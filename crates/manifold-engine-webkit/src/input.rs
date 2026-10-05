@@ -142,15 +142,16 @@ fn modifiers_to_gdk(bits: u8) -> gdk::ModifierType {
     state
 }
 
-/// Letters/digits/space (`KeyCode::produces_text`) deliberately do *not* map to their own real keyval
-/// here (`GDK_KEY_a` etc.) — GTK's input-method handling reads a
-/// `GdkEventKey`'s keyval directly to decide what text to insert, so a
-/// real letter keyval on `KeyDown` inserts text *in addition to* the
-/// separate `InputEvent::Char` pair below (double-insert, the same class
-/// of bug Servo hit — see project memory). Worse, in testing this left
-/// WebKitGTK's input-method context in a state where it silently dropped
-/// every keystroke after the first. `GDK_KEY_VoidSymbol` (X11's "this key
-/// has no keysym" placeholder) is GDK's nearest equivalent to Servo's fix
+/// Letters/digits/space (`KeyCode::produces_text`) deliberately do *not*
+/// map to their own real keyval here (`GDK_KEY_a` etc.) — GTK's
+/// input-method handling reads a `GdkEventKey`'s keyval directly to decide
+/// what text to insert, so a real letter keyval on `KeyDown` inserts text
+/// *in addition to* the separate `InputEvent::Char` pair below
+/// (double-insert, the same class of bug Servo hit — see project memory).
+/// Worse, in testing this left WebKitGTK's input-method context in a state
+/// where it silently dropped every keystroke after the first.
+/// `GDK_KEY_VoidSymbol` (X11's "this key has no keysym" placeholder) is
+/// GDK's nearest equivalent to Servo's fix
 /// (`Key::Named(NamedKey::Unidentified)`) — a valid key event for
 /// shortcut-matching purposes (which key off `KeyCode` on the manifold
 /// side, never a keyval) that produces no text of its own, leaving

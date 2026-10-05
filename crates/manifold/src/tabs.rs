@@ -171,8 +171,9 @@ impl App {
         changed
     }
 
-    /// Asks one WebView2 or CEF tab for its cookies; the answer arrives as `EngineToHost::Cookies`. Best effort: a
-    /// host may never answer, so nothing waits on it, and a pull still pending (under `JAR_PULL_TIMEOUT`) is not stacked.
+    /// Asks one WebView2 or CEF tab for its cookies; the answer arrives as `EngineToHost::Cookies`. Best effort:
+    /// a host may never answer, so nothing waits on it, and a pull still pending (under `JAR_PULL_TIMEOUT`) is not
+    /// stacked.
     pub(crate) fn pull_cookies(&mut self, id: &str) {
         let Some(node) = self.nodes.get_mut(id).and_then(|n| n.as_tab_mut()) else { return };
         if matches!(node.tab.kind, EngineKind::Webview2 | EngineKind::Cef)

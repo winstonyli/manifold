@@ -190,7 +190,8 @@ impl App {
             ui,
             "Sleep background tabs",
             Some(
-                "Applies to open tabs. Sleeping closes the page; waking reloads it. Pinned tabs and tabs playing audio stay awake.",
+                "Applies to open tabs. Sleeping closes the page; waking reloads it. \
+                 Pinned tabs and tabs playing audio stay awake.",
             ),
             |ui| {
                 if toggle(ui, minutes.is_some(), "Sleep background tabs").clicked() {

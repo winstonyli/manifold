@@ -476,7 +476,8 @@ const COMMAND_HELP: &[(&str, &str)] = &[
     ("NEWNOTE", "Graph toolbar's \"+ Note\" button"),
     (
         "ADDFILE path [x y]",
-        "Adds a file as the node its content makes (image, PDF, JSON, note, tab, or a download card); x y is a window point, like a drop there",
+        "Adds a file as the node its content makes (image, PDF, JSON, note, tab, or a download card); \
+         x y is a window point, like a drop there",
     ),
     ("ADDDOWNLOAD path", "Add a download node for `path`, as if the focused tab started it"),
     ("WAITTABS [secs]", "Hold later commands until no tab spawn is in flight (default 60 s max)"),
@@ -490,8 +491,16 @@ const COMMAND_HELP: &[(&str, &str)] = &[
     ("JSONRELAYOUT", "Relayout the current JSON level (clears saved card positions)"),
     ("JSONSEARCH text", "Search the current JSON level's keys and values"),
     ("CLOSEGROUP id", "Close the group `id`, same as its own \"Close\" context-menu action"),
-    ("SLEEPNODE id", "Ask the tab `id` (or every tab of the group `id`) to sleep, same as its \"Sleep\" context-menu action; it sleeps when the engine answers the page-state query (wait a second)"),
-    ("IDLESWEEP secs", "Run one idle auto-sleep sweep: tabs out of sight for `secs` seconds are asked to sleep, and those with a changed form stay awake (the clock updates on every sweep)"),
+    (
+        "SLEEPNODE id",
+        "Ask the tab `id` (or every tab of the group `id`) to sleep, same as its \"Sleep\" \
+         context-menu action; it sleeps when the engine answers the page-state query (wait a second)",
+    ),
+    (
+        "IDLESWEEP secs",
+        "Run one idle auto-sleep sweep: tabs out of sight for `secs` seconds are asked to sleep, \
+         and those with a changed form stay awake (the clock updates on every sweep)",
+    ),
     ("SETJAR <name|default>", "The focused tab uses that jar, by label or name (a new named jar if none has it)"),
     ("SWITCHJARNOW", "The focused tab moves to its new jar now, if it is waiting to switch"),
     ("TRIGGERFIRSTLAUNCHDEMO", "Dev-only: re-spawn the first-launch demo graph on demand"),
@@ -1386,9 +1395,10 @@ mod tests {
 
     #[test]
     fn parses_addfile_with_an_optional_trailing_point() {
-        assert!(
-            matches!(parse_line("ADDFILE C:\\a b\\c.png"), Some(DebugCommand::AddFile(p, None)) if p == "C:\\a b\\c.png")
-        );
+        assert!(matches!(
+            parse_line("ADDFILE C:\\a b\\c.png"),
+            Some(DebugCommand::AddFile(p, None)) if p == "C:\\a b\\c.png"
+        ));
         assert!(matches!(
             parse_line("ADDFILE C:\\a b\\c.png 10 20.5"),
             Some(DebugCommand::AddFile(p, Some((x, y)))) if p == "C:\\a b\\c.png" && x == 10.0 && y == 20.5

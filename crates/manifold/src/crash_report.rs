@@ -66,7 +66,8 @@ fn write_report(info: &std::panic::PanicHookInfo<'_>) {
     let timestamp =
         std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
     let report = format!(
-        "Manifold crash report -- unix time {timestamp}\n\n{info}\n\nLast known state:\n{state}\n\nBacktrace:\n{backtrace}\n"
+        "Manifold crash report -- unix time {timestamp}\n\n{info}\n\n\
+         Last known state:\n{state}\n\nBacktrace:\n{backtrace}\n"
     );
     let path = std::env::temp_dir().join(format!("manifold-crash-{timestamp}.log"));
     let _ = std::fs::write(&path, report);

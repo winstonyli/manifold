@@ -1,5 +1,6 @@
 //! The cookie jar manifold owns. Engines are seeded from it at tab start and pulled back into it, so a login
-//! carries between engines (spec docs/superpowers/specs/2026-10-02-jars-design.md). Pure: no egui, no `App`; it names jars by store `NodeId`.
+//! carries between engines (spec docs/superpowers/specs/2026-10-02-jars-design.md). Pure: no egui, no `App`; it
+//! names jars by store `NodeId`.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -47,7 +48,8 @@ pub enum SameSite {
     Unspecified,
 }
 
-/// The neutral cookie every engine's cookies convert to and from. `expires` is Unix seconds, `None` for a session cookie.
+/// The neutral cookie every engine's cookies convert to and from. `expires` is Unix seconds, `None` for a session
+/// cookie.
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub struct Cookie {
     pub name: String,
@@ -331,9 +333,9 @@ impl Jar {
     }
 
     /// Removes every file holding key `key`'s cookies (a deleted or newly ephemeral jar): its file, its
-    /// `.unreadable-*` copies and the `.<pid>-<n>.tmp` files of crashed saves, each a full copy of its credentials. A live
-    /// process's temp file is its save in progress and stays (`remove_dead_tmps`). A file already gone is fine; the
-    /// first other failure is returned after trying the rest.
+    /// `.unreadable-*` copies and the `.<pid>-<n>.tmp` files of crashed saves, each a full copy of its
+    /// credentials. A live process's temp file is its save in progress and stays (`remove_dead_tmps`). A file
+    /// already gone is fine; the first other failure is returned after trying the rest.
     pub fn delete_files(dir: &Path, key: JarKey) -> std::io::Result<()> {
         let file = key.file_name();
         remove_dead_tmps(dir, &file);
@@ -469,8 +471,8 @@ impl Jar {
     }
 }
 
-/// `merge`'s deletion of key `k`: every copy, as a `retain` by key would. With no `repeats` in the jar, only the indexed
-/// slot holds it. Whether anything was removed.
+/// `merge`'s deletion of key `k`: every copy, as a `retain` by key would. With no `repeats` in the jar, only the
+/// indexed slot holds it. Whether anything was removed.
 fn remove_key(slots: &mut [Option<Cookie>], index: &mut HashMap<Key, usize>, k: &Key, repeats: bool) -> bool {
     let Some(i) = index.remove(k) else { return false };
     slots[i] = None;

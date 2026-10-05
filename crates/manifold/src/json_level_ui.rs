@@ -484,7 +484,10 @@ impl App {
             tab_target = None;
             let shift = ui.input(|i| {
                 i.events.iter().any(|e| {
-                    matches!(e, egui::Event::Key { key: egui::Key::Tab, pressed: true, modifiers, .. } if modifiers.shift)
+                    matches!(
+                        e,
+                        egui::Event::Key { key: egui::Key::Tab, pressed: true, modifiers, .. } if modifiers.shift
+                    )
                 })
             });
             let next = if shift { at.checked_sub(1) } else { Some(at + 1).filter(|&n| n < level.cards.len()) };

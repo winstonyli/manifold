@@ -1291,7 +1291,11 @@ fn file_with_a_work_jar() -> JsonDoc {
     let json = serde_json::json!({ "nodes": [
         json_node("g", "group", serde_json::json!({ "name": "G", "default_jar": "j" })),
         json_node("j", "jar", serde_json::json!({ "name": "Work" })),
-        json_node("t", "tab", serde_json::json!({ "url": "https://a.com/", "group": "g", "jar": "j", "jar_set": true })),
+        json_node(
+            "t",
+            "tab",
+            serde_json::json!({ "url": "https://a.com/", "group": "g", "jar": "j", "jar_set": true }),
+        ),
     ]});
     serde_json::from_value(json).unwrap()
 }

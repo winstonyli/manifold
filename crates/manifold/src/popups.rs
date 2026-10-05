@@ -1687,8 +1687,8 @@ mod tests {
         output.textures_delta.clear();
     }
 
-    /// Name rules: a long bookmark folder name is one line cut with "…" at the popup's width, not wrapped, both as a header
-    /// and as the "click to set folder" label under a bookmark.
+    /// Name rules: a long bookmark folder name is one line cut with "…" at the popup's width, not wrapped, both as
+    /// a header and as the "click to set folder" label under a bookmark.
     #[test]
     fn a_long_bookmark_folder_header_is_one_cut_line() {
         let ctx = egui::Context::default();

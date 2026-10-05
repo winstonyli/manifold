@@ -1333,7 +1333,8 @@ fn spawn_webkit_tab(tab_id: &str, initial_url: &str) -> std::io::Result<EngineTa
     let mut token = [0u8; transport::TOKEN_LEN];
     getrandom::fill(&mut token).map_err(|e| std::io::Error::other(e.to_string()))?;
     let command = format!(
-        "ENGINE_TAB_ID={} ENGINE_INITIAL_URL={} ENGINE_TCP_PORT={} ENGINE_TOKEN={} ENGINE_HOST_IP=$(ip route | awk '/^default/ {{print $3}}') xvfb-run -a {}",
+        "ENGINE_TAB_ID={} ENGINE_INITIAL_URL={} ENGINE_TCP_PORT={} ENGINE_TOKEN={} \
+         ENGINE_HOST_IP=$(ip route | awk '/^default/ {{print $3}}') xvfb-run -a {}",
         shell_quote(tab_id),
         shell_quote(initial_url),
         port,

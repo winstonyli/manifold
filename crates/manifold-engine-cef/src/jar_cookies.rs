@@ -151,7 +151,8 @@ fn given_up(failed: bool, seen_any: bool, elapsed: Duration) -> bool {
 }
 
 /// What a pull whose visitor has not completed answers: nothing yet unless `given_up` (the read never started, no
-/// callback came in time, or `PULL_DEADLINE` passed); then `[]` only for a host that never had a cookie (a genuinely empty store), else silence.
+/// callback came in time, or `PULL_DEADLINE` passed); then `[]` only for a host that never had a cookie (a genuinely
+/// empty store), else silence.
 fn no_callback_answer(given_up: bool, may_hold_cookies: bool) -> PullState {
     match (given_up, may_hold_cookies) {
         (false, _) => PullState::Pending,
@@ -232,7 +233,8 @@ mod tests {
 
     #[test]
     fn a_neutral_cookie_becomes_a_cef_cookie_and_back() {
-        let j = json!({"name":"sid","value":"1","domain":"a.com","path":"/","expires":4102444800.0,"secure":true,"http_only":true,"same_site":"Strict"});
+        let j = json!({"name":"sid","value":"1","domain":"a.com","path":"/","expires":4102444800.0,
+                       "secure":true,"http_only":true,"same_site":"Strict"});
         let (url, cookie) = cookie_from_json(&j).unwrap();
         assert_eq!(url, "https://a.com/");
         assert_eq!(cookie.httponly, 1);
@@ -243,7 +245,8 @@ mod tests {
     }
 
     fn neutral(name: &str, domain: &str, path: &str, secure: bool) -> Value {
-        json!({"name":name,"value":"v","domain":domain,"path":path,"expires":null,"secure":secure,"http_only":false,"same_site":"Lax"})
+        json!({"name":name,"value":"v","domain":domain,"path":path,"expires":null,
+               "secure":secure,"http_only":false,"same_site":"Lax"})
     }
 
     #[test]
@@ -310,7 +313,8 @@ mod tests {
 
     #[test]
     fn a_session_cookie_has_no_expiry() {
-        let j = json!({"name":"s","value":"1","domain":".a.com","path":"/","expires":null,"secure":false,"http_only":false,"same_site":"Unspecified"});
+        let j = json!({"name":"s","value":"1","domain":".a.com","path":"/","expires":null,
+                       "secure":false,"http_only":false,"same_site":"Unspecified"});
         let (url, cookie) = cookie_from_json(&j).unwrap();
         assert_eq!(url, "http://a.com/");
         assert_eq!(cookie_to_json(&cookie)["expires"], serde_json::Value::Null);

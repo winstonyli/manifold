@@ -1023,7 +1023,8 @@ mod tests {
         );
         assert_eq!(
             menu_of(&tab(jars(true, true, false)), false).2,
-            "Pin | Duplicate | Sleep | Copy URL | Fit Subtree | <jars> | New Jar... | Follow Group's Jar | Switch Jar Now | <colors> | --- | Close"
+            "Pin | Duplicate | Sleep | Copy URL | Fit Subtree | <jars> | New Jar... | Follow Group's Jar | \
+             Switch Jar Now | <colors> | --- | Close"
         );
         let unloaded = NodeMenuView { jars: jars(true, true, false), ..view_of(ItemNodeKind::Unloaded) };
         assert_eq!(
@@ -1038,7 +1039,8 @@ mod tests {
         );
         assert_eq!(
             menu_of(&group(true), false).2,
-            "Rename | Sleep Tabs | <jars> | Clear Default Jar | <colors> | --- | Dissolve | Close Group | Export Group..."
+            "Rename | Sleep Tabs | <jars> | Clear Default Jar | <colors> | --- | Dissolve | Close Group | \
+             Export Group..."
         );
     }
 

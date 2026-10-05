@@ -828,7 +828,8 @@ impl App {
         }
     }
 
-    /// The breadcrumb trail with its back button, the rename box on the current group and, on a JSON level, the JSON bar. Returns the back button's rect.
+    /// The breadcrumb trail with its back button, the rename box on the current group and, on a JSON level, the
+    /// JSON bar. Returns the back button's rect.
     fn toolbar_breadcrumb(
         &mut self,
         ui: &mut egui::Ui,
@@ -1679,9 +1680,12 @@ impl App {
         let Some(at) = order.iter().position(|id| ui.memory(|m| m.has_focus(card_id(id)))) else { return };
         // The shift state comes from the key event itself, which is also how the debug `TABKEY shift` sends it.
         let (tab, shift) = ui.input(|i| {
-            let shifted = i.events.iter().any(
-                |e| matches!(e, egui::Event::Key { key: egui::Key::Tab, pressed: true, modifiers, .. } if modifiers.shift),
-            );
+            let shifted = i.events.iter().any(|e| {
+                matches!(
+                    e,
+                    egui::Event::Key { key: egui::Key::Tab, pressed: true, modifiers, .. } if modifiers.shift
+                )
+            });
             (i.key_pressed(egui::Key::Tab), shifted)
         });
         let target = if shift { at.checked_sub(1) } else { Some(at + 1).filter(|&n| n < order.len()) };

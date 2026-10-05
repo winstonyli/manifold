@@ -213,8 +213,10 @@ pub(crate) fn engine_cons(kind: EngineKind) -> &'static [&'static str] {
             "Younger engine -- some sites may render incorrectly or not at all yet",
         ],
         EngineKind::Webkit => &[
-            "No native Windows WebKit exists -- runs inside a WSL2 Ubuntu VM, relayed over TCP (no shared memory, higher latency)",
-            "Slowest to start (a cold WSL2 boot can take up to 45s); needs WSL2 + Ubuntu + several Linux packages preinstalled",
+            "No native Windows WebKit exists -- runs inside a WSL2 Ubuntu VM, relayed over TCP \
+             (no shared memory, higher latency)",
+            "Slowest to start (a cold WSL2 boot can take up to 45s); needs WSL2 + Ubuntu + several Linux \
+             packages preinstalled",
         ],
     }
 }

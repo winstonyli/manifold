@@ -2108,7 +2108,8 @@ impl App {
                 // Below `MIN_LABEL_CARD_SCREEN_WIDTH` the label would be a sliver; the dot alone remains.
                 if show_text {
                     let label_font = egui::FontId::proportional(14.0);
-                    // Screen width left for the label: the strip's, less the 16px left offset and some room on the right.
+                    // Screen width left for the label: the strip's, less the 16px left offset and some room on
+                    // the right.
                     let label_max_width = (title_strip.width() * zoom_scale - 16.0 - 6.0).max(0.0);
                     let label =
                         truncate_to_width(&mut self.truncate_cache, ui.ctx(), label, &label_font, label_max_width);
@@ -2549,7 +2550,8 @@ mod tests {
     pub(crate) fn ",
                 )
                 .unwrap_or(rest.len())];
-            // The JSON preview's header is drawn by `json_level_ui::paint_json_content`, which `CardLook::preview` switches to F.
+            // The JSON preview's header is drawn by `json_level_ui::paint_json_content`, which
+            // `CardLook::preview` switches to F.
             let json_preview = name == "json" && body.contains("TAB_HEADER_POINTS");
             assert!(json_preview || markers.iter().any(|m| body.contains(m)), "paint_{name}_body draws no card header");
         }

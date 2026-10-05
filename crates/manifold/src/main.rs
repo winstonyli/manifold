@@ -961,8 +961,8 @@ struct App {
     /// A copy of `jars` for spawn threads: the seed is read when the host connects, not when the spawn starts. Also
     /// counts each jar's clears, so a host seeded before a clear is caught when it lands (`note_spawned_jar`).
     jar_snapshots: Arc<std::sync::Mutex<jar::Snapshots>>,
-    /// A sleep's `PageState` or a swap's `StateSnapshot` waiting for the tab's `Cookies` reply (or its deadline), so the
-    /// host is not dropped before its last cookies arrive.
+    /// A sleep's `PageState` or a swap's `StateSnapshot` waiting for the tab's `Cookies` reply (or its deadline), so
+    /// the host is not dropped before its last cookies arrive.
     cookie_holds: HashMap<String, (std::time::Instant, tabs::Held)>,
     /// When `jar_pull_all` last ran, for the 30 s pull in `about_to_wait`.
     jar_last_pull: Option<std::time::Instant>,

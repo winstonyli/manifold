@@ -292,7 +292,8 @@ fn main() {
                         url: delegate.nav.borrow().url.clone(),
                     }));
                 }
-                HostToEngine::SetCookies(_) | HostToEngine::GetCookies => {} // This engine has no cookie jar to seed or read; stays silent.
+                // This engine has no cookie jar to seed or read; stays silent.
+                HostToEngine::SetCookies(_) | HostToEngine::GetCookies => {}
                 HostToEngine::QueryPageState => {
                     let pending = pending_page_state.clone();
                     webview.evaluate_javascript(ipc_protocol::PAGE_STATE_SCRIPT, move |result| {
@@ -437,13 +438,14 @@ fn translate_input_event(event: HostInputEvent) -> Option<ServoInputEvent> {
 /// The *logical* key (what a DOM `KeyboardEvent.key` would read) for a
 /// `KeyDown`/`KeyUp` — used for arrow/enter/backspace/etc. shortcut
 /// handling, where the physical key's identity is what matters. Letters,
-/// digits, and space (`KeyCode::produces_text`) map to `Key::Named(NamedKey::Unidentified)` rather
-/// than a guessed `Key::Character` — the *correct* produced text arrives
-/// separately via `InputEvent::Char` (see `translate_input_event`'s `Char`
-/// arm), and sending a guessed character here too double-inserts text
-/// (confirmed by hand: typing showed up doubled, e.g. "Hello" as
-/// "hHeellllooo", before this was `Unidentified`). Shortcuts mostly key
-/// off `code` anyway, not `key`, so `Unidentified` here costs nothing real.
+/// digits, and space (`KeyCode::produces_text`) map to
+/// `Key::Named(NamedKey::Unidentified)` rather than a guessed
+/// `Key::Character` — the *correct* produced text arrives separately via
+/// `InputEvent::Char` (see `translate_input_event`'s `Char` arm), and
+/// sending a guessed character here too double-inserts text (confirmed by
+/// hand: typing showed up doubled, e.g. "Hello" as "hHeellllooo", before
+/// this was `Unidentified`). Shortcuts mostly key off `code` anyway, not
+/// `key`, so `Unidentified` here costs nothing real.
 fn key_to_servo_key(key: HostKeyCode) -> Key {
     if key.produces_text() {
         return Key::Named(NamedKey::Unidentified);

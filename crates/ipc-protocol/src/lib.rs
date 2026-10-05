@@ -38,7 +38,8 @@ pub fn check_version(theirs: u32) -> Result<(), String> {
         return Ok(());
     }
     Err(format!(
-        "{PROTOCOL_MISMATCH}: the engine host speaks protocol {theirs}, manifold speaks {PROTOCOL_VERSION}; rebuild the engine host"
+        "{PROTOCOL_MISMATCH}: the engine host speaks protocol {theirs}, manifold speaks {PROTOCOL_VERSION}; \
+         rebuild the engine host"
     ))
 }
 
