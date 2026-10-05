@@ -595,7 +595,8 @@ Done on `dev`: 5e82da0, dc1d1e6, 4741dab, 566b0c3, 9fa6631, 952fe1c, 808fc0e. 78
 
 ### Parked (not fixed)
 
-- After a commit the mirror takes the resolved target, so a Move the store refuses as a cycle leaves the mirror wrong; `merge_groups`' ancestor walk (`graph_nav.rs`) has no loop guard; `would_create_cycle` can hang on a parent cycle made by two concurrent reparents (pre-2b-2).
+(The cycle items, the mirror taking the resolved target after a refused Move and the unguarded `merge_groups`/`would_create_cycle` walks, were fixed in 10372ac.)
+
 - A pending `Set PARENT` is written even when it equals the document's value.
 - A large remote delete costs O(deleted x nodes) through `children_of`.
 - A local cascade does not patch a parked `remote_in_flight` entry for a respawning tab, so landing can show a deleted group (display only).
