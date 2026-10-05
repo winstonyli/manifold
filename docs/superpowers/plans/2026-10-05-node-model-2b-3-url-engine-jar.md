@@ -201,3 +201,26 @@ Survey this plan was written from (git-ignored, may be gone): `.superpowers/scra
   fresh `cargo build` or it probes the old exe. A respawning tab with no mirror entry must be excluded from
   `linked_ids` (2b-2 Task 3 fix) when cascades widen.
 - **Unverified at writing:** whether sleeping mid-swap is reachable (Task 3 Step 3 checks); exact test line numbers.
+
+---
+
+## Outcome (2026-10-05)
+
+Done on `dev`: aa95040, b51f345 (url); 02810e6 (jar, jar_set); f1626b8, 637d7c0 (engine); f92ae1f (docs); 58835f1, 0b01986 (final-review fixes). 816 tests pass (4 ignored) plus 43 in ipc-protocol; fmt and clippy clean; two-instance scenarios 3,4,5,7, `jar-probe.sh` and the headless smoke test passed (smoke ran at about 53% CPU from other sessions, Defender real-time protection off). `scale-test.sh` was not run.
+
+### Rulings I made
+
+- Recently Closed keeps recording a tab's live url (no ruling changes it; one extra live-url read in `closed_entry`).
+- Task 2 got no fix round (only minors); minors 1, 4, 5 were folded into the final-review fix.
+- A crash mid-swap finishes the swap, and duplicating a tab mid-swap uses the target engine (the mirror holds the target; reverting needs a second source of truth). Cost: a tab restarts on a target that may fail; the fallback covers it.
+- After a swap's own edit is saved, a later remote engine change is overwritten by the target, also for swaps another replica started (documented in the sync map).
+- One fix dispatch covered the final review's Important (a remote url/engine change parked during a spawn lost its live effect), the mid-spawn jar delete, the test gaps and the doc fixes.
+
+### Parked (not fixed)
+
+- `seed_landing` clears any *new* spawn whose jar is missing from `jar_defs`, not only one deleted mid-flight: a duplicate of a tab holding a dangling jar, or a new tab in a group whose `DEFAULT_JAR` dangles, lands on the default jar. The doc comment and sync map describe only the mid-flight case.
+- Per-field last-writer-wins can mix a jar choice (jar and jar_set are separate fields); a pending Set equal to the stored value is still written; the post-commit mirror correction covers a created tab's JAR only.
+- An engine pick during the cookie hold (up to 2 s) is dropped silently; the picker isn't greyed out. A crash card after a crash mid-swap names the target engine with the old engine's crash reason. Duplicating mid-swap has no fallback if the target fails to start.
+- `NodePayload::saved_tab()` now returns only the live url, so its name is a slight misnomer.
+- 2b-2's parked items still stand (cycle-refused Move leaves the mirror wrong, `merge_groups` loop guard, `children_of` cost, local cascade vs parked remote entry, `destroy_group` with a respawning member).
+- Commit trailers for Tasks 2-3 and the fixes name "Claude Opus 5.5", not Sonnet 5.5 (the implementers were Opus).
