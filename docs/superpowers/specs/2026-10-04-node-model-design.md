@@ -141,6 +141,37 @@ One history replaces both undo and Recently Closed.
   not change.
 - The history is persisted in the session in the generic entry form; `closed.rs`'s per-kind entry type goes away.
 
+## 6. Session format simplifications
+
+The journal and session code shrink as a result of sections 1-5. No compatibility is kept.
+
+1. **One spelling of a node's type.** The `type` MIME string replaces the numeric kind code (`KINDS`, `from_code`,
+   `name`, `from_name`, `Kind::Unknown(code)`) in the journal, and the JSON export spells it the same way. If size
+   matters, intern it in a per-file type table like the actor table.
+2. **Field lists are row data.** `kind_fields` (`session_sync.rs`) gives nine kinds near-identical lists. The row `fields`
+   list appends by layer: `*/*` carries the common fields, file-backed rows add `url` and `path`, `text/markdown` adds
+   `text`, and so on. `diff`, `fields_of` and `imported_fields` read the merged list.
+3. **Common fields on every node:** `pos`, `color`, `name`, `pinned`, `closed`, `parent`. The per-kind carve-outs
+   (`pinned` only on tabs, `name` only on groups and jars) go away.
+4. **Edge validity is generic.** `diff` hard-codes `PARENT` (`valid(...)` on the create and set paths); it iterates every
+   Id-typed edge field from the edge table instead, so `jar`, `link` endpoints and later edges get "a target that is
+   neither live nor new is written as none" for free.
+5. **No separate closed-entry format.** `LocalState.closed: Vec<JsonDoc>` (a JSON serialization of each closed subtree)
+   and `closed.rs`'s entry type are replaced by the `closed` flag plus a short list of `{label, inverse}` entries.
+   Decision for the plan: the list stays in local state as now (history is per replica); closed nodes are in the shared
+   document either way.
+6. **Live state is the document node.** The app builds `Shared { kind, group, fields }` from `NodePayload` and back
+   (`tab_fields`, `tab_common`, `str_of`, `url_of`, `bool_of`, `pos_of`, `id_of`, `engine_field` and the 33 kind sites in
+   `session_sync.rs`). With a generic node (type, fields) the live model is the fields map plus a runtime side-table
+   (the row's `presentation.runtime`: engine handle, texture, load state), and that translation layer disappears. This
+   is the largest cut and the largest refactor; it lands in step 5 of the plan, once consumers read `caps()`.
+7. **One "viewed" id in local state.** `viewed_image` (an image-specific field) becomes `viewed: Option<Id>` for any
+   node; with D it names the node a view is open on.
+8. After C: `JAR_SET` and `DEFAULT_JAR` retire into the single `jar` edge field (18 fields to 16).
+
+Unchanged: the typed `FIELDS` table, `explicit` fields, `ENGINE` and `ENGINES` (until D), and `JsonLeaf`'s
+`key`/`value`/`path` (a JSON-path node type is a separate idea).
+
 ## Rename plan and order
 
 Each step leaves the app working:
