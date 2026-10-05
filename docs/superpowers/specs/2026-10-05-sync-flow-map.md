@@ -34,3 +34,9 @@ Node creation funnels: `place_node` (fetched.rs ~65; groups, notes, content, dow
 - Mirrored fields (`color`, `pinned`) are written only by `App::edit_field`, which updates the mirror and queues the op in `App::pending`.
 - `save_session` commits `App::pending` beside `diff`, dropping edits for nodes this commit creates or deletes or the document doesn't show live, and clears it only on a successful commit.
 - `mirror_remote` (called from `materialize`) skips a field with a pending edit, and `Mirror::init` seeds a new tab at spawn landing only if the id has no entry.
+
+## After 2b-2
+
+- Links (`group`, `parent`) are written only by `edit_group` and `edit_parent`.
+- Commit order is `diff`, pending `Move`s, pending `Set`s, with targets resolved against the document and this commit.
+- `mirror_remote` takes the effective group and skips a link with a pending edit.

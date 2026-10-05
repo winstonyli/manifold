@@ -251,9 +251,12 @@ leaves the app working:
      `App::edit_field` and `App::pending` exist; `color` and `pinned` read through `Mirror`; `diff` skips `MIRRORED`
      fields on existing non-jar nodes (jars keep their colour in `jar_defs` until sub-project C). Known leftovers: no
      end-to-end test of `SetColor`/`CycleColor`, and no test that colour/pin survive a crash, swap or wake respawn
-     across a save. Next: 2b-2, written when this lands. Field groups left: pos, group/parent, url/engine/jar, name,
-     text/view, content kinds; then delete `diff`, `explicit`, `keep`, the enums and the caps bridge, rewrite
-     fixtures, add the grep guard.
+     across a save.
+     2b-2 done: 5e82da0, dc1d1e6, 4741dab and 566b0c3. `group` and `parent` live in `Mirror` links; `edit_group` queues
+     a `Move` (`App::pending_moves`), `edit_parent` a `Set PARENT`; `diff` no longer compares either for an existing
+     non-jar node. Next: 2b-3 (url, engine, jar, jar_set); 2b-4 (name, text, view, pos: the document `pos` goes in the
+     mirror, the layout `pos`/`vel` become a runtime side-table); 2b-5 (content kinds, then delete `diff`, `explicit`,
+     `keep`, the enums and the caps bridge, rewrite fixtures, add the grep guard).
 3. **Plan 3, generic verbs and history.** Selection, pin, rename, duplicate and connect over any node (edit the rows);
    the `closed` field (`is_live`, `Doc::shown`, the closed-aware `effective_group`, compaction and pruning keep closed
    nodes, content-file ownership and local per-node state keep closed ids); transaction history replacing
