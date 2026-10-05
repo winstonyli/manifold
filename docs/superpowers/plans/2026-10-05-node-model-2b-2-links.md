@@ -209,7 +209,7 @@ fn a_local_parent_edit_wins_over_a_remote_one() {
         add(&mut app, sleeping_tab("https://c/", "")),
     );
     assert!(app.save_session());
-    let mut other = app_on_journal(&path, 2);
+    let mut other = Journal::open(&path, ActorId(2)).unwrap();
     app.edit_parent(&c, Some(a.clone()));
     remote_set(&mut other, &c, field::PARENT, FieldValue::Id(Some(b.parse().unwrap())));
     assert!(app.save_session());
@@ -259,8 +259,8 @@ fn remote_parent_change_and_removal_reparent_through_the_mirror() {
 }
 ```
 
-If `app_on_journal` does not exist, write the second replica the way the existing test
-`a_remote_edit_to_one_field_keeps_an_unsaved_local_edit_to_another` (line ~518) does and copy its setup verbatim.
+The second replica is `Journal::open(&path, ActorId(2)).unwrap()`, as in the existing test
+`a_remote_edit_to_one_field_keeps_an_unsaved_local_edit_to_another` (line ~518); `remote_set` is its helper.
 
 - [ ] **Step 2: Run, expect compile errors** (`edit_parent`, `Mirror::parent` missing).
 
@@ -386,7 +386,7 @@ directly rather than `&self` methods to keep the borrow checker satisfied.
 fn a_group_edit_reads_back_and_commits_as_a_move() {
     let path = temp_dir("group-edit").join("session.mnf");
     let mut app = app_on(&path, 1);
-    let g = add(&mut app, NodePayload::Group(GroupPayload::named("G".into())));
+    let g = add(&mut app, NodePayload::Group(GroupPayload::named("G")));
     let t = add(&mut app, sleeping_tab("https://t/", ""));
     assert!(app.save_session());
     app.edit_group(&t, Some(g.clone()));
@@ -403,7 +403,7 @@ fn a_move_into_a_group_created_by_the_same_save_follows_the_create() {
     let mut app = app_on(&path, 1);
     let t = add(&mut app, sleeping_tab("https://t/", ""));
     assert!(app.save_session());
-    let g = add(&mut app, NodePayload::Group(GroupPayload::named("G".into())));
+    let g = add(&mut app, NodePayload::Group(GroupPayload::named("G")));
     app.edit_group(&t, Some(g.clone()));
     assert!(app.save_session());
     assert_eq!(app.journal.as_ref().unwrap().doc().effective_group(t.parse().unwrap()), Some(g.parse().unwrap()));
@@ -414,7 +414,7 @@ fn a_move_into_a_group_created_by_the_same_save_follows_the_create() {
 fn a_move_into_a_group_deleted_by_the_same_save_is_written_as_none() {
     let path = temp_dir("group-gone").join("session.mnf");
     let mut app = app_on(&path, 1);
-    let g = add(&mut app, NodePayload::Group(GroupPayload::named("G".into())));
+    let g = add(&mut app, NodePayload::Group(GroupPayload::named("G")));
     let t = add(&mut app, sleeping_tab("https://t/", ""));
     assert!(app.save_session());
     app.edit_group(&t, Some(g.clone()));
@@ -424,13 +424,32 @@ fn a_move_into_a_group_deleted_by_the_same_save_is_written_as_none() {
 }
 
 #[test]
-fn a_local_group_move_wins_over_a_remote_one_and_hand_built_ids_queue_nothing() {
+fn a_group_edit_on_a_non_store_id_queues_nothing() {
     let mut app = App::default();
     app.edit_group("t", Some("g".into()));
     assert_eq!(app.mirror.group("t"), Some("g"));
     assert!(app.pending_moves.is_empty());
-    // the two-replica conflict follows `a_local_parent_edit_wins_over_a_remote_one`, with an
-    // `OpBody::Move` as the remote op: write it the same way, asserting `app.mirror.group(&t)` keeps the local group.
+}
+
+/// An unsaved local move beats another replica's move of the same node.
+#[test]
+fn a_local_group_move_wins_over_a_remote_one() {
+    let path = temp_dir("group-conflict").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let g1 = add(&mut app, NodePayload::Group(GroupPayload::named("A")));
+    let g2 = add(&mut app, NodePayload::Group(GroupPayload::named("B")));
+    let t = add(&mut app, sleeping_tab("https://t/", ""));
+    assert!(app.save_session());
+    let mut other = Journal::open(&path, ActorId(2)).unwrap();
+    app.edit_group(&t, Some(g1.clone()));
+    other
+        .begin()
+        .unwrap()
+        .commit(vec![OpBody::Move { node: t.parse().unwrap(), group: Some(g2.parse().unwrap()) }])
+        .unwrap();
+    assert!(app.save_session());
+    assert_eq!(app.mirror.group(&t), Some(g1.as_str()));
+    assert_eq!(app.journal.as_ref().unwrap().doc().effective_group(t.parse().unwrap()), Some(g1.parse().unwrap()));
 }
 
 /// Dissolving a group moves its members up through the writer and the store agrees after a save.
@@ -438,8 +457,8 @@ fn a_local_group_move_wins_over_a_remote_one_and_hand_built_ids_queue_nothing() 
 fn dissolving_a_group_moves_members_up_and_saves() {
     let path = temp_dir("group-dissolve").join("session.mnf");
     let mut app = app_on(&path, 1);
-    let outer = add(&mut app, NodePayload::Group(GroupPayload::named("O".into())));
-    let inner = add(&mut app, NodePayload::Group(GroupPayload::named("I".into())));
+    let outer = add(&mut app, NodePayload::Group(GroupPayload::named("O")));
+    let inner = add(&mut app, NodePayload::Group(GroupPayload::named("I")));
     let t = add(&mut app, sleeping_tab("https://t/", ""));
     app.edit_group(&inner, Some(outer.clone()));
     app.edit_group(&t, Some(inner.clone()));
@@ -554,9 +573,9 @@ collected first, then `edit_group(member, Some(target))`.
 
 - **Spec coverage:** section 6 item 4 (one validity rule) is Ruling 5 and Tasks 2-3 tests; item 10 (direct ops) advances
   for two link kinds; the carry dedupe (2b-1 review items M1/M2) is Task 1. Items 2, 3, 6, 7, 8, 9 belong to later plans.
-- **Placeholders:** the two-replica conflict tests are specified by reference to an existing test's setup because the
-  helper name for a second journal is not fixed in the repo (`app_on_journal` is assumed in Task 2; Step 1 says how to
-  fall back). The executor must write them in full, not leave the comment.
+- **Placeholders:** none. The second replica is `Journal::open(&path, ActorId(2))`, checked against the existing tests.
+  Tests were written against the helpers `app_on`, `add`, `sleeping_tab`, `remote_set`, `stored`; verify
+  `Journal`, `ActorId` and `OpBody` are in scope in `tests.rs` (they are used by the neighbouring tests).
 - **Type consistency:** `Carried` gains `parent` in Task 2 and `group` in Task 3; Task 1's tests construct it with two
   fields and Task 2 Step 3 must update them. `resolve` is defined in Task 2 Step 4 and reused in Task 3 Step 4.
 - **Risks:** ~210 read sites are mechanical but wide; Task 3 is the largest and may deserve two review rounds. Borrowing
