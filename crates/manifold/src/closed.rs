@@ -118,7 +118,7 @@ pub(crate) fn closed_entry(app: &App, id: &str) -> Option<ClosedEntry> {
         root_id,
         &order,
         |id| shared.get(id).and_then(|n| n.group),
-        |id| shared.get(id).is_some_and(|n| n.kind == store::model::Kind::Group),
+        |id| shared.get(id).is_some_and(|n| crate::caps::bridge::is_container_store(n.kind)),
     );
     for member_id in members {
         let Some(member) = shared.get(&member_id) else { continue };

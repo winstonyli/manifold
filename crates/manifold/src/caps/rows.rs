@@ -155,10 +155,9 @@ mod tests {
     #[test]
     fn a_tag_does_not_outrank_a_more_specific_pattern() {
         let r = registry(vec![
-            // `Blank` stands in for any tag until Task 2 adds `Loaded`.
-            Row::new("image/*").requires(&[Tag::Blank]).restorable(false),
+            Row::new("image/*").requires(&[Tag::Loaded]).restorable(false),
             Row::new("image/png").restorable(true),
         ]);
-        assert!(r.caps("image/png", TagSet::of(&[Tag::Blank])).restorable);
+        assert!(r.caps("image/png", TagSet::of(&[Tag::Loaded])).restorable);
     }
 }

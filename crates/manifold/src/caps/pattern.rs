@@ -64,6 +64,8 @@ impl Pattern {
 /// A runtime fact about a node that refines which rows apply (spec "Tags"). Not stored.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum Tag {
+    /// A tab with a running engine.
+    Loaded,
     /// A note with no text.
     Blank,
 }
@@ -135,13 +137,11 @@ mod tests {
 
     #[test]
     fn tag_sets_hold_and_count_tags() {
-        // Task 2 adds `Tag::Loaded` and the two-tag assertions back.
-        let blank = TagSet::of(&[Tag::Blank]);
-        assert_eq!(blank.len(), 1);
-        assert_eq!(TagSet::EMPTY.len(), 0);
-        assert!(blank.contains_all(blank));
-        assert!(blank.contains_all(TagSet::EMPTY));
-        assert!(!TagSet::EMPTY.contains_all(blank));
+        let both = TagSet::of(&[Tag::Loaded, Tag::Blank]);
+        assert_eq!(both.len(), 2);
+        assert!(both.contains_all(TagSet::of(&[Tag::Blank])));
+        assert!(both.contains_all(TagSet::EMPTY));
+        assert!(!TagSet::of(&[Tag::Loaded]).contains_all(both));
         assert_eq!(TagSet::of(&[Tag::Blank, Tag::Blank]).len(), 1);
     }
 }

@@ -498,7 +498,7 @@ impl CardControl {
             CardControl::Pin => NodeAction::TogglePin,
             CardControl::Audio => NodeAction::ToggleMute,
             CardControl::Eject => NodeAction::RemoveFromGroup,
-            CardControl::Close if kind == ItemNodeKind::Group => NodeAction::Dissolve,
+            CardControl::Close if crate::caps::bridge::is_container(kind) => NodeAction::Dissolve,
             CardControl::Close => NodeAction::Delete,
         }
     }
@@ -591,11 +591,12 @@ pub(crate) enum DropEffect {
 /// Every drag-and-drop rule in Graph view, for every kind. A group dropped on a group merges into it; the
 /// node menu's "Move into <group>" (`NodeAction::MoveToGroup`) is always a Join, so it nests one instead.
 pub(crate) fn drop_action(dragged: ItemNodeKind, target: DropTarget, inside_group: bool) -> Option<DropEffect> {
-    use ItemNodeKind::{Group, Tab, Unloaded};
+    use crate::caps::bridge::{can_contain, is_container};
+    use ItemNodeKind::{Tab, Unloaded};
     match (dragged, target, inside_group) {
         (_, DropTarget::BackButton, true) => Some(DropEffect::Eject),
-        (Group, DropTarget::Card(Group), _) => Some(DropEffect::Merge),
-        (_, DropTarget::Card(Group), _) => Some(DropEffect::Join),
+        (dragged, DropTarget::Card(onto), _) if is_container(dragged) && is_container(onto) => Some(DropEffect::Merge),
+        (dragged, DropTarget::Card(onto), _) if can_contain(onto, dragged) => Some(DropEffect::Join),
         (Tab | Unloaded, DropTarget::Card(Tab | Unloaded), false) => Some(DropEffect::GroupWith),
         (Tab | Unloaded, DropTarget::Card(Tab | Unloaded), true) => Some(DropEffect::Reparent),
         _ => None,
