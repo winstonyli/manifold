@@ -100,7 +100,6 @@ fn unloaded_from(tab: &TabPayload, state: UnloadedState) -> UnloadedTabPayload {
         muted: tab.muted,
         zoom_factor: tab.zoom_factor,
         state,
-        jar: tab.jar,
     }
 }
 
@@ -125,14 +124,15 @@ impl App {
     /// arrives.
     pub(crate) fn spawn_tab_async(&mut self, spawn: TabSpawn) {
         self.tab_spawns_in_flight += 1;
-        // Shared at the url the mirror holds for it (a respawn's `spawn.url` is the live one); a new tab has no entry
-        // yet and shares the one it starts at.
+        // Shared at the url and jar the mirror holds for it (a respawn's `spawn.url` is the live one); a new tab has no
+        // entry yet and shares the ones it starts with.
         let shared_url = Some(self.mirror.url(&spawn.id)).filter(|url| !url.is_empty());
-        let shared = session_sync::spawn_shared(&spawn, shared_url.as_deref().unwrap_or(&spawn.url));
+        let choice = if self.mirror.has(&spawn.id) { self.mirror.jar_choice(&spawn.id) } else { spawn.jar };
+        let shared = session_sync::spawn_shared(&spawn, shared_url.as_deref().unwrap_or(&spawn.url), choice);
         self.spawning.insert(spawn.id.clone(), shared);
         let generation = self.session_generation;
         // Resolved and loaded before the test early return, so tests see the load happen.
-        let (jar, _) = self.resolved_jar(&spawn.carry.jar);
+        let (jar, _) = self.resolved_jar(&choice);
         self.ensure_jar_loaded(jar);
         #[cfg(test)]
         if self.event_proxy.is_none() {
@@ -339,14 +339,14 @@ impl App {
     /// same moment the old inline code decided it, just later in wall time.
     pub(crate) fn handle_tab_spawn_result(&mut self, outcome: TabSpawnOutcome) {
         let TabSpawnOutcome {
-            spawn: TabSpawn { id, url, kind, parent, group, pos, vel, purpose, carry, fallback_kind },
+            spawn: TabSpawn { id, url, kind, parent, group, jar: spawn_jar, pos, vel, purpose, carry, fallback_kind },
             generation,
             result,
             seeded,
             jar,
             seed_clears,
         } = outcome;
-        let TabCarry { pinned, color, zoom_factor, title, muted, jar: carry_jar } = carry;
+        let TabCarry { pinned, color, zoom_factor, title, muted } = carry;
         self.spawning.remove(&id);
         let remote = self.remote_in_flight.remove(&id);
         self.tab_spawns_in_flight = self.tab_spawns_in_flight.saturating_sub(1);
@@ -371,11 +371,11 @@ impl App {
         // same guard `reopen_closed`'s relinking applies for the same
         // reason, centralized here since every spawn path funnels through
         // this one function.
-        let (parent, group, pos, color, pinned, muted, carry_jar) = if self.wakes_in_flight.remove(&id) {
+        let (parent, group, pos, color, pinned, muted) = if self.wakes_in_flight.remove(&id) {
             match self.nodes.get(&id).and_then(|n| n.as_unloaded().map(|tab| (n, tab))) {
                 Some((card, tab)) => {
                     let Carried { color, pinned, parent, group, .. } = self.mirror.carried(&id);
-                    (parent, group, card.pos, color, pinned, tab.muted, tab.jar)
+                    (parent, group, card.pos, color, pinned, tab.muted)
                 }
                 // Closed while waking (see `wakes_in_flight`): `spawning`
                 // no longer holds this id (removed above), so the save
@@ -388,7 +388,7 @@ impl App {
                 }
             }
         } else {
-            (parent, group, pos, color, pinned, muted, carry_jar)
+            (parent, group, pos, color, pinned, muted)
         };
         if matches!(purpose, SpawnPurpose::Respawn | SpawnPurpose::Restore | SpawnPurpose::Wake)
             && self.pending_respawn_focus.as_deref() == Some(id.as_str())
@@ -437,11 +437,10 @@ impl App {
                             muted,
                             zoom_factor,
                             swap_target: None,
-                            jar: carry_jar,
                         }),
                     },
                 );
-                self.seed_landing(&id, Carried { color, pinned, parent, group, url: url.clone() });
+                self.seed_landing(&id, Carried { color, pinned, parent, group, url: url.clone(), jar: spawn_jar });
                 if !self.node_order.iter().any(|t| t == &id) {
                     self.node_order.push(id.clone());
                 }
@@ -520,13 +519,14 @@ impl App {
                         engine_label(kind),
                         engine_label(fallback)
                     ));
-                    let carry = TabCarry { pinned, color, zoom_factor, title, muted, jar: carry_jar };
+                    let carry = TabCarry { pinned, color, zoom_factor, title, muted };
                     let spawn = TabSpawn {
                         id,
                         url,
                         kind: fallback,
                         parent,
                         group,
+                        jar: spawn_jar,
                         pos,
                         vel,
                         purpose,
@@ -554,11 +554,10 @@ impl App {
                     };
                     self.queue_toast(toast);
                     let state = UnloadedState::Failed(err.to_string());
-                    let failed =
-                        UnloadedTabPayload { url: url.clone(), title, kind, muted, zoom_factor, state, jar: carry_jar };
+                    let failed = UnloadedTabPayload { url: url.clone(), title, kind, muted, zoom_factor, state };
                     let payload = NodePayload::Unloaded(failed);
                     self.nodes.insert(id.clone(), GraphNode { pos, vel, payload });
-                    self.seed_landing(&id, Carried { color, pinned, parent, group, url });
+                    self.seed_landing(&id, Carried { color, pinned, parent, group, url, jar: spawn_jar });
                     if !self.node_order.iter().any(|t| t == &id) {
                         self.node_order.push(id.clone());
                     }
@@ -667,9 +666,7 @@ impl App {
         self.tab_spawn_error = None;
         let spawn = TabSpawn::new(id.clone(), url.to_string(), kind, pos, purpose, self.settings.zoom_factor);
         let jar = jar.unwrap_or_else(|| self.new_tab_jar(group.as_deref()));
-        let mut spawn = TabSpawn { parent, group, ..spawn };
-        spawn.carry.jar = jar;
-        self.spawn_tab_async(spawn);
+        self.spawn_tab_async(TabSpawn { parent, group, jar, ..spawn });
         id
     }
 
@@ -995,7 +992,7 @@ impl App {
         let Some(tab) = self.nodes.get(id).and_then(|n| n.as_tab()) else { return false };
         let Some((had, _)) = self.jar_tabs.get(id) else { return false };
         matches!(tab.tab.kind, EngineKind::Webview2 | EngineKind::Cef)
-            && (*had != self.resolved_jar(&tab.jar).0 || self.jar_reseed.contains(id))
+            && (*had != self.resolved_jar(&self.mirror.jar_choice(id)).0 || self.jar_reseed.contains(id))
     }
 
     /// Puts every live tab whose jar changed and that is not busy, focused or showing to sleep; it wakes into the
@@ -1007,12 +1004,14 @@ impl App {
             .iter()
             .filter(|v| self.will_switch(v.id))
             .filter(|v| {
-                let Some(tab) = self.nodes.get(v.id).and_then(|n| n.as_tab()) else { return false };
+                if self.nodes.get(v.id).and_then(|n| n.as_tab()).is_none() {
+                    return false;
+                }
                 let had = self.jar_tabs.get(v.id).map(|(k, _)| *k);
                 let focused = self.focused.as_deref() == Some(v.id);
                 let reseed = self.jar_reseed.contains(v.id);
-                sleep_state::jar_switch(had, self.resolved_jar(&tab.jar).0, reseed, v.busy(), focused)
-                    == sleep_state::JarSwitch::SleepNow
+                let now = self.resolved_jar(&self.mirror.jar_choice(v.id)).0;
+                sleep_state::jar_switch(had, now, reseed, v.busy(), focused) == sleep_state::JarSwitch::SleepNow
             })
             .map(|v| v.id.to_string())
             .collect();
@@ -1183,9 +1182,9 @@ impl App {
         // Cleared at the start of this spawn attempt too -- see
         // `tab_spawn_error`'s own doc comment.
         self.tab_spawn_error = None;
-        let mut spawn = TabSpawn::new(id.clone(), url.to_string(), kind, pos, SpawnPurpose::New, zoom);
-        spawn.carry.jar = self.new_tab_jar(group.as_deref());
-        self.spawn_tab_async(TabSpawn { group, parent, ..spawn });
+        let spawn = TabSpawn::new(id.clone(), url.to_string(), kind, pos, SpawnPurpose::New, zoom);
+        let jar = self.new_tab_jar(group.as_deref());
+        self.spawn_tab_async(TabSpawn { group, parent, jar, ..spawn });
         id
     }
 

@@ -8,12 +8,14 @@
 
 use std::collections::HashMap;
 
+use crate::jar::JarChoice;
 use crate::session_sync::{color_of, color_value, Fields};
 use crate::store::model::{field, field_def, FieldValue};
 
 /// The fields the mirror holds. `diff` leaves them to `App::pending` on existing nodes. `URL` is mirrored for every
 /// kind that has it, but only tabs seed and read it; content kinds read their payload's until 2b-5 (2b-3 Ruling 2).
-pub(crate) const MIRRORED: &[u32] = &[field::COLOR, field::PINNED, field::URL];
+/// `JAR` and `JAR_SET` are a tab's jar choice (`jar_choice`), written together by `App::edit_jar`.
+pub(crate) const MIRRORED: &[u32] = &[field::COLOR, field::PINNED, field::URL, field::JAR, field::JAR_SET];
 
 #[derive(Default)]
 pub(crate) struct Mirror {
@@ -96,6 +98,22 @@ impl Mirror {
         }
     }
 
+    /// A tab's jar choice (`field::JAR`, `field::JAR_SET`): the document's, or the one a local edit is about to write.
+    /// The default jar, unset, when the mirror has none. It may name a jar that no longer exists (`App::resolved_jar`).
+    pub(crate) fn jar_choice(&self, id: &str) -> JarChoice {
+        let jar = match self.get(id, field::JAR) {
+            FieldValue::Id(jar) => jar,
+            _ => None,
+        };
+        JarChoice { jar, set: matches!(self.get(id, field::JAR_SET), FieldValue::Bool(true)) }
+    }
+
+    /// Whether `id` has an entry: every node placed here, and a tab mid-respawn (its entry outlives the respawn). A
+    /// new spawn has none until it lands (`App::linked_ids`).
+    pub(crate) fn has(&self, id: &str) -> bool {
+        self.nodes.contains_key(id) || self.links.contains_key(id)
+    }
+
     pub(crate) fn carried(&self, id: &str) -> Carried {
         Carried {
             color: self.color(id),
@@ -103,15 +121,18 @@ impl Mirror {
             parent: self.parent(id).map(str::to_owned),
             group: self.group(id).map(str::to_owned),
             url: self.url(id),
+            jar: self.jar_choice(id),
         }
     }
 
-    /// `init` for everything a tab carries. An empty `url` (any node but a tab) is the field's absent value, so it
-    /// is left out.
+    /// `init` for everything a tab carries. An empty `url` and the default, unset jar (any node but a tab) are the
+    /// fields' absent values, so they are left out.
     pub(crate) fn seed(&mut self, id: &str, carried: &Carried) {
         let url = (!carried.url.is_empty()).then(|| (field::URL, FieldValue::Str(carried.url.clone())));
+        let jar = carried.jar.jar.is_some().then_some((field::JAR, FieldValue::Id(carried.jar.jar)));
+        let jar_set = carried.jar.set.then_some((field::JAR_SET, FieldValue::Bool(true)));
         let fields = [(field::COLOR, color_value(carried.color)), (field::PINNED, FieldValue::Bool(carried.pinned))];
-        self.init(id, fields.into_iter().chain(url));
+        self.init(id, fields.into_iter().chain(url).chain(jar).chain(jar_set));
         if !self.links.contains_key(id) {
             let links = Links { parent: carried.parent.clone(), group: carried.group.clone() };
             self.links.insert(id.to_owned(), links);
@@ -129,6 +150,8 @@ pub(crate) struct Carried {
     pub group: Option<String>,
     /// The shared url (`Mirror::url`); "" for a node that isn't a tab.
     pub url: String,
+    /// The jar choice (`Mirror::jar_choice`); the default for a node that isn't a tab.
+    pub jar: JarChoice,
 }
 
 #[cfg(test)]
@@ -144,11 +167,27 @@ mod tests {
             parent: Some("p".into()),
             group: Some("g".into()),
             url: "https://a/".into(),
+            jar: JarChoice {
+                jar: Some(crate::store::model::NodeId { actor: crate::store::model::ActorId(1), counter: 2 }),
+                set: true,
+            },
         };
         mirror.seed("7", &first);
         assert_eq!(mirror.carried("7"), first);
-        mirror.seed("7", &Carried { color: None, pinned: false, parent: None, group: None, url: "https://b/".into() });
+        mirror.seed("7", &Carried { url: "https://b/".into(), ..Carried::default() });
         assert_eq!(mirror.carried("7"), first);
+    }
+
+    #[test]
+    fn a_jar_choice_reads_back_and_a_node_without_one_has_the_default() {
+        let mut mirror = Mirror::default();
+        assert_eq!(mirror.jar_choice("7"), JarChoice::default());
+        mirror.seed("8", &Carried::default());
+        assert!(!mirror.nodes["8"].contains_key(&field::JAR), "the default jar seeds nothing");
+        assert!(!mirror.nodes["8"].contains_key(&field::JAR_SET));
+        assert!(mirror.has("8") && !mirror.has("7"));
+        mirror.set("7", field::JAR_SET, FieldValue::Bool(true));
+        assert_eq!(mirror.jar_choice("7"), JarChoice { jar: None, set: true });
     }
 
     #[test]

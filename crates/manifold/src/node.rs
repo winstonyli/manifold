@@ -313,8 +313,6 @@ pub(crate) struct UnloadedTabPayload {
     pub(crate) muted: bool,
     pub(crate) zoom_factor: f64,
     pub(crate) state: UnloadedState,
-    /// See `jar::JarChoice`. Synced (`field::JAR`, `field::JAR_SET`).
-    pub(crate) jar: crate::jar::JarChoice,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -371,8 +369,6 @@ pub(crate) struct TabPayload {
     /// back. Per-tab (not a flat `App` field) so a swap on one tab can't
     /// block or interfere with a concurrent swap/crash on another.
     pub(crate) swap_target: Option<EngineKind>,
-    /// See `jar::JarChoice`. Synced (`field::JAR`, `field::JAR_SET`).
-    pub(crate) jar: crate::jar::JarChoice,
 }
 
 /// A download's own data -- was `DownloadNode`'s non-shared fields (`path`,
@@ -658,7 +654,6 @@ second"
                 muted: false,
                 zoom_factor: 1.5,
                 state: UnloadedState::Failed("no binary".into()),
-                jar: Default::default(),
             }))
             .saved_tab(),
             Some(("https://example.org/", EngineKind::Cef))

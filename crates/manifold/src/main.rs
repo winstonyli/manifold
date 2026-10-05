@@ -724,6 +724,9 @@ struct TabSpawn {
     kind: EngineKind,
     parent: Option<String>,
     group: Option<String>,
+    /// The jar a new tab starts with, which it lands with (`Carried::jar`). A tab the mirror already holds (a
+    /// respawn or wake) uses the mirror's instead, which a cascade may change while it is in flight.
+    jar: jar::JarChoice,
     pos: egui::Vec2,
     vel: egui::Vec2,
     purpose: SpawnPurpose,
@@ -749,8 +752,6 @@ struct TabCarry {
     title: String,
     /// See `TabPayload::muted`. Sent to the new engine on landing.
     muted: bool,
-    /// See `TabPayload::jar`.
-    jar: crate::jar::JarChoice,
 }
 
 impl TabSpawn {
@@ -768,17 +769,11 @@ impl TabSpawn {
             kind,
             parent: None,
             group: None,
+            jar: Default::default(),
             pos,
             vel: egui::Vec2::ZERO,
             purpose,
-            carry: TabCarry {
-                pinned: false,
-                color: None,
-                zoom_factor,
-                title: String::new(),
-                muted: false,
-                jar: Default::default(),
-            },
+            carry: TabCarry { pinned: false, color: None, zoom_factor, title: String::new(), muted: false },
             fallback_kind: None,
         }
     }
@@ -793,6 +788,7 @@ impl TabSpawn {
             kind,
             parent: carried.parent.clone(),
             group: carried.group.clone(),
+            jar: carried.jar,
             pos: node.pos,
             vel: node.vel,
             purpose: SpawnPurpose::Respawn,
@@ -802,7 +798,6 @@ impl TabSpawn {
                 zoom_factor: tab.zoom_factor,
                 title: tab.title.clone(),
                 muted: tab.muted,
-                jar: tab.jar,
             },
             fallback_kind: None,
         })
@@ -2434,7 +2429,7 @@ impl App {
     /// the live tab under the same id, or a failed card with the new
     /// error. Ignored while a wake is already in flight.
     pub(crate) fn wake_tab(&mut self, id: &str, kind: EngineKind) {
-        let Carried { color, pinned, parent, group, .. } = self.mirror.carried(id);
+        let Carried { color, pinned, parent, group, jar, .. } = self.mirror.carried(id);
         let Some(node) = self.nodes.get_mut(id) else { return };
         let pos = node.pos;
         let NodePayload::Unloaded(tab) = &mut node.payload else { return };
@@ -2443,18 +2438,12 @@ impl App {
         }
         tab.state = UnloadedState::Waking;
         self.wakes_in_flight.insert(id.to_string());
-        let carry = TabCarry {
-            pinned,
-            color,
-            zoom_factor: tab.zoom_factor,
-            title: tab.title.clone(),
-            muted: tab.muted,
-            jar: tab.jar,
-        };
+        let (zoom_factor, title, muted) = (tab.zoom_factor, tab.title.clone(), tab.muted);
+        let carry = TabCarry { pinned, color, zoom_factor, title, muted };
         let url = tab.url.clone();
         let vel = egui::Vec2::ZERO;
         let (id, purpose, fallback_kind) = (id.to_string(), SpawnPurpose::Wake, None);
-        self.respawn_tab(TabSpawn { id, url, kind, parent, group, pos, vel, purpose, carry, fallback_kind });
+        self.respawn_tab(TabSpawn { id, url, kind, parent, group, jar, pos, vel, purpose, carry, fallback_kind });
     }
 
     /// `Ctrl+Shift+W` / headless `CLOSEALLLEVEL` — closes every tab

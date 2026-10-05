@@ -292,8 +292,8 @@ fn a_tabs_jar_and_a_groups_default_project_to_fields_and_back() {
         (id(2), shared(Kind::Group, None, &[(field::DEFAULT_JAR, FieldValue::Id(Some(jar)))])),
     ]);
     let app = app_with(&nodes);
-    let tab = &app.nodes[&id(1).to_string()];
-    assert_eq!(tab.payload.as_unloaded().unwrap().jar, crate::jar::JarChoice { jar: Some(jar), set: true });
+    assert!(app.nodes[&id(1).to_string()].payload.as_unloaded().is_some());
+    assert_eq!(app.mirror.jar_choice(&id(1).to_string()), crate::jar::JarChoice { jar: Some(jar), set: true });
     assert_eq!(app.nodes[&id(2).to_string()].payload.as_group().unwrap().default_jar, Some(jar));
     assert_eq!(app.shared_nodes(), nodes, "the live payloads project back to the same fields");
 }
@@ -312,7 +312,7 @@ fn a_remote_jar_edit_updates_a_sleeping_tab_and_a_group() {
         (id(1), Some((Kind::Tab, tab_fields, None))),
         (id(2), Some((Kind::Group, group_fields, None))),
     ]);
-    assert_eq!(app.nodes[&id(1).to_string()].payload.as_unloaded().unwrap().jar.jar, Some(jar));
+    assert_eq!(app.mirror.jar_choice(&id(1).to_string()).jar, Some(jar));
     assert_eq!(app.nodes[&id(2).to_string()].payload.as_group().unwrap().default_jar, Some(jar));
 }
 
@@ -963,7 +963,6 @@ fn failed_tab(url: &str, zoom_factor: f64) -> NodePayload {
         muted: false,
         zoom_factor,
         state: UnloadedState::Failed("x".into()),
-        jar: Default::default(),
     })
 }
 
@@ -976,7 +975,6 @@ pub(crate) fn sleeping_tab(url: &str, title: &str) -> NodePayload {
         muted: false,
         zoom_factor: 1.0,
         state: UnloadedState::Sleeping,
-        jar: Default::default(),
     })
 }
 
@@ -1378,11 +1376,10 @@ fn deleting_a_jar_clears_the_tabs_and_groups_that_named_it() {
     let mut group = GroupPayload::named("G");
     group.default_jar = Some(jar);
     let grp = add(&mut app, NodePayload::Group(group));
-    let NodePayload::Unloaded(t) = &mut app.nodes.get_mut(&tab).unwrap().payload else { panic!("sleeping tab") };
-    t.jar = crate::jar::JarChoice { jar: Some(jar), set: true };
+    app.edit_jar(&tab, crate::jar::JarChoice { jar: Some(jar), set: true });
     app.delete_jar(jar);
     assert!(app.jar_defs.is_empty());
-    assert_eq!(app.nodes[&tab].payload.as_unloaded().unwrap().jar.jar, None);
+    assert_eq!(app.mirror.jar_choice(&tab).jar, None);
     assert_eq!(app.nodes[&grp].as_group().unwrap().default_jar, None);
 }
 
@@ -1413,8 +1410,9 @@ fn opening_a_session_gives_each_imported_jar_a_new_jar() {
     assert_eq!(app.jar_defs[&work], before, "the existing jar is untouched");
     let new = *app.jar_defs.keys().find(|&&j| j != work).unwrap();
     assert_eq!(app.jar_defs[&new].name, "Work");
-    let tab = app.nodes.values().find_map(|n| n.payload.as_unloaded()).expect("tab imported");
-    assert_eq!(tab.jar, crate::jar::JarChoice { jar: Some(new), set: true });
+    let tab =
+        app.nodes.iter().find(|(_, n)| n.payload.as_unloaded().is_some()).map(|(id, _)| id).expect("tab imported");
+    assert_eq!(app.mirror.jar_choice(tab), crate::jar::JarChoice { jar: Some(new), set: true });
     let group = app.nodes.values().find_map(|n| n.as_group()).expect("group imported");
     assert_eq!(group.default_jar, Some(new));
     assert_ne!(
@@ -1434,8 +1432,12 @@ fn importing_a_group_gives_each_imported_jar_a_new_jar() {
         assert_eq!(app.jar_defs.len(), n);
     }
     let new: BTreeSet<NodeId> = app.jar_defs.keys().copied().filter(|&j| j != work).collect();
-    let tabs: BTreeSet<NodeId> =
-        app.nodes.values().filter_map(|n| n.payload.as_unloaded()).filter_map(|t| t.jar.jar).collect();
+    let tabs: BTreeSet<NodeId> = app
+        .nodes
+        .iter()
+        .filter(|(_, n)| n.payload.as_unloaded().is_some())
+        .filter_map(|(id, _)| app.mirror.jar_choice(id).jar)
+        .collect();
     let groups: BTreeSet<NodeId> = app.nodes.values().filter_map(|n| n.as_group()?.default_jar).collect();
     assert_eq!((&tabs, &groups), (&new, &new), "each import's tab and group name its own new jar");
 }
@@ -2719,7 +2721,7 @@ fn start_respawn(app: &mut App, tab: &str) {
         SpawnPurpose::Respawn,
         1.0,
     );
-    (spawn.parent, spawn.group) = (carried.parent, carried.group);
+    (spawn.parent, spawn.group, spawn.jar) = (carried.parent, carried.group, carried.jar);
     (spawn.carry.color, spawn.carry.pinned) = (carried.color, carried.pinned);
     app.respawn_tab(spawn);
     assert!(app.spawning.contains_key(tab) && !app.nodes.contains_key(tab), "respawning");
@@ -2983,4 +2985,165 @@ fn a_spawning_tab_is_created_and_lands_with_its_url() {
     assert_eq!(app.mirror.url(&t), "https://t/", "the failed card lands with it");
     assert!(app.save_session());
     assert_eq!(stored(&app, &t, field::URL), FieldValue::Str("https://t/".into()));
+}
+
+// ---- 2b-3: jar and jar_set in the mirror ------------------------------------
+
+use crate::jar::JarChoice;
+
+/// Ruling 7: one writer for both fields, queuing only the one that changed. Re-picking the same jar queues nothing.
+#[test]
+fn a_jar_pick_saves_both_fields_and_only_the_changed_one() {
+    let path = temp_dir("jar-pick").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let work = app.create_jar("Work");
+    let tab = add(&mut app, sleeping_tab("https://s/", ""));
+    assert!(app.save_session());
+    let key = |no| (tab.parse::<NodeId>().unwrap(), no);
+    app.set_tab_jar(&tab, Some(work));
+    assert_eq!(app.mirror.jar_choice(&tab), JarChoice { jar: Some(work), set: true }, "shown at once");
+    assert_eq!(app.pending.keys().copied().collect::<Vec<_>>(), [key(field::JAR), key(field::JAR_SET)]);
+    assert!(app.save_session());
+    assert_eq!(stored(&app, &tab, field::JAR), FieldValue::Id(Some(work)));
+    assert_eq!(stored(&app, &tab, field::JAR_SET), FieldValue::Bool(true));
+    app.edit_jar(&tab, JarChoice { jar: Some(work), set: false });
+    assert_eq!(app.pending.keys().copied().collect::<Vec<_>>(), [key(field::JAR_SET)], "only the changed field");
+    assert!(app.save_session());
+    assert_eq!(stored(&app, &tab, field::JAR_SET), FieldValue::Bool(false));
+    app.edit_jar(&tab, JarChoice { jar: Some(work), set: false });
+    assert!(app.pending.is_empty(), "re-picking the same jar queues nothing");
+}
+
+/// Ruling 8: a pending `jar` is resolved at commit like `parent`: a jar this commit deletes is written as none, and
+/// the mirror shows what was written.
+#[test]
+fn a_pending_jar_naming_a_jar_deleted_in_this_commit_is_written_as_none() {
+    let path = temp_dir("jar-pending-deleted").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let work = app.create_jar("Work");
+    let tab = add(&mut app, sleeping_tab("https://s/", ""));
+    assert!(app.save_session());
+    app.set_tab_jar(&tab, Some(work));
+    app.forget_jar(work); // gone here without `delete_jar`'s cascade: this commit deletes its node
+    assert!(app.save_session());
+    assert!(!app.journal.as_ref().unwrap().doc().nodes[&work].is_live(), "the jar's delete is in this commit");
+    assert_eq!(stored(&app, &tab, field::JAR), FieldValue::Id(None));
+    assert_eq!(stored(&app, &tab, field::JAR_SET), FieldValue::Bool(true));
+    assert_eq!(app.mirror.jar_choice(&tab), JarChoice { jar: None, set: true }, "the mirror shows what was written");
+}
+
+/// Ruling 8, `Create`: a new tab naming a jar the same commit deletes is created with none; one naming a jar the same
+/// commit creates keeps it.
+#[test]
+fn a_created_tab_naming_a_jar_deleted_in_this_commit_is_created_with_none() {
+    let path = temp_dir("jar-create-deleted").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let work = app.create_jar("Work");
+    assert!(app.save_session());
+    let tab = add(&mut app, sleeping_tab("https://s/", ""));
+    app.set_tab_jar(&tab, Some(work));
+    app.forget_jar(work);
+    let home = app.create_jar("Home");
+    let other = add(&mut app, sleeping_tab("https://o/", ""));
+    app.set_tab_jar(&other, Some(home));
+    assert!(app.save_session());
+    assert_eq!(stored(&app, &tab, field::JAR), FieldValue::Id(None), "created with none");
+    assert_eq!(app.mirror.jar_choice(&tab).jar, None, "the mirror shows what was written");
+    assert_eq!(stored(&app, &other, field::JAR), FieldValue::Id(Some(home)), "a jar created here is kept");
+}
+
+/// Ruling 8's accepted behavior change: a tab naming a jar another replica deleted keeps naming it through a save (it
+/// was cleared by every save before). Its chip still says the jar is missing.
+#[test]
+fn a_dangling_remote_deleted_jar_survives_a_save() {
+    let path = temp_dir("jar-dangling").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let work = app.create_jar("Work");
+    let tab = add(&mut app, sleeping_tab("https://s/", ""));
+    app.set_tab_jar(&tab, Some(work));
+    assert!(app.save_session());
+    let mut other = Journal::open(&path, ActorId(2)).unwrap();
+    other.begin().unwrap().commit(vec![OpBody::Delete { node: work }]).unwrap();
+    assert!(app.save_session());
+    assert!(!app.jar_defs.contains_key(&work), "the remote delete arrived");
+    assert!(app.save_session());
+    assert_eq!(stored(&app, &tab, field::JAR), FieldValue::Id(Some(work)), "not cleared by a save");
+    assert_eq!(app.mirror.jar_choice(&tab).jar, Some(work));
+    assert!(app.jar_chip(&tab).is_some_and(|c| c.missing), "the chip says the jar is missing");
+}
+
+/// Ruling 3: an unsaved local jar pick beats another replica's; their other fields still arrive.
+#[test]
+fn a_local_jar_pick_wins_over_a_remote_one() {
+    let path = temp_dir("jar-local-wins").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let (mine, theirs) = (app.create_jar("Mine"), app.create_jar("Theirs"));
+    let tab = add(&mut app, sleeping_tab("https://s/", ""));
+    assert!(app.save_session());
+    let mut other = Journal::open(&path, ActorId(2)).unwrap();
+    app.set_tab_jar(&tab, Some(mine));
+    remote_set(&mut other, &tab, field::JAR, FieldValue::Id(Some(theirs)));
+    remote_set(&mut other, &tab, field::PINNED, FieldValue::Bool(true));
+    assert!(app.save_session());
+    assert_eq!(app.mirror.jar_choice(&tab), JarChoice { jar: Some(mine), set: true });
+    assert_eq!(stored(&app, &tab, field::JAR), FieldValue::Id(Some(mine)));
+    assert!(app.mirror.pinned(&tab), "their other field arrives");
+}
+
+/// Ruling 9 (2b-2's parked item): `refollow` reaches a tab mid-respawn, so a local dissolve re-snapshots its jar
+/// from the level it moves to, and it lands with that jar.
+#[test]
+fn a_respawning_tab_follows_a_local_dissolve_s_jar_snapshot() {
+    let path = temp_dir("jar-respawn-dissolve").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let work = app.create_jar("Work");
+    let (_outer, g, t) = nested_tab(&mut app);
+    assert_eq!(app.set_group_default_jar(&g, work), 1);
+    assert!(app.save_session());
+    assert_eq!(stored(&app, &t, field::JAR), FieldValue::Id(Some(work)));
+    start_respawn(&mut app, &t);
+    app.dissolve_group(&g); // O has no default: T follows it to none
+    assert_eq!(app.mirror.jar_choice(&t), JarChoice::default());
+    assert!(app.save_session());
+    assert_eq!(stored(&app, &t, field::JAR), FieldValue::Id(None));
+    fail_spawns(&mut app);
+    assert_eq!(app.mirror.jar_choice(&t), JarChoice::default(), "it lands with it");
+    assert!(app.save_session());
+    assert_eq!(stored(&app, &t, field::JAR), FieldValue::Id(None));
+}
+
+/// A new tab is created with the jar it starts with and lands with it in the mirror. A cascade meanwhile does not
+/// reach it (it has no mirror entry until it lands, as before 2b-3), so it never gives it a partial entry that would
+/// stop the landing from seeding its colour; the tab keeps the jar it started with.
+#[test]
+fn a_spawning_tab_is_created_and_lands_with_its_jar() {
+    let path = temp_dir("jar-spawn").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let (work, home) = (app.create_jar("Work"), app.create_jar("Home"));
+    let g = add(&mut app, NodePayload::Group(GroupPayload::named("G")));
+    app.nodes.get_mut(&g).unwrap().as_group_mut().unwrap().default_jar = Some(work);
+    assert!(app.save_session());
+    // A restored tab (a failed `New` spawn never lands), started with G's default as `spawn_tab_at` gives one.
+    let t = app.alloc_node_id();
+    let mut spawn = crate::TabSpawn::new(
+        t.clone(),
+        "https://t/".into(),
+        EngineKind::Servo,
+        egui::Vec2::ZERO,
+        SpawnPurpose::Restore,
+        1.0,
+    );
+    (spawn.group, spawn.jar) = (Some(g.clone()), app.new_tab_jar(Some(&g)));
+    spawn.carry.color = Some(egui::Color32::RED);
+    app.spawn_tab_async(spawn);
+    assert!(app.save_session());
+    assert_eq!(stored(&app, &t, field::JAR), FieldValue::Id(Some(work)), "created with its jar");
+    assert!(!app.linked_ids().any(|id| id == t) && app.tab_jar(&t).is_none(), "out of the cascades' reach");
+    app.set_group_default_jar(&g, home);
+    assert!(!app.mirror.has(&t), "no partial entry");
+    fail_spawns(&mut app);
+    assert_eq!(app.mirror.jar_choice(&t), JarChoice { jar: Some(work), set: false }, "lands with it");
+    assert_eq!(app.mirror.color(&t), Some(egui::Color32::RED), "the landing seeded the whole entry");
+    assert!(app.save_session());
+    assert_eq!(stored(&app, &t, field::JAR), FieldValue::Id(Some(work)));
 }

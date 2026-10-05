@@ -285,9 +285,9 @@ impl App {
         }
     }
 
-    /// Tabs (live or asleep) that resolve to `key`, for Settings' count and the delete confirm.
+    /// Tabs (live, asleep or mid-respawn) that resolve to `key`, for Settings' count and the delete confirm.
     pub(crate) fn jar_tab_count(&self, key: JarKey) -> usize {
-        self.nodes.keys().filter_map(|t| self.tab_jar(t)).filter(|c| self.resolved_jar(c).0 == key).count()
+        self.linked_ids().filter_map(|t| self.tab_jar(t)).filter(|c| self.resolved_jar(c).0 == key).count()
     }
 
     /// The confirm dialog's title, detail and button. `None` once a named jar it asks about is gone (deleted on
@@ -417,16 +417,23 @@ impl App {
         self.jars_dir().is_some_and(|dir| Jar::path(&dir, key).exists())
     }
 
-    /// The user deleted jar `id`: tabs and groups that named it fall back to the default jar (deviation 9), then it is
-    /// forgotten and the live tabs that used it switch. Its document node is deleted by the next save (`diff`: live no
-    /// longer has it).
+    /// The user deleted jar `id`: tabs (a respawning one too, `linked_ids`) and groups that named it fall back to the
+    /// default jar (deviation 9), then it is forgotten and the live tabs that used it switch. Its document node is
+    /// deleted by the next save (`diff`: live no longer has it).
     pub(crate) fn delete_jar(&mut self, id: NodeId) {
+        let tabs: Vec<String> = self
+            .linked_ids()
+            .filter(|t| self.tab_jar(t).is_some_and(|c| c.jar == Some(id)))
+            .map(str::to_owned)
+            .collect();
+        for t in tabs {
+            self.edit_jar(&t, JarChoice::default());
+        }
         for node in self.nodes.values_mut() {
-            match &mut node.payload {
-                NodePayload::Tab(t) if t.jar.jar == Some(id) => t.jar = Default::default(),
-                NodePayload::Unloaded(t) if t.jar.jar == Some(id) => t.jar = Default::default(),
-                NodePayload::Group(g) if g.default_jar == Some(id) => g.default_jar = None,
-                _ => {}
+            if let NodePayload::Group(g) = &mut node.payload {
+                if g.default_jar == Some(id) {
+                    g.default_jar = None;
+                }
             }
         }
         self.forget_jar(id);
@@ -506,26 +513,21 @@ impl App {
         JarChoice { jar: self.inherited_jar(group), set: false }
     }
 
-    /// Live or unloaded tab `id`'s jar choice; `None` for any other node.
+    /// Tab `id`'s jar choice (`Mirror::jar_choice`), live, unloaded or mid-respawn (`linked_ids`); `None` for any
+    /// other node, and for a new spawn, which has no mirror entry until it lands.
     pub(crate) fn tab_jar(&self, id: &str) -> Option<JarChoice> {
-        match &self.nodes.get(id)?.payload {
-            NodePayload::Tab(t) => Some(t.jar),
-            NodePayload::Unloaded(t) => Some(t.jar),
-            _ => None,
-        }
-    }
-
-    fn put_tab_jar(&mut self, id: &str, choice: JarChoice) {
-        match self.nodes.get_mut(id).map(|n| &mut n.payload) {
-            Some(NodePayload::Tab(t)) => t.jar = choice,
-            Some(NodePayload::Unloaded(t)) => t.jar = choice,
-            _ => {}
-        }
+        let is_tab = match self.nodes.get(id) {
+            Some(node) => node.payload.saved_tab().is_some(),
+            None => self.is_linked(id), // only a tab respawns
+        };
+        is_tab.then(|| self.mirror.jar_choice(id))
     }
 
     /// The user picked a jar for tab `id` (`None`: the default jar). Cascades and moves leave it alone from now on.
     pub(crate) fn set_tab_jar(&mut self, id: &str, jar: Option<NodeId>) {
-        self.put_tab_jar(id, JarChoice { jar, set: true });
+        if self.tab_jar(id).is_some() {
+            self.edit_jar(id, JarChoice { jar, set: true });
+        }
         self.sweep_jar_switches();
     }
 
@@ -537,30 +539,36 @@ impl App {
 
     /// `follow_group_jar` without the sweep, for `refollow`'s loop.
     fn resnapshot(&mut self, id: &str) {
-        let group = self.nodes.get(id).and(self.mirror.group(id)).map(str::to_owned);
-        self.put_tab_jar(id, self.new_tab_jar(group.as_deref()));
+        if self.tab_jar(id).is_none() {
+            return;
+        }
+        let group = self.mirror.group(id).map(str::to_owned);
+        self.edit_jar(id, self.new_tab_jar(group.as_deref()));
     }
 
-    /// Re-snapshots every unset tab at `id` (a tab, or each tab in a group's subtree) from its new place. Called after
-    /// a local move between groups (deviation 12); a remote move's jar edits arrive with it.
+    /// Re-snapshots every unset tab at `id` (a tab, or each tab in a group's subtree) from its new place, a tab
+    /// mid-respawn included (`linked_ids`; 2b-3 Ruling 9). Called after a local move between groups (deviation 12); a
+    /// remote move's jar edits arrive with it.
     pub(crate) fn refollow(&mut self, id: &str) {
         let tabs: Vec<String> = self
-            .nodes
-            .iter()
-            .filter(|(t, n)| n.payload.saved_tab().is_some() && (t.as_str() == id || self.is_inside(t, id)))
-            .map(|(t, _)| t.clone())
+            .linked_ids()
+            .filter(|t| self.tab_jar(t).is_some_and(|c| !c.set) && (*t == id || self.is_inside(t, id)))
+            .map(str::to_owned)
             .collect();
         for t in tabs {
-            if self.tab_jar(&t).is_some_and(|c| !c.set) {
-                self.resnapshot(&t);
-            }
+            self.resnapshot(&t);
         }
         self.sweep_jar_switches();
     }
 
+    /// The group `at` is in, when `at` is one of `linked_ids` (the mirror may still hold a removed node's entry).
+    fn linked_group(&self, at: &str) -> Option<String> {
+        self.mirror.group(at).filter(|_| self.is_linked(at)).map(str::to_owned)
+    }
+
     /// Whether `at` sits somewhere inside group `group`.
     fn is_inside(&self, at: &str, group: &str) -> bool {
-        let mut cur = self.nodes.get(at).and(self.mirror.group(at)).map(str::to_owned);
+        let mut cur = self.linked_group(at);
         for _ in 0..=self.nodes.len() {
             match cur {
                 Some(g) if g == group => return true,
@@ -574,7 +582,7 @@ impl App {
     /// Whether `group` governs tab-or-group `at`'s jar: `group` is `at`'s group or an ancestor, and no group between
     /// them has a default of its own (spec: "nested groups with no default of their own included").
     fn governed_by(&self, at: &str, group: &str) -> bool {
-        let mut cur = self.nodes.get(at).and(self.mirror.group(at)).map(str::to_owned);
+        let mut cur = self.linked_group(at);
         for _ in 0..=self.nodes.len() {
             let Some(g) = cur else { return false };
             if g == group {
@@ -589,13 +597,13 @@ impl App {
         false
     }
 
-    /// The unset tabs a change of `group`'s default to `jar` would rewrite.
+    /// The unset tabs a change of `group`'s default to `jar` would rewrite, a tab mid-respawn included
+    /// (`linked_ids`).
     fn cascade_targets(&self, group: &str, jar: NodeId) -> Vec<String> {
-        self.nodes
-            .keys()
+        self.linked_ids()
             .filter(|t| self.tab_jar(t).is_some_and(|c| !c.set && c.jar != Some(jar)))
             .filter(|t| self.governed_by(t, group))
-            .cloned()
+            .map(str::to_owned)
             .collect()
     }
 
@@ -606,14 +614,15 @@ impl App {
     }
 
     /// Writes `group`'s default, then the new jar into every unset tab it governs (spec "Changing a group's
-    /// `default_jar`"). Plain field edits; the next save writes them. Returns how many tabs changed.
+    /// `default_jar`"). The default is a group field (diffed); the tabs go through `edit_jar`. The next save writes
+    /// them. Returns how many tabs changed.
     pub(crate) fn set_group_default_jar(&mut self, group: &str, jar: NodeId) -> usize {
         let Some(g) = self.nodes.get_mut(group).and_then(|n| n.as_group_mut()) else { return 0 };
         g.default_jar = Some(jar);
         // After the write, so `governed_by` sees it; harmless, as it stops only at groups strictly between.
         let targets = self.cascade_targets(group, jar);
         for t in &targets {
-            self.put_tab_jar(t, JarChoice { jar: Some(jar), set: false });
+            self.edit_jar(t, JarChoice { jar: Some(jar), set: false });
         }
         self.sweep_jar_switches();
         targets.len()
@@ -818,20 +827,20 @@ mod tests {
         app.set_group_default_jar(&g, work);
         app.spawn_new_tab(None, Some(g.clone()), "https://new/");
         let (spawn, _) = app.test_spawns.last().unwrap();
-        assert_eq!(spawn.carry.jar, JarChoice { jar: Some(work), set: false });
+        assert_eq!(spawn.jar, JarChoice { jar: Some(work), set: false });
         let opener = tab_in(&mut app, Some(&g));
         app.set_tab_jar(&opener, Some(home));
         app.spawn_tab_from(&opener, "https://opened/");
         let (spawn, _) = app.test_spawns.last().unwrap();
-        assert_eq!(spawn.carry.jar, JarChoice { jar: Some(home), set: true }, "deviation 3");
+        assert_eq!(spawn.jar, JarChoice { jar: Some(home), set: true }, "deviation 3");
         assert_eq!(spawn.parent.as_deref(), Some(opener.as_str()));
         assert_eq!(spawn.group.as_deref(), Some(g.as_str()));
         app.duplicate_tab(&opener);
         let (spawn, _) = app.test_spawns.last().unwrap();
-        assert_eq!(spawn.carry.jar, JarChoice { jar: Some(home), set: true }, "a duplicate copies too");
+        assert_eq!(spawn.jar, JarChoice { jar: Some(home), set: true }, "a duplicate copies too");
         app.spawn_tab_at("https://dropped/", egui::Vec2::ZERO, Some(g.clone()), None);
         let (spawn, _) = app.test_spawns.last().unwrap();
-        assert_eq!(spawn.carry.jar, JarChoice { jar: Some(work), set: false }, "a dropped page inherits");
+        assert_eq!(spawn.jar, JarChoice { jar: Some(work), set: false }, "a dropped page inherits");
     }
 
     /// A merge re-snapshots only the members that moved: a tab already in the target keeps its jar, even one that
@@ -887,7 +896,7 @@ mod tests {
         // Dissolve: `inner` (no default) inside `h` is dissolved into `h`, then `h` itself to the top level.
         let inner = group_in(&mut app, Some(&h));
         app.edit_group(&unset, Some(inner.clone()));
-        app.put_tab_jar(&unset, JarChoice { jar: Some(work), set: false }); // stale, so the dissolve must fix it
+        app.edit_jar(&unset, JarChoice { jar: Some(work), set: false }); // stale, so the dissolve must fix it
         app.dissolve_group(&inner);
         assert_eq!(unset_jar(&app), JarChoice { jar: Some(home), set: false }, "dissolve into a defaulted group");
         app.dissolve_group(&h);

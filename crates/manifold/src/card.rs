@@ -2829,7 +2829,6 @@ mod tests {
                 muted: false,
                 zoom_factor: 1.5,
                 state: UnloadedState::Failed("no binary".into()),
-                jar: Default::default(),
             })),
             GRAPH_NODE_SIZE
         );
@@ -2912,7 +2911,6 @@ mod tests {
                 muted: false,
                 zoom_factor: 1.5,
                 state: UnloadedState::Failed("no binary".into()),
-                jar: Default::default(),
             })),
             ["Example", "https://example.org/"]
         );
@@ -2924,7 +2922,6 @@ mod tests {
                 muted: false,
                 zoom_factor: 1.5,
                 state: UnloadedState::Failed("no binary".into()),
-                jar: Default::default(),
             })),
             ["", "https://example.org/"]
         );
