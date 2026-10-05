@@ -2499,6 +2499,7 @@ fn a_move_into_a_group_created_by_the_same_save_follows_the_create() {
     app.edit_group(&t, Some(g.clone()));
     assert!(app.save_session());
     assert_eq!(app.journal.as_ref().unwrap().doc().effective_group(t.parse().unwrap()), Some(g.parse().unwrap()));
+    assert_eq!(app.mirror.group(&t), Some(g.as_str()), "the mirror shows what the document holds");
 }
 
 /// A move into a group the same commit deletes lands at the top level (spec section 6 item 4).
@@ -2688,8 +2689,8 @@ fn a_pending_move_into_a_remotely_deleted_group_lands_in_its_group() {
 }
 
 /// A local move the store refuses as a cycle (another replica nested the target into the moved group first) leaves
-/// the document acyclic, and the save still succeeds. The mirror is not checked: it keeps showing the refused target
-/// until final review minor 1 (post-commit alignment from the document) is fixed.
+/// the document acyclic, and the save still succeeds. The mirror shows what the document holds, not the refused
+/// target: it would otherwise hold the cycle the store refused, indefinitely.
 #[test]
 fn a_move_the_store_refuses_as_a_cycle_leaves_the_document_acyclic() {
     let path = temp_dir("group-cycle").join("session.mnf");
@@ -2705,6 +2706,11 @@ fn a_move_the_store_refuses_as_a_cycle_leaves_the_document_acyclic() {
     let doc = app.journal.as_ref().unwrap().doc();
     assert_eq!(doc.effective_group(b.parse().unwrap()), Some(a.parse().unwrap()), "the remote move stands");
     assert_eq!(doc.effective_group(a.parse().unwrap()), None, "the local move was refused");
+    for _ in 0..2 {
+        assert_eq!(app.mirror.group(&a), None, "the mirror shows the refused move as the document does");
+        assert_eq!(app.mirror.group(&b), Some(a.as_str()), "and the remote move");
+        assert!(app.save_session());
+    }
 }
 
 /// What the crash path and `finish_swap` do: carry from the mirror, take the node out of `nodes`, respawn.

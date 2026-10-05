@@ -2575,17 +2575,32 @@ impl App {
     /// on each member), then the group itself. Records nothing: `close_node`
     /// has already recorded the whole subtree as one entry.
     fn destroy_group(&mut self, id: &str) {
-        let member_ids: Vec<String> = self.members_of(id).map(str::to_owned).collect();
-        for tid in member_ids {
-            self.destroy_node(&tid);
-        }
-        self.dissolve_group(id);
+        self.destroy_group_members(id, &mut HashSet::new());
         // `destroy_node` doesn't save, and there's no save on exit -- without
         // this, a group whose members were only Downloads/Notes/Images/Pdfs/Jsons
         // (no Tab member whose `destroy_tab` happens to save) would have
         // those members reappear after a restart unless some unrelated
         // action saved first.
         self.save_session();
+    }
+
+    /// `destroy_group`'s walk, without the save: each member destroyed,
+    /// each group once, so a group cycle in the mirror (two replicas' moves
+    /// raced; the next save shows the document's groups) can't recurse
+    /// forever. A group already being destroyed further up is left to it.
+    fn destroy_group_members(&mut self, id: &str, visited: &mut HashSet<String>) {
+        visited.insert(id.to_owned());
+        let member_ids: Vec<String> = self.members_of(id).map(str::to_owned).collect();
+        for tid in member_ids {
+            if self.nodes.get(&tid).is_some_and(|n| n.as_group().is_some()) {
+                if !visited.contains(&tid) {
+                    self.destroy_group_members(&tid, visited);
+                }
+            } else {
+                self.destroy_node(&tid);
+            }
+        }
+        self.dissolve_group(id);
     }
 
     /// Closes one node: records it (and, for a group, everything under it)
@@ -3424,6 +3439,44 @@ mod tests {
         assert_eq!(app.mirror.group("shallow"), None);
         app.remove_from_group("shallow");
         assert_eq!(app.mirror.group("shallow"), None);
+    }
+
+    /// Groups `a` and `b` inside each other in the mirror, plus group `s` outside them: the cycle two replicas'
+    /// racing moves can leave there until the next save aligns it with the document.
+    fn mirror_group_cycle() -> App {
+        let mut app = App::default();
+        for id in ["a", "b", "s"] {
+            let payload = NodePayload::Group(GroupPayload::named(id));
+            app.nodes.insert(id.into(), GraphNode { pos: egui::Vec2::ZERO, vel: egui::Vec2::ZERO, payload });
+            app.node_order.push(id.into());
+        }
+        app.edit_group("a", Some("b".into()));
+        app.edit_group("b", Some("a".into()));
+        app
+    }
+
+    #[test]
+    fn a_merge_into_a_group_cycle_is_refused() {
+        let mut app = mirror_group_cycle();
+        app.merge_groups("s", "a");
+        assert!(app.nodes.contains_key("s"), "the merge is refused, so the source stays");
+    }
+
+    #[test]
+    fn destroying_a_group_in_a_cycle_ends() {
+        let mut app = mirror_group_cycle();
+        app.destroy_group("a");
+        assert!(!app.nodes.contains_key("a") && !app.nodes.contains_key("b"), "both go");
+        assert!(app.nodes.contains_key("s"));
+    }
+
+    /// Two concurrent re-parents can make a parent cycle: the store doesn't cycle-check `parent`.
+    #[test]
+    fn a_parent_cycle_counts_as_a_cycle() {
+        let mut app = App::default();
+        app.edit_parent("x", Some("y".into()));
+        app.edit_parent("y", Some("x".into()));
+        assert!(app.would_create_cycle("z", "x"));
     }
 
     #[test]

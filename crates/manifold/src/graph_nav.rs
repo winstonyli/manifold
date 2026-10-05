@@ -133,10 +133,13 @@ impl App {
     /// `group_breadcrumb` does): reassigning source's own members to target
     /// while target is one of them would leave it (or a group between them)
     /// pointing at itself once source is removed, a self-reference cycle.
+    /// Refused too when the walk meets a group cycle in the mirror (two
+    /// replicas' moves raced; the next save shows the document's groups).
     pub(crate) fn merge_groups(&mut self, source: &str, target: &str) {
         let mut ancestor = Some(target.to_string());
+        let mut visited = HashSet::new();
         while let Some(cur) = ancestor {
-            if cur == source {
+            if cur == source || !visited.insert(cur.clone()) {
                 return;
             }
             ancestor = self.nodes.get(&cur).and(self.mirror.group(&cur)).map(str::to_owned);
@@ -159,11 +162,14 @@ impl App {
     /// reaches `node_id`, `new_parent_id` is currently a descendant of
     /// `node_id`, so re-parenting `node_id` under it would loop. See the
     /// tab-onto-tab drag-to-reparent gesture (inside a group's own
-    /// subgraph) this guards.
+    /// subgraph) this guards. A chain that is already a cycle (two replicas
+    /// re-parented concurrently; the store doesn't cycle-check `parent`)
+    /// counts as one too.
     pub(crate) fn would_create_cycle(&self, node_id: &str, new_parent_id: &str) -> bool {
         let mut current = Some(new_parent_id.to_string());
+        let mut visited = HashSet::new();
         while let Some(cur) = current {
-            if cur == node_id {
+            if cur == node_id || !visited.insert(cur.clone()) {
                 return true;
             }
             current = self.mirror.parent(&cur).map(str::to_owned);
@@ -181,13 +187,11 @@ impl App {
         let mut chain = Vec::new();
         let mut visited = std::collections::HashSet::new();
         let mut current = self.current_group.clone();
-        // Guards against an infinite loop if a cycle ever existed in the
-        // `.group` parent chain -- not reachable today (the only path that
-        // reparents an *existing* group, the merge-drag gesture, already
-        // refuses a cycle at the source -- see `App::merge_groups`'s own
-        // ancestor check), but this would hang the whole app with no
-        // error if it ever did happen, called every frame as it is, so the
-        // guard is cheap insurance rather than something to skip.
+        // Guards against an infinite loop on a cycle in the mirror's
+        // `.group` chain: a local move and another replica's move can race
+        // into one until the next save shows the document's groups (the
+        // store refuses the move that closes it). Called every frame, a
+        // hang here would freeze the whole app with no error.
         while let Some(id) = current {
             if !visited.insert(id.clone()) {
                 break;

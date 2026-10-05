@@ -1200,8 +1200,9 @@ impl App {
                 })
             };
             let editable = |node: &NodeId| !skip.contains(node) && doc.nodes.get(node).is_some_and(Node::is_live);
-            // Each pending link's target as this commit leaves it: what the mirror shows once it lands.
-            let mut groups: BTreeMap<NodeId, Option<NodeId>> = BTreeMap::new();
+            // Each pending link's target as this commit leaves it: what the mirror shows once it lands. A moved
+            // node's group is read back from the document after the commit instead: the store may refuse the move.
+            let mut moved: BTreeSet<NodeId> = BTreeSet::new();
             let mut links: BTreeMap<(NodeId, u32), Option<NodeId>> = BTreeMap::new();
             // Moves before sets (Ruling 4). A move to where the document already shows the node is left out.
             for (&node, &group) in &self.pending_moves {
@@ -1209,7 +1210,7 @@ impl App {
                     continue;
                 }
                 let group = resolve(group);
-                groups.insert(node, group);
+                moved.insert(node);
                 if group != doc.effective_group(node) {
                     ops.push(OpBody::Move { node, group });
                 }
@@ -1283,15 +1284,18 @@ impl App {
                                 self.mirror.set(&key, field::JAR, jar);
                             }
                         }
+                        // A moved node shows the group the document holds: the target, none for one this commit
+                        // deleted (Ruling 5), or where it was when the store refused the move as a cycle (a
+                        // concurrent move raced it), which the mirror would otherwise keep showing.
+                        for &node in &moved {
+                            let (id, group) = (node.to_string(), doc.effective_group(node));
+                            if link_id(self.mirror.group(&id)) != group {
+                                self.mirror.set_group(&id, group.map(|g| g.to_string()));
+                            }
+                        }
                     }
                     self.explicit.clear();
                     // A link target this commit wrote as none (Ruling 5: deleted here) is none in the mirror too.
-                    for (node, &group) in &groups {
-                        let id = node.to_string();
-                        if link_id(self.mirror.group(&id)) != group {
-                            self.mirror.set_group(&id, group.map(|g| g.to_string()));
-                        }
-                    }
                     for (&(node, no), &target) in &links {
                         let id = node.to_string();
                         if no == field::PARENT {
