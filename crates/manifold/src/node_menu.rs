@@ -481,8 +481,11 @@ pub(crate) fn node_menu_config(view: &NodeMenuView, headless: bool) -> NodeMenuC
                 items.push(Button("Open in Default Engine", A::OpenInDefaultEngine));
             }
             items.push(Button(if view.pinned { "Unpin" } else { "Pin" }, A::TogglePin));
-            // The same as a live tab's, and Ctrl+D's (`duplicate_tab` takes either).
-            items.push(Button("Duplicate", A::Duplicate));
+            // The same as a live tab's, and Ctrl+D's (`duplicate_tab` takes either). Not for a failed tab: the copy
+            // would start on the same engine and fail the same way.
+            if !view.failed {
+                items.push(Button("Duplicate", A::Duplicate));
+            }
             items.push(Button("Copy URL", A::CopyUrl));
             items.extend(view.jars.iter().flat_map(|j| jar_items(j, true, false)));
             finish("unloaded_tab_context_menu", 170.0, items, delete("Close"))
@@ -983,7 +986,10 @@ mod tests {
                 (
                     "group_context_menu",
                     150.0,
-                    format!("Rename | Sleep Tabs | <colors>{g} | --- | Dissolve Group | Close Group and Contents | Export Group...")
+                    format!(
+                        "Rename | Sleep Tabs | <colors>{g} | --- | Dissolve Group | Close Group and Contents | \
+                         Export Group..."
+                    )
                 )
             );
             assert_eq!(
@@ -997,14 +1003,14 @@ mod tests {
         }
         // A failed tab offers Retry (and the default engine, when it isn't
         // the engine that failed) instead of Open; a sleeping/waking one
-        // just offers Open.
+        // just offers Open. Neither failed one offers Duplicate, which would fail the same way.
         let failed = NodeMenuView { other_default_engine: true, failed: true, ..view_of(ItemNodeKind::Unloaded) };
         assert_eq!(
             menu_of(&failed, false).2,
-            "Retry | Open in Default Engine | Pin | Duplicate | Copy URL | <colors> | --- | Close"
+            "Retry | Open in Default Engine | Pin | Copy URL | <colors> | --- | Close"
         );
         let missing = NodeMenuView { failed: true, engine_missing: true, ..view_of(ItemNodeKind::Unloaded) };
-        assert_eq!(menu_of(&missing, false).2, "Download Engine | Pin | Duplicate | Copy URL | <colors> | --- | Close");
+        assert_eq!(menu_of(&missing, false).2, "Download Engine | Pin | Copy URL | <colors> | --- | Close");
         // Export Group's file dialog can't run headless.
         assert_eq!(
             menu(ItemNodeKind::Group, false, false, true).2,
@@ -1055,12 +1061,13 @@ mod tests {
             |has_default| NodeMenuView { jars: jars(false, false, has_default), ..view_of(ItemNodeKind::Group) };
         assert_eq!(
             menu_of(&group(false), false).2,
-            "Rename | Sleep Tabs | <jars> | <colors> | --- | Dissolve Group | Close Group and Contents | Export Group..."
+            "Rename | Sleep Tabs | <jars> | <colors> | --- | Dissolve Group | Close Group and Contents | \
+             Export Group..."
         );
         assert_eq!(
             menu_of(&group(true), false).2,
-            "Rename | Sleep Tabs | <jars> | Clear Default Jar | <colors> | --- | Dissolve Group | Close Group and Contents | \
-             Export Group..."
+            "Rename | Sleep Tabs | <jars> | Clear Default Jar | <colors> | --- | Dissolve Group | \
+             Close Group and Contents | Export Group..."
         );
     }
 
