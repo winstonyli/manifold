@@ -2,8 +2,9 @@
 //! spec, 2b "Read model"). Every read goes through the accessors here, so making `Doc` the app's own state later
 //! changes only where they read.
 //!
-//! The mirror equals the document except for fields with an edit still waiting for a save (`App::pending`);
-//! `App::edit_field` is the one writer, and `App::mirror_remote` applies another replica's change.
+//! The mirror equals the document except for fields and links with an edit still waiting for a save
+//! (`App::pending`, `App::pending_moves`); `App::edit_field`, `App::edit_parent` and `App::edit_group` are the
+//! writers, and `App::mirror_remote` applies another replica's change.
 
 use std::collections::HashMap;
 
@@ -24,6 +25,7 @@ pub(crate) struct Mirror {
 #[derive(Default)]
 struct Links {
     parent: Option<String>,
+    group: Option<String>,
 }
 
 impl Mirror {
@@ -59,6 +61,15 @@ impl Mirror {
         self.links.entry(id.to_owned()).or_default().parent = parent;
     }
 
+    /// The group this node is shown in (`None` at the top level). Groups nest, so a group has one too.
+    pub(crate) fn group(&self, id: &str) -> Option<&str> {
+        self.links.get(id)?.group.as_deref()
+    }
+
+    pub(crate) fn set_group(&mut self, id: &str, group: Option<String>) {
+        self.links.entry(id.to_owned()).or_default().group = group;
+    }
+
     /// Drops the entries `keep` rejects.
     pub(crate) fn retain(&mut self, keep: impl Fn(&str) -> bool) {
         self.nodes.retain(|id, _| keep(id));
@@ -76,24 +87,32 @@ impl Mirror {
     }
 
     pub(crate) fn carried(&self, id: &str) -> Carried {
-        Carried { color: self.color(id), pinned: self.pinned(id), parent: self.parent(id).map(str::to_owned) }
+        Carried {
+            color: self.color(id),
+            pinned: self.pinned(id),
+            parent: self.parent(id).map(str::to_owned),
+            group: self.group(id).map(str::to_owned),
+        }
     }
 
     /// `init` for everything a tab carries.
     pub(crate) fn seed(&mut self, id: &str, carried: &Carried) {
         self.init(id, [(field::COLOR, color_value(carried.color)), (field::PINNED, FieldValue::Bool(carried.pinned))]);
         if !self.links.contains_key(id) {
-            self.set_parent(id, carried.parent.clone());
+            let links = Links { parent: carried.parent.clone(), group: carried.group.clone() };
+            self.links.insert(id.to_owned(), links);
         }
     }
 }
 
-/// What a tab carries across a respawn or lands with: the mirror's values for it.
-#[derive(Debug, Clone, PartialEq)]
+/// What a tab carries across a respawn or lands with: the mirror's values for it. `place_node` seeds a new node's
+/// links with it too.
+#[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct Carried {
     pub color: Option<egui::Color32>,
     pub pinned: bool,
     pub parent: Option<String>,
+    pub group: Option<String>,
 }
 
 #[cfg(test)]
@@ -103,10 +122,15 @@ mod tests {
     #[test]
     fn seed_then_carried_round_trips_and_never_overwrites() {
         let mut mirror = Mirror::default();
-        let first = Carried { color: Some(egui::Color32::RED), pinned: true, parent: Some("p".into()) };
+        let first = Carried {
+            color: Some(egui::Color32::RED),
+            pinned: true,
+            parent: Some("p".into()),
+            group: Some("g".into()),
+        };
         mirror.seed("7", &first);
         assert_eq!(mirror.carried("7"), first);
-        mirror.seed("7", &Carried { color: None, pinned: false, parent: None });
+        mirror.seed("7", &Carried { color: None, pinned: false, parent: None, group: None });
         assert_eq!(mirror.carried("7"), first);
     }
 

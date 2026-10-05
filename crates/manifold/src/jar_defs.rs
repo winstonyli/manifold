@@ -231,7 +231,7 @@ impl App {
             _ => return None,
         };
         let engine_ignores = !matches!(engine, EngineKind::Webview2 | EngineKind::Cef) && key != JarKey::Default;
-        let group = self.nodes.get(id).and_then(|n| n.group.as_deref());
+        let group = self.nodes.get(id).and(self.mirror.group(id));
         let following = !choice.set && self.inherited_jar(group) == choice.jar;
         if key == JarKey::Default && !missing && !will_switch {
             return None;
@@ -496,7 +496,7 @@ impl App {
             if let Some(jar) = node.as_group().and_then(|g| g.default_jar) {
                 return Some(jar);
             }
-            at = node.group.clone();
+            at = at.as_deref().and_then(|a| self.mirror.group(a)).map(str::to_owned);
         }
         None // a group cycle (never built, but the loop must end)
     }
@@ -537,7 +537,7 @@ impl App {
 
     /// `follow_group_jar` without the sweep, for `refollow`'s loop.
     fn resnapshot(&mut self, id: &str) {
-        let group = self.nodes.get(id).and_then(|n| n.group.clone());
+        let group = self.nodes.get(id).and(self.mirror.group(id)).map(str::to_owned);
         self.put_tab_jar(id, self.new_tab_jar(group.as_deref()));
     }
 
@@ -560,11 +560,11 @@ impl App {
 
     /// Whether `at` sits somewhere inside group `group`.
     fn is_inside(&self, at: &str, group: &str) -> bool {
-        let mut cur = self.nodes.get(at).and_then(|n| n.group.clone());
+        let mut cur = self.nodes.get(at).and(self.mirror.group(at)).map(str::to_owned);
         for _ in 0..=self.nodes.len() {
             match cur {
                 Some(g) if g == group => return true,
-                Some(g) => cur = self.nodes.get(&g).and_then(|n| n.group.clone()),
+                Some(g) => cur = self.nodes.get(&g).and(self.mirror.group(&g)).map(str::to_owned),
                 None => return false,
             }
         }
@@ -574,7 +574,7 @@ impl App {
     /// Whether `group` governs tab-or-group `at`'s jar: `group` is `at`'s group or an ancestor, and no group between
     /// them has a default of its own (spec: "nested groups with no default of their own included").
     fn governed_by(&self, at: &str, group: &str) -> bool {
-        let mut cur = self.nodes.get(at).and_then(|n| n.group.clone());
+        let mut cur = self.nodes.get(at).and(self.mirror.group(at)).map(str::to_owned);
         for _ in 0..=self.nodes.len() {
             let Some(g) = cur else { return false };
             if g == group {
@@ -584,7 +584,7 @@ impl App {
             if node.and_then(|n| n.as_group()).is_some_and(|gp| gp.default_jar.is_some()) {
                 return false; // a nearer default wins
             }
-            cur = node.and_then(|n| n.group.clone());
+            cur = node.and(self.mirror.group(&g)).map(str::to_owned);
         }
         false
     }
@@ -729,12 +729,12 @@ mod tests {
 
     fn tab_in(app: &mut App, group: Option<&str>) -> String {
         let id = add(app, sleeping_tab("https://a.com/", "A"));
-        app.nodes.get_mut(&id).unwrap().group = group.map(str::to_string);
+        app.edit_group(&id, group.map(str::to_string));
         id
     }
     fn group_in(app: &mut App, parent: Option<&str>) -> String {
         let id = add(app, NodePayload::Group(GroupPayload::named("G")));
-        app.nodes.get_mut(&id).unwrap().group = parent.map(str::to_string);
+        app.edit_group(&id, parent.map(str::to_string));
         id
     }
     fn jar_of(app: &App, tab: &str) -> JarChoice {
@@ -788,12 +788,12 @@ mod tests {
         let set = tab_in(&mut app, None);
         app.set_tab_jar(&set, None);
         for t in [&unset, &set] {
-            app.nodes.get_mut(t).unwrap().group = Some(g.clone());
+            app.edit_group(t, Some(g.clone()));
             app.refollow(t);
         }
         assert_eq!(jar_of(&app, &unset).jar, Some(work));
         assert_eq!(jar_of(&app, &set), JarChoice { jar: None, set: true });
-        app.nodes.get_mut(&unset).unwrap().group = None;
+        app.edit_group(&unset, None);
         app.refollow(&unset);
         assert_eq!(jar_of(&app, &unset), JarChoice::default(), "moved out: no default, no jar");
     }
@@ -848,7 +848,7 @@ mod tests {
         let moved = tab_in(&mut app, Some(&w));
         app.set_group_default_jar(&w, work);
         app.apply_drop(&w, Some((DropEffect::Merge, Some(h.clone()))));
-        assert_eq!(app.nodes[&moved].group.as_deref(), Some(h.as_str()));
+        assert_eq!(app.mirror.group(&moved), Some(h.as_str()));
         assert_eq!(jar_of(&app, &moved), JarChoice::default(), "a moved member re-snapshots: `h` has no default");
         assert_eq!(jar_of(&app, &stayed), JarChoice { jar: Some(home), set: false }, "a tab that never moved");
     }
@@ -880,13 +880,13 @@ mod tests {
         // Merge: `w` (holding the tab again) dropped onto `h`; its members now take `h`'s default.
         app.apply_drop(&unset, Some((DropEffect::Join, Some(w.clone()))));
         app.apply_drop(&w, Some((DropEffect::Merge, Some(h.clone()))));
-        assert_eq!(app.nodes[&unset].group.as_deref(), Some(h.as_str()));
+        assert_eq!(app.mirror.group(&unset), Some(h.as_str()));
         assert_eq!(unset_jar(&app), JarChoice { jar: Some(home), set: false }, "merge");
         assert_eq!(jar_of(&app, &set), JarChoice { jar: None, set: true }, "merge leaves a set tab");
 
         // Dissolve: `inner` (no default) inside `h` is dissolved into `h`, then `h` itself to the top level.
         let inner = group_in(&mut app, Some(&h));
-        app.nodes.get_mut(&unset).unwrap().group = Some(inner.clone());
+        app.edit_group(&unset, Some(inner.clone()));
         app.put_tab_jar(&unset, JarChoice { jar: Some(work), set: false }); // stale, so the dissolve must fix it
         app.dissolve_group(&inner);
         assert_eq!(unset_jar(&app), JarChoice { jar: Some(home), set: false }, "dissolve into a defaulted group");
@@ -898,11 +898,11 @@ mod tests {
         let level = group_in(&mut app, None);
         app.set_group_default_jar(&level, work);
         let other = tab_in(&mut app, Some(&level));
-        app.nodes.get_mut(&unset).unwrap().group = Some(level.clone());
+        app.edit_group(&unset, Some(level.clone()));
         app.current_group = Some(level.clone());
         app.apply_drop(&unset, Some((DropEffect::GroupWith, Some(other.clone()))));
-        let made = app.nodes[&unset].group.clone().unwrap();
-        assert_eq!(app.nodes[&made].group.as_deref(), Some(level.as_str()), "the new group sits inside `level`");
+        let made = app.mirror.group(&unset).unwrap().to_owned();
+        assert_eq!(app.mirror.group(&made), Some(level.as_str()), "the new group sits inside `level`");
         assert_eq!(unset_jar(&app), JarChoice { jar: Some(work), set: false }, "group with");
     }
 
@@ -968,7 +968,7 @@ mod tests {
         assert!(!app.jar_chip(&t).unwrap().following, "the group's default is another jar");
         let outer = group_in(&mut app, None);
         app.nodes.get_mut(&g).unwrap().as_group_mut().unwrap().default_jar = None;
-        app.nodes.get_mut(&g).unwrap().group = Some(outer.clone());
+        app.edit_group(&g, Some(outer.clone()));
         app.nodes.get_mut(&outer).unwrap().as_group_mut().unwrap().default_jar = Some(work);
         assert!(app.jar_chip(&t).unwrap().following, "an outer group's default counts when it is the nearest");
     }

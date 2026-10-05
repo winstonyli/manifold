@@ -370,8 +370,8 @@ impl App {
         let (parent, group, pos, color, pinned, muted, carry_jar) = if self.wakes_in_flight.remove(&id) {
             match self.nodes.get(&id).and_then(|n| n.as_unloaded().map(|tab| (n, tab))) {
                 Some((card, tab)) => {
-                    let Carried { color, pinned, parent } = self.mirror.carried(&id);
-                    (parent, card.group.clone(), card.pos, color, pinned, tab.muted, tab.jar)
+                    let Carried { color, pinned, parent, group } = self.mirror.carried(&id);
+                    (parent, group, card.pos, color, pinned, tab.muted, tab.jar)
                 }
                 // Closed while waking (see `wakes_in_flight`): `spawning`
                 // no longer holds this id (removed above), so the save
@@ -386,7 +386,6 @@ impl App {
         } else {
             (parent, group, pos, color, pinned, muted, carry_jar)
         };
-        let group = group.filter(|g| self.nodes.contains_key(g));
         if matches!(purpose, SpawnPurpose::Respawn | SpawnPurpose::Restore | SpawnPurpose::Wake)
             && self.pending_respawn_focus.as_deref() == Some(id.as_str())
         {
@@ -421,7 +420,6 @@ impl App {
                 self.nodes.insert(
                     id.clone(),
                     GraphNode {
-                        group,
                         pos,
                         vel,
                         payload: NodePayload::Tab(TabPayload {
@@ -439,7 +437,7 @@ impl App {
                         }),
                     },
                 );
-                self.mirror.seed(&id, &Carried { color, pinned, parent });
+                self.seed_landing(&id, Carried { color, pinned, parent, group });
                 if !self.node_order.iter().any(|t| t == &id) {
                     self.node_order.push(id.clone());
                 }
@@ -554,8 +552,8 @@ impl App {
                     let state = UnloadedState::Failed(err.to_string());
                     let failed = UnloadedTabPayload { url, title, kind, muted, zoom_factor, state, jar: carry_jar };
                     let payload = NodePayload::Unloaded(failed);
-                    self.nodes.insert(id.clone(), GraphNode { group, pos, vel, payload });
-                    self.mirror.seed(&id, &Carried { color, pinned, parent });
+                    self.nodes.insert(id.clone(), GraphNode { pos, vel, payload });
+                    self.seed_landing(&id, Carried { color, pinned, parent, group });
                     if !self.node_order.iter().any(|t| t == &id) {
                         self.node_order.push(id.clone());
                     }
@@ -589,9 +587,14 @@ impl App {
     /// The copy keeps `id`'s jar choice (deviation 3).
     pub(crate) fn duplicate_tab(&mut self, id: &str) {
         let Some((parent, group, url, kind)) = self.nodes.get(id).and_then(|n| {
-            n.payload
-                .saved_tab()
-                .map(|(url, kind)| (self.mirror.parent(id).map(str::to_owned), n.group.clone(), url.to_string(), kind))
+            n.payload.saved_tab().map(|(url, kind)| {
+                (
+                    self.mirror.parent(id).map(str::to_owned),
+                    self.mirror.group(id).map(str::to_owned),
+                    url.to_string(),
+                    kind,
+                )
+            })
         }) else {
             return;
         };
@@ -647,12 +650,13 @@ impl App {
         // the new tab near its actual new groupmates instead of near an
         // unrelated tab at a different level; `ZERO` (same as a fresh
         // group's own spawn point) covers a brand new, still-empty group.
+        let in_group = |id: &str| self.mirror.group(id) == group.as_deref();
         let parent_pos = parent
-            .as_ref()
+            .as_deref()
+            .filter(|p| in_group(p))
             .and_then(|p| self.nodes.get(p))
-            .filter(|n| n.group == group)
             .map(|n| n.pos)
-            .or_else(|| self.nodes.values().find(|n| n.group == group).map(|n| n.pos))
+            .or_else(|| self.nodes.iter().find(|(id, _)| in_group(id)).map(|(_, n)| n.pos))
             .unwrap_or(egui::Vec2::ZERO);
         let pos = parent_pos + graph_layout::spawn_jitter(&id);
         self.tab_spawn_error = None;
@@ -1042,11 +1046,19 @@ impl App {
             || self.nodes.get(id).and_then(|n| n.as_tab()).is_some_and(|t| t.swap_target.is_some())
     }
 
+    /// Seeds a landing tab's mirror entry (`Mirror::seed`: only an id with none). A group dissolved while the
+    /// spawn was in flight would leave the tab in a group nothing can navigate into: it lands at the top level.
+    fn seed_landing(&mut self, id: &str, carried: Carried) {
+        self.mirror.seed(id, &carried);
+        if self.mirror.group(id).is_some_and(|g| !self.nodes.contains_key(g)) {
+            self.edit_group(id, None);
+        }
+    }
+
     /// "Sleep Tabs" on a group: `request_sleep` for each of its live tabs.
     /// Returns how many were requested.
     pub(crate) fn sleep_group(&mut self, id: &str) -> usize {
-        let members: Vec<String> =
-            self.nodes.iter().filter(|(_, n)| n.group.as_deref() == Some(id)).map(|(m, _)| m.clone()).collect();
+        let members: Vec<String> = self.members_of(id).map(str::to_owned).collect();
         members.iter().filter(|m| self.request_sleep(m, SleepWhy::Manual)).count()
     }
 

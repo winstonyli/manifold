@@ -669,7 +669,7 @@ impl App {
         let node = self.nodes.get(id)?;
         Some(NodeMenuView {
             kind: item_node_kind(&node.payload),
-            has_group: node.group.is_some(),
+            has_group: self.mirror.group(id).is_some(),
             color: self.mirror.color(id),
             has_url: node.source_url().is_some(),
             has_copy_url: node.copyable_url().is_some(),
@@ -688,7 +688,8 @@ impl App {
                 .iter()
                 .filter(|other| other.as_str() != id)
                 .filter_map(|other| {
-                    let sibling = self.nodes.get(other).filter(|n| n.group == node.group)?;
+                    let sibling =
+                        self.nodes.get(other).filter(|_| self.mirror.group(other) == self.mirror.group(id))?;
                     // name rule: drawn by display_name in the MoveTo rows
                     Some((other.clone(), sibling.as_group()?.name.clone()))
                 })
@@ -717,7 +718,7 @@ impl App {
                 .collect()
         };
         if let Some(choice) = self.tab_jar(id) {
-            let group_default = self.inherited_jar(node.group.as_deref());
+            let group_default = self.inherited_jar(self.mirror.group(id));
             // Tick the jar the tab uses: Default for one naming a jar deleted elsewhere.
             let (key, _) = self.resolved_jar(&choice);
             let mut rows = vec![JarRow {
@@ -873,22 +874,22 @@ mod tests {
         // A group nested in g1 is not a sibling of the top-level note.
         let inner = app.alloc_node_id();
         app.insert_group_at(inner.clone(), None);
-        app.nodes.get_mut(&inner).unwrap().group = Some(g1.clone());
+        app.edit_group(&inner, Some(g1.clone()));
         let ids = |app: &App, id: &str| -> Vec<String> {
             app.node_menu_view(id).unwrap().move_targets.into_iter().map(|(gid, _)| gid).collect()
         };
         assert_eq!(ids(&app, &note), vec![g1.clone(), g2.clone()]);
         assert_eq!(ids(&app, &g1), vec![g2.clone()], "a group isn't offered itself");
         app.apply_node_action(&egui::Context::default(), &note, NodeAction::MoveToGroup(g2.clone()));
-        assert_eq!(app.nodes[&note].group, Some(g2.clone()));
+        assert_eq!(app.mirror.group(&note), Some(g2.as_str()));
         // On a group "Move into" nests it, unlike a drop of one group on another (which merges).
         assert_eq!(
             drop_action(ItemNodeKind::Group, DropTarget::Card(ItemNodeKind::Group), false),
             Some(DropEffect::Merge)
         );
         app.apply_node_action(&egui::Context::default(), &g1, NodeAction::MoveToGroup(g2.clone()));
-        assert_eq!(app.nodes[&g1].group, Some(g2), "g1 nested in g2, not merged away");
-        assert_eq!(app.nodes[&inner].group, Some(g1), "g1 keeps its own members");
+        assert_eq!(app.mirror.group(&g1), Some(g2.as_str()), "g1 nested in g2, not merged away");
+        assert_eq!(app.mirror.group(&inner), Some(g1.as_str()), "g1 keeps its own members");
     }
 
     fn view_of(kind: ItemNodeKind) -> NodeMenuView {
@@ -1441,7 +1442,7 @@ mod tests {
         let g = app.alloc_node_id();
         app.insert_group_at(g.clone(), None);
         let t = crate::session_sync::tests::add(&mut app, crate::session_sync::tests::sleeping_tab("https://a/", "A"));
-        app.nodes.get_mut(&t).unwrap().group = Some(g.clone());
+        app.edit_group(&t, Some(g.clone()));
         let menu = app.node_menu_view(&g).unwrap().jars.unwrap();
         assert_eq!(
             menu.rows,

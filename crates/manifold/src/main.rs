@@ -322,18 +322,6 @@ fn debug_key_event(key: egui::Key, modifiers: egui::Modifiers) -> egui::Event {
     egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers }
 }
 
-/// "Remove from Group" (the tab card's eject button, dragging a card out
-/// through the way back, and the tab and item menus): moves `id` up one
-/// level, into the parent of the group it's in, since groups nest. `None`
-/// (the top level) when that group isn't itself in one.
-fn remove_from_group(nodes: &mut NodeMap, id: &str) {
-    let grandparent =
-        nodes.get(id).and_then(|n| n.group.as_ref()).and_then(|group| nodes.get(group)).and_then(|g| g.group.clone());
-    if let Some(node) = nodes.get_mut(id) {
-        node.group = grandparent;
-    }
-}
-
 /// `1234` -> `"1.2 KB"`, binary (1024-based) units -- matches Windows
 /// Explorer's own convention for a "how big is this file" readout, which is
 /// the nearest existing reference point a download progress display has in
@@ -804,7 +792,7 @@ impl TabSpawn {
             url,
             kind,
             parent: carried.parent.clone(),
-            group: node.group.clone(),
+            group: carried.group.clone(),
             pos: node.pos,
             vel: node.vel,
             purpose: SpawnPurpose::Respawn,
@@ -1023,6 +1011,9 @@ struct App {
     /// Local edits to mirrored fields that the next save commits as `Set`s, by node and field. Cleared by a
     /// successful commit.
     pending: std::collections::BTreeMap<(store::model::NodeId, u32), Vec<u8>>,
+    /// Local group moves the next save commits as `Move`s, by node: the target group, `None` for the top level.
+    /// Cleared by a successful commit.
+    pending_moves: std::collections::BTreeMap<store::model::NodeId, Option<store::model::NodeId>>,
     /// What the store held for each node when this replica last read or
     /// committed it. `materialize` applies a field only where the store
     /// now differs, so a remote change to one field doesn't overwrite
@@ -1532,6 +1523,7 @@ impl Default for App {
             explicit: std::collections::BTreeSet::new(),
             mirror: mirror::Mirror::default(),
             pending: std::collections::BTreeMap::new(),
+            pending_moves: std::collections::BTreeMap::new(),
             last_shared: HashMap::new(),
             jar_defs: BTreeMap::new(),
             local_written: None,
@@ -2199,7 +2191,7 @@ impl App {
             self.pdf_renderer.cancel(id);
         }
         if self.current_group.as_deref() == Some(id) {
-            self.switch_group_level(removed.and_then(|n| n.group));
+            self.switch_group_level(self.mirror.group(id).filter(|_| removed.is_some()).map(str::to_owned));
         }
         self.node_order.retain(|d| d != id);
         if self.dragging.as_deref() == Some(id) {
@@ -2361,13 +2353,10 @@ impl App {
     /// `dissolve_group` without the jar re-snapshot, for a remote delete: the remote device's own refollow arrives as
     /// ordinary tab edits (spec "Inheritance"). Returns the members moved.
     fn dissolve_group_quietly(&mut self, id: &str) -> Vec<String> {
-        let parent = self.nodes.get(id).and_then(|n| n.group.clone());
-        let mut members = Vec::new();
-        for (member, node) in self.nodes.iter_mut() {
-            if node.group.as_deref() == Some(id) {
-                node.group = parent.clone();
-                members.push(member.clone());
-            }
+        let parent = self.mirror.group(id).filter(|_| self.nodes.contains_key(id)).map(str::to_owned);
+        let members: Vec<String> = self.members_of(id).map(str::to_owned).collect();
+        for member in &members {
+            self.edit_group(member, parent.clone());
         }
         self.nodes.remove(id);
         self.node_order.retain(|g| g != id);
@@ -2436,9 +2425,9 @@ impl App {
     /// the live tab under the same id, or a failed card with the new
     /// error. Ignored while a wake is already in flight.
     pub(crate) fn wake_tab(&mut self, id: &str, kind: EngineKind) {
-        let Carried { color, pinned, parent } = self.mirror.carried(id);
+        let Carried { color, pinned, parent, group } = self.mirror.carried(id);
         let Some(node) = self.nodes.get_mut(id) else { return };
-        let (group, pos) = (node.group.clone(), node.pos);
+        let pos = node.pos;
         let NodePayload::Unloaded(tab) = &mut node.payload else { return };
         if tab.state == UnloadedState::Waking {
             return;
@@ -2585,12 +2574,7 @@ impl App {
     /// on each member), then the group itself. Records nothing: `close_node`
     /// has already recorded the whole subtree as one entry.
     fn destroy_group(&mut self, id: &str) {
-        let member_ids: Vec<String> = self
-            .nodes
-            .iter()
-            .filter(|(_, node)| node.group.as_deref() == Some(id))
-            .map(|(tid, _)| tid.clone())
-            .collect();
+        let member_ids: Vec<String> = self.members_of(id).map(str::to_owned).collect();
         for tid in member_ids {
             self.destroy_node(&tid);
         }
@@ -3420,26 +3404,25 @@ mod tests {
 
     #[test]
     fn remove_from_group_moves_up_one_level() {
-        let node = |group: Option<&str>, payload| GraphNode {
-            group: group.map(String::from),
-            pos: egui::Vec2::ZERO,
-            vel: egui::Vec2::ZERO,
-            payload,
-        };
+        let mut app = App::default();
         let group = |name: &str| NodePayload::Group(GroupPayload::named(name));
         let note = || NodePayload::Note(NotePayload { text: String::new(), editing: false, url: None });
-        let mut nodes = NodeMap::default();
-        nodes.insert("outer".into(), node(None, group("outer")));
-        nodes.insert("inner".into(), node(Some("outer"), group("inner")));
-        nodes.insert("deep".into(), node(Some("inner"), note()));
-        nodes.insert("shallow".into(), node(Some("outer"), note()));
+        for (id, group, payload) in [
+            ("outer", None, group("outer")),
+            ("inner", Some("outer"), group("inner")),
+            ("deep", Some("inner"), note()),
+            ("shallow", Some("outer"), note()),
+        ] {
+            app.nodes.insert(id.into(), GraphNode { pos: egui::Vec2::ZERO, vel: egui::Vec2::ZERO, payload });
+            app.edit_group(id, group.map(String::from));
+        }
 
-        remove_from_group(&mut nodes, "deep");
-        assert_eq!(nodes["deep"].group.as_deref(), Some("outer"));
-        remove_from_group(&mut nodes, "shallow");
-        assert_eq!(nodes["shallow"].group, None);
-        remove_from_group(&mut nodes, "shallow");
-        assert_eq!(nodes["shallow"].group, None);
+        app.remove_from_group("deep");
+        assert_eq!(app.mirror.group("deep"), Some("outer"));
+        app.remove_from_group("shallow");
+        assert_eq!(app.mirror.group("shallow"), None);
+        app.remove_from_group("shallow");
+        assert_eq!(app.mirror.group("shallow"), None);
     }
 
     #[test]
@@ -3458,7 +3441,7 @@ mod tests {
         let mut app = App::default();
         let add = |app: &mut App, name: &str| {
             let payload = NodePayload::Group(GroupPayload::named(name));
-            let node = GraphNode { group: None, pos: egui::Vec2::ZERO, vel: egui::Vec2::ZERO, payload };
+            let node = GraphNode { pos: egui::Vec2::ZERO, vel: egui::Vec2::ZERO, payload };
             let id = app.alloc_node_id();
             app.nodes.insert(id, node);
         };

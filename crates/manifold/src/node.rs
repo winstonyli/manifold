@@ -415,15 +415,12 @@ pub(crate) struct DownloadPayload {
 /// own comment on it) -- this is a hasher swap, not a new dependency.
 pub(crate) type NodeMap = HashMap<String, GraphNode, foldhash::fast::RandomState>;
 
-/// One node in the graph view -- fields every kind shares (position, graph
-/// membership) live here (`color`, `pinned` and `parent`, the "opened from" edge, are not fields: see `Mirror`); `payload` holds whatever's specific to
-/// the node's actual kind. See `NodePayload`'s own doc comment for the
-/// migration this is a step of.
+/// One node in the graph view -- fields every kind shares (position) live
+/// here; `color`, `pinned`, `parent` (the "opened from" edge) and `group`
+/// (the level it is shown in) are not fields: see `Mirror`. `payload` holds
+/// whatever's specific to the node's actual kind. See `NodePayload`'s own
+/// doc comment for the migration this is a step of.
 pub(crate) struct GraphNode {
-    /// Which group's subgraph this node is shown in -- `None` at the top
-    /// level. Groups nest, so a group node has one too; see
-    /// `GroupPayload`'s own doc comment.
-    pub(crate) group: Option<String>,
     pub(crate) pos: egui::Vec2,
     pub(crate) vel: egui::Vec2,
     pub(crate) payload: NodePayload,
@@ -497,11 +494,11 @@ impl GraphNode {
 /// reusing that same flat `graph_layout::step` simulation rather than a
 /// second nested one running inside the group's own node.
 ///
-/// **Groups nest.** A group's own `GraphNode::group` can itself be
-/// `Some(parent_group_id)` -- the "no nesting, `GraphNode::group` is a
+/// **Groups nest.** A group's own group (`Mirror::group`) can itself be
+/// `Some(parent_group_id)` -- the "no nesting, a node's group is a
 /// single `Option<String>` not a path" limitation this doc comment used to
 /// describe no longer applies: a single `Option<String>` *is* enough to
-/// nest, since walking `.group` links upward from any node already forms
+/// nest, since walking group links upward from any node already forms
 /// the whole ancestor chain (`App::group_breadcrumb`), with no separate
 /// path/stack type needed. `App::current_group` names whichever group's
 /// subgraph is currently showing (`None` at the true top level, same as
@@ -621,7 +618,7 @@ second"
     /// Review C-B12: a local file's card is named by its file name; a web source still wins.
     #[test]
     fn a_local_file_card_has_an_accessible_name() {
-        let node = |payload| GraphNode { group: None, pos: egui::Vec2::ZERO, vel: egui::Vec2::ZERO, payload };
+        let node = |payload| GraphNode { pos: egui::Vec2::ZERO, vel: egui::Vec2::ZERO, payload };
         let pdf = |url: Option<&str>| {
             node(NodePayload::Pdf(PdfPayload {
                 path: r"C:\docs\report.pdf".into(),

@@ -218,6 +218,8 @@ fn random_edits_converge_in_one_diff() {
                     .collect();
                 let choice = candidates[rng.below(candidates.len() as u64) as usize];
                 live.get_mut(&key).unwrap().group = choice;
+                // An existing node's group is `App::pending_moves`' to write, not `diff`'s (Ruling 8).
+                apply(&mut doc, vec![OpBody::Move { node: key, group: choice }]);
             }
             _ => {}
         }
@@ -477,7 +479,7 @@ fn a_remotely_removed_group_leaves_no_member_naming_it() {
     let local = id(3).to_string();
     let payload = NodePayload::Note(NotePayload { text: "local".into(), editing: false, url: None });
     app.insert_placeholder_node(local.clone(), egui::Vec2::ZERO, payload);
-    app.nodes.get_mut(&local).unwrap().group = Some(id(1).to_string());
+    app.edit_group(&local, Some(id(1).to_string()));
     app.current_group = Some(id(1).to_string());
     // What `remote_changes` reports when another replica deletes Inner:
     // the group gone, its stored member now shown in Outer.
@@ -486,10 +488,10 @@ fn a_remotely_removed_group_leaves_no_member_naming_it() {
     let inner = id(1).to_string();
     assert!(!app.nodes.contains_key(&inner) && !app.node_order.contains(&inner));
     let outer = Some(id(0).to_string());
-    assert_eq!(app.nodes[&id(2).to_string()].group, outer);
-    assert_eq!(app.nodes[&local].group, outer, "the local-only member moves to the effective group");
+    assert_eq!(app.mirror.group(&id(2).to_string()), outer.as_deref());
+    assert_eq!(app.mirror.group(&local), outer.as_deref(), "the local-only member moves to the effective group");
     assert_eq!(app.current_group, outer, "the view leaves the removed level");
-    assert!(app.nodes.values().all(|n| n.group.as_deref() != Some(inner.as_str())));
+    assert!(app.nodes.keys().all(|n| app.mirror.group(n) != Some(inner.as_str())));
 }
 
 /// A windowless app saving to `path` as `actor`. `pub(crate)`: also
@@ -927,7 +929,7 @@ fn a_group_export_imports_as_fresh_nodes() {
     app.insert_group_at(g.clone(), Some(egui::vec2(0.0, 0.0)));
     let n = app.alloc_node_id();
     app.insert_note_at(n.clone(), Some(egui::vec2(10.0, 0.0)));
-    app.nodes.get_mut(&n).unwrap().group = Some(g.clone());
+    app.edit_group(&n, Some(g.clone()));
     let json = app.export_group_json(&g).unwrap();
     assert_eq!(json.nodes.len(), 2);
     assert_eq!(json.nodes[0].kind(), Some(Kind::Group));
@@ -1448,13 +1450,13 @@ fn an_imported_groups_tab_arrives_asleep_in_the_new_group() {
     let mut app = app_on(&temp_dir("import-sleep").join("session.mnf"), 1);
     let g = add(&mut app, NodePayload::Group(GroupPayload::named("G")));
     let tab = add(&mut app, failed_tab("https://i/", 1.0));
-    app.nodes.get_mut(&tab).unwrap().group = Some(g.clone());
+    app.edit_group(&tab, Some(g.clone()));
     let json = app.export_group_json(&g).unwrap();
     app.import_group_json(&json);
     assert!(app.test_spawns.is_empty());
-    let (_, copy) = app.nodes.iter().find(|(id, n)| **id != tab && n.as_unloaded().is_some()).expect("a card");
+    let (copy_id, copy) = app.nodes.iter().find(|(id, n)| **id != tab && n.as_unloaded().is_some()).expect("a card");
     assert_eq!(copy.as_unloaded().unwrap().state, UnloadedState::Sleeping);
-    let group = copy.group.as_deref().expect("in a group");
+    let group = app.mirror.group(copy_id).expect("in a group");
     assert!(group != g && app.nodes[group].as_group().is_some(), "in the imported group");
 }
 
@@ -1474,8 +1476,8 @@ fn an_imported_member_whose_group_is_outside_the_file_joins_the_roots_level() {
         local: None,
     };
     app.import_group_json(&json);
-    let note = app.nodes.values().find(|n| matches!(&n.payload, NodePayload::Note(_))).expect("imported");
-    assert_eq!(note.group.as_deref(), Some(level.as_str()));
+    let (note, _) = app.nodes.iter().find(|(_, n)| matches!(&n.payload, NodePayload::Note(_))).expect("imported");
+    assert_eq!(app.mirror.group(note), Some(level.as_str()));
 }
 
 /// A session with no nodes still keeps Recently Closed: the launch
@@ -1831,8 +1833,8 @@ fn last_shared_matches_the_store_after_every_save() {
     let inner = add(&mut app, group("inner"));
     let tab = add(&mut app, failed_tab("https://a/", 1.0));
     let note = add(&mut app, NodePayload::Note(NotePayload { text: String::new(), editing: false, url: None }));
-    app.nodes.get_mut(&inner).unwrap().group = Some(outer.clone());
-    app.nodes.get_mut(&tab).unwrap().group = Some(inner.clone());
+    app.edit_group(&inner, Some(outer.clone()));
+    app.edit_group(&tab, Some(inner.clone()));
     assert!(app.save_session());
     check(&app, "creates");
 
@@ -1898,8 +1900,8 @@ fn app_save_costs() {
         for i in 0..tabs {
             let url = format!("https://www.example{}.com/articles/2026/09/some-long-article-slug-{i}?ref=home", i % 50);
             let id = add(&mut app, failed_tab(&url, 1.0));
+            app.edit_group(&id, Some(groups[i % groups.len()].clone()));
             let node = app.nodes.get_mut(&id).unwrap();
-            node.group = Some(groups[i % groups.len()].clone());
             node.pos = egui::vec2(i as f32 * 3.5, i as f32 * -2.25);
             ids.push(id);
         }
@@ -2365,4 +2367,228 @@ fn a_committed_parent_edit_wins_over_a_remote_value_parked_for_a_waking_tab() {
     fail_spawns(&mut app);
     assert_eq!(app.mirror.parent(&tab), Some(a.as_str()));
     assert_eq!(stored(&app, &tab, field::PARENT), FieldValue::Id(Some(a.parse().unwrap())));
+}
+
+/// A later parent edit to a target that isn't a store id drops the earlier queued one, so the stale target is not
+/// committed.
+#[test]
+fn a_parent_edit_to_a_non_store_target_drops_an_earlier_queued_one() {
+    let path = temp_dir("parent-stale").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let (a, b) = (add(&mut app, sleeping_tab("https://a/", "")), add(&mut app, sleeping_tab("https://b/", "")));
+    assert!(app.save_session());
+    app.edit_parent(&b, Some(a.clone()));
+    app.edit_parent(&b, Some("p".into()));
+    assert_eq!(app.mirror.parent(&b), Some("p"));
+    assert!(app.pending.is_empty());
+    assert!(app.save_session());
+    assert_eq!(stored(&app, &b, field::PARENT), FieldValue::Id(None));
+}
+
+/// A parent target created by the same commit is kept (Ruling 5).
+#[test]
+fn a_parent_created_by_the_same_commit_is_kept() {
+    let path = temp_dir("parent-new").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let b = add(&mut app, sleeping_tab("https://b/", ""));
+    assert!(app.save_session());
+    let a = add(&mut app, sleeping_tab("https://a/", ""));
+    app.edit_parent(&b, Some(a.clone()));
+    assert!(app.save_session());
+    assert_eq!(stored(&app, &b, field::PARENT), FieldValue::Id(Some(a.parse().unwrap())));
+}
+
+/// A pending parent edit or move for a node the document no longer shows live (another replica deleted it) is
+/// dropped: a `Set` or `Move` would make a placeholder.
+#[test]
+fn a_pending_link_edit_for_a_node_deleted_elsewhere_is_dropped() {
+    let path = temp_dir("link-dropped").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let g = add(&mut app, NodePayload::Group(GroupPayload::named("G")));
+    let (a, b, c) = (
+        add(&mut app, sleeping_tab("https://a/", "")),
+        add(&mut app, sleeping_tab("https://b/", "")),
+        add(&mut app, sleeping_tab("https://c/", "")),
+    );
+    assert!(app.save_session());
+    let mut other = Journal::open(&path, ActorId(2)).unwrap();
+    let deletes = vec![OpBody::Delete { node: b.parse().unwrap() }, OpBody::Delete { node: c.parse().unwrap() }];
+    other.begin().unwrap().commit(deletes).unwrap();
+    app.edit_parent(&b, Some(a.clone()));
+    app.edit_group(&c, Some(g.clone()));
+    let ops_before = app.journal.as_ref().unwrap().doc().version[&ActorId(1)];
+    assert!(app.save_session());
+    let doc = app.journal.as_ref().unwrap().doc();
+    assert_eq!(doc.version[&ActorId(1)], ops_before, "nothing written");
+    assert!(!doc.nodes[&b.parse().unwrap()].is_live() && !doc.nodes[&c.parse().unwrap()].is_live());
+    assert!(app.pending.is_empty() && app.pending_moves.is_empty());
+}
+
+/// A parked remote value for a waking tab is patched with what the commit wrote: a parent or group the commit
+/// deleted lands as none, not as the dead id.
+#[test]
+fn a_parked_link_is_patched_with_the_resolved_value() {
+    let path = temp_dir("link-parked-gone").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let g = add(&mut app, NodePayload::Group(GroupPayload::named("G")));
+    let (a, b, tab) = (
+        add(&mut app, sleeping_tab("https://a/", "")),
+        add(&mut app, sleeping_tab("https://b/", "")),
+        add(&mut app, sleeping_tab("https://t/", "")),
+    );
+    assert!(app.save_session());
+    app.focus_tab(&tab);
+    assert!(app.spawning.contains_key(&tab), "waking");
+    let mut other = Journal::open(&path, ActorId(2)).unwrap();
+    remote_set(&mut other, &tab, field::PARENT, FieldValue::Id(Some(b.parse().unwrap())));
+    app.edit_parent(&tab, Some(a.clone()));
+    app.edit_group(&tab, Some(g.clone()));
+    app.nodes.remove(&a);
+    app.nodes.remove(&g);
+    assert!(app.save_session());
+    assert!(app.remote_in_flight.contains_key(&tab), "the remote value is parked");
+    assert_eq!(stored(&app, &tab, field::PARENT), FieldValue::Id(None));
+    fail_spawns(&mut app);
+    assert_eq!(app.mirror.parent(&tab), None);
+    assert_eq!(app.mirror.group(&tab), None);
+}
+
+#[test]
+fn a_group_edit_reads_back_and_commits_as_a_move() {
+    let path = temp_dir("group-edit").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let g = add(&mut app, NodePayload::Group(GroupPayload::named("G")));
+    let t = add(&mut app, sleeping_tab("https://t/", ""));
+    assert!(app.save_session());
+    app.edit_group(&t, Some(g.clone()));
+    assert_eq!(app.mirror.group(&t), Some(g.as_str()));
+    assert_eq!(app.journal.as_ref().unwrap().doc().effective_group(t.parse().unwrap()), None);
+    assert!(app.save_session());
+    assert_eq!(app.journal.as_ref().unwrap().doc().effective_group(t.parse().unwrap()), Some(g.parse().unwrap()));
+}
+
+/// A group created in the same commit is the target of a move that follows its Create.
+#[test]
+fn a_move_into_a_group_created_by_the_same_save_follows_the_create() {
+    let path = temp_dir("group-new").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let t = add(&mut app, sleeping_tab("https://t/", ""));
+    assert!(app.save_session());
+    let g = add(&mut app, NodePayload::Group(GroupPayload::named("G")));
+    app.edit_group(&t, Some(g.clone()));
+    assert!(app.save_session());
+    assert_eq!(app.journal.as_ref().unwrap().doc().effective_group(t.parse().unwrap()), Some(g.parse().unwrap()));
+}
+
+/// A move into a group the same commit deletes lands at the top level (spec section 6 item 4).
+#[test]
+fn a_move_into_a_group_deleted_by_the_same_save_is_written_as_none() {
+    let path = temp_dir("group-gone").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let g = add(&mut app, NodePayload::Group(GroupPayload::named("G")));
+    let t = add(&mut app, sleeping_tab("https://t/", ""));
+    assert!(app.save_session());
+    app.edit_group(&t, Some(g.clone()));
+    app.nodes.remove(&g);
+    assert!(app.save_session());
+    assert_eq!(app.journal.as_ref().unwrap().doc().effective_group(t.parse().unwrap()), None);
+    assert_eq!(app.mirror.group(&t), None, "the mirror shows what the commit wrote");
+}
+
+#[test]
+fn a_group_edit_on_a_non_store_id_queues_nothing() {
+    let mut app = App::default();
+    app.edit_group("t", Some("g".into()));
+    assert_eq!(app.mirror.group("t"), Some("g"));
+    assert!(app.pending_moves.is_empty());
+}
+
+/// A later move to a target that isn't a store id drops the earlier queued one.
+#[test]
+fn a_group_edit_to_a_non_store_target_drops_an_earlier_queued_one() {
+    let path = temp_dir("group-stale").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let g = add(&mut app, NodePayload::Group(GroupPayload::named("G")));
+    let t = add(&mut app, sleeping_tab("https://t/", ""));
+    assert!(app.save_session());
+    app.edit_group(&t, Some(g.clone()));
+    app.edit_group(&t, Some("x".into()));
+    assert!(app.pending_moves.is_empty());
+    assert!(app.save_session());
+    assert_eq!(app.journal.as_ref().unwrap().doc().effective_group(t.parse().unwrap()), None);
+}
+
+/// An unsaved local move beats another replica's move of the same node.
+#[test]
+fn a_local_group_move_wins_over_a_remote_one() {
+    let path = temp_dir("group-conflict").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let g1 = add(&mut app, NodePayload::Group(GroupPayload::named("A")));
+    let g2 = add(&mut app, NodePayload::Group(GroupPayload::named("B")));
+    let t = add(&mut app, sleeping_tab("https://t/", ""));
+    assert!(app.save_session());
+    let mut other = Journal::open(&path, ActorId(2)).unwrap();
+    app.edit_group(&t, Some(g1.clone()));
+    other
+        .begin()
+        .unwrap()
+        .commit(vec![OpBody::Move { node: t.parse().unwrap(), group: Some(g2.parse().unwrap()) }])
+        .unwrap();
+    assert!(app.save_session());
+    assert_eq!(app.mirror.group(&t), Some(g1.as_str()));
+    assert_eq!(app.journal.as_ref().unwrap().doc().effective_group(t.parse().unwrap()), Some(g1.parse().unwrap()));
+}
+
+/// Another replica's move reaches the mirror when nothing is pending locally.
+#[test]
+fn a_remote_group_move_reaches_the_mirror() {
+    let path = temp_dir("group-remote").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let g = add(&mut app, NodePayload::Group(GroupPayload::named("G")));
+    let t = add(&mut app, sleeping_tab("https://t/", ""));
+    assert!(app.save_session());
+    let mut other = Journal::open(&path, ActorId(2)).unwrap();
+    let mv = vec![OpBody::Move { node: t.parse().unwrap(), group: Some(g.parse().unwrap()) }];
+    other.begin().unwrap().commit(mv).unwrap();
+    assert!(app.save_session());
+    assert_eq!(app.mirror.group(&t), Some(g.as_str()));
+}
+
+/// A remote move parked for a waking tab must not land over a local move committed after it.
+#[test]
+fn a_committed_move_wins_over_a_remote_move_parked_for_a_waking_tab() {
+    let path = temp_dir("group-parked").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let g1 = add(&mut app, NodePayload::Group(GroupPayload::named("A")));
+    let g2 = add(&mut app, NodePayload::Group(GroupPayload::named("B")));
+    let tab = add(&mut app, sleeping_tab("https://t/", ""));
+    assert!(app.save_session());
+    app.focus_tab(&tab);
+    assert!(app.spawning.contains_key(&tab), "waking");
+    let mut other = Journal::open(&path, ActorId(2)).unwrap();
+    let mv = vec![OpBody::Move { node: tab.parse().unwrap(), group: Some(g2.parse().unwrap()) }];
+    other.begin().unwrap().commit(mv).unwrap();
+    app.edit_group(&tab, Some(g1.clone()));
+    assert!(app.save_session());
+    assert!(app.remote_in_flight.contains_key(&tab), "the remote value is parked");
+    fail_spawns(&mut app);
+    assert_eq!(app.mirror.group(&tab), Some(g1.as_str()));
+    assert_eq!(app.journal.as_ref().unwrap().doc().effective_group(tab.parse().unwrap()), Some(g1.parse().unwrap()));
+}
+
+/// Dissolving a group moves its members up through the writer and the store agrees after a save.
+#[test]
+fn dissolving_a_group_moves_members_up_and_saves() {
+    let path = temp_dir("group-dissolve").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let outer = add(&mut app, NodePayload::Group(GroupPayload::named("O")));
+    let inner = add(&mut app, NodePayload::Group(GroupPayload::named("I")));
+    let t = add(&mut app, sleeping_tab("https://t/", ""));
+    app.edit_group(&inner, Some(outer.clone()));
+    app.edit_group(&t, Some(inner.clone()));
+    assert!(app.save_session());
+    app.dissolve_group_quietly(&inner);
+    assert_eq!(app.mirror.group(&t), Some(outer.as_str()));
+    assert!(app.save_session());
+    assert_eq!(app.journal.as_ref().unwrap().doc().effective_group(t.parse().unwrap()), Some(outer.parse().unwrap()));
 }

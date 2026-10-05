@@ -241,7 +241,7 @@ mod tests {
         use crate::session_sync::tests::{add, app_on};
         let path = store::testutil::temp_dir("closed-entry").join("session.mnf");
         let mut app = app_on(&path, 1);
-        let put_in = |app: &mut App, id: &str, group: &str| app.nodes.get_mut(id).unwrap().group = Some(group.into());
+        let put_in = |app: &mut App, id: &str, group: &str| app.edit_group(id, Some(group.into()));
 
         let outer = add(&mut app, NodePayload::Group(GroupPayload::named("Outer")));
         let note0 = add(&mut app, NodePayload::Note(NotePayload { text: "kept".into(), editing: false, url: None }));

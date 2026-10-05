@@ -201,7 +201,7 @@ impl App {
         // moved, leaves to its group, where its card shows the error and
         // Retry. Its group is never a Json node, so this recurses once.
         if !json.enterable() {
-            let group = self.current_group.as_ref().and_then(|id| self.nodes.get(id)).and_then(|n| n.group.clone());
+            let group = self.group_of(&self.current_group);
             self.switch_group_level(group);
             return;
         }
@@ -531,8 +531,7 @@ mod tests {
             create(&mut app);
             assert_eq!(app.node_order.len(), before + 1);
             assert!(app.json_level.is_none(), "the level was left");
-            let made = &app.nodes[app.node_order.last().unwrap()];
-            assert_eq!(made.group.as_deref(), Some(OUTER));
+            assert_eq!(app.mirror.group(app.node_order.last().unwrap()), Some(OUTER));
         }
     }
 
@@ -554,7 +553,7 @@ mod tests {
         let id = app.place_node(None, note(), at);
         let node = &app.nodes[&id];
         assert_eq!(
-            (node.group.as_deref(), node.pos, app.mirror.parent(&id).is_none()),
+            (app.mirror.group(&id), node.pos, app.mirror.parent(&id).is_none()),
             (Some(OUTER), egui::vec2(1.0, 2.0), true)
         );
         assert_eq!(app.node_order.last(), Some(&id));
@@ -733,7 +732,7 @@ mod tests {
             view: view.clone(),
         };
         app.insert_placeholder_node(J.into(), egui::Vec2::ZERO, NodePayload::Json(payload));
-        app.nodes.get_mut(J).unwrap().group = Some(OUTER.into());
+        app.edit_group(J, Some(OUTER.into()));
         assert!(!app.nodes[J].as_json().unwrap().enterable());
         app.switch_group_level(Some(J.into()));
         assert_eq!(app.current_group.as_deref(), Some(OUTER), "entering leaves for the placeholder's group");
@@ -752,9 +751,9 @@ mod tests {
         app.drop_file(file, egui::pos2(300.0, 300.0));
         assert_eq!(app.current_group.as_deref(), Some(OUTER));
         assert!(app.json_level.is_none());
-        let new: Vec<_> = app.nodes.values().filter(|n| n.as_note().is_some()).collect();
+        let new: Vec<_> = app.nodes.iter().filter(|(_, n)| n.as_note().is_some()).map(|(id, _)| id).collect();
         assert_eq!(new.len(), 1, "the dropped text file is a note");
-        assert_eq!(new[0].group.as_deref(), Some(OUTER));
+        assert_eq!(app.mirror.group(new[0]), Some(OUTER));
     }
 
     #[test]

@@ -11,7 +11,7 @@ impl App {
     /// instead, since `self.focused` (its `parent`) isn't necessarily a
     /// tab inside whichever group's subgraph is currently being viewed.
     pub(crate) fn group_of(&self, id: &Option<String>) -> Option<String> {
-        id.as_ref().and_then(|id| self.nodes.get(id)).and_then(|n| n.group.clone())
+        id.as_deref().filter(|id| self.nodes.contains_key(*id)).and_then(|id| self.mirror.group(id)).map(str::to_owned)
     }
 
     /// `node_order`, filtered to nodes of `kind` at whichever level
@@ -25,9 +25,7 @@ impl App {
     pub(crate) fn nodes_at_current_level(&self, kind: ItemNodeKind) -> Vec<String> {
         self.node_order
             .iter()
-            .filter(|id| {
-                self.nodes.get(*id).is_some_and(|n| n.group == self.current_group && item_node_kind(&n.payload) == kind)
-            })
+            .filter(|id| self.in_level(id) && self.nodes.get(*id).is_some_and(|n| item_node_kind(&n.payload) == kind))
             .cloned()
             .collect()
     }
@@ -37,9 +35,7 @@ impl App {
     pub(crate) fn tabs_at_current_level(&self) -> Vec<String> {
         self.node_order
             .iter()
-            .filter(|id| {
-                self.nodes.get(*id).is_some_and(|n| n.group == self.current_group && n.payload.saved_tab().is_some())
-            })
+            .filter(|id| self.in_level(id) && self.nodes.get(*id).is_some_and(|n| n.payload.saved_tab().is_some()))
             .cloned()
             .collect()
     }
@@ -78,7 +74,7 @@ impl App {
     /// (`switch_group_level` clears it): a later multi-select drag would
     /// otherwise move, or Join would pull back in, a tab no longer shown.
     pub(crate) fn eject(&mut self, id: &str) {
-        remove_from_group(&mut self.nodes, id);
+        self.remove_from_group(id);
         self.selected_tabs.remove(id);
         self.refollow(id);
     }
@@ -102,8 +98,8 @@ impl App {
             Some((DropEffect::Eject, _)) => self.eject(id),
             Some((DropEffect::Join, Some(group))) => {
                 for member in self.take_drag_unit(id) {
-                    if let Some(node) = self.nodes.get_mut(&member) {
-                        node.group = Some(group.clone());
+                    if self.nodes.contains_key(&member) {
+                        self.edit_group(&member, Some(group.clone()));
                     }
                     self.refollow(&member);
                 }
@@ -114,8 +110,8 @@ impl App {
                 self.insert_group_at(group.clone(), Some(pos));
                 let unit = self.take_drag_unit(id);
                 for member in std::iter::once(other).chain(unit) {
-                    if let Some(node) = self.nodes.get_mut(&member) {
-                        node.group = Some(group.clone());
+                    if self.nodes.contains_key(&member) {
+                        self.edit_group(&member, Some(group.clone()));
                     }
                     self.refollow(&member);
                 }
@@ -143,14 +139,11 @@ impl App {
             if cur == source {
                 return;
             }
-            ancestor = self.nodes.get(&cur).and_then(|n| n.group.clone());
+            ancestor = self.nodes.get(&cur).and(self.mirror.group(&cur)).map(str::to_owned);
         }
-        let mut moved = Vec::new();
-        for (id, node) in self.nodes.iter_mut() {
-            if node.group.as_deref() == Some(source) {
-                node.group = Some(target.to_string());
-                moved.push(id.clone());
-            }
+        let moved: Vec<String> = self.members_of(source).map(str::to_owned).collect();
+        for member in &moved {
+            self.edit_group(member, Some(target.to_string()));
         }
         self.nodes.remove(source);
         self.node_order.retain(|g| g != source);
@@ -180,7 +173,7 @@ impl App {
 
     /// Every ancestor above `self.current_group`, root-most first, as
     /// `(id, name)` pairs -- the toolbar's own breadcrumb trail now that
-    /// groups nest. Empty at the true top level. Walks `GraphNode::group`
+    /// groups nest. Empty at the true top level. Walks `Mirror::group`
     /// upward from the current group exactly the way `subtree_ids`/
     /// `dissolve_group` already do to find a single ancestor; this just
     /// collects the whole chain instead of stopping at the first one.
@@ -207,7 +200,7 @@ impl App {
                 NodePayload::Json(json) => download_filename(&json.path).to_string(),
                 _ => String::new(),
             };
-            current = node.group.clone();
+            current = self.mirror.group(&id).map(str::to_owned);
             chain.push((id, name));
         }
         chain.reverse();
@@ -239,21 +232,24 @@ impl App {
     }
 
     /// `root_id` plus every descendant reachable through `parent` links,
-    /// restricted to the same level `root_id` itself is on (`node.group`
+    /// restricted to the same level `root_id` itself is on (its group
     /// must match) -- a descendant that ended up in a different group is
     /// invisible at this level, and would otherwise pull the fit rect
     /// toward an off-screen position. Not the most efficient traversal
     /// (checks every tab per frontier node), but this graph's tab counts
     /// stay small enough that it's not worth a real adjacency structure.
     pub(crate) fn subtree_ids(&self, root_id: &str) -> Vec<String> {
-        let Some(level_group) = self.nodes.get(root_id).map(|n| n.group.clone()) else {
+        if !self.nodes.contains_key(root_id) {
             return Vec::new();
-        };
+        }
+        let level_group = self.mirror.group(root_id);
         let mut result = vec![root_id.to_string()];
         let mut frontier = vec![root_id.to_string()];
         while let Some(current) = frontier.pop() {
-            for (id, node) in &self.nodes {
-                if self.mirror.parent(id) == Some(current.as_str()) && node.group == level_group && !result.contains(id)
+            for id in self.nodes.keys() {
+                if self.mirror.parent(id) == Some(current.as_str())
+                    && self.mirror.group(id) == level_group
+                    && !result.contains(id)
                 {
                     result.push(id.clone());
                     frontier.push(id.clone());
@@ -323,12 +319,8 @@ impl App {
     /// code -- see `debug_control`'s own doc comment -- so headless mode
     /// calls this directly instead).
     pub(crate) fn move_graph_focus(&mut self, dir: egui::Vec2) {
-        let from_at_level = self
-            .focused
-            .as_ref()
-            .filter(|id| self.nodes.get(id.as_str()).is_some_and(|n| n.group == self.current_group))
-            .and_then(|id| self.nodes.get(id))
-            .map(|n| n.pos);
+        let from_at_level =
+            self.focused.as_ref().filter(|id| self.in_level(id)).and_then(|id| self.nodes.get(id)).map(|n| n.pos);
         match from_at_level {
             Some(from) => {
                 if let Some(next) = self.nearest_tab_in_direction(from, dir) {
@@ -348,7 +340,7 @@ impl App {
     /// keyboard navigation, and the headless `GRAPHOPEN` command.
     pub(crate) fn open_focused_graph_node(&mut self) {
         if let Some(id) = self.focused.clone() {
-            let Some(node) = self.nodes.get(&id).filter(|n| n.group == self.current_group) else {
+            let Some(node) = self.nodes.get(&id).filter(|_| self.in_level(&id)) else {
                 return;
             };
             // A crashed focused tab stays focused as its failed card, which
@@ -406,36 +398,28 @@ impl App {
         // one-time burst triggered only when the visible node set actually
         // changes), so this bug affected every settle animation, not a
         // background steady-state cost.
-        let mut positions: HashMap<String, egui::Vec2> = self
-            .nodes
-            .iter()
-            .filter(|(_, n)| n.group == self.current_group)
-            .map(|(id, n)| (id.clone(), n.pos))
-            .collect();
-        let mut velocities: HashMap<String, egui::Vec2> = self
-            .nodes
-            .iter()
-            .filter(|(_, n)| n.group == self.current_group)
-            .map(|(id, n)| (id.clone(), n.vel))
-            .collect();
+        let mut positions: HashMap<String, egui::Vec2> =
+            self.nodes.iter().filter(|(id, _)| self.in_level(id)).map(|(id, n)| (id.clone(), n.pos)).collect();
+        let mut velocities: HashMap<String, egui::Vec2> =
+            self.nodes.iter().filter(|(id, _)| self.in_level(id)).map(|(id, n)| (id.clone(), n.vel)).collect();
         let edges: Vec<(String, String)> = self
             .nodes
             .iter()
-            .filter(|(_, n)| n.group == self.current_group)
+            .filter(|(id, _)| self.in_level(id))
             .filter_map(|(id, _)| self.mirror.parent(id).map(|p| (p.to_owned(), id.clone())))
             .filter(|(p, c)| positions.contains_key(p) && positions.contains_key(c))
             .collect();
         let pinned: HashSet<String> = self
             .nodes
             .iter()
-            .filter(|(id, n)| n.group == self.current_group && self.mirror.pinned(id))
+            .filter(|(id, _)| self.in_level(id) && self.mirror.pinned(id))
             .map(|(id, _)| id.clone())
             .collect();
 
         let sizes: HashMap<String, egui::Vec2> = self
             .nodes
             .iter()
-            .filter(|(_, n)| n.group == self.current_group)
+            .filter(|(id, _)| self.in_level(id))
             .map(|(id, n)| (id.clone(), crate::card::node_card_size(&n.payload)))
             .collect();
 

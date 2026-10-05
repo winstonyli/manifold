@@ -324,9 +324,9 @@ impl App {
                 let name = self.default_group_name();
                 let at = self.placement(&id, Some(pos));
                 self.place_node(Some(id.clone()), NodePayload::Group(GroupPayload::named(name)), at);
-                for tab_id in self.selected_tabs.drain() {
-                    if let Some(node) = self.nodes.get_mut(&tab_id) {
-                        node.group = Some(id.clone());
+                for tab_id in std::mem::take(&mut self.selected_tabs) {
+                    if self.nodes.contains_key(&tab_id) {
+                        self.edit_group(&tab_id, Some(id.clone()));
                     }
                 }
             }
@@ -371,8 +371,7 @@ impl App {
             // handler both use, now that groups nest. Also ends any rename
             // of the group being left.
             GraphAction::LeaveGroup => {
-                let parent =
-                    self.current_group.as_ref().and_then(|id| self.nodes.get(id)).and_then(|n| n.group.clone());
+                let parent = self.group_of(&self.current_group);
                 self.switch_group_level(parent);
                 self.renaming_group = None;
             }
@@ -388,7 +387,7 @@ impl App {
     /// the view toggle): the camera would otherwise keep the old level's
     /// framing and show the new one's nodes off screen.
     pub(crate) fn show_level_of(&mut self, id: &str) {
-        let group = self.nodes.get(id).and_then(|n| n.group.clone());
+        let group = self.nodes.get(id).and(self.mirror.group(id)).map(str::to_owned);
         if group != self.current_group {
             self.switch_group_level(group);
         }
@@ -1653,11 +1652,7 @@ impl App {
 
     /// The current level's cards in creation order: the Tab order.
     fn card_tab_order(&self) -> Vec<String> {
-        self.node_order
-            .iter()
-            .filter(|id| self.nodes.get(*id).is_some_and(|n| n.group == self.current_group))
-            .cloned()
-            .collect()
+        self.node_order.iter().filter(|id| self.nodes.contains_key(*id) && self.in_level(id)).cloned().collect()
     }
 
     /// Tab / Shift+Tab from a focused card moves focus to the next / previous card in `order`
@@ -2164,7 +2159,7 @@ mod tests {
         let (outer, inner) = (app.alloc_node_id(), app.alloc_node_id());
         app.insert_group_at(outer.clone(), None);
         app.insert_group_at(inner.clone(), None);
-        app.nodes.get_mut(&inner).unwrap().group = Some(outer.clone());
+        app.edit_group(&inner, Some(outer.clone()));
         app.nodes.get_mut(&outer).unwrap().as_group_mut().unwrap().name = "x".repeat(30);
         app.nodes.get_mut(&inner).unwrap().as_group_mut().unwrap().name = "Re\u{200B}ading".into();
         app.current_group = Some(inner);

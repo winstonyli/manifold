@@ -913,8 +913,8 @@ impl App {
     pub(crate) fn group_members(&self) -> HashMap<String, Vec<String>> {
         let mut members: HashMap<String, Vec<String>> = HashMap::new();
         for id in &self.node_order {
-            if let Some(group) = self.nodes.get(id).and_then(|n| n.group.as_ref()) {
-                members.entry(group.clone()).or_default().push(id.clone());
+            if let Some(group) = self.nodes.get(id).and(self.mirror.group(id)) {
+                members.entry(group.to_owned()).or_default().push(id.clone());
             }
         }
         members
@@ -931,7 +931,7 @@ impl App {
         Some(CardView {
             kind,
             color: self.mirror.color(id),
-            in_group: node.group.is_some(),
+            in_group: self.mirror.group(id).is_some(),
             overloaded: members.len() > GROUP_OVERLOAD_THRESHOLD,
             members,
             focused: self.focused.as_deref() == Some(id),
@@ -2972,7 +2972,7 @@ mod tests {
         for _ in 0..20 {
             app.new_note_shortcut();
             let id = app.node_order.last().unwrap().clone();
-            app.nodes.get_mut(&id).unwrap().group = Some(g.clone());
+            app.edit_group(&id, Some(g.clone()));
             made.push(id);
         }
         assert_eq!(app.group_members()[&g], made);

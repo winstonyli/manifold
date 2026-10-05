@@ -96,9 +96,10 @@ impl App {
         }
         self.nodes
             .iter()
-            .filter(|(_, node)| node.group == self.current_group)
+            .filter(|(id, _)| self.in_level(id))
             .filter_map(|(id, node)| {
-                let parent = self.nodes.get(self.mirror.parent(id)?).filter(|p| p.group == self.current_group)?;
+                let parent_id = self.mirror.parent(id)?;
+                let parent = self.nodes.get(parent_id).filter(|_| self.in_level(parent_id))?;
                 Some(LevelEdge {
                     from: parent.pos.to_pos2(),
                     to: node.pos.to_pos2(),
@@ -128,7 +129,7 @@ impl App {
     /// before the first frame builds the level (plan ruling 3).
     pub(crate) fn insertion_group(&self) -> Option<String> {
         if self.current_json_node().is_some() {
-            return self.current_group.as_ref().and_then(|id| self.nodes.get(id)).and_then(|n| n.group.clone());
+            return self.group_of(&self.current_group);
         }
         self.current_group.clone()
     }
@@ -159,7 +160,7 @@ mod tests {
         app.insert_placeholder_node("g".into(), egui::vec2(0.0, 0.0), group("G"));
         app.insert_placeholder_node("d".into(), egui::vec2(300.0, 0.0), download("a.bin"));
         app.insert_placeholder_node("inner".into(), egui::vec2(0.0, 0.0), download("b.bin"));
-        app.nodes.get_mut("inner").unwrap().group = Some("g".into());
+        app.edit_group("inner", Some("g".into()));
 
         let top: Vec<(String, LevelItemKind)> = app.level_items().into_iter().map(|i| (i.id, i.kind)).collect();
         // Downloads draw before groups (`GRAPH_DRAW_ORDER`), whatever the insertion order.
@@ -195,7 +196,7 @@ mod tests {
         app.insert_placeholder_node("elsewhere".into(), egui::vec2(9.0, 9.0), download("e.bin"));
         app.edit_parent("c", Some("p".into()));
         app.edit_parent("elsewhere", Some("p".into()));
-        app.nodes.get_mut("elsewhere").unwrap().group = Some("other".into());
+        app.edit_group("elsewhere", Some("other".into()));
 
         let edges = app.level_edges();
         assert_eq!(edges.len(), 1);
