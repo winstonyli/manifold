@@ -31,24 +31,11 @@ pub(crate) const MAX_CLOSED: usize = 20;
 /// worth keeping in a `ClosedEntry`. `false` for a completed download (it
 /// has no closed state -- starting it over isn't "reopening") and a blank
 /// note (nothing to restore); everything else -- tabs, groups, images,
-/// PDFs, JSON files and leaves -- is.
+/// PDFs, JSON files and leaves -- is. The capability rows in
+/// `caps/rows.rs` decide.
 pub(crate) fn worth_reopening(kind: store::model::Kind, fields: &session_sync::Fields) -> bool {
-    match kind {
-        store::model::Kind::Download | store::model::Kind::Jar => false,
-        store::model::Kind::Note => match fields.get(&field::TEXT) {
-            Some(store::model::FieldValue::Str(text)) => !text.trim().is_empty(),
-            _ => false,
-        },
-        store::model::Kind::Tab
-        | store::model::Kind::Group
-        | store::model::Kind::Image
-        | store::model::Kind::Pdf
-        | store::model::Kind::Json
-        | store::model::Kind::JsonLeaf => true,
-        // A kind this build can't show (and `node_json` can't name) isn't
-        // reopenable.
-        store::model::Kind::Unknown(_) => false,
-    }
+    let (mime, tags) = crate::caps::bridge::store_node(kind, fields);
+    crate::caps::registry().caps(mime, tags).restorable
 }
 
 /// Every node under `root` at any depth, in `order`, each group visited
@@ -324,6 +311,29 @@ mod tests {
     #[test]
     fn an_unknown_kind_is_not_worth_reopening() {
         assert!(!worth_reopening(store::model::Kind::Unknown(99), &Default::default()));
+    }
+
+    #[test]
+    fn worth_reopening_is_what_it_was_for_every_kind() {
+        use store::model::{FieldValue, Kind};
+        let text = |s: &str| session_sync::Fields::from([(field::TEXT, FieldValue::Str(s.into()))]);
+        let none = session_sync::Fields::new();
+        for (kind, fields, want) in [
+            (Kind::Tab, &none, true),
+            (Kind::Group, &none, true),
+            (Kind::Image, &none, true),
+            (Kind::Pdf, &none, true),
+            (Kind::Json, &none, true),
+            (Kind::JsonLeaf, &none, true),
+            (Kind::Download, &none, false),
+            (Kind::Jar, &none, false),
+            (Kind::Unknown(99), &none, false),
+            (Kind::Note, &text("hi"), true),
+            (Kind::Note, &text("  \n"), false),
+            (Kind::Note, &none, false),
+        ] {
+            assert_eq!(worth_reopening(kind, fields), want, "{kind:?}");
+        }
     }
 
     #[test]
