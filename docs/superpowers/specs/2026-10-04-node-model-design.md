@@ -232,12 +232,14 @@ leaves the app working:
    - **2a, store and journal:** `type` string in the journal replaces the numeric kind code, `Create` drops its `kind`
      slot (section 6 items 1, 9), unknown types show as a generic card. The app's live model is unchanged; the sync
      layer maps enum to type string at its edge.
-   - **2b, sync by ops:** verbs and sync write ops directly; `diff`, `explicit`, `keep` and `FieldDef.explicit` go
-     (item 10). `NodePayload` stays for now.
-   - **2c, live state is the node:** document node plus runtime side-table replaces `NodePayload`, `ItemNodeKind`,
-     `ContentKind` and `LevelItemKind`; the caps bridge is deleted; fixtures (`seed.json`, smoke and drive scripts,
-     README, first-launch demo) are rewritten; a grep-guard test, in the style of the `APPDATA` guard in
-     `profile::tests`, fails if any source still names the old enums (items 2, 3, 6, 7).
+   - **2b, live state is the node, and sync by ops (2b and 2c merged 2026-10-05):** document node plus runtime
+     side-table replaces `NodePayload`, `ItemNodeKind`, `ContentKind` and `LevelItemKind`; mutation sites write ops
+     directly, and `diff`, `explicit`, `keep` and `FieldDef.explicit` go (items 6, 10); the caps bridge is deleted;
+     fixtures (`seed.json`, smoke and drive scripts, README, first-launch demo) are rewritten; a grep-guard test, in
+     the style of the `APPDATA` guard in `profile::tests`, fails if any source still names the old enums (items 2, 3,
+     7). Split from the separate "sync by ops" plan because the sync map (`2026-10-05-sync-flow-map.md`: about 60
+     mutation sites in 20 files) shows that emitting ops while `NodePayload` still exists would rewrite every site
+     twice. Staged inside the plan by field group, each stage leaving the app working.
 3. **Plan 3, generic verbs and history.** Selection, pin, rename, duplicate and connect over any node (edit the rows);
    the `closed` field (`is_live`, `Doc::shown`, the closed-aware `effective_group`, compaction and pruning keep closed
    nodes, content-file ownership and local per-node state keep closed ids); transaction history replacing
