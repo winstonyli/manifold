@@ -203,3 +203,36 @@ Rulings and Outcome; they all still hold). Survey this plan was written from (gi
   nothing else visible.
 - **Unverified at writing:** survey grep counts; whether `Row.fields` is worth adopting in Task 4; the exact list of
   create funnels beyond those found; ItemNodeKind and ContentKind sites were not read.
+
+## Outcome (2026-10-06)
+
+Done on `dev`: f032489 and 4b57c18 (Task 1: group, leaf and content fields in the mirror; the second reconciles a created
+group's DEFAULT_JAR into the mirror), 0bdf7d3 and 6052e43 (Task 2: jars in the mirror with the `JarDef` cache; the second
+adds the ephemeral first-sighting and pending-toggle tests), 4b928c3 (Task 3: creates and deletes are queued ops; `diff`,
+`explicit`, `keep` gone), 05d31cc (Task 4: `last_shared`, `shared_nodes`, `Shared`, `kind_fields`, `MIRRORED` gone;
+`mirror_remote` returns changed fields; resurrection guard); plus this docs commit. 869 tests at Task 4.
+Gate on 05d31cc: see ledger.
+
+### Rulings and deviations
+
+- **Ruling 7 deviation:** jar readers moved to `self.mirror.jar_defs()`; `App.jar_defs` is gone.
+- **Behavior change besides Ruling 6:** an unsaved local jar rename or ephemeral change now beats a remote one (the remote
+  value is compared against the mirror, not `last_shared`).
+- **Ruling 4 text** said "queued and live"; the shipped delete filter is plain "queued and doc-live". Task 3 had an extra
+  "not shown" clause; Task 4 added the resurrection guard in `materialize` and removed it.
+- **Ruling 9 interpretation:** `materialize_jar` keeps its own `jar_defs`-based ephemeral comparison and runs before
+  `mirror_remote`; the guard is the pending delete.
+
+### Parked (not fixed)
+
+- TYPE is canonical, not raw: `Kind::from_type` maps `image/*` to Image. Flag for 2b-6, before readers of the raw string exist.
+- Recently Closed now also records group members whose spawn is in flight (the snapshot falls back to `spawning`). An
+  improvement, untested.
+- The direct test of containment by type string (only `TYPE_GROUP` accepts CONTAINS) was dropped with `is_container_store`.
+- A failed download stays in `pending_creates` for the run; harmless.
+- `LiveUrl.from` is now the mirror url, so an unsaved tab records a live_url and an unsaved `edit_url` does not.
+- `pending_deletes` never clears on a read-only store (matches the old jar guard).
+- Two-instance flakes: scenario 4 (link click) and scenario 7 (script navigation) each failed once on a 15 s page-load wait
+  under CPU load of 39-77% on commit 4b928c3, and passed on rerun; no create or delete path is involved.
+- Step 3 (a two-instance scenario for jar rename and default jar) was not done.
+- The commit trailer of 05d31cc says "Fable 5.1"; left as is.

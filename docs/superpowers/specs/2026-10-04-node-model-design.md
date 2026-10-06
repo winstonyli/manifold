@@ -262,8 +262,11 @@ leaves the app working:
      mirror; layout pos/vel in `App::layout`), text, view and name live in the mirror; `explicit` has no users (`mark`
      is dead code). A note's text is held while it is typed in and resolved at blur; a group's name and a Json node's
      view are no longer on the payload (`GroupPayload::name`, `JsonPayload::view` deleted). Jar names stay diffed.
-     Next: 2b-5 (content kinds, then delete `diff`, `explicit`, `keep`, the enums and the caps bridge, rewrite
-     fixtures, add the grep guard).
+     2b-5 done: f032489 and 4b57c18 (group, leaf and content fields), 0bdf7d3 and 6052e43 (jars), 4b928c3 (creates
+     and deletes), 05d31cc (`last_shared`, `shared_nodes`). Every stored field is mirror state; creates and deletes
+     are queued ops; `diff`, `explicit`, `keep`, `last_shared` (and `Shared`, `shared_nodes`, `kind_fields`,
+     `MIRRORED`) are gone.
+     Next: 2b-6 (enums to type + runtime table, caps bridge, EXPORTSTATE/scripts, grep guard).
 3. **Plan 3, generic verbs and history.** Selection, pin, rename, duplicate and connect over any node (edit the rows);
    the `closed` field (`is_live`, `Doc::shown`, the closed-aware `effective_group`, compaction and pruning keep closed
    nodes, content-file ownership and local per-node state keep closed ids); transaction history replacing
