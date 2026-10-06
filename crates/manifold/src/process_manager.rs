@@ -1320,7 +1320,7 @@ pub fn spawn_tab(
 
 /// Generous upper bound for a cold WSL2 VM boot + Xvfb readiness + GTK/
 /// WebKit init, not a tuned-tight value — see `accept_remote`'s doc comment
-/// for why this exists at all. Failing loudly (a `tab_spawn_error` the user
+/// for why this exists at all. Failing loudly (a failed card the user
 /// can see and retry) well within a minute beats an unbounded app freeze.
 const WEBKIT_CONNECT_TIMEOUT: Duration = Duration::from_secs(45);
 

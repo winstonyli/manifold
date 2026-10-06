@@ -445,10 +445,7 @@ impl App {
 
         if self.nodes.is_empty() {
             ui.centered_and_justified(|ui| {
-                match &self.tab_spawn_error {
-                    Some(err) => ui.colored_label(DANGER_COLOR, format!("{err}\nClick \"+ New Tab\" to try again.")),
-                    None => ui.label("No tabs. Click \"+ New Tab\" to start browsing."),
-                };
+                ui.label("No tabs. Click \"+ New Tab\" to start browsing.");
             });
             for action in actions {
                 self.apply_graph_action(ui.ctx(), action);
@@ -815,7 +812,6 @@ impl App {
                 if !on_json_level {
                     self.toolbar_selection(ui, &mut actions);
                 }
-                self.toolbar_spawn_error(ui);
                 shortcuts_help_button_rect = Some(self.render_universal_chip(ui));
             });
         });
@@ -1088,25 +1084,6 @@ impl App {
             }
             if ui.button(format!("Close Selected ({})", self.selected_tabs.len())).clicked() {
                 actions.push(GraphAction::CloseSelected);
-            }
-        }
-    }
-
-    /// The last tab-spawn error with its dismiss button.
-    fn toolbar_spawn_error(&mut self, ui: &mut egui::Ui) {
-        // Cloned rather than borrowed -- `self.tab_spawn_error =
-        // None` below needs `&mut self`, which a live `&String`
-        // borrow from `self.tab_spawn_error` would conflict
-        // with; this only ever clones a short error string, and
-        // only while one is actually being shown.
-        if let Some(err) = self.tab_spawn_error.clone() {
-            ui.colored_label(DANGER_COLOR, &err);
-            // No dismiss before this -- an error already easy to
-            // miss in a packed row (now scrollable, see the
-            // `ScrollArea` above) had no way to clear itself
-            // short of a new spawn attempt overwriting it.
-            if ui.button(egui_phosphor::light::X).on_hover_text("Dismiss").clicked() {
-                self.tab_spawn_error = None;
             }
         }
     }

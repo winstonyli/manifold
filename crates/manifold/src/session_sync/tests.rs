@@ -300,28 +300,48 @@ fn is_inside(model: &BTreeMap<String, (Kind, Option<String>)>, node: &str, ances
     false
 }
 
-/// A Root/New/Split spawn that fails after a save created its tab (`spawning`) deletes it: the failed card branch
-/// is only for a tab that exists. One that fails before any save was never in the document, and the queues are
-/// left empty either way.
+/// A Root/New spawn that fails keeps its place as a failed card, in the document whether or not a save had created
+/// it while in flight; Split, whose pane is not a card, is deleted and only toasts.
 #[test]
-fn a_failed_new_spawn_is_deleted_if_its_create_committed() {
-    let mut app = app_on(&temp_dir("failed-new-spawn").join("session.mnf"), 1);
-    let saved = app.spawn_tab_at("https://a/", egui::Vec2::ZERO, None, None);
-    assert!(app.save_session());
-    assert!(live_in_doc(&app, &saved), "created while in flight");
-    fail_spawns(&mut app);
-    assert!(app.tab_spawn_error.is_some());
-    let doc = app.journal.as_ref().unwrap().doc();
-    assert!(!doc.nodes[&saved.parse().unwrap()].is_live(), "deleted by the failure's save");
-    assert!(app.pending_creates.is_empty() && app.pending_deletes.is_empty());
+fn a_failed_new_spawn_leaves_a_failed_card() {
+    for saved_first in [true, false] {
+        let mut app = app_on(&temp_dir("failed-new-spawn").join("session.mnf"), 1);
+        let id = app.spawn_tab_at("https://a/", egui::Vec2::ZERO, None, None);
+        if saved_first {
+            assert!(app.save_session());
+            assert!(live_in_doc(&app, &id), "created while in flight");
+        }
+        fail_spawns(&mut app);
+        let tab = app.nodes[&id].as_unloaded().expect("a failed card");
+        assert!(matches!(tab.state, UnloadedState::Failed(_)), "saved_first={saved_first}");
+        assert_eq!(tab.url, "https://a/");
+        assert_eq!(app.card_kind(&id).map(|kind| kind.ty), Some(crate::store::model::TYPE_TAB));
+        assert!(live_in_doc(&app, &id), "persisted, saved_first={saved_first}");
+        assert!(app.pending_creates.is_empty() && app.pending_deletes.is_empty());
+    }
+}
 
-    let mut app = app_on(&temp_dir("failed-new-spawn-unsaved").join("session.mnf"), 1);
-    let unsaved = app.spawn_tab_at("https://b/", egui::Vec2::ZERO, None, None);
+/// A failed Root also leaves the app in Graph view (success does), so the card is seen.
+#[test]
+fn a_failed_root_spawn_shows_its_card_in_graph_view() {
+    let mut app = app_on(&temp_dir("failed-root-spawn").join("session.mnf"), 1);
+    assert_eq!(app.view_mode, ViewMode::Item, "the app starts in Item view");
+    app.spawn_root_tab();
     fail_spawns(&mut app);
-    assert!(app.tab_spawn_error.is_some());
-    let doc = app.journal.as_ref().unwrap().doc();
-    assert!(!doc.nodes.contains_key(&unsaved.parse().unwrap()), "never created");
-    assert!(app.pending_creates.is_empty() && app.pending_deletes.is_empty());
+    assert_eq!(app.nodes.len(), 1);
+    assert_eq!(app.view_mode, ViewMode::Graph);
+}
+
+/// A failed Split makes no card: its node is deleted, and the failure only toasts.
+#[test]
+fn a_failed_split_spawn_toasts_and_makes_no_card() {
+    let mut app = app_on(&temp_dir("failed-split-spawn").join("session.mnf"), 1);
+    let id = app.spawn_new_tab_with_kind(None, None, "https://s/", crate::EngineKind::Servo, SpawnPurpose::Split, None);
+    assert!(app.save_session());
+    fail_spawns(&mut app);
+    assert!(!app.nodes.contains_key(&id), "no card for a split pane");
+    assert!(!live_in_doc(&app, &id), "deleted by the failure's save");
+    assert!(app.save_toast_queue.iter().any(|toast| toast.contains("Couldn't start split view")));
 }
 
 /// Open Session: the replaced session's nodes of every kind are deleted from the document; its jars stay (they

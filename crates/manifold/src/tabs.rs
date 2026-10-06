@@ -110,7 +110,6 @@ impl App {
     pub(crate) fn spawn_root_tab(&mut self) {
         let id = self.alloc_node_id();
         let home_page = self.settings.home_page.clone();
-        self.tab_spawn_error = None;
         let kind = self.settings.default_starting_engine;
         let zoom = self.settings.zoom_factor;
         self.spawn_tab_async(TabSpawn::new(id, home_page, kind, egui::Vec2::ZERO, SpawnPurpose::Root, zoom));
@@ -338,7 +337,7 @@ impl App {
     }
 
     /// Applies a finished `spawn_tab_async` call — inserts the new tab node
-    /// (or records `tab_spawn_error`), with per-`SpawnPurpose` follow-up
+    /// (or leaves a failed card, or toasts for a split), with per-`SpawnPurpose` follow-up
     /// matching what `spawn_root_tab`/`spawn_new_tab`/`respawn_tab` used to
     /// do synchronously right after `process_manager::spawn_tab` returned.
     /// Focus/visibility for `Respawn` is decided here, at completion time —
@@ -557,10 +556,10 @@ impl App {
                     self.respawn_tab(spawn);
                     return;
                 }
-                // A tab that already existed (a crash restart, a restored
-                // session or group, a retry) keeps its place as a failed
-                // card rather than disappearing; see `UnloadedTabPayload`.
-                if matches!(purpose, SpawnPurpose::Respawn | SpawnPurpose::Restore | SpawnPurpose::Wake) {
+                // A tab keeps its place as a failed card rather than disappearing (see `UnloadedTabPayload`):
+                // one that already existed (a crash restart, a restored session or group, a retry) and one just
+                // asked for (Root, New). A split's secondary pane is not a card (`App::split_tab`).
+                if !matches!(purpose, SpawnPurpose::Split) {
                     // "Couldn't start Blink (CEF): Blink (CEF) is not installed" says it twice.
                     let toast = match err {
                         process_manager::SpawnError::EngineMissing(_)
@@ -587,21 +586,15 @@ impl App {
                         self.node_order.push(id.clone());
                     }
                     self.apply_pending_local(&id);
+                    if matches!(purpose, SpawnPurpose::Root) {
+                        // Success switches to Graph view; the failed card must be seen too.
+                        self.view_mode = ViewMode::Graph;
+                    }
                     self.land_remote_in_flight(&id, remote);
                     self.save_session();
                     return;
                 }
-                self.tab_spawn_error = Some(match purpose {
-                    SpawnPurpose::Root => format!("Couldn't start a browser tab: {err}"),
-                    SpawnPurpose::New => format!("Couldn't start a new tab: {err}"),
-                    SpawnPurpose::Split => format!("Couldn't start split view: {err}"),
-                    SpawnPurpose::Respawn => format!("Couldn't restart tab: {err}"),
-                    SpawnPurpose::Restore => format!("Couldn't restore tab: {err}"),
-                    // Unreachable in practice: a wake's failure always
-                    // takes the failed-card branch above (the tab already
-                    // exists), but the match must stay exhaustive.
-                    SpawnPurpose::Wake => format!("Couldn't load tab: {err}"),
-                });
+                self.queue_toast(format!("Couldn't start split view: {err}"));
                 // A save while it was in flight may have created it
                 // (`spawning`); it's gone now (Ruling 4). One never
                 // created is just forgotten.
@@ -688,7 +681,6 @@ impl App {
             .or_else(|| self.nodes.keys().map(String::as_str).find(|id| in_group(id)))
             .map_or(egui::Vec2::ZERO, |id| self.layout_pos(id));
         let pos = parent_pos + graph_layout::spawn_jitter(&id);
-        self.tab_spawn_error = None;
         let spawn = TabSpawn::new(id.clone(), url.to_string(), kind, pos, purpose, self.settings.zoom_factor);
         let jar = jar.unwrap_or_else(|| self.new_tab_jar(group.as_deref()));
         self.spawn_tab_async(TabSpawn { parent, group, jar, ..spawn });
@@ -1225,9 +1217,6 @@ impl App {
     ) -> String {
         let id = self.alloc_node_id();
         let (kind, zoom) = (self.settings.default_starting_engine, self.settings.zoom_factor);
-        // Cleared at the start of this spawn attempt too -- see
-        // `tab_spawn_error`'s own doc comment.
-        self.tab_spawn_error = None;
         let spawn = TabSpawn::new(id.clone(), url.to_string(), kind, pos, SpawnPurpose::New, zoom);
         let jar = self.new_tab_jar(group.as_deref());
         self.spawn_tab_async(TabSpawn { group, parent, jar, ..spawn });

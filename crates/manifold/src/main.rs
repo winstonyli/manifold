@@ -1382,15 +1382,6 @@ struct App {
     /// The Home page field's text while it's being edited; Escape drops it (`build_settings_page`).
     home_page_draft: Option<String>,
 
-    /// Set when `spawn_root_tab`/`spawn_new_tab` fails (e.g. a stale
-    /// engine-host from a previous crashed run still holding the tab's
-    /// named pipe). Without this, a failed spawn left `tabs` empty and the
-    /// user saw the ordinary "No tabs" Graph view with no indication
-    /// anything had gone wrong — see `build_graph_ui`. Cleared at the start
-    /// of the next spawn attempt so a retry doesn't leave a stale message
-    /// on screen.
-    tab_spawn_error: Option<String>,
-
     /// User-configurable defaults (search engine, starting engine, zoom,
     /// home page), loaded once at startup and persisted to
     /// `%APPDATA%\manifold\settings.json` on every change — see
@@ -1645,7 +1636,6 @@ impl Default for App {
             cef_dir_check: Default::default(),
             cef_dir_draft: None,
             home_page_draft: None,
-            tab_spawn_error: None,
             settings,
             settings_return_view: ViewMode::Item,
             bookmarks,
