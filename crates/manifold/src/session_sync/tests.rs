@@ -650,7 +650,8 @@ fn a_remote_text_change_is_held_while_the_note_is_typed_in() {
 }
 
 /// Ruling 7, a commit between: text a save already committed is older than a remote change held after it, so with
-/// nothing typed since, the held value applies at the blur. A remote change the save's own commit overwrote is dropped.
+/// nothing typed since, the held value applies at the blur. A remote change that arrives while a typed edit is
+/// pending loses to it, as any pending edit wins.
 #[test]
 fn a_held_text_change_follows_the_order_of_the_commits() {
     let path = temp_dir("text-held-order").join("session.mnf");
@@ -658,12 +659,13 @@ fn a_held_text_change_follows_the_order_of_the_commits() {
     let note = add(&mut app, NodePayload::Note(NotePayload { text: "v1".into(), editing: false, url: None }));
     assert!(app.save_session());
     let mut other = Journal::open(&path, ActorId(2)).unwrap();
-    // Typed, then their change, then a save: it applies theirs (held), then commits ours over it.
+    // Typed, then their change, then a save: the save queues ours first (`commit_note_buffers`), so theirs is held
+    // behind that pending edit, never remembered in `held_text`, and ours commits over it.
     type_into(&mut app, &note, "mine");
     remote_set(&mut other, &note, field::TEXT, FieldValue::Str("before".into()));
     assert!(app.save_session());
     assert_eq!(stored(&app, &note, field::TEXT), FieldValue::Str("mine".into()));
-    assert!(app.held_text.is_empty(), "the commit came after theirs");
+    assert!(app.held_text.is_empty(), "held behind the pending edit, not remembered");
     // Their change after that commit, nothing typed since: theirs applies at the blur.
     remote_set(&mut other, &note, field::TEXT, FieldValue::Str("after".into()));
     assert!(app.save_session());
@@ -671,6 +673,28 @@ fn a_held_text_change_follows_the_order_of_the_commits() {
     app.blur_note(&note);
     assert_eq!((app.mirror.text(&note), buffer(&app, &note).as_str()), ("after", "after"));
     assert_eq!(stored(&app, &note, field::TEXT), FieldValue::Str("after".into()));
+}
+
+/// Ruling 7: a remote text held while the note is typed in is older than a local commit that follows it, so that
+/// commit drops it (`save_session`), and the blur keeps what was typed.
+#[test]
+fn a_held_remote_text_is_dropped_by_a_later_local_commit() {
+    let path = temp_dir("text-held-dropped").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let note = add(&mut app, NodePayload::Note(NotePayload { text: "v1".into(), editing: false, url: None }));
+    assert!(app.save_session());
+    let mut other = Journal::open(&path, ActorId(2)).unwrap();
+    type_into(&mut app, &note, "v1");
+    remote_set(&mut other, &note, field::TEXT, FieldValue::Str("theirs".into()));
+    assert!(app.save_session());
+    assert_eq!(app.held_text.get(&note).map(String::as_str), Some("theirs"), "held, nothing typed yet");
+    type_into(&mut app, &note, "mine");
+    assert!(app.save_session());
+    assert_eq!(stored(&app, &note, field::TEXT), FieldValue::Str("mine".into()));
+    assert!(app.held_text.is_empty(), "the commit came after theirs");
+    app.blur_note(&note);
+    assert_eq!((app.mirror.text(&note), buffer(&app, &note).as_str()), ("mine", "mine"));
+    assert_eq!(stored(&app, &note, field::TEXT), FieldValue::Str("mine".into()));
 }
 
 /// As before 2b-4: a note nobody is typing in shows another replica's text at once.
