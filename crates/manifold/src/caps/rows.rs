@@ -8,11 +8,12 @@ pub(crate) struct Row {
     pattern: Pattern,
     requires: TagSet,
     restorable: Option<bool>,
+    draw_layer: Option<u8>,
 }
 
 impl Row {
     pub(crate) fn new(pattern: &str) -> Row {
-        Row { pattern: Pattern::parse(pattern), requires: TagSet::EMPTY, restorable: None }
+        Row { pattern: Pattern::parse(pattern), requires: TagSet::EMPTY, restorable: None, draw_layer: None }
     }
 
     pub(crate) fn requires(mut self, tags: &[Tag]) -> Row {
@@ -22,6 +23,11 @@ impl Row {
 
     pub(crate) fn restorable(mut self, restorable: bool) -> Row {
         self.restorable = Some(restorable);
+        self
+    }
+
+    pub(crate) fn draw_layer(mut self, layer: u8) -> Row {
+        self.draw_layer = Some(layer);
         self
     }
 
@@ -35,6 +41,8 @@ impl Row {
 pub(crate) struct Caps {
     /// Closing it is recorded, so Recently Closed can reopen it.
     pub(crate) restorable: bool,
+    /// Where its card draws in Graph view: 0 first, so a higher layer draws, and takes the pointer, on top.
+    pub(crate) draw_layer: u8,
 }
 
 #[derive(Debug, Default)]
@@ -67,6 +75,9 @@ impl Registry {
             if let Some(restorable) = row.restorable {
                 caps.restorable = restorable;
             }
+            if let Some(layer) = row.draw_layer {
+                caps.draw_layer = layer;
+            }
         }
         caps
     }
@@ -75,17 +86,19 @@ impl Registry {
 /// What today's `worth_reopening` decided per kind: only a completed download, a jar, a blank note and an unknown kind
 /// are not recorded when closed.
 pub(crate) fn builtin_rows() -> Vec<Row> {
-    use crate::store::model::{TYPE_GROUP, TYPE_JSON_LEAF, TYPE_NOTE, TYPE_TAB};
+    use crate::store::model::{TYPE_DOWNLOAD, TYPE_GROUP, TYPE_JSON_LEAF, TYPE_NOTE, TYPE_TAB};
     vec![
-        Row::new("*/*").restorable(false),
-        Row::new(TYPE_TAB).restorable(true),
-        Row::new(TYPE_GROUP).restorable(true),
-        Row::new("image/*").restorable(true),
-        Row::new("application/pdf").restorable(true),
-        Row::new("application/json").restorable(true),
-        Row::new(TYPE_JSON_LEAF).restorable(true),
-        Row::new(TYPE_NOTE).restorable(true),
+        Row::new("*/*").restorable(false).draw_layer(0),
+        Row::new(TYPE_TAB).restorable(true).draw_layer(1), // a sleeping tab; a loaded one draws under it
+        Row::new(TYPE_TAB).requires(&[Tag::Loaded]).draw_layer(0),
+        Row::new(TYPE_GROUP).restorable(true).draw_layer(7),
+        Row::new("image/*").restorable(true).draw_layer(4),
+        Row::new("application/pdf").restorable(true).draw_layer(5),
+        Row::new("application/json").restorable(true).draw_layer(6),
+        Row::new(TYPE_JSON_LEAF).restorable(true).draw_layer(6),
+        Row::new(TYPE_NOTE).restorable(true).draw_layer(3),
         Row::new(TYPE_NOTE).requires(&[Tag::Blank]).restorable(false),
+        Row::new(TYPE_DOWNLOAD).draw_layer(2), // a download
     ]
 }
 

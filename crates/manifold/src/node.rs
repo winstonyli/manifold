@@ -540,6 +540,17 @@ impl App {
 pub(crate) struct GroupPayload {}
 
 #[cfg(test)]
+impl App {
+    /// Places a node `id` showing `runtime`, typed as `kind` (its `TYPE` in the mirror), at the origin, as
+    /// `insert_placeholder_node` would. For tests that need a node of a given type.
+    pub(crate) fn test_node(&mut self, id: &str, kind: crate::store::model::Kind, runtime: NodePayload) {
+        self.insert_placeholder_node(id.to_owned(), egui::Vec2::ZERO, runtime);
+        let ty = kind.type_str().unwrap_or_default().to_owned();
+        self.mirror.set(id, crate::store::model::field::TYPE, FieldValue::Str(ty));
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
