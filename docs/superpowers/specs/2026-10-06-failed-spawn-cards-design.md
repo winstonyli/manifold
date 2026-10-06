@@ -29,7 +29,8 @@ node, and the empty state, the error display and the toast path all change.
    retries exactly that, so merging cards would need a new node kind that holds a list. Before creating a failed card,
    find a failed card with the same (url, engine, group) and refresh its error text and re-toast instead of adding one.
    A different url is a different intent and gets its own card.
-5. **Success clears matching failed cards.** When a spawn of a url succeeds, failed cards with the same url (any
+5. **Success clears matching failed cards.** When a Root or New spawn of a url succeeds (a fresh attempt; Respawn,
+   Restore and Wake landings are existing tabs, not new intent, and clear nothing), failed cards with the same url (any
    engine) are removed through the normal delete queue (`queue_delete`). A card for another url stays. A failure on
    another engine for that url is still informative and is not cleared by a success on a different url.
 6. **Failure toasts are coalesced by cause, not by node.** Failures with the same cause (engine and error text) inside
