@@ -551,7 +551,7 @@ mod tests {
     #[test]
     fn place_node_inserts_at_the_placement_and_returns_the_id() {
         let (mut app, _) = app_with_json("place_node", "[1]");
-        let note = || NodePayload::Note(NotePayload { text: String::new(), editing: false });
+        let note = || Runtime::Note(NotePayload { text: String::new(), editing: false });
         let at = Placement { group: Some(OUTER.into()), pos: egui::vec2(1.0, 2.0) };
         let id = app.place_node(None, note(), at);
         assert_eq!(
@@ -755,7 +755,7 @@ mod tests {
             leaf: false,
             error: None,
         };
-        app.insert_placeholder_node(J.into(), egui::Vec2::ZERO, NodePayload::Json(payload));
+        app.insert_placeholder_node(J.into(), egui::Vec2::ZERO, Runtime::Json(payload));
         let url = crate::store::model::FieldValue::Str("https://x.test/j".into());
         app.mirror.set(J, crate::store::model::field::URL, url);
         app.edit_group(J, Some(OUTER.into()));

@@ -67,7 +67,7 @@ impl App {
     /// pos, text and stored path (2b-5 Ruling 5). A content node's web source is seeded by its caller
     /// (`insert_content`, `insert_download_node`).
     /// Doesn't save: the caller does, as `apply_graph_action` does once per action.
-    pub(crate) fn place_node(&mut self, id: Option<String>, payload: NodePayload, at: Placement) -> String {
+    pub(crate) fn place_node(&mut self, id: Option<String>, payload: Runtime, at: Placement) -> String {
         let id = id.unwrap_or_else(|| self.alloc_node_id());
         // A tab's shared url starts as the one it is shown at (2b-3 Ruling 10). A stored tab's entry already holds
         // the document's (`materialize` runs `mirror_remote` first), so a live url it reopens at isn't taken for it.
@@ -78,7 +78,7 @@ impl App {
         let text = payload.as_note().map(|n| n.text.clone()).unwrap_or_default();
         let ty = payload.store_kind().type_str().unwrap_or_default().to_owned();
         let path = payload.file_path().unwrap_or_default().to_owned();
-        self.nodes.insert(id.clone(), GraphNode { payload });
+        self.nodes.insert(id.clone(), GraphNode { runtime: payload });
         // The one way a node enters `nodes`: the next save creates it if the document lacks it (Ruling 3).
         self.queue_create(&id);
         self.snap_layout(&id, at.pos);
@@ -95,7 +95,7 @@ impl App {
     pub(crate) fn place_group(&mut self, id: Option<String>, name: &str, at: Placement) -> String {
         let id = id.unwrap_or_else(|| self.alloc_node_id());
         let fresh = !self.mirror.has(&id);
-        self.place_node(Some(id.clone()), NodePayload::Group(crate::node::GroupPayload::default()), at);
+        self.place_node(Some(id.clone()), Runtime::Group(crate::node::GroupPayload::default()), at);
         if fresh && !name.is_empty() {
             self.mirror.set(&id, crate::store::model::field::NAME, FieldValue::Str(name.to_owned()));
         }
@@ -123,7 +123,7 @@ impl App {
         let node_pos = self.layout_pos(&tab_id);
         let id = self.alloc_node_id();
         let pos = node_pos + graph_layout::spawn_jitter(&id);
-        let payload = NodePayload::Download(DownloadPayload {
+        let payload = Runtime::Download(DownloadPayload {
             path,
             bytes_received: 0,
             total_bytes,
@@ -156,7 +156,7 @@ impl App {
     /// `materialize`'s way in for kinds with no insert helper of their own,
     /// and for an image/JSON card whose file couldn't be loaded (see
     /// `ImagePayload::error`).
-    pub(crate) fn insert_placeholder_node(&mut self, id: String, pos: egui::Vec2, payload: NodePayload) {
+    pub(crate) fn insert_placeholder_node(&mut self, id: String, pos: egui::Vec2, payload: Runtime) {
         self.place_node(Some(id), payload, Placement { group: None, pos });
     }
 
@@ -167,7 +167,7 @@ impl App {
     pub(crate) fn content_keep(&self, except: Option<&str>) -> HashSet<String> {
         let mut keep: HashSet<String> = HashSet::new();
         for (id, node) in self.nodes.iter().filter(|(id, _)| Some(id.as_str()) != except) {
-            keep.extend(node.payload.file_path().and_then(content::file_name));
+            keep.extend(node.runtime.file_path().and_then(content::file_name));
             keep.insert(id.clone());
         }
         for entry in &self.closed {
@@ -244,9 +244,9 @@ impl App {
             return;
         }
         let Some(node) = self.nodes.get(id) else { return };
-        let (path, is_image) = match &node.payload {
-            NodePayload::Image(image) if image.error.is_some() => (image.path.clone(), true),
-            NodePayload::Json(json) if json.error.is_some() => (json.path.clone(), false),
+        let (path, is_image) = match &node.runtime {
+            Runtime::Image(image) if image.error.is_some() => (image.path.clone(), true),
+            Runtime::Json(json) if json.error.is_some() => (json.path.clone(), false),
             _ => return,
         };
         let (group, parent) = (self.mirror.group(id).map(str::to_owned), self.mirror.parent(id).map(str::to_owned));
@@ -267,9 +267,9 @@ impl App {
                 self.edit_parent(id, parent);
                 self.save_session();
             }
-            Err(error) => match self.nodes.get_mut(id).map(|n| &mut n.payload) {
-                Some(NodePayload::Image(image)) => image.error = Some(error),
-                Some(NodePayload::Json(json)) => json.error = Some(error),
+            Err(error) => match self.nodes.get_mut(id).map(|n| &mut n.runtime) {
+                Some(Runtime::Image(image)) => image.error = Some(error),
+                Some(Runtime::Json(json)) => json.error = Some(error),
                 _ => {}
             },
         }
@@ -280,10 +280,10 @@ impl App {
     pub(crate) fn refresh_node(&mut self, id: &str) {
         use content::ContentKind as K;
         let Some(node) = self.nodes.get(id) else { return };
-        let kind = match &node.payload {
-            NodePayload::Image(_) => K::Image,
-            NodePayload::Pdf(_) => K::Pdf,
-            NodePayload::Json(j) if !j.leaf => K::Json,
+        let kind = match &node.runtime {
+            Runtime::Image(_) => K::Image,
+            Runtime::Pdf(_) => K::Pdf,
+            Runtime::Json(j) if !j.leaf => K::Json,
             _ => return,
         };
         let Some(url) = self.source_url(id).map(str::to_string) else { return };
@@ -310,7 +310,7 @@ impl App {
         let (group, parent) = (self.mirror.group(id).map(str::to_owned), self.mirror.parent(id).map(str::to_owned));
         let pos = self.layout_pos(id);
         // A PNG turned JPEG keeps its id stem, so `prune` never frees it.
-        let old_path = node.payload.file_path().map(str::to_owned);
+        let old_path = node.runtime.file_path().map(str::to_owned);
         let Some(url) = self.source_url(id).map(str::to_string) else { return };
         let at = self.node_order.iter().position(|n| n == id);
         if let Some(gpu) = &mut self.gpu {
@@ -322,9 +322,9 @@ impl App {
         let result = self.insert_content(source, id.to_string(), pos, group.clone());
         if let Err(error) = &result {
             let payload = match kind {
-                K::Image => NodePayload::Image(ImagePayload { path, width: 0, height: 0, error: Some(error.clone()) }),
-                K::Pdf => NodePayload::Pdf(PdfPayload { path, outcome: Some(Err(error.clone())) }),
-                K::Json => NodePayload::Json(JsonPayload {
+                K::Image => Runtime::Image(ImagePayload { path, width: 0, height: 0, error: Some(error.clone()) }),
+                K::Pdf => Runtime::Pdf(PdfPayload { path, outcome: Some(Err(error.clone())) }),
+                K::Json => Runtime::Json(JsonPayload {
                     path,
                     value: Default::default(),
                     leaf: false,
@@ -378,13 +378,13 @@ impl App {
         let error = format!("Couldn't fetch {}", self.source_url(id).unwrap_or_default());
         let Some(node) = self.nodes.get_mut(id) else { return };
         let missing = |path: &str| !std::path::Path::new(path).exists();
-        let name = match &mut node.payload {
-            NodePayload::Image(p) if missing(&p.path) => return p.error = Some(error),
-            NodePayload::Json(p) if missing(&p.path) => return p.error = Some(error),
-            NodePayload::Pdf(p) if missing(&p.path) => return p.outcome = Some(Err(error)),
-            NodePayload::Image(ImagePayload { path, .. })
-            | NodePayload::Json(JsonPayload { path, .. })
-            | NodePayload::Pdf(PdfPayload { path, .. }) => crate::json_file::file_name(std::path::Path::new(path)),
+        let name = match &mut node.runtime {
+            Runtime::Image(p) if missing(&p.path) => return p.error = Some(error),
+            Runtime::Json(p) if missing(&p.path) => return p.error = Some(error),
+            Runtime::Pdf(p) if missing(&p.path) => return p.outcome = Some(Err(error)),
+            Runtime::Image(ImagePayload { path, .. })
+            | Runtime::Json(JsonPayload { path, .. })
+            | Runtime::Pdf(PdfPayload { path, .. }) => crate::json_file::file_name(std::path::Path::new(path)),
             _ => return,
         };
         self.queue_toast(format!("Couldn't refresh {name}"));
@@ -451,7 +451,7 @@ impl App {
                             completed: true,
                             failed: false,
                         };
-                        self.insert_placeholder_node(id.clone(), pos, NodePayload::Download(payload));
+                        self.insert_placeholder_node(id.clone(), pos, Runtime::Download(payload));
                         if self.nodes.contains_key(&id) {
                             self.edit_group(&id, group);
                         }
@@ -489,7 +489,7 @@ impl App {
         group: Option<String>,
     ) {
         let payload = NotePayload { text, editing: false };
-        self.place_node(Some(id.clone()), NodePayload::Note(payload), Placement { group, pos });
+        self.place_node(Some(id.clone()), Runtime::Note(payload), Placement { group, pos });
         self.seed_source_url(&id, url);
     }
 
@@ -533,7 +533,7 @@ impl App {
         }
         self.place_node(
             Some(id),
-            NodePayload::Image(ImagePayload { path, width, height, error: None }),
+            Runtime::Image(ImagePayload { path, width, height, error: None }),
             Placement { group, pos },
         );
         Ok(())
@@ -573,7 +573,7 @@ impl App {
     /// never having existed the way a bad image file does.
     pub(crate) fn insert_pdf_node_with_id(&mut self, id: String, path: String, pos: egui::Vec2, group: Option<String>) {
         self.pdf_renderer.request(id.clone(), path.clone());
-        self.place_node(Some(id), NodePayload::Pdf(PdfPayload { path, outcome: None }), Placement { group, pos });
+        self.place_node(Some(id), Runtime::Pdf(PdfPayload { path, outcome: None }), Placement { group, pos });
     }
 
     /// The insert every `json` card goes through: the caller picks the id,
@@ -600,7 +600,7 @@ impl App {
                 return Err(err);
             }
         };
-        let payload = NodePayload::Json(JsonPayload { path, value: value.into(), leaf: false, error: None });
+        let payload = Runtime::Json(JsonPayload { path, value: value.into(), leaf: false, error: None });
         self.place_node(Some(id), payload, Placement { group, pos });
         Ok(())
     }
@@ -698,12 +698,12 @@ mod tests {
             std::fs::write(&path, bytes).unwrap();
             let id = app.alloc_node_id();
             app.insert_content(ContentSource::Local(path), id.clone(), egui::Vec2::ZERO, None).unwrap();
-            kinds.push(match &app.nodes[&id].payload {
-                NodePayload::Image(p) => format!("image {}x{}", p.width, p.height),
-                NodePayload::Pdf(_) => "pdf".into(),
-                NodePayload::Json(p) => format!("json {}", p.value),
-                NodePayload::Note(p) => format!("note {}", p.text),
-                NodePayload::Download(p) => format!("download {} done={}", p.bytes_received, p.completed),
+            kinds.push(match &app.nodes[&id].runtime {
+                Runtime::Image(p) => format!("image {}x{}", p.width, p.height),
+                Runtime::Pdf(_) => "pdf".into(),
+                Runtime::Json(p) => format!("json {}", p.value),
+                Runtime::Note(p) => format!("note {}", p.text),
+                Runtime::Download(p) => format!("download {} done={}", p.bytes_received, p.completed),
                 _ => "other".into(),
             });
             assert_eq!(app.source_url(&id), None);
@@ -718,7 +718,7 @@ mod tests {
         let mut app = App::default();
         app.mirror.set("n", field::URL, FieldValue::Str("https://a/".into()));
         assert_eq!(app.mirror.ty("n"), "");
-        let note = NodePayload::Note(NotePayload { text: "t".into(), editing: false });
+        let note = Runtime::Note(NotePayload { text: "t".into(), editing: false });
         app.insert_placeholder_node("n".into(), egui::Vec2::ZERO, note);
         assert_eq!(app.mirror.ty("n"), crate::store::model::TYPE_NOTE);
         assert_eq!(app.card_kind("n").unwrap().ty, crate::store::model::TYPE_NOTE);
@@ -916,7 +916,7 @@ mod tests {
         app.insert_placeholder_node(
             "1".into(),
             egui::Vec2::ZERO,
-            NodePayload::Image(ImagePayload {
+            Runtime::Image(ImagePayload {
                 path: dir.join("a.png").to_string_lossy().into_owned(),
                 width: 0,
                 height: 0,
@@ -926,7 +926,7 @@ mod tests {
         app.insert_placeholder_node(
             "1-7".into(),
             egui::Vec2::ZERO,
-            NodePayload::Json(JsonPayload {
+            Runtime::Json(JsonPayload {
                 path: r"Z:\x.json".into(),
                 value: Default::default(),
                 leaf: false,
@@ -968,7 +968,7 @@ mod tests {
         let mut app = app_on(&root.join("session.mnf"), 1);
         let image = |path: &std::path::Path| {
             let path = path.to_string_lossy().into_owned();
-            NodePayload::Image(ImagePayload { path, width: 1, height: 1, error: None })
+            Runtime::Image(ImagePayload { path, width: 1, height: 1, error: None })
         };
         // A live node by path, one by id (its stored path elsewhere), and a
         // closed one by path.
@@ -1011,7 +1011,7 @@ mod tests {
         std::fs::create_dir_all(&sessions).unwrap();
         let saved = sessions.join("saved.mnf");
         let mut app = app_on(&root.join("session.mnf"), 1);
-        add(&mut app, NodePayload::Note(NotePayload { text: "x".into(), editing: false }));
+        add(&mut app, Runtime::Note(NotePayload { text: "x".into(), editing: false }));
         assert!(app.save_session());
         app.journal.as_ref().unwrap().save_copy(&saved, None).unwrap();
         assert_eq!(prune(), Some(1));
@@ -1036,7 +1036,7 @@ mod tests {
         use crate::session_sync::tests::{add, app_on};
         let path = crate::store::testutil::temp_dir("prune_recovered").join("session.mnf");
         let mut app = app_on(&path, 1);
-        add(&mut app, NodePayload::Note(NotePayload { text: "x".into(), editing: false }));
+        add(&mut app, Runtime::Note(NotePayload { text: "x".into(), editing: false }));
         assert!(app.save_session());
         assert!(app.may_prune_content());
         drop(app);
@@ -1070,7 +1070,7 @@ mod tests {
         let mut app = App::default();
         for id in ["r", "s"] {
             let path = old.to_string_lossy().into_owned();
-            let payload = NodePayload::Image(ImagePayload { path, width: 1, height: 1, error: None });
+            let payload = Runtime::Image(ImagePayload { path, width: 1, height: 1, error: None });
             app.insert_placeholder_node(id.into(), egui::Vec2::ZERO, payload);
         }
         assert!(!replaced_file_unused(&dir, "r", &old, &new, &app.content_keep(Some("r"))));
@@ -1206,7 +1206,7 @@ mod tests {
         use crate::session_sync::tests::{add, sleeping_tab};
         let mut app = App::default();
         let opener = add(&mut app, sleeping_tab("https://x.test/", "Opener"));
-        let note = add(&mut app, NodePayload::Note(NotePayload { text: "n".into(), editing: false }));
+        let note = add(&mut app, Runtime::Note(NotePayload { text: "n".into(), editing: false }));
         app.edit_parent(&note, Some(opener.clone()));
         let tab = add(&mut app, sleeping_tab("https://x.test/from-note", "T"));
         app.edit_parent(&tab, Some(note.clone()));

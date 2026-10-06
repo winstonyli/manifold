@@ -1040,7 +1040,7 @@ impl App {
         let tab_pin_states: Vec<bool> = self
             .nodes
             .iter()
-            .filter(|(_, n)| n.payload.saved_tab().is_some())
+            .filter(|(_, n)| n.runtime.saved_tab().is_some())
             .map(|(id, _)| self.mirror.pinned(id))
             .collect();
         let all_pinned = !tab_pin_states.is_empty() && tab_pin_states.iter().all(|&p| p);
@@ -1274,7 +1274,7 @@ impl App {
     /// out so `build_quick_switcher`'s row loop and its own test agree on
     /// exactly what a sleeping tab's row shows.
     pub(crate) fn quick_switcher_row_label(&self, id: &str) -> Option<String> {
-        let (title, url) = self.nodes.get(id)?.payload.listed_tab()?;
+        let (title, url) = self.nodes.get(id)?.runtime.listed_tab()?;
         Some(if title.is_empty() { url.to_string() } else { title.to_string() })
     }
 
@@ -1288,7 +1288,7 @@ impl App {
         self.node_order
             .iter()
             .filter(|id| {
-                self.nodes.get(id.as_str()).and_then(|n| n.payload.listed_tab()).is_some_and(|(title, url)| {
+                self.nodes.get(id.as_str()).and_then(|n| n.runtime.listed_tab()).is_some_and(|(title, url)| {
                     query.is_empty() || title.to_lowercase().contains(&query) || url.to_lowercase().contains(&query)
                 })
             })

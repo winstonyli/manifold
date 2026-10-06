@@ -3,7 +3,7 @@
 //! applied from the document by `materialize` (`materialize_jar`), and dropped by `forget_jar`.
 
 use crate::jar::{Jar, JarChoice, JarKey};
-use crate::node::NodePayload;
+use crate::node::Runtime;
 use crate::process_manager::EngineKind;
 use crate::session_sync::{color_value, Fields};
 use crate::store::model::{field, FieldValue, Kind, NodeId};
@@ -225,9 +225,9 @@ impl App {
         let (key, missing) = self.resolved_jar(&choice);
         let will_switch = self.will_switch(id);
         let can_switch_now = self.can_switch_jar_now(id);
-        let engine = match &self.nodes.get(id)?.payload {
-            NodePayload::Tab(t) => t.tab.kind,
-            NodePayload::Unloaded(_) => self.mirror.engine(id),
+        let engine = match &self.nodes.get(id)?.runtime {
+            Runtime::Tab(t) => t.tab.kind,
+            Runtime::Unloaded(_) => self.mirror.engine(id),
             _ => return None,
         };
         let engine_ignores = !matches!(engine, EngineKind::Webview2 | EngineKind::Cef) && key != JarKey::Default;
@@ -537,7 +537,7 @@ impl App {
     /// other node, and for a new spawn, which has no mirror entry until it lands.
     pub(crate) fn tab_jar(&self, id: &str) -> Option<JarChoice> {
         let is_tab = match self.nodes.get(id) {
-            Some(node) => node.payload.saved_tab().is_some(),
+            Some(node) => node.runtime.saved_tab().is_some(),
             None => self.is_linked(id), // only a tab respawns
         };
         is_tab.then(|| self.mirror.jar_choice(id))

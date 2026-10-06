@@ -824,7 +824,7 @@ struct App {
     last_window_title: String,
     gpu: Option<GpuState>,
     /// Every graph node -- tabs, downloads, and groups alike (see
-    /// `NodePayload`'s own doc comment). `node_order` is a stable
+    /// `GraphNode`'s own doc comment). `node_order` is a stable
     /// iteration/z-order for graph rendering and hit-testing, separate from
     /// this `HashMap`'s own unspecified iteration order (which would make
     /// node click/drag targeting flaky if used directly).
@@ -1148,7 +1148,7 @@ struct App {
     /// background -- see the marquee-release logic below for where this
     /// gets set (same gesture, disambiguated from a real rectangle-select
     /// drag by movement distance) and `build_graph_ui`'s own rendering of
-    /// it. Deliberately *not* a `NodePayload`/`self.nodes` entry -- it's a
+    /// it. Deliberately *not* a `GraphNode`/`self.nodes` entry -- it's a
     /// pending choice, not real graph content, so it never needs excluding
     /// from `level_scan`/session persistence/drag-into-group/
     /// filters the way a real new node kind would. Cleared on any camera
@@ -1875,7 +1875,7 @@ impl App {
         self.node_order
             .iter()
             .filter(|id| id.as_str() != exclude)
-            .filter_map(|id| self.nodes.get(id).and_then(|n| n.payload.listed_tab()).map(|tab| (id, tab)))
+            .filter_map(|id| self.nodes.get(id).and_then(|n| n.runtime.listed_tab()).map(|tab| (id, tab)))
             .filter(|(_, (title, url))| url.to_lowercase().contains(&query) || title.to_lowercase().contains(&query))
             .take(5)
             .map(|(id, (title, url))| Suggestion::OpenTab {
@@ -2072,7 +2072,7 @@ impl App {
         let welcome = "manifold://welcome".to_string();
         self.spawn_tab_async(TabSpawn::new(welcome_id, welcome, kind, egui::Vec2::ZERO, SpawnPurpose::Restore, zoom));
 
-        let note = NodePayload::Note(NotePayload {
+        let note = Runtime::Note(NotePayload {
             text: "This is a Note -- drag it anywhere, or right-click to delete it \
                            (undo via \"Recently Closed\" if you change your mind)."
                 .to_string(),
@@ -2108,7 +2108,7 @@ impl App {
         // same "inherited path, no real ownership" reasoning leaves use,
         // though this node is a genuine standalone JSON node, not an
         // exploded leaf).
-        let json = NodePayload::Json(JsonPayload {
+        let json = Runtime::Json(JsonPayload {
             path: "(demo).json".to_string(),
             value: std::sync::Arc::new(serde_json::json!({
                 "project": "Manifold",
@@ -2274,12 +2274,12 @@ impl App {
     /// empty path: "no file" (a Download from a `Trust::Foreign` import has
     /// its machine-local path dropped).
     fn node_file_path(&self, id: &str) -> Option<String> {
-        let path = match &self.nodes.get(id)?.payload {
-            NodePayload::Download(_) => self.windows_path_for_download(id),
-            NodePayload::Image(image) => Some(image.path.clone()),
-            NodePayload::Pdf(pdf) => Some(pdf.path.clone()),
-            NodePayload::Json(json) => Some(json.path.clone()),
-            NodePayload::Tab(_) | NodePayload::Unloaded(_) | NodePayload::Group(_) | NodePayload::Note(_) => None,
+        let path = match &self.nodes.get(id)?.runtime {
+            Runtime::Download(_) => self.windows_path_for_download(id),
+            Runtime::Image(image) => Some(image.path.clone()),
+            Runtime::Pdf(pdf) => Some(pdf.path.clone()),
+            Runtime::Json(json) => Some(json.path.clone()),
+            Runtime::Tab(_) | Runtime::Unloaded(_) | Runtime::Group(_) | Runtime::Note(_) => None,
         };
         path.filter(|p| !p.is_empty())
     }
@@ -2291,10 +2291,8 @@ impl App {
     /// with no file; a file node with no path (`node_file_path`) is toasted.
     fn reveal_node(&mut self, id: &str) {
         let Some(node) = self.nodes.get(id) else { return };
-        let has_file = matches!(
-            node.payload,
-            NodePayload::Download(_) | NodePayload::Image(_) | NodePayload::Pdf(_) | NodePayload::Json(_)
-        );
+        let has_file =
+            matches!(node.runtime, Runtime::Download(_) | Runtime::Image(_) | Runtime::Pdf(_) | Runtime::Json(_));
         match self.node_file_path(id) {
             Some(path) => {
                 if let Err(e) = Self::reveal_in_explorer(&path) {
@@ -2442,7 +2440,7 @@ impl App {
     fn insert_note_at(&mut self, id: String, pos: Option<egui::Vec2>) {
         let at = self.placement(&id, pos);
         let note = NotePayload { text: String::new(), editing: true };
-        self.place_node(Some(id), NodePayload::Note(note), at);
+        self.place_node(Some(id), Runtime::Note(note), at);
     }
 
     /// Starts an unloaded tab's engine (`UnloadedTabPayload`) on `kind`, which becomes its engine (`edit_engine`).
@@ -2453,7 +2451,7 @@ impl App {
         let Carried { pos, color, pinned, parent, group, jar, .. } = self.mirror.carried(id);
         let pos = pos.unwrap_or_default(); // unused: the card's layout entry stays (`TabSpawn::pos`)
         let Some(node) = self.nodes.get_mut(id) else { return };
-        let NodePayload::Unloaded(tab) = &mut node.payload else { return };
+        let Runtime::Unloaded(tab) = &mut node.runtime else { return };
         if tab.state == UnloadedState::Waking {
             return;
         }
@@ -2542,17 +2540,17 @@ impl App {
         let other_ids: Vec<String> = self
             .nodes
             .iter()
-            .filter(|(id, n)| id.as_str() != keep_id && n.payload.saved_tab().is_some())
+            .filter(|(id, n)| id.as_str() != keep_id && n.runtime.saved_tab().is_some())
             .map(|(id, _)| id.clone())
             .collect();
         for id in other_ids {
             let Some(node) = self.nodes.get_mut(&id) else { continue };
-            match &mut node.payload {
-                NodePayload::Tab(tab) if !tab.muted => {
+            match &mut node.runtime {
+                Runtime::Tab(tab) if !tab.muted => {
                     tab.muted = true;
                     tab.tab.send(&HostToEngine::SetMuted { muted: true });
                 }
-                NodePayload::Unloaded(tab) => tab.muted = true,
+                Runtime::Unloaded(tab) => tab.muted = true,
                 _ => {}
             }
         }
@@ -2567,7 +2565,7 @@ impl App {
             .node_order
             .iter()
             .filter(|id| {
-                id.as_str() != keep_id && self.nodes.get(id.as_str()).is_some_and(|n| n.payload.saved_tab().is_some())
+                id.as_str() != keep_id && self.nodes.get(id.as_str()).is_some_and(|n| n.runtime.saved_tab().is_some())
             })
             .cloned()
             .collect();
@@ -2584,7 +2582,7 @@ impl App {
     /// they're presumably still listening to.
     fn set_all_pinned(&mut self, pin: bool) {
         let tabs: Vec<String> =
-            self.nodes.iter().filter(|(_, n)| n.payload.saved_tab().is_some()).map(|(id, _)| id.clone()).collect();
+            self.nodes.iter().filter(|(_, n)| n.runtime.saved_tab().is_some()).map(|(id, _)| id.clone()).collect();
         for id in tabs {
             self.edit_field(&id, field::PINNED, FieldValue::Bool(pin));
         }
@@ -3430,8 +3428,8 @@ mod tests {
     fn remove_from_group_moves_up_one_level() {
         let mut app = App::default();
         use crate::store::model::Kind;
-        let group = || (Kind::Group, NodePayload::Group(GroupPayload::default()));
-        let note = || (Kind::Note, NodePayload::Note(NotePayload { text: String::new(), editing: false }));
+        let group = || (Kind::Group, Runtime::Group(GroupPayload::default()));
+        let note = || (Kind::Note, Runtime::Note(NotePayload { text: String::new(), editing: false }));
         for (id, group, (kind, payload)) in [
             ("outer", None, group()),
             ("inner", Some("outer"), group()),
@@ -3455,7 +3453,7 @@ mod tests {
     fn mirror_group_cycle() -> App {
         let mut app = App::default();
         for id in ["a", "b", "s"] {
-            app.test_node(id, crate::store::model::Kind::Group, NodePayload::Group(GroupPayload::default()));
+            app.test_node(id, crate::store::model::Kind::Group, Runtime::Group(GroupPayload::default()));
         }
         app.edit_group("a", Some("b".into()));
         app.edit_group("b", Some("a".into()));

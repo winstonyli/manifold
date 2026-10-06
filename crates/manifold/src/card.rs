@@ -838,41 +838,41 @@ pub(crate) fn pdf_card_size(pdf: &PdfPayload) -> egui::Vec2 {
 /// count and the right-click hit test all read, so none of them can
 /// disagree about how big a given card is (they used to each carry
 /// their own per-kind copy, and the LOD count approximated Image/Pdf).
-pub(crate) fn node_card_size(payload: &NodePayload) -> egui::Vec2 {
+pub(crate) fn node_card_size(payload: &Runtime) -> egui::Vec2 {
     match payload {
-        NodePayload::Tab(_) | NodePayload::Unloaded(_) => GRAPH_NODE_SIZE,
-        NodePayload::Download(_) => DOWNLOAD_NODE_SIZE,
-        NodePayload::Note(_) => NOTE_NODE_SIZE,
+        Runtime::Tab(_) | Runtime::Unloaded(_) => GRAPH_NODE_SIZE,
+        Runtime::Download(_) => DOWNLOAD_NODE_SIZE,
+        Runtime::Note(_) => NOTE_NODE_SIZE,
         // A placeholder has no real size: the same box a failed PDF gets.
-        NodePayload::Image(image) if image.error.is_some() => PDF_PENDING_NODE_SIZE,
-        NodePayload::Image(image) => image_node_card_size(image.width, image.height),
-        NodePayload::Pdf(pdf) => pdf_card_size(pdf),
+        Runtime::Image(image) if image.error.is_some() => PDF_PENDING_NODE_SIZE,
+        Runtime::Image(image) => image_node_card_size(image.width, image.height),
+        Runtime::Pdf(pdf) => pdf_card_size(pdf),
         // A file's own card previews its root (spec "The card at the
         // parent level"); a leaf or an error card keeps the small box.
-        NodePayload::Json(json) if !json.leaf && json.error.is_none() => crate::json_view::preview_size(&json.value),
-        NodePayload::Json(_) => JSON_NODE_SIZE,
-        NodePayload::Group(_) => GROUP_NODE_SIZE,
+        Runtime::Json(json) if !json.leaf && json.error.is_none() => crate::json_view::preview_size(&json.value),
+        Runtime::Json(_) => JSON_NODE_SIZE,
+        Runtime::Group(_) => GROUP_NODE_SIZE,
     }
 }
 
 /// A card in world space: `node_card_size` centered on `pos`, its layout position (`App::card_rect`).
-pub(crate) fn node_card_rect(pos: egui::Vec2, payload: &NodePayload) -> egui::Rect {
+pub(crate) fn node_card_rect(pos: egui::Vec2, payload: &Runtime) -> egui::Rect {
     egui::Rect::from_center_size(pos.to_pos2(), node_card_size(payload))
 }
 
 /// What the Graph filter box matches a card against: a tab's title and
 /// URL, a download's full path, a note's text, a file node's filename, a group's name (`text`, `App::own_text`, for
 /// a note or a group).
-pub(crate) fn card_filter_text<'a>(payload: &'a NodePayload, text: &'a str) -> Vec<&'a str> {
+pub(crate) fn card_filter_text<'a>(payload: &'a Runtime, text: &'a str) -> Vec<&'a str> {
     match payload {
-        NodePayload::Tab(tab) => vec![&tab.title, &tab.url],
-        NodePayload::Unloaded(tab) => vec![&tab.title, &tab.url],
-        NodePayload::Download(download) => vec![&download.path],
-        NodePayload::Note(_) => vec![text],
-        NodePayload::Image(image) => vec![download_filename(&image.path)],
-        NodePayload::Pdf(pdf) => vec![download_filename(&pdf.path)],
-        NodePayload::Json(json) => vec![download_filename(&json.path)],
-        NodePayload::Group(_) => vec![text],
+        Runtime::Tab(tab) => vec![&tab.title, &tab.url],
+        Runtime::Unloaded(tab) => vec![&tab.title, &tab.url],
+        Runtime::Download(download) => vec![&download.path],
+        Runtime::Note(_) => vec![text],
+        Runtime::Image(image) => vec![download_filename(&image.path)],
+        Runtime::Pdf(pdf) => vec![download_filename(&pdf.path)],
+        Runtime::Json(json) => vec![download_filename(&json.path)],
+        Runtime::Group(_) => vec![text],
     }
 }
 
@@ -1169,7 +1169,7 @@ impl App {
             dim_if_filtered_out(
                 deferred_overlays,
                 &self.graph_filter,
-                &card_filter_text(&node.payload, self.own_text(id)),
+                &card_filter_text(&node.runtime, self.own_text(id)),
                 rect,
                 style.dim_rounding,
             );
@@ -2777,7 +2777,7 @@ mod tests {
 
     #[test]
     fn node_card_size_matches_each_kinds_card() {
-        let download = NodePayload::Download(DownloadPayload {
+        let download = Runtime::Download(DownloadPayload {
             path: "f.bin".into(),
             bytes_received: 0,
             total_bytes: None,
@@ -2785,13 +2785,10 @@ mod tests {
             failed: false,
         });
         assert_eq!(node_card_size(&download), DOWNLOAD_NODE_SIZE);
-        assert_eq!(
-            node_card_size(&NodePayload::Note(NotePayload { text: String::new(), editing: false })),
-            NOTE_NODE_SIZE
-        );
-        assert_eq!(node_card_size(&NodePayload::Group(GroupPayload::default())), GROUP_NODE_SIZE);
+        assert_eq!(node_card_size(&Runtime::Note(NotePayload { text: String::new(), editing: false })), NOTE_NODE_SIZE);
+        assert_eq!(node_card_size(&Runtime::Group(GroupPayload::default())), GROUP_NODE_SIZE);
         let json = |value: serde_json::Value, leaf: bool, error: Option<&str>| {
-            NodePayload::Json(JsonPayload {
+            Runtime::Json(JsonPayload {
                 path: "a.json".into(),
                 value: value.into(),
                 leaf,
@@ -2805,7 +2802,7 @@ mod tests {
         assert_eq!(node_card_size(&json(serde_json::json!(1), true, None)), JSON_NODE_SIZE);
         assert_eq!(node_card_size(&json(five, false, Some("missing"))), JSON_NODE_SIZE);
         assert_eq!(
-            node_card_size(&NodePayload::Unloaded(UnloadedTabPayload {
+            node_card_size(&Runtime::Unloaded(UnloadedTabPayload {
                 url: "https://example.org/".into(),
                 title: String::new(),
                 muted: false,
@@ -2817,8 +2814,7 @@ mod tests {
 
         // Image: a small picture keeps its own size; an oversized one is
         // scaled down to fit `IMAGE_NODE_MAX_SIZE`, aspect ratio kept.
-        let image =
-            |width, height| NodePayload::Image(ImagePayload { path: "p.png".into(), width, height, error: None });
+        let image = |width, height| Runtime::Image(ImagePayload { path: "p.png".into(), width, height, error: None });
         assert_eq!(node_card_size(&image(40, 20)), egui::vec2(40.0, 20.0));
         let big = node_card_size(&image(100_000, 50_000));
         assert!(big.x <= IMAGE_NODE_MAX_SIZE.x && big.y <= IMAGE_NODE_MAX_SIZE.y);
@@ -2826,7 +2822,7 @@ mod tests {
 
         // Pdf: pending and failed use the fixed pending box; rendered uses
         // the page's own size through the same image fitting.
-        let pdf = |outcome| NodePayload::Pdf(PdfPayload { path: "d.pdf".into(), outcome });
+        let pdf = |outcome| Runtime::Pdf(PdfPayload { path: "d.pdf".into(), outcome });
         assert_eq!(node_card_size(&pdf(None)), PDF_PENDING_NODE_SIZE);
         assert_eq!(node_card_size(&pdf(Some(Err("bad".into())))), PDF_PENDING_NODE_SIZE);
         assert_eq!(
@@ -2839,10 +2835,10 @@ mod tests {
     #[test]
     fn card_filter_text_matches_each_kinds_filter_input() {
         // A note or a group matches on its own text (`App::own_text`), passed in.
-        fn filter(payload: &NodePayload) -> Vec<&str> {
+        fn filter(payload: &Runtime) -> Vec<&str> {
             card_filter_text(payload, "buy milk")
         }
-        let download = NodePayload::Download(DownloadPayload {
+        let download = Runtime::Download(DownloadPayload {
             path: "C:/dl/f.bin".into(),
             bytes_received: 0,
             total_bytes: None,
@@ -2851,22 +2847,17 @@ mod tests {
         });
         // Download filters on its full path; the file kinds on the filename only.
         assert_eq!(filter(&download), ["C:/dl/f.bin"]);
-        assert_eq!(filter(&NodePayload::Note(NotePayload { text: String::new(), editing: false })), ["buy milk"]);
+        assert_eq!(filter(&Runtime::Note(NotePayload { text: String::new(), editing: false })), ["buy milk"]);
         assert_eq!(
-            filter(&NodePayload::Image(ImagePayload {
-                path: "C:/pics/cat.png".into(),
-                width: 1,
-                height: 1,
-                error: None,
-            })),
+            filter(&Runtime::Image(ImagePayload { path: "C:/pics/cat.png".into(), width: 1, height: 1, error: None })),
             ["cat.png"]
         );
         assert_eq!(
-            filter(&NodePayload::Pdf(PdfPayload { path: "C:/docs/paper.pdf".into(), outcome: None })),
+            filter(&Runtime::Pdf(PdfPayload { path: "C:/docs/paper.pdf".into(), outcome: None })),
             ["paper.pdf"]
         );
         assert_eq!(
-            filter(&NodePayload::Json(JsonPayload {
+            filter(&Runtime::Json(JsonPayload {
                 path: "C:/data/x.json".into(),
                 value: std::sync::Arc::new(serde_json::json!(1)),
                 leaf: false,
@@ -2874,11 +2865,11 @@ mod tests {
             })),
             ["x.json"]
         );
-        assert_eq!(filter(&NodePayload::Group(GroupPayload::default())), ["buy milk"]);
+        assert_eq!(filter(&Runtime::Group(GroupPayload::default())), ["buy milk"]);
         // Like a live tab: title and url, so the Graph filter can match a
         // sleeping card by its saved title, not just its url.
         assert_eq!(
-            filter(&NodePayload::Unloaded(UnloadedTabPayload {
+            filter(&Runtime::Unloaded(UnloadedTabPayload {
                 url: "https://example.org/".into(),
                 title: "Example".into(),
                 muted: false,
@@ -2888,7 +2879,7 @@ mod tests {
             ["Example", "https://example.org/"]
         );
         assert_eq!(
-            filter(&NodePayload::Unloaded(UnloadedTabPayload {
+            filter(&Runtime::Unloaded(UnloadedTabPayload {
                 url: "https://example.org/".into(),
                 title: String::new(),
                 muted: false,

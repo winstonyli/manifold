@@ -1577,7 +1577,7 @@ mod tests {
         let path = crate::store::testutil::temp_dir("debug-edits").join("session.mnf");
         let mut app = app_on(&path, 1);
         let g = add_group(&mut app, "G");
-        let note = add(&mut app, NodePayload::Note(NotePayload { text: "v1".into(), editing: false }));
+        let note = add(&mut app, Runtime::Note(NotePayload { text: "v1".into(), editing: false }));
         assert!(app.save_session());
 
         app.commit_rename(&g, " Errands\u{200B} ");

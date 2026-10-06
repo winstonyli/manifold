@@ -73,9 +73,9 @@ fn members_under(
 /// `closed_entry` records in `doc.local["zoom"]`. Zoom isn't a store
 /// field (it's personal state), so it isn't in the node's snapshot.
 pub(crate) fn tab_zoom(app: &App, id: &str) -> Option<f64> {
-    let zoom = match app.nodes.get(id).map(|n| &n.payload) {
-        Some(NodePayload::Tab(tab)) => tab.zoom_factor,
-        Some(NodePayload::Unloaded(tab)) => tab.zoom_factor,
+    let zoom = match app.nodes.get(id).map(|n| &n.runtime) {
+        Some(Runtime::Tab(tab)) => tab.zoom_factor,
+        Some(Runtime::Unloaded(tab)) => tab.zoom_factor,
         _ => return None,
     };
     (zoom != app.settings.zoom_factor).then_some(zoom)
@@ -84,9 +84,9 @@ pub(crate) fn tab_zoom(app: &App, id: &str) -> Option<f64> {
 /// `id`'s tab title, when it has one -- what `closed_entry` records in
 /// `doc.local["title"]`. Like zoom, a title is personal state.
 pub(crate) fn tab_title(app: &App, id: &str) -> Option<String> {
-    let title = match app.nodes.get(id).map(|n| &n.payload) {
-        Some(NodePayload::Tab(tab)) => &tab.title,
-        Some(NodePayload::Unloaded(tab)) => &tab.title,
+    let title = match app.nodes.get(id).map(|n| &n.runtime) {
+        Some(Runtime::Tab(tab)) => &tab.title,
+        Some(Runtime::Unloaded(tab)) => &tab.title,
         _ => return None,
     };
     (!title.is_empty()).then(|| title.clone())
@@ -99,13 +99,13 @@ pub(crate) fn tab_title(app: &App, id: &str) -> Option<String> {
 /// where it was shown, not at its document pos (2b-4 Ruling 10), from the file this machine read (2b-5 Ruling 5).
 fn live_fields(app: &App, id: &str, fields: &session_sync::Fields) -> session_sync::Fields {
     let mut fields = fields.clone();
-    if let Some(url) = app.nodes.get(id).and_then(|n| n.payload.saved_tab()) {
+    if let Some(url) = app.nodes.get(id).and_then(|n| n.runtime.saved_tab()) {
         fields.insert(field::URL, store::model::FieldValue::Str(url.to_owned()));
     }
     if fields.contains_key(&field::TEXT) {
         fields.insert(field::TEXT, store::model::FieldValue::Str(app.note_text(id).to_owned()));
     }
-    if let Some(path) = app.nodes.get(id).and_then(|n| n.payload.file_path()) {
+    if let Some(path) = app.nodes.get(id).and_then(|n| n.runtime.file_path()) {
         if fields.contains_key(&field::PATH) {
             fields.insert(field::PATH, store::model::FieldValue::Str(path.to_owned()));
         }
@@ -239,7 +239,7 @@ impl App {
         let root = session_sync::ImportRoot { group: self.insertion_group(), pos: None };
         self.materialize_imported(imported, Some(root), true);
         for (id, zoom, title) in personal {
-            if let Some(NodePayload::Unloaded(tab)) = self.nodes.get_mut(&id).map(|n| &mut n.payload) {
+            if let Some(Runtime::Unloaded(tab)) = self.nodes.get_mut(&id).map(|n| &mut n.runtime) {
                 if let Some(zoom) = zoom {
                     tab.zoom_factor = zoom;
                 }
@@ -272,18 +272,18 @@ mod tests {
         let put_in = |app: &mut App, id: &str, group: &str| app.edit_group(id, Some(group.into()));
 
         let outer = crate::session_sync::tests::add_group(&mut app, "Outer");
-        let note0 = add(&mut app, NodePayload::Note(NotePayload { text: "kept".into(), editing: false }));
+        let note0 = add(&mut app, Runtime::Note(NotePayload { text: "kept".into(), editing: false }));
         put_in(&mut app, &note0, &outer);
-        let note1 = add(&mut app, NodePayload::Note(NotePayload { text: " ".into(), editing: false }));
+        let note1 = add(&mut app, Runtime::Note(NotePayload { text: " ".into(), editing: false }));
         put_in(&mut app, &note1, &outer);
         let inner = crate::session_sync::tests::add_group(&mut app, "Inner");
         put_in(&mut app, &inner, &outer);
         let img0 =
-            add(&mut app, NodePayload::Image(ImagePayload { path: "i.png".into(), width: 1, height: 1, error: None }));
+            add(&mut app, Runtime::Image(ImagePayload { path: "i.png".into(), width: 1, height: 1, error: None }));
         put_in(&mut app, &img0, &inner);
         let json0 = add(
             &mut app,
-            NodePayload::Json(JsonPayload {
+            Runtime::Json(JsonPayload {
                 path: "d.json".into(),
                 value: std::sync::Arc::new(1.into()),
                 leaf: true,
@@ -293,7 +293,7 @@ mod tests {
         put_in(&mut app, &json0, &inner);
         let dl0 = add(
             &mut app,
-            NodePayload::Download(DownloadPayload {
+            Runtime::Download(DownloadPayload {
                 path: "f.bin".into(),
                 bytes_received: 1,
                 total_bytes: Some(1),
@@ -302,7 +302,7 @@ mod tests {
             }),
         );
         put_in(&mut app, &dl0, &inner);
-        let note2 = add(&mut app, NodePayload::Note(NotePayload { text: "outside".into(), editing: false }));
+        let note2 = add(&mut app, Runtime::Note(NotePayload { text: "outside".into(), editing: false }));
 
         let entry = closed_entry(&app, &outer).unwrap();
         let ids: Vec<&str> = entry.doc.nodes.iter().map(|n| n.id.as_str()).collect();
@@ -317,7 +317,7 @@ mod tests {
 
         let leaf_outside = add(
             &mut app,
-            NodePayload::Json(JsonPayload {
+            Runtime::Json(JsonPayload {
                 path: "d.json".into(),
                 value: std::sync::Arc::new(1.into()),
                 leaf: true,
@@ -342,7 +342,7 @@ mod tests {
         app.edit_group(&member, Some(group.clone()));
         assert!(app.save_session());
         for (id, live) in [(&tab, "https://live/"), (&member, "https://m-live/")] {
-            if let NodePayload::Unloaded(t) = &mut app.nodes.get_mut(id).unwrap().payload {
+            if let Runtime::Unloaded(t) = &mut app.nodes.get_mut(id).unwrap().runtime {
                 t.url = live.into();
             }
         }
@@ -367,7 +367,7 @@ mod tests {
         use crate::session_sync::tests::app_on;
         let path = store::testutil::temp_dir("closed-layout-pos").join("session.mnf");
         let mut app = app_on(&path, 1);
-        let note = NodePayload::Note(crate::node::NotePayload { text: "n".into(), editing: false });
+        let note = Runtime::Note(crate::node::NotePayload { text: "n".into(), editing: false });
         let note = app.place_node(None, note, crate::fetched::Placement { group: None, pos: egui::vec2(10.0, 20.0) });
         assert!(app.save_session());
         app.snap_layout(&note, egui::vec2(70.0, 80.0));
@@ -386,7 +386,7 @@ mod tests {
     #[test]
     fn a_closed_note_records_what_was_typed() {
         let mut app = App::default();
-        let note = NodePayload::Note(crate::node::NotePayload { text: "n".into(), editing: false });
+        let note = Runtime::Note(crate::node::NotePayload { text: "n".into(), editing: false });
         let note = app.place_node(None, note, crate::fetched::Placement { group: None, pos: egui::vec2(10.0, 20.0) });
         let n = app.nodes.get_mut(&note).unwrap().as_note_mut().unwrap();
         (n.editing, n.text) = (true, "typed".into());

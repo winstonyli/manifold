@@ -19,7 +19,7 @@ impl App {
     pub(crate) fn tabs_at_current_level(&self) -> Vec<String> {
         self.node_order
             .iter()
-            .filter(|id| self.in_level(id) && self.nodes.get(*id).is_some_and(|n| n.payload.saved_tab().is_some()))
+            .filter(|id| self.in_level(id) && self.nodes.get(*id).is_some_and(|n| n.runtime.saved_tab().is_some()))
             .cloned()
             .collect()
     }
@@ -212,10 +212,10 @@ impl App {
             }
             let Some(node) = self.nodes.get(&id) else { break };
             // A JSON level's crumb is its Json node, named by its file.
-            let name = match &node.payload {
+            let name = match &node.runtime {
                 // name rule: drawn by display_name in toolbar_breadcrumb
-                NodePayload::Group(_) => self.mirror.name(&id).to_owned(),
-                NodePayload::Json(json) => download_filename(&json.path).to_string(),
+                Runtime::Group(_) => self.mirror.name(&id).to_owned(),
+                Runtime::Json(json) => download_filename(&json.path).to_string(),
                 _ => String::new(),
             };
             current = self.mirror.group(&id).map(str::to_owned);
@@ -441,7 +441,7 @@ impl App {
             .nodes
             .iter()
             .filter(|(id, _)| self.in_level(id))
-            .map(|(id, n)| (id.clone(), crate::card::node_card_size(&n.payload)))
+            .map(|(id, n)| (id.clone(), crate::card::node_card_size(&n.runtime)))
             .collect();
 
         for _ in 0..SETTLE_ITERATIONS {
@@ -474,7 +474,7 @@ impl App {
 
     /// `id`'s card in world space (`node_card_rect` at its layout position); `None` when there is no such node.
     pub(crate) fn card_rect(&self, id: &str) -> Option<egui::Rect> {
-        Some(node_card_rect(self.layout_pos(id), &self.nodes.get(id)?.payload))
+        Some(node_card_rect(self.layout_pos(id), &self.nodes.get(id)?.runtime))
     }
 
     /// Whether the user is dragging `id` right now: the card under the pointer, or one moving with it as part of
@@ -519,7 +519,7 @@ mod tests {
         let mut app = App::default();
         let mut peers = Vec::new();
         for g in 0..8 {
-            app.test_node(&format!("g{g}"), Kind::Group, NodePayload::Group(GroupPayload::default()));
+            app.test_node(&format!("g{g}"), Kind::Group, Runtime::Group(GroupPayload::default()));
         }
         for i in 0..2000 {
             let id = format!("n{i}");
@@ -539,7 +539,7 @@ mod tests {
                         zoom_factor: 1.0,
                         swap_target: None,
                     };
-                    (Kind::Tab, NodePayload::Tab(live))
+                    (Kind::Tab, Runtime::Tab(live))
                 }
                 0 => {
                     let sleeping = UnloadedTabPayload {
@@ -549,7 +549,7 @@ mod tests {
                         zoom_factor: 1.0,
                         state: UnloadedState::Sleeping,
                     };
-                    (Kind::Tab, NodePayload::Unloaded(sleeping))
+                    (Kind::Tab, Runtime::Unloaded(sleeping))
                 }
                 1 => {
                     let download = DownloadPayload {
@@ -559,20 +559,20 @@ mod tests {
                         completed: true,
                         failed: false,
                     };
-                    (Kind::Download, NodePayload::Download(download))
+                    (Kind::Download, Runtime::Download(download))
                 }
-                2 => (Kind::Note, NodePayload::Note(NotePayload { text: "t".into(), editing: false })),
+                2 => (Kind::Note, Runtime::Note(NotePayload { text: "t".into(), editing: false })),
                 3 => (
                     Kind::Image,
-                    NodePayload::Image(ImagePayload { path: "i.png".into(), width: 1, height: 1, error: None }),
+                    Runtime::Image(ImagePayload { path: "i.png".into(), width: 1, height: 1, error: None }),
                 ),
-                4 => (Kind::Pdf, NodePayload::Pdf(PdfPayload { path: "d.pdf".into(), outcome: None })),
+                4 => (Kind::Pdf, Runtime::Pdf(PdfPayload { path: "d.pdf".into(), outcome: None })),
                 5 => {
                     let json =
                         JsonPayload { path: "a.json".into(), value: Default::default(), leaf: false, error: None };
-                    (Kind::Json, NodePayload::Json(json))
+                    (Kind::Json, Runtime::Json(json))
                 }
-                _ => (Kind::Group, NodePayload::Group(GroupPayload::default())),
+                _ => (Kind::Group, Runtime::Group(GroupPayload::default())),
             };
             app.test_node(&id, kind, payload);
             if i % 3 != 0 {
@@ -615,22 +615,22 @@ mod tests {
 
             // (a) The old enum pass: eight per-kind calls, each a walk of `node_order` keeping the nodes whose
             // payload variant was that kind (the card enum 2b-6 deleted, matched per node per pass).
-            let old_layer = |payload: &NodePayload| match payload {
-                NodePayload::Tab(_) => 0,
-                NodePayload::Unloaded(_) => 1,
-                NodePayload::Download(_) => 2,
-                NodePayload::Note(_) => 3,
-                NodePayload::Image(_) => 4,
-                NodePayload::Pdf(_) => 5,
-                NodePayload::Json(_) => 6,
-                NodePayload::Group(_) => 7,
+            let old_layer = |payload: &Runtime| match payload {
+                Runtime::Tab(_) => 0,
+                Runtime::Unloaded(_) => 1,
+                Runtime::Download(_) => 2,
+                Runtime::Note(_) => 3,
+                Runtime::Image(_) => 4,
+                Runtime::Pdf(_) => 5,
+                Runtime::Json(_) => 6,
+                Runtime::Group(_) => 7,
             };
             let old_pass = || {
                 std::array::from_fn::<Vec<String>, 8, _>(|layer| {
                     app.node_order
                         .iter()
                         .filter(|id| {
-                            app.in_level(id) && app.nodes.get(*id).is_some_and(|n| old_layer(&n.payload) == layer)
+                            app.in_level(id) && app.nodes.get(*id).is_some_and(|n| old_layer(&n.runtime) == layer)
                         })
                         .cloned()
                         .collect()

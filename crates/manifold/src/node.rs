@@ -1,16 +1,17 @@
-//! The graph's node model: `GraphNode`, its `NodePayload` kinds and their
-//! payload structs.
+//! The graph's node model: `GraphNode`, its `Runtime` and the payload
+//! structs the runtime's variants hold.
 
 use super::*;
 
-/// Kind-specific data for one node in the unified graph-node model --
-/// `GraphNode` holds the fields every kind shares (position, graph
-/// membership); this holds only what varies per kind. Tab/Download/Group
+/// What a node holds on this machine beyond its stored fields (which are the
+/// `Mirror`'s): the live state its card shows and works from. A node's type
+/// is `Mirror::ty`, not the variant; the variant is the runtime shape that
+/// type's card needs, and `None` for a kind with none. Tab/Download/Group
 /// were the migration off three separate hardcoded node types (the old
 /// `TabNode`/`DownloadNode`/`GroupNode`); `Note`/`Image`/`Pdf`/`Json` are
 /// genuinely new kinds added on top of that unified model -- see each one's
 /// own `*Payload` doc comment.
-pub(crate) enum NodePayload {
+pub(crate) enum Runtime {
     Tab(TabPayload),
     Unloaded(UnloadedTabPayload),
     Download(DownloadPayload),
@@ -21,22 +22,22 @@ pub(crate) enum NodePayload {
     Json(JsonPayload),
 }
 
-/// `as_x` (and `as_x_mut` where listed) on `NodePayload`, and the same
-/// pair on `GraphNode` forwarding to its payload.
-macro_rules! payload_accessors {
+/// `as_x` (and `as_x_mut` where listed) on `Runtime`, and the same
+/// pair on `GraphNode` forwarding to its runtime.
+macro_rules! runtime_accessors {
     ($( $variant:ident($ty:ty) => $as:ident $(, $as_mut:ident)?; )*) => {
-        impl NodePayload {
+        impl Runtime {
             $(
                 pub(crate) fn $as(&self) -> Option<&$ty> {
                     match self {
-                        NodePayload::$variant(p) => Some(p),
+                        Runtime::$variant(p) => Some(p),
                         _ => None,
                     }
                 }
                 $(
                     pub(crate) fn $as_mut(&mut self) -> Option<&mut $ty> {
                         match self {
-                            NodePayload::$variant(p) => Some(p),
+                            Runtime::$variant(p) => Some(p),
                             _ => None,
                         }
                     }
@@ -47,11 +48,11 @@ macro_rules! payload_accessors {
         impl GraphNode {
             $(
                 pub(crate) fn $as(&self) -> Option<&$ty> {
-                    self.payload.$as()
+                    self.runtime.$as()
                 }
                 $(
                     pub(crate) fn $as_mut(&mut self) -> Option<&mut $ty> {
-                        self.payload.$as_mut()
+                        self.runtime.$as_mut()
                     }
                 )?
             )*
@@ -59,7 +60,7 @@ macro_rules! payload_accessors {
     };
 }
 
-payload_accessors! {
+runtime_accessors! {
     Tab(TabPayload) => as_tab, as_tab_mut;
     Unloaded(UnloadedTabPayload) => as_unloaded;
     Download(DownloadPayload) => as_download, as_download_mut;
@@ -70,19 +71,19 @@ payload_accessors! {
     Json(JsonPayload) => as_json;
 }
 
-impl NodePayload {
+impl Runtime {
     /// A live or unloaded tab's live url (what it is copied and reopened
     /// at); `None` for any other node. Its engine is `Mirror::engine`.
     pub(crate) fn saved_tab(&self) -> Option<&str> {
         match self {
-            NodePayload::Tab(t) => Some(&t.url),
-            NodePayload::Unloaded(t) => Some(&t.url),
-            NodePayload::Download(_)
-            | NodePayload::Group(_)
-            | NodePayload::Note(_)
-            | NodePayload::Image(_)
-            | NodePayload::Pdf(_)
-            | NodePayload::Json(_) => None,
+            Runtime::Tab(t) => Some(&t.url),
+            Runtime::Unloaded(t) => Some(&t.url),
+            Runtime::Download(_)
+            | Runtime::Group(_)
+            | Runtime::Note(_)
+            | Runtime::Image(_)
+            | Runtime::Pdf(_)
+            | Runtime::Json(_) => None,
         }
     }
 
@@ -91,14 +92,14 @@ impl NodePayload {
     pub(crate) fn store_kind(&self) -> crate::store::model::Kind {
         use crate::store::model::Kind;
         match self {
-            NodePayload::Tab(_) | NodePayload::Unloaded(_) => Kind::Tab,
-            NodePayload::Download(_) => Kind::Download,
-            NodePayload::Group(_) => Kind::Group,
-            NodePayload::Note(_) => Kind::Note,
-            NodePayload::Image(_) => Kind::Image,
-            NodePayload::Pdf(_) => Kind::Pdf,
-            NodePayload::Json(j) if j.leaf => Kind::JsonLeaf,
-            NodePayload::Json(_) => Kind::Json,
+            Runtime::Tab(_) | Runtime::Unloaded(_) => Kind::Tab,
+            Runtime::Download(_) => Kind::Download,
+            Runtime::Group(_) => Kind::Group,
+            Runtime::Note(_) => Kind::Note,
+            Runtime::Image(_) => Kind::Image,
+            Runtime::Pdf(_) => Kind::Pdf,
+            Runtime::Json(j) if j.leaf => Kind::JsonLeaf,
+            Runtime::Json(_) => Kind::Json,
         }
     }
 
@@ -107,11 +108,11 @@ impl NodePayload {
     /// the mirror's (`Mirror::path`, 2b-5 Ruling 5).
     pub(crate) fn file_path(&self) -> Option<&str> {
         match self {
-            NodePayload::Image(p) => Some(&p.path),
-            NodePayload::Pdf(p) => Some(&p.path),
-            NodePayload::Json(p) => Some(&p.path),
-            NodePayload::Download(p) => Some(&p.path),
-            NodePayload::Tab(_) | NodePayload::Unloaded(_) | NodePayload::Group(_) | NodePayload::Note(_) => None,
+            Runtime::Image(p) => Some(&p.path),
+            Runtime::Pdf(p) => Some(&p.path),
+            Runtime::Json(p) => Some(&p.path),
+            Runtime::Download(p) => Some(&p.path),
+            Runtime::Tab(_) | Runtime::Unloaded(_) | Runtime::Group(_) | Runtime::Note(_) => None,
         }
     }
 
@@ -119,21 +120,21 @@ impl NodePayload {
     /// Switcher, Ctrl+Tab, the address bar's open tabs) show and match.
     pub(crate) fn listed_tab(&self) -> Option<(&str, &str)> {
         match self {
-            NodePayload::Tab(t) => Some((&t.title, &t.url)),
-            NodePayload::Unloaded(t) => Some((&t.title, &t.url)),
-            NodePayload::Download(_)
-            | NodePayload::Group(_)
-            | NodePayload::Note(_)
-            | NodePayload::Image(_)
-            | NodePayload::Pdf(_)
-            | NodePayload::Json(_) => None,
+            Runtime::Tab(t) => Some((&t.title, &t.url)),
+            Runtime::Unloaded(t) => Some((&t.title, &t.url)),
+            Runtime::Download(_)
+            | Runtime::Group(_)
+            | Runtime::Note(_)
+            | Runtime::Image(_)
+            | Runtime::Pdf(_)
+            | Runtime::Json(_) => None,
         }
     }
 }
 
 /// A sticky note's own data -- free-form user-typed text, no engine process
 /// or IPC of any kind behind it (unlike every other node kind so far). The
-/// first new kind added on top of the unified `GraphNode`/`NodePayload`
+/// first new kind added on top of the unified `GraphNode`/`Runtime`
 /// model, rather than another migration of a pre-existing type -- proof the
 /// model actually supports "arrange anything" the way it was built to.
 /// Persisted in the session store (`field::TEXT`) since a note is
@@ -293,7 +294,7 @@ pub(crate) enum UnloadedState {
 
 /// A tab's own data -- was `TabNode`'s non-shared fields (`parent`/`group`, `color`, `pinned` and the
 /// document pos live in the `Mirror`; where its card is drawn is `App::layout`). See
-/// `NodePayload`'s own doc comment.
+/// `Runtime`'s own doc comment.
 pub(crate) struct TabPayload {
     pub(crate) tab: EngineTab,
     pub(crate) url: String,
@@ -335,7 +336,7 @@ pub(crate) struct TabPayload {
 }
 
 /// A download's own data -- was `DownloadNode`'s non-shared fields (`path`,
-/// byte progress). See `NodePayload`'s own doc comment for why this is
+/// byte progress). See `Runtime`'s own doc comment for why this is
 /// split out from the position/graph-membership fields `GraphNode` now
 /// holds for every kind.
 pub(crate) struct DownloadPayload {
@@ -376,10 +377,9 @@ pub(crate) type NodeMap = HashMap<String, GraphNode, foldhash::fast::RandomState
 
 /// One node in the graph view. Its document fields (`pos`, `color`, `pinned`, `parent`, the "opened from" edge,
 /// and `group`, the level it is shown in) are not fields here: see `Mirror`; where its card is drawn is
-/// `App::layout`. `payload` holds whatever's specific to the node's actual kind. See `NodePayload`'s own doc comment
-/// for the migration this is a step of.
+/// `App::layout`. `runtime` holds whatever live state the node's kind needs here (`Runtime`).
 pub(crate) struct GraphNode {
-    pub(crate) payload: NodePayload,
+    pub(crate) runtime: Runtime,
 }
 
 /// Where a node's card is drawn and how fast physics is moving it (`App::layout`, 2b-4 Ruling 1): runtime state,
@@ -409,21 +409,21 @@ impl GraphNode {
         let file_name =
             |path: &str| path.rsplit(['/', '\\']).next().filter(|name| !name.is_empty()).map(str::to_string);
         let source_or_file = |path: &str| source.map(str::to_string).or_else(|| file_name(path));
-        let (kind, detail) = match &self.payload {
-            NodePayload::Tab(t) => ("Tab", first_nonempty(&[&t.title, &t.url])),
-            NodePayload::Unloaded(t) => ("Sleeping tab", first_nonempty(&[&t.title, &t.url])),
-            NodePayload::Download(d) => ("Download", file_name(&d.path)),
-            NodePayload::Group(_) => {
+        let (kind, detail) = match &self.runtime {
+            Runtime::Tab(t) => ("Tab", first_nonempty(&[&t.title, &t.url])),
+            Runtime::Unloaded(t) => ("Sleeping tab", first_nonempty(&[&t.title, &t.url])),
+            Runtime::Download(d) => ("Download", file_name(&d.path)),
+            Runtime::Group(_) => {
                 ("Group", Some(crate::names::to_plain(&crate::names::display_name(text, crate::names::UNTITLED))))
             }
-            NodePayload::Note(_) => {
+            Runtime::Note(_) => {
                 // The note's text is never cleaned; its first non-blank line is shown by the display rule.
                 let first = text.lines().map(str::trim).find(|l| !l.is_empty());
                 ("Note", first.map(|l| crate::names::to_plain(&crate::names::display_name(l, crate::names::UNTITLED))))
             }
-            NodePayload::Image(p) => ("Image", source_or_file(&p.path)),
-            NodePayload::Pdf(p) => ("PDF", source_or_file(&p.path)),
-            NodePayload::Json(p) => ("JSON", source_or_file(&p.path)),
+            Runtime::Image(p) => ("Image", source_or_file(&p.path)),
+            Runtime::Pdf(p) => ("PDF", source_or_file(&p.path)),
+            Runtime::Json(p) => ("JSON", source_or_file(&p.path)),
         };
         match detail {
             Some(detail) => format!("{kind}: {detail}"),
@@ -436,9 +436,9 @@ impl App {
     /// The web source of an Image, Pdf, Json (not a leaf) or Note node (`Mirror::url`): Refresh and Open as tab use it,
     /// and a missing file is fetched again from it. `None` for a local file and for other kinds.
     pub(crate) fn source_url(&self, id: &str) -> Option<&str> {
-        let content = match &self.nodes.get(id)?.payload {
-            NodePayload::Image(_) | NodePayload::Pdf(_) | NodePayload::Note(_) => true,
-            NodePayload::Json(p) => !p.leaf,
+        let content = match &self.nodes.get(id)?.runtime {
+            Runtime::Image(_) | Runtime::Pdf(_) | Runtime::Note(_) => true,
+            Runtime::Json(p) => !p.leaf,
             _ => false,
         };
         Some(self.mirror.url(id)).filter(|url| content && !url.is_empty())
@@ -498,7 +498,7 @@ pub(crate) struct GroupPayload {}
 impl App {
     /// Places a node `id` showing `runtime`, typed as `kind` (its `TYPE` in the mirror), at the origin, as
     /// `insert_placeholder_node` would. For tests that need a node of a given type.
-    pub(crate) fn test_node(&mut self, id: &str, kind: crate::store::model::Kind, runtime: NodePayload) {
+    pub(crate) fn test_node(&mut self, id: &str, kind: crate::store::model::Kind, runtime: Runtime) {
         self.insert_placeholder_node(id.to_owned(), egui::Vec2::ZERO, runtime);
         let ty = kind.type_str().unwrap_or_default().to_owned();
         self.mirror.set(id, crate::store::model::field::TYPE, FieldValue::Str(ty));
@@ -518,7 +518,7 @@ mod tests {
         app.insert_note_at(n.clone(), None);
         let name = |app: &crate::App, id: &str| app.nodes[id].accessible_name(app.own_text(id), None);
         assert_eq!(name(&app, &n), "Note");
-        app.nodes.get_mut(&n).unwrap().payload.as_note_mut().unwrap().text = "
+        app.nodes.get_mut(&n).unwrap().runtime.as_note_mut().unwrap().text = "
   first line
 second"
             .into();
@@ -534,7 +534,7 @@ second"
         app.mirror.set(&g, crate::store::model::field::NAME, crate::store::model::FieldValue::Str(" ".into()));
         assert_eq!(name(&app, &g), "Group: Untitled");
         let raw = "\n\tRe\u{200B}ading\u{00A0}\u{00A0}list \nbody";
-        app.nodes.get_mut(&n).unwrap().payload.as_note_mut().unwrap().text = raw.into();
+        app.nodes.get_mut(&n).unwrap().runtime.as_note_mut().unwrap().text = raw.into();
         assert_eq!(name(&app, &n), "Note: Re<U+200B>ading list");
         assert_eq!(app.nodes[&n].as_note().unwrap().text, raw, "the note's text is not cleaned");
     }
@@ -542,15 +542,15 @@ second"
     /// Review C-B12: a local file's card is named by its file name; a web source still wins.
     #[test]
     fn a_local_file_card_has_an_accessible_name() {
-        let node = |payload| GraphNode { payload };
-        let pdf = node(NodePayload::Pdf(PdfPayload { path: r"C:\docs\report.pdf".into(), outcome: None }));
+        let node = |payload| GraphNode { runtime: payload };
+        let pdf = node(Runtime::Pdf(PdfPayload { path: r"C:\docs\report.pdf".into(), outcome: None }));
         assert_eq!(pdf.accessible_name("", None), "PDF: report.pdf");
         let source = Some("https://example.org/r.pdf");
         assert_eq!(pdf.accessible_name("", source), "PDF: https://example.org/r.pdf");
         let image =
-            node(NodePayload::Image(ImagePayload { path: "/home/u/cat.png".into(), width: 1, height: 1, error: None }));
+            node(Runtime::Image(ImagePayload { path: "/home/u/cat.png".into(), width: 1, height: 1, error: None }));
         assert_eq!(image.accessible_name("", None), "Image: cat.png");
-        let json = node(NodePayload::Json(JsonPayload {
+        let json = node(Runtime::Json(JsonPayload {
             path: r"D:\data\x.json".into(),
             value: Default::default(),
             leaf: false,
@@ -563,7 +563,7 @@ second"
     #[test]
     fn saved_tab_keeps_a_failed_tab() {
         assert_eq!(
-            (NodePayload::Unloaded(UnloadedTabPayload {
+            (Runtime::Unloaded(UnloadedTabPayload {
                 url: "https://example.org/".into(),
                 title: String::new(),
                 muted: false,
@@ -573,6 +573,6 @@ second"
             .saved_tab(),
             Some("https://example.org/")
         );
-        assert_eq!(NodePayload::Group(GroupPayload::default()).saved_tab(), None);
+        assert_eq!(Runtime::Group(GroupPayload::default()).saved_tab(), None);
     }
 }

@@ -10,7 +10,7 @@ use ipc_protocol::HostToEngine;
 
 use crate::local_state::{LiveUrl, LocalNode, LocalState};
 use crate::node::{
-    DownloadPayload, GroupPayload, ImagePayload, JsonPayload, NodePayload, NotePayload, PdfPayload, UnloadedState,
+    DownloadPayload, GroupPayload, ImagePayload, JsonPayload, NotePayload, PdfPayload, Runtime, UnloadedState,
     UnloadedTabPayload,
 };
 use crate::process_manager::EngineKind;
@@ -307,12 +307,10 @@ struct TabCommon<'a> {
     url: &'a str,
 }
 
-fn tab_common(payload: &NodePayload) -> Option<TabCommon<'_>> {
+fn tab_common(payload: &Runtime) -> Option<TabCommon<'_>> {
     match payload {
-        NodePayload::Tab(t) => {
-            Some(TabCommon { title: &t.title, muted: t.muted, zoom_factor: t.zoom_factor, url: &t.url })
-        }
-        NodePayload::Unloaded(u) => {
+        Runtime::Tab(t) => Some(TabCommon { title: &t.title, muted: t.muted, zoom_factor: t.zoom_factor, url: &t.url }),
+        Runtime::Unloaded(u) => {
             Some(TabCommon { title: &u.title, muted: u.muted, zoom_factor: u.zoom_factor, url: &u.url })
         }
         _ => None,
@@ -333,7 +331,7 @@ impl App {
             if node.as_download().is_some_and(|dl| !dl.completed) {
                 return None;
             }
-            let kind = node.payload.store_kind();
+            let kind = node.runtime.store_kind();
             let fields = kind
                 .fields()
                 .iter()
@@ -458,8 +456,8 @@ impl App {
         };
         let (mut swap, mut reassert) = (None, None);
         let mut store_load = false;
-        match &mut node.payload {
-            NodePayload::Tab(tab) => {
+        match &mut node.runtime {
+            Runtime::Tab(tab) => {
                 let url = str_of(fields, field::URL);
                 if changed(field::URL) && tab.url != url {
                     tab.url = url.clone();
@@ -479,12 +477,12 @@ impl App {
                     }
                 }
             }
-            NodePayload::Unloaded(tab) => {
+            Runtime::Unloaded(tab) => {
                 if changed(field::URL) {
                     tab.url = str_of(fields, field::URL);
                 }
             }
-            NodePayload::Note(n) => {
+            Runtime::Note(n) => {
                 // The box shows the mirror's new text. Not for a note being typed in: `mirror_remote` held it.
                 if changed(field::TEXT) {
                     n.text = str_of(fields, field::TEXT);
@@ -492,11 +490,7 @@ impl App {
             }
             // A group's fields, a content node's url and a Json node's view are the mirror's alone (`mirror_remote`;
             // the level shown is relaid out below). Paths, keys and values never change after creation.
-            NodePayload::Group(_)
-            | NodePayload::Download(_)
-            | NodePayload::Image(_)
-            | NodePayload::Pdf(_)
-            | NodePayload::Json(_) => {}
+            Runtime::Group(_) | Runtime::Download(_) | Runtime::Image(_) | Runtime::Pdf(_) | Runtime::Json(_) => {}
         }
         // Another replica changed the view of the level being shown:
         // relaid out on the next sync.
@@ -571,15 +565,15 @@ impl App {
                 let zoom_factor = self.settings.zoom_factor;
                 let (title, muted, state) = (String::new(), false, UnloadedState::Sleeping);
                 let payload = UnloadedTabPayload { url, title, muted, zoom_factor, state };
-                self.insert_placeholder_node(id.clone(), pos, NodePayload::Unloaded(payload));
+                self.insert_placeholder_node(id.clone(), pos, Runtime::Unloaded(payload));
             }
             Kind::Group => {
                 // Its name, `from_json` and default jar are already the mirror's (`mirror_remote`).
-                self.insert_placeholder_node(id.clone(), pos, NodePayload::Group(GroupPayload::default()));
+                self.insert_placeholder_node(id.clone(), pos, Runtime::Group(GroupPayload::default()));
             }
             Kind::Note => {
                 let payload = NotePayload { text: str_of(fields, field::TEXT), editing: false };
-                self.insert_placeholder_node(id.clone(), pos, NodePayload::Note(payload));
+                self.insert_placeholder_node(id.clone(), pos, Runtime::Note(payload));
             }
             Kind::Image => {
                 let path = content_path.clone().unwrap_or_default();
@@ -590,14 +584,14 @@ impl App {
                 };
                 if missing_with_url || error.is_some() {
                     let payload = ImagePayload { path, width: 0, height: 0, error };
-                    self.insert_placeholder_node(id.clone(), pos, NodePayload::Image(payload));
+                    self.insert_placeholder_node(id.clone(), pos, Runtime::Image(payload));
                 }
             }
             Kind::Pdf => {
                 let path = content_path.clone().unwrap_or_default();
                 if missing_with_url {
                     let payload = PdfPayload { path, outcome: None };
-                    self.insert_placeholder_node(id.clone(), pos, NodePayload::Pdf(payload));
+                    self.insert_placeholder_node(id.clone(), pos, Runtime::Pdf(payload));
                 } else {
                     self.insert_pdf_node_with_id(id.clone(), path, pos, None);
                 }
@@ -611,7 +605,7 @@ impl App {
                 };
                 if missing_with_url || error.is_some() {
                     let payload = JsonPayload { path, value: Default::default(), leaf: false, error };
-                    self.insert_placeholder_node(id.clone(), pos, NodePayload::Json(payload));
+                    self.insert_placeholder_node(id.clone(), pos, Runtime::Json(payload));
                 }
             }
             Kind::JsonLeaf => {
@@ -620,7 +614,7 @@ impl App {
                 // Its key and stored value are already the mirror's (`mirror_remote`); the payload holds the parsed one.
                 let payload =
                     JsonPayload { path: str_of(fields, field::PATH), value: value.into(), leaf: true, error: None };
-                self.insert_placeholder_node(id.clone(), pos, NodePayload::Json(payload));
+                self.insert_placeholder_node(id.clone(), pos, Runtime::Json(payload));
             }
             Kind::Download => {
                 let path = str_of(fields, field::PATH);
@@ -632,7 +626,7 @@ impl App {
                     completed: true,
                     failed: false,
                 };
-                self.insert_placeholder_node(id.clone(), pos, NodePayload::Download(payload));
+                self.insert_placeholder_node(id.clone(), pos, Runtime::Download(payload));
             }
             Kind::Jar | Kind::Unknown => return,
         }
@@ -704,7 +698,7 @@ impl App {
         let Some(node) = self.nodes.get(id) else { return };
         let up = self.mirror.group(id).map(str::to_owned);
         let is_group = node.as_group().is_some();
-        let is_tab = node.payload.saved_tab().is_some();
+        let is_tab = node.runtime.saved_tab().is_some();
         let parent = self.mirror.parent(id).map(str::to_owned);
         let children: Vec<String> = self.children_of(id).map(str::to_owned).collect();
         for child in children {
@@ -864,9 +858,9 @@ impl App {
     /// The stored text a card is known by, borrowed: a note's (`note_text`), a group's raw name (`Mirror::name`),
     /// which the caller draws through a name rule or matches as stored. "" for other kinds.
     pub(crate) fn own_text(&self, id: &str) -> &str {
-        match self.nodes.get(id).map(|n| &n.payload) {
+        match self.nodes.get(id).map(|n| &n.runtime) {
             // name rule: raw, for `accessible_name` (display_name) and the filter (matches the stored text)
-            Some(NodePayload::Group(_)) => self.mirror.name(id),
+            Some(Runtime::Group(_)) => self.mirror.name(id),
             _ => self.note_text(id),
         }
     }
@@ -1509,12 +1503,12 @@ impl App {
                     let from = self.mirror.url(id);
                     (from != url).then(|| LiveUrl { url: url.to_string(), from: from.to_owned() })
                 };
-                if let Some(tab) = tab_common(&node.payload) {
+                if let Some(tab) = tab_common(&node.runtime) {
                     local.title = tab.title.to_string();
                     local.muted = tab.muted;
                     local.zoom = zoom(tab.zoom_factor);
                     local.live_url = live_url(tab.url);
-                } else if let NodePayload::Note(n) = &node.payload {
+                } else if let Runtime::Note(n) = &node.runtime {
                     local.editing = n.editing;
                 }
                 (id.clone(), local)
@@ -1627,22 +1621,22 @@ impl App {
     /// One node's share of `apply_local` beyond its settled position (the caller's `snap_layout`): whatever its
     /// payload kind keeps (a tab's title/muted/zoom, a note's editing).
     fn apply_local_node(live: &mut crate::GraphNode, node: &LocalNode) {
-        match &mut live.payload {
-            NodePayload::Tab(tab) => {
+        match &mut live.runtime {
+            Runtime::Tab(tab) => {
                 tab.title = node.title.clone();
                 tab.muted = node.muted;
                 if let Some(zoom) = node.zoom {
                     tab.zoom_factor = zoom;
                 }
             }
-            NodePayload::Unloaded(tab) => {
+            Runtime::Unloaded(tab) => {
                 tab.title = node.title.clone();
                 tab.muted = node.muted;
                 if let Some(zoom) = node.zoom {
                     tab.zoom_factor = zoom;
                 }
             }
-            NodePayload::Note(n) => n.editing = node.editing,
+            Runtime::Note(n) => n.editing = node.editing,
             _ => {}
         }
     }
@@ -1658,7 +1652,7 @@ impl App {
             self.pending_local = None;
         }
         if let Some(live) = self.nodes.get_mut(id) {
-            if let NodePayload::Tab(_) | NodePayload::Unloaded(_) | NodePayload::Note(_) = &live.payload {
+            if let Runtime::Tab(_) | Runtime::Unloaded(_) | Runtime::Note(_) = &live.runtime {
                 Self::apply_local_node(live, &node)
             }
             self.snap_layout(id, egui::vec2(node.pos[0], node.pos[1]));

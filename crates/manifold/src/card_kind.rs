@@ -63,7 +63,7 @@ impl App {
     pub(crate) fn card_kind(&self, id: &str) -> Option<CardKind> {
         let node = self.nodes.get(id)?;
         let ty = Kind::from_type(self.mirror.ty(id)).type_str().unwrap_or(UNKNOWN_TYPE);
-        let tags = if node.payload.as_tab().is_some() { TagSet::of(&[Tag::Loaded]) } else { TagSet::EMPTY };
+        let tags = if node.runtime.as_tab().is_some() { TagSet::of(&[Tag::Loaded]) } else { TagSet::EMPTY };
         Some(CardKind { ty, tags })
     }
 }
@@ -132,9 +132,9 @@ mod tests {
     }
 
     /// Every constructible payload with the type it is stored under and the `CardKind` it must read as.
-    fn payloads() -> Vec<(Kind, NodePayload, CardKind)> {
+    fn payloads() -> Vec<(Kind, Runtime, CardKind)> {
         let (tab, _peer) = EngineTab::fake(EngineKind::Servo);
-        let live = NodePayload::Tab(crate::node::TabPayload {
+        let live = Runtime::Tab(crate::node::TabPayload {
             tab,
             url: "https://a/".into(),
             title: String::new(),
@@ -146,14 +146,14 @@ mod tests {
             zoom_factor: 1.0,
             swap_target: None,
         });
-        let sleeping = NodePayload::Unloaded(UnloadedTabPayload {
+        let sleeping = Runtime::Unloaded(UnloadedTabPayload {
             url: "https://s/".into(),
             title: String::new(),
             muted: false,
             zoom_factor: 1.0,
             state: UnloadedState::Sleeping,
         });
-        let download = NodePayload::Download(DownloadPayload {
+        let download = Runtime::Download(DownloadPayload {
             path: "f.bin".into(),
             bytes_received: 0,
             total_bytes: None,
@@ -161,24 +161,24 @@ mod tests {
             failed: false,
         });
         let json = |leaf| {
-            NodePayload::Json(JsonPayload {
+            Runtime::Json(JsonPayload {
                 path: "a.json".into(),
                 value: std::sync::Arc::new(1.into()),
                 leaf,
                 error: None,
             })
         };
-        let image = NodePayload::Image(ImagePayload { path: "i.png".into(), width: 1, height: 1, error: None });
+        let image = Runtime::Image(ImagePayload { path: "i.png".into(), width: 1, height: 1, error: None });
         vec![
             (Kind::Tab, live, loaded_tab()),
             (Kind::Tab, sleeping, plain(TYPE_TAB)),
             (Kind::Download, download, plain(TYPE_DOWNLOAD)),
-            (Kind::Note, NodePayload::Note(NotePayload { text: "t".into(), editing: false }), plain(TYPE_NOTE)),
+            (Kind::Note, Runtime::Note(NotePayload { text: "t".into(), editing: false }), plain(TYPE_NOTE)),
             (Kind::Image, image, plain(TYPE_IMAGE)),
-            (Kind::Pdf, NodePayload::Pdf(PdfPayload { path: "d.pdf".into(), outcome: None }), plain(TYPE_PDF)),
+            (Kind::Pdf, Runtime::Pdf(PdfPayload { path: "d.pdf".into(), outcome: None }), plain(TYPE_PDF)),
             (Kind::Json, json(false), plain(TYPE_JSON)),
             (Kind::JsonLeaf, json(true), plain(TYPE_JSON_LEAF)),
-            (Kind::Group, NodePayload::Group(GroupPayload::default()), plain(TYPE_GROUP)),
+            (Kind::Group, Runtime::Group(GroupPayload::default()), plain(TYPE_GROUP)),
         ]
     }
 
@@ -199,7 +199,7 @@ mod tests {
     #[test]
     fn an_unknown_stored_type_falls_back_to_the_catch_all_row() {
         let mut app = App::default();
-        app.test_node("u", Kind::Unknown, NodePayload::Group(GroupPayload::default()));
+        app.test_node("u", Kind::Unknown, Runtime::Group(GroupPayload::default()));
         let kind = app.card_kind("u").unwrap();
         assert_eq!(kind.ty, UNKNOWN_TYPE);
         assert!(!kind.caps().restorable);

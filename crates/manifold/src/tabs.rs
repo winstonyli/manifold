@@ -428,7 +428,7 @@ impl App {
                 self.nodes.insert(
                     id.clone(),
                     GraphNode {
-                        payload: NodePayload::Tab(TabPayload {
+                        runtime: Runtime::Tab(TabPayload {
                             tab,
                             url: url.clone(),
                             title,
@@ -573,8 +573,8 @@ impl App {
                     self.queue_toast(toast);
                     let state = UnloadedState::Failed(err.to_string());
                     let failed = UnloadedTabPayload { url: url.clone(), title, muted, zoom_factor, state };
-                    let payload = NodePayload::Unloaded(failed);
-                    self.nodes.insert(id.clone(), GraphNode { payload });
+                    let payload = Runtime::Unloaded(failed);
+                    self.nodes.insert(id.clone(), GraphNode { runtime: payload });
                     // A tab the mirror holds already shows the engine that failed: a switch's target, written when
                     // it started (`edit_engine`); a new one lands on it here.
                     let engine = session_sync::engine_code(kind);
@@ -618,7 +618,7 @@ impl App {
     /// The copy keeps `id`'s jar choice (deviation 3).
     pub(crate) fn duplicate_tab(&mut self, id: &str) {
         let Some((parent, group, url, kind)) = self.nodes.get(id).and_then(|n| {
-            n.payload.saved_tab().map(|url| {
+            n.runtime.saved_tab().map(|url| {
                 (
                     self.mirror.parent(id).map(str::to_owned),
                     self.mirror.group(id).map(str::to_owned),
@@ -857,11 +857,11 @@ impl App {
             return false;
         }
         let Some(node) = self.nodes.get_mut(id) else { return false };
-        let NodePayload::Tab(tab) = &node.payload else { return false };
+        let Runtime::Tab(tab) = &node.runtime else { return false };
         let asleep = unloaded_from(tab, UnloadedState::Sleeping);
         // Replacing the payload drops the `EngineTab`, whose `Drop` shuts
         // the engine host down (see `teardown_running_session`).
-        node.payload = NodePayload::Unloaded(asleep);
+        node.runtime = Runtime::Unloaded(asleep);
         if let Some(gpu) = &mut self.gpu {
             gpu.free_tab_thumbnail(id);
             gpu.free_tab_texture(id);
@@ -883,10 +883,10 @@ impl App {
     /// `cannot_start`: the host could not start at all (`AfterCrash::CannotStart`), and the toast says why.
     pub(crate) fn leave_crashed_card(&mut self, id: &str, reason: &str, cannot_start: bool) {
         let Some(node) = self.nodes.get_mut(id) else { return };
-        let NodePayload::Tab(tab) = &node.payload else { return };
+        let Runtime::Tab(tab) = &node.runtime else { return };
         let (url, kind) = (tab.url.clone(), tab.tab.kind);
         // Replacing the payload drops the `EngineTab`, which reaps the dead host.
-        node.payload = NodePayload::Unloaded(unloaded_from(tab, UnloadedState::Failed(reason.to_string())));
+        node.runtime = Runtime::Unloaded(unloaded_from(tab, UnloadedState::Failed(reason.to_string())));
         if let Some(gpu) = &mut self.gpu {
             gpu.free_tab_thumbnail(id);
             gpu.free_tab_texture(id);
@@ -1136,7 +1136,7 @@ impl App {
     /// `remove_tab` without the queued delete, for a tab another replica deleted (`remove_remotely_deleted`).
     /// False when `id` is not a tab.
     pub(crate) fn drop_tab(&mut self, id: &str) -> bool {
-        if !self.nodes.get(id).is_some_and(|n| n.payload.saved_tab().is_some()) {
+        if !self.nodes.get(id).is_some_and(|n| n.runtime.saved_tab().is_some()) {
             return false;
         }
         let parent = self.mirror.parent(id).map(str::to_owned);
@@ -1249,7 +1249,7 @@ impl App {
         let tab_ids: Vec<&String> = self
             .node_order
             .iter()
-            .filter(|id| self.nodes.get(id.as_str()).and_then(|n| n.payload.listed_tab()).is_some())
+            .filter(|id| self.nodes.get(id.as_str()).and_then(|n| n.runtime.listed_tab()).is_some())
             .collect();
         if tab_ids.len() < 2 {
             return;

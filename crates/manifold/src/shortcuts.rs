@@ -206,7 +206,7 @@ impl App {
 
     /// Pins or unpins tab `id` (live or unloaded); any other kind is left alone.
     pub(crate) fn toggle_pin(&mut self, id: &str) {
-        if self.nodes.get(id).is_some_and(|n| n.payload.saved_tab().is_some()) {
+        if self.nodes.get(id).is_some_and(|n| n.runtime.saved_tab().is_some()) {
             let on = !self.mirror.pinned(id);
             self.edit_field(id, field::PINNED, FieldValue::Bool(on));
         }

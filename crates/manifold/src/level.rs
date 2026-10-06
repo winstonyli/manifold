@@ -95,7 +95,7 @@ impl App {
                 let node = self.nodes.get(id)?;
                 Some(LevelItem {
                     kind: LevelItemKind::Node(self.card_kind(id)?),
-                    rect: node_card_rect(self.layout_pos(id), &node.payload),
+                    rect: node_card_rect(self.layout_pos(id), &node.runtime),
                     id: id.clone(),
                 })
             })
@@ -170,8 +170,8 @@ impl App {
 mod tests {
     use super::*;
 
-    fn download(path: &str) -> NodePayload {
-        NodePayload::Download(DownloadPayload {
+    fn download(path: &str) -> Runtime {
+        Runtime::Download(DownloadPayload {
             path: path.to_string(),
             bytes_received: 0,
             total_bytes: None,
@@ -199,7 +199,7 @@ mod tests {
                 ("g".to_string(), LevelItemKind::Node(plain(TYPE_GROUP))),
             ]
         );
-        assert_eq!(app.level_items()[0].rect, node_card_rect(app.layout_pos("d"), &app.nodes["d"].payload));
+        assert_eq!(app.level_items()[0].rect, node_card_rect(app.layout_pos("d"), &app.nodes["d"].runtime));
         assert_eq!(app.level_scan().groups, ["g"]);
 
         app.current_group = Some("g".into());
