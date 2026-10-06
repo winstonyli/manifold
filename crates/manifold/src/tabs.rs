@@ -639,14 +639,18 @@ impl App {
         })
     }
 
-    /// A tab for `url` landed: failed cards for the same url, other than `except`, are resolved. Removed like a
-    /// delete that is not a close, so Recently Closed does not collect them. Another url's card stays.
-    fn clear_failed_cards(&mut self, url: &str, except: &str) {
+    /// A tab for `url` landed (`landed`): failed cards for the same url in the landing tab's group (any engine),
+    /// other than `landed`, are resolved. Removed like a delete that is not a close, so Recently Closed does not
+    /// collect them, and without a save: the landing's own save commits the delete, after the parked remote changes
+    /// land. Another url's card, or the same url's card in another group, stays.
+    fn clear_failed_cards(&mut self, url: &str, landed: &str) {
+        let group = self.mirror.group(landed);
         let stale: Vec<String> = self
             .nodes
             .iter()
             .filter(|(id, node)| {
-                id.as_str() != except
+                id.as_str() != landed
+                    && self.mirror.group(id) == group
                     && node
                         .as_unloaded()
                         .is_some_and(|tab| matches!(tab.state, UnloadedState::Failed(_)) && tab.url == url)
@@ -654,7 +658,7 @@ impl App {
             .map(|(id, _)| id.clone())
             .collect();
         for id in stale {
-            self.destroy_node(&id);
+            self.remove_tab(&id);
         }
     }
 

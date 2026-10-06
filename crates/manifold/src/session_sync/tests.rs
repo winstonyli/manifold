@@ -1917,6 +1917,55 @@ fn a_successful_spawn_clears_failed_cards_for_its_url() {
     assert!(app.closed.is_empty(), "a clear is not a close: nothing goes to Recently Closed");
 }
 
+/// The group is part of the intent: a failed card for the same url in another group stays when a tab lands.
+#[test]
+fn a_successful_spawn_leaves_a_same_url_failed_card_in_another_group() {
+    let mut app = app_on(&temp_dir("failed-kept-other-group").join("session.mnf"), 1);
+    let group = add_group(&mut app, "G");
+    app.spawn_tab_at("https://a/", egui::Vec2::ZERO, Some(group), None);
+    fail_spawns(&mut app);
+    assert_eq!(failed_cards(&app).len(), 1);
+    let landed = succeed_spawn(&mut app, "https://a/");
+    assert_eq!(failed_cards(&app).len(), 1, "the card in group G is another intent");
+    assert!(app.nodes.contains_key(&landed));
+}
+
+/// The clear queues its deletes without a save, so another replica's delete parked for the landing tab
+/// (`remote_in_flight`) still lands before the first save of the landing.
+#[test]
+fn clearing_failed_cards_does_not_save_before_a_parked_remote_delete_lands() {
+    let path = temp_dir("failed-cleared-parked").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    app.spawn_tab_at("https://a/", egui::Vec2::ZERO, None, None);
+    fail_spawns(&mut app);
+    let card = failed_cards(&app).remove(0);
+    let id = app.spawn_tab_at("https://a/", egui::Vec2::ZERO, None, None);
+    // The failed twin is not refreshed here: the spawn is still in flight, so it is its own node.
+    assert!(app.save_session());
+    assert!(app.journal.as_ref().unwrap().doc().nodes.contains_key(&id.parse().unwrap()), "the spawn is committed");
+    let mut other = Journal::open(&path, ActorId(2)).unwrap();
+    other.begin().unwrap().commit(vec![OpBody::Delete { node: id.parse().unwrap() }]).unwrap();
+    assert!(app.save_session());
+    assert!(app.remote_in_flight.contains_key(&id), "the remote delete is parked");
+
+    let at = app.test_spawns.iter().position(|(spawn, _)| spawn.id == id).expect("the spawn is parked");
+    let (spawn, generation) = app.test_spawns.remove(at);
+    let (tab, _peer) = crate::process_manager::EngineTab::fake(spawn.kind);
+    app.handle_tab_spawn_result(crate::TabSpawnOutcome {
+        spawn,
+        generation,
+        result: Ok(tab),
+        seeded: Default::default(),
+        jar: Default::default(),
+        seed_clears: None,
+    });
+    assert!(app.save_session());
+    let doc = app.journal.as_ref().unwrap().doc();
+    assert!(!app.nodes.contains_key(&id), "the remotely deleted landing is gone");
+    assert!(!app.nodes.contains_key(&card), "the failed card was cleared");
+    assert_eq!(doc.live().count(), 0, "the document agrees");
+}
+
 /// A respawn lands an existing tab: it is no new intent, so a same-url failed card stays.
 #[test]
 fn a_respawn_landing_leaves_a_same_url_failed_card() {

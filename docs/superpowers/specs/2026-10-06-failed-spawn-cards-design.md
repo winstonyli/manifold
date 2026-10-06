@@ -1,6 +1,6 @@
 # Failed spawns become cards; the "No tabs." screen goes (design)
 
-Status: Implemented 2026-10-06, plan `2026-10-06-failed-spawn-cards.md`, commits 86913df, 8e4f9a6, 2729ba1, 8970810 and the Task 4 commit (`git log --grep="empty graph keeps its canvas"`). Was: design for review. Architectural: a failed Root or New tab becomes a persisted, synced document
+Status: Implemented 2026-10-06, plan `2026-10-06-failed-spawn-cards.md`, commits 86913df, 8e4f9a6, 2729ba1, 8970810 and d3f9d30 (Task 4). Was: design for review. Architectural: a failed Root or New tab becomes a persisted, synced document
 node, and the empty state, the error display and the toast path all change.
 
 ## Problem
@@ -30,8 +30,8 @@ node, and the empty state, the error display and the toast path all change.
    find a failed card with the same (url, engine, group) and refresh its error text and re-toast instead of adding one.
    A different url is a different intent and gets its own card.
 5. **Success clears matching failed cards.** When a Root or New spawn of a url succeeds (a fresh attempt; Respawn,
-   Restore and Wake landings are existing tabs, not new intent, and clear nothing), failed cards with the same url (any
-   engine) are removed through the normal delete queue (`queue_delete`). A card for another url stays. A failure on
+   Restore and Wake landings are existing tabs, not new intent, and clear nothing), failed cards with the same url and
+   group (any engine) are removed through the normal delete queue (`queue_delete`). A card for another url, or for the same url in another group, stays. A failure on
    another engine for that url is still informative and is not cleared by a success on a different url.
 6. **Failure toasts are coalesced by cause, not by node.** Failures with the same cause (engine and error text) inside
    a short window (about 2 s) read as one toast: "10 tabs couldn't start: Blink (CEF) is not installed". One failure

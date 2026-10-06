@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 # Usage: scripts/failed-spawn-probe.sh
 #
-# Checks the failed card a failed New-tab spawn leaves (spec failed-spawn-cards):
-#   1. NEWTAB with no engine host to start (a copy of the exe on its own, so
-#      every engine fails to launch) leaves one card: a tab, not loaded.
-#   2. A second NEWTAB failing for the same url, engine and group leaves still
-#      one card, under the same id (the twin is refreshed, not duplicated).
+# Checks the failed card a failed spawn leaves (spec failed-spawn-cards):
+#   1. With no engine host to start (a copy of the exe on its own, so every
+#      engine fails to launch) the empty session's startup Root spawn fails and
+#      leaves one card: a tab, not loaded. (This proves the Root card, not a
+#      New card: NEWTAB spawns the same url, so it takes the twin path below.)
+#   2. A NEWTAB failing for the same url, engine and group leaves still one
+#      card, under the same id (the twin is refreshed, not duplicated).
 #   3. Retry (GRAPHRIGHT GRAPHOPEN: the same `RetryMissingFile` the card's menu
 #      runs) keeps that card and its id.
 # One headless instance, an empty session, state read back through EXPORTSTATE.
@@ -70,9 +72,9 @@ check() { # name want got
 read -r n1 id1 label1 <<<"$(summary "$out/s1.json")"
 read -r n2 id2 _ <<<"$(summary "$out/s2.json")"
 read -r n3 id3 _ <<<"$(summary "$out/s3.json")"
-check "a failed New spawn leaves one card" "1" "$n1"
+check "a failed startup Root spawn leaves one card" "1" "$n1"
 check "it is a tab that is not loaded" "application/vnd.manifold.tab" "$label1"
-check "a second failure for the same url stays one card" "1" "$n2"
+check "a New spawn failing for the same intent stays one card" "1" "$n2"
 check "and it is the same card" "$id1" "$id2"
 check "Retry keeps the card count" "1" "$n3"
 check "Retry keeps the card id" "$id1" "$id3"
