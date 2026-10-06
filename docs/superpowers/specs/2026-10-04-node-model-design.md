@@ -266,7 +266,16 @@ leaves the app working:
      and deletes), 05d31cc (`last_shared`, `shared_nodes`). Every stored field is mirror state; creates and deletes
      are queued ops; `diff`, `explicit`, `keep`, `last_shared` (and `Shared`, `shared_nodes`, `kind_fields`,
      `MIRRORED`) are gone.
-     Next: 2b-6 (enums to type + runtime table, caps bridge, EXPORTSTATE/scripts, grep guard).
+     Next: 2b-6 (plan `docs/superpowers/plans/2026-10-06-node-model-2b-6-enums-to-type.md`: `NodePayload` becomes
+     `enum Runtime`, `ItemNodeKind` becomes `CardKind { ty, tags }` read from `Mirror::ty`, caps bridge, EXPORTSTATE/scripts,
+     grep guard).
+     **Deferred from 2b-6 (decided 2026-10-06, so a later session does not re-derive them):** (1) store `Kind` stays; replacing
+     it with type strings belongs to D2 (external plugins), and 2b-6 code reads `Mirror::ty` and `caps(type)`, never a new
+     `Kind::` match, so that swap stays mechanical. (2) `ContentKind` stays until D (views registry) replaces content
+     dispatch with registered rows. (3) `Runtime` is one enum; per-family maps or a plugin runtime slot (a boxed `dyn Any`
+     variant) come with D2 and are a local rewrite behind the `as_x` accessors. (4) `Mirror::ty` stays canonical (an
+     `image/jpeg` reads as `image/png`) until sniffed types arrive with D. (5) The unknown-type card (6.9, formerly "2c")
+     and retiring JsonLeaf/FROM_JSON/KEY/VALUE are not in 2b-6; `Runtime::None` makes the card possible.
 3. **Plan 3, generic verbs and history.** Selection, pin, rename, duplicate and connect over any node (edit the rows);
    the `closed` field (`is_live`, `Doc::shown`, the closed-aware `effective_group`, compaction and pruning keep closed
    nodes, content-file ownership and local per-node state keep closed ids); transaction history replacing
