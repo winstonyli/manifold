@@ -1,6 +1,6 @@
 # Failed spawns become cards; the "No tabs." screen goes (design)
 
-Status: design for review (2026-10-06). Architectural: a failed Root or New tab becomes a persisted, synced document
+Status: Implemented 2026-10-06, plan `2026-10-06-failed-spawn-cards.md`, commits 86913df, 8e4f9a6, 2729ba1, 8970810 and the Task 4 commit (`git log --grep="empty graph keeps its canvas"`). Was: design for review. Architectural: a failed Root or New tab becomes a persisted, synced document
 node, and the empty state, the error display and the toast path all change.
 
 ## Problem

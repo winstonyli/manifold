@@ -444,13 +444,14 @@ impl App {
         self.apply_camera_requests(reset_view);
 
         if self.nodes.is_empty() {
-            ui.centered_and_justified(|ui| {
-                ui.label("No tabs. Click \"+ New Tab\" to start browsing.");
-            });
-            for action in actions {
-                self.apply_graph_action(ui.ctx(), action);
-            }
-            return;
+            let rect = ui.max_rect();
+            ui.painter().text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                EMPTY_HINT,
+                egui::TextStyle::Body.resolve(ui.style()),
+                ui.visuals().weak_text_color(),
+            );
         }
 
         // Static layout: the force-directed sim only runs as a one-shot
@@ -1283,6 +1284,9 @@ impl App {
         scene_outer_rect: egui::Rect,
         items: &[LevelItem],
     ) -> Option<(egui::Rect, egui::Rect, f32)> {
+        if items.is_empty() {
+            return None;
+        }
         let world_bounds = self.bounds_for_rects(items.iter().map(|item| item.rect));
         if self.camera.rect.contains_rect(world_bounds.shrink(GRAPH_FIT_MARGIN)) {
             return None;
@@ -1888,6 +1892,9 @@ impl App {
     }
 }
 
+/// Painted on the canvas when the level has no nodes (the bindings are in `shortcuts.rs`).
+const EMPTY_HINT: &str = "Ctrl+T for a new tab \u{b7} drop a file or URL \u{b7} F1 for shortcuts";
+
 /// The most units a breadcrumb crumb shows (`names::shorten`; a placeholder counts one).
 const CRUMB_UNITS: usize = 20;
 
@@ -2164,5 +2171,32 @@ mod tests {
         assert!(texts.contains(&format!("{}…", "x".repeat(19))), "{texts:?}");
         let current = galleys.iter().find(|g| g.text() == "Re⟦200B⟧ading").unwrap_or_else(|| panic!("{texts:?}"));
         assert!(current.job.sections.iter().any(|s| s.format.font_id.family == egui::FontFamily::Monospace));
+    }
+
+    /// An empty level keeps its canvas: the whole of `build_graph_ui` runs without panicking and paints the hint.
+    #[test]
+    fn an_empty_level_paints_the_hint_on_its_canvas() {
+        let ctx = egui::Context::default();
+        crate::theme::apply_fonts(&ctx);
+        let mut app = App::default();
+        assert!(app.nodes.is_empty());
+        let mut hints = Vec::new();
+        for _ in 0..3 {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0))),
+                ..Default::default()
+            };
+            let mut output = ctx.run_ui(input, |ui| app.build_graph_ui(ui));
+            output.textures_delta.clear();
+            hints = output
+                .shapes
+                .iter()
+                .filter_map(|s| match &s.shape {
+                    egui::Shape::Text(t) if t.galley.text() == EMPTY_HINT => Some(t.pos),
+                    _ => None,
+                })
+                .collect();
+        }
+        assert_eq!(hints.len(), 1, "the hint is painted once");
     }
 }

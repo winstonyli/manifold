@@ -515,3 +515,28 @@ Run `cargo fmt --all`, the full `cargo test -j 8 -p manifold --bins`, clippy via
 - **Placeholders:** the `succeed_spawn` helper and the Task 4 UI test harness are described by the pattern to follow rather than complete code, because they depend on test scaffolding I did not read in full (`EngineTab::fake`, an egui test context). The implementer reports the obstacle if a pattern cannot be followed; nothing else is open.
 - **Type consistency:** `failed_twin`, `clear_failed_cards`, `FailureNotices::{push, flush, is_pending}`, `WINDOW`, `queue_failure_toast`, `EMPTY_HINT` are defined once and used with the same signatures.
 - **Unverified at writing:** that `destroy_node` is callable from `tabs.rs` (private in `main.rs`'s impl; Task 2 says to widen it); that a group-spawn path has its own `tab_spawn_error = None` (three clears were seen: `spawn_root_tab`, `spawn_new_tab_with_kind`, and one near `tabs.rs:1230`); the exact test names for engine kind and `add_group`'s signature.
+
+---
+
+## Outcome (2026-10-06)
+
+Commits on `dev`: 86913df (Task 1: failed Root/New cards, no `tab_spawn_error`), 8e4f9a6 and 2729ba1 (Task 2: one failed card per intent, a fresh Root/New landing clears its url's failed cards, after the landing), 8970810 (Task 3: failure toasts that share a cause merge), and Task 4's commit (`The empty graph keeps its canvas and shows a hint; failed-spawn probe and docs`).
+
+**Deviations**
+- Spec decision 5 narrowed (ruling during Task 2): only a fresh Root or New success clears failed cards; Respawn, Restore and Wake landings do not.
+- Task 1 reversed the 2b-5 rule that a failed New spawn is deleted, as the spec required.
+- Task 4's test is a real `build_graph_ui` run over an empty `App` in a headless `egui::Context` (the harness existed), asserting the hint text is painted once.
+- `draw_graph_minimap` got an early `return None` for an empty level (see below).
+
+**Step 1: canvas on an empty level.** The grep hit only `graph_nav.rs:605` (a bench helper, unrelated). Reading the rest of `build_graph_ui` after the old early return: `settle_level_if_changed(0)` lays out an empty level (no division); `bounds_for_rects` folds to `Rect::NOTHING` and falls back to `default_graph_scene_rect()`, so fit-to-view, `apply_camera_requests` and the camera tween get a finite rect; `update_graph_lod` counts zero; `handle_graph_keys`/`move_graph_focus` guard with `Option`. One real oddity: the minimap compared the default fallback rect against the camera and could paint an empty minimap box; fixed with `if items.is_empty() { return None; }`.
+
+**Probes**
+- `scripts/failed-spawn-probe.sh` (new): no clean in-app switch forces a New spawn failure, and a CEF or WebKit default engine does not fail (CEF starts; WebKit crashes the host after the spawn, which is a restart path, not a spawn failure). It runs a copy of the exe with no engine host beside it, so every spawn fails ("cannot find the file specified"). 6/6: one card after the first failure, a tab with `loaded` false, still one card with the same id after a second failure, and Retry (`GRAPHRIGHT GRAPHOPEN`, which runs `retry_missing_file`) keeps the card and its id.
+- Screenshot of an empty session (`CLOSEALLLEVEL` on the bootstrapped session, headless `SCREENSHOT`): the hint is centred, no "No tabs." label, the toolbar and dot grid are drawn.
+- `page-kind-probe.sh`: 6/6. `headless-smoke-test.sh` and `sleep-probe.sh` are left to the controller's gate.
+
+**Parked**
+- `leave_crashed_card`'s cannot-start toast is not coalesced (Task 3).
+- A failure queued after `build_save_toast` in the same frame with no later repaint flushes late (Task 3).
+- No test asserts the landing tab's mirror/layout entries survive the clear's save (Task 2).
+- A comment near `tabs.rs` ~597 should name Split (Task 1).
