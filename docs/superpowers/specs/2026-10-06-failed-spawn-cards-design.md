@@ -43,6 +43,11 @@ node, and the empty state, the error display and the toast path all change.
 - "Retry all N failed tabs" on a level when two or more failed cards share a cause: coalesced action without a
   coalesced node. Add it if the dedup and toast change leaves a real need.
 - A card for a failed Split pane.
+- **Explore later (parked 2026-10-06):** (a) *coalescing cards*: one card standing for several failed tabs of one
+  cause. Needs a node that holds a list of intents, so its type, Retry, move, sync and close semantics are open; this
+  design deduplicates same-intent cards instead (decision 4). (b) *toasts as cards*: notifications that are nodes on
+  the canvas rather than transient overlays, which would make messages persistent, syncable and closable. Needs a
+  decision on what a message node is and when it expires; decision 6 coalesces the existing toast text only.
 - A hint variant that lists Recently Closed.
 
 ## Risks and open questions
