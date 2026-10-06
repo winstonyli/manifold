@@ -1013,6 +1013,9 @@ struct App {
     /// Local group moves the next save commits as `Move`s, by node: the target group, `None` for the top level.
     /// Cleared by a successful commit.
     pending_moves: std::collections::BTreeMap<store::model::NodeId, Option<store::model::NodeId>>,
+    /// Another replica's text for a note being typed in, held back from its mirror and box until the blur
+    /// (`end_note_edit`, 2b-4 Ruling 7), by node. Dropped when this replica commits its own text after it.
+    held_text: HashMap<String, String>,
     /// What the store held for each node when this replica last read or
     /// committed it. `materialize` applies a field only where the store
     /// now differs, so a remote change to one field doesn't overwrite
@@ -1527,6 +1530,7 @@ impl Default for App {
             explicit: std::collections::BTreeSet::new(),
             mirror: mirror::Mirror::default(),
             pending: std::collections::BTreeMap::new(),
+            held_text: HashMap::new(),
             pending_moves: std::collections::BTreeMap::new(),
             last_shared: HashMap::new(),
             jar_defs: BTreeMap::new(),

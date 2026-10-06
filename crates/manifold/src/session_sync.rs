@@ -420,7 +420,7 @@ impl App {
                 }
                 NodePayload::Note(n) => {
                     fields.insert(field::URL, str(n.url.as_deref().unwrap_or("")));
-                    fields.insert(field::TEXT, str(&n.text));
+                    fields.insert(field::TEXT, self.mirror.get(key, field::TEXT));
                     Kind::Note
                 }
                 NodePayload::Image(i) => {
@@ -594,6 +594,7 @@ impl App {
                 }
             }
             NodePayload::Note(n) => {
+                // The box shows the mirror's new text. Not for a note being typed in: `mirror_remote` held it.
                 if changed(field::TEXT) {
                     n.text = str_of(fields, field::TEXT);
                 }
@@ -988,6 +989,75 @@ impl App {
         self.edit_field(id, field::URL, FieldValue::Str(url.to_owned()));
     }
 
+    /// The one writer of a note's text (2b-4 Ruling 6): what its box holds, committed at the blur (`end_note_edit`)
+    /// and by every save (`commit_note_buffers`), never per keystroke, since a note can reach 1 MB. Text the mirror
+    /// already shows queues nothing and copies nothing.
+    pub(crate) fn edit_text(&mut self, id: &str, text: &str) {
+        if self.mirror.text(id) != text {
+            self.edit_field(id, field::TEXT, FieldValue::Str(text.to_owned()));
+        }
+    }
+
+    /// What a note's card shows, borrowed (Ruling 6): the box's edit buffer while it is typed in, the mirror's text
+    /// otherwise. "" for a node that isn't a note.
+    pub(crate) fn note_text(&self, id: &str) -> &str {
+        match self.nodes.get(id).and_then(|n| n.as_note()) {
+            Some(note) if note.editing => &note.text,
+            _ => self.mirror.text(id),
+        }
+    }
+
+    /// Whether `id` is a note being typed in: its box holds the text, and another replica's is held (Ruling 7).
+    fn is_typed_in(&self, id: &str) -> bool {
+        self.nodes.get(id).and_then(|n| n.as_note()).is_some_and(|n| n.editing)
+    }
+
+    /// Commits every note's box that differs from the mirror (`edit_text`), so a save commits what is being typed.
+    /// A note nobody is typing in has its box equal to the mirror, so it compares and copies nothing.
+    fn commit_note_buffers(&mut self) {
+        let typed: Vec<(String, String)> = self
+            .nodes
+            .iter()
+            .filter_map(|(id, n)| Some((id, n.as_note()?)))
+            .filter(|(id, note)| note.text != self.mirror.text(id))
+            .map(|(id, note)| (id.clone(), note.text.clone()))
+            .collect();
+        for (id, text) in typed {
+            self.edit_text(&id, &text);
+        }
+    }
+
+    /// Ends the edit of note `id` (its box lost focus, or stopped being laid out: `end_note_edits`). What the user
+    /// typed since the last commit wins, as a pending local edit does, and another replica's text held meanwhile
+    /// (`held_text`) is dropped; with nothing typed, the held text applies to the mirror and the box (Ruling 7). The
+    /// caller saves.
+    pub(crate) fn end_note_edit(&mut self, id: &str) {
+        let held = self.held_text.remove(id);
+        let Some(note) = self.nodes.get_mut(id).and_then(|n| n.as_note_mut()) else { return };
+        note.editing = false;
+        let buffer = std::mem::take(&mut note.text);
+        let pending = id.parse::<NodeId>().is_ok_and(|node| self.pending.contains_key(&(node, field::TEXT)));
+        let text = match held {
+            Some(theirs) if !pending && buffer == self.mirror.text(id) => {
+                self.mirror.set(id, field::TEXT, FieldValue::Str(theirs.clone()));
+                theirs
+            }
+            _ => {
+                self.edit_text(id, &buffer);
+                buffer
+            }
+        };
+        if let Some(note) = self.nodes.get_mut(id).and_then(|n| n.as_note_mut()) {
+            note.text = text;
+        }
+    }
+
+    /// A note's box lost focus: its edit ends (`end_note_edit`) and is saved.
+    pub(crate) fn blur_note(&mut self, id: &str) {
+        self.end_note_edit(id);
+        self.save_session();
+    }
+
     /// The one writer of a node's document pos (2b-4 Ruling 2): a drag release, with where the card was dropped
     /// (`release_drag`). A new node's is seeded at placement instead (`place_node`, `seed_landing`). Physics never
     /// calls it: a settle moves only `App::layout`. `None` (and a non-finite pos) writes the absent value, Pos (0,0).
@@ -1114,7 +1184,8 @@ impl App {
 
     /// Shows another replica's values of the mirrored fields in `fields` and its effective `group`, except where
     /// this replica has an edit waiting for a save: it commits next and wins (last writer, per field or link).
-    /// Returns the mirrored fields held back that way, whose live effects `update_live_node` then skips.
+    /// Returns the mirrored fields held back that way, whose live effects `update_live_node` then skips. A note's
+    /// text is held too while the note is typed in, and remembered in `held_text` for the blur (2b-4 Ruling 7).
     fn mirror_remote(&mut self, id: &str, fields: &Fields, group: Option<&str>) -> Vec<u32> {
         let node = id.parse::<NodeId>().ok();
         let mut held = Vec::new();
@@ -1122,6 +1193,19 @@ impl App {
             let Some(value) = fields.get(&no) else { continue };
             if node.is_some_and(|node| self.pending.contains_key(&(node, no))) {
                 held.push(no);
+                continue;
+            }
+            if no == field::TEXT && self.is_typed_in(id) {
+                held.push(no);
+                match value {
+                    FieldValue::Str(theirs) if theirs != self.mirror.text(id) => {
+                        self.held_text.insert(id.to_owned(), theirs.clone());
+                    }
+                    // Back to what the mirror shows: nothing left to apply.
+                    _ => {
+                        self.held_text.remove(id);
+                    }
+                }
                 continue;
             }
             self.mirror.set(id, no, value.clone());
@@ -1159,6 +1243,8 @@ impl App {
         // Each round applies what others wrote since the last; four rounds
         // of fresh remote frames means another instance is busy: try again
         // later (`save_retry_at`) rather than spin.
+        // What is being typed is committed too (2b-4 Ruling 6).
+        self.commit_note_buffers();
         for _ in 0..4 {
             // Projected before `begin`, since the `Txn` borrows the journal.
             let mut live = self.shared_nodes();
@@ -1348,6 +1434,12 @@ impl App {
                             *group = self.mirror.group(&id).map(str::to_owned);
                         }
                     }
+                    // Text committed here is newer than another replica's held before it: the held text is dropped.
+                    for &(node, no) in self.pending.keys() {
+                        if no == field::TEXT {
+                            self.held_text.remove(&node.to_string());
+                        }
+                    }
                     self.pending.clear();
                     self.pending_moves.clear();
                     // A tab still spawning keeps its entry, and its layout: a respawn has removed it from `nodes`
@@ -1355,6 +1447,7 @@ impl App {
                     let (nodes, spawning) = (&self.nodes, &self.spawning);
                     self.mirror.retain(|id| nodes.contains_key(id) || spawning.contains_key(id));
                     self.layout.retain(|id, _| nodes.contains_key(id) || spawning.contains_key(id));
+                    self.held_text.retain(|id, _| nodes.get(id).and_then(|n| n.as_note()).is_some_and(|n| n.editing));
                     self.store_notices.clear();
                     self.last_session_save = Some(std::time::Instant::now());
                     self.save_retry_at = None;
@@ -1956,6 +2049,7 @@ impl App {
         self.nodes.clear();
         self.node_order.clear();
         self.layout.clear();
+        self.held_text.clear();
         self.focused = None;
         self.viewed_image = None;
         self.split_tab = None;

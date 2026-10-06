@@ -61,9 +61,9 @@ impl App {
 
     /// Inserts a node (colourless: colour is the mirror's, by id) showing `payload` at `at` under `id`
     /// (allocated when `None`) and appends it to `node_order`. Its card is drawn at `at.pos` (`App::layout`).
-    /// `at.group` and `at.pos` seed the mirror only for an id with no entry yet (`Mirror::seed`): a new node's
-    /// document pos is its placement, which its `Create` carries (2b-4 Ruling 3), while a node shown again (a
-    /// placeholder for a stored node, a reload) keeps its group and document pos.
+    /// `at.group`, `at.pos` and a note's text seed the mirror only for an id with no entry yet (`Mirror::seed`): a
+    /// new node's document pos is its placement, which its `Create` carries (2b-4 Ruling 3), while a node shown again
+    /// (a placeholder for a stored node, a reload) keeps its group, document pos and text.
     /// Doesn't save: the caller does, as `apply_graph_action` does once per action.
     pub(crate) fn place_node(&mut self, id: Option<String>, payload: NodePayload, at: Placement) -> String {
         let id = id.unwrap_or_else(|| self.alloc_node_id());
@@ -72,10 +72,12 @@ impl App {
         // A live tab's engine is the one it runs; an unloaded card has none of its own (`Mirror::engine`).
         let url = payload.saved_tab().map(str::to_owned).unwrap_or_default();
         let engine = payload.as_tab().map_or(0, |t| crate::session_sync::engine_code(t.tab.kind));
+        // A new note's text starts as what it was made with (its payload, the edit buffer, 2b-4 Ruling 6).
+        let text = payload.as_note().map(|n| n.text.clone()).unwrap_or_default();
         self.nodes.insert(id.clone(), GraphNode { payload });
         self.snap_layout(&id, at.pos);
         let (pos, group) = (Some(at.pos), at.group);
-        self.mirror.seed(&id, &crate::mirror::Carried { pos, group, url, engine, ..Default::default() });
+        self.mirror.seed(&id, &crate::mirror::Carried { pos, group, url, text, engine, ..Default::default() });
         self.node_order.push(id.clone());
         id
     }

@@ -219,10 +219,17 @@ fn random_edits_converge_in_one_diff() {
             }
             2 if !live.is_empty() => {
                 let key = *live.keys().nth(rng.below(live.len() as u64) as usize).unwrap();
-                // A diffed field: mirrored ones (`COLOR`) are written by `App::pending`, not `diff`.
+                // A group's `NAME` is diffed. Mirrored fields (`COLOR`, a note's `TEXT`) are written by
+                // `App::pending`, not `diff`: applied here as the `Set` the save would commit.
                 let node = live.get_mut(&key).unwrap();
-                let no = if node.kind == Kind::Group { field::NAME } else { field::TEXT };
-                node.fields.insert(no, FieldValue::Str(rng.below(1 << 24).to_string()));
+                let value = FieldValue::Str(rng.below(1 << 24).to_string());
+                if node.kind == Kind::Group {
+                    node.fields.insert(field::NAME, value);
+                } else {
+                    node.fields.insert(field::TEXT, value.clone());
+                    let enc = encode_field(field::TEXT, &value);
+                    apply(&mut doc, vec![OpBody::Set { node: key, field: field::TEXT, enc }]);
+                }
             }
             3 if !live.is_empty() => {
                 let key = *live.keys().nth(rng.below(live.len() as u64) as usize).unwrap();
@@ -578,6 +585,122 @@ fn a_remote_edit_to_one_field_keeps_an_unsaved_local_edit_to_another() {
     assert!(app.save_session());
     assert!(matches!(&app.nodes[&note].payload, NodePayload::Note(n) if n.text == "theirs"));
     assert_eq!(app.mirror.color(&note), Some(egui::Color32::RED));
+}
+
+/// The note's text box has focus and holds `text` (2b-4 Ruling 6: the payload is the edit buffer).
+fn type_into(app: &mut App, note: &str, text: &str) {
+    let n = app.nodes.get_mut(note).unwrap().as_note_mut().unwrap();
+    n.editing = true;
+    n.text = text.into();
+}
+
+fn buffer(app: &App, note: &str) -> String {
+    app.nodes[note].as_note().unwrap().text.clone()
+}
+
+/// Ruling 6: typing writes the mirror only when a save or the blur commits it, never per keystroke.
+#[test]
+fn typing_commits_on_blur_and_at_save() {
+    let path = temp_dir("text-commit").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let note = add(&mut app, NodePayload::Note(NotePayload { text: "v1".into(), editing: false, url: None }));
+    assert!(app.save_session());
+    assert_eq!(app.mirror.text(&note), "v1");
+    type_into(&mut app, &note, "v2");
+    assert_eq!(app.mirror.text(&note), "v1", "no mirror write per keystroke");
+    assert_eq!(app.note_text(&note), "v2", "the card shows the buffer while it is typed in");
+    assert!(app.save_session());
+    assert_eq!(stored(&app, &note, field::TEXT), FieldValue::Str("v2".into()), "a save while editing commits it");
+    assert_eq!(app.mirror.text(&note), "v2");
+    assert!(app.nodes[&note].as_note().unwrap().editing, "a save doesn't end the edit");
+    type_into(&mut app, &note, "v3");
+    app.blur_note(&note);
+    assert!(!app.nodes[&note].as_note().unwrap().editing);
+    assert_eq!(stored(&app, &note, field::TEXT), FieldValue::Str("v3".into()), "the blur commits it");
+    assert_eq!((app.mirror.text(&note), app.note_text(&note)), ("v3", "v3"));
+}
+
+/// Ruling 7: a remote text change that arrives while the note is typed in leaves the box alone and is held. At the
+/// blur, what the user typed wins and the held value is dropped; with nothing typed, the held value applies.
+#[test]
+fn a_remote_text_change_is_held_while_the_note_is_typed_in() {
+    for typed in [true, false] {
+        let path = temp_dir("text-held").join("session.mnf");
+        let mut app = app_on(&path, 1);
+        let note = add(&mut app, NodePayload::Note(NotePayload { text: "v1".into(), editing: false, url: None }));
+        assert!(app.save_session());
+        let mut other = Journal::open(&path, ActorId(2)).unwrap();
+        type_into(&mut app, &note, "v1");
+        remote_set(&mut other, &note, field::TEXT, FieldValue::Str("theirs".into()));
+        remote_set(&mut other, &note, field::COLOR, red());
+        assert!(app.save_session());
+        assert_eq!(buffer(&app, &note), "v1", "the box is not overwritten");
+        assert_eq!(app.mirror.text(&note), "v1", "held");
+        assert_eq!(app.held_text.get(&note).map(String::as_str), Some("theirs"));
+        assert_eq!(app.mirror.color(&note), Some(egui::Color32::RED), "their other field arrives");
+        if typed {
+            type_into(&mut app, &note, "mine");
+        }
+        app.blur_note(&note);
+        let want = if typed { "mine" } else { "theirs" };
+        assert_eq!((app.mirror.text(&note), buffer(&app, &note).as_str()), (want, want), "typed: {typed}");
+        assert_eq!(stored(&app, &note, field::TEXT), FieldValue::Str(want.into()), "typed: {typed}");
+        assert!(app.held_text.is_empty(), "typed: {typed}");
+    }
+}
+
+/// Ruling 7, a commit between: text a save already committed is older than a remote change held after it, so with
+/// nothing typed since, the held value applies at the blur. A remote change the save's own commit overwrote is dropped.
+#[test]
+fn a_held_text_change_follows_the_order_of_the_commits() {
+    let path = temp_dir("text-held-order").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let note = add(&mut app, NodePayload::Note(NotePayload { text: "v1".into(), editing: false, url: None }));
+    assert!(app.save_session());
+    let mut other = Journal::open(&path, ActorId(2)).unwrap();
+    // Typed, then their change, then a save: it applies theirs (held), then commits ours over it.
+    type_into(&mut app, &note, "mine");
+    remote_set(&mut other, &note, field::TEXT, FieldValue::Str("before".into()));
+    assert!(app.save_session());
+    assert_eq!(stored(&app, &note, field::TEXT), FieldValue::Str("mine".into()));
+    assert!(app.held_text.is_empty(), "the commit came after theirs");
+    // Their change after that commit, nothing typed since: theirs applies at the blur.
+    remote_set(&mut other, &note, field::TEXT, FieldValue::Str("after".into()));
+    assert!(app.save_session());
+    assert_eq!(buffer(&app, &note), "mine");
+    app.blur_note(&note);
+    assert_eq!((app.mirror.text(&note), buffer(&app, &note).as_str()), ("after", "after"));
+    assert_eq!(stored(&app, &note, field::TEXT), FieldValue::Str("after".into()));
+}
+
+/// As before 2b-4: a note nobody is typing in shows another replica's text at once.
+#[test]
+fn a_remote_text_change_updates_an_idle_note() {
+    let path = temp_dir("text-idle").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let note = add(&mut app, NodePayload::Note(NotePayload { text: "v1".into(), editing: false, url: None }));
+    assert!(app.save_session());
+    let mut other = Journal::open(&path, ActorId(2)).unwrap();
+    remote_set(&mut other, &note, field::TEXT, FieldValue::Str("theirs".into()));
+    assert!(app.save_session());
+    assert_eq!((app.mirror.text(&note), app.note_text(&note)), ("theirs", "theirs"));
+    assert_eq!(buffer(&app, &note), "theirs");
+    assert!(app.held_text.is_empty());
+}
+
+/// Ruling 6: a note can reach 1 MB, so the per-frame reader borrows: the mirror's own string when idle, the box's
+/// buffer while typed in; neither is a copy.
+#[test]
+fn a_large_note_edit_does_not_clone_per_frame() {
+    let mut app = App::default();
+    let text = "x".repeat(1 << 20);
+    let note = add(&mut app, NodePayload::Note(NotePayload { text, editing: false, url: None }));
+    let idle: &str = app.note_text(&note);
+    assert_eq!(idle.as_ptr(), app.mirror.text(&note).as_ptr(), "idle: the mirror's string");
+    assert_eq!(app.mirror.text(&note).as_ptr(), app.mirror.text(&note).as_ptr(), "`Mirror::text` borrows");
+    app.nodes.get_mut(&note).unwrap().as_note_mut().unwrap().editing = true;
+    let editing: &str = app.note_text(&note);
+    assert_eq!(editing.as_ptr(), app.nodes[&note].as_note().unwrap().text.as_ptr(), "editing: the buffer");
 }
 
 #[test]

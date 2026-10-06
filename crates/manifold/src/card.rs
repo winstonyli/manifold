@@ -860,14 +860,14 @@ pub(crate) fn node_card_rect(pos: egui::Vec2, payload: &NodePayload) -> egui::Re
 }
 
 /// What the Graph filter box matches a card against: a tab's title and
-/// URL, a download's full path, a note's text, a file node's filename, a
+/// URL, a download's full path, a note's text (`note_text`, `App::note_text`), a file node's filename, a
 /// group's name.
-pub(crate) fn card_filter_text(payload: &NodePayload) -> Vec<&str> {
+pub(crate) fn card_filter_text<'a>(payload: &'a NodePayload, note_text: &'a str) -> Vec<&'a str> {
     match payload {
         NodePayload::Tab(tab) => vec![&tab.title, &tab.url],
         NodePayload::Unloaded(tab) => vec![&tab.title, &tab.url],
         NodePayload::Download(download) => vec![&download.path],
-        NodePayload::Note(note) => vec![&note.text],
+        NodePayload::Note(_) => vec![note_text],
         NodePayload::Image(image) => vec![download_filename(&image.path)],
         NodePayload::Pdf(pdf) => vec![download_filename(&pdf.path)],
         NodePayload::Json(json) => vec![download_filename(&json.path)],
@@ -895,18 +895,23 @@ fn missing_engine_phrases(state: &crate::engine_install::EngineState) -> (&'stat
 }
 
 impl App {
-    /// Ends every note edit, saving if one was on. A note's TextEdit that
+    /// Ends every note edit (`end_note_edit`), saving if one was on. A note's TextEdit that
     /// stops being laid out (its level left, the view changed) loses focus
     /// without `lost_focus()` ever firing, so `editing` would stay on.
     pub(crate) fn end_note_edits(&mut self) -> bool {
-        let mut ended = false;
-        for note in self.nodes.values_mut().filter_map(|n| n.as_note_mut()) {
-            ended |= std::mem::take(&mut note.editing);
+        let editing: Vec<String> = self
+            .nodes
+            .iter()
+            .filter(|(_, n)| n.as_note().is_some_and(|note| note.editing))
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in &editing {
+            self.end_note_edit(id);
         }
-        if ended {
+        if !editing.is_empty() {
             self.save_session();
         }
-        ended
+        !editing.is_empty()
     }
 
     /// Every group's members, in `node_order`: built once per card pass.
@@ -1015,8 +1020,9 @@ impl App {
         };
         // Screen readers: the card is a button named by its kind and title (egui announces it on focus).
         if let Some(node) = self.nodes.get(id) {
+            let note_text = self.note_text(id);
             response.widget_info(|| {
-                egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), node.accessible_name())
+                egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), node.accessible_name(note_text))
             });
         }
         // Keyboard: a focus ring, the camera follows focus, and the Tab-order number while navigating.
@@ -1163,7 +1169,7 @@ impl App {
             dim_if_filtered_out(
                 deferred_overlays,
                 &self.graph_filter,
-                &card_filter_text(&node.payload),
+                &card_filter_text(&node.payload, self.note_text(id)),
                 rect,
                 style.dim_rounding,
             );
@@ -1436,7 +1442,7 @@ impl App {
 
         ui.painter().rect_filled(paper, 4.0 * inv_zoom, NOTE_CARD_COLOR);
         if !self.graph_lod_simplified {
-            let words = self.nodes.get(id).and_then(|n| n.as_note()).map_or(0, |n| n.text.split_whitespace().count());
+            let words = self.note_text(id).split_whitespace().count();
             let header = CardHeader {
                 glyph: Some(egui_phosphor::light::NOTE_PENCIL),
                 glyph_color: None,
@@ -1467,22 +1473,15 @@ impl App {
                     )
                     .lost_focus();
             }
-            // Committed on blur, not on every keystroke -- a note is
-            // persisted (unlike every other per-node display state
-            // in the session store, see `NotePayload`'s own doc
-            // comment), and `save_session` is real file I/O, so
-            // writing it once per edit *session* rather than once
-            // per character avoids hammering disk while typing.
+            // The box edits the payload, the edit buffer; the mirror gets it on blur (and at each save), not on
+            // every keystroke -- a note can reach 1 MB, and `save_session` is real file I/O (2b-4 Ruling 6).
             if lost_focus {
-                if let Some(note) = self.nodes.get_mut(id).and_then(|n| n.as_note_mut()) {
-                    note.editing = false;
-                }
                 // Escape ends the edit; focus goes back to the card so keyboard users keep their place
                 // (a click elsewhere keeps the focus it took).
                 if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                     ui.memory_mut(|m| m.request_focus(egui::Id::new(("graph_card", id))));
                 }
-                self.save_session();
+                self.blur_note(id);
             }
         } else if !self.graph_lod_simplified {
             // LOD: skip the markdown render (real parsing +
@@ -1494,9 +1493,9 @@ impl App {
             // its live `TextEdit` yanked out from under the
             // user just because the rest of the graph got
             // busy.
-            // Borrowed, not cloned: `text` borrows `self.nodes` and `cache` `self.commonmark_cache`, two
-            // disjoint fields.
-            let text = self.nodes.get(id).and_then(|n| n.as_note()).map_or("", |n| n.text.as_str());
+            // Borrowed, not cloned (2b-4 Ruling 6): `text` borrows `self.mirror` and `cache` `self.commonmark_cache`,
+            // two disjoint fields. Not being typed in, the note shows the mirror's text (`App::note_text`).
+            let text = self.mirror.text(id);
             let cache = &mut self.commonmark_cache;
             ui.scope_builder(
                 egui::UiBuilder::new().max_rect(text_rect).layout(egui::Layout::top_down(egui::Align::LEFT)),
@@ -2843,6 +2842,10 @@ mod tests {
 
     #[test]
     fn card_filter_text_matches_each_kinds_filter_input() {
+        // A note matches on the text it shows (`App::note_text`), passed in.
+        fn filter(payload: &NodePayload) -> Vec<&str> {
+            card_filter_text(payload, "buy milk")
+        }
         let download = NodePayload::Download(DownloadPayload {
             path: "C:/dl/f.bin".into(),
             url: None,
@@ -2852,13 +2855,13 @@ mod tests {
             failed: false,
         });
         // Download filters on its full path; the file kinds on the filename only.
-        assert_eq!(card_filter_text(&download), ["C:/dl/f.bin"]);
+        assert_eq!(filter(&download), ["C:/dl/f.bin"]);
         assert_eq!(
-            card_filter_text(&NodePayload::Note(NotePayload { text: "buy milk".into(), editing: false, url: None })),
+            filter(&NodePayload::Note(NotePayload { text: String::new(), editing: false, url: None })),
             ["buy milk"]
         );
         assert_eq!(
-            card_filter_text(&NodePayload::Image(ImagePayload {
+            filter(&NodePayload::Image(ImagePayload {
                 path: "C:/pics/cat.png".into(),
                 width: 1,
                 height: 1,
@@ -2868,15 +2871,11 @@ mod tests {
             ["cat.png"]
         );
         assert_eq!(
-            card_filter_text(&NodePayload::Pdf(PdfPayload {
-                path: "C:/docs/paper.pdf".into(),
-                outcome: None,
-                url: None
-            })),
+            filter(&NodePayload::Pdf(PdfPayload { path: "C:/docs/paper.pdf".into(), outcome: None, url: None })),
             ["paper.pdf"]
         );
         assert_eq!(
-            card_filter_text(&NodePayload::Json(JsonPayload {
+            filter(&NodePayload::Json(JsonPayload {
                 path: "C:/data/x.json".into(),
                 value: std::sync::Arc::new(serde_json::json!(1)),
                 key: None,
@@ -2886,11 +2885,11 @@ mod tests {
             })),
             ["x.json"]
         );
-        assert_eq!(card_filter_text(&NodePayload::Group(GroupPayload::named("Reading"))), ["Reading"]);
+        assert_eq!(filter(&NodePayload::Group(GroupPayload::named("Reading"))), ["Reading"]);
         // Like a live tab: title and url, so the Graph filter can match a
         // sleeping card by its saved title, not just its url.
         assert_eq!(
-            card_filter_text(&NodePayload::Unloaded(UnloadedTabPayload {
+            filter(&NodePayload::Unloaded(UnloadedTabPayload {
                 url: "https://example.org/".into(),
                 title: "Example".into(),
                 muted: false,
@@ -2900,7 +2899,7 @@ mod tests {
             ["Example", "https://example.org/"]
         );
         assert_eq!(
-            card_filter_text(&NodePayload::Unloaded(UnloadedTabPayload {
+            filter(&NodePayload::Unloaded(UnloadedTabPayload {
                 url: "https://example.org/".into(),
                 title: String::new(),
                 muted: false,

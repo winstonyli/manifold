@@ -2139,7 +2139,11 @@ mod tests {
             let rect = egui::Rect::from_min_size(egui::pos2(10.0, 10.0), egui::vec2(50.0, 50.0));
             let response = ui.interact(rect, egui::Id::new(("graph_card", g.as_str())), egui::Sense::click());
             response.widget_info(|| {
-                egui::WidgetInfo::labeled(egui::WidgetType::Button, true, app.nodes[&g].accessible_name())
+                egui::WidgetInfo::labeled(
+                    egui::WidgetType::Button,
+                    true,
+                    app.nodes[&g].accessible_name(app.note_text(&g)),
+                )
             });
         });
         output.textures_delta.clear();

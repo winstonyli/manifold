@@ -89,13 +89,17 @@ pub(crate) fn tab_title(app: &App, id: &str) -> Option<String> {
     (!title.is_empty()).then(|| title.clone())
 }
 
-/// `fields` (`id`'s, from `shared_nodes`) as the user saw the node: a tab's `url` replaced by its live one, and `pos`
+/// `fields` (`id`'s, from `shared_nodes`) as the user saw the node: a tab's `url` replaced by its live one, a note's
+/// `text` by what its card shows (`App::note_text`: a box being typed in holds text no save has committed), and `pos`
 /// by where its card was drawn (`App::layout`). Recently Closed reopens the page that was closed, not the shared url
 /// the mirror holds (2b-3 Ruling 1), where it was shown, not at its document pos (2b-4 Ruling 10).
 fn live_fields(app: &App, id: &str, fields: &session_sync::Fields) -> session_sync::Fields {
     let mut fields = fields.clone();
     if let Some(url) = app.nodes.get(id).and_then(|n| n.payload.saved_tab()) {
         fields.insert(field::URL, store::model::FieldValue::Str(url.to_owned()));
+    }
+    if fields.contains_key(&field::TEXT) {
+        fields.insert(field::TEXT, store::model::FieldValue::Str(app.note_text(id).to_owned()));
     }
     if app.layout.contains_key(id) && fields.contains_key(&field::POS) {
         fields.insert(field::POS, session_sync::pos_value(app.layout_pos(id)));
@@ -375,6 +379,18 @@ mod tests {
         let reopened = app.nodes.keys().find(|id| **id != note).unwrap().clone();
         assert_eq!(app.layout_pos(&reopened), egui::vec2(70.0, 80.0));
         assert_eq!(app.mirror.pos(&reopened), Some(egui::vec2(70.0, 80.0)));
+    }
+
+    /// A note closed while it is typed in records what the box held, which no save has committed yet.
+    #[test]
+    fn a_closed_note_records_what_was_typed() {
+        let mut app = App::default();
+        let note = NodePayload::Note(crate::node::NotePayload { text: "n".into(), editing: false, url: None });
+        let note = app.place_node(None, note, crate::fetched::Placement { group: None, pos: egui::vec2(10.0, 20.0) });
+        let n = app.nodes.get_mut(&note).unwrap().as_note_mut().unwrap();
+        (n.editing, n.text) = (true, "typed".into());
+        let entry = closed_entry(&app, &note).unwrap();
+        assert_eq!(entry.doc.nodes[0].fields.get("text"), Some(&serde_json::json!("typed")));
     }
 
     #[test]

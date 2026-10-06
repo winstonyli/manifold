@@ -17,9 +17,10 @@ use crate::store::model::{field, field_def, FieldValue};
 /// kind that has it, but only tabs seed and read it; content kinds read their payload's until 2b-5 (2b-3 Ruling 2).
 /// `JAR` and `JAR_SET` are a tab's jar choice (`jar_choice`), written together by `App::edit_jar`. `ENGINE` is a tab's
 /// engine as its stored code (`engine`), written by `App::edit_engine`. `POS` is the document pos (`pos`), written by
-/// `App::edit_pos`; where a card is drawn is `App::layout`, which the document never reads (2b-4 Ruling 1).
+/// `App::edit_pos`; where a card is drawn is `App::layout`, which the document never reads (2b-4 Ruling 1). `TEXT` is a
+/// note's text (`text`), written by `App::edit_text` at a save or blur; the note's payload is its edit buffer.
 pub(crate) const MIRRORED: &[u32] =
-    &[field::POS, field::COLOR, field::PINNED, field::URL, field::ENGINE, field::JAR, field::JAR_SET];
+    &[field::POS, field::COLOR, field::PINNED, field::URL, field::TEXT, field::ENGINE, field::JAR, field::JAR_SET];
 
 #[derive(Default)]
 pub(crate) struct Mirror {
@@ -93,6 +94,16 @@ impl Mirror {
         }
     }
 
+    /// A note's text: the document's, or what the last save or blur committed (`App::edit_text`). "" when the mirror
+    /// has none. Borrowed from the stored string, never a copy: a note can reach 1 MB and the card reads it every
+    /// frame (2b-4 Ruling 6). While the note is typed in, the card shows its edit buffer instead (`App::note_text`).
+    pub(crate) fn text(&self, id: &str) -> &str {
+        match self.nodes.get(id).and_then(|fields| fields.get(&field::TEXT)) {
+            Some(FieldValue::Str(text)) => text,
+            _ => "",
+        }
+    }
+
     pub(crate) fn color(&self, id: &str) -> Option<egui::Color32> {
         color_of(&self.get(id, field::COLOR))
     }
@@ -151,21 +162,23 @@ impl Mirror {
             parent: self.parent(id).map(str::to_owned),
             group: self.group(id).map(str::to_owned),
             url: self.url(id),
+            text: self.text(id).to_owned(),
             engine: self.engine_code(id),
             jar: self.jar_choice(id),
         }
     }
 
-    /// `init` for everything a node carries. No pos, an empty `url`, engine code 0 and the default, unset jar (any
+    /// `init` for everything a node carries. No pos, an empty `url` or `text`, engine code 0 and the default, unset jar (any
     /// node but a tab) are the fields' absent values, so they are left out.
     pub(crate) fn seed(&mut self, id: &str, carried: &Carried) {
         let pos = carried.pos.map(|pos| (field::POS, pos_value(pos)));
         let url = (!carried.url.is_empty()).then(|| (field::URL, FieldValue::Str(carried.url.clone())));
+        let text = (!carried.text.is_empty()).then(|| (field::TEXT, FieldValue::Str(carried.text.clone())));
         let engine = (carried.engine != 0).then_some((field::ENGINE, FieldValue::Engine(carried.engine)));
         let jar = carried.jar.jar.is_some().then_some((field::JAR, FieldValue::Id(carried.jar.jar)));
         let jar_set = carried.jar.set.then_some((field::JAR_SET, FieldValue::Bool(true)));
         let fields = [(field::COLOR, color_value(carried.color)), (field::PINNED, FieldValue::Bool(carried.pinned))];
-        self.init(id, fields.into_iter().chain(pos).chain(url).chain(engine).chain(jar).chain(jar_set));
+        self.init(id, fields.into_iter().chain(pos).chain(url).chain(text).chain(engine).chain(jar).chain(jar_set));
         if !self.links.contains_key(id) {
             let links = Links { parent: carried.parent.clone(), group: carried.group.clone() };
             self.links.insert(id.to_owned(), links);
@@ -185,6 +198,8 @@ pub(crate) struct Carried {
     pub group: Option<String>,
     /// The shared url (`Mirror::url`); "" for a node that isn't a tab.
     pub url: String,
+    /// A note's text (`Mirror::text`): what a new note starts with, which its `Create` carries; "" for other kinds.
+    pub text: String,
     /// The engine's stored code (`Mirror::engine` decodes it, `session_sync::engine_code` makes one); 0, the absent
     /// value, for a node that isn't a tab.
     pub engine: u64,
@@ -206,6 +221,7 @@ mod tests {
             parent: Some("p".into()),
             group: Some("g".into()),
             url: "https://a/".into(),
+            text: "note".into(),
             engine: 99,
             jar: JarChoice {
                 jar: Some(crate::store::model::NodeId { actor: crate::store::model::ActorId(1), counter: 2 }),
@@ -254,6 +270,18 @@ mod tests {
         assert!(!mirror.nodes["8"].contains_key(&field::URL), "an empty url seeds nothing");
         mirror.set("7", field::URL, FieldValue::Str("https://a/".into()));
         assert_eq!(mirror.url("7"), "https://a/");
+    }
+
+    #[test]
+    fn a_text_reads_back_borrowed_and_a_node_without_one_has_none() {
+        let mut mirror = Mirror::default();
+        assert_eq!(mirror.text("7"), "");
+        mirror.seed("8", &Carried::default());
+        assert!(!mirror.nodes["8"].contains_key(&field::TEXT), "an empty text seeds nothing");
+        mirror.set("7", field::TEXT, FieldValue::Str("hello".into()));
+        assert_eq!(mirror.text("7"), "hello");
+        let FieldValue::Str(stored) = &mirror.nodes["7"][&field::TEXT] else { panic!("a Str") };
+        assert_eq!(mirror.text("7").as_ptr(), stored.as_ptr(), "the stored string, not a copy (2b-4 Ruling 6)");
     }
 
     #[test]

@@ -760,8 +760,8 @@ impl App {
                 }
             }
             NodeAction::CopyText => {
-                if let Some(text) = self.nodes.get(id).and_then(|n| n.as_note()).map(|n| n.text.clone()) {
-                    ctx.copy_text(text);
+                if self.nodes.get(id).is_some_and(|n| n.as_note().is_some()) {
+                    ctx.copy_text(self.note_text(id).to_owned());
                 }
             }
             NodeAction::Reveal => self.reveal_node(id),

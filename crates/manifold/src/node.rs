@@ -157,6 +157,9 @@ pub(crate) fn item_node_kind(payload: &NodePayload) -> ItemNodeKind {
 /// or a group's own membership -- losing it on restart would defeat the
 /// point of writing one down.
 pub(crate) struct NotePayload {
+    /// The text box's edit buffer (2b-4 Ruling 6). The text is the mirror's (`Mirror::text`); this copy follows it
+    /// (`update_live_node`, `end_note_edit`) except while the box is typed in, when it holds what the user typed until
+    /// a save or the blur commits it (`App::edit_text`). Read through `App::note_text`.
     pub(crate) text: String,
     /// `true` shows a real, focused `TextEdit` (today's own behavior);
     /// `false` renders `text` as real Markdown (`egui_commonmark`) instead,
@@ -437,8 +440,9 @@ impl Layout {
 
 impl GraphNode {
     /// What a screen reader announces for the node's card: its kind, then what identifies it. A local file (no
-    /// web source) is named by its file name.
-    pub(crate) fn accessible_name(&self) -> String {
+    /// web source) is named by its file name; a note by the first line of `note_text`, the text its card shows
+    /// (`App::note_text`), ignored for other kinds.
+    pub(crate) fn accessible_name(&self, note_text: &str) -> String {
         let first_nonempty = |parts: &[&str]| parts.iter().find(|p| !p.trim().is_empty()).map(|p| p.trim().to_string());
         // Either separator: a saved path may come from the other platform.
         let file_name =
@@ -451,9 +455,9 @@ impl GraphNode {
             NodePayload::Group(g) => {
                 ("Group", Some(crate::names::to_plain(&crate::names::display_name(&g.name, crate::names::UNTITLED))))
             }
-            NodePayload::Note(n) => {
+            NodePayload::Note(_) => {
                 // The note's text is never cleaned; its first non-blank line is shown by the display rule.
-                let first = n.text.lines().map(str::trim).find(|l| !l.is_empty());
+                let first = note_text.lines().map(str::trim).find(|l| !l.is_empty());
                 ("Note", first.map(|l| crate::names::to_plain(&crate::names::display_name(l, crate::names::UNTITLED))))
             }
             NodePayload::Image(p) => ("Image", source_or_file(&p.path)),
@@ -605,7 +609,7 @@ mod tests {
         let (g, n) = (app.alloc_node_id(), app.alloc_node_id());
         app.insert_group_at(g.clone(), None);
         app.insert_note_at(n.clone(), None);
-        let name = |app: &crate::App, id: &str| app.nodes[id].accessible_name();
+        let name = |app: &crate::App, id: &str| app.nodes[id].accessible_name(app.note_text(id));
         assert_eq!(name(&app, &n), "Note");
         app.nodes.get_mut(&n).unwrap().payload.as_note_mut().unwrap().text = "
   first line
@@ -635,8 +639,8 @@ second"
                 url: url.map(str::to_string),
             }))
         };
-        assert_eq!(pdf(None).accessible_name(), "PDF: report.pdf");
-        assert_eq!(pdf(Some("https://example.org/r.pdf")).accessible_name(), "PDF: https://example.org/r.pdf");
+        assert_eq!(pdf(None).accessible_name(""), "PDF: report.pdf");
+        assert_eq!(pdf(Some("https://example.org/r.pdf")).accessible_name(""), "PDF: https://example.org/r.pdf");
         let image = node(NodePayload::Image(ImagePayload {
             path: "/home/u/cat.png".into(),
             width: 1,
@@ -644,7 +648,7 @@ second"
             error: None,
             url: None,
         }));
-        assert_eq!(image.accessible_name(), "Image: cat.png");
+        assert_eq!(image.accessible_name(""), "Image: cat.png");
         let json = node(NodePayload::Json(JsonPayload {
             path: r"D:\data\x.json".into(),
             value: Default::default(),
@@ -653,7 +657,7 @@ second"
             url: None,
             view: JsonView::default(),
         }));
-        assert_eq!(json.accessible_name(), "JSON: x.json");
+        assert_eq!(json.accessible_name(""), "JSON: x.json");
     }
 
     /// An unloaded tab's card is saved, exported and copied as its tab.

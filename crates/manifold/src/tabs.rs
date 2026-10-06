@@ -446,7 +446,17 @@ impl App {
                 let pos = Some(pos);
                 self.seed_landing(
                     &id,
-                    Carried { pos, color, pinned, parent, group, url: url.clone(), engine, jar: spawn_jar },
+                    Carried {
+                        pos,
+                        color,
+                        pinned,
+                        parent,
+                        group,
+                        url: url.clone(),
+                        text: String::new(),
+                        engine,
+                        jar: spawn_jar,
+                    },
                 );
                 if !self.node_order.iter().any(|t| t == &id) {
                     self.node_order.push(id.clone());
@@ -569,7 +579,10 @@ impl App {
                     // it started (`edit_engine`); a new one lands on it here.
                     let engine = session_sync::engine_code(kind);
                     let (pos, jar) = (Some(pos), spawn_jar);
-                    self.seed_landing(&id, Carried { pos, color, pinned, parent, group, url, engine, jar });
+                    self.seed_landing(
+                        &id,
+                        Carried { pos, color, pinned, parent, group, url, text: String::new(), engine, jar },
+                    );
                     if !self.node_order.iter().any(|t| t == &id) {
                         self.node_order.push(id.clone());
                     }
