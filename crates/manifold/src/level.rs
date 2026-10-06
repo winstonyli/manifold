@@ -10,7 +10,7 @@ use super::*;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum LevelItemKind {
     /// A stored node's card.
-    Node(ItemNodeKind),
+    Node(CardKind),
     /// A JSON level's card (`json_level.rs`).
     JsonCard,
 }
@@ -42,11 +42,18 @@ pub(crate) struct LevelEdge {
 }
 
 impl App {
+    /// The current level's stored nodes by draw layer (`Caps::draw_layer`),
+    /// each layer in `node_order`: one scan per layer, as the per-kind
+    /// scans always were (Task 3 of 2b-6 makes it one pass).
+    pub(crate) fn level_scan(&self) -> [Vec<String>; crate::caps::DRAW_LAYERS] {
+        std::array::from_fn(|layer| self.nodes_at_current_level(|kind| usize::from(kind.caps().draw_layer) == layer))
+    }
+
     /// The current level's items, bottom-first in draw order: stored
-    /// nodes kind by kind in `GRAPH_DRAW_ORDER`, and each kind in
+    /// nodes layer by layer (`level_scan`), and each layer in
     /// `node_order`.
     pub(crate) fn level_items(&self) -> Vec<LevelItem> {
-        self.level_items_from(&GRAPH_DRAW_ORDER.map(|kind| self.nodes_at_current_level(kind)))
+        self.level_items_from(&self.level_scan())
     }
 
     /// `level_items` from an `at_level` scan already made this frame
@@ -63,7 +70,7 @@ impl App {
             .filter_map(|id| {
                 let node = self.nodes.get(id)?;
                 Some(LevelItem {
-                    kind: LevelItemKind::Node(item_node_kind(&node.payload)),
+                    kind: LevelItemKind::Node(self.card_kind(id)?),
                     rect: node_card_rect(self.layout_pos(id), &node.payload),
                     id: id.clone(),
                 })
@@ -158,12 +165,12 @@ mod tests {
         app.edit_group("inner", Some("g".into()));
 
         let top: Vec<(String, LevelItemKind)> = app.level_items().into_iter().map(|i| (i.id, i.kind)).collect();
-        // Downloads draw before groups (`GRAPH_DRAW_ORDER`), whatever the insertion order.
+        // Downloads draw before groups (`Caps::draw_layer`), whatever the insertion order.
         assert_eq!(
             top,
             [
-                ("d".to_string(), LevelItemKind::Node(ItemNodeKind::Download)),
-                ("g".to_string(), LevelItemKind::Node(ItemNodeKind::Group)),
+                ("d".to_string(), LevelItemKind::Node(ItemNodeKind::Download.into())),
+                ("g".to_string(), LevelItemKind::Node(ItemNodeKind::Group.into())),
             ]
         );
         assert_eq!(app.level_items()[0].rect, node_card_rect(app.layout_pos("d"), &app.nodes["d"].payload));
@@ -179,8 +186,7 @@ mod tests {
         for _ in 0..3 {
             app.new_note_shortcut();
         }
-        let at_level = GRAPH_DRAW_ORDER.map(|kind| app.nodes_at_current_level(kind));
-        assert_eq!(app.level_items_from(&at_level), app.level_items());
+        assert_eq!(app.level_items_from(&app.level_scan()), app.level_items());
     }
 
     #[test]

@@ -184,7 +184,7 @@ impl App {
                 // A Tab's Graph button lives in its nav chip (see
                 // `render_tab_toolbar_content`); other kinds keep it standalone.
                 let graph_in_chip =
-                    self.nodes.get(node_id).is_some_and(|n| item_node_kind(&n.payload) == ItemNodeKind::Tab);
+                    self.card_kind(node_id).is_some_and(|k| k.ty == crate::store::model::TYPE_TAB && k.loaded());
                 if !graph_in_chip && render_return_to_graph(ui) {
                     back_to_graph = true;
                 }
@@ -208,19 +208,13 @@ impl App {
         ui: &mut egui::Ui,
         trailing_ui: &mut egui::Ui,
     ) -> ItemToolbarActions {
-        let kind = match self.nodes.get(node_id) {
-            Some(node) => item_node_kind(&node.payload),
-            None => return ItemToolbarActions::default(),
-        };
-        match kind {
-            ItemNodeKind::Tab => self.render_tab_toolbar_content(node_id, ui, trailing_ui),
-            ItemNodeKind::Image => self.render_image_toolbar_content(node_id, ui, trailing_ui),
-            ItemNodeKind::Unloaded
-            | ItemNodeKind::Download
-            | ItemNodeKind::Group
-            | ItemNodeKind::Note
-            | ItemNodeKind::Pdf
-            | ItemNodeKind::Json => ItemToolbarActions::default(),
+        use crate::store::model::{TYPE_IMAGE, TYPE_TAB};
+        let Some(kind) = self.card_kind(node_id) else { return ItemToolbarActions::default() };
+        match kind.ty {
+            TYPE_TAB if kind.loaded() => self.render_tab_toolbar_content(node_id, ui, trailing_ui),
+            TYPE_IMAGE => self.render_image_toolbar_content(node_id, ui, trailing_ui),
+            // An unloaded tab and every other kind have no toolbar content of their own.
+            _ => ItemToolbarActions::default(),
         }
     }
 

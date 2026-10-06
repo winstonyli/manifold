@@ -2,6 +2,9 @@
 //! styles, corner controls and drop rules, and each kind's body painter.
 
 use super::*;
+use crate::store::model::{
+    TYPE_DOWNLOAD, TYPE_GROUP, TYPE_IMAGE, TYPE_JSON, TYPE_JSON_LEAF, TYPE_NOTE, TYPE_PDF, TYPE_TAB,
+};
 
 pub(crate) const GRAPH_NODE_SIZE: egui::Vec2 = egui::vec2(160.0, 110.0);
 
@@ -397,7 +400,7 @@ pub(crate) struct CardStyle {
     pub(crate) dim_rounding: f32,
 }
 
-pub(crate) fn card_style(kind: ItemNodeKind, visuals: &egui::Visuals) -> CardStyle {
+pub(crate) fn card_style(kind: CardKind, visuals: &egui::Visuals) -> CardStyle {
     let themed = CardStyle {
         fill: visuals.extreme_bg_color,
         border_hover: visuals.text_color(),
@@ -407,12 +410,10 @@ pub(crate) fn card_style(kind: ItemNodeKind, visuals: &egui::Visuals) -> CardSty
         close_icon: visuals.text_color(),
         dim_rounding: 4.0,
     };
-    match kind {
-        ItemNodeKind::Note | ItemNodeKind::Download | ItemNodeKind::Tab | ItemNodeKind::Unloaded => {
-            CardStyle { dim_rounding: 6.0, ..themed }
-        }
+    match kind.ty {
+        TYPE_NOTE | TYPE_DOWNLOAD | TYPE_TAB => CardStyle { dim_rounding: 6.0, ..themed },
         // ACCENT at rest, as group cards have always been.
-        ItemNodeKind::Group => CardStyle { border_idle: ACCENT, dim_rounding: 6.0, ..themed },
+        TYPE_GROUP => CardStyle { border_idle: ACCENT, dim_rounding: 6.0, ..themed },
         _ => themed,
     }
 }
@@ -440,7 +441,7 @@ pub(crate) struct CardOutput {
 /// node, snapshotted once up front (`App::card_view`) so nothing holds a
 /// node borrow across the frame's `&mut self` calls.
 pub(crate) struct CardView {
-    pub(crate) kind: ItemNodeKind,
+    pub(crate) kind: CardKind,
     pub(crate) color: Option<egui::Color32>,
     /// In a group: its cards show the eject button.
     pub(crate) in_group: bool,
@@ -492,13 +493,13 @@ impl CardControl {
         matches!(self, CardControl::Eject | CardControl::Close)
     }
 
-    pub(crate) fn action(self, kind: ItemNodeKind) -> NodeAction {
+    pub(crate) fn action(self, kind: CardKind) -> NodeAction {
         match self {
             CardControl::Swatch => NodeAction::CycleColor,
             CardControl::Pin => NodeAction::TogglePin,
             CardControl::Audio => NodeAction::ToggleMute,
             CardControl::Eject => NodeAction::RemoveFromGroup,
-            CardControl::Close if crate::caps::bridge::is_container(kind) => NodeAction::Dissolve,
+            CardControl::Close if is_container(kind.ty) => NodeAction::Dissolve,
             CardControl::Close => NodeAction::Delete,
         }
     }
@@ -518,12 +519,14 @@ impl CardControl {
 
 /// What Del (the card's Close) does to a `kind` of card, for the focused card's key hint: the first word of the
 /// node menu's row hinted Del.
-pub(crate) fn del_verb(kind: ItemNodeKind) -> &'static str {
-    match kind {
-        ItemNodeKind::Group => "dissolve",
-        ItemNodeKind::Tab | ItemNodeKind::Unloaded => "close",
-        ItemNodeKind::Download => "remove",
-        ItemNodeKind::Note | ItemNodeKind::Image | ItemNodeKind::Pdf | ItemNodeKind::Json => "delete",
+pub(crate) fn del_verb(kind: CardKind) -> &'static str {
+    if is_container(kind.ty) {
+        return "dissolve";
+    }
+    match kind.ty {
+        TYPE_TAB => "close",
+        TYPE_DOWNLOAD => "remove",
+        _ => "delete",
     }
 }
 
@@ -534,11 +537,11 @@ pub(crate) fn del_verb(kind: ItemNodeKind) -> &'static str {
 /// - Download, Pdf: reveals the file. A PDF has no Item view, so it gets the other file card's click.
 ///
 /// A Note's click edits it in place and a Group or Json opens on double-click, in the caller.
-pub(crate) fn click_action(kind: ItemNodeKind) -> Option<NodeAction> {
-    match kind {
-        ItemNodeKind::Tab | ItemNodeKind::Unloaded | ItemNodeKind::Image => Some(NodeAction::Open),
-        ItemNodeKind::Download | ItemNodeKind::Pdf => Some(NodeAction::Reveal),
-        ItemNodeKind::Note | ItemNodeKind::Group | ItemNodeKind::Json => None,
+pub(crate) fn click_action(kind: CardKind) -> Option<NodeAction> {
+    match kind.ty {
+        TYPE_TAB | TYPE_IMAGE => Some(NodeAction::Open),
+        TYPE_DOWNLOAD | TYPE_PDF => Some(NodeAction::Reveal),
+        _ => None,
     }
 }
 
@@ -548,12 +551,12 @@ pub(crate) fn click_action(kind: ItemNodeKind) -> Option<NodeAction> {
 /// a grouped one, and the ✕ last, so it wins over anything under it.
 pub(crate) fn card_controls(view: &CardView) -> Vec<CardControl> {
     let mut controls = vec![CardControl::Swatch];
-    if matches!(view.kind, ItemNodeKind::Tab | ItemNodeKind::Unloaded) {
+    if view.kind.ty == TYPE_TAB {
         controls.push(CardControl::Pin);
         // Also while muted after audio stops, so a mute can always be
         // seen and undone from Graph view. An unloaded card has no engine
         // to be playing or muted, so it never gets this control.
-        if view.kind == ItemNodeKind::Tab && (view.audio_playing || view.muted) {
+        if view.kind.loaded() && (view.audio_playing || view.muted) {
             controls.push(CardControl::Audio);
         }
     }
@@ -569,7 +572,7 @@ pub(crate) fn card_controls(view: &CardView) -> Vec<CardControl> {
 pub(crate) enum DropTarget {
     /// The toolbar's back button, inside a group.
     BackButton,
-    Card(ItemNodeKind),
+    Card(CardKind),
 }
 
 /// What a drop does (`App::apply_drop`).
@@ -590,15 +593,15 @@ pub(crate) enum DropEffect {
 
 /// Every drag-and-drop rule in Graph view, for every kind. A group dropped on a group merges into it; the
 /// node menu's "Move into <group>" (`NodeAction::MoveToGroup`) is always a Join, so it nests one instead.
-pub(crate) fn drop_action(dragged: ItemNodeKind, target: DropTarget, inside_group: bool) -> Option<DropEffect> {
-    use crate::caps::bridge::{can_contain, is_container};
-    use ItemNodeKind::{Tab, Unloaded};
-    match (dragged, target, inside_group) {
-        (_, DropTarget::BackButton, true) => Some(DropEffect::Eject),
-        (dragged, DropTarget::Card(onto), _) if is_container(dragged) && is_container(onto) => Some(DropEffect::Merge),
-        (dragged, DropTarget::Card(onto), _) if can_contain(dragged, onto) => Some(DropEffect::Join),
-        (Tab | Unloaded, DropTarget::Card(Tab | Unloaded), false) => Some(DropEffect::GroupWith),
-        (Tab | Unloaded, DropTarget::Card(Tab | Unloaded), true) => Some(DropEffect::Reparent),
+pub(crate) fn drop_action(dragged: CardKind, target: DropTarget, inside_group: bool) -> Option<DropEffect> {
+    // A tab, live or sleeping, on both sides of a tab-onto-tab drop.
+    let tabs = |onto: CardKind| dragged.ty == TYPE_TAB && onto.ty == TYPE_TAB;
+    match (target, inside_group) {
+        (DropTarget::BackButton, true) => Some(DropEffect::Eject),
+        (DropTarget::Card(onto), _) if is_container(dragged.ty) && is_container(onto.ty) => Some(DropEffect::Merge),
+        (DropTarget::Card(onto), _) if can_contain(dragged, onto) => Some(DropEffect::Join),
+        (DropTarget::Card(onto), false) if tabs(onto) => Some(DropEffect::GroupWith),
+        (DropTarget::Card(onto), true) if tabs(onto) => Some(DropEffect::Reparent),
         _ => None,
     }
 }
@@ -927,9 +930,8 @@ impl App {
     /// `group_members`, built once for the whole pass.
     pub(crate) fn card_view(&self, id: &str, members: &HashMap<String, Vec<String>>) -> Option<CardView> {
         let node = self.nodes.get(id)?;
-        let kind = item_node_kind(&node.payload);
-        let members =
-            if kind == ItemNodeKind::Group { members.get(id).cloned().unwrap_or_default() } else { Vec::new() };
+        let kind = self.card_kind(id)?;
+        let members = if is_container(kind.ty) { members.get(id).cloned().unwrap_or_default() } else { Vec::new() };
         let tab = node.as_tab();
         Some(CardView {
             kind,
@@ -1002,7 +1004,7 @@ impl App {
         };
         // Space on a focused tab card toggles it in the selection, as the marquee would select it. Taken
         // before the interact, which would otherwise read it as a click and open the tab.
-        if matches!(view.kind, ItemNodeKind::Tab | ItemNodeKind::Unloaded)
+        if view.kind.ty == TYPE_TAB
             && ui.memory(|m| m.has_focus(card_id))
             && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Space))
             && !self.selected_tabs.remove(id)
@@ -1188,17 +1190,19 @@ impl App {
     ) -> CardBody {
         let (inv_zoom, zoom_scale) = (pass.inv_zoom, pass.zoom_scale);
         let deferred_overlays = &mut *pass.deferred_overlays;
-        match view.kind {
-            ItemNodeKind::Download => self.paint_download_body(ui, deferred_overlays, id, rect, inv_zoom, zoom_scale),
-            ItemNodeKind::Note => self.paint_note_body(ui, deferred_overlays, id, rect, inv_zoom, zoom_scale),
-            ItemNodeKind::Image => self.paint_image_body(ui, deferred_overlays, id, rect, inv_zoom, zoom_scale),
-            ItemNodeKind::Pdf => self.paint_pdf_body(ui, deferred_overlays, id, rect, inv_zoom, zoom_scale),
-            ItemNodeKind::Json => self.paint_json_body(ui, deferred_overlays, id, rect, zoom_scale),
-            ItemNodeKind::Group => self.paint_group_body(ui, pass, id, view, rect),
-            ItemNodeKind::Tab => self.paint_tab_body(ui, deferred_overlays, id, rect, inv_zoom, zoom_scale),
-            ItemNodeKind::Unloaded => {
-                self.paint_unloaded_tab_body(ui, deferred_overlays, id, rect, inv_zoom, zoom_scale)
+        match view.kind.ty {
+            TYPE_DOWNLOAD => self.paint_download_body(ui, deferred_overlays, id, rect, inv_zoom, zoom_scale),
+            TYPE_NOTE => self.paint_note_body(ui, deferred_overlays, id, rect, inv_zoom, zoom_scale),
+            TYPE_IMAGE => self.paint_image_body(ui, deferred_overlays, id, rect, inv_zoom, zoom_scale),
+            TYPE_PDF => self.paint_pdf_body(ui, deferred_overlays, id, rect, inv_zoom, zoom_scale),
+            TYPE_JSON | TYPE_JSON_LEAF => self.paint_json_body(ui, deferred_overlays, id, rect, zoom_scale),
+            TYPE_GROUP => self.paint_group_body(ui, pass, id, view, rect),
+            TYPE_TAB if view.kind.loaded() => {
+                self.paint_tab_body(ui, deferred_overlays, id, rect, inv_zoom, zoom_scale)
             }
+            TYPE_TAB => self.paint_unloaded_tab_body(ui, deferred_overlays, id, rect, inv_zoom, zoom_scale),
+            // A type this build doesn't know has no card of its own yet (2b-6 Ruling 8): the bare frame.
+            _ => CardBody { interact_rect: rect, tooltip: None },
         }
     }
 
@@ -2572,7 +2576,7 @@ mod tests {
     /// A `CardView` for `kind` with nothing set, for tests to override.
     fn test_view(kind: ItemNodeKind) -> CardView {
         CardView {
-            kind,
+            kind: kind.into(),
             color: None,
             in_group: false,
             overloaded: false,
@@ -2591,7 +2595,7 @@ mod tests {
         let style = CardStyle {
             border_idle: egui::Color32::GRAY,
             border_hover: egui::Color32::WHITE,
-            ..card_style(ItemNodeKind::Note, &egui::Visuals::dark())
+            ..card_style(ItemNodeKind::Note.into(), &egui::Visuals::dark())
         };
         let red = egui::Color32::RED;
         let view = |color| CardView { color, ..test_view(ItemNodeKind::Note) };
@@ -2654,7 +2658,7 @@ mod tests {
             let grouped = CardView { in_group: true, ..test_view(kind) };
             assert_eq!(card_controls(&grouped), vec![Swatch, Eject, Close], "{kind:?}");
             let close = if kind == ItemNodeKind::Group { NodeAction::Dissolve } else { NodeAction::Delete };
-            assert_eq!(Close.action(kind), close, "{kind:?}");
+            assert_eq!(Close.action(kind.into()), close, "{kind:?}");
         }
         // An unloaded card shows its pin too, but never the audio
         // indicator -- it has no engine to be playing or muted.
@@ -2681,12 +2685,13 @@ mod tests {
             }),
             vec![Swatch, Pin, Audio, Eject, Close]
         );
-        assert_eq!(Close.action(ItemNodeKind::Tab), NodeAction::Delete);
-        assert_eq!(Pin.action(ItemNodeKind::Tab), NodeAction::TogglePin);
-        assert_eq!(Audio.action(ItemNodeKind::Tab), NodeAction::ToggleMute);
+        let (tab, note) = (CardKind::from(ItemNodeKind::Tab), CardKind::from(ItemNodeKind::Note));
+        assert_eq!(Close.action(tab), NodeAction::Delete);
+        assert_eq!(Pin.action(tab), NodeAction::TogglePin);
+        assert_eq!(Audio.action(tab), NodeAction::ToggleMute);
         assert!(!Pin.hover_only() && !Audio.hover_only());
-        assert_eq!(Eject.action(ItemNodeKind::Note), NodeAction::RemoveFromGroup);
-        assert_eq!(Swatch.action(ItemNodeKind::Note), NodeAction::CycleColor);
+        assert_eq!(Eject.action(note), NodeAction::RemoveFromGroup);
+        assert_eq!(Swatch.action(note), NodeAction::CycleColor);
         assert!(Close.hover_only() && Eject.hover_only() && !Swatch.hover_only());
     }
 
@@ -2727,6 +2732,7 @@ mod tests {
     #[test]
     fn click_action_gives_a_pdf_the_download_click() {
         use ItemNodeKind as K;
+        let click_action = |kind: K| click_action(kind.into());
         assert_eq!(click_action(K::Pdf), Some(NodeAction::Reveal));
         assert_eq!(click_action(K::Pdf), click_action(K::Download));
         for kind in [K::Tab, K::Unloaded, K::Image] {
@@ -2740,7 +2746,8 @@ mod tests {
     #[test]
     fn drop_action_matches_the_drop_table() {
         use ItemNodeKind as K;
-        let card = DropTarget::Card;
+        let card = |kind: K| DropTarget::Card(kind.into());
+        let drop_action = |kind: K, target, inside_group| drop_action(kind.into(), target, inside_group);
         for kind in GRAPH_DRAW_ORDER {
             // The back button only exists inside a group.
             assert_eq!(drop_action(kind, DropTarget::BackButton, true), Some(DropEffect::Eject), "{kind:?}");

@@ -131,13 +131,9 @@ impl NodePayload {
     }
 }
 
-/// A cheap, owned, `Copy` classifier for `&NodePayload` -- computed once
-/// up front so its immutable borrow of `self.nodes` ends immediately,
-/// before a dispatcher needs `&mut self` to render that kind's toolbar
-/// content. Mirrors `close_node`'s own match for exactly the same reason:
-/// matching directly on `&NodePayload` would keep that borrow alive for as
-/// long as the match arms run, which conflicts with the `&mut self` those
-/// arms need.
+/// The card classifier `CardKind` replaced (2b-6 Task 2): only the test tables still name it, through
+/// `From<ItemNodeKind> for CardKind`, until Task 3 rewrites them and deletes it.
+#[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ItemNodeKind {
     Tab,
@@ -150,8 +146,8 @@ pub(crate) enum ItemNodeKind {
     Json,
 }
 
-/// Every kind, in the order Graph view draws their cards: a later kind
-/// draws, and takes the pointer, on top of an earlier one.
+/// Every kind, in the order Graph view drew their cards (now `Caps::draw_layer`): the test tables' kind list.
+#[cfg(test)]
 pub(crate) const GRAPH_DRAW_ORDER: [ItemNodeKind; 8] = [
     ItemNodeKind::Tab,
     ItemNodeKind::Unloaded,
@@ -163,6 +159,7 @@ pub(crate) const GRAPH_DRAW_ORDER: [ItemNodeKind; 8] = [
     ItemNodeKind::Group,
 ];
 
+#[cfg(test)]
 pub(crate) fn item_node_kind(payload: &NodePayload) -> ItemNodeKind {
     match payload {
         NodePayload::Tab(_) => ItemNodeKind::Tab,

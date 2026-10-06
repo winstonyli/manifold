@@ -3,7 +3,9 @@
 use super::*;
 use crate::jar_defs::JarLabel;
 use crate::sleep_state::SleepWhy;
-use crate::store::model::NodeId;
+use crate::store::model::{
+    NodeId, TYPE_DOWNLOAD, TYPE_GROUP, TYPE_IMAGE, TYPE_JSON, TYPE_JSON_LEAF, TYPE_NOTE, TYPE_PDF, TYPE_TAB,
+};
 
 /// Something done to one node, from its right-click menu or its card's
 /// own buttons, applied by `App::apply_node_action`.
@@ -77,7 +79,7 @@ impl NodeAction {
     /// The key that does this to a keyboard-focused card of `kind`, shown at the row's right edge. Del is
     /// whatever the card's Close does (`CardControl::Close`): Dissolve on a group, so "Close Group and
     /// Contents" (`Delete`), which closes the members too, is never hinted Del.
-    pub(crate) fn key_hint(&self, kind: ItemNodeKind) -> Option<&'static str> {
+    pub(crate) fn key_hint(&self, kind: CardKind) -> Option<&'static str> {
         (*self == CardControl::Close.action(kind)).then_some("Del")
     }
 
@@ -142,7 +144,7 @@ pub(crate) enum NodeMenuItem {
 #[derive(Debug, PartialEq)]
 pub(crate) struct NodeMenuConfig {
     /// Whose menu: picks the row hinted Del (`NodeAction::key_hint`).
-    kind: ItemNodeKind,
+    kind: CardKind,
     area_id: &'static str,
     min_width: f32,
     items: Vec<NodeMenuItem>,
@@ -432,33 +434,33 @@ pub(crate) fn node_menu_config(view: &NodeMenuView, headless: bool) -> NodeMenuC
         }
         out
     };
-    match view.kind {
-        ItemNodeKind::Download => {
+    match view.kind.ty {
+        TYPE_DOWNLOAD => {
             let mut items = url_items(false);
             items.extend(file_items());
             finish("download_context_menu", 170.0, items, delete("Remove from List"))
         }
-        ItemNodeKind::Note => {
+        TYPE_NOTE => {
             let mut items = url_items(false);
             items.push(Button("Copy Text", A::CopyText));
             finish("note_context_menu", 150.0, items, delete("Delete"))
         }
-        ItemNodeKind::Image => {
+        TYPE_IMAGE => {
             let mut items = url_items(true);
             items.extend(file_items());
             finish("image_context_menu", 170.0, items, delete("Delete"))
         }
-        ItemNodeKind::Pdf => {
+        TYPE_PDF => {
             let mut items = url_items(true);
             items.extend(file_items());
             finish("pdf_context_menu", 170.0, items, delete("Delete"))
         }
-        ItemNodeKind::Json => {
+        TYPE_JSON | TYPE_JSON_LEAF => {
             let mut items = url_items(true);
             items.extend(file_items());
             finish("json_context_menu", 170.0, items, delete("Delete"))
         }
-        ItemNodeKind::Tab => {
+        TYPE_TAB if view.kind.loaded() => {
             let mut items = vec![
                 Button(if view.pinned { "Unpin" } else { "Pin" }, A::TogglePin),
                 Button("Duplicate", A::Duplicate),
@@ -469,7 +471,7 @@ pub(crate) fn node_menu_config(view: &NodeMenuView, headless: bool) -> NodeMenuC
             items.extend(view.jars.iter().flat_map(|j| jar_items(j, true, true)));
             finish("tab_context_menu", 150.0, items, delete("Close"))
         }
-        ItemNodeKind::Unloaded => {
+        TYPE_TAB => {
             // Retrying a tab whose engine isn't installed asks to install it (`retry_missing_file`).
             let first = match (view.failed, view.engine_missing) {
                 (true, true) => Button("Download Engine", A::RetryMissingFile),
@@ -490,7 +492,7 @@ pub(crate) fn node_menu_config(view: &NodeMenuView, headless: bool) -> NodeMenuC
             items.extend(view.jars.iter().flat_map(|j| jar_items(j, true, false)));
             finish("unloaded_tab_context_menu", 170.0, items, delete("Close"))
         }
-        ItemNodeKind::Group => {
+        TYPE_GROUP => {
             // Dissolve keeps the members (the card's Del, ✕ and middle-click do it); the second closes them all.
             let mut delete_items =
                 vec![Button("Dissolve Group", A::Dissolve), Button("Close Group and Contents", A::Delete)];
@@ -501,6 +503,8 @@ pub(crate) fn node_menu_config(view: &NodeMenuView, headless: bool) -> NodeMenuC
             items.extend(view.jars.iter().flat_map(|j| jar_items(j, false, false)));
             finish("group_context_menu", 150.0, items, delete_items)
         }
+        // A type this build doesn't know has no menu of its own yet (2b-6 Ruling 8): the shared tail only.
+        _ => finish("node_context_menu", 150.0, Vec::new(), delete("Delete")),
     }
 }
 
@@ -512,7 +516,7 @@ pub(crate) fn node_menu_config(view: &NodeMenuView, headless: bool) -> NodeMenuC
 /// still fades when the action removed the node itself.
 #[derive(Clone)]
 pub(crate) struct NodeMenuView {
-    kind: ItemNodeKind,
+    kind: CardKind,
     has_group: bool,
     color: Option<egui::Color32>,
     /// Image/Pdf/Json/Note: `node.source_url().is_some()`. Offers Refresh
@@ -669,7 +673,7 @@ impl App {
     pub(crate) fn node_menu_view(&self, id: &str) -> Option<NodeMenuView> {
         let node = self.nodes.get(id)?;
         Some(NodeMenuView {
-            kind: item_node_kind(&node.payload),
+            kind: self.card_kind(id)?,
             has_group: self.mirror.group(id).is_some(),
             color: self.mirror.color(id),
             has_url: self.source_url(id).is_some(),
@@ -888,10 +892,8 @@ mod tests {
         app.apply_node_action(&egui::Context::default(), &note, NodeAction::MoveToGroup(g2.clone()));
         assert_eq!(app.mirror.group(&note), Some(g2.as_str()));
         // On a group "Move into" nests it, unlike a drop of one group on another (which merges).
-        assert_eq!(
-            drop_action(ItemNodeKind::Group, DropTarget::Card(ItemNodeKind::Group), false),
-            Some(DropEffect::Merge)
-        );
+        let group = CardKind::from(ItemNodeKind::Group);
+        assert_eq!(drop_action(group, DropTarget::Card(group), false), Some(DropEffect::Merge));
         app.apply_node_action(&egui::Context::default(), &g1, NodeAction::MoveToGroup(g2.clone()));
         assert_eq!(app.mirror.group(&g1), Some(g2.as_str()), "g1 nested in g2, not merged away");
         assert_eq!(app.mirror.group(&inner), Some(g1.as_str()), "g1 keeps its own members");
@@ -899,7 +901,7 @@ mod tests {
 
     fn view_of(kind: ItemNodeKind) -> NodeMenuView {
         NodeMenuView {
-            kind,
+            kind: kind.into(),
             has_group: false,
             color: None,
             has_url: false,
@@ -1021,7 +1023,8 @@ mod tests {
         );
         // A url on Image/Pdf/Json/Note offers Refresh (not Note) and Open as
         // Tab, ahead of the kind's own items.
-        let with_url = |kind| NodeMenuView { kind, has_url: true, has_copy_url: true, ..view_of(kind) };
+        let with_url =
+            |kind: ItemNodeKind| NodeMenuView { kind: kind.into(), has_url: true, has_copy_url: true, ..view_of(kind) };
         assert_eq!(
             menu_of(&with_url(ItemNodeKind::Image), false).2,
             "Refresh | Open as Tab | Copy URL | Open Containing Folder | Copy Path | <colors> | --- | Delete"
@@ -1084,11 +1087,11 @@ mod tests {
                 .items
                 .iter()
                 .filter_map(|item| match item {
-                    NodeMenuItem::Button(label, action) if action.key_hint(kind).is_some() => Some(*label),
+                    NodeMenuItem::Button(label, action) if action.key_hint(kind.into()).is_some() => Some(*label),
                     _ => None,
                 })
                 .collect();
-            let del = CardControl::Close.action(kind);
+            let del = CardControl::Close.action(kind.into());
             let want: Vec<&str> = config
                 .items
                 .iter()
@@ -1100,9 +1103,9 @@ mod tests {
             assert_eq!(hinted, want, "{kind:?}");
             assert_eq!(hinted.len(), 1, "{kind:?}: one row hinted Del");
         }
-        assert_eq!(NodeAction::Dissolve.key_hint(ItemNodeKind::Group), Some("Del"));
-        assert_eq!(NodeAction::Delete.key_hint(ItemNodeKind::Group), None, "closing the members isn't Del");
-        assert_eq!(NodeAction::Delete.key_hint(ItemNodeKind::Tab), Some("Del"));
+        assert_eq!(NodeAction::Dissolve.key_hint(ItemNodeKind::Group.into()), Some("Del"));
+        assert_eq!(NodeAction::Delete.key_hint(ItemNodeKind::Group.into()), None, "closing the members isn't Del");
+        assert_eq!(NodeAction::Delete.key_hint(ItemNodeKind::Tab.into()), Some("Del"));
     }
 
     /// The focused card's "Del <verb>" hint names the same action as the menu row hinted Del.
@@ -1111,13 +1114,13 @@ mod tests {
         for kind in GRAPH_DRAW_ORDER {
             let config = node_menu_config(&view_of(kind), false);
             let label = config.items.iter().find_map(|item| match item {
-                NodeMenuItem::Button(label, action) if action.key_hint(kind).is_some() => Some(*label),
+                NodeMenuItem::Button(label, action) if action.key_hint(kind.into()).is_some() => Some(*label),
                 _ => None,
             });
             let first = label.and_then(|l| l.split(' ').next()).map(str::to_lowercase);
-            assert_eq!(first.as_deref(), Some(del_verb(kind)), "{kind:?}");
+            assert_eq!(first.as_deref(), Some(del_verb(kind.into())), "{kind:?}");
         }
-        assert_eq!(del_verb(ItemNodeKind::Group), "dissolve");
+        assert_eq!(del_verb(ItemNodeKind::Group.into()), "dissolve");
     }
 
     /// An unloaded tab's menu Duplicate opens a copy at its url and engine, as Ctrl+D does.

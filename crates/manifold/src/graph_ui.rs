@@ -3,6 +3,7 @@
 //! menu and the hover peek.
 
 use super::*;
+use crate::store::model::{TYPE_DOWNLOAD, TYPE_JSON, TYPE_JSON_LEAF, TYPE_NOTE, TYPE_TAB};
 
 /// Visible-node count (post-cull, current level, see `build_graph_ui`'s
 /// LOD pre-pass) above which Graph view switches to simplified rendering
@@ -336,7 +337,7 @@ impl App {
                 }
             }
             GraphAction::UngroupAll => {
-                for id in self.nodes_at_current_level(ItemNodeKind::Group) {
+                for id in self.nodes_at_current_level(|kind| is_container(kind.ty)) {
                     self.dissolve_group(&id);
                 }
             }
@@ -419,8 +420,8 @@ impl App {
         self.sync_json_level();
         // One level scan per frame, reused by the toolbar, settle key, minimap, items and cards;
         // `current_group` only changes at the end of this function.
-        let at_level = GRAPH_DRAW_ORDER.map(|kind| self.nodes_at_current_level(kind));
-        let [_, _, _, _, _, _, _, groups_at_level] = &at_level;
+        let at_level = self.level_scan();
+        let groups_at_level = self.nodes_at_current_level(|kind| is_container(kind.ty));
         let items = self.level_items_from(&at_level);
 
         self.update_graph_lod(&items);
@@ -433,7 +434,7 @@ impl App {
             shortcuts_help_button_rect,
             recently_closed_button_rect,
             leave_group_button_rect,
-        } = self.render_graph_toolbar(ui, groups_at_level);
+        } = self.render_graph_toolbar(ui, &groups_at_level);
         // `build_shortcuts_help`/`build_recently_closed_popup`/the three
         // context menus below are all deferred to the very end of this
         // function (past the Scene/`overlay_painter` node-rendering block),
@@ -708,10 +709,11 @@ impl App {
             return;
         };
         let screen = ui.ctx().content_rect();
-        let extra: &[(&str, &str)] = match kind {
-            ItemNodeKind::Tab | ItemNodeKind::Unloaded => &[("Enter", "open"), ("Space", "select")],
-            ItemNodeKind::Group | ItemNodeKind::Json => &[("Enter", "enter")],
-            ItemNodeKind::Note => &[("Enter", "edit")],
+        let extra: &[(&str, &str)] = match kind.ty {
+            TYPE_TAB => &[("Enter", "open"), ("Space", "select")],
+            TYPE_JSON | TYPE_JSON_LEAF => &[("Enter", "enter")],
+            ty if is_container(ty) => &[("Enter", "enter")],
+            TYPE_NOTE => &[("Enter", "edit")],
             _ => &[],
         };
         let tail = [("Del", del_verb(kind)), ("Shift+F10", "menu")];
@@ -962,8 +964,8 @@ impl App {
         // is still discoverable. All three now work at any
         // level, not just the top -- see `GroupPayload`'s own
         // doc comment on nesting; each already acts on
-        // `self.current_group`/`nodes_at_current_level(Group)`
-        // (its own level), never hardcoding the top level.
+        // `self.current_group`/the level's groups (`nodes_at_current_level`,
+        // its own level), never hardcoding the top level.
         //
         // The rule this toolbar actually follows, for any
         // future addition: the identity/entry-point action that
@@ -1322,12 +1324,13 @@ impl App {
         for item in items {
             let (radius, color) = match item.kind {
                 LevelItemKind::JsonCard => (2.0, ACCENT),
-                LevelItemKind::Node(kind) => match kind {
-                    ItemNodeKind::Tab | ItemNodeKind::Unloaded => (2.0, ui.visuals().text_color()),
-                    ItemNodeKind::Download => (2.0, ui.visuals().weak_text_color()),
-                    ItemNodeKind::Note => (2.0, NOTE_CARD_COLOR),
-                    ItemNodeKind::Image | ItemNodeKind::Pdf | ItemNodeKind::Json => (2.0, ACCENT),
-                    ItemNodeKind::Group => (3.0, ACCENT),
+                LevelItemKind::Node(kind) => match kind.ty {
+                    ty if is_container(ty) => (3.0, ACCENT),
+                    TYPE_TAB => (2.0, ui.visuals().text_color()),
+                    TYPE_DOWNLOAD => (2.0, ui.visuals().weak_text_color()),
+                    TYPE_NOTE => (2.0, NOTE_CARD_COLOR),
+                    // Image, PDF and JSON cards; a type this build doesn't know draws as one of them.
+                    _ => (2.0, ACCENT),
                 },
             };
             let failed = self
@@ -1543,8 +1546,8 @@ impl App {
             self.dragging.clone().and_then(|dragged| self.drop_target(&dragged, pointer, leave_group_button_rect));
 
         // Every card: one shared frame each (`draw_graph_card`),
-        // kind by kind in `GRAPH_DRAW_ORDER` (Group last), which is
-        // also their stacking order: a later kind draws, and takes
+        // layer by layer (`level_scan`, groups last), which is
+        // also their stacking order: a later layer draws, and takes
         // the pointer, on top of an earlier one. Each kind's own
         // click action is applied here.
         let tab_order = self.card_tab_order();
@@ -1579,70 +1582,70 @@ impl App {
             any_focused: false,
             members: &members,
         };
-        for (&kind, ids) in GRAPH_DRAW_ORDER.iter().zip(at_level.iter()) {
-            for id in ids.iter() {
-                // Read before the frame: a Note's `TextEdit` can lose
-                // focus to a click on its own header this very frame,
-                // clearing `editing`, and that click must not
-                // immediately re-enter editing.
-                let note_was_editing = kind == ItemNodeKind::Note
-                    && self.nodes.get(id).and_then(|n| n.as_note()).is_some_and(|n| n.editing);
-                let Some(card) = self.draw_graph_card(ui, &mut pass, id) else {
-                    continue;
-                };
-                if let Some(action) = card.control {
-                    // A control consumed this frame's click, so
-                    // the kind's own click action below (e.g.
-                    // Image maximize) is skipped.
-                    pass.actions.push(GraphAction::Node(id.clone(), action));
-                    continue;
+        for id in at_level.iter().flatten() {
+            let Some(kind) = self.card_kind(id) else {
+                continue;
+            };
+            // Read before the frame: a Note's `TextEdit` can lose
+            // focus to a click on its own header this very frame,
+            // clearing `editing`, and that click must not
+            // immediately re-enter editing.
+            let note_was_editing = self.nodes.get(id).and_then(|n| n.as_note()).is_some_and(|n| n.editing);
+            let Some(card) = self.draw_graph_card(ui, &mut pass, id) else {
+                continue;
+            };
+            if let Some(action) = card.control {
+                // A control consumed this frame's click, so
+                // the kind's own click action below (e.g.
+                // Image maximize) is skipped.
+                pass.actions.push(GraphAction::Node(id.clone(), action));
+                continue;
+            }
+            // A placeholder (see `ImagePayload::error`) has nothing
+            // to open; a click tries its file again instead.
+            let missing_file = self.nodes.get(id).is_some_and(|n| {
+                n.as_image().is_some_and(|i| i.error.is_some())
+                    || n.as_unloaded().is_some_and(|t| matches!(t.state, UnloadedState::Failed(_)))
+                    || n.as_json().is_some_and(|j| j.error.is_some())
+                    || n.as_pdf().is_some_and(|p| matches!(p.outcome, Some(Err(_))))
+            });
+            // A double-click, or Enter on the keyboard-focused card (a single Enter already
+            // counts as `clicked()`, which is what the other kinds act on).
+            let activated = card.response.double_clicked()
+                || (card.response.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
+            // Click (not drag -- egui doesn't report `clicked()` for a drag).
+            let click = card.response.clicked().then(|| click_action(kind)).flatten();
+            match (kind.ty, click) {
+                _ if missing_file => {
+                    if card.response.clicked() {
+                        pass.actions.push(GraphAction::Node(id.clone(), NodeAction::RetryMissingFile));
+                    }
                 }
-                // A placeholder (see `ImagePayload::error`) has nothing
-                // to open; a click tries its file again instead.
-                let missing_file = self.nodes.get(id).is_some_and(|n| {
-                    n.as_image().is_some_and(|i| i.error.is_some())
-                        || n.as_unloaded().is_some_and(|t| matches!(t.state, UnloadedState::Failed(_)))
-                        || n.as_json().is_some_and(|j| j.error.is_some())
-                        || n.as_pdf().is_some_and(|p| matches!(p.outcome, Some(Err(_))))
-                });
-                // A double-click, or Enter on the keyboard-focused card (a single Enter already
-                // counts as `clicked()`, which is what the other kinds act on).
-                let activated = card.response.double_clicked()
-                    || (card.response.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
-                // Click (not drag -- egui doesn't report `clicked()` for a drag).
-                let click = card.response.clicked().then(|| click_action(kind)).flatten();
-                match (kind, click) {
-                    _ if missing_file => {
-                        if card.response.clicked() {
-                            pass.actions.push(GraphAction::Node(id.clone(), NodeAction::RetryMissingFile));
-                        }
+                (_, Some(action)) => pass.actions.push(GraphAction::Node(id.clone(), action)),
+                // Click on the rendered note enters editing in place.
+                (TYPE_NOTE, _) if card.response.clicked() && !note_was_editing => {
+                    if let Some(note) = self.nodes.get_mut(id).and_then(|n| n.as_note_mut()) {
+                        note.editing = true;
                     }
-                    (_, Some(action)) => pass.actions.push(GraphAction::Node(id.clone(), action)),
-                    // Click on the rendered note enters editing in place.
-                    (ItemNodeKind::Note, _) if card.response.clicked() && !note_was_editing => {
-                        if let Some(note) = self.nodes.get_mut(id).and_then(|n| n.as_note_mut()) {
-                            note.editing = true;
-                        }
-                        // The editor appears next frame; focus it so typing can start at once.
-                        ui.memory_mut(|m| m.request_focus(egui::Id::new(("note_edit", id))));
-                    }
-                    // Enters the node's JSON level, unless it's a leaf, its
-                    // file failed to load (plan ruling 10) or it's still
-                    // being refetched (`JsonPayload::enterable`).
-                    (ItemNodeKind::Json, _)
-                        if activated && self.nodes.get(id).and_then(|n| n.as_json()).is_some_and(|j| j.enterable()) =>
-                    {
-                        // Entered from the keyboard: the level's root card takes focus
-                        // (`draw_json_level`), sparing the toolbar's ~17 Tab stops.
-                        if !card.response.double_clicked() {
-                            ui.data_mut(|d| d.insert_temp(crate::json_level_ui::json_focus_root_key(), true));
-                        }
-                        pass.actions.push(GraphAction::EnterGroup(id.clone()))
-                    }
-                    // Drills into the group's own subgraph.
-                    (ItemNodeKind::Group, _) if activated => pass.actions.push(GraphAction::EnterGroup(id.clone())),
-                    _ => {}
+                    // The editor appears next frame; focus it so typing can start at once.
+                    ui.memory_mut(|m| m.request_focus(egui::Id::new(("note_edit", id))));
                 }
+                // Enters the node's JSON level, unless it's a leaf, its
+                // file failed to load (plan ruling 10) or it's still
+                // being refetched (`JsonPayload::enterable`).
+                (TYPE_JSON | TYPE_JSON_LEAF, _)
+                    if activated && self.nodes.get(id).and_then(|n| n.as_json()).is_some_and(|j| j.enterable()) =>
+                {
+                    // Entered from the keyboard: the level's root card takes focus
+                    // (`draw_json_level`), sparing the toolbar's ~17 Tab stops.
+                    if !card.response.double_clicked() {
+                        ui.data_mut(|d| d.insert_temp(crate::json_level_ui::json_focus_root_key(), true));
+                    }
+                    pass.actions.push(GraphAction::EnterGroup(id.clone()))
+                }
+                // Drills into the group's own subgraph.
+                (ty, _) if is_container(ty) && activated => pass.actions.push(GraphAction::EnterGroup(id.clone())),
+                _ => {}
             }
         }
         self.card_nav_active = pass.any_focused;

@@ -41,9 +41,14 @@ impl Row {
 pub(crate) struct Caps {
     /// Closing it is recorded, so Recently Closed can reopen it.
     pub(crate) restorable: bool,
-    /// Where its card draws in Graph view: 0 first, so a higher layer draws, and takes the pointer, on top.
+    /// Where its card draws in Graph view: 0 first, so a higher layer draws, and takes the pointer, on top. Below
+    /// `DRAW_LAYERS`.
     pub(crate) draw_layer: u8,
 }
+
+/// How many draw layers the builtin rows use: every `Caps::draw_layer` is below this, so a level scan has this many
+/// buckets.
+pub(crate) const DRAW_LAYERS: usize = 8;
 
 #[derive(Debug, Default)]
 pub(crate) struct Registry {
@@ -90,6 +95,7 @@ pub(crate) fn builtin_rows() -> Vec<Row> {
     vec![
         Row::new("*/*").restorable(false).draw_layer(0),
         Row::new(TYPE_TAB).restorable(true).draw_layer(1), // a sleeping tab; a loaded one draws under it
+        // Outranks the row above for a loaded tab: same pattern, more `requires` tags (`Row::rank`).
         Row::new(TYPE_TAB).requires(&[Tag::Loaded]).draw_layer(0),
         Row::new(TYPE_GROUP).restorable(true).draw_layer(7),
         Row::new("image/*").restorable(true).draw_layer(4),
@@ -112,6 +118,13 @@ mod tests {
             registry.register(row).unwrap();
         }
         registry
+    }
+
+    #[test]
+    fn every_builtin_draw_layer_fits_the_bucket_count() {
+        for row in builtin_rows() {
+            assert!(row.draw_layer.is_none_or(|layer| usize::from(layer) < DRAW_LAYERS), "{row:?}");
+        }
     }
 
     #[test]

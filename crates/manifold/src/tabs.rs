@@ -751,9 +751,10 @@ impl App {
     /// stays `focused`, hidden, exactly as in Graph view). Kinds with no
     /// Item view are a no-op (and a debug-build assertion).
     pub(crate) fn focus_item(&mut self, id: &str) {
-        match self.nodes.get(id).map(|n| item_node_kind(&n.payload)) {
-            Some(ItemNodeKind::Tab | ItemNodeKind::Unloaded) => self.focus_tab(id),
-            Some(ItemNodeKind::Image) => {
+        let Some(kind) = self.card_kind(id) else { return };
+        match kind.ty {
+            crate::store::model::TYPE_TAB => self.focus_tab(id),
+            crate::store::model::TYPE_IMAGE => {
                 self.end_note_edits();
                 self.hide_focused_tab();
                 self.viewed_image = Some(id.to_string());
@@ -761,8 +762,7 @@ impl App {
                 self.view_mode = ViewMode::Item;
                 self.save_session();
             }
-            Some(kind) => debug_assert!(false, "focus_item: {kind:?} nodes have no Item view"),
-            None => {}
+            ty => debug_assert!(false, "focus_item: {ty} nodes have no Item view"),
         }
     }
 

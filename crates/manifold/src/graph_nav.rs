@@ -14,18 +14,19 @@ impl App {
         id.as_deref().filter(|id| self.nodes.contains_key(*id)).and_then(|id| self.mirror.group(id)).map(str::to_owned)
     }
 
-    /// `node_order`, filtered to nodes of `kind` at whichever level
-    /// `self.current_group` is currently viewing -- the id list
-    /// `build_graph_ui`'s one card loop iterates for that kind, kept in stable
-    /// insertion order (unlike filtering `self.nodes` directly, a
-    /// `HashMap`'s iteration order isn't stable frame-to-frame). The kind
-    /// filter matters even for one kind: a top-level group's own `group`
-    /// is `None`, same as `current_group` at the top level, so a level
-    /// check alone would leak group cards into every other kind's list.
-    pub(crate) fn nodes_at_current_level(&self, kind: ItemNodeKind) -> Vec<String> {
+    /// `node_order`, filtered to the nodes whose card kind `pick` accepts at
+    /// whichever level `self.current_group` is currently viewing -- the id
+    /// list `build_graph_ui`'s card loop iterates for one draw layer
+    /// (`level_scan`), kept in stable insertion order (unlike filtering
+    /// `self.nodes` directly, a `HashMap`'s iteration order isn't stable
+    /// frame-to-frame). The kind filter matters even for one kind: a
+    /// top-level group's own `group` is `None`, same as `current_group` at
+    /// the top level, so a level check alone would leak group cards into
+    /// every other kind's list.
+    pub(crate) fn nodes_at_current_level(&self, pick: impl Fn(CardKind) -> bool) -> Vec<String> {
         self.node_order
             .iter()
-            .filter(|id| self.in_level(id) && self.nodes.get(*id).is_some_and(|n| item_node_kind(&n.payload) == kind))
+            .filter(|id| self.in_level(id) && self.card_kind(id).is_some_and(&pick))
             .cloned()
             .collect()
     }
@@ -52,19 +53,23 @@ impl App {
         pointer: Option<egui::Pos2>,
         leave_button: Option<egui::Rect>,
     ) -> Option<(DropEffect, Option<String>)> {
-        let node = self.nodes.get(id)?;
-        let dragged = item_node_kind(&node.payload);
+        use crate::store::model::TYPE_TAB;
+        let dragged = self.card_kind(id)?;
         let inside_group = self.current_group.is_some();
         if leave_button.zip(pointer).is_some_and(|(button, pointer)| button.contains(pointer)) {
             return drop_action(dragged, DropTarget::BackButton, inside_group).map(|effect| (effect, None));
         }
         let center = self.layout_pos(id).to_pos2();
-        [ItemNodeKind::Group, ItemNodeKind::Tab, ItemNodeKind::Unloaded].into_iter().find_map(|kind| {
-            let effect = drop_action(dragged, DropTarget::Card(kind), inside_group)?;
+        // A group card before a tab card, and a live tab before a sleeping one: the per-kind search order the drop
+        // has always had. A target the drop table refuses (`drop_action` None) moves the search on.
+        let searches: [&dyn Fn(CardKind) -> bool; 3] =
+            [&|k| is_container(k.ty), &|k| k.ty == TYPE_TAB && k.loaded(), &|k| k.ty == TYPE_TAB && !k.loaded()];
+        searches.into_iter().find_map(|pick| {
             let target = self
-                .nodes_at_current_level(kind)
+                .nodes_at_current_level(pick)
                 .into_iter()
                 .find(|other| other != id && self.card_rect(other).is_some_and(|rect| rect.contains(center)))?;
+            let effect = drop_action(dragged, DropTarget::Card(self.card_kind(&target)?), inside_group)?;
             Some((effect, Some(target)))
         })
     }

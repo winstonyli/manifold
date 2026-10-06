@@ -74,6 +74,7 @@ use redirect_fetch::{FetchJob, FetchResult, FetchTarget, RedirectFetcher};
 use suggestions::{resolve_navigation_url, Suggestion, SuggestionFetcher};
 
 use card::*;
+use card_kind::*;
 use debug_control::DebugCommand;
 use engine_info::*;
 use gpu::GpuState;
@@ -1149,7 +1150,7 @@ struct App {
     /// drag by movement distance) and `build_graph_ui`'s own rendering of
     /// it. Deliberately *not* a `NodePayload`/`self.nodes` entry -- it's a
     /// pending choice, not real graph content, so it never needs excluding
-    /// from `nodes_at_current_level(Group)`/session persistence/drag-into-group/
+    /// from `nodes_at_current_level`/session persistence/drag-into-group/
     /// filters the way a real new node kind would. Cleared on any camera
     /// movement (pan/zoom/Reset View/entering or leaving a group/minimap
     /// click), Escape, clicking elsewhere, or picking one of its own
@@ -1397,7 +1398,7 @@ struct App {
     hints_revealed: bool,
     /// The card holding keyboard focus this frame: its kind and screen rect, for the key-hint strip
     /// (`build_card_hint`).
-    card_hint: Option<(ItemNodeKind, egui::Rect)>,
+    card_hint: Option<(CardKind, egui::Rect)>,
 
     /// The in-progress Tab↔Graph shrink/expand animation, if any — see
     /// `Transition`'s own doc comment.
@@ -2197,10 +2198,8 @@ impl App {
         if removed.as_ref().is_some_and(|n| n.as_pdf().is_some()) {
             self.pdf_renderer.cancel(id);
         }
-        if removed
-            .as_ref()
-            .is_some_and(|n| matches!(item_node_kind(&n.payload), ItemNodeKind::Image | ItemNodeKind::Pdf))
-        {
+        // The runtimes with a texture (`GpuState::images`).
+        if removed.as_ref().is_some_and(|n| n.as_image().is_some() || n.as_pdf().is_some()) {
             if let Some(gpu) = &mut self.gpu {
                 gpu.free_image(id);
             }
@@ -2470,7 +2469,7 @@ impl App {
     }
 
     /// `Ctrl+Shift+W` / headless `CLOSEALLLEVEL` — closes every tab
-    /// `nodes_at_current_level(Tab)` returns (top level: every ungrouped tab,
+    /// `tabs_at_current_level` returns (top level: every ungrouped tab,
     /// leaving groups and their members untouched; inside a group: every
     /// tab member: the tabs that group's own "Close Group and Contents"
     /// context-menu entry would close, though that entry also closes the
@@ -2644,17 +2643,15 @@ impl App {
     /// confirmed while building "Expand as Graph", whose whole output is
     /// `JsonPayload` leaves nested inside Groups.)
     fn destroy_node(&mut self, id: &str) {
-        let Some(kind) = self.nodes.get(id).map(|node| item_node_kind(&node.payload)) else {
+        let Some(kind) = self.card_kind(id) else {
             return;
         };
-        match kind {
-            ItemNodeKind::Group => self.destroy_group(id),
-            ItemNodeKind::Tab | ItemNodeKind::Unloaded => self.destroy_tab(id),
-            ItemNodeKind::Download
-            | ItemNodeKind::Note
-            | ItemNodeKind::Image
-            | ItemNodeKind::Pdf
-            | ItemNodeKind::Json => self.remove_node(id),
+        if is_container(kind.ty) {
+            self.destroy_group(id);
+        } else if kind.ty == store::model::TYPE_TAB {
+            self.destroy_tab(id);
+        } else {
+            self.remove_node(id);
         }
     }
 
@@ -2663,16 +2660,8 @@ impl App {
     /// except for a tab or group, whose `destroy_tab`/`destroy_group`
     /// already save.
     fn close_node_and_save(&mut self, id: &str) {
-        let persisted = self.nodes.get(id).is_some_and(|node| {
-            matches!(
-                item_node_kind(&node.payload),
-                ItemNodeKind::Download
-                    | ItemNodeKind::Note
-                    | ItemNodeKind::Image
-                    | ItemNodeKind::Pdf
-                    | ItemNodeKind::Json
-            )
-        });
+        let persisted =
+            self.card_kind(id).is_some_and(|kind| kind.ty != store::model::TYPE_TAB && !is_container(kind.ty));
         self.close_node(id);
         if persisted {
             self.save_session();

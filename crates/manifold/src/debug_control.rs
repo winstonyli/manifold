@@ -1134,7 +1134,7 @@ impl App {
                         let node = self.nodes.get(&item.id)?;
                         Some(serde_json::json!({
                             "id": item.id,
-                            "kind": format!("{kind:?}"),
+                            "kind": legacy_kind_name(kind),
                             "group": self.mirror.group(&item.id),
                             "parent": self.mirror.parent(&item.id),
                             "color": self.mirror.color(&item.id).is_some(),
