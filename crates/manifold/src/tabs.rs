@@ -401,7 +401,6 @@ impl App {
         match result {
             Ok(mut tab) => {
                 self.note_spawned_jar(&id, jar, seeded, seed_clears);
-                self.clear_failed_cards(&url, &id);
                 let is_focused = match purpose {
                     SpawnPurpose::Root => true,
                     SpawnPurpose::New | SpawnPurpose::Split => false,
@@ -462,6 +461,11 @@ impl App {
                     self.node_order.push(id.clone());
                 }
                 self.apply_pending_local(&id);
+                // A fresh attempt at a url resolves its earlier failed attempts; landing an existing tab (respawn,
+                // restore, wake) is no new intent and leaves a failed card the user placed alone.
+                if matches!(purpose, SpawnPurpose::Root | SpawnPurpose::New) {
+                    self.clear_failed_cards(&url, &id);
+                }
                 match purpose {
                     SpawnPurpose::Root => {
                         self.focused = Some(id.clone());
@@ -579,6 +583,9 @@ impl App {
                             {
                                 tab.state = UnloadedState::Failed(err.to_string());
                             }
+                            if matches!(purpose, SpawnPurpose::Root) {
+                                self.view_mode = ViewMode::Graph;
+                            }
                             self.queue_delete(&id);
                             self.save_session();
                             return;
@@ -619,7 +626,7 @@ impl App {
     }
 
     /// A failed card already standing for the intent `(url, kind, group)`, other than `id`: a repeat failure refreshes
-    /// it instead of adding a second card.
+    /// it instead of adding a second card. Urls compare as exact strings (no normalization).
     fn failed_twin(&self, id: &str, url: &str, kind: EngineKind, group: Option<&str>) -> Option<String> {
         self.nodes.iter().find_map(|(other, node)| {
             let tab = node.as_unloaded()?;

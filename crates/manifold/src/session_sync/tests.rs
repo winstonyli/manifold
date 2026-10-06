@@ -1917,6 +1917,35 @@ fn a_successful_spawn_clears_failed_cards_for_its_url() {
     assert!(app.closed.is_empty(), "a clear is not a close: nothing goes to Recently Closed");
 }
 
+/// A respawn lands an existing tab: it is no new intent, so a same-url failed card stays.
+#[test]
+fn a_respawn_landing_leaves_a_same_url_failed_card() {
+    let mut app = app_on(&temp_dir("failed-kept-on-respawn").join("session.mnf"), 1);
+    let (tab, _peer) = live_tab(&mut app, EngineKind::Servo, "https://a/");
+    assert!(app.save_session());
+    app.spawn_tab_at("https://a/", egui::Vec2::ZERO, None, None);
+    fail_spawns(&mut app);
+    assert_eq!(failed_cards(&app).len(), 1);
+    app.handle_engine_message(&tab, ipc_protocol::EngineToHost::Crashed { reason: "boom".into() });
+    assert!(app.test_spawns.iter().any(|(s, _)| matches!(s.purpose, SpawnPurpose::Respawn)), "restarting");
+    let _peers = land_spawns(&mut app);
+    assert_eq!(failed_cards(&app).len(), 1, "the failed card stays");
+    assert!(app.save_session());
+}
+
+/// A repeat Root failure refreshes the card and still shows Graph view.
+#[test]
+fn a_repeat_root_failure_still_shows_graph_view() {
+    let mut app = app_on(&temp_dir("failed-root-twin").join("session.mnf"), 1);
+    app.spawn_root_tab();
+    fail_spawns(&mut app);
+    app.view_mode = ViewMode::Item;
+    app.spawn_root_tab();
+    fail_spawns(&mut app);
+    assert_eq!(failed_cards(&app).len(), 1);
+    assert!(matches!(app.view_mode, ViewMode::Graph));
+}
+
 fn json_node(id: &str, kind: Kind, fields: serde_json::Value) -> crate::store::json::JsonNode {
     let serde_json::Value::Object(mut fields) = fields else { panic!("fields are an object") };
     fields.insert("type".into(), kind.type_str().expect("a known kind").into());
