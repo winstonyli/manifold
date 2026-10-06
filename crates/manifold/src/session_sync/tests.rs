@@ -1,8 +1,7 @@
 use super::*;
 use crate::redirect_fetch::{FetchResult, FetchTarget};
 use crate::store::journal::Journal;
-use crate::store::model::{ActorId, DocId, Hlc};
-use crate::store::ops::Op;
+use crate::store::model::ActorId;
 use crate::store::testutil::{temp_dir, XorShift};
 use crate::{NodeAction, SpawnPurpose};
 
@@ -60,15 +59,6 @@ fn id(counter: u64) -> NodeId {
     NodeId { actor: A, counter }
 }
 
-/// Applies `bodies` to `doc` as actor `A`'s next ops.
-fn apply(doc: &mut Doc, bodies: Vec<OpBody>) {
-    for body in bodies {
-        let counter = doc.version.get(&A).copied().unwrap_or(0).max(1000);
-        let hlc = Hlc { ms: doc.clock.ms + 1, logical: 0 };
-        doc.apply(&Op { id: id(counter), hlc, body });
-    }
-}
-
 fn shared(kind: Kind, group: Option<NodeId>, set: &[(u32, FieldValue)]) -> Shared {
     let mut fields: Fields =
         kind_fields(kind).iter().map(|&no| (no, FieldValue::absent(field_def(no).unwrap().ty))).collect();
@@ -93,186 +83,364 @@ fn shown(doc: &Doc) -> BTreeMap<NodeId, Shared> {
         .collect()
 }
 
-fn all_explicit(live: &BTreeMap<NodeId, Shared>) -> BTreeSet<(NodeId, u32)> {
-    live.keys().flat_map(|&id| [(id, field::POS), (id, field::URL)]).collect()
+/// Actor 1's op count: what a save wrote.
+fn ops_of(app: &App) -> u64 {
+    app.journal.as_ref().unwrap().doc().version.get(&ActorId(1)).copied().unwrap_or(0)
 }
 
+/// Whether the document shows `id` live.
+fn live_in_doc(app: &App, id: &str) -> bool {
+    app.journal.as_ref().unwrap().doc().nodes.get(&id.parse().unwrap()).is_some_and(Node::is_live)
+}
+
+/// The commit builder (2b-5 Task 3): a save creates every queued node the document lacks, each group before the
+/// nodes inside it, so a member's `Create` names a group that exists. The member's id sorts before its group's.
 #[test]
 fn new_nodes_are_created_groups_first() {
-    let doc = Doc::new(DocId([1; 16]));
-    // The member's id sorts before its group's.
-    let live = BTreeMap::from([(id(0), note("inside", Some(id(1)))), (id(1), group("G"))]);
-    let ops = diff(&doc, &live, &all_explicit(&live), &BTreeSet::new());
-    assert!(matches!(ops[0], OpBody::Create { node, .. } if node == id(1)));
-    let mut doc = doc;
-    apply(&mut doc, ops);
-    assert_eq!(shown(&doc), live);
+    let mut app = app_on(&temp_dir("create-groups-first").join("session.mnf"), 1);
+    let note = add(&mut app, NodePayload::Note(NotePayload { text: "inside".into(), editing: false }));
+    let group = add_group(&mut app, "G");
+    assert!(note < group, "the member's id sorts first");
+    app.edit_group(&note, Some(group.clone()));
+    assert!(app.save_session());
+    assert!(app.pending_creates.is_empty(), "created");
+    let doc = app.journal.as_ref().unwrap().doc();
+    assert_eq!(doc.effective_group(note.parse().unwrap()), Some(group.parse().unwrap()));
+    assert_eq!(doc.nodes[&group.parse().unwrap()].get(field::NAME), FieldValue::Str("G".into()));
+    assert_eq!(shown(doc), app.shared_nodes());
 }
 
 #[test]
 fn an_unchanged_graph_emits_nothing() {
-    let mut doc = Doc::new(DocId([1; 16]));
-    let live = BTreeMap::from([(id(0), note("a", None))]);
-    let ops = diff(&doc, &live, &all_explicit(&live), &BTreeSet::new());
-    apply(&mut doc, ops);
-    assert_eq!(diff(&doc, &live, &all_explicit(&live), &BTreeSet::new()), vec![]);
+    let mut app = app_on(&temp_dir("unchanged-nothing").join("session.mnf"), 1);
+    add(&mut app, NodePayload::Note(NotePayload { text: "a".into(), editing: false }));
+    assert!(app.save_session());
+    let ops = ops_of(&app);
+    assert!(app.save_session());
+    assert_eq!(ops_of(&app), ops, "a second save writes nothing");
 }
 
+/// A node removed here is deleted at the next save (`queue_delete`); a tab mid-respawn is not removed, so it is kept
+/// (Ruling 4: `spawning` is no longer a keep list, respawns just never queue).
 #[test]
-fn explicit_fields_change_only_when_marked() {
-    let mut doc = Doc::new(DocId([1; 16]));
-    let mut live = BTreeMap::from([(id(0), note("a", None))]);
-    let ops = diff(&doc, &live, &all_explicit(&live), &BTreeSet::new());
-    apply(&mut doc, ops);
-    // `pos` is mirrored (2b-4): `App::pending` writes it, `diff` never does, marked or not.
-    live.get_mut(&id(0)).unwrap().fields.insert(field::POS, FieldValue::Pos(5.0, 6.0));
-    assert_eq!(diff(&doc, &live, &all_explicit(&live), &BTreeSet::new()), vec![]);
-    // `path`, the last explicit field, is mirrored too since 2b-5 Task 1 (the stored path, never rewritten: Ruling 5),
-    // so `diff` never writes it, marked or not. Task 3 deletes the machinery.
-    let image = shared(Kind::Image, None, &[(field::PATH, FieldValue::Str("a.png".into()))]);
-    live.insert(id(1), image);
-    let ops = diff(&doc, &live, &all_explicit(&live), &BTreeSet::new());
-    apply(&mut doc, ops);
-    live.get_mut(&id(1)).unwrap().fields.insert(field::PATH, FieldValue::Str("b.png".into()));
-    assert_eq!(diff(&doc, &live, &BTreeSet::new(), &BTreeSet::new()), vec![], "unmarked");
-    let marked = BTreeSet::from([(id(1), field::PATH)]);
-    assert_eq!(diff(&doc, &live, &marked, &BTreeSet::new()), vec![], "marked");
+fn a_removed_node_is_deleted_and_a_respawning_one_kept() {
+    let mut app = app_on(&temp_dir("delete-unless-respawning").join("session.mnf"), 1);
+    let note = add(&mut app, NodePayload::Note(NotePayload { text: "a".into(), editing: false }));
+    let tab = add(&mut app, sleeping_tab("https://t/", ""));
+    assert!(app.save_session());
+    app.remove_node(&note);
+    start_respawn(&mut app, &tab);
+    assert!(app.save_session());
+    assert!(!live_in_doc(&app, &note), "deleted");
+    assert!(live_in_doc(&app, &tab), "kept while respawning");
+    assert!(app.pending_deletes.is_empty());
 }
 
-#[test]
-fn a_missing_node_is_deleted_unless_kept() {
-    let mut doc = Doc::new(DocId([1; 16]));
-    let live = BTreeMap::from([(id(0), note("a", None))]);
-    let ops = diff(&doc, &live, &all_explicit(&live), &BTreeSet::new());
-    apply(&mut doc, ops);
-    let empty = BTreeMap::new();
-    assert_eq!(diff(&doc, &empty, &BTreeSet::new(), &BTreeSet::from([id(0)])), vec![]);
-    assert_eq!(diff(&doc, &empty, &BTreeSet::new(), &BTreeSet::new()), vec![OpBody::Delete { node: id(0) }]);
-}
-
+/// A queued create for an id the document holds as a tombstone is dropped (ids are never reused): here a tab
+/// another replica deleted while it was waking, which is still shown until the wake lands.
 #[test]
 fn a_tombstone_is_never_recreated() {
-    let mut doc = Doc::new(DocId([1; 16]));
-    let live = BTreeMap::from([(id(0), note("a", None))]);
-    let ops = diff(&doc, &live, &all_explicit(&live), &BTreeSet::new());
-    apply(&mut doc, ops);
-    apply(&mut doc, vec![OpBody::Delete { node: id(0) }]);
-    let ops = diff(&doc, &live, &all_explicit(&live), &BTreeSet::new());
-    assert!(!ops.iter().any(|op| matches!(op, OpBody::Create { .. })), "{ops:?}");
+    let path = temp_dir("tombstone-no-create").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let tab = add(&mut app, sleeping_tab("https://t/", ""));
+    assert!(app.save_session());
+    app.focus_tab(&tab);
+    assert!(app.spawning.contains_key(&tab) && app.nodes.contains_key(&tab), "waking: shown and in flight");
+    let mut other = Journal::open(&path, ActorId(2)).unwrap();
+    other.begin().unwrap().commit(vec![OpBody::Delete { node: tab.parse().unwrap() }]).unwrap();
+    app.pending_creates.insert(tab.parse().unwrap());
+    let ops = ops_of(&app);
+    assert!(app.save_session());
+    assert_eq!(ops_of(&app), ops, "no Create");
+    assert!(!live_in_doc(&app, &tab));
+    fail_spawns(&mut app);
+    assert!(!app.nodes.contains_key(&tab), "the parked remote delete lands");
 }
 
+/// Another replica deleted a group: its members are shown at the top here, but that is the document's own
+/// effective group, so the next save writes no `Move`.
 #[test]
 fn re_homing_out_of_a_deleted_group_is_not_a_move() {
-    let mut doc = Doc::new(DocId([1; 16]));
-    let live = BTreeMap::from([(id(0), note("a", Some(id(1)))), (id(1), group("G"))]);
-    let ops = diff(&doc, &live, &all_explicit(&live), &BTreeSet::new());
-    apply(&mut doc, ops);
-    // Another replica deleted the group only; the note is shown at the top.
-    apply(&mut doc, vec![OpBody::Delete { node: id(1) }]);
-    let rehomed = BTreeMap::from([(id(0), note("a", None))]);
-    assert_eq!(diff(&doc, &rehomed, &BTreeSet::new(), &BTreeSet::new()), vec![]);
+    let path = temp_dir("rehome-no-move").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let group = add_group(&mut app, "G");
+    let tab = add(&mut app, sleeping_tab("https://t/", ""));
+    app.edit_group(&tab, Some(group.clone()));
+    assert!(app.save_session());
+    let mut other = Journal::open(&path, ActorId(2)).unwrap();
+    other.begin().unwrap().commit(vec![OpBody::Delete { node: group.parse().unwrap() }]).unwrap();
+    let ops = ops_of(&app);
+    assert!(app.save_session());
+    assert!(!app.nodes.contains_key(&group) && app.nodes.contains_key(&tab));
+    assert_eq!(app.mirror.group(&tab), None, "shown at the top");
+    assert_eq!(ops_of(&app), ops, "nothing written");
 }
 
+/// A new node's `parent` naming an id the document has never seen is written as none (Ruling 12: one resolver for
+/// every Id a `Create` carries).
 #[test]
 fn a_parent_naming_a_missing_node_is_written_as_none() {
-    let doc = Doc::new(DocId([1; 16]));
-    let tab = shared(Kind::Tab, None, &[(field::PARENT, FieldValue::Id(Some(id(9))))]);
-    let live = BTreeMap::from([(id(0), tab)]);
-    let mut doc2 = doc.clone();
-    apply(&mut doc2, diff(&doc, &live, &all_explicit(&live), &BTreeSet::new()));
-    assert_eq!(doc2.nodes[&id(0)].get(field::PARENT), FieldValue::Id(None));
+    let mut app = app_on(&temp_dir("parent-missing").join("session.mnf"), 1);
+    let tab = add(&mut app, sleeping_tab("https://t/", ""));
+    app.edit_parent(&tab, Some(id(9).to_string()));
+    assert!(app.save_session());
+    assert_eq!(stored(&app, &tab, field::PARENT), FieldValue::Id(None));
 }
 
-/// A created node's parent or group that the same commit deletes is written as none, not as the dead id (Ruling 5;
-/// final review minor 3).
+/// A created node's parent or group that the same save deletes is written as none, not as the dead id (Ruling 5;
+/// final review minor 3): a new tab opened from a tab into a group, both closed before its spawn landed.
 #[test]
-fn a_create_naming_a_node_deleted_by_the_same_diff_writes_none() {
-    let mut doc = Doc::new(DocId([1; 16]));
-    let start = BTreeMap::from([(id(0), shared(Kind::Tab, None, &[])), (id(1), group("G"))]);
-    let ops = diff(&doc, &start, &all_explicit(&start), &BTreeSet::new());
-    apply(&mut doc, ops);
-    // Both are gone from the live graph; a new tab still names them (a spawn started before they went).
-    let tab = shared(Kind::Tab, Some(id(1)), &[(field::PARENT, FieldValue::Id(Some(id(0))))]);
-    let live = BTreeMap::from([(id(2), tab)]);
-    let ops = diff(&doc, &live, &all_explicit(&live), &BTreeSet::new());
-    apply(&mut doc, ops);
-    assert!(!doc.nodes[&id(0)].is_live() && !doc.nodes[&id(1)].is_live());
-    assert_eq!(doc.nodes[&id(2)].get(field::PARENT), FieldValue::Id(None));
-    assert_eq!(doc.nodes[&id(2)].group, None);
+fn a_create_naming_a_node_deleted_by_the_same_save_writes_none() {
+    let mut app = app_on(&temp_dir("create-names-deleted").join("session.mnf"), 1);
+    let opener = add(&mut app, sleeping_tab("https://o/", ""));
+    let group = add_group(&mut app, "G");
+    assert!(app.save_session());
+    let tab = app.spawn_tab_at("https://n/", egui::Vec2::ZERO, Some(group.clone()), Some(opener.clone()));
+    assert!(app.spawning.contains_key(&tab));
+    app.remove_tab(&opener);
+    app.dissolve_group(&group);
+    assert!(app.save_session());
+    assert!(!live_in_doc(&app, &opener) && !live_in_doc(&app, &group));
+    assert!(live_in_doc(&app, &tab), "created from its spawn snapshot");
+    assert_eq!(stored(&app, &tab, field::PARENT), FieldValue::Id(None));
+    assert_eq!(app.journal.as_ref().unwrap().doc().nodes[&tab.parse().unwrap()].group, None);
 }
 
+/// Random local edits through the app's writers (place, group, rename, type, close), each followed by one save:
+/// the document then shows exactly the live graph, and a second save writes nothing.
 #[test]
-fn random_edits_converge_in_one_diff() {
+fn random_edits_converge_in_one_save() {
     let mut rng = XorShift(0x5E55);
-    let mut doc = Doc::new(DocId([1; 16]));
-    let mut live: BTreeMap<NodeId, Shared> = BTreeMap::new();
-    let mut next = 0;
-    for _ in 0..200 {
+    let mut app = app_on(&temp_dir("random-converge").join("session.mnf"), 1);
+    // The model: each live node's kind and group.
+    let mut model: BTreeMap<String, (Kind, Option<String>)> = BTreeMap::new();
+    let groups = |model: &BTreeMap<String, (Kind, Option<String>)>| -> Vec<String> {
+        model.iter().filter(|(_, (k, _))| *k == Kind::Group).map(|(id, _)| id.clone()).collect()
+    };
+    for _ in 0..120 {
         match rng.below(5) {
             0 | 1 => {
-                let groups: Vec<NodeId> =
-                    live.iter().filter(|(_, s)| s.kind == Kind::Group).map(|(id, _)| *id).collect();
-                let group =
-                    (!groups.is_empty() && rng.below(2) == 0).then(|| groups[rng.below(groups.len() as u64) as usize]);
-                let node = if rng.below(3) == 0 { group_in("g", group) } else { note("n", group) };
-                live.insert(id(next), node);
-                next += 1;
+                let groups = groups(&model);
+                let group = (!groups.is_empty() && rng.below(2) == 0)
+                    .then(|| groups[rng.below(groups.len() as u64) as usize].clone());
+                let (id, kind) = if rng.below(3) == 0 {
+                    (add_group(&mut app, "g"), Kind::Group)
+                } else {
+                    (add(&mut app, NodePayload::Note(NotePayload { text: "n".into(), editing: false })), Kind::Note)
+                };
+                app.edit_group(&id, group.clone());
+                model.insert(id, (kind, group));
             }
-            2 if !live.is_empty() => {
-                let key = *live.keys().nth(rng.below(live.len() as u64) as usize).unwrap();
-                // Mirrored fields (`COLOR`, a note's `TEXT`, a group's `NAME`) are written by `App::pending`, not
-                // `diff`: applied here as the `Set` the save would commit.
-                let node = live.get_mut(&key).unwrap();
-                let value = FieldValue::Str(rng.below(1 << 24).to_string());
-                let no = if node.kind == Kind::Group { field::NAME } else { field::TEXT };
-                node.fields.insert(no, value.clone());
-                apply(&mut doc, vec![OpBody::Set { node: key, field: no, enc: encode_field(no, &value) }]);
-            }
-            3 if !live.is_empty() => {
-                let key = *live.keys().nth(rng.below(live.len() as u64) as usize).unwrap();
-                // Deleting a group deletes what it shows, as the app does.
-                let doomed: Vec<NodeId> =
-                    live.keys().filter(|&&n| n == key || is_inside(&live, n, key)).copied().collect();
-                for n in doomed {
-                    live.remove(&n);
+            2 if !model.is_empty() => {
+                let key = model.keys().nth(rng.below(model.len() as u64) as usize).unwrap().clone();
+                let value = rng.below(1 << 24).to_string();
+                if model[&key].0 == Kind::Group {
+                    app.edit_name(&key, &value);
+                } else {
+                    app.edit_text(&key, &value);
                 }
             }
-            4 if !live.is_empty() => {
-                let key = *live.keys().nth(rng.below(live.len() as u64) as usize).unwrap();
-                let groups: Vec<NodeId> =
-                    live.iter().filter(|(_, s)| s.kind == Kind::Group).map(|(id, _)| *id).collect();
+            3 if !model.is_empty() => {
+                let key = model.keys().nth(rng.below(model.len() as u64) as usize).unwrap().clone();
+                // Destroying a group destroys what it holds, as the app does.
+                let doomed: Vec<String> =
+                    model.keys().filter(|n| **n == key || is_inside(&model, n, &key)).cloned().collect();
+                app.destroy_node(&key);
+                for n in doomed {
+                    model.remove(&n);
+                }
+            }
+            4 if !model.is_empty() => {
+                let key = model.keys().nth(rng.below(model.len() as u64) as usize).unwrap().clone();
                 // A move into `key` itself or one of its descendants would create a cycle.
-                let candidates: Vec<Option<NodeId>> = std::iter::once(None)
-                    .chain(groups.into_iter().map(Some))
-                    .filter(|&g| g != Some(key) && !g.is_some_and(|g| is_inside(&live, g, key)))
+                let candidates: Vec<Option<String>> = std::iter::once(None)
+                    .chain(groups(&model).into_iter().map(Some))
+                    .filter(|g| g.as_ref().is_none_or(|g| *g != key && !is_inside(&model, g, &key)))
                     .collect();
-                let choice = candidates[rng.below(candidates.len() as u64) as usize];
-                live.get_mut(&key).unwrap().group = choice;
-                // An existing node's group is `App::pending_moves`' to write, not `diff`'s (Ruling 8).
-                apply(&mut doc, vec![OpBody::Move { node: key, group: choice }]);
+                let choice = candidates[rng.below(candidates.len() as u64) as usize].clone();
+                app.edit_group(&key, choice.clone());
+                model.get_mut(&key).unwrap().1 = choice;
             }
             _ => {}
         }
-        let ops = diff(&doc, &live, &all_explicit(&live), &BTreeSet::new());
-        apply(&mut doc, ops);
-        assert_eq!(shown(&doc), live);
-        assert_eq!(diff(&doc, &live, &all_explicit(&live), &BTreeSet::new()), vec![]);
+        assert!(app.save_session());
+        let doc = app.journal.as_ref().unwrap().doc();
+        assert_eq!(shown(doc), app.shared_nodes(), "the document shows the live graph");
+        let live: BTreeMap<String, (Kind, Option<String>)> = doc
+            .live()
+            .map(|(id, n)| (id.to_string(), (n.kind(), doc.effective_group(id).map(|g| g.to_string()))))
+            .collect();
+        assert_eq!(live, model, "and the model");
+        let ops = ops_of(&app);
+        assert!(app.save_session());
+        assert_eq!(ops_of(&app), ops, "a second save writes nothing");
     }
 }
 
-fn group_in(name: &str, parent: Option<NodeId>) -> Shared {
-    Shared { group: parent, ..group(name) }
-}
-
-fn is_inside(live: &BTreeMap<NodeId, Shared>, node: NodeId, ancestor: NodeId) -> bool {
-    let mut at = live.get(&node).and_then(|s| s.group);
+fn is_inside(model: &BTreeMap<String, (Kind, Option<String>)>, node: &str, ancestor: &str) -> bool {
+    let mut at = model.get(node).and_then(|(_, g)| g.as_deref());
     while let Some(g) = at {
         if g == ancestor {
             return true;
         }
-        at = live.get(&g).and_then(|s| s.group);
+        at = model.get(g).and_then(|(_, g)| g.as_deref());
     }
     false
+}
+
+/// A Root/New/Split spawn that fails after a save created its tab (`spawning`) deletes it: the failed card branch
+/// is only for a tab that exists. One that fails before any save was never in the document, and the queues are
+/// left empty either way.
+#[test]
+fn a_failed_new_spawn_is_deleted_if_its_create_committed() {
+    let mut app = app_on(&temp_dir("failed-new-spawn").join("session.mnf"), 1);
+    let saved = app.spawn_tab_at("https://a/", egui::Vec2::ZERO, None, None);
+    assert!(app.save_session());
+    assert!(live_in_doc(&app, &saved), "created while in flight");
+    fail_spawns(&mut app);
+    assert!(app.tab_spawn_error.is_some());
+    let doc = app.journal.as_ref().unwrap().doc();
+    assert!(!doc.nodes[&saved.parse().unwrap()].is_live(), "deleted by the failure's save");
+    assert!(app.pending_creates.is_empty() && app.pending_deletes.is_empty());
+
+    let mut app = app_on(&temp_dir("failed-new-spawn-unsaved").join("session.mnf"), 1);
+    let unsaved = app.spawn_tab_at("https://b/", egui::Vec2::ZERO, None, None);
+    fail_spawns(&mut app);
+    assert!(app.tab_spawn_error.is_some());
+    let doc = app.journal.as_ref().unwrap().doc();
+    assert!(!doc.nodes.contains_key(&unsaved.parse().unwrap()), "never created");
+    assert!(app.pending_creates.is_empty() && app.pending_deletes.is_empty());
+}
+
+/// Open Session: the replaced session's nodes of every kind are deleted from the document; its jars stay (they
+/// are not part of the graph), and the new nodes are created.
+#[test]
+fn teardown_deletes_every_old_document_node_but_keeps_jars() {
+    let path = temp_dir("teardown-deletes").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let note = add(&mut app, NodePayload::Note(NotePayload { text: "old".into(), editing: false }));
+    let group = add_group(&mut app, "G");
+    let tab = add(&mut app, sleeping_tab("https://old/", ""));
+    app.edit_group(&tab, Some(group.clone()));
+    let jar = app.create_jar("Work");
+    assert!(app.save_session());
+    let json =
+        JsonDoc { nodes: vec![json_node("t", Kind::Tab, serde_json::json!({ "url": "https://new/" }))], local: None };
+    app.replace_running_session(&json, crate::store::json::Trust::Foreign);
+    for old in [&note, &group, &tab] {
+        assert!(!live_in_doc(&app, old), "{old} deleted");
+    }
+    assert!(live_in_doc(&app, &jar.to_string()), "the jar stays");
+    let doc = app.journal.as_ref().unwrap().doc();
+    let urls: Vec<FieldValue> =
+        doc.live().filter(|(_, n)| n.kind() == Kind::Tab).map(|(_, n)| n.get(field::URL)).collect();
+    assert_eq!(urls, [FieldValue::Str("https://new/".into())]);
+    assert!(app.pending_deletes.is_empty());
+}
+
+/// Another replica's delete removes the node here and queues nothing: the document already lacks it.
+#[test]
+fn a_remote_removal_queues_no_delete() {
+    let mut app = app_on(&temp_dir("remote-removal-queues-nothing").join("session.mnf"), 1);
+    let note = add(&mut app, NodePayload::Note(NotePayload { text: "n".into(), editing: false }));
+    let group = add_group(&mut app, "G");
+    let tab = add(&mut app, sleeping_tab("https://t/", ""));
+    app.edit_group(&tab, Some(group.clone()));
+    let jar = app.create_jar("Work");
+    assert!(app.save_session());
+    for id in [note.parse().unwrap(), tab.parse().unwrap(), group.parse().unwrap(), jar] {
+        app.apply_remote(vec![(id, None)]);
+        assert!(!app.nodes.contains_key(&id.to_string()) && !app.mirror.jar_defs().contains_key(&id), "{id} removed");
+        assert!(app.pending_deletes.is_empty(), "{id}: nothing queued");
+    }
+}
+
+/// A crash respawn, an engine swap and a content reload take the node out of `nodes` and put it back: none
+/// queues a delete, so a save in between keeps the document node.
+#[test]
+fn a_crash_respawn_a_swap_and_a_reload_delete_nothing() {
+    let dir = temp_dir("respawn-swap-reload-keep");
+    let mut app = app_on(&dir.join("session.mnf"), 1);
+    let crashed = add(&mut app, sleeping_tab("https://c/", ""));
+    let (swapped, _peer) = live_tab(&mut app, EngineKind::Servo, "https://s/");
+    let json = app.alloc_node_id();
+    let body = crate::redirect_fetch::save(&dir, &json, crate::content::ContentKind::Json, b"[1]".to_vec()).unwrap();
+    let source = crate::ContentSource::Web { url: "https://x.test/j".into(), body };
+    app.insert_content(source, json.clone(), egui::Vec2::ZERO, None).unwrap();
+    assert!(app.save_session());
+    start_respawn(&mut app, &crashed);
+    app.finish_swap(&swapped, EngineKind::Webview2, "https://s/".into());
+    assert!(app.spawning.contains_key(&swapped) && !app.nodes.contains_key(&swapped), "swapping");
+    let moved = dir.join("moved.json");
+    std::fs::write(&moved, b"[2]").unwrap();
+    let path = moved.to_string_lossy().into_owned();
+    app.reload_fetched_node(&json, crate::WebBody::File { kind: crate::content::ContentKind::Json, path });
+    assert!(app.pending_deletes.is_empty(), "nothing queued");
+    assert!(app.save_session());
+    for id in [&crashed, &swapped, &json] {
+        assert!(live_in_doc(&app, id), "{id} kept");
+    }
+}
+
+/// A download is created once it completes: an in-progress one can't resume, so it is not written, but its queued
+/// create waits for the save after completion.
+#[test]
+fn a_download_is_created_once_it_completes() {
+    let mut app = app_on(&temp_dir("download-create-on-complete").join("session.mnf"), 1);
+    let payload = DownloadPayload {
+        path: "f.bin".into(),
+        bytes_received: 1,
+        total_bytes: Some(2),
+        completed: false,
+        failed: false,
+    };
+    let dl = add(&mut app, NodePayload::Download(payload));
+    assert!(app.save_session());
+    assert!(!app.journal.as_ref().unwrap().doc().nodes.contains_key(&dl.parse().unwrap()), "not yet");
+    assert!(app.pending_creates.contains(&dl.parse().unwrap()), "still queued");
+    app.nodes.get_mut(&dl).unwrap().payload = NodePayload::Download(DownloadPayload {
+        path: "f.bin".into(),
+        bytes_received: 2,
+        total_bytes: Some(2),
+        completed: true,
+        failed: false,
+    });
+    assert!(app.save_session());
+    assert!(live_in_doc(&app, &dl), "created");
+}
+
+/// A jar from an opened or imported file (a fresh id) is created like a local one.
+#[test]
+fn an_imported_jar_is_created() {
+    let mut app = app_on(&temp_dir("imported-jar-created").join("session.mnf"), 1);
+    app.replace_running_session(&file_with_a_work_jar(), crate::store::json::Trust::Foreign);
+    let jar = *app.mirror.jar_defs().keys().next().expect("the jar imported");
+    assert!(live_in_doc(&app, &jar.to_string()));
+}
+
+/// Ruling 14: in a test build every save checks that the live graph and the document agree, so a node that leaves
+/// `nodes` behind the queues' back (a missed delete funnel) is caught at once.
+#[test]
+#[should_panic(expected = "delete funnel")]
+fn a_node_removed_behind_the_queues_back_trips_the_invariant() {
+    let mut app = app_on(&temp_dir("invariant-missed-delete").join("session.mnf"), 1);
+    let note = add(&mut app, NodePayload::Note(NotePayload { text: "n".into(), editing: false }));
+    assert!(app.save_session());
+    app.nodes.remove(&note);
+    app.save_session();
+}
+
+/// The same for a node that enters `nodes` without `place_node` (a missed create funnel).
+#[test]
+#[should_panic(expected = "create funnel")]
+fn a_node_inserted_behind_the_queues_back_trips_the_invariant() {
+    let mut app = app_on(&temp_dir("invariant-missed-create").join("session.mnf"), 1);
+    add(&mut app, NodePayload::Note(NotePayload { text: "n".into(), editing: false }));
+    assert!(app.save_session());
+    let id = app.alloc_node_id();
+    let payload = NodePayload::Note(NotePayload { text: "stray".into(), editing: false });
+    app.nodes.insert(id, crate::GraphNode { payload });
+    app.save_session();
 }
 
 /// Materializes `nodes` into a windowless app, as `apply_remote` would
@@ -1073,34 +1241,6 @@ fn a_restart_places_a_node_at_its_personal_position_while_the_mirror_holds_the_d
     assert_eq!(stored(&app, &note, field::POS), FieldValue::Pos(10.0, 20.0));
 }
 
-/// Ruling 11: `explicit` stays as dead machinery until 2b-5, with nothing filling it: no source calls `mark`, and
-/// only `mark` itself inserts into `explicit`.
-#[test]
-fn explicit_is_never_populated() {
-    fn scan(dir: &std::path::Path, out: &mut Vec<(String, String)>) {
-        for entry in std::fs::read_dir(dir).unwrap() {
-            let path = entry.unwrap().path();
-            if path.is_dir() {
-                scan(&path, out);
-            } else if path.extension().is_some_and(|ext| ext == "rs") && !path.ends_with("session_sync/tests.rs") {
-                out.push((path.display().to_string(), std::fs::read_to_string(&path).unwrap()));
-            }
-        }
-    }
-    let mut sources = Vec::new();
-    scan(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &mut sources);
-    let count = |needle: &str| sources.iter().map(|(_, text)| text.matches(needle).count()).sum::<usize>();
-    let callers: Vec<&str> = sources
-        .iter()
-        .filter(|(_, text)| text.contains(".mark(") || text.contains("::mark("))
-        .map(|(p, _)| p.as_str())
-        .collect();
-    assert_eq!(callers, Vec::<&str>::new(), "nothing marks a field");
-    assert_eq!(count("explicit.insert("), 1, "only `mark` writes `explicit`");
-    let app = App::default();
-    assert!(app.explicit.is_empty());
-}
-
 #[test]
 fn a_read_only_store_saves_nothing() {
     let path = temp_dir("sync-readonly").join("session.mnf");
@@ -1342,13 +1482,9 @@ fn an_older_sessions_download_without_a_parent_loads_unchanged() {
     assert_eq!(app.layout_pos(&node.to_string()), egui::vec2(1.0, 2.0));
     assert_eq!(app.mirror.pos(&node.to_string()), Some(egui::vec2(1.0, 2.0)));
     // No link encodes as the absent register, so a save has nothing to write back.
-    let ops = diff(app.journal.as_ref().unwrap().doc(), &app.shared_nodes(), &BTreeSet::new(), &BTreeSet::new());
-    assert!(ops.is_empty(), "{ops:?}");
-}
-
-#[test]
-fn path_is_explicit() {
-    assert!(crate::store::model::field_def(field::PATH).unwrap().explicit);
+    let ops = ops_of(&app);
+    assert!(app.save_session());
+    assert_eq!(ops_of(&app), ops, "nothing written");
 }
 
 /// A group export round-trips as a JSON snapshot: `export_group_json`
@@ -1706,7 +1842,7 @@ fn a_session_with_only_jars_still_restores_them() {
     let tab = add(&mut app, sleeping_tab("https://a.com/", "A"));
     let jar = app.create_jar("Work");
     app.save_session();
-    app.nodes.remove(&tab);
+    app.remove_tab(&tab);
     app.save_session();
     drop(app);
     let mut back = app_on(&path, 3);
@@ -2009,8 +2145,7 @@ fn a_reopened_tab_comes_back_asleep_with_its_zoom_and_title() {
         t.zoom_factor = 1.5;
     }
     let entry = crate::closed_entry(&app, &tab).unwrap();
-    app.nodes.remove(&tab);
-    app.node_order.retain(|t| t != &tab);
+    app.remove_tab(&tab);
     app.reopen_closed(entry);
     assert!(app.test_spawns.is_empty());
     let cards: Vec<&UnloadedTabPayload> = app.nodes.values().filter_map(|n| n.as_unloaded()).collect();
@@ -2442,7 +2577,7 @@ fn last_shared_matches_the_store_after_every_save() {
 
 /// What the app's side of a save costs at realistic session sizes: the
 /// live projection (`shared_nodes`), a whole `save_session` (projection,
-/// `begin`, `diff`, commit, `last_shared` refresh) with nothing and with
+/// `begin`, the queued ops, commit, `last_shared` refresh) with nothing and with
 /// one url to save, and the personal-state build and write. The store
 /// side alone is `journal::tests::save_path_costs`. Timing, not
 /// correctness, so ignored:
@@ -2486,10 +2621,6 @@ fn app_save_costs() {
         report("shared_nodes (per save)", timed(N, || drop(app.shared_nodes())));
         let live = app.shared_nodes();
         let doc = app.journal.as_ref().unwrap().doc();
-        report(
-            "diff, nothing changed",
-            timed(N, || assert!(diff(doc, &live, &app.explicit, &BTreeSet::new()).is_empty())),
-        );
         report(
             "last_shared refresh (after a commit)",
             timed(N, || {
@@ -2695,16 +2826,20 @@ fn an_edit_to_an_unsaved_node_removed_before_the_save_leaves_no_placeholder() {
     assert!(!doc.nodes.contains_key(&note.parse().unwrap()), "no entry at all for the id");
 }
 
-/// Since 2b-5 Task 2 a jar's fields are mirrored like every other kind's: `App::pending` writes them, not `diff`.
+/// Since 2b-5 Task 2 a jar's fields are mirrored like every other kind's: `App::pending` writes them, and nothing
+/// compares the mirror with the document (Task 3: `diff` is gone), so a value written to the mirror directly is
+/// never saved.
 #[test]
-fn diff_leaves_a_jars_fields_to_the_mirror() {
-    let mut doc = Doc::new(DocId([1; 16]));
-    let mut live = BTreeMap::from([(id(0), shared(Kind::Jar, None, &[(field::NAME, FieldValue::Str("j".into()))]))]);
-    let ops = diff(&doc, &live, &all_explicit(&live), &BTreeSet::new());
-    apply(&mut doc, ops);
-    live.get_mut(&id(0)).unwrap().fields.insert(field::COLOR, red());
-    live.get_mut(&id(0)).unwrap().fields.insert(field::EPHEMERAL, FieldValue::Bool(true));
-    assert_eq!(diff(&doc, &live, &all_explicit(&live), &BTreeSet::new()), vec![]);
+fn a_jars_fields_reach_the_document_only_through_pending() {
+    let mut app = app_on(&temp_dir("jar-fields-pending-only").join("session.mnf"), 1);
+    let jar = app.create_jar("j").to_string();
+    assert!(app.save_session());
+    app.mirror.set(&jar, field::COLOR, red());
+    app.mirror.set(&jar, field::EPHEMERAL, FieldValue::Bool(true));
+    let ops = ops_of(&app);
+    assert!(app.save_session());
+    assert_eq!(ops_of(&app), ops, "nothing written");
+    assert_eq!(stored(&app, &jar, field::EPHEMERAL), FieldValue::Bool(false));
 }
 
 #[test]
@@ -2724,16 +2859,18 @@ fn an_unchanged_edit_queues_nothing() {
     assert!(app.pending.is_empty());
 }
 
+/// The same for a graph node: an existing node's mirrored fields reach the document only as `pending` `Set`s.
 #[test]
-fn diff_leaves_mirrored_fields_of_existing_nodes_to_pending() {
-    let mut doc = Doc::new(DocId([1; 16]));
-    let mut live = BTreeMap::from([(id(0), note("a", None))]);
-    let ops = diff(&doc, &live, &all_explicit(&live), &BTreeSet::new());
-    apply(&mut doc, ops);
-    live.get_mut(&id(0)).unwrap().fields.insert(field::COLOR, red());
-    // `url` too (2b-3), even marked explicit as `all_explicit` does.
-    live.get_mut(&id(0)).unwrap().fields.insert(field::URL, FieldValue::Str("https://elsewhere/".into()));
-    assert_eq!(diff(&doc, &live, &all_explicit(&live), &BTreeSet::new()), vec![]);
+fn an_existing_nodes_fields_reach_the_document_only_through_pending() {
+    let mut app = app_on(&temp_dir("node-fields-pending-only").join("session.mnf"), 1);
+    let note = a_note(&mut app);
+    assert!(app.save_session());
+    app.mirror.set(&note, field::COLOR, red());
+    app.mirror.set(&note, field::URL, FieldValue::Str("https://elsewhere/".into()));
+    let ops = ops_of(&app);
+    assert!(app.save_session());
+    assert_eq!(ops_of(&app), ops, "nothing written");
+    assert_eq!(stored(&app, &note, field::COLOR), FieldValue::Color(None));
 }
 
 #[test]
@@ -2896,7 +3033,7 @@ fn a_parent_deleted_by_the_same_commit_is_written_as_none() {
     let (a, b) = (add(&mut app, sleeping_tab("https://a/", "")), add(&mut app, sleeping_tab("https://b/", "")));
     assert!(app.save_session());
     app.edit_parent(&b, Some(a.clone()));
-    app.nodes.remove(&a); // gone from the live graph: `diff` Deletes it
+    app.remove_tab(&a); // queues its Delete
     assert!(app.save_session());
     assert_eq!(stored(&app, &b, field::PARENT), FieldValue::Id(None));
 }
@@ -3026,8 +3163,8 @@ fn a_parked_link_is_patched_with_the_resolved_value() {
     remote_set(&mut other, &tab, field::PARENT, FieldValue::Id(Some(b.parse().unwrap())));
     app.edit_parent(&tab, Some(a.clone()));
     app.edit_group(&tab, Some(g.clone()));
-    app.nodes.remove(&a);
-    app.nodes.remove(&g);
+    app.remove_tab(&a);
+    app.dissolve_group(&g);
     assert!(app.save_session());
     assert!(app.remote_in_flight.contains_key(&tab), "the remote value is parked");
     assert_eq!(stored(&app, &tab, field::PARENT), FieldValue::Id(None));
@@ -3073,7 +3210,7 @@ fn a_move_into_a_group_deleted_by_the_same_save_is_written_as_none() {
     let t = add(&mut app, sleeping_tab("https://t/", ""));
     assert!(app.save_session());
     app.edit_group(&t, Some(g.clone()));
-    app.nodes.remove(&g);
+    app.dissolve_group(&g);
     assert!(app.save_session());
     assert_eq!(app.journal.as_ref().unwrap().doc().effective_group(t.parse().unwrap()), None);
     assert_eq!(app.mirror.group(&t), None, "the mirror shows what the commit wrote");
@@ -3591,7 +3728,9 @@ fn a_pending_jar_naming_a_jar_deleted_in_this_commit_is_written_as_none() {
     let tab = add(&mut app, sleeping_tab("https://s/", ""));
     assert!(app.save_session());
     app.set_tab_jar(&tab, Some(work));
-    app.forget_jar(work); // gone here without `delete_jar`'s cascade: this commit deletes its node
+    // Gone here without `delete_jar`'s cascade (which would clear the tab's field first): this commit deletes its node.
+    app.forget_jar(work);
+    app.queue_delete(&work.to_string());
     assert!(app.save_session());
     assert!(!app.journal.as_ref().unwrap().doc().nodes[&work].is_live(), "the jar's delete is in this commit");
     assert_eq!(stored(&app, &tab, field::JAR), FieldValue::Id(None));
@@ -3609,7 +3748,8 @@ fn a_created_tab_naming_a_jar_deleted_in_this_commit_is_created_with_none() {
     assert!(app.save_session());
     let tab = add(&mut app, sleeping_tab("https://s/", ""));
     app.set_tab_jar(&tab, Some(work));
-    app.forget_jar(work);
+    app.forget_jar(work); // without `delete_jar`'s cascade, so the pending field still names it
+    app.queue_delete(&work.to_string());
     let home = app.create_jar("Home");
     let other = add(&mut app, sleeping_tab("https://o/", ""));
     app.set_tab_jar(&other, Some(home));
@@ -4054,7 +4194,7 @@ fn a_remote_url_parked_during_a_wake_navigates_the_tab_when_it_lands() {
     remote_set(&mut other, &tab, field::URL, FieldValue::Str("https://r/".into()));
     assert!(app.save_session());
     assert!(app.remote_in_flight.contains_key(&tab), "parked for the landing");
-    app.nodes.remove(&note);
+    app.remove_node(&note);
     assert!(app.save_session());
     assert!(!app.journal.as_ref().unwrap().doc().nodes[&note.parse().unwrap()].is_live(), "the Delete committed");
     let mut peers = land_spawns(&mut app);
@@ -4312,7 +4452,7 @@ fn importing_or_reopening_a_group_of_leaves_carries_key_and_value() {
     assert_eq!((app.mirror.key(&l2), app.mirror.value(&l2)), ("k", "[1,2]"));
 }
 
-/// A node's `Create` resolves its Id fields (`diff`'s `valid`): a link to a node deleted meanwhile is written as
+/// A node's `Create` resolves its Id fields (`create_ops`'s `valid`): a link to a node deleted meanwhile is written as
 /// none, and the mirror shows what the document holds, as after an edit (2b-5 Task 1 review).
 #[test]
 fn a_created_group_shows_the_default_jar_its_create_resolved() {

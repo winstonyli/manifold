@@ -1,7 +1,8 @@
 //! The live graph and the session store (spec "Local edits become ops").
-//! The first half is pure: each live node's shared fields (`Shared`), and
-//! the diff that turns local edits into ops. The `impl App` half after it
-//! restores the session, saves local edits, and shows other replicas' ops.
+//! The first half is pure: each live node's shared fields (`Shared`), the
+//! `Create`s for queued new nodes and the one link resolver. The `impl App`
+//! half after it restores the session, saves local edits (the queued
+//! creates, moves, sets and deletes) and shows other replicas' ops.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -17,7 +18,7 @@ use crate::process_manager::EngineKind;
 use crate::store::journal::{JournalError, Recovery};
 use crate::store::json::{Imported, JsonDoc};
 use crate::store::model::{
-    decode_field, encode_field, encode_field_into, field, field_def, Doc, FieldType, FieldValue, Kind, Node, NodeId,
+    decode_field, encode_field, field, field_def, Doc, FieldType, FieldValue, Kind, Node, NodeId,
 };
 use crate::store::ops::OpBody;
 use crate::{App, ClosedEntry, TabSpawn, ViewMode, MAX_CLOSED};
@@ -47,7 +48,7 @@ pub(crate) type Fields = BTreeMap<u32, FieldValue>;
 
 /// The fields each kind carries, `group` aside (spec, "The shared document"). `parent` ("opened from") is on
 /// every kind a page can make: a tab, a download, and content a tab became. Older builds don't write it for the
-/// non-tab kinds, but keep it (`Node` holds every register, and `diff` only writes the fields listed here).
+/// non-tab kinds, but keep it (`Node` holds every register, and a `Create` only writes the fields listed here).
 pub(crate) fn kind_fields(kind: Kind) -> &'static [u32] {
     use field::*;
     match kind {
@@ -113,95 +114,58 @@ pub(crate) fn engine_of(code: u64) -> EngineKind {
     EngineKind::from_code(code).unwrap_or(EngineKind::Servo)
 }
 
-/// The ops that make `doc` show `live` (spec "Local edits become ops").
-/// - A live node the document lacks is created, each group before the
-///   nodes inside it. A live id the document holds as a tombstone is
-///   never recreated (ids are never reused).
-/// - An existing node's group and parent are left to `App::pending_moves`
-///   and `App::pending` (Ruling 8), as its mirrored fields (`pos`, `url`,
-///   `engine`, `jar`, `jar_set`, a group's `from_json` and `default_jar`, a
-///   file's `path`, a leaf's `key` and `value`, a jar's `name`, `color` and
-///   `ephemeral` among them) are.
-/// - A diffed field that differs is `Set`. No explicit field is left
-///   unmirrored (`path` is mirrored since 2b-5 Task 1), so `explicit` changes
-///   nothing (2b-5 Task 3 deletes the machinery).
-/// - A document node missing from `live` is deleted, unless `keep` names
-///   it (a tab whose spawn is in flight).
-///
-/// A group, parent or other link (`Id` field) naming a node that is neither
-/// live in the document nor created here, or that is deleted here, is
-/// written as none (contract "Missing means deleted"; Ruling 5).
-pub(crate) fn diff(
+/// The one resolver of the links a commit writes (2b-5 Ruling 12): `target` stands if the document shows it live
+/// and this commit (`deleted`) doesn't delete it, or this commit (`created`) creates it; otherwise it is written as
+/// none (contract "Missing means deleted"; Ruling 5). A closed target is still valid: its node is only gone once
+/// its delete commits.
+fn resolve_id(
     doc: &Doc,
-    live: &BTreeMap<NodeId, Shared>,
-    explicit: &BTreeSet<(NodeId, u32)>,
-    keep: &BTreeSet<NodeId>,
-) -> Vec<OpBody> {
-    let in_doc = |id: &NodeId| doc.nodes.get(id).is_some_and(Node::is_live);
-    let new: BTreeSet<NodeId> = live.keys().filter(|id| !doc.nodes.contains_key(id)).copied().collect();
-    let deleted: BTreeSet<NodeId> =
-        doc.live().map(|(id, _)| id).filter(|id| !live.contains_key(id) && !keep.contains(id)).collect();
-    let valid = |id: Option<NodeId>| id.filter(|id| (in_doc(id) && !deleted.contains(id)) || new.contains(id));
-    let mut ops = Vec::new();
+    created: &BTreeSet<NodeId>,
+    deleted: &BTreeSet<NodeId>,
+    target: Option<NodeId>,
+) -> Option<NodeId> {
+    target.filter(|t| (doc.nodes.get(t).is_some_and(Node::is_live) && !deleted.contains(t)) || created.contains(t))
+}
 
-    // Creates, each group's chain of new ancestors first.
+/// The `Create`s for `new`, the queued nodes the document has no entry for, each with what it shows (Ruling 3),
+/// each group's chain of new ancestors before the nodes inside it (Ruling 13). Every link a `Create` carries
+/// (`group`, `parent`, a tab's `jar`, a group's `default_jar`) goes through `resolve_id`, against this commit's
+/// `deleted`. A group created later in the batch (only a cycle does that) would make a placeholder: the node is
+/// created at the top level instead.
+fn create_ops(doc: &Doc, new: &BTreeMap<NodeId, Shared>, deleted: &BTreeSet<NodeId>) -> Vec<OpBody> {
+    let in_doc = |id: &NodeId| doc.nodes.get(id).is_some_and(Node::is_live);
+    let all: BTreeSet<NodeId> = new.keys().copied().collect();
+    let valid = |target: Option<NodeId>| resolve_id(doc, &all, deleted, target);
     let mut order = Vec::new();
     let mut queued = BTreeSet::new();
-    for &start in &new {
+    for &start in new.keys() {
         let mut chain = Vec::new();
         let mut at = Some(start);
-        while let Some(id) = at.filter(|id| new.contains(id) && !queued.contains(id) && !chain.contains(id)) {
+        while let Some(id) = at.filter(|id| new.contains_key(id) && !queued.contains(id) && !chain.contains(id)) {
             chain.push(id);
-            at = live[&id].group;
+            at = new[&id].group;
         }
         for id in chain.into_iter().rev() {
             queued.insert(id);
             order.push(id);
         }
     }
+    let mut ops = Vec::new();
     let mut created = BTreeSet::new();
     for id in order {
-        let node = &live[&id];
-        // A group created later in this batch (only a cycle does that)
-        // would make a placeholder: create at the top level instead.
+        let node = &new[&id];
         let group = valid(node.group).filter(|g| in_doc(g) || created.contains(g));
-        let mut all = node.fields.clone();
-        // Every link a `Create` carries (`parent`, a tab's `jar`, a group's `default_jar`) is resolved alike.
-        for value in all.values_mut() {
+        let mut fields = node.fields.clone();
+        for value in fields.values_mut() {
             if let FieldValue::Id(target) = value {
                 *target = valid(*target);
             }
         }
-        all.insert(field::GROUP, FieldValue::Id(group));
-        let fields = all.iter().flat_map(|(&no, value)| encode_field(no, value)).collect();
-        ops.push(OpBody::create(id, node.kind, fields));
+        fields.insert(field::GROUP, FieldValue::Id(group));
+        let enc = fields.iter().flat_map(|(&no, value)| encode_field(no, value)).collect();
+        ops.push(OpBody::create(id, node.kind, enc));
         created.insert(id);
     }
-
-    // Existing nodes: sets. Each field is encoded into `enc` and copied out
-    // only when it differs.
-    let mut enc = Vec::new();
-    for (&id, node) in live {
-        let Some(current) = doc.nodes.get(&id).filter(|n| n.is_live()) else { continue };
-        for (&no, value) in &node.fields {
-            if field_def(no).is_some_and(|def| def.explicit) && !explicit.contains(&(id, no)) {
-                continue;
-            }
-            // A mirrored field (and `parent`) is written by `App::pending`, not compared.
-            if MIRRORED.contains(&no) || no == field::PARENT {
-                continue;
-            }
-            match value {
-                FieldValue::Id(parent) => encode_field_into(&mut enc, no, &FieldValue::Id(valid(*parent))),
-                other => encode_field_into(&mut enc, no, other),
-            }
-            if current.fields.get(&no).map_or(&[][..], |reg| &reg.enc[..]) != &enc[..] {
-                ops.push(OpBody::Set { node: id, field: no, enc: enc.clone() });
-            }
-        }
-    }
-
-    ops.extend(deleted.into_iter().map(|node| OpBody::Delete { node }));
     ops
 }
 
@@ -374,35 +338,64 @@ fn tab_common(payload: &NodePayload) -> Option<TabCommon<'_>> {
 }
 
 impl App {
-    /// Every live node the store keeps, as `Shared`: each field of its kind as the mirror holds it (2b-5: every
-    /// stored field of a graph node is mirror state). A tab's url is the shared one, not the live one its payload holds
-    /// (2b-3 Ruling 1); its engine is the one a swap in progress already shows as its target (`start_swap_to`); a file
-    /// card's path is the stored one, not the one its payload resolved here (2b-5 Ruling 5). Skipped: an in-progress
-    /// download (it can't resume), and a node whose id isn't a store id (only hand-built test nodes).
-    pub(crate) fn shared_nodes(&self) -> BTreeMap<NodeId, Shared> {
-        let mut out = BTreeMap::new();
-        for (key, node) in &self.nodes {
-            let Ok(id) = key.parse::<NodeId>() else { continue };
+    /// What the store holds for `id`, as `Shared`: a graph node's fields of its kind as the mirror holds them (2b-5:
+    /// every stored field of a graph node is mirror state), a jar's definition, or the snapshot a tab's spawn started
+    /// with (`spawning`, for one not shown yet). A tab's url is the shared one, not the live one its payload holds
+    /// (2b-3 Ruling 1); its engine is the one a swap in progress already shows as its target (`start_swap_to`); a
+    /// file card's path is the stored one, not the one its payload resolved here (2b-5 Ruling 5). `None` for an
+    /// in-progress download (it can't resume, so it isn't created until it completes) and for an id that is none of
+    /// these.
+    pub(crate) fn shared_of(&self, id: NodeId) -> Option<Shared> {
+        let key = id.to_string();
+        if let Some(node) = self.nodes.get(&key) {
             if node.as_download().is_some_and(|dl| !dl.completed) {
-                continue;
+                return None;
             }
             let kind = node.payload.store_kind();
             let fields = kind_fields(kind)
                 .iter()
                 .map(|&no| match no {
-                    field::PARENT => (no, FieldValue::Id(link_id(self.mirror.parent(key)))),
-                    _ => (no, self.mirror.get(key, no)),
+                    field::PARENT => (no, FieldValue::Id(link_id(self.mirror.parent(&key)))),
+                    _ => (no, self.mirror.get(&key, no)),
                 })
                 .collect();
-            out.insert(id, Shared { kind, group: link_id(self.mirror.group(key)), fields });
+            return Some(Shared { kind, group: link_id(self.mirror.group(&key)), fields });
         }
-        // Jars are not graph nodes but must be live, or `diff` deletes their document nodes.
-        for &id in self.mirror.jar_defs().keys() {
-            let key = id.to_string();
+        if self.mirror.jar_defs().contains_key(&id) {
             let fields = kind_fields(Kind::Jar).iter().map(|&no| (no, self.mirror.get(&key, no))).collect();
-            out.insert(id, Shared { kind: Kind::Jar, group: None, fields });
+            return Some(Shared { kind: Kind::Jar, group: None, fields });
         }
-        out
+        self.spawning.get(&key).cloned()
+    }
+
+    /// Every live node and jar as the store holds it (`shared_of`), by store id. Skipped: an in-progress download,
+    /// a node whose id isn't a store id (only hand-built test nodes), and a tab whose spawn is in flight.
+    pub(crate) fn shared_nodes(&self) -> BTreeMap<NodeId, Shared> {
+        let nodes = self.nodes.keys().filter_map(|key| key.parse::<NodeId>().ok());
+        let jars = self.mirror.jar_defs().keys().copied();
+        nodes.chain(jars).filter_map(|id| Some((id, self.shared_of(id)?))).collect()
+    }
+
+    /// Queues `id`, a node that just entered the live graph (`place_node`, `spawn_tab_async`, a jar's `add_jar`),
+    /// for the next save to create (Ruling 3). One the document already has an entry for (shown again from a
+    /// restore or another replica's op, or a tombstone) needs none; an id that isn't a store id is never written.
+    pub(crate) fn queue_create(&mut self, id: &str) {
+        let Ok(node) = id.parse::<NodeId>() else { return };
+        if self.journal.as_ref().is_some_and(|j| j.doc().nodes.contains_key(&node)) {
+            return;
+        }
+        self.pending_creates.insert(node);
+    }
+
+    /// Queues `id`, a node removed here, for the next save to delete (Ruling 4). The save deletes it only if the
+    /// document still shows it live and this replica no longer does, so a node never created is just forgotten.
+    /// Only a local removal queues: a node another replica deleted is already gone from the document
+    /// (`remove_remotely_deleted`), and a crash respawn, an engine swap and a content reload take a node out of
+    /// `nodes` only for a while.
+    pub(crate) fn queue_delete(&mut self, id: &str) {
+        let Ok(node) = id.parse::<NodeId>() else { return };
+        self.pending_creates.remove(&node);
+        self.pending_deletes.insert(node);
     }
 
     /// Makes live node `id` show `fields`. A new node is inserted; a new
@@ -423,14 +416,13 @@ impl App {
     ///
     /// A kind mismatch between the live node and `kind` is ignored (the
     /// store never changes a node's kind). A file card whose file can't be
-    /// loaded is kept, showing its error, so the next diff doesn't delete
-    /// it from the store.
+    /// loaded is kept, showing its error: the node stays in the store.
     ///
     /// `local`, personal state's entry for a new node, lays it out at its
     /// settled position instead of `fields`'s stored `pos` (which the mirror
     /// holds), and reopens a tab at its live url (`LocalNode::live_url`);
-    /// `last_shared` still records the real stored fields, so a later save
-    /// doesn't diff the overrides back into the store. Every caller but
+    /// `last_shared` still records the real stored fields, so a later remote
+    /// change is judged against what the store held. Every caller but
     /// `restore_session` passes `None`.
     pub(crate) fn materialize(
         &mut self,
@@ -692,10 +684,10 @@ impl App {
             .collect()
     }
 
-    /// Shows other replicas' changes, before the next diff (contract
-    /// "Missing means deleted"): the diff would otherwise delete what they
-    /// created and recreate what they pruned. A deleted node is removed
-    /// without a Recently Closed entry (`remove_remotely_deleted`), and a
+    /// Shows other replicas' changes, before the next commit (contract
+    /// "Missing means deleted"). A deleted node is removed without a
+    /// Recently Closed entry and without queueing a delete of its own
+    /// (`remove_remotely_deleted`: the document already lacks it), and a
     /// tab's engine host is shut down. Groups are materialized before the
     /// nodes inside them, so a new member never names a group that doesn't
     /// exist yet. A new tab arrives asleep (`materialize`, spec "Lazy
@@ -760,9 +752,9 @@ impl App {
             }
             self.dissolve_group_quietly(id);
         } else if is_tab {
-            self.remove_tab(id);
+            self.drop_tab(id);
         } else {
-            self.destroy_node(id); // saves nothing for these kinds
+            self.drop_node(id);
         }
         if self.viewed_image.as_deref() == Some(id) {
             self.viewed_image = None;
@@ -847,18 +839,6 @@ impl App {
         }
         self.host_loads.remove(id);
         true
-    }
-
-    /// Marks explicit field `field` of `id` for the next save (spec
-    /// "Local edits become ops"). New nodes need no mark: their `Create`
-    /// carries every field.
-    // No caller since `pos` moved to the mirror (2b-4 Ruling 11): kept as dead machinery until 2b-5 deletes it with
-    // `explicit` and `FieldDef::explicit`.
-    #[allow(dead_code)]
-    pub(crate) fn mark(&mut self, id: &str, field: u32) {
-        if let Ok(id) = id.parse() {
-            self.explicit.insert((id, field));
-        }
     }
 
     /// The one writer of mirrored fields (node model spec, 2b "Read model"): the mirror shows `value` at once, and
@@ -1160,12 +1140,13 @@ impl App {
     }
 
     /// Saves local edits (spec "Local edits become ops"): take the lock,
-    /// show what other replicas wrote, diff the live graph against the
-    /// document, and commit. On error the pending edits stay for the next
-    /// save, which re-diffs (contract "Transactions"). `true` when the
-    /// store now holds every local edit: `false` read-only, on error, and
-    /// when another instance kept writing. The last two are tried again
-    /// by `poll_store` after `SAVE_RETRY`.
+    /// show what other replicas wrote, and commit the queued edits as one
+    /// transaction, in the order Creates (`pending_creates`, groups first),
+    /// Moves (`pending_moves`), Sets (`pending`), Deletes (`pending_deletes`).
+    /// On error the queues stay for the next save (contract "Transactions").
+    /// `true` when the store now holds every local edit: `false` read-only,
+    /// on error, and when another instance kept writing. The last two are
+    /// tried again by `poll_store` after `SAVE_RETRY`.
     pub(crate) fn save_session(&mut self) -> bool {
         // Each round applies what others wrote since the last; four rounds
         // of fresh remote frames means another instance is busy: try again
@@ -1173,9 +1154,16 @@ impl App {
         // What is being typed is committed too (2b-4 Ruling 6).
         self.commit_note_buffers();
         for _ in 0..4 {
-            // Projected before `begin`, since the `Txn` borrows the journal.
-            let mut live = self.shared_nodes();
-            let keep: BTreeSet<NodeId> = self.spawning.keys().filter_map(|id| id.parse().ok()).collect();
+            // Projected before `begin`, since the `Txn` borrows the journal: what each queued node shows (one that
+            // shows nothing yet, an in-progress download, waits), and the ids this replica shows at all.
+            let candidates: BTreeMap<NodeId, Shared> =
+                self.pending_creates.iter().filter_map(|&id| Some((id, self.shared_of(id)?))).collect();
+            let shown: BTreeSet<NodeId> = self
+                .nodes
+                .keys()
+                .filter_map(|key| key.parse().ok())
+                .chain(self.mirror.jar_defs().keys().copied())
+                .collect();
             let Some(journal) = self.journal.as_mut() else {
                 self.flush_history();
                 return false;
@@ -1203,40 +1191,28 @@ impl App {
                 self.flush_history();
                 return false;
             }
-            // A tab still spawning that the store doesn't hold yet is
-            // created as it was started; one it does hold is only kept, so
-            // other replicas' edits to it stand.
-            for (id, shared) in &self.spawning {
-                let Ok(id) = id.parse::<NodeId>() else { continue };
-                if !txn.doc().nodes.contains_key(&id) {
-                    live.entry(id).or_insert_with(|| shared.clone());
-                }
-            }
-            let mut ops = diff(txn.doc(), &live, &self.explicit, &keep);
-            // Edits to mirrored fields. A node this commit creates carries its value in the `Create`, and one it
-            // deletes needs none; one the document doesn't show live would get a placeholder from a `Set`. Those
-            // edits are dropped.
-            let skip: BTreeSet<NodeId> = ops
-                .iter()
-                .filter_map(|op| match op {
-                    OpBody::Create { node, .. } | OpBody::Delete { node } => Some(*node),
-                    _ => None,
-                })
-                .collect();
             let doc = txn.doc();
-            let created: BTreeSet<NodeId> = ops
+            // A queued node is created only if the document has no entry for it at all: a tombstone is never
+            // recreated (ids are never reused), and one another replica created meanwhile stands.
+            let new: BTreeMap<NodeId, Shared> =
+                candidates.into_iter().filter(|(id, _)| !doc.nodes.contains_key(id)).collect();
+            // A queued delete applies to a node the document still shows live and this replica no longer shows:
+            // one shown again (another replica's edit to it arrived first and re-created it here) stays.
+            let deleted: BTreeSet<NodeId> = self
+                .pending_deletes
                 .iter()
-                .filter_map(|op| if let OpBody::Create { node, .. } = op { Some(*node) } else { None })
+                .copied()
+                .filter(|id| doc.nodes.get(id).is_some_and(Node::is_live) && !shown.contains(id))
                 .collect();
-            let deleted: BTreeSet<NodeId> =
-                ops.iter().filter_map(|op| if let OpBody::Delete { node } = op { Some(*node) } else { None }).collect();
-            // A link target is kept if it is live in the document and not deleted here, or created here.
-            let resolve = |target: Option<NodeId>| {
-                target.filter(|t| {
-                    (doc.nodes.get(t).is_some_and(Node::is_live) && !deleted.contains(t)) || created.contains(t)
-                })
+            let mut ops = create_ops(doc, &new, &deleted);
+            let created: BTreeSet<NodeId> = new.keys().copied().collect();
+            let resolve = |target: Option<NodeId>| resolve_id(doc, &created, &deleted, target);
+            // Edits to mirrored fields and moves. A node this commit creates carries its values in the `Create`,
+            // and one it deletes needs none; one the document doesn't show live would get a placeholder from a
+            // `Set`. Those edits are dropped.
+            let editable = |node: &NodeId| {
+                !created.contains(node) && !deleted.contains(node) && doc.nodes.get(node).is_some_and(Node::is_live)
             };
-            let editable = |node: &NodeId| !skip.contains(node) && doc.nodes.get(node).is_some_and(Node::is_live);
             // Each pending link's target as this commit leaves it: what the mirror shows once it lands. A moved
             // node's group is read back from the document after the commit instead: the store may refuse the move.
             let mut moved: BTreeSet<NodeId> = BTreeSet::new();
@@ -1270,6 +1246,7 @@ impl App {
                 };
                 ops.push(OpBody::Set { node, field: no, enc });
             }
+            ops.extend(deleted.iter().map(|&node| OpBody::Delete { node }));
             // The nodes whose stored state this commit changes. A delete can
             // also change other nodes' effective group, so it refreshes all.
             let touched: Option<BTreeSet<NodeId>> = ops
@@ -1289,18 +1266,17 @@ impl App {
             match result {
                 Ok(()) => {
                     // What the store now holds is what this replica last
-                    // saw: every diffed field as live, but an explicit one
-                    // only if it was marked (nothing marks since 2b-4; `explicit` is dead). Only
-                    // `touched` nodes can differ from `last_shared`: every
-                    // other store change (a remote op, a restore) already
-                    // updated it in `materialize`.
+                    // saw. Only `touched` nodes can differ from
+                    // `last_shared`: every other store change (a remote op,
+                    // a restore) already updated it in `materialize`. After
+                    // a delete every live node is refreshed.
                     if let Some(journal) = &self.journal {
                         let doc = journal.doc();
-                        let ids: Box<dyn Iterator<Item = &NodeId>> = match &touched {
-                            Some(touched) => Box::new(touched.iter()),
-                            None => Box::new(live.keys()),
+                        let ids: Vec<NodeId> = match &touched {
+                            Some(touched) => touched.iter().copied().collect(),
+                            None => doc.live().map(|(id, _)| id).collect(),
                         };
-                        for &id in ids {
+                        for id in ids {
                             // A tab whose spawn has a remote change parked (`remote_in_flight`) keeps what this
                             // replica saw before it: the document already holds that change, and the landing
                             // compares against this to replay its live effects (`Navigate`, a swap; final review I1).
@@ -1312,7 +1288,7 @@ impl App {
                                 Shared { kind: node.kind(), group: doc.effective_group(id), fields: fields_of(node) };
                             self.last_shared.insert(id.to_string(), seen);
                         }
-                        // A node this commit created shows the links its `Create` resolved (`diff`'s `valid`: a
+                        // A node this commit created shows the links its `Create` resolved (`resolve_id`: a
                         // tab's jar, a group's default jar, any mirrored Id field), as an edited one does. Only one
                         // with an entry: a new spawn's lands from its `TabSpawn` (`linked_ids`). `parent` lives
                         // in the mirror's links and `group` is the moves' (below).
@@ -1342,8 +1318,11 @@ impl App {
                                 self.mirror.set_group(&id, group.map(|g| g.to_string()));
                             }
                         }
+                        // Created ids are done; one still queued shows nothing yet (an in-progress download) and
+                        // waits for the save after it does.
+                        self.pending_creates.retain(|id| !doc.nodes.contains_key(id));
                     }
-                    self.explicit.clear();
+                    self.pending_deletes.clear();
                     // A link target this commit wrote as none (Ruling 5: deleted here) is none in the mirror too.
                     for (&(node, no), &target) in &links {
                         let id = node.to_string();
@@ -1391,6 +1370,8 @@ impl App {
                     self.last_session_save = Some(std::time::Instant::now());
                     self.save_retry_at = None;
                     self.flush_history();
+                    #[cfg(debug_assertions)]
+                    self.check_graph_matches_document();
                     return true;
                 }
                 Err(err) => {
@@ -1404,6 +1385,43 @@ impl App {
         self.save_retry_at = Some(std::time::Instant::now() + SAVE_RETRY);
         self.flush_history();
         false
+    }
+
+    /// Ruling 14, test and debug builds: after a successful save the live graph and the document agree. Every store
+    /// id in `nodes` (an in-progress download aside) and every jar is live in the document; a tab whose spawn is
+    /// in flight has an entry (live, or a tombstone another replica left while it was in flight, which the landing
+    /// applies); and every live document node is one of them. A failure names the funnel that was missed: a node
+    /// that entered the graph without `place_node`, `spawn_tab_async` or `add_jar` (a missed create), or left it
+    /// without `queue_delete` (a missed delete).
+    #[cfg(debug_assertions)]
+    fn check_graph_matches_document(&self) {
+        let Some(journal) = &self.journal else { return };
+        let doc = journal.doc();
+        let live = |id: &NodeId| doc.nodes.get(id).is_some_and(Node::is_live);
+        for (key, node) in &self.nodes {
+            let Ok(id) = key.parse::<NodeId>() else { continue };
+            if node.as_download().is_some_and(|dl| !dl.completed) || self.spawning.contains_key(key) {
+                continue;
+            }
+            assert!(live(&id), "node {key} is shown but not live in the document: a create funnel was missed");
+        }
+        for id in self.mirror.jar_defs().keys() {
+            assert!(live(id), "jar {id} is shown but not live in the document: a create funnel was missed");
+        }
+        for key in self.spawning.keys() {
+            let Ok(id) = key.parse::<NodeId>() else { continue };
+            assert!(
+                doc.nodes.contains_key(&id),
+                "tab {key} is spawning but the document has no entry: a create funnel was missed"
+            );
+        }
+        for (id, _) in doc.live() {
+            let key = id.to_string();
+            let shown = self.nodes.contains_key(&key)
+                || self.spawning.contains_key(&key)
+                || self.mirror.jar_defs().contains_key(&id);
+            assert!(shown, "node {key} is live in the document but not shown: a delete funnel was missed");
+        }
     }
 
     /// Startup: shows the document, then applies personal state
@@ -1976,7 +1994,9 @@ impl App {
         map
     }
 
-    /// Clears the running session's nodes and the state naming them. Each
+    /// Clears the running session's nodes and the state naming them, and
+    /// queues a delete for every graph node the document holds (Ruling 4:
+    /// jars stay, they are not part of the graph being replaced). Each
     /// tab's `EngineTab::Drop` shuts its engine host down, as `destroy_tab`
     /// relies on, so clearing the map is enough; spawns still in flight are
     /// dropped when they land (`session_generation`), and a PDF's render
@@ -1985,6 +2005,16 @@ impl App {
         for (id, _) in self.nodes.iter().filter(|(_, node)| node.as_pdf().is_some()) {
             self.pdf_renderer.cancel(id);
         }
+        let old: Vec<NodeId> = self
+            .journal
+            .as_ref()
+            .map(|j| j.doc().live().filter(|(_, n)| n.kind() != Kind::Jar).map(|(id, _)| id).collect())
+            .unwrap_or_default();
+        for id in old {
+            self.queue_delete(&id.to_string());
+        }
+        // The old session's nodes not created yet are not created at all.
+        self.pending_creates.clear();
         self.nodes.clear();
         self.node_order.clear();
         self.layout.clear();

@@ -192,9 +192,6 @@ pub struct FieldDef {
     pub no: u32,
     pub name: &'static str,
     pub ty: FieldType,
-    /// Emitted only by named user actions, never by diffing (spec "Local
-    /// edits become ops").
-    pub explicit: bool,
 }
 
 /// Field numbers. Never reuse one; retired numbers go in `RESERVED`.
@@ -228,27 +225,27 @@ pub mod field {
 }
 
 pub static FIELDS: [FieldDef; 19] = [
-    FieldDef { no: field::POS, name: "pos", ty: FieldType::Pos, explicit: true },
-    FieldDef { no: field::COLOR, name: "color", ty: FieldType::Color, explicit: false },
-    FieldDef { no: field::GROUP, name: "group", ty: FieldType::Id, explicit: false },
-    FieldDef { no: field::PARENT, name: "parent", ty: FieldType::Id, explicit: false },
-    FieldDef { no: field::URL, name: "url", ty: FieldType::Str, explicit: true },
-    FieldDef { no: field::ENGINE, name: "engine", ty: FieldType::Engine, explicit: false },
-    FieldDef { no: field::PINNED, name: "pinned", ty: FieldType::Bool, explicit: false },
-    FieldDef { no: field::NAME, name: "name", ty: FieldType::Str, explicit: false },
-    FieldDef { no: field::FROM_JSON, name: "from_json", ty: FieldType::Bool, explicit: false },
-    FieldDef { no: field::TEXT, name: "text", ty: FieldType::Str, explicit: false },
+    FieldDef { no: field::POS, name: "pos", ty: FieldType::Pos },
+    FieldDef { no: field::COLOR, name: "color", ty: FieldType::Color },
+    FieldDef { no: field::GROUP, name: "group", ty: FieldType::Id },
+    FieldDef { no: field::PARENT, name: "parent", ty: FieldType::Id },
+    FieldDef { no: field::URL, name: "url", ty: FieldType::Str },
+    FieldDef { no: field::ENGINE, name: "engine", ty: FieldType::Engine },
+    FieldDef { no: field::PINNED, name: "pinned", ty: FieldType::Bool },
+    FieldDef { no: field::NAME, name: "name", ty: FieldType::Str },
+    FieldDef { no: field::FROM_JSON, name: "from_json", ty: FieldType::Bool },
+    FieldDef { no: field::TEXT, name: "text", ty: FieldType::Str },
     // Machine-local: a replica that refetches a missing file saves it under
     // its own content dir, and that path must not be written back.
-    FieldDef { no: field::PATH, name: "path", ty: FieldType::Str, explicit: true },
-    FieldDef { no: field::KEY, name: "key", ty: FieldType::Str, explicit: false },
-    FieldDef { no: field::VALUE, name: "value", ty: FieldType::Str, explicit: false },
-    FieldDef { no: field::VIEW, name: "view", ty: FieldType::Str, explicit: false },
-    FieldDef { no: field::JAR, name: "jar", ty: FieldType::Id, explicit: false },
-    FieldDef { no: field::JAR_SET, name: "jar_set", ty: FieldType::Bool, explicit: false },
-    FieldDef { no: field::DEFAULT_JAR, name: "default_jar", ty: FieldType::Id, explicit: false },
-    FieldDef { no: field::EPHEMERAL, name: "ephemeral", ty: FieldType::Bool, explicit: false },
-    FieldDef { no: field::TYPE, name: "type", ty: FieldType::Str, explicit: false },
+    FieldDef { no: field::PATH, name: "path", ty: FieldType::Str },
+    FieldDef { no: field::KEY, name: "key", ty: FieldType::Str },
+    FieldDef { no: field::VALUE, name: "value", ty: FieldType::Str },
+    FieldDef { no: field::VIEW, name: "view", ty: FieldType::Str },
+    FieldDef { no: field::JAR, name: "jar", ty: FieldType::Id },
+    FieldDef { no: field::JAR_SET, name: "jar_set", ty: FieldType::Bool },
+    FieldDef { no: field::DEFAULT_JAR, name: "default_jar", ty: FieldType::Id },
+    FieldDef { no: field::EPHEMERAL, name: "ephemeral", ty: FieldType::Bool },
+    FieldDef { no: field::TYPE, name: "type", ty: FieldType::Str },
 ];
 
 /// Retired field numbers, never to be reused (checked by a test).
@@ -592,7 +589,6 @@ mod tests {
         assert_eq!(field::VIEW, 14);
         let view = field_by_name("view").unwrap();
         assert_eq!(view.ty, FieldType::Str);
-        assert!(!view.explicit);
         for (no, name, ty) in [
             (field::JAR, "jar", FieldType::Id),
             (field::JAR_SET, "jar_set", FieldType::Bool),
@@ -600,11 +596,11 @@ mod tests {
             (field::EPHEMERAL, "ephemeral", FieldType::Bool),
         ] {
             let def = field_by_name(name).unwrap();
-            assert_eq!((def.no, def.ty, def.explicit), (no, ty, false), "{name}");
+            assert_eq!((def.no, def.ty), (no, ty), "{name}");
         }
         assert_eq!((field::JAR, field::JAR_SET, field::DEFAULT_JAR, field::EPHEMERAL), (15, 16, 17, 18));
         let ty = field_by_name("type").unwrap();
-        assert_eq!((ty.no, ty.ty, ty.explicit), (19, FieldType::Str, false));
+        assert_eq!((ty.no, ty.ty), (19, FieldType::Str));
     }
 
     #[test]

@@ -15,7 +15,8 @@ use crate::session_sync::{color_of, color_value, engine_of, pos_value, Fields};
 use crate::store::model::{field, field_def, FieldValue, Kind, NodeId};
 use crate::JarDef;
 
-/// The fields the mirror holds. `diff` leaves them to `App::pending` on existing nodes. `URL` is a tab's shared url
+/// The fields the mirror holds: a `Create` carries them, and on an existing node only `App::pending` writes them
+/// (nothing compares the mirror with the document). `URL` is a tab's shared url
 /// (2b-3 Ruling 2) and a content node's web source (`App::source_url`), seeded at creation since 2b-5. `JAR` and
 /// `JAR_SET` are a tab's jar choice (`jar_choice`), written together by `App::edit_jar`. `ENGINE` is a tab's engine as
 /// its stored code (`engine`), written by `App::edit_engine`. `POS` is the document pos (`pos`), written by

@@ -134,6 +134,8 @@ impl App {
         let url = shared_url.unwrap_or(&spawn.url);
         let shared = session_sync::spawn_shared(&spawn, pos, url, engine, choice);
         self.spawning.insert(spawn.id.clone(), shared);
+        // A new tab is created from that snapshot by the next save (Ruling 3); a respawn's id is already stored.
+        self.queue_create(&spawn.id);
         let generation = self.session_generation;
         // Resolved and loaded before the test early return, so tests see the load happen.
         let (jar, _) = self.resolved_jar(&choice);
@@ -381,11 +383,9 @@ impl App {
                     let Carried { color, pinned, parent, group, .. } = self.mirror.carried(&id);
                     (parent, group, color, pinned, tab.muted)
                 }
-                // Closed while waking (see `wakes_in_flight`): `spawning`
-                // no longer holds this id (removed above), so the save
-                // actually deletes it -- without this, a save taken while
-                // the wake was still in flight had kept it (`spawning`),
-                // and nothing else ever saves it again.
+                // Closed while waking (see `wakes_in_flight`): `remove_tab`
+                // queued its delete, which this save commits -- without
+                // this, nothing else ever saves it again.
                 None => {
                     self.save_session();
                     return;
@@ -603,7 +603,9 @@ impl App {
                     SpawnPurpose::Wake => format!("Couldn't load tab: {err}"),
                 });
                 // A save while it was in flight may have created it
-                // (`spawning`); it's gone now.
+                // (`spawning`); it's gone now (Ruling 4). One never
+                // created is just forgotten.
+                self.queue_delete(&id);
                 self.save_session();
             }
         }
@@ -1129,8 +1131,16 @@ impl App {
     /// a tab converting into a node (`redirect_tab_to_content`), which
     /// saves once after inserting it.
     pub(crate) fn remove_tab(&mut self, id: &str) {
+        if self.drop_tab(id) {
+            self.queue_delete(id);
+        }
+    }
+
+    /// `remove_tab` without the queued delete, for a tab another replica deleted (`remove_remotely_deleted`).
+    /// False when `id` is not a tab.
+    pub(crate) fn drop_tab(&mut self, id: &str) -> bool {
         if !self.nodes.get(id).is_some_and(|n| n.payload.saved_tab().is_some()) {
-            return;
+            return false;
         }
         let parent = self.mirror.parent(id).map(str::to_owned);
         let children: Vec<String> = self.children_of(id).map(str::to_owned).collect();
@@ -1194,6 +1204,7 @@ impl App {
             // to send `FindStop` to, so only the UI side of the close.
             self.find.close();
         }
+        true
     }
 
     /// Shared by swap-finish and crash recovery: starts `spawn` (from

@@ -987,10 +987,10 @@ struct App {
     tab_spawns_in_flight: usize,
     /// Ids whose tab spawn is in flight (every `SpawnPurpose`), each with
     /// the tab it was started as (`session_sync::spawn_shared`). No live
-    /// node yet, so `save_session` keeps them in the store rather than
-    /// deleting them (contract "In-flight spawns"), and creates one the
-    /// store doesn't hold yet (a new, imported or reopened tab), so a quit
-    /// before it lands doesn't lose it.
+    /// node yet (contract "In-flight spawns"); a save creates one the store
+    /// doesn't hold yet (a new, imported or reopened tab) from this snapshot
+    /// (`shared_of`), so a quit before it lands doesn't lose it. A respawn
+    /// queues no delete, so the store keeps the tab meanwhile.
     spawning: HashMap<String, session_sync::Shared>,
     /// Other replicas' latest change to a node in `spawning`, applied when
     /// its spawn lands (`None`: deleted). The spawn itself carries only
@@ -1003,9 +1003,15 @@ struct App {
     /// Tabs `navigate_tab` just moved on, with the url each left, when, and
     /// whether the engine has reported loading since (`App::reported_url`).
     navigated_from: HashMap<String, (String, std::time::Instant, bool)>,
-    /// Explicit fields marked at user actions, for the next save to write (spec "Local edits become ops"). Nothing
-    /// marks any since `pos` moved to the mirror (2b-4 Ruling 11); 2b-5 deletes it.
-    explicit: std::collections::BTreeSet<(store::model::NodeId, u32)>,
+    /// Nodes placed here that the next save creates (2b-5 Ruling 3): every way a node enters the live graph
+    /// (`place_node`, `spawn_tab_async`, a jar's `add_jar`) queues its id; the save creates each the document lacks,
+    /// from the mirror or the spawn's snapshot (`shared_of`). One the document already holds (a restore, another
+    /// replica's node) is dropped. Cleared of created ids by a successful commit.
+    pending_creates: std::collections::BTreeSet<store::model::NodeId>,
+    /// Nodes removed here that the next save deletes (Ruling 4: `queue_delete`). Only a local removal queues: a
+    /// node another replica deleted is already gone from the document, and a respawn, swap or reload only takes
+    /// the node out of `nodes` for a while. Cleared by a successful commit.
+    pending_deletes: std::collections::BTreeSet<store::model::NodeId>,
     /// The decoded copy of the document's mirrored fields (`mirror::Mirror`).
     mirror: mirror::Mirror,
     /// Local edits to mirrored fields that the next save commits as `Set`s, by node and field. Cleared by a
@@ -1525,7 +1531,8 @@ impl Default for App {
             remote_in_flight: HashMap::new(),
             host_loads: HashMap::new(),
             navigated_from: HashMap::new(),
-            explicit: std::collections::BTreeSet::new(),
+            pending_creates: std::collections::BTreeSet::new(),
+            pending_deletes: std::collections::BTreeSet::new(),
             mirror: mirror::Mirror::default(),
             pending: std::collections::BTreeMap::new(),
             held_text: HashMap::new(),
@@ -2181,6 +2188,13 @@ impl App {
     /// What it opened (a tab from Open as Tab) is then opened from its own
     /// `parent`, as `remove_tab` does for a tab's children.
     fn remove_node(&mut self, id: &str) {
+        self.drop_node(id);
+        self.queue_delete(id);
+    }
+
+    /// `remove_node` without the queued delete, for a node another replica deleted (`remove_remotely_deleted`).
+    /// Its children move to its parent, and an image's or PDF's texture is freed.
+    fn drop_node(&mut self, id: &str) {
         let parent = self.mirror.parent(id).map(str::to_owned);
         let children: Vec<String> = self.children_of(id).map(str::to_owned).collect();
         for child in children {
@@ -2189,6 +2203,14 @@ impl App {
         let removed = self.nodes.remove(id);
         if removed.as_ref().is_some_and(|n| n.as_pdf().is_some()) {
             self.pdf_renderer.cancel(id);
+        }
+        if removed
+            .as_ref()
+            .is_some_and(|n| matches!(item_node_kind(&n.payload), ItemNodeKind::Image | ItemNodeKind::Pdf))
+        {
+            if let Some(gpu) = &mut self.gpu {
+                gpu.free_image(id);
+            }
         }
         if self.current_group.as_deref() == Some(id) {
             self.switch_group_level(self.mirror.group(id).filter(|_| removed.is_some()).map(str::to_owned));
@@ -2354,8 +2376,8 @@ impl App {
         self.dissolve_members(id, true);
     }
 
-    /// Moves group `id`'s members to its own group and removes it; `remote` for another replica's delete. Returns
-    /// the members moved.
+    /// Moves group `id`'s members to its own group and removes it; `remote` for another replica's delete, which
+    /// queues no delete of its own (the document already lacks the group). Returns the members moved.
     fn dissolve_members(&mut self, id: &str, remote: bool) -> Vec<String> {
         let parent = self.mirror.group(id).filter(|_| self.nodes.contains_key(id)).map(str::to_owned);
         let members: Vec<String> = self.members_of(id).map(str::to_owned).collect();
@@ -2367,6 +2389,9 @@ impl App {
             }
         }
         self.nodes.remove(id);
+        if !remote {
+            self.queue_delete(id);
+        }
         self.node_order.retain(|g| g != id);
         if self.current_group.as_deref() == Some(id) {
             self.switch_group_level(parent);
@@ -2636,14 +2661,7 @@ impl App {
             | ItemNodeKind::Note
             | ItemNodeKind::Image
             | ItemNodeKind::Pdf
-            | ItemNodeKind::Json => {
-                if matches!(kind, ItemNodeKind::Image | ItemNodeKind::Pdf) {
-                    if let Some(gpu) = &mut self.gpu {
-                        gpu.free_image(id);
-                    }
-                }
-                self.remove_node(id);
-            }
+            | ItemNodeKind::Json => self.remove_node(id),
         }
     }
 

@@ -79,6 +79,8 @@ impl App {
         let ty = payload.store_kind().type_str().unwrap_or_default().to_owned();
         let path = payload.file_path().unwrap_or_default().to_owned();
         self.nodes.insert(id.clone(), GraphNode { payload });
+        // The one way a node enters `nodes`: the next save creates it if the document lacks it (Ruling 3).
+        self.queue_create(&id);
         self.snap_layout(&id, at.pos);
         let (pos, group) = (Some(at.pos), at.group);
         let carried = crate::mirror::Carried { pos, group, url, text, engine, ty, path, ..Default::default() };

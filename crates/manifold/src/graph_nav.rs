@@ -169,6 +169,7 @@ impl App {
             self.edit_group(member, Some(target.to_string()));
         }
         self.nodes.remove(source);
+        self.queue_delete(source);
         self.node_order.retain(|g| g != source);
         self.forget_removed_group(source);
         // Only the members that moved: `target`'s own tabs keep their jar (deviation 12).

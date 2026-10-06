@@ -335,6 +335,7 @@ impl App {
         let color = *free.unwrap_or(&TAG_COLOR_PALETTE[defs.len() % TAG_COLOR_PALETTE.len()]);
         self.mirror.add_jar(id);
         let key = id.to_string();
+        self.queue_create(&key);
         self.edit_field(&key, field::NAME, FieldValue::Str(crate::names::clean_name(name).into_owned()));
         self.edit_field(&key, field::COLOR, color_value(Some(color)));
         id
@@ -434,8 +435,8 @@ impl App {
 
     /// The user deleted jar `id`: tabs (a respawning one too, `linked_ids`) and groups that named it fall back to the
     /// default jar (deviation 9), then it is forgotten and the live tabs that used it switch. Its document node is
-    /// deleted by the next save (`diff`: live no longer has it). A new spawn in flight is not reached: it has no
-    /// mirror entry until it lands (`tab_jar`), and its landing clears the jar instead (`seed_landing`).
+    /// deleted by the next save (`queue_delete`). A new spawn in flight is not reached: it has no mirror entry until
+    /// it lands (`tab_jar`), and its landing clears the jar instead (`seed_landing`).
     pub(crate) fn delete_jar(&mut self, id: NodeId) {
         let tabs: Vec<String> = self
             .linked_ids()
@@ -455,6 +456,7 @@ impl App {
             self.edit_default_jar(&g, None);
         }
         self.forget_jar(id);
+        self.queue_delete(&id.to_string());
         self.sweep_jar_switches();
     }
 
@@ -720,16 +722,18 @@ impl App {
 
     /// A `Kind::Jar` change from the document, before `materialize` gives the mirror its fields (`mirror_remote`, which
     /// refreshes `jar_defs`). `false` refuses it: a jar this replica knew (`seen`: it has a `last_shared` entry) but no
-    /// longer has was deleted here, and the next save's diff deletes its node; another device's edit to it is dropped
-    /// rather than bringing it back, nameless from a partial change or whole (final review M1). `forget_jar` leaves
-    /// the `last_shared` entry that marks it; a remote delete removes that entry first (`apply_remote`). Otherwise the
-    /// jar is known from now on, and a changed ephemeral flag that no local edit holds runs its file side effects
-    /// first (`switch_jar_ephemeral`), while the mirror still shows the old flag.
+    /// longer has was deleted here, and the next save commits its queued delete; another device's edit to it is
+    /// dropped rather than bringing it back, nameless from a partial change or whole (final review M1). `forget_jar`
+    /// leaves the `last_shared` entry that marks it; a remote delete removes that entry first (`apply_remote`).
+    /// Otherwise the jar is known from now on (and queued for creation, which only an imported jar's fresh id needs:
+    /// `queue_create`), and a changed ephemeral flag that no local edit holds runs its file side effects first
+    /// (`switch_jar_ephemeral`), while the mirror still shows the old flag.
     pub(crate) fn materialize_jar(&mut self, id: NodeId, fields: &Fields, seen: bool) -> bool {
         if seen && !self.mirror.jar_defs().contains_key(&id) {
             return false;
         }
         self.mirror.add_jar(id);
+        self.queue_create(&id.to_string());
         if let Some(value) = fields.get(&field::EPHEMERAL) {
             if !self.pending.contains_key(&(id, field::EPHEMERAL)) {
                 self.switch_jar_ephemeral(id, matches!(value, FieldValue::Bool(true)), false);
