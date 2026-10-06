@@ -573,8 +573,8 @@ impl App {
                     self.queue_toast(toast);
                     let state = UnloadedState::Failed(err.to_string());
                     let failed = UnloadedTabPayload { url: url.clone(), title, muted, zoom_factor, state };
-                    let payload = Runtime::Unloaded(failed);
-                    self.nodes.insert(id.clone(), GraphNode { runtime: payload });
+                    let runtime = Runtime::Unloaded(failed);
+                    self.nodes.insert(id.clone(), GraphNode { runtime });
                     // A tab the mirror holds already shows the engine that failed: a switch's target, written when
                     // it started (`edit_engine`); a new one lands on it here.
                     let engine = session_sync::engine_code(kind);

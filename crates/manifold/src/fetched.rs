@@ -322,7 +322,7 @@ impl App {
         let source = ContentSource::Web { url: url.clone(), body };
         let result = self.insert_content(source, id.to_string(), pos, group.clone());
         if let Err(error) = &result {
-            let (ty, payload) = match kind {
+            let (ty, runtime) = match kind {
                 K::Image => (
                     Kind::Image,
                     Runtime::Image(ImagePayload { path, width: 0, height: 0, error: Some(error.clone()) }),
@@ -341,7 +341,7 @@ impl App {
                 // matches.
                 _ => unreachable!("reload_fetched_node only reaches here for Image/Pdf/Json"),
             };
-            self.insert_placeholder_node(id.to_string(), pos, ty, payload);
+            self.insert_placeholder_node(id.to_string(), pos, ty, runtime);
         }
         self.edit_parent(id, parent);
         self.edit_group(id, group);

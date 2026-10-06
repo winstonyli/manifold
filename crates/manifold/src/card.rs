@@ -838,8 +838,8 @@ pub(crate) fn pdf_card_size(pdf: &PdfPayload) -> egui::Vec2 {
 /// count and the right-click hit test all read, so none of them can
 /// disagree about how big a given card is (they used to each carry
 /// their own per-kind copy, and the LOD count approximated Image/Pdf).
-pub(crate) fn node_card_size(payload: &Runtime) -> egui::Vec2 {
-    match payload {
+pub(crate) fn node_card_size(runtime: &Runtime) -> egui::Vec2 {
+    match runtime {
         Runtime::Tab(_) | Runtime::Unloaded(_) => GRAPH_NODE_SIZE,
         Runtime::Download(_) => DOWNLOAD_NODE_SIZE,
         Runtime::Note(_) => NOTE_NODE_SIZE,
@@ -857,15 +857,15 @@ pub(crate) fn node_card_size(payload: &Runtime) -> egui::Vec2 {
 }
 
 /// A card in world space: `node_card_size` centered on `pos`, its layout position (`App::card_rect`).
-pub(crate) fn node_card_rect(pos: egui::Vec2, payload: &Runtime) -> egui::Rect {
-    egui::Rect::from_center_size(pos.to_pos2(), node_card_size(payload))
+pub(crate) fn node_card_rect(pos: egui::Vec2, runtime: &Runtime) -> egui::Rect {
+    egui::Rect::from_center_size(pos.to_pos2(), node_card_size(runtime))
 }
 
 /// What the Graph filter box matches a card against: a tab's title and
 /// URL, a download's full path, a note's text, a file node's filename, a group's name (`text`, `App::own_text`, for
 /// a note or a group).
-pub(crate) fn card_filter_text<'a>(payload: &'a Runtime, text: &'a str) -> Vec<&'a str> {
-    match payload {
+pub(crate) fn card_filter_text<'a>(runtime: &'a Runtime, text: &'a str) -> Vec<&'a str> {
+    match runtime {
         Runtime::Tab(tab) => vec![&tab.title, &tab.url],
         Runtime::Unloaded(tab) => vec![&tab.title, &tab.url],
         Runtime::Download(download) => vec![&download.path],
@@ -2836,8 +2836,8 @@ mod tests {
     #[test]
     fn card_filter_text_matches_each_kinds_filter_input() {
         // A note or a group matches on its own text (`App::own_text`), passed in.
-        fn filter(payload: &Runtime) -> Vec<&str> {
-            card_filter_text(payload, "buy milk")
+        fn filter(runtime: &Runtime) -> Vec<&str> {
+            card_filter_text(runtime, "buy milk")
         }
         let download = Runtime::Download(DownloadPayload {
             path: "C:/dl/f.bin".into(),

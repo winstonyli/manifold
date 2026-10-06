@@ -257,8 +257,7 @@ under the same code (the old scan read 426 and 532 µs), so read them as ratios.
 - Task 3: `drop_target` hits the first card in `node_order`, the bottom-most of overlapping same-kind cards, not the topmost
   (pre-existing, user-visible); a fix could search `node_order` in reverse.
 - Task 4: `every_creation_path_seeds_the_node_type` is circular for Note/Json/Pdf/Image/Download (tests.rs near 4441-4455).
-- Task 4: stale `payload` names remain in comments or locals (`card.rs` near 852 and 873, `fetched.rs` near 325, `tabs.rs`
-  near 576, `node.rs` near 485).
+- Task 4: stale `payload` names: renamed to `runtime` after the final review (2026-10-06).
 - Task 4: reloading with a differing content kind leaves the mirror type unchanged (`fetched.rs` near 325-344, pre-existing).
 - Task 4: add one `// Ruling 8` marker on the `Runtime::None`-as-group arms.
 - Task 5: smoke check messages still say "Pdf card" and so on; the `ExportState` doc comment (`debug_control.rs` near 157-170)
@@ -266,7 +265,7 @@ under the same code (the old scan read 426 and 532 µs), so read them as ratios.
 - Task 5: `scripts/json-level-probe.txt` does not enter the JSON level on this machine (pre-existing); a follow-up could seed
   `has_shown_first_launch_demo` or poll two exports before computing the double-click.
 - Done after the final review (2026-10-06): `check_graph_matches_document` now also asserts each node's stored type is one its `Runtime` runs (`runtime_has_type`, test `a_node_whose_runtime_does_not_match_its_type_trips_the_invariant`); the full suite passed with it (881).
-- Task 4/5 minors above (stale `payload` names, the circular seeding test, smoke-check wording) are parked as listed.
+- Task 4/5 minors above (the circular seeding test, smoke-check wording) are parked as listed.
 - Two same-named test helpers of different types: `card_kind::sleeping_tab()` (a `CardKind`) and
   `session_sync::tests::sleeping_tab(url, title)` (a `Runtime`, 113 call sites); rename if it ever confuses.
 - Deferred directions (spec "Deferred from 2b-6"): `Kind` to type strings (D2), `ContentKind` to the views registry (D),

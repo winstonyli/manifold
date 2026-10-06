@@ -482,7 +482,7 @@ second"
     /// Review C-B12: a local file's card is named by its file name; a web source still wins.
     #[test]
     fn a_local_file_card_has_an_accessible_name() {
-        let node = |payload| GraphNode { runtime: payload };
+        let node = |runtime| GraphNode { runtime };
         let pdf = node(Runtime::Pdf(PdfPayload { path: r"C:\docs\report.pdf".into(), outcome: None }));
         assert_eq!(pdf.accessible_name("", None), "PDF: report.pdf");
         let source = Some("https://example.org/r.pdf");
