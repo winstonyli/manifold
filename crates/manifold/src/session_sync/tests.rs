@@ -1689,13 +1689,13 @@ fn remote_jar_create_rename_and_delete_reach_jar_defs() {
     let jar = id(40);
     let named = |name: &str| shared(Kind::Jar, None, &[(field::NAME, FieldValue::Str(name.into()))]);
     let mut app = app_with(&BTreeMap::from([(jar, named("Home"))]));
-    assert_eq!(app.jar_defs[&jar].name, "Home");
+    assert_eq!(app.mirror.jar_defs()[&jar].name, "Home");
     assert!(!app.nodes.contains_key(&jar.to_string()), "never a graph node");
     app.apply_remote(vec![(jar, Some((Kind::Jar, named("House").fields, None)))]);
-    assert_eq!(app.jar_defs[&jar].name, "House");
+    assert_eq!(app.mirror.jar_defs()[&jar].name, "House");
     assert_eq!(app.shared_nodes()[&jar], named("House"), "projects back unchanged");
     app.apply_remote(vec![(jar, None)]);
-    assert!(!app.jar_defs.contains_key(&jar));
+    assert!(!app.mirror.jar_defs().contains_key(&jar));
 }
 
 #[test]
@@ -1711,7 +1711,7 @@ fn a_session_with_only_jars_still_restores_them() {
     drop(app);
     let mut back = app_on(&path, 3);
     assert!(!back.restore_session(), "no graph node: a fresh start");
-    assert_eq!(back.jar_defs[&jar].name, "Work", "but the jar is kept, so the next save keeps it");
+    assert_eq!(back.mirror.jar_defs()[&jar].name, "Work", "but the jar is kept, so the next save keeps it");
     back.save_session();
     assert!(back.journal.as_ref().unwrap().doc().nodes[&jar].is_live());
 }
@@ -1733,9 +1733,86 @@ fn a_remote_edit_does_not_bring_back_a_jar_deleted_here() {
         remote_set(&mut other, &jar.to_string(), no, value);
         app.delete_jar(jar);
         assert!(app.save_session());
-        assert!(!app.jar_defs.contains_key(&jar), "field {no}: deleted here, not recreated");
+        assert!(!app.mirror.jar_defs().contains_key(&jar), "field {no}: deleted here, not recreated");
+        assert_eq!(app.mirror.get(&jar.to_string(), field::NAME), FieldValue::Str(String::new()), "field {no}");
         assert!(!app.journal.as_ref().unwrap().doc().nodes[&jar].is_live(), "field {no}: the delete was saved");
     }
+}
+
+/// 2b-5 Ruling 7: a jar's name, colour and ephemeral flag are mirror fields. Creating, renaming and toggling a jar
+/// write them through `edit_field` and the save stores them; the mirror keeps the jar's entry across saves
+/// (`Mirror::retain`), and a remote change reaches the mirror and `jar_defs`.
+#[test]
+fn a_jar_create_rename_and_ephemeral_save_and_a_remote_change_reaches_jar_defs() {
+    let path = temp_dir("jar-mirror-sync").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    add(&mut app, sleeping_tab("https://a.com/", "A"));
+    let jar = app.create_jar("Work");
+    let key = jar.to_string();
+    let work = FieldValue::Str("Work".into());
+    assert_eq!(app.mirror.get(&key, field::NAME), work, "created in the mirror");
+    assert!(app.save_session());
+    assert_eq!(stored(&app, &key, field::NAME), work);
+    assert_eq!(stored(&app, &key, field::COLOR), color_value(app.mirror.jar_defs()[&jar].color));
+    assert_eq!(app.mirror.get(&key, field::NAME), work, "kept by the save's retain");
+    app.rename_jar(jar, "Job");
+    assert!(app.pending.contains_key(&(jar, field::NAME)), "a rename queues its field");
+    app.set_jar_ephemeral(jar, true);
+    assert!(app.pending.contains_key(&(jar, field::EPHEMERAL)), "so does a toggle");
+    assert!(app.save_session());
+    assert_eq!(stored(&app, &key, field::NAME), FieldValue::Str("Job".into()));
+    assert_eq!(stored(&app, &key, field::EPHEMERAL), FieldValue::Bool(true));
+    let mut other = Journal::open(&path, ActorId(2)).unwrap();
+    remote_set(&mut other, &key, field::NAME, FieldValue::Str("House".into()));
+    remote_set(&mut other, &key, field::COLOR, red());
+    assert!(app.save_session());
+    assert_eq!(app.mirror.jar_defs()[&jar].name, "House");
+    assert_eq!(app.mirror.jar_defs()[&jar].color, Some(egui::Color32::RED));
+    assert_eq!(app.mirror.get(&key, field::NAME), FieldValue::Str("House".into()));
+}
+
+/// A jar rename not saved yet wins over another device's (last writer, as for every mirrored field).
+#[test]
+fn a_pending_local_jar_rename_wins_over_a_remote_one() {
+    let path = temp_dir("jar-rename-wins").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    add(&mut app, sleeping_tab("https://a.com/", "A"));
+    let jar = app.create_jar("Work");
+    assert!(app.save_session());
+    let mut other = Journal::open(&path, ActorId(2)).unwrap();
+    remote_set(&mut other, &jar.to_string(), field::NAME, FieldValue::Str("House".into()));
+    app.rename_jar(jar, "Job");
+    assert!(app.save_session());
+    assert_eq!(app.mirror.jar_defs()[&jar].name, "Job");
+    assert_eq!(stored(&app, &jar.to_string(), field::NAME), FieldValue::Str("Job".into()));
+}
+
+/// Ruling 7: another device's ephemeral toggle has the local one's file side effects (`set_jar_ephemeral`): on deletes
+/// the jar's file, off saves it back. It is applied, not queued as a local edit.
+#[test]
+fn a_remote_ephemeral_change_deletes_and_saves_the_jar_file() {
+    let dir = temp_dir("jar-remote-ephemeral");
+    let (path, jars) = (dir.join("session.mnf"), dir.join("jars"));
+    std::fs::create_dir(&jars).unwrap();
+    let mut app = App { jars_dir_override: Some(jars.clone()), ..app_on(&path, 1) };
+    add(&mut app, sleeping_tab("https://a.com/", "A"));
+    let jar = app.create_jar("Work");
+    assert!(app.save_session());
+    let file = crate::jar::Jar::path(&jars, crate::jar::JarKey::Named(jar));
+    std::fs::write(&file, r#"{"cookies":[]}"#).unwrap();
+    let toggled = |app: &App, on: bool| {
+        let mut fields = app.shared_nodes()[&jar].fields.clone();
+        fields.insert(field::EPHEMERAL, FieldValue::Bool(on));
+        vec![(jar, Some((Kind::Jar, fields, None)))]
+    };
+    app.apply_remote(toggled(&app, true));
+    assert!(app.mirror.jar_defs()[&jar].ephemeral);
+    assert!(!file.exists(), "on: the file goes");
+    assert!(app.pending.is_empty(), "a remote value is not a local edit");
+    app.apply_remote(toggled(&app, false));
+    assert!(!app.mirror.jar_defs()[&jar].ephemeral);
+    assert!(file.exists(), "off: saved back");
+    assert!(app.pending.is_empty());
 }
 
 /// Final review I2b: a jar deleted on another device while this one was not running never reaches `forget_jar`
@@ -1791,7 +1868,7 @@ fn deleting_a_jar_clears_the_tabs_and_groups_that_named_it() {
     app.edit_default_jar(&grp, Some(jar));
     app.edit_jar(&tab, crate::jar::JarChoice { jar: Some(jar), set: true });
     app.delete_jar(jar);
-    assert!(app.jar_defs.is_empty());
+    assert!(app.mirror.jar_defs().is_empty());
     assert_eq!(app.mirror.jar_choice(&tab).jar, None);
     assert_eq!(app.mirror.default_jar(&grp), None);
 }
@@ -1817,12 +1894,12 @@ fn file_with_a_work_jar() -> JsonDoc {
 fn opening_a_session_gives_each_imported_jar_a_new_jar() {
     let mut app = App::default();
     let work = app.create_jar("Work");
-    let before = app.jar_defs[&work].clone();
+    let before = app.mirror.jar_defs()[&work].clone();
     app.replace_running_session(&file_with_a_work_jar(), crate::store::json::Trust::Foreign);
-    assert_eq!(app.jar_defs.len(), 2, "a second Work");
-    assert_eq!(app.jar_defs[&work], before, "the existing jar is untouched");
-    let new = *app.jar_defs.keys().find(|&&j| j != work).unwrap();
-    assert_eq!(app.jar_defs[&new].name, "Work");
+    assert_eq!(app.mirror.jar_defs().len(), 2, "a second Work");
+    assert_eq!(app.mirror.jar_defs()[&work], before, "the existing jar is untouched");
+    let new = *app.mirror.jar_defs().keys().find(|&&j| j != work).unwrap();
+    assert_eq!(app.mirror.jar_defs()[&new].name, "Work");
     let tab =
         app.nodes.iter().find(|(_, n)| n.payload.as_unloaded().is_some()).map(|(id, _)| id).expect("tab imported");
     assert_eq!(app.mirror.jar_choice(tab), crate::jar::JarChoice { jar: Some(new), set: true });
@@ -1842,9 +1919,9 @@ fn importing_a_group_gives_each_imported_jar_a_new_jar() {
     let work = app.create_jar("Work");
     for n in 2..=3 {
         app.import_group_json(&file_with_a_work_jar());
-        assert_eq!(app.jar_defs.len(), n);
+        assert_eq!(app.mirror.jar_defs().len(), n);
     }
-    let new: BTreeSet<NodeId> = app.jar_defs.keys().copied().filter(|&j| j != work).collect();
+    let new: BTreeSet<NodeId> = app.mirror.jar_defs().keys().copied().filter(|&j| j != work).collect();
     let tabs: BTreeSet<NodeId> = app
         .nodes
         .iter()
@@ -2556,17 +2633,16 @@ fn an_edit_to_an_unsaved_node_removed_before_the_save_leaves_no_placeholder() {
     assert!(!doc.nodes.contains_key(&note.parse().unwrap()), "no entry at all for the id");
 }
 
+/// Since 2b-5 Task 2 a jar's fields are mirrored like every other kind's: `App::pending` writes them, not `diff`.
 #[test]
-fn diff_still_writes_a_changed_jar_color() {
+fn diff_leaves_a_jars_fields_to_the_mirror() {
     let mut doc = Doc::new(DocId([1; 16]));
     let mut live = BTreeMap::from([(id(0), shared(Kind::Jar, None, &[(field::NAME, FieldValue::Str("j".into()))]))]);
     let ops = diff(&doc, &live, &all_explicit(&live), &BTreeSet::new());
     apply(&mut doc, ops);
     live.get_mut(&id(0)).unwrap().fields.insert(field::COLOR, red());
-    assert_eq!(
-        diff(&doc, &live, &all_explicit(&live), &BTreeSet::new()),
-        vec![OpBody::Set { node: id(0), field: field::COLOR, enc: encode_field(field::COLOR, &red()) }]
-    );
+    live.get_mut(&id(0)).unwrap().fields.insert(field::EPHEMERAL, FieldValue::Bool(true));
+    assert_eq!(diff(&doc, &live, &all_explicit(&live), &BTreeSet::new()), vec![]);
 }
 
 #[test]
@@ -3494,7 +3570,7 @@ fn a_dangling_remote_deleted_jar_survives_a_save() {
     let mut other = Journal::open(&path, ActorId(2)).unwrap();
     other.begin().unwrap().commit(vec![OpBody::Delete { node: work }]).unwrap();
     assert!(app.save_session());
-    assert!(!app.jar_defs.contains_key(&work), "the remote delete arrived");
+    assert!(!app.mirror.jar_defs().contains_key(&work), "the remote delete arrived");
     assert!(app.save_session());
     assert_eq!(stored(&app, &tab, field::JAR), FieldValue::Id(Some(work)), "not cleared by a save");
     assert_eq!(app.mirror.jar_choice(&tab).jar, Some(work));
@@ -4068,7 +4144,7 @@ fn a_remote_deleted_default_jar_stays_stored() {
     let mut other = Journal::open(&path, ActorId(2)).unwrap();
     other.begin().unwrap().commit(vec![OpBody::Delete { node: work }]).unwrap();
     assert!(app.save_session());
-    assert!(!app.jar_defs.contains_key(&work), "the jar is gone here");
+    assert!(!app.mirror.jar_defs().contains_key(&work), "the jar is gone here");
     assert!(app.save_session());
     assert_eq!(stored(&app, &g, field::DEFAULT_JAR), FieldValue::Id(Some(work)), "not cleared");
     assert_eq!(app.mirror.default_jar(&g), Some(work));

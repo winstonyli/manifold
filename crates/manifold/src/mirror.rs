@@ -6,13 +6,14 @@
 //! (`App::pending`, `App::pending_moves`); `App::edit_field`, `App::edit_parent` and `App::edit_group` are the
 //! writers, and `App::mirror_remote` applies another replica's change.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use crate::jar::JarChoice;
 use crate::json_view::JsonView;
 use crate::process_manager::EngineKind;
 use crate::session_sync::{color_of, color_value, engine_of, pos_value, Fields};
-use crate::store::model::{field, field_def, FieldValue, NodeId};
+use crate::store::model::{field, field_def, FieldValue, Kind, NodeId};
+use crate::JarDef;
 
 /// The fields the mirror holds. `diff` leaves them to `App::pending` on existing nodes. `URL` is a tab's shared url
 /// (2b-3 Ruling 2) and a content node's web source (`App::source_url`), seeded at creation since 2b-5. `JAR` and
@@ -21,7 +22,8 @@ use crate::store::model::{field, field_def, FieldValue, NodeId};
 /// `App::edit_pos`; where a card is drawn is `App::layout`, which the document never reads (2b-4 Ruling 1). `TEXT` is a
 /// note's text (`text`), written by `App::edit_text` at a save or blur; the note's payload is its edit buffer. `VIEW`
 /// is a Json node's view (`view`, decoded), written by `App::edit_view`. `NAME` is a group's name (`name`), written by
-/// `App::edit_name`; a jar's `NAME` is not mirrored (`JarDef`, `materialize_jar`), and `diff` still writes it.
+/// `App::edit_name`. A jar's `NAME`, `COLOR` and `EPHEMERAL` are its definition (`jar_defs`), written by
+/// `App::create_jar`, `App::rename_jar` and `App::set_jar_ephemeral` (2b-5 Ruling 7).
 /// `DEFAULT_JAR` is a group's default jar (`default_jar`), written by `App::edit_default_jar` and resolved at commit
 /// like `JAR` (2b-5 Ruling 6). `PATH` is the stored, create-time path (`path`), never rewritten: the payload holds the
 /// path resolved on this machine (2b-5 Ruling 5). `FROM_JSON`, `KEY` and `VALUE` are written once, at creation
@@ -43,6 +45,7 @@ pub(crate) const MIRRORED: &[u32] = &[
     field::KEY,
     field::VALUE,
     field::TYPE,
+    field::EPHEMERAL,
 ];
 
 #[derive(Default)]
@@ -51,6 +54,8 @@ pub(crate) struct Mirror {
     links: HashMap<String, Links>,
     /// `field::VIEW` of `nodes`, decoded (`view`); only non-empty views.
     views: HashMap<String, JsonView>,
+    /// Every jar's `NAME`, `COLOR` and `EPHEMERAL` of `nodes`, decoded (`jar_defs`): the jars this replica knows.
+    jars: BTreeMap<NodeId, JarDef>,
 }
 
 /// A node's links to other nodes, as ids: `Option<String>` so hand-built test ids work and per-frame filters
@@ -85,6 +90,47 @@ impl Mirror {
             }
         }
         self.nodes.entry(id.to_owned()).or_default().insert(no, value);
+        if matches!(no, field::NAME | field::COLOR | field::EPHEMERAL) {
+            if let Some(jar) = id.parse::<NodeId>().ok().filter(|jar| self.jars.contains_key(jar)) {
+                let def = self.jar_def(id);
+                self.jars.insert(jar, def);
+            }
+        }
+    }
+
+    /// Makes `id` a jar this replica knows (`jar_defs`), its definition read from the fields already held, and seeds
+    /// its type. A jar already known stays as it is. A jar is never a graph node: it has no links or layout.
+    pub(crate) fn add_jar(&mut self, id: NodeId) {
+        if self.jars.contains_key(&id) {
+            return;
+        }
+        let key = id.to_string();
+        self.init_field(&key, field::TYPE, FieldValue::Str(Kind::Jar.type_str().expect("a jar type").to_owned()));
+        let def = self.jar_def(&key);
+        self.jars.insert(id, def);
+    }
+
+    /// Drops jar `id` and its fields (`App::forget_jar`: a local or remote delete).
+    pub(crate) fn forget_jar(&mut self, id: NodeId) {
+        self.jars.remove(&id);
+        let key = id.to_string();
+        self.nodes.remove(&key);
+        self.links.remove(&key);
+        self.views.remove(&key);
+    }
+
+    /// Every jar this replica knows, by id (the order labels and pickers use), decoded from the mirror's fields: the
+    /// cache `set` refreshes whenever a jar's field changes (2b-5 Ruling 7), as `view` is.
+    pub(crate) fn jar_defs(&self) -> &BTreeMap<NodeId, JarDef> {
+        &self.jars
+    }
+
+    fn jar_def(&self, id: &str) -> JarDef {
+        JarDef {
+            name: self.str_field(id, field::NAME).to_owned(), // name rule: the stored name, as `JarDef` holds it
+            color: self.color(id),
+            ephemeral: matches!(self.get(id, field::EPHEMERAL), FieldValue::Bool(true)),
+        }
     }
 
     /// Gives `id` these values only if it has no entry yet (a spawn landing: a new tab takes what it was started
@@ -132,8 +178,10 @@ impl Mirror {
         self.links.entry(id.to_owned()).or_default().group = group;
     }
 
-    /// Drops the entries `keep` rejects.
+    /// Drops the entries `keep` rejects, except a jar's: jars are not graph nodes, and only `forget_jar` drops one.
     pub(crate) fn retain(&mut self, keep: impl Fn(&str) -> bool) {
+        let jars = &self.jars;
+        let keep = |id: &str| keep(id) || id.parse::<NodeId>().is_ok_and(|jar| jars.contains_key(&jar));
         self.nodes.retain(|id, _| keep(id));
         self.links.retain(|id, _| keep(id));
         self.views.retain(|id, _| keep(id));
@@ -164,7 +212,7 @@ impl Mirror {
 
     /// A group's stored name (`field::NAME`, 2b-4 Ruling 9): the document's, or the rename about to be written
     /// (`App::edit_name`). "" when the mirror has none. Raw: drawn only through a name rule (`names.rs`). A jar's
-    /// name is its `JarDef`'s, not this.
+    /// name is read through its `JarDef` (`jar_defs`).
     pub(crate) fn name(&self, id: &str) -> &str {
         self.str_field(id, field::NAME)
     }
@@ -502,6 +550,34 @@ mod tests {
         mirror.retain(|id| id == "a");
         assert_eq!(mirror.color("a"), Some(egui::Color32::RED));
         assert_eq!(mirror.color("b"), None);
+    }
+
+    /// 2b-5 Ruling 7: a jar's definition is decoded from its mirrored fields on every `set`, read from what is
+    /// already held when the jar is added, kept by `retain` and dropped only by `forget_jar`.
+    #[test]
+    fn a_jars_fields_refresh_its_def_and_retain_keeps_it() {
+        let mut mirror = Mirror::default();
+        let jar = NodeId { actor: crate::store::model::ActorId(1), counter: 5 };
+        let key = jar.to_string();
+        mirror.set(&key, field::NAME, FieldValue::Str("Work".into()));
+        assert!(mirror.jar_defs().is_empty(), "not a jar until added");
+        mirror.add_jar(jar);
+        assert_eq!(mirror.jar_defs()[&jar], JarDef { name: "Work".into(), color: None, ephemeral: false });
+        assert_eq!(mirror.ty(&key), crate::store::model::TYPE_JAR, "its type is seeded");
+        mirror.set(&key, field::COLOR, color_value(Some(egui::Color32::RED)));
+        mirror.set(&key, field::EPHEMERAL, FieldValue::Bool(true));
+        mirror.set(&key, field::NAME, FieldValue::Str("Job".into()));
+        let job = JarDef { name: "Job".into(), color: Some(egui::Color32::RED), ephemeral: true };
+        assert_eq!(mirror.jar_defs()[&jar], job);
+        mirror.add_jar(jar);
+        assert_eq!(mirror.jar_defs()[&jar], job, "adding a known jar changes nothing");
+        mirror.set("7", field::NAME, FieldValue::Str("G".into()));
+        mirror.retain(|_| false);
+        assert_eq!(mirror.jar_defs()[&jar], job, "retain keeps a jar");
+        assert_eq!(mirror.get(&key, field::NAME), FieldValue::Str("Job".into()));
+        assert_eq!(mirror.name("7"), "", "and drops the rest");
+        mirror.forget_jar(jar);
+        assert!(mirror.jar_defs().is_empty() && !mirror.has(&key));
     }
 
     #[test]

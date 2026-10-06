@@ -186,7 +186,7 @@ impl App {
         let Some(pulled) = crate::jar::from_json(json) else { return false };
         let Some((key, _)) = self.jar_tabs.get(tab_id) else { return false };
         let key = *key;
-        if matches!(key, crate::jar::JarKey::Named(id) if !self.jar_defs.contains_key(&id)) {
+        if matches!(key, crate::jar::JarKey::Named(id) if !self.mirror.jar_defs().contains_key(&id)) {
             return false;
         }
         self.ensure_jar_loaded(key);
@@ -1092,7 +1092,7 @@ impl App {
         self.layout.entry(id.to_owned()).or_insert(Layout::at(carried.pos.unwrap_or_default()));
         let new = !self.mirror.has(id);
         self.mirror.seed(id, &carried);
-        if new && self.mirror.jar_choice(id).jar.is_some_and(|jar| !self.jar_defs.contains_key(&jar)) {
+        if new && self.mirror.jar_choice(id).jar.is_some_and(|jar| !self.mirror.jar_defs().contains_key(&jar)) {
             self.edit_jar(id, crate::jar::JarChoice::default());
         }
         if self.mirror.group(id).is_some_and(|g| !self.nodes.contains_key(g)) {

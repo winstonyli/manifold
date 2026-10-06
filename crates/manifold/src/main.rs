@@ -803,7 +803,8 @@ impl TabSpawn {
     }
 }
 
-/// A named jar's synced definition (a `Kind::Jar` node). Not a graph node (spec "Data model").
+/// A named jar's synced definition (a `Kind::Jar` node), decoded from its mirrored fields (`Mirror::jar_defs`). Not a
+/// graph node (spec "Data model").
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct JarDef {
     pub(crate) name: String,
@@ -1022,9 +1023,6 @@ struct App {
     /// another field's unsaved local value. A tab with a change parked in `remote_in_flight` keeps its entry from
     /// before the change until the landing replays it (a commit does not refresh it).
     last_shared: HashMap<String, session_sync::Shared>,
-    /// Named jars' synced definitions (spec "Data model"). A jar is a `Kind::Jar` store node but never a graph node:
-    /// `session_sync` bridges this map to the document.
-    jar_defs: BTreeMap<store::model::NodeId, JarDef>,
     /// Personal state (spec "Personal state") last written to
     /// `session.mnf.local`, or read at startup: `maybe_write_local` skips
     /// writing when the current state compares equal, so an idle session
@@ -1533,7 +1531,6 @@ impl Default for App {
             held_text: HashMap::new(),
             pending_moves: std::collections::BTreeMap::new(),
             last_shared: HashMap::new(),
-            jar_defs: BTreeMap::new(),
             local_written: None,
             local_unread: None,
             local_written_at: std::time::Instant::now(),
@@ -3191,7 +3188,7 @@ mod tests {
         let aside = dir.join(format!("{}.json.unreadable-100", key.file_stem()));
         std::fs::write(&aside, "x").unwrap();
         app.set_jar_ephemeral(work, true);
-        assert!(app.jar_defs[&work].ephemeral);
+        assert!(app.mirror.jar_defs()[&work].ephemeral);
         assert!(jar::Jar::path(&dir, key).is_dir() && aside.exists());
         app.set_jar_ephemeral(work, false);
         assert!(jar::Jar::path(&dir, key).is_dir() && aside.exists(), "off saves nothing over it");
@@ -3204,7 +3201,7 @@ mod tests {
         let (dir, mut app, work) = jar_saved_earlier("jar-ephemeral-confirm");
         app.request_jar_ephemeral(work, true);
         assert_eq!(app.pending_jar_confirm, Some(jar_defs::JarConfirm::Ephemeral(work)));
-        assert!(!app.jar_defs[&work].ephemeral, "nothing happens until confirmed");
+        assert!(!app.mirror.jar_defs()[&work].ephemeral, "nothing happens until confirmed");
         assert!(jar::Jar::path(&dir, jar::JarKey::Named(work)).exists());
         let (title, detail, button) = app.jar_confirm_text(jar_defs::JarConfirm::Ephemeral(work)).unwrap();
         assert_eq!((title.as_str(), button), ("Make Work ephemeral?", "Make Ephemeral"));
@@ -3212,9 +3209,12 @@ mod tests {
         app.pending_jar_confirm = None;
         let home = app.create_jar("Home");
         app.request_jar_ephemeral(home, true);
-        assert!(app.pending_jar_confirm.is_none() && app.jar_defs[&home].ephemeral, "no file: nothing to lose");
+        assert!(
+            app.pending_jar_confirm.is_none() && app.mirror.jar_defs()[&home].ephemeral,
+            "no file: nothing to lose"
+        );
         app.request_jar_ephemeral(home, false);
-        assert!(!app.jar_defs[&home].ephemeral);
+        assert!(!app.mirror.jar_defs()[&home].ephemeral);
         app.set_jar_ephemeral(work, true);
         assert!(app.jar_confirm_text(jar_defs::JarConfirm::Ephemeral(work)).is_none(), "already ephemeral");
     }

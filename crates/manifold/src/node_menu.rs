@@ -707,7 +707,8 @@ impl App {
     /// The tab and group menus' jar list (spec "UI"); `None` for every other kind.
     pub(crate) fn jar_menu(&self, id: &str, node: &crate::node::GraphNode) -> Option<JarMenu> {
         let named = |ticked: &dyn Fn(NodeId) -> bool, count: &dyn Fn(NodeId) -> Option<usize>| -> Vec<JarRow> {
-            self.jar_defs
+            self.mirror
+                .jar_defs()
                 .iter()
                 .map(|(jid, d)| JarRow {
                     id: Some(*jid),
@@ -739,7 +740,7 @@ impl App {
         }
         node.as_group()?;
         let default = self.mirror.default_jar(id);
-        if self.jar_defs.is_empty() && default.is_none() {
+        if self.mirror.jar_defs().is_empty() && default.is_none() {
             return None; // nothing to pick: jars are made from a tab's menu
         }
         Some(JarMenu {
@@ -1145,7 +1146,7 @@ mod tests {
         assert_eq!(app.tab_jar(&t).unwrap(), crate::jar::JarChoice { jar: Some(work), set: true });
         app.apply_node_action(&ctx, &t, NodeAction::StartNewJar);
         app.apply_node_action(&ctx, &t, NodeAction::NewJar("   ".into()));
-        assert_eq!(app.jar_defs.len(), 1, "an empty name creates nothing");
+        assert_eq!(app.mirror.jar_defs().len(), 1, "an empty name creates nothing");
         app.apply_node_action(&ctx, &t, NodeAction::StartNewJar);
         app.remove_tab(&t);
         assert_eq!(app.naming_jar, None, "closing the tab drops its draft");
@@ -1166,8 +1167,8 @@ mod tests {
         // Styled jar label markers: a user jar named "Default" is listed plainly, after the marked built-in one.
         let user = app.create_jar("Default");
         assert_eq!(shown(&app), [(JarLabel::built_in(), false), (plain("Work"), true), (plain("Default"), false)]);
-        app.jar_defs.remove(&user);
-        app.jar_defs.remove(&work); // deleted on another device; the tab's field still names it
+        app.mirror.forget_jar(user);
+        app.mirror.forget_jar(work); // deleted on another device; the tab's field still names it
         assert_eq!(shown(&app), [(JarLabel::built_in(), true)]);
     }
 
@@ -1336,7 +1337,7 @@ mod tests {
         };
         assert_eq!(row("Default built-in"), (true, vec![" built-in".to_string()]));
         assert_eq!(row("Default"), (false, vec![]), "a user jar named Default is plain");
-        let frag = crate::jar_defs::jar_fragment(w1, &app.jar_defs).unwrap();
+        let frag = crate::jar_defs::jar_fragment(w1, app.mirror.jar_defs()).unwrap();
         assert_eq!(row(&format!("Work #{frag}")), (false, vec![format!(" #{frag}")]));
         assert_eq!(row("Work · #3f2a"), (false, vec![]), "the typed look-alike is all name");
     }
@@ -1386,7 +1387,7 @@ mod tests {
             frame(&mut app, vec![]);
             assert_eq!(app.naming_jar, None, "{how}: no draft left");
             let made = app.jar_named("Work");
-            assert_eq!(made.is_some(), creates, "{how}: jars {:?}", app.jar_defs);
+            assert_eq!(made.is_some(), creates, "{how}: jars {:?}", app.mirror.jar_defs());
             let expected = crate::jar::JarChoice { jar: made, set: creates };
             assert_eq!(app.tab_jar(&t).unwrap(), expected, "{how}: the tab's jar");
         }
@@ -1499,9 +1500,9 @@ mod tests {
         let mut app = App::default();
         let t = crate::session_sync::tests::add(&mut app, crate::session_sync::tests::sleeping_tab("https://a/", "A"));
         app.apply_node_action(&ctx, &t, NodeAction::NewJar("\u{200B} ".into()));
-        assert!(app.jar_defs.is_empty());
+        assert!(app.mirror.jar_defs().is_empty());
         app.apply_node_action(&ctx, &t, NodeAction::NewJar(" Wo\u{200B}rk ".into()));
-        assert_eq!(app.jar_defs.values().map(|d| d.name.as_str()).collect::<Vec<_>>(), ["Work"]);
+        assert_eq!(app.mirror.jar_defs().values().map(|d| d.name.as_str()).collect::<Vec<_>>(), ["Work"]);
     }
 
     #[test]

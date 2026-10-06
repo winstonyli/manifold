@@ -120,7 +120,8 @@ pub(crate) fn engine_of(code: u64) -> EngineKind {
 /// - An existing node's group and parent are left to `App::pending_moves`
 ///   and `App::pending` (Ruling 8), as its mirrored fields (`pos`, `url`,
 ///   `engine`, `jar`, `jar_set`, a group's `from_json` and `default_jar`, a
-///   file's `path`, a leaf's `key` and `value` among them) are, except a jar's.
+///   file's `path`, a leaf's `key` and `value`, a jar's `name`, `color` and
+///   `ephemeral` among them) are.
 /// - A diffed field that differs is `Set`. No explicit field is left
 ///   unmirrored (`path` is mirrored since 2b-5 Task 1), so `explicit` changes
 ///   nothing (2b-5 Task 3 deletes the machinery).
@@ -186,9 +187,8 @@ pub(crate) fn diff(
             if field_def(no).is_some_and(|def| def.explicit) && !explicit.contains(&(id, no)) {
                 continue;
             }
-            // A mirrored field (and `parent`) is written by `App::pending`, not compared. Jars still read
-            // `def.color` from `jar_defs` (not the mirror) until sub-project C, so theirs is still diffed.
-            if (MIRRORED.contains(&no) || no == field::PARENT) && node.kind != Kind::Jar {
+            // A mirrored field (and `parent`) is written by `App::pending`, not compared.
+            if MIRRORED.contains(&no) || no == field::PARENT {
                 continue;
             }
             match value {
@@ -380,7 +380,6 @@ impl App {
     /// card's path is the stored one, not the one its payload resolved here (2b-5 Ruling 5). Skipped: an in-progress
     /// download (it can't resume), and a node whose id isn't a store id (only hand-built test nodes).
     pub(crate) fn shared_nodes(&self) -> BTreeMap<NodeId, Shared> {
-        let str = |s: &str| FieldValue::Str(s.to_owned());
         let mut out = BTreeMap::new();
         for (key, node) in &self.nodes {
             let Ok(id) = key.parse::<NodeId>() else { continue };
@@ -397,14 +396,11 @@ impl App {
                 .collect();
             out.insert(id, Shared { kind, group: link_id(self.mirror.group(key)), fields });
         }
-        // Jar definitions are not graph nodes but must be live, or `diff` deletes their document nodes.
-        for (id, def) in &self.jar_defs {
-            let fields = Fields::from([
-                (field::COLOR, color_value(def.color)),
-                (field::NAME, str(&def.name)), // name rule: synced as stored
-                (field::EPHEMERAL, FieldValue::Bool(def.ephemeral)),
-            ]);
-            out.insert(*id, Shared { kind: Kind::Jar, group: None, fields });
+        // Jars are not graph nodes but must be live, or `diff` deletes their document nodes.
+        for &id in self.mirror.jar_defs().keys() {
+            let key = id.to_string();
+            let fields = kind_fields(Kind::Jar).iter().map(|&no| (no, self.mirror.get(&key, no))).collect();
+            out.insert(id, Shared { kind: Kind::Jar, group: None, fields });
         }
         out
     }
@@ -444,11 +440,13 @@ impl App {
         group: Option<String>,
         local: Option<&LocalNode>,
     ) {
+        // A jar's fields are mirror state like a node's (2b-5 Ruling 7), but it is never a graph node.
         if kind == Kind::Jar {
             let Ok(jar) = id.parse::<NodeId>() else { return };
-            let now = Shared { kind, group: None, fields: fields.clone() };
-            let seen = self.last_shared.insert(id, now.clone());
-            self.materialize_jar(jar, fields, &seen, &now);
+            let seen = self.last_shared.insert(id.clone(), Shared { kind, group: None, fields: fields.clone() });
+            if self.materialize_jar(jar, fields, seen.is_some()) {
+                self.mirror_remote(&id, fields, None);
+            }
             return;
         }
         if self.spawning.contains_key(&id) {
@@ -740,7 +738,7 @@ impl App {
     /// from there, and one only this replica has lands where the store
     /// would show it. Either way no live node names a removed group.
     pub(crate) fn remove_remotely_deleted(&mut self, id: &str) {
-        if let Some(jar) = id.parse::<NodeId>().ok().filter(|j| self.jar_defs.contains_key(j)) {
+        if let Some(jar) = id.parse::<NodeId>().ok().filter(|j| self.mirror.jar_defs().contains_key(j)) {
             self.forget_jar(jar);
             return;
         }
@@ -902,7 +900,7 @@ impl App {
     }
 
     /// The one writer of a group's name (2b-4 Ruling 9): the rename commit (`NodeAction::CommitRename`), with the
-    /// name already cleaned. A new group's is seeded at placement instead (`place_group`). Jar names are not this.
+    /// name already cleaned. A new group's is seeded at placement instead (`place_group`). A jar's is `rename_jar`'s.
     pub(crate) fn edit_name(&mut self, id: &str, name: &str) {
         // name rule: compares stored names
         if self.mirror.name(id) != name {
@@ -2006,7 +2004,7 @@ impl App {
         self.host_loads.clear();
         self.navigated_from.clear();
         self.remote_in_flight.clear();
-        self.last_shared.clear(); // `jar_defs` stays: jars are not part of the graph being replaced
+        self.last_shared.clear(); // the mirror's jars stay: jars are not part of the graph being replaced
         self.pending_local = None;
         self.session_generation += 1;
     }
