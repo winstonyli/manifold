@@ -15,8 +15,9 @@ use crate::session_sync::{color_of, color_value, engine_of, pos_value, Fields};
 use crate::store::model::{field, field_def, FieldValue, Kind, NodeId};
 use crate::JarDef;
 
-/// The fields the mirror holds: a `Create` carries them, and on an existing node only `App::pending` writes them
-/// (nothing compares the mirror with the document). `URL` is a tab's shared url
+/// Every field of a node's type (`Kind::fields`, 2b-5 Ruling 2) but the two links, `parent` and `group`, which are
+/// `links`. A `Create` carries them, and on an existing node only `App::pending` writes them (nothing compares the
+/// mirror with the document). `URL` is a tab's shared url
 /// (2b-3 Ruling 2) and a content node's web source (`App::source_url`), seeded at creation since 2b-5. `JAR` and
 /// `JAR_SET` are a tab's jar choice (`jar_choice`), written together by `App::edit_jar`. `ENGINE` is a tab's engine as
 /// its stored code (`engine`), written by `App::edit_engine`. `POS` is the document pos (`pos`), written by
@@ -29,26 +30,6 @@ use crate::JarDef;
 /// like `JAR` (2b-5 Ruling 6). `PATH` is the stored, create-time path (`path`), never rewritten: the payload holds the
 /// path resolved on this machine (2b-5 Ruling 5). `FROM_JSON`, `KEY` and `VALUE` are written once, at creation
 /// (Ruling 8). `TYPE` is the node's type string (`ty`), seeded at every creation and never changed (Ruling 10).
-pub(crate) const MIRRORED: &[u32] = &[
-    field::POS,
-    field::COLOR,
-    field::PINNED,
-    field::URL,
-    field::TEXT,
-    field::VIEW,
-    field::NAME,
-    field::ENGINE,
-    field::JAR,
-    field::JAR_SET,
-    field::FROM_JSON,
-    field::DEFAULT_JAR,
-    field::PATH,
-    field::KEY,
-    field::VALUE,
-    field::TYPE,
-    field::EPHEMERAL,
-];
-
 #[derive(Default)]
 pub(crate) struct Mirror {
     nodes: HashMap<String, Fields>,
@@ -78,7 +59,7 @@ impl Mirror {
 
     /// Every write of a mirrored field lands here, so the decoded view (`view`) is refreshed in this one place.
     pub(crate) fn set(&mut self, id: &str, no: u32, value: FieldValue) {
-        debug_assert!(MIRRORED.contains(&no), "field {no} is not mirrored");
+        debug_assert!(!matches!(no, field::GROUP | field::PARENT), "a link: `set_group` / `set_parent`");
         if no == field::VIEW {
             let view = match &value {
                 FieldValue::Str(text) => JsonView::from_field(text),

@@ -27,15 +27,18 @@ impl ClosedEntry {
 /// browser's own bounded "Recently closed" list.
 pub(crate) const MAX_CLOSED: usize = 20;
 
-/// Whether `kind`/`fields` (as `App::shared_nodes` sees a live node) is
+/// Whether a node of type `ty` (`Mirror::ty`) with `fields` (its snapshot's) is
 /// worth keeping in a `ClosedEntry`. `false` for a completed download (it
 /// has no closed state -- starting it over isn't "reopening"), a jar, a
-/// blank note (nothing to restore) and an unknown kind; everything else --
-/// tabs, groups, images, PDFs, JSON files and leaves -- is. The capability
-/// rows in `caps/rows.rs` decide.
-pub(crate) fn worth_reopening(kind: store::model::Kind, fields: &session_sync::Fields) -> bool {
-    let (mime, tags) = crate::caps::bridge::store_node(kind, fields);
-    crate::caps::registry().caps(mime, tags).restorable
+/// blank note (nothing to restore; the `Blank` tag) and a type this build
+/// doesn't know; everything else -- tabs, groups, images, PDFs, JSON files
+/// and leaves -- is. The capability rows in `caps/rows.rs` decide.
+pub(crate) fn worth_reopening(ty: &str, fields: &session_sync::Fields) -> bool {
+    use crate::caps::{Tag, TagSet};
+    let text = fields.get(&field::TEXT);
+    let blank = !matches!(text, Some(store::model::FieldValue::Str(text)) if !text.trim().is_empty());
+    let tags = if ty == store::model::TYPE_NOTE && blank { TagSet::of(&[Tag::Blank]) } else { TagSet::EMPTY };
+    crate::caps::registry().caps(ty, tags).restorable
 }
 
 /// Every node under `root` at any depth, in `order`, each group visited
@@ -68,7 +71,7 @@ fn members_under(
 
 /// `id`'s live tab zoom, when it differs from the default -- what
 /// `closed_entry` records in `doc.local["zoom"]`. Zoom isn't a store
-/// field (it's personal state), so it doesn't come from `shared_nodes`.
+/// field (it's personal state), so it isn't in the node's snapshot.
 pub(crate) fn tab_zoom(app: &App, id: &str) -> Option<f64> {
     let zoom = match app.nodes.get(id).map(|n| &n.payload) {
         Some(NodePayload::Tab(tab)) => tab.zoom_factor,
@@ -89,7 +92,7 @@ pub(crate) fn tab_title(app: &App, id: &str) -> Option<String> {
     (!title.is_empty()).then(|| title.clone())
 }
 
-/// `fields` (`id`'s, from `shared_nodes`) as the user saw the node: a tab's `url` replaced by its live one, a note's
+/// `fields` (`id`'s snapshot's, `App::snapshot`) as the user saw the node: a tab's `url` replaced by its live one, a note's
 /// `text` by what its card shows (`App::note_text`: a box being typed in holds text no save has committed), and `pos`
 /// by where its card was drawn (`App::layout`), and a file card's `path` by the one resolved on this machine (the
 /// payload's). Recently Closed reopens the page that was closed, not the shared url the mirror holds (2b-3 Ruling 1),
@@ -119,11 +122,10 @@ fn live_fields(app: &App, id: &str, fields: &session_sync::Fields) -> session_sy
 /// isn't worth reopening, which includes a lone "Expand as Graph" leaf:
 /// it's one of many, and each would push a real entry out of `MAX_CLOSED`.
 pub(crate) fn closed_entry(app: &App, id: &str) -> Option<ClosedEntry> {
-    let shared = app.shared_nodes();
     let root_id: store::model::NodeId = id.parse().ok()?;
-    let root = shared.get(&root_id)?;
+    let root = app.snapshot(root_id)?;
     let root_fields = live_fields(app, id, &root.fields);
-    if root.kind == store::model::Kind::JsonLeaf || !worth_reopening(root.kind, &root_fields) {
+    if root.kind == store::model::Kind::JsonLeaf || !worth_reopening(app.mirror.ty(id), &root_fields) {
         return None;
     }
     let mut nodes = vec![store::json::node_json(id, root.kind, &root_fields, None)];
@@ -137,19 +139,19 @@ pub(crate) fn closed_entry(app: &App, id: &str) -> Option<ClosedEntry> {
         }
     };
     record(id);
-    // Only a group has members; for anything else this finds none.
+    // Only a group has members; for anything else this finds none. Membership and containment are the mirror's.
     let order: Vec<store::model::NodeId> = app.node_order.iter().filter_map(|s| s.parse().ok()).collect();
     let members = members_under(
         root_id,
         &order,
-        |id| shared.get(id).and_then(|n| n.group),
-        |id| shared.get(id).is_some_and(|n| crate::caps::bridge::is_container_store(n.kind)),
+        |id| app.mirror.group(&id.to_string()).and_then(|g| g.parse().ok()),
+        |id| crate::caps::edges().target_accepts(crate::caps::CONTAINS, app.mirror.ty(&id.to_string())),
     );
     for member_id in members {
-        let Some(member) = shared.get(&member_id) else { continue };
+        let Some(member) = app.snapshot(member_id) else { continue };
         let label = member_id.to_string();
         let fields = live_fields(app, &label, &member.fields);
-        if worth_reopening(member.kind, &fields) {
+        if worth_reopening(app.mirror.ty(&label), &fields) {
             nodes.push(store::json::node_json(&label, member.kind, &fields, member.group));
             record(&label);
         }
@@ -392,11 +394,14 @@ mod tests {
         assert_eq!(entry.doc.nodes[0].fields.get("text"), Some(&serde_json::json!("typed")));
     }
 
+    /// A type this build doesn't know, and no type at all (`Mirror::ty` of a node the mirror lacks), are not.
     #[test]
-    fn an_unknown_kind_is_not_worth_reopening() {
-        assert!(!worth_reopening(store::model::Kind::Unknown, &Default::default()));
+    fn an_unknown_type_is_not_worth_reopening() {
+        assert!(!worth_reopening("application/x-future", &Default::default()));
+        assert!(!worth_reopening("", &Default::default()));
     }
 
+    /// Decided by the node's type string (`Mirror::ty`) and, for a note, whether its text is blank.
     #[test]
     fn worth_reopening_is_what_it_was_for_every_kind() {
         use store::model::{FieldValue, Kind};
@@ -411,13 +416,13 @@ mod tests {
             (Kind::JsonLeaf, &none, true),
             (Kind::Download, &none, false),
             (Kind::Jar, &none, false),
-            (Kind::Unknown, &none, false),
             (Kind::Note, &text("hi"), true),
             (Kind::Note, &text("  \n"), false),
             (Kind::Note, &none, false),
         ] {
-            assert_eq!(worth_reopening(kind, fields), want, "{kind:?}");
+            assert_eq!(worth_reopening(kind.type_str().unwrap(), fields), want, "{kind:?}");
         }
+        assert!(worth_reopening("image/gif", &none), "any image, not only the stored `image/png`");
     }
 
     #[test]

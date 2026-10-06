@@ -140,22 +140,37 @@ pub enum Kind {
     Unknown,
 }
 
-const TYPES: [(Kind, &str); 9] = [
-    (Kind::Tab, TYPE_TAB),
-    (Kind::Group, TYPE_GROUP),
-    (Kind::Note, TYPE_NOTE),
-    (Kind::Image, TYPE_IMAGE),
-    (Kind::Pdf, TYPE_PDF),
-    (Kind::Json, TYPE_JSON),
-    (Kind::JsonLeaf, TYPE_JSON_LEAF),
-    (Kind::Download, TYPE_DOWNLOAD),
-    (Kind::Jar, TYPE_JAR),
-];
+/// The type table: each kind, the type string it is stored under, and the fields a node of it carries, `group`
+/// aside (spec, "The shared document"). `parent` ("opened from") is on every kind a page can make: a tab, a download,
+/// and content a tab became. Older builds don't write it for the non-tab kinds, but keep it (`Node` holds every
+/// register, and a `Create` only writes the fields listed here). Fields a type does not list stay raw in the document
+/// untouched (2b-5 Ruling 2).
+#[rustfmt::skip]
+const TYPES: [(Kind, &str, &[u32]); 9] = {
+    use field::*;
+    [
+        (Kind::Tab, TYPE_TAB, &[POS, COLOR, PARENT, URL, ENGINE, PINNED, JAR, JAR_SET]),
+        (Kind::Group, TYPE_GROUP, &[POS, COLOR, NAME, FROM_JSON, DEFAULT_JAR]),
+        (Kind::Note, TYPE_NOTE, &[POS, COLOR, PARENT, URL, TEXT]),
+        (Kind::Image, TYPE_IMAGE, &[POS, COLOR, PARENT, URL, PATH]),
+        (Kind::Pdf, TYPE_PDF, &[POS, COLOR, PARENT, URL, PATH]),
+        (Kind::Json, TYPE_JSON, &[POS, COLOR, PARENT, URL, PATH, VIEW]),
+        (Kind::JsonLeaf, TYPE_JSON_LEAF, &[POS, COLOR, PATH, KEY, VALUE]),
+        (Kind::Download, TYPE_DOWNLOAD, &[POS, COLOR, PARENT, URL, PATH]),
+        (Kind::Jar, TYPE_JAR, &[COLOR, NAME, EPHEMERAL]),
+    ]
+};
 
 impl Kind {
     /// The type string a created node of this kind is stored under.
     pub fn type_str(self) -> Option<&'static str> {
         TYPES.iter().find(|t| t.0 == self).map(|t| t.1)
+    }
+
+    /// The fields a node of this kind carries, `group` aside (`TYPES`): what a `Create` writes, what another
+    /// replica's change hands the app (2b-5 Ruling 11), and what a snapshot of the node holds. Empty for `Unknown`.
+    pub fn fields(self) -> &'static [u32] {
+        TYPES.iter().find(|t| t.0 == self).map_or(&[], |t| t.2)
     }
 
     /// The kind a stored type string means; any `image/*` is an image.

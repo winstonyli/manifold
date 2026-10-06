@@ -463,9 +463,8 @@ impl App {
     /// Drops jar `id` (a local or remote delete): its mirror entry and definition (`Mirror::forget_jar`), its cookies
     /// and its files, unreadable copies and crashed saves' temp files included (`Jar::delete_files`). A tab still
     /// running on it has its pulls dropped (`apply_pulled_cookies`) and now resolves to the default jar, so it
-    /// switches: the caller sweeps (`delete_jar`, or `apply_remote` once the whole remote batch is in). Its
-    /// `last_shared` entry stays: after a local delete it is what keeps a remote edit from recreating the jar before
-    /// the save (`materialize_jar`).
+    /// switches: the caller sweeps (`delete_jar`, or `apply_remote` once the whole remote batch is in). After a local
+    /// delete, the queued delete is what keeps a remote edit from recreating the jar before the save (`materialize`).
     pub(crate) fn forget_jar(&mut self, id: NodeId) {
         self.mirror.forget_jar(id);
         let key = JarKey::Named(id);
@@ -721,17 +720,12 @@ impl App {
     }
 
     /// A `Kind::Jar` change from the document, before `materialize` gives the mirror its fields (`mirror_remote`, which
-    /// refreshes `jar_defs`). `false` refuses it: a jar this replica knew (`seen`: it has a `last_shared` entry) but no
-    /// longer has was deleted here, and the next save commits its queued delete; another device's edit to it is
-    /// dropped rather than bringing it back, nameless from a partial change or whole (final review M1). `forget_jar`
-    /// leaves the `last_shared` entry that marks it; a remote delete removes that entry first (`apply_remote`).
-    /// Otherwise the jar is known from now on (and queued for creation, which only an imported jar's fresh id needs:
-    /// `queue_create`), and a changed ephemeral flag that no local edit holds runs its file side effects first
-    /// (`switch_jar_ephemeral`), while the mirror still shows the old flag.
-    pub(crate) fn materialize_jar(&mut self, id: NodeId, fields: &Fields, seen: bool) -> bool {
-        if seen && !self.mirror.jar_defs().contains_key(&id) {
-            return false;
-        }
+    /// refreshes `jar_defs`). A jar deleted here whose delete is pending never gets this far (`materialize` drops the
+    /// change, final review M1 / Ruling 9). The jar is known from now on (and queued for creation, which only an
+    /// imported jar's fresh id needs: `queue_create`), and a changed ephemeral flag that no local edit holds runs its
+    /// file side effects first (`switch_jar_ephemeral`, which compares against `jar_defs`), while the mirror still
+    /// shows the old flag: a jar still saved is loaded from its file before the flag says it has none.
+    pub(crate) fn materialize_jar(&mut self, id: NodeId, fields: &Fields) {
         self.mirror.add_jar(id);
         self.queue_create(&id.to_string());
         if let Some(value) = fields.get(&field::EPHEMERAL) {
@@ -739,7 +733,6 @@ impl App {
                 self.switch_jar_ephemeral(id, matches!(value, FieldValue::Bool(true)), false);
             }
         }
-        true
     }
 }
 

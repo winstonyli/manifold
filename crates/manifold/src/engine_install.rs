@@ -1804,7 +1804,7 @@ Connection: close
         let pin = pin_for(&a, serve_file(&a));
         let data = dir.join("data");
         let mut app = App::default();
-        let pending = crate::session_sync::Shared {
+        let pending = crate::session_sync::Snapshot {
             kind: crate::store::model::Kind::Tab,
             group: None,
             fields: Default::default(),

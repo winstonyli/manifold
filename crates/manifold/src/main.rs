@@ -986,12 +986,12 @@ struct App {
     /// reaches zero.
     tab_spawns_in_flight: usize,
     /// Ids whose tab spawn is in flight (every `SpawnPurpose`), each with
-    /// the tab it was started as (`session_sync::spawn_shared`). No live
+    /// the tab it was started as (`session_sync::spawn_snapshot`). No live
     /// node yet (contract "In-flight spawns"); a save creates one the store
     /// doesn't hold yet (a new, imported or reopened tab) from this snapshot
-    /// (`shared_of`), so a quit before it lands doesn't lose it. A respawn
+    /// (`snapshot`), so a quit before it lands doesn't lose it. A respawn
     /// queues no delete, so the store keeps the tab meanwhile.
-    spawning: HashMap<String, session_sync::Shared>,
+    spawning: HashMap<String, session_sync::Snapshot>,
     /// Other replicas' latest change to a node in `spawning`, applied when
     /// its spawn lands (`None`: deleted). The spawn itself carries only
     /// what it was started with.
@@ -1005,7 +1005,7 @@ struct App {
     navigated_from: HashMap<String, (String, std::time::Instant, bool)>,
     /// Nodes placed here that the next save creates (2b-5 Ruling 3): every way a node enters the live graph
     /// (`place_node`, `spawn_tab_async`, a jar's `add_jar`) queues its id; the save creates each the document lacks,
-    /// from the mirror or the spawn's snapshot (`shared_of`). One the document already holds (a restore, another
+    /// from the mirror or the spawn's snapshot (`snapshot`). One the document already holds (a restore, another
     /// replica's node) is dropped. Cleared of created ids by a successful commit.
     pending_creates: std::collections::BTreeSet<store::model::NodeId>,
     /// Nodes removed here that the next save deletes (Ruling 4: `queue_delete`). Only a local removal queues: a
@@ -1023,12 +1023,6 @@ struct App {
     /// Another replica's text for a note being typed in, held back from its mirror and box until the blur
     /// (`end_note_edit`, 2b-4 Ruling 7), by node. Dropped when this replica commits its own text after it.
     held_text: HashMap<String, String>,
-    /// What the store held for each node when this replica last read or
-    /// committed it. `materialize` applies a field only where the store
-    /// now differs, so a remote change to one field doesn't overwrite
-    /// another field's unsaved local value. A tab with a change parked in `remote_in_flight` keeps its entry from
-    /// before the change until the landing replays it (a commit does not refresh it).
-    last_shared: HashMap<String, session_sync::Shared>,
     /// Personal state (spec "Personal state") last written to
     /// `session.mnf.local`, or read at startup: `maybe_write_local` skips
     /// writing when the current state compares equal, so an idle session
@@ -1537,7 +1531,6 @@ impl Default for App {
             pending: std::collections::BTreeMap::new(),
             held_text: HashMap::new(),
             pending_moves: std::collections::BTreeMap::new(),
-            last_shared: HashMap::new(),
             local_written: None,
             local_unread: None,
             local_written_at: std::time::Instant::now(),
@@ -2173,12 +2166,18 @@ impl App {
         }
     }
 
-    /// Removes a download or note node from the graph -- a download's file
-    /// on disk is left untouched (this only forgets the node), and neither
-    /// kind has anything else to persist/tear down on removal the way a
-    /// tab's engine process or a group's membership does, so one plain
-    /// `self.nodes`/`node_order` removal (plus the same stale-`dragging`/
-    /// `hovered` guard `destroy_tab`/`finish_swap` also apply) covers both.
+    /// The local removal of a download, note, image, PDF or Json node: `drop_node` + `queue_delete`.
+    fn remove_node(&mut self, id: &str) {
+        self.drop_node(id);
+        self.queue_delete(id);
+    }
+
+    /// Removes a download, note, image, PDF or Json node from the graph without queueing a delete (`remove_node`
+    /// adds that; a node another replica deleted, `remove_remotely_deleted`, needs none). A download's file on disk
+    /// is left untouched (this only forgets the node); an image's or PDF's texture is freed, and a PDF's render not
+    /// yet started is cancelled. Neither kind has an engine process or a membership to tear down, so one plain
+    /// `self.nodes`/`node_order` removal (plus the same stale-`dragging`/`hovered` guard `destroy_tab`/`finish_swap`
+    /// also apply) covers them all.
     ///
     /// Removing the Json node whose level is being viewed (another replica
     /// deleted it, or its group was closed) leaves to that node's group,
@@ -2186,14 +2185,7 @@ impl App {
     /// name a node that's gone, or `insertion_group` would orphan new nodes.
     ///
     /// What it opened (a tab from Open as Tab) is then opened from its own
-    /// `parent`, as `remove_tab` does for a tab's children.
-    fn remove_node(&mut self, id: &str) {
-        self.drop_node(id);
-        self.queue_delete(id);
-    }
-
-    /// `remove_node` without the queued delete, for a node another replica deleted (`remove_remotely_deleted`).
-    /// Its children move to its parent, and an image's or PDF's texture is freed.
+    /// `parent`, as `drop_tab` does for a tab's children.
     fn drop_node(&mut self, id: &str) {
         let parent = self.mirror.parent(id).map(str::to_owned);
         let children: Vec<String> = self.children_of(id).map(str::to_owned).collect();

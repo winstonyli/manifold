@@ -132,8 +132,8 @@ impl App {
         let choice = if has { self.mirror.jar_choice(&spawn.id) } else { spawn.jar };
         let engine = if has { self.mirror.engine_code(&spawn.id) } else { session_sync::engine_code(spawn.kind) };
         let url = shared_url.unwrap_or(&spawn.url);
-        let shared = session_sync::spawn_shared(&spawn, pos, url, engine, choice);
-        self.spawning.insert(spawn.id.clone(), shared);
+        let snapshot = session_sync::spawn_snapshot(&spawn, pos, url, engine, choice);
+        self.spawning.insert(spawn.id.clone(), snapshot);
         // A new tab is created from that snapshot by the next save (Ruling 3); a respawn's id is already stored.
         self.queue_create(&spawn.id);
         let generation = self.session_generation;
@@ -1126,10 +1126,7 @@ impl App {
         members.iter().filter(|m| self.request_sleep(m, SleepWhy::Manual)).count()
     }
 
-    /// `destroy_tab` without the save: a tab another replica deleted
-    /// (`remove_remotely_deleted`), whose removal is not a local edit, or
-    /// a tab converting into a node (`redirect_tab_to_content`), which
-    /// saves once after inserting it.
+    /// The local close without the save (`destroy_tab`, `redirect_tab_to_content`); queues the delete.
     pub(crate) fn remove_tab(&mut self, id: &str) {
         if self.drop_tab(id) {
             self.queue_delete(id);

@@ -805,9 +805,8 @@ mod tests {
             (app.mirror.url(&id), app.mirror.url(&note_id)),
             ("https://x.test/a.png", "https://x.test/note.txt")
         );
-        let shared = app.shared_nodes();
-        let url = |id: &str| shared[&id.parse().unwrap()].fields[&field::URL].clone();
-        assert_eq!(url(&id), FieldValue::Str("https://x.test/a.png".into()));
+        let snapshot = app.snapshot(id.parse().unwrap()).unwrap();
+        assert_eq!(snapshot.fields[&field::URL], FieldValue::Str("https://x.test/a.png".into()));
     }
 
     /// 2b-5 Task 1: a download's address is the mirror's from the moment its card is placed, and its type is seeded.
@@ -848,8 +847,8 @@ mod tests {
         app.reload_fetched_node(&id, WebBody::File { kind: crate::content::ContentKind::Json, path: moved.clone() });
         assert_eq!(app.nodes[&id].as_json().unwrap().path, moved, "the payload reads the new file");
         assert_eq!(app.mirror.path(&id), stored, "the mirror keeps the stored path");
-        let shared = app.shared_nodes();
-        assert_eq!(shared[&id.parse().unwrap()].fields[&field::PATH], FieldValue::Str(stored.clone()));
+        let snapshot = app.snapshot(id.parse().unwrap()).unwrap();
+        assert_eq!(snapshot.fields[&field::PATH], FieldValue::Str(stored.clone()), "a save writes the stored path");
         let entry = crate::closed::closed_entry(&app, &id).unwrap();
         assert_eq!(entry.doc.nodes[0].fields.get("path").and_then(|v| v.as_str()), Some(moved.as_str()));
     }

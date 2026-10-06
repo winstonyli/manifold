@@ -461,7 +461,7 @@ impl App {
 mod tests {
     use super::*;
 
-    // Real node ids: `shared_nodes()` skips any id that doesn't parse as
+    // Real node ids: `snapshots()` skips any id that doesn't parse as
     // a `NodeId`, which would make the store test pass vacuously.
     const OUTER: &str = "0000000000000001-1";
     const J: &str = "0000000000000001-2";
@@ -576,9 +576,9 @@ mod tests {
     #[test]
     fn the_store_sees_nothing_of_the_level_but_view() {
         let (mut app, j) = app_with_json("store", r#"{"a": {"b": [1, 2, 3]}, "c": [1, 2]}"#);
-        // (id, kind, group, fields without VIEW) for every stored node.
+        // (id, kind, group, fields without VIEW) for every stored node, as the mirror snapshot has it.
         let stored = |app: &App| {
-            app.shared_nodes()
+            crate::session_sync::tests::snapshots(app)
                 .into_iter()
                 .map(|(id, mut s)| {
                     s.fields.remove(&field::VIEW);

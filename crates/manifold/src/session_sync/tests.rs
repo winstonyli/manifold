@@ -10,9 +10,10 @@ const A: ActorId = ActorId(0xA);
 #[test]
 fn jar_fields_belong_to_tabs_groups_and_jars() {
     use field::*;
-    assert_eq!(kind_fields(Kind::Tab), &[POS, COLOR, PARENT, URL, ENGINE, PINNED, JAR, JAR_SET]);
-    assert_eq!(kind_fields(Kind::Group), &[POS, COLOR, NAME, FROM_JSON, DEFAULT_JAR]);
-    assert_eq!(kind_fields(Kind::Jar), &[COLOR, NAME, EPHEMERAL]);
+    assert_eq!(Kind::Tab.fields(), &[POS, COLOR, PARENT, URL, ENGINE, PINNED, JAR, JAR_SET]);
+    assert_eq!(Kind::Group.fields(), &[POS, COLOR, NAME, FROM_JSON, DEFAULT_JAR]);
+    assert_eq!(Kind::Jar.fields(), &[COLOR, NAME, EPHEMERAL]);
+    assert!(Kind::Unknown.fields().is_empty());
 }
 
 /// Waits up to ~1 s for `app.redirect_fetcher` to report something.
@@ -59,28 +60,36 @@ fn id(counter: u64) -> NodeId {
     NodeId { actor: A, counter }
 }
 
-fn shared(kind: Kind, group: Option<NodeId>, set: &[(u32, FieldValue)]) -> Shared {
+fn shared(kind: Kind, group: Option<NodeId>, set: &[(u32, FieldValue)]) -> Snapshot {
     let mut fields: Fields =
-        kind_fields(kind).iter().map(|&no| (no, FieldValue::absent(field_def(no).unwrap().ty))).collect();
+        kind.fields().iter().map(|&no| (no, FieldValue::absent(field_def(no).unwrap().ty))).collect();
     for (no, value) in set {
         fields.insert(*no, value.clone());
     }
-    Shared { kind, group, fields }
+    Snapshot { kind, group, fields }
 }
 
-fn note(text: &str, group: Option<NodeId>) -> Shared {
+fn note(text: &str, group: Option<NodeId>) -> Snapshot {
     shared(Kind::Note, group, &[(field::TEXT, FieldValue::Str(text.into()))])
 }
 
-fn group(name: &str) -> Shared {
+fn group(name: &str) -> Snapshot {
     shared(Kind::Group, None, &[(field::NAME, FieldValue::Str(name.into()))])
 }
 
-/// What `doc` shows, shaped like `live`.
-fn shown(doc: &Doc) -> BTreeMap<NodeId, Shared> {
+/// What `doc` shows, shaped like `snapshots`.
+fn shown(doc: &Doc) -> BTreeMap<NodeId, Snapshot> {
     doc.live()
-        .map(|(id, node)| (id, Shared { kind: node.kind(), group: doc.effective_group(id), fields: fields_of(node) }))
+        .map(|(id, node)| (id, Snapshot { kind: node.kind(), group: doc.effective_group(id), fields: fields_of(node) }))
         .collect()
+}
+
+/// What the store holds for every live node and jar (`App::snapshot`), by store id: an in-progress download, a
+/// hand-built id and a tab whose spawn is in flight are left out. `pub(crate)`: other modules' tests compare it too.
+pub(crate) fn snapshots(app: &App) -> BTreeMap<NodeId, Snapshot> {
+    let nodes = app.nodes.keys().filter_map(|key| key.parse::<NodeId>().ok());
+    let jars = app.mirror.jar_defs().keys().copied();
+    nodes.chain(jars).filter_map(|id| Some((id, app.snapshot(id)?))).collect()
 }
 
 /// Actor 1's op count: what a save wrote.
@@ -107,7 +116,7 @@ fn new_nodes_are_created_groups_first() {
     let doc = app.journal.as_ref().unwrap().doc();
     assert_eq!(doc.effective_group(note.parse().unwrap()), Some(group.parse().unwrap()));
     assert_eq!(doc.nodes[&group.parse().unwrap()].get(field::NAME), FieldValue::Str("G".into()));
-    assert_eq!(shown(doc), app.shared_nodes());
+    assert_eq!(shown(doc), snapshots(&app));
 }
 
 #[test]
@@ -265,7 +274,7 @@ fn random_edits_converge_in_one_save() {
         }
         assert!(app.save_session());
         let doc = app.journal.as_ref().unwrap().doc();
-        assert_eq!(shown(doc), app.shared_nodes(), "the document shows the live graph");
+        assert_eq!(shown(doc), snapshots(&app), "the document shows the live graph");
         let live: BTreeMap<String, (Kind, Option<String>)> = doc
             .live()
             .map(|(id, n)| (id.to_string(), (n.kind(), doc.effective_group(id).map(|g| g.to_string()))))
@@ -445,7 +454,7 @@ fn a_node_inserted_behind_the_queues_back_trips_the_invariant() {
 
 /// Materializes `nodes` into a windowless app, as `apply_remote` would
 /// show another replica's new nodes.
-fn app_with(nodes: &BTreeMap<NodeId, Shared>) -> App {
+fn app_with(nodes: &BTreeMap<NodeId, Snapshot>) -> App {
     let mut app = App::default();
     let changes = nodes.iter().map(|(&id, s)| (id, Some((s.kind, s.fields.clone(), s.group)))).collect();
     app.apply_remote(changes);
@@ -475,7 +484,7 @@ fn a_tabs_jar_and_a_groups_default_project_to_fields_and_back() {
     assert!(app.nodes[&id(1).to_string()].payload.as_unloaded().is_some());
     assert_eq!(app.mirror.jar_choice(&id(1).to_string()), crate::jar::JarChoice { jar: Some(jar), set: true });
     assert_eq!(app.mirror.default_jar(&id(2).to_string()), Some(jar));
-    assert_eq!(app.shared_nodes(), nodes, "the live payloads project back to the same fields");
+    assert_eq!(snapshots(&app), nodes, "the live payloads project back to the same fields");
 }
 
 #[test]
@@ -534,7 +543,7 @@ fn a_restored_note_group_and_leaf_project_back_to_their_fields() {
             ),
         ),
     ]);
-    assert_eq!(app_with(&nodes).shared_nodes(), nodes);
+    assert_eq!(snapshots(&app_with(&nodes)), nodes);
 }
 
 /// An App holding one Json node, id `id(1)`, loaded from a temp file.
@@ -553,7 +562,7 @@ fn a_json_nodes_view_round_trips_through_the_store() {
     let (mut app, node) = app_with_json_file("json_view_field");
     app.edit_view(&node, r#"{"/users":{"collapsed":true}}"#);
 
-    let shared = app.shared_nodes();
+    let shared = snapshots(&app);
     let fields = &shared[&id(1)].fields;
     assert_eq!(fields.get(&field::VIEW), Some(&FieldValue::Str(r#"{"/users":{"collapsed":true}}"#.into())));
 
@@ -567,7 +576,7 @@ fn a_json_nodes_view_round_trips_through_the_store() {
 fn a_remote_view_change_updates_the_node_in_place() {
     let (mut app, node) = app_with_json_file("json_view_remote");
     let (value, path) = app.nodes[&node].as_json().map(|j| (j.value.clone(), j.path.clone())).unwrap();
-    let mut fields = app.shared_nodes()[&id(1)].fields.clone();
+    let mut fields = snapshots(&app)[&id(1)].fields.clone();
     fields.insert(field::VIEW, FieldValue::Str(r#"{"":{"collapsed":true}}"#.into()));
     app.materialize(node.clone(), Kind::Json, &fields, None, None);
     assert_eq!(app.mirror.view(&node).unwrap().get("").unwrap().collapsed, Some(true));
@@ -1330,7 +1339,7 @@ fn an_idle_open_and_close_writes_nothing() {
 }
 
 /// A note made from a web page keeps its URL through save and restore
-/// (content dispatch spec): `shared_nodes` reports it under `field::URL`
+/// (content dispatch spec): its snapshot reports it under `field::URL`
 /// and `restore_session` hands it back via `App::source_url`.
 #[test]
 fn content_nodes_keep_their_source_url() {
@@ -1340,7 +1349,7 @@ fn content_nodes_keep_their_source_url() {
     let payload = NotePayload { text: "hi".into(), editing: false };
     app.insert_placeholder_node(id.clone(), egui::Vec2::ZERO, NodePayload::Note(payload));
     app.mirror.set(&id, field::URL, FieldValue::Str("https://x.test/a.txt".into()));
-    let shared = app.shared_nodes();
+    let shared = snapshots(&app);
     let fields = &shared[&id.parse().unwrap()].fields;
     assert_eq!(fields.get(&field::URL), Some(&FieldValue::Str("https://x.test/a.txt".into())));
     assert!(app.save_session());
@@ -1504,7 +1513,7 @@ fn a_group_export_imports_as_fresh_nodes() {
     assert_eq!(json.nodes.len(), 2);
     assert_eq!(json.nodes[0].kind(), Some(Kind::Group));
     app.import_group_json(&json);
-    assert_eq!(app.shared_nodes().len(), 4, "the import added a second group and note");
+    assert_eq!(snapshots(&app).len(), 4, "the import added a second group and note");
 }
 
 fn failed_tab(url: &str, zoom_factor: f64) -> NodePayload {
@@ -1829,7 +1838,7 @@ fn remote_jar_create_rename_and_delete_reach_jar_defs() {
     assert!(!app.nodes.contains_key(&jar.to_string()), "never a graph node");
     app.apply_remote(vec![(jar, Some((Kind::Jar, named("House").fields, None)))]);
     assert_eq!(app.mirror.jar_defs()[&jar].name, "House");
-    assert_eq!(app.shared_nodes()[&jar], named("House"), "projects back unchanged");
+    assert_eq!(snapshots(&app)[&jar], named("House"), "projects back unchanged");
     app.apply_remote(vec![(jar, None)]);
     assert!(!app.mirror.jar_defs().contains_key(&jar));
 }
@@ -1873,6 +1882,73 @@ fn a_remote_edit_does_not_bring_back_a_jar_deleted_here() {
         assert_eq!(app.mirror.get(&jar.to_string(), field::NAME), FieldValue::Str(String::new()), "field {no}");
         assert!(!app.journal.as_ref().unwrap().doc().nodes[&jar].is_live(), "field {no}: the delete was saved");
     }
+}
+
+/// Ruling 9, extended to graph nodes (Task 4): a node closed here whose delete is not saved yet must not come back
+/// when the save's first round applies another replica's edit to it; the delete then commits. Without the guard the
+/// edit re-shows the node and its queued delete is lost.
+#[test]
+fn a_remote_edit_does_not_bring_back_a_node_closed_here() {
+    let path = temp_dir("node-closed-here").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let note = add(&mut app, NodePayload::Note(NotePayload { text: "n".into(), editing: false }));
+    let tab = add(&mut app, sleeping_tab("https://a/", ""));
+    assert!(app.save_session());
+    let mut other = Journal::open(&path, ActorId(2)).unwrap();
+    remote_set(&mut other, &note, field::TEXT, FieldValue::Str("theirs".into()));
+    remote_set(&mut other, &tab, field::URL, FieldValue::Str("https://b/".into()));
+    app.remove_node(&note);
+    app.remove_tab(&tab);
+    assert!(app.save_session());
+    for id in [&note, &tab] {
+        assert!(!app.nodes.contains_key(id), "{id}: closed here, not shown again");
+        assert!(!live_in_doc(&app, id), "{id}: the delete was saved");
+        assert!(!app.mirror.has(id), "{id}: nothing of it kept");
+    }
+    assert!(app.pending_deletes.is_empty());
+}
+
+/// `queue_create` checks the document eagerly: an id it already has an entry for (live, or a tombstone) is not
+/// queued, so a restore, a remote node and a respawn never fill the queue (the commit's own filter stays the guard);
+/// an id that isn't a store id is never queued. Queueing a create withdraws a pending delete of the same id: the
+/// node is shown again.
+#[test]
+fn queue_create_skips_an_id_the_document_already_has() {
+    let mut app = app_on(&temp_dir("queue-create-eager").join("session.mnf"), 1);
+    let note = add(&mut app, NodePayload::Note(NotePayload { text: "n".into(), editing: false }));
+    let id: NodeId = note.parse().unwrap();
+    assert_eq!(app.pending_creates, BTreeSet::from([id]), "a new node is queued");
+    assert!(app.save_session());
+    app.queue_create(&note);
+    assert!(app.pending_creates.is_empty(), "live in the document: not queued again");
+    app.queue_delete(&note);
+    app.queue_create(&note);
+    assert!(app.pending_deletes.is_empty(), "shown again: the delete is withdrawn");
+    app.remove_node(&note);
+    assert!(app.save_session());
+    app.queue_create(&note);
+    assert!(app.pending_creates.is_empty(), "a tombstone: never recreated");
+    app.queue_create("demo");
+    assert!(app.pending_creates.is_empty(), "not a store id");
+}
+
+/// `mirror_remote` (Ruling 9) returns the fields another replica changed (old mirror value != new), so
+/// `update_live_node` can act on them, leaving out those a pending local edit holds back, which keep the local value.
+#[test]
+fn mirror_remote_reports_the_changed_fields_but_not_the_held_ones() {
+    let mut app = App::default();
+    let tab = add(&mut app, sleeping_tab("https://a/", ""));
+    app.edit_pos(&tab, Some(egui::vec2(5.0, 5.0)));
+    let mut fields = app.snapshot(tab.parse().unwrap()).unwrap().fields;
+    fields.insert(field::POS, FieldValue::Pos(9.0, 9.0));
+    fields.insert(field::URL, FieldValue::Str("https://b/".into()));
+    let (held, changed) = app.mirror_remote(&tab, &fields, None);
+    assert_eq!(held, [field::POS], "a pending edit holds the field");
+    assert_eq!(changed, [field::URL], "the url changed; pinned, engine and the rest did not");
+    assert_eq!(app.mirror.url(&tab), "https://b/");
+    assert_eq!(app.mirror.pos(&tab), Some(egui::vec2(5.0, 5.0)), "held: the local edit stands");
+    let (held, changed) = app.mirror_remote(&tab, &fields, None);
+    assert_eq!((held, changed), (vec![field::POS], vec![]), "the same values again change nothing");
 }
 
 /// 2b-5 Ruling 7: a jar's name, colour and ephemeral flag are mirror fields. Creating, renaming and toggling a jar
@@ -1937,7 +2013,7 @@ fn a_remote_ephemeral_change_deletes_and_saves_the_jar_file() {
     let file = crate::jar::Jar::path(&jars, crate::jar::JarKey::Named(jar));
     std::fs::write(&file, r#"{"cookies":[]}"#).unwrap();
     let toggled = |app: &App, on: bool| {
-        let mut fields = app.shared_nodes()[&jar].fields.clone();
+        let mut fields = snapshots(app)[&jar].fields.clone();
         fields.insert(field::EPHEMERAL, FieldValue::Bool(on));
         vec![(jar, Some((Kind::Jar, fields, None)))]
     };
@@ -2524,20 +2600,19 @@ fn exporting_a_group_the_store_lacks_gives_none() {
     assert!(!app.save_toast_queue.is_empty(), "toasted");
 }
 
-/// `save_session` refreshes `last_shared` only for nodes its ops name
-/// (all of them after a delete), trusting `materialize` for every other
-/// store change. After each kind of save, `last_shared` must still be
-/// exactly what the store holds for every live node.
+/// The mirror is what this replica knows of the store (2b-5 Task 4: `last_shared` is gone). After each kind of save,
+/// nothing pending, every live node's snapshot (`App::snapshot`: the mirror's fields and group) must be exactly what
+/// the store holds for it, whether the commit wrote it, another replica did, or a remote delete moved it.
 #[test]
-fn last_shared_matches_the_store_after_every_save() {
+fn the_mirror_matches_the_store_after_every_save() {
     fn check(app: &App, step: &str) {
         let doc = app.journal.as_ref().unwrap().doc();
         for (id, node) in doc.live() {
-            let want = Shared { kind: node.kind(), group: doc.effective_group(id), fields: fields_of(node) };
-            assert_eq!(app.last_shared.get(&id.to_string()), Some(&want), "{step}: node {id}");
+            let want = Snapshot { kind: node.kind(), group: doc.effective_group(id), fields: fields_of(node) };
+            assert_eq!(app.snapshot(id), Some(want), "{step}: node {id}");
         }
     }
-    let dir = temp_dir("last-shared");
+    let dir = temp_dir("mirror-matches-store");
     let path = dir.join("session.mnf");
     let mut app = app_on(&path, 1);
     let outer = add_group(&mut app, "outer");
@@ -2576,8 +2651,8 @@ fn last_shared_matches_the_store_after_every_save() {
 }
 
 /// What the app's side of a save costs at realistic session sizes: the
-/// live projection (`shared_nodes`), a whole `save_session` (projection,
-/// `begin`, the queued ops, commit, `last_shared` refresh) with nothing and with
+/// snapshot of every node (`snapshots`, more than a save takes: it projects only the queued creates), a whole
+/// `save_session` (projection, `begin`, the queued ops, commit) with nothing and with
 /// one url to save, and the personal-state build and write. The store
 /// side alone is `journal::tests::save_path_costs`. Timing, not
 /// correctness, so ignored:
@@ -2618,19 +2693,7 @@ fn app_save_costs() {
         assert!(app.save_session());
         println!("{tabs} tabs, {} groups:", groups.len());
 
-        report("shared_nodes (per save)", timed(N, || drop(app.shared_nodes())));
-        let live = app.shared_nodes();
-        let doc = app.journal.as_ref().unwrap().doc();
-        report(
-            "last_shared refresh (after a commit)",
-            timed(N, || {
-                for &id in live.keys() {
-                    let node = &doc.nodes[&id];
-                    let seen = Shared { kind: node.kind(), group: doc.effective_group(id), fields: fields_of(node) };
-                    std::hint::black_box(seen);
-                }
-            }),
-        );
+        report("snapshot of every node", timed(N, || drop(snapshots(&app))));
         report("save_session, nothing changed", timed(N, || assert!(app.save_session())));
         let mut k = 0;
         report(
@@ -4179,8 +4242,8 @@ fn a_remote_url_navigates_a_live_tab_unless_a_local_url_is_pending() {
 }
 
 /// Final review I1, url: another replica's url, parked while the tab wakes (`remote_in_flight`), still navigates
-/// it when it lands, though a commit in between (here an unrelated Delete, which refreshes every live node's
-/// `last_shared`) read that url from the document.
+/// it when it lands, though a commit in between (here an unrelated Delete) saw that url in the document: the mirror
+/// keeps the url the tab had until the landing applies the parked change against it.
 #[test]
 fn a_remote_url_parked_during_a_wake_navigates_the_tab_when_it_lands() {
     let path = temp_dir("url-parked-wake").join("session.mnf");
@@ -4206,8 +4269,8 @@ fn a_remote_url_parked_during_a_wake_navigates_the_tab_when_it_lands() {
 
 /// Final review I1, engine: another replica's engine, parked while a swap's respawn is in flight, still reaches
 /// the tab when it lands, though a jar cascade (a group default, which reaches a respawning tab, Ruling 9) committed
-/// a Set for the tab in between, refreshing its `last_shared` from the document. The document and the running engine
-/// end up agreeing: the landing starts a swap to it.
+/// a Set for the tab in between (the parked change takes the committed jar, so the landing does not replay the old
+/// one over it). The document and the running engine end up agreeing: the landing starts a swap to it.
 #[test]
 fn a_remote_engine_parked_during_a_swap_respawn_is_swapped_to_when_it_lands() {
     let path = temp_dir("engine-parked-swap").join("session.mnf");
@@ -4437,7 +4500,7 @@ fn importing_or_reopening_a_group_of_leaves_carries_key_and_value() {
     assert!(app.mirror.from_json(&g));
     assert_eq!((app.mirror.key(&l), app.mirror.value(&l)), ("k", "[1,2]"));
     assert_eq!(*app.nodes[&l].as_json().unwrap().value, serde_json::json!([1, 2]), "the payload holds it parsed");
-    let shared = app.shared_nodes();
+    let shared = snapshots(&app);
     let fields = &shared[&l.parse().unwrap()].fields;
     assert_eq!(fields[&field::KEY], FieldValue::Str("k".into()));
     assert_eq!(fields[&field::VALUE], FieldValue::Str("[1,2]".into()));

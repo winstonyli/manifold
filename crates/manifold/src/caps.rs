@@ -5,6 +5,8 @@ mod edges;
 mod pattern;
 mod rows;
 
+pub(crate) use edges::CONTAINS;
+pub(crate) use pattern::{Tag, TagSet};
 use rows::{builtin_rows, Registry};
 use std::sync::OnceLock;
 

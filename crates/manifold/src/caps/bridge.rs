@@ -3,22 +3,7 @@
 use super::edges::CONTAINS;
 use super::pattern::{Tag, TagSet};
 use crate::node::ItemNodeKind;
-use crate::session_sync::Fields;
-use crate::store::model::{
-    field, FieldValue, Kind, TYPE_DOWNLOAD, TYPE_GROUP, TYPE_JSON, TYPE_NOTE, TYPE_PDF, TYPE_TAB,
-};
-
-/// A stored node's type and tags, as `App::shared_nodes` sees it: a note with no (or only blank) text is `Blank`.
-pub(crate) fn store_node(kind: Kind, fields: &Fields) -> (&'static str, TagSet) {
-    let none = TagSet::EMPTY;
-    match kind {
-        Kind::Note => {
-            let blank = !matches!(fields.get(&field::TEXT), Some(FieldValue::Str(text)) if !text.trim().is_empty());
-            (TYPE_NOTE, if blank { TagSet::of(&[Tag::Blank]) } else { none })
-        }
-        kind => (kind.type_str().unwrap_or("application/x-manifold-unknown"), none),
-    }
-}
+use crate::store::model::{TYPE_DOWNLOAD, TYPE_GROUP, TYPE_JSON, TYPE_NOTE, TYPE_PDF, TYPE_TAB};
 
 /// A card's type and tags. A loaded tab is `Loaded`; a sleeping one is the same type without it.
 pub(crate) fn item_node(kind: ItemNodeKind) -> (&'static str, TagSet) {
@@ -37,11 +22,6 @@ pub(crate) fn item_node(kind: ItemNodeKind) -> (&'static str, TagSet) {
 /// Whether nodes can sit inside this kind of card (a group).
 pub(crate) fn is_container(kind: ItemNodeKind) -> bool {
     super::edges().target_accepts(CONTAINS, item_node(kind).0)
-}
-
-/// `is_container` for a stored node's kind.
-pub(crate) fn is_container_store(kind: Kind) -> bool {
-    super::edges().target_accepts(CONTAINS, store_node(kind, &Fields::new()).0)
 }
 
 /// Whether a `member` card may be put inside a `group` card; argument order is (member, group), source then target.
@@ -69,10 +49,6 @@ mod tests {
         for kind in KINDS {
             assert_eq!(is_container(kind), kind == ItemNodeKind::Group, "{kind:?}");
         }
-        for kind in [Kind::Tab, Kind::Note, Kind::Jar, Kind::JsonLeaf, Kind::Unknown] {
-            assert!(!is_container_store(kind), "{kind:?}");
-        }
-        assert!(is_container_store(Kind::Group));
     }
 
     #[test]
