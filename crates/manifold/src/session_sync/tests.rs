@@ -1842,6 +1842,81 @@ fn fail_spawns(app: &mut App) {
     }
 }
 
+/// Starts a New spawn for `url` and lands it on a fake host; returns the new tab's id.
+fn succeed_spawn(app: &mut App, url: &str) -> String {
+    let id = app.spawn_tab_at(url, egui::Vec2::ZERO, None, None);
+    let at = app.test_spawns.iter().position(|(spawn, _)| spawn.id == id).expect("the spawn is parked");
+    let (spawn, generation) = app.test_spawns.remove(at);
+    let (tab, _peer) = crate::process_manager::EngineTab::fake(spawn.kind);
+    app.handle_tab_spawn_result(crate::TabSpawnOutcome {
+        spawn,
+        generation,
+        result: Ok(tab),
+        seeded: Default::default(),
+        jar: Default::default(),
+        seed_clears: None,
+    });
+    id
+}
+
+fn failed_cards(app: &App) -> Vec<String> {
+    let mut ids: Vec<String> = app
+        .nodes
+        .iter()
+        .filter(|(_, node)| node.as_unloaded().is_some_and(|tab| matches!(tab.state, UnloadedState::Failed(_))))
+        .map(|(id, _)| id.clone())
+        .collect();
+    ids.sort();
+    ids
+}
+
+/// The same intent failing again (same url, engine, group) refreshes the one card instead of adding another; a
+/// different url is a different intent.
+#[test]
+fn a_repeat_failure_refreshes_one_card_and_a_new_url_adds_one() {
+    let mut app = app_on(&temp_dir("failed-twin").join("session.mnf"), 1);
+    app.spawn_tab_at("https://a/", egui::Vec2::ZERO, None, None);
+    fail_spawns(&mut app);
+    assert_eq!(failed_cards(&app).len(), 1);
+    app.spawn_tab_at("https://a/", egui::Vec2::ZERO, None, None);
+    fail_spawns(&mut app);
+    assert_eq!(failed_cards(&app).len(), 1, "the same intent is one card");
+    assert!(app.save_session());
+    let doc = app.journal.as_ref().unwrap().doc();
+    assert_eq!(doc.live().count(), 1, "and one document node");
+    app.spawn_tab_at("https://b/", egui::Vec2::ZERO, None, None);
+    fail_spawns(&mut app);
+    assert_eq!(failed_cards(&app).len(), 2, "another url is another intent");
+}
+
+/// A group is part of the intent: the same url failing in two groups is two cards.
+#[test]
+fn a_failed_twin_in_another_group_is_not_a_twin() {
+    let mut app = app_on(&temp_dir("failed-twin-group").join("session.mnf"), 1);
+    let group = add_group(&mut app, "G");
+    app.spawn_tab_at("https://a/", egui::Vec2::ZERO, None, None);
+    fail_spawns(&mut app);
+    app.spawn_tab_at("https://a/", egui::Vec2::ZERO, Some(group), None);
+    fail_spawns(&mut app);
+    assert_eq!(failed_cards(&app).len(), 2);
+}
+
+/// A tab that lands clears the failed cards for its url, and only those.
+#[test]
+fn a_successful_spawn_clears_failed_cards_for_its_url() {
+    let mut app = app_on(&temp_dir("failed-cleared").join("session.mnf"), 1);
+    app.spawn_tab_at("https://a/", egui::Vec2::ZERO, None, None);
+    app.spawn_tab_at("https://b/", egui::Vec2::ZERO, None, None);
+    fail_spawns(&mut app);
+    assert_eq!(failed_cards(&app).len(), 2);
+    let landed = succeed_spawn(&mut app, "https://a/");
+    let left = failed_cards(&app);
+    assert_eq!(left.len(), 1, "a/'s failed card is gone, b/'s stays");
+    assert!(app.nodes[&left[0]].as_unloaded().unwrap().url == "https://b/");
+    assert!(app.nodes.contains_key(&landed));
+    assert!(app.closed.is_empty(), "a clear is not a close: nothing goes to Recently Closed");
+}
+
 fn json_node(id: &str, kind: Kind, fields: serde_json::Value) -> crate::store::json::JsonNode {
     let serde_json::Value::Object(mut fields) = fields else { panic!("fields are an object") };
     fields.insert("type".into(), kind.type_str().expect("a known kind").into());

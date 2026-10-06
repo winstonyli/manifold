@@ -401,6 +401,7 @@ impl App {
         match result {
             Ok(mut tab) => {
                 self.note_spawned_jar(&id, jar, seeded, seed_clears);
+                self.clear_failed_cards(&url, &id);
                 let is_focused = match purpose {
                     SpawnPurpose::Root => true,
                     SpawnPurpose::New | SpawnPurpose::Split => false,
@@ -570,6 +571,19 @@ impl App {
                         _ => format!("Couldn't start {} for {}: {err}", engine_label(kind), Self::toast_url(&url)),
                     };
                     self.queue_toast(toast);
+                    // The same intent failing again refreshes the card already standing for it.
+                    if matches!(purpose, SpawnPurpose::Root | SpawnPurpose::New) {
+                        if let Some(twin) = self.failed_twin(&id, &url, kind, group.as_deref()) {
+                            if let Some(Runtime::Unloaded(tab)) =
+                                self.nodes.get_mut(&twin).map(|node| &mut node.runtime)
+                            {
+                                tab.state = UnloadedState::Failed(err.to_string());
+                            }
+                            self.queue_delete(&id);
+                            self.save_session();
+                            return;
+                        }
+                    }
                     let state = UnloadedState::Failed(err.to_string());
                     let failed = UnloadedTabPayload { url: url.clone(), title, muted, zoom_factor, state };
                     let runtime = Runtime::Unloaded(failed);
@@ -601,6 +615,39 @@ impl App {
                 self.queue_delete(&id);
                 self.save_session();
             }
+        }
+    }
+
+    /// A failed card already standing for the intent `(url, kind, group)`, other than `id`: a repeat failure refreshes
+    /// it instead of adding a second card.
+    fn failed_twin(&self, id: &str, url: &str, kind: EngineKind, group: Option<&str>) -> Option<String> {
+        self.nodes.iter().find_map(|(other, node)| {
+            let tab = node.as_unloaded()?;
+            let same = other != id
+                && matches!(tab.state, UnloadedState::Failed(_))
+                && tab.url == url
+                && self.mirror.engine(other) == kind
+                && self.mirror.group(other) == group;
+            same.then(|| other.clone())
+        })
+    }
+
+    /// A tab for `url` landed: failed cards for the same url, other than `except`, are resolved. Removed like a
+    /// delete that is not a close, so Recently Closed does not collect them. Another url's card stays.
+    fn clear_failed_cards(&mut self, url: &str, except: &str) {
+        let stale: Vec<String> = self
+            .nodes
+            .iter()
+            .filter(|(id, node)| {
+                id.as_str() != except
+                    && node
+                        .as_unloaded()
+                        .is_some_and(|tab| matches!(tab.state, UnloadedState::Failed(_)) && tab.url == url)
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in stale {
+            self.destroy_node(&id);
         }
     }
 
