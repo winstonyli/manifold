@@ -1917,6 +1917,26 @@ fn a_successful_spawn_clears_failed_cards_for_its_url() {
     assert_eq!(app.closed.len(), 1, "the cleared card is recorded in Recently Closed first, so it can come back");
 }
 
+/// The recorded entry is restorable: reopening it brings the cleared card back as a sleeping tab at its url.
+#[test]
+fn a_cleared_failed_card_reopens_from_recently_closed() {
+    let mut app = app_on(&temp_dir("failed-cleared-reopen").join("session.mnf"), 1);
+    app.spawn_tab_at("https://a/", egui::Vec2::ZERO, None, None);
+    fail_spawns(&mut app);
+    let card = failed_cards(&app).remove(0);
+    let landed = succeed_spawn(&mut app, "https://a/");
+    assert!(!app.nodes.contains_key(&card), "the card is cleared");
+    let entry = app.closed.pop().expect("the cleared card was recorded");
+    app.reopen_closed(entry);
+    let back: Vec<&String> = app
+        .nodes
+        .iter()
+        .filter(|(id, n)| *id != &landed && n.as_unloaded().is_some_and(|t| t.url == "https://a/"))
+        .map(|(id, _)| id)
+        .collect();
+    assert_eq!(back.len(), 1, "one sleeping card for a/ is back beside the landed tab");
+}
+
 /// The group is part of the intent: a failed card for the same url in another group stays when a tab lands.
 #[test]
 fn a_successful_spawn_leaves_a_same_url_failed_card_in_another_group() {
