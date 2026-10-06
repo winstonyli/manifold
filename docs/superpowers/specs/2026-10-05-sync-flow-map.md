@@ -104,8 +104,9 @@ Node creation funnels: `place_node` (fetched.rs ~65; groups, notes, content, dow
 
 - **A card's identity is its type.** `App::card_kind(id)` (`card_kind.rs`) returns `CardKind { ty, tags }`: `ty` is
   `Mirror::ty` canonicalised through `Kind::from_type(..).type_str()`, and `Tag::Loaded` is set when the runtime is a live
-  tab. Every per-kind decision (draw layer, restorable, containment, drops) reads `caps(type)` and the edge table from it;
-  nothing matches an enum. `Tag::Loaded` is produced there and matched by the tab/unloaded rows (a loaded tab wins by rank).
+  tab. Draw order, restorability and containment read `caps(type)` and the edge table from it. Not every decision does:
+  click action, the Del verb, card style, the body painter, menus and parts of `drop_action` still `match` on the type
+  constant (`TYPE_*`), and card size and filter text match on `Runtime`. No enum of kinds remains. `Tag::Loaded` is produced there and matched by the tab/unloaded rows (a loaded tab wins by rank).
 - **Live data is a side table.** `App::nodes: HashMap<String, GraphNode>` stays "shown in the graph"; `GraphNode.runtime` is
   `enum Runtime { Tab, Unloaded, Download, Note, Image, Pdf, Json, None }` (`node.rs`) holding only what the mirror cannot
   (webview, edit buffer, decoded image, ...). A group has `Runtime::None`; the as_x accessors keep their names. The document
@@ -115,5 +116,5 @@ Node creation funnels: `place_node` (fetched.rs ~65; groups, notes, content, dow
 - **One-pass level scan.** `App::level_scan()` (`level.rs`) walks `node_order` once, keeps the nodes in the current level and
   buckets them by `Caps::draw_layer` (`LevelScan::layers`, plus `groups` for containers); `build_graph_ui` draws layer by
   layer. It replaced eight per-kind scans (`nodes_at_current_level(kind)`).
-- **EXPORTSTATE** `cards[]` carries `type`, `loaded` and `json_card` instead of `kind`; `scripts/export_state.py` maps them
-  back to the names the probes use.
+- **EXPORTSTATE** `cards[]` carries `type`, `loaded` and `json_card` instead of `kind`; `scripts/export_state.py` offers
+  `card_is(card, TYPE, loaded)` and a `type[;loaded]` label (`json-card` for a JSON level's card) to the probes.

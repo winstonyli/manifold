@@ -75,7 +75,7 @@ impl Pattern {
 /// A runtime fact about a node that refines which rows apply (spec "Tags"). Not stored.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum Tag {
-    /// A tab with a running engine.
+    /// A tab with a running engine (`App::card_kind` produces it; the `TYPE_TAB` row that requires it reads it).
     Loaded,
     /// A note with no text.
     Blank,

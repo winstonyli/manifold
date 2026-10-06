@@ -873,7 +873,7 @@ pub(crate) fn card_filter_text<'a>(payload: &'a Runtime, text: &'a str) -> Vec<&
         Runtime::Image(image) => vec![download_filename(&image.path)],
         Runtime::Pdf(pdf) => vec![download_filename(&pdf.path)],
         Runtime::Json(json) => vec![download_filename(&json.path)],
-        // A group (no runtime) matches on its name, `text`.
+        // A group is the one kind with no runtime (2b-6 Ruling 8: no unknown-type card yet); it matches on its name, `text`.
         Runtime::None => vec![text],
     }
 }

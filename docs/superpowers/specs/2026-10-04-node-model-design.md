@@ -304,11 +304,10 @@ Known consequences of 2a:
 
 Carry-overs for plan 2:
 
-- Sites still hard-coding the container rule, to move onto the edge table: `card.rs` `card_view` members collection
-  (~929), `graph_ui.rs` EnterGroup on activate (~1646) and the "Enter" hint (~713), `main.rs` `destroy_node` Group arm
-  (~2620), `session_sync.rs` groups-before-members load order (~796, ~1105, ~1543-1549), `del_verb` (`card.rs` ~521).
-- `Tag::Loaded` is attached by `bridge::item_node` but no row reads it yet; fine until plan 3 reads it, otherwise drop
-  it.
+- Container-rule sites: 2b-6 moved them onto `is_container` (`card.rs` members collection and `del_verb`, `graph_ui.rs`
+  EnterGroup and the "Enter" hint, `App::is_container`); `card_style`, `paint_card_body` and `node_menu_config` still
+  match the literal `TYPE_GROUP`, parked (2b-6 plan Outcome).
+- `Tag::Loaded` is produced by `App::card_kind` (`card_kind.rs`) and read by the `TYPE_TAB` + `Loaded` row (`caps/rows.rs`).
 - The `contains` source list names `application/octet-stream` exactly; with sniffed file types (`video/mp4`,
   `text/plain`) it must widen to `*/*` minus jar and link.
 - `Pattern::parse` accepts nonsense (`*/json`, `*/*+`) and `matches` is false for a slash-less mime against any

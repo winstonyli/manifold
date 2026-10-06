@@ -233,8 +233,8 @@ pub enum DebugCommand {
     /// `application/vnd.manifold.tab` or `text/markdown`; `store::model`'s
     /// `TYPE_*`), `loaded` (true for a tab with a running engine only),
     /// `json_card` (true for a JSON level's card, which is no stored node:
-    /// it has `type` `application/json` and only `screen` and `rect`
-    /// besides), `group`, `parent`, `color` (whether it has a tag color),
+    /// its keys are only `id`, `type` (`application/json`), `loaded` (false),
+    /// `json_card`, `screen` and `rect`), `group`, `parent`, `color` (whether it has a tag color),
     /// `pinned`, `editing` (a note being edited), `screen` (its center) and
     /// `rect` (`[left, top, right, bottom]`), in points, which are pixels
     /// headless. `scripts/export_state.py` reads these for the probe

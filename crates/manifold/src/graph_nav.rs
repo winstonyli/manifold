@@ -213,7 +213,8 @@ impl App {
             let Some(node) = self.nodes.get(&id) else { break };
             // A JSON level's crumb is its Json node, named by its file.
             let name = match &node.runtime {
-                // name rule: drawn by display_name in toolbar_breadcrumb. A group is the one kind with no runtime.
+                // A group is the one kind with no runtime (2b-6 Ruling 8: no unknown-type card yet).
+                // name rule: drawn by display_name in toolbar_breadcrumb.
                 Runtime::None => self.mirror.name(&id).to_owned(),
                 Runtime::Json(json) => download_filename(&json.path).to_string(),
                 _ => String::new(),
@@ -508,8 +509,8 @@ mod tests {
     use crate::store::model::Kind;
 
     /// 2000 nodes of every kind: every third at the top level, the rest spread over eight groups. Each node's kind
-    /// cycles through the constructible payloads; every 40th is a live tab (`EngineTab::fake`, whose peers are kept
-    /// so the sockets stay open).
+    /// cycles through the constructible payloads; every 280th (8 of 2000) is a live tab (`EngineTab::fake`, whose
+    /// peers are kept so the sockets stay open).
     fn level_fixture() -> (App, Vec<ipc_protocol::MessageChannel<std::net::TcpStream>>) {
         use crate::node::{
             DownloadPayload, ImagePayload, JsonPayload, NotePayload, PdfPayload, TabPayload, UnloadedState,
@@ -586,8 +587,8 @@ mod tests {
     /// `cargo test -p manifold --bins level_pass_cost -- --ignored --nocapture`. Three variants over the same 2000
     /// nodes: the enum pass Graph view had before 2b-6 (eight passes, each matching the payload against one kind),
     /// the eight `card_kind`-filtered passes plus the group pass Task 2 left, and the single bucketed pass
-    /// (`level_scan`). Release-build numbers will be recorded in the 2b-6 plan's Outcome
-    /// (`docs/superpowers/plans/2026-10-06-node-model-2b-6-enums-to-type.md`) at its Task 6.
+    /// (`level_scan`). Release-build numbers are recorded in the 2b-6 plan's Outcome
+    /// (`docs/superpowers/plans/2026-10-06-node-model-2b-6-enums-to-type.md`).
     #[test]
     #[ignore]
     fn level_pass_cost() {

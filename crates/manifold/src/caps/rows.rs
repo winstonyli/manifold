@@ -91,7 +91,7 @@ impl Registry {
 }
 
 /// What today's `worth_reopening` decided per kind: only a completed download, a jar, a blank note and an unknown kind
-/// are not recorded when closed.
+/// are not recorded when closed. Also the draw layer of each type (`draw_layer`).
 pub(crate) fn builtin_rows() -> Vec<Row> {
     use crate::store::model::{TYPE_DOWNLOAD, TYPE_GROUP, TYPE_JSON_LEAF, TYPE_NOTE, TYPE_TAB};
     vec![

@@ -863,7 +863,7 @@ impl App {
     /// which the caller draws through a name rule or matches as stored. "" for other kinds.
     pub(crate) fn own_text(&self, id: &str) -> &str {
         match self.nodes.get(id).map(|n| &n.runtime) {
-            // A group is the one kind with no runtime.
+            // A group is the one kind with no runtime (2b-6 Ruling 8: no unknown-type card yet).
             // name rule: raw, for `accessible_name` (display_name) and the filter (matches the stored text)
             Some(Runtime::None) => self.mirror.name(id),
             _ => self.note_text(id),

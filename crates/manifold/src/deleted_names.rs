@@ -7,7 +7,16 @@ use std::path::Path;
 #[test]
 fn no_source_names_a_deleted_enum() {
     let mut offenders = Vec::new();
-    let needles = ["NodePayload", "ItemNodeKind", "item_node_kind", "GRAPH_DRAW_ORDER", "GroupPayload", "caps::bridge"];
+    let needles = [
+        "NodePayload",
+        "ItemNodeKind",
+        "item_node_kind",
+        "GRAPH_DRAW_ORDER",
+        "GroupPayload",
+        "caps::bridge",
+        "mod bridge",
+        "as_group(",
+    ];
     scan(&Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &needles, &mut offenders);
     assert_eq!(offenders, Vec::<String>::new(), "read the type through App::card_kind and Caps, see plan 2b-6");
 }
@@ -17,11 +26,11 @@ fn scan(dir: &Path, needles: &[&str], offenders: &mut Vec<String>) {
         let path = entry.unwrap().path();
         if path.is_dir() {
             scan(&path, needles, offenders);
-        } else if path.extension().is_some_and(|ext| ext == "rs")
-            && !path.ends_with("deleted_names.rs")
-            && needles.iter().any(|needle| std::fs::read_to_string(&path).unwrap().contains(needle))
-        {
-            offenders.push(path.display().to_string());
+        } else if path.extension().is_some_and(|ext| ext == "rs") && !path.ends_with("deleted_names.rs") {
+            let text = std::fs::read_to_string(&path).unwrap();
+            if needles.iter().any(|needle| text.contains(needle)) {
+                offenders.push(path.display().to_string());
+            }
         }
     }
 }

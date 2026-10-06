@@ -203,12 +203,12 @@ Recorded so a new session does not re-derive them (also in the spec, "Deferred f
 
 ## Outcome (2026-10-06)
 
-Done on `dev`: b115bd1 (Task 1: `CardKind { ty, tags }`, `card_kind`, `Caps.draw_layer`, a tenth row for TYPE_DOWNLOAD),
+Done on `dev`: b115bd1 (Task 1: `CardKind { ty, tags }`, `card_kind`, `Caps.draw_layer`, two rows: `TYPE_TAB` requiring `Loaded` and `TYPE_DOWNLOAD`, 11 rows in all),
 7c4c4f8 (Task 2: cards read their type; the caps bridge is gone), 747015d (Task 3: `ItemNodeKind` and `GRAPH_DRAW_ORDER`
 gone, the level is scanned in one pass, `Registry::caps` allocation-free), 326f73f and 438b7eb (Task 4: `NodePayload` is
 `Runtime`, `payload` is `runtime`; groups have no runtime and the type travels explicitly), 78bff97 (Task 5: EXPORTSTATE
 `cards[]` names a card by `type`, `loaded`, `json_card`; scripts follow); plus the Task 6 commit (this Outcome, the docs, the
-guard `crates/manifold/src/deleted_names.rs`). Plan commits: e82a6fb, 6ede40d. Tests: 879 at Task 5.
+guard `crates/manifold/src/deleted_names.rs`). Plan commits: e82a6fb, 6ede40d. Tests: 880 after Task 6.
 
 Gate results: filled by the controller after the final gate.
 
@@ -226,6 +226,12 @@ under the same code (the old scan read 426 and 532 µs), so read them as ratios.
 
 ### Rulings made during execution and deviations
 
+- **Ruling 5 deviation: menu, verb and style decisions stayed `ty` matches.** Rows for them were not added: click action,
+  the Del verb (`del_verb` beyond the container test), card style, the body painter, `node_menu_config` and parts of
+  `drop_action` still `match` on `TYPE_*` constants, and card size and filter text match on `Runtime`. Only draw order,
+  restorability and containment come from `caps/` and the edge table. Rows for the rest are deferred. Parked with it:
+  some sites use `is_container(ty)` and others match the literal `TYPE_GROUP` (`card_style`, `paint_card_body`,
+  `node_menu_config`).
 - **Ruling 12 deviation: `LevelItemKind` is not a guard needle.** Task 3 keeps it as a live type (`LevelItemKind::Node(CardKind)`
   and `JsonCard`, `level.rs`) and the plan only retires its inner kind; banning the name would delete working code. The guard
   bans the other six needles and `LevelItemKind` is documented in the guard's doc comment.
@@ -259,5 +265,10 @@ under the same code (the old scan read 426 and 532 µs), so read them as ratios.
   says `json_card` has only screen/rect besides (it also has `type` and `loaded`).
 - Task 5: `scripts/json-level-probe.txt` does not enter the JSON level on this machine (pre-existing); a follow-up could seed
   `has_shown_first_launch_demo` or poll two exports before computing the double-click.
+- Nothing asserts that `card_kind`'s type and the `Runtime` variant agree; a `debug_assert` or a `check_graph_matches_document`
+  check would. The reload paths keep them consistent today.
+- Task 4/5 minors above (stale `payload` names, the circular seeding test, smoke-check wording) are parked as listed.
+- Two same-named test helpers of different types: `card_kind::sleeping_tab()` (a `CardKind`) and
+  `session_sync::tests::sleeping_tab(url, title)` (a `Runtime`, 113 call sites); rename if it ever confuses.
 - Deferred directions (spec "Deferred from 2b-6"): `Kind` to type strings (D2), `ContentKind` to the views registry (D),
   `Runtime` per-family maps or a plugin slot (D2), raw TYPE (D), the unknown-type card and JsonLeaf retirement.
