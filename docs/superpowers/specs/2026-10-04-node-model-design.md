@@ -258,9 +258,12 @@ leaves the app working:
      2b-3 done: aa95040 and b51f345 (url), 02810e6 (jar, jar_set), f1626b8 and 637d7c0 (engine), 58835f1 (final
      review: parked remote changes replay at landing, a mid-spawn jar delete reaches the tab). url (the shared url; the payload
      keeps the live url, which Recently Closed records), engine, jar and jar_set live in the mirror; `explicit` keeps only POS.
-     Next: 2b-4 (name, text, view, pos: the document `pos` goes in the
-     mirror, the layout `pos`/`vel` become a runtime side-table); 2b-5 (content kinds, then delete `diff`, `explicit`,
-     `keep`, the enums and the caps bridge, rewrite fixtures, add the grep guard).
+     2b-4 done: a9c0149 and 3b0cdc8 (pos), 51edf26 and 35138e4 (text), ceefbe2 (view, name). pos (document pos in the
+     mirror; layout pos/vel in `App::layout`), text, view and name live in the mirror; `explicit` has no users (`mark`
+     is dead code). A note's text is held while it is typed in and resolved at blur; a group's name and a Json node's
+     view are no longer on the payload (`GroupPayload::name`, `JsonPayload::view` deleted). Jar names stay diffed.
+     Next: 2b-5 (content kinds, then delete `diff`, `explicit`, `keep`, the enums and the caps bridge, rewrite
+     fixtures, add the grep guard).
 3. **Plan 3, generic verbs and history.** Selection, pin, rename, duplicate and connect over any node (edit the rows);
    the `closed` field (`is_live`, `Doc::shown`, the closed-aware `effective_group`, compaction and pruning keep closed
    nodes, content-file ownership and local per-node state keep closed ids); transaction history replacing

@@ -195,3 +195,58 @@ landing), `closed.rs`, tests.
   document pos changes remotely is not snapped; the release then wins.
 - **Unverified at writing:** `FieldValue::Pos` details and the exact `placement` seeding path; whether the headless debug
   commands can drive a rename or text edit (Task 4 Step 3 checks).
+
+## Outcome (2026-10-05)
+
+Done on `dev`: a9c0149, 3b0cdc8 (pos; the second clears a stale drag); 51edf26, 35138e4 (text; the second adds the
+held-text test); ceefbe2 (view, name); plus this docs commit. 843 tests pass (4 ignored) plus 43 in ipc-protocol (note:
+`cargo test -p manifold --bins -p ipc-protocol` runs no ipc-protocol tests, since `--bins` skips its lib; run it
+separately); fmt and clippy clean. `two-instance-test.sh` scenarios 1-10 and `headless-smoke-test.sh` (48 checks)
+passed at 85-100% CPU from other sessions' jobs, Defender real-time protection off.
+
+### Rulings made
+
+- **Task 2 deviated from Ruling 7: a held remote text is resolved against "unchanged since the last commit", not "since
+  focus".** Every save commits any note whose box differs from the mirror (`commit_note_buffers`), so a remote text
+  that arrives after a local commit is held while the note is typed in and applies at blur, unless the user typed or
+  committed more (`end_note_edit`: buffer equal to the mirror and no TEXT pending). A commit carrying a pending TEXT
+  drops a held value older than it. Read literally, "since focus" would leave the mirror showing the local text while
+  the document held the remote one. Cost: a user who typed, got saved, then stopped typing sees a later-arriving remote
+  text replace theirs at blur.
+- **`is_typed_in` is the `NotePayload::editing` flag, not egui focus** (Task 2 review M1, accepted). A restored note
+  whose personal state says `editing`, or a new note that never gets focus, holds remote text with no time limit, until
+  its box blurs or `end_note_edits` runs.
+- **The note payload stays a full copy of the text** (Task 2), because the 538 test must pass unchanged: a 1 MB note is
+  held twice, and a commit of a large note copies it a few times.
+- **Task 3 deleted `GroupPayload::name` and `JsonPayload::view`:** the mirror is the only copy. A new group is placed with
+  `App::place_group(id, name, at)`.
+- **A reload's view prune is now a pending local edit** (Task 3 review M1, accepted): a remote view edit arriving before
+  the next save loses to it (last writer wins per field, as 2b-3 Ruling 3).
+- **Task 1's review fix** (3b0cdc8) ended a drag whose grabbed card left the level or whose Graph view was left
+  (`live_drag`, `end_stale_drag`), so a stale release can't overwrite a remote pos.
+- **Task 4 Step 3 skipped** (`EXPORTSTATE` name/text/pos and two-instance scenarios 11-12). The debug commands can't
+  drive either edit headlessly without new commands. A rename (`RENAMEGROUP`, then `EGUITEXT`, `ENTER`) renames only
+  the *current* group, and no command enters a group by id: `GRAPHOPEN` opens the focused card, and focus order among
+  the earlier scenarios' cards isn't predictable. A new note starts `editing` but its `TextEdit` never requests focus,
+  so `EGUITEXT` types nowhere until a `CLICK` at a screen point computed from `EXPORTSTATE`'s `rect`, and the blur
+  needs another click on empty canvas. A follow-up would add by-id commands (enter a group; focus, type into and blur
+  a note) and then the scenarios.
+
+### Parked (not fixed)
+
+- A node in neither `nodes` nor `spawning` at a successful save loses its `App::layout` entry. None was found, but such
+  a node reinserted later lands at its document pos, not where it was shown.
+- A remote pos for a card in `drag_moved` is ignored until release, while the drag is live; a drag that stopped being
+  live is cleared by `end_stale_drag`. Neither is covered by the two-instance test.
+- `wake_tab` and `TabSpawn::respawn` compute a pos nobody uses: the layout entry persists.
+- Restore edge: a node whose stored fields include no MIRRORED field gets its personal pos seeded into the mirror as its
+  document pos (the same edge as colour).
+- The card.rs drag body has no unit test (`release_drag` is tested).
+- VIEW is no longer canonicalized at Create: the mirror's raw string is written, not re-encoded through `JsonView`.
+- `App::own_text` returns a group's raw name. A caller that draws it must apply a name rule; the names.rs guard sees
+  only the one mark inside `own_text`.
+- `place_group` and `place_node` decide "fresh" differently: `place_group` checks `mirror.has` (any field or link
+  entry), and `place_node` seeds through `Mirror::init` (no field entry).
+- No two-instance scenario covers a rename, a text edit or a view edit (Step 3 above).
+- 2b-3's parked items still stand.
+- The commit trailers of Tasks 1-3 and their fixes say "Claude Opus 5.5", not Sonnet 5.5: the implementers were Opus.
