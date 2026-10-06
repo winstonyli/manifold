@@ -1914,7 +1914,7 @@ fn a_successful_spawn_clears_failed_cards_for_its_url() {
     assert_eq!(left.len(), 1, "a/'s failed card is gone, b/'s stays");
     assert!(app.nodes[&left[0]].as_unloaded().unwrap().url == "https://b/");
     assert!(app.nodes.contains_key(&landed));
-    assert!(app.closed.is_empty(), "a clear is not a close: nothing goes to Recently Closed");
+    assert_eq!(app.closed.len(), 1, "the cleared card is recorded in Recently Closed first, so it can come back");
 }
 
 /// The group is part of the intent: a failed card for the same url in another group stays when a tab lands.

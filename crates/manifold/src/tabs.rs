@@ -640,8 +640,8 @@ impl App {
     }
 
     /// A tab for `url` landed (`landed`): failed cards for the same url in the landing tab's group (any engine),
-    /// other than `landed`, are resolved. Removed like a delete that is not a close, so Recently Closed does not
-    /// collect them, and without a save: the landing's own save commits the delete, after the parked remote changes
+    /// other than `landed`, are resolved. Each is recorded in Recently Closed first (it may be an arranged
+    /// tab's card), then removed without a save: the landing's own save commits the delete, after the parked remote changes
     /// land. Another url's card, or the same url's card in another group, stays.
     fn clear_failed_cards(&mut self, url: &str, landed: &str) {
         let group = self.mirror.group(landed);
@@ -658,6 +658,7 @@ impl App {
             .map(|(id, _)| id.clone())
             .collect();
         for id in stale {
+            self.record_closed(&id);
             self.remove_tab(&id);
         }
     }
