@@ -99,7 +99,8 @@ impl Mirror {
     }
 
     /// Makes `id` a jar this replica knows (`jar_defs`), its definition read from the fields already held, and seeds
-    /// its type. A jar already known stays as it is. A jar is never a graph node: it has no links or layout.
+    /// its type. A jar already known stays as it is. A jar is never a graph node: it has no layout, and its links
+    /// entry (from `App::mirror_remote`) is empty, no parent and no group; `forget_jar` drops it with the rest.
     pub(crate) fn add_jar(&mut self, id: NodeId) {
         if self.jars.contains_key(&id) {
             return;

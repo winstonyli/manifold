@@ -1815,6 +1815,68 @@ fn a_remote_ephemeral_change_deletes_and_saves_the_jar_file() {
     assert!(app.pending.is_empty());
 }
 
+/// A local ephemeral toggle not saved yet wins over another device's, and the remote value runs no file side effect:
+/// here the remote "on" must not delete the file the local "off" just saved.
+#[test]
+fn a_remote_ephemeral_toggle_under_a_pending_local_one_touches_no_file() {
+    let dir = temp_dir("jar-ephemeral-pending");
+    let (path, jars) = (dir.join("session.mnf"), dir.join("jars"));
+    std::fs::create_dir(&jars).unwrap();
+    let mut app = App { jars_dir_override: Some(jars.clone()), ..app_on(&path, 1) };
+    add(&mut app, sleeping_tab("https://a.com/", "A"));
+    let jar = app.create_jar("Work");
+    app.set_jar_ephemeral(jar, true);
+    assert!(app.save_session());
+    let file = crate::jar::Jar::path(&jars, crate::jar::JarKey::Named(jar));
+    app.set_jar_ephemeral(jar, false);
+    assert!(file.exists(), "the local off saved the file");
+    let mut other = Journal::open(&path, ActorId(2)).unwrap();
+    remote_set(&mut other, &jar.to_string(), field::EPHEMERAL, FieldValue::Bool(true));
+    assert!(app.save_session());
+    assert!(file.exists(), "the held remote on deleted nothing");
+    assert!(!app.mirror.jar_defs()[&jar].ephemeral);
+    assert_eq!(stored(&app, &jar.to_string(), field::EPHEMERAL), FieldValue::Bool(false), "the local value is saved");
+}
+
+/// A jar first seen already ephemeral (created on another device, or restored) deletes a leftover file of it, as a
+/// toggle on would, and queues nothing.
+#[test]
+fn a_jar_first_seen_ephemeral_deletes_its_leftover_file_and_queues_nothing() {
+    let dir = temp_dir("jar-ephemeral-first");
+    let (path, jars) = (dir.join("session.mnf"), dir.join("jars"));
+    std::fs::create_dir(&jars).unwrap();
+    let leftover = |jar| {
+        let file = crate::jar::Jar::path(&jars, crate::jar::JarKey::Named(jar));
+        std::fs::write(&file, r#"{"cookies":[]}"#).unwrap();
+        file
+    };
+    // Created on another device.
+    let mut app = App { jars_dir_override: Some(jars.clone()), ..app_on(&path, 1) };
+    let remote = NodeId { actor: ActorId(2), counter: 7 };
+    let file = leftover(remote);
+    let fields = Fields::from([
+        (field::COLOR, color_value(None)),
+        (field::NAME, FieldValue::Str("Theirs".into())),
+        (field::EPHEMERAL, FieldValue::Bool(true)),
+    ]);
+    app.apply_remote(vec![(remote, Some((Kind::Jar, fields, None)))]);
+    assert!(app.mirror.jar_defs()[&remote].ephemeral);
+    assert!(!file.exists(), "remote-created: the leftover file goes");
+    assert!(app.pending.is_empty(), "remote-created: nothing queued");
+    // Restored at startup.
+    add(&mut app, sleeping_tab("https://a.com/", "A"));
+    let jar = app.create_jar("Work");
+    app.set_jar_ephemeral(jar, true);
+    assert!(app.save_session());
+    drop(app);
+    let file = leftover(jar);
+    let mut back = App { jars_dir_override: Some(jars.clone()), ..app_on(&path, 3) };
+    assert!(back.restore_session());
+    assert!(back.mirror.jar_defs()[&jar].ephemeral);
+    assert!(!file.exists(), "restored: the leftover file goes");
+    assert!(!back.pending.keys().any(|(node, _)| *node == jar), "restored: nothing queued for it");
+}
+
 /// Final review I2b: a jar deleted on another device while this one was not running never reaches `forget_jar`
 /// here, so startup deletes the files of named jars the document no longer has, unless it may not know them all.
 #[test]

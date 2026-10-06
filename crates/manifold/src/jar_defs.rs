@@ -458,12 +458,12 @@ impl App {
         self.sweep_jar_switches();
     }
 
-    /// Drops jar `id` (a local or remote delete): its mirror entry and definition (`Mirror::forget_jar`), its
-    /// cookies and its files, unreadable copies and
-    /// crashed saves' temp files included (`Jar::delete_files`). A tab still running on it has its pulls dropped
-    /// (`apply_pulled_cookies`) and now resolves to the default jar, so it switches: the caller sweeps (`delete_jar`,
-    /// or `apply_remote` once the whole remote batch is in). Its `last_shared` entry stays: after a local delete it
-    /// is what keeps a remote edit from recreating the jar before the save (`materialize_jar`).
+    /// Drops jar `id` (a local or remote delete): its mirror entry and definition (`Mirror::forget_jar`), its cookies
+    /// and its files, unreadable copies and crashed saves' temp files included (`Jar::delete_files`). A tab still
+    /// running on it has its pulls dropped (`apply_pulled_cookies`) and now resolves to the default jar, so it
+    /// switches: the caller sweeps (`delete_jar`, or `apply_remote` once the whole remote batch is in). Its
+    /// `last_shared` entry stays: after a local delete it is what keeps a remote edit from recreating the jar before
+    /// the save (`materialize_jar`).
     pub(crate) fn forget_jar(&mut self, id: NodeId) {
         self.mirror.forget_jar(id);
         let key = JarKey::Named(id);
