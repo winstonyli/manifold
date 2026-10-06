@@ -4700,3 +4700,18 @@ fn a_created_note_shows_the_parent_its_create_resolved() {
     assert_eq!(stored(&app, &note, field::PARENT), FieldValue::Id(None));
     assert_eq!(app.mirror.parent(&note), None, "the mirror shows what the document holds");
 }
+
+/// Spawn failures that share a cause reach the toast queue as one message once the window has passed.
+#[test]
+fn spawn_failures_of_one_cause_toast_once_with_a_count() {
+    let mut app = app_on(&temp_dir("failure-toasts").join("session.mnf"), 1);
+    for i in 0..3 {
+        app.spawn_tab_at(&format!("https://t{i}/"), egui::Vec2::ZERO, None, None);
+    }
+    fail_spawns(&mut app);
+    assert!(app.save_toast_queue.is_empty(), "held inside the window");
+    for message in app.failure_notices.flush(std::time::Instant::now() + crate::failure_toasts::WINDOW) {
+        app.queue_toast(message);
+    }
+    assert_eq!(app.save_toast_queue.iter().collect::<Vec<_>>(), ["3 tabs couldn't start: no engine"]);
+}

@@ -15,6 +15,7 @@ mod deleted_names;
 mod engine_info;
 mod engine_install;
 mod event_loop;
+mod failure_toasts;
 mod favicon_fetch;
 mod fetched;
 mod gpu;
@@ -1325,6 +1326,8 @@ struct App {
     /// `SAVE_TOAST_DURATION` elapses. Pushed to by `queue_toast` (and
     /// directly by `DownloadCompleted`, for borrow reasons).
     save_toast_queue: std::collections::VecDeque<String>,
+    /// Spawn-failure toasts held to merge by cause (`failure_toasts`).
+    failure_notices: failure_toasts::FailureNotices,
     /// Admits or drops page-opened tabs (`EngineToHost::OpenTabRequested`)
     /// per source tab: a user gesture and a rate budget.
     popup_gate: popup_gate::PopupGate,
@@ -1619,6 +1622,7 @@ impl Default for App {
             context_menu_cache: None,
             save_toast: None,
             save_toast_queue: std::collections::VecDeque::new(),
+            failure_notices: Default::default(),
             popup_gate: popup_gate::PopupGate::default(),
             tab_crashes: HashMap::new(),
             last_session_save: None,
@@ -2725,6 +2729,11 @@ impl App {
         self.save_toast_queue.push_back(message);
     }
 
+    /// A spawn-failure toast: held a moment so failures sharing `cause` read as one message (`failure_toasts`).
+    pub(crate) fn queue_failure_toast(&mut self, cause: &str, message: String) {
+        self.failure_notices.push(std::time::Instant::now(), cause, message);
+    }
+
     /// `url` short enough for a toast: its first `TOAST_URL_CHARS` characters and an ellipsis. A toast sizes to its
     /// text, and a `data:` URL can be megabytes.
     fn toast_url(url: &str) -> String {
@@ -2738,6 +2747,12 @@ impl App {
     fn build_save_toast(&mut self, ui: &mut egui::Ui) {
         const TOAST_FADE_IN: std::time::Duration = std::time::Duration::from_millis(150);
         const TOAST_FADE_OUT: std::time::Duration = std::time::Duration::from_millis(400);
+        for message in self.failure_notices.flush(std::time::Instant::now()) {
+            self.queue_toast(message);
+        }
+        if self.failure_notices.is_pending() {
+            ui.ctx().request_repaint_after(failure_toasts::WINDOW);
+        }
         if self.save_toast.is_none() {
             self.save_toast = self.save_toast_queue.pop_front().map(|message| (message, std::time::Instant::now()));
         }

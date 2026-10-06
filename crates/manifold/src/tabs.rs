@@ -574,7 +574,7 @@ impl App {
                         }
                         _ => format!("Couldn't start {} for {}: {err}", engine_label(kind), Self::toast_url(&url)),
                     };
-                    self.queue_toast(toast);
+                    self.queue_failure_toast(&err.to_string(), toast);
                     // The same intent failing again refreshes the card already standing for it.
                     if matches!(purpose, SpawnPurpose::Root | SpawnPurpose::New) {
                         if let Some(twin) = self.failed_twin(&id, &url, kind, group.as_deref()) {
