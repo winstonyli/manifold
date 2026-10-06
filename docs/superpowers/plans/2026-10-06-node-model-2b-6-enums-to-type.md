@@ -69,7 +69,7 @@ Survey (git-ignored, regenerate if lost): `.superpowers/scratch-2b6-map.md`. Pre
    is `json_card`, and `"Json"` is the JSON type with `not json_card`. Cost if wrong: another edit of the same script lines.
 10. **Per-frame path.** `graph_ui` scans `nodes_at_current_level` eight times per frame (one pass per kind). Replace it with
     one pass that buckets by `draw_layer`. `card_kind(id)` is computed per call from the mirror (one hash lookup, no cache);
-    Task 3 measures the frame cost with the existing `scale-test.sh` before and after and records it. Cost if wrong: a
+    Task 3 measures the pass with an `#[ignore]`d unit benchmark (2000 test nodes, 200 passes, old eight-pass scan versus the new single pass; `scale-test.sh` measures restore time, not frame time, so it cannot be used) and records the numbers. Cost if wrong: a
     cached `CardKind` field on `GraphNode`, set wherever the runtime is replaced.
 11. **Tests build nodes through one helper.** `App::test_node(id, kind: Kind, runtime: Runtime)` (cfg(test)) places a node with
     its TYPE seeded in the mirror; the ~130 test sites that construct `NodePayload` literals use it, so Tasks 2-4 touch tests once.
@@ -149,10 +149,10 @@ Recorded so a new session does not re-derive them (also in the spec, "Deferred f
 
 **Interfaces:** Consumes Tasks 1-2. Produces: no `ItemNodeKind`, `item_node_kind`, `GRAPH_DRAW_ORDER` anywhere in `src` (Task 6 pins it); `fn nodes_by_layer(&self) -> impl Iterator<Item = (u8, &str)>` or equivalent single pass used by `graph_ui` and `graph_nav` search order.
 
-- [ ] **Step 1: Measure before.** `bash scripts/scale-test.sh` (it prints frame timing; record the numbers in the report, with CPU load and Defender state).
+- [ ] **Step 1: Measure before.** Add `#[test] #[ignore] fn level_pass_cost` in `graph_nav.rs` tests: place 2000 `test_node`s (mixed kinds), time 200 runs of the current eight-pass scan; run it with `cargo test -p manifold --bins level_pass_cost -- --ignored --nocapture` and record the numbers with CPU load and Defender state.
 - [ ] **Step 2: Migrate the 69 test uses** of `ItemNodeKind` (table tests over all kinds use a `KINDS: [CardKind; N]` fixture built from `TYPES` plus the loaded/unloaded tab pair) and delete the enum and helpers.
 - [ ] **Step 3: One pass per frame.** Replace the eight `nodes_at_current_level(kind)` passes with one pass bucketed by `draw_layer`; keep `nodes_at_current_level` for its other callers if any remain (grep).
-- [ ] **Step 4: Measure after;** a regression over 5% frame time at the scale-test size is a finding to resolve (cache `CardKind` per Ruling 10) before commit.
+- [ ] **Step 4: Measure after** with the same benchmark on the single pass; the new pass slower than the old by more than 5% is a finding to resolve (cache `CardKind` per Ruling 10) before commit.
 - [ ] **Step 5: Verify and commit** `ItemNodeKind is gone`. Full suite, smoke 48/0, two-instance once.
 
 ### Task 4: Runtime replaces NodePayload
@@ -199,4 +199,4 @@ Recorded so a new session does not re-derive them (also in the spec, "Deferred f
 - **Placeholders:** none intended; per-site conversions are compiler-led and listed by file with counts from the survey (re-grep at execution: counts drift).
 - **Type consistency:** `CardKind`, `card_kind`, `is_container`, `can_contain`, `Runtime`, `test_node`, `draw_layer` are defined in Tasks 1-2 and used later with the same signatures; `test_node` takes `NodePayload` in Tasks 1-3 and `Runtime` from Task 4.
 - **Risks:** Task 4 is the riskiest (Tab/Unloaded swap under one id, test helpers, `payload` to `runtime` rename touching 89 sites); Task 3's frame-time measurement can force the cached-`CardKind` fallback (Ruling 10). Counts in this plan came from a survey at 4a58427: 879 enum occurrences (47% tests).
-- **Unverified at writing:** the `scale-test.sh` output format and whether it measures frame time; whether `CardControl::action` and `drop_action` have exactly the four bridge calls after 2b-5 (survey says three sites, four calls); whether `LevelItemKind::Node` readers can look the card up by id without a borrow conflict in `graph_ui`.
+- **Unverified at writing:** whether `CardControl::action` and `drop_action` have exactly the four bridge calls after 2b-5 (survey says three sites, four calls); whether `LevelItemKind::Node` readers can look the card up by id without a borrow conflict in `graph_ui`.
