@@ -4,8 +4,10 @@
 
 use super::*;
 use crate::caps::{edges, registry, Caps, Tag, TagSet, CONTAINS};
+use crate::store::model::Kind;
+#[cfg(test)]
 use crate::store::model::{
-    Kind, TYPE_DOWNLOAD, TYPE_GROUP, TYPE_IMAGE, TYPE_JSON, TYPE_JSON_LEAF, TYPE_NOTE, TYPE_PDF, TYPE_TAB,
+    TYPE_DOWNLOAD, TYPE_GROUP, TYPE_IMAGE, TYPE_JSON, TYPE_JSON_LEAF, TYPE_NOTE, TYPE_PDF, TYPE_TAB,
 };
 
 /// The row string for a type this build doesn't know: only the `*/*` row matches it.
@@ -38,23 +40,6 @@ pub(crate) fn is_container(ty: &str) -> bool {
 /// Whether a `member` card may be put inside a `group` card; argument order is (member, group), source then target.
 pub(crate) fn can_contain(member: CardKind, group: CardKind) -> bool {
     edges().can_connect(CONTAINS, member.ty, group.ty)
-}
-
-/// The name EXPORTSTATE's `cards[].kind` gave this card before 2b-6 (the old card enum's `Debug` spelling): a live
-/// tab is `Tab`, any other tab `Unloaded`, a JSON leaf `Json`. The probe scripts still read these; Task 5 replaces
-/// them.
-pub(crate) fn legacy_kind_name(kind: CardKind) -> &'static str {
-    match kind.ty {
-        TYPE_TAB if kind.loaded() => "Tab",
-        TYPE_TAB => "Unloaded",
-        TYPE_DOWNLOAD => "Download",
-        TYPE_GROUP => "Group",
-        TYPE_NOTE => "Note",
-        TYPE_IMAGE => "Image",
-        TYPE_PDF => "Pdf",
-        TYPE_JSON | TYPE_JSON_LEAF => "Json",
-        _ => "Unknown",
-    }
 }
 
 impl App {
@@ -255,15 +240,9 @@ mod tests {
         }
     }
 
-    /// EXPORTSTATE's `kind` strings are unchanged until Task 5: each old kind's `Debug` name, a leaf's `Json`.
+    /// The old Tab/Unloaded pair is one type, told apart by `Loaded`.
     #[test]
-    fn legacy_kind_names_spell_the_old_enum() {
-        let names = ["Tab", "Unloaded", "Download", "Note", "Image", "Pdf", "Json", "Json", "Group"];
-        for (kind, name) in kinds().into_iter().zip(names) {
-            assert_eq!(legacy_kind_name(kind), name, "{kind:?}");
-        }
-        assert_eq!(legacy_kind_name(plain(UNKNOWN_TYPE)), "Unknown");
-        // The old pair is one type, told apart by `Loaded`.
+    fn a_live_and_a_sleeping_tab_share_a_type_and_differ_in_loaded() {
         assert_eq!(loaded_tab().ty, sleeping_tab().ty);
         assert!(loaded_tab().loaded() && !sleeping_tab().loaded());
     }

@@ -38,6 +38,8 @@ if [ ! -x "$exe" ]; then
 fi
 . "$repo_root/scripts/fresh-exe.sh"
 require_fresh_exe "$exe" || exit 1
+# The inline python below reads EXPORTSTATE cards through scripts/export_state.py.
+export PYTHONPATH="$(cygpath -w "$repo_root/scripts")"
 
 mkdir -p "$out_dir"
 rm -f "$out_dir"/*.png "$out_dir"/*.json
@@ -244,19 +246,22 @@ ROW="$second_row" check_state escape_dismiss "Escape closes the dropdown, stays 
 # eject button sits, as "x y") and `bbox` (every tab's rects' bounds grown
 # by 20 and kept inside the window, as "x0 y0 x1 y1"). `xy` and `lt` say
 # on stderr when the point is off the graph canvas (under the toolbar or
-# outside the window), where a click can't reach the card.
+# outside the window), where a click can't reach the card. EXPR also sees
+# scripts/export_state.py's names: `card_is(c, TYPE[, loaded])` and the
+# type constants (`TAB`, `NOTE`, `JSON`, ...).
 query() {
     python - "$out_dir/$1.json" "$2" <<'EOF'
 import json, os, sys
+from export_state import *
 s = json.load(open(sys.argv[1], encoding="utf-8"))
 cards = {c["id"]: c for c in s["cards"]}
-tabs = sorted(i for i, c in cards.items() if c["kind"] in ("Tab", "Unloaded"))
-groups = sorted(i for i, c in cards.items() if c["kind"] == "Group")
+tabs = sorted(i for i, c in cards.items() if card_is(c, TAB))
+groups = sorted(i for i, c in cards.items() if card_is(c, GROUP))
 W, H, TOP = 816, 639, 40  # RESIZE below; the graph toolbar's height, rounded up
 
 def pt(i, x, y):
     if not (0 <= x < W and TOP <= y < H):
-        sys.stderr.write(f"query: {x:.0f},{y:.0f} ({cards[i]['kind']} {i}) is off the graph canvas\n")
+        sys.stderr.write(f"query: {x:.0f},{y:.0f} ({label(cards[i])} {i}) is off the graph canvas\n")
     return "%.0f %.0f" % (x, y)
 
 xy = lambda i: pt(i, *cards[i]["screen"])
@@ -439,7 +444,7 @@ send "IMPORTGROUP $out_dir_win\pair.group.json"
 send "WAITTABS"
 settle outer_built
 check_query outer_built "a group can hold an image and a nested group" \
-    "s['current_group'] == '$empty' and len(groups) == 1 and [c['kind'] for c in cards.values()].count('Image') == 1"
+    "s['current_group'] == '$empty' and len(groups) == 1 and sum(card_is(c, IMAGE) for c in cards.values()) == 1"
 send "CLICK 22 17"
 settle outer_back
 send "CLOSEGROUP $empty"
@@ -455,7 +460,7 @@ else
     send "DOUBLECLICK $(query reopened "xy('$outer')")"
     settle reopened_in
     check_query reopened_in "the reopened group has its image and nested group back" \
-        "s['current_group'] == '$outer' and len(groups) == 1 and [c['kind'] for c in cards.values()].count('Image') == 1"
+        "s['current_group'] == '$outer' and len(groups) == 1 and sum(card_is(c, IMAGE) for c in cards.values()) == 1"
     inner=$(query reopened_in '(groups or ["none"])[0]')
     send "DOUBLECLICK $(query reopened_in "xy('$inner')")"
     settle reopened_inner
@@ -474,9 +479,9 @@ send "ADDFILE $out_dir_win\\drop.txt 400 300"
 send "ADDFILE $out_dir_win\\drop.json 400 300"
 settle after_drop
 note_id=$(BEFORE="$before_drop_ids" query after_drop \
-    '([i for i, c in cards.items() if c["kind"] == "Note" and i not in eval(env["BEFORE"])] or ["none"])[0]')
+    '([i for i, c in cards.items() if card_is(c, NOTE) and i not in eval(env["BEFORE"])] or ["none"])[0]')
 json_id=$(BEFORE="$before_drop_ids" query after_drop \
-    '([i for i, c in cards.items() if c["kind"] == "Json" and i not in eval(env["BEFORE"])] or ["none"])[0]')
+    '([i for i, c in cards.items() if card_is(c, JSON) and i not in eval(env["BEFORE"])] or ["none"])[0]')
 check_query after_drop "a dropped .txt becomes a Note card" "'$note_id' != 'none'"
 check_query after_drop "a dropped .json becomes a Json card" "'$json_id' != 'none'"
 # Both land on one point, so the layout eases them about a card apart
@@ -496,7 +501,7 @@ settle json_in
 check_query json_in "double-clicking a Json card enters its level" \
     "s['json_level'] and s['json_level']['root'] == '$json_id' and s['current_group'] == '$json_id'"
 check_query json_in "the JSON level shows the root card" \
-    "[c['pointer'] for c in s['json_level']['cards']] == [''] and cards['$json_id#']['kind'] == 'JsonCard'"
+    "[c['pointer'] for c in s['json_level']['cards']] == [''] and cards['$json_id#']['json_card']"
 send "JSONSELECT /a"
 send "JSONSEARCH a"
 check_state json_search "JSONSELECT and JSONSEARCH reach the level" \
@@ -512,17 +517,17 @@ settle json_out2
 send "DOUBLECLICK $(query json_out2 "xy('$json_id')")"
 settle json_in2
 check_query json_in2 "re-entering the JSON level" "s['json_level'] and s['current_group'] == '$json_id'"
-notes_before=$(query json_out2 'sorted(i for i, c in cards.items() if c["kind"] == "Note")')
+notes_before=$(query json_out2 'sorted(i for i, c in cards.items() if card_is(c, NOTE))')
 send "NEWNOTE"
 settle json_note
 check_query json_note "NEWNOTE from a JSON level leaves it" "s['json_level'] is None and s['current_group'] != '$json_id'"
 check_query json_note "the new note is a card on the level now shown" \
-    "len([i for i, c in cards.items() if c['kind'] == 'Note']) == len(eval('''$notes_before''')) + 1"
+    "len([i for i, c in cards.items() if card_is(c, NOTE)]) == len(eval('''$notes_before''')) + 1"
 
 # The remaining `ADDFILE` kinds (the image and the .txt/.json are above),
-# each checked by the new card's kind: a PDF, a `.bin` (a Download card)
+# each checked by the new card's type: a PDF, a `.bin` (a Download card)
 # and a `.md` (a Note by its bytes, not its extension). `.html` becomes a
-# Tab, which is clicked into Tab view to check its `file://` url.
+# live Tab, which is clicked into Tab view to check its `file://` url.
 printf '%%PDF-1.4\n' >"$out_dir/doc.pdf"
 printf '# a markdown note\n' >"$out_dir/note.md"
 printf '\xffbinary\xfedata' >"$out_dir/data.bin"
@@ -535,14 +540,15 @@ send "ADDFILE $out_dir_win\\data.bin 600 500"
 send "ADDFILE $out_dir_win\\page.html 600 500"
 send "WAITTABS"
 settle after_kinds
+# new_card TYPE [True|False]: the id of the one new card of that type (and, for a tab, that `loaded` state).
 new_card() {
     BEFORE="$before_kinds_ids" query after_kinds \
-        "([i for i, c in cards.items() if c[\"kind\"] == \"$1\" and i not in eval(env[\"BEFORE\"])] or [\"none\"])[0]"
+        "([i for i, c in cards.items() if card_is(c, $1, ${2:-None}) and i not in eval(env[\"BEFORE\"])] or [\"none\"])[0]"
 }
-pdf_id=$(new_card Pdf)
-md_id=$(new_card Note)
-bin_id=$(new_card Download)
-html_id=$(new_card Tab)
+pdf_id=$(new_card PDF)
+md_id=$(new_card NOTE)
+bin_id=$(new_card DOWNLOAD)
+html_id=$(new_card TAB True)
 check_query after_kinds "a dropped .pdf becomes a Pdf card" "'$pdf_id' != 'none'"
 check_query after_kinds "a dropped .md becomes a Note card" "'$md_id' != 'none'"
 check_query after_kinds "a dropped .bin becomes a Download card" "'$bin_id' != 'none'"

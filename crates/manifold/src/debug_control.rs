@@ -229,10 +229,16 @@ pub enum DebugCommand {
     /// query, or `tab:<id>` for an open tab), `highlighted` (a row
     /// index, or null) and `current_group` (the Graph view level's group
     /// id, or null at the top). `cards` lists the current level's cards in
-    /// draw order, each as `id`, `kind` (`"Tab"`, `"Note"`, ...), `group`,
-    /// `parent`, `color` (whether it has a tag color), `pinned`, `screen`
-    /// (its center) and `rect` (`[left, top, right, bottom]`), in points,
-    /// which are pixels headless. `selected_tabs` is the rectangle
+    /// draw order, each as `id`, `type` (the card's mime type, e.g.
+    /// `application/vnd.manifold.tab` or `text/markdown`; `store::model`'s
+    /// `TYPE_*`), `loaded` (true for a tab with a running engine only),
+    /// `json_card` (true for a JSON level's card, which is no stored node:
+    /// it has `type` `application/json` and only `screen` and `rect`
+    /// besides), `group`, `parent`, `color` (whether it has a tag color),
+    /// `pinned`, `editing` (a note being edited), `screen` (its center) and
+    /// `rect` (`[left, top, right, bottom]`), in points, which are pixels
+    /// headless. `scripts/export_state.py` reads these for the probe
+    /// scripts. `selected_tabs` is the rectangle
     /// selection's ids, sorted. `mirror_groups` maps every node id (any
     /// level) to its group as this replica shows it (the mirror), or null.
     /// `mirror_names` (groups), `mirror_texts` (notes) and `mirror_pos` (every node, `[x, y]`) map ids to the
@@ -1099,91 +1105,7 @@ impl App {
                 self.export_session_to(std::path::Path::new(&path));
             }
             DebugCommand::ExportState(path) => {
-                let focused_url = self
-                    .focused
-                    .as_ref()
-                    .and_then(|id| self.nodes.get(id))
-                    .and_then(|n| n.as_tab())
-                    .map(|t| t.url.clone());
-                let suggestions: Vec<String> = self
-                    .address_bar
-                    .combined()
-                    .into_iter()
-                    .map(|s| match s {
-                        Suggestion::OpenTab { tab_id, .. } => format!("tab:{tab_id}"),
-                        Suggestion::Search { query } => query,
-                    })
-                    .collect();
-                // The current level's cards, in draw order, with where each
-                // one's center is on screen: what a headless test needs to
-                // aim a click or drag at a card.
-                let cards: Vec<serde_json::Value> = self
-                    .level_items()
-                    .into_iter()
-                    .filter_map(|item| {
-                        let screen = self.graph_world_rect_to_screen(item.rect);
-                        if item.kind == LevelItemKind::JsonCard {
-                            return Some(serde_json::json!({
-                                "id": item.id,
-                                "kind": "JsonCard",
-                                "screen": [screen.center().x, screen.center().y],
-                                "rect": [screen.min.x, screen.min.y, screen.max.x, screen.max.y],
-                            }));
-                        }
-                        let LevelItemKind::Node(kind) = item.kind else { return None };
-                        let node = self.nodes.get(&item.id)?;
-                        Some(serde_json::json!({
-                            "id": item.id,
-                            "kind": legacy_kind_name(kind),
-                            "group": self.mirror.group(&item.id),
-                            "parent": self.mirror.parent(&item.id),
-                            "color": self.mirror.color(&item.id).is_some(),
-                            "pinned": self.mirror.pinned(&item.id),
-                            "editing": node.as_note().is_some_and(|n| n.editing),
-                            "screen": [screen.center().x, screen.center().y],
-                            "rect": [screen.min.x, screen.min.y, screen.max.x, screen.max.y],
-                        }))
-                    })
-                    .collect();
-                // Every node's group as this replica shows it, at any level (a two-instance test compares them).
-                let mirror_groups: std::collections::BTreeMap<&str, Option<&str>> =
-                    self.linked_ids().map(|id| (id, self.mirror.group(id))).collect();
-                // Likewise each group's name, each note's text and every node's document pos, null when absent
-                // (empty, or Pos (0,0)), as EXPORTSESSION leaves them out.
-                let non_empty = |s: &'_ str| (!s.is_empty()).then(|| s.to_owned());
-                let mirror_names: std::collections::BTreeMap<&str, Option<String>> = self
-                    .linked_ids()
-                    .filter(|id| self.is_container(id))
-                    .map(|id| (id, non_empty(self.mirror.name(id)))) // name rule: raw, compared with the document
-                    .collect();
-                let mirror_texts: std::collections::BTreeMap<&str, Option<String>> = self
-                    .linked_ids()
-                    .filter(|id| self.nodes.get(*id).is_some_and(|n| n.as_note().is_some()))
-                    .map(|id| (id, non_empty(self.mirror.text(id))))
-                    .collect();
-                let mirror_pos: std::collections::BTreeMap<&str, Option<[f32; 2]>> =
-                    self.linked_ids().map(|id| (id, self.mirror.pos(id).map(|p| [p.x, p.y]))).collect();
-                let mut selected_tabs: Vec<&String> = self.selected_tabs.iter().collect();
-                selected_tabs.sort();
-                let state = serde_json::json!({
-                    "tab_view": self.showing_tab_view(),
-                    "transition": self.transition.is_some(),
-                    "focused_url": focused_url,
-                    "address_bar_text": self.address_bar.text,
-                    "suggestions": suggestions,
-                    "highlighted": self.address_bar.highlighted,
-                    "current_group": self.current_group,
-                    "cards": cards,
-                    "mirror_groups": mirror_groups,
-                    "mirror_names": mirror_names,
-                    "mirror_texts": mirror_texts,
-                    "mirror_pos": mirror_pos,
-                    "json_level": self.json_level_state(),
-                    "selected_tabs": selected_tabs,
-                    // The toast showing, or else the next queued one.
-                    "toast": self.save_toast.as_ref().map(|(message, _)| message).or(self.save_toast_queue.front()),
-                });
-                if let Err(err) = std::fs::write(&path, state.to_string()) {
+                if let Err(err) = std::fs::write(&path, self.export_state().to_string()) {
                     eprintln!("EXPORTSTATE: couldn't write {path}: {err}");
                 }
             }
@@ -1357,6 +1279,96 @@ impl App {
                 }
             }
         }
+    }
+
+    /// What `EXPORTSTATE` writes (its doc on `DebugCommand::ExportState`).
+    pub(crate) fn export_state(&self) -> serde_json::Value {
+        let focused_url =
+            self.focused.as_ref().and_then(|id| self.nodes.get(id)).and_then(|n| n.as_tab()).map(|t| t.url.clone());
+        let suggestions: Vec<String> = self
+            .address_bar
+            .combined()
+            .into_iter()
+            .map(|s| match s {
+                Suggestion::OpenTab { tab_id, .. } => format!("tab:{tab_id}"),
+                Suggestion::Search { query } => query,
+            })
+            .collect();
+        // The current level's cards, in draw order, with where each
+        // one's center is on screen: what a headless test needs to
+        // aim a click or drag at a card. A card is named by its type
+        // (`CardKind`), never a kind enum (plan 2b-6, Ruling 9).
+        let cards: Vec<serde_json::Value> = self
+            .level_items()
+            .into_iter()
+            .filter_map(|item| {
+                let screen = self.graph_world_rect_to_screen(item.rect);
+                if item.kind == LevelItemKind::JsonCard {
+                    // A JSON level's card shows a piece of the Json node's value; it is no stored node.
+                    return Some(serde_json::json!({
+                        "id": item.id,
+                        "type": crate::store::model::TYPE_JSON,
+                        "loaded": false,
+                        "json_card": true,
+                        "screen": [screen.center().x, screen.center().y],
+                        "rect": [screen.min.x, screen.min.y, screen.max.x, screen.max.y],
+                    }));
+                }
+                let LevelItemKind::Node(kind) = item.kind else { return None };
+                let node = self.nodes.get(&item.id)?;
+                Some(serde_json::json!({
+                    "id": item.id,
+                    "type": kind.ty,
+                    "loaded": kind.loaded(),
+                    "json_card": false,
+                    "group": self.mirror.group(&item.id),
+                    "parent": self.mirror.parent(&item.id),
+                    "color": self.mirror.color(&item.id).is_some(),
+                    "pinned": self.mirror.pinned(&item.id),
+                    "editing": node.as_note().is_some_and(|n| n.editing),
+                    "screen": [screen.center().x, screen.center().y],
+                    "rect": [screen.min.x, screen.min.y, screen.max.x, screen.max.y],
+                }))
+            })
+            .collect();
+        // Every node's group as this replica shows it, at any level (a two-instance test compares them).
+        let mirror_groups: std::collections::BTreeMap<&str, Option<&str>> =
+            self.linked_ids().map(|id| (id, self.mirror.group(id))).collect();
+        // Likewise each group's name, each note's text and every node's document pos, null when absent
+        // (empty, or Pos (0,0)), as EXPORTSESSION leaves them out.
+        let non_empty = |s: &'_ str| (!s.is_empty()).then(|| s.to_owned());
+        let mirror_names: std::collections::BTreeMap<&str, Option<String>> = self
+            .linked_ids()
+            .filter(|id| self.is_container(id))
+            .map(|id| (id, non_empty(self.mirror.name(id)))) // name rule: raw, compared with the document
+            .collect();
+        let mirror_texts: std::collections::BTreeMap<&str, Option<String>> = self
+            .linked_ids()
+            .filter(|id| self.nodes.get(*id).is_some_and(|n| n.as_note().is_some()))
+            .map(|id| (id, non_empty(self.mirror.text(id))))
+            .collect();
+        let mirror_pos: std::collections::BTreeMap<&str, Option<[f32; 2]>> =
+            self.linked_ids().map(|id| (id, self.mirror.pos(id).map(|p| [p.x, p.y]))).collect();
+        let mut selected_tabs: Vec<&String> = self.selected_tabs.iter().collect();
+        selected_tabs.sort();
+        serde_json::json!({
+            "tab_view": self.showing_tab_view(),
+            "transition": self.transition.is_some(),
+            "focused_url": focused_url,
+            "address_bar_text": self.address_bar.text,
+            "suggestions": suggestions,
+            "highlighted": self.address_bar.highlighted,
+            "current_group": self.current_group,
+            "cards": cards,
+            "mirror_groups": mirror_groups,
+            "mirror_names": mirror_names,
+            "mirror_texts": mirror_texts,
+            "mirror_pos": mirror_pos,
+            "json_level": self.json_level_state(),
+            "selected_tabs": selected_tabs,
+            // The toast showing, or else the next queued one.
+            "toast": self.save_toast.as_ref().map(|(message, _)| message).or(self.save_toast_queue.front()),
+        })
     }
 }
 
@@ -1534,6 +1546,82 @@ mod tests {
         assert_eq!(app.mirror.group(&note), Some(g.as_str()));
         assert!(app.debug_move_to_group(&g, &h), "a group nests, as the menu row does");
         assert_eq!(app.mirror.group(&g), Some(h.as_str()));
+    }
+
+    /// `EXPORTSTATE` names a card by its type (plan 2b-6, Ruling 9): `type` (the mime), `loaded` (true for a live tab
+    /// only) and `json_card` (a JSON level's card, not a stored node); the old card enum's `kind` is gone.
+    #[test]
+    fn export_state_names_cards_by_type_loaded_and_json_card() {
+        use crate::node::{NotePayload, TabPayload, UnloadedState, UnloadedTabPayload};
+        use crate::process_manager::{EngineKind, EngineTab};
+        use crate::store::model::{Kind, TYPE_GROUP, TYPE_JSON, TYPE_NOTE, TYPE_TAB};
+        let dir = crate::store::testutil::temp_dir("export_state");
+        let path = dir.join("a.json");
+        std::fs::write(&path, r#"{"a": {"b": 1}}"#).unwrap();
+        let mut app = App::default();
+        let (tab, _peer) = EngineTab::fake(EngineKind::Servo);
+        let live = Runtime::Tab(TabPayload {
+            tab,
+            url: "https://a/".into(),
+            title: String::new(),
+            can_go_back: false,
+            can_go_forward: false,
+            loading: false,
+            audio_playing: false,
+            muted: false,
+            zoom_factor: 1.0,
+            swap_target: None,
+        });
+        let asleep = Runtime::Unloaded(UnloadedTabPayload {
+            url: "https://s/".into(),
+            title: String::new(),
+            muted: false,
+            zoom_factor: 1.0,
+            state: UnloadedState::Sleeping,
+        });
+        app.test_node("live", Kind::Tab, live);
+        app.test_node("asleep", Kind::Tab, asleep);
+        app.test_node("n", Kind::Note, Runtime::Note(NotePayload { text: "t".into(), editing: false }));
+        app.test_node("g", Kind::Group, Runtime::None);
+        app.insert_json_node_with_id("j".into(), path.to_string_lossy().into_owned(), egui::Vec2::ZERO, None).unwrap();
+        let cards = |app: &App| -> std::collections::BTreeMap<String, serde_json::Value> {
+            let state = app.export_state();
+            let cards = state["cards"].as_array().expect("cards is a list");
+            cards.iter().map(|c| (c["id"].as_str().unwrap().to_owned(), c.clone())).collect()
+        };
+
+        let top = cards(&app);
+        assert_eq!(top.len(), 5, "{top:?}");
+        for (id, ty, loaded) in [
+            ("live", TYPE_TAB, true),
+            ("asleep", TYPE_TAB, false),
+            ("n", TYPE_NOTE, false),
+            ("g", TYPE_GROUP, false),
+            ("j", TYPE_JSON, false),
+        ] {
+            let card = &top[id];
+            assert_eq!(card["type"], ty, "{id}: {card}");
+            assert_eq!(card["loaded"], loaded, "{id}: {card}");
+            assert_eq!(card["json_card"], false, "{id}: {card}");
+            assert!(card.get("kind").is_none(), "{id}: {card}");
+            for key in ["group", "parent", "color", "pinned", "editing", "screen", "rect"] {
+                assert!(card.get(key).is_some(), "{id} keeps {key}: {card}");
+            }
+        }
+
+        // A JSON level's cards are not stored nodes: `json_card`, typed as the JSON they show.
+        app.switch_group_level(Some("j".into()));
+        let level = cards(&app);
+        assert_eq!(level.keys().collect::<Vec<_>>(), ["j#", "j#/a"]);
+        for card in level.values() {
+            assert_eq!(card["json_card"], true, "{card}");
+            assert_eq!(card["type"], TYPE_JSON, "{card}");
+            assert_eq!(card["loaded"], false, "{card}");
+            assert!(card.get("kind").is_none(), "{card}");
+            for key in ["screen", "rect"] {
+                assert!(card.get(key).is_some(), "{key}: {card}");
+            }
+        }
     }
 
     /// `RENAMEGROUP` alone is F2; with an id it takes the rest of the line as the name. `SETNOTETEXT` takes the rest

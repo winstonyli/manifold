@@ -35,6 +35,8 @@ exe="$repo_root/target/debug/manifold.exe"
 # shellcheck source=fresh-exe.sh
 . "$repo_root/scripts/fresh-exe.sh"
 require_fresh_exe "$exe" || exit 1
+# The inline python below reads EXPORTSTATE cards through scripts/export_state.py.
+export PYTHONPATH="$(cygpath -w "$repo_root/scripts")"
 
 OUT="${OUT:-$repo_root/target/shots}"
 SIZE="${SIZE:-1280 800}"
@@ -94,21 +96,26 @@ state() {
     wait_file "$work/state.json"
     sleep 0.2
 }
-# "x y" of the first card of kind $1 (group $2: "top" or "any"): the centre of the
-# part of its rect inside the window, since a card can hang off the edge.
+# "x y" of the first card of type $1 (group $2: "top" or "any"; $3 "loaded" or
+# "asleep" narrows a tab by its engine state): the centre of the part of its
+# rect inside the window, since a card can hang off the edge.
 center() {
     state
     python -P -c '
 import json, sys
+from export_state import card_is
 d = json.load(open(sys.argv[1], encoding="utf-8"))
-kind, where, W, H = sys.argv[2], sys.argv[3], float(sys.argv[4]), float(sys.argv[5])
+ty, where, W, H = sys.argv[2], sys.argv[3], float(sys.argv[4]), float(sys.argv[5])
+loaded = {"loaded": True, "asleep": False, "": None}[sys.argv[6]]
 for c in d["cards"]:
-    if c["kind"] == kind and (where == "any" or c["group"] is None):
+    if card_is(c, ty, loaded) and (where == "any" or c["group"] is None):
         x0, y0, x1, y1 = c["rect"]
         print(int((max(x0, 0) + min(x1, W)) / 2), int((max(y0, 36) + min(y1, H)) / 2))
         break
-' "$(w "$work/state.json")" "$1" "${2:-top}" "${SIZE% *}" "${SIZE#* }" </dev/null
+' "$(w "$work/state.json")" "$1" "${2:-top}" "${SIZE% *}" "${SIZE#* }" "${3:-}" </dev/null
 }
+TAB=application/vnd.manifold.tab GROUP=application/vnd.manifold.group NOTE=text/markdown
+IMAGE=image/png JSON=application/json
 field() { python -P -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8")).get(sys.argv[2]))' "$(w "$work/state.json")" "$1" </dev/null; }
 # Waits until two exports agree on the cards: SLEEP draws no frames, and the
 # camera eases after entering a level, so a fixed sleep can shoot mid-ease.
@@ -202,12 +209,13 @@ send "ADDFILE $(w "$work/data.json") 640 700" "SLEEP 2"
 
 if has graph; then shot graph; fi
 if has graph-hover; then
-    read -r x y < <(center Tab); send "MOUSEMOVE $x $y" "SLEEP 1"; shot graph-hover; send "MOUSEMOVE 5 790"
+    read -r x y < <(center "$TAB" top loaded); send "MOUSEMOVE $x $y" "SLEEP 1"; shot graph-hover; send "MOUSEMOVE 5 790"
 fi
-for v in tab:Tab group:Group note:Note; do
-    name="graph-menu-${v%%:*}"
+for v in "tab $TAB loaded" "group $GROUP" "note $NOTE"; do
+    set -- $v
+    name="graph-menu-$1"
     if has "$name"; then
-        read -r x y < <(center "${v##*:}"); send "MOUSEMOVE $x $y" "MOUSEDOWN $x $y right" "MOUSEUP $x $y right" "SLEEP 1"; shot "$name"; reset
+        read -r x y < <(center "$2" top "${3:-}"); send "MOUSEMOVE $x $y" "MOUSEDOWN $x $y right" "MOUSEUP $x $y right" "SLEEP 1"; shot "$name"; reset
     fi
 done
 if has hover-graph; then hover_scan graph; fi
@@ -291,23 +299,24 @@ if has mouse-regress; then
         state
         python -P -c '
 import json, sys
+from export_state import card_is
 for c in json.load(open(sys.argv[1], encoding="utf-8"))["cards"]:
-    if c["kind"] == sys.argv[2]:
+    if card_is(c, sys.argv[2]):
         print(*[int(v) for v in c["rect"]]); break
 ' "$(w "$work/state.json")" "$1" </dev/null | tr -d '\r'
     }
     cardcount() { state; python -P -c 'import json,sys; print(len(json.load(open(sys.argv[1], encoding="utf-8"))["cards"]))' "$(w "$work/state.json")" </dev/null | tr -d '\r'; }
     check() { if [ "$2" = "$3" ]; then echo "PASS: $1"; else echo "FAIL: $1 (got $2, want $3)"; fi; }
-    read -r x0 y0 x1 y1 < <(cardrect Note)
+    read -r x0 y0 x1 y1 < <(cardrect "$NOTE")
     cx=$(((x0 + x1) / 2)); cy=$(((y0 + y1) / 2))
     send "MOUSEMOVE $cx $cy" "MOUSEDOWN $cx $cy" "MOUSEMOVE $((cx + 30)) $((cy + 15))" "MOUSEMOVE $((cx + 60)) $((cy + 30))" "MOUSEMOVE $((cx + 90)) $((cy + 45))" "MOUSEUP $((cx + 90)) $((cy + 45))" "SLEEP 1"
-    read -r n0 m0 n1 m1 < <(cardrect Note)
+    read -r n0 m0 n1 m1 < <(cardrect "$NOTE")
     check "drag moves the card by the drag distance" "$((n0 - x0)),$((m0 - y0))" "90,45"
     # The swatch sits on the bottom-right corner (hover reveals nothing extra; the click is what counts).
     sx=$n1; sy=$m1
     send "MOUSEMOVE $((n0 + 20)) $((m0 + 20))" "SLEEP 0.5" "CLICK $sx $sy" "SLEEP 1"; shot mouse-regress-swatch
     state
-    check "swatch click tags the card" "$(python -P -c 'import json,sys; print([c["color"] for c in json.load(open(sys.argv[1], encoding="utf-8"))["cards"] if c["kind"]=="Note"][0])' "$(w "$work/state.json")" </dev/null)" "True"
+    check "swatch click tags the card" "$(python -P -c 'import json,sys; from export_state import *; print([c["color"] for c in json.load(open(sys.argv[1], encoding="utf-8"))["cards"] if card_is(c, NOTE)][0])' "$(w "$work/state.json")" </dev/null)" "True"
     before=$(cardcount)
     mx=$(((n0 + n1) / 2)); my=$(((m0 + m1) / 2))
     send "MOUSEMOVE $mx $my" "MOUSEDOWN $mx $my middle" "MOUSEUP $mx $my middle" "SLEEP 1"
@@ -315,7 +324,7 @@ for c in json.load(open(sys.argv[1], encoding="utf-8"))["cards"]:
     reset
 fi
 if has hover-menu-tab; then
-    read -r x y < <(center Tab); send "MOUSEMOVE $x $y" "MOUSEDOWN $x $y right" "MOUSEUP $x $y right" "SLEEP 1"
+    read -r x y < <(center "$TAB" top loaded); send "MOUSEMOVE $x $y" "MOUSEDOWN $x $y right" "MOUSEUP $x $y right" "SLEEP 1"
     HOVER_X0="${MENU_X0:-640}" HOVER_BAND=190 hover_column menu-tab "${MENU_X:-700}" "${MENU_Y0:-424}" "${MENU_Y1:-646}"; reset
 fi
 if has focus-graph; then focus_scan graph 385 16 235 16; fi
@@ -337,17 +346,17 @@ if has cards-f; then
 fi
 # A note being edited: a click on the rendered note enters the editor in place.
 if has note-edit; then
-    read -r x y < <(center Note); send "CLICK $x $y" "SLEEP 1" "MOUSEMOVE 5 790" "SLEEP 1"; shot note-edit; send ESCAPE "SLEEP 1"
+    read -r x y < <(center "$NOTE"); send "CLICK $x $y" "SLEEP 1" "MOUSEMOVE 5 790" "SLEEP 1"; shot note-edit; send ESCAPE "SLEEP 1"
 fi
 if has image-view; then
-    read -r x y < <(center Image); send "DOUBLECLICK $x $y" "SLEEP 3"; shot image-view; reset
+    read -r x y < <(center "$IMAGE"); send "DOUBLECLICK $x $y" "SLEEP 3"; shot image-view; reset
 fi
 if has graph-filter; then send "GRAPHFILTERTEXT res" "SLEEP 1"; shot graph-filter; send "GRAPHFILTERTEXT "; fi
 if has graph-group; then
-    read -r x y < <(center Group); send "DOUBLECLICK $x $y" "SLEEP 3"; shot graph-group; reset
+    read -r x y < <(center "$GROUP"); send "DOUBLECLICK $x $y" "SLEEP 3"; shot graph-group; reset
 fi
 if has json-level || has json-menu || has json-tooltip || has json-keys || has hover-json || has hover-json-sel; then
-    read -r x y < <(center Json); send "DOUBLECLICK $x $y" "SLEEP 3"
+    read -r x y < <(center "$JSON"); send "DOUBLECLICK $x $y" "SLEEP 3"
     has json-level && shot json-level
     has hover-json && hover_scan json
     # With a card selected, the bar's Copy buttons are enabled.
@@ -366,7 +375,7 @@ if has json-level || has json-menu || has json-tooltip || has json-keys || has h
     reset
 fi
 if has tabview || has hover-tabview || has tab-tabview || has tabview-dropdown || has tabview-find || has tabview-actions || has tabview-actions-click || has tabview-split || has tabview-engine || has hover-find || has hover-dropdown || has tab-find || has tab-dropdown || has tabview-split-key; then
-    read -r x y < <(center Tab); send "DOUBLECLICK $x $y" "SLEEP 5"
+    read -r x y < <(center "$TAB" top loaded); send "DOUBLECLICK $x $y" "SLEEP 5"
     has tabview && shot tabview
     has tab-tabview && tab_scan tabview 12
     has hover-tabview && hover_scan tabview
@@ -422,7 +431,7 @@ if has quickswitch; then send QUICKSWITCHOPEN "SLEEP 1"; shot quickswitch; send 
 # Closes the note (middle-click), so it must come before the settings block
 # and after every view that shows the note.
 if has graph-closed; then
-    read -r x y < <(center Note); send "CLICK $x $y middle" "SLEEP 1"; settle
+    read -r x y < <(center "$NOTE"); send "CLICK $x $y middle" "SLEEP 1"; settle
     send "CLICK $CLOSED_BUTTON_X 16" "SLEEP 1"; shot graph-closed; reset
 fi
 # Last: the download it adds would show in the other views.
@@ -486,7 +495,7 @@ http.server.ThreadingHTTPServer(("127.0.0.1", 8765), H).serve_forever()
 PY
     python -P "$work/serve.py" </dev/null >/dev/null 2>&1 &
     srv=$!
-    read -r x y < <(center Tab); send "DOUBLECLICK $x $y" "SLEEP 5"
+    read -r x y < <(center "$TAB" top loaded); send "DOUBLECLICK $x $y" "SLEEP 5"
     if has download-progress || has download-failed; then
         # Still arriving: 300 KB of 1 MB. The fit button frames the new card, which opens above the tab's.
         send "ADDRESSBAR http://127.0.0.1:8765/slow" "SLEEP 1" ENTER "SLEEP 6"
