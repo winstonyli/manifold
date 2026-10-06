@@ -198,7 +198,8 @@ The journal and session code shrink as a result of sections 1-5. No compatibilit
    uniform. "Not yet created" (today `Kind::Unknown(0)`, `Node::placeholder`, and its compaction special case at
    `ops.rs:158`) becomes "has no `type`". Behavior change: unknown types are no longer hidden (`is_live` today rejects
    `Kind::Unknown`); they show as the generic `*/*` card and keep their raw fields. The create-without-kind half is
-   done (2a); showing unknown types is 2c.
+   done (2a); showing unknown types is not part of 2b-6 (plan 2b-6 Ruling 8: `Runtime::None` makes the
+   `*/*` card possible, the card itself is a later change, see "Deferred from 2b-6").
 10. **Sync by ops, not by diff (decision for the plan).** Today the app mutates live state and `diff` (with the
     `explicit` set and `keep`) derives ops after the fact. That conflicts with history: an undo transaction needs the
     ops a verb produced, with the verb's label, and a diff has lost both. Two ways to reconcile:
@@ -266,9 +267,14 @@ leaves the app working:
      and deletes), 05d31cc (`last_shared`, `shared_nodes`). Every stored field is mirror state; creates and deletes
      are queued ops; `diff`, `explicit`, `keep`, `last_shared` (and `Shared`, `shared_nodes`, `kind_fields`,
      `MIRRORED`) are gone.
-     Next: 2b-6 (plan `docs/superpowers/plans/2026-10-06-node-model-2b-6-enums-to-type.md`: `NodePayload` becomes
-     `enum Runtime`, `ItemNodeKind` becomes `CardKind { ty, tags }` read from `Mirror::ty`, caps bridge, EXPORTSTATE/scripts,
-     grep guard).
+     2b-6 done (plan `docs/superpowers/plans/2026-10-06-node-model-2b-6-enums-to-type.md`): b115bd1 (`CardKind { ty, tags }`
+     and `card_kind`, read from `Mirror::ty`), 7c4c4f8 (cards read their type; the caps bridge is gone), 747015d
+     (`ItemNodeKind` gone; the level is scanned in one pass by `Caps::draw_layer`), 326f73f and 438b7eb (`NodePayload`
+     is `Runtime`, `payload` is `runtime`; groups have no runtime and the type travels explicitly), 78bff97 (EXPORTSTATE
+     `cards[]` names a card by `type`, `loaded` and `json_card`, not `kind`; scripts follow), and the docs commit with a
+     grep guard (`deleted_names.rs`) that fails if a source names `NodePayload`, `ItemNodeKind`, `item_node_kind`,
+     `GRAPH_DRAW_ORDER`, `GroupPayload` or `caps::bridge`. `LevelItemKind` stays (a level's node or JSON card item).
+     Next: B (links), E, C, D, D2.
      **Deferred from 2b-6 (decided 2026-10-06, so a later session does not re-derive them):** (1) store `Kind` stays; replacing
      it with type strings belongs to D2 (external plugins), and 2b-6 code reads `Mirror::ty` and `caps(type)`, never a new
      `Kind::` match, so that swap stays mechanical. (2) `ContentKind` stays until D (views registry) replaces content

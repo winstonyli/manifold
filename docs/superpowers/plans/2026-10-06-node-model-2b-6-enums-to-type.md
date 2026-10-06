@@ -200,3 +200,64 @@ Recorded so a new session does not re-derive them (also in the spec, "Deferred f
 - **Type consistency:** `CardKind`, `card_kind`, `is_container`, `can_contain`, `Runtime`, `test_node`, `draw_layer` are defined in Tasks 1-2 and used later with the same signatures; `test_node` takes `NodePayload` in Tasks 1-3 and `Runtime` from Task 4.
 - **Risks:** Task 4 is the riskiest (Tab/Unloaded swap under one id, test helpers, `payload` to `runtime` rename touching 89 sites); Task 3's frame-time measurement can force the cached-`CardKind` fallback (Ruling 10). Counts in this plan came from a survey at 4a58427: 879 enum occurrences (47% tests).
 - **Unverified at writing:** whether `CardControl::action` and `drop_action` have exactly the four bridge calls after 2b-5 (survey says three sites, four calls); whether `LevelItemKind::Node` readers can look the card up by id without a borrow conflict in `graph_ui`.
+
+## Outcome (2026-10-06)
+
+Done on `dev`: b115bd1 (Task 1: `CardKind { ty, tags }`, `card_kind`, `Caps.draw_layer`, a tenth row for TYPE_DOWNLOAD),
+7c4c4f8 (Task 2: cards read their type; the caps bridge is gone), 747015d (Task 3: `ItemNodeKind` and `GRAPH_DRAW_ORDER`
+gone, the level is scanned in one pass, `Registry::caps` allocation-free), 326f73f and 438b7eb (Task 4: `NodePayload` is
+`Runtime`, `payload` is `runtime`; groups have no runtime and the type travels explicitly), 78bff97 (Task 5: EXPORTSTATE
+`cards[]` names a card by `type`, `loaded`, `json_card`; scripts follow); plus the Task 6 commit (this Outcome, the docs, the
+guard `crates/manifold/src/deleted_names.rs`). Plan commits: e82a6fb, 6ede40d. Tests: 879 at Task 5.
+
+Gate results: filled by the controller after the final gate.
+
+### Frame cost of the level pass (Task 3 unit benchmark `level_pass_cost`, release build, load about 9%, Defender real-time off)
+
+| Level (2000 test nodes) | old enum scan (8 passes) | Task 2 (nine passes) | new one pass |
+|---|---|---|---|
+| top level | 432 µs | 1100 µs | about 170 µs |
+| g0 (a group level) | about 400 µs | about 532 µs | about 72 µs |
+
+The first one-pass version cost 553/496/535 µs at the top level (over Ruling 10's 5% limit): about 70% of it was
+`Registry::caps` allocating and lower-casing per row. The root cause was fixed (allocation-free `Registry::caps` and
+`Pattern::matches`, rows tests as goldens) instead of caching `CardKind` on `GraphNode`. The numbers move between runs
+under the same code (the old scan read 426 and 532 µs), so read them as ratios.
+
+### Rulings made during execution and deviations
+
+- **Ruling 12 deviation: `LevelItemKind` is not a guard needle.** Task 3 keeps it as a live type (`LevelItemKind::Node(CardKind)`
+  and `JsonCard`, `level.rs`) and the plan only retires its inner kind; banning the name would delete working code. The guard
+  bans the other six needles and `LevelItemKind` is documented in the guard's doc comment.
+- **Guard placement:** its own small test module `deleted_names.rs` (not a profile.rs test), so the needles it names exempt only
+  that file, as Ruling 12 requires. Its only offender check was a planted `// NodePayload` comment in `rgba.rs` (failed, then
+  removed).
+- **Ruling 10 changed:** `scale-test.sh` measures restore time, not frame time, so Task 3 used an `#[ignore]`d unit
+  benchmark (plan fixed at 6ede40d). When it showed the one-pass scan over the 5% limit, the controller ruled to fix
+  `Registry::caps` rather than cache `CardKind` (a cache would have recovered only 36 µs).
+- **Task 2 scaffolding:** `ItemNodeKind`, `GRAPH_DRAW_ORDER`, `item_node_kind` and `legacy_kind_name` lived on as
+  `cfg(test)`/temporary code until Task 3 and Task 5 removed them; Task 2's review caught a wrong concern (a node
+  lacking TYPE reads as `*/*`, `card_kind` is `None` only for an absent node) and moved those fixtures to `test_node`.
+- **Ruling 3 detail:** `card_kind` returns `Some(*/*)` for a node whose TYPE is missing.
+- **Ruling 8 consequence:** six data-read arms treat `Runtime::None` as a group; they must switch to `is_container` when the
+  unknown-type card arrives. `snapshot()` returns `None` for an unknown type (unreachable today).
+- **Ruling 9 interpretation:** a JSON level's card exports `type: application/json` with `json_card: true`; the export's
+  `label` appends `;loaded` for a live tab (vocabulary used by page-kind-probe and sleep-probe).
+- **Test helper:** `test_node` uses `Mirror::seed` semantics (TYPE set only when absent) since Task 4.
+- **Trailers:** Task 5's commit trailer names Fable 5.1 (the implementer's own model); accepted, not amended.
+
+### Parked (not fixed)
+
+- Task 3: `drop_target` hits the first card in `node_order`, the bottom-most of overlapping same-kind cards, not the topmost
+  (pre-existing, user-visible); a fix could search `node_order` in reverse.
+- Task 4: `every_creation_path_seeds_the_node_type` is circular for Note/Json/Pdf/Image/Download (tests.rs near 4441-4455).
+- Task 4: stale `payload` names remain in comments or locals (`card.rs` near 852 and 873, `fetched.rs` near 325, `tabs.rs`
+  near 576, `node.rs` near 485).
+- Task 4: reloading with a differing content kind leaves the mirror type unchanged (`fetched.rs` near 325-344, pre-existing).
+- Task 4: add one `// Ruling 8` marker on the `Runtime::None`-as-group arms.
+- Task 5: smoke check messages still say "Pdf card" and so on; the `ExportState` doc comment (`debug_control.rs` near 157-170)
+  says `json_card` has only screen/rect besides (it also has `type` and `loaded`).
+- Task 5: `scripts/json-level-probe.txt` does not enter the JSON level on this machine (pre-existing); a follow-up could seed
+  `has_shown_first_launch_demo` or poll two exports before computing the double-click.
+- Deferred directions (spec "Deferred from 2b-6"): `Kind` to type strings (D2), `ContentKind` to the views registry (D),
+  `Runtime` per-family maps or a plugin slot (D2), raw TYPE (D), the unknown-type card and JsonLeaf retirement.

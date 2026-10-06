@@ -99,3 +99,21 @@ Node creation funnels: `place_node` (fetched.rs ~65; groups, notes, content, dow
 - **Pending-delete resurrection guard.** `materialize` (and `materialize_jar`, which runs before `mirror_remote`) drops a remote change to a node or jar whose delete is pending, so a remote edit cannot re-show something the user just closed before the save lands; showing it again locally withdraws the delete (`queue_create`).
 - **Snapshot for Create and Recently Closed.** `App::snapshot` reads a node's (type, fields, group) from the mirror; Create commits and `closed::` entries both use it, so a node mid-spawn is recorded through the same fallback (`spawning`). `worth_reopening` takes the type string (`Mirror::ty`), and the caps bridge no longer reads `store_node`.
 - **Known gaps, parked:** `Kind::from_type` maps `image/*` to Image, so TYPE is canonical, not raw (2b-6); a failed download stays in `pending_creates` for the run; `pending_deletes` never clears on a read-only store; `LiveUrl.from` is the mirror url, so an unsaved tab records a live_url and an unsaved `edit_url` does not.
+
+## After 2b-6
+
+- **A card's identity is its type.** `App::card_kind(id)` (`card_kind.rs`) returns `CardKind { ty, tags }`: `ty` is
+  `Mirror::ty` canonicalised through `Kind::from_type(..).type_str()`, and `Tag::Loaded` is set when the runtime is a live
+  tab. Every per-kind decision (draw layer, restorable, containment, drops) reads `caps(type)` and the edge table from it;
+  nothing matches an enum. `Tag::Loaded` is produced there and matched by the tab/unloaded rows (a loaded tab wins by rank).
+- **Live data is a side table.** `App::nodes: HashMap<String, GraphNode>` stays "shown in the graph"; `GraphNode.runtime` is
+  `enum Runtime { Tab, Unloaded, Download, Note, Image, Pdf, Json, None }` (`node.rs`) holding only what the mirror cannot
+  (webview, edit buffer, decoded image, ...). A group has `Runtime::None`; the as_x accessors keep their names. The document
+  fields (url, text, name, view, ...) are mirror state, as since 2b-5.
+- **No payload or item enums.** `NodePayload`, `GroupPayload`, `ItemNodeKind` and the caps bridge are gone, and a source
+  test (`deleted_names.rs`) keeps them gone. `LevelItemKind` is `Node(CardKind)` or `JsonCard`.
+- **One-pass level scan.** `App::level_scan()` (`level.rs`) walks `node_order` once, keeps the nodes in the current level and
+  buckets them by `Caps::draw_layer` (`LevelScan::layers`, plus `groups` for containers); `build_graph_ui` draws layer by
+  layer. It replaced eight per-kind scans (`nodes_at_current_level(kind)`).
+- **EXPORTSTATE** `cards[]` carries `type`, `loaded` and `json_card` instead of `kind`; `scripts/export_state.py` maps them
+  back to the names the probes use.
