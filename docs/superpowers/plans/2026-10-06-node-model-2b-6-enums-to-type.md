@@ -265,8 +265,7 @@ under the same code (the old scan read 426 and 532 µs), so read them as ratios.
   says `json_card` has only screen/rect besides (it also has `type` and `loaded`).
 - Task 5: `scripts/json-level-probe.txt` does not enter the JSON level on this machine (pre-existing); a follow-up could seed
   `has_shown_first_launch_demo` or poll two exports before computing the double-click.
-- Nothing asserts that `card_kind`'s type and the `Runtime` variant agree; a `debug_assert` or a `check_graph_matches_document`
-  check would. The reload paths keep them consistent today.
+- Done after the final review (2026-10-06): `check_graph_matches_document` now also asserts each node's stored type is one its `Runtime` runs (`runtime_has_type`, test `a_node_whose_runtime_does_not_match_its_type_trips_the_invariant`); the full suite passed with it (881).
 - Task 4/5 minors above (stale `payload` names, the circular seeding test, smoke-check wording) are parked as listed.
 - Two same-named test helpers of different types: `card_kind::sleeping_tab()` (a `CardKind`) and
   `session_sync::tests::sleeping_tab(url, title)` (a `Runtime`, 113 call sites); rename if it ever confuses.

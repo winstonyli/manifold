@@ -84,6 +84,24 @@ pub(crate) fn color_of(value: &FieldValue) -> Option<egui::Color32> {
     }
 }
 
+/// Whether a card of stored type `ty` can run on `runtime`: the pairing `place_node` and the landings establish.
+/// A tab's runtime is one type whether it is loaded or asleep; a group has none (2b-6 Ruling 8).
+#[cfg(debug_assertions)]
+fn runtime_has_type(runtime: &Runtime, ty: &str) -> bool {
+    use crate::store::model::{
+        TYPE_DOWNLOAD, TYPE_GROUP, TYPE_IMAGE, TYPE_JSON, TYPE_JSON_LEAF, TYPE_NOTE, TYPE_PDF, TYPE_TAB,
+    };
+    match runtime {
+        Runtime::Tab(_) | Runtime::Unloaded(_) => ty == TYPE_TAB,
+        Runtime::Download(_) => ty == TYPE_DOWNLOAD,
+        Runtime::Note(_) => ty == TYPE_NOTE,
+        Runtime::Image(_) => ty == TYPE_IMAGE,
+        Runtime::Pdf(_) => ty == TYPE_PDF,
+        Runtime::Json(json) => ty == if json.leaf { TYPE_JSON_LEAF } else { TYPE_JSON },
+        Runtime::None => ty == TYPE_GROUP,
+    }
+}
+
 /// `store::model::ENGINES` order: code `n` is `ENGINES[n - 1]`.
 pub(crate) fn engine_code(kind: EngineKind) -> u64 {
     kind.desc().code
@@ -1329,7 +1347,8 @@ impl App {
     /// in flight has an entry (live, or a tombstone another replica left while it was in flight, which the landing
     /// applies); and every live document node is one of them. A failure names the funnel that was missed: a node
     /// that entered the graph without `place_node`, `spawn_tab_async` or `add_jar` (a missed create), or left it
-    /// without `queue_delete` (a missed delete).
+    /// without `queue_delete` (a missed delete). Each node's stored type is one its runtime runs, so a create that
+    /// passed a mismatched kind (an image type on a pdf runtime) is caught before a painter dispatches on it.
     #[cfg(debug_assertions)]
     fn check_graph_matches_document(&self) {
         let Some(journal) = &self.journal else { return };
@@ -1341,6 +1360,11 @@ impl App {
                 continue;
             }
             assert!(live(&id), "node {key} is shown but not live in the document: a create funnel was missed");
+            let ty = self.card_kind(key).map(|kind| kind.ty);
+            assert!(
+                ty.is_some_and(|ty| runtime_has_type(&node.runtime, ty)),
+                "node {key} has type {ty:?} that its runtime does not run: a create funnel passed a mismatched kind"
+            );
         }
         for id in self.mirror.jar_defs().keys() {
             assert!(live(id), "jar {id} is shown but not live in the document: a create funnel was missed");

@@ -457,6 +457,15 @@ fn a_node_inserted_behind_the_queues_back_trips_the_invariant() {
     app.save_session();
 }
 
+/// A node whose runtime does not run its stored type (a create that passed a mismatched kind) trips it too.
+#[test]
+#[should_panic(expected = "mismatched kind")]
+fn a_node_whose_runtime_does_not_match_its_type_trips_the_invariant() {
+    let mut app = app_on(&temp_dir("invariant-mismatched-kind").join("session.mnf"), 1);
+    add(&mut app, Kind::Image, Runtime::Pdf(PdfPayload { path: "d.pdf".into(), outcome: None }));
+    app.save_session();
+}
+
 /// Materializes `nodes` into a windowless app, as `apply_remote` would
 /// show another replica's new nodes.
 fn app_with(nodes: &BTreeMap<NodeId, Snapshot>) -> App {
