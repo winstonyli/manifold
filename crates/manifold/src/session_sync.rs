@@ -1232,7 +1232,7 @@ impl App {
 
     /// Saves local edits (spec "Local edits become ops"): take the lock,
     /// show what other replicas wrote, diff the live graph against the
-    /// document, and commit. On error the explicit marks stay for the next
+    /// document, and commit. On error the pending edits stay for the next
     /// save, which re-diffs (contract "Transactions"). `true` when the
     /// store now holds every local edit: `false` read-only, on error, and
     /// when another instance kept writing. The last two are tried again
@@ -1361,7 +1361,7 @@ impl App {
                 Ok(()) => {
                     // What the store now holds is what this replica last
                     // saw: every diffed field as live, but an explicit one
-                    // only if it was marked (an unmarked `pos` stays). Only
+                    // only if it was marked (nothing marks since 2b-4; `explicit` is dead). Only
                     // `touched` nodes can differ from `last_shared`: every
                     // other store change (a remote op, a restore) already
                     // updated it in `materialize`.
@@ -2053,6 +2053,7 @@ impl App {
         self.split_tab = None;
         self.current_group = None;
         self.dragging = None;
+        self.drag_moved.clear();
         self.hovered = None;
         self.selected_tabs.clear();
         self.rect_select_start = None;

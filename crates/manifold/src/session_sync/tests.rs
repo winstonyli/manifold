@@ -558,8 +558,7 @@ fn a_remote_edit_to_one_field_keeps_an_unsaved_local_edit_to_another() {
     assert!(app.save_session());
     let mut other = Journal::open(&path, ActorId(2)).unwrap();
 
-    // Unsaved here: typing in the note, and a navigation (`url` is
-    // explicit and unmarked, so saves don't write it).
+    // Unsaved here: typing in the note, and a navigation (the live url).
     if let NodePayload::Note(n) = &mut app.nodes.get_mut(&note).unwrap().payload {
         n.text = "typing".into();
     }
