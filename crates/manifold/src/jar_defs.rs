@@ -430,12 +430,14 @@ impl App {
         for t in tabs {
             self.edit_jar(&t, JarChoice::default());
         }
-        for node in self.nodes.values_mut() {
-            if let NodePayload::Group(g) = &mut node.payload {
-                if g.default_jar == Some(id) {
-                    g.default_jar = None;
-                }
-            }
+        let groups: Vec<String> = self
+            .nodes
+            .iter()
+            .filter(|(g, node)| node.as_group().is_some() && self.mirror.default_jar(g) == Some(id))
+            .map(|(g, _)| g.clone())
+            .collect();
+        for g in groups {
+            self.edit_default_jar(&g, None);
         }
         self.forget_jar(id);
         self.sweep_jar_switches();
@@ -501,7 +503,7 @@ impl App {
         let mut at = group.map(str::to_string);
         for _ in 0..=self.nodes.len() {
             let node = self.nodes.get(at.as_deref()?)?;
-            if let Some(jar) = node.as_group().and_then(|g| g.default_jar) {
+            if let Some(jar) = node.as_group().and(self.mirror.default_jar(at.as_deref()?)) {
                 return Some(jar);
             }
             at = at.as_deref().and_then(|a| self.mirror.group(a)).map(str::to_owned);
@@ -590,7 +592,7 @@ impl App {
                 return true;
             }
             let node = self.nodes.get(&g);
-            if node.and_then(|n| n.as_group()).is_some_and(|gp| gp.default_jar.is_some()) {
+            if node.and_then(|n| n.as_group()).is_some() && self.mirror.default_jar(&g).is_some() {
                 return false; // a nearer default wins
             }
             cur = node.and(self.mirror.group(&g)).map(str::to_owned);
@@ -615,11 +617,13 @@ impl App {
     }
 
     /// Writes `group`'s default, then the new jar into every unset tab it governs (spec "Changing a group's
-    /// `default_jar`"). The default is a group field (diffed); the tabs go through `edit_jar`. The next save writes
+    /// `default_jar`"). The default goes through `edit_default_jar`, the tabs through `edit_jar`. The next save writes
     /// them. Returns how many tabs changed.
     pub(crate) fn set_group_default_jar(&mut self, group: &str, jar: NodeId) -> usize {
-        let Some(g) = self.nodes.get_mut(group).and_then(|n| n.as_group_mut()) else { return 0 };
-        g.default_jar = Some(jar);
+        if self.nodes.get(group).and_then(|n| n.as_group()).is_none() {
+            return 0;
+        }
+        self.edit_default_jar(group, Some(jar));
         // After the write, so `governed_by` sees it; harmless, as it stops only at groups strictly between.
         let targets = self.cascade_targets(group, jar);
         for t in &targets {
@@ -631,8 +635,8 @@ impl App {
 
     /// "Clear default": new tabs stop inheriting it; existing tabs keep their jar.
     pub(crate) fn clear_group_default_jar(&mut self, group: &str) {
-        if let Some(g) = self.nodes.get_mut(group).and_then(|n| n.as_group_mut()) {
-            g.default_jar = None;
+        if self.nodes.get(group).and_then(|n| n.as_group()).is_some() {
+            self.edit_default_jar(group, None);
         }
     }
 
@@ -973,12 +977,16 @@ mod tests {
         app.clear_group_default_jar(&g);
         assert_eq!(jar_of(&app, &t), JarChoice { jar: Some(work), set: false }, "stored values unchanged");
         assert!(!app.jar_chip(&t).unwrap().following, "no group default: a plain dot");
-        app.nodes.get_mut(&g).unwrap().as_group_mut().unwrap().default_jar = Some(home); // a remote edit, uncascaded
+        app.mirror.set(&g, crate::store::model::field::DEFAULT_JAR, crate::store::model::FieldValue::Id(Some(home))); // remote, uncascaded
         assert!(!app.jar_chip(&t).unwrap().following, "the group's default is another jar");
         let outer = group_in(&mut app, None);
-        app.nodes.get_mut(&g).unwrap().as_group_mut().unwrap().default_jar = None;
+        app.mirror.set(&g, crate::store::model::field::DEFAULT_JAR, crate::store::model::FieldValue::Id(None));
         app.edit_group(&g, Some(outer.clone()));
-        app.nodes.get_mut(&outer).unwrap().as_group_mut().unwrap().default_jar = Some(work);
+        app.mirror.set(
+            &outer,
+            crate::store::model::field::DEFAULT_JAR,
+            crate::store::model::FieldValue::Id(Some(work)),
+        );
         assert!(app.jar_chip(&t).unwrap().following, "an outer group's default counts when it is the nearest");
     }
 

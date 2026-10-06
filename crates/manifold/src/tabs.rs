@@ -131,7 +131,7 @@ impl App {
         let pos = if has { self.mirror.pos(&spawn.id) } else { Some(spawn.pos) };
         let choice = if has { self.mirror.jar_choice(&spawn.id) } else { spawn.jar };
         let engine = if has { self.mirror.engine_code(&spawn.id) } else { session_sync::engine_code(spawn.kind) };
-        let url = shared_url.as_deref().unwrap_or(&spawn.url);
+        let url = shared_url.unwrap_or(&spawn.url);
         let shared = session_sync::spawn_shared(&spawn, pos, url, engine, choice);
         self.spawning.insert(spawn.id.clone(), shared);
         let generation = self.session_generation;
@@ -453,9 +453,9 @@ impl App {
                         parent,
                         group,
                         url: url.clone(),
-                        text: String::new(),
                         engine,
                         jar: spawn_jar,
+                        ..Default::default()
                     },
                 );
                 if !self.node_order.iter().any(|t| t == &id) {
@@ -581,7 +581,7 @@ impl App {
                     let (pos, jar) = (Some(pos), spawn_jar);
                     self.seed_landing(
                         &id,
-                        Carried { pos, color, pinned, parent, group, url, text: String::new(), engine, jar },
+                        Carried { pos, color, pinned, parent, group, url, engine, jar, ..Default::default() },
                     );
                     if !self.node_order.iter().any(|t| t == &id) {
                         self.node_order.push(id.clone());
@@ -1087,6 +1087,8 @@ impl App {
     /// tab lands on the default jar, as the delete would have put it, and the document is told so whether its
     /// `Create` already named the jar or resolved it to none (2b-3 final review Minor 1).
     fn seed_landing(&mut self, id: &str, carried: Carried) {
+        let ty = crate::store::model::Kind::Tab.type_str().unwrap_or_default().to_owned();
+        let carried = Carried { ty, ..carried };
         self.layout.entry(id.to_owned()).or_insert(Layout::at(carried.pos.unwrap_or_default()));
         let new = !self.mirror.has(id);
         self.mirror.seed(id, &carried);

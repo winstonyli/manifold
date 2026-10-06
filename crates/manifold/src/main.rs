@@ -2078,7 +2078,6 @@ impl App {
                            (undo via \"Recently Closed\" if you change your mind)."
                 .to_string(),
             editing: false,
-            url: None,
         });
         self.place_node(None, note, Placement { group: None, pos: egui::vec2(-300.0, 0.0) });
 
@@ -2106,10 +2105,10 @@ impl App {
         // double-click this exact kind of node themselves, so entering its
         // level here would rob them of the discovery the copy is pointing
         // at. Synthetic, not file-backed (`path` is a display-only label, not a
-        // real path -- see `JsonPayload`'s own doc comment on `key` for the
-        // same "inherited path, no real ownership" reasoning `key: Some`
-        // leaves use, though this node uses `key: None` since it's a
-        // genuine standalone JSON node, not an exploded leaf).
+        // real path -- see `JsonPayload`'s own doc comment on `leaf` for the
+        // same "inherited path, no real ownership" reasoning leaves use,
+        // though this node is a genuine standalone JSON node, not an
+        // exploded leaf).
         let json = NodePayload::Json(JsonPayload {
             path: "(demo).json".to_string(),
             value: std::sync::Arc::new(serde_json::json!({
@@ -2117,9 +2116,8 @@ impl App {
                 "tags": ["browser", "graph-ui"],
                 "version": {"major": 0, "minor": 1}
             })),
-            key: None,
+            leaf: false,
             error: None,
-            url: None,
         });
         self.place_node(None, json, Placement { group: None, pos: egui::vec2(0.0, -260.0) });
     }
@@ -2429,7 +2427,7 @@ impl App {
     /// Doesn't save; the caller does.
     fn insert_note_at(&mut self, id: String, pos: Option<egui::Vec2>) {
         let at = self.placement(&id, pos);
-        let note = NotePayload { text: String::new(), editing: true, url: None };
+        let note = NotePayload { text: String::new(), editing: true };
         self.place_node(Some(id), NodePayload::Note(note), at);
     }
 
@@ -3432,7 +3430,7 @@ mod tests {
     fn remove_from_group_moves_up_one_level() {
         let mut app = App::default();
         let group = || NodePayload::Group(GroupPayload::default());
-        let note = || NodePayload::Note(NotePayload { text: String::new(), editing: false, url: None });
+        let note = || NodePayload::Note(NotePayload { text: String::new(), editing: false });
         for (id, group, payload) in [
             ("outer", None, group()),
             ("inner", Some("outer"), group()),

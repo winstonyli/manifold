@@ -12,16 +12,20 @@ use crate::jar::JarChoice;
 use crate::json_view::JsonView;
 use crate::process_manager::EngineKind;
 use crate::session_sync::{color_of, color_value, engine_of, pos_value, Fields};
-use crate::store::model::{field, field_def, FieldValue};
+use crate::store::model::{field, field_def, FieldValue, NodeId};
 
-/// The fields the mirror holds. `diff` leaves them to `App::pending` on existing nodes. `URL` is mirrored for every
-/// kind that has it, but only tabs seed and read it; content kinds read their payload's until 2b-5 (2b-3 Ruling 2).
-/// `JAR` and `JAR_SET` are a tab's jar choice (`jar_choice`), written together by `App::edit_jar`. `ENGINE` is a tab's
+/// The fields the mirror holds. `diff` leaves them to `App::pending` on existing nodes. `URL` is a tab's shared url
+/// (2b-3 Ruling 2) and a content node's web source (`App::source_url`), seeded at creation since 2b-5. `JAR` and `JAR_SET` are a tab's jar choice (`jar_choice`), written together by `App::edit_jar`. `ENGINE` is a tab's
 /// engine as its stored code (`engine`), written by `App::edit_engine`. `POS` is the document pos (`pos`), written by
 /// `App::edit_pos`; where a card is drawn is `App::layout`, which the document never reads (2b-4 Ruling 1). `TEXT` is a
 /// note's text (`text`), written by `App::edit_text` at a save or blur; the note's payload is its edit buffer. `VIEW`
 /// is a Json node's view (`view`, decoded), written by `App::edit_view`. `NAME` is a group's name (`name`), written by
 /// `App::edit_name`; a jar's `NAME` is not mirrored (`JarDef`, `materialize_jar`), and `diff` still writes it.
+/// `DEFAULT_JAR` is a group's default jar (`default_jar`), written by `App::edit_default_jar` and resolved at commit like
+/// `JAR` (2b-5 Ruling 6). `PATH` is the stored,
+/// create-time path (`path`), never rewritten: the payload holds the path resolved on this machine (2b-5 Ruling 5).
+/// `FROM_JSON`, `KEY` and `VALUE` are written once, at creation (Ruling 8). `TYPE` is the node's type string (`ty`),
+/// seeded at every creation and never changed (Ruling 10).
 pub(crate) const MIRRORED: &[u32] = &[
     field::POS,
     field::COLOR,
@@ -33,6 +37,12 @@ pub(crate) const MIRRORED: &[u32] = &[
     field::ENGINE,
     field::JAR,
     field::JAR_SET,
+    field::FROM_JSON,
+    field::DEFAULT_JAR,
+    field::PATH,
+    field::KEY,
+    field::VALUE,
+    field::TYPE,
 ];
 
 #[derive(Default)]
@@ -87,6 +97,22 @@ impl Mirror {
         }
     }
 
+    /// Gives `id` field `no` only if it holds no value for it yet: a new content node's web source, seeded after
+    /// its placement (`App::insert_content`), which a stored node shown again (a reload, a restore) already has.
+    pub(crate) fn init_field(&mut self, id: &str, no: u32, value: FieldValue) {
+        if !self.nodes.get(id).is_some_and(|fields| fields.contains_key(&no)) {
+            self.set(id, no, value);
+        }
+    }
+
+    /// A string field, borrowed from the stored value; "" when the mirror has none.
+    fn str_field(&self, id: &str, no: u32) -> &str {
+        match self.nodes.get(id).and_then(|fields| fields.get(&no)) {
+            Some(FieldValue::Str(text)) => text,
+            _ => "",
+        }
+    }
+
     /// The node this one was opened from (`None` for a root).
     pub(crate) fn parent(&self, id: &str) -> Option<&str> {
         self.links.get(id)?.parent.as_deref()
@@ -126,10 +152,7 @@ impl Mirror {
     /// has none. Borrowed from the stored string, never a copy: a note can reach 1 MB and the card reads it every
     /// frame (2b-4 Ruling 6). While the note is typed in, the card shows its edit buffer instead (`App::note_text`).
     pub(crate) fn text(&self, id: &str) -> &str {
-        match self.nodes.get(id).and_then(|fields| fields.get(&field::TEXT)) {
-            Some(FieldValue::Str(text)) => text,
-            _ => "",
-        }
+        self.str_field(id, field::TEXT)
     }
 
     /// A Json node's view overrides (`field::VIEW`), decoded: the cache `set` refreshes whenever the mirror's view
@@ -142,10 +165,7 @@ impl Mirror {
     /// (`App::edit_name`). "" when the mirror has none. Raw: drawn only through a name rule (`names.rs`). A jar's
     /// name is its `JarDef`'s, not this.
     pub(crate) fn name(&self, id: &str) -> &str {
-        match self.nodes.get(id).and_then(|fields| fields.get(&field::NAME)) {
-            Some(FieldValue::Str(name)) => name,
-            _ => "",
-        }
+        self.str_field(id, field::NAME)
     }
 
     pub(crate) fn color(&self, id: &str) -> Option<egui::Color32> {
@@ -159,12 +179,50 @@ impl Mirror {
     }
 
     /// A tab's shared url: the document's, or the one a local edit is about to write (Ruling 1). Its live url, which
-    /// every engine report moves, is `TabPayload::url` / `UnloadedTabPayload::url`. "" when the mirror has none.
-    pub(crate) fn url(&self, id: &str) -> String {
-        match self.get(id, field::URL) {
-            FieldValue::Str(url) => url,
-            _ => String::new(),
+    /// every engine report moves, is `TabPayload::url` / `UnloadedTabPayload::url`. For a content node (a note, image,
+    /// PDF, Json file or download) it is the web source it came from (`App::source_url`), set at creation. "" when the
+    /// mirror has none.
+    pub(crate) fn url(&self, id: &str) -> &str {
+        self.str_field(id, field::URL)
+    }
+
+    /// A content node's stored path (`field::PATH`): the one it was created with, never rewritten (2b-5 Ruling 5).
+    /// The file it opens on this machine is its payload's `path` (`ContentIndex::resolve`, or a reload's new file).
+    /// "" when the mirror has none.
+    pub(crate) fn path(&self, id: &str) -> &str {
+        self.str_field(id, field::PATH)
+    }
+
+    /// A group made by an older build's "Expand as Graph" (`field::FROM_JSON`): written once, at creation.
+    // Named after the field it reads (`from_json`), as the other accessors are; it converts nothing.
+    #[allow(clippy::wrong_self_convention)]
+    pub(crate) fn from_json(&self, id: &str) -> bool {
+        matches!(self.get(id, field::FROM_JSON), FieldValue::Bool(true))
+    }
+
+    /// A group's default jar (`field::DEFAULT_JAR`): the jar new tabs in it start with (`App::inherited_jar`). `None`
+    /// inherits from the group above. It may name a jar that no longer exists (2b-5 Ruling 6).
+    pub(crate) fn default_jar(&self, id: &str) -> Option<NodeId> {
+        match self.get(id, field::DEFAULT_JAR) {
+            FieldValue::Id(jar) => jar,
+            _ => None,
         }
+    }
+
+    /// A Json leaf's key (`field::KEY`): the JSON key, or `[index]`, its value came from. Written once.
+    pub(crate) fn key(&self, id: &str) -> &str {
+        self.str_field(id, field::KEY)
+    }
+
+    /// A Json leaf's value as stored (`field::VALUE`, JSON text). Written once; the parsed value is the payload's.
+    pub(crate) fn value(&self, id: &str) -> &str {
+        self.str_field(id, field::VALUE)
+    }
+
+    /// The node's type string (`field::TYPE`, `Kind::type_str`), seeded at every creation and never changed. No reader
+    /// yet: 2b-6 moves the readers of `NodePayload` and `ItemNodeKind` here. "" when the mirror has none.
+    pub(crate) fn ty(&self, id: &str) -> &str {
+        self.str_field(id, field::TYPE)
     }
 
     /// A tab's jar choice (`field::JAR`, `field::JAR_SET`): the document's, or the one a local edit is about to write.
@@ -205,24 +263,40 @@ impl Mirror {
             pinned: self.pinned(id),
             parent: self.parent(id).map(str::to_owned),
             group: self.group(id).map(str::to_owned),
-            url: self.url(id),
+            url: self.url(id).to_owned(),
             text: self.text(id).to_owned(),
             engine: self.engine_code(id),
             jar: self.jar_choice(id),
+            ty: self.ty(id).to_owned(),
+            path: self.path(id).to_owned(),
+            from_json: self.from_json(id),
+            default_jar: self.default_jar(id),
+            key: self.key(id).to_owned(),
+            value: self.value(id).to_owned(),
         }
     }
 
-    /// `init` for everything a node carries. No pos, an empty `url` or `text`, engine code 0 and the default, unset jar (any
-    /// node but a tab) are the fields' absent values, so they are left out.
+    /// `init` for everything a node carries. No pos, an empty string, engine code 0, `false` and no jar (the fields a
+    /// node's kind lacks, or holds unset) are the fields' absent values, so they are left out.
     pub(crate) fn seed(&mut self, id: &str, carried: &Carried) {
+        let str = |no: u32, s: &String| (!s.is_empty()).then(|| (no, FieldValue::Str(s.clone())));
         let pos = carried.pos.map(|pos| (field::POS, pos_value(pos)));
-        let url = (!carried.url.is_empty()).then(|| (field::URL, FieldValue::Str(carried.url.clone())));
-        let text = (!carried.text.is_empty()).then(|| (field::TEXT, FieldValue::Str(carried.text.clone())));
         let engine = (carried.engine != 0).then_some((field::ENGINE, FieldValue::Engine(carried.engine)));
         let jar = carried.jar.jar.is_some().then_some((field::JAR, FieldValue::Id(carried.jar.jar)));
         let jar_set = carried.jar.set.then_some((field::JAR_SET, FieldValue::Bool(true)));
+        let from_json = carried.from_json.then_some((field::FROM_JSON, FieldValue::Bool(true)));
+        let default_jar = carried.default_jar.map(|jar| (field::DEFAULT_JAR, FieldValue::Id(Some(jar))));
+        let strings = [
+            str(field::URL, &carried.url),
+            str(field::TEXT, &carried.text),
+            str(field::TYPE, &carried.ty),
+            str(field::PATH, &carried.path),
+            str(field::KEY, &carried.key),
+            str(field::VALUE, &carried.value),
+        ];
         let fields = [(field::COLOR, color_value(carried.color)), (field::PINNED, FieldValue::Bool(carried.pinned))];
-        self.init(id, fields.into_iter().chain(pos).chain(url).chain(text).chain(engine).chain(jar).chain(jar_set));
+        let optional = [pos, engine, jar, jar_set, from_json, default_jar];
+        self.init(id, fields.into_iter().chain(optional.into_iter().flatten()).chain(strings.into_iter().flatten()));
         if !self.links.contains_key(id) {
             let links = Links { parent: carried.parent.clone(), group: carried.group.clone() };
             self.links.insert(id.to_owned(), links);
@@ -231,7 +305,7 @@ impl Mirror {
 }
 
 /// What a tab carries across a respawn or lands with: the mirror's values for it. `place_node` seeds a new node's
-/// links and pos with it too.
+/// links, pos, type and stored path with it too.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct Carried {
     /// The document pos (`Mirror::pos`): a new node's placement, which its `Create` carries (2b-4 Ruling 3).
@@ -249,6 +323,17 @@ pub(crate) struct Carried {
     pub engine: u64,
     /// The jar choice (`Mirror::jar_choice`); the default for a node that isn't a tab.
     pub jar: JarChoice,
+    /// The type string (`Mirror::ty`); "" for none.
+    pub ty: String,
+    /// The stored path (`Mirror::path`); "" for a node without a file.
+    pub path: String,
+    /// `Mirror::from_json`; `false` for a node that isn't a group.
+    pub from_json: bool,
+    /// `Mirror::default_jar`; `None` for a node that isn't a group.
+    pub default_jar: Option<NodeId>,
+    /// A Json leaf's key and stored value (`Mirror::key`, `Mirror::value`); "" for other kinds.
+    pub key: String,
+    pub value: String,
 }
 
 #[cfg(test)]
@@ -271,6 +356,12 @@ mod tests {
                 jar: Some(crate::store::model::NodeId { actor: crate::store::model::ActorId(1), counter: 2 }),
                 set: true,
             },
+            ty: "text/x".into(),
+            path: "C:/a.json".into(),
+            from_json: true,
+            default_jar: Some(NodeId { actor: crate::store::model::ActorId(1), counter: 3 }),
+            key: "k".into(),
+            value: "42".into(),
         };
         mirror.seed("7", &first);
         assert_eq!(mirror.carried("7"), first);
@@ -314,6 +405,28 @@ mod tests {
         assert!(!mirror.nodes["8"].contains_key(&field::URL), "an empty url seeds nothing");
         mirror.set("7", field::URL, FieldValue::Str("https://a/".into()));
         assert_eq!(mirror.url("7"), "https://a/");
+    }
+
+    #[test]
+    fn a_node_without_group_leaf_or_file_fields_seeds_none_and_reads_them_as_absent() {
+        let mut mirror = Mirror::default();
+        mirror.seed("8", &Carried::default());
+        for no in [field::TYPE, field::PATH, field::FROM_JSON, field::DEFAULT_JAR, field::KEY, field::VALUE] {
+            assert!(!mirror.nodes["8"].contains_key(&no), "field {no} seeds nothing");
+        }
+        assert_eq!((mirror.ty("8"), mirror.path("8"), mirror.key("8"), mirror.value("8")), ("", "", "", ""));
+        assert!(!mirror.from_json("8") && mirror.default_jar("8").is_none());
+    }
+
+    #[test]
+    fn init_field_never_overwrites_a_value() {
+        let mut mirror = Mirror::default();
+        mirror.init_field("7", field::URL, FieldValue::Str("https://a/".into()));
+        mirror.init_field("7", field::URL, FieldValue::Str("https://b/".into()));
+        assert_eq!(mirror.url("7"), "https://a/");
+        mirror.set("8", field::URL, FieldValue::Str(String::new()));
+        mirror.init_field("8", field::URL, FieldValue::Str("https://b/".into()));
+        assert_eq!(mirror.url("8"), "", "an absent value held is a value");
     }
 
     #[test]

@@ -2142,7 +2142,7 @@ mod tests {
                 egui::WidgetInfo::labeled(
                     egui::WidgetType::Button,
                     true,
-                    app.nodes[&g].accessible_name(app.own_text(&g)),
+                    app.nodes[&g].accessible_name(app.own_text(&g), app.source_url(&g)),
                 )
             });
         });

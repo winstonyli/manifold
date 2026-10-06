@@ -173,7 +173,7 @@ impl App {
     /// The file-backed Json node `current_group` names, if it does.
     pub(crate) fn current_json_node(&self) -> Option<&JsonPayload> {
         let node = self.nodes.get(self.current_group.as_ref()?)?;
-        node.as_json().filter(|json| json.key.is_none())
+        node.as_json().filter(|json| !json.leaf)
     }
 
     /// Leaves a JSON level for the Json node's group, before placing a new
@@ -551,7 +551,7 @@ mod tests {
     #[test]
     fn place_node_inserts_at_the_placement_and_returns_the_id() {
         let (mut app, _) = app_with_json("place_node", "[1]");
-        let note = || NodePayload::Note(NotePayload { text: String::new(), editing: false, url: None });
+        let note = || NodePayload::Note(NotePayload { text: String::new(), editing: false });
         let at = Placement { group: Some(OUTER.into()), pos: egui::vec2(1.0, 2.0) };
         let id = app.place_node(None, note(), at);
         assert_eq!(
@@ -752,11 +752,12 @@ mod tests {
         let payload = JsonPayload {
             path: dir.join("not-fetched-yet.json").to_string_lossy().into_owned(),
             value: Default::default(),
-            key: None,
+            leaf: false,
             error: None,
-            url: Some("https://x.test/j".into()),
         };
         app.insert_placeholder_node(J.into(), egui::Vec2::ZERO, NodePayload::Json(payload));
+        let url = crate::store::model::FieldValue::Str("https://x.test/j".into());
+        app.mirror.set(J, crate::store::model::field::URL, url);
         app.edit_group(J, Some(OUTER.into()));
         assert!(!app.nodes[J].as_json().unwrap().enterable());
         app.switch_group_level(Some(J.into()));

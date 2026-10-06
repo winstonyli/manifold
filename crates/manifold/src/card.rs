@@ -846,9 +846,7 @@ pub(crate) fn node_card_size(payload: &NodePayload) -> egui::Vec2 {
         NodePayload::Pdf(pdf) => pdf_card_size(pdf),
         // A file's own card previews its root (spec "The card at the
         // parent level"); a leaf or an error card keeps the small box.
-        NodePayload::Json(json) if json.key.is_none() && json.error.is_none() => {
-            crate::json_view::preview_size(&json.value)
-        }
+        NodePayload::Json(json) if !json.leaf && json.error.is_none() => crate::json_view::preview_size(&json.value),
         NodePayload::Json(_) => JSON_NODE_SIZE,
         NodePayload::Group(_) => GROUP_NODE_SIZE,
     }
@@ -1020,9 +1018,9 @@ impl App {
         };
         // Screen readers: the card is a button named by its kind and title (egui announces it on focus).
         if let Some(node) = self.nodes.get(id) {
-            let text = self.own_text(id);
+            let (text, source) = (self.own_text(id), self.source_url(id));
             response.widget_info(|| {
-                egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), node.accessible_name(text))
+                egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), node.accessible_name(text, source))
             });
         }
         // Keyboard: a focus ring, the camera follows focus, and the Tab-order number while navigating.
@@ -1337,14 +1335,15 @@ impl App {
         zoom_scale: f32,
     ) -> CardBody {
         let body = CardBody { interact_rect: rect, tooltip: None };
-        let Some((download_path, download_url, completed, failed, total_bytes, bytes_received)) = self
+        let Some((download_path, completed, failed, total_bytes, bytes_received)) = self
             .nodes
             .get(id)
             .and_then(|n| n.as_download())
-            .map(|d| (d.path.clone(), d.url.clone(), d.completed, d.failed, d.total_bytes, d.bytes_received))
+            .map(|d| (d.path.clone(), d.completed, d.failed, d.total_bytes, d.bytes_received))
         else {
             return body;
         };
+        let download_url = self.copyable_url(id).map(str::to_owned);
         let filename = download_filename(&download_path);
         // LOD: the header text is skipped once simplified -- see `paint_tab_body`'s own LOD comment.
         if !self.graph_lod_simplified {
@@ -1560,10 +1559,8 @@ impl App {
         let mut body = CardBody { interact_rect: rect, tooltip: None };
         let error = self.nodes.get(id).and_then(|n| n.as_image()).and_then(|i| i.error.clone());
         if let Some(error) = error {
-            if let Some((path, url)) =
-                self.nodes.get(id).and_then(|n| n.as_image()).map(|i| (i.path.clone(), i.url.clone()))
-            {
-                let text = file_header_text(&path, url.as_deref());
+            if let Some(path) = self.nodes.get(id).and_then(|n| n.as_image()).map(|i| i.path.clone()) {
+                let text = file_header_text(&path, self.source_url(id));
                 self.paint_missing_file_card(ui, deferred_overlays, rect, inv_zoom, zoom_scale, text);
             }
             body.tooltip = Some(error);
@@ -1582,7 +1579,7 @@ impl App {
                 Some(tex_id) => {
                     ui.painter().image(tex_id, rect, FULL_UV, egui::Color32::WHITE);
                     if let Some(image) = self.nodes.get(id).and_then(|n| n.as_image()) {
-                        let (name, source, source_is_path) = file_header_text(&image.path, image.url.as_deref());
+                        let (name, source, source_is_path) = file_header_text(&image.path, self.source_url(id));
                         let header = CardHeader {
                             glyph: Some(egui_phosphor::light::IMAGE),
                             glyph_color: None,
@@ -1662,7 +1659,7 @@ impl App {
                 Some(Ok((Some(tex_id), page_count))) => {
                     ui.painter().image(tex_id, rect, FULL_UV, egui::Color32::WHITE);
                     if let Some(pdf) = self.nodes.get(id).and_then(|n| n.as_pdf()) {
-                        let (name, source, source_is_path) = file_header_text(&pdf.path, pdf.url.as_deref());
+                        let (name, source, source_is_path) = file_header_text(&pdf.path, self.source_url(id));
                         // The page count sits at the bottom right, so the fallback strip stops short of it.
                         let header = CardHeader {
                             glyph: Some(egui_phosphor::light::FILE_PDF),
@@ -1751,9 +1748,9 @@ impl App {
         }
         let Some(json) = self.nodes.get(id).and_then(|n| n.as_json()) else { return body };
         let text = !self.graph_lod_simplified && rect.width() * zoom_scale >= MIN_LABEL_CARD_SCREEN_WIDTH;
-        if json.key.is_some() {
-            // A leaf from an old "Expand as Graph": its one-line summary.
-            let key = json.key.clone().unwrap_or_default();
+        if json.leaf {
+            // A leaf from an old "Expand as Graph": its one-line summary. Its key is the mirror's.
+            let key = self.mirror.key(id).to_owned();
             let key_display =
                 if key.chars().count() > 16 { format!("{}…", key.chars().take(15).collect::<String>()) } else { key };
             let summary = format!("{key_display}: {}", json_summary(&json.value));
@@ -2779,7 +2776,6 @@ mod tests {
     fn node_card_size_matches_each_kinds_card() {
         let download = NodePayload::Download(DownloadPayload {
             path: "f.bin".into(),
-            url: None,
             bytes_received: 0,
             total_bytes: None,
             completed: false,
@@ -2787,25 +2783,24 @@ mod tests {
         });
         assert_eq!(node_card_size(&download), DOWNLOAD_NODE_SIZE);
         assert_eq!(
-            node_card_size(&NodePayload::Note(NotePayload { text: String::new(), editing: false, url: None })),
+            node_card_size(&NodePayload::Note(NotePayload { text: String::new(), editing: false })),
             NOTE_NODE_SIZE
         );
         assert_eq!(node_card_size(&NodePayload::Group(GroupPayload::default())), GROUP_NODE_SIZE);
-        let json = |value: serde_json::Value, key: Option<&str>, error: Option<&str>| {
+        let json = |value: serde_json::Value, leaf: bool, error: Option<&str>| {
             NodePayload::Json(JsonPayload {
                 path: "a.json".into(),
                 value: value.into(),
-                key: key.map(Into::into),
+                leaf,
                 error: error.map(Into::into),
-                url: None,
             })
         };
         let five = serde_json::json!({"a": 1, "b": 2, "c": 3, "d": 4, "e": 5});
-        assert_eq!(node_card_size(&json(five.clone(), None, None)), crate::json_view::preview_size(&five));
-        assert_eq!(node_card_size(&json(serde_json::json!({}), None, None)).x, crate::json_view::PREVIEW_CARD_WIDTH);
+        assert_eq!(node_card_size(&json(five.clone(), false, None)), crate::json_view::preview_size(&five));
+        assert_eq!(node_card_size(&json(serde_json::json!({}), false, None)).x, crate::json_view::PREVIEW_CARD_WIDTH);
         // A leaf from an old "Expand as Graph" and an error card keep the small size.
-        assert_eq!(node_card_size(&json(serde_json::json!(1), Some("k"), None)), JSON_NODE_SIZE);
-        assert_eq!(node_card_size(&json(five, None, Some("missing"))), JSON_NODE_SIZE);
+        assert_eq!(node_card_size(&json(serde_json::json!(1), true, None)), JSON_NODE_SIZE);
+        assert_eq!(node_card_size(&json(five, false, Some("missing"))), JSON_NODE_SIZE);
         assert_eq!(
             node_card_size(&NodePayload::Unloaded(UnloadedTabPayload {
                 url: "https://example.org/".into(),
@@ -2819,9 +2814,8 @@ mod tests {
 
         // Image: a small picture keeps its own size; an oversized one is
         // scaled down to fit `IMAGE_NODE_MAX_SIZE`, aspect ratio kept.
-        let image = |width, height| {
-            NodePayload::Image(ImagePayload { path: "p.png".into(), width, height, error: None, url: None })
-        };
+        let image =
+            |width, height| NodePayload::Image(ImagePayload { path: "p.png".into(), width, height, error: None });
         assert_eq!(node_card_size(&image(40, 20)), egui::vec2(40.0, 20.0));
         let big = node_card_size(&image(100_000, 50_000));
         assert!(big.x <= IMAGE_NODE_MAX_SIZE.x && big.y <= IMAGE_NODE_MAX_SIZE.y);
@@ -2829,7 +2823,7 @@ mod tests {
 
         // Pdf: pending and failed use the fixed pending box; rendered uses
         // the page's own size through the same image fitting.
-        let pdf = |outcome| NodePayload::Pdf(PdfPayload { path: "d.pdf".into(), outcome, url: None });
+        let pdf = |outcome| NodePayload::Pdf(PdfPayload { path: "d.pdf".into(), outcome });
         assert_eq!(node_card_size(&pdf(None)), PDF_PENDING_NODE_SIZE);
         assert_eq!(node_card_size(&pdf(Some(Err("bad".into())))), PDF_PENDING_NODE_SIZE);
         assert_eq!(
@@ -2847,7 +2841,6 @@ mod tests {
         }
         let download = NodePayload::Download(DownloadPayload {
             path: "C:/dl/f.bin".into(),
-            url: None,
             bytes_received: 0,
             total_bytes: None,
             completed: true,
@@ -2855,31 +2848,26 @@ mod tests {
         });
         // Download filters on its full path; the file kinds on the filename only.
         assert_eq!(filter(&download), ["C:/dl/f.bin"]);
-        assert_eq!(
-            filter(&NodePayload::Note(NotePayload { text: String::new(), editing: false, url: None })),
-            ["buy milk"]
-        );
+        assert_eq!(filter(&NodePayload::Note(NotePayload { text: String::new(), editing: false })), ["buy milk"]);
         assert_eq!(
             filter(&NodePayload::Image(ImagePayload {
                 path: "C:/pics/cat.png".into(),
                 width: 1,
                 height: 1,
                 error: None,
-                url: None
             })),
             ["cat.png"]
         );
         assert_eq!(
-            filter(&NodePayload::Pdf(PdfPayload { path: "C:/docs/paper.pdf".into(), outcome: None, url: None })),
+            filter(&NodePayload::Pdf(PdfPayload { path: "C:/docs/paper.pdf".into(), outcome: None })),
             ["paper.pdf"]
         );
         assert_eq!(
             filter(&NodePayload::Json(JsonPayload {
                 path: "C:/data/x.json".into(),
                 value: std::sync::Arc::new(serde_json::json!(1)),
-                key: None,
+                leaf: false,
                 error: None,
-                url: None,
             })),
             ["x.json"]
         );

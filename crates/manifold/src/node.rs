@@ -63,7 +63,7 @@ payload_accessors! {
     Tab(TabPayload) => as_tab, as_tab_mut;
     Unloaded(UnloadedTabPayload) => as_unloaded;
     Download(DownloadPayload) => as_download, as_download_mut;
-    Group(GroupPayload) => as_group, as_group_mut;
+    Group(GroupPayload) => as_group;
     Note(NotePayload) => as_note, as_note_mut;
     Image(ImagePayload) => as_image;
     Pdf(PdfPayload) => as_pdf, as_pdf_mut;
@@ -83,6 +83,35 @@ impl NodePayload {
             | NodePayload::Image(_)
             | NodePayload::Pdf(_)
             | NodePayload::Json(_) => None,
+        }
+    }
+
+    /// The store kind this payload is saved as: its type (`Kind::type_str`, `Mirror::ty`). A live or unloaded card is a
+    /// `Tab`, a Json leaf a `JsonLeaf`, and a download in progress (never saved) a `Download` too.
+    pub(crate) fn store_kind(&self) -> crate::store::model::Kind {
+        use crate::store::model::Kind;
+        match self {
+            NodePayload::Tab(_) | NodePayload::Unloaded(_) => Kind::Tab,
+            NodePayload::Download(_) => Kind::Download,
+            NodePayload::Group(_) => Kind::Group,
+            NodePayload::Note(_) => Kind::Note,
+            NodePayload::Image(_) => Kind::Image,
+            NodePayload::Pdf(_) => Kind::Pdf,
+            NodePayload::Json(j) if j.leaf => Kind::JsonLeaf,
+            NodePayload::Json(_) => Kind::Json,
+        }
+    }
+
+    /// The file a content card shows on this machine (an image, PDF, Json file or leaf, or download): its stored
+    /// path resolved here (`ContentIndex::resolve`), or a reload's new file. `None` for other kinds. The stored path is
+    /// the mirror's (`Mirror::path`, 2b-5 Ruling 5).
+    pub(crate) fn file_path(&self) -> Option<&str> {
+        match self {
+            NodePayload::Image(p) => Some(&p.path),
+            NodePayload::Pdf(p) => Some(&p.path),
+            NodePayload::Json(p) => Some(&p.path),
+            NodePayload::Download(p) => Some(&p.path),
+            NodePayload::Tab(_) | NodePayload::Unloaded(_) | NodePayload::Group(_) | NodePayload::Note(_) => None,
         }
     }
 
@@ -173,10 +202,7 @@ pub(crate) struct NotePayload {
     /// note starts `true` instead, so typing into it works immediately
     /// with no extra click.
     pub(crate) editing: bool,
-    /// Where this content came from on the web, when it did (see
-    /// `content`): Refresh and Open as tab use it, and a missing file is
-    /// fetched again from it. `None` for a local file.
-    pub(crate) url: Option<String>,
+    // Where it came from on the web, when it did, is the mirror's (`Mirror::url`, `App::source_url`).
 }
 
 /// A locally-added picture, embedded directly on the graph -- the second
@@ -203,10 +229,6 @@ pub(crate) struct ImagePayload {
     /// with this message as its tooltip. It stays in the session, so the
     /// next launch tries the file again.
     pub(crate) error: Option<String>,
-    /// Where this content came from on the web, when it did (see
-    /// `content`): Refresh and Open as tab use it, and a missing file is
-    /// fetched again from it. `None` for a local file.
-    pub(crate) url: Option<String>,
 }
 
 /// A locally-added PDF, rendered as its own graph node -- the third new
@@ -236,10 +258,6 @@ pub(crate) struct PdfPayload {
     /// failure) -- shown in place of the page image, distinct from "still
     /// loading" so a real failure isn't mistaken for a hang.
     pub(crate) outcome: Option<Result<PdfOutcome, String>>,
-    /// Where this content came from on the web, when it did (see
-    /// `content`): Refresh and Open as tab use it, and a missing file is
-    /// fetched again from it. `None` for a local file.
-    pub(crate) url: Option<String>,
 }
 
 pub(crate) struct PdfOutcome {
@@ -262,24 +280,16 @@ pub(crate) struct JsonPayload {
     pub(crate) path: String,
     /// Shared with an open `JsonLevel` (entering the node doesn't copy it).
     pub(crate) value: std::sync::Arc<serde_json::Value>,
-    /// The JSON key (or `[index]` for an array element) this value came
-    /// from -- `None` for a genuine top-level file-backed JSON node (its
-    /// card just shows the value's own shape), `Some(k)` for a leaf that an
-    /// older build's "Expand as Graph" made, whose card shows `"{k}: {value}"`
-    /// instead so it's clear which field this is. Such a leaf is stored as
-    /// its own `JsonLeaf` node, not this field, but still loads from a
-    /// session saved before that feature was removed -- see
-    /// `GroupPayload::from_json`.
-    pub(crate) key: Option<String>,
+    /// A leaf that an older build's "Expand as Graph" made (a `JsonLeaf` node), whose card shows `"{key}: {value}"`
+    /// (`Mirror::key`) so it's clear which field it is; `false` for a genuine top-level file-backed JSON node (its card
+    /// just shows the value's own shape). A leaf still loads from a session saved before that feature was removed; see
+    /// `Mirror::from_json`.
+    pub(crate) leaf: bool,
     /// Same as `ImagePayload::error`: a restored card whose file couldn't
     /// be loaded (`value` is `Null`).
     pub(crate) error: Option<String>,
-    /// Where this content came from on the web, when it did (see
-    /// `content`): Refresh and Open as tab use it, and a missing file is
-    /// fetched again from it. `None` for a local file, and for a leaf
-    /// (`key.is_some()`, never persisted).
-    pub(crate) url: Option<String>,
-    // What the user changed about this node's level (spec "Saved view state") is the mirror's: `Mirror::view`.
+    // Where it came from on the web (`Mirror::url`) and what the user changed about its level (spec "Saved view
+    // state", `Mirror::view`) are the mirror's.
 }
 
 impl JsonPayload {
@@ -289,9 +299,7 @@ impl JsonPayload {
     /// here yet), whose view must outlive the fetch. A file that really
     /// holds `null` is still on disk, so the stat runs only for `Null`.
     pub(crate) fn enterable(&self) -> bool {
-        self.key.is_none()
-            && self.error.is_none()
-            && !(self.value.is_null() && !std::path::Path::new(&self.path).exists())
+        !self.leaf && self.error.is_none() && !(self.value.is_null() && !std::path::Path::new(&self.path).exists())
     }
 }
 
@@ -377,8 +385,8 @@ pub(crate) struct TabPayload {
 /// holds for every kind.
 pub(crate) struct DownloadPayload {
     pub(crate) path: String,
-    /// What the engine fetched, if it said (not a refetch source: a download has no Refresh).
-    pub(crate) url: Option<String>,
+    // What the engine fetched, if it said, is the mirror's (`Mirror::url`): not a refetch source, a download has no
+    // Refresh.
     /// Bytes received so far -- created (node included) at
     /// `EngineToHost::DownloadStarted`, not only once finished, so a
     /// download is visible with live progress for its whole lifetime
@@ -437,15 +445,15 @@ impl Layout {
 }
 
 impl GraphNode {
-    /// What a screen reader announces for the node's card: its kind, then what identifies it. A local file (no
-    /// web source) is named by its file name; a note by the first line of `text` and a group by `text`, the stored
-    /// text its card shows (`App::own_text`), ignored for other kinds.
-    pub(crate) fn accessible_name(&self, text: &str) -> String {
+    /// What a screen reader announces for the node's card: its kind, then what identifies it. A content card is named
+    /// by its web `source` (`App::source_url`), or by its file name when it has none; a note by the first line of
+    /// `text` and a group by `text`, the stored text its card shows (`App::own_text`), ignored for other kinds.
+    pub(crate) fn accessible_name(&self, text: &str, source: Option<&str>) -> String {
         let first_nonempty = |parts: &[&str]| parts.iter().find(|p| !p.trim().is_empty()).map(|p| p.trim().to_string());
         // Either separator: a saved path may come from the other platform.
         let file_name =
             |path: &str| path.rsplit(['/', '\\']).next().filter(|name| !name.is_empty()).map(str::to_string);
-        let source_or_file = |path: &str| self.source_url().map(str::to_string).or_else(|| file_name(path));
+        let source_or_file = |path: &str| source.map(str::to_string).or_else(|| file_name(path));
         let (kind, detail) = match &self.payload {
             NodePayload::Tab(t) => ("Tab", first_nonempty(&[&t.title, &t.url])),
             NodePayload::Unloaded(t) => ("Sleeping tab", first_nonempty(&[&t.title, &t.url])),
@@ -467,31 +475,24 @@ impl GraphNode {
             None => kind.to_string(),
         }
     }
+}
 
-    /// The web source of an Image, Pdf, Json (not a leaf) or Note node.
-    pub(crate) fn source_url(&self) -> Option<&str> {
-        match &self.payload {
-            NodePayload::Image(p) => p.url.as_deref(),
-            NodePayload::Pdf(p) => p.url.as_deref(),
-            NodePayload::Json(p) if p.key.is_none() => p.url.as_deref(),
-            NodePayload::Note(p) => p.url.as_deref(),
-            _ => None,
-        }
+impl App {
+    /// The web source of an Image, Pdf, Json (not a leaf) or Note node (`Mirror::url`): Refresh and Open as tab use it,
+    /// and a missing file is fetched again from it. `None` for a local file and for other kinds.
+    pub(crate) fn source_url(&self, id: &str) -> Option<&str> {
+        let content = match &self.nodes.get(id)?.payload {
+            NodePayload::Image(_) | NodePayload::Pdf(_) | NodePayload::Note(_) => true,
+            NodePayload::Json(p) => !p.leaf,
+            _ => false,
+        };
+        Some(self.mirror.url(id)).filter(|url| content && !url.is_empty())
     }
 
     /// The URL a card's "Copy URL" puts on the clipboard: its `source_url`, or the address a download came from.
-    pub(crate) fn copyable_url(&self) -> Option<&str> {
-        self.source_url().or_else(|| self.as_download().and_then(|d| d.url.as_deref()))
-    }
-
-    pub(crate) fn source_url_mut(&mut self) -> Option<&mut Option<String>> {
-        match &mut self.payload {
-            NodePayload::Image(p) => Some(&mut p.url),
-            NodePayload::Pdf(p) => Some(&mut p.url),
-            NodePayload::Json(p) if p.key.is_none() => Some(&mut p.url),
-            NodePayload::Note(p) => Some(&mut p.url),
-            _ => None,
-        }
+    pub(crate) fn copyable_url(&self, id: &str) -> Option<&str> {
+        let download = self.nodes.get(id).is_some_and(|n| n.as_download().is_some());
+        self.source_url(id).or_else(|| Some(self.mirror.url(id)).filter(|url| download && !url.is_empty()))
     }
 }
 
@@ -533,15 +534,10 @@ impl GraphNode {
 /// members and nesting are saved in the session store (`session_sync`).
 /// Its name is the mirror's (`Mirror::name`, written by `App::edit_name`; a new group's is seeded by
 /// `App::place_group`).
+/// Whether an older build's "Expand as Graph" made it (`Mirror::from_json`) and the jar new tabs in it start with
+/// (`Mirror::default_jar`) are the mirror's too: a group has no runtime state of its own.
 #[derive(Default)]
-pub(crate) struct GroupPayload {
-    /// Made by an older build's "Expand as Graph", now removed. Saved like
-    /// any group, as are the JSON leaves inside it, so a session saved by
-    /// that build still loads.
-    pub(crate) from_json: bool,
-    /// The jar new tabs in this group start with (`field::DEFAULT_JAR`); `None` inherits from the parent group.
-    pub(crate) default_jar: Option<crate::store::model::NodeId>,
-}
+pub(crate) struct GroupPayload {}
 
 #[cfg(test)]
 mod tests {
@@ -554,7 +550,6 @@ mod tests {
         assert_eq!(
             item_node_kind(&NodePayload::Download(DownloadPayload {
                 path: "file.bin".into(),
-                url: None,
                 bytes_received: 0,
                 total_bytes: Some(1024),
                 completed: false,
@@ -564,7 +559,7 @@ mod tests {
         );
         assert_eq!(item_node_kind(&NodePayload::Group(GroupPayload::default())), ItemNodeKind::Group);
         assert_eq!(
-            item_node_kind(&NodePayload::Note(NotePayload { text: "n".into(), editing: false, url: None })),
+            item_node_kind(&NodePayload::Note(NotePayload { text: "n".into(), editing: false })),
             ItemNodeKind::Note
         );
         assert_eq!(
@@ -573,21 +568,19 @@ mod tests {
                 width: 100,
                 height: 100,
                 error: None,
-                url: None
             })),
             ItemNodeKind::Image
         );
         assert_eq!(
-            item_node_kind(&NodePayload::Pdf(PdfPayload { path: "doc.pdf".into(), outcome: None, url: None })),
+            item_node_kind(&NodePayload::Pdf(PdfPayload { path: "doc.pdf".into(), outcome: None })),
             ItemNodeKind::Pdf
         );
         assert_eq!(
             item_node_kind(&NodePayload::Json(JsonPayload {
                 path: "data.json".into(),
                 value: Default::default(),
-                key: None,
+                leaf: false,
                 error: None,
-                url: None,
             })),
             ItemNodeKind::Json
         );
@@ -600,7 +593,7 @@ mod tests {
         let (g, n) = (app.alloc_node_id(), app.alloc_node_id());
         app.insert_group_at(g.clone(), None);
         app.insert_note_at(n.clone(), None);
-        let name = |app: &crate::App, id: &str| app.nodes[id].accessible_name(app.own_text(id));
+        let name = |app: &crate::App, id: &str| app.nodes[id].accessible_name(app.own_text(id), None);
         assert_eq!(name(&app, &n), "Note");
         app.nodes.get_mut(&n).unwrap().payload.as_note_mut().unwrap().text = "
   first line
@@ -627,31 +620,20 @@ second"
     #[test]
     fn a_local_file_card_has_an_accessible_name() {
         let node = |payload| GraphNode { payload };
-        let pdf = |url: Option<&str>| {
-            node(NodePayload::Pdf(PdfPayload {
-                path: r"C:\docs\report.pdf".into(),
-                outcome: None,
-                url: url.map(str::to_string),
-            }))
-        };
-        assert_eq!(pdf(None).accessible_name(""), "PDF: report.pdf");
-        assert_eq!(pdf(Some("https://example.org/r.pdf")).accessible_name(""), "PDF: https://example.org/r.pdf");
-        let image = node(NodePayload::Image(ImagePayload {
-            path: "/home/u/cat.png".into(),
-            width: 1,
-            height: 1,
-            error: None,
-            url: None,
-        }));
-        assert_eq!(image.accessible_name(""), "Image: cat.png");
+        let pdf = node(NodePayload::Pdf(PdfPayload { path: r"C:\docs\report.pdf".into(), outcome: None }));
+        assert_eq!(pdf.accessible_name("", None), "PDF: report.pdf");
+        let source = Some("https://example.org/r.pdf");
+        assert_eq!(pdf.accessible_name("", source), "PDF: https://example.org/r.pdf");
+        let image =
+            node(NodePayload::Image(ImagePayload { path: "/home/u/cat.png".into(), width: 1, height: 1, error: None }));
+        assert_eq!(image.accessible_name("", None), "Image: cat.png");
         let json = node(NodePayload::Json(JsonPayload {
             path: r"D:\data\x.json".into(),
             value: Default::default(),
-            key: None,
+            leaf: false,
             error: None,
-            url: None,
         }));
-        assert_eq!(json.accessible_name(""), "JSON: x.json");
+        assert_eq!(json.accessible_name("", None), "JSON: x.json");
     }
 
     /// An unloaded tab's card is saved, exported and copied as its tab.

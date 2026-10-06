@@ -91,8 +91,9 @@ pub(crate) fn tab_title(app: &App, id: &str) -> Option<String> {
 
 /// `fields` (`id`'s, from `shared_nodes`) as the user saw the node: a tab's `url` replaced by its live one, a note's
 /// `text` by what its card shows (`App::note_text`: a box being typed in holds text no save has committed), and `pos`
-/// by where its card was drawn (`App::layout`). Recently Closed reopens the page that was closed, not the shared url
-/// the mirror holds (2b-3 Ruling 1), where it was shown, not at its document pos (2b-4 Ruling 10).
+/// by where its card was drawn (`App::layout`), and a file card's `path` by the one resolved on this machine (the
+/// payload's). Recently Closed reopens the page that was closed, not the shared url the mirror holds (2b-3 Ruling 1),
+/// where it was shown, not at its document pos (2b-4 Ruling 10), from the file this machine read (2b-5 Ruling 5).
 fn live_fields(app: &App, id: &str, fields: &session_sync::Fields) -> session_sync::Fields {
     let mut fields = fields.clone();
     if let Some(url) = app.nodes.get(id).and_then(|n| n.payload.saved_tab()) {
@@ -100,6 +101,11 @@ fn live_fields(app: &App, id: &str, fields: &session_sync::Fields) -> session_sy
     }
     if fields.contains_key(&field::TEXT) {
         fields.insert(field::TEXT, store::model::FieldValue::Str(app.note_text(id).to_owned()));
+    }
+    if let Some(path) = app.nodes.get(id).and_then(|n| n.payload.file_path()) {
+        if fields.contains_key(&field::PATH) {
+            fields.insert(field::PATH, store::model::FieldValue::Str(path.to_owned()));
+        }
     }
     if app.layout.contains_key(id) && fields.contains_key(&field::POS) {
         fields.insert(field::POS, session_sync::pos_value(app.layout_pos(id)));
@@ -264,25 +270,22 @@ mod tests {
         let put_in = |app: &mut App, id: &str, group: &str| app.edit_group(id, Some(group.into()));
 
         let outer = crate::session_sync::tests::add_group(&mut app, "Outer");
-        let note0 = add(&mut app, NodePayload::Note(NotePayload { text: "kept".into(), editing: false, url: None }));
+        let note0 = add(&mut app, NodePayload::Note(NotePayload { text: "kept".into(), editing: false }));
         put_in(&mut app, &note0, &outer);
-        let note1 = add(&mut app, NodePayload::Note(NotePayload { text: " ".into(), editing: false, url: None }));
+        let note1 = add(&mut app, NodePayload::Note(NotePayload { text: " ".into(), editing: false }));
         put_in(&mut app, &note1, &outer);
         let inner = crate::session_sync::tests::add_group(&mut app, "Inner");
         put_in(&mut app, &inner, &outer);
-        let img0 = add(
-            &mut app,
-            NodePayload::Image(ImagePayload { path: "i.png".into(), width: 1, height: 1, error: None, url: None }),
-        );
+        let img0 =
+            add(&mut app, NodePayload::Image(ImagePayload { path: "i.png".into(), width: 1, height: 1, error: None }));
         put_in(&mut app, &img0, &inner);
         let json0 = add(
             &mut app,
             NodePayload::Json(JsonPayload {
                 path: "d.json".into(),
                 value: std::sync::Arc::new(1.into()),
-                key: Some("k".into()),
+                leaf: true,
                 error: None,
-                url: None,
             }),
         );
         put_in(&mut app, &json0, &inner);
@@ -290,7 +293,6 @@ mod tests {
             &mut app,
             NodePayload::Download(DownloadPayload {
                 path: "f.bin".into(),
-                url: None,
                 bytes_received: 1,
                 total_bytes: Some(1),
                 completed: true,
@@ -298,7 +300,7 @@ mod tests {
             }),
         );
         put_in(&mut app, &dl0, &inner);
-        let note2 = add(&mut app, NodePayload::Note(NotePayload { text: "outside".into(), editing: false, url: None }));
+        let note2 = add(&mut app, NodePayload::Note(NotePayload { text: "outside".into(), editing: false }));
 
         let entry = closed_entry(&app, &outer).unwrap();
         let ids: Vec<&str> = entry.doc.nodes.iter().map(|n| n.id.as_str()).collect();
@@ -316,9 +318,8 @@ mod tests {
             NodePayload::Json(JsonPayload {
                 path: "d.json".into(),
                 value: std::sync::Arc::new(1.into()),
-                key: Some("k".into()),
+                leaf: true,
                 error: None,
-                url: None,
             }),
         );
         assert!(closed_entry(&app, &leaf_outside).is_none(), "a JSON leaf outside a group gives None");
@@ -364,7 +365,7 @@ mod tests {
         use crate::session_sync::tests::app_on;
         let path = store::testutil::temp_dir("closed-layout-pos").join("session.mnf");
         let mut app = app_on(&path, 1);
-        let note = NodePayload::Note(crate::node::NotePayload { text: "n".into(), editing: false, url: None });
+        let note = NodePayload::Note(crate::node::NotePayload { text: "n".into(), editing: false });
         let note = app.place_node(None, note, crate::fetched::Placement { group: None, pos: egui::vec2(10.0, 20.0) });
         assert!(app.save_session());
         app.snap_layout(&note, egui::vec2(70.0, 80.0));
@@ -383,7 +384,7 @@ mod tests {
     #[test]
     fn a_closed_note_records_what_was_typed() {
         let mut app = App::default();
-        let note = NodePayload::Note(crate::node::NotePayload { text: "n".into(), editing: false, url: None });
+        let note = NodePayload::Note(crate::node::NotePayload { text: "n".into(), editing: false });
         let note = app.place_node(None, note, crate::fetched::Placement { group: None, pos: egui::vec2(10.0, 20.0) });
         let n = app.nodes.get_mut(&note).unwrap().as_note_mut().unwrap();
         (n.editing, n.text) = (true, "typed".into());

@@ -119,7 +119,8 @@ pub(crate) fn engine_of(code: u64) -> EngineKind {
 ///   never recreated (ids are never reused).
 /// - An existing node's group and parent are left to `App::pending_moves`
 ///   and `App::pending` (Ruling 8), as its mirrored fields (`pos`, `url`,
-///   `engine`, `jar` and `jar_set` among them) are, except a jar's.
+///   `engine`, `jar`, `jar_set`, a group's `from_json` and `default_jar`, a
+///   file's `path`, a leaf's `key` and `value` among them) are, except a jar's.
 /// - A diffed field that differs is `Set`. An explicit field (`path`, the
 ///   last one) is `Set` only when `explicit` names it, which nothing does
 ///   (2b-5 deletes the machinery).
@@ -251,10 +252,6 @@ fn url_of(fields: &Fields) -> Option<String> {
     Some(str_of(fields, field::URL)).filter(|u| !u.is_empty())
 }
 
-fn bool_of(fields: &Fields, no: u32) -> bool {
-    matches!(fields.get(&no), Some(FieldValue::Bool(true)))
-}
-
 fn pos_of(fields: &Fields) -> egui::Vec2 {
     match fields.get(&field::POS) {
         Some(FieldValue::Pos(x, y)) => egui::vec2(*x, *y),
@@ -341,13 +338,6 @@ fn tab_fields(
     Kind::Tab
 }
 
-fn node_id_of(fields: &Fields, no: u32) -> Option<NodeId> {
-    match fields.get(&no) {
-        Some(FieldValue::Id(id)) => *id,
-        _ => None,
-    }
-}
-
 /// `raw` (an imported node's field values, as `store::json::import` gave
 /// them) shaped like `Shared::fields`: exactly `kind_fields(kind)`, with
 /// any field the file left out filled in as absent, for
@@ -384,78 +374,27 @@ fn tab_common(payload: &NodePayload) -> Option<TabCommon<'_>> {
 }
 
 impl App {
-    /// Every live node the store keeps, as `Shared`. Skipped: an
-    /// in-progress download (it can't resume), and a node whose id isn't a
-    /// store id (only hand-built test nodes).
+    /// Every live node the store keeps, as `Shared`: each field of its kind as the mirror holds it (2b-5: every
+    /// stored field of a graph node is mirror state). A tab's url is the shared one, not the live one its payload holds
+    /// (2b-3 Ruling 1); its engine is the one a swap in progress already shows as its target (`start_swap_to`); a file
+    /// card's path is the stored one, not the one its payload resolved here (2b-5 Ruling 5). Skipped: an in-progress
+    /// download (it can't resume), and a node whose id isn't a store id (only hand-built test nodes).
     pub(crate) fn shared_nodes(&self) -> BTreeMap<NodeId, Shared> {
         let str = |s: &str| FieldValue::Str(s.to_owned());
         let mut out = BTreeMap::new();
         for (key, node) in &self.nodes {
             let Ok(id) = key.parse::<NodeId>() else { continue };
-            let mut fields = Fields::from([
-                (field::POS, self.mirror.get(key, field::POS)),
-                (field::COLOR, self.mirror.get(key, field::COLOR)),
-            ]);
-            let kind = match &node.payload {
-                // A tab's url is the shared one, not the live one its payload holds (Ruling 1); its engine is the
-                // mirror's, which a swap in progress already shows as its target (`start_swap_to`), and so is its
-                // jar.
-                NodePayload::Tab(_) | NodePayload::Unloaded(_) => {
-                    let (url, engine) = (self.mirror.get(key, field::URL), self.mirror.get(key, field::ENGINE));
-                    let (pinned, jar) = (self.mirror.pinned(key), self.mirror.jar_choice(key));
-                    tab_fields(&mut fields, url, engine, pinned, link_id(self.mirror.parent(key)), jar)
-                }
-                NodePayload::Download(dl) if dl.completed => {
-                    fields.insert(field::PATH, str(&dl.path));
-                    fields.insert(field::URL, str(dl.url.as_deref().unwrap_or("")));
-                    Kind::Download
-                }
-                NodePayload::Download(_) => continue,
-                NodePayload::Group(g) => {
-                    fields.insert(field::NAME, self.mirror.get(key, field::NAME));
-                    fields.insert(field::FROM_JSON, FieldValue::Bool(g.from_json));
-                    fields.insert(field::DEFAULT_JAR, FieldValue::Id(g.default_jar));
-                    Kind::Group
-                }
-                NodePayload::Note(n) => {
-                    fields.insert(field::URL, str(n.url.as_deref().unwrap_or("")));
-                    fields.insert(field::TEXT, self.mirror.get(key, field::TEXT));
-                    Kind::Note
-                }
-                NodePayload::Image(i) => {
-                    fields.insert(field::URL, str(i.url.as_deref().unwrap_or("")));
-                    fields.insert(field::PATH, str(&i.path));
-                    Kind::Image
-                }
-                NodePayload::Pdf(p) => {
-                    fields.insert(field::URL, str(p.url.as_deref().unwrap_or("")));
-                    fields.insert(field::PATH, str(&p.path));
-                    Kind::Pdf
-                }
-                NodePayload::Json(j) => {
-                    fields.insert(field::PATH, str(&j.path));
-                    match &j.key {
-                        None => {
-                            fields.insert(field::URL, str(j.url.as_deref().unwrap_or("")));
-                            fields.insert(field::VIEW, self.mirror.get(key, field::VIEW));
-                            Kind::Json
-                        }
-                        Some(key) => {
-                            fields.insert(field::KEY, str(key));
-                            fields.insert(field::VALUE, FieldValue::Str(j.value.to_string()));
-                            Kind::JsonLeaf
-                        }
-                    }
-                }
-            };
-            if kind_fields(kind).contains(&field::PARENT) {
-                fields.insert(field::PARENT, FieldValue::Id(link_id(self.mirror.parent(key))));
+            if node.as_download().is_some_and(|dl| !dl.completed) {
+                continue;
             }
-            debug_assert_eq!(fields.keys().copied().collect::<Vec<_>>(), {
-                let mut want = kind_fields(kind).to_vec();
-                want.sort();
-                want
-            });
+            let kind = node.payload.store_kind();
+            let fields = kind_fields(kind)
+                .iter()
+                .map(|&no| match no {
+                    field::PARENT => (no, FieldValue::Id(link_id(self.mirror.parent(key)))),
+                    _ => (no, self.mirror.get(key, no)),
+                })
+                .collect();
             out.insert(id, Shared { kind, group: link_id(self.mirror.group(key)), fields });
         }
         // Jar definitions are not graph nodes but must be live, or `diff` deletes their document nodes.
@@ -517,6 +456,10 @@ impl App {
             return;
         }
         let held = self.mirror_remote(&id, fields, group.as_deref());
+        // The store never changes a node's type, so the first one seen stands (2b-5 Ruling 10).
+        if let Some(ty) = kind.type_str() {
+            self.mirror.init_field(&id, field::TYPE, FieldValue::Str(ty.to_owned()));
+        }
         let pos = local.map_or_else(|| pos_of(fields), |l| egui::vec2(l.pos[0], l.pos[1]));
         let now = Shared { kind, group: group.as_deref().and_then(|g| g.parse().ok()), fields: fields.clone() };
         let seen = self.last_shared.insert(id.clone(), now.clone());
@@ -581,30 +524,19 @@ impl App {
                     tab.url = str_of(fields, field::URL);
                 }
             }
-            // A group's name is the mirror's (`mirror_remote`).
-            NodePayload::Group(g) => {
-                if changed(field::FROM_JSON) {
-                    g.from_json = bool_of(fields, field::FROM_JSON);
-                }
-                if changed(field::DEFAULT_JAR) {
-                    g.default_jar = node_id_of(fields, field::DEFAULT_JAR);
-                }
-            }
             NodePayload::Note(n) => {
                 // The box shows the mirror's new text. Not for a note being typed in: `mirror_remote` held it.
                 if changed(field::TEXT) {
                     n.text = str_of(fields, field::TEXT);
                 }
-                if changed(field::URL) {
-                    n.url = url_of(fields);
-                }
             }
-            NodePayload::Image(p) if changed(field::URL) => p.url = url_of(fields),
-            NodePayload::Pdf(p) if changed(field::URL) => p.url = url_of(fields),
-            // The view is the mirror's (`mirror_remote`); the level shown is relaid out below.
-            NodePayload::Json(p) if p.key.is_none() && changed(field::URL) => p.url = url_of(fields),
-            // Paths, keys and values never change after creation.
-            NodePayload::Download(_) | NodePayload::Image(_) | NodePayload::Pdf(_) | NodePayload::Json(_) => {}
+            // A group's fields, a content node's url and a Json node's view are the mirror's alone (`mirror_remote`;
+            // the level shown is relaid out below). Paths, keys and values never change after creation.
+            NodePayload::Group(_)
+            | NodePayload::Download(_)
+            | NodePayload::Image(_)
+            | NodePayload::Pdf(_)
+            | NodePayload::Json(_) => {}
         }
         // Another replica changed the view of the level being shown:
         // relaid out on the next sync.
@@ -682,15 +614,11 @@ impl App {
                 self.insert_placeholder_node(id.clone(), pos, NodePayload::Unloaded(payload));
             }
             Kind::Group => {
-                // Its name is already the mirror's (`mirror_remote`).
-                let payload = GroupPayload {
-                    from_json: bool_of(fields, field::FROM_JSON),
-                    default_jar: node_id_of(fields, field::DEFAULT_JAR),
-                };
-                self.insert_placeholder_node(id.clone(), pos, NodePayload::Group(payload));
+                // Its name, `from_json` and default jar are already the mirror's (`mirror_remote`).
+                self.insert_placeholder_node(id.clone(), pos, NodePayload::Group(GroupPayload::default()));
             }
             Kind::Note => {
-                let payload = NotePayload { text: str_of(fields, field::TEXT), editing: false, url: None };
+                let payload = NotePayload { text: str_of(fields, field::TEXT), editing: false };
                 self.insert_placeholder_node(id.clone(), pos, NodePayload::Note(payload));
             }
             Kind::Image => {
@@ -701,14 +629,14 @@ impl App {
                     self.insert_image_node_with_id(id.clone(), path.clone(), pos, None).err()
                 };
                 if missing_with_url || error.is_some() {
-                    let payload = ImagePayload { path, width: 0, height: 0, error, url: None };
+                    let payload = ImagePayload { path, width: 0, height: 0, error };
                     self.insert_placeholder_node(id.clone(), pos, NodePayload::Image(payload));
                 }
             }
             Kind::Pdf => {
                 let path = content_path.clone().unwrap_or_default();
                 if missing_with_url {
-                    let payload = PdfPayload { path, outcome: None, url: None };
+                    let payload = PdfPayload { path, outcome: None };
                     self.insert_placeholder_node(id.clone(), pos, NodePayload::Pdf(payload));
                 } else {
                     self.insert_pdf_node_with_id(id.clone(), path, pos, None);
@@ -722,16 +650,16 @@ impl App {
                     self.insert_json_node_with_id(id.clone(), path.clone(), pos, None).err()
                 };
                 if missing_with_url || error.is_some() {
-                    let payload = JsonPayload { path, value: Default::default(), key: None, error, url: None };
+                    let payload = JsonPayload { path, value: Default::default(), leaf: false, error };
                     self.insert_placeholder_node(id.clone(), pos, NodePayload::Json(payload));
                 }
             }
             Kind::JsonLeaf => {
                 let text = str_of(fields, field::VALUE);
                 let value = serde_json::from_str(&text).unwrap_or(serde_json::Value::String(text));
-                let key = Some(str_of(fields, field::KEY));
+                // Its key and stored value are already the mirror's (`mirror_remote`); the payload holds the parsed one.
                 let payload =
-                    JsonPayload { path: str_of(fields, field::PATH), value: value.into(), key, error: None, url: None };
+                    JsonPayload { path: str_of(fields, field::PATH), value: value.into(), leaf: true, error: None };
                 self.insert_placeholder_node(id.clone(), pos, NodePayload::Json(payload));
             }
             Kind::Download => {
@@ -739,7 +667,6 @@ impl App {
                 let bytes = std::fs::metadata(&path).map_or(0, |m| m.len());
                 let payload = DownloadPayload {
                     path,
-                    url: url_of(fields),
                     bytes_received: bytes,
                     total_bytes: Some(bytes),
                     completed: true,
@@ -749,10 +676,7 @@ impl App {
             }
             Kind::Jar | Kind::Unknown => return,
         }
-        // A Json node's view is already the mirror's (`mirror_remote`).
-        if let Some(url) = self.nodes.get_mut(&id).and_then(|node| node.source_url_mut()) {
-            *url = url_of(fields);
-        }
+        // A content node's url, its stored path and a Json node's view are already the mirror's (`mirror_remote`).
         // The placeholder just inserted above (see `missing_with_url`)
         // shows until this fetch lands.
         if missing_with_url {
@@ -1069,6 +993,13 @@ impl App {
     pub(crate) fn edit_jar(&mut self, id: &str, choice: crate::jar::JarChoice) {
         self.edit_field(id, field::JAR, FieldValue::Id(choice.jar));
         self.edit_field(id, field::JAR_SET, FieldValue::Bool(choice.set));
+    }
+
+    /// The one writer of a group's default jar (2b-5 Task 1): `set_group_default_jar`, `clear_group_default_jar` and
+    /// `delete_jar`'s cascade. Resolved at commit like a tab's `JAR` (2b-5 Ruling 6): a jar deleted by the save is written
+    /// as none, and one another replica deleted earlier stays stored, dangling, until a new edit.
+    pub(crate) fn edit_default_jar(&mut self, group: &str, jar: Option<NodeId>) {
+        self.edit_field(group, field::DEFAULT_JAR, FieldValue::Id(jar));
     }
 
     /// The one writer of a tab's engine (2b-3 Ruling 5): called when a switch starts (`start_swap_to`, a wake into

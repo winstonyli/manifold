@@ -672,8 +672,8 @@ impl App {
             kind: item_node_kind(&node.payload),
             has_group: self.mirror.group(id).is_some(),
             color: self.mirror.color(id),
-            has_url: node.source_url().is_some(),
-            has_copy_url: node.copyable_url().is_some(),
+            has_url: self.source_url(id).is_some(),
+            has_copy_url: self.copyable_url(id).is_some(),
             pinned: self.mirror.pinned(id),
             other_default_engine: node.payload.as_unloaded().is_some()
                 && self.mirror.engine(id) != self.settings.default_starting_engine,
@@ -737,15 +737,16 @@ impl App {
                 has_default: false,
             });
         }
-        let g = node.as_group()?;
-        if self.jar_defs.is_empty() && g.default_jar.is_none() {
+        node.as_group()?;
+        let default = self.mirror.default_jar(id);
+        if self.jar_defs.is_empty() && default.is_none() {
             return None; // nothing to pick: jars are made from a tab's menu
         }
         Some(JarMenu {
-            rows: named(&|j| g.default_jar == Some(j), &|j| Some(self.cascade_count(id, j)).filter(|&n| n > 0)),
+            rows: named(&|j| default == Some(j), &|j| Some(self.cascade_count(id, j)).filter(|&n| n > 0)),
             can_follow: false,
             will_switch: false,
-            has_default: g.default_jar.is_some(),
+            has_default: default.is_some(),
         })
     }
 
@@ -794,7 +795,7 @@ impl App {
             }
             NodeAction::CopyUrl => {
                 let node = self.nodes.get(id);
-                if let Some(url) = node.and_then(|n| n.copyable_url().map(str::to_owned)) {
+                if let Some(url) = self.copyable_url(id).map(str::to_owned) {
                     ctx.copy_text(url);
                 } else if let Some(url) = node.and_then(|n| n.payload.saved_tab()) {
                     ctx.copy_text(url.to_string());
