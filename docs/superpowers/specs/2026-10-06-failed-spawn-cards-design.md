@@ -33,6 +33,9 @@ node, and the empty state, the error display and the toast path all change.
    Restore and Wake landings are existing tabs, not new intent, and clear nothing), failed cards with the same url and
    group (any engine) are removed through the normal delete queue (`queue_delete`). A card for another url, or for the same url in another group, stays. A failure on
    another engine for that url is still informative and is not cleared by a success on a different url.
+   **Amended 2026-10-06 (B):** each cleared card goes through `record_closed` first, so a card that belonged to an
+   arranged tab (Restore, Wake or crash) can be restored from Recently Closed. Revisit later: clear only cards a
+   Root/New failure created (needs an origin field on the failed state).
 6. **Failure toasts are coalesced by cause, not by node.** Failures with the same cause (engine and error text) inside
    a short window (about 2 s) read as one toast: "10 tabs couldn't start: Blink (CEF) is not installed". One failure
    reads as it does today. It covers the Restore, Respawn, Wake and new-spawn failure paths.
