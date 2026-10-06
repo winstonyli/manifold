@@ -235,6 +235,9 @@ pub enum DebugCommand {
     /// which are pixels headless. `selected_tabs` is the rectangle
     /// selection's ids, sorted. `mirror_groups` maps every node id (any
     /// level) to its group as this replica shows it (the mirror), or null.
+    /// `mirror_names` (groups), `mirror_texts` (notes) and `mirror_pos` (every node, `[x, y]`) map ids to the
+    /// mirror's name, text and document pos the same way, null where EXPORTSESSION leaves the field out (empty, or
+    /// pos (0, 0)).
     /// `toast` is the bottom-left toast's text
     /// (the one showing, else the next queued), or null. Suggestions arriving from the network show up
     /// only once a frame has drained them, and every command draws one, so
@@ -336,6 +339,16 @@ pub enum DebugCommand {
     /// `CloseGroup`: only when the menu would offer `group` (a sibling group, `NodeMenuView::move_targets`), else
     /// ignored with a note on stderr. See `NodeAction::MoveToGroup`.
     MoveToGroup { id: String, group: String },
+    /// `RENAMEGROUP id name` -- a group's rename field committed with `name` (`NodeAction::CommitRename`: the clean
+    /// name, groups only, an empty clean name ignored), by id for the same reason as `CloseGroup`. Saves, as the
+    /// menu does. `RENAMEGROUP` alone is `RenameGroup` (F2).
+    RenameGroupTo { id: String, name: String },
+    /// `SETNOTETEXT id text` -- note `id`'s box typed to hold `text` and then blurred (`App::blur_note`, which
+    /// resolves a held remote text and saves). `text` is the rest of the line, possibly empty.
+    SetNoteText { id: String, text: String },
+    /// `MOVENODE id x y` -- card `id` dragged to world point (x, y) and released: its layout moves there and
+    /// `edit_pos` writes it, as `release_drag` does, then the save a drop makes.
+    MoveNode { id: String, x: f32, y: f32 },
     /// `SLEEPNODE id` -- a tab's (or a group's tabs') "Sleep" context-menu
     /// action, targeting an explicit id for the same reason as `CloseGroup`.
     /// See `App::request_sleep`.
@@ -471,7 +484,7 @@ const COMMAND_HELP: &[(&str, &str)] = &[
     ("CLOSEALLLEVEL", "Ctrl+Shift+W -- close every tab at the current level"),
     ("CONFIRMIMPORT", "Click the \"Import Session...\" confirm popup's Import button"),
     ("CANCELIMPORT", "Click the confirm popup's Cancel button"),
-    ("RENAMEGROUP", "F2 -- rename the current group"),
+    ("RENAMEGROUP [id name]", "F2 -- rename the current group; with `id name`, commit `name` as group `id`'s new name"),
     ("BOOKMARKFOLDERTEXT text", "Set the bookmarks popup's own folder-rename draft"),
     ("DISMISSPEEK", "Escape-dismisses-peek equivalent in Graph view"),
     ("EXPORTGROUP path", "Export whichever group's context menu is currently open"),
@@ -502,6 +515,8 @@ const COMMAND_HELP: &[(&str, &str)] = &[
     ("JSONSEARCH text", "Search the current JSON level's keys and values"),
     ("CLOSEGROUP id", "Close the group `id`, same as its own \"Close\" context-menu action"),
     ("MOVETOGROUP id group", "Move node `id` into the sibling group `group`, same as its \"Move into\" menu row"),
+    ("SETNOTETEXT id text", "Type `text` into note `id`'s box (replacing it) and blur it, which commits and saves"),
+    ("MOVENODE id x y", "Drag card `id` to world point (x, y) and release it there, which saves"),
     (
         "SLEEPNODE id",
         "Ask the tab `id` (or every tab of the group `id`) to sleep, same as its \"Sleep\" \
@@ -573,6 +588,13 @@ fn parse_add_file(rest: &str) -> Option<DebugCommand> {
         }
     }
     Some(DebugCommand::AddFile(rest.to_string(), None))
+}
+
+/// `<id> <text...>` -- `rest` is trimmed and non-empty: the first word, and the rest of the line after it, trimmed
+/// (empty when there is none). The text may itself contain spaces.
+fn split_id(rest: &str) -> (String, &str) {
+    let (id, text) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
+    (id.to_string(), text.trim())
 }
 
 /// Parses one line of the headless debug-command text protocol. Unknown
@@ -691,7 +713,21 @@ pub fn parse_line(line: &str) -> Option<DebugCommand> {
         "CLOSEALLLEVEL" => Some(DebugCommand::CloseAllLevel),
         "CONFIRMIMPORT" => Some(DebugCommand::ConfirmImport),
         "CANCELIMPORT" => Some(DebugCommand::CancelImport),
-        "RENAMEGROUP" => Some(DebugCommand::RenameGroup),
+        "RENAMEGROUP" if rest.is_empty() => Some(DebugCommand::RenameGroup),
+        "RENAMEGROUP" => {
+            let (id, name) = split_id(rest);
+            (!name.is_empty()).then(|| DebugCommand::RenameGroupTo { id, name: name.to_string() })
+        }
+        "SETNOTETEXT" if !rest.is_empty() => {
+            let (id, text) = split_id(rest);
+            Some(DebugCommand::SetNoteText { id, text: text.to_string() })
+        }
+        "MOVENODE" => {
+            let id = parts.next()?.to_string();
+            let mut coord = || parts.next()?.parse::<f32>().ok().filter(|v| v.is_finite());
+            let (x, y) = (coord()?, coord()?);
+            parts.next().is_none().then_some(DebugCommand::MoveNode { id, x, y })
+        }
         "BOOKMARKFOLDERTEXT" => Some(DebugCommand::BookmarkFolderText(rest.to_string())),
         "DISMISSPEEK" => Some(DebugCommand::DismissPeek),
         "EXPORTGROUP" => non_empty(DebugCommand::ExportGroup),
@@ -821,6 +857,31 @@ impl App {
             self.apply_drop(id, Some((DropEffect::Join, Some(group.to_string()))));
         }
         offered
+    }
+
+    /// `SETNOTETEXT`: what a click into note `id`, typing that leaves its box holding `text`, and a click away do.
+    /// The box is the payload's buffer and `editing` is on while typed in (`paint_note_body`), so a remote text
+    /// arriving meanwhile would be held; the blur (`blur_note`) then resolves it and saves. `false` when `id` isn't a
+    /// note.
+    fn debug_set_note_text(&mut self, id: &str, text: String) -> bool {
+        let Some(note) = self.nodes.get_mut(id).and_then(|n| n.as_note_mut()) else { return false };
+        note.editing = true;
+        note.text = text;
+        self.blur_note(id);
+        true
+    }
+
+    /// `MOVENODE`: card `id` dragged to world point `pos` and released. The drag moves the layout (`card.rs`), the
+    /// release writes the document pos (`release_drag`: `edit_pos` with the layout pos), and the drop saves
+    /// (`apply_drop` with no target). `false` when there is no such node.
+    fn debug_move_node(&mut self, id: &str, pos: egui::Vec2) -> bool {
+        if !self.nodes.contains_key(id) {
+            return false;
+        }
+        self.layout.entry(id.to_owned()).or_default().pos = pos;
+        self.edit_pos(id, Some(self.layout_pos(id)));
+        self.save_session();
+        true
     }
 
     /// Applies one headless `DebugCommand` (see `debug_control`'s doc
@@ -1087,6 +1148,21 @@ impl App {
                 // Every node's group as this replica shows it, at any level (a two-instance test compares them).
                 let mirror_groups: std::collections::BTreeMap<&str, Option<&str>> =
                     self.linked_ids().map(|id| (id, self.mirror.group(id))).collect();
+                // Likewise each group's name, each note's text and every node's document pos, null when absent
+                // (empty, or Pos (0,0)), as EXPORTSESSION leaves them out.
+                let non_empty = |s: &'_ str| (!s.is_empty()).then(|| s.to_owned());
+                let mirror_names: std::collections::BTreeMap<&str, Option<String>> = self
+                    .linked_ids()
+                    .filter(|id| self.nodes.get(*id).is_some_and(|n| n.as_group().is_some()))
+                    .map(|id| (id, non_empty(self.mirror.name(id)))) // name rule: raw, compared with the document
+                    .collect();
+                let mirror_texts: std::collections::BTreeMap<&str, Option<String>> = self
+                    .linked_ids()
+                    .filter(|id| self.nodes.get(*id).is_some_and(|n| n.as_note().is_some()))
+                    .map(|id| (id, non_empty(self.mirror.text(id))))
+                    .collect();
+                let mirror_pos: std::collections::BTreeMap<&str, Option<[f32; 2]>> =
+                    self.linked_ids().map(|id| (id, self.mirror.pos(id).map(|p| [p.x, p.y]))).collect();
                 let mut selected_tabs: Vec<&String> = self.selected_tabs.iter().collect();
                 selected_tabs.sort();
                 let state = serde_json::json!({
@@ -1099,6 +1175,9 @@ impl App {
                     "current_group": self.current_group,
                     "cards": cards,
                     "mirror_groups": mirror_groups,
+                    "mirror_names": mirror_names,
+                    "mirror_texts": mirror_texts,
+                    "mirror_pos": mirror_pos,
                     "json_level": self.json_level_state(),
                     "selected_tabs": selected_tabs,
                     // The toast showing, or else the next queued one.
@@ -1208,6 +1287,24 @@ impl App {
             DebugCommand::MoveToGroup { id, group } => {
                 if !self.debug_move_to_group(&id, &group) {
                     eprintln!("MOVETOGROUP: {group} isn't a sibling group of {id}; ignored");
+                }
+            }
+            DebugCommand::RenameGroupTo { id, name } => {
+                if self.nodes.get(&id).is_some_and(|n| n.as_group().is_some()) {
+                    self.commit_rename(&id, &name);
+                    self.save_session();
+                } else {
+                    eprintln!("RENAMEGROUP: {id} isn't a group; ignored");
+                }
+            }
+            DebugCommand::SetNoteText { id, text } => {
+                if !self.debug_set_note_text(&id, text) {
+                    eprintln!("SETNOTETEXT: {id} isn't a note; ignored");
+                }
+            }
+            DebugCommand::MoveNode { id, x, y } => {
+                if !self.debug_move_node(&id, egui::vec2(x, y)) {
+                    eprintln!("MOVENODE: no node {id}; ignored");
                 }
             }
             DebugCommand::IdleSweep(secs) => self.sweep_idle_tabs(Some(std::time::Duration::from_secs(secs))),
@@ -1394,6 +1491,8 @@ mod tests {
             "CLOSESPLIT",
             "CLOSEGROUP g1",
             "MOVETOGROUP n1 g1",
+            "SETNOTETEXT n1 hello",
+            "MOVENODE n1 10 -20",
             "SLEEPNODE t1",
             "IDLESWEEP 30",
             "SETJAR default",
@@ -1439,6 +1538,72 @@ mod tests {
         assert_eq!(app.mirror.group(&note), Some(g.as_str()));
         assert!(app.debug_move_to_group(&g, &h), "a group nests, as the menu row does");
         assert_eq!(app.mirror.group(&g), Some(h.as_str()));
+    }
+
+    /// `RENAMEGROUP` alone is F2; with an id it takes the rest of the line as the name. `SETNOTETEXT` takes the rest
+    /// of the line as the text, possibly empty. `MOVENODE` takes exactly an id and two finite numbers.
+    #[test]
+    fn name_text_and_pos_commands_parse() {
+        assert!(matches!(parse_line("RENAMEGROUP"), Some(DebugCommand::RenameGroup)));
+        assert!(matches!(
+            parse_line("RENAMEGROUP g1  Reading list "),
+            Some(DebugCommand::RenameGroupTo { id, name }) if id == "g1" && name == "Reading list"
+        ));
+        assert!(parse_line("RENAMEGROUP g1").is_none(), "a name is required with an id");
+        assert!(matches!(
+            parse_line("SETNOTETEXT n1 two  words"),
+            Some(DebugCommand::SetNoteText { id, text }) if id == "n1" && text == "two  words"
+        ));
+        assert!(matches!(
+            parse_line("SETNOTETEXT n1"),
+            Some(DebugCommand::SetNoteText { id, text }) if id == "n1" && text.is_empty()
+        ));
+        assert!(parse_line("SETNOTETEXT").is_none(), "an id is required");
+        assert!(matches!(
+            parse_line("MOVENODE n1 12 -34.5"),
+            Some(DebugCommand::MoveNode { id, x, y }) if id == "n1" && x == 12.0 && y == -34.5
+        ));
+        for bad in ["MOVENODE n1 12", "MOVENODE n1 inf 0", "MOVENODE n1 NaN 0", "MOVENODE n1 1 2 3", "MOVENODE"] {
+            assert!(parse_line(bad).is_none(), "{bad}");
+        }
+    }
+
+    /// The three edits reach the document through their writers: the rename's clean name (groups only), the note's
+    /// typed text at the blur (beating a remote text held meanwhile, as typing does), and the released card's pos.
+    #[test]
+    fn name_text_and_pos_commands_write_the_document() {
+        use crate::session_sync::tests::{add, add_group, app_on, remote_set, stored};
+        use crate::store::model::{field, ActorId, FieldValue};
+        let path = crate::store::testutil::temp_dir("debug-edits").join("session.mnf");
+        let mut app = app_on(&path, 1);
+        let g = add_group(&mut app, "G");
+        let note = add(&mut app, NodePayload::Note(NotePayload { text: "v1".into(), editing: false, url: None }));
+        assert!(app.save_session());
+
+        app.commit_rename(&g, " Errands\u{200B} ");
+        assert!(app.save_session());
+        assert_eq!(stored(&app, &g, field::NAME), FieldValue::Str("Errands".into()));
+        app.commit_rename(&note, "Not a group");
+        assert_eq!(app.mirror.name(&note), "", "a note has no name");
+
+        assert!(app.debug_set_note_text(&note, "mine".into()));
+        assert_eq!(stored(&app, &note, field::TEXT), FieldValue::Str("mine".into()), "the blur saved it");
+        assert!(!app.nodes[&note].as_note().unwrap().editing);
+        // A remote text held while typed in loses to what is typed.
+        let mut other = crate::store::journal::Journal::open(&path, ActorId(2)).unwrap();
+        app.nodes.get_mut(&note).unwrap().as_note_mut().unwrap().editing = true;
+        remote_set(&mut other, &note, field::TEXT, FieldValue::Str("theirs".into()));
+        assert!(app.save_session());
+        assert!(app.held_text.contains_key(&note), "held");
+        assert!(app.debug_set_note_text(&note, "mine again".into()));
+        assert_eq!(stored(&app, &note, field::TEXT), FieldValue::Str("mine again".into()));
+        assert_eq!(app.mirror.text(&note), "mine again");
+        assert!(!app.debug_set_note_text(&g, "x".into()), "not a note");
+
+        assert!(app.debug_move_node(&note, egui::vec2(12.0, -34.0)));
+        assert_eq!(stored(&app, &note, field::POS), FieldValue::Pos(12.0, -34.0));
+        assert_eq!(app.layout_pos(&note), egui::vec2(12.0, -34.0), "the card is where it was dropped");
+        assert!(!app.debug_move_node("999999", egui::vec2(1.0, 1.0)), "no such node");
     }
 
     #[test]

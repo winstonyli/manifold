@@ -230,7 +230,10 @@ passed at 85-100% CPU from other sessions' jobs, Defender real-time protection o
   the earlier scenarios' cards isn't predictable. A new note starts `editing` but its `TextEdit` never requests focus,
   so `EGUITEXT` types nowhere until a `CLICK` at a screen point computed from `EXPORTSTATE`'s `rect`, and the blur
   needs another click on empty canvas. A follow-up would add by-id commands (enter a group; focus, type into and blur
-  a note) and then the scenarios.
+  a note) and then the scenarios. **Done in a follow-up** (commit "Debug commands and two-instance scenarios for name,
+  text and pos"): by-id `RENAMEGROUP id name`, `SETNOTETEXT`, `MOVENODE`, `EXPORTSTATE` `mirror_names`/`mirror_texts`/
+  `mirror_pos`, and scenarios 11-12. `SETNOTETEXT` types and blurs in one command, so the back-to-back text edits
+  never exercise a held remote text; the unit tests cover that path.
 
 ### Parked (not fixed)
 

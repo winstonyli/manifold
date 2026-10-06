@@ -540,12 +540,13 @@ pub(crate) fn add_group(app: &mut App, name: &str) -> String {
 }
 
 /// Another replica sets one field of `node`.
-fn remote_set(other: &mut Journal, node: &str, no: u32, value: FieldValue) {
+pub(crate) fn remote_set(other: &mut Journal, node: &str, no: u32, value: FieldValue) {
     let node = node.parse().unwrap();
     other.begin().unwrap().commit(vec![OpBody::Set { node, field: no, enc: encode_field(no, &value) }]).unwrap();
 }
 
-fn stored(app: &App, node: &str, no: u32) -> FieldValue {
+/// `node`'s field `no` as the document stores it.
+pub(crate) fn stored(app: &App, node: &str, no: u32) -> FieldValue {
     app.journal.as_ref().unwrap().doc().nodes[&node.parse().unwrap()].get(no)
 }
 

@@ -32,6 +32,15 @@
 #      groups agree on one of the two, no node is lost, no cycle.
 #  10. A moves group G into H while B moves H into G: the groups agree,
 #      no node is lost, no cycle, nothing hangs.
+# Scenarios 11-12 follow them, with RENAMEGROUP <id> <name>, SETNOTETEXT
+# (type into a note and blur it) and MOVENODE (drag and release), each of
+# which saves; "agree" is as above for the name, text or document pos
+# (EXPORTSTATE mirror_names, mirror_texts, mirror_pos).
+#  11. A renames a group: the names agree on A's. Then A and B rename it
+#      back to back: the names agree on one of the two.
+#  12. A edits a note's text: the texts agree on A's. Then A and B edit it
+#      back to back: the texts agree on one of the two. Then A moves the
+#      note: the positions agree on where A dropped it.
 #
 # A kill is TerminateProcess (`taskkill //F //PID`), not power loss: the
 # store's on-disk file is never mid-write at that point (each scenario
@@ -203,8 +212,13 @@ new_node() { # $1=sa|sb $2=command $3=file label
 # EXPORTSESSION, which saves first). Leaves the last exports at
 # $out/<label>-{a,b}-state.json and $out/<label>-doc.json.
 wait_mirror() { # $1=label $2...=ids
-    local label="$1" i log="$out/mirror.log"
-    shift
+    wait_field group "$@"
+}
+# wait_mirror for any field session_asserts.py field_agree knows (group,
+# name, text, pos).
+wait_field() { # $1=field $2=label $3...=ids
+    local field="$1" label="$2" i log="$out/mirror.log"
+    shift 2
     local af="$out/$label-a-state.json" bf="$out/$label-b-state.json" df="$out/$label-doc.json"
     for i in $(seq 1 50); do
         rm -f "$af" "$bf" "$df"
@@ -217,13 +231,13 @@ wait_mirror() { # $1=label $2...=ids
         sb "EXPORTSTATE $(win "$bf")"
         wait_file "$af"
         wait_file "$bf"
-        if assert_py mirror_agree "$af" "$bf" "$df" "$@" >"$log" 2>&1; then
+        if assert_py field_agree "$field" "$af" "$bf" "$df" "$@" >"$log" 2>&1; then
             cat "$log"
             return 0
         fi
         sleep 0.2
     done
-    echo "FAIL: $label: A, B and the document never agreed on the groups after ~10s"
+    echo "FAIL: $label: A, B and the document never agreed on the ${field}s after ~10s"
     cat "$log" || true
     exit 1
 }
@@ -297,6 +311,86 @@ assert_py no_cycle "$out/s10-doc.json"
 gg="$(assert_py group_of "$out/s10-doc.json" "$g10" | tr -d '\r')"
 hg="$(assert_py group_of "$out/s10-doc.json" "$h10" | tr -d '\r')"
 echo "scenario 10: ok (G in $gg, H in $hg)"
+
+# $1=field $2=label $3=id: the value A showed in the last wait_field for
+# that label, as JSON.
+shown() { assert_py field_of "$1" "$out/$2-a-state.json" "$3" | tr -d '\r'; }
+# Each instance's own value right after both edited: informational, as
+# show_local.
+show_local_field() { # $1=field $2=label $3=id
+    local af="$out/$2-a-local.json" bf="$out/$2-b-local.json"
+    sa "EXPORTSTATE $(win "$af")"
+    sb "EXPORTSTATE $(win "$bf")"
+    wait_file "$af"
+    wait_file "$bf"
+    echo "$2: right after the edits, $3: A shows $(assert_py field_of "$1" "$af" "$3" | tr -d '\r')," \
+        "B shows $(assert_py field_of "$1" "$bf" "$3" | tr -d '\r')"
+}
+
+echo "=== scenario 11: a group rename reaches the other instance ==="
+g11="$(new_node sa NEWGROUP s11g)"
+# B needs the group before it can rename it.
+wait_field name s11-setup "$g11"
+sa "RENAMEGROUP $g11 Renamed by A"
+wait_agree "scenario 11" "$out/a11.json" "$out/b11.json"
+wait_field name s11 "$g11"
+[ "$(shown name s11 "$g11")" = '"Renamed by A"' ] || {
+    echo "FAIL: scenario 11: $g11 is named $(shown name s11 "$g11"), not A's rename"
+    exit 1
+}
+# Back to back, so each rename is likely made before that instance picks up
+# the other's.
+sa "RENAMEGROUP $g11 Both A"
+sb "RENAMEGROUP $g11 Both B"
+show_local_field name s11c "$g11"
+wait_agree "scenario 11" "$out/a11c.json" "$out/b11c.json"
+wait_field name s11c "$g11"
+got11="$(shown name s11c "$g11")"
+[ "$got11" = '"Both A"' ] || [ "$got11" = '"Both B"' ] || {
+    echo "FAIL: scenario 11: $g11 ended named $got11, neither A's nor B's rename"
+    exit 1
+}
+echo "scenario 11: ok ($g11 named $got11)"
+
+echo "=== scenario 12: a note's text and a move reach the other instance ==="
+n12="$(new_node sa NEWNOTE s12n)"
+wait_field text s12-setup "$n12"
+sa "SETNOTETEXT $n12 Typed by A"
+wait_agree "scenario 12" "$out/a12.json" "$out/b12.json"
+wait_field text s12 "$n12"
+[ "$(shown text s12 "$n12")" = '"Typed by A"' ] || {
+    echo "FAIL: scenario 12: $n12 holds $(shown text s12 "$n12"), not A's text"
+    exit 1
+}
+sa "SETNOTETEXT $n12 Both typed A"
+sb "SETNOTETEXT $n12 Both typed B"
+show_local_field text s12c "$n12"
+wait_agree "scenario 12" "$out/a12c.json" "$out/b12c.json"
+wait_field text s12c "$n12"
+got12="$(shown text s12c "$n12")"
+[ "$got12" = '"Both typed A"' ] || [ "$got12" = '"Both typed B"' ] || {
+    echo "FAIL: scenario 12: $n12 ended holding $got12, neither A's nor B's text"
+    exit 1
+}
+# The mirror and the document must stay agreed, not just reach agreement
+# once: a later save on either side (B's here, A's in wait_field's
+# EXPORTSESSION) mustn't bring a losing text back (`commit_note_buffers`
+# commits any box that differs from the mirror).
+sb "EXPORTSESSION $(win "$out/s12c2-b-save.json")"
+wait_file "$out/s12c2-b-save.json"
+wait_field text s12c2 "$n12"
+[ "$(shown text s12c2 "$n12")" = "$got12" ] || {
+    echo "FAIL: scenario 12: $n12 went from $got12 to $(shown text s12c2 "$n12") with no edit"
+    exit 1
+}
+sa "MOVENODE $n12 321 -123"
+wait_agree "scenario 12" "$out/a12m.json" "$out/b12m.json"
+wait_field pos s12m "$n12"
+[ "$(shown pos s12m "$n12")" = '[321.0, -123.0]' ] || {
+    echo "FAIL: scenario 12: $n12 is at $(shown pos s12m "$n12"), not where A dropped it"
+    exit 1
+}
+echo "scenario 12: ok ($n12 holds $got12)"
 
 echo "=== scenario 3: a url that changes on every load ==="
 python -P "$repo_root/scripts/nonce_server.py" "$out/hits" 240 >"$out/port" 2>"$out/server.err" </dev/null &

@@ -18,7 +18,14 @@ Commands:
   mirror_agree <a_state> <b_state> <session> <id> [<id> ...]
       Fails unless each <id>'s group is the same in both EXPORTSTATE files'
       `mirror_groups` (what each instance shows) and in the EXPORTSESSION
-      <session> (the document). Prints the groups.
+      <session> (the document). Prints the groups. Same as field_agree group.
+  field_agree <group|name|text|pos> <a_state> <b_state> <session> <id> [<id> ...]
+      Fails unless each <id>'s field is the same in both EXPORTSTATE files'
+      mirror map (`mirror_groups`, `mirror_names`, `mirror_texts`,
+      `mirror_pos`) and in the EXPORTSESSION <session>, where an absent
+      field is null. Positions agree within 1e-3. Prints the values.
+  field_of <group|name|text|pos> <state> <id>
+      Prints <id>'s value in that EXPORTSTATE mirror map, as JSON.
   no_cycle <path>
       Fails if following groups from any node in <path> loops.
   kept_ids <before_path> <after_path>
@@ -88,20 +95,56 @@ def cmd_group_of(args):
     print(groups[wanted] or "null")
 
 
-def cmd_mirror_agree(args):
-    a_state, b_state, session, ids = args[0], args[1], args[2], args[3:]
+# field -> (EXPORTSTATE map, EXPORTSESSION node key)
+MIRROR_FIELDS = {
+    "group": ("mirror_groups", "group"),
+    "name": ("mirror_names", "name"),
+    "text": ("mirror_texts", "text"),
+    "pos": ("mirror_pos", "pos"),
+}
+
+
+def same_value(values):
+    """Whether every value is equal; positions within 1e-3 (f32 through JSON)."""
+    first = values[0]
+    if isinstance(first, list):
+        return all(
+            isinstance(v, list) and len(v) == len(first) and all(abs(a - b) <= 1e-3 for a, b in zip(v, first))
+            for v in values
+        )
+    return all(v == first for v in values)
+
+
+def cmd_field_agree(args):
+    field, a_state, b_state, session, ids = args[0], args[1], args[2], args[3], args[4:]
+    state_key, doc_key = MIRROR_FIELDS[field]
     mirrors = []
     for path in (a_state, b_state):
         with open(path, encoding="utf-8") as f:
-            mirrors.append(json.load(f)["mirror_groups"])
-    doc = groups_of(session)
+            mirrors.append(json.load(f)[state_key])
+    doc = {n["id"]: n.get(doc_key) for n in load_nodes(session)}
+    absent = "<absent>"
     ok = True
     for i in ids:
-        seen = [m.get(i, "<absent>") for m in mirrors] + [doc.get(i, "<absent>")]
-        print(f"{i}: A shows {seen[0]}, B shows {seen[1]}, document {seen[2]}")
-        if "<absent>" in seen or len({str(s) for s in seen}) != 1:
+        seen = [m.get(i, absent) for m in mirrors] + [doc.get(i, absent)]
+        print(f"{i} {field}: A shows {seen[0]!r}, B shows {seen[1]!r}, document {seen[2]!r}")
+        if absent in seen or not same_value(seen):
             ok = False
     sys.exit(0 if ok else 1)
+
+
+def cmd_mirror_agree(args):
+    cmd_field_agree(["group"] + args)
+
+
+def cmd_field_of(args):
+    field, path, wanted = args
+    with open(path, encoding="utf-8") as f:
+        values = json.load(f)[MIRROR_FIELDS[field][0]]
+    if wanted not in values:
+        print(f"FAIL: {wanted!r} not in {path}'s {MIRROR_FIELDS[field][0]}")
+        sys.exit(1)
+    print(json.dumps(values[wanted]))
 
 
 def cmd_no_cycle(args):
@@ -134,6 +177,8 @@ COMMANDS = {
     "count_kind": cmd_count_kind,
     "group_of": cmd_group_of,
     "mirror_agree": cmd_mirror_agree,
+    "field_agree": cmd_field_agree,
+    "field_of": cmd_field_of,
     "no_cycle": cmd_no_cycle,
     "kept_ids": cmd_kept_ids,
 }

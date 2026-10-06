@@ -882,8 +882,9 @@ mod tests {
     /// rule (the line calls one of `RULE_MARKS`) or marked raw with `// name rule: <why>`, on the same line or as a
     /// comment on the line just above (`ruled`). A new file that reads `.name` must be added here, after deciding
     /// which rule its site gets.
-    const ALLOWED: [&str; 9] = [
+    const ALLOWED: [&str; 10] = [
         "card.rs",
+        "debug_control.rs",
         "graph_nav.rs",
         "jar_defs.rs",
         "main.rs",

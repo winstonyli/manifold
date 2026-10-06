@@ -749,6 +749,17 @@ impl App {
         })
     }
 
+    /// The rename field committed with `name` (`NodeAction::CommitRename`, and headless `RENAMEGROUP id name`): the
+    /// field closes, and a group takes the clean name (`edit_name`). A name with nothing left once cleaned, or an id
+    /// that isn't a group, changes nothing. The caller saves.
+    pub(crate) fn commit_rename(&mut self, id: &str, name: &str) {
+        self.renaming_group = None;
+        let clean = crate::names::clean_name(name);
+        if !clean.is_empty() && self.nodes.get(id).is_some_and(|n| n.as_group().is_some()) {
+            self.edit_name(id, &clean);
+        }
+    }
+
     /// Applies whichever item was clicked in a node's right-click menu.
     /// Each action only ever appears on kinds where it makes sense
     /// (`node_menu_config`), so none of these re-check the kind.
@@ -796,13 +807,7 @@ impl App {
                 self.renaming_group = Some((id.to_string(), name));
                 self.pending_focus = Some(FocusTarget::GroupRename);
             }
-            NodeAction::CommitRename(name) => {
-                self.renaming_group = None;
-                let clean = crate::names::clean_name(&name);
-                if !clean.is_empty() && self.nodes.get(id).is_some_and(|n| n.as_group().is_some()) {
-                    self.edit_name(id, &clean);
-                }
-            }
+            NodeAction::CommitRename(name) => self.commit_rename(id, &name),
             NodeAction::CancelRename => self.renaming_group = None,
             NodeAction::SetColor(color) => {
                 if self.nodes.contains_key(id) {
