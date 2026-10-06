@@ -211,7 +211,7 @@ group's DEFAULT_JAR into the mirror), 0bdf7d3 and 6052e43 (Task 2: jars in the m
 adds the ephemeral first-sighting and pending-toggle tests), 4b928c3 (Task 3: creates and deletes are queued ops; `diff`,
 `explicit`, `keep` gone), 05d31cc (Task 4: `last_shared`, `shared_nodes`, `Shared`, `kind_fields`, `MIRRORED` gone;
 `mirror_remote` returns changed fields; resurrection guard); plus this docs commit. 869 tests at Task 4.
-Gate on 05d31cc: see ledger.
+Gate on 05d31cc (2026-10-06, Defender real-time off, CPU 50-84% at run starts): two-instance 3/3 ok (about 4 min each), headless smoke 48 pass / 0 fail. Final whole-branch review: Ready, no Critical or Important; its Minors (stale `Mirror::ty` comment, two sync-map sentences, this line) are fixed. `GroupPayload` is now an empty struct, kept for 2b-6's enum removal. Commit trailers vary by implementer (Opus 5.5, Sonnet 5.5, Fable 5.1 for 05d31cc).
 
 ### Rulings and deviations
 

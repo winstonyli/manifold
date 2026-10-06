@@ -251,8 +251,9 @@ impl Mirror {
         self.str_field(id, field::VALUE)
     }
 
-    /// The node's type string (`field::TYPE`, `Kind::type_str`), seeded at every creation and never changed. No reader
-    /// yet: 2b-6 moves the readers of `NodePayload` and `ItemNodeKind` here. "" when the mirror has none.
+    /// The node's type string (`field::TYPE`, `Kind::type_str`), seeded at every creation and never changed. Read by
+    /// Recently Closed (`worth_reopening`, containment); 2b-6 moves the readers of `NodePayload` and `ItemNodeKind`
+    /// here. "" when the mirror has none.
     pub(crate) fn ty(&self, id: &str) -> &str {
         self.str_field(id, field::TYPE)
     }
