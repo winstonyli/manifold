@@ -279,9 +279,7 @@ pub(crate) struct JsonPayload {
     /// fetched again from it. `None` for a local file, and for a leaf
     /// (`key.is_some()`, never persisted).
     pub(crate) url: Option<String>,
-    /// What the user changed about this node's level (spec "Saved view
-    /// state"): the store's `view` field. Empty for a leaf.
-    pub(crate) view: crate::json_view::JsonView,
+    // What the user changed about this node's level (spec "Saved view state") is the mirror's: `Mirror::view`.
 }
 
 impl JsonPayload {
@@ -440,9 +438,9 @@ impl Layout {
 
 impl GraphNode {
     /// What a screen reader announces for the node's card: its kind, then what identifies it. A local file (no
-    /// web source) is named by its file name; a note by the first line of `note_text`, the text its card shows
-    /// (`App::note_text`), ignored for other kinds.
-    pub(crate) fn accessible_name(&self, note_text: &str) -> String {
+    /// web source) is named by its file name; a note by the first line of `text` and a group by `text`, the stored
+    /// text its card shows (`App::own_text`), ignored for other kinds.
+    pub(crate) fn accessible_name(&self, text: &str) -> String {
         let first_nonempty = |parts: &[&str]| parts.iter().find(|p| !p.trim().is_empty()).map(|p| p.trim().to_string());
         // Either separator: a saved path may come from the other platform.
         let file_name =
@@ -452,12 +450,12 @@ impl GraphNode {
             NodePayload::Tab(t) => ("Tab", first_nonempty(&[&t.title, &t.url])),
             NodePayload::Unloaded(t) => ("Sleeping tab", first_nonempty(&[&t.title, &t.url])),
             NodePayload::Download(d) => ("Download", file_name(&d.path)),
-            NodePayload::Group(g) => {
-                ("Group", Some(crate::names::to_plain(&crate::names::display_name(&g.name, crate::names::UNTITLED))))
+            NodePayload::Group(_) => {
+                ("Group", Some(crate::names::to_plain(&crate::names::display_name(text, crate::names::UNTITLED))))
             }
             NodePayload::Note(_) => {
                 // The note's text is never cleaned; its first non-blank line is shown by the display rule.
-                let first = note_text.lines().map(str::trim).find(|l| !l.is_empty());
+                let first = text.lines().map(str::trim).find(|l| !l.is_empty());
                 ("Note", first.map(|l| crate::names::to_plain(&crate::names::display_name(l, crate::names::UNTITLED))))
             }
             NodePayload::Image(p) => ("Image", source_or_file(&p.path)),
@@ -533,8 +531,10 @@ impl GraphNode {
 /// Entering/leaving eases the camera via `GraphCameraTween` rather than
 /// `Transition` — see that type's own doc comment for why. Groups, their
 /// members and nesting are saved in the session store (`session_sync`).
+/// Its name is the mirror's (`Mirror::name`, written by `App::edit_name`; a new group's is seeded by
+/// `App::place_group`).
+#[derive(Default)]
 pub(crate) struct GroupPayload {
-    pub(crate) name: String,
     /// Made by an older build's "Expand as Graph", now removed. Saved like
     /// any group, as are the JSON leaves inside it, so a session saved by
     /// that build still loads.
@@ -543,17 +543,9 @@ pub(crate) struct GroupPayload {
     pub(crate) default_jar: Option<crate::store::model::NodeId>,
 }
 
-impl GroupPayload {
-    /// A plain group: not from JSON, no default jar.
-    pub(crate) fn named(name: impl Into<String>) -> GroupPayload {
-        GroupPayload { name: name.into(), from_json: false, default_jar: None }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::json_view::JsonView;
 
     // `Tab` is left out: `TabPayload` owns a live `EngineTab`, which a unit
     // test can't construct. Its arm is covered by live Tab-view runs instead.
@@ -570,7 +562,7 @@ mod tests {
             })),
             ItemNodeKind::Download
         );
-        assert_eq!(item_node_kind(&NodePayload::Group(GroupPayload::named("g"))), ItemNodeKind::Group);
+        assert_eq!(item_node_kind(&NodePayload::Group(GroupPayload::default())), ItemNodeKind::Group);
         assert_eq!(
             item_node_kind(&NodePayload::Note(NotePayload { text: "n".into(), editing: false, url: None })),
             ItemNodeKind::Note
@@ -596,7 +588,6 @@ mod tests {
                 key: None,
                 error: None,
                 url: None,
-                view: JsonView::default()
             })),
             ItemNodeKind::Json
         );
@@ -609,18 +600,22 @@ mod tests {
         let (g, n) = (app.alloc_node_id(), app.alloc_node_id());
         app.insert_group_at(g.clone(), None);
         app.insert_note_at(n.clone(), None);
-        let name = |app: &crate::App, id: &str| app.nodes[id].accessible_name(app.note_text(id));
+        let name = |app: &crate::App, id: &str| app.nodes[id].accessible_name(app.own_text(id));
         assert_eq!(name(&app, &n), "Note");
         app.nodes.get_mut(&n).unwrap().payload.as_note_mut().unwrap().text = "
   first line
 second"
             .into();
         assert_eq!(name(&app, &n), "Note: first line");
-        app.nodes.get_mut(&g).unwrap().as_group_mut().unwrap().name = "Reading".into();
+        app.mirror.set(&g, crate::store::model::field::NAME, crate::store::model::FieldValue::Str("Reading".into()));
         assert_eq!(name(&app, &g), "Group: Reading");
-        app.nodes.get_mut(&g).unwrap().as_group_mut().unwrap().name = "Re\u{200B}ading".into();
+        app.mirror.set(
+            &g,
+            crate::store::model::field::NAME,
+            crate::store::model::FieldValue::Str("Re\u{200B}ading".into()),
+        );
         assert_eq!(name(&app, &g), "Group: Re<U+200B>ading");
-        app.nodes.get_mut(&g).unwrap().as_group_mut().unwrap().name = " ".into();
+        app.mirror.set(&g, crate::store::model::field::NAME, crate::store::model::FieldValue::Str(" ".into()));
         assert_eq!(name(&app, &g), "Group: Untitled");
         let raw = "\n\tRe\u{200B}ading\u{00A0}\u{00A0}list \nbody";
         app.nodes.get_mut(&n).unwrap().payload.as_note_mut().unwrap().text = raw.into();
@@ -655,7 +650,6 @@ second"
             key: None,
             error: None,
             url: None,
-            view: JsonView::default(),
         }));
         assert_eq!(json.accessible_name(""), "JSON: x.json");
     }
@@ -674,6 +668,6 @@ second"
             .saved_tab(),
             Some("https://example.org/")
         );
-        assert_eq!(NodePayload::Group(GroupPayload::named("g")).saved_tab(), None);
+        assert_eq!(NodePayload::Group(GroupPayload::default()).saved_tab(), None);
     }
 }

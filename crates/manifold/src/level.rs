@@ -115,8 +115,8 @@ impl App {
     /// (where the settle never runs).
     pub(crate) fn layout_current_level(&mut self) {
         if let Some(level) = self.json_level.as_mut() {
-            if let Some(json) = self.nodes.get(&level.node_id).and_then(|n| n.as_json()) {
-                level.relayout(&json.view);
+            if self.nodes.get(&level.node_id).and_then(|n| n.as_json()).is_some() {
+                level.relayout(self.mirror.view(&level.node_id).unwrap_or(&crate::json_view::NO_VIEW));
             }
             return;
         }
@@ -150,14 +150,10 @@ mod tests {
         })
     }
 
-    fn group(name: &str) -> NodePayload {
-        NodePayload::Group(GroupPayload::named(name.to_string()))
-    }
-
     #[test]
     fn level_items_list_the_current_level_bottom_first_in_draw_order() {
         let mut app = App::default();
-        app.insert_placeholder_node("g".into(), egui::vec2(0.0, 0.0), group("G"));
+        app.place_group(Some("g".into()), "G", crate::fetched::Placement { group: None, pos: egui::Vec2::ZERO });
         app.insert_placeholder_node("d".into(), egui::vec2(300.0, 0.0), download("a.bin"));
         app.insert_placeholder_node("inner".into(), egui::vec2(0.0, 0.0), download("b.bin"));
         app.edit_group("inner", Some("g".into()));

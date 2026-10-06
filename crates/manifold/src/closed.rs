@@ -263,12 +263,12 @@ mod tests {
         let mut app = app_on(&path, 1);
         let put_in = |app: &mut App, id: &str, group: &str| app.edit_group(id, Some(group.into()));
 
-        let outer = add(&mut app, NodePayload::Group(GroupPayload::named("Outer")));
+        let outer = crate::session_sync::tests::add_group(&mut app, "Outer");
         let note0 = add(&mut app, NodePayload::Note(NotePayload { text: "kept".into(), editing: false, url: None }));
         put_in(&mut app, &note0, &outer);
         let note1 = add(&mut app, NodePayload::Note(NotePayload { text: " ".into(), editing: false, url: None }));
         put_in(&mut app, &note1, &outer);
-        let inner = add(&mut app, NodePayload::Group(GroupPayload::named("Inner")));
+        let inner = crate::session_sync::tests::add_group(&mut app, "Inner");
         put_in(&mut app, &inner, &outer);
         let img0 = add(
             &mut app,
@@ -283,7 +283,6 @@ mod tests {
                 key: Some("k".into()),
                 error: None,
                 url: None,
-                view: json_view::JsonView::default(),
             }),
         );
         put_in(&mut app, &json0, &inner);
@@ -320,7 +319,6 @@ mod tests {
                 key: Some("k".into()),
                 error: None,
                 url: None,
-                view: json_view::JsonView::default(),
             }),
         );
         assert!(closed_entry(&app, &leaf_outside).is_none(), "a JSON leaf outside a group gives None");
@@ -335,7 +333,7 @@ mod tests {
         use crate::session_sync::tests::{add, app_on, sleeping_tab};
         let path = store::testutil::temp_dir("closed-live-url").join("session.mnf");
         let mut app = app_on(&path, 1);
-        let group = add(&mut app, NodePayload::Group(GroupPayload::named("G")));
+        let group = crate::session_sync::tests::add_group(&mut app, "G");
         let tab = add(&mut app, sleeping_tab("https://shared/", "T"));
         let member = add(&mut app, sleeping_tab("https://m-shared/", "M"));
         app.edit_group(&member, Some(group.clone()));

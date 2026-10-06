@@ -7,7 +7,6 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use ipc_protocol::HostToEngine;
 
-use crate::json_view::JsonView;
 use crate::local_state::{LiveUrl, LocalNode, LocalState};
 use crate::mirror::MIRRORED;
 use crate::node::{
@@ -413,7 +412,7 @@ impl App {
                 }
                 NodePayload::Download(_) => continue,
                 NodePayload::Group(g) => {
-                    fields.insert(field::NAME, str(&g.name)); // name rule: synced as stored
+                    fields.insert(field::NAME, self.mirror.get(key, field::NAME));
                     fields.insert(field::FROM_JSON, FieldValue::Bool(g.from_json));
                     fields.insert(field::DEFAULT_JAR, FieldValue::Id(g.default_jar));
                     Kind::Group
@@ -438,7 +437,7 @@ impl App {
                     match &j.key {
                         None => {
                             fields.insert(field::URL, str(j.url.as_deref().unwrap_or("")));
-                            fields.insert(field::VIEW, str(&j.view.to_field()));
+                            fields.insert(field::VIEW, self.mirror.get(key, field::VIEW));
                             Kind::Json
                         }
                         Some(key) => {
@@ -582,10 +581,8 @@ impl App {
                     tab.url = str_of(fields, field::URL);
                 }
             }
+            // A group's name is the mirror's (`mirror_remote`).
             NodePayload::Group(g) => {
-                if changed(field::NAME) {
-                    g.name = str_of(fields, field::NAME);
-                }
                 if changed(field::FROM_JSON) {
                     g.from_json = bool_of(fields, field::FROM_JSON);
                 }
@@ -604,14 +601,8 @@ impl App {
             }
             NodePayload::Image(p) if changed(field::URL) => p.url = url_of(fields),
             NodePayload::Pdf(p) if changed(field::URL) => p.url = url_of(fields),
-            NodePayload::Json(p) if p.key.is_none() => {
-                if changed(field::URL) {
-                    p.url = url_of(fields);
-                }
-                if changed(field::VIEW) {
-                    p.view = JsonView::from_field(&str_of(fields, field::VIEW));
-                }
-            }
+            // The view is the mirror's (`mirror_remote`); the level shown is relaid out below.
+            NodePayload::Json(p) if p.key.is_none() && changed(field::URL) => p.url = url_of(fields),
             // Paths, keys and values never change after creation.
             NodePayload::Download(_) | NodePayload::Image(_) | NodePayload::Pdf(_) | NodePayload::Json(_) => {}
         }
@@ -691,8 +682,8 @@ impl App {
                 self.insert_placeholder_node(id.clone(), pos, NodePayload::Unloaded(payload));
             }
             Kind::Group => {
+                // Its name is already the mirror's (`mirror_remote`).
                 let payload = GroupPayload {
-                    name: str_of(fields, field::NAME),
                     from_json: bool_of(fields, field::FROM_JSON),
                     default_jar: node_id_of(fields, field::DEFAULT_JAR),
                 };
@@ -731,14 +722,7 @@ impl App {
                     self.insert_json_node_with_id(id.clone(), path.clone(), pos, None).err()
                 };
                 if missing_with_url || error.is_some() {
-                    let payload = JsonPayload {
-                        path,
-                        value: Default::default(),
-                        key: None,
-                        error,
-                        url: None,
-                        view: JsonView::default(),
-                    };
+                    let payload = JsonPayload { path, value: Default::default(), key: None, error, url: None };
                     self.insert_placeholder_node(id.clone(), pos, NodePayload::Json(payload));
                 }
             }
@@ -746,14 +730,8 @@ impl App {
                 let text = str_of(fields, field::VALUE);
                 let value = serde_json::from_str(&text).unwrap_or(serde_json::Value::String(text));
                 let key = Some(str_of(fields, field::KEY));
-                let payload = JsonPayload {
-                    path: str_of(fields, field::PATH),
-                    value: value.into(),
-                    key,
-                    error: None,
-                    url: None,
-                    view: JsonView::default(),
-                };
+                let payload =
+                    JsonPayload { path: str_of(fields, field::PATH), value: value.into(), key, error: None, url: None };
                 self.insert_placeholder_node(id.clone(), pos, NodePayload::Json(payload));
             }
             Kind::Download => {
@@ -771,15 +749,9 @@ impl App {
             }
             Kind::Jar | Kind::Unknown => return,
         }
-        if let Some(node) = self.nodes.get_mut(&id) {
-            if let Some(url) = node.source_url_mut() {
-                *url = url_of(fields);
-            }
-            if let NodePayload::Json(json) = &mut node.payload {
-                if json.key.is_none() {
-                    json.view = JsonView::from_field(&str_of(fields, field::VIEW));
-                }
-            }
+        // A Json node's view is already the mirror's (`mirror_remote`).
+        if let Some(url) = self.nodes.get_mut(&id).and_then(|node| node.source_url_mut()) {
+            *url = url_of(fields);
         }
         // The placeholder just inserted above (see `missing_with_url`)
         // shows until this fetch lands.
@@ -998,12 +970,38 @@ impl App {
         }
     }
 
+    /// The one writer of a Json node's view (2b-4 Ruling 8): `view` is the stored text (`JsonView::to_field`). The
+    /// mirror's decoded cache (`Mirror::view`) follows at once. Written by a level edit (`edit_json_view`) and by a
+    /// reload that prunes overrides its new value can't resolve (`reload_fetched_node`).
+    pub(crate) fn edit_view(&mut self, id: &str, view: &str) {
+        self.edit_field(id, field::VIEW, FieldValue::Str(view.to_owned()));
+    }
+
+    /// The one writer of a group's name (2b-4 Ruling 9): the rename commit (`NodeAction::CommitRename`), with the
+    /// name already cleaned. A new group's is seeded at placement instead (`place_group`). Jar names are not this.
+    pub(crate) fn edit_name(&mut self, id: &str, name: &str) {
+        // name rule: compares stored names
+        if self.mirror.name(id) != name {
+            self.edit_field(id, field::NAME, FieldValue::Str(name.to_owned()));
+        }
+    }
+
     /// What a note's card shows, borrowed (Ruling 6): the box's edit buffer while it is typed in, the mirror's text
     /// otherwise. "" for a node that isn't a note.
     pub(crate) fn note_text(&self, id: &str) -> &str {
         match self.nodes.get(id).and_then(|n| n.as_note()) {
             Some(note) if note.editing => &note.text,
             _ => self.mirror.text(id),
+        }
+    }
+
+    /// The stored text a card is known by, borrowed: a note's (`note_text`), a group's raw name (`Mirror::name`),
+    /// which the caller draws through a name rule or matches as stored. "" for other kinds.
+    pub(crate) fn own_text(&self, id: &str) -> &str {
+        match self.nodes.get(id).map(|n| &n.payload) {
+            // name rule: raw, for `accessible_name` (display_name) and the filter (matches the stored text)
+            Some(NodePayload::Group(_)) => self.mirror.name(id),
+            _ => self.note_text(id),
         }
     }
 

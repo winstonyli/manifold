@@ -220,7 +220,7 @@ impl App {
             // A JSON level's crumb is its Json node, named by its file.
             let name = match &node.payload {
                 // name rule: drawn by display_name in toolbar_breadcrumb
-                NodePayload::Group(group) => group.name.clone(),
+                NodePayload::Group(_) => self.mirror.name(&id).to_owned(),
                 NodePayload::Json(json) => download_filename(&json.path).to_string(),
                 _ => String::new(),
             };

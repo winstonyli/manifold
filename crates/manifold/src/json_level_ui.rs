@@ -467,6 +467,7 @@ impl App {
         let Some(level) = self.json_level.as_ref() else { return };
         let Some(json) = self.nodes.get(&level.node_id).and_then(|n| n.as_json()) else { return };
         let root_name = download_filename(&json.path).to_string();
+        let view = self.mirror.view(&level.node_id); // the decoded cache: no parse per frame (2b-4 Ruling 8)
         let pal = palette(ui.visuals().dark_mode);
         let base_fill = ui.visuals().extreme_bg_color;
         let idle_border = ui.visuals().weak_text_color();
@@ -530,7 +531,7 @@ impl App {
                 (1.0, idle_border)
             };
             let fill = if value.is_array() { base_fill.lerp_to_gamma(ARRAY_TINT, 0.12) } else { base_fill };
-            let tint = json.view.get(&card.pointer).and_then(|o| o.color).map(rgb);
+            let tint = view.and_then(|v| v.get(&card.pointer)).and_then(|o| o.color).map(rgb);
             paint_json_frame(ui.painter(), rect, fill, tint, border, inv_zoom);
             let look = CardLook {
                 palette: &pal,
@@ -679,7 +680,8 @@ impl App {
         // a scalar or empty root has nothing to hide.
         let has_entries = level.value.pointer(&pointer).is_some_and(|v| json_view::entry_count(v) > 0);
         let collapsed = card.filter(|_| has_entries).map(|c| c.collapsed);
-        let color = self.current_json_node().and_then(|j| j.view.get(&pointer)).and_then(|o| o.color).map(rgb);
+        let view = self.mirror.view(&level.node_id);
+        let color = view.and_then(|v| v.get(&pointer)).and_then(|o| o.color).map(rgb);
         let mut close = false;
         let mut edit = None;
         let area = egui::Area::new(egui::Id::new("json_context_menu"))

@@ -2083,8 +2083,7 @@ impl App {
         self.place_node(None, note, Placement { group: None, pos: egui::vec2(-300.0, 0.0) });
 
         let group_pos = egui::vec2(300.0, 0.0);
-        let group = NodePayload::Group(GroupPayload::named("Try grouping".to_string()));
-        let group_id = self.place_node(None, group, Placement { group: None, pos: group_pos });
+        let group_id = self.place_group(None, "Try grouping", Placement { group: None, pos: group_pos });
         // A small fixed offset, not `graph_layout::spawn_jitter` -- its
         // radius is calibrated to spread a new tab away from a busy live
         // layout (see its own doc comment), which is far too large for
@@ -2121,7 +2120,6 @@ impl App {
             key: None,
             error: None,
             url: None,
-            view: json_view::JsonView::default(),
         });
         self.place_node(None, json, Placement { group: None, pos: egui::vec2(0.0, -260.0) });
     }
@@ -2330,11 +2328,9 @@ impl App {
     fn default_group_name(&self) -> String {
         let taken: HashSet<&str> = self
             .nodes
-            .values()
-            .filter_map(|node| match &node.payload {
-                NodePayload::Group(group) => Some(group.name.as_str()), // name rule: compares stored names
-                _ => None,
-            })
+            .iter()
+            .filter(|(_, node)| node.as_group().is_some())
+            .map(|(id, _)| self.mirror.name(id)) // name rule: compares stored names
             .collect();
         (1..).map(|n| format!("Group {n}")).find(|name| !taken.contains(name.as_str())).expect("a free number")
     }
@@ -2426,7 +2422,7 @@ impl App {
     fn insert_group_at(&mut self, id: String, pos: Option<egui::Vec2>) {
         let name = self.default_group_name();
         let at = self.placement(&id, pos);
-        self.place_node(Some(id), NodePayload::Group(GroupPayload::named(name)), at);
+        self.place_group(Some(id), &name, at);
     }
 
     /// Like `insert_group_at`, for `new_note_shortcut` and the card's note.
@@ -3435,11 +3431,11 @@ mod tests {
     #[test]
     fn remove_from_group_moves_up_one_level() {
         let mut app = App::default();
-        let group = |name: &str| NodePayload::Group(GroupPayload::named(name));
+        let group = || NodePayload::Group(GroupPayload::default());
         let note = || NodePayload::Note(NotePayload { text: String::new(), editing: false, url: None });
         for (id, group, payload) in [
-            ("outer", None, group("outer")),
-            ("inner", Some("outer"), group("inner")),
+            ("outer", None, group()),
+            ("inner", Some("outer"), group()),
             ("deep", Some("inner"), note()),
             ("shallow", Some("outer"), note()),
         ] {
@@ -3460,7 +3456,7 @@ mod tests {
     fn mirror_group_cycle() -> App {
         let mut app = App::default();
         for id in ["a", "b", "s"] {
-            let payload = NodePayload::Group(GroupPayload::named(id));
+            let payload = NodePayload::Group(GroupPayload::default());
             app.nodes.insert(id.into(), GraphNode { payload });
             app.node_order.push(id.into());
         }
@@ -3508,10 +3504,7 @@ mod tests {
     fn a_new_group_takes_the_smallest_free_number() {
         let mut app = App::default();
         let add = |app: &mut App, name: &str| {
-            let payload = NodePayload::Group(GroupPayload::named(name));
-            let node = GraphNode { payload };
-            let id = app.alloc_node_id();
-            app.nodes.insert(id, node);
+            app.place_group(None, name, Placement { group: None, pos: egui::Vec2::ZERO });
         };
         assert_eq!(app.default_group_name(), "Group 1");
         add(&mut app, "Group 1");

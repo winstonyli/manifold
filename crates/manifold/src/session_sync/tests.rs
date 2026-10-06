@@ -219,17 +219,13 @@ fn random_edits_converge_in_one_diff() {
             }
             2 if !live.is_empty() => {
                 let key = *live.keys().nth(rng.below(live.len() as u64) as usize).unwrap();
-                // A group's `NAME` is diffed. Mirrored fields (`COLOR`, a note's `TEXT`) are written by
-                // `App::pending`, not `diff`: applied here as the `Set` the save would commit.
+                // Mirrored fields (`COLOR`, a note's `TEXT`, a group's `NAME`) are written by `App::pending`, not
+                // `diff`: applied here as the `Set` the save would commit.
                 let node = live.get_mut(&key).unwrap();
                 let value = FieldValue::Str(rng.below(1 << 24).to_string());
-                if node.kind == Kind::Group {
-                    node.fields.insert(field::NAME, value);
-                } else {
-                    node.fields.insert(field::TEXT, value.clone());
-                    let enc = encode_field(field::TEXT, &value);
-                    apply(&mut doc, vec![OpBody::Set { node: key, field: field::TEXT, enc }]);
-                }
+                let no = if node.kind == Kind::Group { field::NAME } else { field::TEXT };
+                node.fields.insert(no, value.clone());
+                apply(&mut doc, vec![OpBody::Set { node: key, field: no, enc: encode_field(no, &value) }]);
             }
             3 if !live.is_empty() => {
                 let key = *live.keys().nth(rng.below(live.len() as u64) as usize).unwrap();
@@ -385,8 +381,7 @@ fn app_with_json_file(name: &str) -> (App, String) {
 #[test]
 fn a_json_nodes_view_round_trips_through_the_store() {
     let (mut app, node) = app_with_json_file("json_view_field");
-    let NodePayload::Json(json) = &mut app.nodes.get_mut(&node).unwrap().payload else { unreachable!() };
-    json.view.entry("/users").collapsed = Some(true);
+    app.edit_view(&node, r#"{"/users":{"collapsed":true}}"#);
 
     let shared = app.shared_nodes();
     let fields = &shared[&id(1)].fields;
@@ -395,8 +390,7 @@ fn a_json_nodes_view_round_trips_through_the_store() {
     // Restoring those fields gives the same view back.
     let mut restored = App::default();
     restored.materialize(node.clone(), Kind::Json, fields, None, None);
-    let json = restored.nodes[&node].as_json().unwrap();
-    assert_eq!(json.view.get("/users").unwrap().collapsed, Some(true));
+    assert_eq!(restored.mirror.view(&node).unwrap().get("/users").unwrap().collapsed, Some(true));
 }
 
 #[test]
@@ -406,8 +400,8 @@ fn a_remote_view_change_updates_the_node_in_place() {
     let mut fields = app.shared_nodes()[&id(1)].fields.clone();
     fields.insert(field::VIEW, FieldValue::Str(r#"{"":{"collapsed":true}}"#.into()));
     app.materialize(node.clone(), Kind::Json, &fields, None, None);
+    assert_eq!(app.mirror.view(&node).unwrap().get("").unwrap().collapsed, Some(true));
     let json = app.nodes[&node].as_json().unwrap();
-    assert_eq!(json.view.get("").unwrap().collapsed, Some(true));
     assert_eq!((&json.value, &json.path), (&value, &path), "only the view changed");
 }
 
@@ -537,6 +531,12 @@ pub(crate) fn add(app: &mut App, payload: NodePayload) -> String {
     let id = app.alloc_node_id();
     app.insert_placeholder_node(id.clone(), egui::Vec2::ZERO, payload);
     id
+}
+
+/// A group named `name` at the top level (`App::place_group`).
+pub(crate) fn add_group(app: &mut App, name: &str) -> String {
+    let id = app.alloc_node_id();
+    app.place_group(Some(id), name, crate::fetched::Placement { group: None, pos: egui::Vec2::ZERO })
 }
 
 /// Another replica sets one field of `node`.
@@ -727,6 +727,71 @@ fn a_large_note_edit_does_not_clone_per_frame() {
     assert_eq!(editing.as_ptr(), app.nodes[&note].as_note().unwrap().text.as_ptr(), "editing: the buffer");
 }
 
+/// Ruling 9: the rename commit is the group name's writer (`edit_name`), and another replica's rename reaches the
+/// mirror.
+#[test]
+fn a_rename_saves_and_a_remote_rename_reaches_the_mirror() {
+    let path = temp_dir("name-rename").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let g = add_group(&mut app, "G");
+    assert!(app.save_session());
+    assert_eq!(stored(&app, &g, field::NAME), FieldValue::Str("G".into()), "a new group's Create carries its name");
+    app.apply_node_action(&egui::Context::default(), &g, NodeAction::CommitRename("Errands".into()));
+    assert_eq!(app.mirror.name(&g), "Errands", "the mirror shows it at once");
+    assert!(app.save_session());
+    assert_eq!(stored(&app, &g, field::NAME), FieldValue::Str("Errands".into()));
+    let mut other = Journal::open(&path, ActorId(2)).unwrap();
+    remote_set(&mut other, &g, field::NAME, FieldValue::Str("Theirs".into()));
+    assert!(app.save_session());
+    assert_eq!(app.mirror.name(&g), "Theirs");
+    assert_eq!(stored(&app, &g, field::NAME), FieldValue::Str("Theirs".into()), "not diffed back");
+}
+
+/// Ruling 9 with 2b-3 Ruling 3: a rename waiting for a save wins over another replica's.
+#[test]
+fn a_pending_local_rename_wins_over_a_remote_one() {
+    let path = temp_dir("name-pending").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let g = add_group(&mut app, "G");
+    assert!(app.save_session());
+    let mut other = Journal::open(&path, ActorId(2)).unwrap();
+    app.edit_name(&g, "mine");
+    remote_set(&mut other, &g, field::NAME, FieldValue::Str("theirs".into()));
+    assert!(app.save_session());
+    assert_eq!(app.mirror.name(&g), "mine");
+    assert_eq!(stored(&app, &g, field::NAME), FieldValue::Str("mine".into()));
+}
+
+/// A Json node `v.json` (`{"users": [...]}`) with a store id, in an app saving to `path`.
+fn json_on(path: &std::path::Path, name: &str) -> (App, String) {
+    let file = temp_dir(name).join("v.json");
+    std::fs::write(&file, r#"{"users": [{"name": "a"}]}"#).unwrap();
+    let mut app = app_on(path, 1);
+    let node = app.alloc_node_id();
+    app.insert_json_node_with_id(node.clone(), file.to_string_lossy().into_owned(), egui::Vec2::ZERO, None).unwrap();
+    (app, node)
+}
+
+/// Ruling 8: a view edit (`edit_view`) saves, and the decoded cache follows every change of the mirror's view,
+/// another replica's too.
+#[test]
+fn a_json_view_edit_saves_and_a_remote_one_refreshes_the_decoded_cache() {
+    let path = temp_dir("view-edit").join("session.mnf");
+    let (mut app, node) = json_on(&path, "view-edit-file");
+    assert!(app.save_session());
+    let users = r#"{"/users":{"collapsed":true}}"#;
+    app.edit_view(&node, users);
+    assert_eq!(app.mirror.view(&node).and_then(|v| v.get("/users")).and_then(|o| o.collapsed), Some(true));
+    assert!(app.save_session());
+    assert_eq!(stored(&app, &node, field::VIEW), FieldValue::Str(users.into()));
+    let mut other = Journal::open(&path, ActorId(2)).unwrap();
+    remote_set(&mut other, &node, field::VIEW, FieldValue::Str(r#"{"":{"collapsed":true}}"#.into()));
+    assert!(app.save_session());
+    let view = app.mirror.view(&node).expect("a view");
+    assert_eq!(view.get("").and_then(|o| o.collapsed), Some(true), "the cache shows theirs");
+    assert!(view.get("/users").is_none(), "and only theirs");
+}
+
 #[test]
 fn url_changes_after_a_host_started_load_stay_local_until_it_settles() {
     let mut app = App::default();
@@ -906,7 +971,7 @@ fn a_remote_pos_does_not_snap_a_node_being_dragged() {
 fn a_stale_drag_does_not_overwrite_a_remote_pos() {
     let path = temp_dir("pos-stale-drag").join("session.mnf");
     let mut app = app_on(&path, 1);
-    let g = add(&mut app, NodePayload::Group(GroupPayload::named("G")));
+    let g = add_group(&mut app, "G");
     let (a, b) = (a_note_at(&mut app, egui::vec2(10.0, 20.0)), a_note_at(&mut app, egui::vec2(300.0, 20.0)));
     assert!(app.save_session());
     let mut other = Journal::open(&path, ActorId(2)).unwrap();
@@ -1732,8 +1797,7 @@ fn deleting_a_jar_clears_the_tabs_and_groups_that_named_it() {
     let mut app = App::default();
     let jar = app.create_jar("Work");
     let tab = add(&mut app, sleeping_tab("https://a.com/", "A"));
-    let mut group = GroupPayload::named("G");
-    group.default_jar = Some(jar);
+    let group = GroupPayload { default_jar: Some(jar), ..GroupPayload::default() };
     let grp = add(&mut app, NodePayload::Group(group));
     app.edit_jar(&tab, crate::jar::JarChoice { jar: Some(jar), set: true });
     app.delete_jar(jar);
@@ -1827,7 +1891,7 @@ fn a_reopened_tab_comes_back_asleep_with_its_zoom_and_title() {
 #[test]
 fn an_imported_groups_tab_arrives_asleep_in_the_new_group() {
     let mut app = app_on(&temp_dir("import-sleep").join("session.mnf"), 1);
-    let g = add(&mut app, NodePayload::Group(GroupPayload::named("G")));
+    let g = add_group(&mut app, "G");
     let tab = add(&mut app, failed_tab("https://i/", 1.0));
     app.edit_group(&tab, Some(g.clone()));
     let json = app.export_group_json(&g).unwrap();
@@ -1844,8 +1908,8 @@ fn an_imported_groups_tab_arrives_asleep_in_the_new_group() {
 #[test]
 fn an_imported_member_whose_group_is_outside_the_file_joins_the_roots_level() {
     let mut app = app_on(&temp_dir("import-outside").join("session.mnf"), 1);
-    let level = add(&mut app, NodePayload::Group(GroupPayload::named("L")));
-    let elsewhere = add(&mut app, NodePayload::Group(GroupPayload::named("E")));
+    let level = add_group(&mut app, "L");
+    let elsewhere = add_group(&mut app, "E");
     app.current_group = Some(level.clone());
     let json = JsonDoc {
         nodes: vec![
@@ -2207,9 +2271,8 @@ fn last_shared_matches_the_store_after_every_save() {
     let dir = temp_dir("last-shared");
     let path = dir.join("session.mnf");
     let mut app = app_on(&path, 1);
-    let group = |name: &str| NodePayload::Group(GroupPayload::named(name));
-    let outer = add(&mut app, group("outer"));
-    let inner = add(&mut app, group("inner"));
+    let outer = add_group(&mut app, "outer");
+    let inner = add_group(&mut app, "inner");
     let tab = add(&mut app, failed_tab("https://a/", 1.0));
     let note = add(&mut app, NodePayload::Note(NotePayload { text: String::new(), editing: false, url: None }));
     app.edit_group(&inner, Some(outer.clone()));
@@ -2272,9 +2335,7 @@ fn app_save_costs() {
     for tabs in [300usize, 3000] {
         let dir = temp_dir(&format!("app-cost-{tabs}"));
         let mut app = app_on(&dir.join("session.mnf"), 1);
-        let groups: Vec<String> = (0..tabs / 10)
-            .map(|i| add(&mut app, NodePayload::Group(GroupPayload::named(format!("Group {i}")))))
-            .collect();
+        let groups: Vec<String> = (0..tabs / 10).map(|i| add_group(&mut app, &format!("Group {i}"))).collect();
         let mut ids = Vec::new();
         for i in 0..tabs {
             let url = format!("https://www.example{}.com/articles/2026/09/some-long-article-slug-{i}?ref=home", i % 50);
@@ -2794,7 +2855,7 @@ fn a_parent_created_by_the_same_commit_is_kept() {
 fn a_pending_link_edit_for_a_node_deleted_elsewhere_is_dropped() {
     let path = temp_dir("link-dropped").join("session.mnf");
     let mut app = app_on(&path, 1);
-    let g = add(&mut app, NodePayload::Group(GroupPayload::named("G")));
+    let g = add_group(&mut app, "G");
     let (a, b, c) = (
         add(&mut app, sleeping_tab("https://a/", "")),
         add(&mut app, sleeping_tab("https://b/", "")),
@@ -2820,7 +2881,7 @@ fn a_pending_link_edit_for_a_node_deleted_elsewhere_is_dropped() {
 fn a_parked_link_is_patched_with_the_resolved_value() {
     let path = temp_dir("link-parked-gone").join("session.mnf");
     let mut app = app_on(&path, 1);
-    let g = add(&mut app, NodePayload::Group(GroupPayload::named("G")));
+    let g = add_group(&mut app, "G");
     let (a, b, tab) = (
         add(&mut app, sleeping_tab("https://a/", "")),
         add(&mut app, sleeping_tab("https://b/", "")),
@@ -2847,7 +2908,7 @@ fn a_parked_link_is_patched_with_the_resolved_value() {
 fn a_group_edit_reads_back_and_commits_as_a_move() {
     let path = temp_dir("group-edit").join("session.mnf");
     let mut app = app_on(&path, 1);
-    let g = add(&mut app, NodePayload::Group(GroupPayload::named("G")));
+    let g = add_group(&mut app, "G");
     let t = add(&mut app, sleeping_tab("https://t/", ""));
     assert!(app.save_session());
     app.edit_group(&t, Some(g.clone()));
@@ -2864,7 +2925,7 @@ fn a_move_into_a_group_created_by_the_same_save_follows_the_create() {
     let mut app = app_on(&path, 1);
     let t = add(&mut app, sleeping_tab("https://t/", ""));
     assert!(app.save_session());
-    let g = add(&mut app, NodePayload::Group(GroupPayload::named("G")));
+    let g = add_group(&mut app, "G");
     app.edit_group(&t, Some(g.clone()));
     assert!(app.save_session());
     assert_eq!(app.journal.as_ref().unwrap().doc().effective_group(t.parse().unwrap()), Some(g.parse().unwrap()));
@@ -2876,7 +2937,7 @@ fn a_move_into_a_group_created_by_the_same_save_follows_the_create() {
 fn a_move_into_a_group_deleted_by_the_same_save_is_written_as_none() {
     let path = temp_dir("group-gone").join("session.mnf");
     let mut app = app_on(&path, 1);
-    let g = add(&mut app, NodePayload::Group(GroupPayload::named("G")));
+    let g = add_group(&mut app, "G");
     let t = add(&mut app, sleeping_tab("https://t/", ""));
     assert!(app.save_session());
     app.edit_group(&t, Some(g.clone()));
@@ -2899,7 +2960,7 @@ fn a_group_edit_on_a_non_store_id_queues_nothing() {
 fn a_group_edit_to_a_non_store_target_drops_an_earlier_queued_one() {
     let path = temp_dir("group-stale").join("session.mnf");
     let mut app = app_on(&path, 1);
-    let g = add(&mut app, NodePayload::Group(GroupPayload::named("G")));
+    let g = add_group(&mut app, "G");
     let t = add(&mut app, sleeping_tab("https://t/", ""));
     assert!(app.save_session());
     app.edit_group(&t, Some(g.clone()));
@@ -2914,8 +2975,8 @@ fn a_group_edit_to_a_non_store_target_drops_an_earlier_queued_one() {
 fn a_local_group_move_wins_over_a_remote_one() {
     let path = temp_dir("group-conflict").join("session.mnf");
     let mut app = app_on(&path, 1);
-    let g1 = add(&mut app, NodePayload::Group(GroupPayload::named("A")));
-    let g2 = add(&mut app, NodePayload::Group(GroupPayload::named("B")));
+    let g1 = add_group(&mut app, "A");
+    let g2 = add_group(&mut app, "B");
     let t = add(&mut app, sleeping_tab("https://t/", ""));
     assert!(app.save_session());
     let mut other = Journal::open(&path, ActorId(2)).unwrap();
@@ -2935,7 +2996,7 @@ fn a_local_group_move_wins_over_a_remote_one() {
 fn a_remote_group_move_reaches_the_mirror() {
     let path = temp_dir("group-remote").join("session.mnf");
     let mut app = app_on(&path, 1);
-    let g = add(&mut app, NodePayload::Group(GroupPayload::named("G")));
+    let g = add_group(&mut app, "G");
     let t = add(&mut app, sleeping_tab("https://t/", ""));
     assert!(app.save_session());
     let mut other = Journal::open(&path, ActorId(2)).unwrap();
@@ -2950,8 +3011,8 @@ fn a_remote_group_move_reaches_the_mirror() {
 fn a_committed_move_wins_over_a_remote_move_parked_for_a_waking_tab() {
     let path = temp_dir("group-parked").join("session.mnf");
     let mut app = app_on(&path, 1);
-    let g1 = add(&mut app, NodePayload::Group(GroupPayload::named("A")));
-    let g2 = add(&mut app, NodePayload::Group(GroupPayload::named("B")));
+    let g1 = add_group(&mut app, "A");
+    let g2 = add_group(&mut app, "B");
     let tab = add(&mut app, sleeping_tab("https://t/", ""));
     assert!(app.save_session());
     app.focus_tab(&tab);
@@ -2972,8 +3033,8 @@ fn a_committed_move_wins_over_a_remote_move_parked_for_a_waking_tab() {
 fn dissolving_a_group_moves_members_up_and_saves() {
     let path = temp_dir("group-dissolve").join("session.mnf");
     let mut app = app_on(&path, 1);
-    let outer = add(&mut app, NodePayload::Group(GroupPayload::named("O")));
-    let inner = add(&mut app, NodePayload::Group(GroupPayload::named("I")));
+    let outer = add_group(&mut app, "O");
+    let inner = add_group(&mut app, "I");
     let t = add(&mut app, sleeping_tab("https://t/", ""));
     app.edit_group(&inner, Some(outer.clone()));
     app.edit_group(&t, Some(inner.clone()));
@@ -2990,8 +3051,8 @@ fn dissolving_a_group_moves_members_up_and_saves() {
 fn a_remote_merge_is_not_reverted_by_the_dissolve_it_triggers() {
     let path = temp_dir("group-remote-merge").join("session.mnf");
     let mut app = app_on(&path, 1);
-    let t = add(&mut app, NodePayload::Group(GroupPayload::named("T")));
-    let g = add(&mut app, NodePayload::Group(GroupPayload::named("G")));
+    let t = add_group(&mut app, "T");
+    let g = add_group(&mut app, "G");
     let m = add(&mut app, sleeping_tab("https://m/", ""));
     assert!(g.parse::<NodeId>().unwrap() < m.parse::<NodeId>().unwrap(), "G's delete is applied before M's move");
     app.edit_group(&m, Some(g.clone()));
@@ -3043,8 +3104,8 @@ fn a_remote_reparent_is_not_reverted_by_the_removal_it_races() {
 fn a_pending_move_into_a_remotely_deleted_group_lands_in_its_group() {
     let path = temp_dir("group-pending-remote-delete").join("session.mnf");
     let mut app = app_on(&path, 1);
-    let outer = add(&mut app, NodePayload::Group(GroupPayload::named("O")));
-    let g = add(&mut app, NodePayload::Group(GroupPayload::named("G")));
+    let outer = add_group(&mut app, "O");
+    let g = add_group(&mut app, "G");
     let m = add(&mut app, sleeping_tab("https://m/", ""));
     app.edit_group(&g, Some(outer.clone()));
     assert!(app.save_session());
@@ -3064,8 +3125,8 @@ fn a_pending_move_into_a_remotely_deleted_group_lands_in_its_group() {
 fn a_move_the_store_refuses_as_a_cycle_leaves_the_document_acyclic() {
     let path = temp_dir("group-cycle").join("session.mnf");
     let mut app = app_on(&path, 1);
-    let a = add(&mut app, NodePayload::Group(GroupPayload::named("A")));
-    let b = add(&mut app, NodePayload::Group(GroupPayload::named("B")));
+    let a = add_group(&mut app, "A");
+    let b = add_group(&mut app, "B");
     assert!(app.save_session());
     let mut other = Journal::open(&path, ActorId(2)).unwrap();
     let nest = vec![OpBody::Move { node: b.parse().unwrap(), group: Some(a.parse().unwrap()) }];
@@ -3103,8 +3164,8 @@ fn start_respawn(app: &mut App, tab: &str) {
 
 /// O holds G, G holds T, saved.
 fn nested_tab(app: &mut App) -> (String, String, String) {
-    let outer = add(app, NodePayload::Group(GroupPayload::named("O")));
-    let g = add(app, NodePayload::Group(GroupPayload::named("G")));
+    let outer = add_group(app, "O");
+    let g = add_group(app, "G");
     let t = add(app, sleeping_tab("https://t/", ""));
     app.edit_group(&g, Some(outer.clone()));
     app.edit_group(&t, Some(g.clone()));
@@ -3153,8 +3214,8 @@ fn a_local_dissolve_during_a_respawn_moves_the_tab_up_a_level() {
 fn a_local_merge_during_a_respawn_moves_the_tab_into_the_target() {
     let path = temp_dir("respawn-local-merge").join("session.mnf");
     let mut app = app_on(&path, 1);
-    let source = add(&mut app, NodePayload::Group(GroupPayload::named("S")));
-    let target = add(&mut app, NodePayload::Group(GroupPayload::named("T")));
+    let source = add_group(&mut app, "S");
+    let target = add_group(&mut app, "T");
     let m = add(&mut app, sleeping_tab("https://m/", ""));
     app.edit_group(&m, Some(source.clone()));
     assert!(app.save_session());
@@ -3217,8 +3278,8 @@ fn a_remote_removal_during_a_respawn_reparents_the_tab_in_the_mirror_only() {
 fn a_new_spawn_into_a_group_dissolved_in_flight_lands_where_the_document_shows_it() {
     let path = temp_dir("spawn-dissolved").join("session.mnf");
     let mut app = app_on(&path, 1);
-    let outer = add(&mut app, NodePayload::Group(GroupPayload::named("O")));
-    let g = add(&mut app, NodePayload::Group(GroupPayload::named("G")));
+    let outer = add_group(&mut app, "O");
+    let g = add_group(&mut app, "G");
     app.edit_group(&g, Some(outer.clone()));
     assert!(app.save_session());
     let t = app.alloc_node_id();
@@ -3494,7 +3555,7 @@ fn a_spawning_tab_is_created_and_lands_with_its_jar() {
     let path = temp_dir("jar-spawn").join("session.mnf");
     let mut app = app_on(&path, 1);
     let (work, home) = (app.create_jar("Work"), app.create_jar("Home"));
-    let g = add(&mut app, NodePayload::Group(GroupPayload::named("G")));
+    let g = add_group(&mut app, "G");
     app.nodes.get_mut(&g).unwrap().as_group_mut().unwrap().default_jar = Some(work);
     assert!(app.save_session());
     // A restored tab (a failed `New` spawn never lands), started with G's default as `spawn_tab_at` gives one.
@@ -3880,7 +3941,7 @@ fn a_remote_engine_parked_during_a_swap_respawn_is_swapped_to_when_it_lands() {
     let path = temp_dir("engine-parked-swap").join("session.mnf");
     let mut app = app_on(&path, 1);
     let work = app.create_jar("Work");
-    let g = add(&mut app, NodePayload::Group(GroupPayload::named("G")));
+    let g = add_group(&mut app, "G");
     let (tab, _peer) = live_tab(&mut app, EngineKind::Servo, "https://s/");
     app.edit_group(&tab, Some(g.clone()));
     assert!(app.save_session());

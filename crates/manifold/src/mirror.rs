@@ -9,6 +9,7 @@
 use std::collections::HashMap;
 
 use crate::jar::JarChoice;
+use crate::json_view::JsonView;
 use crate::process_manager::EngineKind;
 use crate::session_sync::{color_of, color_value, engine_of, pos_value, Fields};
 use crate::store::model::{field, field_def, FieldValue};
@@ -18,14 +19,28 @@ use crate::store::model::{field, field_def, FieldValue};
 /// `JAR` and `JAR_SET` are a tab's jar choice (`jar_choice`), written together by `App::edit_jar`. `ENGINE` is a tab's
 /// engine as its stored code (`engine`), written by `App::edit_engine`. `POS` is the document pos (`pos`), written by
 /// `App::edit_pos`; where a card is drawn is `App::layout`, which the document never reads (2b-4 Ruling 1). `TEXT` is a
-/// note's text (`text`), written by `App::edit_text` at a save or blur; the note's payload is its edit buffer.
-pub(crate) const MIRRORED: &[u32] =
-    &[field::POS, field::COLOR, field::PINNED, field::URL, field::TEXT, field::ENGINE, field::JAR, field::JAR_SET];
+/// note's text (`text`), written by `App::edit_text` at a save or blur; the note's payload is its edit buffer. `VIEW`
+/// is a Json node's view (`view`, decoded), written by `App::edit_view`. `NAME` is a group's name (`name`), written by
+/// `App::edit_name`; a jar's `NAME` is not mirrored (`JarDef`, `materialize_jar`), and `diff` still writes it.
+pub(crate) const MIRRORED: &[u32] = &[
+    field::POS,
+    field::COLOR,
+    field::PINNED,
+    field::URL,
+    field::TEXT,
+    field::VIEW,
+    field::NAME,
+    field::ENGINE,
+    field::JAR,
+    field::JAR_SET,
+];
 
 #[derive(Default)]
 pub(crate) struct Mirror {
     nodes: HashMap<String, Fields>,
     links: HashMap<String, Links>,
+    /// `field::VIEW` of `nodes`, decoded (`view`); only non-empty views.
+    views: HashMap<String, JsonView>,
 }
 
 /// A node's links to other nodes, as ids: `Option<String>` so hand-built test ids work and per-frame filters
@@ -45,8 +60,20 @@ impl Mirror {
         }
     }
 
+    /// Every write of a mirrored field lands here, so the decoded view (`view`) is refreshed in this one place.
     pub(crate) fn set(&mut self, id: &str, no: u32, value: FieldValue) {
         debug_assert!(MIRRORED.contains(&no), "field {no} is not mirrored");
+        if no == field::VIEW {
+            let view = match &value {
+                FieldValue::Str(text) => JsonView::from_field(text),
+                _ => JsonView::default(),
+            };
+            if view.0.is_empty() {
+                self.views.remove(id);
+            } else {
+                self.views.insert(id.to_owned(), view);
+            }
+        }
         self.nodes.entry(id.to_owned()).or_default().insert(no, value);
     }
 
@@ -82,6 +109,7 @@ impl Mirror {
     pub(crate) fn retain(&mut self, keep: impl Fn(&str) -> bool) {
         self.nodes.retain(|id, _| keep(id));
         self.links.retain(|id, _| keep(id));
+        self.views.retain(|id, _| keep(id));
     }
 
     /// A node's document pos: where it was placed or last dropped (`App::edit_pos`), or where another replica put
@@ -100,6 +128,22 @@ impl Mirror {
     pub(crate) fn text(&self, id: &str) -> &str {
         match self.nodes.get(id).and_then(|fields| fields.get(&field::TEXT)) {
             Some(FieldValue::Str(text)) => text,
+            _ => "",
+        }
+    }
+
+    /// A Json node's view overrides (`field::VIEW`), decoded: the cache `set` refreshes whenever the mirror's view
+    /// changes (2b-4 Ruling 8), so the per-frame readers never parse. `None` when the node has no overrides.
+    pub(crate) fn view(&self, id: &str) -> Option<&JsonView> {
+        self.views.get(id)
+    }
+
+    /// A group's stored name (`field::NAME`, 2b-4 Ruling 9): the document's, or the rename about to be written
+    /// (`App::edit_name`). "" when the mirror has none. Raw: drawn only through a name rule (`names.rs`). A jar's
+    /// name is its `JarDef`'s, not this.
+    pub(crate) fn name(&self, id: &str) -> &str {
+        match self.nodes.get(id).and_then(|fields| fields.get(&field::NAME)) {
+            Some(FieldValue::Str(name)) => name,
             _ => "",
         }
     }
@@ -282,6 +326,32 @@ mod tests {
         assert_eq!(mirror.text("7"), "hello");
         let FieldValue::Str(stored) = &mirror.nodes["7"][&field::TEXT] else { panic!("a Str") };
         assert_eq!(mirror.text("7").as_ptr(), stored.as_ptr(), "the stored string, not a copy (2b-4 Ruling 6)");
+    }
+
+    #[test]
+    fn a_view_is_decoded_on_every_set_and_dropped_with_its_entry() {
+        let mut mirror = Mirror::default();
+        assert!(mirror.view("7").is_none());
+        mirror.set("7", field::VIEW, FieldValue::Str(r#"{"/a":{"collapsed":true}}"#.into()));
+        assert_eq!(mirror.view("7").and_then(|v| v.get("/a")).and_then(|o| o.collapsed), Some(true));
+        mirror.set("7", field::VIEW, FieldValue::Str(r#"{"/b":{"collapsed":false}}"#.into()));
+        let view = mirror.view("7").expect("a view");
+        assert!(view.get("/a").is_none() && view.get("/b").is_some(), "refreshed, not merged");
+        mirror.set("7", field::VIEW, FieldValue::Str(String::new()));
+        assert!(mirror.view("7").is_none(), "an empty view is none");
+        mirror.set("8", field::VIEW, FieldValue::Str(r#"{"/a":{"collapsed":true}}"#.into()));
+        mirror.retain(|id| id != "8");
+        assert!(mirror.view("8").is_none(), "the cache goes with the entry");
+    }
+
+    #[test]
+    fn a_name_reads_back_borrowed_and_a_node_without_one_has_none() {
+        let mut mirror = Mirror::default();
+        assert_eq!(mirror.name("7"), "");
+        mirror.set("7", field::NAME, FieldValue::Str("Errands".into()));
+        assert_eq!(mirror.name("7"), "Errands");
+        let FieldValue::Str(stored) = &mirror.nodes["7"][&field::NAME] else { panic!("a Str") };
+        assert_eq!(mirror.name("7").as_ptr(), stored.as_ptr(), "the stored string, not a copy");
     }
 
     #[test]

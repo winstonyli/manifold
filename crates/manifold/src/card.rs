@@ -860,18 +860,18 @@ pub(crate) fn node_card_rect(pos: egui::Vec2, payload: &NodePayload) -> egui::Re
 }
 
 /// What the Graph filter box matches a card against: a tab's title and
-/// URL, a download's full path, a note's text (`note_text`, `App::note_text`), a file node's filename, a
-/// group's name.
-pub(crate) fn card_filter_text<'a>(payload: &'a NodePayload, note_text: &'a str) -> Vec<&'a str> {
+/// URL, a download's full path, a note's text, a file node's filename, a group's name (`text`, `App::own_text`, for
+/// a note or a group).
+pub(crate) fn card_filter_text<'a>(payload: &'a NodePayload, text: &'a str) -> Vec<&'a str> {
     match payload {
         NodePayload::Tab(tab) => vec![&tab.title, &tab.url],
         NodePayload::Unloaded(tab) => vec![&tab.title, &tab.url],
         NodePayload::Download(download) => vec![&download.path],
-        NodePayload::Note(_) => vec![note_text],
+        NodePayload::Note(_) => vec![text],
         NodePayload::Image(image) => vec![download_filename(&image.path)],
         NodePayload::Pdf(pdf) => vec![download_filename(&pdf.path)],
         NodePayload::Json(json) => vec![download_filename(&json.path)],
-        NodePayload::Group(group) => vec![&group.name], // name rule: the filter matches the stored text
+        NodePayload::Group(_) => vec![text],
     }
 }
 
@@ -1020,9 +1020,9 @@ impl App {
         };
         // Screen readers: the card is a button named by its kind and title (egui announces it on focus).
         if let Some(node) = self.nodes.get(id) {
-            let note_text = self.note_text(id);
+            let text = self.own_text(id);
             response.widget_info(|| {
-                egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), node.accessible_name(note_text))
+                egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), node.accessible_name(text))
             });
         }
         // Keyboard: a focus ring, the camera follows focus, and the Tab-order number while navigating.
@@ -1169,7 +1169,7 @@ impl App {
             dim_if_filtered_out(
                 deferred_overlays,
                 &self.graph_filter,
-                &card_filter_text(&node.payload, self.note_text(id)),
+                &card_filter_text(&node.payload, self.own_text(id)),
                 rect,
                 style.dim_rounding,
             );
@@ -1840,7 +1840,8 @@ impl App {
         if !self.graph_lod_simplified {
             // Owned, so the header can borrow it while `paint_card_header` borrows `self`.
             // name rule: drawn by display_name just below
-            if let Some(stored) = self.nodes.get(id).and_then(|n| n.as_group()).map(|g| g.name.clone()) {
+            if let Some(stored) = self.nodes.get(id).and_then(|n| n.as_group()).map(|_| self.mirror.name(id).to_owned())
+            {
                 let segs = crate::names::display_name(&stored, crate::names::UNTITLED);
                 body.tooltip = crate::names::hidden_hint(&segs);
                 let header = CardHeader {
@@ -2508,7 +2509,7 @@ mod tests {
             ("Re\u{200B}ading", Some("Hidden characters: U+200B zero width space"), "Re⟦200B⟧ading"),
             ("Reading", None, "Reading"),
         ] {
-            app.nodes.get_mut(&g).unwrap().as_group_mut().unwrap().name = name.into();
+            app.mirror.set(&g, crate::store::model::field::NAME, crate::store::model::FieldValue::Str(name.into()));
             let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
                 let mut overlays: DeferredOverlays = Vec::new();
                 let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(300.0, 200.0));
@@ -2570,7 +2571,6 @@ mod tests {
             assert!(json_preview || markers.iter().any(|m| body.contains(m)), "paint_{name}_body draws no card header");
         }
     }
-    use crate::json_view::JsonView;
 
     /// A `CardView` for `kind` with nothing set, for tests to override.
     fn test_view(kind: ItemNodeKind) -> CardView {
@@ -2790,7 +2790,7 @@ mod tests {
             node_card_size(&NodePayload::Note(NotePayload { text: String::new(), editing: false, url: None })),
             NOTE_NODE_SIZE
         );
-        assert_eq!(node_card_size(&NodePayload::Group(GroupPayload::named("g"))), GROUP_NODE_SIZE);
+        assert_eq!(node_card_size(&NodePayload::Group(GroupPayload::default())), GROUP_NODE_SIZE);
         let json = |value: serde_json::Value, key: Option<&str>, error: Option<&str>| {
             NodePayload::Json(JsonPayload {
                 path: "a.json".into(),
@@ -2798,7 +2798,6 @@ mod tests {
                 key: key.map(Into::into),
                 error: error.map(Into::into),
                 url: None,
-                view: JsonView::default(),
             })
         };
         let five = serde_json::json!({"a": 1, "b": 2, "c": 3, "d": 4, "e": 5});
@@ -2842,7 +2841,7 @@ mod tests {
 
     #[test]
     fn card_filter_text_matches_each_kinds_filter_input() {
-        // A note matches on the text it shows (`App::note_text`), passed in.
+        // A note or a group matches on its own text (`App::own_text`), passed in.
         fn filter(payload: &NodePayload) -> Vec<&str> {
             card_filter_text(payload, "buy milk")
         }
@@ -2881,11 +2880,10 @@ mod tests {
                 key: None,
                 error: None,
                 url: None,
-                view: JsonView::default()
             })),
             ["x.json"]
         );
-        assert_eq!(filter(&NodePayload::Group(GroupPayload::named("Reading"))), ["Reading"]);
+        assert_eq!(filter(&NodePayload::Group(GroupPayload::default())), ["buy milk"]);
         // Like a live tab: title and url, so the Graph filter can match a
         // sleeping card by its saved title, not just its url.
         assert_eq!(

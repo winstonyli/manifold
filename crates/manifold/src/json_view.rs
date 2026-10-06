@@ -67,6 +67,9 @@ impl CardOverride {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct JsonView(pub(crate) BTreeMap<String, CardOverride>);
 
+/// No overrides: what a node without a view (`Mirror::view`'s `None`) lays out with.
+pub(crate) static NO_VIEW: JsonView = JsonView(BTreeMap::new());
+
 impl JsonView {
     /// The stored field's text; empty or unreadable text is no overrides.
     pub(crate) fn from_field(text: &str) -> Self {

@@ -731,7 +731,6 @@ mod tests {
     use super::{id_digest, jar_fragment, named_jar_label, JarConfirm, JarLabel, JarMarker};
     use crate::card::DropEffect;
     use crate::jar::{JarChoice, JarKey};
-    use crate::node::{GroupPayload, NodePayload};
     use crate::session_sync::tests::{add, sleeping_tab};
     use crate::store::model::NodeId;
     use crate::App;
@@ -743,7 +742,7 @@ mod tests {
         id
     }
     fn group_in(app: &mut App, parent: Option<&str>) -> String {
-        let id = add(app, NodePayload::Group(GroupPayload::named("G")));
+        let id = crate::session_sync::tests::add_group(app, "G");
         app.edit_group(&id, parent.map(str::to_string));
         id
     }

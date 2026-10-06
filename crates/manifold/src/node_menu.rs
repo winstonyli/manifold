@@ -690,8 +690,9 @@ impl App {
                 .filter_map(|other| {
                     let sibling =
                         self.nodes.get(other).filter(|_| self.mirror.group(other) == self.mirror.group(id))?;
+                    sibling.as_group()?;
                     // name rule: drawn by display_name in the MoveTo rows
-                    Some((other.clone(), sibling.as_group()?.name.clone()))
+                    Some((other.clone(), self.mirror.name(other).to_owned()))
                 })
                 .collect(),
             renaming: [&self.renaming_group, &self.naming_jar]
@@ -791,17 +792,15 @@ impl App {
             NodeAction::FitSubtree => self.camera.jump_to(self.fit_subtree_scene_rect(id)),
             NodeAction::Rename => {
                 // name rule: the field edits the stored name
-                let name = self.nodes.get(id).and_then(|n| n.as_group()).map(|g| g.name.clone()).unwrap_or_default();
+                let name = self.mirror.name(id).to_owned();
                 self.renaming_group = Some((id.to_string(), name));
                 self.pending_focus = Some(FocusTarget::GroupRename);
             }
             NodeAction::CommitRename(name) => {
                 self.renaming_group = None;
                 let clean = crate::names::clean_name(&name);
-                if !clean.is_empty() {
-                    if let Some(group) = self.nodes.get_mut(id).and_then(|n| n.as_group_mut()) {
-                        group.name = clean.into_owned();
-                    }
+                if !clean.is_empty() && self.nodes.get(id).is_some_and(|n| n.as_group().is_some()) {
+                    self.edit_name(id, &clean);
                 }
             }
             NodeAction::CancelRename => self.renaming_group = None,
@@ -823,8 +822,7 @@ impl App {
             NodeAction::MoveToGroup(group) => self.apply_drop(id, Some((DropEffect::Join, Some(group)))),
             NodeAction::Dissolve => self.dissolve_group(id),
             NodeAction::ExportGroup => {
-                let group = self.nodes.get(id).and_then(|n| n.as_group());
-                let name = export_file_name(group.map_or("", |g| &g.name)); // name rule: export_file_name cleans it
+                let name = export_file_name(self.mirror.name(id)); // name rule: export_file_name cleans it
                 if let Some(json) = self.export_group_json(id) {
                     if let Some((path, toast)) = save_dialog_with_toast(name, "Group") {
                         write_json_export(&json, &path, "group");
@@ -1183,7 +1181,7 @@ mod tests {
         let t = crate::session_sync::tests::add(&mut app, crate::session_sync::tests::sleeping_tab("https://a/", "A"));
         let rows = app.node_menu_view(&t).unwrap().jars.unwrap().rows;
         assert_eq!(rows.iter().map(|r| r.name.clone()).collect::<Vec<_>>()[1..], want);
-        let g = crate::session_sync::tests::add(&mut app, NodePayload::Group(crate::node::GroupPayload::named("G")));
+        let g = crate::session_sync::tests::add_group(&mut app, "G");
         let rows = app.node_menu_view(&g).unwrap().jars.unwrap().rows;
         assert_eq!(rows.iter().map(|r| r.name.clone()).collect::<Vec<_>>(), want);
     }
@@ -1196,7 +1194,11 @@ mod tests {
         let (g, note) = (app.alloc_node_id(), app.alloc_node_id());
         app.insert_group_at(g.clone(), None);
         app.insert_note_at(note.clone(), None);
-        app.nodes.get_mut(&g).unwrap().as_group_mut().unwrap().name = "Re\u{200B}ading".into();
+        app.mirror.set(
+            &g,
+            crate::store::model::field::NAME,
+            crate::store::model::FieldValue::Str("Re\u{200B}ading".into()),
+        );
         app.node_menu = Some((note, egui::pos2(100.0, 100.0)));
         let mut galleys = Vec::new();
         for _ in 0..3 {
@@ -1228,7 +1230,7 @@ mod tests {
         let (g, note) = (app.alloc_node_id(), app.alloc_node_id());
         app.insert_group_at(g.clone(), None);
         app.insert_note_at(note.clone(), None);
-        app.nodes.get_mut(&g).unwrap().as_group_mut().unwrap().name = "x".repeat(200);
+        app.mirror.set(&g, crate::store::model::field::NAME, crate::store::model::FieldValue::Str("x".repeat(200)));
         app.node_menu = Some((note, egui::pos2(100.0, 100.0)));
         let mut texts = Vec::new();
         for _ in 0..3 {
@@ -1408,7 +1410,7 @@ mod tests {
         }
         menu_frame(&ctx, &mut app, vec![]);
         assert_eq!(app.renaming_group, None);
-        assert_eq!(app.nodes[&g].as_group().unwrap().name, "Errands");
+        assert_eq!(app.mirror.name(&g), "Errands");
     }
 
     /// "New Jar..."'s draft goes with its menu: closed, or another node's menu open, drops it.
@@ -1479,9 +1481,9 @@ mod tests {
         let g = app.alloc_node_id();
         app.insert_group_at(g.clone(), None);
         app.apply_node_action(&ctx, &g, NodeAction::CommitRename("  Re\u{200B}ading\u{00A0}\u{00A0}list\n".into()));
-        assert_eq!(app.nodes[&g].as_group().unwrap().name, "Reading list");
+        assert_eq!(app.mirror.name(&g), "Reading list");
         app.apply_node_action(&ctx, &g, NodeAction::CommitRename("\u{200B} \u{202E}".into()));
-        assert_eq!(app.nodes[&g].as_group().unwrap().name, "Reading list");
+        assert_eq!(app.mirror.name(&g), "Reading list");
     }
 
     /// Name rules: "New Jar..." makes a jar under the clean name, and none from a name with nothing left.

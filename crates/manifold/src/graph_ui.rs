@@ -323,7 +323,7 @@ impl App {
                 let pos = sum / count;
                 let name = self.default_group_name();
                 let at = self.placement(&id, Some(pos));
-                self.place_node(Some(id.clone()), NodePayload::Group(GroupPayload::named(name)), at);
+                self.place_group(Some(id.clone()), &name, at);
                 for tab_id in std::mem::take(&mut self.selected_tabs) {
                     if self.nodes.contains_key(&tab_id) {
                         self.edit_group(&tab_id, Some(id.clone()));
@@ -2128,7 +2128,7 @@ mod tests {
         let mut app = App::default();
         let g = app.alloc_node_id();
         app.insert_group_at(g.clone(), None);
-        app.nodes.get_mut(&g).unwrap().as_group_mut().unwrap().name = "Reading".into();
+        app.mirror.set(&g, crate::store::model::field::NAME, crate::store::model::FieldValue::Str("Reading".into()));
         let ctx = egui::Context::default();
         ctx.enable_accesskit();
         let input = egui::RawInput {
@@ -2142,7 +2142,7 @@ mod tests {
                 egui::WidgetInfo::labeled(
                     egui::WidgetType::Button,
                     true,
-                    app.nodes[&g].accessible_name(app.note_text(&g)),
+                    app.nodes[&g].accessible_name(app.own_text(&g)),
                 )
             });
         });
@@ -2162,8 +2162,12 @@ mod tests {
         app.insert_group_at(outer.clone(), None);
         app.insert_group_at(inner.clone(), None);
         app.edit_group(&inner, Some(outer.clone()));
-        app.nodes.get_mut(&outer).unwrap().as_group_mut().unwrap().name = "x".repeat(30);
-        app.nodes.get_mut(&inner).unwrap().as_group_mut().unwrap().name = "Re\u{200B}ading".into();
+        app.mirror.set(&outer, crate::store::model::field::NAME, crate::store::model::FieldValue::Str("x".repeat(30)));
+        app.mirror.set(
+            &inner,
+            crate::store::model::field::NAME,
+            crate::store::model::FieldValue::Str("Re\u{200B}ading".into()),
+        );
         app.current_group = Some(inner);
         let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
             ui.horizontal(|ui| app.toolbar_breadcrumb(ui, false, &mut Vec::new()));

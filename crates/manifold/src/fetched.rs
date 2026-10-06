@@ -82,6 +82,19 @@ impl App {
         id
     }
 
+    /// `place_node` for a group named `name`. Like a note's text, the name seeds the mirror (`Mirror::name`) only for
+    /// an id with no entry yet: a new group's `Create` carries it, and a stored group shown again keeps the
+    /// document's (`materialize` runs `mirror_remote` first). Doesn't save.
+    pub(crate) fn place_group(&mut self, id: Option<String>, name: &str, at: Placement) -> String {
+        let id = id.unwrap_or_else(|| self.alloc_node_id());
+        let fresh = !self.mirror.has(&id);
+        self.place_node(Some(id.clone()), NodePayload::Group(crate::node::GroupPayload::default()), at);
+        if fresh && !name.is_empty() {
+            self.mirror.set(&id, crate::store::model::field::NAME, FieldValue::Str(name.to_owned()));
+        }
+        id
+    }
+
     /// A download node for `path`, started from tab `tab_id`: placed next
     /// to that tab, in the tab's group, with an edge from it. Shared by an
     /// engine's `DownloadStarted` and the headless `ADDDOWNLOAD <path>`
@@ -304,7 +317,6 @@ impl App {
             NodePayload::Json(p) => Some(p.path.clone()),
             _ => None,
         };
-        let view = node.as_json().map(|j| j.view.clone()).unwrap_or_default();
         let at = self.node_order.iter().position(|n| n == id);
         if let Some(gpu) = &mut self.gpu {
             gpu.free_image(id);
@@ -329,7 +341,6 @@ impl App {
                     key: None,
                     error: Some(error.clone()),
                     url: Some(url),
-                    view: json_view::JsonView::default(),
                 }),
                 // Guarded above: `kind` is one of the three arms this
                 // matches.
@@ -339,15 +350,15 @@ impl App {
         }
         self.edit_parent(id, parent);
         self.edit_group(id, group);
-        if let Some(node) = self.nodes.get_mut(id) {
-            // The view goes back unpruned onto an error card: pruning
-            // against its `Null` would wipe, and sync away, every override
-            // a Retry should get back.
-            if let NodePayload::Json(json) = &mut node.payload {
-                json.view = view;
-                if result.is_ok() {
-                    json.view.retain_resolvable(&json.value);
-                }
+        // The view is the mirror's, which the remove and reinsert above leave alone (2b-4 Ruling 8). Overrides the new
+        // value can't resolve are dropped; an error card's view is left unpruned, since pruning against its `Null`
+        // would wipe, and sync away, every override a Retry should get back.
+        let value = self.nodes.get(id).and_then(|n| n.as_json()).filter(|_| result.is_ok()).map(|j| j.value.clone());
+        if let (Some(value), Some(view)) = (value, self.mirror.view(id)) {
+            let mut pruned = view.clone();
+            pruned.retain_resolvable(&value);
+            if pruned != *view {
+                self.edit_view(id, &pruned.to_field());
             }
         }
         if let (Some(at), Some(last)) = (at, self.node_order.pop()) {
@@ -599,14 +610,7 @@ impl App {
                 return Err(err);
             }
         };
-        let payload = NodePayload::Json(JsonPayload {
-            path,
-            value: value.into(),
-            key: None,
-            error: None,
-            url: None,
-            view: json_view::JsonView::default(),
-        });
+        let payload = NodePayload::Json(JsonPayload { path, value: value.into(), key: None, error: None, url: None });
         self.place_node(Some(id), payload, Placement { group, pos });
         Ok(())
     }
@@ -874,7 +878,6 @@ mod tests {
                 key: None,
                 error: None,
                 url: None,
-                view: json_view::JsonView::default(),
             }),
         );
         app.closed.push(ClosedEntry {
