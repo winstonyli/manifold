@@ -210,7 +210,7 @@ gone, the level is scanned in one pass, `Registry::caps` allocation-free), 326f7
 `cards[]` names a card by `type`, `loaded`, `json_card`; scripts follow); plus the Task 6 commit (this Outcome, the docs, the
 guard `crates/manifold/src/deleted_names.rs`). Plan commits: e82a6fb, 6ede40d. Tests: 880 after Task 6.
 
-Gate results: filled by the controller after the final gate.
+Gate results (2026-10-06, on 55e64c9; 5112422 changed only comments, docs and the guard test): two-instance x3 ok (03:51-03:59), smoke pass=48 fail=0; machine load 19-29% CPU (other sessions), Defender real-time off. Task 4 gate on 438b7eb: two-instance x3 ok, smoke 48/0. Full suite 880 passed / 0 failed / 5 ignored; fmt and clippy clean via the pre-commit hook on every commit. Probes run live by the Task 5 implementer: page-kind 6/6, sleep 8/8, scale-test ok, chrome-shots 13 of 44 views; json-level-probe does not enter the level (pre-existing, not fixed).
 
 ### Frame cost of the level pass (Task 3 unit benchmark `level_pass_cost`, release build, load about 9%, Defender real-time off)
 
