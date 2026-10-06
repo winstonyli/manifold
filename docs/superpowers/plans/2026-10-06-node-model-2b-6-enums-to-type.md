@@ -270,3 +270,7 @@ under the same code (the old scan read 426 and 532 µs), so read them as ratios.
   `session_sync::tests::sleeping_tab(url, title)` (a `Runtime`, 113 call sites); rename if it ever confuses.
 - Deferred directions (spec "Deferred from 2b-6"): `Kind` to type strings (D2), `ContentKind` to the views registry (D),
   `Runtime` per-family maps or a plugin slot (D2), raw TYPE (D), the unknown-type card and JsonLeaf retirement.
+
+### Presentation arms (decided 2026-10-06)
+
+Behaviour asks the container table (`is_container`, about 40 sites); presentation matches the type constant (`card_style`, `paint_card_body`, `node_menu_config`). Chosen because a group's look is not the same question as "is a container": a second container type would likely want its own look, and an `is_container` guard there would hand it the group's. Revisit: (B) `is_container` guards on the presentation arms if one rule is wanted before then; (C) a `presentation` field on caps rows (style, body, menu) when D or D2 supplies a real second container type or plugin-registered types. Until then a new container type gets the behaviour but the default style, body and menu.

@@ -410,6 +410,8 @@ pub(crate) fn card_style(kind: CardKind, visuals: &egui::Visuals) -> CardStyle {
         close_icon: visuals.text_color(),
         dim_rounding: 4.0,
     };
+    // Presentation matches the type; behaviour reads the container table (`is_container`). See the plan 2b-6
+    // Outcome, "Presentation arms".
     match kind.ty {
         TYPE_NOTE | TYPE_DOWNLOAD | TYPE_TAB => CardStyle { dim_rounding: 6.0, ..themed },
         // ACCENT at rest, as group cards have always been.
@@ -1198,6 +1200,7 @@ impl App {
             TYPE_IMAGE => self.paint_image_body(ui, deferred_overlays, id, rect, inv_zoom, zoom_scale),
             TYPE_PDF => self.paint_pdf_body(ui, deferred_overlays, id, rect, inv_zoom, zoom_scale),
             TYPE_JSON | TYPE_JSON_LEAF => self.paint_json_body(ui, deferred_overlays, id, rect, zoom_scale),
+            // Presentation matches the type, not `is_container` (see `card_style`).
             TYPE_GROUP => self.paint_group_body(ui, pass, id, view, rect),
             TYPE_TAB if view.kind.loaded() => {
                 self.paint_tab_body(ui, deferred_overlays, id, rect, inv_zoom, zoom_scale)

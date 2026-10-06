@@ -492,6 +492,7 @@ pub(crate) fn node_menu_config(view: &NodeMenuView, headless: bool) -> NodeMenuC
             items.extend(view.jars.iter().flat_map(|j| jar_items(j, true, false)));
             finish("unloaded_tab_context_menu", 170.0, items, delete("Close"))
         }
+        // Presentation matches the type, not `is_container` (see `card_style`).
         TYPE_GROUP => {
             // Dissolve keeps the members (the card's Del, ✕ and middle-click do it); the second closes them all.
             let mut delete_items =
