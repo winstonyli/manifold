@@ -843,11 +843,53 @@ struct App {
     /// touch `groups`/membership at all. Session-only, resets on restart.
     groups_collapsed: bool,
     /// `None` while viewing the top level; `Some(group_id)` while a
-    /// group's own subgraph has been drilled into (see `GroupPayload`'s doc
-    /// comment) — only meaningful when `view_mode == Graph`, but not reset
-    /// on leaving Graph view, so returning to Graph resumes wherever the
-    /// user last drilled into, same "graph view remembers its own state"
-    /// treatment `camera.rect`'s pan/zoom already gets.
+    /// group's own subgraph has been drilled into — only meaningful when
+    /// `view_mode == Graph`, but not reset on leaving Graph view, so
+    /// returning to Graph resumes wherever the user last drilled into, same
+    /// "graph view remembers its own state" treatment `camera.rect`'s
+    /// pan/zoom already gets.
+    ///
+    /// A group is a container node (the target of the `contains` edge,
+    /// `card_kind::is_container`) shown at whichever level of Graph view it
+    /// itself belongs to that, double-clicked, drills into its own subgraph of
+    /// members (tabs/downloads/notes/images/PDFs/JSON, and other groups) in
+    /// place of that level's -- the same "swap which set of nodes this view
+    /// renders" idea `ViewMode::Item`/`Graph` already is, just recursively, and
+    /// reusing that same flat `graph_layout::step` simulation rather than a
+    /// second nested one running inside the group's own node. It has no
+    /// runtime state of its own (`Runtime::None`): its name (`Mirror::name`,
+    /// written by `App::edit_name`; a new group's is seeded by
+    /// `App::place_group`), whether an older build's "Expand as Graph" made it
+    /// (`Mirror::from_json`) and the jar new tabs in it start with
+    /// (`Mirror::default_jar`) are the mirror's, as are its document pos and
+    /// `color`; the drawn position is `App::layout`.
+    ///
+    /// **Groups nest.** A group's own group (`Mirror::group`) can itself be
+    /// `Some(parent_group_id)` -- the "no nesting, a node's group is a
+    /// single `Option<String>` not a path" limitation this doc comment used to
+    /// describe no longer applies: a single `Option<String>` *is* enough to
+    /// nest, since walking group links upward from any node already forms
+    /// the whole ancestor chain (`App::group_breadcrumb`), with no separate
+    /// path/stack type needed. This field names whichever group's
+    /// subgraph is currently showing (`None` at the true top level, same as
+    /// before); leaving a group (the toolbar's "◀" button) goes to that
+    /// group's own parent, not straight to the top, so leaving a deeply-nested
+    /// group takes as many "◀" clicks as it took to get there (or one
+    /// breadcrumb click to jump straight to any ancestor). Dissolving a nested
+    /// group reparents its members to *its own* parent (`App::dissolve_group`),
+    /// not unconditionally to the top level.
+    ///
+    /// Dragging one group's card onto another's is deliberately left as
+    /// **merge** (dissolve the source, flatten its members into the target),
+    /// unchanged from before nesting existed -- it does not nest the source
+    /// under the target. Nesting is created only through "+ New Group"/Import
+    /// Group/"Group Selected" while already viewing a group's own subgraph, a
+    /// deliberate choice (confirmed with the user) to avoid changing what an
+    /// already-shipped drag gesture does.
+    ///
+    /// Entering/leaving eases the camera via `GraphCameraTween` rather than
+    /// `Transition` — see that type's own doc comment for why. Groups, their
+    /// members and nesting are saved in the session store (`session_sync`).
     current_group: Option<String>,
     /// The level of the Json node `current_group` names (spec "Level
     /// sources"); `None` on every other level.
@@ -864,7 +906,7 @@ struct App {
     /// (see `node_menu`) sets this the same way. A real
     /// `egui::TextEdit` replaces whichever plain button/menu row started
     /// it until Enter commits or Escape cancels. Transient UI state, not
-    /// part of `GroupPayload` itself.
+    /// the group's name (`Mirror::name`).
     renaming_group: Option<(String, String)>,
     /// `(tab_id, draft_name)` while a tab's menu shows "New Jar..."'s name field in place of its items, the way
     /// `renaming_group` does for a group. Committing creates the jar and picks it for the tab (`NodeAction::NewJar`).
@@ -2078,7 +2120,7 @@ impl App {
                 .to_string(),
             editing: false,
         });
-        self.place_node(None, note, Placement { group: None, pos: egui::vec2(-300.0, 0.0) });
+        self.place_node(None, store::model::Kind::Note, note, Placement { group: None, pos: egui::vec2(-300.0, 0.0) });
 
         let group_pos = egui::vec2(300.0, 0.0);
         let group_id = self.place_group(None, "Try grouping", Placement { group: None, pos: group_pos });
@@ -2118,7 +2160,7 @@ impl App {
             leaf: false,
             error: None,
         });
-        self.place_node(None, json, Placement { group: None, pos: egui::vec2(0.0, -260.0) });
+        self.place_node(None, store::model::Kind::Json, json, Placement { group: None, pos: egui::vec2(0.0, -260.0) });
     }
 
     /// A fresh node id: the journal's counter (contract "Actors and ids"),
@@ -2279,7 +2321,7 @@ impl App {
             Runtime::Image(image) => Some(image.path.clone()),
             Runtime::Pdf(pdf) => Some(pdf.path.clone()),
             Runtime::Json(json) => Some(json.path.clone()),
-            Runtime::Tab(_) | Runtime::Unloaded(_) | Runtime::Group(_) | Runtime::Note(_) => None,
+            Runtime::Tab(_) | Runtime::Unloaded(_) | Runtime::Note(_) | Runtime::None => None,
         };
         path.filter(|p| !p.is_empty())
     }
@@ -2336,7 +2378,7 @@ impl App {
         let taken: HashSet<&str> = self
             .nodes
             .iter()
-            .filter(|(_, node)| node.as_group().is_some())
+            .filter(|(id, _)| self.is_container(id))
             .map(|(id, _)| self.mirror.name(id)) // name rule: compares stored names
             .collect();
         (1..).map(|n| format!("Group {n}")).find(|name| !taken.contains(name.as_str())).expect("a free number")
@@ -2440,7 +2482,7 @@ impl App {
     fn insert_note_at(&mut self, id: String, pos: Option<egui::Vec2>) {
         let at = self.placement(&id, pos);
         let note = NotePayload { text: String::new(), editing: true };
-        self.place_node(Some(id), Runtime::Note(note), at);
+        self.place_node(Some(id), store::model::Kind::Note, Runtime::Note(note), at);
     }
 
     /// Starts an unloaded tab's engine (`UnloadedTabPayload`) on `kind`, which becomes its engine (`edit_engine`).
@@ -2609,7 +2651,7 @@ impl App {
         visited.insert(id.to_owned());
         let member_ids: Vec<String> = self.members_of(id).map(str::to_owned).collect();
         for tid in member_ids {
-            if self.nodes.get(&tid).is_some_and(|n| n.as_group().is_some()) {
+            if self.is_container(&tid) {
                 if !visited.contains(&tid) {
                     self.destroy_group_members(&tid, visited);
                 }
@@ -3245,7 +3287,11 @@ mod tests {
     fn a_sleeping_tab_never_needs_a_switch_and_a_deleted_jar_switches_to_default() {
         let mut app = App::default();
         let work = app.create_jar("Work");
-        let t = crate::session_sync::tests::add(&mut app, crate::session_sync::tests::sleeping_tab("https://a/", "A"));
+        let t = crate::session_sync::tests::add(
+            &mut app,
+            crate::store::model::Kind::Tab,
+            crate::session_sync::tests::sleeping_tab("https://a/", "A"),
+        );
         // A stale entry from before it slept, on a key other than the one it now resolves to.
         app.jar_tabs.insert(t.clone(), (jar::JarKey::Default, jar::TabCookies::default()));
         app.set_tab_jar(&t, Some(work));
@@ -3378,8 +3424,9 @@ mod tests {
     #[test]
     fn closing_a_tab_clears_its_cookie_bookkeeping() {
         use crate::session_sync::tests::{add, sleeping_tab};
+        use crate::store::model::Kind;
         let mut app = App::default();
-        let tab = add(&mut app, sleeping_tab("https://x.test/", "A"));
+        let tab = add(&mut app, Kind::Tab, sleeping_tab("https://x.test/", "A"));
         app.jar_tabs.insert(tab.clone(), (jar::JarKey::Default, jar::TabCookies::default()));
         app.jar_pulls.insert(tab.clone(), std::time::Instant::now());
         app.jar_silent.insert(tab.clone(), 2);
@@ -3428,7 +3475,7 @@ mod tests {
     fn remove_from_group_moves_up_one_level() {
         let mut app = App::default();
         use crate::store::model::Kind;
-        let group = || (Kind::Group, Runtime::Group(GroupPayload::default()));
+        let group = || (Kind::Group, Runtime::None);
         let note = || (Kind::Note, Runtime::Note(NotePayload { text: String::new(), editing: false }));
         for (id, group, (kind, payload)) in [
             ("outer", None, group()),
@@ -3453,7 +3500,7 @@ mod tests {
     fn mirror_group_cycle() -> App {
         let mut app = App::default();
         for id in ["a", "b", "s"] {
-            app.test_node(id, crate::store::model::Kind::Group, Runtime::Group(GroupPayload::default()));
+            app.test_node(id, crate::store::model::Kind::Group, Runtime::None);
         }
         app.edit_group("a", Some("b".into()));
         app.edit_group("b", Some("a".into()));

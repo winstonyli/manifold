@@ -6,8 +6,9 @@ use super::*;
 /// What a node holds on this machine beyond its stored fields (which are the
 /// `Mirror`'s): the live state its card shows and works from. A node's type
 /// is `Mirror::ty`, not the variant; the variant is the runtime shape that
-/// type's card needs, and `None` for a kind with none. Tab/Download/Group
-/// were the migration off three separate hardcoded node types (the old
+/// type's card needs, and `None` for a kind with none (a group: its name,
+/// `from_json` and default jar are all the mirror's). Tab/Download were the
+/// migration off separate hardcoded node types (the old
 /// `TabNode`/`DownloadNode`/`GroupNode`); `Note`/`Image`/`Pdf`/`Json` are
 /// genuinely new kinds added on top of that unified model -- see each one's
 /// own `*Payload` doc comment.
@@ -15,11 +16,11 @@ pub(crate) enum Runtime {
     Tab(TabPayload),
     Unloaded(UnloadedTabPayload),
     Download(DownloadPayload),
-    Group(GroupPayload),
     Note(NotePayload),
     Image(ImagePayload),
     Pdf(PdfPayload),
     Json(JsonPayload),
+    None,
 }
 
 /// `as_x` (and `as_x_mut` where listed) on `Runtime`, and the same
@@ -64,7 +65,6 @@ runtime_accessors! {
     Tab(TabPayload) => as_tab, as_tab_mut;
     Unloaded(UnloadedTabPayload) => as_unloaded;
     Download(DownloadPayload) => as_download, as_download_mut;
-    Group(GroupPayload) => as_group;
     Note(NotePayload) => as_note, as_note_mut;
     Image(ImagePayload) => as_image;
     Pdf(PdfPayload) => as_pdf, as_pdf_mut;
@@ -79,27 +79,11 @@ impl Runtime {
             Runtime::Tab(t) => Some(&t.url),
             Runtime::Unloaded(t) => Some(&t.url),
             Runtime::Download(_)
-            | Runtime::Group(_)
             | Runtime::Note(_)
             | Runtime::Image(_)
             | Runtime::Pdf(_)
-            | Runtime::Json(_) => None,
-        }
-    }
-
-    /// The store kind this payload is saved as: its type (`Kind::type_str`, `Mirror::ty`). A live or unloaded card is a
-    /// `Tab`, a Json leaf a `JsonLeaf`, and a download in progress (never saved) a `Download` too.
-    pub(crate) fn store_kind(&self) -> crate::store::model::Kind {
-        use crate::store::model::Kind;
-        match self {
-            Runtime::Tab(_) | Runtime::Unloaded(_) => Kind::Tab,
-            Runtime::Download(_) => Kind::Download,
-            Runtime::Group(_) => Kind::Group,
-            Runtime::Note(_) => Kind::Note,
-            Runtime::Image(_) => Kind::Image,
-            Runtime::Pdf(_) => Kind::Pdf,
-            Runtime::Json(j) if j.leaf => Kind::JsonLeaf,
-            Runtime::Json(_) => Kind::Json,
+            | Runtime::Json(_)
+            | Runtime::None => None,
         }
     }
 
@@ -112,7 +96,7 @@ impl Runtime {
             Runtime::Pdf(p) => Some(&p.path),
             Runtime::Json(p) => Some(&p.path),
             Runtime::Download(p) => Some(&p.path),
-            Runtime::Tab(_) | Runtime::Unloaded(_) | Runtime::Group(_) | Runtime::Note(_) => None,
+            Runtime::Tab(_) | Runtime::Unloaded(_) | Runtime::Note(_) | Runtime::None => None,
         }
     }
 
@@ -123,11 +107,11 @@ impl Runtime {
             Runtime::Tab(t) => Some((&t.title, &t.url)),
             Runtime::Unloaded(t) => Some((&t.title, &t.url)),
             Runtime::Download(_)
-            | Runtime::Group(_)
             | Runtime::Note(_)
             | Runtime::Image(_)
             | Runtime::Pdf(_)
-            | Runtime::Json(_) => None,
+            | Runtime::Json(_)
+            | Runtime::None => None,
         }
     }
 }
@@ -413,7 +397,8 @@ impl GraphNode {
             Runtime::Tab(t) => ("Tab", first_nonempty(&[&t.title, &t.url])),
             Runtime::Unloaded(t) => ("Sleeping tab", first_nonempty(&[&t.title, &t.url])),
             Runtime::Download(d) => ("Download", file_name(&d.path)),
-            Runtime::Group(_) => {
+            // A group is the one kind with no runtime (2b-6 Ruling 8: no unknown-type card yet); its name is `text`.
+            Runtime::None => {
                 ("Group", Some(crate::names::to_plain(&crate::names::display_name(text, crate::names::UNTITLED))))
             }
             Runtime::Note(_) => {
@@ -451,57 +436,12 @@ impl App {
     }
 }
 
-/// A tab group's own data -- was `GroupNode`'s non-shared field (`name`;
-/// the document pos and `color` live in the `Mirror`, the drawn position in `App::layout`). A
-/// group is a container node shown at whichever level of Graph view it
-/// itself belongs to that, double-clicked, drills into its own subgraph of
-/// members (tabs/downloads/notes/images/PDFs/JSON, and other groups) in
-/// place of that level's -- the same "swap which set of nodes this view
-/// renders" idea `ViewMode::Item`/`Graph` already is, just recursively, and
-/// reusing that same flat `graph_layout::step` simulation rather than a
-/// second nested one running inside the group's own node.
-///
-/// **Groups nest.** A group's own group (`Mirror::group`) can itself be
-/// `Some(parent_group_id)` -- the "no nesting, a node's group is a
-/// single `Option<String>` not a path" limitation this doc comment used to
-/// describe no longer applies: a single `Option<String>` *is* enough to
-/// nest, since walking group links upward from any node already forms
-/// the whole ancestor chain (`App::group_breadcrumb`), with no separate
-/// path/stack type needed. `App::current_group` names whichever group's
-/// subgraph is currently showing (`None` at the true top level, same as
-/// before); leaving a group (the toolbar's "◀" button) goes to that
-/// group's own parent, not straight to the top, so leaving a deeply-nested
-/// group takes as many "◀" clicks as it took to get there (or one
-/// breadcrumb click to jump straight to any ancestor). Dissolving a nested
-/// group reparents its members to *its own* parent (`App::dissolve_group`),
-/// not unconditionally to the top level.
-///
-/// Dragging one group's card onto another's is deliberately left as
-/// **merge** (dissolve the source, flatten its members into the target),
-/// unchanged from before nesting existed -- it does not nest the source
-/// under the target. Nesting is created only through "+ New Group"/Import
-/// Group/"Group Selected" while already viewing a group's own subgraph, a
-/// deliberate choice (confirmed with the user) to avoid changing what an
-/// already-shipped drag gesture does.
-///
-/// Entering/leaving eases the camera via `GraphCameraTween` rather than
-/// `Transition` — see that type's own doc comment for why. Groups, their
-/// members and nesting are saved in the session store (`session_sync`).
-/// Its name is the mirror's (`Mirror::name`, written by `App::edit_name`; a new group's is seeded by
-/// `App::place_group`).
-/// Whether an older build's "Expand as Graph" made it (`Mirror::from_json`) and the jar new tabs in it start with
-/// (`Mirror::default_jar`) are the mirror's too: a group has no runtime state of its own.
-#[derive(Default)]
-pub(crate) struct GroupPayload {}
-
 #[cfg(test)]
 impl App {
-    /// Places a node `id` showing `runtime`, typed as `kind` (its `TYPE` in the mirror), at the origin, as
+    /// Places a node `id` of type `kind` (its `TYPE` in the mirror) showing `runtime`, at the origin, as
     /// `insert_placeholder_node` would. For tests that need a node of a given type.
     pub(crate) fn test_node(&mut self, id: &str, kind: crate::store::model::Kind, runtime: Runtime) {
-        self.insert_placeholder_node(id.to_owned(), egui::Vec2::ZERO, runtime);
-        let ty = kind.type_str().unwrap_or_default().to_owned();
-        self.mirror.set(id, crate::store::model::field::TYPE, FieldValue::Str(ty));
+        self.insert_placeholder_node(id.to_owned(), egui::Vec2::ZERO, kind, runtime);
     }
 }
 
@@ -573,6 +513,6 @@ second"
             .saved_tab(),
             Some("https://example.org/")
         );
-        assert_eq!(Runtime::Group(GroupPayload::default()).saved_tab(), None);
+        assert_eq!(Runtime::None.saved_tab(), None);
     }
 }

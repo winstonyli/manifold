@@ -255,6 +255,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::store::model::Kind;
 
     /// Closing a group records it and every live member at any depth as
     /// one store-shaped entry, root first: `entry.doc.nodes[0]` is the
@@ -272,17 +273,21 @@ mod tests {
         let put_in = |app: &mut App, id: &str, group: &str| app.edit_group(id, Some(group.into()));
 
         let outer = crate::session_sync::tests::add_group(&mut app, "Outer");
-        let note0 = add(&mut app, Runtime::Note(NotePayload { text: "kept".into(), editing: false }));
+        let note0 = add(&mut app, Kind::Note, Runtime::Note(NotePayload { text: "kept".into(), editing: false }));
         put_in(&mut app, &note0, &outer);
-        let note1 = add(&mut app, Runtime::Note(NotePayload { text: " ".into(), editing: false }));
+        let note1 = add(&mut app, Kind::Note, Runtime::Note(NotePayload { text: " ".into(), editing: false }));
         put_in(&mut app, &note1, &outer);
         let inner = crate::session_sync::tests::add_group(&mut app, "Inner");
         put_in(&mut app, &inner, &outer);
-        let img0 =
-            add(&mut app, Runtime::Image(ImagePayload { path: "i.png".into(), width: 1, height: 1, error: None }));
+        let img0 = add(
+            &mut app,
+            Kind::Image,
+            Runtime::Image(ImagePayload { path: "i.png".into(), width: 1, height: 1, error: None }),
+        );
         put_in(&mut app, &img0, &inner);
         let json0 = add(
             &mut app,
+            Kind::JsonLeaf,
             Runtime::Json(JsonPayload {
                 path: "d.json".into(),
                 value: std::sync::Arc::new(1.into()),
@@ -293,6 +298,7 @@ mod tests {
         put_in(&mut app, &json0, &inner);
         let dl0 = add(
             &mut app,
+            Kind::Download,
             Runtime::Download(DownloadPayload {
                 path: "f.bin".into(),
                 bytes_received: 1,
@@ -302,7 +308,7 @@ mod tests {
             }),
         );
         put_in(&mut app, &dl0, &inner);
-        let note2 = add(&mut app, Runtime::Note(NotePayload { text: "outside".into(), editing: false }));
+        let note2 = add(&mut app, Kind::Note, Runtime::Note(NotePayload { text: "outside".into(), editing: false }));
 
         let entry = closed_entry(&app, &outer).unwrap();
         let ids: Vec<&str> = entry.doc.nodes.iter().map(|n| n.id.as_str()).collect();
@@ -311,12 +317,13 @@ mod tests {
             [outer.as_str(), note0.as_str(), inner.as_str(), img0.as_str(), json0.as_str()],
             "a blank note and a completed download are both skipped"
         );
-        assert_eq!(entry.doc.nodes[0].kind(), Some(store::model::Kind::Group));
+        assert_eq!(entry.doc.nodes[0].kind(), Some(Kind::Group));
         assert!(entry.doc.nodes[0].fields.get("group").is_none(), "the root's group isn't recorded");
         assert_eq!(entry.doc.nodes[3].fields.get("group").and_then(|v| v.as_str()), Some(inner.as_str()));
 
         let leaf_outside = add(
             &mut app,
+            Kind::JsonLeaf,
             Runtime::Json(JsonPayload {
                 path: "d.json".into(),
                 value: std::sync::Arc::new(1.into()),
@@ -337,8 +344,8 @@ mod tests {
         let path = store::testutil::temp_dir("closed-live-url").join("session.mnf");
         let mut app = app_on(&path, 1);
         let group = crate::session_sync::tests::add_group(&mut app, "G");
-        let tab = add(&mut app, sleeping_tab("https://shared/", "T"));
-        let member = add(&mut app, sleeping_tab("https://m-shared/", "M"));
+        let tab = add(&mut app, Kind::Tab, sleeping_tab("https://shared/", "T"));
+        let member = add(&mut app, Kind::Tab, sleeping_tab("https://m-shared/", "M"));
         app.edit_group(&member, Some(group.clone()));
         assert!(app.save_session());
         for (id, live) in [(&tab, "https://live/"), (&member, "https://m-live/")] {
@@ -368,7 +375,8 @@ mod tests {
         let path = store::testutil::temp_dir("closed-layout-pos").join("session.mnf");
         let mut app = app_on(&path, 1);
         let note = Runtime::Note(crate::node::NotePayload { text: "n".into(), editing: false });
-        let note = app.place_node(None, note, crate::fetched::Placement { group: None, pos: egui::vec2(10.0, 20.0) });
+        let at = crate::fetched::Placement { group: None, pos: egui::vec2(10.0, 20.0) };
+        let note = app.place_node(None, Kind::Note, note, at);
         assert!(app.save_session());
         app.snap_layout(&note, egui::vec2(70.0, 80.0));
         let entry = closed_entry(&app, &note).unwrap();
@@ -387,7 +395,8 @@ mod tests {
     fn a_closed_note_records_what_was_typed() {
         let mut app = App::default();
         let note = Runtime::Note(crate::node::NotePayload { text: "n".into(), editing: false });
-        let note = app.place_node(None, note, crate::fetched::Placement { group: None, pos: egui::vec2(10.0, 20.0) });
+        let at = crate::fetched::Placement { group: None, pos: egui::vec2(10.0, 20.0) };
+        let note = app.place_node(None, Kind::Note, note, at);
         let n = app.nodes.get_mut(&note).unwrap().as_note_mut().unwrap();
         (n.editing, n.text) = (true, "typed".into());
         let entry = closed_entry(&app, &note).unwrap();

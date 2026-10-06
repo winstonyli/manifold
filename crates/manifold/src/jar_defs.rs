@@ -449,7 +449,7 @@ impl App {
         let groups: Vec<String> = self
             .nodes
             .iter()
-            .filter(|(g, node)| node.as_group().is_some() && self.mirror.default_jar(g) == Some(id))
+            .filter(|(g, _)| self.is_container(g) && self.mirror.default_jar(g) == Some(id))
             .map(|(g, _)| g.clone())
             .collect();
         for g in groups {
@@ -519,11 +519,14 @@ impl App {
     pub(crate) fn inherited_jar(&self, group: Option<&str>) -> Option<NodeId> {
         let mut at = group.map(str::to_string);
         for _ in 0..=self.nodes.len() {
-            let node = self.nodes.get(at.as_deref()?)?;
-            if let Some(jar) = node.as_group().and(self.mirror.default_jar(at.as_deref()?)) {
+            let here = at.as_deref()?;
+            if !self.nodes.contains_key(here) {
+                return None;
+            }
+            if let Some(jar) = self.mirror.default_jar(here).filter(|_| self.is_container(here)) {
                 return Some(jar);
             }
-            at = at.as_deref().and_then(|a| self.mirror.group(a)).map(str::to_owned);
+            at = self.mirror.group(here).map(str::to_owned);
         }
         None // a group cycle (never built, but the loop must end)
     }
@@ -608,11 +611,10 @@ impl App {
             if g == group {
                 return true;
             }
-            let node = self.nodes.get(&g);
-            if node.and_then(|n| n.as_group()).is_some() && self.mirror.default_jar(&g).is_some() {
+            if self.is_container(&g) && self.mirror.default_jar(&g).is_some() {
                 return false; // a nearer default wins
             }
-            cur = node.and(self.mirror.group(&g)).map(str::to_owned);
+            cur = self.nodes.get(&g).and(self.mirror.group(&g)).map(str::to_owned);
         }
         false
     }
@@ -637,7 +639,7 @@ impl App {
     /// `default_jar`"). The default goes through `edit_default_jar`, the tabs through `edit_jar`. The next save writes
     /// them. Returns how many tabs changed.
     pub(crate) fn set_group_default_jar(&mut self, group: &str, jar: NodeId) -> usize {
-        if self.nodes.get(group).and_then(|n| n.as_group()).is_none() {
+        if !self.is_container(group) {
             return 0;
         }
         self.edit_default_jar(group, Some(jar));
@@ -652,7 +654,7 @@ impl App {
 
     /// "Clear default": new tabs stop inheriting it; existing tabs keep their jar.
     pub(crate) fn clear_group_default_jar(&mut self, group: &str) {
-        if self.nodes.get(group).and_then(|n| n.as_group()).is_some() {
+        if self.is_container(group) {
             self.edit_default_jar(group, None);
         }
     }
@@ -742,12 +744,12 @@ mod tests {
     use crate::card::DropEffect;
     use crate::jar::{JarChoice, JarKey};
     use crate::session_sync::tests::{add, sleeping_tab};
-    use crate::store::model::NodeId;
+    use crate::store::model::{Kind, NodeId};
     use crate::App;
     use std::collections::{BTreeMap, BTreeSet};
 
     fn tab_in(app: &mut App, group: Option<&str>) -> String {
-        let id = add(app, sleeping_tab("https://a.com/", "A"));
+        let id = add(app, Kind::Tab, sleeping_tab("https://a.com/", "A"));
         app.edit_group(&id, group.map(str::to_string));
         id
     }
@@ -1359,7 +1361,11 @@ mod tests {
     #[test]
     fn setjar_matches_and_makes_by_the_clean_name() {
         let mut app = App::default();
-        let t = crate::session_sync::tests::add(&mut app, crate::session_sync::tests::sleeping_tab("https://a/", "A"));
+        let t = crate::session_sync::tests::add(
+            &mut app,
+            crate::store::model::Kind::Tab,
+            crate::session_sync::tests::sleeping_tab("https://a/", "A"),
+        );
         app.focused = Some(t.clone());
         assert!(!app.set_focused_tab_jar_named("\u{200B} "));
         assert!(app.mirror.jar_defs().is_empty());
@@ -1397,7 +1403,11 @@ mod tests {
     #[test]
     fn a_jar_chip_hover_names_a_hidden_character() {
         let mut app = App::default();
-        let t = crate::session_sync::tests::add(&mut app, crate::session_sync::tests::sleeping_tab("https://a/", "A"));
+        let t = crate::session_sync::tests::add(
+            &mut app,
+            crate::store::model::Kind::Tab,
+            crate::session_sync::tests::sleeping_tab("https://a/", "A"),
+        );
         let jar = app.create_jar("x");
         app.mirror.set(
             &jar.to_string(),

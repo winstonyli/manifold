@@ -331,7 +331,7 @@ pub(crate) fn tab_thumb_rect(rect: egui::Rect, inv_zoom: f32) -> egui::Rect {
 pub(crate) const DOWNLOAD_NODE_SIZE: egui::Vec2 = GRAPH_NODE_SIZE;
 
 /// A group card's footprint: a tab card's, for the same header-and-body layout. Also the
-/// drop-target rect a dragged tab is tested against on release — see `GroupPayload`'s own doc
+/// drop-target rect a dragged tab is tested against on release — see `App::current_group`'s own doc
 /// comment.
 pub(crate) const GROUP_NODE_SIZE: egui::Vec2 = GRAPH_NODE_SIZE;
 
@@ -851,7 +851,8 @@ pub(crate) fn node_card_size(payload: &Runtime) -> egui::Vec2 {
         // parent level"); a leaf or an error card keeps the small box.
         Runtime::Json(json) if !json.leaf && json.error.is_none() => crate::json_view::preview_size(&json.value),
         Runtime::Json(_) => JSON_NODE_SIZE,
-        Runtime::Group(_) => GROUP_NODE_SIZE,
+        // A group is the one kind with no runtime (2b-6 Ruling 8: no unknown-type card yet).
+        Runtime::None => GROUP_NODE_SIZE,
     }
 }
 
@@ -872,7 +873,8 @@ pub(crate) fn card_filter_text<'a>(payload: &'a Runtime, text: &'a str) -> Vec<&
         Runtime::Image(image) => vec![download_filename(&image.path)],
         Runtime::Pdf(pdf) => vec![download_filename(&pdf.path)],
         Runtime::Json(json) => vec![download_filename(&json.path)],
-        Runtime::Group(_) => vec![text],
+        // A group (no runtime) matches on its name, `text`.
+        Runtime::None => vec![text],
     }
 }
 
@@ -1841,8 +1843,7 @@ impl App {
         if !self.graph_lod_simplified {
             // Owned, so the header can borrow it while `paint_card_header` borrows `self`.
             // name rule: drawn by display_name just below
-            if let Some(stored) = self.nodes.get(id).and_then(|n| n.as_group()).map(|_| self.mirror.name(id).to_owned())
-            {
+            if let Some(stored) = self.is_container(id).then(|| self.mirror.name(id).to_owned()) {
                 let segs = crate::names::display_name(&stored, crate::names::UNTITLED);
                 body.tooltip = crate::names::hidden_hint(&segs);
                 let header = CardHeader {
@@ -2786,7 +2787,7 @@ mod tests {
         });
         assert_eq!(node_card_size(&download), DOWNLOAD_NODE_SIZE);
         assert_eq!(node_card_size(&Runtime::Note(NotePayload { text: String::new(), editing: false })), NOTE_NODE_SIZE);
-        assert_eq!(node_card_size(&Runtime::Group(GroupPayload::default())), GROUP_NODE_SIZE);
+        assert_eq!(node_card_size(&Runtime::None), GROUP_NODE_SIZE, "a group has no runtime");
         let json = |value: serde_json::Value, leaf: bool, error: Option<&str>| {
             Runtime::Json(JsonPayload {
                 path: "a.json".into(),
@@ -2865,7 +2866,7 @@ mod tests {
             })),
             ["x.json"]
         );
-        assert_eq!(filter(&Runtime::Group(GroupPayload::default())), ["buy milk"]);
+        assert_eq!(filter(&Runtime::None), ["buy milk"], "a group (no runtime) matches on its name");
         // Like a live tab: title and url, so the Graph filter can match a
         // sleeping card by its saved title, not just its url.
         assert_eq!(

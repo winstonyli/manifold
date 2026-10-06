@@ -38,7 +38,7 @@ fn alternating_store_notices_are_each_shown_once_until_a_commit() {
         app.notice("damaged".into());
     }
     assert_eq!(app.save_toast_queue.len(), 2);
-    add(&mut app, Runtime::Note(NotePayload { text: "n".into(), editing: false }));
+    add(&mut app, Kind::Note, Runtime::Note(NotePayload { text: "n".into(), editing: false }));
     assert!(app.save_session());
     app.notice("read-only".into());
     assert_eq!(app.save_toast_queue.len(), 3, "a commit lets a notice show again");
@@ -107,7 +107,7 @@ fn live_in_doc(app: &App, id: &str) -> bool {
 #[test]
 fn new_nodes_are_created_groups_first() {
     let mut app = app_on(&temp_dir("create-groups-first").join("session.mnf"), 1);
-    let note = add(&mut app, Runtime::Note(NotePayload { text: "inside".into(), editing: false }));
+    let note = add(&mut app, Kind::Note, Runtime::Note(NotePayload { text: "inside".into(), editing: false }));
     let group = add_group(&mut app, "G");
     assert!(note < group, "the member's id sorts first");
     app.edit_group(&note, Some(group.clone()));
@@ -122,7 +122,7 @@ fn new_nodes_are_created_groups_first() {
 #[test]
 fn an_unchanged_graph_emits_nothing() {
     let mut app = app_on(&temp_dir("unchanged-nothing").join("session.mnf"), 1);
-    add(&mut app, Runtime::Note(NotePayload { text: "a".into(), editing: false }));
+    add(&mut app, Kind::Note, Runtime::Note(NotePayload { text: "a".into(), editing: false }));
     assert!(app.save_session());
     let ops = ops_of(&app);
     assert!(app.save_session());
@@ -134,8 +134,8 @@ fn an_unchanged_graph_emits_nothing() {
 #[test]
 fn a_removed_node_is_deleted_and_a_respawning_one_kept() {
     let mut app = app_on(&temp_dir("delete-unless-respawning").join("session.mnf"), 1);
-    let note = add(&mut app, Runtime::Note(NotePayload { text: "a".into(), editing: false }));
-    let tab = add(&mut app, sleeping_tab("https://t/", ""));
+    let note = add(&mut app, Kind::Note, Runtime::Note(NotePayload { text: "a".into(), editing: false }));
+    let tab = add(&mut app, Kind::Tab, sleeping_tab("https://t/", ""));
     assert!(app.save_session());
     app.remove_node(&note);
     start_respawn(&mut app, &tab);
@@ -151,7 +151,7 @@ fn a_removed_node_is_deleted_and_a_respawning_one_kept() {
 fn a_tombstone_is_never_recreated() {
     let path = temp_dir("tombstone-no-create").join("session.mnf");
     let mut app = app_on(&path, 1);
-    let tab = add(&mut app, sleeping_tab("https://t/", ""));
+    let tab = add(&mut app, Kind::Tab, sleeping_tab("https://t/", ""));
     assert!(app.save_session());
     app.focus_tab(&tab);
     assert!(app.spawning.contains_key(&tab) && app.nodes.contains_key(&tab), "waking: shown and in flight");
@@ -173,7 +173,7 @@ fn re_homing_out_of_a_deleted_group_is_not_a_move() {
     let path = temp_dir("rehome-no-move").join("session.mnf");
     let mut app = app_on(&path, 1);
     let group = add_group(&mut app, "G");
-    let tab = add(&mut app, sleeping_tab("https://t/", ""));
+    let tab = add(&mut app, Kind::Tab, sleeping_tab("https://t/", ""));
     app.edit_group(&tab, Some(group.clone()));
     assert!(app.save_session());
     let mut other = Journal::open(&path, ActorId(2)).unwrap();
@@ -190,7 +190,7 @@ fn re_homing_out_of_a_deleted_group_is_not_a_move() {
 #[test]
 fn a_parent_naming_a_missing_node_is_written_as_none() {
     let mut app = app_on(&temp_dir("parent-missing").join("session.mnf"), 1);
-    let tab = add(&mut app, sleeping_tab("https://t/", ""));
+    let tab = add(&mut app, Kind::Tab, sleeping_tab("https://t/", ""));
     app.edit_parent(&tab, Some(id(9).to_string()));
     assert!(app.save_session());
     assert_eq!(stored(&app, &tab, field::PARENT), FieldValue::Id(None));
@@ -201,7 +201,7 @@ fn a_parent_naming_a_missing_node_is_written_as_none() {
 #[test]
 fn a_create_naming_a_node_deleted_by_the_same_save_writes_none() {
     let mut app = app_on(&temp_dir("create-names-deleted").join("session.mnf"), 1);
-    let opener = add(&mut app, sleeping_tab("https://o/", ""));
+    let opener = add(&mut app, Kind::Tab, sleeping_tab("https://o/", ""));
     let group = add_group(&mut app, "G");
     assert!(app.save_session());
     let tab = app.spawn_tab_at("https://n/", egui::Vec2::ZERO, Some(group.clone()), Some(opener.clone()));
@@ -235,7 +235,10 @@ fn random_edits_converge_in_one_save() {
                 let (id, kind) = if rng.below(3) == 0 {
                     (add_group(&mut app, "g"), Kind::Group)
                 } else {
-                    (add(&mut app, Runtime::Note(NotePayload { text: "n".into(), editing: false })), Kind::Note)
+                    (
+                        add(&mut app, Kind::Note, Runtime::Note(NotePayload { text: "n".into(), editing: false })),
+                        Kind::Note,
+                    )
                 };
                 app.edit_group(&id, group.clone());
                 model.insert(id, (kind, group));
@@ -327,9 +330,9 @@ fn a_failed_new_spawn_is_deleted_if_its_create_committed() {
 fn teardown_deletes_every_old_document_node_but_keeps_jars() {
     let path = temp_dir("teardown-deletes").join("session.mnf");
     let mut app = app_on(&path, 1);
-    let note = add(&mut app, Runtime::Note(NotePayload { text: "old".into(), editing: false }));
+    let note = add(&mut app, Kind::Note, Runtime::Note(NotePayload { text: "old".into(), editing: false }));
     let group = add_group(&mut app, "G");
-    let tab = add(&mut app, sleeping_tab("https://old/", ""));
+    let tab = add(&mut app, Kind::Tab, sleeping_tab("https://old/", ""));
     app.edit_group(&tab, Some(group.clone()));
     let jar = app.create_jar("Work");
     assert!(app.save_session());
@@ -351,9 +354,9 @@ fn teardown_deletes_every_old_document_node_but_keeps_jars() {
 #[test]
 fn a_remote_removal_queues_no_delete() {
     let mut app = app_on(&temp_dir("remote-removal-queues-nothing").join("session.mnf"), 1);
-    let note = add(&mut app, Runtime::Note(NotePayload { text: "n".into(), editing: false }));
+    let note = add(&mut app, Kind::Note, Runtime::Note(NotePayload { text: "n".into(), editing: false }));
     let group = add_group(&mut app, "G");
-    let tab = add(&mut app, sleeping_tab("https://t/", ""));
+    let tab = add(&mut app, Kind::Tab, sleeping_tab("https://t/", ""));
     app.edit_group(&tab, Some(group.clone()));
     let jar = app.create_jar("Work");
     assert!(app.save_session());
@@ -370,7 +373,7 @@ fn a_remote_removal_queues_no_delete() {
 fn a_crash_respawn_a_swap_and_a_reload_delete_nothing() {
     let dir = temp_dir("respawn-swap-reload-keep");
     let mut app = app_on(&dir.join("session.mnf"), 1);
-    let crashed = add(&mut app, sleeping_tab("https://c/", ""));
+    let crashed = add(&mut app, Kind::Tab, sleeping_tab("https://c/", ""));
     let (swapped, _peer) = live_tab(&mut app, EngineKind::Servo, "https://s/");
     let json = app.alloc_node_id();
     let body = crate::redirect_fetch::save(&dir, &json, crate::content::ContentKind::Json, b"[1]".to_vec()).unwrap();
@@ -403,7 +406,7 @@ fn a_download_is_created_once_it_completes() {
         completed: false,
         failed: false,
     };
-    let dl = add(&mut app, Runtime::Download(payload));
+    let dl = add(&mut app, Kind::Download, Runtime::Download(payload));
     assert!(app.save_session());
     assert!(!app.journal.as_ref().unwrap().doc().nodes.contains_key(&dl.parse().unwrap()), "not yet");
     assert!(app.pending_creates.contains(&dl.parse().unwrap()), "still queued");
@@ -433,7 +436,7 @@ fn an_imported_jar_is_created() {
 #[should_panic(expected = "delete funnel")]
 fn a_node_removed_behind_the_queues_back_trips_the_invariant() {
     let mut app = app_on(&temp_dir("invariant-missed-delete").join("session.mnf"), 1);
-    let note = add(&mut app, Runtime::Note(NotePayload { text: "n".into(), editing: false }));
+    let note = add(&mut app, Kind::Note, Runtime::Note(NotePayload { text: "n".into(), editing: false }));
     assert!(app.save_session());
     app.nodes.remove(&note);
     app.save_session();
@@ -444,7 +447,7 @@ fn a_node_removed_behind_the_queues_back_trips_the_invariant() {
 #[should_panic(expected = "create funnel")]
 fn a_node_inserted_behind_the_queues_back_trips_the_invariant() {
     let mut app = app_on(&temp_dir("invariant-missed-create").join("session.mnf"), 1);
-    add(&mut app, Runtime::Note(NotePayload { text: "n".into(), editing: false }));
+    add(&mut app, Kind::Note, Runtime::Note(NotePayload { text: "n".into(), editing: false }));
     assert!(app.save_session());
     let id = app.alloc_node_id();
     let payload = Runtime::Note(NotePayload { text: "stray".into(), editing: false });
@@ -687,7 +690,7 @@ fn a_remotely_removed_group_leaves_no_member_naming_it() {
     // A note only this replica has, not yet saved, inside the group.
     let local = id(3).to_string();
     let payload = Runtime::Note(NotePayload { text: "local".into(), editing: false });
-    app.insert_placeholder_node(local.clone(), egui::Vec2::ZERO, payload);
+    app.insert_placeholder_node(local.clone(), egui::Vec2::ZERO, Kind::Note, payload);
     app.edit_group(&local, Some(id(1).to_string()));
     app.current_group = Some(id(1).to_string());
     // What `remote_changes` reports when another replica deletes Inner:
@@ -709,9 +712,10 @@ pub(crate) fn app_on(path: &std::path::Path, actor: u64) -> App {
     App { journal: Some(Journal::open(path, ActorId(actor)).unwrap()), ..App::default() }
 }
 
-pub(crate) fn add(app: &mut App, payload: Runtime) -> String {
+/// A node of `kind` at the top level with `runtime` as its live state; its type is seeded from `kind`.
+pub(crate) fn add(app: &mut App, kind: Kind, runtime: Runtime) -> String {
     let id = app.alloc_node_id();
-    app.insert_placeholder_node(id.clone(), egui::Vec2::ZERO, payload);
+    app.insert_placeholder_node(id.clone(), egui::Vec2::ZERO, kind, runtime);
     id
 }
 
@@ -736,8 +740,8 @@ pub(crate) fn stored(app: &App, node: &str, no: u32) -> FieldValue {
 fn a_remote_edit_to_one_field_keeps_an_unsaved_local_edit_to_another() {
     let path = temp_dir("sync-fields").join("session.mnf");
     let mut app = app_on(&path, 1);
-    let note = add(&mut app, Runtime::Note(NotePayload { text: "v1".into(), editing: false }));
-    let tab = add(&mut app, failed_tab("https://u0/", 1.0));
+    let note = add(&mut app, Kind::Note, Runtime::Note(NotePayload { text: "v1".into(), editing: false }));
+    let tab = add(&mut app, Kind::Tab, failed_tab("https://u0/", 1.0));
     assert!(app.save_session());
     let mut other = Journal::open(&path, ActorId(2)).unwrap();
 
@@ -785,7 +789,7 @@ fn buffer(app: &App, note: &str) -> String {
 fn typing_commits_on_blur_and_at_save() {
     let path = temp_dir("text-commit").join("session.mnf");
     let mut app = app_on(&path, 1);
-    let note = add(&mut app, Runtime::Note(NotePayload { text: "v1".into(), editing: false }));
+    let note = add(&mut app, Kind::Note, Runtime::Note(NotePayload { text: "v1".into(), editing: false }));
     assert!(app.save_session());
     assert_eq!(app.mirror.text(&note), "v1");
     type_into(&mut app, &note, "v2");
@@ -809,7 +813,7 @@ fn a_remote_text_change_is_held_while_the_note_is_typed_in() {
     for typed in [true, false] {
         let path = temp_dir("text-held").join("session.mnf");
         let mut app = app_on(&path, 1);
-        let note = add(&mut app, Runtime::Note(NotePayload { text: "v1".into(), editing: false }));
+        let note = add(&mut app, Kind::Note, Runtime::Note(NotePayload { text: "v1".into(), editing: false }));
         assert!(app.save_session());
         let mut other = Journal::open(&path, ActorId(2)).unwrap();
         type_into(&mut app, &note, "v1");
@@ -838,7 +842,7 @@ fn a_remote_text_change_is_held_while_the_note_is_typed_in() {
 fn a_held_text_change_follows_the_order_of_the_commits() {
     let path = temp_dir("text-held-order").join("session.mnf");
     let mut app = app_on(&path, 1);
-    let note = add(&mut app, Runtime::Note(NotePayload { text: "v1".into(), editing: false }));
+    let note = add(&mut app, Kind::Note, Runtime::Note(NotePayload { text: "v1".into(), editing: false }));
     assert!(app.save_session());
     let mut other = Journal::open(&path, ActorId(2)).unwrap();
     // Typed, then their change, then a save: the save queues ours first (`commit_note_buffers`), so theirs is held
@@ -863,7 +867,7 @@ fn a_held_text_change_follows_the_order_of_the_commits() {
 fn a_held_remote_text_is_dropped_by_a_later_local_commit() {
     let path = temp_dir("text-held-dropped").join("session.mnf");
     let mut app = app_on(&path, 1);
-    let note = add(&mut app, Runtime::Note(NotePayload { text: "v1".into(), editing: false }));
+    let note = add(&mut app, Kind::Note, Runtime::Note(NotePayload { text: "v1".into(), editing: false }));
     assert!(app.save_session());
     let mut other = Journal::open(&path, ActorId(2)).unwrap();
     type_into(&mut app, &note, "v1");
@@ -884,7 +888,7 @@ fn a_held_remote_text_is_dropped_by_a_later_local_commit() {
 fn a_remote_text_change_updates_an_idle_note() {
     let path = temp_dir("text-idle").join("session.mnf");
     let mut app = app_on(&path, 1);
-    let note = add(&mut app, Runtime::Note(NotePayload { text: "v1".into(), editing: false }));
+    let note = add(&mut app, Kind::Note, Runtime::Note(NotePayload { text: "v1".into(), editing: false }));
     assert!(app.save_session());
     let mut other = Journal::open(&path, ActorId(2)).unwrap();
     remote_set(&mut other, &note, field::TEXT, FieldValue::Str("theirs".into()));
@@ -900,7 +904,7 @@ fn a_remote_text_change_updates_an_idle_note() {
 fn a_large_note_edit_does_not_clone_per_frame() {
     let mut app = App::default();
     let text = "x".repeat(1 << 20);
-    let note = add(&mut app, Runtime::Note(NotePayload { text, editing: false }));
+    let note = add(&mut app, Kind::Note, Runtime::Note(NotePayload { text, editing: false }));
     let idle: &str = app.note_text(&note);
     assert_eq!(idle.as_ptr(), app.mirror.text(&note).as_ptr(), "idle: the mirror's string");
     assert_eq!(app.mirror.text(&note).as_ptr(), app.mirror.text(&note).as_ptr(), "`Mirror::text` borrows");
@@ -1032,7 +1036,7 @@ fn a_typed_navigation_that_ends_at_the_url_it_left_keeps_that_url() {
 /// A note placed at `pos` (top level), as `place_node` places every new node.
 fn a_note_at(app: &mut App, pos: egui::Vec2) -> String {
     let note = Runtime::Note(NotePayload { text: "n".into(), editing: false });
-    app.place_node(None, note, crate::fetched::Placement { group: None, pos })
+    app.place_node(None, Kind::Note, note, crate::fetched::Placement { group: None, pos })
 }
 
 /// What a drag does to the layout every frame (`card.rs`), then its release.
@@ -1197,7 +1201,7 @@ fn a_stale_drag_does_not_overwrite_a_remote_pos() {
 fn a_respawn_keeps_the_layout_position() {
     let path = temp_dir("pos-respawn").join("session.mnf");
     let mut app = app_on(&path, 1);
-    let tab = add(&mut app, sleeping_tab("https://t/", ""));
+    let tab = add(&mut app, Kind::Tab, sleeping_tab("https://t/", ""));
     app.snap_layout(&tab, egui::vec2(30.0, 40.0));
     assert!(app.save_session());
     start_respawn(&mut app, &tab);
@@ -1262,7 +1266,7 @@ fn a_read_only_store_saves_nothing() {
     bytes[21..25].copy_from_slice(&crc.to_le_bytes());
     std::fs::write(&path, &bytes).unwrap();
     let mut app = app_on(&path, 2);
-    add(&mut app, Runtime::Note(NotePayload { text: "n".into(), editing: false }));
+    add(&mut app, Kind::Note, Runtime::Note(NotePayload { text: "n".into(), editing: false }));
     assert!(!app.save_session());
     assert_eq!(app.journal.as_ref().unwrap().doc().live().count(), 0);
 }
@@ -1304,7 +1308,7 @@ fn colors_round_trip() {
 fn item_view_restoring_onto_a_still_spawning_tab_sets_the_respawn_focus_guard() {
     let path = crate::store::testutil::temp_dir("view-item-spawning").join("session.mnf");
     let mut app = app_on(&path, 1);
-    let tab = add(&mut app, failed_tab("https://x/", 1.0));
+    let tab = add(&mut app, Kind::Tab, failed_tab("https://x/", 1.0));
     // A node whose id isn't live yet -- `spawning`, not `self.nodes` --
     // is exactly the shape a real tab restore has before its spawn
     // lands (`materialize`'s `Kind::Tab` arm never inserts directly).
@@ -1328,7 +1332,7 @@ fn an_idle_open_and_close_writes_nothing() {
     let path = dir.join("session.mnf");
     {
         let mut app = app_on(&path, 1);
-        let id = add(&mut app, Runtime::Note(NotePayload { text: String::new(), editing: false }));
+        let id = add(&mut app, Kind::Note, Runtime::Note(NotePayload { text: String::new(), editing: false }));
         app.snap_layout(&id, egui::vec2(3.0, 4.0));
         app.close_store();
     }
@@ -1349,7 +1353,7 @@ fn content_nodes_keep_their_source_url() {
     let mut app = app_on(&path, 1);
     let id = app.alloc_node_id();
     let payload = NotePayload { text: "hi".into(), editing: false };
-    app.insert_placeholder_node(id.clone(), egui::Vec2::ZERO, Runtime::Note(payload));
+    app.insert_placeholder_node(id.clone(), egui::Vec2::ZERO, Kind::Note, Runtime::Note(payload));
     app.mirror.set(&id, field::URL, FieldValue::Str("https://x.test/a.txt".into()));
     let shared = snapshots(&app);
     let fields = &shared[&id.parse().unwrap()].fields;
@@ -1369,7 +1373,7 @@ fn a_completed_download_keeps_its_url() {
     let id = app.alloc_node_id();
     let payload =
         DownloadPayload { path: "f.bin".into(), bytes_received: 0, total_bytes: None, completed: true, failed: false };
-    app.insert_placeholder_node(id.clone(), egui::Vec2::ZERO, Runtime::Download(payload));
+    app.insert_placeholder_node(id.clone(), egui::Vec2::ZERO, Kind::Download, Runtime::Download(payload));
     app.mirror.set(&id, field::URL, FieldValue::Str("https://x.test/f.bin".into()));
     assert!(app.save_session());
     app.close_store();
@@ -1388,7 +1392,7 @@ fn a_download_without_a_url_restores_without_one() {
     let id = app.alloc_node_id();
     let payload =
         DownloadPayload { path: "f.bin".into(), bytes_received: 0, total_bytes: None, completed: true, failed: false };
-    app.insert_placeholder_node(id.clone(), egui::Vec2::ZERO, Runtime::Download(payload));
+    app.insert_placeholder_node(id.clone(), egui::Vec2::ZERO, Kind::Download, Runtime::Download(payload));
     assert!(app.save_session());
     app.close_store();
     let mut restored = app_on(&path, 2);
@@ -1403,12 +1407,12 @@ fn a_download_without_a_url_restores_without_one() {
 fn an_opened_from_link_survives_a_restart_on_every_kind_that_has_one() {
     let path = temp_dir("parent-kinds").join("session.mnf");
     let mut app = app_on(&path, 1);
-    let opener = add(&mut app, sleeping_tab("https://x.test/", "Opener"));
+    let opener = add(&mut app, Kind::Tab, sleeping_tab("https://x.test/", "Opener"));
     let download =
         DownloadPayload { path: "f.bin".into(), bytes_received: 0, total_bytes: None, completed: true, failed: false };
-    let download = add(&mut app, Runtime::Download(download));
-    let note = add(&mut app, Runtime::Note(NotePayload { text: "hi".into(), editing: false }));
-    let tab = add(&mut app, sleeping_tab("https://x.test/child", "Child"));
+    let download = add(&mut app, Kind::Download, Runtime::Download(download));
+    let note = add(&mut app, Kind::Note, Runtime::Note(NotePayload { text: "hi".into(), editing: false }));
+    let tab = add(&mut app, Kind::Tab, sleeping_tab("https://x.test/child", "Child"));
     for id in [&download, &note, &tab] {
         app.edit_parent(id, Some(opener.clone()));
     }
@@ -1442,7 +1446,7 @@ fn an_opened_from_link_survives_a_restart_on_file_cards_and_a_tab_opened_from_on
     let file = |p: &std::path::Path| p.to_string_lossy().into_owned();
 
     let mut app = app_on(&path, 1);
-    let opener = add(&mut app, sleeping_tab("https://x.test/", "Opener"));
+    let opener = add(&mut app, Kind::Tab, sleeping_tab("https://x.test/", "Opener"));
     let (image, pdf, json) = (app.alloc_node_id(), app.alloc_node_id(), app.alloc_node_id());
     app.insert_image_node_with_id(image.clone(), file(&png_path), egui::Vec2::ZERO, None).unwrap();
     app.insert_pdf_node_with_id(pdf.clone(), file(&dir.join("a.pdf")), egui::Vec2::ZERO, None);
@@ -1450,7 +1454,7 @@ fn an_opened_from_link_survives_a_restart_on_file_cards_and_a_tab_opened_from_on
     for id in [&image, &pdf, &json] {
         app.edit_parent(id, Some(opener.clone()));
     }
-    let tab = add(&mut app, sleeping_tab("https://x.test/a.png", "From image"));
+    let tab = add(&mut app, Kind::Tab, sleeping_tab("https://x.test/a.png", "From image"));
     app.edit_parent(&tab, Some(image.clone()));
     assert!(app.save_session());
     app.close_store();
@@ -1544,7 +1548,7 @@ pub(crate) fn sleeping_tab(url: &str, title: &str) -> Runtime {
 #[test]
 fn personal_state_keeps_an_unloaded_tabs_title_and_mute() {
     let mut app = app_on(&temp_dir("unloaded-local").join("session.mnf"), 1);
-    let tab = add(&mut app, sleeping_tab("https://s/", "Saved title"));
+    let tab = add(&mut app, Kind::Tab, sleeping_tab("https://s/", "Saved title"));
     let set = |app: &mut App, title: &str, muted: bool| {
         if let Runtime::Unloaded(t) = &mut app.nodes.get_mut(&tab).unwrap().runtime {
             (t.title, t.muted) = (title.to_string(), muted);
@@ -1565,9 +1569,9 @@ fn personal_state_keeps_an_unloaded_tabs_title_and_mute() {
 #[test]
 fn closing_an_unloaded_tab_reparents_its_children() {
     let mut app = app_on(&temp_dir("unloaded-close").join("session.mnf"), 1);
-    let root = add(&mut app, sleeping_tab("https://root/", ""));
-    let mid = add(&mut app, failed_tab("https://mid/", 1.0));
-    let leaf = add(&mut app, sleeping_tab("https://leaf/", ""));
+    let root = add(&mut app, Kind::Tab, sleeping_tab("https://root/", ""));
+    let mid = add(&mut app, Kind::Tab, failed_tab("https://mid/", 1.0));
+    let leaf = add(&mut app, Kind::Tab, sleeping_tab("https://leaf/", ""));
     app.edit_parent(&mid, Some(root.clone()));
     app.edit_parent(&leaf, Some(mid.clone()));
     app.close_node(&mid);
@@ -1582,9 +1586,9 @@ fn a_restore_starts_only_the_focused_tab() {
     let path = temp_dir("lazy-restore").join("session.mnf");
     let (a, b, c) = {
         let mut app = app_on(&path, 1);
-        let a = add(&mut app, sleeping_tab("https://a/", "A"));
-        let b = add(&mut app, sleeping_tab("https://b/", "B"));
-        let c = add(&mut app, sleeping_tab("https://c/", "C"));
+        let a = add(&mut app, Kind::Tab, sleeping_tab("https://a/", "A"));
+        let b = add(&mut app, Kind::Tab, sleeping_tab("https://b/", "B"));
+        let c = add(&mut app, Kind::Tab, sleeping_tab("https://c/", "C"));
         app.focused = Some(b.clone());
         assert!(app.save_session());
         app.maybe_write_local(true);
@@ -1613,9 +1617,9 @@ fn restoring_a_split_session_wakes_both_the_focused_and_split_tab() {
     let path = temp_dir("lazy-restore-split").join("session.mnf");
     let (a, b, c) = {
         let mut app = app_on(&path, 1);
-        let a = add(&mut app, sleeping_tab("https://a/", "A"));
-        let b = add(&mut app, sleeping_tab("https://b/", "B"));
-        let c = add(&mut app, sleeping_tab("https://c/", "C"));
+        let a = add(&mut app, Kind::Tab, sleeping_tab("https://a/", "A"));
+        let b = add(&mut app, Kind::Tab, sleeping_tab("https://b/", "B"));
+        let c = add(&mut app, Kind::Tab, sleeping_tab("https://c/", "C"));
         app.focused = Some(a.clone());
         app.split_tab = Some(b.clone());
         assert!(app.save_session());
@@ -1640,8 +1644,8 @@ fn restoring_a_split_session_wakes_both_the_focused_and_split_tab() {
 #[test]
 fn opening_a_sleeping_tab_wakes_it_once() {
     let mut app = app_on(&temp_dir("lazy-open").join("session.mnf"), 1);
-    let a = add(&mut app, sleeping_tab("https://a/", "Alpha"));
-    let b = add(&mut app, sleeping_tab("https://b/", "Beta"));
+    let a = add(&mut app, Kind::Tab, sleeping_tab("https://a/", "Alpha"));
+    let b = add(&mut app, Kind::Tab, sleeping_tab("https://b/", "Beta"));
     app.focus_item(&a);
     app.focus_item(&a);
     assert_eq!(app.test_spawns.len(), 1);
@@ -1658,8 +1662,8 @@ fn opening_a_sleeping_tab_wakes_it_once() {
 #[test]
 fn tab_lists_include_sleeping_tabs() {
     let mut app = app_on(&temp_dir("lazy-lists").join("session.mnf"), 1);
-    let a = add(&mut app, sleeping_tab("https://a/", "Alpha"));
-    let b = add(&mut app, sleeping_tab("https://b/", "Beta"));
+    let a = add(&mut app, Kind::Tab, sleeping_tab("https://a/", "Alpha"));
+    let b = add(&mut app, Kind::Tab, sleeping_tab("https://b/", "Beta"));
     assert_eq!(app.quick_switcher_matches("beta"), std::slice::from_ref(&b));
     app.quick_switcher = Some(crate::QuickSwitcher { query: "beta".into(), selected: 0 });
     app.quick_switcher_confirm();
@@ -1680,7 +1684,7 @@ fn tab_lists_include_sleeping_tabs() {
 #[test]
 fn a_failed_wake_leaves_a_failed_card() {
     let mut app = app_on(&temp_dir("lazy-fail").join("session.mnf"), 1);
-    let a = add(&mut app, sleeping_tab("https://a/", "A"));
+    let a = add(&mut app, Kind::Tab, sleeping_tab("https://a/", "A"));
     app.focus_tab(&a);
     fail_spawns(&mut app);
     assert!(matches!(app.nodes[&a].as_unloaded().unwrap().state, UnloadedState::Failed(_)));
@@ -1698,7 +1702,7 @@ fn a_failed_wake_leaves_a_failed_card() {
 fn closing_a_tab_while_it_wakes_deletes_it_from_the_store() {
     let path = temp_dir("close-waking").join("session.mnf");
     let mut app = app_on(&path, 1);
-    let tab = add(&mut app, sleeping_tab("https://a/", "A"));
+    let tab = add(&mut app, Kind::Tab, sleeping_tab("https://a/", "A"));
     assert!(app.save_session());
     app.focus_tab(&tab);
     assert_eq!(app.test_spawns.len(), 1, "the wake is in flight, parked");
@@ -1719,7 +1723,7 @@ fn closing_a_tab_while_it_wakes_deletes_it_from_the_store() {
 #[test]
 fn removing_a_tab_clears_its_stale_pending_respawn_focus() {
     let mut app = app_on(&temp_dir("remove-pending-focus").join("session.mnf"), 1);
-    let tab = add(&mut app, sleeping_tab("https://a/", "A"));
+    let tab = add(&mut app, Kind::Tab, sleeping_tab("https://a/", "A"));
     app.focus_tab(&tab);
     assert_eq!(app.pending_respawn_focus.as_deref(), Some(tab.as_str()));
     app.destroy_tab(&tab);
@@ -1734,8 +1738,8 @@ fn removing_a_tab_clears_its_stale_pending_respawn_focus() {
 #[test]
 fn mute_all_except_also_mutes_sleeping_tabs() {
     let mut app = app_on(&temp_dir("mute-others-sleeping").join("session.mnf"), 1);
-    let keep = add(&mut app, sleeping_tab("https://keep/", "Keep"));
-    let other = add(&mut app, sleeping_tab("https://other/", "Other"));
+    let keep = add(&mut app, Kind::Tab, sleeping_tab("https://keep/", "Keep"));
+    let other = add(&mut app, Kind::Tab, sleeping_tab("https://other/", "Other"));
     app.mute_all_except(&keep);
     assert!(!app.nodes[&keep].as_unloaded().unwrap().muted, "kept tab untouched");
     assert!(app.nodes[&other].as_unloaded().unwrap().muted);
@@ -1748,7 +1752,7 @@ fn mute_all_except_also_mutes_sleeping_tabs() {
 fn a_remote_url_change_moves_a_sleeping_tab_without_waking_it() {
     let path = temp_dir("lazy-remote").join("session.mnf");
     let mut app = app_on(&path, 1);
-    let tab = add(&mut app, sleeping_tab("https://s/", "S"));
+    let tab = add(&mut app, Kind::Tab, sleeping_tab("https://s/", "S"));
     assert!(app.save_session());
     let mut other = Journal::open(&path, ActorId(2)).unwrap();
     remote_set(&mut other, &tab, field::URL, FieldValue::Str("https://moved/".into()));
@@ -1775,7 +1779,7 @@ fn a_sleeping_tab_saves_as_its_tab() {
     let path = temp_dir("lazy-save").join("session.mnf");
     let tab = {
         let mut app = app_on(&path, 1);
-        let tab = add(&mut app, sleeping_tab("https://s/", ""));
+        let tab = add(&mut app, Kind::Tab, sleeping_tab("https://s/", ""));
         app.edit_field(&tab, field::PINNED, FieldValue::Bool(true));
         assert!(app.save_session());
         app.close_store();
@@ -1819,7 +1823,7 @@ fn json_node(id: &str, kind: Kind, fields: serde_json::Value) -> crate::store::j
 fn a_jar_def_is_saved_as_a_jar_node_and_survives_later_saves() {
     let dir = crate::store::testutil::temp_dir("jar-def-saved");
     let mut app = app_on(&dir.join("session.mnf"), 1);
-    add(&mut app, sleeping_tab("https://a.com/", "A"));
+    add(&mut app, Kind::Tab, sleeping_tab("https://a.com/", "A"));
     let jar = app.create_jar("Work");
     app.save_session();
     let doc = app.journal.as_ref().unwrap().doc();
@@ -1850,7 +1854,7 @@ fn a_session_with_only_jars_still_restores_them() {
     let dir = crate::store::testutil::temp_dir("jar-only-restore");
     let path = dir.join("session.mnf");
     let mut app = app_on(&path, 1);
-    let tab = add(&mut app, sleeping_tab("https://a.com/", "A"));
+    let tab = add(&mut app, Kind::Tab, sleeping_tab("https://a.com/", "A"));
     let jar = app.create_jar("Work");
     app.save_session();
     app.remove_tab(&tab);
@@ -1873,7 +1877,7 @@ fn a_remote_edit_does_not_bring_back_a_jar_deleted_here() {
     {
         let path = crate::store::testutil::temp_dir(&format!("jar-deleted-here-{n}")).join("session.mnf");
         let mut app = app_on(&path, 1);
-        add(&mut app, sleeping_tab("https://a.com/", "A"));
+        add(&mut app, Kind::Tab, sleeping_tab("https://a.com/", "A"));
         let jar = app.create_jar("Work");
         assert!(app.save_session());
         let mut other = Journal::open(&path, ActorId(2)).unwrap();
@@ -1893,8 +1897,8 @@ fn a_remote_edit_does_not_bring_back_a_jar_deleted_here() {
 fn a_remote_edit_does_not_bring_back_a_node_closed_here() {
     let path = temp_dir("node-closed-here").join("session.mnf");
     let mut app = app_on(&path, 1);
-    let note = add(&mut app, Runtime::Note(NotePayload { text: "n".into(), editing: false }));
-    let tab = add(&mut app, sleeping_tab("https://a/", ""));
+    let note = add(&mut app, Kind::Note, Runtime::Note(NotePayload { text: "n".into(), editing: false }));
+    let tab = add(&mut app, Kind::Tab, sleeping_tab("https://a/", ""));
     assert!(app.save_session());
     let mut other = Journal::open(&path, ActorId(2)).unwrap();
     remote_set(&mut other, &note, field::TEXT, FieldValue::Str("theirs".into()));
@@ -1917,7 +1921,7 @@ fn a_remote_edit_does_not_bring_back_a_node_closed_here() {
 #[test]
 fn queue_create_skips_an_id_the_document_already_has() {
     let mut app = app_on(&temp_dir("queue-create-eager").join("session.mnf"), 1);
-    let note = add(&mut app, Runtime::Note(NotePayload { text: "n".into(), editing: false }));
+    let note = add(&mut app, Kind::Note, Runtime::Note(NotePayload { text: "n".into(), editing: false }));
     let id: NodeId = note.parse().unwrap();
     assert_eq!(app.pending_creates, BTreeSet::from([id]), "a new node is queued");
     assert!(app.save_session());
@@ -1939,7 +1943,7 @@ fn queue_create_skips_an_id_the_document_already_has() {
 #[test]
 fn mirror_remote_reports_the_changed_fields_but_not_the_held_ones() {
     let mut app = App::default();
-    let tab = add(&mut app, sleeping_tab("https://a/", ""));
+    let tab = add(&mut app, Kind::Tab, sleeping_tab("https://a/", ""));
     app.edit_pos(&tab, Some(egui::vec2(5.0, 5.0)));
     let mut fields = app.snapshot(tab.parse().unwrap()).unwrap().fields;
     fields.insert(field::POS, FieldValue::Pos(9.0, 9.0));
@@ -1960,7 +1964,7 @@ fn mirror_remote_reports_the_changed_fields_but_not_the_held_ones() {
 fn a_jar_create_rename_and_ephemeral_save_and_a_remote_change_reaches_jar_defs() {
     let path = temp_dir("jar-mirror-sync").join("session.mnf");
     let mut app = app_on(&path, 1);
-    add(&mut app, sleeping_tab("https://a.com/", "A"));
+    add(&mut app, Kind::Tab, sleeping_tab("https://a.com/", "A"));
     let jar = app.create_jar("Work");
     let key = jar.to_string();
     let work = FieldValue::Str("Work".into());
@@ -1990,7 +1994,7 @@ fn a_jar_create_rename_and_ephemeral_save_and_a_remote_change_reaches_jar_defs()
 fn a_pending_local_jar_rename_wins_over_a_remote_one() {
     let path = temp_dir("jar-rename-wins").join("session.mnf");
     let mut app = app_on(&path, 1);
-    add(&mut app, sleeping_tab("https://a.com/", "A"));
+    add(&mut app, Kind::Tab, sleeping_tab("https://a.com/", "A"));
     let jar = app.create_jar("Work");
     assert!(app.save_session());
     let mut other = Journal::open(&path, ActorId(2)).unwrap();
@@ -2009,7 +2013,7 @@ fn a_remote_ephemeral_change_deletes_and_saves_the_jar_file() {
     let (path, jars) = (dir.join("session.mnf"), dir.join("jars"));
     std::fs::create_dir(&jars).unwrap();
     let mut app = App { jars_dir_override: Some(jars.clone()), ..app_on(&path, 1) };
-    add(&mut app, sleeping_tab("https://a.com/", "A"));
+    add(&mut app, Kind::Tab, sleeping_tab("https://a.com/", "A"));
     let jar = app.create_jar("Work");
     assert!(app.save_session());
     let file = crate::jar::Jar::path(&jars, crate::jar::JarKey::Named(jar));
@@ -2037,7 +2041,7 @@ fn a_remote_ephemeral_toggle_under_a_pending_local_one_touches_no_file() {
     let (path, jars) = (dir.join("session.mnf"), dir.join("jars"));
     std::fs::create_dir(&jars).unwrap();
     let mut app = App { jars_dir_override: Some(jars.clone()), ..app_on(&path, 1) };
-    add(&mut app, sleeping_tab("https://a.com/", "A"));
+    add(&mut app, Kind::Tab, sleeping_tab("https://a.com/", "A"));
     let jar = app.create_jar("Work");
     app.set_jar_ephemeral(jar, true);
     assert!(app.save_session());
@@ -2078,7 +2082,7 @@ fn a_jar_first_seen_ephemeral_deletes_its_leftover_file_and_queues_nothing() {
     assert!(!file.exists(), "remote-created: the leftover file goes");
     assert!(app.pending.is_empty(), "remote-created: nothing queued");
     // Restored at startup.
-    add(&mut app, sleeping_tab("https://a.com/", "A"));
+    add(&mut app, Kind::Tab, sleeping_tab("https://a.com/", "A"));
     let jar = app.create_jar("Work");
     app.set_jar_ephemeral(jar, true);
     assert!(app.save_session());
@@ -2099,7 +2103,7 @@ fn startup_deletes_the_files_of_jars_the_document_no_longer_has() {
     let (path, jars) = (dir.join("session.mnf"), dir.join("jars"));
     std::fs::create_dir(&jars).unwrap();
     let mut app = app_on(&path, 1);
-    add(&mut app, sleeping_tab("https://a.com/", "A"));
+    add(&mut app, Kind::Tab, sleeping_tab("https://a.com/", "A"));
     let work = app.create_jar("Work");
     app.save_session();
     drop(app);
@@ -2139,8 +2143,8 @@ fn startup_deletes_the_files_of_jars_the_document_no_longer_has() {
 fn deleting_a_jar_clears_the_tabs_and_groups_that_named_it() {
     let mut app = App::default();
     let jar = app.create_jar("Work");
-    let tab = add(&mut app, sleeping_tab("https://a.com/", "A"));
-    let grp = add(&mut app, Runtime::Group(GroupPayload::default()));
+    let tab = add(&mut app, Kind::Tab, sleeping_tab("https://a.com/", "A"));
+    let grp = add(&mut app, Kind::Group, Runtime::None);
     app.edit_default_jar(&grp, Some(jar));
     app.edit_jar(&tab, crate::jar::JarChoice { jar: Some(jar), set: true });
     app.delete_jar(jar);
@@ -2179,7 +2183,7 @@ fn opening_a_session_gives_each_imported_jar_a_new_jar() {
     let tab =
         app.nodes.iter().find(|(_, n)| n.runtime.as_unloaded().is_some()).map(|(id, _)| id).expect("tab imported");
     assert_eq!(app.mirror.jar_choice(tab), crate::jar::JarChoice { jar: Some(new), set: true });
-    let group = app.nodes.iter().find(|(_, n)| n.as_group().is_some()).map(|(id, _)| id).expect("group imported");
+    let group = app.nodes.keys().find(|id| app.is_container(id)).expect("group imported");
     assert_eq!(app.mirror.default_jar(group), Some(new));
     assert_ne!(
         app.jar_label(crate::jar::JarKey::Named(new)),
@@ -2204,12 +2208,8 @@ fn importing_a_group_gives_each_imported_jar_a_new_jar() {
         .filter(|(_, n)| n.runtime.as_unloaded().is_some())
         .filter_map(|(id, _)| app.mirror.jar_choice(id).jar)
         .collect();
-    let groups: BTreeSet<NodeId> = app
-        .nodes
-        .iter()
-        .filter(|(_, n)| n.as_group().is_some())
-        .filter_map(|(id, _)| app.mirror.default_jar(id))
-        .collect();
+    let groups: BTreeSet<NodeId> =
+        app.nodes.keys().filter(|id| app.is_container(id)).filter_map(|id| app.mirror.default_jar(id)).collect();
     assert_eq!((&tabs, &groups), (&new, &new), "each import's tab and group name its own new jar");
 }
 
@@ -2218,7 +2218,7 @@ fn importing_a_group_gives_each_imported_jar_a_new_jar() {
 #[test]
 fn a_reopened_tab_comes_back_asleep_with_its_zoom_and_title() {
     let mut app = app_on(&temp_dir("reopen-sleep").join("session.mnf"), 1);
-    let tab = add(&mut app, sleeping_tab("https://r/", "Page R"));
+    let tab = add(&mut app, Kind::Tab, sleeping_tab("https://r/", "Page R"));
     if let Runtime::Unloaded(t) = &mut app.nodes.get_mut(&tab).unwrap().runtime {
         t.zoom_factor = 1.5;
     }
@@ -2239,7 +2239,7 @@ fn a_reopened_tab_comes_back_asleep_with_its_zoom_and_title() {
 fn an_imported_groups_tab_arrives_asleep_in_the_new_group() {
     let mut app = app_on(&temp_dir("import-sleep").join("session.mnf"), 1);
     let g = add_group(&mut app, "G");
-    let tab = add(&mut app, failed_tab("https://i/", 1.0));
+    let tab = add(&mut app, Kind::Tab, failed_tab("https://i/", 1.0));
     app.edit_group(&tab, Some(g.clone()));
     let json = app.export_group_json(&g).unwrap();
     app.import_group_json(&json);
@@ -2247,7 +2247,7 @@ fn an_imported_groups_tab_arrives_asleep_in_the_new_group() {
     let (copy_id, copy) = app.nodes.iter().find(|(id, n)| **id != tab && n.as_unloaded().is_some()).expect("a card");
     assert_eq!(copy.as_unloaded().unwrap().state, UnloadedState::Sleeping);
     let group = app.mirror.group(copy_id).expect("in a group");
-    assert!(group != g && app.nodes[group].as_group().is_some(), "in the imported group");
+    assert!(group != g && app.is_container(group), "in the imported group");
 }
 
 /// A member whose group isn't part of the imported file lands where
@@ -2284,7 +2284,7 @@ fn an_empty_session_keeps_recently_closed_across_a_launch() {
     let mut app = app_on(&path, 2);
     assert!(!app.restore_session(), "no nodes: the caller starts fresh");
     assert_eq!(app.closed.len(), 1);
-    add(&mut app, Runtime::Note(NotePayload { text: "n".into(), editing: false }));
+    add(&mut app, Kind::Note, Runtime::Note(NotePayload { text: "n".into(), editing: false }));
     app.maybe_write_local(true);
     let bytes = app.journal.as_ref().unwrap().read_local().unwrap().unwrap();
     assert_eq!(LocalState::from_bytes(&bytes).unwrap().closed, vec![entry]);
@@ -2299,7 +2299,7 @@ fn personal_state_startup_could_not_read_is_retried_not_overwritten() {
     let path = temp_dir("local-unread").join("session.mnf");
     let note = {
         let mut app = app_on(&path, 1);
-        let note = add(&mut app, Runtime::Note(NotePayload { text: "n".into(), editing: false }));
+        let note = add(&mut app, Kind::Note, Runtime::Note(NotePayload { text: "n".into(), editing: false }));
         app.close_store();
         note
     };
@@ -2360,7 +2360,7 @@ fn a_damaged_personal_state_file_is_not_retried() {
     let path = temp_dir("local-damaged-restore").join("session.mnf");
     {
         let mut app = app_on(&path, 1);
-        add(&mut app, Runtime::Note(NotePayload { text: "n".into(), editing: false }));
+        add(&mut app, Kind::Note, Runtime::Note(NotePayload { text: "n".into(), editing: false }));
         app.close_store();
     }
     std::fs::write(crate::store::local::path_for(&path), b"MNFL damaged").unwrap();
@@ -2368,7 +2368,7 @@ fn a_damaged_personal_state_file_is_not_retried() {
     assert!(app.restore_session());
     assert!(app.local_unread.is_none());
     // An unchanged state isn't written (`local_written` is armed); a change is.
-    add(&mut app, Runtime::Note(NotePayload { text: "m".into(), editing: false }));
+    add(&mut app, Kind::Note, Runtime::Note(NotePayload { text: "m".into(), editing: false }));
     app.maybe_write_local(true);
     let bytes = app.journal.as_ref().unwrap().read_local().unwrap();
     assert!(bytes.is_some(), "replaced with this profile's state");
@@ -2389,7 +2389,7 @@ fn mark_unread_with(app: &mut App, path: &std::path::Path, state: &LocalState) {
 fn opening_a_session_while_unread_takes_only_recently_closed_on_retry() {
     let path = temp_dir("local-unread-open").join("session.mnf");
     let mut app = app_on(&path, 1);
-    add(&mut app, Runtime::Note(NotePayload { text: "n".into(), editing: false }));
+    add(&mut app, Kind::Note, Runtime::Note(NotePayload { text: "n".into(), editing: false }));
     assert!(app.save_session());
     let old = JsonDoc { nodes: vec![json_node("x", Kind::Note, serde_json::json!({ "text": "gone" }))], local: None };
     mark_unread_with(
@@ -2415,8 +2415,8 @@ fn the_forced_retry_at_exit_applies_without_waking() {
     let path = temp_dir("local-unread-exit").join("session.mnf");
     let (a, b) = {
         let mut app = app_on(&path, 1);
-        let a = add(&mut app, sleeping_tab("https://a/", "A"));
-        let b = add(&mut app, sleeping_tab("https://b/", "B"));
+        let a = add(&mut app, Kind::Tab, sleeping_tab("https://a/", "A"));
+        let b = add(&mut app, Kind::Tab, sleeping_tab("https://b/", "B"));
         assert!(app.save_session());
         (a, b)
     };
@@ -2438,7 +2438,7 @@ fn the_forced_retry_at_exit_applies_without_waking() {
 fn a_late_read_of_no_personal_state_keeps_the_live_view() {
     let path = temp_dir("local-unread-none").join("session.mnf");
     let mut app = app_on(&path, 1);
-    add(&mut app, Runtime::Note(NotePayload { text: "n".into(), editing: false }));
+    add(&mut app, Kind::Note, Runtime::Note(NotePayload { text: "n".into(), editing: false }));
     assert!(app.save_session());
     app.local_unread = Some(LocalUnread { retry_at: std::time::Instant::now(), fresh: false });
     app.local_written = None;
@@ -2459,7 +2459,7 @@ fn a_late_read_of_no_personal_state_keeps_the_live_view() {
 fn tabs_still_spawning_at_quit_are_saved() {
     let path = temp_dir("spawning-quit").join("session.mnf");
     let mut app = app_on(&path, 1);
-    add(&mut app, Runtime::Note(NotePayload { text: "old".into(), editing: false }));
+    add(&mut app, Kind::Note, Runtime::Note(NotePayload { text: "old".into(), editing: false }));
     assert!(app.save_session());
     let json =
         JsonDoc { nodes: vec![json_node("t", Kind::Tab, serde_json::json!({ "url": "https://new/" }))], local: None };
@@ -2506,8 +2506,8 @@ fn restore_without_personal_state_focuses_and_wakes_the_first_tab() {
     let path = temp_dir("no-local-restore").join("session.mnf");
     let (a, b) = {
         let mut app = app_on(&path, 1);
-        let a = add(&mut app, sleeping_tab("https://a/", "A"));
-        let b = add(&mut app, sleeping_tab("https://b/", "B"));
+        let a = add(&mut app, Kind::Tab, sleeping_tab("https://a/", "A"));
+        let b = add(&mut app, Kind::Tab, sleeping_tab("https://b/", "B"));
         assert!(app.save_session());
         // No `maybe_write_local`: no `session.mnf.local` at all, the
         // literal "without personal state" case, not just one whose
@@ -2533,7 +2533,7 @@ fn personal_state_survives_onto_a_still_waking_restored_card_and_a_fresh_failed_
     let path = temp_dir("local-spawning").join("session.mnf");
     let tab = {
         let mut app = app_on(&path, 1);
-        let tab = add(&mut app, failed_tab("https://s/", 1.0));
+        let tab = add(&mut app, Kind::Tab, failed_tab("https://s/", 1.0));
         app.close_store();
         tab
     };
@@ -2549,7 +2549,7 @@ fn personal_state_survives_onto_a_still_waking_restored_card_and_a_fresh_failed_
     // live `Unloaded` card (`apply_local_node`), not carried through
     // `pending_local`.
     assert_eq!(app.test_spawns.len(), 1, "the restored tab's wake is still in flight");
-    let card = add(&mut app, failed_tab("https://f/", 1.5));
+    let card = add(&mut app, Kind::Tab, failed_tab("https://f/", 1.5));
     let state = app.local_state();
     assert_eq!(state.nodes.get(&tab), Some(&entry));
     assert_eq!(state.nodes[&card].zoom, Some(1.5));
@@ -2563,7 +2563,7 @@ fn a_restart_reopens_a_tabs_live_url_while_the_shared_url_is_unchanged() {
     let path = temp_dir("live-url").join("session.mnf");
     let tab = {
         let mut app = app_on(&path, 1);
-        let tab = add(&mut app, failed_tab("https://s/", 1.0));
+        let tab = add(&mut app, Kind::Tab, failed_tab("https://s/", 1.0));
         assert!(app.save_session());
         if let Runtime::Unloaded(t) = &mut app.nodes.get_mut(&tab).unwrap().runtime {
             t.url = "https://s/moved".into();
@@ -2619,8 +2619,8 @@ fn the_mirror_matches_the_store_after_every_save() {
     let mut app = app_on(&path, 1);
     let outer = add_group(&mut app, "outer");
     let inner = add_group(&mut app, "inner");
-    let tab = add(&mut app, failed_tab("https://a/", 1.0));
-    let note = add(&mut app, Runtime::Note(NotePayload { text: String::new(), editing: false }));
+    let tab = add(&mut app, Kind::Tab, failed_tab("https://a/", 1.0));
+    let note = add(&mut app, Kind::Note, Runtime::Note(NotePayload { text: String::new(), editing: false }));
     app.edit_group(&inner, Some(outer.clone()));
     app.edit_group(&tab, Some(inner.clone()));
     assert!(app.save_session());
@@ -2685,7 +2685,7 @@ fn app_save_costs() {
         let mut ids = Vec::new();
         for i in 0..tabs {
             let url = format!("https://www.example{}.com/articles/2026/09/some-long-article-slug-{i}?ref=home", i % 50);
-            let id = add(&mut app, failed_tab(&url, 1.0));
+            let id = add(&mut app, Kind::Tab, failed_tab(&url, 1.0));
             app.edit_group(&id, Some(groups[i % groups.len()].clone()));
             let pos = egui::vec2(i as f32 * 3.5, i as f32 * -2.25);
             app.snap_layout(&id, pos);
@@ -2729,8 +2729,8 @@ fn app_save_costs() {
 #[test]
 fn teardown_cancels_pending_pdf_renders() {
     let mut app = App::default();
-    let pdf = add(&mut app, Runtime::Pdf(crate::node::PdfPayload { path: "d.pdf".into(), outcome: None }));
-    let note = add(&mut app, Runtime::Note(NotePayload { text: "n".into(), editing: false }));
+    let pdf = add(&mut app, Kind::Pdf, Runtime::Pdf(crate::node::PdfPayload { path: "d.pdf".into(), outcome: None }));
+    let note = add(&mut app, Kind::Note, Runtime::Note(NotePayload { text: "n".into(), editing: false }));
     app.teardown_running_session();
     assert!(app.pdf_renderer.is_cancelled(&pdf));
     assert!(!app.pdf_renderer.is_cancelled(&note), "only PDFs are marked");
@@ -2745,7 +2745,7 @@ fn blue() -> FieldValue {
 }
 
 fn a_note(app: &mut App) -> String {
-    add(app, Runtime::Note(NotePayload { text: "n".into(), editing: false }))
+    add(app, Kind::Note, Runtime::Note(NotePayload { text: "n".into(), editing: false }))
 }
 
 #[test]
@@ -2942,7 +2942,7 @@ fn an_existing_nodes_fields_reach_the_document_only_through_pending() {
 fn a_tab_pin_is_committed_and_a_remote_pin_reaches_the_mirror() {
     let path = temp_dir("pin-sync").join("session.mnf");
     let mut app = app_on(&path, 1);
-    let tab = add(&mut app, failed_tab("https://u0/", 1.0));
+    let tab = add(&mut app, Kind::Tab, failed_tab("https://u0/", 1.0));
     assert!(app.save_session());
     app.edit_field(&tab, field::PINNED, FieldValue::Bool(true));
     assert!(app.mirror.pinned(&tab));
@@ -2967,7 +2967,10 @@ fn pinning_skips_a_node_that_is_not_a_tab() {
 #[test]
 fn pin_all_pins_every_tab_and_only_tabs() {
     let mut app = App::default();
-    let (a, b) = (add(&mut app, failed_tab("https://u0/", 1.0)), add(&mut app, failed_tab("https://u0/", 1.0)));
+    let (a, b) = (
+        add(&mut app, Kind::Tab, failed_tab("https://u0/", 1.0)),
+        add(&mut app, Kind::Tab, failed_tab("https://u0/", 1.0)),
+    );
     let note = a_note(&mut app);
     app.set_all_pinned(true);
     assert!(app.mirror.pinned(&a) && app.mirror.pinned(&b) && !app.mirror.pinned(&note));
@@ -2980,7 +2983,7 @@ fn pin_all_pins_every_tab_and_only_tabs() {
 fn a_committed_local_edit_wins_over_a_remote_value_parked_for_a_waking_tab() {
     let path = temp_dir("edit-parked").join("session.mnf");
     let mut app = app_on(&path, 1);
-    let tab = add(&mut app, sleeping_tab("https://a/", "A"));
+    let tab = add(&mut app, Kind::Tab, sleeping_tab("https://a/", "A"));
     assert!(app.save_session());
     app.focus_tab(&tab);
     assert!(app.spawning.contains_key(&tab), "waking");
@@ -3002,7 +3005,7 @@ fn a_committed_local_edit_wins_over_a_remote_value_parked_for_a_waking_tab() {
 fn a_save_during_a_respawn_keeps_the_mirror_entry() {
     let path = temp_dir("edit-respawn").join("session.mnf");
     let mut app = app_on(&path, 1);
-    let tab = add(&mut app, sleeping_tab("https://a/", "A"));
+    let tab = add(&mut app, Kind::Tab, sleeping_tab("https://a/", "A"));
     app.edit_field(&tab, field::COLOR, red());
     app.edit_field(&tab, field::PINNED, FieldValue::Bool(true));
     assert!(app.save_session());
@@ -3062,7 +3065,10 @@ fn a_failed_commit_keeps_a_pending_edit_for_the_retry() {
 fn a_parent_edit_reads_back_and_commits() {
     let path = temp_dir("parent-edit").join("session.mnf");
     let mut app = app_on(&path, 1);
-    let (a, b) = (add(&mut app, sleeping_tab("https://a/", "")), add(&mut app, sleeping_tab("https://b/", "")));
+    let (a, b) = (
+        add(&mut app, Kind::Tab, sleeping_tab("https://a/", "")),
+        add(&mut app, Kind::Tab, sleeping_tab("https://b/", "")),
+    );
     assert!(app.save_session());
     app.edit_parent(&b, Some(a.clone()));
     assert_eq!(app.mirror.parent(&b), Some(a.as_str()));
@@ -3077,9 +3083,9 @@ fn a_local_parent_edit_wins_over_a_remote_one() {
     let path = temp_dir("parent-conflict").join("session.mnf");
     let mut app = app_on(&path, 1);
     let (a, b, c) = (
-        add(&mut app, sleeping_tab("https://a/", "")),
-        add(&mut app, sleeping_tab("https://b/", "")),
-        add(&mut app, sleeping_tab("https://c/", "")),
+        add(&mut app, Kind::Tab, sleeping_tab("https://a/", "")),
+        add(&mut app, Kind::Tab, sleeping_tab("https://b/", "")),
+        add(&mut app, Kind::Tab, sleeping_tab("https://c/", "")),
     );
     assert!(app.save_session());
     let mut other = Journal::open(&path, ActorId(2)).unwrap();
@@ -3095,7 +3101,10 @@ fn a_local_parent_edit_wins_over_a_remote_one() {
 fn a_parent_deleted_by_the_same_commit_is_written_as_none() {
     let path = temp_dir("parent-deleted").join("session.mnf");
     let mut app = app_on(&path, 1);
-    let (a, b) = (add(&mut app, sleeping_tab("https://a/", "")), add(&mut app, sleeping_tab("https://b/", "")));
+    let (a, b) = (
+        add(&mut app, Kind::Tab, sleeping_tab("https://a/", "")),
+        add(&mut app, Kind::Tab, sleeping_tab("https://b/", "")),
+    );
     assert!(app.save_session());
     app.edit_parent(&b, Some(a.clone()));
     app.remove_tab(&a); // queues its Delete
@@ -3118,9 +3127,9 @@ fn remote_parent_change_and_removal_reparent_through_the_mirror() {
     let path = temp_dir("parent-remote").join("session.mnf");
     let mut app = app_on(&path, 1);
     let (a, b, c) = (
-        add(&mut app, sleeping_tab("https://a/", "")),
-        add(&mut app, sleeping_tab("https://b/", "")),
-        add(&mut app, sleeping_tab("https://c/", "")),
+        add(&mut app, Kind::Tab, sleeping_tab("https://a/", "")),
+        add(&mut app, Kind::Tab, sleeping_tab("https://b/", "")),
+        add(&mut app, Kind::Tab, sleeping_tab("https://c/", "")),
     );
     app.edit_parent(&b, Some(a.clone()));
     app.edit_parent(&c, Some(b.clone()));
@@ -3137,9 +3146,9 @@ fn a_committed_parent_edit_wins_over_a_remote_value_parked_for_a_waking_tab() {
     let path = temp_dir("parent-parked").join("session.mnf");
     let mut app = app_on(&path, 1);
     let (a, b, tab) = (
-        add(&mut app, sleeping_tab("https://a/", "")),
-        add(&mut app, sleeping_tab("https://b/", "")),
-        add(&mut app, sleeping_tab("https://t/", "")),
+        add(&mut app, Kind::Tab, sleeping_tab("https://a/", "")),
+        add(&mut app, Kind::Tab, sleeping_tab("https://b/", "")),
+        add(&mut app, Kind::Tab, sleeping_tab("https://t/", "")),
     );
     assert!(app.save_session());
     app.focus_tab(&tab);
@@ -3160,7 +3169,10 @@ fn a_committed_parent_edit_wins_over_a_remote_value_parked_for_a_waking_tab() {
 fn a_parent_edit_to_a_non_store_target_drops_an_earlier_queued_one() {
     let path = temp_dir("parent-stale").join("session.mnf");
     let mut app = app_on(&path, 1);
-    let (a, b) = (add(&mut app, sleeping_tab("https://a/", "")), add(&mut app, sleeping_tab("https://b/", "")));
+    let (a, b) = (
+        add(&mut app, Kind::Tab, sleeping_tab("https://a/", "")),
+        add(&mut app, Kind::Tab, sleeping_tab("https://b/", "")),
+    );
     assert!(app.save_session());
     app.edit_parent(&b, Some(a.clone()));
     app.edit_parent(&b, Some("p".into()));
@@ -3175,9 +3187,9 @@ fn a_parent_edit_to_a_non_store_target_drops_an_earlier_queued_one() {
 fn a_parent_created_by_the_same_commit_is_kept() {
     let path = temp_dir("parent-new").join("session.mnf");
     let mut app = app_on(&path, 1);
-    let b = add(&mut app, sleeping_tab("https://b/", ""));
+    let b = add(&mut app, Kind::Tab, sleeping_tab("https://b/", ""));
     assert!(app.save_session());
-    let a = add(&mut app, sleeping_tab("https://a/", ""));
+    let a = add(&mut app, Kind::Tab, sleeping_tab("https://a/", ""));
     app.edit_parent(&b, Some(a.clone()));
     assert!(app.save_session());
     assert_eq!(stored(&app, &b, field::PARENT), FieldValue::Id(Some(a.parse().unwrap())));
@@ -3191,9 +3203,9 @@ fn a_pending_link_edit_for_a_node_deleted_elsewhere_is_dropped() {
     let mut app = app_on(&path, 1);
     let g = add_group(&mut app, "G");
     let (a, b, c) = (
-        add(&mut app, sleeping_tab("https://a/", "")),
-        add(&mut app, sleeping_tab("https://b/", "")),
-        add(&mut app, sleeping_tab("https://c/", "")),
+        add(&mut app, Kind::Tab, sleeping_tab("https://a/", "")),
+        add(&mut app, Kind::Tab, sleeping_tab("https://b/", "")),
+        add(&mut app, Kind::Tab, sleeping_tab("https://c/", "")),
     );
     assert!(app.save_session());
     let mut other = Journal::open(&path, ActorId(2)).unwrap();
@@ -3217,9 +3229,9 @@ fn a_parked_link_is_patched_with_the_resolved_value() {
     let mut app = app_on(&path, 1);
     let g = add_group(&mut app, "G");
     let (a, b, tab) = (
-        add(&mut app, sleeping_tab("https://a/", "")),
-        add(&mut app, sleeping_tab("https://b/", "")),
-        add(&mut app, sleeping_tab("https://t/", "")),
+        add(&mut app, Kind::Tab, sleeping_tab("https://a/", "")),
+        add(&mut app, Kind::Tab, sleeping_tab("https://b/", "")),
+        add(&mut app, Kind::Tab, sleeping_tab("https://t/", "")),
     );
     assert!(app.save_session());
     app.focus_tab(&tab);
@@ -3243,7 +3255,7 @@ fn a_group_edit_reads_back_and_commits_as_a_move() {
     let path = temp_dir("group-edit").join("session.mnf");
     let mut app = app_on(&path, 1);
     let g = add_group(&mut app, "G");
-    let t = add(&mut app, sleeping_tab("https://t/", ""));
+    let t = add(&mut app, Kind::Tab, sleeping_tab("https://t/", ""));
     assert!(app.save_session());
     app.edit_group(&t, Some(g.clone()));
     assert_eq!(app.mirror.group(&t), Some(g.as_str()));
@@ -3257,7 +3269,7 @@ fn a_group_edit_reads_back_and_commits_as_a_move() {
 fn a_move_into_a_group_created_by_the_same_save_follows_the_create() {
     let path = temp_dir("group-new").join("session.mnf");
     let mut app = app_on(&path, 1);
-    let t = add(&mut app, sleeping_tab("https://t/", ""));
+    let t = add(&mut app, Kind::Tab, sleeping_tab("https://t/", ""));
     assert!(app.save_session());
     let g = add_group(&mut app, "G");
     app.edit_group(&t, Some(g.clone()));
@@ -3272,7 +3284,7 @@ fn a_move_into_a_group_deleted_by_the_same_save_is_written_as_none() {
     let path = temp_dir("group-gone").join("session.mnf");
     let mut app = app_on(&path, 1);
     let g = add_group(&mut app, "G");
-    let t = add(&mut app, sleeping_tab("https://t/", ""));
+    let t = add(&mut app, Kind::Tab, sleeping_tab("https://t/", ""));
     assert!(app.save_session());
     app.edit_group(&t, Some(g.clone()));
     app.dissolve_group(&g);
@@ -3295,7 +3307,7 @@ fn a_group_edit_to_a_non_store_target_drops_an_earlier_queued_one() {
     let path = temp_dir("group-stale").join("session.mnf");
     let mut app = app_on(&path, 1);
     let g = add_group(&mut app, "G");
-    let t = add(&mut app, sleeping_tab("https://t/", ""));
+    let t = add(&mut app, Kind::Tab, sleeping_tab("https://t/", ""));
     assert!(app.save_session());
     app.edit_group(&t, Some(g.clone()));
     app.edit_group(&t, Some("x".into()));
@@ -3311,7 +3323,7 @@ fn a_local_group_move_wins_over_a_remote_one() {
     let mut app = app_on(&path, 1);
     let g1 = add_group(&mut app, "A");
     let g2 = add_group(&mut app, "B");
-    let t = add(&mut app, sleeping_tab("https://t/", ""));
+    let t = add(&mut app, Kind::Tab, sleeping_tab("https://t/", ""));
     assert!(app.save_session());
     let mut other = Journal::open(&path, ActorId(2)).unwrap();
     app.edit_group(&t, Some(g1.clone()));
@@ -3331,7 +3343,7 @@ fn a_remote_group_move_reaches_the_mirror() {
     let path = temp_dir("group-remote").join("session.mnf");
     let mut app = app_on(&path, 1);
     let g = add_group(&mut app, "G");
-    let t = add(&mut app, sleeping_tab("https://t/", ""));
+    let t = add(&mut app, Kind::Tab, sleeping_tab("https://t/", ""));
     assert!(app.save_session());
     let mut other = Journal::open(&path, ActorId(2)).unwrap();
     let mv = vec![OpBody::Move { node: t.parse().unwrap(), group: Some(g.parse().unwrap()) }];
@@ -3347,7 +3359,7 @@ fn a_committed_move_wins_over_a_remote_move_parked_for_a_waking_tab() {
     let mut app = app_on(&path, 1);
     let g1 = add_group(&mut app, "A");
     let g2 = add_group(&mut app, "B");
-    let tab = add(&mut app, sleeping_tab("https://t/", ""));
+    let tab = add(&mut app, Kind::Tab, sleeping_tab("https://t/", ""));
     assert!(app.save_session());
     app.focus_tab(&tab);
     assert!(app.spawning.contains_key(&tab), "waking");
@@ -3369,7 +3381,7 @@ fn dissolving_a_group_moves_members_up_and_saves() {
     let mut app = app_on(&path, 1);
     let outer = add_group(&mut app, "O");
     let inner = add_group(&mut app, "I");
-    let t = add(&mut app, sleeping_tab("https://t/", ""));
+    let t = add(&mut app, Kind::Tab, sleeping_tab("https://t/", ""));
     app.edit_group(&inner, Some(outer.clone()));
     app.edit_group(&t, Some(inner.clone()));
     assert!(app.save_session());
@@ -3387,7 +3399,7 @@ fn a_remote_merge_is_not_reverted_by_the_dissolve_it_triggers() {
     let mut app = app_on(&path, 1);
     let t = add_group(&mut app, "T");
     let g = add_group(&mut app, "G");
-    let m = add(&mut app, sleeping_tab("https://m/", ""));
+    let m = add(&mut app, Kind::Tab, sleeping_tab("https://m/", ""));
     assert!(g.parse::<NodeId>().unwrap() < m.parse::<NodeId>().unwrap(), "G's delete is applied before M's move");
     app.edit_group(&m, Some(g.clone()));
     assert!(app.save_session());
@@ -3411,9 +3423,9 @@ fn a_remote_merge_is_not_reverted_by_the_dissolve_it_triggers() {
 fn a_remote_reparent_is_not_reverted_by_the_removal_it_races() {
     let path = temp_dir("parent-remote-race").join("session.mnf");
     let mut app = app_on(&path, 1);
-    let a = add(&mut app, sleeping_tab("https://a/", ""));
-    let p = add(&mut app, sleeping_tab("https://p/", ""));
-    let c = add(&mut app, sleeping_tab("https://c/", ""));
+    let a = add(&mut app, Kind::Tab, sleeping_tab("https://a/", ""));
+    let p = add(&mut app, Kind::Tab, sleeping_tab("https://p/", ""));
+    let c = add(&mut app, Kind::Tab, sleeping_tab("https://c/", ""));
     app.edit_parent(&c, Some(p.clone()));
     assert!(app.save_session());
     let mut other = Journal::open(&path, ActorId(2)).unwrap();
@@ -3440,7 +3452,7 @@ fn a_pending_move_into_a_remotely_deleted_group_lands_in_its_group() {
     let mut app = app_on(&path, 1);
     let outer = add_group(&mut app, "O");
     let g = add_group(&mut app, "G");
-    let m = add(&mut app, sleeping_tab("https://m/", ""));
+    let m = add(&mut app, Kind::Tab, sleeping_tab("https://m/", ""));
     app.edit_group(&g, Some(outer.clone()));
     assert!(app.save_session());
     let mut other = Journal::open(&path, ActorId(2)).unwrap();
@@ -3500,7 +3512,7 @@ fn start_respawn(app: &mut App, tab: &str) {
 fn nested_tab(app: &mut App) -> (String, String, String) {
     let outer = add_group(app, "O");
     let g = add_group(app, "G");
-    let t = add(app, sleeping_tab("https://t/", ""));
+    let t = add(app, Kind::Tab, sleeping_tab("https://t/", ""));
     app.edit_group(&g, Some(outer.clone()));
     app.edit_group(&t, Some(g.clone()));
     assert!(app.save_session());
@@ -3550,7 +3562,7 @@ fn a_local_merge_during_a_respawn_moves_the_tab_into_the_target() {
     let mut app = app_on(&path, 1);
     let source = add_group(&mut app, "S");
     let target = add_group(&mut app, "T");
-    let m = add(&mut app, sleeping_tab("https://m/", ""));
+    let m = add(&mut app, Kind::Tab, sleeping_tab("https://m/", ""));
     app.edit_group(&m, Some(source.clone()));
     assert!(app.save_session());
     start_respawn(&mut app, &m);
@@ -3564,9 +3576,9 @@ fn a_local_merge_during_a_respawn_moves_the_tab_into_the_target() {
 
 /// A opened P, P opened C, saved.
 fn parent_chain(app: &mut App) -> (String, String, String) {
-    let a = add(app, sleeping_tab("https://a/", ""));
-    let p = add(app, sleeping_tab("https://p/", ""));
-    let c = add(app, sleeping_tab("https://c/", ""));
+    let a = add(app, Kind::Tab, sleeping_tab("https://a/", ""));
+    let p = add(app, Kind::Tab, sleeping_tab("https://p/", ""));
+    let c = add(app, Kind::Tab, sleeping_tab("https://c/", ""));
     app.edit_parent(&p, Some(a.clone()));
     app.edit_parent(&c, Some(p.clone()));
     assert!(app.save_session());
@@ -3654,7 +3666,7 @@ fn set_live_url(app: &mut App, tab: &str, url: &str) {
 fn a_navigation_saves_the_url_it_started_with_not_the_redirect() {
     let path = temp_dir("url-redirect").join("session.mnf");
     let mut app = app_on(&path, 1);
-    let tab = add(&mut app, sleeping_tab("https://s/", ""));
+    let tab = add(&mut app, Kind::Tab, sleeping_tab("https://s/", ""));
     assert!(app.save_session());
     app.edit_url(&tab, "https://a/");
     set_live_url(&mut app, &tab, "https://b/");
@@ -3671,7 +3683,7 @@ fn a_navigation_saves_the_url_it_started_with_not_the_redirect() {
 fn a_local_url_edit_wins_over_a_remote_one() {
     let path = temp_dir("url-local-wins").join("session.mnf");
     let mut app = app_on(&path, 1);
-    let tab = add(&mut app, sleeping_tab("https://s/", ""));
+    let tab = add(&mut app, Kind::Tab, sleeping_tab("https://s/", ""));
     assert!(app.save_session());
     let mut other = Journal::open(&path, ActorId(2)).unwrap();
     app.edit_url(&tab, "https://mine/");
@@ -3692,7 +3704,7 @@ fn a_local_url_edit_wins_over_a_remote_one() {
 fn a_remote_url_change_reaches_the_mirror_and_moves_a_sleeping_tab() {
     let path = temp_dir("url-remote").join("session.mnf");
     let mut app = app_on(&path, 1);
-    let tab = add(&mut app, sleeping_tab("https://s/", ""));
+    let tab = add(&mut app, Kind::Tab, sleeping_tab("https://s/", ""));
     assert!(app.save_session());
     let mut other = Journal::open(&path, ActorId(2)).unwrap();
     remote_set(&mut other, &tab, field::URL, FieldValue::Str("https://moved/".into()));
@@ -3714,7 +3726,7 @@ fn an_unmarked_live_url_is_never_saved() {
     let path = temp_dir("url-unmarked").join("session.mnf");
     let tab = {
         let mut app = app_on(&path, 1);
-        let tab = add(&mut app, sleeping_tab("https://s/", ""));
+        let tab = add(&mut app, Kind::Tab, sleeping_tab("https://s/", ""));
         assert!(app.save_session());
         set_live_url(&mut app, &tab, "https://s/moved");
         assert!(app.save_session());
@@ -3766,7 +3778,7 @@ fn a_jar_pick_saves_both_fields_and_only_the_changed_one() {
     let path = temp_dir("jar-pick").join("session.mnf");
     let mut app = app_on(&path, 1);
     let work = app.create_jar("Work");
-    let tab = add(&mut app, sleeping_tab("https://s/", ""));
+    let tab = add(&mut app, Kind::Tab, sleeping_tab("https://s/", ""));
     assert!(app.save_session());
     let key = |no| (tab.parse::<NodeId>().unwrap(), no);
     app.set_tab_jar(&tab, Some(work));
@@ -3790,7 +3802,7 @@ fn a_pending_jar_naming_a_jar_deleted_in_this_commit_is_written_as_none() {
     let path = temp_dir("jar-pending-deleted").join("session.mnf");
     let mut app = app_on(&path, 1);
     let work = app.create_jar("Work");
-    let tab = add(&mut app, sleeping_tab("https://s/", ""));
+    let tab = add(&mut app, Kind::Tab, sleeping_tab("https://s/", ""));
     assert!(app.save_session());
     app.set_tab_jar(&tab, Some(work));
     // Gone here without `delete_jar`'s cascade (which would clear the tab's field first): this commit deletes its node.
@@ -3811,12 +3823,12 @@ fn a_created_tab_naming_a_jar_deleted_in_this_commit_is_created_with_none() {
     let mut app = app_on(&path, 1);
     let work = app.create_jar("Work");
     assert!(app.save_session());
-    let tab = add(&mut app, sleeping_tab("https://s/", ""));
+    let tab = add(&mut app, Kind::Tab, sleeping_tab("https://s/", ""));
     app.set_tab_jar(&tab, Some(work));
     app.forget_jar(work); // without `delete_jar`'s cascade, so the pending field still names it
     app.queue_delete(&work.to_string());
     let home = app.create_jar("Home");
-    let other = add(&mut app, sleeping_tab("https://o/", ""));
+    let other = add(&mut app, Kind::Tab, sleeping_tab("https://o/", ""));
     app.set_tab_jar(&other, Some(home));
     assert!(app.save_session());
     assert_eq!(stored(&app, &tab, field::JAR), FieldValue::Id(None), "created with none");
@@ -3831,7 +3843,7 @@ fn a_dangling_remote_deleted_jar_survives_a_save() {
     let path = temp_dir("jar-dangling").join("session.mnf");
     let mut app = app_on(&path, 1);
     let work = app.create_jar("Work");
-    let tab = add(&mut app, sleeping_tab("https://s/", ""));
+    let tab = add(&mut app, Kind::Tab, sleeping_tab("https://s/", ""));
     app.set_tab_jar(&tab, Some(work));
     assert!(app.save_session());
     let mut other = Journal::open(&path, ActorId(2)).unwrap();
@@ -3850,7 +3862,7 @@ fn a_local_jar_pick_wins_over_a_remote_one() {
     let path = temp_dir("jar-local-wins").join("session.mnf");
     let mut app = app_on(&path, 1);
     let (mine, theirs) = (app.create_jar("Mine"), app.create_jar("Theirs"));
-    let tab = add(&mut app, sleeping_tab("https://s/", ""));
+    let tab = add(&mut app, Kind::Tab, sleeping_tab("https://s/", ""));
     assert!(app.save_session());
     let mut other = Journal::open(&path, ActorId(2)).unwrap();
     app.set_tab_jar(&tab, Some(mine));
@@ -3939,7 +3951,7 @@ fn live_tab(app: &mut App, kind: EngineKind, url: &str) -> (String, Peer) {
         zoom_factor: 1.0,
         swap_target: None,
     });
-    (add(app, payload), peer)
+    (add(app, Kind::Tab, payload), peer)
 }
 
 /// What the app sent the fake host so far.
@@ -4049,7 +4061,7 @@ fn a_local_swap_in_flight_wins_over_a_remote_engine() {
 fn a_wake_into_another_engine_is_saved_at_wake_start() {
     let path = temp_dir("engine-wake").join("session.mnf");
     let mut app = app_on(&path, 1);
-    let tab = add(&mut app, sleeping_tab("https://s/", ""));
+    let tab = add(&mut app, Kind::Tab, sleeping_tab("https://s/", ""));
     assert!(app.save_session());
     app.wake_tab(&tab, EngineKind::Cef);
     assert_eq!(app.mirror.engine(&tab), EngineKind::Cef, "shown at once");
@@ -4071,7 +4083,7 @@ fn a_wake_into_another_engine_is_saved_at_wake_start() {
 fn an_unknown_engine_code_survives_a_save() {
     let path = temp_dir("engine-unknown").join("session.mnf");
     let mut app = app_on(&path, 1);
-    let tab = add(&mut app, sleeping_tab("https://s/", ""));
+    let tab = add(&mut app, Kind::Tab, sleeping_tab("https://s/", ""));
     assert!(app.save_session());
     let mut other = Journal::open(&path, ActorId(2)).unwrap();
     remote_set(&mut other, &tab, field::ENGINE, FieldValue::Engine(99));
@@ -4185,7 +4197,7 @@ fn a_swap_waiting_for_its_cookies_is_still_the_one_swap() {
 fn a_remote_engine_change_on_a_sleeping_card_is_the_one_it_wakes_into() {
     let path = temp_dir("engine-remote-sleeping").join("session.mnf");
     let mut app = app_on(&path, 1);
-    let tab = add(&mut app, sleeping_tab("https://s/", ""));
+    let tab = add(&mut app, Kind::Tab, sleeping_tab("https://s/", ""));
     assert!(app.save_session());
     let mut other = Journal::open(&path, ActorId(2)).unwrap();
     remote_set(&mut other, &tab, field::ENGINE, engine(EngineKind::Cef));
@@ -4203,7 +4215,7 @@ fn a_remote_engine_change_on_a_sleeping_card_is_the_one_it_wakes_into() {
 fn an_unknown_engine_code_survives_a_tab_landing_live() {
     let path = temp_dir("engine-unknown-live").join("session.mnf");
     let mut app = app_on(&path, 1);
-    let tab = add(&mut app, sleeping_tab("https://s/", ""));
+    let tab = add(&mut app, Kind::Tab, sleeping_tab("https://s/", ""));
     assert!(app.save_session());
     let mut other = Journal::open(&path, ActorId(2)).unwrap();
     remote_set(&mut other, &tab, field::ENGINE, FieldValue::Engine(99));
@@ -4250,8 +4262,8 @@ fn a_remote_url_navigates_a_live_tab_unless_a_local_url_is_pending() {
 fn a_remote_url_parked_during_a_wake_navigates_the_tab_when_it_lands() {
     let path = temp_dir("url-parked-wake").join("session.mnf");
     let mut app = app_on(&path, 1);
-    let tab = add(&mut app, sleeping_tab("https://a/", ""));
-    let note = add(&mut app, Runtime::Note(NotePayload { text: "n".into(), editing: false }));
+    let tab = add(&mut app, Kind::Tab, sleeping_tab("https://a/", ""));
+    let note = add(&mut app, Kind::Note, Runtime::Note(NotePayload { text: "n".into(), editing: false }));
     assert!(app.save_session());
     app.focus_tab(&tab);
     assert_eq!(app.test_spawns.len(), 1, "waking");
@@ -4357,7 +4369,7 @@ fn deleting_a_jar_writes_none_for_saved_and_respawning_tabs() {
     let path = temp_dir("jar-delete-doc").join("session.mnf");
     let mut app = app_on(&path, 1);
     let work = app.create_jar("Work");
-    let asleep = add(&mut app, sleeping_tab("https://a/", ""));
+    let asleep = add(&mut app, Kind::Tab, sleeping_tab("https://a/", ""));
     let (live, _peer) = live_tab(&mut app, EngineKind::Servo, "https://l/");
     app.set_tab_jar(&asleep, Some(work));
     app.set_tab_jar(&live, Some(work));
@@ -4426,14 +4438,18 @@ fn every_creation_path_seeds_the_node_type() {
     let json =
         |leaf| Runtime::Json(JsonPayload { path: "d.json".into(), value: Default::default(), leaf, error: None });
     let placed = [
-        (add(&mut app, Runtime::Note(NotePayload { text: "n".into(), editing: false })), Kind::Note),
+        (add(&mut app, Kind::Note, Runtime::Note(NotePayload { text: "n".into(), editing: false })), Kind::Note),
         (add_group(&mut app, "G"), Kind::Group),
-        (add(&mut app, sleeping_tab("https://a.test/", "A")), Kind::Tab),
-        (add(&mut app, json(false)), Kind::Json),
-        (add(&mut app, json(true)), Kind::JsonLeaf),
-        (add(&mut app, Runtime::Pdf(PdfPayload { path: "d.pdf".into(), outcome: None })), Kind::Pdf),
+        (add(&mut app, Kind::Tab, sleeping_tab("https://a.test/", "A")), Kind::Tab),
+        (add(&mut app, Kind::Json, json(false)), Kind::Json),
+        (add(&mut app, Kind::JsonLeaf, json(true)), Kind::JsonLeaf),
+        (add(&mut app, Kind::Pdf, Runtime::Pdf(PdfPayload { path: "d.pdf".into(), outcome: None })), Kind::Pdf),
         (
-            add(&mut app, Runtime::Image(ImagePayload { path: "i.png".into(), width: 1, height: 1, error: None })),
+            add(
+                &mut app,
+                Kind::Image,
+                Runtime::Image(ImagePayload { path: "i.png".into(), width: 1, height: 1, error: None }),
+            ),
             Kind::Image,
         ),
     ];
@@ -4495,7 +4511,7 @@ fn importing_or_reopening_a_group_of_leaves_carries_key_and_value() {
     app.import_group_json(&doc);
     let find = |app: &App| {
         let leaf = app.nodes.iter().find(|(_, n)| n.as_json().is_some_and(|j| j.leaf)).map(|(id, _)| id.clone());
-        let group = app.nodes.iter().find(|(_, n)| n.as_group().is_some()).map(|(id, _)| id.clone());
+        let group = app.nodes.keys().find(|id| app.is_container(id)).cloned();
         (group.expect("a group"), leaf.expect("a leaf"))
     };
     let (g, l) = find(&app);
@@ -4541,9 +4557,9 @@ fn a_created_group_shows_the_default_jar_its_create_resolved() {
 fn a_created_note_shows_the_parent_its_create_resolved() {
     let path = temp_dir("parent-create").join("session.mnf");
     let mut app = app_on(&path, 1);
-    let opener = add(&mut app, sleeping_tab("https://x.test/", "Opener"));
+    let opener = add(&mut app, Kind::Tab, sleeping_tab("https://x.test/", "Opener"));
     assert!(app.save_session());
-    let note = add(&mut app, Runtime::Note(NotePayload { text: "n".into(), editing: false }));
+    let note = add(&mut app, Kind::Note, Runtime::Note(NotePayload { text: "n".into(), editing: false }));
     app.edit_parent(&note, Some(opener.clone()));
     let mut other = Journal::open(&path, ActorId(2)).unwrap();
     other.begin().unwrap().commit(vec![OpBody::Delete { node: opener.parse().unwrap() }]).unwrap();

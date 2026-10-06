@@ -1153,7 +1153,7 @@ impl App {
                 let non_empty = |s: &'_ str| (!s.is_empty()).then(|| s.to_owned());
                 let mirror_names: std::collections::BTreeMap<&str, Option<String>> = self
                     .linked_ids()
-                    .filter(|id| self.nodes.get(*id).is_some_and(|n| n.as_group().is_some()))
+                    .filter(|id| self.is_container(id))
                     .map(|id| (id, non_empty(self.mirror.name(id)))) // name rule: raw, compared with the document
                     .collect();
                 let mirror_texts: std::collections::BTreeMap<&str, Option<String>> = self
@@ -1207,11 +1207,7 @@ impl App {
             }
             DebugCommand::DismissPeek => self.dismiss_hover_peek(),
             DebugCommand::ExportGroup(path) => {
-                if let Some((group_id, _)) = self
-                    .node_menu
-                    .clone()
-                    .filter(|(id, _)| self.nodes.get(id).is_some_and(|node| node.as_group().is_some()))
-                {
+                if let Some((group_id, _)) = self.node_menu.clone().filter(|(id, _)| self.is_container(id)) {
                     if let Some(json) = self.export_group_json(&group_id) {
                         write_json_export(&json, std::path::Path::new(&path), "group");
                     }
@@ -1280,7 +1276,7 @@ impl App {
             DebugCommand::JsonRelayout => self.apply_json_edit(JsonEdit::Relayout),
             DebugCommand::JsonSearch(text) => self.set_json_search(text),
             DebugCommand::CloseGroup(id) => {
-                if self.nodes.get(&id).is_some_and(|n| n.as_group().is_some()) {
+                if self.is_container(&id) {
                     self.close_node(&id);
                 }
             }
@@ -1290,7 +1286,7 @@ impl App {
                 }
             }
             DebugCommand::RenameGroupTo { id, name } => {
-                if self.nodes.get(&id).is_some_and(|n| n.as_group().is_some()) {
+                if self.is_container(&id) {
                     self.commit_rename(&id, &name);
                     self.save_session();
                 } else {
@@ -1309,7 +1305,7 @@ impl App {
             }
             DebugCommand::IdleSweep(secs) => self.sweep_idle_tabs(Some(std::time::Duration::from_secs(secs))),
             DebugCommand::SleepNode(id) => {
-                if self.nodes.get(&id).is_some_and(|n| n.as_group().is_some()) {
+                if self.is_container(&id) {
                     self.sleep_group(&id);
                 } else {
                     self.request_sleep(&id, SleepWhy::Manual);
@@ -1573,11 +1569,11 @@ mod tests {
     #[test]
     fn name_text_and_pos_commands_write_the_document() {
         use crate::session_sync::tests::{add, add_group, app_on, remote_set, stored};
-        use crate::store::model::{field, ActorId, FieldValue};
+        use crate::store::model::{field, ActorId, FieldValue, Kind};
         let path = crate::store::testutil::temp_dir("debug-edits").join("session.mnf");
         let mut app = app_on(&path, 1);
         let g = add_group(&mut app, "G");
-        let note = add(&mut app, Runtime::Note(NotePayload { text: "v1".into(), editing: false }));
+        let note = add(&mut app, Kind::Note, Runtime::Note(NotePayload { text: "v1".into(), editing: false }));
         assert!(app.save_session());
 
         app.commit_rename(&g, " Errands\u{200B} ");

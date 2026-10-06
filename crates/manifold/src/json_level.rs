@@ -460,6 +460,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::store::model::Kind;
 
     // Real node ids: `snapshots()` skips any id that doesn't parse as
     // a `NodeId`, which would make the store test pass vacuously.
@@ -553,7 +554,7 @@ mod tests {
         let (mut app, _) = app_with_json("place_node", "[1]");
         let note = || Runtime::Note(NotePayload { text: String::new(), editing: false });
         let at = Placement { group: Some(OUTER.into()), pos: egui::vec2(1.0, 2.0) };
-        let id = app.place_node(None, note(), at);
+        let id = app.place_node(None, Kind::Note, note(), at);
         assert_eq!(
             (app.mirror.group(&id), app.layout_pos(&id), app.mirror.parent(&id).is_none()),
             (Some(OUTER), egui::vec2(1.0, 2.0), true)
@@ -561,7 +562,7 @@ mod tests {
         assert_eq!(app.mirror.pos(&id), Some(egui::vec2(1.0, 2.0)), "the document pos is the placement too");
         assert_eq!(app.node_order.last(), Some(&id));
         let at = Placement { group: None, pos: egui::Vec2::ZERO };
-        assert_eq!(app.place_node(Some("fixed".into()), note(), at), "fixed", "a given id is kept");
+        assert_eq!(app.place_node(Some("fixed".into()), Kind::Note, note(), at), "fixed", "a given id is kept");
     }
 
     #[test]
@@ -755,7 +756,7 @@ mod tests {
             leaf: false,
             error: None,
         };
-        app.insert_placeholder_node(J.into(), egui::Vec2::ZERO, Runtime::Json(payload));
+        app.insert_placeholder_node(J.into(), egui::Vec2::ZERO, Kind::Json, Runtime::Json(payload));
         let url = crate::store::model::FieldValue::Str("https://x.test/j".into());
         app.mirror.set(J, crate::store::model::field::URL, url);
         app.edit_group(J, Some(OUTER.into()));

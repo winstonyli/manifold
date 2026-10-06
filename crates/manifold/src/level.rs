@@ -169,6 +169,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::store::model::Kind;
 
     fn download(path: &str) -> Runtime {
         Runtime::Download(DownloadPayload {
@@ -184,8 +185,8 @@ mod tests {
     fn level_items_list_the_current_level_bottom_first_in_draw_order() {
         let mut app = App::default();
         app.place_group(Some("g".into()), "G", crate::fetched::Placement { group: None, pos: egui::Vec2::ZERO });
-        app.insert_placeholder_node("d".into(), egui::vec2(300.0, 0.0), download("a.bin"));
-        app.insert_placeholder_node("inner".into(), egui::vec2(0.0, 0.0), download("b.bin"));
+        app.insert_placeholder_node("d".into(), egui::vec2(300.0, 0.0), Kind::Download, download("a.bin"));
+        app.insert_placeholder_node("inner".into(), egui::vec2(0.0, 0.0), Kind::Download, download("b.bin"));
         app.edit_group("inner", Some("g".into()));
 
         let top: Vec<(String, LevelItemKind)> = app.level_items().into_iter().map(|i| (i.id, i.kind)).collect();
@@ -214,10 +215,10 @@ mod tests {
     fn level_scan_buckets_every_node_on_the_level_by_layer_in_node_order() {
         let mut app = App::default();
         app.place_group(Some("g".into()), "G", crate::fetched::Placement { group: None, pos: egui::Vec2::ZERO });
-        app.insert_placeholder_node("d1".into(), egui::Vec2::ZERO, download("a.bin"));
+        app.insert_placeholder_node("d1".into(), egui::Vec2::ZERO, Kind::Download, download("a.bin"));
         app.new_note_shortcut();
-        app.insert_placeholder_node("d2".into(), egui::Vec2::ZERO, download("b.bin"));
-        app.insert_placeholder_node("away".into(), egui::Vec2::ZERO, download("c.bin"));
+        app.insert_placeholder_node("d2".into(), egui::Vec2::ZERO, Kind::Download, download("b.bin"));
+        app.insert_placeholder_node("away".into(), egui::Vec2::ZERO, Kind::Download, download("c.bin"));
         app.edit_group("away", Some("g".into()));
         let scan = app.level_scan();
         let by_filter = |pick: &dyn Fn(CardKind) -> bool| -> Vec<String> {
@@ -247,9 +248,9 @@ mod tests {
     #[test]
     fn level_edges_join_parent_and_child_centers_on_this_level_only() {
         let mut app = App::default();
-        app.insert_placeholder_node("p".into(), egui::vec2(0.0, 0.0), download("p.bin"));
-        app.insert_placeholder_node("c".into(), egui::vec2(100.0, 50.0), download("c.bin"));
-        app.insert_placeholder_node("elsewhere".into(), egui::vec2(9.0, 9.0), download("e.bin"));
+        app.insert_placeholder_node("p".into(), egui::vec2(0.0, 0.0), Kind::Download, download("p.bin"));
+        app.insert_placeholder_node("c".into(), egui::vec2(100.0, 50.0), Kind::Download, download("c.bin"));
+        app.insert_placeholder_node("elsewhere".into(), egui::vec2(9.0, 9.0), Kind::Download, download("e.bin"));
         app.edit_parent("c", Some("p".into()));
         app.edit_parent("elsewhere", Some("p".into()));
         app.edit_group("elsewhere", Some("other".into()));

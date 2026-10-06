@@ -691,25 +691,21 @@ impl App {
                 .node_order
                 .iter()
                 .filter(|other| other.as_str() != id)
-                .filter_map(|other| {
-                    let sibling =
-                        self.nodes.get(other).filter(|_| self.mirror.group(other) == self.mirror.group(id))?;
-                    sibling.as_group()?;
-                    // name rule: drawn by display_name in the MoveTo rows
-                    Some((other.clone(), self.mirror.name(other).to_owned()))
-                })
+                .filter(|other| self.mirror.group(other) == self.mirror.group(id) && self.is_container(other))
+                // name rule: drawn by display_name in the MoveTo rows
+                .map(|other| (other.clone(), self.mirror.name(other).to_owned()))
                 .collect(),
             renaming: [&self.renaming_group, &self.naming_jar]
                 .into_iter()
                 .flatten()
                 .find(|(of, _)| of == id)
                 .map(|(_, draft)| draft.clone()),
-            jars: self.jar_menu(id, node),
+            jars: self.jar_menu(id),
         })
     }
 
     /// The tab and group menus' jar list (spec "UI"); `None` for every other kind.
-    pub(crate) fn jar_menu(&self, id: &str, node: &crate::node::GraphNode) -> Option<JarMenu> {
+    pub(crate) fn jar_menu(&self, id: &str) -> Option<JarMenu> {
         let named = |ticked: &dyn Fn(NodeId) -> bool, count: &dyn Fn(NodeId) -> Option<usize>| -> Vec<JarRow> {
             self.mirror
                 .jar_defs()
@@ -742,7 +738,9 @@ impl App {
                 has_default: false,
             });
         }
-        node.as_group()?;
+        if !self.is_container(id) {
+            return None;
+        }
         let default = self.mirror.default_jar(id);
         if self.mirror.jar_defs().is_empty() && default.is_none() {
             return None; // nothing to pick: jars are made from a tab's menu
@@ -761,7 +759,7 @@ impl App {
     pub(crate) fn commit_rename(&mut self, id: &str, name: &str) {
         self.renaming_group = None;
         let clean = crate::names::clean_name(name);
-        if !clean.is_empty() && self.nodes.get(id).is_some_and(|n| n.as_group().is_some()) {
+        if !clean.is_empty() && self.is_container(id) {
             self.edit_name(id, &clean);
         }
     }
@@ -1128,7 +1126,11 @@ mod tests {
     #[test]
     fn duplicate_from_an_unloaded_tabs_menu_spawns_a_copy() {
         let mut app = App::default();
-        let t = crate::session_sync::tests::add(&mut app, crate::session_sync::tests::sleeping_tab("https://a/", "A"));
+        let t = crate::session_sync::tests::add(
+            &mut app,
+            crate::store::model::Kind::Tab,
+            crate::session_sync::tests::sleeping_tab("https://a/", "A"),
+        );
         app.apply_node_action(&egui::Context::default(), &t, NodeAction::Duplicate);
         assert_eq!(app.test_spawns.len(), 1);
         let spawn = &app.test_spawns[0].0;
@@ -1140,7 +1142,11 @@ mod tests {
     fn new_jar_names_a_jar_and_picks_it_for_the_tab() {
         let mut app = App::default();
         let ctx = egui::Context::default();
-        let t = crate::session_sync::tests::add(&mut app, crate::session_sync::tests::sleeping_tab("https://a/", "A"));
+        let t = crate::session_sync::tests::add(
+            &mut app,
+            crate::store::model::Kind::Tab,
+            crate::session_sync::tests::sleeping_tab("https://a/", "A"),
+        );
         app.apply_node_action(&ctx, &t, NodeAction::StartNewJar);
         assert_eq!(app.naming_jar, Some((t.clone(), String::new())));
         assert_eq!(app.node_menu_view(&t).unwrap().renaming, Some(String::new()), "the menu shows the name field");
@@ -1160,7 +1166,11 @@ mod tests {
     fn the_tab_menu_lists_default_then_named_jars_with_a_tick() {
         let mut app = App::default();
         let work = app.create_jar("Work");
-        let t = crate::session_sync::tests::add(&mut app, crate::session_sync::tests::sleeping_tab("https://a/", "A"));
+        let t = crate::session_sync::tests::add(
+            &mut app,
+            crate::store::model::Kind::Tab,
+            crate::session_sync::tests::sleeping_tab("https://a/", "A"),
+        );
         app.set_tab_jar(&t, Some(work));
         let shown = |app: &App| {
             let rows = app.node_menu_view(&t).unwrap().jars.unwrap().rows;
@@ -1189,7 +1199,11 @@ mod tests {
             "{plain:?}"
         );
         assert_eq!(plain[2], "Home");
-        let t = crate::session_sync::tests::add(&mut app, crate::session_sync::tests::sleeping_tab("https://a/", "A"));
+        let t = crate::session_sync::tests::add(
+            &mut app,
+            crate::store::model::Kind::Tab,
+            crate::session_sync::tests::sleeping_tab("https://a/", "A"),
+        );
         let rows = app.node_menu_view(&t).unwrap().jars.unwrap().rows;
         assert_eq!(rows.iter().map(|r| r.name.clone()).collect::<Vec<_>>()[1..], want);
         let g = crate::session_sync::tests::add_group(&mut app, "G");
@@ -1292,7 +1306,11 @@ mod tests {
         let (w1, _) = (app.create_jar("Work"), app.create_jar("Work"));
         app.create_jar("Default");
         app.create_jar("Work · #3f2a");
-        let t = crate::session_sync::tests::add(&mut app, crate::session_sync::tests::sleeping_tab("https://a/", "A"));
+        let t = crate::session_sync::tests::add(
+            &mut app,
+            crate::store::model::Kind::Tab,
+            crate::session_sync::tests::sleeping_tab("https://a/", "A"),
+        );
         app.node_menu = Some((t, egui::pos2(100.0, 100.0)));
         let mut galleys = Vec::new();
         for _ in 0..3 {
@@ -1376,8 +1394,11 @@ mod tests {
         ] {
             let ctx = menu_ctx();
             let mut app = App::default();
-            let t =
-                crate::session_sync::tests::add(&mut app, crate::session_sync::tests::sleeping_tab("https://a/", "A"));
+            let t = crate::session_sync::tests::add(
+                &mut app,
+                crate::store::model::Kind::Tab,
+                crate::session_sync::tests::sleeping_tab("https://a/", "A"),
+            );
             app.node_menu = Some((t.clone(), egui::pos2(100.0, 100.0)));
             let frame = |app: &mut App, events| menu_frame(&ctx, app, events);
             app.apply_node_action(&ctx, &t, NodeAction::StartNewJar);
@@ -1429,8 +1450,16 @@ mod tests {
     fn a_jar_name_draft_does_not_outlive_its_menu() {
         let mut app = App::default();
         let ctx = egui::Context::default();
-        let t = crate::session_sync::tests::add(&mut app, crate::session_sync::tests::sleeping_tab("https://a/", "A"));
-        let u = crate::session_sync::tests::add(&mut app, crate::session_sync::tests::sleeping_tab("https://b/", "B"));
+        let t = crate::session_sync::tests::add(
+            &mut app,
+            crate::store::model::Kind::Tab,
+            crate::session_sync::tests::sleeping_tab("https://a/", "A"),
+        );
+        let u = crate::session_sync::tests::add(
+            &mut app,
+            crate::store::model::Kind::Tab,
+            crate::session_sync::tests::sleeping_tab("https://b/", "B"),
+        );
         app.node_menu = Some((t.clone(), egui::Pos2::ZERO));
         app.apply_node_action(&ctx, &t, NodeAction::StartNewJar);
         app.drop_stray_jar_name();
@@ -1454,7 +1483,11 @@ mod tests {
         let work = app.create_jar("Work");
         let g = app.alloc_node_id();
         app.insert_group_at(g.clone(), None);
-        let t = crate::session_sync::tests::add(&mut app, crate::session_sync::tests::sleeping_tab("https://a/", "A"));
+        let t = crate::session_sync::tests::add(
+            &mut app,
+            crate::store::model::Kind::Tab,
+            crate::session_sync::tests::sleeping_tab("https://a/", "A"),
+        );
         app.edit_group(&t, Some(g.clone()));
         let menu = app.node_menu_view(&g).unwrap().jars.unwrap();
         assert_eq!(
@@ -1502,7 +1535,11 @@ mod tests {
     fn new_jar_takes_the_clean_name() {
         let ctx = egui::Context::default();
         let mut app = App::default();
-        let t = crate::session_sync::tests::add(&mut app, crate::session_sync::tests::sleeping_tab("https://a/", "A"));
+        let t = crate::session_sync::tests::add(
+            &mut app,
+            crate::store::model::Kind::Tab,
+            crate::session_sync::tests::sleeping_tab("https://a/", "A"),
+        );
         app.apply_node_action(&ctx, &t, NodeAction::NewJar("\u{200B} ".into()));
         assert!(app.mirror.jar_defs().is_empty());
         app.apply_node_action(&ctx, &t, NodeAction::NewJar(" Wo\u{200B}rk ".into()));

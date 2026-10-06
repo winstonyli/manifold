@@ -10,8 +10,7 @@ use ipc_protocol::HostToEngine;
 
 use crate::local_state::{LiveUrl, LocalNode, LocalState};
 use crate::node::{
-    DownloadPayload, GroupPayload, ImagePayload, JsonPayload, NotePayload, PdfPayload, Runtime, UnloadedState,
-    UnloadedTabPayload,
+    DownloadPayload, ImagePayload, JsonPayload, NotePayload, PdfPayload, Runtime, UnloadedState, UnloadedTabPayload,
 };
 use crate::process_manager::EngineKind;
 use crate::store::journal::{JournalError, Recovery};
@@ -323,15 +322,19 @@ impl App {
     /// tab's spawn started with (`spawning`, for one not shown yet). A tab's url is the shared one, not the live one
     /// its payload holds (2b-3 Ruling 1); its engine is the one a swap in progress already shows as its target
     /// (`start_swap_to`); a file card's path is the stored one, not the one its payload resolved here (2b-5 Ruling
-    /// 5). `None` for an in-progress download (it can't resume, so it isn't created until it completes) and for an
-    /// id that is none of these.
+    /// 5). Its kind is its type (`Mirror::ty`, the one source of a node's type). `None` for an in-progress download
+    /// (it can't resume, so it isn't created until it completes), for a node of a type this build doesn't know (never
+    /// placed today: every way in seeds a known type), and for an id that is none of these.
     pub(crate) fn snapshot(&self, id: NodeId) -> Option<Snapshot> {
         let key = id.to_string();
         if let Some(node) = self.nodes.get(&key) {
             if node.as_download().is_some_and(|dl| !dl.completed) {
                 return None;
             }
-            let kind = node.runtime.store_kind();
+            let kind = Kind::from_type(self.mirror.ty(&key));
+            if kind == Kind::Unknown {
+                return None;
+            }
             let fields = kind
                 .fields()
                 .iter()
@@ -488,9 +491,10 @@ impl App {
                     n.text = str_of(fields, field::TEXT);
                 }
             }
-            // A group's fields, a content node's url and a Json node's view are the mirror's alone (`mirror_remote`;
-            // the level shown is relaid out below). Paths, keys and values never change after creation.
-            Runtime::Group(_) | Runtime::Download(_) | Runtime::Image(_) | Runtime::Pdf(_) | Runtime::Json(_) => {}
+            // A group's fields (it has no runtime), a content node's url and a Json node's view are the mirror's alone
+            // (`mirror_remote`; the level shown is relaid out below). Paths, keys and values never change after
+            // creation.
+            Runtime::None | Runtime::Download(_) | Runtime::Image(_) | Runtime::Pdf(_) | Runtime::Json(_) => {}
         }
         // Another replica changed the view of the level being shown:
         // relaid out on the next sync.
@@ -565,15 +569,15 @@ impl App {
                 let zoom_factor = self.settings.zoom_factor;
                 let (title, muted, state) = (String::new(), false, UnloadedState::Sleeping);
                 let payload = UnloadedTabPayload { url, title, muted, zoom_factor, state };
-                self.insert_placeholder_node(id.clone(), pos, Runtime::Unloaded(payload));
+                self.insert_placeholder_node(id.clone(), pos, kind, Runtime::Unloaded(payload));
             }
             Kind::Group => {
-                // Its name, `from_json` and default jar are already the mirror's (`mirror_remote`).
-                self.insert_placeholder_node(id.clone(), pos, Runtime::Group(GroupPayload::default()));
+                // Its name, `from_json` and default jar are already the mirror's (`mirror_remote`); it has no runtime.
+                self.insert_placeholder_node(id.clone(), pos, kind, Runtime::None);
             }
             Kind::Note => {
                 let payload = NotePayload { text: str_of(fields, field::TEXT), editing: false };
-                self.insert_placeholder_node(id.clone(), pos, Runtime::Note(payload));
+                self.insert_placeholder_node(id.clone(), pos, kind, Runtime::Note(payload));
             }
             Kind::Image => {
                 let path = content_path.clone().unwrap_or_default();
@@ -584,14 +588,14 @@ impl App {
                 };
                 if missing_with_url || error.is_some() {
                     let payload = ImagePayload { path, width: 0, height: 0, error };
-                    self.insert_placeholder_node(id.clone(), pos, Runtime::Image(payload));
+                    self.insert_placeholder_node(id.clone(), pos, kind, Runtime::Image(payload));
                 }
             }
             Kind::Pdf => {
                 let path = content_path.clone().unwrap_or_default();
                 if missing_with_url {
                     let payload = PdfPayload { path, outcome: None };
-                    self.insert_placeholder_node(id.clone(), pos, Runtime::Pdf(payload));
+                    self.insert_placeholder_node(id.clone(), pos, kind, Runtime::Pdf(payload));
                 } else {
                     self.insert_pdf_node_with_id(id.clone(), path, pos, None);
                 }
@@ -605,7 +609,7 @@ impl App {
                 };
                 if missing_with_url || error.is_some() {
                     let payload = JsonPayload { path, value: Default::default(), leaf: false, error };
-                    self.insert_placeholder_node(id.clone(), pos, Runtime::Json(payload));
+                    self.insert_placeholder_node(id.clone(), pos, kind, Runtime::Json(payload));
                 }
             }
             Kind::JsonLeaf => {
@@ -614,7 +618,7 @@ impl App {
                 // Its key and stored value are already the mirror's (`mirror_remote`); the payload holds the parsed one.
                 let payload =
                     JsonPayload { path: str_of(fields, field::PATH), value: value.into(), leaf: true, error: None };
-                self.insert_placeholder_node(id.clone(), pos, Runtime::Json(payload));
+                self.insert_placeholder_node(id.clone(), pos, kind, Runtime::Json(payload));
             }
             Kind::Download => {
                 let path = str_of(fields, field::PATH);
@@ -626,7 +630,7 @@ impl App {
                     completed: true,
                     failed: false,
                 };
-                self.insert_placeholder_node(id.clone(), pos, Runtime::Download(payload));
+                self.insert_placeholder_node(id.clone(), pos, kind, Runtime::Download(payload));
             }
             Kind::Jar | Kind::Unknown => return,
         }
@@ -697,7 +701,7 @@ impl App {
         }
         let Some(node) = self.nodes.get(id) else { return };
         let up = self.mirror.group(id).map(str::to_owned);
-        let is_group = node.as_group().is_some();
+        let is_group = self.is_container(id);
         let is_tab = node.runtime.saved_tab().is_some();
         let parent = self.mirror.parent(id).map(str::to_owned);
         let children: Vec<String> = self.children_of(id).map(str::to_owned).collect();
@@ -859,8 +863,9 @@ impl App {
     /// which the caller draws through a name rule or matches as stored. "" for other kinds.
     pub(crate) fn own_text(&self, id: &str) -> &str {
         match self.nodes.get(id).map(|n| &n.runtime) {
+            // A group is the one kind with no runtime.
             // name rule: raw, for `accessible_name` (display_name) and the filter (matches the stored text)
-            Some(Runtime::Group(_)) => self.mirror.name(id),
+            Some(Runtime::None) => self.mirror.name(id),
             _ => self.note_text(id),
         }
     }

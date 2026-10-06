@@ -1822,8 +1822,8 @@ mod tests {
     fn quick_switcher_label_uses_title_or_url_for_a_sleeping_tab() {
         use crate::session_sync::tests::{add, app_on, sleeping_tab};
         let mut app = app_on(&crate::store::testutil::temp_dir("qs-label").join("session.mnf"), 1);
-        let titled = add(&mut app, sleeping_tab("https://a/", "Alpha"));
-        let untitled = add(&mut app, sleeping_tab("https://b/", ""));
+        let titled = add(&mut app, Kind::Tab, sleeping_tab("https://a/", "Alpha"));
+        let untitled = add(&mut app, Kind::Tab, sleeping_tab("https://b/", ""));
         assert_eq!(app.quick_switcher_row_label(&titled).as_deref(), Some("Alpha"));
         assert_eq!(app.quick_switcher_row_label(&untitled).as_deref(), Some("https://b/"));
     }
@@ -1833,8 +1833,9 @@ mod tests {
     fn a_narrowed_query_confirms_its_first_match() {
         use crate::session_sync::tests::{add, app_on, sleeping_tab};
         let mut app = app_on(&crate::store::testutil::temp_dir("qs-narrowed").join("session.mnf"), 1);
-        let ids: Vec<String> =
-            (0..6).map(|i| add(&mut app, sleeping_tab(&format!("https://{i}/"), &format!("Tab {i}")))).collect();
+        let ids: Vec<String> = (0..6)
+            .map(|i| add(&mut app, Kind::Tab, sleeping_tab(&format!("https://{i}/"), &format!("Tab {i}"))))
+            .collect();
         app.open_quick_switcher();
         for _ in 0..5 {
             app.quick_switcher_move(1);

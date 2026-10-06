@@ -1,6 +1,7 @@
 //! Fetched and file-backed nodes: content keep/prune, refresh, inserting content nodes, file drops.
 
 use super::*;
+use crate::store::model::Kind;
 
 /// Prunes `dir` of files neither `keep` nor any named session in
 /// `sessions` names. `None`, deleting nothing, when a session can't be
@@ -59,26 +60,26 @@ impl App {
         Placement { group: self.current_group.clone(), pos }
     }
 
-    /// Inserts a node (colourless: colour is the mirror's, by id) showing `payload` at `at` under `id`
+    /// Inserts a node of type `kind` (colourless: colour is the mirror's, by id) showing `runtime` at `at` under `id`
     /// (allocated when `None`) and appends it to `node_order`. Its card is drawn at `at.pos` (`App::layout`).
-    /// `at.group`, `at.pos`, a note's text, its type (`Mirror::ty`) and a file card's path seed the mirror only for an
-    /// id with no entry yet (`Mirror::seed`): a new node's document pos is its placement, which its `Create` carries
-    /// (2b-4 Ruling 3), while a node shown again (a placeholder for a stored node, a reload) keeps its group, document
-    /// pos, text and stored path (2b-5 Ruling 5). A content node's web source is seeded by its caller
-    /// (`insert_content`, `insert_download_node`).
+    /// `at.group`, `at.pos`, a note's text, its type (`Mirror::ty`, from `kind`) and a file card's path seed the
+    /// mirror only for an id with no entry yet (`Mirror::seed`; the type also lands on an entry that lacks one): a
+    /// new node's document pos is its placement, which its `Create` carries (2b-4 Ruling 3), while a node shown again
+    /// (a placeholder for a stored node, a reload) keeps its group, document pos, text and stored path (2b-5 Ruling
+    /// 5). A content node's web source is seeded by its caller (`insert_content`, `insert_download_node`).
     /// Doesn't save: the caller does, as `apply_graph_action` does once per action.
-    pub(crate) fn place_node(&mut self, id: Option<String>, payload: Runtime, at: Placement) -> String {
+    pub(crate) fn place_node(&mut self, id: Option<String>, kind: Kind, runtime: Runtime, at: Placement) -> String {
         let id = id.unwrap_or_else(|| self.alloc_node_id());
         // A tab's shared url starts as the one it is shown at (2b-3 Ruling 10). A stored tab's entry already holds
         // the document's (`materialize` runs `mirror_remote` first), so a live url it reopens at isn't taken for it.
         // A live tab's engine is the one it runs; an unloaded card has none of its own (`Mirror::engine`).
-        let url = payload.saved_tab().map(str::to_owned).unwrap_or_default();
-        let engine = payload.as_tab().map_or(0, |t| crate::session_sync::engine_code(t.tab.kind));
+        let url = runtime.saved_tab().map(str::to_owned).unwrap_or_default();
+        let engine = runtime.as_tab().map_or(0, |t| crate::session_sync::engine_code(t.tab.kind));
         // A new note's text starts as what it was made with (its payload, the edit buffer, 2b-4 Ruling 6).
-        let text = payload.as_note().map(|n| n.text.clone()).unwrap_or_default();
-        let ty = payload.store_kind().type_str().unwrap_or_default().to_owned();
-        let path = payload.file_path().unwrap_or_default().to_owned();
-        self.nodes.insert(id.clone(), GraphNode { runtime: payload });
+        let text = runtime.as_note().map(|n| n.text.clone()).unwrap_or_default();
+        let ty = kind.type_str().unwrap_or_default().to_owned();
+        let path = runtime.file_path().unwrap_or_default().to_owned();
+        self.nodes.insert(id.clone(), GraphNode { runtime });
         // The one way a node enters `nodes`: the next save creates it if the document lacks it (Ruling 3).
         self.queue_create(&id);
         self.snap_layout(&id, at.pos);
@@ -89,13 +90,13 @@ impl App {
         id
     }
 
-    /// `place_node` for a group named `name`. Like a note's text, the name seeds the mirror (`Mirror::name`) only for
-    /// an id with no entry yet: a new group's `Create` carries it, and a stored group shown again keeps the
-    /// document's (`materialize` runs `mirror_remote` first). Doesn't save.
+    /// `place_node` for a group named `name` (a group has no runtime). Like a note's text, the name seeds the mirror
+    /// (`Mirror::name`) only for an id with no entry yet: a new group's `Create` carries it, and a stored group shown
+    /// again keeps the document's (`materialize` runs `mirror_remote` first). Doesn't save.
     pub(crate) fn place_group(&mut self, id: Option<String>, name: &str, at: Placement) -> String {
         let id = id.unwrap_or_else(|| self.alloc_node_id());
         let fresh = !self.mirror.has(&id);
-        self.place_node(Some(id.clone()), Runtime::Group(crate::node::GroupPayload::default()), at);
+        self.place_node(Some(id.clone()), Kind::Group, Runtime::None, at);
         if fresh && !name.is_empty() {
             self.mirror.set(&id, crate::store::model::field::NAME, FieldValue::Str(name.to_owned()));
         }
@@ -130,7 +131,7 @@ impl App {
             completed: false,
             failed: false,
         });
-        self.place_node(Some(id.clone()), payload, Placement { group: node_group, pos });
+        self.place_node(Some(id.clone()), Kind::Download, payload, Placement { group: node_group, pos });
         self.seed_source_url(&id, url);
         self.edit_parent(&id, Some(tab_id)); // the edge from the tab it came from
     }
@@ -152,12 +153,12 @@ impl App {
         newest_first.find(from_tab).or(first).cloned()
     }
 
-    /// Inserts a node showing `payload` at `pos`, top level, no colour of its own (colour is the mirror's, by id):
-    /// `materialize`'s way in for kinds with no insert helper of their own,
+    /// Inserts a node of type `kind` showing `runtime` at `pos`, top level, no colour of its own (colour is the
+    /// mirror's, by id): `materialize`'s way in for kinds with no insert helper of their own,
     /// and for an image/JSON card whose file couldn't be loaded (see
     /// `ImagePayload::error`).
-    pub(crate) fn insert_placeholder_node(&mut self, id: String, pos: egui::Vec2, payload: Runtime) {
-        self.place_node(Some(id), payload, Placement { group: None, pos });
+    pub(crate) fn insert_placeholder_node(&mut self, id: String, pos: egui::Vec2, kind: Kind, runtime: Runtime) {
+        self.place_node(Some(id), kind, runtime, Placement { group: None, pos });
     }
 
     /// Content-dir names this session still uses, for `content::kept`:
@@ -321,20 +322,26 @@ impl App {
         let source = ContentSource::Web { url: url.clone(), body };
         let result = self.insert_content(source, id.to_string(), pos, group.clone());
         if let Err(error) = &result {
-            let payload = match kind {
-                K::Image => Runtime::Image(ImagePayload { path, width: 0, height: 0, error: Some(error.clone()) }),
-                K::Pdf => Runtime::Pdf(PdfPayload { path, outcome: Some(Err(error.clone())) }),
-                K::Json => Runtime::Json(JsonPayload {
-                    path,
-                    value: Default::default(),
-                    leaf: false,
-                    error: Some(error.clone()),
-                }),
+            let (ty, payload) = match kind {
+                K::Image => (
+                    Kind::Image,
+                    Runtime::Image(ImagePayload { path, width: 0, height: 0, error: Some(error.clone()) }),
+                ),
+                K::Pdf => (Kind::Pdf, Runtime::Pdf(PdfPayload { path, outcome: Some(Err(error.clone())) })),
+                K::Json => (
+                    Kind::Json,
+                    Runtime::Json(JsonPayload {
+                        path,
+                        value: Default::default(),
+                        leaf: false,
+                        error: Some(error.clone()),
+                    }),
+                ),
                 // Guarded above: `kind` is one of the three arms this
                 // matches.
                 _ => unreachable!("reload_fetched_node only reaches here for Image/Pdf/Json"),
             };
-            self.insert_placeholder_node(id.to_string(), pos, payload);
+            self.insert_placeholder_node(id.to_string(), pos, ty, payload);
         }
         self.edit_parent(id, parent);
         self.edit_group(id, group);
@@ -451,7 +458,7 @@ impl App {
                             completed: true,
                             failed: false,
                         };
-                        self.insert_placeholder_node(id.clone(), pos, Runtime::Download(payload));
+                        self.insert_placeholder_node(id.clone(), pos, Kind::Download, Runtime::Download(payload));
                         if self.nodes.contains_key(&id) {
                             self.edit_group(&id, group);
                         }
@@ -489,7 +496,7 @@ impl App {
         group: Option<String>,
     ) {
         let payload = NotePayload { text, editing: false };
-        self.place_node(Some(id.clone()), Runtime::Note(payload), Placement { group, pos });
+        self.place_node(Some(id.clone()), Kind::Note, Runtime::Note(payload), Placement { group, pos });
         self.seed_source_url(&id, url);
     }
 
@@ -533,6 +540,7 @@ impl App {
         }
         self.place_node(
             Some(id),
+            Kind::Image,
             Runtime::Image(ImagePayload { path, width, height, error: None }),
             Placement { group, pos },
         );
@@ -573,7 +581,8 @@ impl App {
     /// never having existed the way a bad image file does.
     pub(crate) fn insert_pdf_node_with_id(&mut self, id: String, path: String, pos: egui::Vec2, group: Option<String>) {
         self.pdf_renderer.request(id.clone(), path.clone());
-        self.place_node(Some(id), Runtime::Pdf(PdfPayload { path, outcome: None }), Placement { group, pos });
+        let pdf = Runtime::Pdf(PdfPayload { path, outcome: None });
+        self.place_node(Some(id), Kind::Pdf, pdf, Placement { group, pos });
     }
 
     /// The insert every `json` card goes through: the caller picks the id,
@@ -601,7 +610,7 @@ impl App {
             }
         };
         let payload = Runtime::Json(JsonPayload { path, value: value.into(), leaf: false, error: None });
-        self.place_node(Some(id), payload, Placement { group, pos });
+        self.place_node(Some(id), Kind::Json, payload, Placement { group, pos });
         Ok(())
     }
 
@@ -719,7 +728,7 @@ mod tests {
         app.mirror.set("n", field::URL, FieldValue::Str("https://a/".into()));
         assert_eq!(app.mirror.ty("n"), "");
         let note = Runtime::Note(NotePayload { text: "t".into(), editing: false });
-        app.insert_placeholder_node("n".into(), egui::Vec2::ZERO, note);
+        app.insert_placeholder_node("n".into(), egui::Vec2::ZERO, Kind::Note, note);
         assert_eq!(app.mirror.ty("n"), crate::store::model::TYPE_NOTE);
         assert_eq!(app.card_kind("n").unwrap().ty, crate::store::model::TYPE_NOTE);
         assert_eq!(app.mirror.url("n"), "https://a/", "the entry's other fields are kept");
@@ -769,7 +778,7 @@ mod tests {
         // (`showing_tab_view()`, see `several_drops_in_a_frame_fan_out`'s
         // own comment).
         use crate::session_sync::tests::{add, sleeping_tab};
-        let focused = add(&mut app, sleeping_tab("https://x.test/", "Focused"));
+        let focused = add(&mut app, Kind::Tab, sleeping_tab("https://x.test/", "Focused"));
         app.snap_layout(&focused, egui::vec2(100.0, 50.0));
         app.edit_group(&focused, Some("g".into()));
         app.focused = Some(focused.clone());
@@ -828,7 +837,7 @@ mod tests {
     fn a_new_download_has_its_url_and_type_in_the_mirror() {
         use crate::session_sync::tests::{add, sleeping_tab};
         let mut app = App::default();
-        let tab = add(&mut app, sleeping_tab("https://x.test/", "T"));
+        let tab = add(&mut app, Kind::Tab, sleeping_tab("https://x.test/", "T"));
         app.insert_download_node(tab, "f.bin".into(), Some(3), Some("https://x.test/f.bin".into()));
         let id = app.nodes.iter().find(|(_, n)| n.as_download().is_some()).map(|(id, _)| id.clone()).unwrap();
         assert_eq!(app.mirror.url(&id), "https://x.test/f.bin");
@@ -916,6 +925,7 @@ mod tests {
         app.insert_placeholder_node(
             "1".into(),
             egui::Vec2::ZERO,
+            Kind::Image,
             Runtime::Image(ImagePayload {
                 path: dir.join("a.png").to_string_lossy().into_owned(),
                 width: 0,
@@ -926,6 +936,7 @@ mod tests {
         app.insert_placeholder_node(
             "1-7".into(),
             egui::Vec2::ZERO,
+            Kind::Json,
             Runtime::Json(JsonPayload {
                 path: r"Z:\x.json".into(),
                 value: Default::default(),
@@ -972,9 +983,9 @@ mod tests {
         };
         // A live node by path, one by id (its stored path elsewhere), and a
         // closed one by path.
-        add(&mut app, image(&content_dir.join("by-path.png")));
-        let by_id = add(&mut app, image(std::path::Path::new(r"Z:\elsewhere.png")));
-        let closed = add(&mut app, image(&content_dir.join("closed.png")));
+        add(&mut app, Kind::Image, image(&content_dir.join("by-path.png")));
+        let by_id = add(&mut app, Kind::Image, image(std::path::Path::new(r"Z:\elsewhere.png")));
+        let closed = add(&mut app, Kind::Image, image(&content_dir.join("closed.png")));
         assert!(app.save_session());
         app.close_node(&closed);
         assert!(app.save_session());
@@ -1011,7 +1022,7 @@ mod tests {
         std::fs::create_dir_all(&sessions).unwrap();
         let saved = sessions.join("saved.mnf");
         let mut app = app_on(&root.join("session.mnf"), 1);
-        add(&mut app, Runtime::Note(NotePayload { text: "x".into(), editing: false }));
+        add(&mut app, Kind::Note, Runtime::Note(NotePayload { text: "x".into(), editing: false }));
         assert!(app.save_session());
         app.journal.as_ref().unwrap().save_copy(&saved, None).unwrap();
         assert_eq!(prune(), Some(1));
@@ -1036,7 +1047,7 @@ mod tests {
         use crate::session_sync::tests::{add, app_on};
         let path = crate::store::testutil::temp_dir("prune_recovered").join("session.mnf");
         let mut app = app_on(&path, 1);
-        add(&mut app, Runtime::Note(NotePayload { text: "x".into(), editing: false }));
+        add(&mut app, Kind::Note, Runtime::Note(NotePayload { text: "x".into(), editing: false }));
         assert!(app.save_session());
         assert!(app.may_prune_content());
         drop(app);
@@ -1071,7 +1082,7 @@ mod tests {
         for id in ["r", "s"] {
             let path = old.to_string_lossy().into_owned();
             let payload = Runtime::Image(ImagePayload { path, width: 1, height: 1, error: None });
-            app.insert_placeholder_node(id.into(), egui::Vec2::ZERO, payload);
+            app.insert_placeholder_node(id.into(), egui::Vec2::ZERO, Kind::Image, payload);
         }
         assert!(!replaced_file_unused(&dir, "r", &old, &new, &app.content_keep(Some("r"))));
         app.nodes.remove("s");
@@ -1205,10 +1216,10 @@ mod tests {
     fn closing_a_content_node_moves_what_it_opened_up() {
         use crate::session_sync::tests::{add, sleeping_tab};
         let mut app = App::default();
-        let opener = add(&mut app, sleeping_tab("https://x.test/", "Opener"));
-        let note = add(&mut app, Runtime::Note(NotePayload { text: "n".into(), editing: false }));
+        let opener = add(&mut app, Kind::Tab, sleeping_tab("https://x.test/", "Opener"));
+        let note = add(&mut app, Kind::Note, Runtime::Note(NotePayload { text: "n".into(), editing: false }));
         app.edit_parent(&note, Some(opener.clone()));
-        let tab = add(&mut app, sleeping_tab("https://x.test/from-note", "T"));
+        let tab = add(&mut app, Kind::Tab, sleeping_tab("https://x.test/from-note", "T"));
         app.edit_parent(&tab, Some(note.clone()));
         app.close_node(&note);
         assert_eq!(app.mirror.parent(&tab), Some(opener.as_str()));
@@ -1238,7 +1249,7 @@ mod tests {
     fn removing_a_tab_clears_its_skip_convert_flag() {
         use crate::session_sync::tests::{add, sleeping_tab};
         let mut app = App::default();
-        let tab = add(&mut app, sleeping_tab("https://x.test/a.json", "A"));
+        let tab = add(&mut app, Kind::Tab, sleeping_tab("https://x.test/a.json", "A"));
         app.skip_convert.insert(tab.clone(), true);
         app.remove_tab(&tab);
         assert!(!app.skip_convert.contains_key(&tab));
@@ -1251,12 +1262,12 @@ mod tests {
 
         let dir = crate::store::testutil::temp_dir("redirect_convert");
         let mut app = App::default();
-        let opener = add(&mut app, sleeping_tab("https://x.test/", "Opener"));
-        let tab = add(&mut app, sleeping_tab("https://x.test/a.json", "A"));
+        let opener = add(&mut app, Kind::Tab, sleeping_tab("https://x.test/", "Opener"));
+        let tab = add(&mut app, Kind::Tab, sleeping_tab("https://x.test/a.json", "A"));
         app.snap_layout(&tab, egui::vec2(5.0, 6.0));
         app.edit_group(&tab, Some("g".into()));
         app.edit_parent(&tab, Some(opener.clone()));
-        let child = add(&mut app, sleeping_tab("https://x.test/child", "Child"));
+        let child = add(&mut app, Kind::Tab, sleeping_tab("https://x.test/child", "Child"));
         app.edit_parent(&child, Some(tab.clone()));
 
         let body = crate::redirect_fetch::save(&dir, "n", crate::content::ContentKind::Json, b"[1]".to_vec()).unwrap();
@@ -1278,7 +1289,7 @@ mod tests {
 
         let dir = crate::store::testutil::temp_dir("redirect_convert_stale");
         let mut app = App::default();
-        let tab = add(&mut app, sleeping_tab("https://x.test/a.json", "A"));
+        let tab = add(&mut app, Kind::Tab, sleeping_tab("https://x.test/a.json", "A"));
         app.view_mode = ViewMode::Item;
         app.focused = Some(tab.clone());
         app.split_tab = Some(tab.clone());
@@ -1302,8 +1313,8 @@ mod tests {
         use crate::session_sync::tests::{add, sleeping_tab};
         let dir = crate::store::testutil::temp_dir("redirect_convert_fail");
         let mut app = App::default();
-        let tab = add(&mut app, sleeping_tab("https://x.test/a.png", "A"));
-        let child = add(&mut app, sleeping_tab("https://x.test/child", "Child"));
+        let tab = add(&mut app, Kind::Tab, sleeping_tab("https://x.test/a.png", "A"));
+        let child = add(&mut app, Kind::Tab, sleeping_tab("https://x.test/child", "Child"));
         app.edit_parent(&child, Some(tab.clone()));
         app.focused = Some(tab.clone());
         let path = dir.join("n.png");

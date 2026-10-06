@@ -234,7 +234,7 @@ impl App {
         if self.renaming_group.is_some() || self.current_json_node().is_some() {
             return;
         }
-        if self.nodes.get(&group_id).and_then(|n| n.as_group()).is_none() {
+        if !self.is_container(&group_id) {
             return;
         }
         // name rule: the field edits the stored name
@@ -246,7 +246,7 @@ impl App {
     /// `Ctrl+Shift+G` / toolbar "+ New Group" / headless `NEWGROUP` —
     /// creates an empty group at whichever level is currently being
     /// viewed, nested under `current_group` if that's not the top level
-    /// (see `GroupPayload`'s own doc comment on nesting). From a JSON
+    /// (see `App::current_group`'s own doc comment on nesting). From a JSON
     /// level, leaves it first (`placement`).
     pub(crate) fn new_group_shortcut(&mut self) {
         let id = self.alloc_node_id();

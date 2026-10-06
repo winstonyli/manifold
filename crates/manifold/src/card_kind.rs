@@ -66,6 +66,11 @@ impl App {
         let tags = if node.runtime.as_tab().is_some() { TagSet::of(&[Tag::Loaded]) } else { TagSet::EMPTY };
         Some(CardKind { ty, tags })
     }
+
+    /// Whether node `id` is a container (a group): `is_container` of its type. `false` when `id` has no node.
+    pub(crate) fn is_container(&self, id: &str) -> bool {
+        self.card_kind(id).is_some_and(|kind| is_container(kind.ty))
+    }
 }
 
 /// The card kinds the tests' tables run over.
@@ -111,8 +116,7 @@ mod tests {
     use super::*;
     use crate::caps::DRAW_LAYERS;
     use crate::node::{
-        DownloadPayload, GroupPayload, ImagePayload, JsonPayload, NotePayload, PdfPayload, UnloadedState,
-        UnloadedTabPayload,
+        DownloadPayload, ImagePayload, JsonPayload, NotePayload, PdfPayload, UnloadedState, UnloadedTabPayload,
     };
     use crate::process_manager::{EngineKind, EngineTab};
 
@@ -178,7 +182,7 @@ mod tests {
             (Kind::Pdf, Runtime::Pdf(PdfPayload { path: "d.pdf".into(), outcome: None }), plain(TYPE_PDF)),
             (Kind::Json, json(false), plain(TYPE_JSON)),
             (Kind::JsonLeaf, json(true), plain(TYPE_JSON_LEAF)),
-            (Kind::Group, Runtime::Group(GroupPayload::default()), plain(TYPE_GROUP)),
+            (Kind::Group, Runtime::None, plain(TYPE_GROUP)),
         ]
     }
 
@@ -199,12 +203,13 @@ mod tests {
     #[test]
     fn an_unknown_stored_type_falls_back_to_the_catch_all_row() {
         let mut app = App::default();
-        app.test_node("u", Kind::Unknown, Runtime::Group(GroupPayload::default()));
+        app.test_node("u", Kind::Unknown, Runtime::None);
         let kind = app.card_kind("u").unwrap();
         assert_eq!(kind.ty, UNKNOWN_TYPE);
         assert!(!kind.caps().restorable);
         assert_eq!(kind.caps().draw_layer, 0);
         assert!(!is_container(kind.ty));
+        assert!(!app.is_container("u") && !app.is_container("missing"));
     }
 
     /// The layers in the order Graph view always drew the kinds: a later one draws on top.
@@ -234,6 +239,11 @@ mod tests {
         for kind in kinds() {
             assert_eq!(is_container(kind.ty), kind.ty == TYPE_GROUP, "{kind:?}");
         }
+        // The node form reads the mirror's type, not the runtime: a group has none.
+        let mut app = App::default();
+        app.test_node("g", Kind::Group, Runtime::None);
+        app.test_node("n", Kind::Note, Runtime::Note(NotePayload { text: String::new(), editing: false }));
+        assert!(app.is_container("g") && !app.is_container("n"));
     }
 
     #[test]

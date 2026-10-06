@@ -213,8 +213,8 @@ impl App {
             let Some(node) = self.nodes.get(&id) else { break };
             // A JSON level's crumb is its Json node, named by its file.
             let name = match &node.runtime {
-                // name rule: drawn by display_name in toolbar_breadcrumb
-                Runtime::Group(_) => self.mirror.name(&id).to_owned(),
+                // name rule: drawn by display_name in toolbar_breadcrumb. A group is the one kind with no runtime.
+                Runtime::None => self.mirror.name(&id).to_owned(),
                 Runtime::Json(json) => download_filename(&json.path).to_string(),
                 _ => String::new(),
             };
@@ -512,14 +512,14 @@ mod tests {
     /// so the sockets stay open).
     fn level_fixture() -> (App, Vec<ipc_protocol::MessageChannel<std::net::TcpStream>>) {
         use crate::node::{
-            DownloadPayload, GroupPayload, ImagePayload, JsonPayload, NotePayload, PdfPayload, TabPayload,
-            UnloadedState, UnloadedTabPayload,
+            DownloadPayload, ImagePayload, JsonPayload, NotePayload, PdfPayload, TabPayload, UnloadedState,
+            UnloadedTabPayload,
         };
         use crate::process_manager::{EngineKind, EngineTab};
         let mut app = App::default();
         let mut peers = Vec::new();
         for g in 0..8 {
-            app.test_node(&format!("g{g}"), Kind::Group, Runtime::Group(GroupPayload::default()));
+            app.test_node(&format!("g{g}"), Kind::Group, Runtime::None);
         }
         for i in 0..2000 {
             let id = format!("n{i}");
@@ -572,7 +572,7 @@ mod tests {
                         JsonPayload { path: "a.json".into(), value: Default::default(), leaf: false, error: None };
                     (Kind::Json, Runtime::Json(json))
                 }
-                _ => (Kind::Group, Runtime::Group(GroupPayload::default())),
+                _ => (Kind::Group, Runtime::None),
             };
             app.test_node(&id, kind, payload);
             if i % 3 != 0 {
@@ -586,8 +586,8 @@ mod tests {
     /// `cargo test -p manifold --bins level_pass_cost -- --ignored --nocapture`. Three variants over the same 2000
     /// nodes: the enum pass Graph view had before 2b-6 (eight passes, each matching the payload against one kind),
     /// the eight `card_kind`-filtered passes plus the group pass Task 2 left, and the single bucketed pass
-    /// (`level_scan`). The numbers are recorded in the 2b-6 plan's Outcome
-    /// (`docs/superpowers/plans/2026-10-06-node-model-2b-6-enums-to-type.md`, written at its Task 6).
+    /// (`level_scan`). Release-build numbers will be recorded in the 2b-6 plan's Outcome
+    /// (`docs/superpowers/plans/2026-10-06-node-model-2b-6-enums-to-type.md`) at its Task 6.
     #[test]
     #[ignore]
     fn level_pass_cost() {
@@ -623,7 +623,7 @@ mod tests {
                 Runtime::Image(_) => 4,
                 Runtime::Pdf(_) => 5,
                 Runtime::Json(_) => 6,
-                Runtime::Group(_) => 7,
+                Runtime::None => 7, // the old Group variant
             };
             let old_pass = || {
                 std::array::from_fn::<Vec<String>, 8, _>(|layer| {

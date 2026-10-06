@@ -843,7 +843,7 @@ impl App {
         // group otherwise (root-most first, current group
         // last) -- groups nest now, so this is a real
         // breadcrumb trail, not just "are we inside the one
-        // possible group or not." See `GroupPayload`'s own doc
+        // possible group or not." See `App::current_group`'s own doc
         // comment on nesting and `group_breadcrumb`'s own.
         let breadcrumb = self.group_breadcrumb();
         if !breadcrumb.is_empty() {
@@ -961,7 +961,7 @@ impl App {
         // stays a one-click action, just narrower, with the
         // old label preserved as a hover tooltip so the action
         // is still discoverable. All three now work at any
-        // level, not just the top -- see `GroupPayload`'s own
+        // level, not just the top -- see `App::current_group`'s own
         // doc comment on nesting; each already acts on
         // `self.current_group`/the level's groups (`level_scan`,
         // its own level), never hardcoding the top level.

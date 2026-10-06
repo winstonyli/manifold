@@ -195,9 +195,11 @@ mod tests {
             assert_eq!(forwards.caps(&mime.to_ascii_uppercase(), tags), want, "{mime}: case");
         }
         assert_eq!(forwards.caps("IMAGE/PNG", TagSet::EMPTY), Caps { restorable: true, draw_layer: 4 });
-        // Equal rank keeps registration order in both tables: the later `application/vnd.a*` twin wins.
+        // Rows are in rank order after registration.
         let ranks: Vec<(u8, u32)> = forwards.rows.iter().map(Row::rank).collect();
         assert!(ranks.windows(2).all(|pair| pair[0] <= pair[1]), "{ranks:?}");
+        // Equal rank keeps registration order: a row registered after an equal-rank twin is applied after it, an
+        // out-of-order insert included.
         let mut r = registry(vec![Row::new("*/*"), Row::new("application/vnd.ab*").restorable(false)]);
         r.register(Row::new("application/vnd.a*").restorable(true)).unwrap();
         assert!(r.caps("application/vnd.abc", TagSet::EMPTY).restorable, "registered last, applied last");
