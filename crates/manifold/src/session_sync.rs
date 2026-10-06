@@ -121,9 +121,9 @@ pub(crate) fn engine_of(code: u64) -> EngineKind {
 ///   and `App::pending` (Ruling 8), as its mirrored fields (`pos`, `url`,
 ///   `engine`, `jar`, `jar_set`, a group's `from_json` and `default_jar`, a
 ///   file's `path`, a leaf's `key` and `value` among them) are, except a jar's.
-/// - A diffed field that differs is `Set`. An explicit field (`path`, the
-///   last one) is `Set` only when `explicit` names it, which nothing does
-///   (2b-5 deletes the machinery).
+/// - A diffed field that differs is `Set`. No explicit field is left
+///   unmirrored (`path` is mirrored since 2b-5 Task 1), so `explicit` changes
+///   nothing (2b-5 Task 3 deletes the machinery).
 /// - A document node missing from `live` is deleted, unless `keep` names
 ///   it (a tab whose spawn is in flight).
 ///
@@ -1314,13 +1314,25 @@ impl App {
                                 Shared { kind: node.kind(), group: doc.effective_group(id), fields: fields_of(node) };
                             self.last_shared.insert(id.to_string(), seen);
                         }
-                        // A tab this commit created shows the jar its `Create` resolved (`diff`), as an edited one
-                        // does. Only one with an entry: a new spawn's lands from its `TabSpawn` (`linked_ids`).
+                        // A node this commit created shows the links its `Create` resolved (`diff`'s `valid`: a
+                        // tab's jar, a group's default jar, any mirrored Id field), as an edited one does. Only one
+                        // with an entry: a new spawn's lands from its `TabSpawn` (`linked_ids`). `parent` lives
+                        // in the mirror's links and `group` is the moves' (below).
                         for id in &created {
-                            let Some(node) = doc.nodes.get(id).filter(|n| n.kind() == Kind::Tab) else { continue };
-                            let (key, jar) = (id.to_string(), node.get(field::JAR));
-                            if self.mirror.has(&key) && self.mirror.get(&key, field::JAR) != jar {
-                                self.mirror.set(&key, field::JAR, jar);
+                            let Some(node) = doc.nodes.get(id) else { continue };
+                            let key = id.to_string();
+                            if !self.mirror.has(&key) {
+                                continue;
+                            }
+                            for &no in kind_fields(node.kind()) {
+                                let is_id = field_def(no).is_some_and(|def| def.ty == FieldType::Id);
+                                if !is_id || no == field::PARENT || !MIRRORED.contains(&no) {
+                                    continue;
+                                }
+                                let stored = node.get(no);
+                                if self.mirror.get(&key, no) != stored {
+                                    self.mirror.set(&key, no, stored);
+                                }
                             }
                         }
                         // A moved node shows the group the document holds: the target, none for one this commit

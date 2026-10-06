@@ -4110,7 +4110,20 @@ fn every_creation_path_seeds_the_node_type() {
     );
     app.spawn_tab_async(spawn);
     fail_spawns(&mut app);
-    assert_eq!(app.mirror.ty(&t), ty(Kind::Tab), "a landed tab");
+    assert_eq!(app.mirror.ty(&t), ty(Kind::Tab), "a failed landing");
+    let live = app.alloc_node_id();
+    let spawn = crate::TabSpawn::new(
+        live.clone(),
+        "https://l.test/".into(),
+        EngineKind::Servo,
+        egui::Vec2::ZERO,
+        SpawnPurpose::Restore,
+        1.0,
+    );
+    app.spawn_tab_async(spawn);
+    let _peers = land_spawns(&mut app);
+    assert!(app.nodes[&live].as_tab().is_some(), "landed live");
+    assert_eq!(app.mirror.ty(&live), ty(Kind::Tab), "a live landing");
 
     // Materialized from the document.
     let leaf = [(field::KEY, FieldValue::Str("k".into())), (field::VALUE, FieldValue::Str("1".into()))];
@@ -4159,4 +4172,39 @@ fn importing_or_reopening_a_group_of_leaves_carries_key_and_value() {
     assert_ne!(l2, l, "reopened with a fresh id");
     assert!(app.mirror.from_json(&g2));
     assert_eq!((app.mirror.key(&l2), app.mirror.value(&l2)), ("k", "[1,2]"));
+}
+
+/// A node's `Create` resolves its Id fields (`diff`'s `valid`): a link to a node deleted meanwhile is written as
+/// none, and the mirror shows what the document holds, as after an edit (2b-5 Task 1 review).
+#[test]
+fn a_created_group_shows_the_default_jar_its_create_resolved() {
+    let path = temp_dir("default-jar-create").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let work = app.create_jar("Work");
+    assert!(app.save_session());
+    let g = add_group(&mut app, "G");
+    app.set_group_default_jar(&g, work);
+    let mut other = Journal::open(&path, ActorId(2)).unwrap();
+    other.begin().unwrap().commit(vec![OpBody::Delete { node: work }]).unwrap();
+    assert!(app.save_session());
+    assert_eq!(stored(&app, &g, field::DEFAULT_JAR), FieldValue::Id(None), "created without the deleted jar");
+    assert_eq!(app.mirror.default_jar(&g), None, "the mirror shows what the document holds");
+    assert!(app.save_session());
+    assert_eq!(stored(&app, &g, field::DEFAULT_JAR), FieldValue::Id(None));
+}
+
+/// The same for a created node's `parent`: an opener deleted elsewhere before the first save.
+#[test]
+fn a_created_note_shows_the_parent_its_create_resolved() {
+    let path = temp_dir("parent-create").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let opener = add(&mut app, sleeping_tab("https://x.test/", "Opener"));
+    assert!(app.save_session());
+    let note = add(&mut app, NodePayload::Note(NotePayload { text: "n".into(), editing: false }));
+    app.edit_parent(&note, Some(opener.clone()));
+    let mut other = Journal::open(&path, ActorId(2)).unwrap();
+    other.begin().unwrap().commit(vec![OpBody::Delete { node: opener.parse().unwrap() }]).unwrap();
+    assert!(app.save_session());
+    assert_eq!(stored(&app, &note, field::PARENT), FieldValue::Id(None));
+    assert_eq!(app.mirror.parent(&note), None, "the mirror shows what the document holds");
 }

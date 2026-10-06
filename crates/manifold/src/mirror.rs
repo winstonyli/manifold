@@ -15,17 +15,17 @@ use crate::session_sync::{color_of, color_value, engine_of, pos_value, Fields};
 use crate::store::model::{field, field_def, FieldValue, NodeId};
 
 /// The fields the mirror holds. `diff` leaves them to `App::pending` on existing nodes. `URL` is a tab's shared url
-/// (2b-3 Ruling 2) and a content node's web source (`App::source_url`), seeded at creation since 2b-5. `JAR` and `JAR_SET` are a tab's jar choice (`jar_choice`), written together by `App::edit_jar`. `ENGINE` is a tab's
-/// engine as its stored code (`engine`), written by `App::edit_engine`. `POS` is the document pos (`pos`), written by
+/// (2b-3 Ruling 2) and a content node's web source (`App::source_url`), seeded at creation since 2b-5. `JAR` and
+/// `JAR_SET` are a tab's jar choice (`jar_choice`), written together by `App::edit_jar`. `ENGINE` is a tab's engine as
+/// its stored code (`engine`), written by `App::edit_engine`. `POS` is the document pos (`pos`), written by
 /// `App::edit_pos`; where a card is drawn is `App::layout`, which the document never reads (2b-4 Ruling 1). `TEXT` is a
 /// note's text (`text`), written by `App::edit_text` at a save or blur; the note's payload is its edit buffer. `VIEW`
 /// is a Json node's view (`view`, decoded), written by `App::edit_view`. `NAME` is a group's name (`name`), written by
 /// `App::edit_name`; a jar's `NAME` is not mirrored (`JarDef`, `materialize_jar`), and `diff` still writes it.
-/// `DEFAULT_JAR` is a group's default jar (`default_jar`), written by `App::edit_default_jar` and resolved at commit like
-/// `JAR` (2b-5 Ruling 6). `PATH` is the stored,
-/// create-time path (`path`), never rewritten: the payload holds the path resolved on this machine (2b-5 Ruling 5).
-/// `FROM_JSON`, `KEY` and `VALUE` are written once, at creation (Ruling 8). `TYPE` is the node's type string (`ty`),
-/// seeded at every creation and never changed (Ruling 10).
+/// `DEFAULT_JAR` is a group's default jar (`default_jar`), written by `App::edit_default_jar` and resolved at commit
+/// like `JAR` (2b-5 Ruling 6). `PATH` is the stored, create-time path (`path`), never rewritten: the payload holds the
+/// path resolved on this machine (2b-5 Ruling 5). `FROM_JSON`, `KEY` and `VALUE` are written once, at creation
+/// (Ruling 8). `TYPE` is the node's type string (`ty`), seeded at every creation and never changed (Ruling 10).
 pub(crate) const MIRRORED: &[u32] = &[
     field::POS,
     field::COLOR,
@@ -98,7 +98,8 @@ impl Mirror {
     }
 
     /// Gives `id` field `no` only if it holds no value for it yet: a new content node's web source, seeded after
-    /// its placement (`App::insert_content`), which a stored node shown again (a reload, a restore) already has.
+    /// its placement (`App::insert_content`), which a stored node shown again (a reload, a restore) already has, and
+    /// a materialized node's `TYPE` (`App::materialize`), which a node this replica placed already holds.
     pub(crate) fn init_field(&mut self, id: &str, no: u32, value: FieldValue) {
         if !self.nodes.get(id).is_some_and(|fields| fields.contains_key(&no)) {
             self.set(id, no, value);
@@ -314,7 +315,8 @@ pub(crate) struct Carried {
     pub pinned: bool,
     pub parent: Option<String>,
     pub group: Option<String>,
-    /// The shared url (`Mirror::url`); "" for a node that isn't a tab.
+    /// The url (`Mirror::url`): a tab's shared url, or a content node's web source. `place_node` passes only a tab's
+    /// (from `saved_tab`); a content node's is seeded by its caller (`App::seed_source_url`). "" for none.
     pub url: String,
     /// A note's text (`Mirror::text`): what a new note starts with, which its `Create` carries; "" for other kinds.
     pub text: String,
