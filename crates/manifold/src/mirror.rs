@@ -310,7 +310,9 @@ impl Mirror {
     }
 
     /// `init` for everything a node carries. No pos, an empty string, engine code 0, `false` and no jar (the fields a
-    /// node's kind lacks, or holds unset) are the fields' absent values, so they are left out.
+    /// node's kind lacks, or holds unset) are the fields' absent values, so they are left out. The type alone is
+    /// `init_field`: an entry made before the node was placed (a remote op naming it ahead of its `Create`, a
+    /// link cascade) must not leave the placed node untyped, and the store never changes a type (2b-5 Ruling 10).
     pub(crate) fn seed(&mut self, id: &str, carried: &Carried) {
         let str = |no: u32, s: &String| (!s.is_empty()).then(|| (no, FieldValue::Str(s.clone())));
         let pos = carried.pos.map(|pos| (field::POS, pos_value(pos)));
@@ -322,7 +324,6 @@ impl Mirror {
         let strings = [
             str(field::URL, &carried.url),
             str(field::TEXT, &carried.text),
-            str(field::TYPE, &carried.ty),
             str(field::PATH, &carried.path),
             str(field::KEY, &carried.key),
             str(field::VALUE, &carried.value),
@@ -330,6 +331,10 @@ impl Mirror {
         let fields = [(field::COLOR, color_value(carried.color)), (field::PINNED, FieldValue::Bool(carried.pinned))];
         let optional = [pos, engine, jar, jar_set, from_json, default_jar];
         self.init(id, fields.into_iter().chain(optional.into_iter().flatten()).chain(strings.into_iter().flatten()));
+        // After `init`, which seeds nothing once the entry exists: the type is the one field that still lands.
+        if !carried.ty.is_empty() {
+            self.init_field(id, field::TYPE, FieldValue::Str(carried.ty.clone()));
+        }
         if !self.links.contains_key(id) {
             let links = Links { parent: carried.parent.clone(), group: carried.group.clone() };
             self.links.insert(id.to_owned(), links);
@@ -403,6 +408,20 @@ mod tests {
         assert_eq!(mirror.carried("7"), first);
         mirror.seed("8", &Carried { pos: Some(egui::Vec2::ZERO), ..Carried::default() });
         assert_eq!(mirror.pos("8"), None, "pos (0,0) is the absent value (Ruling 5)");
+    }
+
+    /// An entry that exists without a type (a remote op named the node before it was placed) takes the placed
+    /// node's type; one with a type keeps it.
+    #[test]
+    fn seed_types_an_entry_that_has_none() {
+        let mut mirror = Mirror::default();
+        mirror.set("7", field::URL, FieldValue::Str("https://a/".into()));
+        mirror.seed("7", &Carried { ty: "text/x".into(), url: "https://b/".into(), ..Carried::default() });
+        assert_eq!((mirror.ty("7"), mirror.url("7")), ("text/x", "https://a/"), "the type lands, the rest is kept");
+        mirror.seed("7", &Carried { ty: "text/y".into(), ..Carried::default() });
+        assert_eq!(mirror.ty("7"), "text/x");
+        mirror.seed("8", &Carried::default());
+        assert!(!mirror.nodes["8"].contains_key(&field::TYPE), "no type seeds nothing");
     }
 
     #[test]

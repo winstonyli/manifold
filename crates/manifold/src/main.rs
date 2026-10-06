@@ -85,7 +85,7 @@ use ipc_protocol::{
     frame_path, modifiers, EngineToHost, HostToEngine, InputEvent, KeyCode, MouseButton, SharedFrameBuffer,
 };
 use json_level::{JsonEdit, JsonLevel};
-use level::{EdgeCurve, LevelItem, LevelItemKind};
+use level::{EdgeCurve, LevelItem, LevelItemKind, LevelScan};
 use mirror::Carried;
 use node::*;
 use popups::*;
@@ -1150,7 +1150,7 @@ struct App {
     /// drag by movement distance) and `build_graph_ui`'s own rendering of
     /// it. Deliberately *not* a `NodePayload`/`self.nodes` entry -- it's a
     /// pending choice, not real graph content, so it never needs excluding
-    /// from `nodes_at_current_level`/session persistence/drag-into-group/
+    /// from `level_scan`/session persistence/drag-into-group/
     /// filters the way a real new node kind would. Cleared on any camera
     /// movement (pan/zoom/Reset View/entering or leaving a group/minimap
     /// click), Escape, clicking elsewhere, or picking one of its own
@@ -3429,15 +3429,16 @@ mod tests {
     #[test]
     fn remove_from_group_moves_up_one_level() {
         let mut app = App::default();
-        let group = || NodePayload::Group(GroupPayload::default());
-        let note = || NodePayload::Note(NotePayload { text: String::new(), editing: false });
-        for (id, group, payload) in [
+        use crate::store::model::Kind;
+        let group = || (Kind::Group, NodePayload::Group(GroupPayload::default()));
+        let note = || (Kind::Note, NodePayload::Note(NotePayload { text: String::new(), editing: false }));
+        for (id, group, (kind, payload)) in [
             ("outer", None, group()),
             ("inner", Some("outer"), group()),
             ("deep", Some("inner"), note()),
             ("shallow", Some("outer"), note()),
         ] {
-            app.nodes.insert(id.into(), GraphNode { payload });
+            app.test_node(id, kind, payload);
             app.edit_group(id, group.map(String::from));
         }
 
@@ -3454,9 +3455,7 @@ mod tests {
     fn mirror_group_cycle() -> App {
         let mut app = App::default();
         for id in ["a", "b", "s"] {
-            let payload = NodePayload::Group(GroupPayload::default());
-            app.nodes.insert(id.into(), GraphNode { payload });
-            app.node_order.push(id.into());
+            app.test_node(id, crate::store::model::Kind::Group, NodePayload::Group(GroupPayload::default()));
         }
         app.edit_group("a", Some("b".into()));
         app.edit_group("b", Some("a".into()));

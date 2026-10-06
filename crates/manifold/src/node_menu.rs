@@ -868,6 +868,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::card_kind::fixtures::{kinds, loaded_tab, plain, sleeping_tab};
 
     // One row per kind, pinned to the exact menus each kind showed before
     // the per-kind builders were merged (see the node-menu spec), and
@@ -892,16 +893,16 @@ mod tests {
         app.apply_node_action(&egui::Context::default(), &note, NodeAction::MoveToGroup(g2.clone()));
         assert_eq!(app.mirror.group(&note), Some(g2.as_str()));
         // On a group "Move into" nests it, unlike a drop of one group on another (which merges).
-        let group = CardKind::from(ItemNodeKind::Group);
+        let group = plain(TYPE_GROUP);
         assert_eq!(drop_action(group, DropTarget::Card(group), false), Some(DropEffect::Merge));
         app.apply_node_action(&egui::Context::default(), &g1, NodeAction::MoveToGroup(g2.clone()));
         assert_eq!(app.mirror.group(&g1), Some(g2.as_str()), "g1 nested in g2, not merged away");
         assert_eq!(app.mirror.group(&inner), Some(g1.as_str()), "g1 keeps its own members");
     }
 
-    fn view_of(kind: ItemNodeKind) -> NodeMenuView {
+    fn view_of(kind: CardKind) -> NodeMenuView {
         NodeMenuView {
-            kind: kind.into(),
+            kind,
             has_group: false,
             color: None,
             has_url: false,
@@ -933,7 +934,7 @@ mod tests {
                 .collect();
             (config.area_id, config.min_width, items.join(" | "))
         }
-        fn menu(kind: ItemNodeKind, has_group: bool, pinned: bool, headless: bool) -> (&'static str, f32, String) {
+        fn menu(kind: CardKind, has_group: bool, pinned: bool, headless: bool) -> (&'static str, f32, String) {
             let view = NodeMenuView { has_group, pinned, ..view_of(kind) };
             menu_of(&view, headless)
         }
@@ -943,7 +944,7 @@ mod tests {
             let g = if has_group { " | --- | Remove from Group" } else { "" };
             let menu = |kind, pinned| menu(kind, has_group, pinned, false);
             assert_eq!(
-                menu(ItemNodeKind::Download, false),
+                menu(plain(TYPE_DOWNLOAD), false),
                 (
                     "download_context_menu",
                     170.0,
@@ -951,11 +952,11 @@ mod tests {
                 )
             );
             assert_eq!(
-                menu(ItemNodeKind::Note, false),
+                menu(plain(TYPE_NOTE), false),
                 ("note_context_menu", 150.0, format!("Copy Text | <colors>{g} | --- | Delete"))
             );
             assert_eq!(
-                menu(ItemNodeKind::Image, false),
+                menu(plain(TYPE_IMAGE), false),
                 (
                     "image_context_menu",
                     170.0,
@@ -963,19 +964,21 @@ mod tests {
                 )
             );
             assert_eq!(
-                menu(ItemNodeKind::Pdf, false),
+                menu(plain(TYPE_PDF), false),
                 ("pdf_context_menu", 170.0, format!("Open Containing Folder | Copy Path | <colors>{g} | --- | Delete"))
             );
+            for json in [TYPE_JSON, TYPE_JSON_LEAF] {
+                assert_eq!(
+                    menu(plain(json), false),
+                    (
+                        "json_context_menu",
+                        170.0,
+                        format!("Open Containing Folder | Copy Path | <colors>{g} | --- | Delete")
+                    )
+                );
+            }
             assert_eq!(
-                menu(ItemNodeKind::Json, false),
-                (
-                    "json_context_menu",
-                    170.0,
-                    format!("Open Containing Folder | Copy Path | <colors>{g} | --- | Delete")
-                )
-            );
-            assert_eq!(
-                menu(ItemNodeKind::Tab, false),
+                menu(loaded_tab(), false),
                 (
                     "tab_context_menu",
                     150.0,
@@ -983,11 +986,11 @@ mod tests {
                 )
             );
             assert_eq!(
-                menu(ItemNodeKind::Tab, true).2,
+                menu(loaded_tab(), true).2,
                 format!("Unpin | Duplicate | Sleep | Copy URL | Fit Subtree | <colors>{g} | --- | Close")
             );
             assert_eq!(
-                menu(ItemNodeKind::Group, false),
+                menu(plain(TYPE_GROUP), false),
                 (
                     "group_context_menu",
                     150.0,
@@ -998,7 +1001,7 @@ mod tests {
                 )
             );
             assert_eq!(
-                menu(ItemNodeKind::Unloaded, false),
+                menu(sleeping_tab(), false),
                 (
                     "unloaded_tab_context_menu",
                     170.0,
@@ -1009,38 +1012,37 @@ mod tests {
         // A failed tab offers Retry (and the default engine, when it isn't
         // the engine that failed) instead of Open; a sleeping/waking one
         // just offers Open. Neither failed one offers Duplicate, which would fail the same way.
-        let failed = NodeMenuView { other_default_engine: true, failed: true, ..view_of(ItemNodeKind::Unloaded) };
+        let failed = NodeMenuView { other_default_engine: true, failed: true, ..view_of(sleeping_tab()) };
         assert_eq!(
             menu_of(&failed, false).2,
             "Retry | Open in Default Engine | Pin | Copy URL | <colors> | --- | Close"
         );
-        let missing = NodeMenuView { failed: true, engine_missing: true, ..view_of(ItemNodeKind::Unloaded) };
+        let missing = NodeMenuView { failed: true, engine_missing: true, ..view_of(sleeping_tab()) };
         assert_eq!(menu_of(&missing, false).2, "Download Engine | Pin | Copy URL | <colors> | --- | Close");
         // Export Group's file dialog can't run headless.
         assert_eq!(
-            menu(ItemNodeKind::Group, false, false, true).2,
+            menu(plain(TYPE_GROUP), false, false, true).2,
             "Rename | Sleep Tabs | <colors> | --- | Dissolve Group | Close Group and Contents"
         );
         // A url on Image/Pdf/Json/Note offers Refresh (not Note) and Open as
         // Tab, ahead of the kind's own items.
-        let with_url =
-            |kind: ItemNodeKind| NodeMenuView { kind: kind.into(), has_url: true, has_copy_url: true, ..view_of(kind) };
+        let with_url = |kind: CardKind| NodeMenuView { has_url: true, has_copy_url: true, ..view_of(kind) };
         assert_eq!(
-            menu_of(&with_url(ItemNodeKind::Image), false).2,
+            menu_of(&with_url(plain(TYPE_IMAGE)), false).2,
             "Refresh | Open as Tab | Copy URL | Open Containing Folder | Copy Path | <colors> | --- | Delete"
         );
         assert_eq!(
-            menu_of(&with_url(ItemNodeKind::Json), false).2,
+            menu_of(&with_url(plain(TYPE_JSON)), false).2,
             "Refresh | Open as Tab | Copy URL | Open Containing Folder | Copy Path | <colors> | --- | Delete"
         );
         // A download has no Open as Tab (it would download again), but can copy where it came from.
-        let download = NodeMenuView { has_copy_url: true, ..view_of(ItemNodeKind::Download) };
+        let download = NodeMenuView { has_copy_url: true, ..view_of(plain(TYPE_DOWNLOAD)) };
         assert_eq!(
             menu_of(&download, false).2,
             "Copy URL | Open Containing Folder | Copy Path | <colors> | --- | Remove from List"
         );
         assert_eq!(
-            menu_of(&with_url(ItemNodeKind::Note), false).2,
+            menu_of(&with_url(plain(TYPE_NOTE)), false).2,
             "Open as Tab | Copy URL | Copy Text | <colors> | --- | Delete"
         );
         // Jars (per-tab jars plan, Task 7): tabs and groups list them ahead of the colours.
@@ -1048,7 +1050,7 @@ mod tests {
         let jars = |can_follow, will_switch, has_default| {
             Some(JarMenu { rows: rows.clone(), can_follow, will_switch, has_default })
         };
-        let tab = |j| NodeMenuView { jars: j, ..view_of(ItemNodeKind::Tab) };
+        let tab = |j| NodeMenuView { jars: j, ..view_of(loaded_tab()) };
         assert_eq!(
             menu_of(&tab(jars(false, false, false)), false).2,
             "Pin | Duplicate | Sleep | Copy URL | Fit Subtree | <jars> | New Jar... | <colors> | --- | Close"
@@ -1058,13 +1060,12 @@ mod tests {
             "Pin | Duplicate | Sleep | Copy URL | Fit Subtree | <jars> | New Jar... | Follow Group's Jar | \
              Switch Jar Now | <colors> | --- | Close"
         );
-        let unloaded = NodeMenuView { jars: jars(true, true, false), ..view_of(ItemNodeKind::Unloaded) };
+        let unloaded = NodeMenuView { jars: jars(true, true, false), ..view_of(sleeping_tab()) };
         assert_eq!(
             menu_of(&unloaded, false).2,
             "Open | Pin | Duplicate | Copy URL | <jars> | New Jar... | Follow Group's Jar | <colors> | --- | Close"
         );
-        let group =
-            |has_default| NodeMenuView { jars: jars(false, false, has_default), ..view_of(ItemNodeKind::Group) };
+        let group = |has_default| NodeMenuView { jars: jars(false, false, has_default), ..view_of(plain(TYPE_GROUP)) };
         assert_eq!(
             menu_of(&group(false), false).2,
             "Rename | Sleep Tabs | <jars> | <colors> | --- | Dissolve Group | Close Group and Contents | \
@@ -1081,17 +1082,17 @@ mod tests {
     /// "Close Group and Contents", which closes the members too.
     #[test]
     fn del_hint_names_what_del_does_on_the_card() {
-        for kind in GRAPH_DRAW_ORDER {
+        for kind in kinds() {
             let config = node_menu_config(&view_of(kind), false);
             let hinted: Vec<&str> = config
                 .items
                 .iter()
                 .filter_map(|item| match item {
-                    NodeMenuItem::Button(label, action) if action.key_hint(kind.into()).is_some() => Some(*label),
+                    NodeMenuItem::Button(label, action) if action.key_hint(kind).is_some() => Some(*label),
                     _ => None,
                 })
                 .collect();
-            let del = CardControl::Close.action(kind.into());
+            let del = CardControl::Close.action(kind);
             let want: Vec<&str> = config
                 .items
                 .iter()
@@ -1103,24 +1104,24 @@ mod tests {
             assert_eq!(hinted, want, "{kind:?}");
             assert_eq!(hinted.len(), 1, "{kind:?}: one row hinted Del");
         }
-        assert_eq!(NodeAction::Dissolve.key_hint(ItemNodeKind::Group.into()), Some("Del"));
-        assert_eq!(NodeAction::Delete.key_hint(ItemNodeKind::Group.into()), None, "closing the members isn't Del");
-        assert_eq!(NodeAction::Delete.key_hint(ItemNodeKind::Tab.into()), Some("Del"));
+        assert_eq!(NodeAction::Dissolve.key_hint(plain(TYPE_GROUP)), Some("Del"));
+        assert_eq!(NodeAction::Delete.key_hint(plain(TYPE_GROUP)), None, "closing the members isn't Del");
+        assert_eq!(NodeAction::Delete.key_hint(loaded_tab()), Some("Del"));
     }
 
     /// The focused card's "Del <verb>" hint names the same action as the menu row hinted Del.
     #[test]
     fn card_del_hint_matches_the_menu_row_hinted_del() {
-        for kind in GRAPH_DRAW_ORDER {
+        for kind in kinds() {
             let config = node_menu_config(&view_of(kind), false);
             let label = config.items.iter().find_map(|item| match item {
-                NodeMenuItem::Button(label, action) if action.key_hint(kind.into()).is_some() => Some(*label),
+                NodeMenuItem::Button(label, action) if action.key_hint(kind).is_some() => Some(*label),
                 _ => None,
             });
             let first = label.and_then(|l| l.split(' ').next()).map(str::to_lowercase);
-            assert_eq!(first.as_deref(), Some(del_verb(kind.into())), "{kind:?}");
+            assert_eq!(first.as_deref(), Some(del_verb(kind)), "{kind:?}");
         }
-        assert_eq!(del_verb(ItemNodeKind::Group.into()), "dissolve");
+        assert_eq!(del_verb(plain(TYPE_GROUP)), "dissolve");
     }
 
     /// An unloaded tab's menu Duplicate opens a copy at its url and engine, as Ctrl+D does.

@@ -14,25 +14,8 @@ impl App {
         id.as_deref().filter(|id| self.nodes.contains_key(*id)).and_then(|id| self.mirror.group(id)).map(str::to_owned)
     }
 
-    /// `node_order`, filtered to the nodes whose card kind `pick` accepts at
-    /// whichever level `self.current_group` is currently viewing -- the id
-    /// list `build_graph_ui`'s card loop iterates for one draw layer
-    /// (`level_scan`), kept in stable insertion order (unlike filtering
-    /// `self.nodes` directly, a `HashMap`'s iteration order isn't stable
-    /// frame-to-frame). The kind filter matters even for one kind: a
-    /// top-level group's own `group` is `None`, same as `current_group` at
-    /// the top level, so a level check alone would leak group cards into
-    /// every other kind's list.
-    pub(crate) fn nodes_at_current_level(&self, pick: impl Fn(CardKind) -> bool) -> Vec<String> {
-        self.node_order
-            .iter()
-            .filter(|id| self.in_level(id) && self.card_kind(id).is_some_and(&pick))
-            .cloned()
-            .collect()
-    }
-
-    /// The live and unloaded tabs at the level being viewed, in draw order:
-    /// what graph navigation, selection and Close All act on.
+    /// The live and unloaded tabs at the level being viewed, in `node_order` (the order within a draw layer,
+    /// `level_scan`): what graph navigation, selection and Close All act on.
     pub(crate) fn tabs_at_current_level(&self) -> Vec<String> {
         self.node_order
             .iter()
@@ -61,16 +44,21 @@ impl App {
         }
         let center = self.layout_pos(id).to_pos2();
         // A group card before a tab card, and a live tab before a sleeping one: the per-kind search order the drop
-        // has always had. A target the drop table refuses (`drop_action` None) moves the search on.
+        // has always had, each search's hit the first card of its kind in `node_order` under the center. One pass
+        // over the level finds all three; a target the drop table refuses (`drop_action` None) moves the search on.
         let searches: [&dyn Fn(CardKind) -> bool; 3] =
             [&|k| is_container(k.ty), &|k| k.ty == TYPE_TAB && k.loaded(), &|k| k.ty == TYPE_TAB && !k.loaded()];
-        searches.into_iter().find_map(|pick| {
-            let target = self
-                .nodes_at_current_level(pick)
-                .into_iter()
-                .find(|other| other != id && self.card_rect(other).is_some_and(|rect| rect.contains(center)))?;
-            let effect = drop_action(dragged, DropTarget::Card(self.card_kind(&target)?), inside_group)?;
-            Some((effect, Some(target)))
+        let mut hits: [Option<(&str, CardKind)>; 3] = [None; 3];
+        for other in self.node_order.iter().filter(|other| *other != id && self.in_level(other)) {
+            let Some(kind) = self.card_kind(other) else { continue };
+            let Some(slot) = searches.iter().position(|pick| pick(kind)) else { continue };
+            if hits[slot].is_none() && self.card_rect(other).is_some_and(|rect| rect.contains(center)) {
+                hits[slot] = Some((other, kind));
+            }
+        }
+        hits.into_iter().flatten().find_map(|(target, kind)| {
+            let effect = drop_action(dragged, DropTarget::Card(kind), inside_group)?;
+            Some((effect, Some(target.to_owned())))
         })
     }
 
@@ -238,7 +226,7 @@ impl App {
     }
 
     /// "Reset View"'s scene rect: bounds every node currently visible at
-    /// this level (every kind -- same level rules `nodes_at_current_level`
+    /// this level (every kind -- same level rules `level_scan`
     /// already uses) instead of always framing
     /// the same fixed world-space rect regardless of how many nodes exist
     /// or where they've drifted to. Each node contributes its own
@@ -511,5 +499,189 @@ impl App {
             self.dragging = None;
             self.drag_moved.clear();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::store::model::Kind;
+
+    /// 2000 nodes of every kind: every third at the top level, the rest spread over eight groups. Each node's kind
+    /// cycles through the constructible payloads; every 40th is a live tab (`EngineTab::fake`, whose peers are kept
+    /// so the sockets stay open).
+    fn level_fixture() -> (App, Vec<ipc_protocol::MessageChannel<std::net::TcpStream>>) {
+        use crate::node::{
+            DownloadPayload, GroupPayload, ImagePayload, JsonPayload, NotePayload, PdfPayload, TabPayload,
+            UnloadedState, UnloadedTabPayload,
+        };
+        use crate::process_manager::{EngineKind, EngineTab};
+        let mut app = App::default();
+        let mut peers = Vec::new();
+        for g in 0..8 {
+            app.test_node(&format!("g{g}"), Kind::Group, NodePayload::Group(GroupPayload::default()));
+        }
+        for i in 0..2000 {
+            let id = format!("n{i}");
+            let (kind, payload) = match i % 7 {
+                0 if i % 40 == 0 => {
+                    let (tab, peer) = EngineTab::fake(EngineKind::Servo);
+                    peers.push(peer);
+                    let live = TabPayload {
+                        tab,
+                        url: "https://a/".into(),
+                        title: String::new(),
+                        can_go_back: false,
+                        can_go_forward: false,
+                        loading: false,
+                        audio_playing: false,
+                        muted: false,
+                        zoom_factor: 1.0,
+                        swap_target: None,
+                    };
+                    (Kind::Tab, NodePayload::Tab(live))
+                }
+                0 => {
+                    let sleeping = UnloadedTabPayload {
+                        url: "https://s/".into(),
+                        title: String::new(),
+                        muted: false,
+                        zoom_factor: 1.0,
+                        state: UnloadedState::Sleeping,
+                    };
+                    (Kind::Tab, NodePayload::Unloaded(sleeping))
+                }
+                1 => {
+                    let download = DownloadPayload {
+                        path: "f.bin".into(),
+                        bytes_received: 0,
+                        total_bytes: None,
+                        completed: true,
+                        failed: false,
+                    };
+                    (Kind::Download, NodePayload::Download(download))
+                }
+                2 => (Kind::Note, NodePayload::Note(NotePayload { text: "t".into(), editing: false })),
+                3 => (
+                    Kind::Image,
+                    NodePayload::Image(ImagePayload { path: "i.png".into(), width: 1, height: 1, error: None }),
+                ),
+                4 => (Kind::Pdf, NodePayload::Pdf(PdfPayload { path: "d.pdf".into(), outcome: None })),
+                5 => {
+                    let json =
+                        JsonPayload { path: "a.json".into(), value: Default::default(), leaf: false, error: None };
+                    (Kind::Json, NodePayload::Json(json))
+                }
+                _ => (Kind::Group, NodePayload::Group(GroupPayload::default())),
+            };
+            app.test_node(&id, kind, payload);
+            if i % 3 != 0 {
+                app.edit_group(&id, Some(format!("g{}", i % 8)));
+            }
+        }
+        (app, peers)
+    }
+
+    /// Frame cost of the level scan (2b-6 Ruling 10), timing, not correctness, so ignored:
+    /// `cargo test -p manifold --bins level_pass_cost -- --ignored --nocapture`. Three variants over the same 2000
+    /// nodes: the enum pass Graph view had before 2b-6 (eight passes, each matching the payload against one kind),
+    /// the eight `card_kind`-filtered passes plus the group pass Task 2 left, and the single bucketed pass
+    /// (`level_scan`). The numbers are recorded in the 2b-6 plan's Outcome
+    /// (`docs/superpowers/plans/2026-10-06-node-model-2b-6-enums-to-type.md`, written at its Task 6).
+    #[test]
+    #[ignore]
+    fn level_pass_cost() {
+        use std::time::{Duration, Instant};
+        fn timed(n: usize, mut f: impl FnMut()) -> (Duration, Duration) {
+            let mut times: Vec<Duration> = (0..n)
+                .map(|_| {
+                    let start = Instant::now();
+                    f();
+                    start.elapsed()
+                })
+                .collect();
+            times.sort();
+            (times[0], times[n / 2])
+        }
+        fn report(what: &str, (best, median): (Duration, Duration)) {
+            println!("  {what:<40} best {best:>10.1?}  median {median:>10.1?}");
+        }
+        const N: usize = 200;
+        let (mut app, _peers) = level_fixture();
+        for level in [None, Some("g0".to_string())] {
+            app.current_group = level.clone();
+            let in_level = app.node_order.iter().filter(|id| app.in_level(id)).count();
+            println!("level {level:?}: {in_level} of {} nodes", app.node_order.len());
+
+            // (a) The old enum pass: eight per-kind calls, each a walk of `node_order` keeping the nodes whose
+            // payload variant was that kind (the card enum 2b-6 deleted, matched per node per pass).
+            let old_layer = |payload: &NodePayload| match payload {
+                NodePayload::Tab(_) => 0,
+                NodePayload::Unloaded(_) => 1,
+                NodePayload::Download(_) => 2,
+                NodePayload::Note(_) => 3,
+                NodePayload::Image(_) => 4,
+                NodePayload::Pdf(_) => 5,
+                NodePayload::Json(_) => 6,
+                NodePayload::Group(_) => 7,
+            };
+            let old_pass = || {
+                std::array::from_fn::<Vec<String>, 8, _>(|layer| {
+                    app.node_order
+                        .iter()
+                        .filter(|id| {
+                            app.in_level(id) && app.nodes.get(*id).is_some_and(|n| old_layer(&n.payload) == layer)
+                        })
+                        .cloned()
+                        .collect()
+                })
+            };
+            report("old: 8 enum passes", timed(N, || drop(old_pass())));
+
+            // (b) Task 2's: eight `card_kind` passes by draw layer plus the group pass.
+            let at_level = |pick: &dyn Fn(CardKind) -> bool| -> Vec<String> {
+                app.node_order
+                    .iter()
+                    .filter(|id| app.in_level(id) && app.card_kind(id).is_some_and(pick))
+                    .cloned()
+                    .collect()
+            };
+            let eight_pass = || {
+                let layers: [Vec<String>; crate::caps::DRAW_LAYERS] =
+                    std::array::from_fn(|layer| at_level(&|kind| usize::from(kind.caps().draw_layer) == layer));
+                let groups = at_level(&|kind| is_container(kind.ty));
+                (layers, groups)
+            };
+            report("task 2: 8 card_kind passes + groups", timed(N, || drop(eight_pass())));
+
+            // (c) Task 3's single pass, and where its per-node cost goes: the level filter alone, plus `card_kind`,
+            // plus `caps()` (the draw layer), plus `is_container` (the whole of `level_scan`).
+            report("task 3: level_scan, one pass", timed(N, || drop(app.level_scan())));
+            let mut sink = 0usize;
+            let level_only = || app.node_order.iter().filter(|id| app.in_level(id)).count();
+            report("  in_level only", timed(N, || sink += level_only()));
+            let kinds_only =
+                || app.node_order.iter().filter(|id| app.in_level(id)).filter_map(|id| app.card_kind(id)).count();
+            report("  + card_kind", timed(N, || sink += kinds_only()));
+            let layers_only = || {
+                app.node_order
+                    .iter()
+                    .filter(|id| app.in_level(id))
+                    .filter_map(|id| app.card_kind(id))
+                    .map(|kind| usize::from(kind.caps().draw_layer))
+                    .sum::<usize>()
+            };
+            report("  + caps().draw_layer", timed(N, || sink += layers_only()));
+            assert!(sink > 0);
+
+            let (layers, groups) = eight_pass();
+            let scan = app.level_scan();
+            assert_eq!((scan.layers, scan.groups), (layers, groups));
+            assert_eq!(old_pass().concat().len(), scan_len(&app));
+        }
+    }
+
+    fn scan_len(app: &App) -> usize {
+        app.level_scan().layers.concat().len()
     }
 }

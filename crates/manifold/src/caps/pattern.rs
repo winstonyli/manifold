@@ -48,15 +48,26 @@ impl Pattern {
         }
     }
 
+    /// Case-insensitive (ASCII), compared in place: this runs per row per card per frame (`App::level_scan`), so it
+    /// never lower-cases a copy. The pattern's own text is lower-cased once by `parse`.
     pub(crate) fn matches(&self, mime: &str) -> bool {
-        let mime = mime.to_ascii_lowercase();
-        let Some((ty, sub)) = mime.split_once('/') else { return matches!(self, Pattern::Any) };
+        let mime = mime.as_bytes();
+        let Some(slash) = mime.iter().position(|&b| b == b'/') else { return matches!(self, Pattern::Any) };
+        let (ty, sub) = (&mime[..slash], &mime[slash + 1..]);
         match self {
             Pattern::Any => true,
-            Pattern::Type(t) => ty == t,
-            Pattern::Suffix(s) => sub.strip_suffix(s.as_str()).is_some_and(|rest| rest.ends_with('+')),
-            Pattern::Prefix { ty: t, prefix } => ty == t && sub.starts_with(prefix.as_str()),
-            Pattern::Exact(e) => mime == *e,
+            Pattern::Type(t) => ty.eq_ignore_ascii_case(t.as_bytes()),
+            // `+suffix` at the end of the subtype.
+            Pattern::Suffix(s) => {
+                sub.len() > s.len()
+                    && sub[sub.len() - s.len()..].eq_ignore_ascii_case(s.as_bytes())
+                    && sub[sub.len() - s.len() - 1] == b'+'
+            }
+            Pattern::Prefix { ty: t, prefix } => {
+                ty.eq_ignore_ascii_case(t.as_bytes())
+                    && sub.get(..prefix.len()).is_some_and(|head| head.eq_ignore_ascii_case(prefix.as_bytes()))
+            }
+            Pattern::Exact(e) => mime.eq_ignore_ascii_case(e.as_bytes()),
         }
     }
 }
@@ -117,6 +128,29 @@ mod tests {
         assert!(!Pattern::parse("application/vnd.manifold.*").matches("text/vnd.manifold.tab"));
         assert!(Pattern::parse("text/markdown").matches("TEXT/Markdown"));
         assert!(!Pattern::parse("text/markdown").matches("text/plain"));
+    }
+
+    /// Every pattern kind matches mixed-case input as it matches lower-case, and only then.
+    #[test]
+    fn matching_ignores_ascii_case_for_every_pattern_kind() {
+        for (pattern, mime) in [
+            ("image/*", "IMAGE/PNG"),
+            ("*/*+json", "Application/LD+JSON"),
+            ("application/vnd.manifold.*", "APPLICATION/VND.Manifold.Tab"),
+            ("text/markdown", "Text/MARKDOWN"),
+            ("Image/*", "image/png"),
+        ] {
+            assert!(Pattern::parse(pattern).matches(mime), "{pattern} vs {mime}");
+            assert_eq!(
+                Pattern::parse(pattern).matches(mime),
+                Pattern::parse(pattern).matches(&mime.to_ascii_lowercase())
+            );
+        }
+        // Not a match: a suffix with no `+`, a subtype shorter than the prefix, a different type.
+        assert!(!Pattern::parse("*/*+json").matches("application/JSON"));
+        assert!(!Pattern::parse("application/vnd.manifold.*").matches("application/VND"));
+        assert!(!Pattern::parse("image/*").matches("IMAGES/png"));
+        assert!(!Pattern::parse("text/markdown").matches("text/markdownx"));
     }
 
     #[test]

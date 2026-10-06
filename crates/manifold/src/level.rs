@@ -41,19 +41,43 @@ pub(crate) struct LevelEdge {
     pub(crate) highlight: bool,
 }
 
+/// One walk of `node_order` at the level being viewed (`App::level_scan`).
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(crate) struct LevelScan {
+    /// The stored nodes by draw layer (`Caps::draw_layer`), each layer in `node_order`: the order
+    /// `build_graph_ui`'s card loop draws them, a later layer on top.
+    pub(crate) layers: [Vec<String>; crate::caps::DRAW_LAYERS],
+    /// The container cards (`is_container`) among them, in `node_order`: what the toolbar's group chip, Ungroup
+    /// All and a drop's first search act on.
+    pub(crate) groups: Vec<String>,
+}
+
 impl App {
-    /// The current level's stored nodes by draw layer (`Caps::draw_layer`),
-    /// each layer in `node_order`: one scan per layer, as the per-kind
-    /// scans always were (Task 3 of 2b-6 makes it one pass).
-    pub(crate) fn level_scan(&self) -> [Vec<String>; crate::caps::DRAW_LAYERS] {
-        std::array::from_fn(|layer| self.nodes_at_current_level(|kind| usize::from(kind.caps().draw_layer) == layer))
+    /// The current level's stored nodes, bucketed in one pass over `node_order` (stable insertion order, unlike
+    /// `self.nodes`, a `HashMap`). The kind check matters even at the top level: a top-level group's own `group` is
+    /// `None`, same as `current_group` there, so a level check alone could not tell the layers apart.
+    pub(crate) fn level_scan(&self) -> LevelScan {
+        let mut scan = LevelScan::default();
+        for id in &self.node_order {
+            if !self.in_level(id) {
+                continue;
+            }
+            let Some(kind) = self.card_kind(id) else { continue };
+            // Every builtin row's layer fits (`caps::rows` tests); a row past the top draws on top.
+            let layer = usize::from(kind.caps().draw_layer).min(crate::caps::DRAW_LAYERS - 1);
+            scan.layers[layer].push(id.clone());
+            if is_container(kind.ty) {
+                scan.groups.push(id.clone());
+            }
+        }
+        scan
     }
 
     /// The current level's items, bottom-first in draw order: stored
     /// nodes layer by layer (`level_scan`), and each layer in
     /// `node_order`.
     pub(crate) fn level_items(&self) -> Vec<LevelItem> {
-        self.level_items_from(&self.level_scan())
+        self.level_items_from(&self.level_scan().layers)
     }
 
     /// `level_items` from an `at_level` scan already made this frame
@@ -166,18 +190,49 @@ mod tests {
 
         let top: Vec<(String, LevelItemKind)> = app.level_items().into_iter().map(|i| (i.id, i.kind)).collect();
         // Downloads draw before groups (`Caps::draw_layer`), whatever the insertion order.
+        use crate::card_kind::fixtures::plain;
+        use crate::store::model::{TYPE_DOWNLOAD, TYPE_GROUP};
         assert_eq!(
             top,
             [
-                ("d".to_string(), LevelItemKind::Node(ItemNodeKind::Download.into())),
-                ("g".to_string(), LevelItemKind::Node(ItemNodeKind::Group.into())),
+                ("d".to_string(), LevelItemKind::Node(plain(TYPE_DOWNLOAD))),
+                ("g".to_string(), LevelItemKind::Node(plain(TYPE_GROUP))),
             ]
         );
         assert_eq!(app.level_items()[0].rect, node_card_rect(app.layout_pos("d"), &app.nodes["d"].payload));
+        assert_eq!(app.level_scan().groups, ["g"]);
 
         app.current_group = Some("g".into());
         let inside: Vec<String> = app.level_items().into_iter().map(|i| i.id).collect();
         assert_eq!(inside, ["inner"]);
+        assert!(app.level_scan().groups.is_empty());
+    }
+
+    /// The one-pass scan buckets as the per-layer filters did: each layer holds exactly the level's nodes of that
+    /// layer, in `node_order`, and `groups` exactly its containers.
+    #[test]
+    fn level_scan_buckets_every_node_on_the_level_by_layer_in_node_order() {
+        let mut app = App::default();
+        app.place_group(Some("g".into()), "G", crate::fetched::Placement { group: None, pos: egui::Vec2::ZERO });
+        app.insert_placeholder_node("d1".into(), egui::Vec2::ZERO, download("a.bin"));
+        app.new_note_shortcut();
+        app.insert_placeholder_node("d2".into(), egui::Vec2::ZERO, download("b.bin"));
+        app.insert_placeholder_node("away".into(), egui::Vec2::ZERO, download("c.bin"));
+        app.edit_group("away", Some("g".into()));
+        let scan = app.level_scan();
+        let by_filter = |pick: &dyn Fn(CardKind) -> bool| -> Vec<String> {
+            app.node_order
+                .iter()
+                .filter(|id| app.in_level(id) && app.card_kind(id).is_some_and(pick))
+                .cloned()
+                .collect()
+        };
+        for (layer, ids) in scan.layers.iter().enumerate() {
+            assert_eq!(*ids, by_filter(&|kind| usize::from(kind.caps().draw_layer) == layer), "layer {layer}");
+        }
+        assert_eq!(scan.groups, by_filter(&|kind| is_container(kind.ty)));
+        assert_eq!(scan.layers.concat().len(), 4, "the top level's nodes, once each");
+        assert_eq!(scan.layers[2], ["d1", "d2"]);
     }
 
     #[test]
@@ -186,7 +241,7 @@ mod tests {
         for _ in 0..3 {
             app.new_note_shortcut();
         }
-        assert_eq!(app.level_items_from(&app.level_scan()), app.level_items());
+        assert_eq!(app.level_items_from(&app.level_scan().layers), app.level_items());
     }
 
     #[test]

@@ -337,7 +337,7 @@ impl App {
                 }
             }
             GraphAction::UngroupAll => {
-                for id in self.nodes_at_current_level(|kind| is_container(kind.ty)) {
+                for id in self.level_scan().groups {
                     self.dissolve_group(&id);
                 }
             }
@@ -420,8 +420,7 @@ impl App {
         self.sync_json_level();
         // One level scan per frame, reused by the toolbar, settle key, minimap, items and cards;
         // `current_group` only changes at the end of this function.
-        let at_level = self.level_scan();
-        let groups_at_level = self.nodes_at_current_level(|kind| is_container(kind.ty));
+        let LevelScan { layers: at_level, groups: groups_at_level } = self.level_scan();
         let items = self.level_items_from(&at_level);
 
         self.update_graph_lod(&items);
@@ -964,7 +963,7 @@ impl App {
         // is still discoverable. All three now work at any
         // level, not just the top -- see `GroupPayload`'s own
         // doc comment on nesting; each already acts on
-        // `self.current_group`/the level's groups (`nodes_at_current_level`,
+        // `self.current_group`/the level's groups (`level_scan`,
         // its own level), never hardcoding the top level.
         //
         // The rule this toolbar actually follows, for any
@@ -1255,7 +1254,7 @@ impl App {
             if !secondary_down {
                 self.rect_select_start = None;
                 // Barely moved -- a plain right-click, not a real
-                // rectangle-select drag. `nodes_at_current_level`
+                // rectangle-select drag. The level items'
                 // hit-testing above already ruled out landing on any real
                 // node, so this is genuinely empty background: show the
                 // "New Tab/Note/Group/File" card here instead of computing

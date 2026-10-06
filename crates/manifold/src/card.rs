@@ -2185,6 +2185,7 @@ fn paint_card_title(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::card_kind::fixtures::{kinds, loaded_tab, plain, sleeping_tab};
 
     /// Fix batch B3: a chip on a narrow card gives up, in turn, the end of its name, its name, then the old jar's dot
     /// and arrow; it never runs past `max`.
@@ -2514,7 +2515,7 @@ mod tests {
             let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
                 let mut overlays: DeferredOverlays = Vec::new();
                 let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(300.0, 200.0));
-                let view = test_view(ItemNodeKind::Group);
+                let view = test_view(plain(TYPE_GROUP));
                 let mut actions = Vec::new();
                 let drop_preview = None;
                 let members = HashMap::new();
@@ -2574,9 +2575,9 @@ mod tests {
     }
 
     /// A `CardView` for `kind` with nothing set, for tests to override.
-    fn test_view(kind: ItemNodeKind) -> CardView {
+    fn test_view(kind: CardKind) -> CardView {
         CardView {
-            kind: kind.into(),
+            kind,
             color: None,
             in_group: false,
             overloaded: false,
@@ -2595,21 +2596,21 @@ mod tests {
         let style = CardStyle {
             border_idle: egui::Color32::GRAY,
             border_hover: egui::Color32::WHITE,
-            ..card_style(ItemNodeKind::Note.into(), &egui::Visuals::dark())
+            ..card_style(plain(TYPE_NOTE), &egui::Visuals::dark())
         };
         let red = egui::Color32::RED;
-        let view = |color| CardView { color, ..test_view(ItemNodeKind::Note) };
+        let view = |color| CardView { color, ..test_view(plain(TYPE_NOTE)) };
         // At rest: the tag color, else the kind's idle color.
         assert_eq!(card_border(&view(None), &style, 0.0), (1.0, egui::Color32::GRAY));
         assert_eq!(card_border(&view(Some(red)), &style, 0.0), (1.0, red));
         // An overloaded group rests on DANGER_COLOR, unless tagged.
-        let overloaded = |color| CardView { color, overloaded: true, ..test_view(ItemNodeKind::Group) };
+        let overloaded = |color| CardView { color, overloaded: true, ..test_view(plain(TYPE_GROUP)) };
         assert_eq!(card_border(&overloaded(None), &style, 0.0), (1.0, DANGER_COLOR));
         assert_eq!(card_border(&overloaded(Some(red)), &style, 0.0), (1.0, red));
         // Fully hovered: the hover color at 1.5, whatever the resting color.
         assert_eq!(card_border(&view(Some(red)), &style, 1.0), (1.5, egui::Color32::WHITE));
         // The open tab: ACCENT at 2.5 over everything, not eased.
-        let focused = CardView { color: Some(red), focused: true, ..test_view(ItemNodeKind::Tab) };
+        let focused = CardView { color: Some(red), focused: true, ..test_view(loaded_tab()) };
         assert_eq!(card_border(&focused, &style, 0.0), (2.5, ACCENT));
         assert_eq!(card_border(&focused, &style, 1.0), (2.5, ACCENT));
     }
@@ -2653,24 +2654,24 @@ mod tests {
     #[test]
     fn card_controls_list_each_cards_buttons_in_pointer_order() {
         use CardControl::*;
-        for kind in GRAPH_DRAW_ORDER.into_iter().filter(|&k| !matches!(k, ItemNodeKind::Tab | ItemNodeKind::Unloaded)) {
+        for kind in kinds().into_iter().filter(|k| k.ty != TYPE_TAB) {
             assert_eq!(card_controls(&test_view(kind)), vec![Swatch, Close], "{kind:?}");
             let grouped = CardView { in_group: true, ..test_view(kind) };
             assert_eq!(card_controls(&grouped), vec![Swatch, Eject, Close], "{kind:?}");
-            let close = if kind == ItemNodeKind::Group { NodeAction::Dissolve } else { NodeAction::Delete };
-            assert_eq!(Close.action(kind.into()), close, "{kind:?}");
+            let close = if kind.ty == TYPE_GROUP { NodeAction::Dissolve } else { NodeAction::Delete };
+            assert_eq!(Close.action(kind), close, "{kind:?}");
         }
         // An unloaded card shows its pin too, but never the audio
         // indicator -- it has no engine to be playing or muted.
-        assert_eq!(card_controls(&test_view(ItemNodeKind::Unloaded)), vec![Swatch, Pin, Close]);
+        assert_eq!(card_controls(&test_view(sleeping_tab())), vec![Swatch, Pin, Close]);
         assert_eq!(
-            card_controls(&CardView { audio_playing: true, muted: true, ..test_view(ItemNodeKind::Unloaded) }),
+            card_controls(&CardView { audio_playing: true, muted: true, ..test_view(sleeping_tab()) }),
             vec![Swatch, Pin, Close]
         );
         // A tab always shows its pin; its audio indicator while playing or
         // muted. Close still registers last: it overlaps the indicator.
         let tab = |f: fn(&mut CardView)| {
-            let mut view = test_view(ItemNodeKind::Tab);
+            let mut view = test_view(loaded_tab());
             f(&mut view);
             card_controls(&view)
         };
@@ -2685,7 +2686,7 @@ mod tests {
             }),
             vec![Swatch, Pin, Audio, Eject, Close]
         );
-        let (tab, note) = (CardKind::from(ItemNodeKind::Tab), CardKind::from(ItemNodeKind::Note));
+        let (tab, note) = (loaded_tab(), plain(TYPE_NOTE));
         assert_eq!(Close.action(tab), NodeAction::Delete);
         assert_eq!(Pin.action(tab), NodeAction::TogglePin);
         assert_eq!(Audio.action(tab), NodeAction::ToggleMute);
@@ -2731,36 +2732,31 @@ mod tests {
     /// A PDF card's click reveals its file, as a download's does; the other kinds keep theirs.
     #[test]
     fn click_action_gives_a_pdf_the_download_click() {
-        use ItemNodeKind as K;
-        let click_action = |kind: K| click_action(kind.into());
-        assert_eq!(click_action(K::Pdf), Some(NodeAction::Reveal));
-        assert_eq!(click_action(K::Pdf), click_action(K::Download));
-        for kind in [K::Tab, K::Unloaded, K::Image] {
+        assert_eq!(click_action(plain(TYPE_PDF)), Some(NodeAction::Reveal));
+        assert_eq!(click_action(plain(TYPE_PDF)), click_action(plain(TYPE_DOWNLOAD)));
+        for kind in [loaded_tab(), sleeping_tab(), plain(TYPE_IMAGE)] {
             assert_eq!(click_action(kind), Some(NodeAction::Open), "{kind:?}");
         }
-        for kind in [K::Note, K::Group, K::Json] {
+        for kind in [plain(TYPE_NOTE), plain(TYPE_GROUP), plain(TYPE_JSON), plain(TYPE_JSON_LEAF)] {
             assert_eq!(click_action(kind), None, "{kind:?}: handled by the caller");
         }
     }
 
     #[test]
     fn drop_action_matches_the_drop_table() {
-        use ItemNodeKind as K;
-        let card = |kind: K| DropTarget::Card(kind.into());
-        let drop_action = |kind: K, target, inside_group| drop_action(kind.into(), target, inside_group);
-        for kind in GRAPH_DRAW_ORDER {
+        let card = |kind: CardKind| DropTarget::Card(kind);
+        let (tab, sleeping, group) = (loaded_tab(), sleeping_tab(), plain(TYPE_GROUP));
+        for kind in kinds() {
             // The back button only exists inside a group.
             assert_eq!(drop_action(kind, DropTarget::BackButton, true), Some(DropEffect::Eject), "{kind:?}");
             assert_eq!(drop_action(kind, DropTarget::BackButton, false), None, "{kind:?}");
-            let onto_group = if kind == K::Group { DropEffect::Merge } else { DropEffect::Join };
+            let onto_group = if kind.ty == TYPE_GROUP { DropEffect::Merge } else { DropEffect::Join };
             for inside_group in [false, true] {
-                assert_eq!(drop_action(kind, card(K::Group), inside_group), Some(onto_group), "{kind:?}");
+                assert_eq!(drop_action(kind, card(group), inside_group), Some(onto_group), "{kind:?}");
             }
         }
         // An unloaded card is a tab on both sides of the drop.
-        for (dragged, target) in
-            [(K::Tab, K::Tab), (K::Tab, K::Unloaded), (K::Unloaded, K::Tab), (K::Unloaded, K::Unloaded)]
-        {
+        for (dragged, target) in [(tab, tab), (tab, sleeping), (sleeping, tab), (sleeping, sleeping)] {
             assert_eq!(
                 drop_action(dragged, card(target), false),
                 Some(DropEffect::GroupWith),
@@ -2773,10 +2769,10 @@ mod tests {
             );
         }
         // Only a tab drops onto a tab, and nothing drops onto the file kinds.
-        assert_eq!(drop_action(K::Note, card(K::Tab), false), None);
-        assert_eq!(drop_action(K::Group, card(K::Tab), true), None);
-        assert_eq!(drop_action(K::Tab, card(K::Note), false), None);
-        assert_eq!(drop_action(K::Image, card(K::Json), true), None);
+        assert_eq!(drop_action(plain(TYPE_NOTE), card(tab), false), None);
+        assert_eq!(drop_action(group, card(tab), true), None);
+        assert_eq!(drop_action(tab, card(plain(TYPE_NOTE)), false), None);
+        assert_eq!(drop_action(plain(TYPE_IMAGE), card(plain(TYPE_JSON)), true), None);
     }
 
     #[test]

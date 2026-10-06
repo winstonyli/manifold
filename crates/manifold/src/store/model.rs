@@ -146,7 +146,7 @@ pub enum Kind {
 /// register, and a `Create` only writes the fields listed here). Fields a type does not list stay raw in the document
 /// untouched (2b-5 Ruling 2).
 #[rustfmt::skip]
-const TYPES: [(Kind, &str, &[u32]); 9] = {
+pub(crate) const TYPES: [(Kind, &str, &[u32]); 9] = {
     use field::*;
     [
         (Kind::Tab, TYPE_TAB, &[POS, COLOR, PARENT, URL, ENGINE, PINNED, JAR, JAR_SET]),

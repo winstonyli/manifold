@@ -131,48 +131,6 @@ impl NodePayload {
     }
 }
 
-/// The card classifier `CardKind` replaced (2b-6 Task 2): only the test tables still name it, through
-/// `From<ItemNodeKind> for CardKind`, until Task 3 rewrites them and deletes it.
-#[cfg(test)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ItemNodeKind {
-    Tab,
-    Unloaded,
-    Download,
-    Group,
-    Note,
-    Image,
-    Pdf,
-    Json,
-}
-
-/// Every kind, in the order Graph view drew their cards (now `Caps::draw_layer`): the test tables' kind list.
-#[cfg(test)]
-pub(crate) const GRAPH_DRAW_ORDER: [ItemNodeKind; 8] = [
-    ItemNodeKind::Tab,
-    ItemNodeKind::Unloaded,
-    ItemNodeKind::Download,
-    ItemNodeKind::Note,
-    ItemNodeKind::Image,
-    ItemNodeKind::Pdf,
-    ItemNodeKind::Json,
-    ItemNodeKind::Group,
-];
-
-#[cfg(test)]
-pub(crate) fn item_node_kind(payload: &NodePayload) -> ItemNodeKind {
-    match payload {
-        NodePayload::Tab(_) => ItemNodeKind::Tab,
-        NodePayload::Unloaded(_) => ItemNodeKind::Unloaded,
-        NodePayload::Download(_) => ItemNodeKind::Download,
-        NodePayload::Group(_) => ItemNodeKind::Group,
-        NodePayload::Note(_) => ItemNodeKind::Note,
-        NodePayload::Image(_) => ItemNodeKind::Image,
-        NodePayload::Pdf(_) => ItemNodeKind::Pdf,
-        NodePayload::Json(_) => ItemNodeKind::Json,
-    }
-}
-
 /// A sticky note's own data -- free-form user-typed text, no engine process
 /// or IPC of any kind behind it (unlike every other node kind so far). The
 /// first new kind added on top of the unified `GraphNode`/`NodePayload`
@@ -550,49 +508,6 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // `Tab` is left out: `TabPayload` owns a live `EngineTab`, which a unit
-    // test can't construct. Its arm is covered by live Tab-view runs instead.
-    #[test]
-    fn maps_each_constructible_payload_variant_to_its_own_kind() {
-        assert_eq!(
-            item_node_kind(&NodePayload::Download(DownloadPayload {
-                path: "file.bin".into(),
-                bytes_received: 0,
-                total_bytes: Some(1024),
-                completed: false,
-                failed: false
-            })),
-            ItemNodeKind::Download
-        );
-        assert_eq!(item_node_kind(&NodePayload::Group(GroupPayload::default())), ItemNodeKind::Group);
-        assert_eq!(
-            item_node_kind(&NodePayload::Note(NotePayload { text: "n".into(), editing: false })),
-            ItemNodeKind::Note
-        );
-        assert_eq!(
-            item_node_kind(&NodePayload::Image(ImagePayload {
-                path: "img.png".into(),
-                width: 100,
-                height: 100,
-                error: None,
-            })),
-            ItemNodeKind::Image
-        );
-        assert_eq!(
-            item_node_kind(&NodePayload::Pdf(PdfPayload { path: "doc.pdf".into(), outcome: None })),
-            ItemNodeKind::Pdf
-        );
-        assert_eq!(
-            item_node_kind(&NodePayload::Json(JsonPayload {
-                path: "data.json".into(),
-                value: Default::default(),
-                leaf: false,
-                error: None,
-            })),
-            ItemNodeKind::Json
-        );
-    }
 
     /// A card's screen-reader name is its kind, then its title (or the first line of a note).
     #[test]

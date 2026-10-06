@@ -1,6 +1,6 @@
 //! A card's identity: the type it is stored under and the tags its runtime adds (spec 2026-10-04-node-model-design.md,
-//! section 1). The key into the capability rows (`caps::registry`) and the edge table (`caps::edges`), replacing
-//! `ItemNodeKind` as 2b-6 moves its readers.
+//! section 1). The key into the capability rows (`caps::registry`) and the edge table (`caps::edges`); the card
+//! classifier enum it replaced went in 2b-6.
 
 use super::*;
 use crate::caps::{edges, registry, Caps, Tag, TagSet, CONTAINS};
@@ -40,8 +40,9 @@ pub(crate) fn can_contain(member: CardKind, group: CardKind) -> bool {
     edges().can_connect(CONTAINS, member.ty, group.ty)
 }
 
-/// The name EXPORTSTATE's `cards[].kind` gave this card before 2b-6 (`ItemNodeKind`'s `Debug` spelling): a live tab
-/// is `Tab`, any other tab `Unloaded`, a JSON leaf `Json`. The probe scripts still read these; Task 5 replaces them.
+/// The name EXPORTSTATE's `cards[].kind` gave this card before 2b-6 (the old card enum's `Debug` spelling): a live
+/// tab is `Tab`, any other tab `Unloaded`, a JSON leaf `Json`. The probe scripts still read these; Task 5 replaces
+/// them.
 pub(crate) fn legacy_kind_name(kind: CardKind) -> &'static str {
     match kind.ty {
         TYPE_TAB if kind.loaded() => "Tab",
@@ -67,26 +68,46 @@ impl App {
     }
 }
 
-/// The caps bridge's `item_node`, for the test tables still written over `ItemNodeKind` (Task 3 rewrites them).
+/// The card kinds the tests' tables run over.
 #[cfg(test)]
-impl From<ItemNodeKind> for CardKind {
-    fn from(kind: ItemNodeKind) -> CardKind {
-        let (ty, tags) = match kind {
-            ItemNodeKind::Tab => (TYPE_TAB, TagSet::of(&[Tag::Loaded])),
-            ItemNodeKind::Unloaded => (TYPE_TAB, TagSet::EMPTY),
-            ItemNodeKind::Download => (TYPE_DOWNLOAD, TagSet::EMPTY),
-            ItemNodeKind::Group => (TYPE_GROUP, TagSet::EMPTY),
-            ItemNodeKind::Note => (TYPE_NOTE, TagSet::EMPTY),
-            ItemNodeKind::Image => (TYPE_IMAGE, TagSet::EMPTY),
-            ItemNodeKind::Pdf => (TYPE_PDF, TagSet::EMPTY),
-            ItemNodeKind::Json => (TYPE_JSON, TagSet::EMPTY),
-        };
-        CardKind { ty, tags }
+pub(crate) mod fixtures {
+    use super::*;
+
+    /// A card of type `ty` with no tags: every kind but the live tab.
+    pub(crate) fn plain(ty: &'static str) -> CardKind {
+        CardKind { ty, tags: TagSet::EMPTY }
+    }
+
+    /// A tab with a running engine.
+    pub(crate) fn loaded_tab() -> CardKind {
+        CardKind { ty: TYPE_TAB, tags: TagSet::of(&[Tag::Loaded]) }
+    }
+
+    /// A sleeping, waking or failed tab.
+    pub(crate) fn sleeping_tab() -> CardKind {
+        plain(TYPE_TAB)
+    }
+
+    /// Every card kind, in draw order: each `TYPES` entry a node can show (`kinds_cover_every_node_type` pins that)
+    /// plus the loaded tab, which shares the sleeping tab's type.
+    pub(crate) fn kinds() -> [CardKind; 9] {
+        [
+            loaded_tab(),
+            sleeping_tab(),
+            plain(TYPE_DOWNLOAD),
+            plain(TYPE_NOTE),
+            plain(TYPE_IMAGE),
+            plain(TYPE_PDF),
+            plain(TYPE_JSON),
+            plain(TYPE_JSON_LEAF),
+            plain(TYPE_GROUP),
+        ]
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::fixtures::{kinds, loaded_tab, plain, sleeping_tab};
     use super::*;
     use crate::caps::DRAW_LAYERS;
     use crate::node::{
@@ -95,26 +116,19 @@ mod tests {
     };
     use crate::process_manager::{EngineKind, EngineTab};
 
-    fn plain(ty: &'static str) -> CardKind {
-        CardKind { ty, tags: TagSet::EMPTY }
-    }
-
-    fn loaded_tab() -> CardKind {
-        CardKind { ty: TYPE_TAB, tags: TagSet::of(&[Tag::Loaded]) }
-    }
-
-    /// Every card kind the old `ItemNodeKind` named, as `CardKind`s: the bridge tests' `KINDS` list.
-    fn kinds() -> [CardKind; 8] {
-        [
-            loaded_tab(),
-            plain(TYPE_TAB),
-            plain(TYPE_DOWNLOAD),
-            plain(TYPE_GROUP),
-            plain(TYPE_NOTE),
-            plain(TYPE_IMAGE),
-            plain(TYPE_PDF),
-            plain(TYPE_JSON),
-        ]
+    /// The fixture lists one card per node type (a jar is never a card) and the loaded tab, in draw order.
+    #[test]
+    fn kinds_cover_every_node_type() {
+        use crate::store::model::{TYPES, TYPE_JAR};
+        let types: Vec<&str> = TYPES.iter().map(|t| t.1).filter(|&ty| ty != TYPE_JAR).collect();
+        let listed: Vec<&str> = kinds().iter().filter(|kind| !kind.loaded()).map(|kind| kind.ty).collect();
+        for ty in &types {
+            assert!(listed.contains(ty), "{ty} is not in kinds()");
+        }
+        assert_eq!(listed.len(), types.len(), "{listed:?}");
+        assert_eq!(kinds()[0], loaded_tab());
+        let layers: Vec<u8> = kinds().iter().map(|kind| kind.caps().draw_layer).collect();
+        assert!(layers.windows(2).all(|pair| pair[0] <= pair[1]), "{layers:?}");
     }
 
     /// Every constructible payload with the type it is stored under and the `CardKind` it must read as.
@@ -193,7 +207,7 @@ mod tests {
         assert!(!is_container(kind.ty));
     }
 
-    /// The layers in the order `GRAPH_DRAW_ORDER` drew the kinds: a later one draws on top.
+    /// The layers in the order Graph view always drew the kinds: a later one draws on top.
     #[test]
     fn draw_layer_follows_the_graph_draw_order() {
         let order = [
@@ -211,7 +225,7 @@ mod tests {
             assert_eq!(kind.caps().draw_layer, layer, "{kind:?}");
             assert!(usize::from(layer) < DRAW_LAYERS);
         }
-        // A leaf drew as a Json card (`ItemNodeKind::Json` covered both types).
+        // A leaf drew as a Json card (the old card enum had one Json kind for both types).
         assert_eq!(plain(TYPE_JSON_LEAF).caps().draw_layer, plain(TYPE_JSON).caps().draw_layer);
     }
 
@@ -234,14 +248,13 @@ mod tests {
     /// EXPORTSTATE's `kind` strings are unchanged until Task 5: each old kind's `Debug` name, a leaf's `Json`.
     #[test]
     fn legacy_kind_names_spell_the_old_enum() {
-        for kind in GRAPH_DRAW_ORDER {
-            assert_eq!(legacy_kind_name(kind.into()), format!("{kind:?}"));
+        let names = ["Tab", "Unloaded", "Download", "Note", "Image", "Pdf", "Json", "Json", "Group"];
+        for (kind, name) in kinds().into_iter().zip(names) {
+            assert_eq!(legacy_kind_name(kind), name, "{kind:?}");
         }
-        assert_eq!(legacy_kind_name(plain(TYPE_JSON_LEAF)), "Json");
         assert_eq!(legacy_kind_name(plain(UNKNOWN_TYPE)), "Unknown");
-        // The test bridge keeps the old pair: one type, told apart by `Loaded`.
-        let (tab, sleeping) = (CardKind::from(ItemNodeKind::Tab), CardKind::from(ItemNodeKind::Unloaded));
-        assert_eq!(tab.ty, sleeping.ty);
-        assert!(tab.loaded() && !sleeping.loaded());
+        // The old pair is one type, told apart by `Loaded`.
+        assert_eq!(loaded_tab().ty, sleeping_tab().ty);
+        assert!(loaded_tab().loaded() && !sleeping_tab().loaded());
     }
 }

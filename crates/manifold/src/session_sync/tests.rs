@@ -448,6 +448,8 @@ fn a_node_inserted_behind_the_queues_back_trips_the_invariant() {
     assert!(app.save_session());
     let id = app.alloc_node_id();
     let payload = NodePayload::Note(NotePayload { text: "stray".into(), editing: false });
+    // Behind `place_node` on purpose, so the mirror is given the type by hand: a stray node, not an untyped one.
+    app.mirror.set(&id, field::TYPE, FieldValue::Str(Kind::Note.type_str().unwrap().to_owned()));
     app.nodes.insert(id, crate::GraphNode { payload });
     app.save_session();
 }

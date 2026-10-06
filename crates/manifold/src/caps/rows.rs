@@ -52,6 +52,7 @@ pub(crate) const DRAW_LAYERS: usize = 8;
 
 #[derive(Debug, Default)]
 pub(crate) struct Registry {
+    /// Kept in rank order, lowest first, equal ranks in registration order (`register`), so `caps` is one fold.
     rows: Vec<Row>,
 }
 
@@ -65,16 +66,17 @@ impl Registry {
         if self.rows.iter().any(|r| r.pattern == row.pattern && r.requires == row.requires) {
             return Err(format!("capability row {:?} with tags {:?} is already registered", row.pattern, row.requires));
         }
-        self.rows.push(row);
+        // After every row of the same or a lower rank: a stable sort, done once here rather than per lookup.
+        let at = self.rows.iter().rposition(|r| r.rank() <= row.rank()).map_or(0, |i| i + 1);
+        self.rows.insert(at, row);
         Ok(())
     }
 
     /// The rows matching `mime` whose required tags `tags` holds, applied from lowest rank to highest (equal rank:
-    /// registration order), each overriding the fields it sets.
+    /// registration order), each overriding the fields it sets. Per card per frame (`App::level_scan`): no
+    /// allocation, the rows are already in rank order.
     pub(crate) fn caps(&self, mime: &str, tags: TagSet) -> Caps {
-        let mut matching: Vec<&Row> =
-            self.rows.iter().filter(|r| r.pattern.matches(mime) && tags.contains_all(r.requires)).collect();
-        matching.sort_by_key(|r| r.rank()); // stable: ties keep registration order
+        let matching = self.rows.iter().filter(|r| tags.contains_all(r.requires) && r.pattern.matches(mime));
         let mut caps = Caps::default();
         for row in matching {
             if let Some(restorable) = row.restorable {
@@ -166,6 +168,39 @@ mod tests {
             Row::new("application/vnd.ab*").restorable(false),
         ]);
         assert!(!r.caps("application/vnd.abc", TagSet::EMPTY).restorable);
+    }
+
+    /// Rows registered in any order layer by rank, equal ranks by registration order, and a mixed-case lookup
+    /// reads the same caps as a lower-case one: the builtin table, registered forwards and backwards.
+    #[test]
+    fn layering_is_the_same_whatever_the_registration_order_and_the_input_case() {
+        let forwards = registry(builtin_rows());
+        let mut reversed = builtin_rows();
+        reversed.reverse();
+        let backwards = registry(reversed);
+        let loaded = TagSet::of(&[Tag::Loaded]);
+        for (mime, tags) in [
+            ("application/vnd.manifold.tab", TagSet::EMPTY),
+            ("application/vnd.manifold.tab", loaded),
+            ("image/png", TagSet::EMPTY),
+            ("image/png", loaded),
+            ("application/json", TagSet::EMPTY),
+            ("application/vnd.manifold.json-leaf", TagSet::EMPTY),
+            ("text/markdown", TagSet::of(&[Tag::Blank])),
+            ("application/octet-stream", TagSet::EMPTY),
+            ("video/mp4", TagSet::EMPTY),
+        ] {
+            let want = forwards.caps(mime, tags);
+            assert_eq!(backwards.caps(mime, tags), want, "{mime} {tags:?}: rank, not registration order");
+            assert_eq!(forwards.caps(&mime.to_ascii_uppercase(), tags), want, "{mime}: case");
+        }
+        assert_eq!(forwards.caps("IMAGE/PNG", TagSet::EMPTY), Caps { restorable: true, draw_layer: 4 });
+        // Equal rank keeps registration order in both tables: the later `application/vnd.a*` twin wins.
+        let ranks: Vec<(u8, u32)> = forwards.rows.iter().map(Row::rank).collect();
+        assert!(ranks.windows(2).all(|pair| pair[0] <= pair[1]), "{ranks:?}");
+        let mut r = registry(vec![Row::new("*/*"), Row::new("application/vnd.ab*").restorable(false)]);
+        r.register(Row::new("application/vnd.a*").restorable(true)).unwrap();
+        assert!(r.caps("application/vnd.abc", TagSet::EMPTY).restorable, "registered last, applied last");
     }
 
     #[test]

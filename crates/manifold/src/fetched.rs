@@ -711,6 +711,20 @@ mod tests {
         assert_eq!(kinds, ["image 3x2", "pdf", r#"json {"a":1}"#, "json [2]", "note # hi", "download 4 done=true"]);
     }
 
+    /// A node whose mirror entry exists without a type (an op named it before its `Create` arrived) is typed when
+    /// placed, so its card never reads as unknown.
+    #[test]
+    fn place_node_types_a_node_whose_entry_lacks_a_type() {
+        let mut app = App::default();
+        app.mirror.set("n", field::URL, FieldValue::Str("https://a/".into()));
+        assert_eq!(app.mirror.ty("n"), "");
+        let note = NodePayload::Note(NotePayload { text: "t".into(), editing: false });
+        app.insert_placeholder_node("n".into(), egui::Vec2::ZERO, note);
+        assert_eq!(app.mirror.ty("n"), crate::store::model::TYPE_NOTE);
+        assert_eq!(app.card_kind("n").unwrap().ty, crate::store::model::TYPE_NOTE);
+        assert_eq!(app.mirror.url("n"), "https://a/", "the entry's other fields are kept");
+    }
+
     #[test]
     fn insert_content_refuses_a_failing_local_file() {
         let dir = crate::store::testutil::temp_dir("insert_content_refuse");
