@@ -1396,6 +1396,12 @@ Gate (two-instance-test x3, headless-smoke-test x1) on ddf2704, 2026-10-07: two-
   `line_click_allowed`, so the connect handles stay usable while a note is being edited.
 - I2 (and Task 2 M3 for the connect-drag): `on_window_focus(false)` cancels a connect-drag and drops `line_press`. The
   release block cancels, instead of linking, when the button is up with no release this frame (a lost button-up).
+  Focus-loss verified live (`scripts/focus-loss-probe.sh`, 2026-10-07): 9 PASS on each of 3 runs (and on
+  one earlier run without the late button-up check). A real foreground change (the headless window given the
+  foreground, then a throwaway form taking it) delivered winit's `Focused(false)`; `connect_drag` was null, and
+  neither a late button-up over b nor a click on b linked. The control (`NO_STEAL=1`) keeps the drag alive and the late button-up links a -> b, so the checks
+  discriminate. No headless short-circuit stands in the way: real `Focused` events reach `on_window_focus` in
+  headless mode too (only egui's `raw_input.focused` is forced on).
 - M2: a release that egui counts as a click (no movement) cancels, so a click on a handle's outer half over a
   neighbouring card links nothing. A press held past egui's `max_click_duration` without moving is no longer a click
   and links to whatever is under the handle's outer half; that remainder is accepted.

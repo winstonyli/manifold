@@ -52,7 +52,8 @@ line to disconnect"). Adds two gestures on top of `App::connect` / `disconnect`;
 - **Lifecycle:** `connect_drag` is reset wherever `dragging` and `connecting` are reset (`end_stale_drag`,
   `end_stale_connect`, session replace, source removed or off level). The pick-target "any primary click cancels"
   rule fires on `primary_clicked`, so a press-drag-release is not cancelled by it; a release on the handle without
-  moving ends the gesture.
+  moving ends the gesture. Losing window focus cancels it (`on_window_focus`; added in the final review, I2), since
+  the button-up may go to another window; `scripts/focus-loss-probe.sh` checks this in the real app.
 
 ## Not in scope
 
