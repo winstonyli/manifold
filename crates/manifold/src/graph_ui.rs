@@ -443,7 +443,8 @@ impl App {
         // `Order::Middle`.
         self.apply_camera_requests(reset_view);
 
-        if self.nodes.is_empty() {
+        // The level drawn, not the whole graph: an empty group shows it too.
+        if items.is_empty() {
             let rect = ui.max_rect();
             ui.painter().text(
                 rect.center(),
@@ -2198,5 +2199,42 @@ mod tests {
                 .collect();
         }
         assert_eq!(hints.len(), 1, "the hint is painted once");
+    }
+
+    /// The hint is per level: an empty group, or the top level beside a group that holds the only tab, shows it; a
+    /// level with a node does not.
+    #[test]
+    fn the_hint_shows_on_every_empty_level_not_only_an_empty_graph() {
+        use crate::fetched::Placement;
+        let ctx = egui::Context::default();
+        crate::theme::apply_fonts(&ctx);
+        let mut app = App::default();
+        let at = Placement { group: None, pos: egui::Vec2::ZERO };
+        app.place_group(Some("full".into()), "Full", at);
+        app.place_group(Some("empty".into()), "Empty", Placement { group: Some("full".into()), pos: egui::Vec2::ZERO });
+        let note = Runtime::Note(NotePayload { text: "n".into(), editing: false });
+        app.insert_placeholder_node("n".into(), egui::Vec2::ZERO, crate::store::model::Kind::Note, note);
+        app.edit_group("n", Some("full".into()));
+        let hints_at = |app: &mut App, level: Option<&str>| {
+            app.current_group = level.map(str::to_owned);
+            let mut hints = 0;
+            for _ in 0..3 {
+                let input = egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0))),
+                    ..Default::default()
+                };
+                let mut output = ctx.run_ui(input, |ui| app.build_graph_ui(ui));
+                output.textures_delta.clear();
+                hints = output
+                    .shapes
+                    .iter()
+                    .filter(|s| matches!(&s.shape, egui::Shape::Text(t) if t.galley.text() == EMPTY_HINT))
+                    .count();
+            }
+            hints
+        };
+        assert_eq!(hints_at(&mut app, Some("empty")), 1, "an empty group shows the hint");
+        assert_eq!(hints_at(&mut app, Some("full")), 0, "a level with a node does not");
+        assert_eq!(hints_at(&mut app, None), 0, "the top level holds the group card");
     }
 }

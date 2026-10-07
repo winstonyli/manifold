@@ -574,7 +574,7 @@ impl App {
                         }
                         _ => format!("Couldn't start {} for {}: {err}", engine_label(kind), Self::toast_url(&url)),
                     };
-                    self.queue_failure_toast(&err.to_string(), toast);
+                    self.queue_failure_toast(kind, &url, group.as_deref(), &err.to_string(), toast);
                     // The same intent failing again refreshes the card already standing for it.
                     if matches!(purpose, SpawnPurpose::Root | SpawnPurpose::New) {
                         if let Some(twin) = self.failed_twin(&id, &url, kind, group.as_deref()) {
@@ -589,6 +589,15 @@ impl App {
                             self.queue_delete(&id);
                             self.save_session();
                             return;
+                        }
+                    }
+                    // A retry (or restart) that fails beside a card already failed for its intent, which a Root/New
+                    // failure made while the retry was waking, keeps the retried card (its id is the one in use) and
+                    // drops the other: one card per intent, with this error.
+                    if matches!(purpose, SpawnPurpose::Respawn | SpawnPurpose::Wake) {
+                        if let Some(twin) = self.failed_twin(&id, &url, kind, group.as_deref()) {
+                            self.record_closed(&twin);
+                            self.remove_tab(&twin);
                         }
                     }
                     let state = UnloadedState::Failed(err.to_string());
@@ -952,11 +961,13 @@ impl App {
             self.close_split();
         }
         self.tab_crashes.remove(id);
-        self.queue_toast(if cannot_start {
-            format!("Couldn't start {} for {}: {reason}", engine_label(kind), Self::toast_url(&url))
+        if cannot_start {
+            let message = format!("Couldn't start {} for {}: {reason}", engine_label(kind), Self::toast_url(&url));
+            let group = self.mirror.group(id).map(str::to_owned);
+            self.queue_failure_toast(kind, &url, group.as_deref(), reason, message);
         } else {
-            format!("Tab keeps crashing, left closed: {}", Self::toast_url(&url))
-        });
+            self.queue_toast(format!("Tab keeps crashing, left closed: {}", Self::toast_url(&url)));
+        }
         self.save_session();
     }
 

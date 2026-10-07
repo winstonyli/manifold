@@ -2729,9 +2729,20 @@ impl App {
         self.save_toast_queue.push_back(message);
     }
 
-    /// A spawn-failure toast: held a moment so failures sharing `cause` read as one message (`failure_toasts`).
-    pub(crate) fn queue_failure_toast(&mut self, cause: &str, message: String) {
-        self.failure_notices.push(std::time::Instant::now(), cause, message);
+    /// A spawn-failure toast: held a moment so failures with one cause (engine and `error`) read as one message, counted
+    /// by distinct intent (`url`, engine, `group`; `failure_toasts`).
+    pub(crate) fn queue_failure_toast(
+        &mut self,
+        kind: EngineKind,
+        url: &str,
+        group: Option<&str>,
+        error: &str,
+        message: String,
+    ) {
+        let intent = format!("{url}\u{1f}{}\u{1f}{}", engine_label(kind), group.unwrap_or_default());
+        self.failure_notices.push(std::time::Instant::now(), engine_label(kind), error, &intent, message);
+        // The frame that builds toasts may already have run; nothing else need repaint before the window ends.
+        self.egui_ctx.request_repaint_after(failure_toasts::WINDOW);
     }
 
     /// `url` short enough for a toast: its first `TOAST_URL_CHARS` characters and an ellipsis. A toast sizes to its

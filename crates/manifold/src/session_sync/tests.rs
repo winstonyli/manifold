@@ -1829,17 +1829,21 @@ fn a_sleeping_tab_saves_as_its_tab() {
 
 /// Fails every spawn parked in `test_spawns`, as a missing engine would.
 fn fail_spawns(app: &mut App) {
-    for (spawn, generation) in std::mem::take(&mut app.test_spawns) {
-        let result = Err(std::io::Error::other("no engine").into());
-        app.handle_tab_spawn_result(crate::TabSpawnOutcome {
-            spawn,
-            generation,
-            result,
-            seeded: Default::default(),
-            jar: Default::default(),
-            seed_clears: None,
-        });
+    for parked in std::mem::take(&mut app.test_spawns) {
+        fail_spawn(app, parked);
     }
+}
+
+fn fail_spawn(app: &mut App, (spawn, generation): (crate::TabSpawn, u64)) {
+    let result = Err(std::io::Error::other("no engine").into());
+    app.handle_tab_spawn_result(crate::TabSpawnOutcome {
+        spawn,
+        generation,
+        result,
+        seeded: Default::default(),
+        jar: Default::default(),
+        seed_clears: None,
+    });
 }
 
 /// Starts a New spawn for `url` and lands it on a fake host; returns the new tab's id.
@@ -4783,4 +4787,41 @@ fn spawn_failures_of_one_cause_toast_once_with_a_count() {
         app.queue_toast(message);
     }
     assert_eq!(app.save_toast_queue.iter().collect::<Vec<_>>(), ["3 tabs couldn't start: no engine"]);
+}
+
+fn flushed_failure_toasts(app: &mut App) -> Vec<String> {
+    app.failure_notices.flush(std::time::Instant::now() + crate::failure_toasts::WINDOW)
+}
+
+/// A host that cannot start is a spawn failure like any other: two such crashes with one reason read as one message.
+#[test]
+fn cannot_start_crashes_with_one_reason_toast_once_with_a_count() {
+    let mut app = app_on(&temp_dir("crash-toasts").join("session.mnf"), 1);
+    let a = succeed_spawn(&mut app, "https://a/");
+    let b = succeed_spawn(&mut app, "https://b/");
+    app.leave_crashed_card(&a, "no engine", true);
+    app.leave_crashed_card(&b, "no engine", true);
+    assert!(app.save_toast_queue.is_empty(), "held inside the window");
+    assert_eq!(flushed_failure_toasts(&mut app), ["2 tabs couldn't start: no engine"]);
+}
+
+/// A failed card's retry is `Waking`, so a Root/New failure of the same intent meanwhile lands as a second card;
+/// when the wake fails too, one card stays: the retried one, with the refreshed error.
+#[test]
+fn a_failed_retry_and_a_new_failure_of_one_intent_leave_one_card() {
+    let mut app = app_on(&temp_dir("failed-retry-twin").join("session.mnf"), 1);
+    app.spawn_tab_at("https://a/", egui::Vec2::ZERO, None, None);
+    fail_spawns(&mut app);
+    let card = failed_cards(&app).remove(0);
+    let kind = app.mirror.engine(&card);
+    app.wake_tab(&card, kind);
+    assert_eq!(app.nodes[&card].as_unloaded().unwrap().state, UnloadedState::Waking);
+    app.spawn_tab_at("https://a/", egui::Vec2::ZERO, None, None);
+    let mut parked = std::mem::take(&mut app.test_spawns);
+    assert_eq!(parked.len(), 2);
+    let wake = parked.remove(parked.iter().position(|(s, _)| s.id == card).unwrap());
+    fail_spawn(&mut app, parked.remove(0));
+    fail_spawn(&mut app, wake);
+    assert_eq!(failed_cards(&app), std::slice::from_ref(&card), "one card for one intent, the retried one");
+    assert_eq!(app.nodes.len(), 1);
 }
