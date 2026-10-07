@@ -136,6 +136,11 @@ impl App {
         targets
     }
 
+    /// Whether `valid_targets(edge, from)` is non-empty, stopping at the first (`shows_link_handles`, every frame).
+    pub(crate) fn has_valid_target(&self, edge: &str, from: &str) -> bool {
+        self.nodes.keys().any(|to| self.check_connect(edge, from, to).is_ok())
+    }
+
     /// Pick-target mode's end on a target: draws the chosen edge from the mode's source to `target`, ends the mode and
     /// saves. A refused edge (the target stopped being valid since it was drawn highlighted) says so in a toast.
     pub(crate) fn finish_connect(&mut self, target: &str) {

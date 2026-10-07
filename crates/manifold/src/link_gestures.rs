@@ -176,14 +176,16 @@ impl App {
         if let Some(source) = &self.connect_drag {
             return source == id;
         }
-        self.line_click_allowed() && !self.valid_targets(crate::caps::LINK, id).is_empty()
+        self.line_click_allowed() && self.has_valid_target(crate::caps::LINK, id)
     }
 
     /// A press on one of card `id`'s handles: pick-target mode for `link` from it, which rings the targets, run as a
-    /// drag.
+    /// drag. Like any press on the graph it stops a glide ("grab it to stop it"), which `track_pan_momentum` skips
+    /// during a connect-drag, so the cards hold still under the rubber band.
     pub(crate) fn start_connect_drag(&mut self, id: &str) {
         self.connecting = Some((id.to_string(), crate::caps::LINK));
         self.connect_drag = Some(id.to_string());
+        self.camera.momentum = None;
     }
 
     /// The topmost card under world point `at`. `level_items` is bottom-first, as right-click's hit-test reads it.
@@ -201,11 +203,21 @@ impl App {
         Some(ui.ctx().layer_transform_from_global(ui.layer_id()).map_or(pointer, |t| t * pointer))
     }
 
-    /// During a connect-drag, the card other than the source under the pointer, whose target ring brightens. egui
-    /// hovers only the dragged handle meanwhile, so the card's own hover cannot say so.
-    pub(crate) fn connect_drag_target(&self, ui: &egui::Ui) -> Option<String> {
+    /// During a connect-drag, the card a release at screen point `pointer` would link to: the topmost card other than
+    /// the source under it, inside `scene_outer_rect` and off the `minimap` (painted over the Scene, not a widget).
+    /// `(zoom_scale, translation)` maps world to screen (`graph_world_to_screen_transform`). Both the bright target
+    /// ring and the release read this, so the ring shows exactly where a release links. egui hovers only the dragged
+    /// handle meanwhile, so the card's own hover cannot say so.
+    pub(crate) fn connect_drag_target(
+        &self,
+        pointer: Option<egui::Pos2>,
+        scene_outer_rect: egui::Rect,
+        minimap: Option<egui::Rect>,
+        (zoom_scale, translation): (f32, egui::Vec2),
+    ) -> Option<String> {
         let source = self.connect_drag.as_ref()?;
-        self.card_at(Self::scene_pointer(ui)?).filter(|target| target != source)
+        let pointer = pointer.filter(|p| scene_outer_rect.contains(*p) && !minimap.is_some_and(|m| m.contains(*p)))?;
+        self.card_at(((pointer.to_vec2() - translation) / zoom_scale).to_pos2()).filter(|target| target != source)
     }
 
     /// The rubber band: a dashed accent line from the connect-drag's source centre to the pointer, over the cards.
@@ -742,5 +754,122 @@ mod tests {
         h.drag(&mut app, from, from + egui::vec2(-60.0, 0.0));
         assert_ne!(app.layout_pos(&a), before, "the card moved");
         assert!(app.connect_drag.is_none() && app.links_naming(&a).is_empty());
+    }
+
+    /// Review I1: a focused text field (a note being edited) keeps its keys, but Esc still cancels a connect-drag.
+    #[test]
+    fn escape_cancels_a_handle_drag_while_a_note_is_being_edited() {
+        let (h, mut app, [a, b, c]) = three_notes();
+        let on_a = screen_rect(&app, &a).center();
+        h.click(&mut app, on_a);
+        assert!(app.nodes[&a].as_note().unwrap().editing);
+        assert!(h.ctx.memory(|m| m.has_focus(egui::Id::new(("note_edit", a.as_str())))), "a's editor has focus");
+        let escape = egui::Event::Key {
+            key: egui::Key::Escape,
+            physical_key: Some(egui::Key::Escape),
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        };
+        let onto = screen_rect(&app, &c).center();
+        drag_from_handle(&h, &mut app, &b, HandleSide::Bottom, onto, vec![escape]);
+        assert!(app.links_naming(&b).is_empty(), "Esc cancelled it");
+        assert!(app.connect_drag.is_none() && app.connecting.is_none());
+    }
+
+    /// Where `draw_graph_minimap` puts the minimap: 160 by 110, 12 in from the scene's bottom-right corner.
+    fn minimap_rect(app: &App) -> egui::Rect {
+        let outer = app.graph_scene_outer_rect();
+        egui::Rect::from_min_size(
+            outer.right_bottom() - egui::vec2(160.0, 110.0) - egui::Vec2::splat(12.0),
+            egui::vec2(160.0, 110.0),
+        )
+    }
+
+    /// Review M1: the bright ring and the release read one function, so a card under the minimap (painted over the
+    /// Scene) is neither ringed nor linked.
+    #[test]
+    fn a_card_under_the_minimap_is_neither_ringed_nor_linked() {
+        let (h, mut app, [a, b, _]) = three_notes();
+        let (outer, minimap) = (app.graph_scene_outer_rect(), minimap_rect(&app));
+        // At 100%, b's centre under the minimap's centre; c, below, is then out of view, so the minimap shows.
+        let center = app.layout_pos(&b).to_pos2() - (minimap.center() - outer.center());
+        app.camera.jump_to(egui::Rect::from_center_size(center, outer.size()));
+        h.frame(&mut app, vec![]);
+        let over = minimap.center();
+        assert!(screen_rect(&app, &b).contains(over), "b lies under the minimap");
+        app.start_connect_drag(&a);
+        let transform = app.graph_world_to_screen_transform(outer);
+        assert_eq!(app.connect_drag_target(Some(over), outer, None, transform), Some(b.clone()), "without it: b");
+        assert_eq!(app.connect_drag_target(Some(over), outer, Some(minimap), transform), None, "not ringed");
+        app.cancel_connect();
+        drag_from_handle(&h, &mut app, &a, HandleSide::Right, over, vec![]);
+        assert!(app.links_naming(&a).is_empty(), "not linked");
+        assert!(app.connect_drag.is_none() && app.connecting.is_none());
+    }
+
+    /// Review M5: handles exist only on a hovered card. A drag from where a's right handle would be, off the card and
+    /// with a not hovered, pans.
+    #[test]
+    fn a_drag_from_a_handle_spot_on_an_unhovered_card_pans() {
+        let (h, mut app, [a, _, _]) = three_notes();
+        let spot = handle_on_screen(&app, &a, HandleSide::Right) + egui::vec2(4.0, 0.0);
+        assert!(!screen_rect(&app, &a).contains(spot), "the handle's outer half, off the card");
+        let before = app.camera.rect;
+        h.drag(&mut app, spot, spot + egui::vec2(100.0, 60.0));
+        assert_ne!(app.camera.rect.center(), before.center(), "the drag panned");
+        assert!(app.connect_drag.is_none() && app.links_naming(&a).is_empty());
+    }
+
+    /// Review M5: released where two cards overlap, the connect-drag links the one drawn on top.
+    #[test]
+    fn the_topmost_of_overlapping_cards_takes_the_release() {
+        let (h, mut app, [a, b, _]) = three_notes();
+        let d = app.alloc_node_id();
+        let note = Runtime::Note(NotePayload { text: "n".into(), editing: false });
+        app.insert_placeholder_node(d.clone(), app.layout_pos(&b), Kind::Note, note);
+        h.frame(&mut app, vec![]);
+        // Placed after the level settled its new count, so it stays overlapping b.
+        app.snap_layout(&d, app.layout_pos(&b) + egui::vec2(40.0, 20.0));
+        h.frame(&mut app, vec![]);
+        let both = screen_rect(&app, &b).intersect(screen_rect(&app, &d));
+        assert!(both.is_positive(), "b and d overlap");
+        let items: Vec<String> = app.level_items().into_iter().map(|i| i.id).collect();
+        let pos = |id: &String| items.iter().position(|i| i == id);
+        assert!(pos(&d) > pos(&b), "d is drawn after b, on top");
+        drag_from_handle(&h, &mut app, &a, HandleSide::Right, both.center(), vec![]);
+        let links = app.links_naming(&a);
+        assert_eq!(links.len(), 1);
+        assert_eq!(app.mirror.link_ends(&links[0]), (a.parse().ok(), d.parse().ok()), "a -> d, the top card");
+    }
+
+    /// Review M4: pressing a handle stops a glide ("grab it to stop it"), as any press on the graph does, so the
+    /// cards hold still under the rubber band; the drag itself starts none.
+    #[test]
+    fn a_handle_press_stops_a_glide_and_the_drag_starts_none() {
+        let (h, mut app, [a, b, _]) = three_notes();
+        let centre = screen_rect(&app, &a).center();
+        h.frame(&mut app, vec![egui::Event::PointerMoved(centre)]);
+        let handle = handle_on_screen(&app, &a, HandleSide::Right);
+        h.frame(&mut app, vec![egui::Event::PointerMoved(handle)]);
+        h.frame(&mut app, vec![egui::Event::PointerMoved(handle)]);
+        app.camera.momentum = Some(crate::view_modes::PanMomentum {
+            initial_velocity: egui::vec2(1.0, 0.0),
+            start: std::time::Instant::now(),
+            start_center: app.camera.rect.center(),
+        });
+        h.frame(&mut app, vec![press(handle, true)]);
+        assert_eq!(app.connect_drag.as_deref(), Some(a.as_str()));
+        assert!(app.camera.momentum.is_none(), "the press stopped the glide");
+        let held = app.camera.rect;
+        let onto = screen_rect(&app, &b).center();
+        for step in 1..=4 {
+            h.frame(&mut app, vec![egui::Event::PointerMoved(handle + (onto - handle) * (step as f32 / 4.0))]);
+        }
+        h.frame(&mut app, vec![press(onto, false)]);
+        h.frame(&mut app, vec![]);
+        assert_eq!(app.camera.rect, held, "the camera held still");
+        assert!(app.camera.momentum.is_none(), "and no glide after the release");
+        assert_eq!(app.links_naming(&a).len(), 1);
     }
 }

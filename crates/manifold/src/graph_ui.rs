@@ -575,6 +575,13 @@ impl App {
                 if self.json_level.is_some() {
                     self.draw_json_level(ui, &mut deferred_overlays, &mut json_edits, inv_zoom, zoom_scale);
                 } else {
+                    // The card a release now would link to, ringed bright: the release below reads the same function.
+                    let connect_target = self.connect_drag_target(
+                        ui.input(|i| i.pointer.interact_pos()),
+                        scene_outer_rect,
+                        minimap.map(|(rect, _, _)| rect),
+                        (zoom_scale, translation),
+                    );
                     self.draw_graph_cards(
                         ui,
                         &mut deferred_overlays,
@@ -583,6 +590,7 @@ impl App {
                         inv_zoom,
                         zoom_scale,
                         leave_group_button_rect,
+                        connect_target.as_deref(),
                     );
                     self.draw_pending_new_node_menu(ui, &mut deferred_overlays, &mut actions, inv_zoom, &project);
                     self.draw_peek_preview(ui, &mut deferred_overlays);
@@ -616,12 +624,15 @@ impl App {
         self.track_pan_momentum(ui, scene_rect);
 
         // A connect-drag ends when the button comes up (link-gestures spec A). Its target is the card under the
-        // pointer, unlike a card drop's (the dragged card's centre), in the scene and off the minimap.
+        // pointer, unlike a card drop's (the dragged card's centre), in the scene and off the minimap: the one the
+        // ring showed, through this frame's final transform.
         if self.connect_drag.is_some() && !ui.input(|i| i.pointer.primary_down()) {
-            let at = ui
-                .input(|i| i.pointer.interact_pos())
-                .filter(|p| scene_outer_rect.contains(*p) && !minimap.is_some_and(|(rect, _, _)| rect.contains(*p)));
-            let target = at.and_then(|p| self.card_at(((p.to_vec2() - translation) / zoom_scale).to_pos2()));
+            let target = self.connect_drag_target(
+                ui.input(|i| i.pointer.interact_pos()),
+                scene_outer_rect,
+                minimap.map(|(rect, _, _)| rect),
+                (zoom_scale, translation),
+            );
             self.end_connect_drag(target);
         }
 
@@ -1150,6 +1161,13 @@ impl App {
     /// `typing`: a text field had focus at frame start; its keys are its own
     /// (`shortcuts::text_field_has_keys`).
     pub(crate) fn handle_graph_keys(&mut self, ui: &egui::Ui, typing: bool) {
+        // Esc cancels a connect-drag even while a text field has the keys: the handle press never takes focus from
+        // it (egui surrenders focus on clicks only), so a note being edited would otherwise eat that Esc and the
+        // release would still link. That Esc does nothing else here.
+        if self.connect_drag.is_some() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.cancel_connect();
+            return;
+        }
         if self.json_level.is_some() {
             self.handle_json_keys(ui, typing);
             return;
@@ -1390,7 +1408,10 @@ impl App {
     /// never has "held down across multiple frames" to sample a
     /// velocity from), no node currently grabbed (a node drag moves
     /// the node, not the camera, so it'd contribute a bogus near-zero
-    /// sample anyway, but this is the explicit, intended guard), and
+    /// sample anyway, but this is the explicit, intended guard), no
+    /// connect-drag (the camera stays put, but a wheel zoom mid-drag moves
+    /// its centre, which would start a glide on release; the press's
+    /// "grab it to stop it" is `start_connect_drag`'s), and
     /// no `GraphCameraTween` in progress (that already owns
     /// `camera.rect` this frame).
     pub(crate) fn track_pan_momentum(&mut self, ui: &egui::Ui, scene_rect: egui::Rect) {
@@ -1587,6 +1608,7 @@ impl App {
         inv_zoom: f32,
         zoom_scale: f32,
         leave_group_button_rect: Option<egui::Rect>,
+        connect_target: Option<&str>,
     ) {
         // One drop target per frame, shared by the ring and the
         // release (see `drop_target`).
@@ -1622,7 +1644,6 @@ impl App {
         let members = self.group_members();
         // Pick-target mode: the cards a click would connect to, ringed.
         let pick_targets = self.connecting.as_ref().map(|(from, edge)| self.valid_targets(edge, from));
-        let connect_target = self.connect_drag_target(ui);
         let mut pass = CardPass {
             deferred_overlays,
             actions,
@@ -1630,7 +1651,7 @@ impl App {
             zoom_scale,
             drop_preview: &drop_preview,
             pick_targets: pick_targets.as_deref().unwrap_or_default(),
-            connect_target: connect_target.as_deref(),
+            connect_target,
             show_order: self.card_nav_active || self.hints_revealed,
             order: &tab_order,
             any_focused: false,
