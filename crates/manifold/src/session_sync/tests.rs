@@ -5017,3 +5017,54 @@ fn a_tab_that_becomes_content_keeps_its_links() {
     assert!(ends.contains(&(n, o)) && ends.contains(&(o, n)), "direction kept");
     assert!(app.save_session());
 }
+
+#[test]
+fn edges_of_leaves_out_a_dangling_link_and_one_at_another_level() {
+    let mut app = app_on(&temp_dir("edges-live").join("session.mnf"), 1);
+    let a = succeed_spawn(&mut app, "https://a/");
+    let b = succeed_spawn(&mut app, "https://b/");
+    let c = succeed_spawn(&mut app, "https://c/");
+    let ghost = app.alloc_node_id();
+    app.create_link(&a, &ghost);
+    app.connect(LINK, &a, &b).unwrap();
+    app.connect(LINK, &a, &c).unwrap();
+    let g = add_group(&mut app, "g");
+    app.edit_group(&b, Some(g));
+    app.edit_parent(&a, Some(ghost));
+    let of_a = app.edges_of(&a);
+    assert_eq!(of_a.len(), 1, "only the link to c is live and at a's level");
+    assert_eq!(of_a[0].other, c);
+}
+
+#[test]
+fn connecting_opened_from_again_replaces_the_opener() {
+    let mut app = app_on(&temp_dir("connect-replace").join("session.mnf"), 1);
+    let a = succeed_spawn(&mut app, "https://a/");
+    let b = succeed_spawn(&mut app, "https://b/");
+    let c = succeed_spawn(&mut app, "https://c/");
+    app.connect(OPENED_FROM, &c, &a).unwrap();
+    assert_eq!(app.connect(OPENED_FROM, &c, &b), Ok(()));
+    assert_eq!(app.mirror.parent(&c), Some(b.as_str()));
+}
+
+#[test]
+fn disconnect_removes_a_link_from_the_opposite_end() {
+    let mut app = app_on(&temp_dir("disconnect-reverse").join("session.mnf"), 1);
+    let a = succeed_spawn(&mut app, "https://a/");
+    let b = succeed_spawn(&mut app, "https://b/");
+    app.connect(LINK, &a, &b).unwrap();
+    app.disconnect(LINK, &b, &a);
+    assert!(app.links_naming(&a).is_empty());
+}
+
+#[test]
+fn a_refused_drag_reparent_leaves_the_parent_alone() {
+    let mut app = app_on(&temp_dir("reparent-refused").join("session.mnf"), 1);
+    let a = succeed_spawn(&mut app, "https://a/");
+    let b = succeed_spawn(&mut app, "https://b/");
+    app.connect(OPENED_FROM, &b, &a).unwrap();
+    app.apply_drop(&b, Some((crate::card::DropEffect::Reparent, Some("nope".into()))));
+    assert_eq!(app.mirror.parent(&b), Some(a.as_str()), "a missing target");
+    app.apply_drop(&a, Some((crate::card::DropEffect::Reparent, Some(b.clone()))));
+    assert_eq!(app.mirror.parent(&a), None, "a cycle");
+}

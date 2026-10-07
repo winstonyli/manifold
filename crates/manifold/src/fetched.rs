@@ -567,12 +567,17 @@ impl App {
             let old = tab_id.parse::<crate::store::model::NodeId>().ok();
             for link in self.links_naming(tab_id) {
                 let (from, to) = self.mirror.link_ends(&link);
-                let end = |e: Option<crate::store::model::NodeId>| match e {
-                    e if e == old => node_id.clone(),
-                    Some(other) => other.to_string(),
-                    None => String::new(),
+                // Only a link to another live card carries over: not a dangling, half-made or self link.
+                let (Some(from), Some(to)) = (from, to) else { continue };
+                let (new_from, new_to) = match (Some(from) == old, Some(to) == old) {
+                    (true, false) => (node_id.clone(), to.to_string()),
+                    (false, true) => (from.to_string(), node_id.clone()),
+                    _ => continue,
                 };
-                self.create_link(&end(from), &end(to));
+                let other = if Some(from) == old { &new_to } else { &new_from };
+                if self.nodes.contains_key(other) {
+                    self.create_link(&new_from, &new_to);
+                }
             }
             self.remove_tab(tab_id);
             self.save_session();

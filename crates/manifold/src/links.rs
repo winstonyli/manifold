@@ -51,8 +51,9 @@ impl App {
             return Err(ConnectError::Cycle);
         }
         let exists = match row.storage() {
-            Storage::Field(_) => self.mirror.parent(from) == Some(to),
-            _ => self.link_between(from, to).is_some(),
+            Storage::Field(field::PARENT) => self.mirror.parent(from) == Some(to),
+            Storage::Node(_) => self.link_between(from, to).is_some(),
+            _ => return Err(ConnectError::NotAllowed),
         };
         if exists {
             return Err(ConnectError::Exists);
@@ -100,15 +101,20 @@ impl App {
         })
     }
 
-    /// Every edge at `node` that the table draws as one the user can make: the card it was opened from (outgoing),
-    /// the cards opened from it, and its links.
+    /// Whether `other` is a live card shown at the same level as `node`: the far end of an edge worth listing.
+    fn shown_with(&self, node: &str, other: &str) -> bool {
+        other != node && self.nodes.contains_key(other) && self.mirror.group(other) == self.mirror.group(node)
+    }
+
+    /// The live edges at `node`: the card it was opened from (outgoing), the cards opened from it, and its links.
+    /// An edge whose far end is missing, not live, or at another level is left out, as the read rule hides it.
     #[allow(dead_code)] // only tests call it until the edge menu (a later links task)
     pub(crate) fn edges_of(&self, node: &str) -> Vec<EdgeRef> {
         let mut edges = Vec::new();
-        if let Some(opener) = self.mirror.parent(node) {
+        if let Some(opener) = self.mirror.parent(node).filter(|o| self.shown_with(node, o)) {
             edges.push(EdgeRef { edge: OPENED_FROM, other: opener.to_string(), link: None, outgoing: true });
         }
-        for child in self.children_of(node) {
+        for child in self.children_of(node).filter(|c| self.shown_with(node, c)) {
             edges.push(EdgeRef { edge: OPENED_FROM, other: child.to_string(), link: None, outgoing: false });
         }
         let me = node.parse::<NodeId>().ok();
@@ -116,7 +122,9 @@ impl App {
             let (from, to) = self.mirror.link_ends(&link);
             let outgoing = from == me;
             let Some(other) = (if outgoing { to } else { from }) else { continue };
-            edges.push(EdgeRef { edge: LINK, other: other.to_string(), link: Some(link), outgoing });
+            if self.shown_with(node, &other.to_string()) {
+                edges.push(EdgeRef { edge: LINK, other: other.to_string(), link: Some(link), outgoing });
+            }
         }
         edges
     }
