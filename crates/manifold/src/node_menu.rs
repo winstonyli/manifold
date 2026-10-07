@@ -229,51 +229,45 @@ pub(crate) fn build_node_context_menu(
                         }
                     }
                     NodeMenuItem::Jars { heading, rows, group } => {
-                        ui.add_space(3.0);
-                        ui.horizontal(|ui| {
-                            // Lined up with the menu rows' text, as `color_swatch_row` does.
-                            ui.add_space(ui.spacing().button_padding.x);
-                            ui.label(egui::RichText::new(*heading).small().weak());
+                        menu_section(ui, heading, |ui, grid| {
+                            for row in rows {
+                                // The label's marker in its own style (`JarLabel::append_to`); the rest in the button's.
+                                let font = egui::FontSelection::Default.resolve(ui.style());
+                                let plain = egui::TextFormat::simple(font.clone(), egui::Color32::PLACEHOLDER);
+                                let mut text = egui::text::LayoutJob::default();
+                                // The colour dot is painted in this leading gap, at the menu text's margin.
+                                text.append("", MenuGrid::MARKER_SLOT, plain.clone());
+                                row.name.append_to(&mut text, font, ui.visuals().weak_text_color());
+                                if let Some(n) = row.count {
+                                    text.append(&format!("({n})"), 8.0, plain);
+                                }
+                                // The current jar is the selected row: no tick to widen it.
+                                let response = menu_row(ui, text, None, &mut first_item, row.ticked);
+                                let dot = grid.marker_center(response.rect);
+                                // The default jar has no colour: an outlined dot.
+                                match row.color {
+                                    Some(c) => {
+                                        ui.painter().circle_filled(dot, 4.0, c);
+                                    }
+                                    None => {
+                                        let stroke = egui::Stroke::new(1.0, ui.visuals().weak_text_color());
+                                        ui.painter().circle_stroke(dot, 4.0, stroke);
+                                    }
+                                }
+                                let response = match row.count {
+                                    Some(n) if *group => response
+                                        .on_hover_text(format!("Tabs following this group that would change: {n}")),
+                                    _ => response,
+                                };
+                                if response.clicked() {
+                                    action = Some(match (group, row.id) {
+                                        (true, Some(id)) => NodeAction::SetGroupDefaultJar(id),
+                                        (true, None) => NodeAction::ClearGroupDefaultJar,
+                                        (false, id) => NodeAction::SetJar(id),
+                                    });
+                                }
+                            }
                         });
-                        for row in rows {
-                            // The label's marker in its own style (`JarLabel::append_to`); the rest in the button's.
-                            let font = egui::FontSelection::Default.resolve(ui.style());
-                            let plain = egui::TextFormat::simple(font.clone(), egui::Color32::PLACEHOLDER);
-                            let mut text = egui::text::LayoutJob::default();
-                            // The colour dot is painted in this leading gap, at the menu text's margin.
-                            text.append("", JAR_DOT_SLOT, plain.clone());
-                            row.name.append_to(&mut text, font, ui.visuals().weak_text_color());
-                            if let Some(n) = row.count {
-                                text.append(&format!("({n})"), 8.0, plain);
-                            }
-                            // The current jar is the selected row: no tick to widen it.
-                            let response = menu_row(ui, text, None, &mut first_item, row.ticked);
-                            let dot =
-                                response.rect.left_center() + egui::vec2(ui.spacing().button_padding.x + 5.0, 0.0);
-                            // The default jar has no colour: an outlined dot.
-                            match row.color {
-                                Some(c) => {
-                                    ui.painter().circle_filled(dot, 4.0, c);
-                                }
-                                None => {
-                                    let stroke = egui::Stroke::new(1.0, ui.visuals().weak_text_color());
-                                    ui.painter().circle_stroke(dot, 4.0, stroke);
-                                }
-                            }
-                            let response = match row.count {
-                                Some(n) if *group => {
-                                    response.on_hover_text(format!("Tabs following this group that would change: {n}"))
-                                }
-                                _ => response,
-                            };
-                            if response.clicked() {
-                                action = Some(match (group, row.id) {
-                                    (true, Some(id)) => NodeAction::SetGroupDefaultJar(id),
-                                    (true, None) => NodeAction::ClearGroupDefaultJar,
-                                    (false, id) => NodeAction::SetJar(id),
-                                });
-                            }
-                        }
                     }
                     NodeMenuItem::Colors => {
                         if let Some(picked) = color_swatch_row(ui, color) {
@@ -300,8 +294,47 @@ fn export_file_name(name: &str) -> String {
     format!("{}.json", if clean.is_empty() { crate::names::UNTITLED } else { &clean })
 }
 
-/// Room a jar row leaves before its name for the colour dot (10 px) and a gap.
-const JAR_DOT_SLOT: f32 = 16.0;
+/// The menu's layout grid. Every section (a heading and what follows) takes its spacing and left margin from here,
+/// so a new section lines up with the others instead of hand-tuning numbers (the colour row and the jar rows each
+/// had their own spacing bugs).
+struct MenuGrid {
+    /// Where the rows' text starts: the button padding. Headings and markers start here too.
+    margin: f32,
+}
+
+impl MenuGrid {
+    /// Space above a section's heading and below its content.
+    const SECTION_GAP: f32 = 6.0;
+    /// Space between a heading and its first row.
+    const HEADING_GAP: f32 = 3.0;
+    /// Width of a marker (a jar's colour dot, a swatch) and the gap after it, at the left margin.
+    const MARKER_SLOT: f32 = 16.0;
+    /// Space between neighbouring markers in a row of them.
+    const MARKER_GAP: f32 = 4.0;
+
+    fn of(ui: &egui::Ui) -> Self {
+        Self { margin: ui.spacing().button_padding.x }
+    }
+
+    /// The centre of the marker slot in a menu row at `row`.
+    fn marker_center(&self, row: egui::Rect) -> egui::Pos2 {
+        row.left_center() + egui::vec2(self.margin + Self::MARKER_SLOT / 2.0, 0.0)
+    }
+}
+
+/// A heading in the menu's small weak style, then `body`, with the grid's spacing around both.
+fn menu_section<R>(ui: &mut egui::Ui, heading: &str, body: impl FnOnce(&mut egui::Ui, &MenuGrid) -> R) -> R {
+    let grid = MenuGrid::of(ui);
+    ui.add_space(MenuGrid::SECTION_GAP);
+    ui.horizontal(|ui| {
+        ui.add_space(grid.margin);
+        ui.label(egui::RichText::new(heading).small().weak());
+    });
+    ui.add_space(MenuGrid::HEADING_GAP);
+    let out = body(ui, &grid);
+    ui.add_space(MenuGrid::SECTION_GAP);
+    out
+}
 
 /// A menu row; takes focus when `first_item` is set (clearing it), and shows the focus ring.
 fn menu_button(
@@ -351,49 +384,43 @@ fn menu_row(
 /// choice (`Some(None)` for no color).
 pub(crate) fn color_swatch_row(ui: &mut egui::Ui, current: Option<egui::Color32>) -> Option<Option<egui::Color32>> {
     let mut picked = None;
-    // Lined up with the menu rows' text, which `menu_item_style` pads 10 px.
-    let indent = ui.spacing().button_padding.x;
-    ui.add_space(6.0);
-    ui.horizontal(|ui| {
-        ui.add_space(indent);
-        ui.label(egui::RichText::new("Color").small().weak());
-    });
-    ui.add_space(3.0);
-    ui.horizontal(|ui| {
-        ui.add_space(indent);
-        ui.spacing_mut().item_spacing.x = 4.0;
-        for choice in TAG_COLOR_PALETTE.iter().copied().map(Some).chain([None]) {
-            let (rect, response) = ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::click());
-            let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
-            if response.has_focus() {
-                focus_ring(ui, &response);
-            }
-            match choice {
-                Some(swatch) => {
-                    ui.painter().circle_filled(rect.center(), 7.0, swatch);
-                    if current == Some(swatch) {
+    menu_section(ui, "Color", |ui, grid| {
+        ui.horizontal(|ui| {
+            ui.add_space(grid.margin);
+            ui.spacing_mut().item_spacing.x = MenuGrid::MARKER_GAP;
+            for choice in TAG_COLOR_PALETTE.iter().copied().map(Some).chain([None]) {
+                let (rect, response) =
+                    ui.allocate_exact_size(egui::Vec2::splat(MenuGrid::MARKER_SLOT), egui::Sense::click());
+                let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
+                if response.has_focus() {
+                    focus_ring(ui, &response);
+                }
+                match choice {
+                    Some(swatch) => {
+                        ui.painter().circle_filled(rect.center(), 7.0, swatch);
+                        if current == Some(swatch) {
+                            ui.painter().circle_stroke(
+                                rect.center(),
+                                7.0,
+                                egui::Stroke::new(2.0, ui.visuals().text_color()),
+                            );
+                        }
+                    }
+                    None => {
                         ui.painter().circle_stroke(
                             rect.center(),
                             7.0,
-                            egui::Stroke::new(2.0, ui.visuals().text_color()),
+                            egui::Stroke::new(1.5, ui.visuals().weak_text_color()),
                         );
                     }
                 }
-                None => {
-                    ui.painter().circle_stroke(
-                        rect.center(),
-                        7.0,
-                        egui::Stroke::new(1.5, ui.visuals().weak_text_color()),
-                    );
+                if response.clicked() {
+                    picked = Some(choice);
                 }
             }
-            if response.clicked() {
-                picked = Some(choice);
-            }
-        }
-        ui.add_space(indent - 4.0);
+            ui.add_space(grid.margin - MenuGrid::MARKER_GAP);
+        })
     });
-    ui.add_space(6.0);
     picked
 }
 
@@ -1306,6 +1333,48 @@ mod tests {
         crate::theme::apply_fonts(&ctx);
         crate::theme::apply_style(&ctx);
         ctx
+    }
+
+    /// The menu's sections share one grid: a heading, a jar row's colour dot and a colour swatch start at the same x,
+    /// whether or not the jar row is the selected one, so a new section cannot drift out of line.
+    #[test]
+    fn menu_sections_share_one_left_margin() {
+        let ctx = menu_ctx();
+        let row = |ticked, color| JarRow { id: None, name: JarLabel::built_in(), color, ticked, count: None };
+        let rows = vec![row(true, None), row(false, Some(egui::Color32::RED))];
+        let view = NodeMenuView {
+            jars: Some(JarMenu { rows, can_follow: false, will_switch: false, has_default: false }),
+            ..view_of(loaded_tab())
+        };
+        let config = node_menu_config(&view, false);
+        let (mut dots, mut swatches, mut headings) = (Vec::new(), Vec::new(), Vec::new());
+        for _ in 0..3 {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0))),
+                ..Default::default()
+            };
+            let mut output = ctx.run_ui(input, |ui| {
+                build_node_context_menu(ui, egui::pos2(100.0, 100.0), 1.0, true, &config, None, None);
+            });
+            output.textures_delta.clear();
+            (dots, swatches, headings) = Default::default();
+            for shape in output.shapes {
+                match shape.shape {
+                    egui::Shape::Circle(c) if c.radius == 4.0 => dots.push(c.center.x),
+                    egui::Shape::Circle(c) if c.radius == 7.0 => swatches.push(c.center.x),
+                    egui::Shape::Text(t) if matches!(t.galley.text(), "Jar" | "Color") => headings.push(t.pos.x),
+                    _ => {}
+                }
+            }
+        }
+        assert_eq!((dots.len(), headings.len()), (2, 2), "two jar dots, two headings");
+        assert!(!swatches.is_empty());
+        let half_slot = MenuGrid::MARKER_SLOT / 2.0;
+        // Both dots and the first swatch are centred in a slot that starts where the headings do.
+        for centre in [dots[0], dots[1], swatches[0]] {
+            assert!((centre - half_slot - headings[0]).abs() < 0.6, "{centre} vs heading {}", headings[0]);
+        }
+        assert!((headings[0] - headings[1]).abs() < 0.01, "headings: {headings:?}");
     }
 
     /// One frame of `build_node_menu` in an 800x600 window.
