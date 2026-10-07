@@ -5143,3 +5143,114 @@ fn export_state_lists_links() {
     let state = app.export_state();
     assert_eq!(state["links"], serde_json::json!([{ "id": link, "from": a, "to": b }]));
 }
+
+fn link_count(app: &App) -> usize {
+    app.mirror.link_ids().count()
+}
+
+fn link_doc(nodes: Vec<crate::store::json::JsonNode>) -> JsonDoc {
+    JsonDoc { nodes, local: None }
+}
+
+/// An outside end that is a real, valid id of a live card must still be dropped from a foreign file: otherwise an
+/// imported card would be linked to an unrelated card of this session. Fails if the `json.rs` FROM/TO drop is reverted.
+#[test]
+fn a_foreign_import_drops_a_link_naming_a_live_card_outside_the_file() {
+    let mut app = app_on(&temp_dir("link-foreign-live").join("session.mnf"), 1);
+    let live = succeed_spawn(&mut app, "https://live/");
+    let doc = link_doc(vec![
+        json_node("t", Kind::Tab, serde_json::json!({ "url": "https://a/" })),
+        json_node("l", Kind::Link, serde_json::json!({ "from": "t", "to": live })),
+    ]);
+    app.import_group_json(&doc);
+    assert_eq!(link_count(&app), 0);
+    assert!(app.links_naming(&live).is_empty());
+}
+
+/// Export Group keeps a link with both ends in the group and leaves out one to a card outside it.
+#[test]
+fn export_group_includes_links_inside_the_group_only() {
+    let mut app = app_on(&temp_dir("link-export-group").join("session.mnf"), 1);
+    let outside = succeed_spawn(&mut app, "https://out/");
+    let (x, y) = (succeed_spawn(&mut app, "https://x/"), succeed_spawn(&mut app, "https://y/"));
+    let group = add_group(&mut app, "g");
+    app.edit_group(&x, Some(group.clone()));
+    app.edit_group(&y, Some(group.clone()));
+    let inside = app.create_link(&x, &y);
+    let crossing = app.create_link(&x, &outside);
+    let json = app.export_group_json(&group).unwrap();
+    let ids: Vec<&str> = json.nodes.iter().map(|n| n.id.as_str()).collect();
+    assert!(ids.contains(&inside.as_str()), "the inner link is exported");
+    assert!(!ids.contains(&crossing.as_str()), "the crossing link is not");
+    // And it round-trips through Import Group.
+    app.import_group_json(&json);
+    assert_eq!(link_count(&app), 3, "the two originals and one imported copy");
+}
+
+/// An Own-trust file with a dangling link (a real-format id of no node) creates no junk link.
+#[test]
+fn an_own_import_skips_a_link_whose_end_is_not_a_node() {
+    let mut app = app_on(&temp_dir("link-own-dangling").join("session.mnf"), 1);
+    let doc = link_doc(vec![
+        json_node("t", Kind::Tab, serde_json::json!({ "url": "https://a/" })),
+        json_node("l", Kind::Link, serde_json::json!({ "from": "t", "to": "ffffffffffffffff-999" })),
+    ]);
+    app.replace_running_session(&doc, crate::store::json::Trust::Own);
+    assert_eq!(link_count(&app), 0);
+    assert!(app.save_session());
+}
+
+/// Export Session leaves out a link with a dead end and keeps a good one.
+#[test]
+fn export_session_drops_links_with_a_dead_end() {
+    let mut app = app_on(&temp_dir("link-export-session").join("session.mnf"), 1);
+    let (a, b) = (succeed_spawn(&mut app, "https://a/"), succeed_spawn(&mut app, "https://b/"));
+    let good = app.create_link(&a, &b);
+    let dead = app.create_link(&a, "ffffffffffffffff-777");
+    let json = app.export_session_json().unwrap();
+    let ids: Vec<&str> = json.nodes.iter().map(|n| n.id.as_str()).collect();
+    assert!(ids.contains(&good.as_str()));
+    assert!(!ids.contains(&dead.as_str()));
+}
+
+/// A link end must be a card: a file's link naming a jar, another link or itself loses that end, and is skipped.
+#[test]
+fn an_import_drops_a_link_whose_end_is_a_jar_a_link_or_itself() {
+    let mut app = app_on(&temp_dir("link-bad-ends").join("session.mnf"), 1);
+    let doc = link_doc(vec![
+        json_node("t", Kind::Tab, serde_json::json!({ "url": "https://a/" })),
+        json_node("j", Kind::Jar, serde_json::json!({ "name": "Work" })),
+        json_node("l1", Kind::Link, serde_json::json!({ "from": "t", "to": "j" })),
+        json_node("l2", Kind::Link, serde_json::json!({ "from": "t", "to": "l1" })),
+        json_node("l3", Kind::Link, serde_json::json!({ "from": "l3", "to": "t" })),
+    ]);
+    for trust in [crate::store::json::Trust::Own, crate::store::json::Trust::Foreign] {
+        app.replace_running_session(&doc, trust);
+        assert_eq!(link_count(&app), 0, "{trust:?}");
+    }
+}
+
+/// Which links a close records: a link between a member and the closed root, and one across nested groups, come
+/// back; one to a member `worth_reopening` drops (a blank note) is not recorded.
+#[test]
+fn closing_records_links_to_the_root_and_across_nesting_but_not_to_dropped_members() {
+    let mut app = app_on(&temp_dir("link-closed-kept").join("session.mnf"), 1);
+    let outer = add_group(&mut app, "outer");
+    let inner = add_group(&mut app, "inner");
+    app.edit_group(&inner, Some(outer.clone()));
+    let x = succeed_spawn(&mut app, "https://x/");
+    let y = succeed_spawn(&mut app, "https://y/");
+    app.edit_group(&x, Some(outer.clone()));
+    app.edit_group(&y, Some(inner.clone()));
+    let blank = add(&mut app, Kind::Note, Runtime::Note(NotePayload { text: " ".into(), editing: false }));
+    app.edit_group(&blank, Some(outer.clone()));
+    app.create_link(&x, &outer); // member and root
+    app.create_link(&x, &y); // across nested groups
+    app.create_link(&x, &blank); // to a member the entry drops
+    app.close_node(&outer);
+    let entry = app.closed.pop().unwrap();
+    assert_eq!(entry.doc.nodes.iter().filter(|n| n.kind() == Some(Kind::Link)).count(), 2);
+    app.reopen_closed(entry);
+    assert_eq!(link_count(&app), 2);
+    assert!(app.save_session());
+}

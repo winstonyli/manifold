@@ -1876,6 +1876,11 @@ impl App {
     ///   Same-named jars
     ///   are told apart by their labels (`jar_defs::named_jar_label`).
     ///
+    /// - A Link is created only when its `from` and `to` each name a card in
+    ///   the same batch or a live one; otherwise it is skipped, so no junk
+    ///   link reaches the store (`import` already dropped ends outside a
+    ///   foreign file, or naming a jar, a link or the link itself).
+    ///
     /// Tabs arrive asleep (`materialize`). Toasts from missing files are
     /// collapsed into one.
     pub(crate) fn materialize_imported(
@@ -1898,8 +1903,11 @@ impl App {
         let toasts = self.save_toast_queue.len();
         let pass = self.begin_content_pass();
         for node in imported {
-            // A link whose end did not resolve (a foreign file named a card outside it) has nothing to join.
-            let end = |no| matches!(node.fields.get(&no), Some(FieldValue::Id(Some(_))));
+            // A link whose end did not resolve, or names no card in this batch or live, has nothing to join.
+            let end = |no| match node.fields.get(&no) {
+                Some(FieldValue::Id(Some(n))) => ids.contains(n) || self.nodes.contains_key(&n.to_string()),
+                _ => false,
+            };
             if node.kind == Kind::Link && !(end(field::FROM) && end(field::TO)) {
                 continue;
             }

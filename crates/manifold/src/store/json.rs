@@ -92,13 +92,29 @@ fn node_to_json(id: NodeId, node: &Node, group: Option<NodeId>) -> JsonNode {
 }
 
 /// Every live node, in id order, each under its effective group.
+/// A link whose end is not a live card is left out (an export drops links whose far end is not in the file).
 pub fn doc_to_json(doc: &Doc) -> JsonDoc {
-    let nodes = doc.live().map(|(id, node)| node_to_json(id, node, doc.effective_group(id))).collect();
+    let nodes = doc
+        .live()
+        .filter(|(_, node)| node.kind() != Kind::Link || link_ends_among(node, |id| is_live_card(doc, id)))
+        .map(|(id, node)| node_to_json(id, node, doc.effective_group(id)))
+        .collect();
     JsonDoc { nodes, local: None }
 }
 
+/// Whether `node` is a Link whose `from` and `to` both satisfy `ok`.
+fn link_ends_among(node: &Node, ok: impl Fn(NodeId) -> bool) -> bool {
+    [field::FROM, field::TO].iter().all(|&no| matches!(node.get(no), FieldValue::Id(Some(end)) if ok(end)))
+}
+
+/// Whether `id` is a live node that a link can join (not a jar, not a link).
+fn is_live_card(doc: &Doc, id: NodeId) -> bool {
+    doc.nodes.get(&id).is_some_and(|n| n.is_live() && !matches!(n.kind(), Kind::Jar | Kind::Link))
+}
+
 /// `root` and its live subtree, root first (a group export). The root
-/// is written without a group, since its group isn't exported.
+/// is written without a group, since its group isn't exported. A link is
+/// included when both its ends are in the export.
 pub fn subtree_to_json(doc: &Doc, root: NodeId) -> JsonDoc {
     let mut nodes = Vec::new();
     if let Some(node) = doc.nodes.get(&root).filter(|n| n.is_live()) {
@@ -107,6 +123,12 @@ pub fn subtree_to_json(doc: &Doc, root: NodeId) -> JsonDoc {
     for (id, node) in doc.live() {
         if id != root && doc.is_ancestor(root, id) {
             nodes.push(node_to_json(id, node, doc.effective_group(id)));
+        }
+    }
+    let inside: std::collections::BTreeSet<String> = nodes.iter().map(|n| n.id.clone()).collect();
+    for (id, node) in doc.live() {
+        if node.kind() == Kind::Link && link_ends_among(node, |end| inside.contains(&end.to_string())) {
+            nodes.push(node_to_json(id, node, None));
         }
     }
     JsonDoc { nodes, local: None }
@@ -130,7 +152,8 @@ pub enum Trust {
     /// is dropped (it would point "Show in folder" anywhere), and `jar` /
     /// `default_jar` are kept only when they name a node in the same file
     /// (an export re-imported on its source machine must not re-link tabs to
-    /// that machine's logins).
+    /// that machine's logins); so are a link's `from` and `to` (it must not
+    /// join the file's cards to this session's).
     Foreign,
 }
 
@@ -139,8 +162,10 @@ pub enum Trust {
 /// kept when they are real node ids and dropped otherwise. Unknown field
 /// names are ignored (a newer build's export); a bad value is an error.
 /// Under `Trust::Foreign` the machine-local fields are filtered first (see
-/// `Trust`): a Download's `path` is dropped, and a `jar`/`default_jar`
-/// naming no node in the file is dropped rather than kept as a real id.
+/// `Trust`): a Download's `path` is dropped, and a `jar`/`default_jar`/
+/// link `from`/`to` naming no node in the file is dropped rather than kept
+/// as a real id. Under either trust a link end naming a jar, a link or
+/// the link itself is dropped.
 /// The result is in `json.nodes` order, so `imported[i]` is `json.nodes[i]`
 /// (callers map labels to fresh ids by index).
 pub fn import(json: &JsonDoc, mut next_id: impl FnMut() -> NodeId, trust: Trust) -> Result<Vec<Imported>, String> {
@@ -150,6 +175,7 @@ pub fn import(json: &JsonDoc, mut next_id: impl FnMut() -> NodeId, trust: Trust)
             return Err(format!("node id {:?} appears twice", node.id));
         }
     }
+    let kinds: HashMap<&str, Option<Kind>> = json.nodes.iter().map(|n| (n.id.as_str(), n.kind())).collect();
     let mut out = Vec::new();
     for node in &json.nodes {
         let kind = node.kind().ok_or_else(|| format!("node {:?}: missing or unknown type", node.id))?;
@@ -163,6 +189,13 @@ pub fn import(json: &JsonDoc, mut next_id: impl FnMut() -> NodeId, trust: Trust)
                 }
                 let names_in_file = value.as_str().is_some_and(|s| fresh.contains_key(s));
                 if matches!(def.no, field::JAR | field::DEFAULT_JAR | field::FROM | field::TO) && !names_in_file {
+                    continue;
+                }
+            }
+            // A link joins cards: an end naming a jar, another link or itself is no end.
+            if matches!(def.no, field::FROM | field::TO) {
+                let label = value.as_str().unwrap_or_default();
+                if label == node.id || matches!(kinds.get(label), Some(Some(Kind::Jar | Kind::Link))) {
                     continue;
                 }
             }
