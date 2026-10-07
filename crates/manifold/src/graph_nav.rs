@@ -130,9 +130,7 @@ impl App {
                 }
             }
             Some((DropEffect::Reparent, Some(parent))) => {
-                if !self.would_create_cycle(id, &parent) {
-                    self.edit_parent(id, Some(parent));
-                }
+                let _ = self.connect(crate::caps::OPENED_FROM, id, &parent);
             }
             Some((DropEffect::Merge, Some(target))) => self.merge_groups(id, &target),
             _ => {}

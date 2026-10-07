@@ -4,7 +4,7 @@ mod edges;
 mod pattern;
 mod rows;
 
-pub(crate) use edges::CONTAINS;
+pub(crate) use edges::{Storage, CONTAINS, LINK, OPENED_FROM};
 pub(crate) use pattern::{Tag, TagSet};
 use rows::{builtin_rows, Registry};
 pub(crate) use rows::{Caps, DRAW_LAYERS};

@@ -233,6 +233,21 @@ mod tests {
     }
 
     #[test]
+    fn opened_from_excludes_a_jar_and_a_json_leaf() {
+        let t = edges();
+        for end in ["application/vnd.manifold.jar", TYPE_JSON_LEAF] {
+            assert!(!t.can_connect(OPENED_FROM, end, TYPE_TAB), "{end} as source");
+            assert!(!t.can_connect(OPENED_FROM, TYPE_TAB, end), "{end} as target");
+        }
+    }
+
+    #[test]
+    fn contains_is_acyclic_and_has_no_verb() {
+        let row = edges().row(CONTAINS).unwrap();
+        assert!(row.is_acyclic() && row.verb().is_none());
+    }
+
+    #[test]
     fn the_columns_say_what_each_edge_does() {
         let t = edges();
         assert!(t.row(OPENED_FROM).unwrap().affects_layout() && t.row(OPENED_FROM).unwrap().is_acyclic());

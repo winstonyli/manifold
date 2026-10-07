@@ -4929,3 +4929,91 @@ fn a_saved_link_keeps_its_ends_and_is_found_by_a_later_delete() {
     assert!(app.links_naming(&b).is_empty());
     assert!(app.save_session());
 }
+
+use crate::caps::{LINK, OPENED_FROM};
+use crate::links::ConnectError;
+
+#[test]
+fn connect_link_makes_one_link_and_refuses_a_repeat_in_either_order() {
+    let mut app = app_on(&temp_dir("connect-link").join("session.mnf"), 1);
+    let a = succeed_spawn(&mut app, "https://a/");
+    let b = succeed_spawn(&mut app, "https://b/");
+    assert_eq!(app.connect(LINK, &a, &b), Ok(()));
+    assert_eq!(app.connect(LINK, &a, &b), Err(ConnectError::Exists));
+    assert_eq!(app.connect(LINK, &b, &a), Err(ConnectError::Exists));
+    assert_eq!(app.links_naming(&a).len(), 1);
+    app.disconnect(LINK, &a, &b);
+    assert!(app.links_naming(&a).is_empty());
+}
+
+#[test]
+fn connect_opened_from_sets_the_parent_and_refuses_a_cycle() {
+    let mut app = app_on(&temp_dir("connect-opener").join("session.mnf"), 1);
+    let a = succeed_spawn(&mut app, "https://a/");
+    let b = succeed_spawn(&mut app, "https://b/");
+    assert_eq!(app.connect(OPENED_FROM, &b, &a), Ok(()));
+    assert_eq!(app.mirror.parent(&b), Some(a.as_str()));
+    assert_eq!(app.connect(OPENED_FROM, &a, &b), Err(ConnectError::Cycle));
+    app.disconnect(OPENED_FROM, &b, &a);
+    assert_eq!(app.mirror.parent(&b), None);
+}
+
+#[test]
+fn connect_refuses_another_level_and_a_missing_card() {
+    let mut app = app_on(&temp_dir("connect-level").join("session.mnf"), 1);
+    let a = succeed_spawn(&mut app, "https://a/");
+    let b = succeed_spawn(&mut app, "https://b/");
+    let g = add_group(&mut app, "g");
+    app.edit_group(&b, Some(g));
+    assert_eq!(app.connect(LINK, &a, &b), Err(ConnectError::DifferentLevel));
+    assert_eq!(app.connect(LINK, &a, "nope"), Err(ConnectError::NotLive));
+    assert_eq!(app.connect("contains", &a, &b), Err(ConnectError::NotAllowed), "not a user-drawn edge");
+}
+
+#[test]
+fn edges_of_lists_the_opener_the_openees_and_the_links() {
+    let mut app = app_on(&temp_dir("edges-of").join("session.mnf"), 1);
+    let a = succeed_spawn(&mut app, "https://a/");
+    let b = succeed_spawn(&mut app, "https://b/");
+    let c = succeed_spawn(&mut app, "https://c/");
+    app.connect(OPENED_FROM, &b, &a).unwrap();
+    app.connect(LINK, &a, &c).unwrap();
+    let of_a = app.edges_of(&a);
+    assert!(of_a.iter().any(|e| e.edge == OPENED_FROM && e.other == b && !e.outgoing));
+    assert!(of_a.iter().any(|e| e.edge == LINK && e.other == c && e.link.is_some()));
+    let of_b = app.edges_of(&b);
+    assert!(of_b.iter().any(|e| e.edge == OPENED_FROM && e.other == a && e.outgoing));
+}
+
+#[test]
+fn valid_targets_are_the_cards_connect_would_accept() {
+    let mut app = app_on(&temp_dir("valid-targets").join("session.mnf"), 1);
+    let a = succeed_spawn(&mut app, "https://a/");
+    let b = succeed_spawn(&mut app, "https://b/");
+    let c = succeed_spawn(&mut app, "https://c/");
+    app.connect(LINK, &a, &b).unwrap();
+    assert_eq!(app.valid_targets(LINK, &a), vec![c.clone()], "not itself, not one it is linked to");
+    app.connect(OPENED_FROM, &b, &a).unwrap();
+    assert!(!app.valid_targets(OPENED_FROM, &a).contains(&b), "that would close a loop");
+}
+
+/// A tab that becomes a content card keeps its links: each now names the new card.
+#[test]
+fn a_tab_that_becomes_content_keeps_its_links() {
+    let dir = temp_dir("link-redirect");
+    let mut app = app_on(&dir.join("session.mnf"), 1);
+    let tab = succeed_spawn(&mut app, "https://x.test/a.json");
+    let other = succeed_spawn(&mut app, "https://b/");
+    app.create_link(&tab, &other);
+    app.create_link(&other, &tab);
+    let node = app.alloc_node_id();
+    let body = crate::redirect_fetch::save(&dir, &node, crate::content::ContentKind::Json, b"[1]".to_vec()).unwrap();
+    app.redirect_tab_to_content(&tab, node.clone(), "https://x.test/a.json".into(), body);
+    assert!(app.links_naming(&tab).is_empty());
+    let links = app.links_naming(&node);
+    assert_eq!(links.len(), 2);
+    let ends: Vec<_> = links.iter().map(|l| app.mirror.link_ends(l)).collect();
+    let (n, o) = (node.parse().ok(), other.parse().ok());
+    assert!(ends.contains(&(n, o)) && ends.contains(&(o, n)), "direction kept");
+    assert!(app.save_session());
+}

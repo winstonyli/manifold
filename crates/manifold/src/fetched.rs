@@ -563,6 +563,17 @@ impl App {
         let parent = self.mirror.parent(tab_id).map(str::to_owned);
         if self.insert_content(ContentSource::Web { url, body }, node_id.clone(), pos, group).is_ok() {
             self.edit_parent(&node_id, parent);
+            // The tab's links go with it (`queue_delete`); the new card takes over each, keeping its direction.
+            let old = tab_id.parse::<crate::store::model::NodeId>().ok();
+            for link in self.links_naming(tab_id) {
+                let (from, to) = self.mirror.link_ends(&link);
+                let end = |e: Option<crate::store::model::NodeId>| match e {
+                    e if e == old => node_id.clone(),
+                    Some(other) => other.to_string(),
+                    None => String::new(),
+                };
+                self.create_link(&end(from), &end(to));
+            }
             self.remove_tab(tab_id);
             self.save_session();
         }
