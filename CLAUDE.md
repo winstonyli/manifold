@@ -2,7 +2,7 @@
 
 ## Branches
 
-Work on `dev`, never on `main`. `main` moves only when a release merges `dev` into it (`git merge --no-ff dev`, then a `vX.Y.Z` tag), and only when the user asks for a release. New branches and worktrees start from `dev` and merge back into `dev`. See README "Branches".
+Work on `main`. A release is a version bump commit plus an annotated `vX.Y.Z` tag on `main`, and only when the user asks for one. New branches and worktrees start from `main` and merge back into it. A hotfix for an old release branches from its tag as `release/x.y` and is deleted after. See README "Branches".
 
 ## Formatting and lints
 
