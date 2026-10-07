@@ -2044,6 +2044,7 @@ impl App {
         self.dragging = None;
         self.drag_moved.clear();
         self.connecting = None;
+        self.connect_drag = None;
         self.hovered = None;
         self.selected_tabs.clear();
         self.rect_select_start = None;

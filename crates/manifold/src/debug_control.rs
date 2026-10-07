@@ -247,7 +247,9 @@ pub enum DebugCommand {
     /// `links` lists every Link node as `{id, from, to}`. `edges` lists the lines drawn at the current level as
     /// `{kind: link|opened, link (the Link node id, or null), from, to, screen: [x, y]}`, where `screen` is the middle
     /// of the straight segment between the two card centres. `connecting` is pick-target mode as `{from, edge, targets}`
-    /// (`targets` sorted), or null.
+    /// (`targets` sorted), or null. `link_handles` maps each card that would show connect-drag handles when hovered
+    /// to `{top, right, bottom, left}` (those shown at this zoom), each `[left, top, right, bottom]` on screen.
+    /// `connect_drag` is the source card of a running connect-drag, or null.
     /// `toast` is the bottom-left toast's text
     /// (the one showing, else the next queued), or null. Suggestions arriving from the network show up
     /// only once a frame has drained them, and every command draws one, so
@@ -1414,6 +1416,25 @@ impl App {
                 })
             })
             .collect();
+        // Where each card that would show connect handles has them (shown on hover only), on screen, so a probe can
+        // press one: `{card id: {top|right|bottom|left: [left, top, right, bottom]}}`.
+        let (zoom_scale, _) = self.graph_world_to_screen_transform(self.graph_scene_outer_rect());
+        let link_handles: serde_json::Map<String, serde_json::Value> = self
+            .level_items()
+            .into_iter()
+            .filter(|item| matches!(item.kind, LevelItemKind::Node(_)) && self.shows_link_handles(&item.id))
+            .map(|item| {
+                let sides: serde_json::Map<String, serde_json::Value> =
+                    crate::link_gestures::link_handle_rects(item.rect, zoom_scale, self.graph_lod_simplified)
+                        .into_iter()
+                        .map(|(side, rect)| {
+                            let r = self.graph_world_rect_to_screen(rect);
+                            (side.key().to_string(), serde_json::json!([r.left(), r.top(), r.right(), r.bottom()]))
+                        })
+                        .collect();
+                (item.id, serde_json::Value::Object(sides))
+            })
+            .collect();
         serde_json::json!({
             "tab_view": self.showing_tab_view(),
             "transition": self.transition.is_some(),
@@ -1433,6 +1454,8 @@ impl App {
             "connecting": self.connecting.as_ref().map(|(from, edge)| {
                 serde_json::json!({ "from": from, "edge": edge, "targets": self.valid_targets(edge, from) })
             }),
+            "link_handles": link_handles,
+            "connect_drag": self.connect_drag,
             "json_level": self.json_level_state(),
             "selected_tabs": selected_tabs,
             // The toast showing, or else the next queued one.
@@ -1738,6 +1761,31 @@ mod tests {
             app.graph_world_rect_to_screen(egui::Rect::from_two_pos(egui::pos2(0.0, 0.0), egui::pos2(400.0, 0.0)));
         let screen: Vec<f64> = edges[0]["screen"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect();
         assert!((screen[0] as f32 - mid.center().x).abs() < 0.01 && (screen[1] as f32 - mid.center().y).abs() < 0.01);
+    }
+
+    /// EXPORTSTATE's `link_handles`: each card that would show connect handles, each side's on-screen rect.
+    #[test]
+    fn export_state_gives_each_linkable_card_its_handle_rects() {
+        use crate::node::NotePayload;
+        use crate::store::model::Kind;
+        let mut app = App::default();
+        let (a, b) = (app.alloc_node_id(), app.alloc_node_id());
+        for (id, x) in [(&a, 0.0), (&b, 400.0)] {
+            let note = Runtime::Note(NotePayload { text: "n".into(), editing: false });
+            app.insert_placeholder_node(id.clone(), egui::vec2(x, 0.0), Kind::Note, note);
+        }
+        let state = app.export_state();
+        let handles = state["link_handles"][a.as_str()].as_object().expect("a has handles");
+        assert_eq!(handles.keys().map(String::as_str).collect::<Vec<_>>(), ["top", "right", "bottom", "left"]);
+        let r: Vec<f32> = handles["right"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap() as f32).collect();
+        let card = app.graph_world_rect_to_screen(app.card_rect(&a).unwrap());
+        assert!((egui::pos2((r[0] + r[2]) / 2.0, (r[1] + r[3]) / 2.0) - card.right_center()).length() < 0.01);
+        assert!((r[2] - r[0] - crate::link_gestures::HANDLE_PX).abs() < 0.01, "12 points wide on screen");
+        assert!(state["connect_drag"].is_null());
+        app.start_connect_drag(&a);
+        let state = app.export_state();
+        assert_eq!(state["connect_drag"], a.as_str());
+        assert!(state["link_handles"].get(b.as_str()).is_none(), "during a connect-drag only the source");
     }
 
     /// `RENAMEGROUP` alone is F2; with an id it takes the rest of the line as the name. `SETNOTETEXT` takes the rest

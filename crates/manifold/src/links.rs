@@ -139,6 +139,7 @@ impl App {
     /// Pick-target mode's end on a target: draws the chosen edge from the mode's source to `target`, ends the mode and
     /// saves. A refused edge (the target stopped being valid since it was drawn highlighted) says so in a toast.
     pub(crate) fn finish_connect(&mut self, target: &str) {
+        self.connect_drag = None;
         let Some((from, edge)) = self.connecting.take() else { return };
         if self.connect(edge, &from, target).is_err() {
             self.queue_toast("Can't connect these cards".to_string());
@@ -146,24 +147,26 @@ impl App {
         self.save_session();
     }
 
-    /// Ends pick-target mode without drawing anything.
+    /// Ends pick-target mode, and a connect-drag running as it, without drawing anything.
     pub(crate) fn cancel_connect(&mut self) {
         self.connecting = None;
+        self.connect_drag = None;
     }
 
-    /// Ends pick-target mode when `id`, a card being removed, is its source.
+    /// Ends pick-target mode, and a connect-drag, when `id`, a card being removed, is its source.
     pub(crate) fn forget_connect_source(&mut self, id: &str) {
-        if self.connecting.as_ref().is_some_and(|(from, _)| from == id) {
-            self.connecting = None;
+        if self.connecting.as_ref().is_some_and(|(from, _)| from == id) || self.connect_drag.as_deref() == Some(id) {
+            self.cancel_connect();
         }
     }
 
     /// Ends pick-target mode once its targets are no longer drawn: the Graph view not `graph_shown`, or the source
-    /// gone or moved off the level shown (another replica's edit).
+    /// gone or moved off the level shown (another replica's edit). A connect-drag left without its mode (a path that
+    /// cleared `connecting` alone) ends too.
     pub(crate) fn end_stale_connect(&mut self, graph_shown: bool) {
         let stale = |(from, _): &(String, &str)| !graph_shown || !self.nodes.contains_key(from) || !self.in_level(from);
-        if self.connecting.as_ref().is_some_and(stale) {
-            self.connecting = None;
+        if self.connecting.as_ref().is_some_and(stale) || (self.connecting.is_none() && self.connect_drag.is_some()) {
+            self.cancel_connect();
         }
     }
 

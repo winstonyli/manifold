@@ -615,6 +615,16 @@ impl App {
 
         self.track_pan_momentum(ui, scene_rect);
 
+        // A connect-drag ends when the button comes up (link-gestures spec A). Its target is the card under the
+        // pointer, unlike a card drop's (the dragged card's centre), in the scene and off the minimap.
+        if self.connect_drag.is_some() && !ui.input(|i| i.pointer.primary_down()) {
+            let at = ui
+                .input(|i| i.pointer.interact_pos())
+                .filter(|p| scene_outer_rect.contains(*p) && !minimap.is_some_and(|(rect, _, _)| rect.contains(*p)));
+            let target = at.and_then(|p| self.card_at(((p.to_vec2() - translation) / zoom_scale).to_pos2()));
+            self.end_connect_drag(target);
+        }
+
         if let Some((minimap_rect, world_bounds, minimap_scale)) = minimap {
             self.handle_minimap_click(ui, minimap_rect, world_bounds, minimap_scale);
         }
@@ -1385,7 +1395,8 @@ impl App {
     /// `camera.rect` this frame).
     pub(crate) fn track_pan_momentum(&mut self, ui: &egui::Ui, scene_rect: egui::Rect) {
         let pointer_down = ui.input(|i| i.pointer.primary_down());
-        let actively_panning = pointer_down && self.dragging.is_none() && self.camera.tween.is_none();
+        let actively_panning =
+            pointer_down && self.dragging.is_none() && self.connect_drag.is_none() && self.camera.tween.is_none();
         if actively_panning {
             // A fresh grab of the background cancels any momentum still
             // gliding from an earlier release -- "grab it to stop it".
@@ -1611,6 +1622,7 @@ impl App {
         let members = self.group_members();
         // Pick-target mode: the cards a click would connect to, ringed.
         let pick_targets = self.connecting.as_ref().map(|(from, edge)| self.valid_targets(edge, from));
+        let connect_target = self.connect_drag_target(ui);
         let mut pass = CardPass {
             deferred_overlays,
             actions,
@@ -1618,6 +1630,7 @@ impl App {
             zoom_scale,
             drop_preview: &drop_preview,
             pick_targets: pick_targets.as_deref().unwrap_or_default(),
+            connect_target: connect_target.as_deref(),
             show_order: self.card_nav_active || self.hints_revealed,
             order: &tab_order,
             any_focused: false,
@@ -1698,6 +1711,7 @@ impl App {
             }
         }
         self.card_nav_active = pass.any_focused;
+        self.draw_connect_rubber_band(ui, inv_zoom);
     }
 
     /// The current level's cards in creation order: the Tab order.

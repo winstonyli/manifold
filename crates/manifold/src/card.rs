@@ -620,6 +620,9 @@ pub(crate) struct CardPass<'a> {
     pub(crate) drop_preview: &'a Option<(DropEffect, Option<String>)>,
     /// Pick-target mode's valid targets (`App::valid_targets`), each ringed; empty outside the mode.
     pub(crate) pick_targets: &'a [String],
+    /// During a connect-drag, the card under the pointer (`App::connect_drag_target`): its target ring is drawn bright,
+    /// as a hovered one is in pick-target mode.
+    pub(crate) connect_target: Option<&'a str>,
     /// Keyboard navigation is on (a card or control had focus last frame): each card shows its
     /// Tab-order number.
     pub(crate) show_order: bool,
@@ -1108,7 +1111,7 @@ impl App {
         // Pick-target mode: a valid target gets a thinner accent ring, closer in than the drop ring, and brighter
         // while hovered, where a click would connect.
         if pass.pick_targets.iter().any(|t| t == id) {
-            let alpha = if pointer_on_card { 255 } else { 160 };
+            let alpha = if pointer_on_card || pass.connect_target == Some(id) { 255 } else { 160 };
             ui.painter().rect_stroke(
                 rect.expand(6.0 * inv_zoom),
                 6.0 * inv_zoom,
@@ -1151,10 +1154,31 @@ impl App {
             }
         }
 
+        // Connect-drag handles (link-gestures spec A), on a hovered card or on the source while its drag runs.
+        // Registered after the card and its controls: egui gives a press on a drag-only widget on top to that widget
+        // alone (no click below), so the card neither moves nor opens.
+        let mut handle_hovered = false;
+        let is_source = self.connect_drag.as_deref() == Some(id);
+        if (is_hovered || is_source) && self.shows_link_handles(id) {
+            let handles = crate::link_gestures::link_handle_rects(rect, pass.zoom_scale, self.graph_lod_simplified);
+            for (side, handle) in handles {
+                let handle_response = ui
+                    .interact(handle, egui::Id::new(("link_handle", side, id)), egui::Sense::DRAG)
+                    .on_hover_cursor(egui::CursorIcon::Crosshair);
+                handle_hovered |= handle_response.hovered();
+                let active = handle_response.hovered() || handle_response.dragged();
+                crate::link_gestures::paint_link_handle(ui, handle, active, inv_zoom);
+                if handle_response.drag_started() {
+                    self.start_connect_drag(id);
+                }
+            }
+        }
+
         // This frame's hover only: passing `is_hovered` (which includes
         // `self.hovered`) made a card stay hovered, ✕ and all, after the
-        // pointer left it, until another card was hovered.
-        let still_hovered = pointer_on_card || control_hovered;
+        // pointer left it, until another card was hovered. Never during a
+        // connect-drag, whose peek would cover the targets.
+        let still_hovered = self.connect_drag.is_none() && (pointer_on_card || control_hovered || handle_hovered);
         if response.dragged() {
             self.dragging = Some(id.to_string());
             // Dragging one selected tab moves the whole selection, as one
@@ -2546,6 +2570,7 @@ mod tests {
                     zoom_scale: 1.0,
                     drop_preview: &drop_preview,
                     pick_targets: &[],
+                    connect_target: None,
                     show_order: false,
                     order: &[],
                     any_focused: false,

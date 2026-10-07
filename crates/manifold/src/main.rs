@@ -1175,6 +1175,11 @@ struct App {
     /// "Opened from…") and the edge it draws. The next click on a valid target finishes it (`finish_connect`); Esc, a
     /// click elsewhere, any other action, leaving the level or the Graph view, or the source going, ends it.
     connecting: Option<(String, &'static str)>,
+    /// A connect-drag (link-gestures spec A): the card whose edge handle the primary button went down on. While it
+    /// runs, `connecting` is `(source, LINK)`, so pick-target mode's rings show the targets. The release ends it on
+    /// the card under the pointer (`end_connect_drag`). It ends with pick-target mode (`cancel_connect`,
+    /// `finish_connect`), so every path that ends that mode ends this too.
+    connect_drag: Option<String>,
     /// The link line under the pointer when the primary press began with the camera still, and the camera rect then
     /// (`line_click`). Only that line, with the camera unmoved, can be taken by the click that ends the press.
     line_press: Option<(String, egui::Rect)>,
@@ -1603,6 +1608,7 @@ impl Default for App {
             dragging: None,
             drag_moved: Vec::new(),
             connecting: None,
+            connect_drag: None,
             line_press: None,
             hovered: None,
             peek_suppressed: None,
