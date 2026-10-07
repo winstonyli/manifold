@@ -236,32 +236,30 @@ pub(crate) fn build_node_context_menu(
                             ui.label(egui::RichText::new(*heading).small().weak());
                         });
                         for row in rows {
-                            let tick = if row.ticked { "\u{2713} " } else { "   " };
                             // The label's marker in its own style (`JarLabel::append_to`); the rest in the button's.
                             let font = egui::FontSelection::Default.resolve(ui.style());
                             let plain = egui::TextFormat::simple(font.clone(), egui::Color32::PLACEHOLDER);
                             let mut text = egui::text::LayoutJob::default();
-                            text.append(tick, 0.0, plain.clone());
+                            // The colour dot is painted in this leading gap, at the menu text's margin.
+                            text.append("", JAR_DOT_SLOT, plain.clone());
                             row.name.append_to(&mut text, font, ui.visuals().weak_text_color());
                             if let Some(n) = row.count {
-                                text.append(&format!("  ({n})"), 0.0, plain);
+                                text.append(&format!("({n})"), 8.0, plain);
                             }
-                            let response = ui
-                                .horizontal(|ui| {
-                                    let (dot, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
-                                    // The default jar has no colour: an outlined dot.
+                            // The current jar is the selected row: no tick to widen it.
+                            let response = menu_row(ui, text, None, &mut first_item, row.ticked);
+                            let dot =
+                                response.rect.left_center() + egui::vec2(ui.spacing().button_padding.x + 5.0, 0.0);
+                            // The default jar has no colour: an outlined dot.
+                            match row.color {
+                                Some(c) => {
+                                    ui.painter().circle_filled(dot, 4.0, c);
+                                }
+                                None => {
                                     let stroke = egui::Stroke::new(1.0, ui.visuals().weak_text_color());
-                                    match row.color {
-                                        Some(c) => {
-                                            ui.painter().circle_filled(dot.center(), 4.0, c);
-                                        }
-                                        None => {
-                                            ui.painter().circle_stroke(dot.center(), 4.0, stroke);
-                                        }
-                                    }
-                                    menu_button(ui, text, None, &mut first_item)
-                                })
-                                .inner;
+                                    ui.painter().circle_stroke(dot, 4.0, stroke);
+                                }
+                            }
                             let response = match row.count {
                                 Some(n) if *group => {
                                     response.on_hover_text(format!("Tabs following this group that would change: {n}"))
@@ -302,6 +300,9 @@ fn export_file_name(name: &str) -> String {
     format!("{}.json", if clean.is_empty() { crate::names::UNTITLED } else { &clean })
 }
 
+/// Room a jar row leaves before its name for the colour dot (10 px) and a gap.
+const JAR_DOT_SLOT: f32 = 16.0;
+
 /// A menu row; takes focus when `first_item` is set (clearing it), and shows the focus ring.
 fn menu_button(
     ui: &mut egui::Ui,
@@ -309,12 +310,33 @@ fn menu_button(
     key: Option<&str>,
     first_item: &mut bool,
 ) -> egui::Response {
+    menu_row(ui, label, key, first_item, false)
+}
+
+/// `menu_button`, drawn selected when `selected` (the current choice in a list of rows).
+fn menu_row(
+    ui: &mut egui::Ui,
+    label: impl Into<egui::WidgetText>,
+    key: Option<&str>,
+    first_item: &mut bool,
+    selected: bool,
+) -> egui::Response {
     // As wide as the menu so far, so a key hint lands at the row's right edge.
-    let mut button = egui::Button::new(label).min_size(egui::vec2(ui.min_rect().width(), 0.0));
+    let mut button = egui::Button::new(label).min_size(egui::vec2(ui.min_rect().width(), 0.0)).selected(selected);
     if let Some(key) = key {
         button = button.shortcut_text(key);
     }
-    let response = ui.add(button);
+    let response = ui
+        .scope(|ui| {
+            if selected {
+                // A quiet tint under normal text; the accent fill would swamp the row (the name keeps its colours).
+                let visuals = ui.visuals_mut();
+                visuals.selection.bg_fill = visuals.selection.bg_fill.gamma_multiply(0.3);
+                visuals.selection.stroke.color = visuals.text_color();
+            }
+            ui.add(button)
+        })
+        .inner;
     if std::mem::take(first_item) {
         response.request_focus();
     }
