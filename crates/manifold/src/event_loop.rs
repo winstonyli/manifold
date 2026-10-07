@@ -25,7 +25,13 @@ impl ApplicationHandler<UserEvent> for App {
             // contention with the user's own desktop use) without hitting
             // this platform limitation. `with_skip_taskbar` keeps it out of
             // the taskbar/alt-tab list since there's nothing to switch to.
-            attrs = attrs.with_position(winit::dpi::PhysicalPosition::new(-32000, -32000)).with_decorations(false);
+            // `with_active(false)`: shown with `SW_SHOWNOACTIVATE` rather than winit's
+            // default `SW_SHOW`, which activated it and, whenever Windows allowed it, took
+            // the OS foreground from the user's own app (scripts/foreground-watch.ps1).
+            attrs = attrs
+                .with_position(winit::dpi::PhysicalPosition::new(-32000, -32000))
+                .with_decorations(false)
+                .with_active(false);
             // A Windows-only window attribute; elsewhere the headless window shows in the task list.
             #[cfg(windows)]
             {

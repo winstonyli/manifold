@@ -1244,7 +1244,9 @@ struct App {
     /// Headless mode (`--headless`): the window is created real but
     /// positioned far off-screen (NOT invisible — a genuinely invisible
     /// window's swapchain never successfully acquires a frame on Windows,
-    /// see `resumed`'s doc comment), so it never steals focus/foreground or
+    /// see `resumed`'s doc comment), and shown without activation
+    /// (`with_active(false)`; the WebView2 host window is `WS_EX_NOACTIVATE`),
+    /// so it never steals focus/foreground (`scripts/foreground-watch.ps1`) or
     /// visually contends with the user's own screen (project memory's
     /// `SetForegroundWindow`/foreground-lock gotchas), while still
     /// rendering normally. Driven entirely by `DebugCommand`s read from

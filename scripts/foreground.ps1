@@ -128,7 +128,7 @@ try {
     $during = [Fg]::GetForegroundWindow()
     $lost = [int]($during -ne $h)
     # Hand it back only if the form still has it (the user may have clicked somewhere since), and never to a
-    # manifold window: a headless instance's engine host can hold the foreground when it starts.
+    # manifold window: before 2026-10-07 a headless instance or its engine host could hold it (foreground-watch.ps1).
     $restored = 0
     $origPid = [uint32]0
     if ($orig -ne [IntPtr]::Zero) { $origPid = [Fg]::ProcessOf($orig) }

@@ -25,7 +25,7 @@ use windows::Win32::UI::Shell::ITaskbarList;
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DispatchMessageW, PeekMessageW, RegisterClassW, SetWindowPos, ShowWindow,
     TranslateMessage, CS_HREDRAW, CS_VREDRAW, MSG, PM_REMOVE, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOZORDER,
-    SW_SHOWNOACTIVATE, WINDOW_EX_STYLE, WNDCLASSW, WS_OVERLAPPEDWINDOW,
+    SW_SHOWNOACTIVATE, WNDCLASSW, WS_EX_NOACTIVATE, WS_OVERLAPPEDWINDOW,
 };
 
 const CLASS_NAME: PCWSTR = w!("ManifoldWebView2Host");
@@ -55,6 +55,15 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
 /// `hide_from_taskbar` still handles the taskbar entry it produces (see its
 /// own doc comment for why that mechanism was picked, and what changing it
 /// now would need re-verifying).
+///
+/// `WS_EX_NOACTIVATE`: the window still activates inside this process's own
+/// thread (its first `ShowWindow`, despite `SW_SHOWNOACTIVATE`, and
+/// `MoveFocus`'s `SetFocus` in `main` both did), which keeps the WebView's
+/// logical focus, but it never becomes the OS foreground window. Without
+/// it, whenever this process had foreground rights (inherited from a
+/// `manifold` that had the foreground, or the foreground lock open), that
+/// activation took the foreground from the user's own app, e.g. out of a
+/// fullscreen game (`scripts/foreground-watch.ps1 -Permissive`, 2026-10-07).
 pub fn create_hidden_window() -> Result<HWND> {
     unsafe {
         let instance = windows::Win32::System::LibraryLoader::GetModuleHandleW(None)?;
@@ -73,7 +82,7 @@ pub fn create_hidden_window() -> Result<HWND> {
         let _ = RegisterClassW(&class);
 
         let hwnd = CreateWindowExW(
-            WINDOW_EX_STYLE(0),
+            WS_EX_NOACTIVATE,
             CLASS_NAME,
             w!("manifold-webview2-host"),
             WS_OVERLAPPEDWINDOW,
