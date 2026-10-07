@@ -4825,3 +4825,17 @@ fn a_failed_retry_and_a_new_failure_of_one_intent_leave_one_card() {
     assert_eq!(failed_cards(&app), std::slice::from_ref(&card), "one card for one intent, the retried one");
     assert_eq!(app.nodes.len(), 1);
 }
+
+/// A live tab that crash-loops into a failed card beside a failed card for its own intent leaves one card: the
+/// crashed tab's, which keeps its id; the other is recorded in Recently Closed.
+#[test]
+fn a_crashed_tab_beside_a_failed_card_for_its_intent_leaves_one_card() {
+    let mut app = app_on(&temp_dir("crash-twin").join("session.mnf"), 1);
+    let live = succeed_spawn(&mut app, "https://a/");
+    app.spawn_tab_at("https://a/", egui::Vec2::ZERO, None, None);
+    fail_spawns(&mut app);
+    assert_eq!(failed_cards(&app).len(), 1, "setup: a failed card beside the live tab");
+    app.leave_crashed_card(&live, "keeps crashing", false);
+    assert_eq!(failed_cards(&app), std::slice::from_ref(&live));
+    assert_eq!(app.closed.len(), 1, "the other card is recorded in Recently Closed");
+}

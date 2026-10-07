@@ -961,9 +961,14 @@ impl App {
             self.close_split();
         }
         self.tab_crashes.remove(id);
+        let group = self.mirror.group(id).map(str::to_owned);
+        // One failed card per intent: keep this one (its id is the live one) and drop another standing for it.
+        if let Some(twin) = self.failed_twin(id, &url, kind, group.as_deref()) {
+            self.record_closed(&twin);
+            self.remove_tab(&twin);
+        }
         if cannot_start {
             let message = format!("Couldn't start {} for {}: {reason}", engine_label(kind), Self::toast_url(&url));
-            let group = self.mirror.group(id).map(str::to_owned);
             self.queue_failure_toast(kind, &url, group.as_deref(), reason, message);
         } else {
             self.queue_toast(format!("Tab keeps crashing, left closed: {}", Self::toast_url(&url)));
