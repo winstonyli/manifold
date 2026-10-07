@@ -1,4 +1,5 @@
-# Sourced by drive.sh and headless-smoke-test.sh.
+# Sourced by drive.sh, headless-smoke-test.sh and most probes that run
+# target/debug/manifold.exe (`grep -l fresh-exe.sh scripts/*.sh` lists them).
 #
 # require_fresh_exe <path to manifold.exe>: fails, naming the files, if any
 # source the exe was built from (cargo's dep-info, manifold.d beside it) is

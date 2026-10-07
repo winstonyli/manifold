@@ -152,8 +152,13 @@ for engine in ${ENGINES:-webview2 cef}; do
             echo "EXPORTSTATE $(st pre)"
             if [ "$case" = crash ]; then
                 # Kill the engine host from outside, between command batches; the app restarts the tab at its URL.
+                # Only this instance's own host (its child by pid): other manifolds may be running.
                 for _ in $(seq 120); do [ -s "$out/$case-$engine-pre.json" ] && break; sleep 0.5; done
-                taskkill //F //IM "manifold-engine-$engine.exe" >/dev/null 2>&1
+                if w="$(winpid_of "$inst")"; then
+                    for h in $(powershell -NoProfile -Command "(Get-CimInstance Win32_Process -Filter \"ParentProcessId=$w AND Name='manifold-engine-$engine.exe'\").ProcessId" </dev/null | tr -d '\r'); do
+                        taskkill //F //T //PID "$h" >/dev/null 2>&1
+                    done
+                fi
                 sleep 8
             elif [ "$case" = restart ]; then
                 # Quit here; the second instance below restores the tab.

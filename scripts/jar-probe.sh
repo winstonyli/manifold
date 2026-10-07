@@ -28,7 +28,9 @@ host="${JAR_PROBE_HOST:-jar.localhost}"
 out="$(mktemp -d)"
 python -P "$sp/cookie_server.py" "$(cygpath -w "$out/port")" "$(cygpath -w "$out/req.log")" 1200 </dev/null >/dev/null 2>&1 &
 srv=$!
-trap 'kill "$srv" 2>/dev/null' EXIT
+# The running app (its bash pid; `start` sets and clears it): an interrupted probe kills it and its hosts.
+app=""
+trap '[ -n "$app" ] && kill_tree "$app"; kill "$srv" 2>/dev/null' EXIT
 for _ in $(seq 50); do [ -s "$out/port" ] && break; sleep 0.1; done
 port="$(cat "$out/port")"
 base="http://$host:$port"
@@ -54,11 +56,12 @@ start() {
   shift
   local cmd="$profile/cmd-$name"; : >"$cmd"
   APPDATA="$(cygpath -w "$profile")" "$exe" --headless < <(exec tail -n +1 -f --pid=$$ "$cmd" 2>/dev/null) >"$profile/log-$name" 2>&1 &
-  local app=$!
+  app=$!
   local winpid; winpid="$(below_normal "$app")" || echo "WARNING: $name: the app runs at normal priority" >&2
   echo "    app pid ${winpid:-?}, started $(date +%T), log $(cygpath -w "$profile/log-$name")"
   { printf '%s\n' "$@"; echo QUIT; } >>"$cmd"
   wait "$app" 2>/dev/null
+  app=""
   # Hosts log to %TEMP%/manifold-<tab id>.log (process_manager::per_tab_log_path), not to the app's stderr.
   find /tmp -maxdepth 1 -name 'manifold-*.log' -newer "$cmd" -exec grep -ah "^jar:" {} + 2>/dev/null | sort | uniq -c | cut -c1-200 | tee "$out/jar-$name"
 }
