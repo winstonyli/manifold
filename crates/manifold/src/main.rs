@@ -89,7 +89,7 @@ use ipc_protocol::{
     frame_path, modifiers, EngineToHost, HostToEngine, InputEvent, KeyCode, MouseButton, SharedFrameBuffer,
 };
 use json_level::{JsonEdit, JsonLevel};
-use level::{EdgeCurve, LevelItem, LevelItemKind, LevelScan};
+use level::{EdgeCurve, EdgeKind, LevelItem, LevelItemKind, LevelScan};
 use mirror::Carried;
 use node::*;
 use popups::*;

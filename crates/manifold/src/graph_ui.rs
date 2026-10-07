@@ -1488,6 +1488,16 @@ impl App {
             if !egui::Rect::from_two_pos(edge.from, edge.to).intersects(self.camera.rect) {
                 continue;
             }
+            if edge.kind == EdgeKind::Link {
+                let stroke = egui::Stroke::new(1.5 * inv_zoom, ACCENT);
+                ui.painter().add(egui::Shape::dashed_line(
+                    &[edge.from, edge.to],
+                    stroke,
+                    6.0 * inv_zoom,
+                    4.0 * inv_zoom,
+                ));
+                continue;
+            }
             let color = if edge.highlight { ACCENT } else { ui.visuals().weak_text_color() };
             let stroke = egui::Stroke::new(2.0 * inv_zoom, color);
             match edge.curve {

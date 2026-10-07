@@ -32,6 +32,15 @@ pub(crate) enum EdgeCurve {
     Horizontal,
 }
 
+/// Which edge source a `LevelEdge` came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EdgeKind {
+    /// A `parent` link (or a JSON level's row-to-card link): drawn solid.
+    Opened,
+    /// A Link node: drawn dashed, and never a layout spring.
+    Link,
+}
+
 /// One edge on the current level, in world space.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct LevelEdge {
@@ -39,6 +48,7 @@ pub(crate) struct LevelEdge {
     pub(crate) to: egui::Pos2,
     pub(crate) curve: EdgeCurve,
     pub(crate) highlight: bool,
+    pub(crate) kind: EdgeKind,
 }
 
 /// One walk of `node_order` at the level being viewed (`App::level_scan`).
@@ -121,24 +131,36 @@ impl App {
                         to: egui::pos2(rect.left(), rect.top() + json_view::HEADER_HEIGHT / 2.0),
                         curve: EdgeCurve::Horizontal,
                         highlight: level.selected.as_deref() == Some(card.pointer.as_str()),
+                        kind: EdgeKind::Opened,
                     })
                 })
                 .collect();
         }
-        self.nodes
-            .iter()
-            .filter(|(id, _)| self.in_level(id))
-            .filter_map(|(id, _)| {
-                let parent_id = self.mirror.parent(id)?;
-                self.nodes.get(parent_id).filter(|_| self.in_level(parent_id))?;
-                Some(LevelEdge {
-                    from: self.layout_pos(parent_id).to_pos2(),
-                    to: self.layout_pos(id).to_pos2(),
-                    curve: EdgeCurve::Bow,
-                    highlight: false,
-                })
+        let opened = self.nodes.iter().filter(|(id, _)| self.in_level(id)).filter_map(|(id, _)| {
+            let parent_id = self.mirror.parent(id)?;
+            self.nodes.get(parent_id).filter(|_| self.in_level(parent_id))?;
+            Some(LevelEdge {
+                from: self.layout_pos(parent_id).to_pos2(),
+                to: self.layout_pos(id).to_pos2(),
+                curve: EdgeCurve::Bow,
+                highlight: false,
+                kind: EdgeKind::Opened,
             })
-            .collect()
+        });
+        // A link shows only while both of its ends are live cards at this level.
+        let links = self.mirror.link_ids().filter_map(|link| {
+            let (from, to) = self.mirror.link_ends(&link.to_string());
+            let (from, to) = (from?.to_string(), to?.to_string());
+            let both_here = [&from, &to].iter().all(|end| self.nodes.contains_key(*end) && self.in_level(end));
+            both_here.then(|| LevelEdge {
+                from: self.layout_pos(&from).to_pos2(),
+                to: self.layout_pos(&to).to_pos2(),
+                curve: EdgeCurve::Bow,
+                highlight: false,
+                kind: EdgeKind::Link,
+            })
+        });
+        opened.chain(links).collect()
     }
 
     /// Lays out the current level with its source's own strategy: the

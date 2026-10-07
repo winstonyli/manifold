@@ -4959,6 +4959,30 @@ fn connect_opened_from_sets_the_parent_and_refuses_a_cycle() {
 }
 
 #[test]
+fn a_link_is_a_level_edge_only_while_both_ends_are_live_at_this_level() {
+    use crate::level::EdgeKind;
+    let mut app = app_on(&temp_dir("link-level").join("session.mnf"), 1);
+    let a = succeed_spawn(&mut app, "https://a/");
+    let b = succeed_spawn(&mut app, "https://b/");
+    app.connect(LINK, &a, &b).unwrap();
+    let edges = app.level_edges();
+    assert_eq!(edges.iter().filter(|e| e.kind == EdgeKind::Link).count(), 1);
+    app.edit_group(&b, Some("elsewhere".into()));
+    assert!(app.level_edges().iter().all(|e| e.kind != EdgeKind::Link), "another level: not shown");
+}
+
+#[test]
+fn links_never_feed_the_layout_springs() {
+    let mut app = app_on(&temp_dir("link-springs").join("session.mnf"), 1);
+    let a = succeed_spawn(&mut app, "https://a/");
+    let b = succeed_spawn(&mut app, "https://b/");
+    app.connect(LINK, &a, &b).unwrap();
+    assert!(app.spring_edges().is_empty());
+    app.connect(OPENED_FROM, &b, &a).unwrap();
+    assert_eq!(app.spring_edges(), vec![(a, b)]);
+}
+
+#[test]
 fn connect_refuses_another_level_and_a_missing_card() {
     let mut app = app_on(&temp_dir("connect-level").join("session.mnf"), 1);
     let a = succeed_spawn(&mut app, "https://a/");

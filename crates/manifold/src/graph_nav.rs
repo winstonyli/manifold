@@ -422,13 +422,7 @@ impl App {
         let layout = |id: &String| self.layout.get(id).copied().unwrap_or_default();
         let mut positions: HashMap<String, egui::Vec2> = at_level().map(|id| (id.clone(), layout(id).pos)).collect();
         let mut velocities: HashMap<String, egui::Vec2> = at_level().map(|id| (id.clone(), layout(id).vel)).collect();
-        let edges: Vec<(String, String)> = self
-            .nodes
-            .iter()
-            .filter(|(id, _)| self.in_level(id))
-            .filter_map(|(id, _)| self.mirror.parent(id).map(|p| (p.to_owned(), id.clone())))
-            .filter(|(p, c)| positions.contains_key(p) && positions.contains_key(c))
-            .collect();
+        let edges = self.spring_edges();
         let pinned: HashSet<String> = self
             .nodes
             .iter()
@@ -459,6 +453,21 @@ impl App {
             let vel = velocities.get(&id).copied().unwrap_or_default();
             self.layout.insert(id, Layout { pos, vel });
         }
+    }
+
+    /// The `(opener, opened)` pairs that pull on each other in the layout: the level's edges whose table row has
+    /// `affects_layout` (today `opened-from`, stored as `parent`). A link is not one, so it never moves a card.
+    pub(crate) fn spring_edges(&self) -> Vec<(String, String)> {
+        if !crate::caps::edges().row(crate::caps::OPENED_FROM).is_some_and(|row| row.affects_layout()) {
+            return Vec::new();
+        }
+        let live = |id: &str| self.nodes.contains_key(id) && self.in_level(id);
+        self.nodes
+            .keys()
+            .filter(|id| live(id))
+            .filter_map(|id| self.mirror.parent(id).map(|p| (p.to_owned(), id.clone())))
+            .filter(|(p, _)| live(p))
+            .collect()
     }
 
     /// Where `id`'s card is drawn (`App::layout`); the origin for a node with no entry (a hand-built test node).
