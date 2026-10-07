@@ -11,7 +11,7 @@
 #   sheet.png           every view in one grid (needs Pillow, which is optional)
 # Each view starts from Graph view at the top level and leaves the app
 # there, so VIEWS picks any subset and a run is ~40 s. Views:
-#   graph graph-hover graph-menu-tab graph-menu-group graph-menu-note graph-menu-jars
+#   graph graph-hover graph-menu-tab graph-menu-group graph-menu-note graph-menu-jars graph-menu-group-jars
 #   graph-filter graph-group json-level json-menu
 #   tabview tabview-dropdown tabview-find tabview-actions
 #   tabview-split settings popup-bookmarks popup-history popup-downloads
@@ -222,6 +222,11 @@ done
 # both jars) with the current one selected.
 if has graph-menu-jars; then
     read -r x y < <(center "$TAB" top loaded); send "MOUSEMOVE $x $y" "MOUSEDOWN $x $y right" "MOUSEUP $x $y right" "SLEEP 1" ESCAPE "SETJAR Alpha" "SETJAR Beta" "SLEEP 1"         "MOUSEMOVE $x $y" "MOUSEDOWN $x $y right" "MOUSEUP $x $y right" "SLEEP 1"; shot graph-menu-jars; reset
+fi
+# The group's menu with those jars: the default-jar rows, none chosen (so Default is the selected row).
+if has graph-menu-group-jars; then
+    read -r x y < <(center "$TAB" top loaded); send "MOUSEMOVE $x $y" "MOUSEDOWN $x $y right" "MOUSEUP $x $y right" "SLEEP 1" ESCAPE "SETJAR Alpha" "SETJAR Beta" "SLEEP 1"
+    read -r x y < <(center "$GROUP" top); send "MOUSEMOVE $x $y" "MOUSEDOWN $x $y right" "MOUSEUP $x $y right" "SLEEP 1"; shot graph-menu-group-jars; reset
 fi
 if has hover-graph; then hover_scan graph; fi
 if has tab-graph; then tab_scan graph "${TAB_STOPS:-10}"; fi
