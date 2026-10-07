@@ -119,15 +119,19 @@ impl App {
     /// The link line under the pointer. Called inside `build_graph_ui`'s Scene, where `ui.response()` is the Scene's
     /// own background: hovered only when no card, control or popup is on top and nothing is being dragged. Off the
     /// minimap (`minimap`, screen points), which is painted, not a widget. Sets the pointing-hand cursor when there is
-    /// a line, so a click is never a surprise.
+    /// a line, so a click is never a surprise. None while a text field has the keys (`typing`, read at frame start:
+    /// a note being edited, a group rename, the quick switcher, the filter box): egui hands focus back on a click
+    /// elsewhere, so that click only ends the edit. Not in `line_click_allowed`, which also gates the connect handles:
+    /// those stay usable while a note is being edited.
     pub(crate) fn hovered_link_line(
         &self,
         ui: &egui::Ui,
         edges: &[LevelEdge],
         inv_zoom: f32,
         minimap: Option<egui::Rect>,
+        typing: bool,
     ) -> Option<String> {
-        if !self.line_click_allowed() {
+        if !self.line_click_allowed() || typing || self.renaming_group.is_some() || self.quick_switcher.is_some() {
             return None;
         }
         let background = ui.response();
@@ -204,19 +208,24 @@ impl App {
     }
 
     /// During a connect-drag, the card a release at screen point `pointer` would link to: the topmost card other than
-    /// the source under it, inside `scene_outer_rect` and off the `minimap` (painted over the Scene, not a widget).
-    /// `(zoom_scale, translation)` maps world to screen (`graph_world_to_screen_transform`). Both the bright target
-    /// ring and the release read this, so the ring shows exactly where a release links. egui hovers only the dragged
-    /// handle meanwhile, so the card's own hover cannot say so.
+    /// the source under it, inside `scene_outer_rect`, off the `minimap` (painted over the Scene, not a widget) and
+    /// under no interactable egui Area above the graph (a popup or menu, by `Context::layer_id_at`, the layer test
+    /// egui's own hit-test uses, so a click there would reach no card either; a non-interactable toast lets both
+    /// through). `(zoom_scale, translation)` maps world to screen (`graph_world_to_screen_transform`). Both the bright
+    /// target ring and the release read this, so the ring shows exactly where a release links. egui hovers only the
+    /// dragged handle meanwhile, so the card's own hover cannot say so.
     pub(crate) fn connect_drag_target(
         &self,
+        ctx: &egui::Context,
         pointer: Option<egui::Pos2>,
         scene_outer_rect: egui::Rect,
         minimap: Option<egui::Rect>,
         (zoom_scale, translation): (f32, egui::Vec2),
     ) -> Option<String> {
         let source = self.connect_drag.as_ref()?;
-        let pointer = pointer.filter(|p| scene_outer_rect.contains(*p) && !minimap.is_some_and(|m| m.contains(*p)))?;
+        let covered = |p: egui::Pos2| ctx.layer_id_at(p).is_some_and(|layer| layer.order != egui::Order::Background);
+        let pointer = pointer
+            .filter(|p| scene_outer_rect.contains(*p) && !minimap.is_some_and(|m| m.contains(*p)) && !covered(*p))?;
         self.card_at(((pointer.to_vec2() - translation) / zoom_scale).to_pos2()).filter(|target| target != source)
     }
 
@@ -291,13 +300,15 @@ mod tests {
     /// Drives `build_graph_ui` headless, as `a_click_finishes_or_cancels_pick_target_mode` (graph_ui.rs) does.
     struct Harness {
         ctx: egui::Context,
+        /// An interactable Foreground Area drawn over the graph each frame (as a popup is), when set.
+        cover: std::cell::Cell<Option<egui::Rect>>,
     }
 
     impl Harness {
         fn new() -> Self {
             let ctx = egui::Context::default();
             crate::theme::apply_fonts(&ctx);
-            Self { ctx }
+            Self { ctx, cover: std::cell::Cell::new(None) }
         }
 
         /// One frame at the size `graph_world_rect_to_screen` assumes with no window. Returns the cursor it asked for.
@@ -307,7 +318,16 @@ mod tests {
                 events,
                 ..Default::default()
             };
-            let mut output = self.ctx.run_ui(input, |ui| app.build_graph_ui(ui));
+            let cover = self.cover.get();
+            let mut output = self.ctx.run_ui(input, |ui| {
+                app.build_graph_ui(ui);
+                if let Some(rect) = cover {
+                    egui::Area::new(egui::Id::new("test_cover"))
+                        .order(egui::Order::Foreground)
+                        .fixed_pos(rect.min)
+                        .show(ui.ctx(), |ui| ui.allocate_exact_size(rect.size(), egui::Sense::click()));
+                }
+            });
             output.textures_delta.clear();
             output.platform_output.cursor_icon
         }
@@ -775,6 +795,8 @@ mod tests {
         drag_from_handle(&h, &mut app, &b, HandleSide::Bottom, onto, vec![escape]);
         assert!(app.links_naming(&b).is_empty(), "Esc cancelled it");
         assert!(app.connect_drag.is_none() && app.connecting.is_none());
+        // Final review M5: egui drops keyboard focus on Esc, so the same Esc also ended a's edit.
+        assert!(!app.nodes[&a].as_note().unwrap().editing, "the same Esc ended the note edit");
     }
 
     /// Where `draw_graph_minimap` puts the minimap: 160 by 110, 12 in from the scene's bottom-right corner.
@@ -800,8 +822,12 @@ mod tests {
         assert!(screen_rect(&app, &b).contains(over), "b lies under the minimap");
         app.start_connect_drag(&a);
         let transform = app.graph_world_to_screen_transform(outer);
-        assert_eq!(app.connect_drag_target(Some(over), outer, None, transform), Some(b.clone()), "without it: b");
-        assert_eq!(app.connect_drag_target(Some(over), outer, Some(minimap), transform), None, "not ringed");
+        assert_eq!(
+            app.connect_drag_target(&h.ctx, Some(over), outer, None, transform),
+            Some(b.clone()),
+            "without it: b"
+        );
+        assert_eq!(app.connect_drag_target(&h.ctx, Some(over), outer, Some(minimap), transform), None, "not ringed");
         app.cancel_connect();
         drag_from_handle(&h, &mut app, &a, HandleSide::Right, over, vec![]);
         assert!(app.links_naming(&a).is_empty(), "not linked");
@@ -871,5 +897,107 @@ mod tests {
         assert_eq!(app.camera.rect, held, "the camera held still");
         assert!(app.camera.momentum.is_none(), "and no glide after the release");
         assert_eq!(app.links_naming(&a).len(), 1);
+    }
+
+    /// Final review I1: while a text field has the keys, a click outside it only ends the edit (egui hands focus
+    /// back on that click), so it takes no line.
+    #[test]
+    fn a_click_that_ends_a_note_edit_deletes_no_line() {
+        let (h, mut app, [a, b, _]) = three_notes();
+        let ab = app.create_link(&a, &b);
+        h.frame(&mut app, vec![]);
+        let on_a = screen_rect(&app, &a).center();
+        h.click(&mut app, on_a);
+        assert!(h.ctx.memory(|m| m.has_focus(egui::Id::new(("note_edit", a.as_str())))), "a's editor has focus");
+        let on = line_middle(&app, &ab);
+        h.click(&mut app, on);
+        assert_eq!(app.links_naming(&a), std::slice::from_ref(&ab), "the line stays");
+        assert!(!app.nodes[&a].as_note().unwrap().editing, "the click ended the edit");
+        h.click(&mut app, on);
+        assert!(app.links_naming(&a).is_empty(), "with no edit running the same click takes it");
+    }
+
+    /// Final review I2: losing window focus mid-drag cancels it (the button-up may never arrive), so a later
+    /// ordinary click on a card links nothing.
+    #[test]
+    fn losing_window_focus_cancels_a_connect_drag() {
+        let (h, mut app, [a, b, _]) = three_notes();
+        let centre = screen_rect(&app, &a).center();
+        h.frame(&mut app, vec![egui::Event::PointerMoved(centre)]);
+        let handle = handle_on_screen(&app, &a, HandleSide::Right);
+        h.frame(&mut app, vec![egui::Event::PointerMoved(handle)]);
+        h.frame(&mut app, vec![egui::Event::PointerMoved(handle)]);
+        h.frame(&mut app, vec![press(handle, true)]);
+        assert_eq!(app.connect_drag.as_deref(), Some(a.as_str()));
+        app.on_window_focus(false);
+        assert!(app.connect_drag.is_none() && app.connecting.is_none() && app.line_press.is_none());
+        let on_b = screen_rect(&app, &b).center();
+        h.frame(&mut app, vec![egui::Event::PointerMoved(on_b), press(on_b, false)]);
+        h.frame(&mut app, vec![]);
+        h.click(&mut app, on_b);
+        assert!(app.links_naming(&a).is_empty());
+    }
+
+    /// Final review nit: a level change drops a line press, as it drops a connect-drag.
+    #[test]
+    fn a_level_change_drops_a_line_press() {
+        let (mut app, a, _) = two_notes();
+        app.line_press = Some((a.clone(), app.camera.rect));
+        app.start_connect_drag(&a);
+        app.switch_group_level(None);
+        assert!(app.line_press.is_none() && app.connect_drag.is_none());
+    }
+
+    /// Final review I2: a connect-drag whose button-up was lost (the button is up, yet no release came this frame)
+    /// cancels, so the next ordinary click on a card links nothing.
+    #[test]
+    fn a_connect_drag_without_its_button_down_cancels() {
+        let (h, mut app, [a, b, _]) = three_notes();
+        let on_b = screen_rect(&app, &b).center();
+        app.start_connect_drag(&a);
+        h.frame(&mut app, vec![egui::Event::PointerMoved(on_b)]);
+        assert!(app.connect_drag.is_none() && app.connecting.is_none(), "no button down: cancelled");
+        h.click(&mut app, on_b);
+        assert!(app.links_naming(&a).is_empty());
+    }
+
+    /// Final review M2: a plain click (no movement) on a handle's outer half, where it lies over a neighbouring card
+    /// drawn earlier, ends the gesture: it links nothing.
+    #[test]
+    fn a_click_on_a_handle_over_a_neighbour_links_nothing() {
+        let (h, mut app, [a, b, _]) = three_notes();
+        // b's left edge 2 screen points right of a's right edge: b's left handle's outer half lies over a.
+        let (zoom, _) = app.graph_world_to_screen_transform(app.graph_scene_outer_rect());
+        let (ra, rb) = (app.card_rect(&a).unwrap(), app.card_rect(&b).unwrap());
+        let b_centre = egui::pos2(ra.right() + 2.0 / zoom + rb.width() / 2.0, ra.center().y);
+        app.snap_layout(&b, b_centre.to_vec2());
+        h.frame(&mut app, vec![]);
+        let spot = handle_on_screen(&app, &b, HandleSide::Left) - egui::vec2(4.0, 0.0);
+        assert!(screen_rect(&app, &a).contains(spot) && !screen_rect(&app, &b).contains(spot), "over a, off b");
+        let on_b = screen_rect(&app, &b).center();
+        h.frame(&mut app, vec![egui::Event::PointerMoved(on_b)]);
+        h.frame(&mut app, vec![egui::Event::PointerMoved(spot)]);
+        h.frame(&mut app, vec![egui::Event::PointerMoved(spot)]);
+        h.frame(&mut app, vec![press(spot, true)]);
+        assert_eq!(app.connect_drag.as_deref(), Some(b.as_str()), "the press is b's handle's");
+        h.frame(&mut app, vec![press(spot, false)]);
+        h.frame(&mut app, vec![]);
+        assert!(app.links_naming(&b).is_empty(), "a click on the handle links nothing");
+        assert!(app.connect_drag.is_none() && app.connecting.is_none());
+    }
+
+    /// Final review M3: a release over an interactable egui Area (a popup) links nothing under it, as a click there
+    /// reaches no card.
+    #[test]
+    fn a_release_over_a_popup_links_nothing_under_it() {
+        let (h, mut app, [a, b, _]) = three_notes();
+        let on_b = screen_rect(&app, &b).center();
+        h.cover.set(Some(egui::Rect::from_center_size(on_b, egui::vec2(60.0, 60.0))));
+        h.frame(&mut app, vec![]);
+        h.frame(&mut app, vec![]);
+        assert_eq!(h.ctx.layer_id_at(on_b).map(|l| l.order), Some(egui::Order::Foreground), "the cover is on top");
+        drag_from_handle(&h, &mut app, &a, HandleSide::Right, on_b, vec![]);
+        assert!(app.links_naming(&a).is_empty());
+        assert!(app.connect_drag.is_none() && app.connecting.is_none());
     }
 }

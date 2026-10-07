@@ -1343,8 +1343,10 @@ Executed subagent-driven, one commit per task plus review fix rounds:
 | 1 Click a link line to disconnect | f0fa529, 9dbeece | 0 crit, 2 important (popup-dismissal click, glide tap; fixed red-first), 5 minor (M2, M3 fixed; M1, M4, M5 below), 5 nit |
 | 2 Edge handles and connect-drag | dfc01f8, add755e | 0 crit, 1 important (Esc with a focused text field; fixed), 6 minor (M1, M4, M5, M6 fixed; M2, M3 parked), 5 nit |
 | 3 Probe, screenshots, docs | "Link gestures: probe, screenshots, docs" | |
+| Final whole-branch review | "Link gestures: final-review fixes" | 0 crit, 2 important (I1 a click ending a text edit took a line; I2 a lost button-up let the next click link; both fixed red-first), 5 minor (M2, M3, M5 fixed; M1, M4 parked), 4 nit (N1 fixed; N2-N4 parked) |
 
-`cargo test -p manifold`: 983 passed, 0 failed, 5 ignored after Task 2's fix round (Task 3 changed no Rust).
+`cargo test -p manifold`: 983 passed, 0 failed, 5 ignored after Task 2's fix round (Task 3 changed no Rust); 989
+passed, 0 failed, 5 ignored after the final-review fixes.
 `scripts/link-probe.sh`: 13 PASS (the 7 from links, plus: LINK again; a click on the line's middle deletes it; a
 drag from a's right handle onto b links a -> b; a's rect unchanged; `connect_drag` null after; the link persists).
 It passed on the first run in the real app; the state files showed a new link id after the drag and identical
@@ -1387,11 +1389,36 @@ Gate (two-instance-test x3, headless-smoke-test x1) on ddf2704, 2026-10-07: two-
   `graph-link-drag` view does; before this, every caller only pasted it into a command). README's chrome-shots count
   says 46 (the size of `ALL`; it said 46 before with 43 names, so the brief's 49 would have been off by three).
 
+**Fixed in the final-review round:**
+
+- I1: no line hover, so no line press or click, while a text field has the keys (`typing` at frame start, a group
+  rename, the quick switcher). The click that ends a note edit keeps the line. The gate is in `hovered_link_line`, not
+  `line_click_allowed`, so the connect handles stay usable while a note is being edited.
+- I2 (and Task 2 M3 for the connect-drag): `on_window_focus(false)` cancels a connect-drag and drops `line_press`. The
+  release block cancels, instead of linking, when the button is up with no release this frame (a lost button-up).
+- M2: a release that egui counts as a click (no movement) cancels, so a click on a handle's outer half over a
+  neighbouring card links nothing. A press held past egui's `max_click_duration` without moving is no longer a click
+  and links to whatever is under the handle's outer half; that remainder is accepted.
+- M3: `connect_drag_target` refuses a pointer whose topmost interactable egui Area is above the Background order
+  (`Context::layer_id_at`, the layer test egui's hit-test uses), so a release over a popup or menu links nothing. The
+  save toast is non-interactable, so a release over it still links, as a click there still reaches the card.
+- M5: the comment in `handle_graph_keys` now says egui's own Esc focus drop also ends a note edit, and the test
+  asserts it.
+- N1: `line_press` is cleared on session replace and on a level change (`switch_group_level`).
+
 **Parked:**
 
+- Final review M1: a double-click on a line whose pair has two links deletes both. Duplicate pairs only come from
+  concurrent creation on two replicas.
+- Final review M4: the top handle's inner half sits over the header's centre, where cards are usually grabbed to
+  drag. Look at it live; the handle could sit on the border's outside instead.
+- Final review N2: the spec's Lifecycle says `end_stale_drag` where the code uses `end_stale_connect`.
+- Final review N3: `level_edges()` clones two `String`s per edge per frame.
+- Final review N4: no harness tests for a source culled or simplified mid-drag, or for no handles in a JSON level.
 - Task 2 M2: a right-press during a connect-drag (or a card drag) opens a node menu or starts a marquee. Fix: skip the
   secondary-press branch while `connect_drag` or `dragging` is set.
-- Task 2 M3: losing window focus mid-drag leaves the connect-drag (and a card drag) alive. Fix: cancel on focus loss.
+- Task 2 M3, card-drag half: losing window focus mid-drag still leaves a card drag alive (the connect-drag half is
+  fixed above).
 - Task 1 M5: a painted, non-widget overlay over a line (a label past its card's rect, the marquee) lets a click through
   to the line. Not checked live.
 - Task 1 N3: the EXPORTSTATE doc calls `edges`' `screen` the middle "between the two card centres"; it is the straight

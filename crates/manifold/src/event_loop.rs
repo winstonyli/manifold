@@ -774,10 +774,13 @@ impl App {
 
     /// Window focus changed. A chord's key-up can be lost while the window is
     /// in the background (Alt-Tab mid-chord); a key left in `swallowed_keys`
-    /// would then swallow that key's next real release in the page.
+    /// would then swallow that key's next real release in the page. A mouse button's up can be lost the same way, and
+    /// egui keeps it down: a connect-drag (and a line press) ends here, or the next ordinary click would link.
     pub(crate) fn on_window_focus(&mut self, focused: bool) {
         if !focused {
             self.swallowed_keys.clear();
+            self.cancel_connect();
+            self.line_press = None;
         }
     }
 

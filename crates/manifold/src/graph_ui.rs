@@ -412,6 +412,7 @@ impl App {
         self.current_group = group;
         self.end_stale_drag(true);
         self.cancel_connect();
+        self.line_press = None;
         self.sync_json_level();
         self.layout_current_level();
         self.graph_settled_key = Some(self.current_level_settle_key());
@@ -566,7 +567,8 @@ impl App {
                 // The link line under the pointer (link-gestures spec B) is drawn highlighted; a click on it is
                 // applied after the Scene, from the Scene's own response.
                 let mut edges = self.level_edges();
-                let line_hover = self.hovered_link_line(ui, &edges, inv_zoom, minimap.map(|(rect, _, _)| rect));
+                let minimap_rect = minimap.map(|(rect, _, _)| rect);
+                let line_hover = self.hovered_link_line(ui, &edges, inv_zoom, minimap_rect, typing);
                 for edge in &mut edges {
                     edge.highlight |= edge.link.is_some() && edge.link == line_hover;
                 }
@@ -577,6 +579,7 @@ impl App {
                 } else {
                     // The card a release now would link to, ringed bright: the release below reads the same function.
                     let connect_target = self.connect_drag_target(
+                        ui.ctx(),
                         ui.input(|i| i.pointer.interact_pos()),
                         scene_outer_rect,
                         minimap.map(|(rect, _, _)| rect),
@@ -625,14 +628,23 @@ impl App {
 
         // A connect-drag ends when the button comes up (link-gestures spec A). Its target is the card under the
         // pointer, unlike a card drop's (the dragged card's centre), in the scene and off the minimap: the one the
-        // ring showed, through this frame's final transform.
-        if self.connect_drag.is_some() && !ui.input(|i| i.pointer.primary_down()) {
-            let target = self.connect_drag_target(
-                ui.input(|i| i.pointer.interact_pos()),
-                scene_outer_rect,
-                minimap.map(|(rect, _, _)| rect),
-                (zoom_scale, translation),
-            );
+        // ring showed, through this frame's final transform. It cancels instead when the release is a click (no
+        // movement: the release is on the pressed handle, whose outer half may lie over a neighbour), or when the
+        // button is up with no release this frame (its button-up was lost), so a later ordinary click never links.
+        let (down, released, clicked) =
+            ui.input(|i| (i.pointer.primary_down(), i.pointer.primary_released(), i.pointer.primary_clicked()));
+        if self.connect_drag.is_some() && !down {
+            let target = (released && !clicked)
+                .then(|| {
+                    self.connect_drag_target(
+                        ui.ctx(),
+                        ui.input(|i| i.pointer.interact_pos()),
+                        scene_outer_rect,
+                        minimap.map(|(rect, _, _)| rect),
+                        (zoom_scale, translation),
+                    )
+                })
+                .flatten();
             self.end_connect_drag(target);
         }
 
@@ -1163,7 +1175,8 @@ impl App {
     pub(crate) fn handle_graph_keys(&mut self, ui: &egui::Ui, typing: bool) {
         // Esc cancels a connect-drag even while a text field has the keys: the handle press never takes focus from
         // it (egui surrenders focus on clicks only), so a note being edited would otherwise eat that Esc and the
-        // release would still link. That Esc does nothing else here.
+        // release would still link. That Esc does nothing else here, though egui itself drops keyboard focus on Esc,
+        // so the same Esc also ends a note edit or rename that had the keys.
         if self.connect_drag.is_some() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
             self.cancel_connect();
             return;
