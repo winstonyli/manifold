@@ -2201,8 +2201,7 @@ mod tests {
         assert_eq!(hints.len(), 1, "the hint is painted once");
     }
 
-    /// The hint is per level: an empty group, or the top level beside a group that holds the only tab, shows it; a
-    /// level with a node does not.
+    /// The hint is per level: an empty group shows it; a level with a node (a group card counts) does not.
     #[test]
     fn the_hint_shows_on_every_empty_level_not_only_an_empty_graph() {
         use crate::fetched::Placement;
