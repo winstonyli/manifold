@@ -10,7 +10,7 @@
 # Build first (`cargo build -j 8 -p manifold`): both tests run the existing exe. Launch detached and low priority:
 #   cmd //c start "" //b //belownormal bash scripts/gate.sh LOG [mode]
 # Progress and verdicts go to LOG; each run's own output to LOG.two-N.log and LOG.smoke.log. Running the runs in
-# parallel was tried (2026-10-07) and is no faster: the CPU is the limit, and it adds timing-flake risk.
+# parallel was tried (2026-10-07) and was worse: 53 min, all four runs failed on timing waits under load.
 cd "$(dirname "$0")/.." || exit 1
 out="$1"
 mode="${2:-full}"
