@@ -1368,7 +1368,7 @@ Shots (chrome-shots, 1280x800, zoom 144%), looked at whole and zoomed:
 - Geometry: a handle spans edge/2 +- 6 and Audio reaches 16 from the top-right corner, so at exactly 44 they touch
   and never overlap; no tab played audio in the shots, so Audio itself was not pictured.
 
-Gate (two-instance-test x3, headless-smoke-test x1) on ddf2704, 2026-10-07: two-instance ok x3, smoke 48 pass / 0 fail (CPU 31-100% from other sessions, Defender real-time off).
+Gate (two-instance-test x3, headless-smoke-test x1) on ddf2704, 2026-10-07: two-instance ok x3, smoke 48 pass / 0 fail. Rerun on 688e391 (final-review fixes): same result (CPU 22-100% from other sessions, Defender real-time off).
 
 **Deviations from the plan text:**
 
