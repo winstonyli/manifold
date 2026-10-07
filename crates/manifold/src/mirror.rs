@@ -126,6 +126,11 @@ impl Mirror {
         self.link_nodes.iter().copied()
     }
 
+    /// Whether `id` is a link this replica knows.
+    pub(crate) fn is_link(&self, id: NodeId) -> bool {
+        self.link_nodes.contains(&id)
+    }
+
     /// A link's `from` and `to` (`field::FROM`, `field::TO`), read through the plain field map as `default_jar` is.
     /// Either may name a card that no longer exists, or be `None`.
     pub(crate) fn link_ends(&self, id: &str) -> (Option<NodeId>, Option<NodeId>) {

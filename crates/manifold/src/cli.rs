@@ -45,7 +45,7 @@ fn dump(path: &Path) -> Result<i32, String> {
         println!("frame at {offset}: type {ty}, {size} bytes");
     }
     let doc = Journal::read(&bytes).map_err(|e| e.to_string())?;
-    println!("{}", serde_json::to_string_pretty(&json::doc_to_json(&doc)).expect("JSON serializes"));
+    println!("{}", serde_json::to_string_pretty(&json::doc_to_json_all(&doc)).expect("JSON serializes"));
     Ok(0)
 }
 

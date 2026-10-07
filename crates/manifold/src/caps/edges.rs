@@ -258,6 +258,12 @@ mod tests {
     }
 
     #[test]
+    fn linkable_is_every_card_type_but_the_json_leaf() {
+        let expected: Vec<_> = CARD_TYPES.iter().filter(|&&t| t != TYPE_JSON_LEAF).collect();
+        assert_eq!(LINKABLE.iter().collect::<Vec<_>>(), expected, "CARD_TYPES and LINKABLE diverged");
+    }
+
+    #[test]
     fn contains_is_acyclic_and_has_no_verb() {
         let row = edges().row(CONTAINS).unwrap();
         assert!(row.is_acyclic() && row.verb().is_none());

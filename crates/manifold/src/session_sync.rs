@@ -367,7 +367,7 @@ impl App {
             let fields = Kind::Jar.fields().iter().map(|&no| (no, self.mirror.get(&key, no))).collect();
             return Some(Snapshot { kind: Kind::Jar, group: None, fields });
         }
-        if self.mirror.link_ids().any(|link| link == id) {
+        if self.mirror.is_link(id) {
             let fields = Kind::Link.fields().iter().map(|&no| (no, self.mirror.get(&key, no))).collect();
             return Some(Snapshot { kind: Kind::Link, group: None, fields });
         }
@@ -748,7 +748,7 @@ impl App {
         for link in self.links_naming(id) {
             self.delete_link(&link);
         }
-        if let Some(link) = id.parse::<NodeId>().ok().filter(|l| self.mirror.link_ids().any(|k| k == *l)) {
+        if let Some(link) = id.parse::<NodeId>().ok().filter(|l| self.mirror.is_link(*l)) {
             self.mirror.forget_link(link);
             return;
         }
@@ -1419,7 +1419,7 @@ impl App {
             let shown = self.nodes.contains_key(&key)
                 || self.spawning.contains_key(&key)
                 || self.mirror.jar_defs().contains_key(&id)
-                || self.mirror.link_ids().any(|link| link == id);
+                || self.mirror.is_link(id);
             assert!(shown, "node {key} is live in the document but not shown: a delete funnel was missed");
         }
     }
@@ -1910,11 +1910,9 @@ impl App {
         let pass = self.begin_content_pass();
         for node in imported {
             // A link whose end did not resolve, or names no card in this batch or live, has nothing to join.
-            let end = |no| match node.fields.get(&no) {
-                Some(FieldValue::Id(Some(n))) => ids.contains(n) || self.nodes.contains_key(&n.to_string()),
-                _ => false,
-            };
-            if node.kind == Kind::Link && !(end(field::FROM) && end(field::TO)) {
+            if crate::store::json::is_half_made_link(&node, |n| {
+                ids.contains(&n) || self.nodes.contains_key(&n.to_string())
+            }) {
                 continue;
             }
             let is_root = Some(node.id) == root_id;

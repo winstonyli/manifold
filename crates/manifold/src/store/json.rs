@@ -94,9 +94,18 @@ fn node_to_json(id: NodeId, node: &Node, group: Option<NodeId>) -> JsonNode {
 /// Every live node, in id order, each under its effective group.
 /// A link whose end is not a live card is left out (an export drops links whose far end is not in the file).
 pub fn doc_to_json(doc: &Doc) -> JsonDoc {
+    doc_to_json_with(doc, false)
+}
+
+/// `doc_to_json` with every stored link, dangling ones included (`--dump`, a forensic view).
+pub fn doc_to_json_all(doc: &Doc) -> JsonDoc {
+    doc_to_json_with(doc, true)
+}
+
+fn doc_to_json_with(doc: &Doc, all_links: bool) -> JsonDoc {
     let nodes = doc
         .live()
-        .filter(|(_, node)| node.kind() != Kind::Link || link_ends_among(node, |id| is_live_card(doc, id)))
+        .filter(|(_, node)| all_links || node.kind() != Kind::Link || link_ends_among(node, |id| is_live_card(doc, id)))
         .map(|(id, node)| node_to_json(id, node, doc.effective_group(id)))
         .collect();
     JsonDoc { nodes, local: None }
@@ -228,15 +237,24 @@ pub fn import(json: &JsonDoc, mut next_id: impl FnMut() -> NodeId, trust: Trust)
     Ok(out)
 }
 
-/// The `Create` ops that add `imported` to a document.
+/// Whether `node` is a Link with an end that is not a card (`is_card`), so it joins nothing and must not be
+/// created. `import` has already dropped ends naming a jar, a link or the link itself.
+pub fn is_half_made_link(node: &Imported, is_card: impl Fn(NodeId) -> bool) -> bool {
+    let end = |no| matches!(node.fields.get(&no), Some(FieldValue::Id(Some(n))) if is_card(*n));
+    node.kind == Kind::Link && !(end(field::FROM) && end(field::TO))
+}
+
+fn create_op(node: &Imported) -> OpBody {
+    let fields = node.fields.iter().flat_map(|(no, value)| encode_field(*no, value)).collect();
+    OpBody::create(node.id, node.kind, fields)
+}
+
+/// The `Create` ops that add `imported` to a document. A link whose end is not a card in `imported` is skipped
+/// (the same rule `materialize_imported` applies, there also accepting live cards).
 pub fn creates(imported: &[Imported]) -> Vec<OpBody> {
-    imported
-        .iter()
-        .map(|node| {
-            let fields = node.fields.iter().flat_map(|(no, value)| encode_field(*no, value)).collect();
-            OpBody::create(node.id, node.kind, fields)
-        })
-        .collect()
+    let cards: std::collections::BTreeSet<NodeId> =
+        imported.iter().filter(|n| !matches!(n.kind, Kind::Jar | Kind::Link)).map(|n| n.id).collect();
+    imported.iter().filter(|n| !is_half_made_link(n, |id| cards.contains(&id))).map(create_op).collect()
 }
 
 #[cfg(test)]
@@ -269,6 +287,37 @@ mod tests {
         {"id": "t2", "type": "application/vnd.manifold.tab", "group": "g", "parent": "t1", "url": "https://b.example/", "future_field": 7},
         {"id": "n", "type": "text/markdown", "text": "hi"}
     ]}"##;
+
+    const WITH_LINKS: &str = r##"{"nodes": [
+        {"id": "a", "type": "text/markdown", "text": "a"},
+        {"id": "b", "type": "text/markdown", "text": "b"},
+        {"id": "ok", "type": "application/vnd.manifold.link", "from": "a", "to": "b"},
+        {"id": "dangling", "type": "application/vnd.manifold.link", "from": "a", "to": "424242"},
+        {"id": "loop", "type": "application/vnd.manifold.link", "from": "a", "to": "loop"}
+    ]}"##;
+
+    #[test]
+    fn creates_drops_a_link_with_an_end_that_is_no_card_in_the_file() {
+        let parsed: JsonDoc = serde_json::from_str(WITH_LINKS).unwrap();
+        let imported = import(&parsed, ids(1), Trust::Foreign).unwrap();
+        let made = creates(&imported);
+        assert_eq!(made.len(), 3, "two notes and the whole link");
+        assert_eq!(imported.len(), 5, "import keeps index alignment with the file");
+    }
+
+    #[test]
+    fn dump_shows_dangling_links_that_an_export_hides() {
+        let mut doc = Doc::new(DocId([0; 16]));
+        let mut op_ids = ids(200);
+        let parsed: JsonDoc = serde_json::from_str(WITH_LINKS).unwrap();
+        // Own trust keeps the dangling end as written, as a half-made link in a store would be.
+        for (i, body) in import(&parsed, ids(1), Trust::Own).unwrap().iter().map(create_op).enumerate() {
+            doc.apply(&Op { id: op_ids(), hlc: Hlc { ms: 1, logical: i as u32 }, body });
+        }
+        let links = |j: JsonDoc| j.nodes.iter().filter(|n| n.kind() == Some(Kind::Link)).count();
+        assert_eq!(links(doc_to_json(&doc)), 1);
+        assert_eq!(links(doc_to_json_all(&doc)), 3);
+    }
 
     #[test]
     fn hand_written_short_ids_resolve_within_the_file() {
