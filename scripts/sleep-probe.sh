@@ -30,6 +30,8 @@ exe="$repo_root/target/debug/manifold.exe"
 # shellcheck source=fresh-exe.sh
 . "$repo_root/scripts/fresh-exe.sh"
 require_fresh_exe "$exe" || exit 1
+# The inline python below reads EXPORTSTATE cards through scripts/export_state.py.
+export PYTHONPATH="$(cygpath -w "$repo_root/scripts")"
 # Seconds from a sleep request to the tab being asleep. WebView2 sleeps at
 # once, but a CEF tab's sleep waits for its last cookies: the host's jar pull
 # answers only after `EMPTY_PULL_TIMEOUT` (2 s, manifold-engine-cef
@@ -49,10 +51,12 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# The card kinds and the focused card's id in an exported state, "id kind".
+# The cards in an exported state, "id:label" each (export_state.py's `label`: the type, `;loaded` on a live tab).
 cards() {
-    python -P -c 'import json,sys; c = json.load(open(sys.argv[1], encoding="utf-8"))["cards"]; print(" ".join(x["id"] + ":" + x["kind"] for x in c))' "$(cygpath -w "$1")" </dev/null
+    python -P -c 'import json,sys; from export_state import label; c = json.load(open(sys.argv[1], encoding="utf-8"))["cards"]; print(" ".join(x["id"] + ":" + label(x) for x in c))' "$(cygpath -w "$1")" </dev/null
 }
+live=application/vnd.manifold.tab\;loaded
+asleep=application/vnd.manifold.tab
 
 status=0
 for case in ${CASES:-manual idle scroll dirty}; do
@@ -71,7 +75,7 @@ for engine in ${ENGINES:-webview2 cef}; do
     *) path=/ ;;
     esac
     echo "{\"has_shown_first_launch_demo\": true, \"default_starting_engine\": \"$engine\"}" >"$profile/manifold/settings.json"
-    echo "{\"nodes\": [{\"id\": \"t1\", \"kind\": \"tab\", \"url\": \"http://127.0.0.1:$port$path\", \"engine\": \"$engine\", \"pos\": [0.0, 0.0]}]}" >"$profile/seed.json"
+    echo "{\"nodes\": [{\"id\": \"t1\", \"type\": \"application/vnd.manifold.tab\", \"url\": \"http://127.0.0.1:$port$path\", \"engine\": \"$engine\", \"pos\": [0.0, 0.0]}]}" >"$profile/seed.json"
     "$exe" --import-json "$(cygpath -w "$profile/seed.json")" --out "$(cygpath -w "$profile/manifold/session.mnf")" >/dev/null
 
     cmd="$profile/cmd"
@@ -205,7 +209,7 @@ for engine in ${ENGINES:-webview2 cef}; do
     case "$case" in
     manual | idle)
         got="$(cards "$out/$case-$engine-live.json") | $(cards "$out/$case-$engine-asleep.json") | $(cards "$out/$case-$engine-woken.json")"
-        want="$id:Tab | $id:Unloaded | $id:Tab"
+        want="$id:$live | $id:$asleep | $id:$live"
         what="tab, asleep, woken again"
         ;;
     scroll)
@@ -231,7 +235,7 @@ for engine in ${ENGINES:-webview2 cef}; do
         ;;
     dirty)
         got="$(cards "$out/$case-$engine-stay.json") | $(cards "$out/$case-$engine-slept.json")"
-        want="$id:Tab | $id:Unloaded"
+        want="$id:$live | $id:$asleep"
         what="idle sleep skipped the dirty tab, manual Sleep did not"
         ;;
     esac

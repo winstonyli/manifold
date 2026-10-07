@@ -22,6 +22,25 @@
 #   7. That instance, now alone, types a url whose page navigates by
 #      script, and quits: the next instance reopens the tab where the
 #      script took it (the personal-state live_url), not at the typed url.
+# Scenarios 8-10 run between 2 and 3. Moves use MOVETOGROUP (the node
+# menu's "Move into", which saves); "groups agree" means each node's group
+# is the same in what A shows, what B shows (EXPORTSTATE mirror_groups) and
+# the document.
+#   8. A creates a group and a note and moves the note into the group: the
+#      groups agree.
+#   9. A and B move one note into two different groups back to back: the
+#      groups agree on one of the two, no node is lost, no cycle.
+#  10. A moves group G into H while B moves H into G: the groups agree,
+#      no node is lost, no cycle, nothing hangs.
+# Scenarios 11-12 follow them, with RENAMEGROUP <id> <name>, SETNOTETEXT
+# (type into a note and blur it) and MOVENODE (drag and release), each of
+# which saves; "agree" is as above for the name, text or document pos
+# (EXPORTSTATE mirror_names, mirror_texts, mirror_pos).
+#  11. A renames a group: the names agree on A's. Then A and B rename it
+#      back to back: the names agree on one of the two.
+#  12. A edits a note's text: the texts agree on A's. Then A and B edit it
+#      back to back: the texts agree on one of the two. Then A moves the
+#      note: the positions agree on where A dropped it.
 #
 # A kill is TerminateProcess (`taskkill //F //PID`), not power loss: the
 # store's on-disk file is never mid-write at that point (each scenario
@@ -137,15 +156,15 @@ wait_agree() { # $1=label $2=a_export_path $3=b_export_path
 echo "=== scenario 1: import + note ==="
 cat >"$out/pair.json" <<'EOF'
 {"nodes": [
- {"id": "g", "kind": "group", "name": "Pair"},
- {"id": "a", "kind": "tab", "url": "manifold://welcome", "engine": "webview2", "pos": [-150.0, 0.0], "group": "g"},
- {"id": "b", "kind": "tab", "url": "manifold://welcome", "engine": "webview2", "pos": [150.0, 0.0], "group": "g"}]}
+ {"id": "g", "type": "application/vnd.manifold.group", "name": "Pair"},
+ {"id": "a", "type": "application/vnd.manifold.tab", "url": "manifold://welcome", "engine": "webview2", "pos": [-150.0, 0.0], "group": "g"},
+ {"id": "b", "type": "application/vnd.manifold.tab", "url": "manifold://welcome", "engine": "webview2", "pos": [150.0, 0.0], "group": "g"}]}
 EOF
 sa "IMPORTGROUP $(win "$out/pair.json")"
 sa WAITTABS
 sb NEWNOTE
 wait_agree "scenario 1" "$out/a1.json" "$out/b1.json"
-assert_py has_kinds "$out/a1.json" "note:1" "tab:2"
+assert_py has_kinds "$out/a1.json" "text/markdown:1" "application/vnd.manifold.tab:2"
 echo "scenario 1: ok"
 
 echo "=== scenario 2: compaction mid-run ==="
@@ -154,9 +173,9 @@ echo "=== scenario 2: compaction mid-run ==="
 big="$out/big.json"
 text="$(printf 'x%.0s' $(seq 1 500))"
 {
-    printf '{"nodes": [{"id": "biggroup", "kind": "group", "name": "Big"}'
+    printf '{"nodes": [{"id": "biggroup", "type": "application/vnd.manifold.group", "name": "Big"}'
     for i in $(seq 1 200); do
-        printf ',{"id": "note%d", "kind": "note", "text": "%s", "group": "biggroup"}' "$i" "$text"
+        printf ',{"id": "note%d", "type": "text/markdown", "text": "%s", "group": "biggroup"}' "$i" "$text"
     done
     printf ']}'
 } >"$big"
@@ -170,8 +189,208 @@ wait_agree "scenario 2" "$out/a2.json" "$out/b2.json"
 # >=201: the 200 imported notes plus B's own from this scenario (B's note
 # from scenario 1 is a separate node again already counted at the group
 # level, not as "note" text necessarily, so this is a floor, not exact).
-assert_py has_kinds "$out/a2.json" "note:201"
+assert_py has_kinds "$out/a2.json" "text/markdown:201"
 echo "scenario 2: ok"
+
+# Scenarios 8-10 (groups) run here, while both instances are in Graph view
+# with no tabs navigating.
+
+# Runs `$2` on instance `$1` (sa or sb) and prints the id of the one node it
+# added. Nothing else may add a node meanwhile.
+new_node() { # $1=sa|sb $2=command $3=file label
+    local before="$out/$3-before.json" after="$out/$3-after.json"
+    "$1" "EXPORTSESSION $(win "$before")"
+    wait_file "$before"
+    "$1" "$2"
+    "$1" "EXPORTSESSION $(win "$after")"
+    wait_file "$after"
+    assert_py new_id "$before" "$after" | tr -d '\r'
+}
+
+# Polls, up to ~10s, until each listed id's group is the same in what A
+# shows, what B shows (EXPORTSTATE's mirror_groups) and the document (A's
+# EXPORTSESSION, which saves first). Leaves the last exports at
+# $out/<label>-{a,b}-state.json and $out/<label>-doc.json.
+wait_mirror() { # $1=label $2...=ids
+    wait_field group "$@"
+}
+# wait_mirror for any field session_asserts.py field_agree knows (group,
+# name, text, pos).
+wait_field() { # $1=field $2=label $3...=ids
+    local field="$1" label="$2" i log="$out/mirror.log"
+    shift 2
+    local af="$out/$label-a-state.json" bf="$out/$label-b-state.json" df="$out/$label-doc.json"
+    for i in $(seq 1 50); do
+        rm -f "$af" "$bf" "$df"
+        tick sa
+        tick sb
+        sa "EXPORTSESSION $(win "$df")"
+        wait_file "$df"
+        tick sb
+        sa "EXPORTSTATE $(win "$af")"
+        sb "EXPORTSTATE $(win "$bf")"
+        wait_file "$af"
+        wait_file "$bf"
+        if assert_py field_agree "$field" "$af" "$bf" "$df" "$@" >"$log" 2>&1; then
+            cat "$log"
+            return 0
+        fi
+        sleep 0.2
+    done
+    echo "FAIL: $label: A, B and the document never agreed on the ${field}s after ~10s"
+    cat "$log" || true
+    exit 1
+}
+
+# Each instance's own view right after both moved: informational, since
+# whether either had already picked up the other's move depends on frame
+# timing (headless frames come per command and from sporadic WM_PAINTs).
+show_local() { # $1=label $2...=ids
+    local label="$1" af="$out/$1-a-local.json" bf="$out/$1-b-local.json"
+    shift
+    sa "EXPORTSTATE $(win "$af")"
+    sb "EXPORTSTATE $(win "$bf")"
+    wait_file "$af"
+    wait_file "$bf"
+    local id
+    for id in "$@"; do
+        echo "$label: right after the moves, $id: A shows $(json_get "$af" "$id"), B shows $(json_get "$bf" "$id")"
+    done
+}
+json_get() { # $1=EXPORTSTATE file $2=id: that id's mirror group
+    grep -o "\"$2\":\(null\|\"[^\"]*\"\)" "$1" | head -1 | cut -d: -f2- | tr -d '"'
+}
+
+echo "=== scenario 8: a move into a group reaches the other instance ==="
+g8="$(new_node sa NEWGROUP s8g)"
+n8="$(new_node sa NEWNOTE s8n)"
+sa "MOVETOGROUP $n8 $g8"
+wait_agree "scenario 8" "$out/a8.json" "$out/b8.json"
+[ "$(assert_py group_of "$out/a8.json" "$n8" | tr -d '\r')" = "$g8" ] || {
+    echo "FAIL: scenario 8: the document doesn't put $n8 in $g8"
+    exit 1
+}
+wait_mirror s8 "$n8" "$g8"
+echo "scenario 8: ok"
+
+echo "=== scenario 9: both move one node into different groups ==="
+g9a="$(new_node sa NEWGROUP s9ga)"
+g9b="$(new_node sa NEWGROUP s9gb)"
+n9="$(new_node sa NEWNOTE s9n)"
+# B needs all three before it can offer the move.
+wait_mirror s9-setup "$g9a" "$g9b" "$n9"
+cp "$out/s9-setup-doc.json" "$out/a9-before.json"
+# Back to back, so each move is likely made before that instance picks up
+# the other's.
+sa "MOVETOGROUP $n9 $g9a"
+sb "MOVETOGROUP $n9 $g9b"
+show_local s9 "$n9"
+wait_agree "scenario 9" "$out/a9.json" "$out/b9.json"
+wait_mirror s9 "$n9" "$g9a" "$g9b"
+got9="$(assert_py group_of "$out/s9-doc.json" "$n9" | tr -d '\r')"
+[ "$got9" = "$g9a" ] || [ "$got9" = "$g9b" ] || {
+    echo "FAIL: scenario 9: $n9 ended in $got9, neither $g9a (A's) nor $g9b (B's)"
+    exit 1
+}
+assert_py kept_ids "$out/a9-before.json" "$out/s9-doc.json"
+assert_py no_cycle "$out/s9-doc.json"
+echo "scenario 9: ok ($n9 in $([ "$got9" = "$g9a" ] && echo "A's" || echo "B's") group)"
+
+echo "=== scenario 10: A moves G into H while B moves H into G ==="
+g10="$(new_node sa NEWGROUP s10g)"
+h10="$(new_node sa NEWGROUP s10h)"
+wait_mirror s10-setup "$g10" "$h10"
+cp "$out/s10-setup-doc.json" "$out/a10-before.json"
+sa "MOVETOGROUP $g10 $h10"
+sb "MOVETOGROUP $h10 $g10"
+show_local s10 "$g10" "$h10"
+wait_agree "scenario 10" "$out/a10.json" "$out/b10.json"
+wait_mirror s10 "$g10" "$h10"
+assert_py kept_ids "$out/a10-before.json" "$out/s10-doc.json"
+assert_py no_cycle "$out/s10-doc.json"
+gg="$(assert_py group_of "$out/s10-doc.json" "$g10" | tr -d '\r')"
+hg="$(assert_py group_of "$out/s10-doc.json" "$h10" | tr -d '\r')"
+echo "scenario 10: ok (G in $gg, H in $hg)"
+
+# $1=field $2=label $3=id: the value A showed in the last wait_field for
+# that label, as JSON.
+shown() { assert_py field_of "$1" "$out/$2-a-state.json" "$3" | tr -d '\r'; }
+# Each instance's own value right after both edited: informational, as
+# show_local.
+show_local_field() { # $1=field $2=label $3=id
+    local af="$out/$2-a-local.json" bf="$out/$2-b-local.json"
+    sa "EXPORTSTATE $(win "$af")"
+    sb "EXPORTSTATE $(win "$bf")"
+    wait_file "$af"
+    wait_file "$bf"
+    echo "$2: right after the edits, $3: A shows $(assert_py field_of "$1" "$af" "$3" | tr -d '\r')," \
+        "B shows $(assert_py field_of "$1" "$bf" "$3" | tr -d '\r')"
+}
+
+echo "=== scenario 11: a group rename reaches the other instance ==="
+g11="$(new_node sa NEWGROUP s11g)"
+# B needs the group before it can rename it.
+wait_field name s11-setup "$g11"
+sa "RENAMEGROUP $g11 Renamed by A"
+wait_agree "scenario 11" "$out/a11.json" "$out/b11.json"
+wait_field name s11 "$g11"
+[ "$(shown name s11 "$g11")" = '"Renamed by A"' ] || {
+    echo "FAIL: scenario 11: $g11 is named $(shown name s11 "$g11"), not A's rename"
+    exit 1
+}
+# Back to back, so each rename is likely made before that instance picks up
+# the other's.
+sa "RENAMEGROUP $g11 Both A"
+sb "RENAMEGROUP $g11 Both B"
+show_local_field name s11c "$g11"
+wait_agree "scenario 11" "$out/a11c.json" "$out/b11c.json"
+wait_field name s11c "$g11"
+got11="$(shown name s11c "$g11")"
+[ "$got11" = '"Both A"' ] || [ "$got11" = '"Both B"' ] || {
+    echo "FAIL: scenario 11: $g11 ended named $got11, neither A's nor B's rename"
+    exit 1
+}
+echo "scenario 11: ok ($g11 named $got11)"
+
+echo "=== scenario 12: a note's text and a move reach the other instance ==="
+n12="$(new_node sa NEWNOTE s12n)"
+wait_field text s12-setup "$n12"
+sa "SETNOTETEXT $n12 Typed by A"
+wait_agree "scenario 12" "$out/a12.json" "$out/b12.json"
+wait_field text s12 "$n12"
+[ "$(shown text s12 "$n12")" = '"Typed by A"' ] || {
+    echo "FAIL: scenario 12: $n12 holds $(shown text s12 "$n12"), not A's text"
+    exit 1
+}
+sa "SETNOTETEXT $n12 Both typed A"
+sb "SETNOTETEXT $n12 Both typed B"
+show_local_field text s12c "$n12"
+wait_agree "scenario 12" "$out/a12c.json" "$out/b12c.json"
+wait_field text s12c "$n12"
+got12="$(shown text s12c "$n12")"
+[ "$got12" = '"Both typed A"' ] || [ "$got12" = '"Both typed B"' ] || {
+    echo "FAIL: scenario 12: $n12 ended holding $got12, neither A's nor B's text"
+    exit 1
+}
+# The mirror and the document must stay agreed, not just reach agreement
+# once: a later save on either side (B's here, A's in wait_field's
+# EXPORTSESSION) mustn't bring a losing text back (`commit_note_buffers`
+# commits any box that differs from the mirror).
+sb "EXPORTSESSION $(win "$out/s12c2-b-save.json")"
+wait_file "$out/s12c2-b-save.json"
+wait_field text s12c2 "$n12"
+[ "$(shown text s12c2 "$n12")" = "$got12" ] || {
+    echo "FAIL: scenario 12: $n12 went from $got12 to $(shown text s12c2 "$n12") with no edit"
+    exit 1
+}
+sa "MOVENODE $n12 321 -123"
+wait_agree "scenario 12" "$out/a12m.json" "$out/b12m.json"
+wait_field pos s12m "$n12"
+[ "$(shown pos s12m "$n12")" = '[321.0, -123.0]' ] || {
+    echo "FAIL: scenario 12: $n12 is at $(shown pos s12m "$n12"), not where A dropped it"
+    exit 1
+}
+echo "scenario 12: ok ($n12 holds $got12)"
 
 echo "=== scenario 3: a url that changes on every load ==="
 python -P "$repo_root/scripts/nonce_server.py" "$out/hits" 240 >"$out/port" 2>"$out/server.err" </dev/null &
@@ -292,7 +511,7 @@ echo '{"converted": true}' >"$out/c5.json"
 c5_url="file:///$(cygpath -m "$out/c5.json" | sed 's/ /%20/g')"
 sa "EXPORTSESSION $(win "$out/a5-before.json")"
 wait_file "$out/a5-before.json"
-json_before="$(assert_py count_kind "$out/a5-before.json" json | tr -d '\r')"
+json_before="$(assert_py count_kind "$out/a5-before.json" application/json | tr -d '\r')"
 sa "ADDRESSBAR $c5_url"
 sa "SLEEP 1"
 sa ENTER
@@ -301,13 +520,13 @@ for _ in $(seq 75); do
     tick sa
     sa "EXPORTSESSION $(win "$out/a5.json")"
     wait_file "$out/a5.json"
-    [ "$(assert_py count_kind "$out/a5.json" json | tr -d '\r')" -gt "$json_before" ] && break
+    [ "$(assert_py count_kind "$out/a5.json" application/json | tr -d '\r')" -gt "$json_before" ] && break
     sleep 0.2
 done
 # Time for B to follow the url, load it and convert too, if it's going to.
 sleep 8
 wait_agree "scenario 5" "$out/a5.json" "$out/b5.json"
-json_after="$(assert_py count_kind "$out/a5.json" json | tr -d '\r')"
+json_after="$(assert_py count_kind "$out/a5.json" application/json | tr -d '\r')"
 [ "$json_after" -eq $((json_before + 1)) ] || {
     echo "FAIL: scenario 5: Json nodes went $json_before -> $json_after, want exactly one more"
     exit 1

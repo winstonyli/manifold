@@ -882,8 +882,9 @@ mod tests {
     /// rule (the line calls one of `RULE_MARKS`) or marked raw with `// name rule: <why>`, on the same line or as a
     /// comment on the line just above (`ruled`). A new file that reads `.name` must be added here, after deciding
     /// which rule its site gets.
-    const ALLOWED: [&str; 9] = [
+    const ALLOWED: [&str; 10] = [
         "card.rs",
+        "debug_control.rs",
         "graph_nav.rs",
         "jar_defs.rs",
         "main.rs",
@@ -962,10 +963,15 @@ mod tests {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         let mut offenders = Vec::new();
         let mut seen = Vec::new();
-        for entry in std::fs::read_dir(&dir).unwrap() {
+        // `caps/` is production code: its files are scanned as `caps/<file>`.
+        let entries = std::fs::read_dir(&dir).unwrap().chain(std::fs::read_dir(dir.join("caps")).unwrap());
+        for entry in entries {
             let path = entry.unwrap().path();
-            let file = path.file_name().unwrap().to_string_lossy().into_owned();
+            let file = path.strip_prefix(&dir).unwrap().to_string_lossy().replace('\\', "/");
             if path.is_dir() {
+                if file == "caps" {
+                    continue;
+                }
                 // `session_sync/` holds only `session_sync`'s test module, which `production` would skip anyway.
                 if file == "session_sync" {
                     let files: Vec<_> = std::fs::read_dir(&path)

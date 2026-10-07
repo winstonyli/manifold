@@ -204,12 +204,12 @@ impl App {
             egui::pos2(0.0, CHROME_HEIGHT_POINTS),
             egui::vec2(screen.x, (screen.y - CHROME_HEIGHT_POINTS).max(0.0)),
         );
-        let Some(node) = self.nodes.get(&transition.node_id) else {
+        if !self.nodes.contains_key(&transition.node_id) {
             let rect = transition_eased_rect(transition, full_content_rect, full_content_rect);
             return (rect, rect);
-        };
+        }
         // Same rect `paint_tab_body` blits the thumbnail at, so the transition starts and ends on it.
-        let world = egui::Rect::from_center_size(egui::pos2(node.pos.x, node.pos.y), GRAPH_NODE_SIZE);
+        let world = egui::Rect::from_center_size(self.layout_pos(&transition.node_id).to_pos2(), GRAPH_NODE_SIZE);
         let zoom = self.graph_world_rect_to_screen(world).width() / GRAPH_NODE_SIZE.x;
         let clip_end = self.graph_world_rect_to_screen(tab_thumb_rect(world, 1.0 / zoom));
         let viewport_end = match self.gpu.as_ref().and_then(|g| g.thumbnail_size(&transition.node_id)) {
@@ -237,7 +237,7 @@ impl App {
         let tex_id = self.gpu.as_ref()?.image_id(&transition.node_id)?;
         let size = image_pixel_size(image);
         let card = self.graph_world_rect_to_screen(egui::Rect::from_center_size(
-            egui::pos2(node.pos.x, node.pos.y),
+            self.layout_pos(&transition.node_id).to_pos2(),
             image_node_card_size(image.width, image.height),
         ));
         let body = self.item_body_rect();
@@ -251,13 +251,19 @@ impl App {
     /// engine's first `FrameReady` becomes the displayed texture (once
     /// focused) -> old engine-host dropped when its graph node is replaced.
     pub(crate) fn start_swap_to(&mut self, tab_id: &str, target: EngineKind) {
+        if self.swap_in_flight(tab_id).is_some() {
+            return; // one swap at a time for this tab
+        }
         let Some(node) = self.nodes.get_mut(tab_id).and_then(|n| n.as_tab_mut()) else {
             return;
         };
-        if node.tab.kind == target || node.swap_target.is_some() {
-            return; // no-op swap, or one swap at a time for this tab
+        if node.tab.kind == target {
+            return; // no-op swap
         }
         node.swap_target = Some(target);
+        // Saved as the swap starts (2b-3 Ruling 5): a save before the snapshot writes the target, and a failure
+        // that falls back writes the old engine back (`handle_tab_spawn_result`).
+        self.edit_engine(tab_id, target);
         // Cookies first: the old host is dropped once its snapshot arrives (`hold_for_cookies` waits for them).
         self.pull_cookies(tab_id);
         if let Some(node) = self.nodes.get_mut(tab_id).and_then(|n| n.as_tab_mut()) {
@@ -265,10 +271,25 @@ impl App {
         }
     }
 
+    /// The engine a host swap in flight for tab `id` lands on: its `swap_target` until the old host's snapshot
+    /// arrives, then the snapshot parked for the host's cookies (`hold_for_cookies`; "Switch Jar Now" parks one on
+    /// the running engine). The one lock: `start_swap_to` starts no second swap, whose snapshot would never come once
+    /// the first drops the host, and a remote engine meanwhile is written over (`update_live_node`).
+    pub(crate) fn swap_in_flight(&self, id: &str) -> Option<EngineKind> {
+        let tab = self.nodes.get(id)?.as_tab()?;
+        tab.swap_target.or(match self.cookie_holds.get(id) {
+            Some((_, crate::tabs::Held::Snapshot(target, _))) => Some(*target),
+            _ => None,
+        })
+    }
+
     pub(crate) fn finish_swap(&mut self, tab_id: &str, target: EngineKind, url: String) {
         let Some(spawn) = self.nodes.get(tab_id).and_then(|n| {
             let old = n.as_tab()?.tab.kind;
-            Some(TabSpawn { fallback_kind: Some(old), ..TabSpawn::respawn(tab_id, n, target, url)? })
+            Some(TabSpawn {
+                fallback_kind: Some(old),
+                ..TabSpawn::respawn(tab_id, n, self.mirror.carried(tab_id), target, url)?
+            })
         }) else {
             return;
         };

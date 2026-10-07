@@ -5,7 +5,7 @@ edition.workspace = true
 description.workspace = true
 
 [dependencies]
-ipc-protocol = { version = "0.2.0", path = "../ipc-protocol" }
+ipc-protocol = { version = "0.3.0", path = "../ipc-protocol" }
 # Real JSON-string unescaping for `ExecuteScript`'s own JSON-encoded return
 # values -- see `nav_state.rs`'s JSON-body detection for why the plain
 # strip-outer-quotes trick `input.rs`'s href parsing gets away with isn't

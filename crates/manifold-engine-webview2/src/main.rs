@@ -165,9 +165,12 @@ fn main() {
     let (_composition_target, root_visual) =
         composition::create_composition_target(hwnd, DEFAULT_WIDTH, DEFAULT_HEIGHT).expect("create composition target");
 
-    let environment = create_environment().expect("create CoreWebView2Environment");
-    let (comp_controller, controller, webview, in_private) =
-        create_composition_controller(environment.clone(), hwnd).expect("create CoreWebView2CompositionController");
+    // These fail when the runtime vanished or is damaged after the check above, or the user-data folder is
+    // unusable: a respawn would fail the same way, so they end the host with a reason rather than a panic.
+    let environment = create_environment()
+        .unwrap_or_else(|e| exit_fatal(&mut control, &startup_failure("create its environment", &e)));
+    let (comp_controller, controller, webview, in_private) = create_composition_controller(environment.clone(), hwnd)
+        .unwrap_or_else(|e| exit_fatal(&mut control, &startup_failure("create its controller", &e)));
     unsafe {
         comp_controller.SetRootVisualTarget(&root_visual).expect("set composition root visual target");
     }
@@ -578,6 +581,24 @@ fn missing_runtime_reason(version: windows::core::Result<String>) -> Option<Stri
     ))
 }
 
+/// One line saying which startup step (`what`) failed and how, for `exit_fatal`.
+fn startup_failure(what: &str, err: &webview2_com::Error) -> String {
+    let how = match err {
+        webview2_com::Error::WindowsError(e) => format!("{:#010x}: {}", e.code().0, e.message().trim()),
+        other => format!("{other:?}"),
+    };
+    format!("WebView2 couldn't {what} ({how}); its runtime may be damaged, or its user-data folder unusable")
+}
+
+/// Ends a host that connected but cannot start, so manifold leaves a failed card naming `reason` instead of
+/// respawning (`tabs::after_crash`): `Crashed` with `ipc_protocol::HOST_FATAL` before it, and the same line in the log.
+fn exit_fatal(control: &mut transport::LocalTransport, reason: &str) -> ! {
+    let reason = format!("{}{}", ipc_protocol::HOST_FATAL, reason.replace(['\r', '\n'], " "));
+    eprintln!("{reason}");
+    let _ = control.send(&EngineToHost::Crashed { reason });
+    std::process::exit(1)
+}
+
 fn create_environment() -> webview2_com::Result<ICoreWebView2Environment> {
     let options = scheme::environment_options().map_err(webview2_com::Error::WindowsError)?;
     let (tx, rx) = mpsc::channel();
@@ -721,7 +742,17 @@ fn resize_controller(controller: &ICoreWebView2Controller, root_visual: &Contain
 
 #[cfg(test)]
 mod tests {
-    use super::missing_runtime_reason;
+    use super::{missing_runtime_reason, startup_failure};
+
+    #[test]
+    fn a_startup_failure_names_the_step_and_the_error() {
+        let denied = windows::core::Error::from(windows::Win32::Foundation::E_ACCESSDENIED);
+        let reason = startup_failure("create its environment", &webview2_com::Error::WindowsError(denied));
+        assert!(reason.starts_with("WebView2 couldn't create its environment (0x80070005: "), "{reason}");
+        assert!(reason.ends_with("user-data folder unusable") && !reason.contains('\n'), "{reason}");
+        let canceled = startup_failure("create its controller", &webview2_com::Error::TaskCanceled);
+        assert!(canceled.starts_with("WebView2 couldn't create its controller (TaskCanceled)"), "{canceled}");
+    }
 
     #[test]
     fn a_missing_runtime_says_to_install_it() {

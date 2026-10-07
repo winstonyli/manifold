@@ -229,11 +229,22 @@ pub enum DebugCommand {
     /// query, or `tab:<id>` for an open tab), `highlighted` (a row
     /// index, or null) and `current_group` (the Graph view level's group
     /// id, or null at the top). `cards` lists the current level's cards in
-    /// draw order, each as `id`, `kind` (`"Tab"`, `"Note"`, ...), `group`,
-    /// `parent`, `color` (whether it has a tag color), `pinned`, `screen`
-    /// (its center) and `rect` (`[left, top, right, bottom]`), in points,
-    /// which are pixels headless. `selected_tabs` is the rectangle
-    /// selection's ids, sorted. `toast` is the bottom-left toast's text
+    /// draw order, each as `id`, `type` (the card's mime type, e.g.
+    /// `application/vnd.manifold.tab` or `text/markdown`; `store::model`'s
+    /// `TYPE_*`), `loaded` (true for a tab with a running engine only),
+    /// `json_card` (true for a JSON level's card, which is no stored node:
+    /// its keys are only `id`, `type` (`application/json`), `loaded` (false),
+    /// `json_card`, `screen` and `rect`), `group`, `parent`, `color` (whether it has a tag color),
+    /// `pinned`, `editing` (a note being edited), `screen` (its center) and
+    /// `rect` (`[left, top, right, bottom]`), in points, which are pixels
+    /// headless. `scripts/export_state.py` reads these for the probe
+    /// scripts. `selected_tabs` is the rectangle
+    /// selection's ids, sorted. `mirror_groups` maps every node id (any
+    /// level) to its group as this replica shows it (the mirror), or null.
+    /// `mirror_names` (groups), `mirror_texts` (notes) and `mirror_pos` (every node, `[x, y]`) map ids to the
+    /// mirror's name, text and document pos the same way, null where EXPORTSESSION leaves the field out (empty, or
+    /// pos (0, 0)).
+    /// `toast` is the bottom-left toast's text
     /// (the one showing, else the next queued), or null. Suggestions arriving from the network show up
     /// only once a frame has drained them, and every command draws one, so
     /// a test can poll this until `suggestions` fills.
@@ -330,6 +341,20 @@ pub enum DebugCommand {
     /// can't rely on focus. No-ops if `id` isn't actually a group. See
     /// `App::close_group`.
     CloseGroup(String),
+    /// `MOVETOGROUP id group` -- the node menu's "Move into <group>" with explicit ids, for the same reason as
+    /// `CloseGroup`: only when the menu would offer `group` (a sibling group, `NodeMenuView::move_targets`), else
+    /// ignored with a note on stderr. See `NodeAction::MoveToGroup`.
+    MoveToGroup { id: String, group: String },
+    /// `RENAMEGROUP id name` -- a group's rename field committed with `name` (`NodeAction::CommitRename`: the clean
+    /// name, groups only, an empty clean name ignored), by id for the same reason as `CloseGroup`. Saves, as the
+    /// menu does. `RENAMEGROUP` alone is `RenameGroup` (F2).
+    RenameGroupTo { id: String, name: String },
+    /// `SETNOTETEXT id text` -- note `id`'s box typed to hold `text` and then blurred (`App::blur_note`, which
+    /// resolves a held remote text and saves). `text` is the rest of the line, possibly empty.
+    SetNoteText { id: String, text: String },
+    /// `MOVENODE id x y` -- card `id` dragged to world point (x, y) and released: its layout moves there and
+    /// `edit_pos` writes it, as `release_drag` does, then the save a drop makes.
+    MoveNode { id: String, x: f32, y: f32 },
     /// `SLEEPNODE id` -- a tab's (or a group's tabs') "Sleep" context-menu
     /// action, targeting an explicit id for the same reason as `CloseGroup`.
     /// See `App::request_sleep`.
@@ -346,6 +371,10 @@ pub enum DebugCommand {
     /// `SWITCHJARNOW` -- the focused tab's "Switch Jar Now". See
     /// `App::switch_jar_now`.
     SwitchJarNow,
+    /// `CLEARJAR <name|default>` -- that jar's "Clear cookies", confirmed
+    /// (`App::clear_jar_cookies`). `name` as for `SETJAR`; an unknown name
+    /// does nothing.
+    ClearJar(String),
     /// Dev-only: re-runs the one-time first-launch demo graph on demand
     /// (see `Settings::has_shown_first_launch_demo`'s own doc comment for
     /// why it otherwise only ever fires once) -- adds a fresh copy of the
@@ -461,7 +490,7 @@ const COMMAND_HELP: &[(&str, &str)] = &[
     ("CLOSEALLLEVEL", "Ctrl+Shift+W -- close every tab at the current level"),
     ("CONFIRMIMPORT", "Click the \"Import Session...\" confirm popup's Import button"),
     ("CANCELIMPORT", "Click the confirm popup's Cancel button"),
-    ("RENAMEGROUP", "F2 -- rename the current group"),
+    ("RENAMEGROUP [id name]", "F2 -- rename the current group; with `id name`, commit `name` as group `id`'s new name"),
     ("BOOKMARKFOLDERTEXT text", "Set the bookmarks popup's own folder-rename draft"),
     ("DISMISSPEEK", "Escape-dismisses-peek equivalent in Graph view"),
     ("EXPORTGROUP path", "Export whichever group's context menu is currently open"),
@@ -476,7 +505,8 @@ const COMMAND_HELP: &[(&str, &str)] = &[
     ("NEWNOTE", "Graph toolbar's \"+ Note\" button"),
     (
         "ADDFILE path [x y]",
-        "Adds a file as the node its content makes (image, PDF, JSON, note, tab, or a download card); x y is a window point, like a drop there",
+        "Adds a file as the node its content makes (image, PDF, JSON, note, tab, or a download card); \
+         x y is a window point, like a drop there",
     ),
     ("ADDDOWNLOAD path", "Add a download node for `path`, as if the focused tab started it"),
     ("WAITTABS [secs]", "Hold later commands until no tab spawn is in flight (default 60 s max)"),
@@ -490,10 +520,22 @@ const COMMAND_HELP: &[(&str, &str)] = &[
     ("JSONRELAYOUT", "Relayout the current JSON level (clears saved card positions)"),
     ("JSONSEARCH text", "Search the current JSON level's keys and values"),
     ("CLOSEGROUP id", "Close the group `id`, same as its own \"Close\" context-menu action"),
-    ("SLEEPNODE id", "Ask the tab `id` (or every tab of the group `id`) to sleep, same as its \"Sleep\" context-menu action; it sleeps when the engine answers the page-state query (wait a second)"),
-    ("IDLESWEEP secs", "Run one idle auto-sleep sweep: tabs out of sight for `secs` seconds are asked to sleep, and those with a changed form stay awake (the clock updates on every sweep)"),
+    ("MOVETOGROUP id group", "Move node `id` into the sibling group `group`, same as its \"Move into\" menu row"),
+    ("SETNOTETEXT id text", "Type `text` into note `id`'s box (replacing it) and blur it, which commits and saves"),
+    ("MOVENODE id x y", "Drag card `id` to world point (x, y) and release it there, which saves"),
+    (
+        "SLEEPNODE id",
+        "Ask the tab `id` (or every tab of the group `id`) to sleep, same as its \"Sleep\" \
+         context-menu action; it sleeps when the engine answers the page-state query (wait a second)",
+    ),
+    (
+        "IDLESWEEP secs",
+        "Run one idle auto-sleep sweep: tabs out of sight for `secs` seconds are asked to sleep, \
+         and those with a changed form stay awake (the clock updates on every sweep)",
+    ),
     ("SETJAR <name|default>", "The focused tab uses that jar, by label or name (a new named jar if none has it)"),
     ("SWITCHJARNOW", "The focused tab moves to its new jar now, if it is waiting to switch"),
+    ("CLEARJAR <name|default>", "Clear that jar's cookies, as its confirmed \"Clear cookies\" does"),
     ("TRIGGERFIRSTLAUNCHDEMO", "Dev-only: re-spawn the first-launch demo graph on demand"),
     ("HELP", "Print this command list"),
 ];
@@ -552,6 +594,13 @@ fn parse_add_file(rest: &str) -> Option<DebugCommand> {
         }
     }
     Some(DebugCommand::AddFile(rest.to_string(), None))
+}
+
+/// `<id> <text...>` -- `rest` is trimmed and non-empty: the first word, and the rest of the line after it, trimmed
+/// (empty when there is none). The text may itself contain spaces.
+fn split_id(rest: &str) -> (String, &str) {
+    let (id, text) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
+    (id.to_string(), text.trim())
 }
 
 /// Parses one line of the headless debug-command text protocol. Unknown
@@ -670,7 +719,21 @@ pub fn parse_line(line: &str) -> Option<DebugCommand> {
         "CLOSEALLLEVEL" => Some(DebugCommand::CloseAllLevel),
         "CONFIRMIMPORT" => Some(DebugCommand::ConfirmImport),
         "CANCELIMPORT" => Some(DebugCommand::CancelImport),
-        "RENAMEGROUP" => Some(DebugCommand::RenameGroup),
+        "RENAMEGROUP" if rest.is_empty() => Some(DebugCommand::RenameGroup),
+        "RENAMEGROUP" => {
+            let (id, name) = split_id(rest);
+            (!name.is_empty()).then(|| DebugCommand::RenameGroupTo { id, name: name.to_string() })
+        }
+        "SETNOTETEXT" if !rest.is_empty() => {
+            let (id, text) = split_id(rest);
+            Some(DebugCommand::SetNoteText { id, text: text.to_string() })
+        }
+        "MOVENODE" => {
+            let id = parts.next()?.to_string();
+            let mut coord = || parts.next()?.parse::<f32>().ok().filter(|v| v.is_finite());
+            let (x, y) = (coord()?, coord()?);
+            parts.next().is_none().then_some(DebugCommand::MoveNode { id, x, y })
+        }
         "BOOKMARKFOLDERTEXT" => Some(DebugCommand::BookmarkFolderText(rest.to_string())),
         "DISMISSPEEK" => Some(DebugCommand::DismissPeek),
         "EXPORTGROUP" => non_empty(DebugCommand::ExportGroup),
@@ -695,10 +758,14 @@ pub fn parse_line(line: &str) -> Option<DebugCommand> {
         "SPLIT" => parse_engine_kind(rest).map(DebugCommand::Split),
         "CLOSESPLIT" => Some(DebugCommand::CloseSplit),
         "CLOSEGROUP" => non_empty(DebugCommand::CloseGroup),
+        "MOVETOGROUP" => {
+            Some(DebugCommand::MoveToGroup { id: parts.next()?.to_string(), group: parts.next()?.to_string() })
+        }
         "SLEEPNODE" => non_empty(DebugCommand::SleepNode),
         "IDLESWEEP" => rest.parse().ok().map(DebugCommand::IdleSweep),
         "SETJAR" => non_empty(DebugCommand::SetJar),
         "SWITCHJARNOW" => Some(DebugCommand::SwitchJarNow),
+        "CLEARJAR" => non_empty(DebugCommand::ClearJar),
         "JSONSELECT" => Some(DebugCommand::JsonSelect(rest.to_string())),
         "JSONTOGGLE" => Some(DebugCommand::JsonToggle(rest.to_string())),
         "JSONMORE" => Some(DebugCommand::JsonMore(rest.to_string())),
@@ -788,6 +855,41 @@ pub fn spawn_stdin_reader(proxy: EventLoopProxy<UserEvent>) {
 }
 
 impl App {
+    /// `MOVETOGROUP`: what the node menu's "Move into <group>" row does (`NodeAction::MoveToGroup`, a Join drop,
+    /// which saves), only when the menu would offer `group`. `false` when it wouldn't.
+    fn debug_move_to_group(&mut self, id: &str, group: &str) -> bool {
+        let offered = self.node_menu_view(id).is_some_and(|v| v.move_targets.iter().any(|(g, _)| g == group));
+        if offered {
+            self.apply_drop(id, Some((DropEffect::Join, Some(group.to_string()))));
+        }
+        offered
+    }
+
+    /// `SETNOTETEXT`: what a click into note `id`, typing that leaves its box holding `text`, and a click away do.
+    /// The box is the payload's buffer and `editing` is on while typed in (`paint_note_body`), so a remote text
+    /// arriving meanwhile would be held; the blur (`blur_note`) then resolves it and saves. `false` when `id` isn't a
+    /// note.
+    fn debug_set_note_text(&mut self, id: &str, text: String) -> bool {
+        let Some(note) = self.nodes.get_mut(id).and_then(|n| n.as_note_mut()) else { return false };
+        note.editing = true;
+        note.text = text;
+        self.blur_note(id);
+        true
+    }
+
+    /// `MOVENODE`: card `id` dragged to world point `pos` and released. The drag moves the layout (`card.rs`), the
+    /// release writes the document pos (`release_drag`: `edit_pos` with the layout pos), and the drop saves
+    /// (`apply_drop` with no target). `false` when there is no such node.
+    fn debug_move_node(&mut self, id: &str, pos: egui::Vec2) -> bool {
+        if !self.nodes.contains_key(id) {
+            return false;
+        }
+        self.layout.entry(id.to_owned()).or_default().pos = pos;
+        self.edit_pos(id, Some(self.layout_pos(id)));
+        self.save_session();
+        true
+    }
+
     /// Applies one headless `DebugCommand` (see `debug_control`'s doc
     /// comment for the overall design: mouse commands are real synthetic
     /// `WindowEvent`s, keyboard/text commands call the equivalent effect
@@ -1003,69 +1105,7 @@ impl App {
                 self.export_session_to(std::path::Path::new(&path));
             }
             DebugCommand::ExportState(path) => {
-                let focused_url = self
-                    .focused
-                    .as_ref()
-                    .and_then(|id| self.nodes.get(id))
-                    .and_then(|n| n.as_tab())
-                    .map(|t| t.url.clone());
-                let suggestions: Vec<String> = self
-                    .address_bar
-                    .combined()
-                    .into_iter()
-                    .map(|s| match s {
-                        Suggestion::OpenTab { tab_id, .. } => format!("tab:{tab_id}"),
-                        Suggestion::Search { query } => query,
-                    })
-                    .collect();
-                // The current level's cards, in draw order, with where each
-                // one's center is on screen: what a headless test needs to
-                // aim a click or drag at a card.
-                let cards: Vec<serde_json::Value> = self
-                    .level_items()
-                    .into_iter()
-                    .filter_map(|item| {
-                        let screen = self.graph_world_rect_to_screen(item.rect);
-                        if item.kind == LevelItemKind::JsonCard {
-                            return Some(serde_json::json!({
-                                "id": item.id,
-                                "kind": "JsonCard",
-                                "screen": [screen.center().x, screen.center().y],
-                                "rect": [screen.min.x, screen.min.y, screen.max.x, screen.max.y],
-                            }));
-                        }
-                        let LevelItemKind::Node(kind) = item.kind else { return None };
-                        let node = self.nodes.get(&item.id)?;
-                        Some(serde_json::json!({
-                            "id": item.id,
-                            "kind": format!("{kind:?}"),
-                            "group": node.group,
-                            "parent": node.parent,
-                            "color": node.color.is_some(),
-                            "pinned": node.payload.pinned(),
-                            "editing": node.as_note().is_some_and(|n| n.editing),
-                            "screen": [screen.center().x, screen.center().y],
-                            "rect": [screen.min.x, screen.min.y, screen.max.x, screen.max.y],
-                        }))
-                    })
-                    .collect();
-                let mut selected_tabs: Vec<&String> = self.selected_tabs.iter().collect();
-                selected_tabs.sort();
-                let state = serde_json::json!({
-                    "tab_view": self.showing_tab_view(),
-                    "transition": self.transition.is_some(),
-                    "focused_url": focused_url,
-                    "address_bar_text": self.address_bar.text,
-                    "suggestions": suggestions,
-                    "highlighted": self.address_bar.highlighted,
-                    "current_group": self.current_group,
-                    "cards": cards,
-                    "json_level": self.json_level_state(),
-                    "selected_tabs": selected_tabs,
-                    // The toast showing, or else the next queued one.
-                    "toast": self.save_toast.as_ref().map(|(message, _)| message).or(self.save_toast_queue.front()),
-                });
-                if let Err(err) = std::fs::write(&path, state.to_string()) {
+                if let Err(err) = std::fs::write(&path, self.export_state().to_string()) {
                     eprintln!("EXPORTSTATE: couldn't write {path}: {err}");
                 }
             }
@@ -1089,11 +1129,7 @@ impl App {
             }
             DebugCommand::DismissPeek => self.dismiss_hover_peek(),
             DebugCommand::ExportGroup(path) => {
-                if let Some((group_id, _)) = self
-                    .node_menu
-                    .clone()
-                    .filter(|(id, _)| self.nodes.get(id).is_some_and(|node| node.as_group().is_some()))
-                {
+                if let Some((group_id, _)) = self.node_menu.clone().filter(|(id, _)| self.is_container(id)) {
                     if let Some(json) = self.export_group_json(&group_id) {
                         write_json_export(&json, std::path::Path::new(&path), "group");
                     }
@@ -1162,13 +1198,36 @@ impl App {
             DebugCommand::JsonRelayout => self.apply_json_edit(JsonEdit::Relayout),
             DebugCommand::JsonSearch(text) => self.set_json_search(text),
             DebugCommand::CloseGroup(id) => {
-                if self.nodes.get(&id).is_some_and(|n| n.as_group().is_some()) {
+                if self.is_container(&id) {
                     self.close_node(&id);
+                }
+            }
+            DebugCommand::MoveToGroup { id, group } => {
+                if !self.debug_move_to_group(&id, &group) {
+                    eprintln!("MOVETOGROUP: {group} isn't a sibling group of {id}; ignored");
+                }
+            }
+            DebugCommand::RenameGroupTo { id, name } => {
+                if self.is_container(&id) {
+                    self.commit_rename(&id, &name);
+                    self.save_session();
+                } else {
+                    eprintln!("RENAMEGROUP: {id} isn't a group; ignored");
+                }
+            }
+            DebugCommand::SetNoteText { id, text } => {
+                if !self.debug_set_note_text(&id, text) {
+                    eprintln!("SETNOTETEXT: {id} isn't a note; ignored");
+                }
+            }
+            DebugCommand::MoveNode { id, x, y } => {
+                if !self.debug_move_node(&id, egui::vec2(x, y)) {
+                    eprintln!("MOVENODE: no node {id}; ignored");
                 }
             }
             DebugCommand::IdleSweep(secs) => self.sweep_idle_tabs(Some(std::time::Duration::from_secs(secs))),
             DebugCommand::SleepNode(id) => {
-                if self.nodes.get(&id).is_some_and(|n| n.as_group().is_some()) {
+                if self.is_container(&id) {
                     self.sleep_group(&id);
                 } else {
                     self.request_sleep(&id, SleepWhy::Manual);
@@ -1182,6 +1241,17 @@ impl App {
             DebugCommand::SwitchJarNow => {
                 if let Some(tab) = self.focused.clone() {
                     self.switch_jar_now(&tab);
+                }
+            }
+            DebugCommand::ClearJar(name) => {
+                let key = if name.trim().eq_ignore_ascii_case("default") {
+                    Some(crate::jar::JarKey::Default)
+                } else {
+                    self.jar_named(&name).map(crate::jar::JarKey::Named)
+                };
+                match key {
+                    Some(key) => self.clear_jar_cookies(key),
+                    None => eprintln!("CLEARJAR: no jar named {name:?}"),
                 }
             }
             DebugCommand::TriggerFirstLaunchDemo => self.spawn_first_launch_demo(),
@@ -1209,6 +1279,96 @@ impl App {
                 }
             }
         }
+    }
+
+    /// What `EXPORTSTATE` writes (its doc on `DebugCommand::ExportState`).
+    pub(crate) fn export_state(&self) -> serde_json::Value {
+        let focused_url =
+            self.focused.as_ref().and_then(|id| self.nodes.get(id)).and_then(|n| n.as_tab()).map(|t| t.url.clone());
+        let suggestions: Vec<String> = self
+            .address_bar
+            .combined()
+            .into_iter()
+            .map(|s| match s {
+                Suggestion::OpenTab { tab_id, .. } => format!("tab:{tab_id}"),
+                Suggestion::Search { query } => query,
+            })
+            .collect();
+        // The current level's cards, in draw order, with where each
+        // one's center is on screen: what a headless test needs to
+        // aim a click or drag at a card. A card is named by its type
+        // (`CardKind`), never a kind enum (plan 2b-6, Ruling 9).
+        let cards: Vec<serde_json::Value> = self
+            .level_items()
+            .into_iter()
+            .filter_map(|item| {
+                let screen = self.graph_world_rect_to_screen(item.rect);
+                if item.kind == LevelItemKind::JsonCard {
+                    // A JSON level's card shows a piece of the Json node's value; it is no stored node.
+                    return Some(serde_json::json!({
+                        "id": item.id,
+                        "type": crate::store::model::TYPE_JSON,
+                        "loaded": false,
+                        "json_card": true,
+                        "screen": [screen.center().x, screen.center().y],
+                        "rect": [screen.min.x, screen.min.y, screen.max.x, screen.max.y],
+                    }));
+                }
+                let LevelItemKind::Node(kind) = item.kind else { return None };
+                let node = self.nodes.get(&item.id)?;
+                Some(serde_json::json!({
+                    "id": item.id,
+                    "type": kind.ty,
+                    "loaded": kind.loaded(),
+                    "json_card": false,
+                    "group": self.mirror.group(&item.id),
+                    "parent": self.mirror.parent(&item.id),
+                    "color": self.mirror.color(&item.id).is_some(),
+                    "pinned": self.mirror.pinned(&item.id),
+                    "editing": node.as_note().is_some_and(|n| n.editing),
+                    "screen": [screen.center().x, screen.center().y],
+                    "rect": [screen.min.x, screen.min.y, screen.max.x, screen.max.y],
+                }))
+            })
+            .collect();
+        // Every node's group as this replica shows it, at any level (a two-instance test compares them).
+        let mirror_groups: std::collections::BTreeMap<&str, Option<&str>> =
+            self.linked_ids().map(|id| (id, self.mirror.group(id))).collect();
+        // Likewise each group's name, each note's text and every node's document pos, null when absent
+        // (empty, or Pos (0,0)), as EXPORTSESSION leaves them out.
+        let non_empty = |s: &'_ str| (!s.is_empty()).then(|| s.to_owned());
+        let mirror_names: std::collections::BTreeMap<&str, Option<String>> = self
+            .linked_ids()
+            .filter(|id| self.is_container(id))
+            .map(|id| (id, non_empty(self.mirror.name(id)))) // name rule: raw, compared with the document
+            .collect();
+        let mirror_texts: std::collections::BTreeMap<&str, Option<String>> = self
+            .linked_ids()
+            .filter(|id| self.nodes.get(*id).is_some_and(|n| n.as_note().is_some()))
+            .map(|id| (id, non_empty(self.mirror.text(id))))
+            .collect();
+        let mirror_pos: std::collections::BTreeMap<&str, Option<[f32; 2]>> =
+            self.linked_ids().map(|id| (id, self.mirror.pos(id).map(|p| [p.x, p.y]))).collect();
+        let mut selected_tabs: Vec<&String> = self.selected_tabs.iter().collect();
+        selected_tabs.sort();
+        serde_json::json!({
+            "tab_view": self.showing_tab_view(),
+            "transition": self.transition.is_some(),
+            "focused_url": focused_url,
+            "address_bar_text": self.address_bar.text,
+            "suggestions": suggestions,
+            "highlighted": self.address_bar.highlighted,
+            "current_group": self.current_group,
+            "cards": cards,
+            "mirror_groups": mirror_groups,
+            "mirror_names": mirror_names,
+            "mirror_texts": mirror_texts,
+            "mirror_pos": mirror_pos,
+            "json_level": self.json_level_state(),
+            "selected_tabs": selected_tabs,
+            // The toast showing, or else the next queued one.
+            "toast": self.save_toast.as_ref().map(|(message, _)| message).or(self.save_toast_queue.front()),
+        })
     }
 }
 
@@ -1338,10 +1498,14 @@ mod tests {
             "SPLIT cef",
             "CLOSESPLIT",
             "CLOSEGROUP g1",
+            "MOVETOGROUP n1 g1",
+            "SETNOTETEXT n1 hello",
+            "MOVENODE n1 10 -20",
             "SLEEPNODE t1",
             "IDLESWEEP 30",
             "SETJAR default",
             "SWITCHJARNOW",
+            "CLEARJAR Work",
             "JSONSELECT /a/0",
             "JSONTOGGLE",
             "JSONMORE /a",
@@ -1361,12 +1525,179 @@ mod tests {
         assert!(matches!(parse_line("?"), Some(DebugCommand::Help)));
     }
 
+    /// `MOVETOGROUP` takes two ids and moves only where the node menu's "Move into" would offer.
+    #[test]
+    fn move_to_group_moves_only_into_an_offered_sibling() {
+        assert!(matches!(
+            parse_line("MOVETOGROUP n1 g1"),
+            Some(DebugCommand::MoveToGroup { id, group }) if id == "n1" && group == "g1"
+        ));
+        assert!(parse_line("MOVETOGROUP n1").is_none(), "both ids are required");
+        let mut app = App::default();
+        let (g, h, note) = (app.alloc_node_id(), app.alloc_node_id(), app.alloc_node_id());
+        app.insert_group_at(g.clone(), None);
+        app.insert_group_at(h.clone(), None);
+        app.insert_note_at(note.clone(), None);
+        assert!(!app.debug_move_to_group(&note, &note), "not a group");
+        assert!(!app.debug_move_to_group(&note, "missing"));
+        assert!(app.debug_move_to_group(&note, &g));
+        assert_eq!(app.mirror.group(&note), Some(g.as_str()));
+        assert!(!app.debug_move_to_group(&note, &h), "h is no longer a sibling of the note");
+        assert_eq!(app.mirror.group(&note), Some(g.as_str()));
+        assert!(app.debug_move_to_group(&g, &h), "a group nests, as the menu row does");
+        assert_eq!(app.mirror.group(&g), Some(h.as_str()));
+    }
+
+    /// `EXPORTSTATE` names a card by its type (plan 2b-6, Ruling 9): `type` (the mime), `loaded` (true for a live tab
+    /// only) and `json_card` (a JSON level's card, not a stored node); the old card enum's `kind` is gone.
+    #[test]
+    fn export_state_names_cards_by_type_loaded_and_json_card() {
+        use crate::node::{NotePayload, TabPayload, UnloadedState, UnloadedTabPayload};
+        use crate::process_manager::{EngineKind, EngineTab};
+        use crate::store::model::{Kind, TYPE_GROUP, TYPE_JSON, TYPE_NOTE, TYPE_TAB};
+        let dir = crate::store::testutil::temp_dir("export_state");
+        let path = dir.join("a.json");
+        std::fs::write(&path, r#"{"a": {"b": 1}}"#).unwrap();
+        let mut app = App::default();
+        let (tab, _peer) = EngineTab::fake(EngineKind::Servo);
+        let live = Runtime::Tab(TabPayload {
+            tab,
+            url: "https://a/".into(),
+            title: String::new(),
+            can_go_back: false,
+            can_go_forward: false,
+            loading: false,
+            audio_playing: false,
+            muted: false,
+            zoom_factor: 1.0,
+            swap_target: None,
+        });
+        let asleep = Runtime::Unloaded(UnloadedTabPayload {
+            url: "https://s/".into(),
+            title: String::new(),
+            muted: false,
+            zoom_factor: 1.0,
+            state: UnloadedState::Sleeping,
+        });
+        app.test_node("live", Kind::Tab, live);
+        app.test_node("asleep", Kind::Tab, asleep);
+        app.test_node("n", Kind::Note, Runtime::Note(NotePayload { text: "t".into(), editing: false }));
+        app.test_node("g", Kind::Group, Runtime::None);
+        app.insert_json_node_with_id("j".into(), path.to_string_lossy().into_owned(), egui::Vec2::ZERO, None).unwrap();
+        let cards = |app: &App| -> std::collections::BTreeMap<String, serde_json::Value> {
+            let state = app.export_state();
+            let cards = state["cards"].as_array().expect("cards is a list");
+            cards.iter().map(|c| (c["id"].as_str().unwrap().to_owned(), c.clone())).collect()
+        };
+
+        let top = cards(&app);
+        assert_eq!(top.len(), 5, "{top:?}");
+        for (id, ty, loaded) in [
+            ("live", TYPE_TAB, true),
+            ("asleep", TYPE_TAB, false),
+            ("n", TYPE_NOTE, false),
+            ("g", TYPE_GROUP, false),
+            ("j", TYPE_JSON, false),
+        ] {
+            let card = &top[id];
+            assert_eq!(card["type"], ty, "{id}: {card}");
+            assert_eq!(card["loaded"], loaded, "{id}: {card}");
+            assert_eq!(card["json_card"], false, "{id}: {card}");
+            assert!(card.get("kind").is_none(), "{id}: {card}");
+            for key in ["group", "parent", "color", "pinned", "editing", "screen", "rect"] {
+                assert!(card.get(key).is_some(), "{id} keeps {key}: {card}");
+            }
+        }
+
+        // A JSON level's cards are not stored nodes: `json_card`, typed as the JSON they show.
+        app.switch_group_level(Some("j".into()));
+        let level = cards(&app);
+        assert_eq!(level.keys().collect::<Vec<_>>(), ["j#", "j#/a"]);
+        for card in level.values() {
+            assert_eq!(card["json_card"], true, "{card}");
+            assert_eq!(card["type"], TYPE_JSON, "{card}");
+            assert_eq!(card["loaded"], false, "{card}");
+            assert!(card.get("kind").is_none(), "{card}");
+            for key in ["screen", "rect"] {
+                assert!(card.get(key).is_some(), "{key}: {card}");
+            }
+        }
+    }
+
+    /// `RENAMEGROUP` alone is F2; with an id it takes the rest of the line as the name. `SETNOTETEXT` takes the rest
+    /// of the line as the text, possibly empty. `MOVENODE` takes exactly an id and two finite numbers.
+    #[test]
+    fn name_text_and_pos_commands_parse() {
+        assert!(matches!(parse_line("RENAMEGROUP"), Some(DebugCommand::RenameGroup)));
+        assert!(matches!(
+            parse_line("RENAMEGROUP g1  Reading list "),
+            Some(DebugCommand::RenameGroupTo { id, name }) if id == "g1" && name == "Reading list"
+        ));
+        assert!(parse_line("RENAMEGROUP g1").is_none(), "a name is required with an id");
+        assert!(matches!(
+            parse_line("SETNOTETEXT n1 two  words"),
+            Some(DebugCommand::SetNoteText { id, text }) if id == "n1" && text == "two  words"
+        ));
+        assert!(matches!(
+            parse_line("SETNOTETEXT n1"),
+            Some(DebugCommand::SetNoteText { id, text }) if id == "n1" && text.is_empty()
+        ));
+        assert!(parse_line("SETNOTETEXT").is_none(), "an id is required");
+        assert!(matches!(
+            parse_line("MOVENODE n1 12 -34.5"),
+            Some(DebugCommand::MoveNode { id, x, y }) if id == "n1" && x == 12.0 && y == -34.5
+        ));
+        for bad in ["MOVENODE n1 12", "MOVENODE n1 inf 0", "MOVENODE n1 NaN 0", "MOVENODE n1 1 2 3", "MOVENODE"] {
+            assert!(parse_line(bad).is_none(), "{bad}");
+        }
+    }
+
+    /// The three edits reach the document through their writers: the rename's clean name (groups only), the note's
+    /// typed text at the blur (beating a remote text held meanwhile, as typing does), and the released card's pos.
+    #[test]
+    fn name_text_and_pos_commands_write_the_document() {
+        use crate::session_sync::tests::{add, add_group, app_on, remote_set, stored};
+        use crate::store::model::{field, ActorId, FieldValue, Kind};
+        let path = crate::store::testutil::temp_dir("debug-edits").join("session.mnf");
+        let mut app = app_on(&path, 1);
+        let g = add_group(&mut app, "G");
+        let note = add(&mut app, Kind::Note, Runtime::Note(NotePayload { text: "v1".into(), editing: false }));
+        assert!(app.save_session());
+
+        app.commit_rename(&g, " Errands\u{200B} ");
+        assert!(app.save_session());
+        assert_eq!(stored(&app, &g, field::NAME), FieldValue::Str("Errands".into()));
+        app.commit_rename(&note, "Not a group");
+        assert_eq!(app.mirror.name(&note), "", "a note has no name");
+
+        assert!(app.debug_set_note_text(&note, "mine".into()));
+        assert_eq!(stored(&app, &note, field::TEXT), FieldValue::Str("mine".into()), "the blur saved it");
+        assert!(!app.nodes[&note].as_note().unwrap().editing);
+        // A remote text held while typed in loses to what is typed.
+        let mut other = crate::store::journal::Journal::open(&path, ActorId(2)).unwrap();
+        app.nodes.get_mut(&note).unwrap().as_note_mut().unwrap().editing = true;
+        remote_set(&mut other, &note, field::TEXT, FieldValue::Str("theirs".into()));
+        assert!(app.save_session());
+        assert!(app.held_text.contains_key(&note), "held");
+        assert!(app.debug_set_note_text(&note, "mine again".into()));
+        assert_eq!(stored(&app, &note, field::TEXT), FieldValue::Str("mine again".into()));
+        assert_eq!(app.mirror.text(&note), "mine again");
+        assert!(!app.debug_set_note_text(&g, "x".into()), "not a note");
+
+        assert!(app.debug_move_node(&note, egui::vec2(12.0, -34.0)));
+        assert_eq!(stored(&app, &note, field::POS), FieldValue::Pos(12.0, -34.0));
+        assert_eq!(app.layout_pos(&note), egui::vec2(12.0, -34.0), "the card is where it was dropped");
+        assert!(!app.debug_move_node("999999", egui::vec2(1.0, 1.0)), "no such node");
+    }
+
     #[test]
     fn jar_commands_parse() {
         assert!(matches!(parse_line("SETJAR Work"), Some(DebugCommand::SetJar(n)) if n == "Work"));
         assert!(matches!(parse_line("SETJAR default"), Some(DebugCommand::SetJar(n)) if n == "default"));
         assert!(parse_line("SETJAR").is_none(), "a jar name is required");
         assert!(matches!(parse_line("SWITCHJARNOW"), Some(DebugCommand::SwitchJarNow)));
+        assert!(matches!(parse_line("CLEARJAR Work"), Some(DebugCommand::ClearJar(n)) if n == "Work"));
+        assert!(parse_line("CLEARJAR").is_none(), "a jar name is required");
     }
 
     #[test]
@@ -1386,9 +1717,10 @@ mod tests {
 
     #[test]
     fn parses_addfile_with_an_optional_trailing_point() {
-        assert!(
-            matches!(parse_line("ADDFILE C:\\a b\\c.png"), Some(DebugCommand::AddFile(p, None)) if p == "C:\\a b\\c.png")
-        );
+        assert!(matches!(
+            parse_line("ADDFILE C:\\a b\\c.png"),
+            Some(DebugCommand::AddFile(p, None)) if p == "C:\\a b\\c.png"
+        ));
         assert!(matches!(
             parse_line("ADDFILE C:\\a b\\c.png 10 20.5"),
             Some(DebugCommand::AddFile(p, Some((x, y)))) if p == "C:\\a b\\c.png" && x == 10.0 && y == 20.5

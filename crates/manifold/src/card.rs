@@ -2,6 +2,9 @@
 //! styles, corner controls and drop rules, and each kind's body painter.
 
 use super::*;
+use crate::store::model::{
+    TYPE_DOWNLOAD, TYPE_GROUP, TYPE_IMAGE, TYPE_JSON, TYPE_JSON_LEAF, TYPE_NOTE, TYPE_PDF, TYPE_TAB,
+};
 
 pub(crate) const GRAPH_NODE_SIZE: egui::Vec2 = egui::vec2(160.0, 110.0);
 
@@ -328,7 +331,7 @@ pub(crate) fn tab_thumb_rect(rect: egui::Rect, inv_zoom: f32) -> egui::Rect {
 pub(crate) const DOWNLOAD_NODE_SIZE: egui::Vec2 = GRAPH_NODE_SIZE;
 
 /// A group card's footprint: a tab card's, for the same header-and-body layout. Also the
-/// drop-target rect a dragged tab is tested against on release — see `GroupPayload`'s own doc
+/// drop-target rect a dragged tab is tested against on release — see `App::current_group`'s own doc
 /// comment.
 pub(crate) const GROUP_NODE_SIZE: egui::Vec2 = GRAPH_NODE_SIZE;
 
@@ -397,7 +400,7 @@ pub(crate) struct CardStyle {
     pub(crate) dim_rounding: f32,
 }
 
-pub(crate) fn card_style(kind: ItemNodeKind, visuals: &egui::Visuals) -> CardStyle {
+pub(crate) fn card_style(kind: CardKind, visuals: &egui::Visuals) -> CardStyle {
     let themed = CardStyle {
         fill: visuals.extreme_bg_color,
         border_hover: visuals.text_color(),
@@ -407,12 +410,12 @@ pub(crate) fn card_style(kind: ItemNodeKind, visuals: &egui::Visuals) -> CardSty
         close_icon: visuals.text_color(),
         dim_rounding: 4.0,
     };
-    match kind {
-        ItemNodeKind::Note | ItemNodeKind::Download | ItemNodeKind::Tab | ItemNodeKind::Unloaded => {
-            CardStyle { dim_rounding: 6.0, ..themed }
-        }
+    // Presentation matches the type; behaviour reads the container table (`is_container`). See the plan 2b-6
+    // Outcome, "Presentation arms".
+    match kind.ty {
+        TYPE_NOTE | TYPE_DOWNLOAD | TYPE_TAB => CardStyle { dim_rounding: 6.0, ..themed },
         // ACCENT at rest, as group cards have always been.
-        ItemNodeKind::Group => CardStyle { border_idle: ACCENT, dim_rounding: 6.0, ..themed },
+        TYPE_GROUP => CardStyle { border_idle: ACCENT, dim_rounding: 6.0, ..themed },
         _ => themed,
     }
 }
@@ -440,7 +443,7 @@ pub(crate) struct CardOutput {
 /// node, snapshotted once up front (`App::card_view`) so nothing holds a
 /// node borrow across the frame's `&mut self` calls.
 pub(crate) struct CardView {
-    pub(crate) kind: ItemNodeKind,
+    pub(crate) kind: CardKind,
     pub(crate) color: Option<egui::Color32>,
     /// In a group: its cards show the eject button.
     pub(crate) in_group: bool,
@@ -492,13 +495,13 @@ impl CardControl {
         matches!(self, CardControl::Eject | CardControl::Close)
     }
 
-    pub(crate) fn action(self, kind: ItemNodeKind) -> NodeAction {
+    pub(crate) fn action(self, kind: CardKind) -> NodeAction {
         match self {
             CardControl::Swatch => NodeAction::CycleColor,
             CardControl::Pin => NodeAction::TogglePin,
             CardControl::Audio => NodeAction::ToggleMute,
             CardControl::Eject => NodeAction::RemoveFromGroup,
-            CardControl::Close if kind == ItemNodeKind::Group => NodeAction::Dissolve,
+            CardControl::Close if is_container(kind.ty) => NodeAction::Dissolve,
             CardControl::Close => NodeAction::Delete,
         }
     }
@@ -516,18 +519,46 @@ impl CardControl {
     }
 }
 
+/// What Del (the card's Close) does to a `kind` of card, for the focused card's key hint: the first word of the
+/// node menu's row hinted Del.
+pub(crate) fn del_verb(kind: CardKind) -> &'static str {
+    if is_container(kind.ty) {
+        return "dissolve";
+    }
+    match kind.ty {
+        TYPE_TAB => "close",
+        TYPE_DOWNLOAD => "remove",
+        _ => "delete",
+    }
+}
+
+/// What a single click (or Enter) on a `kind` of card does, for the kinds whose click is a `NodeAction`
+/// (`App::draw_graph_cards`; a card whose file is missing retries it instead):
+/// - Tab, Unloaded: opens it into Tab view (an unloaded one wakes, `App::wake_tab`).
+/// - Image: maximizes it into Item view, the gesture a tab uses.
+/// - Download, Pdf: reveals the file. A PDF has no Item view, so it gets the other file card's click.
+///
+/// A Note's click edits it in place and a Group or Json opens on double-click, in the caller.
+pub(crate) fn click_action(kind: CardKind) -> Option<NodeAction> {
+    match kind.ty {
+        TYPE_TAB | TYPE_IMAGE => Some(NodeAction::Open),
+        TYPE_DOWNLOAD | TYPE_PDF => Some(NodeAction::Reveal),
+        _ => None,
+    }
+}
+
 /// The buttons `view`'s card shows, in registration order (see
 /// `CardControl`): the swatch on every card, a tab's (live or unloaded)
 /// pin, and a live tab's audio indicator while playing or muted, eject on
 /// a grouped one, and the ✕ last, so it wins over anything under it.
 pub(crate) fn card_controls(view: &CardView) -> Vec<CardControl> {
     let mut controls = vec![CardControl::Swatch];
-    if matches!(view.kind, ItemNodeKind::Tab | ItemNodeKind::Unloaded) {
+    if view.kind.ty == TYPE_TAB {
         controls.push(CardControl::Pin);
         // Also while muted after audio stops, so a mute can always be
         // seen and undone from Graph view. An unloaded card has no engine
         // to be playing or muted, so it never gets this control.
-        if view.kind == ItemNodeKind::Tab && (view.audio_playing || view.muted) {
+        if view.kind.loaded() && (view.audio_playing || view.muted) {
             controls.push(CardControl::Audio);
         }
     }
@@ -543,7 +574,7 @@ pub(crate) fn card_controls(view: &CardView) -> Vec<CardControl> {
 pub(crate) enum DropTarget {
     /// The toolbar's back button, inside a group.
     BackButton,
-    Card(ItemNodeKind),
+    Card(CardKind),
 }
 
 /// What a drop does (`App::apply_drop`).
@@ -562,15 +593,17 @@ pub(crate) enum DropEffect {
     Reparent,
 }
 
-/// Every drag-and-drop rule in Graph view, for every kind.
-pub(crate) fn drop_action(dragged: ItemNodeKind, target: DropTarget, inside_group: bool) -> Option<DropEffect> {
-    use ItemNodeKind::{Group, Tab, Unloaded};
-    match (dragged, target, inside_group) {
-        (_, DropTarget::BackButton, true) => Some(DropEffect::Eject),
-        (Group, DropTarget::Card(Group), _) => Some(DropEffect::Merge),
-        (_, DropTarget::Card(Group), _) => Some(DropEffect::Join),
-        (Tab | Unloaded, DropTarget::Card(Tab | Unloaded), false) => Some(DropEffect::GroupWith),
-        (Tab | Unloaded, DropTarget::Card(Tab | Unloaded), true) => Some(DropEffect::Reparent),
+/// Every drag-and-drop rule in Graph view, for every kind. A group dropped on a group merges into it; the
+/// node menu's "Move into <group>" (`NodeAction::MoveToGroup`) is always a Join, so it nests one instead.
+pub(crate) fn drop_action(dragged: CardKind, target: DropTarget, inside_group: bool) -> Option<DropEffect> {
+    // A tab, live or sleeping, on both sides of a tab-onto-tab drop.
+    let tabs = |onto: CardKind| dragged.ty == TYPE_TAB && onto.ty == TYPE_TAB;
+    match (target, inside_group) {
+        (DropTarget::BackButton, true) => Some(DropEffect::Eject),
+        (DropTarget::Card(onto), _) if is_container(dragged.ty) && is_container(onto.ty) => Some(DropEffect::Merge),
+        (DropTarget::Card(onto), _) if can_contain(dragged, onto) => Some(DropEffect::Join),
+        (DropTarget::Card(onto), false) if tabs(onto) => Some(DropEffect::GroupWith),
+        (DropTarget::Card(onto), true) if tabs(onto) => Some(DropEffect::Reparent),
         _ => None,
     }
 }
@@ -649,7 +682,7 @@ pub(crate) fn paint_card_control(
             }
         }
         // A `PUSH_PIN` icon, ACCENT when pinned. A pinned node is left out
-        // of the force-directed layout (see `TabPayload::pinned`).
+        // of the force-directed layout (see `Mirror::pinned`).
         CardControl::Pin => {
             let pin_color = if view.pinned { ACCENT } else { ui.visuals().weak_text_color() };
             if !lod_simplified {
@@ -807,43 +840,43 @@ pub(crate) fn pdf_card_size(pdf: &PdfPayload) -> egui::Vec2 {
 /// count and the right-click hit test all read, so none of them can
 /// disagree about how big a given card is (they used to each carry
 /// their own per-kind copy, and the LOD count approximated Image/Pdf).
-pub(crate) fn node_card_size(payload: &NodePayload) -> egui::Vec2 {
-    match payload {
-        NodePayload::Tab(_) | NodePayload::Unloaded(_) => GRAPH_NODE_SIZE,
-        NodePayload::Download(_) => DOWNLOAD_NODE_SIZE,
-        NodePayload::Note(_) => NOTE_NODE_SIZE,
+pub(crate) fn node_card_size(runtime: &Runtime) -> egui::Vec2 {
+    match runtime {
+        Runtime::Tab(_) | Runtime::Unloaded(_) => GRAPH_NODE_SIZE,
+        Runtime::Download(_) => DOWNLOAD_NODE_SIZE,
+        Runtime::Note(_) => NOTE_NODE_SIZE,
         // A placeholder has no real size: the same box a failed PDF gets.
-        NodePayload::Image(image) if image.error.is_some() => PDF_PENDING_NODE_SIZE,
-        NodePayload::Image(image) => image_node_card_size(image.width, image.height),
-        NodePayload::Pdf(pdf) => pdf_card_size(pdf),
+        Runtime::Image(image) if image.error.is_some() => PDF_PENDING_NODE_SIZE,
+        Runtime::Image(image) => image_node_card_size(image.width, image.height),
+        Runtime::Pdf(pdf) => pdf_card_size(pdf),
         // A file's own card previews its root (spec "The card at the
         // parent level"); a leaf or an error card keeps the small box.
-        NodePayload::Json(json) if json.key.is_none() && json.error.is_none() => {
-            crate::json_view::preview_size(&json.value)
-        }
-        NodePayload::Json(_) => JSON_NODE_SIZE,
-        NodePayload::Group(_) => GROUP_NODE_SIZE,
+        Runtime::Json(json) if !json.leaf && json.error.is_none() => crate::json_view::preview_size(&json.value),
+        Runtime::Json(_) => JSON_NODE_SIZE,
+        // A group is the one kind with no runtime (2b-6 Ruling 8: no unknown-type card yet).
+        Runtime::None => GROUP_NODE_SIZE,
     }
 }
 
-/// `node`'s card in world space: `node_card_size` centered on its position.
-pub(crate) fn node_card_rect(node: &GraphNode) -> egui::Rect {
-    egui::Rect::from_center_size(egui::Pos2::new(node.pos.x, node.pos.y), node_card_size(&node.payload))
+/// A card in world space: `node_card_size` centered on `pos`, its layout position (`App::card_rect`).
+pub(crate) fn node_card_rect(pos: egui::Vec2, runtime: &Runtime) -> egui::Rect {
+    egui::Rect::from_center_size(pos.to_pos2(), node_card_size(runtime))
 }
 
 /// What the Graph filter box matches a card against: a tab's title and
-/// URL, a download's full path, a note's text, a file node's filename, a
-/// group's name.
-pub(crate) fn card_filter_text(payload: &NodePayload) -> Vec<&str> {
-    match payload {
-        NodePayload::Tab(tab) => vec![&tab.title, &tab.url],
-        NodePayload::Unloaded(tab) => vec![&tab.title, &tab.url],
-        NodePayload::Download(download) => vec![&download.path],
-        NodePayload::Note(note) => vec![&note.text],
-        NodePayload::Image(image) => vec![download_filename(&image.path)],
-        NodePayload::Pdf(pdf) => vec![download_filename(&pdf.path)],
-        NodePayload::Json(json) => vec![download_filename(&json.path)],
-        NodePayload::Group(group) => vec![&group.name], // name rule: the filter matches the stored text
+/// URL, a download's full path, a note's text, a file node's filename, a group's name (`text`, `App::own_text`, for
+/// a note or a group).
+pub(crate) fn card_filter_text<'a>(runtime: &'a Runtime, text: &'a str) -> Vec<&'a str> {
+    match runtime {
+        Runtime::Tab(tab) => vec![&tab.title, &tab.url],
+        Runtime::Unloaded(tab) => vec![&tab.title, &tab.url],
+        Runtime::Download(download) => vec![&download.path],
+        Runtime::Note(_) => vec![text],
+        Runtime::Image(image) => vec![download_filename(&image.path)],
+        Runtime::Pdf(pdf) => vec![download_filename(&pdf.path)],
+        Runtime::Json(json) => vec![download_filename(&json.path)],
+        // A group is the one kind with no runtime (2b-6 Ruling 8: no unknown-type card yet); it matches on its name, `text`.
+        Runtime::None => vec![text],
     }
 }
 
@@ -867,26 +900,31 @@ fn missing_engine_phrases(state: &crate::engine_install::EngineState) -> (&'stat
 }
 
 impl App {
-    /// Ends every note edit, saving if one was on. A note's TextEdit that
+    /// Ends every note edit (`end_note_edit`), saving if one was on. A note's TextEdit that
     /// stops being laid out (its level left, the view changed) loses focus
     /// without `lost_focus()` ever firing, so `editing` would stay on.
     pub(crate) fn end_note_edits(&mut self) -> bool {
-        let mut ended = false;
-        for note in self.nodes.values_mut().filter_map(|n| n.as_note_mut()) {
-            ended |= std::mem::take(&mut note.editing);
+        let editing: Vec<String> = self
+            .nodes
+            .iter()
+            .filter(|(_, n)| n.as_note().is_some_and(|note| note.editing))
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in &editing {
+            self.end_note_edit(id);
         }
-        if ended {
+        if !editing.is_empty() {
             self.save_session();
         }
-        ended
+        !editing.is_empty()
     }
 
     /// Every group's members, in `node_order`: built once per card pass.
     pub(crate) fn group_members(&self) -> HashMap<String, Vec<String>> {
         let mut members: HashMap<String, Vec<String>> = HashMap::new();
         for id in &self.node_order {
-            if let Some(group) = self.nodes.get(id).and_then(|n| n.group.as_ref()) {
-                members.entry(group.clone()).or_default().push(id.clone());
+            if let Some(group) = self.nodes.get(id).and(self.mirror.group(id)) {
+                members.entry(group.to_owned()).or_default().push(id.clone());
             }
         }
         members
@@ -896,18 +934,17 @@ impl App {
     /// `group_members`, built once for the whole pass.
     pub(crate) fn card_view(&self, id: &str, members: &HashMap<String, Vec<String>>) -> Option<CardView> {
         let node = self.nodes.get(id)?;
-        let kind = item_node_kind(&node.payload);
-        let members =
-            if kind == ItemNodeKind::Group { members.get(id).cloned().unwrap_or_default() } else { Vec::new() };
+        let kind = self.card_kind(id)?;
+        let members = if is_container(kind.ty) { members.get(id).cloned().unwrap_or_default() } else { Vec::new() };
         let tab = node.as_tab();
         Some(CardView {
             kind,
-            color: node.color,
-            in_group: node.group.is_some(),
+            color: self.mirror.color(id),
+            in_group: self.mirror.group(id).is_some(),
             overloaded: members.len() > GROUP_OVERLOAD_THRESHOLD,
             members,
             focused: self.focused.as_deref() == Some(id),
-            pinned: node.payload.pinned(),
+            pinned: self.mirror.pinned(id),
             muted: tab.is_some_and(|t| t.muted),
             audio_playing: tab.is_some_and(|t| t.audio_playing),
             selected: self.selected_tabs.contains(id),
@@ -923,7 +960,7 @@ impl App {
     /// returned response.
     pub(crate) fn draw_graph_card(&mut self, ui: &mut egui::Ui, pass: &mut CardPass, id: &str) -> Option<CardOutput> {
         let inv_zoom = pass.inv_zoom;
-        let rect = node_card_rect(self.nodes.get(id)?);
+        let rect = self.card_rect(id)?;
         // Viewport culling: skip every bit of interact/paint
         // work below for a node that isn't actually visible --
         // the single highest-leverage fix for a graph with many
@@ -971,7 +1008,7 @@ impl App {
         };
         // Space on a focused tab card toggles it in the selection, as the marquee would select it. Taken
         // before the interact, which would otherwise read it as a click and open the tab.
-        if matches!(view.kind, ItemNodeKind::Tab | ItemNodeKind::Unloaded)
+        if view.kind.ty == TYPE_TAB
             && ui.memory(|m| m.has_focus(card_id))
             && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Space))
             && !self.selected_tabs.remove(id)
@@ -987,8 +1024,9 @@ impl App {
         };
         // Screen readers: the card is a button named by its kind and title (egui announces it on focus).
         if let Some(node) = self.nodes.get(id) {
+            let (text, source) = (self.own_text(id), self.source_url(id));
             response.widget_info(|| {
-                egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), node.accessible_name())
+                egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), node.accessible_name(text, source))
             });
         }
         // Keyboard: a focus ring, the camera follows focus, and the Tab-order number while navigating.
@@ -1108,32 +1146,19 @@ impl App {
             // every dragged frame rather than only at drag start: cheap,
             // and it's always exactly this frame's moved set, so whatever
             // `drag_moved` holds when the drag ends is the full, correct
-            // set to mark -- see the release branch below.
+            // set to save -- see the release branch below.
             let delta = response.drag_delta();
             let moved: Vec<String> =
                 if view.selected { self.selected_tabs.iter().cloned().collect() } else { vec![id.to_string()] };
+            // The layout only: the document pos is written once, at release (`release_drag`).
             for moved_id in &moved {
-                if let Some(node) = self.nodes.get_mut(moved_id) {
-                    node.pos += delta;
+                if self.nodes.contains_key(moved_id) {
+                    self.layout.entry(moved_id.clone()).or_default().pos += delta;
                 }
             }
             self.drag_moved = moved;
         } else if self.dragging.as_deref() == Some(id) {
-            self.dragging = None;
-            // Marked once, here at release, not every dragged frame above:
-            // `explicit` is drained by any successful `save_session()`, and
-            // saves fire independently of this gesture mid-drag (e.g.
-            // `poll_store`, or a url change batched through
-            // `drain_tab_events`), so marking every frame could commit an
-            // intermediate position as its own op, repeatedly, before the
-            // drag even ends.
-            // A card removed mid-drag (closed, crashed, swapped) leaves its
-            // id here; skip it rather than clearing at every removal site.
-            for moved_id in std::mem::take(&mut self.drag_moved) {
-                if self.nodes.contains_key(&moved_id) {
-                    self.mark(&moved_id, field::POS);
-                }
-            }
+            self.release_drag();
             // `drop_preview` was computed this frame for this card, and
             // nothing moved it since (no drag delta on a release frame).
             pass.actions.push(GraphAction::Drop { id: id.to_string(), target: pass.drop_preview.clone() });
@@ -1148,7 +1173,7 @@ impl App {
             dim_if_filtered_out(
                 deferred_overlays,
                 &self.graph_filter,
-                &card_filter_text(&node.payload),
+                &card_filter_text(&node.runtime, self.own_text(id)),
                 rect,
                 style.dim_rounding,
             );
@@ -1169,17 +1194,20 @@ impl App {
     ) -> CardBody {
         let (inv_zoom, zoom_scale) = (pass.inv_zoom, pass.zoom_scale);
         let deferred_overlays = &mut *pass.deferred_overlays;
-        match view.kind {
-            ItemNodeKind::Download => self.paint_download_body(ui, deferred_overlays, id, rect, inv_zoom, zoom_scale),
-            ItemNodeKind::Note => self.paint_note_body(ui, deferred_overlays, id, rect, inv_zoom, zoom_scale),
-            ItemNodeKind::Image => self.paint_image_body(ui, deferred_overlays, id, rect, inv_zoom, zoom_scale),
-            ItemNodeKind::Pdf => self.paint_pdf_body(ui, deferred_overlays, id, rect, inv_zoom, zoom_scale),
-            ItemNodeKind::Json => self.paint_json_body(ui, deferred_overlays, id, rect, zoom_scale),
-            ItemNodeKind::Group => self.paint_group_body(ui, pass, id, view, rect),
-            ItemNodeKind::Tab => self.paint_tab_body(ui, deferred_overlays, id, rect, inv_zoom, zoom_scale),
-            ItemNodeKind::Unloaded => {
-                self.paint_unloaded_tab_body(ui, deferred_overlays, id, rect, inv_zoom, zoom_scale)
+        match view.kind.ty {
+            TYPE_DOWNLOAD => self.paint_download_body(ui, deferred_overlays, id, rect, inv_zoom, zoom_scale),
+            TYPE_NOTE => self.paint_note_body(ui, deferred_overlays, id, rect, inv_zoom, zoom_scale),
+            TYPE_IMAGE => self.paint_image_body(ui, deferred_overlays, id, rect, inv_zoom, zoom_scale),
+            TYPE_PDF => self.paint_pdf_body(ui, deferred_overlays, id, rect, inv_zoom, zoom_scale),
+            TYPE_JSON | TYPE_JSON_LEAF => self.paint_json_body(ui, deferred_overlays, id, rect, zoom_scale),
+            // Presentation matches the type, not `is_container` (see `card_style`).
+            TYPE_GROUP => self.paint_group_body(ui, pass, id, view, rect),
+            TYPE_TAB if view.kind.loaded() => {
+                self.paint_tab_body(ui, deferred_overlays, id, rect, inv_zoom, zoom_scale)
             }
+            TYPE_TAB => self.paint_unloaded_tab_body(ui, deferred_overlays, id, rect, inv_zoom, zoom_scale),
+            // A type this build doesn't know has no card of its own yet (2b-6 Ruling 8): the bare frame.
+            _ => CardBody { interact_rect: rect, tooltip: None },
         }
     }
 
@@ -1203,7 +1231,7 @@ impl App {
             return body;
         };
         let (url, title, state) = (tab.url.clone(), tab.title.clone(), tab.state.clone());
-        let kind = tab.kind;
+        let kind = self.mirror.engine(id);
         // A failed card whose engine isn't installed offers its Download, not a retry that can't work.
         let missing_engine = matches!(state, UnloadedState::Failed(_))
             && !matches!(pick_outcome(kind, &self.engine_state(kind)), PickOutcome::Switch(_));
@@ -1223,7 +1251,7 @@ impl App {
                 }
             }
             UnloadedState::Failed(error) => {
-                format!("Couldn't start {}: {error}\nClick to try again.", engine_label(tab.kind))
+                format!("Couldn't start {}: {error}\nClick to try again.", engine_label(kind))
             }
             UnloadedState::Sleeping | UnloadedState::Waking => sleeping_or_waking_tooltip(&state).to_string(),
         });
@@ -1316,14 +1344,15 @@ impl App {
         zoom_scale: f32,
     ) -> CardBody {
         let body = CardBody { interact_rect: rect, tooltip: None };
-        let Some((download_path, download_url, completed, failed, total_bytes, bytes_received)) = self
+        let Some((download_path, completed, failed, total_bytes, bytes_received)) = self
             .nodes
             .get(id)
             .and_then(|n| n.as_download())
-            .map(|d| (d.path.clone(), d.url.clone(), d.completed, d.failed, d.total_bytes, d.bytes_received))
+            .map(|d| (d.path.clone(), d.completed, d.failed, d.total_bytes, d.bytes_received))
         else {
             return body;
         };
+        let download_url = self.copyable_url(id).map(str::to_owned);
         let filename = download_filename(&download_path);
         // LOD: the header text is skipped once simplified -- see `paint_tab_body`'s own LOD comment.
         if !self.graph_lod_simplified {
@@ -1421,7 +1450,7 @@ impl App {
 
         ui.painter().rect_filled(paper, 4.0 * inv_zoom, NOTE_CARD_COLOR);
         if !self.graph_lod_simplified {
-            let words = self.nodes.get(id).and_then(|n| n.as_note()).map_or(0, |n| n.text.split_whitespace().count());
+            let words = self.note_text(id).split_whitespace().count();
             let header = CardHeader {
                 glyph: Some(egui_phosphor::light::NOTE_PENCIL),
                 glyph_color: None,
@@ -1452,22 +1481,15 @@ impl App {
                     )
                     .lost_focus();
             }
-            // Committed on blur, not on every keystroke -- a note is
-            // persisted (unlike every other per-node display state
-            // in the session store, see `NotePayload`'s own doc
-            // comment), and `save_session` is real file I/O, so
-            // writing it once per edit *session* rather than once
-            // per character avoids hammering disk while typing.
+            // The box edits the payload, the edit buffer; the mirror gets it on blur (and at each save), not on
+            // every keystroke -- a note can reach 1 MB, and `save_session` is real file I/O (2b-4 Ruling 6).
             if lost_focus {
-                if let Some(note) = self.nodes.get_mut(id).and_then(|n| n.as_note_mut()) {
-                    note.editing = false;
-                }
                 // Escape ends the edit; focus goes back to the card so keyboard users keep their place
                 // (a click elsewhere keeps the focus it took).
                 if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                     ui.memory_mut(|m| m.request_focus(egui::Id::new(("graph_card", id))));
                 }
-                self.save_session();
+                self.blur_note(id);
             }
         } else if !self.graph_lod_simplified {
             // LOD: skip the markdown render (real parsing +
@@ -1479,9 +1501,9 @@ impl App {
             // its live `TextEdit` yanked out from under the
             // user just because the rest of the graph got
             // busy.
-            // Borrowed, not cloned: `text` borrows `self.nodes` and `cache` `self.commonmark_cache`, two
-            // disjoint fields.
-            let text = self.nodes.get(id).and_then(|n| n.as_note()).map_or("", |n| n.text.as_str());
+            // Borrowed, not cloned (2b-4 Ruling 6): `text` borrows `self.mirror` and `cache` `self.commonmark_cache`,
+            // two disjoint fields. Not being typed in, the note shows the mirror's text (`App::note_text`).
+            let text = self.mirror.text(id);
             let cache = &mut self.commonmark_cache;
             ui.scope_builder(
                 egui::UiBuilder::new().max_rect(text_rect).layout(egui::Layout::top_down(egui::Align::LEFT)),
@@ -1546,10 +1568,8 @@ impl App {
         let mut body = CardBody { interact_rect: rect, tooltip: None };
         let error = self.nodes.get(id).and_then(|n| n.as_image()).and_then(|i| i.error.clone());
         if let Some(error) = error {
-            if let Some((path, url)) =
-                self.nodes.get(id).and_then(|n| n.as_image()).map(|i| (i.path.clone(), i.url.clone()))
-            {
-                let text = file_header_text(&path, url.as_deref());
+            if let Some(path) = self.nodes.get(id).and_then(|n| n.as_image()).map(|i| i.path.clone()) {
+                let text = file_header_text(&path, self.source_url(id));
                 self.paint_missing_file_card(ui, deferred_overlays, rect, inv_zoom, zoom_scale, text);
             }
             body.tooltip = Some(error);
@@ -1568,7 +1588,7 @@ impl App {
                 Some(tex_id) => {
                     ui.painter().image(tex_id, rect, FULL_UV, egui::Color32::WHITE);
                     if let Some(image) = self.nodes.get(id).and_then(|n| n.as_image()) {
-                        let (name, source, source_is_path) = file_header_text(&image.path, image.url.as_deref());
+                        let (name, source, source_is_path) = file_header_text(&image.path, self.source_url(id));
                         let header = CardHeader {
                             glyph: Some(egui_phosphor::light::IMAGE),
                             glyph_color: None,
@@ -1648,7 +1668,7 @@ impl App {
                 Some(Ok((Some(tex_id), page_count))) => {
                     ui.painter().image(tex_id, rect, FULL_UV, egui::Color32::WHITE);
                     if let Some(pdf) = self.nodes.get(id).and_then(|n| n.as_pdf()) {
-                        let (name, source, source_is_path) = file_header_text(&pdf.path, pdf.url.as_deref());
+                        let (name, source, source_is_path) = file_header_text(&pdf.path, self.source_url(id));
                         // The page count sits at the bottom right, so the fallback strip stops short of it.
                         let header = CardHeader {
                             glyph: Some(egui_phosphor::light::FILE_PDF),
@@ -1737,9 +1757,9 @@ impl App {
         }
         let Some(json) = self.nodes.get(id).and_then(|n| n.as_json()) else { return body };
         let text = !self.graph_lod_simplified && rect.width() * zoom_scale >= MIN_LABEL_CARD_SCREEN_WIDTH;
-        if json.key.is_some() {
-            // A leaf from an old "Expand as Graph": its one-line summary.
-            let key = json.key.clone().unwrap_or_default();
+        if json.leaf {
+            // A leaf from an old "Expand as Graph": its one-line summary. Its key is the mirror's.
+            let key = self.mirror.key(id).to_owned();
             let key_display =
                 if key.chars().count() > 16 { format!("{}…", key.chars().take(15).collect::<String>()) } else { key };
             let summary = format!("{key_display}: {}", json_summary(&json.value));
@@ -1826,7 +1846,7 @@ impl App {
         if !self.graph_lod_simplified {
             // Owned, so the header can borrow it while `paint_card_header` borrows `self`.
             // name rule: drawn by display_name just below
-            if let Some(stored) = self.nodes.get(id).and_then(|n| n.as_group()).map(|g| g.name.clone()) {
+            if let Some(stored) = self.is_container(id).then(|| self.mirror.name(id).to_owned()) {
                 let segs = crate::names::display_name(&stored, crate::names::UNTITLED);
                 body.tooltip = crate::names::hidden_hint(&segs);
                 let header = CardHeader {
@@ -2108,7 +2128,8 @@ impl App {
                 // Below `MIN_LABEL_CARD_SCREEN_WIDTH` the label would be a sliver; the dot alone remains.
                 if show_text {
                     let label_font = egui::FontId::proportional(14.0);
-                    // Screen width left for the label: the strip's, less the 16px left offset and some room on the right.
+                    // Screen width left for the label: the strip's, less the 16px left offset and some room on
+                    // the right.
                     let label_max_width = (title_strip.width() * zoom_scale - 16.0 - 6.0).max(0.0);
                     let label =
                         truncate_to_width(&mut self.truncate_cache, ui.ctx(), label, &label_font, label_max_width);
@@ -2168,6 +2189,7 @@ fn paint_card_title(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::card_kind::fixtures::{kinds, loaded_tab, plain, sleeping_tab};
 
     /// Fix batch B3: a chip on a narrow card gives up, in turn, the end of its name, its name, then the old jar's dot
     /// and arrow; it never runs past `max`.
@@ -2493,11 +2515,11 @@ mod tests {
             ("Re\u{200B}ading", Some("Hidden characters: U+200B zero width space"), "Re⟦200B⟧ading"),
             ("Reading", None, "Reading"),
         ] {
-            app.nodes.get_mut(&g).unwrap().as_group_mut().unwrap().name = name.into();
+            app.mirror.set(&g, crate::store::model::field::NAME, crate::store::model::FieldValue::Str(name.into()));
             let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
                 let mut overlays: DeferredOverlays = Vec::new();
                 let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(300.0, 200.0));
-                let view = test_view(ItemNodeKind::Group);
+                let view = test_view(plain(TYPE_GROUP));
                 let mut actions = Vec::new();
                 let drop_preview = None;
                 let members = HashMap::new();
@@ -2549,15 +2571,15 @@ mod tests {
     pub(crate) fn ",
                 )
                 .unwrap_or(rest.len())];
-            // The JSON preview's header is drawn by `json_level_ui::paint_json_content`, which `CardLook::preview` switches to F.
+            // The JSON preview's header is drawn by `json_level_ui::paint_json_content`, which
+            // `CardLook::preview` switches to F.
             let json_preview = name == "json" && body.contains("TAB_HEADER_POINTS");
             assert!(json_preview || markers.iter().any(|m| body.contains(m)), "paint_{name}_body draws no card header");
         }
     }
-    use crate::json_view::JsonView;
 
     /// A `CardView` for `kind` with nothing set, for tests to override.
-    fn test_view(kind: ItemNodeKind) -> CardView {
+    fn test_view(kind: CardKind) -> CardView {
         CardView {
             kind,
             color: None,
@@ -2578,21 +2600,21 @@ mod tests {
         let style = CardStyle {
             border_idle: egui::Color32::GRAY,
             border_hover: egui::Color32::WHITE,
-            ..card_style(ItemNodeKind::Note, &egui::Visuals::dark())
+            ..card_style(plain(TYPE_NOTE), &egui::Visuals::dark())
         };
         let red = egui::Color32::RED;
-        let view = |color| CardView { color, ..test_view(ItemNodeKind::Note) };
+        let view = |color| CardView { color, ..test_view(plain(TYPE_NOTE)) };
         // At rest: the tag color, else the kind's idle color.
         assert_eq!(card_border(&view(None), &style, 0.0), (1.0, egui::Color32::GRAY));
         assert_eq!(card_border(&view(Some(red)), &style, 0.0), (1.0, red));
         // An overloaded group rests on DANGER_COLOR, unless tagged.
-        let overloaded = |color| CardView { color, overloaded: true, ..test_view(ItemNodeKind::Group) };
+        let overloaded = |color| CardView { color, overloaded: true, ..test_view(plain(TYPE_GROUP)) };
         assert_eq!(card_border(&overloaded(None), &style, 0.0), (1.0, DANGER_COLOR));
         assert_eq!(card_border(&overloaded(Some(red)), &style, 0.0), (1.0, red));
         // Fully hovered: the hover color at 1.5, whatever the resting color.
         assert_eq!(card_border(&view(Some(red)), &style, 1.0), (1.5, egui::Color32::WHITE));
         // The open tab: ACCENT at 2.5 over everything, not eased.
-        let focused = CardView { color: Some(red), focused: true, ..test_view(ItemNodeKind::Tab) };
+        let focused = CardView { color: Some(red), focused: true, ..test_view(loaded_tab()) };
         assert_eq!(card_border(&focused, &style, 0.0), (2.5, ACCENT));
         assert_eq!(card_border(&focused, &style, 1.0), (2.5, ACCENT));
     }
@@ -2636,24 +2658,24 @@ mod tests {
     #[test]
     fn card_controls_list_each_cards_buttons_in_pointer_order() {
         use CardControl::*;
-        for kind in GRAPH_DRAW_ORDER.into_iter().filter(|&k| !matches!(k, ItemNodeKind::Tab | ItemNodeKind::Unloaded)) {
+        for kind in kinds().into_iter().filter(|k| k.ty != TYPE_TAB) {
             assert_eq!(card_controls(&test_view(kind)), vec![Swatch, Close], "{kind:?}");
             let grouped = CardView { in_group: true, ..test_view(kind) };
             assert_eq!(card_controls(&grouped), vec![Swatch, Eject, Close], "{kind:?}");
-            let close = if kind == ItemNodeKind::Group { NodeAction::Dissolve } else { NodeAction::Delete };
+            let close = if kind.ty == TYPE_GROUP { NodeAction::Dissolve } else { NodeAction::Delete };
             assert_eq!(Close.action(kind), close, "{kind:?}");
         }
         // An unloaded card shows its pin too, but never the audio
         // indicator -- it has no engine to be playing or muted.
-        assert_eq!(card_controls(&test_view(ItemNodeKind::Unloaded)), vec![Swatch, Pin, Close]);
+        assert_eq!(card_controls(&test_view(sleeping_tab())), vec![Swatch, Pin, Close]);
         assert_eq!(
-            card_controls(&CardView { audio_playing: true, muted: true, ..test_view(ItemNodeKind::Unloaded) }),
+            card_controls(&CardView { audio_playing: true, muted: true, ..test_view(sleeping_tab()) }),
             vec![Swatch, Pin, Close]
         );
         // A tab always shows its pin; its audio indicator while playing or
         // muted. Close still registers last: it overlaps the indicator.
         let tab = |f: fn(&mut CardView)| {
-            let mut view = test_view(ItemNodeKind::Tab);
+            let mut view = test_view(loaded_tab());
             f(&mut view);
             card_controls(&view)
         };
@@ -2668,12 +2690,13 @@ mod tests {
             }),
             vec![Swatch, Pin, Audio, Eject, Close]
         );
-        assert_eq!(Close.action(ItemNodeKind::Tab), NodeAction::Delete);
-        assert_eq!(Pin.action(ItemNodeKind::Tab), NodeAction::TogglePin);
-        assert_eq!(Audio.action(ItemNodeKind::Tab), NodeAction::ToggleMute);
+        let (tab, note) = (loaded_tab(), plain(TYPE_NOTE));
+        assert_eq!(Close.action(tab), NodeAction::Delete);
+        assert_eq!(Pin.action(tab), NodeAction::TogglePin);
+        assert_eq!(Audio.action(tab), NodeAction::ToggleMute);
         assert!(!Pin.hover_only() && !Audio.hover_only());
-        assert_eq!(Eject.action(ItemNodeKind::Note), NodeAction::RemoveFromGroup);
-        assert_eq!(Swatch.action(ItemNodeKind::Note), NodeAction::CycleColor);
+        assert_eq!(Eject.action(note), NodeAction::RemoveFromGroup);
+        assert_eq!(Swatch.action(note), NodeAction::CycleColor);
         assert!(Close.hover_only() && Eject.hover_only() && !Swatch.hover_only());
     }
 
@@ -2710,23 +2733,34 @@ mod tests {
         }
     }
 
+    /// A PDF card's click reveals its file, as a download's does; the other kinds keep theirs.
+    #[test]
+    fn click_action_gives_a_pdf_the_download_click() {
+        assert_eq!(click_action(plain(TYPE_PDF)), Some(NodeAction::Reveal));
+        assert_eq!(click_action(plain(TYPE_PDF)), click_action(plain(TYPE_DOWNLOAD)));
+        for kind in [loaded_tab(), sleeping_tab(), plain(TYPE_IMAGE)] {
+            assert_eq!(click_action(kind), Some(NodeAction::Open), "{kind:?}");
+        }
+        for kind in [plain(TYPE_NOTE), plain(TYPE_GROUP), plain(TYPE_JSON), plain(TYPE_JSON_LEAF)] {
+            assert_eq!(click_action(kind), None, "{kind:?}: handled by the caller");
+        }
+    }
+
     #[test]
     fn drop_action_matches_the_drop_table() {
-        use ItemNodeKind as K;
-        let card = DropTarget::Card;
-        for kind in GRAPH_DRAW_ORDER {
+        let card = |kind: CardKind| DropTarget::Card(kind);
+        let (tab, sleeping, group) = (loaded_tab(), sleeping_tab(), plain(TYPE_GROUP));
+        for kind in kinds() {
             // The back button only exists inside a group.
             assert_eq!(drop_action(kind, DropTarget::BackButton, true), Some(DropEffect::Eject), "{kind:?}");
             assert_eq!(drop_action(kind, DropTarget::BackButton, false), None, "{kind:?}");
-            let onto_group = if kind == K::Group { DropEffect::Merge } else { DropEffect::Join };
+            let onto_group = if kind.ty == TYPE_GROUP { DropEffect::Merge } else { DropEffect::Join };
             for inside_group in [false, true] {
-                assert_eq!(drop_action(kind, card(K::Group), inside_group), Some(onto_group), "{kind:?}");
+                assert_eq!(drop_action(kind, card(group), inside_group), Some(onto_group), "{kind:?}");
             }
         }
         // An unloaded card is a tab on both sides of the drop.
-        for (dragged, target) in
-            [(K::Tab, K::Tab), (K::Tab, K::Unloaded), (K::Unloaded, K::Tab), (K::Unloaded, K::Unloaded)]
-        {
+        for (dragged, target) in [(tab, tab), (tab, sleeping), (sleeping, tab), (sleeping, sleeping)] {
             assert_eq!(
                 drop_action(dragged, card(target), false),
                 Some(DropEffect::GroupWith),
@@ -2739,63 +2773,52 @@ mod tests {
             );
         }
         // Only a tab drops onto a tab, and nothing drops onto the file kinds.
-        assert_eq!(drop_action(K::Note, card(K::Tab), false), None);
-        assert_eq!(drop_action(K::Group, card(K::Tab), true), None);
-        assert_eq!(drop_action(K::Tab, card(K::Note), false), None);
-        assert_eq!(drop_action(K::Image, card(K::Json), true), None);
+        assert_eq!(drop_action(plain(TYPE_NOTE), card(tab), false), None);
+        assert_eq!(drop_action(group, card(tab), true), None);
+        assert_eq!(drop_action(tab, card(plain(TYPE_NOTE)), false), None);
+        assert_eq!(drop_action(plain(TYPE_IMAGE), card(plain(TYPE_JSON)), true), None);
     }
 
     #[test]
     fn node_card_size_matches_each_kinds_card() {
-        let download = NodePayload::Download(DownloadPayload {
+        let download = Runtime::Download(DownloadPayload {
             path: "f.bin".into(),
-            url: None,
             bytes_received: 0,
             total_bytes: None,
             completed: false,
             failed: false,
         });
         assert_eq!(node_card_size(&download), DOWNLOAD_NODE_SIZE);
-        assert_eq!(
-            node_card_size(&NodePayload::Note(NotePayload { text: String::new(), editing: false, url: None })),
-            NOTE_NODE_SIZE
-        );
-        assert_eq!(node_card_size(&NodePayload::Group(GroupPayload::named("g"))), GROUP_NODE_SIZE);
-        let json = |value: serde_json::Value, key: Option<&str>, error: Option<&str>| {
-            NodePayload::Json(JsonPayload {
+        assert_eq!(node_card_size(&Runtime::Note(NotePayload { text: String::new(), editing: false })), NOTE_NODE_SIZE);
+        assert_eq!(node_card_size(&Runtime::None), GROUP_NODE_SIZE, "a group has no runtime");
+        let json = |value: serde_json::Value, leaf: bool, error: Option<&str>| {
+            Runtime::Json(JsonPayload {
                 path: "a.json".into(),
                 value: value.into(),
-                key: key.map(Into::into),
+                leaf,
                 error: error.map(Into::into),
-                url: None,
-                view: JsonView::default(),
             })
         };
         let five = serde_json::json!({"a": 1, "b": 2, "c": 3, "d": 4, "e": 5});
-        assert_eq!(node_card_size(&json(five.clone(), None, None)), crate::json_view::preview_size(&five));
-        assert_eq!(node_card_size(&json(serde_json::json!({}), None, None)).x, crate::json_view::PREVIEW_CARD_WIDTH);
+        assert_eq!(node_card_size(&json(five.clone(), false, None)), crate::json_view::preview_size(&five));
+        assert_eq!(node_card_size(&json(serde_json::json!({}), false, None)).x, crate::json_view::PREVIEW_CARD_WIDTH);
         // A leaf from an old "Expand as Graph" and an error card keep the small size.
-        assert_eq!(node_card_size(&json(serde_json::json!(1), Some("k"), None)), JSON_NODE_SIZE);
-        assert_eq!(node_card_size(&json(five, None, Some("missing"))), JSON_NODE_SIZE);
+        assert_eq!(node_card_size(&json(serde_json::json!(1), true, None)), JSON_NODE_SIZE);
+        assert_eq!(node_card_size(&json(five, false, Some("missing"))), JSON_NODE_SIZE);
         assert_eq!(
-            node_card_size(&NodePayload::Unloaded(UnloadedTabPayload {
+            node_card_size(&Runtime::Unloaded(UnloadedTabPayload {
                 url: "https://example.org/".into(),
                 title: String::new(),
-                kind: EngineKind::Cef,
-                pinned: true,
                 muted: false,
                 zoom_factor: 1.5,
                 state: UnloadedState::Failed("no binary".into()),
-                jar: Default::default(),
             })),
             GRAPH_NODE_SIZE
         );
 
         // Image: a small picture keeps its own size; an oversized one is
         // scaled down to fit `IMAGE_NODE_MAX_SIZE`, aspect ratio kept.
-        let image = |width, height| {
-            NodePayload::Image(ImagePayload { path: "p.png".into(), width, height, error: None, url: None })
-        };
+        let image = |width, height| Runtime::Image(ImagePayload { path: "p.png".into(), width, height, error: None });
         assert_eq!(node_card_size(&image(40, 20)), egui::vec2(40.0, 20.0));
         let big = node_card_size(&image(100_000, 50_000));
         assert!(big.x <= IMAGE_NODE_MAX_SIZE.x && big.y <= IMAGE_NODE_MAX_SIZE.y);
@@ -2803,7 +2826,7 @@ mod tests {
 
         // Pdf: pending and failed use the fixed pending box; rendered uses
         // the page's own size through the same image fitting.
-        let pdf = |outcome| NodePayload::Pdf(PdfPayload { path: "d.pdf".into(), outcome, url: None });
+        let pdf = |outcome| Runtime::Pdf(PdfPayload { path: "d.pdf".into(), outcome });
         assert_eq!(node_card_size(&pdf(None)), PDF_PENDING_NODE_SIZE);
         assert_eq!(node_card_size(&pdf(Some(Err("bad".into())))), PDF_PENDING_NODE_SIZE);
         assert_eq!(
@@ -2815,75 +2838,57 @@ mod tests {
 
     #[test]
     fn card_filter_text_matches_each_kinds_filter_input() {
-        let download = NodePayload::Download(DownloadPayload {
+        // A note or a group matches on its own text (`App::own_text`), passed in.
+        fn filter(runtime: &Runtime) -> Vec<&str> {
+            card_filter_text(runtime, "buy milk")
+        }
+        let download = Runtime::Download(DownloadPayload {
             path: "C:/dl/f.bin".into(),
-            url: None,
             bytes_received: 0,
             total_bytes: None,
             completed: true,
             failed: false,
         });
         // Download filters on its full path; the file kinds on the filename only.
-        assert_eq!(card_filter_text(&download), ["C:/dl/f.bin"]);
+        assert_eq!(filter(&download), ["C:/dl/f.bin"]);
+        assert_eq!(filter(&Runtime::Note(NotePayload { text: String::new(), editing: false })), ["buy milk"]);
         assert_eq!(
-            card_filter_text(&NodePayload::Note(NotePayload { text: "buy milk".into(), editing: false, url: None })),
-            ["buy milk"]
-        );
-        assert_eq!(
-            card_filter_text(&NodePayload::Image(ImagePayload {
-                path: "C:/pics/cat.png".into(),
-                width: 1,
-                height: 1,
-                error: None,
-                url: None
-            })),
+            filter(&Runtime::Image(ImagePayload { path: "C:/pics/cat.png".into(), width: 1, height: 1, error: None })),
             ["cat.png"]
         );
         assert_eq!(
-            card_filter_text(&NodePayload::Pdf(PdfPayload {
-                path: "C:/docs/paper.pdf".into(),
-                outcome: None,
-                url: None
-            })),
+            filter(&Runtime::Pdf(PdfPayload { path: "C:/docs/paper.pdf".into(), outcome: None })),
             ["paper.pdf"]
         );
         assert_eq!(
-            card_filter_text(&NodePayload::Json(JsonPayload {
+            filter(&Runtime::Json(JsonPayload {
                 path: "C:/data/x.json".into(),
                 value: std::sync::Arc::new(serde_json::json!(1)),
-                key: None,
+                leaf: false,
                 error: None,
-                url: None,
-                view: JsonView::default()
             })),
             ["x.json"]
         );
-        assert_eq!(card_filter_text(&NodePayload::Group(GroupPayload::named("Reading"))), ["Reading"]);
+        assert_eq!(filter(&Runtime::None), ["buy milk"], "a group (no runtime) matches on its name");
         // Like a live tab: title and url, so the Graph filter can match a
         // sleeping card by its saved title, not just its url.
         assert_eq!(
-            card_filter_text(&NodePayload::Unloaded(UnloadedTabPayload {
+            filter(&Runtime::Unloaded(UnloadedTabPayload {
                 url: "https://example.org/".into(),
                 title: "Example".into(),
-                kind: EngineKind::Cef,
-                pinned: true,
                 muted: false,
                 zoom_factor: 1.5,
                 state: UnloadedState::Failed("no binary".into()),
-                jar: Default::default(),
             })),
             ["Example", "https://example.org/"]
         );
         assert_eq!(
-            card_filter_text(&NodePayload::Unloaded(UnloadedTabPayload {
+            filter(&Runtime::Unloaded(UnloadedTabPayload {
                 url: "https://example.org/".into(),
                 title: String::new(),
-                kind: EngineKind::Cef,
-                pinned: true,
                 muted: false,
                 zoom_factor: 1.5,
                 state: UnloadedState::Failed("no binary".into()),
-                jar: Default::default(),
             })),
             ["", "https://example.org/"]
         );
@@ -2931,7 +2936,7 @@ mod tests {
         for _ in 0..20 {
             app.new_note_shortcut();
             let id = app.node_order.last().unwrap().clone();
-            app.nodes.get_mut(&id).unwrap().group = Some(g.clone());
+            app.edit_group(&id, Some(g.clone()));
             made.push(id);
         }
         assert_eq!(app.group_members()[&g], made);

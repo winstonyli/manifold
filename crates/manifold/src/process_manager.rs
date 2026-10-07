@@ -264,6 +264,28 @@ impl EngineTab {
     pub fn set_visible(&mut self, visible: bool) {
         self.send(&HostToEngine::SetVisible(visible));
     }
+
+    /// A live tab for unit tests: no process, its control channel a loopback TCP connection. The returned peer
+    /// reads what the app sends it (`HostToEngine`), timing out after 200 ms when nothing more comes.
+    #[cfg(test)]
+    pub(crate) fn fake(kind: EngineKind) -> (EngineTab, ipc_protocol::MessageChannel<std::net::TcpStream>) {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind loopback");
+        let host = std::net::TcpStream::connect(listener.local_addr().expect("local addr")).expect("connect");
+        let (peer, _) = listener.accept().expect("accept");
+        peer.set_read_timeout(Some(Duration::from_millis(200))).expect("read timeout");
+        let (_, events_rx) = mpsc::channel();
+        let to_engine = ToEngine::Remote(RemoteTransport::new(host));
+        let tab = EngineTab {
+            kind,
+            socket_id: String::new(),
+            to_engine,
+            events_rx,
+            child: None,
+            cache_dir: None,
+            profile_slot: None,
+        };
+        (tab, ipc_protocol::MessageChannel::new(peer))
+    }
 }
 
 impl Drop for EngineTab {
@@ -1298,7 +1320,7 @@ pub fn spawn_tab(
 
 /// Generous upper bound for a cold WSL2 VM boot + Xvfb readiness + GTK/
 /// WebKit init, not a tuned-tight value — see `accept_remote`'s doc comment
-/// for why this exists at all. Failing loudly (a `tab_spawn_error` the user
+/// for why this exists at all. Failing loudly (a failed card the user
 /// can see and retry) well within a minute beats an unbounded app freeze.
 const WEBKIT_CONNECT_TIMEOUT: Duration = Duration::from_secs(45);
 
@@ -1333,7 +1355,8 @@ fn spawn_webkit_tab(tab_id: &str, initial_url: &str) -> std::io::Result<EngineTa
     let mut token = [0u8; transport::TOKEN_LEN];
     getrandom::fill(&mut token).map_err(|e| std::io::Error::other(e.to_string()))?;
     let command = format!(
-        "ENGINE_TAB_ID={} ENGINE_INITIAL_URL={} ENGINE_TCP_PORT={} ENGINE_TOKEN={} ENGINE_HOST_IP=$(ip route | awk '/^default/ {{print $3}}') xvfb-run -a {}",
+        "ENGINE_TAB_ID={} ENGINE_INITIAL_URL={} ENGINE_TCP_PORT={} ENGINE_TOKEN={} \
+         ENGINE_HOST_IP=$(ip route | awk '/^default/ {{print $3}}') xvfb-run -a {}",
         shell_quote(tab_id),
         shell_quote(initial_url),
         port,

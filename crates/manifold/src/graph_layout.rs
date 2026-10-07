@@ -21,6 +21,12 @@ const MIN_DISTANCE: f32 = 1.0;
 /// spacing (~230 px for two free nodes) near where it was, and nodes
 /// further apart than this feel exactly the force they did before.
 const REPULSION_SOFT_DISTANCE: f32 = 40.0;
+/// Spring constant (force per px of overlap) pushing overlapping cards apart.
+const OVERLAP_STRENGTH: f32 = 40.0;
+/// Overlap depth beyond which the push stops growing (max force ~640).
+const OVERLAP_MAX: f32 = 16.0;
+/// Clear space kept between two cards' rects.
+const CARD_GAP: f32 = 8.0;
 const SPRING_STRENGTH: f32 = 8.0;
 const REST_LENGTH: f32 = 320.0;
 const CENTERING_STRENGTH: f32 = 0.15;
@@ -52,11 +58,28 @@ const SETTLE_SPEED: f32 = 1.0;
 /// still push the others (a dragged card shoulders its neighbours aside).
 /// Ids and edges are processed in sorted order, so the result doesn't depend
 /// on the maps' iteration order or the order of `edges`.
+#[cfg(test)]
 pub fn step(
     positions: &mut HashMap<String, egui::Vec2>,
     velocities: &mut HashMap<String, egui::Vec2>,
     edges: &[(String, String)],
     pinned: &HashSet<String>,
+    center: egui::Vec2,
+    dt: f32,
+) {
+    step_sized(positions, velocities, edges, pinned, &HashMap::new(), center, dt);
+}
+
+/// `step` where cards have extents: `sizes` maps a node id to its card size
+/// (a missing id is a point). Cards whose rects, padded by `CARD_GAP`, overlap
+/// are pushed apart along the axis of least overlap, so a pair never settles
+/// with centers a repulsion-length apart but corners on top of each other.
+pub fn step_sized(
+    positions: &mut HashMap<String, egui::Vec2>,
+    velocities: &mut HashMap<String, egui::Vec2>,
+    edges: &[(String, String)],
+    pinned: &HashSet<String>,
+    sizes: &HashMap<String, egui::Vec2>,
     center: egui::Vec2,
     dt: f32,
 ) {
@@ -87,6 +110,22 @@ pub fn step(
             let force = dir * (REPULSION_STRENGTH / (dist * dist));
             forces[i] += force;
             forces[j] -= force;
+
+            // Card extents: push apart along the axis that overlaps least.
+            let (Some(a), Some(b)) = (sizes.get(&ids[i]), sizes.get(&ids[j])) else { continue };
+            let reach = (*a + *b) / 2.0 + egui::Vec2::splat(CARD_GAP);
+            let overlap = egui::vec2(reach.x - delta.x.abs(), reach.y - delta.y.abs());
+            if overlap.x > 0.0 && overlap.y > 0.0 {
+                // Capped like the soft repulsion: a card dropped deep inside
+                // another must ease out, not coast across the canvas.
+                let push = if overlap.x < overlap.y {
+                    egui::vec2(if delta.x < 0.0 { -1.0 } else { 1.0 } * overlap.x.min(OVERLAP_MAX), 0.0)
+                } else {
+                    egui::vec2(0.0, if delta.y < 0.0 { -1.0 } else { 1.0 } * overlap.y.min(OVERLAP_MAX))
+                } * OVERLAP_STRENGTH;
+                forces[i] += push;
+                forces[j] -= push;
+            }
         }
     }
 
@@ -236,6 +275,29 @@ mod tests {
             // pair, ~160 when one is held in place.
             assert!(gap > 150.0, "too close: {gap} ({pinned:?})");
             assert!(farthest < 200.0, "a node strayed {farthest} px from the drop ({pinned:?})");
+        }
+    }
+
+    /// Wide cards dropped on one point end with disjoint rects whatever the
+    /// ids (the jitter direction comes from them), not just distant centers.
+    #[test]
+    fn wide_cards_settle_without_overlap() {
+        let drop = egui::vec2(400.0, 300.0);
+        for n in 0..40 {
+            let (a, b) = (format!("a{n}"), format!("b{n}"));
+            let mut positions = HashMap::from([(a.clone(), drop), (b.clone(), drop)]);
+            let mut velocities = HashMap::from([(a.clone(), egui::Vec2::ZERO), (b.clone(), egui::Vec2::ZERO)]);
+            let sizes = HashMap::from([(a.clone(), egui::vec2(250.0, 200.0)), (b.clone(), egui::vec2(225.0, 90.0))]);
+            for _ in 0..360 {
+                step_sized(&mut positions, &mut velocities, &[], &HashSet::new(), &sizes, drop, 1.0 / 60.0);
+            }
+            for id in [&a, &b] {
+                let off = (positions[id] - drop).length();
+                assert!(off < 200.0, "seed {n}: {id} strayed {off} px from the drop");
+            }
+            let d = (positions[&a] - positions[&b]).abs();
+            let reach = (sizes[&a] + sizes[&b]) / 2.0;
+            assert!(d.x >= reach.x || d.y >= reach.y, "seed {n}: overlap, delta {d:?} reach {reach:?}");
         }
     }
 

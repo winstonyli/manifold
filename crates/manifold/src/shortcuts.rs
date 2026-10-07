@@ -201,8 +201,14 @@ impl App {
     /// Pin/Unpin entry.
     pub(crate) fn pin_focused_tab_shortcut(&mut self) {
         let Some(id) = self.focused.clone() else { return };
-        if let Some(pinned) = self.nodes.get_mut(&id).and_then(|n| n.payload.pinned_mut()) {
-            *pinned = !*pinned;
+        self.toggle_pin(&id);
+    }
+
+    /// Pins or unpins tab `id` (live or unloaded); any other kind is left alone.
+    pub(crate) fn toggle_pin(&mut self, id: &str) {
+        if self.nodes.get(id).is_some_and(|n| n.runtime.saved_tab().is_some()) {
+            let on = !self.mirror.pinned(id);
+            self.edit_field(id, field::PINNED, FieldValue::Bool(on));
         }
     }
 
@@ -228,8 +234,11 @@ impl App {
         if self.renaming_group.is_some() || self.current_json_node().is_some() {
             return;
         }
+        if !self.is_container(&group_id) {
+            return;
+        }
         // name rule: the field edits the stored name
-        let Some(name) = self.nodes.get(&group_id).and_then(|n| n.as_group()).map(|g| g.name.clone()) else { return };
+        let name = self.mirror.name(&group_id).to_owned();
         self.renaming_group = Some((group_id, name));
         self.pending_focus = Some(FocusTarget::GroupRename);
     }
@@ -237,7 +246,7 @@ impl App {
     /// `Ctrl+Shift+G` / toolbar "+ New Group" / headless `NEWGROUP` —
     /// creates an empty group at whichever level is currently being
     /// viewed, nested under `current_group` if that's not the top level
-    /// (see `GroupPayload`'s own doc comment on nesting). From a JSON
+    /// (see `App::current_group`'s own doc comment on nesting). From a JSON
     /// level, leaves it first (`placement`).
     pub(crate) fn new_group_shortcut(&mut self) {
         let id = self.alloc_node_id();

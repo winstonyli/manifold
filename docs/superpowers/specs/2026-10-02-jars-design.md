@@ -158,6 +158,9 @@ process keeps a closed profile's folder open for as long as it lives, and waitin
 pool. Reusing the name is still safe because the cookies are InPrivate, in memory, and go with the host: in the reuse
 run of `scripts/jar-probe.sh`, tab A logs in and closes, tab B then gets the same name in the same live browser and is
 not signed in; in the fresh run a name reused after a browser restart is not signed in either.
+Reusing a slot as soon as its host exits was tried and rejected (2026-10-04, ceeace8, reverted): the cookies live in
+the shared browser process, and a host's exit does not prove the browser has dropped its InPrivate profile, so a Switch
+Jar Now could hand the next jar the old jar's sign-ins. A slot is reused only after its folder's deletion is tried.
 
 Costs seen on runtime 154.0.4258.53:
 - No extra processes (two tabs: one browser process, one more renderer, as before).

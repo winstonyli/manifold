@@ -1,22 +1,23 @@
 //! The live graph and the session store (spec "Local edits become ops").
-//! The first half is pure: each live node's shared fields (`Shared`), and
-//! the diff that turns local edits into ops. The `impl App` half after it
-//! restores the session, saves local edits, and shows other replicas' ops.
+//! The first half is pure: a node as the store holds it (`Snapshot`), the
+//! `Create`s for queued new nodes and the one link resolver. The `impl App`
+//! half after it restores the session, saves local edits (the queued
+//! creates, moves, sets and deletes) and shows other replicas' ops.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use ipc_protocol::HostToEngine;
 
-use crate::json_view::JsonView;
 use crate::local_state::{LiveUrl, LocalNode, LocalState};
 use crate::node::{
-    DownloadPayload, GroupPayload, ImagePayload, JsonPayload, NodePayload, NotePayload, PdfPayload, TabPayload,
-    UnloadedState, UnloadedTabPayload,
+    DownloadPayload, ImagePayload, JsonPayload, NotePayload, PdfPayload, Runtime, UnloadedState, UnloadedTabPayload,
 };
 use crate::process_manager::EngineKind;
 use crate::store::journal::{JournalError, Recovery};
 use crate::store::json::{Imported, JsonDoc};
-use crate::store::model::{encode_field, encode_field_into, field, field_def, Doc, FieldValue, Kind, Node, NodeId};
+use crate::store::model::{
+    decode_field, encode_field, field, field_def, Doc, FieldType, FieldValue, Kind, Node, NodeId,
+};
 use crate::store::ops::OpBody;
 use crate::{App, ClosedEntry, TabSpawn, ViewMode, MAX_CLOSED};
 
@@ -40,24 +41,9 @@ pub(crate) struct LocalUnread {
     pub(crate) fresh: bool,
 }
 
-/// A node's shared fields by number: every field of its kind but `group`.
+/// A node's fields by number: every field of its kind (`Kind::fields`) but `group`, absent values included, so a
+/// field cleared reads as a change.
 pub(crate) type Fields = BTreeMap<u32, FieldValue>;
-
-/// The fields each kind carries, `group` aside (spec, "The shared document").
-pub(crate) fn kind_fields(kind: Kind) -> &'static [u32] {
-    use field::*;
-    match kind {
-        Kind::Tab => &[POS, COLOR, PARENT, URL, ENGINE, PINNED, JAR, JAR_SET],
-        Kind::Group => &[POS, COLOR, NAME, FROM_JSON, DEFAULT_JAR],
-        Kind::Note => &[POS, COLOR, URL, TEXT],
-        Kind::Image | Kind::Pdf => &[POS, COLOR, URL, PATH],
-        Kind::Json => &[POS, COLOR, URL, PATH, VIEW],
-        Kind::Download => &[POS, COLOR, URL, PATH],
-        Kind::JsonLeaf => &[POS, COLOR, PATH, KEY, VALUE],
-        Kind::Jar => &[COLOR, NAME, EPHEMERAL],
-        Kind::Unknown(_) => &[],
-    }
-}
 
 /// Personal state from a `read_local`: the defaults for no store, no
 /// state, one that doesn't decode, or a read that failed (which the caller
@@ -69,19 +55,19 @@ fn local_from(read: Option<Result<Option<Vec<u8>>, JournalError>>) -> LocalState
     }
 }
 
-/// One live node as the store sees it.
+/// A node as the store holds it, or is about to (`App::snapshot`): its kind, its group and its fields of that kind
+/// (`Kind::fields`, every one present). A `Create` writes one, Recently Closed records one, and a tab's spawn starts
+/// from one (`App::spawning`).
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct Shared {
+pub(crate) struct Snapshot {
     pub kind: Kind,
     pub group: Option<NodeId>,
-    /// Exactly `kind_fields(kind)`, absent values included, so a field
-    /// cleared live reads as a change.
     pub fields: Fields,
 }
 
-/// A document node's fields for its kind, shaped like `Shared::fields`.
+/// A document node's fields for its kind, shaped like `Snapshot::fields`.
 pub(crate) fn fields_of(node: &Node) -> Fields {
-    kind_fields(node.kind).iter().map(|&no| (no, node.get(no))).collect()
+    node.kind().fields().iter().map(|&no| (no, node.get(no))).collect()
 }
 
 pub(crate) fn color_value(color: Option<egui::Color32>) -> FieldValue {
@@ -98,6 +84,24 @@ pub(crate) fn color_of(value: &FieldValue) -> Option<egui::Color32> {
     }
 }
 
+/// Whether a card of stored type `ty` can run on `runtime`: the pairing `place_node` and the landings establish.
+/// A tab's runtime is one type whether it is loaded or asleep; a group has none (2b-6 Ruling 8).
+#[cfg(debug_assertions)]
+fn runtime_has_type(runtime: &Runtime, ty: &str) -> bool {
+    use crate::store::model::{
+        TYPE_DOWNLOAD, TYPE_GROUP, TYPE_IMAGE, TYPE_JSON, TYPE_JSON_LEAF, TYPE_NOTE, TYPE_PDF, TYPE_TAB,
+    };
+    match runtime {
+        Runtime::Tab(_) | Runtime::Unloaded(_) => ty == TYPE_TAB,
+        Runtime::Download(_) => ty == TYPE_DOWNLOAD,
+        Runtime::Note(_) => ty == TYPE_NOTE,
+        Runtime::Image(_) => ty == TYPE_IMAGE,
+        Runtime::Pdf(_) => ty == TYPE_PDF,
+        Runtime::Json(json) => ty == if json.leaf { TYPE_JSON_LEAF } else { TYPE_JSON },
+        Runtime::None => ty == TYPE_GROUP,
+    }
+}
+
 /// `store::model::ENGINES` order: code `n` is `ENGINES[n - 1]`.
 pub(crate) fn engine_code(kind: EngineKind) -> u64 {
     kind.desc().code
@@ -109,88 +113,57 @@ pub(crate) fn engine_of(code: u64) -> EngineKind {
     EngineKind::from_code(code).unwrap_or(EngineKind::Servo)
 }
 
-/// The ops that make `doc` show `live` (spec "Local edits become ops").
-/// - A live node the document lacks is created, each group before the
-///   nodes inside it. A live id the document holds as a tombstone is
-///   never recreated (ids are never reused).
-/// - A node shown in another group moves. Its group is compared with
-///   `effective_group`, so re-homing out of a deleted group is not a move.
-/// - A diffed field that differs is `Set`. An explicit field (`pos`,
-///   `url`) is `Set` only when `explicit` names it.
-/// - A document node missing from `live` is deleted, unless `keep` names
-///   it (a tab whose spawn is in flight).
-///
-/// A group or parent naming a node that is neither live in the document
-/// nor created here is written as none (contract "Missing means deleted").
-pub(crate) fn diff(
+/// The one resolver of the links a commit writes (2b-5 Ruling 12): `target` stands if the document shows it live
+/// and this commit (`deleted`) doesn't delete it, or this commit (`created`) creates it; otherwise it is written as
+/// none (contract "Missing means deleted"; Ruling 5). A closed target is still valid: its node is only gone once
+/// its delete commits.
+fn resolve_id(
     doc: &Doc,
-    live: &BTreeMap<NodeId, Shared>,
-    explicit: &BTreeSet<(NodeId, u32)>,
-    keep: &BTreeSet<NodeId>,
-) -> Vec<OpBody> {
-    let in_doc = |id: &NodeId| doc.nodes.get(id).is_some_and(Node::is_live);
-    let new: BTreeSet<NodeId> = live.keys().filter(|id| !doc.nodes.contains_key(id)).copied().collect();
-    let valid = |id: Option<NodeId>| id.filter(|id| in_doc(id) || new.contains(id));
-    let mut ops = Vec::new();
+    created: &BTreeSet<NodeId>,
+    deleted: &BTreeSet<NodeId>,
+    target: Option<NodeId>,
+) -> Option<NodeId> {
+    target.filter(|t| (doc.nodes.get(t).is_some_and(Node::is_live) && !deleted.contains(t)) || created.contains(t))
+}
 
-    // Creates, each group's chain of new ancestors first.
+/// The `Create`s for `new`, the queued nodes the document has no entry for, each with what it shows (Ruling 3),
+/// each group's chain of new ancestors before the nodes inside it (Ruling 13). Every link a `Create` carries
+/// (`group`, `parent`, a tab's `jar`, a group's `default_jar`) goes through `resolve_id`, against this commit's
+/// `deleted`. A group created later in the batch (only a cycle does that) would make a placeholder: the node is
+/// created at the top level instead.
+fn create_ops(doc: &Doc, new: &BTreeMap<NodeId, Snapshot>, deleted: &BTreeSet<NodeId>) -> Vec<OpBody> {
+    let in_doc = |id: &NodeId| doc.nodes.get(id).is_some_and(Node::is_live);
+    let all: BTreeSet<NodeId> = new.keys().copied().collect();
+    let valid = |target: Option<NodeId>| resolve_id(doc, &all, deleted, target);
     let mut order = Vec::new();
     let mut queued = BTreeSet::new();
-    for &start in &new {
+    for &start in new.keys() {
         let mut chain = Vec::new();
         let mut at = Some(start);
-        while let Some(id) = at.filter(|id| new.contains(id) && !queued.contains(id) && !chain.contains(id)) {
+        while let Some(id) = at.filter(|id| new.contains_key(id) && !queued.contains(id) && !chain.contains(id)) {
             chain.push(id);
-            at = live[&id].group;
+            at = new[&id].group;
         }
         for id in chain.into_iter().rev() {
             queued.insert(id);
             order.push(id);
         }
     }
+    let mut ops = Vec::new();
     let mut created = BTreeSet::new();
     for id in order {
-        let node = &live[&id];
-        // A group created later in this batch (only a cycle does that)
-        // would make a placeholder: create at the top level instead.
+        let node = &new[&id];
         let group = valid(node.group).filter(|g| in_doc(g) || created.contains(g));
-        let mut all = node.fields.clone();
-        all.insert(field::GROUP, FieldValue::Id(group));
-        if let Some(FieldValue::Id(parent)) = all.get_mut(&field::PARENT) {
-            *parent = valid(*parent);
+        let mut fields = node.fields.clone();
+        for value in fields.values_mut() {
+            if let FieldValue::Id(target) = value {
+                *target = valid(*target);
+            }
         }
-        let fields = all.iter().flat_map(|(&no, value)| encode_field(no, value)).collect();
-        ops.push(OpBody::Create { node: id, kind: node.kind, fields });
+        fields.insert(field::GROUP, FieldValue::Id(group));
+        let enc = fields.iter().flat_map(|(&no, value)| encode_field(no, value)).collect();
+        ops.push(OpBody::create(id, node.kind, enc));
         created.insert(id);
-    }
-
-    // Existing nodes: moves and sets. Each field is encoded into `enc` and
-    // copied out only when it differs.
-    let mut enc = Vec::new();
-    for (&id, node) in live {
-        let Some(current) = doc.nodes.get(&id).filter(|n| n.is_live()) else { continue };
-        let group = valid(node.group);
-        if group != doc.effective_group(id) {
-            ops.push(OpBody::Move { node: id, group });
-        }
-        for (&no, value) in &node.fields {
-            if field_def(no).is_some_and(|def| def.explicit) && !explicit.contains(&(id, no)) {
-                continue;
-            }
-            match value {
-                FieldValue::Id(parent) => encode_field_into(&mut enc, no, &FieldValue::Id(valid(*parent))),
-                other => encode_field_into(&mut enc, no, other),
-            }
-            if current.fields.get(&no).map_or(&[][..], |reg| &reg.enc[..]) != &enc[..] {
-                ops.push(OpBody::Set { node: id, field: no, enc: enc.clone() });
-            }
-        }
-    }
-
-    for (id, _) in doc.live() {
-        if !live.contains_key(&id) && !keep.contains(&id) {
-            ops.push(OpBody::Delete { node: id });
-        }
     }
     ops
 }
@@ -242,10 +215,6 @@ fn url_of(fields: &Fields) -> Option<String> {
     Some(str_of(fields, field::URL)).filter(|u| !u.is_empty())
 }
 
-fn bool_of(fields: &Fields, no: u32) -> bool {
-    matches!(fields.get(&no), Some(FieldValue::Bool(true)))
-}
-
 fn pos_of(fields: &Fields) -> egui::Vec2 {
     match fields.get(&field::POS) {
         Some(FieldValue::Pos(x, y)) => egui::vec2(*x, *y),
@@ -268,7 +237,7 @@ fn engine_field(fields: &Fields) -> EngineKind {
 }
 
 /// `pos` as the store keeps it: never non-finite (contract "Fields").
-fn pos_value(pos: egui::Vec2) -> FieldValue {
+pub(crate) fn pos_value(pos: egui::Vec2) -> FieldValue {
     if pos.x.is_finite() && pos.y.is_finite() {
         FieldValue::Pos(pos.x, pos.y)
     } else {
@@ -276,30 +245,55 @@ fn pos_value(pos: egui::Vec2) -> FieldValue {
     }
 }
 
+/// A parent or group as a store link: `Some(None)` for none, `None` when it names something that isn't a store id.
+fn parent_id(parent: &Option<String>) -> Option<Option<NodeId>> {
+    match parent {
+        None => Some(None),
+        Some(id) => id.parse().ok().map(Some),
+    }
+}
+
 fn parse_id(id: &Option<String>) -> Option<NodeId> {
-    id.as_deref().and_then(|id| id.parse().ok())
+    link_id(id.as_deref())
 }
 
-/// The tab `spawn` starts, as `Shared`: what `save_session` writes for a
-/// tab whose spawn hasn't landed yet (`App::spawning`).
-pub(crate) fn spawn_shared(spawn: &TabSpawn) -> Shared {
-    let mut fields = Fields::from([(field::POS, pos_value(spawn.pos)), (field::COLOR, color_value(spawn.carry.color))]);
-    let kind =
-        tab_fields(&mut fields, &spawn.url, spawn.kind, spawn.carry.pinned, parse_id(&spawn.parent), spawn.carry.jar);
-    Shared { kind, group: parse_id(&spawn.group), fields }
+/// A mirror link as a store id: `None` for none or an id that isn't a store id.
+fn link_id(id: Option<&str>) -> Option<NodeId> {
+    id.and_then(|id| id.parse().ok())
 }
 
-/// A tab's fields beyond `pos` and `color`, live or failed.
+/// The tab `spawn` starts, as a `Snapshot`: what `save_session` writes for a
+/// tab whose spawn hasn't landed yet (`App::spawning`). `pos`, `url`, `engine` (a
+/// stored code) and `jar` are its shared ones (`App::spawn_tab_async`): the
+/// mirror's for a tab that has an entry, which a respawn's live `spawn.url`
+/// may not be.
+pub(crate) fn spawn_snapshot(
+    spawn: &TabSpawn,
+    pos: Option<egui::Vec2>,
+    url: &str,
+    engine: u64,
+    jar: crate::jar::JarChoice,
+) -> Snapshot {
+    let pos = pos.map_or(FieldValue::Pos(0.0, 0.0), pos_value);
+    let mut fields = Fields::from([(field::POS, pos), (field::COLOR, color_value(spawn.carry.color))]);
+    let (pinned, parent) = (spawn.carry.pinned, parse_id(&spawn.parent));
+    let (url, engine) = (FieldValue::Str(url.to_owned()), FieldValue::Engine(engine));
+    let kind = tab_fields(&mut fields, url, engine, pinned, parent, jar);
+    Snapshot { kind, group: parse_id(&spawn.group), fields }
+}
+
+/// A tab's fields beyond `pos` and `color`, live or failed. `url`, `engine` and `jar` are the shared ones
+/// (`Mirror::url`, the mirror's raw engine code, `Mirror::jar_choice`).
 fn tab_fields(
     fields: &mut Fields,
-    url: &str,
-    engine: EngineKind,
+    url: FieldValue,
+    engine: FieldValue,
     pinned: bool,
     parent: Option<NodeId>,
     jar: crate::jar::JarChoice,
 ) -> Kind {
-    fields.insert(field::URL, FieldValue::Str(url.to_owned()));
-    fields.insert(field::ENGINE, FieldValue::Engine(engine_code(engine)));
+    fields.insert(field::URL, url);
+    fields.insert(field::ENGINE, engine);
     fields.insert(field::PINNED, FieldValue::Bool(pinned));
     fields.insert(field::PARENT, FieldValue::Id(parent));
     fields.insert(field::JAR, FieldValue::Id(jar.jar));
@@ -307,23 +301,12 @@ fn tab_fields(
     Kind::Tab
 }
 
-fn node_id_of(fields: &Fields, no: u32) -> Option<NodeId> {
-    match fields.get(&no) {
-        Some(FieldValue::Id(id)) => *id,
-        _ => None,
-    }
-}
-
-fn jar_choice_of(fields: &Fields) -> crate::jar::JarChoice {
-    crate::jar::JarChoice { jar: node_id_of(fields, field::JAR), set: bool_of(fields, field::JAR_SET) }
-}
-
 /// `raw` (an imported node's field values, as `store::json::import` gave
-/// them) shaped like `Shared::fields`: exactly `kind_fields(kind)`, with
+/// them) shaped like `Snapshot::fields`: exactly `kind.fields()`, with
 /// any field the file left out filled in as absent, for
 /// `App::materialize_imported`.
 pub(crate) fn imported_fields(kind: Kind, raw: &BTreeMap<u32, FieldValue>) -> Fields {
-    kind_fields(kind)
+    kind.fields()
         .iter()
         .map(|&no| {
             let absent = || FieldValue::absent(field_def(no).expect("a known field").ty);
@@ -341,12 +324,10 @@ struct TabCommon<'a> {
     url: &'a str,
 }
 
-fn tab_common(payload: &NodePayload) -> Option<TabCommon<'_>> {
+fn tab_common(payload: &Runtime) -> Option<TabCommon<'_>> {
     match payload {
-        NodePayload::Tab(t) => {
-            Some(TabCommon { title: &t.title, muted: t.muted, zoom_factor: t.zoom_factor, url: &t.url })
-        }
-        NodePayload::Unloaded(u) => {
+        Runtime::Tab(t) => Some(TabCommon { title: &t.title, muted: t.muted, zoom_factor: t.zoom_factor, url: &t.url }),
+        Runtime::Unloaded(u) => {
             Some(TabCommon { title: &u.title, muted: u.muted, zoom_factor: u.zoom_factor, url: &u.url })
         }
         _ => None,
@@ -354,84 +335,63 @@ fn tab_common(payload: &NodePayload) -> Option<TabCommon<'_>> {
 }
 
 impl App {
-    /// Every live node the store keeps, as `Shared`. Skipped: an
-    /// in-progress download (it can't resume), and a node whose id isn't a
-    /// store id (only hand-built test nodes).
-    pub(crate) fn shared_nodes(&self) -> BTreeMap<NodeId, Shared> {
-        let str = |s: &str| FieldValue::Str(s.to_owned());
-        let mut out = BTreeMap::new();
-        for (key, node) in &self.nodes {
-            let Ok(id) = key.parse::<NodeId>() else { continue };
-            let mut fields = Fields::from([(field::POS, pos_value(node.pos)), (field::COLOR, color_value(node.color))]);
-            let kind = match &node.payload {
-                // A swap in progress already shows its target engine, so a
-                // save meanwhile doesn't write the old one back.
-                NodePayload::Tab(TabPayload { tab, url, pinned, swap_target, jar, .. }) => {
-                    tab_fields(&mut fields, url, swap_target.unwrap_or(tab.kind), *pinned, parse_id(&node.parent), *jar)
-                }
-                NodePayload::Unloaded(UnloadedTabPayload { url, kind, pinned, jar, .. }) => {
-                    tab_fields(&mut fields, url, *kind, *pinned, parse_id(&node.parent), *jar)
-                }
-                NodePayload::Download(dl) if dl.completed => {
-                    fields.insert(field::PATH, str(&dl.path));
-                    fields.insert(field::URL, str(dl.url.as_deref().unwrap_or("")));
-                    Kind::Download
-                }
-                NodePayload::Download(_) => continue,
-                NodePayload::Group(g) => {
-                    fields.insert(field::NAME, str(&g.name)); // name rule: synced as stored
-                    fields.insert(field::FROM_JSON, FieldValue::Bool(g.from_json));
-                    fields.insert(field::DEFAULT_JAR, FieldValue::Id(g.default_jar));
-                    Kind::Group
-                }
-                NodePayload::Note(n) => {
-                    fields.insert(field::URL, str(n.url.as_deref().unwrap_or("")));
-                    fields.insert(field::TEXT, str(&n.text));
-                    Kind::Note
-                }
-                NodePayload::Image(i) => {
-                    fields.insert(field::URL, str(i.url.as_deref().unwrap_or("")));
-                    fields.insert(field::PATH, str(&i.path));
-                    Kind::Image
-                }
-                NodePayload::Pdf(p) => {
-                    fields.insert(field::URL, str(p.url.as_deref().unwrap_or("")));
-                    fields.insert(field::PATH, str(&p.path));
-                    Kind::Pdf
-                }
-                NodePayload::Json(j) => {
-                    fields.insert(field::PATH, str(&j.path));
-                    match &j.key {
-                        None => {
-                            fields.insert(field::URL, str(j.url.as_deref().unwrap_or("")));
-                            fields.insert(field::VIEW, str(&j.view.to_field()));
-                            Kind::Json
-                        }
-                        Some(key) => {
-                            fields.insert(field::KEY, str(key));
-                            fields.insert(field::VALUE, FieldValue::Str(j.value.to_string()));
-                            Kind::JsonLeaf
-                        }
-                    }
-                }
-            };
-            debug_assert_eq!(fields.keys().copied().collect::<Vec<_>>(), {
-                let mut want = kind_fields(kind).to_vec();
-                want.sort();
-                want
-            });
-            out.insert(id, Shared { kind, group: parse_id(&node.group), fields });
+    /// What the store holds for `id`, or is about to, as a `Snapshot`: a graph node's fields of its kind as the mirror
+    /// holds them (2b-5: every stored field of a graph node is mirror state), a jar's definition, or the snapshot a
+    /// tab's spawn started with (`spawning`, for one not shown yet). A tab's url is the shared one, not the live one
+    /// its payload holds (2b-3 Ruling 1); its engine is the one a swap in progress already shows as its target
+    /// (`start_swap_to`); a file card's path is the stored one, not the one its payload resolved here (2b-5 Ruling
+    /// 5). Its kind is its type (`Mirror::ty`, the one source of a node's type). `None` for an in-progress download
+    /// (it can't resume, so it isn't created until it completes), for a node of a type this build doesn't know (never
+    /// placed today: every way in seeds a known type), and for an id that is none of these.
+    pub(crate) fn snapshot(&self, id: NodeId) -> Option<Snapshot> {
+        let key = id.to_string();
+        if let Some(node) = self.nodes.get(&key) {
+            if node.as_download().is_some_and(|dl| !dl.completed) {
+                return None;
+            }
+            let kind = Kind::from_type(self.mirror.ty(&key));
+            if kind == Kind::Unknown {
+                return None;
+            }
+            let fields = kind
+                .fields()
+                .iter()
+                .map(|&no| match no {
+                    field::PARENT => (no, FieldValue::Id(link_id(self.mirror.parent(&key)))),
+                    _ => (no, self.mirror.get(&key, no)),
+                })
+                .collect();
+            return Some(Snapshot { kind, group: link_id(self.mirror.group(&key)), fields });
         }
-        // Jar definitions are not graph nodes but must be live, or `diff` deletes their document nodes.
-        for (id, def) in &self.jar_defs {
-            let fields = Fields::from([
-                (field::COLOR, color_value(def.color)),
-                (field::NAME, str(&def.name)), // name rule: synced as stored
-                (field::EPHEMERAL, FieldValue::Bool(def.ephemeral)),
-            ]);
-            out.insert(*id, Shared { kind: Kind::Jar, group: None, fields });
+        if self.mirror.jar_defs().contains_key(&id) {
+            let fields = Kind::Jar.fields().iter().map(|&no| (no, self.mirror.get(&key, no))).collect();
+            return Some(Snapshot { kind: Kind::Jar, group: None, fields });
         }
-        out
+        self.spawning.get(&key).cloned()
+    }
+
+    /// Queues `id`, a node that just entered the live graph (`place_node`, `spawn_tab_async`, a jar's `add_jar`),
+    /// for the next save to create (Ruling 3), and withdraws a pending delete of it: it is shown again. One the
+    /// document already has an entry for (shown again from a restore or another replica's op, or a tombstone) needs
+    /// no create; an id that isn't a store id is never written.
+    pub(crate) fn queue_create(&mut self, id: &str) {
+        let Ok(node) = id.parse::<NodeId>() else { return };
+        self.pending_deletes.remove(&node);
+        if self.journal.as_ref().is_some_and(|j| j.doc().nodes.contains_key(&node)) {
+            return;
+        }
+        self.pending_creates.insert(node);
+    }
+
+    /// Queues `id`, a node removed here, for the next save to delete (Ruling 4). The save deletes it if the document
+    /// still shows it live, so a node never created is just forgotten. Until then another replica's edit to it is
+    /// dropped rather than showing it again (`materialize`). Only a local removal queues: a node another replica
+    /// deleted is already gone from the document (`remove_remotely_deleted`), and a crash respawn, an engine swap
+    /// and a content reload take a node out of `nodes` only for a while.
+    pub(crate) fn queue_delete(&mut self, id: &str) {
+        let Ok(node) = id.parse::<NodeId>() else { return };
+        self.pending_creates.remove(&node);
+        self.pending_deletes.insert(node);
     }
 
     /// Makes live node `id` show `fields`. A new node is inserted; a new
@@ -439,23 +399,28 @@ impl App {
     /// restore, another replica, Recently Closed or an import. A node
     /// whose spawn is in flight keeps the change
     /// for when it lands (`remote_in_flight`). An existing node is updated
-    /// in place, but only in the fields (and group) where the store
-    /// differs from what this replica last saw of it (`last_shared`), so
-    /// an unsaved local value in another field survives:
-    /// - a tab's url change navigates without marking `url`;
-    /// - an engine change swaps engines.
+    /// in place, but only in the fields where the store differs from what
+    /// the mirror shows (`mirror_remote`, which takes them), so an unsaved local
+    /// value in another field survives (it is held, and keeps the mirror's value):
+    /// - a tab's url change navigates, unless a local url edit is pending
+    ///   (it wins);
+    /// - an engine change is the mirror's; a live tab swaps to it, unless a
+    ///   local engine edit is pending or a swap is in flight (they win);
+    /// - a jar change is the mirror's alone: `apply_remote`'s
+    ///   `sweep_jar_switches` then switches the live tabs it moved.
+    ///
+    /// A node or jar whose delete is pending (`queue_delete`) was closed here
+    /// and the save deletes it: another replica's edit to it is dropped
+    /// rather than bringing it back (Ruling 9).
     ///
     /// A kind mismatch between the live node and `kind` is ignored (the
     /// store never changes a node's kind). A file card whose file can't be
-    /// loaded is kept, showing its error, so the next diff doesn't delete
-    /// it from the store.
+    /// loaded is kept, showing its error: the node stays in the store.
     ///
-    /// `local`, personal state's entry for a new node, places it at its
-    /// settled position instead of `fields`'s stored `pos`, and reopens a
-    /// tab at its live url (`LocalNode::live_url`); `last_shared` still
-    /// records the real stored fields, so a later save doesn't diff the
-    /// overrides back into the store. Every caller but `restore_session`
-    /// passes `None`.
+    /// `local`, personal state's entry for a new node, lays it out at its
+    /// settled position instead of `fields`'s stored `pos` (which the mirror
+    /// holds), and reopens a tab at its live url (`LocalNode::live_url`).
+    /// Every caller but `restore_session` passes `None`.
     pub(crate) fn materialize(
         &mut self,
         id: String,
@@ -464,124 +429,90 @@ impl App {
         group: Option<String>,
         local: Option<&LocalNode>,
     ) {
+        // A node or jar deleted here stays gone: a remote edit arriving before the save commits the queued delete
+        // would otherwise re-show it, nameless from a partial change or whole (2b-5 Ruling 9, final review M1).
+        if id.parse::<NodeId>().is_ok_and(|node| self.pending_deletes.contains(&node)) {
+            return;
+        }
+        // A jar's fields are mirror state like a node's (2b-5 Ruling 7), but it is never a graph node. Its file side
+        // effects run first, while the mirror still shows the old flag (`materialize_jar`).
         if kind == Kind::Jar {
             let Ok(jar) = id.parse::<NodeId>() else { return };
-            let now = Shared { kind, group: None, fields: fields.clone() };
-            let seen = self.last_shared.insert(id, now.clone());
-            self.materialize_jar(jar, fields, &seen, &now);
+            self.materialize_jar(jar, fields);
+            self.mirror_remote(&id, fields, None);
             return;
         }
         if self.spawning.contains_key(&id) {
             self.remote_in_flight.insert(id, Some((kind, fields.clone(), group)));
             return;
         }
+        let (held, changed) = self.mirror_remote(&id, fields, group.as_deref());
+        // The store never changes a node's type, so the first one seen stands (2b-5 Ruling 10).
+        if let Some(ty) = kind.type_str() {
+            self.mirror.init_field(&id, field::TYPE, FieldValue::Str(ty.to_owned()));
+        }
         let pos = local.map_or_else(|| pos_of(fields), |l| egui::vec2(l.pos[0], l.pos[1]));
-        let color = fields.get(&field::COLOR).and_then(color_of);
-        let now = Shared { kind, group: group.as_deref().and_then(|g| g.parse().ok()), fields: fields.clone() };
-        let seen = self.last_shared.insert(id.clone(), now.clone());
-        if self.update_live_node(&id, kind, fields, group.clone(), pos, color, &seen, &now) {
+        if self.update_live_node(&id, fields, pos, &changed, &held) {
             return;
         }
-        self.insert_materialized(id, kind, fields, group, local);
+        self.insert_materialized(id, kind, fields, local);
     }
 
-    /// Applies `fields` to the live node `id` where they differ from what this replica last saw (`seen`).
-    /// False when there is no such node.
-    #[allow(clippy::too_many_arguments)] // the pieces `materialize` already worked out
-    fn update_live_node(
-        &mut self,
-        id: &str,
-        kind: Kind,
-        fields: &Fields,
-        group: Option<String>,
-        pos: egui::Vec2,
-        color: Option<egui::Color32>,
-        seen: &Option<Shared>,
-        now: &Shared,
-    ) -> bool {
+    /// Applies `fields` to the live node `id` in the fields `mirror_remote` found changed (`changed`); the ones it
+    /// held at a local edit (`held`) are left out: their live effects follow the mirror's verdict (2b-3 Ruling 3),
+    /// so a tab whose url edit is pending is not navigated away from it, and a card whose pos edit is pending is not
+    /// moved. A new pos snaps the layout to `pos`, at rest, except for a card being dragged: the drag keeps it under
+    /// the pointer, and its release then wins (2b-4 Ruling 4). False when there is no such node.
+    fn update_live_node(&mut self, id: &str, fields: &Fields, pos: egui::Vec2, changed: &[u32], held: &[u32]) -> bool {
+        let in_flight = self.swap_in_flight(id);
+        let changed = |no: u32| !held.contains(&no) && changed.contains(&no);
+        if !self.nodes.contains_key(id) {
+            return false;
+        }
+        if changed(field::POS) && !self.is_being_dragged(id) {
+            self.snap_layout(id, pos);
+        }
         let Some(node) = self.nodes.get_mut(id) else {
             return false;
         };
-        let changed = |no: u32| seen.as_ref().is_none_or(|s| s.fields.get(&no) != now.fields.get(&no));
-        if seen.as_ref().is_none_or(|s| s.group != now.group) {
-            node.group = group;
-        }
-        if changed(field::COLOR) {
-            node.color = color;
-        }
-        if changed(field::POS) {
-            node.pos = pos;
-            node.vel = egui::Vec2::ZERO;
-        }
-        if kind == Kind::Tab && changed(field::PARENT) {
-            node.parent = id_of(fields, field::PARENT);
-        }
-        let mut swap = None;
+        let (mut swap, mut reassert) = (None, None);
         let mut store_load = false;
-        match &mut node.payload {
-            NodePayload::Tab(tab) => {
-                if changed(field::PINNED) {
-                    tab.pinned = bool_of(fields, field::PINNED);
-                }
+        match &mut node.runtime {
+            Runtime::Tab(tab) => {
                 let url = str_of(fields, field::URL);
                 if changed(field::URL) && tab.url != url {
                     tab.url = url.clone();
                     tab.tab.send(&HostToEngine::Navigate { url, referrer: None });
                     store_load = true;
                 }
+                // A swap in flight here (`swap_in_flight`, parked for cookies too) wins: `mirror_remote` held the
+                // remote engine back while the swap's edit is unsaved; once saved, its target is written again
+                // (`reassert`), so the document ends on the engine this tab lands on.
                 let want = engine_field(fields);
-                if changed(field::ENGINE) && tab.swap_target.unwrap_or(tab.tab.kind) != want {
-                    swap = Some(want);
-                }
-                if changed(field::JAR) || changed(field::JAR_SET) {
-                    tab.jar = jar_choice_of(fields);
+                if changed(field::ENGINE) {
+                    match in_flight {
+                        Some(target) if target != want => reassert = Some(target),
+                        Some(_) => {}
+                        None if tab.tab.kind != want => swap = Some(want),
+                        None => {}
+                    }
                 }
             }
-            NodePayload::Unloaded(tab) => {
-                if changed(field::PINNED) {
-                    tab.pinned = bool_of(fields, field::PINNED);
-                }
+            Runtime::Unloaded(tab) => {
                 if changed(field::URL) {
                     tab.url = str_of(fields, field::URL);
                 }
-                if changed(field::ENGINE) {
-                    tab.kind = engine_field(fields);
-                }
-                if changed(field::JAR) || changed(field::JAR_SET) {
-                    tab.jar = jar_choice_of(fields);
-                }
             }
-            NodePayload::Group(g) => {
-                if changed(field::NAME) {
-                    g.name = str_of(fields, field::NAME);
-                }
-                if changed(field::FROM_JSON) {
-                    g.from_json = bool_of(fields, field::FROM_JSON);
-                }
-                if changed(field::DEFAULT_JAR) {
-                    g.default_jar = node_id_of(fields, field::DEFAULT_JAR);
-                }
-            }
-            NodePayload::Note(n) => {
+            Runtime::Note(n) => {
+                // The box shows the mirror's new text. Not for a note being typed in: `mirror_remote` held it.
                 if changed(field::TEXT) {
                     n.text = str_of(fields, field::TEXT);
                 }
-                if changed(field::URL) {
-                    n.url = url_of(fields);
-                }
             }
-            NodePayload::Image(p) if changed(field::URL) => p.url = url_of(fields),
-            NodePayload::Pdf(p) if changed(field::URL) => p.url = url_of(fields),
-            NodePayload::Json(p) if p.key.is_none() => {
-                if changed(field::URL) {
-                    p.url = url_of(fields);
-                }
-                if changed(field::VIEW) {
-                    p.view = JsonView::from_field(&str_of(fields, field::VIEW));
-                }
-            }
-            // Paths, keys and values never change after creation.
-            NodePayload::Download(_) | NodePayload::Image(_) | NodePayload::Pdf(_) | NodePayload::Json(_) => {}
+            // A group's fields (it has no runtime), a content node's url and a Json node's view are the mirror's alone
+            // (`mirror_remote`; the level shown is relaid out below). Paths, keys and values never change after
+            // creation.
+            Runtime::None | Runtime::Download(_) | Runtime::Image(_) | Runtime::Pdf(_) | Runtime::Json(_) => {}
         }
         // Another replica changed the view of the level being shown:
         // relaid out on the next sync.
@@ -598,6 +529,9 @@ impl App {
         }
         if let Some(target) = swap {
             self.start_swap_to(id, target);
+        }
+        if let Some(target) = reassert {
+            self.edit_engine(id, target);
         }
         true
     }
@@ -620,16 +554,8 @@ impl App {
     }
 
     /// Creates the node `id` of `kind` from `fields` (a file card whose file is gone gets a placeholder).
-    fn insert_materialized(
-        &mut self,
-        id: String,
-        kind: Kind,
-        fields: &Fields,
-        group: Option<String>,
-        local: Option<&LocalNode>,
-    ) {
+    fn insert_materialized(&mut self, id: String, kind: Kind, fields: &Fields, local: Option<&LocalNode>) {
         let pos = local.map_or_else(|| pos_of(fields), |l| egui::vec2(l.pos[0], l.pos[1]));
-        let color = fields.get(&field::COLOR).and_then(color_of);
         // Resolved once up front for the arms below and the missing-file
         // refetch check: this machine's newest `<id>.*` in the content dir,
         // else `stored` (`ContentIndex`): the pass's own index when one is
@@ -657,29 +583,19 @@ impl App {
                 let shared = str_of(fields, field::URL);
                 let live = local.and_then(|l| l.live_url.as_ref()).filter(|l| l.from == shared);
                 let url = live.map_or(shared, |l| l.url.clone());
-                let (kind, pinned, parent) =
-                    (engine_field(fields), bool_of(fields, field::PINNED), id_of(fields, field::PARENT));
-                // Title, mute and zoom come from personal state (`apply_local`).
+                // Title, mute and zoom come from personal state (`apply_local`); the engine is the mirror's.
                 let zoom_factor = self.settings.zoom_factor;
                 let (title, muted, state) = (String::new(), false, UnloadedState::Sleeping);
-                let jar = jar_choice_of(fields);
-                let payload = UnloadedTabPayload { url, title, kind, pinned, muted, zoom_factor, state, jar };
-                self.insert_placeholder_node(id.clone(), pos, NodePayload::Unloaded(payload));
-                if let Some(node) = self.nodes.get_mut(&id) {
-                    node.parent = parent;
-                }
+                let payload = UnloadedTabPayload { url, title, muted, zoom_factor, state };
+                self.insert_placeholder_node(id.clone(), pos, kind, Runtime::Unloaded(payload));
             }
             Kind::Group => {
-                let payload = GroupPayload {
-                    name: str_of(fields, field::NAME),
-                    from_json: bool_of(fields, field::FROM_JSON),
-                    default_jar: node_id_of(fields, field::DEFAULT_JAR),
-                };
-                self.insert_placeholder_node(id.clone(), pos, NodePayload::Group(payload));
+                // Its name, `from_json` and default jar are already the mirror's (`mirror_remote`); it has no runtime.
+                self.insert_placeholder_node(id.clone(), pos, kind, Runtime::None);
             }
             Kind::Note => {
-                let payload = NotePayload { text: str_of(fields, field::TEXT), editing: false, url: None };
-                self.insert_placeholder_node(id.clone(), pos, NodePayload::Note(payload));
+                let payload = NotePayload { text: str_of(fields, field::TEXT), editing: false };
+                self.insert_placeholder_node(id.clone(), pos, kind, Runtime::Note(payload));
             }
             Kind::Image => {
                 let path = content_path.clone().unwrap_or_default();
@@ -689,15 +605,15 @@ impl App {
                     self.insert_image_node_with_id(id.clone(), path.clone(), pos, None).err()
                 };
                 if missing_with_url || error.is_some() {
-                    let payload = ImagePayload { path, width: 0, height: 0, error, url: None };
-                    self.insert_placeholder_node(id.clone(), pos, NodePayload::Image(payload));
+                    let payload = ImagePayload { path, width: 0, height: 0, error };
+                    self.insert_placeholder_node(id.clone(), pos, kind, Runtime::Image(payload));
                 }
             }
             Kind::Pdf => {
                 let path = content_path.clone().unwrap_or_default();
                 if missing_with_url {
-                    let payload = PdfPayload { path, outcome: None, url: None };
-                    self.insert_placeholder_node(id.clone(), pos, NodePayload::Pdf(payload));
+                    let payload = PdfPayload { path, outcome: None };
+                    self.insert_placeholder_node(id.clone(), pos, kind, Runtime::Pdf(payload));
                 } else {
                     self.insert_pdf_node_with_id(id.clone(), path, pos, None);
                 }
@@ -710,58 +626,33 @@ impl App {
                     self.insert_json_node_with_id(id.clone(), path.clone(), pos, None).err()
                 };
                 if missing_with_url || error.is_some() {
-                    let payload = JsonPayload {
-                        path,
-                        value: Default::default(),
-                        key: None,
-                        error,
-                        url: None,
-                        view: JsonView::default(),
-                    };
-                    self.insert_placeholder_node(id.clone(), pos, NodePayload::Json(payload));
+                    let payload = JsonPayload { path, value: Default::default(), leaf: false, error };
+                    self.insert_placeholder_node(id.clone(), pos, kind, Runtime::Json(payload));
                 }
             }
             Kind::JsonLeaf => {
                 let text = str_of(fields, field::VALUE);
                 let value = serde_json::from_str(&text).unwrap_or(serde_json::Value::String(text));
-                let key = Some(str_of(fields, field::KEY));
-                let payload = JsonPayload {
-                    path: str_of(fields, field::PATH),
-                    value: value.into(),
-                    key,
-                    error: None,
-                    url: None,
-                    view: JsonView::default(),
-                };
-                self.insert_placeholder_node(id.clone(), pos, NodePayload::Json(payload));
+                // Its key and stored value are already the mirror's (`mirror_remote`); the payload holds the parsed one.
+                let payload =
+                    JsonPayload { path: str_of(fields, field::PATH), value: value.into(), leaf: true, error: None };
+                self.insert_placeholder_node(id.clone(), pos, kind, Runtime::Json(payload));
             }
             Kind::Download => {
                 let path = str_of(fields, field::PATH);
                 let bytes = std::fs::metadata(&path).map_or(0, |m| m.len());
                 let payload = DownloadPayload {
                     path,
-                    url: url_of(fields),
                     bytes_received: bytes,
                     total_bytes: Some(bytes),
                     completed: true,
                     failed: false,
                 };
-                self.insert_placeholder_node(id.clone(), pos, NodePayload::Download(payload));
+                self.insert_placeholder_node(id.clone(), pos, kind, Runtime::Download(payload));
             }
-            Kind::Jar | Kind::Unknown(_) => return,
+            Kind::Jar | Kind::Unknown => return,
         }
-        if let Some(node) = self.nodes.get_mut(&id) {
-            node.group = group;
-            node.color = color;
-            if let Some(url) = node.source_url_mut() {
-                *url = url_of(fields);
-            }
-            if let NodePayload::Json(json) = &mut node.payload {
-                if json.key.is_none() {
-                    json.view = JsonView::from_field(&str_of(fields, field::VIEW));
-                }
-            }
-        }
+        // A content node's url, its stored path and a Json node's view are already the mirror's (`mirror_remote`).
         // The placeholder just inserted above (see `missing_with_url`)
         // shows until this fetch lands.
         if missing_with_url {
@@ -774,15 +665,15 @@ impl App {
             .iter()
             .map(|&id| {
                 let live = doc.nodes.get(&id).filter(|n| n.is_live());
-                (id, live.map(|n| (n.kind, fields_of(n), doc.effective_group(id))))
+                (id, live.map(|n| (n.kind(), fields_of(n), doc.effective_group(id))))
             })
             .collect()
     }
 
-    /// Shows other replicas' changes, before the next diff (contract
-    /// "Missing means deleted"): the diff would otherwise delete what they
-    /// created and recreate what they pruned. A deleted node is removed
-    /// without a Recently Closed entry (`remove_remotely_deleted`), and a
+    /// Shows other replicas' changes, before the next commit (contract
+    /// "Missing means deleted"). A deleted node is removed without a
+    /// Recently Closed entry and without queueing a delete of its own
+    /// (`remove_remotely_deleted`: the document already lacks it), and a
     /// tab's engine host is shut down. Groups are materialized before the
     /// nodes inside them, so a new member never names a group that doesn't
     /// exist yet. A new tab arrives asleep (`materialize`, spec "Lazy
@@ -804,16 +695,13 @@ impl App {
                 None if self.spawning.contains_key(&key) => {
                     self.remote_in_flight.insert(key, None);
                 }
-                None => {
-                    self.last_shared.remove(&key);
-                    self.remove_remotely_deleted(&key);
-                }
+                None => self.remove_remotely_deleted(&key),
             }
         }
         self.end_content_pass(pass);
         self.collapse_toasts_since(toasts);
-        // A remote jar edit follows the same table (spec "Live tabs when `jar` changes"); once the whole batch is in, so
-        // a tab is judged by where the batch leaves it.
+        // A remote jar edit follows the same table (spec "Live tabs when `jar` changes"); once the whole batch is
+        // in, so a tab is judged by where the batch leaves it.
         self.sweep_jar_switches();
     }
 
@@ -825,16 +713,18 @@ impl App {
     /// from there, and one only this replica has lands where the store
     /// would show it. Either way no live node names a removed group.
     pub(crate) fn remove_remotely_deleted(&mut self, id: &str) {
-        if let Some(jar) = id.parse::<NodeId>().ok().filter(|j| self.jar_defs.contains_key(j)) {
+        if let Some(jar) = id.parse::<NodeId>().ok().filter(|j| self.mirror.jar_defs().contains_key(j)) {
             self.forget_jar(jar);
             return;
         }
         let Some(node) = self.nodes.get(id) else { return };
-        let (parent, up) = (node.parent.clone(), node.group.clone());
-        let is_group = node.as_group().is_some();
-        let is_tab = node.payload.saved_tab().is_some();
-        for node in self.nodes.values_mut().filter(|n| n.parent.as_deref() == Some(id)) {
-            node.parent = parent.clone();
+        let up = self.mirror.group(id).map(str::to_owned);
+        let is_group = self.is_container(id);
+        let is_tab = node.runtime.saved_tab().is_some();
+        let parent = self.mirror.parent(id).map(str::to_owned);
+        let children: Vec<String> = self.children_of(id).map(str::to_owned).collect();
+        for child in children {
+            self.follow_remote_parent(&child, parent.clone());
         }
         if is_group {
             // A change waiting for a spawn may name this group too.
@@ -845,9 +735,9 @@ impl App {
             }
             self.dissolve_group_quietly(id);
         } else if is_tab {
-            self.remove_tab(id);
+            self.drop_tab(id);
         } else {
-            self.destroy_node(id); // saves nothing for these kinds
+            self.drop_node(id);
         }
         if self.viewed_image.as_deref() == Some(id) {
             self.viewed_image = None;
@@ -867,16 +757,13 @@ impl App {
     pub(crate) fn land_remote_in_flight(&mut self, id: &str, remote: Option<Option<RemoteNode>>) {
         match remote {
             Some(Some((kind, fields, group))) => self.materialize(id.to_string(), kind, &fields, group, None),
-            Some(None) => {
-                self.last_shared.remove(id);
-                self.remove_remotely_deleted(id);
-            }
+            Some(None) => self.remove_remotely_deleted(id),
             None => {}
         }
     }
 
     /// Tab `id` is loading a url the host gave it (another replica's `url`,
-    /// a restore, or a typed url, which `navigate_tab` marks itself): its
+    /// a restore, or a typed url, which `navigate_tab` shares itself): its
     /// unlabelled url changes stay local until the load settles
     /// (`shares_url_change`).
     pub(crate) fn note_host_load(&mut self, id: &str) {
@@ -889,11 +776,8 @@ impl App {
     /// card that never wakes, leaving the split pane empty forever.
     pub(crate) fn wake_focused(&mut self) {
         let asleep = |id: &str, this: &Self| {
-            this.nodes
-                .get(id)
-                .and_then(|n| n.as_unloaded())
-                .filter(|t| t.state == UnloadedState::Sleeping)
-                .map(|t| t.kind)
+            let card = this.nodes.get(id).and_then(|n| n.as_unloaded());
+            card.is_some_and(|t| t.state == UnloadedState::Sleeping).then(|| this.mirror.engine(id))
         };
         if let Some(id) = self.focused.clone() {
             if let Some(kind) = asleep(&id, self) {
@@ -910,7 +794,7 @@ impl App {
     /// Whether tab `id`'s reported url change is shared (ruling 3), given
     /// how the engine says its navigation started (`user_started`). One a
     /// person started is; a page script's or the host's own `Navigate` (a
-    /// typed url, which `navigate_tab` marks itself, or another replica's)
+    /// typed url, which `navigate_tab` shares itself, or another replica's)
     /// isn't. Otherwise, not while it follows a load the host started, nor
     /// for `HOST_LOAD_GRACE` after the tab was last seen loading. Either
     /// way a site that redirects to a fresh url on every load (a nonce, a
@@ -937,13 +821,297 @@ impl App {
         true
     }
 
-    /// Marks explicit field `field` (`pos` or `url`) of `id` for the next
-    /// save (spec "Local edits become ops"). New nodes need no mark: their
-    /// `Create` carries every field.
-    pub(crate) fn mark(&mut self, id: &str, field: u32) {
-        if let Ok(id) = id.parse() {
-            self.explicit.insert((id, field));
+    /// The one writer of mirrored fields (node model spec, 2b "Read model"): the mirror shows `value` at once, and
+    /// the next save commits it as a `Set`. An id that isn't a store id (a hand-built test node) only updates the
+    /// mirror. A value the mirror already shows queues nothing.
+    pub(crate) fn edit_field(&mut self, id: &str, no: u32, value: FieldValue) {
+        debug_assert!(!matches!(no, field::GROUP | field::PARENT), "a link: `edit_group` / `edit_parent`");
+        if self.mirror.get(id, no) == value {
+            return;
         }
+        if let Ok(node) = id.parse::<NodeId>() {
+            self.pending.insert((node, no), encode_field(no, &value));
+        }
+        self.mirror.set(id, no, value);
+    }
+
+    /// The one writer of a tab's shared url (2b-3 Ruling 4): called with the url at the moment it is shared (a typed
+    /// navigation, or a report `shares_url_change` accepts). A move that is not shared (a report labelled not
+    /// user-started, or a redirect during a load the host started, `note_host_load`) changes only the live url; an
+    /// unlabelled redirect report after a link click is shared.
+    pub(crate) fn edit_url(&mut self, id: &str, url: &str) {
+        self.edit_field(id, field::URL, FieldValue::Str(url.to_owned()));
+    }
+
+    /// The one writer of a note's text (2b-4 Ruling 6): what its box holds, committed at the blur (`end_note_edit`)
+    /// and by every save (`commit_note_buffers`), never per keystroke, since a note can reach 1 MB. Text the mirror
+    /// already shows queues nothing and copies nothing.
+    pub(crate) fn edit_text(&mut self, id: &str, text: &str) {
+        if self.mirror.text(id) != text {
+            self.edit_field(id, field::TEXT, FieldValue::Str(text.to_owned()));
+        }
+    }
+
+    /// The one writer of a Json node's view (2b-4 Ruling 8): `view` is the stored text (`JsonView::to_field`). The
+    /// mirror's decoded cache (`Mirror::view`) follows at once. Written by a level edit (`edit_json_view`) and by a
+    /// reload that prunes overrides its new value can't resolve (`reload_fetched_node`).
+    pub(crate) fn edit_view(&mut self, id: &str, view: &str) {
+        self.edit_field(id, field::VIEW, FieldValue::Str(view.to_owned()));
+    }
+
+    /// The one writer of a group's name (2b-4 Ruling 9): the rename commit (`NodeAction::CommitRename`), with the
+    /// name already cleaned. A new group's is seeded at placement instead (`place_group`). A jar's is `rename_jar`'s.
+    pub(crate) fn edit_name(&mut self, id: &str, name: &str) {
+        // name rule: compares stored names
+        if self.mirror.name(id) != name {
+            self.edit_field(id, field::NAME, FieldValue::Str(name.to_owned()));
+        }
+    }
+
+    /// What a note's card shows, borrowed (Ruling 6): the box's edit buffer while it is typed in, the mirror's text
+    /// otherwise. "" for a node that isn't a note.
+    pub(crate) fn note_text(&self, id: &str) -> &str {
+        match self.nodes.get(id).and_then(|n| n.as_note()) {
+            Some(note) if note.editing => &note.text,
+            _ => self.mirror.text(id),
+        }
+    }
+
+    /// The stored text a card is known by, borrowed: a note's (`note_text`), a group's raw name (`Mirror::name`),
+    /// which the caller draws through a name rule or matches as stored. "" for other kinds.
+    pub(crate) fn own_text(&self, id: &str) -> &str {
+        match self.nodes.get(id).map(|n| &n.runtime) {
+            // A group is the one kind with no runtime (2b-6 Ruling 8: no unknown-type card yet).
+            // name rule: raw, for `accessible_name` (display_name) and the filter (matches the stored text)
+            Some(Runtime::None) => self.mirror.name(id),
+            _ => self.note_text(id),
+        }
+    }
+
+    /// Whether `id` is a note being typed in: its box holds the text, and another replica's is held (Ruling 7).
+    fn is_typed_in(&self, id: &str) -> bool {
+        self.nodes.get(id).and_then(|n| n.as_note()).is_some_and(|n| n.editing)
+    }
+
+    /// Commits every note's box that differs from the mirror (`edit_text`), so a save commits what is being typed.
+    /// A note nobody is typing in has its box equal to the mirror, so it compares and copies nothing.
+    fn commit_note_buffers(&mut self) {
+        let typed: Vec<(String, String)> = self
+            .nodes
+            .iter()
+            .filter_map(|(id, n)| Some((id, n.as_note()?)))
+            .filter(|(id, note)| note.text != self.mirror.text(id))
+            .map(|(id, note)| (id.clone(), note.text.clone()))
+            .collect();
+        for (id, text) in typed {
+            self.edit_text(&id, &text);
+        }
+    }
+
+    /// Ends the edit of note `id` (its box lost focus, or stopped being laid out: `end_note_edits`). What the user
+    /// typed since the last commit wins, as a pending local edit does, and another replica's text held meanwhile
+    /// (`held_text`) is dropped; with nothing typed, the held text applies to the mirror and the box (Ruling 7). The
+    /// caller saves.
+    pub(crate) fn end_note_edit(&mut self, id: &str) {
+        let held = self.held_text.remove(id);
+        let Some(note) = self.nodes.get_mut(id).and_then(|n| n.as_note_mut()) else { return };
+        note.editing = false;
+        let buffer = std::mem::take(&mut note.text);
+        let pending = id.parse::<NodeId>().is_ok_and(|node| self.pending.contains_key(&(node, field::TEXT)));
+        let text = match held {
+            Some(theirs) if !pending && buffer == self.mirror.text(id) => {
+                self.mirror.set(id, field::TEXT, FieldValue::Str(theirs.clone()));
+                theirs
+            }
+            _ => {
+                self.edit_text(id, &buffer);
+                buffer
+            }
+        };
+        if let Some(note) = self.nodes.get_mut(id).and_then(|n| n.as_note_mut()) {
+            note.text = text;
+        }
+    }
+
+    /// A note's box lost focus: its edit ends (`end_note_edit`) and is saved.
+    pub(crate) fn blur_note(&mut self, id: &str) {
+        self.end_note_edit(id);
+        self.save_session();
+    }
+
+    /// The one writer of a node's document pos (2b-4 Ruling 2): a drag release, with where the card was dropped
+    /// (`release_drag`). A new node's is seeded at placement instead (`place_node`, `seed_landing`). Physics never
+    /// calls it: a settle moves only `App::layout`. `None` (and a non-finite pos) writes the absent value, Pos (0,0).
+    pub(crate) fn edit_pos(&mut self, id: &str, pos: Option<egui::Vec2>) {
+        self.edit_field(id, field::POS, pos.map_or(FieldValue::Pos(0.0, 0.0), pos_value));
+    }
+
+    /// The one writer of a tab's jar choice (2b-3 Ruling 7): `JAR` and `JAR_SET` go through `edit_field`, so only the
+    /// one that changed is queued, and re-picking the same jar queues nothing. A pending `JAR` naming a jar that is
+    /// gone by the save is written as none (`save_session`, Ruling 8). The caller sweeps (`sweep_jar_switches`).
+    pub(crate) fn edit_jar(&mut self, id: &str, choice: crate::jar::JarChoice) {
+        self.edit_field(id, field::JAR, FieldValue::Id(choice.jar));
+        self.edit_field(id, field::JAR_SET, FieldValue::Bool(choice.set));
+    }
+
+    /// The one writer of a group's default jar (2b-5 Task 1): `set_group_default_jar`, `clear_group_default_jar` and
+    /// `delete_jar`'s cascade. Resolved at commit like a tab's `JAR` (2b-5 Ruling 6): a jar deleted by the save is written
+    /// as none, and one another replica deleted earlier stays stored, dangling, until a new edit.
+    pub(crate) fn edit_default_jar(&mut self, group: &str, jar: Option<NodeId>) {
+        self.edit_field(group, field::DEFAULT_JAR, FieldValue::Id(jar));
+    }
+
+    /// The one writer of a tab's engine (2b-3 Ruling 5): called when a switch starts (`start_swap_to`, a wake into
+    /// another engine), and with the old engine when a switch fails and falls back. Compared as decoded, so asking for
+    /// the engine the mirror already shows queues nothing and keeps a code this build doesn't know (Ruling 6).
+    pub(crate) fn edit_engine(&mut self, id: &str, kind: EngineKind) {
+        if self.mirror.engine(id) != kind {
+            self.edit_field(id, field::ENGINE, FieldValue::Engine(engine_code(kind)));
+        }
+    }
+
+    /// The one writer of a node's parent link: the mirror shows it at once and the next save commits a `Set PARENT`.
+    /// A non-store id or target only updates the mirror.
+    pub(crate) fn edit_parent(&mut self, id: &str, parent: Option<String>) {
+        if self.mirror.parent(id) == parent.as_deref() {
+            return;
+        }
+        if let Ok(node) = id.parse::<NodeId>() {
+            match parent_id(&parent) {
+                Some(target) => {
+                    let enc = encode_field(field::PARENT, &FieldValue::Id(target));
+                    self.pending.insert((node, field::PARENT), enc);
+                }
+                // A target that isn't a store id is mirror-only: an earlier queued target must not commit.
+                None => {
+                    self.pending.remove(&(node, field::PARENT));
+                }
+            }
+        }
+        self.mirror.set_parent(id, parent);
+    }
+
+    /// The one writer of a node's group (Ruling 2): shown at once, committed as a `Move` by the next save.
+    /// A non-store id or target only updates the mirror.
+    pub(crate) fn edit_group(&mut self, id: &str, group: Option<String>) {
+        if self.mirror.group(id) == group.as_deref() {
+            return;
+        }
+        if let Ok(node) = id.parse::<NodeId>() {
+            // A target that isn't a store id is mirror-only: an earlier queued move must not commit.
+            match parent_id(&group) {
+                Some(target) => self.pending_moves.insert(node, target),
+                None => self.pending_moves.remove(&node),
+            };
+        }
+        self.mirror.set_group(id, group);
+    }
+
+    /// Whether node `id` is shown at the level being viewed.
+    pub(crate) fn in_level(&self, id: &str) -> bool {
+        self.mirror.group(id) == self.current_group.as_deref()
+    }
+
+    /// Every node whose mirror group is `group` (`linked_ids`).
+    pub(crate) fn members_of<'a>(&'a self, group: &'a str) -> impl Iterator<Item = &'a str> + 'a {
+        self.linked_ids().filter(move |id| self.mirror.group(id) == Some(group))
+    }
+
+    /// The ids a cascade (a dissolve, merge or removal; a jar re-snapshot, default or delete) must reach: every live
+    /// node, and every tab mid-respawn. A respawn takes the tab out of `nodes` until it lands but keeps its mirror
+    /// entry, which the landing keeps (`Mirror::seed`), so a cascade that skipped it would leave it naming a removed
+    /// node or an old jar. A new spawn has no mirror entry yet and is left out: it lands from its `TabSpawn`
+    /// (`seed_landing`), and a cascade writing to it would make a partial entry that stops that seed.
+    pub(crate) fn linked_ids(&self) -> impl Iterator<Item = &str> {
+        let respawning = self.spawning.keys().filter(|id| !self.nodes.contains_key(*id) && self.mirror.has(id));
+        self.nodes.keys().chain(respawning).map(String::as_str)
+    }
+
+    /// Whether `id` is one of `linked_ids`.
+    pub(crate) fn is_linked(&self, id: &str) -> bool {
+        self.nodes.contains_key(id) || (self.spawning.contains_key(id) && self.mirror.has(id))
+    }
+
+    /// "Remove from Group" (the tab card's eject button, dragging a card out through the way back, and the tab and
+    /// item menus): moves `id` up one level, into the group of the group it's in, since groups nest. `None` (the
+    /// top level) when that group isn't itself in one.
+    pub(crate) fn remove_from_group(&mut self, id: &str) {
+        if !self.nodes.contains_key(id) {
+            return;
+        }
+        let group = self.mirror.group(id).map(str::to_owned);
+        let up = group.as_deref().and_then(|g| self.mirror.group(g)).map(str::to_owned);
+        self.edit_group(id, up);
+    }
+
+    /// A remote removal's cascade: the document already shows `id`'s new parent (a node only this replica has
+    /// carries it in its own `Create`), so only the mirror changes; queuing it would revert a concurrent remote
+    /// re-parent. A local edit still pending for the link is rewritten instead, so it keeps winning.
+    pub(crate) fn follow_remote_parent(&mut self, id: &str, parent: Option<String>) {
+        if id.parse::<NodeId>().is_ok_and(|node| self.pending.contains_key(&(node, field::PARENT))) {
+            self.edit_parent(id, parent);
+        } else {
+            self.mirror.set_parent(id, parent);
+        }
+    }
+
+    /// `follow_remote_parent` for the group: a remote group delete's members move up in the mirror only, so a
+    /// concurrent remote merge or move of them stands.
+    pub(crate) fn follow_remote_group(&mut self, id: &str, group: Option<String>) {
+        if id.parse::<NodeId>().is_ok_and(|node| self.pending_moves.contains_key(&node)) {
+            self.edit_group(id, group);
+        } else {
+            self.mirror.set_group(id, group);
+        }
+    }
+
+    /// Every node whose mirror parent is `id` (`linked_ids`).
+    pub(crate) fn children_of<'a>(&'a self, id: &'a str) -> impl Iterator<Item = &'a str> + 'a {
+        self.linked_ids().filter(move |child| self.mirror.parent(child) == Some(id))
+    }
+
+    /// Shows another replica's values of `fields` (the node's type's fields, Ruling 11) and its effective `group`,
+    /// except where this replica has an edit waiting for a save: it commits next and wins (last writer, per field or
+    /// link). Returns `(held, changed)`: the fields held back that way, whose live effects `update_live_node` then
+    /// skips, and the fields whose value differs from what the mirror showed (Ruling 9), whose live effects it
+    /// applies. A note's text is held too while the note is typed in, and remembered in `held_text` for the blur
+    /// (2b-4 Ruling 7). The links (`parent`, `group`) are set but reported in neither list.
+    fn mirror_remote(&mut self, id: &str, fields: &Fields, group: Option<&str>) -> (Vec<u32>, Vec<u32>) {
+        let node = id.parse::<NodeId>().ok();
+        let (mut held, mut changed) = (Vec::new(), Vec::new());
+        for (&no, value) in fields {
+            if no == field::PARENT {
+                continue;
+            }
+            if node.is_some_and(|node| self.pending.contains_key(&(node, no))) {
+                held.push(no);
+                continue;
+            }
+            if no == field::TEXT && self.is_typed_in(id) {
+                held.push(no);
+                match value {
+                    FieldValue::Str(theirs) if theirs != self.mirror.text(id) => {
+                        self.held_text.insert(id.to_owned(), theirs.clone());
+                    }
+                    // Back to what the mirror shows: nothing left to apply.
+                    _ => {
+                        self.held_text.remove(id);
+                    }
+                }
+                continue;
+            }
+            if self.mirror.get(id, no) != *value {
+                changed.push(no);
+                self.mirror.set(id, no, value.clone());
+            }
+        }
+        if !node.is_some_and(|node| self.pending.contains_key(&(node, field::PARENT))) {
+            self.mirror.set_parent(id, id_of(fields, field::PARENT));
+        }
+        if !node.is_some_and(|node| self.pending_moves.contains_key(&node)) {
+            self.mirror.set_group(id, group.map(str::to_owned));
+        }
+        (held, changed)
     }
 
     /// Saves browsing history to disk if `history_dirty` is set, then clears
@@ -960,20 +1128,24 @@ impl App {
     }
 
     /// Saves local edits (spec "Local edits become ops"): take the lock,
-    /// show what other replicas wrote, diff the live graph against the
-    /// document, and commit. On error the explicit marks stay for the next
-    /// save, which re-diffs (contract "Transactions"). `true` when the
-    /// store now holds every local edit: `false` read-only, on error, and
-    /// when another instance kept writing. The last two are tried again
-    /// by `poll_store` after `SAVE_RETRY`.
+    /// show what other replicas wrote, and commit the queued edits as one
+    /// transaction, in the order Creates (`pending_creates`, groups first),
+    /// Moves (`pending_moves`), Sets (`pending`), Deletes (`pending_deletes`).
+    /// On error the queues stay for the next save (contract "Transactions").
+    /// `true` when the store now holds every local edit: `false` read-only,
+    /// on error, and when another instance kept writing. The last two are
+    /// tried again by `poll_store` after `SAVE_RETRY`.
     pub(crate) fn save_session(&mut self) -> bool {
         // Each round applies what others wrote since the last; four rounds
         // of fresh remote frames means another instance is busy: try again
         // later (`save_retry_at`) rather than spin.
+        // What is being typed is committed too (2b-4 Ruling 6).
+        self.commit_note_buffers();
         for _ in 0..4 {
-            // Projected before `begin`, since the `Txn` borrows the journal.
-            let mut live = self.shared_nodes();
-            let keep: BTreeSet<NodeId> = self.spawning.keys().filter_map(|id| id.parse().ok()).collect();
+            // Projected before `begin`, since the `Txn` borrows the journal: what each queued node shows (one that
+            // shows nothing yet, an in-progress download, waits).
+            let candidates: BTreeMap<NodeId, Snapshot> =
+                self.pending_creates.iter().filter_map(|&id| Some((id, self.snapshot(id)?))).collect();
             let Some(journal) = self.journal.as_mut() else {
                 self.flush_history();
                 return false;
@@ -1001,25 +1173,63 @@ impl App {
                 self.flush_history();
                 return false;
             }
-            // A tab still spawning that the store doesn't hold yet is
-            // created as it was started; one it does hold is only kept, so
-            // other replicas' edits to it stand.
-            for (id, shared) in &self.spawning {
-                let Ok(id) = id.parse::<NodeId>() else { continue };
-                if !txn.doc().nodes.contains_key(&id) {
-                    live.entry(id).or_insert_with(|| shared.clone());
+            let doc = txn.doc();
+            // A queued node is created only if the document has no entry for it at all: a tombstone is never
+            // recreated (ids are never reused), and one another replica created meanwhile stands.
+            let new: BTreeMap<NodeId, Snapshot> =
+                candidates.into_iter().filter(|(id, _)| !doc.nodes.contains_key(id)).collect();
+            // A queued delete applies to a node the document still shows live (Ruling 4); one it never had, or
+            // another replica deleted meanwhile, is just forgotten. Nothing queued is shown here: `materialize`
+            // drops a remote edit to it, and showing it again locally withdraws the delete (`queue_create`).
+            let deleted: BTreeSet<NodeId> = self
+                .pending_deletes
+                .iter()
+                .copied()
+                .filter(|id| doc.nodes.get(id).is_some_and(Node::is_live))
+                .collect();
+            let mut ops = create_ops(doc, &new, &deleted);
+            let created: BTreeSet<NodeId> = new.keys().copied().collect();
+            let resolve = |target: Option<NodeId>| resolve_id(doc, &created, &deleted, target);
+            // Edits to mirrored fields and moves. A node this commit creates carries its values in the `Create`,
+            // and one it deletes needs none; one the document doesn't show live would get a placeholder from a
+            // `Set`. Those edits are dropped.
+            let editable = |node: &NodeId| {
+                !created.contains(node) && !deleted.contains(node) && doc.nodes.get(node).is_some_and(Node::is_live)
+            };
+            // Each pending link's target as this commit leaves it: what the mirror shows once it lands. A moved
+            // node's group is read back from the document after the commit instead: the store may refuse the move.
+            let mut moved: BTreeSet<NodeId> = BTreeSet::new();
+            let mut links: BTreeMap<(NodeId, u32), Option<NodeId>> = BTreeMap::new();
+            // Moves before sets (Ruling 4). A move to where the document already shows the node is left out.
+            for (&node, &group) in &self.pending_moves {
+                if !editable(&node) {
+                    continue;
+                }
+                let group = resolve(group);
+                moved.insert(node);
+                if group != doc.effective_group(node) {
+                    ops.push(OpBody::Move { node, group });
                 }
             }
-            let ops = diff(txn.doc(), &live, &self.explicit, &keep);
-            // The nodes whose stored state this commit changes. A delete can
-            // also change other nodes' effective group, so it refreshes all.
-            let touched: Option<BTreeSet<NodeId>> = ops
-                .iter()
-                .map(|op| match op {
-                    OpBody::Create { node, .. } | OpBody::Set { node, .. } | OpBody::Move { node, .. } => Some(*node),
-                    OpBody::Delete { .. } => None,
-                })
-                .collect();
+            for (&(node, no), enc) in &self.pending {
+                if !editable(&node) {
+                    continue;
+                }
+                // Every link (an `Id` field: `parent`, a tab's `jar`) is resolved alike (2b-3 Ruling 8).
+                let def = field_def(no);
+                let enc = if def.is_some_and(|def| def.ty == FieldType::Id) {
+                    let target = match def.and_then(|def| decode_field(def, enc).ok()) {
+                        Some(FieldValue::Id(target)) => resolve(target),
+                        _ => None,
+                    };
+                    links.insert((node, no), target);
+                    encode_field(no, &FieldValue::Id(target))
+                } else {
+                    enc.clone()
+                };
+                ops.push(OpBody::Set { node, field: no, enc });
+            }
+            ops.extend(deleted.iter().map(|&node| OpBody::Delete { node }));
             let result = if ops.is_empty() {
                 drop(txn);
                 Ok(())
@@ -1029,30 +1239,94 @@ impl App {
             self.take_store_recovery();
             match result {
                 Ok(()) => {
-                    // What the store now holds is what this replica last
-                    // saw: every diffed field as live, but an explicit one
-                    // only if it was marked (an unmarked `pos` stays). Only
-                    // `touched` nodes can differ from `last_shared`: every
-                    // other store change (a remote op, a restore) already
-                    // updated it in `materialize`.
+                    // The mirror already shows what this commit wrote (it is what the ops were built from); only
+                    // the links the commit resolved can differ from it.
                     if let Some(journal) = &self.journal {
                         let doc = journal.doc();
-                        let ids: Box<dyn Iterator<Item = &NodeId>> = match &touched {
-                            Some(touched) => Box::new(touched.iter()),
-                            None => Box::new(live.keys()),
-                        };
-                        for &id in ids {
-                            let Some(node) = doc.nodes.get(&id).filter(|n| n.is_live()) else { continue };
-                            let seen =
-                                Shared { kind: node.kind, group: doc.effective_group(id), fields: fields_of(node) };
-                            self.last_shared.insert(id.to_string(), seen);
+                        // A node this commit created shows the links its `Create` resolved (`resolve_id`: a
+                        // tab's jar, a group's default jar, any Id field), as an edited one does. Only one
+                        // with an entry: a new spawn's lands from its `TabSpawn` (`linked_ids`). `parent` lives
+                        // in the mirror's links and `group` is the moves' (below).
+                        for id in &created {
+                            let Some(node) = doc.nodes.get(id) else { continue };
+                            let key = id.to_string();
+                            if !self.mirror.has(&key) {
+                                continue;
+                            }
+                            for &no in node.kind().fields() {
+                                let is_id = field_def(no).is_some_and(|def| def.ty == FieldType::Id);
+                                if !is_id || no == field::PARENT {
+                                    continue;
+                                }
+                                let stored = node.get(no);
+                                if self.mirror.get(&key, no) != stored {
+                                    self.mirror.set(&key, no, stored);
+                                }
+                            }
+                        }
+                        // A moved node shows the group the document holds: the target, none for one this commit
+                        // deleted (Ruling 5), or where it was when the store refused the move as a cycle (a
+                        // concurrent move raced it), which the mirror would otherwise keep showing.
+                        for &node in &moved {
+                            let (id, group) = (node.to_string(), doc.effective_group(node));
+                            if link_id(self.mirror.group(&id)) != group {
+                                self.mirror.set_group(&id, group.map(|g| g.to_string()));
+                            }
+                        }
+                        // Created ids are done; one still queued shows nothing yet (an in-progress download) and
+                        // waits for the save after it does.
+                        self.pending_creates.retain(|id| !doc.nodes.contains_key(id));
+                    }
+                    self.pending_deletes.clear();
+                    // A link target this commit wrote as none (Ruling 5: deleted here) is none in the mirror too.
+                    for (&(node, no), &target) in &links {
+                        let id = node.to_string();
+                        if no == field::PARENT {
+                            if link_id(self.mirror.parent(&id)) != target {
+                                self.mirror.set_parent(&id, target.map(|p| p.to_string()));
+                            }
+                        } else {
+                            self.mirror.set(&id, no, FieldValue::Id(target));
                         }
                     }
-                    self.explicit.clear();
+                    // A remote value parked for a tab still spawning (`remote_in_flight`) predates what this
+                    // commit wrote; its landing must not replay it over the local edit.
+                    for &(node, no) in self.pending.keys() {
+                        let id = node.to_string();
+                        if let Some(Some((_, fields, _))) = self.remote_in_flight.get_mut(&id) {
+                            let value = match no {
+                                field::PARENT => FieldValue::Id(link_id(self.mirror.parent(&id))),
+                                _ => self.mirror.get(&id, no),
+                            };
+                            fields.insert(no, value);
+                        }
+                    }
+                    for node in self.pending_moves.keys() {
+                        let id = node.to_string();
+                        if let Some(Some((_, _, group))) = self.remote_in_flight.get_mut(&id) {
+                            *group = self.mirror.group(&id).map(str::to_owned);
+                        }
+                    }
+                    // Text committed here is newer than another replica's held before it: the held text is dropped.
+                    for &(node, no) in self.pending.keys() {
+                        if no == field::TEXT {
+                            self.held_text.remove(&node.to_string());
+                        }
+                    }
+                    self.pending.clear();
+                    self.pending_moves.clear();
+                    // A tab still spawning keeps its entry, and its layout: a respawn has removed it from `nodes`
+                    // until it lands, and `Mirror::init` then leaves an existing entry alone.
+                    let (nodes, spawning) = (&self.nodes, &self.spawning);
+                    self.mirror.retain(|id| nodes.contains_key(id) || spawning.contains_key(id));
+                    self.layout.retain(|id, _| nodes.contains_key(id) || spawning.contains_key(id));
+                    self.held_text.retain(|id, _| nodes.get(id).and_then(|n| n.as_note()).is_some_and(|n| n.editing));
                     self.store_notices.clear();
                     self.last_session_save = Some(std::time::Instant::now());
                     self.save_retry_at = None;
                     self.flush_history();
+                    #[cfg(debug_assertions)]
+                    self.check_graph_matches_document();
                     return true;
                 }
                 Err(err) => {
@@ -1068,6 +1342,49 @@ impl App {
         false
     }
 
+    /// Ruling 14, test and debug builds: after a successful save the live graph and the document agree. Every store
+    /// id in `nodes` (an in-progress download aside) and every jar is live in the document; a tab whose spawn is
+    /// in flight has an entry (live, or a tombstone another replica left while it was in flight, which the landing
+    /// applies); and every live document node is one of them. A failure names the funnel that was missed: a node
+    /// that entered the graph without `place_node`, `spawn_tab_async` or `add_jar` (a missed create), or left it
+    /// without `queue_delete` (a missed delete). Each node's stored type is one its runtime runs, so a create that
+    /// passed a mismatched kind (an image type on a pdf runtime) is caught before a painter dispatches on it.
+    #[cfg(debug_assertions)]
+    fn check_graph_matches_document(&self) {
+        let Some(journal) = &self.journal else { return };
+        let doc = journal.doc();
+        let live = |id: &NodeId| doc.nodes.get(id).is_some_and(Node::is_live);
+        for (key, node) in &self.nodes {
+            let Ok(id) = key.parse::<NodeId>() else { continue };
+            if node.as_download().is_some_and(|dl| !dl.completed) || self.spawning.contains_key(key) {
+                continue;
+            }
+            assert!(live(&id), "node {key} is shown but not live in the document: a create funnel was missed");
+            let ty = self.card_kind(key).map(|kind| kind.ty);
+            assert!(
+                ty.is_some_and(|ty| runtime_has_type(&node.runtime, ty)),
+                "node {key} has type {ty:?} that its runtime does not run: a create funnel passed a mismatched kind"
+            );
+        }
+        for id in self.mirror.jar_defs().keys() {
+            assert!(live(id), "jar {id} is shown but not live in the document: a create funnel was missed");
+        }
+        for key in self.spawning.keys() {
+            let Ok(id) = key.parse::<NodeId>() else { continue };
+            assert!(
+                doc.nodes.contains_key(&id),
+                "tab {key} is spawning but the document has no entry: a create funnel was missed"
+            );
+        }
+        for (id, _) in doc.live() {
+            let key = id.to_string();
+            let shown = self.nodes.contains_key(&key)
+                || self.spawning.contains_key(&key)
+                || self.mirror.jar_defs().contains_key(&id);
+            assert!(shown, "node {key} is live in the document but not shown: a delete funnel was missed");
+        }
+    }
+
     /// Startup: shows the document, then applies personal state
     /// (`session.mnf.local`) on top. `false` when it has no live node, so
     /// the caller starts fresh; Recently Closed is still restored then,
@@ -1076,7 +1393,7 @@ impl App {
         let Some(journal) = self.journal.as_ref() else { return false };
         let doc = journal.doc();
         let mut nodes: Vec<(NodeId, Kind, Fields, Option<NodeId>)> =
-            doc.live().map(|(id, n)| (id, n.kind, fields_of(n), doc.effective_group(id))).collect();
+            doc.live().map(|(id, n)| (id, n.kind(), fields_of(n), doc.effective_group(id))).collect();
         self.take_store_recovery();
         // Contract: `None` (no file, another document's, or a newer format
         // version) or a damaged file is a fresh start, same as a session
@@ -1105,7 +1422,7 @@ impl App {
         let pass = self.begin_content_pass();
         for (id, kind, fields, group) in &nodes {
             let group = group.map(|g| g.to_string());
-            // The store's own `pos` still becomes `last_shared` inside
+            // The store's own `pos` still reaches the mirror inside
             // `materialize`; only the live placement is overridden.
             let entry = local.nodes.get(&id.to_string());
             self.materialize(id.to_string(), *kind, fields, group, entry);
@@ -1207,19 +1524,20 @@ impl App {
             .iter()
             .filter(|(id, _)| id.parse::<NodeId>().is_ok())
             .map(|(id, node)| {
-                let mut local = LocalNode { pos: [node.pos.x, node.pos.y], ..LocalNode::default() };
-                // Against what the store held at this replica's last save
-                // or load: a url this replica shares is marked and saved.
+                let pos = self.layout_pos(id);
+                let mut local = LocalNode { pos: [pos.x, pos.y], ..LocalNode::default() };
+                // Against the shared url the mirror holds (Ruling 9): a url this replica shares is edited
+                // (`edit_url`) into it, so only an unshared move (a redirect, a script) is recorded.
                 let live_url = |url: &str| {
-                    let from = str_of(&self.last_shared.get(id)?.fields, field::URL);
-                    (from != url).then(|| LiveUrl { url: url.to_string(), from })
+                    let from = self.mirror.url(id);
+                    (from != url).then(|| LiveUrl { url: url.to_string(), from: from.to_owned() })
                 };
-                if let Some(tab) = tab_common(&node.payload) {
+                if let Some(tab) = tab_common(&node.runtime) {
                     local.title = tab.title.to_string();
                     local.muted = tab.muted;
                     local.zoom = zoom(tab.zoom_factor);
                     local.live_url = live_url(tab.url);
-                } else if let NodePayload::Note(n) = &node.payload {
+                } else if let Runtime::Note(n) = &node.runtime {
                     local.editing = n.editing;
                 }
                 (id.clone(), local)
@@ -1299,6 +1617,7 @@ impl App {
         for (id, node) in state.nodes {
             if let Some(live) = self.nodes.get_mut(&id) {
                 Self::apply_local_node(live, &node);
+                self.snap_layout(&id, egui::vec2(node.pos[0], node.pos[1]));
             } else if self.spawning.contains_key(&id) {
                 pending.insert(id, node);
             }
@@ -1328,27 +1647,25 @@ impl App {
         self.closed = closed;
     }
 
-    /// One node's share of `apply_local`: settled position, and whatever
-    /// its payload kind keeps (a tab's title/muted/zoom, a note's editing).
+    /// One node's share of `apply_local` beyond its settled position (the caller's `snap_layout`): whatever its
+    /// payload kind keeps (a tab's title/muted/zoom, a note's editing).
     fn apply_local_node(live: &mut crate::GraphNode, node: &LocalNode) {
-        live.pos = egui::vec2(node.pos[0], node.pos[1]);
-        live.vel = egui::Vec2::ZERO;
-        match &mut live.payload {
-            NodePayload::Tab(tab) => {
+        match &mut live.runtime {
+            Runtime::Tab(tab) => {
                 tab.title = node.title.clone();
                 tab.muted = node.muted;
                 if let Some(zoom) = node.zoom {
                     tab.zoom_factor = zoom;
                 }
             }
-            NodePayload::Unloaded(tab) => {
+            Runtime::Unloaded(tab) => {
                 tab.title = node.title.clone();
                 tab.muted = node.muted;
                 if let Some(zoom) = node.zoom {
                     tab.zoom_factor = zoom;
                 }
             }
-            NodePayload::Note(n) => n.editing = node.editing,
+            Runtime::Note(n) => n.editing = node.editing,
             _ => {}
         }
     }
@@ -1364,15 +1681,10 @@ impl App {
             self.pending_local = None;
         }
         if let Some(live) = self.nodes.get_mut(id) {
-            match &live.payload {
-                NodePayload::Tab(_) | NodePayload::Unloaded(_) | NodePayload::Note(_) => {
-                    Self::apply_local_node(live, &node)
-                }
-                _ => {
-                    live.pos = egui::vec2(node.pos[0], node.pos[1]);
-                    live.vel = egui::Vec2::ZERO;
-                }
+            if let Runtime::Tab(_) | Runtime::Unloaded(_) | Runtime::Note(_) = &live.runtime {
+                Self::apply_local_node(live, &node)
             }
+            self.snap_layout(id, egui::vec2(node.pos[0], node.pos[1]));
         }
     }
 
@@ -1643,7 +1955,9 @@ impl App {
         map
     }
 
-    /// Clears the running session's nodes and the state naming them. Each
+    /// Clears the running session's nodes and the state naming them, and
+    /// queues a delete for every graph node the document holds (Ruling 4:
+    /// jars stay, they are not part of the graph being replaced). Each
     /// tab's `EngineTab::Drop` shuts its engine host down, as `destroy_tab`
     /// relies on, so clearing the map is enough; spawns still in flight are
     /// dropped when they land (`session_generation`), and a PDF's render
@@ -1652,13 +1966,26 @@ impl App {
         for (id, _) in self.nodes.iter().filter(|(_, node)| node.as_pdf().is_some()) {
             self.pdf_renderer.cancel(id);
         }
+        let old: Vec<NodeId> = self
+            .journal
+            .as_ref()
+            .map(|j| j.doc().live().filter(|(_, n)| n.kind() != Kind::Jar).map(|(id, _)| id).collect())
+            .unwrap_or_default();
+        for id in old {
+            self.queue_delete(&id.to_string());
+        }
+        // The old session's nodes not created yet are not created at all.
+        self.pending_creates.clear();
         self.nodes.clear();
         self.node_order.clear();
+        self.layout.clear();
+        self.held_text.clear();
         self.focused = None;
         self.viewed_image = None;
         self.split_tab = None;
         self.current_group = None;
         self.dragging = None;
+        self.drag_moved.clear();
         self.hovered = None;
         self.selected_tabs.clear();
         self.rect_select_start = None;
@@ -1668,7 +1995,6 @@ impl App {
         self.host_loads.clear();
         self.navigated_from.clear();
         self.remote_in_flight.clear();
-        self.last_shared.clear(); // `jar_defs` stays: jars are not part of the graph being replaced
         self.pending_local = None;
         self.session_generation += 1;
     }

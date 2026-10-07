@@ -1,4 +1,4 @@
-//! One-shot background PDF-to-image rendering for `NodePayload::Pdf` --
+//! One-shot background PDF-to-image rendering for `Runtime::Pdf` --
 //! mirrors `favicon_fetch`'s own "spawn a thread, `mpsc` channel, main loop
 //! `tick()`s it" pattern, but for a one-time render triggered by the user
 //! adding a PDF node, not a per-navigation fetch. Both halves of the work

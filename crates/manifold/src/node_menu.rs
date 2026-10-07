@@ -3,7 +3,9 @@
 use super::*;
 use crate::jar_defs::JarLabel;
 use crate::sleep_state::SleepWhy;
-use crate::store::model::NodeId;
+use crate::store::model::{
+    NodeId, TYPE_DOWNLOAD, TYPE_GROUP, TYPE_IMAGE, TYPE_JSON, TYPE_JSON_LEAF, TYPE_NOTE, TYPE_PDF, TYPE_TAB,
+};
 
 /// Something done to one node, from its right-click menu or its card's
 /// own buttons, applied by `App::apply_node_action`.
@@ -47,12 +49,14 @@ pub(crate) enum NodeAction {
     /// A failed tab's card: tries again on the default engine.
     OpenInDefaultEngine,
     RemoveFromGroup,
-    /// The keyboard route for dragging a card onto a sibling group (`DropEffect::Join`).
+    /// The keyboard route for dragging a card onto a sibling group (`DropEffect::Join`). On a group it differs
+    /// from the drag: "Move into" nests the group inside the other, where dropping it there merges the two
+    /// (`drop_action`).
     MoveToGroup(String),
     Dissolve,
     ExportGroup,
     /// Delete for a file card, "Remove from List" for a download, Close
-    /// for a tab or group.
+    /// for a tab, "Close Group and Contents" for a group.
     Delete,
     /// A tab's jar row: that jar (`None`: the default jar), picked by hand (`App::set_tab_jar`).
     SetJar(Option<NodeId>),
@@ -72,12 +76,11 @@ pub(crate) enum NodeAction {
 }
 
 impl NodeAction {
-    /// The key that does this to a keyboard-focused card, shown at the row's right edge.
-    pub(crate) fn key_hint(&self) -> Option<&'static str> {
-        match self {
-            NodeAction::Delete => Some("Del"),
-            _ => None,
-        }
+    /// The key that does this to a keyboard-focused card of `kind`, shown at the row's right edge. Del is
+    /// whatever the card's Close does (`CardControl::Close`): Dissolve on a group, so "Close Group and
+    /// Contents" (`Delete`), which closes the members too, is never hinted Del.
+    pub(crate) fn key_hint(&self, kind: CardKind) -> Option<&'static str> {
+        (*self == CardControl::Close.action(kind)).then_some("Del")
     }
 
     pub(crate) fn hover_text(&self) -> Option<&'static str> {
@@ -122,7 +125,7 @@ pub(crate) enum NodeMenuItem {
     /// The "Color" label and tag-color swatch row, ending in a "no color"
     /// ring.
     Colors,
-    /// One "Move to <name>" button per `(group id, name)`: the sibling groups a card can join.
+    /// One "Move into <name>" button per `(group id, name)`: the sibling groups a card can join.
     MoveTo(Vec<(String, String)>),
     /// A small heading, then one row per jar with its colour dot and a tick on the current one. `group`: the rows
     /// set the group's default rather than the tab's jar.
@@ -140,6 +143,8 @@ pub(crate) enum NodeMenuItem {
 /// maximum, so it grows to fit the swatch row.
 #[derive(Debug, PartialEq)]
 pub(crate) struct NodeMenuConfig {
+    /// Whose menu: picks the row hinted Del (`NodeAction::key_hint`).
+    kind: CardKind,
     area_id: &'static str,
     min_width: f32,
     items: Vec<NodeMenuItem>,
@@ -199,7 +204,7 @@ pub(crate) fn build_node_context_menu(
             for item in &config.items {
                 match item {
                     NodeMenuItem::Button(label, item_action) => {
-                        let mut response = menu_button(ui, *label, item_action.key_hint(), &mut first_item);
+                        let mut response = menu_button(ui, *label, item_action.key_hint(config.kind), &mut first_item);
                         if let Some(text) = item_action.hover_text() {
                             response = response.on_hover_text(text);
                         }
@@ -212,7 +217,7 @@ pub(crate) fn build_node_context_menu(
                             // Cut to `ROW_UNITS`, so a long name cannot widen the menu; the hover has all of it.
                             let segs = crate::names::display_name(name, crate::names::UNTITLED);
                             let shown = crate::names::shorten(&segs, crate::names::ROW_UNITS);
-                            let text = crate::names::name_job(ui, "Move to ", shown.as_deref().unwrap_or(&segs), "");
+                            let text = crate::names::name_job(ui, "Move into ", shown.as_deref().unwrap_or(&segs), "");
                             let mut response = menu_button(ui, text, None, &mut first_item);
                             let hover = crate::names::name_hover(name, crate::names::ROW_UNITS, "", str::to_string);
                             if !hover.is_empty() {
@@ -405,7 +410,7 @@ pub(crate) fn node_menu_config(view: &NodeMenuView, headless: bool) -> NodeMenuC
         }
         items.push(Separator);
         items.extend(delete_items);
-        NodeMenuConfig { area_id, min_width, items }
+        NodeMenuConfig { kind: view.kind, area_id, min_width, items }
     };
     let delete = |label| vec![Button(label, A::Delete)];
     // Tab, Unloaded and Group: the jar list and its actions, after the kind's own items. `live`: only a running tab
@@ -429,33 +434,33 @@ pub(crate) fn node_menu_config(view: &NodeMenuView, headless: bool) -> NodeMenuC
         }
         out
     };
-    match view.kind {
-        ItemNodeKind::Download => {
+    match view.kind.ty {
+        TYPE_DOWNLOAD => {
             let mut items = url_items(false);
             items.extend(file_items());
             finish("download_context_menu", 170.0, items, delete("Remove from List"))
         }
-        ItemNodeKind::Note => {
+        TYPE_NOTE => {
             let mut items = url_items(false);
             items.push(Button("Copy Text", A::CopyText));
             finish("note_context_menu", 150.0, items, delete("Delete"))
         }
-        ItemNodeKind::Image => {
+        TYPE_IMAGE => {
             let mut items = url_items(true);
             items.extend(file_items());
             finish("image_context_menu", 170.0, items, delete("Delete"))
         }
-        ItemNodeKind::Pdf => {
+        TYPE_PDF => {
             let mut items = url_items(true);
             items.extend(file_items());
             finish("pdf_context_menu", 170.0, items, delete("Delete"))
         }
-        ItemNodeKind::Json => {
+        TYPE_JSON | TYPE_JSON_LEAF => {
             let mut items = url_items(true);
             items.extend(file_items());
             finish("json_context_menu", 170.0, items, delete("Delete"))
         }
-        ItemNodeKind::Tab => {
+        TYPE_TAB if view.kind.loaded() => {
             let mut items = vec![
                 Button(if view.pinned { "Unpin" } else { "Pin" }, A::TogglePin),
                 Button("Duplicate", A::Duplicate),
@@ -466,7 +471,7 @@ pub(crate) fn node_menu_config(view: &NodeMenuView, headless: bool) -> NodeMenuC
             items.extend(view.jars.iter().flat_map(|j| jar_items(j, true, true)));
             finish("tab_context_menu", 150.0, items, delete("Close"))
         }
-        ItemNodeKind::Unloaded => {
+        TYPE_TAB => {
             // Retrying a tab whose engine isn't installed asks to install it (`retry_missing_file`).
             let first = match (view.failed, view.engine_missing) {
                 (true, true) => Button("Download Engine", A::RetryMissingFile),
@@ -478,12 +483,20 @@ pub(crate) fn node_menu_config(view: &NodeMenuView, headless: bool) -> NodeMenuC
                 items.push(Button("Open in Default Engine", A::OpenInDefaultEngine));
             }
             items.push(Button(if view.pinned { "Unpin" } else { "Pin" }, A::TogglePin));
+            // The same as a live tab's, and Ctrl+D's (`duplicate_tab` takes either). Not for a failed tab: the copy
+            // would start on the same engine and fail the same way.
+            if !view.failed {
+                items.push(Button("Duplicate", A::Duplicate));
+            }
             items.push(Button("Copy URL", A::CopyUrl));
             items.extend(view.jars.iter().flat_map(|j| jar_items(j, true, false)));
             finish("unloaded_tab_context_menu", 170.0, items, delete("Close"))
         }
-        ItemNodeKind::Group => {
-            let mut delete_items = vec![Button("Dissolve", A::Dissolve), Button("Close Group", A::Delete)];
+        // Presentation matches the type, not `is_container` (see `card_style`).
+        TYPE_GROUP => {
+            // Dissolve keeps the members (the card's Del, ✕ and middle-click do it); the second closes them all.
+            let mut delete_items =
+                vec![Button("Dissolve Group", A::Dissolve), Button("Close Group and Contents", A::Delete)];
             if !headless {
                 delete_items.push(Button("Export Group...", A::ExportGroup));
             }
@@ -491,6 +504,8 @@ pub(crate) fn node_menu_config(view: &NodeMenuView, headless: bool) -> NodeMenuC
             items.extend(view.jars.iter().flat_map(|j| jar_items(j, false, false)));
             finish("group_context_menu", 150.0, items, delete_items)
         }
+        // A type this build doesn't know has no menu of its own yet (2b-6 Ruling 8): the shared tail only.
+        _ => finish("node_context_menu", 150.0, Vec::new(), delete("Delete")),
     }
 }
 
@@ -502,7 +517,7 @@ pub(crate) fn node_menu_config(view: &NodeMenuView, headless: bool) -> NodeMenuC
 /// still fades when the action removed the node itself.
 #[derive(Clone)]
 pub(crate) struct NodeMenuView {
-    kind: ItemNodeKind,
+    kind: CardKind,
     has_group: bool,
     color: Option<egui::Color32>,
     /// Image/Pdf/Json/Note: `node.source_url().is_some()`. Offers Refresh
@@ -520,7 +535,8 @@ pub(crate) struct NodeMenuView {
     /// Unloaded only: it failed because its engine isn't installed, so the menu offers the download.
     engine_missing: bool,
     /// Sibling groups (same level, not this node) it can move into, as `(id, name)`.
-    move_targets: Vec<(String, String)>,
+    /// `pub(crate)` for headless `MOVETOGROUP`, which moves only where the menu would offer.
+    pub(crate) move_targets: Vec<(String, String)>,
     /// Group: the rename draft, while this group is being renamed. Tab: the "New Jar..." name draft.
     renaming: Option<String>,
     /// Tab, Unloaded and Group: their jar list (`App::jar_menu`).
@@ -567,8 +583,10 @@ impl App {
             // The link came from the page: no `file:`/`javascript:` new tab (`popup_gate.rs`).
             if !crate::popup_gate::page_tab_url_allowed(&menu.href) {
                 // The scheme only: the rest is page content (a `data:` or `javascript:` body).
-                let scheme = crate::popup_gate::scheme_for_log(&menu.href);
-                self.queue_toast(format!("Can't open a {scheme}: link in a new tab"));
+                self.queue_toast(match crate::popup_gate::scheme_for_log(&menu.href) {
+                    Some(scheme) => format!("Can't open a {scheme}: link in a new tab"),
+                    None => "Can't open this link in a new tab".to_string(),
+                });
             } else if let Some(opener) = self.focused.clone() {
                 self.spawn_tab_from(&opener, &menu.href);
             } else {
@@ -656,44 +674,42 @@ impl App {
     pub(crate) fn node_menu_view(&self, id: &str) -> Option<NodeMenuView> {
         let node = self.nodes.get(id)?;
         Some(NodeMenuView {
-            kind: item_node_kind(&node.payload),
-            has_group: node.group.is_some(),
-            color: node.color,
-            has_url: node.source_url().is_some(),
-            has_copy_url: node.copyable_url().is_some(),
-            pinned: node.payload.pinned(),
-            other_default_engine: node
-                .payload
-                .as_unloaded()
-                .is_some_and(|t| t.kind != self.settings.default_starting_engine),
-            failed: node.payload.as_unloaded().is_some_and(|t| matches!(t.state, UnloadedState::Failed(_))),
-            engine_missing: node.payload.as_unloaded().is_some_and(|t| {
+            kind: self.card_kind(id)?,
+            has_group: self.mirror.group(id).is_some(),
+            color: self.mirror.color(id),
+            has_url: self.source_url(id).is_some(),
+            has_copy_url: self.copyable_url(id).is_some(),
+            pinned: self.mirror.pinned(id),
+            other_default_engine: node.runtime.as_unloaded().is_some()
+                && self.mirror.engine(id) != self.settings.default_starting_engine,
+            failed: node.runtime.as_unloaded().is_some_and(|t| matches!(t.state, UnloadedState::Failed(_))),
+            engine_missing: node.runtime.as_unloaded().is_some_and(|t| {
+                let kind = self.mirror.engine(id);
                 matches!(t.state, UnloadedState::Failed(_))
-                    && !matches!(pick_outcome(t.kind, &self.engine_state(t.kind)), PickOutcome::Switch(_))
+                    && !matches!(pick_outcome(kind, &self.engine_state(kind)), PickOutcome::Switch(_))
             }),
             move_targets: self
                 .node_order
                 .iter()
                 .filter(|other| other.as_str() != id)
-                .filter_map(|other| {
-                    let sibling = self.nodes.get(other).filter(|n| n.group == node.group)?;
-                    // name rule: drawn by display_name in the MoveTo rows
-                    Some((other.clone(), sibling.as_group()?.name.clone()))
-                })
+                .filter(|other| self.mirror.group(other) == self.mirror.group(id) && self.is_container(other))
+                // name rule: drawn by display_name in the MoveTo rows
+                .map(|other| (other.clone(), self.mirror.name(other).to_owned()))
                 .collect(),
             renaming: [&self.renaming_group, &self.naming_jar]
                 .into_iter()
                 .flatten()
                 .find(|(of, _)| of == id)
                 .map(|(_, draft)| draft.clone()),
-            jars: self.jar_menu(id, node),
+            jars: self.jar_menu(id),
         })
     }
 
     /// The tab and group menus' jar list (spec "UI"); `None` for every other kind.
-    pub(crate) fn jar_menu(&self, id: &str, node: &crate::node::GraphNode) -> Option<JarMenu> {
+    pub(crate) fn jar_menu(&self, id: &str) -> Option<JarMenu> {
         let named = |ticked: &dyn Fn(NodeId) -> bool, count: &dyn Fn(NodeId) -> Option<usize>| -> Vec<JarRow> {
-            self.jar_defs
+            self.mirror
+                .jar_defs()
                 .iter()
                 .map(|(jid, d)| JarRow {
                     id: Some(*jid),
@@ -705,7 +721,7 @@ impl App {
                 .collect()
         };
         if let Some(choice) = self.tab_jar(id) {
-            let group_default = self.inherited_jar(node.group.as_deref());
+            let group_default = self.inherited_jar(self.mirror.group(id));
             // Tick the jar the tab uses: Default for one naming a jar deleted elsewhere.
             let (key, _) = self.resolved_jar(&choice);
             let mut rows = vec![JarRow {
@@ -723,16 +739,30 @@ impl App {
                 has_default: false,
             });
         }
-        let g = node.as_group()?;
-        if self.jar_defs.is_empty() && g.default_jar.is_none() {
+        if !self.is_container(id) {
+            return None;
+        }
+        let default = self.mirror.default_jar(id);
+        if self.mirror.jar_defs().is_empty() && default.is_none() {
             return None; // nothing to pick: jars are made from a tab's menu
         }
         Some(JarMenu {
-            rows: named(&|j| g.default_jar == Some(j), &|j| Some(self.cascade_count(id, j)).filter(|&n| n > 0)),
+            rows: named(&|j| default == Some(j), &|j| Some(self.cascade_count(id, j)).filter(|&n| n > 0)),
             can_follow: false,
             will_switch: false,
-            has_default: g.default_jar.is_some(),
+            has_default: default.is_some(),
         })
+    }
+
+    /// The rename field committed with `name` (`NodeAction::CommitRename`, and headless `RENAMEGROUP id name`): the
+    /// field closes, and a group takes the clean name (`edit_name`). A name with nothing left once cleaned, or an id
+    /// that isn't a group, changes nothing. The caller saves.
+    pub(crate) fn commit_rename(&mut self, id: &str, name: &str) {
+        self.renaming_group = None;
+        let clean = crate::names::clean_name(name);
+        if !clean.is_empty() && self.is_container(id) {
+            self.edit_name(id, &clean);
+        }
     }
 
     /// Applies whichever item was clicked in a node's right-click menu.
@@ -747,8 +777,8 @@ impl App {
                 }
             }
             NodeAction::CopyText => {
-                if let Some(text) = self.nodes.get(id).and_then(|n| n.as_note()).map(|n| n.text.clone()) {
-                    ctx.copy_text(text);
+                if self.nodes.get(id).is_some_and(|n| n.as_note().is_some()) {
+                    ctx.copy_text(self.note_text(id).to_owned());
                 }
             }
             NodeAction::Reveal => self.reveal_node(id),
@@ -759,11 +789,7 @@ impl App {
             }
             NodeAction::Refresh => self.refresh_node(id),
             NodeAction::OpenAsTab => self.open_as_tab(id),
-            NodeAction::TogglePin => {
-                if let Some(pinned) = self.nodes.get_mut(id).and_then(|n| n.payload.pinned_mut()) {
-                    *pinned = !*pinned;
-                }
-            }
+            NodeAction::TogglePin => self.toggle_pin(id),
             NodeAction::Duplicate => self.duplicate_tab(id),
             NodeAction::Sleep => {
                 self.request_sleep(id, SleepWhy::Manual);
@@ -773,37 +799,30 @@ impl App {
             }
             NodeAction::CopyUrl => {
                 let node = self.nodes.get(id);
-                if let Some(url) = node.and_then(|n| n.copyable_url().map(str::to_owned)) {
+                if let Some(url) = self.copyable_url(id).map(str::to_owned) {
                     ctx.copy_text(url);
-                } else if let Some((url, _)) = node.and_then(|n| n.payload.saved_tab()) {
+                } else if let Some(url) = node.and_then(|n| n.runtime.saved_tab()) {
                     ctx.copy_text(url.to_string());
                 }
             }
             NodeAction::FitSubtree => self.camera.jump_to(self.fit_subtree_scene_rect(id)),
             NodeAction::Rename => {
                 // name rule: the field edits the stored name
-                let name = self.nodes.get(id).and_then(|n| n.as_group()).map(|g| g.name.clone()).unwrap_or_default();
+                let name = self.mirror.name(id).to_owned();
                 self.renaming_group = Some((id.to_string(), name));
                 self.pending_focus = Some(FocusTarget::GroupRename);
             }
-            NodeAction::CommitRename(name) => {
-                self.renaming_group = None;
-                let clean = crate::names::clean_name(&name);
-                if !clean.is_empty() {
-                    if let Some(group) = self.nodes.get_mut(id).and_then(|n| n.as_group_mut()) {
-                        group.name = clean.into_owned();
-                    }
-                }
-            }
+            NodeAction::CommitRename(name) => self.commit_rename(id, &name),
             NodeAction::CancelRename => self.renaming_group = None,
             NodeAction::SetColor(color) => {
-                if let Some(node) = self.nodes.get_mut(id) {
-                    node.color = color;
+                if self.nodes.contains_key(id) {
+                    self.edit_field(id, field::COLOR, session_sync::color_value(color));
                 }
             }
             NodeAction::CycleColor => {
-                if let Some(node) = self.nodes.get_mut(id) {
-                    node.color = next_tag_color(node.color);
+                if self.nodes.contains_key(id) {
+                    let next = next_tag_color(self.mirror.color(id));
+                    self.edit_field(id, field::COLOR, session_sync::color_value(next));
                 }
             }
             NodeAction::ToggleMute => self.toggle_muted(id),
@@ -813,8 +832,7 @@ impl App {
             NodeAction::MoveToGroup(group) => self.apply_drop(id, Some((DropEffect::Join, Some(group)))),
             NodeAction::Dissolve => self.dissolve_group(id),
             NodeAction::ExportGroup => {
-                let group = self.nodes.get(id).and_then(|n| n.as_group());
-                let name = export_file_name(group.map_or("", |g| &g.name)); // name rule: export_file_name cleans it
+                let name = export_file_name(self.mirror.name(id)); // name rule: export_file_name cleans it
                 if let Some(json) = self.export_group_json(id) {
                     if let Some((path, toast)) = save_dialog_with_toast(name, "Group") {
                         write_json_export(&json, &path, "group");
@@ -849,11 +867,12 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::card_kind::fixtures::{kinds, loaded_tab, plain, sleeping_tab};
 
     // One row per kind, pinned to the exact menus each kind showed before
     // the per-kind builders were merged (see the node-menu spec), and
     // before the tab and group menus joined them.
-    /// "Move to <group>" offers only sibling groups, and joins the node to the chosen one.
+    /// "Move into <group>" offers only sibling groups, and joins the node to the chosen one.
     #[test]
     fn move_to_group_offers_sibling_groups_and_joins() {
         let mut app = App::default();
@@ -864,34 +883,41 @@ mod tests {
         // A group nested in g1 is not a sibling of the top-level note.
         let inner = app.alloc_node_id();
         app.insert_group_at(inner.clone(), None);
-        app.nodes.get_mut(&inner).unwrap().group = Some(g1.clone());
+        app.edit_group(&inner, Some(g1.clone()));
         let ids = |app: &App, id: &str| -> Vec<String> {
             app.node_menu_view(id).unwrap().move_targets.into_iter().map(|(gid, _)| gid).collect()
         };
         assert_eq!(ids(&app, &note), vec![g1.clone(), g2.clone()]);
         assert_eq!(ids(&app, &g1), vec![g2.clone()], "a group isn't offered itself");
         app.apply_node_action(&egui::Context::default(), &note, NodeAction::MoveToGroup(g2.clone()));
-        assert_eq!(app.nodes[&note].group, Some(g2));
+        assert_eq!(app.mirror.group(&note), Some(g2.as_str()));
+        // On a group "Move into" nests it, unlike a drop of one group on another (which merges).
+        let group = plain(TYPE_GROUP);
+        assert_eq!(drop_action(group, DropTarget::Card(group), false), Some(DropEffect::Merge));
+        app.apply_node_action(&egui::Context::default(), &g1, NodeAction::MoveToGroup(g2.clone()));
+        assert_eq!(app.mirror.group(&g1), Some(g2.as_str()), "g1 nested in g2, not merged away");
+        assert_eq!(app.mirror.group(&inner), Some(g1.as_str()), "g1 keeps its own members");
+    }
+
+    fn view_of(kind: CardKind) -> NodeMenuView {
+        NodeMenuView {
+            kind,
+            has_group: false,
+            color: None,
+            has_url: false,
+            has_copy_url: false,
+            pinned: false,
+            other_default_engine: false,
+            failed: false,
+            engine_missing: false,
+            move_targets: Vec::new(),
+            renaming: None,
+            jars: None,
+        }
     }
 
     #[test]
     fn node_menu_config_matches_each_kinds_menu() {
-        fn view_of(kind: ItemNodeKind) -> NodeMenuView {
-            NodeMenuView {
-                kind,
-                has_group: false,
-                color: None,
-                has_url: false,
-                has_copy_url: false,
-                pinned: false,
-                other_default_engine: false,
-                failed: false,
-                engine_missing: false,
-                move_targets: Vec::new(),
-                renaming: None,
-                jars: None,
-            }
-        }
         fn menu_of(view: &NodeMenuView, headless: bool) -> (&'static str, f32, String) {
             let config = node_menu_config(view, headless);
             let items: Vec<&str> = config
@@ -907,7 +933,7 @@ mod tests {
                 .collect();
             (config.area_id, config.min_width, items.join(" | "))
         }
-        fn menu(kind: ItemNodeKind, has_group: bool, pinned: bool, headless: bool) -> (&'static str, f32, String) {
+        fn menu(kind: CardKind, has_group: bool, pinned: bool, headless: bool) -> (&'static str, f32, String) {
             let view = NodeMenuView { has_group, pinned, ..view_of(kind) };
             menu_of(&view, headless)
         }
@@ -917,7 +943,7 @@ mod tests {
             let g = if has_group { " | --- | Remove from Group" } else { "" };
             let menu = |kind, pinned| menu(kind, has_group, pinned, false);
             assert_eq!(
-                menu(ItemNodeKind::Download, false),
+                menu(plain(TYPE_DOWNLOAD), false),
                 (
                     "download_context_menu",
                     170.0,
@@ -925,11 +951,11 @@ mod tests {
                 )
             );
             assert_eq!(
-                menu(ItemNodeKind::Note, false),
+                menu(plain(TYPE_NOTE), false),
                 ("note_context_menu", 150.0, format!("Copy Text | <colors>{g} | --- | Delete"))
             );
             assert_eq!(
-                menu(ItemNodeKind::Image, false),
+                menu(plain(TYPE_IMAGE), false),
                 (
                     "image_context_menu",
                     170.0,
@@ -937,19 +963,21 @@ mod tests {
                 )
             );
             assert_eq!(
-                menu(ItemNodeKind::Pdf, false),
+                menu(plain(TYPE_PDF), false),
                 ("pdf_context_menu", 170.0, format!("Open Containing Folder | Copy Path | <colors>{g} | --- | Delete"))
             );
+            for json in [TYPE_JSON, TYPE_JSON_LEAF] {
+                assert_eq!(
+                    menu(plain(json), false),
+                    (
+                        "json_context_menu",
+                        170.0,
+                        format!("Open Containing Folder | Copy Path | <colors>{g} | --- | Delete")
+                    )
+                );
+            }
             assert_eq!(
-                menu(ItemNodeKind::Json, false),
-                (
-                    "json_context_menu",
-                    170.0,
-                    format!("Open Containing Folder | Copy Path | <colors>{g} | --- | Delete")
-                )
-            );
-            assert_eq!(
-                menu(ItemNodeKind::Tab, false),
+                menu(loaded_tab(), false),
                 (
                     "tab_context_menu",
                     150.0,
@@ -957,56 +985,63 @@ mod tests {
                 )
             );
             assert_eq!(
-                menu(ItemNodeKind::Tab, true).2,
+                menu(loaded_tab(), true).2,
                 format!("Unpin | Duplicate | Sleep | Copy URL | Fit Subtree | <colors>{g} | --- | Close")
             );
             assert_eq!(
-                menu(ItemNodeKind::Group, false),
+                menu(plain(TYPE_GROUP), false),
                 (
                     "group_context_menu",
                     150.0,
-                    format!("Rename | Sleep Tabs | <colors>{g} | --- | Dissolve | Close Group | Export Group...")
+                    format!(
+                        "Rename | Sleep Tabs | <colors>{g} | --- | Dissolve Group | Close Group and Contents | \
+                         Export Group..."
+                    )
                 )
             );
             assert_eq!(
-                menu(ItemNodeKind::Unloaded, false),
-                ("unloaded_tab_context_menu", 170.0, format!("Open | Pin | Copy URL | <colors>{g} | --- | Close"))
+                menu(sleeping_tab(), false),
+                (
+                    "unloaded_tab_context_menu",
+                    170.0,
+                    format!("Open | Pin | Duplicate | Copy URL | <colors>{g} | --- | Close")
+                )
             );
         }
         // A failed tab offers Retry (and the default engine, when it isn't
         // the engine that failed) instead of Open; a sleeping/waking one
-        // just offers Open.
-        let failed = NodeMenuView { other_default_engine: true, failed: true, ..view_of(ItemNodeKind::Unloaded) };
+        // just offers Open. Neither failed one offers Duplicate, which would fail the same way.
+        let failed = NodeMenuView { other_default_engine: true, failed: true, ..view_of(sleeping_tab()) };
         assert_eq!(
             menu_of(&failed, false).2,
             "Retry | Open in Default Engine | Pin | Copy URL | <colors> | --- | Close"
         );
-        let missing = NodeMenuView { failed: true, engine_missing: true, ..view_of(ItemNodeKind::Unloaded) };
+        let missing = NodeMenuView { failed: true, engine_missing: true, ..view_of(sleeping_tab()) };
         assert_eq!(menu_of(&missing, false).2, "Download Engine | Pin | Copy URL | <colors> | --- | Close");
         // Export Group's file dialog can't run headless.
         assert_eq!(
-            menu(ItemNodeKind::Group, false, false, true).2,
-            "Rename | Sleep Tabs | <colors> | --- | Dissolve | Close Group"
+            menu(plain(TYPE_GROUP), false, false, true).2,
+            "Rename | Sleep Tabs | <colors> | --- | Dissolve Group | Close Group and Contents"
         );
         // A url on Image/Pdf/Json/Note offers Refresh (not Note) and Open as
         // Tab, ahead of the kind's own items.
-        let with_url = |kind| NodeMenuView { kind, has_url: true, has_copy_url: true, ..view_of(kind) };
+        let with_url = |kind: CardKind| NodeMenuView { has_url: true, has_copy_url: true, ..view_of(kind) };
         assert_eq!(
-            menu_of(&with_url(ItemNodeKind::Image), false).2,
+            menu_of(&with_url(plain(TYPE_IMAGE)), false).2,
             "Refresh | Open as Tab | Copy URL | Open Containing Folder | Copy Path | <colors> | --- | Delete"
         );
         assert_eq!(
-            menu_of(&with_url(ItemNodeKind::Json), false).2,
+            menu_of(&with_url(plain(TYPE_JSON)), false).2,
             "Refresh | Open as Tab | Copy URL | Open Containing Folder | Copy Path | <colors> | --- | Delete"
         );
         // A download has no Open as Tab (it would download again), but can copy where it came from.
-        let download = NodeMenuView { has_copy_url: true, ..view_of(ItemNodeKind::Download) };
+        let download = NodeMenuView { has_copy_url: true, ..view_of(plain(TYPE_DOWNLOAD)) };
         assert_eq!(
             menu_of(&download, false).2,
             "Copy URL | Open Containing Folder | Copy Path | <colors> | --- | Remove from List"
         );
         assert_eq!(
-            menu_of(&with_url(ItemNodeKind::Note), false).2,
+            menu_of(&with_url(plain(TYPE_NOTE)), false).2,
             "Open as Tab | Copy URL | Copy Text | <colors> | --- | Delete"
         );
         // Jars (per-tab jars plan, Task 7): tabs and groups list them ahead of the colours.
@@ -1014,37 +1049,105 @@ mod tests {
         let jars = |can_follow, will_switch, has_default| {
             Some(JarMenu { rows: rows.clone(), can_follow, will_switch, has_default })
         };
-        let tab = |j| NodeMenuView { jars: j, ..view_of(ItemNodeKind::Tab) };
+        let tab = |j| NodeMenuView { jars: j, ..view_of(loaded_tab()) };
         assert_eq!(
             menu_of(&tab(jars(false, false, false)), false).2,
             "Pin | Duplicate | Sleep | Copy URL | Fit Subtree | <jars> | New Jar... | <colors> | --- | Close"
         );
         assert_eq!(
             menu_of(&tab(jars(true, true, false)), false).2,
-            "Pin | Duplicate | Sleep | Copy URL | Fit Subtree | <jars> | New Jar... | Follow Group's Jar | Switch Jar Now | <colors> | --- | Close"
+            "Pin | Duplicate | Sleep | Copy URL | Fit Subtree | <jars> | New Jar... | Follow Group's Jar | \
+             Switch Jar Now | <colors> | --- | Close"
         );
-        let unloaded = NodeMenuView { jars: jars(true, true, false), ..view_of(ItemNodeKind::Unloaded) };
+        let unloaded = NodeMenuView { jars: jars(true, true, false), ..view_of(sleeping_tab()) };
         assert_eq!(
             menu_of(&unloaded, false).2,
-            "Open | Pin | Copy URL | <jars> | New Jar... | Follow Group's Jar | <colors> | --- | Close"
+            "Open | Pin | Duplicate | Copy URL | <jars> | New Jar... | Follow Group's Jar | <colors> | --- | Close"
         );
-        let group =
-            |has_default| NodeMenuView { jars: jars(false, false, has_default), ..view_of(ItemNodeKind::Group) };
+        let group = |has_default| NodeMenuView { jars: jars(false, false, has_default), ..view_of(plain(TYPE_GROUP)) };
         assert_eq!(
             menu_of(&group(false), false).2,
-            "Rename | Sleep Tabs | <jars> | <colors> | --- | Dissolve | Close Group | Export Group..."
+            "Rename | Sleep Tabs | <jars> | <colors> | --- | Dissolve Group | Close Group and Contents | \
+             Export Group..."
         );
         assert_eq!(
             menu_of(&group(true), false).2,
-            "Rename | Sleep Tabs | <jars> | Clear Default Jar | <colors> | --- | Dissolve | Close Group | Export Group..."
+            "Rename | Sleep Tabs | <jars> | Clear Default Jar | <colors> | --- | Dissolve Group | \
+             Close Group and Contents | Export Group..."
         );
+    }
+
+    /// The row hinted Del is the one the card's Del does, for every kind: a group's is Dissolve Group, never
+    /// "Close Group and Contents", which closes the members too.
+    #[test]
+    fn del_hint_names_what_del_does_on_the_card() {
+        for kind in kinds() {
+            let config = node_menu_config(&view_of(kind), false);
+            let hinted: Vec<&str> = config
+                .items
+                .iter()
+                .filter_map(|item| match item {
+                    NodeMenuItem::Button(label, action) if action.key_hint(kind).is_some() => Some(*label),
+                    _ => None,
+                })
+                .collect();
+            let del = CardControl::Close.action(kind);
+            let want: Vec<&str> = config
+                .items
+                .iter()
+                .filter_map(|item| match item {
+                    NodeMenuItem::Button(label, action) if *action == del => Some(*label),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(hinted, want, "{kind:?}");
+            assert_eq!(hinted.len(), 1, "{kind:?}: one row hinted Del");
+        }
+        assert_eq!(NodeAction::Dissolve.key_hint(plain(TYPE_GROUP)), Some("Del"));
+        assert_eq!(NodeAction::Delete.key_hint(plain(TYPE_GROUP)), None, "closing the members isn't Del");
+        assert_eq!(NodeAction::Delete.key_hint(loaded_tab()), Some("Del"));
+    }
+
+    /// The focused card's "Del <verb>" hint names the same action as the menu row hinted Del.
+    #[test]
+    fn card_del_hint_matches_the_menu_row_hinted_del() {
+        for kind in kinds() {
+            let config = node_menu_config(&view_of(kind), false);
+            let label = config.items.iter().find_map(|item| match item {
+                NodeMenuItem::Button(label, action) if action.key_hint(kind).is_some() => Some(*label),
+                _ => None,
+            });
+            let first = label.and_then(|l| l.split(' ').next()).map(str::to_lowercase);
+            assert_eq!(first.as_deref(), Some(del_verb(kind)), "{kind:?}");
+        }
+        assert_eq!(del_verb(plain(TYPE_GROUP)), "dissolve");
+    }
+
+    /// An unloaded tab's menu Duplicate opens a copy at its url and engine, as Ctrl+D does.
+    #[test]
+    fn duplicate_from_an_unloaded_tabs_menu_spawns_a_copy() {
+        let mut app = App::default();
+        let t = crate::session_sync::tests::add(
+            &mut app,
+            crate::store::model::Kind::Tab,
+            crate::session_sync::tests::sleeping_tab("https://a/", "A"),
+        );
+        app.apply_node_action(&egui::Context::default(), &t, NodeAction::Duplicate);
+        assert_eq!(app.test_spawns.len(), 1);
+        let spawn = &app.test_spawns[0].0;
+        assert_ne!(spawn.id, t);
+        assert_eq!((spawn.url.as_str(), spawn.kind), ("https://a/", EngineKind::Servo));
     }
 
     #[test]
     fn new_jar_names_a_jar_and_picks_it_for_the_tab() {
         let mut app = App::default();
         let ctx = egui::Context::default();
-        let t = crate::session_sync::tests::add(&mut app, crate::session_sync::tests::sleeping_tab("https://a/", "A"));
+        let t = crate::session_sync::tests::add(
+            &mut app,
+            crate::store::model::Kind::Tab,
+            crate::session_sync::tests::sleeping_tab("https://a/", "A"),
+        );
         app.apply_node_action(&ctx, &t, NodeAction::StartNewJar);
         assert_eq!(app.naming_jar, Some((t.clone(), String::new())));
         assert_eq!(app.node_menu_view(&t).unwrap().renaming, Some(String::new()), "the menu shows the name field");
@@ -1054,7 +1157,7 @@ mod tests {
         assert_eq!(app.tab_jar(&t).unwrap(), crate::jar::JarChoice { jar: Some(work), set: true });
         app.apply_node_action(&ctx, &t, NodeAction::StartNewJar);
         app.apply_node_action(&ctx, &t, NodeAction::NewJar("   ".into()));
-        assert_eq!(app.jar_defs.len(), 1, "an empty name creates nothing");
+        assert_eq!(app.mirror.jar_defs().len(), 1, "an empty name creates nothing");
         app.apply_node_action(&ctx, &t, NodeAction::StartNewJar);
         app.remove_tab(&t);
         assert_eq!(app.naming_jar, None, "closing the tab drops its draft");
@@ -1064,7 +1167,11 @@ mod tests {
     fn the_tab_menu_lists_default_then_named_jars_with_a_tick() {
         let mut app = App::default();
         let work = app.create_jar("Work");
-        let t = crate::session_sync::tests::add(&mut app, crate::session_sync::tests::sleeping_tab("https://a/", "A"));
+        let t = crate::session_sync::tests::add(
+            &mut app,
+            crate::store::model::Kind::Tab,
+            crate::session_sync::tests::sleeping_tab("https://a/", "A"),
+        );
         app.set_tab_jar(&t, Some(work));
         let shown = |app: &App| {
             let rows = app.node_menu_view(&t).unwrap().jars.unwrap().rows;
@@ -1075,8 +1182,8 @@ mod tests {
         // Styled jar label markers: a user jar named "Default" is listed plainly, after the marked built-in one.
         let user = app.create_jar("Default");
         assert_eq!(shown(&app), [(JarLabel::built_in(), false), (plain("Work"), true), (plain("Default"), false)]);
-        app.jar_defs.remove(&user);
-        app.jar_defs.remove(&work); // deleted on another device; the tab's field still names it
+        app.mirror.forget_jar(user);
+        app.mirror.forget_jar(work); // deleted on another device; the tab's field still names it
         assert_eq!(shown(&app), [(JarLabel::built_in(), true)]);
     }
 
@@ -1093,15 +1200,19 @@ mod tests {
             "{plain:?}"
         );
         assert_eq!(plain[2], "Home");
-        let t = crate::session_sync::tests::add(&mut app, crate::session_sync::tests::sleeping_tab("https://a/", "A"));
+        let t = crate::session_sync::tests::add(
+            &mut app,
+            crate::store::model::Kind::Tab,
+            crate::session_sync::tests::sleeping_tab("https://a/", "A"),
+        );
         let rows = app.node_menu_view(&t).unwrap().jars.unwrap().rows;
         assert_eq!(rows.iter().map(|r| r.name.clone()).collect::<Vec<_>>()[1..], want);
-        let g = crate::session_sync::tests::add(&mut app, NodePayload::Group(crate::node::GroupPayload::named("G")));
+        let g = crate::session_sync::tests::add_group(&mut app, "G");
         let rows = app.node_menu_view(&g).unwrap().jars.unwrap().rows;
         assert_eq!(rows.iter().map(|r| r.name.clone()).collect::<Vec<_>>(), want);
     }
 
-    /// Name rules: "Move to <group>" draws a hidden character in the group's name as a placeholder.
+    /// Name rules: "Move into <group>" draws a hidden character in the group's name as a placeholder.
     #[test]
     fn move_to_rows_show_a_hidden_character_as_a_placeholder() {
         let ctx = menu_ctx();
@@ -1109,7 +1220,11 @@ mod tests {
         let (g, note) = (app.alloc_node_id(), app.alloc_node_id());
         app.insert_group_at(g.clone(), None);
         app.insert_note_at(note.clone(), None);
-        app.nodes.get_mut(&g).unwrap().as_group_mut().unwrap().name = "Re\u{200B}ading".into();
+        app.mirror.set(
+            &g,
+            crate::store::model::field::NAME,
+            crate::store::model::FieldValue::Str("Re\u{200B}ading".into()),
+        );
         app.node_menu = Some((note, egui::pos2(100.0, 100.0)));
         let mut galleys = Vec::new();
         for _ in 0..3 {
@@ -1128,12 +1243,12 @@ mod tests {
                 })
                 .collect();
         }
-        let row = galleys.iter().find(|g| g.text() == "Move to Re⟦200B⟧ading");
+        let row = galleys.iter().find(|g| g.text() == "Move into Re⟦200B⟧ading");
         let row = row.unwrap_or_else(|| panic!("{:?}", galleys.iter().map(|g| g.text()).collect::<Vec<_>>()));
         assert!(row.job.sections.iter().any(|s| s.format.font_id.family == egui::FontFamily::Monospace));
     }
 
-    /// Name rules: a long group name is cut to `ROW_UNITS` in a "Move to" row, so it cannot widen the menu.
+    /// Name rules: a long group name is cut to `ROW_UNITS` in a "Move into" row, so it cannot widen the menu.
     #[test]
     fn move_to_rows_shorten_a_long_name() {
         let ctx = menu_ctx();
@@ -1141,7 +1256,7 @@ mod tests {
         let (g, note) = (app.alloc_node_id(), app.alloc_node_id());
         app.insert_group_at(g.clone(), None);
         app.insert_note_at(note.clone(), None);
-        app.nodes.get_mut(&g).unwrap().as_group_mut().unwrap().name = "x".repeat(200);
+        app.mirror.set(&g, crate::store::model::field::NAME, crate::store::model::FieldValue::Str("x".repeat(200)));
         app.node_menu = Some((note, egui::pos2(100.0, 100.0)));
         let mut texts = Vec::new();
         for _ in 0..3 {
@@ -1160,7 +1275,7 @@ mod tests {
                 })
                 .collect();
         }
-        let want = format!("Move to {}…", "x".repeat(crate::names::ROW_UNITS - 1));
+        let want = format!("Move into {}…", "x".repeat(crate::names::ROW_UNITS - 1));
         assert!(texts.contains(&want), "{texts:?}");
     }
 
@@ -1192,7 +1307,11 @@ mod tests {
         let (w1, _) = (app.create_jar("Work"), app.create_jar("Work"));
         app.create_jar("Default");
         app.create_jar("Work · #3f2a");
-        let t = crate::session_sync::tests::add(&mut app, crate::session_sync::tests::sleeping_tab("https://a/", "A"));
+        let t = crate::session_sync::tests::add(
+            &mut app,
+            crate::store::model::Kind::Tab,
+            crate::session_sync::tests::sleeping_tab("https://a/", "A"),
+        );
         app.node_menu = Some((t, egui::pos2(100.0, 100.0)));
         let mut galleys = Vec::new();
         for _ in 0..3 {
@@ -1241,7 +1360,7 @@ mod tests {
         };
         assert_eq!(row("Default built-in"), (true, vec![" built-in".to_string()]));
         assert_eq!(row("Default"), (false, vec![]), "a user jar named Default is plain");
-        let frag = crate::jar_defs::jar_fragment(w1, &app.jar_defs).unwrap();
+        let frag = crate::jar_defs::jar_fragment(w1, app.mirror.jar_defs()).unwrap();
         assert_eq!(row(&format!("Work #{frag}")), (false, vec![format!(" #{frag}")]));
         assert_eq!(row("Work · #3f2a"), (false, vec![]), "the typed look-alike is all name");
     }
@@ -1276,8 +1395,11 @@ mod tests {
         ] {
             let ctx = menu_ctx();
             let mut app = App::default();
-            let t =
-                crate::session_sync::tests::add(&mut app, crate::session_sync::tests::sleeping_tab("https://a/", "A"));
+            let t = crate::session_sync::tests::add(
+                &mut app,
+                crate::store::model::Kind::Tab,
+                crate::session_sync::tests::sleeping_tab("https://a/", "A"),
+            );
             app.node_menu = Some((t.clone(), egui::pos2(100.0, 100.0)));
             let frame = |app: &mut App, events| menu_frame(&ctx, app, events);
             app.apply_node_action(&ctx, &t, NodeAction::StartNewJar);
@@ -1291,7 +1413,7 @@ mod tests {
             frame(&mut app, vec![]);
             assert_eq!(app.naming_jar, None, "{how}: no draft left");
             let made = app.jar_named("Work");
-            assert_eq!(made.is_some(), creates, "{how}: jars {:?}", app.jar_defs);
+            assert_eq!(made.is_some(), creates, "{how}: jars {:?}", app.mirror.jar_defs());
             let expected = crate::jar::JarChoice { jar: made, set: creates };
             assert_eq!(app.tab_jar(&t).unwrap(), expected, "{how}: the tab's jar");
         }
@@ -1321,7 +1443,7 @@ mod tests {
         }
         menu_frame(&ctx, &mut app, vec![]);
         assert_eq!(app.renaming_group, None);
-        assert_eq!(app.nodes[&g].as_group().unwrap().name, "Errands");
+        assert_eq!(app.mirror.name(&g), "Errands");
     }
 
     /// "New Jar..."'s draft goes with its menu: closed, or another node's menu open, drops it.
@@ -1329,8 +1451,16 @@ mod tests {
     fn a_jar_name_draft_does_not_outlive_its_menu() {
         let mut app = App::default();
         let ctx = egui::Context::default();
-        let t = crate::session_sync::tests::add(&mut app, crate::session_sync::tests::sleeping_tab("https://a/", "A"));
-        let u = crate::session_sync::tests::add(&mut app, crate::session_sync::tests::sleeping_tab("https://b/", "B"));
+        let t = crate::session_sync::tests::add(
+            &mut app,
+            crate::store::model::Kind::Tab,
+            crate::session_sync::tests::sleeping_tab("https://a/", "A"),
+        );
+        let u = crate::session_sync::tests::add(
+            &mut app,
+            crate::store::model::Kind::Tab,
+            crate::session_sync::tests::sleeping_tab("https://b/", "B"),
+        );
         app.node_menu = Some((t.clone(), egui::Pos2::ZERO));
         app.apply_node_action(&ctx, &t, NodeAction::StartNewJar);
         app.drop_stray_jar_name();
@@ -1354,8 +1484,12 @@ mod tests {
         let work = app.create_jar("Work");
         let g = app.alloc_node_id();
         app.insert_group_at(g.clone(), None);
-        let t = crate::session_sync::tests::add(&mut app, crate::session_sync::tests::sleeping_tab("https://a/", "A"));
-        app.nodes.get_mut(&t).unwrap().group = Some(g.clone());
+        let t = crate::session_sync::tests::add(
+            &mut app,
+            crate::store::model::Kind::Tab,
+            crate::session_sync::tests::sleeping_tab("https://a/", "A"),
+        );
+        app.edit_group(&t, Some(g.clone()));
         let menu = app.node_menu_view(&g).unwrap().jars.unwrap();
         assert_eq!(
             menu.rows,
@@ -1392,9 +1526,9 @@ mod tests {
         let g = app.alloc_node_id();
         app.insert_group_at(g.clone(), None);
         app.apply_node_action(&ctx, &g, NodeAction::CommitRename("  Re\u{200B}ading\u{00A0}\u{00A0}list\n".into()));
-        assert_eq!(app.nodes[&g].as_group().unwrap().name, "Reading list");
+        assert_eq!(app.mirror.name(&g), "Reading list");
         app.apply_node_action(&ctx, &g, NodeAction::CommitRename("\u{200B} \u{202E}".into()));
-        assert_eq!(app.nodes[&g].as_group().unwrap().name, "Reading list");
+        assert_eq!(app.mirror.name(&g), "Reading list");
     }
 
     /// Name rules: "New Jar..." makes a jar under the clean name, and none from a name with nothing left.
@@ -1402,11 +1536,15 @@ mod tests {
     fn new_jar_takes_the_clean_name() {
         let ctx = egui::Context::default();
         let mut app = App::default();
-        let t = crate::session_sync::tests::add(&mut app, crate::session_sync::tests::sleeping_tab("https://a/", "A"));
+        let t = crate::session_sync::tests::add(
+            &mut app,
+            crate::store::model::Kind::Tab,
+            crate::session_sync::tests::sleeping_tab("https://a/", "A"),
+        );
         app.apply_node_action(&ctx, &t, NodeAction::NewJar("\u{200B} ".into()));
-        assert!(app.jar_defs.is_empty());
+        assert!(app.mirror.jar_defs().is_empty());
         app.apply_node_action(&ctx, &t, NodeAction::NewJar(" Wo\u{200B}rk ".into()));
-        assert_eq!(app.jar_defs.values().map(|d| d.name.as_str()).collect::<Vec<_>>(), ["Work"]);
+        assert_eq!(app.mirror.jar_defs().values().map(|d| d.name.as_str()).collect::<Vec<_>>(), ["Work"]);
     }
 
     #[test]

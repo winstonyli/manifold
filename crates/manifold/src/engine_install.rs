@@ -206,7 +206,8 @@ const CHUNK: usize = 64 * 1024;
 /// The body is read on a helper thread so that a connection that goes quiet is noticed: no data for
 /// `IDLE_TIMEOUT` is a `Network` error (the `.part` is kept, so a retry resumes), and `cancel` is seen
 /// within about 100 ms even while a read is blocked. (ureq's body timeout is a total, not an idle
-/// time, so it only bounds the leaked helper thread: see the body budget in `fetch`.) The helper thread ends when the socket does, or at the latest when that budget runs out.
+/// time, so it only bounds the leaked helper thread: see the body budget in `fetch`.) The helper
+/// thread ends when the socket does, or at the latest when that budget runs out.
 /// Run it on a worker thread.
 pub(crate) fn download(
     url: &str,
@@ -345,7 +346,7 @@ fn fetch(
                 have += chunk.len() as u64;
                 progress(have);
             }
-            Ok(Err(e)) => return Err(InstallError::Network(e.to_string())),
+            Ok(Err(e)) => return Err(InstallError::Network(crate::net::describe_io(e))),
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) if last_data.elapsed() >= idle => {
                 return Err(InstallError::Network(format!("no data for {} s", idle.as_secs_f32())));
             }
@@ -649,9 +650,9 @@ pub(crate) struct InstallJob {
     cancel: Arc<AtomicBool>,
     /// The pin's size, for `(received, total)`.
     total: u64,
-    /// Set by Cancel: the UI no longer shows the job, but the thread may linger briefly (until it next checks the flag), and
-    /// its result is discarded. The job stays in the map until the thread has finished, so a new install
-    /// never races its `.part`.
+    /// Set by Cancel: the UI no longer shows the job, but the thread may linger briefly (until it next
+    /// checks the flag), and its result is discarded. The job stays in the map until the thread has
+    /// finished, so a new install never races its `.part`.
     cancelled: bool,
     handle: JoinHandle<Result<PathBuf, InstallError>>,
 }
@@ -1803,7 +1804,7 @@ Connection: close
         let pin = pin_for(&a, serve_file(&a));
         let data = dir.join("data");
         let mut app = App::default();
-        let pending = crate::session_sync::Shared {
+        let pending = crate::session_sync::Snapshot {
             kind: crate::store::model::Kind::Tab,
             group: None,
             fields: Default::default(),

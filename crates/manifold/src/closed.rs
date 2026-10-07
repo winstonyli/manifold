@@ -27,28 +27,18 @@ impl ClosedEntry {
 /// browser's own bounded "Recently closed" list.
 pub(crate) const MAX_CLOSED: usize = 20;
 
-/// Whether `kind`/`fields` (as `App::shared_nodes` sees a live node) is
+/// Whether a node of type `ty` (`Mirror::ty`) with `fields` (its snapshot's) is
 /// worth keeping in a `ClosedEntry`. `false` for a completed download (it
-/// has no closed state -- starting it over isn't "reopening") and a blank
-/// note (nothing to restore); everything else -- tabs, groups, images,
-/// PDFs, JSON files and leaves -- is.
-pub(crate) fn worth_reopening(kind: store::model::Kind, fields: &session_sync::Fields) -> bool {
-    match kind {
-        store::model::Kind::Download | store::model::Kind::Jar => false,
-        store::model::Kind::Note => match fields.get(&field::TEXT) {
-            Some(store::model::FieldValue::Str(text)) => !text.trim().is_empty(),
-            _ => false,
-        },
-        store::model::Kind::Tab
-        | store::model::Kind::Group
-        | store::model::Kind::Image
-        | store::model::Kind::Pdf
-        | store::model::Kind::Json
-        | store::model::Kind::JsonLeaf => true,
-        // A kind this build can't show (and `node_json` can't name) isn't
-        // reopenable.
-        store::model::Kind::Unknown(_) => false,
-    }
+/// has no closed state -- starting it over isn't "reopening"), a jar, a
+/// blank note (nothing to restore; the `Blank` tag) and a type this build
+/// doesn't know; everything else -- tabs, groups, images, PDFs, JSON files
+/// and leaves -- is. The capability rows in `caps/rows.rs` decide.
+pub(crate) fn worth_reopening(ty: &str, fields: &session_sync::Fields) -> bool {
+    use crate::caps::{Tag, TagSet};
+    let text = fields.get(&field::TEXT);
+    let blank = !matches!(text, Some(store::model::FieldValue::Str(text)) if !text.trim().is_empty());
+    let tags = if ty == store::model::TYPE_NOTE && blank { TagSet::of(&[Tag::Blank]) } else { TagSet::EMPTY };
+    crate::caps::registry().caps(ty, tags).restorable
 }
 
 /// Every node under `root` at any depth, in `order`, each group visited
@@ -81,11 +71,11 @@ fn members_under(
 
 /// `id`'s live tab zoom, when it differs from the default -- what
 /// `closed_entry` records in `doc.local["zoom"]`. Zoom isn't a store
-/// field (it's personal state), so it doesn't come from `shared_nodes`.
+/// field (it's personal state), so it isn't in the node's snapshot.
 pub(crate) fn tab_zoom(app: &App, id: &str) -> Option<f64> {
-    let zoom = match app.nodes.get(id).map(|n| &n.payload) {
-        Some(NodePayload::Tab(tab)) => tab.zoom_factor,
-        Some(NodePayload::Unloaded(tab)) => tab.zoom_factor,
+    let zoom = match app.nodes.get(id).map(|n| &n.runtime) {
+        Some(Runtime::Tab(tab)) => tab.zoom_factor,
+        Some(Runtime::Unloaded(tab)) => tab.zoom_factor,
         _ => return None,
     };
     (zoom != app.settings.zoom_factor).then_some(zoom)
@@ -94,12 +84,36 @@ pub(crate) fn tab_zoom(app: &App, id: &str) -> Option<f64> {
 /// `id`'s tab title, when it has one -- what `closed_entry` records in
 /// `doc.local["title"]`. Like zoom, a title is personal state.
 pub(crate) fn tab_title(app: &App, id: &str) -> Option<String> {
-    let title = match app.nodes.get(id).map(|n| &n.payload) {
-        Some(NodePayload::Tab(tab)) => &tab.title,
-        Some(NodePayload::Unloaded(tab)) => &tab.title,
+    let title = match app.nodes.get(id).map(|n| &n.runtime) {
+        Some(Runtime::Tab(tab)) => &tab.title,
+        Some(Runtime::Unloaded(tab)) => &tab.title,
         _ => return None,
     };
     (!title.is_empty()).then(|| title.clone())
+}
+
+/// `fields` (`id`'s snapshot's, `App::snapshot`) as the user saw the node: a tab's `url` replaced by its live one, a note's
+/// `text` by what its card shows (`App::note_text`: a box being typed in holds text no save has committed), and `pos`
+/// by where its card was drawn (`App::layout`), and a file card's `path` by the one resolved on this machine (the
+/// payload's). Recently Closed reopens the page that was closed, not the shared url the mirror holds (2b-3 Ruling 1),
+/// where it was shown, not at its document pos (2b-4 Ruling 10), from the file this machine read (2b-5 Ruling 5).
+fn live_fields(app: &App, id: &str, fields: &session_sync::Fields) -> session_sync::Fields {
+    let mut fields = fields.clone();
+    if let Some(url) = app.nodes.get(id).and_then(|n| n.runtime.saved_tab()) {
+        fields.insert(field::URL, store::model::FieldValue::Str(url.to_owned()));
+    }
+    if fields.contains_key(&field::TEXT) {
+        fields.insert(field::TEXT, store::model::FieldValue::Str(app.note_text(id).to_owned()));
+    }
+    if let Some(path) = app.nodes.get(id).and_then(|n| n.runtime.file_path()) {
+        if fields.contains_key(&field::PATH) {
+            fields.insert(field::PATH, store::model::FieldValue::Str(path.to_owned()));
+        }
+    }
+    if app.layout.contains_key(id) && fields.contains_key(&field::POS) {
+        fields.insert(field::POS, session_sync::pos_value(app.layout_pos(id)));
+    }
+    fields
 }
 
 /// The `ClosedEntry` closing `id` should record: `id` and, for a group,
@@ -108,13 +122,13 @@ pub(crate) fn tab_title(app: &App, id: &str) -> Option<String> {
 /// isn't worth reopening, which includes a lone "Expand as Graph" leaf:
 /// it's one of many, and each would push a real entry out of `MAX_CLOSED`.
 pub(crate) fn closed_entry(app: &App, id: &str) -> Option<ClosedEntry> {
-    let shared = app.shared_nodes();
     let root_id: store::model::NodeId = id.parse().ok()?;
-    let root = shared.get(&root_id)?;
-    if root.kind == store::model::Kind::JsonLeaf || !worth_reopening(root.kind, &root.fields) {
+    let root = app.snapshot(root_id)?;
+    let root_fields = live_fields(app, id, &root.fields);
+    if root.kind == store::model::Kind::JsonLeaf || !worth_reopening(app.mirror.ty(id), &root_fields) {
         return None;
     }
-    let mut nodes = vec![store::json::node_json(id, root.kind, &root.fields, None)];
+    let mut nodes = vec![store::json::node_json(id, root.kind, &root_fields, None)];
     let (mut zoom, mut title) = (serde_json::Map::new(), serde_json::Map::new());
     let mut record = |label: &str| {
         if let Some(z) = tab_zoom(app, label) {
@@ -125,19 +139,20 @@ pub(crate) fn closed_entry(app: &App, id: &str) -> Option<ClosedEntry> {
         }
     };
     record(id);
-    // Only a group has members; for anything else this finds none.
+    // Only a group has members; for anything else this finds none. Membership and containment are the mirror's.
     let order: Vec<store::model::NodeId> = app.node_order.iter().filter_map(|s| s.parse().ok()).collect();
     let members = members_under(
         root_id,
         &order,
-        |id| shared.get(id).and_then(|n| n.group),
-        |id| shared.get(id).is_some_and(|n| n.kind == store::model::Kind::Group),
+        |id| app.mirror.group(&id.to_string()).and_then(|g| g.parse().ok()),
+        |id| crate::caps::edges().target_accepts(crate::caps::CONTAINS, app.mirror.ty(&id.to_string())),
     );
     for member_id in members {
-        let Some(member) = shared.get(&member_id) else { continue };
-        if worth_reopening(member.kind, &member.fields) {
-            let label = member_id.to_string();
-            nodes.push(store::json::node_json(&label, member.kind, &member.fields, member.group));
+        let Some(member) = app.snapshot(member_id) else { continue };
+        let label = member_id.to_string();
+        let fields = live_fields(app, &label, &member.fields);
+        if worth_reopening(app.mirror.ty(&label), &fields) {
+            nodes.push(store::json::node_json(&label, member.kind, &fields, member.group));
             record(&label);
         }
     }
@@ -182,8 +197,9 @@ impl App {
 
     /// Rebuilds a closed entry where it was: fresh ids via `store::json::
     /// import`, the old positions/colors/zooms, links inside the entry
-    /// remapped (import resolves labels within the file), and a tab's
-    /// `parent` outside the entry kept only if that node still exists.
+    /// remapped (import resolves labels within the file), and a node's
+    /// `parent` ("opened from", any kind that has one) outside the entry
+    /// kept only if that node still exists.
     /// The root's group becomes `self.current_group` (it's written as
     /// `None` in the doc -- see `closed_entry`); every other node keeps
     /// the group `closed_entry` recorded if it's still part of this entry,
@@ -223,7 +239,7 @@ impl App {
         let root = session_sync::ImportRoot { group: self.insertion_group(), pos: None };
         self.materialize_imported(imported, Some(root), true);
         for (id, zoom, title) in personal {
-            if let Some(NodePayload::Unloaded(tab)) = self.nodes.get_mut(&id).map(|n| &mut n.payload) {
+            if let Some(Runtime::Unloaded(tab)) = self.nodes.get_mut(&id).map(|n| &mut n.runtime) {
                 if let Some(zoom) = zoom {
                     tab.zoom_factor = zoom;
                 }
@@ -239,6 +255,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::store::model::Kind;
 
     /// Closing a group records it and every live member at any depth as
     /// one store-shaped entry, root first: `entry.doc.nodes[0]` is the
@@ -253,37 +270,37 @@ mod tests {
         use crate::session_sync::tests::{add, app_on};
         let path = store::testutil::temp_dir("closed-entry").join("session.mnf");
         let mut app = app_on(&path, 1);
-        let put_in = |app: &mut App, id: &str, group: &str| app.nodes.get_mut(id).unwrap().group = Some(group.into());
+        let put_in = |app: &mut App, id: &str, group: &str| app.edit_group(id, Some(group.into()));
 
-        let outer = add(&mut app, NodePayload::Group(GroupPayload::named("Outer")));
-        let note0 = add(&mut app, NodePayload::Note(NotePayload { text: "kept".into(), editing: false, url: None }));
+        let outer = crate::session_sync::tests::add_group(&mut app, "Outer");
+        let note0 = add(&mut app, Kind::Note, Runtime::Note(NotePayload { text: "kept".into(), editing: false }));
         put_in(&mut app, &note0, &outer);
-        let note1 = add(&mut app, NodePayload::Note(NotePayload { text: " ".into(), editing: false, url: None }));
+        let note1 = add(&mut app, Kind::Note, Runtime::Note(NotePayload { text: " ".into(), editing: false }));
         put_in(&mut app, &note1, &outer);
-        let inner = add(&mut app, NodePayload::Group(GroupPayload::named("Inner")));
+        let inner = crate::session_sync::tests::add_group(&mut app, "Inner");
         put_in(&mut app, &inner, &outer);
         let img0 = add(
             &mut app,
-            NodePayload::Image(ImagePayload { path: "i.png".into(), width: 1, height: 1, error: None, url: None }),
+            Kind::Image,
+            Runtime::Image(ImagePayload { path: "i.png".into(), width: 1, height: 1, error: None }),
         );
         put_in(&mut app, &img0, &inner);
         let json0 = add(
             &mut app,
-            NodePayload::Json(JsonPayload {
+            Kind::JsonLeaf,
+            Runtime::Json(JsonPayload {
                 path: "d.json".into(),
                 value: std::sync::Arc::new(1.into()),
-                key: Some("k".into()),
+                leaf: true,
                 error: None,
-                url: None,
-                view: json_view::JsonView::default(),
             }),
         );
         put_in(&mut app, &json0, &inner);
         let dl0 = add(
             &mut app,
-            NodePayload::Download(DownloadPayload {
+            Kind::Download,
+            Runtime::Download(DownloadPayload {
                 path: "f.bin".into(),
-                url: None,
                 bytes_received: 1,
                 total_bytes: Some(1),
                 completed: true,
@@ -291,7 +308,7 @@ mod tests {
             }),
         );
         put_in(&mut app, &dl0, &inner);
-        let note2 = add(&mut app, NodePayload::Note(NotePayload { text: "outside".into(), editing: false, url: None }));
+        let note2 = add(&mut app, Kind::Note, Runtime::Note(NotePayload { text: "outside".into(), editing: false }));
 
         let entry = closed_entry(&app, &outer).unwrap();
         let ids: Vec<&str> = entry.doc.nodes.iter().map(|n| n.id.as_str()).collect();
@@ -300,19 +317,18 @@ mod tests {
             [outer.as_str(), note0.as_str(), inner.as_str(), img0.as_str(), json0.as_str()],
             "a blank note and a completed download are both skipped"
         );
-        assert_eq!(entry.doc.nodes[0].kind, "group");
+        assert_eq!(entry.doc.nodes[0].kind(), Some(Kind::Group));
         assert!(entry.doc.nodes[0].fields.get("group").is_none(), "the root's group isn't recorded");
         assert_eq!(entry.doc.nodes[3].fields.get("group").and_then(|v| v.as_str()), Some(inner.as_str()));
 
         let leaf_outside = add(
             &mut app,
-            NodePayload::Json(JsonPayload {
+            Kind::JsonLeaf,
+            Runtime::Json(JsonPayload {
                 path: "d.json".into(),
                 value: std::sync::Arc::new(1.into()),
-                key: Some("k".into()),
+                leaf: true,
                 error: None,
-                url: None,
-                view: json_view::JsonView::default(),
             }),
         );
         assert!(closed_entry(&app, &leaf_outside).is_none(), "a JSON leaf outside a group gives None");
@@ -320,9 +336,102 @@ mod tests {
         assert_eq!(closed_entry(&app, &note2).unwrap().doc.nodes.len(), 1);
     }
 
+    /// A tab whose page moved on without sharing it (a redirect, a script, a restore at its `LiveUrl`) reopens from
+    /// Recently Closed at the page that was closed, not at the shared url.
     #[test]
-    fn an_unknown_kind_is_not_worth_reopening() {
-        assert!(!worth_reopening(store::model::Kind::Unknown(99), &Default::default()));
+    fn a_closed_tab_reopens_at_its_live_url() {
+        use crate::session_sync::tests::{add, app_on, sleeping_tab};
+        let path = store::testutil::temp_dir("closed-live-url").join("session.mnf");
+        let mut app = app_on(&path, 1);
+        let group = crate::session_sync::tests::add_group(&mut app, "G");
+        let tab = add(&mut app, Kind::Tab, sleeping_tab("https://shared/", "T"));
+        let member = add(&mut app, Kind::Tab, sleeping_tab("https://m-shared/", "M"));
+        app.edit_group(&member, Some(group.clone()));
+        assert!(app.save_session());
+        for (id, live) in [(&tab, "https://live/"), (&member, "https://m-live/")] {
+            if let Runtime::Unloaded(t) = &mut app.nodes.get_mut(id).unwrap().runtime {
+                t.url = live.into();
+            }
+        }
+        assert_eq!(app.mirror.url(&tab), "https://shared/", "the shared url is unchanged");
+        let url_of = |entry: &ClosedEntry, i: usize| entry.doc.nodes[i].fields.get("url").cloned();
+        let entry = closed_entry(&app, &tab).unwrap();
+        assert_eq!(url_of(&entry, 0), Some(serde_json::json!("https://live/")));
+        let entry = closed_entry(&app, &group).unwrap();
+        assert_eq!(url_of(&entry, 1), Some(serde_json::json!("https://m-live/")), "a group member's too");
+
+        app.close_node(&tab);
+        let entry = app.closed.pop().unwrap();
+        app.reopen_closed(entry);
+        let reopened = app.nodes.values().filter_map(|n| n.as_unloaded()).find(|t| t.title == "T").unwrap();
+        assert_eq!(reopened.url, "https://live/");
+    }
+
+    /// Recently Closed records where the card was shown (its layout position), not its document pos, and reopens it
+    /// there (2b-4 Ruling 10).
+    #[test]
+    fn a_closed_node_reopens_where_it_was_shown() {
+        use crate::session_sync::tests::app_on;
+        let path = store::testutil::temp_dir("closed-layout-pos").join("session.mnf");
+        let mut app = app_on(&path, 1);
+        let note = Runtime::Note(crate::node::NotePayload { text: "n".into(), editing: false });
+        let at = crate::fetched::Placement { group: None, pos: egui::vec2(10.0, 20.0) };
+        let note = app.place_node(None, Kind::Note, note, at);
+        assert!(app.save_session());
+        app.snap_layout(&note, egui::vec2(70.0, 80.0));
+        let entry = closed_entry(&app, &note).unwrap();
+        assert_eq!(entry.doc.nodes[0].fields.get("pos"), Some(&serde_json::json!([70.0, 80.0])));
+
+        app.close_node(&note);
+        let entry = app.closed.pop().unwrap();
+        app.reopen_closed(entry);
+        let reopened = app.nodes.keys().find(|id| **id != note).unwrap().clone();
+        assert_eq!(app.layout_pos(&reopened), egui::vec2(70.0, 80.0));
+        assert_eq!(app.mirror.pos(&reopened), Some(egui::vec2(70.0, 80.0)));
+    }
+
+    /// A note closed while it is typed in records what the box held, which no save has committed yet.
+    #[test]
+    fn a_closed_note_records_what_was_typed() {
+        let mut app = App::default();
+        let note = Runtime::Note(crate::node::NotePayload { text: "n".into(), editing: false });
+        let at = crate::fetched::Placement { group: None, pos: egui::vec2(10.0, 20.0) };
+        let note = app.place_node(None, Kind::Note, note, at);
+        let n = app.nodes.get_mut(&note).unwrap().as_note_mut().unwrap();
+        (n.editing, n.text) = (true, "typed".into());
+        let entry = closed_entry(&app, &note).unwrap();
+        assert_eq!(entry.doc.nodes[0].fields.get("text"), Some(&serde_json::json!("typed")));
+    }
+
+    /// A type this build doesn't know, and no type at all (`Mirror::ty` of a node the mirror lacks), are not.
+    #[test]
+    fn an_unknown_type_is_not_worth_reopening() {
+        assert!(!worth_reopening("application/x-future", &Default::default()));
+        assert!(!worth_reopening("", &Default::default()));
+    }
+
+    /// Decided by the node's type string (`Mirror::ty`) and, for a note, whether its text is blank.
+    #[test]
+    fn worth_reopening_is_what_it_was_for_every_kind() {
+        use store::model::{FieldValue, Kind};
+        let text = |s: &str| session_sync::Fields::from([(field::TEXT, FieldValue::Str(s.into()))]);
+        let none = session_sync::Fields::new();
+        for (kind, fields, want) in [
+            (Kind::Tab, &none, true),
+            (Kind::Group, &none, true),
+            (Kind::Image, &none, true),
+            (Kind::Pdf, &none, true),
+            (Kind::Json, &none, true),
+            (Kind::JsonLeaf, &none, true),
+            (Kind::Download, &none, false),
+            (Kind::Jar, &none, false),
+            (Kind::Note, &text("hi"), true),
+            (Kind::Note, &text("  \n"), false),
+            (Kind::Note, &none, false),
+        ] {
+            assert_eq!(worth_reopening(kind.type_str().unwrap(), fields), want, "{kind:?}");
+        }
+        assert!(worth_reopening("image/gif", &none), "any image, not only the stored `image/png`");
     }
 
     #[test]

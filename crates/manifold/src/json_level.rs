@@ -173,7 +173,7 @@ impl App {
     /// The file-backed Json node `current_group` names, if it does.
     pub(crate) fn current_json_node(&self) -> Option<&JsonPayload> {
         let node = self.nodes.get(self.current_group.as_ref()?)?;
-        node.as_json().filter(|json| json.key.is_none())
+        node.as_json().filter(|json| !json.leaf)
     }
 
     /// Leaves a JSON level for the Json node's group, before placing a new
@@ -201,7 +201,7 @@ impl App {
         // moved, leaves to its group, where its card shows the error and
         // Retry. Its group is never a Json node, so this recurses once.
         if !json.enterable() {
-            let group = self.current_group.as_ref().and_then(|id| self.nodes.get(id)).and_then(|n| n.group.clone());
+            let group = self.group_of(&self.current_group);
             self.switch_group_level(group);
             return;
         }
@@ -209,14 +209,15 @@ impl App {
         // `self.json_level` can be borrowed mutably alongside it.
         let id = self.current_group.clone().unwrap_or_default();
         let Some(json) = self.nodes.get(&id).and_then(|n| n.as_json()) else { return };
+        let view = self.mirror.view(&id).unwrap_or(&json_view::NO_VIEW);
         match &mut self.json_level {
             Some(level) if level.node_id == id => {
                 if level.stale {
                     level.stale = false;
-                    level.relayout(&json.view);
+                    level.relayout(view);
                 }
             }
-            _ => self.json_level = Some(JsonLevel::new(id, json.value.clone(), &json.view)),
+            _ => self.json_level = Some(JsonLevel::new(id, json.value.clone(), view)),
         }
         // Here, not in the outline's build, so a worker's answer lands
         // while the outline is hidden (headless `JSONSEARCH`).
@@ -224,20 +225,22 @@ impl App {
     }
 
     /// Applies `edit` to the shown node's view, drops overrides that no
-    /// longer resolve, relays the level out and saves (`VIEW` is diffed).
-    /// Only while the node holds a parsed value: pruning against an error
-    /// or refetch placeholder's `Null` would wipe the synced view.
+    /// longer resolve, writes it (`edit_view`), relays the level out and
+    /// saves. Only while the node holds a parsed value: pruning against an
+    /// error or refetch placeholder's `Null` would wipe the synced view.
     pub(crate) fn edit_json_view(&mut self, edit: impl FnOnce(&mut JsonView, &serde_json::Value, &HashSet<String>)) {
-        let Some(level) = self.json_level.as_mut() else { return };
-        let Some(NodePayload::Json(json)) = self.nodes.get_mut(&level.node_id).map(|n| &mut n.payload) else {
-            return;
-        };
-        if !json.enterable() {
+        let Some(level) = self.json_level.as_ref() else { return };
+        if !self.nodes.get(&level.node_id).and_then(|n| n.as_json()).is_some_and(|json| json.enterable()) {
             return;
         }
-        edit(&mut json.view, &level.value, &level.expanded);
-        json.view.retain_resolvable(&level.value);
-        level.relayout(&json.view);
+        let id = level.node_id.clone();
+        let mut view = self.mirror.view(&id).cloned().unwrap_or_default();
+        edit(&mut view, &level.value, &level.expanded);
+        view.retain_resolvable(&level.value);
+        self.edit_view(&id, &view.to_field());
+        if let Some(level) = self.json_level.as_mut() {
+            level.relayout(&view);
+        }
         self.save_session();
     }
 
@@ -394,8 +397,8 @@ impl App {
     /// pans to it, and the outline opens down to it.
     pub(crate) fn reveal_json(&mut self, pointer: &str) {
         // A dry run first, so selecting an already-visible entry doesn't save.
-        let changed = self.json_level.as_ref().zip(self.current_json_node()).is_some_and(|(level, json)| {
-            let mut view = json.view.clone();
+        let changed = self.json_level.as_ref().filter(|_| self.current_json_node().is_some()).is_some_and(|level| {
+            let mut view = self.mirror.view(&level.node_id).cloned().unwrap_or_default();
             json_view::reveal(&level.value, &mut view, &level.expanded, pointer)
         });
         if changed {
@@ -457,8 +460,9 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::store::model::Kind;
 
-    // Real node ids: `shared_nodes()` skips any id that doesn't parse as
+    // Real node ids: `snapshots()` skips any id that doesn't parse as
     // a `NodeId`, which would make the store test pass vacuously.
     const OUTER: &str = "0000000000000001-1";
     const J: &str = "0000000000000001-2";
@@ -471,7 +475,7 @@ mod tests {
         let path = dir.join("level.json");
         std::fs::write(&path, text).unwrap();
         let mut app = App::default();
-        app.insert_placeholder_node(OUTER.into(), egui::Vec2::ZERO, NodePayload::Group(GroupPayload::named("outer")));
+        app.place_group(Some(OUTER.into()), "outer", Placement { group: None, pos: egui::Vec2::ZERO });
         app.insert_json_node_with_id(
             J.into(),
             path.to_string_lossy().into_owned(),
@@ -531,8 +535,7 @@ mod tests {
             create(&mut app);
             assert_eq!(app.node_order.len(), before + 1);
             assert!(app.json_level.is_none(), "the level was left");
-            let made = &app.nodes[app.node_order.last().unwrap()];
-            assert_eq!(made.group.as_deref(), Some(OUTER));
+            assert_eq!(app.mirror.group(app.node_order.last().unwrap()), Some(OUTER));
         }
     }
 
@@ -549,14 +552,17 @@ mod tests {
     #[test]
     fn place_node_inserts_at_the_placement_and_returns_the_id() {
         let (mut app, _) = app_with_json("place_node", "[1]");
-        let note = || NodePayload::Note(NotePayload { text: String::new(), editing: false, url: None });
+        let note = || Runtime::Note(NotePayload { text: String::new(), editing: false });
         let at = Placement { group: Some(OUTER.into()), pos: egui::vec2(1.0, 2.0) };
-        let id = app.place_node(None, note(), at);
-        let node = &app.nodes[&id];
-        assert_eq!((node.group.as_deref(), node.pos, node.parent.is_none()), (Some(OUTER), egui::vec2(1.0, 2.0), true));
+        let id = app.place_node(None, Kind::Note, note(), at);
+        assert_eq!(
+            (app.mirror.group(&id), app.layout_pos(&id), app.mirror.parent(&id).is_none()),
+            (Some(OUTER), egui::vec2(1.0, 2.0), true)
+        );
+        assert_eq!(app.mirror.pos(&id), Some(egui::vec2(1.0, 2.0)), "the document pos is the placement too");
         assert_eq!(app.node_order.last(), Some(&id));
         let at = Placement { group: None, pos: egui::Vec2::ZERO };
-        assert_eq!(app.place_node(Some("fixed".into()), note(), at), "fixed", "a given id is kept");
+        assert_eq!(app.place_node(Some("fixed".into()), Kind::Note, note(), at), "fixed", "a given id is kept");
     }
 
     #[test]
@@ -571,9 +577,9 @@ mod tests {
     #[test]
     fn the_store_sees_nothing_of_the_level_but_view() {
         let (mut app, j) = app_with_json("store", r#"{"a": {"b": [1, 2, 3]}, "c": [1, 2]}"#);
-        // (id, kind, group, fields without VIEW) for every stored node.
+        // (id, kind, group, fields without VIEW) for every stored node, as the mirror snapshot has it.
         let stored = |app: &App| {
-            app.shared_nodes()
+            crate::session_sync::tests::snapshots(app)
                 .into_iter()
                 .map(|(id, mut s)| {
                     s.fields.remove(&field::VIEW);
@@ -592,7 +598,7 @@ mod tests {
         app.apply_json_edit(JsonEdit::Relayout);
         assert_eq!(stored(&app), before);
         // The toggle is still there after Relayout; the drag is not.
-        let view = &app.nodes[&j].as_json().unwrap().view;
+        let view = app.mirror.view(&j).expect("a view");
         assert_eq!(view.get("/a").and_then(|o| o.collapsed), Some(true));
         assert_eq!(view.get("/a").and_then(|o| o.pos), None);
         app.switch_group_level(Some(OUTER.into()));
@@ -671,7 +677,7 @@ mod tests {
     fn a_failed_refresh_leaves_the_level_for_the_error_card() {
         let dir = crate::store::testutil::temp_dir("json_level-failed_refresh");
         let mut app = App::default();
-        app.insert_placeholder_node(OUTER.into(), egui::Vec2::ZERO, NodePayload::Group(GroupPayload::named("outer")));
+        app.place_group(Some(OUTER.into()), "outer", Placement { group: None, pos: egui::Vec2::ZERO });
         let body = crate::redirect_fetch::save(&dir, J, crate::content::ContentKind::Json, b"[1]".to_vec()).unwrap();
         let source = ContentSource::Web { url: "https://x.test/j".into(), body };
         app.insert_content(source, J.into(), egui::Vec2::ZERO, Some(OUTER.into())).unwrap();
@@ -702,7 +708,7 @@ mod tests {
         app.switch_group_level(Some(J.into()));
         app.apply_json_edit(JsonEdit::Toggle("/a".into()));
         app.apply_json_edit(JsonEdit::Moved("/a".into(), egui::pos2(500.0, 40.0)));
-        let before = app.nodes[J].as_json().unwrap().view.to_field();
+        let before = app.mirror.view(J).expect("a view").to_field();
         assert_ne!(before, "", "the view has overrides to lose");
         let bad = WebBody::File {
             kind: crate::content::ContentKind::Json,
@@ -711,31 +717,54 @@ mod tests {
         app.reload_fetched_node(J, bad);
         let json = app.nodes[J].as_json().unwrap();
         assert!(json.error.is_some(), "the reload failed");
-        assert_eq!(json.view.to_field(), before, "the error card keeps the view for Retry");
+        assert_eq!(app.mirror.view(J).expect("a view").to_field(), before, "the error card keeps the view for Retry");
+    }
+
+    /// Ruling 8: a reload removes the node and inserts it again, but the view lives in the mirror, which keeps it;
+    /// only overrides the new value can't resolve are dropped.
+    #[test]
+    fn a_reload_keeps_the_view() {
+        let dir = crate::store::testutil::temp_dir("json_level-reload_view");
+        let mut app = App::default();
+        let first = br#"{"a": {"b": 1}, "c": {"d": 2}}"#.to_vec();
+        let body = crate::redirect_fetch::save(&dir, J, crate::content::ContentKind::Json, first).unwrap();
+        let source = ContentSource::Web { url: "https://x.test/j".into(), body };
+        app.insert_content(source, J.into(), egui::Vec2::ZERO, None).unwrap();
+        app.switch_group_level(Some(J.into()));
+        app.apply_json_edit(JsonEdit::Moved("/a".into(), egui::pos2(500.0, 40.0)));
+        app.apply_json_edit(JsonEdit::Moved("/c".into(), egui::pos2(900.0, 40.0)));
+        let second = br#"{"a": {"b": 3}}"#.to_vec();
+        let body = crate::redirect_fetch::save(&dir, J, crate::content::ContentKind::Json, second).unwrap();
+        app.reload_fetched_node(J, body);
+        assert!(app.nodes[J].as_json().unwrap().error.is_none(), "the reload worked");
+        let view = app.mirror.view(J).expect("the view survived the reload");
+        assert_eq!(view.get("/a").and_then(|o| o.pos), Some([500.0, 40.0]));
+        assert!(view.get("/c").is_none(), "an override the new value can't resolve is dropped");
     }
 
     #[test]
     fn a_refetch_placeholder_is_not_entered_and_keeps_its_view() {
         let dir = crate::store::testutil::temp_dir("json_level-placeholder");
         let mut app = App::default();
-        app.insert_placeholder_node(OUTER.into(), egui::Vec2::ZERO, NodePayload::Group(GroupPayload::named("outer")));
-        // What `materialize` inserts for a missing file with a known URL.
+        app.place_group(Some(OUTER.into()), "outer", Placement { group: None, pos: egui::Vec2::ZERO });
+        // What `materialize` inserts for a missing file with a known URL, its view already the mirror's.
         let view = JsonView::from_field(r#"{"/a":{"collapsed":true}}"#);
+        app.edit_view(J, &view.to_field());
         let payload = JsonPayload {
             path: dir.join("not-fetched-yet.json").to_string_lossy().into_owned(),
             value: Default::default(),
-            key: None,
+            leaf: false,
             error: None,
-            url: Some("https://x.test/j".into()),
-            view: view.clone(),
         };
-        app.insert_placeholder_node(J.into(), egui::Vec2::ZERO, NodePayload::Json(payload));
-        app.nodes.get_mut(J).unwrap().group = Some(OUTER.into());
+        app.insert_placeholder_node(J.into(), egui::Vec2::ZERO, Kind::Json, Runtime::Json(payload));
+        let url = crate::store::model::FieldValue::Str("https://x.test/j".into());
+        app.mirror.set(J, crate::store::model::field::URL, url);
+        app.edit_group(J, Some(OUTER.into()));
         assert!(!app.nodes[J].as_json().unwrap().enterable());
         app.switch_group_level(Some(J.into()));
         assert_eq!(app.current_group.as_deref(), Some(OUTER), "entering leaves for the placeholder's group");
         assert!(app.json_level.is_none());
-        assert_eq!(app.nodes[J].as_json().unwrap().view, view);
+        assert_eq!(app.mirror.view(J), Some(&view));
     }
 
     #[test]
@@ -749,9 +778,9 @@ mod tests {
         app.drop_file(file, egui::pos2(300.0, 300.0));
         assert_eq!(app.current_group.as_deref(), Some(OUTER));
         assert!(app.json_level.is_none());
-        let new: Vec<_> = app.nodes.values().filter(|n| n.as_note().is_some()).collect();
+        let new: Vec<_> = app.nodes.iter().filter(|(_, n)| n.as_note().is_some()).map(|(id, _)| id).collect();
         assert_eq!(new.len(), 1, "the dropped text file is a note");
-        assert_eq!(new[0].group.as_deref(), Some(OUTER));
+        assert_eq!(app.mirror.group(new[0]), Some(OUTER));
     }
 
     #[test]
@@ -790,7 +819,7 @@ mod tests {
         for open in ["", "/users", "/users/33"] {
             assert!(level.outline.open.contains(open), "the outline opens {open:?}");
         }
-        let view = &app.nodes[&j].as_json().unwrap().view;
+        let view = app.mirror.view(&j).expect("a view");
         assert_eq!(view.pages("/users"), 2, "the reveal is saved like a manual one");
     }
 
@@ -849,7 +878,7 @@ mod tests {
         // Enter toggles the selected container's card.
         let collapsed = |app: &App| {
             json_view::is_collapsed(
-                &app.nodes[J].as_json().unwrap().view,
+                app.mirror.view(J).unwrap_or(&json_view::NO_VIEW),
                 &app.json_level.as_ref().unwrap().expanded,
                 "/a",
             )

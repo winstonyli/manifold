@@ -3,6 +3,7 @@
 //! switcher, shortcuts help and import confirm.
 
 use super::*;
+use crate::store::model::Kind;
 
 /// A Tab actions row: label, the key shown at its edge, and what it does.
 type TabActionRow = (&'static str, &'static str, fn(&mut App));
@@ -593,13 +594,13 @@ impl App {
         title: Option<&str>,
     ) -> (egui::WidgetText, Option<String>) {
         let str_field = |name: &str| node.fields.get(name).and_then(|v| v.as_str()).unwrap_or_default().to_string();
-        if node.kind == "group" {
+        if node.kind() == Some(Kind::Group) {
             ui.label(egui_phosphor::light::FOLDER_SIMPLE);
             let name = str_field("name");
             let segs = crate::names::display_name(&name, crate::names::UNTITLED);
             return (crate::names::name_job(ui, "", &segs, "").into(), crate::names::hidden_hint(&segs));
         }
-        if node.kind == "note" {
+        if node.kind() == Some(Kind::Note) {
             ui.label(egui_phosphor::light::NOTE_PENCIL);
             // The note's text is never cleaned; its first non-blank line is shown by the display rule.
             let text = str_field("text");
@@ -607,21 +608,21 @@ impl App {
             let segs = crate::names::display_name(first, crate::names::UNTITLED);
             return (crate::names::name_job(ui, "", &segs, "").into(), crate::names::hidden_hint(&segs));
         }
-        let text: String = match node.kind.as_str() {
-            "tab" => {
+        let text: String = match node.kind() {
+            Some(Kind::Tab) => {
                 engine_dot(ui, EngineKind::from_name(&str_field("engine")).unwrap_or(EngineKind::Servo), 8.0);
                 title.map_or_else(|| str_field("url"), str::to_string)
             }
-            "image" => {
+            Some(Kind::Image) => {
                 ui.label(egui_phosphor::light::IMAGE);
                 str_field("path")
             }
-            "pdf" => {
+            Some(Kind::Pdf) => {
                 ui.label(egui_phosphor::light::FILE_PDF);
                 str_field("path")
             }
             _ => {
-                // "json" / "json_leaf", and anything a newer build added.
+                // Json / JsonLeaf, and anything a newer build added.
                 ui.label(egui_phosphor::light::BRACKETS_CURLY);
                 str_field("path")
             }
@@ -651,7 +652,7 @@ impl App {
                                 reopen_index = Some(index);
                             }
                         };
-                        if root.kind == "group" {
+                        if root.kind() == Some(Kind::Group) {
                             // The count is laid out first, at the right, so a name cut short keeps it.
                             let count = member_count_text(entry.doc.nodes.len() - 1);
                             egui::Sides::new().shrink_left().truncate().show(ui, row_ui, |ui| ui.weak(count));
@@ -1035,9 +1036,13 @@ impl App {
         let mut toggle_pin_all = false;
         // The focused tab's own actions, each with its shortcut shown at the row's edge.
         let mut tab_action: Option<fn(&mut App)> = None;
-        let focused_pinned = self.nodes.get(focused_id).is_some_and(|n| n.payload.pinned());
-        let tab_pin_states: Vec<bool> =
-            self.nodes.values().filter(|n| n.payload.saved_tab().is_some()).map(|n| n.payload.pinned()).collect();
+        let focused_pinned = self.mirror.pinned(focused_id);
+        let tab_pin_states: Vec<bool> = self
+            .nodes
+            .iter()
+            .filter(|(_, n)| n.runtime.saved_tab().is_some())
+            .map(|(id, _)| self.mirror.pinned(id))
+            .collect();
         let all_pinned = !tab_pin_states.is_empty() && tab_pin_states.iter().all(|&p| p);
         let area = egui::Area::new(egui::Id::new("tab_actions_popup"))
             .fixed_pos(anchor_rect.left_bottom())
@@ -1269,7 +1274,7 @@ impl App {
     /// out so `build_quick_switcher`'s row loop and its own test agree on
     /// exactly what a sleeping tab's row shows.
     pub(crate) fn quick_switcher_row_label(&self, id: &str) -> Option<String> {
-        let (title, url) = self.nodes.get(id)?.payload.listed_tab()?;
+        let (title, url) = self.nodes.get(id)?.runtime.listed_tab()?;
         Some(if title.is_empty() { url.to_string() } else { title.to_string() })
     }
 
@@ -1283,7 +1288,7 @@ impl App {
         self.node_order
             .iter()
             .filter(|id| {
-                self.nodes.get(id.as_str()).and_then(|n| n.payload.listed_tab()).is_some_and(|(title, url)| {
+                self.nodes.get(id.as_str()).and_then(|n| n.runtime.listed_tab()).is_some_and(|(title, url)| {
                     query.is_empty() || title.to_lowercase().contains(&query) || url.to_lowercase().contains(&query)
                 })
             })
@@ -1570,7 +1575,7 @@ impl App {
     /// session, leaving the running one untouched.
     pub(crate) fn build_import_confirm_popup(&mut self, ui: &mut egui::Ui) {
         let Some(json) = &self.pending_import else { return };
-        let incoming = json.nodes.iter().filter(|n| n.kind == "tab").count();
+        let incoming = json.nodes.iter().filter(|n| n.kind() == Some(Kind::Tab)).count();
         let current = self.nodes.len();
         let mut confirm = false;
         let mut cancel = false;
@@ -1648,7 +1653,8 @@ mod tests {
         let ctx = egui::Context::default();
         let mut fields = serde_json::Map::new();
         fields.insert("name".into(), "Re\u{200B}ading".into());
-        let node = store::json::JsonNode { id: "g".into(), kind: "group".into(), fields };
+        fields.insert("type".into(), store::model::TYPE_GROUP.into());
+        let node = store::json::JsonNode { id: "g".into(), fields };
         let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
             let (label, hint) = App::closed_entry_label(ui, &node, None);
             assert_eq!(label.text(), "Re⟦200B⟧ading");
@@ -1664,7 +1670,8 @@ mod tests {
         let ctx = egui::Context::default();
         let mut fields = serde_json::Map::new();
         fields.insert("url".into(), "https://example.org/".into());
-        let node = store::json::JsonNode { id: "t".into(), kind: "tab".into(), fields };
+        fields.insert("type".into(), store::model::TYPE_TAB.into());
+        let node = store::json::JsonNode { id: "t".into(), fields };
         let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
             let (label, hint) = App::closed_entry_label(ui, &node, None);
             assert_eq!((label.text(), hint), ("https://example.org/", None));
@@ -1678,7 +1685,8 @@ mod tests {
         let ctx = egui::Context::default();
         let mut fields = serde_json::Map::new();
         fields.insert("text".into(), "\n\tRe\u{200B}ading\u{00A0}\u{00A0}list \nbody".into());
-        let node = store::json::JsonNode { id: "n".into(), kind: "note".into(), fields };
+        fields.insert("type".into(), store::model::TYPE_NOTE.into());
+        let node = store::json::JsonNode { id: "n".into(), fields };
         let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
             let (label, hint) = App::closed_entry_label(ui, &node, None);
             assert_eq!(label.text(), "Re⟦200B⟧ading list");
@@ -1687,8 +1695,8 @@ mod tests {
         output.textures_delta.clear();
     }
 
-    /// Name rules: a long bookmark folder name is one line cut with "…" at the popup's width, not wrapped, both as a header
-    /// and as the "click to set folder" label under a bookmark.
+    /// Name rules: a long bookmark folder name is one line cut with "…" at the popup's width, not wrapped, both as
+    /// a header and as the "click to set folder" label under a bookmark.
     #[test]
     fn a_long_bookmark_folder_header_is_one_cut_line() {
         let ctx = egui::Context::default();
@@ -1814,8 +1822,8 @@ mod tests {
     fn quick_switcher_label_uses_title_or_url_for_a_sleeping_tab() {
         use crate::session_sync::tests::{add, app_on, sleeping_tab};
         let mut app = app_on(&crate::store::testutil::temp_dir("qs-label").join("session.mnf"), 1);
-        let titled = add(&mut app, sleeping_tab("https://a/", "Alpha"));
-        let untitled = add(&mut app, sleeping_tab("https://b/", ""));
+        let titled = add(&mut app, Kind::Tab, sleeping_tab("https://a/", "Alpha"));
+        let untitled = add(&mut app, Kind::Tab, sleeping_tab("https://b/", ""));
         assert_eq!(app.quick_switcher_row_label(&titled).as_deref(), Some("Alpha"));
         assert_eq!(app.quick_switcher_row_label(&untitled).as_deref(), Some("https://b/"));
     }
@@ -1825,8 +1833,9 @@ mod tests {
     fn a_narrowed_query_confirms_its_first_match() {
         use crate::session_sync::tests::{add, app_on, sleeping_tab};
         let mut app = app_on(&crate::store::testutil::temp_dir("qs-narrowed").join("session.mnf"), 1);
-        let ids: Vec<String> =
-            (0..6).map(|i| add(&mut app, sleeping_tab(&format!("https://{i}/"), &format!("Tab {i}")))).collect();
+        let ids: Vec<String> = (0..6)
+            .map(|i| add(&mut app, Kind::Tab, sleeping_tab(&format!("https://{i}/"), &format!("Tab {i}"))))
+            .collect();
         app.open_quick_switcher();
         for _ in 0..5 {
             app.quick_switcher_move(1);

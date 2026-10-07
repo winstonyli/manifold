@@ -1,42 +1,44 @@
-//! The graph's node model: `GraphNode`, its `NodePayload` kinds and their
-//! payload structs.
+//! The graph's node model: `GraphNode`, its `Runtime` and the payload
+//! structs the runtime's variants hold.
 
 use super::*;
 
-/// Kind-specific data for one node in the unified graph-node model --
-/// `GraphNode` holds the fields every kind shares (position, graph
-/// membership); this holds only what varies per kind. Tab/Download/Group
-/// were the migration off three separate hardcoded node types (the old
+/// What a node holds on this machine beyond its stored fields (which are the
+/// `Mirror`'s): the live state its card shows and works from. A node's type
+/// is `Mirror::ty`, not the variant; the variant is the runtime shape that
+/// type's card needs, and `None` for a kind with none (a group: its name,
+/// `from_json` and default jar are all the mirror's). Tab/Download were the
+/// migration off separate hardcoded node types (the old
 /// `TabNode`/`DownloadNode`/`GroupNode`); `Note`/`Image`/`Pdf`/`Json` are
 /// genuinely new kinds added on top of that unified model -- see each one's
 /// own `*Payload` doc comment.
-pub(crate) enum NodePayload {
+pub(crate) enum Runtime {
     Tab(TabPayload),
     Unloaded(UnloadedTabPayload),
     Download(DownloadPayload),
-    Group(GroupPayload),
     Note(NotePayload),
     Image(ImagePayload),
     Pdf(PdfPayload),
     Json(JsonPayload),
+    None,
 }
 
-/// `as_x` (and `as_x_mut` where listed) on `NodePayload`, and the same
-/// pair on `GraphNode` forwarding to its payload.
-macro_rules! payload_accessors {
+/// `as_x` (and `as_x_mut` where listed) on `Runtime`, and the same
+/// pair on `GraphNode` forwarding to its runtime.
+macro_rules! runtime_accessors {
     ($( $variant:ident($ty:ty) => $as:ident $(, $as_mut:ident)?; )*) => {
-        impl NodePayload {
+        impl Runtime {
             $(
                 pub(crate) fn $as(&self) -> Option<&$ty> {
                     match self {
-                        NodePayload::$variant(p) => Some(p),
+                        Runtime::$variant(p) => Some(p),
                         _ => None,
                     }
                 }
                 $(
                     pub(crate) fn $as_mut(&mut self) -> Option<&mut $ty> {
                         match self {
-                            NodePayload::$variant(p) => Some(p),
+                            Runtime::$variant(p) => Some(p),
                             _ => None,
                         }
                     }
@@ -47,11 +49,11 @@ macro_rules! payload_accessors {
         impl GraphNode {
             $(
                 pub(crate) fn $as(&self) -> Option<&$ty> {
-                    self.payload.$as()
+                    self.runtime.$as()
                 }
                 $(
                     pub(crate) fn $as_mut(&mut self) -> Option<&mut $ty> {
-                        self.payload.$as_mut()
+                        self.runtime.$as_mut()
                     }
                 )?
             )*
@@ -59,30 +61,42 @@ macro_rules! payload_accessors {
     };
 }
 
-payload_accessors! {
+runtime_accessors! {
     Tab(TabPayload) => as_tab, as_tab_mut;
     Unloaded(UnloadedTabPayload) => as_unloaded;
     Download(DownloadPayload) => as_download, as_download_mut;
-    Group(GroupPayload) => as_group, as_group_mut;
     Note(NotePayload) => as_note, as_note_mut;
     Image(ImagePayload) => as_image;
     Pdf(PdfPayload) => as_pdf, as_pdf_mut;
     Json(JsonPayload) => as_json;
 }
 
-impl NodePayload {
-    /// The url and engine a live or unloaded tab is saved (and exported,
-    /// and copied) with.
-    pub(crate) fn saved_tab(&self) -> Option<(&str, EngineKind)> {
+impl Runtime {
+    /// A live or unloaded tab's live url (what it is copied and reopened
+    /// at); `None` for any other node. Its engine is `Mirror::engine`.
+    pub(crate) fn saved_tab(&self) -> Option<&str> {
         match self {
-            NodePayload::Tab(t) => Some((&t.url, t.tab.kind)),
-            NodePayload::Unloaded(t) => Some((&t.url, t.kind)),
-            NodePayload::Download(_)
-            | NodePayload::Group(_)
-            | NodePayload::Note(_)
-            | NodePayload::Image(_)
-            | NodePayload::Pdf(_)
-            | NodePayload::Json(_) => None,
+            Runtime::Tab(t) => Some(&t.url),
+            Runtime::Unloaded(t) => Some(&t.url),
+            Runtime::Download(_)
+            | Runtime::Note(_)
+            | Runtime::Image(_)
+            | Runtime::Pdf(_)
+            | Runtime::Json(_)
+            | Runtime::None => None,
+        }
+    }
+
+    /// The file a content card shows on this machine (an image, PDF, Json file or leaf, or download): its stored
+    /// path resolved here (`ContentIndex::resolve`), or a reload's new file. `None` for other kinds. The stored path is
+    /// the mirror's (`Mirror::path`, 2b-5 Ruling 5).
+    pub(crate) fn file_path(&self) -> Option<&str> {
+        match self {
+            Runtime::Image(p) => Some(&p.path),
+            Runtime::Pdf(p) => Some(&p.path),
+            Runtime::Json(p) => Some(&p.path),
+            Runtime::Download(p) => Some(&p.path),
+            Runtime::Tab(_) | Runtime::Unloaded(_) | Runtime::Note(_) | Runtime::None => None,
         }
     }
 
@@ -90,100 +104,31 @@ impl NodePayload {
     /// Switcher, Ctrl+Tab, the address bar's open tabs) show and match.
     pub(crate) fn listed_tab(&self) -> Option<(&str, &str)> {
         match self {
-            NodePayload::Tab(t) => Some((&t.title, &t.url)),
-            NodePayload::Unloaded(t) => Some((&t.title, &t.url)),
-            NodePayload::Download(_)
-            | NodePayload::Group(_)
-            | NodePayload::Note(_)
-            | NodePayload::Image(_)
-            | NodePayload::Pdf(_)
-            | NodePayload::Json(_) => None,
+            Runtime::Tab(t) => Some((&t.title, &t.url)),
+            Runtime::Unloaded(t) => Some((&t.title, &t.url)),
+            Runtime::Download(_)
+            | Runtime::Note(_)
+            | Runtime::Image(_)
+            | Runtime::Pdf(_)
+            | Runtime::Json(_)
+            | Runtime::None => None,
         }
-    }
-
-    pub(crate) fn pinned_mut(&mut self) -> Option<&mut bool> {
-        match self {
-            NodePayload::Tab(t) => Some(&mut t.pinned),
-            NodePayload::Unloaded(t) => Some(&mut t.pinned),
-            NodePayload::Download(_)
-            | NodePayload::Group(_)
-            | NodePayload::Note(_)
-            | NodePayload::Image(_)
-            | NodePayload::Pdf(_)
-            | NodePayload::Json(_) => None,
-        }
-    }
-
-    /// Whether a live or unloaded tab is pinned in place on the graph.
-    pub(crate) fn pinned(&self) -> bool {
-        match self {
-            NodePayload::Tab(t) => t.pinned,
-            NodePayload::Unloaded(t) => t.pinned,
-            NodePayload::Download(_)
-            | NodePayload::Group(_)
-            | NodePayload::Note(_)
-            | NodePayload::Image(_)
-            | NodePayload::Pdf(_)
-            | NodePayload::Json(_) => false,
-        }
-    }
-}
-
-/// A cheap, owned, `Copy` classifier for `&NodePayload` -- computed once
-/// up front so its immutable borrow of `self.nodes` ends immediately,
-/// before a dispatcher needs `&mut self` to render that kind's toolbar
-/// content. Mirrors `close_node`'s own match for exactly the same reason:
-/// matching directly on `&NodePayload` would keep that borrow alive for as
-/// long as the match arms run, which conflicts with the `&mut self` those
-/// arms need.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ItemNodeKind {
-    Tab,
-    Unloaded,
-    Download,
-    Group,
-    Note,
-    Image,
-    Pdf,
-    Json,
-}
-
-/// Every kind, in the order Graph view draws their cards: a later kind
-/// draws, and takes the pointer, on top of an earlier one.
-pub(crate) const GRAPH_DRAW_ORDER: [ItemNodeKind; 8] = [
-    ItemNodeKind::Tab,
-    ItemNodeKind::Unloaded,
-    ItemNodeKind::Download,
-    ItemNodeKind::Note,
-    ItemNodeKind::Image,
-    ItemNodeKind::Pdf,
-    ItemNodeKind::Json,
-    ItemNodeKind::Group,
-];
-
-pub(crate) fn item_node_kind(payload: &NodePayload) -> ItemNodeKind {
-    match payload {
-        NodePayload::Tab(_) => ItemNodeKind::Tab,
-        NodePayload::Unloaded(_) => ItemNodeKind::Unloaded,
-        NodePayload::Download(_) => ItemNodeKind::Download,
-        NodePayload::Group(_) => ItemNodeKind::Group,
-        NodePayload::Note(_) => ItemNodeKind::Note,
-        NodePayload::Image(_) => ItemNodeKind::Image,
-        NodePayload::Pdf(_) => ItemNodeKind::Pdf,
-        NodePayload::Json(_) => ItemNodeKind::Json,
     }
 }
 
 /// A sticky note's own data -- free-form user-typed text, no engine process
 /// or IPC of any kind behind it (unlike every other node kind so far). The
-/// first new kind added on top of the unified `GraphNode`/`NodePayload`
+/// first new kind added on top of the unified `GraphNode`/`Runtime`
 /// model, rather than another migration of a pre-existing type -- proof the
 /// model actually supports "arrange anything" the way it was built to.
 /// Persisted in the session store (`field::TEXT`) since a note is
-/// user-authored content, not a display preference like `TabPayload::pinned`
+/// user-authored content, not a display preference like `Mirror::pinned`
 /// or a group's own membership -- losing it on restart would defeat the
 /// point of writing one down.
 pub(crate) struct NotePayload {
+    /// The text box's edit buffer (2b-4 Ruling 6). The text is the mirror's (`Mirror::text`); this copy follows it
+    /// (`update_live_node`, `end_note_edit`) except while the box is typed in, when it holds what the user typed until
+    /// a save or the blur commits it (`App::edit_text`). Read through `App::note_text`.
     pub(crate) text: String,
     /// `true` shows a real, focused `TextEdit` (today's own behavior);
     /// `false` renders `text` as real Markdown (`egui_commonmark`) instead,
@@ -197,10 +142,7 @@ pub(crate) struct NotePayload {
     /// note starts `true` instead, so typing into it works immediately
     /// with no extra click.
     pub(crate) editing: bool,
-    /// Where this content came from on the web, when it did (see
-    /// `content`): Refresh and Open as tab use it, and a missing file is
-    /// fetched again from it. `None` for a local file.
-    pub(crate) url: Option<String>,
+    // Where it came from on the web, when it did, is the mirror's (`Mirror::url`, `App::source_url`).
 }
 
 /// A locally-added picture, embedded directly on the graph -- the second
@@ -227,10 +169,6 @@ pub(crate) struct ImagePayload {
     /// with this message as its tooltip. It stays in the session, so the
     /// next launch tries the file again.
     pub(crate) error: Option<String>,
-    /// Where this content came from on the web, when it did (see
-    /// `content`): Refresh and Open as tab use it, and a missing file is
-    /// fetched again from it. `None` for a local file.
-    pub(crate) url: Option<String>,
 }
 
 /// A locally-added PDF, rendered as its own graph node -- the third new
@@ -260,10 +198,6 @@ pub(crate) struct PdfPayload {
     /// failure) -- shown in place of the page image, distinct from "still
     /// loading" so a real failure isn't mistaken for a hang.
     pub(crate) outcome: Option<Result<PdfOutcome, String>>,
-    /// Where this content came from on the web, when it did (see
-    /// `content`): Refresh and Open as tab use it, and a missing file is
-    /// fetched again from it. `None` for a local file.
-    pub(crate) url: Option<String>,
 }
 
 pub(crate) struct PdfOutcome {
@@ -286,26 +220,16 @@ pub(crate) struct JsonPayload {
     pub(crate) path: String,
     /// Shared with an open `JsonLevel` (entering the node doesn't copy it).
     pub(crate) value: std::sync::Arc<serde_json::Value>,
-    /// The JSON key (or `[index]` for an array element) this value came
-    /// from -- `None` for a genuine top-level file-backed JSON node (its
-    /// card just shows the value's own shape), `Some(k)` for a leaf that an
-    /// older build's "Expand as Graph" made, whose card shows `"{k}: {value}"`
-    /// instead so it's clear which field this is. Such a leaf is stored as
-    /// its own `JsonLeaf` node, not this field, but still loads from a
-    /// session saved before that feature was removed -- see
-    /// `GroupPayload::from_json`.
-    pub(crate) key: Option<String>,
+    /// A leaf that an older build's "Expand as Graph" made (a `JsonLeaf` node), whose card shows `"{key}: {value}"`
+    /// (`Mirror::key`) so it's clear which field it is; `false` for a genuine top-level file-backed JSON node (its card
+    /// just shows the value's own shape). A leaf still loads from a session saved before that feature was removed; see
+    /// `Mirror::from_json`.
+    pub(crate) leaf: bool,
     /// Same as `ImagePayload::error`: a restored card whose file couldn't
     /// be loaded (`value` is `Null`).
     pub(crate) error: Option<String>,
-    /// Where this content came from on the web, when it did (see
-    /// `content`): Refresh and Open as tab use it, and a missing file is
-    /// fetched again from it. `None` for a local file, and for a leaf
-    /// (`key.is_some()`, never persisted).
-    pub(crate) url: Option<String>,
-    /// What the user changed about this node's level (spec "Saved view
-    /// state"): the store's `view` field. Empty for a leaf.
-    pub(crate) view: crate::json_view::JsonView,
+    // Where it came from on the web (`Mirror::url`) and what the user changed about its level (spec "Saved view
+    // state", `Mirror::view`) are the mirror's.
 }
 
 impl JsonPayload {
@@ -315,9 +239,7 @@ impl JsonPayload {
     /// here yet), whose view must outlive the fetch. A file that really
     /// holds `null` is still on disk, so the stat runs only for `Null`.
     pub(crate) fn enterable(&self) -> bool {
-        self.key.is_none()
-            && self.error.is_none()
-            && !(self.value.is_null() && !std::path::Path::new(&self.path).exists())
+        !self.leaf && self.error.is_none() && !(self.value.is_null() && !std::path::Path::new(&self.path).exists())
     }
 }
 
@@ -335,14 +257,10 @@ pub(crate) struct UnloadedTabPayload {
     /// From personal state (`LocalNode::title`); the live tab reports its
     /// own once it loads.
     pub(crate) title: String,
-    pub(crate) kind: EngineKind,
-    pub(crate) pinned: bool,
     /// From personal state, like `title`.
     pub(crate) muted: bool,
     pub(crate) zoom_factor: f64,
     pub(crate) state: UnloadedState,
-    /// See `jar::JarChoice`. Synced (`field::JAR`, `field::JAR_SET`).
-    pub(crate) jar: crate::jar::JarChoice,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -358,9 +276,9 @@ pub(crate) enum UnloadedState {
     Failed(String),
 }
 
-/// A tab's own data -- was `TabNode`'s non-shared fields (`parent`/`group`/
-/// `pos`/`vel`/`color` moved to the now-shared `GraphNode`). See
-/// `NodePayload`'s own doc comment.
+/// A tab's own data -- was `TabNode`'s non-shared fields (`parent`/`group`, `color`, `pinned` and the
+/// document pos live in the `Mirror`; where its card is drawn is `App::layout`). See
+/// `Runtime`'s own doc comment.
 pub(crate) struct TabPayload {
     pub(crate) tab: EngineTab,
     pub(crate) url: String,
@@ -390,34 +308,25 @@ pub(crate) struct TabPayload {
     /// from `Settings::zoom_factor` at spawn time (a fresh tab still
     /// picks up "whatever the default is right now", unchanged), then
     /// tracked per-tab from there -- carried through a respawn/engine
-    /// swap/crash recovery the same way `pinned`/`color` already are. Not
+    /// swap/crash recovery the same way `Mirror::pinned`/`Mirror::color` are. Not
     /// persisted to the session store: a restored tab starts at
     /// `Settings::zoom_factor`.
     pub(crate) zoom_factor: f64,
-    /// Graph view's pin toggle — a pinned node is never moved by the
-    /// force-directed layout (the same `pinned` handling `graph_layout::step`
-    /// gives a node being dragged; it still pushes its neighbours), so it
-    /// stays exactly where the user put it instead of drifting under
-    /// repulsion/centering forces as siblings come and go. Saved as
-    /// `field::PINNED`.
-    pub(crate) pinned: bool,
     /// Set while a swap is in flight for *this* tab: the engine to swap
     /// *to*, once this tab's `GetState` reply (its `StateSnapshot`) comes
     /// back. Per-tab (not a flat `App` field) so a swap on one tab can't
     /// block or interfere with a concurrent swap/crash on another.
     pub(crate) swap_target: Option<EngineKind>,
-    /// See `jar::JarChoice`. Synced (`field::JAR`, `field::JAR_SET`).
-    pub(crate) jar: crate::jar::JarChoice,
 }
 
 /// A download's own data -- was `DownloadNode`'s non-shared fields (`path`,
-/// byte progress). See `NodePayload`'s own doc comment for why this is
+/// byte progress). See `Runtime`'s own doc comment for why this is
 /// split out from the position/graph-membership fields `GraphNode` now
 /// holds for every kind.
 pub(crate) struct DownloadPayload {
     pub(crate) path: String,
-    /// What the engine fetched, if it said (not a refetch source: a download has no Refresh).
-    pub(crate) url: Option<String>,
+    // What the engine fetched, if it said, is the mirror's (`Mirror::url`): not a refetch source, a download has no
+    // Refresh.
     /// Bytes received so far -- created (node included) at
     /// `EngineToHost::DownloadStarted`, not only once finished, so a
     /// download is visible with live progress for its whole lifetime
@@ -450,190 +359,95 @@ pub(crate) struct DownloadPayload {
 /// own comment on it) -- this is a hasher swap, not a new dependency.
 pub(crate) type NodeMap = HashMap<String, GraphNode, foldhash::fast::RandomState>;
 
-/// One node in the graph view -- fields every kind shares (position, graph
-/// membership) live here; `payload` holds whatever's specific to the
-/// node's actual kind. See `NodePayload`'s own doc comment for the
-/// migration this is a step of.
+/// One node in the graph view. Its document fields (`pos`, `color`, `pinned`, `parent`, the "opened from" edge,
+/// and `group`, the level it is shown in) are not fields here: see `Mirror`; where its card is drawn is
+/// `App::layout`. `runtime` holds whatever live state the node's kind needs here (`Runtime`).
 pub(crate) struct GraphNode {
-    /// The "opened from" edge for a tab (which tab spawned it, making the
-    /// tab collection a forest for Graph view), or, for a download, the tab
-    /// it was downloaded from. `None` for a root node, and always `None`
-    /// for a group (never "opened from").
-    pub(crate) parent: Option<String>,
-    /// Which group's subgraph this node is shown in -- `None` at the top
-    /// level. Groups nest, so a group node has one too; see
-    /// `GroupPayload`'s own doc comment.
-    pub(crate) group: Option<String>,
+    pub(crate) runtime: Runtime,
+}
+
+/// Where a node's card is drawn and how fast physics is moving it (`App::layout`, 2b-4 Ruling 1): runtime state,
+/// personal to this replica. The force-directed settle and drags move it; it starts at the node's placement, a
+/// remote pos snaps it, and personal state (`LocalNode::pos`) restores it. The document never reads it: only a drag
+/// release (`App::edit_pos`) writes the document pos.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub(crate) struct Layout {
     pub(crate) pos: egui::Vec2,
     pub(crate) vel: egui::Vec2,
-    /// User-chosen tag color -- `None` for any kind that doesn't use one
-    /// (`Download` doesn't; `Tab`/`Group` do).
-    pub(crate) color: Option<egui::Color32>,
-    pub(crate) payload: NodePayload,
+}
+
+impl Layout {
+    /// At rest at `pos`.
+    pub(crate) fn at(pos: egui::Vec2) -> Self {
+        Layout { pos, vel: egui::Vec2::ZERO }
+    }
 }
 
 impl GraphNode {
-    /// What a screen reader announces for the node's card: its kind, then what identifies it. A local file (no
-    /// web source) is named by its file name.
-    pub(crate) fn accessible_name(&self) -> String {
+    /// What a screen reader announces for the node's card: its kind, then what identifies it. A content card is named
+    /// by its web `source` (`App::source_url`), or by its file name when it has none; a note by the first line of
+    /// `text` and a group by `text`, the stored text its card shows (`App::own_text`), ignored for other kinds.
+    pub(crate) fn accessible_name(&self, text: &str, source: Option<&str>) -> String {
         let first_nonempty = |parts: &[&str]| parts.iter().find(|p| !p.trim().is_empty()).map(|p| p.trim().to_string());
         // Either separator: a saved path may come from the other platform.
         let file_name =
             |path: &str| path.rsplit(['/', '\\']).next().filter(|name| !name.is_empty()).map(str::to_string);
-        let source_or_file = |path: &str| self.source_url().map(str::to_string).or_else(|| file_name(path));
-        let (kind, detail) = match &self.payload {
-            NodePayload::Tab(t) => ("Tab", first_nonempty(&[&t.title, &t.url])),
-            NodePayload::Unloaded(t) => ("Sleeping tab", first_nonempty(&[&t.title, &t.url])),
-            NodePayload::Download(d) => ("Download", file_name(&d.path)),
-            NodePayload::Group(g) => {
-                ("Group", Some(crate::names::to_plain(&crate::names::display_name(&g.name, crate::names::UNTITLED))))
+        let source_or_file = |path: &str| source.map(str::to_string).or_else(|| file_name(path));
+        let (kind, detail) = match &self.runtime {
+            Runtime::Tab(t) => ("Tab", first_nonempty(&[&t.title, &t.url])),
+            Runtime::Unloaded(t) => ("Sleeping tab", first_nonempty(&[&t.title, &t.url])),
+            Runtime::Download(d) => ("Download", file_name(&d.path)),
+            // A group is the one kind with no runtime (2b-6 Ruling 8: no unknown-type card yet); its name is `text`.
+            Runtime::None => {
+                ("Group", Some(crate::names::to_plain(&crate::names::display_name(text, crate::names::UNTITLED))))
             }
-            NodePayload::Note(n) => {
+            Runtime::Note(_) => {
                 // The note's text is never cleaned; its first non-blank line is shown by the display rule.
-                let first = n.text.lines().map(str::trim).find(|l| !l.is_empty());
+                let first = text.lines().map(str::trim).find(|l| !l.is_empty());
                 ("Note", first.map(|l| crate::names::to_plain(&crate::names::display_name(l, crate::names::UNTITLED))))
             }
-            NodePayload::Image(p) => ("Image", source_or_file(&p.path)),
-            NodePayload::Pdf(p) => ("PDF", source_or_file(&p.path)),
-            NodePayload::Json(p) => ("JSON", source_or_file(&p.path)),
+            Runtime::Image(p) => ("Image", source_or_file(&p.path)),
+            Runtime::Pdf(p) => ("PDF", source_or_file(&p.path)),
+            Runtime::Json(p) => ("JSON", source_or_file(&p.path)),
         };
         match detail {
             Some(detail) => format!("{kind}: {detail}"),
             None => kind.to_string(),
         }
     }
+}
 
-    /// The web source of an Image, Pdf, Json (not a leaf) or Note node.
-    pub(crate) fn source_url(&self) -> Option<&str> {
-        match &self.payload {
-            NodePayload::Image(p) => p.url.as_deref(),
-            NodePayload::Pdf(p) => p.url.as_deref(),
-            NodePayload::Json(p) if p.key.is_none() => p.url.as_deref(),
-            NodePayload::Note(p) => p.url.as_deref(),
-            _ => None,
-        }
+impl App {
+    /// The web source of an Image, Pdf, Json (not a leaf) or Note node (`Mirror::url`): Refresh and Open as tab use it,
+    /// and a missing file is fetched again from it. `None` for a local file and for other kinds.
+    pub(crate) fn source_url(&self, id: &str) -> Option<&str> {
+        let content = match &self.nodes.get(id)?.runtime {
+            Runtime::Image(_) | Runtime::Pdf(_) | Runtime::Note(_) => true,
+            Runtime::Json(p) => !p.leaf,
+            _ => false,
+        };
+        Some(self.mirror.url(id)).filter(|url| content && !url.is_empty())
     }
 
     /// The URL a card's "Copy URL" puts on the clipboard: its `source_url`, or the address a download came from.
-    pub(crate) fn copyable_url(&self) -> Option<&str> {
-        self.source_url().or_else(|| self.as_download().and_then(|d| d.url.as_deref()))
-    }
-
-    pub(crate) fn source_url_mut(&mut self) -> Option<&mut Option<String>> {
-        match &mut self.payload {
-            NodePayload::Image(p) => Some(&mut p.url),
-            NodePayload::Pdf(p) => Some(&mut p.url),
-            NodePayload::Json(p) if p.key.is_none() => Some(&mut p.url),
-            NodePayload::Note(p) => Some(&mut p.url),
-            _ => None,
-        }
+    pub(crate) fn copyable_url(&self, id: &str) -> Option<&str> {
+        let download = self.nodes.get(id).is_some_and(|n| n.as_download().is_some());
+        self.source_url(id).or_else(|| Some(self.mirror.url(id)).filter(|url| download && !url.is_empty()))
     }
 }
 
-/// A tab group's own data -- was `GroupNode`'s non-shared field (`name`;
-/// `pos`/`vel`/`color` moved to `GraphNode`, shared with every kind). A
-/// group is a container node shown at whichever level of Graph view it
-/// itself belongs to that, double-clicked, drills into its own subgraph of
-/// members (tabs/downloads/notes/images/PDFs/JSON, and other groups) in
-/// place of that level's -- the same "swap which set of nodes this view
-/// renders" idea `ViewMode::Item`/`Graph` already is, just recursively, and
-/// reusing that same flat `graph_layout::step` simulation rather than a
-/// second nested one running inside the group's own node.
-///
-/// **Groups nest.** A group's own `GraphNode::group` can itself be
-/// `Some(parent_group_id)` -- the "no nesting, `GraphNode::group` is a
-/// single `Option<String>` not a path" limitation this doc comment used to
-/// describe no longer applies: a single `Option<String>` *is* enough to
-/// nest, since walking `.group` links upward from any node already forms
-/// the whole ancestor chain (`App::group_breadcrumb`), with no separate
-/// path/stack type needed. `App::current_group` names whichever group's
-/// subgraph is currently showing (`None` at the true top level, same as
-/// before); leaving a group (the toolbar's "◀" button) goes to that
-/// group's own parent, not straight to the top, so leaving a deeply-nested
-/// group takes as many "◀" clicks as it took to get there (or one
-/// breadcrumb click to jump straight to any ancestor). Dissolving a nested
-/// group reparents its members to *its own* parent (`App::dissolve_group`),
-/// not unconditionally to the top level.
-///
-/// Dragging one group's card onto another's is deliberately left as
-/// **merge** (dissolve the source, flatten its members into the target),
-/// unchanged from before nesting existed -- it does not nest the source
-/// under the target. Nesting is created only through "+ New Group"/Import
-/// Group/"Group Selected" while already viewing a group's own subgraph, a
-/// deliberate choice (confirmed with the user) to avoid changing what an
-/// already-shipped drag gesture does.
-///
-/// Entering/leaving eases the camera via `GraphCameraTween` rather than
-/// `Transition` — see that type's own doc comment for why. Groups, their
-/// members and nesting are saved in the session store (`session_sync`).
-pub(crate) struct GroupPayload {
-    pub(crate) name: String,
-    /// Made by an older build's "Expand as Graph", now removed. Saved like
-    /// any group, as are the JSON leaves inside it, so a session saved by
-    /// that build still loads.
-    pub(crate) from_json: bool,
-    /// The jar new tabs in this group start with (`field::DEFAULT_JAR`); `None` inherits from the parent group.
-    pub(crate) default_jar: Option<crate::store::model::NodeId>,
-}
-
-impl GroupPayload {
-    /// A plain group: not from JSON, no default jar.
-    pub(crate) fn named(name: impl Into<String>) -> GroupPayload {
-        GroupPayload { name: name.into(), from_json: false, default_jar: None }
+#[cfg(test)]
+impl App {
+    /// Places a node `id` of type `kind` (its `TYPE` in the mirror) showing `runtime`, at the origin, as
+    /// `insert_placeholder_node` would. For tests that need a node of a given type.
+    pub(crate) fn test_node(&mut self, id: &str, kind: crate::store::model::Kind, runtime: Runtime) {
+        self.insert_placeholder_node(id.to_owned(), egui::Vec2::ZERO, kind, runtime);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::json_view::JsonView;
-
-    // `Tab` is left out: `TabPayload` owns a live `EngineTab`, which a unit
-    // test can't construct. Its arm is covered by live Tab-view runs instead.
-    #[test]
-    fn maps_each_constructible_payload_variant_to_its_own_kind() {
-        assert_eq!(
-            item_node_kind(&NodePayload::Download(DownloadPayload {
-                path: "file.bin".into(),
-                url: None,
-                bytes_received: 0,
-                total_bytes: Some(1024),
-                completed: false,
-                failed: false
-            })),
-            ItemNodeKind::Download
-        );
-        assert_eq!(item_node_kind(&NodePayload::Group(GroupPayload::named("g"))), ItemNodeKind::Group);
-        assert_eq!(
-            item_node_kind(&NodePayload::Note(NotePayload { text: "n".into(), editing: false, url: None })),
-            ItemNodeKind::Note
-        );
-        assert_eq!(
-            item_node_kind(&NodePayload::Image(ImagePayload {
-                path: "img.png".into(),
-                width: 100,
-                height: 100,
-                error: None,
-                url: None
-            })),
-            ItemNodeKind::Image
-        );
-        assert_eq!(
-            item_node_kind(&NodePayload::Pdf(PdfPayload { path: "doc.pdf".into(), outcome: None, url: None })),
-            ItemNodeKind::Pdf
-        );
-        assert_eq!(
-            item_node_kind(&NodePayload::Json(JsonPayload {
-                path: "data.json".into(),
-                value: Default::default(),
-                key: None,
-                error: None,
-                url: None,
-                view: JsonView::default()
-            })),
-            ItemNodeKind::Json
-        );
-    }
 
     /// A card's screen-reader name is its kind, then its title (or the first line of a note).
     #[test]
@@ -642,21 +456,25 @@ mod tests {
         let (g, n) = (app.alloc_node_id(), app.alloc_node_id());
         app.insert_group_at(g.clone(), None);
         app.insert_note_at(n.clone(), None);
-        let name = |app: &crate::App, id: &str| app.nodes[id].accessible_name();
+        let name = |app: &crate::App, id: &str| app.nodes[id].accessible_name(app.own_text(id), None);
         assert_eq!(name(&app, &n), "Note");
-        app.nodes.get_mut(&n).unwrap().payload.as_note_mut().unwrap().text = "
+        app.nodes.get_mut(&n).unwrap().runtime.as_note_mut().unwrap().text = "
   first line
 second"
             .into();
         assert_eq!(name(&app, &n), "Note: first line");
-        app.nodes.get_mut(&g).unwrap().as_group_mut().unwrap().name = "Reading".into();
+        app.mirror.set(&g, crate::store::model::field::NAME, crate::store::model::FieldValue::Str("Reading".into()));
         assert_eq!(name(&app, &g), "Group: Reading");
-        app.nodes.get_mut(&g).unwrap().as_group_mut().unwrap().name = "Re\u{200B}ading".into();
+        app.mirror.set(
+            &g,
+            crate::store::model::field::NAME,
+            crate::store::model::FieldValue::Str("Re\u{200B}ading".into()),
+        );
         assert_eq!(name(&app, &g), "Group: Re<U+200B>ading");
-        app.nodes.get_mut(&g).unwrap().as_group_mut().unwrap().name = " ".into();
+        app.mirror.set(&g, crate::store::model::field::NAME, crate::store::model::FieldValue::Str(" ".into()));
         assert_eq!(name(&app, &g), "Group: Untitled");
         let raw = "\n\tRe\u{200B}ading\u{00A0}\u{00A0}list \nbody";
-        app.nodes.get_mut(&n).unwrap().payload.as_note_mut().unwrap().text = raw.into();
+        app.nodes.get_mut(&n).unwrap().runtime.as_note_mut().unwrap().text = raw.into();
         assert_eq!(name(&app, &n), "Note: Re<U+200B>ading list");
         assert_eq!(app.nodes[&n].as_note().unwrap().text, raw, "the note's text is not cleaned");
     }
@@ -664,59 +482,37 @@ second"
     /// Review C-B12: a local file's card is named by its file name; a web source still wins.
     #[test]
     fn a_local_file_card_has_an_accessible_name() {
-        let node = |payload| GraphNode {
-            parent: None,
-            group: None,
-            pos: egui::Vec2::ZERO,
-            vel: egui::Vec2::ZERO,
-            color: None,
-            payload,
-        };
-        let pdf = |url: Option<&str>| {
-            node(NodePayload::Pdf(PdfPayload {
-                path: r"C:\docs\report.pdf".into(),
-                outcome: None,
-                url: url.map(str::to_string),
-            }))
-        };
-        assert_eq!(pdf(None).accessible_name(), "PDF: report.pdf");
-        assert_eq!(pdf(Some("https://example.org/r.pdf")).accessible_name(), "PDF: https://example.org/r.pdf");
-        let image = node(NodePayload::Image(ImagePayload {
-            path: "/home/u/cat.png".into(),
-            width: 1,
-            height: 1,
-            error: None,
-            url: None,
-        }));
-        assert_eq!(image.accessible_name(), "Image: cat.png");
-        let json = node(NodePayload::Json(JsonPayload {
+        let node = |runtime| GraphNode { runtime };
+        let pdf = node(Runtime::Pdf(PdfPayload { path: r"C:\docs\report.pdf".into(), outcome: None }));
+        assert_eq!(pdf.accessible_name("", None), "PDF: report.pdf");
+        let source = Some("https://example.org/r.pdf");
+        assert_eq!(pdf.accessible_name("", source), "PDF: https://example.org/r.pdf");
+        let image =
+            node(Runtime::Image(ImagePayload { path: "/home/u/cat.png".into(), width: 1, height: 1, error: None }));
+        assert_eq!(image.accessible_name("", None), "Image: cat.png");
+        let json = node(Runtime::Json(JsonPayload {
             path: r"D:\data\x.json".into(),
             value: Default::default(),
-            key: None,
+            leaf: false,
             error: None,
-            url: None,
-            view: JsonView::default(),
         }));
-        assert_eq!(json.accessible_name(), "JSON: x.json");
+        assert_eq!(json.accessible_name("", None), "JSON: x.json");
     }
 
     /// An unloaded tab's card is saved, exported and copied as its tab.
     #[test]
     fn saved_tab_keeps_a_failed_tab() {
         assert_eq!(
-            (NodePayload::Unloaded(UnloadedTabPayload {
+            (Runtime::Unloaded(UnloadedTabPayload {
                 url: "https://example.org/".into(),
                 title: String::new(),
-                kind: EngineKind::Cef,
-                pinned: true,
                 muted: false,
                 zoom_factor: 1.5,
                 state: UnloadedState::Failed("no binary".into()),
-                jar: Default::default(),
             }))
             .saved_tab(),
-            Some(("https://example.org/", EngineKind::Cef))
+            Some("https://example.org/")
         );
-        assert_eq!(NodePayload::Group(GroupPayload::named("g")).saved_tab(), None);
+        assert_eq!(Runtime::None.saved_tab(), None);
     }
 }

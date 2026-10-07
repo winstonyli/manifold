@@ -113,6 +113,17 @@ pub fn now_ms() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
 }
 
+pub const TYPE_TAB: &str = "application/vnd.manifold.tab";
+pub const TYPE_GROUP: &str = "application/vnd.manifold.group";
+pub const TYPE_JAR: &str = "application/vnd.manifold.jar";
+pub const TYPE_JSON_LEAF: &str = "application/vnd.manifold.json-leaf";
+pub const TYPE_NOTE: &str = "text/markdown";
+pub const TYPE_PDF: &str = "application/pdf";
+pub const TYPE_JSON: &str = "application/json";
+/// What a created image is stored as until sniffed types arrive (plan 2c); any `image/*` reads back as an image.
+pub const TYPE_IMAGE: &str = "image/png";
+pub const TYPE_DOWNLOAD: &str = "application/octet-stream";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Kind {
     Tab,
@@ -124,41 +135,50 @@ pub enum Kind {
     JsonLeaf,
     Download,
     Jar,
-    /// A kind a newer build wrote (kept, never shown), or `Unknown(0)` for
-    /// a node an op named before its `Create` arrived.
-    Unknown(u64),
+    /// No `type` yet (an op named the node before its `Create` arrived), or a type a newer build wrote
+    /// (kept, never shown).
+    Unknown,
 }
 
-const KINDS: [(Kind, u64, &str); 9] = [
-    (Kind::Tab, 1, "tab"),
-    (Kind::Group, 2, "group"),
-    (Kind::Note, 3, "note"),
-    (Kind::Image, 4, "image"),
-    (Kind::Pdf, 5, "pdf"),
-    (Kind::Json, 6, "json"),
-    (Kind::JsonLeaf, 7, "json_leaf"),
-    (Kind::Download, 8, "download"),
-    (Kind::Jar, 9, "jar"),
-];
+/// The type table: each kind, the type string it is stored under, and the fields a node of it carries, `group`
+/// aside (spec, "The shared document"). `parent` ("opened from") is on every kind a page can make: a tab, a download,
+/// and content a tab became. Older builds don't write it for the non-tab kinds, but keep it (`Node` holds every
+/// register, and a `Create` only writes the fields listed here). Fields a type does not list stay raw in the document
+/// untouched (2b-5 Ruling 2).
+#[rustfmt::skip]
+pub(crate) const TYPES: [(Kind, &str, &[u32]); 9] = {
+    use field::*;
+    [
+        (Kind::Tab, TYPE_TAB, &[POS, COLOR, PARENT, URL, ENGINE, PINNED, JAR, JAR_SET]),
+        (Kind::Group, TYPE_GROUP, &[POS, COLOR, NAME, FROM_JSON, DEFAULT_JAR]),
+        (Kind::Note, TYPE_NOTE, &[POS, COLOR, PARENT, URL, TEXT]),
+        (Kind::Image, TYPE_IMAGE, &[POS, COLOR, PARENT, URL, PATH]),
+        (Kind::Pdf, TYPE_PDF, &[POS, COLOR, PARENT, URL, PATH]),
+        (Kind::Json, TYPE_JSON, &[POS, COLOR, PARENT, URL, PATH, VIEW]),
+        (Kind::JsonLeaf, TYPE_JSON_LEAF, &[POS, COLOR, PATH, KEY, VALUE]),
+        (Kind::Download, TYPE_DOWNLOAD, &[POS, COLOR, PARENT, URL, PATH]),
+        (Kind::Jar, TYPE_JAR, &[COLOR, NAME, EPHEMERAL]),
+    ]
+};
 
 impl Kind {
-    pub fn code(self) -> u64 {
-        match self {
-            Kind::Unknown(code) => code,
-            known => KINDS.iter().find(|k| k.0 == known).map_or(0, |k| k.1),
+    /// The type string a created node of this kind is stored under.
+    pub fn type_str(self) -> Option<&'static str> {
+        TYPES.iter().find(|t| t.0 == self).map(|t| t.1)
+    }
+
+    /// The fields a node of this kind carries, `group` aside (`TYPES`): what a `Create` writes, what another
+    /// replica's change hands the app (2b-5 Ruling 11), and what a snapshot of the node holds. Empty for `Unknown`.
+    pub fn fields(self) -> &'static [u32] {
+        TYPES.iter().find(|t| t.0 == self).map_or(&[], |t| t.2)
+    }
+
+    /// The kind a stored type string means; any `image/*` is an image.
+    pub fn from_type(ty: &str) -> Kind {
+        if ty.get(..6).is_some_and(|p| p.eq_ignore_ascii_case("image/")) {
+            return Kind::Image;
         }
-    }
-
-    pub fn from_code(code: u64) -> Kind {
-        KINDS.iter().find(|k| k.1 == code).map_or(Kind::Unknown(code), |k| k.0)
-    }
-
-    pub fn name(self) -> Option<&'static str> {
-        KINDS.iter().find(|k| k.0 == self).map(|k| k.2)
-    }
-
-    pub fn from_name(name: &str) -> Option<Kind> {
-        KINDS.iter().find(|k| k.2 == name).map(|k| k.0)
+        TYPES.iter().find(|t| t.1.eq_ignore_ascii_case(ty)).map_or(Kind::Unknown, |t| t.0)
     }
 }
 
@@ -187,9 +207,6 @@ pub struct FieldDef {
     pub no: u32,
     pub name: &'static str,
     pub ty: FieldType,
-    /// Emitted only by named user actions, never by diffing (spec "Local
-    /// edits become ops").
-    pub explicit: bool,
 }
 
 /// Field numbers. Never reuse one; retired numbers go in `RESERVED`.
@@ -218,29 +235,32 @@ pub mod field {
     pub const DEFAULT_JAR: u32 = 17;
     /// A jar with no file: dropped at quit.
     pub const EPHEMERAL: u32 = 18;
+    /// A node's MIME type, written by `Create`.
+    pub const TYPE: u32 = 19;
 }
 
-pub static FIELDS: [FieldDef; 18] = [
-    FieldDef { no: field::POS, name: "pos", ty: FieldType::Pos, explicit: true },
-    FieldDef { no: field::COLOR, name: "color", ty: FieldType::Color, explicit: false },
-    FieldDef { no: field::GROUP, name: "group", ty: FieldType::Id, explicit: false },
-    FieldDef { no: field::PARENT, name: "parent", ty: FieldType::Id, explicit: false },
-    FieldDef { no: field::URL, name: "url", ty: FieldType::Str, explicit: true },
-    FieldDef { no: field::ENGINE, name: "engine", ty: FieldType::Engine, explicit: false },
-    FieldDef { no: field::PINNED, name: "pinned", ty: FieldType::Bool, explicit: false },
-    FieldDef { no: field::NAME, name: "name", ty: FieldType::Str, explicit: false },
-    FieldDef { no: field::FROM_JSON, name: "from_json", ty: FieldType::Bool, explicit: false },
-    FieldDef { no: field::TEXT, name: "text", ty: FieldType::Str, explicit: false },
+pub static FIELDS: [FieldDef; 19] = [
+    FieldDef { no: field::POS, name: "pos", ty: FieldType::Pos },
+    FieldDef { no: field::COLOR, name: "color", ty: FieldType::Color },
+    FieldDef { no: field::GROUP, name: "group", ty: FieldType::Id },
+    FieldDef { no: field::PARENT, name: "parent", ty: FieldType::Id },
+    FieldDef { no: field::URL, name: "url", ty: FieldType::Str },
+    FieldDef { no: field::ENGINE, name: "engine", ty: FieldType::Engine },
+    FieldDef { no: field::PINNED, name: "pinned", ty: FieldType::Bool },
+    FieldDef { no: field::NAME, name: "name", ty: FieldType::Str },
+    FieldDef { no: field::FROM_JSON, name: "from_json", ty: FieldType::Bool },
+    FieldDef { no: field::TEXT, name: "text", ty: FieldType::Str },
     // Machine-local: a replica that refetches a missing file saves it under
     // its own content dir, and that path must not be written back.
-    FieldDef { no: field::PATH, name: "path", ty: FieldType::Str, explicit: true },
-    FieldDef { no: field::KEY, name: "key", ty: FieldType::Str, explicit: false },
-    FieldDef { no: field::VALUE, name: "value", ty: FieldType::Str, explicit: false },
-    FieldDef { no: field::VIEW, name: "view", ty: FieldType::Str, explicit: false },
-    FieldDef { no: field::JAR, name: "jar", ty: FieldType::Id, explicit: false },
-    FieldDef { no: field::JAR_SET, name: "jar_set", ty: FieldType::Bool, explicit: false },
-    FieldDef { no: field::DEFAULT_JAR, name: "default_jar", ty: FieldType::Id, explicit: false },
-    FieldDef { no: field::EPHEMERAL, name: "ephemeral", ty: FieldType::Bool, explicit: false },
+    FieldDef { no: field::PATH, name: "path", ty: FieldType::Str },
+    FieldDef { no: field::KEY, name: "key", ty: FieldType::Str },
+    FieldDef { no: field::VALUE, name: "value", ty: FieldType::Str },
+    FieldDef { no: field::VIEW, name: "view", ty: FieldType::Str },
+    FieldDef { no: field::JAR, name: "jar", ty: FieldType::Id },
+    FieldDef { no: field::JAR_SET, name: "jar_set", ty: FieldType::Bool },
+    FieldDef { no: field::DEFAULT_JAR, name: "default_jar", ty: FieldType::Id },
+    FieldDef { no: field::EPHEMERAL, name: "ephemeral", ty: FieldType::Bool },
+    FieldDef { no: field::TYPE, name: "type", ty: FieldType::Str },
 ];
 
 /// Retired field numbers, never to be reused (checked by a test).
@@ -387,9 +407,8 @@ pub struct Reg {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Node {
-    pub kind: Kind,
-    /// Every field but `group`, by number, including numbers this build
-    /// doesn't know (kept raw so compaction writes them back).
+    /// Every field but `group`, by number, `type` included, and numbers this
+    /// build doesn't know (kept raw so compaction writes them back).
     pub fields: BTreeMap<u32, Reg>,
     /// The tree edge, owned by the move log (`ops.rs`). It may name a
     /// deleted group; see `Doc::effective_group`.
@@ -400,12 +419,43 @@ pub struct Node {
 impl Node {
     /// A node an op named before its `Create` arrived; shown once it does.
     pub fn placeholder() -> Node {
-        Node { kind: Kind::Unknown(0), fields: BTreeMap::new(), group: None, deleted: false }
+        Node { fields: BTreeMap::new(), group: None, deleted: false }
+    }
+
+    /// Created: an op wrote its `type`.
+    pub fn has_type(&self) -> bool {
+        self.fields.contains_key(&field::TYPE)
+    }
+
+    /// What kind of node this is, read from its `type`.
+    pub fn kind(&self) -> Kind {
+        let Some(reg) = self.fields.get(&field::TYPE) else { return Kind::Unknown };
+        let mut ty = "";
+        for f in Reader::new(&reg.enc).map_while(Result::ok) {
+            if let Ok(s) = f.value.str() {
+                ty = s; // the last occurrence wins, as `decode_field` reads it
+            }
+        }
+        Kind::from_type(ty)
     }
 
     /// Shown in the graph: created, not deleted, and of a kind this build knows.
     pub fn is_live(&self) -> bool {
-        !self.deleted && !matches!(self.kind, Kind::Unknown(_))
+        !self.deleted && self.kind() != Kind::Unknown
+    }
+
+    /// A live, groupless node of a known `kind`.
+    #[cfg(test)]
+    pub fn typed(kind: Kind) -> Node {
+        Node::with_type(kind.type_str().expect("a known kind"))
+    }
+
+    /// A live, groupless node whose `type` is `ty`.
+    #[cfg(test)]
+    pub fn with_type(ty: &str) -> Node {
+        let stamp = Stamp { hlc: Hlc::default(), actor: ActorId(0) };
+        let reg = Reg { stamp, enc: encode_field(field::TYPE, &FieldValue::Str(ty.to_owned())) };
+        Node { fields: BTreeMap::from([(field::TYPE, reg)]), group: None, deleted: false }
     }
 
     /// Field `no`'s value; its default when unset or undecodable.
@@ -554,7 +604,6 @@ mod tests {
         assert_eq!(field::VIEW, 14);
         let view = field_by_name("view").unwrap();
         assert_eq!(view.ty, FieldType::Str);
-        assert!(!view.explicit);
         for (no, name, ty) in [
             (field::JAR, "jar", FieldType::Id),
             (field::JAR_SET, "jar_set", FieldType::Bool),
@@ -562,9 +611,11 @@ mod tests {
             (field::EPHEMERAL, "ephemeral", FieldType::Bool),
         ] {
             let def = field_by_name(name).unwrap();
-            assert_eq!((def.no, def.ty, def.explicit), (no, ty, false), "{name}");
+            assert_eq!((def.no, def.ty), (no, ty), "{name}");
         }
         assert_eq!((field::JAR, field::JAR_SET, field::DEFAULT_JAR, field::EPHEMERAL), (15, 16, 17, 18));
+        let ty = field_by_name("type").unwrap();
+        assert_eq!((ty.no, ty.ty), (19, FieldType::Str));
     }
 
     #[test]
@@ -596,23 +647,48 @@ mod tests {
         assert_eq!(encode_field(field::POS, &FieldValue::Pos(-0.0, -0.0)), Vec::<u8>::new());
     }
 
-    #[test]
-    fn kinds_have_codes_and_names() {
-        for (kind, code, name) in KINDS {
-            assert_eq!(Kind::from_code(code), kind);
-            assert_eq!(Kind::from_name(name), Some(kind));
-            assert_eq!((kind.code(), kind.name()), (code, Some(name)));
-        }
-        assert_eq!(Kind::from_code(40), Kind::Unknown(40));
-        assert_eq!(Kind::Unknown(40).code(), 40);
+    fn reg(counter: u64, ty: &str) -> Reg {
+        let stamp = Stamp { hlc: Hlc { ms: counter, logical: 0 }, actor: ActorId(1) };
+        Reg { stamp, enc: encode_field(field::TYPE, &FieldValue::Str(ty.into())) }
     }
 
     #[test]
-    fn jar_is_kind_nine_and_live() {
-        assert_eq!((Kind::Jar.code(), Kind::Jar.name()), (9, Some("jar")));
-        assert_eq!(Kind::from_name("jar"), Some(Kind::Jar));
-        let node = Node { kind: Kind::Jar, fields: BTreeMap::new(), group: None, deleted: false };
-        assert!(node.is_live(), "a build that knows jars shows them as live");
+    fn every_known_kind_has_a_type_string_that_maps_back() {
+        for kind in [
+            Kind::Tab,
+            Kind::Group,
+            Kind::Note,
+            Kind::Image,
+            Kind::Pdf,
+            Kind::Json,
+            Kind::JsonLeaf,
+            Kind::Download,
+            Kind::Jar,
+        ] {
+            let ty = kind.type_str().expect("a known kind has a type");
+            assert_eq!(Kind::from_type(ty), kind, "{ty}");
+        }
+        assert_eq!(Kind::Unknown.type_str(), None);
+    }
+
+    #[test]
+    fn from_type_is_case_insensitive_takes_any_image_and_rejects_the_rest() {
+        assert_eq!(Kind::from_type("Application/VND.manifold.TAB"), Kind::Tab);
+        assert_eq!(Kind::from_type("image/jpeg"), Kind::Image);
+        assert_eq!(Kind::from_type("IMAGE/webp"), Kind::Image);
+        assert_eq!(Kind::from_type("video/mp4"), Kind::Unknown);
+        assert_eq!(Kind::from_type(""), Kind::Unknown);
+    }
+
+    #[test]
+    fn a_node_reads_its_kind_from_the_last_type_write() {
+        let mut node = Node::placeholder();
+        assert_eq!(node.kind(), Kind::Unknown, "no type yet");
+        assert!(!node.has_type() && !node.is_live());
+        node.fields.insert(field::TYPE, reg(1, "application/vnd.manifold.jar"));
+        assert_eq!((node.kind(), node.has_type(), node.is_live()), (Kind::Jar, true, true));
+        node.fields.insert(field::TYPE, reg(2, "application/x-from-the-future"));
+        assert_eq!((node.kind(), node.has_type(), node.is_live()), (Kind::Unknown, true, false));
     }
 
     #[test]
@@ -630,14 +706,18 @@ mod tests {
     #[test]
     fn nodes_show_at_their_nearest_live_group() {
         let id = |counter| NodeId { actor: ActorId(1), counter };
-        let node =
-            |kind, group: Option<u64>, deleted| Node { kind, fields: BTreeMap::new(), group: group.map(id), deleted };
+        let at = |mut node: Node, group: Option<u64>, deleted| {
+            node.group = group.map(id);
+            node.deleted = deleted;
+            node
+        };
+        let node = |kind, group, deleted| at(Node::typed(kind), group, deleted);
         let mut doc = Doc::new(DocId([0; 16]));
         doc.nodes.insert(id(1), node(Kind::Group, None, false));
         doc.nodes.insert(id(2), node(Kind::Group, Some(1), true)); // deleted, in 1
         doc.nodes.insert(id(3), node(Kind::Tab, Some(2), false)); // shown in 1
         doc.nodes.insert(id(4), node(Kind::Tab, Some(99), false)); // group missing
-        doc.nodes.insert(id(5), node(Kind::Unknown(40), Some(1), false)); // a newer build's group
+        doc.nodes.insert(id(5), at(Node::with_type("application/x-future"), Some(1), false)); // a newer build's group
         doc.nodes.insert(id(6), node(Kind::Tab, Some(5), false)); // shown in 1
         doc.nodes.insert(id(7), node(Kind::Group, Some(8), true)); // 7 and 8: a damaged cycle
         doc.nodes.insert(id(8), node(Kind::Group, Some(7), true));

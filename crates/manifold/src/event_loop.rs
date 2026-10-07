@@ -3,7 +3,7 @@
 //! the engine processes' messages.
 
 use super::*;
-use crate::tabs::Held;
+use crate::tabs::{AfterCrash, Held};
 
 impl ApplicationHandler<UserEvent> for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
@@ -345,13 +345,16 @@ impl ApplicationHandler<UserEvent> for App {
                         }
                         ElementState::Pressed => None,
                     };
+                    if state == ElementState::Pressed && target.is_none() {
+                        self.click_counter.reset();
+                    }
                     if let Some(id) = target {
                         if let Some(node) = self.nodes.get_mut(&id).and_then(|n| n.as_tab_mut()) {
                             let (x, y) = (x, y - chrome_height);
                             let event = match state {
                                 ElementState::Pressed => {
                                     let click_count =
-                                        self.click_counter.press(button, (x, y), std::time::Instant::now());
+                                        self.click_counter.press(&id, button, (x, y), std::time::Instant::now());
                                     InputEvent::MouseDown { x, y, button, modifiers: self.key_modifiers, click_count }
                                 }
                                 ElementState::Released => InputEvent::MouseUp {
@@ -1002,12 +1005,15 @@ impl App {
             let url_changed = self.handle_engine_message(&tab_id, msg);
             if url_changed && self.shares_url_change(&tab_id, user_started) {
                 // Ruling 3: every reported url change is shared, whichever
-                // tab it came from -- mark it here rather than leaving it
+                // tab it came from -- share it here rather than leaving it
                 // to `navigate_tab` (that only handles this instance's own
                 // address-bar navigations, not the engine's own
                 // confirmation this responds to, nor back/forward) --
-                // except one a script or the store started.
-                self.mark(&tab_id, field::URL);
+                // except one a script or the store started. Shared as reported
+                // now: a later unshared move (a redirect) is not (2b-3 Ruling 4).
+                if let Some(url) = self.nodes.get(&tab_id).and_then(|n| n.as_tab()).map(|t| t.url.clone()) {
+                    self.edit_url(&tab_id, &url);
+                }
             }
             changed |= url_changed;
         }
@@ -1256,24 +1262,41 @@ impl App {
                 return url_changed;
             }
             EngineToHost::Crashed { reason } => {
+                // Restarted on the mirror's engine: a swap in flight (`swap_target`, or one waiting for its cookies)
+                // has already saved its target, so the tab restarts on it, the crashed engine its fallback.
+                let want = self.mirror.engine(tab_id);
                 let Some(spawn) = self.nodes.get(tab_id).and_then(|n| {
                     let t = n.as_tab()?;
-                    TabSpawn::respawn(tab_id, n, t.tab.kind, t.url.clone())
+                    let fallback_kind = (t.tab.kind != want).then_some(t.tab.kind);
+                    let spawn = TabSpawn::respawn(tab_id, n, self.mirror.carried(tab_id), want, t.url.clone())?;
+                    Some(TabSpawn { fallback_kind, ..spawn })
                 }) else {
                     return false;
                 };
-                // A stale engine binary (protocol mismatch) would fail the same
-                // way again, and a page or install that crashes on every start
-                // would loop forever; either is left as a failed card instead.
-                let mismatch = reason.starts_with(ipc_protocol::PROTOCOL_MISMATCH);
+                // A stale engine binary (protocol mismatch) or a host that cannot
+                // start would fail the same way again, and a page or install that
+                // crashes on every start would loop forever; each is left as a
+                // failed card instead.
                 let times = self.tab_crashes.entry(tab_id.to_string()).or_default();
-                if mismatch || crate::tabs::crashes_too_often(times, std::time::Instant::now()) {
-                    eprintln!("engine-host for {tab_id} crashed ({reason}); not restarting");
-                    self.leave_crashed_card(tab_id, &reason);
-                    return false;
+                match crate::tabs::after_crash(&reason, times, std::time::Instant::now()) {
+                    AfterCrash::Restart => {}
+                    AfterCrash::GiveUp => {
+                        eprintln!("engine-host for {tab_id} crashed ({reason}); not restarting");
+                        self.leave_crashed_card(tab_id, &reason, false);
+                        return false;
+                    }
+                    AfterCrash::CannotStart(why) => {
+                        eprintln!("engine-host for {tab_id} could not start ({why}); not restarting");
+                        self.leave_crashed_card(tab_id, why, true);
+                        return false;
+                    }
                 }
                 let url = &spawn.url;
-                eprintln!("engine-host crashed ({reason}) for {tab_id}, restarting at {url}");
+                // The origin only (`redacted_url`): a path or query can carry a token.
+                eprintln!(
+                    "engine-host crashed ({reason}) for {tab_id}, restarting at {}",
+                    crash_report::redacted_url(url)
+                );
                 // Previously silent from the actual app's own UI -- this only
                 // ever showed up in the console, so a user with no terminal
                 // open had no way to know a tab had crashed and quietly come
@@ -1302,7 +1325,10 @@ impl App {
             // gesture, and only a few per source tab (`popup_gate.rs`).
             EngineToHost::OpenTabRequested { url, user_gesture } => {
                 if !crate::popup_gate::page_tab_url_allowed(&url) {
-                    eprintln!("popup to a disallowed scheme dropped: {}:", crate::popup_gate::scheme_for_log(&url));
+                    match crate::popup_gate::scheme_for_log(&url) {
+                        Some(scheme) => eprintln!("popup to a disallowed scheme dropped: {scheme}:"),
+                        None => eprintln!("popup to a url with no scheme dropped"),
+                    }
                 } else {
                     match self.popup_gate.admit(tab_id, user_gesture, std::time::Instant::now()) {
                         crate::popup_gate::Admit::Open => {
@@ -1486,7 +1512,12 @@ mod idle_tests {
         app.insert_download_node("b".into(), "f.zip".into(), None, None);
         app.handle_engine_message("a", EngineToHost::DownloadFailed { path: "f.zip".into() });
         let by_parent = |p: &str| {
-            app.nodes.values().find(|n| n.parent.as_deref() == Some(p)).and_then(|n| n.as_download()).unwrap().failed
+            app.nodes
+                .iter()
+                .find(|(id, _)| app.mirror.parent(id) == Some(p))
+                .and_then(|(_, n)| n.as_download())
+                .unwrap()
+                .failed
         };
         assert!(by_parent("a") && !by_parent("b"));
     }

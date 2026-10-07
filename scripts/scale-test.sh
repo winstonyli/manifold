@@ -18,6 +18,8 @@ exe="$repo_root/target/debug/manifold.exe"
 . "$repo_root/scripts/fresh-exe.sh"
 require_fresh_exe "$exe"
 [ $# -gt 0 ] || { sed -n 2p "$0"; exit 1; }
+# The inline python below reads EXPORTSTATE cards through scripts/export_state.py.
+export PYTHONPATH="$(cygpath -w "$repo_root/scripts")"
 engine="${ENGINE:-webview2}"
 out="$repo_root/target/scale-test-$$"
 mkdir -p "$out"
@@ -61,7 +63,7 @@ for n in "$@"; do
         printf '{"nodes": ['
         for i in $(seq 1 "$n"); do
             [ "$i" -gt 1 ] && printf ','
-            printf '{"id": "t%d", "kind": "tab", "url": "http://127.0.0.1:%s/p?i=%d", "engine": "%s", "pos": [%d.0, %d.0]}' \
+            printf '{"id": "t%d", "type": "application/vnd.manifold.tab", "url": "http://127.0.0.1:%s/p?i=%d", "engine": "%s", "pos": [%d.0, %d.0]}' \
                 "$i" "$port" "$i" "$engine" $((i % 10 * 300)) $((i / 10 * 200))
         done
         printf ']}'
@@ -80,10 +82,8 @@ for n in "$@"; do
     for _ in $(seq 1200); do [ -s "$spawned" ] && break; sleep 0.1; done
     [ -s "$spawned" ] || { echo "FAIL: $n tabs: WAITTABS never answered in 120 s"; exit 1; }
     elapsed=$(awk -v a="$start" -v b="$(date +%s.%N)" 'BEGIN { printf "%.1f", b - a }')
-    # `|| true`: grep finding none fails the pipeline, and a count of 0 is
-    # an answer (1 tab has none asleep).
-    live=$(grep -o '"kind":"Tab"' "$spawned" | wc -l || true)
-    asleep=$(grep -o '"kind":"Unloaded"' "$spawned" | wc -l || true)
+    # The tab cards with a running engine, and the sleeping ones.
+    read -r live asleep < <(python -P -c 'import json,sys; from export_state import *; c = json.load(open(sys.argv[1], encoding="utf-8"))["cards"]; print(sum(card_is(x, TAB, True) for x in c), sum(card_is(x, TAB, False) for x in c))' "$(cygpath -w "$spawned")" </dev/null | tr -d '\r')
     [ "$live" -eq 1 ] && [ $((live + asleep)) -eq "$n" ] ||
         { echo "FAIL: $n tabs: $live live and $asleep asleep, expected 1 and $((n - 1))"; exit 1; }
     winpid="$(ps -W | awk -v p="$inst" '$1 == p { print $4 }')"

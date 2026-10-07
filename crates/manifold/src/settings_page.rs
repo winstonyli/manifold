@@ -190,7 +190,8 @@ impl App {
             ui,
             "Sleep background tabs",
             Some(
-                "Applies to open tabs. Sleeping closes the page; waking reloads it. Pinned tabs and tabs playing audio stay awake.",
+                "Applies to open tabs. Sleeping closes the page; waking reloads it. \
+                 Pinned tabs and tabs playing audio stay awake.",
             ),
             |ui| {
                 if toggle(ui, minutes.is_some(), "Sleep background tabs").clicked() {
@@ -536,7 +537,7 @@ impl App {
                 req.jar_confirm = Some(JarConfirm::Clear(JarKey::Default));
             }
         });
-        for (&id, def) in &self.jar_defs {
+        for (&id, def) in self.mirror.jar_defs() {
             let marker = self.jar_label(JarKey::Named(id)).marker_text();
             head(ui, self.jar_color(JarKey::Named(id)), self.jar_tab_count(JarKey::Named(id)), marker, &mut |ui| {
                 let mut draft = jar_name_draft(ui, id, &def.name); // name rule: the field edits the stored name
@@ -579,7 +580,7 @@ impl App {
                 }
             });
         }
-        if self.jar_defs.is_empty() {
+        if self.mirror.jar_defs().is_empty() {
             let hint = "Make a jar from a tab's right-click menu (New Jar...) to keep a second set of sign-ins.";
             ui.add(egui::Label::new(egui::RichText::new(hint).small().weak()).wrap());
         }
@@ -1102,7 +1103,7 @@ mod tests {
         };
         app.apply_settings_requests(&req);
         assert_eq!(app.pending_jar_confirm, Some(clear), "the first confirm stays");
-        assert!(!app.jar_defs[&work].ephemeral, "the click was ignored, not acted on");
+        assert!(!app.mirror.jar_defs()[&work].ephemeral, "the click was ignored, not acted on");
         let download = EngineConfirm::Download(crate::process_manager::EngineKind::Cef);
         assert!(!app.offer_engine_confirm(download));
         assert_eq!(app.pending_engine_confirm, None, "no engine confirm over a jar confirm");
@@ -1111,7 +1112,7 @@ mod tests {
         assert!(app.offer_engine_confirm(download));
         app.apply_settings_requests(&req);
         assert_eq!(app.pending_jar_confirm, None, "no jar confirm over an engine confirm");
-        assert!(!app.jar_defs[&work].ephemeral);
+        assert!(!app.mirror.jar_defs()[&work].ephemeral);
 
         app.pending_engine_confirm = None;
         app.apply_settings_requests(&SettingsRequests {
@@ -1152,7 +1153,7 @@ mod tests {
         let weak = ctx.global_style().visuals.weak_text_color();
         let body = ctx.global_style().text_styles[&egui::TextStyle::Body].size;
         for w in [w1, w2] {
-            let frag = crate::jar_defs::jar_fragment(w, &app.jar_defs).unwrap();
+            let frag = crate::jar_defs::jar_fragment(w, app.mirror.jar_defs()).unwrap();
             let marker = marker_galleys.iter().find(|g| g.text() == format!("#{frag}"));
             let marker = marker.unwrap_or_else(|| panic!("{w}'s marker in {shown:?}"));
             let want = crate::jar_defs::JarLabel::marker_format(body, weak);
@@ -1180,7 +1181,7 @@ mod tests {
         assert_eq!(id, w2);
         assert!(name.contains('X') && name.contains("Work") && name.len() == 5, "{name:?}");
         app.apply_settings_requests(&SettingsRequests { rename_jar: Some((id, name.clone())), ..Default::default() });
-        assert_eq!(app.jar_defs[&w2].name, name, "stored as typed");
+        assert_eq!(app.mirror.jar_defs()[&w2].name, name, "stored as typed");
         assert_eq!(app.jar_label(JarKey::Named(w1)).to_string(), "Work", "no twin left");
     }
 
@@ -1237,7 +1238,11 @@ mod tests {
         let mut app = App::default();
         let work = app.create_jar("Work");
         let synced = app.create_jar("x");
-        app.jar_defs.get_mut(&synced).unwrap().name = "Ho\u{200B}me".into();
+        app.mirror.set(
+            &synced.to_string(),
+            crate::store::model::field::NAME,
+            crate::store::model::FieldValue::Str("Ho\u{200B}me".into()),
+        );
         let text = |t: &str| egui::RawInput { events: vec![egui::Event::Text(t.into())], ..Default::default() };
         for (jar, typed) in [(work, Some("\u{200B}")), (synced, None)] {
             ctx.memory_mut(|m| m.request_focus(jar_name_edit_id(jar)));
@@ -1266,7 +1271,11 @@ mod tests {
             crate::theme::apply_style(&ctx);
             let mut app = App::default();
             let jar = app.create_jar("x");
-            app.jar_defs.get_mut(&jar).unwrap().name = name.into();
+            app.mirror.set(
+                &jar.to_string(),
+                crate::store::model::field::NAME,
+                crate::store::model::FieldValue::Str(name.into()),
+            );
             jars_frame(&mut app, &ctx);
             let field = ctx.read_response(jar_name_edit_id(jar)).expect("the jar's field").rect.center();
             let mut texts = Vec::new();

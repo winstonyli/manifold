@@ -7,7 +7,8 @@
 # docs/superpowers/specs/2026-10-02-engine-install-design.md). Refuses a dirty tree, so the zip matches a commit.
 #
 # --check  unzips the newest zip into a temp folder and asserts on it (no libcef.dll or .pak files; a headless
-#          manifold starts, reports CEF as not installed, and a WebView2 tab loads a local page that reports its load). Downloads nothing.
+#          manifold starts, reports CEF as not installed, and a WebView2 tab loads a local page that reports its load;
+#          no exe imports vcruntime/msvcp, which needs llvm-objdump: --check fails without it). Downloads nothing.
 # SKIP_BUILD=1  package whatever target/release holds (for a build you ran yourself, e.g. at BelowNormal priority;
 #               build it with RUSTFLAGS="-C target-feature=+crt-static" as below, or --check fails it).
 # JOBS=N        cargo's -j for the build (default 8).
@@ -46,7 +47,7 @@ check() {
                 ok "$(basename "$f") needs no VC++ Redistributable"
         done
     else
-        echo "SKIP: no llvm-objdump to list the exes' DLL imports"
+        bad "llvm-objdump not found: cannot verify no vcruntime/msvcp imports; install llvm (scoop install llvm)"
     fi
     heavy="$(find "$pkg" \( -iname 'libcef.dll' -o -iname '*.pak' -o -iname 'icudtl.dat' \) | head -1)"
     [ -z "$heavy" ] && ok "zip has no CEF runtime files" || bad "zip carries a CEF runtime file: $heavy"
@@ -58,7 +59,7 @@ check() {
     for _ in $(seq 50); do [ -s "$out/port" ] && break; sleep 0.1; done
     port="$(cat "$out/port")"
     echo '{"has_shown_first_launch_demo": true, "default_starting_engine": "webview2"}' >"$profile/manifold/settings.json"
-    echo "{\"nodes\": [{\"id\": \"t1\", \"kind\": \"tab\", \"url\": \"http://127.0.0.1:$port/tall\", \"engine\": \"webview2\", \"pos\": [0.0, 0.0]}]}" >"$profile/seed.json"
+    echo "{\"nodes\": [{\"id\": \"t1\", \"type\": \"application/vnd.manifold.tab\", \"url\": \"http://127.0.0.1:$port/tall\", \"engine\": \"webview2\", \"pos\": [0.0, 0.0]}]}" >"$profile/seed.json"
     "$pkg/manifold.exe" --import-json "$(cygpath -w "$profile/seed.json")" --out "$(cygpath -w "$profile/manifold/session.mnf")" >/dev/null
     cmd="$profile/cmd"
     : >"$cmd"
@@ -81,7 +82,9 @@ if [ -z "${SKIP_BUILD:-}" ]; then
     # A static CRT spares users the VC++ Redistributable; CEF's wrapper is built against the static one already.
     # RUSTFLAGS (not .cargo/config.toml) keeps it to this build: debug builds would otherwise rebuild everything.
     PATH="$(echo "$PATH" | tr ':' '\n' | grep -v -F depot_tools | tr '\n' ':')" \
-        RUSTFLAGS="-C target-feature=+crt-static" cargo build --release -j "${JOBS:-8}" -p manifold -p manifold-engine-webview2 -p manifold-engine-cef
+        RUSTFLAGS="-C target-feature=+crt-static" \
+        cargo build --release -j "${JOBS:-8}" \
+        -p manifold -p manifold-engine-webview2 -p manifold-engine-cef
 fi
 stage="$(mktemp -d)"
 trap 'rm -rf "$stage"' EXIT

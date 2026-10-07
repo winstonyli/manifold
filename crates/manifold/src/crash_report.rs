@@ -44,15 +44,18 @@ pub fn record_state(state: impl std::fmt::Display) {
 
 /// `url` as a crash report may keep it: the origin only (no path, query,
 /// fragment or userinfo, any of which can carry a token), or just the
-/// scheme of a URL with no `://`. Nothing when what follows the `:` has an
-/// `@`: in `user:pw@host` the "scheme" is a user name (a `mailto:` loses
-/// its scheme too, which a report can spare).
+/// scheme of a URL with no `://`. Nothing when what precedes the `:` isn't
+/// a scheme, or when what follows it has an `@`: in `user:pw@host` the
+/// "scheme" is a user name (a `mailto:` loses its scheme too, which a
+/// report can spare).
 pub fn redacted_url(url: &str) -> String {
     if let Some(origin) = crate::favicon_fetch::url_origin(url) {
         return origin;
     }
     match url.split_once(':') {
-        Some((_, rest)) if !rest.contains('@') => format!("{}:", crate::popup_gate::scheme_for_log(url)),
+        Some((_, rest)) if !rest.contains('@') => {
+            crate::popup_gate::scheme_for_log(url).map_or_else(String::new, |scheme| format!("{scheme}:"))
+        }
         _ => String::new(),
     }
 }
@@ -63,7 +66,8 @@ fn write_report(info: &std::panic::PanicHookInfo<'_>) {
     let timestamp =
         std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
     let report = format!(
-        "Manifold crash report -- unix time {timestamp}\n\n{info}\n\nLast known state:\n{state}\n\nBacktrace:\n{backtrace}\n"
+        "Manifold crash report -- unix time {timestamp}\n\n{info}\n\n\
+         Last known state:\n{state}\n\nBacktrace:\n{backtrace}\n"
     );
     let path = std::env::temp_dir().join(format!("manifold-crash-{timestamp}.log"));
     let _ = std::fs::write(&path, report);
@@ -80,6 +84,6 @@ mod tests {
         assert_eq!(redacted_url(""), "");
         assert_eq!(redacted_url("user:pw@host/x"), "", "a scheme-less URL's user name isn't kept");
         assert_eq!(redacted_url("about:blank"), "about:");
-        assert_eq!(redacted_url("not a scheme:x"), "?:");
+        assert_eq!(redacted_url("not a scheme:x"), "", "no scheme to keep");
     }
 }

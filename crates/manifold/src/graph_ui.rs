@@ -3,6 +3,7 @@
 //! menu and the hover peek.
 
 use super::*;
+use crate::store::model::{TYPE_DOWNLOAD, TYPE_JSON, TYPE_JSON_LEAF, TYPE_NOTE, TYPE_TAB};
 
 /// Visible-node count (post-cull, current level, see `build_graph_ui`'s
 /// LOD pre-pass) above which Graph view switches to simplified rendering
@@ -318,15 +319,15 @@ impl App {
                 let sum = self
                     .selected_tabs
                     .iter()
-                    .filter_map(|id| self.nodes.get(id))
-                    .fold(egui::Vec2::ZERO, |acc, node| acc + node.pos);
+                    .filter(|id| self.nodes.contains_key(*id))
+                    .fold(egui::Vec2::ZERO, |acc, id| acc + self.layout_pos(id));
                 let pos = sum / count;
                 let name = self.default_group_name();
                 let at = self.placement(&id, Some(pos));
-                self.place_node(Some(id.clone()), NodePayload::Group(GroupPayload::named(name)), at);
-                for tab_id in self.selected_tabs.drain() {
-                    if let Some(node) = self.nodes.get_mut(&tab_id) {
-                        node.group = Some(id.clone());
+                self.place_group(Some(id.clone()), &name, at);
+                for tab_id in std::mem::take(&mut self.selected_tabs) {
+                    if self.nodes.contains_key(&tab_id) {
+                        self.edit_group(&tab_id, Some(id.clone()));
                     }
                 }
             }
@@ -336,7 +337,7 @@ impl App {
                 }
             }
             GraphAction::UngroupAll => {
-                for id in self.nodes_at_current_level(ItemNodeKind::Group) {
+                for id in self.level_scan().groups {
                     self.dissolve_group(&id);
                 }
             }
@@ -371,8 +372,7 @@ impl App {
             // handler both use, now that groups nest. Also ends any rename
             // of the group being left.
             GraphAction::LeaveGroup => {
-                let parent =
-                    self.current_group.as_ref().and_then(|id| self.nodes.get(id)).and_then(|n| n.group.clone());
+                let parent = self.group_of(&self.current_group);
                 self.switch_group_level(parent);
                 self.renaming_group = None;
             }
@@ -388,7 +388,7 @@ impl App {
     /// the view toggle): the camera would otherwise keep the old level's
     /// framing and show the new one's nodes off screen.
     pub(crate) fn show_level_of(&mut self, id: &str) {
-        let group = self.nodes.get(id).and_then(|n| n.group.clone());
+        let group = self.nodes.get(id).and(self.mirror.group(id)).map(str::to_owned);
         if group != self.current_group {
             self.switch_group_level(group);
         }
@@ -397,11 +397,12 @@ impl App {
     /// Shows `group`'s level (`None` for the top), easing the camera to fit
     /// it, and drops everything tied to the old level: the rectangle
     /// selection (the toolbar's "Group Selected"/"Close Selected" would
-    /// otherwise act on tabs no longer visible), the empty-canvas card and
-    /// any open node menu.
+    /// otherwise act on tabs no longer visible), the empty-canvas card,
+    /// any open node menu and a drag whose card is no longer shown.
     pub(crate) fn switch_group_level(&mut self, group: Option<String>) {
         self.end_note_edits();
         self.current_group = group;
+        self.end_stale_drag(true);
         self.sync_json_level();
         self.layout_current_level();
         self.graph_settled_key = Some(self.current_level_settle_key());
@@ -419,8 +420,7 @@ impl App {
         self.sync_json_level();
         // One level scan per frame, reused by the toolbar, settle key, minimap, items and cards;
         // `current_group` only changes at the end of this function.
-        let at_level = GRAPH_DRAW_ORDER.map(|kind| self.nodes_at_current_level(kind));
-        let [_, _, _, _, _, _, _, groups_at_level] = &at_level;
+        let LevelScan { layers: at_level, groups: groups_at_level } = self.level_scan();
         let items = self.level_items_from(&at_level);
 
         self.update_graph_lod(&items);
@@ -433,7 +433,7 @@ impl App {
             shortcuts_help_button_rect,
             recently_closed_button_rect,
             leave_group_button_rect,
-        } = self.render_graph_toolbar(ui, groups_at_level);
+        } = self.render_graph_toolbar(ui, &groups_at_level);
         // `build_shortcuts_help`/`build_recently_closed_popup`/the three
         // context menus below are all deferred to the very end of this
         // function (past the Scene/`overlay_painter` node-rendering block),
@@ -444,16 +444,14 @@ impl App {
         self.apply_camera_requests(reset_view);
 
         if self.nodes.is_empty() {
-            ui.centered_and_justified(|ui| {
-                match &self.tab_spawn_error {
-                    Some(err) => ui.colored_label(DANGER_COLOR, format!("{err}\nClick \"+ New Tab\" to try again.")),
-                    None => ui.label("No tabs. Click \"+ New Tab\" to start browsing."),
-                };
-            });
-            for action in actions {
-                self.apply_graph_action(ui.ctx(), action);
-            }
-            return;
+            let rect = ui.max_rect();
+            ui.painter().text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                EMPTY_HINT,
+                egui::TextStyle::Body.resolve(ui.style()),
+                ui.visuals().weak_text_color(),
+            );
         }
 
         // Static layout: the force-directed sim only runs as a one-shot
@@ -473,7 +471,7 @@ impl App {
         // Pan (drag empty background) + zoom (scroll wheel, centered on the
         // cursor) via egui's built-in `Scene` container — everything drawn
         // inside `add_contents` below is in the same world-space coordinates
-        // `node.pos` already uses; egui's transform layer handles converting
+        // `App::layout` positions use; egui's transform layer handles converting
         // to/from screen space (including for nested widgets' own
         // hover/click/drag responses, e.g. a node's own drag below), so none
         // of that logic needs to know pan/zoom exists at all. `scene_rect`
@@ -708,13 +706,15 @@ impl App {
             return;
         };
         let screen = ui.ctx().content_rect();
-        let extra: &[(&str, &str)] = match kind {
-            ItemNodeKind::Tab | ItemNodeKind::Unloaded => &[("Enter", "open"), ("Space", "select")],
-            ItemNodeKind::Group | ItemNodeKind::Json => &[("Enter", "enter")],
-            ItemNodeKind::Note => &[("Enter", "edit")],
+        let extra: &[(&str, &str)] = match kind.ty {
+            TYPE_TAB => &[("Enter", "open"), ("Space", "select")],
+            TYPE_JSON | TYPE_JSON_LEAF => &[("Enter", "enter")],
+            ty if is_container(ty) => &[("Enter", "enter")],
+            TYPE_NOTE => &[("Enter", "edit")],
             _ => &[],
         };
-        let hints = [("Tab", "next")].iter().chain(extra).chain(&[("Del", "close"), ("Shift+F10", "menu")]);
+        let tail = [("Del", del_verb(kind)), ("Shift+F10", "menu")];
+        let hints = [("Tab", "next")].iter().chain(extra).chain(&tail);
         let below = rect.bottom() + 40.0 < screen.bottom();
         let (anchor_y, pivot) = if below {
             (rect.bottom() + 8.0, egui::Align2::CENTER_TOP)
@@ -813,7 +813,6 @@ impl App {
                 if !on_json_level {
                     self.toolbar_selection(ui, &mut actions);
                 }
-                self.toolbar_spawn_error(ui);
                 shortcuts_help_button_rect = Some(self.render_universal_chip(ui));
             });
         });
@@ -828,7 +827,8 @@ impl App {
         }
     }
 
-    /// The breadcrumb trail with its back button, the rename box on the current group and, on a JSON level, the JSON bar. Returns the back button's rect.
+    /// The breadcrumb trail with its back button, the rename box on the current group and, on a JSON level, the
+    /// JSON bar. Returns the back button's rect.
     fn toolbar_breadcrumb(
         &mut self,
         ui: &mut egui::Ui,
@@ -840,7 +840,7 @@ impl App {
         // group otherwise (root-most first, current group
         // last) -- groups nest now, so this is a real
         // breadcrumb trail, not just "are we inside the one
-        // possible group or not." See `GroupPayload`'s own doc
+        // possible group or not." See `App::current_group`'s own doc
         // comment on nesting and `group_breadcrumb`'s own.
         let breadcrumb = self.group_breadcrumb();
         if !breadcrumb.is_empty() {
@@ -958,10 +958,10 @@ impl App {
         // stays a one-click action, just narrower, with the
         // old label preserved as a hover tooltip so the action
         // is still discoverable. All three now work at any
-        // level, not just the top -- see `GroupPayload`'s own
+        // level, not just the top -- see `App::current_group`'s own
         // doc comment on nesting; each already acts on
-        // `self.current_group`/`nodes_at_current_level(Group)`
-        // (its own level), never hardcoding the top level.
+        // `self.current_group`/the level's groups (`level_scan`,
+        // its own level), never hardcoding the top level.
         //
         // The rule this toolbar actually follows, for any
         // future addition: the identity/entry-point action that
@@ -1085,25 +1085,6 @@ impl App {
             }
             if ui.button(format!("Close Selected ({})", self.selected_tabs.len())).clicked() {
                 actions.push(GraphAction::CloseSelected);
-            }
-        }
-    }
-
-    /// The last tab-spawn error with its dismiss button.
-    fn toolbar_spawn_error(&mut self, ui: &mut egui::Ui) {
-        // Cloned rather than borrowed -- `self.tab_spawn_error =
-        // None` below needs `&mut self`, which a live `&String`
-        // borrow from `self.tab_spawn_error` would conflict
-        // with; this only ever clones a short error string, and
-        // only while one is actually being shown.
-        if let Some(err) = self.tab_spawn_error.clone() {
-            ui.colored_label(DANGER_COLOR, &err);
-            // No dismiss before this -- an error already easy to
-            // miss in a packed row (now scrollable, see the
-            // `ScrollArea` above) had no way to clear itself
-            // short of a new spawn attempt overwriting it.
-            if ui.button(egui_phosphor::light::X).on_hover_text("Dismiss").clicked() {
-                self.tab_spawn_error = None;
             }
         }
     }
@@ -1251,7 +1232,7 @@ impl App {
             if !secondary_down {
                 self.rect_select_start = None;
                 // Barely moved -- a plain right-click, not a real
-                // rectangle-select drag. `nodes_at_current_level`
+                // rectangle-select drag. The level items'
                 // hit-testing above already ruled out landing on any real
                 // node, so this is genuinely empty background: show the
                 // "New Tab/Note/Group/File" card here instead of computing
@@ -1271,13 +1252,10 @@ impl App {
                         .tabs_at_current_level()
                         .into_iter()
                         .filter(|id| {
-                            self.nodes.get(id).is_some_and(|node| {
-                                let card = egui::Rect::from_center_size(
-                                    egui::Pos2::new(node.pos.x, node.pos.y),
-                                    GRAPH_NODE_SIZE,
-                                );
+                            self.nodes.contains_key(id) && {
+                                let card = egui::Rect::from_center_size(self.layout_pos(id).to_pos2(), GRAPH_NODE_SIZE);
                                 world_rect.intersects(card)
-                            })
+                            }
                         })
                         .collect();
                 }
@@ -1306,6 +1284,9 @@ impl App {
         scene_outer_rect: egui::Rect,
         items: &[LevelItem],
     ) -> Option<(egui::Rect, egui::Rect, f32)> {
+        if items.is_empty() {
+            return None;
+        }
         let world_bounds = self.bounds_for_rects(items.iter().map(|item| item.rect));
         if self.camera.rect.contains_rect(world_bounds.shrink(GRAPH_FIT_MARGIN)) {
             return None;
@@ -1323,12 +1304,13 @@ impl App {
         for item in items {
             let (radius, color) = match item.kind {
                 LevelItemKind::JsonCard => (2.0, ACCENT),
-                LevelItemKind::Node(kind) => match kind {
-                    ItemNodeKind::Tab | ItemNodeKind::Unloaded => (2.0, ui.visuals().text_color()),
-                    ItemNodeKind::Download => (2.0, ui.visuals().weak_text_color()),
-                    ItemNodeKind::Note => (2.0, NOTE_CARD_COLOR),
-                    ItemNodeKind::Image | ItemNodeKind::Pdf | ItemNodeKind::Json => (2.0, ACCENT),
-                    ItemNodeKind::Group => (3.0, ACCENT),
+                LevelItemKind::Node(kind) => match kind.ty {
+                    ty if is_container(ty) => (3.0, ACCENT),
+                    TYPE_TAB => (2.0, ui.visuals().text_color()),
+                    TYPE_DOWNLOAD => (2.0, ui.visuals().weak_text_color()),
+                    TYPE_NOTE => (2.0, NOTE_CARD_COLOR),
+                    // Image, PDF and JSON cards; a type this build doesn't know draws as one of them.
+                    _ => (2.0, ACCENT),
                 },
             };
             let failed = self
@@ -1544,8 +1526,8 @@ impl App {
             self.dragging.clone().and_then(|dragged| self.drop_target(&dragged, pointer, leave_group_button_rect));
 
         // Every card: one shared frame each (`draw_graph_card`),
-        // kind by kind in `GRAPH_DRAW_ORDER` (Group last), which is
-        // also their stacking order: a later kind draws, and takes
+        // layer by layer (`level_scan`, groups last), which is
+        // also their stacking order: a later layer draws, and takes
         // the pointer, on top of an earlier one. Each kind's own
         // click action is applied here.
         let tab_order = self.card_tab_order();
@@ -1580,83 +1562,70 @@ impl App {
             any_focused: false,
             members: &members,
         };
-        for (&kind, ids) in GRAPH_DRAW_ORDER.iter().zip(at_level.iter()) {
-            for id in ids.iter() {
-                // Read before the frame: a Note's `TextEdit` can lose
-                // focus to a click on its own header this very frame,
-                // clearing `editing`, and that click must not
-                // immediately re-enter editing.
-                let note_was_editing = kind == ItemNodeKind::Note
-                    && self.nodes.get(id).and_then(|n| n.as_note()).is_some_and(|n| n.editing);
-                let Some(card) = self.draw_graph_card(ui, &mut pass, id) else {
-                    continue;
-                };
-                if let Some(action) = card.control {
-                    // A control consumed this frame's click, so
-                    // the kind's own click action below (e.g.
-                    // Image maximize) is skipped.
-                    pass.actions.push(GraphAction::Node(id.clone(), action));
-                    continue;
+        for id in at_level.iter().flatten() {
+            let Some(kind) = self.card_kind(id) else {
+                continue;
+            };
+            // Read before the frame: a Note's `TextEdit` can lose
+            // focus to a click on its own header this very frame,
+            // clearing `editing`, and that click must not
+            // immediately re-enter editing.
+            let note_was_editing = self.nodes.get(id).and_then(|n| n.as_note()).is_some_and(|n| n.editing);
+            let Some(card) = self.draw_graph_card(ui, &mut pass, id) else {
+                continue;
+            };
+            if let Some(action) = card.control {
+                // A control consumed this frame's click, so
+                // the kind's own click action below (e.g.
+                // Image maximize) is skipped.
+                pass.actions.push(GraphAction::Node(id.clone(), action));
+                continue;
+            }
+            // A placeholder (see `ImagePayload::error`) has nothing
+            // to open; a click tries its file again instead.
+            let missing_file = self.nodes.get(id).is_some_and(|n| {
+                n.as_image().is_some_and(|i| i.error.is_some())
+                    || n.as_unloaded().is_some_and(|t| matches!(t.state, UnloadedState::Failed(_)))
+                    || n.as_json().is_some_and(|j| j.error.is_some())
+                    || n.as_pdf().is_some_and(|p| matches!(p.outcome, Some(Err(_))))
+            });
+            // A double-click, or Enter on the keyboard-focused card (a single Enter already
+            // counts as `clicked()`, which is what the other kinds act on).
+            let activated = card.response.double_clicked()
+                || (card.response.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
+            // Click (not drag -- egui doesn't report `clicked()` for a drag).
+            let click = card.response.clicked().then(|| click_action(kind)).flatten();
+            match (kind.ty, click) {
+                _ if missing_file => {
+                    if card.response.clicked() {
+                        pass.actions.push(GraphAction::Node(id.clone(), NodeAction::RetryMissingFile));
+                    }
                 }
-                // A placeholder (see `ImagePayload::error`) has nothing
-                // to open; a click tries its file again instead.
-                let missing_file = self.nodes.get(id).is_some_and(|n| {
-                    n.as_image().is_some_and(|i| i.error.is_some())
-                        || n.as_unloaded().is_some_and(|t| matches!(t.state, UnloadedState::Failed(_)))
-                        || n.as_json().is_some_and(|j| j.error.is_some())
-                        || n.as_pdf().is_some_and(|p| matches!(p.outcome, Some(Err(_))))
-                });
-                // A double-click, or Enter on the keyboard-focused card (a single Enter already
-                // counts as `clicked()`, which is what the other kinds act on).
-                let activated = card.response.double_clicked()
-                    || (card.response.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
-                match kind {
-                    _ if missing_file => {
-                        if card.response.clicked() {
-                            pass.actions.push(GraphAction::Node(id.clone(), NodeAction::RetryMissingFile));
-                        }
+                (_, Some(action)) => pass.actions.push(GraphAction::Node(id.clone(), action)),
+                // Click on the rendered note enters editing in place.
+                (TYPE_NOTE, _) if card.response.clicked() && !note_was_editing => {
+                    if let Some(note) = self.nodes.get_mut(id).and_then(|n| n.as_note_mut()) {
+                        note.editing = true;
                     }
-                    // Opens the tab into Tab view; for a sleeping/waking
-                    // Unloaded card this wakes its engine (see
-                    // `App::wake_tab`).
-                    ItemNodeKind::Tab | ItemNodeKind::Unloaded if card.response.clicked() => {
-                        pass.actions.push(GraphAction::Node(id.clone(), NodeAction::Open))
-                    }
-                    // Click (not drag -- egui doesn't report
-                    // `clicked()` for a drag) reveals the file.
-                    ItemNodeKind::Download if card.response.clicked() => {
-                        pass.actions.push(GraphAction::Node(id.clone(), NodeAction::Reveal))
-                    }
-                    // Click on the rendered note enters editing in place.
-                    ItemNodeKind::Note if card.response.clicked() && !note_was_editing => {
-                        if let Some(note) = self.nodes.get_mut(id).and_then(|n| n.as_note_mut()) {
-                            note.editing = true;
-                        }
-                        // The editor appears next frame; focus it so typing can start at once.
-                        ui.memory_mut(|m| m.request_focus(egui::Id::new(("note_edit", id))));
-                    }
-                    // Maximizes the image into Item view, the same
-                    // gesture a Tab card uses.
-                    ItemNodeKind::Image if card.response.clicked() => {
-                        pass.actions.push(GraphAction::Node(id.clone(), NodeAction::Open))
-                    }
-                    // Enters the node's JSON level, unless it's a leaf, its
-                    // file failed to load (plan ruling 10) or it's still
-                    // being refetched (`JsonPayload::enterable`).
-                    ItemNodeKind::Json
-                        if activated && self.nodes.get(id).and_then(|n| n.as_json()).is_some_and(|j| j.enterable()) =>
-                    {
-                        // Entered from the keyboard: the level's root card takes focus
-                        // (`draw_json_level`), sparing the toolbar's ~17 Tab stops.
-                        if !card.response.double_clicked() {
-                            ui.data_mut(|d| d.insert_temp(crate::json_level_ui::json_focus_root_key(), true));
-                        }
-                        pass.actions.push(GraphAction::EnterGroup(id.clone()))
-                    }
-                    // Drills into the group's own subgraph.
-                    ItemNodeKind::Group if activated => pass.actions.push(GraphAction::EnterGroup(id.clone())),
-                    _ => {}
+                    // The editor appears next frame; focus it so typing can start at once.
+                    ui.memory_mut(|m| m.request_focus(egui::Id::new(("note_edit", id))));
                 }
+                // Enters the node's JSON level, unless it's a leaf, its
+                // file failed to load (plan ruling 10) or it's still
+                // being refetched (`JsonPayload::enterable`).
+                (TYPE_JSON | TYPE_JSON_LEAF, _)
+                    if activated && self.nodes.get(id).and_then(|n| n.as_json()).is_some_and(|j| j.enterable()) =>
+                {
+                    // Entered from the keyboard: the level's root card takes focus
+                    // (`draw_json_level`), sparing the toolbar's ~17 Tab stops.
+                    if !card.response.double_clicked() {
+                        ui.data_mut(|d| d.insert_temp(crate::json_level_ui::json_focus_root_key(), true));
+                    }
+                    pass.actions.push(GraphAction::EnterGroup(id.clone()))
+                }
+                // Drills into the group's own subgraph.
+                (ty, _) if is_container(ty) && activated => pass.actions.push(GraphAction::EnterGroup(id.clone())),
+                _ => {}
             }
         }
         self.card_nav_active = pass.any_focused;
@@ -1664,11 +1633,7 @@ impl App {
 
     /// The current level's cards in creation order: the Tab order.
     fn card_tab_order(&self) -> Vec<String> {
-        self.node_order
-            .iter()
-            .filter(|id| self.nodes.get(*id).is_some_and(|n| n.group == self.current_group))
-            .cloned()
-            .collect()
+        self.node_order.iter().filter(|id| self.nodes.contains_key(*id) && self.in_level(id)).cloned().collect()
     }
 
     /// Tab / Shift+Tab from a focused card moves focus to the next / previous card in `order`
@@ -1679,9 +1644,12 @@ impl App {
         let Some(at) = order.iter().position(|id| ui.memory(|m| m.has_focus(card_id(id)))) else { return };
         // The shift state comes from the key event itself, which is also how the debug `TABKEY shift` sends it.
         let (tab, shift) = ui.input(|i| {
-            let shifted = i.events.iter().any(
-                |e| matches!(e, egui::Event::Key { key: egui::Key::Tab, pressed: true, modifiers, .. } if modifiers.shift),
-            );
+            let shifted = i.events.iter().any(|e| {
+                matches!(
+                    e,
+                    egui::Event::Key { key: egui::Key::Tab, pressed: true, modifiers, .. } if modifiers.shift
+                )
+            });
             (i.key_pressed(egui::Key::Tab), shifted)
         });
         let target = if shift { at.checked_sub(1) } else { Some(at + 1).filter(|&n| n < order.len()) };
@@ -1693,8 +1661,8 @@ impl App {
         });
         if let (true, Some(target)) = (tab, target) {
             ui.memory_mut(|m| m.request_focus(card_id(&order[target])));
-            if let Some(node) = self.nodes.get(&order[target]) {
-                self.pan_to_card(node_card_rect(node));
+            if let Some(rect) = self.card_rect(&order[target]) {
+                self.pan_to_card(rect);
             }
         }
     }
@@ -1733,8 +1701,8 @@ impl App {
         ui.data_mut(|d| d.remove_temp::<(String, f64)>(key));
         if let Some(id) = number.checked_sub(1).and_then(|n| order.get(n)) {
             ui.memory_mut(|m| m.request_focus(egui::Id::new(("graph_card", id.as_str()))));
-            if let Some(node) = self.nodes.get(id) {
-                self.pan_to_card(node_card_rect(node));
+            if let Some(rect) = self.card_rect(id) {
+                self.pan_to_card(rect);
             }
         }
     }
@@ -1887,7 +1855,7 @@ impl App {
         let peek_fade = ui.ctx().animate_bool(egui::Id::new("peek_preview_fade"), peek_target.is_some());
         if peek_fade > 0.0 {
             if let Some(hovered_id) = peek_target {
-                let node_pos = self.nodes.get(&hovered_id).map(|n| n.pos);
+                let node_pos = self.nodes.contains_key(&hovered_id).then(|| self.layout_pos(&hovered_id));
                 let thumb_id = self.gpu.as_ref().and_then(|g| g.thumbnail_id(&hovered_id));
                 if let (Some(node_pos), Some(tex_id)) = (node_pos, thumb_id) {
                     let rect = egui::Rect::from_min_size(
@@ -1923,6 +1891,9 @@ impl App {
         }
     }
 }
+
+/// Painted on the canvas when the level has no nodes (the bindings are in `shortcuts.rs`).
+const EMPTY_HINT: &str = "Ctrl+T for a new tab \u{b7} drop a file or URL \u{b7} F1 for shortcuts";
 
 /// The most units a breadcrumb crumb shows (`names::shorten`; a placeholder counts one).
 const CRUMB_UNITS: usize = 20;
@@ -2143,7 +2114,7 @@ mod tests {
         let mut app = App::default();
         let g = app.alloc_node_id();
         app.insert_group_at(g.clone(), None);
-        app.nodes.get_mut(&g).unwrap().as_group_mut().unwrap().name = "Reading".into();
+        app.mirror.set(&g, crate::store::model::field::NAME, crate::store::model::FieldValue::Str("Reading".into()));
         let ctx = egui::Context::default();
         ctx.enable_accesskit();
         let input = egui::RawInput {
@@ -2154,7 +2125,11 @@ mod tests {
             let rect = egui::Rect::from_min_size(egui::pos2(10.0, 10.0), egui::vec2(50.0, 50.0));
             let response = ui.interact(rect, egui::Id::new(("graph_card", g.as_str())), egui::Sense::click());
             response.widget_info(|| {
-                egui::WidgetInfo::labeled(egui::WidgetType::Button, true, app.nodes[&g].accessible_name())
+                egui::WidgetInfo::labeled(
+                    egui::WidgetType::Button,
+                    true,
+                    app.nodes[&g].accessible_name(app.own_text(&g), app.source_url(&g)),
+                )
             });
         });
         output.textures_delta.clear();
@@ -2172,9 +2147,13 @@ mod tests {
         let (outer, inner) = (app.alloc_node_id(), app.alloc_node_id());
         app.insert_group_at(outer.clone(), None);
         app.insert_group_at(inner.clone(), None);
-        app.nodes.get_mut(&inner).unwrap().group = Some(outer.clone());
-        app.nodes.get_mut(&outer).unwrap().as_group_mut().unwrap().name = "x".repeat(30);
-        app.nodes.get_mut(&inner).unwrap().as_group_mut().unwrap().name = "Re\u{200B}ading".into();
+        app.edit_group(&inner, Some(outer.clone()));
+        app.mirror.set(&outer, crate::store::model::field::NAME, crate::store::model::FieldValue::Str("x".repeat(30)));
+        app.mirror.set(
+            &inner,
+            crate::store::model::field::NAME,
+            crate::store::model::FieldValue::Str("Re\u{200B}ading".into()),
+        );
         app.current_group = Some(inner);
         let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
             ui.horizontal(|ui| app.toolbar_breadcrumb(ui, false, &mut Vec::new()));
@@ -2192,5 +2171,32 @@ mod tests {
         assert!(texts.contains(&format!("{}…", "x".repeat(19))), "{texts:?}");
         let current = galleys.iter().find(|g| g.text() == "Re⟦200B⟧ading").unwrap_or_else(|| panic!("{texts:?}"));
         assert!(current.job.sections.iter().any(|s| s.format.font_id.family == egui::FontFamily::Monospace));
+    }
+
+    /// An empty level keeps its canvas: the whole of `build_graph_ui` runs without panicking and paints the hint.
+    #[test]
+    fn an_empty_level_paints_the_hint_on_its_canvas() {
+        let ctx = egui::Context::default();
+        crate::theme::apply_fonts(&ctx);
+        let mut app = App::default();
+        assert!(app.nodes.is_empty());
+        let mut hints = Vec::new();
+        for _ in 0..3 {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0))),
+                ..Default::default()
+            };
+            let mut output = ctx.run_ui(input, |ui| app.build_graph_ui(ui));
+            output.textures_delta.clear();
+            hints = output
+                .shapes
+                .iter()
+                .filter_map(|s| match &s.shape {
+                    egui::Shape::Text(t) if t.galley.text() == EMPTY_HINT => Some(t.pos),
+                    _ => None,
+                })
+                .collect();
+        }
+        assert_eq!(hints.len(), 1, "the hint is painted once");
     }
 }

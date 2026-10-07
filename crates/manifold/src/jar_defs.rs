@@ -1,11 +1,11 @@
-//! Named cookie jars as synced definitions (`App::jar_defs`, spec "Data model"). A jar is a `Kind::Jar` store node
-//! but never a graph node: `session_sync` bridges these to the document in `shared_nodes`, `materialize` and
-//! `remove_remotely_deleted`.
+//! Named cookie jars as synced definitions (`Mirror::jar_defs`, spec "Data model"). A jar is a `Kind::Jar` store
+//! node but never a graph node. Its fields are mirror state (2b-5 Ruling 7): written through `App::edit_field` here,
+//! applied from the document by `materialize` (`materialize_jar`), and dropped by `forget_jar`.
 
 use crate::jar::{Jar, JarChoice, JarKey};
-use crate::node::NodePayload;
+use crate::node::Runtime;
 use crate::process_manager::EngineKind;
-use crate::session_sync::{color_of, Fields, Shared};
+use crate::session_sync::{color_value, Fields};
 use crate::store::model::{field, FieldValue, Kind, NodeId};
 use crate::theme::TAG_COLOR_PALETTE;
 use crate::{App, JarDef};
@@ -225,13 +225,13 @@ impl App {
         let (key, missing) = self.resolved_jar(&choice);
         let will_switch = self.will_switch(id);
         let can_switch_now = self.can_switch_jar_now(id);
-        let engine = match &self.nodes.get(id)?.payload {
-            NodePayload::Tab(t) => t.tab.kind,
-            NodePayload::Unloaded(t) => t.kind,
+        let engine = match &self.nodes.get(id)?.runtime {
+            Runtime::Tab(t) => t.tab.kind,
+            Runtime::Unloaded(_) => self.mirror.engine(id),
             _ => return None,
         };
         let engine_ignores = !matches!(engine, EngineKind::Webview2 | EngineKind::Cef) && key != JarKey::Default;
-        let group = self.nodes.get(id).and_then(|n| n.group.as_deref());
+        let group = self.nodes.get(id).and(self.mirror.group(id));
         let following = !choice.set && self.inherited_jar(group) == choice.jar;
         if key == JarKey::Default && !missing && !will_switch {
             return None;
@@ -270,7 +270,7 @@ impl App {
     /// gone, as that is what its tabs use).
     pub(crate) fn jar_label(&self, key: JarKey) -> JarLabel {
         match key {
-            JarKey::Named(id) => named_jar_label(id, &self.jar_defs).unwrap_or_else(JarLabel::built_in),
+            JarKey::Named(id) => named_jar_label(id, self.mirror.jar_defs()).unwrap_or_else(JarLabel::built_in),
             JarKey::Default => JarLabel::built_in(),
         }
     }
@@ -279,21 +279,21 @@ impl App {
     pub(crate) fn jar_color(&self, key: JarKey) -> egui::Color32 {
         match key {
             JarKey::Named(id) => {
-                self.jar_defs.get(&id).map_or(egui::Color32::GRAY, |d| d.color.unwrap_or(TAG_COLOR_PALETTE[0]))
+                self.mirror.jar_defs().get(&id).map_or(egui::Color32::GRAY, |d| d.color.unwrap_or(TAG_COLOR_PALETTE[0]))
             }
             JarKey::Default => egui::Color32::GRAY,
         }
     }
 
-    /// Tabs (live or asleep) that resolve to `key`, for Settings' count and the delete confirm.
+    /// Tabs (live, asleep or mid-respawn) that resolve to `key`, for Settings' count and the delete confirm.
     pub(crate) fn jar_tab_count(&self, key: JarKey) -> usize {
-        self.nodes.keys().filter_map(|t| self.tab_jar(t)).filter(|c| self.resolved_jar(c).0 == key).count()
+        self.linked_ids().filter_map(|t| self.tab_jar(t)).filter(|c| self.resolved_jar(c).0 == key).count()
     }
 
     /// The confirm dialog's title, detail and button. `None` once a named jar it asks about is gone (deleted on
     /// another device meanwhile): there is nothing left to confirm.
     pub(crate) fn jar_confirm_text(&self, confirm: JarConfirm) -> Option<(String, String, &'static str)> {
-        let exists = |key| !matches!(key, JarKey::Named(id) if !self.jar_defs.contains_key(&id));
+        let exists = |key| !matches!(key, JarKey::Named(id) if !self.mirror.jar_defs().contains_key(&id));
         match confirm {
             JarConfirm::Clear(key) if exists(key) => Some((
                 format!("Clear cookies in {}?", self.jar_label(key)),
@@ -312,7 +312,7 @@ impl App {
                     "Delete",
                 ))
             }
-            JarConfirm::Ephemeral(id) if self.jar_defs.get(&id).is_some_and(|d| !d.ephemeral) => Some((
+            JarConfirm::Ephemeral(id) if self.mirror.jar_defs().get(&id).is_some_and(|d| !d.ephemeral) => Some((
                 format!("Make {} ephemeral?", self.jar_label(JarKey::Named(id))),
                 "Its saved sign-ins are deleted from disk now. Tabs keep them until Manifold quits; after that this \
                  jar starts empty each time."
@@ -326,13 +326,18 @@ impl App {
     /// A new named jar under `name`'s clean form (name rules), with the first palette colour no jar shows (one without
     /// a colour shows the first, `jar_color`), so deleting a jar doesn't make the next one repeat a colour; with every
     /// colour taken, they cycle by count.
-    /// Saved by the caller's `save_session`.
+    /// Its fields go through `edit_field`; the caller's `save_session` creates it.
     pub(crate) fn create_jar(&mut self, name: &str) -> NodeId {
         let id: NodeId = self.alloc_node_id().parse().expect("alloc_node_id returns a store id");
-        let shown = |c: &egui::Color32| self.jar_defs.values().any(|d| d.color.unwrap_or(TAG_COLOR_PALETTE[0]) == *c);
+        let defs = self.mirror.jar_defs();
+        let shown = |c: &egui::Color32| defs.values().any(|d| d.color.unwrap_or(TAG_COLOR_PALETTE[0]) == *c);
         let free = TAG_COLOR_PALETTE.iter().find(|c| !shown(c));
-        let color = Some(*free.unwrap_or(&TAG_COLOR_PALETTE[self.jar_defs.len() % TAG_COLOR_PALETTE.len()]));
-        self.jar_defs.insert(id, JarDef { name: crate::names::clean_name(name).into_owned(), color, ephemeral: false });
+        let color = *free.unwrap_or(&TAG_COLOR_PALETTE[defs.len() % TAG_COLOR_PALETTE.len()]);
+        self.mirror.add_jar(id);
+        let key = id.to_string();
+        self.queue_create(&key);
+        self.edit_field(&key, field::NAME, FieldValue::Str(crate::names::clean_name(name).into_owned()));
+        self.edit_field(&key, field::COLOR, color_value(Some(color)));
         id
     }
 
@@ -342,11 +347,12 @@ impl App {
     pub(crate) fn jar_named(&self, text: &str) -> Option<NodeId> {
         let text = text.trim();
         let label = self
-            .jar_defs
+            .mirror
+            .jar_defs()
             .keys()
-            .find(|&&id| named_jar_label(id, &self.jar_defs).is_some_and(|l| l.to_string() == text));
+            .find(|&&id| named_jar_label(id, self.mirror.jar_defs()).is_some_and(|l| l.to_string() == text));
         // name rule: SETJAR matches the stored name
-        label.or_else(|| self.jar_defs.iter().find(|(_, d)| d.name == text).map(|(id, _)| id)).copied()
+        label.or_else(|| self.mirror.jar_defs().iter().find(|(_, d)| d.name == text).map(|(id, _)| id)).copied()
     }
 
     /// `SETJAR`: the focused tab picks the jar `name` names (`jar_named`: a label or a stored name, tried as typed and
@@ -368,30 +374,40 @@ impl App {
         true
     }
 
-    /// Renames jar `id` to `name`'s clean form (name rules); nothing left once cleaned leaves the name as it is.
+    /// Renames jar `id` to `name`'s clean form (name rules) through `edit_field`; nothing left once cleaned leaves the
+    /// name as it is.
     pub(crate) fn rename_jar(&mut self, id: NodeId, name: &str) {
         let clean = crate::names::clean_name(name);
-        if let (false, Some(def)) = (clean.is_empty(), self.jar_defs.get_mut(&id)) {
-            def.name = clean.into_owned();
+        if !clean.is_empty() && self.mirror.jar_defs().contains_key(&id) {
+            self.edit_field(&id.to_string(), field::NAME, FieldValue::Str(clean.into_owned()));
         }
     }
 
-    /// Turns jar `id`'s ephemeral flag on or off (deviation 10; final review I1), the same for a local toggle (after
-    /// `request_jar_ephemeral`'s confirm) and a remote one (`materialize_jar`). The jar is loaded from its file first,
-    /// while it still counts as saved, so nothing on disk is dropped unread:
+    /// Turns jar `id`'s ephemeral flag on or off (deviation 10; final review I1), a local toggle (after
+    /// `request_jar_ephemeral`'s confirm): the flag goes through `edit_field`. See `switch_jar_ephemeral`.
+    pub(crate) fn set_jar_ephemeral(&mut self, id: NodeId, on: bool) {
+        self.switch_jar_ephemeral(id, on, true);
+    }
+
+    /// The flag's switch, the same for a local toggle (`set_jar_ephemeral`, `local`: written through `edit_field`)
+    /// and a remote one (`materialize_jar`: the mirror takes the document's value, queuing nothing). The jar is loaded
+    /// from its file first, while it still counts as saved, so nothing on disk is dropped unread:
     /// - on: its files are deleted now (`Jar::delete_files`); its cookies stay in memory until quit. Not a locked
     ///   jar's: an unreadable file is never touched, and a locked jar saves nothing anyway.
     /// - off: the loaded jar is saved (a locked one writes nothing).
-    pub(crate) fn set_jar_ephemeral(&mut self, id: NodeId, on: bool) {
-        if self.jar_defs.get(&id).is_none_or(|d| d.ephemeral == on) {
+    fn switch_jar_ephemeral(&mut self, id: NodeId, on: bool, local: bool) {
+        if self.mirror.jar_defs().get(&id).is_none_or(|d| d.ephemeral == on) {
             return;
         }
         let key = JarKey::Named(id);
         if on {
             self.ensure_jar_loaded(key);
         }
-        if let Some(def) = self.jar_defs.get_mut(&id) {
-            def.ephemeral = on;
+        let flag = FieldValue::Bool(on);
+        if local {
+            self.edit_field(&id.to_string(), field::EPHEMERAL, flag);
+        } else {
+            self.mirror.set(&id.to_string(), field::EPHEMERAL, flag);
         }
         if !on {
             self.ensure_jar_loaded(key);
@@ -417,29 +433,40 @@ impl App {
         self.jars_dir().is_some_and(|dir| Jar::path(&dir, key).exists())
     }
 
-    /// The user deleted jar `id`: tabs and groups that named it fall back to the default jar (deviation 9), then it is
-    /// forgotten and the live tabs that used it switch. Its document node is deleted by the next save (`diff`: live no
-    /// longer has it).
+    /// The user deleted jar `id`: tabs (a respawning one too, `linked_ids`) and groups that named it fall back to the
+    /// default jar (deviation 9), then it is forgotten and the live tabs that used it switch. Its document node is
+    /// deleted by the next save (`queue_delete`). A new spawn in flight is not reached: it has no mirror entry until
+    /// it lands (`tab_jar`), and its landing clears the jar instead (`seed_landing`).
     pub(crate) fn delete_jar(&mut self, id: NodeId) {
-        for node in self.nodes.values_mut() {
-            match &mut node.payload {
-                NodePayload::Tab(t) if t.jar.jar == Some(id) => t.jar = Default::default(),
-                NodePayload::Unloaded(t) if t.jar.jar == Some(id) => t.jar = Default::default(),
-                NodePayload::Group(g) if g.default_jar == Some(id) => g.default_jar = None,
-                _ => {}
-            }
+        let tabs: Vec<String> = self
+            .linked_ids()
+            .filter(|t| self.tab_jar(t).is_some_and(|c| c.jar == Some(id)))
+            .map(str::to_owned)
+            .collect();
+        for t in tabs {
+            self.edit_jar(&t, JarChoice::default());
+        }
+        let groups: Vec<String> = self
+            .nodes
+            .iter()
+            .filter(|(g, _)| self.is_container(g) && self.mirror.default_jar(g) == Some(id))
+            .map(|(g, _)| g.clone())
+            .collect();
+        for g in groups {
+            self.edit_default_jar(&g, None);
         }
         self.forget_jar(id);
+        self.queue_delete(&id.to_string());
         self.sweep_jar_switches();
     }
 
-    /// Drops jar `id` (a local or remote delete): its definition, its cookies and its files, unreadable copies and
-    /// crashed saves' temp files included (`Jar::delete_files`). A tab still running on it
-    /// has its pulls dropped (`apply_pulled_cookies`) and now resolves to the default jar, so it switches: the caller
-    /// sweeps (`delete_jar`, or `apply_remote` once the whole remote batch is in). Its `last_shared` entry stays: after a
-    /// local delete it is what keeps a remote edit from recreating the jar before the save (`materialize_jar`).
+    /// Drops jar `id` (a local or remote delete): its mirror entry and definition (`Mirror::forget_jar`), its cookies
+    /// and its files, unreadable copies and crashed saves' temp files included (`Jar::delete_files`). A tab still
+    /// running on it has its pulls dropped (`apply_pulled_cookies`) and now resolves to the default jar, so it
+    /// switches: the caller sweeps (`delete_jar`, or `apply_remote` once the whole remote batch is in). After a local
+    /// delete, the queued delete is what keeps a remote edit from recreating the jar before the save (`materialize`).
     pub(crate) fn forget_jar(&mut self, id: NodeId) {
-        self.jar_defs.remove(&id);
+        self.mirror.forget_jar(id);
         let key = JarKey::Named(id);
         self.jars.remove(&key);
         if let Ok(mut snapshots) = self.jar_snapshots.lock() {
@@ -464,8 +491,8 @@ impl App {
         if !self.may_prune_content() || journal.read_only() || doc.live().next().is_none() {
             return;
         }
-        let in_doc = doc.live().filter(|(_, n)| n.kind == Kind::Jar).map(|(id, _)| id);
-        let keep: BTreeSet<NodeId> = self.jar_defs.keys().copied().chain(in_doc).collect();
+        let in_doc = doc.live().filter(|(_, n)| n.kind() == Kind::Jar).map(|(id, _)| id);
+        let keep: BTreeSet<NodeId> = self.mirror.jar_defs().keys().copied().chain(in_doc).collect();
         crate::jar::prune_orphans(&dir, &keep);
     }
 
@@ -483,7 +510,7 @@ impl App {
     pub(crate) fn resolved_jar(&self, choice: &JarChoice) -> (JarKey, bool) {
         match choice.jar {
             None => (JarKey::Default, false),
-            Some(id) if self.jar_defs.contains_key(&id) => (JarKey::Named(id), false),
+            Some(id) if self.mirror.jar_defs().contains_key(&id) => (JarKey::Named(id), false),
             Some(_) => (JarKey::Default, true),
         }
     }
@@ -492,11 +519,14 @@ impl App {
     pub(crate) fn inherited_jar(&self, group: Option<&str>) -> Option<NodeId> {
         let mut at = group.map(str::to_string);
         for _ in 0..=self.nodes.len() {
-            let node = self.nodes.get(at.as_deref()?)?;
-            if let Some(jar) = node.as_group().and_then(|g| g.default_jar) {
+            let here = at.as_deref()?;
+            if !self.nodes.contains_key(here) {
+                return None;
+            }
+            if let Some(jar) = self.mirror.default_jar(here).filter(|_| self.is_container(here)) {
                 return Some(jar);
             }
-            at = node.group.clone();
+            at = self.mirror.group(here).map(str::to_owned);
         }
         None // a group cycle (never built, but the loop must end)
     }
@@ -506,26 +536,21 @@ impl App {
         JarChoice { jar: self.inherited_jar(group), set: false }
     }
 
-    /// Live or unloaded tab `id`'s jar choice; `None` for any other node.
+    /// Tab `id`'s jar choice (`Mirror::jar_choice`), live, unloaded or mid-respawn (`linked_ids`); `None` for any
+    /// other node, and for a new spawn, which has no mirror entry until it lands.
     pub(crate) fn tab_jar(&self, id: &str) -> Option<JarChoice> {
-        match &self.nodes.get(id)?.payload {
-            NodePayload::Tab(t) => Some(t.jar),
-            NodePayload::Unloaded(t) => Some(t.jar),
-            _ => None,
-        }
-    }
-
-    fn put_tab_jar(&mut self, id: &str, choice: JarChoice) {
-        match self.nodes.get_mut(id).map(|n| &mut n.payload) {
-            Some(NodePayload::Tab(t)) => t.jar = choice,
-            Some(NodePayload::Unloaded(t)) => t.jar = choice,
-            _ => {}
-        }
+        let is_tab = match self.nodes.get(id) {
+            Some(node) => node.runtime.saved_tab().is_some(),
+            None => self.is_linked(id), // only a tab respawns
+        };
+        is_tab.then(|| self.mirror.jar_choice(id))
     }
 
     /// The user picked a jar for tab `id` (`None`: the default jar). Cascades and moves leave it alone from now on.
     pub(crate) fn set_tab_jar(&mut self, id: &str, jar: Option<NodeId>) {
-        self.put_tab_jar(id, JarChoice { jar, set: true });
+        if self.tab_jar(id).is_some() {
+            self.edit_jar(id, JarChoice { jar, set: true });
+        }
         self.sweep_jar_switches();
     }
 
@@ -537,34 +562,40 @@ impl App {
 
     /// `follow_group_jar` without the sweep, for `refollow`'s loop.
     fn resnapshot(&mut self, id: &str) {
-        let group = self.nodes.get(id).and_then(|n| n.group.clone());
-        self.put_tab_jar(id, self.new_tab_jar(group.as_deref()));
+        if self.tab_jar(id).is_none() {
+            return;
+        }
+        let group = self.mirror.group(id).map(str::to_owned);
+        self.edit_jar(id, self.new_tab_jar(group.as_deref()));
     }
 
-    /// Re-snapshots every unset tab at `id` (a tab, or each tab in a group's subtree) from its new place. Called after
-    /// a local move between groups (deviation 12); a remote move's jar edits arrive with it.
+    /// Re-snapshots every unset tab at `id` (a tab, or each tab in a group's subtree) from its new place, a tab
+    /// mid-respawn included (`linked_ids`; 2b-3 Ruling 9). Called after a local move between groups (deviation 12); a
+    /// remote move's jar edits arrive with it.
     pub(crate) fn refollow(&mut self, id: &str) {
         let tabs: Vec<String> = self
-            .nodes
-            .iter()
-            .filter(|(t, n)| n.payload.saved_tab().is_some() && (t.as_str() == id || self.is_inside(t, id)))
-            .map(|(t, _)| t.clone())
+            .linked_ids()
+            .filter(|t| self.tab_jar(t).is_some_and(|c| !c.set) && (*t == id || self.is_inside(t, id)))
+            .map(str::to_owned)
             .collect();
         for t in tabs {
-            if self.tab_jar(&t).is_some_and(|c| !c.set) {
-                self.resnapshot(&t);
-            }
+            self.resnapshot(&t);
         }
         self.sweep_jar_switches();
     }
 
+    /// The group `at` is in, when `at` is one of `linked_ids` (the mirror may still hold a removed node's entry).
+    fn linked_group(&self, at: &str) -> Option<String> {
+        self.mirror.group(at).filter(|_| self.is_linked(at)).map(str::to_owned)
+    }
+
     /// Whether `at` sits somewhere inside group `group`.
     fn is_inside(&self, at: &str, group: &str) -> bool {
-        let mut cur = self.nodes.get(at).and_then(|n| n.group.clone());
+        let mut cur = self.linked_group(at);
         for _ in 0..=self.nodes.len() {
             match cur {
                 Some(g) if g == group => return true,
-                Some(g) => cur = self.nodes.get(&g).and_then(|n| n.group.clone()),
+                Some(g) => cur = self.nodes.get(&g).and(self.mirror.group(&g)).map(str::to_owned),
                 None => return false,
             }
         }
@@ -574,28 +605,27 @@ impl App {
     /// Whether `group` governs tab-or-group `at`'s jar: `group` is `at`'s group or an ancestor, and no group between
     /// them has a default of its own (spec: "nested groups with no default of their own included").
     fn governed_by(&self, at: &str, group: &str) -> bool {
-        let mut cur = self.nodes.get(at).and_then(|n| n.group.clone());
+        let mut cur = self.linked_group(at);
         for _ in 0..=self.nodes.len() {
             let Some(g) = cur else { return false };
             if g == group {
                 return true;
             }
-            let node = self.nodes.get(&g);
-            if node.and_then(|n| n.as_group()).is_some_and(|gp| gp.default_jar.is_some()) {
+            if self.is_container(&g) && self.mirror.default_jar(&g).is_some() {
                 return false; // a nearer default wins
             }
-            cur = node.and_then(|n| n.group.clone());
+            cur = self.nodes.get(&g).and(self.mirror.group(&g)).map(str::to_owned);
         }
         false
     }
 
-    /// The unset tabs a change of `group`'s default to `jar` would rewrite.
+    /// The unset tabs a change of `group`'s default to `jar` would rewrite, a tab mid-respawn included
+    /// (`linked_ids`).
     fn cascade_targets(&self, group: &str, jar: NodeId) -> Vec<String> {
-        self.nodes
-            .keys()
+        self.linked_ids()
             .filter(|t| self.tab_jar(t).is_some_and(|c| !c.set && c.jar != Some(jar)))
             .filter(|t| self.governed_by(t, group))
-            .cloned()
+            .map(str::to_owned)
             .collect()
     }
 
@@ -606,14 +636,17 @@ impl App {
     }
 
     /// Writes `group`'s default, then the new jar into every unset tab it governs (spec "Changing a group's
-    /// `default_jar`"). Plain field edits; the next save writes them. Returns how many tabs changed.
+    /// `default_jar`"). The default goes through `edit_default_jar`, the tabs through `edit_jar`. The next save writes
+    /// them. Returns how many tabs changed.
     pub(crate) fn set_group_default_jar(&mut self, group: &str, jar: NodeId) -> usize {
-        let Some(g) = self.nodes.get_mut(group).and_then(|n| n.as_group_mut()) else { return 0 };
-        g.default_jar = Some(jar);
+        if !self.is_container(group) {
+            return 0;
+        }
+        self.edit_default_jar(group, Some(jar));
         // After the write, so `governed_by` sees it; harmless, as it stops only at groups strictly between.
         let targets = self.cascade_targets(group, jar);
         for t in &targets {
-            self.put_tab_jar(t, JarChoice { jar: Some(jar), set: false });
+            self.edit_jar(t, JarChoice { jar: Some(jar), set: false });
         }
         self.sweep_jar_switches();
         targets.len()
@@ -621,8 +654,8 @@ impl App {
 
     /// "Clear default": new tabs stop inheriting it; existing tabs keep their jar.
     pub(crate) fn clear_group_default_jar(&mut self, group: &str) {
-        if let Some(g) = self.nodes.get_mut(group).and_then(|n| n.as_group_mut()) {
-            g.default_jar = None;
+        if self.is_container(group) {
+            self.edit_default_jar(group, None);
         }
     }
 
@@ -648,7 +681,7 @@ impl App {
     }
 
     fn is_ephemeral(&self, key: JarKey) -> bool {
-        matches!(key, JarKey::Named(id) if self.jar_defs.get(&id).is_some_and(|d| d.ephemeral))
+        matches!(key, JarKey::Named(id) if self.mirror.jar_defs().get(&id).is_some_and(|d| d.ephemeral))
     }
 
     /// Writes `key`'s file unless it is ephemeral. A failure is logged (never cookie values) and leaves other jars
@@ -666,7 +699,7 @@ impl App {
     /// Empties `key`'s jar and saves it, then switches the live tabs running on it (deviation 14): their engines still
     /// hold the old cookies. A named jar that no longer exists is left alone, so no file is written for it.
     pub(crate) fn clear_jar_cookies(&mut self, key: JarKey) {
-        if matches!(key, JarKey::Named(id) if !self.jar_defs.contains_key(&id)) {
+        if matches!(key, JarKey::Named(id) if !self.mirror.jar_defs().contains_key(&id)) {
             return;
         }
         self.ensure_jar_loaded(key);
@@ -688,30 +721,19 @@ impl App {
         self.sweep_jar_switches();
     }
 
-    /// A `Kind::Jar` change from the document: applies the fields that differ from what this replica last saw.
-    /// A jar this replica knew (`seen`) but no longer has was deleted here, and the next save's diff deletes its node:
-    /// another device's edit to it is dropped rather than bringing it back, nameless from a partial change or whole
-    /// (final review M1). `forget_jar` leaves the `last_shared` entry that marks it; a remote delete removes that entry
-    /// first (`apply_remote`).
-    pub(crate) fn materialize_jar(&mut self, id: NodeId, fields: &Fields, seen: &Option<Shared>, now: &Shared) {
-        if seen.is_some() && !self.jar_defs.contains_key(&id) {
-            return;
-        }
-        let changed = |no: u32| seen.as_ref().is_none_or(|s| s.fields.get(&no) != now.fields.get(&no));
-        let def =
-            self.jar_defs.entry(id).or_insert_with(|| JarDef { name: String::new(), color: None, ephemeral: false });
-        if changed(field::NAME) {
-            def.name = match fields.get(&field::NAME) {
-                Some(FieldValue::Str(s)) => s.clone(),
-                _ => String::new(),
-            };
-        }
-        if changed(field::COLOR) {
-            def.color = fields.get(&field::COLOR).and_then(color_of);
-        }
-        if changed(field::EPHEMERAL) {
-            let on = matches!(fields.get(&field::EPHEMERAL), Some(FieldValue::Bool(true)));
-            self.set_jar_ephemeral(id, on);
+    /// A `Kind::Jar` change from the document, before `materialize` gives the mirror its fields (`mirror_remote`, which
+    /// refreshes `jar_defs`). A jar deleted here whose delete is pending never gets this far (`materialize` drops the
+    /// change, final review M1 / Ruling 9). The jar is known from now on (and queued for creation, which only an
+    /// imported jar's fresh id needs: `queue_create`), and a changed ephemeral flag that no local edit holds runs its
+    /// file side effects first (`switch_jar_ephemeral`, which compares against `jar_defs`), while the mirror still
+    /// shows the old flag: a jar still saved is loaded from its file before the flag says it has none.
+    pub(crate) fn materialize_jar(&mut self, id: NodeId, fields: &Fields) {
+        self.mirror.add_jar(id);
+        self.queue_create(&id.to_string());
+        if let Some(value) = fields.get(&field::EPHEMERAL) {
+            if !self.pending.contains_key(&(id, field::EPHEMERAL)) {
+                self.switch_jar_ephemeral(id, matches!(value, FieldValue::Bool(true)), false);
+            }
         }
     }
 }
@@ -721,20 +743,19 @@ mod tests {
     use super::{id_digest, jar_fragment, named_jar_label, JarConfirm, JarLabel, JarMarker};
     use crate::card::DropEffect;
     use crate::jar::{JarChoice, JarKey};
-    use crate::node::{GroupPayload, NodePayload};
     use crate::session_sync::tests::{add, sleeping_tab};
-    use crate::store::model::NodeId;
+    use crate::store::model::{Kind, NodeId};
     use crate::App;
     use std::collections::{BTreeMap, BTreeSet};
 
     fn tab_in(app: &mut App, group: Option<&str>) -> String {
-        let id = add(app, sleeping_tab("https://a.com/", "A"));
-        app.nodes.get_mut(&id).unwrap().group = group.map(str::to_string);
+        let id = add(app, Kind::Tab, sleeping_tab("https://a.com/", "A"));
+        app.edit_group(&id, group.map(str::to_string));
         id
     }
     fn group_in(app: &mut App, parent: Option<&str>) -> String {
-        let id = add(app, NodePayload::Group(GroupPayload::named("G")));
-        app.nodes.get_mut(&id).unwrap().group = parent.map(str::to_string);
+        let id = crate::session_sync::tests::add_group(app, "G");
+        app.edit_group(&id, parent.map(str::to_string));
         id
     }
     fn jar_of(app: &App, tab: &str) -> JarChoice {
@@ -788,12 +809,12 @@ mod tests {
         let set = tab_in(&mut app, None);
         app.set_tab_jar(&set, None);
         for t in [&unset, &set] {
-            app.nodes.get_mut(t).unwrap().group = Some(g.clone());
+            app.edit_group(t, Some(g.clone()));
             app.refollow(t);
         }
         assert_eq!(jar_of(&app, &unset).jar, Some(work));
         assert_eq!(jar_of(&app, &set), JarChoice { jar: None, set: true });
-        app.nodes.get_mut(&unset).unwrap().group = None;
+        app.edit_group(&unset, None);
         app.refollow(&unset);
         assert_eq!(jar_of(&app, &unset), JarChoice::default(), "moved out: no default, no jar");
     }
@@ -818,20 +839,20 @@ mod tests {
         app.set_group_default_jar(&g, work);
         app.spawn_new_tab(None, Some(g.clone()), "https://new/");
         let (spawn, _) = app.test_spawns.last().unwrap();
-        assert_eq!(spawn.carry.jar, JarChoice { jar: Some(work), set: false });
+        assert_eq!(spawn.jar, JarChoice { jar: Some(work), set: false });
         let opener = tab_in(&mut app, Some(&g));
         app.set_tab_jar(&opener, Some(home));
         app.spawn_tab_from(&opener, "https://opened/");
         let (spawn, _) = app.test_spawns.last().unwrap();
-        assert_eq!(spawn.carry.jar, JarChoice { jar: Some(home), set: true }, "deviation 3");
+        assert_eq!(spawn.jar, JarChoice { jar: Some(home), set: true }, "deviation 3");
         assert_eq!(spawn.parent.as_deref(), Some(opener.as_str()));
         assert_eq!(spawn.group.as_deref(), Some(g.as_str()));
         app.duplicate_tab(&opener);
         let (spawn, _) = app.test_spawns.last().unwrap();
-        assert_eq!(spawn.carry.jar, JarChoice { jar: Some(home), set: true }, "a duplicate copies too");
-        app.spawn_tab_at("https://dropped/", egui::Vec2::ZERO, Some(g.clone()));
+        assert_eq!(spawn.jar, JarChoice { jar: Some(home), set: true }, "a duplicate copies too");
+        app.spawn_tab_at("https://dropped/", egui::Vec2::ZERO, Some(g.clone()), None);
         let (spawn, _) = app.test_spawns.last().unwrap();
-        assert_eq!(spawn.carry.jar, JarChoice { jar: Some(work), set: false }, "a dropped page inherits");
+        assert_eq!(spawn.jar, JarChoice { jar: Some(work), set: false }, "a dropped page inherits");
     }
 
     /// A merge re-snapshots only the members that moved: a tab already in the target keeps its jar, even one that
@@ -848,7 +869,7 @@ mod tests {
         let moved = tab_in(&mut app, Some(&w));
         app.set_group_default_jar(&w, work);
         app.apply_drop(&w, Some((DropEffect::Merge, Some(h.clone()))));
-        assert_eq!(app.nodes[&moved].group.as_deref(), Some(h.as_str()));
+        assert_eq!(app.mirror.group(&moved), Some(h.as_str()));
         assert_eq!(jar_of(&app, &moved), JarChoice::default(), "a moved member re-snapshots: `h` has no default");
         assert_eq!(jar_of(&app, &stayed), JarChoice { jar: Some(home), set: false }, "a tab that never moved");
     }
@@ -880,14 +901,14 @@ mod tests {
         // Merge: `w` (holding the tab again) dropped onto `h`; its members now take `h`'s default.
         app.apply_drop(&unset, Some((DropEffect::Join, Some(w.clone()))));
         app.apply_drop(&w, Some((DropEffect::Merge, Some(h.clone()))));
-        assert_eq!(app.nodes[&unset].group.as_deref(), Some(h.as_str()));
+        assert_eq!(app.mirror.group(&unset), Some(h.as_str()));
         assert_eq!(unset_jar(&app), JarChoice { jar: Some(home), set: false }, "merge");
         assert_eq!(jar_of(&app, &set), JarChoice { jar: None, set: true }, "merge leaves a set tab");
 
         // Dissolve: `inner` (no default) inside `h` is dissolved into `h`, then `h` itself to the top level.
         let inner = group_in(&mut app, Some(&h));
-        app.nodes.get_mut(&unset).unwrap().group = Some(inner.clone());
-        app.put_tab_jar(&unset, JarChoice { jar: Some(work), set: false }); // stale, so the dissolve must fix it
+        app.edit_group(&unset, Some(inner.clone()));
+        app.edit_jar(&unset, JarChoice { jar: Some(work), set: false }); // stale, so the dissolve must fix it
         app.dissolve_group(&inner);
         assert_eq!(unset_jar(&app), JarChoice { jar: Some(home), set: false }, "dissolve into a defaulted group");
         app.dissolve_group(&h);
@@ -898,11 +919,11 @@ mod tests {
         let level = group_in(&mut app, None);
         app.set_group_default_jar(&level, work);
         let other = tab_in(&mut app, Some(&level));
-        app.nodes.get_mut(&unset).unwrap().group = Some(level.clone());
+        app.edit_group(&unset, Some(level.clone()));
         app.current_group = Some(level.clone());
         app.apply_drop(&unset, Some((DropEffect::GroupWith, Some(other.clone()))));
-        let made = app.nodes[&unset].group.clone().unwrap();
-        assert_eq!(app.nodes[&made].group.as_deref(), Some(level.as_str()), "the new group sits inside `level`");
+        let made = app.mirror.group(&unset).unwrap().to_owned();
+        assert_eq!(app.mirror.group(&made), Some(level.as_str()), "the new group sits inside `level`");
         assert_eq!(unset_jar(&app), JarChoice { jar: Some(work), set: false }, "group with");
     }
 
@@ -920,7 +941,7 @@ mod tests {
         app.follow_group_jar(&t); // no group default: back to the default jar
         assert!(app.jar_chip(&t).is_none());
         app.set_tab_jar(&t, Some(work));
-        app.jar_defs.remove(&work); // a remote delete arrives before the tab's own field edit
+        app.mirror.forget_jar(work); // a remote delete arrives before the tab's own field edit
         let chip = app.jar_chip(&t).unwrap();
         assert!(chip.missing);
         assert_eq!(chip.tooltip.as_deref(), Some("This tab's jar was deleted; it uses the default jar"));
@@ -933,15 +954,16 @@ mod tests {
     fn a_new_jar_takes_a_colour_no_jar_uses() {
         use crate::theme::TAG_COLOR_PALETTE;
         let mut app = App::default();
-        let colour = |app: &App, id| app.jar_defs[&id].color.unwrap();
+        let colour = |app: &App, id| app.mirror.jar_defs()[&id].color.unwrap();
         let ids: Vec<_> = ["A", "B", "C"].iter().map(|n| app.create_jar(n)).collect();
         assert_eq!(ids.iter().map(|&id| colour(&app, id)).collect::<Vec<_>>(), TAG_COLOR_PALETTE[..3]);
         app.delete_jar(ids[1]);
         let d = app.create_jar("D");
         assert_eq!(colour(&app, d), TAG_COLOR_PALETTE[1], "the freed colour");
-        let distinct = |app: &App| app.jar_defs.values().map(|j| j.color.unwrap().to_array()).collect::<BTreeSet<_>>();
-        assert_eq!(distinct(&app).len(), app.jar_defs.len(), "no colour repeats");
-        while app.jar_defs.len() < TAG_COLOR_PALETTE.len() {
+        let distinct =
+            |app: &App| app.mirror.jar_defs().values().map(|j| j.color.unwrap().to_array()).collect::<BTreeSet<_>>();
+        assert_eq!(distinct(&app).len(), app.mirror.jar_defs().len(), "no colour repeats");
+        while app.mirror.jar_defs().len() < TAG_COLOR_PALETTE.len() {
             app.create_jar("More");
         }
         assert_eq!(distinct(&app).len(), TAG_COLOR_PALETTE.len(), "every palette colour once");
@@ -964,12 +986,16 @@ mod tests {
         app.clear_group_default_jar(&g);
         assert_eq!(jar_of(&app, &t), JarChoice { jar: Some(work), set: false }, "stored values unchanged");
         assert!(!app.jar_chip(&t).unwrap().following, "no group default: a plain dot");
-        app.nodes.get_mut(&g).unwrap().as_group_mut().unwrap().default_jar = Some(home); // a remote edit, uncascaded
+        app.mirror.set(&g, crate::store::model::field::DEFAULT_JAR, crate::store::model::FieldValue::Id(Some(home))); // remote, uncascaded
         assert!(!app.jar_chip(&t).unwrap().following, "the group's default is another jar");
         let outer = group_in(&mut app, None);
-        app.nodes.get_mut(&g).unwrap().as_group_mut().unwrap().default_jar = None;
-        app.nodes.get_mut(&g).unwrap().group = Some(outer.clone());
-        app.nodes.get_mut(&outer).unwrap().as_group_mut().unwrap().default_jar = Some(work);
+        app.mirror.set(&g, crate::store::model::field::DEFAULT_JAR, crate::store::model::FieldValue::Id(None));
+        app.edit_group(&g, Some(outer.clone()));
+        app.mirror.set(
+            &outer,
+            crate::store::model::field::DEFAULT_JAR,
+            crate::store::model::FieldValue::Id(Some(work)),
+        );
         assert!(app.jar_chip(&t).unwrap().following, "an outer group's default counts when it is the nearest");
     }
 
@@ -980,17 +1006,17 @@ mod tests {
         let g = group_in(&mut app, None);
         app.focused = Some(g);
         assert!(!app.set_focused_tab_jar_named("Stray"));
-        assert!(app.jar_defs.is_empty(), "a focused group makes no jar");
+        assert!(app.mirror.jar_defs().is_empty(), "a focused group makes no jar");
         app.focused = None;
         assert!(!app.set_focused_tab_jar_named("Stray"));
-        assert!(app.jar_defs.is_empty());
+        assert!(app.mirror.jar_defs().is_empty());
         let t = tab_in(&mut app, None);
         app.focused = Some(t.clone());
         assert!(app.set_focused_tab_jar_named("Work"));
         let work = app.jar_named("Work").expect("made for the tab");
         assert_eq!(jar_of(&app, &t), JarChoice { jar: Some(work), set: true });
         assert!(app.set_focused_tab_jar_named("Work"));
-        assert_eq!(app.jar_defs.len(), 1, "an existing name is reused");
+        assert_eq!(app.mirror.jar_defs().len(), 1, "an existing name is reused");
         assert!(app.set_focused_tab_jar_named("DEFAULT"));
         assert_eq!(jar_of(&app, &t).jar, None);
     }
@@ -1012,7 +1038,7 @@ mod tests {
         assert_eq!(jar_of(&app, &t).jar, Some(w1), "an ambiguous stored name: the lowest id");
         assert!(app.set_focused_tab_jar_named("Home"));
         assert_eq!(jar_of(&app, &t).jar, Some(home), "a unique name is its own label");
-        assert_eq!(app.jar_defs.len(), 3, "no jar made");
+        assert_eq!(app.mirror.jar_defs().len(), 3, "no jar made");
         // A jar literally named like another's label: the label wins, as it is matched first.
         app.create_jar(&l2);
         assert_eq!(app.jar_named(&l2), Some(w2));
@@ -1043,7 +1069,7 @@ mod tests {
         assert_eq!((app.jar_tab_count(JarKey::Default), app.jar_tab_count(JarKey::Named(work))), (1, 1));
         app.set_tab_jar(&a, Some(work));
         assert_eq!((app.jar_tab_count(JarKey::Default), app.jar_tab_count(JarKey::Named(work))), (0, 2));
-        app.jar_defs.remove(&work);
+        app.mirror.forget_jar(work);
         assert_eq!(app.jar_tab_count(JarKey::Default), 2, "a missing jar's tabs use the default jar");
     }
 
@@ -1071,7 +1097,7 @@ mod tests {
             app.jar_confirm_text(JarConfirm::Delete(work)).unwrap().1,
             "2 tabs use this; they'll use Default (built-in)."
         );
-        app.jar_defs.remove(&work);
+        app.mirror.forget_jar(work);
         assert!(
             app.jar_confirm_text(JarConfirm::Delete(work)).is_none(),
             "deleted elsewhere meanwhile: nothing to ask"
@@ -1162,7 +1188,7 @@ mod tests {
             app.jar_confirm_text(JarConfirm::Clear(JarKey::Default)).unwrap().0,
             "Clear cookies in Default (built-in)?"
         );
-        app.jar_defs.remove(&user);
+        app.mirror.forget_jar(user);
         assert_eq!(app.jar_label(JarKey::Named(user)), JarLabel::built_in(), "gone: its tabs use the built-in jar");
     }
 
@@ -1323,11 +1349,11 @@ mod tests {
     fn a_jar_is_made_and_renamed_with_the_clean_name() {
         let mut app = App::default();
         let jar = app.create_jar(" Wo\u{200B}rk\n");
-        assert_eq!(app.jar_defs[&jar].name, "Work");
+        assert_eq!(app.mirror.jar_defs()[&jar].name, "Work");
         app.rename_jar(jar, "\u{00A0}Home\u{2028}Office");
-        assert_eq!(app.jar_defs[&jar].name, "Home Office");
+        assert_eq!(app.mirror.jar_defs()[&jar].name, "Home Office");
         app.rename_jar(jar, "\u{200B}");
-        assert_eq!(app.jar_defs[&jar].name, "Home Office");
+        assert_eq!(app.mirror.jar_defs()[&jar].name, "Home Office");
     }
 
     /// Name rules: `SETJAR` with nothing left of the name does nothing; a name that is clean only after cleaning
@@ -1335,16 +1361,20 @@ mod tests {
     #[test]
     fn setjar_matches_and_makes_by_the_clean_name() {
         let mut app = App::default();
-        let t = crate::session_sync::tests::add(&mut app, crate::session_sync::tests::sleeping_tab("https://a/", "A"));
+        let t = crate::session_sync::tests::add(
+            &mut app,
+            crate::store::model::Kind::Tab,
+            crate::session_sync::tests::sleeping_tab("https://a/", "A"),
+        );
         app.focused = Some(t.clone());
         assert!(!app.set_focused_tab_jar_named("\u{200B} "));
-        assert!(app.jar_defs.is_empty());
+        assert!(app.mirror.jar_defs().is_empty());
         let work = app.create_jar("Work");
         assert!(app.set_focused_tab_jar_named("Wo\u{200B}rk"));
-        assert_eq!(app.jar_defs.len(), 1, "no twin made");
+        assert_eq!(app.mirror.jar_defs().len(), 1, "no twin made");
         assert_eq!(app.tab_jar(&t).map(|c| c.jar), Some(Some(work)));
         assert!(app.set_focused_tab_jar_named(" New\u{00A0}\u{00A0}one "));
-        assert!(app.jar_defs.values().any(|d| d.name == "New one"));
+        assert!(app.mirror.jar_defs().values().any(|d| d.name == "New one"));
     }
 
     /// Name rules: a label draws a hidden character as a placeholder in the marker style, between the plain name
@@ -1373,9 +1403,17 @@ mod tests {
     #[test]
     fn a_jar_chip_hover_names_a_hidden_character() {
         let mut app = App::default();
-        let t = crate::session_sync::tests::add(&mut app, crate::session_sync::tests::sleeping_tab("https://a/", "A"));
+        let t = crate::session_sync::tests::add(
+            &mut app,
+            crate::store::model::Kind::Tab,
+            crate::session_sync::tests::sleeping_tab("https://a/", "A"),
+        );
         let jar = app.create_jar("x");
-        app.jar_defs.get_mut(&jar).unwrap().name = "Wo\u{200B}rk".into();
+        app.mirror.set(
+            &jar.to_string(),
+            crate::store::model::field::NAME,
+            crate::store::model::FieldValue::Str("Wo\u{200B}rk".into()),
+        );
         app.set_tab_jar(&t, Some(jar));
         let tip = app.jar_chip(&t).and_then(|c| c.tooltip).unwrap_or_default();
         assert!(tip.contains("Hidden characters: U+200B zero width space"), "{tip}");

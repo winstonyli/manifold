@@ -1,5 +1,7 @@
 mod bookmarks;
+mod caps;
 mod card;
+mod card_kind;
 mod cef_pin;
 mod cef_platform;
 mod cli;
@@ -8,9 +10,12 @@ mod closed;
 mod content;
 mod crash_report;
 mod debug_control;
+#[cfg(test)]
+mod deleted_names;
 mod engine_info;
 mod engine_install;
 mod event_loop;
+mod failure_toasts;
 mod favicon_fetch;
 mod fetched;
 mod gpu;
@@ -29,6 +34,7 @@ mod json_level_ui;
 mod json_view;
 mod level;
 mod local_state;
+mod mirror;
 mod names;
 mod nav_history;
 mod net;
@@ -71,6 +77,7 @@ use redirect_fetch::{FetchJob, FetchResult, FetchTarget, RedirectFetcher};
 use suggestions::{resolve_navigation_url, Suggestion, SuggestionFetcher};
 
 use card::*;
+use card_kind::*;
 use debug_control::DebugCommand;
 use engine_info::*;
 use gpu::GpuState;
@@ -81,12 +88,13 @@ use ipc_protocol::{
     frame_path, modifiers, EngineToHost, HostToEngine, InputEvent, KeyCode, MouseButton, SharedFrameBuffer,
 };
 use json_level::{JsonEdit, JsonLevel};
-use level::{EdgeCurve, LevelItem, LevelItemKind};
+use level::{EdgeCurve, LevelItem, LevelItemKind, LevelScan};
+use mirror::Carried;
 use node::*;
 use popups::*;
 use process_manager::{EngineKind, EngineTab};
 use settings::{SearchEngine, Settings};
-use store::model::field;
+use store::model::{field, FieldValue};
 use tab_view::*;
 use theme::*;
 use winit::application::ApplicationHandler;
@@ -317,18 +325,6 @@ fn json_summary(value: &serde_json::Value) -> String {
 /// commands (see `App::debug_input_events`).
 fn debug_key_event(key: egui::Key, modifiers: egui::Modifiers) -> egui::Event {
     egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers }
-}
-
-/// "Remove from Group" (the tab card's eject button, dragging a card out
-/// through the way back, and the tab and item menus): moves `id` up one
-/// level, into the parent of the group it's in, since groups nest. `None`
-/// (the top level) when that group isn't itself in one.
-fn remove_from_group(nodes: &mut NodeMap, id: &str) {
-    let grandparent =
-        nodes.get(id).and_then(|n| n.group.as_ref()).and_then(|group| nodes.get(group)).and_then(|g| g.group.clone());
-    if let Some(node) = nodes.get_mut(id) {
-        node.group = grandparent;
-    }
 }
 
 /// `1234` -> `"1.2 KB"`, binary (1024-based) units -- matches Windows
@@ -725,7 +721,7 @@ struct TabSpawnOutcome {
 
 /// What `spawn_tab_async` needs to start a tab and, once it's up, to
 /// insert its graph node: `TabSpawn::new` for a new tab (no parent or
-/// group, at rest, nothing carried), `TabSpawn::respawn` for one that
+/// group, nothing carried), `TabSpawn::respawn` for one that
 /// already has a node.
 struct TabSpawn {
     id: String,
@@ -733,8 +729,12 @@ struct TabSpawn {
     kind: EngineKind,
     parent: Option<String>,
     group: Option<String>,
+    /// The jar a new tab starts with, which it lands with (`Carried::jar`). A tab the mirror already holds (a
+    /// respawn or wake) uses the mirror's instead, which a cascade may change while it is in flight.
+    jar: jar::JarChoice,
+    /// Where a new tab lands: its layout entry and its document pos start there (2b-4 Ruling 3). A tab already
+    /// placed (a respawn, a wake) keeps both (`App::layout` outlives the respawn, `Mirror::seed` never overwrites).
     pos: egui::Vec2,
-    vel: egui::Vec2,
     purpose: SpawnPurpose,
     carry: TabCarry,
     /// The engine to respawn with if this spawn fails: a swap's old
@@ -747,9 +747,9 @@ struct TabSpawn {
 /// title or mute of its own yet. A new attribute that must survive a
 /// respawn or wake is one more field here.
 struct TabCarry {
-    /// See `TabPayload::pinned`.
+    /// See `Mirror::pinned`; seeds the mirror when the tab's id has no entry yet.
     pinned: bool,
-    /// See `GraphNode::color`.
+    /// See `Mirror::color`; seeds the mirror when the tab's id has no entry yet.
     color: Option<egui::Color32>,
     /// See `TabPayload::zoom_factor`. A new tab takes
     /// `Settings::zoom_factor`, having no value of its own yet.
@@ -758,8 +758,6 @@ struct TabCarry {
     title: String,
     /// See `TabPayload::muted`. Sent to the new engine on landing.
     muted: bool,
-    /// See `TabPayload::jar`.
-    jar: crate::jar::JarChoice,
 }
 
 impl TabSpawn {
@@ -777,48 +775,41 @@ impl TabSpawn {
             kind,
             parent: None,
             group: None,
+            jar: Default::default(),
             pos,
-            vel: egui::Vec2::ZERO,
             purpose,
-            carry: TabCarry {
-                pinned: false,
-                color: None,
-                zoom_factor,
-                title: String::new(),
-                muted: false,
-                jar: Default::default(),
-            },
+            carry: TabCarry { pinned: false, color: None, zoom_factor, title: String::new(), muted: false },
             fallback_kind: None,
         }
     }
 
-    /// Tab `node` (`id`) respawned as `kind` at `url`, keeping its place in
-    /// the graph and its `TabCarry`. `None` if `node` isn't a tab.
-    fn respawn(id: &str, node: &GraphNode, kind: EngineKind, url: String) -> Option<Self> {
+    /// Tab `node` (`id`) respawned as `kind` at `url`, keeping its `TabCarry` (`carried` is the mirror's); its place
+    /// in the graph is its `App::layout` entry, which the respawn leaves alone. `None` if `node` isn't a tab.
+    fn respawn(id: &str, node: &GraphNode, carried: Carried, kind: EngineKind, url: String) -> Option<Self> {
         let tab = node.as_tab()?;
         Some(TabSpawn {
             id: id.to_string(),
             url,
             kind,
-            parent: node.parent.clone(),
-            group: node.group.clone(),
-            pos: node.pos,
-            vel: node.vel,
+            parent: carried.parent.clone(),
+            group: carried.group.clone(),
+            jar: carried.jar,
+            pos: carried.pos.unwrap_or_default(),
             purpose: SpawnPurpose::Respawn,
             carry: TabCarry {
-                pinned: tab.pinned,
-                color: node.color,
+                pinned: carried.pinned,
+                color: carried.color,
                 zoom_factor: tab.zoom_factor,
                 title: tab.title.clone(),
                 muted: tab.muted,
-                jar: tab.jar,
             },
             fallback_kind: None,
         })
     }
 }
 
-/// A named jar's synced definition (a `Kind::Jar` node). Not a graph node (spec "Data model").
+/// A named jar's synced definition (a `Kind::Jar` node), decoded from its mirrored fields (`Mirror::jar_defs`). Not a
+/// graph node (spec "Data model").
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct JarDef {
     pub(crate) name: String,
@@ -836,12 +827,17 @@ struct App {
     last_window_title: String,
     gpu: Option<GpuState>,
     /// Every graph node -- tabs, downloads, and groups alike (see
-    /// `NodePayload`'s own doc comment). `node_order` is a stable
+    /// `GraphNode`'s own doc comment). `node_order` is a stable
     /// iteration/z-order for graph rendering and hit-testing, separate from
     /// this `HashMap`'s own unspecified iteration order (which would make
     /// node click/drag targeting flaky if used directly).
     nodes: NodeMap,
     node_order: Vec<String>,
+    /// Where each node's card is drawn, by id (`Layout`, 2b-4 Ruling 1): runtime and personal, never the document's
+    /// pos (`Mirror::pos`). Keyed by id and left alone by a respawn's remove-and-reinsert, so a respawning tab keeps
+    /// its place; pruned with the mirror at a save. Read through `layout_pos`: a node without an entry (a hand-built
+    /// test node) is at the origin.
+    layout: HashMap<String, Layout>,
     /// Toggled by the Graph toolbar's "Collapse Groups"/"Expand Groups"
     /// button -- while `true`, every non-empty group card falls back to
     /// the plain centered name+count layout an empty group already uses,
@@ -850,11 +846,53 @@ struct App {
     /// touch `groups`/membership at all. Session-only, resets on restart.
     groups_collapsed: bool,
     /// `None` while viewing the top level; `Some(group_id)` while a
-    /// group's own subgraph has been drilled into (see `GroupPayload`'s doc
-    /// comment) — only meaningful when `view_mode == Graph`, but not reset
-    /// on leaving Graph view, so returning to Graph resumes wherever the
-    /// user last drilled into, same "graph view remembers its own state"
-    /// treatment `camera.rect`'s pan/zoom already gets.
+    /// group's own subgraph has been drilled into — only meaningful when
+    /// `view_mode == Graph`, but not reset on leaving Graph view, so
+    /// returning to Graph resumes wherever the user last drilled into, same
+    /// "graph view remembers its own state" treatment `camera.rect`'s
+    /// pan/zoom already gets.
+    ///
+    /// A group is a container node (the target of the `contains` edge,
+    /// `card_kind::is_container`) shown at whichever level of Graph view it
+    /// itself belongs to that, double-clicked, drills into its own subgraph of
+    /// members (tabs/downloads/notes/images/PDFs/JSON, and other groups) in
+    /// place of that level's -- the same "swap which set of nodes this view
+    /// renders" idea `ViewMode::Item`/`Graph` already is, just recursively, and
+    /// reusing that same flat `graph_layout::step` simulation rather than a
+    /// second nested one running inside the group's own node. It has no
+    /// runtime state of its own (`Runtime::None`): its name (`Mirror::name`,
+    /// written by `App::edit_name`; a new group's is seeded by
+    /// `App::place_group`), whether an older build's "Expand as Graph" made it
+    /// (`Mirror::from_json`) and the jar new tabs in it start with
+    /// (`Mirror::default_jar`) are the mirror's, as are its document pos and
+    /// `color`; the drawn position is `App::layout`.
+    ///
+    /// **Groups nest.** A group's own group (`Mirror::group`) can itself be
+    /// `Some(parent_group_id)` -- the "no nesting, a node's group is a
+    /// single `Option<String>` not a path" limitation this doc comment used to
+    /// describe no longer applies: a single `Option<String>` *is* enough to
+    /// nest, since walking group links upward from any node already forms
+    /// the whole ancestor chain (`App::group_breadcrumb`), with no separate
+    /// path/stack type needed. This field names whichever group's
+    /// subgraph is currently showing (`None` at the true top level, same as
+    /// before); leaving a group (the toolbar's "◀" button) goes to that
+    /// group's own parent, not straight to the top, so leaving a deeply-nested
+    /// group takes as many "◀" clicks as it took to get there (or one
+    /// breadcrumb click to jump straight to any ancestor). Dissolving a nested
+    /// group reparents its members to *its own* parent (`App::dissolve_group`),
+    /// not unconditionally to the top level.
+    ///
+    /// Dragging one group's card onto another's is deliberately left as
+    /// **merge** (dissolve the source, flatten its members into the target),
+    /// unchanged from before nesting existed -- it does not nest the source
+    /// under the target. Nesting is created only through "+ New Group"/Import
+    /// Group/"Group Selected" while already viewing a group's own subgraph, a
+    /// deliberate choice (confirmed with the user) to avoid changing what an
+    /// already-shipped drag gesture does.
+    ///
+    /// Entering/leaving eases the camera via `GraphCameraTween` rather than
+    /// `Transition` — see that type's own doc comment for why. Groups, their
+    /// members and nesting are saved in the session store (`session_sync`).
     current_group: Option<String>,
     /// The level of the Json node `current_group` names (spec "Level
     /// sources"); `None` on every other level.
@@ -871,7 +909,7 @@ struct App {
     /// (see `node_menu`) sets this the same way. A real
     /// `egui::TextEdit` replaces whichever plain button/menu row started
     /// it until Enter commits or Escape cancels. Transient UI state, not
-    /// part of `GroupPayload` itself.
+    /// the group's name (`Mirror::name`).
     renaming_group: Option<(String, String)>,
     /// `(tab_id, draft_name)` while a tab's menu shows "New Jar..."'s name field in place of its items, the way
     /// `renaming_group` does for a group. Committing creates the jar and picks it for the tab (`NodeAction::NewJar`).
@@ -961,8 +999,8 @@ struct App {
     /// A copy of `jars` for spawn threads: the seed is read when the host connects, not when the spawn starts. Also
     /// counts each jar's clears, so a host seeded before a clear is caught when it lands (`note_spawned_jar`).
     jar_snapshots: Arc<std::sync::Mutex<jar::Snapshots>>,
-    /// A sleep's `PageState` or a swap's `StateSnapshot` waiting for the tab's `Cookies` reply (or its deadline), so the
-    /// host is not dropped before its last cookies arrive.
+    /// A sleep's `PageState` or a swap's `StateSnapshot` waiting for the tab's `Cookies` reply (or its deadline), so
+    /// the host is not dropped before its last cookies arrive.
     cookie_holds: HashMap<String, (std::time::Instant, tabs::Held)>,
     /// When `jar_pull_all` last ran, for the 30 s pull in `about_to_wait`.
     jar_last_pull: Option<std::time::Instant>,
@@ -995,12 +1033,12 @@ struct App {
     /// reaches zero.
     tab_spawns_in_flight: usize,
     /// Ids whose tab spawn is in flight (every `SpawnPurpose`), each with
-    /// the tab it was started as (`session_sync::spawn_shared`). No live
-    /// node yet, so `save_session` keeps them in the store rather than
-    /// deleting them (contract "In-flight spawns"), and creates one the
-    /// store doesn't hold yet (a new, imported or reopened tab), so a quit
-    /// before it lands doesn't lose it.
-    spawning: HashMap<String, session_sync::Shared>,
+    /// the tab it was started as (`session_sync::spawn_snapshot`). No live
+    /// node yet (contract "In-flight spawns"); a save creates one the store
+    /// doesn't hold yet (a new, imported or reopened tab) from this snapshot
+    /// (`snapshot`), so a quit before it lands doesn't lose it. A respawn
+    /// queues no delete, so the store keeps the tab meanwhile.
+    spawning: HashMap<String, session_sync::Snapshot>,
     /// Other replicas' latest change to a node in `spawning`, applied when
     /// its spawn lands (`None`: deleted). The spawn itself carries only
     /// what it was started with.
@@ -1012,17 +1050,26 @@ struct App {
     /// Tabs `navigate_tab` just moved on, with the url each left, when, and
     /// whether the engine has reported loading since (`App::reported_url`).
     navigated_from: HashMap<String, (String, std::time::Instant, bool)>,
-    /// Explicit fields (`pos`, `url`) marked at user actions, for the next
-    /// save to write (spec "Local edits become ops").
-    explicit: std::collections::BTreeSet<(store::model::NodeId, u32)>,
-    /// What the store held for each node when this replica last read or
-    /// committed it. `materialize` applies a field only where the store
-    /// now differs, so a remote change to one field doesn't overwrite
-    /// another field's unsaved local value.
-    last_shared: HashMap<String, session_sync::Shared>,
-    /// Named jars' synced definitions (spec "Data model"). A jar is a `Kind::Jar` store node but never a graph node:
-    /// `session_sync` bridges this map to the document.
-    jar_defs: BTreeMap<store::model::NodeId, JarDef>,
+    /// Nodes placed here that the next save creates (2b-5 Ruling 3): every way a node enters the live graph
+    /// (`place_node`, `spawn_tab_async`, a jar's `add_jar`) queues its id; the save creates each the document lacks,
+    /// from the mirror or the spawn's snapshot (`snapshot`). One the document already holds (a restore, another
+    /// replica's node) is dropped. Cleared of created ids by a successful commit.
+    pending_creates: std::collections::BTreeSet<store::model::NodeId>,
+    /// Nodes removed here that the next save deletes (Ruling 4: `queue_delete`). Only a local removal queues: a
+    /// node another replica deleted is already gone from the document, and a respawn, swap or reload only takes
+    /// the node out of `nodes` for a while. Cleared by a successful commit.
+    pending_deletes: std::collections::BTreeSet<store::model::NodeId>,
+    /// The decoded copy of the document's mirrored fields (`mirror::Mirror`).
+    mirror: mirror::Mirror,
+    /// Local edits to mirrored fields that the next save commits as `Set`s, by node and field. Cleared by a
+    /// successful commit.
+    pending: std::collections::BTreeMap<(store::model::NodeId, u32), Vec<u8>>,
+    /// Local group moves the next save commits as `Move`s, by node: the target group, `None` for the top level.
+    /// Cleared by a successful commit.
+    pending_moves: std::collections::BTreeMap<store::model::NodeId, Option<store::model::NodeId>>,
+    /// Another replica's text for a note being typed in, held back from its mirror and box until the blur
+    /// (`end_note_edit`, 2b-4 Ruling 7), by node. Dropped when this replica commits its own text after it.
+    held_text: HashMap<String, String>,
     /// Personal state (spec "Personal state") last written to
     /// `session.mnf.local`, or read at startup: `maybe_write_local` skips
     /// writing when the current state compares equal, so an idle session
@@ -1113,11 +1160,14 @@ struct App {
     /// Every node the current drag is moving (a lone card, or the whole
     /// selection when the dragged card is selected — see `take_drag_unit`
     /// and the `dragged()` branch that fills this in). Read and cleared at
-    /// release, where each one's `pos` is marked exactly once (spec "Local
-    /// edits become ops"): marking every frame of the drag instead would
-    /// let an intermediate position reach the store, since a save can fire
-    /// mid-drag from an unrelated event (`poll_store`, or a url change
-    /// batched through `drain_tab_events`), independent of the gesture.
+    /// release (`release_drag`), where each one's `pos` is written exactly
+    /// once (`edit_pos`, 2b-4 Ruling 2): writing every frame of the drag
+    /// instead would let an intermediate position reach the store, since a
+    /// save can fire mid-drag from an unrelated event (`poll_store`, or a
+    /// url change batched through `drain_tab_events`), independent of the
+    /// gesture. Until then a remote pos for any of them doesn't snap its
+    /// layout (`is_being_dragged`). Cleared without a write when the drag
+    /// stops being live (`end_stale_drag`).
     drag_moved: Vec<String>,
     hovered: Option<String>,
     /// Set to `self.hovered` by an Escape press while a hover-peek preview
@@ -1143,9 +1193,9 @@ struct App {
     /// background -- see the marquee-release logic below for where this
     /// gets set (same gesture, disambiguated from a real rectangle-select
     /// drag by movement distance) and `build_graph_ui`'s own rendering of
-    /// it. Deliberately *not* a `NodePayload`/`self.nodes` entry -- it's a
+    /// it. Deliberately *not* a `GraphNode`/`self.nodes` entry -- it's a
     /// pending choice, not real graph content, so it never needs excluding
-    /// from `nodes_at_current_level(Group)`/session persistence/drag-into-group/
+    /// from `level_scan`/session persistence/drag-into-group/
     /// filters the way a real new node kind would. Cleared on any camera
     /// movement (pan/zoom/Reset View/entering or leaving a group/minimap
     /// click), Escape, clicking elsewhere, or picking one of its own
@@ -1276,6 +1326,8 @@ struct App {
     /// `SAVE_TOAST_DURATION` elapses. Pushed to by `queue_toast` (and
     /// directly by `DownloadCompleted`, for borrow reasons).
     save_toast_queue: std::collections::VecDeque<String>,
+    /// Spawn-failure toasts held to merge by cause (`failure_toasts`).
+    failure_notices: failure_toasts::FailureNotices,
     /// Admits or drops page-opened tabs (`EngineToHost::OpenTabRequested`)
     /// per source tab: a user gesture and a rate budget.
     popup_gate: popup_gate::PopupGate,
@@ -1333,15 +1385,6 @@ struct App {
     /// The Home page field's text while it's being edited; Escape drops it (`build_settings_page`).
     home_page_draft: Option<String>,
 
-    /// Set when `spawn_root_tab`/`spawn_new_tab` fails (e.g. a stale
-    /// engine-host from a previous crashed run still holding the tab's
-    /// named pipe). Without this, a failed spawn left `tabs` empty and the
-    /// user saw the ordinary "No tabs" Graph view with no indication
-    /// anything had gone wrong — see `build_graph_ui`. Cleared at the start
-    /// of the next spawn attempt so a retry doesn't leave a stale message
-    /// on screen.
-    tab_spawn_error: Option<String>,
-
     /// User-configurable defaults (search engine, starting engine, zoom,
     /// home page), loaded once at startup and persisted to
     /// `%APPDATA%\manifold\settings.json` on every change — see
@@ -1393,7 +1436,7 @@ struct App {
     hints_revealed: bool,
     /// The card holding keyboard focus this frame: its kind and screen rect, for the key-hint strip
     /// (`build_card_hint`).
-    card_hint: Option<(ItemNodeKind, egui::Rect)>,
+    card_hint: Option<(CardKind, egui::Rect)>,
 
     /// The in-progress Tab↔Graph shrink/expand animation, if any — see
     /// `Transition`'s own doc comment.
@@ -1478,6 +1521,7 @@ impl Default for App {
             gpu: None,
             nodes: NodeMap::default(),
             node_order: Vec::new(),
+            layout: HashMap::new(),
             groups_collapsed: false,
             current_group: None,
             json_level: None,
@@ -1521,9 +1565,12 @@ impl Default for App {
             remote_in_flight: HashMap::new(),
             host_loads: HashMap::new(),
             navigated_from: HashMap::new(),
-            explicit: std::collections::BTreeSet::new(),
-            last_shared: HashMap::new(),
-            jar_defs: BTreeMap::new(),
+            pending_creates: std::collections::BTreeSet::new(),
+            pending_deletes: std::collections::BTreeSet::new(),
+            mirror: mirror::Mirror::default(),
+            pending: std::collections::BTreeMap::new(),
+            held_text: HashMap::new(),
+            pending_moves: std::collections::BTreeMap::new(),
             local_written: None,
             local_unread: None,
             local_written_at: std::time::Instant::now(),
@@ -1575,6 +1622,7 @@ impl Default for App {
             context_menu_cache: None,
             save_toast: None,
             save_toast_queue: std::collections::VecDeque::new(),
+            failure_notices: Default::default(),
             popup_gate: popup_gate::PopupGate::default(),
             tab_crashes: HashMap::new(),
             last_session_save: None,
@@ -1592,7 +1640,6 @@ impl Default for App {
             cef_dir_check: Default::default(),
             cef_dir_draft: None,
             home_page_draft: None,
-            tab_spawn_error: None,
             settings,
             settings_return_view: ViewMode::Item,
             bookmarks,
@@ -1840,16 +1887,15 @@ impl App {
                 self.navigated_from.insert(tab_id.to_string(), (node.url.clone(), std::time::Instant::now(), false));
             }
             node.url = url.clone();
-            node.tab.send(&HostToEngine::Navigate { url, referrer: None });
+            node.tab.send(&HostToEngine::Navigate { url: url.clone(), referrer: None });
             // Until the engine labels the navigation, a report can still
             // carry the old url (CEF reported loading before the new address,
             // unlabelled): that isn't the user's either.
             self.note_host_load(tab_id);
-            self.mark(tab_id, field::URL);
-            // Now, while `node.url` is still the typed url: a save writes the
-            // live value, and the page's own redirect or script navigation
-            // (never shared) would otherwise be what the mark writes. Only a
-            // save that doesn't commit leaves the mark for a later one.
+            // The typed url, whatever the page then redirects to (2b-3 Ruling 4).
+            self.edit_url(tab_id, &url);
+            // Saved now so other replicas follow at once. Only a save that
+            // doesn't commit leaves the edit for a later one.
             self.save_session();
         }
     }
@@ -1867,7 +1913,7 @@ impl App {
         self.node_order
             .iter()
             .filter(|id| id.as_str() != exclude)
-            .filter_map(|id| self.nodes.get(id).and_then(|n| n.payload.listed_tab()).map(|tab| (id, tab)))
+            .filter_map(|id| self.nodes.get(id).and_then(|n| n.runtime.listed_tab()).map(|tab| (id, tab)))
             .filter(|(_, (title, url))| url.to_lowercase().contains(&query) || title.to_lowercase().contains(&query))
             .take(5)
             .map(|(id, (title, url))| Suggestion::OpenTab {
@@ -2064,18 +2110,16 @@ impl App {
         let welcome = "manifold://welcome".to_string();
         self.spawn_tab_async(TabSpawn::new(welcome_id, welcome, kind, egui::Vec2::ZERO, SpawnPurpose::Restore, zoom));
 
-        let note = NodePayload::Note(NotePayload {
+        let note = Runtime::Note(NotePayload {
             text: "This is a Note -- drag it anywhere, or right-click to delete it \
                            (undo via \"Recently Closed\" if you change your mind)."
                 .to_string(),
             editing: false,
-            url: None,
         });
-        self.place_node(None, note, Placement { group: None, pos: egui::vec2(-300.0, 0.0) });
+        self.place_node(None, store::model::Kind::Note, note, Placement { group: None, pos: egui::vec2(-300.0, 0.0) });
 
         let group_pos = egui::vec2(300.0, 0.0);
-        let group = NodePayload::Group(GroupPayload::named("Try grouping".to_string()));
-        let group_id = self.place_node(None, group, Placement { group: None, pos: group_pos });
+        let group_id = self.place_group(None, "Try grouping", Placement { group: None, pos: group_pos });
         // A small fixed offset, not `graph_layout::spawn_jitter` -- its
         // radius is calibrated to spread a new tab away from a busy live
         // layout (see its own doc comment), which is far too large for
@@ -2098,23 +2142,21 @@ impl App {
         // double-click this exact kind of node themselves, so entering its
         // level here would rob them of the discovery the copy is pointing
         // at. Synthetic, not file-backed (`path` is a display-only label, not a
-        // real path -- see `JsonPayload`'s own doc comment on `key` for the
-        // same "inherited path, no real ownership" reasoning `key: Some`
-        // leaves use, though this node uses `key: None` since it's a
-        // genuine standalone JSON node, not an exploded leaf).
-        let json = NodePayload::Json(JsonPayload {
+        // real path -- see `JsonPayload`'s own doc comment on `leaf` for the
+        // same "inherited path, no real ownership" reasoning leaves use,
+        // though this node is a genuine standalone JSON node, not an
+        // exploded leaf).
+        let json = Runtime::Json(JsonPayload {
             path: "(demo).json".to_string(),
             value: std::sync::Arc::new(serde_json::json!({
                 "project": "Manifold",
                 "tags": ["browser", "graph-ui"],
                 "version": {"major": 0, "minor": 1}
             })),
-            key: None,
+            leaf: false,
             error: None,
-            url: None,
-            view: json_view::JsonView::default(),
         });
-        self.place_node(None, json, Placement { group: None, pos: egui::vec2(0.0, -260.0) });
+        self.place_node(None, store::model::Kind::Json, json, Placement { group: None, pos: egui::vec2(0.0, -260.0) });
     }
 
     /// A fresh node id: the journal's counter (contract "Actors and ids"),
@@ -2131,12 +2173,10 @@ impl App {
         }
     }
 
-    /// Opens `session.mnf` under a fresh actor. A file that isn't a session
-    /// file at all is set aside (`Journal::open_or_set_aside`) and a new one
-    /// started, toasting where the old one went; that launch then counts as
-    /// recovered (`store_recovered`), so nothing is pruned against the new,
-    /// empty session. Any other failure is toasted
-    /// and leaves the app running without a store.
+    /// Opens `session.mnf` under a fresh actor. A file that isn't a session file this build reads (not one at all,
+    /// or an older format) is set aside (`Journal::open_or_set_aside`) and a new one started, toasting where the
+    /// old one went; that launch then counts as recovered (`store_recovered`), so nothing is pruned against the
+    /// new, empty session. Any other failure is toasted and leaves the app running without a store.
     fn open_store(&mut self) {
         if let Some(path) = session::store_path() {
             self.open_store_at(&path);
@@ -2156,8 +2196,8 @@ impl App {
                     // against it this launch would delete what the set-aside file still needs.
                     self.store_recovered = true;
                     self.queue_toast(format!(
-                        "The session file wasn't readable; it was kept (with its .prev/.local) as {} and a new one \
-                         started",
+                        "The session file wasn't readable (damaged, or from an older version of manifold); it was kept \
+                         (with its .prev/.local) as {} and a new one started",
                         aside.display()
                     ));
                 }
@@ -2166,24 +2206,44 @@ impl App {
         }
     }
 
-    /// Removes a download or note node from the graph -- a download's file
-    /// on disk is left untouched (this only forgets the node), and neither
-    /// kind has anything else to persist/tear down on removal the way a
-    /// tab's engine process or a group's membership does, so one plain
-    /// `self.nodes`/`node_order` removal (plus the same stale-`dragging`/
-    /// `hovered` guard `destroy_tab`/`finish_swap` also apply) covers both.
+    /// The local removal of a download, note, image, PDF or Json node: `drop_node` + `queue_delete`.
+    fn remove_node(&mut self, id: &str) {
+        self.drop_node(id);
+        self.queue_delete(id);
+    }
+
+    /// Removes a download, note, image, PDF or Json node from the graph without queueing a delete (`remove_node`
+    /// adds that; a node another replica deleted, `remove_remotely_deleted`, needs none). A download's file on disk
+    /// is left untouched (this only forgets the node); an image's or PDF's texture is freed, and a PDF's render not
+    /// yet started is cancelled. Neither kind has an engine process or a membership to tear down, so one plain
+    /// `self.nodes`/`node_order` removal (plus the same stale-`dragging`/`hovered` guard `destroy_tab`/`finish_swap`
+    /// also apply) covers them all.
     ///
     /// Removing the Json node whose level is being viewed (another replica
     /// deleted it, or its group was closed) leaves to that node's group,
     /// as `dissolve_group` does for a group: `current_group` must never
     /// name a node that's gone, or `insertion_group` would orphan new nodes.
-    fn remove_node(&mut self, id: &str) {
+    ///
+    /// What it opened (a tab from Open as Tab) is then opened from its own
+    /// `parent`, as `drop_tab` does for a tab's children.
+    fn drop_node(&mut self, id: &str) {
+        let parent = self.mirror.parent(id).map(str::to_owned);
+        let children: Vec<String> = self.children_of(id).map(str::to_owned).collect();
+        for child in children {
+            self.edit_parent(&child, parent.clone());
+        }
         let removed = self.nodes.remove(id);
         if removed.as_ref().is_some_and(|n| n.as_pdf().is_some()) {
             self.pdf_renderer.cancel(id);
         }
+        // The runtimes with a texture (`GpuState::images`).
+        if removed.as_ref().is_some_and(|n| n.as_image().is_some() || n.as_pdf().is_some()) {
+            if let Some(gpu) = &mut self.gpu {
+                gpu.free_image(id);
+            }
+        }
         if self.current_group.as_deref() == Some(id) {
-            self.switch_group_level(removed.and_then(|n| n.group));
+            self.switch_group_level(self.mirror.group(id).filter(|_| removed.is_some()).map(str::to_owned));
         }
         self.node_order.retain(|d| d != id);
         if self.dragging.as_deref() == Some(id) {
@@ -2252,12 +2312,12 @@ impl App {
     /// empty path: "no file" (a Download from a `Trust::Foreign` import has
     /// its machine-local path dropped).
     fn node_file_path(&self, id: &str) -> Option<String> {
-        let path = match &self.nodes.get(id)?.payload {
-            NodePayload::Download(_) => self.windows_path_for_download(id),
-            NodePayload::Image(image) => Some(image.path.clone()),
-            NodePayload::Pdf(pdf) => Some(pdf.path.clone()),
-            NodePayload::Json(json) => Some(json.path.clone()),
-            NodePayload::Tab(_) | NodePayload::Unloaded(_) | NodePayload::Group(_) | NodePayload::Note(_) => None,
+        let path = match &self.nodes.get(id)?.runtime {
+            Runtime::Download(_) => self.windows_path_for_download(id),
+            Runtime::Image(image) => Some(image.path.clone()),
+            Runtime::Pdf(pdf) => Some(pdf.path.clone()),
+            Runtime::Json(json) => Some(json.path.clone()),
+            Runtime::Tab(_) | Runtime::Unloaded(_) | Runtime::Note(_) | Runtime::None => None,
         };
         path.filter(|p| !p.is_empty())
     }
@@ -2269,10 +2329,8 @@ impl App {
     /// with no file; a file node with no path (`node_file_path`) is toasted.
     fn reveal_node(&mut self, id: &str) {
         let Some(node) = self.nodes.get(id) else { return };
-        let has_file = matches!(
-            node.payload,
-            NodePayload::Download(_) | NodePayload::Image(_) | NodePayload::Pdf(_) | NodePayload::Json(_)
-        );
+        let has_file =
+            matches!(node.runtime, Runtime::Download(_) | Runtime::Image(_) | Runtime::Pdf(_) | Runtime::Json(_));
         match self.node_file_path(id) {
             Some(path) => {
                 if let Err(e) = Self::reveal_in_explorer(&path) {
@@ -2315,11 +2373,9 @@ impl App {
     fn default_group_name(&self) -> String {
         let taken: HashSet<&str> = self
             .nodes
-            .values()
-            .filter_map(|node| match &node.payload {
-                NodePayload::Group(group) => Some(group.name.as_str()), // name rule: compares stored names
-                _ => None,
-            })
+            .iter()
+            .filter(|(id, _)| self.is_container(id))
+            .map(|(id, _)| self.mirror.name(id)) // name rule: compares stored names
             .collect();
         (1..).map(|n| format!("Group {n}")).find(|name| !taken.contains(name.as_str())).expect("a free number")
     }
@@ -2337,23 +2393,33 @@ impl App {
     ///
     /// A local dissolve: unset tabs among the members re-snapshot their jar from the new level (deviation 12).
     fn dissolve_group(&mut self, id: &str) {
-        for member in self.dissolve_group_quietly(id) {
+        for member in self.dissolve_members(id, false) {
             self.refollow(&member);
         }
     }
 
     /// `dissolve_group` without the jar re-snapshot, for a remote delete: the remote device's own refollow arrives as
-    /// ordinary tab edits (spec "Inheritance"). Returns the members moved.
-    fn dissolve_group_quietly(&mut self, id: &str) -> Vec<String> {
-        let parent = self.nodes.get(id).and_then(|n| n.group.clone());
-        let mut members = Vec::new();
-        for (member, node) in self.nodes.iter_mut() {
-            if node.group.as_deref() == Some(id) {
-                node.group = parent.clone();
-                members.push(member.clone());
+    /// ordinary tab edits (spec "Inheritance"). The members move up in the mirror only (`follow_remote_group`).
+    fn dissolve_group_quietly(&mut self, id: &str) {
+        self.dissolve_members(id, true);
+    }
+
+    /// Moves group `id`'s members to its own group and removes it; `remote` for another replica's delete, which
+    /// queues no delete of its own (the document already lacks the group). Returns the members moved.
+    fn dissolve_members(&mut self, id: &str, remote: bool) -> Vec<String> {
+        let parent = self.mirror.group(id).filter(|_| self.nodes.contains_key(id)).map(str::to_owned);
+        let members: Vec<String> = self.members_of(id).map(str::to_owned).collect();
+        for member in &members {
+            if remote {
+                self.follow_remote_group(member, parent.clone());
+            } else {
+                self.edit_group(member, parent.clone());
             }
         }
         self.nodes.remove(id);
+        if !remote {
+            self.queue_delete(id);
+        }
         self.node_order.retain(|g| g != id);
         if self.current_group.as_deref() == Some(id) {
             self.switch_group_level(parent);
@@ -2404,49 +2470,46 @@ impl App {
     fn insert_group_at(&mut self, id: String, pos: Option<egui::Vec2>) {
         let name = self.default_group_name();
         let at = self.placement(&id, pos);
-        self.place_node(Some(id), NodePayload::Group(GroupPayload::named(name)), at);
+        self.place_group(Some(id), &name, at);
     }
 
     /// Like `insert_group_at`, for `new_note_shortcut` and the card's note.
     /// Doesn't save; the caller does.
     fn insert_note_at(&mut self, id: String, pos: Option<egui::Vec2>) {
         let at = self.placement(&id, pos);
-        let note = NotePayload { text: String::new(), editing: true, url: None };
-        self.place_node(Some(id), NodePayload::Note(note), at);
+        let note = NotePayload { text: String::new(), editing: true };
+        self.place_node(Some(id), store::model::Kind::Note, Runtime::Note(note), at);
     }
 
-    /// Starts an unloaded tab's engine (`UnloadedTabPayload`) on `kind`.
+    /// Starts an unloaded tab's engine (`UnloadedTabPayload`) on `kind`, which becomes its engine (`edit_engine`).
     /// The card stays, showing a spinner, until the outcome replaces it:
     /// the live tab under the same id, or a failed card with the new
     /// error. Ignored while a wake is already in flight.
     pub(crate) fn wake_tab(&mut self, id: &str, kind: EngineKind) {
+        let Carried { pos, color, pinned, parent, group, jar, .. } = self.mirror.carried(id);
+        let pos = pos.unwrap_or_default(); // unused: the card's layout entry stays (`TabSpawn::pos`)
         let Some(node) = self.nodes.get_mut(id) else { return };
-        let (parent, group, pos, color) = (node.parent.clone(), node.group.clone(), node.pos, node.color);
-        let NodePayload::Unloaded(tab) = &mut node.payload else { return };
+        let Runtime::Unloaded(tab) = &mut node.runtime else { return };
         if tab.state == UnloadedState::Waking {
             return;
         }
         tab.state = UnloadedState::Waking;
-        self.wakes_in_flight.insert(id.to_string());
-        let carry = TabCarry {
-            pinned: tab.pinned,
-            color,
-            zoom_factor: tab.zoom_factor,
-            title: tab.title.clone(),
-            muted: tab.muted,
-            jar: tab.jar,
-        };
+        let (zoom_factor, title, muted) = (tab.zoom_factor, tab.title.clone(), tab.muted);
+        let carry = TabCarry { pinned, color, zoom_factor, title, muted };
         let url = tab.url.clone();
-        let vel = egui::Vec2::ZERO;
+        self.wakes_in_flight.insert(id.to_string());
+        // Another engine is saved as the wake starts, not when it lands (2b-3 Ruling 5).
+        self.edit_engine(id, kind);
         let (id, purpose, fallback_kind) = (id.to_string(), SpawnPurpose::Wake, None);
-        self.respawn_tab(TabSpawn { id, url, kind, parent, group, pos, vel, purpose, carry, fallback_kind });
+        self.respawn_tab(TabSpawn { id, url, kind, parent, group, jar, pos, purpose, carry, fallback_kind });
     }
 
     /// `Ctrl+Shift+W` / headless `CLOSEALLLEVEL` — closes every tab
-    /// `nodes_at_current_level(Tab)` returns (top level: every ungrouped tab,
+    /// `tabs_at_current_level` returns (top level: every ungrouped tab,
     /// leaving groups and their members untouched; inside a group: every
-    /// member, same effect as that group's own "Close Group" context-menu
-    /// entry, just reachable without opening it). Each closes through the
+    /// tab member: the tabs that group's own "Close Group and Contents"
+    /// context-menu entry would close, though that entry also closes the
+    /// group and its other members). Each closes through the
     /// normal `close_node` path, same "just that action run once per tab"
     /// shape `close_all_except` already has.
     fn close_all_at_current_level(&mut self) {
@@ -2515,17 +2578,17 @@ impl App {
         let other_ids: Vec<String> = self
             .nodes
             .iter()
-            .filter(|(id, n)| id.as_str() != keep_id && n.payload.saved_tab().is_some())
+            .filter(|(id, n)| id.as_str() != keep_id && n.runtime.saved_tab().is_some())
             .map(|(id, _)| id.clone())
             .collect();
         for id in other_ids {
             let Some(node) = self.nodes.get_mut(&id) else { continue };
-            match &mut node.payload {
-                NodePayload::Tab(tab) if !tab.muted => {
+            match &mut node.runtime {
+                Runtime::Tab(tab) if !tab.muted => {
                     tab.muted = true;
                     tab.tab.send(&HostToEngine::SetMuted { muted: true });
                 }
-                NodePayload::Unloaded(tab) => tab.muted = true,
+                Runtime::Unloaded(tab) => tab.muted = true,
                 _ => {}
             }
         }
@@ -2540,7 +2603,7 @@ impl App {
             .node_order
             .iter()
             .filter(|id| {
-                id.as_str() != keep_id && self.nodes.get(id.as_str()).is_some_and(|n| n.payload.saved_tab().is_some())
+                id.as_str() != keep_id && self.nodes.get(id.as_str()).is_some_and(|n| n.runtime.saved_tab().is_some())
             })
             .cloned()
             .collect();
@@ -2556,8 +2619,10 @@ impl App {
     /// has no natural tab to exclude the way muting excludes the one
     /// they're presumably still listening to.
     fn set_all_pinned(&mut self, pin: bool) {
-        for pinned in self.nodes.values_mut().filter_map(|n| n.payload.pinned_mut()) {
-            *pinned = pin;
+        let tabs: Vec<String> =
+            self.nodes.iter().filter(|(_, n)| n.runtime.saved_tab().is_some()).map(|(id, _)| id.clone()).collect();
+        for id in tabs {
+            self.edit_field(&id, field::PINNED, FieldValue::Bool(pin));
         }
     }
 
@@ -2565,22 +2630,32 @@ impl App {
     /// on each member), then the group itself. Records nothing: `close_node`
     /// has already recorded the whole subtree as one entry.
     fn destroy_group(&mut self, id: &str) {
-        let member_ids: Vec<String> = self
-            .nodes
-            .iter()
-            .filter(|(_, node)| node.group.as_deref() == Some(id))
-            .map(|(tid, _)| tid.clone())
-            .collect();
-        for tid in member_ids {
-            self.destroy_node(&tid);
-        }
-        self.dissolve_group(id);
+        self.destroy_group_members(id, &mut HashSet::new());
         // `destroy_node` doesn't save, and there's no save on exit -- without
         // this, a group whose members were only Downloads/Notes/Images/Pdfs/Jsons
         // (no Tab member whose `destroy_tab` happens to save) would have
         // those members reappear after a restart unless some unrelated
         // action saved first.
         self.save_session();
+    }
+
+    /// `destroy_group`'s walk, without the save: each member destroyed,
+    /// each group once, so a group cycle in the mirror (two replicas' moves
+    /// raced; the next save shows the document's groups) can't recurse
+    /// forever. A group already being destroyed further up is left to it.
+    fn destroy_group_members(&mut self, id: &str, visited: &mut HashSet<String>) {
+        visited.insert(id.to_owned());
+        let member_ids: Vec<String> = self.members_of(id).map(str::to_owned).collect();
+        for tid in member_ids {
+            if self.is_container(&tid) {
+                if !visited.contains(&tid) {
+                    self.destroy_group_members(&tid, visited);
+                }
+            } else {
+                self.destroy_node(&tid);
+            }
+        }
+        self.dissolve_group(id);
     }
 
     /// Closes one node: records it (and, for a group, everything under it)
@@ -2604,24 +2679,15 @@ impl App {
     /// confirmed while building "Expand as Graph", whose whole output is
     /// `JsonPayload` leaves nested inside Groups.)
     fn destroy_node(&mut self, id: &str) {
-        let Some(kind) = self.nodes.get(id).map(|node| item_node_kind(&node.payload)) else {
+        let Some(kind) = self.card_kind(id) else {
             return;
         };
-        match kind {
-            ItemNodeKind::Group => self.destroy_group(id),
-            ItemNodeKind::Tab | ItemNodeKind::Unloaded => self.destroy_tab(id),
-            ItemNodeKind::Download
-            | ItemNodeKind::Note
-            | ItemNodeKind::Image
-            | ItemNodeKind::Pdf
-            | ItemNodeKind::Json => {
-                if matches!(kind, ItemNodeKind::Image | ItemNodeKind::Pdf) {
-                    if let Some(gpu) = &mut self.gpu {
-                        gpu.free_image(id);
-                    }
-                }
-                self.remove_node(id);
-            }
+        if is_container(kind.ty) {
+            self.destroy_group(id);
+        } else if kind.ty == store::model::TYPE_TAB {
+            self.destroy_tab(id);
+        } else {
+            self.remove_node(id);
         }
     }
 
@@ -2630,16 +2696,8 @@ impl App {
     /// except for a tab or group, whose `destroy_tab`/`destroy_group`
     /// already save.
     fn close_node_and_save(&mut self, id: &str) {
-        let persisted = self.nodes.get(id).is_some_and(|node| {
-            matches!(
-                item_node_kind(&node.payload),
-                ItemNodeKind::Download
-                    | ItemNodeKind::Note
-                    | ItemNodeKind::Image
-                    | ItemNodeKind::Pdf
-                    | ItemNodeKind::Json
-            )
-        });
+        let persisted =
+            self.card_kind(id).is_some_and(|kind| kind.ty != store::model::TYPE_TAB && !is_container(kind.ty));
         self.close_node(id);
         if persisted {
             self.save_session();
@@ -2671,6 +2729,11 @@ impl App {
         self.save_toast_queue.push_back(message);
     }
 
+    /// A spawn-failure toast: held a moment so failures sharing `cause` read as one message (`failure_toasts`).
+    pub(crate) fn queue_failure_toast(&mut self, cause: &str, message: String) {
+        self.failure_notices.push(std::time::Instant::now(), cause, message);
+    }
+
     /// `url` short enough for a toast: its first `TOAST_URL_CHARS` characters and an ellipsis. A toast sizes to its
     /// text, and a `data:` URL can be megabytes.
     fn toast_url(url: &str) -> String {
@@ -2684,6 +2747,12 @@ impl App {
     fn build_save_toast(&mut self, ui: &mut egui::Ui) {
         const TOAST_FADE_IN: std::time::Duration = std::time::Duration::from_millis(150);
         const TOAST_FADE_OUT: std::time::Duration = std::time::Duration::from_millis(400);
+        for message in self.failure_notices.flush(std::time::Instant::now()) {
+            self.queue_toast(message);
+        }
+        if self.failure_notices.is_pending() {
+            ui.ctx().request_repaint_after(failure_toasts::WINDOW);
+        }
         if self.save_toast.is_none() {
             self.save_toast = self.save_toast_queue.pop_front().map(|message| (message, std::time::Instant::now()));
         }
@@ -2755,6 +2824,9 @@ impl App {
             self.address_bar.dismiss();
             self.address_bar.focused = false;
         }
+        // Likewise a drag ends when its card stops being drawn (Graph view left, or the card left the level by
+        // another replica's move): its release would never be seen, and the next one would save a stale pos.
+        self.end_stale_drag(self.transition.is_some() || self.view_mode == ViewMode::Graph);
         // Every view, so a toast queued in Graph view (a crash/respawn
         // notice, an unreadable session file) is seen where it happened.
         self.build_save_toast(ui);
@@ -3163,7 +3235,7 @@ mod tests {
         let aside = dir.join(format!("{}.json.unreadable-100", key.file_stem()));
         std::fs::write(&aside, "x").unwrap();
         app.set_jar_ephemeral(work, true);
-        assert!(app.jar_defs[&work].ephemeral);
+        assert!(app.mirror.jar_defs()[&work].ephemeral);
         assert!(jar::Jar::path(&dir, key).is_dir() && aside.exists());
         app.set_jar_ephemeral(work, false);
         assert!(jar::Jar::path(&dir, key).is_dir() && aside.exists(), "off saves nothing over it");
@@ -3176,7 +3248,7 @@ mod tests {
         let (dir, mut app, work) = jar_saved_earlier("jar-ephemeral-confirm");
         app.request_jar_ephemeral(work, true);
         assert_eq!(app.pending_jar_confirm, Some(jar_defs::JarConfirm::Ephemeral(work)));
-        assert!(!app.jar_defs[&work].ephemeral, "nothing happens until confirmed");
+        assert!(!app.mirror.jar_defs()[&work].ephemeral, "nothing happens until confirmed");
         assert!(jar::Jar::path(&dir, jar::JarKey::Named(work)).exists());
         let (title, detail, button) = app.jar_confirm_text(jar_defs::JarConfirm::Ephemeral(work)).unwrap();
         assert_eq!((title.as_str(), button), ("Make Work ephemeral?", "Make Ephemeral"));
@@ -3184,9 +3256,12 @@ mod tests {
         app.pending_jar_confirm = None;
         let home = app.create_jar("Home");
         app.request_jar_ephemeral(home, true);
-        assert!(app.pending_jar_confirm.is_none() && app.jar_defs[&home].ephemeral, "no file: nothing to lose");
+        assert!(
+            app.pending_jar_confirm.is_none() && app.mirror.jar_defs()[&home].ephemeral,
+            "no file: nothing to lose"
+        );
         app.request_jar_ephemeral(home, false);
-        assert!(!app.jar_defs[&home].ephemeral);
+        assert!(!app.mirror.jar_defs()[&home].ephemeral);
         app.set_jar_ephemeral(work, true);
         assert!(app.jar_confirm_text(jar_defs::JarConfirm::Ephemeral(work)).is_none(), "already ephemeral");
     }
@@ -3219,7 +3294,11 @@ mod tests {
     fn a_sleeping_tab_never_needs_a_switch_and_a_deleted_jar_switches_to_default() {
         let mut app = App::default();
         let work = app.create_jar("Work");
-        let t = crate::session_sync::tests::add(&mut app, crate::session_sync::tests::sleeping_tab("https://a/", "A"));
+        let t = crate::session_sync::tests::add(
+            &mut app,
+            crate::store::model::Kind::Tab,
+            crate::session_sync::tests::sleeping_tab("https://a/", "A"),
+        );
         // A stale entry from before it slept, on a key other than the one it now resolves to.
         app.jar_tabs.insert(t.clone(), (jar::JarKey::Default, jar::TabCookies::default()));
         app.set_tab_jar(&t, Some(work));
@@ -3352,8 +3431,9 @@ mod tests {
     #[test]
     fn closing_a_tab_clears_its_cookie_bookkeeping() {
         use crate::session_sync::tests::{add, sleeping_tab};
+        use crate::store::model::Kind;
         let mut app = App::default();
-        let tab = add(&mut app, sleeping_tab("https://x.test/", "A"));
+        let tab = add(&mut app, Kind::Tab, sleeping_tab("https://x.test/", "A"));
         app.jar_tabs.insert(tab.clone(), (jar::JarKey::Default, jar::TabCookies::default()));
         app.jar_pulls.insert(tab.clone(), std::time::Instant::now());
         app.jar_silent.insert(tab.clone(), 2);
@@ -3400,28 +3480,62 @@ mod tests {
 
     #[test]
     fn remove_from_group_moves_up_one_level() {
-        let node = |group: Option<&str>, payload| GraphNode {
-            parent: None,
-            group: group.map(String::from),
-            pos: egui::Vec2::ZERO,
-            vel: egui::Vec2::ZERO,
-            color: None,
-            payload,
-        };
-        let group = |name: &str| NodePayload::Group(GroupPayload::named(name));
-        let note = || NodePayload::Note(NotePayload { text: String::new(), editing: false, url: None });
-        let mut nodes = NodeMap::default();
-        nodes.insert("outer".into(), node(None, group("outer")));
-        nodes.insert("inner".into(), node(Some("outer"), group("inner")));
-        nodes.insert("deep".into(), node(Some("inner"), note()));
-        nodes.insert("shallow".into(), node(Some("outer"), note()));
+        let mut app = App::default();
+        use crate::store::model::Kind;
+        let group = || (Kind::Group, Runtime::None);
+        let note = || (Kind::Note, Runtime::Note(NotePayload { text: String::new(), editing: false }));
+        for (id, group, (kind, payload)) in [
+            ("outer", None, group()),
+            ("inner", Some("outer"), group()),
+            ("deep", Some("inner"), note()),
+            ("shallow", Some("outer"), note()),
+        ] {
+            app.test_node(id, kind, payload);
+            app.edit_group(id, group.map(String::from));
+        }
 
-        remove_from_group(&mut nodes, "deep");
-        assert_eq!(nodes["deep"].group.as_deref(), Some("outer"));
-        remove_from_group(&mut nodes, "shallow");
-        assert_eq!(nodes["shallow"].group, None);
-        remove_from_group(&mut nodes, "shallow");
-        assert_eq!(nodes["shallow"].group, None);
+        app.remove_from_group("deep");
+        assert_eq!(app.mirror.group("deep"), Some("outer"));
+        app.remove_from_group("shallow");
+        assert_eq!(app.mirror.group("shallow"), None);
+        app.remove_from_group("shallow");
+        assert_eq!(app.mirror.group("shallow"), None);
+    }
+
+    /// Groups `a` and `b` inside each other in the mirror, plus group `s` outside them: the cycle two replicas'
+    /// racing moves can leave there until the next save aligns it with the document.
+    fn mirror_group_cycle() -> App {
+        let mut app = App::default();
+        for id in ["a", "b", "s"] {
+            app.test_node(id, crate::store::model::Kind::Group, Runtime::None);
+        }
+        app.edit_group("a", Some("b".into()));
+        app.edit_group("b", Some("a".into()));
+        app
+    }
+
+    #[test]
+    fn a_merge_into_a_group_cycle_is_refused() {
+        let mut app = mirror_group_cycle();
+        app.merge_groups("s", "a");
+        assert!(app.nodes.contains_key("s"), "the merge is refused, so the source stays");
+    }
+
+    #[test]
+    fn destroying_a_group_in_a_cycle_ends() {
+        let mut app = mirror_group_cycle();
+        app.destroy_group("a");
+        assert!(!app.nodes.contains_key("a") && !app.nodes.contains_key("b"), "both go");
+        assert!(app.nodes.contains_key("s"));
+    }
+
+    /// Two concurrent re-parents can make a parent cycle: the store doesn't cycle-check `parent`.
+    #[test]
+    fn a_parent_cycle_counts_as_a_cycle() {
+        let mut app = App::default();
+        app.edit_parent("x", Some("y".into()));
+        app.edit_parent("y", Some("x".into()));
+        assert!(app.would_create_cycle("z", "x"));
     }
 
     #[test]
@@ -3439,17 +3553,7 @@ mod tests {
     fn a_new_group_takes_the_smallest_free_number() {
         let mut app = App::default();
         let add = |app: &mut App, name: &str| {
-            let payload = NodePayload::Group(GroupPayload::named(name));
-            let node = GraphNode {
-                parent: None,
-                group: None,
-                pos: egui::Vec2::ZERO,
-                vel: egui::Vec2::ZERO,
-                color: None,
-                payload,
-            };
-            let id = app.alloc_node_id();
-            app.nodes.insert(id, node);
+            app.place_group(None, name, Placement { group: None, pos: egui::Vec2::ZERO });
         };
         assert_eq!(app.default_group_name(), "Group 1");
         add(&mut app, "Group 1");

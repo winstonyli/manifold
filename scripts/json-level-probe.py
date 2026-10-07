@@ -13,7 +13,12 @@ Commands:
 """
 
 import json
+import os
 import sys
+
+# `-P` keeps this file's directory off sys.path; export_state.py sits beside it.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from export_state import JSON, card_is  # noqa: E402
 
 
 def cmd_fixture(args):
@@ -36,7 +41,7 @@ def cmd_doubleclick(args):
     drop_x, drop_y = float(drop_x), float(drop_y)
     with open(export_path, encoding="utf-8") as f:
         s = json.load(f)
-    candidates = [c for c in s["cards"] if c["kind"] == "Json"]
+    candidates = [c for c in s["cards"] if card_is(c, JSON)]
     c = min(candidates, key=lambda c: (c["screen"][0] - drop_x) ** 2 + (c["screen"][1] - drop_y) ** 2)
     print("DOUBLECLICK %.0f %.0f" % tuple(c["screen"]))
 

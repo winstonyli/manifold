@@ -144,10 +144,11 @@ impl KeyCode {
         }
     }
 
-    /// The key types a character of its own (letters, digits,
-    /// space): its DOM `key` is that one character. Engines send
-    /// such keys without text and let `InputEvent::Char` insert it.
-    /// A new key fails `text_keys_are_letters_digits_and_space`; check the WebKit and Servo key tables then.
+    /// The key types a character of its own (letters, digits, space): its DOM
+    /// `key` is that one character. Engines send such keys without text and let
+    /// `InputEvent::Char` insert it. A new key fails
+    /// `text_keys_are_letters_digits_and_space`; check the WebKit and Servo key
+    /// tables then.
     pub fn produces_text(self) -> bool {
         let mut chars = self.dom_key().chars();
         chars.next().is_some() && chars.next().is_none()
