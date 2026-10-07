@@ -608,15 +608,18 @@ impl App {
             self.pending_new_node = None;
         }
 
+        // A click on a link line deletes that link (link-gestures spec B). The Scene's background took the click, so
+        // no card, control or popup was on top, and egui never reports a pan (a drag) as a click. Read before
+        // `track_pan_momentum`, which clears a glide on the press that `line_click` must still see.
+        let line_click = self.line_click(ui, line_hover, scene_background.clicked());
+
         self.track_pan_momentum(ui, scene_rect);
 
         if let Some((minimap_rect, world_bounds, minimap_scale)) = minimap {
             self.handle_minimap_click(ui, minimap_rect, world_bounds, minimap_scale);
         }
 
-        // A click on a link line deletes that link (link-gestures spec B). The Scene's background took the click, so
-        // no card, control or popup was on top, and egui never reports a pan (a drag) as a click.
-        if let Some(link) = line_hover.filter(|_| scene_background.clicked()) {
+        if let Some(link) = line_click {
             self.click_link_line(&link);
         }
 

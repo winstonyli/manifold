@@ -1175,6 +1175,9 @@ struct App {
     /// "Opened from…") and the edge it draws. The next click on a valid target finishes it (`finish_connect`); Esc, a
     /// click elsewhere, any other action, leaving the level or the Graph view, or the source going, ends it.
     connecting: Option<(String, &'static str)>,
+    /// The link line under the pointer when the primary press began with the camera still, and the camera rect then
+    /// (`line_click`). Only that line, with the camera unmoved, can be taken by the click that ends the press.
+    line_press: Option<(String, egui::Rect)>,
     hovered: Option<String>,
     /// Set to `self.hovered` by an Escape press while a hover-peek preview
     /// is showing, so that preview can be dismissed early without needing
@@ -1600,6 +1603,7 @@ impl Default for App {
             dragging: None,
             drag_moved: Vec::new(),
             connecting: None,
+            line_press: None,
             hovered: None,
             peek_suppressed: None,
             rect_select_start: None,
