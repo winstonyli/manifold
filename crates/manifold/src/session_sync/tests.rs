@@ -4839,3 +4839,19 @@ fn a_crashed_tab_beside_a_failed_card_for_its_intent_leaves_one_card() {
     assert_eq!(failed_cards(&app), std::slice::from_ref(&live));
     assert_eq!(app.closed.len(), 1, "the other card is recorded in Recently Closed");
 }
+
+/// A startup Root spawn that failed leaves a saved failed card; the next launch restores it as the focused tab and
+/// tries it again, so a failed startup is retried without a Root spawn (a non-empty session never makes one).
+#[test]
+fn a_failed_startup_card_is_retried_at_the_next_launch() {
+    let path = temp_dir("failed-startup-retry").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    app.spawn_root_tab();
+    fail_spawns(&mut app);
+    let card = failed_cards(&app).remove(0);
+    app.close_store();
+    let mut restored = app_on(&path, 2);
+    assert!(restored.restore_session());
+    assert_eq!(restored.focused.as_deref(), Some(card.as_str()));
+    assert!(restored.test_spawns.iter().any(|(spawn, _)| spawn.id == card), "the card is woken");
+}
