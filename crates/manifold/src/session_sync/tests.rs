@@ -5022,6 +5022,110 @@ fn valid_targets_are_the_cards_connect_would_accept() {
     assert!(!app.valid_targets(OPENED_FROM, &a).contains(&b), "that would close a loop");
 }
 
+/// "Opened from..." on every kind the edge table allows as its source is saved, restored, and kept when another
+/// replica edits the card (`mirror_remote` reapplies only a kind's fields). A kind added to the table's sources
+/// must be added here.
+#[test]
+fn connect_opened_from_survives_a_restart_and_a_remote_edit_on_every_allowed_source_kind() {
+    use crate::store::model::{TYPES, TYPE_TAB};
+    let dir = temp_dir("opened-from-every-kind");
+    let path = dir.join("session.mnf");
+    let mut png = std::io::Cursor::new(Vec::new());
+    image::RgbaImage::new(1, 1).write_to(&mut png, image::ImageFormat::Png).unwrap();
+    let png_path = dir.join("a.png");
+    std::fs::write(&png_path, png.into_inner()).unwrap();
+    let json_path = dir.join("a.json");
+    std::fs::write(&json_path, b"[1]").unwrap();
+    let file = |p: &std::path::Path| p.to_string_lossy().into_owned();
+
+    let mut app = app_on(&path, 1);
+    let opener = add(&mut app, Kind::Tab, sleeping_tab("https://x.test/", "Opener"));
+    let mut sources = Vec::new();
+    for &(kind, ty, _) in TYPES.iter().filter(|t| crate::caps::edges().can_connect(OPENED_FROM, t.1, TYPE_TAB)) {
+        let id = match kind {
+            Kind::Tab => add(&mut app, kind, sleeping_tab("https://x.test/child", "Child")),
+            Kind::Group => add_group(&mut app, "g"),
+            Kind::Note => add(&mut app, kind, Runtime::Note(NotePayload { text: "n".into(), editing: false })),
+            Kind::Image => {
+                let id = app.alloc_node_id();
+                app.insert_image_node_with_id(id.clone(), file(&png_path), egui::Vec2::ZERO, None).unwrap();
+                id
+            }
+            Kind::Pdf => {
+                let id = app.alloc_node_id();
+                app.insert_pdf_node_with_id(id.clone(), file(&dir.join("a.pdf")), egui::Vec2::ZERO, None);
+                id
+            }
+            Kind::Json => {
+                let id = app.alloc_node_id();
+                app.insert_json_node_with_id(id.clone(), file(&json_path), egui::Vec2::ZERO, None).unwrap();
+                id
+            }
+            Kind::Download => {
+                let dl = DownloadPayload {
+                    path: "f.bin".into(),
+                    bytes_received: 0,
+                    total_bytes: None,
+                    completed: true,
+                    failed: false,
+                };
+                add(&mut app, kind, Runtime::Download(dl))
+            }
+            _ => panic!("{ty} ({kind:?}) is an opened-from source: add it to this test"),
+        };
+        assert_eq!(app.connect(OPENED_FROM, &id, &opener), Ok(()), "{ty}");
+        sources.push((ty, id));
+    }
+    assert!(sources.len() >= 6, "tab, note, image, PDF, JSON and download at least: {sources:?}");
+    assert!(app.save_session());
+    app.close_store();
+
+    let mut restored = app_on(&path, 2);
+    assert!(restored.restore_session());
+    for (ty, id) in &sources {
+        assert_eq!(restored.mirror.parent(id), Some(opener.as_str()), "{ty} after a restart");
+    }
+    let mut other = Journal::open(&path, ActorId(3)).unwrap();
+    for (_, id) in &sources {
+        remote_set(&mut other, id, field::COLOR, FieldValue::Color(Some(0x00ff_0000)));
+    }
+    assert!(restored.save_session());
+    for (ty, id) in &sources {
+        assert_eq!(restored.mirror.parent(id), Some(opener.as_str()), "{ty} after another replica's edit");
+    }
+}
+
+/// A running download is placed but not stored until it completes (`snapshot`), so it is no end for a link or an
+/// opener yet: the save would write that end as none (a half-made link, a cleared parent).
+#[test]
+fn a_running_download_is_no_link_or_opener_end_until_it_completes() {
+    let mut app = app_on(&temp_dir("connect-running-download").join("session.mnf"), 1);
+    let tab = succeed_spawn(&mut app, "https://a/");
+    let download = |completed| {
+        Runtime::Download(DownloadPayload {
+            path: "f.bin".into(),
+            bytes_received: 1,
+            total_bytes: Some(2),
+            completed,
+            failed: false,
+        })
+    };
+    let dl = add(&mut app, Kind::Download, download(false));
+    for (edge, from, to) in [(LINK, &tab, &dl), (LINK, &dl, &tab), (OPENED_FROM, &tab, &dl), (OPENED_FROM, &dl, &tab)] {
+        assert_eq!(app.connect(edge, from, to), Err(ConnectError::NotLive), "{edge} {from} -> {to}");
+    }
+    assert!(app.valid_targets(LINK, &tab).is_empty() && app.valid_targets(OPENED_FROM, &tab).is_empty());
+    assert!(app.valid_targets(LINK, &dl).is_empty(), "nor a source");
+    assert!(app.mirror.link_ids().next().is_none() && app.mirror.parent(&tab).is_none());
+
+    app.nodes.get_mut(&dl).unwrap().runtime = download(true);
+    assert_eq!(app.valid_targets(LINK, &tab), vec![dl.clone()], "complete, it is a card like any other");
+    assert_eq!(app.connect(LINK, &tab, &dl), Ok(()));
+    assert!(app.save_session());
+    let link = app.links_naming(&tab).pop().expect("the link");
+    assert_eq!(stored(&app, &link, field::TO), FieldValue::Id(dl.parse().ok()));
+}
+
 /// A tab that becomes a content card keeps its links: each now names the new card.
 #[test]
 fn a_tab_that_becomes_content_keeps_its_links() {

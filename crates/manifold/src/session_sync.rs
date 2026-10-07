@@ -345,8 +345,8 @@ impl App {
     /// placed today: every way in seeds a known type), and for an id that is none of these.
     pub(crate) fn snapshot(&self, id: NodeId) -> Option<Snapshot> {
         let key = id.to_string();
-        if let Some(node) = self.nodes.get(&key) {
-            if node.as_download().is_some_and(|dl| !dl.completed) {
+        if self.nodes.contains_key(&key) {
+            if self.is_running_download(&key) {
                 return None;
             }
             let kind = Kind::from_type(self.mirror.ty(&key));
@@ -372,6 +372,12 @@ impl App {
             return Some(Snapshot { kind: Kind::Link, group: None, fields });
         }
         self.spawning.get(&key).cloned()
+    }
+
+    /// Whether card `key` is a download still in progress (or failed): placed, but not stored until it completes
+    /// (`snapshot`), so nothing stored may name it yet (`check_connect`).
+    pub(crate) fn is_running_download(&self, key: &str) -> bool {
+        self.nodes.get(key).and_then(|n| n.as_download()).is_some_and(|dl| !dl.completed)
     }
 
     /// Queues `id`, a node that just entered the live graph (`place_node`, `spawn_tab_async`, a jar's `add_jar`),

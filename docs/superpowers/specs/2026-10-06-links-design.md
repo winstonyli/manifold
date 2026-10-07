@@ -44,7 +44,7 @@ source, `Node(type)` for a many edge stored as its own node), `acyclic`, `affect
 | Edge | Source | Target | Storage | Acyclic | Layout | User-creatable |
 |---|---|---|---|---|---|---|
 | `contains` | as now | group | the group link (store tree edge) | yes | no | no (own gestures) |
-| `opened-from` | every card type | every card type | `Field(PARENT)` | yes | yes | yes, "Opened from…" |
+| `opened-from` | every card type but a group (it has no `parent` field; final review I1) | every card type | `Field(PARENT)` | yes | yes | yes, "Opened from…" |
 | `link` | every card type | every card type | `Node(TYPE_LINK)` | no | no | yes, "Link to…" |
 
 Cardinality follows from `storage`. The other spec columns (removal variants beyond the read rule, `drawing`) are not

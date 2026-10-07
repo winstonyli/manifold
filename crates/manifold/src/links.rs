@@ -11,7 +11,7 @@ use crate::App;
 pub(crate) enum ConnectError {
     /// No such user-drawable edge, or its type table forbids these two node types.
     NotAllowed,
-    /// An end is not a live card.
+    /// An end is not a live card, or not stored yet (a running download).
     NotLive,
     /// The ends sit in different groups.
     DifferentLevel,
@@ -34,10 +34,12 @@ pub(crate) struct EdgeRef {
 
 impl App {
     /// Whether an `edge` edge from `from` to `to` may be drawn now, and if not, why not. Checks liveness before the
-    /// type table so a missing card reads as `NotLive`, not as an unknown type.
+    /// type table so a missing card reads as `NotLive`, not as an unknown type. A running download is not live
+    /// here: it is not stored until it completes, so the save would write it as none (a half-made link).
     fn check_connect(&self, edge: &str, from: &str, to: &str) -> Result<(), ConnectError> {
         let row = crate::caps::edges().row(edge).filter(|r| r.verb().is_some()).ok_or(ConnectError::NotAllowed)?;
-        if !self.nodes.contains_key(from) || !self.nodes.contains_key(to) {
+        let stored_card = |id: &str| self.nodes.contains_key(id) && !self.is_running_download(id);
+        if !stored_card(from) || !stored_card(to) {
             return Err(ConnectError::NotLive);
         }
         if from == to || !crate::caps::edges().can_connect(edge, self.mirror.ty(from), self.mirror.ty(to)) {

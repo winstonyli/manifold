@@ -34,9 +34,13 @@ const CARD_TYPES: [&str; 8] = [
     TYPE_JSON_LEAF,
     "application/octet-stream",
 ];
-/// The card types a link or opened-from edge may join: all but the JSON leaf.
+/// The card types a link may join, and an opened-from edge may end on: all but the JSON leaf.
 const LINKABLE: [&str; 7] =
     [TYPE_TAB, TYPE_GROUP, TYPE_NOTE, "image/*", "application/pdf", "application/json", "application/octet-stream"];
+/// The cards that may be opened from another: the linkable ones with a `parent` field, so all but a group (a group
+/// is made, never opened; `TYPES` gives it no `parent`, so the save could not keep one).
+const OPENER_SOURCES: [&str; 6] =
+    [TYPE_TAB, TYPE_NOTE, "image/*", "application/pdf", "application/json", "application/octet-stream"];
 
 /// One edge type and the node types allowed at each end.
 #[derive(Debug, Clone)]
@@ -141,7 +145,7 @@ impl EdgeTable {
 pub(crate) fn builtin_edges() -> EdgeTable {
     EdgeTable::new(vec![
         EdgeRow::new(CONTAINS, &CARD_TYPES, &[TYPE_GROUP]).stored_in(Storage::Tree).acyclic(),
-        EdgeRow::new(OPENED_FROM, &LINKABLE, &LINKABLE)
+        EdgeRow::new(OPENED_FROM, &OPENER_SOURCES, &LINKABLE)
             .stored_in(Storage::Field(field::PARENT))
             .acyclic()
             .layout()
@@ -204,7 +208,7 @@ mod tests {
     }
 
     #[test]
-    fn opened_from_and_link_take_any_card_to_any_card_but_never_a_jar_or_a_link_node() {
+    fn link_takes_any_card_to_any_card_and_opened_from_any_but_a_group_never_a_jar_or_a_link_node() {
         let t = edges();
         for a in [
             TYPE_TAB,
@@ -217,7 +221,8 @@ mod tests {
         ] {
             for b in [TYPE_TAB, TYPE_GROUP, "image/png"] {
                 assert!(t.can_connect(LINK, a, b), "{a} -> {b}");
-                assert!(t.can_connect(OPENED_FROM, a, b), "{a} -> {b}");
+                // A group is never opened from a card (it has no `parent` field), but a card may be from a group.
+                assert_eq!(t.can_connect(OPENED_FROM, a, b), a != TYPE_GROUP, "{a} -> {b}");
             }
         }
         assert!(!t.can_connect(LINK, "application/vnd.manifold.jar", TYPE_TAB));
@@ -231,6 +236,24 @@ mod tests {
         for end in ["application/vnd.manifold.jar", TYPE_JSON_LEAF] {
             assert!(!t.can_connect(OPENED_FROM, end, TYPE_TAB), "{end} as source");
             assert!(!t.can_connect(OPENED_FROM, TYPE_TAB, end), "{end} as target");
+        }
+    }
+
+    /// A `Field(no)` edge lives on its source node, so every stored type its sources accept must carry `no` in
+    /// `TYPES`: the save writes only a kind's fields, and the restore and sync read only those (a group as an
+    /// `opened-from` source once lost its parent that way). Every source pattern must name a stored type too.
+    #[test]
+    fn every_source_of_a_field_stored_edge_carries_the_field() {
+        use crate::store::model::TYPES;
+        for row in &edges().rows {
+            let Storage::Field(no) = row.storage else { continue };
+            for pattern in &row.sources {
+                let types: Vec<_> = TYPES.iter().filter(|t| pattern.matches(t.1)).collect();
+                assert!(!types.is_empty(), "{}: a source pattern that matches no stored type", row.id);
+                for (kind, ty, fields) in types {
+                    assert!(fields.contains(&no), "{}: {ty} ({kind:?}) is a source but has no field {no}", row.id);
+                }
+            }
         }
     }
 
