@@ -1,6 +1,7 @@
 # Link gestures: click a line to disconnect, drag a handle to connect (design)
 
-Status: design for review, 2026-10-07. Follows `2026-10-06-links-design.md` (its "Parked: drag to connect, click a
+Status: Implemented 2026-10-07 (commits f0fa529, 9dbeece, dfc01f8, add755e and "Link gestures: probe, screenshots,
+docs"); see the plan's Outcome (`docs/superpowers/plans/2026-10-07-link-gestures.md`) for deviations. Follows `2026-10-06-links-design.md` (its "Parked: drag to connect, click a
 line to disconnect"). Adds two gestures on top of `App::connect` / `disconnect`; no store, sync or edge-table change.
 
 ## Decisions (agreed 2026-10-07)
@@ -24,7 +25,8 @@ line to disconnect"). Adds two gestures on top of `App::connect` / `disconnect`;
   control, node menu, minimap or pick-target mode claiming it; not while `dragging`, `connecting` or a connect-drag
   is active; never in a JSON level. Where a card is under the pointer the card wins (lines pass under cards).
 - **Effect:** `delete_link(link)` (exactly the Link node under the line, as the node-menu row does), then save. Two
-  links on one pair are two lines on the same segment: the nearest wins, ties go to the most recently created; the
+  links on one pair are two lines on the same segment: the nearest wins, ties go to the most recently created (as built: the greatest id, which is the
+  newest only within one launch; see the plan's Outcome); the
   other stays and can be clicked next.
 - **Feedback:** the nearest link line under the pointer is drawn highlighted and the cursor becomes a pointer, so a
   click is never a surprise. An undo path is not added (the node menu can re-link).
@@ -36,7 +38,8 @@ line to disconnect"). Adds two gestures on top of `App::connect` / `disconnect`;
 
 - **Handles:** one per side, centred on the card's edge midpoint, ~12 screen px (scaled by `inv_zoom`). Shown on hover
   only (like Eject and Close), only on cards that are valid link ends, never in a JSON level, never while another
-  gesture owns the pointer. Hidden when the card's edge is under ~40 screen px or the level is drawn simplified
+  gesture owns the pointer. Hidden when the card's edge is under 44 screen px (half the edge must clear the 16 px Audio control plus
+  half a handle) or the level is drawn simplified
   (`graph_lod_simplified`), where they would collide with the corner controls.
 - **Gesture:** press on a handle starts a connect-drag; the card does not move, is not selected, and never emits a
   `Drop`. State: `connect_drag: Option<String>` (the source id) beside `connecting`. While it runs, `connecting` is set

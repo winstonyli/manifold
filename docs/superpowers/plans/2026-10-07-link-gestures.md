@@ -1331,3 +1331,74 @@ echo "== done $(date +%T)" >>"$log"
 | Risks: coordinates | Decision 2 |
 | Risks: thin cards | Decision 4 |
 | Risks: probes | EXPORTSTATE `edges` and `link_handles`; probe steps |
+
+---
+
+## Outcome (2026-10-07)
+
+Executed subagent-driven, one commit per task plus review fix rounds:
+
+| Task | Commits | Review |
+|---|---|---|
+| 1 Click a link line to disconnect | f0fa529, 9dbeece | 0 crit, 2 important (popup-dismissal click, glide tap; fixed red-first), 5 minor (M2, M3 fixed; M1, M4, M5 below), 5 nit |
+| 2 Edge handles and connect-drag | dfc01f8, add755e | 0 crit, 1 important (Esc with a focused text field; fixed), 6 minor (M1, M4, M5, M6 fixed; M2, M3 parked), 5 nit |
+| 3 Probe, screenshots, docs | "Link gestures: probe, screenshots, docs" | |
+
+`cargo test -p manifold`: 983 passed, 0 failed, 5 ignored after Task 2's fix round (Task 3 changed no Rust).
+`scripts/link-probe.sh`: 13 PASS (the 7 from links, plus: LINK again; a click on the line's middle deletes it; a
+drag from a's right handle onto b links a -> b; a's rect unchanged; `connect_drag` null after; the link persists).
+It passed on the first run in the real app; the state files showed a new link id after the drag and identical
+rects. `VIEWS=mouse-regress`: 3 PASS (card drag, swatch click, middle-click close).
+
+Shots (chrome-shots, 1280x800, zoom 144%), looked at whole and zoomed:
+
+- `graph-link-hover`: the dashed accent line is visibly thicker and brighter than in `graph-link`.
+- `graph-link-handles`: four 12-point accent rings on the tab's edge midpoints, centred on the card's outer border,
+  the left one filled under the pointer; none touch Close (top right), the pin (bottom left) or the resize corner. The
+  tab's hover peek opens to the right as on any tab hover.
+- `graph-link-drag`: a dashed band from the tab's centre to the pointer over the note, drawn over both cards (tan on
+  the note's yellow is low contrast but visible); the note's ring bright, the image, JSON and group rings dim; the
+  source keeps its handles, the pressed one filled.
+- Extra checks (scratch, not in the script): handles on the note, image, group and JSON cards sit on the frame,
+  clear of the note's text area and the JSON rows; a note being edited looks the same at rest. Zoomed out, a 118x80
+  tab has four handles, a 60x42 one only top and bottom, a 30x22 one none, as Decision 4 says. At 60x42 the bottom
+  handle covers the end of the title's ellipsis, which sits on the bottom edge at that size (minor, not fixed).
+- Geometry: a handle spans edge/2 +- 6 and Audio reaches 16 from the top-right corner, so at exactly 44 they touch
+  and never overlap; no tab played audio in the shots, so Audio itself was not pictured.
+
+Gate (two-instance-test x3, headless-smoke-test x1): run by the controller; see `progress.md`.
+
+**Deviations from the plan text:**
+
+- Decision 3's tie rule as built: of two links on one pair the greatest id wins (`nearest_link`: last of equals in
+  `level_edges` order). `NodeId` orders by (actor, counter) and each launch has a fresh actor, so that is the newest
+  only within one launch; across launches or replicas it is a deterministic stand-in. Both lines stay clickable one at
+  a time. The spec now says so.
+- Decision 4: the minimum edge is 44 screen points, not the spec's ~40; the spec now says 44 and why.
+- `HandleSide::name()` is `key()` (`names::tests` reads every `.name(` as a stored name).
+- The connect-drag release block runs after `track_pan_momentum`, which since 9dbeece runs after `line_click`.
+- `connect_drag_target` is one function for both the bright ring (pre-Scene transform) and the release (post-Scene),
+  so they agree off the Scene and over the minimap (Task 2 review M1).
+- A handle press stops a glide (`start_connect_drag` clears `camera.momentum`); `track_pan_momentum` still ignores a
+  connect-drag so a wheel zoom mid-drag starts no glide (Task 2 review M4).
+- The spec's "line click in a JSON level" case has no harness test: a JSON level draws no link lines, so nothing could
+  be hit; the `json_level` gate is covered by the JSON-level `link.is_none()` assertion.
+- Task 3: `chrome-shots.sh`'s `center()` now strips python's `\r`, so its y can go into shell arithmetic (the
+  `graph-link-drag` view does; before this, every caller only pasted it into a command). README's chrome-shots count
+  says 46 (the size of `ALL`; it said 46 before with 43 names, so the brief's 49 would have been off by three).
+
+**Parked:**
+
+- Task 2 M2: a right-press during a connect-drag (or a card drag) opens a node menu or starts a marquee. Fix: skip the
+  secondary-press branch while `connect_drag` or `dragging` is set.
+- Task 2 M3: losing window focus mid-drag leaves the connect-drag (and a card drag) alive. Fix: cancel on focus loss.
+- Task 1 M5: a painted, non-widget overlay over a line (a label past its card's rect, the marquee) lets a click through
+  to the line. Not checked live.
+- Task 1 N3: the EXPORTSTATE doc calls `edges`' `screen` the middle "between the two card centres"; it is the straight
+  segment's middle and may be covered (README now says the former).
+- Task 2 N2: at low zoom the inner half of a handle can sit over an editing note's text field edge and take its
+  tooltip; not seen at 144%.
+- Task 2 N3: the tab peek can overlap the right handle by about a point at zoom 0.4-0.5.
+- The bottom handle over the title ellipsis on a short card (above).
+- Not in scope, per the spec: opened-from by gesture or line click, lines anchored on the side handles, directed or
+  named links, and an undo for a line click (the node menu can re-link).

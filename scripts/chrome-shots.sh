@@ -12,7 +12,7 @@
 # Each view starts from Graph view at the top level and leaves the app
 # there, so VIEWS picks any subset and a run is ~40 s. Views:
 #   graph graph-hover graph-menu-tab graph-menu-group graph-menu-note graph-menu-jars graph-menu-group-jars
-#   graph-link graph-menu-links
+#   graph-link graph-menu-links graph-link-hover graph-link-handles graph-link-drag
 #   graph-filter graph-group json-level json-menu
 #   tabview tabview-dropdown tabview-find tabview-actions
 #   tabview-split settings popup-bookmarks popup-history popup-downloads
@@ -46,7 +46,7 @@ CROP_PX="${CROP_PX:-110}"
 CLOSED_BUTTON_X="${CLOSED_BUTTON_X:-515}"
 # A JSON bar button with a tooltip (Copy value).
 JSON_TIP_X="${JSON_TIP_X:-120}"
-ALL="graph graph-hover graph-menu-tab graph-menu-group graph-menu-note graph-link graph-menu-links graph-filter graph-group json-level json-menu tabview tabview-dropdown tabview-find tabview-actions tabview-split settings popup-bookmarks popup-history popup-downloads shortcuts quickswitch graph-closed graph-newnode-menu newnode-zoom graph-tooltip image-view cards-f note-edit missing-file download-real download-progress download-failed json-zoom settings-engine settings-engine-tab settings-combo toast tabview-engine json-tooltip engine-states-picker engine-states-settings engine-install-confirm"
+ALL="graph graph-hover graph-menu-tab graph-menu-group graph-menu-note graph-link graph-menu-links graph-link-hover graph-link-handles graph-link-drag graph-filter graph-group json-level json-menu tabview tabview-dropdown tabview-find tabview-actions tabview-split settings popup-bookmarks popup-history popup-downloads shortcuts quickswitch graph-closed graph-newnode-menu newnode-zoom graph-tooltip image-view cards-f note-edit missing-file download-real download-progress download-failed json-zoom settings-engine settings-engine-tab settings-combo toast tabview-engine json-tooltip engine-states-picker engine-states-settings engine-install-confirm"
 VIEWS="${VIEWS:-$ALL}"
 mkdir -p "$OUT/crop"
 work="$(mktemp -d)"
@@ -99,7 +99,8 @@ state() {
 }
 # "x y" of the first card of type $1 (group $2: "top" or "any"; $3 "loaded" or
 # "asleep" narrows a tab by its engine state): the centre of the part of its
-# rect inside the window, since a card can hang off the edge.
+# rect inside the window, since a card can hang off the edge. Without the
+# python's "\r", so the y can go into shell arithmetic.
 center() {
     state
     python -P -c '
@@ -113,7 +114,7 @@ for c in d["cards"]:
         x0, y0, x1, y1 = c["rect"]
         print(int((max(x0, 0) + min(x1, W)) / 2), int((max(y0, 36) + min(y1, H)) / 2))
         break
-' "$(w "$work/state.json")" "$1" "${2:-top}" "${SIZE% *}" "${SIZE#* }" "${3:-}" </dev/null
+' "$(w "$work/state.json")" "$1" "${2:-top}" "${SIZE% *}" "${SIZE#* }" "${3:-}" </dev/null | tr -d '\r'
 }
 TAB=application/vnd.manifold.tab GROUP=application/vnd.manifold.group NOTE=text/markdown
 IMAGE=image/png JSON=application/json
@@ -229,21 +230,46 @@ if has graph-menu-group-jars; then
     read -r x y < <(center "$TAB" top loaded); send "MOUSEMOVE $x $y" "MOUSEDOWN $x $y right" "MOUSEUP $x $y right" "SLEEP 1" ESCAPE "SETJAR Alpha" "SETJAR Beta" "SLEEP 1"
     read -r x y < <(center "$GROUP" top); send "MOUSEMOVE $x $y" "MOUSEDOWN $x $y right" "MOUSEUP $x $y right" "SLEEP 1"; shot graph-menu-group-jars; reset
 fi
-# Links: the top-level tab linked to the note (a dashed line between the cards), then the tab's menu with its
-# Links section (the verb rows and "Disconnect from" the note). UNLINK after, so later views have no link.
-if has graph-link || has graph-menu-links; then
-    # The id of the first top-level card of type $1 (import gives the seeded nodes fresh ids).
-    cardid() {
-        state
-        python -P -c 'import json,sys; from export_state import card_is; print([c["id"] for c in json.load(open(sys.argv[1], encoding="utf-8"))["cards"] if card_is(c, sys.argv[2]) and c["group"] is None][0])' "$(w "$work/state.json")" "$1" </dev/null | tr -d '\r'
-    }
+# The id of the first top-level card of type $1 (import gives the seeded nodes fresh ids).
+cardid() {
+    state
+    python -P -c 'import json,sys; from export_state import card_is; print([c["id"] for c in json.load(open(sys.argv[1], encoding="utf-8"))["cards"] if card_is(c, sys.argv[2]) and c["group"] is None][0])' "$(w "$work/state.json")" "$1" </dev/null | tr -d '\r'
+}
+# Links: the top-level tab linked to the note (a dashed line between the cards), the line hovered, then the tab's
+# menu with its Links section (the verb rows and "Disconnect from" the note). UNLINK after, so later views have no link.
+if has graph-link || has graph-link-hover || has graph-menu-links; then
     tab_id=$(cardid "$TAB"); note_id=$(cardid "$NOTE")
     send "LINK $tab_id $note_id" "SLEEP 1"
     if has graph-link; then shot graph-link; fi
+    # The pointer on the link line: the line drawn thicker (the cursor, a pointing hand, is not in a screenshot).
+    if has graph-link-hover; then
+        state
+        read -r lx ly < <(python -P -c 'import json,sys; e=[e for e in json.load(open(sys.argv[1], encoding="utf-8"))["edges"] if e["kind"]=="link"][0]["screen"]; print(round(e[0]), round(e[1]))' "$(w "$work/state.json")" </dev/null | tr -d '\r')
+        send "MOUSEMOVE $lx $ly" "SLEEP 1"; shot graph-link-hover; reset
+    fi
     if has graph-menu-links; then
         read -r x y < <(center "$TAB" top loaded); send "MOUSEMOVE $x $y" "MOUSEDOWN $x $y right" "MOUSEUP $x $y right" "SLEEP 1"; shot graph-menu-links; reset
     fi
     send "UNLINK $tab_id $note_id" "SLEEP 1"
+fi
+# Connect-drag: the top-level tab hovered shows its four edge handles; then a drag from its left handle 4/5 of the
+# way to the note's centre (the rubber band, and the note's target ring bright under the pointer), shot mid-drag.
+# Esc cancels it before the button comes up, so nothing is linked.
+if has graph-link-handles || has graph-link-drag; then
+    tab_id=$(cardid "$TAB")
+    read -r tx ty < <(center "$TAB" top loaded)
+    send "MOUSEMOVE $tx $ty" "SLEEP 1"
+    state
+    read -r hx hy < <(python -P -c 'import json,sys; r=json.load(open(sys.argv[1], encoding="utf-8"))["link_handles"][sys.argv[2]]["left"]; print(round((r[0]+r[2])/2), round((r[1]+r[3])/2))' "$(w "$work/state.json")" "$tab_id" </dev/null | tr -d '\r')
+    if has graph-link-handles; then send "MOUSEMOVE $hx $hy" "SLEEP 1"; shot graph-link-handles; fi
+    if has graph-link-drag; then
+        read -r nx ny < <(center "$NOTE" top)
+        send "MOUSEMOVE $tx $ty" "MOUSEMOVE $hx $hy" "MOUSEMOVE $hx $hy" "MOUSEDOWN $hx $hy"
+        for i in 1 2 3 4 5 6 7 8; do send "MOUSEMOVE $((hx + (nx - hx) * i * 4 / 40)) $((hy + (ny - hy) * i * 4 / 40))"; done
+        send "SLEEP 1"; shot graph-link-drag
+        send ESCAPE "MOUSEUP $((hx + (nx - hx) * 4 / 5)) $((hy + (ny - hy) * 4 / 5))" "SLEEP 1"
+    fi
+    reset
 fi
 if has hover-graph; then hover_scan graph; fi
 if has tab-graph; then tab_scan graph "${TAB_STOPS:-10}"; fi
