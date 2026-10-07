@@ -153,15 +153,25 @@ impl App {
     /// background reported a click. Call once per frame, before `track_pan_momentum` clears a glide on the press. A
     /// line is taken only if it was already under the pointer when the press began, with the camera still (no glide,
     /// no tween), and the camera has not moved since: a tap that stops a glide ("grab it to stop it") or lands mid
-    /// animation aims at no line, though one may be under the pointer by its release.
+    /// animation aims at no line, though one may be under the pointer by its release. Only a single click: the later
+    /// clicks of a double- or triple-click take nothing, or they would delete a pair's duplicate link (now under the
+    /// pointer) along with the first.
     pub(crate) fn line_click(&mut self, ui: &egui::Ui, line_hover: Option<String>, clicked: bool) -> Option<String> {
-        let (pressed, released) = ui.input(|i| (i.pointer.primary_pressed(), i.pointer.primary_released()));
+        let (pressed, released, repeat) = ui.input(|i| {
+            let p = &i.pointer;
+            let primary = egui::PointerButton::Primary;
+            (
+                p.primary_pressed(),
+                p.primary_released(),
+                p.button_double_clicked(primary) || p.button_triple_clicked(primary),
+            )
+        });
         if pressed {
             let still = self.camera.momentum.is_none() && self.camera.tween.is_none();
             self.line_press = line_hover.clone().filter(|_| still).map(|link| (link, self.camera.rect));
         }
         let press = if released { self.line_press.take() } else { None };
-        let (link, rect) = press.filter(|_| clicked)?;
+        let (link, rect) = press.filter(|_| clicked && !repeat)?;
         (line_hover.as_ref() == Some(&link) && rect == self.camera.rect).then_some(link)
     }
 
@@ -302,19 +312,29 @@ mod tests {
         ctx: egui::Context,
         /// An interactable Foreground Area drawn over the graph each frame (as a popup is), when set.
         cover: std::cell::Cell<Option<egui::Rect>>,
+        /// egui's input time for the next frame, in seconds: 1/60 per frame, plus any `pause`.
+        clock: std::cell::Cell<f64>,
     }
 
     impl Harness {
         fn new() -> Self {
             let ctx = egui::Context::default();
             crate::theme::apply_fonts(&ctx);
-            Self { ctx, cover: std::cell::Cell::new(None) }
+            Self { ctx, cover: std::cell::Cell::new(None), clock: std::cell::Cell::new(0.0) }
+        }
+
+        /// Lets `seconds` pass before the next frame, e.g. past egui's double-click window.
+        fn pause(&self, seconds: f64) {
+            self.clock.set(self.clock.get() + seconds);
         }
 
         /// One frame at the size `graph_world_rect_to_screen` assumes with no window. Returns the cursor it asked for.
         fn frame(&self, app: &mut App, events: Vec<egui::Event>) -> egui::CursorIcon {
+            let time = self.clock.get();
+            self.clock.set(time + 1.0 / 60.0);
             let input = egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1024.0, 768.0))),
+                time: Some(time),
                 events,
                 ..Default::default()
             };
@@ -466,8 +486,74 @@ mod tests {
         let on = line_middle(&app, &older);
         h.click(&mut app, on);
         assert_eq!(app.links_naming(&a), [older]);
+        h.pause(1.0);
         h.click(&mut app, on);
         assert!(app.links_naming(&a).is_empty());
+    }
+
+    /// Final review M1: the second click of a double-click (or a triple-click's third) on a pair's line takes nothing.
+    #[test]
+    fn a_double_or_triple_click_on_a_line_deletes_one_link() {
+        let (h, mut app, [a, b, _]) = three_notes();
+        for _ in 0..3 {
+            app.create_link(&a, &b);
+        }
+        h.frame(&mut app, vec![]);
+        let on = line_middle(&app, &app.links_naming(&a)[0]);
+        h.click(&mut app, on);
+        h.click(&mut app, on);
+        assert_eq!(app.links_naming(&a).len(), 2, "a double-click deletes one");
+        h.pause(1.0);
+        for _ in 0..3 {
+            h.click(&mut app, on);
+        }
+        assert_eq!(app.links_naming(&a).len(), 1, "a triple-click deletes one");
+    }
+
+    fn right(at: egui::Pos2, pressed: bool) -> egui::Event {
+        egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Secondary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        }
+    }
+
+    /// Moves the pointer to `at` and right-presses there: the `midway` of a drag.
+    fn right_press_at(at: egui::Pos2) -> Vec<egui::Event> {
+        vec![egui::Event::PointerMoved(at), right(at, true)]
+    }
+
+    /// Task 2 review M2: during a connect-drag a right-press on a card opens no menu and one on the canvas starts no
+    /// marquee; the drag still links where it is released.
+    #[test]
+    fn a_right_press_during_a_connect_drag_opens_no_menu_and_starts_no_marquee() {
+        let (h, mut app, [a, b, c]) = three_notes();
+        let (on_b, on_c) = (screen_rect(&app, &b).center(), screen_rect(&app, &c).center());
+        let canvas = on_b.lerp(on_c, 0.5);
+        drag_from_handle(&h, &mut app, &a, HandleSide::Right, on_b, right_press_at(on_c));
+        assert!(app.node_menu.is_none(), "no menu on c");
+        assert_eq!(app.links_naming(&a).len(), 1, "linked to b");
+        h.frame(&mut app, vec![right(on_b, false)]);
+        drag_from_handle(&h, &mut app, &a, HandleSide::Bottom, on_c, right_press_at(canvas));
+        assert!(app.rect_select_start.is_none(), "no marquee");
+        assert_eq!(app.links_naming(&a).len(), 2, "linked to c");
+    }
+
+    /// Task 2 review M2, card-drag half: a right-press while a card is dragged opens no menu and starts no marquee.
+    #[test]
+    fn a_right_press_during_a_card_drag_opens_no_menu_and_starts_no_marquee() {
+        let (h, mut app, [a, b, c]) = three_notes();
+        let (on_b, on_c) = (screen_rect(&app, &b).center(), screen_rect(&app, &c).center());
+        let canvas = on_b.lerp(on_c, 0.5);
+        let from = screen_rect(&app, &a).center();
+        let to = from + egui::vec2(0.0, -40.0);
+        h.drag_with(&mut app, from, to, right_press_at(on_c));
+        assert!(app.node_menu.is_none(), "no menu on c");
+        h.frame(&mut app, vec![right(to, false)]);
+        let from = screen_rect(&app, &a).center();
+        h.drag_with(&mut app, from, from + egui::vec2(40.0, 0.0), right_press_at(canvas));
+        assert!(app.rect_select_start.is_none(), "no marquee");
     }
 
     #[test]
@@ -501,6 +587,7 @@ mod tests {
         assert_eq!(app.links_naming(&a), std::slice::from_ref(&ab), "the shortcuts help was open");
         app.shortcuts_help_open = false;
         h.frame(&mut app, vec![]);
+        h.pause(1.0); // past the double-click window: a second click there takes nothing
         h.click(&mut app, on);
         assert!(app.links_naming(&a).is_empty(), "with neither open the same click takes it");
     }
@@ -525,6 +612,7 @@ mod tests {
         h.click(&mut app, on);
         assert_eq!(app.links_naming(&a), std::slice::from_ref(&ab), "a tap during a tween takes no line");
         app.camera.jump_to(app.camera.rect);
+        h.pause(1.0); // past the double-click window: a second click there takes nothing
         h.click(&mut app, on);
         assert!(app.links_naming(&a).is_empty(), "with the camera still the same tap takes it");
     }
@@ -542,6 +630,7 @@ mod tests {
         let on = line_middle(&app, &ab);
         h.click(&mut app, on + egui::vec2(0.0, 8.0));
         assert_eq!(app.links_naming(&a), std::slice::from_ref(&ab), "8 points off: a miss");
+        h.pause(1.0); // past the double-click window: a second click there takes nothing
         h.click(&mut app, on + egui::vec2(0.0, 5.0));
         assert!(app.links_naming(&a).is_empty(), "5 points off: a hit");
     }
@@ -913,6 +1002,7 @@ mod tests {
         h.click(&mut app, on);
         assert_eq!(app.links_naming(&a), std::slice::from_ref(&ab), "the line stays");
         assert!(!app.nodes[&a].as_note().unwrap().editing, "the click ended the edit");
+        h.pause(1.0); // past the double-click window: a second click there takes nothing
         h.click(&mut app, on);
         assert!(app.links_naming(&a).is_empty(), "with no edit running the same click takes it");
     }
@@ -942,7 +1032,8 @@ mod tests {
     /// (`App::egui_ctx`, the one the event loop runs and `on_window_focus` reaches) rather than a separate one.
     fn note_and_group_on_app_ctx() -> (Harness, App, String, String) {
         let mut app = App::default();
-        let h = Harness { ctx: app.egui_ctx.clone(), cover: std::cell::Cell::new(None) };
+        let h =
+            Harness { ctx: app.egui_ctx.clone(), cover: std::cell::Cell::new(None), clock: std::cell::Cell::new(0.0) };
         let (note, group) = (app.alloc_node_id(), app.alloc_node_id());
         let text = Runtime::Note(NotePayload { text: "n".into(), editing: false });
         app.insert_placeholder_node(note.clone(), egui::vec2(0.0, 0.0), Kind::Note, text);

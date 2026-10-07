@@ -159,6 +159,8 @@ impl App {
         for member in &moved {
             self.edit_group(member, Some(target.to_string()));
         }
+        // Its links move to `target` before its delete would take them (Links final review M2).
+        self.retarget_links(source, target);
         self.nodes.remove(source);
         self.queue_delete(source);
         self.node_order.retain(|g| g != source);

@@ -5151,6 +5151,42 @@ fn a_tab_that_becomes_content_keeps_its_links() {
     assert!(app.save_session());
 }
 
+/// Links final review M2: merging S into T moves S's links onto T, keeping their direction, except one that would join T
+/// to itself (S-T) and one to a card T is already linked to (S-c beside T-c). Restored as saved.
+#[test]
+fn merging_a_group_retargets_its_links_onto_the_target() {
+    let path = temp_dir("link-merge").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let s = add_group(&mut app, "S");
+    let t = add_group(&mut app, "T");
+    let a = succeed_spawn(&mut app, "https://a/");
+    let b = succeed_spawn(&mut app, "https://b/");
+    let c = succeed_spawn(&mut app, "https://c/");
+    app.create_link(&s, &a);
+    app.create_link(&b, &s);
+    app.create_link(&s, &t);
+    app.create_link(&s, &c);
+    let tc = app.create_link(&t, &c);
+    assert!(app.save_session());
+    app.merge_groups(&s, &t);
+    assert!(app.links_naming(&s).is_empty());
+    let id = |x: &str| x.parse().ok();
+    let ends = |app: &App| {
+        let mut ends: Vec<_> = app.links_naming(&t).iter().map(|l| app.mirror.link_ends(l)).collect();
+        ends.sort();
+        ends
+    };
+    let mut want = vec![(id(&t), id(&a)), (id(&b), id(&t)), (id(&t), id(&c))];
+    want.sort();
+    assert_eq!(ends(&app), want);
+    assert_eq!(app.links_naming(&c), [tc], "T-c kept as it was");
+    assert!(app.save_session());
+    app.close_store();
+    let mut restored = app_on(&path, 2);
+    assert!(restored.restore_session());
+    assert_eq!(ends(&restored), want);
+}
+
 #[test]
 fn edges_of_leaves_out_a_dangling_link_and_one_at_another_level() {
     let mut app = app_on(&temp_dir("edges-live").join("session.mnf"), 1);

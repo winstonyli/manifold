@@ -1256,7 +1256,11 @@ impl App {
     ) {
         let secondary_down = ui.input(|i| i.pointer.button_down(egui::PointerButton::Secondary));
         let pointer_pos = ui.input(|i| i.pointer.interact_pos());
-        let secondary_pressed = ui.input(|i| i.pointer.button_pressed(egui::PointerButton::Secondary));
+        // Not while a card drag or a connect-drag holds the primary button: a right-press then would open a menu
+        // under the drag (whose release still drops or links) or start a marquee beside it.
+        let secondary_pressed = ui.input(|i| i.pointer.button_pressed(egui::PointerButton::Secondary))
+            && self.dragging.is_none()
+            && self.connect_drag.is_none();
         if secondary_pressed {
             // A fresh right-click press always cancels any still-open
             // "New Tab/Note/Group/File" card from a previous one -- same

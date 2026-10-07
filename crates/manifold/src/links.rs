@@ -193,6 +193,36 @@ impl App {
         self.queue_delete(id);
     }
 
+    /// Remakes `old`'s links on `new`, the node replacing it, each keeping its direction: a tab turned into content
+    /// (`redirect_tab_to_content`), a group merged into another (`merge_groups`). Call before `old` goes, whose delete
+    /// takes its own links with it. Only a link to another live card carries over: not a dangling, half-made or self
+    /// link, not one that would join `new` to itself, and not one to a card `new` was already linked to (that pair
+    /// keeps its link).
+    pub(crate) fn retarget_links(&mut self, old: &str, new: &str) {
+        let (Ok(old_id), Ok(new_id)) = (old.parse::<NodeId>(), new.parse::<NodeId>()) else { return };
+        let far_end =
+            |(from, to): (Option<NodeId>, Option<NodeId>), me: NodeId| if from == Some(me) { to } else { from };
+        let linked: Vec<NodeId> =
+            self.links_naming(new).iter().filter_map(|link| far_end(self.mirror.link_ends(link), new_id)).collect();
+        for link in self.links_naming(old) {
+            let (Some(from), Some(to)) = self.mirror.link_ends(&link) else { continue };
+            let other = match (from == old_id, to == old_id) {
+                (true, false) => to,
+                (false, true) => from,
+                _ => continue,
+            };
+            let far = other.to_string();
+            if other == new_id || linked.contains(&other) || !self.nodes.contains_key(&far) {
+                continue;
+            }
+            if from == old_id {
+                self.create_link(new, &far);
+            } else {
+                self.create_link(&far, new);
+            }
+        }
+    }
+
     /// The Link nodes whose `from` or `to` is `node`.
     pub(crate) fn links_naming(&self, node: &str) -> Vec<String> {
         let Ok(node) = node.parse::<crate::store::model::NodeId>() else { return Vec::new() };

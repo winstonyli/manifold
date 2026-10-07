@@ -1421,18 +1421,24 @@ Gate (two-instance-test x3, headless-smoke-test x1) on ddf2704, 2026-10-07: two-
   `stop_dragging` removed). `scripts/focus-loss-probe.sh` has a `card` case (`CASES=card`): 22 PASS for both cases;
   the `NO_STEAL=1` control fails 5 card checks (the drag survives, a follows the pointer, the late release groups a
   and b). `EXPORTSTATE` gained `dragging`.
+- Final review M1 ("Links: double-click, right-press during drag, merge retargets links"): `line_click` takes no line
+  on a release that egui counts as a double- or triple-click (`button_double_clicked` / `button_triple_clicked`), so a
+  double-click on a pair's line deletes one link. Any click within egui's 0.3 s double-click window and 6 points of
+  the last one counts, so a click right after one that dismissed a popup or ended a note edit takes nothing either
+  (the tests that click twice in a row now let time pass; the harness feeds egui a clock). Test
+  `a_double_or_triple_click_on_a_line_deletes_one_link` (red first).
+- Task 2 M2 (same commit): `handle_rect_select` ignores a right-press while `dragging` or `connect_drag` is set, so
+  it opens no node menu and starts no marquee during a card drag or a connect-drag. Tests
+  `a_right_press_during_a_connect_drag_opens_no_menu_and_starts_no_marquee` and
+  `a_right_press_during_a_card_drag_opens_no_menu_and_starts_no_marquee` (both halves of each red first).
 
 **Parked:**
 
-- Final review M1: a double-click on a line whose pair has two links deletes both. Duplicate pairs only come from
-  concurrent creation on two replicas.
 - Final review M4: the top handle's inner half sits over the header's centre, where cards are usually grabbed to
   drag. Look at it live; the handle could sit on the border's outside instead.
 - Final review N2: the spec's Lifecycle says `end_stale_drag` where the code uses `end_stale_connect`.
 - Final review N3: `level_edges()` clones two `String`s per edge per frame.
 - Final review N4: no harness tests for a source culled or simplified mid-drag, or for no handles in a JSON level.
-- Task 2 M2: a right-press during a connect-drag (or a card drag) opens a node menu or starts a marquee. Fix: skip the
-  secondary-press branch while `connect_drag` or `dragging` is set.
 - Task 1 M5: a painted, non-widget overlay over a line (a label past its card's rect, the marquee) lets a click through
   to the line. Not checked live.
 - Task 1 N3: the EXPORTSTATE doc calls `edges`' `screen` the middle "between the two card centres"; it is the straight
