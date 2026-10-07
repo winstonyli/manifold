@@ -30,6 +30,8 @@ pub(crate) enum EdgeCurve {
     Bow,
     /// Leaves and enters horizontally: a JSON level's row-to-card links.
     Horizontal,
+    /// A straight segment, dashed: Link nodes (`EdgeKind::Link`), so they never read as a `parent` link.
+    Straight,
 }
 
 /// Which edge source a `LevelEdge` came from.
@@ -112,8 +114,8 @@ impl App {
             .collect()
     }
 
-    /// The current level's edges: each stored node's `parent` link whose
-    /// two ends are both on this level.
+    /// The current level's edges: each stored node's `parent` link, then each Link node, whose two ends are both on
+    /// this level.
     pub(crate) fn level_edges(&self) -> Vec<LevelEdge> {
         // A JSON level: from the parent's row port (its right edge, at the
         // row's middle) to the child's header.
@@ -155,7 +157,7 @@ impl App {
             both_here.then(|| LevelEdge {
                 from: self.layout_pos(&from).to_pos2(),
                 to: self.layout_pos(&to).to_pos2(),
-                curve: EdgeCurve::Bow,
+                curve: EdgeCurve::Straight,
                 highlight: false,
                 kind: EdgeKind::Link,
             })

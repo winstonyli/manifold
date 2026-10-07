@@ -244,7 +244,8 @@ pub enum DebugCommand {
     /// `mirror_names` (groups), `mirror_texts` (notes) and `mirror_pos` (every node, `[x, y]`) map ids to the
     /// mirror's name, text and document pos the same way, null where EXPORTSESSION leaves the field out (empty, or
     /// pos (0, 0)).
-    /// `links` lists every Link node as `{id, from, to}`.
+    /// `links` lists every Link node as `{id, from, to}`. `connecting` is pick-target mode as `{from, edge, targets}`
+    /// (`targets` sorted), or null.
     /// `toast` is the bottom-left toast's text
     /// (the one showing, else the next queued), or null. Suggestions arriving from the network show up
     /// only once a frame has drained them, and every command draws one, so
@@ -346,6 +347,14 @@ pub enum DebugCommand {
     /// `CloseGroup`: only when the menu would offer `group` (a sibling group, `NodeMenuView::move_targets`), else
     /// ignored with a note on stderr. See `NodeAction::MoveToGroup`.
     MoveToGroup { id: String, group: String },
+    /// `LINK a b` -- links card `a` to card `b` (`App::connect`, the node menu's "Link to…" and a click on `b`), and
+    /// saves. A refused link is ignored with the reason on stderr.
+    Link { from: String, to: String },
+    /// `UNLINK a b` -- removes the link between cards `a` and `b`, in either order (`App::disconnect`), and saves.
+    Unlink { a: String, b: String },
+    /// `OPENEDFROM child parent` -- sets the card `child` was opened from (`App::connect`, the node menu's "Opened
+    /// from…"), and saves. A refused edge is ignored with the reason on stderr.
+    OpenedFrom { child: String, parent: String },
     /// `RENAMEGROUP id name` -- a group's rename field committed with `name` (`NodeAction::CommitRename`: the clean
     /// name, groups only, an empty clean name ignored), by id for the same reason as `CloseGroup`. Saves, as the
     /// menu does. `RENAMEGROUP` alone is `RenameGroup` (F2).
@@ -522,6 +531,9 @@ const COMMAND_HELP: &[(&str, &str)] = &[
     ("JSONSEARCH text", "Search the current JSON level's keys and values"),
     ("CLOSEGROUP id", "Close the group `id`, same as its own \"Close\" context-menu action"),
     ("MOVETOGROUP id group", "Move node `id` into the sibling group `group`, same as its \"Move into\" menu row"),
+    ("LINK a b", "Link card `a` to card `b`, same as `a`'s \"Link to...\" row and a click on `b`"),
+    ("UNLINK a b", "Remove the link between cards `a` and `b`, in either order"),
+    ("OPENEDFROM child parent", "Set the card `child` was opened from, same as its \"Opened from...\" row"),
     ("SETNOTETEXT id text", "Type `text` into note `id`'s box (replacing it) and blur it, which commits and saves"),
     ("MOVENODE id x y", "Drag card `id` to world point (x, y) and release it there, which saves"),
     (
@@ -761,6 +773,11 @@ pub fn parse_line(line: &str) -> Option<DebugCommand> {
         "CLOSEGROUP" => non_empty(DebugCommand::CloseGroup),
         "MOVETOGROUP" => {
             Some(DebugCommand::MoveToGroup { id: parts.next()?.to_string(), group: parts.next()?.to_string() })
+        }
+        "LINK" => Some(DebugCommand::Link { from: parts.next()?.to_string(), to: parts.next()?.to_string() }),
+        "UNLINK" => Some(DebugCommand::Unlink { a: parts.next()?.to_string(), b: parts.next()?.to_string() }),
+        "OPENEDFROM" => {
+            Some(DebugCommand::OpenedFrom { child: parts.next()?.to_string(), parent: parts.next()?.to_string() })
         }
         "SLEEPNODE" => non_empty(DebugCommand::SleepNode),
         "IDLESWEEP" => rest.parse().ok().map(DebugCommand::IdleSweep),
@@ -1208,6 +1225,23 @@ impl App {
                     eprintln!("MOVETOGROUP: {group} isn't a sibling group of {id}; ignored");
                 }
             }
+            DebugCommand::Link { from, to } => match self.connect(crate::caps::LINK, &from, &to) {
+                Ok(()) => {
+                    self.save_session();
+                }
+                Err(err) => eprintln!("LINK: {from} -> {to} refused: {err:?}"),
+            },
+            DebugCommand::Unlink { a, b } => {
+                self.disconnect(crate::caps::LINK, &a, &b);
+                self.save_session();
+            }
+            DebugCommand::OpenedFrom { child, parent } => match self.connect(crate::caps::OPENED_FROM, &child, &parent)
+            {
+                Ok(()) => {
+                    self.save_session();
+                }
+                Err(err) => eprintln!("OPENEDFROM: {child} -> {parent} refused: {err:?}"),
+            },
             DebugCommand::RenameGroupTo { id, name } => {
                 if self.is_container(&id) {
                     self.commit_rename(&id, &name);
@@ -1376,6 +1410,10 @@ impl App {
             "mirror_texts": mirror_texts,
             "mirror_pos": mirror_pos,
             "links": links,
+            // Pick-target mode: the source card, the edge and the cards a click would finish it on.
+            "connecting": self.connecting.as_ref().map(|(from, edge)| {
+                serde_json::json!({ "from": from, "edge": edge, "targets": self.valid_targets(edge, from) })
+            }),
             "json_level": self.json_level_state(),
             "selected_tabs": selected_tabs,
             // The toast showing, or else the next queued one.
@@ -1511,6 +1549,9 @@ mod tests {
             "CLOSESPLIT",
             "CLOSEGROUP g1",
             "MOVETOGROUP n1 g1",
+            "LINK n1 n2",
+            "UNLINK n1 n2",
+            "OPENEDFROM n1 n2",
             "SETNOTETEXT n1 hello",
             "MOVENODE n1 10 -20",
             "SLEEPNODE t1",
@@ -1535,6 +1576,26 @@ mod tests {
             assert!(SAMPLES.iter().any(|s| verb(s) == verb(usage)), "HELP verb {usage:?} has a sample");
         }
         assert!(matches!(parse_line("?"), Some(DebugCommand::Help)));
+    }
+
+    /// `LINK`, `UNLINK` and `OPENEDFROM` each take two card ids, in order.
+    #[test]
+    fn link_unlink_and_openedfrom_take_two_ids() {
+        assert!(matches!(
+            parse_line("LINK n1 n2"),
+            Some(DebugCommand::Link { from, to }) if from == "n1" && to == "n2"
+        ));
+        assert!(matches!(
+            parse_line("UNLINK n1 n2"),
+            Some(DebugCommand::Unlink { a, b }) if a == "n1" && b == "n2"
+        ));
+        assert!(matches!(
+            parse_line("OPENEDFROM c p"),
+            Some(DebugCommand::OpenedFrom { child, parent }) if child == "c" && parent == "p"
+        ));
+        for one in ["LINK n1", "UNLINK n1", "OPENEDFROM c"] {
+            assert!(parse_line(one).is_none(), "{one}: both ids are required");
+        }
     }
 
     /// `MOVETOGROUP` takes two ids and moves only where the node menu's "Move into" would offer.

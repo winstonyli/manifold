@@ -2039,6 +2039,7 @@ impl App {
         self.current_group = None;
         self.dragging = None;
         self.drag_moved.clear();
+        self.connecting = None;
         self.hovered = None;
         self.selected_tabs.clear();
         self.rect_select_start = None;

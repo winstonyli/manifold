@@ -1241,6 +1241,7 @@ impl App {
         if self.dragging.as_deref() == Some(id) {
             self.dragging = None;
         }
+        self.forget_connect_source(id);
         if self.hovered.as_deref() == Some(id) {
             self.hovered = None;
         }

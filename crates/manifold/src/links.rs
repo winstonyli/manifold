@@ -22,7 +22,6 @@ pub(crate) enum ConnectError {
 }
 
 /// One edge at a node, as `App::edges_of` lists it.
-#[allow(dead_code)] // read by tests until the edge menu (a later links task)
 pub(crate) struct EdgeRef {
     pub edge: &'static str,
     /// The node at the other end.
@@ -75,7 +74,6 @@ impl App {
     }
 
     /// Removes the `edge` edge joining `from` and `to`, if there is one.
-    #[allow(dead_code)] // only tests call it until the edge menu (a later links task)
     pub(crate) fn disconnect(&mut self, edge: &str, from: &str, to: &str) {
         match crate::caps::edges().row(edge).map(|r| r.storage()) {
             Some(Storage::Field(field::PARENT)) => {
@@ -108,7 +106,6 @@ impl App {
 
     /// The live edges at `node`: the card it was opened from (outgoing), the cards opened from it, and its links.
     /// An edge whose far end is missing, not live, or at another level is left out, as the read rule hides it.
-    #[allow(dead_code)] // only tests call it until the edge menu (a later links task)
     pub(crate) fn edges_of(&self, node: &str) -> Vec<EdgeRef> {
         let mut edges = Vec::new();
         if let Some(opener) = self.mirror.parent(node).filter(|o| self.shown_with(node, o)) {
@@ -130,12 +127,42 @@ impl App {
     }
 
     /// Every live card `connect(edge, from, _)` would accept, in id order.
-    #[allow(dead_code)] // only tests call it until the connect gesture (a later links task)
     pub(crate) fn valid_targets(&self, edge: &str, from: &str) -> Vec<String> {
         let mut targets: Vec<String> =
             self.nodes.keys().filter(|to| self.check_connect(edge, from, to).is_ok()).cloned().collect();
         targets.sort();
         targets
+    }
+
+    /// Pick-target mode's end on a target: draws the chosen edge from the mode's source to `target`, ends the mode and
+    /// saves. A refused edge (the target stopped being valid since it was drawn highlighted) says so in a toast.
+    pub(crate) fn finish_connect(&mut self, target: &str) {
+        let Some((from, edge)) = self.connecting.take() else { return };
+        if self.connect(edge, &from, target).is_err() {
+            self.queue_toast("Can't connect these cards".to_string());
+        }
+        self.save_session();
+    }
+
+    /// Ends pick-target mode without drawing anything.
+    pub(crate) fn cancel_connect(&mut self) {
+        self.connecting = None;
+    }
+
+    /// Ends pick-target mode when `id`, a card being removed, is its source.
+    pub(crate) fn forget_connect_source(&mut self, id: &str) {
+        if self.connecting.as_ref().is_some_and(|(from, _)| from == id) {
+            self.connecting = None;
+        }
+    }
+
+    /// Ends pick-target mode once its targets are no longer drawn: the Graph view not `graph_shown`, or the source
+    /// gone or moved off the level shown (another replica's edit).
+    pub(crate) fn end_stale_connect(&mut self, graph_shown: bool) {
+        let stale = |(from, _): &(String, &str)| !graph_shown || !self.nodes.contains_key(from) || !self.in_level(from);
+        if self.connecting.as_ref().is_some_and(stale) {
+            self.connecting = None;
+        }
     }
 
     /// Makes a link from `from` to `to`, both card ids, and returns the new Link node's id. Queued for the next save.

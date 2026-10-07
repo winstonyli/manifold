@@ -500,6 +500,22 @@ mod tests {
         assert!(app.json_level.is_none());
     }
 
+    /// Links: a JSON level's cards are not stored nodes, so no node menu there offers the Links section, and entering
+    /// one ends pick-target mode.
+    #[test]
+    fn a_json_level_hides_the_links_section_and_ends_pick_target_mode() {
+        let (mut app, j) = app_with_json("links", r#"{"a": 1}"#);
+        let note = app.alloc_node_id();
+        app.insert_note_at(note.clone(), None);
+        app.edit_group(&note, Some(OUTER.into()));
+        app.switch_group_level(Some(OUTER.into()));
+        assert!(!app.node_menu_view(&note).unwrap().edges.is_empty(), "the Json card is a target at OUTER's level");
+        app.apply_node_action(&egui::Context::default(), &note, crate::NodeAction::Connect(crate::caps::LINK));
+        app.switch_group_level(Some(j));
+        assert!(app.connecting.is_none());
+        assert!(app.node_menu_view(&note).unwrap().edges.is_empty());
+    }
+
     /// Review C-B11: screen<->world agree with the outline open.
     #[test]
     fn screen_to_world_inverts_world_to_screen_with_the_outline_open() {

@@ -4967,6 +4967,7 @@ fn a_link_is_a_level_edge_only_while_both_ends_are_live_at_this_level() {
     app.connect(LINK, &a, &b).unwrap();
     let edges = app.level_edges();
     assert_eq!(edges.iter().filter(|e| e.kind == EdgeKind::Link).count(), 1);
+    assert!(edges.iter().all(|e| (e.kind == EdgeKind::Link) == (e.curve == crate::level::EdgeCurve::Straight)));
     app.edit_group(&b, Some("elsewhere".into()));
     assert!(app.level_edges().iter().all(|e| e.kind != EdgeKind::Link), "another level: not shown");
 }
@@ -5253,4 +5254,101 @@ fn closing_records_links_to_the_root_and_across_nesting_but_not_to_dropped_membe
     app.reopen_closed(entry);
     assert_eq!(link_count(&app), 2);
     assert!(app.save_session());
+}
+
+#[test]
+fn the_menu_offers_a_verb_per_edge_with_a_valid_target_and_a_disconnect_per_live_edge() {
+    let mut app = app_on(&temp_dir("link-menu").join("session.mnf"), 1);
+    let a = succeed_spawn(&mut app, "https://a/");
+    let b = succeed_spawn(&mut app, "https://b/");
+    app.connect(LINK, &a, &b).unwrap();
+    let rows = app.node_menu_view(&a).unwrap().edges;
+    let actions: Vec<&NodeAction> = rows.iter().map(|r| &r.action).collect();
+    assert!(!actions.contains(&&NodeAction::Connect(LINK)), "b is the only other card and is linked already");
+    assert!(actions.contains(&&NodeAction::Connect(OPENED_FROM)));
+    assert!(rows.iter().any(|r| matches!(&r.action, NodeAction::Disconnect { edge, .. } if *edge == LINK)));
+}
+
+#[test]
+fn pick_target_mode_enters_completes_and_cancels() {
+    let mut app = app_on(&temp_dir("pick-target").join("session.mnf"), 1);
+    let a = succeed_spawn(&mut app, "https://a/");
+    let b = succeed_spawn(&mut app, "https://b/");
+    app.apply_node_action(&egui::Context::default(), &a, NodeAction::Connect(LINK));
+    assert_eq!(app.connecting, Some((a.clone(), LINK)));
+    app.finish_connect(&b);
+    assert!(app.connecting.is_none());
+    assert_eq!(app.links_naming(&a).len(), 1);
+    app.apply_node_action(&egui::Context::default(), &a, NodeAction::Connect(OPENED_FROM));
+    app.cancel_connect();
+    assert!(app.connecting.is_none());
+}
+
+/// Pick-target mode ends on any other node action, a level change, and its source card closing.
+#[test]
+fn pick_target_mode_ends_on_another_action_a_level_change_or_its_source_closing() {
+    let mut app = app_on(&temp_dir("pick-ends").join("session.mnf"), 1);
+    let ctx = egui::Context::default();
+    let a = succeed_spawn(&mut app, "https://a/");
+    let b = succeed_spawn(&mut app, "https://b/");
+    app.apply_node_action(&ctx, &a, NodeAction::Connect(LINK));
+    app.apply_node_action(&ctx, &b, NodeAction::TogglePin);
+    assert!(app.connecting.is_none(), "another action");
+    app.apply_node_action(&ctx, &a, NodeAction::Connect(LINK));
+    let g = add_group(&mut app, "g");
+    app.switch_group_level(Some(g));
+    assert!(app.connecting.is_none(), "a level change");
+    app.switch_group_level(None);
+    app.apply_node_action(&ctx, &a, NodeAction::Connect(LINK));
+    app.close_node(&a);
+    assert!(app.connecting.is_none(), "its source closed");
+    // A stale mode found by the per-frame check: the Graph view not shown.
+    app.apply_node_action(&ctx, &b, NodeAction::Connect(LINK));
+    app.end_stale_connect(true);
+    assert!(app.connecting.is_some());
+    app.end_stale_connect(false);
+    assert!(app.connecting.is_none());
+}
+
+/// "Disconnect from X" removes the edge its row names, either way round, and its label says which edge it is.
+#[test]
+fn disconnect_rows_name_their_edge_and_remove_it() {
+    let mut app = app_on(&temp_dir("disconnect-rows").join("session.mnf"), 1);
+    let ctx = egui::Context::default();
+    let a = succeed_spawn(&mut app, "https://a/");
+    let b = succeed_spawn(&mut app, "https://b/");
+    app.connect(OPENED_FROM, &b, &a).unwrap();
+    app.connect(LINK, &a, &b).unwrap();
+    let rows = |app: &App, id: &str| app.node_menu_view(id).unwrap().edges;
+    let disconnects = |app: &App, id: &str| -> Vec<(String, NodeAction)> {
+        rows(app, id)
+            .into_iter()
+            .filter(|r| matches!(r.action, NodeAction::Disconnect { .. }))
+            .map(|r| (r.label, r.action))
+            .collect()
+    };
+    let of_a = disconnects(&app, &a);
+    assert_eq!(of_a.len(), 2, "{of_a:?}");
+    assert!(of_a.iter().any(|(label, _)| label.starts_with("Disconnect from Tab") && label.ends_with("(link)")));
+    assert!(of_a.iter().any(|(label, _)| label.ends_with("(opened from here)")), "{of_a:?}");
+    assert!(disconnects(&app, &b).iter().any(|(label, _)| label.ends_with("(opened from it)")));
+    // a's row for the opened-from edge: the parent field is b's.
+    let (_, opener) = of_a.iter().find(|(label, _)| label.ends_with("(opened from here)")).unwrap().clone();
+    app.apply_node_action(&ctx, &a, opener);
+    assert_eq!(app.mirror.parent(&b), None);
+    let (_, link) = disconnects(&app, &b).into_iter().find(|(label, _)| label.ends_with("(link)")).unwrap();
+    app.apply_node_action(&ctx, &b, link);
+    assert!(app.links_naming(&a).is_empty());
+    assert!(disconnects(&app, &a).is_empty());
+    assert!(app.save_session());
+}
+
+/// EXPORTSTATE shows pick-target mode, with its targets.
+#[test]
+fn export_state_shows_pick_target_mode() {
+    let mut app = app_on(&temp_dir("pick-state").join("session.mnf"), 1);
+    let (a, b) = (succeed_spawn(&mut app, "https://a/"), succeed_spawn(&mut app, "https://b/"));
+    assert_eq!(app.export_state()["connecting"], serde_json::Value::Null);
+    app.apply_node_action(&egui::Context::default(), &a, NodeAction::Connect(LINK));
+    assert_eq!(app.export_state()["connecting"], serde_json::json!({ "from": a, "edge": LINK, "targets": [b] }));
 }

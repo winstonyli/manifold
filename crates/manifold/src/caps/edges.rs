@@ -84,28 +84,22 @@ impl EdgeRow {
         self
     }
 
-    // The accessors below are read by later links tasks.
-    #[allow(dead_code)]
     pub(crate) fn id(&self) -> &'static str {
         self.id
     }
 
-    #[allow(dead_code)]
     pub(crate) fn storage(&self) -> Storage {
         self.storage
     }
 
-    #[allow(dead_code)]
     pub(crate) fn is_acyclic(&self) -> bool {
         self.acyclic
     }
 
-    #[allow(dead_code)]
     pub(crate) fn affects_layout(&self) -> bool {
         self.affects_layout
     }
 
-    #[allow(dead_code)]
     pub(crate) fn verb(&self) -> Option<&'static str> {
         self.verb
     }
@@ -133,7 +127,6 @@ impl EdgeTable {
     }
 
     /// The rows the user can draw, in table order.
-    #[allow(dead_code)]
     pub(crate) fn user_creatable(&self) -> impl Iterator<Item = &EdgeRow> {
         self.rows.iter().filter(|r| r.verb.is_some())
     }

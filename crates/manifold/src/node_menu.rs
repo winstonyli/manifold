@@ -73,6 +73,16 @@ pub(crate) enum NodeAction {
     /// A group's jar row: its default for new tabs, cascaded to the unset tabs it governs.
     SetGroupDefaultJar(NodeId),
     ClearGroupDefaultJar,
+    /// "Link to…", "Opened from…": starts pick-target mode for this edge (`App::connecting`); the next click on a
+    /// valid target draws it (`App::finish_connect`).
+    Connect(&'static str),
+    /// "Disconnect from X": removes the `edge` edge between this node and `other`. `link`: the Link node the row
+    /// lists, for an edge stored as one.
+    Disconnect {
+        edge: &'static str,
+        other: String,
+        link: Option<String>,
+    },
 }
 
 impl NodeAction {
@@ -119,6 +129,15 @@ pub(crate) struct JarMenu {
     pub(crate) has_default: bool,
 }
 
+/// One row of a node menu's "Links" section: a verb that starts pick-target mode, or a "Disconnect from X".
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct EdgeMenuRow {
+    pub(crate) action: NodeAction,
+    pub(crate) label: String,
+    /// The row's hover: what happens next for a verb, the other card's whole name for a disconnect cut short.
+    pub(crate) hover: Option<String>,
+}
+
 #[derive(Debug, PartialEq)]
 pub(crate) enum NodeMenuItem {
     Button(&'static str, NodeAction),
@@ -134,6 +153,8 @@ pub(crate) enum NodeMenuItem {
         rows: Vec<JarRow>,
         group: bool,
     },
+    /// The "Links" heading, then its rows (`NodeMenuView::edges`).
+    Edges(Vec<EdgeMenuRow>),
     Separator,
 }
 
@@ -265,6 +286,19 @@ pub(crate) fn build_node_context_menu(
                                         (true, None) => NodeAction::ClearGroupDefaultJar,
                                         (false, id) => NodeAction::SetJar(id),
                                     });
+                                }
+                            }
+                        });
+                    }
+                    NodeMenuItem::Edges(rows) => {
+                        menu_section(ui, "Links", |ui, _| {
+                            for row in rows {
+                                let mut response = menu_button(ui, row.label.as_str(), None, &mut first_item);
+                                if let Some(hover) = &row.hover {
+                                    response = response.on_hover_text(hover);
+                                }
+                                if response.clicked() {
+                                    action = Some(row.action.clone());
                                 }
                             }
                         });
@@ -447,10 +481,13 @@ pub(crate) fn node_menu_config(view: &NodeMenuView, headless: bool) -> NodeMenuC
         }
         items
     };
-    // Every menu ends in the Colors row, Remove from Group (when the node
+    // Every menu ends in the Colors row, the Links section (when it has rows), Remove from Group (when the node
     // is grouped), then the kind's delete items.
     let finish = |area_id, min_width, mut items: Vec<NodeMenuItem>, delete_items: Vec<NodeMenuItem>| {
         items.push(Colors);
+        if !view.edges.is_empty() {
+            items.push(NodeMenuItem::Edges(view.edges.clone()));
+        }
         if !view.move_targets.is_empty() {
             items.extend([Separator, MoveTo(view.move_targets.clone())]);
         }
@@ -590,6 +627,8 @@ pub(crate) struct NodeMenuView {
     renaming: Option<String>,
     /// Tab, Unloaded and Group: their jar list (`App::jar_menu`).
     jars: Option<JarMenu>,
+    /// The Links section (`App::edge_menu`): empty in a JSON level and for a node no edge may join.
+    pub(crate) edges: Vec<EdgeMenuRow>,
 }
 
 impl App {
@@ -751,7 +790,49 @@ impl App {
                 .find(|(of, _)| of == id)
                 .map(|(_, draft)| draft.clone()),
             jars: self.jar_menu(id),
+            edges: self.edge_menu(id),
         })
+    }
+
+    /// The Links section (links spec "Menus and pick-target mode"): a verb row per user-creatable edge with at least
+    /// one valid target at this level, then a "Disconnect from X" per live edge (`edges_of`). None in a JSON level,
+    /// whose cards are not stored nodes.
+    pub(crate) fn edge_menu(&self, id: &str) -> Vec<EdgeMenuRow> {
+        if self.json_level.is_some() {
+            return Vec::new();
+        }
+        let verbs = crate::caps::edges().user_creatable().filter_map(|row| {
+            let label = row.verb()?;
+            (!self.valid_targets(row.id(), id).is_empty()).then(|| EdgeMenuRow {
+                action: NodeAction::Connect(row.id()),
+                label: label.to_string(),
+                hover: Some("Then click a highlighted card (Esc cancels)".to_string()),
+            })
+        });
+        let disconnects = self.edges_of(id).into_iter().map(|e| {
+            // The other card as a screen reader names it, cut to a row's length.
+            let name = self
+                .nodes
+                .get(&e.other)
+                .map_or_else(String::new, |n| n.accessible_name(self.own_text(&e.other), self.source_url(&e.other)));
+            let segs = crate::names::display_name(&name, crate::names::UNTITLED);
+            let short = crate::names::shorten(&segs, crate::names::ROW_UNITS);
+            // Which edge it is, since a pair can be joined by both (spec "Two lines on one pair").
+            let what = match (e.edge, e.outgoing) {
+                (crate::caps::OPENED_FROM, true) => "opened from it",
+                (crate::caps::OPENED_FROM, false) => "opened from here",
+                _ => "link",
+            };
+            EdgeMenuRow {
+                label: format!(
+                    "Disconnect from {} ({what})",
+                    crate::names::to_plain(short.as_deref().unwrap_or(&segs))
+                ),
+                hover: short.is_some().then(|| crate::names::to_plain(&segs)),
+                action: NodeAction::Disconnect { edge: e.edge, other: e.other, link: e.link },
+            }
+        });
+        verbs.chain(disconnects).collect()
     }
 
     /// The tab and group menus' jar list (spec "UI"); `None` for every other kind.
@@ -818,6 +899,10 @@ impl App {
     /// Each action only ever appears on kinds where it makes sense
     /// (`node_menu_config`), so none of these re-check the kind.
     pub(crate) fn apply_node_action(&mut self, ctx: &egui::Context, id: &str, action: NodeAction) {
+        // Pick-target mode ends on any other action (links spec).
+        if !matches!(action, NodeAction::Connect(_)) {
+            self.cancel_connect();
+        }
         match action {
             NodeAction::Open => {
                 if self.nodes.contains_key(id) {
@@ -909,6 +994,25 @@ impl App {
                 self.set_group_default_jar(id, jar);
             }
             NodeAction::ClearGroupDefaultJar => self.clear_group_default_jar(id),
+            NodeAction::Connect(edge) => {
+                if self.nodes.contains_key(id) {
+                    self.connecting = Some((id.to_string(), edge));
+                }
+            }
+            NodeAction::Disconnect { edge, other, link } => match link {
+                // The very Link node the row listed: of two joining the same pair (drawn on two replicas at once),
+                // the one clicked.
+                Some(link) => {
+                    if self.links_naming(id).contains(&link) {
+                        self.delete_link(&link);
+                    }
+                }
+                // Either way round: the row says which, and `disconnect` only removes an edge that is there.
+                None => {
+                    self.disconnect(edge, id, &other);
+                    self.disconnect(edge, &other, id);
+                }
+            },
         }
     }
 }
@@ -962,6 +1066,7 @@ mod tests {
             move_targets: Vec::new(),
             renaming: None,
             jars: None,
+            edges: Vec::new(),
         }
     }
 
@@ -977,6 +1082,7 @@ mod tests {
                     NodeMenuItem::Colors => "<colors>",
                     NodeMenuItem::MoveTo(_) => "<move>",
                     NodeMenuItem::Jars { .. } => "<jars>",
+                    NodeMenuItem::Edges(_) => "<links>",
                     NodeMenuItem::Separator => "---",
                 })
                 .collect();
@@ -1123,6 +1229,19 @@ mod tests {
             menu_of(&group(true), false).2,
             "Rename | Sleep Tabs | <jars> | Clear Default Jar | <colors> | --- | Dissolve Group | \
              Close Group and Contents | Export Group..."
+        );
+        // Links (links plan, Task 6): their section follows the colours, on every kind.
+        let row =
+            EdgeMenuRow { action: NodeAction::Connect(crate::caps::LINK), label: "Link to…".into(), hover: None };
+        let linked = |kind| NodeMenuView { edges: vec![row.clone()], has_group: true, ..view_of(kind) };
+        assert_eq!(
+            menu_of(&linked(plain(TYPE_NOTE)), false).2,
+            "Copy Text | <colors> | <links> | --- | Remove from Group | --- | Delete"
+        );
+        assert_eq!(
+            menu_of(&linked(loaded_tab()), false).2,
+            "Pin | Duplicate | Sleep | Copy URL | Fit Subtree | <colors> | <links> | --- | Remove from Group | --- | \
+             Close"
         );
     }
 
@@ -1454,6 +1573,54 @@ mod tests {
         let frag = crate::jar_defs::jar_fragment(w1, app.mirror.jar_defs()).unwrap();
         assert_eq!(row(&format!("Work #{frag}")), (false, vec![format!(" #{frag}")]));
         assert_eq!(row("Work · #3f2a"), (false, vec![]), "the typed look-alike is all name");
+    }
+
+    /// The Links section draws under its heading, and a click on "Link to…" closes the menu and starts pick-target
+    /// mode from the menu's card. Driven through `build_node_menu` with real egui input.
+    #[test]
+    fn a_click_on_link_to_starts_pick_target_mode() {
+        let ctx = menu_ctx();
+        let mut app = App::default();
+        let (a, b) = (app.alloc_node_id(), app.alloc_node_id());
+        app.insert_note_at(a.clone(), None);
+        app.insert_note_at(b.clone(), None);
+        app.node_menu = Some((a.clone(), egui::pos2(100.0, 100.0)));
+        let frame = |app: &mut App, events| {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0))),
+                events,
+                ..Default::default()
+            };
+            let mut output = ctx.run_ui(input, |ui| app.build_node_menu(ui));
+            output.textures_delta.clear();
+            output
+                .shapes
+                .into_iter()
+                .filter_map(|s| match s.shape {
+                    egui::Shape::Text(t) => {
+                        Some((t.galley.text().to_string(), t.galley.rect.translate(t.pos.to_vec2())))
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        let mut texts = Vec::new();
+        for _ in 0..3 {
+            texts = frame(&mut app, vec![]);
+        }
+        let names: Vec<&str> = texts.iter().map(|(t, _)| t.as_str()).collect();
+        assert!(names.contains(&"Links") && names.contains(&"Opened from\u{2026}"), "{names:?}");
+        let at = texts.iter().find(|(t, _)| t == "Link to\u{2026}").expect("a Link to row").1.center();
+        let press = |pressed| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        frame(&mut app, vec![egui::Event::PointerMoved(at), press(true)]);
+        frame(&mut app, vec![press(false)]);
+        assert_eq!(app.connecting, Some((a, crate::caps::LINK)));
+        assert_eq!(app.node_menu, None, "the menu closed");
     }
 
     /// A left press, then its release a frame later, at (700, 500): outside a menu opened at (100, 100).

@@ -41,6 +41,8 @@ pub(crate) enum GraphAction {
     /// A card released after a drag, with where it landed
     /// (`App::drop_target`), if anywhere.
     Drop { id: String, target: Option<(DropEffect, Option<String>)> },
+    /// Pick-target mode: a click on this valid target (`App::finish_connect`).
+    FinishConnect(String),
     GroupSelected,
     CloseSelected,
     UngroupAll,
@@ -288,8 +290,13 @@ impl App {
     /// order; no two of these depend on each other's order (a group rename
     /// carries its own name, see `NodeAction::CommitRename`).
     pub(crate) fn apply_graph_action(&mut self, ctx: &egui::Context, action: GraphAction) {
+        // Any other action ends pick-target mode (a node's own, in `apply_node_action`).
+        if !matches!(action, GraphAction::Node(..) | GraphAction::FinishConnect(_)) {
+            self.cancel_connect();
+        }
         match action {
             GraphAction::Node(id, action) => self.apply_node_action(ctx, &id, action),
+            GraphAction::FinishConnect(target) => self.finish_connect(&target),
             GraphAction::NewTab(parent) => {
                 let home_page = self.settings.home_page.clone();
                 self.leave_json_level();
@@ -398,11 +405,13 @@ impl App {
     /// it, and drops everything tied to the old level: the rectangle
     /// selection (the toolbar's "Group Selected"/"Close Selected" would
     /// otherwise act on tabs no longer visible), the empty-canvas card,
-    /// any open node menu and a drag whose card is no longer shown.
+    /// any open node menu, a drag whose card is no longer shown, and pick-target mode (its targets were the old
+    /// level's).
     pub(crate) fn switch_group_level(&mut self, group: Option<String>) {
         self.end_note_edits();
         self.current_group = group;
         self.end_stale_drag(true);
+        self.cancel_connect();
         self.sync_json_level();
         self.layout_current_level();
         self.graph_settled_key = Some(self.current_level_settle_key());
@@ -599,6 +608,16 @@ impl App {
 
         for action in actions {
             self.apply_graph_action(ui.ctx(), action);
+        }
+        // Pick-target mode: a click in the graph that didn't finish it above (empty canvas, a card that isn't a
+        // target, the minimap) ends it. A pan is a drag, not a click, so the user can still go looking for a target.
+        // The node menu that starts the mode is built after this, so the click choosing its verb doesn't count.
+        if self.connecting.is_some()
+            && ui.input(|i| {
+                i.pointer.primary_clicked() && i.pointer.interact_pos().is_some_and(|p| scene_outer_rect.contains(p))
+            })
+        {
+            self.cancel_connect();
         }
         for edit in json_edits {
             self.apply_json_edit(edit);
@@ -1144,8 +1163,11 @@ impl App {
             // specific id without needing the pointer to actually move
             // away first. Graph view has no other use for Escape (unlike
             // Tab view, where it steps back to Graph), so this is a plain
-            // no-op the rest of the time.
-            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            // no-op the rest of the time. Pick-target mode comes first: that
+            // Escape ends it and does nothing else.
+            if self.connecting.is_some() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                self.cancel_connect();
+            } else if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                 self.selected_tabs.clear();
                 if let Some((id, _)) = self.node_menu.take() {
                     ui.memory_mut(|m| m.request_focus(egui::Id::new(("graph_card", id.as_str()))));
@@ -1468,11 +1490,9 @@ impl App {
         }
     }
 
-    /// Edges first so node cards paint on top of the lines feeding them.
-    /// Both endpoints must share the currently-viewed level —
-    /// see the physics block's own edge filter above for why.
-    /// One pass over every node kind (tabs, downloads, ...), so
-    /// each parent->child edge is drawn exactly once.
+    /// Edges first so node cards paint on top of the lines feeding them: every edge `level_edges` lists once, each
+    /// parent->child edge solid and each Link node dashed and straight in the accent colour. Both endpoints must share
+    /// the currently-viewed level.
     pub(crate) fn draw_graph_edges(&self, ui: &egui::Ui, inv_zoom: f32) {
         for edge in self.level_edges() {
             // Viewport culling: unlike a node's own rect, an edge
@@ -1488,19 +1508,22 @@ impl App {
             if !egui::Rect::from_two_pos(edge.from, edge.to).intersects(self.camera.rect) {
                 continue;
             }
-            if edge.kind == EdgeKind::Link {
-                let stroke = egui::Stroke::new(1.5 * inv_zoom, ACCENT);
-                ui.painter().add(egui::Shape::dashed_line(
-                    &[edge.from, edge.to],
-                    stroke,
-                    6.0 * inv_zoom,
-                    4.0 * inv_zoom,
-                ));
-                continue;
-            }
-            let color = if edge.highlight { ACCENT } else { ui.visuals().weak_text_color() };
-            let stroke = egui::Stroke::new(2.0 * inv_zoom, color);
+            let stroke = match edge.kind {
+                EdgeKind::Link => egui::Stroke::new(1.5 * inv_zoom, ACCENT),
+                EdgeKind::Opened => egui::Stroke::new(
+                    2.0 * inv_zoom,
+                    if edge.highlight { ACCENT } else { ui.visuals().weak_text_color() },
+                ),
+            };
             match edge.curve {
+                EdgeCurve::Straight => {
+                    ui.painter().add(egui::Shape::dashed_line(
+                        &[edge.from, edge.to],
+                        stroke,
+                        6.0 * inv_zoom,
+                        4.0 * inv_zoom,
+                    ));
+                }
                 EdgeCurve::Bow => draw_graph_edge(ui.painter(), edge.from, edge.to, stroke),
                 EdgeCurve::Horizontal => {
                     let bend = ((edge.to.x - edge.from.x) / 2.0).max(20.0);
@@ -1562,12 +1585,15 @@ impl App {
             shown
         };
         let members = self.group_members();
+        // Pick-target mode: the cards a click would connect to, ringed.
+        let pick_targets = self.connecting.as_ref().map(|(from, edge)| self.valid_targets(edge, from));
         let mut pass = CardPass {
             deferred_overlays,
             actions,
             inv_zoom,
             zoom_scale,
             drop_preview: &drop_preview,
+            pick_targets: pick_targets.as_deref().unwrap_or_default(),
             show_order: self.card_nav_active || self.hints_revealed,
             order: &tab_order,
             any_focused: false,
@@ -1590,6 +1616,14 @@ impl App {
                 // the kind's own click action below (e.g.
                 // Image maximize) is skipped.
                 pass.actions.push(GraphAction::Node(id.clone(), action));
+                continue;
+            }
+            // Pick-target mode takes the card's click: a valid target finishes it, any other card ends it (as every
+            // click does, `build_graph_ui`), and neither does the card's own click action.
+            if pick_targets.is_some() {
+                if card.response.clicked() && pass.pick_targets.contains(id) {
+                    pass.actions.push(GraphAction::FinishConnect(id.clone()));
+                }
                 continue;
             }
             // A placeholder (see `ImagePayload::error`) has nothing
@@ -2029,6 +2063,93 @@ mod tests {
         assert!(!ctx.memory(|m| m.has_focus(field)), "the field let go");
         frame(&mut app, vec![key(egui::Key::Escape)]);
         assert!(app.selected_tabs.is_empty(), "with no field focused, Escape is the graph's");
+    }
+
+    /// Links: Escape in pick-target mode ends the mode and does nothing else; the next one is the graph's as before.
+    #[test]
+    fn escape_ends_pick_target_mode_first() {
+        let mut app = App::default();
+        let note = app.alloc_node_id();
+        app.insert_note_at(note.clone(), None);
+        app.connecting = Some((note, crate::caps::LINK));
+        app.selected_tabs.insert("t".into());
+        let ctx = egui::Context::default();
+        let escape = egui::Event::Key {
+            key: egui::Key::Escape,
+            physical_key: Some(egui::Key::Escape),
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        };
+        let frame = |app: &mut App| {
+            let input = egui::RawInput { events: vec![escape.clone()], ..Default::default() };
+            let mut output = ctx.run_ui(input, |ui| app.handle_graph_keys(ui, false));
+            output.textures_delta.clear();
+        };
+        frame(&mut app);
+        assert!(app.connecting.is_none());
+        assert!(app.selected_tabs.contains("t"), "that Escape was pick mode's only");
+        frame(&mut app);
+        assert!(app.selected_tabs.is_empty());
+    }
+
+    /// Links: in pick-target mode a click on a target card draws the edge (and not the card's own click action), and
+    /// a click on empty canvas ends the mode. Driven through `build_graph_ui` with real egui input.
+    #[test]
+    fn a_click_finishes_or_cancels_pick_target_mode() {
+        use crate::caps::{LINK, OPENED_FROM};
+        let ctx = egui::Context::default();
+        crate::theme::apply_fonts(&ctx);
+        let mut app = App::default();
+        let (a, b) = (app.alloc_node_id(), app.alloc_node_id());
+        for (id, x) in [(&a, 0.0), (&b, 600.0)] {
+            let note = Runtime::Note(NotePayload { text: "n".into(), editing: false });
+            app.insert_placeholder_node(id.clone(), egui::vec2(x, 0.0), crate::store::model::Kind::Note, note);
+        }
+        // The size `graph_world_rect_to_screen` assumes with no window.
+        let frame = |app: &mut App, events: Vec<egui::Event>| {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1024.0, 768.0))),
+                events,
+                ..Default::default()
+            };
+            let mut output = ctx.run_ui(input, |ui| app.build_graph_ui(ui));
+            output.textures_delta.clear();
+        };
+        let click = |app: &mut App, at: egui::Pos2| {
+            let press = |pressed| egui::Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            };
+            frame(app, vec![egui::Event::PointerMoved(at), press(true)]);
+            frame(app, vec![press(false)]);
+            frame(app, vec![]);
+        };
+        for _ in 0..3 {
+            frame(&mut app, vec![]);
+        }
+        app.camera.jump_to(app.fit_all_nodes_scene_rect());
+        frame(&mut app, vec![]);
+        let screen_rect = |app: &App, id: &str| {
+            let item = app.level_items().into_iter().find(|i| i.id == id).expect("on the level");
+            app.graph_world_rect_to_screen(item.rect)
+        };
+        app.connecting = Some((a.clone(), LINK));
+        let on_b = screen_rect(&app, &b).center();
+        assert!(app.graph_scene_outer_rect().contains(on_b), "{on_b:?} in {:?}", app.graph_scene_outer_rect());
+        click(&mut app, on_b);
+        assert!(app.connecting.is_none());
+        assert_eq!(app.links_naming(&a).len(), 1, "the click linked b");
+        assert!(!app.nodes[&b].as_note().unwrap().editing, "the click was pick mode's, not the note's");
+        app.connecting = Some((a.clone(), OPENED_FROM));
+        // Below both cards, clear of the minimap in the bottom-right corner.
+        let below = egui::pos2(screen_rect(&app, &a).center().x, screen_rect(&app, &a).bottom() + 60.0);
+        assert!(![&a, &b].iter().any(|id| screen_rect(&app, id).contains(below)), "empty canvas");
+        click(&mut app, below);
+        assert!(app.connecting.is_none(), "a click on empty canvas ends the mode");
+        assert_eq!(app.mirror.parent(&a), None, "and draws nothing");
     }
 
     #[test]

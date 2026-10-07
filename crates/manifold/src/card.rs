@@ -618,6 +618,8 @@ pub(crate) struct CardPass<'a> {
     /// Where the card being dragged would drop right now
     /// (`App::drop_target`), computed once before the pass.
     pub(crate) drop_preview: &'a Option<(DropEffect, Option<String>)>,
+    /// Pick-target mode's valid targets (`App::valid_targets`), each ringed; empty outside the mode.
+    pub(crate) pick_targets: &'a [String],
     /// Keyboard navigation is on (a card or control had focus last frame): each card shows its
     /// Tab-order number.
     pub(crate) show_order: bool,
@@ -1100,6 +1102,20 @@ impl App {
                 rect.expand(16.0 * inv_zoom),
                 10.0 * inv_zoom,
                 egui::Stroke::new(4.0 * inv_zoom, ACCENT),
+                egui::StrokeKind::Outside,
+            );
+        }
+        // Pick-target mode: a valid target gets a thinner accent ring, closer in than the drop ring, and brighter
+        // while hovered, where a click would connect.
+        if pass.pick_targets.iter().any(|t| t == id) {
+            let alpha = if pointer_on_card { 255 } else { 160 };
+            ui.painter().rect_stroke(
+                rect.expand(6.0 * inv_zoom),
+                6.0 * inv_zoom,
+                egui::Stroke::new(
+                    2.5 * inv_zoom,
+                    egui::Color32::from_rgba_unmultiplied(ACCENT.r(), ACCENT.g(), ACCENT.b(), alpha),
+                ),
                 egui::StrokeKind::Outside,
             );
         }
@@ -2529,6 +2545,7 @@ mod tests {
                     inv_zoom: 1.0,
                     zoom_scale: 1.0,
                     drop_preview: &drop_preview,
+                    pick_targets: &[],
                     show_order: false,
                     order: &[],
                     any_focused: false,

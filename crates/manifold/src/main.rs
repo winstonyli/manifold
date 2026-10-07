@@ -1170,6 +1170,10 @@ struct App {
     /// layout (`is_being_dragged`). Cleared without a write when the drag
     /// stops being live (`end_stale_drag`).
     drag_moved: Vec<String>,
+    /// Pick-target mode (links spec "Menus and pick-target mode"): the card whose menu chose a verb ("Link to…",
+    /// "Opened from…") and the edge it draws. The next click on a valid target finishes it (`finish_connect`); Esc, a
+    /// click elsewhere, any other action, leaving the level or the Graph view, or the source going, ends it.
+    connecting: Option<(String, &'static str)>,
     hovered: Option<String>,
     /// Set to `self.hovered` by an Escape press while a hover-peek preview
     /// is showing, so that preview can be dismissed early without needing
@@ -1594,6 +1598,7 @@ impl Default for App {
             favicon_resolved: HashSet::new(),
             dragging: None,
             drag_moved: Vec::new(),
+            connecting: None,
             hovered: None,
             peek_suppressed: None,
             rect_select_start: None,
@@ -2250,6 +2255,7 @@ impl App {
         if self.dragging.as_deref() == Some(id) {
             self.dragging = None;
         }
+        self.forget_connect_source(id);
         if self.hovered.as_deref() == Some(id) {
             self.hovered = None;
         }
@@ -2436,6 +2442,7 @@ impl App {
         if self.dragging.as_deref() == Some(id) {
             self.dragging = None;
         }
+        self.forget_connect_source(id);
         if self.hovered.as_deref() == Some(id) {
             self.hovered = None;
         }
@@ -2837,6 +2844,8 @@ impl App {
         // Likewise a drag ends when its card stops being drawn (Graph view left, or the card left the level by
         // another replica's move): its release would never be seen, and the next one would save a stale pos.
         self.end_stale_drag(self.transition.is_some() || self.view_mode == ViewMode::Graph);
+        // And pick-target mode, whose targets are drawn only there.
+        self.end_stale_connect(self.view_mode == ViewMode::Graph);
         // Every view, so a toast queued in Graph view (a crash/respawn
         // notice, an unreadable session file) is seen where it happened.
         self.build_save_toast(ui);
