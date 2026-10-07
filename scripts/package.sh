@@ -14,6 +14,8 @@
 # JOBS=N        cargo's -j for the build (default 8).
 set -euo pipefail
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=winpid.sh
+. "$repo_root/scripts/winpid.sh"
 cd "$repo_root"
 version="$(sed -n '/^\[workspace.package\]/,/^\[/{s/^version = "\(.*\)"/\1/p}' Cargo.toml | head -1)"
 name="manifold-v$version-windows-x64"
@@ -24,7 +26,7 @@ check() {
     out="$(mktemp -d)"
     srv="" inst=""
     cleanup() {
-        [ -n "$inst" ] && { winpid="$(ps -W | awk -v p="$inst" '$1 == p { print $4 }')"; [ -n "$winpid" ] && taskkill //F //T //PID "$winpid" >/dev/null 2>&1; }
+        [ -n "$inst" ] && kill_tree "$inst"
         [ -n "$srv" ] && kill "$srv" 2>/dev/null
         rm -rf "$out"
     }

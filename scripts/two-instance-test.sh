@@ -58,6 +58,8 @@ fi
 # than the built one (ENGINE=cef runs the copy).
 # shellcheck source=fresh-exe.sh
 . "$repo_root/scripts/fresh-exe.sh"
+# shellcheck source=winpid.sh
+. "$repo_root/scripts/winpid.sh"
 require_fresh_exe "$exe" || exit 1
 profile="$repo_root/target/two-instance-appdata-$$"
 out="$repo_root/target/two-instance-out-$$"
@@ -93,16 +95,12 @@ sb() { echo "$1" >&"${B[1]}"; }
 # `$A_PID`/`$B_PID` (the coproc's own PID) name that proxy, not
 # manifold.exe -- confirmed live: ps -W showed two distinct WINPIDs, one
 # for the coproc PID and a different one for its manifold.exe child.
-# `taskkill` needs the real one: find the child of the coproc's PID whose
-# command line is manifold, and read its WINPID column.
-winpid_of() {
-    ps -W | awk -v ppid="$1" '$2 == ppid && $0 ~ /manifold/ { print $4; exit }'
-}
-# Give each coprocess a moment to actually exec manifold.exe before
-# looking for its child in the process table.
-sleep 1
-a_winpid="$(winpid_of "$A_PID")"
-b_winpid="$(winpid_of "$B_PID")"
+# `taskkill` needs the real one: winpid_of_child (winpid.sh) finds the child
+# of the coproc's PID whose command line is manifold, retrying while the
+# coprocess has yet to exec manifold.exe. Both before either check, so a
+# failure still leaves cleanup the other's pid.
+a_winpid="$(winpid_of_child "$A_PID")" || true
+b_winpid="$(winpid_of_child "$B_PID")" || true
 [ -n "$a_winpid" ] || {
     echo "FAIL: couldn't find A's manifold.exe Windows PID"
     exit 1
@@ -552,9 +550,7 @@ b_winpid=""
 
 coproc C { "$exe" --headless; }
 sc() { echo "$1" >&"${C[1]}"; }
-sleep 1
-c_winpid="$(winpid_of "$C_PID")"
-[ -n "$c_winpid" ] || {
+c_winpid="$(winpid_of_child "$C_PID")" || {
     echo "FAIL: couldn't find C's manifold.exe Windows PID"
     exit 1
 }
@@ -590,9 +586,7 @@ c_winpid=""
 
 coproc D { "$exe" --headless; }
 sd() { echo "$1" >&"${D[1]}"; }
-sleep 1
-d_winpid="$(winpid_of "$D_PID")"
-[ -n "$d_winpid" ] || {
+d_winpid="$(winpid_of_child "$D_PID")" || {
     echo "FAIL: couldn't find D's manifold.exe Windows PID"
     exit 1
 }

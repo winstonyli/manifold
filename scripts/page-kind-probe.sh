@@ -14,6 +14,8 @@ repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 exe="$repo_root/target/debug/manifold.exe"
 # shellcheck source=fresh-exe.sh
 . "$repo_root/scripts/fresh-exe.sh"
+# shellcheck source=winpid.sh
+. "$repo_root/scripts/winpid.sh"
 require_fresh_exe "$exe" || exit 1
 # The inline python below reads EXPORTSTATE cards through scripts/export_state.py.
 export PYTHONPATH="$(cygpath -w "$repo_root/scripts")"
@@ -22,7 +24,7 @@ out="$(mktemp -d)"
 srv=""
 inst=""
 cleanup() {
-    [ -n "$inst" ] && { winpid="$(ps -W | awk -v p="$inst" '$1 == p { print $4 }')"; [ -n "$winpid" ] && taskkill //F //T //PID "$winpid" >/dev/null 2>&1; }
+    [ -n "$inst" ] && kill_tree "$inst"
     [ -n "$srv" ] && kill "$srv" 2>/dev/null
     [ -n "${KEEP:-}" ] || rm -rf "$out"
 }

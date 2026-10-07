@@ -32,13 +32,15 @@ repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 exe="$repo_root/target/debug/manifold.exe"
 # shellcheck source=fresh-exe.sh
 . "$repo_root/scripts/fresh-exe.sh"
+# shellcheck source=winpid.sh
+. "$repo_root/scripts/winpid.sh"
 require_fresh_exe "$exe" || exit 1
 fg_ps1="$(cygpath -w "$repo_root/scripts/foreground.ps1")"
 # Not under the repo: a path with a space (this one has "Winston Li") stops the app reading its commands.
 out="$(mktemp -d)"
 inst=""
 cleanup() {
-    [ -n "$inst" ] && { winpid="$(ps -W | awk -v p="$inst" '$1 == p { print $4 }')"; [ -n "$winpid" ] && taskkill //F //T //PID "$winpid" >/dev/null 2>&1; }
+    [ -n "$inst" ] && kill_tree "$inst"
     [ -n "${KEEP:-}" ] || rm -rf "$out"
 }
 trap cleanup EXIT
@@ -77,10 +79,8 @@ EOF
     # `-n +1`: plain `tail -f` starts with only the last 10 lines.
     APPDATA="$(cygpath -w "$profile")" "$exe" --headless < <(exec tail -n +1 -f --pid=$$ "$cmd" 2>/dev/null) >"$dir/log" 2>&1 &
     inst=$!
-    # Retried: right after the launch `ps -W` can list it without its Windows pid yet.
-    winpid=""
-    for _ in $(seq 20); do winpid="$(ps -W | awk -v p="$inst" '$1 == p { print $4 }')"; [ -n "$winpid" ] && break; sleep 0.25; done
-    [ -n "$winpid" ] && powershell -NoProfile -Command "try { (Get-Process -Id $winpid -ErrorAction Stop).PriorityClass = 'BelowNormal' } catch {}" </dev/null >/dev/null 2>&1
+    # The steal needs the Windows pid (below_normal retries the lookup).
+    winpid="$(below_normal "$inst")"
     send WAITTABS "SLEEP 1"
     [ -n "$winpid" ] || { echo "FAIL: $1: no Windows pid for the instance"; status=1; return 1; }
 }

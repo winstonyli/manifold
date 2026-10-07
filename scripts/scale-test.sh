@@ -16,6 +16,8 @@ repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 exe="$repo_root/target/debug/manifold.exe"
 # shellcheck source=fresh-exe.sh
 . "$repo_root/scripts/fresh-exe.sh"
+# shellcheck source=winpid.sh
+. "$repo_root/scripts/winpid.sh"
 require_fresh_exe "$exe"
 [ $# -gt 0 ] || { sed -n 2p "$0"; exit 1; }
 # The inline python below reads EXPORTSTATE cards through scripts/export_state.py.
@@ -27,7 +29,7 @@ srv=""
 inst=""
 cleanup() {
     local status=$?
-    [ -n "$inst" ] && { winpid="$(ps -W | awk -v p="$inst" '$1 == p { print $4 }')"; [ -n "$winpid" ] && taskkill //F //T //PID "$winpid" >/dev/null 2>&1; }
+    [ -n "$inst" ] && kill_tree "$inst"
     [ -n "$srv" ] && kill "$srv" 2>/dev/null
     rm -rf "$out"
     exit $status
@@ -86,7 +88,7 @@ for n in "$@"; do
     read -r live asleep < <(python -P -c 'import json,sys; from export_state import *; c = json.load(open(sys.argv[1], encoding="utf-8"))["cards"]; print(sum(card_is(x, TAB, True) for x in c), sum(card_is(x, TAB, False) for x in c))' "$(cygpath -w "$spawned")" </dev/null | tr -d '\r')
     [ "$live" -eq 1 ] && [ $((live + asleep)) -eq "$n" ] ||
         { echo "FAIL: $n tabs: $live live and $asleep asleep, expected 1 and $((n - 1))"; exit 1; }
-    winpid="$(ps -W | awk -v p="$inst" '$1 == p { print $4 }')"
+    winpid="$(winpid_of "$inst")" || { echo "FAIL: $n tabs: no Windows pid for the instance, so no memory figure"; exit 1; }
     echo "$engine, $n tabs: restored in ${elapsed}s, 1 live and $asleep asleep"
     sleep 15
     tree_memory "$winpid"

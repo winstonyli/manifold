@@ -21,6 +21,8 @@
 set -u
 repo="$(cd "$(dirname "$0")/.." && pwd)"
 sp="$repo/scripts"
+# shellcheck source=winpid.sh
+. "$sp/winpid.sh"
 exe="$repo/target/debug/manifold.exe"
 host="${JAR_PROBE_HOST:-jar.localhost}"
 out="$(mktemp -d)"
@@ -53,8 +55,7 @@ start() {
   local cmd="$profile/cmd-$name"; : >"$cmd"
   APPDATA="$(cygpath -w "$profile")" "$exe" --headless < <(exec tail -n +1 -f --pid=$$ "$cmd" 2>/dev/null) >"$profile/log-$name" 2>&1 &
   local app=$!
-  local winpid; winpid="$(cat "/proc/$app/winpid" 2>/dev/null)"
-  [ -n "$winpid" ] && powershell.exe -NoProfile -Command "(Get-Process -Id $winpid).PriorityClass = 'BelowNormal'" >/dev/null 2>&1
+  local winpid; winpid="$(below_normal "$app")" || echo "WARNING: $name: the app runs at normal priority" >&2
   echo "    app pid ${winpid:-?}, started $(date +%T), log $(cygpath -w "$profile/log-$name")"
   { printf '%s\n' "$@"; echo QUIT; } >>"$cmd"
   wait "$app" 2>/dev/null
