@@ -337,15 +337,15 @@ Each engine-host writes its own log to `%TEMP%\manifold-<tab_id>.log`.
 
 ## Branches
 
-Since 2026-09-25, day-to-day work goes on `dev`, and `main` moves only at releases.
+Since 2026-10-06, `main` is the only long-lived branch and releases are tags. (From 2026-09-25 to then, work went on `dev` and `main` moved only at releases through `git merge --no-ff dev`; `dev` was merged into `main` and retired. The release merges `v0.1.0`, `v0.2.0` and `v0.3.0` remain in `main`'s history.)
 
-- Commit and push to `dev`. Feature branches and worktrees branch from `dev` and merge back into it.
-- A release merges `dev` into `main` with `git merge --no-ff dev`, then tags it `vX.Y.Z`. Following `main`'s first parents then lists exactly the releases.
+- Commit and push to `main`. Feature branches and worktrees branch from `main` and merge back into it.
+- A release is a version bump commit on `main` (workspace `version` and the `ipc-protocol` requirements in the crate manifests, plus `Cargo.lock`), then an annotated tag `vX.Y.Z` on it, then `scripts/package.sh` and `--check`. `git tag -l` and `git log --first-parent --decorate` list the releases.
 - Packaging: `scripts/package.sh` builds `dist/manifold-v<version>-windows-x64.zip` (`manifold.exe`, the WebView2 host, the small CEF host, README, PACKAGING.md; about 10 MB; no CEF runtime) from a clean tree, and `scripts/package.sh --check` unzips it and checks it (no CEF runtime files, CEF reports Not installed, a WebView2 tab loads a page). `SKIP_BUILD=1` packages an existing `target/release`; `JOBS` sets cargo's `-j` (default 8). The release build links the C runtime statically (`RUSTFLAGS="-C target-feature=+crt-static"`, set by the script only, so debug builds are untouched; CEF's wrapper is built `/MT` by `cef-dll-sys` already), so users need no Visual C++ Redistributable, and `--check` fails an exe that imports `vcruntime140`/`msvcp140` (it prints each exe's DLL imports with `llvm-objdump`). Run both after tagging a release. The build strips `depot_tools` from `PATH`; a CMake cache from an earlier failed CEF build (`target/release/build/cef-dll-sys/<hash>/out/build`) must be deleted by hand. Unsigned.
 - Packaging policy: packaged builds offer CEF on demand, opt-in, never as the default engine, and never bundled (spec `2026-10-02-engine-install-design.md`).
 - Release checklist: if the `cef` crate moved, re-pin CEF for every pinned platform (`scripts/cef-pin.sh [--platform <id>] <prefix>`, a download per platform; spec `2026-10-02-engine-install-design.md`, "Platforms") before tagging.
-- A hotfix branches from `main`, merges into `main` (tagged like a release), then merges into `dev`.
-- Everything on `main` up to `2a88b50` predates this convention and is the pre-release baseline. `dev` starts from there.
+- A hotfix for an old release branches from its tag as `release/x.y`, is tagged like a release, and the branch is deleted after. The fix is also applied to `main` (cherry-pick or merge).
+- Everything on `main` up to `2a88b50` predates the branch convention and is the pre-release baseline.
 
 ## Headless mode (automated testing)
 
