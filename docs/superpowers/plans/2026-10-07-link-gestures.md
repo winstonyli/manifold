@@ -1449,3 +1449,10 @@ Gate (two-instance-test x3, headless-smoke-test x1) on ddf2704, 2026-10-07: two-
 - The bottom handle over the title ellipsis on a short card (above).
 - Not in scope, per the spec: opened-from by gesture or line click, lines anchored on the side handles, directed or
   named links, and an undo for a line click (the node menu can re-link).
+
+**Foreground follow-up (2026-10-07):** after a59af9a one `-Visible -Permissive` run of `scripts/foreground-watch.ps1`
+lost the foreground to `msrdc` 100 ms after the WebView2 host's `MoveFocus`. Rerun against a control host built
+without `MoveFocus` (temporary, reverted; both builds interleaved, 8 s and 16 s runs): with it 9 of 10 visible runs
+kept the foreground through `QUIT`, without it 9 of 9, headless `-Permissive` unchanged 3 of 3 each. The one loss was
+a freshly spawned WSLg `msrdc` (new `wslhost.exe` 6 s earlier) taking the foreground 1.3 s before the engine host
+started, so not `MoveFocus`. No change; README's foreground-watch paragraph has the numbers.
