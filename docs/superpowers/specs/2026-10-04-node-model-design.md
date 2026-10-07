@@ -95,6 +95,10 @@ Built-in rows:
   close brings every such edge back for free. (Deleted targets use the same rule, the existing "missing means deleted"
   contract; eviction also deletes Link nodes that name a node it deletes.) Only the structural variants, `Adopt` and
   `Cascade`, change the document.
+  **Correction (B, 2026-10-07):** this assumes plan 3's `closed` field. Until it lands a close is a delete, so closing
+  a node deletes every Link node naming it; Recently Closed records a link only when both ends are inside the closed
+  subtree, and reopening restores only those. A link to a node outside the subtree is lost, and an undo of the
+  close cannot bring it back (links spec, "Reading and lifecycle").
 - A Link node (`application/vnd.manifold.link`) has `from`, `to`, `edge-type`, and the common `name`. Any later
   many-to-many type (such as `references`) uses the same storage with its own `edge-type` id.
 - The connect gesture offers the edge types whose endpoints accept the pair. Cycle checks read `acyclic`.
@@ -282,6 +286,12 @@ leaves the app working:
      variant) come with D2 and are a local rewrite behind the `as_x` accessors. (4) `Mirror::ty` stays canonical (an
      `image/jpeg` reads as `image/png`) until sniffed types arrive with D. (5) The unknown-type card (6.9, formerly "2c")
      and retiring JsonLeaf/FROM_JSON/KEY/VALUE are not in 2b-6; `Runtime::None` makes the card possible.
+     B (links) done, 2026-10-07 (spec `2026-10-06-links-design.md`, plan `2026-10-06-links.md`, whose Outcome has the
+     commits and parked items): `Kind::Link` (`application/vnd.manifold.link`, fields `from`, `to`, `name`; no
+     `edge-type` field yet, since `link` is the only Node-stored edge); the edge table's `storage`, `acyclic`, `layout`
+     and verb columns with user-creatable `opened-from` and `link` rows; `App::connect`/`disconnect`/`edges_of` as the
+     one edge-changing path (the drag reparent included); the node menu's Links section and pick-target mode. Not
+     built: cardinality, removal variants and `drawing` as columns, `contains` and `jar` as rows, drag to connect.
 3. **Plan 3, generic verbs and history.** Selection, pin, rename, duplicate and connect over any node (edit the rows);
    the `closed` field (`is_live`, `Doc::shown`, the closed-aware `effective_group`, compaction and pruning keep closed
    nodes, content-file ownership and local per-node state keep closed ids); transaction history replacing

@@ -1,6 +1,10 @@
 # Links and menu-driven edges (sub-project B, design)
 
-Status: design for review, 2026-10-06. Builds on `2026-10-04-node-model-design.md` (sections 3 and 4) and
+Status: Implemented, 2026-10-07 (plan `docs/superpowers/plans/2026-10-06-links.md`, whose Outcome lists the deviations
+and parked items): f84961a and d1f4fe5 (Link node), ae0463d (edge table rows), 42ea6c9 and 3faf717 (connect,
+disconnect, edges_of), cf6ea35 (drawing), 0121399 and fbcf9e9 (close, import, export, EXPORTSTATE), 5ce9988 (menu,
+pick-target mode, debug commands), and the probe/docs commit "Links: probe, screenshots, docs". Designed 2026-10-06.
+Builds on `2026-10-04-node-model-design.md` (sections 3 and 4) and
 `2026-10-04-homogeneity-decisions.md`. Architectural: a new node kind, new edge-table columns, and a connect/disconnect
 path that existing code (`edit_parent`, drag reparent) moves onto.
 

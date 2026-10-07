@@ -12,6 +12,7 @@
 # Each view starts from Graph view at the top level and leaves the app
 # there, so VIEWS picks any subset and a run is ~40 s. Views:
 #   graph graph-hover graph-menu-tab graph-menu-group graph-menu-note graph-menu-jars graph-menu-group-jars
+#   graph-link graph-menu-links
 #   graph-filter graph-group json-level json-menu
 #   tabview tabview-dropdown tabview-find tabview-actions
 #   tabview-split settings popup-bookmarks popup-history popup-downloads
@@ -45,7 +46,7 @@ CROP_PX="${CROP_PX:-110}"
 CLOSED_BUTTON_X="${CLOSED_BUTTON_X:-515}"
 # A JSON bar button with a tooltip (Copy value).
 JSON_TIP_X="${JSON_TIP_X:-120}"
-ALL="graph graph-hover graph-menu-tab graph-menu-group graph-menu-note graph-filter graph-group json-level json-menu tabview tabview-dropdown tabview-find tabview-actions tabview-split settings popup-bookmarks popup-history popup-downloads shortcuts quickswitch graph-closed graph-newnode-menu newnode-zoom graph-tooltip image-view cards-f note-edit missing-file download-real download-progress download-failed json-zoom settings-engine settings-engine-tab settings-combo toast tabview-engine json-tooltip engine-states-picker engine-states-settings engine-install-confirm"
+ALL="graph graph-hover graph-menu-tab graph-menu-group graph-menu-note graph-link graph-menu-links graph-filter graph-group json-level json-menu tabview tabview-dropdown tabview-find tabview-actions tabview-split settings popup-bookmarks popup-history popup-downloads shortcuts quickswitch graph-closed graph-newnode-menu newnode-zoom graph-tooltip image-view cards-f note-edit missing-file download-real download-progress download-failed json-zoom settings-engine settings-engine-tab settings-combo toast tabview-engine json-tooltip engine-states-picker engine-states-settings engine-install-confirm"
 VIEWS="${VIEWS:-$ALL}"
 mkdir -p "$OUT/crop"
 work="$(mktemp -d)"
@@ -227,6 +228,22 @@ fi
 if has graph-menu-group-jars; then
     read -r x y < <(center "$TAB" top loaded); send "MOUSEMOVE $x $y" "MOUSEDOWN $x $y right" "MOUSEUP $x $y right" "SLEEP 1" ESCAPE "SETJAR Alpha" "SETJAR Beta" "SLEEP 1"
     read -r x y < <(center "$GROUP" top); send "MOUSEMOVE $x $y" "MOUSEDOWN $x $y right" "MOUSEUP $x $y right" "SLEEP 1"; shot graph-menu-group-jars; reset
+fi
+# Links: the top-level tab linked to the note (a dashed line between the cards), then the tab's menu with its
+# Links section (the verb rows and "Disconnect from" the note). UNLINK after, so later views have no link.
+if has graph-link || has graph-menu-links; then
+    # The id of the first top-level card of type $1 (import gives the seeded nodes fresh ids).
+    cardid() {
+        state
+        python -P -c 'import json,sys; from export_state import card_is; print([c["id"] for c in json.load(open(sys.argv[1], encoding="utf-8"))["cards"] if card_is(c, sys.argv[2]) and c["group"] is None][0])' "$(w "$work/state.json")" "$1" </dev/null | tr -d '\r'
+    }
+    tab_id=$(cardid "$TAB"); note_id=$(cardid "$NOTE")
+    send "LINK $tab_id $note_id" "SLEEP 1"
+    if has graph-link; then shot graph-link; fi
+    if has graph-menu-links; then
+        read -r x y < <(center "$TAB" top loaded); send "MOUSEMOVE $x $y" "MOUSEDOWN $x $y right" "MOUSEUP $x $y right" "SLEEP 1"; shot graph-menu-links; reset
+    fi
+    send "UNLINK $tab_id $note_id" "SLEEP 1"
 fi
 if has hover-graph; then hover_scan graph; fi
 if has tab-graph; then tab_scan graph "${TAB_STOPS:-10}"; fi
