@@ -4968,6 +4968,10 @@ fn a_link_is_a_level_edge_only_while_both_ends_are_live_at_this_level() {
     let edges = app.level_edges();
     assert_eq!(edges.iter().filter(|e| e.kind == EdgeKind::Link).count(), 1);
     assert!(edges.iter().all(|e| (e.kind == EdgeKind::Link) == (e.curve == crate::level::EdgeCurve::Straight)));
+    assert!(edges
+        .iter()
+        .filter(|e| e.kind == EdgeKind::Link)
+        .all(|e| (e.from_id.as_str(), e.to_id.as_str()) == (a.as_str(), b.as_str()) && e.link.is_some()));
     app.edit_group(&b, Some("elsewhere".into()));
     assert!(app.level_edges().iter().all(|e| e.kind != EdgeKind::Link), "another level: not shown");
 }

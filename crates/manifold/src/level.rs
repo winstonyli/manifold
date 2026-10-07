@@ -44,13 +44,18 @@ pub(crate) enum EdgeKind {
 }
 
 /// One edge on the current level, in world space.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct LevelEdge {
     pub(crate) from: egui::Pos2,
     pub(crate) to: egui::Pos2,
+    /// The cards at each end (a JSON level's card ids there).
+    pub(crate) from_id: String,
+    pub(crate) to_id: String,
     pub(crate) curve: EdgeCurve,
     pub(crate) highlight: bool,
     pub(crate) kind: EdgeKind,
+    /// The Link node this line draws. `None` for an opened-from line and every JSON-level line, which no click takes.
+    pub(crate) link: Option<String>,
 }
 
 /// One walk of `node_order` at the level being viewed (`App::level_scan`).
@@ -115,7 +120,8 @@ impl App {
     }
 
     /// The current level's edges: each stored node's `parent` link, then each Link node, whose two ends are both on
-    /// this level.
+    /// this level. Link lines come in `link_ids` order, so the last of two on one pair is the greater id
+    /// (`nearest_link`'s tie rule).
     pub(crate) fn level_edges(&self) -> Vec<LevelEdge> {
         // A JSON level: from the parent's row port (its right edge, at the
         // row's middle) to the child's header.
@@ -124,16 +130,20 @@ impl App {
                 .cards
                 .iter()
                 .zip(&level.rects)
-                .filter_map(|(card, rect)| {
+                .enumerate()
+                .filter_map(|(i, (card, rect))| {
                     let (parent, row) = card.parent?;
                     let from_rect = level.rects[parent];
                     let row_y = from_rect.top() + json_view::HEADER_HEIGHT + json_view::ROW_HEIGHT * (row as f32 + 0.5);
                     Some(LevelEdge {
                         from: egui::pos2(from_rect.right(), row_y),
                         to: egui::pos2(rect.left(), rect.top() + json_view::HEADER_HEIGHT / 2.0),
+                        from_id: level.card_id(parent),
+                        to_id: level.card_id(i),
                         curve: EdgeCurve::Horizontal,
                         highlight: level.selected.as_deref() == Some(card.pointer.as_str()),
                         kind: EdgeKind::Opened,
+                        link: None,
                     })
                 })
                 .collect();
@@ -144,9 +154,12 @@ impl App {
             Some(LevelEdge {
                 from: self.layout_pos(parent_id).to_pos2(),
                 to: self.layout_pos(id).to_pos2(),
+                from_id: parent_id.to_string(),
+                to_id: id.clone(),
                 curve: EdgeCurve::Bow,
                 highlight: false,
                 kind: EdgeKind::Opened,
+                link: None,
             })
         });
         // A link shows only while both of its ends are live cards at this level.
@@ -154,12 +167,18 @@ impl App {
             let (from, to) = self.mirror.link_ends(&link.to_string());
             let (from, to) = (from?.to_string(), to?.to_string());
             let both_here = [&from, &to].iter().all(|end| self.nodes.contains_key(*end) && self.in_level(end));
-            both_here.then(|| LevelEdge {
+            if !both_here {
+                return None;
+            }
+            Some(LevelEdge {
                 from: self.layout_pos(&from).to_pos2(),
                 to: self.layout_pos(&to).to_pos2(),
+                from_id: from,
+                to_id: to,
                 curve: EdgeCurve::Straight,
                 highlight: false,
                 kind: EdgeKind::Link,
+                link: Some(link.to_string()),
             })
         });
         opened.chain(links).collect()
@@ -283,5 +302,10 @@ mod tests {
         assert_eq!(edges.len(), 1);
         assert_eq!((edges[0].from, edges[0].to), (egui::pos2(0.0, 0.0), egui::pos2(100.0, 50.0)));
         assert_eq!(edges[0].curve, EdgeCurve::Bow);
+        assert_eq!(
+            (edges[0].from_id.as_str(), edges[0].to_id.as_str(), edges[0].link.as_deref()),
+            ("p", "c", None),
+            "an opened-from line names its ends and no Link node"
+        );
     }
 }

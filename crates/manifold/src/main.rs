@@ -33,6 +33,7 @@ mod json_level;
 mod json_level_ui;
 mod json_view;
 mod level;
+mod link_gestures;
 mod links;
 mod local_state;
 mod mirror;
@@ -89,7 +90,7 @@ use ipc_protocol::{
     frame_path, modifiers, EngineToHost, HostToEngine, InputEvent, KeyCode, MouseButton, SharedFrameBuffer,
 };
 use json_level::{JsonEdit, JsonLevel};
-use level::{EdgeCurve, EdgeKind, LevelItem, LevelItemKind, LevelScan};
+use level::{EdgeCurve, EdgeKind, LevelEdge, LevelItem, LevelItemKind, LevelScan};
 use mirror::Carried;
 use node::*;
 use popups::*;

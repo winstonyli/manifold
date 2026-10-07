@@ -563,7 +563,14 @@ impl App {
                 let mut deferred_overlays: DeferredOverlays = Vec::new();
                 self.draw_graph_dot_grid(ui, zoom_scale, inv_zoom);
 
-                self.draw_graph_edges(ui, inv_zoom);
+                // The link line under the pointer (link-gestures spec B) is drawn highlighted; a click on it is
+                // applied after the Scene, from the Scene's own response.
+                let mut edges = self.level_edges();
+                let line_hover = self.hovered_link_line(ui, &edges, inv_zoom, minimap.map(|(rect, _, _)| rect));
+                for edge in &mut edges {
+                    edge.highlight |= edge.link.is_some() && edge.link == line_hover;
+                }
+                self.draw_graph_edges(ui, &edges, inv_zoom);
 
                 if self.json_level.is_some() {
                     self.draw_json_level(ui, &mut deferred_overlays, &mut json_edits, inv_zoom, zoom_scale);
@@ -580,8 +587,9 @@ impl App {
                     self.draw_pending_new_node_menu(ui, &mut deferred_overlays, &mut actions, inv_zoom, &project);
                     self.draw_peek_preview(ui, &mut deferred_overlays);
                 }
-                deferred_overlays
+                (deferred_overlays, line_hover)
             });
+        let egui::InnerResponse { inner: (deferred_overlays, line_hover), response: scene_background } = scene_response;
         self.camera.rect = scene_rect;
         // Now that `self.camera.rect` reflects this frame's actual
         // pan/zoom (not the stale value `project`/`overlay_painter` calls
@@ -593,7 +601,7 @@ impl App {
         // during a fast pan or zoom.
         let (zoom_scale, translation) = self.graph_world_to_screen_transform(scene_outer_rect);
         let project = move |world: egui::Pos2| -> egui::Pos2 { (translation + zoom_scale * world.to_vec2()).to_pos2() };
-        for overlay in scene_response.inner {
+        for overlay in deferred_overlays {
             overlay(&overlay_painter, &project);
         }
         if scene_rect != scene_rect_before_pan_zoom {
@@ -604,6 +612,12 @@ impl App {
 
         if let Some((minimap_rect, world_bounds, minimap_scale)) = minimap {
             self.handle_minimap_click(ui, minimap_rect, world_bounds, minimap_scale);
+        }
+
+        // A click on a link line deletes that link (link-gestures spec B). The Scene's background took the click, so
+        // no card, control or popup was on top, and egui never reports a pan (a drag) as a click.
+        if let Some(link) = line_hover.filter(|_| scene_background.clicked()) {
+            self.click_link_line(&link);
         }
 
         for action in actions {
@@ -1492,9 +1506,9 @@ impl App {
 
     /// Edges first so node cards paint on top of the lines feeding them: every edge `level_edges` lists once, each
     /// parent->child edge solid and each Link node dashed and straight in the accent colour. Both endpoints must share
-    /// the currently-viewed level.
-    pub(crate) fn draw_graph_edges(&self, ui: &egui::Ui, inv_zoom: f32) {
-        for edge in self.level_edges() {
+    /// the currently-viewed level. A hovered link line (`highlight`) is drawn twice as thick.
+    pub(crate) fn draw_graph_edges(&self, ui: &egui::Ui, edges: &[LevelEdge], inv_zoom: f32) {
+        for edge in edges {
             // Viewport culling: unlike a node's own rect, an edge
             // can have one endpoint off-screen and the other on --
             // or pass through the viewport with both endpoints
@@ -1509,7 +1523,14 @@ impl App {
                 continue;
             }
             let stroke = match edge.kind {
-                EdgeKind::Link => egui::Stroke::new(1.5 * inv_zoom, ACCENT),
+                EdgeKind::Link => {
+                    let width = if edge.highlight {
+                        crate::link_gestures::LINK_HOVER_STROKE_PX
+                    } else {
+                        crate::link_gestures::LINK_STROKE_PX
+                    };
+                    egui::Stroke::new(width * inv_zoom, ACCENT)
+                }
                 EdgeKind::Opened => egui::Stroke::new(
                     2.0 * inv_zoom,
                     if edge.highlight { ACCENT } else { ui.visuals().weak_text_color() },

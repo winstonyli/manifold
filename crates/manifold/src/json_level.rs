@@ -496,6 +496,7 @@ mod tests {
         assert_eq!(ids, [format!("{J}#"), format!("{J}#/a"), format!("{J}#/c")]);
         assert!(app.level_items().iter().all(|i| i.kind == LevelItemKind::JsonCard));
         assert_eq!(app.level_edges().len(), 2);
+        assert!(app.level_edges().iter().all(|e| e.link.is_none()), "no JSON-level line is a link");
         app.switch_group_level(Some(OUTER.into()));
         assert!(app.json_level.is_none());
     }

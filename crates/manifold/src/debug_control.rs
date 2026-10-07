@@ -244,7 +244,9 @@ pub enum DebugCommand {
     /// `mirror_names` (groups), `mirror_texts` (notes) and `mirror_pos` (every node, `[x, y]`) map ids to the
     /// mirror's name, text and document pos the same way, null where EXPORTSESSION leaves the field out (empty, or
     /// pos (0, 0)).
-    /// `links` lists every Link node as `{id, from, to}`. `connecting` is pick-target mode as `{from, edge, targets}`
+    /// `links` lists every Link node as `{id, from, to}`. `edges` lists the lines drawn at the current level as
+    /// `{kind: link|opened, link (the Link node id, or null), from, to, screen: [x, y]}`, where `screen` is the middle
+    /// of the straight segment between the two card centres. `connecting` is pick-target mode as `{from, edge, targets}`
     /// (`targets` sorted), or null.
     /// `toast` is the bottom-left toast's text
     /// (the one showing, else the next queued), or null. Suggestions arriving from the network show up
@@ -1396,6 +1398,22 @@ impl App {
                 serde_json::json!({ "id": id, "from": from.map(|n| n.to_string()), "to": to.map(|n| n.to_string()) })
             })
             .collect();
+        // The lines drawn at this level, with the middle of each straight segment on screen (where a probe clicks a
+        // link line). A bowed opened-from line passes elsewhere; its middle is listed for symmetry only.
+        let edges: Vec<serde_json::Value> = self
+            .level_edges()
+            .iter()
+            .map(|edge| {
+                let mid = self.graph_world_rect_to_screen(egui::Rect::from_two_pos(edge.from, edge.to)).center();
+                let kind = match edge.kind {
+                    crate::level::EdgeKind::Link => "link",
+                    crate::level::EdgeKind::Opened => "opened",
+                };
+                serde_json::json!({
+                    "kind": kind, "link": edge.link, "from": edge.from_id, "to": edge.to_id, "screen": [mid.x, mid.y],
+                })
+            })
+            .collect();
         serde_json::json!({
             "tab_view": self.showing_tab_view(),
             "transition": self.transition.is_some(),
@@ -1410,6 +1428,7 @@ impl App {
             "mirror_texts": mirror_texts,
             "mirror_pos": mirror_pos,
             "links": links,
+            "edges": edges,
             // Pick-target mode: the source card, the edge and the cards a click would finish it on.
             "connecting": self.connecting.as_ref().map(|(from, edge)| {
                 serde_json::json!({ "from": from, "edge": edge, "targets": self.valid_targets(edge, from) })
@@ -1695,6 +1714,30 @@ mod tests {
                 assert!(card.get(key).is_some(), "{key}: {card}");
             }
         }
+    }
+
+    /// EXPORTSTATE's `edges`: each line at this level with its kind, Link node, ends and on-screen middle.
+    #[test]
+    fn export_state_lists_the_level_edges_with_their_link() {
+        use crate::node::NotePayload;
+        use crate::store::model::Kind;
+        let mut app = App::default();
+        let (a, b) = (app.alloc_node_id(), app.alloc_node_id());
+        for (id, x) in [(&a, 0.0), (&b, 400.0)] {
+            let note = Runtime::Note(NotePayload { text: "n".into(), editing: false });
+            app.insert_placeholder_node(id.clone(), egui::vec2(x, 0.0), Kind::Note, note);
+        }
+        let link = app.create_link(&a, &b);
+        let state = app.export_state();
+        let edges = state["edges"].as_array().expect("an array");
+        assert_eq!(edges.len(), 1);
+        assert_eq!(edges[0]["kind"], "link");
+        assert_eq!(edges[0]["link"], link.as_str());
+        assert_eq!((edges[0]["from"].as_str(), edges[0]["to"].as_str()), (Some(a.as_str()), Some(b.as_str())));
+        let mid =
+            app.graph_world_rect_to_screen(egui::Rect::from_two_pos(egui::pos2(0.0, 0.0), egui::pos2(400.0, 0.0)));
+        let screen: Vec<f64> = edges[0]["screen"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect();
+        assert!((screen[0] as f32 - mid.center().x).abs() < 0.01 && (screen[1] as f32 - mid.center().y).abs() < 0.01);
     }
 
     /// `RENAMEGROUP` alone is F2; with an id it takes the rest of the line as the name. `SETNOTETEXT` takes the rest
