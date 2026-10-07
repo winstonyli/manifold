@@ -781,12 +781,20 @@ impl App {
     /// Window focus changed. A chord's key-up can be lost while the window is
     /// in the background (Alt-Tab mid-chord); a key left in `swallowed_keys`
     /// would then swallow that key's next real release in the page. A mouse button's up can be lost the same way, and
-    /// egui keeps it down: a connect-drag (and a line press) ends here, or the next ordinary click would link.
+    /// egui keeps it down: a connect-drag (and a line press) ends here, or the next ordinary click would link. A card
+    /// drag ends as a release where the card is (`release_drag` saves its pos), never as a drop onto what is under it,
+    /// and egui's own drag stops too: with the button still down it would carry on, the card following the pointer
+    /// again (or a pan going on) until the next real release, which would then drop it.
     pub(crate) fn on_window_focus(&mut self, focused: bool) {
         if !focused {
             self.swallowed_keys.clear();
             self.cancel_connect();
             self.line_press = None;
+            if self.dragging.is_some() {
+                self.release_drag();
+            }
+            // Clears a press that is not a drag yet too, so the stale button can't start one.
+            self.egui_ctx.stop_dragging();
         }
     }
 

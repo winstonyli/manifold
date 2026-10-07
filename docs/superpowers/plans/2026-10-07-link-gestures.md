@@ -1412,6 +1412,16 @@ Gate (two-instance-test x3, headless-smoke-test x1) on ddf2704, 2026-10-07: two-
   asserts it.
 - N1: `line_press` is cleared on session replace and on a level change (`switch_group_level`).
 
+**Fixed after the branch (2026-10-07):**
+
+- Task 2 M3, card-drag half: `on_window_focus(false)` ends a card drag as a release where the card is (`release_drag`
+  saves its pos; no `Drop`, so no join, group-with or reparent) and calls egui's `stop_dragging`, which also clears a
+  press not yet a drag. Without that, egui (button still down) kept the card following the pointer and the next real
+  release dropped it. Test `losing_window_focus_ends_a_card_drag_in_place` (red first, and red again with only the
+  `stop_dragging` removed). `scripts/focus-loss-probe.sh` has a `card` case (`CASES=card`): 22 PASS for both cases;
+  the `NO_STEAL=1` control fails 5 card checks (the drag survives, a follows the pointer, the late release groups a
+  and b). `EXPORTSTATE` gained `dragging`.
+
 **Parked:**
 
 - Final review M1: a double-click on a line whose pair has two links deletes both. Duplicate pairs only come from
@@ -1423,8 +1433,6 @@ Gate (two-instance-test x3, headless-smoke-test x1) on ddf2704, 2026-10-07: two-
 - Final review N4: no harness tests for a source culled or simplified mid-drag, or for no handles in a JSON level.
 - Task 2 M2: a right-press during a connect-drag (or a card drag) opens a node menu or starts a marquee. Fix: skip the
   secondary-press branch while `connect_drag` or `dragging` is set.
-- Task 2 M3, card-drag half: losing window focus mid-drag still leaves a card drag alive (the connect-drag half is
-  fixed above).
 - Task 1 M5: a painted, non-widget overlay over a line (a label past its card's rect, the marquee) lets a click through
   to the line. Not checked live.
 - Task 1 N3: the EXPORTSTATE doc calls `edges`' `screen` the middle "between the two card centres"; it is the straight

@@ -1456,6 +1456,8 @@ impl App {
             }),
             "link_handles": link_handles,
             "connect_drag": self.connect_drag,
+            // The card being dragged (`App::dragging`), or null.
+            "dragging": self.dragging,
             "json_level": self.json_level_state(),
             "selected_tabs": selected_tabs,
             // The toast showing, or else the next queued one.
@@ -1781,11 +1783,14 @@ mod tests {
         let card = app.graph_world_rect_to_screen(app.card_rect(&a).unwrap());
         assert!((egui::pos2((r[0] + r[2]) / 2.0, (r[1] + r[3]) / 2.0) - card.right_center()).length() < 0.01);
         assert!((r[2] - r[0] - crate::link_gestures::HANDLE_PX).abs() < 0.01, "12 points wide on screen");
-        assert!(state["connect_drag"].is_null());
+        assert!(state["connect_drag"].is_null() && state["dragging"].is_null());
         app.start_connect_drag(&a);
         let state = app.export_state();
         assert_eq!(state["connect_drag"], a.as_str());
         assert!(state["link_handles"].get(b.as_str()).is_none(), "during a connect-drag only the source");
+        app.cancel_connect();
+        app.dragging = Some(b.clone());
+        assert_eq!(app.export_state()["dragging"], b.as_str());
     }
 
     /// `RENAMEGROUP` alone is F2; with an id it takes the rest of the line as the name. `SETNOTETEXT` takes the rest

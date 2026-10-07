@@ -938,6 +938,64 @@ mod tests {
         assert!(app.links_naming(&a).is_empty());
     }
 
+    /// A note and a group side by side, warmed up and fitted in view, driven through the app's own egui context
+    /// (`App::egui_ctx`, the one the event loop runs and `on_window_focus` reaches) rather than a separate one.
+    fn note_and_group_on_app_ctx() -> (Harness, App, String, String) {
+        let mut app = App::default();
+        let h = Harness { ctx: app.egui_ctx.clone(), cover: std::cell::Cell::new(None) };
+        let (note, group) = (app.alloc_node_id(), app.alloc_node_id());
+        let text = Runtime::Note(NotePayload { text: "n".into(), editing: false });
+        app.insert_placeholder_node(note.clone(), egui::vec2(0.0, 0.0), Kind::Note, text);
+        app.insert_placeholder_node(group.clone(), egui::vec2(600.0, 0.0), Kind::Group, Runtime::None);
+        for _ in 0..3 {
+            h.frame(&mut app, vec![]);
+        }
+        app.camera.jump_to(app.fit_all_nodes_scene_rect());
+        h.frame(&mut app, vec![]);
+        (h, app, note, group)
+    }
+
+    /// Task 2 M3, card half: losing window focus mid card drag ends it as a release where the card is (its pos
+    /// saved, as `release_drag` saves it), never as a drop onto what is under it. egui keeps the button down across
+    /// the focus loss, so the card must also stop following the pointer until a real release, which drops nothing.
+    #[test]
+    fn losing_window_focus_ends_a_card_drag_in_place() {
+        let (h, mut app, note, group) = note_and_group_on_app_ctx();
+        let from = screen_rect(&app, &note).center();
+        let over_group = screen_rect(&app, &group).center();
+        h.frame(&mut app, vec![egui::Event::PointerMoved(from)]);
+        h.frame(&mut app, vec![egui::Event::PointerMoved(from)]);
+        h.frame(&mut app, vec![press(from, true)]);
+        for step in 1..=8 {
+            h.frame(&mut app, vec![egui::Event::PointerMoved(from + (over_group - from) * (step as f32 / 8.0))]);
+        }
+        assert_eq!(app.dragging.as_deref(), Some(note.as_str()), "mid-drag");
+        assert!(
+            matches!(app.drop_target(&note, Some(over_group), None), Some((crate::card::DropEffect::Join, _))),
+            "a release here would join the group"
+        );
+        let held = app.layout_pos(&note);
+
+        app.on_window_focus(false);
+        assert!(app.dragging.is_none() && app.drag_moved.is_empty(), "the drag ended");
+        assert_eq!(app.mirror.pos(&note), Some(held), "saved where it was");
+        assert_eq!(app.group_of(&Some(note.clone())), None, "no drop: it joined nothing");
+
+        // The button-up went to another window: egui still has the button down while the pointer moves on.
+        for step in 1..=4 {
+            h.frame(&mut app, vec![egui::Event::PointerMoved(over_group + egui::vec2(0.0, 30.0 * step as f32))]);
+        }
+        assert_eq!(app.layout_pos(&note), held, "the card no longer follows the pointer");
+        assert!(app.dragging.is_none());
+        let late = over_group + egui::vec2(0.0, 120.0);
+        h.frame(&mut app, vec![press(late, false)]);
+        h.frame(&mut app, vec![]);
+        assert_eq!(app.layout_pos(&note), held);
+        assert_eq!(app.mirror.pos(&note), Some(held));
+        assert_eq!(app.group_of(&Some(note.clone())), None, "a late release drops nothing");
+        assert!(app.nodes.contains_key(&note) && app.in_level(&note), "still on this level");
+    }
+
     /// Final review nit: a level change drops a line press, as it drops a connect-drag.
     #[test]
     fn a_level_change_drops_a_line_press() {
