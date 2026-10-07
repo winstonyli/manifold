@@ -389,14 +389,16 @@ impl App {
 
     /// Queues `id`, a node removed here, for the next save to delete (Ruling 4). The save deletes it if the document
     /// still shows it live, so a node never created is just forgotten. Until then another replica's edit to it is
-    /// dropped rather than showing it again (`materialize`). Only a local removal queues: a node another replica
-    /// deleted is already gone from the document (`remove_remotely_deleted`), and a crash respawn, an engine swap
+    /// dropped rather than showing it again (`materialize`). Only a local removal queues (a remote delete queues
+    /// only the deletes of the links naming the node, `remove_remotely_deleted`): a node another replica
+    /// deleted is already gone from the document, and a crash respawn, an engine swap
     /// and a content reload take a node out of `nodes` only for a while.
     pub(crate) fn queue_delete(&mut self, id: &str) {
         let Ok(node) = id.parse::<NodeId>() else { return };
         self.pending_creates.remove(&node);
         self.pending_deletes.insert(node);
-        // A link goes with either end. (`delete_link` queues the link itself, which names no card: no recursion.)
+        // A link goes with either end. `delete_link` forgets the link before it queues the delete, so a link naming
+        // a link (remote data can) is found once at most: the recursion ends.
         for link in self.links_naming(id) {
             self.delete_link(&link);
         }
@@ -689,7 +691,8 @@ impl App {
     /// Shows other replicas' changes, before the next commit (contract
     /// "Missing means deleted"). A deleted node is removed without a
     /// Recently Closed entry and without queueing a delete of its own
-    /// (`remove_remotely_deleted`: the document already lacks it), and a
+    /// (`remove_remotely_deleted`: the document already lacks it; it does queue the deletes of the links naming
+    /// the node), and a
     /// tab's engine host is shut down. Groups are materialized before the
     /// nodes inside them, so a new member never names a group that doesn't
     /// exist yet. A new tab arrives asleep (`materialize`, spec "Lazy
@@ -722,7 +725,7 @@ impl App {
     }
 
     /// Removes a node another replica deleted, recording nothing and saving
-    /// nothing. Its tab children move to its parent. A group's members move
+    /// nothing (but see the links below). Its tab children move to its parent. A group's members move
     /// to the group's own group (`dissolve_group`, which also leaves the
     /// level if it was showing): a member the store still has is in
     /// `remote` too (it lists descendants) and gets its effective group
@@ -733,8 +736,9 @@ impl App {
             self.forget_jar(jar);
             return;
         }
-        // The links naming a node another replica deleted go with it; the document may still show them live, so
-        // they are queued for deletion here (this function queues nothing else).
+        // The links naming a node another replica deleted go with it. Unlike the node, a link may still be live in the
+        // document (the deleting replica did not know it, or an older build left it), and a link forgotten here
+        // while live would fail `check_graph_matches_document`: so these deletes are queued (`delete_link`).
         for link in self.links_naming(id) {
             self.delete_link(&link);
         }
@@ -2004,6 +2008,11 @@ impl App {
             .unwrap_or_default();
         for id in old {
             self.queue_delete(&id.to_string());
+        }
+        // A link is not a card, so no endpoint's cascade is certain to reach it (a dangling one has none): the
+        // replaced session's links all go, as its cards do. Jars stay.
+        for link in self.mirror.link_ids().map(|l| l.to_string()).collect::<Vec<_>>() {
+            self.delete_link(&link);
         }
         // The old session's nodes not created yet are not created at all.
         self.pending_creates.clear();

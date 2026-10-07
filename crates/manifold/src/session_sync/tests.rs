@@ -4893,8 +4893,39 @@ fn a_remote_delete_of_an_endpoint_removes_its_links() {
     let a = succeed_spawn(&mut app, "https://a/");
     let b = succeed_spawn(&mut app, "https://b/");
     app.create_link(&a, &b);
-    // What `remote_changes` reports when another replica deletes `a` (as `remote_jar_create_rename_and_delete_reach_jar_defs`):
+    // What `remote_changes` reports when another replica deletes `a`
+    // (as `remote_jar_create_rename_and_delete_reach_jar_defs`):
     app.apply_remote(vec![(a.parse().unwrap(), None)]);
     assert!(app.links_naming(&b).is_empty());
     assert!(app.mirror.link_ids().next().is_none());
+}
+
+/// Replacing the session drops every link from the mirror, a dangling one too, and the save still agrees with the
+/// document (`check_graph_matches_document`).
+#[test]
+fn replacing_the_session_drops_its_links() {
+    let mut app = app_on(&temp_dir("link-replace").join("session.mnf"), 1);
+    let a = succeed_spawn(&mut app, "https://a/");
+    let b = succeed_spawn(&mut app, "https://b/");
+    app.create_link(&a, &b);
+    app.create_link("not-a-card", "nor-this"); // dangling: no endpoint's cascade reaches it
+    assert!(app.save_session());
+    app.replace_running_session(&file_with_a_work_jar(), crate::store::json::Trust::Foreign);
+    assert!(app.mirror.link_ids().next().is_none(), "no stale link");
+    assert!(app.save_session());
+}
+
+/// A link keeps its ends in the mirror after a save (which retains only the graph's nodes), so a later delete of an
+/// endpoint still finds it.
+#[test]
+fn a_saved_link_keeps_its_ends_and_is_found_by_a_later_delete() {
+    let mut app = app_on(&temp_dir("link-retain").join("session.mnf"), 1);
+    let a = succeed_spawn(&mut app, "https://a/");
+    let b = succeed_spawn(&mut app, "https://b/");
+    let link = app.create_link(&a, &b);
+    assert!(app.save_session());
+    assert_eq!(app.mirror.link_ends(&link), (a.parse().ok(), b.parse().ok()));
+    app.remove_tab(&a);
+    assert!(app.links_naming(&b).is_empty());
+    assert!(app.save_session());
 }

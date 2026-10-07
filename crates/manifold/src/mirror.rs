@@ -195,7 +195,8 @@ impl Mirror {
         self.links.entry(id.to_owned()).or_default().group = group;
     }
 
-    /// Drops the entries `keep` rejects, except a jar's or a link's: neither is a graph node, and only `forget_jar` / `forget_link` drops one.
+    /// Drops the entries `keep` rejects, except a jar's or a link's: neither is a graph node, and only
+    /// `forget_jar` / `forget_link` drops one.
     pub(crate) fn retain(&mut self, keep: impl Fn(&str) -> bool) {
         let (jars, link_nodes) = (&self.jars, &self.link_nodes);
         let keep =
