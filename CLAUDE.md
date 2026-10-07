@@ -11,3 +11,7 @@ Run `cargo fmt --all` before each commit. `cargo fmt --all --check` and `cargo c
 ## Tests and the user's profile
 
 No test may read or write the real `%APPDATA%\manifold`. Every path into it starts from `profile::dir()` (or `profile::engine_data_dir()`, the `etcetera` directory inside it), both `None` under `cfg(test)`, so `App::default()` in a test loads defaults. A test that needs files uses `store::testutil::temp_dir` and passes the path in. `profile::tests` fails if any other source file mentions `"APPDATA"` or `etcetera`.
+
+## Gate
+
+Before merging or tagging, run `scripts/gate.sh LOG full` (sync, store, mirror, session or engine changes) or `light` (UI code, scripts, docs only) after `cargo build -j 8 -p manifold`, detached at BelowNormal; see README "scripts/gate.sh". Report CPU load and Defender state with the result.
