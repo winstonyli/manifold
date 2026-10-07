@@ -6,7 +6,7 @@
 //! (`App::pending`, `App::pending_moves`); `App::edit_field`, `App::edit_parent` and `App::edit_group` are the
 //! writers, and `App::mirror_remote` applies another replica's change.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use crate::jar::JarChoice;
 use crate::json_view::JsonView;
@@ -38,6 +38,8 @@ pub(crate) struct Mirror {
     views: HashMap<String, JsonView>,
     /// Every jar's `NAME`, `COLOR` and `EPHEMERAL` of `nodes`, decoded (`jar_defs`): the jars this replica knows.
     jars: BTreeMap<NodeId, JarDef>,
+    /// Every `Kind::Link` node this replica knows (`link_ids`); their ends are plain fields of `nodes` (`link_ends`).
+    link_nodes: BTreeSet<NodeId>,
 }
 
 /// A node's links to other nodes, as ids: `Option<String>` so hand-built test ids work and per-frame filters
@@ -102,6 +104,38 @@ impl Mirror {
         self.views.remove(&key);
     }
 
+    /// Makes `id` a link this replica knows, and seeds its type. Like a jar, a link is never a graph node.
+    pub(crate) fn add_link(&mut self, id: NodeId) {
+        if self.link_nodes.insert(id) {
+            let ty = Kind::Link.type_str().expect("a link type").to_owned();
+            self.init_field(&id.to_string(), field::TYPE, FieldValue::Str(ty));
+        }
+    }
+
+    /// Drops link `id` and its fields (a local or remote delete).
+    pub(crate) fn forget_link(&mut self, id: NodeId) {
+        self.link_nodes.remove(&id);
+        let key = id.to_string();
+        self.nodes.remove(&key);
+        self.links.remove(&key);
+        self.views.remove(&key);
+    }
+
+    /// Every link this replica knows, by id.
+    pub(crate) fn link_ids(&self) -> impl Iterator<Item = NodeId> + '_ {
+        self.link_nodes.iter().copied()
+    }
+
+    /// A link's `from` and `to` (`field::FROM`, `field::TO`), read through the plain field map as `default_jar` is.
+    /// Either may name a card that no longer exists, or be `None`.
+    pub(crate) fn link_ends(&self, id: &str) -> (Option<NodeId>, Option<NodeId>) {
+        let end = |no| match self.get(id, no) {
+            FieldValue::Id(end) => end,
+            _ => None,
+        };
+        (end(field::FROM), end(field::TO))
+    }
+
     /// Every jar this replica knows, by id (the order labels and pickers use), decoded from the mirror's fields: the
     /// cache `set` refreshes whenever a jar's field changes (2b-5 Ruling 7), as `view` is.
     pub(crate) fn jar_defs(&self) -> &BTreeMap<NodeId, JarDef> {
@@ -161,10 +195,11 @@ impl Mirror {
         self.links.entry(id.to_owned()).or_default().group = group;
     }
 
-    /// Drops the entries `keep` rejects, except a jar's: jars are not graph nodes, and only `forget_jar` drops one.
+    /// Drops the entries `keep` rejects, except a jar's or a link's: neither is a graph node, and only `forget_jar` / `forget_link` drops one.
     pub(crate) fn retain(&mut self, keep: impl Fn(&str) -> bool) {
-        let jars = &self.jars;
-        let keep = |id: &str| keep(id) || id.parse::<NodeId>().is_ok_and(|jar| jars.contains_key(&jar));
+        let (jars, link_nodes) = (&self.jars, &self.link_nodes);
+        let keep =
+            |id: &str| keep(id) || id.parse::<NodeId>().is_ok_and(|n| jars.contains_key(&n) || link_nodes.contains(&n));
         self.nodes.retain(|id, _| keep(id));
         self.links.retain(|id, _| keep(id));
         self.views.retain(|id, _| keep(id));

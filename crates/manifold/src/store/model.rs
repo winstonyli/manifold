@@ -116,6 +116,7 @@ pub fn now_ms() -> u64 {
 pub const TYPE_TAB: &str = "application/vnd.manifold.tab";
 pub const TYPE_GROUP: &str = "application/vnd.manifold.group";
 pub const TYPE_JAR: &str = "application/vnd.manifold.jar";
+pub const TYPE_LINK: &str = "application/vnd.manifold.link";
 pub const TYPE_JSON_LEAF: &str = "application/vnd.manifold.json-leaf";
 pub const TYPE_NOTE: &str = "text/markdown";
 pub const TYPE_PDF: &str = "application/pdf";
@@ -135,6 +136,8 @@ pub enum Kind {
     JsonLeaf,
     Download,
     Jar,
+    /// A connection between two cards: a stored node, never a graph card (like a jar), with `from` and `to` ends.
+    Link,
     /// No `type` yet (an op named the node before its `Create` arrived), or a type a newer build wrote
     /// (kept, never shown).
     Unknown,
@@ -146,7 +149,7 @@ pub enum Kind {
 /// register, and a `Create` only writes the fields listed here). Fields a type does not list stay raw in the document
 /// untouched (2b-5 Ruling 2).
 #[rustfmt::skip]
-pub(crate) const TYPES: [(Kind, &str, &[u32]); 9] = {
+pub(crate) const TYPES: [(Kind, &str, &[u32]); 10] = {
     use field::*;
     [
         (Kind::Tab, TYPE_TAB, &[POS, COLOR, PARENT, URL, ENGINE, PINNED, JAR, JAR_SET]),
@@ -158,6 +161,7 @@ pub(crate) const TYPES: [(Kind, &str, &[u32]); 9] = {
         (Kind::JsonLeaf, TYPE_JSON_LEAF, &[POS, COLOR, PATH, KEY, VALUE]),
         (Kind::Download, TYPE_DOWNLOAD, &[POS, COLOR, PARENT, URL, PATH]),
         (Kind::Jar, TYPE_JAR, &[COLOR, NAME, EPHEMERAL]),
+        (Kind::Link, TYPE_LINK, &[NAME, FROM, TO]),
     ]
 };
 
@@ -237,9 +241,13 @@ pub mod field {
     pub const EPHEMERAL: u32 = 18;
     /// A node's MIME type, written by `Create`.
     pub const TYPE: u32 = 19;
+    /// A link's start card.
+    pub const FROM: u32 = 20;
+    /// A link's end card.
+    pub const TO: u32 = 21;
 }
 
-pub static FIELDS: [FieldDef; 19] = [
+pub static FIELDS: [FieldDef; 21] = [
     FieldDef { no: field::POS, name: "pos", ty: FieldType::Pos },
     FieldDef { no: field::COLOR, name: "color", ty: FieldType::Color },
     FieldDef { no: field::GROUP, name: "group", ty: FieldType::Id },
@@ -261,6 +269,8 @@ pub static FIELDS: [FieldDef; 19] = [
     FieldDef { no: field::DEFAULT_JAR, name: "default_jar", ty: FieldType::Id },
     FieldDef { no: field::EPHEMERAL, name: "ephemeral", ty: FieldType::Bool },
     FieldDef { no: field::TYPE, name: "type", ty: FieldType::Str },
+    FieldDef { no: field::FROM, name: "from", ty: FieldType::Id },
+    FieldDef { no: field::TO, name: "to", ty: FieldType::Id },
 ];
 
 /// Retired field numbers, never to be reused (checked by a test).
@@ -664,6 +674,7 @@ mod tests {
             Kind::JsonLeaf,
             Kind::Download,
             Kind::Jar,
+            Kind::Link,
         ] {
             let ty = kind.type_str().expect("a known kind has a type");
             assert_eq!(Kind::from_type(ty), kind, "{ty}");

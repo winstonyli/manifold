@@ -108,8 +108,8 @@ mod tests {
     /// The fixture lists one card per node type (a jar is never a card) and the loaded tab, in draw order.
     #[test]
     fn kinds_cover_every_node_type() {
-        use crate::store::model::{TYPES, TYPE_JAR};
-        let types: Vec<&str> = TYPES.iter().map(|t| t.1).filter(|&ty| ty != TYPE_JAR).collect();
+        use crate::store::model::{TYPES, TYPE_JAR, TYPE_LINK};
+        let types: Vec<&str> = TYPES.iter().map(|t| t.1).filter(|&ty| ty != TYPE_JAR && ty != TYPE_LINK).collect();
         let listed: Vec<&str> = kinds().iter().filter(|kind| !kind.loaded()).map(|kind| kind.ty).collect();
         for ty in &types {
             assert!(listed.contains(ty), "{ty} is not in kinds()");

@@ -258,7 +258,7 @@ fn parse_id(id: &Option<String>) -> Option<NodeId> {
 }
 
 /// A mirror link as a store id: `None` for none or an id that isn't a store id.
-fn link_id(id: Option<&str>) -> Option<NodeId> {
+pub(crate) fn link_id(id: Option<&str>) -> Option<NodeId> {
     id.and_then(|id| id.parse().ok())
 }
 
@@ -367,6 +367,10 @@ impl App {
             let fields = Kind::Jar.fields().iter().map(|&no| (no, self.mirror.get(&key, no))).collect();
             return Some(Snapshot { kind: Kind::Jar, group: None, fields });
         }
+        if self.mirror.link_ids().any(|link| link == id) {
+            let fields = Kind::Link.fields().iter().map(|&no| (no, self.mirror.get(&key, no))).collect();
+            return Some(Snapshot { kind: Kind::Link, group: None, fields });
+        }
         self.spawning.get(&key).cloned()
     }
 
@@ -392,6 +396,10 @@ impl App {
         let Ok(node) = id.parse::<NodeId>() else { return };
         self.pending_creates.remove(&node);
         self.pending_deletes.insert(node);
+        // A link goes with either end. (`delete_link` queues the link itself, which names no card: no recursion.)
+        for link in self.links_naming(id) {
+            self.delete_link(&link);
+        }
     }
 
     /// Makes live node `id` show `fields`. A new node is inserted; a new
@@ -439,6 +447,14 @@ impl App {
         if kind == Kind::Jar {
             let Ok(jar) = id.parse::<NodeId>() else { return };
             self.materialize_jar(jar, fields);
+            self.mirror_remote(&id, fields, None);
+            return;
+        }
+        // A link is stored and mirrored like a jar, and is never a graph node.
+        if kind == Kind::Link {
+            let Ok(link) = id.parse::<NodeId>() else { return };
+            self.mirror.add_link(link);
+            self.queue_create(&id);
             self.mirror_remote(&id, fields, None);
             return;
         }
@@ -650,7 +666,7 @@ impl App {
                 };
                 self.insert_placeholder_node(id.clone(), pos, kind, Runtime::Download(payload));
             }
-            Kind::Jar | Kind::Unknown => return,
+            Kind::Jar | Kind::Link | Kind::Unknown => return,
         }
         // A content node's url, its stored path and a Json node's view are already the mirror's (`mirror_remote`).
         // The placeholder just inserted above (see `missing_with_url`)
@@ -715,6 +731,15 @@ impl App {
     pub(crate) fn remove_remotely_deleted(&mut self, id: &str) {
         if let Some(jar) = id.parse::<NodeId>().ok().filter(|j| self.mirror.jar_defs().contains_key(j)) {
             self.forget_jar(jar);
+            return;
+        }
+        // The links naming a node another replica deleted go with it; the document may still show them live, so
+        // they are queued for deletion here (this function queues nothing else).
+        for link in self.links_naming(id) {
+            self.delete_link(&link);
+        }
+        if let Some(link) = id.parse::<NodeId>().ok().filter(|l| self.mirror.link_ids().any(|k| k == *l)) {
+            self.mirror.forget_link(link);
             return;
         }
         let Some(node) = self.nodes.get(id) else { return };
@@ -1369,6 +1394,9 @@ impl App {
         for id in self.mirror.jar_defs().keys() {
             assert!(live(id), "jar {id} is shown but not live in the document: a create funnel was missed");
         }
+        for id in self.mirror.link_ids() {
+            assert!(live(&id), "link {id} is shown but not live in the document: a create funnel was missed");
+        }
         for key in self.spawning.keys() {
             let Ok(id) = key.parse::<NodeId>() else { continue };
             assert!(
@@ -1380,7 +1408,8 @@ impl App {
             let key = id.to_string();
             let shown = self.nodes.contains_key(&key)
                 || self.spawning.contains_key(&key)
-                || self.mirror.jar_defs().contains_key(&id);
+                || self.mirror.jar_defs().contains_key(&id)
+                || self.mirror.link_ids().any(|link| link == id);
             assert!(shown, "node {key} is live in the document but not shown: a delete funnel was missed");
         }
     }
@@ -1409,10 +1438,11 @@ impl App {
         let local = local_from(read);
         let toasts = self.save_toast_queue.len();
         // Jars first: they are not graph nodes, so they survive a "fresh start" and the next save keeps them.
-        for (id, kind, fields, _) in nodes.iter().filter(|(_, kind, ..)| *kind == Kind::Jar) {
+        // Links ride along: also stored, never graph nodes.
+        for (id, kind, fields, _) in nodes.iter().filter(|(_, kind, ..)| matches!(kind, Kind::Jar | Kind::Link)) {
             self.materialize(id.to_string(), *kind, fields, None, None);
         }
-        nodes.retain(|(_, kind, ..)| *kind != Kind::Jar);
+        nodes.retain(|(_, kind, ..)| !matches!(kind, Kind::Jar | Kind::Link));
         if nodes.is_empty() {
             self.restore_closed(local.closed);
             self.arm_local(unread, true);
@@ -1858,6 +1888,7 @@ impl App {
         imported.sort_by_key(|i| match i.kind {
             Kind::Jar => 0,
             Kind::Group => 1,
+            Kind::Link => 3, // after the cards it joins
             _ => 2,
         });
         let toasts = self.save_toast_queue.len();

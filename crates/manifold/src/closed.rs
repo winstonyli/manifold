@@ -425,6 +425,7 @@ mod tests {
             (Kind::JsonLeaf, &none, true),
             (Kind::Download, &none, false),
             (Kind::Jar, &none, false),
+            (Kind::Link, &none, false),
             (Kind::Note, &text("hi"), true),
             (Kind::Note, &text("  \n"), false),
             (Kind::Note, &none, false),

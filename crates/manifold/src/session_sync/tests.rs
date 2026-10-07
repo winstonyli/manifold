@@ -13,6 +13,7 @@ fn jar_fields_belong_to_tabs_groups_and_jars() {
     assert_eq!(Kind::Tab.fields(), &[POS, COLOR, PARENT, URL, ENGINE, PINNED, JAR, JAR_SET]);
     assert_eq!(Kind::Group.fields(), &[POS, COLOR, NAME, FROM_JSON, DEFAULT_JAR]);
     assert_eq!(Kind::Jar.fields(), &[COLOR, NAME, EPHEMERAL]);
+    assert_eq!(Kind::Link.fields(), &[NAME, FROM, TO]);
     assert!(Kind::Unknown.fields().is_empty());
 }
 
@@ -4854,4 +4855,46 @@ fn a_failed_startup_card_is_retried_at_the_next_launch() {
     assert!(restored.restore_session());
     assert_eq!(restored.focused.as_deref(), Some(card.as_str()));
     assert!(restored.test_spawns.iter().any(|(spawn, _)| spawn.id == card), "the card is woken");
+}
+
+/// A link is a stored node: it survives save and restore with both ends.
+#[test]
+fn a_link_survives_save_and_restore() {
+    let path = temp_dir("link-roundtrip").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let a = succeed_spawn(&mut app, "https://a/");
+    let b = succeed_spawn(&mut app, "https://b/");
+    let link = app.create_link(&a, &b);
+    assert!(app.save_session());
+    app.close_store();
+    let mut restored = app_on(&path, 2);
+    assert!(restored.restore_session());
+    assert_eq!(restored.mirror.link_ends(&link), (a.parse().ok(), b.parse().ok()));
+    assert_eq!(restored.links_naming(&a), vec![link]);
+}
+
+/// Deleting an endpoint deletes the links naming it (the save also runs `check_graph_matches_document`).
+#[test]
+fn removing_a_card_deletes_its_links() {
+    let mut app = app_on(&temp_dir("link-delete").join("session.mnf"), 1);
+    let a = succeed_spawn(&mut app, "https://a/");
+    let b = succeed_spawn(&mut app, "https://b/");
+    let link = app.create_link(&a, &b);
+    app.remove_tab(&a);
+    assert!(app.links_naming(&b).is_empty());
+    assert!(app.mirror.link_ids().all(|id| id.to_string() != link));
+    assert!(app.save_session());
+}
+
+/// A remote delete of an endpoint hides and removes the link as well.
+#[test]
+fn a_remote_delete_of_an_endpoint_removes_its_links() {
+    let mut app = app_on(&temp_dir("link-remote-delete").join("session.mnf"), 1);
+    let a = succeed_spawn(&mut app, "https://a/");
+    let b = succeed_spawn(&mut app, "https://b/");
+    app.create_link(&a, &b);
+    // What `remote_changes` reports when another replica deletes `a` (as `remote_jar_create_rename_and_delete_reach_jar_defs`):
+    app.apply_remote(vec![(a.parse().unwrap(), None)]);
+    assert!(app.links_naming(&b).is_empty());
+    assert!(app.mirror.link_ids().next().is_none());
 }

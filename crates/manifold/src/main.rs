@@ -33,6 +33,7 @@ mod json_level;
 mod json_level_ui;
 mod json_view;
 mod level;
+mod links;
 mod local_state;
 mod mirror;
 mod names;
