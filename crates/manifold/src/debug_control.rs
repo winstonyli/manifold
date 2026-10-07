@@ -244,6 +244,7 @@ pub enum DebugCommand {
     /// `mirror_names` (groups), `mirror_texts` (notes) and `mirror_pos` (every node, `[x, y]`) map ids to the
     /// mirror's name, text and document pos the same way, null where EXPORTSESSION leaves the field out (empty, or
     /// pos (0, 0)).
+    /// `links` lists every Link node as `{id, from, to}`.
     /// `toast` is the bottom-left toast's text
     /// (the one showing, else the next queued), or null. Suggestions arriving from the network show up
     /// only once a frame has drained them, and every command draws one, so
@@ -1351,6 +1352,16 @@ impl App {
             self.linked_ids().map(|id| (id, self.mirror.pos(id).map(|p| [p.x, p.y]))).collect();
         let mut selected_tabs: Vec<&String> = self.selected_tabs.iter().collect();
         selected_tabs.sort();
+        // Every link this replica knows (ends null where unset), whether or not it is shown.
+        let links: Vec<serde_json::Value> = self
+            .mirror
+            .link_ids()
+            .map(|link| {
+                let id = link.to_string();
+                let (from, to) = self.mirror.link_ends(&id);
+                serde_json::json!({ "id": id, "from": from.map(|n| n.to_string()), "to": to.map(|n| n.to_string()) })
+            })
+            .collect();
         serde_json::json!({
             "tab_view": self.showing_tab_view(),
             "transition": self.transition.is_some(),
@@ -1364,6 +1375,7 @@ impl App {
             "mirror_names": mirror_names,
             "mirror_texts": mirror_texts,
             "mirror_pos": mirror_pos,
+            "links": links,
             "json_level": self.json_level_state(),
             "selected_tabs": selected_tabs,
             // The toast showing, or else the next queued one.

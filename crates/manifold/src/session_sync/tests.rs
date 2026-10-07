@@ -5092,3 +5092,54 @@ fn a_refused_drag_reparent_leaves_the_parent_alone() {
     app.apply_drop(&a, Some((crate::card::DropEffect::Reparent, Some(b.clone()))));
     assert_eq!(app.mirror.parent(&a), None, "a cycle");
 }
+
+/// A link inside a closed group comes back with it, between the new ids; a link to a card outside is not restored.
+#[test]
+fn reopening_a_closed_group_restores_links_inside_it_only() {
+    let mut app = app_on(&temp_dir("link-closed").join("session.mnf"), 1);
+    let outside = succeed_spawn(&mut app, "https://out/");
+    let (x, y) = (succeed_spawn(&mut app, "https://x/"), succeed_spawn(&mut app, "https://y/"));
+    let group = add_group(&mut app, "g");
+    app.edit_group(&x, Some(group.clone()));
+    app.edit_group(&y, Some(group.clone()));
+    app.connect(crate::caps::LINK, &x, &y).unwrap();
+    app.create_link(&x, &outside); // `connect` would refuse another level, so build this one directly
+    app.close_node(&group);
+    assert!(app.mirror.link_ids().next().is_none(), "closing deletes every link naming a closed card");
+    let entry = app.closed.pop().unwrap();
+    app.reopen_closed(entry);
+    let links: Vec<_> = app.mirror.link_ids().collect();
+    assert_eq!(links.len(), 1, "only the link between x and y returns");
+    let (from, to) = app.mirror.link_ends(&links[0].to_string());
+    let (from, to) = (from.unwrap().to_string(), to.unwrap().to_string());
+    assert!(app.nodes.contains_key(&from) && app.nodes.contains_key(&to), "between live cards");
+    assert!(![&x, &y, &outside].contains(&&from) && ![&x, &y, &outside].contains(&&to), "the new ids");
+    assert!(app.save_session());
+}
+
+/// A foreign file's link naming a card outside the file is dropped; one inside it is kept.
+#[test]
+fn a_foreign_import_drops_a_link_naming_a_card_outside_the_file() {
+    let mut app = app_on(&temp_dir("link-foreign").join("session.mnf"), 1);
+    let json = serde_json::json!({ "nodes": [
+        json_node("t", Kind::Tab, serde_json::json!({ "url": "https://a/" })),
+        json_node("u", Kind::Tab, serde_json::json!({ "url": "https://b/" })),
+        json_node("in", Kind::Link, serde_json::json!({ "from": "t", "to": "u" })),
+        json_node("out", Kind::Link, serde_json::json!({ "from": "t", "to": "424242" })),
+    ]});
+    app.replace_running_session(&serde_json::from_value(json).unwrap(), crate::store::json::Trust::Foreign);
+    let ends: Vec<_> = app.mirror.link_ids().map(|l| app.mirror.link_ends(&l.to_string())).collect();
+    assert_eq!(ends.len(), 1, "only the link inside the file");
+    assert!(ends[0].0.is_some() && ends[0].1.is_some());
+    assert!(app.save_session());
+}
+
+/// EXPORTSTATE lists every link with its ends.
+#[test]
+fn export_state_lists_links() {
+    let mut app = app_on(&temp_dir("link-state").join("session.mnf"), 1);
+    let (a, b) = (succeed_spawn(&mut app, "https://a/"), succeed_spawn(&mut app, "https://b/"));
+    let link = app.create_link(&a, &b);
+    let state = app.export_state();
+    assert_eq!(state["links"], serde_json::json!([{ "id": link, "from": a, "to": b }]));
+}

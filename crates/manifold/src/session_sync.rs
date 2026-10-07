@@ -1898,6 +1898,11 @@ impl App {
         let toasts = self.save_toast_queue.len();
         let pass = self.begin_content_pass();
         for node in imported {
+            // A link whose end did not resolve (a foreign file named a card outside it) has nothing to join.
+            let end = |no| matches!(node.fields.get(&no), Some(FieldValue::Id(Some(_))));
+            if node.kind == Kind::Link && !(end(field::FROM) && end(field::TO)) {
+                continue;
+            }
             let is_root = Some(node.id) == root_id;
             let group = match node.fields.get(&field::GROUP) {
                 Some(FieldValue::Id(Some(g))) if !is_root && groups.contains(g) => Some(g.to_string()),

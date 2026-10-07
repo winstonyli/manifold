@@ -162,7 +162,7 @@ pub fn import(json: &JsonDoc, mut next_id: impl FnMut() -> NodeId, trust: Trust)
                     continue;
                 }
                 let names_in_file = value.as_str().is_some_and(|s| fresh.contains_key(s));
-                if matches!(def.no, field::JAR | field::DEFAULT_JAR) && !names_in_file {
+                if matches!(def.no, field::JAR | field::DEFAULT_JAR | field::FROM | field::TO) && !names_in_file {
                     continue;
                 }
             }

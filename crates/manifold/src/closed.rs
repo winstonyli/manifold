@@ -156,6 +156,20 @@ pub(crate) fn closed_entry(app: &App, id: &str) -> Option<ClosedEntry> {
             record(&label);
         }
     }
+    // A link comes back only between cards that do (both ends recorded above); import remaps its ends to the new ids.
+    let kept: std::collections::BTreeSet<store::model::NodeId> =
+        nodes.iter().filter_map(|n| n.id.parse().ok()).collect();
+    let mut links: Vec<_> = app.mirror.link_ids().collect();
+    links.sort();
+    for link in links {
+        let label = link.to_string();
+        let (from, to) = app.mirror.link_ends(&label);
+        if from.is_some_and(|n| kept.contains(&n)) && to.is_some_and(|n| kept.contains(&n)) {
+            if let Some(snap) = app.snapshot(link) {
+                nodes.push(store::json::node_json(&label, snap.kind, &snap.fields, None));
+            }
+        }
+    }
     let mut local = serde_json::Map::new();
     for (key, map) in [("zoom", zoom), ("title", title)] {
         if !map.is_empty() {
