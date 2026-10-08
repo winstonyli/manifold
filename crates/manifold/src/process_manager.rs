@@ -189,9 +189,10 @@ impl EngineKind {
 }
 
 /// `EngineKind` itself has no reason to derive serde (it's an internal
-/// process-management type) — a small manual string mapping instead, shared
+/// process-management type) — a small manual string mapping instead, written
 /// by the two independent persistence formats that each need to store one
 /// (`settings.rs`'s default-starting-engine, `session.rs`'s per-tab engine).
+/// Serialize only: each format reads it back its own way (settings, leniently).
 pub(crate) mod engine_kind_serde {
     use super::EngineKind;
     use serde::{Serialize, Serializer};
