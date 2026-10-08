@@ -510,6 +510,15 @@ impl App {
             self.drag_moved.clear();
         }
     }
+
+    /// Drops from the rectangle selection every tab no longer drawn on this level: closed, mid-respawn, or moved by
+    /// another replica. It only ever holds this level's tabs (`eject`, `switch_group_level`); otherwise Close Selected
+    /// or Group Selected would act on a tab the user can't see.
+    pub(crate) fn end_stale_selection(&mut self) {
+        let mut selected = std::mem::take(&mut self.selected_tabs);
+        selected.retain(|id| self.nodes.contains_key(id) && self.in_level(id));
+        self.selected_tabs = selected;
+    }
 }
 
 #[cfg(test)]
@@ -693,5 +702,31 @@ mod tests {
 
     fn scan_len(app: &App) -> usize {
         app.level_scan().layers.concat().len()
+    }
+
+    /// H1: another replica moves a selected tab into a group; the next frame drops it from the selection, so Close
+    /// Selected closes only what is still on screen.
+    #[test]
+    fn a_tab_another_replica_moved_away_leaves_the_selection() {
+        use crate::session_sync::tests::{add, add_group, sleeping_tab};
+        let ctx = egui::Context::default();
+        crate::theme::apply_fonts(&ctx);
+        crate::theme::apply_style(&ctx);
+        let mut app = App { view_mode: crate::view_modes::ViewMode::Settings, ..App::default() };
+        let a = add(&mut app, Kind::Tab, sleeping_tab("https://a.test/", "a"));
+        let b = add(&mut app, Kind::Tab, sleeping_tab("https://b.test/", "b"));
+        let h = add_group(&mut app, "H");
+        app.selected_tabs.extend([a.clone(), b.clone()]);
+        app.follow_remote_group(&b, Some(h)); // another replica's move
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 1000.0))),
+            ..Default::default()
+        };
+        let mut output = ctx.run_ui(input, |ui| app.build_ui_inner(ui));
+        output.textures_delta.clear();
+        assert_eq!(app.selected_tabs, std::collections::HashSet::from([a.clone()]));
+        app.apply_graph_action(&ctx, crate::graph_ui::GraphAction::CloseSelected);
+        assert!(!app.nodes.contains_key(&a), "the tab still shown is closed");
+        assert!(app.nodes.contains_key(&b), "the tab moved away is not");
     }
 }

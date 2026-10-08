@@ -2882,6 +2882,8 @@ impl App {
         self.end_stale_drag(self.transition.is_some() || self.view_mode == ViewMode::Graph);
         // And pick-target mode, whose targets are drawn only there.
         self.end_stale_connect(self.view_mode == ViewMode::Graph);
+        // And the rectangle selection, which only ever holds the tabs drawn on this level.
+        self.end_stale_selection();
         // Every view, so a toast queued in Graph view (a crash/respawn
         // notice, an unreadable session file) is seen where it happened.
         self.build_save_toast(ui);
