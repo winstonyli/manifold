@@ -1554,16 +1554,22 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 ## Outcome
 
-Per task, what landed and its commit (`TODO` marks what the controller fills from the ledger).
+Executed 2026-10-07/08 on `main` by subagent-driven development, one subagent per task and a reviewer per task (ledger: `.superpowers/sdd/2026-10-07-wave-0-tooling/progress.md`, gitignored). Nothing is pushed.
 
-- **Task 1** (toolchain pin): TODO commit; Fresh/rebuild result: TODO.
-- **Task 2** (`ipc-protocol` in `[workspace.dependencies]`): TODO commit.
-- **Task 3** (one shared `windows` entry): TODO done or declined, and any feature added beyond the listed union.
-- **Task 4** (`allow_attributes_without_reason`): TODO commit; site count (11 or 12): TODO.
-- **Task 5** (minimal CI): TODO commit; CI result or "not pushed": TODO.
-- **Task 6** (smoke-test hygiene, BT-4): TODO commit; interrupt results, old `cleanup()` against new: TODO.
-- **Task 7** (atomic exports, no post-appearance sleeps, BT-9): TODO commit; probe run counts and any SKIP: TODO (`focus-loss-probe.sh`: TODO run or not run).
-- **Tasks 8-11** (`scripts/lib.sh`): TODO commits; sweep comparison and its leftovers: TODO.
-- **Task 12** (bad initial URL, BT-5): `857580d`. Before the host change `bad-url-probe.sh` exited 1 in 148 s: `garbage` panicked 6 times in its host log (`initial navigate: ... HRESULT(0x80070057)`) and ended `1 False` after 30 exports; `missing` panicked 3 times but read `1 True` on its first export (the app does not substitute a URL for an empty one; the host got `""` and panicked, and the panic check is what caught it). After: exit 0 in 26 s, all six checks PASS, `focused_url about:blank` for both, and both host logs hold the `initial navigate to ... failed ...; opening about:blank` line. Servo: `CARGO_TARGET_DIR=target-servo cargo build -p manifold-engine-servo` compiled only `ipc-protocol` and `manifold-engine-servo`, `Finished` in 15.87 s; the probe was not run with `ENGINES=servo`.
-- **Gates**: after Task 7: TODO (`cpu=`, `defender_rt=`); after Task 12: TODO (`cpu=`, `defender_rt=`).
-- **Deferred**: TODO.
+- **Task 1** (toolchain pin): `3bbee2c`. The first pinned clippy run rebuilt the three workspace crates once (a path fingerprint change; the compiler is identical); the rerun was 285 units `Fresh`, 0 compiled.
+- **Task 2** (`ipc-protocol` in `[workspace.dependencies]`): `ad6c896`. `cargo tree` identical before and after; `Cargo.lock` unchanged.
+- **Task 3** (one shared `windows` entry): **not done**, waiting on the user's yes/no (value rated low).
+- **Task 4** (`allow_attributes_without_reason`): `ce27c9c`. Twelve reason-missing errors in the hook's crates before; 0 after. The CEF `client.rs` site is outside the hook's crates and also has a reason (13 in all). Once, under load, three `ipc-protocol` transport timing tests failed on wall-clock bounds and passed on the rerun; no baseline was taken.
+- **Task 5** (minimal CI): `146327f`, **not pushed, so CI has not run**. The push and `gh run watch` are left for the user's yes.
+- **Task 6** (smoke-test hygiene, BT-4): `1444d35`. A whole smoke run passed (48 PASS) in about 15 min and left nothing; an interrupted run left no `manifold.exe` and no profile dir. The old-`cleanup()` interrupt was run three times and also left nothing, so the before/after difference did not reproduce; the change rests on the verified finding.
+- **Task 7** (atomic exports, no post-appearance sleeps, BT-9): `5816ae2`. Three new tests fail against a plain write and pass; `link-probe.sh` three times green (13 PASS each); a chrome-shots subset green. **`focus-loss-probe.sh` was not run** (it steals the foreground; no yes), only `bash -n`-checked.
+- **Tasks 8-11** (`scripts/lib.sh`): `986e770` (seed_settings), `cbe5a85` (launch_headless, send), `c9304cc` (wait_file), `696e024` (check). The baseline and after sweeps over nine probes match byte for byte in their verdict files (focus-loss excluded; scale 4.5 s before, 5.3 s after, noise). The sweeps ran per probe in the foreground; detached `cmd start //b` runs left empty logs.
+- **Task 12** (bad initial URL, BT-5): `857580d`, probe tightened in `f86a375`. Before the host change `bad-url-probe.sh` exited 1 in 148 s (`garbage` panicked 6 times, `missing` 3); after, exit 0 in 26-32 s, and the final probe passes 10 of 10 checks (`focused_url` is `about:blank` and the host logs the fallback). Servo: only `ipc-protocol` and `manifold-engine-servo` rebuilt in `target-servo` (15.87 s); the probe was not run with `ENGINES=servo`.
+- **Gates**: after Task 7 (covers 1-7): two-instance x3 ok, smoke 48 PASS / 0 FAIL; start `cpu=37.9%`, end `cpu=24.8%`, `defender_rt=False`. After Task 12 (covers 8-12): two-instance x3 ok, smoke 48 PASS / 0 FAIL; start `cpu=44.3%`, end `cpu=51.8%`, `defender_rt=False`. CPU was above the 20% guideline at several run starts (other sessions' work); the runs are correctness gates, not timings.
+- **Deferred / parked**:
+  - Task 3 (above), the CI push, and three `focus-loss-probe.sh` runs.
+  - `scale-test.sh`'s elapsed now includes `launch_headless`'s pid lookup and runs at BelowNormal, so its numbers do not compare with older baselines.
+  - `package.sh:68` keeps its own headless launch (Normal priority, no pid lookup).
+  - The host fallback log prints the stored URL in full (local `%TEMP%` log only); log the scheme and error instead if URLs may carry credentials.
+  - `send QUIT; wait "$inst"` has no deadline in any probe; a shared helper with one is a later job.
+  - `two-instance-test.sh` retry loops re-export to one path without `rm -f` first (pre-existing); `hscroll-probe.sh` keeps a `SLEEP 4` that `EXPORTSTATE` gives no signal for; `lib-test.sh`'s late-file check can pass without the file being late.
