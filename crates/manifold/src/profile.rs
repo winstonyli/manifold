@@ -108,6 +108,7 @@ mod tests {
         let args = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         let appdata = Some(std::ffi::OsString::from("A"));
         assert_eq!(super::dir_from(&args(&["m", "--profile-dir=P"]), appdata.clone()), Some("P".into()));
+        // `cli::validate` refuses this before `profile::dir` is read (M4); `dir_from` alone still ignores it.
         assert_eq!(
             super::dir_from(&args(&["m", "--profile-directory", "X"]), appdata),
             Some(Path::new("A").join("manifold")),
@@ -122,6 +123,7 @@ mod tests {
         assert_eq!(super::dir_from(&args(&["m", "--profile-dir", "P"]), appdata.clone()), Some("P".into()));
         assert_eq!(super::dir_from(&args(&["m", "--profile-dir", "P"]), None), Some("P".into()));
         assert_eq!(super::dir_from(&args(&["m"]), appdata.clone()), Some(Path::new("A").join("manifold")));
+        // `cli::validate` refuses a bare `--profile-dir` first (M4); this is `dir_from`'s own fallback.
         assert_eq!(super::dir_from(&args(&["m", "--profile-dir"]), appdata), Some(Path::new("A").join("manifold")));
         assert_eq!(super::dir_from(&args(&["m"]), None), None);
     }
