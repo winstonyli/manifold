@@ -248,7 +248,7 @@ fn write_json_export(json: &store::json::JsonDoc, path: &std::path::Path, what: 
         if let Some(dir) = path.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
-        std::fs::write(path, text).map_err(|e| e.to_string())
+        store::atomic::replace(path, text.as_bytes()).map_err(|e| e.to_string())
     });
     if let Err(err) = written {
         eprintln!("{what}: couldn't export to {}: {err}", path.display());
@@ -3643,5 +3643,18 @@ mod tests {
         let mut app = App::default();
         app.save_named_session("Con");
         assert_eq!(Vec::from(app.save_toast_queue.clone()), ["Not a session name: Con"]);
+    }
+
+    /// Export Group writes through `store::atomic::replace`: a blocked target stays unwritten.
+    #[test]
+    fn a_group_export_is_written_through_the_atomic_replace() {
+        let path = store::testutil::temp_dir("group-export-atomic").join("g.group.json");
+        let json = store::json::JsonDoc::default();
+        store::atomic::block_for_test(&path, true);
+        write_json_export(&json, &path, "group");
+        assert!(!path.exists(), "the write went around store::atomic::replace");
+        store::atomic::block_for_test(&path, false);
+        write_json_export(&json, &path, "group");
+        assert_eq!(json_file::load::<store::json::JsonDoc>(&path, "group"), Ok(json));
     }
 }

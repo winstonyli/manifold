@@ -5359,6 +5359,22 @@ fn export_session_drops_links_with_a_dead_end() {
     assert!(!ids.contains(&dead.as_str()));
 }
 
+/// Export Session writes through `store::atomic::replace`: a blocked target fails the export and stays unwritten.
+#[test]
+fn export_session_is_written_through_the_atomic_replace() {
+    let dir = temp_dir("export-session-atomic");
+    let mut app = app_on(&dir.join("session.mnf"), 1);
+    succeed_spawn(&mut app, "https://a/");
+    let path = dir.join("export.json");
+    crate::store::atomic::block_for_test(&path, true);
+    assert!(!app.export_session_to(&path));
+    assert!(!path.exists(), "the write went around store::atomic::replace");
+    crate::store::atomic::block_for_test(&path, false);
+    assert!(app.export_session_to(&path));
+    let written: JsonDoc = crate::json_file::load(&path, "session").unwrap();
+    assert_eq!(written.nodes, app.export_session_json().unwrap().nodes);
+}
+
 /// A link end must be a card: a file's link naming a jar, another link or itself loses that end, and is skipped.
 #[test]
 fn an_import_drops_a_link_whose_end_is_a_jar_a_link_or_itself() {

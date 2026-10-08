@@ -97,7 +97,6 @@ state() {
     rm -f "$work/state.json"
     send "EXPORTSTATE $(w "$work/state.json")"
     wait_file "$work/state.json"
-    sleep 0.2
 }
 # "x y" of the first card of type $1 (group $2: "top" or "any"; $3 "loaded" or
 # "asleep" narrows a tab by its engine state): the centre of the part of its

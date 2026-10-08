@@ -1943,7 +1943,7 @@ impl App {
                 if let Some(dir) = path.parent() {
                     let _ = std::fs::create_dir_all(dir);
                 }
-                std::fs::write(path, text).map_err(|e| e.to_string())
+                crate::store::atomic::replace(path, text.as_bytes()).map_err(|e| e.to_string())
             }),
         };
         if let Err(err) = &written {

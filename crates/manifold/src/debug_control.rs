@@ -254,6 +254,7 @@ pub enum DebugCommand {
     /// (the one showing, else the next queued), or null. Suggestions arriving from the network show up
     /// only once a frame has drained them, and every command draws one, so
     /// a test can poll this until `suggestions` fills.
+    /// The file is replaced atomically (`store::atomic::replace`), so a test may read it as soon as it exists.
     ExportState(String),
     /// "Import..." with an explicit path, same "bypass the real file
     /// dialog" reason as `ExportSession`.
@@ -1126,11 +1127,7 @@ impl App {
             DebugCommand::ExportSession(path) => {
                 self.export_session_to(std::path::Path::new(&path));
             }
-            DebugCommand::ExportState(path) => {
-                if let Err(err) = std::fs::write(&path, self.export_state().to_string()) {
-                    eprintln!("EXPORTSTATE: couldn't write {path}: {err}");
-                }
-            }
+            DebugCommand::ExportState(path) => self.write_export_state(std::path::Path::new(&path)),
             DebugCommand::ImportSession(path) => match crate::json_file::load(std::path::Path::new(&path), "session") {
                 Ok(json) => self.pending_import = Some(json),
                 Err(err) => self.queue_toast(err),
@@ -1463,6 +1460,14 @@ impl App {
             // The toast showing, or else the next queued one.
             "toast": self.save_toast.as_ref().map(|(message, _)| message).or(self.save_toast_queue.front()),
         })
+    }
+
+    /// `EXPORTSTATE`: writes `export_state` to `path` through `store::atomic::replace`, so a probe never reads
+    /// a half-written file. A failure is logged.
+    pub(crate) fn write_export_state(&self, path: &std::path::Path) {
+        if let Err(err) = crate::store::atomic::replace(path, self.export_state().to_string().as_bytes()) {
+            eprintln!("EXPORTSTATE: couldn't write {}: {err}", path.display());
+        }
     }
 }
 
@@ -1894,5 +1899,19 @@ mod tests {
             parse_line("ADDFILE C:\\a b\\c.png 10 20.5"),
             Some(DebugCommand::AddFile(p, Some((x, y)))) if p == "C:\\a b\\c.png" && x == 10.0 && y == 20.5
         ));
+    }
+
+    /// EXPORTSTATE writes through `store::atomic::replace`, so a probe can read the file as soon as it exists:
+    /// a blocked target stays unwritten (a plain write would ignore the block).
+    #[test]
+    fn export_state_is_written_through_the_atomic_replace() {
+        let path = crate::store::testutil::temp_dir("export-state-atomic").join("state.json");
+        let app = App::default();
+        crate::store::atomic::block_for_test(&path, true);
+        app.write_export_state(&path);
+        assert!(!path.exists(), "the write went around store::atomic::replace");
+        crate::store::atomic::block_for_test(&path, false);
+        app.write_export_state(&path);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), app.export_state().to_string());
     }
 }

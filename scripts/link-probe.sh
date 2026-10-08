@@ -61,7 +61,7 @@ py() { python -P -c "$1" "$(cygpath -w "$out/$2.json")" </dev/null 2>&1 | tr -d 
 
 start log1
 send "$(x s0)"
-wait_file "$out/s0.json" && sleep 0.2
+wait_file "$out/s0.json"
 read -r ncards a b <<<"$(py 'import json,sys; c=json.load(open(sys.argv[1], encoding="utf-8"))["cards"]; print(len(c), *[x["id"] for x in c])' s0)"
 send "LINK $a $b" "SLEEP 1" "$(x s1)"
 stop
@@ -70,11 +70,11 @@ send "$(x s2)" "UNLINK $b $a" "SLEEP 1" "$(x s3)"
 stop
 start log3
 send "$(x s4)" "LINK $a $b" "SLEEP 1" "$(x s5)"
-wait_file "$out/s5.json" && sleep 0.2
+wait_file "$out/s5.json"
 # The link line's middle on screen (EXPORTSTATE edges), clear of both cards: a click there deletes it.
 read -r lx ly <<<"$(py 'import json,sys; e=[e for e in json.load(open(sys.argv[1], encoding="utf-8"))["edges"] if e["kind"]=="link"][0]["screen"]; print(round(e[0]), round(e[1]))' s5)"
 send "MOUSEMOVE $lx $ly" "CLICK $lx $ly" "SLEEP 1" "$(x s6)"
-wait_file "$out/s6.json" && sleep 0.2
+wait_file "$out/s6.json"
 # a's centre, a's right handle and b's centre, then a drag from the handle onto b in six steps.
 read -r ax ay hx hy bx by <<<"$(py "import json,sys; d=json.load(open(sys.argv[1], encoding='utf-8')); c={x['id']: x['screen'] for x in d['cards']}; r=d['link_handles']['$a']['right']; print(*[round(v) for v in (*c['$a'], (r[0]+r[2])/2, (r[1]+r[3])/2, *c['$b'])])" s6)"
 send "MOUSEMOVE $ax $ay" "MOUSEMOVE $hx $hy" "MOUSEMOVE $hx $hy" "MOUSEDOWN $hx $hy"

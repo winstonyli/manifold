@@ -113,7 +113,7 @@ poll_cleared() {
     local i
     for i in $(seq 8); do
         send "$(x "$1_$i")"
-        wait_file "$dir/$1_$i.json" >&2 && sleep 0.1
+        wait_file "$dir/$1_$i.json" >&2
         [ "$(field "$1_$i" "$2")" = "None" ] && break
         sleep 0.25
     done
@@ -123,7 +123,7 @@ poll_cleared() {
 case_connect() {
     launch connect || return
     send "$(x s0)"
-    wait_file "$dir/s0.json" && sleep 0.2
+    wait_file "$dir/s0.json"
     read -r ncards a b ax ay hx hy bx by <<<"$(cards s0)"
     check "connect: the session has the two seeded tabs" "2" "$ncards"
 
@@ -132,7 +132,7 @@ case_connect() {
     send "MOUSEMOVE $ax $ay" "MOUSEMOVE $hx $hy" "MOUSEMOVE $hx $hy" "MOUSEDOWN $hx $hy"
     for i in 1 2 3; do send "MOUSEMOVE $((hx + (bx - hx) * i / 6)) $((hy + (by - hy) * i / 6))"; done
     send "SLEEP 1" "$(x s1)"
-    wait_file "$dir/s1.json" && sleep 0.2
+    wait_file "$dir/s1.json"
     check "connect: the handle press started a connect-drag from a" "$a" "$(field s1 connect_drag)"
     check "connect: no links yet" "0" "$(nlinks s1)"
 
@@ -144,12 +144,12 @@ case_connect() {
 
     # The button-up that went elsewhere, arriving late over b: with the drag still live (NO_STEAL) this links a -> b.
     send "MOUSEMOVE $bx $by" "MOUSEUP $bx $by" "SLEEP 1" "$(x s3)"
-    wait_file "$dir/s3.json" && sleep 0.2
+    wait_file "$dir/s3.json"
     check "connect: a late button-up over b links nothing" "0 None" "$(nlinks s3) $(field s3 connect_drag)"
     # Then an ordinary click on b. (Not a discriminating check alone: a press-release without movement on a live
     # connect-drag is a click, which cancels it too.)
     send "MOUSEDOWN $bx $by" "MOUSEUP $bx $by" "SLEEP 1" "$(x s4)"
-    wait_file "$dir/s4.json" && sleep 0.2
+    wait_file "$dir/s4.json"
     check "connect: a click on b after the focus loss links nothing" "0 None" "$(nlinks s4) $(field s4 connect_drag)"
     quit
 }
@@ -157,7 +157,7 @@ case_connect() {
 case_card() {
     launch card || return
     send "$(x c0)"
-    wait_file "$dir/c0.json" && sleep 0.2
+    wait_file "$dir/c0.json"
     read -r ncards a b ax ay _ _ bx by <<<"$(cards c0)"
     check "card: the session has the two seeded tabs" "2" "$ncards"
     # a's screen rect, rounded; its saved document pos; both cards' groups.
@@ -170,7 +170,7 @@ case_card() {
     send "MOUSEMOVE $ax $ay" "MOUSEMOVE $ax $ay" "MOUSEDOWN $ax $ay"
     for i in 1 2 3 4 5 6; do send "MOUSEMOVE $((ax + (bx - ax) * i / 6)) $((ay + (by - ay) * i / 6))"; done
     send "SLEEP 1" "$(x c1)"
-    wait_file "$dir/c1.json" && sleep 0.2
+    wait_file "$dir/c1.json"
     check "card: the press started a card drag of a" "$a" "$(field c1 dragging)"
     [ "$(rect_of c0)" != "$(rect_of c1)" ] && moved=1 || moved=0
     check "card: a follows the pointer" "1" "$moved"
@@ -186,11 +186,11 @@ case_card() {
     # The button-up went elsewhere, so the button is still down for the app: the pointer moves on, down and away.
     for i in 1 2 3; do send "MOUSEMOVE $bx $((by + 60 * i))"; done
     send "SLEEP 1" "$(x c3)"
-    wait_file "$dir/c3.json" && sleep 0.2
+    wait_file "$dir/c3.json"
     check "card: a stays put while the stale button is down" "$(rect_of "$c2")" "$(rect_of c3)"
     # Back over b and the late button-up: with the drag still live (NO_STEAL) this drops a on b, grouping them.
     send "MOUSEMOVE $bx $by" "MOUSEUP $bx $by" "SLEEP 1" "$(x c4)"
-    wait_file "$dir/c4.json" && sleep 0.2
+    wait_file "$dir/c4.json"
     check "card: the late button-up over b grouped nothing" "None None" "$(groups c4)"
     check "card: a did not move" "$(rect_of "$c2")" "$(rect_of c4)"
     check "card: no drag left" "None" "$(field c4 dragging)"
