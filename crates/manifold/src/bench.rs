@@ -1,6 +1,7 @@
 //! Timing helpers and fixtures shared by the `#[ignore]` timing tests (wave 2 "Measuring"):
 //! `cargo test --release -j 8 -p manifold --bins <name> -- --ignored --nocapture`.
 
+use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use crate::node::{
@@ -32,6 +33,17 @@ pub(crate) fn timed(n: usize, mut f: impl FnMut()) -> (Duration, Duration) {
 
 pub(crate) fn report(what: &str, (best, median): (Duration, Duration)) {
     println!("  {what:<44} best {best:>10.1?}  median {median:>10.1?}");
+}
+
+/// Spreads each level's cards on a grid, 30 to a row, 300 by 200 apart, so a settle starts from distinct positions.
+pub(crate) fn spread(f: &mut Fixture) {
+    let mut next: HashMap<Option<String>, usize> = HashMap::new();
+    for id in f.groups.iter().chain(&f.nodes) {
+        let k = next.entry(f.app.mirror.group(id).map(str::to_owned)).or_default();
+        let pos = egui::vec2((*k % 30) as f32 * 300.0, (*k / 30) as f32 * 200.0);
+        *k += 1;
+        f.app.snap_layout(id, pos);
+    }
 }
 
 /// `level_fixture`'s app, with its ids.

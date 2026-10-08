@@ -198,6 +198,139 @@ pub fn spawn_jitter(seed_str: &str) -> egui::Vec2 {
 mod tests {
     use super::*;
 
+    /// Today's `step_sized`, kept as the golden test's reference (wave 2, H3).
+    fn step_sized_reference(
+        positions: &mut HashMap<String, egui::Vec2>,
+        velocities: &mut HashMap<String, egui::Vec2>,
+        edges: &[(String, String)],
+        pinned: &HashSet<String>,
+        sizes: &HashMap<String, egui::Vec2>,
+        center: egui::Vec2,
+        dt: f32,
+    ) {
+        if dt <= 0.0 {
+            return;
+        }
+        // Owned ids: `positions` is mutated below.
+        let mut ids: Vec<String> = positions.keys().cloned().collect();
+        ids.sort_unstable();
+        let index: HashMap<&str, usize> = ids.iter().enumerate().map(|(i, id)| (id.as_str(), i)).collect();
+        let pos: Vec<egui::Vec2> = ids.iter().map(|id| positions[id]).collect();
+        let mut forces = vec![egui::Vec2::ZERO; ids.len()];
+
+        // Pairwise repulsion: O(n^2) over plain vectors.
+        for i in 0..pos.len() {
+            for j in (i + 1)..pos.len() {
+                let delta = pos[i] - pos[j];
+                let length = delta.length();
+                let dir = if length > f32::EPSILON {
+                    delta / length
+                } else {
+                    spawn_jitter(&format!("{}\u{0}{}", ids[i], ids[j])).normalized()
+                };
+                let dist = length.max(REPULSION_SOFT_DISTANCE);
+                let force = dir * (REPULSION_STRENGTH / (dist * dist));
+                forces[i] += force;
+                forces[j] -= force;
+
+                // Card extents: push apart along the axis that overlaps least.
+                let (Some(a), Some(b)) = (sizes.get(&ids[i]), sizes.get(&ids[j])) else { continue };
+                let reach = (*a + *b) / 2.0 + egui::Vec2::splat(CARD_GAP);
+                let overlap = egui::vec2(reach.x - delta.x.abs(), reach.y - delta.y.abs());
+                if overlap.x > 0.0 && overlap.y > 0.0 {
+                    let push = if overlap.x < overlap.y {
+                        egui::vec2(if delta.x < 0.0 { -1.0 } else { 1.0 } * overlap.x.min(OVERLAP_MAX), 0.0)
+                    } else {
+                        egui::vec2(0.0, if delta.y < 0.0 { -1.0 } else { 1.0 } * overlap.y.min(OVERLAP_MAX))
+                    } * OVERLAP_STRENGTH;
+                    forces[i] += push;
+                    forces[j] -= push;
+                }
+            }
+        }
+
+        let mut springs: Vec<(usize, usize)> = edges
+            .iter()
+            .filter_map(|(parent, child)| Some((*index.get(parent.as_str())?, *index.get(child.as_str())?)))
+            .collect();
+        springs.sort_unstable();
+        for (p, c) in springs {
+            let delta = pos[c] - pos[p];
+            let dist = delta.length().max(MIN_DISTANCE);
+            let force = delta / dist * (SPRING_STRENGTH * (dist - REST_LENGTH));
+            forces[p] += force;
+            forces[c] -= force;
+        }
+
+        for (i, id) in ids.iter().enumerate() {
+            if pinned.contains(id) {
+                velocities.insert(id.clone(), egui::Vec2::ZERO);
+                continue;
+            }
+            let force = forces[i] + (center - pos[i]) * CENTERING_STRENGTH;
+            let mut vel = velocities.get(id).copied().unwrap_or(egui::Vec2::ZERO);
+            vel = (vel + force * dt) * DAMPING;
+            if vel.length() > MAX_SPEED {
+                vel *= MAX_SPEED / vel.length();
+            }
+            if vel.length() < SETTLE_SPEED {
+                vel = egui::Vec2::ZERO;
+            }
+            if let Some(p) = positions.get_mut(id) {
+                *p += vel * dt;
+            }
+            match velocities.get_mut(id) {
+                Some(v) => *v = vel,
+                None => {
+                    velocities.insert(id.clone(), vel);
+                }
+            }
+        }
+    }
+
+    /// Wave 2 (H3): `step_sized` over 40 cards for 90 settle steps matches today's copy bit for bit: sized and unsized
+    /// cards, two on one point (the `spawn_jitter` direction), springs, and one pinned card.
+    #[test]
+    fn step_sized_matches_reference_bit_for_bit() {
+        let ids: Vec<String> = (0..40).map(|i| format!("c{i:02}")).collect();
+        let mut positions: HashMap<String, egui::Vec2> = ids
+            .iter()
+            .enumerate()
+            .map(|(i, id)| (id.clone(), egui::vec2((i % 8) as f32 * 150.0, (i / 8) as f32 * 90.0)))
+            .collect();
+        let c00 = positions["c00"];
+        positions.insert("c01".into(), c00);
+        let mut velocities: HashMap<String, egui::Vec2> = ids.iter().map(|id| (id.clone(), egui::Vec2::ZERO)).collect();
+        let sizes: HashMap<String, egui::Vec2> = (0..40)
+            .filter(|i: &usize| !i.is_multiple_of(5))
+            .map(|i| (ids[i].clone(), egui::vec2(160.0 + i as f32, 100.0)))
+            .collect();
+        let edges: Vec<(String, String)> = (1..13).map(|i| ("c00".to_string(), ids[3 * i].clone())).collect();
+        let pinned = HashSet::from(["c07".to_string()]);
+        let (mut ref_positions, mut ref_velocities) = (positions.clone(), velocities.clone());
+        for _ in 0..90 {
+            step_sized(&mut positions, &mut velocities, &edges, &pinned, &sizes, egui::Vec2::ZERO, 1.0 / 60.0);
+            step_sized_reference(
+                &mut ref_positions,
+                &mut ref_velocities,
+                &edges,
+                &pinned,
+                &sizes,
+                egui::Vec2::ZERO,
+                1.0 / 60.0,
+            );
+        }
+        let bits = |map: &HashMap<String, egui::Vec2>| {
+            let mut all: Vec<(String, u32, u32)> =
+                map.iter().map(|(id, v)| (id.clone(), v.x.to_bits(), v.y.to_bits())).collect();
+            all.sort();
+            all
+        };
+        assert_eq!(bits(&positions), bits(&ref_positions));
+        assert_eq!(bits(&velocities), bits(&ref_velocities));
+        assert_ne!(positions["c00"], positions["c01"], "the pair on one point pushed apart");
+    }
+
     #[test]
     fn connected_pair_settles_near_rest_length() {
         let mut positions = HashMap::new();

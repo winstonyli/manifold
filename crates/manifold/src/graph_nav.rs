@@ -614,6 +614,32 @@ mod tests {
         }
     }
 
+    /// Wave 2 (H3): one `settle_current_level` (90 steps of the O(n²) pair loop) at the top level (about 675 cards)
+    /// and in the first group (about 167), from a grid. Timing, not correctness, so ignored:
+    /// `cargo test --release -j 8 -p manifold --bins settle_cost -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn settle_cost() {
+        use crate::bench::{level_fixture, report, spread, timed};
+        let mut f = level_fixture(false);
+        spread(&mut f);
+        let levels = [None, Some(f.groups[0].clone())];
+        let mut app = f.app;
+        let start = app.layout.clone();
+        for level in levels {
+            app.current_group = level.clone();
+            let cards = app.nodes.keys().filter(|id| app.in_level(id)).count();
+            let what = format!("settle, {} ({cards} cards)", if level.is_some() { "g0" } else { "top" });
+            report(
+                &what,
+                timed(10, || {
+                    app.layout = start.clone();
+                    app.settle_current_level();
+                }),
+            );
+        }
+    }
+
     fn scan_len(app: &App) -> usize {
         app.level_scan().layers.concat().len()
     }
