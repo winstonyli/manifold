@@ -75,11 +75,13 @@ a_winpid=""
 b_winpid=""
 c_winpid=""
 d_winpid=""
+nonce_pid="" # scenario 3's page server
 cleanup() {
     local status=$?
     for wp in "$a_winpid" "$b_winpid" "$c_winpid" "$d_winpid"; do
         [ -n "$wp" ] && taskkill //F //PID "$wp" >/dev/null 2>&1
     done
+    [ -n "$nonce_pid" ] && kill_tree "$nonce_pid"
     rm -rf "$profile" "$out"
     exit $status
 }
@@ -392,6 +394,7 @@ echo "scenario 12: ok ($n12 holds $got12)"
 
 echo "=== scenario 3: a url that changes on every load ==="
 python -P "$repo_root/scripts/nonce_server.py" "$out/hits" 240 >"$out/port" 2>"$out/server.err" </dev/null &
+nonce_pid=$!
 wait_file "$out/port"
 port="$(tr -d '\r\n' <"$out/port")"
 hits() { cat "$out/hits" 2>/dev/null || echo 0; }
