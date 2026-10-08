@@ -91,6 +91,8 @@ pub fn step_sized(
     ids.sort_unstable();
     let index: HashMap<&str, usize> = ids.iter().enumerate().map(|(i, id)| (id.as_str(), i)).collect();
     let pos: Vec<egui::Vec2> = ids.iter().map(|id| positions[id]).collect();
+    // Each card's size, indexed like `pos`: looked up once per step, not twice per pair.
+    let size: Vec<Option<egui::Vec2>> = ids.iter().map(|id| sizes.get(id).copied()).collect();
     let mut forces = vec![egui::Vec2::ZERO; ids.len()];
 
     // Pairwise repulsion: O(n^2) over plain vectors.
@@ -112,8 +114,8 @@ pub fn step_sized(
             forces[j] -= force;
 
             // Card extents: push apart along the axis that overlaps least.
-            let (Some(a), Some(b)) = (sizes.get(&ids[i]), sizes.get(&ids[j])) else { continue };
-            let reach = (*a + *b) / 2.0 + egui::Vec2::splat(CARD_GAP);
+            let (Some(a), Some(b)) = (size[i], size[j]) else { continue };
+            let reach = (a + b) / 2.0 + egui::Vec2::splat(CARD_GAP);
             let overlap = egui::vec2(reach.x - delta.x.abs(), reach.y - delta.y.abs());
             if overlap.x > 0.0 && overlap.y > 0.0 {
                 // Capped like the soft repulsion: a card dropped deep inside
