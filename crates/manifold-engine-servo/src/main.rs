@@ -197,8 +197,13 @@ fn main() {
     // Filled by the `QueryPageState` script callback, drained and sent each tick.
     let pending_page_state: Rc<RefCell<Option<ipc_protocol::PageState>>> = Rc::new(RefCell::new(None));
 
+    // As the WebView2 host: an initial URL that doesn't parse opens about:blank instead of panicking.
+    let start = Url::parse(&initial_url).unwrap_or_else(|err| {
+        eprintln!("initial url {initial_url:?} doesn't parse ({err}); opening about:blank");
+        Url::parse("about:blank").expect("about:blank parses")
+    });
     let webview = WebViewBuilder::new(&servo, rendering_context.clone() as Rc<dyn RenderingContext>)
-        .url(Url::parse(&initial_url).expect("parse initial url"))
+        .url(start)
         .delegate(delegate.clone())
         .build();
 

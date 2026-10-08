@@ -259,8 +259,13 @@ fn main() {
         }
     }
 
+    // A tab's stored URL can be anything (an old build's, an import's): one WebView2 rejects opens about:blank,
+    // where the user can type another, instead of panicking the host into the crash-respawn loop.
     unsafe {
-        webview.Navigate(&HSTRING::from(&initial_url)).expect("initial navigate");
+        if let Err(err) = webview.Navigate(&HSTRING::from(&initial_url)) {
+            eprintln!("initial navigate to {initial_url:?} failed ({err}); opening about:blank");
+            let _ = webview.Navigate(&HSTRING::from("about:blank"));
+        }
     }
 
     let mut capture = Capture::new(&root_visual).expect("create capture pipeline");
