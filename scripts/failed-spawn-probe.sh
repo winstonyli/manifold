@@ -19,6 +19,8 @@ exe="$repo_root/target/debug/manifold.exe"
 . "$repo_root/scripts/fresh-exe.sh"
 # shellcheck source=winpid.sh
 . "$repo_root/scripts/winpid.sh"
+# shellcheck source=lib.sh
+. "$repo_root/scripts/lib.sh"
 require_fresh_exe "$exe" || exit 1
 export PYTHONPATH="$(cygpath -w "$repo_root/scripts")"
 # Not under the repo: a path with a space (this one has "Winston Li") stops the app reading its commands.
@@ -35,8 +37,7 @@ mkdir -p "$out/bin"
 cp "$exe" "$out/bin/manifold.exe"
 exe="$out/bin/manifold.exe"
 profile="$out/appdata"
-mkdir -p "$profile/manifold"
-echo '{"has_shown_first_launch_demo": true, "default_starting_engine": "webview2"}' >"$profile/manifold/settings.json"
+seed_settings "$profile"
 echo '{"nodes": []}' >"$profile/seed.json"
 "$exe" --import-json "$(cygpath -w "$profile/seed.json")" --out "$(cygpath -w "$profile/manifold/session.mnf")" >/dev/null
 

@@ -31,6 +31,8 @@ exe="$repo_root/target/debug/manifold.exe"
 . "$repo_root/scripts/fresh-exe.sh"
 # shellcheck source=winpid.sh
 . "$repo_root/scripts/winpid.sh"
+# shellcheck source=lib.sh
+. "$repo_root/scripts/lib.sh"
 require_fresh_exe "$exe" || exit 1
 # The inline python below reads EXPORTSTATE cards through scripts/export_state.py.
 export PYTHONPATH="$(cygpath -w "$repo_root/scripts")"
@@ -76,7 +78,7 @@ for engine in ${ENGINES:-webview2 cef}; do
     dirty) path="/tall?dirty=1" ;;
     *) path=/ ;;
     esac
-    echo "{\"has_shown_first_launch_demo\": true, \"default_starting_engine\": \"$engine\"}" >"$profile/manifold/settings.json"
+    seed_settings "$profile" "$engine"
     echo "{\"nodes\": [{\"id\": \"t1\", \"type\": \"application/vnd.manifold.tab\", \"url\": \"http://127.0.0.1:$port$path\", \"engine\": \"$engine\", \"pos\": [0.0, 0.0]}]}" >"$profile/seed.json"
     "$exe" --import-json "$(cygpath -w "$profile/seed.json")" --out "$(cygpath -w "$profile/manifold/session.mnf")" >/dev/null
 

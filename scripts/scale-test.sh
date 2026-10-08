@@ -18,6 +18,8 @@ exe="$repo_root/target/debug/manifold.exe"
 . "$repo_root/scripts/fresh-exe.sh"
 # shellcheck source=winpid.sh
 . "$repo_root/scripts/winpid.sh"
+# shellcheck source=lib.sh
+. "$repo_root/scripts/lib.sh"
 require_fresh_exe "$exe"
 [ $# -gt 0 ] || { sed -n 2p "$0"; exit 1; }
 # The inline python below reads EXPORTSTATE cards through scripts/export_state.py.
@@ -59,8 +61,7 @@ tree_memory() {
 
 for n in "$@"; do
     profile="$out/appdata-$n"
-    mkdir -p "$profile/manifold"
-    echo "{\"has_shown_first_launch_demo\": true, \"default_starting_engine\": \"$engine\"}" >"$profile/manifold/settings.json"
+    seed_settings "$profile" "$engine"
     {
         printf '{"nodes": ['
         for i in $(seq 1 "$n"); do

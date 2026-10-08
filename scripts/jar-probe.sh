@@ -23,6 +23,8 @@ repo="$(cd "$(dirname "$0")/.." && pwd)"
 sp="$repo/scripts"
 # shellcheck source=winpid.sh
 . "$sp/winpid.sh"
+# shellcheck source=lib.sh
+. "$sp/lib.sh"
 exe="$repo/target/debug/manifold.exe"
 host="${JAR_PROBE_HOST:-jar.localhost}"
 out="$(mktemp -d)"
@@ -34,9 +36,9 @@ trap '[ -n "$app" ] && kill_tree "$app"; kill "$srv" 2>/dev/null' EXIT
 for _ in $(seq 50); do [ -s "$out/port" ] && break; sleep 0.1; done
 port="$(cat "$out/port")"
 base="http://$host:$port"
-profile="$out/appdata"; mkdir -p "$profile/manifold"
+profile="$out/appdata"
 # The home page is what NEWTAB opens: tab B of the two-tab run below.
-echo "{\"has_shown_first_launch_demo\": true, \"default_starting_engine\": \"webview2\", \"home_page\": \"$base/whoami?b\", \"cef_directory\": \"$(cygpath -m "$repo/target/debug/cef-runtime")\"}" >"$profile/manifold/settings.json"
+seed_settings "$profile" webview2 ", \"home_page\": \"$base/whoami?b\", \"cef_directory\": \"$(cygpath -m "$repo/target/debug/cef-runtime")\""
 
 # wanted <run>: RUNS is empty or names it.
 wanted() { [ -z "${RUNS:-}" ] || [[ " $RUNS " == *" $1 "* ]]; }

@@ -34,6 +34,8 @@ exe="$repo_root/target/debug/manifold.exe"
 . "$repo_root/scripts/fresh-exe.sh"
 # shellcheck source=winpid.sh
 . "$repo_root/scripts/winpid.sh"
+# shellcheck source=lib.sh
+. "$repo_root/scripts/lib.sh"
 require_fresh_exe "$exe" || exit 1
 fg_ps1="$(cygpath -w "$repo_root/scripts/foreground.ps1")"
 # Not under the repo: a path with a space (this one has "Winston Li") stops the app reading its commands.
@@ -65,8 +67,7 @@ nlinks() { py 'import json,sys; print(len(json.load(open(sys.argv[1], encoding="
 launch() {
     dir="$out/$1"
     local profile="$dir/appdata"
-    mkdir -p "$profile/manifold"
-    echo '{"has_shown_first_launch_demo": true, "default_starting_engine": "webview2"}' >"$profile/manifold/settings.json"
+    seed_settings "$profile"
     cat >"$profile/seed.json" <<'EOF'
 {"nodes": [
  {"id": "t1", "type": "application/vnd.manifold.tab", "url": "about:blank", "engine": "webview2", "pos": [0.0, 0.0]},

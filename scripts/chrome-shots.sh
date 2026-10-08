@@ -37,6 +37,8 @@ exe="$repo_root/target/debug/manifold.exe"
 . "$repo_root/scripts/fresh-exe.sh"
 # shellcheck source=winpid.sh
 . "$repo_root/scripts/winpid.sh"
+# shellcheck source=lib.sh
+. "$repo_root/scripts/lib.sh"
 require_fresh_exe "$exe" || exit 1
 # The inline python below reads EXPORTSTATE cards through scripts/export_state.py.
 export PYTHONPATH="$(cygpath -w "$repo_root/scripts")"
@@ -61,8 +63,7 @@ trap cleanup EXIT
 
 w() { cygpath -w "$1"; }
 profile="$work/appdata"
-mkdir -p "$profile/manifold"
-echo '{"has_shown_first_launch_demo": true, "default_starting_engine": "webview2"}' >"$profile/manifold/settings.json"
+seed_settings "$profile"
 # Rows for the Bookmarks and History popups.
 echo '[{"title": "Example Domain", "url": "https://example.com/", "folder": null}, {"title": "Rust docs", "url": "https://doc.rust-lang.org/", "folder": "Reading"}, {"title": "A rather long page title that has to be truncated by the popup", "url": "https://example.org/long", "folder": "Reading"}]' >"$profile/manifold/bookmarks.json"
 echo '[{"title": "Example Domain", "url": "https://example.com/"}, {"title": "Wikipedia", "url": "https://en.wikipedia.org/"}, {"title": "Hacker News", "url": "https://news.ycombinator.com/"}]' >"$profile/manifold/history.json"
@@ -602,8 +603,8 @@ if has engine-states-picker || has engine-states-settings || has engine-install-
     # engine_app NAME [SETTINGS-EXTRA]: restart the instance on a fresh profile "eng-NAME" (the settings
     # page open). `eng_data` is where the runtime lives: etcetera's data dir under this APPDATA.
     engine_app() {
-        profile="$work/eng-$1"; mkdir -p "$profile/manifold"
-        echo "{\"has_shown_first_launch_demo\": true, \"default_starting_engine\": \"webview2\"${2:-}}" >"$profile/manifold/settings.json"
+        profile="$work/eng-$1"
+        seed_settings "$profile" webview2 "${2:-}"
         eng_data="$profile/manifold/manifold/data/engine-hosts"; mkdir -p "$eng_data"
         cat >"$work/seed-eng.json" <<SEED
 {"nodes": [
