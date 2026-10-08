@@ -1,4 +1,4 @@
-"""EXPORTSTATE card helpers shared by the probe scripts (headless-smoke-test.sh,
+"""EXPORTSTATE card helpers shared by the probe scripts (smoke_eval.py for headless-smoke-test.sh,
 chrome-shots.sh, page-kind-probe.sh, sleep-probe.sh, scale-test.sh,
 json-level-probe.py).
 

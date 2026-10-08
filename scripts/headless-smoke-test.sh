@@ -37,8 +37,10 @@ if [ ! -x "$exe" ]; then
     exit 1
 fi
 . "$repo_root/scripts/fresh-exe.sh"
+# shellcheck source=winpid.sh
+. "$repo_root/scripts/winpid.sh"
 require_fresh_exe "$exe" || exit 1
-# The inline python below reads EXPORTSTATE cards through scripts/export_state.py.
+# scripts/smoke_eval.py's checks read EXPORTSTATE cards through scripts/export_state.py.
 export PYTHONPATH="$(cygpath -w "$repo_root/scripts")"
 
 mkdir -p "$out_dir"
@@ -123,17 +125,7 @@ state() {
     rm -f "$path"
     send "EXPORTSTATE $out_dir_win\\$1.json"
     wait_for_file "$path"
-    python - "$path" "$2" "${3:-}" <<'EOF'
-import json, os, sys
-from urllib.parse import parse_qs, urlparse
-s = json.load(open(sys.argv[1], encoding="utf-8"))
-url = s["focused_url"] or ""
-q = parse_qs(urlparse(url).query).get("q", [""])[0]
-row = os.environ.get("ROW", "")
-v = eval(sys.argv[2])
-print(url if sys.argv[3] == "url" else v)
-sys.exit(0 if v else 1)
-EOF
+    python -P "$repo_root/scripts/smoke_eval.py" state "$path" "$2" "${3:-}" </dev/null
 }
 
 check_state() {
@@ -169,10 +161,19 @@ browser_pid=$BROWSER_PID
 
 send() { echo "$1" >&"${BROWSER[1]}"; }
 
+# The coproc's pid is the MSYS proxy whose Windows tree holds manifold.exe (two-instance-test.sh says how), so
+# kill_tree, not kill: a kill of that pid stops only the proxy, and manifold.exe could outlive an interrupted run
+# with its profile locked (ten such profiles were left in target/). The profile's session.mnf.lock goes only once
+# manifold.exe is gone, so the rm retries for up to 5 s.
 cleanup() {
-    kill "$browser_pid" "$probe_pid" 2>/dev/null || true
+    kill_tree "$browser_pid"
+    kill_tree "$probe_pid"
     wait "$browser_pid" 2>/dev/null
-    rm -rf "$profile"
+    for _ in 1 2 3 4 5; do
+        rm -rf "$profile" 2>/dev/null
+        [ -e "$profile" ] || break
+        sleep 1
+    done
 }
 trap cleanup EXIT
 
@@ -250,28 +251,7 @@ ROW="$second_row" check_state escape_dismiss "Escape closes the dropdown, stays 
 # scripts/export_state.py's names: `card_is(c, TYPE[, loaded])` and the
 # type constants (`TAB`, `NOTE`, `JSON`, ...).
 query() {
-    python - "$out_dir/$1.json" "$2" <<'EOF'
-import json, os, sys
-from export_state import *
-s = json.load(open(sys.argv[1], encoding="utf-8"))
-cards = {c["id"]: c for c in s["cards"]}
-tabs = sorted(i for i, c in cards.items() if card_is(c, TAB))
-groups = sorted(i for i, c in cards.items() if card_is(c, GROUP))
-W, H, TOP = 816, 639, 40  # RESIZE below; the graph toolbar's height, rounded up
-
-def pt(i, x, y):
-    if not (0 <= x < W and TOP <= y < H):
-        sys.stderr.write(f"query: {x:.0f},{y:.0f} ({label(cards[i])} {i}) is off the graph canvas\n")
-    return "%.0f %.0f" % (x, y)
-
-xy = lambda i: pt(i, *cards[i]["screen"])
-lt = lambda i: pt(i, cards[i]["rect"][0] + 3, cards[i]["rect"][1] + 3)
-r = [cards[i]["rect"] for i in tabs]
-bbox = "%.0f %.0f %.0f %.0f" % (max(0, min(x[0] for x in r) - 20), max(TOP, min(x[1] for x in r) - 20),
-                                min(W - 1, max(x[2] for x in r) + 20), min(H - 1, max(x[3] for x in r) + 20)) if r else ""
-env = os.environ
-print(eval(sys.argv[2]))
-EOF
+    python -P "$repo_root/scripts/smoke_eval.py" query "$out_dir/$1.json" "$2" </dev/null
 }
 
 check_query() {
@@ -393,11 +373,7 @@ check_query ejected "ejecting a selected tab also drops it from the selection" \
 # The mouse waits in an empty corner so no card eases toward its hover
 # color.
 send "CLICK 22 17"
-python - "$out_dir/nine.group.json" <<'EOF'
-import json, sys
-tab = lambda i: {"id": f"t{i}", "type": "application/vnd.manifold.tab", "url": "manifold://welcome", "engine": "webview2", "group": "g"}
-json.dump({"nodes": [{"id": "g", "type": "application/vnd.manifold.group", "name": "Nine"}] + [tab(i) for i in range(9)]}, open(sys.argv[1], "w"))
-EOF
+python -P "$repo_root/scripts/smoke_eval.py" nine "$out_dir/nine.group.json" </dev/null
 settle top
 before_nine=$(query top 'groups')
 send "IMPORTGROUP $out_dir_win\nine.group.json"
@@ -412,19 +388,9 @@ check_screenshot "$out_dir/borders.png" "group borders"
 # `border NAME ID RGB` succeeds if a pixel on ID's left edge, at
 # mid-height, is within 40 of RGB (the stroke is about 1 px wide).
 border() {
-    python - "$out_dir/$1.json" "$out_dir/borders.png" "$2" "$3" <<'EOF'
-import json, sys
-from PIL import Image
-cards = {c["id"]: c for c in json.load(open(sys.argv[1], encoding="utf-8"))["cards"]}
-img = Image.open(sys.argv[2]).convert("RGB")
-left, top, _, bottom = cards[sys.argv[3]]["rect"]
-y = round((top + bottom) / 2)
-want = eval(sys.argv[4])
-near = min(sum((a - b) ** 2 for a, b in zip(img.getpixel((x, y)), want)) ** 0.5 for x in range(round(left) - 1, round(left) + 3))
-sys.exit(0 if near < 40 else 1)
-EOF
+    python -P "$repo_root/scripts/smoke_eval.py" border "$out_dir/$1.json" "$out_dir/borders.png" "$2" "$3" </dev/null
 }
-if ! python -c "import PIL" 2>/dev/null; then
+if ! python -P -c "import PIL" </dev/null 2>/dev/null; then
     echo "SKIP: group border colors (needs Pillow: pip install pillow)"
 else
     if border nine "$nine" "(196, 87, 58)"; then pass "a group of 9 has a DANGER_COLOR border"
@@ -567,13 +533,7 @@ printf '%%PDF-1.4\n' >"$out_dir/conv.pdf"
 # `converted NAME FILE KIND` succeeds once NAME.json (a session export) has
 # a KIND node whose url is a file:// one ending in /FILE, and no tab there.
 converted() {
-    python - "$out_dir/$1.json" "$2" "$3" <<'EOF'
-import json, sys
-nodes = json.load(open(sys.argv[1], encoding="utf-8"))["nodes"]
-KINDS = {"json": "application/json", "pdf": "application/pdf"}
-at = lambda n: n.get("url", "").startswith("file://") and n.get("url", "").endswith("/" + sys.argv[2])
-sys.exit(0 if any(n["type"] == KINDS[sys.argv[3]] and at(n) for n in nodes) and not any(n["type"] == "application/vnd.manifold.tab" and at(n) for n in nodes) else 1)
-EOF
+    python -P "$repo_root/scripts/smoke_eval.py" converted "$out_dir/$1.json" "$2" "$3" </dev/null
 }
 # NEWTAB doesn't focus the tab it opens, and a conversion drops to Graph
 # view with nothing focused, so this types into whichever tab NEXTTAB
