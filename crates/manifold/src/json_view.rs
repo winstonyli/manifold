@@ -943,6 +943,134 @@ mod tests {
         assert!(!result.truncated, "exactly MAX_MATCHES: nothing was left out");
     }
 
+    /// Today's `search_with`, kept as M1's reference (wave 2).
+    fn reference_search(root: &Value, query: &str, cancelled: &dyn Fn() -> bool) -> Option<SearchResult> {
+        let mut result = SearchResult::default();
+        let needle = query.to_lowercase();
+        if needle.is_empty() {
+            return Some(result);
+        }
+        // Depth-first, children pushed in reverse so they pop in document order.
+        let mut stack: Vec<(String, Option<&str>, &Value)> = vec![(String::new(), None, root)];
+        let mut visited = 0usize;
+        while let Some((pointer, key, value)) = stack.pop() {
+            visited += 1;
+            if visited.is_multiple_of(4096) && cancelled() {
+                return None;
+            }
+            let key_hit = key.is_some_and(|k| k.to_lowercase().contains(&needle));
+            let value_hit = scalar_text(value).is_some_and(|t| t.to_lowercase().contains(&needle));
+            if key_hit || value_hit {
+                if result.matches.len() == MAX_MATCHES {
+                    result.truncated = true; // a match past the cap: there are more than it shows
+                    break;
+                }
+                for (i, _) in pointer.match_indices('/') {
+                    result.keep.insert(pointer[..i].to_string());
+                }
+                result.keep.insert(pointer.clone());
+                result.hits.insert(pointer.clone());
+                result.matches.push(pointer.clone());
+            }
+            let children: Vec<(String, Option<&str>, &Value)> = match value {
+                Value::Object(map) => {
+                    map.iter().map(|(k, v)| (child_pointer(&pointer, k), Some(k.as_str()), v)).collect()
+                }
+                Value::Array(items) => {
+                    items.iter().enumerate().map(|(i, v)| (child_pointer(&pointer, &i.to_string()), None, v)).collect()
+                }
+                _ => Vec::new(),
+            };
+            stack.extend(children.into_iter().rev());
+        }
+        Some(result)
+    }
+
+    /// Wave 2 (M1): the search's whole result equals today's, for queries chosen to hit its edge cases (case,
+    /// Unicode lowercasing, escaped keys, numbers, booleans, null, the root), at the match cap, and its cancel
+    /// checks come at the same visits.
+    #[test]
+    fn search_matches_reference() {
+        let root = json!({
+            "Name": "Kelvin \u{212A} and \u{130}stanbul",
+            "kayak": "plain ascii",
+            "a/b": {"c~d": "slash and tilde", "\u{DF}": "strasse ss"},
+            "items": [1, 2.5, -3e10, true, false, null, "Item 9", {"item 9": ["x"]}],
+            "~": "/",
+            "": "empty key",
+            "nested": {"deep": {"deeper": ["zzz?", 12_345_678_901_234_567_890u64]}},
+        });
+        let queries = [
+            "",
+            "a",
+            "A",
+            "k",
+            "\u{212A}",
+            "i\u{307}",
+            "\u{130}",
+            "\u{DF}",
+            "ss",
+            "~",
+            "/",
+            "~1",
+            "c~d",
+            "2.5",
+            "-3",
+            "e10",
+            "true",
+            "fal",
+            "null",
+            "item 9",
+            "ITEM",
+            "zzz",
+            "nomatch",
+            "1234567890",
+            "empty",
+        ];
+        for q in queries {
+            assert_eq!(search_with(&root, q, &|| false), reference_search(&root, q, &|| false), "{q:?}");
+        }
+        assert_eq!(
+            search_with(&json!("root text"), "TEXT", &|| false),
+            reference_search(&json!("root text"), "TEXT", &|| false)
+        );
+
+        let many = Value::Array((0..10_005).map(|i| json!(format!("m{i}"))).collect());
+        let new = search(&many, "m");
+        assert!(new.truncated && new.matches.len() == MAX_MATCHES);
+        assert_eq!(Some(new), reference_search(&many, "m", &|| false));
+        type SearchFn = fn(&Value, &str, &dyn Fn() -> bool) -> Option<SearchResult>;
+        let checks = |f: SearchFn, stop_at: usize| {
+            let n = std::cell::Cell::new(0);
+            let result = f(&many, "m", &|| {
+                n.set(n.get() + 1);
+                n.get() >= stop_at
+            });
+            (result, n.get())
+        };
+        assert_eq!(checks(search_with, usize::MAX), checks(reference_search, usize::MAX), "the same cancel checks");
+        assert_eq!(checks(search_with, 2), (None, 2), "a cancel stops it");
+        assert_eq!(checks(reference_search, 2), (None, 2));
+    }
+
+    /// Wave 2 (M1): a UI-thread search (just under `WORKER_SEARCH_NODES`) of 14 000 items of 7 nodes, with many
+    /// matches and with none. Timing, not correctness, so ignored:
+    /// `cargo test --release -j 8 -p manifold --bins json_search_cost -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn json_search_cost() {
+        use crate::bench::{report, timed};
+        let root = Value::Array(
+            (0..14_000)
+                .map(|n| json!({"id": n, "name": format!("item {n}"), "score": n as f64 * 0.37, "tags": ["a", "b"]}))
+                .collect(),
+        );
+        assert!(count_nodes(&root) < WORKER_SEARCH_NODES, "{} nodes: searched on the UI thread", count_nodes(&root));
+        for q in ["item 9", "zzz"] {
+            report(&format!("search {q:?}, 14 000 items"), timed(20, || drop(search(&root, q))));
+        }
+    }
+
     #[test]
     fn outline_rows_follow_open_containers_or_the_search() {
         let root = json!({"a": {"x": 1}, "b": [true]});
