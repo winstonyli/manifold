@@ -55,9 +55,6 @@ py() { python -P -c "$1" "$(cygpath -w "$dir/$2.json")" </dev/null 2>&1 | tr -d 
 # kv <line> <key>: the value of key=value in a helper's output line.
 kv() { printf '%s\n' "$1" | tr ' ' '\n' | sed -n "s/^$2=//p"; }
 status=0
-check() { # name want got
-    if [ "$2" = "$3" ]; then echo "PASS: $1"; else echo "FAIL: $1: got [$3], wanted [$2]"; status=1; fi
-}
 field() { py "import json,sys; print(json.load(open(sys.argv[1], encoding='utf-8'))['$2'])" "$1"; }
 nlinks() { py 'import json,sys; print(len(json.load(open(sys.argv[1], encoding="utf-8"))["links"]))' "$1"; }
 

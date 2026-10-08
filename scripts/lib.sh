@@ -36,3 +36,8 @@ wait_file() {
     echo "timed out waiting for $1" >&2
     return 1
 }
+
+# check NAME WANT GOT: a PASS or FAIL line; a FAIL sets status=1 (the caller starts with status=0).
+check() {
+    if [ "$2" = "$3" ]; then echo "PASS: $1"; else echo "FAIL: $1: got [$3], wanted [$2]"; status=1; fi
+}

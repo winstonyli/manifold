@@ -60,4 +60,9 @@ expect "wait_file: says what it waited for" "timed out waiting for $t/never" "$(
 WAIT_FILE_SECS=1 wait_file "$t/empty" 2>/dev/null
 expect "wait_file: an empty file is not there yet" 1 "$?"
 
+expect "check: a match passes and leaves status" "PASS: same
+status=0" "$(status=0; check same a a; echo "status=$status")"
+expect "check: a mismatch says got and wanted, and sets status" "FAIL: differs: got [b], wanted [a]
+status=1" "$(status=0; check differs a b; echo "status=$status")"
+
 exit $fails

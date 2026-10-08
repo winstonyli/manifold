@@ -87,9 +87,6 @@ summary() {
     py 'import json,sys; l=json.load(open(sys.argv[1], encoding="utf-8"))["links"]; print(len(l), *((l[0]["id"], l[0]["from"], l[0]["to"]) if l else ("-", "-", "-")))' "$1"
 }
 status=0
-check() { # name want got
-    if [ "$2" = "$3" ]; then echo "PASS: $1"; else echo "FAIL: $1: got [$3], wanted [$2]"; status=1; fi
-}
 read -r n1 id1 from1 to1 <<<"$(summary s1)"
 read -r n2 id2 from2 to2 <<<"$(summary s2)"
 read -r n3 _ <<<"$(summary s3)"

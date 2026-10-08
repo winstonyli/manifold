@@ -68,9 +68,6 @@ summary() {
     python -P -c 'import json,sys; from export_state import label; c=json.load(open(sys.argv[1], encoding="utf-8"))["cards"]; print(len(c), c[0]["id"] if c else "-", label(c[0]) if c else "-")' "$(cygpath -w "$1")" </dev/null 2>&1
 }
 status=0
-check() { # name want got
-    if [ "$2" = "$3" ]; then echo "PASS: $1"; else echo "FAIL: $1: got [$3], wanted [$2]"; status=1; fi
-}
 read -r n1 id1 label1 <<<"$(summary "$out/s1.json")"
 read -r n2 id2 _ <<<"$(summary "$out/s2.json")"
 read -r n3 id3 _ <<<"$(summary "$out/s3.json")"
