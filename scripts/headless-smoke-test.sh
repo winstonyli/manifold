@@ -71,7 +71,7 @@ export APPDATA="$(cygpath -w "$profile")"
 # don't depend on the network. Its lifetime covers the whole run; `cleanup` kills it.
 python -P "$repo_root/scripts/probe_server.py" "$(cygpath -w "$profile/port")" "$(cygpath -w "$profile/page.log")" 1800 </dev/null >/dev/null 2>&1 &
 probe_pid=$!
-for _ in $(seq 50); do [ -s "$profile/port" ] && break; sleep 0.1; done
+for _ in $(seq 300); do [ -s "$profile/port" ] && break; sleep 0.1; done
 export MANIFOLD_SUGGESTIONS_URL="http://127.0.0.1:$(cat "$profile/port")/ac/"
 
 fail=0
@@ -194,7 +194,7 @@ send "WAITTABS"
 # runs out of 3 without that). Keep it first: any command in between
 # renders a frame of its own and would hide a regression.
 send "CLICK 407 332"
-sleep 1
+send WAITIDLE
 check_state tab_view "clicking the just-spawned root node enters Tab view" 's["tab_view"]'
 
 send "ADDRESSBAR weather"
@@ -209,10 +209,10 @@ first_row=$(state weather_rows 's["suggestions"][0]')
 # had to move this twice — most recently when Tab view's separate tab-strip
 # and toolbar bars were merged into one, shrinking chrome height 58->32.)
 send "CLICK 283 42"
-sleep 3 # navigation + first paint
+ROW="$first_row" wait_state after_click "clicking the first suggestion searches it" 'q == row'
+send WAITIDLE # first paint
 send "SCREENSHOT $out_dir_win\\after_click.png"
 check_screenshot "$out_dir/after_click.png" "post-click navigation"
-ROW="$first_row" check_state after_click "clicking the first suggestion searches it" 'q == row'
 
 # Arrow-key highlight + Enter-accept: two ARROWDOWNs highlight the 2nd row
 # (the first press highlights the 1st), and ENTER searches that row's
@@ -224,10 +224,10 @@ send "ARROWDOWN"
 check_state highlighted "two ARROWDOWNs highlight the 2nd row" 's["highlighted"] == 1'
 second_row=$(state highlighted 's["suggestions"][1]')
 send "ENTER"
-sleep 3
+ROW="$second_row" wait_state arrow_nav "Enter searches the highlighted row" 'q == row'
+send WAITIDLE # first paint
 send "SCREENSHOT $out_dir_win\\arrow_nav.png"
 check_screenshot "$out_dir/arrow_nav.png" "arrow-key navigation"
-ROW="$second_row" check_state arrow_nav "Enter searches the highlighted row" 'q == row'
 
 # Escape dismisses the dropdown without leaving Tab view (as opposed to a
 # second Escape / one with no dropdown showing, which leaves to Graph
@@ -289,7 +289,7 @@ settle() {
 # frame can push past egui's double-click delay.
 send "ESCAPE"
 send "NEWGROUP"
-sleep 1 # Tab-to-Graph transition, layout settle
+send WAITIDLE # Tab-to-Graph transition, layout settle
 send "SCREENSHOT $out_dir_win\group_card.png"
 check_screenshot "$out_dir/group_card.png" "group card"
 # A "Saved <path>" toast would cover the bottom-left of the window, and a
@@ -521,8 +521,7 @@ check_query after_kinds "a dropped .bin becomes a Download card" "'$bin_id' != '
 check_query after_kinds "a dropped .html becomes a Tab card" "'$html_id' != 'none'"
 if [ "$html_id" != none ]; then
     send "CLICK $(query after_kinds "xy('$html_id')")"
-    sleep 1
-    check_state html_tab "the dropped .html tab's url is a file:// URL" 'url.startswith("file://")'
+    wait_state html_tab "the dropped .html tab's url is a file:// URL" 'url.startswith("file://")'
 fi
 
 # Engine-side conversion, no network: a tab typed to a local JSON or
@@ -545,15 +544,15 @@ convert_focused_tab() { # $1=file $2=kind (as EXPORTSESSION names it)
     state "focus_$2" 's["tab_view"]' >/dev/null || send "NEXTTAB"
     # Let the tab's own load settle, or its address-bar update overwrites
     # the typed url before ENTER.
-    send "SLEEP 3"
+    send WAITIDLE
     if ! state "focus_$2" 's["tab_view"] and url' >/dev/null; then
         failed "no tab focused to type $1 into (see focus_$2.json)"
         return
     fi
     send "ADDRESSBAR $url"
-    send "SLEEP 1"
+    send WAITIDLE
     send "ENTER"
-    for i in $(seq 1 50); do
+    for i in $(seq 1 150); do
         rm -f "$out_dir/$name.json"
         send "EXPORTSESSION $out_dir_win\\$name.json"
         wait_for_file "$out_dir/$name.json"
