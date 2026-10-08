@@ -2247,6 +2247,117 @@ mod tests {
         assert_eq!(app.mirror.parent(&a), None, "and draws nothing");
     }
 
+    /// Wave 2 (H2 / P2): whole `build_graph_ui` frames over the 2000-node fixture spread on a grid: idle at the top
+    /// level, hovering a card, in pick-target mode, with the node menu open, filtered, and idle in the first group.
+    /// Timing, not correctness, so ignored:
+    /// `cargo test --release -j 8 -p manifold --bins graph_frame_cost -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn graph_frame_cost() {
+        use crate::bench::{level_fixture, report, spread, timed};
+        let ctx = egui::Context::default();
+        crate::theme::apply_fonts(&ctx);
+        let mut f = level_fixture(false);
+        spread(&mut f);
+        let mut app = f.app;
+        let frame = |app: &mut App, events: Vec<egui::Event>| {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1024.0, 768.0))),
+                events,
+                ..Default::default()
+            };
+            let mut output = ctx.run_ui(input, |ui| app.build_graph_ui(ui));
+            output.textures_delta.clear();
+        };
+        let run = |app: &mut App, what: &str, events: Vec<egui::Event>| {
+            for _ in 0..5 {
+                frame(app, events.clone());
+            }
+            report(what, timed(50, || frame(app, events.clone())));
+        };
+        let note = f
+            .nodes
+            .iter()
+            .find(|id| app.mirror.group(id).is_none() && app.nodes[*id].as_note().is_some())
+            .expect("a top-level note")
+            .clone();
+        app.camera.jump_to(app.card_rect(&note).unwrap().expand(300.0));
+        for _ in 0..3 {
+            frame(&mut app, vec![]);
+        }
+        run(&mut app, "idle, top level", vec![]);
+        let on_note = app.graph_world_rect_to_screen(app.card_rect(&note).unwrap()).center();
+        run(&mut app, "hovering a card", vec![egui::Event::PointerMoved(on_note)]);
+        app.connecting = Some((note.clone(), crate::caps::LINK));
+        run(&mut app, "pick-target mode (LINK)", vec![]);
+        assert!(app.connecting.is_some(), "the mode stayed on");
+        app.connecting = None;
+        app.node_menu = Some((note.clone(), egui::pos2(500.0, 400.0)));
+        run(&mut app, "node menu open", vec![]);
+        assert!(app.node_menu.is_some(), "the menu stayed open");
+        app.node_menu = None;
+        app.graph_filter = "abc".into();
+        run(&mut app, "filtered", vec![]);
+        app.graph_filter.clear();
+        app.switch_group_level(Some(f.groups[0].clone()));
+        for _ in 0..3 {
+            frame(&mut app, vec![]);
+        }
+        run(&mut app, "idle, first group", vec![]);
+    }
+
+    /// Wave 2 (H4): keyboard navigation shows each card's Tab slot (`card_tab_order`'s index plus one) at its
+    /// top-left corner. Pins the slot lookup before it moves to a per-pass map.
+    #[test]
+    fn each_card_shows_its_tab_slot_badge() {
+        let ctx = egui::Context::default();
+        crate::theme::apply_fonts(&ctx);
+        let mut app = App::default();
+        for k in 0..3 {
+            let id = app.alloc_node_id();
+            let note = Runtime::Note(NotePayload { text: "n".into(), editing: false });
+            app.insert_placeholder_node(id, egui::vec2(400.0 * k as f32, 0.0), crate::store::model::Kind::Note, note);
+        }
+        let frame = |app: &mut App| {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1024.0, 768.0))),
+                ..Default::default()
+            };
+            let mut output = ctx.run_ui(input, |ui| app.build_graph_ui(ui));
+            output.textures_delta.clear();
+            output
+        };
+        for _ in 0..3 {
+            frame(&mut app);
+        }
+        app.camera.jump_to(app.fit_all_nodes_scene_rect());
+        frame(&mut app);
+        app.card_nav_active = true; // read when the pass starts; the frame may clear it at its end
+        let output = frame(&mut app);
+        let badges: Vec<(String, egui::Pos2)> = output
+            .shapes
+            .iter()
+            .filter_map(|s| match &s.shape {
+                egui::Shape::Text(t) if t.galley.text().parse::<usize>().is_ok() => {
+                    Some((t.galley.text().to_string(), t.galley.rect.translate(t.pos.to_vec2()).center()))
+                }
+                _ => None,
+            })
+            .collect();
+        let order = app.card_tab_order();
+        assert_eq!(order.len(), 3);
+        for (k, id) in order.iter().enumerate() {
+            // The rect the card is drawn at, as `a_click_finishes_or_cancels_pick_target_mode` reads it.
+            let item = app.level_items().into_iter().find(|i| i.id == *id).expect("on the level");
+            let corner = app.graph_world_rect_to_screen(item.rect).left_top();
+            let number = (k + 1).to_string();
+            assert!(
+                badges.iter().any(|(text, at)| *text == number && at.distance(corner) < 15.0),
+                "{id}: badge {number} near {corner:?}; badges {badges:?}"
+            );
+        }
+    }
+
     #[test]
     fn easing_the_camera_stops_a_glide() {
         let mut camera = GraphCamera::new();

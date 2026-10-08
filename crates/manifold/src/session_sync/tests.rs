@@ -2943,6 +2943,48 @@ fn teardown_cancels_pending_pdf_renders() {
     assert!(!app.pdf_renderer.is_cancelled(&note), "only PDFs are marked");
 }
 
+/// Wave 2 (teardown order): replacing the session queues a delete for every live non-jar node of the document and
+/// for every link (saved or not), leaves nothing to create, and leaves the mirror no links.
+#[test]
+fn teardown_queues_every_node_and_link_delete() {
+    let mut app = app_on(&temp_dir("teardown-queues").join("session.mnf"), 1);
+    let notes: Vec<String> = (0..6).map(|_| a_note(&mut app)).collect();
+    app.connect(LINK, &notes[0], &notes[1]).unwrap();
+    app.connect(LINK, &notes[2], &notes[3]).unwrap();
+    assert!(app.save_session());
+    app.connect(LINK, &notes[4], &notes[5]).unwrap(); // in the mirror, not saved yet
+    a_note(&mut app); // queued for create, not saved yet
+    let mut want: BTreeSet<NodeId> =
+        app.journal.as_ref().unwrap().doc().live().filter(|(_, n)| n.kind() != Kind::Jar).map(|(id, _)| id).collect();
+    want.extend(app.mirror.link_ids());
+    assert!(want.len() >= 9, "six notes and three links: {want:?}");
+    app.teardown_running_session();
+    assert_eq!(app.pending_deletes, want);
+    assert!(app.pending_creates.is_empty());
+    assert_eq!(app.mirror.link_ids().count(), 0);
+}
+
+/// Wave 2 (teardown order): replacing a session of 2000 notes and 300 links. Timing, not correctness, so ignored:
+/// `cargo test --release -j 8 -p manifold --bins teardown_cost -- --ignored --nocapture`.
+#[test]
+#[ignore]
+fn teardown_cost() {
+    use crate::bench::{best_median, report};
+    let mut times = Vec::new();
+    for _ in 0..10 {
+        let mut app = app_on(&temp_dir("teardown-cost").join("session.mnf"), 1);
+        let notes: Vec<String> = (0..2000).map(|_| a_note(&mut app)).collect();
+        for k in 0..300 {
+            app.create_link(&notes[k], &notes[(k * 7 + 1) % 2000]);
+        }
+        assert!(app.save_session());
+        let start = std::time::Instant::now();
+        app.teardown_running_session();
+        times.push(start.elapsed());
+    }
+    report("teardown, 2000 notes and 300 links", best_median(times));
+}
+
 fn red() -> FieldValue {
     color_value(Some(egui::Color32::RED))
 }

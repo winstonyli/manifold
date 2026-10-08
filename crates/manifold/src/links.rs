@@ -236,3 +236,109 @@ impl App {
             .collect()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::caps::{LINK, OPENED_FROM};
+    use crate::node::{DownloadPayload, NotePayload, Runtime};
+    use crate::session_sync::tests::{add, sleeping_tab};
+    use crate::store::model::{field, FieldValue, Kind, NodeId};
+    use crate::store::testutil::XorShift;
+    use crate::App;
+
+    /// Wave 2 (H2): `valid_targets` holds exactly the cards `check_connect` accepts, for every source and edge, over
+    /// random cards (notes, sleeping tabs, completed and running downloads, two groups) in three levels, random
+    /// connects, a half-made link and a dangling one; `has_valid_target` is its non-emptiness.
+    #[test]
+    fn valid_targets_match_check_connect() {
+        let mut app = App::default();
+        let groups: Vec<String> = (0..2)
+            .map(|_| {
+                let g = app.alloc_node_id();
+                app.insert_group_at(g.clone(), None);
+                g
+            })
+            .collect();
+        let download = |completed| {
+            Runtime::Download(DownloadPayload {
+                path: "f.bin".into(),
+                bytes_received: 1,
+                total_bytes: Some(2),
+                completed,
+                failed: false,
+            })
+        };
+        for i in 0..60usize {
+            let id = match i % 4 {
+                0 => add(&mut app, Kind::Note, Runtime::Note(NotePayload { text: "n".into(), editing: false })),
+                1 => add(&mut app, Kind::Tab, sleeping_tab("https://a.test/", "a")),
+                2 => add(&mut app, Kind::Download, download(true)),
+                _ => add(&mut app, Kind::Download, download(false)),
+            };
+            if !i.is_multiple_of(3) {
+                app.edit_group(&id, Some(groups[i % 3 - 1].clone()));
+            }
+        }
+        // Sorted: `HashMap` order is random, and the picks must repeat.
+        let mut ids: Vec<String> = app.nodes.keys().cloned().collect();
+        ids.sort();
+        let mut rng = XorShift(0x5eed_1234);
+        let mut links = 0;
+        for _ in 0..300 {
+            let (from, to) = (&ids[rng.below(ids.len() as u64) as usize], &ids[rng.below(ids.len() as u64) as usize]);
+            let edge = if rng.below(2) == 0 { LINK } else { OPENED_FROM };
+            if app.connect(edge, from, to).is_ok() && edge == LINK {
+                links += 1;
+            }
+        }
+        assert!(links >= 15, "{links} links made: raise the connect count");
+        let (a, b, c) = (&ids[0], &ids[1], &ids[2]);
+        let half = app.create_link(a, b);
+        app.edit_field(&half, field::TO, FieldValue::Id(None));
+        let ghost: NodeId = app.alloc_node_id().parse().unwrap(); // never inserted
+        let dangling = app.create_link(a, c);
+        app.edit_field(&dangling, field::TO, FieldValue::Id(Some(ghost)));
+        for from in &ids {
+            for edge in [LINK, OPENED_FROM] {
+                let targets = app.valid_targets(edge, from);
+                for to in &ids {
+                    let accepted = app.check_connect(edge, from, to).is_ok();
+                    assert_eq!(targets.binary_search(to).is_ok(), accepted, "{edge} {from} -> {to}");
+                }
+                assert_eq!(app.has_valid_target(edge, from), !targets.is_empty(), "{edge} {from}");
+            }
+        }
+    }
+
+    /// Wave 2 (H2): pick-target mode's per-frame queries at the first group of the 2000-node fixture, with 20, 100
+    /// and 300 links among its cards. Timing, not correctness, so ignored:
+    /// `cargo test --release -j 8 -p manifold --bins link_query_cost -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn link_query_cost() {
+        use crate::bench::{level_fixture, report, timed};
+        let f = level_fixture(false);
+        let g0 = f.groups[0].clone();
+        let mut app = f.app;
+        let at: Vec<String> = f.nodes.iter().filter(|id| app.mirror.group(id) == Some(g0.as_str())).cloned().collect();
+        let n = at.len();
+        let mut k = 0;
+        for links in [20usize, 100, 300] {
+            while app.mirror.link_ids().count() < links {
+                let (a, b) = (&at[k % n], &at[(k * 7 + 1) % n]);
+                if a != b {
+                    app.create_link(a, b);
+                }
+                k += 1;
+            }
+            let from = &at[0];
+            report(&format!("valid_targets(LINK), L={links}"), timed(50, || drop(app.valid_targets(LINK, from))));
+            report(
+                &format!("has_valid_target(LINK), L={links}"),
+                timed(50, || {
+                    std::hint::black_box(app.has_valid_target(LINK, from));
+                }),
+            );
+        }
+    }
+}
