@@ -500,10 +500,10 @@ impl App {
         self.dragging.as_deref().filter(|dragged| self.nodes.contains_key(*dragged) && self.in_level(dragged))
     }
 
+    /// Ends a drag that is no longer live (`live_drag`), or any drag when Graph view isn't shown (`graph_shown`
     /// false), with no drop: nothing is saved. The layout keeps the dragged positions (remote snaps were skipped
-    /// while it ran); a later remote pos snaps again. Otherwise the
-    /// false), with no drop: nothing is saved, and the cards it moved take remote positions again. Otherwise the
-    /// card's next release, whenever it is drawn again, would save the stale layout pos over a remote one.
+    /// while it ran); a later remote pos snaps again. Otherwise the card's next release, whenever it is drawn again,
+    /// would save the stale layout pos over a remote one.
     pub(crate) fn end_stale_drag(&mut self, graph_shown: bool) {
         if self.dragging.is_some() && !(graph_shown && self.live_drag().is_some()) {
             self.dragging = None;
