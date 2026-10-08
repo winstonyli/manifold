@@ -856,6 +856,8 @@ impl App {
             }
         }
 
+        self.release_idle_waiters();
+
         // See `quit_after_redraws`'s doc comment.
         if let Some(left) = self.quit_after_redraws {
             if !self.debug_input_pending() || left == 0 {
@@ -891,6 +893,23 @@ impl App {
             || self.debug_address_bar_typing.is_some()
             || self.pending_focus == Some(FocusTarget::AddressBar)
             || self.pending_screenshot.is_some()
+    }
+
+    /// What `WAITIDLE` waits for: no debug input still needs a frame, no
+    /// view transition is running, and the focused tab (if any) isn't loading.
+    fn debug_idle(&self) -> bool {
+        let loading =
+            self.focused.as_ref().and_then(|id| self.nodes.get(id)).and_then(|n| n.as_tab()).is_some_and(|t| t.loading);
+        !self.debug_input_pending() && self.transition.is_none() && !loading
+    }
+
+    /// Releases the `WAITIDLE` commands waiting, if `debug_idle` holds.
+    pub(crate) fn release_idle_waiters(&mut self) {
+        if !self.idle_waiters.is_empty() && self.debug_idle() {
+            for waiter in self.idle_waiters.drain(..) {
+                let _ = waiter.send(());
+            }
+        }
     }
 
     /// Moves the pointer to (x, y), then presses and releases `button`

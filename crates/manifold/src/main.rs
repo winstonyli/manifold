@@ -1095,6 +1095,8 @@ struct App {
     /// itself, since spawning is enough for those to take effect.
     pending_local: Option<local_state::LocalState>,
     tabs_spawned_waiters: Vec<std::sync::mpsc::Sender<()>>,
+    /// Senders of the headless `WAITIDLE` commands waiting for `debug_idle`.
+    idle_waiters: Vec<std::sync::mpsc::Sender<()>>,
     /// Bumped by `replace_running_session`. A tab spawn carries the value it
     /// started under, and `handle_tab_spawn_result` drops a result from an
     /// older one: it belongs to the replaced session, and inserting it would
@@ -1593,6 +1595,7 @@ impl Default for App {
             closed_changed_at: None,
             pending_local: None,
             tabs_spawned_waiters: Vec::new(),
+            idle_waiters: Vec::new(),
             session_generation: 0,
             commonmark_cache: egui_commonmark::CommonMarkCache::default(),
             cursor_pos: (0.0, 0.0),

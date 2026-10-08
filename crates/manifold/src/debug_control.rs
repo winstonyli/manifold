@@ -407,6 +407,19 @@ pub enum DebugCommand {
     /// Handled by `spawn_stdin_reader` itself, which sends
     /// `NotifyWhenTabsSpawned`; never reaches the app.
     WaitTabs(std::time::Duration),
+    /// `WAITIDLE [secs]` -- blocks the stdin reader until no debug input is
+    /// waiting for a frame (`ADDRESSBAR` text typed, queued keys sent), no
+    /// view transition is running and the focused tab isn't loading, or `secs` (default 60) pass. Replaces
+    /// the `SLEEP 1` between `ADDRESSBAR` and `ENTER` (they land in one frame
+    /// otherwise, Enter first) and the `SLEEP 3` for a new tab's first load.
+    /// A tab that hasn't reported its first load yet counts as not loading.
+    /// Handled by `spawn_stdin_reader` itself, which sends `NotifyWhenIdle`;
+    /// never reaches the app.
+    WaitIdle(std::time::Duration),
+    /// Internal, sent only by `spawn_stdin_reader` for `WAITIDLE`: the app
+    /// sends `()` on this once `App::debug_idle` holds, checked when it
+    /// arrives and at the end of every frame.
+    NotifyWhenIdle(std::sync::mpsc::Sender<()>),
     /// `SLEEP secs` -- pauses the stdin reader, so the pause stays in order
     /// with the commands around it. A driver script's own `sleep` doesn't:
     /// while the reader is blocked (`WAITTABS`, `SCREENSHOT`) the script
@@ -525,6 +538,10 @@ const COMMAND_HELP: &[(&str, &str)] = &[
     ),
     ("ADDDOWNLOAD path", "Add a download node for `path`, as if the focused tab started it"),
     ("WAITTABS [secs]", "Hold later commands until no tab spawn is in flight (default 60 s max)"),
+    (
+        "WAITIDLE [secs]",
+        "Hold later commands until typed input has landed, no view transition runs and the focused tab isn't loading (default 60 s max)",
+    ),
     ("SLEEP secs", "Hold later commands for `secs` (in order, unlike a driver script's own sleep)"),
     ("TOGGLESHORTCUTSHELP", "F1 -- toggle the keyboard-shortcut reference popup"),
     ("SPLIT engine", "Open a Split pane running `engine` (servo|cef|webkit|webview2)"),
@@ -771,6 +788,11 @@ pub fn parse_line(line: &str) -> Option<DebugCommand> {
         } else {
             parse_secs(rest)?
         })),
+        "WAITIDLE" => Some(DebugCommand::WaitIdle(if rest.is_empty() {
+            std::time::Duration::from_secs(60)
+        } else {
+            parse_secs(rest)?
+        })),
         "SLEEP" => Some(DebugCommand::Sleep(parse_secs(rest)?)),
         "TOGGLESHORTCUTSHELP" => Some(DebugCommand::ToggleShortcutsHelp),
         "SPLIT" => parse_engine_kind(rest).map(DebugCommand::Split),
@@ -844,6 +866,15 @@ pub fn spawn_stdin_reader(proxy: EventLoopProxy<UserEvent>) {
                     }
                     if rx.recv_timeout(timeout).is_err() {
                         eprintln!("WAITTABS: tab spawns still in flight after {timeout:?}; continuing");
+                    }
+                }
+                Some(DebugCommand::WaitIdle(timeout)) => {
+                    let (tx, rx) = std::sync::mpsc::channel();
+                    if proxy.send_event(UserEvent::Debug(DebugCommand::NotifyWhenIdle(tx))).is_err() {
+                        break;
+                    }
+                    if rx.recv_timeout(timeout).is_err() {
+                        eprintln!("WAITIDLE: input or a load still pending after {timeout:?}; continuing");
                     }
                 }
                 Some(DebugCommand::Sleep(duration)) => std::thread::sleep(duration),
@@ -1204,6 +1235,15 @@ impl App {
                     self.tabs_spawned_waiters.push(waiter);
                 }
             }
+            DebugCommand::WaitIdle(_) => {}
+            DebugCommand::NotifyWhenIdle(waiter) => {
+                self.idle_waiters.push(waiter);
+                self.release_idle_waiters();
+                // Pending input needs frames to land, and the check runs at the end of each.
+                if let Some(window) = &self.window {
+                    window.request_redraw();
+                }
+            }
             DebugCommand::AddDownload(path) => {
                 if let Some(tab_id) = self.focused.clone() {
                     self.insert_download_node(tab_id, path, None, None);
@@ -1498,6 +1538,9 @@ mod tests {
         assert!(parse_line("SLEEP inf").is_none());
         assert!(parse_line("WAITTABS 1e30").is_none());
         assert!(matches!(parse_line("WAITTABS"), Some(DebugCommand::WaitTabs(d)) if d.as_secs() == 60));
+        assert!(parse_line("WAITIDLE 1e30").is_none());
+        assert!(matches!(parse_line("WAITIDLE"), Some(DebugCommand::WaitIdle(d)) if d.as_secs() == 60));
+        assert!(matches!(parse_line("WAITIDLE 5"), Some(DebugCommand::WaitIdle(d)) if d.as_secs() == 5));
     }
 
     /// Every HELP usage parses with sample arguments, and every sampled verb is in HELP.
@@ -1592,6 +1635,7 @@ mod tests {
             r"ADDFILE C:\x.json 10 20",
             r"ADDDOWNLOAD C:\x.zip",
             "WAITTABS 5",
+            "WAITIDLE 5",
             "SLEEP 0.5",
             "TOGGLESHORTCUTSHELP",
             "SPLIT cef",
