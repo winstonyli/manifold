@@ -1553,3 +1553,17 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
 
 ## Outcome
+
+Per task, what landed and its commit (`TODO` marks what the controller fills from the ledger).
+
+- **Task 1** (toolchain pin): TODO commit; Fresh/rebuild result: TODO.
+- **Task 2** (`ipc-protocol` in `[workspace.dependencies]`): TODO commit.
+- **Task 3** (one shared `windows` entry): TODO done or declined, and any feature added beyond the listed union.
+- **Task 4** (`allow_attributes_without_reason`): TODO commit; site count (11 or 12): TODO.
+- **Task 5** (minimal CI): TODO commit; CI result or "not pushed": TODO.
+- **Task 6** (smoke-test hygiene, BT-4): TODO commit; interrupt results, old `cleanup()` against new: TODO.
+- **Task 7** (atomic exports, no post-appearance sleeps, BT-9): TODO commit; probe run counts and any SKIP: TODO (`focus-loss-probe.sh`: TODO run or not run).
+- **Tasks 8-11** (`scripts/lib.sh`): TODO commits; sweep comparison and its leftovers: TODO.
+- **Task 12** (bad initial URL, BT-5): `857580d`. Before the host change `bad-url-probe.sh` exited 1 in 148 s: `garbage` panicked 6 times in its host log (`initial navigate: ... HRESULT(0x80070057)`) and ended `1 False` after 30 exports; `missing` panicked 3 times but read `1 True` on its first export (the app does not substitute a URL for an empty one; the host got `""` and panicked, and the panic check is what caught it). After: exit 0 in 26 s, all six checks PASS, `focused_url about:blank` for both, and both host logs hold the `initial navigate to ... failed ...; opening about:blank` line. Servo: `CARGO_TARGET_DIR=target-servo cargo build -p manifold-engine-servo` compiled only `ipc-protocol` and `manifold-engine-servo`, `Finished` in 15.87 s; the probe was not run with `ENGINES=servo`.
+- **Gates**: after Task 7: TODO (`cpu=`, `defender_rt=`); after Task 12: TODO (`cpu=`, `defender_rt=`).
+- **Deferred**: TODO.
