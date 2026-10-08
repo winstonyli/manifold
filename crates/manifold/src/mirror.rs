@@ -633,4 +633,33 @@ mod tests {
         mirror.set("7", field::PINNED, FieldValue::Bool(true));
         assert!(mirror.pinned("7"));
     }
+
+    /// G2: every field a tab carries (`Kind::Tab.fields()`) survives `carried` → `seed` onto a fresh entry. A tab
+    /// field added to `TYPES` but not to `Carried` fails here, rather than going unseeded on a new spawn's `Create`.
+    #[test]
+    fn carried_holds_every_tab_field() {
+        use crate::store::model::{ActorId, FieldType};
+        let sample = |ty: FieldType| match ty {
+            FieldType::Pos => FieldValue::Pos(1.5, -2.0),
+            FieldType::Color => FieldValue::Color(Some(0x123456)),
+            FieldType::Id => FieldValue::Id(Some(NodeId { actor: ActorId(1), counter: 2 })),
+            FieldType::Str => FieldValue::Str("s".into()),
+            FieldType::Bool => FieldValue::Bool(true),
+            FieldType::Engine => FieldValue::Engine(3),
+        };
+        let fields: Vec<u32> = Kind::Tab.fields().iter().copied().filter(|&no| no != field::PARENT).collect();
+        assert!(!fields.is_empty());
+        let mut a = Mirror::default();
+        for &no in &fields {
+            a.set("a", no, sample(field_def(no).unwrap().ty));
+        }
+        a.set_parent("a", Some("p".into()));
+        a.set_group("a", Some("g".into()));
+        let mut b = Mirror::default();
+        b.seed("b", &a.carried("a"));
+        for &no in &fields {
+            assert_eq!(b.get("b", no), a.get("a", no), "field {no} is not carried");
+        }
+        assert_eq!((b.parent("b"), b.group("b")), (Some("p"), Some("g")));
+    }
 }
