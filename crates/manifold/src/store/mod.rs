@@ -39,13 +39,17 @@ pub(crate) mod testutil {
     }
 
     /// A fresh, empty directory for one test, under the system temp dir.
+    /// Each call returns a distinct directory, even for the same `name`, so
+    /// parallel tests that share a name cannot delete each other's files.
     /// The first call of a run also sweeps other runs' leftovers.
     pub fn temp_dir(name: &str) -> PathBuf {
         static SWEEP: std::sync::Once = std::sync::Once::new();
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         SWEEP.call_once(|| {
             sweep_old_dirs(&std::env::temp_dir(), std::time::Duration::from_secs(60 * 60));
         });
-        let dir = std::env::temp_dir().join(format!("manifold-store-{}-{name}", std::process::id()));
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("manifold-store-{}-{n}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
@@ -102,6 +106,15 @@ pub(crate) mod testutil {
             }
             assert_eq!(sweep_old_dirs(&root, std::time::Duration::ZERO), 1);
             assert!(!other.exists() && ours.exists() && unrelated.exists());
+        }
+
+        #[test]
+        fn temp_dir_is_distinct_for_the_same_name() {
+            let a = temp_dir("same");
+            let b = temp_dir("same");
+            assert_ne!(a, b);
+            std::fs::write(a.join("file.txt"), b"a").unwrap();
+            assert!(!b.join("file.txt").exists());
         }
     }
 }
