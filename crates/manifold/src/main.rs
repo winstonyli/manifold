@@ -2647,23 +2647,19 @@ impl App {
         }
     }
 
-    /// Destroys a group and everything in it, at any depth (`destroy_node`
-    /// on each member), then the group itself. Records nothing: `close_node`
-    /// has already recorded the whole subtree as one entry.
+    /// Destroys a group and everything in it, at any depth, then the group itself, and saves once. Records nothing:
+    /// `close_node` has already recorded the whole subtree as one entry.
     fn destroy_group(&mut self, id: &str) {
         self.destroy_group_members(id, &mut HashSet::new());
-        // `destroy_node` doesn't save, and there's no save on exit -- without
-        // this, a group whose members were only Downloads/Notes/Images/Pdfs/Jsons
-        // (no Tab member whose `destroy_tab` happens to save) would have
-        // those members reappear after a restart unless some unrelated
-        // action saved first.
+        // The one save for the whole subtree: no member's removal saves (`destroy_group_members`), so the group and
+        // everything in it go in one commit, and another replica never reads it half deleted.
         self.save_session();
     }
 
-    /// `destroy_group`'s walk, without the save: each member destroyed,
-    /// each group once, so a group cycle in the mirror (two replicas' moves
-    /// raced; the next save shows the document's groups) can't recurse
-    /// forever. A group already being destroyed further up is left to it.
+    /// `destroy_group`'s walk, with no save: a tab member is `remove_tab`d (not `destroy_tab`, which saves), every
+    /// other member `destroy_node`d, each group once, so a group cycle in the mirror (two replicas' moves raced; the
+    /// next save shows the document's groups) can't recurse forever. A group already being destroyed further up is
+    /// left to it.
     fn destroy_group_members(&mut self, id: &str, visited: &mut HashSet<String>) {
         visited.insert(id.to_owned());
         let member_ids: Vec<String> = self.members_of(id).map(str::to_owned).collect();
@@ -2672,6 +2668,9 @@ impl App {
                 if !visited.contains(&tid) {
                     self.destroy_group_members(&tid, visited);
                 }
+            } else if self.card_kind(&tid).is_some_and(|k| k.ty == store::model::TYPE_TAB) {
+                // No save per tab: `destroy_group` commits the whole subtree once.
+                self.remove_tab(&tid);
             } else {
                 self.destroy_node(&tid);
             }

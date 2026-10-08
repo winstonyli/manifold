@@ -5513,3 +5513,22 @@ fn export_state_shows_pick_target_mode() {
     app.apply_node_action(&egui::Context::default(), &a, NodeAction::Connect(LINK));
     assert_eq!(app.export_state()["connecting"], serde_json::json!({ "from": a, "edge": LINK, "targets": [b] }));
 }
+
+/// P1: closing a group commits once, so another replica never reads it half deleted and a crash can't leave part of
+/// it.
+#[test]
+fn closing_a_group_commits_one_frame() {
+    let path = temp_dir("group-close-once").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let g = add_group(&mut app, "G");
+    for url in ["https://a.test/", "https://b.test/", "https://c.test/"] {
+        let t = add(&mut app, Kind::Tab, sleeping_tab(url, "t"));
+        app.edit_group(&t, Some(g.clone()));
+    }
+    assert!(app.save_session());
+    let frames = || crate::store::journal::inspect(&std::fs::read(&path).unwrap()).unwrap().frames.len();
+    let before = frames();
+    app.close_node(&g);
+    assert_eq!(frames() - before, 1, "one commit for the group and its tabs");
+    assert!(!live_in_doc(&app, &g));
+}
