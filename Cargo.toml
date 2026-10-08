@@ -14,6 +14,9 @@ version = "0.3.0"
 edition = "2021"
 description = "A browser where each tab can run on a different rendering engine (Servo, CEF, WebKit, or WebView2), swappable live without closing it."
 
+[workspace.dependencies]
+ipc-protocol = { path = "crates/ipc-protocol" } # path only: nothing is published, so no version to bump
+
 # Full debug info produces multi-hundred-MB PDBs for the Servo/CEF-linked
 # binaries specifically (SpiderMonkey/Chromium bring enormous debug info),
 # which has repeatedly filled this machine's disk mid-build and caused
