@@ -177,14 +177,23 @@ impl App {
 
     /// Folds tab `tab_id`'s cookie dump into the jar its host was spawned with, and saves that jar's file when it
     /// changed (spec: "Its pulls merge into that jar and save only that jar's file"). Merged against that tab's own
-    /// `jar_tabs` entry (`jar::Jar::merge`). `false` for a dump that does not parse, a tab with no `jar_tabs` entry
+    /// `jar_tabs` entry (`jar::Jar::merge`). `false` for a dump that does not parse (logged), a tab with no `jar_tabs` entry
     /// (closed or replaced since it was asked; deviation 5), a named jar deleted while it ran, or a host whose jar was
     /// cleared under it (`jar_reseed`): it still holds the old cookies, and they must not refill the cleared jar.
     pub(crate) fn apply_pulled_cookies(&mut self, tab_id: &str, json: &str) -> bool {
         if self.jar_reseed.contains(tab_id) {
             return false;
         }
-        let Some(pulled) = crate::jar::from_json(json) else { return false };
+        let pulled = match crate::jar::from_json(json) {
+            Ok(pulled) => pulled,
+            Err(err) => {
+                // All or nothing, never per cookie: a cookie missing from a pull is a logout (`jar::Jar::merge`), so
+                // skipping one that doesn't parse would delete a live login. Logged, as the reason this tab's
+                // logins stop reaching its jar.
+                eprintln!("jar: tab {tab_id}'s cookie dump didn't parse ({err}); its jar is not updated");
+                return false;
+            }
+        };
         let Some((key, _)) = self.jar_tabs.get(tab_id) else { return false };
         let key = *key;
         if matches!(key, crate::jar::JarKey::Named(id) if !self.mirror.jar_defs().contains_key(&id)) {

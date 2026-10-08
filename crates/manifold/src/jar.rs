@@ -119,9 +119,11 @@ impl Cookie {
 /// (a new `Max-Age` or `Expires`) moves an expiry by far more.
 const EXPIRES_TOLERANCE: f64 = 0.001;
 
-/// An engine's cookie dump, as its host serialised it. `None` if it is not that shape.
-pub fn from_json(json: &str) -> Option<Vec<Cookie>> {
-    serde_json::from_str(json).ok()
+/// An engine's cookie dump, as its host serialised it. The error gives the position only: serde's message can quote
+/// the input, and a cookie value is a credential.
+pub fn from_json(json: &str) -> Result<Vec<Cookie>, String> {
+    serde_json::from_str(json)
+        .map_err(|e| format!("{:?} error at line {} column {}", e.classify(), e.line(), e.column()))
 }
 
 fn now() -> f64 {
@@ -1043,6 +1045,20 @@ mod tests {
         let json = r#"[{"name":"a","value":"b","domain":"x.com","path":"/","expires":null,"secure":true,"http_only":false,"same_site":"Strict"}]"#;
         let cookies = from_json(json).unwrap();
         assert_eq!(cookies[0].same_site, SameSite::Strict);
-        assert!(from_json("nope").is_none());
+        assert!(from_json("nope").is_err());
+    }
+
+    /// M3: a dump that doesn't parse says where, never what. serde's own message would quote the input ("unknown
+    /// variant `SECRET`"), and a cookie value is a credential. It stays all or nothing: a cookie skipped from a pull
+    /// would read as a logout and be deleted from the jar.
+    #[test]
+    fn a_bad_dump_reports_where_without_echoing_a_value() {
+        let good = r#"{"name":"a","value":"b","domain":"x.com","path":"/","expires":null,"secure":true,"http_only":false,"same_site":"Strict"}"#;
+        let bad = r#"{"name":"sid","value":"SECRET","domain":"a","path":"/","expires":null,"secure":true,"http_only":true,"same_site":"SECRET"}"#;
+        let err = from_json(&format!("[{bad}]")).unwrap_err();
+        assert!(err.contains("line 1"), "{err}");
+        assert!(!err.contains("SECRET"), "{err}");
+        assert!(from_json(&format!("[{good},{bad}]")).is_err(), "all or nothing");
+        assert_eq!(from_json(&format!("[{good}]")).map(|c| c.len()), Ok(1));
     }
 }
