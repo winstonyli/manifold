@@ -4,7 +4,7 @@
 //! text rows show, labels, which cards are visible, the tree layout,
 //! search and the outline's rows. Nothing here touches `App`.
 
-use std::collections::{BTreeMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -63,36 +63,131 @@ impl CardOverride {
     }
 }
 
-/// A Json node's view overrides by JSON Pointer: the `VIEW` field (14).
+/// The keys `CardOverride` reads; any other key of a stored override is kept as it was (`Unread::extra`).
+const CARD_OVERRIDE_KEYS: [&str; 4] = ["pos", "collapsed", "color", "pages"];
+
+/// What a view's stored text held that this build can't read (M5), kept so an edit here writes it back untouched
+/// (`JsonView::to_field`) rather than wiping it on every replica: whole entries that don't read as a `CardOverride`
+/// (a newer build changed a field's shape), the unknown keys of entries that do, and text that isn't an object of
+/// overrides at all, which no edit may overwrite (`JsonView::is_opaque`).
 #[derive(Debug, Clone, Default, PartialEq)]
-pub(crate) struct JsonView(pub(crate) BTreeMap<String, CardOverride>);
+pub(crate) struct Unread {
+    entries: BTreeMap<String, Value>,
+    extra: BTreeMap<String, serde_json::Map<String, Value>>,
+    opaque: Option<String>,
+}
+
+/// A Json node's view overrides by JSON Pointer: the `VIEW` field (14), and what this build couldn't read of it.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) struct JsonView(pub(crate) BTreeMap<String, CardOverride>, pub(crate) Unread);
 
 /// No overrides: what a node without a view (`Mirror::view`'s `None`) lays out with.
-pub(crate) static NO_VIEW: JsonView = JsonView(BTreeMap::new());
+pub(crate) static NO_VIEW: JsonView =
+    JsonView(BTreeMap::new(), Unread { entries: BTreeMap::new(), extra: BTreeMap::new(), opaque: None });
+
+/// One pointer's entry as `to_field` writes it: an unreadable one as it was, or an override with its unknown keys
+/// after its own. Serialising `CardOverride` itself (not through `serde_json::to_value`, which widens an `f32` to
+/// `f64`) keeps today's text.
+#[derive(Serialize)]
+#[serde(untagged)]
+enum Written<'a> {
+    Unread(&'a Value),
+    Card(WrittenCard<'a>),
+}
+
+/// An override and its unknown keys, flattened into one object. (Not `Card`: that is this file's laid-out card.)
+#[derive(Serialize)]
+struct WrittenCard<'a> {
+    #[serde(flatten)]
+    known: Option<&'a CardOverride>,
+    #[serde(flatten)]
+    extra: Option<&'a serde_json::Map<String, Value>>,
+}
 
 impl JsonView {
-    /// The stored field's text; empty or unreadable text is no overrides.
+    /// The stored field's text; empty text is no overrides. Each entry is read on its own, and what this build
+    /// can't read is kept (`Unread`).
     pub(crate) fn from_field(text: &str) -> Self {
         if text.is_empty() {
             return Self::default();
         }
-        serde_json::from_str(text).map(Self).unwrap_or_default()
+        let Ok(raw) = serde_json::from_str::<BTreeMap<String, Value>>(text) else {
+            eprintln!("json view: the stored view is not an object of overrides; kept as is, edits to it refused");
+            return JsonView(BTreeMap::new(), Unread { opaque: Some(text.to_owned()), ..Unread::default() });
+        };
+        let mut view = Self::default();
+        for (pointer, value) in raw {
+            let read = match &value {
+                Value::Object(object) => CardOverride::deserialize(&value).ok().map(|known| {
+                    let extra: serde_json::Map<String, Value> = object
+                        .iter()
+                        .filter(|(key, _)| !CARD_OVERRIDE_KEYS.contains(&key.as_str()))
+                        .map(|(key, v)| (key.clone(), v.clone()))
+                        .collect();
+                    (known, extra)
+                }),
+                _ => None,
+            };
+            match read {
+                Some((known, extra)) => {
+                    if !known.is_empty() {
+                        view.0.insert(pointer.clone(), known);
+                    }
+                    if !extra.is_empty() {
+                        view.1.extra.insert(pointer, extra);
+                    }
+                }
+                None => {
+                    view.1.entries.insert(pointer, value);
+                }
+            }
+        }
+        view
     }
 
-    /// Compact JSON of the non-empty overrides, or `""` when there are none.
+    /// Compact JSON of the non-empty overrides and of what this build couldn't read, written back as it was, or `""`
+    /// when there is nothing. Opaque text comes back unchanged.
     pub(crate) fn to_field(&self) -> String {
-        let kept: BTreeMap<&String, &CardOverride> = self.0.iter().filter(|(_, o)| !o.is_empty()).collect();
-        if kept.is_empty() {
+        if let Some(text) = &self.1.opaque {
+            return text.clone();
+        }
+        let mut out: BTreeMap<&str, Written> =
+            self.1.entries.iter().map(|(pointer, value)| (pointer.as_str(), Written::Unread(value))).collect();
+        let pointers: BTreeSet<&str> = self
+            .0
+            .iter()
+            .filter(|(_, o)| !o.is_empty())
+            .map(|(pointer, _)| pointer.as_str())
+            .chain(self.1.extra.keys().map(String::as_str))
+            .collect();
+        for pointer in pointers {
+            let known = self.0.get(pointer).filter(|o| !o.is_empty());
+            out.insert(pointer, Written::Card(WrittenCard { known, extra: self.1.extra.get(pointer) }));
+        }
+        if out.is_empty() {
             return String::new();
         }
-        serde_json::to_string(&kept).unwrap_or_default()
+        serde_json::to_string(&out).unwrap_or_default()
+    }
+
+    /// No overrides and nothing unread: `Mirror::set` stores no view for it.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.0.is_empty() && self.1 == Unread::default()
+    }
+
+    /// Text that isn't an object of overrides (a newer format): laid out as no overrides, written back unchanged,
+    /// and never edited here (`edit_json_view`).
+    pub(crate) fn is_opaque(&self) -> bool {
+        self.1.opaque.is_some()
     }
 
     pub(crate) fn get(&self, pointer: &str) -> Option<&CardOverride> {
         self.0.get(pointer)
     }
 
+    /// The override to edit at `pointer`. An unreadable entry there goes: the user's edit replaces that card's state.
     pub(crate) fn entry(&mut self, pointer: &str) -> &mut CardOverride {
+        self.1.entries.remove(pointer);
         self.0.entry(pointer.to_string()).or_default()
     }
 
@@ -101,10 +196,12 @@ impl JsonView {
         self.get(pointer).and_then(|o| o.pages).map_or(1, |pages| (pages as usize).max(1))
     }
 
-    /// Drops overrides whose pointer no longer resolves in `root` (after
-    /// a Refresh), and empty ones.
+    /// Drops overrides whose pointer no longer resolves in `root` (after a Refresh), and empty ones; unread entries
+    /// and keys go by the same rule. Opaque text is left alone.
     pub(crate) fn retain_resolvable(&mut self, root: &Value) {
         self.0.retain(|pointer, o| !o.is_empty() && root.pointer(pointer).is_some());
+        self.1.entries.retain(|pointer, _| root.pointer(pointer).is_some());
+        self.1.extra.retain(|pointer, _| root.pointer(pointer).is_some());
     }
 
     /// Relayout: every saved position goes, the rest stays.
@@ -548,7 +645,7 @@ mod tests {
     fn view_round_trips_and_stores_nothing_when_empty() {
         assert_eq!(JsonView::default().to_field(), "");
         assert_eq!(JsonView::from_field(""), JsonView::default());
-        assert_eq!(JsonView::from_field("not json"), JsonView::default());
+        assert!(JsonView::from_field("not json").is_opaque(), "kept, not read as no overrides");
 
         let mut view = JsonView::default();
         view.entry("/users/0").pos = Some([520.0, 20.0]);
@@ -561,6 +658,41 @@ mod tests {
         assert_eq!(back.get("/users/0"), view.get("/users/0"));
         assert_eq!(back.pages("/users"), 2);
         assert_eq!(back.pages("/elsewhere"), 1);
+    }
+
+    /// M5: one entry this build can't read (a newer build's shape) costs neither the others nor itself.
+    #[test]
+    fn an_entry_this_build_cannot_read_survives_an_edit() {
+        let mut view = JsonView::from_field(r#"{"/a":{"pages":{"offset":0,"pages":2}},"/b":{"collapsed":true}}"#);
+        assert_eq!(view.get("/b").and_then(|o| o.collapsed), Some(true), "the readable entry still loads");
+        view.entry("/c").collapsed = Some(true);
+        let back: Value = serde_json::from_str(&view.to_field()).unwrap();
+        assert_eq!(back["/a"]["pages"]["offset"], 0, "written back as it was");
+        assert_eq!(back["/b"]["collapsed"], true);
+        assert_eq!(back["/c"]["collapsed"], true);
+    }
+
+    /// M5: an override's unknown keys, a non-object entry and text that isn't an object of overrides are all
+    /// written back; positions keep their short f32 form.
+    #[test]
+    fn unknown_keys_and_unreadable_text_are_written_back() {
+        let mut view = JsonView::from_field(r#"{"/a":{"collapsed":true,"width":3},"/x":[]}"#);
+        assert_eq!(view.get("/a").and_then(|o| o.collapsed), Some(true));
+        view.entry("/a").collapsed = None;
+        view.entry("/b").pos = Some([0.1, 0.2]);
+        assert_eq!(view.to_field(), r#"{"/a":{"width":3},"/b":{"pos":[0.1,0.2]},"/x":[]}"#);
+        let opaque = JsonView::from_field("[1]");
+        assert!(opaque.is_opaque() && !opaque.is_empty());
+        assert_eq!(opaque.to_field(), "[1]");
+        assert!(JsonView::from_field("").is_empty());
+    }
+
+    /// The keys `from_field` treats as known are exactly the ones `CardOverride` writes.
+    #[test]
+    fn card_override_keys_are_the_fields_it_reads() {
+        let full = CardOverride { pos: Some([1.0, 2.0]), collapsed: Some(true), color: Some(1), pages: Some(2) };
+        let Value::Object(object) = serde_json::to_value(&full).unwrap() else { panic!("an object") };
+        assert_eq!(object.keys().map(String::as_str).collect::<Vec<_>>(), CARD_OVERRIDE_KEYS);
     }
 
     #[test]

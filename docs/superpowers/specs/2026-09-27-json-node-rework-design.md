@@ -177,6 +177,7 @@ keyed by pointer. Only overrides are stored:
 - Entries whose pointer no longer resolves (after a Refresh) are dropped
   on the next save. If array elements are reordered, their overrides
   stay with the index, not the element.
+- What this build can't read is kept and written back as it was: an entry that isn't an override, an override's unknown keys, and text that isn't an object of overrides at all (which is then never edited here; an edit is refused with a toast). Wave 1, M5.
 
 ### Removed
 

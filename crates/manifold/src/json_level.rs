@@ -235,6 +235,15 @@ impl App {
         }
         let id = level.node_id.clone();
         let mut view = self.mirror.view(&id).cloned().unwrap_or_default();
+        if view.is_opaque() {
+            // M5: a newer build's format, written back untouched; an edit here would replace it on every replica.
+            // Lay out from the unchanged view so a refused drag doesn't leave its card where it was dropped.
+            if let Some(level) = self.json_level.as_mut() {
+                level.relayout(&view);
+            }
+            self.queue_toast("This JSON view was saved by a newer manifold; changes to it aren't saved".into());
+            return;
+        }
         edit(&mut view, &level.value, &level.expanded);
         view.retain_resolvable(&level.value);
         self.edit_view(&id, &view.to_field());
@@ -1030,5 +1039,25 @@ mod tests {
         assert_eq!(selected(&app).as_deref(), Some("/a"), "Escape ended the edit only");
         frame(&mut app, vec![escape]);
         assert_eq!(selected(&app), None, "with no field focused, Escape clears the selection");
+    }
+
+    /// M5: a view in a format this build can't read (a newer build's) is never overwritten by an edit here, which
+    /// would replace it on every replica.
+    #[test]
+    fn an_unreadable_view_is_never_overwritten() {
+        use crate::store::model::{field, FieldValue};
+        let (mut app, j) = app_with_json("opaque-view", r#"{"a": {"b": 1}, "c": [1, 2]}"#);
+        app.edit_view(&j, "[1]");
+        app.switch_group_level(Some(j.clone()));
+        app.apply_json_edit(JsonEdit::Toggle("/a".into()));
+        // A live drag moves the card's rect frame by frame (`json_level_ui`); the refused drop must put it back.
+        let a = app.json_level.as_ref().unwrap().index["/a"];
+        let laid = app.json_level.as_ref().unwrap().rects[a];
+        let dropped = laid.translate(egui::vec2(300.0, 0.0));
+        app.json_level.as_mut().unwrap().rects[a] = dropped;
+        app.apply_json_edit(JsonEdit::Moved("/a".into(), dropped.min));
+        assert_eq!(app.mirror.get(&j, field::VIEW), FieldValue::Str("[1]".into()));
+        assert!(app.mirror.view(&j).is_some_and(|view| view.is_opaque()));
+        assert_eq!(app.json_level.as_ref().unwrap().rects[a], laid, "the refused drag snaps back to the layout");
     }
 }

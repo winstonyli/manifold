@@ -67,7 +67,7 @@ impl Mirror {
                 FieldValue::Str(text) => JsonView::from_field(text),
                 _ => JsonView::default(),
             };
-            if view.0.is_empty() {
+            if view.is_empty() {
                 self.views.remove(id);
             } else {
                 self.views.insert(id.to_owned(), view);
