@@ -76,7 +76,7 @@ for engine in ${ENGINES:-webview2 cef}; do
 
     cmd="$profile/cmd"
     : >"$cmd"
-    APPDATA="$(cygpath -w "$profile")" "$exe" --headless < <(exec tail -n +1 -f --pid=$$ "$cmd" 2>/dev/null) >"$profile/log" 2>&1 &
+    launch_headless "$exe" "$profile" "$cmd" "$profile/log"
     inst=$!
     {
         echo WAITTABS

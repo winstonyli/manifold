@@ -50,7 +50,6 @@ trap cleanup EXIT
 # The case's working dir; set by `launch`.
 dir=""
 cmd=""
-send() { printf '%s\n' "$@" >>"$cmd"; }
 x() { echo "EXPORTSTATE $(cygpath -w "$dir/$1.json")"; }
 wait_file() { for _ in $(seq 240); do [ -s "$1" ] && return 0; sleep 0.25; done; echo "timed out waiting for $1" >&2; return 1; }
 py() { python -P -c "$1" "$(cygpath -w "$dir/$2.json")" </dev/null 2>&1 | tr -d '\r'; }
@@ -77,11 +76,9 @@ EOF
     "$exe" --import-json "$(cygpath -w "$profile/seed.json")" --out "$(cygpath -w "$profile/manifold/session.mnf")" >/dev/null || return 1
     cmd="$dir/cmd"
     : >"$cmd"
-    # `-n +1`: plain `tail -f` starts with only the last 10 lines.
-    APPDATA="$(cygpath -w "$profile")" "$exe" --headless < <(exec tail -n +1 -f --pid=$$ "$cmd" 2>/dev/null) >"$dir/log" 2>&1 &
+    launch_headless "$exe" "$profile" "$cmd" "$dir/log"
     inst=$!
-    # The steal needs the Windows pid (below_normal retries the lookup).
-    winpid="$(below_normal "$inst")"
+    winpid="$launched_winpid" # the steal needs the Windows pid; launch_headless looked it up
     send WAITTABS "SLEEP 1"
     [ -n "$winpid" ] || { echo "FAIL: $1: no Windows pid for the instance"; status=1; return 1; }
 }

@@ -88,10 +88,9 @@ json.dump({"name": "demo", "items": [1, 2, 3], "nested": {"a": True, "b": None}}
 
 cmd="$work/cmd"
 : >"$cmd"
-APPDATA="$(w "$profile")" "$exe" --headless < <(exec tail -n +1 -f --pid=$$ "$cmd" 2>/dev/null) >"$work/log" 2>&1 &
+launch_headless "$exe" "$profile" "$cmd" "$work/log"
 inst=$!
 
-send() { printf '%s\n' "$@" >>"$cmd"; }
 wait_file() { for _ in $(seq 120); do [ -s "$1" ] && return 0; sleep 0.25; done; echo "timed out waiting for $1" >&2; return 1; }
 # The state file, fresh.
 state() {
@@ -614,8 +613,7 @@ if has engine-states-picker || has engine-states-settings || has engine-install-
 SEED
         "$eng/manifold.exe" --import-json "$(w "$work/seed-eng.json")" --out "$(w "$profile/manifold/session.mnf")" >/dev/null
         cmd="$work/cmd-$1"; : >"$cmd"
-        APPDATA="$(w "$profile")" HTTPS_PROXY="http://127.0.0.1:$(cat "$work/proxy-port")" \
-            "$eng/manifold.exe" --headless < <(exec tail -n +1 -f --pid=$$ "$cmd" 2>/dev/null) >"$work/log-eng-$1" 2>&1 &
+        HTTPS_PROXY="http://127.0.0.1:$(cat "$work/proxy-port")" launch_headless "$eng/manifold.exe" "$profile" "$cmd" "$work/log-eng-$1"
         inst=$!
         send "RESIZE ${SIZE% *} 1000" WAITTABS "SLEEP 3"
     }

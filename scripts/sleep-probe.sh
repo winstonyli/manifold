@@ -84,8 +84,7 @@ for engine in ${ENGINES:-webview2 cef}; do
 
     cmd="$profile/cmd"
     : >"$cmd"
-    # `-n +1`: plain `tail -f` starts with only the last 10 lines.
-    APPDATA="$(cygpath -w "$profile")" "$exe" --headless < <(exec tail -n +1 -f --pid=$$ "$cmd" 2>/dev/null) >"$profile/log" 2>&1 &
+    launch_headless "$exe" "$profile" "$cmd" "$profile/log"
     inst=$!
     st() { cygpath -w "$out/$case-$engine-$1.json"; }
     back_and_forward() {
@@ -197,7 +196,7 @@ for engine in ${ENGINES:-webview2 cef}; do
     if [ "$case" = restart ]; then
         # A second instance on the same profile: the restored tab has a new engine.
         : >"$cmd"
-        APPDATA="$(cygpath -w "$profile")" "$exe" --headless < <(exec tail -n +1 -f --pid=$$ "$cmd" 2>/dev/null) >"$profile/log2" 2>&1 &
+        launch_headless "$exe" "$profile" "$cmd" "$profile/log2"
         inst=$!
         {
             echo WAITTABS

@@ -57,9 +57,9 @@ start() {
   local name="$1"
   shift
   local cmd="$profile/cmd-$name"; : >"$cmd"
-  APPDATA="$(cygpath -w "$profile")" "$exe" --headless < <(exec tail -n +1 -f --pid=$$ "$cmd" 2>/dev/null) >"$profile/log-$name" 2>&1 &
+  launch_headless "$exe" "$profile" "$cmd" "$profile/log-$name"
   app=$!
-  local winpid; winpid="$(below_normal "$app")" || echo "WARNING: $name: the app runs at normal priority" >&2
+  local winpid="$launched_winpid"
   echo "    app pid ${winpid:-?}, started $(date +%T), log $(cygpath -w "$profile/log-$name")"
   { printf '%s\n' "$@"; echo QUIT; } >>"$cmd"
   wait "$app" 2>/dev/null

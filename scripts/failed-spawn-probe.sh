@@ -43,8 +43,7 @@ echo '{"nodes": []}' >"$profile/seed.json"
 
 cmd="$profile/cmd"
 : >"$cmd"
-# `-n +1`: plain `tail -f` starts with only the last 10 lines.
-APPDATA="$(cygpath -w "$profile")" "$exe" --headless < <(exec tail -n +1 -f --pid=$$ "$cmd" 2>/dev/null) >"$profile/log" 2>&1 &
+launch_headless "$exe" "$profile" "$cmd" "$profile/log"
 inst=$!
 {
     echo NEWTAB

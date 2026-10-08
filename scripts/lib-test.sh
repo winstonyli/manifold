@@ -22,4 +22,30 @@ expect "seed_settings: the engine" '{"has_shown_first_launch_demo": true, "defau
 seed_settings "$t/p3" webview2 ', "home_page": "http://x/"'
 expect "seed_settings: extra members" '{"has_shown_first_launch_demo": true, "default_starting_engine": "webview2", "home_page": "http://x/"}' "$(cat "$t/p3/manifold/settings.json")"
 
+# A fake instance: prints its first argument, APPDATA, HTTPS_PROXY and the first command line, then waits for an
+# END line, so it is still running while launch_headless looks up its Windows pid.
+cat >"$t/fake-exe" <<'EOF'
+#!/usr/bin/env bash
+read -r first
+printf '%s\n' "$1" "$APPDATA" "${HTTPS_PROXY:-none}" "$first"
+while read -r line; do [ "$line" = END ] && break; done
+EOF
+chmod +x "$t/fake-exe"
+cmd="$t/cmd"
+: >"$cmd"
+send "FIRST LINE" SECOND
+expect "send: one line per argument" "FIRST LINE
+SECOND" "$(cat "$cmd")"
+HTTPS_PROXY=http://proxy.test launch_headless "$t/fake-exe" "$t/prof" "$cmd" "$t/fake.log"
+pid=$!
+expect "launch_headless: \$! is still the instance after the priority lookup" yes "$(kill -0 "$pid" 2>/dev/null && echo yes)"
+expect "launch_headless: launched_winpid is set" yes "$([ -n "$launched_winpid" ] && echo yes)"
+send END
+wait "$pid"
+expect "launch_headless: \$! is the instance, and it exits 0" 0 "$?"
+expect "launch_headless: --headless" --headless "$(sed -n 1p "$t/fake.log")"
+expect "launch_headless: APPDATA is the profile, Windows-style" "$(cygpath -w "$t/prof")" "$(sed -n 2p "$t/fake.log")"
+expect "launch_headless: a prefix assignment reaches the instance" http://proxy.test "$(sed -n 3p "$t/fake.log")"
+expect "launch_headless: commands from the file's first line" "FIRST LINE" "$(sed -n 4p "$t/fake.log")"
+
 exit $fails

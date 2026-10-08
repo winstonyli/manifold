@@ -45,14 +45,11 @@ EOF
 "$exe" --import-json "$(cygpath -w "$profile/seed.json")" --out "$(cygpath -w "$profile/manifold/session.mnf")" >/dev/null || exit 1
 
 cmd="$profile/cmd"
-send() { printf '%s\n' "$@" >>"$cmd"; }
 # start <log>: one instance on the profile, at BelowNormal, its tabs up.
 start() {
     : >"$cmd"
-    # `-n +1`: plain `tail -f` starts with only the last 10 lines.
-    APPDATA="$(cygpath -w "$profile")" "$exe" --headless < <(exec tail -n +1 -f --pid=$$ "$cmd" 2>/dev/null) >"$out/$1" 2>&1 &
+    launch_headless "$exe" "$profile" "$cmd" "$out/$1"
     inst=$!
-    below_normal "$inst" >/dev/null || echo "WARNING: $1: the instance runs at normal priority" >&2
     send WAITTABS "SLEEP 1"
 }
 stop() { send QUIT; wait "$inst" 2>/dev/null; inst=""; }
