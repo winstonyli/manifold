@@ -313,7 +313,12 @@ impl App {
             }
             GraphAction::NewFile(pos) => self.add_file_node(Some(pos)),
             GraphAction::GroupSelected => {
-                if self.selected_tabs.is_empty() {
+                // Only the selected cards still shown: a tab mid-crash-respawn or mid-engine-swap has no card, so it
+                // is neither counted in the centroid nor moved (its selection is consumed with the rest).
+                let live: Vec<String> =
+                    self.selected_tabs.iter().filter(|id| self.nodes.contains_key(*id)).cloned().collect();
+                self.selected_tabs.clear();
+                if live.is_empty() {
                     return;
                 }
                 let id = self.alloc_node_id();
@@ -322,20 +327,12 @@ impl App {
                 // real positions the user just drew a box around, so the new
                 // group card should appear where they actually are, not at the
                 // origin of a possibly-distant part of the graph.
-                let count = self.selected_tabs.len() as f32;
-                let sum = self
-                    .selected_tabs
-                    .iter()
-                    .filter(|id| self.nodes.contains_key(*id))
-                    .fold(egui::Vec2::ZERO, |acc, id| acc + self.layout_pos(id));
-                let pos = sum / count;
+                let pos = live.iter().fold(egui::Vec2::ZERO, |acc, t| acc + self.layout_pos(t)) / live.len() as f32;
                 let name = self.default_group_name();
                 let at = self.placement(&id, Some(pos));
                 self.place_group(Some(id.clone()), &name, at);
-                for tab_id in std::mem::take(&mut self.selected_tabs) {
-                    if self.nodes.contains_key(&tab_id) {
-                        self.edit_group(&tab_id, Some(id.clone()));
-                    }
+                for tab_id in live {
+                    self.edit_group(&tab_id, Some(id.clone()));
                 }
             }
             GraphAction::CloseSelected => {
@@ -2142,6 +2139,25 @@ mod tests {
         assert!(!ctx.memory(|m| m.has_focus(field)), "the field let go");
         frame(&mut app, vec![key(egui::Key::Escape)]);
         assert!(app.selected_tabs.is_empty(), "with no field focused, Escape is the graph's");
+    }
+
+    /// L1: a selected id with no card (its tab mid-crash-respawn or mid-engine-swap) is left out of the centroid,
+    /// not counted in it.
+    #[test]
+    fn group_selected_centres_on_the_tabs_still_shown() {
+        use crate::session_sync::tests::sleeping_tab;
+        use crate::store::model::Kind;
+        let mut app = App::default();
+        let (a, b) = (app.alloc_node_id(), app.alloc_node_id());
+        app.insert_placeholder_node(a.clone(), egui::vec2(100.0, 0.0), Kind::Tab, sleeping_tab("https://a.test/", "a"));
+        app.insert_placeholder_node(b.clone(), egui::vec2(300.0, 0.0), Kind::Tab, sleeping_tab("https://b.test/", "b"));
+        let expected = (app.layout_pos(&a) + app.layout_pos(&b)) / 2.0;
+        app.selected_tabs.extend([a.clone(), b.clone(), "999".to_string()]);
+        app.apply_graph_action(&egui::Context::default(), GraphAction::GroupSelected);
+        let group = app.mirror.group(&a).expect("a was grouped").to_string();
+        assert_eq!(app.mirror.group(&b), Some(group.as_str()));
+        assert_eq!(app.mirror.pos(&group), Some(expected), "the mean of the two cards, not divided by three");
+        assert!(app.selected_tabs.is_empty());
     }
 
     /// Links: Escape in pick-target mode ends the mode and does nothing else; the next one is the graph's as before.
