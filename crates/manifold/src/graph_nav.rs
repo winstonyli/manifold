@@ -526,81 +526,6 @@ mod tests {
     use super::*;
     use crate::store::model::Kind;
 
-    /// 2000 nodes of every kind: every third at the top level, the rest spread over eight groups. Each node's kind
-    /// cycles through the constructible payloads; every 280th (8 of 2000) is a live tab (`EngineTab::fake`, whose
-    /// peers are kept so the sockets stay open).
-    fn level_fixture() -> (App, Vec<ipc_protocol::MessageChannel<std::net::TcpStream>>) {
-        use crate::node::{
-            DownloadPayload, ImagePayload, JsonPayload, NotePayload, PdfPayload, TabPayload, UnloadedState,
-            UnloadedTabPayload,
-        };
-        use crate::process_manager::{EngineKind, EngineTab};
-        let mut app = App::default();
-        let mut peers = Vec::new();
-        for g in 0..8 {
-            app.test_node(&format!("g{g}"), Kind::Group, Runtime::None);
-        }
-        for i in 0..2000 {
-            let id = format!("n{i}");
-            let (kind, payload) = match i % 7 {
-                0 if i % 40 == 0 => {
-                    let (tab, peer) = EngineTab::fake(EngineKind::Servo);
-                    peers.push(peer);
-                    let live = TabPayload {
-                        tab,
-                        url: "https://a/".into(),
-                        title: String::new(),
-                        can_go_back: false,
-                        can_go_forward: false,
-                        loading: false,
-                        audio_playing: false,
-                        muted: false,
-                        zoom_factor: 1.0,
-                        swap_target: None,
-                    };
-                    (Kind::Tab, Runtime::Tab(live))
-                }
-                0 => {
-                    let sleeping = UnloadedTabPayload {
-                        url: "https://s/".into(),
-                        title: String::new(),
-                        muted: false,
-                        zoom_factor: 1.0,
-                        state: UnloadedState::Sleeping,
-                    };
-                    (Kind::Tab, Runtime::Unloaded(sleeping))
-                }
-                1 => {
-                    let download = DownloadPayload {
-                        path: "f.bin".into(),
-                        bytes_received: 0,
-                        total_bytes: None,
-                        completed: true,
-                        failed: false,
-                    };
-                    (Kind::Download, Runtime::Download(download))
-                }
-                2 => (Kind::Note, Runtime::Note(NotePayload { text: "t".into(), editing: false })),
-                3 => (
-                    Kind::Image,
-                    Runtime::Image(ImagePayload { path: "i.png".into(), width: 1, height: 1, error: None }),
-                ),
-                4 => (Kind::Pdf, Runtime::Pdf(PdfPayload { path: "d.pdf".into(), outcome: None })),
-                5 => {
-                    let json =
-                        JsonPayload { path: "a.json".into(), value: Default::default(), leaf: false, error: None };
-                    (Kind::Json, Runtime::Json(json))
-                }
-                _ => (Kind::Group, Runtime::None),
-            };
-            app.test_node(&id, kind, payload);
-            if i % 3 != 0 {
-                app.edit_group(&id, Some(format!("g{}", i % 8)));
-            }
-        }
-        (app, peers)
-    }
-
     /// Frame cost of the level scan (2b-6 Ruling 10), timing, not correctness, so ignored:
     /// `cargo test -p manifold --bins level_pass_cost -- --ignored --nocapture`. Three variants over the same 2000
     /// nodes: the enum pass Graph view had before 2b-6 (eight passes, each matching the payload against one kind),
@@ -610,24 +535,13 @@ mod tests {
     #[test]
     #[ignore]
     fn level_pass_cost() {
-        use std::time::{Duration, Instant};
-        fn timed(n: usize, mut f: impl FnMut()) -> (Duration, Duration) {
-            let mut times: Vec<Duration> = (0..n)
-                .map(|_| {
-                    let start = Instant::now();
-                    f();
-                    start.elapsed()
-                })
-                .collect();
-            times.sort();
-            (times[0], times[n / 2])
-        }
-        fn report(what: &str, (best, median): (Duration, Duration)) {
-            println!("  {what:<40} best {best:>10.1?}  median {median:>10.1?}");
-        }
+        use crate::bench::{report, timed};
         const N: usize = 200;
-        let (mut app, _peers) = level_fixture();
-        for level in [None, Some("g0".to_string())] {
+        let f = crate::bench::level_fixture(true);
+        assert_eq!((f.groups.len(), f.nodes.len()), (8, 2000));
+        let levels = [None, Some(f.groups[0].clone())];
+        let mut app = f.app; // `f`'s other fields (the live tabs' peers) live to the end of the test
+        for level in levels {
             app.current_group = level.clone();
             let in_level = app.node_order.iter().filter(|id| app.in_level(id)).count();
             println!("level {level:?}: {in_level} of {} nodes", app.node_order.len());
