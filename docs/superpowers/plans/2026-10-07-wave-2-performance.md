@@ -29,7 +29,7 @@ A shared `#[cfg(test)] mod bench` (timing helpers and the 2000-node fixture) and
 - Work on branch `wave-2-performance`, created from `main` after waves 0 and 1 have merged (`git switch -c wave-2-performance main`), with no worktree.
 - Commit once per task, with the exact message given in its last step. A change task whose part misses its keep rule reverts that part before the commit (Decision 11).
 - Merge into `main` only after the user's go-ahead (Task 16).
-- Each implementer's commit message ends with that implementer's own `Co-Authored-By:` line, taken from its system reminder. The controller's is `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
+- Each implementer's commit message ends with that implementer's own `Co-Authored-By:` line, taken from its system reminder. The controller's is `Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>`.
 
 **Formatting and lints**
 - Run `cargo fmt --all` before each commit.
@@ -90,7 +90,7 @@ A shared `#[cfg(test)] mod bench` (timing helpers and the 2000-node fixture) and
 
 ## Decisions resolved by reading the code
 
-1. **The fixture moves to `bench.rs` with real store ids.** `graph_nav::tests::level_fixture` (`graph_nav.rs:523-593`, plus its doc comment just above; anchor on the quoted text) names nodes `g{g}` and `n{i}`, which don't parse as `NodeId`, so links and saves can't use them. `alloc_node_id` works on `App::default()` (`graph_ui.rs:2180`). `level_pass_cost`'s level becomes `f.groups[0]`. The fixture used `Kind` and `std::time` only in `graph_nav`'s tests, so those imports go with it. `spread` lands with its first caller (Task 1): an unused helper fails `-D warnings`.
+1. **The fixture moves to `bench.rs` with real store ids.** `graph_nav::tests::level_fixture` (`graph_nav.rs:532-602`, plus its doc comment just above; anchor on the quoted text) names nodes `g{g}` and `n{i}`, which don't parse as `NodeId`, so links and saves can't use them. `alloc_node_id` works on `App::default()` (`graph_ui.rs:2180`). `level_pass_cost`'s level becomes `f.groups[0]`. The fixture used `Kind` and `std::time` only in `graph_nav`'s tests, so those imports go with it. `spread` lands with its first caller (Task 1): an unused helper fails `-D warnings`.
 2. **Struct literal sites (each new field is added at every one):**
    - `json_view::Card`: `card.rs:1823` (the preview), `json_view.rs:338` (`visible_cards`), Task 3's golden, and Task 4's `a_culled_card_paints_only_its_visible_rows`.
    - `CardPass`: `card.rs:2566` (a test) and `graph_ui.rs:1664`.
@@ -103,7 +103,7 @@ A shared `#[cfg(test)] mod bench` (timing helpers and the 2000-node fixture) and
    - `Memory::end_pass` drops focus from a widget not drawn this pass, which is why a focused card is never culled (`json_level_ui.rs:513`).
 5. **`changed_on_disk` is (len, mtime), as `poll_store` already relies on** (`journal.rs:911`). `file_seen` returns `None` for a missing file, so `quiet()` requires `seen.is_some()`. `catch_up` and `append` refresh `seen`.
 6. **H5 skips only the lock and `catch_up` on an unchanged file.** `sync_if_due` is called on its own (`session_sync.rs:1762`), not from `begin`. The full path always calls `take_store_recovery`; the fast path requires no recovery pending, so skipping it changes nothing.
-7. **`save_jar` settles the dirty mark itself.** Its only callers are `jar_defs.rs:414` (`switch_jar_ephemeral` off), `:716` (`clear_jar_cookies`) and `tabs.rs:203` (`apply_pulled_cookies`, which stops saving). It becomes `&mut self` and removes the jar's `jar_dirty` entry first, so every write settles the mark in one place. `forget_jar` removes it too.
+7. **`save_jar` settles the dirty mark itself.** Its only callers are `jar_defs.rs:414` (`switch_jar_ephemeral` off), `:716` (`clear_jar_cookies`) and `tabs.rs:213` (`apply_pulled_cookies`, which stops saving). It becomes `&mut self` and removes the jar's `jar_dirty` entry first, so every write settles the mark in one place. `forget_jar` removes it too.
 8. **The quit flush has one site.** `final_cookie_pull` is called only from `exiting` (`event_loop.rs:107`), headless runs included, so `flush_dirty_jars(None)` goes right after it.
 9. **Teardown's end state is a set.** `old` (`session_sync.rs:2021-2025`) is every live non-jar node of the document, links included. Forgetting every mirror link first and then queueing every link's delete before `old` gives the same `pending_deletes`, with every `links_naming` scan seeing no links.
 10. **The save counts are by name.** `apply_graph_action` ends in `save_session` (`graph_ui.rs:390`):
@@ -671,13 +671,13 @@ def cmd_fixture(args):
         json.dump(value, f)
 ```
 
-  - `cmd_script`: replace the depth-2 loop with the block below. A JSONSELECT that finds no level does nothing and says nothing, so a reveal run writes `EXPORTSTATE` beside the fixture, and the `.sh` reads its `selected` back (Step 6). The longer first sleep gives the 200 000-entry file time to load before the double-click enters it; it is the same in both runs of a pair, so it cancels.
+  - `cmd_script`: replace the depth-2 loop with the block below. A JSONSELECT that finds no level does nothing and says nothing, so a reveal run writes `EXPORTSTATE` beside the fixture, and the `.sh` reads its `selected` back (Step 6). The first `WAITIDLE` gives the 200 000-entry file time to load (it waits on the focused tab's loading flag, which a Json card's file load may never raise: check on the first run that the double-click finds the card, else go back to `SLEEP 5`) before the double-click enters it; it is the same in both runs of a pair, so it cancels.
 
 ```python
     if mode.startswith("reveal-"):
-        lines[2] = "SLEEP 5"  # after ADDFILE: a big file loads before the double-click
+        lines[2] = "WAITIDLE 60"  # after ADDFILE: a big file loads before the double-click
         lines.append(f"JSONSELECT /items/{REVEAL_N - 1}")  # pages the array to every row
-        lines.append("SLEEP 2")
+        lines.append("WAITIDLE 60")
         lines.append("EXPORTSTATE " + os.path.join(os.path.dirname(fixture), "state.json"))
     else:
         for i in range(BRANCH):
@@ -1933,23 +1933,17 @@ git commit -m "Wave 2 (H2): link checks share one linked set per query; edge_men
 **Interfaces:**
 - Consumes: `Mirror::{link_ids, forget_link}`, `App::queue_delete`. Produces: nothing new.
 
-- [ ] **Step 1: Forget the links first.** In `teardown_running_session`, before the line `for id in old {`, add:
+- [ ] **Step 1: Delete the links first.** Wave 1 left `teardown_running_session` (`session_sync.rs`, anchor on the quoted lines) with the link loop after the `for id in old {` loop. Move it, unchanged, to just before that loop:
 
 ```rust
-        // Links first, forgotten in the mirror before any delete is queued: each `queue_delete` scans the links
-        // naming its node (`links_naming`), so with every link already gone each scan is empty and the teardown is
-        // O(N + L), not O(N·L). A link is not a card, so no endpoint's cascade is certain to reach it (a dangling one
-        // has none): the replaced session's links all go, as its cards do. Jars stay.
-        let links: Vec<NodeId> = self.mirror.link_ids().collect();
-        for &link in &links {
-            self.mirror.forget_link(link);
-        }
-        for link in &links {
-            self.queue_delete(&link.to_string());
+        // A link is not a card, so no endpoint's cascade is certain to reach it (a dangling one has none): the
+        // replaced session's links all go, as its cards do. Jars stay.
+        for link in self.mirror.link_ids().map(|l| l.to_string()).collect::<Vec<_>>() {
+            self.delete_link(&link);
         }
 ```
 
-  and delete the old block after the `for id in old` loop (its two comment lines starting `// A link is not a card` and the `for link in self.mirror.link_ids()…` loop). Wave 1 edits this function (`forget_id`, `spawning`): anchor on the quoted lines, not the numbers.
+  Add above it: `// Links first: each queue_delete below scans the links naming its node (links_naming), so with every link already gone each scan is empty and the teardown is O(N + L), not O(N·L).` `delete_link` (`links.rs`) already does `forget_link` then `queue_delete`, so nothing else changes. Delete the old copy after the loop. The `forget_id` loop stays where it is, after the `pending_creates` clear.
 
 - [ ] **Step 2: Check and measure.** `cargo test -j 8 -p manifold` (expect all PASS, the teardown pin included), `cargo fmt --all`, the clippy line. Then the CPU and Defender checks and `cargo test --release -j 8 -p manifold --bins teardown_cost -- --ignored --nocapture`. Report and stop. Keep rule: twice as fast or more.
 
@@ -1957,7 +1951,7 @@ git commit -m "Wave 2 (H2): link checks share one linked set per query; edge_men
 
 ```bash
 git add crates/manifold/src/session_sync.rs
-git commit -m "Wave 2 (teardown): forget the links before queueing deletes, so no scan sees them" -m "Co-Authored-By: <implementer's own line>"
+git commit -m "Wave 2 (teardown): delete the links before the nodes, so no scan sees them" -m "Co-Authored-By: <implementer's own line>"
 ```
 
 ---
@@ -2498,7 +2492,7 @@ cargo build -j 8 -p manifold
 cmd //c start "" //b //belownormal bash scripts/gate.sh "<scratchpad>/wave2-gate.log" full
 ```
 
-`start //b` returns at once. Watch `<scratchpad>/wave2-gate.log` for the `GATE done` line (Monitor with an until-loop), not the launcher. It takes about 17 minutes on a quiet machine, and up to 28 under load.
+`start //b` returns at once. Watch `<scratchpad>/wave2-gate.log` for the `GATE done` line (Monitor with an until-loop), not the launcher. It takes about 6 minutes on a quiet machine since the wave 1 gate tooling (`WAITIDLE` instead of fixed sleeps; measured 2026-10-08), and more under load.
 
 Expected:
 - `GATE two-instance run 1..3 exit=0`;
