@@ -561,6 +561,18 @@ mod tests {
         }
     }
 
+    /// Wave 2 (Jar H3): one save of a 3000-cookie jar (serialize, DPAPI on Windows, temp file, rename). Timing,
+    /// not correctness, so ignored: `cargo test --release -j 8 -p manifold --bins jar_save_cost -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn jar_save_cost() {
+        use crate::bench::{report, timed};
+        let dir = temp_dir("jar-save-cost");
+        let cookies = (0..3000).map(|i| c(&format!("n{i}"), &format!("value-{i}-0123456789abcdef"))).collect();
+        let jar = Jar { cookies, ..Jar::default() };
+        report("save, 3000 cookies", timed(40, || jar.save(&dir, JarKey::Default).unwrap()));
+    }
+
     fn key(name: &str) -> Key {
         (name.into(), "example.com".into(), "/".into())
     }

@@ -691,6 +691,8 @@ impl App {
         if self.is_ephemeral(key) {
             return;
         }
+        #[cfg(test)]
+        self.jar_saves.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         if let Err(e) = jar.save(&dir, key) {
             eprintln!("jar: could not save {}: {e}", key.file_stem());
         }

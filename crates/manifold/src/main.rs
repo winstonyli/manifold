@@ -1508,6 +1508,9 @@ struct App {
     /// under test).
     #[cfg(test)]
     jars_dir_override: Option<std::path::PathBuf>,
+    /// Jar files written (`save_jar`), per app so parallel tests don't share it.
+    #[cfg(test)]
+    jar_saves: std::sync::atomic::AtomicUsize,
 }
 
 impl Default for App {
@@ -1686,6 +1689,8 @@ impl Default for App {
             test_spawns: Vec::new(),
             #[cfg(test)]
             jars_dir_override: None,
+            #[cfg(test)]
+            jar_saves: std::sync::atomic::AtomicUsize::new(0),
         };
         for err in [settings_err, bookmarks_err, history_err].into_iter().flatten() {
             app.queue_toast(err);
@@ -3459,6 +3464,43 @@ mod tests {
         assert!(!app.mirror.jar_defs()[&home].ephemeral);
         app.set_jar_ephemeral(work, true);
         assert!(app.jar_confirm_text(jar_defs::JarConfirm::Ephemeral(work)).is_none(), "already ephemeral");
+    }
+
+    fn jar_saves(app: &App) -> usize {
+        app.jar_saves.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Wave 2 (Jar H3): fifteen tabs pull a rotating cookie into one jar. Each changed pull saves the file today.
+    #[test]
+    fn a_burst_of_pulls_saves_the_jar() {
+        let dir = store::testutil::temp_dir("jar-burst");
+        let mut app = App { jars_dir_override: Some(dir.clone()), ..App::default() };
+        let work = app.create_jar("Work");
+        let key = jar::JarKey::Named(work);
+        app.ensure_jar_loaded(key);
+        let before = jar_saves(&app);
+        for t in 0..15 {
+            let tab = format!("t{t}");
+            app.jar_tabs.insert(tab.clone(), (key, jar::TabCookies::default()));
+            let dump = SID.replace(r#""value":"1""#, &format!(r#""value":"v{t}""#));
+            assert!(app.apply_pulled_cookies(&tab, &dump), "pull {t} changed the jar");
+        }
+        assert_eq!(jar_saves(&app) - before, 15, "one save per changed pull");
+        assert_eq!(jar::Jar::load(&dir, key).cookies[0].value, "v14", "the file holds the last value");
+    }
+
+    /// Wave 2 (Jar H3): a jar whose first login is not on disk yet still asks before ephemeral deletes it.
+    #[test]
+    fn ephemeral_on_asks_first_for_a_jar_whose_cookies_are_not_saved_yet() {
+        let dir = store::testutil::temp_dir("jar-ephemeral-dirty");
+        let mut app = App { jars_dir_override: Some(dir.clone()), ..App::default() };
+        let work = app.create_jar("Work");
+        let key = jar::JarKey::Named(work);
+        app.ensure_jar_loaded(key);
+        app.jar_tabs.insert("a".into(), (key, jar::TabCookies::default()));
+        assert!(app.apply_pulled_cookies("a", SID));
+        app.request_jar_ephemeral(work, true);
+        assert_eq!(app.pending_jar_confirm, Some(jar_defs::JarConfirm::Ephemeral(work)));
     }
 
     /// Final review I2: an unreadable copy or a crashed save's temp file is a full copy of the jar's credentials, so
