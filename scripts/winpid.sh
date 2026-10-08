@@ -45,6 +45,6 @@ below_normal() {
 kill_tree() {
     local w
     kill -0 "$1" 2>/dev/null || return 0
-    w="$(winpid_of "$1")" && taskkill //F //T //PID "$w" >/dev/null 2>&1
+    if w="$(winpid_of "$1")"; then taskkill //F //T //PID "$w" >/dev/null 2>&1; else kill "$1" 2>/dev/null; fi
     return 0
 }

@@ -1,4 +1,4 @@
-﻿[package]
+[package]
 name = "manifold"
 version.workspace = true
 edition.workspace = true

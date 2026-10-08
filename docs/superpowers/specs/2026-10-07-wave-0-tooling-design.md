@@ -1,6 +1,6 @@
 # Wave 0: tooling, build and script hygiene (design)
 
-Status: Done 2026-10-08; outcome in the plan. Plan: `docs/superpowers/plans/2026-10-07-wave-0-tooling.md`. First wave of the
+Status: Done 2026-10-08 except Task 3 (skipped, low value); first CI run green; outcome in the plan. Plan: `docs/superpowers/plans/2026-10-07-wave-0-tooling.md`. First wave of the
 refactor program. Scope comes from `.superpowers/survey/verified-wave-0.md` (a fact-check of
 `.superpowers/survey/build-tooling.md`); where the two differ the verified file wins, and where the verified file
 differs from the code as of `c8b7485`, this spec says so ("Corrections"). Already done and not repeated:

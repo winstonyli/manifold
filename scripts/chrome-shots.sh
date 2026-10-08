@@ -360,21 +360,21 @@ for c in json.load(open(sys.argv[1], encoding="utf-8"))["cards"]:
 ' "$(w "$work/state.json")" "$1" </dev/null | tr -d '\r'
     }
     cardcount() { state; python -P -c 'import json,sys; print(len(json.load(open(sys.argv[1], encoding="utf-8"))["cards"]))' "$(w "$work/state.json")" </dev/null | tr -d '\r'; }
-    check() { if [ "$2" = "$3" ]; then echo "PASS: $1"; else echo "FAIL: $1 (got $2, want $3)"; fi; }
     read -r x0 y0 x1 y1 < <(cardrect "$NOTE")
     cx=$(((x0 + x1) / 2)); cy=$(((y0 + y1) / 2))
     send "MOUSEMOVE $cx $cy" "MOUSEDOWN $cx $cy" "MOUSEMOVE $((cx + 30)) $((cy + 15))" "MOUSEMOVE $((cx + 60)) $((cy + 30))" "MOUSEMOVE $((cx + 90)) $((cy + 45))" "MOUSEUP $((cx + 90)) $((cy + 45))" "SLEEP 1"
     read -r n0 m0 n1 m1 < <(cardrect "$NOTE")
-    check "drag moves the card by the drag distance" "$((n0 - x0)),$((m0 - y0))" "90,45"
+    check "drag moves the card by the drag distance" "90,45" "$((n0 - x0)),$((m0 - y0))"
     # The swatch sits on the bottom-right corner (hover reveals nothing extra; the click is what counts).
     sx=$n1; sy=$m1
     send "MOUSEMOVE $((n0 + 20)) $((m0 + 20))" "SLEEP 0.5" "CLICK $sx $sy" "SLEEP 1"; shot mouse-regress-swatch
     state
-    check "swatch click tags the card" "$(python -P -c 'import json,sys; from export_state import *; print([c["color"] for c in json.load(open(sys.argv[1], encoding="utf-8"))["cards"] if card_is(c, NOTE)][0])' "$(w "$work/state.json")" </dev/null)" "True"
+    tagged=$(python -P -c 'import json,sys; from export_state import *; print([c["color"] for c in json.load(open(sys.argv[1], encoding="utf-8"))["cards"] if card_is(c, NOTE)][0])' "$(w "$work/state.json")" </dev/null)
+    check "swatch click tags the card" "True" "$tagged"
     before=$(cardcount)
     mx=$(((n0 + n1) / 2)); my=$(((m0 + m1) / 2))
     send "MOUSEMOVE $mx $my" "MOUSEDOWN $mx $my middle" "MOUSEUP $mx $my middle" "SLEEP 1"
-    check "middle-click closes the card" "$(cardcount)" "$((before - 1))"
+    check "middle-click closes the card" "$((before - 1))" "$(cardcount)"
     reset
 fi
 if has hover-menu-tab; then
