@@ -88,7 +88,7 @@ for n in "$@"; do
     read -r live asleep < <(python -P -c 'import json,sys; from export_state import *; c = json.load(open(sys.argv[1], encoding="utf-8"))["cards"]; print(sum(card_is(x, TAB, True) for x in c), sum(card_is(x, TAB, False) for x in c))' "$(cygpath -w "$spawned")" </dev/null | tr -d '\r')
     [ "$live" -eq 1 ] && [ $((live + asleep)) -eq "$n" ] ||
         { echo "FAIL: $n tabs: $live live and $asleep asleep, expected 1 and $((n - 1))"; exit 1; }
-    winpid="$(winpid_of "$inst")" || { echo "FAIL: $n tabs: no Windows pid for the instance, so no memory figure"; exit 1; }
+    winpid="$launched_winpid"; [ -n "$winpid" ] || { echo "FAIL: $n tabs: no Windows pid for the instance, so no memory figure"; exit 1; }
     echo "$engine, $n tabs: restored in ${elapsed}s, 1 live and $asleep asleep"
     sleep 15
     tree_memory "$winpid"

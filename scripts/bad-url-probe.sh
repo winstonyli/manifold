@@ -10,7 +10,8 @@
 # reads about:blank (or 30 tries); then a host log must exist, hold the host's "opening about:blank" line and no
 # "panicked", and the tab must be loaded on about:blank. Requiring about:blank proves the host reached its initial
 # navigate (a loaded tab alone doesn't: one read loaded between panics). Hosts log to %TEMP%\manifold-<tab>.log,
-# so TEMP and TMP point into the case's own directory. ENGINES defaults to webview2 (servo needs manifold-engine-servo.exe beside the exe). Runs
+# so TEMP and TMP point into the case's own directory. ENGINES defaults to webview2
+# (servo needs manifold-engine-servo.exe beside the exe). Runs
 # BelowNormal; kills only its own instances. Build first: cargo build -p manifold.
 set -u
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
@@ -41,7 +42,8 @@ tab_state() {
 
 # run_case ENGINE NAME URL-MEMBER: URL-MEMBER is the seed tab's `, "url": ...` member, or empty for none.
 run_case() {
-    local dir="$out/$1-$2" profile="$out/$1-$2/appdata" tmp
+    local dir="$out/$1-$2" profile="$out/$1-$2/appdata" tmp earlier=$status
+    status=0 # this case alone decides whether its host log is dumped
     seed_settings "$profile" "$1"
     mkdir -p "$dir/tmp"
     tmp="$(cygpath -w "$dir/tmp")"
@@ -81,6 +83,7 @@ run_case() {
     check "$1 $2: the tab ends loaded (after $n exports)" "1 True" "$(echo "$got" | cut -d' ' -f1-2)"
     check "$1 $2: the tab ends on about:blank" about:blank "$(echo "$got" | cut -d' ' -f3-)"
     [ "$status" -eq 0 ] || { echo "--- $1 $2 host log"; tail -n 15 "$dir"/tmp/manifold-*.log 2>/dev/null; }
+    [ "$earlier" -eq 0 ] || status=1
 }
 
 for engine in ${ENGINES:-webview2}; do
