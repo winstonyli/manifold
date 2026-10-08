@@ -54,7 +54,6 @@ start() {
 }
 stop() { send QUIT; wait "$inst" 2>/dev/null; inst=""; }
 x() { echo "EXPORTSTATE $(cygpath -w "$out/$1.json")"; }
-wait_file() { for _ in $(seq 240); do [ -s "$1" ] && return 0; sleep 0.25; done; echo "timed out waiting for $1" >&2; return 1; }
 py() { python -P -c "$1" "$(cygpath -w "$out/$2.json")" </dev/null 2>&1 | tr -d '\r'; }
 
 start log1

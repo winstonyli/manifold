@@ -51,7 +51,6 @@ trap cleanup EXIT
 dir=""
 cmd=""
 x() { echo "EXPORTSTATE $(cygpath -w "$dir/$1.json")"; }
-wait_file() { for _ in $(seq 240); do [ -s "$1" ] && return 0; sleep 0.25; done; echo "timed out waiting for $1" >&2; return 1; }
 py() { python -P -c "$1" "$(cygpath -w "$dir/$2.json")" </dev/null 2>&1 | tr -d '\r'; }
 # kv <line> <key>: the value of key=value in a helper's output line.
 kv() { printf '%s\n' "$1" | tr ' ' '\n' | sed -n "s/^$2=//p"; }

@@ -24,3 +24,15 @@ launch_headless() {
 
 # send LINE...: appends each argument as one command line to "$cmd".
 send() { printf '%s\n' "$@" >>"$cmd"; }
+
+# wait_file PATH: until PATH exists and is non-empty, for WAIT_FILE_SECS seconds (default 60). The EXPORT*
+# files are replaced atomically, so a non-empty one is whole.
+wait_file() {
+    local _
+    for _ in $(seq $((${WAIT_FILE_SECS:-60} * 4))); do
+        [ -s "$1" ] && return 0
+        sleep 0.25
+    done
+    echo "timed out waiting for $1" >&2
+    return 1
+}

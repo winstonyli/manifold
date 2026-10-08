@@ -39,6 +39,7 @@ exe="$repo_root/target/debug/manifold.exe"
 . "$repo_root/scripts/winpid.sh"
 # shellcheck source=lib.sh
 . "$repo_root/scripts/lib.sh"
+WAIT_FILE_SECS=30 # chrome-shots' own wait, from before lib.sh
 require_fresh_exe "$exe" || exit 1
 # The inline python below reads EXPORTSTATE cards through scripts/export_state.py.
 export PYTHONPATH="$(cygpath -w "$repo_root/scripts")"
@@ -91,7 +92,6 @@ cmd="$work/cmd"
 launch_headless "$exe" "$profile" "$cmd" "$work/log"
 inst=$!
 
-wait_file() { for _ in $(seq 120); do [ -s "$1" ] && return 0; sleep 0.25; done; echo "timed out waiting for $1" >&2; return 1; }
 # The state file, fresh.
 state() {
     rm -f "$work/state.json"

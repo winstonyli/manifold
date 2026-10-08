@@ -48,4 +48,16 @@ expect "launch_headless: APPDATA is the profile, Windows-style" "$(cygpath -w "$
 expect "launch_headless: a prefix assignment reaches the instance" http://proxy.test "$(sed -n 3p "$t/fake.log")"
 expect "launch_headless: commands from the file's first line" "FIRST LINE" "$(sed -n 4p "$t/fake.log")"
 
+# The producer waits for a marker, so the file turns up while wait_file is polling (no fixed sleep).
+(until [ -e "$t/go" ]; do sleep 0.05; done; echo x >"$t/late") &
+: >"$t/go"
+wait_file "$t/late"
+expect "wait_file: a file that turns up later" 0 "$?"
+WAIT_FILE_SECS=1 wait_file "$t/never" 2>"$t/wait.err"
+expect "wait_file: gives up after WAIT_FILE_SECS" 1 "$?"
+expect "wait_file: says what it waited for" "timed out waiting for $t/never" "$(cat "$t/wait.err")"
+: >"$t/empty"
+WAIT_FILE_SECS=1 wait_file "$t/empty" 2>/dev/null
+expect "wait_file: an empty file is not there yet" 1 "$?"
+
 exit $fails
