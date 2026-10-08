@@ -23,7 +23,7 @@ Only `manifold-engine-webkit` is Linux-only (no Windows WebKit embedding exists)
 
 ## Prerequisites
 
-- **Rust** (stable), via rustup.
+- **Rust**: the toolchain `rust-toolchain.toml` pins (rustup installs it on first use). Nothing needs nightly features; it is pinned so a clippy update can't fail the `-D warnings` hook with no code change.
 - **Visual Studio 2022, 17.14 or newer.** Older toolsets are missing STL symbols that Servo's build needs — this is a hard requirement, not a suggestion.
 - **A real `ninja.exe`** on PATH (`scoop install ninja`), for CEF's build script.
   - If a Chromium `depot_tools` checkout is also on your PATH, **exclude it** for this project's builds — its extensionless `ninja` shell script shadows the real `ninja.exe` and breaks the CEF build. See the "Building" commands below, which strip it automatically.
@@ -50,7 +50,7 @@ The `PATH` filtering is only needed if `depot_tools` is on your PATH; harmless o
 wsl.exe -d Ubuntu -- bash -c 'cd "/mnt/c/Users/<you>/Documents/GitHub/manifold" && CARGO_TARGET_DIR=target-linux cargo build -p manifold-engine-webkit'
 ```
 
-Adjust the path for wherever this repo actually lives on your machine (WSL2 sees your Windows drives under `/mnt/c/...`).
+Adjust the path for wherever this repo actually lives on your machine (WSL2 sees your Windows drives under `/mnt/c/...`). `rust-toolchain.toml` applies there too: the first build makes WSL's rustup install the Linux build of the same nightly, and `target-linux` rebuilds once if WSL was on another toolchain.
 
 ### Runtime-file placement (required after every build)
 
