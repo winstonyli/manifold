@@ -153,11 +153,11 @@ impl App {
             // `Settings::zoom_factor` -- see `set_focused_zoom`'s own
             // doc comment for the display-vs-reality bug this fixed.
             if ui.button(egui_phosphor::light::MINUS).clicked() {
-                self.set_focused_zoom((self.focused_zoom_factor() - 0.1).max(0.5));
+                self.set_focused_zoom((self.focused_zoom_factor() - 0.1).max(*crate::settings::ZOOM_RANGE.start()));
             }
             ui.label(format!("{:.0}%", self.focused_zoom_factor() * 100.0));
             if ui.button(egui_phosphor::light::PLUS).clicked() {
-                self.set_focused_zoom((self.focused_zoom_factor() + 0.1).min(2.0));
+                self.set_focused_zoom((self.focused_zoom_factor() + 0.1).min(*crate::settings::ZOOM_RANGE.end()));
             }
             if ui.button("Reset").clicked() {
                 self.set_focused_zoom(1.0);

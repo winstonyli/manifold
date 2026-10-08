@@ -194,15 +194,10 @@ impl EngineKind {
 /// (`settings.rs`'s default-starting-engine, `session.rs`'s per-tab engine).
 pub(crate) mod engine_kind_serde {
     use super::EngineKind;
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use serde::{Serialize, Serializer};
 
     pub fn serialize<S: Serializer>(kind: &EngineKind, s: S) -> Result<S::Ok, S::Error> {
         kind.desc().name.serialize(s)
-    }
-
-    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<EngineKind, D::Error> {
-        let name = String::deserialize(d)?;
-        EngineKind::from_name(&name).ok_or_else(|| serde::de::Error::custom(format!("unknown engine {name:?}")))
     }
 }
 

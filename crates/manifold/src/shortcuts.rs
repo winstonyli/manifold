@@ -296,7 +296,7 @@ impl App {
         if self.showing_image_view() {
             self.apply_image_zoom_action(ZoomChipAction::In);
         } else {
-            self.set_focused_zoom((self.focused_zoom_factor() + 0.1).min(2.0));
+            self.set_focused_zoom((self.focused_zoom_factor() + 0.1).min(*crate::settings::ZOOM_RANGE.end()));
         }
     }
 
@@ -307,7 +307,7 @@ impl App {
         if self.showing_image_view() {
             self.apply_image_zoom_action(ZoomChipAction::Out);
         } else {
-            self.set_focused_zoom((self.focused_zoom_factor() - 0.1).max(0.5));
+            self.set_focused_zoom((self.focused_zoom_factor() - 0.1).max(*crate::settings::ZOOM_RANGE.start()));
         }
     }
 

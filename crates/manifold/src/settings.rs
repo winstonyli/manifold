@@ -1,5 +1,7 @@
 use std::path::PathBuf;
 
+use serde::Deserialize as _;
+
 use crate::process_manager::{engine_kind_serde, EngineKind};
 
 /// Which search engine `resolve_navigation_url`/the autocomplete dropdown's
@@ -54,14 +56,16 @@ impl SearchEngine {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct Settings {
+    #[serde(deserialize_with = "search_engine")]
     pub default_search_engine: SearchEngine,
-    #[serde(with = "engine_kind_serde")]
+    #[serde(serialize_with = "engine_kind_serde::serialize", deserialize_with = "starting_engine")]
     pub default_starting_engine: EngineKind,
     /// A linear multiplier (1.0 = 100%), matching WebKit's own
     /// `WebView::set_zoom_level`'s semantics directly — CEF's zoom API is
     /// log-scale internally (Chromium's own `zoom_level`, not a linear
     /// factor) and gets converted at the point of use (`main.rs`'s
     /// `send_zoom_to`), not stored converted here.
+    #[serde(deserialize_with = "zoom")]
     pub zoom_factor: f64,
     pub home_page: String,
     /// The OS window's own size last time it changed -- in DPI-independent
@@ -148,6 +152,47 @@ impl Default for Settings {
             cef_directory: None,
         }
     }
+}
+
+/// The page zoom the UI steps through (`zoom_in_shortcut`, `zoom_out_shortcut`, the settings page's buttons); a
+/// stored value outside it loads clamped into it.
+pub(crate) const ZOOM_RANGE: std::ops::RangeInclusive<f64> = 0.5..=2.0;
+
+/// A value this build can't read (a newer build's name, a hand edit) loads as that setting's default, logged, rather
+/// than failing the whole file, which `load_or_move_aside` would set aside with every other setting (H4).
+fn lenient<'de, D: serde::Deserializer<'de>, T>(
+    d: D,
+    what: &str,
+    read: impl FnOnce(&serde_json::Value) -> Option<T>,
+    default: impl FnOnce() -> T,
+) -> Result<T, D::Error> {
+    let value = serde_json::Value::deserialize(d)?;
+    Ok(read(&value).unwrap_or_else(|| {
+        eprintln!("settings: unreadable {what} {value}; using the default");
+        default()
+    }))
+}
+
+fn search_engine<'de, D: serde::Deserializer<'de>>(d: D) -> Result<SearchEngine, D::Error> {
+    lenient(
+        d,
+        "default_search_engine",
+        |v| SearchEngine::deserialize(v).ok(),
+        || Settings::default().default_search_engine,
+    )
+}
+
+fn starting_engine<'de, D: serde::Deserializer<'de>>(d: D) -> Result<EngineKind, D::Error> {
+    lenient(
+        d,
+        "default_starting_engine",
+        |v| v.as_str().and_then(EngineKind::from_name),
+        || Settings::default().default_starting_engine,
+    )
+}
+
+fn zoom<'de, D: serde::Deserializer<'de>>(d: D) -> Result<f64, D::Error> {
+    lenient(d, "zoom_factor", |v| v.as_f64().map(|z| z.clamp(*ZOOM_RANGE.start(), *ZOOM_RANGE.end())), || 1.0)
 }
 
 fn settings_path() -> Option<PathBuf> {
@@ -258,5 +303,34 @@ mod tests {
         assert_eq!(old.default_starting_engine, crate::process_manager::platform_default_engine(std::env::consts::OS));
         let saved: Settings = serde_json::from_str(r#"{"default_starting_engine":"webview2"}"#).unwrap();
         assert_eq!(saved.default_starting_engine, EngineKind::Webview2);
+    }
+
+    /// H4: a value this build can't read resets that setting alone, not the whole file.
+    #[test]
+    fn an_unknown_value_resets_only_its_own_setting() {
+        let s: Settings = serde_json::from_str(
+            r#"{"home_page":"https://a.test","default_search_engine":"Kagi",
+                "default_starting_engine":"chrome","zoom_factor":0,"cef_directory":"D:/cef"}"#,
+        )
+        .unwrap();
+        assert_eq!(s.home_page, "https://a.test");
+        assert_eq!(s.cef_directory.as_deref(), Some("D:/cef"));
+        assert_eq!(s.default_search_engine, SearchEngine::DuckDuckGo);
+        assert_eq!(s.default_starting_engine, Settings::default().default_starting_engine);
+        assert_eq!(s.zoom_factor, 0.5, "clamped into the range the UI steps through");
+    }
+
+    /// H4: zoom loads clamped, a wrongly typed zoom is the default, and the defaults round-trip.
+    #[test]
+    fn zoom_is_clamped_and_a_wrong_type_is_its_default() {
+        let zoom = |text: &str| serde_json::from_str::<Settings>(text).unwrap().zoom_factor;
+        assert_eq!(zoom(r#"{"zoom_factor":9}"#), 2.0);
+        assert_eq!(zoom(r#"{"zoom_factor":"1.2"}"#), 1.0);
+        assert_eq!(zoom(r#"{"zoom_factor":1.3}"#), 1.3);
+        let defaults = Settings::default();
+        let back: Settings = serde_json::from_str(&serde_json::to_string(&defaults).unwrap()).unwrap();
+        assert_eq!(back.default_search_engine, defaults.default_search_engine);
+        assert_eq!(back.default_starting_engine, defaults.default_starting_engine);
+        assert_eq!(back.zoom_factor, defaults.zoom_factor);
     }
 }
