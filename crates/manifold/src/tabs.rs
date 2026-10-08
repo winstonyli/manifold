@@ -177,9 +177,10 @@ impl App {
 
     /// Folds tab `tab_id`'s cookie dump into the jar its host was spawned with, and saves that jar's file when it
     /// changed (spec: "Its pulls merge into that jar and save only that jar's file"). Merged against that tab's own
-    /// `jar_tabs` entry (`jar::Jar::merge`). `false` for a dump that does not parse (logged), a tab with no `jar_tabs` entry
-    /// (closed or replaced since it was asked; deviation 5), a named jar deleted while it ran, or a host whose jar was
-    /// cleared under it (`jar_reseed`): it still holds the old cookies, and they must not refill the cleared jar.
+    /// `jar_tabs` entry (`jar::Jar::merge`). `false` for a dump that does not parse (logged), a tab with no
+    /// `jar_tabs` entry (closed or replaced since it was asked; deviation 5), a named jar deleted while it ran, or a
+    /// host whose jar was cleared under it (`jar_reseed`): it still holds the old cookies, and they must not refill
+    /// the cleared jar.
     pub(crate) fn apply_pulled_cookies(&mut self, tab_id: &str, json: &str) -> bool {
         if self.jar_reseed.contains(tab_id) {
             return false;
@@ -1202,7 +1203,8 @@ impl App {
         members.iter().filter(|m| self.request_sleep(m, SleepWhy::Manual)).count()
     }
 
-    /// The local close without the save (`destroy_tab`, `redirect_tab_to_content`); queues the delete.
+    /// The local close without the save (`destroy_tab`, `destroy_group_members`, `redirect_tab_to_content`); queues
+    /// the delete.
     pub(crate) fn remove_tab(&mut self, id: &str) {
         if self.drop_tab(id) {
             self.queue_delete(id);

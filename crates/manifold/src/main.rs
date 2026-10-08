@@ -2239,7 +2239,7 @@ impl App {
     /// is left untouched (this only forgets the node); an image's or PDF's texture is freed, and a PDF's render not
     /// yet started is cancelled. Neither kind has an engine process or a membership to tear down, so one plain
     /// `self.nodes`/`node_order` removal (plus the same stale-`dragging`/`hovered` guard `destroy_tab`/`finish_swap`
-    /// also apply) covers them all.
+    /// also apply), then `forget_id`, covers them all.
     ///
     /// Removing the Json node whose level is being viewed (another replica
     /// deleted it, or its group was closed) leaves to that node's group,

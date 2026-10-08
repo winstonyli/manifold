@@ -1638,3 +1638,39 @@ Type consistency:
 ---
 
 ## Outcome
+
+Implemented 2026-10-08 on `wave-1-integrity`, base `99af4ec`.
+
+| Task | Item | Commit |
+|---|---|---|
+| 1 | L4 `end_stale_drag` doc comment | `9f16f93` |
+| 2 | L1 Group Selected centres on live cards | `bb270d7` |
+| 3 | P1 closing a group commits once | `2308875` |
+| 4 | C1 `forget_id`, texture leak on session replace | `b650ed9` |
+| 5 | H1 `end_stale_selection` | `cd9e08d` |
+| 6 | M5 Json `Unread` part | `b04003f` |
+| 7 | H4 lenient settings, zoom clamp | `d82bed4`, `9ddbfed` |
+| 8 | M3 `jar::from_json` returns `Result` | `b4a1712` |
+| 9 | M4 CLI `validate()` | `f1ec3ed` |
+| 10 | G2 `carried_holds_every_tab_field` | `714343b` |
+| gate tooling | `WAITIDLE`; scripts wait on conditions | `8575d45`, `f8f5d8b` |
+
+Each task passed a per-task review; the whole-branch Opus review said "Ready" with four Minors, applied in the docs commit.
+
+**Tests:** 1013 passed, 5 ignored (`manifold`), 44 (`ipc-protocol`), 9 (engine-webview2).
+
+**Gate (full, 2026-10-08 13:15-13:21):** three two-instance runs and the smoke test all passed (48 PASS, 0 FAIL), 5.5 minutes. CPU 16-30%, Defender real-time protection off; GPU users and leases not checked. An earlier gate on the same code (before the timing fix) failed scenarios 5 and 7 and lost the eGPU during the smoke test, under heavy load from other sessions; that is why the scripts now wait on conditions (`WAITIDLE`, the page server's request log) instead of fixed sleeps. Scenarios 3-5 keep fixed windows only where they assert that nothing happens.
+
+**Deviations:**
+- Task 7 also deleted the now-dead `engine_kind_serde::deserialize` (reviewer grepped all callers), and `9ddbfed` fixed its stale doc.
+- Task 8's brief cited `main.rs:3239`; the real caller is `main.rs:3397`.
+- Spec Decision 1 (spec and plan on `main` as `32ad186`) was already satisfied before the branch.
+- Gate tooling (`WAITIDLE`) was added to the branch because the gate could not pass without it.
+
+**Parked:**
+- Task 4: `ID_SHAPES` misses `BTreeSet` and tuple-keyed maps; the scan checks fields, not call sites; the teardown test lacks spawning-id and GPU coverage; `forget_id` could note `cancel_held` ordering.
+- Task 6: an entry that partly fails to read is dropped whole on edit; the toast repeats on refused drag edits.
+- Task 9: `FLAGS` is kept in step by hand; a value starting with `--` is refused.
+- Task 10: the G2 guard covers `Kind::Tab` only.
+- `destroy_group_members` bypasses `destroy_tab` (note for the P1 audit).
+- Hand-testing of the M4 launch forms.

@@ -1,6 +1,6 @@
 # Wave 1: correctness and data integrity (design)
 
-Status: Designed 2026-10-07, not started. The plan is `docs/superpowers/plans/2026-10-07-wave-1-integrity.md`. The scope and
+Status: Implemented 2026-10-08 on `wave-1-integrity` (commits `9f16f93`..`714343b`, gate tooling `8575d45`, `f8f5d8b`); see the plan's Outcome for deviations. The plan is `docs/superpowers/plans/2026-10-07-wave-1-integrity.md`. The scope and
 the evidence come from the read-only fact check `.superpowers/survey/verified-wave-1.md` (at `c8b7485`). This spec re-checked
 every line and symbol it relies on against the files at `c8b7485`. Where this spec departs from that file, it says so ("Deviation").
 
