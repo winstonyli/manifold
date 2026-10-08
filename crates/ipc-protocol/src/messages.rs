@@ -664,3 +664,242 @@ mod page_state_tests {
         assert_eq!(restore_scroll_script(1.0, f64::INFINITY), restore_scroll_script(1.0, 0.0));
     }
 }
+
+/// Fails when the wire shape of `HostToEngine` or `EngineToHost` changes without `PROTOCOL_VERSION` changing.
+/// The fingerprint is FNV-1a over the frames `MessageChannel::send` writes for one representative value per variant,
+/// including every `InputEvent`, `MouseButton` and `KeyCode`.
+#[cfg(test)]
+mod wire_shape_tests {
+    use super::*;
+    use crate::channel::MessageChannel;
+    use crate::PROTOCOL_VERSION;
+    use std::io::Cursor;
+
+    /// The `PROTOCOL_VERSION` that `RECORDED_FINGERPRINT` was recorded for.
+    const RECORDED_FOR_VERSION: u32 = 3;
+    /// The fingerprint of the wire shape at `RECORDED_FOR_VERSION`.
+    const RECORDED_FINGERPRINT: u64 = 0x6634_ca5c_7cb1_04de;
+    const HOST_TO_ENGINE_VARIANTS: usize = 20;
+    const ENGINE_TO_HOST_VARIANTS: usize = 16;
+    const INPUT_EVENT_VARIANTS: usize = 7;
+    const MOUSE_BUTTON_VARIANTS: usize = 3;
+
+    /// The index of each variant's representative in `host_samples`. Exhaustive on purpose: a new variant does not
+    /// compile until it has an index here, and then `host_samples` needs a value at that index.
+    fn host_slot(m: &HostToEngine) -> usize {
+        match m {
+            HostToEngine::Navigate { .. } => 0,
+            HostToEngine::GoBack => 1,
+            HostToEngine::GoForward => 2,
+            HostToEngine::Reload => 3,
+            HostToEngine::Resize { .. } => 4,
+            HostToEngine::Input(_) => 5,
+            HostToEngine::SetZoom { .. } => 6,
+            HostToEngine::SetVisible(_) => 7,
+            HostToEngine::GetState => 8,
+            HostToEngine::QueryPageState => 9,
+            HostToEngine::SetCookies(_) => 10,
+            HostToEngine::GetCookies => 11,
+            HostToEngine::RestoreScroll { .. } => 12,
+            HostToEngine::FindStart { .. } => 13,
+            HostToEngine::FindNext => 14,
+            HostToEngine::FindPrevious => 15,
+            HostToEngine::FindStop => 16,
+            HostToEngine::OpenDevTools => 17,
+            HostToEngine::SetMuted { .. } => 18,
+            HostToEngine::Shutdown => 19,
+        }
+    }
+
+    /// As `host_slot`, for `EngineToHost`.
+    fn engine_slot(m: &EngineToHost) -> usize {
+        match m {
+            EngineToHost::FrameReady { .. } => 0,
+            EngineToHost::NavigationStateChanged { .. } => 1,
+            EngineToHost::StateSnapshot(_) => 2,
+            EngineToHost::PageState(_) => 3,
+            EngineToHost::Cookies(_) => 4,
+            EngineToHost::Crashed { .. } => 5,
+            EngineToHost::OpenTabRequested { .. } => 6,
+            EngineToHost::FindResult { .. } => 7,
+            EngineToHost::AudioPlayingChanged { .. } => 8,
+            EngineToHost::ContextMenuLink { .. } => 9,
+            EngineToHost::DownloadStarted { .. } => 10,
+            EngineToHost::DownloadProgress { .. } => 11,
+            EngineToHost::DownloadCompleted { .. } => 12,
+            EngineToHost::DownloadFailed { .. } => 13,
+            EngineToHost::JsonBody { .. } => 14,
+            EngineToHost::RedirectableContent { .. } => 15,
+        }
+    }
+
+    /// As `host_slot`, for `InputEvent`, which `HostToEngine::Input` carries.
+    fn input_slot(e: &InputEvent) -> usize {
+        match e {
+            InputEvent::MouseMove { .. } => 0,
+            InputEvent::MouseDown { .. } => 1,
+            InputEvent::MouseUp { .. } => 2,
+            InputEvent::Scroll { .. } => 3,
+            InputEvent::KeyDown { .. } => 4,
+            InputEvent::KeyUp { .. } => 5,
+            InputEvent::Char { .. } => 6,
+        }
+    }
+
+    /// As `host_slot`, for `MouseButton`.
+    fn button_slot(b: &MouseButton) -> usize {
+        match b {
+            MouseButton::Left => 0,
+            MouseButton::Right => 1,
+            MouseButton::Middle => 2,
+        }
+    }
+
+    fn input_samples() -> Vec<InputEvent> {
+        let key = KeyCode::KeyA;
+        vec![
+            InputEvent::MouseMove { x: 1.0, y: 2.0, modifiers: modifiers::ALT },
+            InputEvent::MouseDown {
+                x: 1.0,
+                y: 2.0,
+                button: MouseButton::Left,
+                modifiers: modifiers::SHIFT,
+                click_count: 2,
+            },
+            InputEvent::MouseUp {
+                x: 1.0,
+                y: 2.0,
+                button: MouseButton::Right,
+                modifiers: modifiers::CONTROL,
+                click_count: 3,
+            },
+            InputEvent::Scroll { x: 1.0, y: 2.0, delta_x: 3.0, delta_y: 4.0, modifiers: modifiers::SUPER },
+            InputEvent::KeyDown { key, modifiers: modifiers::SHIFT },
+            InputEvent::KeyUp { key, modifiers: modifiers::CONTROL },
+            InputEvent::Char { codepoint: 0x1F600 },
+        ]
+    }
+
+    fn host_samples() -> Vec<HostToEngine> {
+        vec![
+            HostToEngine::Navigate { url: "https://example.com".into(), referrer: Some("https://a.test".into()) },
+            HostToEngine::GoBack,
+            HostToEngine::GoForward,
+            HostToEngine::Reload,
+            HostToEngine::Resize { width: 800, height: 600, dpi_scale: 1.25 },
+            HostToEngine::Input(input_samples().remove(1)),
+            HostToEngine::SetZoom { factor: 1.5 },
+            HostToEngine::SetVisible(true),
+            HostToEngine::GetState,
+            HostToEngine::QueryPageState,
+            HostToEngine::SetCookies("[]".into()),
+            HostToEngine::GetCookies,
+            HostToEngine::RestoreScroll { x: 3.0, y: 4.0 },
+            HostToEngine::FindStart { text: "needle".into(), match_case: true },
+            HostToEngine::FindNext,
+            HostToEngine::FindPrevious,
+            HostToEngine::FindStop,
+            HostToEngine::OpenDevTools,
+            HostToEngine::SetMuted { muted: true },
+            HostToEngine::Shutdown,
+        ]
+    }
+
+    fn engine_samples() -> Vec<EngineToHost> {
+        vec![
+            EngineToHost::FrameReady {
+                frame_id: 7,
+                width: 800,
+                height: 600,
+                damage: Some((0, 0, 10, 10)),
+                pixels: None,
+            },
+            EngineToHost::NavigationStateChanged {
+                url: "https://example.com".into(),
+                title: "Example".into(),
+                can_go_back: true,
+                can_go_forward: false,
+                loading: true,
+                user_started: Some(true),
+            },
+            EngineToHost::StateSnapshot(TabState { url: "https://example.com".into() }),
+            EngineToHost::PageState(PageState { scroll_x: 1.0, scroll_y: 2.0, dirty_form: true }),
+            EngineToHost::Cookies("[]".into()),
+            EngineToHost::Crashed { reason: "gone".into() },
+            EngineToHost::OpenTabRequested { url: "https://example.com".into(), user_gesture: true },
+            EngineToHost::FindResult { count: 3, active_index: 1 },
+            EngineToHost::AudioPlayingChanged { playing: true },
+            EngineToHost::ContextMenuLink { x: 5.0, y: 6.0, href: "https://example.com".into() },
+            EngineToHost::DownloadStarted {
+                path: "a.bin".into(),
+                total_bytes: Some(1 << 40),
+                url: Some("https://example.com/a.bin".into()),
+            },
+            EngineToHost::DownloadProgress { path: "a.bin".into(), bytes_received: 1 << 40 },
+            EngineToHost::DownloadCompleted { path: "a.bin".into() },
+            EngineToHost::DownloadFailed { path: "a.bin".into() },
+            EngineToHost::JsonBody { body: "{}".into() },
+            EngineToHost::RedirectableContent { content_type: "image/png".into() },
+        ]
+    }
+
+    /// The frames `MessageChannel::send` writes for `samples`, one after another.
+    fn frames<T: Serialize>(samples: &[T]) -> Vec<u8> {
+        let mut ch = MessageChannel::new(Cursor::new(Vec::new()));
+        for s in samples {
+            ch.send(s).unwrap();
+        }
+        ch.into_inner().into_inner()
+    }
+
+    /// FNV-1a, 64-bit.
+    fn fnv1a(bytes: &[u8]) -> u64 {
+        bytes.iter().fold(0xcbf2_9ce4_8422_2325, |h, &b| (h ^ b as u64).wrapping_mul(0x0100_0000_01b3))
+    }
+
+    #[test]
+    fn wire_shape_matches_the_recorded_fingerprint() {
+        let host = host_samples();
+        let engine = engine_samples();
+        assert_eq!(host.len(), HOST_TO_ENGINE_VARIANTS, "HostToEngine has a new variant: add its sample and index");
+        assert_eq!(engine.len(), ENGINE_TO_HOST_VARIANTS, "EngineToHost has a new variant: add its sample and index");
+        for (i, m) in host.iter().enumerate() {
+            assert_eq!(host_slot(m), i, "host_samples is out of step with host_slot");
+        }
+        for (i, m) in engine.iter().enumerate() {
+            assert_eq!(engine_slot(m), i, "engine_samples is out of step with engine_slot");
+        }
+
+        let inputs = input_samples();
+        assert_eq!(inputs.len(), INPUT_EVENT_VARIANTS, "InputEvent has a new variant: add its sample and index");
+        for (i, e) in inputs.iter().enumerate() {
+            assert_eq!(input_slot(e), i, "input_samples is out of step with input_slot");
+        }
+        let buttons = [MouseButton::Left, MouseButton::Right, MouseButton::Middle];
+        assert_eq!(buttons.len(), MOUSE_BUTTON_VARIANTS, "MouseButton has a new variant: add it and its index");
+        for (i, b) in buttons.iter().enumerate() {
+            assert_eq!(button_slot(b), i, "buttons is out of step with button_slot");
+        }
+        // Every `MouseButton`, and every `KeyCode` (its wire form is its position in the table).
+        let press = |button| InputEvent::MouseDown { x: 0.0, y: 0.0, button, modifiers: 0, click_count: 1 };
+        let mut bytes = frames(&inputs);
+        bytes.extend(frames(&buttons.map(press)));
+        bytes.extend(frames(
+            &KeyCode::ALL.iter().map(|&key| InputEvent::KeyDown { key, modifiers: 0 }).collect::<Vec<_>>(),
+        ));
+        bytes.extend(frames(&host));
+        bytes.extend(frames(&engine));
+        let actual = fnv1a(&bytes);
+        assert!(
+            actual == RECORDED_FINGERPRINT,
+            "the HostToEngine/EngineToHost wire shape changed (fingerprint {actual:#018x}, recorded \
+             {RECORDED_FINGERPRINT:#018x}). Bump PROTOCOL_VERSION in ipc-protocol/src/lib.rs, then in this test set \
+             RECORDED_FOR_VERSION to the new PROTOCOL_VERSION and RECORDED_FINGERPRINT to {actual:#018x}."
+        );
+        assert_eq!(
+            PROTOCOL_VERSION, RECORDED_FOR_VERSION,
+            "PROTOCOL_VERSION is {PROTOCOL_VERSION} but this test records version {RECORDED_FOR_VERSION}. If the bump \
+             was deliberate and the wire shape is unchanged, set RECORDED_FOR_VERSION to {PROTOCOL_VERSION}."
+        );
+    }
+}

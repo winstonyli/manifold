@@ -17,7 +17,7 @@ pub use transport::{LocalTransport, RemoteTransport};
 /// postcard message. postcard encodes enum variants by position, so a host
 /// and engine built from different `messages.rs` would silently misread each
 /// other. Bump it on any change to `HostToEngine`, `EngineToHost` or a type
-/// they carry.
+/// they carry. The `wire_shape_tests` test in `messages.rs` fails when that shape changes without a bump.
 /// 2: `EngineToHost::OpenTabRequested` carries `user_gesture`.
 /// 3: `InputEvent::MouseDown`/`MouseUp` carry `click_count`; `TabState` drops `zoom`.
 pub const PROTOCOL_VERSION: u32 = 3;
