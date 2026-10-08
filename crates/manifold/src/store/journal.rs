@@ -759,6 +759,9 @@ pub struct Journal {
     seen: Option<(u64, SystemTime)>,
     last_sync: Instant,
     unsynced: bool,
+    /// `begin` calls, for tests that count saves that reached the store.
+    #[cfg(test)]
+    pub(crate) begins: usize,
 }
 
 /// Holds the profile lock; commit through it. Dropping it unlocks.
@@ -793,6 +796,8 @@ impl Journal {
             seen: None,
             last_sync: Instant::now(),
             unsynced: false,
+            #[cfg(test)]
+            begins: 0,
         }
     }
 
@@ -901,6 +906,10 @@ impl Journal {
 
     /// Takes the lock and reads what other processes appended since.
     pub fn begin(&mut self) -> Result<Txn<'_>, JournalError> {
+        #[cfg(test)]
+        {
+            self.begins += 1;
+        }
         let lock = self.lock()?;
         let remote = self.guard(Journal::catch_up)?;
         Ok(Txn { journal: self, _lock: lock, remote })

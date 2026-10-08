@@ -2885,7 +2885,7 @@ fn app_save_costs() {
         println!("  {what:<44} best {best:>10.1?}  median {median:>10.1?}");
     }
     const N: usize = 40;
-    for tabs in [300usize, 3000] {
+    for tabs in [300usize, 2000, 3000] {
         let dir = temp_dir(&format!("app-cost-{tabs}"));
         let mut app = app_on(&dir.join("session.mnf"), 1);
         let groups: Vec<String> = (0..tabs / 10).map(|i| add_group(&mut app, &format!("Group {i}"))).collect();
@@ -2930,6 +2930,38 @@ fn app_save_costs() {
         let bytes = app.local_state().to_bytes().len();
         println!("  session.mnf.local: {bytes} B");
     }
+}
+
+/// Wave 2 (H5): the saves that reach the store (`Journal::begin`) per action through `apply_graph_action`, which
+/// saves after the action's own save. With nothing left to write, the second one is redundant.
+#[test]
+fn save_count_per_action() {
+    use crate::card::DropEffect;
+    use crate::graph_ui::GraphAction;
+    let mut app = app_on(&temp_dir("save-count").join("session.mnf"), 1);
+    let ctx = egui::Context::default();
+    let g = add_group(&mut app, "g");
+    let (a, b, c, d) = (a_note(&mut app), a_note(&mut app), a_note(&mut app), a_note(&mut app));
+    assert!(app.save_session());
+    let begins = |app: &App| app.journal.as_ref().unwrap().begins;
+    let count = |app: &mut App, action: GraphAction| {
+        let before = begins(app);
+        app.apply_graph_action(&ctx, action);
+        begins(app) - before
+    };
+    let delete = count(&mut app, GraphAction::Node(a.clone(), NodeAction::Delete));
+    let join = count(&mut app, GraphAction::Drop { id: b.clone(), target: Some((DropEffect::Join, Some(g.clone()))) });
+    app.connecting = Some((c.clone(), crate::caps::LINK));
+    let finish = count(&mut app, GraphAction::FinishConnect(d.clone()));
+    let enter = count(&mut app, GraphAction::EnterGroup(g.clone()));
+    assert!(!app.nodes.contains_key(&a), "deleted");
+    assert_eq!(app.mirror.group(&b), Some(g.as_str()), "joined");
+    assert_eq!(app.links_naming(&c).len(), 1, "linked");
+    assert_eq!(app.current_group.as_deref(), Some(g.as_str()), "entered");
+    assert_eq!(
+        [("menu Delete", delete), ("enter a group", enter), ("Join drop", join), ("finish a link", finish)],
+        [("menu Delete", 2), ("enter a group", 1), ("Join drop", 2), ("finish a link", 2)]
+    );
 }
 
 /// Replacing the running session skips the renders of its PDFs that haven't started, as deleting one does.
