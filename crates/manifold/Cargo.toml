@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 description.workspace = true
 
+[lints]
+workspace = true
+
 [dependencies]
 egui = "0.36.2"
 # `light` (not the default `regular`) -- see `apply_fonts`'s own doc comment

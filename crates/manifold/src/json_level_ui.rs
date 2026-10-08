@@ -259,7 +259,7 @@ fn paint_json_frame(
 /// A card's contents (the frame is the caller's): the header, then the
 /// first `rows` entries of `value`, then `+ N more` when `more > 0`.
 /// Shared by the JSON level and the Json card at its parent's level.
-#[allow(clippy::too_many_arguments)] // one card's full description; a struct for it would only rename these
+#[allow(clippy::too_many_arguments, reason = "one card's full description; a struct for it would only rename these")]
 pub(crate) fn paint_json_content(
     painter: &egui::Painter,
     deferred_overlays: &mut DeferredOverlays,

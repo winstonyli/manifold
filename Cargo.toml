@@ -17,6 +17,12 @@ description = "A browser where each tab can run on a different rendering engine 
 [workspace.dependencies]
 ipc-protocol = { path = "crates/ipc-protocol" } # path only: nothing is published, so no version to bump
 
+[workspace.lints.clippy]
+# An #[allow] must say why. Not `allow_attributes` as well: it pushes toward #[expect], which on cfg-dependent
+# code (the Windows-only read-only tests, `cfg_attr(not(unix), ...)`) goes unfulfilled on one target and fails
+# -D warnings there.
+allow_attributes_without_reason = "warn"
+
 # Full debug info produces multi-hundred-MB PDBs for the Servo/CEF-linked
 # binaries specifically (SpiderMonkey/Chromium bring enormous debug info),
 # which has repeatedly filled this machine's disk mid-build and caused

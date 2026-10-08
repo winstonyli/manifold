@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 description.workspace = true
 
+[lints]
+workspace = true
+
 [dependencies]
 interprocess = "2.4.4"
 memmap2 = "0.9.11"

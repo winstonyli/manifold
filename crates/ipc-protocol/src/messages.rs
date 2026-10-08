@@ -584,8 +584,10 @@ mod key_code_tests {
         assert_eq!(KeyCode::KeyQ.dom_key(), "q");
     }
 
-    // The macro also emits `ALL`, `dom_code` and `windows_vk`, which this one-key table never calls.
-    #[allow(dead_code)]
+    #[allow(
+        dead_code,
+        reason = "the macro also emits `ALL`, `dom_code` and `windows_vk`, which this one-key table never calls"
+    )]
     mod attrs_pass_through {
         // A doc comment on a variant must compile: `key_codes!` forwards attributes.
         use serde::{Deserialize, Serialize};

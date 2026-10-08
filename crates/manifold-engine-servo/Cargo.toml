@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 description.workspace = true
 
+[lints]
+workspace = true
+
 [dependencies]
 dpi = "0.1.2"
 euclid = "0.22.14"

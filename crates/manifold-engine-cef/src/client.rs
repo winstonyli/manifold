@@ -1,6 +1,7 @@
-// `wrap_client!`'s generated `new` and `ClientBuilder::build` take one argument per
-// handler or shared handle; bundling them into a struct would only rename the list.
-#![allow(clippy::too_many_arguments)]
+#![allow(
+    clippy::too_many_arguments,
+    reason = "`wrap_client!`'s generated `new` and `ClientBuilder::build` take one argument per handler or shared handle; bundling them into a struct would only rename the list"
+)]
 
 // cef-rs fills in every callback of a wrapped handler, so one left out returns `Default::default()` (0) where
 // CEF would have used its own default. Audited for cef 152 (2026-10-04): every int-returning callback left out

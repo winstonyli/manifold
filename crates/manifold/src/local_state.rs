@@ -84,7 +84,7 @@ fn lenient_pos<'de, D: serde::Deserializer<'de>>(d: D) -> Result<[f32; 2], D::Er
 }
 
 /// A camera rect with a `null` in it reads as no saved camera.
-#[allow(clippy::type_complexity)] // mirrors the field's own type
+#[allow(clippy::type_complexity, reason = "mirrors the field's own type")]
 fn lenient_camera<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<([f32; 4], Option<String>)>, D::Error> {
     let raw = Option::<([Option<f32>; 4], Option<String>)>::deserialize(d)?;
     Ok(raw.and_then(|(r, level)| Some(([r[0]?, r[1]?, r[2]?, r[3]?], level))))

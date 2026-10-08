@@ -650,8 +650,10 @@ pub(crate) fn card_focus_ring(ui: &egui::Ui, rect: egui::Rect, inv_zoom: f32) {
 /// Returns its response: the frame turns a click into
 /// `control.action(kind)` and counts its hover as the card's. Icons are
 /// painted on the overlay layer (see `DeferredOverlays`), like card text.
-// Free function: callers hold no CardPass, and a struct for one call site would only rename the arguments.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "free function: callers hold no CardPass, and a struct for one call site would only rename the arguments"
+)]
 pub(crate) fn paint_card_control(
     ui: &egui::Ui,
     deferred_overlays: &mut DeferredOverlays,
@@ -795,8 +797,10 @@ pub(crate) fn paint_card_control(
 
 /// The ✕ and eject buttons' look: a small square in the card's close
 /// colors (`card_style`), filled `hover_fill` while hovered.
-// Free function: callers hold no CardPass, and a struct for one call site would only rename the arguments.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "free function: callers hold no CardPass, and a struct for one call site would only rename the arguments"
+)]
 pub(crate) fn paint_control_square(
     ui: &egui::Ui,
     deferred_overlays: &mut DeferredOverlays,

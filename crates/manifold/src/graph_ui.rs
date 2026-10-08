@@ -1615,7 +1615,10 @@ impl App {
     /// (`draw_graph_card`), plus each kind's own click action. Runs inside
     /// `build_graph_ui`'s `Scene`, after the grid and edges, so cards paint
     /// on top of them.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one call site, in `build_graph_ui`'s Scene closure: these are that frame's locals, and a struct would only rename them"
+    )]
     pub(crate) fn draw_graph_cards(
         &mut self,
         ui: &mut egui::Ui,

@@ -1025,7 +1025,7 @@ impl GpuState {
     /// on top; or, during a Tab<->Graph transition (`content_on_top`), egui
     /// as the base and the shrinking/expanding content quad over it. The
     /// screen and a screenshot both draw through here, so they can't differ.
-    #[allow(clippy::too_many_arguments)] // Disjoint borrows of `GpuState` fields: `self` can't be passed whole.
+    #[allow(clippy::too_many_arguments, reason = "disjoint borrows of `GpuState` fields: `self` can't be passed whole")]
     fn record_scene(
         encoder: &mut wgpu::CommandEncoder,
         view: &wgpu::TextureView,

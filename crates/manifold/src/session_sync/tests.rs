@@ -3248,9 +3248,10 @@ fn a_failed_commit_keeps_a_pending_edit_for_the_retry() {
     app.edit_field(&note, field::COLOR, red());
     let set_readonly = |readonly: bool| {
         let mut perms = std::fs::metadata(&path).unwrap().permissions();
-        // The Windows read-only attribute makes the append fail; on Unix this would make the file writable by
-        // everyone, but it's a temp file this test owns.
-        #[allow(clippy::permissions_set_readonly_false)]
+        #[allow(
+            clippy::permissions_set_readonly_false,
+            reason = "the Windows read-only attribute makes the append fail; on Unix this would make the file writable by everyone, but it's a temp file this test owns"
+        )]
         perms.set_readonly(readonly);
         std::fs::set_permissions(&path, perms).unwrap();
     };

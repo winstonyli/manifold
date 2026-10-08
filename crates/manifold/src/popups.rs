@@ -36,7 +36,7 @@ pub(crate) fn clicked_outside_popup(ui: &egui::Ui, area_rect: egui::Rect, anchor
 /// in/out instead of popping instantly. `interactable` is whether the popup
 /// is open: while fading out it is click-through, so the rest of a
 /// double-click on an item can't run it twice.
-#[allow(clippy::too_many_arguments)] // egui builder: each is a plain knob
+#[allow(clippy::too_many_arguments, reason = "egui builder: each is a plain knob")]
 pub(crate) fn build_list_popup_frame(
     ctx: &egui::Context,
     id: &str,

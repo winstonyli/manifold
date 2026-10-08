@@ -433,7 +433,7 @@ pub(crate) fn unpack(archive: &Path, into: &Path, pin: &Pin, cancel: &AtomicBool
 /// setuid/setgid/sticky and group/other write. `chrome-sandbox` needs setuid
 /// root only for the setuid sandbox, which manifold doesn't use (the CEF host
 /// passes `--no-sandbox`, see `manifold-engine-cef/src/app.rs`).
-#[cfg_attr(not(unix), allow(dead_code))] // only applied on Unix; tested everywhere
+#[cfg_attr(not(unix), allow(dead_code, reason = "only applied on Unix; tested everywhere"))]
 fn unpacked_mode(header_mode: u32) -> u32 {
     header_mode & 0o755
 }

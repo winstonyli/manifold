@@ -267,8 +267,10 @@ impl Mirror {
     }
 
     /// A group made by an older build's "Expand as Graph" (`field::FROM_JSON`): written once, at creation.
-    // Named after the field it reads (`from_json`), as the other accessors are; it converts nothing.
-    #[allow(clippy::wrong_self_convention)]
+    #[allow(
+        clippy::wrong_self_convention,
+        reason = "named after the field it reads (`from_json`), as the other accessors are; it converts nothing"
+    )]
     pub(crate) fn from_json(&self, id: &str) -> bool {
         matches!(self.get(id, field::FROM_JSON), FieldValue::Bool(true))
     }

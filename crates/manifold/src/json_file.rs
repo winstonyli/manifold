@@ -127,9 +127,10 @@ mod tests {
         }
         let set_readonly = |readonly: bool| {
             let mut perms = std::fs::metadata(&path).unwrap().permissions();
-            // The Windows read-only attribute makes the rename over it
-            // fail; on Unix this is a temp file this test owns.
-            #[allow(clippy::permissions_set_readonly_false)]
+            #[allow(
+                clippy::permissions_set_readonly_false,
+                reason = "the Windows read-only attribute makes the rename over it fail; on Unix this is a temp file this test owns"
+            )]
             perms.set_readonly(readonly);
             std::fs::set_permissions(&path, perms).unwrap();
         };
