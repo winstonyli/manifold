@@ -1213,38 +1213,7 @@ impl App {
         }
         self.nodes.remove(id);
         self.node_order.retain(|t| t != id);
-        self.skip_convert.remove(id);
-        self.pending_sleeps.remove(id);
-        self.clear_cookie_state(id);
-        if self.naming_jar.as_ref().is_some_and(|(t, _)| t == id) {
-            self.naming_jar = None;
-        }
-        self.saved_scroll.remove(id);
-        self.nav_history.remove(id);
-        self.popup_gate.forget(id);
-        self.tab_crashes.remove(id);
-        // A rectangle-selected tab closed through any path other than
-        // "Close Selected" itself (its own card close button, or its
-        // containing group being closed) otherwise leaves a stale id in
-        // `selected_tabs` -- harmless to the no-op `destroy_tab`/`nodes.get`
-        // callers that already tolerate a missing id, but it skews
-        // "Group Selected"'s centroid (divides by a count that includes
-        // dead ids) and overcounts the toolbar's own "(N)" labels.
-        self.selected_tabs.remove(id);
-        if self.pending_respawn_focus.as_deref() == Some(id) {
-            self.pending_respawn_focus = None;
-        }
-        if let Some(gpu) = &mut self.gpu {
-            gpu.free_tab_thumbnail(id);
-            gpu.free_tab_texture(id);
-        }
-        if self.dragging.as_deref() == Some(id) {
-            self.dragging = None;
-        }
-        self.forget_connect_source(id);
-        if self.hovered.as_deref() == Some(id) {
-            self.hovered = None;
-        }
+        self.forget_id(id);
         // A split only ever makes sense paired with a specific focused tab
         // (see `focus_tab`'s own doc comment) -- closing either half of it
         // (the tab node is already gone either way, so no `set_visible`/

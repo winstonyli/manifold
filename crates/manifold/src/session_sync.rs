@@ -783,7 +783,6 @@ impl App {
         if self.focused.as_deref() == Some(id) {
             self.focused = None;
         }
-        self.selected_tabs.remove(id);
         self.wakes_in_flight.remove(id);
     }
 
@@ -2033,6 +2032,12 @@ impl App {
         }
         // The old session's nodes not created yet are not created at all.
         self.pending_creates.clear();
+        // Each old node's per-id state and GPU textures (`forget_id`), including tabs whose spawn is still in flight
+        // (no `nodes` entry yet, but cookie and popup state already). The session-wide clears below stay.
+        let old_ids: Vec<String> = self.nodes.keys().chain(self.spawning.keys()).cloned().collect();
+        for id in old_ids {
+            self.forget_id(&id);
+        }
         self.nodes.clear();
         self.node_order.clear();
         self.layout.clear();

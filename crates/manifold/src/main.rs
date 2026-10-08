@@ -2255,22 +2255,62 @@ impl App {
         if removed.as_ref().is_some_and(|n| n.as_pdf().is_some()) {
             self.pdf_renderer.cancel(id);
         }
-        // The runtimes with a texture (`GpuState::images`).
-        if removed.as_ref().is_some_and(|n| n.as_image().is_some() || n.as_pdf().is_some()) {
-            if let Some(gpu) = &mut self.gpu {
-                gpu.free_image(id);
-            }
-        }
         if self.current_group.as_deref() == Some(id) {
             self.switch_group_level(self.mirror.group(id).filter(|_| removed.is_some()).map(str::to_owned));
         }
         self.node_order.retain(|d| d != id);
+        // The texture of an image or PDF (`GpuState::images`) goes here too.
+        self.forget_id(id);
+    }
+
+    /// Everything a permanently removed node leaves behind that carries no order: per-id tables, the gestures and
+    /// latches naming it, its GPU textures. Called by every permanent removal (`drop_tab`, `drop_node`,
+    /// `dissolve_members`, `merge_groups`, `teardown_running_session`); `main.rs`'s
+    /// `every_id_keyed_field_is_forgotten_or_excused` fails if an id-holding App field is in neither this nor its
+    /// `NOT_FORGOTTEN` list. Deliberately not here:
+    /// - `wakes_in_flight`: a tab closed while waking needs it, so the landing commits its delete;
+    /// - `spawning`, `remote_in_flight`, `host_loads`: the spawn lifecycle owns them;
+    /// - the `pending*` save queues: the save's `editable` filter drops a deleted node's ops;
+    /// - `layout`, `held_text`: pruned to live nodes at every save.
+    ///
+    /// Never call it for a crash respawn or an engine swap: those are temporary, and keep `tab_crashes`,
+    /// `nav_history` and `saved_scroll`.
+    fn forget_id(&mut self, id: &str) {
+        self.skip_convert.remove(id);
+        self.pending_sleeps.remove(id);
+        self.clear_cookie_state(id);
+        self.saved_scroll.remove(id);
+        self.nav_history.remove(id);
+        self.navigated_from.remove(id);
+        self.popup_gate.forget(id);
+        self.tab_crashes.remove(id);
+        self.selected_tabs.remove(id);
+        if self.naming_jar.as_ref().is_some_and(|(t, _)| t == id) {
+            self.naming_jar = None;
+        }
+        if self.renaming_group.as_ref().is_some_and(|(g, _)| g == id) {
+            self.renaming_group = None;
+        }
+        if self.node_menu.as_ref().is_some_and(|(n, _)| n == id) {
+            self.node_menu = None;
+        }
+        if self.pending_respawn_focus.as_deref() == Some(id) {
+            self.pending_respawn_focus = None;
+        }
+        if self.peek_suppressed.as_deref() == Some(id) {
+            self.peek_suppressed = None;
+        }
         if self.dragging.as_deref() == Some(id) {
             self.dragging = None;
         }
         self.forget_connect_source(id);
         if self.hovered.as_deref() == Some(id) {
             self.hovered = None;
+        }
+        if let Some(gpu) = &mut self.gpu {
+            gpu.free_tab_thumbnail(id);
+            gpu.free_tab_texture(id);
+            gpu.free_image(id);
         }
     }
 
@@ -2444,24 +2484,8 @@ impl App {
         if self.current_group.as_deref() == Some(id) {
             self.switch_group_level(parent);
         }
-        self.forget_removed_group(id);
+        self.forget_id(id);
         members
-    }
-
-    /// Drops the per-card state still naming a group card that's gone
-    /// (dissolved or merged away): the released drag, the hover latch the
-    /// peek fade polls, and a rename in progress.
-    fn forget_removed_group(&mut self, id: &str) {
-        if self.dragging.as_deref() == Some(id) {
-            self.dragging = None;
-        }
-        self.forget_connect_source(id);
-        if self.hovered.as_deref() == Some(id) {
-            self.hovered = None;
-        }
-        if self.renaming_group.as_ref().is_some_and(|(g, _)| g == id) {
-            self.renaming_group = None;
-        }
     }
 
     /// The shared fold behind both of the above (and `level_items`'
@@ -3027,6 +3051,139 @@ mod tests {
     use super::*;
 
     const SID: &str = r#"[{"name":"sid","value":"1","domain":"a.com","path":"/","expires":null,"secure":false,"http_only":true,"same_site":"Lax"}]"#;
+
+    /// C1: everything `forget_id` owns goes for the forgotten id, and only for it.
+    #[test]
+    fn forget_id_clears_every_id_keyed_table() {
+        let mut app = App::default();
+        let now = std::time::Instant::now();
+        let t = || "t".to_string();
+        app.skip_convert.insert(t(), true);
+        app.pending_sleeps.insert(t(), sleep_state::PendingSleep { why: sleep_state::SleepWhy::Manual, sent: now });
+        app.jar_tabs.insert(t(), (jar::JarKey::Default, jar::TabCookies::default()));
+        app.jar_reseed.insert(t());
+        app.cookie_holds.insert(t(), (now, tabs::Held::Snapshot(EngineKind::Webview2, String::new())));
+        app.jar_pulls.insert(t(), now);
+        app.jar_silent.insert(t(), 1);
+        app.saved_scroll.insert(t(), sleep_state::SavedScroll::new(0.0, 1.0));
+        app.saved_scroll.insert("u".into(), sleep_state::SavedScroll::new(0.0, 1.0));
+        app.nav_history.insert(t(), nav_history::NavHistory::default());
+        app.navigated_from.insert(t(), ("https://a.test/".into(), now, false));
+        for _ in 0..popup_gate::POPUP_BURST {
+            app.popup_gate.admit("t", true, now);
+        }
+        app.tab_crashes.insert(t(), vec![now]);
+        app.selected_tabs.extend([t(), "u".to_string()]);
+        app.naming_jar = Some((t(), String::new()));
+        app.renaming_group = Some((t(), String::new()));
+        app.node_menu = Some((t(), egui::Pos2::ZERO));
+        app.pending_respawn_focus = Some(t());
+        app.peek_suppressed = Some(t());
+        app.dragging = Some(t());
+        app.connecting = Some((t(), crate::caps::LINK));
+        app.connect_drag = Some(t());
+        app.hovered = Some(t());
+
+        app.forget_id("t");
+
+        assert!(app.skip_convert.is_empty() && app.pending_sleeps.is_empty());
+        assert!(app.jar_tabs.is_empty() && app.jar_reseed.is_empty() && app.cookie_holds.is_empty());
+        assert!(app.jar_pulls.is_empty() && app.jar_silent.is_empty());
+        assert!(!app.saved_scroll.contains_key("t") && app.saved_scroll.contains_key("u"), "only t's entry goes");
+        assert!(app.nav_history.is_empty() && app.navigated_from.is_empty() && app.tab_crashes.is_empty());
+        assert_eq!(app.popup_gate.admit("t", true, now), popup_gate::Admit::Open, "t's popup burst count went");
+        assert_eq!(app.selected_tabs, HashSet::from(["u".to_string()]));
+        assert!(app.naming_jar.is_none() && app.renaming_group.is_none() && app.node_menu.is_none());
+        assert!(app.pending_respawn_focus.is_none() && app.peek_suppressed.is_none());
+        assert!(app.dragging.is_none() && app.connecting.is_none() && app.connect_drag.is_none());
+        assert!(app.hovered.is_none());
+    }
+
+    /// C1: App fields that can hold a node id, but that `forget_id` deliberately leaves alone, each with why. A
+    /// field of an id-holding type that is in neither place fails `every_id_keyed_field_is_forgotten_or_excused`.
+    const NOT_FORGOTTEN: &[(&str, &str)] = &[
+        ("node_order", "removed with `nodes` by each caller (kind-specific order)"),
+        ("layout", "pruned to live nodes at every save (`layout.retain`)"),
+        ("held_text", "pruned to live nodes at every save (`held_text.retain`)"),
+        ("current_group", "kind-specific: `drop_node` and `dissolve_members` switch level"),
+        ("focused", "`drop_tab`'s focus, split and view-mode logic"),
+        ("split_tab", "`drop_tab`'s focus, split and view-mode logic"),
+        ("viewed_image", "`remove_remotely_deleted`; `image_view` resets it when the image is gone"),
+        ("jar_tabs", "via `clear_cookie_state`"),
+        ("jar_reseed", "via `clear_cookie_state`"),
+        ("cookie_holds", "via `clear_cookie_state`"),
+        ("jar_pulls", "via `clear_cookie_state`"),
+        ("jar_silent", "via `clear_cookie_state`"),
+        ("connecting", "via `forget_connect_source`"),
+        ("connect_drag", "via `forget_connect_source`"),
+        ("wakes_in_flight", "spawn lifecycle: a tab closed while waking needs it so the landing commits its delete"),
+        ("spawning", "spawn lifecycle: the landing or teardown removes it"),
+        ("remote_in_flight", "spawn lifecycle: replayed after the landing"),
+        ("host_loads", "spawn lifecycle: expired by `shares_url_change`, cleared at teardown"),
+        ("drag_moved", "ends with the drag; a gone id is skipped at release"),
+        ("line_press", "a link id, taken at release only if still hovered"),
+        ("native_drag_tab", "taken at the button-up"),
+        ("hidden_for_minimize", "drained at restore"),
+        ("node_menu_cache", "the closing menu's fade copy; `node_menu` is the live one"),
+        ("pending_session_delete", "a session name, not a node id"),
+        ("favicon_resolved", "origins, not node ids"),
+        ("favicon_origin_cache", "urls, not node ids"),
+        ("graph_settled_key", "a level fingerprint, rebuilt when it differs"),
+        ("debug_address_bar_typing", "typed text, not a node id"),
+        ("pending_screenshot", "a file path, not a node id"),
+        ("pending_print_to_pdf", "a file path, not a node id"),
+        ("save_toast", "a message, not a node id"),
+        ("cef_dir_draft", "a path draft, not a node id"),
+        ("home_page_draft", "a url draft, not a node id"),
+        ("renaming_bookmark_folder", "a bookmark folder, not a node id"),
+        ("history_matches_cache", "a history query, not a node id"),
+    ];
+
+    /// C1: a new App table that can hold a node id must be decided: forgotten by `forget_id` (permanent removal)
+    /// or excused in `NOT_FORGOTTEN` with why. The drift this replaces was five hand-written lists.
+    #[test]
+    fn every_id_keyed_field_is_forgotten_or_excused() {
+        let source = include_str!("main.rs");
+        let fields: Vec<(&str, &str)> = source
+            .lines()
+            .skip_while(|l| *l != "struct App {")
+            .skip(1)
+            .take_while(|l| *l != "}")
+            .map(str::trim)
+            .filter(|l| !l.starts_with("//") && !l.starts_with('#'))
+            .filter_map(|l| l.split_once(": "))
+            .collect();
+        assert!(fields.len() > 100, "App's fields were found ({})", fields.len());
+        let body = source
+            .lines()
+            .skip_while(|l| !l.contains("fn forget_id("))
+            .take_while(|l| *l != "    }")
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(body.contains("self.skip_convert"), "forget_id's body was found");
+        let mentions = |name: &str| {
+            let needle = format!("self.{name}");
+            body.match_indices(&needle)
+                .any(|(at, _)| !body[at + needle.len()..].starts_with(|c: char| c == '_' || c.is_ascii_alphanumeric()))
+        };
+        const ID_SHAPES: [&str; 5] =
+            ["HashMap<String", "HashSet<String", "Option<String", "Option<(String", "Vec<String"];
+        let mut undecided = Vec::new();
+        for &(name, ty) in &fields {
+            if !ID_SHAPES.iter().any(|shape| ty.contains(shape)) {
+                continue;
+            }
+            let excused = NOT_FORGOTTEN.iter().any(|&(n, _)| n == name);
+            if mentions(name) == excused {
+                let why = if excused { "both forgotten and excused" } else { "neither forgotten nor excused" };
+                undecided.push(format!("{name}: {why}"));
+            }
+        }
+        assert!(undecided.is_empty(), "decide each App field: {undecided:?}");
+        for &(name, _) in NOT_FORGOTTEN {
+            assert!(fields.iter().any(|&(n, _)| n == name), "{name} is excused but is no longer an App field");
+        }
+    }
 
     #[cfg(windows)]
     #[test]

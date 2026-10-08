@@ -5532,3 +5532,21 @@ fn closing_a_group_commits_one_frame() {
     assert_eq!(frames() - before, 1, "one commit for the group and its tabs");
     assert!(!live_in_doc(&app, &g));
 }
+
+/// C1: replacing the running session forgets the old tabs' per-id state (and, with a GPU, frees their textures).
+#[test]
+fn teardown_forgets_the_old_tabs_per_id_state() {
+    let mut app = App::default();
+    let t = add(&mut app, Kind::Tab, sleeping_tab("https://a.test/", "a"));
+    let now = std::time::Instant::now();
+    app.saved_scroll.insert(t.clone(), crate::sleep_state::SavedScroll::new(0.0, 1.0));
+    app.tab_crashes.insert(t.clone(), vec![now]);
+    app.skip_convert.insert(t.clone(), true);
+    app.jar_pulls.insert(t.clone(), now);
+    app.teardown_running_session();
+    assert!(app.nodes.is_empty());
+    assert!(app.saved_scroll.is_empty(), "saved_scroll");
+    assert!(app.tab_crashes.is_empty(), "tab_crashes");
+    assert!(app.skip_convert.is_empty(), "skip_convert");
+    assert!(app.jar_pulls.is_empty(), "jar_pulls");
+}

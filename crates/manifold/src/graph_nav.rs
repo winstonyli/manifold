@@ -164,7 +164,7 @@ impl App {
         self.nodes.remove(source);
         self.queue_delete(source);
         self.node_order.retain(|g| g != source);
-        self.forget_removed_group(source);
+        self.forget_id(source);
         // Only the members that moved: `target`'s own tabs keep their jar (deviation 12).
         for member in moved {
             self.refollow(&member);
