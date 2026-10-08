@@ -641,6 +641,19 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// Wave 2 (H1a): revealing the last of 20 000 objects pages its array to every row, so the level holds a card per
+    /// object (H1b, if it lands, bounds this to a window).
+    #[test]
+    fn reveal_bounds_rows() {
+        let root = json!({"items": (0..20_000).map(|n| json!({"n": n})).collect::<Vec<_>>()});
+        let expanded = default_expanded(&root);
+        let mut view = JsonView::default();
+        assert!(reveal(&root, &mut view, &expanded, "/items/19999"));
+        let cards = visible_cards(&root, &view, &expanded);
+        let items = cards.iter().find(|c| c.pointer == "/items").expect("the array's card");
+        assert_eq!((cards.len(), items.rows, items.more), (20_002, 20_000, 0));
+    }
+
     #[test]
     fn view_round_trips_and_stores_nothing_when_empty() {
         assert_eq!(JsonView::default().to_field(), "");

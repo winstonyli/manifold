@@ -1,17 +1,20 @@
 """Inputs for scripts/json-pan-profile.sh (run as `python -P <this> <cmd> ... </dev/null`).
 
-  fixture <out.json>
+  fixture <out.json> [mode]
       A tree 3 levels deep, 12 children per level (1 + 12 + 144 + 1728
       containers, each with a few scalar rows), deterministic. The level's
       default expansion stops at 150 cards, so the script reveals the
       12 x 12 depth-2 cards to bring a few thousand cards into play.
-  script <fixture.json> <out.txt> <seconds> [pan|zoom]
+  script <fixture.json> <out.txt> <seconds> [pan|zoom|reveal-numbers|reveal-objects]
       The headless command file: opens the fixture, enters its level,
       selects into every depth-2 card (which reveals it), then for about
       <seconds> (one command per frame, headless renders a frame per command)
       either pans (drag on the background, back and forth; default) or zooms
       (graph view maps plain wheel scroll to zoom, so SCROLL with dy zooms in
       and out around the cursor; dx alone does nothing).
+      The reveal modes open {"items": [...]} of REVEAL_N (default 200000)
+      numbers or `leaf` objects, select the last entry (which pages its array
+      to every row), then pan as `pan` does.
 """
 
 import json
@@ -19,6 +22,7 @@ import os
 import sys
 
 BRANCH = int(os.environ.get("JSON_BRANCH", "12"))  # 27 gives ~20k containers
+REVEAL_N = int(os.environ.get("REVEAL_N", "200000"))
 
 
 def leaf(n):
@@ -32,18 +36,31 @@ def tree(depth, n=0):
 
 
 def cmd_fixture(args):
-    (out,) = args
+    out = args[0]
+    mode = args[1] if len(args) > 1 else "pan"
+    if mode == "reveal-numbers":
+        value = {"items": [n * 0.37 for n in range(REVEAL_N)]}
+    elif mode == "reveal-objects":
+        value = {"items": [leaf(n) for n in range(REVEAL_N)]}
+    else:
+        value = tree(3)
     with open(out, "w", encoding="utf-8") as f:
-        json.dump(tree(3), f)
+        json.dump(value, f)
 
 
 def cmd_script(args):
     fixture, out, seconds = args[0], args[1], float(args[2])
     mode = args[3] if len(args) > 3 else "pan"
     lines = ["RESIZE 1400 900", f"ADDFILE {fixture} 500 350", "SLEEP 1", "DOUBLECLICK 500 350", "SLEEP 2"]
-    for i in range(BRANCH):
-        for j in range(BRANCH):
-            lines.append(f"JSONSELECT /k{i}/k{j}/k0")  # reveals (opens) the depth-2 card
+    if mode.startswith("reveal-"):
+        lines[2] = "WAITIDLE 60"  # after ADDFILE: a big file loads before the double-click
+        lines.append(f"JSONSELECT /items/{REVEAL_N - 1}")  # pages the array to every row
+        lines.append("WAITIDLE 60")
+        lines.append("EXPORTSTATE " + os.path.join(os.path.dirname(fixture), "state.json"))
+    else:
+        for i in range(BRANCH):
+            for j in range(BRANCH):
+                lines.append(f"JSONSELECT /k{i}/k{j}/k0")  # reveals (opens) the depth-2 card
     lines.append("SLEEP 2")
     # ~60 frames/s is not guaranteed; the loop is a fixed count, the
     # profile's own timestamps give the real rate.

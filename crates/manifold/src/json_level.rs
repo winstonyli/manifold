@@ -495,6 +495,62 @@ mod tests {
         (app, J.into())
     }
 
+    /// Wave 2 (H1a): Tab and Shift+Tab walk the JSON cards through real frames, and a focused card panned out of view
+    /// keeps its focus. Pins the focus reads before they move out of the per-card loop.
+    #[test]
+    fn tab_walks_the_json_cards_and_focus_survives_a_pan() {
+        let (mut app, j) = app_with_json("tab-walk", r#"{"a": {"x": 1}, "b": {"y": 2}, "c": {"z": 3}}"#);
+        app.switch_group_level(Some(j));
+        let ctx = egui::Context::default();
+        crate::theme::apply_fonts(&ctx);
+        let frame = |app: &mut App, events: Vec<egui::Event>| {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1024.0, 768.0))),
+                events,
+                ..Default::default()
+            };
+            let mut output = ctx.run_ui(input, |ui| app.build_graph_ui(ui));
+            output.textures_delta.clear();
+        };
+        let tab = |shift: bool| egui::Event::Key {
+            key: egui::Key::Tab,
+            physical_key: Some(egui::Key::Tab),
+            pressed: true,
+            repeat: false,
+            modifiers: if shift { egui::Modifiers::SHIFT } else { egui::Modifiers::NONE },
+        };
+        let card = |app: &App, i: usize| {
+            let level = app.json_level.as_ref().unwrap();
+            egui::Id::new(("json_card", &level.node_id, &level.cards[i].pointer))
+        };
+        for _ in 0..3 {
+            frame(&mut app, vec![]);
+        }
+        assert_eq!(app.json_level.as_ref().unwrap().cards.len(), 4, "root, a, b, c");
+        ctx.memory_mut(|m| m.request_focus(card(&app, 0)));
+        frame(&mut app, vec![]);
+        let focused = || ctx.memory(|m| m.focused());
+        assert_eq!(focused(), Some(card(&app, 0)));
+        // An idle frame follows each key: egui applies a card's Tab lock filter only once it has held focus for a
+        // frame (`set_focus_lock_filter` checks `had_focus_last_frame`), so a key in the very next frame would also
+        // run egui's own Tab move and skip a card. That consecutive-frame skip is today's behavior, not pinned here.
+        frame(&mut app, vec![tab(false)]);
+        assert_eq!(focused(), Some(card(&app, 1)), "Tab: the next card");
+        frame(&mut app, vec![]);
+        assert_eq!(focused(), Some(card(&app, 1)), "an idle frame keeps it");
+        frame(&mut app, vec![tab(false)]);
+        assert_eq!(focused(), Some(card(&app, 2)));
+        frame(&mut app, vec![]);
+        frame(&mut app, vec![tab(true)]);
+        assert_eq!(focused(), Some(card(&app, 1)), "Shift+Tab: the previous card");
+        frame(&mut app, vec![]);
+        assert_eq!(focused(), Some(card(&app, 1)));
+        app.camera.jump_to(egui::Rect::from_min_size(egui::pos2(50_000.0, 50_000.0), egui::vec2(800.0, 600.0)));
+        frame(&mut app, vec![]);
+        frame(&mut app, vec![]);
+        assert_eq!(focused(), Some(card(&app, 1)), "a focused card panned out of view keeps its focus");
+    }
+
     #[test]
     fn entering_builds_the_level_and_leaving_drops_it() {
         let (mut app, j) = app_with_json("enter", r#"{"a": {"b": 1}, "c": [1, 2]}"#);

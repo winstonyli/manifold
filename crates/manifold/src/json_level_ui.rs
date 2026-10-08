@@ -921,6 +921,52 @@ mod tests {
     use super::*;
     use crate::json_view::{default_expanded, visible_cards, JsonView};
 
+    /// The texts one level card paints, in order: header, rows, `+ N more`.
+    fn painted_texts(value: &Value, card: &Card) -> Vec<String> {
+        let ctx = egui::Context::default();
+        crate::theme::apply_fonts(&ctx);
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let mut overlays: DeferredOverlays = Vec::new();
+            let pal = palette(true);
+            let look = CardLook {
+                palette: &pal,
+                text_color: egui::Color32::WHITE,
+                inv_zoom: 1.0,
+                text: true,
+                selected_row: None,
+                hit_rows: &[],
+                ports: true,
+                preview: false,
+            };
+            let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(json_view::CARD_WIDTH, card.height()));
+            let header = header_parts(value, card, "f.json");
+            paint_json_content(ui.painter(), &mut overlays, rect, value, &header, card.rows, card.more, &look);
+            for overlay in overlays {
+                overlay(ui.painter(), &|p| p);
+            }
+        });
+        output.textures_delta.clear();
+        output
+            .shapes
+            .iter()
+            .filter_map(|s| match &s.shape {
+                egui::Shape::Text(t) => Some(t.galley.text().to_string()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Wave 2 (H1a): a card's painted texts, pinned before rows are culled to the camera.
+    #[test]
+    fn a_card_paints_its_rows_texts() {
+        let value = Value::Array((0..30).map(|i| Value::String(format!("v{i}"))).collect());
+        let card = Card { pointer: String::new(), parent: None, depth: 0, collapsed: false, rows: 25, more: 5 };
+        let texts = painted_texts(&value, &card);
+        assert_eq!(texts.len(), 54, "{texts:?}");
+        assert_eq!(texts[1..5], ["f.json", "[30]", "0", "\"v0\""], "{texts:?}");
+        assert_eq!(texts[53], "+ 5 more");
+    }
+
     #[test]
     fn quantized_scale_is_stable_within_a_step_and_close_to_the_input() {
         // Nearby zoom frames share one layout size...
