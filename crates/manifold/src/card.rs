@@ -620,9 +620,13 @@ pub(crate) struct CardPass<'a> {
     pub(crate) drop_preview: &'a Option<(DropEffect, Option<String>)>,
     /// Pick-target mode's valid targets (`App::valid_targets`), each ringed; empty outside the mode.
     pub(crate) pick_targets: &'a [String],
-    /// During a connect-drag, the card under the pointer (`App::connect_drag_target`): its target ring is drawn bright,
+    /// During a connect-drag, the card under the pointer (`App::connect_drag_end`): its target ring is drawn bright,
     /// as a hovered one is in pick-target mode.
     pub(crate) connect_target: Option<&'a str>,
+    /// While a link's end is dragged (`App::retarget_preview`), the ring colour for the outcome of releasing on
+    /// `connect_target`, which is then ringed even where it is no valid target (refused, its own card), so a ring
+    /// never promises a retarget the release will not do. `None` otherwise: valid targets keep the accent ring.
+    pub(crate) connect_ring: Option<egui::Color32>,
     /// Keyboard navigation is on (a card or control had focus last frame): each card shows its
     /// Tab-order number.
     pub(crate) show_order: bool,
@@ -1113,14 +1117,16 @@ impl App {
         }
         // Pick-target mode: a valid target gets a thinner accent ring, closer in than the drop ring, and brighter
         // while hovered, where a click would connect.
-        if pass.pick_targets.iter().any(|t| t == id) {
-            let alpha = if pointer_on_card || pass.connect_target == Some(id) { 255 } else { 160 };
+        let reached = pass.connect_target == Some(id);
+        if pass.pick_targets.iter().any(|t| t == id) || (reached && pass.connect_ring.is_some()) {
+            let alpha = if pointer_on_card || reached { 255 } else { 160 };
+            let ring = pass.connect_ring.filter(|_| reached).unwrap_or(ACCENT);
             ui.painter().rect_stroke(
                 rect.expand(6.0 * inv_zoom),
                 6.0 * inv_zoom,
                 egui::Stroke::new(
                     2.5 * inv_zoom,
-                    egui::Color32::from_rgba_unmultiplied(ACCENT.r(), ACCENT.g(), ACCENT.b(), alpha),
+                    egui::Color32::from_rgba_unmultiplied(ring.r(), ring.g(), ring.b(), alpha),
                 ),
                 egui::StrokeKind::Outside,
             );
@@ -2576,6 +2582,7 @@ mod tests {
                     drop_preview: &drop_preview,
                     pick_targets: &[],
                     connect_target: None,
+                    connect_ring: None,
                     show_order: false,
                     order: &[],
                     any_focused: false,

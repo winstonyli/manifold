@@ -100,9 +100,10 @@ behaviour (a drag from one pans). A click without movement still deletes the lin
 
 - **One mechanism.** The gesture is a connect-drag from the end that stays. `App::retarget:
   Option<LinkRetarget { link, fixed_is_from }>` rides beside `connect_drag`, which holds the fixed end's card as its
-  source; rings, snap (`card_within`, `DROP_TOLERANCE_PX`, valid targets only in the tolerance pass), handles on every
+  source; rings, snap (`card_within`, `DROP_TOLERANCE_PX`, valid targets first in the tolerance pass, any other card after them for a dragged end), handles on every
   card, the rubber band, Esc, the right-press rule, the lifecycle resets and the release (`end_connect_drag`) are the
-  existing ones. `retarget` is cleared wherever `connect_drag` is (`cancel_connect`, `finish_connect`, session replace).
+  existing ones, except the release (`end_connect_drag` -> `finish_retarget`). `retarget` is cleared wherever
+  `connect_drag` is (`cancel_connect`, `finish_connect`, session replace).
 - **Start.** The press on a curve records `line_press` as for a click (same hit-test, `nearest_link` within 6 screen
   points; a handle or card under the pointer takes the press instead). When the Scene background reports
   `drag_started` (egui's own threshold), `start_line_retarget` takes the end nearer the press origin (distance to the
@@ -112,16 +113,37 @@ behaviour (a drag from one pans). A click without movement still deletes the lin
 - **Drawing.** The link being moved is not drawn (the simpler of not drawing it or dimming it): the dashed rubber band
   stands for it, from the fixed end's facing side to the pointer or the snapped target, bowed in the link's own
   direction (`from` to `to`), so it looks as the finished link will.
-- **Release.** On a valid card (`finish_connect` with `retarget` set -> `App::retarget_link`) the moving end is
-  rewritten **in place**: one `edit_field` on the Link node's `from` or `to`, the same writer `create_link` uses, so the
-  node keeps its id, its other end and its direction, and the change syncs as one field edit (no delete plus create).
-  The pair is checked as `connect` checks a new one (`check_connect`: live, same level, type table, no existing
-  link on the pair), so a duplicate or cross-level target is refused with the usual "Can't connect these cards" toast
-  and the link is left alone. A release on its old end's card, on empty canvas or the fixed card, or after Esc or a
-  focus loss, changes nothing and shows no toast. A link deleted or re-ended by another replica mid-drag is refused
-  the same way.
+- **Release.** The release is read as a `DragEnd` (`connect_drag_end`: `Card`, the fixed card `Source`, `Canvas` for
+  a release over the scene with no card under or within the drop tolerance, or `Abandoned` for no real release: off
+  the scene, on the minimap or a popup, a click, a lost button-up) and `App::retarget_outcome` turns it into one of
+  four outcomes that `finish_retarget` acts on and saves:
+  - `Retargeted`: on a card the pair may take, the moving end is rewritten **in place**: one `edit_field` on the Link
+    node's `from` or `to`, the same writer `create_link` uses, so the node keeps its id, its other end and its
+    direction, and the change syncs as one field edit (no delete plus create). The pair is checked as `connect`
+    checks a new one (`check_connect`: live, same level, type table, no existing link on the pair).
+  - `Deleted`: on empty canvas, or on a card `check_connect` refuses with `ConnectError::Exists` (a link already
+    joins it and the fixed card), the dragged link is deleted (`delete_link`, as the click does). Dropping the end
+    off its card removes the link; a duplicate would have nowhere to go.
+  - `Refused`: on the fixed card, or a card refused for any other reason (another level, not a live card), the usual
+    "Can't connect these cards" toast and the link is kept.
+  - `Cancelled`, silently and the link kept: Esc, a focus loss, `Abandoned`, a release on its old end's card, or the
+    link deleted or re-ended by another replica mid-drag.
+  Only a release with no card under or within the drop tolerance is empty canvas. For this gesture `card_within`
+  tries the ring-marked cards first and then any other card in reach, so the end's own old card, a refused card and
+  an already-linked card all resolve as that card (silent keep, toast, delete), and the fixed card within reach is
+  `Source` (toast).
+- **Live feedback.** Every frame of the drag the graph pass resolves the pointer the way the release will
+  (`connect_drag_end`, then `retarget_outcome` via `App::retarget_preview`: one resolution, so preview and release
+  cannot drift) and stores it in `App::retarget_preview`. `retarget_look` maps the outcome to a look, painted through
+  the one `paint_bow` call: `Retargeted` and `Cancelled` the usual accent band; `Deleted` a thinner red band
+  (`DANGER_COLOR`) ending in a small "x" at the free end, so colour is not the only signal; `Refused` a cool blue
+  (`theme::refused_color`: the sky-blue `TAG_COLOR_PALETTE` entry pulled 20% toward `BG`) ending in a small slashed
+  circle (a prohibited sign); the two marks are `RetargetGlyph`, drawn in one place. The card in reach is ringed in the outcome's colour (accent for a retarget, red for a duplicate
+  that would delete, blue for a refusal, `TEXT_WEAK` for its own old card), so a ring never promises a retarget the
+  release will not do; refused and own cards are ringed too, which they were not before.
 - **Debug.** `EXPORTSTATE` `edges[]` gain `near_from` and `near_to` (the curve at t = 0.2 and 0.8, where a probe grabs
-  an end), and the state gains `retarget` (the Link node id or null). `scripts/link-probe.sh` drives the gesture.
+  an end), and the state gains `retarget` (the Link node id or null) and `retarget_preview` (`"retarget"`, `"delete"`, `"refused"`
+  or `"cancel"` while it runs, else null). `scripts/link-probe.sh` drives the gesture.
 - **Changed.** A drag that starts on a link curve used to pan; it now retargets. A drag from the canvas beside the
   curve still pans.
 
