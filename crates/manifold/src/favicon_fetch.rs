@@ -23,7 +23,7 @@
 //! fetch isn't recorded, so an origin without a favicon is tried once per
 //! launch, as before.
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::{Duration, SystemTime};
@@ -41,7 +41,7 @@ pub struct FaviconImage {
     pub height: u32,
 }
 
-/// Favicon fetches running at once; the rest wait in `queue`. A restored
+/// Favicon fetches running at once; the rest wait in `throttle`. A restored
 /// session can name dozens of origins at the same moment.
 const MAX_FAVICON_FETCHES: usize = 4;
 
@@ -53,9 +53,10 @@ const MAX_FAVICON_FETCHES: usize = 4;
 pub struct FaviconFetcher {
     tx: mpsc::Sender<(String, Option<FaviconImage>)>,
     rx: mpsc::Receiver<(String, Option<FaviconImage>)>,
+    /// Origins running or waiting.
     in_flight: HashSet<String>,
-    /// Origins waiting for one of the `MAX_FAVICON_FETCHES` slots.
-    queue: VecDeque<String>,
+    /// Origins beyond `MAX_FAVICON_FETCHES` wait here.
+    throttle: crate::net::Throttle<String>,
     cache_dir: Option<PathBuf>,
     /// `fetch_favicon`; tests swap in a stub so no request leaves the machine.
     fetch: fn(&str) -> Option<FaviconImage>,
@@ -69,28 +70,32 @@ impl FaviconFetcher {
         if let Some(dir) = cache_dir.clone() {
             std::thread::spawn(move || prune_cache(&dir, CACHE_PRUNE));
         }
-        Self { tx, rx, in_flight: HashSet::new(), queue: VecDeque::new(), cache_dir, fetch: fetch_favicon }
+        Self {
+            tx,
+            rx,
+            in_flight: HashSet::new(),
+            throttle: crate::net::Throttle::new(MAX_FAVICON_FETCHES),
+            cache_dir,
+            fetch: fetch_favicon,
+        }
     }
 
     /// Requests `origin`'s favicon if it isn't already being fetched: it
     /// starts at once while fewer than `MAX_FAVICON_FETCHES` run, and waits
-    /// in the queue otherwise. A no-op if this origin is already running or
-    /// queued -- the caller is expected to have already checked its own
+    /// in the throttle otherwise. A no-op if this origin is already running
+    /// or waiting -- the caller is expected to have already checked its own
     /// cache for a previously-*completed* fetch (this only dedupes
     /// concurrent ones).
     pub fn request(&mut self, origin: String) {
-        if self.in_flight.contains(&origin) || self.queue.contains(&origin) {
+        if !self.in_flight.insert(origin.clone()) {
             return;
         }
-        if self.in_flight.len() < MAX_FAVICON_FETCHES {
+        if let Some(origin) = self.throttle.admit(origin) {
             self.start(origin);
-        } else {
-            self.queue.push_back(origin);
         }
     }
 
-    fn start(&mut self, origin: String) {
-        self.in_flight.insert(origin.clone());
+    fn start(&self, origin: String) {
         let (tx, cache_dir, fetch) = (self.tx.clone(), self.cache_dir.clone(), self.fetch);
         std::thread::spawn(move || {
             // A panic still reports (as no favicon), so `tick` frees the
@@ -108,17 +113,16 @@ impl FaviconFetcher {
     /// last call -- `None` for the image means the fetch failed (no
     /// favicon at that origin, a network error, or undecodable bytes);
     /// the caller should still remember that as a negative result so it
-    /// doesn't keep retrying the same origin every navigation. Queued
+    /// doesn't keep retrying the same origin every navigation. Waiting
     /// origins start here as slots free up.
     pub fn tick(&mut self) -> Vec<(String, Option<FaviconImage>)> {
         let mut results = Vec::new();
         while let Ok((origin, result)) = self.rx.try_recv() {
             self.in_flight.remove(&origin);
+            if let Some(next) = self.throttle.finish() {
+                self.start(next);
+            }
             results.push((origin, result));
-        }
-        while self.in_flight.len() < MAX_FAVICON_FETCHES {
-            let Some(origin) = self.queue.pop_front() else { break };
-            self.start(origin);
         }
         results
     }
@@ -309,7 +313,7 @@ mod tests {
         }
         fetcher.request("https://o5.example".into());
         assert_eq!(
-            (fetcher.in_flight.len(), fetcher.queue.len()),
+            (fetcher.throttle.running(), fetcher.throttle.waiting()),
             (MAX_FAVICON_FETCHES, 2),
             "a queued origin isn't queued twice"
         );
@@ -338,5 +342,6 @@ mod tests {
         }
         assert!(matches!(done.as_slice(), [(origin, None)] if origin == "https://p.example"));
         assert!(fetcher.in_flight.is_empty(), "the slot is free again");
+        assert_eq!(fetcher.throttle.running(), 0);
     }
 }
