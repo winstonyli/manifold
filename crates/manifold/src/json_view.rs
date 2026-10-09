@@ -23,6 +23,8 @@ pub(crate) const COLUMN_GAP: f32 = 60.0;
 pub(crate) const SIBLING_GAP: f32 = 16.0;
 /// Rows per page; a `+ N more` row reveals the next page.
 pub(crate) const PAGE_SIZE: usize = 20;
+/// A reveal this many pages past a card's window grows the window; farther, it moves it.
+pub(crate) const REVEAL_GROW_PAGES: usize = 5;
 /// Default expansion stops at about this many visible cards...
 pub(crate) const EXPANSION_BUDGET: usize = 150;
 /// ...and cards this deep start collapsed.
@@ -55,6 +57,10 @@ pub(crate) struct CardOverride {
     /// Pages of rows revealed; one when unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) pages: Option<u32>,
+    /// The first page shown (H1b): a far reveal moves the window here instead of paging every row in; `+ N
+    /// earlier` grows it up. 0 when unset, so a view saved before it reads unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) first: Option<u32>,
 }
 
 impl CardOverride {
@@ -64,7 +70,7 @@ impl CardOverride {
 }
 
 /// The keys `CardOverride` reads; any other key of a stored override is kept as it was (`Unread::extra`).
-const CARD_OVERRIDE_KEYS: [&str; 4] = ["pos", "collapsed", "color", "pages"];
+const CARD_OVERRIDE_KEYS: [&str; 5] = ["pos", "collapsed", "color", "pages", "first"];
 
 /// What a view's stored text held that this build can't read (M5), kept so an edit here writes it back untouched
 /// (`JsonView::to_field`) rather than wiping it on every replica: whole entries that don't read as a `CardOverride`
@@ -194,6 +200,11 @@ impl JsonView {
     /// Pages revealed for the card at `pointer`, at least one.
     pub(crate) fn pages(&self, pointer: &str) -> usize {
         self.get(pointer).and_then(|o| o.pages).map_or(1, |pages| (pages as usize).max(1))
+    }
+
+    /// The first page shown for the card at `pointer`; 0 when unset.
+    pub(crate) fn first(&self, pointer: &str) -> usize {
+        self.get(pointer).and_then(|o| o.first).map_or(0, |first| first as usize)
     }
 
     /// Drops overrides whose pointer no longer resolves in `root` (after a Refresh), and empty ones; unread entries
@@ -428,15 +439,22 @@ pub(crate) struct Card {
     pub(crate) parent: Option<(usize, usize)>,
     pub(crate) depth: usize,
     pub(crate) collapsed: bool,
-    /// Entry rows shown: none when collapsed, else the revealed pages.
+    /// Entries before the window: shown as one `+ N earlier` row when over 0.
+    pub(crate) skip: usize,
+    /// Entry rows shown: none when collapsed, else the window's pages.
     pub(crate) rows: usize,
     /// Entries past the revealed pages, shown as one `+ N more` row.
     pub(crate) more: usize,
 }
 
 impl Card {
+    /// The `+ N earlier` row: 1 when the window starts past the first entry.
+    pub(crate) fn lead(&self) -> usize {
+        usize::from(self.skip > 0)
+    }
+
     pub(crate) fn height(&self) -> f32 {
-        HEADER_HEIGHT + ROW_HEIGHT * (self.rows + usize::from(self.more > 0)) as f32
+        HEADER_HEIGHT + ROW_HEIGHT * (self.lead() + self.rows + usize::from(self.more > 0)) as f32
     }
 
     pub(crate) fn size(&self) -> egui::Vec2 {
@@ -482,15 +500,23 @@ pub(crate) fn visible_cards(root: &Value, view: &JsonView, expanded: &HashSet<St
     while let Some((pointer, value, parent, depth)) = queue.pop_front() {
         let collapsed = is_collapsed(view, expanded, &pointer);
         let len = entry_count(value);
-        let rows = if collapsed { 0 } else { len.min(view.pages(&pointer) * PAGE_SIZE) };
+        // The window starts on a page boundary, at the last page at most.
+        let skip = if collapsed {
+            0
+        } else {
+            (view.first(&pointer) * PAGE_SIZE).min(len.saturating_sub(1) / PAGE_SIZE * PAGE_SIZE)
+        };
+        let rows = if collapsed { 0 } else { (len - skip).min(view.pages(&pointer) * PAGE_SIZE) };
+        let lead = usize::from(skip > 0);
         let index = cards.len();
-        for (row, (key, child)) in entries(value).take(rows).enumerate() {
+        for (row, (key, child)) in entries_from(value, skip).take(rows).enumerate() {
             if is_card(child) {
-                queue.push_back((child_pointer(&pointer, &key), child, Some((index, row)), depth + 1));
+                // The row as drawn: below the `+ N earlier` row when there is one.
+                queue.push_back((child_pointer(&pointer, &key), child, Some((index, lead + row)), depth + 1));
             }
         }
-        let more = if collapsed { 0 } else { len - rows };
-        cards.push(Card { pointer, parent, depth, collapsed, rows, more });
+        let more = if collapsed { 0 } else { len - skip - rows };
+        cards.push(Card { pointer, parent, depth, collapsed, skip, rows, more });
     }
     cards
 }
@@ -510,8 +536,21 @@ pub(crate) fn show_more(view: &mut JsonView, pointer: &str) {
     view.entry(pointer).pages = Some(pages as u32);
 }
 
-/// Makes `pointer` visible (spec "Outline"): every ancestor expanded and
-/// paged far enough to show the next step down. `true` if `view` changed.
+/// The `+ N earlier` row: one more page above the window, so it grows up.
+pub(crate) fn show_earlier(root: &Value, view: &mut JsonView, pointer: &str) {
+    let len = root.pointer(pointer).map_or(0, entry_count);
+    let first = view.first(pointer).min(len.saturating_sub(1) / PAGE_SIZE);
+    if first == 0 {
+        return;
+    }
+    let pages = view.pages(pointer) + 1;
+    let o = view.entry(pointer);
+    o.first = (first > 1).then(|| (first - 1) as u32);
+    o.pages = Some(pages as u32);
+}
+
+/// Makes `pointer` visible (spec "Outline"): every ancestor expanded and its window holding the next step down
+/// (grown when within REVEAL_GROW_PAGES pages, moved otherwise). `true` if `view` changed.
 pub(crate) fn reveal(root: &Value, view: &mut JsonView, expanded: &HashSet<String>, pointer: &str) -> bool {
     let before = view.clone();
     let mut at = root;
@@ -521,8 +560,20 @@ pub(crate) fn reveal(root: &Value, view: &mut JsonView, expanded: &HashSet<Strin
         if is_collapsed(view, expanded, &ancestor) {
             toggle(view, expanded, &ancestor);
         }
-        if index >= view.pages(&ancestor) * PAGE_SIZE {
-            view.entry(&ancestor).pages = Some((index / PAGE_SIZE + 1) as u32);
+        let (page, first, pages) = (index / PAGE_SIZE, view.first(&ancestor), view.pages(&ancestor));
+        let window = if page < first && first - page <= REVEAL_GROW_PAGES {
+            Some((page, pages + (first - page))) // just above: grow up
+        } else if page >= first + pages && page < first + pages + REVEAL_GROW_PAGES {
+            Some((first, page - first + 1)) // just below: grow down, as before
+        } else if page < first || page >= first + pages {
+            Some((page, 1)) // far: move the window to it
+        } else {
+            None
+        };
+        if let Some((first, pages)) = window {
+            let o = view.entry(&ancestor);
+            o.first = (first > 0).then_some(first as u32);
+            o.pages = (pages > 1).then_some(pages as u32);
         }
         at = if at.is_array() { &at[index] } else { &at[token.as_str()] };
         ancestor = child_pointer(&ancestor, &token);
@@ -761,8 +812,7 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    /// Wave 2 (H1a): revealing the last of 20 000 objects pages its array to every row, so the level holds a card per
-    /// object (H1b, if it lands, bounds this to a window).
+    /// Wave 2 (H1b): revealing the last of 20 000 objects moves the array's window to it: one page of rows, so one page of cards.
     #[test]
     fn reveal_bounds_rows() {
         let root = json!({"items": (0..20_000).map(|n| json!({"n": n})).collect::<Vec<_>>()});
@@ -771,7 +821,33 @@ mod tests {
         assert!(reveal(&root, &mut view, &expanded, "/items/19999"));
         let cards = visible_cards(&root, &view, &expanded);
         let items = cards.iter().find(|c| c.pointer == "/items").expect("the array's card");
-        assert_eq!((cards.len(), items.rows, items.more), (20_002, 20_000, 0));
+        assert_eq!((cards.len(), items.rows, items.skip, items.more), (22, 20, 19_980, 0));
+    }
+
+    /// Wave 2 (H1b): a view saved before `first` existed reads, lays out and writes back exactly as before.
+    #[test]
+    fn an_old_view_round_trips_without_first() {
+        let text = r#"{"/items":{"collapsed":false,"pages":3}}"#;
+        let view = JsonView::from_field(text);
+        assert_eq!(view.first("/items"), 0);
+        assert_eq!(view.pages("/items"), 3);
+        assert_eq!(view.to_field(), text);
+    }
+
+    /// Wave 2 (H1b): a reveal near the window grows it as before; a far one moves it; `+ N earlier` grows it up.
+    #[test]
+    fn reveal_moves_the_window_and_earlier_grows_it_up() {
+        let root = json!({"items": (0..1000).collect::<Vec<_>>()});
+        let expanded = default_expanded(&root);
+        let mut view = JsonView::default();
+        reveal(&root, &mut view, &expanded, "/items/90"); // page 4: within 5 of the window's end
+        assert_eq!((view.first("/items"), view.pages("/items")), (0, 5));
+        reveal(&root, &mut view, &expanded, "/items/900"); // page 45: far
+        assert_eq!((view.first("/items"), view.pages("/items")), (45, 1));
+        show_earlier(&root, &mut view, "/items");
+        assert_eq!((view.first("/items"), view.pages("/items")), (44, 2));
+        let items = visible_cards(&root, &view, &expanded).into_iter().find(|c| c.pointer == "/items").unwrap();
+        assert_eq!((items.skip, items.rows, items.more, items.lead()), (880, 40, 80, 1));
     }
 
     #[test]
@@ -823,7 +899,13 @@ mod tests {
     /// The keys `from_field` treats as known are exactly the ones `CardOverride` writes.
     #[test]
     fn card_override_keys_are_the_fields_it_reads() {
-        let full = CardOverride { pos: Some([1.0, 2.0]), collapsed: Some(true), color: Some(1), pages: Some(2) };
+        let full = CardOverride {
+            pos: Some([1.0, 2.0]),
+            collapsed: Some(true),
+            color: Some(1),
+            pages: Some(2),
+            first: Some(3),
+        };
         let Value::Object(object) = serde_json::to_value(&full).unwrap() else { panic!("an object") };
         assert_eq!(object.keys().map(String::as_str).collect::<Vec<_>>(), CARD_OVERRIDE_KEYS);
     }

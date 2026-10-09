@@ -85,6 +85,8 @@ pub(crate) enum JsonEdit {
     Select(String),
     Toggle(String),
     More(String),
+    /// The `+ N earlier` row.
+    Earlier(String),
     /// A dragged card's new top-left.
     Moved(String, egui::Pos2),
     Relayout,
@@ -144,9 +146,11 @@ impl JsonLevel {
             return None;
         }
         let row = (offset / json_view::ROW_HEIGHT) as usize;
-        let pointer = &self.cards[card].pointer;
+        let c = &self.cards[card];
+        let row = row.checked_sub(c.lead())?; // the `+ N earlier` row (`?`, not `let … else`: clippy::question_mark)
+        let pointer = &c.pointer;
         let value = self.value.pointer(pointer)?;
-        let (key, _) = json_view::entries(value).take(self.cards[card].rows).nth(row)?;
+        let (key, _) = json_view::entries_from(value, c.skip).take(c.rows).nth(row)?;
         Some(json_view::child_pointer(pointer, &key))
     }
 
@@ -159,11 +163,12 @@ impl JsonLevel {
         let parent = json_view::parent_pointer(pointer)?;
         let card = *self.index.get(parent)?;
         let row = json_view::entry_index(self.value.pointer(parent)?, &json_view::last_key(pointer)?)?;
-        if row >= self.cards[card].rows {
+        let c = &self.cards[card];
+        if row < c.skip || row >= c.skip + c.rows {
             return None;
         }
         let rect = self.rects[card];
-        let top = rect.top() + json_view::HEADER_HEIGHT + json_view::ROW_HEIGHT * row as f32;
+        let top = rect.top() + json_view::HEADER_HEIGHT + json_view::ROW_HEIGHT * (row - c.skip + c.lead()) as f32;
         Some(egui::Rect::from_min_size(egui::pos2(rect.left(), top), egui::vec2(rect.width(), json_view::ROW_HEIGHT)))
     }
 
@@ -175,8 +180,15 @@ impl JsonLevel {
     /// Whether `world` is on card `card`'s `+ N more` row.
     pub(crate) fn more_row_at(&self, card: usize, world: egui::Pos2) -> bool {
         let (Some(rect), Some(c)) = (self.rects.get(card), self.cards.get(card)) else { return false };
-        let top = rect.top() + json_view::HEADER_HEIGHT + json_view::ROW_HEIGHT * c.rows as f32;
+        let top = rect.top() + json_view::HEADER_HEIGHT + json_view::ROW_HEIGHT * (c.lead() + c.rows) as f32;
         c.more > 0 && rect.contains(world) && world.y >= top
+    }
+
+    /// Whether `world` is on card `card`'s `+ N earlier` row.
+    pub(crate) fn earlier_row_at(&self, card: usize, world: egui::Pos2) -> bool {
+        let (Some(rect), Some(c)) = (self.rects.get(card), self.cards.get(card)) else { return false };
+        let top = rect.top() + json_view::HEADER_HEIGHT;
+        c.skip > 0 && rect.contains(world) && world.y >= top && world.y < top + json_view::ROW_HEIGHT
     }
 }
 
@@ -279,6 +291,9 @@ impl App {
                 self.edit_json_view(|view, _, expanded| json_view::toggle(view, expanded, &pointer))
             }
             JsonEdit::More(pointer) => self.edit_json_view(|view, _, _| json_view::show_more(view, &pointer)),
+            JsonEdit::Earlier(pointer) => {
+                self.edit_json_view(|view, value, _| json_view::show_earlier(value, view, &pointer))
+            }
             JsonEdit::Moved(pointer, top_left) => {
                 self.edit_json_view(|view, _, _| view.entry(&pointer).pos = Some([top_left.x, top_left.y]))
             }
@@ -464,6 +479,7 @@ impl App {
                     "pos": [rect.min.x, rect.min.y],
                     "collapsed": card.collapsed,
                     "rows": card.rows,
+                    "skip": card.skip,
                     "more": card.more,
                 })
             })

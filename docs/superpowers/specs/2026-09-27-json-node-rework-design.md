@@ -11,7 +11,8 @@ level, the same way double-clicking a group does. Every object and
 array on that level is a record card, and an outline panel beside the
 canvas gives the same tree as text for scanning, search and copying.
 The level is read-only. Nothing about it is stored except the view
-overrides the user makes: position, colour, collapse and pages.
+overrides the user makes: position, colour, collapse, pages and `first`
+(the window's first page).
 
 ## Today
 
@@ -52,7 +53,9 @@ Leaving works exactly as it does for a group.
 - **Paging.** A container with more than 20 entries shows 20 rows and
   then a `+ N more` row, which reveals 20 more per click. This applies
   to objects as well as arrays. A child card exists only for a visible
-  row.
+  row. The rows shown are a window of pages that may start past the
+  first page (`first`, saved with `pages`); then a `+ N earlier` row
+  above them grows the window up one page per click. Wave 2, H1b.
 - **Collapse.** Double-clicking a card's header toggles it. A collapsed
   card is just its header with its label, and its subtree is hidden.
 - **Default expansion.** When a level opens, a breadth-first pass
@@ -91,6 +94,10 @@ card's position. **Relayout** in the bar clears every saved `pos`.
 - Selection is synced both ways. Selecting a row pans to its card. If
   that card is hidden behind a collapsed ancestor or an unrevealed page,
   the canvas reveals it, and the reveal is saved like a manual expand.
+  A reveal within 5 pages of a card's window grows the window to it; a
+  farther one moves the window to that page alone, so a reveal deep in
+  a large array lays out one page of cards, not every row before it.
+  `+ N earlier` then grows the window up one page. Wave 2, H1b.
 - **Search** (Ctrl+F) is a case-insensitive substring match on keys and
   scalar values across the whole value, including unrevealed pages.
   Matches keep their ancestors. Enter or ↓ steps to the next match, and
@@ -174,6 +181,9 @@ keyed by pointer. Only overrides are stored:
   view at the same moment, one change is lost. That is acceptable for
   view state (see Future directions).
 - An older build ignores the field.
+- `first` (Wave 2, H1b) is stored only when set; a view saved before it
+  reads and writes back unchanged, and a build without it shows that
+  card's window from the first page.
 - Entries whose pointer no longer resolves (after a Refresh) are dropped
   on the next save. If array elements are reordered, their overrides
   stay with the index, not the element.

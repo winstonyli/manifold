@@ -260,8 +260,8 @@ fn paint_json_frame(
     painter.rect_stroke(rect, rounding, egui::Stroke::new(border.0 * inv_zoom, border.1), egui::StrokeKind::Inside);
 }
 
-/// A card's contents (the frame is the caller's): the header, then those of the first `rows` entries of `value` that
-/// `look.visible` shows, then `+ N more` when `more > 0`.
+/// A card's contents (the frame is the caller's): the header, `+ N earlier` when `skip > 0`, then those of the `rows`
+/// entries of `value` from entry `skip` that `look.visible` shows, then `+ N more` when `more > 0`.
 /// Shared by the JSON level and the Json card at its parent's level.
 #[allow(clippy::too_many_arguments, reason = "one card's full description; a struct for it would only rename these")]
 pub(crate) fn paint_json_content(
@@ -270,6 +270,7 @@ pub(crate) fn paint_json_content(
     rect: egui::Rect,
     value: &Value,
     header: &HeaderParts,
+    skip: usize,
     rows: usize,
     more: usize,
     look: &CardLook,
@@ -284,21 +285,26 @@ pub(crate) fn paint_json_content(
             egui::vec2(rect.width(), ROW_HEIGHT),
         )
     };
-    let shown = json_view::visible_rows(rect.top() + header_height, rows, look.visible);
-    if !look.preview && rows + usize::from(more > 0) > 0 {
+    // The `+ N earlier` row, above the window's rows when it starts past the first entry.
+    let lead = usize::from(skip > 0);
+    // Window rows: `shown.start` is the window's first drawn entry row, entry `skip + shown.start`.
+    let shown = json_view::visible_rows(rect.top() + header_height + lead as f32 * ROW_HEIGHT, rows, look.visible);
+    if !look.preview && lead + rows + usize::from(more > 0) > 0 {
         painter.hline(
             rect.x_range(),
             rect.top() + header_height,
             egui::Stroke::new(look.inv_zoom, pal.muted.gamma_multiply(0.4)),
         );
     }
-    let (lo, hi) =
-        (look.hit_rows.partition_point(|&r| r < shown.start), look.hit_rows.partition_point(|&r| r < shown.end));
-    for &row in &look.hit_rows[lo..hi] {
-        painter.rect_filled(row_rect(row), 0.0, SEARCH_HIT.gamma_multiply(0.18));
+    let (lo, hi) = (
+        look.hit_rows.partition_point(|&r| r < skip + shown.start),
+        look.hit_rows.partition_point(|&r| r < skip + shown.end),
+    );
+    for &e in &look.hit_rows[lo..hi] {
+        painter.rect_filled(row_rect(lead + e - skip), 0.0, SEARCH_HIT.gamma_multiply(0.18));
     }
     if let Some(row) = look.selected_row {
-        painter.rect_filled(row_rect(row), 0.0, ACCENT.gamma_multiply(0.22));
+        painter.rect_filled(row_rect(lead + row - skip), 0.0, ACCENT.gamma_multiply(0.22));
     }
 
     let mut text = Vec::new();
@@ -380,9 +386,24 @@ pub(crate) fn paint_json_content(
             size: if look.preview { HEADER_TITLE_SIZE * look.inv_zoom } else { TEXT_SIZE },
         });
     }
+    if skip > 0 {
+        let r = row_rect(0);
+        if look.text {
+            text.push(TextItem {
+                pos: egui::pos2(left, r.center().y),
+                align: egui::Align2::LEFT_CENTER,
+                text: format!("+ {skip} earlier"),
+                color: pal.muted,
+                max_width: inner,
+                size: TEXT_SIZE,
+            });
+        } else {
+            painter.rect_filled(r.shrink2(egui::vec2(PAD, 7.0)), 2.0, pal.muted.gamma_multiply(0.2));
+        }
+    }
     let first = shown.start;
     for (row, (key, child)) in
-        json_view::entries_from(value, first).take(shown.len()).enumerate().map(|(i, e)| (first + i, e))
+        json_view::entries_from(value, skip + first).take(shown.len()).enumerate().map(|(i, e)| (lead + first + i, e))
     {
         let r = row_rect(row);
         let y = r.center().y;
@@ -438,7 +459,7 @@ pub(crate) fn paint_json_content(
         });
     }
     if more > 0 {
-        let r = row_rect(rows);
+        let r = row_rect(lead + rows);
         if look.text {
             text.push(TextItem {
                 pos: egui::pos2(left, r.center().y),
@@ -528,14 +549,14 @@ impl App {
                 continue;
             }
             let Some(value) = level.value.pointer(&card.pointer) else { continue };
-            let selected_row =
-                level.selected.as_deref().and_then(|s| json_view::row_of(value, &card.pointer, s, 0..card.rows));
+            let selected_row = level
+                .selected
+                .as_deref()
+                .and_then(|s| json_view::row_of(value, &card.pointer, s, card.skip..card.skip + card.rows));
             // This card's hit rows, cut to the rows it shows.
-            let hit_rows: &[usize] = level
-                .search
-                .hit_rows
-                .get(&card.pointer)
-                .map_or(&[][..], |rows| &rows[..rows.partition_point(|&r| r < card.rows)]);
+            let hit_rows: &[usize] = level.search.hit_rows.get(&card.pointer).map_or(&[][..], |rows| {
+                &rows[rows.partition_point(|&r| r < card.skip)..rows.partition_point(|&r| r < card.skip + card.rows)]
+            });
             let border = if level.selected.as_deref() == Some(card.pointer.as_str()) {
                 (2.0, ACCENT)
             } else if hits.is_some_and(|h| h.contains(&card.pointer)) || !hit_rows.is_empty() {
@@ -558,7 +579,17 @@ impl App {
                 preview: false,
             };
             let header = header_parts(&level.value, card, &root_name);
-            paint_json_content(ui.painter(), deferred_overlays, rect, value, &header, card.rows, card.more, &look);
+            paint_json_content(
+                ui.painter(),
+                deferred_overlays,
+                rect,
+                value,
+                &header,
+                card.skip,
+                card.rows,
+                card.more,
+                &look,
+            );
 
             let response = ui.interact(
                 rect,
@@ -582,7 +613,9 @@ impl App {
                 edits.push(JsonEdit::Toggle(card.pointer.clone()));
             } else if response.clicked() {
                 if let Some(p) = at {
-                    if level.more_row_at(i, p) {
+                    if level.earlier_row_at(i, p) {
+                        edits.push(JsonEdit::Earlier(card.pointer.clone()));
+                    } else if level.more_row_at(i, p) {
                         edits.push(JsonEdit::More(card.pointer.clone()));
                     } else {
                         edits.push(JsonEdit::Select(level.row_at(i, p).unwrap_or_else(|| card.pointer.clone())));
@@ -956,7 +989,17 @@ mod tests {
             };
             let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(json_view::CARD_WIDTH, card.height()));
             let header = header_parts(value, card, "f.json");
-            paint_json_content(ui.painter(), &mut overlays, rect, value, &header, card.rows, card.more, &look);
+            paint_json_content(
+                ui.painter(),
+                &mut overlays,
+                rect,
+                value,
+                &header,
+                card.skip,
+                card.rows,
+                card.more,
+                &look,
+            );
             for overlay in overlays {
                 overlay(ui.painter(), &|p| p);
             }
@@ -976,7 +1019,8 @@ mod tests {
     #[test]
     fn a_card_paints_its_rows_texts() {
         let value = Value::Array((0..30).map(|i| Value::String(format!("v{i}"))).collect());
-        let card = Card { pointer: String::new(), parent: None, depth: 0, collapsed: false, rows: 25, more: 5 };
+        let card =
+            Card { pointer: String::new(), parent: None, depth: 0, collapsed: false, skip: 0, rows: 25, more: 5 };
         let texts = painted_texts(&value, &card, egui::Rect::EVERYTHING);
         assert_eq!(texts.len(), 54, "{texts:?}");
         assert_eq!(texts[1..5], ["f.json", "[30]", "0", "\"v0\""], "{texts:?}");
@@ -987,7 +1031,8 @@ mod tests {
     #[test]
     fn a_culled_card_paints_only_its_visible_rows() {
         let value = Value::Array((0..30).map(|i| Value::String(format!("v{i}"))).collect());
-        let card = Card { pointer: String::new(), parent: None, depth: 0, collapsed: false, rows: 25, more: 5 };
+        let card =
+            Card { pointer: String::new(), parent: None, depth: 0, collapsed: false, skip: 0, rows: 25, more: 5 };
         let full = painted_texts(&value, &card, egui::Rect::EVERYTHING);
         let visible = egui::Rect::from_min_max(egui::pos2(0.0, 137.0), egui::pos2(220.0, 245.0)); // rows 5..10
         assert_eq!(painted_texts(&value, &card, visible), [&full[..3], &full[13..23], &full[53..]].concat());

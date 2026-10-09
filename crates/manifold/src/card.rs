@@ -1829,6 +1829,7 @@ impl App {
             parent: None,
             depth: 0,
             collapsed: false,
+            skip: 0,
             rows,
             more: len - rows,
         };
@@ -1865,6 +1866,7 @@ impl App {
             rect,
             &json.value,
             &header,
+            0,
             rows,
             len - rows,
             &look,
