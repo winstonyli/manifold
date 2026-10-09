@@ -929,11 +929,18 @@ impl App {
         y: f64,
         button: WinitMouseButton,
         count: u8,
+        ctrl: bool,
     ) {
         self.dispatch_window_event(
             event_loop,
             WindowEvent::CursorMoved { device_id: DeviceId::dummy(), position: PhysicalPosition::new(x, y) },
         );
+        if ctrl {
+            self.dispatch_window_event(
+                event_loop,
+                WindowEvent::ModifiersChanged(winit::keyboard::ModifiersState::CONTROL.into()),
+            );
+        }
         for _ in 0..count {
             for state in [ElementState::Pressed, ElementState::Released] {
                 self.dispatch_window_event(
@@ -941,6 +948,11 @@ impl App {
                     WindowEvent::MouseInput { device_id: DeviceId::dummy(), state, button },
                 );
             }
+        }
+        if ctrl {
+            // The click's frame, with Ctrl still down, before it is let go.
+            self.dispatch_window_event(event_loop, WindowEvent::RedrawRequested);
+            self.dispatch_window_event(event_loop, WindowEvent::ModifiersChanged(Default::default()));
         }
     }
 

@@ -619,7 +619,19 @@ impl App {
         // A click on a link line deletes that link (link-gestures spec B). The Scene's background took the click, so
         // no card, control or popup was on top, and egui never reports a pan (a drag) as a click. Read before
         // `track_pan_momentum`, which clears a glide on the press that `line_click` must still see.
+        // The same click on empty canvas, with no line under it, deselects (`canvas_click_deselects`). Read before
+        // `line_click` and `track_pan_momentum`, which end a glide.
+        let deselect = self.canvas_click_deselects(
+            scene_background.clicked(),
+            line_hover.is_some(),
+            ui.input(|i| i.pointer.interact_pos()),
+            minimap.map(|(rect, _, _)| rect),
+            typing,
+        );
         let line_click = self.line_click(ui, line_hover, scene_background.clicked());
+        if deselect {
+            self.selected_tabs.clear();
+        }
 
         self.track_pan_momentum(ui, scene_rect);
 
@@ -1699,6 +1711,11 @@ impl App {
                 if card.response.clicked() && pass.pick_targets.contains(id) {
                     pass.actions.push(GraphAction::FinishConnect(id.clone()));
                 }
+                continue;
+            }
+            // Ctrl-click on a tab toggles it in the selection and opens nothing.
+            if kind.ty == TYPE_TAB && card.response.clicked() && ui.input(|i| i.modifiers.ctrl) {
+                self.toggle_tab_selected(id);
                 continue;
             }
             // A placeholder (see `ImagePayload::error`) has nothing

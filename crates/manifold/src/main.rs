@@ -14,6 +14,7 @@ mod crash_report;
 mod debug_control;
 #[cfg(test)]
 mod deleted_names;
+mod deselect;
 mod engine_info;
 mod engine_install;
 mod event_loop;

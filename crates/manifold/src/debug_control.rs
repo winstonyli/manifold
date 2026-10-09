@@ -64,7 +64,8 @@ pub enum DebugCommand {
     MouseUp { x: f64, y: f64, button: MouseButton },
     /// A full click (move + press + release) in one command — the common
     /// case, and avoids needing three round-trips through stdin for it.
-    Click { x: f64, y: f64, button: MouseButton },
+    /// `ctrl` holds Ctrl down across the click.
+    Click { x: f64, y: f64, button: MouseButton, ctrl: bool },
     /// A left double-click, both clicks in one frame. Two `CLICK`s only
     /// count as one when their frames fall within egui's 0.3 s
     /// double-click delay, which a slow headless frame can break.
@@ -449,7 +450,7 @@ const COMMAND_HELP: &[(&str, &str)] = &[
     ("MOUSEMOVE x y", "Move the mouse to (x, y)"),
     ("MOUSEDOWN x y [button]", "Press a mouse button at (x, y) -- button defaults to left"),
     ("MOUSEUP x y [button]", "Release a mouse button at (x, y)"),
-    ("CLICK x y [button]", "Full click (move+press+release) at (x, y)"),
+    ("CLICK x y [button] [ctrl]", "Full click (move+press+release) at (x, y); ctrl holds Ctrl down"),
     ("DOUBLECLICK x y", "Left double-click at (x, y), both clicks in one frame"),
     ("SCROLL x y dx dy", "Scroll at (x, y) by (dx, dy)"),
     ("ADDRESSBAR text", "Set the address bar's text and focus"),
@@ -669,11 +670,19 @@ pub fn parse_line(line: &str) -> Option<DebugCommand> {
             y: parts.next()?.parse().ok()?,
             button: parts.next().map(parse_mouse_button).unwrap_or(MouseButton::Left),
         }),
-        "CLICK" => Some(DebugCommand::Click {
-            x: parts.next()?.parse().ok()?,
-            y: parts.next()?.parse().ok()?,
-            button: parts.next().map(parse_mouse_button).unwrap_or(MouseButton::Left),
-        }),
+        "CLICK" => {
+            let (x, y) = (parts.next()?.parse().ok()?, parts.next()?.parse().ok()?);
+            // Then `[button] [ctrl]`.
+            let (mut button, mut ctrl) = (MouseButton::Left, false);
+            for word in parts {
+                if word.eq_ignore_ascii_case("ctrl") {
+                    ctrl = true;
+                } else {
+                    button = parse_mouse_button(word);
+                }
+            }
+            Some(DebugCommand::Click { x, y, button, ctrl })
+        }
         "DOUBLECLICK" => {
             Some(DebugCommand::DoubleClick { x: parts.next()?.parse().ok()?, y: parts.next()?.parse().ok()? })
         }
@@ -982,8 +991,8 @@ impl App {
                     WindowEvent::MouseInput { device_id: DeviceId::dummy(), state: ElementState::Released, button },
                 );
             }
-            DebugCommand::Click { x, y, button } => self.debug_click(event_loop, x, y, button, 1),
-            DebugCommand::DoubleClick { x, y } => self.debug_click(event_loop, x, y, WinitMouseButton::Left, 2),
+            DebugCommand::Click { x, y, button, ctrl } => self.debug_click(event_loop, x, y, button, 1, ctrl),
+            DebugCommand::DoubleClick { x, y } => self.debug_click(event_loop, x, y, WinitMouseButton::Left, 2, false),
             DebugCommand::Scroll { x, y, delta_x, delta_y } => {
                 self.dispatch_window_event(
                     event_loop,
@@ -1532,6 +1541,19 @@ mod tests {
         for usage in ["EGUITEXT text", "BACKSPACE"] {
             assert!(COMMAND_HELP.iter().any(|(u, _)| *u == usage), "{usage} is in HELP");
         }
+    }
+
+    #[test]
+    fn click_takes_an_optional_button_and_ctrl() {
+        let click = |line| match parse_line(line) {
+            Some(DebugCommand::Click { x, y, button, ctrl }) => Some((x, y, button, ctrl)),
+            _ => None,
+        };
+        assert_eq!(click("CLICK 1 2"), Some((1.0, 2.0, MouseButton::Left, false)));
+        assert_eq!(click("CLICK 1 2 right"), Some((1.0, 2.0, MouseButton::Right, false)));
+        assert_eq!(click("CLICK 1 2 ctrl"), Some((1.0, 2.0, MouseButton::Left, true)));
+        assert_eq!(click("click 1 2 right CTRL"), Some((1.0, 2.0, MouseButton::Right, true)));
+        assert_eq!(click("CLICK 1"), None);
     }
 
     #[test]

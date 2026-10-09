@@ -1020,9 +1020,8 @@ impl App {
         if view.kind.ty == TYPE_TAB
             && ui.memory(|m| m.has_focus(card_id))
             && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Space))
-            && !self.selected_tabs.remove(id)
         {
-            self.selected_tabs.insert(id.to_string());
+            self.toggle_tab_selected(id);
         }
         let response = ui.interact(body.interact_rect, card_id, sense);
         // Not while a card's menu is open: the pointer is usually still on

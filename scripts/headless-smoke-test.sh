@@ -366,6 +366,24 @@ settle ejected
 check_query ejected "ejecting a selected tab also drops it from the selection" \
     "len(tabs) == 1 and s['selected_tabs'] == tabs"
 
+# Ctrl-click toggles the selected tab out and back in without opening it; a plain click on empty canvas (the
+# marquee's start corner) then clears the selection.
+read -r x y <<<"$(query ejected "xy(tabs[0])")"
+read -r bx by _ <<<"$(query ejected 'bbox')"
+send "MOUSEMOVE $x $y"
+send "CLICK $x $y ctrl"
+settle ctrl_out
+check_query ctrl_out "a Ctrl-click on a selected tab takes it out of the selection without opening it" \
+    "s['selected_tabs'] == [] and not s['tab_view']"
+send "CLICK $x $y ctrl"
+settle ctrl_in
+check_query ctrl_in "a Ctrl-click on an unselected tab selects it without opening it" \
+    "s['selected_tabs'] == tabs and not s['tab_view']"
+send "MOUSEMOVE $bx $by"
+send "CLICK $bx $by"
+settle deselected
+check_query deselected "a click on empty canvas clears the selection" "s['selected_tabs'] == []"
+
 # Border colors, read off a screenshot: a group of more than 8 members
 # rests on DANGER_COLOR (196, 87, 58), and the empty group from above on
 # ACCENT (215, 162, 74). `card_border`'s unit test covers which color
