@@ -3516,10 +3516,20 @@ mod tests {
         app.flush_dirty_jars(Some(dirty + tabs::JAR_FLUSH_AFTER * 2));
         assert_eq!(jar_saves(&app), 1, "saved jars are clean");
 
+        // The round ends before the jar is due (500 ms after its mark): first with b's pull timed out, then with none.
         assert!(app.apply_pulled_cookies("a", "[]"));
-        app.flush_dirty_jars(Some(t0 + tabs::JAR_PULL_TIMEOUT));
+        let dirty = *app.jar_dirty.values().next().expect("the pull marked the jar dirty");
+        let timed_out = dirty.checked_sub(tabs::JAR_PULL_TIMEOUT).expect("the clock reaches back 10 s");
+        app.jar_pulls.insert("b".into(), timed_out);
+        app.flush_dirty_jars(Some(dirty + Duration::from_millis(500)));
         assert!(app.jar_pulls.contains_key("b"), "a timed-out pull keeps its entry");
         assert_eq!(jar_saves(&app), 2, "but it is not pending: the round is over");
+
+        assert!(app.apply_pulled_cookies("a", SID));
+        let dirty = *app.jar_dirty.values().next().expect("the pull marked the jar dirty");
+        app.jar_pulls.remove("b"); // b answered
+        app.flush_dirty_jars(Some(dirty + Duration::from_millis(500)));
+        assert_eq!(jar_saves(&app), 3, "no pull is out: the round is over");
     }
 
     /// Wave 2 (Jar H3): a jar whose first login is not on disk yet still asks before ephemeral deletes it.

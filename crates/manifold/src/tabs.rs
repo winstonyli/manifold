@@ -179,11 +179,11 @@ impl App {
     }
 
     /// Folds tab `tab_id`'s cookie dump into the jar its host was spawned with, and marks that jar dirty when it
-    /// changed (`flush_dirty_jars` saves it) (spec: "Its pulls merge into that jar and save only that jar's file"). Merged against that tab's own
-    /// `jar_tabs` entry (`jar::Jar::merge`). `false` for a dump that does not parse (logged), a tab with no
-    /// `jar_tabs` entry (closed or replaced since it was asked; deviation 5), a named jar deleted while it ran, or a
-    /// host whose jar was cleared under it (`jar_reseed`): it still holds the old cookies, and they must not refill
-    /// the cleared jar.
+    /// changed (`flush_dirty_jars` saves it) (spec: "Its pulls merge into that jar and save only that jar's file").
+    /// Merged against that tab's own `jar_tabs` entry (`jar::Jar::merge`). `false` for a dump that does not parse
+    /// (logged), a tab with no `jar_tabs` entry (closed or replaced since it was asked; deviation 5), a named jar
+    /// deleted while it ran, or a host whose jar was cleared under it (`jar_reseed`): it still holds the old cookies,
+    /// and they must not refill the cleared jar.
     pub(crate) fn apply_pulled_cookies(&mut self, tab_id: &str, json: &str) -> bool {
         if self.jar_reseed.contains(tab_id) {
             return false;

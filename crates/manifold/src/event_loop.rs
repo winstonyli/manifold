@@ -160,7 +160,8 @@ impl ApplicationHandler<UserEvent> for App {
             self.jar_last_pull = Some(std::time::Instant::now());
         }
         // A pull round's changed jars, once its replies are in or `JAR_FLUSH_AFTER` has passed. The loop wakes at
-        // least every `IDLE_FRAME` or `MINIMIZED_TICK` (100 ms), so a due jar is written within 100 ms.
+        // least every `IDLE_FRAME` or `MINIMIZED_TICK` (100 ms), so a due jar is written about 100 ms later at most
+        // while the loop turns (a modal file dialog or a long frame holds it).
         self.flush_dirty_jars(Some(std::time::Instant::now()));
         // A window drag's geometry, once it has been quiet for `SETTINGS_SAVE_DELAY`. The loop wakes at least
         // every idle frame or `MINIMIZED_TICK`, so it lands within about a second.
