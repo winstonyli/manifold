@@ -2,6 +2,12 @@
 
 One entry per tagged release, newest first. The annotated tag `vX.Y.Z` carries the same text. Releases before v0.4.0 have no entry: see `git log --first-parent --decorate`.
 
+## Unreleased
+
+### Features
+
+- **Link gesture polish.** Connect handles are 28 by 16 pills, show on hover even when the card has nothing to link to, and show on every card while you drag. A release within 24 points of a card links it, so a near miss counts. Links and opened-from lines are now one curved style between the facing sides of the two cards, and clicking a link means clicking its curve.
+
 ## v0.4.0 (2026-10-08)
 
 101 commits since v0.3.0.

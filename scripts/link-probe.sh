@@ -6,11 +6,15 @@
 #   2. After a restart on the same profile the link is still there, same id.
 #   3. UNLINK b a (the other order) removes it, and a second restart still
 #      has none (the removal was saved).
-#   4. In run 3, LINK again, then a CLICK on the line's middle (from
-#      EXPORTSTATE `edges`) deletes it (spec 2026-10-07-link-gestures).
+#   4. In run 3, LINK again, then a CLICK on the curve's middle (from
+#      EXPORTSTATE `edges`, clear of both cards) deletes it (spec
+#      2026-10-07-link-gestures).
 #   5. A MOUSEDOWN on a's right handle (`link_handles`), six MOUSEMOVEs and a
 #      MOUSEUP on b links a to b, without moving a.
-#   6. Run 4 still has that link.
+#   6. UNLINK, then the same drag released 15 points left of b's left edge
+#      (inside the drop tolerance) links a to b again; EXPORTSTATE while the
+#      button is down lists handles on b too (every card shows them).
+#   7. Run 4 still has that link.
 # One headless instance per run, on a fresh isolated profile seeded with two
 # about:blank tabs (import gives them fresh ids, so the first run reads them
 # from EXPORTSTATE), state read back through EXPORTSTATE. Runs BelowNormal.
@@ -77,6 +81,14 @@ read -r ax ay hx hy bx by <<<"$(py "import json,sys; d=json.load(open(sys.argv[1
 send "MOUSEMOVE $ax $ay" "MOUSEMOVE $hx $hy" "MOUSEMOVE $hx $hy" "MOUSEDOWN $hx $hy"
 for i in 1 2 3 4 5 6; do send "MOUSEMOVE $((hx + (bx - hx) * i / 6)) $((hy + (by - hy) * i / 6))"; done
 send "MOUSEUP $bx $by" "SLEEP 1" "$(x s7)"
+wait_file "$out/s7.json"
+# The same drag, released 15 points left of b's left edge: within the drop tolerance of b, off every card.
+read -r nx ny <<<"$(py "import json,sys; d=json.load(open(sys.argv[1], encoding='utf-8')); r=[c for c in d['cards'] if c['id']=='$b'][0]['rect']; print(round(r[0]) - 15, round((r[1]+r[3])/2))" s7)"
+send "UNLINK $a $b" "SLEEP 1" "MOUSEMOVE $ax $ay" "MOUSEMOVE $hx $hy" "MOUSEMOVE $hx $hy" "MOUSEDOWN $hx $hy"
+for i in 1 2 3 4 5 6; do send "MOUSEMOVE $((hx + (nx - hx) * i / 6)) $((hy + (ny - hy) * i / 6))"; done
+send "SLEEP 1" "$(x s7m)"
+wait_file "$out/s7m.json"
+send "MOUSEUP $nx $ny" "SLEEP 1" "$(x s7t)"
 stop
 start log4
 send "$(x s8)"
@@ -96,8 +108,12 @@ rect_of() { py "import json,sys; print(*[round(v) for v in [c for c in json.load
 field() { py "import json,sys; print(json.load(open(sys.argv[1], encoding='utf-8'))['$2'])" "$1"; }
 read -r n5 _ <<<"$(summary s5)"
 read -r n6 _ <<<"$(summary s6)"
-read -r n7 id7 from7 to7 <<<"$(summary s7)"
+read -r n7 _ from7 to7 <<<"$(summary s7)"
+read -r n7t id7t from7t to7t <<<"$(summary s7t)"
 read -r n8 id8 _ <<<"$(summary s8)"
+# Whether the link line's middle (s5) lies inside either card's rect, and how many cards list handles in s7m.
+clear_of_cards() { py "import json,sys; d=json.load(open(sys.argv[1], encoding='utf-8')); x,y=[e for e in d['edges'] if e['kind']=='link'][0]['screen']; print('clear' if not any(r[0]<=x<=r[2] and r[1]<=y<=r[3] for r in (c['rect'] for c in d['cards'])) else 'on a card')" "$1"; }
+handle_cards() { py "import json,sys; d=json.load(open(sys.argv[1], encoding='utf-8')); print(sorted(k for k,v in d['link_handles'].items() if v) == sorted(c['id'] for c in d['cards']))" "$1"; }
 check "the session has the two seeded tabs" "2" "$ncards"
 check "LINK creates one link" "1" "$n1"
 check "it runs a -> b" "$a $b" "$from1 $to1"
@@ -106,11 +122,14 @@ check "with the same id and ends" "$id1 $a $b" "$id2 $from2 $to2"
 check "UNLINK (ends in the other order) removes it" "0" "$n3"
 check "the removal persists across a restart" "0" "$n4"
 check "LINK again" "1" "$n5"
-check "a click on the link line removes it" "0" "$n6"
+check "the link curve's middle is clear of both cards" "clear" "$(clear_of_cards s5)"
+check "a click on the link curve's middle removes it" "0" "$n6"
 check "a drag from a's handle onto b links a -> b" "1 $a $b" "$n7 $from7 $to7"
 check "the card dragged from did not move" "$(rect_of s6)" "$(rect_of s7)"
 check "the connect-drag ended" "None" "$(field s7 connect_drag)"
-check "the dragged link persists across a restart" "1 $id7" "$n8 $id8"
+check "every card lists handles mid-drag" "True" "$(handle_cards s7m)"
+check "a release 15 points outside b links a -> b" "1 $a $b" "$n7t $from7t $to7t"
+check "the dragged link persists across a restart" "1 $id7t" "$n8 $id8"
 if [ $status -ne 0 ]; then
     for l in log1 log2 log3 log4; do echo "--- $l"; tail -n 20 "$out/$l"; done
 fi

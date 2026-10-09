@@ -11,8 +11,9 @@ line to disconnect"). Adds two gestures on top of `App::connect` / `disconnect`;
    automatically, is directed with a child-to-parent direction opposite to a natural drag, silently replaces an
    existing parent, and already has two user routes; clearing one can also drop a tab's idle-sleep protection while a
    download child is in flight.
-2. **Connect-drag starts from an edge handle on all four sides of a card.** No modifier key. Lines keep running
-   centre to centre; the handles only start a gesture.
+2. **Connect-drag starts from an edge handle on all four sides of a card.** No modifier key. *Amended 2026-10-08
+   (see "Polish" below): lines no longer run centre to centre; every edge between cards is one bowed curve that
+   leaves and enters the facing side midpoints, where the handles are.*
 3. **Build order: click-to-disconnect (B) first, then connect-drag (A)**, as two tasks of one plan.
 
 ## B. Click a link line to disconnect
@@ -20,7 +21,8 @@ line to disconnect"). Adds two gestures on top of `App::connect` / `disconnect`;
 - `LevelEdge` gains the data a hit-test and a disconnect need: `from_id`, `to_id`, and `link: Option<String>` (the
   Link node's id; `None` for opened-from lines). `level_edges()` fills them. Opened-from lines stay non-interactive.
 - A hit-test helper takes the pointer (world coordinates) and returns the nearest link edge within a tolerance of
-  `max(6 screen px, line half-width) * inv_zoom`, by point-to-segment distance (links are straight).
+  `max(6 screen px, line half-width) * inv_zoom`, by distance to the flattened curve (originally to a straight
+  segment; see "Polish").
 - **When it applies:** a primary *click* (not a drag, so pan is unaffected) in the graph scene, with no card, card
   control, node menu, minimap or pick-target mode claiming it; not while `dragging`, `connecting` or a connect-drag
   is active; never in a JSON level. Where a card is under the pointer the card wins (lines pass under cards).
@@ -55,9 +57,37 @@ line to disconnect"). Adds two gestures on top of `App::connect` / `disconnect`;
   moving ends the gesture. Losing window focus cancels it (`on_window_focus`; added in the final review, I2), since
   the button-up may go to another window; `scripts/focus-loss-probe.sh` checks this in the real app.
 
+## Polish (2026-10-08)
+
+Supersedes the handle, release and drawing details above where they differ.
+
+- **Handles** are pills 28 by 16 screen points (`HANDLE_LONG_PX`, `HANDLE_SHORT_PX`), the long side along the card
+  edge, centred on the edge midpoint. They show on hover whether or not the card has a valid link target (a drag
+  from one with none cancels as an empty release does), and on **every** card while a connect-drag runs. The
+  minimum on-screen edge length is `HANDLE_MIN_EDGE_PX` = 60 (was 44): the same derivation, 2 * (16 px Audio
+  control + half the pill's long side) = 2 * (16 + 14).
+- **Drop tolerance:** a release on no card takes the nearest card other than the source within
+  `DROP_TOLERANCE_PX` = 24 screen points (24 / zoom world units) of its rect, the topmost of equals
+  (`App::card_within`). A card under the pointer still wins, and if that is the source nothing is taken. The target
+  ring and the release read the same `connect_drag_target`. Every card other than the source is eligible, valid
+  target or not (a refused pair toasts, as before).
+- **Drawing:** one routine (`link_gestures::paint_bow`) draws every edge between cards, links (dashed accent) and
+  opened-from (solid) alike, as the quadratic bow of `bow_control` (control point = chord midpoint + perpendicular
+  * min(15% of the length, 30 world units)) between **facing side midpoints**. Facing rule (`facing_sides`): take
+  the centre-to-centre delta from `a` to `b`; if |dx| >= |dy| the pair is right/left (right of `a` and left of `b`
+  when dx >= 0, mirrored otherwise), else bottom/top by the sign of dy. A tie goes horizontal, so the choice
+  depends only on the two centres and is stable while neither card moves. JSON-level edges are unchanged
+  (`EdgeCurve::Horizontal`), and layout is unchanged: links never feed it, opened-from still feeds the springs from
+  the centres.
+- **Everything that read the straight line follows the curve:** the click hit-test is the distance to the curve
+  flattened into `BOW_SEGMENTS` = 24 pieces (same tolerance and tie rule); culling uses the box of both ends and the
+  control point; `EXPORTSTATE` `edges[].screen` is the curve at t = 0.5; the rubber band is the same bow from the
+  source side facing the pointer, ending on the pointer or, with a target (within tolerance or under the pointer),
+  on the target's facing side midpoint.
+
 ## Not in scope
 
-- Drawing link lines to the side handles (side anchors), directed or named links, opened-from by drag or line click,
+- Directed or named links, opened-from by drag or line click,
   touch-specific handles, a modifier-key variant, multi-selection connect, cross-level targets, an undo for a line
   click.
 
