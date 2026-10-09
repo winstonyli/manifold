@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Usage: [ENGINE=cef] scripts/two-instance-test.sh
+# Prints a TIMING line per scenario (scripts/timing.sh); gate.sh collects them.
 #
 # Two headless instances on one isolated APPDATA (spec "Testing",
 # Headless). Never touches the real %APPDATA%\manifold. Build first:
@@ -60,7 +61,10 @@ fi
 . "$repo_root/scripts/fresh-exe.sh"
 # shellcheck source=winpid.sh
 . "$repo_root/scripts/winpid.sh"
+# shellcheck source=timing.sh
+. "$repo_root/scripts/timing.sh"
 require_fresh_exe "$exe" || exit 1
+timing_mark setup
 profile="$repo_root/target/two-instance-appdata-$$"
 out="$repo_root/target/two-instance-out-$$"
 mkdir -p "$profile/manifold" "$out"
@@ -78,6 +82,7 @@ d_winpid=""
 nonce_pid="" # scenario 3's page server
 cleanup() {
     local status=$?
+    timing_mark
     for wp in "$a_winpid" "$b_winpid" "$c_winpid" "$d_winpid"; do
         [ -n "$wp" ] && taskkill //F //PID "$wp" >/dev/null 2>&1
     done
@@ -153,6 +158,7 @@ wait_agree() { # $1=label $2=a_export_path $3=b_export_path
     exit 1
 }
 
+timing_mark s1-import
 echo "=== scenario 1: import + note ==="
 cat >"$out/pair.json" <<'EOF'
 {"nodes": [
@@ -167,6 +173,7 @@ wait_agree "scenario 1" "$out/a1.json" "$out/b1.json"
 assert_py has_kinds "$out/a1.json" "text/markdown:1" "application/vnd.manifold.tab:2"
 echo "scenario 1: ok"
 
+timing_mark s2-compaction
 echo "=== scenario 2: compaction mid-run ==="
 # 200 notes of 500 chars each: ~100 KB of ops, past COMPACT_MIN (64 KiB)
 # and twice a snapshot this small, so A's save after the import compacts.
@@ -261,6 +268,7 @@ json_get() { # $1=EXPORTSTATE file $2=id: that id's mirror group
     grep -o "\"$2\":\(null\|\"[^\"]*\"\)" "$1" | head -1 | cut -d: -f2- | tr -d '"'
 }
 
+timing_mark s8-move-into-group
 echo "=== scenario 8: a move into a group reaches the other instance ==="
 g8="$(new_node sa NEWGROUP s8g)"
 n8="$(new_node sa NEWNOTE s8n)"
@@ -273,6 +281,7 @@ wait_agree "scenario 8" "$out/a8.json" "$out/b8.json"
 wait_mirror s8 "$n8" "$g8"
 echo "scenario 8: ok"
 
+timing_mark s9-two-moves
 echo "=== scenario 9: both move one node into different groups ==="
 g9a="$(new_node sa NEWGROUP s9ga)"
 g9b="$(new_node sa NEWGROUP s9gb)"
@@ -296,6 +305,7 @@ assert_py kept_ids "$out/a9-before.json" "$out/s9-doc.json"
 assert_py no_cycle "$out/s9-doc.json"
 echo "scenario 9: ok ($n9 in $([ "$got9" = "$g9a" ] && echo "A's" || echo "B's") group)"
 
+timing_mark s10-cycle
 echo "=== scenario 10: A moves G into H while B moves H into G ==="
 g10="$(new_node sa NEWGROUP s10g)"
 h10="$(new_node sa NEWGROUP s10h)"
@@ -327,6 +337,7 @@ show_local_field() { # $1=field $2=label $3=id
         "B shows $(assert_py field_of "$1" "$bf" "$3" | tr -d '\r')"
 }
 
+timing_mark s11-rename
 echo "=== scenario 11: a group rename reaches the other instance ==="
 g11="$(new_node sa NEWGROUP s11g)"
 # B needs the group before it can rename it.
@@ -352,6 +363,7 @@ got11="$(shown name s11c "$g11")"
 }
 echo "scenario 11: ok ($g11 named $got11)"
 
+timing_mark s12-note-text
 echo "=== scenario 12: a note's text and a move reach the other instance ==="
 n12="$(new_node sa NEWNOTE s12n)"
 wait_field text s12-setup "$n12"
@@ -392,6 +404,7 @@ wait_field pos s12m "$n12"
 }
 echo "scenario 12: ok ($n12 holds $got12)"
 
+timing_mark s3-nonce-site
 echo "=== scenario 3: a url that changes on every load ==="
 python -P "$repo_root/scripts/nonce_server.py" "$out/hits" 240 >"$out/port" 2>"$out/server.err" </dev/null &
 nonce_pid=$!
@@ -448,6 +461,7 @@ sleep 10
 }
 echo "scenario 3: ok ($settled requests)"
 
+timing_mark s4-click-vs-script
 echo "=== scenario 4: a click is shared, a script's navigation isn't ==="
 # "<r-repeats> <dest-repeats> <dests> <spa-clicks> <spa-timers>", see
 # nonce_server.py.
@@ -518,6 +532,7 @@ sleep 5
 }
 echo "scenario 4: ok"
 
+timing_mark s5-json-convert
 echo "=== scenario 5: a shared tab converting to a node ==="
 # A navigates the shared tab to a local JSON file (no network); B follows.
 # Both engines load it and report content, but the document must end up
@@ -548,6 +563,7 @@ json_after="$(assert_py count_kind "$out/a5.json" application/json | tr -d '\r')
 }
 echo "scenario 5: ok"
 
+timing_mark s6-kill
 echo "=== scenario 6: kill A ==="
 sa "EXPORTSESSION $(win "$out/before3.json")"
 wait_file "$out/before3.json"
@@ -576,6 +592,7 @@ wait_file "$out/c.json"
 assert_py has_id "$out/c.json" "$new_id"
 echo "scenario 6: ok"
 
+timing_mark s7-restart
 echo "=== scenario 7: a restart reopens a tab's live url ==="
 # C is the only instance, so its personal state is the one on disk after
 # it quits (two instances would each overwrite the other's on save).
@@ -638,4 +655,5 @@ wait "$D_PID" 2>/dev/null || true
 d_winpid=""
 echo "scenario 7: ok"
 
+timing_mark
 echo "two-instance test: ok"

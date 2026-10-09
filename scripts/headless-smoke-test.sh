@@ -20,6 +20,8 @@
 # click cards where EXPORTSTATE's `cards` says they are, after the layout
 # stops moving (`settle`), not at fixed coordinates.
 #
+# Prints a TIMING line per step group (scripts/timing.sh); gate.sh collects them.
+#
 # Deliberately NOT covered: clicking an open-tab suggestion (accepting it
 # focuses another tab), left to manual verification (see project memory
 # for the one-off manual pass that confirmed it works). EXPORTSTATE's
@@ -39,7 +41,10 @@ fi
 . "$repo_root/scripts/fresh-exe.sh"
 # shellcheck source=winpid.sh
 . "$repo_root/scripts/winpid.sh"
+# shellcheck source=timing.sh
+. "$repo_root/scripts/timing.sh"
 require_fresh_exe "$exe" || exit 1
+timing_mark setup
 # scripts/smoke_eval.py's checks read EXPORTSTATE cards through scripts/export_state.py.
 export PYTHONPATH="$(cygpath -w "$repo_root/scripts")"
 
@@ -166,6 +171,7 @@ send() { echo "$1" >&"${BROWSER[1]}"; }
 # with its profile locked (ten such profiles were left in target/). The profile's session.mnf.lock goes only once
 # manifold.exe is gone, so the rm retries for up to 5 s.
 cleanup() {
+    timing_mark
     kill_tree "$browser_pid"
     kill_tree "$probe_pid"
     wait "$browser_pid" 2>/dev/null
@@ -177,6 +183,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
+timing_mark launch
 # Pin a known window size so the click coordinates below (measured against
 # this exact size during manual verification) stay valid regardless of
 # whatever winit's platform-default window size happens to be.
@@ -186,6 +193,7 @@ send "RESIZE 816 639"
 # a fixed sleep here used to race it.
 send "WAITTABS"
 
+timing_mark address-bar
 # The app launches into Graph view; with only the root tab, the layout
 # puts it at the window's center (~(407, 332) at 816x639). Clicking it
 # enters Tab view, which the address-bar flow below needs. This CLICK is
@@ -279,6 +287,7 @@ settle() {
     failed "$1: the layout never stopped moving"
 }
 
+timing_mark group-drill
 # Group drill-in: a second Escape (no dropdown now) leaves to Graph view,
 # NEWGROUP adds a group card, DOUBLECLICK enters it and the toolbar's back
 # button leaves it. The card is found by its reported position: spawn
@@ -303,6 +312,7 @@ check_state group_in "double-clicking the group card enters the group" 'not s["t
 send "CLICK 22 17"
 check_state group_out "the back button leaves the group" 's["current_group"] is None'
 
+timing_mark group-drops
 # Tab drops inside a group.
 
 # `drag X0 Y0 X1 Y1 [button]`: a press, six moves and a release with no
@@ -384,6 +394,7 @@ send "CLICK $bx $by"
 settle deselected
 check_query deselected "a click on empty canvas clears the selection" "s['selected_tabs'] == []"
 
+timing_mark borders
 # Border colors, read off a screenshot: a group of more than 8 members
 # rests on DANGER_COLOR (196, 87, 58), and the empty group from above on
 # ACCENT (215, 162, 74). `card_border`'s unit test covers which color
@@ -417,6 +428,7 @@ else
     else failed "the empty group $empty's border isn't ACCENT (see borders.png)"; fi
 fi
 
+timing_mark reopen-nested
 # Recently Closed keeps nesting: fill the empty group with an image and
 # the Pair group (so `$empty { image, group { tab, tab } }`), close it
 # from the top level, and REOPENTAB (Ctrl+Shift+T) brings the whole
@@ -452,6 +464,7 @@ else
         "s['current_group'] == '$inner' and len(tabs) == 2"
 fi
 
+timing_mark file-drops
 # Drag and drop: `ADDFILE <path> X Y` places a file the way a real drop
 # does (`drop_file`), in Graph view here, so each card lands near X Y.
 # Same-frame fan-out is left to the unit tests.
@@ -478,6 +491,7 @@ check_query after_drop "the dropped json's screen center is within 200px of (400
 check_query after_drop "the two cards dropped on one point no longer overlap" \
     "(lambda a, b: a[2] <= b[0] or b[2] <= a[0] or a[3] <= b[1] or b[3] <= a[1])(cards['$note_id']['rect'], cards['$json_id']['rect'])"
 
+timing_mark json-level
 # Entering the dropped JSON file: its level, driven by the JSON commands,
 # then back out. `{"a": 1}` is one root card with one row.
 send "DOUBLECLICK $(query after_drop "xy('$json_id')")"
@@ -533,6 +547,7 @@ check_query big_earlier "clicking the + N earlier row grows the window up by one
 send "CLICK 22 17"
 check_state big_out "the back button leaves the big JSON level" "s['json_level'] is None"
 
+timing_mark content-kinds
 # The remaining `ADDFILE` kinds (the image and the .txt/.json are above),
 # each checked by the new card's type: a PDF, a `.bin` (a Download card)
 # and a `.md` (a Note by its bytes, not its extension). `.html` becomes a
@@ -567,6 +582,7 @@ if [ "$html_id" != none ]; then
     wait_state html_tab "the dropped .html tab's url is a file:// URL" 'url.startswith("file://")'
 fi
 
+timing_mark conversion
 # Engine-side conversion, no network: a tab typed to a local JSON or
 # PDF file goes, and a node of that kind takes its place, keeping the
 # file:// url. Checked on EXPORTSESSION, which carries each node's url.
@@ -617,6 +633,7 @@ else
     failed "process did not exit cleanly (exit code $?)"
 fi
 
+timing_mark
 echo
 if [ "$fail" -eq 0 ]; then
     echo "All checks passed. Screenshots in $out_dir"

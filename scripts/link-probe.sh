@@ -34,13 +34,17 @@ exe="$repo_root/target/debug/manifold.exe"
 . "$repo_root/scripts/fresh-exe.sh"
 # shellcheck source=winpid.sh
 . "$repo_root/scripts/winpid.sh"
+# shellcheck source=timing.sh
+. "$repo_root/scripts/timing.sh"
 # shellcheck source=lib.sh
 . "$repo_root/scripts/lib.sh"
 require_fresh_exe "$exe" || exit 1
+timing_mark setup
 # Not under the repo: a path with a space (this one has "Winston Li") stops the app reading its commands.
 out="$(mktemp -d)"
 inst=""
 cleanup() {
+    timing_mark
     [ -n "$inst" ] && kill_tree "$inst"
     [ -n "${KEEP:-}" ] || rm -rf "$out"
 }
@@ -69,6 +73,7 @@ stop() { send QUIT; wait "$inst" 2>/dev/null; inst=""; }
 x() { echo "EXPORTSTATE $(cygpath -w "$out/$1.json")"; }
 py() { python -P -c "$1" "$(cygpath -w "$out/$2.json")" </dev/null 2>&1 | tr -d '\r'; }
 
+timing_mark run1-link
 start log1
 send "$(x s0)"
 wait_file "$out/s0.json"
@@ -76,9 +81,11 @@ wait_file "$out/s0.json"
 read -r ncards a b c <<<"$(py 'import json,sys; c=json.load(open(sys.argv[1], encoding="utf-8"))["cards"]; print(len(c), *[x["id"] for x in sorted(c, key=lambda x: (round(x["screen"][1] / 50), x["screen"][0]))])' s0)"
 send "LINK $a $b" "SLEEP 1" "$(x s1)"
 stop
+timing_mark run2-restart-unlink
 start log2
 send "$(x s2)" "UNLINK $b $a" "SLEEP 1" "$(x s3)"
 stop
+timing_mark run3-gestures
 start log3
 send "$(x s4)" "LINK $a $b" "SLEEP 1" "$(x s5)"
 wait_file "$out/s5.json"
@@ -100,6 +107,7 @@ send "SLEEP 1" "$(x s7m)"
 wait_file "$out/s7m.json"
 send "MOUSEUP $nx $ny" "SLEEP 1" "$(x s7t)"
 stop
+timing_mark run4-persists
 start log4
 send "$(x s8)"
 wait_file "$out/s8.json"
@@ -158,6 +166,7 @@ start log5
 send "$(x s12)"
 stop
 
+timing_mark verdicts
 # Prints "<link count> <first link's id> <its from> <its to>" for one EXPORTSTATE file.
 summary() {
     py 'import json,sys; l=json.load(open(sys.argv[1], encoding="utf-8"))["links"]; print(len(l), *((l[0]["id"], l[0]["from"], l[0]["to"]) if l else ("-", "-", "-")))' "$1"
@@ -217,4 +226,5 @@ check "the deletion persists across a restart" "0" "$n12"
 if [ $status -ne 0 ]; then
     for l in log1 log2 log3 log4 log5; do echo "--- $l"; tail -n 20 "$out/$l"; done
 fi
+timing_mark
 exit $status
