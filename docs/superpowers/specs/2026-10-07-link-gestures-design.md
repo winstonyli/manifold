@@ -100,7 +100,7 @@ behaviour (a drag from one pans). A click without movement still deletes the lin
 
 - **One mechanism.** The gesture is a connect-drag from the end that stays. `App::retarget:
   Option<LinkRetarget { link, fixed_is_from }>` rides beside `connect_drag`, which holds the fixed end's card as its
-  source; rings, snap (`card_within`, `DROP_TOLERANCE_PX`, valid targets only in the tolerance pass), handles on every
+  source; rings, snap (`card_within`, `DROP_TOLERANCE_PX`, valid targets first in the tolerance pass, any other card after them for a dragged end), handles on every
   card, the rubber band, Esc, the right-press rule, the lifecycle resets and the release (`end_connect_drag`) are the
   existing ones, except the release (`end_connect_drag` -> `finish_retarget`). `retarget` is cleared wherever
   `connect_drag` is (`cancel_connect`, `finish_connect`, session replace).
@@ -128,8 +128,10 @@ behaviour (a drag from one pans). A click without movement still deletes the lin
     "Can't connect these cards" toast and the link is kept.
   - `Cancelled`, silently and the link kept: Esc, a focus loss, `Abandoned`, a release on its old end's card, or the
     link deleted or re-ended by another replica mid-drag.
-  A card in the drop tolerance counts only if the ring marks it (valid targets), so a release just outside the old or
-  a refused card is empty canvas and deletes.
+  Only a release with no card under or within the drop tolerance is empty canvas. For this gesture `card_within`
+  tries the ring-marked cards first and then any other card in reach, so the end's own old card, a refused card and
+  an already-linked card all resolve as that card (silent keep, toast, delete), and the fixed card within reach is
+  `Source` (toast).
 - **Debug.** `EXPORTSTATE` `edges[]` gain `near_from` and `near_to` (the curve at t = 0.2 and 0.8, where a probe grabs
   an end), and the state gains `retarget` (the Link node id or null). `scripts/link-probe.sh` drives the gesture.
 - **Changed.** A drag that starts on a link curve used to pan; it now retargets. A drag from the canvas beside the

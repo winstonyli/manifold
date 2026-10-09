@@ -379,14 +379,20 @@ impl App {
         // Only cards the ring marks (`valid_targets`) count here, so a refused neighbour never shadows a valid one.
         let edge = self.connecting.as_ref().map_or(crate::caps::LINK, |(_, edge)| edge);
         let valid = self.valid_targets(edge, source);
-        let mut best: Option<(f32, &crate::level::LevelItem)> = None;
-        for item in cards().filter(|item| valid.contains(&item.id)) {
-            let d = distance_to_rect(at, item.rect);
-            if d <= tolerance && best.is_none_or(|(b, _)| d < b) {
-                best = Some((d, item));
+        let nearest = |take: &dyn Fn(&crate::level::LevelItem) -> bool| {
+            let mut best: Option<(f32, &crate::level::LevelItem)> = None;
+            for item in cards().filter(|item| take(item)) {
+                let d = distance_to_rect(at, item.rect);
+                if d <= tolerance && best.is_none_or(|(b, _)| d < b) {
+                    best = Some((d, item));
+                }
             }
-        }
-        best.map(|(_, item)| item.id.clone())
+            best.map(|(_, item)| item.id.clone())
+        };
+        // A dragged link end deletes its link on empty canvas, so there any other card in reach (its own old card, a
+        // refused one) is where it landed, tried after the valid ones; the release then resolves it, never as canvas.
+        nearest(&|item| valid.contains(&item.id))
+            .or_else(|| self.retarget.is_some().then(|| nearest(&|item| item.id != source)).flatten())
     }
 
     /// The pointer in world space, inside `build_graph_ui`'s Scene (this frame's layer transform).
@@ -435,15 +441,13 @@ impl App {
             return DragEnd::Abandoned;
         };
         let at = ((pointer.to_vec2() - translation) / zoom_scale).to_pos2();
-        if let Some(target) = self.card_within(at, DROP_TOLERANCE_PX / zoom_scale, source) {
+        let tolerance = DROP_TOLERANCE_PX / zoom_scale;
+        if let Some(target) = self.card_within(at, tolerance, source) {
             return DragEnd::Card(target);
         }
-        let items = self.level_items();
-        let topmost = items
-            .iter()
-            .rev()
-            .find(|item| matches!(item.kind, crate::level::LevelItemKind::Node(_)) && item.rect.contains(at));
-        if topmost.is_some_and(|item| item.id == *source) {
+        // On the source, or (for a dragged link end, which deletes on canvas) within the tolerance of it.
+        let reach = if self.retarget.is_some() { tolerance } else { 0.0 };
+        if self.card_rect(source).is_some_and(|rect| distance_to_rect(at, rect) <= reach || rect.contains(at)) {
             DragEnd::Source
         } else {
             DragEnd::Canvas
@@ -1054,6 +1058,86 @@ mod tests {
         app.end_connect_drag(DragEnd::Abandoned);
         assert_eq!(ends(&app, &ab), (Some(a), Some(b)));
         assert!(app.connect_drag.is_none() && app.retarget.is_none() && toasts(&app).is_empty());
+    }
+
+    /// Three notes and a running download d (a card no link may end on) to the right of b, with a -> b linked: the b
+    /// end is dragged out and released at `at(app, [a, b, c, d])`. Returns the app after the release.
+    fn drop_b_end_at(link_a_c: bool, at: impl Fn(&App, [&str; 4]) -> egui::Pos2) -> (App, [String; 4], String) {
+        let (h, mut app, [a, b, c]) = three_notes();
+        let d = app.alloc_node_id();
+        let download = Runtime::Download(crate::node::DownloadPayload {
+            path: "f.bin".into(),
+            bytes_received: 0,
+            total_bytes: None,
+            completed: false,
+            failed: false,
+        });
+        app.insert_placeholder_node(d.clone(), egui::vec2(1200.0, 0.0), Kind::Download, download);
+        for _ in 0..3 {
+            h.frame(&mut app, vec![]);
+        }
+        app.camera.jump_to(app.fit_all_nodes_scene_rect());
+        h.frame(&mut app, vec![]);
+        let ab = app.create_link(&a, &b);
+        if link_a_c {
+            app.create_link(&a, &c);
+        }
+        h.frame(&mut app, vec![]);
+        let edge = link_edge(&app, &ab);
+        let to = at(&app, [&a, &b, &c, &d]);
+        hold_on(&h, &mut app, &edge, 0.85, to);
+        assert!(app.retarget.is_some(), "mid-drag");
+        release(&h, &mut app, to);
+        (app, [a, b, c, d], ab)
+    }
+
+    /// Only a release over truly empty canvas deletes: any card within the drop tolerance is where the end landed.
+    /// 10px outside its own old card: kept, silently.
+    #[test]
+    fn a_release_just_outside_the_ends_own_card_keeps_the_link() {
+        let (app, [a, b, ..], ab) =
+            drop_b_end_at(false, |app, [_, b, ..]| screen_rect(app, b).center_bottom() + egui::vec2(0.0, 10.0));
+        assert_eq!(ends(&app, &ab), (Some(a), Some(b)));
+        assert!(toasts(&app).is_empty(), "silently");
+    }
+
+    /// 10px outside a card the link may not end on (a running download): kept, with the usual toast.
+    #[test]
+    fn a_release_just_outside_a_refused_card_keeps_the_link_and_toasts() {
+        let (app, [a, b, _, d], ab) =
+            drop_b_end_at(false, |app, [.., d]| screen_rect(app, d).left_center() - egui::vec2(10.0, 0.0));
+        assert!(app.is_running_download(&d));
+        assert_eq!(ends(&app, &ab), (Some(a), Some(b)));
+        assert!(toasts(&app).iter().any(|m| m.as_str() == "Can't connect these cards"), "{:?}", toasts(&app));
+    }
+
+    /// 10px outside the fixed card itself (a self link): refused, kept, with the toast.
+    #[test]
+    fn a_release_just_outside_the_fixed_card_keeps_the_link_and_toasts() {
+        let (app, [a, b, ..], ab) =
+            drop_b_end_at(false, |app, [a, ..]| screen_rect(app, a).left_center() - egui::vec2(10.0, 0.0));
+        assert_eq!(ends(&app, &ab), (Some(a), Some(b)));
+        assert!(toasts(&app).iter().any(|m| m.as_str() == "Can't connect these cards"), "{:?}", toasts(&app));
+    }
+
+    /// 10px outside a card already joined to the fixed card: the link is deleted, a -> c stays.
+    #[test]
+    fn a_release_just_outside_an_already_linked_card_deletes_the_link() {
+        let (app, [a, _, c, _], ab) =
+            drop_b_end_at(true, |app, [_, _, c, _]| screen_rect(app, c).center_bottom() + egui::vec2(0.0, 10.0));
+        assert!(app.mirror.link_ends(&ab) == (None, None) || !app.links_naming(&a).contains(&ab), "deleted");
+        assert_eq!(app.links_naming(&a).len(), 1);
+        assert!(app.links_naming(&c).len() == 1 && toasts(&app).is_empty());
+    }
+
+    /// Further than the tolerance from every card: empty canvas, deleted.
+    #[test]
+    fn a_release_beyond_the_drop_tolerance_of_every_card_deletes_the_link() {
+        let (app, [a, ..], ab) = drop_b_end_at(false, |app, [_, b, ..]| {
+            screen_rect(app, b).center_bottom() + egui::vec2(0.0, DROP_TOLERANCE_PX + 16.0)
+        });
+        assert!(!app.links_naming(&a).contains(&ab), "deleted");
+        assert!(toasts(&app).is_empty());
     }
 
     /// A pair the link cannot take (here another level) and the fixed end's own card refuse and toast, leaving the link.
