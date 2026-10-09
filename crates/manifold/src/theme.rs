@@ -280,11 +280,14 @@ pub(crate) const ACCENT: egui::Color32 = egui::Color32::from_rgb(215, 162, 74);
 /// with the rest of this palette the way a stop-sign red would.
 pub(crate) const DANGER_COLOR: egui::Color32 = egui::Color32::from_rgb(196, 87, 58);
 
-/// A muted amber, darker and browner than `ACCENT`: a drag that a release would refuse (keeping what it holds).
-pub(crate) const REFUSED_COLOR: egui::Color32 = egui::Color32::from_rgb(160, 112, 52);
+/// The sky-blue entry of `TAG_COLOR_PALETTE`: the one cool hue in this otherwise warm theme.
+pub(crate) const TAG_SKY_BLUE: egui::Color32 = TAG_COLOR_PALETTE[4];
 
-/// A neutral grey: a ring on a card where a release changes nothing (the end's own old card).
-pub(crate) const NEUTRAL_RING_COLOR: egui::Color32 = egui::Color32::from_rgb(140, 138, 130);
+/// A drag that a release would refuse (keeping what it holds): `TAG_SKY_BLUE` pulled a little toward `BG`, a hue far
+/// from `ACCENT` (a valid drop) and `DANGER_COLOR` (a deletion), so the outcomes differ by hue, not brightness.
+pub(crate) fn refused_color() -> egui::Color32 {
+    lerp_color32(TAG_SKY_BLUE, BG, 0.2)
+}
 
 /// A sticky note's card fill -- a warm, light color deliberately unlike
 /// every other card's dark `extreme_bg_color`/`TOOLBAR_FILL` tone, so a note

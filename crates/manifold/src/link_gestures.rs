@@ -176,15 +176,15 @@ pub(crate) struct RetargetLook {
 }
 
 /// `RetargetLook` for `outcome`: the usual accent for a retarget or a cancel, a thin red band ending in an "x" for a
-/// deletion, muted amber for a refusal, and a neutral ring where nothing would change.
+/// deletion, a cool blue for a refusal (`theme::refused_color`), and a weak-text ring where nothing would change.
 pub(crate) fn retarget_look(outcome: crate::links::RetargetOutcome) -> RetargetLook {
     use crate::links::RetargetOutcome::*;
-    use crate::theme::{ACCENT, DANGER_COLOR, NEUTRAL_RING_COLOR, REFUSED_COLOR};
+    use crate::theme::{refused_color, ACCENT, DANGER_COLOR, TEXT_WEAK};
     let usual = RetargetLook { band: ACCENT, band_px: LINK_STROKE_PX, cross: false, ring: ACCENT };
     match outcome {
         Retargeted => usual,
-        Cancelled => RetargetLook { ring: NEUTRAL_RING_COLOR, ..usual },
-        Refused => RetargetLook { band: REFUSED_COLOR, ring: REFUSED_COLOR, ..usual },
+        Cancelled => RetargetLook { ring: TEXT_WEAK, ..usual },
+        Refused => RetargetLook { band: refused_color(), ring: refused_color(), ..usual },
         Deleted => RetargetLook { band: DANGER_COLOR, band_px: LINK_STROKE_PX * 0.6, cross: true, ring: DANGER_COLOR },
     }
 }
@@ -1187,23 +1187,22 @@ mod tests {
         assert!(app.export_state()["retarget_preview"].is_null(), "drag over");
     }
 
-    /// Each outcome has its own look: accent for a retarget or a cancel (a neutral ring for the cancel), a thin red band
-    /// with an "x" for a deletion, muted amber for a refusal; no ring colour equals another outcome's but the accent
-    /// pair's band.
+    /// Each outcome has its own look: accent for a retarget or a cancel (a weak-text ring for the cancel), a thin red
+    /// band with an "x" for a deletion, blue for a refusal; the outcomes differ by hue, not brightness.
     #[test]
     fn each_retarget_outcome_has_its_own_look() {
         use crate::links::RetargetOutcome::*;
-        use crate::theme::{ACCENT, DANGER_COLOR, NEUTRAL_RING_COLOR, REFUSED_COLOR};
+        use crate::theme::{refused_color, ACCENT, DANGER_COLOR, TEXT_WEAK};
         let look = retarget_look;
         assert_eq!(
             look(Retargeted),
             RetargetLook { band: ACCENT, band_px: LINK_STROKE_PX, cross: false, ring: ACCENT }
         );
         assert_eq!(look(Cancelled).band, ACCENT);
-        assert_eq!(look(Cancelled).ring, NEUTRAL_RING_COLOR, "an own-card ring promises no retarget");
+        assert_eq!(look(Cancelled).ring, TEXT_WEAK, "an own-card ring promises no retarget");
         assert_eq!(
             (look(Refused).band, look(Refused).ring, look(Refused).cross),
-            (REFUSED_COLOR, REFUSED_COLOR, false)
+            (refused_color(), refused_color(), false)
         );
         let deleted = look(Deleted);
         assert_eq!((deleted.band, deleted.ring, deleted.cross), (DANGER_COLOR, DANGER_COLOR, true));
@@ -1212,6 +1211,19 @@ mod tests {
         for (i, a) in rings.iter().enumerate() {
             assert!(rings.iter().skip(i + 1).all(|b| a != b), "four distinct rings");
         }
+        // Bands (Cancelled shares the accent band with Retargeted by design): pairwise distinct, and the refusal's
+        // hue is far from both others. ACCENT (gold) and DANGER_COLOR (rust) are existing theme constants only about
+        // 25 degrees apart, so that pair also has the thin band and the "x" to tell it apart.
+        let hue = |c: egui::Color32| egui::ecolor::Hsva::from(c).h * 360.0;
+        let apart = |a: egui::Color32, b: egui::Color32| {
+            let d = (hue(a) - hue(b)).abs();
+            d.min(360.0 - d)
+        };
+        let bands = [look(Retargeted).band, look(Refused).band, look(Deleted).band];
+        assert!(bands[0] != bands[1] && bands[1] != bands[2] && bands[0] != bands[2], "{bands:?}");
+        assert!(apart(bands[1], bands[0]) >= 40.0, "refused vs retarget: {}", apart(bands[1], bands[0]));
+        assert!(apart(bands[1], bands[2]) >= 40.0, "refused vs delete: {}", apart(bands[1], bands[2]));
+        assert!(apart(bands[0], bands[2]) >= 20.0, "retarget vs delete: {}", apart(bands[0], bands[2]));
     }
 
     /// The preview for a release position is the outcome the release then has, for all five ways it can end.
