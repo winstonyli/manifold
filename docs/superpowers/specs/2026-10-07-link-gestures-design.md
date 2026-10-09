@@ -137,7 +137,8 @@ behaviour (a drag from one pans). A click without movement still deletes the lin
   cannot drift) and stores it in `App::retarget_preview`. `retarget_look` maps the outcome to a look, painted through
   the one `paint_bow` call: `Retargeted` and `Cancelled` the usual accent band; `Deleted` a thinner red band
   (`DANGER_COLOR`) ending in a small "x" at the free end, so colour is not the only signal; `Refused` a cool blue
-  (`theme::refused_color`: the sky-blue `TAG_COLOR_PALETTE` entry pulled 20% toward `BG`). The card in reach is ringed in the outcome's colour (accent for a retarget, red for a duplicate
+  (`theme::refused_color`: the sky-blue `TAG_COLOR_PALETTE` entry pulled 20% toward `BG`) ending in a small slashed
+  circle (a prohibited sign); the two marks are `RetargetGlyph`, drawn in one place. The card in reach is ringed in the outcome's colour (accent for a retarget, red for a duplicate
   that would delete, blue for a refusal, `TEXT_WEAK` for its own old card), so a ring never promises a retarget the
   release will not do; refused and own cards are ringed too, which they were not before.
 - **Debug.** `EXPORTSTATE` `edges[]` gain `near_from` and `near_to` (the curve at t = 0.2 and 0.8, where a probe grabs

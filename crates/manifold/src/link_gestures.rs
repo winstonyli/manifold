@@ -164,15 +164,23 @@ pub(crate) enum DragEnd {
 }
 
 /// How a dragged link end is drawn for the outcome a release there would have (`App::retarget_preview`): the rubber
-/// band's colour and width in screen points, whether it ends in a small "x" (the link would be deleted, so colour is
-/// not the only signal), and the colour of the ring on the card in reach, which never promises a retarget the release
+/// band's colour and width in screen points, the mark it ends in (a deletion or a refusal, so colour is not the
+/// only signal), and the colour of the ring on the card in reach, which never promises a retarget the release
 /// will not do.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct RetargetLook {
     pub band: egui::Color32,
     pub band_px: f32,
-    pub cross: bool,
+    pub glyph: Option<RetargetGlyph>,
     pub ring: egui::Color32,
+}
+
+/// The small mark at the free end of a dragged link, so colour is not the only signal: `Cross` where the link would be
+/// deleted, `Prohibited` (a circle with a diagonal slash) where the drop is refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RetargetGlyph {
+    Cross,
+    Prohibited,
 }
 
 /// `RetargetLook` for `outcome`: the usual accent for a retarget or a cancel, a thin red band ending in an "x" for a
@@ -180,12 +188,22 @@ pub(crate) struct RetargetLook {
 pub(crate) fn retarget_look(outcome: crate::links::RetargetOutcome) -> RetargetLook {
     use crate::links::RetargetOutcome::*;
     use crate::theme::{refused_color, ACCENT, DANGER_COLOR, TEXT_WEAK};
-    let usual = RetargetLook { band: ACCENT, band_px: LINK_STROKE_PX, cross: false, ring: ACCENT };
+    let usual = RetargetLook { band: ACCENT, band_px: LINK_STROKE_PX, glyph: None, ring: ACCENT };
     match outcome {
         Retargeted => usual,
         Cancelled => RetargetLook { ring: TEXT_WEAK, ..usual },
-        Refused => RetargetLook { band: refused_color(), ring: refused_color(), ..usual },
-        Deleted => RetargetLook { band: DANGER_COLOR, band_px: LINK_STROKE_PX * 0.6, cross: true, ring: DANGER_COLOR },
+        Refused => RetargetLook {
+            band: refused_color(),
+            glyph: Some(RetargetGlyph::Prohibited),
+            ring: refused_color(),
+            ..usual
+        },
+        Deleted => RetargetLook {
+            band: DANGER_COLOR,
+            band_px: LINK_STROKE_PX * 0.6,
+            glyph: Some(RetargetGlyph::Cross),
+            ring: DANGER_COLOR,
+        },
     }
 }
 
@@ -482,11 +500,19 @@ impl App {
             None => egui::Stroke::new(LINK_STROKE_PX * inv_zoom, crate::theme::ACCENT),
         };
         paint_bow(ui.painter(), from, to, stroke, Some(inv_zoom));
-        if look.is_some_and(|look| look.cross) {
-            let r = 5.0 * inv_zoom;
-            let cross = egui::Stroke::new(2.0 * inv_zoom, stroke.color);
-            ui.painter().line_segment([free_end + egui::vec2(-r, -r), free_end + egui::vec2(r, r)], cross);
-            ui.painter().line_segment([free_end + egui::vec2(-r, r), free_end + egui::vec2(r, -r)], cross);
+        let r = 5.0 * inv_zoom;
+        let mark = egui::Stroke::new(2.0 * inv_zoom, stroke.color);
+        match look.and_then(|look| look.glyph) {
+            Some(RetargetGlyph::Cross) => {
+                ui.painter().line_segment([free_end + egui::vec2(-r, -r), free_end + egui::vec2(r, r)], mark);
+                ui.painter().line_segment([free_end + egui::vec2(-r, r), free_end + egui::vec2(r, -r)], mark);
+            }
+            Some(RetargetGlyph::Prohibited) => {
+                let s = r * std::f32::consts::FRAC_1_SQRT_2;
+                ui.painter().circle_stroke(free_end, r, mark);
+                ui.painter().line_segment([free_end + egui::vec2(-s, -s), free_end + egui::vec2(s, s)], mark);
+            }
+            None => {}
         }
     }
 
@@ -1194,18 +1220,21 @@ mod tests {
         use crate::links::RetargetOutcome::*;
         use crate::theme::{refused_color, ACCENT, DANGER_COLOR, TEXT_WEAK};
         let look = retarget_look;
-        assert_eq!(
-            look(Retargeted),
-            RetargetLook { band: ACCENT, band_px: LINK_STROKE_PX, cross: false, ring: ACCENT }
-        );
+        assert_eq!(look(Retargeted), RetargetLook { band: ACCENT, band_px: LINK_STROKE_PX, glyph: None, ring: ACCENT });
         assert_eq!(look(Cancelled).band, ACCENT);
         assert_eq!(look(Cancelled).ring, TEXT_WEAK, "an own-card ring promises no retarget");
         assert_eq!(
-            (look(Refused).band, look(Refused).ring, look(Refused).cross),
-            (refused_color(), refused_color(), false)
+            (look(Refused).band, look(Refused).ring, look(Refused).glyph),
+            (refused_color(), refused_color(), Some(RetargetGlyph::Prohibited))
         );
         let deleted = look(Deleted);
-        assert_eq!((deleted.band, deleted.ring, deleted.cross), (DANGER_COLOR, DANGER_COLOR, true));
+        assert_eq!(
+            (deleted.band, deleted.ring, deleted.glyph),
+            (DANGER_COLOR, DANGER_COLOR, Some(RetargetGlyph::Cross))
+        );
+        assert_ne!(RetargetGlyph::Cross, RetargetGlyph::Prohibited);
+        let glyphs: Vec<_> = [Retargeted, Cancelled, Refused, Deleted].map(|o| look(o).glyph.is_some()).to_vec();
+        assert_eq!(glyphs, [false, false, true, true], "only the deleted and the refused carry a mark");
         assert!(deleted.band_px < LINK_STROKE_PX, "thinner");
         let rings = [look(Retargeted).ring, look(Cancelled).ring, look(Refused).ring, look(Deleted).ring];
         for (i, a) in rings.iter().enumerate() {
