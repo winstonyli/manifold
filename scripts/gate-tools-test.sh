@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# Usage: scripts/gate-tools-test.sh
+# Checks timing.sh, gate-timing.sh and gate-tier.sh in about a second, without the app or git.
+set -u
+repo_root="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=lib.sh
+. "$repo_root/scripts/lib.sh"
+t="$(mktemp -d)"
+trap 'rm -rf "$t"' EXIT
+status=0
+
+# timing_mark: one TIMING line per closed step, name then seconds with three decimals then a start epoch; a mark
+# with no step open prints nothing.
+# shellcheck source=timing.sh
+. "$repo_root/scripts/timing.sh"
+got="$({ timing_mark one; timing_mark two; timing_mark; timing_mark; } | sed -E 's/ [0-9]+\.[0-9]{3} [0-9]{10}$/ SECS EPOCH/')"
+check "timing_mark prints one line per closed step" "TIMING one SECS EPOCH
+TIMING two SECS EPOCH" "$got"
+
+# collect: cpu_start is the last sample at or before the start, cpu_mean the mean of those inside the step.
+printf 'TIMING setup 12.345 100\nTIMING s1 30.000 112\nnoise\nTIMING s2 3.5 142\n' >"$t/run.log"
+printf '99 5.0\n101 10.0\n105 20.0\n130 40.0\n143 90.0\n150 80.0\n' >"$t/cpu.log"
+check "collect joins each step with the cpu samples" "TIMING g/setup 12.345 100 cpu_start=5.0 cpu_mean=15.0
+TIMING g/s1 30.000 112 cpu_start=20.0 cpu_mean=40.0
+TIMING g/s2 3.5 142 cpu_start=40.0 cpu_mean=90.0" "$(bash "$repo_root/scripts/gate-timing.sh" collect g "$t/run.log" "$t/cpu.log")"
+check "collect without a cpu log says -" "TIMING g/setup 12.345 100 cpu_start=- cpu_mean=-" "$(bash "$repo_root/scripts/gate-timing.sh" collect g "$t/run.log" | head -1)"
+bash "$repo_root/scripts/gate-timing.sh" collect g "$t/run.log" "$t/cpu.log" >"$t/all.log"
+check "top lists the slowest first" "g/s1 g/setup" "$(bash "$repo_root/scripts/gate-timing.sh" top "$t/all.log" 2 | awk '{printf "%s%s", sep, $2; sep=" "}')"
+
+# gate-tier --stdin: the strictest path wins; a ui-listed file that imports a core module is demoted.
+mkdir -p "$t/src"
+echo 'use egui;' >"$t/src/theme.rs"
+echo 'use crate::store::model::X;' >"$t/src/zoom_chip.rs"
+s="$t/src"
+tier() { TIER_SRC="$s" bash "$repo_root/scripts/gate-tier.sh" --stdin | tail -1; }
+check "docs only is ui" "TIER ui" "$(printf '%s\n' README.md docs/x.md | tier)"
+check "a ui-listed file with no core import is ui" "TIER ui" "$(printf '%s\n' "$s/theme.rs" | tier)"
+check "a ui-listed file that imports store is light" "TIER light" "$(printf '%s\n' "$s/zoom_chip.rs" | tier)"
+check "an unlisted source file is light" "TIER light" "$(printf '%s\n' "$s/main.rs" | tier)"
+check "a probe script is light" "TIER light" "$(printf '%s\n' scripts/link-probe.sh | tier)"
+check "the store is full" "TIER full" "$(printf '%s\n' "$s/store/journal.rs" | tier)"
+check "the strictest path wins" "TIER full" "$(printf '%s\n' README.md "$s/main.rs" crates/ipc-protocol/src/lib.rs | tier)"
+check "an empty list is refused" "3" "$(printf '' | TIER_SRC="$s" bash "$repo_root/scripts/gate-tier.sh" --stdin >/dev/null 2>&1; echo $?)"
+exit $status
