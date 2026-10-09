@@ -2693,3 +2693,5 @@ Saves per action (Task 12, `begins`): menu Delete 2, enter a group 1, Join drop 
 - Task 14 (H1b): a click on `+ N earlier` was never tried in the running app. It is covered by unit tests of `show_earlier` and the hit-test arithmetic and by the gate's smoke test, and no headless command clicks the row.
 - Task 14, Low: `reveal` compares against the unclamped stored `first`, so after the array shrinks, a reveal in the clamped window can move the window to the same page alone. Harmless; clamp in `reveal` if wanted.
 - Timing caveat: most remaining timings were taken under CPU contention from other sessions (the CPU column above), so treat them as upper bounds.
+
+- Open (2026-10-08): `two-instance-test.sh` scenario 7 failed once at 60-90% CPU ("C's /js page never navigated to /dest"); likely a lost address-bar entry. `bc2733f` retypes once and dumps `hits.log` on failure. If it recurs, read that dump: no `/js` line means the typed url was lost (script), a `/js` line without `/dest` points at the app.
