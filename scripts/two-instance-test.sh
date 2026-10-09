@@ -581,16 +581,30 @@ echo "=== scenario 7: a restart reopens a tab's live url ==="
 # it quits (two instances would each overwrite the other's on save).
 js_loads() { grep -c ' /js$' "$out/hits.log" || true; }
 dests="$(field 3)"
+js_first="$(served /js)"
 sc NEWTAB
 sc WAITTABS
 sc TOGGLEVIEW
-sc WAITIDLE
-sc "ADDRESSBAR http://127.0.0.1:$port/js"
-sc WAITIDLE
-sc ENTER
+# Typed text is dropped if the view changes before the bar takes focus, and a
+# new tab's first load can overwrite it before ENTER; under load either loses
+# the request, so type again once if the server never sees /js.
+for attempt in 1 2; do
+    sc WAITIDLE
+    sc "ADDRESSBAR http://127.0.0.1:$port/js"
+    sc WAITIDLE
+    sc ENTER
+    for _ in $(seq 50); do [ "$(served /js)" -gt "$js_first" ] && break; sleep 0.2; done
+    [ "$(served /js)" -gt "$js_first" ] && break
+done
+[ "$(served /js)" -gt "$js_first" ] || {
+    echo "FAIL: scenario 7: C never requested /js (the address bar text was lost)"
+    cat "$out/hits.log" "$out/hits.repeats"
+    exit 1
+}
 for _ in $(seq 300); do [ "$(field 3)" -gt "$dests" ] && break; sleep 0.2; done
 [ "$(field 3)" -gt "$dests" ] || {
     echo "FAIL: scenario 7: C's /js page never navigated to /dest"
+    cat "$out/hits.log" "$out/hits.repeats"
     exit 1
 }
 # Let C see its tab settle on /dest before quitting saves it.
