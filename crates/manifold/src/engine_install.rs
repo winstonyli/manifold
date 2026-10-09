@@ -199,6 +199,7 @@ const CHUNK: usize = 64 * 1024;
 /// the next call resumes. A resume is restarted from zero, once, when the server answers 416 or a 206
 /// whose `Content-Range` does not start at the resume point; a 200 means it sent the whole file, which
 /// replaces `part`. A body that ends before `total` bytes is a `Network` error, never Ok.
+/// A body that would pass `total` is a `Network` error too, and deletes `part`.
 ///
 /// An existing `part` already `total` bytes long returns Ok at once, so the caller (`install`) MUST
 /// delete `part` when `verify` reports `BadHash`, or the next try would accept the same bad file.
@@ -342,6 +343,13 @@ fn fetch(
         match rx.recv_timeout(idle.min(Duration::from_millis(100))) {
             Ok(Ok(chunk)) => {
                 last_data = std::time::Instant::now();
+                if have + chunk.len() as u64 > total {
+                    // The pin says how big the file is. More than that is a wrong or hostile stream: stop
+                    // before it fills the disk, and drop what arrived (a resume would ask the same server).
+                    drop(file);
+                    let _ = std::fs::remove_file(part);
+                    return Err(InstallError::Network(format!("the server sent more than the {total} bytes expected")));
+                }
                 file.write_all(&chunk).map_err(io)?;
                 have += chunk.len() as u64;
                 progress(have);
@@ -1213,6 +1221,19 @@ Connection: close
         download(&url, &part, b.len() as u64, &mut |n| last = n, &AtomicBool::new(false)).unwrap();
         assert_eq!(std::fs::read(&part).unwrap(), *b);
         assert_eq!(last, b.len() as u64);
+    }
+
+    #[test]
+    fn download_aborts_past_the_pinned_size() {
+        let b = body(300_000);
+        let url = serve(b.clone(), Mode::Honour, None);
+        let part = temp_dir("ei-cap").join("f.part");
+        let total = 100_000u64; // the pin says 100 000 bytes; the server sends 300 000
+        let mut seen = 0;
+        let err = download(&url, &part, total, &mut |n| seen = n, &AtomicBool::new(false)).unwrap_err();
+        assert!(matches!(&err, InstallError::Network(m) if m.contains("more than")), "{err:?}");
+        assert!(seen <= total, "progress never passes the pin: {seen}");
+        assert!(!part.exists(), "a stream that overran the pin is not kept for a resume");
     }
 
     #[test]
