@@ -41,4 +41,24 @@ check "a probe script is light" "TIER light" "$(printf '%s\n' scripts/link-probe
 check "the store is full" "TIER full" "$(printf '%s\n' "$s/store/journal.rs" | tier)"
 check "the strictest path wins" "TIER full" "$(printf '%s\n' README.md "$s/main.rs" crates/ipc-protocol/src/lib.rs | tier)"
 check "an empty list is refused" "3" "$(printf '' | TIER_SRC="$s" bash "$repo_root/scripts/gate-tier.sh" --stdin >/dev/null 2>&1; echo $?)"
+# require_fresh_exe: judges manifold.exe and the WebView2 host beside it, each against its own dep-info.
+# shellcheck source=fresh-exe.sh
+. "$repo_root/scripts/fresh-exe.sh"
+mkdir -p "$t/bin"
+touch -d '2026-01-01' "$t/bin/src.rs"
+src="$(cygpath -m "$t/bin/src.rs")"
+for n in manifold manifold-engine-webview2; do
+    echo "$(cygpath -m "$t/bin/$n.exe"): $src" >"$t/bin/$n.d"
+    touch -d '2026-01-02' "$t/bin/$n.exe"
+done
+fresh() { require_fresh_exe "$t/bin/manifold.exe" 2>/dev/null; echo $?; }
+check "both exes fresh passes" "0" "$(fresh)"
+touch -d '2026-01-03' "$t/bin/src.rs"
+touch -d '2026-01-04' "$t/bin/manifold.exe"
+check "only the webview2 host stale fails" "1" "$(fresh)"
+check "the failure names the host and says to build both" "2" "$(require_fresh_exe "$t/bin/manifold.exe" 2>&1 >/dev/null | grep -c 'manifold-engine-webview2.exe is older\|-p manifold -p manifold-engine-webview2')"
+rm "$t/bin/manifold-engine-webview2.exe"
+check "a missing host is skipped" "0" "$(fresh)"
+touch -d '2026-01-02' "$t/bin/manifold.exe"
+check "only manifold.exe stale fails" "1" "$(fresh)"
 exit $status

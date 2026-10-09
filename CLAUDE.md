@@ -14,4 +14,4 @@ No test may read or write the real `%APPDATA%\manifold`. Every path into it star
 
 ## Gate
 
-Before merging or tagging, run `scripts/gate.sh LOG full` (sync, store, mirror, session or engine changes) or `light` (UI code, scripts, docs only) after `cargo build -j 8 -p manifold`, detached at BelowNormal; see README "scripts/gate.sh". Report CPU load and Defender state with the result.
+Before merging or tagging, run `scripts/gate.sh LOG full` (sync, store, mirror, session or engine changes) or `light` (UI code, scripts, docs only) after `cargo build -j 8 -p manifold -p manifold-engine-webview2` (`-p manifold` alone leaves the WebView2 host old), detached at BelowNormal; see README "scripts/gate.sh". Report CPU load and Defender state with the result.

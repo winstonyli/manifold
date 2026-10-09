@@ -12,7 +12,7 @@
 # --debug-commands is not launched: it opens a real window (a unit test covers it).
 # Every run is headless or a file tool, on a temp profile (never the real
 # %APPDATA%\manifold), under `timeout 60` so a hang fails instead of stalling.
-# Build first: cargo build -j 8 -p manifold.
+# Build first: cargo build -j 8 -p manifold -p manifold-engine-webview2.
 set -u
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 exe="$repo_root/target/debug/manifold.exe"

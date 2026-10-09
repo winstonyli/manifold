@@ -12,7 +12,8 @@
 #   ui:              `cargo test` of the three CI crates + link-probe. For changes to drawing, input and view-state
 #                    modules that import no store, sync or network module (the list is in gate-tier.sh), and docs:
 #                    ~UI_MIN min quiet.
-# Build first (`cargo build -j 8 -p manifold`): every probe stage runs the existing exe. Launch detached and low priority:
+# Build first (`cargo build -j 8 -p manifold -p manifold-engine-webview2`; `-p manifold` alone leaves the WebView2 host
+# old): every probe stage runs the existing exes. Launch detached and low priority:
 #   cmd //c start "" //b //belownormal bash scripts/gate.sh LOG [mode]
 # Progress and verdicts go to LOG; each stage's own output to LOG.two-N.log, LOG.smoke.log, LOG.launch-forms.log,
 # LOG.link.log and LOG.unit.log. After each stage LOG gets its TIMING lines (see scripts/gate-timing.sh) and at the end
