@@ -26,12 +26,11 @@ pub(crate) struct LevelItem {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum EdgeCurve {
-    /// `draw_graph_edge`'s sideways bow, for stored nodes' `parent` links.
+    /// `link_gestures::paint_bow`'s sideways bow between facing card sides, for every edge between stored nodes
+    /// (`from` and `to` are the side midpoints). `EdgeKind` tells a link (dashed) from a `parent` link (solid).
     Bow,
     /// Leaves and enters horizontally: a JSON level's row-to-card links.
     Horizontal,
-    /// A straight segment, dashed: Link nodes (`EdgeKind::Link`), so they never read as a `parent` link.
-    Straight,
 }
 
 /// Which edge source a `LevelEdge` came from.
@@ -120,7 +119,8 @@ impl App {
     }
 
     /// The current level's edges: each stored node's `parent` link, then each Link node, whose two ends are both on
-    /// this level. Link lines come in `link_ids` order, so the last of two on one pair is the greater id
+    /// this level. Between stored nodes an edge runs between the facing side midpoints of the two cards
+    /// (`link_gestures::facing_sides`), not their centres. Link lines come in `link_ids` order, so the last of two on one pair is the greater id
     /// (`nearest_link`'s tie rule).
     pub(crate) fn level_edges(&self) -> Vec<LevelEdge> {
         // A JSON level: from the parent's row port (its right edge, at the
@@ -148,12 +148,14 @@ impl App {
                 })
                 .collect();
         }
+        let rect_of = |id: &str| node_card_rect(self.layout_pos(id), &self.nodes[id].runtime);
         let opened = self.nodes.iter().filter(|(id, _)| self.in_level(id)).filter_map(|(id, _)| {
             let parent_id = self.mirror.parent(id)?;
             self.nodes.get(parent_id).filter(|_| self.in_level(parent_id))?;
+            let (from, to) = crate::link_gestures::facing_ends(rect_of(parent_id), rect_of(id));
             Some(LevelEdge {
-                from: self.layout_pos(parent_id).to_pos2(),
-                to: self.layout_pos(id).to_pos2(),
+                from,
+                to,
                 from_id: parent_id.to_string(),
                 to_id: id.clone(),
                 curve: EdgeCurve::Bow,
@@ -170,12 +172,13 @@ impl App {
             if !both_here {
                 return None;
             }
+            let (from_end, to_end) = crate::link_gestures::facing_ends(rect_of(&from), rect_of(&to));
             Some(LevelEdge {
-                from: self.layout_pos(&from).to_pos2(),
-                to: self.layout_pos(&to).to_pos2(),
+                from: from_end,
+                to: to_end,
                 from_id: from,
                 to_id: to,
-                curve: EdgeCurve::Straight,
+                curve: EdgeCurve::Bow,
                 highlight: false,
                 kind: EdgeKind::Link,
                 link: Some(link.to_string()),
@@ -289,7 +292,7 @@ mod tests {
     }
 
     #[test]
-    fn level_edges_join_parent_and_child_centers_on_this_level_only() {
+    fn level_edges_join_parent_and_child_facing_sides_on_this_level_only() {
         let mut app = App::default();
         app.insert_placeholder_node("p".into(), egui::vec2(0.0, 0.0), Kind::Download, download("p.bin"));
         app.insert_placeholder_node("c".into(), egui::vec2(100.0, 50.0), Kind::Download, download("c.bin"));
@@ -300,7 +303,11 @@ mod tests {
 
         let edges = app.level_edges();
         assert_eq!(edges.len(), 1);
-        assert_eq!((edges[0].from, edges[0].to), (egui::pos2(0.0, 0.0), egui::pos2(100.0, 50.0)));
+        let rect = |id: &str| node_card_rect(app.layout_pos(id), &app.nodes[id].runtime);
+        let (p, c) = (rect("p"), rect("c"));
+        assert_eq!((edges[0].from, edges[0].to), crate::link_gestures::facing_ends(p, c));
+        assert_eq!(edges[0].from, p.right_center(), "c lies mostly to the right of p: p's right side");
+        assert_eq!(edges[0].to, c.left_center(), "and c's left side");
         assert_eq!(edges[0].curve, EdgeCurve::Bow);
         assert_eq!(
             (edges[0].from_id.as_str(), edges[0].to_id.as_str(), edges[0].link.as_deref()),

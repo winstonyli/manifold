@@ -557,29 +557,6 @@ fn card_glow_shapes(
     })
 }
 
-/// A parent-child graph edge, bowed into a gentle quadratic-bezier curve
-/// instead of a straight `line_segment` -- purely cosmetic softening, not
-/// port-based routing (this graph's nodes are free-positioned by physics,
-/// not laid out left-to-right with fixed input/output sides, so a "smart"
-/// horizontal S-curve like most node editors use would look wrong here;
-/// a curve that just bows perpendicular to the straight line works for an
-/// edge in any direction). Bow amount is proportional to edge length
-/// (capped at 30 world units) so short edges between adjacent nodes don't
-/// over-bow into an ugly loop.
-fn draw_graph_edge(painter: &egui::Painter, from: egui::Pos2, to: egui::Pos2, stroke: egui::Stroke) {
-    let delta = to - from;
-    let dist = delta.length();
-    let bow = (dist * 0.15).min(30.0);
-    let perp = egui::vec2(-delta.y, delta.x) / dist.max(0.0001) * bow;
-    let control = from + delta * 0.5 + perp;
-    painter.add(egui::epaint::QuadraticBezierShape::from_points_stroke(
-        [from, control, to],
-        false,
-        egui::Color32::TRANSPARENT,
-        stroke,
-    ));
-}
-
 /// How long a "Saved <path>" toast stays on screen — see `App::save_toast`'s
 /// doc comment.
 const SAVE_TOAST_DURATION: std::time::Duration = std::time::Duration::from_secs(4);

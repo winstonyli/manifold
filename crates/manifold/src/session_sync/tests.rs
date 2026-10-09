@@ -5042,7 +5042,7 @@ fn a_link_is_a_level_edge_only_while_both_ends_are_live_at_this_level() {
     app.connect(LINK, &a, &b).unwrap();
     let edges = app.level_edges();
     assert_eq!(edges.iter().filter(|e| e.kind == EdgeKind::Link).count(), 1);
-    assert!(edges.iter().all(|e| (e.kind == EdgeKind::Link) == (e.curve == crate::level::EdgeCurve::Straight)));
+    assert!(edges.iter().all(|e| e.curve == crate::level::EdgeCurve::Bow), "every edge between stored nodes bows");
     assert!(edges
         .iter()
         .filter(|e| e.kind == EdgeKind::Link)

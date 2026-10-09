@@ -1158,12 +1158,11 @@ impl App {
             }
         }
 
-        // Connect-drag handles (link-gestures spec A), on a hovered card or on the source while its drag runs.
+        // Connect-drag handles (link-gestures spec A), on a hovered card, and on every card while a drag runs.
         // Registered after the card and its controls: egui gives a press on a drag-only widget on top to that widget
         // alone (no click below), so the card neither moves nor opens.
         let mut handle_hovered = false;
-        let is_source = self.connect_drag.as_deref() == Some(id);
-        if (is_hovered || is_source) && self.shows_link_handles(id) {
+        if (is_hovered || self.connect_drag.is_some()) && self.shows_link_handles() {
             let handles = crate::link_gestures::link_handle_rects(rect, pass.zoom_scale, self.graph_lod_simplified);
             for (side, handle) in handles {
                 let handle_response = ui

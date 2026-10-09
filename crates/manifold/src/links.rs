@@ -174,7 +174,7 @@ impl App {
         targets
     }
 
-    /// Whether `valid_targets(edge, from)` is non-empty, stopping at the first (`shows_link_handles`, every frame).
+    /// Whether `valid_targets(edge, from)` is non-empty, stopping at the first (the node menu's edge rows).
     pub(crate) fn has_valid_target(&self, edge: &str, from: &str) -> bool {
         let linked = self.linked_for(edge, from);
         self.nodes.keys().any(|to| self.check_connect(edge, from, to, linked.as_ref()).is_ok())

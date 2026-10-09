@@ -245,10 +245,11 @@ pub enum DebugCommand {
     /// mirror's name, text and document pos the same way, null where EXPORTSESSION leaves the field out (empty, or
     /// pos (0, 0)).
     /// `links` lists every Link node as `{id, from, to}`. `edges` lists the lines drawn at the current level as
-    /// `{kind: link|opened, link (the Link node id, or null), from, to, screen: [x, y]}`, where `screen` is the middle
-    /// of the straight segment between the two card centres. `connecting` is pick-target mode as `{from, edge, targets}`
-    /// (`targets` sorted), or null. `link_handles` maps each card that would show connect-drag handles when hovered
-    /// to `{top, right, bottom, left}` (those shown at this zoom), each `[left, top, right, bottom]` on screen.
+    /// `{kind: link|opened, link (the Link node id, or null), from, to, screen: [x, y]}`, where `screen` is the point
+    /// halfway along the curve (t = 0.5) between the two cards' facing sides. `connecting` is pick-target mode as
+    /// `{from, edge, targets}` (`targets` sorted), or null. `link_handles` maps each card that would show connect-drag
+    /// handles (every card when nothing else owns the pointer; every card during a connect-drag) to
+    /// `{top, right, bottom, left}` (those shown at this zoom), each `[left, top, right, bottom]` on screen.
     /// `connect_drag` is the source card of a running connect-drag, or null.
     /// `toast` is the bottom-left toast's text
     /// (the one showing, else the next queued), or null. Suggestions arriving from the network show up
@@ -1437,13 +1438,17 @@ impl App {
                 serde_json::json!({ "id": id, "from": from.map(|n| n.to_string()), "to": to.map(|n| n.to_string()) })
             })
             .collect();
-        // The lines drawn at this level, with the middle of each straight segment on screen (where a probe clicks a
-        // link line). A bowed opened-from line passes elsewhere; its middle is listed for symmetry only.
+        // The lines drawn at this level, with the point halfway along each curve (t = 0.5) on screen: where a probe
+        // clicks a link line.
         let edges: Vec<serde_json::Value> = self
             .level_edges()
             .iter()
             .map(|edge| {
-                let mid = self.graph_world_rect_to_screen(egui::Rect::from_two_pos(edge.from, edge.to)).center();
+                let world = match edge.curve {
+                    crate::level::EdgeCurve::Bow => crate::link_gestures::bow_point(edge.from, edge.to, 0.5),
+                    crate::level::EdgeCurve::Horizontal => edge.from.lerp(edge.to, 0.5),
+                };
+                let mid = self.graph_world_rect_to_screen(egui::Rect::from_min_max(world, world)).min;
                 let kind = match edge.kind {
                     crate::level::EdgeKind::Link => "link",
                     crate::level::EdgeKind::Opened => "opened",
@@ -1453,13 +1458,14 @@ impl App {
                 })
             })
             .collect();
-        // Where each card that would show connect handles has them (shown on hover only), on screen, so a probe can
-        // press one: `{card id: {top|right|bottom|left: [left, top, right, bottom]}}`.
+        // Where each card has connect handles when it would show them (on hover, and on every card during a
+        // connect-drag), on screen, so a probe can press one:
+        // `{card id: {top|right|bottom|left: [left, top, right, bottom]}}`. Empty when nothing shows them.
         let (zoom_scale, _) = self.graph_world_to_screen_transform(self.graph_scene_outer_rect());
         let link_handles: serde_json::Map<String, serde_json::Value> = self
             .level_items()
             .into_iter()
-            .filter(|item| matches!(item.kind, LevelItemKind::Node(_)) && self.shows_link_handles(&item.id))
+            .filter(|item| matches!(item.kind, LevelItemKind::Node(_)) && self.shows_link_handles())
             .map(|item| {
                 let sides: serde_json::Map<String, serde_json::Value> =
                     crate::link_gestures::link_handle_rects(item.rect, zoom_scale, self.graph_lod_simplified)
@@ -1808,10 +1814,14 @@ mod tests {
         assert_eq!(edges[0]["kind"], "link");
         assert_eq!(edges[0]["link"], link.as_str());
         assert_eq!((edges[0]["from"].as_str(), edges[0]["to"].as_str()), (Some(a.as_str()), Some(b.as_str())));
-        let mid =
-            app.graph_world_rect_to_screen(egui::Rect::from_two_pos(egui::pos2(0.0, 0.0), egui::pos2(400.0, 0.0)));
+        // a's right side to b's left side, bowed: the curve's t = 0.5 point, not the straight segment's middle.
+        let (ra, rb) = (app.card_rect(&a).unwrap(), app.card_rect(&b).unwrap());
+        let (from, to) = (ra.right_center(), rb.left_center());
+        let world = crate::link_gestures::bow_point(from, to, 0.5);
+        assert!((world - from.lerp(to, 0.5)).length() > 1.0, "the bow moves the middle off the chord");
+        let mid = app.graph_world_rect_to_screen(egui::Rect::from_min_max(world, world)).min;
         let screen: Vec<f64> = edges[0]["screen"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect();
-        assert!((screen[0] as f32 - mid.center().x).abs() < 0.01 && (screen[1] as f32 - mid.center().y).abs() < 0.01);
+        assert!((screen[0] as f32 - mid.x).abs() < 0.01 && (screen[1] as f32 - mid.y).abs() < 0.01, "{screen:?}");
     }
 
     /// EXPORTSTATE's `link_handles`: each card that would show connect handles, each side's on-screen rect.
@@ -1831,12 +1841,13 @@ mod tests {
         let r: Vec<f32> = handles["right"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap() as f32).collect();
         let card = app.graph_world_rect_to_screen(app.card_rect(&a).unwrap());
         assert!((egui::pos2((r[0] + r[2]) / 2.0, (r[1] + r[3]) / 2.0) - card.right_center()).length() < 0.01);
-        assert!((r[2] - r[0] - crate::link_gestures::HANDLE_PX).abs() < 0.01, "12 points wide on screen");
+        assert!((r[2] - r[0] - crate::link_gestures::HANDLE_SHORT_PX).abs() < 0.01, "16 points across the edge");
+        assert!((r[3] - r[1] - crate::link_gestures::HANDLE_LONG_PX).abs() < 0.01, "28 points along it");
         assert!(state["connect_drag"].is_null() && state["dragging"].is_null());
         app.start_connect_drag(&a);
         let state = app.export_state();
         assert_eq!(state["connect_drag"], a.as_str());
-        assert!(state["link_handles"].get(b.as_str()).is_none(), "during a connect-drag only the source");
+        assert!(state["link_handles"].get(b.as_str()).is_some(), "during a connect-drag every card has them");
         app.cancel_connect();
         app.dragging = Some(b.clone());
         assert_eq!(app.export_state()["dragging"], b.as_str());

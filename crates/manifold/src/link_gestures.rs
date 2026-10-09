@@ -12,6 +12,11 @@ pub(crate) const LINK_HOVER_STROKE_PX: f32 = 3.0;
 /// How far from a link line, in screen points, a click still takes it.
 pub(crate) const LINK_HIT_PX: f32 = 6.0;
 
+/// How far from a card, in screen points, a connect-drag release still takes it (`App::card_within`).
+pub(crate) const DROP_TOLERANCE_PX: f32 = 24.0;
+/// How many straight pieces a bowed edge is flattened into for hit-testing and the dashed stroke.
+pub(crate) const BOW_SEGMENTS: usize = 24;
+
 /// The distance from `p` to the segment `a`-`b`; to `a` when the segment is a point.
 pub(crate) fn distance_to_segment(p: egui::Pos2, a: egui::Pos2, b: egui::Pos2) -> f32 {
     let ab = b - a;
@@ -21,6 +26,100 @@ pub(crate) fn distance_to_segment(p: egui::Pos2, a: egui::Pos2, b: egui::Pos2) -
     }
     let t = ((p - a).dot(ab) / len_sq).clamp(0.0, 1.0);
     p.distance(a + ab * t)
+}
+
+/// The control point of the quadratic bezier every card-to-card edge is drawn as: the middle of `from`-`to` pushed
+/// sideways (perpendicular, to the left of the direction of travel) by 15% of the distance, at most 30 world units, so
+/// short edges between adjacent cards do not over-bow into a loop and an edge in any direction reads the same.
+pub(crate) fn bow_control(from: egui::Pos2, to: egui::Pos2) -> egui::Pos2 {
+    let delta = to - from;
+    let dist = delta.length();
+    let bow = (dist * 0.15).min(30.0);
+    from + delta * 0.5 + egui::vec2(-delta.y, delta.x) / dist.max(0.0001) * bow
+}
+
+/// The point at `t` (0 to 1) along the bowed edge `from`-`to`.
+pub(crate) fn bow_point(from: egui::Pos2, to: egui::Pos2, t: f32) -> egui::Pos2 {
+    let control = bow_control(from, to);
+    let u = 1.0 - t;
+    (from.to_vec2() * (u * u) + control.to_vec2() * (2.0 * u * t) + to.to_vec2() * (t * t)).to_pos2()
+}
+
+/// The bowed edge as a polyline of `BOW_SEGMENTS + 1` points, ends included.
+pub(crate) fn flatten_bow(from: egui::Pos2, to: egui::Pos2) -> Vec<egui::Pos2> {
+    (0..=BOW_SEGMENTS).map(|i| bow_point(from, to, i as f32 / BOW_SEGMENTS as f32)).collect()
+}
+
+/// A box that contains the whole bowed edge (its end points and its control point: a bezier stays in their hull).
+pub(crate) fn bow_bounds(from: egui::Pos2, to: egui::Pos2) -> egui::Rect {
+    egui::Rect::from_points(&[from, bow_control(from, to), to])
+}
+
+/// The distance from `p` to the bowed edge `from`-`to`.
+pub(crate) fn distance_to_bow(p: egui::Pos2, from: egui::Pos2, to: egui::Pos2) -> f32 {
+    flatten_bow(from, to).windows(2).map(|w| distance_to_segment(p, w[0], w[1])).fold(f32::INFINITY, f32::min)
+}
+
+/// The one routine that draws a card-to-card edge: the bowed curve `from`-`to`, solid, or dashed (a link) with dashes
+/// sized for `dash_inv_zoom` (6 on, 4 off, in screen points).
+pub(crate) fn paint_bow(
+    painter: &egui::Painter,
+    from: egui::Pos2,
+    to: egui::Pos2,
+    stroke: egui::Stroke,
+    dash_inv_zoom: Option<f32>,
+) {
+    if let Some(inv_zoom) = dash_inv_zoom {
+        painter.add(egui::Shape::dashed_line(&flatten_bow(from, to), stroke, 6.0 * inv_zoom, 4.0 * inv_zoom));
+    } else {
+        painter.add(egui::epaint::QuadraticBezierShape::from_points_stroke(
+            [from, bow_control(from, to), to],
+            false,
+            egui::Color32::TRANSPARENT,
+            stroke,
+        ));
+    }
+}
+
+/// The sides of two cards that face each other: the dominant axis of the centre-to-centre delta `a` to `b` picks the
+/// pair, right of `a` and left of `b` when `b` lies more to the right than below or above, and so on. A tie goes to
+/// the horizontal pair. Depends on the two centres only, so it is stable while neither card moves.
+pub(crate) fn facing_sides(a: egui::Pos2, b: egui::Pos2) -> (HandleSide, HandleSide) {
+    let d = b - a;
+    if d.x.abs() >= d.y.abs() {
+        if d.x >= 0.0 {
+            (HandleSide::Right, HandleSide::Left)
+        } else {
+            (HandleSide::Left, HandleSide::Right)
+        }
+    } else if d.y >= 0.0 {
+        (HandleSide::Bottom, HandleSide::Top)
+    } else {
+        (HandleSide::Top, HandleSide::Bottom)
+    }
+}
+
+/// The midpoint of `side` of `card`.
+pub(crate) fn side_midpoint(card: egui::Rect, side: HandleSide) -> egui::Pos2 {
+    match side {
+        HandleSide::Top => card.center_top(),
+        HandleSide::Right => card.right_center(),
+        HandleSide::Bottom => card.center_bottom(),
+        HandleSide::Left => card.left_center(),
+    }
+}
+
+/// Where an edge between cards `a` and `b` runs: the facing side midpoints, `a`'s then `b`'s.
+pub(crate) fn facing_ends(a: egui::Rect, b: egui::Rect) -> (egui::Pos2, egui::Pos2) {
+    let (side_a, side_b) = facing_sides(a.center(), b.center());
+    (side_midpoint(a, side_a), side_midpoint(b, side_b))
+}
+
+/// The distance from `p` to `rect`; 0 inside it.
+pub(crate) fn distance_to_rect(p: egui::Pos2, rect: egui::Rect) -> f32 {
+    let dx = (rect.min.x - p.x).max(0.0).max(p.x - rect.max.x);
+    let dy = (rect.min.y - p.y).max(0.0).max(p.y - rect.max.y);
+    dx.hypot(dy)
 }
 
 /// The hit tolerance in world units at `inv_zoom`: 6 screen points, or half the hovered line if that were wider.
@@ -33,7 +132,7 @@ pub(crate) fn link_hit_tolerance(inv_zoom: f32) -> f32 {
 pub(crate) fn nearest_link(edges: &[LevelEdge], at: egui::Pos2, tolerance: f32) -> Option<&LevelEdge> {
     let mut best: Option<(f32, &LevelEdge)> = None;
     for edge in edges.iter().filter(|e| e.link.is_some()) {
-        let d = distance_to_segment(at, edge.from, edge.to);
+        let d = distance_to_bow(at, edge.from, edge.to);
         if d <= tolerance && best.is_none_or(|(b, _)| d <= b) {
             best = Some((d, edge));
         }
@@ -64,39 +163,42 @@ impl HandleSide {
     }
 }
 
-/// A handle's diameter in screen points.
-pub(crate) const HANDLE_PX: f32 = 12.0;
+/// A handle is a pill straddling its card edge: this long along the edge and `HANDLE_SHORT_PX` across it, in screen
+/// points.
+pub(crate) const HANDLE_LONG_PX: f32 = 28.0;
+pub(crate) const HANDLE_SHORT_PX: f32 = 16.0;
 /// The shortest on-screen card edge that shows its handle. A top or right handle clears the 16-point Audio control
-/// in the top-right corner (`CardControl::rect`) only while half the edge is at least 16 + 6 points.
-pub(crate) const HANDLE_MIN_EDGE_PX: f32 = 44.0;
+/// in the top-right corner (`CardControl::rect`) only while half the edge is at least 16 points plus half the pill's
+/// long side: the old 44 (a 12-point circle) is 2 * (16 + 6), this is 2 * (16 + 14).
+pub(crate) const HANDLE_MIN_EDGE_PX: f32 = 2.0 * (16.0 + HANDLE_LONG_PX / 2.0);
 
-/// Card `card`'s handles (world space) at `zoom_scale`, each `HANDLE_PX` on screen, in `HandleSide::ALL` order. A side
-/// whose edge is under `HANDLE_MIN_EDGE_PX` on screen has none, and a `simplified` level (`graph_lod_simplified`) has
-/// none at all.
+/// Card `card`'s handles (world space) at `zoom_scale`, each a `HANDLE_LONG_PX` by `HANDLE_SHORT_PX` pill on screen
+/// (long side along the edge), in `HandleSide::ALL` order. A side whose edge is under `HANDLE_MIN_EDGE_PX` on screen
+/// has none, and a `simplified` level (`graph_lod_simplified`) has none at all.
 pub(crate) fn link_handle_rects(card: egui::Rect, zoom_scale: f32, simplified: bool) -> Vec<(HandleSide, egui::Rect)> {
     if simplified {
         return Vec::new();
     }
-    let size = egui::Vec2::splat(HANDLE_PX / zoom_scale);
+    let (long, short) = (HANDLE_LONG_PX / zoom_scale, HANDLE_SHORT_PX / zoom_scale);
     HandleSide::ALL
         .into_iter()
         .filter_map(|side| {
-            let (centre, edge) = match side {
-                HandleSide::Top => (card.center_top(), card.width()),
-                HandleSide::Right => (card.right_center(), card.height()),
-                HandleSide::Bottom => (card.center_bottom(), card.width()),
-                HandleSide::Left => (card.left_center(), card.height()),
+            let (edge, size) = match side {
+                HandleSide::Top | HandleSide::Bottom => (card.width(), egui::vec2(long, short)),
+                HandleSide::Right | HandleSide::Left => (card.height(), egui::vec2(short, long)),
             };
-            (edge * zoom_scale >= HANDLE_MIN_EDGE_PX).then(|| (side, egui::Rect::from_center_size(centre, size)))
+            (edge * zoom_scale >= HANDLE_MIN_EDGE_PX)
+                .then(|| (side, egui::Rect::from_center_size(side_midpoint(card, side), size)))
         })
         .collect()
 }
 
-/// A handle: an accent ring, filled while hovered or dragged from.
+/// A handle: an accent-outlined pill, filled while hovered or dragged from.
 pub(crate) fn paint_link_handle(ui: &egui::Ui, handle: egui::Rect, active: bool, inv_zoom: f32) {
     let fill = if active { crate::theme::ACCENT } else { crate::theme::BG };
     let stroke = egui::Stroke::new(1.5 * inv_zoom, crate::theme::ACCENT);
-    ui.painter().circle(handle.center(), handle.width() / 2.0, fill, stroke);
+    let radius = handle.width().min(handle.height()) / 2.0;
+    ui.painter().rect(handle, radius, fill, stroke, egui::StrokeKind::Inside);
 }
 
 impl App {
@@ -183,14 +285,12 @@ impl App {
         }
     }
 
-    /// Whether card `id` shows its connect-drag handles while hovered. During a connect-drag only its source does.
-    /// Otherwise only when nothing else owns the pointer (as `line_click_allowed`) and the card has a valid link
-    /// target at this level, which also makes it a valid link end.
-    pub(crate) fn shows_link_handles(&self, id: &str) -> bool {
-        if let Some(source) = &self.connect_drag {
-            return source == id;
-        }
-        self.line_click_allowed() && self.has_valid_target(crate::caps::LINK, id)
+    /// Whether a card shows its connect-drag handles (while hovered, or all the time during a connect-drag): every
+    /// card does during a connect-drag, so any can be seen as an end. Otherwise only when nothing else owns the
+    /// pointer (as `line_click_allowed`), whether or not the card has a valid link target: a drag with none just
+    /// cancels, as an empty release does.
+    pub(crate) fn shows_link_handles(&self) -> bool {
+        self.connect_drag.is_some() || self.line_click_allowed()
     }
 
     /// A press on one of card `id`'s handles: pick-target mode for `link` from it, which rings the targets, run as a
@@ -202,13 +302,24 @@ impl App {
         self.camera.momentum = None;
     }
 
-    /// The topmost card under world point `at`. `level_items` is bottom-first, as right-click's hit-test reads it.
-    pub(crate) fn card_at(&self, at: egui::Pos2) -> Option<String> {
-        self.level_items()
-            .into_iter()
-            .rev()
-            .find(|item| matches!(item.kind, crate::level::LevelItemKind::Node(_)) && item.rect.contains(at))
-            .map(|item| item.id)
+    /// The card a release at world point `at` takes: the topmost card under it (`level_items` is bottom-first, as
+    /// right-click's hit-test reads it), or when none is, the nearest card other than `source` within `tolerance`
+    /// (world units) of its rect, the topmost of equals. A card under the point wins even if it is `source`, which
+    /// is then no target at all.
+    pub(crate) fn card_within(&self, at: egui::Pos2, tolerance: f32, source: &str) -> Option<String> {
+        let items = self.level_items();
+        let cards = || items.iter().rev().filter(|item| matches!(item.kind, crate::level::LevelItemKind::Node(_)));
+        if let Some(under) = cards().find(|item| item.rect.contains(at)) {
+            return (under.id != source).then(|| under.id.clone());
+        }
+        let mut best: Option<(f32, &crate::level::LevelItem)> = None;
+        for item in cards().filter(|item| item.id != source) {
+            let d = distance_to_rect(at, item.rect);
+            if d <= tolerance && best.is_none_or(|(b, _)| d < b) {
+                best = Some((d, item));
+            }
+        }
+        best.map(|(_, item)| item.id.clone())
     }
 
     /// The pointer in world space, inside `build_graph_ui`'s Scene (this frame's layer transform).
@@ -217,8 +328,9 @@ impl App {
         Some(ui.ctx().layer_transform_from_global(ui.layer_id()).map_or(pointer, |t| t * pointer))
     }
 
-    /// During a connect-drag, the card a release at screen point `pointer` would link to: the topmost card other than
-    /// the source under it, inside `scene_outer_rect`, off the `minimap` (painted over the Scene, not a widget) and
+    /// During a connect-drag, the card a release at screen point `pointer` would link to: the topmost card under it,
+    /// or else the nearest one within `DROP_TOLERANCE_PX` of its edge (`card_within`), never the source, inside
+    /// `scene_outer_rect`, off the `minimap` (painted over the Scene, not a widget) and
     /// under no interactable egui Area above the graph (a popup or menu, by `Context::layer_id_at`, the layer test
     /// egui's own hit-test uses, so a click there would reach no card either; a non-interactable toast lets both
     /// through). `(zoom_scale, translation)` maps world to screen (`graph_world_to_screen_transform`). Both the bright
@@ -236,15 +348,32 @@ impl App {
         let covered = |p: egui::Pos2| ctx.layer_id_at(p).is_some_and(|layer| layer.order != egui::Order::Background);
         let pointer = pointer
             .filter(|p| scene_outer_rect.contains(*p) && !minimap.is_some_and(|m| m.contains(*p)) && !covered(*p))?;
-        self.card_at(((pointer.to_vec2() - translation) / zoom_scale).to_pos2()).filter(|target| target != source)
+        let at = ((pointer.to_vec2() - translation) / zoom_scale).to_pos2();
+        self.card_within(at, DROP_TOLERANCE_PX / zoom_scale, source)
     }
 
-    /// The rubber band: a dashed accent line from the connect-drag's source centre to the pointer, over the cards.
-    pub(crate) fn draw_connect_rubber_band(&self, ui: &egui::Ui, inv_zoom: f32) {
+    /// The rubber band: the bowed dashed accent curve a link would be drawn as, from the source's side that faces the
+    /// pointer to the pointer, over the cards. With a `target` (`connect_drag_target`, within drop tolerance or
+    /// under the pointer) it ends on the target's facing side midpoint, where the handle is, as the finished link will.
+    pub(crate) fn draw_connect_rubber_band(&self, ui: &egui::Ui, inv_zoom: f32, target: Option<&str>) {
         let (Some(source), Some(pointer)) = (&self.connect_drag, Self::scene_pointer(ui)) else { return };
+        let Some((from, to)) = self.rubber_band_ends(source, pointer, target) else { return };
         let stroke = egui::Stroke::new(LINK_STROKE_PX * inv_zoom, crate::theme::ACCENT);
-        let line = [self.layout_pos(source).to_pos2(), pointer];
-        ui.painter().add(egui::Shape::dashed_line(&line, stroke, 6.0 * inv_zoom, 4.0 * inv_zoom));
+        paint_bow(ui.painter(), from, to, stroke, Some(inv_zoom));
+    }
+
+    /// The rubber band's two ends (world): the source's side midpoint, and the pointer or the target's facing side.
+    fn rubber_band_ends(
+        &self,
+        source: &str,
+        pointer: egui::Pos2,
+        target: Option<&str>,
+    ) -> Option<(egui::Pos2, egui::Pos2)> {
+        let source_rect = self.card_rect(source)?;
+        Some(match target.and_then(|t| self.card_rect(t)) {
+            Some(target_rect) => facing_ends(source_rect, target_rect),
+            None => (side_midpoint(source_rect, facing_sides(source_rect.center(), pointer).0), pointer),
+        })
     }
 
     /// Ends a connect-drag at `target`, the card under the pointer at release (or none). Any card other than the
@@ -284,13 +413,14 @@ mod tests {
         assert_eq!(link_hit_tolerance(2.0), 12.0, "zoomed out (inv_zoom 2): 12 world units, 6 on screen");
     }
 
+    /// A 100-long horizontal edge at height `y`: its bow puts the curve's middle at (50, y + 7.5).
     fn edge(link: Option<&str>, y: f32) -> LevelEdge {
         LevelEdge {
             from: egui::pos2(0.0, y),
             to: egui::pos2(100.0, y),
             from_id: "x".into(),
             to_id: "y".into(),
-            curve: if link.is_some() { EdgeCurve::Straight } else { EdgeCurve::Bow },
+            curve: EdgeCurve::Bow,
             highlight: false,
             kind: if link.is_some() { EdgeKind::Link } else { EdgeKind::Opened },
             link: link.map(str::to_string),
@@ -299,12 +429,76 @@ mod tests {
 
     #[test]
     fn nearest_link_takes_the_closest_link_line_within_tolerance() {
-        let edges = [edge(None, 0.0), edge(Some("far"), 5.0), edge(Some("near"), 2.0)];
-        let at = egui::pos2(50.0, 0.0);
+        let edges = [edge(None, 7.5), edge(Some("far"), 12.5), edge(Some("near"), 9.5)];
+        let at = egui::pos2(50.0, 15.0);
         assert_eq!(nearest_link(&edges, at, 6.0).and_then(|e| e.link.as_deref()), Some("near"), "opened-from never");
-        assert!(nearest_link(&edges, egui::pos2(50.0, 20.0), 6.0).is_none(), "nothing within 6");
+        assert!(nearest_link(&edges, egui::pos2(50.0, 40.0), 6.0).is_none(), "nothing within 6");
         let twins = [edge(Some("older"), 1.0), edge(Some("newer"), 1.0)];
-        assert_eq!(nearest_link(&twins, at, 6.0).and_then(|e| e.link.as_deref()), Some("newer"), "last of equals");
+        assert_eq!(nearest_link(&twins, egui::pos2(50.0, 8.5), 6.0).and_then(|e| e.link.as_deref()), Some("newer"));
+    }
+
+    /// The hit-test follows the curve, not the chord: of two points the same distance from the chord's middle, the one
+    /// on the bow side is on the line and the one on the other side is not.
+    #[test]
+    fn a_link_is_hit_on_its_curve_and_missed_on_its_chord() {
+        let chord = edge(Some("l"), 0.0);
+        let edges = [chord];
+        assert!(nearest_link(&edges, egui::pos2(50.0, 7.5), 1.0).is_some(), "the curve's middle");
+        assert!(nearest_link(&edges, egui::pos2(50.0, 0.0), 6.0).is_none(), "the chord's middle is 7.5 off the curve");
+        assert!(nearest_link(&edges, egui::pos2(50.0, 15.0), 6.0).is_none(), "and so is the control point");
+        assert!(nearest_link(&edges, egui::pos2(0.0, 0.0), 1.0).is_some(), "the curve starts at the chord's end");
+        let middle = bow_point(egui::pos2(0.0, 0.0), egui::pos2(100.0, 0.0), 0.5);
+        assert!((middle - egui::pos2(50.0, 7.5)).length() < 1e-4, "{middle:?}");
+        let long = bow_control(egui::pos2(0.0, 0.0), egui::pos2(1000.0, 0.0));
+        assert_eq!(long, egui::pos2(500.0, 30.0), "the bow is capped at 30");
+        let bounds = bow_bounds(egui::pos2(0.0, 0.0), egui::pos2(100.0, 0.0));
+        assert!(bounds.contains(egui::pos2(50.0, 15.0)), "the culling box covers the control point");
+    }
+
+    #[test]
+    fn the_facing_side_rule_follows_the_dominant_axis_and_ties_go_horizontal() {
+        use HandleSide::{Bottom, Left, Right, Top};
+        let o = egui::pos2(0.0, 0.0);
+        assert_eq!(facing_sides(o, egui::pos2(100.0, 30.0)), (Right, Left), "b to the right");
+        assert_eq!(facing_sides(o, egui::pos2(-100.0, 30.0)), (Left, Right), "b to the left");
+        assert_eq!(facing_sides(o, egui::pos2(30.0, 100.0)), (Bottom, Top), "b below");
+        assert_eq!(facing_sides(o, egui::pos2(30.0, -100.0)), (Top, Bottom), "b above");
+        assert_eq!(facing_sides(o, egui::pos2(50.0, 50.0)), (Right, Left), "a tie is horizontal");
+        assert_eq!(facing_sides(o, egui::pos2(-50.0, -50.0)), (Left, Right), "and keeps its direction");
+        assert_eq!(facing_sides(o, o), (Right, Left), "coincident centres");
+        let (a, b) = (egui::pos2(10.0, 20.0), egui::pos2(-80.0, 200.0));
+        let (sa, sb) = facing_sides(a, b);
+        assert_eq!(facing_sides(b, a), (sb, sa), "swapping the cards swaps the sides");
+        let ra = egui::Rect::from_center_size(a, egui::vec2(100.0, 60.0));
+        let rb = egui::Rect::from_center_size(b, egui::vec2(100.0, 60.0));
+        assert_eq!(facing_ends(ra, rb), (ra.center_bottom(), rb.center_top()));
+    }
+
+    #[test]
+    fn the_nearest_card_within_tolerance_takes_a_release_but_never_the_source() {
+        let (mut app, a, b) = two_notes();
+        let c = app.alloc_node_id();
+        let note = Runtime::Note(NotePayload { text: "n".into(), editing: false });
+        app.insert_placeholder_node(c.clone(), egui::vec2(0.0, 400.0), Kind::Note, note);
+        let (ra, rb, rc) = (app.card_rect(&a).unwrap(), app.card_rect(&b).unwrap(), app.card_rect(&c).unwrap());
+        let tol = 24.0;
+        let inside_a = ra.center();
+        assert_eq!(app.card_within(inside_a, tol, &a), None, "a point on the source is no target");
+        assert_eq!(app.card_within(inside_a, tol, &b), Some(a.clone()), "an exact hit wins");
+        let near_b = rb.left_center() - egui::vec2(tol - 1.0, 0.0);
+        assert_eq!(app.card_within(near_b, tol, &a), Some(b.clone()), "just outside b");
+        let far_b = rb.left_center() - egui::vec2(tol + 1.0, 0.0);
+        assert_eq!(app.card_within(far_b, tol, &a), None, "beyond tolerance: nothing");
+        let corner = rb.left_top() - egui::vec2(tol * 0.7, tol * 0.7);
+        assert_eq!(app.card_within(corner, tol, &a), Some(b.clone()), "diagonal distance counts: 0.7 * 1.41 * 24 < 24");
+        let corner_far = rb.left_top() - egui::vec2(tol * 0.8, tol * 0.8);
+        assert_eq!(app.card_within(corner_far, tol, &a), None, "0.8 * 1.41 * 24 > 24");
+        let near_a = ra.right_center() + egui::vec2(tol - 1.0, 0.0);
+        assert_eq!(app.card_within(near_a, tol, &a), None, "near only the source: nothing");
+        // Of b and c, the nearer wins (the tolerance is huge, so both qualify).
+        let above_c = rc.center_top() - egui::vec2(0.0, 10.0);
+        assert!(distance_to_rect(above_c, rc) < distance_to_rect(above_c, rb));
+        assert_eq!(app.card_within(above_c, 1e6, &a), Some(c.clone()), "the nearer of two");
     }
 
     /// Drives `build_graph_ui` headless, as `a_click_finishes_or_cancels_pick_target_mode` (graph_ui.rs) does.
@@ -410,9 +604,10 @@ mod tests {
         app.graph_world_rect_to_screen(app.card_rect(id).expect("a card"))
     }
 
-    /// The middle of `edge`'s straight segment, on screen.
+    /// The point halfway along `edge`'s curve, on screen.
     fn middle(app: &App, edge: &LevelEdge) -> egui::Pos2 {
-        app.graph_world_rect_to_screen(egui::Rect::from_two_pos(edge.from, edge.to)).center()
+        let world = bow_point(edge.from, edge.to, 0.5);
+        app.graph_world_rect_to_screen(egui::Rect::from_min_max(world, world)).min
     }
 
     fn line_middle(app: &App, link: &str) -> egui::Pos2 {
@@ -453,7 +648,7 @@ mod tests {
         let opened = app.level_edges().into_iter().find(|e| e.kind == EdgeKind::Opened).expect("c opened from a");
         let on_opened = middle(&app, &opened);
         h.click(&mut app, on_opened);
-        // b's centre is the link line's end: the card is on top and takes the click.
+        // b's centre is on the card, which takes the click.
         let on_b = screen_rect(&app, &b).center();
         h.click(&mut app, on_b);
         assert_eq!(app.links_naming(&a), [ab]);
@@ -659,11 +854,16 @@ mod tests {
     }
 
     #[test]
-    fn handles_sit_on_each_edge_midpoint_at_a_constant_screen_size() {
+    fn handles_are_pills_on_each_edge_midpoint_at_a_constant_screen_size() {
         let card = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(180.0, 140.0));
         let rects = link_handle_rects(card, 2.0, false);
         assert_eq!(rects.iter().map(|(side, _)| *side).collect::<Vec<_>>(), HandleSide::ALL);
-        assert!(rects.iter().all(|(_, r)| r.width() == HANDLE_PX / 2.0), "12 screen points at zoom 2");
+        let (long, short) = (HANDLE_LONG_PX / 2.0, HANDLE_SHORT_PX / 2.0);
+        for (side, r) in &rects {
+            let along_x = matches!(side, HandleSide::Top | HandleSide::Bottom);
+            let expected = if along_x { egui::vec2(long, short) } else { egui::vec2(short, long) };
+            assert_eq!(r.size(), expected, "{side:?}: 28 by 16 screen points at zoom 2, long side along the edge");
+        }
         assert_eq!(rects[0].1.center(), card.center_top());
         assert_eq!(rects[1].1.center(), card.right_center());
         assert_eq!(rects[2].1.center(), card.center_bottom());
@@ -677,6 +877,10 @@ mod tests {
         assert_eq!(sides, [HandleSide::Top, HandleSide::Bottom], "30 points tall: no side handles");
         assert!(link_handle_rects(thin, 0.2, false).is_empty(), "180 * 0.2 = 36 points wide: none");
         assert!(link_handle_rects(thin, 3.0, true).is_empty(), "a simplified level shows none");
+        assert_eq!(HANDLE_MIN_EDGE_PX, 60.0);
+        let edge = |on_screen: f32| egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(on_screen, 400.0));
+        assert_eq!(link_handle_rects(edge(59.0), 1.0, false).len(), 2, "59 wide: only the side handles");
+        assert_eq!(link_handle_rects(edge(60.0), 1.0, false).len(), 4, "60 wide: all four");
     }
 
     /// Two notes at the top level, not yet drawn.
@@ -691,20 +895,63 @@ mod tests {
     }
 
     #[test]
-    fn handles_show_only_while_nothing_else_owns_the_pointer() {
+    fn handles_show_while_nothing_else_owns_the_pointer_and_on_every_card_during_a_drag() {
         let (mut app, a, b) = two_notes();
-        assert!(app.shows_link_handles(&a));
+        assert!(app.shows_link_handles());
         app.dragging = Some(b.clone());
-        assert!(!app.shows_link_handles(&a), "a card drag");
+        assert!(!app.shows_link_handles(), "a card drag");
         app.dragging = None;
         app.node_menu = Some((b.clone(), egui::Pos2::ZERO));
-        assert!(!app.shows_link_handles(&a), "a menu");
+        assert!(!app.shows_link_handles(), "a menu");
         app.node_menu = None;
         app.start_connect_drag(&a);
-        assert!(app.shows_link_handles(&a) && !app.shows_link_handles(&b), "during a connect-drag only its source");
+        assert!(app.shows_link_handles(), "during a connect-drag every card shows them, not only the source");
         app.cancel_connect();
         app.create_link(&a, &b);
-        assert!(!app.shows_link_handles(&a), "linked to the only other card: no target left");
+        assert!(!app.has_valid_target(crate::caps::LINK, &a), "linked to the only other card: no target left");
+        assert!(app.shows_link_handles(), "yet the handles still show: a drag from them just cancels");
+    }
+
+    /// With no valid target the hovered card still has handles, and a drag from one cancels as an empty release does.
+    #[test]
+    fn a_card_with_no_valid_target_still_shows_handles_and_its_drag_cancels() {
+        let (h, mut app, [a, b, c]) = three_notes();
+        app.create_link(&a, &b);
+        app.create_link(&a, &c);
+        assert!(!app.has_valid_target(crate::caps::LINK, &a), "a is linked to both others");
+        let state = app.export_state();
+        assert!(state["link_handles"].get(a.as_str()).is_some(), "so its handles are exported");
+        let canvas = screen_rect(&app, &a).center().lerp(screen_rect(&app, &b).center(), 0.5);
+        drag_from_handle(&h, &mut app, &a, HandleSide::Right, canvas, vec![]);
+        assert!(app.connect_drag.is_none() && app.connecting.is_none(), "cancelled");
+        assert_eq!(app.links_naming(&a).len(), 2, "and nothing was linked");
+    }
+
+    /// Mid-drag every card has handles: the export lists them and the cards register them as widgets.
+    #[test]
+    fn during_a_handle_drag_every_card_has_handles() {
+        let (h, mut app, [a, b, c]) = three_notes();
+        assert!(app.export_state()["link_handles"].get(b.as_str()).is_some(), "before any drag all do");
+        let centre = screen_rect(&app, &a).center();
+        h.frame(&mut app, vec![egui::Event::PointerMoved(centre)]);
+        let handle = handle_on_screen(&app, &a, HandleSide::Right);
+        h.frame(&mut app, vec![egui::Event::PointerMoved(handle)]);
+        h.frame(&mut app, vec![egui::Event::PointerMoved(handle)]);
+        h.frame(&mut app, vec![press(handle, true)]);
+        let canvas = screen_rect(&app, &a).center().lerp(screen_rect(&app, &b).center(), 0.5);
+        h.frame(&mut app, vec![egui::Event::PointerMoved(canvas)]);
+        h.frame(&mut app, vec![egui::Event::PointerMoved(canvas + egui::vec2(0.0, 5.0))]);
+        assert_eq!(app.connect_drag.as_deref(), Some(a.as_str()));
+        let state = app.export_state();
+        for id in [&a, &b, &c] {
+            let sides = state["link_handles"][id.as_str()].as_object().unwrap_or_else(|| panic!("{id} has handles"));
+            assert_eq!(sides.len(), 4, "{id}");
+        }
+        for (id, side) in [(&b, HandleSide::Left), (&c, HandleSide::Top)] {
+            let widget = egui::Id::new(("link_handle", side, id.as_str()));
+            assert!(h.ctx.read_response(widget).is_some(), "{id}'s {side:?} handle is a widget mid-drag");
+        }
+        h.frame(&mut app, vec![press(canvas, false)]);
     }
 
     #[test]
@@ -752,6 +999,37 @@ mod tests {
         h.frame(app, vec![egui::Event::PointerMoved(screen_rect(app, id).center())]);
         let from = handle_on_screen(app, id, side);
         h.drag_with(app, from, to, midway);
+    }
+
+    /// A release just outside a card (within `DROP_TOLERANCE_PX`) links it; one further out cancels.
+    #[test]
+    fn a_release_within_the_drop_tolerance_of_a_card_links_it_and_beyond_it_does_not() {
+        let (h, mut app, [a, b, _]) = three_notes();
+        let rb = screen_rect(&app, &b);
+        let just_outside = rb.left_center() - egui::vec2(DROP_TOLERANCE_PX - 4.0, 0.0);
+        drag_from_handle(&h, &mut app, &a, HandleSide::Right, just_outside, vec![]);
+        let links = app.links_naming(&a);
+        assert_eq!(links.len(), 1, "linked from {just_outside:?}");
+        assert_eq!(app.mirror.link_ends(&links[0]), (a.parse().ok(), b.parse().ok()), "a -> b");
+        let too_far = rb.left_center() - egui::vec2(DROP_TOLERANCE_PX + 8.0, 0.0);
+        drag_from_handle(&h, &mut app, &a, HandleSide::Right, too_far, vec![]);
+        assert_eq!(app.links_naming(&a).len(), 1, "nothing more from {too_far:?}");
+    }
+
+    /// The rubber band ends on the target's facing handle when there is a target, on the pointer otherwise.
+    #[test]
+    fn the_rubber_band_snaps_to_the_targets_facing_side() {
+        let (app, a, b) = two_notes();
+        let (ra, rb) = (app.card_rect(&a).unwrap(), app.card_rect(&b).unwrap());
+        let pointer = rb.left_center() - egui::vec2(10.0, 0.0);
+        assert_eq!(app.rubber_band_ends(&a, pointer, Some(&b)), Some((ra.right_center(), rb.left_center())));
+        assert_eq!(
+            app.rubber_band_ends(&a, pointer, None),
+            Some((ra.right_center(), pointer)),
+            "no target: the pointer"
+        );
+        let above = ra.center_top() - egui::vec2(0.0, 80.0);
+        assert_eq!(app.rubber_band_ends(&a, above, None).map(|e| e.0), Some(ra.center_top()), "the side facing it");
     }
 
     #[test]
@@ -824,7 +1102,7 @@ mod tests {
         assert!(!app.nodes[&a].as_note().unwrap().editing, "the press was the handle's, not a click on the note");
     }
 
-    /// a's right handle sits on the a-b line (centre to centre). A press and release there is the handle's: it records
+    /// a's right handle sits where the a-b line starts (a's right side midpoint). A press and release there is the handle's: it records
     /// no line press, so the release is no line click, and the line stays. A handle drag released on a line's middle
     /// deletes nothing either.
     #[test]
@@ -836,9 +1114,12 @@ mod tests {
         let handle = handle_on_screen(&app, &a, HandleSide::Right) + egui::vec2(4.0, 0.0);
         assert!(!screen_rect(&app, &a).contains(handle));
         let line = app.level_edges().into_iter().find(|e| e.link.as_ref() == Some(&ab)).expect("drawn");
-        let (from, to) = (app.graph_world_rect_to_screen(egui::Rect::from_min_max(line.from, line.from)), line.to);
-        let to = app.graph_world_rect_to_screen(egui::Rect::from_min_max(to, to));
-        assert!(distance_to_segment(handle, from.min, to.min) < 1.0, "the handle is on the line: {handle:?} {line:?}");
+        let (zoom, _) = app.graph_world_to_screen_transform(app.graph_scene_outer_rect());
+        let in_world = app.card_rect(&a).unwrap().right_center() + egui::vec2(4.0 / zoom, 0.0);
+        assert!(
+            distance_to_bow(in_world, line.from, line.to) <= link_hit_tolerance(1.0 / zoom),
+            "the handle's outer half is within the line's hit area: {handle:?} {line:?}"
+        );
         let centre = screen_rect(&app, &a).center();
         h.frame(&mut app, vec![egui::Event::PointerMoved(centre)]);
         h.frame(&mut app, vec![egui::Event::PointerMoved(handle)]);

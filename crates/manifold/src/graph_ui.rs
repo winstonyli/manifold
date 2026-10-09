@@ -1554,21 +1554,26 @@ impl App {
     }
 
     /// Edges first so node cards paint on top of the lines feeding them: every edge `level_edges` lists once, each
-    /// parent->child edge solid and each Link node dashed and straight in the accent colour. Both endpoints must share
-    /// the currently-viewed level. A hovered link line (`highlight`) is drawn twice as thick.
+    /// parent->child edge solid and each Link node dashed in the accent colour, both as the same bowed curve between
+    /// facing card sides (`paint_bow`). Both endpoints must share the currently-viewed level. A hovered link line
+    /// (`highlight`) is drawn twice as thick.
     pub(crate) fn draw_graph_edges(&self, ui: &egui::Ui, edges: &[LevelEdge], inv_zoom: f32) {
         for edge in edges {
             // Viewport culling: unlike a node's own rect, an edge
             // can have one endpoint off-screen and the other on --
             // or pass through the viewport with both endpoints
             // outside it -- so this checks the bounding box of the
-            // whole segment against the viewport, not either
-            // endpoint alone. Not pixel-exact for a steep diagonal
-            // that grazes past a corner of its own bounding box
-            // without actually crossing the viewport, but that's a
-            // rare, cheap-to-tolerate false negative, not a
-            // visible edge going missing.
-            if !egui::Rect::from_two_pos(edge.from, edge.to).intersects(self.camera.rect) {
+            // whole curve (its control point included) against the
+            // viewport, not either endpoint alone. Not pixel-exact
+            // for a steep diagonal that grazes past a corner of its
+            // own bounding box without actually crossing the
+            // viewport, but that's a rare, cheap-to-tolerate false
+            // negative, not a visible edge going missing.
+            let bounds = match edge.curve {
+                EdgeCurve::Bow => crate::link_gestures::bow_bounds(edge.from, edge.to),
+                EdgeCurve::Horizontal => egui::Rect::from_two_pos(edge.from, edge.to),
+            };
+            if !bounds.intersects(self.camera.rect) {
                 continue;
             }
             let stroke = match edge.kind {
@@ -1586,15 +1591,10 @@ impl App {
                 ),
             };
             match edge.curve {
-                EdgeCurve::Straight => {
-                    ui.painter().add(egui::Shape::dashed_line(
-                        &[edge.from, edge.to],
-                        stroke,
-                        6.0 * inv_zoom,
-                        4.0 * inv_zoom,
-                    ));
+                EdgeCurve::Bow => {
+                    let dash = (edge.kind == EdgeKind::Link).then_some(inv_zoom);
+                    crate::link_gestures::paint_bow(ui.painter(), edge.from, edge.to, stroke, dash);
                 }
-                EdgeCurve::Bow => draw_graph_edge(ui.painter(), edge.from, edge.to, stroke),
                 EdgeCurve::Horizontal => {
                     let bend = ((edge.to.x - edge.from.x) / 2.0).max(20.0);
                     ui.painter().add(egui::epaint::CubicBezierShape::from_points_stroke(
@@ -1749,7 +1749,7 @@ impl App {
             }
         }
         self.card_nav_active = pass.any_focused;
-        self.draw_connect_rubber_band(ui, inv_zoom);
+        self.draw_connect_rubber_band(ui, inv_zoom, connect_target);
     }
 
     /// The current level's cards in creation order: the Tab order.
