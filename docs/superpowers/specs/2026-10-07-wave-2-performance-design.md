@@ -1,6 +1,8 @@
 # Wave 2: performance (design)
 
-Status: Designed 2026-10-07, not started. The plan is `docs/superpowers/plans/2026-10-07-wave-2-performance.md`. The scope
+Status: Implemented 2026-10-08 on `wave-2-performance` (commits `2ae8f76`, `b6542bf`, `36338f7`, `9f7018c`, `6ff1740`,
+`2da1360`, `285eadf`, `6d6b759`, `01eb4f0`, `9444b65`, `31f9829`, `6fd74fc`, `c1554a5`, `e95be81`, `bf11332`, `8b2060d`); see
+the plan's Outcome for the numbers and deviations. Designed 2026-10-07. The plan is `docs/superpowers/plans/2026-10-07-wave-2-performance.md`. The scope
 and the estimates come from the read-only fact check `.superpowers/survey/verified-wave-2.md` (at `c8b7485`), which ran no
 code: every cost in it is an estimate. This spec re-read every line and symbol it relies on at `c8b7485`. Where it departs
 from the verified file, it says so ("Deviation").

@@ -2617,3 +2617,79 @@ Stress test (adversarial passes over both documents, re-reading the code each ti
 ---
 
 ## Outcome
+
+Implemented 2026-10-08 on `wave-2-performance`, base `64c56fc` (the plan refresh).
+
+| Task | Item | Commit | Kept? | Review findings |
+|---|---|---|---|---|
+| 0 | bench module and 2000-node fixture with store ids | `2ae8f76` | pins | none; minor: report column width 44 vs 40 |
+| 1 | H3 pins: `step_sized` golden, `settle_cost` | `b6542bf` | pins | none; minor: golden skips `dt <= 0` |
+| 2 | H3 size index in `step_sized` | `36338f7` | kept | none; minor: committed where the brief said stop (see Deviations) |
+| 3 | H1a pins, `reveal-*` modes in `json-pan-profile` | `9f7018c` | pins | minor: script header comment omits `selected=`; the pan baseline was taken under load |
+| 4 | H1a rows culled to the camera | `6ff1740` | kept | minor: hit-row fill culling and the selected-row path have no paint-level test |
+| 5 | Jar pins: `jar_saves`, burst, `jar_save_cost` | `2da1360` | pins | none (batched review) |
+| 6 | Jar H3: one save per pull round | `285eadf`, `6d6b759` | kept | Important test gap (the round-end save before the jar was due was never exercised), fixed in `6d6b759` along with the minors |
+| 7 | M1 pins: `search_matches_reference`, `json_search_cost` | `01eb4f0` | pins | none (batched review) |
+| 8 | M1 search walks with one path, no per-node allocation | `9444b65` | kept | none |
+| 9 | H2 pins: `valid_targets` property test, badge test, benches | `31f9829` | pins | none (batched review) |
+| 10 | H2 hoisted linked set, `edge_menu` stops at the first target | `6fd74fc`, `c1554a5` | steps 1-2 kept; steps 3-4 reverted | low: a test doc comment over 120 columns, rewrapped in `c1554a5` |
+| 11 | teardown deletes links first | none | not kept | n/a (reverted before review) |
+| 12 | H5 pins: `Journal::begins`, `app_save_costs` at 2000 | `e95be81` | pins | none (batched review) |
+| 13 | H5 no-op save fast path | none | not kept | n/a (reverted before review) |
+| 14 | H1b: a far reveal moves the card's window; `+ N earlier` | `bf11332`, `8b2060d` | kept | Low x3: `reveal` reads the unclamped `first`; a 130-column comment; no tests with `skip > 0`. `8b2060d` added the tests, the rewrap and the README paging line |
+| 15 | mirror `links_at` index | none | skipped | n/a |
+| 16 | gate, docs | this record | n/a | n/a |
+
+Skipped and reverted parts, with why:
+
+- **Task 10 step 3 (binary search in `pick_targets`)**: pick-target frame best 1.4-1.5 ms before and after, under the 5% rule. Reverted.
+- **Task 10 step 4 (Tab-slot map)**: idle top-level frame best 0.88 ms (twice) before, 0.93-0.96 ms after, under the 5% rule. Reverted.
+- **Task 11 (teardown links first)**: 1.69-1.78x over two alternating A/B rounds (best 23.1 to 13.0 ms), below the 2x rule. Reverted, no commit.
+- **Task 13 (no-op save fast path)**: 1.71-1.81x at 2000 tabs over four alternating pairs (241-267 to 136-147 us), below the 2x rule. Reverted, no commit. While the change was in, the full suite passed, and the red and mutation checks failed the new tests as they should.
+- **Task 15 (mirror link index)**: skipped. After Task 10, `valid_targets` at L=100 is 0.50 ms, under the 1 ms trigger.
+
+Benches (release). "Contended" means the CPU was busy with other sessions' jobs, so read the number as an upper bound. Defender real-time protection was off (`False`) at every check. Numbers are best / median where the report gave both.
+
+| Bench | Before | After | CPU | Decision |
+|---|---|---|---|---|
+| `settle_cost`, g0 (166 cards) | 48.6 / 50.0 ms (Task 1 baseline); 56.6 / 58.6 ms (Task 2, same session) | 10.8 / 11.4 ms | 5% (Task 1); 10-50%, noisy (Task 2) | Task 1: over 8 ms, so Task 2 proceeds. Task 2: g0 best down about 81% (rule 25%), kept |
+| `settle_cost`, top (675 cards) | 782.0 / 797.2 ms (Task 1); 904.3 / 975.8 ms (Task 2, same session) | 131.1 / 281.0 ms | as above | about 86% down, kept |
+| `json-pan-profile` pan, ms per command | 31.7 (Task 3); 37.9 (Task 4 before) | 34.8 (Task 4 after) | 88% and 37% (Task 3); 92% before and 24% after (Task 4) | baseline |
+| `reveal-numbers`, ms per command | 893 (Task 3); 1079 (Task 4 before) | about 49 (three-point; 36.3 for the 1 to 2 s pair) | 18% (Task 3); 48% before, 22-65% after (Task 4) | Task 3: over 1.2x pan, so Task 4 proceeds. Task 4: about 95% down (rule 30%), kept |
+| `reveal-objects`, ms per command | 700 (Task 3); 795 (Task 4 before); 537 and 782 (Task 14 before) | 453 (Task 4 after, 13x pan); 22.5 and 23.3, noisy (Task 14 after) | 11-95% (Task 3); 38% before, 51% after (Task 4); 27-93% (Task 14) | After Task 4 still over 1.5x pan, so Task 14 proceeds. Task 14: over 95% down (rule 50%), kept |
+| `jar_save_cost` (3000 cookies) | 42.2 / 44.6 ms (Task 5); 55.1 / 67.4 ms (Task 6 A) | 65.5 / 71.2 ms (Task 6 B) | 88-100% (Task 5); about 75% and about 92% (Task 6), contended | the per-save cost is unchanged; the change cuts the count: a 15-pull burst goes from 15 saves to 1 (rule: exactly one), kept |
+| `json_search_cost`, "item 9" (14 000 items) | 31.2 / 34.0 ms (Task 7); 29.5 / 37.5 ms (Task 8 before) | 4.5 / 6.4 ms | 31-100%, contended (Task 7); 20% before, 35% after (Task 8) | Task 7: over 8 ms, so Task 8 proceeds. Task 8: about 85% down (rule 25%), kept |
+| `json_search_cost`, "zzz" | 32.0 / 37.4 ms (Task 7); 31.0 / 38.4 ms (Task 8 before) | 4.3 / 5.4 ms | as above | kept |
+| `link_query_cost`, `valid_targets` L=20 / 100 / 300 | 3.7 / 7.7 / 20.4 ms best (Task 9, contended); 1.1 / 3.3 / 11.4 ms best (Task 10 A/B) | 510 / 502 / 557 us best | 40-100% (Task 9); 10-23% (Task 10) | Task 9: L=100 over 1 ms, so Task 10 proceeds. L=100 6.6x (rule 2x), hoist kept. Afterwards L=100 is 0.50 ms, under the 1 ms trigger, so Task 15 is skipped |
+| `link_query_cost`, `has_valid_target` L=20 / 100 / 300 | 7.3 / 19.8 / 70.2 us best (Task 10 A/B) | 4.5 / 16.8 / 46.7 us best | 10-23% | kept |
+| `graph_frame_cost`, node menu open | 12.0 / 23.4 ms (Task 9, contended); 4.3 ms best (Task 10 A/B) | 1.3 ms best | 40-100%; 10-23% | `edge_menu` kept. The ratio overstates: the first baseline run was under heavier load (all frames 1.3-2.9 ms vs about 0.9 ms later). The change is a strict reduction (first hit instead of a full scan, called per frame) |
+| `graph_frame_cost`, other rows (Task 9 baseline, contended) | idle top 4.9 / 7.7 ms; hovering a card 5.9 / 9.7; pick-target 7.7 / 9.6; filtered 4.2 / 6.3; idle first group 3.1 / 5.5 | n/a | 40-100% | baseline |
+| Task 10 steps 3 and 4 (best) | pick-target 1.4-1.5 ms; idle top 0.88 ms (twice) | 1.4-1.5 ms; 0.93-0.96 ms | not recorded | both reverted (rule 5%) |
+| `teardown_cost` (2000 notes, 300 links) | 51 / 72 ms (Task 9, contended); 25.6 / 29.5 ms (Task 11 round 1) | 14.5 / 17.5 ms (round 1); round 2 alternating, best: before 23.1 and 23.4 ms, after 13.0 and 14.3 ms | about 31% before and 70% after (round 1); 21.9-33.2% on accepted round 2 runs | 1.69-1.78x, rule 2x not met, not kept |
+| `app_save_costs`, "save_session, nothing changed", 2000 tabs | 677.6 / 767.4 us (Task 12, contended); 241.0-267.2 us best (Task 13, alternating base) | 135.6-147.3 us best (Task 13, alternating new) | 90-100% (Task 12); 23-26% (Task 13) | 1.71-1.81x, rule 2x not met, not kept |
+| `app_save_costs`, other sizes | 300 tabs 124 us, 3000 tabs 355 us best (Task 13 base) | 31.5 us (about 3.9x), 210 us (about 1.7x) | as above | not kept |
+| `app_save_costs`, other rows (Task 12 baseline) | snapshot of every node 4.4 / 7.3 ms; one url changed 895.3 us / 1.1 ms; `local_state` 2.6 / 3.1 ms; `maybe_write_local` 3.6 / 4.7 ms | n/a | 90-100% | baseline |
+
+Saves per action (Task 12, `begins`): menu Delete 2, enter a group 1, Join drop 2, finish a link 2. Task 13 got these to `[1, 0, 1, 1]`, but that change was reverted, so the pins stay at these counts.
+
+**Tests:** 1034 passed, 0 failed, 11 ignored (`manifold`).
+
+**Gate (full, run 2026-10-08 18:22-18:28):** three two-instance runs passed (exit=0 each) and the smoke test passed (exit=0, pass=48 fail=0). CPU 24-57% during the run, 46.3% at the end. Defender real-time protection off (`False`). Two earlier full gates on the same branch also passed: after Task 6 (3x ok, smoke 48/0, CPU 18-70%, Defender off) and after Task 14 (3x ok, smoke 48/0, CPU 66.8% at the start and 25.6% at the end, Defender off).
+
+**Deviations from the plan:**
+- Decision 11 was simplified by the controller on 2026-10-08: an implementer commits only when the keep rule is met, and otherwise reverts and reports. The plan had implementers stop before the commit.
+- Task 2 was committed by its implementer past a stop point: its brief said to stop before committing; the keep rule was met, so the review found it harmless.
+- Tasks 4 and 14 wrote their tests together with the implementation, not compiled red first.
+- Task 0 kept `use crate::store::model::Kind;` because other tests still use it. Fixture ids are random store ids, so tests take them from `Fixture`, never `"g0"` or `"n{i}"`.
+- Task 9 times `has_valid_target` with `{ black_box(...); }` instead of `drop(black_box(...))` (rustc `dropping_copy_types`). Task 5's `jar_save_cost` uses `Jar { cookies, ..Jar::default() }` (clippy `field_reassign_with_default`).
+- Co-author lines differ from the dispatch text: Task 0 used `Claude Haiku 5.5`, and Task 14 used `Claude Opus 5.5` (the model that did the work) where the dispatch said `Sonnet 5.5`.
+- Task 14 changed `docs/superpowers/specs/2026-09-27-json-node-rework-design.md` at line 14 (the overrides list) as well as the Paging bullet near line 53, because the brief's "line 53, the saved overrides list" was ambiguous. It also updated that spec's Outline and "Saved view state" notes.
+- Task 11 and Task 13 were re-measured as alternating A/B runs gated on CPU under 35% after the first back-to-back figures were unclean; the verdicts come from the alternating runs. Task 11 had only two accepted runs per side because the machine was loaded.
+
+**Parked:**
+- Debounce, M2 and `CardView`, per the plan (not in scope).
+- Task 11, teardown links first: 1.7-1.8x, a real gain below the 2x rule. Revisit only if teardown shows up in a profile.
+- Task 13, no-op save fast path: the store part (`begin`) went to zero, but about 140 us at 2000 tabs remains in `after_save` housekeeping (`mirror.retain`, `layout.retain`, `held_text.retain`, `flush_history`). Extending the fast path to skip it needs an audit of whether any node leaves `nodes` without going through `queue_delete`. The absolute cost is about 245 us per no-op save at 2000 tabs.
+- Task 14 (H1b): a click on `+ N earlier` was never tried in the running app. It is covered by unit tests of `show_earlier` and the hit-test arithmetic and by the gate's smoke test, and no headless command clicks the row.
+- Task 14, Low: `reveal` compares against the unclamped stored `first`, so after the array shrinks, a reveal in the clamped window can move the window to the same page alone. Harmless; clamp in `reveal` if wanted.
+- Timing caveat: most remaining timings were taken under CPU contention from other sessions (the CPU column above), so treat them as upper bounds.
