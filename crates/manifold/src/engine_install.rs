@@ -10,6 +10,7 @@ use std::time::Duration;
 
 use crate::process_manager::EngineKind;
 
+use ipc_protocol::transport::to_hex;
 use sha1::Sha1;
 use sha2::{Digest, Sha256};
 
@@ -382,16 +383,12 @@ pub(crate) fn verify(path: &Path, pin: &Pin) -> Result<(), InstallError> {
         sha256.update(&buf[..n]);
         sha1.update(&buf[..n]);
     }
-    for (want, got) in [(pin.sha256, hex(&sha256.finalize())), (pin.sha1, hex(&sha1.finalize()))] {
+    for (want, got) in [(pin.sha256, to_hex(&sha256.finalize())), (pin.sha1, to_hex(&sha1.finalize()))] {
         if !want.eq_ignore_ascii_case(&got) {
             return Err(InstallError::BadHash { want: want.to_string(), got });
         }
     }
     Ok(())
-}
-
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// Where the runtime entry `path` goes under `into`, or None to skip it. The path is `<top>/Release/..`
@@ -1388,8 +1385,8 @@ Connection: close
     fn verify_rejects_a_wrong_hash_and_accepts_the_right_one() {
         let path = temp_dir("ei8").join("f");
         std::fs::write(&path, b"hello").unwrap();
-        let sha256: &'static str = Box::leak(hex(&Sha256::digest(b"hello")).into_boxed_str());
-        let sha1: &'static str = Box::leak(hex(&Sha1::digest(b"hello")).into_boxed_str());
+        let sha256: &'static str = Box::leak(to_hex(&Sha256::digest(b"hello")).into_boxed_str());
+        let sha1: &'static str = Box::leak(to_hex(&Sha1::digest(b"hello")).into_boxed_str());
         let good = Pin { version: "1", url: "u", size: 5, sha1, sha256 };
         verify(&path, &good).unwrap();
         let bad256 = Pin { sha256: "00", ..good.clone() };
@@ -1435,8 +1432,8 @@ Connection: close
             version: "9.9",
             url: leak(url),
             size: bytes.len() as u64,
-            sha1: leak(hex(&Sha1::digest(&bytes))),
-            sha256: leak(hex(&Sha256::digest(&bytes))),
+            sha1: leak(to_hex(&Sha1::digest(&bytes))),
+            sha256: leak(to_hex(&Sha256::digest(&bytes))),
         }
     }
 

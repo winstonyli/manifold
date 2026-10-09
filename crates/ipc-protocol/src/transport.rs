@@ -172,19 +172,22 @@ pub const TOKEN_LEN: usize = 16;
 /// The secret a spawned WSL engine-host must present (`ENGINE_TOKEN`, as hex).
 pub type Token = [u8; TOKEN_LEN];
 
-pub fn token_to_hex(token: &Token) -> String {
-    token.iter().map(|b| format!("{b:02x}")).collect()
+/// Lowercase hex of `bytes`. The only form in which text that came from a page crosses a shell boundary.
+pub fn to_hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// The bytes `hex` spells, or `None` unless it is an even number of ASCII hex digits (`from_str_radix`
+/// alone would also take a leading `+`).
+pub fn from_hex(hex: &str) -> Option<Vec<u8>> {
+    if !hex.len().is_multiple_of(2) || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    (0..hex.len() / 2).map(|i| u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).ok()).collect()
 }
 
 pub fn token_from_hex(hex: &str) -> Option<Token> {
-    if hex.len() != TOKEN_LEN * 2 || !hex.is_ascii() {
-        return None;
-    }
-    let mut token = [0u8; TOKEN_LEN];
-    for (i, byte) in token.iter_mut().enumerate() {
-        *byte = u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).ok()?;
-    }
-    Some(token)
+    from_hex(hex)?.try_into().ok()
 }
 
 /// Used only for the WSL2-hosted WebKit engine-host: manifold listens on
@@ -451,9 +454,21 @@ mod token_tests {
     #[test]
     fn the_token_round_trips_through_hex() {
         let token: Token = std::array::from_fn(|i| (i * 17) as u8);
-        assert_eq!(token_from_hex(&token_to_hex(&token)), Some(token));
+        assert_eq!(token_from_hex(&to_hex(&token)), Some(token));
         assert_eq!(token_from_hex("zz"), None);
         assert_eq!(token_from_hex(&"é".repeat(16)), None);
+    }
+
+    #[test]
+    fn hex_round_trips_any_bytes_and_refuses_anything_else() {
+        let text = "https://x/'$(touch${IFS}/tmp/pwn)'\";`id`\n\u{e9}";
+        assert_eq!(from_hex(&to_hex(text.as_bytes())).unwrap(), text.as_bytes());
+        assert!(to_hex(text.as_bytes()).bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)));
+        assert_eq!(from_hex("0A").unwrap(), [10]);
+        for bad in ["0", "zz", "+f", "0x", "é0"] {
+            assert_eq!(from_hex(bad), None, "{bad}");
+        }
+        assert_eq!(token_from_hex(&"+f".repeat(16)), None, "a sign is not a hex digit");
     }
 
     #[test]

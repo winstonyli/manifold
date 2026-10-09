@@ -923,9 +923,8 @@ fn windows_path_to_wsl(path: &Path) -> String {
     s
 }
 
-/// POSIX single-quote escaping for building the `bash -c` command string
-/// `spawn_webkit_tab` passes to `wsl.exe` (env vars there since `wsl.exe`
-/// doesn't forward this process's own environment — see that function).
+/// POSIX single-quote escaping for the one path `webkit_shell_command` splices into its `bash -c`
+/// string: derived from the running exe's location, never from a page.
 fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', r"'\''"))
 }
@@ -1320,6 +1319,32 @@ pub fn spawn_tab(
 /// can see and retry) well within a minute beats an unbounded app freeze.
 const WEBKIT_CONNECT_TIMEOUT: Duration = Duration::from_secs(45);
 
+/// The `bash -c` string `spawn_webkit_tab` hands to `wsl.exe -d Ubuntu -- bash -c`. It crosses two
+/// shells there (the distro's login shell parses what `wsl.exe` re-joins, then bash), so text from a
+/// page must not appear in it as itself.
+fn webkit_shell_command(
+    initial_url: &str,
+    port: u16,
+    token: &transport::Token,
+    binary_path: &str,
+) -> std::io::Result<String> {
+    /// Windows' command line holds 32 767 characters; leave the rest of this one room.
+    const MAX_URL_HEX: usize = 16_384;
+    let url_hex = transport::to_hex(initial_url.as_bytes());
+    if url_hex.len() > MAX_URL_HEX {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "the URL is too long to start a WebKit tab with",
+        ));
+    }
+    Ok(format!(
+        "ENGINE_INITIAL_URL_HEX={url_hex} ENGINE_TCP_PORT={port} ENGINE_TOKEN={} \
+         ENGINE_HOST_IP=$(ip route | awk '/^default/ {{print $3}}') xvfb-run -a {}",
+        transport::to_hex(token),
+        shell_quote(binary_path),
+    ))
+}
+
 fn spawn_webkit_tab(tab_id: &str, initial_url: &str) -> std::io::Result<EngineTab> {
     // Bind an ephemeral port (0 = "pick one for me") so concurrent tabs
     // don't collide. Bound on all interfaces, not just loopback: WSL2's
@@ -1346,19 +1371,11 @@ fn spawn_webkit_tab(tab_id: &str, initial_url: &str) -> std::io::Result<EngineTa
     // changes across WSL2 restarts, so it's discovered fresh here rather
     // than hardcoded.
     // A random secret the engine must send before it is accepted: the listener is on
-    // every interface (`listen_remote`). It sits in this command line, visible to the
+    // every interface (`listen_remote`). It sits in this command line, as hex, visible to the
     // same user's processes only.
     let mut token = [0u8; transport::TOKEN_LEN];
     getrandom::fill(&mut token).map_err(|e| std::io::Error::other(e.to_string()))?;
-    let command = format!(
-        "ENGINE_TAB_ID={} ENGINE_INITIAL_URL={} ENGINE_TCP_PORT={} ENGINE_TOKEN={} \
-         ENGINE_HOST_IP=$(ip route | awk '/^default/ {{print $3}}') xvfb-run -a {}",
-        shell_quote(tab_id),
-        shell_quote(initial_url),
-        port,
-        transport::token_to_hex(&token),
-        shell_quote(&binary_path),
-    );
+    let command = webkit_shell_command(initial_url, port, &token, &binary_path)?;
     let mut child = Command::new("wsl.exe")
         .args(["-d", "Ubuntu", "--", "bash", "-c", &command])
         .stdout(stdout_file)
@@ -1415,6 +1432,31 @@ fn spawn_webkit_tab(tab_id: &str, initial_url: &str) -> std::io::Result<EngineTa
 mod tests {
     use super::*;
     use std::path::Path;
+
+    /// Page-controlled text (a URL typed, pasted or synced) must reach `wsl.exe` only as hex: whatever
+    /// the distro's login shell or bash do with quotes, `$`, backticks or newlines, they never see any.
+    #[test]
+    fn page_controlled_text_never_reaches_the_wsl_command_line() {
+        let token = [7u8; transport::TOKEN_LEN];
+        let build = |url: &str| webkit_shell_command(url, 4000, &token, "/mnt/c/repo/target-linux/debug/host").unwrap();
+        let benign_url = "https://example.com/";
+        let hostile_url = "https://x/'$(touch${IFS}/tmp/pwn)'\";`id`\n&|;<>\\ \u{e9}";
+        let (benign, hostile) = (build(benign_url), build(hostile_url));
+        assert!(!hostile.contains("pwn") && !hostile.contains('\n'), "{hostile}");
+        // The two commands are the same text once each URL's hex is masked: nothing else depends on it.
+        assert_eq!(
+            benign.replace(&transport::to_hex(benign_url.as_bytes()), "H"),
+            hostile.replace(&transport::to_hex(hostile_url.as_bytes()), "H"),
+        );
+        assert!(!benign.contains("ENGINE_TAB_ID"), "the tab id is not passed: {benign}");
+    }
+
+    #[test]
+    fn a_url_too_long_for_a_command_line_is_refused_by_name() {
+        let token = [7u8; transport::TOKEN_LEN];
+        let err = webkit_shell_command(&"a".repeat(20_000), 4000, &token, "/x").unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+    }
 
     /// The host's reader of one engine connection, fed `version` and then a
     /// well-formed message; returns the first event it delivers.

@@ -33,13 +33,13 @@ fn frame_due(size: (u32, u32), pixels: &[u8], last: Option<&SentFrame>, since_se
 }
 
 fn main() {
-    // Read (and required) so a missing env var fails fast with a clear
-    // message, matching the other engine-hosts' contract with
-    // process_manager.rs — but this engine-host has no actual use for it:
-    // RemoteTransport is keyed by TCP port, not by tab_id (there's no
-    // shared memory path here to name a file after).
-    let _tab_id = std::env::var("ENGINE_TAB_ID").expect("ENGINE_TAB_ID env var required");
-    let initial_url = std::env::var("ENGINE_INITIAL_URL").unwrap_or_else(|_| "https://example.com".to_string());
+    // Hex of the UTF-8 URL (process_manager.rs's webkit_shell_command): page text crosses the WSL shells
+    // only as hex. A missing variable keeps the old default; a malformed one is a bug in the host.
+    let initial_url = match std::env::var("ENGINE_INITIAL_URL_HEX") {
+        Ok(hex) => String::from_utf8(transport::from_hex(&hex).expect("ENGINE_INITIAL_URL_HEX must be hex"))
+            .expect("ENGINE_INITIAL_URL_HEX must spell UTF-8"),
+        Err(_) => "https://example.com".to_string(),
+    };
     let port: u16 = std::env::var("ENGINE_TCP_PORT")
         .expect("ENGINE_TCP_PORT env var required")
         .parse()
