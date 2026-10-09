@@ -1,6 +1,8 @@
 //! Links: stored `Kind::Link` nodes joining two cards by `from` and `to`. Like a jar, a link is mirror and store
 //! state, never a graph card; it goes with either end (`queue_delete`, `remove_remotely_deleted`).
 
+use std::collections::HashSet;
+
 use crate::caps::{Storage, LINK, OPENED_FROM};
 use crate::session_sync::link_id;
 use crate::store::model::{field, FieldValue, NodeId};
@@ -35,8 +37,16 @@ pub(crate) struct EdgeRef {
 impl App {
     /// Whether an `edge` edge from `from` to `to` may be drawn now, and if not, why not. Checks liveness before the
     /// type table so a missing card reads as `NotLive`, not as an unknown type. A running download is not live
-    /// here: it is not stored until it completes, so the save would write it as none (a half-made link).
-    fn check_connect(&self, edge: &str, from: &str, to: &str) -> Result<(), ConnectError> {
+    /// here: it is not stored until it completes, so the save would write it as none (a half-made link). With
+    /// `linked` (`linked_for`), whether a link already joins them is a set lookup; with `None`, a scan of the links
+    /// (`link_between`).
+    fn check_connect(
+        &self,
+        edge: &str,
+        from: &str,
+        to: &str,
+        linked: Option<&HashSet<NodeId>>,
+    ) -> Result<(), ConnectError> {
         let row = crate::caps::edges().row(edge).filter(|r| r.verb().is_some()).ok_or(ConnectError::NotAllowed)?;
         let stored_card = |id: &str| self.nodes.contains_key(id) && !self.is_running_download(id);
         if !stored_card(from) || !stored_card(to) {
@@ -53,7 +63,10 @@ impl App {
         }
         let exists = match row.storage() {
             Storage::Field(field::PARENT) => self.mirror.parent(from) == Some(to),
-            Storage::Node(_) => self.link_between(from, to).is_some(),
+            Storage::Node(_) => match linked {
+                Some(linked) => to.parse::<NodeId>().is_ok_and(|to| linked.contains(&to)),
+                None => self.link_between(from, to).is_some(),
+            },
             _ => return Err(ConnectError::NotAllowed),
         };
         if exists {
@@ -64,7 +77,7 @@ impl App {
 
     /// Draws an `edge` edge from `from` to `to`: a parent link, or a Link node, as the edge's table row stores it.
     pub(crate) fn connect(&mut self, edge: &str, from: &str, to: &str) -> Result<(), ConnectError> {
-        self.check_connect(edge, from, to)?;
+        self.check_connect(edge, from, to, None)?;
         match crate::caps::edges().row(edge).map(|r| r.storage()) {
             Some(Storage::Field(field::PARENT)) => self.edit_parent(from, Some(to.to_string())),
             Some(Storage::Node(_)) => {
@@ -101,6 +114,26 @@ impl App {
         })
     }
 
+    /// The cards a link joins to `from`, either way: `check_connect`'s "already linked", built once per query
+    /// instead of once per candidate. A half-made link (an end `None`) joins nothing, as in `link_between`.
+    fn linked_to(&self, from: &str) -> HashSet<NodeId> {
+        let Ok(me) = from.parse::<NodeId>() else { return HashSet::new() };
+        self.links_naming(from)
+            .iter()
+            .filter_map(|link| match self.mirror.link_ends(link) {
+                (Some(a), Some(b)) if a == me => Some(b),
+                (Some(a), Some(b)) if b == me => Some(a),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// `linked_to(from)` for an edge stored as a Link node; `None` for another edge, which never reads it.
+    fn linked_for(&self, edge: &str, from: &str) -> Option<HashSet<NodeId>> {
+        let node_stored = crate::caps::edges().row(edge).is_some_and(|r| matches!(r.storage(), Storage::Node(_)));
+        node_stored.then(|| self.linked_to(from))
+    }
+
     /// Whether `other` is a live card shown at the same level as `node`: the far end of an edge worth listing.
     fn shown_with(&self, node: &str, other: &str) -> bool {
         other != node && self.nodes.contains_key(other) && self.mirror.group(other) == self.mirror.group(node)
@@ -130,15 +163,21 @@ impl App {
 
     /// Every live card `connect(edge, from, _)` would accept, in id order.
     pub(crate) fn valid_targets(&self, edge: &str, from: &str) -> Vec<String> {
-        let mut targets: Vec<String> =
-            self.nodes.keys().filter(|to| self.check_connect(edge, from, to).is_ok()).cloned().collect();
+        let linked = self.linked_for(edge, from);
+        let mut targets: Vec<String> = self
+            .nodes
+            .keys()
+            .filter(|to| self.check_connect(edge, from, to, linked.as_ref()).is_ok())
+            .cloned()
+            .collect();
         targets.sort();
         targets
     }
 
     /// Whether `valid_targets(edge, from)` is non-empty, stopping at the first (`shows_link_handles`, every frame).
     pub(crate) fn has_valid_target(&self, edge: &str, from: &str) -> bool {
-        self.nodes.keys().any(|to| self.check_connect(edge, from, to).is_ok())
+        let linked = self.linked_for(edge, from);
+        self.nodes.keys().any(|to| self.check_connect(edge, from, to, linked.as_ref()).is_ok())
     }
 
     /// Pick-target mode's end on a target: draws the chosen edge from the mode's source to `target`, ends the mode and
@@ -246,7 +285,7 @@ mod tests {
     use crate::store::testutil::XorShift;
     use crate::App;
 
-    /// Wave 2 (H2): `valid_targets` holds exactly the cards `check_connect` accepts, for every source and edge, over
+    /// Wave 2 (H2): `valid_targets` holds exactly the cards `check_connect` accepts (`None`: the unhoisted scan), for every source and edge, over
     /// random cards (notes, sleeping tabs, completed and running downloads, two groups) in three levels, random
     /// connects, a half-made link and a dangling one; `has_valid_target` is its non-emptiness.
     #[test]
@@ -302,7 +341,7 @@ mod tests {
             for edge in [LINK, OPENED_FROM] {
                 let targets = app.valid_targets(edge, from);
                 for to in &ids {
-                    let accepted = app.check_connect(edge, from, to).is_ok();
+                    let accepted = app.check_connect(edge, from, to, None).is_ok();
                     assert_eq!(targets.binary_search(to).is_ok(), accepted, "{edge} {from} -> {to}");
                 }
                 assert_eq!(app.has_valid_target(edge, from), !targets.is_empty(), "{edge} {from}");

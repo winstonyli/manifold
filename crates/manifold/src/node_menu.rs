@@ -803,7 +803,7 @@ impl App {
         }
         let verbs = crate::caps::edges().user_creatable().filter_map(|row| {
             let label = row.verb()?;
-            (!self.valid_targets(row.id(), id).is_empty()).then(|| EdgeMenuRow {
+            self.has_valid_target(row.id(), id).then(|| EdgeMenuRow {
                 action: NodeAction::Connect(row.id()),
                 label: label.to_string(),
                 hover: Some("Then click a highlighted card (Esc cancels)".to_string()),
