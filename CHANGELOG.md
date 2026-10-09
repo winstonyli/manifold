@@ -9,6 +9,17 @@ One entry per tagged release, newest first. The annotated tag `vX.Y.Z` carries t
 - **Link gesture polish.** Connect handles are 28 by 16 pills, show on hover even when the card has nothing to link to, and show on every card while you drag. A release within 24 points of a card links it, so a near miss counts. Links and opened-from lines are now one curved style between the facing sides of the two cards, and clicking a link means clicking its curve.
 - **Deselect by clicking.** A left-click on empty graph canvas clears the tab selection, and Ctrl-click on a tab card toggles it in or out of the selection without opening it.
 
+### Integrity
+
+- The engine installer stops a download at the pinned size and deletes its `.part` if the stream runs past it, instead of reading to the end of the stream.
+- Redirect fetches run at most four at once; the rest wait. Favicon fetches share the same limit (`net::Throttle`).
+- The WebKit engine's command line carries the start URL as hex (`ENGINE_INITIAL_URL_HEX`), so page-controlled text no longer passes through the WSL shell. `ENGINE_TAB_ID` is dropped.
+
+### Known
+
+- The WebKit host (`manifold-engine-webkit`) must be rebuilt in WSL after pulling: an old host ignores `ENGINE_INITIAL_URL_HEX` and opens its default page instead of the tab's URL.
+- Not done: owner-only local engine pipes with a peer PID check (held for a cross-user manual check).
+
 ## v0.4.0 (2026-10-08)
 
 101 commits since v0.3.0.

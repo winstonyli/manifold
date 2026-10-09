@@ -894,7 +894,23 @@ This crate does not build on Windows. Verify with, from PowerShell: `wsl.exe -d 
 
 ## Outcome
 
-(Left empty on purpose. The controller fills it in after Task 7: per task, the commit, the red-first output, the report's verification route for Task 6, whether Task 5's manual cross-user check was done, the gate's CPU and Defender readings, and any item dropped or parked while executing.)
+Filled in 2026-10-09 for the round that shipped E11, E12 and E6. E7 was held.
+
+| Task | Commit | Red first |
+|---|---|---|
+| 1 E11, stop at the pinned size | `a069090` | Red first, confirmed |
+| 2 E12, `net::Throttle` and the redirect fetcher's cap | `8d1d847` | Red first, confirmed |
+| 3 E12, `FaviconFetcher` onto `Throttle` | `7d0bcea` | A refactor onto tested code: no red step |
+| 4 E7a, accept only the spawned child | none | HELD |
+| 5 E7b, owner-only DACL on both pipes | none | HELD |
+| 6 E6, hex on the WSL command line | `e612076` | Red first, confirmed |
+
+- **Task 6 verification.** `manifold-engine-webkit` does not build on Windows, so it was checked with `cargo check` in WSL Ubuntu (2m38s). It compiled; it was never run. The WebKit host must be rebuilt in WSL after pulling.
+- **Tasks 4 and 5 held.** The PID check and the owner-only DACL wait for a manual cross-user check, which has not been done. Nothing of them is committed. The README entry lists them as held.
+- **Parked, with reasons (README, "Fixed (2026-10-09, wave 3a)").** Random pipe-name suffix (with E10, frame-file naming); free-space check; streaming redirect fetches to disk (`content::passes` needs the whole body); `wsl.exe --exec`.
+- **Reviews.** Tasks 1 to 3: PASS, with 4 minor findings. Task 6: review pending, see `review-6.md`.
+- **Gate.** Pending.
+- **Docs.** README entry and the CEF-install `.part` sentence, CHANGELOG (Unreleased: Integrity, Known), the survey (`.superpowers/survey/engines.md`: E6, E11, E12 done, E7 planned and held), `net.rs` module doc and a `debug_assert!` in `Throttle::finish`.
 
 ## Review rounds
 

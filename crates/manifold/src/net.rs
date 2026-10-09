@@ -3,7 +3,8 @@
 //! User-Agent, and a fetch that keeps the error's reason (with any URL left
 //! out). Engines fetch pages themselves. The suggestions and the installer
 //! build their own requests on `agent()`; the installer shares
-//! `body_budget` and `describe`.
+//! `body_budget` and `describe`. `Throttle` is the queue that caps how many
+//! fetches run at once (redirect fetches and favicons share it).
 
 use std::collections::VecDeque;
 use std::sync::OnceLock;
@@ -107,6 +108,7 @@ impl<J> Throttle<J> {
     /// A running job finished. The next waiting job takes its slot and is returned to start; with
     /// nothing waiting the slot frees.
     pub(crate) fn finish(&mut self) -> Option<J> {
+        debug_assert!(self.running > 0, "Throttle::finish without a running job");
         let next = self.waiting.pop_front();
         if next.is_none() {
             self.running = self.running.saturating_sub(1);
