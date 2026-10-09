@@ -38,19 +38,21 @@ line to disconnect"). Adds two gestures on top of `App::connect` / `disconnect`;
 
 ## A. Drag from an edge handle to connect
 
-- **Handles:** one per side, centred on the card's edge midpoint, ~12 screen px (scaled by `inv_zoom`). Shown on hover
-  only (like Eject and Close), only on cards that are valid link ends, never in a JSON level, never while another
-  gesture owns the pointer. Hidden when the card's edge is under 44 screen px (half the edge must clear the 16 px Audio control plus
-  half a handle) or the level is drawn simplified
-  (`graph_lod_simplified`), where they would collide with the corner controls.
+- **Handles:** one per side, a 28 by 16 screen point pill (long side along the edge, scaled by `inv_zoom`) centred on
+  the card's edge midpoint. Shown on hover (like Eject and Close), whether or not the card has a valid link target, on
+  every card while a connect-drag runs, never in a JSON level, never while another gesture owns the pointer. Hidden
+  when the card's edge is under 60 screen px (half the edge must clear the 16 px Audio control plus half a handle) or
+  the level is drawn simplified (`graph_lod_simplified`), where they would collide with the corner controls.
 - **Gesture:** press on a handle starts a connect-drag; the card does not move, is not selected, and never emits a
   `Drop`. State: `connect_drag: Option<String>` (the source id) beside `connecting`. While it runs, `connecting` is set
   to `(source, LINK)` so the existing ring on `valid_targets` and the brighter ring on the hovered target come free. A
-  rubber-band dashed line is drawn from the source centre to the pointer.
+  rubber-band dashed bow is drawn from the source's side facing the pointer to the pointer (to the target's facing
+  side once there is one).
 - **Release:** the target is the card under the *pointer* (not the dragged card's centre, unlike the drop test),
-  found by walking `level_items()` in reverse as right-click does. A valid target calls `finish_connect`; a release on
-  empty canvas, the source, or an invalid card cancels silently (no toast for empty canvas; `finish_connect`'s existing
-  toast for a refused pair). Esc cancels.
+  found by walking `level_items()` in reverse as right-click does, or else the nearest valid target within the drop
+  tolerance (see "Polish"). A valid target calls `finish_connect`; a release on empty canvas or the source cancels
+  silently, and an exact hit on a refused card toasts (`finish_connect`'s existing toast for a refused pair). Esc
+  cancels.
 - **Lifecycle:** `connect_drag` is reset wherever `dragging` and `connecting` are reset (`end_stale_drag`,
   `end_stale_connect`, session replace, source removed or off level). The pick-target "any primary click cancels"
   rule fires on `primary_clicked`, so a press-drag-release is not cancelled by it; a release on the handle without
@@ -68,9 +70,10 @@ Supersedes the handle, release and drawing details above where they differ.
   control + half the pill's long side) = 2 * (16 + 14).
 - **Drop tolerance:** a release on no card takes the nearest card other than the source within
   `DROP_TOLERANCE_PX` = 24 screen points (24 / zoom world units) of its rect, the topmost of equals
-  (`App::card_within`). A card under the pointer still wins, and if that is the source nothing is taken. The target
-  ring and the release read the same `connect_drag_target`. Every card other than the source is eligible, valid
-  target or not (a refused pair toasts, as before).
+  (`App::card_within`). Only valid targets (`valid_targets`, the cards the ring marks) count in the tolerance pass, so
+  a refused neighbour never shadows a farther valid one; with only refused cards in tolerance there is no target. A
+  card under the pointer still wins, even if refused (it toasts on release), and if that is the source nothing is
+  taken. The target ring and the release read the same `connect_drag_target`.
 - **Drawing:** one routine (`link_gestures::paint_bow`) draws every edge between cards, links (dashed accent) and
   opened-from (solid) alike, as the quadratic bow of `bow_control` (control point = chord midpoint + perpendicular
   * min(15% of the length, 30 world units)) between **facing side midpoints**. Facing rule (`facing_sides`): take
@@ -84,6 +87,11 @@ Supersedes the handle, release and drawing details above where they differ.
   control point; `EXPORTSTATE` `edges[].screen` is the curve at t = 0.5; the rubber band is the same bow from the
   source side facing the pointer, ending on the pointer or, with a target (within tolerance or under the pointer),
   on the target's facing side midpoint.
+
+**Parked:** `facing_sides` uses the raw centre delta, not card extents, so two wide cards that overlap horizontally but
+sit diagonally (for example 180 by 140 notes with delta (150, 130)) pick right/left although a's right edge lies beyond
+b's left edge, and the edge runs backwards through both. Why parked: the rule is stable and simple; a delta scaled by
+the cards' half extents is the cheap improvement if it ever bothers.
 
 ## Not in scope
 

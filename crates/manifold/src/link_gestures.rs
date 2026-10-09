@@ -304,16 +304,20 @@ impl App {
 
     /// The card a release at world point `at` takes: the topmost card under it (`level_items` is bottom-first, as
     /// right-click's hit-test reads it), or when none is, the nearest card other than `source` within `tolerance`
-    /// (world units) of its rect, the topmost of equals. A card under the point wins even if it is `source`, which
-    /// is then no target at all.
+    /// (world units) of its rect that is a valid link target for it (`valid_targets`, the cards the ring marks), the
+    /// topmost of equals. A card under the point wins even if it is `source` or refused: `source` is then no target at
+    /// all, and a refused card toasts on release.
     pub(crate) fn card_within(&self, at: egui::Pos2, tolerance: f32, source: &str) -> Option<String> {
         let items = self.level_items();
         let cards = || items.iter().rev().filter(|item| matches!(item.kind, crate::level::LevelItemKind::Node(_)));
         if let Some(under) = cards().find(|item| item.rect.contains(at)) {
             return (under.id != source).then(|| under.id.clone());
         }
+        // Only cards the ring marks (`valid_targets`) count here, so a refused neighbour never shadows a valid one.
+        let edge = self.connecting.as_ref().map_or(crate::caps::LINK, |(_, edge)| edge);
+        let valid = self.valid_targets(edge, source);
         let mut best: Option<(f32, &crate::level::LevelItem)> = None;
-        for item in cards().filter(|item| item.id != source) {
+        for item in cards().filter(|item| valid.contains(&item.id)) {
             let d = distance_to_rect(at, item.rect);
             if d <= tolerance && best.is_none_or(|(b, _)| d < b) {
                 best = Some((d, item));
@@ -499,6 +503,34 @@ mod tests {
         let above_c = rc.center_top() - egui::vec2(0.0, 10.0);
         assert!(distance_to_rect(above_c, rc) < distance_to_rect(above_c, rb));
         assert_eq!(app.card_within(above_c, 1e6, &a), Some(c.clone()), "the nearer of two");
+    }
+
+    #[test]
+    fn the_tolerance_pass_skips_cards_the_ring_does_not_mark() {
+        let (mut app, a, b) = two_notes();
+        app.connect(crate::caps::LINK, &a, &b).unwrap();
+        assert!(!app.valid_targets(crate::caps::LINK, &a).contains(&b), "b is refused: already linked");
+        let rb = app.card_rect(&b).unwrap();
+        let c = app.alloc_node_id();
+        let note = Runtime::Note(NotePayload { text: "n".into(), editing: false });
+        app.insert_placeholder_node(
+            c.clone(),
+            (rb.center() + egui::vec2(rb.width() + 30.0, 0.0)).to_vec2(),
+            Kind::Note,
+            note,
+        );
+        let tol = 24.0;
+        let between = egui::pos2(rb.right() + 10.0, rb.center().y);
+        let rc = app.card_rect(&c).unwrap();
+        assert!(distance_to_rect(between, rb) < distance_to_rect(between, rc), "the refused b is nearer");
+        assert_eq!(app.card_within(between, tol, &a), Some(c.clone()), "the farther valid card wins");
+        let beside_b = rb.left_center() - egui::vec2(10.0, 0.0);
+        assert_eq!(app.card_within(beside_b, tol, &a), None, "only a refused card in tolerance: no target");
+        assert_eq!(
+            app.card_within(rb.center(), tol, &a),
+            Some(b.clone()),
+            "an exact hit on a refused card stays (toast)"
+        );
     }
 
     /// Drives `build_graph_ui` headless, as `a_click_finishes_or_cancels_pick_target_mode` (graph_ui.rs) does.
