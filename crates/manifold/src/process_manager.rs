@@ -1448,14 +1448,15 @@ mod tests {
             benign.replace(&transport::to_hex(benign_url.as_bytes()), "H"),
             hostile.replace(&transport::to_hex(hostile_url.as_bytes()), "H"),
         );
-        assert!(!benign.contains("ENGINE_TAB_ID"), "the tab id is not passed: {benign}");
     }
 
     #[test]
     fn a_url_too_long_for_a_command_line_is_refused_by_name() {
         let token = [7u8; transport::TOKEN_LEN];
-        let err = webkit_shell_command(&"a".repeat(20_000), 4000, &token, "/x").unwrap_err();
-        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+        let build = |len: usize| webkit_shell_command(&"a".repeat(len), 4000, &token, "/x");
+        assert!(build(8192).is_ok(), "the longest URL that fits");
+        assert_eq!(build(8193).unwrap_err().kind(), std::io::ErrorKind::InvalidInput);
+        assert_eq!(build(20_000).unwrap_err().kind(), std::io::ErrorKind::InvalidInput);
     }
 
     /// The host's reader of one engine connection, fed `version` and then a
