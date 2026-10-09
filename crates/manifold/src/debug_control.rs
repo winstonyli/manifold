@@ -246,8 +246,10 @@ pub enum DebugCommand {
     /// mirror's name, text and document pos the same way, null where EXPORTSESSION leaves the field out (empty, or
     /// pos (0, 0)).
     /// `links` lists every Link node as `{id, from, to}`. `edges` lists the lines drawn at the current level as
-    /// `{kind: link|opened, link (the Link node id, or null), from, to, screen: [x, y]}`, where `screen` is the point
-    /// halfway along the curve (t = 0.5) between the two cards' facing sides. `connecting` is pick-target mode as
+    /// `{kind: link|opened, link (the Link node id, or null), from, to, screen: [x, y], near_from, near_to}`, where
+    /// `screen` is the point halfway along the curve (t = 0.5) between the two cards' facing sides and `near_from`
+    /// and `near_to` are the points at t = 0.2 and 0.8, where a probe grabs a link's `from` or `to` end.
+    /// `retarget` is the Link node whose end a connect-drag from its curve is moving, or null. `connecting` is pick-target mode as
     /// `{from, edge, targets}` (`targets` sorted), or null. `link_handles` maps each card that would show connect-drag
     /// handles (every card when nothing else owns the pointer; every card during a connect-drag) to
     /// `{top, right, bottom, left}` (those shown at this zoom), each `[left, top, right, bottom]` on screen.
@@ -1453,17 +1455,21 @@ impl App {
             .level_edges()
             .iter()
             .map(|edge| {
-                let world = match edge.curve {
-                    crate::level::EdgeCurve::Bow => crate::link_gestures::bow_point(edge.from, edge.to, 0.5),
-                    crate::level::EdgeCurve::Horizontal => edge.from.lerp(edge.to, 0.5),
+                let on_screen = |t: f32| {
+                    let world = match edge.curve {
+                        crate::level::EdgeCurve::Bow => crate::link_gestures::bow_point(edge.from, edge.to, t),
+                        crate::level::EdgeCurve::Horizontal => edge.from.lerp(edge.to, t),
+                    };
+                    self.graph_world_rect_to_screen(egui::Rect::from_min_max(world, world)).min
                 };
-                let mid = self.graph_world_rect_to_screen(egui::Rect::from_min_max(world, world)).min;
+                let (mid, near_from, near_to) = (on_screen(0.5), on_screen(0.2), on_screen(0.8));
                 let kind = match edge.kind {
                     crate::level::EdgeKind::Link => "link",
                     crate::level::EdgeKind::Opened => "opened",
                 };
                 serde_json::json!({
                     "kind": kind, "link": edge.link, "from": edge.from_id, "to": edge.to_id, "screen": [mid.x, mid.y],
+                    "near_from": [near_from.x, near_from.y], "near_to": [near_to.x, near_to.y],
                 })
             })
             .collect();
@@ -1508,6 +1514,8 @@ impl App {
             }),
             "link_handles": link_handles,
             "connect_drag": self.connect_drag,
+            // The Link node whose end a connect-drag from a curve is moving (`App::retarget`), or null.
+            "retarget": self.retarget.as_ref().map(|r| &r.link),
             // The card being dragged (`App::dragging`), or null.
             "dragging": self.dragging,
             "json_level": self.json_level_state(),
@@ -1844,6 +1852,16 @@ mod tests {
         let mid = app.graph_world_rect_to_screen(egui::Rect::from_min_max(world, world)).min;
         let screen: Vec<f64> = edges[0]["screen"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect();
         assert!((screen[0] as f32 - mid.x).abs() < 0.01 && (screen[1] as f32 - mid.y).abs() < 0.01, "{screen:?}");
+        for (key, t) in [("near_from", 0.2), ("near_to", 0.8)] {
+            let world = crate::link_gestures::bow_point(from, to, t);
+            let want = app.graph_world_rect_to_screen(egui::Rect::from_min_max(world, world)).min;
+            let got: Vec<f64> = edges[0][key].as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect();
+            assert!((got[0] as f32 - want.x).abs() < 0.01 && (got[1] as f32 - want.y).abs() < 0.01, "{key}: {got:?}");
+        }
+        assert!(state["retarget"].is_null());
+        app.start_connect_drag(&a);
+        app.retarget = Some(crate::link_gestures::LinkRetarget { link: link.clone(), fixed_is_from: true });
+        assert_eq!(app.export_state()["retarget"], link.as_str());
     }
 
     /// EXPORTSTATE's `link_handles`: each card that would show connect handles, each side's on-screen rect.

@@ -140,6 +140,20 @@ pub(crate) fn nearest_link(edges: &[LevelEdge], at: egui::Pos2, tolerance: f32) 
     best.map(|(_, edge)| edge)
 }
 
+/// A connect-drag that began on an existing link's curve (`App::retarget`): `link` is the Link node whose end follows
+/// the pointer. `fixed_is_from` says which end stays on its card (the connect-drag's source), so a link keeps its
+/// direction when its free end lands on another card.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LinkRetarget {
+    pub link: String,
+    pub fixed_is_from: bool,
+}
+
+/// Whether the end of `edge` nearer the grab point `at` (world) is its `from` end; a tie goes to `from`.
+pub(crate) fn grabs_from_end(edge: &LevelEdge, at: egui::Pos2) -> bool {
+    at.distance(edge.from) <= at.distance(edge.to)
+}
+
 /// A side of a card, where a connect-drag handle sits (centred on that edge).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum HandleSide {
@@ -302,6 +316,34 @@ impl App {
         self.camera.momentum = None;
     }
 
+    /// A drag that began on a link's curve (`line_press`, set by the press on it) has passed egui's drag threshold:
+    /// the end nearer where it was grabbed (`press_origin`) comes off its card and follows the pointer as a
+    /// connect-drag from the other end, so the rest is `start_connect_drag`'s: rings on the valid targets, the
+    /// release on `end_connect_drag`, Esc and `cancel_connect`. Undoes the pan the Scene applied on the frame the
+    /// drag was recognised by restoring the camera of the press. False (nothing started) when no link was pressed,
+    /// another gesture owns the pointer, or the link is gone.
+    pub(crate) fn start_line_retarget(&mut self, ui: &egui::Ui, scene_outer_rect: egui::Rect) -> bool {
+        let Some((link, press_rect)) = self.line_press.take() else { return false };
+        let Some(origin) = ui.input(|i| i.pointer.press_origin()) else { return false };
+        if !self.line_click_allowed() {
+            return false;
+        }
+        let drawn = self.camera.rect;
+        self.camera.rect = press_rect;
+        let (zoom, translation) = self.graph_world_to_screen_transform(scene_outer_rect);
+        let at = ((origin.to_vec2() - translation) / zoom).to_pos2();
+        let edges = self.level_edges();
+        let Some(edge) = edges.iter().find(|e| e.link.as_ref() == Some(&link)) else {
+            self.camera.rect = drawn;
+            return false;
+        };
+        let fixed_is_from = !grabs_from_end(edge, at);
+        let fixed = if fixed_is_from { &edge.from_id } else { &edge.to_id };
+        self.start_connect_drag(fixed);
+        self.retarget = Some(LinkRetarget { link, fixed_is_from });
+        true
+    }
+
     /// The card a release at world point `at` takes: the topmost card under it (`level_items` is bottom-first, as
     /// right-click's hit-test reads it), or when none is, the nearest card other than `source` within `tolerance`
     /// (world units) of its rect that is a valid link target for it (`valid_targets`, the cards the ring marks), the
@@ -361,7 +403,11 @@ impl App {
     /// under the pointer) it ends on the target's facing side midpoint, where the handle is, as the finished link will.
     pub(crate) fn draw_connect_rubber_band(&self, ui: &egui::Ui, inv_zoom: f32, target: Option<&str>) {
         let (Some(source), Some(pointer)) = (&self.connect_drag, Self::scene_pointer(ui)) else { return };
-        let Some((from, to)) = self.rubber_band_ends(source, pointer, target) else { return };
+        let Some((mut from, mut to)) = self.rubber_band_ends(source, pointer, target) else { return };
+        // A retargeted link keeps its direction, so the band bows as the finished link will.
+        if self.retarget.as_ref().is_some_and(|r| !r.fixed_is_from) {
+            std::mem::swap(&mut from, &mut to);
+        }
         let stroke = egui::Stroke::new(LINK_STROKE_PX * inv_zoom, crate::theme::ACCENT);
         paint_bow(ui.painter(), from, to, stroke, Some(inv_zoom));
     }
@@ -783,16 +829,223 @@ mod tests {
         assert!(app.rect_select_start.is_none(), "no marquee");
     }
 
+    /// A drag that starts on empty canvas near a link, but off its curve, still pans.
     #[test]
-    fn a_drag_from_a_link_line_pans_and_deletes_nothing() {
+    fn a_drag_from_empty_canvas_beside_a_link_line_pans_and_deletes_nothing() {
         let (h, mut app, [a, b, _]) = three_notes();
         let ab = app.create_link(&a, &b);
         h.frame(&mut app, vec![]);
         let before = app.camera.rect;
-        let on = line_middle(&app, &ab);
-        h.drag(&mut app, on, on + egui::vec2(120.0, 80.0));
+        let beside = line_middle(&app, &ab) + egui::vec2(0.0, 30.0);
+        h.drag(&mut app, beside, beside + egui::vec2(120.0, 80.0));
         assert_ne!(app.camera.rect.center(), before.center(), "the drag panned");
         assert_eq!(app.links_naming(&a), [ab]);
+        assert!(app.connect_drag.is_none() && app.retarget.is_none());
+    }
+
+    /// The screen point at `t` along `edge`'s curve.
+    fn point_on(app: &App, edge: &LevelEdge, t: f32) -> egui::Pos2 {
+        let world = bow_point(edge.from, edge.to, t);
+        app.graph_world_rect_to_screen(egui::Rect::from_min_max(world, world)).min
+    }
+
+    fn link_edge(app: &App, link: &str) -> LevelEdge {
+        app.level_edges().into_iter().find(|e| e.link.as_deref() == Some(link)).expect("drawn")
+    }
+
+    /// Presses on `from` (hovered two frames first) and moves to `to` in eight steps, leaving the button down.
+    fn hold(h: &Harness, app: &mut App, from: egui::Pos2, to: egui::Pos2) {
+        h.frame(app, vec![egui::Event::PointerMoved(from)]);
+        h.frame(app, vec![egui::Event::PointerMoved(from)]);
+        h.frame(app, vec![press(from, true)]);
+        for step in 1..=8 {
+            h.frame(app, vec![egui::Event::PointerMoved(from + (to - from) * (step as f32 / 8.0))]);
+        }
+    }
+
+    /// `hold` from the point at `t` along `edge`'s curve.
+    fn hold_on(h: &Harness, app: &mut App, edge: &LevelEdge, t: f32, to: egui::Pos2) {
+        let from = point_on(app, edge, t);
+        hold(h, app, from, to);
+    }
+
+    fn release(h: &Harness, app: &mut App, at: egui::Pos2) {
+        h.frame(app, vec![press(at, false)]);
+        h.frame(app, vec![]);
+    }
+
+    fn ends(app: &App, link: &str) -> (Option<String>, Option<String>) {
+        let (from, to) = app.mirror.link_ends(link);
+        (from.map(|n| n.to_string()), to.map(|n| n.to_string()))
+    }
+
+    fn toasts(app: &App) -> Vec<&String> {
+        app.save_toast.iter().map(|(m, _)| m).chain(&app.save_toast_queue).collect()
+    }
+
+    /// Dragging a curve takes the end nearer the grab: that end follows the pointer, the card at the other end is the
+    /// connect-drag's source and its end of the link stays.
+    #[test]
+    fn a_drag_on_a_curve_detaches_the_end_nearer_the_grab_point() {
+        let (h, mut app, [a, b, c]) = three_notes();
+        let ab = app.create_link(&a, &b);
+        h.frame(&mut app, vec![]);
+        let edge = link_edge(&app, &ab);
+        let canvas = screen_rect(&app, &a).center().lerp(screen_rect(&app, &c).center(), 0.5);
+        hold_on(&h, &mut app, &edge, 0.15, canvas);
+        assert_eq!(app.connect_drag.as_deref(), Some(b.as_str()), "grabbed near a: a's end comes off, b stays");
+        assert_eq!(app.retarget, Some(LinkRetarget { link: ab.clone(), fixed_is_from: false }));
+        assert_eq!(app.connecting, Some((b.clone(), crate::caps::LINK)), "ringing the targets of b");
+        release(&h, &mut app, canvas);
+        assert!(app.connect_drag.is_none() && app.retarget.is_none() && app.connecting.is_none());
+        hold_on(&h, &mut app, &edge, 0.85, canvas);
+        assert_eq!(app.connect_drag.as_deref(), Some(a.as_str()), "grabbed near b: b's end comes off, a stays");
+        assert_eq!(app.retarget, Some(LinkRetarget { link: ab.clone(), fixed_is_from: true }));
+        release(&h, &mut app, canvas);
+        assert_eq!(ends(&app, &ab), (Some(a), Some(b)), "both released on empty canvas: untouched");
+    }
+
+    /// Dropped on a valid card, the grabbed end moves there in place: the Link node keeps its id and other end and
+    /// its direction, the old pair is no longer joined, and the new one is.
+    #[test]
+    fn dropping_a_dragged_curve_on_a_card_moves_that_end_there() {
+        let (h, mut app, [a, b, c]) = three_notes();
+        let ab = app.create_link(&a, &b);
+        h.frame(&mut app, vec![]);
+        let edge = link_edge(&app, &ab);
+        let on_c = screen_rect(&app, &c).center();
+        hold_on(&h, &mut app, &edge, 0.85, on_c);
+        assert!(app.retarget.is_some(), "mid-drag");
+        release(&h, &mut app, on_c);
+        assert_eq!(app.links_naming(&a), std::slice::from_ref(&ab), "same Link node");
+        assert_eq!(ends(&app, &ab), (Some(a.clone()), Some(c.clone())), "b's end moved to c");
+        assert!(app.links_naming(&b).is_empty(), "b is no longer linked");
+        assert!(app.connect_drag.is_none() && app.retarget.is_none() && app.connecting.is_none());
+        assert!(toasts(&app).is_empty());
+        // The other end: grab near a, drop on b. a's end is the `from` end, so the link now runs b -> c.
+        h.frame(&mut app, vec![]);
+        let edge = link_edge(&app, &ab);
+        let on_b = screen_rect(&app, &b).center();
+        hold_on(&h, &mut app, &edge, 0.15, on_b);
+        release(&h, &mut app, on_b);
+        assert_eq!(ends(&app, &ab), (Some(b), Some(c)), "the `from` end moved, `to` stayed");
+        assert!(app.links_naming(&a).is_empty());
+    }
+
+    #[test]
+    fn dropping_a_dragged_curve_on_empty_canvas_or_its_old_card_leaves_the_link() {
+        let (h, mut app, [a, b, c]) = three_notes();
+        let ab = app.create_link(&a, &b);
+        h.frame(&mut app, vec![]);
+        let edge = link_edge(&app, &ab);
+        let canvas = screen_rect(&app, &a).center().lerp(screen_rect(&app, &c).center(), 0.5);
+        let before = app.camera.rect;
+        hold_on(&h, &mut app, &edge, 0.85, canvas);
+        release(&h, &mut app, canvas);
+        assert_eq!(ends(&app, &ab), (Some(a.clone()), Some(b.clone())), "empty canvas: nothing changes");
+        assert_eq!(app.camera.rect, before, "and the drag did not pan");
+        let on_b = screen_rect(&app, &b).center();
+        hold_on(&h, &mut app, &edge, 0.85, on_b);
+        release(&h, &mut app, on_b);
+        assert_eq!(ends(&app, &ab), (Some(a.clone()), Some(b)), "back on its own card: nothing changes");
+        assert_eq!(app.links_naming(&a), [ab]);
+        assert!(toasts(&app).is_empty(), "silently");
+    }
+
+    #[test]
+    fn escape_cancels_a_dragged_curve() {
+        let (h, mut app, [a, b, c]) = three_notes();
+        let ab = app.create_link(&a, &b);
+        h.frame(&mut app, vec![]);
+        let edge = link_edge(&app, &ab);
+        let escape = egui::Event::Key {
+            key: egui::Key::Escape,
+            physical_key: Some(egui::Key::Escape),
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        };
+        let on_c = screen_rect(&app, &c).center();
+        let from = point_on(&app, &edge, 0.85);
+        h.drag_with(&mut app, from, on_c, vec![escape]);
+        assert_eq!(ends(&app, &ab), (Some(a), Some(b)), "released on c after Esc: untouched");
+        assert!(app.connect_drag.is_none() && app.retarget.is_none() && app.connecting.is_none());
+    }
+
+    /// A target the link cannot move to (here a already joins c) leaves the old link and says so.
+    #[test]
+    fn a_refused_retarget_leaves_the_link_and_toasts() {
+        let (h, mut app, [a, b, c]) = three_notes();
+        let ab = app.create_link(&a, &b);
+        let ac = app.create_link(&a, &c);
+        h.frame(&mut app, vec![]);
+        let edge = link_edge(&app, &ab);
+        let on_c = screen_rect(&app, &c).center();
+        hold_on(&h, &mut app, &edge, 0.85, on_c);
+        release(&h, &mut app, on_c);
+        assert_eq!(ends(&app, &ab), (Some(a.clone()), Some(b)), "the old link stays");
+        assert_eq!(ends(&app, &ac), (Some(a), Some(c)));
+        assert!(toasts(&app).iter().any(|m| m.as_str() == "Can't connect these cards"), "{:?}", toasts(&app));
+        assert!(app.connect_drag.is_none() && app.retarget.is_none());
+    }
+
+    /// The drop tolerance and the valid-only tolerance pass are the connect-drag's own: a release just outside c links.
+    #[test]
+    fn a_dragged_curve_snaps_to_a_card_within_the_drop_tolerance() {
+        let (h, mut app, [a, b, c]) = three_notes();
+        let ab = app.create_link(&a, &b);
+        h.frame(&mut app, vec![]);
+        let edge = link_edge(&app, &ab);
+        let near_c = screen_rect(&app, &c).center_bottom() + egui::vec2(0.0, DROP_TOLERANCE_PX - 4.0);
+        hold_on(&h, &mut app, &edge, 0.85, near_c);
+        release(&h, &mut app, near_c);
+        assert_eq!(ends(&app, &ab), (Some(a), Some(c)));
+    }
+
+    /// A click on the curve without moving still deletes the link, and a curve drag does not.
+    #[test]
+    fn a_click_on_a_curve_still_deletes_and_a_drag_from_it_does_not() {
+        let (h, mut app, [a, b, _]) = three_notes();
+        let ab = app.create_link(&a, &b);
+        h.frame(&mut app, vec![]);
+        let on = line_middle(&app, &ab);
+        h.drag(&mut app, on, on + egui::vec2(0.0, 150.0));
+        assert_eq!(app.links_naming(&a).len(), 1, "a drag deletes nothing");
+        let on = line_middle(&app, &ab);
+        h.click(&mut app, on);
+        assert!(app.links_naming(&a).is_empty(), "a click does");
+    }
+
+    /// A drag from a handle whose outer half lies over a link's curve is the handle's: a connect-drag from that
+    /// card, no retarget, and the link it lay over is untouched.
+    #[test]
+    fn a_drag_from_a_handle_over_a_curve_is_the_handles_not_a_retarget() {
+        let (h, mut app, [a, b, c]) = three_notes();
+        let ab = app.create_link(&a, &b);
+        h.frame(&mut app, vec![]);
+        let handle = handle_on_screen(&app, &a, HandleSide::Right) + egui::vec2(4.0, 0.0);
+        let centre = screen_rect(&app, &a).center();
+        h.frame(&mut app, vec![egui::Event::PointerMoved(centre)]);
+        let on_c = screen_rect(&app, &c).center();
+        h.drag(&mut app, handle, on_c);
+        assert_eq!(ends(&app, &ab), (Some(a.clone()), Some(b)), "the link under the handle is untouched");
+        assert_eq!(app.links_naming(&a).len(), 2, "the handle drag linked a to c");
+        assert!(app.retarget.is_none());
+    }
+
+    /// Opened-from lines are not draggable: the drag pans as it always did.
+    #[test]
+    fn an_opened_from_line_is_not_draggable() {
+        let (h, mut app, [a, _, c]) = three_notes();
+        app.edit_parent(&c, Some(a.clone()));
+        h.frame(&mut app, vec![]);
+        let opened = app.level_edges().into_iter().find(|e| e.kind == EdgeKind::Opened).expect("c opened from a");
+        let on = middle(&app, &opened);
+        let before = app.camera.rect;
+        h.drag(&mut app, on, on + egui::vec2(100.0, 0.0));
+        assert!(app.connect_drag.is_none() && app.retarget.is_none());
+        assert_ne!(app.camera.rect.center(), before.center(), "it panned");
+        assert_eq!(app.mirror.parent(&c), Some(a.as_str()));
     }
 
     /// Review I1: Recently Closed and the shortcuts help close on a click outside them without consuming it, so the

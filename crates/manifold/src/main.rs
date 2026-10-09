@@ -1165,6 +1165,10 @@ struct App {
     /// the card under the pointer (`end_connect_drag`). It ends with pick-target mode (`cancel_connect`,
     /// `finish_connect`), so every path that ends that mode ends this too.
     connect_drag: Option<String>,
+    /// Set with `connect_drag` when the drag began on an existing link's curve (`start_line_retarget`): the link whose
+    /// free end follows the pointer, and which end stays. `connect_drag` is then the card at the fixed end. Cleared
+    /// wherever `connect_drag` ends (`cancel_connect`, `finish_connect`, a session replace).
+    retarget: Option<link_gestures::LinkRetarget>,
     /// The link line under the pointer when the primary press began with the camera still, and the camera rect then
     /// (`line_click`). Only that line, with the camera unmoved, can be taken by the click that ends the press.
     line_press: Option<(String, egui::Rect)>,
@@ -1601,6 +1605,7 @@ impl Default for App {
             drag_moved: Vec::new(),
             connecting: None,
             connect_drag: None,
+            retarget: None,
             line_press: None,
             hovered: None,
             peek_suppressed: None,

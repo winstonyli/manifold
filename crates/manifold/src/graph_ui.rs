@@ -551,7 +551,12 @@ impl App {
         let mut json_edits = Vec::new();
         let scene_response = egui::Scene::new()
             .zoom_range(GRAPH_ZOOM_MIN..=GRAPH_ZOOM_MAX)
-            .drag_pan_buttons(egui::DragPanButtons::PRIMARY)
+            // The background's primary drag pans, except while it retargets a link (the drag began on a curve).
+            .drag_pan_buttons(if self.retarget.is_some() {
+                egui::DragPanButtons::empty()
+            } else {
+                egui::DragPanButtons::PRIMARY
+            })
             .show(ui, &mut scene_rect, |ui| {
                 // Every `overlay_painter` decoration painted inside this
                 // closure is deferred rather than painted immediately -- see
@@ -569,6 +574,9 @@ impl App {
                 for edge in &mut edges {
                     edge.highlight |= edge.link.is_some() && edge.link == line_hover;
                 }
+                // The link being retargeted is not drawn: its rubber band stands for it.
+                let retargeting = self.retarget.as_ref().map(|r| r.link.as_str());
+                edges.retain(|edge| retargeting.is_none() || edge.link.as_deref() != retargeting);
                 self.draw_graph_edges(ui, &edges, inv_zoom);
 
                 if self.json_level.is_some() {
@@ -599,6 +607,11 @@ impl App {
             });
         let egui::InnerResponse { inner: (deferred_overlays, line_hover), response: scene_background } = scene_response;
         self.camera.rect = scene_rect;
+        // A press on a link curve that has become a drag retargets the link instead of panning (undoing the pan
+        // this frame's drag delta applied).
+        if scene_background.drag_started() && self.start_line_retarget(ui, scene_outer_rect) {
+            scene_rect = self.camera.rect;
+        }
         // Now that `self.camera.rect` reflects this frame's actual
         // pan/zoom (not the stale value `project`/`overlay_painter` calls
         // inside the closure above had to work with -- see

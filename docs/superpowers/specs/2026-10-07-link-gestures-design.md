@@ -93,6 +93,38 @@ sit diagonally (for example 180 by 140 notes with delta (150, 130)) pick right/l
 b's left edge, and the edge runs backwards through both. Why parked: the rule is stable and simple; a delta scaled by
 the cards' half extents is the cheap improvement if it ever bothers.
 
+## Dragging a link's end (2026-10-09)
+
+Pressing on a link curve and dragging retargets one end. Links only (`EdgeKind::Link`); opened-from lines keep today's
+behaviour (a drag from one pans). A click without movement still deletes the link, unchanged.
+
+- **One mechanism.** The gesture is a connect-drag from the end that stays. `App::retarget:
+  Option<LinkRetarget { link, fixed_is_from }>` rides beside `connect_drag`, which holds the fixed end's card as its
+  source; rings, snap (`card_within`, `DROP_TOLERANCE_PX`, valid targets only in the tolerance pass), handles on every
+  card, the rubber band, Esc, the right-press rule, the lifecycle resets and the release (`end_connect_drag`) are the
+  existing ones. `retarget` is cleared wherever `connect_drag` is (`cancel_connect`, `finish_connect`, session replace).
+- **Start.** The press on a curve records `line_press` as for a click (same hit-test, `nearest_link` within 6 screen
+  points; a handle or card under the pointer takes the press instead). When the Scene background reports
+  `drag_started` (egui's own threshold), `start_line_retarget` takes the end nearer the press origin (distance to the
+  curve's two ends; a tie takes `from`) as the moving one, starts the connect-drag from the other, and restores the
+  camera of the press, undoing the few points the Scene panned on the frame it recognised the drag. While it runs the
+  Scene's primary-drag pan is off (`DragPanButtons::empty()`); wheel zoom still works.
+- **Drawing.** The link being moved is not drawn (the simpler of not drawing it or dimming it): the dashed rubber band
+  stands for it, from the fixed end's facing side to the pointer or the snapped target, bowed in the link's own
+  direction (`from` to `to`), so it looks as the finished link will.
+- **Release.** On a valid card (`finish_connect` with `retarget` set -> `App::retarget_link`) the moving end is
+  rewritten **in place**: one `edit_field` on the Link node's `from` or `to`, the same writer `create_link` uses, so the
+  node keeps its id, its other end and its direction, and the change syncs as one field edit (no delete plus create).
+  The pair is checked as `connect` checks a new one (`check_connect`: live, same level, type table, no existing
+  link on the pair), so a duplicate or cross-level target is refused with the usual "Can't connect these cards" toast
+  and the link is left alone. A release on its old end's card, on empty canvas or the fixed card, or after Esc or a
+  focus loss, changes nothing and shows no toast. A link deleted or re-ended by another replica mid-drag is refused
+  the same way.
+- **Debug.** `EXPORTSTATE` `edges[]` gain `near_from` and `near_to` (the curve at t = 0.2 and 0.8, where a probe grabs
+  an end), and the state gains `retarget` (the Link node id or null). `scripts/link-probe.sh` drives the gesture.
+- **Changed.** A drag that starts on a link curve used to pan; it now retargets. A drag from the canvas beside the
+  curve still pans.
+
 ## Not in scope
 
 - Directed or named links, opened-from by drag or line click,
