@@ -25,7 +25,7 @@ pub(crate) enum ConnectError {
 }
 
 /// What releasing a dragged link end does (`App::retarget_outcome`).
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RetargetOutcome {
     /// The end moves to the card it was released on.
     Retargeted,
@@ -35,6 +35,18 @@ pub(crate) enum RetargetOutcome {
     Cancelled,
     /// Nothing changes and a toast says so.
     Refused,
+}
+
+impl RetargetOutcome {
+    /// The outcome's name in EXPORTSTATE's `retarget_preview`.
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::Retargeted => "retarget",
+            Self::Deleted => "delete",
+            Self::Refused => "refused",
+            Self::Cancelled => "cancel",
+        }
+    }
 }
 
 /// One edge at a node, as `App::edges_of` lists it.
@@ -204,6 +216,12 @@ impl App {
             self.queue_toast("Can't connect these cards".to_string());
         }
         self.save_session();
+    }
+
+    /// What a release at `end` would do to the link being dragged, if one is: `retarget_outcome`, the very function
+    /// `finish_retarget` acts on, so the preview and the release cannot differ.
+    pub(crate) fn retarget_preview(&self, end: &DragEnd) -> Option<RetargetOutcome> {
+        Some(self.retarget_outcome(self.retarget.as_ref()?, self.connect_drag.as_deref()?, end))
     }
 
     /// Ends the connect-drag of a link's curve (`retarget`, its fixed end on `fixed`) at `end`: acts on

@@ -163,6 +163,32 @@ pub(crate) enum DragEnd {
     Card(String),
 }
 
+/// How a dragged link end is drawn for the outcome a release there would have (`App::retarget_preview`): the rubber
+/// band's colour and width in screen points, whether it ends in a small "x" (the link would be deleted, so colour is
+/// not the only signal), and the colour of the ring on the card in reach, which never promises a retarget the release
+/// will not do.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct RetargetLook {
+    pub band: egui::Color32,
+    pub band_px: f32,
+    pub cross: bool,
+    pub ring: egui::Color32,
+}
+
+/// `RetargetLook` for `outcome`: the usual accent for a retarget or a cancel, a thin red band ending in an "x" for a
+/// deletion, muted amber for a refusal, and a neutral ring where nothing would change.
+pub(crate) fn retarget_look(outcome: crate::links::RetargetOutcome) -> RetargetLook {
+    use crate::links::RetargetOutcome::*;
+    use crate::theme::{ACCENT, DANGER_COLOR, NEUTRAL_RING_COLOR, REFUSED_COLOR};
+    let usual = RetargetLook { band: ACCENT, band_px: LINK_STROKE_PX, cross: false, ring: ACCENT };
+    match outcome {
+        Retargeted => usual,
+        Cancelled => RetargetLook { ring: NEUTRAL_RING_COLOR, ..usual },
+        Refused => RetargetLook { band: REFUSED_COLOR, ring: REFUSED_COLOR, ..usual },
+        Deleted => RetargetLook { band: DANGER_COLOR, band_px: LINK_STROKE_PX * 0.6, cross: true, ring: DANGER_COLOR },
+    }
+}
+
 /// Drops from `edges` (what is drawn) the link being retargeted: its rubber band stands for it.
 pub(crate) fn without_retargeted(edges: &mut Vec<LevelEdge>, retarget: Option<&LinkRetarget>) {
     if let Some(retarget) = retarget {
@@ -401,30 +427,14 @@ impl App {
         Some(ui.ctx().layer_transform_from_global(ui.layer_id()).map_or(pointer, |t| t * pointer))
     }
 
-    /// During a connect-drag, the card a release at screen point `pointer` would link to: the topmost card under it,
-    /// or else the nearest one within `DROP_TOLERANCE_PX` of its edge (`card_within`), never the source, inside
-    /// `scene_outer_rect`, off the `minimap` (painted over the Scene, not a widget) and
+    /// Where a connect-drag released at screen point `pointer` ends (`DragEnd`). A card (`DragEnd::Card`) is the topmost one under it,
+    /// or else the nearest one within `DROP_TOLERANCE_PX` of its edge (`card_within`), never the source; all of it
+    /// only inside `scene_outer_rect`, off the `minimap` (painted over the Scene, not a widget) and
     /// under no interactable egui Area above the graph (a popup or menu, by `Context::layer_id_at`, the layer test
     /// egui's own hit-test uses, so a click there would reach no card either; a non-interactable toast lets both
     /// through). `(zoom_scale, translation)` maps world to screen (`graph_world_to_screen_transform`). Both the bright
     /// target ring and the release read this, so the ring shows exactly where a release links. egui hovers only the
     /// dragged handle meanwhile, so the card's own hover cannot say so.
-    pub(crate) fn connect_drag_target(
-        &self,
-        ctx: &egui::Context,
-        pointer: Option<egui::Pos2>,
-        scene_outer_rect: egui::Rect,
-        minimap: Option<egui::Rect>,
-        (zoom_scale, translation): (f32, egui::Vec2),
-    ) -> Option<String> {
-        match self.connect_drag_end(ctx, pointer, scene_outer_rect, minimap, (zoom_scale, translation)) {
-            DragEnd::Card(target) => Some(target),
-            _ => None,
-        }
-    }
-
-    /// Where a connect-drag released at `pointer` ends (`DragEnd`); the rules are `connect_drag_target`'s, which is
-    /// this read as a target alone.
     pub(crate) fn connect_drag_end(
         &self,
         ctx: &egui::Context,
@@ -455,17 +465,29 @@ impl App {
     }
 
     /// The rubber band: the bowed dashed accent curve a link would be drawn as, from the source's side that faces the
-    /// pointer to the pointer, over the cards. With a `target` (`connect_drag_target`, within drop tolerance or
+    /// pointer to the pointer, over the cards. With a `target` (`connect_drag_end`, within drop tolerance or
     /// under the pointer) it ends on the target's facing side midpoint, where the handle is, as the finished link will.
     pub(crate) fn draw_connect_rubber_band(&self, ui: &egui::Ui, inv_zoom: f32, target: Option<&str>) {
         let (Some(source), Some(pointer)) = (&self.connect_drag, Self::scene_pointer(ui)) else { return };
         let Some((mut from, mut to)) = self.rubber_band_ends(source, pointer, target) else { return };
+        let free_end = to;
         // A retargeted link keeps its direction, so the band bows as the finished link will.
         if self.retarget.as_ref().is_some_and(|r| !r.fixed_is_from) {
             std::mem::swap(&mut from, &mut to);
         }
-        let stroke = egui::Stroke::new(LINK_STROKE_PX * inv_zoom, crate::theme::ACCENT);
+        // A dragged link end is drawn by what a release there would do (`retarget_look`).
+        let look = self.retarget_preview.map(retarget_look);
+        let stroke = match look {
+            Some(look) => egui::Stroke::new(look.band_px * inv_zoom, look.band),
+            None => egui::Stroke::new(LINK_STROKE_PX * inv_zoom, crate::theme::ACCENT),
+        };
         paint_bow(ui.painter(), from, to, stroke, Some(inv_zoom));
+        if look.is_some_and(|look| look.cross) {
+            let r = 5.0 * inv_zoom;
+            let cross = egui::Stroke::new(2.0 * inv_zoom, stroke.color);
+            ui.painter().line_segment([free_end + egui::vec2(-r, -r), free_end + egui::vec2(r, r)], cross);
+            ui.painter().line_segment([free_end + egui::vec2(-r, r), free_end + egui::vec2(r, -r)], cross);
+        }
     }
 
     /// The rubber band's two ends (world): the source's side midpoint, and the pointer or the target's facing side.
@@ -1140,6 +1162,108 @@ mod tests {
         assert!(toasts(&app).is_empty());
     }
 
+    /// Mid-drag, EXPORTSTATE's `retarget_preview` follows the pointer: a card, empty canvas, the fixed card, the old card.
+    #[test]
+    fn the_live_preview_follows_the_pointer_and_is_exported() {
+        let (h, mut app, [a, b, c]) = three_notes();
+        let ab = app.create_link(&a, &b);
+        h.frame(&mut app, vec![]);
+        assert!(app.export_state()["retarget_preview"].is_null(), "no drag");
+        let edge = link_edge(&app, &ab);
+        let canvas = screen_rect(&app, &a).center().lerp(screen_rect(&app, &c).center(), 0.5);
+        hold_on(&h, &mut app, &edge, 0.85, canvas);
+        let preview_at = |app: &mut App, at: egui::Pos2| {
+            h.frame(app, vec![egui::Event::PointerMoved(at)]);
+            h.frame(app, vec![egui::Event::PointerMoved(at)]);
+            app.export_state()["retarget_preview"].as_str().map(str::to_string)
+        };
+        assert_eq!(preview_at(&mut app, canvas).as_deref(), Some("delete"));
+        let (on_c, on_a, on_b) =
+            (screen_rect(&app, &c).center(), screen_rect(&app, &a).center(), screen_rect(&app, &b).center());
+        assert_eq!(preview_at(&mut app, on_c).as_deref(), Some("retarget"));
+        assert_eq!(preview_at(&mut app, on_a).as_deref(), Some("refused"));
+        assert_eq!(preview_at(&mut app, on_b).as_deref(), Some("cancel"));
+        release(&h, &mut app, on_b);
+        assert!(app.export_state()["retarget_preview"].is_null(), "drag over");
+    }
+
+    /// Each outcome has its own look: accent for a retarget or a cancel (a neutral ring for the cancel), a thin red band
+    /// with an "x" for a deletion, muted amber for a refusal; no ring colour equals another outcome's but the accent
+    /// pair's band.
+    #[test]
+    fn each_retarget_outcome_has_its_own_look() {
+        use crate::links::RetargetOutcome::*;
+        use crate::theme::{ACCENT, DANGER_COLOR, NEUTRAL_RING_COLOR, REFUSED_COLOR};
+        let look = retarget_look;
+        assert_eq!(
+            look(Retargeted),
+            RetargetLook { band: ACCENT, band_px: LINK_STROKE_PX, cross: false, ring: ACCENT }
+        );
+        assert_eq!(look(Cancelled).band, ACCENT);
+        assert_eq!(look(Cancelled).ring, NEUTRAL_RING_COLOR, "an own-card ring promises no retarget");
+        assert_eq!(
+            (look(Refused).band, look(Refused).ring, look(Refused).cross),
+            (REFUSED_COLOR, REFUSED_COLOR, false)
+        );
+        let deleted = look(Deleted);
+        assert_eq!((deleted.band, deleted.ring, deleted.cross), (DANGER_COLOR, DANGER_COLOR, true));
+        assert!(deleted.band_px < LINK_STROKE_PX, "thinner");
+        let rings = [look(Retargeted).ring, look(Cancelled).ring, look(Refused).ring, look(Deleted).ring];
+        for (i, a) in rings.iter().enumerate() {
+            assert!(rings.iter().skip(i + 1).all(|b| a != b), "four distinct rings");
+        }
+    }
+
+    /// The preview for a release position is the outcome the release then has, for all five ways it can end.
+    #[test]
+    fn the_preview_equals_the_release_outcome_for_every_kind_of_end() {
+        use crate::links::RetargetOutcome::*;
+        let cases = [
+            ("a valid card", Retargeted, 3usize),
+            ("empty canvas", Deleted, 5),
+            ("an already-linked card", Deleted, 2),
+            ("the fixed card", Refused, 0),
+            ("its own old card", Cancelled, 1),
+        ];
+        for (what, expected, pick) in cases {
+            let (_h, mut app, [a, b, c]) = three_notes();
+            let d = app.alloc_node_id();
+            let note = Runtime::Note(NotePayload { text: "n".into(), editing: false });
+            app.insert_placeholder_node(d.clone(), egui::vec2(600.0, 400.0), Kind::Note, note);
+            let ab = app.create_link(&a, &b);
+            app.create_link(&a, &c);
+            let end = match pick {
+                0 => DragEnd::Source,
+                1 => DragEnd::Card(b.clone()),
+                2 => DragEnd::Card(c.clone()),
+                3 => DragEnd::Card(d.clone()),
+                _ => DragEnd::Canvas,
+            };
+            app.start_connect_drag(&a);
+            app.retarget = Some(LinkRetarget { link: ab.clone(), fixed_is_from: true });
+            let preview = app.retarget_preview(&end);
+            assert_eq!(preview, Some(expected), "preview over {what}");
+            app.end_connect_drag(end);
+            let kept = ends(&app, &ab);
+            let toasted = !toasts(&app).is_empty();
+            let done = match (kept.1.as_deref(), app.links_naming(&a).contains(&ab), toasted) {
+                (_, false, _) => Deleted,
+                (Some(to), true, _) if to == d => Retargeted,
+                (_, true, true) => Refused,
+                (_, true, false) => Cancelled,
+            };
+            assert_eq!(Some(done), preview, "release over {what} did what the preview said");
+        }
+    }
+
+    /// With no retarget running there is no preview.
+    #[test]
+    fn a_plain_connect_drag_has_no_retarget_preview() {
+        let (mut app, a, _) = two_notes();
+        app.start_connect_drag(&a);
+        assert_eq!(app.retarget_preview(&DragEnd::Canvas), None);
+    }
+
     /// A pair the link cannot take (here another level) and the fixed end's own card refuse and toast, leaving the link.
     #[test]
     fn a_release_the_link_cannot_take_keeps_it_and_toasts() {
@@ -1736,11 +1860,15 @@ mod tests {
         app.start_connect_drag(&a);
         let transform = app.graph_world_to_screen_transform(outer);
         assert_eq!(
-            app.connect_drag_target(&h.ctx, Some(over), outer, None, transform),
-            Some(b.clone()),
+            app.connect_drag_end(&h.ctx, Some(over), outer, None, transform),
+            DragEnd::Card(b.clone()),
             "without it: b"
         );
-        assert_eq!(app.connect_drag_target(&h.ctx, Some(over), outer, Some(minimap), transform), None, "not ringed");
+        assert_eq!(
+            app.connect_drag_end(&h.ctx, Some(over), outer, Some(minimap), transform),
+            DragEnd::Abandoned,
+            "not ringed"
+        );
         app.cancel_connect();
         drag_from_handle(&h, &mut app, &a, HandleSide::Right, over, vec![]);
         assert!(app.links_naming(&a).is_empty(), "not linked");

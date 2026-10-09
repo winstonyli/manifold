@@ -1169,6 +1169,9 @@ struct App {
     /// free end follows the pointer, and which end stays. `connect_drag` is then the card at the fixed end. Cleared
     /// wherever `connect_drag` ends (`cancel_connect`, `finish_connect`, a session replace).
     retarget: Option<link_gestures::LinkRetarget>,
+    /// While `retarget` runs: what a release at the pointer would do now (`App::retarget_preview`), set each frame by
+    /// the graph pass for the band, the ring and EXPORTSTATE.
+    retarget_preview: Option<links::RetargetOutcome>,
     /// The link line under the pointer when the primary press began with the camera still, and the camera rect then
     /// (`line_click`). Only that line, with the camera unmoved, can be taken by the click that ends the press.
     line_press: Option<(String, egui::Rect)>,
@@ -1606,6 +1609,7 @@ impl Default for App {
             connecting: None,
             connect_drag: None,
             retarget: None,
+            retarget_preview: None,
             line_press: None,
             hovered: None,
             peek_suppressed: None,

@@ -20,7 +20,9 @@
 #      `connect_drag` is a and `retarget` the link); a drag from the c end
 #      with Esc leaves it as it was. A second link a -> b dragged from its b
 #      end onto c (already joined to a) is deleted, and a drag of the a -> c
-#      link's end released on empty canvas deletes it. Run 5 has no link.
+#      link's end released on empty canvas deletes it. Mid-drag EXPORTSTATE's
+#      `retarget_preview` says retarget (over c), refused (over the fixed a),
+#      delete (over the duplicate's c, and over empty canvas). Run 5 has no link.
 # One headless instance per run, on a fresh isolated profile seeded with two
 # about:blank tabs (import gives them fresh ids, so the first run reads them
 # from EXPORTSTATE), state read back through EXPORTSTATE. Runs BelowNormal.
@@ -125,6 +127,10 @@ wait_file "$out/s9.json"
 read -r gx gy <<<"$(edge_pt s9 near_to)"
 read -r bx by <<<"$(card_pt s9 $b)"
 drag_to "$gx" "$gy" "$bx" "$by"
+# Over the fixed end's own card (a) the preview says the release is refused.
+read -r fx fy <<<"$(card_pt s9 $a)"
+send "MOUSEMOVE $fx $fy" WAITIDLE "$(x s10f)"
+wait_file "$out/s10f.json"
 send ESCAPE WAITIDLE "$(x s10m)"
 wait_file "$out/s10m.json"
 send "MOUSEUP $bx $by" WAITIDLE "$(x s10)"
@@ -135,12 +141,16 @@ wait_file "$out/s10b.json"
 read -r gx gy <<<"$(edge_pt s10b near_to $b)"
 read -r cx cy <<<"$(card_pt s10b $c)"
 drag_to "$gx" "$gy" "$cx" "$cy"
+send "$(x s10dm)"
+wait_file "$out/s10dm.json"
 send "MOUSEUP $cx $cy" WAITIDLE "$(x s10d)"
 wait_file "$out/s10d.json"
 # Released on empty canvas (b's column, c's row, clear of every card): the dragged link is deleted.
 read -r gx gy <<<"$(edge_pt s10d near_from)"
 read -r _ ey <<<"$(card_pt s10d $c)"
 drag_to "$gx" "$gy" "$bx" "$ey"
+send "$(x s11m)"
+wait_file "$out/s11m.json"
 send "MOUSEUP $bx $ey" WAITIDLE "$(x s11)"
 wait_file "$out/s11.json"
 stop
@@ -193,6 +203,10 @@ read -r n12 _ <<<"$(summary s12)"
 check "grabbed near b's end, a is the fixed end of the connect-drag" "$a" "$(field s9m connect_drag)"
 check "and the link being retargeted is the one that was drawn" "$id8" "$(field s9m retarget)"
 check "dropped on c, the link keeps its id and runs a -> c" "1 $id8 $a $c" "$n9 $id9 $from9 $to9"
+check "over a valid card (c) the preview says retarget" "retarget" "$(field s9m retarget_preview)"
+check "over the fixed card (a) the preview says refused" "refused" "$(field s10f retarget_preview)"
+check "over the already-joined card (c) the preview says delete" "delete" "$(field s10dm retarget_preview)"
+check "over empty canvas the preview says delete" "delete" "$(field s11m retarget_preview)"
 check "the retarget ended" "None None" "$(field s9 connect_drag) $(field s9 retarget)"
 check "Esc ends the drag mid-way" "None None" "$(field s10m connect_drag) $(field s10m retarget)"
 check "Esc then a release on b leaves a -> c" "1 $id8 $a $c" "$n10 $id10 $from10 $to10"

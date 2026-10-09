@@ -280,6 +280,12 @@ pub(crate) const ACCENT: egui::Color32 = egui::Color32::from_rgb(215, 162, 74);
 /// with the rest of this palette the way a stop-sign red would.
 pub(crate) const DANGER_COLOR: egui::Color32 = egui::Color32::from_rgb(196, 87, 58);
 
+/// A muted amber, darker and browner than `ACCENT`: a drag that a release would refuse (keeping what it holds).
+pub(crate) const REFUSED_COLOR: egui::Color32 = egui::Color32::from_rgb(160, 112, 52);
+
+/// A neutral grey: a ring on a card where a release changes nothing (the end's own old card).
+pub(crate) const NEUTRAL_RING_COLOR: egui::Color32 = egui::Color32::from_rgb(140, 138, 130);
+
 /// A sticky note's card fill -- a warm, light color deliberately unlike
 /// every other card's dark `extreme_bg_color`/`TOOLBAR_FILL` tone, so a note
 /// reads as "a physical note" at a glance rather than another chrome-toned

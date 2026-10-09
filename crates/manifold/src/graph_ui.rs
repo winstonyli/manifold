@@ -582,13 +582,19 @@ impl App {
                     self.draw_json_level(ui, &mut deferred_overlays, &mut json_edits, inv_zoom, zoom_scale);
                 } else {
                     // The card a release now would link to, ringed bright: the release below reads the same function.
-                    let connect_target = self.connect_drag_target(
+                    let connect_end = self.connect_drag_end(
                         ui.ctx(),
                         ui.input(|i| i.pointer.interact_pos()),
                         scene_outer_rect,
                         minimap.map(|(rect, _, _)| rect),
                         (zoom_scale, translation),
                     );
+                    // For a dragged link end, what the release there would do: the band and ring show it.
+                    self.retarget_preview = self.retarget_preview(&connect_end);
+                    let connect_target = match connect_end {
+                        crate::link_gestures::DragEnd::Card(target) => Some(target),
+                        _ => None,
+                    };
                     self.draw_graph_cards(
                         ui,
                         &mut deferred_overlays,
@@ -1695,6 +1701,7 @@ impl App {
             drop_preview: &drop_preview,
             pick_targets: pick_targets.as_deref().unwrap_or_default(),
             connect_target,
+            connect_ring: self.retarget_preview.map(|outcome| crate::link_gestures::retarget_look(outcome).ring),
             show_order: self.card_nav_active || self.hints_revealed,
             order: &tab_order,
             any_focused: false,

@@ -1516,6 +1516,9 @@ impl App {
             "connect_drag": self.connect_drag,
             // The Link node whose end a connect-drag from a curve is moving (`App::retarget`), or null.
             "retarget": self.retarget.as_ref().map(|r| &r.link),
+            // While it runs, what a release at the pointer would do (`App::retarget_preview`): "retarget", "delete",
+            // "refused" or "cancel"; else null.
+            "retarget_preview": self.retarget.as_ref().and(self.retarget_preview).map(crate::links::RetargetOutcome::name),
             // The card being dragged (`App::dragging`), or null.
             "dragging": self.dragging,
             "json_level": self.json_level_state(),
