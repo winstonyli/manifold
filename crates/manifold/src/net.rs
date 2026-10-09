@@ -5,6 +5,7 @@
 //! build their own requests on `agent()`; the installer shares
 //! `body_budget` and `describe`.
 
+use std::collections::VecDeque;
 use std::sync::OnceLock;
 use std::time::Duration;
 
@@ -75,6 +76,52 @@ pub(crate) fn describe_io(e: std::io::Error) -> String {
     match ureq::Error::from(e) {
         ureq::Error::Io(e) => e.to_string(),
         e => describe(&e),
+    }
+}
+
+/// At most `cap` background jobs at once; the rest wait, in order. The caller owns the threads and
+/// the results: it starts whatever `admit` or `finish` hands back, and calls `finish` once per job
+/// that was started, when that job's result is read.
+pub(crate) struct Throttle<J> {
+    cap: usize,
+    running: usize,
+    waiting: VecDeque<J>,
+}
+
+impl<J> Throttle<J> {
+    pub(crate) fn new(cap: usize) -> Self {
+        Self { cap, running: 0, waiting: VecDeque::new() }
+    }
+
+    /// `Some(job)` when it may start now (counted as running); `None` when it was queued.
+    pub(crate) fn admit(&mut self, job: J) -> Option<J> {
+        if self.running < self.cap {
+            self.running += 1;
+            Some(job)
+        } else {
+            self.waiting.push_back(job);
+            None
+        }
+    }
+
+    /// A running job finished. The next waiting job takes its slot and is returned to start; with
+    /// nothing waiting the slot frees.
+    pub(crate) fn finish(&mut self) -> Option<J> {
+        let next = self.waiting.pop_front();
+        if next.is_none() {
+            self.running = self.running.saturating_sub(1);
+        }
+        next
+    }
+
+    #[cfg(test)]
+    pub(crate) fn running(&self) -> usize {
+        self.running
+    }
+
+    #[cfg(test)]
+    pub(crate) fn waiting(&self) -> usize {
+        self.waiting.len()
     }
 }
 
@@ -185,6 +232,18 @@ mod tests {
         assert_eq!(describe_io(wrapped), "bad uri");
         let plain = std::io::Error::new(std::io::ErrorKind::ConnectionReset, "reset");
         assert_eq!(describe_io(plain), "reset");
+    }
+
+    #[test]
+    fn a_throttle_runs_at_most_its_cap_and_hands_on_in_order() {
+        let mut t = Throttle::new(2);
+        assert_eq!((t.admit(1), t.admit(2), t.admit(3), t.admit(4)), (Some(1), Some(2), None, None));
+        assert_eq!((t.running(), t.waiting()), (2, 2));
+        assert_eq!((t.finish(), t.finish()), (Some(3), Some(4)));
+        assert_eq!((t.running(), t.waiting()), (2, 0), "a waiting job inherits the slot");
+        assert_eq!((t.finish(), t.finish()), (None, None));
+        assert_eq!((t.running(), t.waiting()), (0, 0));
+        assert_eq!(t.admit(5), Some(5), "free again");
     }
 
     #[test]

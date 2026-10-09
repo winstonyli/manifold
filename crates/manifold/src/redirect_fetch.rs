@@ -1,7 +1,7 @@
 //! Fetches (or, for a `file://` url, reads from disk) the bytes behind a
 //! tab whose page is content that becomes a node, or behind a node's
 //! source url (Refresh, a missing file). manifold fetches on its own,
-//! engine-agnostic, like `favicon_fetch`: a thread per job, an `mpsc`
+//! engine-agnostic, like `favicon_fetch`: a thread per running job (at most four), an `mpsc`
 //! channel, and a `tick()` each frame.
 //!
 //! The kind comes from `content::kind_of`, and the bytes must pass
@@ -41,13 +41,19 @@ pub struct FetchResult {
     pub body: Option<WebBody>,
 }
 
+/// Fetches running at once; the rest wait in `throttle`. A pasted or restored session can name dozens
+/// of large files, and each running fetch holds its whole body (up to 100 MB) in memory.
+const MAX_REDIRECT_FETCHES: usize = 4;
+
 pub struct RedirectFetcher {
     dir: Option<PathBuf>,
     tx: mpsc::Sender<FetchResult>,
     rx: mpsc::Receiver<FetchResult>,
-    /// Nodes with a fetch running: a second Refresh (or a Retry racing a
+    /// Nodes with a fetch running or waiting: a second Refresh (or a Retry racing a
     /// restore-time refetch) is dropped instead of writing the same file.
     in_flight: HashSet<String>,
+    /// Jobs beyond `MAX_REDIRECT_FETCHES` wait here.
+    throttle: crate::net::Throttle<FetchJob>,
     /// `fetch`; tests swap in a stub.
     fetch: fn(&Path, &str, &str, ContentKind) -> Option<WebBody>,
 }
@@ -56,18 +62,26 @@ impl RedirectFetcher {
     /// `dir` is `profile::content_dir()`; `None` (tests) fails every fetch.
     pub fn new(dir: Option<PathBuf>) -> Self {
         let (tx, rx) = mpsc::channel();
-        Self { dir, tx, rx, in_flight: HashSet::new(), fetch }
+        let throttle = crate::net::Throttle::new(MAX_REDIRECT_FETCHES);
+        Self { dir, tx, rx, in_flight: HashSet::new(), throttle, fetch }
     }
 
-    /// Fetches `job.url` on a background thread. `false` (and nothing done)
-    /// when `job.node_id` is already being fetched.
+    /// Fetches `job.url` on a background thread, or queues it behind `MAX_REDIRECT_FETCHES` running
+    /// ones. `false` (and nothing done) when `job.node_id` is already being fetched or waiting.
     pub fn request(&mut self, job: FetchJob) -> bool {
         if !self.in_flight.insert(job.node_id.clone()) {
             return false;
         }
+        if let Some(job) = self.throttle.admit(job) {
+            self.start(job);
+        }
+        true
+    }
+
+    fn start(&self, job: FetchJob) {
         let (tx, dir, fetch) = (self.tx.clone(), self.dir.clone(), self.fetch);
         std::thread::spawn(move || {
-            // A panic still reports (as a failure), so `tick` frees the node;
+            // A panic still reports (as a failure), so `tick` frees the node and the slot;
             // the panic hook has already printed it.
             let body = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 dir.as_deref().and_then(|d| fetch(d, &job.node_id, &job.url, job.kind))
@@ -75,7 +89,6 @@ impl RedirectFetcher {
             .unwrap_or(None);
             let _ = tx.send(FetchResult { job, body });
         });
-        true
     }
 
     /// Call once per frame. `body: None` means the fetch failed (a network
@@ -87,6 +100,9 @@ impl RedirectFetcher {
         let results: Vec<FetchResult> = self.rx.try_iter().collect();
         for r in &results {
             self.in_flight.remove(&r.job.node_id);
+            if let Some(next) = self.throttle.finish() {
+                self.start(next);
+            }
         }
         results
     }
@@ -185,6 +201,59 @@ mod tests {
     use super::*;
     use crate::content::{path_file_url, ContentKind};
     use crate::WebBody;
+
+    static RUNNING: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    static PEAK: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    static RELEASE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+    /// A stub fetch that counts how many run at once and holds until released.
+    fn gated_fetch(_: &Path, _: &str, _: &str, _: ContentKind) -> Option<WebBody> {
+        use std::sync::atomic::Ordering::SeqCst;
+        let now = RUNNING.fetch_add(1, SeqCst) + 1;
+        PEAK.fetch_max(now, SeqCst);
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while !RELEASE.load(SeqCst) && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        RUNNING.fetch_sub(1, SeqCst);
+        None
+    }
+
+    #[test]
+    fn at_most_four_redirect_fetches_run_at_once() {
+        use std::sync::atomic::Ordering::SeqCst;
+        RUNNING.store(0, SeqCst);
+        PEAK.store(0, SeqCst);
+        RELEASE.store(false, SeqCst);
+        let mut fetcher = RedirectFetcher::new(Some(crate::store::testutil::temp_dir("redirect_cap")));
+        fetcher.fetch = gated_fetch;
+        for n in 0..10 {
+            let job = FetchJob {
+                target: FetchTarget::Node(format!("7-{n}")),
+                node_id: format!("7-{n}"),
+                url: "https://example.invalid/x.pdf".into(),
+                kind: ContentKind::Pdf,
+            };
+            assert!(fetcher.request(job));
+        }
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while RUNNING.load(SeqCst) < MAX_REDIRECT_FETCHES && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        // An absence cannot be waited for: give any extra thread 100 ms to show itself. Before the
+        // cap all ten start within a millisecond or two.
+        std::thread::sleep(Duration::from_millis(100));
+        assert_eq!(PEAK.load(SeqCst), MAX_REDIRECT_FETCHES, "no fifth fetch started while four were held");
+        RELEASE.store(true, SeqCst);
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let mut done = 0;
+        while done < 10 && std::time::Instant::now() < deadline {
+            done += fetcher.tick().len();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(done, 10, "every queued job eventually ran and reported");
+        assert_eq!(PEAK.load(SeqCst), MAX_REDIRECT_FETCHES);
+    }
 
     #[test]
     fn saves_checked_content_by_node_id() {
