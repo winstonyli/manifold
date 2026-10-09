@@ -18,8 +18,9 @@
 #   8. In run 4, a drag from the curve near b's end (EXPORTSTATE `near_to`) onto
 #      the third tab c retargets the link in place, a -> c (same id; mid-drag
 #      `connect_drag` is a and `retarget` the link); a drag from the c end
-#      with Esc, and one released on empty canvas, leave it as it was. Run 5
-#      still has it, a -> c.
+#      with Esc leaves it as it was. A second link a -> b dragged from its b
+#      end onto c (already joined to a) is deleted, and a drag of the a -> c
+#      link's end released on empty canvas deletes it. Run 5 has no link.
 # One headless instance per run, on a fresh isolated profile seeded with two
 # about:blank tabs (import gives them fresh ids, so the first run reads them
 # from EXPORTSTATE), state read back through EXPORTSTATE. Runs BelowNormal.
@@ -107,8 +108,9 @@ drag_to() {
     for i in 1 2 3 4 5 6; do send "MOUSEMOVE $(($1 + ($3 - $1) * i / 6)) $(($2 + ($4 - $2) * i / 6))"; done
     send WAITIDLE
 }
-# edge_pt FILE KEY: the first link edge's KEY point (screen, rounded); card_pt FILE ID: a card's centre.
-edge_pt() { py "import json,sys; e=[e for e in json.load(open(sys.argv[1], encoding='utf-8'))['edges'] if e['kind']=='link'][0]['$2']; print(round(e[0]), round(e[1]))" "$1"; }
+# edge_pt FILE KEY [TO]: the first link edge's (with TO: the first running to card TO) KEY point (screen, rounded);
+# card_pt FILE ID: a card's centre.
+edge_pt() { py "import json,sys; e=[e for e in json.load(open(sys.argv[1], encoding='utf-8'))['edges'] if e['kind']=='link' and ('${3:-}' in ('', e['to']))][0]['$2']; print(round(e[0]), round(e[1]))" "$1"; }
 card_pt() { py "import json,sys; c=[c for c in json.load(open(sys.argv[1], encoding='utf-8'))['cards'] if c['id']=='$2'][0]['screen']; print(round(c[0]), round(c[1]))" "$1"; }
 # Retarget (spec link-gestures, "Dragging a link's end"). The link is a -> b. Grabbed near b's end (t = 0.8) and
 # dropped on c, its b end moves to c: same Link node, now a -> c. Mid-drag a is the fixed end.
@@ -127,9 +129,17 @@ send ESCAPE WAITIDLE "$(x s10m)"
 wait_file "$out/s10m.json"
 send "MOUSEUP $bx $by" WAITIDLE "$(x s10)"
 wait_file "$out/s10.json"
-# Released on empty canvas (b's column, c's row, clear of every card): the a end is put back, nothing changes.
-read -r gx gy <<<"$(edge_pt s10 near_from)"
-read -r _ ey <<<"$(card_pt s10 $c)"
+# A second link a -> b, its b end dragged onto c: a already joins c, so the dragged link is deleted, a -> c stays.
+send "LINK $a $b" "SLEEP 1" "$(x s10b)"
+wait_file "$out/s10b.json"
+read -r gx gy <<<"$(edge_pt s10b near_to $b)"
+read -r cx cy <<<"$(card_pt s10b $c)"
+drag_to "$gx" "$gy" "$cx" "$cy"
+send "MOUSEUP $cx $cy" WAITIDLE "$(x s10d)"
+wait_file "$out/s10d.json"
+# Released on empty canvas (b's column, c's row, clear of every card): the dragged link is deleted.
+read -r gx gy <<<"$(edge_pt s10d near_from)"
+read -r _ ey <<<"$(card_pt s10d $c)"
 drag_to "$gx" "$gy" "$bx" "$ey"
 send "MOUSEUP $bx $ey" WAITIDLE "$(x s11)"
 wait_file "$out/s11.json"
@@ -176,16 +186,20 @@ check "a release 15 points outside b links a -> b" "1 $a $b" "$n7t $from7t $to7t
 check "the dragged link persists across a restart" "1 $id7t" "$n8 $id8"
 read -r n9 id9 from9 to9 <<<"$(summary s9)"
 read -r n10 id10 from10 to10 <<<"$(summary s10)"
-read -r n11 id11 from11 to11 <<<"$(summary s11)"
-read -r n12 id12 from12 to12 <<<"$(summary s12)"
+read -r n10b _ <<<"$(summary s10b)"
+read -r n10d id10d from10d to10d <<<"$(summary s10d)"
+read -r n11 _ <<<"$(summary s11)"
+read -r n12 _ <<<"$(summary s12)"
 check "grabbed near b's end, a is the fixed end of the connect-drag" "$a" "$(field s9m connect_drag)"
 check "and the link being retargeted is the one that was drawn" "$id8" "$(field s9m retarget)"
 check "dropped on c, the link keeps its id and runs a -> c" "1 $id8 $a $c" "$n9 $id9 $from9 $to9"
 check "the retarget ended" "None None" "$(field s9 connect_drag) $(field s9 retarget)"
 check "Esc ends the drag mid-way" "None None" "$(field s10m connect_drag) $(field s10m retarget)"
 check "Esc then a release on b leaves a -> c" "1 $id8 $a $c" "$n10 $id10 $from10 $to10"
-check "a release on empty canvas leaves a -> c" "1 $id8 $a $c" "$n11 $id11 $from11 $to11"
-check "the retargeted link persists across a restart" "1 $id8 $a $c" "$n12 $id12 $from12 $to12"
+check "a second link a -> b is made" "2" "$n10b"
+check "its b end dropped on c (already joined to a) deletes it, a -> c stays" "1 $id8 $a $c" "$n10d $id10d $from10d $to10d"
+check "a release on empty canvas deletes the dragged link" "0" "$n11"
+check "the deletion persists across a restart" "0" "$n12"
 if [ $status -ne 0 ]; then
     for l in log1 log2 log3 log4 log5; do echo "--- $l"; tail -n 20 "$out/$l"; done
 fi

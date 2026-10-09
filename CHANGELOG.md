@@ -7,7 +7,7 @@ One entry per tagged release, newest first. The annotated tag `vX.Y.Z` carries t
 ### Features
 
 - **Link gesture polish.** Connect handles are 28 by 16 pills, show on hover even when the card has nothing to link to, and show on every card while you drag. A release within 24 points of a card links it, so a near miss counts. Links and opened-from lines are now one curved style between the facing sides of the two cards, and clicking a link means clicking its curve.
-- **Drag a link to retarget it.** Drag a link's curve and the end nearer your grab comes off its card and follows the pointer; drop it on another card to move that end there (the link keeps its identity and direction). Dropping on empty canvas, on the old card, or pressing Esc leaves the link as it was, and a card that refuses the pair shows the usual toast. A click on the curve still deletes the link.
+- **Drag a link to retarget it.** Drag a link's curve and the end nearer your grab comes off its card and follows the pointer; drop it on another card to move that end there (the link keeps its identity and direction). Dropping on empty canvas, or on a card already linked to the other end's card, deletes the link; dropping on the old card or pressing Esc leaves it as it was, and any other card that refuses the pair shows the usual toast. A click on the curve still deletes the link.
 - **Deselect by clicking.** A left-click on empty graph canvas clears the tab selection, and Ctrl-click on a tab card toggles it in or out of the selection without opening it.
 
 ### Integrity

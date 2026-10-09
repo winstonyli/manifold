@@ -655,18 +655,18 @@ impl App {
         let (down, released, clicked) =
             ui.input(|i| (i.pointer.primary_down(), i.pointer.primary_released(), i.pointer.primary_clicked()));
         if self.connect_drag.is_some() && !down {
-            let target = (released && !clicked)
-                .then(|| {
-                    self.connect_drag_target(
-                        ui.ctx(),
-                        ui.input(|i| i.pointer.interact_pos()),
-                        scene_outer_rect,
-                        minimap.map(|(rect, _, _)| rect),
-                        (zoom_scale, translation),
-                    )
-                })
-                .flatten();
-            self.end_connect_drag(target);
+            let end = if released && !clicked {
+                self.connect_drag_end(
+                    ui.ctx(),
+                    ui.input(|i| i.pointer.interact_pos()),
+                    scene_outer_rect,
+                    minimap.map(|(rect, _, _)| rect),
+                    (zoom_scale, translation),
+                )
+            } else {
+                crate::link_gestures::DragEnd::Abandoned
+            };
+            self.end_connect_drag(end);
         }
 
         if let Some((minimap_rect, world_bounds, minimap_scale)) = minimap {

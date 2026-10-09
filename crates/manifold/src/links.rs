@@ -4,7 +4,7 @@
 use std::collections::HashSet;
 
 use crate::caps::{Storage, LINK, OPENED_FROM};
-use crate::link_gestures::LinkRetarget;
+use crate::link_gestures::{DragEnd, LinkRetarget};
 use crate::session_sync::link_id;
 use crate::store::model::{field, FieldValue, NodeId};
 use crate::App;
@@ -22,6 +22,19 @@ pub(crate) enum ConnectError {
     Cycle,
     /// The ends are already joined by this edge.
     Exists,
+}
+
+/// What releasing a dragged link end does (`App::retarget_outcome`).
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum RetargetOutcome {
+    /// The end moves to the card it was released on.
+    Retargeted,
+    /// The link is deleted.
+    Deleted,
+    /// Nothing happens, silently.
+    Cancelled,
+    /// Nothing changes and a toast says so.
+    Refused,
 }
 
 /// One edge at a node, as `App::edges_of` lists it.
@@ -183,17 +196,29 @@ impl App {
 
     /// Pick-target mode's end on a target: draws the chosen edge from the mode's source to `target`, ends the mode and
     /// saves. A refused edge (the target stopped being valid since it was drawn highlighted) says so in a toast.
-    /// A drag that began on a link's curve (`retarget`) moves that link's free end to `target` instead, in place.
     pub(crate) fn finish_connect(&mut self, target: &str) {
         self.connect_drag = None;
-        let retarget = self.retarget.take();
+        self.retarget = None;
         let Some((from, edge)) = self.connecting.take() else { return };
-        let done = match retarget {
-            Some(retarget) => self.retarget_link(&retarget, &from, target),
-            None => self.connect(edge, &from, target),
-        };
-        if done.is_err() {
+        if self.connect(edge, &from, target).is_err() {
             self.queue_toast("Can't connect these cards".to_string());
+        }
+        self.save_session();
+    }
+
+    /// Ends the connect-drag of a link's curve (`retarget`, its fixed end on `fixed`) at `end`: acts on
+    /// `retarget_outcome` and saves. The one place a retarget release is decided.
+    pub(crate) fn finish_retarget(&mut self, retarget: &LinkRetarget, fixed: &str, end: &DragEnd) {
+        match self.retarget_outcome(retarget, fixed, end) {
+            RetargetOutcome::Retargeted => {
+                if let DragEnd::Card(target) = end {
+                    let free_field = if retarget.fixed_is_from { field::TO } else { field::FROM };
+                    self.edit_field(&retarget.link, free_field, FieldValue::Id(link_id(Some(target))));
+                }
+            }
+            RetargetOutcome::Deleted => self.delete_link(&retarget.link),
+            RetargetOutcome::Cancelled => return,
+            RetargetOutcome::Refused => self.queue_toast("Can't connect these cards".to_string()),
         }
         self.save_session();
     }
@@ -205,26 +230,36 @@ impl App {
         self.retarget = None;
     }
 
-    /// Moves the free end of link `retarget.link` to `target` by rewriting that one field, so the Link node keeps its
-    /// id and its other end; `fixed` is the card at the end that stays. `target` being the end it already has is no
-    /// change. Refused as `connect` would refuse the new pair (a duplicate link, a card not live or on another
-    /// level). When the link is gone or no longer has `fixed` at that end, nothing happens, silently.
-    fn retarget_link(&mut self, retarget: &LinkRetarget, fixed: &str, target: &str) -> Result<(), ConnectError> {
+    /// What releasing the free end of link `retarget.link` at `end` does, its other end staying on `fixed`:
+    /// - the link gone or no longer holding `fixed` at that end, a release not over the canvas
+    ///   (`DragEnd::Abandoned`), or one on the end's own card: `Cancelled`, the link untouched, silently;
+    /// - empty canvas, or a card `check_connect` says is already joined to `fixed` (`ConnectError::Exists`):
+    ///   `Deleted`, the link goes as a click on it would;
+    /// - the fixed end's own card, or a card `check_connect` refuses for any other reason: `Refused`, link kept;
+    /// - otherwise `Retargeted`: the free end moves there by rewriting that one field, so the Link node keeps its
+    ///   id, other end and direction.
+    fn retarget_outcome(&self, retarget: &LinkRetarget, fixed: &str, end: &DragEnd) -> RetargetOutcome {
         let link_is_live = retarget.link.parse::<NodeId>().is_ok_and(|id| self.mirror.is_link(id));
         let (from, to) = self.mirror.link_ends(&retarget.link);
-        let (fixed_end, moving_end, free_field) =
-            if retarget.fixed_is_from { (from, to, field::TO) } else { (to, from, field::FROM) };
+        let (fixed_end, moving_end) = if retarget.fixed_is_from { (from, to) } else { (to, from) };
         let fixed_still_there = fixed_end.is_some_and(|end| end.to_string() == fixed);
         let (Some(moving_end), true, true) = (moving_end, link_is_live, fixed_still_there) else {
-            return Ok(());
+            return RetargetOutcome::Cancelled;
         };
-        if moving_end.to_string() == target {
-            return Ok(());
+        match end {
+            DragEnd::Abandoned => RetargetOutcome::Cancelled,
+            DragEnd::Canvas => RetargetOutcome::Deleted,
+            DragEnd::Source => RetargetOutcome::Refused,
+            DragEnd::Card(target) if moving_end.to_string() == *target => RetargetOutcome::Cancelled,
+            DragEnd::Card(target) => {
+                let (new_from, new_to) = if retarget.fixed_is_from { (fixed, &**target) } else { (&**target, fixed) };
+                match self.check_connect(LINK, new_from, new_to, None) {
+                    Ok(()) => RetargetOutcome::Retargeted,
+                    Err(ConnectError::Exists) => RetargetOutcome::Deleted,
+                    Err(_) => RetargetOutcome::Refused,
+                }
+            }
         }
-        let (new_from, new_to) = if retarget.fixed_is_from { (fixed, target) } else { (target, fixed) };
-        self.check_connect(LINK, new_from, new_to, None)?;
-        self.edit_field(&retarget.link, free_field, FieldValue::Id(link_id(Some(target))));
-        Ok(())
     }
 
     /// Ends pick-target mode, and a connect-drag, when `id`, a card being removed, is its source.
