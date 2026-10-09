@@ -16,7 +16,7 @@
 # closing a group holding an image and a nested group, then reopening
 # it (REOPENTAB) nested as it was; `ADDFILE` for each content kind; a tab
 # at a local JSON or PDF converting into its node; entering a dropped
-# JSON's level via JSONSELECT/JSONSEARCH and leaving it, NEWNOTE from that level; quit. The drop checks
+# JSON's level via JSONSELECT/JSONSEARCH and leaving it, NEWNOTE from that level; clicking a moved JSON window's "+ N earlier" row; quit. The drop checks
 # click cards where EXPORTSTATE's `cards` says they are, after the layout
 # stops moving (`settle`), not at fixed coordinates.
 #
@@ -489,6 +489,31 @@ settle json_note
 check_query json_note "NEWNOTE from a JSON level leaves it" "s['json_level'] is None and s['current_group'] != '$json_id'"
 check_query json_note "the new note is a card on the level now shown" \
     "len([i for i, c in cards.items() if card_is(c, NOTE)]) == len(eval('''$notes_before''')) + 1"
+
+# A far reveal moves a card's window (skip > 0, a `+ N earlier` row under the header); a real CLICK on that row,
+# aimed at the `earlier` point EXPORTSTATE's json_level gives, grows the window up by one page (json_view::show_earlier).
+printf '{"items": [%s]}\n' "$(seq -s, 0 999)" >"$out_dir/big.json"
+state before_big 1 >/dev/null
+before_big_ids=$(query before_big 'sorted(cards)')
+send "ADDFILE $out_dir_win\\big.json 400 300"
+settle after_big
+big_id=$(BEFORE="$before_big_ids" query after_big \
+    '([i for i, c in cards.items() if card_is(c, JSON) and i not in eval(env["BEFORE"])] or ["none"])[0]')
+send "DOUBLECLICK $(query after_big "xy('$big_id')")"
+settle big_in
+ITEMS="next(c for c in s['json_level']['cards'] if c['pointer'] == '/items')" # the /items card, in a query
+send "JSONSELECT /items/900"
+send WAITIDLE
+settle big_far
+check_query big_far "a far JSONSELECT moves the card's window (skip 900) and gives the earlier row a click point" \
+    "s['json_level']['root'] == '$big_id' and $ITEMS['skip'] == 900 and $ITEMS['earlier'] is not None"
+send "CLICK $(query big_far "' '.join('%.0f' % v for v in $ITEMS['earlier'])")"
+send WAITIDLE
+settle big_earlier
+check_query big_earlier "clicking the + N earlier row grows the window up by one page (skip 880)" \
+    "$ITEMS['skip'] == 880"
+send "CLICK 22 17"
+check_state big_out "the back button leaves the big JSON level" "s['json_level'] is None"
 
 # The remaining `ADDFILE` kinds (the image and the .txt/.json are above),
 # each checked by the new card's type: a PDF, a `.bin` (a Download card)

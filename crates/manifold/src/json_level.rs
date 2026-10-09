@@ -466,7 +466,8 @@ impl App {
 
     /// `EXPORTSTATE`'s `json_level` (spec "Headless"): the root id, the
     /// visible cards' pointers and positions, the selection and the
-    /// search's matches.
+    /// search's matches. A card whose window has moved (`skip` > 0) also gives
+    /// `earlier`, the screen point of its `+ N earlier` row (else null).
     pub(crate) fn json_level_state(&self) -> serde_json::Value {
         let Some(level) = &self.json_level else { return serde_json::Value::Null };
         let cards: Vec<serde_json::Value> = level
@@ -474,6 +475,15 @@ impl App {
             .iter()
             .zip(&level.rects)
             .map(|(card, rect)| {
+                // Where a click lands on the `+ N earlier` row (window points), for a script to aim at.
+                let earlier = (card.skip > 0).then(|| {
+                    let row = egui::Rect::from_min_size(
+                        egui::pos2(rect.left(), rect.top() + json_view::HEADER_HEIGHT),
+                        egui::vec2(rect.width(), json_view::ROW_HEIGHT),
+                    );
+                    let c = self.graph_world_rect_to_screen(row).center();
+                    [c.x, c.y]
+                });
                 serde_json::json!({
                     "pointer": card.pointer,
                     "pos": [rect.min.x, rect.min.y],
@@ -481,6 +491,7 @@ impl App {
                     "rows": card.rows,
                     "skip": card.skip,
                     "more": card.more,
+                    "earlier": earlier,
                 })
             })
             .collect();
