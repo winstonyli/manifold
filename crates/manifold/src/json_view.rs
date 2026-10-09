@@ -592,6 +592,36 @@ pub(crate) fn search(root: &Value, query: &str) -> SearchResult {
     search_with(root, query, &|| false).expect("never cancelled")
 }
 
+/// One open container's children in `search_with`'s walk.
+enum Children<'a> {
+    Object(serde_json::map::Iter<'a>),
+    Array(std::iter::Enumerate<std::slice::Iter<'a, Value>>),
+}
+
+/// Appends `key` to `path` as one pointer token, escaping `~` and `/` as `child_pointer` does.
+fn push_token(path: &mut String, key: &str) {
+    path.push('/');
+    for c in key.chars() {
+        match c {
+            '~' => path.push_str("~0"),
+            '/' => path.push_str("~1"),
+            c => path.push(c),
+        }
+    }
+}
+
+/// Whether `text` contains `needle` (already lowercased), ignoring case as `str::to_lowercase` does. When both
+/// are ASCII, a byte compare with no allocation. Otherwise `to_lowercase().contains`, as before: a non-ASCII text
+/// can lowercase to ASCII (the Kelvin sign is `k`), and lowercasing can change a text's length.
+fn contains_lower(text: &str, needle: &str) -> bool {
+    if text.is_ascii() && needle.is_ascii() {
+        let (text, needle) = (text.as_bytes(), needle.as_bytes());
+        needle.is_empty() || text.windows(needle.len()).any(|w| w.eq_ignore_ascii_case(needle))
+    } else {
+        text.to_lowercase().contains(needle)
+    }
+}
+
 /// `search`, checking `cancelled` every 4096 nodes: `None` once it says so
 /// (a newer query superseded this worker's).
 pub(crate) fn search_with(root: &Value, query: &str, cancelled: &dyn Fn() -> bool) -> Option<SearchResult> {
@@ -600,36 +630,68 @@ pub(crate) fn search_with(root: &Value, query: &str, cancelled: &dyn Fn() -> boo
     if needle.is_empty() {
         return Some(result);
     }
-    // Depth-first, children pushed in reverse so they pop in document order.
-    let mut stack: Vec<(String, Option<&str>, &Value)> = vec![(String::new(), None, root)];
+    use std::fmt::Write;
+    // Depth-first in document order with one path: a token is pushed going down and cut off coming back up
+    // (`stack` holds each open container's children and its path length).
+    let mut path = String::new();
+    let mut number = String::new();
+    let mut stack: Vec<(Children, usize)> = Vec::new();
+    let mut node: Option<(Option<&str>, &Value)> = Some((None, root));
     let mut visited = 0usize;
-    while let Some((pointer, key, value)) = stack.pop() {
+    while let Some((key, value)) = node.take() {
         visited += 1;
         if visited.is_multiple_of(4096) && cancelled() {
             return None;
         }
-        let key_hit = key.is_some_and(|k| k.to_lowercase().contains(&needle));
-        let value_hit = scalar_text(value).is_some_and(|t| t.to_lowercase().contains(&needle));
+        let key_hit = key.is_some_and(|k| contains_lower(k, &needle));
+        let value_hit = match value {
+            Value::String(s) => contains_lower(s, &needle),
+            Value::Number(n) => {
+                number.clear();
+                let _ = write!(number, "{n}");
+                contains_lower(&number, &needle)
+            }
+            Value::Bool(b) => contains_lower(if *b { "true" } else { "false" }, &needle),
+            Value::Null => contains_lower("null", &needle),
+            Value::Array(_) | Value::Object(_) => false,
+        };
         if key_hit || value_hit {
             if result.matches.len() == MAX_MATCHES {
                 result.truncated = true; // a match past the cap: there are more than it shows
                 break;
             }
-            for (i, _) in pointer.match_indices('/') {
-                result.keep.insert(pointer[..i].to_string());
+            for (i, _) in path.match_indices('/') {
+                result.keep.insert(path[..i].to_string());
             }
-            result.keep.insert(pointer.clone());
-            result.hits.insert(pointer.clone());
-            result.matches.push(pointer.clone());
+            result.keep.insert(path.clone());
+            result.hits.insert(path.clone());
+            result.matches.push(path.clone());
         }
-        let children: Vec<(String, Option<&str>, &Value)> = match value {
-            Value::Object(map) => map.iter().map(|(k, v)| (child_pointer(&pointer, k), Some(k.as_str()), v)).collect(),
-            Value::Array(items) => {
-                items.iter().enumerate().map(|(i, v)| (child_pointer(&pointer, &i.to_string()), None, v)).collect()
+        match value {
+            Value::Object(map) => stack.push((Children::Object(map.iter()), path.len())),
+            Value::Array(items) => stack.push((Children::Array(items.iter().enumerate()), path.len())),
+            _ => {}
+        }
+        // The next node: the next child of the innermost container that has one left.
+        while let Some((children, len)) = stack.last_mut() {
+            path.truncate(*len);
+            let next = match children {
+                Children::Object(iter) => iter.next().map(|(k, v)| {
+                    push_token(&mut path, k);
+                    (Some(k.as_str()), v)
+                }),
+                Children::Array(iter) => iter.next().map(|(i, v)| {
+                    path.push('/');
+                    let _ = write!(path, "{i}");
+                    (None, v)
+                }),
+            };
+            if next.is_some() {
+                node = next;
+                break;
             }
-            _ => Vec::new(),
-        };
-        stack.extend(children.into_iter().rev());
+            stack.pop();
+        }
     }
     Some(result)
 }
