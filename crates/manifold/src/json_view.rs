@@ -812,7 +812,8 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    /// Wave 2 (H1b): revealing the last of 20 000 objects moves the array's window to it: one page of rows, so one page of cards.
+    /// Wave 2 (H1b): revealing the last of 20 000 objects moves the array's window to it: one page of rows, so one
+    /// page of cards.
     #[test]
     fn reveal_bounds_rows() {
         let root = json!({"items": (0..20_000).map(|n| json!({"n": n})).collect::<Vec<_>>()});

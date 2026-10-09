@@ -971,6 +971,23 @@ mod tests {
 
     /// The texts one level card paints, in order: header, rows, `+ N more`.
     fn painted_texts(value: &Value, card: &Card, visible: egui::Rect) -> Vec<String> {
+        painted_shapes(value, card, visible, None, &[])
+            .iter()
+            .filter_map(|s| match s {
+                egui::Shape::Text(t) => Some(t.galley.text().to_string()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The shapes one level card paints at the origin, with a selected row and hit rows (entry indices).
+    fn painted_shapes(
+        value: &Value,
+        card: &Card,
+        visible: egui::Rect,
+        selected_row: Option<usize>,
+        hit_rows: &[usize],
+    ) -> Vec<egui::Shape> {
         let ctx = egui::Context::default();
         crate::theme::apply_fonts(&ctx);
         let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
@@ -981,8 +998,8 @@ mod tests {
                 text_color: egui::Color32::WHITE,
                 inv_zoom: 1.0,
                 text: true,
-                selected_row: None,
-                hit_rows: &[],
+                selected_row,
+                hit_rows,
                 visible,
                 ports: true,
                 preview: false,
@@ -1005,14 +1022,43 @@ mod tests {
             }
         });
         output.textures_delta.clear();
-        output
-            .shapes
-            .iter()
-            .filter_map(|s| match &s.shape {
-                egui::Shape::Text(t) => Some(t.galley.text().to_string()),
+        output.shapes.into_iter().map(|s| s.shape).collect()
+    }
+
+    /// Wave 2 (H1b): a window past the first page paints `+ N earlier` as row 0, then its entries, hits and
+    /// selection one row lower than their place in the window.
+    #[test]
+    fn a_moved_window_paints_below_its_earlier_row() {
+        let value = Value::Array((0..100).map(|i| Value::String(format!("v{i}"))).collect());
+        let card =
+            Card { pointer: String::new(), parent: None, depth: 0, collapsed: false, skip: 40, rows: 20, more: 40 };
+        let shapes = painted_shapes(&value, &card, egui::Rect::EVERYTHING, Some(45), &[30, 50, 70]);
+        // Each text's vertical centre, by its text.
+        let centre = |text: &str| {
+            shapes.iter().find_map(|s| match s {
+                egui::Shape::Text(t) if t.galley.text() == text => Some(t.pos.y + t.galley.size().y / 2.0),
                 _ => None,
             })
-            .collect()
+        };
+        let row_centre = |row: usize| json_view::HEADER_HEIGHT + json_view::ROW_HEIGHT * (row as f32 + 0.5);
+        let near = |y: Option<f32>, row: usize| y.is_some_and(|y| (y - row_centre(row)).abs() < 1.0);
+        assert!(near(centre("+ 40 earlier"), 0), "{:?}", centre("+ 40 earlier"));
+        assert!(near(centre("\"v40\""), 1) && near(centre("\"v59\""), 20));
+        assert!(near(centre("+ 40 more"), 21));
+        assert_eq!(centre("\"v39\""), None, "before the window: not painted");
+        // Fills: the hit at entry 50 (30 and 70 are outside the window) and the selection at entry 45.
+        let fill_top = |color: egui::Color32| -> Vec<f32> {
+            shapes
+                .iter()
+                .filter_map(|s| match s {
+                    egui::Shape::Rect(r) if r.fill == color => Some(r.rect.top()),
+                    _ => None,
+                })
+                .collect()
+        };
+        let row_top = |row: usize| json_view::HEADER_HEIGHT + json_view::ROW_HEIGHT * row as f32;
+        assert_eq!(fill_top(SEARCH_HIT.gamma_multiply(0.18)), [row_top(1 + 50 - 40)]);
+        assert_eq!(fill_top(ACCENT.gamma_multiply(0.22)), [row_top(1 + 45 - 40)]);
     }
 
     /// Wave 2 (H1a): a card's painted texts, pinned before rows are culled to the camera.

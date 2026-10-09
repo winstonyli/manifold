@@ -756,6 +756,33 @@ mod tests {
         );
     }
 
+    /// Wave 2 (H1b): a window past the first page puts `+ N earlier` under the header and every entry row one
+    /// lower; hit-testing and `entry_rect` follow it.
+    #[test]
+    fn a_moved_window_is_hit_below_its_earlier_row() {
+        let mut view = JsonView::default();
+        view.entry("").first = Some(2);
+        let level = JsonLevel::new(J.into(), Arc::new(serde_json::json!((0..100).collect::<Vec<_>>())), &view);
+        let (card, rect) = (&level.cards[0], level.rects[0]);
+        assert_eq!((card.skip, card.rows, card.more, card.lead()), (40, 20, 40, 1));
+        let row = |i: usize| {
+            egui::pos2(
+                rect.center().x,
+                rect.top() + json_view::HEADER_HEIGHT + json_view::ROW_HEIGHT * (i as f32 + 0.5),
+            )
+        };
+        assert!(level.earlier_row_at(0, row(0)) && !level.earlier_row_at(0, row(1)));
+        assert_eq!(level.row_at(0, row(0)), None, "the earlier row is not an entry");
+        assert_eq!(level.row_at(0, row(1)).as_deref(), Some("/40"));
+        assert_eq!(level.row_at(0, row(20)).as_deref(), Some("/59"));
+        assert_eq!(level.row_at(0, row(21)), None, "the more row is not an entry");
+        assert!(level.more_row_at(0, row(21)) && !level.more_row_at(0, row(20)));
+        let top = |p: &str| level.entry_rect(p).map(|r| r.top());
+        assert_eq!(top("/40"), Some(rect.top() + json_view::HEADER_HEIGHT + json_view::ROW_HEIGHT));
+        assert_eq!(top("/59"), Some(rect.top() + json_view::HEADER_HEIGHT + json_view::ROW_HEIGHT * 20.0));
+        assert_eq!((top("/39"), top("/60")), (None, None), "outside the window");
+    }
+
     #[test]
     fn copy_texts_follow_the_selection_and_the_path_form() {
         let (mut app, j) = app_with_json("copy", r#"{"users": [{"name": "Ada", "a/b": 1}]}"#);
