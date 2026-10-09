@@ -149,6 +149,13 @@ pub(crate) struct LinkRetarget {
     pub fixed_is_from: bool,
 }
 
+/// Drops from `edges` (what is drawn) the link being retargeted: its rubber band stands for it.
+pub(crate) fn without_retargeted(edges: &mut Vec<LevelEdge>, retarget: Option<&LinkRetarget>) {
+    if let Some(retarget) = retarget {
+        edges.retain(|edge| edge.link.as_deref() != Some(retarget.link.as_str()));
+    }
+}
+
 /// Whether the end of `edge` nearer the grab point `at` (world) is its `from` end; a tie goes to `from`.
 pub(crate) fn grabs_from_end(edge: &LevelEdge, at: egui::Pos2) -> bool {
     at.distance(edge.from) <= at.distance(edge.to)
@@ -966,10 +973,60 @@ mod tests {
             modifiers: egui::Modifiers::NONE,
         };
         let on_c = screen_rect(&app, &c).center();
-        let from = point_on(&app, &edge, 0.85);
-        h.drag_with(&mut app, from, on_c, vec![escape]);
-        assert_eq!(ends(&app, &ab), (Some(a), Some(b)), "released on c after Esc: untouched");
+        let before = app.camera.rect;
+        hold_on(&h, &mut app, &edge, 0.85, on_c);
+        assert!(app.retarget.is_some(), "mid-drag");
+        h.frame(&mut app, vec![escape]);
         assert!(app.connect_drag.is_none() && app.retarget.is_none() && app.connecting.is_none());
+        // The button is still down: moving on must not pan the canvas the press began on.
+        for step in 1..=4 {
+            h.frame(&mut app, vec![egui::Event::PointerMoved(on_c + egui::vec2(25.0 * step as f32, 10.0))]);
+        }
+        assert_eq!(app.camera.rect, before, "no pan after Esc");
+        release(&h, &mut app, on_c);
+        assert_eq!(ends(&app, &ab), (Some(a), Some(b)), "released on c after Esc: untouched");
+        assert!(toasts(&app).is_empty());
+    }
+
+    /// The link being retargeted is left out of what is drawn, every other edge is kept.
+    #[test]
+    fn the_retargeted_link_is_not_drawn() {
+        let mut edges = vec![edge(Some("1"), 0.0), edge(Some("2"), 10.0), edge(None, 20.0)];
+        without_retargeted(&mut edges, None);
+        assert_eq!(edges.len(), 3, "no retarget: all drawn");
+        let retarget = LinkRetarget { link: "2".into(), fixed_is_from: true };
+        without_retargeted(&mut edges, Some(&retarget));
+        let left: Vec<_> = edges.iter().map(|e| e.link.as_deref()).collect();
+        assert_eq!(left, [Some("1"), None]);
+    }
+
+    /// A link deleted mid-drag (say by sync) leaves nothing to move: the release cancels without a toast or a new link.
+    #[test]
+    fn releasing_a_dragged_curve_whose_link_was_deleted_cancels_silently() {
+        let (h, mut app, [a, b, c]) = three_notes();
+        let ab = app.create_link(&a, &b);
+        h.frame(&mut app, vec![]);
+        let edge = link_edge(&app, &ab);
+        let on_c = screen_rect(&app, &c).center();
+        hold_on(&h, &mut app, &edge, 0.85, on_c);
+        assert!(app.retarget.is_some(), "mid-drag");
+        app.delete_link(&ab);
+        release(&h, &mut app, on_c);
+        assert!(toasts(&app).is_empty(), "{:?}", toasts(&app));
+        assert!(app.links_naming(&a).is_empty() && app.links_naming(&c).is_empty());
+        assert!(app.connect_drag.is_none() && app.retarget.is_none() && app.connecting.is_none());
+    }
+
+    /// A press on the curve that wobbles under egui's drag threshold is still a click: it deletes the link.
+    #[test]
+    fn a_jittery_click_on_a_curve_still_deletes_the_link() {
+        let (h, mut app, [a, b, _]) = three_notes();
+        let ab = app.create_link(&a, &b);
+        h.frame(&mut app, vec![]);
+        let on = line_middle(&app, &ab);
+        h.drag(&mut app, on, on + egui::vec2(3.0, 0.0));
+        assert!(app.links_naming(&a).is_empty(), "deleted");
+        assert!(app.retarget.is_none());
     }
 
     /// A target the link cannot move to (here a already joins c) leaves the old link and says so.

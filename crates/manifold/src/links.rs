@@ -208,7 +208,7 @@ impl App {
     /// Moves the free end of link `retarget.link` to `target` by rewriting that one field, so the Link node keeps its
     /// id and its other end; `fixed` is the card at the end that stays. `target` being the end it already has is no
     /// change. Refused as `connect` would refuse the new pair (a duplicate link, a card not live or on another
-    /// level), and when the link is gone or no longer has `fixed` at that end; the link is then untouched.
+    /// level). When the link is gone or no longer has `fixed` at that end, nothing happens, silently.
     fn retarget_link(&mut self, retarget: &LinkRetarget, fixed: &str, target: &str) -> Result<(), ConnectError> {
         let link_is_live = retarget.link.parse::<NodeId>().is_ok_and(|id| self.mirror.is_link(id));
         let (from, to) = self.mirror.link_ends(&retarget.link);
@@ -216,7 +216,7 @@ impl App {
             if retarget.fixed_is_from { (from, to, field::TO) } else { (to, from, field::FROM) };
         let fixed_still_there = fixed_end.is_some_and(|end| end.to_string() == fixed);
         let (Some(moving_end), true, true) = (moving_end, link_is_live, fixed_still_there) else {
-            return Err(ConnectError::NotLive);
+            return Ok(());
         };
         if moving_end.to_string() == target {
             return Ok(());

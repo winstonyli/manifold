@@ -575,8 +575,7 @@ impl App {
                     edge.highlight |= edge.link.is_some() && edge.link == line_hover;
                 }
                 // The link being retargeted is not drawn: its rubber band stands for it.
-                let retargeting = self.retarget.as_ref().map(|r| r.link.as_str());
-                edges.retain(|edge| retargeting.is_none() || edge.link.as_deref() != retargeting);
+                crate::link_gestures::without_retargeted(&mut edges, self.retarget.as_ref());
                 self.draw_graph_edges(ui, &edges, inv_zoom);
 
                 if self.json_level.is_some() {
@@ -1200,6 +1199,8 @@ impl App {
         // release would still link. That Esc does nothing else here, though egui itself drops keyboard focus on Esc,
         // so the same Esc also ends a note edit or rename that had the keys.
         if self.connect_drag.is_some() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            // egui aborts the Scene background's drag on this same Esc, so a retarget that began on it does not
+            // turn into a pan with the button still down (`escape_cancels_a_dragged_curve`).
             self.cancel_connect();
             return;
         }
