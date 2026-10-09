@@ -17,7 +17,10 @@ const COOKIE_HOLD: std::time::Duration = std::time::Duration::from_secs(2);
 const QUIT_PULL_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// A `GetCookies` unanswered this long is given up on, so the next pull may ask again.
-const JAR_PULL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+pub(crate) const JAR_PULL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// The longest a jar a pull changed waits for its pull round to end before it is saved anyway (`flush_dirty_jars`).
+pub(crate) const JAR_FLUSH_AFTER: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// A tab whose last `MAX_SILENT_PULLS` pulls all went unanswered is given up on: its host cannot answer (the WebView2
 /// shared-profile fallback, a CDP error), so it is no longer asked and nothing waits on it.
@@ -175,8 +178,8 @@ impl App {
         });
     }
 
-    /// Folds tab `tab_id`'s cookie dump into the jar its host was spawned with, and saves that jar's file when it
-    /// changed (spec: "Its pulls merge into that jar and save only that jar's file"). Merged against that tab's own
+    /// Folds tab `tab_id`'s cookie dump into the jar its host was spawned with, and marks that jar dirty when it
+    /// changed (`flush_dirty_jars` saves it) (spec: "Its pulls merge into that jar and save only that jar's file"). Merged against that tab's own
     /// `jar_tabs` entry (`jar::Jar::merge`). `false` for a dump that does not parse (logged), a tab with no
     /// `jar_tabs` entry (closed or replaced since it was asked; deviation 5), a named jar deleted while it ran, or a
     /// host whose jar was cleared under it (`jar_reseed`): it still holds the old cookies, and they must not refill
@@ -210,9 +213,37 @@ impl App {
             if let Ok(mut snapshots) = self.jar_snapshots.lock() {
                 snapshots.insert(key, jar);
             }
-            self.save_jar(key);
+            // Saved once the round's other replies are in (`flush_dirty_jars`): fifteen tabs that saw one rotating
+            // cookie write the file once, not fifteen times.
+            self.jar_dirty.entry(key).or_insert_with(std::time::Instant::now);
         }
         changed
+    }
+
+    /// Saves each dirty jar (`jar_dirty`) once its pull round is over, or once it has waited `JAR_FLUSH_AFTER`;
+    /// `None` (quit) saves every one. The round is over when no tab has a pull pending (`pull_pending`): one that
+    /// timed out unanswered keeps its `jar_pulls` entry until that tab's next pull, so emptiness is not the test. A
+    /// named jar deleted meanwhile is skipped, as `apply_pulled_cookies` skips one.
+    pub(crate) fn flush_dirty_jars(&mut self, now: Option<std::time::Instant>) {
+        if self.jar_dirty.is_empty() {
+            return;
+        }
+        let round_over = now.is_none_or(|now| !self.jar_pulls.keys().any(|id| pull_pending(&self.jar_pulls, id, now)));
+        let due: Vec<crate::jar::JarKey> = self
+            .jar_dirty
+            .iter()
+            .filter(|(_, since)| {
+                round_over || now.is_some_and(|now| now.saturating_duration_since(**since) >= JAR_FLUSH_AFTER)
+            })
+            .map(|(key, _)| *key)
+            .collect();
+        for key in due {
+            if matches!(key, crate::jar::JarKey::Named(id) if !self.mirror.jar_defs().contains_key(&id)) {
+                self.jar_dirty.remove(&key);
+                continue;
+            }
+            self.save_jar(key);
+        }
     }
 
     /// Asks one WebView2 or CEF tab for its cookies; the answer arrives as `EngineToHost::Cookies`. Best effort:

@@ -105,6 +105,7 @@ impl ApplicationHandler<UserEvent> for App {
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
         self.flush_pending_settings();
         self.final_cookie_pull();
+        self.flush_dirty_jars(None); // the last pull's changes, and any round still open
         self.close_store();
         self.egui_state = None;
         self.gpu = None;
@@ -158,6 +159,9 @@ impl ApplicationHandler<UserEvent> for App {
             self.jar_pull_all();
             self.jar_last_pull = Some(std::time::Instant::now());
         }
+        // A pull round's changed jars, once its replies are in or `JAR_FLUSH_AFTER` has passed. The loop wakes at
+        // least every `IDLE_FRAME` or `MINIMIZED_TICK` (100 ms), so a due jar is written within 100 ms.
+        self.flush_dirty_jars(Some(std::time::Instant::now()));
         // A window drag's geometry, once it has been quiet for `SETTINGS_SAVE_DELAY`. The loop wakes at least
         // every idle frame or `MINIMIZED_TICK`, so it lands within about a second.
         self.flush_settings_if_due(std::time::Instant::now());

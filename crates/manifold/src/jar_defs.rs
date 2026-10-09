@@ -422,6 +422,10 @@ impl App {
     /// Settings' Ephemeral checkbox. Turning it on for a jar with a saved file asks first (`JarConfirm::Ephemeral`):
     /// that file, its saved logins, is deleted. Anything else acts at once.
     pub(crate) fn request_jar_ephemeral(&mut self, id: NodeId, on: bool) {
+        // A jar whose cookies are not on disk yet has logins to lose too: save them, so it asks first.
+        if on && self.jar_dirty.contains_key(&JarKey::Named(id)) {
+            self.save_jar(JarKey::Named(id));
+        }
         if on && self.has_saved_file(JarKey::Named(id)) {
             self.offer_jar_confirm(JarConfirm::Ephemeral(id));
         } else {
@@ -469,6 +473,7 @@ impl App {
         self.mirror.forget_jar(id);
         let key = JarKey::Named(id);
         self.jars.remove(&key);
+        self.jar_dirty.remove(&key);
         if let Ok(mut snapshots) = self.jar_snapshots.lock() {
             snapshots.remove(&key);
         }
@@ -685,8 +690,9 @@ impl App {
     }
 
     /// Writes `key`'s file unless it is ephemeral. A failure is logged (never cookie values) and leaves other jars
-    /// alone.
-    pub(crate) fn save_jar(&self, key: JarKey) {
+    /// alone. Settles the jar's dirty mark (`jar_dirty`): every write goes through here.
+    pub(crate) fn save_jar(&mut self, key: JarKey) {
+        self.jar_dirty.remove(&key); // written now, or never (ephemeral, no dir)
         let (Some(dir), Some(jar)) = (self.jars_dir(), self.jars.get(&key)) else { return };
         if self.is_ephemeral(key) {
             return;

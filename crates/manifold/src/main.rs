@@ -1013,6 +1013,9 @@ struct App {
     jar_pulls: HashMap<String, std::time::Instant>,
     /// Consecutive unanswered pulls per tab (`tabs::start_pull`).
     jar_silent: HashMap<String, u8>,
+    /// Jars a pull changed and not saved yet, each with when it first changed: saved once the pull round ends
+    /// (`flush_dirty_jars`), not once per tab's reply. Memory and `jar_snapshots` are current; only the file lags.
+    jar_dirty: std::collections::BTreeMap<jar::JarKey, std::time::Instant>,
     /// Scroll positions of woken tabs, restored once their first load finishes.
     saved_scroll: HashMap<String, sleep_state::SavedScroll>,
     /// Each tab's back/forward list as the host saw it, by tab id: kept
@@ -1577,6 +1580,7 @@ impl Default for App {
             jar_last_pull: None,
             jar_pulls: HashMap::new(),
             jar_silent: HashMap::new(),
+            jar_dirty: std::collections::BTreeMap::new(),
             saved_scroll: HashMap::new(),
             nav_history: nav_history::load(),
             drop_batch: 0,
@@ -3389,6 +3393,7 @@ mod tests {
         app.ensure_jar_loaded(key);
         app.jar_tabs.insert("a".into(), (key, jar::TabCookies::default()));
         app.apply_pulled_cookies("a", SID);
+        app.flush_dirty_jars(None); // the round ends
         assert!(jar::Jar::path(&dir, key).exists());
         app.clear_jar_cookies(key);
         assert!(app.jars[&key].cookies.is_empty());
@@ -3470,7 +3475,7 @@ mod tests {
         app.jar_saves.load(std::sync::atomic::Ordering::Relaxed)
     }
 
-    /// Wave 2 (Jar H3): fifteen tabs pull a rotating cookie into one jar. Each changed pull saves the file today.
+    /// Wave 2 (Jar H3): fifteen tabs pull a rotating cookie into one jar. They are saved once, when the round ends.
     #[test]
     fn a_burst_of_pulls_saves_the_jar() {
         let dir = store::testutil::temp_dir("jar-burst");
@@ -3485,8 +3490,36 @@ mod tests {
             let dump = SID.replace(r#""value":"1""#, &format!(r#""value":"v{t}""#));
             assert!(app.apply_pulled_cookies(&tab, &dump), "pull {t} changed the jar");
         }
-        assert_eq!(jar_saves(&app) - before, 15, "one save per changed pull");
+        assert_eq!(jar_saves(&app) - before, 0, "nothing is written until the round ends");
+        app.flush_dirty_jars(None);
+        assert_eq!(jar_saves(&app) - before, 1, "then the jar is saved once");
         assert_eq!(jar::Jar::load(&dir, key).cookies[0].value, "v14", "the file holds the last value");
+    }
+
+    /// Wave 2 (Jar H3): a dirty jar is saved once no pull is pending, or once it has waited `JAR_FLUSH_AFTER`. A pull
+    /// that timed out unanswered keeps its entry but holds nothing back.
+    #[test]
+    fn a_dirty_jar_is_saved_when_its_pull_round_ends() {
+        use std::time::{Duration, Instant};
+        let dir = store::testutil::temp_dir("jar-flush-round");
+        let mut app = App { jars_dir_override: Some(dir.clone()), ..App::default() };
+        on_default(&mut app, "a");
+        let t0 = Instant::now();
+        app.jar_pulls.insert("b".into(), t0); // b's pull is still out
+        assert!(app.apply_pulled_cookies("a", SID));
+        // Deadlines from the jar's own dirty mark, not from `t0`: a loaded machine can take any time between the two.
+        let dirty = *app.jar_dirty.values().next().expect("the pull marked the jar dirty");
+        app.flush_dirty_jars(Some(dirty + Duration::from_millis(500)));
+        assert_eq!(jar_saves(&app), 0, "b's pull is pending and the jar is not due yet");
+        app.flush_dirty_jars(Some(dirty + tabs::JAR_FLUSH_AFTER));
+        assert_eq!(jar_saves(&app), 1, "due: saved although b's pull is pending");
+        app.flush_dirty_jars(Some(dirty + tabs::JAR_FLUSH_AFTER * 2));
+        assert_eq!(jar_saves(&app), 1, "saved jars are clean");
+
+        assert!(app.apply_pulled_cookies("a", "[]"));
+        app.flush_dirty_jars(Some(t0 + tabs::JAR_PULL_TIMEOUT));
+        assert!(app.jar_pulls.contains_key("b"), "a timed-out pull keeps its entry");
+        assert_eq!(jar_saves(&app), 2, "but it is not pending: the round is over");
     }
 
     /// Wave 2 (Jar H3): a jar whose first login is not on disk yet still asks before ephemeral deletes it.
