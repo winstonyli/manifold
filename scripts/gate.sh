@@ -50,7 +50,7 @@ stage() {
     "$@" >"$log" 2>&1
     rc=$?
     grep -qE 'PASS|FAIL' "$log" && pf=" pass=$(grep -c PASS "$log") fail=$(grep -c FAIL "$log")"
-    echo "GATE $name exit=$rc end $(date +%H:%M:%S) took=$((SECONDS - t0))s last: $(grep -v '^TIMING ' "$log" | tail -1)$pf" >>"$out"
+    echo "GATE $name exit=$rc end $(date +%H:%M:%S) took=$((SECONDS - t0))s last: $(grep -v -e '^TIMING ' -e '^[[:space:]]*$' "$log" | tail -1)$pf" >>"$out"
     printf 'TIMING gate/%s %d %d\n' "$name" $((SECONDS - t0)) "$s0" >>"$out"
     bash scripts/gate-timing.sh collect "$name" "$log" "$out.cpu" >>"$out"
 }
