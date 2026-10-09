@@ -4540,7 +4540,7 @@ dependencies = [
 
 [[package]]
 name = "ipc-protocol"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "interprocess",
  "memmap2",
@@ -4994,7 +4994,7 @@ dependencies = [
 
 [[package]]
 name = "manifold"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "bzip2",
  "egui",
@@ -5029,7 +5029,7 @@ dependencies = [
 
 [[package]]
 name = "manifold-engine-cef"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "cef",
  "ipc-protocol",
@@ -5039,7 +5039,7 @@ dependencies = [
 
 [[package]]
 name = "manifold-engine-servo"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "dpi",
  "euclid",
@@ -5052,7 +5052,7 @@ dependencies = [
 
 [[package]]
 name = "manifold-engine-webkit"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "gtk",
  "ipc-protocol",
@@ -5063,7 +5063,7 @@ dependencies = [
 
 [[package]]
 name = "manifold-engine-webview2"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "image",
  "ipc-protocol",
