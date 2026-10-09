@@ -3,10 +3,10 @@
 #
 # The pre-merge gate: sequential, so load from other sessions is the only thing that stretches it.
 #   full  (default): two-instance-test x3 + headless-smoke-test x1 + launch-forms-probe + link-probe. Use for any
-#                    change to sync, the store, the mirror, session save/restore or the engines. ~18 min on a
-#                    quiet machine, ~29 under load.
+#                    change to sync, the store, the mirror, session save/restore or the engines. ~7 min on a
+#                    quiet machine, ~12 under load (measured 2026-10-08).
 #   light:           two-instance-test x1 + headless-smoke-test x1 + launch-forms-probe + link-probe. Allowed when
-#                    only UI code changed (drawing, gestures, menus, scripts, docs): ~9 min quiet. The repeats in `full` exist to catch flaky
+#                    only UI code changed (drawing, gestures, menus, scripts, docs): ~4 min quiet. The repeats in `full` exist to catch flaky
 #                    ordering in sync, which UI-only changes cannot reach.
 # Build first (`cargo build -j 8 -p manifold`): every stage runs the existing exe. Launch detached and low priority:
 #   cmd //c start "" //b //belownormal bash scripts/gate.sh LOG [mode]
