@@ -285,9 +285,10 @@ mod tests {
     use crate::store::testutil::XorShift;
     use crate::App;
 
-    /// Wave 2 (H2): `valid_targets` holds exactly the cards `check_connect` accepts (`None`: the unhoisted scan), for every source and edge, over
-    /// random cards (notes, sleeping tabs, completed and running downloads, two groups) in three levels, random
-    /// connects, a half-made link and a dangling one; `has_valid_target` is its non-emptiness.
+    /// Wave 2 (H2): `valid_targets` holds exactly the cards `check_connect` accepts (`None`: the unhoisted scan),
+    /// for every source and edge, over random cards (notes, sleeping tabs, completed and running downloads, two
+    /// groups) in three levels, random connects, a half-made link and a dangling one; `has_valid_target` is its
+    /// non-emptiness.
     #[test]
     fn valid_targets_match_check_connect() {
         let mut app = App::default();
