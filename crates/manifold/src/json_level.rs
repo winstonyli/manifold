@@ -52,6 +52,9 @@ pub(crate) struct Outline {
 pub(crate) struct Search {
     pub(crate) query: String,
     pub(crate) result: Option<SearchResult>,
+    /// The result's hits as rows (`json_view::hit_rows_by_parent`): sorted entry indices per parent card. Set with
+    /// `result` (`set_result`), so a frame never scans a card's rows for hits.
+    pub(crate) hit_rows: HashMap<String, Vec<usize>>,
     /// The match Enter or ↓ is on.
     pub(crate) current: usize,
     /// A worker's search of a big value, with the query it ran.
@@ -66,6 +69,14 @@ impl Drop for Search {
     /// Leaving the level stops its worker too, not only a newer query.
     fn drop(&mut self) {
         self.generation.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+impl Search {
+    /// Sets the result and the hit rows built from it, together.
+    pub(crate) fn set_result(&mut self, root: &serde_json::Value, result: Option<SearchResult>) {
+        self.hit_rows = result.as_ref().map(|r| json_view::hit_rows_by_parent(root, &r.hits)).unwrap_or_default();
+        self.result = result;
     }
 }
 
@@ -297,7 +308,7 @@ impl App {
         level.search.pending = None;
         level.outline.dirty = true;
         let generation = level.search.generation.fetch_add(1, Ordering::Relaxed) + 1;
-        level.search.result = None; // the old query's matches mustn't show or step while this one runs
+        level.search.set_result(&level.value, None); // the old query's matches mustn't show or step while this one runs
         if !query.is_empty() {
             if level.nodes > json_view::WORKER_SEARCH_NODES {
                 let (tx, rx) = mpsc::channel();
@@ -312,7 +323,8 @@ impl App {
                 });
                 level.search.pending = Some((query.clone(), rx));
             } else {
-                level.search.result = Some(json_view::search(&level.value, &query));
+                let result = json_view::search(&level.value, &query);
+                level.search.set_result(&level.value, Some(result));
             }
         }
         level.search.query = query;
@@ -339,7 +351,7 @@ impl App {
             match rx.try_recv() {
                 Ok(result) => {
                     if *query == level.search.query {
-                        level.search.result = Some(result);
+                        level.search.set_result(&level.value, Some(result));
                     }
                     level.search.pending = None;
                     level.outline.dirty = true;
@@ -493,6 +505,18 @@ mod tests {
         )
         .unwrap();
         (app, J.into())
+    }
+
+    /// Wave 2 (H1a): a search's hit rows are built with its result, per parent card, and go with it.
+    #[test]
+    fn a_search_builds_its_hit_rows_per_card() {
+        let (mut app, j) = app_with_json("hit-rows", r#"{"a": {"b": 1}, "c": [1, 2]}"#);
+        app.switch_group_level(Some(j));
+        app.set_json_search("1".into());
+        let rows = |app: &App| app.json_level.as_ref().unwrap().search.hit_rows.clone();
+        assert_eq!(rows(&app), HashMap::from([("/a".to_string(), vec![0]), ("/c".to_string(), vec![0])]));
+        app.set_json_search(String::new());
+        assert!(rows(&app).is_empty());
     }
 
     /// Wave 2 (H1a): Tab and Shift+Tab walk the JSON cards through real frames, and a focused card panned out of view

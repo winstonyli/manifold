@@ -1853,6 +1853,7 @@ impl App {
             text,
             selected_row: None,
             hit_rows: &[],
+            visible: egui::Rect::EVERYTHING,
             // No child cards or edges at the parent level: a port dot here
             // would point at nothing.
             ports: false,

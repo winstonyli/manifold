@@ -4,7 +4,7 @@
 //! text rows show, labels, which cards are visible, the tree layout,
 //! search and the outline's rows. Nothing here touches `App`.
 
-use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -339,11 +339,69 @@ pub(crate) fn entry_count(value: &Value) -> usize {
 
 /// A container's entries in order, array indices as keys.
 pub(crate) fn entries(value: &Value) -> Box<dyn Iterator<Item = (String, &Value)> + '_> {
+    entries_from(value, 0)
+}
+
+/// `entries` from entry `start` on. An array starts there directly; an object steps past `start` entries
+/// (`serde_json`'s map iterator has no fast `nth`).
+pub(crate) fn entries_from(value: &Value, start: usize) -> Box<dyn Iterator<Item = (String, &Value)> + '_> {
     match value {
-        Value::Object(map) => Box::new(map.iter().map(|(k, v)| (k.clone(), v))),
-        Value::Array(items) => Box::new(items.iter().enumerate().map(|(i, v)| (i.to_string(), v))),
+        Value::Object(map) => Box::new(map.iter().skip(start).map(|(k, v)| (k.clone(), v))),
+        Value::Array(items) => {
+            let start = start.min(items.len());
+            Box::new(items[start..].iter().enumerate().map(move |(i, v)| ((start + i).to_string(), v)))
+        }
         _ => Box::new(std::iter::empty()),
     }
+}
+
+/// The rows of a card whose first row's top is `rows_top` that intersect `visible` (world), as a range of its
+/// `rows` rows. `Rect::EVERYTHING` gives every row: float-to-int casts saturate.
+pub(crate) fn visible_rows(rows_top: f32, rows: usize, visible: egui::Rect) -> std::ops::Range<usize> {
+    let first = ((visible.top() - rows_top) / ROW_HEIGHT).floor().max(0.0) as usize;
+    let end = ((visible.bottom() - rows_top) / ROW_HEIGHT).ceil().max(0.0) as usize;
+    first.min(rows)..end.min(rows)
+}
+
+/// The entry index of `pointer` on the card at `card` (`value` is the card's value), when `pointer` is a canonical
+/// child of it (its own pointer as `child_pointer` writes it) within `window`.
+pub(crate) fn row_of(value: &Value, card: &str, pointer: &str, window: std::ops::Range<usize>) -> Option<usize> {
+    let token = pointer.strip_prefix(card)?.strip_prefix('/')?;
+    if token.contains('/') {
+        return None;
+    }
+    let key = token.replace("~1", "/").replace("~0", "~");
+    let row = entry_index(value, &key).filter(|row| window.contains(row))?;
+    let canonical = if value.is_array() { row.to_string() } else { key };
+    (child_pointer(card, &canonical) == pointer).then_some(row)
+}
+
+/// Each search hit's row on its parent's card: sorted entry indices per parent pointer. A hit that is not a
+/// canonical child pointer (none from `search_with` is) or that names no entry is left out; the root has no row.
+pub(crate) fn hit_rows_by_parent(root: &Value, hits: &HashSet<String>) -> HashMap<String, Vec<usize>> {
+    let mut keys: HashMap<&str, HashSet<String>> = HashMap::new();
+    for hit in hits {
+        let (Some(parent), Some(key)) = (parent_pointer(hit), last_key(hit)) else { continue };
+        if child_pointer(parent, &key) == *hit {
+            keys.entry(parent).or_default().insert(key);
+        }
+    }
+    keys.into_iter()
+        .filter_map(|(parent, keys)| {
+            let mut rows: Vec<usize> = match root.pointer(parent)? {
+                Value::Object(map) => {
+                    map.keys().enumerate().filter(|(_, k)| keys.contains(*k)).map(|(i, _)| i).collect()
+                }
+                Value::Array(items) => keys
+                    .iter()
+                    .filter_map(|k| k.parse::<usize>().ok().filter(|&i| i < items.len() && i.to_string() == *k))
+                    .collect(),
+                _ => return None,
+            };
+            rows.sort_unstable();
+            Some((parent.to_string(), rows))
+        })
+        .collect()
 }
 
 /// Whether a child gets its own card: non-empty containers only (plan
@@ -776,6 +834,40 @@ mod tests {
         assert_eq!(label(&json!(["a very long string indeed", "and more"])), None);
         assert_eq!(label(&json!([])), Some("[]".into()));
         assert_eq!(label(&json!("scalar")), None);
+    }
+
+    #[test]
+    fn visible_rows_cover_the_rows_the_rect_touches() {
+        let r = |top, bottom| egui::Rect::from_min_max(egui::pos2(0.0, top), egui::pos2(220.0, bottom));
+        assert_eq!(visible_rows(26.0, 25, r(137.0, 245.0)), 5..10);
+        assert_eq!(visible_rows(26.0, 25, egui::Rect::EVERYTHING), 0..25, "the preview: every row");
+        assert_eq!(visible_rows(26.0, 25, r(-500.0, 0.0)), 0..0, "above the rows");
+        assert_eq!(visible_rows(26.0, 25, r(5000.0, 6000.0)), 25..25, "below them");
+    }
+
+    #[test]
+    fn row_of_and_hit_rows_take_canonical_children_only() {
+        let root = json!({"a~b": {"x/y": 1, "z": 2}, "arr": [10, 20, 30]});
+        assert_eq!(row_of(&root["a~b"], "/a~0b", "/a~0b/x~1y", 0..2), Some(0));
+        assert_eq!(row_of(&root["a~b"], "/a~0b", "/a~0b/z", 0..1), None, "outside the window");
+        assert_eq!(row_of(&root["arr"], "/arr", "/arr/2", 0..3), Some(2));
+        assert_eq!(row_of(&root["arr"], "/arr", "/arr/02", 0..3), None, "not canonical");
+        assert_eq!(row_of(&root["arr"], "/arr", "/arr", 0..3), None, "the card itself");
+        assert_eq!(row_of(&root, "", "/arr/2", 0..2), None, "a grandchild");
+        let hits = HashSet::from(["/a~0b/z", "/arr/0", "/arr/2", "/arr/02"].map(String::from));
+        let rows = hit_rows_by_parent(&root, &hits);
+        assert_eq!(rows.get("/a~0b"), Some(&vec![1]));
+        assert_eq!(rows.get("/arr"), Some(&vec![0, 2]));
+        assert_eq!(rows.len(), 2);
+    }
+
+    #[test]
+    fn entries_from_starts_at_an_entry() {
+        let root = json!({"o": {"a": 1, "b": 2, "c": 3}, "arr": [10, 20, 30]});
+        let keys = |v: &Value, start| entries_from(v, start).map(|(k, _)| k).collect::<Vec<_>>();
+        assert_eq!(keys(&root["o"], 1), ["b", "c"]);
+        assert_eq!(keys(&root["arr"], 2), ["2"]);
+        assert!(keys(&root["arr"], 9).is_empty());
     }
 
     #[test]

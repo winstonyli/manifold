@@ -227,7 +227,11 @@ pub(crate) struct CardLook<'a> {
     /// Text, or gray bars (level of detail).
     pub(crate) text: bool,
     pub(crate) selected_row: Option<usize>,
+    /// Sorted entry rows that match the search.
     pub(crate) hit_rows: &'a [usize],
+    /// The world rect shown (the camera's): only entry rows intersecting it are painted. `Rect::EVERYTHING`
+    /// paints them all (the Json card's preview).
+    pub(crate) visible: egui::Rect,
     /// A container row's port dot: true on the JSON level itself, where it
     /// marks a row with a child card and an edge to it. False for the Json
     /// card's preview at its parent's level, which has no child cards or
@@ -256,8 +260,8 @@ fn paint_json_frame(
     painter.rect_stroke(rect, rounding, egui::Stroke::new(border.0 * inv_zoom, border.1), egui::StrokeKind::Inside);
 }
 
-/// A card's contents (the frame is the caller's): the header, then the
-/// first `rows` entries of `value`, then `+ N more` when `more > 0`.
+/// A card's contents (the frame is the caller's): the header, then those of the first `rows` entries of `value` that
+/// `look.visible` shows, then `+ N more` when `more > 0`.
 /// Shared by the JSON level and the Json card at its parent's level.
 #[allow(clippy::too_many_arguments, reason = "one card's full description; a struct for it would only rename these")]
 pub(crate) fn paint_json_content(
@@ -280,6 +284,7 @@ pub(crate) fn paint_json_content(
             egui::vec2(rect.width(), ROW_HEIGHT),
         )
     };
+    let shown = json_view::visible_rows(rect.top() + header_height, rows, look.visible);
     if !look.preview && rows + usize::from(more > 0) > 0 {
         painter.hline(
             rect.x_range(),
@@ -287,7 +292,9 @@ pub(crate) fn paint_json_content(
             egui::Stroke::new(look.inv_zoom, pal.muted.gamma_multiply(0.4)),
         );
     }
-    for &row in look.hit_rows {
+    let (lo, hi) =
+        (look.hit_rows.partition_point(|&r| r < shown.start), look.hit_rows.partition_point(|&r| r < shown.end));
+    for &row in &look.hit_rows[lo..hi] {
         painter.rect_filled(row_rect(row), 0.0, SEARCH_HIT.gamma_multiply(0.18));
     }
     if let Some(row) = look.selected_row {
@@ -373,7 +380,10 @@ pub(crate) fn paint_json_content(
             size: if look.preview { HEADER_TITLE_SIZE * look.inv_zoom } else { TEXT_SIZE },
         });
     }
-    for (row, (key, child)) in json_view::entries(value).take(rows).enumerate() {
+    let first = shown.start;
+    for (row, (key, child)) in
+        json_view::entries_from(value, first).take(shown.len()).enumerate().map(|(i, e)| (first + i, e))
+    {
         let r = row_rect(row);
         let y = r.center().y;
         let parts = row_parts(value, &key, child);
@@ -481,7 +491,10 @@ impl App {
         // never culled either, or panning away would drop the focus.
         let tab_target_key = egui::Id::new("json_tab_target");
         let mut tab_target: Option<usize> = ui.data(|d| d.get_temp(tab_target_key));
-        if let Some(at) = (0..level.cards.len()).find(|&i| ui.memory(|m| m.has_focus(card_id(i)))) {
+        // The focused widget, read again only where it can change (the Tab request, each drawn card's interact),
+        // not once per card: `has_focus(id)` is `focused() == Some(id)`, and egui applies focus moves at once.
+        let mut focused = ui.memory(|m| m.focused());
+        if let Some(at) = (0..level.cards.len()).find(|&i| focused == Some(card_id(i))) {
             tab_target = None;
             let shift = ui.input(|i| {
                 i.events.iter().any(|e| {
@@ -498,6 +511,7 @@ impl App {
             if let (true, Some(next)) = (ui.input(|i| i.key_pressed(egui::Key::Tab)), next) {
                 ui.memory_mut(|m| m.request_focus(card_id(next)));
                 tab_target = Some(next);
+                focused = ui.memory(|m| m.focused());
             }
         }
         ui.data_mut(|d| match tab_target {
@@ -510,19 +524,18 @@ impl App {
         });
         for (i, card) in level.cards.iter().enumerate() {
             let rect = level.rects[i];
-            if !rect.intersects(self.camera.rect) && tab_target != Some(i) && !ui.memory(|m| m.has_focus(card_id(i))) {
+            if !rect.intersects(self.camera.rect) && tab_target != Some(i) && focused != Some(card_id(i)) {
                 continue;
             }
             let Some(value) = level.value.pointer(&card.pointer) else { continue };
-            let shown: Vec<String> = json_view::entries(value)
-                .take(card.rows)
-                .map(|(key, _)| json_view::child_pointer(&card.pointer, &key))
-                .collect();
-            let selected_row = level.selected.as_ref().and_then(|s| shown.iter().position(|p| p == s));
-            let hit_rows: Vec<usize> = match hits {
-                Some(hits) => shown.iter().enumerate().filter(|(_, p)| hits.contains(*p)).map(|(r, _)| r).collect(),
-                None => Vec::new(),
-            };
+            let selected_row =
+                level.selected.as_deref().and_then(|s| json_view::row_of(value, &card.pointer, s, 0..card.rows));
+            // This card's hit rows, cut to the rows it shows.
+            let hit_rows: &[usize] = level
+                .search
+                .hit_rows
+                .get(&card.pointer)
+                .map_or(&[][..], |rows| &rows[..rows.partition_point(|&r| r < card.rows)]);
             let border = if level.selected.as_deref() == Some(card.pointer.as_str()) {
                 (2.0, ACCENT)
             } else if hits.is_some_and(|h| h.contains(&card.pointer)) || !hit_rows.is_empty() {
@@ -539,7 +552,8 @@ impl App {
                 inv_zoom,
                 text: zoom_scale >= LOD_TEXT_ZOOM,
                 selected_row,
-                hit_rows: &hit_rows,
+                hit_rows,
+                visible: self.camera.rect,
                 ports: true,
                 preview: false,
             };
@@ -554,6 +568,7 @@ impl App {
             if i == 0 && ui.data_mut(|d| d.remove_temp::<bool>(json_focus_root_key())).unwrap_or(false) {
                 response.request_focus();
             }
+            focused = ui.memory(|m| m.focused());
             // Keyboard focus (Tab) selects the card; Enter then toggles it (`handle_json_keys`).
             if response.has_focus() {
                 card_focus_ring(ui, rect, inv_zoom);
@@ -922,7 +937,7 @@ mod tests {
     use crate::json_view::{default_expanded, visible_cards, JsonView};
 
     /// The texts one level card paints, in order: header, rows, `+ N more`.
-    fn painted_texts(value: &Value, card: &Card) -> Vec<String> {
+    fn painted_texts(value: &Value, card: &Card, visible: egui::Rect) -> Vec<String> {
         let ctx = egui::Context::default();
         crate::theme::apply_fonts(&ctx);
         let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
@@ -935,6 +950,7 @@ mod tests {
                 text: true,
                 selected_row: None,
                 hit_rows: &[],
+                visible,
                 ports: true,
                 preview: false,
             };
@@ -961,10 +977,20 @@ mod tests {
     fn a_card_paints_its_rows_texts() {
         let value = Value::Array((0..30).map(|i| Value::String(format!("v{i}"))).collect());
         let card = Card { pointer: String::new(), parent: None, depth: 0, collapsed: false, rows: 25, more: 5 };
-        let texts = painted_texts(&value, &card);
+        let texts = painted_texts(&value, &card, egui::Rect::EVERYTHING);
         assert_eq!(texts.len(), 54, "{texts:?}");
         assert_eq!(texts[1..5], ["f.json", "[30]", "0", "\"v0\""], "{texts:?}");
         assert_eq!(texts[53], "+ 5 more");
+    }
+
+    /// Wave 2 (H1a): only the rows the camera shows are painted; the header and `+ N more` always are.
+    #[test]
+    fn a_culled_card_paints_only_its_visible_rows() {
+        let value = Value::Array((0..30).map(|i| Value::String(format!("v{i}"))).collect());
+        let card = Card { pointer: String::new(), parent: None, depth: 0, collapsed: false, rows: 25, more: 5 };
+        let full = painted_texts(&value, &card, egui::Rect::EVERYTHING);
+        let visible = egui::Rect::from_min_max(egui::pos2(0.0, 137.0), egui::pos2(220.0, 245.0)); // rows 5..10
+        assert_eq!(painted_texts(&value, &card, visible), [&full[..3], &full[13..23], &full[53..]].concat());
     }
 
     #[test]
