@@ -173,9 +173,9 @@ impl ApplicationHandler<UserEvent> for App {
         }
         self.was_minimized = minimized;
         self.release_expired_cookie_holds();
-        if self.jar_last_pull.is_none_or(|t| t.elapsed() >= JAR_PULL_EVERY) {
+        if self.cookies.jar_last_pull.is_none_or(|t| t.elapsed() >= JAR_PULL_EVERY) {
             self.jar_pull_all();
-            self.jar_last_pull = Some(std::time::Instant::now());
+            self.cookies.jar_last_pull = Some(std::time::Instant::now());
         }
         // A pull round's changed jars, once its replies are in or `JAR_FLUSH_AFTER` has passed. The loop wakes at
         // least every `IDLE_FRAME` or `MINIMIZED_TICK` (100 ms), so a due jar is written about 100 ms later at most
@@ -1265,8 +1265,8 @@ impl App {
                 }
             }
             EngineToHost::Cookies(json) => {
-                self.jar_pulls.remove(tab_id);
-                self.jar_silent.remove(tab_id);
+                self.cookies.jar_pulls.remove(tab_id);
+                self.cookies.jar_silent.remove(tab_id);
                 self.apply_pulled_cookies(tab_id, &json);
                 self.release_cookie_hold(tab_id);
             }

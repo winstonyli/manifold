@@ -3,7 +3,7 @@
 //! changes only where they read.
 //!
 //! The mirror equals the document except for fields and links with an edit still waiting for a save
-//! (`App::pending`, `App::pending_moves`); `App::edit_field`, `App::edit_parent` and `App::edit_group` are the
+//! (`App::pending`, `App::writes`.`pending_moves`); `App::edit_field`, `App::edit_parent` and `App::edit_group` are the
 //! writers, and `App::mirror_remote` applies another replica's change.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};

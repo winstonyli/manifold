@@ -721,7 +721,7 @@ impl App {
 
         if let Some(index) = reopen_index {
             let entry = self.closed.remove(index);
-            self.closed_changed_at = Some(std::time::Instant::now());
+            self.local_persist.closed_changed_at = Some(std::time::Instant::now());
             self.reopen_closed(entry);
             close = true;
         }

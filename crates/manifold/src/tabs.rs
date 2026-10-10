@@ -394,7 +394,7 @@ impl App {
         }
         let proxy = self.event_proxy.clone().expect("event_proxy set in main before any tab spawn");
         let custom_cef = self.custom_cef_dir();
-        let snapshots = self.jar_snapshots.clone();
+        let snapshots = self.cookies.jar_snapshots.clone();
         std::thread::spawn(move || {
             // Read when the host has connected (the host starts seconds after the spawn): remember its keys, and the
             // jar's clear count then, so a clear before it lands is caught (`note_spawned_jar`).
@@ -430,7 +430,7 @@ impl App {
     /// deleted while it ran, or a host whose jar was cleared under it (`jar_reseed`): it still holds the old cookies,
     /// and they must not refill the cleared jar.
     pub(crate) fn apply_pulled_cookies(&mut self, tab_id: &str, json: &str) -> bool {
-        if self.jar_reseed.contains(tab_id) {
+        if self.cookies.jar_reseed.contains(tab_id) {
             return false;
         }
         let pulled = match crate::jar::from_json(json) {
@@ -443,24 +443,24 @@ impl App {
                 return false;
             }
         };
-        let Some((key, _)) = self.jar_tabs.get(tab_id) else { return false };
+        let Some((key, _)) = self.cookies.jar_tabs.get(tab_id) else { return false };
         let key = *key;
         if matches!(key, crate::jar::JarKey::Named(id) if !self.mirror.jar_defs().contains_key(&id)) {
             return false;
         }
         self.ensure_jar_loaded(key);
-        let (Some(jar), Some((_, tab))) = (self.jars.get_mut(&key), self.jar_tabs.get_mut(tab_id)) else {
+        let (Some(jar), Some((_, tab))) = (self.jars.get_mut(&key), self.cookies.jar_tabs.get_mut(tab_id)) else {
             return false;
         };
         let changed = jar.merge(pulled, tab);
         if changed {
             let jar = jar.clone();
-            if let Ok(mut snapshots) = self.jar_snapshots.lock() {
+            if let Ok(mut snapshots) = self.cookies.jar_snapshots.lock() {
                 snapshots.insert(key, jar);
             }
             // Saved once the round's other replies are in (`flush_dirty_jars`): fifteen tabs that saw one rotating
             // cookie write the file once, not fifteen times.
-            self.jar_dirty.entry(key).or_insert_with(std::time::Instant::now);
+            self.cookies.jar_dirty.entry(key).or_insert_with(std::time::Instant::now);
         }
         changed
     }
@@ -470,11 +470,13 @@ impl App {
     /// timed out unanswered keeps its `jar_pulls` entry until that tab's next pull, so emptiness is not the test. A
     /// named jar deleted meanwhile is skipped, as `apply_pulled_cookies` skips one.
     pub(crate) fn flush_dirty_jars(&mut self, now: Option<std::time::Instant>) {
-        if self.jar_dirty.is_empty() {
+        if self.cookies.jar_dirty.is_empty() {
             return;
         }
-        let round_over = now.is_none_or(|now| !self.jar_pulls.keys().any(|id| pull_pending(&self.jar_pulls, id, now)));
+        let round_over = now
+            .is_none_or(|now| !self.cookies.jar_pulls.keys().any(|id| pull_pending(&self.cookies.jar_pulls, id, now)));
         let due: Vec<crate::jar::JarKey> = self
+            .cookies
             .jar_dirty
             .iter()
             .filter(|(_, since)| {
@@ -484,7 +486,7 @@ impl App {
             .collect();
         for key in due {
             if matches!(key, crate::jar::JarKey::Named(id) if !self.mirror.jar_defs().contains_key(&id)) {
-                self.jar_dirty.remove(&key);
+                self.cookies.jar_dirty.remove(&key);
                 continue;
             }
             self.save_jar(key);
@@ -497,7 +499,7 @@ impl App {
     pub(crate) fn pull_cookies(&mut self, id: &str) {
         let Some(node) = self.nodes.get_mut(id).and_then(|n| n.as_tab_mut()) else { return };
         if matches!(node.tab.kind, EngineKind::Webview2 | EngineKind::Cef)
-            && start_pull(&mut self.jar_pulls, &mut self.jar_silent, id, std::time::Instant::now())
+            && start_pull(&mut self.cookies.jar_pulls, &mut self.cookies.jar_silent, id, std::time::Instant::now())
         {
             node.tab.send(&HostToEngine::GetCookies);
         }
@@ -507,14 +509,14 @@ impl App {
     /// last cookies arrive. Hands it back when no pull is pending: act on it now.
     pub(crate) fn hold_for_cookies(&mut self, id: &str, held: Held) -> Option<Held> {
         let now = std::time::Instant::now();
-        if !pull_pending(&self.jar_pulls, id, now) {
+        if !pull_pending(&self.cookies.jar_pulls, id, now) {
             return Some(held);
         }
         // The latest request wins: a second hold (a sleep then a swap) cancels the first, which may be stale.
-        if let Some((_, old)) = self.cookie_holds.remove(id) {
+        if let Some((_, old)) = self.cookies.cookie_holds.remove(id) {
             self.cancel_held(id, old);
         }
-        self.cookie_holds.insert(id.to_string(), (now + COOKIE_HOLD, held));
+        self.cookies.cookie_holds.insert(id.to_string(), (now + COOKIE_HOLD, held));
         None
     }
 
@@ -531,11 +533,7 @@ impl App {
     /// entry, pull bookkeeping, its reseed mark and any held answer, which is cancelled, not run against whatever host
     /// comes next.
     pub(crate) fn clear_cookie_state(&mut self, id: &str) {
-        self.jar_tabs.remove(id);
-        self.jar_reseed.remove(id);
-        self.jar_pulls.remove(id);
-        self.jar_silent.remove(id);
-        if let Some((_, held)) = self.cookie_holds.remove(id) {
+        if let Some((_, held)) = self.cookies.forget(id) {
             self.cancel_held(id, held);
         }
     }
@@ -553,17 +551,17 @@ impl App {
         seed_clears: Option<u64>,
     ) {
         self.clear_cookie_state(id);
-        let clears = self.jar_snapshots.lock().ok().map(|s| s.clears(jar));
+        let clears = self.cookies.jar_snapshots.lock().ok().map(|s| s.clears(jar));
         let stale = seed_clears.is_some() && clears.is_some() && seed_clears != clears;
         if stale && !seeded.baseline.is_empty() {
-            self.jar_reseed.insert(id.to_string());
+            self.cookies.jar_reseed.insert(id.to_string());
         }
-        self.jar_tabs.insert(id.to_string(), (jar, seeded));
+        self.cookies.jar_tabs.insert(id.to_string(), (jar, seeded));
     }
 
     /// Acts on what `hold_for_cookies` parked for `id`, if anything.
     pub(crate) fn release_cookie_hold(&mut self, id: &str) {
-        if let Some((_, held)) = self.cookie_holds.remove(id) {
+        if let Some((_, held)) = self.cookies.cookie_holds.remove(id) {
             self.run_held(id, held);
         }
     }
@@ -572,7 +570,7 @@ impl App {
     pub(crate) fn release_expired_cookie_holds(&mut self) {
         let now = std::time::Instant::now();
         let due: Vec<String> =
-            self.cookie_holds.iter().filter(|(_, (t, _))| *t <= now).map(|(id, _)| id.clone()).collect();
+            self.cookies.cookie_holds.iter().filter(|(_, (t, _))| *t <= now).map(|(id, _)| id.clone()).collect();
         for id in due {
             self.release_cookie_hold(&id);
         }
@@ -587,7 +585,7 @@ impl App {
 
     /// Asks every live WebView2 and CEF tab for its cookies.
     pub(crate) fn jar_pull_all(&mut self) {
-        self.jar_pulls.retain(|id, _| self.nodes.contains_key(id));
+        self.cookies.jar_pulls.retain(|id, _| self.nodes.contains_key(id));
         let ids: Vec<String> =
             self.nodes.iter().filter(|(_, n)| n.as_tab().is_some()).map(|(id, _)| id.clone()).collect();
         for id in ids {
@@ -601,10 +599,10 @@ impl App {
     pub(crate) fn final_cookie_pull(&mut self) {
         self.jar_pull_all();
         let deadline = std::time::Instant::now() + QUIT_PULL_WAIT;
-        while !self.jar_pulls.is_empty() && std::time::Instant::now() < deadline {
-            for id in self.jar_pulls.keys().cloned().collect::<Vec<_>>() {
+        while !self.cookies.jar_pulls.is_empty() && std::time::Instant::now() < deadline {
+            for id in self.cookies.jar_pulls.keys().cloned().collect::<Vec<_>>() {
                 let Some(tab) = self.nodes.get(&id).and_then(|n| n.as_tab()) else {
-                    self.jar_pulls.remove(&id);
+                    self.cookies.jar_pulls.remove(&id);
                     continue;
                 };
                 let reply = std::iter::from_fn(|| tab.tab.events_rx.try_recv().ok())
@@ -614,7 +612,7 @@ impl App {
                     })
                     .last();
                 if let Some(json) = reply {
-                    self.jar_pulls.remove(&id);
+                    self.cookies.jar_pulls.remove(&id);
                     self.apply_pulled_cookies(&id, &json);
                 }
             }
@@ -1368,9 +1366,9 @@ impl App {
     /// cleared (`jar_reseed`): it switches when it next qualifies (chip "will switch").
     pub(crate) fn will_switch(&self, id: &str) -> bool {
         let Some(tab) = self.nodes.get(id).and_then(|n| n.as_tab()) else { return false };
-        let Some((had, _)) = self.jar_tabs.get(id) else { return false };
+        let Some((had, _)) = self.cookies.jar_tabs.get(id) else { return false };
         matches!(tab.tab.kind, EngineKind::Webview2 | EngineKind::Cef)
-            && (*had != self.resolved_jar(&self.mirror.jar_choice(id)).0 || self.jar_reseed.contains(id))
+            && (*had != self.resolved_jar(&self.mirror.jar_choice(id)).0 || self.cookies.jar_reseed.contains(id))
     }
 
     /// Puts every live tab whose jar changed and that is not busy, focused or showing to sleep; it wakes into the
@@ -1385,9 +1383,9 @@ impl App {
                 if self.nodes.get(v.id).and_then(|n| n.as_tab()).is_none() {
                     return false;
                 }
-                let had = self.jar_tabs.get(v.id).map(|(k, _)| *k);
+                let had = self.cookies.jar_tabs.get(v.id).map(|(k, _)| *k);
                 let focused = self.focused.as_deref() == Some(v.id);
-                let reseed = self.jar_reseed.contains(v.id);
+                let reseed = self.cookies.jar_reseed.contains(v.id);
                 let now = self.resolved_jar(&self.mirror.jar_choice(v.id)).0;
                 sleep_state::jar_switch(had, now, reseed, v.busy(), focused) == sleep_state::JarSwitch::SleepNow
             })
@@ -1424,7 +1422,7 @@ impl App {
     /// Each replaces or shuts the host, and a second `hold_for_cookies` would cancel the one parked first.
     pub(crate) fn host_change_pending(&self, id: &str) -> bool {
         self.pending_sleeps.contains_key(id)
-            || self.cookie_holds.contains_key(id)
+            || self.cookies.cookie_holds.contains_key(id)
             || self.nodes.get(id).and_then(|n| n.as_tab()).is_some_and(|t| t.swap_target.is_some())
     }
 

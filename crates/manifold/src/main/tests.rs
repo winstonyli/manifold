@@ -10,11 +10,11 @@ fn forget_id_clears_every_id_keyed_table() {
     let t = || "t".to_string();
     app.spawns.skip_convert.insert(t(), true);
     app.pending_sleeps.insert(t(), sleep_state::PendingSleep { why: sleep_state::SleepWhy::Manual, sent: now });
-    app.jar_tabs.insert(t(), (jar::JarKey::Default, jar::TabCookies::default()));
-    app.jar_reseed.insert(t());
-    app.cookie_holds.insert(t(), (now, tabs::Held::Snapshot(EngineKind::Webview2, String::new())));
-    app.jar_pulls.insert(t(), now);
-    app.jar_silent.insert(t(), 1);
+    app.cookies.jar_tabs.insert(t(), (jar::JarKey::Default, jar::TabCookies::default()));
+    app.cookies.jar_reseed.insert(t());
+    app.cookies.cookie_holds.insert(t(), (now, tabs::Held::Snapshot(EngineKind::Webview2, String::new())));
+    app.cookies.jar_pulls.insert(t(), now);
+    app.cookies.jar_silent.insert(t(), 1);
     app.saved_scroll.insert(t(), sleep_state::SavedScroll::new(0.0, 1.0));
     app.saved_scroll.insert("u".into(), sleep_state::SavedScroll::new(0.0, 1.0));
     app.nav_history.insert(t(), nav_history::NavHistory::default());
@@ -37,8 +37,10 @@ fn forget_id_clears_every_id_keyed_table() {
     app.forget_id("t");
 
     assert!(app.spawns.skip_convert.is_empty() && app.pending_sleeps.is_empty());
-    assert!(app.jar_tabs.is_empty() && app.jar_reseed.is_empty() && app.cookie_holds.is_empty());
-    assert!(app.jar_pulls.is_empty() && app.jar_silent.is_empty());
+    assert!(
+        app.cookies.jar_tabs.is_empty() && app.cookies.jar_reseed.is_empty() && app.cookies.cookie_holds.is_empty()
+    );
+    assert!(app.cookies.jar_pulls.is_empty() && app.cookies.jar_silent.is_empty());
     assert!(!app.saved_scroll.contains_key("t") && app.saved_scroll.contains_key("u"), "only t's entry goes");
     assert!(app.nav_history.is_empty() && app.spawns.navigated_from.is_empty() && app.spawns.tab_crashes.is_empty());
     assert_eq!(app.popup_gate.admit("t", true, now), popup_gate::Admit::Open, "t's popup burst count went");
@@ -54,16 +56,11 @@ fn forget_id_clears_every_id_keyed_table() {
 const NOT_FORGOTTEN: &[(&str, &str)] = &[
     ("node_order", "removed with `nodes` by each caller (kind-specific order)"),
     ("layout", "pruned to live nodes at every save (`layout.retain`)"),
-    ("held_text", "pruned to live nodes at every save (`held_text.retain`)"),
+    ("writes.held_text", "pruned to live nodes at every save (`held_text.retain`)"),
     ("current_group", "kind-specific: `drop_node` and `dissolve_members` switch level"),
     ("focused", "`drop_tab`'s focus, split and view-mode logic"),
     ("split_tab", "`drop_tab`'s focus, split and view-mode logic"),
     ("viewed_image", "`remove_remotely_deleted`; `image_view` resets it when the image is gone"),
-    ("jar_tabs", "via `clear_cookie_state`"),
-    ("jar_reseed", "via `clear_cookie_state`"),
-    ("cookie_holds", "via `clear_cookie_state`"),
-    ("jar_pulls", "via `clear_cookie_state`"),
-    ("jar_silent", "via `clear_cookie_state`"),
     ("link.connecting", "via `forget_connect_source`"),
     ("link.connect_drag", "via `forget_connect_source`"),
     ("spawns.wakes_in_flight", "spawn lifecycle: a tab closed while waking needs it so the landing commits its delete"),
@@ -95,7 +92,9 @@ const NOT_FORGOTTEN: &[(&str, &str)] = &[
 fn every_id_keyed_field_is_forgotten_or_excused() {
     /// A struct held by `App` (`App.<prefix>`): its source file, its header line, and the id-forgetting method
     /// (`forget`) it may have; its fields are named `<prefix>.<field>` in `NOT_FORGOTTEN`.
-    const GROUPS: [(&str, &str, &str); 3] = [
+    const GROUPS: [(&str, &str, &str); 5] = [
+        ("writes", include_str!("../session_sync.rs"), "pub(crate) struct PendingWrites {"),
+        ("cookies", include_str!("../jar.rs"), "pub(crate) struct CookieState {"),
         ("link", include_str!("../links.rs"), "pub(crate) struct LinkGesture {"),
         ("interaction", include_str!("../graph_nav.rs"), "pub(crate) struct GraphInteraction {"),
         ("spawns", include_str!("../tabs.rs"), "pub(crate) struct SpawnTracker {"),
@@ -176,7 +175,7 @@ fn sid_key() -> jar::Key {
 }
 
 fn on_default(app: &mut App, tab: &str) {
-    app.jar_tabs.insert(tab.into(), (jar::JarKey::Default, jar::TabCookies::default()));
+    app.cookies.jar_tabs.insert(tab.into(), (jar::JarKey::Default, jar::TabCookies::default()));
 }
 
 fn default_jar(app: &App) -> &jar::Jar {
@@ -213,11 +212,11 @@ fn a_seeded_tab_deletes_a_cookie_only_once_it_has_reported_it() {
     on_default(&mut app, "a");
     app.apply_pulled_cookies("a", SID);
     let seeded = jar::TabCookies::seeded(&default_jar(&app).cookies);
-    app.jar_tabs.insert("b".into(), (jar::JarKey::Default, seeded));
+    app.cookies.jar_tabs.insert("b".into(), (jar::JarKey::Default, seeded));
     assert!(!app.apply_pulled_cookies("b", "[]"), "the seed may have failed: an empty first pull is no logout");
     assert_eq!(default_jar(&app).cookies.len(), 1);
     assert!(!app.apply_pulled_cookies("b", SID), "b now holds sid, unchanged from its seed");
-    assert!(app.jar_tabs["b"].1.reported.contains(&sid_key()));
+    assert!(app.cookies.jar_tabs["b"].1.reported.contains(&sid_key()));
     assert!(app.apply_pulled_cookies("b", "[]"), "b held sid and lost it: a logout");
     assert!(default_jar(&app).cookies.is_empty());
 }
@@ -227,7 +226,7 @@ fn a_pull_merges_into_the_jar_the_tab_was_spawned_with() {
     let mut app = App::default();
     let work = app.create_jar("Work");
     app.ensure_jar_loaded(jar::JarKey::Named(work));
-    app.jar_tabs.insert("a".into(), (jar::JarKey::Named(work), jar::TabCookies::default()));
+    app.cookies.jar_tabs.insert("a".into(), (jar::JarKey::Named(work), jar::TabCookies::default()));
     assert!(app.apply_pulled_cookies("a", SID));
     assert_eq!(app.jars[&jar::JarKey::Named(work)].cookies.len(), 1);
     assert!(app.jars.get(&jar::JarKey::Default).is_none_or(|j| j.cookies.is_empty()), "default untouched");
@@ -238,7 +237,7 @@ fn a_pull_with_no_entry_or_a_deleted_jar_is_dropped() {
     let mut app = App::default();
     assert!(!app.apply_pulled_cookies("nobody", SID), "no jar_tabs entry: dropped (deviation 5)");
     let work = app.create_jar("Work");
-    app.jar_tabs.insert("a".into(), (jar::JarKey::Named(work), jar::TabCookies::default()));
+    app.cookies.jar_tabs.insert("a".into(), (jar::JarKey::Named(work), jar::TabCookies::default()));
     app.forget_jar(work);
     assert!(!app.apply_pulled_cookies("a", SID), "its jar was deleted while it ran: dropped");
     assert!(app.jars.values().all(|j| j.cookies.is_empty()));
@@ -262,7 +261,7 @@ fn an_ephemeral_jar_never_writes_a_file() {
     let tmp = app.create_jar("Throwaway");
     app.set_jar_ephemeral(tmp, true);
     app.ensure_jar_loaded(jar::JarKey::Named(tmp));
-    app.jar_tabs.insert("a".into(), (jar::JarKey::Named(tmp), jar::TabCookies::default()));
+    app.cookies.jar_tabs.insert("a".into(), (jar::JarKey::Named(tmp), jar::TabCookies::default()));
     assert!(app.apply_pulled_cookies("a", SID));
     assert!(!jar::Jar::path(&dir, jar::JarKey::Named(tmp)).exists());
     app.set_jar_ephemeral(tmp, false);
@@ -279,7 +278,7 @@ fn deleting_a_jar_deletes_its_file_and_clearing_empties_it() {
     let work = app.create_jar("Work");
     let key = jar::JarKey::Named(work);
     app.ensure_jar_loaded(key);
-    app.jar_tabs.insert("a".into(), (key, jar::TabCookies::default()));
+    app.cookies.jar_tabs.insert("a".into(), (key, jar::TabCookies::default()));
     app.apply_pulled_cookies("a", SID);
     app.flush_dirty_jars(None); // the round ends
     assert!(jar::Jar::path(&dir, key).exists());
@@ -311,7 +310,7 @@ fn ephemeral_on_then_off_keeps_an_unloaded_jars_cookies() {
     app.set_jar_ephemeral(work, true);
     assert!(!jar::Jar::path(&dir, key).exists(), "on: the file goes");
     assert_eq!(app.jars[&key].cookies.len(), 1, "but its cookies were loaded first");
-    assert_eq!(app.jar_snapshots.lock().unwrap().seed(key).0.len(), 1, "and seed tabs");
+    assert_eq!(app.cookies.jar_snapshots.lock().unwrap().seed(key).0.len(), 1, "and seed tabs");
     app.set_jar_ephemeral(work, false);
     assert_eq!(jar::Jar::load(&dir, key).cookies.len(), 1, "off: saved back");
 }
@@ -371,7 +370,7 @@ fn a_burst_of_pulls_saves_the_jar() {
     let before = jar_saves(&app);
     for t in 0..15 {
         let tab = format!("t{t}");
-        app.jar_tabs.insert(tab.clone(), (key, jar::TabCookies::default()));
+        app.cookies.jar_tabs.insert(tab.clone(), (key, jar::TabCookies::default()));
         let dump = SID.replace(r#""value":"1""#, &format!(r#""value":"v{t}""#));
         assert!(app.apply_pulled_cookies(&tab, &dump), "pull {t} changed the jar");
     }
@@ -390,10 +389,10 @@ fn a_dirty_jar_is_saved_when_its_pull_round_ends() {
     let mut app = App { jars_dir_override: Some(dir.clone()), ..App::default() };
     on_default(&mut app, "a");
     let t0 = Instant::now();
-    app.jar_pulls.insert("b".into(), t0); // b's pull is still out
+    app.cookies.jar_pulls.insert("b".into(), t0); // b's pull is still out
     assert!(app.apply_pulled_cookies("a", SID));
     // Deadlines from the jar's own dirty mark, not from `t0`: a loaded machine can take any time between the two.
-    let dirty = *app.jar_dirty.values().next().expect("the pull marked the jar dirty");
+    let dirty = *app.cookies.jar_dirty.values().next().expect("the pull marked the jar dirty");
     app.flush_dirty_jars(Some(dirty + Duration::from_millis(500)));
     assert_eq!(jar_saves(&app), 0, "b's pull is pending and the jar is not due yet");
     app.flush_dirty_jars(Some(dirty + tabs::JAR_FLUSH_AFTER));
@@ -403,16 +402,16 @@ fn a_dirty_jar_is_saved_when_its_pull_round_ends() {
 
     // The round ends before the jar is due (500 ms after its mark): first with b's pull timed out, then with none.
     assert!(app.apply_pulled_cookies("a", "[]"));
-    let dirty = *app.jar_dirty.values().next().expect("the pull marked the jar dirty");
+    let dirty = *app.cookies.jar_dirty.values().next().expect("the pull marked the jar dirty");
     let timed_out = dirty.checked_sub(tabs::JAR_PULL_TIMEOUT).expect("the clock reaches back 10 s");
-    app.jar_pulls.insert("b".into(), timed_out);
+    app.cookies.jar_pulls.insert("b".into(), timed_out);
     app.flush_dirty_jars(Some(dirty + Duration::from_millis(500)));
-    assert!(app.jar_pulls.contains_key("b"), "a timed-out pull keeps its entry");
+    assert!(app.cookies.jar_pulls.contains_key("b"), "a timed-out pull keeps its entry");
     assert_eq!(jar_saves(&app), 2, "but it is not pending: the round is over");
 
     assert!(app.apply_pulled_cookies("a", SID));
-    let dirty = *app.jar_dirty.values().next().expect("the pull marked the jar dirty");
-    app.jar_pulls.remove("b"); // b answered
+    let dirty = *app.cookies.jar_dirty.values().next().expect("the pull marked the jar dirty");
+    app.cookies.jar_pulls.remove("b"); // b answered
     app.flush_dirty_jars(Some(dirty + Duration::from_millis(500)));
     assert_eq!(jar_saves(&app), 3, "no pull is out: the round is over");
 }
@@ -425,7 +424,7 @@ fn ephemeral_on_asks_first_for_a_jar_whose_cookies_are_not_saved_yet() {
     let work = app.create_jar("Work");
     let key = jar::JarKey::Named(work);
     app.ensure_jar_loaded(key);
-    app.jar_tabs.insert("a".into(), (key, jar::TabCookies::default()));
+    app.cookies.jar_tabs.insert("a".into(), (key, jar::TabCookies::default()));
     assert!(app.apply_pulled_cookies("a", SID));
     app.request_jar_ephemeral(work, true);
     assert_eq!(app.pending_jar_confirm, Some(jar_defs::JarConfirm::Ephemeral(work)));
@@ -465,14 +464,14 @@ fn a_sleeping_tab_never_needs_a_switch_and_a_deleted_jar_switches_to_default() {
         crate::session_sync::tests::sleeping_tab("https://a/", "A"),
     );
     // A stale entry from before it slept, on a key other than the one it now resolves to.
-    app.jar_tabs.insert(t.clone(), (jar::JarKey::Default, jar::TabCookies::default()));
+    app.cookies.jar_tabs.insert(t.clone(), (jar::JarKey::Default, jar::TabCookies::default()));
     app.set_tab_jar(&t, Some(work));
     assert!(!app.will_switch(&t), "asleep: it spawns into the new jar");
-    app.jar_reseed.insert(t.clone());
+    app.cookies.jar_reseed.insert(t.clone());
     assert!(!app.will_switch(&t), "asleep: a reseed spawns into the cleared jar anyway");
     assert!(app.pending_sleeps.is_empty(), "the sweeps after each jar change asked nothing of it");
     // A host spawned with Work whose jar is then deleted must head for Default.
-    app.jar_tabs.insert(t.clone(), (jar::JarKey::Named(work), jar::TabCookies::default()));
+    app.cookies.jar_tabs.insert(t.clone(), (jar::JarKey::Named(work), jar::TabCookies::default()));
     app.forget_jar(work);
     assert_eq!(app.resolved_jar(&app.tab_jar(&t).unwrap()).0, jar::JarKey::Default);
 }
@@ -480,14 +479,14 @@ fn a_sleeping_tab_never_needs_a_switch_and_a_deleted_jar_switches_to_default() {
 #[test]
 fn clearing_a_jar_marks_its_running_tabs_for_a_reseed() {
     let mut app = App::default();
-    app.jar_tabs.insert("a".into(), (jar::JarKey::Default, jar::TabCookies::default()));
+    app.cookies.jar_tabs.insert("a".into(), (jar::JarKey::Default, jar::TabCookies::default()));
     let work = app.create_jar("Work");
-    app.jar_tabs.insert("b".into(), (jar::JarKey::Named(work), jar::TabCookies::default()));
+    app.cookies.jar_tabs.insert("b".into(), (jar::JarKey::Named(work), jar::TabCookies::default()));
     app.clear_jar_cookies(jar::JarKey::Default);
-    assert!(app.jar_reseed.contains("a"));
-    assert!(!app.jar_reseed.contains("b"), "another jar's tab keeps its host");
+    assert!(app.cookies.jar_reseed.contains("a"));
+    assert!(!app.cookies.jar_reseed.contains("b"), "another jar's tab keeps its host");
     app.clear_cookie_state("a");
-    assert!(!app.jar_reseed.contains("a"));
+    assert!(!app.cookies.jar_reseed.contains("a"));
 }
 
 /// Final review I3: a Clear Cookies landing after a spawning host read its seed, but before the host arrived, is
@@ -501,30 +500,30 @@ fn a_clear_during_a_spawn_marks_the_host_when_it_lands() {
     app.apply_pulled_cookies("a", SID);
     app.clear_cookie_state("a");
     let read_seed = |app: &App| {
-        let (cookies, clears) = app.jar_snapshots.lock().unwrap().seed(key);
+        let (cookies, clears) = app.cookies.jar_snapshots.lock().unwrap().seed(key);
         (jar::TabCookies::seeded(&cookies), Some(clears))
     };
     let (old_seed, before) = read_seed(&app);
     assert_eq!(old_seed.baseline.len(), 1);
     app.clear_jar_cookies(key);
     app.note_spawned_jar("t", key, old_seed.clone(), before);
-    assert!(app.jar_reseed.contains("t"), "seeded before the clear: it holds the old cookies");
+    assert!(app.cookies.jar_reseed.contains("t"), "seeded before the clear: it holds the old cookies");
     assert!(!app.apply_pulled_cookies("t", SID), "so its pulls cannot refill the cleared jar");
     assert!(default_jar(&app).cookies.is_empty());
 
     let (empty_seed, after) = read_seed(&app);
-    app.jar_reseed.insert("u".into()); // an earlier host's mark: the landing wipes it
+    app.cookies.jar_reseed.insert("u".into()); // an earlier host's mark: the landing wipes it
     app.note_spawned_jar("u", key, empty_seed.clone(), after);
-    assert!(!app.jar_reseed.contains("u"), "seeded after the clear: the empty jar");
+    assert!(!app.cookies.jar_reseed.contains("u"), "seeded after the clear: the empty jar");
     app.clear_jar_cookies(key);
     app.note_spawned_jar("v", key, empty_seed, after);
-    assert!(!app.jar_reseed.contains("v"), "an empty seed holds nothing the clear took");
+    assert!(!app.cookies.jar_reseed.contains("v"), "an empty seed holds nothing the clear took");
     app.note_spawned_jar("w", key, old_seed.clone(), None);
-    assert!(!app.jar_reseed.contains("w"), "never seeded (its engine ignores jars)");
+    assert!(!app.cookies.jar_reseed.contains("w"), "never seeded (its engine ignores jars)");
     let work = app.create_jar("Work");
     app.clear_jar_cookies(jar::JarKey::Named(work));
     app.note_spawned_jar("x", key, old_seed, after.map(|n| n + 1));
-    assert!(!app.jar_reseed.contains("x"), "only its own jar's clears count");
+    assert!(!app.cookies.jar_reseed.contains("x"), "only its own jar's clears count");
 }
 
 /// The pull `request_sleep` (or a timed pull, or one already in flight) sends a reseed tab still returns the
@@ -562,7 +561,7 @@ fn swap_answer() -> tabs::Held {
 #[test]
 fn a_second_hold_cancels_the_first_so_the_latest_request_wins() {
     let mut app = App::default();
-    app.jar_pulls.insert("t".into(), std::time::Instant::now());
+    app.cookies.jar_pulls.insert("t".into(), std::time::Instant::now());
     // Sleep, then swap: only the swap stays parked, and the sleep's pending entry is gone (no timeout sleep).
     app.pending_sleeps.insert(
         "t".into(),
@@ -570,25 +569,25 @@ fn a_second_hold_cancels_the_first_so_the_latest_request_wins() {
     );
     assert!(app.hold_for_cookies("t", sleep_answer()).is_none());
     assert!(app.hold_for_cookies("t", swap_answer()).is_none());
-    assert!(matches!(app.cookie_holds["t"].1, tabs::Held::Snapshot(..)));
+    assert!(matches!(app.cookies.cookie_holds["t"].1, tabs::Held::Snapshot(..)));
     assert!(app.pending_sleeps.is_empty(), "the cancelled sleep left nothing behind");
     // Swap, then sleep: only the sleep stays parked.
     assert!(app.hold_for_cookies("t", sleep_answer()).is_none());
-    assert!(matches!(app.cookie_holds["t"].1, tabs::Held::PageState(..)));
-    assert_eq!(app.cookie_holds.len(), 1);
+    assert!(matches!(app.cookies.cookie_holds["t"].1, tabs::Held::PageState(..)));
+    assert_eq!(app.cookies.cookie_holds.len(), 1);
 }
 
 #[test]
 fn a_respawn_drops_a_held_answer_meant_for_the_old_host() {
     let mut app = App::default();
-    app.jar_pulls.insert("t".into(), std::time::Instant::now());
+    app.cookies.jar_pulls.insert("t".into(), std::time::Instant::now());
     app.pending_sleeps.insert(
         "t".into(),
         sleep_state::PendingSleep { why: sleep_state::SleepWhy::Manual, sent: std::time::Instant::now() },
     );
     assert!(app.hold_for_cookies("t", sleep_answer()).is_none());
     app.clear_cookie_state("t"); // what a spawn result for the same id does first
-    assert!(app.cookie_holds.is_empty() && app.jar_pulls.is_empty() && app.pending_sleeps.is_empty());
+    assert!(app.cookies.cookie_holds.is_empty() && app.cookies.jar_pulls.is_empty() && app.pending_sleeps.is_empty());
     app.release_expired_cookie_holds();
     app.release_cookie_hold("t"); // nothing left to run against the new host
 }
@@ -599,19 +598,19 @@ fn closing_a_tab_clears_its_cookie_bookkeeping() {
     use crate::store::model::Kind;
     let mut app = App::default();
     let tab = add(&mut app, Kind::Tab, sleeping_tab("https://x.test/", "A"));
-    app.jar_tabs.insert(tab.clone(), (jar::JarKey::Default, jar::TabCookies::default()));
-    app.jar_pulls.insert(tab.clone(), std::time::Instant::now());
-    app.jar_silent.insert(tab.clone(), 2);
-    app.cookie_holds.insert(
+    app.cookies.jar_tabs.insert(tab.clone(), (jar::JarKey::Default, jar::TabCookies::default()));
+    app.cookies.jar_pulls.insert(tab.clone(), std::time::Instant::now());
+    app.cookies.jar_silent.insert(tab.clone(), 2);
+    app.cookies.cookie_holds.insert(
         tab.clone(),
         (std::time::Instant::now(), tabs::Held::Snapshot(process_manager::EngineKind::Cef, String::new())),
     );
     app.remove_tab(&tab);
     assert!(
-        !app.jar_tabs.contains_key(&tab)
-            && !app.jar_pulls.contains_key(&tab)
-            && !app.jar_silent.contains_key(&tab)
-            && !app.cookie_holds.contains_key(&tab)
+        !app.cookies.jar_tabs.contains_key(&tab)
+            && !app.cookies.jar_pulls.contains_key(&tab)
+            && !app.cookies.jar_silent.contains_key(&tab)
+            && !app.cookies.cookie_holds.contains_key(&tab)
     );
 }
 
@@ -636,11 +635,11 @@ fn a_sleep_answer_is_held_for_a_pending_pull_and_released_by_it() {
     let mut app = App::default();
     let state = || ipc_protocol::PageState { scroll_x: 0.0, scroll_y: 0.0, dirty_form: false };
     assert!(app.hold_for_cookies("t", tabs::Held::PageState(state())).is_some(), "no pull pending: act now");
-    app.jar_pulls.insert("t".into(), std::time::Instant::now());
+    app.cookies.jar_pulls.insert("t".into(), std::time::Instant::now());
     assert!(app.hold_for_cookies("t", tabs::Held::PageState(state())).is_none());
-    assert!(app.cookie_holds.contains_key("t"));
+    assert!(app.cookies.cookie_holds.contains_key("t"));
     app.release_cookie_hold("t");
-    assert!(app.cookie_holds.is_empty());
+    assert!(app.cookies.cookie_holds.is_empty());
 }
 
 #[test]
@@ -756,7 +755,8 @@ fn a_toast_url_is_cut_to_eighty_characters() {
 fn save_as_while_personal_state_is_unread_carries_none() {
     let mut app = App::default();
     assert!(app.local_state_for_copy().is_some());
-    app.local_unread = Some(session_sync::LocalUnread { retry_at: std::time::Instant::now(), fresh: false });
+    app.local_persist.local_unread =
+        Some(session_sync::LocalUnread { retry_at: std::time::Instant::now(), fresh: false });
     assert_eq!(app.local_state_for_copy(), None);
 }
 

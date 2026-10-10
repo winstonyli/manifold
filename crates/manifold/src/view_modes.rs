@@ -277,7 +277,7 @@ impl App {
     /// the first drops the host, and a remote engine meanwhile is written over (`update_live_node`).
     pub(crate) fn swap_in_flight(&self, id: &str) -> Option<EngineKind> {
         let tab = self.nodes.get(id)?.as_tab()?;
-        tab.swap_target.or(match self.cookie_holds.get(id) {
+        tab.swap_target.or(match self.cookies.cookie_holds.get(id) {
             Some((_, crate::tabs::Held::Snapshot(target, _))) => Some(*target),
             _ => None,
         })

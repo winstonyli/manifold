@@ -355,7 +355,7 @@ impl App {
     /// if there's none.
     pub(crate) fn reopen_closed_shortcut(&mut self) {
         if let Some(entry) = self.closed.pop() {
-            self.closed_changed_at = Some(std::time::Instant::now());
+            self.local_persist.closed_changed_at = Some(std::time::Instant::now());
             self.reopen_closed(entry);
         }
     }

@@ -323,30 +323,8 @@ struct App {
     /// The cookie jars WebView2 and CEF tabs share, by key (see `jar`). The default jar loads at startup; a named jar
     /// loads the first time a tab spawns with it (`ensure_jar_loaded`). An ephemeral jar lives only here.
     jars: BTreeMap<jar::JarKey, jar::Jar>,
-    /// Per running host, the jar it was **spawned with** (spec "Live tabs when `jar` changes") and what its engine is
-    /// believed to hold (`jar::TabCookies`): only a cookie the tab itself changed reaches that jar, and only a cookie
-    /// the tab itself reported can be deleted by its absence.
-    jar_tabs: HashMap<String, (jar::JarKey, jar::TabCookies)>,
-    /// Hosts still holding cookies from a jar the user cleared (`clear_jar_cookies`): they switch (`will_switch`)
-    /// although their key is unchanged, and their pulls are dropped so the old cookies cannot refill the jar. An id
-    /// leaves when its host is replaced or closed (`clear_cookie_state`).
-    jar_reseed: HashSet<String>,
-    /// A copy of `jars` for spawn threads: the seed is read when the host connects, not when the spawn starts. Also
-    /// counts each jar's clears, so a host seeded before a clear is caught when it lands (`note_spawned_jar`).
-    jar_snapshots: Arc<std::sync::Mutex<jar::Snapshots>>,
-    /// A sleep's `PageState` or a swap's `StateSnapshot` waiting for the tab's `Cookies` reply (or its deadline), so
-    /// the host is not dropped before its last cookies arrive.
-    cookie_holds: HashMap<String, (std::time::Instant, tabs::Held)>,
-    /// When `jar_pull_all` last ran, for the 30 s pull in `about_to_wait`.
-    jar_last_pull: Option<std::time::Instant>,
-    /// Tabs with a `GetCookies` in flight, by tab id. A host may never answer, so an entry expires
-    /// (`JAR_PULL_TIMEOUT`) instead of blocking the next pull.
-    jar_pulls: HashMap<String, std::time::Instant>,
-    /// Consecutive unanswered pulls per tab (`tabs::start_pull`).
-    jar_silent: HashMap<String, u8>,
-    /// Jars a pull changed and not saved yet, each with when it first changed: saved once the pull round ends
-    /// (`flush_dirty_jars`), not once per tab's reply. Memory and `jar_snapshots` are current; only the file lags.
-    jar_dirty: std::collections::BTreeMap<jar::JarKey, std::time::Instant>,
+    /// Per-host cookie bookkeeping: pull rounds, holds, dirty jars (see `jar::CookieState`).
+    cookies: jar::CookieState,
     /// Scroll positions of woken tabs, restored once their first load finishes.
     saved_scroll: HashMap<String, sleep_state::SavedScroll>,
     /// Each tab's back/forward list as the host saw it, by tab id: kept
@@ -365,48 +343,15 @@ struct App {
     /// Ids for nodes made while there is no journal (unit tests, a failed
     /// open): this launch's own actor, so they parse as store ids.
     fallback_ids: (store::model::ActorId, u64),
-    /// Nodes placed here that the next save creates (2b-5 Ruling 3): every way a node enters the live graph
-    /// (`place_node`, `spawn_tab_async`, a jar's `add_jar`) queues its id; the save creates each the document lacks,
-    /// from the mirror or the spawn's snapshot (`snapshot`). One the document already holds (a restore, another
-    /// replica's node) is dropped. Cleared of created ids by a successful commit.
-    pending_creates: std::collections::BTreeSet<store::model::NodeId>,
-    /// Nodes removed here that the next save deletes (Ruling 4: `queue_delete`). Only a local removal queues: a
-    /// node another replica deleted is already gone from the document, and a respawn, swap or reload only takes
-    /// the node out of `nodes` for a while. Cleared by a successful commit.
-    pending_deletes: std::collections::BTreeSet<store::model::NodeId>,
+    /// What the next save commits besides `pending`, and when saves happened or are owed (see `session_sync::PendingWrites`).
+    writes: session_sync::PendingWrites,
     /// The decoded copy of the document's mirrored fields (`mirror::Mirror`).
     mirror: mirror::Mirror,
     /// Local edits to mirrored fields that the next save commits as `Set`s, by node and field. Cleared by a
     /// successful commit.
     pending: std::collections::BTreeMap<(store::model::NodeId, u32), Vec<u8>>,
-    /// Local group moves the next save commits as `Move`s, by node: the target group, `None` for the top level.
-    /// Cleared by a successful commit.
-    pending_moves: std::collections::BTreeMap<store::model::NodeId, Option<store::model::NodeId>>,
-    /// Another replica's text for a note being typed in, held back from its mirror and box until the blur
-    /// (`end_note_edit`, 2b-4 Ruling 7), by node. Dropped when this replica commits its own text after it.
-    held_text: HashMap<String, String>,
-    /// Personal state (spec "Personal state") last written to
-    /// `session.mnf.local`, or read at startup: `maybe_write_local` skips
-    /// writing when the current state compares equal, so an idle session
-    /// never rewrites the file.
-    local_written: Option<local_state::LocalState>,
-    /// Set while startup couldn't read `session.mnf.local` (another
-    /// window held the lock, or the read failed): nothing writes it, so
-    /// this profile's saved state isn't replaced by defaults, and
-    /// `poll_store` retries the read.
-    local_unread: Option<session_sync::LocalUnread>,
-    /// When `local_written` was last written (or, at startup, `Instant::now`
-    /// so the first `EVERY` window starts from launch, not from `UNIX_EPOCH`).
-    local_written_at: std::time::Instant,
-    /// Set when Recently Closed changes (Task 8); `maybe_write_local` writes
-    /// `AFTER_CLOSED` after this, instead of waiting for the `EVERY` timer.
-    closed_changed_at: Option<std::time::Instant>,
-    /// Personal-state entries for nodes `apply_local` found still spawning
-    /// (no live node yet): applied once each one's node is inserted
-    /// (`handle_tab_spawn_result`), then removed. Only `nodes` is ever
-    /// populated here -- the view fields are resolved once, in `apply_local`
-    /// itself, since spawning is enough for those to take effect.
-    pending_local: Option<local_state::LocalState>,
+    /// The personal-state file's write bookkeeping (see `local_state::LocalPersist`).
+    local_persist: local_state::LocalPersist,
     /// Senders of the headless `WAITIDLE` commands waiting for `debug_idle`.
     idle_waiters: Vec<std::sync::mpsc::Sender<()>>,
     /// Shared across every note's own rendered (non-`editing`) view --
@@ -598,21 +543,6 @@ struct App {
     /// per source tab: a user gesture and a rate budget.
     popup_gate: popup_gate::PopupGate,
 
-    /// When `save_session` last committed to the store -- shown in the
-    /// settings popup's Sessions section next to a "Save Now" button, so a
-    /// save that's actually continuous (every mutation calls
-    /// `save_session`, not a timer) has some visible confirmation instead
-    /// of being purely invisible. `None` until the first save this run.
-    last_session_save: Option<std::time::Instant>,
-    /// When a save that didn't commit (another instance kept writing, or
-    /// the write failed) is tried again by `poll_store`; `None` when
-    /// nothing is owed. Without it an edit could sit unsaved until the next
-    /// local action or remote write.
-    save_retry_at: Option<std::time::Instant>,
-    /// Store errors and repair notices toasted since the last commit
-    /// (`store_error`, `take_store_recovery`), each shown once: a read-only
-    /// file with a damaged tail reports both at every reload.
-    store_notices: std::collections::BTreeSet<String>,
     /// Set once the store reports a repair (`take_store_recovery`): what
     /// was loaded may be missing nodes, so `prune_content_dir` doesn't run.
     store_recovered: bool,
@@ -783,31 +713,17 @@ impl Default for App {
             idle_clock: idle_sleep::IdleClock::default(),
             pending_sleeps: HashMap::new(),
             jars,
-            jar_tabs: HashMap::new(),
-            jar_reseed: HashSet::new(),
-            jar_snapshots,
-            cookie_holds: HashMap::new(),
-            jar_last_pull: None,
-            jar_pulls: HashMap::new(),
-            jar_silent: HashMap::new(),
-            jar_dirty: std::collections::BTreeMap::new(),
+            cookies: jar::CookieState { jar_snapshots, ..Default::default() },
             saved_scroll: HashMap::new(),
             nav_history: nav_history::load(),
             drop_batch: 0,
             view_mode: ViewMode::Item,
             journal: None,
             fallback_ids: (store::model::ActorId::random(), 0),
-            pending_creates: std::collections::BTreeSet::new(),
-            pending_deletes: std::collections::BTreeSet::new(),
+            writes: session_sync::PendingWrites::default(),
             mirror: mirror::Mirror::default(),
             pending: std::collections::BTreeMap::new(),
-            held_text: HashMap::new(),
-            pending_moves: std::collections::BTreeMap::new(),
-            local_written: None,
-            local_unread: None,
-            local_written_at: std::time::Instant::now(),
-            closed_changed_at: None,
-            pending_local: None,
+            local_persist: local_state::LocalPersist::default(),
             idle_waiters: Vec::new(),
             commonmark_cache: egui_commonmark::CommonMarkCache::default(),
             cursor_pos: (0.0, 0.0),
@@ -851,9 +767,6 @@ impl Default for App {
             save_toast_queue: std::collections::VecDeque::new(),
             failure_notices: Default::default(),
             popup_gate: popup_gate::PopupGate::default(),
-            last_session_save: None,
-            save_retry_at: None,
-            store_notices: std::collections::BTreeSet::new(),
             store_recovered: false,
             settings_fingerprint,
             settings_save_due: None,

@@ -526,3 +526,32 @@ fn a_bad_dump_reports_where_without_echoing_a_value() {
     assert!(from_json(&format!("[{good},{bad}]")).is_err(), "all or nothing");
     assert_eq!(from_json(&format!("[{good}]")).map(|c| c.len()), Ok(1));
 }
+
+#[test]
+fn cookie_state_forget_drops_one_tabs_entries_and_returns_its_hold() {
+    let now = std::time::Instant::now();
+    let mut state = CookieState::default();
+    for id in ["a", "b"] {
+        state.jar_tabs.insert(id.into(), (JarKey::Default, TabCookies::default()));
+        state.jar_reseed.insert(id.into());
+        state
+            .cookie_holds
+            .insert(id.into(), (now, crate::tabs::Held::Snapshot(crate::EngineKind::Webview2, id.into())));
+        state.jar_pulls.insert(id.into(), now);
+        state.jar_silent.insert(id.into(), 1);
+    }
+    state.jar_dirty.insert(JarKey::Default, now);
+    state.jar_last_pull = Some(now);
+
+    let held = state.forget("a");
+
+    assert!(matches!(held, Some((_, crate::tabs::Held::Snapshot(_, s))) if s == "a"));
+    assert!(
+        !state.jar_tabs.contains_key("a") && !state.jar_reseed.contains("a") && !state.cookie_holds.contains_key("a")
+    );
+    assert!(!state.jar_pulls.contains_key("a") && !state.jar_silent.contains_key("a"));
+    assert!(state.jar_tabs.contains_key("b") && state.jar_reseed.contains("b") && state.cookie_holds.contains_key("b"));
+    assert!(state.jar_pulls.contains_key("b") && state.jar_silent.contains_key("b"));
+    assert!(state.jar_dirty.len() == 1 && state.jar_last_pull.is_some(), "jar-wide state stays");
+    assert!(state.forget("nobody").is_none());
+}

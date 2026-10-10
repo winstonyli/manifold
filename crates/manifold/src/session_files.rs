@@ -99,10 +99,10 @@ impl App {
     }
 
     /// The personal state Save As gives its copy: this profile's, or none while startup's is still unread
-    /// (`App::local_unread`). The live view then lacks what the file holds (its Recently Closed, say); a copy
+    /// (`App::local_persist`.`local_unread`). The live view then lacks what the file holds (its Recently Closed, say); a copy
     /// with none opens with defaults rather than a partial state passed off as this profile's.
     pub(crate) fn local_state_for_copy(&self) -> Option<Vec<u8>> {
-        self.local_unread.is_none().then(|| self.local_state().to_bytes())
+        self.local_persist.local_unread.is_none().then(|| self.local_state().to_bytes())
     }
 
     /// "Open Session" (settings popup) / headless `OPENSESSION` -- reads a
