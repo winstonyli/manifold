@@ -1,5 +1,7 @@
 use super::*;
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
 /// Page-controlled text (a URL typed, pasted or synced) must reach `wsl.exe` only as hex: whatever
 /// the distro's login shell or bash do with quotes, `$`, backticks or newlines, they never see any.
@@ -27,22 +29,91 @@ fn a_url_too_long_for_a_command_line_is_refused_by_name() {
     assert_eq!(build(20_000).unwrap_err().kind(), std::io::ErrorKind::InvalidInput);
 }
 
+/// The host's reader of one engine connection; `feed` writes the engine's side of it, its version first.
+fn reader_fed(
+    feed: impl FnOnce(std::net::TcpStream) + Send + 'static,
+) -> (mpsc::Receiver<EngineToHost>, engine_io::FrameSlot) {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || feed(std::net::TcpStream::connect(("127.0.0.1", port)).unwrap()));
+    let (stream, _) = listener.accept().unwrap();
+    let frame = engine_io::FrameSlot::default();
+    (spawn_reader_thread(ipc_protocol::MessageChannel::new(stream), Arc::clone(&frame)), frame)
+}
+
 /// The host's reader of one engine connection, fed `version` and then a
 /// well-formed message; returns the first event it delivers.
 fn first_event_after_version(version: u32) -> EngineToHost {
     use std::io::Write as _;
-    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let engine = std::thread::spawn(move || {
-        let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+    let (rx, _) = reader_fed(move |mut stream| {
         stream.write_all(&version.to_le_bytes()).unwrap();
         // Best effort: on a mismatch the reader may already have hung up.
         let _ = ipc_protocol::MessageChannel::new(stream).send(&EngineToHost::Cookies("[]".into()));
     });
-    let (stream, _) = listener.accept().unwrap();
-    let rx = spawn_reader_thread(RemoteOrLocalReceiver::Remote(ipc_protocol::MessageChannel::new(stream)));
-    engine.join().unwrap();
     rx.recv_timeout(Duration::from_secs(5)).unwrap()
+}
+
+fn frame(n: u32) -> EngineToHost {
+    EngineToHost::FrameReady { frame_id: u64::from(n), width: n, height: 1, damage: None, pixels: None }
+}
+
+/// Frames never wait in the events channel (survey E3): a burst of them ahead of a message leaves the message first.
+#[test]
+fn frames_never_queue_on_the_events_channel() {
+    let (rx, frame) = reader_fed(|stream| {
+        let mut engine = ipc_protocol::MessageChannel::new(stream);
+        engine.send_version().unwrap();
+        for n in 0..100 {
+            engine.send(&frame(n)).unwrap();
+        }
+        engine.send(&EngineToHost::Cookies("[]".into())).unwrap();
+    });
+    assert!(matches!(rx.recv_timeout(Duration::from_secs(5)).unwrap(), EngineToHost::Cookies(_)), "a frame came first");
+    let newest = frame.lock().unwrap().take().expect("the frames went to the slot");
+    assert_eq!(newest.width, 99, "the newest frame wins");
+}
+
+/// `counter` once it has not moved for `quiet`, or at `deadline`. The `quiet` sleep proves an absence: nothing more
+/// got through.
+fn still_at(counter: &AtomicUsize, quiet: Duration, deadline: Duration) -> usize {
+    let end = std::time::Instant::now() + deadline;
+    let mut last = counter.load(Ordering::SeqCst);
+    while std::time::Instant::now() < end {
+        std::thread::sleep(quiet);
+        let now = counter.load(Ordering::SeqCst);
+        if now == last {
+            return now;
+        }
+        last = now;
+    }
+    last
+}
+
+/// The events channel is bounded (survey E3): an app that stops draining it stops the reader, which stops the engine
+/// on its pipe, and no message is lost.
+#[test]
+fn an_app_that_stops_draining_stops_the_reader_and_loses_nothing() {
+    const N: usize = 1000;
+    let written = Arc::new(AtomicUsize::new(0));
+    let progress = Arc::clone(&written);
+    let (rx, _) = reader_fed(move |stream| {
+        let mut engine = ipc_protocol::MessageChannel::new(stream);
+        engine.send_version().unwrap();
+        for i in 0..N {
+            if engine.send(&EngineToHost::Cookies(format!("{}{i}", "0".repeat(65_530)))).is_err() {
+                return;
+            }
+            progress.store(i + 1, Ordering::SeqCst);
+        }
+    });
+    let stalled_at = still_at(&written, Duration::from_millis(300), Duration::from_secs(20));
+    assert!(stalled_at < N, "the engine wrote all {N} while the app read none: the channel is unbounded");
+    for i in 0..N {
+        match rx.recv_timeout(Duration::from_secs(10)).unwrap() {
+            EngineToHost::Cookies(s) => assert_eq!(s.trim_start_matches('0').parse::<usize>().unwrap_or(0), i),
+            _ => panic!("message {i} is not Cookies"),
+        }
+    }
 }
 
 #[test]

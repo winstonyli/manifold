@@ -1057,6 +1057,8 @@ impl App {
         // idle page, staying well within what this loop could already keep
         // up with (confirmed live: an otherwise-identical idle-memory test
         // with CEF as the default engine stayed flat).
+        // Since wave 3b the reader keeps one frame per tab itself (`EngineTab::take_frame`), so the burst described
+        // above cannot build up in the first place.
         let mut frame_updates: std::collections::HashMap<String, FrameUpdate> = std::collections::HashMap::new();
         let mut messages: Vec<(String, EngineToHost)> = Vec::new();
         for tab_id in &self.node_order {
@@ -1065,19 +1067,6 @@ impl App {
             };
             while let Ok(msg) = tab.tab.events_rx.try_recv() {
                 match msg {
-                    EngineToHost::FrameReady { width, height, pixels, .. } => {
-                        frame_updates.insert(
-                            tab_id.clone(),
-                            FrameUpdate {
-                                tab_id: tab_id.clone(),
-                                socket_id: tab.tab.socket_id.clone(),
-                                kind: tab.tab.kind,
-                                width,
-                                height,
-                                pixels,
-                            },
-                        );
-                    }
                     // Only the last of a run of same-path Progress events is
                     // ever visible (applying one overwrites `bytes_received`),
                     // and each costs a scan of every node, so a run collapses
@@ -1095,6 +1084,19 @@ impl App {
                     }
                     msg => messages.push((tab_id.clone(), msg)),
                 }
+            }
+            if let Some(frame) = tab.tab.take_frame() {
+                frame_updates.insert(
+                    tab_id.clone(),
+                    FrameUpdate {
+                        tab_id: tab_id.clone(),
+                        socket_id: tab.tab.socket_id.clone(),
+                        kind: tab.tab.kind,
+                        width: frame.width,
+                        height: frame.height,
+                        pixels: frame.pixels,
+                    },
+                );
             }
         }
         // One `save_session()` for the whole drain rather than one per

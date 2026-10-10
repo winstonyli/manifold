@@ -3,10 +3,11 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
+use std::sync::Arc;
 use std::time::Duration;
 
 use crate::engine_install::{runtime_state, EngineState, Pin, RuntimeOnDisk, NO_PIN_REASON};
-use ipc_protocol::transport::{self, LocalTransport, RemoteTransport};
+use ipc_protocol::transport::{self, LocalTransport};
 use ipc_protocol::{EngineToHost, HostToEngine};
 
 /// A Windows Job Object every engine-host child (`spawn_tab`/
@@ -219,6 +220,8 @@ pub struct EngineTab {
     /// WebKit, its TCP connection (frames then travel inline in `FrameReady`).
     writer: engine_io::Writer,
     pub events_rx: mpsc::Receiver<EngineToHost>,
+    /// The newest frame its reader saw (`engine_io::FrameSlot`), taken by `take_frame`.
+    frame: engine_io::FrameSlot,
     /// `None` once `Drop` has handed it to its reaper thread.
     child: Option<Child>,
     /// A directory only this host uses, deleted on drop: CEF's `root_cache_path`, or WebView2's named profile
@@ -248,6 +251,11 @@ impl EngineTab {
         self.writer.shutdown();
     }
 
+    /// The newest frame since the last call, if any.
+    pub(crate) fn take_frame(&self) -> Option<engine_io::Frame> {
+        self.frame.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take()
+    }
+
     /// A live tab for unit tests: no process, its control channel a loopback TCP connection. The returned peer
     /// reads what the app sends it (`HostToEngine`), timing out after 200 ms when nothing more comes.
     #[cfg(test)]
@@ -260,8 +268,9 @@ impl EngineTab {
         let tab = EngineTab {
             kind,
             socket_id: String::new(),
-            writer: engine_io::Writer::spawn(RemoteTransport::new(host), "engine writer (fake)"),
+            writer: engine_io::Writer::spawn(transport::RemoteTransport::new(host), "engine writer (fake)"),
             events_rx,
+            frame: engine_io::FrameSlot::default(),
             child: None,
             cache_dir: None,
             profile_slot: None,
@@ -1123,14 +1132,17 @@ fn is_spawn_header(line: &str) -> bool {
 /// Reads the engine's `PROTOCOL_VERSION` first. A stale host (built from an
 /// older `messages.rs`) gets a `Crashed` whose reason starts with
 /// `PROTOCOL_MISMATCH`, so no message of it is ever misread.
-fn spawn_reader_thread(mut from_engine: RemoteOrLocalReceiver) -> mpsc::Receiver<EngineToHost> {
-    let (tx, rx) = mpsc::channel();
+///
+/// Frames go to `frame` (newest wins); everything else goes through a channel of `engine_io::EVENTS_CAP`, whose
+/// `send` waits while the app is that far behind (survey E3).
+fn spawn_reader_thread<S: std::io::Read + std::io::Write + Send + 'static>(
+    mut from_engine: ipc_protocol::MessageChannel<S>,
+    frame: engine_io::FrameSlot,
+) -> mpsc::Receiver<EngineToHost> {
+    let (tx, rx) = mpsc::sync_channel(engine_io::EVENTS_CAP);
     std::thread::spawn(move || {
-        let version = match &mut from_engine {
-            RemoteOrLocalReceiver::Local(t) => t.recv_version(),
-            RemoteOrLocalReceiver::Remote(t) => t.recv_version(),
-        };
-        match version.map(ipc_protocol::check_version) {
+        let lost = || EngineToHost::Crashed { reason: "engine-host connection lost".to_string() };
+        match from_engine.recv_version().map(ipc_protocol::check_version) {
             Ok(Ok(())) => {}
             Ok(Err(mismatch)) => {
                 eprintln!("{mismatch}");
@@ -1138,32 +1150,27 @@ fn spawn_reader_thread(mut from_engine: RemoteOrLocalReceiver) -> mpsc::Receiver
                 return;
             }
             Err(_) => {
-                let _ = tx.send(EngineToHost::Crashed { reason: "engine-host connection lost".to_string() });
+                let _ = tx.send(lost());
                 return;
             }
         }
-        loop {
-            let msg = match &mut from_engine {
-                RemoteOrLocalReceiver::Local(t) => t.recv::<EngineToHost>(),
-                RemoteOrLocalReceiver::Remote(t) => t.recv::<EngineToHost>(),
-            };
+        while let Ok(msg) = from_engine.recv::<EngineToHost>() {
             match msg {
-                Ok(msg) => {
+                EngineToHost::FrameReady { width, height, pixels, .. } => {
+                    *frame.lock().unwrap_or_else(std::sync::PoisonError::into_inner) =
+                        Some(engine_io::Frame { width, height, pixels });
+                }
+                // Fails once the tab is gone (its receiver dropped).
+                msg => {
                     if tx.send(msg).is_err() {
                         return;
                     }
                 }
-                Err(_) => break,
             }
         }
-        let _ = tx.send(EngineToHost::Crashed { reason: "engine-host connection lost".to_string() });
+        let _ = tx.send(lost());
     });
     rx
-}
-
-enum RemoteOrLocalReceiver {
-    Local(LocalTransport),
-    Remote(RemoteTransport),
 }
 
 /// Same-machine (CEF/Servo) equivalent of `WEBKIT_CONNECT_TIMEOUT`, much
@@ -1291,10 +1298,11 @@ pub fn spawn_tab(
                 return Err(e.into());
             }
         };
-    let events_rx = spawn_reader_thread(RemoteOrLocalReceiver::Local(from_engine));
+    let frame = engine_io::FrameSlot::default();
+    let events_rx = spawn_reader_thread(from_engine, Arc::clone(&frame));
 
     let writer = engine_io::Writer::spawn(to_engine, &format!("engine writer {socket_id}"));
-    let tab = EngineTab { kind, socket_id, writer, events_rx, child: Some(child), cache_dir, profile_slot };
+    let tab = EngineTab { kind, socket_id, writer, events_rx, frame, child: Some(child), cache_dir, profile_slot };
     if matches!(kind, EngineKind::Webview2 | EngineKind::Cef) {
         // Serialised now that the host is connected, so cookies merged while it started are in the seed.
         tab.send(&HostToEngine::SetCookies(jar_json()));
@@ -1401,7 +1409,8 @@ fn spawn_webkit_tab(tab_id: &str, initial_url: &str) -> std::io::Result<EngineTa
     let to_engine = ipc_protocol::MessageChannel::new(stream);
     let from_engine = ipc_protocol::MessageChannel::new(read_stream);
 
-    let events_rx = spawn_reader_thread(RemoteOrLocalReceiver::Remote(from_engine));
+    let frame = engine_io::FrameSlot::default();
+    let events_rx = spawn_reader_thread(from_engine, Arc::clone(&frame));
 
     Ok(EngineTab {
         kind: EngineKind::Webkit,
@@ -1411,6 +1420,7 @@ fn spawn_webkit_tab(tab_id: &str, initial_url: &str) -> std::io::Result<EngineTa
         socket_id: tab_id.to_string(),
         writer: engine_io::Writer::spawn(to_engine, &format!("engine writer {tab_id}")),
         events_rx,
+        frame,
         child: Some(child),
         cache_dir: None,
         profile_slot: None,

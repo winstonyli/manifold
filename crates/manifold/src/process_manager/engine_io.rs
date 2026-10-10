@@ -18,6 +18,22 @@ pub(crate) const SEND_QUEUE_CAP: usize = 256;
 pub(crate) const UNRESPONSIVE_AFTER: Duration = Duration::from_secs(2);
 /// How long closing a tab waits for its queue and `Shutdown` to go out, counted from the first `Writer::shutdown`.
 pub(crate) const SHUTDOWN_FLUSH: Duration = Duration::from_millis(200);
+
+/// Engine messages, frames aside, waiting for the app (`process_manager::spawn_reader_thread`). Full, the reader
+/// waits and the engine backs up on its own pipe; no message is dropped (survey E3).
+pub(crate) const EVENTS_CAP: usize = 256;
+
+/// The newest frame an engine reported. Only the newest is ever drawn, so a slow app holds one per tab, never a
+/// queue of them (survey E3). The host never reads `FrameReady`'s `frame_id` or `damage`.
+pub(crate) struct Frame {
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    /// Inline pixels (WebKit over TCP); `None` for a local engine, whose pixels are in its shared frame file.
+    pub(crate) pixels: Option<Vec<u8>>,
+}
+
+/// One tab's newest frame, written by its reader thread and taken by the drain.
+pub(crate) type FrameSlot = Arc<Mutex<Option<Frame>>>;
 /// The writer only serializes and writes.
 const WRITER_STACK: usize = 256 * 1024;
 
