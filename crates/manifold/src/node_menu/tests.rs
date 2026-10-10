@@ -584,7 +584,7 @@ fn a_click_on_link_to_starts_pick_target_mode() {
     };
     frame(&mut app, vec![egui::Event::PointerMoved(at), press(true)]);
     frame(&mut app, vec![press(false)]);
-    assert_eq!(app.connecting, Some((a, crate::caps::LINK)));
+    assert_eq!(app.link.connecting, Some((a, crate::caps::LINK)));
     assert_eq!(app.node_menu, None, "the menu closed");
 }
 

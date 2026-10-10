@@ -115,7 +115,7 @@ fn a_json_level_hides_the_links_section_and_ends_pick_target_mode() {
     assert!(!app.node_menu_view(&note).unwrap().edges.is_empty(), "the Json card is a target at OUTER's level");
     app.apply_node_action(&egui::Context::default(), &note, crate::NodeAction::Connect(crate::caps::LINK));
     app.switch_group_level(Some(j));
-    assert!(app.connecting.is_none());
+    assert!(app.link.connecting.is_none());
     assert!(app.node_menu_view(&note).unwrap().edges.is_empty());
 }
 

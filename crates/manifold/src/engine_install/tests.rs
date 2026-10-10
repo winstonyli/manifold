@@ -962,11 +962,11 @@ fn an_install_waits_while_a_tab_is_still_starting() {
     let mut app = App::default();
     let pending =
         crate::session_sync::Snapshot { kind: crate::store::model::Kind::Tab, group: None, fields: Default::default() };
-    app.spawning.insert("t1".into(), pending);
+    app.spawns.spawning.insert("t1".into(), pending);
     assert!(!app.start_engine_install_at(EngineKind::Cef, &data, &pin));
     assert!(app.engine_installs.is_empty());
     assert_eq!(toasts(&app), ["A tab is still starting; try installing Blink (CEF) again in a moment"]);
-    app.spawning.clear();
+    app.spawns.spawning.clear();
     assert!(app.start_engine_install_at(EngineKind::Cef, &data, &pin));
     settle(&mut app);
 }

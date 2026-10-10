@@ -765,7 +765,7 @@ impl crate::App {
             self.queue_toast(format!("Close {label} tabs before installing it"));
             return false;
         }
-        if !self.spawning.is_empty() {
+        if !self.spawns.spawning.is_empty() {
             // A tab still starting may be a CEF host about to load the runtime's DLLs.
             self.queue_toast(format!("A tab is still starting; try installing {label} again in a moment"));
             return false;
@@ -790,8 +790,8 @@ impl crate::App {
         let label = crate::engine_info::engine_label(kind);
         let Some(dir) = crate::process_manager::engine_hosts_dir() else { return };
         // A spawn still in flight may be this engine's host (it isn't a node yet), so it counts too.
-        let running =
-            !self.spawning.is_empty() || self.nodes.values().any(|n| n.as_tab().is_some_and(|t| t.tab.kind == kind));
+        let running = !self.spawns.spawning.is_empty()
+            || self.nodes.values().any(|n| n.as_tab().is_some_and(|t| t.tab.kind == kind));
         let installing = self.engine_installs.contains_key(&kind);
         let removed = remove_runtime(&dir, running, installing);
         // Even a failed removal may have deleted some of it: the Settings page reads the disk again.

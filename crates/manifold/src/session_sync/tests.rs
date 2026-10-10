@@ -156,7 +156,7 @@ fn a_tombstone_is_never_recreated() {
     let tab = add(&mut app, Kind::Tab, sleeping_tab("https://t/", ""));
     assert!(app.save_session());
     app.focus_tab(&tab);
-    assert!(app.spawning.contains_key(&tab) && app.nodes.contains_key(&tab), "waking: shown and in flight");
+    assert!(app.spawns.spawning.contains_key(&tab) && app.nodes.contains_key(&tab), "waking: shown and in flight");
     let mut other = Journal::open(&path, ActorId(2)).unwrap();
     other.begin().unwrap().commit(vec![OpBody::Delete { node: tab.parse().unwrap() }]).unwrap();
     app.pending_creates.insert(tab.parse().unwrap());
@@ -207,7 +207,7 @@ fn a_create_naming_a_node_deleted_by_the_same_save_writes_none() {
     let group = add_group(&mut app, "G");
     assert!(app.save_session());
     let tab = app.spawn_tab_at("https://n/", egui::Vec2::ZERO, Some(group.clone()), Some(opener.clone()));
-    assert!(app.spawning.contains_key(&tab));
+    assert!(app.spawns.spawning.contains_key(&tab));
     app.remove_tab(&opener);
     app.dissolve_group(&group);
     assert!(app.save_session());
@@ -404,7 +404,7 @@ fn a_crash_respawn_a_swap_and_a_reload_delete_nothing() {
     assert!(app.save_session());
     start_respawn(&mut app, &crashed);
     app.finish_swap(&swapped, EngineKind::Webview2, "https://s/".into());
-    assert!(app.spawning.contains_key(&swapped) && !app.nodes.contains_key(&swapped), "swapping");
+    assert!(app.spawns.spawning.contains_key(&swapped) && !app.nodes.contains_key(&swapped), "swapping");
     let moved = dir.join("moved.json");
     std::fs::write(&moved, b"[2]").unwrap();
     let path = moved.to_string_lossy().into_owned();
@@ -1016,9 +1016,9 @@ fn url_changes_after_a_host_started_load_stay_local_until_it_settles() {
     app.note_host_load("7");
     assert!(!app.shares_url_change("7", None), "a redirect right after the host's navigation");
     assert!(!app.shares_url_change("7", None), "still within the grace");
-    app.host_loads.insert("7".into(), std::time::Instant::now() - HOST_LOAD_GRACE);
+    app.spawns.host_loads.insert("7".into(), std::time::Instant::now() - HOST_LOAD_GRACE);
     assert!(app.shares_url_change("7", None), "settled: the next navigation is shared");
-    assert!(app.host_loads.is_empty());
+    assert!(app.spawns.host_loads.is_empty());
 }
 
 /// An engine that says how a navigation started overrides the grace.
@@ -1028,7 +1028,7 @@ fn the_engines_cause_decides_whether_a_url_change_is_shared() {
     assert!(!app.shares_url_change("7", Some(false)), "a script's navigation stays local");
     app.note_host_load("7");
     assert!(app.shares_url_change("7", Some(true)), "a click right after the host's load is shared");
-    assert!(app.host_loads.is_empty(), "and ends the host's load");
+    assert!(app.spawns.host_loads.is_empty(), "and ends the host's load");
 }
 
 /// Right after a typed navigation, a report still at the url it left
@@ -1038,12 +1038,12 @@ fn a_report_still_at_the_url_a_typed_navigation_left_is_stale() {
     let mut app = App::default();
     let report = |app: &mut App, url: &str| app.reported_url("7", url.into(), true, "https://typed/".into());
     assert_eq!(report(&mut app, "https://old/"), "https://old/", "no typed navigation: as reported");
-    app.navigated_from.insert("7".into(), ("https://old/".into(), std::time::Instant::now(), false));
+    app.spawns.navigated_from.insert("7".into(), ("https://old/".into(), std::time::Instant::now(), false));
     assert_eq!(report(&mut app, "https://old/"), "https://typed/");
     assert_eq!(report(&mut app, "https://typed/"), "https://typed/");
     assert_eq!(report(&mut app, "https://old/"), "https://old/", "after the engine moved on: real (going back)");
     let long_ago = std::time::Instant::now() - std::time::Duration::from_secs(2);
-    app.navigated_from.insert("7".into(), ("https://old/".into(), long_ago, false));
+    app.spawns.navigated_from.insert("7".into(), ("https://old/".into(), long_ago, false));
     assert_eq!(report(&mut app, "https://old/"), "https://old/", "the navigation never started");
 }
 
@@ -1055,11 +1055,11 @@ fn a_typed_navigation_that_ends_at_the_url_it_left_keeps_that_url() {
     let mut app = App::default();
     let report =
         |app: &mut App, url: &str, loading: bool| app.reported_url("7", url.into(), loading, "https://typed/".into());
-    app.navigated_from.insert("7".into(), ("https://old/".into(), std::time::Instant::now(), false));
+    app.spawns.navigated_from.insert("7".into(), ("https://old/".into(), std::time::Instant::now(), false));
     assert_eq!(report(&mut app, "https://old/", false), "https://typed/", "a finish from before it started");
     assert_eq!(report(&mut app, "https://old/", true), "https://typed/", "started, address not changed yet");
     assert_eq!(report(&mut app, "https://old/", false), "https://old/", "finished without leaving");
-    assert!(app.navigated_from.is_empty());
+    assert!(app.spawns.navigated_from.is_empty());
 }
 
 // ---- 2b-4: the document pos in the mirror, the layout a side-table ----------
@@ -1072,8 +1072,8 @@ fn a_note_at(app: &mut App, pos: egui::Vec2) -> String {
 
 /// What a drag does to the layout every frame (`card.rs`), then its release.
 fn drag(app: &mut App, ids: &[&str], delta: egui::Vec2) {
-    app.dragging = Some(ids[0].to_owned());
-    app.drag_moved = ids.iter().map(|&id| id.to_owned()).collect();
+    app.interaction.dragging = Some(ids[0].to_owned());
+    app.interaction.drag_moved = ids.iter().map(|&id| id.to_owned()).collect();
     for &id in ids {
         app.layout.entry(id.to_owned()).or_default().pos += delta;
     }
@@ -1196,7 +1196,7 @@ fn a_stale_drag_does_not_overwrite_a_remote_pos() {
     // A level switch with the button held.
     drag(&mut app, &[&a, &b], egui::vec2(0.0, 50.0));
     app.switch_group_level(Some(g.clone()));
-    assert!(app.dragging.is_none() && app.drag_moved.is_empty());
+    assert!(app.interaction.dragging.is_none() && app.interaction.drag_moved.is_empty());
     remote_set(&mut other, &a, field::POS, FieldValue::Pos(5.0, 6.0));
     assert!(app.save_session());
     assert_eq!(app.layout_pos(&a), egui::vec2(5.0, 6.0), "no longer dragged, so the remote pos snaps it");
@@ -1215,7 +1215,10 @@ fn a_stale_drag_does_not_overwrite_a_remote_pos() {
     assert!(app.save_session());
     assert_eq!(app.layout_pos(&a), egui::vec2(7.0, 8.0), "off the level, the drag no longer holds the remote pos back");
     app.end_stale_drag(true);
-    assert!(app.dragging.is_none() && app.drag_moved.is_empty(), "the frame's check ends the drag");
+    assert!(
+        app.interaction.dragging.is_none() && app.interaction.drag_moved.is_empty(),
+        "the frame's check ends the drag"
+    );
     app.release_drag();
     assert!(app.save_session());
     assert_eq!(stored(&app, &a, field::POS), FieldValue::Pos(7.0, 8.0));
@@ -1223,7 +1226,7 @@ fn a_stale_drag_does_not_overwrite_a_remote_pos() {
     // Leaving Graph view ends a drag too.
     drag(&mut app, &[&b], egui::vec2(0.0, 50.0));
     app.end_stale_drag(false);
-    assert!(app.dragging.is_none() && app.drag_moved.is_empty());
+    assert!(app.interaction.dragging.is_none() && app.interaction.drag_moved.is_empty());
 }
 
 /// Ruling 1: the layout table is keyed by id and outlives a respawn's remove-and-reinsert; `TabSpawn` carries no
@@ -1344,11 +1347,11 @@ fn item_view_restoring_onto_a_still_spawning_tab_sets_the_respawn_focus_guard() 
     // is exactly the shape a real tab restore has before its spawn
     // lands (`materialize`'s `Kind::Tab` arm never inserts directly).
     app.nodes.remove(&tab);
-    app.spawning.insert(tab.clone(), shared(Kind::Tab, None, &[]));
+    app.spawns.spawning.insert(tab.clone(), shared(Kind::Tab, None, &[]));
     let state = LocalState { focused: Some(tab.clone()), view_item: true, ..LocalState::default() };
     app.apply_local(state);
     assert_eq!(app.view_mode, ViewMode::Item);
-    assert_eq!(app.pending_respawn_focus.as_deref(), Some(tab.as_str()));
+    assert_eq!(app.spawns.pending_respawn_focus.as_deref(), Some(tab.as_str()));
 }
 
 /// A launch that changes nothing (no user action at all) must rewrite
@@ -1682,7 +1685,7 @@ fn opening_a_sleeping_tab_wakes_it_once() {
     assert_eq!(app.test_spawns.len(), 1);
     assert_eq!(app.focused.as_deref(), Some(a.as_str()));
     assert_eq!(app.view_mode, ViewMode::Item);
-    assert_eq!(app.pending_respawn_focus.as_deref(), Some(a.as_str()));
+    assert_eq!(app.spawns.pending_respawn_focus.as_deref(), Some(a.as_str()));
     app.focus_tab(&b);
     assert_eq!(app.test_spawns.len(), 2);
     assert_eq!(app.nodes[&b].as_unloaded().unwrap().state, UnloadedState::Waking);
@@ -1720,8 +1723,8 @@ fn a_failed_wake_leaves_a_failed_card() {
     fail_spawns(&mut app);
     assert!(matches!(app.nodes[&a].as_unloaded().unwrap().state, UnloadedState::Failed(_)));
     assert_eq!(app.nodes[&a].as_unloaded().unwrap().title, "A", "the wake carried its title");
-    assert_eq!(app.pending_respawn_focus, None);
-    assert!(app.wakes_in_flight.is_empty());
+    assert_eq!(app.spawns.pending_respawn_focus, None);
+    assert!(app.spawns.wakes_in_flight.is_empty());
 }
 
 /// Closing a tab while its wake is in flight deletes it from the store
@@ -1737,7 +1740,7 @@ fn closing_a_tab_while_it_wakes_deletes_it_from_the_store() {
     assert!(app.save_session());
     app.focus_tab(&tab);
     assert_eq!(app.test_spawns.len(), 1, "the wake is in flight, parked");
-    assert!(app.spawning.contains_key(&tab));
+    assert!(app.spawns.spawning.contains_key(&tab));
     app.destroy_tab(&tab);
     assert!(!app.nodes.contains_key(&tab), "closed");
     // Deliver the parked wake's result -- a failed one, the only kind a
@@ -1756,9 +1759,9 @@ fn removing_a_tab_clears_its_stale_pending_respawn_focus() {
     let mut app = app_on(&temp_dir("remove-pending-focus").join("session.mnf"), 1);
     let tab = add(&mut app, Kind::Tab, sleeping_tab("https://a/", "A"));
     app.focus_tab(&tab);
-    assert_eq!(app.pending_respawn_focus.as_deref(), Some(tab.as_str()));
+    assert_eq!(app.spawns.pending_respawn_focus.as_deref(), Some(tab.as_str()));
     app.destroy_tab(&tab);
-    assert_eq!(app.pending_respawn_focus, None);
+    assert_eq!(app.spawns.pending_respawn_focus, None);
 }
 
 /// "Mute Others" mutes a sleeping or waking card too -- it has no
@@ -1972,7 +1975,7 @@ fn clearing_failed_cards_does_not_save_before_a_parked_remote_delete_lands() {
     let mut other = Journal::open(&path, ActorId(2)).unwrap();
     other.begin().unwrap().commit(vec![OpBody::Delete { node: id.parse().unwrap() }]).unwrap();
     assert!(app.save_session());
-    assert!(app.remote_in_flight.contains_key(&id), "the remote delete is parked");
+    assert!(app.spawns.remote_in_flight.contains_key(&id), "the remote delete is parked");
 
     let at = app.test_spawns.iter().position(|(spawn, _)| spawn.id == id).expect("the spawn is parked");
     let (spawn, generation) = app.test_spawns.remove(at);
@@ -2952,7 +2955,7 @@ fn save_count_per_action() {
     };
     let delete = count(&mut app, GraphAction::Node(a.clone(), NodeAction::Delete));
     let join = count(&mut app, GraphAction::Drop { id: b.clone(), target: Some((DropEffect::Join, Some(g.clone()))) });
-    app.connecting = Some((c.clone(), crate::caps::LINK));
+    app.link.connecting = Some((c.clone(), crate::caps::LINK));
     let finish = count(&mut app, GraphAction::FinishConnect(d.clone()));
     let enter = count(&mut app, GraphAction::EnterGroup(g.clone()));
     assert!(!app.nodes.contains_key(&a), "deleted");
@@ -3268,13 +3271,13 @@ fn a_committed_local_edit_wins_over_a_remote_value_parked_for_a_waking_tab() {
     let tab = add(&mut app, Kind::Tab, sleeping_tab("https://a/", "A"));
     assert!(app.save_session());
     app.focus_tab(&tab);
-    assert!(app.spawning.contains_key(&tab), "waking");
+    assert!(app.spawns.spawning.contains_key(&tab), "waking");
     let mut other = Journal::open(&path, ActorId(2)).unwrap();
     remote_set(&mut other, &tab, field::COLOR, blue());
     app.edit_field(&tab, field::COLOR, red());
     // The remote round parks blue, the next round commits red.
     assert!(app.save_session());
-    assert!(app.remote_in_flight.contains_key(&tab), "the remote value is parked");
+    assert!(app.spawns.remote_in_flight.contains_key(&tab), "the remote value is parked");
     assert_eq!(stored(&app, &tab, field::COLOR), red());
     fail_spawns(&mut app);
     assert_eq!(app.mirror.color(&tab), Some(egui::Color32::RED));
@@ -3435,12 +3438,12 @@ fn a_committed_parent_edit_wins_over_a_remote_value_parked_for_a_waking_tab() {
     );
     assert!(app.save_session());
     app.focus_tab(&tab);
-    assert!(app.spawning.contains_key(&tab), "waking");
+    assert!(app.spawns.spawning.contains_key(&tab), "waking");
     let mut other = Journal::open(&path, ActorId(2)).unwrap();
     remote_set(&mut other, &tab, field::PARENT, FieldValue::Id(Some(b.parse().unwrap())));
     app.edit_parent(&tab, Some(a.clone()));
     assert!(app.save_session());
-    assert!(app.remote_in_flight.contains_key(&tab), "the remote value is parked");
+    assert!(app.spawns.remote_in_flight.contains_key(&tab), "the remote value is parked");
     fail_spawns(&mut app);
     assert_eq!(app.mirror.parent(&tab), Some(a.as_str()));
     assert_eq!(stored(&app, &tab, field::PARENT), FieldValue::Id(Some(a.parse().unwrap())));
@@ -3518,7 +3521,7 @@ fn a_parked_link_is_patched_with_the_resolved_value() {
     );
     assert!(app.save_session());
     app.focus_tab(&tab);
-    assert!(app.spawning.contains_key(&tab), "waking");
+    assert!(app.spawns.spawning.contains_key(&tab), "waking");
     let mut other = Journal::open(&path, ActorId(2)).unwrap();
     remote_set(&mut other, &tab, field::PARENT, FieldValue::Id(Some(b.parse().unwrap())));
     app.edit_parent(&tab, Some(a.clone()));
@@ -3526,7 +3529,7 @@ fn a_parked_link_is_patched_with_the_resolved_value() {
     app.remove_tab(&a);
     app.dissolve_group(&g);
     assert!(app.save_session());
-    assert!(app.remote_in_flight.contains_key(&tab), "the remote value is parked");
+    assert!(app.spawns.remote_in_flight.contains_key(&tab), "the remote value is parked");
     assert_eq!(stored(&app, &tab, field::PARENT), FieldValue::Id(None));
     fail_spawns(&mut app);
     assert_eq!(app.mirror.parent(&tab), None);
@@ -3645,13 +3648,13 @@ fn a_committed_move_wins_over_a_remote_move_parked_for_a_waking_tab() {
     let tab = add(&mut app, Kind::Tab, sleeping_tab("https://t/", ""));
     assert!(app.save_session());
     app.focus_tab(&tab);
-    assert!(app.spawning.contains_key(&tab), "waking");
+    assert!(app.spawns.spawning.contains_key(&tab), "waking");
     let mut other = Journal::open(&path, ActorId(2)).unwrap();
     let mv = vec![OpBody::Move { node: tab.parse().unwrap(), group: Some(g2.parse().unwrap()) }];
     other.begin().unwrap().commit(mv).unwrap();
     app.edit_group(&tab, Some(g1.clone()));
     assert!(app.save_session());
-    assert!(app.remote_in_flight.contains_key(&tab), "the remote value is parked");
+    assert!(app.spawns.remote_in_flight.contains_key(&tab), "the remote value is parked");
     fail_spawns(&mut app);
     assert_eq!(app.mirror.group(&tab), Some(g1.as_str()));
     assert_eq!(app.journal.as_ref().unwrap().doc().effective_group(tab.parse().unwrap()), Some(g1.parse().unwrap()));
@@ -3788,7 +3791,7 @@ fn start_respawn(app: &mut App, tab: &str) {
     (spawn.parent, spawn.group, spawn.jar) = (carried.parent, carried.group, carried.jar);
     (spawn.carry.color, spawn.carry.pinned) = (carried.color, carried.pinned);
     app.respawn_tab(spawn);
-    assert!(app.spawning.contains_key(tab) && !app.nodes.contains_key(tab), "respawning");
+    assert!(app.spawns.spawning.contains_key(tab) && !app.nodes.contains_key(tab), "respawning");
 }
 
 /// O holds G, G holds T, saved.
@@ -4553,7 +4556,7 @@ fn a_remote_url_parked_during_a_wake_navigates_the_tab_when_it_lands() {
     let mut other = Journal::open(&path, ActorId(2)).unwrap();
     remote_set(&mut other, &tab, field::URL, FieldValue::Str("https://r/".into()));
     assert!(app.save_session());
-    assert!(app.remote_in_flight.contains_key(&tab), "parked for the landing");
+    assert!(app.spawns.remote_in_flight.contains_key(&tab), "parked for the landing");
     app.remove_node(&note);
     assert!(app.save_session());
     assert!(!app.journal.as_ref().unwrap().doc().nodes[&note.parse().unwrap()].is_live(), "the Delete committed");
@@ -4585,7 +4588,7 @@ fn a_remote_engine_parked_during_a_swap_respawn_is_swapped_to_when_it_lands() {
     let mut other = Journal::open(&path, ActorId(2)).unwrap();
     remote_set(&mut other, &tab, field::ENGINE, engine(EngineKind::Webview2));
     assert!(app.save_session());
-    assert!(app.remote_in_flight.contains_key(&tab), "parked for the landing");
+    assert!(app.spawns.remote_in_flight.contains_key(&tab), "parked for the landing");
     assert_eq!(app.set_group_default_jar(&g, work), 1, "the cascade reaches the respawning tab");
     assert!(app.save_session());
     assert_eq!(stored(&app, &tab, field::JAR), FieldValue::Id(Some(work)), "the cascade committed for the tab");
@@ -4658,7 +4661,7 @@ fn deleting_a_jar_writes_none_for_saved_and_respawning_tabs() {
     app.set_tab_jar(&live, Some(work));
     assert!(app.save_session());
     app.handle_engine_message(&live, ipc_protocol::EngineToHost::Crashed { reason: "boom".into() });
-    assert!(app.spawning.contains_key(&live) && !app.nodes.contains_key(&live), "mid-respawn");
+    assert!(app.spawns.spawning.contains_key(&live) && !app.nodes.contains_key(&live), "mid-respawn");
     app.delete_jar(work);
     assert!(app.save_session());
     for t in [&asleep, &live] {
@@ -5511,13 +5514,13 @@ fn pick_target_mode_enters_completes_and_cancels() {
     let a = succeed_spawn(&mut app, "https://a/");
     let b = succeed_spawn(&mut app, "https://b/");
     app.apply_node_action(&egui::Context::default(), &a, NodeAction::Connect(LINK));
-    assert_eq!(app.connecting, Some((a.clone(), LINK)));
+    assert_eq!(app.link.connecting, Some((a.clone(), LINK)));
     app.finish_connect(&b);
-    assert!(app.connecting.is_none());
+    assert!(app.link.connecting.is_none());
     assert_eq!(app.links_naming(&a).len(), 1);
     app.apply_node_action(&egui::Context::default(), &a, NodeAction::Connect(OPENED_FROM));
     app.cancel_connect();
-    assert!(app.connecting.is_none());
+    assert!(app.link.connecting.is_none());
 }
 
 /// Pick-target mode ends on any other node action, a level change, and its source card closing.
@@ -5529,21 +5532,21 @@ fn pick_target_mode_ends_on_another_action_a_level_change_or_its_source_closing(
     let b = succeed_spawn(&mut app, "https://b/");
     app.apply_node_action(&ctx, &a, NodeAction::Connect(LINK));
     app.apply_node_action(&ctx, &b, NodeAction::TogglePin);
-    assert!(app.connecting.is_none(), "another action");
+    assert!(app.link.connecting.is_none(), "another action");
     app.apply_node_action(&ctx, &a, NodeAction::Connect(LINK));
     let g = add_group(&mut app, "g");
     app.switch_group_level(Some(g));
-    assert!(app.connecting.is_none(), "a level change");
+    assert!(app.link.connecting.is_none(), "a level change");
     app.switch_group_level(None);
     app.apply_node_action(&ctx, &a, NodeAction::Connect(LINK));
     app.close_node(&a);
-    assert!(app.connecting.is_none(), "its source closed");
+    assert!(app.link.connecting.is_none(), "its source closed");
     // A stale mode found by the per-frame check: the Graph view not shown.
     app.apply_node_action(&ctx, &b, NodeAction::Connect(LINK));
     app.end_stale_connect(true);
-    assert!(app.connecting.is_some());
+    assert!(app.link.connecting.is_some());
     app.end_stale_connect(false);
-    assert!(app.connecting.is_none());
+    assert!(app.link.connecting.is_none());
 }
 
 /// "Disconnect from X" removes the edge its row names, either way round, and its label says which edge it is.
@@ -5615,13 +5618,13 @@ fn teardown_forgets_the_old_tabs_per_id_state() {
     let t = add(&mut app, Kind::Tab, sleeping_tab("https://a.test/", "a"));
     let now = std::time::Instant::now();
     app.saved_scroll.insert(t.clone(), crate::sleep_state::SavedScroll::new(0.0, 1.0));
-    app.tab_crashes.insert(t.clone(), vec![now]);
-    app.skip_convert.insert(t.clone(), true);
+    app.spawns.tab_crashes.insert(t.clone(), vec![now]);
+    app.spawns.skip_convert.insert(t.clone(), true);
     app.jar_pulls.insert(t.clone(), now);
     app.teardown_running_session();
     assert!(app.nodes.is_empty());
     assert!(app.saved_scroll.is_empty(), "saved_scroll");
-    assert!(app.tab_crashes.is_empty(), "tab_crashes");
-    assert!(app.skip_convert.is_empty(), "skip_convert");
+    assert!(app.spawns.tab_crashes.is_empty(), "tab_crashes");
+    assert!(app.spawns.skip_convert.is_empty(), "skip_convert");
     assert!(app.jar_pulls.is_empty(), "jar_pulls");
 }

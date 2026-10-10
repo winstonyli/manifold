@@ -372,7 +372,7 @@ impl App {
             let fields = Kind::Link.fields().iter().map(|&no| (no, self.mirror.get(&key, no))).collect();
             return Some(Snapshot { kind: Kind::Link, group: None, fields });
         }
-        self.spawning.get(&key).cloned()
+        self.spawns.spawning.get(&key).cloned()
     }
 
     /// Whether card `key` is a download still in progress (or failed): placed, but not stored until it completes
@@ -467,8 +467,8 @@ impl App {
             self.mirror_remote(&id, fields, None);
             return;
         }
-        if self.spawning.contains_key(&id) {
-            self.remote_in_flight.insert(id, Some((kind, fields.clone(), group)));
+        if self.spawns.spawning.contains_key(&id) {
+            self.spawns.remote_in_flight.insert(id, Some((kind, fields.clone(), group)));
             return;
         }
         let (held, changed) = self.mirror_remote(&id, fields, group.as_deref());
@@ -550,7 +550,7 @@ impl App {
             self.note_host_load(id);
             // The replica that navigated converts it, if it's content;
             // converting here too would add a second node.
-            self.skip_convert.insert(id.to_string(), false);
+            self.spawns.skip_convert.insert(id.to_string(), false);
         }
         if let Some(target) = swap {
             self.start_swap_to(id, target);
@@ -718,8 +718,8 @@ impl App {
             let key = id.to_string();
             match change {
                 Some((kind, fields, group)) => self.materialize(key, kind, &fields, group.map(|g| g.to_string()), None),
-                None if self.spawning.contains_key(&key) => {
-                    self.remote_in_flight.insert(key, None);
+                None if self.spawns.spawning.contains_key(&key) => {
+                    self.spawns.remote_in_flight.insert(key, None);
                 }
                 None => self.remove_remotely_deleted(&key),
             }
@@ -764,7 +764,7 @@ impl App {
         }
         if is_group {
             // A change waiting for a spawn may name this group too.
-            for (_, _, group) in self.remote_in_flight.values_mut().flatten() {
+            for (_, _, group) in self.spawns.remote_in_flight.values_mut().flatten() {
                 if group.as_deref() == Some(id) {
                     *group = up.clone();
                 }
@@ -784,7 +784,7 @@ impl App {
         if self.focused.as_deref() == Some(id) {
             self.focused = None;
         }
-        self.wakes_in_flight.remove(id);
+        self.spawns.wakes_in_flight.remove(id);
     }
 
     /// Applies what other replicas changed while `id`'s spawn was in flight,
@@ -802,7 +802,7 @@ impl App {
     /// unlabelled url changes stay local until the load settles
     /// (`shares_url_change`).
     pub(crate) fn note_host_load(&mut self, id: &str) {
-        self.host_loads.insert(id.to_string(), std::time::Instant::now());
+        self.spawns.host_loads.insert(id.to_string(), std::time::Instant::now());
     }
 
     /// Starts the engines a restored session starts (spec "Lazy tabs"): the
@@ -838,13 +838,13 @@ impl App {
     pub(crate) fn shares_url_change(&mut self, id: &str, user_started: Option<bool>) -> bool {
         match user_started {
             Some(true) => {
-                self.host_loads.remove(id);
+                self.spawns.host_loads.remove(id);
                 return true;
             }
             Some(false) => return false,
             None => {}
         }
-        let Some(since) = self.host_loads.get_mut(id) else { return true };
+        let Some(since) = self.spawns.host_loads.get_mut(id) else { return true };
         if self.nodes.get(id).and_then(|n| n.as_tab()).is_some_and(|t| t.loading) {
             *since = std::time::Instant::now();
             return false;
@@ -852,7 +852,7 @@ impl App {
         if since.elapsed() < HOST_LOAD_GRACE {
             return false;
         }
-        self.host_loads.remove(id);
+        self.spawns.host_loads.remove(id);
         true
     }
 
@@ -1058,13 +1058,13 @@ impl App {
     /// node or an old jar. A new spawn has no mirror entry yet and is left out: it lands from its `TabSpawn`
     /// (`seed_landing`), and a cascade writing to it would make a partial entry that stops that seed.
     pub(crate) fn linked_ids(&self) -> impl Iterator<Item = &str> {
-        let respawning = self.spawning.keys().filter(|id| !self.nodes.contains_key(*id) && self.mirror.has(id));
+        let respawning = self.spawns.spawning.keys().filter(|id| !self.nodes.contains_key(*id) && self.mirror.has(id));
         self.nodes.keys().chain(respawning).map(String::as_str)
     }
 
     /// Whether `id` is one of `linked_ids`.
     pub(crate) fn is_linked(&self, id: &str) -> bool {
-        self.nodes.contains_key(id) || (self.spawning.contains_key(id) && self.mirror.has(id))
+        self.nodes.contains_key(id) || (self.spawns.spawning.contains_key(id) && self.mirror.has(id))
     }
 
     /// "Remove from Group" (the tab card's eject button, dragging a card out through the way back, and the tab and
@@ -1328,7 +1328,7 @@ impl App {
                     // commit wrote; its landing must not replay it over the local edit.
                     for &(node, no) in self.pending.keys() {
                         let id = node.to_string();
-                        if let Some(Some((_, fields, _))) = self.remote_in_flight.get_mut(&id) {
+                        if let Some(Some((_, fields, _))) = self.spawns.remote_in_flight.get_mut(&id) {
                             let value = match no {
                                 field::PARENT => FieldValue::Id(link_id(self.mirror.parent(&id))),
                                 _ => self.mirror.get(&id, no),
@@ -1338,7 +1338,7 @@ impl App {
                     }
                     for node in self.pending_moves.keys() {
                         let id = node.to_string();
-                        if let Some(Some((_, _, group))) = self.remote_in_flight.get_mut(&id) {
+                        if let Some(Some((_, _, group))) = self.spawns.remote_in_flight.get_mut(&id) {
                             *group = self.mirror.group(&id).map(str::to_owned);
                         }
                     }
@@ -1352,7 +1352,7 @@ impl App {
                     self.pending_moves.clear();
                     // A tab still spawning keeps its entry, and its layout: a respawn has removed it from `nodes`
                     // until it lands, and `Mirror::init` then leaves an existing entry alone.
-                    let (nodes, spawning) = (&self.nodes, &self.spawning);
+                    let (nodes, spawning) = (&self.nodes, &self.spawns.spawning);
                     self.mirror.retain(|id| nodes.contains_key(id) || spawning.contains_key(id));
                     self.layout.retain(|id, _| nodes.contains_key(id) || spawning.contains_key(id));
                     self.held_text.retain(|id, _| nodes.get(id).and_then(|n| n.as_note()).is_some_and(|n| n.editing));
@@ -1391,7 +1391,7 @@ impl App {
         let live = |id: &NodeId| doc.nodes.get(id).is_some_and(Node::is_live);
         for (key, node) in &self.nodes {
             let Ok(id) = key.parse::<NodeId>() else { continue };
-            if node.as_download().is_some_and(|dl| !dl.completed) || self.spawning.contains_key(key) {
+            if node.as_download().is_some_and(|dl| !dl.completed) || self.spawns.spawning.contains_key(key) {
                 continue;
             }
             assert!(live(&id), "node {key} is shown but not live in the document: a create funnel was missed");
@@ -1407,7 +1407,7 @@ impl App {
         for id in self.mirror.link_ids() {
             assert!(live(&id), "link {id} is shown but not live in the document: a create funnel was missed");
         }
-        for key in self.spawning.keys() {
+        for key in self.spawns.spawning.keys() {
             let Ok(id) = key.parse::<NodeId>() else { continue };
             assert!(
                 doc.nodes.contains_key(&id),
@@ -1417,7 +1417,7 @@ impl App {
         for (id, _) in doc.live() {
             let key = id.to_string();
             let shown = self.nodes.contains_key(&key)
-                || self.spawning.contains_key(&key)
+                || self.spawns.spawning.contains_key(&key)
                 || self.mirror.jar_defs().contains_key(&id)
                 || self.mirror.is_link(id);
             assert!(shown, "node {key} is live in the document but not shown: a delete funnel was missed");
@@ -1585,7 +1585,7 @@ impl App {
             .collect();
         if let Some(pending) = &self.pending_local {
             for (id, node) in &pending.nodes {
-                if self.spawning.contains_key(id) && !nodes.contains_key(id) {
+                if self.spawns.spawning.contains_key(id) && !nodes.contains_key(id) {
                     nodes.insert(id.clone(), node.clone());
                 }
             }
@@ -1615,7 +1615,7 @@ impl App {
     /// for `handle_tab_spawn_result` to apply once it lands.
     pub(crate) fn apply_local(&mut self, state: LocalState) {
         let exists = |id: &Option<String>| {
-            id.as_deref().is_some_and(|id| self.nodes.contains_key(id) || self.spawning.contains_key(id))
+            id.as_deref().is_some_and(|id| self.nodes.contains_key(id) || self.spawns.spawning.contains_key(id))
         };
         if exists(&state.focused) {
             self.focused = state.focused;
@@ -1648,7 +1648,7 @@ impl App {
         if self.view_mode == ViewMode::Item && self.viewed_image.is_none() {
             if let Some(id) = &self.focused {
                 if !self.nodes.get(id).is_some_and(|n| n.as_tab().is_some()) {
-                    self.pending_respawn_focus = Some(id.clone());
+                    self.spawns.pending_respawn_focus = Some(id.clone());
                 }
             }
         }
@@ -1658,7 +1658,7 @@ impl App {
             if let Some(live) = self.nodes.get_mut(&id) {
                 Self::apply_local_node(live, &node);
                 self.snap_layout(&id, egui::vec2(node.pos[0], node.pos[1]));
-            } else if self.spawning.contains_key(&id) {
+            } else if self.spawns.spawning.contains_key(&id) {
                 pending.insert(id, node);
             }
         }
@@ -2035,7 +2035,7 @@ impl App {
         self.pending_creates.clear();
         // Each old node's per-id state and GPU textures (`forget_id`), including tabs whose spawn is still in flight
         // (no `nodes` entry yet, but cookie and popup state already). The session-wide clears below stay.
-        let old_ids: Vec<String> = self.nodes.keys().chain(self.spawning.keys()).cloned().collect();
+        let old_ids: Vec<String> = self.nodes.keys().chain(self.spawns.spawning.keys()).cloned().collect();
         for id in old_ids {
             self.forget_id(&id);
         }
@@ -2047,23 +2047,16 @@ impl App {
         self.viewed_image = None;
         self.split_tab = None;
         self.current_group = None;
-        self.dragging = None;
-        self.drag_moved.clear();
-        self.connecting = None;
-        self.connect_drag = None;
-        self.retarget = None;
-        self.line_press = None;
-        self.hovered = None;
-        self.selected_tabs.clear();
-        self.rect_select_start = None;
+        self.interaction.dragging = None;
+        self.interaction.drag_moved.clear();
+        self.link.end();
+        self.link.line_press = None;
+        self.interaction.hovered = None;
+        self.interaction.selected_tabs.clear();
+        self.interaction.rect_select_start = None;
         self.graph_settled_key = None;
-        self.wakes_in_flight.clear();
-        self.spawning.clear();
-        self.host_loads.clear();
-        self.navigated_from.clear();
-        self.remote_in_flight.clear();
+        self.spawns.reset();
         self.pending_local = None;
-        self.session_generation += 1;
     }
 
     /// Collapses the toasts queued since `mark` into one, so a bulk restore

@@ -291,9 +291,9 @@ fn a_line_click_is_ignored_in_pick_mode_and_with_a_menu_open() {
     let ab = app.create_link(&a, &b);
     h.frame(&mut app, vec![]);
     let on = line_middle(&app, &ab);
-    app.connecting = Some((c.clone(), crate::caps::LINK));
+    app.link.connecting = Some((c.clone(), crate::caps::LINK));
     h.click(&mut app, on);
-    assert!(app.connecting.is_none(), "the click ended pick mode, as any click off a target does");
+    assert!(app.link.connecting.is_none(), "the click ended pick mode, as any click off a target does");
     assert_eq!(app.links_naming(&a), std::slice::from_ref(&ab), "and deleted nothing");
     app.node_menu = Some((c.clone(), egui::pos2(5.0, 60.0)));
     h.frame(&mut app, vec![]);
@@ -361,7 +361,7 @@ fn a_right_press_during_a_connect_drag_opens_no_menu_and_starts_no_marquee() {
     assert_eq!(app.links_naming(&a).len(), 1, "linked to b");
     h.frame(&mut app, vec![right(on_b, false)]);
     drag_from_handle(&h, &mut app, &a, HandleSide::Bottom, on_c, right_press_at(canvas));
-    assert!(app.rect_select_start.is_none(), "no marquee");
+    assert!(app.interaction.rect_select_start.is_none(), "no marquee");
     assert_eq!(app.links_naming(&a).len(), 2, "linked to c");
 }
 
@@ -378,7 +378,7 @@ fn a_right_press_during_a_card_drag_opens_no_menu_and_starts_no_marquee() {
     h.frame(&mut app, vec![right(to, false)]);
     let from = screen_rect(&app, &a).center();
     h.drag_with(&mut app, from, from + egui::vec2(40.0, 0.0), right_press_at(canvas));
-    assert!(app.rect_select_start.is_none(), "no marquee");
+    assert!(app.interaction.rect_select_start.is_none(), "no marquee");
 }
 
 /// A drag that starts on empty canvas near a link, but off its curve, still pans.
@@ -392,7 +392,7 @@ fn a_drag_from_empty_canvas_beside_a_link_line_pans_and_deletes_nothing() {
     h.drag(&mut app, beside, beside + egui::vec2(120.0, 80.0));
     assert_ne!(app.camera.rect.center(), before.center(), "the drag panned");
     assert_eq!(app.links_naming(&a), [ab]);
-    assert!(app.connect_drag.is_none() && app.retarget.is_none());
+    assert!(app.link.connect_drag.is_none() && app.link.retarget.is_none());
 }
 
 /// The screen point at `t` along `edge`'s curve.
@@ -445,15 +445,15 @@ fn a_drag_on_a_curve_detaches_the_end_nearer_the_grab_point() {
     let edge = link_edge(&app, &ab);
     let canvas = screen_rect(&app, &a).center().lerp(screen_rect(&app, &c).center(), 0.5);
     hold_on(&h, &mut app, &edge, 0.15, canvas);
-    assert_eq!(app.connect_drag.as_deref(), Some(b.as_str()), "grabbed near a: a's end comes off, b stays");
-    assert_eq!(app.retarget, Some(LinkRetarget { link: ab.clone(), fixed_is_from: false }));
-    assert_eq!(app.connecting, Some((b.clone(), crate::caps::LINK)), "ringing the targets of b");
+    assert_eq!(app.link.connect_drag.as_deref(), Some(b.as_str()), "grabbed near a: a's end comes off, b stays");
+    assert_eq!(app.link.retarget, Some(LinkRetarget { link: ab.clone(), fixed_is_from: false }));
+    assert_eq!(app.link.connecting, Some((b.clone(), crate::caps::LINK)), "ringing the targets of b");
     let on_a = screen_rect(&app, &a).center();
     release(&h, &mut app, on_a);
-    assert!(app.connect_drag.is_none() && app.retarget.is_none() && app.connecting.is_none());
+    assert!(app.link.connect_drag.is_none() && app.link.retarget.is_none() && app.link.connecting.is_none());
     hold_on(&h, &mut app, &edge, 0.85, canvas);
-    assert_eq!(app.connect_drag.as_deref(), Some(a.as_str()), "grabbed near b: b's end comes off, a stays");
-    assert_eq!(app.retarget, Some(LinkRetarget { link: ab.clone(), fixed_is_from: true }));
+    assert_eq!(app.link.connect_drag.as_deref(), Some(a.as_str()), "grabbed near b: b's end comes off, a stays");
+    assert_eq!(app.link.retarget, Some(LinkRetarget { link: ab.clone(), fixed_is_from: true }));
     let on_b = screen_rect(&app, &b).center();
     release(&h, &mut app, on_b);
     assert_eq!(ends(&app, &ab), (Some(a), Some(b)), "both released on their own cards: untouched");
@@ -469,12 +469,12 @@ fn dropping_a_dragged_curve_on_a_card_moves_that_end_there() {
     let edge = link_edge(&app, &ab);
     let on_c = screen_rect(&app, &c).center();
     hold_on(&h, &mut app, &edge, 0.85, on_c);
-    assert!(app.retarget.is_some(), "mid-drag");
+    assert!(app.link.retarget.is_some(), "mid-drag");
     release(&h, &mut app, on_c);
     assert_eq!(app.links_naming(&a), std::slice::from_ref(&ab), "same Link node");
     assert_eq!(ends(&app, &ab), (Some(a.clone()), Some(c.clone())), "b's end moved to c");
     assert!(app.links_naming(&b).is_empty(), "b is no longer linked");
-    assert!(app.connect_drag.is_none() && app.retarget.is_none() && app.connecting.is_none());
+    assert!(app.link.connect_drag.is_none() && app.link.retarget.is_none() && app.link.connecting.is_none());
     assert!(toasts(&app).is_empty());
     // The other end: grab near a, drop on b. a's end is the `from` end, so the link now runs b -> c.
     h.frame(&mut app, vec![]);
@@ -515,7 +515,7 @@ fn dropping_a_dragged_curve_on_empty_canvas_deletes_the_link() {
     release(&h, &mut app, canvas);
     assert!(app.links_naming(&a).is_empty() && app.links_naming(&b).is_empty(), "deleted");
     assert_eq!(app.camera.rect, before, "and the drag did not pan");
-    assert!(app.connect_drag.is_none() && app.retarget.is_none() && app.connecting.is_none());
+    assert!(app.link.connect_drag.is_none() && app.link.retarget.is_none() && app.link.connecting.is_none());
     assert!(toasts(&app).is_empty(), "silently");
     h.frame(&mut app, vec![]);
     let state = app.export_state();
@@ -531,9 +531,9 @@ fn losing_focus_during_a_dragged_curve_keeps_the_link() {
     let edge = link_edge(&app, &ab);
     let canvas = screen_rect(&app, &a).center().lerp(screen_rect(&app, &c).center(), 0.5);
     hold_on(&h, &mut app, &edge, 0.85, canvas);
-    assert!(app.retarget.is_some(), "mid-drag");
+    assert!(app.link.retarget.is_some(), "mid-drag");
     app.on_window_focus(false);
-    assert!(app.connect_drag.is_none() && app.retarget.is_none() && app.connecting.is_none());
+    assert!(app.link.connect_drag.is_none() && app.link.retarget.is_none() && app.link.connecting.is_none());
     release(&h, &mut app, canvas);
     assert_eq!(ends(&app, &ab), (Some(a), Some(b)), "untouched");
 }
@@ -544,10 +544,10 @@ fn a_release_off_the_scene_keeps_the_link() {
     let (_h, mut app, [a, b, _]) = three_notes();
     let ab = app.create_link(&a, &b);
     app.start_connect_drag(&a);
-    app.retarget = Some(LinkRetarget { link: ab.clone(), fixed_is_from: true });
+    app.link.retarget = Some(LinkRetarget { link: ab.clone(), fixed_is_from: true });
     app.end_connect_drag(DragEnd::Abandoned);
     assert_eq!(ends(&app, &ab), (Some(a), Some(b)));
-    assert!(app.connect_drag.is_none() && app.retarget.is_none() && toasts(&app).is_empty());
+    assert!(app.link.connect_drag.is_none() && app.link.retarget.is_none() && toasts(&app).is_empty());
 }
 
 /// Three notes and a running download d (a card no link may end on) to the right of b, with a -> b linked: the b
@@ -576,7 +576,7 @@ fn drop_b_end_at(link_a_c: bool, at: impl Fn(&App, [&str; 4]) -> egui::Pos2) -> 
     let edge = link_edge(&app, &ab);
     let to = at(&app, [&a, &b, &c, &d]);
     hold_on(&h, &mut app, &edge, 0.85, to);
-    assert!(app.retarget.is_some(), "mid-drag");
+    assert!(app.link.retarget.is_some(), "mid-drag");
     release(&h, &mut app, to);
     (app, [a, b, c, d], ab)
 }
@@ -720,7 +720,7 @@ fn the_preview_equals_the_release_outcome_for_every_kind_of_end() {
             _ => DragEnd::Canvas,
         };
         app.start_connect_drag(&a);
-        app.retarget = Some(LinkRetarget { link: ab.clone(), fixed_is_from: true });
+        app.link.retarget = Some(LinkRetarget { link: ab.clone(), fixed_is_from: true });
         let preview = app.retarget_preview(&end);
         assert_eq!(preview, Some(expected), "preview over {what}");
         app.end_connect_drag(end);
@@ -753,7 +753,7 @@ fn a_release_the_link_cannot_take_keeps_it_and_toasts() {
     let ab = app.create_link(&a, &b);
     for end in [DragEnd::Card(c.clone()), DragEnd::Source] {
         app.start_connect_drag(&a);
-        app.retarget = Some(LinkRetarget { link: ab.clone(), fixed_is_from: true });
+        app.link.retarget = Some(LinkRetarget { link: ab.clone(), fixed_is_from: true });
         app.end_connect_drag(end);
         assert_eq!(ends(&app, &ab), (Some(a.clone()), Some(b.clone())), "kept");
         assert!(toasts(&app).iter().any(|m| m.as_str() == "Can't connect these cards"), "{:?}", toasts(&app));
@@ -778,9 +778,9 @@ fn escape_cancels_a_dragged_curve() {
     let on_c = screen_rect(&app, &c).center();
     let before = app.camera.rect;
     hold_on(&h, &mut app, &edge, 0.85, on_c);
-    assert!(app.retarget.is_some(), "mid-drag");
+    assert!(app.link.retarget.is_some(), "mid-drag");
     h.frame(&mut app, vec![escape]);
-    assert!(app.connect_drag.is_none() && app.retarget.is_none() && app.connecting.is_none());
+    assert!(app.link.connect_drag.is_none() && app.link.retarget.is_none() && app.link.connecting.is_none());
     // The button is still down: moving on must not pan the canvas the press began on.
     for step in 1..=4 {
         h.frame(&mut app, vec![egui::Event::PointerMoved(on_c + egui::vec2(25.0 * step as f32, 10.0))]);
@@ -812,12 +812,12 @@ fn releasing_a_dragged_curve_whose_link_was_deleted_cancels_silently() {
     let edge = link_edge(&app, &ab);
     let on_c = screen_rect(&app, &c).center();
     hold_on(&h, &mut app, &edge, 0.85, on_c);
-    assert!(app.retarget.is_some(), "mid-drag");
+    assert!(app.link.retarget.is_some(), "mid-drag");
     app.delete_link(&ab);
     release(&h, &mut app, on_c);
     assert!(toasts(&app).is_empty(), "{:?}", toasts(&app));
     assert!(app.links_naming(&a).is_empty() && app.links_naming(&c).is_empty());
-    assert!(app.connect_drag.is_none() && app.retarget.is_none() && app.connecting.is_none());
+    assert!(app.link.connect_drag.is_none() && app.link.retarget.is_none() && app.link.connecting.is_none());
 }
 
 /// A press on the curve that wobbles under egui's drag threshold is still a click: it deletes the link.
@@ -829,7 +829,7 @@ fn a_jittery_click_on_a_curve_still_deletes_the_link() {
     let on = line_middle(&app, &ab);
     h.drag(&mut app, on, on + egui::vec2(3.0, 0.0));
     assert!(app.links_naming(&a).is_empty(), "deleted");
-    assert!(app.retarget.is_none());
+    assert!(app.link.retarget.is_none());
 }
 
 /// A target already joined to the fixed card (here a already joins c) deletes the dragged link, and only it.
@@ -847,7 +847,7 @@ fn dropping_a_dragged_curve_on_an_already_linked_card_deletes_the_link() {
     assert!(app.links_naming(&b).is_empty());
     assert_eq!(ends(&app, &ac), (Some(a), Some(c)));
     assert!(toasts(&app).is_empty(), "silently");
-    assert!(app.connect_drag.is_none() && app.retarget.is_none());
+    assert!(app.link.connect_drag.is_none() && app.link.retarget.is_none());
 }
 
 /// The drop tolerance and the valid-only tolerance pass are the connect-drag's own: a release just outside c links.
@@ -892,7 +892,7 @@ fn a_drag_from_a_handle_over_a_curve_is_the_handles_not_a_retarget() {
     h.drag(&mut app, handle, on_c);
     assert_eq!(ends(&app, &ab), (Some(a.clone()), Some(b)), "the link under the handle is untouched");
     assert_eq!(app.links_naming(&a).len(), 2, "the handle drag linked a to c");
-    assert!(app.retarget.is_none());
+    assert!(app.link.retarget.is_none());
 }
 
 /// Opened-from lines are not draggable: the drag pans as it always did.
@@ -905,7 +905,7 @@ fn an_opened_from_line_is_not_draggable() {
     let on = middle(&app, &opened);
     let before = app.camera.rect;
     h.drag(&mut app, on, on + egui::vec2(100.0, 0.0));
-    assert!(app.connect_drag.is_none() && app.retarget.is_none());
+    assert!(app.link.connect_drag.is_none() && app.link.retarget.is_none());
     assert_ne!(app.camera.rect.center(), before.center(), "it panned");
     assert_eq!(app.mirror.parent(&c), Some(a.as_str()));
 }
@@ -1045,9 +1045,9 @@ fn two_notes() -> (App, String, String) {
 fn handles_show_while_nothing_else_owns_the_pointer_and_on_every_card_during_a_drag() {
     let (mut app, a, b) = two_notes();
     assert!(app.shows_link_handles());
-    app.dragging = Some(b.clone());
+    app.interaction.dragging = Some(b.clone());
     assert!(!app.shows_link_handles(), "a card drag");
-    app.dragging = None;
+    app.interaction.dragging = None;
     app.node_menu = Some((b.clone(), egui::Pos2::ZERO));
     assert!(!app.shows_link_handles(), "a menu");
     app.node_menu = None;
@@ -1070,7 +1070,7 @@ fn a_card_with_no_valid_target_still_shows_handles_and_its_drag_cancels() {
     assert!(state["link_handles"].get(a.as_str()).is_some(), "so its handles are exported");
     let canvas = screen_rect(&app, &a).center().lerp(screen_rect(&app, &b).center(), 0.5);
     drag_from_handle(&h, &mut app, &a, HandleSide::Right, canvas, vec![]);
-    assert!(app.connect_drag.is_none() && app.connecting.is_none(), "cancelled");
+    assert!(app.link.connect_drag.is_none() && app.link.connecting.is_none(), "cancelled");
     assert_eq!(app.links_naming(&a).len(), 2, "and nothing was linked");
 }
 
@@ -1088,7 +1088,7 @@ fn during_a_handle_drag_every_card_has_handles() {
     let canvas = screen_rect(&app, &a).center().lerp(screen_rect(&app, &b).center(), 0.5);
     h.frame(&mut app, vec![egui::Event::PointerMoved(canvas)]);
     h.frame(&mut app, vec![egui::Event::PointerMoved(canvas + egui::vec2(0.0, 5.0))]);
-    assert_eq!(app.connect_drag.as_deref(), Some(a.as_str()));
+    assert_eq!(app.link.connect_drag.as_deref(), Some(a.as_str()));
     let state = app.export_state();
     for id in [&a, &b, &c] {
         let sides = state["link_handles"][id.as_str()].as_object().unwrap_or_else(|| panic!("{id} has handles"));
@@ -1105,25 +1105,25 @@ fn during_a_handle_drag_every_card_has_handles() {
 fn a_connect_drag_ends_with_its_mode_and_with_its_source() {
     let (mut app, a, b) = two_notes();
     app.start_connect_drag(&a);
-    assert_eq!(app.connecting, Some((a.clone(), crate::caps::LINK)), "it runs as pick-target mode for link");
+    assert_eq!(app.link.connecting, Some((a.clone(), crate::caps::LINK)), "it runs as pick-target mode for link");
     app.cancel_connect();
-    assert!(app.connect_drag.is_none());
+    assert!(app.link.connect_drag.is_none());
     app.start_connect_drag(&a);
     app.forget_connect_source(&a);
-    assert!(app.connect_drag.is_none() && app.connecting.is_none(), "its source removed");
+    assert!(app.link.connect_drag.is_none() && app.link.connecting.is_none(), "its source removed");
     app.start_connect_drag(&a);
     app.end_stale_connect(false);
-    assert!(app.connect_drag.is_none(), "Graph view left");
+    assert!(app.link.connect_drag.is_none(), "Graph view left");
     app.start_connect_drag(&a);
-    app.connecting = None;
+    app.link.connecting = None;
     app.end_stale_connect(true);
-    assert!(app.connect_drag.is_none(), "a connect-drag without its mode is stale");
+    assert!(app.link.connect_drag.is_none(), "a connect-drag without its mode is stale");
     app.start_connect_drag(&a);
     app.end_connect_drag(DragEnd::Canvas);
-    assert!(app.connect_drag.is_none() && app.connecting.is_none() && app.links_naming(&a).is_empty());
+    assert!(app.link.connect_drag.is_none() && app.link.connecting.is_none() && app.links_naming(&a).is_empty());
     app.start_connect_drag(&a);
     app.end_connect_drag(DragEnd::Card(b.clone()));
-    assert!(app.connect_drag.is_none() && app.connecting.is_none());
+    assert!(app.link.connect_drag.is_none() && app.link.connecting.is_none());
     assert_eq!(app.links_naming(&a).len(), 1, "released on b");
 }
 
@@ -1178,7 +1178,7 @@ fn dragging_a_handle_onto_a_card_links_them_and_moves_nothing() {
     assert_eq!(links.len(), 1);
     assert_eq!(app.mirror.link_ends(&links[0]), (a.parse().ok(), b.parse().ok()), "a -> b");
     assert_eq!(app.layout_pos(&a), before, "the card did not move");
-    assert!(app.dragging.is_none() && app.connect_drag.is_none() && app.connecting.is_none());
+    assert!(app.interaction.dragging.is_none() && app.link.connect_drag.is_none() && app.link.connecting.is_none());
 }
 
 #[test]
@@ -1189,7 +1189,7 @@ fn a_handle_drag_released_on_canvas_or_on_its_source_links_nothing_silently() {
     let own = screen_rect(&app, &a).center();
     drag_from_handle(&h, &mut app, &a, HandleSide::Right, own, vec![]);
     assert!(app.links_naming(&a).is_empty());
-    assert!(app.connect_drag.is_none() && app.connecting.is_none());
+    assert!(app.link.connect_drag.is_none() && app.link.connecting.is_none());
     assert!(app.save_toast.is_none() && app.save_toast_queue.is_empty(), "no toast");
 }
 
@@ -1219,7 +1219,7 @@ fn escape_cancels_a_handle_drag() {
     drag_from_handle(&h, &mut app, &a, HandleSide::Right, onto, vec![escape]);
     assert_eq!(app.layout_pos(&a), before, "the rest of the held drag moves no card");
     assert!(app.links_naming(&a).is_empty());
-    assert!(app.connect_drag.is_none() && app.connecting.is_none());
+    assert!(app.link.connect_drag.is_none() && app.link.connecting.is_none());
 }
 
 #[test]
@@ -1231,10 +1231,10 @@ fn pressing_a_handle_without_moving_ends_the_gesture_and_clicks_nothing() {
     h.frame(&mut app, vec![egui::Event::PointerMoved(handle)]);
     h.frame(&mut app, vec![egui::Event::PointerMoved(handle)]);
     h.frame(&mut app, vec![press(handle, true)]);
-    assert_eq!(app.connect_drag.as_deref(), Some(a.as_str()), "the press started it");
+    assert_eq!(app.link.connect_drag.as_deref(), Some(a.as_str()), "the press started it");
     h.frame(&mut app, vec![press(handle, false)]);
     h.frame(&mut app, vec![]);
-    assert!(app.connect_drag.is_none() && app.connecting.is_none() && app.links_naming(&a).is_empty());
+    assert!(app.link.connect_drag.is_none() && app.link.connecting.is_none() && app.links_naming(&a).is_empty());
     assert!(!app.nodes[&a].as_note().unwrap().editing, "the press was the handle's, not a click on the note");
 }
 
@@ -1261,15 +1261,15 @@ fn a_handle_over_a_link_line_takes_the_press_from_the_line() {
     h.frame(&mut app, vec![egui::Event::PointerMoved(handle)]);
     h.frame(&mut app, vec![egui::Event::PointerMoved(handle)]);
     h.frame(&mut app, vec![press(handle, true)]);
-    assert_eq!(app.connect_drag.as_deref(), Some(a.as_str()));
-    assert!(app.line_press.is_none(), "the handle's press is not a line press");
+    assert_eq!(app.link.connect_drag.as_deref(), Some(a.as_str()));
+    assert!(app.link.line_press.is_none(), "the handle's press is not a line press");
     h.frame(&mut app, vec![press(handle, false)]);
     h.frame(&mut app, vec![]);
     assert_eq!(app.links_naming(&a), std::slice::from_ref(&ab), "the line under the handle stays");
     let on = line_middle(&app, &ab);
     drag_from_handle(&h, &mut app, &c, HandleSide::Top, on, vec![]);
     assert_eq!(app.links_naming(&a), [ab]);
-    assert!(app.links_naming(&c).is_empty() && app.connect_drag.is_none() && app.line_press.is_none());
+    assert!(app.links_naming(&c).is_empty() && app.link.connect_drag.is_none() && app.link.line_press.is_none());
 }
 
 #[test]
@@ -1279,7 +1279,7 @@ fn a_drag_on_the_card_body_still_moves_the_card() {
     let from = screen_rect(&app, &a).center();
     h.drag(&mut app, from, from + egui::vec2(-60.0, 0.0));
     assert_ne!(app.layout_pos(&a), before, "the card moved");
-    assert!(app.connect_drag.is_none() && app.links_naming(&a).is_empty());
+    assert!(app.link.connect_drag.is_none() && app.links_naming(&a).is_empty());
 }
 
 /// Review I1: a focused text field (a note being edited) keeps its keys, but Esc still cancels a connect-drag.
@@ -1300,7 +1300,7 @@ fn escape_cancels_a_handle_drag_while_a_note_is_being_edited() {
     let onto = screen_rect(&app, &c).center();
     drag_from_handle(&h, &mut app, &b, HandleSide::Bottom, onto, vec![escape]);
     assert!(app.links_naming(&b).is_empty(), "Esc cancelled it");
-    assert!(app.connect_drag.is_none() && app.connecting.is_none());
+    assert!(app.link.connect_drag.is_none() && app.link.connecting.is_none());
     // Final review M5: egui drops keyboard focus on Esc, so the same Esc also ended a's edit.
     assert!(!app.nodes[&a].as_note().unwrap().editing, "the same Esc ended the note edit");
 }
@@ -1341,7 +1341,7 @@ fn a_card_under_the_minimap_is_neither_ringed_nor_linked() {
     app.cancel_connect();
     drag_from_handle(&h, &mut app, &a, HandleSide::Right, over, vec![]);
     assert!(app.links_naming(&a).is_empty(), "not linked");
-    assert!(app.connect_drag.is_none() && app.connecting.is_none());
+    assert!(app.link.connect_drag.is_none() && app.link.connecting.is_none());
 }
 
 /// Review M5: handles exist only on a hovered card. A drag from where a's right handle would be, off the card and
@@ -1354,7 +1354,7 @@ fn a_drag_from_a_handle_spot_on_an_unhovered_card_pans() {
     let before = app.camera.rect;
     h.drag(&mut app, spot, spot + egui::vec2(100.0, 60.0));
     assert_ne!(app.camera.rect.center(), before.center(), "the drag panned");
-    assert!(app.connect_drag.is_none() && app.links_naming(&a).is_empty());
+    assert!(app.link.connect_drag.is_none() && app.links_naming(&a).is_empty());
 }
 
 /// Review M5: released where two cards overlap, the connect-drag links the one drawn on top.
@@ -1395,7 +1395,7 @@ fn a_handle_press_stops_a_glide_and_the_drag_starts_none() {
         start_center: app.camera.rect.center(),
     });
     h.frame(&mut app, vec![press(handle, true)]);
-    assert_eq!(app.connect_drag.as_deref(), Some(a.as_str()));
+    assert_eq!(app.link.connect_drag.as_deref(), Some(a.as_str()));
     assert!(app.camera.momentum.is_none(), "the press stopped the glide");
     let held = app.camera.rect;
     let onto = screen_rect(&app, &b).center();
@@ -1439,9 +1439,9 @@ fn losing_window_focus_cancels_a_connect_drag() {
     h.frame(&mut app, vec![egui::Event::PointerMoved(handle)]);
     h.frame(&mut app, vec![egui::Event::PointerMoved(handle)]);
     h.frame(&mut app, vec![press(handle, true)]);
-    assert_eq!(app.connect_drag.as_deref(), Some(a.as_str()));
+    assert_eq!(app.link.connect_drag.as_deref(), Some(a.as_str()));
     app.on_window_focus(false);
-    assert!(app.connect_drag.is_none() && app.connecting.is_none() && app.line_press.is_none());
+    assert!(app.link.connect_drag.is_none() && app.link.connecting.is_none() && app.link.line_press.is_none());
     let on_b = screen_rect(&app, &b).center();
     h.frame(&mut app, vec![egui::Event::PointerMoved(on_b), press(on_b, false)]);
     h.frame(&mut app, vec![]);
@@ -1480,7 +1480,7 @@ fn losing_window_focus_ends_a_card_drag_in_place() {
     for step in 1..=8 {
         h.frame(&mut app, vec![egui::Event::PointerMoved(from + (over_group - from) * (step as f32 / 8.0))]);
     }
-    assert_eq!(app.dragging.as_deref(), Some(note.as_str()), "mid-drag");
+    assert_eq!(app.interaction.dragging.as_deref(), Some(note.as_str()), "mid-drag");
     assert!(
         matches!(app.drop_target(&note, Some(over_group), None), Some((crate::card::DropEffect::Join, _))),
         "a release here would join the group"
@@ -1488,7 +1488,7 @@ fn losing_window_focus_ends_a_card_drag_in_place() {
     let held = app.layout_pos(&note);
 
     app.on_window_focus(false);
-    assert!(app.dragging.is_none() && app.drag_moved.is_empty(), "the drag ended");
+    assert!(app.interaction.dragging.is_none() && app.interaction.drag_moved.is_empty(), "the drag ended");
     assert_eq!(app.mirror.pos(&note), Some(held), "saved where it was");
     assert_eq!(app.group_of(&Some(note.clone())), None, "no drop: it joined nothing");
 
@@ -1497,7 +1497,7 @@ fn losing_window_focus_ends_a_card_drag_in_place() {
         h.frame(&mut app, vec![egui::Event::PointerMoved(over_group + egui::vec2(0.0, 30.0 * step as f32))]);
     }
     assert_eq!(app.layout_pos(&note), held, "the card no longer follows the pointer");
-    assert!(app.dragging.is_none());
+    assert!(app.interaction.dragging.is_none());
     let late = over_group + egui::vec2(0.0, 120.0);
     h.frame(&mut app, vec![press(late, false)]);
     h.frame(&mut app, vec![]);
@@ -1511,10 +1511,10 @@ fn losing_window_focus_ends_a_card_drag_in_place() {
 #[test]
 fn a_level_change_drops_a_line_press() {
     let (mut app, a, _) = two_notes();
-    app.line_press = Some((a.clone(), app.camera.rect));
+    app.link.line_press = Some((a.clone(), app.camera.rect));
     app.start_connect_drag(&a);
     app.switch_group_level(None);
-    assert!(app.line_press.is_none() && app.connect_drag.is_none());
+    assert!(app.link.line_press.is_none() && app.link.connect_drag.is_none());
 }
 
 /// Final review I2: a connect-drag whose button-up was lost (the button is up, yet no release came this frame)
@@ -1525,7 +1525,7 @@ fn a_connect_drag_without_its_button_down_cancels() {
     let on_b = screen_rect(&app, &b).center();
     app.start_connect_drag(&a);
     h.frame(&mut app, vec![egui::Event::PointerMoved(on_b)]);
-    assert!(app.connect_drag.is_none() && app.connecting.is_none(), "no button down: cancelled");
+    assert!(app.link.connect_drag.is_none() && app.link.connecting.is_none(), "no button down: cancelled");
     h.click(&mut app, on_b);
     assert!(app.links_naming(&a).is_empty());
 }
@@ -1548,11 +1548,11 @@ fn a_click_on_a_handle_over_a_neighbour_links_nothing() {
     h.frame(&mut app, vec![egui::Event::PointerMoved(spot)]);
     h.frame(&mut app, vec![egui::Event::PointerMoved(spot)]);
     h.frame(&mut app, vec![press(spot, true)]);
-    assert_eq!(app.connect_drag.as_deref(), Some(b.as_str()), "the press is b's handle's");
+    assert_eq!(app.link.connect_drag.as_deref(), Some(b.as_str()), "the press is b's handle's");
     h.frame(&mut app, vec![press(spot, false)]);
     h.frame(&mut app, vec![]);
     assert!(app.links_naming(&b).is_empty(), "a click on the handle links nothing");
-    assert!(app.connect_drag.is_none() && app.connecting.is_none());
+    assert!(app.link.connect_drag.is_none() && app.link.connecting.is_none());
 }
 
 /// Final review M3: a release over an interactable egui Area (a popup) links nothing under it, as a click there
@@ -1567,5 +1567,5 @@ fn a_release_over_a_popup_links_nothing_under_it() {
     assert_eq!(h.ctx.layer_id_at(on_b).map(|l| l.order), Some(egui::Order::Foreground), "the cover is on top");
     drag_from_handle(&h, &mut app, &a, HandleSide::Right, on_b, vec![]);
     assert!(app.links_naming(&a).is_empty());
-    assert!(app.connect_drag.is_none() && app.connecting.is_none());
+    assert!(app.link.connect_drag.is_none() && app.link.connecting.is_none());
 }

@@ -979,7 +979,7 @@ impl App {
             pinned: self.mirror.pinned(id),
             muted: tab.is_some_and(|t| t.muted),
             audio_playing: tab.is_some_and(|t| t.audio_playing),
-            selected: self.selected_tabs.contains(id),
+            selected: self.interaction.selected_tabs.contains(id),
         })
     }
 
@@ -1008,7 +1008,7 @@ impl App {
         let keeps_keyboard = pass.order.first().is_some_and(|first| first == id)
             || ui.memory(|m| m.has_focus(egui::Id::new(("graph_card", id))))
             || ui.memory(|m| m.has_focus(egui::Id::new(("note_edit", id))));
-        if self.dragging.as_deref() != Some(id) && !keeps_keyboard && !rect.intersects(self.camera.rect) {
+        if self.interaction.dragging.as_deref() != Some(id) && !keeps_keyboard && !rect.intersects(self.camera.rect) {
             return None;
         }
         let view = self.card_view(id, pass.members)?;
@@ -1089,7 +1089,7 @@ impl App {
         // Last frame's hover too, which keeps the ✕ drawn while the
         // pointer is on it: registered last, it takes the hover from both
         // interacts above.
-        let is_hovered = self.hovered.as_deref() == Some(id) || pointer_on_card;
+        let is_hovered = self.interaction.hovered.as_deref() == Some(id) || pointer_on_card;
 
         // One eased hover drives the glow, the fill's brightening and the
         // border, so the three move together.
@@ -1186,7 +1186,7 @@ impl App {
         // Registered after the card and its controls: egui gives a press on a drag-only widget on top to that widget
         // alone (no click below), so the card neither moves nor opens.
         let mut handle_hovered = false;
-        if (is_hovered || self.connect_drag.is_some()) && self.shows_link_handles() {
+        if (is_hovered || self.link.connect_drag.is_some()) && self.shows_link_handles() {
             let handles = crate::link_gestures::link_handle_rects(rect, pass.zoom_scale, self.graph_lod_simplified);
             for (side, handle) in handles {
                 let handle_response = ui
@@ -1202,12 +1202,12 @@ impl App {
         }
 
         // This frame's hover only: passing `is_hovered` (which includes
-        // `self.hovered`) made a card stay hovered, ✕ and all, after the
+        // `self.interaction.hovered`) made a card stay hovered, ✕ and all, after the
         // pointer left it, until another card was hovered. Never during a
         // connect-drag, whose peek would cover the targets.
-        let still_hovered = self.connect_drag.is_none() && (pointer_on_card || control_hovered || handle_hovered);
+        let still_hovered = self.link.connect_drag.is_none() && (pointer_on_card || control_hovered || handle_hovered);
         if response.dragged() {
-            self.dragging = Some(id.to_string());
+            self.interaction.dragging = Some(id.to_string());
             // Dragging one selected tab moves the whole selection, as one
             // unit (see `take_drag_unit`). Recomputed (and overwritten)
             // every dragged frame rather than only at drag start: cheap,
@@ -1215,25 +1215,28 @@ impl App {
             // `drag_moved` holds when the drag ends is the full, correct
             // set to save -- see the release branch below.
             let delta = response.drag_delta();
-            let moved: Vec<String> =
-                if view.selected { self.selected_tabs.iter().cloned().collect() } else { vec![id.to_string()] };
+            let moved: Vec<String> = if view.selected {
+                self.interaction.selected_tabs.iter().cloned().collect()
+            } else {
+                vec![id.to_string()]
+            };
             // The layout only: the document pos is written once, at release (`release_drag`).
             for moved_id in &moved {
                 if self.nodes.contains_key(moved_id) {
                     self.layout.entry(moved_id.clone()).or_default().pos += delta;
                 }
             }
-            self.drag_moved = moved;
-        } else if self.dragging.as_deref() == Some(id) {
+            self.interaction.drag_moved = moved;
+        } else if self.interaction.dragging.as_deref() == Some(id) {
             self.release_drag();
             // `drop_preview` was computed this frame for this card, and
             // nothing moved it since (no drag delta on a release frame).
             pass.actions.push(GraphAction::Drop { id: id.to_string(), target: pass.drop_preview.clone() });
         }
         if still_hovered {
-            self.hovered = Some(id.to_string());
-        } else if self.hovered.as_deref() == Some(id) {
-            self.hovered = None;
+            self.interaction.hovered = Some(id.to_string());
+        } else if self.interaction.hovered.as_deref() == Some(id) {
+            self.interaction.hovered = None;
         }
 
         if let Some(node) = self.nodes.get(id) {

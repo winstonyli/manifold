@@ -906,7 +906,7 @@ impl App {
         match action {
             NodeAction::Open => {
                 if self.nodes.contains_key(id) {
-                    self.selected_tabs.clear();
+                    self.interaction.selected_tabs.clear();
                     self.start_transition_to_item(id);
                 }
             }
@@ -996,7 +996,7 @@ impl App {
             NodeAction::ClearGroupDefaultJar => self.clear_group_default_jar(id),
             NodeAction::Connect(edge) => {
                 if self.nodes.contains_key(id) {
-                    self.connecting = Some((id.to_string(), edge));
+                    self.link.connecting = Some((id.to_string(), edge));
                 }
             }
             NodeAction::Disconnect { edge, other, link } => match link {

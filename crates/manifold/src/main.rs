@@ -82,7 +82,7 @@ use export::*;
 use fetched::*;
 use node_menu::*;
 use session::sanitize_session_name;
-use tabs::{SpawnPurpose, TabCarry, TabSpawn, TabSpawnOutcome};
+use tabs::{SpawnPurpose, SpawnTracker, TabCarry, TabSpawn, TabSpawnOutcome};
 use text::*;
 use view_modes::*;
 use zoom_chip::*;
@@ -100,6 +100,7 @@ use card_kind::*;
 use debug_control::DebugCommand;
 use engine_info::*;
 use gpu::GpuState;
+use graph_nav::GraphInteraction;
 use graph_ui::*;
 use image_view::*;
 use input::*;
@@ -108,6 +109,7 @@ use ipc_protocol::{
 };
 use json_level::{JsonEdit, JsonLevel};
 use level::{EdgeCurve, EdgeKind, LevelEdge, LevelItem, LevelItemKind, LevelScan};
+use links::LinkGesture;
 use mirror::Carried;
 use node::*;
 use popups::*;
@@ -363,29 +365,6 @@ struct App {
     /// Ids for nodes made while there is no journal (unit tests, a failed
     /// open): this launch's own actor, so they parse as store ids.
     fallback_ids: (store::model::ActorId, u64),
-    /// Tab spawns started by `spawn_tab_async` whose `TabSpawned` result
-    /// hasn't been handled yet. Read by the headless `WAITTABS` command,
-    /// whose waiting senders sit in `tabs_spawned_waiters` until this
-    /// reaches zero.
-    tab_spawns_in_flight: usize,
-    /// Ids whose tab spawn is in flight (every `SpawnPurpose`), each with
-    /// the tab it was started as (`session_sync::spawn_snapshot`). No live
-    /// node yet (contract "In-flight spawns"); a save creates one the store
-    /// doesn't hold yet (a new, imported or reopened tab) from this snapshot
-    /// (`snapshot`), so a quit before it lands doesn't lose it. A respawn
-    /// queues no delete, so the store keeps the tab meanwhile.
-    spawning: HashMap<String, session_sync::Snapshot>,
-    /// Other replicas' latest change to a node in `spawning`, applied when
-    /// its spawn lands (`None`: deleted). The spawn itself carries only
-    /// what it was started with.
-    remote_in_flight: HashMap<String, Option<session_sync::RemoteNode>>,
-    /// Tabs loading a url the host gave them, with when each was last seen
-    /// loading; their url changes aren't shared meanwhile
-    /// (`App::shares_url_change`).
-    host_loads: HashMap<String, std::time::Instant>,
-    /// Tabs `navigate_tab` just moved on, with the url each left, when, and
-    /// whether the engine has reported loading since (`App::reported_url`).
-    navigated_from: HashMap<String, (String, std::time::Instant, bool)>,
     /// Nodes placed here that the next save creates (2b-5 Ruling 3): every way a node enters the live graph
     /// (`place_node`, `spawn_tab_async`, a jar's `add_jar`) queues its id; the save creates each the document lacks,
     /// from the mirror or the spawn's snapshot (`snapshot`). One the document already holds (a restore, another
@@ -428,15 +407,8 @@ struct App {
     /// populated here -- the view fields are resolved once, in `apply_local`
     /// itself, since spawning is enough for those to take effect.
     pending_local: Option<local_state::LocalState>,
-    tabs_spawned_waiters: Vec<std::sync::mpsc::Sender<()>>,
     /// Senders of the headless `WAITIDLE` commands waiting for `debug_idle`.
     idle_waiters: Vec<std::sync::mpsc::Sender<()>>,
-    /// Bumped by `replace_running_session`. A tab spawn carries the value it
-    /// started under, and `handle_tab_spawn_result` drops a result from an
-    /// older one: it belongs to the replaced session, and inserting it would
-    /// add a stray tab to the new scene, so a spawn from a replaced session
-    /// never lands in it.
-    session_generation: u64,
     /// Shared across every note's own rendered (non-`editing`) view --
     /// `egui_commonmark`'s own recommended usage (glyph-layout/heading-id
     /// state, not per-note content), not a fresh cache per card per frame.
@@ -491,77 +463,12 @@ struct App {
     /// resolution was already attempted, not the result itself.
     favicon_resolved: HashSet<String>,
 
-    /// Graph view: the node currently being dragged (pinned in the physics
-    /// sim — see `graph_layout::step`'s `pinned` parameter) and the node
-    /// currently hovered (drives the peek-preview popup).
-    dragging: Option<String>,
-    /// Every node the current drag is moving (a lone card, or the whole
-    /// selection when the dragged card is selected — see `take_drag_unit`
-    /// and the `dragged()` branch that fills this in). Read and cleared at
-    /// release (`release_drag`), where each one's `pos` is written exactly
-    /// once (`edit_pos`, 2b-4 Ruling 2): writing every frame of the drag
-    /// instead would let an intermediate position reach the store, since a
-    /// save can fire mid-drag from an unrelated event (`poll_store`, or a
-    /// url change batched through `drain_tab_events`), independent of the
-    /// gesture. Until then a remote pos for any of them doesn't snap its
-    /// layout (`is_being_dragged`). Cleared without a write when the drag
-    /// stops being live (`end_stale_drag`).
-    drag_moved: Vec<String>,
-    /// Pick-target mode (links spec "Menus and pick-target mode"): the card whose menu chose a verb ("Link to…",
-    /// "Opened from…") and the edge it draws. The next click on a valid target finishes it (`finish_connect`); Esc, a
-    /// click elsewhere, any other action, leaving the level or the Graph view, or the source going, ends it.
-    connecting: Option<(String, &'static str)>,
-    /// A connect-drag (link-gestures spec A): the card whose edge handle the primary button went down on. While it
-    /// runs, `connecting` is `(source, LINK)`, so pick-target mode's rings show the targets. The release ends it on
-    /// the card under the pointer (`end_connect_drag`). It ends with pick-target mode (`cancel_connect`,
-    /// `finish_connect`), so every path that ends that mode ends this too.
-    connect_drag: Option<String>,
-    /// Set with `connect_drag` when the drag began on an existing link's curve (`start_line_retarget`): the link whose
-    /// free end follows the pointer, and which end stays. `connect_drag` is then the card at the fixed end. Cleared
-    /// wherever `connect_drag` ends (`cancel_connect`, `finish_connect`, a session replace).
-    retarget: Option<link_gestures::LinkRetarget>,
-    /// While `retarget` runs: what a release at the pointer would do now (`App::retarget_preview`), set each frame by
-    /// the graph pass for the band, the ring and EXPORTSTATE.
-    retarget_preview: Option<links::RetargetOutcome>,
-    /// The link line under the pointer when the primary press began with the camera still, and the camera rect then
-    /// (`line_click`). Only that line, with the camera unmoved, can be taken by the click that ends the press.
-    line_press: Option<(String, egui::Rect)>,
-    hovered: Option<String>,
-    /// Set to `self.hovered` by an Escape press while a hover-peek preview
-    /// is showing, so that preview can be dismissed early without needing
-    /// the pointer to actually move away -- the peek drawing code skips
-    /// rendering while this matches the current `hovered` id. Cleared
-    /// whenever `hovered` changes to anything else (including `None`), so
-    /// hovering the same or a different node again always shows a fresh
-    /// peek.
-    peek_suppressed: Option<String>,
-    /// Graph view rectangle-select: `Some` (holding the screen-space anchor
-    /// point) for exactly the duration of a right-button drag over the
-    /// graph panel -- the right button specifically, since the primary
-    /// button is already Scene's own pan gesture (`drag_pan_buttons` is
-    /// restricted to `PRIMARY` in `build_graph_ui` so the two never fight
-    /// over the same drag). `selected_tabs` is the committed result, kept
-    /// until the next selection (a fresh right-drag) or an explicit clear
-    /// (a plain click on empty background, or Escape).
-    rect_select_start: Option<egui::Pos2>,
-    selected_tabs: HashSet<String>,
-    /// World position of the small "New Tab/Note/Group/File" card shown
-    /// after a plain right-click (no real drag) on empty Graph-view
-    /// background -- see the marquee-release logic below for where this
-    /// gets set (same gesture, disambiguated from a real rectangle-select
-    /// drag by movement distance) and `build_graph_ui`'s own rendering of
-    /// it. Deliberately *not* a `GraphNode`/`self.nodes` entry -- it's a
-    /// pending choice, not real graph content, so it never needs excluding
-    /// from `level_scan`/session persistence/drag-into-group/
-    /// filters the way a real new node kind would. Cleared on any camera
-    /// movement (pan/zoom/Reset View/entering or leaving a group/minimap
-    /// click), Escape, clicking elsewhere, or picking one of its own
-    /// actions -- deliberately short-lived rather than a droppable/
-    /// draggable placeholder (a real node's card lingers regardless of
-    /// camera movement; this one is a transient choice, not content, so
-    /// letting it silently drift out of sync with a moved camera would be
-    /// the wrong feel for it).
-    pending_new_node: Option<egui::Vec2>,
+    /// Pick-target mode and the connect-drag/retarget gestures. See `LinkGesture`.
+    link: LinkGesture,
+    /// Graph view drag, hover, selection and pending-card state. See `GraphInteraction`.
+    interaction: GraphInteraction,
+    /// Tab spawns in flight, crash history and navigation bookkeeping. See `SpawnTracker`.
+    spawns: SpawnTracker,
     /// Graph view's pan/zoom and its animations.
     camera: GraphCamera,
     /// Level-of-detail: true once a frame's own count of viewport-visible
@@ -690,9 +597,6 @@ struct App {
     /// Admits or drops page-opened tabs (`EngineToHost::OpenTabRequested`)
     /// per source tab: a user gesture and a rate budget.
     popup_gate: popup_gate::PopupGate,
-    /// Recent engine crash times per tab id (`tabs::crashes_too_often`): a
-    /// tab crashing too often is left as a failed card, not respawned.
-    tab_crashes: HashMap<String, Vec<std::time::Instant>>,
 
     /// When `save_session` last committed to the store -- shown in the
     /// settings popup's Sessions section next to a "Save Now" button, so a
@@ -808,36 +712,6 @@ struct App {
     /// before `main` sets it; every real spawn happens after that.
     event_proxy: Option<EventLoopProxy<UserEvent>>,
 
-    /// The tab id `respawn_tab` was called for *while it was the focused
-    /// tab* — i.e. an engine swap or crash recovery is currently respawning
-    /// the tab the user is looking at. `build_tab_view_ui`'s existing "focused
-    /// tab missing from `self.nodes`" guard (a pre-existing one-frame safety
-    /// net, from before spawning was async) would otherwise bounce the user
-    /// to Graph view for the tab's *entire* respawn duration — imperceptible
-    /// when spawning was synchronous, but a visible multi-second flicker
-    /// back to Graph and then back to Tab view now that a WebKit respawn can
-    /// take many seconds. Set in `respawn_tab`, cleared in
-    /// `handle_tab_spawn_result` once that same id's `Respawn` outcome
-    /// (`Ok` or `Err`) arrives.
-    pending_respawn_focus: Option<String>,
-
-    /// Unloaded tabs' cards whose `wake_tab` spawn is in flight. Unlike a
-    /// crash respawn, the card is still on the graph meanwhile, so it can
-    /// be moved or closed: the outcome takes the card's placement as it is
-    /// now, and is dropped if the card is gone. Set in `wake_tab`, cleared
-    /// by that outcome in `handle_tab_spawn_result`.
-    wakes_in_flight: HashSet<String>,
-
-    /// Tabs that stay tabs whatever they load, each with whether that load
-    /// has settled (reported `loading == false`): one opened by "Open as
-    /// tab", and one loading another replica's url (`materialize`), which
-    /// that replica converts itself. Every `RedirectableContent`/`JsonBody`
-    /// report is skipped while a tab is in here. It stays until a real url
-    /// change after the load settles (an HTTP redirect during it doesn't
-    /// count; see `skip_convert_after`) or the tab closes (`remove_tab`).
-    /// Not persisted (spec "Left open").
-    skip_convert: HashMap<String, bool>,
-
     /// Windowless tests have no event loop to spawn on: `spawn_tab_async`
     /// parks each spawn here (with its `session_generation`) for the test
     /// to hand `handle_tab_spawn_result` an outcome itself.
@@ -923,11 +797,6 @@ impl Default for App {
             view_mode: ViewMode::Item,
             journal: None,
             fallback_ids: (store::model::ActorId::random(), 0),
-            tab_spawns_in_flight: 0,
-            spawning: HashMap::new(),
-            remote_in_flight: HashMap::new(),
-            host_loads: HashMap::new(),
-            navigated_from: HashMap::new(),
             pending_creates: std::collections::BTreeSet::new(),
             pending_deletes: std::collections::BTreeSet::new(),
             mirror: mirror::Mirror::default(),
@@ -939,9 +808,7 @@ impl Default for App {
             local_written_at: std::time::Instant::now(),
             closed_changed_at: None,
             pending_local: None,
-            tabs_spawned_waiters: Vec::new(),
             idle_waiters: Vec::new(),
-            session_generation: 0,
             commonmark_cache: egui_commonmark::CommonMarkCache::default(),
             cursor_pos: (0.0, 0.0),
             native_drag_tab: None,
@@ -955,18 +822,9 @@ impl Default for App {
             pdf_renderer: PdfRenderer::new(),
             redirect_fetcher: RedirectFetcher::new(profile::content_dir()),
             favicon_resolved: HashSet::new(),
-            dragging: None,
-            drag_moved: Vec::new(),
-            connecting: None,
-            connect_drag: None,
-            retarget: None,
-            retarget_preview: None,
-            line_press: None,
-            hovered: None,
-            peek_suppressed: None,
-            rect_select_start: None,
-            selected_tabs: HashSet::new(),
-            pending_new_node: None,
+            link: LinkGesture::default(),
+            interaction: GraphInteraction::default(),
+            spawns: SpawnTracker::default(),
             camera: GraphCamera::new(),
             graph_lod_simplified: false,
             truncate_cache: HashMap::new(),
@@ -993,7 +851,6 @@ impl Default for App {
             save_toast_queue: std::collections::VecDeque::new(),
             failure_notices: Default::default(),
             popup_gate: popup_gate::PopupGate::default(),
-            tab_crashes: HashMap::new(),
             last_session_save: None,
             save_retry_at: None,
             store_notices: std::collections::BTreeSet::new(),
@@ -1024,9 +881,6 @@ impl Default for App {
             card_hint: None,
             transition: None,
             event_proxy: None,
-            pending_respawn_focus: None,
-            wakes_in_flight: HashSet::new(),
-            skip_convert: HashMap::new(),
             #[cfg(test)]
             test_spawns: Vec::new(),
             #[cfg(test)]

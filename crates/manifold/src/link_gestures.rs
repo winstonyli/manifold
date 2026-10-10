@@ -287,12 +287,12 @@ impl App {
     /// the shortcuts help) owns the pointer: that click only dismisses.
     pub(crate) fn line_click_allowed(&self) -> bool {
         self.json_level.is_none()
-            && self.dragging.is_none()
-            && self.connecting.is_none()
-            && self.connect_drag.is_none()
+            && self.interaction.dragging.is_none()
+            && self.link.connecting.is_none()
+            && self.link.connect_drag.is_none()
             && self.node_menu.is_none()
-            && self.pending_new_node.is_none()
-            && self.rect_select_start.is_none()
+            && self.interaction.pending_new_node.is_none()
+            && self.interaction.rect_select_start.is_none()
             && self.open_popup.is_none()
             && !self.shortcuts_help_open
     }
@@ -349,9 +349,9 @@ impl App {
         });
         if pressed {
             let still = self.camera.momentum.is_none() && self.camera.tween.is_none();
-            self.line_press = line_hover.clone().filter(|_| still).map(|link| (link, self.camera.rect));
+            self.link.line_press = line_hover.clone().filter(|_| still).map(|link| (link, self.camera.rect));
         }
-        let press = if released { self.line_press.take() } else { None };
+        let press = if released { self.link.line_press.take() } else { None };
         let (link, rect) = press.filter(|_| clicked && !repeat)?;
         (line_hover.as_ref() == Some(&link) && rect == self.camera.rect).then_some(link)
     }
@@ -369,15 +369,15 @@ impl App {
     /// pointer (as `line_click_allowed`), whether or not the card has a valid link target: a drag with none just
     /// cancels, as an empty release does.
     pub(crate) fn shows_link_handles(&self) -> bool {
-        self.connect_drag.is_some() || self.line_click_allowed()
+        self.link.connect_drag.is_some() || self.line_click_allowed()
     }
 
     /// A press on one of card `id`'s handles: pick-target mode for `link` from it, which rings the targets, run as a
     /// drag. Like any press on the graph it stops a glide ("grab it to stop it"), which `track_pan_momentum` skips
     /// during a connect-drag, so the cards hold still under the rubber band.
     pub(crate) fn start_connect_drag(&mut self, id: &str) {
-        self.connecting = Some((id.to_string(), crate::caps::LINK));
-        self.connect_drag = Some(id.to_string());
+        self.link.connecting = Some((id.to_string(), crate::caps::LINK));
+        self.link.connect_drag = Some(id.to_string());
         self.camera.momentum = None;
     }
 
@@ -388,7 +388,7 @@ impl App {
     /// drag was recognised by restoring the camera of the press. False (nothing started) when no link was pressed,
     /// another gesture owns the pointer, or the link is gone.
     pub(crate) fn start_line_retarget(&mut self, ui: &egui::Ui, scene_outer_rect: egui::Rect) -> bool {
-        let Some((link, press_rect)) = self.line_press.take() else { return false };
+        let Some((link, press_rect)) = self.link.line_press.take() else { return false };
         let Some(origin) = ui.input(|i| i.pointer.press_origin()) else { return false };
         if !self.line_click_allowed() {
             return false;
@@ -405,7 +405,7 @@ impl App {
         let fixed_is_from = !grabs_from_end(edge, at);
         let fixed = if fixed_is_from { &edge.from_id } else { &edge.to_id };
         self.start_connect_drag(fixed);
-        self.retarget = Some(LinkRetarget { link, fixed_is_from });
+        self.link.retarget = Some(LinkRetarget { link, fixed_is_from });
         true
     }
 
@@ -421,7 +421,7 @@ impl App {
             return (under.id != source).then(|| under.id.clone());
         }
         // Only cards the ring marks (`valid_targets`) count here, so a refused neighbour never shadows a valid one.
-        let edge = self.connecting.as_ref().map_or(crate::caps::LINK, |(_, edge)| edge);
+        let edge = self.link.connecting.as_ref().map_or(crate::caps::LINK, |(_, edge)| edge);
         let valid = self.valid_targets(edge, source);
         let nearest = |take: &dyn Fn(&crate::level::LevelItem) -> bool| {
             let mut best: Option<(f32, &crate::level::LevelItem)> = None;
@@ -436,7 +436,7 @@ impl App {
         // A dragged link end deletes its link on empty canvas, so there any other card in reach (its own old card, a
         // refused one) is where it landed, tried after the valid ones; the release then resolves it, never as canvas.
         nearest(&|item| valid.contains(&item.id))
-            .or_else(|| self.retarget.is_some().then(|| nearest(&|item| item.id != source)).flatten())
+            .or_else(|| self.link.retarget.is_some().then(|| nearest(&|item| item.id != source)).flatten())
     }
 
     /// The pointer in world space, inside `build_graph_ui`'s Scene (this frame's layer transform).
@@ -461,7 +461,7 @@ impl App {
         minimap: Option<egui::Rect>,
         (zoom_scale, translation): (f32, egui::Vec2),
     ) -> DragEnd {
-        let Some(source) = self.connect_drag.as_ref() else { return DragEnd::Abandoned };
+        let Some(source) = self.link.connect_drag.as_ref() else { return DragEnd::Abandoned };
         let covered = |p: egui::Pos2| ctx.layer_id_at(p).is_some_and(|layer| layer.order != egui::Order::Background);
         let Some(pointer) = pointer
             .filter(|p| scene_outer_rect.contains(*p) && !minimap.is_some_and(|m| m.contains(*p)) && !covered(*p))
@@ -474,7 +474,7 @@ impl App {
             return DragEnd::Card(target);
         }
         // On the source, or (for a dragged link end, which deletes on canvas) within the tolerance of it.
-        let reach = if self.retarget.is_some() { tolerance } else { 0.0 };
+        let reach = if self.link.retarget.is_some() { tolerance } else { 0.0 };
         if self.card_rect(source).is_some_and(|rect| distance_to_rect(at, rect) <= reach || rect.contains(at)) {
             DragEnd::Source
         } else {
@@ -486,15 +486,15 @@ impl App {
     /// pointer to the pointer, over the cards. With a `target` (`connect_drag_end`, within drop tolerance or
     /// under the pointer) it ends on the target's facing side midpoint, where the handle is, as the finished link will.
     pub(crate) fn draw_connect_rubber_band(&self, ui: &egui::Ui, inv_zoom: f32, target: Option<&str>) {
-        let (Some(source), Some(pointer)) = (&self.connect_drag, Self::scene_pointer(ui)) else { return };
+        let (Some(source), Some(pointer)) = (&self.link.connect_drag, Self::scene_pointer(ui)) else { return };
         let Some((mut from, mut to)) = self.rubber_band_ends(source, pointer, target) else { return };
         let free_end = to;
         // A retargeted link keeps its direction, so the band bows as the finished link will.
-        if self.retarget.as_ref().is_some_and(|r| !r.fixed_is_from) {
+        if self.link.retarget.as_ref().is_some_and(|r| !r.fixed_is_from) {
             std::mem::swap(&mut from, &mut to);
         }
         // A dragged link end is drawn by what a release there would do (`retarget_look`).
-        let look = self.retarget_preview.map(retarget_look);
+        let look = self.link.retarget_preview.map(retarget_look);
         let stroke = match look {
             Some(look) => egui::Stroke::new(look.band_px * inv_zoom, look.band),
             None => egui::Stroke::new(LINK_STROKE_PX * inv_zoom, crate::theme::ACCENT),
@@ -535,11 +535,11 @@ impl App {
     /// link's end (`retarget`) is decided by `finish_retarget`: empty canvas or an already-linked card deletes the
     /// link, a card it can move to takes it, a refused card toasts, and the rest cancels.
     pub(crate) fn end_connect_drag(&mut self, end: DragEnd) {
-        let Some(source) = self.connect_drag.take() else { return };
+        let Some(source) = self.link.connect_drag.take() else { return };
         let owns_mode =
-            self.connecting.as_ref().is_some_and(|(from, edge)| *from == source && *edge == crate::caps::LINK);
-        if let (Some(retarget), true) = (self.retarget.take(), owns_mode) {
-            self.connecting = None;
+            self.link.connecting.as_ref().is_some_and(|(from, edge)| *from == source && *edge == crate::caps::LINK);
+        if let (Some(retarget), true) = (self.link.retarget.take(), owns_mode) {
+            self.link.connecting = None;
             self.finish_retarget(&retarget, &source, &end);
             return;
         }
