@@ -104,7 +104,7 @@ fn every_id_keyed_field_is_forgotten_or_excused() {
         .filter_map(|l| l.split_once(": "))
         .collect();
     assert!(fields.len() > 100, "App's fields were found ({})", fields.len());
-    let body = source
+    let body = include_str!("../node_store.rs")
         .lines()
         .skip_while(|l| !l.contains("fn forget_id("))
         .take_while(|l| *l != "    }")
