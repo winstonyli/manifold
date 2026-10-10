@@ -256,8 +256,9 @@ impl EngineTab {
         self.frame.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take()
     }
 
-    /// The engine has stopped reading: a send was refused, or one write has been stuck for
-    /// `engine_io::UNRESPONSIVE_AFTER` (the card badge and the menu's Restart and End rows).
+    /// The engine has stopped reading: a send was refused while a write had been blocked for
+    /// `engine_io::REFUSED_BLOCKED_AFTER`, or one write has been stuck for `engine_io::UNRESPONSIVE_AFTER` (the card
+    /// badge and the menu's Restart and End rows).
     pub(crate) fn is_unresponsive(&self, now: std::time::Instant) -> bool {
         self.writer.is_unresponsive(now)
     }

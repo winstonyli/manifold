@@ -652,7 +652,14 @@ fn sends_to_an_engine_that_stopped_reading_never_block() {
         let _ = done_tx.send(tab);
     });
     let tab = done_rx.recv_timeout(Duration::from_secs(5)).expect("the sends returned although the engine read none");
-    assert!(tab.writer.is_unresponsive(std::time::Instant::now()), "its queue filled, so it reads as unresponsive");
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while !tab.writer.is_unresponsive(std::time::Instant::now()) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "its queue filled and a write is stuck, so it reads as unresponsive"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
     let start = std::time::Instant::now();
     drop(tab);
     // `fake_fed` has no child process, so `Drop` returns before its stuck-tab rule: this only bounds the rest of `Drop`.

@@ -16,6 +16,9 @@ use ipc_protocol::{HostToEngine, InputEvent, MessageChannel};
 pub(crate) const SEND_QUEUE_CAP: usize = 256;
 /// How long one write may stay blocked before the tab reads as unresponsive.
 pub(crate) const UNRESPONSIVE_AFTER: Duration = Duration::from_secs(2);
+/// How long the write under way must have been blocked before a refused push counts: a healthy engine can fall
+/// behind a burst of more than `SEND_QUEUE_CAP` unmergeable messages (a long headless `TYPE`) for a moment.
+pub(crate) const REFUSED_BLOCKED_AFTER: Duration = Duration::from_millis(50);
 /// How long closing a tab waits for its queue and `Shutdown` to go out, counted from the first `Writer::shutdown`.
 pub(crate) const SHUTDOWN_FLUSH: Duration = Duration::from_millis(200);
 
@@ -118,9 +121,11 @@ struct State {
 
 impl State {
     fn unresponsive(&self, now: Instant) -> bool {
+        let blocked_for_at_least = |min: Duration| self.writing_since.is_some_and(|t| now.duration_since(t) >= min);
         self.broken
             || (self.closed_at.is_none()
-                && (self.refused || self.writing_since.is_some_and(|t| now.duration_since(t) >= UNRESPONSIVE_AFTER)))
+                && (blocked_for_at_least(UNRESPONSIVE_AFTER)
+                    || (self.refused && blocked_for_at_least(REFUSED_BLOCKED_AFTER))))
     }
 }
 
@@ -161,7 +166,7 @@ impl Writer {
     }
 
     /// Queues `msg`; never blocks. Dropped once closed or finished, and when the queue is full (the tab then reads as
-    /// unresponsive).
+    /// unresponsive once a write is stuck).
     pub(crate) fn send(&self, msg: HostToEngine) {
         let mut state = self.0.lock();
         if state.finished || state.closed_at.is_some() {
@@ -174,8 +179,8 @@ impl Writer {
         self.0.changed.notify_all();
     }
 
-    /// A refused push, or one write blocked for `UNRESPONSIVE_AFTER`, since the last completed write; or a broken
-    /// writer. Never while closing (`shutdown`).
+    /// A refused push while the write in flight has been blocked for `REFUSED_BLOCKED_AFTER`, or one write blocked
+    /// for `UNRESPONSIVE_AFTER`, since the last completed write; or a broken writer. Never while closing (`shutdown`).
     pub(crate) fn is_unresponsive(&self, now: Instant) -> bool {
         self.0.lock().unresponsive(now)
     }
@@ -217,17 +222,19 @@ impl Writer {
         true
     }
 
-    /// Fills the queue of a writer whose engine end is never read, until it reads as unresponsive.
+    /// Wedges a writer whose engine end is never read: pushes until a push is refused while a write is blocked, so it
+    /// reads as unresponsive (`REFUSED_BLOCKED_AFTER` passes once the queue is full).
     #[cfg(test)]
     pub(crate) fn wedge(&self) {
         let big = HostToEngine::SetCookies("x".repeat(64 * 1024));
-        for _ in 0..4096 {
-            if self.is_unresponsive(Instant::now()) {
-                return;
-            }
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !self.is_unresponsive(Instant::now()) {
+            assert!(Instant::now() < deadline, "the writer never wedged: is the engine end being read?");
             self.send(big.clone());
+            if self.0.lock().refused {
+                std::thread::sleep(Duration::from_millis(1));
+            }
         }
-        panic!("4096 sends of 64 KiB never filled the queue: is the engine end being read?");
     }
 }
 
@@ -444,13 +451,32 @@ mod tests {
     }
 
     #[test]
-    fn a_full_queue_is_unresponsive_at_once_and_recovers_in_order() {
+    fn a_burst_past_the_cap_to_an_engine_that_keeps_reading_is_not_unresponsive() {
+        let (writer, permit, _) = gated(false);
+        let sent = SEND_QUEUE_CAP + 10;
+        for n in 0..sent {
+            writer.send(url(n));
+        }
+        // Some pushes were refused, but the write in flight has only just started.
+        assert!(!writer.is_unresponsive(Instant::now()), "a refusal alone is not enough");
+        for _ in 0..sent + 2 {
+            permit.send(()).unwrap();
+        }
+        assert!(eventually(Duration::from_secs(5), || !writer.is_unresponsive(Instant::now())));
+        assert!(!writer.take_newly_unresponsive(Instant::now()), "no toast for a burst that drained");
+    }
+
+    #[test]
+    fn a_full_queue_is_unresponsive_once_its_write_has_been_blocked_and_recovers_in_order() {
         let (writer, permit, written) = gated(false);
         let sent = SEND_QUEUE_CAP + 10;
         for n in 0..sent {
             writer.send(url(n));
         }
-        assert!(writer.is_unresponsive(Instant::now()), "a refused message marks the tab at once");
+        assert!(
+            eventually(Duration::from_secs(5), || writer.is_unresponsive(Instant::now() + REFUSED_BLOCKED_AFTER)),
+            "a refused message plus a write blocked for REFUSED_BLOCKED_AFTER"
+        );
         for _ in 0..sent + 2 {
             permit.send(()).unwrap();
         }
@@ -472,14 +498,18 @@ mod tests {
         for n in 0..SEND_QUEUE_CAP + 2 {
             writer.send(url(n));
         }
-        assert!(writer.take_newly_unresponsive(Instant::now()));
-        assert!(!writer.take_newly_unresponsive(Instant::now()), "once per stall");
+        let later = || Instant::now() + REFUSED_BLOCKED_AFTER;
+        assert!(eventually(Duration::from_secs(5), || writer.is_unresponsive(later())), "the first write is under way");
+        assert!(writer.take_newly_unresponsive(later()));
+        assert!(!writer.take_newly_unresponsive(later()), "once per stall");
         permit.send(()).unwrap();
         assert!(eventually(Duration::from_secs(5), || !writer.is_unresponsive(Instant::now())));
         for n in 0..SEND_QUEUE_CAP + 2 {
             writer.send(url(n)); // the writer is stuck on its next write again, and the queue refills
         }
-        assert!(writer.take_newly_unresponsive(Instant::now()), "a new stall is reported again");
+        let later = || Instant::now() + REFUSED_BLOCKED_AFTER;
+        assert!(eventually(Duration::from_secs(5), || writer.is_unresponsive(later())), "the next write is under way");
+        assert!(writer.take_newly_unresponsive(later()), "a new stall is reported again");
     }
 
     #[test]
