@@ -3,22 +3,6 @@
 use super::*;
 
 impl App {
-    /// A brief bottom-left toast, for `self.save_toast` — cleared once
-    /// `SAVE_TOAST_DURATION` elapses. No dismiss interaction (unlike the
-    /// context menu): it just times out, and clicks pass through it to the
-    /// card or page underneath. Fades in over its first
-    /// `TOAST_FADE_IN` and out over its last `TOAST_FADE_OUT` rather than
-    /// popping on and cutting off instantly -- driven directly off
-    /// `shown_at.elapsed()` (this app's winit loop runs `ControlFlow::Poll`,
-    /// so it's already redrawing every frame regardless; no extra
-    /// `request_repaint` needed for a time-based fade to animate smoothly),
-    /// not `ctx.animate_bool` -- unlike the toggle-bool dropdown popups,
-    /// this already has a real wall-clock lifetime to derive opacity from
-    /// directly. Despite the field's own name, the message is the caller's
-    /// full text now, not just a path this function used to prepend
-    /// "Saved " to -- every original "Saved <path>" call site now includes
-    /// that itself, freeing this up for unrelated short-lived messages too
-    /// (e.g. a crash/respawn notice, see `EngineToHost` handling below).
     /// Queues `message` behind whatever toast is showing. `build_save_toast`
     /// takes it off the queue when it first draws it, and its
     /// `SAVE_TOAST_DURATION` starts then, not here: a toast queued during
@@ -52,6 +36,22 @@ impl App {
         }
     }
 
+    /// A brief bottom-left toast, for `self.save_toast` — cleared once
+    /// `SAVE_TOAST_DURATION` elapses. No dismiss interaction (unlike the
+    /// context menu): it just times out, and clicks pass through it to the
+    /// card or page underneath. Fades in over its first
+    /// `TOAST_FADE_IN` and out over its last `TOAST_FADE_OUT` rather than
+    /// popping on and cutting off instantly -- driven directly off
+    /// `shown_at.elapsed()` (this app's winit loop runs `ControlFlow::Poll`,
+    /// so it's already redrawing every frame regardless; no extra
+    /// `request_repaint` needed for a time-based fade to animate smoothly),
+    /// not `ctx.animate_bool` -- unlike the toggle-bool dropdown popups,
+    /// this already has a real wall-clock lifetime to derive opacity from
+    /// directly. Despite the field's own name, the message is the caller's
+    /// full text now, not just a path this function used to prepend
+    /// "Saved " to -- every original "Saved <path>" call site now includes
+    /// that itself, freeing this up for unrelated short-lived messages too
+    /// (e.g. a crash/respawn notice, see `EngineToHost` handling below).
     fn build_save_toast(&mut self, ui: &mut egui::Ui) {
         const TOAST_FADE_IN: std::time::Duration = std::time::Duration::from_millis(150);
         const TOAST_FADE_OUT: std::time::Duration = std::time::Duration::from_millis(400);
