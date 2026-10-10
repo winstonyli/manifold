@@ -165,10 +165,10 @@ mod tests {
     #[test]
     fn a_click_that_ends_pick_mode_keeps_the_selection() {
         let mut rig = Rig::new();
-        rig.app.connecting = Some((rig.ids[0].clone(), crate::caps::LINK));
+        rig.app.link.connecting = Some((rig.ids[0].clone(), crate::caps::LINK));
         let at = rig.empty();
         rig.click(at);
-        assert!(rig.app.connecting.is_none(), "the click ended pick mode");
+        assert!(rig.app.link.connecting.is_none(), "the click ended pick mode");
         assert_eq!(rig.app.selected_tabs, rig.both());
     }
 

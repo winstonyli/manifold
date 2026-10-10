@@ -2952,7 +2952,7 @@ fn save_count_per_action() {
     };
     let delete = count(&mut app, GraphAction::Node(a.clone(), NodeAction::Delete));
     let join = count(&mut app, GraphAction::Drop { id: b.clone(), target: Some((DropEffect::Join, Some(g.clone()))) });
-    app.connecting = Some((c.clone(), crate::caps::LINK));
+    app.link.connecting = Some((c.clone(), crate::caps::LINK));
     let finish = count(&mut app, GraphAction::FinishConnect(d.clone()));
     let enter = count(&mut app, GraphAction::EnterGroup(g.clone()));
     assert!(!app.nodes.contains_key(&a), "deleted");
@@ -5511,13 +5511,13 @@ fn pick_target_mode_enters_completes_and_cancels() {
     let a = succeed_spawn(&mut app, "https://a/");
     let b = succeed_spawn(&mut app, "https://b/");
     app.apply_node_action(&egui::Context::default(), &a, NodeAction::Connect(LINK));
-    assert_eq!(app.connecting, Some((a.clone(), LINK)));
+    assert_eq!(app.link.connecting, Some((a.clone(), LINK)));
     app.finish_connect(&b);
-    assert!(app.connecting.is_none());
+    assert!(app.link.connecting.is_none());
     assert_eq!(app.links_naming(&a).len(), 1);
     app.apply_node_action(&egui::Context::default(), &a, NodeAction::Connect(OPENED_FROM));
     app.cancel_connect();
-    assert!(app.connecting.is_none());
+    assert!(app.link.connecting.is_none());
 }
 
 /// Pick-target mode ends on any other node action, a level change, and its source card closing.
@@ -5529,21 +5529,21 @@ fn pick_target_mode_ends_on_another_action_a_level_change_or_its_source_closing(
     let b = succeed_spawn(&mut app, "https://b/");
     app.apply_node_action(&ctx, &a, NodeAction::Connect(LINK));
     app.apply_node_action(&ctx, &b, NodeAction::TogglePin);
-    assert!(app.connecting.is_none(), "another action");
+    assert!(app.link.connecting.is_none(), "another action");
     app.apply_node_action(&ctx, &a, NodeAction::Connect(LINK));
     let g = add_group(&mut app, "g");
     app.switch_group_level(Some(g));
-    assert!(app.connecting.is_none(), "a level change");
+    assert!(app.link.connecting.is_none(), "a level change");
     app.switch_group_level(None);
     app.apply_node_action(&ctx, &a, NodeAction::Connect(LINK));
     app.close_node(&a);
-    assert!(app.connecting.is_none(), "its source closed");
+    assert!(app.link.connecting.is_none(), "its source closed");
     // A stale mode found by the per-frame check: the Graph view not shown.
     app.apply_node_action(&ctx, &b, NodeAction::Connect(LINK));
     app.end_stale_connect(true);
-    assert!(app.connecting.is_some());
+    assert!(app.link.connecting.is_some());
     app.end_stale_connect(false);
-    assert!(app.connecting.is_none());
+    assert!(app.link.connecting.is_none());
 }
 
 /// "Disconnect from X" removes the edge its row names, either way round, and its label says which edge it is.

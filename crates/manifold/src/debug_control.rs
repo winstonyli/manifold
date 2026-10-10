@@ -1509,16 +1509,16 @@ impl App {
             "links": links,
             "edges": edges,
             // Pick-target mode: the source card, the edge and the cards a click would finish it on.
-            "connecting": self.connecting.as_ref().map(|(from, edge)| {
+            "connecting": self.link.connecting.as_ref().map(|(from, edge)| {
                 serde_json::json!({ "from": from, "edge": edge, "targets": self.valid_targets(edge, from) })
             }),
             "link_handles": link_handles,
-            "connect_drag": self.connect_drag,
+            "connect_drag": self.link.connect_drag,
             // The Link node whose end a connect-drag from a curve is moving (`App::retarget`), or null.
-            "retarget": self.retarget.as_ref().map(|r| &r.link),
+            "retarget": self.link.retarget.as_ref().map(|r| &r.link),
             // While it runs, what a release at the pointer would do (`App::retarget_preview`): "retarget", "delete",
             // "refused" or "cancel"; else null.
-            "retarget_preview": self.retarget.as_ref().and(self.retarget_preview).map(crate::links::RetargetOutcome::name),
+            "retarget_preview": self.link.retarget.as_ref().and(self.link.retarget_preview).map(crate::links::RetargetOutcome::name),
             // The card being dragged (`App::dragging`), or null.
             "dragging": self.dragging,
             "json_level": self.json_level_state(),
@@ -1869,7 +1869,7 @@ mod tests {
         }
         assert!(state["retarget"].is_null());
         app.start_connect_drag(&a);
-        app.retarget = Some(crate::link_gestures::LinkRetarget { link: link.clone(), fixed_is_from: true });
+        app.link.retarget = Some(crate::link_gestures::LinkRetarget { link: link.clone(), fixed_is_from: true });
         assert_eq!(app.export_state()["retarget"], link.as_str());
     }
 

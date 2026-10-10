@@ -9,6 +9,39 @@ use crate::session_sync::link_id;
 use crate::store::model::{field, FieldValue, NodeId};
 use crate::App;
 
+/// The link gestures' state (`App::link`): pick-target mode and the connect-drag and retarget that run as it.
+#[derive(Default)]
+pub(crate) struct LinkGesture {
+    /// Pick-target mode (links spec "Menus and pick-target mode"): the card whose menu chose a verb ("Link to…",
+    /// "Opened from…") and the edge it draws. The next click on a valid target finishes it (`finish_connect`); Esc, a
+    /// click elsewhere, any other action, leaving the level or the Graph view, or the source going, ends it.
+    pub(crate) connecting: Option<(String, &'static str)>,
+    /// A connect-drag (link-gestures spec A): the card whose edge handle the primary button went down on. While it
+    /// runs, `connecting` is `(source, LINK)`, so pick-target mode's rings show the targets. The release ends it on
+    /// the card under the pointer (`end_connect_drag`). It ends with pick-target mode (`cancel_connect`,
+    /// `finish_connect`), so every path that ends that mode ends this too.
+    pub(crate) connect_drag: Option<String>,
+    /// Set with `connect_drag` when the drag began on an existing link's curve (`start_line_retarget`): the link whose
+    /// free end follows the pointer, and which end stays. `connect_drag` is then the card at the fixed end. Cleared
+    /// wherever `connect_drag` ends (`cancel_connect`, `finish_connect`, a session replace).
+    pub(crate) retarget: Option<LinkRetarget>,
+    /// While `retarget` runs: what a release at the pointer would do now (`App::retarget_preview`), set each frame by
+    /// the graph pass for the band, the ring and EXPORTSTATE.
+    pub(crate) retarget_preview: Option<RetargetOutcome>,
+    /// The link line under the pointer when the primary press began with the camera still, and the camera rect then
+    /// (`line_click`). Only that line, with the camera unmoved, can be taken by the click that ends the press.
+    pub(crate) line_press: Option<(String, egui::Rect)>,
+}
+
+impl LinkGesture {
+    /// Ends pick-target mode and the connect-drag and retarget running as it, returning the mode's source and edge.
+    pub(crate) fn end(&mut self) -> Option<(String, &'static str)> {
+        self.connect_drag = None;
+        self.retarget = None;
+        self.connecting.take()
+    }
+}
+
 /// Why `App::connect` refused.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum ConnectError {
@@ -209,9 +242,7 @@ impl App {
     /// Pick-target mode's end on a target: draws the chosen edge from the mode's source to `target`, ends the mode and
     /// saves. A refused edge (the target stopped being valid since it was drawn highlighted) says so in a toast.
     pub(crate) fn finish_connect(&mut self, target: &str) {
-        self.connect_drag = None;
-        self.retarget = None;
-        let Some((from, edge)) = self.connecting.take() else { return };
+        let Some((from, edge)) = self.link.end() else { return };
         if self.connect(edge, &from, target).is_err() {
             self.queue_toast("Can't connect these cards".to_string());
         }
@@ -221,7 +252,7 @@ impl App {
     /// What a release at `end` would do to the link being dragged, if one is: `retarget_outcome`, the very function
     /// `finish_retarget` acts on, so the preview and the release cannot differ.
     pub(crate) fn retarget_preview(&self, end: &DragEnd) -> Option<RetargetOutcome> {
-        Some(self.retarget_outcome(self.retarget.as_ref()?, self.connect_drag.as_deref()?, end))
+        Some(self.retarget_outcome(self.link.retarget.as_ref()?, self.link.connect_drag.as_deref()?, end))
     }
 
     /// Ends the connect-drag of a link's curve (`retarget`, its fixed end on `fixed`) at `end`: acts on
@@ -243,9 +274,7 @@ impl App {
 
     /// Ends pick-target mode, and a connect-drag running as it, without drawing anything.
     pub(crate) fn cancel_connect(&mut self) {
-        self.connecting = None;
-        self.connect_drag = None;
-        self.retarget = None;
+        self.link.end();
     }
 
     /// What releasing the free end of link `retarget.link` at `end` does, its other end staying on `fixed`:
@@ -282,7 +311,9 @@ impl App {
 
     /// Ends pick-target mode, and a connect-drag, when `id`, a card being removed, is its source.
     pub(crate) fn forget_connect_source(&mut self, id: &str) {
-        if self.connecting.as_ref().is_some_and(|(from, _)| from == id) || self.connect_drag.as_deref() == Some(id) {
+        if self.link.connecting.as_ref().is_some_and(|(from, _)| from == id)
+            || self.link.connect_drag.as_deref() == Some(id)
+        {
             self.cancel_connect();
         }
     }
@@ -292,7 +323,9 @@ impl App {
     /// cleared `connecting` alone) ends too.
     pub(crate) fn end_stale_connect(&mut self, graph_shown: bool) {
         let stale = |(from, _): &(String, &str)| !graph_shown || !self.nodes.contains_key(from) || !self.in_level(from);
-        if self.connecting.as_ref().is_some_and(stale) || (self.connecting.is_none() && self.connect_drag.is_some()) {
+        if self.link.connecting.as_ref().is_some_and(stale)
+            || (self.link.connecting.is_none() && self.link.connect_drag.is_some())
+        {
             self.cancel_connect();
         }
     }
@@ -367,6 +400,25 @@ mod tests {
     use crate::store::model::{field, FieldValue, Kind, NodeId};
     use crate::store::testutil::XorShift;
     use crate::App;
+
+    /// `LinkGesture::end` clears pick-target mode, the connect-drag and the retarget (what `cancel_connect` and
+    /// `finish_connect` cleared by hand) and returns the mode's source; `line_press` and the preview are not its
+    /// business.
+    #[test]
+    fn end_clears_the_mode_the_drag_and_the_retarget_only() {
+        let rect = egui::Rect::NOTHING;
+        let mut gesture = super::LinkGesture {
+            connecting: Some(("a".into(), LINK)),
+            connect_drag: Some("a".into()),
+            retarget: Some(super::LinkRetarget { link: "l".into(), fixed_is_from: true }),
+            retarget_preview: Some(super::RetargetOutcome::Deleted),
+            line_press: Some(("l".into(), rect)),
+        };
+        assert_eq!(gesture.end(), Some(("a".to_string(), LINK)));
+        assert!(gesture.connecting.is_none() && gesture.connect_drag.is_none() && gesture.retarget.is_none());
+        assert!(gesture.retarget_preview.is_some() && gesture.line_press.is_some());
+        assert_eq!(gesture.end(), None);
+    }
 
     /// Wave 2 (H2): `valid_targets` holds exactly the cards `check_connect` accepts (`None`: the unhoisted scan),
     /// for every source and edge, over random cards (notes, sleeping tabs, completed and running downloads, two

@@ -1186,7 +1186,7 @@ impl App {
         // Registered after the card and its controls: egui gives a press on a drag-only widget on top to that widget
         // alone (no click below), so the card neither moves nor opens.
         let mut handle_hovered = false;
-        if (is_hovered || self.connect_drag.is_some()) && self.shows_link_handles() {
+        if (is_hovered || self.link.connect_drag.is_some()) && self.shows_link_handles() {
             let handles = crate::link_gestures::link_handle_rects(rect, pass.zoom_scale, self.graph_lod_simplified);
             for (side, handle) in handles {
                 let handle_response = ui
@@ -1205,7 +1205,7 @@ impl App {
         // `self.hovered`) made a card stay hovered, ✕ and all, after the
         // pointer left it, until another card was hovered. Never during a
         // connect-drag, whose peek would cover the targets.
-        let still_hovered = self.connect_drag.is_none() && (pointer_on_card || control_hovered || handle_hovered);
+        let still_hovered = self.link.connect_drag.is_none() && (pointer_on_card || control_hovered || handle_hovered);
         if response.dragged() {
             self.dragging = Some(id.to_string());
             // Dragging one selected tab moves the whole selection, as one

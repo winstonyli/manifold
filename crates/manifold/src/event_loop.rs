@@ -812,7 +812,7 @@ impl App {
         if !focused {
             self.swallowed_keys.clear();
             self.cancel_connect();
-            self.line_press = None;
+            self.link.line_press = None;
             if self.dragging.is_some() {
                 self.release_drag();
             }

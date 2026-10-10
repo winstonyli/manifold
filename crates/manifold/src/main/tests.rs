@@ -30,8 +30,8 @@ fn forget_id_clears_every_id_keyed_table() {
     app.pending_respawn_focus = Some(t());
     app.peek_suppressed = Some(t());
     app.dragging = Some(t());
-    app.connecting = Some((t(), crate::caps::LINK));
-    app.connect_drag = Some(t());
+    app.link.connecting = Some((t(), crate::caps::LINK));
+    app.link.connect_drag = Some(t());
     app.hovered = Some(t());
 
     app.forget_id("t");
@@ -45,7 +45,7 @@ fn forget_id_clears_every_id_keyed_table() {
     assert_eq!(app.selected_tabs, HashSet::from(["u".to_string()]));
     assert!(app.naming_jar.is_none() && app.renaming_group.is_none() && app.node_menu.is_none());
     assert!(app.pending_respawn_focus.is_none() && app.peek_suppressed.is_none());
-    assert!(app.dragging.is_none() && app.connecting.is_none() && app.connect_drag.is_none());
+    assert!(app.dragging.is_none() && app.link.connecting.is_none() && app.link.connect_drag.is_none());
     assert!(app.hovered.is_none());
 }
 
@@ -64,14 +64,14 @@ const NOT_FORGOTTEN: &[(&str, &str)] = &[
     ("cookie_holds", "via `clear_cookie_state`"),
     ("jar_pulls", "via `clear_cookie_state`"),
     ("jar_silent", "via `clear_cookie_state`"),
-    ("connecting", "via `forget_connect_source`"),
-    ("connect_drag", "via `forget_connect_source`"),
+    ("link.connecting", "via `forget_connect_source`"),
+    ("link.connect_drag", "via `forget_connect_source`"),
     ("wakes_in_flight", "spawn lifecycle: a tab closed while waking needs it so the landing commits its delete"),
     ("spawning", "spawn lifecycle: the landing or teardown removes it"),
     ("remote_in_flight", "spawn lifecycle: replayed after the landing"),
     ("host_loads", "spawn lifecycle: expired by `shares_url_change`, cleared at teardown"),
     ("drag_moved", "ends with the drag; a gone id is skipped at release"),
-    ("line_press", "a link id, taken at release only if still hovered"),
+    ("link.line_press", "a link id, taken at release only if still hovered"),
     ("native_drag_tab", "taken at the button-up"),
     ("hidden_for_minimize", "drained at restore"),
     ("node_menu_cache", "the closing menu's fade copy; `node_menu` is the live one"),
@@ -93,44 +93,69 @@ const NOT_FORGOTTEN: &[(&str, &str)] = &[
 /// or excused in `NOT_FORGOTTEN` with why. The drift this replaces was five hand-written lists.
 #[test]
 fn every_id_keyed_field_is_forgotten_or_excused() {
-    let source = include_str!("../main.rs");
-    let fields: Vec<(&str, &str)> = source
-        .lines()
-        .skip_while(|l| *l != "struct App {")
-        .skip(1)
-        .take_while(|l| *l != "}")
-        .map(str::trim)
-        .filter(|l| !l.starts_with("//") && !l.starts_with('#'))
-        .filter_map(|l| l.split_once(": "))
+    /// A struct held by `App` (`App.<prefix>`): its source file, its header line, and the id-forgetting method
+    /// (`forget`) it may have; its fields are named `<prefix>.<field>` in `NOT_FORGOTTEN`.
+    const GROUPS: [(&str, &str, &str); 1] = [("link", include_str!("../links.rs"), "pub(crate) struct LinkGesture {")];
+    fn block<'a>(source: &'a str, header: &str, end: &str) -> Vec<&'a str> {
+        source.lines().skip_while(|l| !l.trim_start().starts_with(header)).skip(1).take_while(|l| *l != end).collect()
+    }
+    fn fields<'a>(lines: &[&'a str]) -> Vec<(&'a str, &'a str)> {
+        lines
+            .iter()
+            .map(|l| l.trim().trim_start_matches("pub(crate) "))
+            .filter(|l| !l.starts_with("//") && !l.starts_with('#'))
+            .filter_map(|l| l.split_once(": "))
+            .collect()
+    }
+    let mut all: Vec<(String, &str)> = fields(&block(include_str!("../main.rs"), "struct App {", "}"))
+        .into_iter()
+        .map(|(n, t)| (n.to_string(), t))
         .collect();
-    assert!(fields.len() > 100, "App's fields were found ({})", fields.len());
-    let body = include_str!("../node_store.rs")
-        .lines()
-        .skip_while(|l| !l.contains("fn forget_id("))
-        .take_while(|l| *l != "    }")
-        .collect::<Vec<_>>()
-        .join("\n");
+    assert!(all.len() > 100, "App's fields were found ({})", all.len());
+    let body = block(include_str!("../node_store.rs"), "pub(crate) fn forget_id(", "    }").join(
+        "
+",
+    );
     assert!(body.contains("self.skip_convert"), "forget_id's body was found");
-    let mentions = |name: &str| {
-        let needle = format!("self.{name}");
-        body.match_indices(&needle)
-            .any(|(at, _)| !body[at + needle.len()..].starts_with(|c: char| c == '_' || c.is_ascii_alphanumeric()))
+    let mentions = |haystack: &str, path: &str| {
+        let needle = format!("self.{path}");
+        haystack
+            .match_indices(&needle)
+            .any(|(at, _)| !haystack[at + needle.len()..].starts_with(|c: char| c == '_' || c.is_ascii_alphanumeric()))
     };
+    // A group's fields count as forgotten when `forget_id` names them as `self.<group>.<field>` or the group's own
+    // `forget` method (which `forget_id` calls) names them as `self.<field>`.
+    let mut forgotten_by_group = Vec::new();
+    for (prefix, source, header) in GROUPS {
+        let lines = block(source, header, "}");
+        assert!(!lines.is_empty(), "{header} was found");
+        let forget = block(source, "pub(crate) fn forget(", "    }").join(
+            "
+",
+        );
+        for (name, ty) in fields(&lines) {
+            if mentions(&forget, name) {
+                forgotten_by_group.push(format!("{prefix}.{name}"));
+            }
+            all.push((format!("{prefix}.{name}"), ty));
+        }
+    }
     const ID_SHAPES: [&str; 5] = ["HashMap<String", "HashSet<String", "Option<String", "Option<(String", "Vec<String"];
     let mut undecided = Vec::new();
-    for &(name, ty) in &fields {
+    for (name, ty) in &all {
         if !ID_SHAPES.iter().any(|shape| ty.contains(shape)) {
             continue;
         }
         let excused = NOT_FORGOTTEN.iter().any(|&(n, _)| n == name);
-        if mentions(name) == excused {
+        let forgotten = mentions(&body, name) || forgotten_by_group.contains(name);
+        if forgotten == excused {
             let why = if excused { "both forgotten and excused" } else { "neither forgotten nor excused" };
             undecided.push(format!("{name}: {why}"));
         }
     }
     assert!(undecided.is_empty(), "decide each App field: {undecided:?}");
     for &(name, _) in NOT_FORGOTTEN {
-        assert!(fields.iter().any(|&(n, _)| n == name), "{name} is excused but is no longer an App field");
+        assert!(all.iter().any(|(n, _)| n == name), "{name} is excused but is no longer an App field");
     }
 }
 

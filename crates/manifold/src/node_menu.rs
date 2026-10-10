@@ -996,7 +996,7 @@ impl App {
             NodeAction::ClearGroupDefaultJar => self.clear_group_default_jar(id),
             NodeAction::Connect(edge) => {
                 if self.nodes.contains_key(id) {
-                    self.connecting = Some((id.to_string(), edge));
+                    self.link.connecting = Some((id.to_string(), edge));
                 }
             }
             NodeAction::Disconnect { edge, other, link } => match link {

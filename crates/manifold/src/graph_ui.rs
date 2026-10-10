@@ -427,7 +427,7 @@ impl App {
         self.current_group = group;
         self.end_stale_drag(true);
         self.cancel_connect();
-        self.line_press = None;
+        self.link.line_press = None;
         self.sync_json_level();
         self.layout_current_level();
         self.graph_settled_key = Some(self.current_level_settle_key());
@@ -570,7 +570,7 @@ impl App {
         let scene_response = egui::Scene::new()
             .zoom_range(GRAPH_ZOOM_MIN..=GRAPH_ZOOM_MAX)
             // The background's primary drag pans, except while it retargets a link (the drag began on a curve).
-            .drag_pan_buttons(if self.retarget.is_some() {
+            .drag_pan_buttons(if self.link.retarget.is_some() {
                 egui::DragPanButtons::empty()
             } else {
                 egui::DragPanButtons::PRIMARY
@@ -593,7 +593,7 @@ impl App {
                     edge.highlight |= edge.link.is_some() && edge.link == line_hover;
                 }
                 // The link being retargeted is not drawn: its rubber band stands for it.
-                crate::link_gestures::without_retargeted(&mut edges, self.retarget.as_ref());
+                crate::link_gestures::without_retargeted(&mut edges, self.link.retarget.as_ref());
                 self.draw_graph_edges(ui, &edges, inv_zoom);
 
                 if self.json_level.is_some() {
@@ -608,7 +608,7 @@ impl App {
                         (zoom_scale, translation),
                     );
                     // For a dragged link end, what the release there would do: the band and ring show it.
-                    self.retarget_preview = self.retarget_preview(&connect_end);
+                    self.link.retarget_preview = self.retarget_preview(&connect_end);
                     let connect_target = match connect_end {
                         crate::link_gestures::DragEnd::Card(target) => Some(target),
                         _ => None,
@@ -678,7 +678,7 @@ impl App {
         // button is up with no release this frame (its button-up was lost), so a later ordinary click never links.
         let (down, released, clicked) =
             ui.input(|i| (i.pointer.primary_down(), i.pointer.primary_released(), i.pointer.primary_clicked()));
-        if self.connect_drag.is_some() && !down {
+        if self.link.connect_drag.is_some() && !down {
             let end = if released && !clicked {
                 self.connect_drag_end(
                     ui.ctx(),
@@ -707,7 +707,7 @@ impl App {
         // Pick-target mode: a click in the graph that didn't finish it above (empty canvas, a card that isn't a
         // target, the minimap) ends it. A pan is a drag, not a click, so the user can still go looking for a target.
         // The node menu that starts the mode is built after this, so the click choosing its verb doesn't count.
-        if self.connecting.is_some()
+        if self.link.connecting.is_some()
             && ui.input(|i| {
                 i.pointer.primary_clicked() && i.pointer.interact_pos().is_some_and(|p| scene_outer_rect.contains(p))
             })
@@ -1222,7 +1222,7 @@ impl App {
         // it (egui surrenders focus on clicks only), so a note being edited would otherwise eat that Esc and the
         // release would still link. That Esc does nothing else here, though egui itself drops keyboard focus on Esc,
         // so the same Esc also ends a note edit or rename that had the keys.
-        if self.connect_drag.is_some() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+        if self.link.connect_drag.is_some() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
             // egui aborts the Scene background's drag on this same Esc, so a retarget that began on it does not
             // turn into a pan with the button still down (`escape_cancels_a_dragged_curve`).
             self.cancel_connect();
@@ -1270,7 +1270,7 @@ impl App {
             // Tab view, where it steps back to Graph), so this is a plain
             // no-op the rest of the time. Pick-target mode comes first: that
             // Escape ends it and does nothing else.
-            if self.connecting.is_some() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            if self.link.connecting.is_some() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                 self.cancel_connect();
             } else if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                 self.selected_tabs.clear();
@@ -1307,7 +1307,7 @@ impl App {
         // under the drag (whose release still drops or links) or start a marquee beside it.
         let secondary_pressed = ui.input(|i| i.pointer.button_pressed(egui::PointerButton::Secondary))
             && self.dragging.is_none()
-            && self.connect_drag.is_none();
+            && self.link.connect_drag.is_none();
         if secondary_pressed {
             // A fresh right-click press always cancels any still-open
             // "New Tab/Note/Group/File" card from a previous one -- same
@@ -1481,7 +1481,7 @@ impl App {
     pub(crate) fn track_pan_momentum(&mut self, ui: &egui::Ui, scene_rect: egui::Rect) {
         let pointer_down = ui.input(|i| i.pointer.primary_down());
         let actively_panning =
-            pointer_down && self.dragging.is_none() && self.connect_drag.is_none() && self.camera.tween.is_none();
+            pointer_down && self.dragging.is_none() && self.link.connect_drag.is_none() && self.camera.tween.is_none();
         if actively_panning {
             // A fresh grab of the background cancels any momentum still
             // gliding from an earlier release -- "grab it to stop it".
@@ -1710,7 +1710,7 @@ impl App {
         };
         let members = self.group_members();
         // Pick-target mode: the cards a click would connect to, ringed.
-        let pick_targets = self.connecting.as_ref().map(|(from, edge)| self.valid_targets(edge, from));
+        let pick_targets = self.link.connecting.as_ref().map(|(from, edge)| self.valid_targets(edge, from));
         let mut pass = CardPass {
             deferred_overlays,
             actions,
@@ -1719,7 +1719,7 @@ impl App {
             drop_preview: &drop_preview,
             pick_targets: pick_targets.as_deref().unwrap_or_default(),
             connect_target,
-            connect_ring: self.retarget_preview.map(|outcome| crate::link_gestures::retarget_look(outcome).ring),
+            connect_ring: self.link.retarget_preview.map(|outcome| crate::link_gestures::retarget_look(outcome).ring),
             show_order: self.card_nav_active || self.hints_revealed,
             order: &tab_order,
             any_focused: false,
@@ -2271,7 +2271,7 @@ mod tests {
         let mut app = App::default();
         let note = app.alloc_node_id();
         app.insert_note_at(note.clone(), None);
-        app.connecting = Some((note, crate::caps::LINK));
+        app.link.connecting = Some((note, crate::caps::LINK));
         app.selected_tabs.insert("t".into());
         let ctx = egui::Context::default();
         let escape = egui::Event::Key {
@@ -2287,7 +2287,7 @@ mod tests {
             output.textures_delta.clear();
         };
         frame(&mut app);
-        assert!(app.connecting.is_none());
+        assert!(app.link.connecting.is_none());
         assert!(app.selected_tabs.contains("t"), "that Escape was pick mode's only");
         frame(&mut app);
         assert!(app.selected_tabs.is_empty());
@@ -2336,19 +2336,19 @@ mod tests {
             let item = app.level_items().into_iter().find(|i| i.id == id).expect("on the level");
             app.graph_world_rect_to_screen(item.rect)
         };
-        app.connecting = Some((a.clone(), LINK));
+        app.link.connecting = Some((a.clone(), LINK));
         let on_b = screen_rect(&app, &b).center();
         assert!(app.graph_scene_outer_rect().contains(on_b), "{on_b:?} in {:?}", app.graph_scene_outer_rect());
         click(&mut app, on_b);
-        assert!(app.connecting.is_none());
+        assert!(app.link.connecting.is_none());
         assert_eq!(app.links_naming(&a).len(), 1, "the click linked b");
         assert!(!app.nodes[&b].as_note().unwrap().editing, "the click was pick mode's, not the note's");
-        app.connecting = Some((a.clone(), OPENED_FROM));
+        app.link.connecting = Some((a.clone(), OPENED_FROM));
         // Below both cards, clear of the minimap in the bottom-right corner.
         let below = egui::pos2(screen_rect(&app, &a).center().x, screen_rect(&app, &a).bottom() + 60.0);
         assert!(![&a, &b].iter().any(|id| screen_rect(&app, id).contains(below)), "empty canvas");
         click(&mut app, below);
-        assert!(app.connecting.is_none(), "a click on empty canvas ends the mode");
+        assert!(app.link.connecting.is_none(), "a click on empty canvas ends the mode");
         assert_eq!(app.mirror.parent(&a), None, "and draws nothing");
     }
 
@@ -2393,10 +2393,10 @@ mod tests {
         run(&mut app, "idle, top level", vec![]);
         let on_note = app.graph_world_rect_to_screen(app.card_rect(&note).unwrap()).center();
         run(&mut app, "hovering a card", vec![egui::Event::PointerMoved(on_note)]);
-        app.connecting = Some((note.clone(), crate::caps::LINK));
+        app.link.connecting = Some((note.clone(), crate::caps::LINK));
         run(&mut app, "pick-target mode (LINK)", vec![]);
-        assert!(app.connecting.is_some(), "the mode stayed on");
-        app.connecting = None;
+        assert!(app.link.connecting.is_some(), "the mode stayed on");
+        app.link.connecting = None;
         app.node_menu = Some((note.clone(), egui::pos2(500.0, 400.0)));
         run(&mut app, "node menu open", vec![]);
         assert!(app.node_menu.is_some(), "the menu stayed open");

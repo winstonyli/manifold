@@ -108,6 +108,7 @@ use ipc_protocol::{
 };
 use json_level::{JsonEdit, JsonLevel};
 use level::{EdgeCurve, EdgeKind, LevelEdge, LevelItem, LevelItemKind, LevelScan};
+use links::LinkGesture;
 use mirror::Carried;
 use node::*;
 use popups::*;
@@ -507,25 +508,8 @@ struct App {
     /// layout (`is_being_dragged`). Cleared without a write when the drag
     /// stops being live (`end_stale_drag`).
     drag_moved: Vec<String>,
-    /// Pick-target mode (links spec "Menus and pick-target mode"): the card whose menu chose a verb ("Link to…",
-    /// "Opened from…") and the edge it draws. The next click on a valid target finishes it (`finish_connect`); Esc, a
-    /// click elsewhere, any other action, leaving the level or the Graph view, or the source going, ends it.
-    connecting: Option<(String, &'static str)>,
-    /// A connect-drag (link-gestures spec A): the card whose edge handle the primary button went down on. While it
-    /// runs, `connecting` is `(source, LINK)`, so pick-target mode's rings show the targets. The release ends it on
-    /// the card under the pointer (`end_connect_drag`). It ends with pick-target mode (`cancel_connect`,
-    /// `finish_connect`), so every path that ends that mode ends this too.
-    connect_drag: Option<String>,
-    /// Set with `connect_drag` when the drag began on an existing link's curve (`start_line_retarget`): the link whose
-    /// free end follows the pointer, and which end stays. `connect_drag` is then the card at the fixed end. Cleared
-    /// wherever `connect_drag` ends (`cancel_connect`, `finish_connect`, a session replace).
-    retarget: Option<link_gestures::LinkRetarget>,
-    /// While `retarget` runs: what a release at the pointer would do now (`App::retarget_preview`), set each frame by
-    /// the graph pass for the band, the ring and EXPORTSTATE.
-    retarget_preview: Option<links::RetargetOutcome>,
-    /// The link line under the pointer when the primary press began with the camera still, and the camera rect then
-    /// (`line_click`). Only that line, with the camera unmoved, can be taken by the click that ends the press.
-    line_press: Option<(String, egui::Rect)>,
+    /// Pick-target mode and the connect-drag/retarget gestures. See `LinkGesture`.
+    link: LinkGesture,
     hovered: Option<String>,
     /// Set to `self.hovered` by an Escape press while a hover-peek preview
     /// is showing, so that preview can be dismissed early without needing
@@ -957,11 +941,7 @@ impl Default for App {
             favicon_resolved: HashSet::new(),
             dragging: None,
             drag_moved: Vec::new(),
-            connecting: None,
-            connect_drag: None,
-            retarget: None,
-            retarget_preview: None,
-            line_press: None,
+            link: LinkGesture::default(),
             hovered: None,
             peek_suppressed: None,
             rect_select_start: None,
