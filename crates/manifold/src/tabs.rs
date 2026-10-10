@@ -1,10 +1,12 @@
-//! Tab lifecycle on App: spawn, respawn, focus, hide, split, leave to graph, destroy and remove.
+//! Tab lifecycle on App: spawn, respawn, focus, hide, split, leave to graph, destroy and remove. The cookie-jar pull
+//! (`jar_pull`), landing a finished spawn (`spawn_result`) and sleeping (`sleep`) live in child modules.
 
 use super::*;
 use ipc_protocol::PageState;
 use sleep_state::{PendingSleep, SavedScroll, SleepWhy, Verdict};
 
 mod jar_pull;
+mod sleep;
 mod spawn_result;
 pub(crate) use jar_pull::Held;
 #[cfg(test)]
@@ -654,39 +656,6 @@ impl App {
         self.save_session();
     }
 
-    /// Second half of "Sleep": shuts a live tab's engine down and keeps its
-    /// card, as the unloaded tab a restore makes (`UnloadedState::Sleeping`):
-    /// same id, place, url, pin, mute and zoom, and it saves as the same tab.
-    /// Opening it starts the engine again (`wake_tab`) and reloads the url;
-    /// `scroll`, when not the origin, is put back once that load finishes. The
-    /// tab Tab view shows and the split pane's tab stay live. Returns whether
-    /// it slept. Callers go through `request_sleep`.
-    fn sleep_now(&mut self, id: &str, scroll: Option<(f64, f64)>) -> bool {
-        let open = self.showing_tab_view() && self.focused.as_deref() == Some(id);
-        if open || self.split_tab.as_deref() == Some(id) {
-            return false;
-        }
-        let Some(node) = self.nodes.get_mut(id) else { return false };
-        let Runtime::Tab(tab) = &node.runtime else { return false };
-        let asleep = unloaded_from(tab, UnloadedState::Sleeping);
-        // Replacing the payload drops the `EngineTab`, whose `Drop` shuts
-        // the engine host down (see `teardown_running_session`).
-        node.runtime = Runtime::Unloaded(asleep);
-        if let Some(gpu) = &mut self.gpu {
-            gpu.free_tab_thumbnail(id);
-            gpu.free_tab_texture(id);
-        }
-        // A scroll left from an earlier wake that never finished loading is stale.
-        self.saved_scroll.remove(id);
-        if let Some((x, y)) = scroll {
-            if x != 0.0 || y != 0.0 {
-                self.saved_scroll.insert(id.to_string(), SavedScroll::new(x, y));
-            }
-        }
-        self.save_session();
-        true
-    }
-
     /// A tab whose engine keeps crashing (`crashes_too_often`), or speaks
     /// another protocol version, becomes a failed card: the reason is its
     /// tooltip, and opening it tries again. Respawning would only loop.
@@ -775,108 +744,6 @@ impl App {
         true
     }
 
-    /// First phase of every sleep: validates as `sleep_now` does, asks the
-    /// engine for its page state, and notes the request. `finish_sleep`
-    /// completes it when `EngineToHost::PageState` arrives;
-    /// `expire_pending_sleeps` (run by `sweep_idle_tabs`) settles requests
-    /// nobody answered. Returns whether a query was sent.
-    pub(crate) fn request_sleep(&mut self, id: &str, why: SleepWhy) -> bool {
-        let open = self.showing_tab_view() && self.focused.as_deref() == Some(id);
-        // A request nobody answered must not block a new one.
-        self.expire_pending_sleeps(std::time::Instant::now());
-        if open || self.split_tab.as_deref() == Some(id) || self.pending_sleeps.contains_key(id) {
-            return false;
-        }
-        if self.nodes.get(id).and_then(|n| n.as_tab()).is_none() {
-            return false;
-        }
-        self.pull_cookies(id);
-        let Some(tab) = self.nodes.get_mut(id).and_then(|n| n.as_tab_mut()) else { return false };
-        tab.tab.send(&HostToEngine::QueryPageState);
-        self.pending_sleeps.insert(id.to_string(), PendingSleep { why, sent: std::time::Instant::now() });
-        true
-    }
-
-    /// Second phase: the engine's answer. Idle sleep stays awake for a dirty
-    /// form (and restarts that tab's idle clock); otherwise the tab sleeps,
-    /// keeping its scroll position for the wake.
-    pub(crate) fn finish_sleep(&mut self, id: &str, state: PageState) {
-        let Some(pending) = self.pending_sleeps.remove(id) else { return };
-        match sleep_state::verdict(pending.why, &state) {
-            Verdict::Stay => self.idle_clock.restart(id, std::time::Instant::now()),
-            Verdict::Sleep => {
-                self.sleep_now(id, Some((state.scroll_x, state.scroll_y)));
-            }
-        }
-    }
-
-    /// Settles requests the engine never answered (hung page, no script
-    /// context). A manual one sleeps the tab anyway, without a scroll to
-    /// restore, so Sleep still works on a stuck tab; an idle or jar-switch one
-    /// is dropped and the tab's clock restarts so it is not asked again every
-    /// sweep (a waiting jar switch is asked again by the next sweep).
-    fn expire_pending_sleeps(&mut self, now: std::time::Instant) {
-        let dead: Vec<(String, SleepWhy)> = self
-            .pending_sleeps
-            .iter()
-            .filter(|(_, p)| sleep_state::expired(p, now))
-            .map(|(id, p)| (id.clone(), p.why))
-            .collect();
-        for (id, why) in dead {
-            self.pending_sleeps.remove(&id);
-            match why {
-                SleepWhy::Manual => {
-                    self.sleep_now(&id, None);
-                }
-                SleepWhy::Idle | SleepWhy::JarSwitch => self.idle_clock.restart(&id, now),
-            }
-        }
-    }
-
-    /// Idle auto-sleep (`idle_sleep`): updates every live tab's clock and
-    /// asks those out of sight for `limit` to sleep (`request_sleep`). `limit`
-    /// is the setting's `idle_sleep_minutes`, or the headless `IDLESWEEP`'s
-    /// seconds.
-    /// Each sweep also switches the tabs whose jar change was waiting and that now qualify (`sweep_jar_switches`).
-    pub(crate) fn sweep_idle_tabs(&mut self, limit: Option<std::time::Duration>) {
-        let now = std::time::Instant::now();
-        self.expire_pending_sleeps(now);
-        // Taken out so the views can borrow the rest of `self`.
-        let mut clock = std::mem::take(&mut self.idle_clock);
-        let idle = clock.sweep(now, limit, self.tab_idle_views());
-        self.idle_clock = clock;
-        for id in idle {
-            self.request_sleep(&id, SleepWhy::Idle);
-        }
-        self.sweep_jar_switches();
-    }
-
-    /// What the idle and jar-switch sweeps need to know about each live tab.
-    fn tab_idle_views(&self) -> Vec<crate::idle_sleep::TabIdleView<'_>> {
-        let on_screen = self.showing_tab_view().then_some(self.focused.as_deref()).flatten();
-        // A download card's parent is the tab it came from; `completed` flips when the engine finishes it.
-        let downloading: std::collections::HashSet<&str> = self
-            .nodes
-            .iter()
-            .filter(|(_, n)| n.as_download().is_some_and(|d| !d.completed && !d.failed))
-            .filter_map(|(id, _)| self.mirror.parent(id))
-            .collect();
-        self.nodes
-            .iter()
-            .filter_map(|(id, n)| {
-                let t = n.as_tab()?;
-                Some(crate::idle_sleep::TabIdleView {
-                    id,
-                    on_screen: on_screen == Some(id.as_str()) || self.split_tab.as_deref() == Some(id),
-                    audio_playing: t.audio_playing,
-                    pinned: self.mirror.pinned(id),
-                    loading: t.loading,
-                    downloading: downloading.contains(id.as_str()),
-                })
-            })
-            .collect()
-    }
-
     /// A live WebView2 or CEF tab running on a jar other than the one it now resolves to, or on a jar the user
     /// cleared (`jar_reseed`): it switches when it next qualifies (chip "will switch").
     pub(crate) fn will_switch(&self, id: &str) -> bool {
@@ -939,13 +806,6 @@ impl App {
         self.pending_sleeps.contains_key(id)
             || self.cookies.cookie_holds.contains_key(id)
             || self.nodes.get(id).and_then(|n| n.as_tab()).is_some_and(|t| t.swap_target.is_some())
-    }
-
-    /// "Sleep Tabs" on a group: `request_sleep` for each of its live tabs.
-    /// Returns how many were requested.
-    pub(crate) fn sleep_group(&mut self, id: &str) -> usize {
-        let members: Vec<String> = self.members_of(id).map(str::to_owned).collect();
-        members.iter().filter(|m| self.request_sleep(m, SleepWhy::Manual)).count()
     }
 
     /// The local close without the save (`destroy_tab`, `destroy_group_members`, `redirect_tab_to_content`); queues
@@ -1059,113 +919,4 @@ impl App {
 }
 
 #[cfg(test)]
-mod crash_tests {
-    use super::*;
-    use std::time::{Duration, Instant};
-
-    #[test]
-    fn the_third_crash_within_the_window_gives_up() {
-        let t0 = Instant::now();
-        let mut times = Vec::new();
-        assert!(!crashes_too_often(&mut times, t0));
-        assert!(!crashes_too_often(&mut times, t0 + Duration::from_secs(1)));
-        assert!(crashes_too_often(&mut times, t0 + Duration::from_secs(2)));
-    }
-
-    #[test]
-    fn a_host_that_cannot_start_is_not_restarted_and_says_why() {
-        let t0 = Instant::now();
-        let mut times = Vec::new();
-        let why = "WebView2 couldn't create its environment (0x80070005: Access is denied.)";
-        let fatal = format!("{}{why}", ipc_protocol::HOST_FATAL);
-        assert_eq!(after_crash(&fatal, &mut times, t0), AfterCrash::CannotStart(why));
-        assert!(times.is_empty(), "not counted as a crash");
-        let mismatch = format!("{}: host 2, engine 3", ipc_protocol::PROTOCOL_MISMATCH);
-        assert_eq!(after_crash(&mismatch, &mut times, t0), AfterCrash::GiveUp);
-        // A plain crash still restarts, up to the cap.
-        let lost = "engine-host connection lost";
-        assert_eq!(after_crash(lost, &mut times, t0), AfterCrash::Restart);
-        assert_eq!(after_crash(lost, &mut times, t0 + Duration::from_secs(1)), AfterCrash::Restart);
-        assert_eq!(after_crash(lost, &mut times, t0 + Duration::from_secs(2)), AfterCrash::GiveUp);
-    }
-
-    #[test]
-    fn crashes_spread_past_the_window_keep_respawning() {
-        let t0 = Instant::now();
-        let mut times = Vec::new();
-        for i in 0..10 {
-            assert!(!crashes_too_often(&mut times, t0 + CRASH_WINDOW * i), "crash {i}");
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    /// `SpawnTracker::forget` takes what `forget_id` cleared by hand (`skip_convert`, `navigated_from`,
-    /// `tab_crashes`, a matching `pending_respawn_focus`) and `reset` what `teardown_running_session` cleared (the
-    /// spawns in flight, `host_loads`, `navigated_from`) plus a generation bump; neither touches the rest.
-    #[test]
-    fn forget_and_reset_clear_what_the_old_sites_cleared() {
-        let now = std::time::Instant::now();
-        let filled = || {
-            let mut s = SpawnTracker::default();
-            s.skip_convert.insert("t".into(), true);
-            s.navigated_from.insert("t".into(), ("u".into(), now, false));
-            s.tab_crashes.insert("t".into(), vec![now]);
-            s.pending_respawn_focus = Some("t".into());
-            s.wakes_in_flight.insert("t".into());
-            s.host_loads.insert("t".into(), now);
-            s.remote_in_flight.insert("t".into(), None);
-            s.tab_spawns_in_flight = 2;
-            s
-        };
-        let mut s = filled();
-        s.forget("u");
-        assert!(s.skip_convert.contains_key("t") && s.pending_respawn_focus.is_some(), "another id's state stays");
-        s.forget("t");
-        assert!(s.skip_convert.is_empty() && s.navigated_from.is_empty() && s.tab_crashes.is_empty());
-        assert!(s.pending_respawn_focus.is_none());
-        assert!(
-            s.wakes_in_flight.contains("t") && s.host_loads.contains_key("t") && s.remote_in_flight.contains_key("t")
-        );
-
-        let mut s = filled();
-        s.reset();
-        assert!(s.wakes_in_flight.is_empty() && s.host_loads.is_empty() && s.remote_in_flight.is_empty());
-        assert!(s.spawning.is_empty() && s.navigated_from.is_empty());
-        assert_eq!(s.session_generation, 1);
-        assert!(
-            s.skip_convert.contains_key("t") && s.tab_crashes.contains_key("t") && s.pending_respawn_focus.is_some()
-        );
-        assert_eq!(s.tab_spawns_in_flight, 2);
-    }
-
-    use super::*;
-
-    #[test]
-    fn finish_sleep_without_a_request_does_nothing() {
-        let mut app = App::default();
-        app.finish_sleep("t1", PageState { scroll_x: 0.0, scroll_y: 10.0, dirty_form: false });
-        assert!(app.pending_sleeps.is_empty() && app.saved_scroll.is_empty());
-    }
-
-    #[test]
-    fn request_sleep_needs_a_live_tab() {
-        let mut app = App::default();
-        assert!(!app.request_sleep("missing", SleepWhy::Manual));
-        assert!(app.pending_sleeps.is_empty());
-    }
-
-    #[test]
-    fn unanswered_requests_are_settled_after_the_timeout() {
-        let mut app = App::default();
-        let t0 = std::time::Instant::now();
-        for (id, why) in [("m", SleepWhy::Manual), ("i", SleepWhy::Idle), ("j", SleepWhy::JarSwitch)] {
-            app.pending_sleeps.insert(id.into(), PendingSleep { why, sent: t0 });
-        }
-        app.expire_pending_sleeps(t0 + sleep_state::PENDING_TIMEOUT - std::time::Duration::from_millis(1));
-        assert_eq!(app.pending_sleeps.len(), 3);
-        app.expire_pending_sleeps(t0 + sleep_state::PENDING_TIMEOUT);
-        assert!(app.pending_sleeps.is_empty());
-    }
-}
+mod tests;
