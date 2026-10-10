@@ -1575,7 +1575,11 @@ mod idle_tests {
         app.debug.pending_print_to_pdf = Some(("p.png".into(), "out.pdf".into()));
         app.handle_screenshot_result(Some("p.png".into()), Some(Err("no surface".into())));
         assert!(app.debug.pending_print_to_pdf.is_none());
-        assert!(app.save_toast_queue.iter().any(|t| t.contains("Couldn't print")), "{:?}", app.save_toast_queue);
+        assert!(
+            app.toasts.save_toast_queue.iter().any(|t| t.contains("Couldn't print")),
+            "{:?}",
+            app.toasts.save_toast_queue
+        );
     }
 
     #[test]
@@ -1583,7 +1587,7 @@ mod idle_tests {
         let mut app = App::default();
         app.debug.pending_print_to_pdf = Some(("p.png".into(), "out.pdf".into()));
         app.handle_screenshot_result(Some("shot.png".into()), Some(Ok(())));
-        assert!(app.save_toast_queue.iter().any(|t| t == "Saved shot.png"));
+        assert!(app.toasts.save_toast_queue.iter().any(|t| t == "Saved shot.png"));
         assert!(app.debug.pending_print_to_pdf.is_some(), "still waiting for its own capture");
     }
 

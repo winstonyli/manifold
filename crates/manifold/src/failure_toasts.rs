@@ -8,6 +8,30 @@ use std::time::{Duration, Instant};
 /// How long after the first notice a burst is held before it is shown.
 pub(crate) const WINDOW: Duration = Duration::from_millis(1500);
 
+/// The toast line (`App::toasts`): the one showing, the ones waiting, and spawn failures held to merge by cause.
+#[derive(Default)]
+pub(crate) struct Toasts {
+    /// A brief toast message (full text, not just a path -- see `build_
+    /// save_toast`'s own doc comment) for the most recent completed
+    /// download/save or crash/respawn notice, and when it was first drawn —
+    /// cleared once `SAVE_TOAST_DURATION` has passed, at which point the
+    /// next queued message (`save_toast_queue`) takes over, if any. Was
+    /// "latest wins" with no queue at all until this session, when a
+    /// second toast (e.g. a crash notice) arriving while a download's own
+    /// "Saved <path>" toast was still showing was confirmed to silently
+    /// replace it, unlike `FindState::result`'s own "latest wins" (correct
+    /// there -- a stale search count would be actively wrong, whereas a
+    /// dropped one-time notification like "tab crashed" is just gone).
+    pub(crate) save_toast: Option<(String, std::time::Instant)>,
+    /// See `save_toast`'s own doc comment -- messages waiting to be shown,
+    /// one at a time in order, each after the previous one's
+    /// `SAVE_TOAST_DURATION` elapses. Pushed to by `queue_toast` (and
+    /// directly by `DownloadCompleted`, for borrow reasons).
+    pub(crate) save_toast_queue: std::collections::VecDeque<String>,
+    /// Spawn-failure toasts held to merge by cause (`failure_toasts`).
+    pub(crate) failure_notices: FailureNotices,
+}
+
 /// One cause's burst: its intents (distinct, first-seen order) and the first message, shown when there is one intent.
 struct Held {
     engine: String,

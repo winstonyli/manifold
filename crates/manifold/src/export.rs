@@ -4,7 +4,7 @@
 /// Bookmarks, one Group) on success. Doesn't write anything itself, and
 /// deliberately isn't a method on `App` -- the caller still does its own
 /// serialization (`self.export_session_to(&path)`, etc.)
-/// and sets `self.save_toast`, which a `&mut self` helper here couldn't
+/// and sets `self.toasts.save_toast`, which a `&mut self` helper here couldn't
 /// do without a borrow conflict against a closure also wanting to touch
 /// `self`. Previously this dialog-plus-toast tail was hand-copied three
 /// times, differing only in the default filename and the filter's label.

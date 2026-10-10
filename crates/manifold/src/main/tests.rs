@@ -79,7 +79,7 @@ const NOT_FORGOTTEN: &[(&str, &str)] = &[
     ("debug.debug_address_bar_typing", "typed text, not a node id"),
     ("debug.pending_screenshot", "a file path, not a node id"),
     ("debug.pending_print_to_pdf", "a file path, not a node id"),
-    ("save_toast", "a message, not a node id"),
+    ("toasts.save_toast", "a message, not a node id"),
     ("cef_dir_draft", "a path draft, not a node id"),
     ("home_page_draft", "a url draft, not a node id"),
     ("renaming_bookmark_folder", "a bookmark folder, not a node id"),
@@ -92,7 +92,7 @@ const NOT_FORGOTTEN: &[(&str, &str)] = &[
 fn every_id_keyed_field_is_forgotten_or_excused() {
     /// A struct held by `App` (`App.<prefix>`): its source file, its header line, and the id-forgetting method
     /// (`forget`) it may have; its fields are named `<prefix>.<field>` in `NOT_FORGOTTEN`.
-    const GROUPS: [(&str, &str, &str); 7] = [
+    const GROUPS: [(&str, &str, &str); 8] = [
         ("writes", include_str!("../session_sync.rs"), "pub(crate) struct PendingWrites {"),
         ("cookies", include_str!("../jar.rs"), "pub(crate) struct CookieState {"),
         ("link", include_str!("../links.rs"), "pub(crate) struct LinkGesture {"),
@@ -100,6 +100,7 @@ fn every_id_keyed_field_is_forgotten_or_excused() {
         ("spawns", include_str!("../tabs.rs"), "pub(crate) struct SpawnTracker {"),
         ("pacing", include_str!("../event_loop.rs"), "pub(crate) struct FramePacing {"),
         ("debug", include_str!("../debug_control.rs"), "pub(crate) struct HeadlessDebug {"),
+        ("toasts", include_str!("../failure_toasts.rs"), "pub(crate) struct Toasts {"),
     ];
     fn block<'a>(source: &'a str, header: &str, end: &str) -> Vec<&'a str> {
         source.lines().skip_while(|l| !l.trim_start().starts_with(header)).skip(1).take_while(|l| *l != end).collect()
@@ -735,9 +736,9 @@ fn a_new_group_takes_the_smallest_free_number() {
 fn save_as_with_nothing_left_of_the_name_does_nothing() {
     let mut app = App::default();
     app.save_named_session("\u{200B} ..");
-    assert!(app.save_toast_queue.is_empty(), "{:?}", app.save_toast_queue);
+    assert!(app.toasts.save_toast_queue.is_empty(), "{:?}", app.toasts.save_toast_queue);
     app.save_named_session("Trip");
-    assert_eq!(app.save_toast_queue.len(), 1, "under test there is no session file");
+    assert_eq!(app.toasts.save_toast_queue.len(), 1, "under test there is no session file");
 }
 
 /// A toast shows a long URL's start and an ellipsis, cut on a character boundary.
@@ -768,5 +769,5 @@ fn save_as_while_personal_state_is_unread_carries_none() {
 fn save_as_a_device_name_says_why() {
     let mut app = App::default();
     app.save_named_session("Con");
-    assert_eq!(Vec::from(app.save_toast_queue.clone()), ["Not a session name: Con"]);
+    assert_eq!(Vec::from(app.toasts.save_toast_queue.clone()), ["Not a session name: Con"]);
 }

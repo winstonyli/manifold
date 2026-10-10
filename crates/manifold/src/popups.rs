@@ -2119,7 +2119,12 @@ mod engine_picker_tests {
         frame(&mut app, vec![button(true)]);
         frame(&mut app, vec![button(false)]);
         let toasted = |text: &str| {
-            app.save_toast.iter().map(|(t, _)| t).chain(app.save_toast_queue.iter()).any(|t| t.contains(text))
+            app.toasts
+                .save_toast
+                .iter()
+                .map(|(t, _)| t)
+                .chain(app.toasts.save_toast_queue.iter())
+                .any(|t| t.contains(text))
         };
         assert!(toasted(reason), "the reason should be toasted");
         assert_eq!(app.open_popup, Some(AnchoredPopup::DefaultEngine), "the picker stays open");

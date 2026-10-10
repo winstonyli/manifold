@@ -1566,7 +1566,7 @@ impl App {
             "json_level": self.json_level_state(),
             "selected_tabs": selected_tabs,
             // The toast showing, or else the next queued one.
-            "toast": self.save_toast.as_ref().map(|(message, _)| message).or(self.save_toast_queue.front()),
+            "toast": self.toasts.save_toast.as_ref().map(|(message, _)| message).or(self.toasts.save_toast_queue.front()),
         })
     }
 

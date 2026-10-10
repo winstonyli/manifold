@@ -9,7 +9,7 @@ impl App {
     /// startup (an unreadable settings/session file) used to spend part of
     /// its time before the first frame.
     pub(crate) fn queue_toast(&mut self, message: String) {
-        self.save_toast_queue.push_back(message);
+        self.toasts.save_toast_queue.push_back(message);
     }
 
     /// A spawn-failure toast: held a moment so failures with one cause (engine and `error`) read as one message, counted
@@ -23,7 +23,7 @@ impl App {
         message: String,
     ) {
         let intent = format!("{url}\u{1f}{}\u{1f}{}", engine_label(kind), group.unwrap_or_default());
-        self.failure_notices.push(std::time::Instant::now(), engine_label(kind), error, &intent, message);
+        self.toasts.failure_notices.push(std::time::Instant::now(), engine_label(kind), error, &intent, message);
     }
 
     /// `url` short enough for a toast: its first `TOAST_URL_CHARS` characters and an ellipsis. A toast sizes to its
@@ -36,7 +36,7 @@ impl App {
         }
     }
 
-    /// A brief bottom-left toast, for `self.save_toast` — cleared once
+    /// A brief bottom-left toast, for `self.toasts.save_toast` — cleared once
     /// `SAVE_TOAST_DURATION` elapses. No dismiss interaction (unlike the
     /// context menu): it just times out, and clicks pass through it to the
     /// card or page underneath. Fades in over its first
@@ -55,19 +55,20 @@ impl App {
     fn build_save_toast(&mut self, ui: &mut egui::Ui) {
         const TOAST_FADE_IN: std::time::Duration = std::time::Duration::from_millis(150);
         const TOAST_FADE_OUT: std::time::Duration = std::time::Duration::from_millis(400);
-        for message in self.failure_notices.flush(std::time::Instant::now()) {
+        for message in self.toasts.failure_notices.flush(std::time::Instant::now()) {
             self.queue_toast(message);
         }
-        if self.failure_notices.is_pending() {
+        if self.toasts.failure_notices.is_pending() {
             ui.ctx().request_repaint_after(failure_toasts::WINDOW);
         }
-        if self.save_toast.is_none() {
-            self.save_toast = self.save_toast_queue.pop_front().map(|message| (message, std::time::Instant::now()));
+        if self.toasts.save_toast.is_none() {
+            self.toasts.save_toast =
+                self.toasts.save_toast_queue.pop_front().map(|message| (message, std::time::Instant::now()));
         }
-        let Some((message, shown_at)) = &self.save_toast else { return };
+        let Some((message, shown_at)) = &self.toasts.save_toast else { return };
         let elapsed = shown_at.elapsed();
         if elapsed >= SAVE_TOAST_DURATION {
-            self.save_toast = None;
+            self.toasts.save_toast = None;
             return;
         }
         ui.ctx().request_repaint();

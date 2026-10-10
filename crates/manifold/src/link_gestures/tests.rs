@@ -432,7 +432,7 @@ fn ends(app: &App, link: &str) -> (Option<String>, Option<String>) {
 }
 
 fn toasts(app: &App) -> Vec<&String> {
-    app.save_toast.iter().map(|(m, _)| m).chain(&app.save_toast_queue).collect()
+    app.toasts.save_toast.iter().map(|(m, _)| m).chain(&app.toasts.save_toast_queue).collect()
 }
 
 /// Dragging a curve takes the end nearer the grab: that end follows the pointer, the card at the other end is the
@@ -757,8 +757,8 @@ fn a_release_the_link_cannot_take_keeps_it_and_toasts() {
         app.end_connect_drag(end);
         assert_eq!(ends(&app, &ab), (Some(a.clone()), Some(b.clone())), "kept");
         assert!(toasts(&app).iter().any(|m| m.as_str() == "Can't connect these cards"), "{:?}", toasts(&app));
-        app.save_toast_queue.clear();
-        app.save_toast = None;
+        app.toasts.save_toast_queue.clear();
+        app.toasts.save_toast = None;
     }
 }
 
@@ -1190,7 +1190,7 @@ fn a_handle_drag_released_on_canvas_or_on_its_source_links_nothing_silently() {
     drag_from_handle(&h, &mut app, &a, HandleSide::Right, own, vec![]);
     assert!(app.links_naming(&a).is_empty());
     assert!(app.link.connect_drag.is_none() && app.link.connecting.is_none());
-    assert!(app.save_toast.is_none() && app.save_toast_queue.is_empty(), "no toast");
+    assert!(app.toasts.save_toast.is_none() && app.toasts.save_toast_queue.is_empty(), "no toast");
 }
 
 #[test]
@@ -1200,7 +1200,8 @@ fn a_handle_drag_onto_a_card_already_linked_says_so() {
     let onto = screen_rect(&app, &b).center();
     drag_from_handle(&h, &mut app, &a, HandleSide::Right, onto, vec![]);
     assert_eq!(app.links_naming(&a).len(), 1);
-    let toasts: Vec<&String> = app.save_toast.iter().map(|(m, _)| m).chain(&app.save_toast_queue).collect();
+    let toasts: Vec<&String> =
+        app.toasts.save_toast.iter().map(|(m, _)| m).chain(&app.toasts.save_toast_queue).collect();
     assert!(toasts.iter().any(|m| m.as_str() == "Can't connect these cards"), "{toasts:?}");
 }
 

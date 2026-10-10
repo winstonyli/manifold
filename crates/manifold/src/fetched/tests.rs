@@ -61,7 +61,11 @@ fn insert_content_refuses_a_failing_local_file() {
         assert!(app.insert_content(ContentSource::Local(path), id.clone(), egui::Vec2::ZERO, None).is_err());
         assert!(!app.nodes.contains_key(&id));
     }
-    assert_eq!(app.save_toast_queue.len() + usize::from(app.save_toast.is_some()), 3, "each refusal toasts");
+    assert_eq!(
+        app.toasts.save_toast_queue.len() + usize::from(app.toasts.save_toast.is_some()),
+        3,
+        "each refusal toasts"
+    );
 }
 
 #[test]
@@ -428,8 +432,8 @@ fn a_failed_refresh_fetch_toasts() {
     )
     .unwrap();
     app.refresh_fetch_failed("r");
-    assert_eq!(app.save_toast_queue.len(), 1);
-    assert!(app.save_toast_queue[0].contains("Couldn't refresh"));
+    assert_eq!(app.toasts.save_toast_queue.len(), 1);
+    assert!(app.toasts.save_toast_queue[0].contains("Couldn't refresh"));
     // The node itself is untouched by a fetch-level failure.
     assert!(app.nodes.contains_key("r"));
 }
@@ -627,5 +631,5 @@ fn a_failed_conversion_keeps_the_tab() {
     assert!(!app.nodes.contains_key("n"));
     assert_eq!(app.focused.as_deref(), Some(tab.as_str()));
     assert_eq!(app.mirror.parent(&child), Some(tab.as_str()));
-    assert_eq!(app.save_toast_queue.len() + usize::from(app.save_toast.is_some()), 1, "toasted");
+    assert_eq!(app.toasts.save_toast_queue.len() + usize::from(app.toasts.save_toast.is_some()), 1, "toasted");
 }

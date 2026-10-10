@@ -39,11 +39,11 @@ fn alternating_store_notices_are_each_shown_once_until_a_commit() {
         app.notice("read-only".into());
         app.notice("damaged".into());
     }
-    assert_eq!(app.save_toast_queue.len(), 2);
+    assert_eq!(app.toasts.save_toast_queue.len(), 2);
     add(&mut app, Kind::Note, Runtime::Note(NotePayload { text: "n".into(), editing: false }));
     assert!(app.save_session());
     app.notice("read-only".into());
-    assert_eq!(app.save_toast_queue.len(), 3, "a commit lets a notice show again");
+    assert_eq!(app.toasts.save_toast_queue.len(), 3, "a commit lets a notice show again");
 }
 
 #[test]
@@ -343,7 +343,7 @@ fn a_failed_split_spawn_toasts_and_makes_no_card() {
     fail_spawns(&mut app);
     assert!(!app.nodes.contains_key(&id), "no card for a split pane");
     assert!(!live_in_doc(&app, &id), "deleted by the failure's save");
-    assert!(app.save_toast_queue.iter().any(|toast| toast.contains("Couldn't start split view")));
+    assert!(app.toasts.save_toast_queue.iter().any(|toast| toast.contains("Couldn't start split view")));
 }
 
 /// Open Session: the replaced session's nodes of every kind are deleted from the document; its jars stay (they
@@ -643,7 +643,7 @@ fn a_missing_content_file_with_a_known_url_becomes_a_placeholder_that_refetches(
         _ => panic!("expected a Json placeholder"),
     }
     assert_eq!(app.source_url(&node_id), Some("https://x.test/a.json"));
-    assert!(app.save_toast_queue.is_empty() && app.save_toast.is_none(), "no 'Couldn't open' toast");
+    assert!(app.toasts.save_toast_queue.is_empty() && app.toasts.save_toast.is_none(), "no 'Couldn't open' toast");
     let results = drain_fetches(&mut app);
     assert_eq!(results.len(), 1, "materialize's own refresh_node queued exactly one fetch");
     assert!(matches!(&results[0].job.target, FetchTarget::Node(n) if *n == node_id));
@@ -683,7 +683,7 @@ fn a_failed_refetch_of_a_missing_file_shows_the_missing_file_card() {
     assert_eq!(error(0).as_deref(), Some("Couldn't fetch https://x.test/a.json"));
     assert_eq!(error(1).as_deref(), Some("Couldn't fetch https://x.test/a.png"));
     assert_eq!(error(2).as_deref(), Some("Couldn't fetch https://x.test/a.pdf"));
-    assert!(app.save_toast_queue.is_empty() && app.save_toast.is_none(), "no toast");
+    assert!(app.toasts.save_toast_queue.is_empty() && app.toasts.save_toast.is_none(), "no toast");
 }
 
 #[test]
@@ -2810,7 +2810,7 @@ fn exporting_a_group_the_store_lacks_gives_none() {
     let mut app = app_on(&temp_dir("export-missing").join("session.mnf"), 1);
     let g = app.alloc_node_id();
     assert!(app.export_group_json(&g).is_none());
-    assert!(!app.save_toast_queue.is_empty(), "toasted");
+    assert!(!app.toasts.save_toast_queue.is_empty(), "toasted");
 }
 
 /// The mirror is what this replica knows of the store (2b-5 Task 4: `last_shared` is gone). After each kind of save,
@@ -4862,15 +4862,15 @@ fn spawn_failures_of_one_cause_toast_once_with_a_count() {
         app.spawn_tab_at(&format!("https://t{i}/"), egui::Vec2::ZERO, None, None);
     }
     fail_spawns(&mut app);
-    assert!(app.save_toast_queue.is_empty(), "held inside the window");
-    for message in app.failure_notices.flush(std::time::Instant::now() + crate::failure_toasts::WINDOW) {
+    assert!(app.toasts.save_toast_queue.is_empty(), "held inside the window");
+    for message in app.toasts.failure_notices.flush(std::time::Instant::now() + crate::failure_toasts::WINDOW) {
         app.queue_toast(message);
     }
-    assert_eq!(app.save_toast_queue.iter().collect::<Vec<_>>(), ["3 tabs couldn't start: no engine"]);
+    assert_eq!(app.toasts.save_toast_queue.iter().collect::<Vec<_>>(), ["3 tabs couldn't start: no engine"]);
 }
 
 fn flushed_failure_toasts(app: &mut App) -> Vec<String> {
-    app.failure_notices.flush(std::time::Instant::now() + crate::failure_toasts::WINDOW)
+    app.toasts.failure_notices.flush(std::time::Instant::now() + crate::failure_toasts::WINDOW)
 }
 
 /// A host that cannot start is a spawn failure like any other: two such crashes with one reason read as one message.
@@ -4881,7 +4881,7 @@ fn cannot_start_crashes_with_one_reason_toast_once_with_a_count() {
     let b = succeed_spawn(&mut app, "https://b/");
     app.leave_crashed_card(&a, "no engine", true);
     app.leave_crashed_card(&b, "no engine", true);
-    assert!(app.save_toast_queue.is_empty(), "held inside the window");
+    assert!(app.toasts.save_toast_queue.is_empty(), "held inside the window");
     assert_eq!(flushed_failure_toasts(&mut app), ["2 tabs couldn't start: no engine"]);
 }
 

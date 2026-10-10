@@ -446,6 +446,8 @@ struct App {
     /// stdin instead of real OS input. See `debug_control`'s doc comment
     /// for the full rationale and the text-command protocol.
     headless: bool,
+    /// Toast state (see `failure_toasts::Toasts`).
+    toasts: failure_toasts::Toasts,
     /// Headless debug-control state (see `debug_control::HeadlessDebug`).
     debug: debug_control::HeadlessDebug,
     /// Frame pacing: minimize and idle state (see `event_loop::FramePacing`).
@@ -469,25 +471,6 @@ struct App {
     /// Same fade-out role as `node_menu_cache`, for `context_menu`.
     context_menu_cache: Option<ContextMenuState>,
 
-    /// A brief toast message (full text, not just a path -- see `build_
-    /// save_toast`'s own doc comment) for the most recent completed
-    /// download/save or crash/respawn notice, and when it was first drawn —
-    /// cleared once `SAVE_TOAST_DURATION` has passed, at which point the
-    /// next queued message (`save_toast_queue`) takes over, if any. Was
-    /// "latest wins" with no queue at all until this session, when a
-    /// second toast (e.g. a crash notice) arriving while a download's own
-    /// "Saved <path>" toast was still showing was confirmed to silently
-    /// replace it, unlike `FindState::result`'s own "latest wins" (correct
-    /// there -- a stale search count would be actively wrong, whereas a
-    /// dropped one-time notification like "tab crashed" is just gone).
-    save_toast: Option<(String, std::time::Instant)>,
-    /// See `save_toast`'s own doc comment -- messages waiting to be shown,
-    /// one at a time in order, each after the previous one's
-    /// `SAVE_TOAST_DURATION` elapses. Pushed to by `queue_toast` (and
-    /// directly by `DownloadCompleted`, for borrow reasons).
-    save_toast_queue: std::collections::VecDeque<String>,
-    /// Spawn-failure toasts held to merge by cause (`failure_toasts`).
-    failure_notices: failure_toasts::FailureNotices,
     /// Admits or drops page-opened tabs (`EngineToHost::OpenTabRequested`)
     /// per source tab: a user gesture and a rate budget.
     popup_gate: popup_gate::PopupGate,
@@ -695,15 +678,13 @@ impl Default for App {
             favicon_origin_cache: HashMap::new(),
             graph_settled_key: None,
             headless: false,
+            toasts: failure_toasts::Toasts::default(),
             debug: debug_control::HeadlessDebug::default(),
             pacing: event_loop::FramePacing::default(),
             pending_focus: None,
             closed: Vec::new(),
             context_menu: None,
             context_menu_cache: None,
-            save_toast: None,
-            save_toast_queue: std::collections::VecDeque::new(),
-            failure_notices: Default::default(),
             popup_gate: popup_gate::PopupGate::default(),
             store_recovered: false,
             settings_fingerprint,

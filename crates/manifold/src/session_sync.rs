@@ -748,7 +748,7 @@ impl App {
             Some((Kind::Group, ..)) => 1,
             _ => 2,
         });
-        let toasts = self.save_toast_queue.len();
+        let toasts = self.toasts.save_toast_queue.len();
         let pass = self.begin_content_pass();
         for (id, change) in changes {
             let key = id.to_string();
@@ -1485,7 +1485,7 @@ impl App {
             self.log_local_unread(err);
         }
         let local = local_from(read);
-        let toasts = self.save_toast_queue.len();
+        let toasts = self.toasts.save_toast_queue.len();
         // Jars first: they are not graph nodes, so they survive a "fresh start" and the next save keeps them.
         // Links ride along: also stored, never graph nodes.
         for (id, kind, fields, _) in nodes.iter().filter(|(_, kind, ..)| matches!(kind, Kind::Jar | Kind::Link)) {
@@ -1947,7 +1947,7 @@ impl App {
             Kind::Link => 3, // after the cards it joins
             _ => 2,
         });
-        let toasts = self.save_toast_queue.len();
+        let toasts = self.toasts.save_toast_queue.len();
         let pass = self.begin_content_pass();
         for node in imported {
             // A link whose end did not resolve, or names no card in this batch or live, has nothing to join.
@@ -2103,10 +2103,10 @@ impl App {
     /// Collapses the toasts queued since `mark` into one, so a bulk restore
     /// or import with many missing files toasts once, not once per card.
     fn collapse_toasts_since(&mut self, mark: usize) {
-        let extra = self.save_toast_queue.len().saturating_sub(mark + 1);
+        let extra = self.toasts.save_toast_queue.len().saturating_sub(mark + 1);
         if extra > 0 {
-            let first = self.save_toast_queue.drain(mark..).next().expect("toasts past the mark");
-            self.save_toast_queue.push_back(format!("{first} (and {extra} more)"));
+            let first = self.toasts.save_toast_queue.drain(mark..).next().expect("toasts past the mark");
+            self.toasts.save_toast_queue.push_back(format!("{first} (and {extra} more)"));
         }
     }
 

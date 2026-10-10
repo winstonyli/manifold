@@ -934,7 +934,7 @@ fn settle(app: &mut App) {
 }
 
 fn toasts(app: &App) -> Vec<String> {
-    app.save_toast_queue.iter().cloned().collect()
+    app.toasts.save_toast_queue.iter().cloned().collect()
 }
 
 #[test]
