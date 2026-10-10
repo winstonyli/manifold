@@ -311,7 +311,7 @@ struct App {
     journal: Option<store::journal::Journal>,
     /// Ids for nodes made while there is no journal (unit tests, a failed
     /// open): this launch's own actor, so they parse as store ids.
-    fallback_ids: (store::model::ActorId, u64),
+    fallback_ids: node_store::NodeIdFallback,
     /// What the next save commits besides `pending`, and when saves happened or are owed (see `session_sync::PendingWrites`).
     writes: session_sync::PendingWrites,
     /// The decoded copy of the document's mirrored fields (`mirror::Mirror`).
@@ -577,7 +577,7 @@ impl Default for App {
             drop_batch: 0,
             view_mode: ViewMode::Item,
             journal: None,
-            fallback_ids: (store::model::ActorId::random(), 0),
+            fallback_ids: node_store::NodeIdFallback::default(),
             writes: session_sync::PendingWrites::default(),
             mirror: mirror::Mirror::default(),
             pending: std::collections::BTreeMap::new(),
