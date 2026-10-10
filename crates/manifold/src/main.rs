@@ -421,6 +421,8 @@ struct App {
     /// stdin instead of real OS input. See `debug_control`'s doc comment
     /// for the full rationale and the text-command protocol.
     headless: bool,
+    /// Bookmarks and history popup state (see `history::HistoryUi`).
+    history_ui: history::HistoryUi,
     /// Engine install jobs, failures and the Settings drafts for them (see `engine_install::EngineInstallUi`).
     engine_ui: engine_install::EngineInstallUi,
     /// Open menus and popups (see `popups::MenuPopups`).
@@ -483,17 +485,6 @@ struct App {
     /// `%APPDATA%\manifold\bookmarks.json` on every change — see
     /// `bookmarks.rs`. Listed by `App::build_bookmarks_popup`.
     bookmarks: Vec<bookmarks::Bookmark>,
-    /// The bookmarks popup's own filter box text -- cleared each time the
-    /// popup is opened, same "fresh state each open" reasoning
-    /// `FindState::match_case` resetting on a new find session already has.
-    bookmarks_filter: String,
-    /// `(bookmark_url, draft)` while a bookmark's folder label in the
-    /// popup is being renamed -- keyed by url (a bookmark's own natural
-    /// identity, same as `toggle_bookmark`'s own match) rather than index,
-    /// so it can't end up pointing at the wrong row if the list reorders.
-    /// Same "real `TextEdit` replaces the label, Enter/blur commits,
-    /// Escape cancels" shape `renaming_group` already has.
-    renaming_bookmark_folder: Option<(String, String)>,
     /// Every distinct `(title, url)` this session has actually navigated
     /// to, most-recent-last, capped at `history::MAX_HISTORY_ENTRIES` (oldest
     /// dropped first) -- recorded once per real URL change in
@@ -501,15 +492,6 @@ struct App {
     /// in-page navigation (clicked links) the same as address-bar entries,
     /// not just the latter. Persisted to `history.json` whenever saved.
     history: Vec<history::HistoryEntry>,
-    /// Set whenever an entry is pushed to `history` or when history is cleared.
-    /// Saved by `save_session` or `close_store` when `true`.
-    history_dirty: bool,
-    /// The history popup's own filter box text -- same "cleared on each
-    /// open" reasoning as `bookmarks_filter`.
-    history_filter: String,
-    /// The History popup's filter, the history length it was computed at, and its matches: recomputed only when
-    /// either changes (or when `history_dirty` is set, which also covers an in-place title update).
-    history_matches_cache: Option<(String, usize, Vec<usize>)>,
     /// A graph card or one of its controls had keyboard focus in the last card pass: the cards
     /// show their Tab-order numbers (`CardPass::show_order`).
     card_nav_active: bool,
@@ -629,6 +611,7 @@ impl Default for App {
             favicon_origin_cache: HashMap::new(),
             graph_settled_key: None,
             headless: false,
+            history_ui: history::HistoryUi::default(),
             engine_ui: engine_install::EngineInstallUi::default(),
             menus: popups::MenuPopups::default(),
             toasts: failure_toasts::Toasts::default(),
@@ -646,12 +629,7 @@ impl Default for App {
             settings,
             settings_return_view: ViewMode::Item,
             bookmarks,
-            bookmarks_filter: String::new(),
-            renaming_bookmark_folder: None,
             history,
-            history_dirty: false,
-            history_filter: String::new(),
-            history_matches_cache: None,
             card_nav_active: false,
             hints_revealed: false,
             card_hint: None,

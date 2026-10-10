@@ -1190,9 +1190,9 @@ impl App {
     /// path. History doesn't depend on the store, so it's saved regardless of
     /// store success or failure.
     fn flush_history(&mut self) {
-        if self.history_dirty {
+        if self.history_ui.history_dirty {
             crate::history::save(&self.history);
-            self.history_dirty = false;
+            self.history_ui.history_dirty = false;
         }
         let nodes = &self.nodes;
         crate::nav_history::save(&mut self.nav_history, |id| nodes.contains_key(id));

@@ -1205,8 +1205,8 @@ impl App {
                 self.close_settings_page();
             }
             DebugCommand::GraphFilterText(text) => self.graph_filter = text,
-            DebugCommand::HistoryFilterText(text) => self.history_filter = text,
-            DebugCommand::BookmarksFilterText(text) => self.bookmarks_filter = text,
+            DebugCommand::HistoryFilterText(text) => self.history_ui.history_filter = text,
+            DebugCommand::BookmarksFilterText(text) => self.history_ui.bookmarks_filter = text,
             DebugCommand::ToggleView => self.toggle_view_mode_shortcut(),
             DebugCommand::ToggleSettingsPage => self.toggle_settings_page(),
             DebugCommand::ExportSession(path) => {
@@ -1227,7 +1227,7 @@ impl App {
             }
             DebugCommand::RenameGroup => self.rename_current_group_shortcut(),
             DebugCommand::BookmarkFolderText(text) => {
-                if let Some((_, draft)) = &mut self.renaming_bookmark_folder {
+                if let Some((_, draft)) = &mut self.history_ui.renaming_bookmark_folder {
                     *draft = text;
                 }
             }
