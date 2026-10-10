@@ -17,12 +17,12 @@ const PIN: Pin = Pin { version: "1.0", url: "http://x/a", size: 10, sha1: "aa", 
 fn engine_state_is_reused_within_a_frame_and_refreshed_when_an_install_changes() {
     let mut app = App::default();
     let kind = EngineKind::Cef;
-    app.engine_state_cache.borrow_mut().insert(kind, EngineState::Failed("cached".into()));
+    app.engine_ui.engine_state_cache.borrow_mut().insert(kind, EngineState::Failed("cached".into()));
     assert_eq!(app.engine_state(kind), EngineState::Failed("cached".into()), "reused");
     app.cancel_engine_install(kind);
     assert_ne!(app.engine_state(kind), EngineState::Failed("cached".into()), "refreshed");
-    app.engine_state_cache.borrow_mut().insert(kind, EngineState::Failed("cached".into()));
-    app.engine_state_cache.borrow_mut().clear(); // what each new frame does
+    app.engine_ui.engine_state_cache.borrow_mut().insert(kind, EngineState::Failed("cached".into()));
+    app.engine_ui.engine_state_cache.borrow_mut().clear(); // what each new frame does
     assert_ne!(app.engine_state(kind), EngineState::Failed("cached".into()));
 }
 
@@ -221,7 +221,7 @@ fn a_custom_directory_deleted_later_stops_being_custom() {
     assert!(app.cef_dir_verdict().unwrap().1.is_ok(), "still inside the TTL: the cached verdict stands");
     // Age the cached verdict past the TTL, as waiting would.
     let aged = std::time::Instant::now().checked_sub(CEF_DIR_CHECK_TTL * 2).unwrap();
-    app.cef_dir_check.borrow_mut().as_mut().unwrap().1 = aged;
+    app.engine_ui.cef_dir_check.borrow_mut().as_mut().unwrap().1 = aged;
     assert!(app.cef_dir_verdict().unwrap().1.is_err());
     assert_eq!(app.custom_cef_dir(), None);
 }
@@ -926,7 +926,7 @@ fn cef_state(app: &App, data: &Path, pin: &Pin) -> EngineState {
 /// Poll until no job is left (the thread has finished and been collected).
 fn settle(app: &mut App) {
     let deadline = std::time::Instant::now() + Duration::from_secs(30);
-    while !app.engine_installs.is_empty() {
+    while !app.engine_ui.engine_installs.is_empty() {
         app.poll_engine_installs();
         assert!(std::time::Instant::now() < deadline, "the job never finished");
         std::thread::sleep(Duration::from_millis(10));
@@ -950,7 +950,7 @@ fn a_job_installs_and_toasts() {
     settle(&mut app);
     assert_eq!(cef_state(&app, &data, &pin), EngineState::Installed);
     assert_eq!(toasts(&app), ["Blink (CEF) installed"]);
-    assert!(app.engine_failures.is_empty());
+    assert!(app.engine_ui.engine_failures.is_empty());
 }
 
 #[test]
@@ -964,7 +964,7 @@ fn an_install_waits_while_a_tab_is_still_starting() {
         crate::session_sync::Snapshot { kind: crate::store::model::Kind::Tab, group: None, fields: Default::default() };
     app.spawns.spawning.insert("t1".into(), pending);
     assert!(!app.start_engine_install_at(EngineKind::Cef, &data, &pin));
-    assert!(app.engine_installs.is_empty());
+    assert!(app.engine_ui.engine_installs.is_empty());
     assert_eq!(toasts(&app), ["A tab is still starting; try installing Blink (CEF) again in a moment"]);
     app.spawns.spawning.clear();
     assert!(app.start_engine_install_at(EngineKind::Cef, &data, &pin));
@@ -1033,7 +1033,7 @@ fn cancel_is_immediate_keeps_the_part_and_records_no_failure() {
     release.send(()).unwrap();
     settle(&mut app);
     assert!(matches!(cef_state(&app, &data, &pin), EngineState::NotInstalled { .. }));
-    assert!(app.engine_failures.is_empty() && toasts(&app).is_empty(), "a cancel is not a failure");
+    assert!(app.engine_ui.engine_failures.is_empty() && toasts(&app).is_empty(), "a cancel is not a failure");
     assert!(std::fs::metadata(data.join("cef-runtime.part")).unwrap().len() > 0, "the part is kept");
     // Once the thread is gone a new install starts (and resumes the part).
     assert!(app.start_engine_install_at(EngineKind::Cef, &data, &Pin { url: pin.url, ..pin.clone() }));
@@ -1050,7 +1050,7 @@ fn one_install_per_engine_and_only_cef_downloads() {
     let mut app = App::default();
     assert!(app.start_engine_install_at(EngineKind::Cef, &data, &pin));
     assert!(!app.start_engine_install_at(EngineKind::Cef, &data, &pin), "already installing");
-    assert_eq!(app.engine_installs.len(), 1);
+    assert_eq!(app.engine_ui.engine_installs.len(), 1);
     app.cancel_engine_install(EngineKind::Cef);
     release.send(()).unwrap();
     settle(&mut app);

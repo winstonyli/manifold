@@ -499,7 +499,7 @@ impl App {
 
     /// Whether an engine, jar or session-delete confirm dialog is up (`offer_confirm`).
     pub(crate) fn confirm_open(&self) -> bool {
-        self.pending_engine_confirm.is_some()
+        self.engine_ui.pending_engine_confirm.is_some()
             || self.pending_jar_confirm.is_some()
             || self.pending_session_delete.is_some()
     }
@@ -507,18 +507,18 @@ impl App {
     /// Asks `confirm` unless a confirm is already up (`offer_confirm`).
     pub(crate) fn offer_engine_confirm(&mut self, confirm: EngineConfirm) -> bool {
         let other = self.pending_jar_confirm.is_some() || self.pending_session_delete.is_some();
-        offer_confirm(&mut self.pending_engine_confirm, other, confirm)
+        offer_confirm(&mut self.engine_ui.pending_engine_confirm, other, confirm)
     }
 
     /// Asks `confirm` unless a confirm is already up (`offer_confirm`).
     pub(crate) fn offer_jar_confirm(&mut self, confirm: crate::jar_defs::JarConfirm) -> bool {
-        let other = self.pending_engine_confirm.is_some() || self.pending_session_delete.is_some();
+        let other = self.engine_ui.pending_engine_confirm.is_some() || self.pending_session_delete.is_some();
         offer_confirm(&mut self.pending_jar_confirm, other, confirm)
     }
 
     /// Asks before deleting a named session (`offer_confirm`).
     pub(crate) fn offer_session_delete(&mut self, name: String) -> bool {
-        let other = self.pending_engine_confirm.is_some() || self.pending_jar_confirm.is_some();
+        let other = self.engine_ui.pending_engine_confirm.is_some() || self.pending_jar_confirm.is_some();
         offer_confirm(&mut self.pending_session_delete, other, name)
     }
 
@@ -547,7 +547,7 @@ impl App {
     /// The confirm before a large or destructive engine action: "Download CEF, 172 MB?" (always
     /// asked first, since it is a big network action) or removing the downloaded runtime.
     pub(crate) fn build_engine_confirm_popup(&mut self, ui: &mut egui::Ui) {
-        let Some(confirm) = self.pending_engine_confirm else { return };
+        let Some(confirm) = self.engine_ui.pending_engine_confirm else { return };
         let (title, detail, button) = match confirm {
             EngineConfirm::Download(kind) => {
                 let size = crate::engine_info::megabytes(crate::cef_pin::pin_for_platform().map_or(0, |pin| pin.size));
@@ -577,7 +577,7 @@ impl App {
         };
         match confirm_dialog(ui, "engine_confirm_popup", title, &detail, button) {
             Some(true) => {
-                self.pending_engine_confirm = None;
+                self.engine_ui.pending_engine_confirm = None;
                 match confirm {
                     EngineConfirm::Download(kind) => {
                         self.start_engine_install(kind);
@@ -585,7 +585,7 @@ impl App {
                     EngineConfirm::Remove(kind) => self.remove_engine(kind),
                 }
             }
-            Some(false) => self.pending_engine_confirm = None,
+            Some(false) => self.engine_ui.pending_engine_confirm = None,
             None => {}
         }
     }
@@ -2140,7 +2140,7 @@ mod engine_picker_tests {
             };
             let mut output = ctx.run_ui(input, |ui| {
                 let state = crate::engine_install::EngineState::Unavailable(reason.to_string());
-                app.engine_state_cache.borrow_mut().insert(first, state);
+                app.engine_ui.engine_state_cache.borrow_mut().insert(first, state);
                 app.build_ui_inner(ui);
             });
             output.textures_delta.clear();

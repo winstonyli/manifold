@@ -108,7 +108,7 @@ impl App {
     /// One frame of UI. An open anchored popup takes Escape (the views skip theirs while one is
     /// open, `popup_open`), and when it closes from the keyboard focus goes back to its opening button.
     pub(crate) fn build_ui(&mut self, ui: &mut egui::Ui) {
-        self.engine_state_cache.borrow_mut().clear();
+        self.engine_ui.engine_state_cache.borrow_mut().clear();
         let open_at_start = self.menus.open_popup;
         let escape = open_at_start.is_some() && ui.input(|i| i.key_pressed(egui::Key::Escape));
         self.build_ui_inner(ui);

@@ -421,6 +421,8 @@ struct App {
     /// stdin instead of real OS input. See `debug_control`'s doc comment
     /// for the full rationale and the text-command protocol.
     headless: bool,
+    /// Engine install jobs, failures and the Settings drafts for them (see `engine_install::EngineInstallUi`).
+    engine_ui: engine_install::EngineInstallUi,
     /// Open menus and popups (see `popups::MenuPopups`).
     menus: popups::MenuPopups,
     /// Toast state (see `failure_toasts::Toasts`).
@@ -465,19 +467,6 @@ struct App {
     /// Find-in-page, for the focused tab only. See `FindState`.
     find: FindState,
 
-    /// Engine runtime installs, at most one per engine (see `engine_install::InstallJob`).
-    engine_installs: HashMap<EngineKind, engine_install::InstallJob>,
-    /// The last install's failure message per engine, until the next attempt starts.
-    engine_failures: HashMap<EngineKind, String>,
-    /// An engine download or removal waiting for its confirm dialog (`build_engine_confirm_popup`).
-    pending_engine_confirm: Option<EngineConfirm>,
-    /// `engine_state` per engine for the current frame: it stats the disk, and cards, pickers, menus
-    /// and Settings all ask. Cleared at the start of each frame and whenever an install changes.
-    engine_state_cache: std::cell::RefCell<HashMap<EngineKind, engine_install::EngineState>>,
-    /// The bring-your-own CEF directory's last validation, with the path it was for (`custom_cef_dir`).
-    cef_dir_check: std::cell::RefCell<Option<engine_install::DirCheck>>,
-    /// Settings' text field for that directory while it is being edited; committed on Enter or focus loss.
-    cef_dir_draft: Option<String>,
     /// The Home page field's text while it's being edited; Escape drops it (`build_settings_page`).
     home_page_draft: Option<String>,
 
@@ -640,6 +629,7 @@ impl Default for App {
             favicon_origin_cache: HashMap::new(),
             graph_settled_key: None,
             headless: false,
+            engine_ui: engine_install::EngineInstallUi::default(),
             menus: popups::MenuPopups::default(),
             toasts: failure_toasts::Toasts::default(),
             debug: debug_control::HeadlessDebug::default(),
@@ -652,12 +642,6 @@ impl Default for App {
             settings_save_due: None,
             content_index: None,
             find: FindState::default(),
-            engine_installs: HashMap::new(),
-            engine_failures: HashMap::new(),
-            pending_engine_confirm: None,
-            engine_state_cache: Default::default(),
-            cef_dir_check: Default::default(),
-            cef_dir_draft: None,
             home_page_draft: None,
             settings,
             settings_return_view: ViewMode::Item,
