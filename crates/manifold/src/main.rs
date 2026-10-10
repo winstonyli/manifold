@@ -6,6 +6,7 @@ mod card;
 mod card_kind;
 mod cef_pin;
 mod cef_platform;
+mod chrome_ui;
 mod cli;
 mod click_count;
 mod closed;
@@ -26,6 +27,7 @@ mod gpu;
 mod graph_layout;
 mod graph_nav;
 mod graph_ui;
+mod groups;
 mod history;
 mod idle_sleep;
 mod image_view;
@@ -53,6 +55,7 @@ mod popups;
 mod process_manager;
 mod profile;
 mod redirect_fetch;
+mod reveal;
 mod rgba;
 mod session;
 mod session_sync;
@@ -1679,160 +1682,6 @@ impl App {
         })
     }
 
-    /// Opens `path`'s containing folder with the file itself pre-selected --
-    /// the mechanism behind `reveal_node`.
-    #[cfg(windows)]
-    fn reveal_in_explorer(path: &str) -> Result<(), String> {
-        use std::os::windows::process::CommandExt;
-        if path.is_empty() {
-            return Err("This download has no file path".to_string());
-        }
-        // `raw_arg`, not `arg`: `arg` would escape the quotes `explorer_select_arg` adds.
-        std::process::Command::new("explorer.exe")
-            .raw_arg(explorer_select_arg(path))
-            .spawn()
-            .map(drop)
-            .map_err(|e| format!("Couldn't open Explorer: {e}"))
-    }
-    /// Elsewhere there is no portable "select this file", so the containing folder is opened with the desktop's
-    /// own handler (`xdg-open` on Linux, `open` on macOS).
-    #[cfg(not(windows))]
-    fn reveal_in_explorer(path: &str) -> Result<(), String> {
-        let opener = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
-        let folder = std::path::Path::new(path).parent().ok_or_else(|| format!("{path} has no containing folder"))?;
-        std::process::Command::new(opener)
-            .arg(folder)
-            .spawn()
-            .map(|_| ())
-            .map_err(|e| format!("Couldn't open {}: {opener}: {e}", folder.display()))
-    }
-
-    /// The real file behind a Download/Image/Pdf/Json node, in the form
-    /// Explorer and a pasted clipboard path understand -- what both
-    /// "Open Containing Folder" (`reveal_node`) and "Copy Path" use. A
-    /// download's path may be a WSL-side POSIX path (WebKit downloads), so
-    /// it goes through `windows_path_for_download`; an image/PDF/JSON path
-    /// always came from a real Windows file picker, so it's used as-is.
-    /// `None` for kinds with no backing file (Tab, Group, Note), and for an
-    /// empty path: "no file" (a Download from a `Trust::Foreign` import has
-    /// its machine-local path dropped).
-    fn node_file_path(&self, id: &str) -> Option<String> {
-        let path = match &self.nodes.get(id)?.runtime {
-            Runtime::Download(_) => self.windows_path_for_download(id),
-            Runtime::Image(image) => Some(image.path.clone()),
-            Runtime::Pdf(pdf) => Some(pdf.path.clone()),
-            Runtime::Json(json) => Some(json.path.clone()),
-            Runtime::Tab(_) | Runtime::Unloaded(_) | Runtime::Note(_) | Runtime::None => None,
-        };
-        path.filter(|p| !p.is_empty())
-    }
-
-    /// Opens a node's file's containing folder with the file pre-selected
-    /// (a plain click on a download card does this too -- same "just show
-    /// the obvious thing, no custom UI" posture as the download itself, see
-    /// `EngineToHost::DownloadCompleted`'s doc comment). No-op for kinds
-    /// with no file; a file node with no path (`node_file_path`) is toasted.
-    fn reveal_node(&mut self, id: &str) {
-        let Some(node) = self.nodes.get(id) else { return };
-        let has_file =
-            matches!(node.runtime, Runtime::Download(_) | Runtime::Image(_) | Runtime::Pdf(_) | Runtime::Json(_));
-        match self.node_file_path(id) {
-            Some(path) => {
-                if let Err(e) = Self::reveal_in_explorer(&path) {
-                    self.queue_toast(e);
-                }
-            }
-            None if has_file => self.queue_toast("This file's path isn't known on this machine".to_string()),
-            None => {}
-        }
-    }
-
-    /// Memoized `favicon_fetch::url_origin(url)` -- that function is a
-    /// couple of string scans plus a `format!` allocation, and both of
-    /// this app's per-frame callers (the Graph-view tab card, the Tab-
-    /// view toolbar's own identity chip) called it fresh every single
-    /// frame for a URL that's stable between navigations. **Found on a
-    /// general (not just large-graph) performance audit**, the same
-    /// category as `truncate_cache`: capped and cleared outright past
-    /// `TRUNCATE_CACHE_CAP` rather than evicted incrementally, for the
-    /// same "should stay small in steady state, insurance against
-    /// unbounded growth" reasoning.
-    fn cached_favicon_origin(&mut self, url: &str) -> Option<String> {
-        if let Some(cached) = self.favicon_origin_cache.get(url) {
-            return cached.clone();
-        }
-        let origin = favicon_fetch::url_origin(url);
-        if self.favicon_origin_cache.len() >= TRUNCATE_CACHE_CAP {
-            self.favicon_origin_cache.clear();
-        }
-        self.favicon_origin_cache.insert(url.to_owned(), origin.clone());
-        origin
-    }
-
-    /// A fresh group's default display name: "Group N" for the smallest N
-    /// no group is named yet. Not the group count plus one, which repeats a
-    /// name after a dissolve (three groups "Group 1/2/3", dissolve "Group
-    /// 2", and the next new one is "Group 3" again), and not the id, which
-    /// is a long store id. Manually *renaming* two groups to the identical
-    /// string is left alone -- that's a deliberate user choice.
-    fn default_group_name(&self) -> String {
-        let taken: HashSet<&str> = self
-            .nodes
-            .iter()
-            .filter(|(id, _)| self.is_container(id))
-            .map(|(id, _)| self.mirror.name(id)) // name rule: compares stored names
-            .collect();
-        (1..).map(|n| format!("Group {n}")).find(|name| !taken.contains(name.as_str())).expect("a free number")
-    }
-
-    /// Dissolves a group: members rejoin *its own parent's* level again
-    /// (never closed — grouping is purely a display grouping, not an
-    /// ownership one), and the group card itself is removed. A top-level
-    /// group's parent is `None`, so this still means "become top-level"
-    /// exactly as before nesting existed -- reads the group's own parent
-    /// before removing it, rather than assuming `None`. `current_group`
-    /// moves to that same parent if it happened to be the group just
-    /// dissolved (should only actually matter defensively — the close
-    /// button that calls this only ever renders one level up from the
-    /// group being closed, never on the level currently being viewed).
-    ///
-    /// A local dissolve: unset tabs among the members re-snapshot their jar from the new level (deviation 12).
-    fn dissolve_group(&mut self, id: &str) {
-        for member in self.dissolve_members(id, false) {
-            self.refollow(&member);
-        }
-    }
-
-    /// `dissolve_group` without the jar re-snapshot, for a remote delete: the remote device's own refollow arrives as
-    /// ordinary tab edits (spec "Inheritance"). The members move up in the mirror only (`follow_remote_group`).
-    fn dissolve_group_quietly(&mut self, id: &str) {
-        self.dissolve_members(id, true);
-    }
-
-    /// Moves group `id`'s members to its own group and removes it; `remote` for another replica's delete, which
-    /// queues no delete of its own (the document already lacks the group). Returns the members moved.
-    fn dissolve_members(&mut self, id: &str, remote: bool) -> Vec<String> {
-        let parent = self.mirror.group(id).filter(|_| self.nodes.contains_key(id)).map(str::to_owned);
-        let members: Vec<String> = self.members_of(id).map(str::to_owned).collect();
-        for member in &members {
-            if remote {
-                self.follow_remote_group(member, parent.clone());
-            } else {
-                self.edit_group(member, parent.clone());
-            }
-        }
-        self.nodes.remove(id);
-        if !remote {
-            self.queue_delete(id);
-        }
-        self.node_order.retain(|g| g != id);
-        if self.current_group.as_deref() == Some(id) {
-            self.switch_group_level(parent);
-        }
-        self.forget_id(id);
-        members
-    }
-
     /// The shared fold behind both of the above (and `level_items`'
     /// world bounds more generally): every rect's union, expanded by a
     /// flat margin, or `default_graph_scene_rect()` when there's nothing
@@ -1851,16 +1700,6 @@ impl App {
     /// doc comment for why this can't just clear `hovered` directly.
     fn dismiss_hover_peek(&mut self) {
         self.peek_suppressed = self.hovered.clone();
-    }
-
-    /// Shared by `new_group_shortcut` (`pos` `None`: a jittered spawn) and
-    /// the empty-canvas "New Tab/Note/Group/File" card (`pending_new_node`),
-    /// which passes the exact position that was right-clicked instead.
-    /// Doesn't save; the caller does.
-    fn insert_group_at(&mut self, id: String, pos: Option<egui::Vec2>) {
-        let name = self.default_group_name();
-        let at = self.placement(&id, pos);
-        self.place_group(Some(id), &name, at);
     }
 
     /// Like `insert_group_at`, for `new_note_shortcut` and the card's note.
@@ -2016,37 +1855,6 @@ impl App {
         }
     }
 
-    /// Destroys a group and everything in it, at any depth, then the group itself, and saves once. Records nothing:
-    /// `close_node` has already recorded the whole subtree as one entry.
-    fn destroy_group(&mut self, id: &str) {
-        self.destroy_group_members(id, &mut HashSet::new());
-        // The one save for the whole subtree: no member's removal saves (`destroy_group_members`), so the group and
-        // everything in it go in one commit, and another replica never reads it half deleted.
-        self.save_session();
-    }
-
-    /// `destroy_group`'s walk, with no save: a tab member is `remove_tab`d (not `destroy_tab`, which saves), every
-    /// other member `destroy_node`d, each group once, so a group cycle in the mirror (two replicas' moves raced; the
-    /// next save shows the document's groups) can't recurse forever. A group already being destroyed further up is
-    /// left to it.
-    fn destroy_group_members(&mut self, id: &str, visited: &mut HashSet<String>) {
-        visited.insert(id.to_owned());
-        let member_ids: Vec<String> = self.members_of(id).map(str::to_owned).collect();
-        for tid in member_ids {
-            if self.is_container(&tid) {
-                if !visited.contains(&tid) {
-                    self.destroy_group_members(&tid, visited);
-                }
-            } else if self.card_kind(&tid).is_some_and(|k| k.ty == store::model::TYPE_TAB) {
-                // No save per tab: `destroy_group` commits the whole subtree once.
-                self.remove_tab(&tid);
-            } else {
-                self.destroy_node(&tid);
-            }
-        }
-        self.dissolve_group(id);
-    }
-
     /// Closes one node: records it (and, for a group, everything under it)
     /// as one "Recently Closed" entry, then `destroy_node`s it. The single
     /// user-facing close: a card's hover ✕, its context-menu Delete/Close/
@@ -2091,190 +1899,6 @@ impl App {
         if persisted {
             self.save_session();
         }
-    }
-
-    /// A brief bottom-left toast, for `self.save_toast` — cleared once
-    /// `SAVE_TOAST_DURATION` elapses. No dismiss interaction (unlike the
-    /// context menu): it just times out, and clicks pass through it to the
-    /// card or page underneath. Fades in over its first
-    /// `TOAST_FADE_IN` and out over its last `TOAST_FADE_OUT` rather than
-    /// popping on and cutting off instantly -- driven directly off
-    /// `shown_at.elapsed()` (this app's winit loop runs `ControlFlow::Poll`,
-    /// so it's already redrawing every frame regardless; no extra
-    /// `request_repaint` needed for a time-based fade to animate smoothly),
-    /// not `ctx.animate_bool` -- unlike the toggle-bool dropdown popups,
-    /// this already has a real wall-clock lifetime to derive opacity from
-    /// directly. Despite the field's own name, the message is the caller's
-    /// full text now, not just a path this function used to prepend
-    /// "Saved " to -- every original "Saved <path>" call site now includes
-    /// that itself, freeing this up for unrelated short-lived messages too
-    /// (e.g. a crash/respawn notice, see `EngineToHost` handling below).
-    /// Queues `message` behind whatever toast is showing. `build_save_toast`
-    /// takes it off the queue when it first draws it, and its
-    /// `SAVE_TOAST_DURATION` starts then, not here: a toast queued during
-    /// startup (an unreadable settings/session file) used to spend part of
-    /// its time before the first frame.
-    fn queue_toast(&mut self, message: String) {
-        self.save_toast_queue.push_back(message);
-    }
-
-    /// A spawn-failure toast: held a moment so failures with one cause (engine and `error`) read as one message, counted
-    /// by distinct intent (`url`, engine, `group`; `failure_toasts`).
-    pub(crate) fn queue_failure_toast(
-        &mut self,
-        kind: EngineKind,
-        url: &str,
-        group: Option<&str>,
-        error: &str,
-        message: String,
-    ) {
-        let intent = format!("{url}\u{1f}{}\u{1f}{}", engine_label(kind), group.unwrap_or_default());
-        self.failure_notices.push(std::time::Instant::now(), engine_label(kind), error, &intent, message);
-    }
-
-    /// `url` short enough for a toast: its first `TOAST_URL_CHARS` characters and an ellipsis. A toast sizes to its
-    /// text, and a `data:` URL can be megabytes.
-    fn toast_url(url: &str) -> String {
-        const TOAST_URL_CHARS: usize = 80;
-        match url.char_indices().nth(TOAST_URL_CHARS) {
-            Some((at, _)) => format!("{}\u{2026}", &url[..at]),
-            None => url.to_string(),
-        }
-    }
-
-    fn build_save_toast(&mut self, ui: &mut egui::Ui) {
-        const TOAST_FADE_IN: std::time::Duration = std::time::Duration::from_millis(150);
-        const TOAST_FADE_OUT: std::time::Duration = std::time::Duration::from_millis(400);
-        for message in self.failure_notices.flush(std::time::Instant::now()) {
-            self.queue_toast(message);
-        }
-        if self.failure_notices.is_pending() {
-            ui.ctx().request_repaint_after(failure_toasts::WINDOW);
-        }
-        if self.save_toast.is_none() {
-            self.save_toast = self.save_toast_queue.pop_front().map(|message| (message, std::time::Instant::now()));
-        }
-        let Some((message, shown_at)) = &self.save_toast else { return };
-        let elapsed = shown_at.elapsed();
-        if elapsed >= SAVE_TOAST_DURATION {
-            self.save_toast = None;
-            return;
-        }
-        ui.ctx().request_repaint();
-        let fade_in = (elapsed.as_secs_f32() / TOAST_FADE_IN.as_secs_f32()).min(1.0);
-        let remaining = SAVE_TOAST_DURATION.saturating_sub(elapsed);
-        let fade_out = (remaining.as_secs_f32() / TOAST_FADE_OUT.as_secs_f32()).min(1.0);
-        let opacity = fade_in.min(fade_out);
-        let message = message.clone();
-        egui::Area::new(egui::Id::new("save_toast"))
-            .anchor(egui::Align2::LEFT_BOTTOM, egui::vec2(12.0, -12.0))
-            .order(egui::Order::Foreground)
-            .interactable(false)
-            .show(ui.ctx(), |ui| {
-                ui.set_opacity(opacity);
-                // Same ACCENT-tinted glow the graph cards use, tying the
-                // toast into that visual language -- but this Frame
-                // auto-sizes to its own label, so the rect `card_glow_
-                // shapes` needs isn't known until *after* `.show()` below
-                // lays it out. Reserve two placeholder shapes now (glow is
-                // always two layers) so they still paint *behind* the
-                // frame by paint order, then fill them in for real once
-                // `response.rect` exists -- see `card_glow_shapes`'s own
-                // doc comment for why this indirection, unlike graph
-                // cards, is needed here specifically.
-                let glow_slots = [ui.painter().add(egui::Shape::Noop), ui.painter().add(egui::Shape::Noop)];
-                let response = popup_frame(ui).inner_margin(egui::Margin::symmetric(10, 6)).show(ui, |ui| {
-                    control_font(ui);
-                    ui.label(message);
-                });
-                let shapes = card_glow_shapes(response.response.rect, 3.0, ACCENT, 1.0, 1.0);
-                for (slot, shape) in glow_slots.into_iter().zip(shapes) {
-                    ui.painter().set(slot, shape);
-                }
-            });
-    }
-
-    /// One frame of UI. An open anchored popup takes Escape (the views skip theirs while one is
-    /// open, `popup_open`), and when it closes from the keyboard focus goes back to its opening button.
-    fn build_ui(&mut self, ui: &mut egui::Ui) {
-        self.engine_state_cache.borrow_mut().clear();
-        let open_at_start = self.open_popup;
-        let escape = open_at_start.is_some() && ui.input(|i| i.key_pressed(egui::Key::Escape));
-        self.build_ui_inner(ui);
-        if escape && self.open_popup == open_at_start {
-            self.open_popup = None;
-        }
-        if let Some(which) = open_at_start.filter(|_| self.open_popup.is_none()) {
-            if !ui.input(|i| i.pointer.any_click()) {
-                if let Some(button) = ui.data(|d| d.get_temp::<egui::Id>(App::popup_opener_key(which))) {
-                    ui.memory_mut(|m| m.request_focus(button));
-                }
-            }
-        }
-    }
-
-    fn build_ui_inner(&mut self, ui: &mut egui::Ui) {
-        self.handle_global_shortcuts(ui);
-        // The address bar is built only in Tab view, so leaving it by any
-        // path ends the edit, as Escape does. Otherwise the dropdown and
-        // typed text came back over whichever tab was shown next.
-        if !self.showing_tab_view() && self.address_bar.editing() {
-            self.address_bar.dismiss();
-            self.address_bar.focused = false;
-        }
-        // Likewise a drag ends when its card stops being drawn (Graph view left, or the card left the level by
-        // another replica's move): its release would never be seen, and the next one would save a stale pos.
-        self.end_stale_drag(self.transition.is_some() || self.view_mode == ViewMode::Graph);
-        // And pick-target mode, whose targets are drawn only there.
-        self.end_stale_connect(self.view_mode == ViewMode::Graph);
-        // And the rectangle selection, which only ever holds the tabs drawn on this level.
-        self.end_stale_selection();
-        // Every view, so a toast queued in Graph view (a crash/respawn
-        // notice, an unreadable session file) is seen where it happened.
-        self.build_save_toast(ui);
-        // A `Transition` (either direction) always renders Graph view's
-        // node layout as the backdrop — it's the one screen both a
-        // shrinking-away Tab view and an expanding-toward Tab view have a
-        // coherent shared position in (the target/source node). The actual
-        // animated content quad itself is drawn separately, in
-        // `render_frame` — see `transition_content_rects_points`.
-        if self.transition.is_some() {
-            self.build_graph_ui(ui);
-            // A Tab's transition quad is a GPU pane (`content_panes_pts`);
-            // an Image's is painted here, above the graph backdrop.
-            if let Some((tex_id, rect)) = self.transition.as_ref().and_then(|t| self.image_transition_frame(t)) {
-                // Clipped to the area below the toolbar `build_graph_ui`
-                // (the backdrop, drawn just above) just painted -- at the
-                // ToGraph end's t≈0, `rect` starts at the zoomed-in Image
-                // view's own rect, which can reach above
-                // `CHROME_HEIGHT_POINTS` into the toolbar row; this is a
-                // plain `Order::Foreground` layer with no clip of its own,
-                // so without this it painted over the toolbar for a frame.
-                // Same height as both the Graph and Item toolbars
-                // (`GRAPH_TOOLBAR_HEIGHT_POINTS == CHROME_HEIGHT_POINTS`),
-                // so this is correct at either end of the animation.
-                let screen = self.screen_size_points();
-                let clip_rect = egui::Rect::from_min_size(
-                    egui::pos2(0.0, CHROME_HEIGHT_POINTS),
-                    egui::vec2(screen.x, (screen.y - CHROME_HEIGHT_POINTS).max(0.0)),
-                );
-                ui.ctx()
-                    .layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("image_transition")))
-                    .with_clip_rect(clip_rect)
-                    .image(tex_id, rect, crate::card::FULL_UV, egui::Color32::WHITE);
-            }
-            return;
-        }
-        match self.view_mode {
-            ViewMode::Item => self.build_item_ui(ui),
-            ViewMode::Graph => self.build_graph_ui(ui),
-            ViewMode::Settings => self.build_settings_page(ui),
-        }
-        self.build_quick_switcher(ui);
-        self.build_import_confirm_popup(ui);
-        self.build_engine_confirm_popup(ui);
-        self.build_jar_confirm_popup(ui);
-        self.build_session_delete_popup(ui);
     }
 
     /// The "Keyboard Shortcuts (F1)" half of `render_universal_chip`.
