@@ -6,6 +6,7 @@ An EXPORTSTATE `cards[]` entry names a card by its type (plan 2b-6, Ruling 9):
   type       the card's MIME type (the TYPE_* constants in store/model.rs)
   loaded     true only for a tab with a running engine
   json_card  true for a JSON level's card, which is no stored node
+  unresponsive  true for a live tab whose engine stopped reading its pipe (wave 3b)
 The old `kind` enum names (Tab, Unloaded, Note, ...) are gone; this module is
 the one place that spells the mapping, so a script says `card_is(c, TAB, True)`
 for a live tab and `card_is(c, TAB, False)` for a sleeping one.

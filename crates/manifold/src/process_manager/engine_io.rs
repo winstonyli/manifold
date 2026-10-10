@@ -112,6 +112,8 @@ struct State {
     writing_since: Option<Instant>,
     /// A push was refused since the last completed write.
     refused: bool,
+    /// `take_newly_unresponsive` has reported the current stall.
+    reported: bool,
 }
 
 impl State {
@@ -176,6 +178,16 @@ impl Writer {
     /// writer. Never while closing (`shutdown`).
     pub(crate) fn is_unresponsive(&self, now: Instant) -> bool {
         self.0.lock().unresponsive(now)
+    }
+
+    /// True once per stall: the first call that finds the tab unresponsive since its last completed write (the toast).
+    pub(crate) fn take_newly_unresponsive(&self, now: Instant) -> bool {
+        let mut state = self.0.lock();
+        let newly = state.unresponsive(now) && !state.reported;
+        if newly {
+            state.reported = true;
+        }
+        newly
     }
 
     /// Queues `Shutdown` after everything queued and takes nothing more. Repeat calls do nothing.
@@ -256,6 +268,7 @@ fn write_queued<S: Read + Write>(mut channel: MessageChannel<S>, shared: &Shared
             let mut state = shared.lock();
             state.writing_since = None;
             state.refused = false;
+            state.reported = false;
         }
         if !written || last {
             return;
@@ -451,6 +464,22 @@ mod tests {
         assert!(got.len() < sent, "some were refused while full");
         assert_eq!(got.last(), Some(&sent), "a message sent after the recovery arrives");
         assert!(matches!(out.last(), Some(HostToEngine::Shutdown)));
+    }
+
+    #[test]
+    fn a_stall_is_reported_once_until_a_write_completes() {
+        let (writer, permit, _) = gated(false);
+        for n in 0..SEND_QUEUE_CAP + 2 {
+            writer.send(url(n));
+        }
+        assert!(writer.take_newly_unresponsive(Instant::now()));
+        assert!(!writer.take_newly_unresponsive(Instant::now()), "once per stall");
+        permit.send(()).unwrap();
+        assert!(eventually(Duration::from_secs(5), || !writer.is_unresponsive(Instant::now())));
+        for n in 0..SEND_QUEUE_CAP + 2 {
+            writer.send(url(n)); // the writer is stuck on its next write again, and the queue refills
+        }
+        assert!(writer.take_newly_unresponsive(Instant::now()), "a new stall is reported again");
     }
 
     #[test]

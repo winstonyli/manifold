@@ -378,6 +378,10 @@ pub enum DebugCommand {
     /// action, targeting an explicit id for the same reason as `CloseGroup`.
     /// See `App::request_sleep`.
     SleepNode(String),
+    /// `RESTARTENGINE id` -- the "Restart Engine" row of live tab `id`'s menu (`App::restart_engine`).
+    RestartEngine(String),
+    /// `ENDENGINE id` -- the "End Engine" row of live tab `id`'s menu (`App::end_engine`).
+    EndEngine(String),
     /// `IDLESWEEP secs` -- one idle auto-sleep sweep with a limit of `secs`
     /// seconds instead of the setting's minutes. See `App::sweep_idle_tabs`.
     IdleSweep(u64),
@@ -567,6 +571,12 @@ const COMMAND_HELP: &[(&str, &str)] = &[
         "Ask the tab `id` (or every tab of the group `id`) to sleep, same as its \"Sleep\" \
          context-menu action; it sleeps when the engine answers the page-state query (wait a second)",
     ),
+    (
+        "RESTARTENGINE id",
+        "Start a new engine host for live tab `id` at its URL, same as its \"Restart Engine\" row \
+         (offered while it is not responding)",
+    ),
+    ("ENDENGINE id", "End live tab `id`'s engine host and leave a failed card, same as its \"End Engine\" row"),
     (
         "IDLESWEEP secs",
         "Run one idle auto-sleep sweep: tabs out of sight for `secs` seconds are asked to sleep, \
@@ -819,6 +829,8 @@ pub fn parse_line(line: &str) -> Option<DebugCommand> {
             Some(DebugCommand::OpenedFrom { child: parts.next()?.to_string(), parent: parts.next()?.to_string() })
         }
         "SLEEPNODE" => non_empty(DebugCommand::SleepNode),
+        "RESTARTENGINE" => non_empty(DebugCommand::RestartEngine),
+        "ENDENGINE" => non_empty(DebugCommand::EndEngine),
         "IDLESWEEP" => rest.parse().ok().map(DebugCommand::IdleSweep),
         "SETJAR" => non_empty(DebugCommand::SetJar),
         "SWITCHJARNOW" => Some(DebugCommand::SwitchJarNow),
@@ -1363,6 +1375,16 @@ impl App {
                     self.request_sleep(&id, SleepWhy::Manual);
                 }
             }
+            DebugCommand::RestartEngine(id) => {
+                if !self.restart_engine(&id) {
+                    eprintln!("RESTARTENGINE: no live tab {id}; ignored");
+                }
+            }
+            DebugCommand::EndEngine(id) => {
+                if !self.end_engine(&id) {
+                    eprintln!("ENDENGINE: no live tab {id}; ignored");
+                }
+            }
             DebugCommand::SetJar(name) => {
                 if self.set_focused_tab_jar_named(&name) {
                     self.save_session();
@@ -1428,6 +1450,7 @@ impl App {
         // one's center is on screen: what a headless test needs to
         // aim a click or drag at a card. A card is named by its type
         // (`CardKind`), never a kind enum (plan 2b-6, Ruling 9).
+        let now = std::time::Instant::now();
         let cards: Vec<serde_json::Value> = self
             .level_items()
             .into_iter()
@@ -1440,6 +1463,7 @@ impl App {
                         "type": crate::store::model::TYPE_JSON,
                         "loaded": false,
                         "json_card": true,
+                        "unresponsive": false,
                         "screen": [screen.center().x, screen.center().y],
                         "rect": [screen.min.x, screen.min.y, screen.max.x, screen.max.y],
                     }));
@@ -1455,6 +1479,8 @@ impl App {
                     "parent": self.mirror.parent(&item.id),
                     "color": self.mirror.color(&item.id).is_some(),
                     "pinned": self.mirror.pinned(&item.id),
+                    // A live tab whose engine stopped reading (`EngineTab::is_unresponsive`).
+                    "unresponsive": node.as_tab().is_some_and(|t| t.tab.is_unresponsive(now)),
                     "editing": node.as_note().is_some_and(|n| n.editing),
                     "screen": [screen.center().x, screen.center().y],
                     "rect": [screen.min.x, screen.min.y, screen.max.x, screen.max.y],
@@ -1735,6 +1761,8 @@ mod tests {
             "SETNOTETEXT n1 hello",
             "MOVENODE n1 10 -20",
             "SLEEPNODE t1",
+            "RESTARTENGINE t1",
+            "ENDENGINE t1",
             "IDLESWEEP 30",
             "SETJAR default",
             "SWITCHJARNOW",
@@ -1875,6 +1903,10 @@ mod tests {
                 assert!(card.get(key).is_some(), "{key}: {card}");
             }
         }
+        app.switch_group_level(None);
+        assert_eq!(cards(&app)["live"]["unresponsive"], serde_json::json!(false));
+        app.nodes.get("live").and_then(|n| n.as_tab()).unwrap().tab.wedge();
+        assert_eq!(cards(&app)["live"]["unresponsive"], serde_json::json!(true), "its queue filled");
     }
 
     /// EXPORTSTATE's `edges`: each line at this level with its kind, Link node, ends and on-screen middle.

@@ -256,6 +256,23 @@ impl EngineTab {
         self.frame.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take()
     }
 
+    /// The engine has stopped reading: a send was refused, or one write has been stuck for
+    /// `engine_io::UNRESPONSIVE_AFTER` (the card badge and the menu's Restart and End rows).
+    pub(crate) fn is_unresponsive(&self, now: std::time::Instant) -> bool {
+        self.writer.is_unresponsive(now)
+    }
+
+    /// `is_unresponsive`, true once per stall (the toast).
+    pub(crate) fn take_newly_unresponsive(&self, now: std::time::Instant) -> bool {
+        self.writer.take_newly_unresponsive(now)
+    }
+
+    /// Makes a fake tab unresponsive: fills its queue (its peer must never be read).
+    #[cfg(test)]
+    pub(crate) fn wedge(&self) {
+        self.writer.wedge();
+    }
+
     /// A live tab for unit tests: no process, its control channel a loopback TCP connection. The returned peer
     /// reads what the app sends it (`HostToEngine`), timing out after 200 ms when nothing more comes; the sender
     /// feeds the tab's events as its reader would.

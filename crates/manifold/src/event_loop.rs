@@ -4,7 +4,7 @@
 
 use super::*;
 use crate::debug_control::debug_key_event;
-use crate::tabs::{AfterCrash, Held};
+use crate::tabs::{AfterCrash, Held, LeftClosed};
 use winit::window::Icon;
 
 /// The event loop's real user-event type: headless debug commands, plus
@@ -1113,6 +1113,8 @@ impl App {
         // above cannot build up in the first place.
         let mut frame_updates: std::collections::HashMap<String, FrameUpdate> = std::collections::HashMap::new();
         let mut messages: Vec<(String, EngineToHost)> = Vec::new();
+        let now = std::time::Instant::now();
+        let mut stuck: Vec<String> = Vec::new();
         for tab_id in &self.node_order {
             let Some(tab) = self.nodes.get(tab_id).and_then(|n| n.as_tab()) else {
                 continue;
@@ -1150,6 +1152,15 @@ impl App {
                     },
                 );
             }
+            if tab.tab.take_newly_unresponsive(now) {
+                stuck.push(tab.url.clone());
+            }
+        }
+        for url in stuck {
+            self.queue_toast(format!(
+                "Not responding: {}. Right-click its card to restart or end it.",
+                Self::toast_url(&url)
+            ));
         }
         // One `save_session()` for the whole drain rather than one per
         // `NavigationStateChanged`.
@@ -1423,17 +1434,7 @@ impl App {
                 return url_changed;
             }
             EngineToHost::Crashed { reason } => {
-                // Restarted on the mirror's engine: a swap in flight (`swap_target`, or one waiting for its cookies)
-                // has already saved its target, so the tab restarts on it, the crashed engine its fallback.
-                let want = self.mirror.engine(tab_id);
-                let Some(spawn) = self.nodes.get(tab_id).and_then(|n| {
-                    let t = n.as_tab()?;
-                    let fallback_kind = (t.tab.kind != want).then_some(t.tab.kind);
-                    let spawn = TabSpawn::respawn(tab_id, n, self.mirror.carried(tab_id), want, t.url.clone())?;
-                    Some(TabSpawn { fallback_kind, ..spawn })
-                }) else {
-                    return false;
-                };
+                let Some(spawn) = self.restart_spawn(tab_id) else { return false };
                 // A stale engine binary (protocol mismatch) or a host that cannot
                 // start would fail the same way again, and a page or install that
                 // crashes on every start would loop forever; each is left as a
@@ -1443,12 +1444,12 @@ impl App {
                     AfterCrash::Restart => {}
                     AfterCrash::GiveUp => {
                         eprintln!("engine-host for {tab_id} crashed ({reason}); not restarting");
-                        self.leave_crashed_card(tab_id, &reason, false);
+                        self.leave_failed_card(tab_id, &reason, LeftClosed::KeepsCrashing);
                         return false;
                     }
                     AfterCrash::CannotStart(why) => {
                         eprintln!("engine-host for {tab_id} could not start ({why}); not restarting");
-                        self.leave_crashed_card(tab_id, why, true);
+                        self.leave_failed_card(tab_id, why, LeftClosed::CannotStart);
                         return false;
                     }
                 }
@@ -1467,16 +1468,7 @@ impl App {
                 // doc comment) rather than a second, separate notification
                 // mechanism.
                 self.queue_toast(format!("Tab crashed, restarted: {}", Self::toast_url(url)));
-                self.nodes.remove(tab_id);
-                // Same stale-state guard `destroy_tab`/`finish_swap` apply — see
-                // `finish_swap`'s own comment on this.
-                if self.interaction.dragging.as_deref() == Some(tab_id) {
-                    self.interaction.dragging = None;
-                }
-                if self.interaction.hovered.as_deref() == Some(tab_id) {
-                    self.interaction.hovered = None;
-                }
-                self.respawn_tab(spawn);
+                self.restart_with(tab_id, spawn);
             }
             // Page-triggered new tab (target=_blank/window.open()/ctrl+click,
             // intercepted by CEF/WebKit/WebView2 - see EngineToHost::OpenTabRequested's

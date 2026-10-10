@@ -3,7 +3,7 @@ use crate::redirect_fetch::{FetchResult, FetchTarget};
 use crate::store::journal::Journal;
 use crate::store::model::ActorId;
 use crate::store::testutil::{temp_dir, XorShift};
-use crate::tabs::SpawnPurpose;
+use crate::tabs::{LeftClosed, SpawnPurpose};
 use crate::NodeAction;
 
 const A: ActorId = ActorId(0xA);
@@ -4893,8 +4893,8 @@ fn cannot_start_crashes_with_one_reason_toast_once_with_a_count() {
     let mut app = app_on(&temp_dir("crash-toasts").join("session.mnf"), 1);
     let a = succeed_spawn(&mut app, "https://a/");
     let b = succeed_spawn(&mut app, "https://b/");
-    app.leave_crashed_card(&a, "no engine", true);
-    app.leave_crashed_card(&b, "no engine", true);
+    app.leave_failed_card(&a, "no engine", LeftClosed::CannotStart);
+    app.leave_failed_card(&b, "no engine", LeftClosed::CannotStart);
     assert!(app.toasts.save_toast_queue.is_empty(), "held inside the window");
     assert_eq!(flushed_failure_toasts(&mut app), ["2 tabs couldn't start: no engine"]);
 }
@@ -4929,9 +4929,44 @@ fn a_crashed_tab_beside_a_failed_card_for_its_intent_leaves_one_card() {
     app.spawn_tab_at("https://a/", egui::Vec2::ZERO, None, None);
     fail_spawns(&mut app);
     assert_eq!(failed_cards(&app).len(), 1, "setup: a failed card beside the live tab");
-    app.leave_crashed_card(&live, "keeps crashing", false);
+    app.leave_failed_card(&live, "keeps crashing", LeftClosed::KeepsCrashing);
     assert_eq!(failed_cards(&app), std::slice::from_ref(&live));
     assert_eq!(app.closed.len(), 1, "the other card is recorded in Recently Closed");
+}
+
+/// A tab whose engine stops reading is toasted once per stall, not once per drain.
+#[test]
+fn a_tab_that_stops_responding_is_toasted_once() {
+    let mut app = app_on(&temp_dir("not-responding").join("session.mnf"), 1);
+    let (id, _peer) = live_tab(&mut app, EngineKind::Servo, "https://a/");
+    app.nodes.get(&id).and_then(|n| n.as_tab()).unwrap().tab.wedge();
+    let toasts = |app: &App| app.toasts.save_toast_queue.iter().filter(|t| t.starts_with("Not responding: ")).count();
+    app.drain_tab_events();
+    assert_eq!(toasts(&app), 1);
+    app.drain_tab_events();
+    assert_eq!(toasts(&app), 1, "once per stall");
+}
+
+/// "Restart Engine" starts a new host for the tab under the same id, and says so.
+#[test]
+fn restart_engine_respawns_the_tab_under_its_id() {
+    let mut app = app_on(&temp_dir("restart-engine").join("session.mnf"), 1);
+    let live = succeed_spawn(&mut app, "https://a/");
+    assert!(app.restart_engine(&live));
+    assert!(app.test_spawns.iter().any(|(s, _)| s.id == live), "a respawn under the same id");
+    assert!(app.toasts.save_toast_queue.iter().any(|t| t == "Restarted: https://a/"));
+    assert!(!app.restart_engine("no-such-tab"));
+}
+
+/// "End Engine" leaves a failed card for the tab, and says so.
+#[test]
+fn end_engine_leaves_a_failed_card() {
+    let mut app = app_on(&temp_dir("end-engine").join("session.mnf"), 1);
+    let live = succeed_spawn(&mut app, "https://a/");
+    assert!(app.end_engine(&live));
+    assert_eq!(failed_cards(&app), std::slice::from_ref(&live));
+    assert!(app.toasts.save_toast_queue.iter().any(|t| t == "Ended (not responding): https://a/"));
+    assert!(!app.end_engine(&live), "a failed card is no live tab");
 }
 
 /// A startup Root spawn that failed leaves a saved failed card; the next launch restores it as the focused tab and

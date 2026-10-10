@@ -313,6 +313,16 @@ pub(crate) fn crashes_too_often(times: &mut Vec<std::time::Instant>, now: std::t
     times.len() >= CRASH_LIMIT
 }
 
+/// Why `leave_failed_card` left a failed card, which picks its toast.
+pub(crate) enum LeftClosed {
+    /// `AfterCrash::GiveUp`: it crashed too often.
+    KeepsCrashing,
+    /// `AfterCrash::CannotStart`: the host could not start; the toast says why.
+    CannotStart,
+    /// "End Engine" on a tab that stopped responding.
+    Ended,
+}
+
 /// What to do about a tab whose engine reported `Crashed { reason }` at `now`.
 #[derive(Debug, PartialEq)]
 pub(crate) enum AfterCrash<'a> {
@@ -1236,8 +1246,8 @@ impl App {
     /// A tab whose engine keeps crashing (`crashes_too_often`), or speaks
     /// another protocol version, becomes a failed card: the reason is its
     /// tooltip, and opening it tries again. Respawning would only loop.
-    /// `cannot_start`: the host could not start at all (`AfterCrash::CannotStart`), and the toast says why.
-    pub(crate) fn leave_crashed_card(&mut self, id: &str, reason: &str, cannot_start: bool) {
+    /// `why` picks the toast: `CannotStart` says why the host could not start.
+    pub(crate) fn leave_failed_card(&mut self, id: &str, reason: &str, why: LeftClosed) {
         let Some(node) = self.nodes.get_mut(id) else { return };
         let Runtime::Tab(tab) = &node.runtime else { return };
         let (url, kind) = (tab.url.clone(), tab.tab.kind);
@@ -1263,13 +1273,62 @@ impl App {
             self.record_closed(&twin);
             self.remove_tab(&twin);
         }
-        if cannot_start {
-            let message = format!("Couldn't start {} for {}: {reason}", engine_label(kind), Self::toast_url(&url));
-            self.queue_failure_toast(kind, &url, group.as_deref(), reason, message);
-        } else {
-            self.queue_toast(format!("Tab keeps crashing, left closed: {}", Self::toast_url(&url)));
+        match why {
+            LeftClosed::CannotStart => {
+                let message = format!("Couldn't start {} for {}: {reason}", engine_label(kind), Self::toast_url(&url));
+                self.queue_failure_toast(kind, &url, group.as_deref(), reason, message);
+            }
+            LeftClosed::KeepsCrashing => {
+                self.queue_toast(format!("Tab keeps crashing, left closed: {}", Self::toast_url(&url)))
+            }
+            LeftClosed::Ended => self.queue_toast(format!("Ended (not responding): {}", Self::toast_url(&url))),
         }
         self.save_session();
+    }
+
+    /// The spawn that restarts live tab `id` on the engine the mirror holds for it: a swap in flight (`swap_target`,
+    /// or one waiting for its cookies) has already saved its target, so the tab restarts on it, the running engine
+    /// its fallback. `None` when `id` is no live tab.
+    pub(crate) fn restart_spawn(&self, id: &str) -> Option<TabSpawn> {
+        let want = self.mirror.engine(id);
+        let node = self.nodes.get(id)?;
+        let tab = node.as_tab()?;
+        let fallback_kind = (tab.tab.kind != want).then_some(tab.tab.kind);
+        let spawn = TabSpawn::respawn(id, node, self.mirror.carried(id), want, tab.url.clone())?;
+        Some(TabSpawn { fallback_kind, ..spawn })
+    }
+
+    /// Replaces live tab `id`'s engine with one started from `spawn` (`restart_spawn`). Dropping the old `EngineTab`
+    /// ends its host.
+    pub(crate) fn restart_with(&mut self, id: &str, spawn: TabSpawn) {
+        self.nodes.remove(id);
+        // Same stale-state guard `destroy_tab`/`finish_swap` apply — see `finish_swap`'s own comment on this.
+        if self.interaction.dragging.as_deref() == Some(id) {
+            self.interaction.dragging = None;
+        }
+        if self.interaction.hovered.as_deref() == Some(id) {
+            self.interaction.hovered = None;
+        }
+        self.respawn_tab(spawn);
+    }
+
+    /// "Restart Engine": a new host for live tab `id` at its current URL, as a crash restart does, without counting
+    /// toward the crash limit. False when `id` is no live tab.
+    pub(crate) fn restart_engine(&mut self, id: &str) -> bool {
+        let Some(spawn) = self.restart_spawn(id) else { return false };
+        self.queue_toast(format!("Restarted: {}", Self::toast_url(&spawn.url)));
+        self.restart_with(id, spawn);
+        true
+    }
+
+    /// "End Engine": ends live tab `id`'s host and leaves a failed card, which a click starts again. False when `id`
+    /// is no live tab.
+    pub(crate) fn end_engine(&mut self, id: &str) -> bool {
+        if self.nodes.get(id).and_then(|n| n.as_tab()).is_none() {
+            return false;
+        }
+        self.leave_failed_card(id, "It stopped responding and was ended.", LeftClosed::Ended);
+        true
     }
 
     /// First phase of every sleep: validates as `sleep_now` does, asks the
