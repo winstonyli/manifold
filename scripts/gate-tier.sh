@@ -21,8 +21,8 @@ classify() {
     case "$1" in
     Cargo.toml | Cargo.lock | .cargo/* | rust-toolchain* | crates/*/Cargo.toml | crates/ipc-protocol/* | crates/manifold-engine-*/*)
         echo "full dependency, protocol or engine crate" ;;
-    "$src"/session_sync.rs | "$src"/session_sync/* | "$src"/store/* | "$src"/mirror.rs | "$src"/session.rs | "$src"/local_state.rs | \
-        "$src"/process_manager.rs | "$src"/net.rs | "$src"/engine_install.rs | "$src"/redirect_fetch.rs | "$src"/favicon_fetch.rs | "$src"/jar.rs)
+    "$src"/session_sync.rs | "$src"/session_sync/* | "$src"/store/* | "$src"/mirror.rs | "$src"/mirror/* | "$src"/session.rs | "$src"/session/* | "$src"/local_state.rs | "$src"/local_state/* | \
+        "$src"/process_manager.rs | "$src"/process_manager/* | "$src"/net.rs | "$src"/net/* | "$src"/engine_install.rs | "$src"/engine_install/* | "$src"/redirect_fetch.rs | "$src"/redirect_fetch/* | "$src"/favicon_fetch.rs | "$src"/favicon_fetch/* | "$src"/jar.rs | "$src"/jar/*)
         echo "full sync, store, mirror, session, engine or network core" ;;
     scripts/two-instance-test.sh | scripts/compare_sessions.py | scripts/session_asserts.py | scripts/nonce_server.py | scripts/gate*.sh | \
         scripts/timing.sh | scripts/fresh-exe.sh | scripts/winpid.sh | scripts/lib.sh | scripts/cpu-sampler.ps1)
