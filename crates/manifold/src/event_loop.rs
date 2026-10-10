@@ -80,18 +80,20 @@ pub(crate) fn engine_wake(
     let proxy = std::sync::Mutex::new(proxy);
     coalesced_wake(pending, move || {
         let proxy = proxy.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        let _ = proxy.send_event(UserEvent::EngineMessage);
+        proxy.send_event(UserEvent::EngineMessage).is_ok()
     })
 }
 
-/// `post`, unless `pending` says a post is already waiting to be handled.
+/// `post` (true if it queued the event), unless `pending` says a post is already waiting to be handled.
 fn coalesced_wake(
     pending: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    post: impl Fn() + Send + Sync + 'static,
+    post: impl Fn() -> bool + Send + Sync + 'static,
 ) -> crate::process_manager::engine_io::Wake {
     std::sync::Arc::new(move || {
-        if !pending.swap(true, std::sync::atomic::Ordering::SeqCst) {
-            post();
+        // A post that was not queued (the loop is gone, or the OS refused) clears the flag again: left set, it would mute
+        // every later wake.
+        if !pending.swap(true, std::sync::atomic::Ordering::SeqCst) && !post() {
+            pending.store(false, std::sync::atomic::Ordering::SeqCst);
         }
     })
 }
@@ -1625,6 +1627,7 @@ mod idle_tests {
         let count = Arc::clone(&posted);
         let wake = coalesced_wake(Arc::clone(&pending), move || {
             count.fetch_add(1, Ordering::SeqCst);
+            true
         });
         for _ in 0..5 {
             wake();

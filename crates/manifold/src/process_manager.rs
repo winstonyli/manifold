@@ -354,7 +354,7 @@ fn reap_host(kind: EngineKind, mut child: Child) {
         // of any Windows-side process state: confirmed live, a killed
         // relay leaves that whole tree orphaned and running
         // indefinitely, invisible to any further Windows-side cleanup.
-        // The graceful `Shutdown` sent above already makes
+        // The graceful `Shutdown` queued above (the writer sends it before the reaper gives up) already makes
         // manifold-engine-webkit return from `main()` on its own, which
         // cascades correctly on the Linux side (xvfb-run's own EXIT
         // trap kills its Xvfb child once its wrapped command exits, and

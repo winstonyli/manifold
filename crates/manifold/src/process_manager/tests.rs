@@ -655,7 +655,8 @@ fn sends_to_an_engine_that_stopped_reading_never_block() {
     assert!(tab.writer.is_unresponsive(std::time::Instant::now()), "its queue filled, so it reads as unresponsive");
     let start = std::time::Instant::now();
     drop(tab);
-    assert!(start.elapsed() < Duration::from_secs(1), "closing a stuck tab does not wait on it");
+    // `fake_fed` has no child process, so `Drop` returns before its stuck-tab rule: this only bounds the rest of `Drop`.
+    assert!(start.elapsed() < Duration::from_secs(1), "dropping a stuck tab does not block");
 }
 
 /// A writer stuck on a local pipe its engine stopped reading ends when the engine's end closes, as killing the engine

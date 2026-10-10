@@ -598,8 +598,14 @@ impl App {
     /// Asks every live WebView2 and CEF tab for its cookies.
     pub(crate) fn jar_pull_all(&mut self) {
         self.cookies.jar_pulls.retain(|id, _| self.nodes.contains_key(id));
-        let ids: Vec<String> =
-            self.nodes.iter().filter(|(_, n)| n.as_tab().is_some()).map(|(id, _)| id.clone()).collect();
+        // Not a tab whose engine stopped reading: its reply cannot come, and the final pull would wait on it.
+        let now = std::time::Instant::now();
+        let ids: Vec<String> = self
+            .nodes
+            .iter()
+            .filter(|(_, n)| n.as_tab().is_some_and(|t| !t.tab.is_unresponsive(now)))
+            .map(|(id, _)| id.clone())
+            .collect();
         for id in ids {
             self.pull_cookies(&id);
         }
