@@ -1240,12 +1240,12 @@ impl App {
     /// (an attachment download, a 204), and CEF reports nothing after it.
     pub(crate) fn reported_url(&mut self, tab_id: &str, url: String, loading: bool, current: String) -> String {
         const NAVIGATE_START_WINDOW: std::time::Duration = std::time::Duration::from_secs(2);
-        let Some((from, at, started)) = self.navigated_from.get_mut(tab_id) else { return url };
+        let Some((from, at, started)) = self.spawns.navigated_from.get_mut(tab_id) else { return url };
         if *from == url && at.elapsed() < NAVIGATE_START_WINDOW && (loading || !*started) {
             *started |= loading;
             return current;
         }
-        self.navigated_from.remove(tab_id);
+        self.spawns.navigated_from.remove(tab_id);
         url
     }
 
@@ -1290,10 +1290,10 @@ impl App {
                     return false;
                 };
                 let url_changed = node.url != url;
-                let skip = skip_convert_after(self.skip_convert.get(tab_id).copied(), url_changed, loading);
+                let skip = skip_convert_after(self.spawns.skip_convert.get(tab_id).copied(), url_changed, loading);
                 match skip {
-                    Some(settled) => self.skip_convert.insert(tab_id.to_string(), settled),
-                    None => self.skip_convert.remove(tab_id),
+                    Some(settled) => self.spawns.skip_convert.insert(tab_id.to_string(), settled),
+                    None => self.spawns.skip_convert.remove(tab_id),
                 };
                 if url_changed {
                     self.history.push(history::HistoryEntry { title: title.clone(), url: url.clone() });
@@ -1348,7 +1348,7 @@ impl App {
                 // start would fail the same way again, and a page or install that
                 // crashes on every start would loop forever; each is left as a
                 // failed card instead.
-                let times = self.tab_crashes.entry(tab_id.to_string()).or_default();
+                let times = self.spawns.tab_crashes.entry(tab_id.to_string()).or_default();
                 match crate::tabs::after_crash(&reason, times, std::time::Instant::now()) {
                     AfterCrash::Restart => {}
                     AfterCrash::GiveUp => {
@@ -1434,7 +1434,7 @@ impl App {
             // fetch: it's already in hand, so there's nothing to background.
             EngineToHost::JsonBody { body } => {
                 let url = self.nodes.get(tab_id).and_then(|n| n.as_tab()).map(|tab| tab.url.clone());
-                if self.skip_convert.contains_key(tab_id) {
+                if self.spawns.skip_convert.contains_key(tab_id) {
                     return false;
                 }
                 if let (Some(url), Some(dir)) = (url, crate::profile::content_dir()) {
@@ -1456,7 +1456,7 @@ impl App {
             // in `drain_tab_events`, not here.
             EngineToHost::RedirectableContent { content_type } => {
                 use crate::content::ContentKind as K;
-                if self.skip_convert.contains_key(tab_id) {
+                if self.spawns.skip_convert.contains_key(tab_id) {
                     return false;
                 }
                 let url = self.nodes.get(tab_id).and_then(|n| n.as_tab()).map(|t| t.url.clone());

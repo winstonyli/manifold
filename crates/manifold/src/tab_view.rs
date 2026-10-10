@@ -468,7 +468,7 @@ impl App {
         };
         // Missing (mid-respawn), or a failed tab's card.
         if !self.nodes.get(&focused_id).is_some_and(|n| n.as_tab().is_some()) {
-            if self.pending_respawn_focus.as_deref() == Some(focused_id.as_str()) {
+            if self.spawns.pending_respawn_focus.as_deref() == Some(focused_id.as_str()) {
                 self.build_respawn_placeholder(ui, &focused_id);
             } else {
                 self.view_mode = ViewMode::Graph;

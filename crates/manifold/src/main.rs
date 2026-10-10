@@ -82,7 +82,7 @@ use export::*;
 use fetched::*;
 use node_menu::*;
 use session::sanitize_session_name;
-use tabs::{SpawnPurpose, TabCarry, TabSpawn, TabSpawnOutcome};
+use tabs::{SpawnPurpose, SpawnTracker, TabCarry, TabSpawn, TabSpawnOutcome};
 use text::*;
 use view_modes::*;
 use zoom_chip::*;
@@ -365,29 +365,6 @@ struct App {
     /// Ids for nodes made while there is no journal (unit tests, a failed
     /// open): this launch's own actor, so they parse as store ids.
     fallback_ids: (store::model::ActorId, u64),
-    /// Tab spawns started by `spawn_tab_async` whose `TabSpawned` result
-    /// hasn't been handled yet. Read by the headless `WAITTABS` command,
-    /// whose waiting senders sit in `tabs_spawned_waiters` until this
-    /// reaches zero.
-    tab_spawns_in_flight: usize,
-    /// Ids whose tab spawn is in flight (every `SpawnPurpose`), each with
-    /// the tab it was started as (`session_sync::spawn_snapshot`). No live
-    /// node yet (contract "In-flight spawns"); a save creates one the store
-    /// doesn't hold yet (a new, imported or reopened tab) from this snapshot
-    /// (`snapshot`), so a quit before it lands doesn't lose it. A respawn
-    /// queues no delete, so the store keeps the tab meanwhile.
-    spawning: HashMap<String, session_sync::Snapshot>,
-    /// Other replicas' latest change to a node in `spawning`, applied when
-    /// its spawn lands (`None`: deleted). The spawn itself carries only
-    /// what it was started with.
-    remote_in_flight: HashMap<String, Option<session_sync::RemoteNode>>,
-    /// Tabs loading a url the host gave them, with when each was last seen
-    /// loading; their url changes aren't shared meanwhile
-    /// (`App::shares_url_change`).
-    host_loads: HashMap<String, std::time::Instant>,
-    /// Tabs `navigate_tab` just moved on, with the url each left, when, and
-    /// whether the engine has reported loading since (`App::reported_url`).
-    navigated_from: HashMap<String, (String, std::time::Instant, bool)>,
     /// Nodes placed here that the next save creates (2b-5 Ruling 3): every way a node enters the live graph
     /// (`place_node`, `spawn_tab_async`, a jar's `add_jar`) queues its id; the save creates each the document lacks,
     /// from the mirror or the spawn's snapshot (`snapshot`). One the document already holds (a restore, another
@@ -430,15 +407,8 @@ struct App {
     /// populated here -- the view fields are resolved once, in `apply_local`
     /// itself, since spawning is enough for those to take effect.
     pending_local: Option<local_state::LocalState>,
-    tabs_spawned_waiters: Vec<std::sync::mpsc::Sender<()>>,
     /// Senders of the headless `WAITIDLE` commands waiting for `debug_idle`.
     idle_waiters: Vec<std::sync::mpsc::Sender<()>>,
-    /// Bumped by `replace_running_session`. A tab spawn carries the value it
-    /// started under, and `handle_tab_spawn_result` drops a result from an
-    /// older one: it belongs to the replaced session, and inserting it would
-    /// add a stray tab to the new scene, so a spawn from a replaced session
-    /// never lands in it.
-    session_generation: u64,
     /// Shared across every note's own rendered (non-`editing`) view --
     /// `egui_commonmark`'s own recommended usage (glyph-layout/heading-id
     /// state, not per-note content), not a fresh cache per card per frame.
@@ -497,6 +467,8 @@ struct App {
     link: LinkGesture,
     /// Graph view drag, hover, selection and pending-card state. See `GraphInteraction`.
     interaction: GraphInteraction,
+    /// Tab spawns in flight, crash history and navigation bookkeeping. See `SpawnTracker`.
+    spawns: SpawnTracker,
     /// Graph view's pan/zoom and its animations.
     camera: GraphCamera,
     /// Level-of-detail: true once a frame's own count of viewport-visible
@@ -625,9 +597,6 @@ struct App {
     /// Admits or drops page-opened tabs (`EngineToHost::OpenTabRequested`)
     /// per source tab: a user gesture and a rate budget.
     popup_gate: popup_gate::PopupGate,
-    /// Recent engine crash times per tab id (`tabs::crashes_too_often`): a
-    /// tab crashing too often is left as a failed card, not respawned.
-    tab_crashes: HashMap<String, Vec<std::time::Instant>>,
 
     /// When `save_session` last committed to the store -- shown in the
     /// settings popup's Sessions section next to a "Save Now" button, so a
@@ -743,36 +712,6 @@ struct App {
     /// before `main` sets it; every real spawn happens after that.
     event_proxy: Option<EventLoopProxy<UserEvent>>,
 
-    /// The tab id `respawn_tab` was called for *while it was the focused
-    /// tab* — i.e. an engine swap or crash recovery is currently respawning
-    /// the tab the user is looking at. `build_tab_view_ui`'s existing "focused
-    /// tab missing from `self.nodes`" guard (a pre-existing one-frame safety
-    /// net, from before spawning was async) would otherwise bounce the user
-    /// to Graph view for the tab's *entire* respawn duration — imperceptible
-    /// when spawning was synchronous, but a visible multi-second flicker
-    /// back to Graph and then back to Tab view now that a WebKit respawn can
-    /// take many seconds. Set in `respawn_tab`, cleared in
-    /// `handle_tab_spawn_result` once that same id's `Respawn` outcome
-    /// (`Ok` or `Err`) arrives.
-    pending_respawn_focus: Option<String>,
-
-    /// Unloaded tabs' cards whose `wake_tab` spawn is in flight. Unlike a
-    /// crash respawn, the card is still on the graph meanwhile, so it can
-    /// be moved or closed: the outcome takes the card's placement as it is
-    /// now, and is dropped if the card is gone. Set in `wake_tab`, cleared
-    /// by that outcome in `handle_tab_spawn_result`.
-    wakes_in_flight: HashSet<String>,
-
-    /// Tabs that stay tabs whatever they load, each with whether that load
-    /// has settled (reported `loading == false`): one opened by "Open as
-    /// tab", and one loading another replica's url (`materialize`), which
-    /// that replica converts itself. Every `RedirectableContent`/`JsonBody`
-    /// report is skipped while a tab is in here. It stays until a real url
-    /// change after the load settles (an HTTP redirect during it doesn't
-    /// count; see `skip_convert_after`) or the tab closes (`remove_tab`).
-    /// Not persisted (spec "Left open").
-    skip_convert: HashMap<String, bool>,
-
     /// Windowless tests have no event loop to spawn on: `spawn_tab_async`
     /// parks each spawn here (with its `session_generation`) for the test
     /// to hand `handle_tab_spawn_result` an outcome itself.
@@ -858,11 +797,6 @@ impl Default for App {
             view_mode: ViewMode::Item,
             journal: None,
             fallback_ids: (store::model::ActorId::random(), 0),
-            tab_spawns_in_flight: 0,
-            spawning: HashMap::new(),
-            remote_in_flight: HashMap::new(),
-            host_loads: HashMap::new(),
-            navigated_from: HashMap::new(),
             pending_creates: std::collections::BTreeSet::new(),
             pending_deletes: std::collections::BTreeSet::new(),
             mirror: mirror::Mirror::default(),
@@ -874,9 +808,7 @@ impl Default for App {
             local_written_at: std::time::Instant::now(),
             closed_changed_at: None,
             pending_local: None,
-            tabs_spawned_waiters: Vec::new(),
             idle_waiters: Vec::new(),
-            session_generation: 0,
             commonmark_cache: egui_commonmark::CommonMarkCache::default(),
             cursor_pos: (0.0, 0.0),
             native_drag_tab: None,
@@ -892,6 +824,7 @@ impl Default for App {
             favicon_resolved: HashSet::new(),
             link: LinkGesture::default(),
             interaction: GraphInteraction::default(),
+            spawns: SpawnTracker::default(),
             camera: GraphCamera::new(),
             graph_lod_simplified: false,
             truncate_cache: HashMap::new(),
@@ -918,7 +851,6 @@ impl Default for App {
             save_toast_queue: std::collections::VecDeque::new(),
             failure_notices: Default::default(),
             popup_gate: popup_gate::PopupGate::default(),
-            tab_crashes: HashMap::new(),
             last_session_save: None,
             save_retry_at: None,
             store_notices: std::collections::BTreeSet::new(),
@@ -949,9 +881,6 @@ impl Default for App {
             card_hint: None,
             transition: None,
             event_proxy: None,
-            pending_respawn_focus: None,
-            wakes_in_flight: HashSet::new(),
-            skip_convert: HashMap::new(),
             #[cfg(test)]
             test_spawns: Vec::new(),
             #[cfg(test)]

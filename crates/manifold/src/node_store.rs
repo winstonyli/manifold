@@ -101,14 +101,12 @@ impl App {
     /// Never call it for a crash respawn or an engine swap: those are temporary, and keep `tab_crashes`,
     /// `nav_history` and `saved_scroll`.
     pub(crate) fn forget_id(&mut self, id: &str) {
-        self.skip_convert.remove(id);
+        self.spawns.forget(id);
         self.pending_sleeps.remove(id);
         self.clear_cookie_state(id);
         self.saved_scroll.remove(id);
         self.nav_history.remove(id);
-        self.navigated_from.remove(id);
         self.popup_gate.forget(id);
-        self.tab_crashes.remove(id);
         if self.naming_jar.as_ref().is_some_and(|(t, _)| t == id) {
             self.naming_jar = None;
         }
@@ -117,9 +115,6 @@ impl App {
         }
         if self.node_menu.as_ref().is_some_and(|(n, _)| n == id) {
             self.node_menu = None;
-        }
-        if self.pending_respawn_focus.as_deref() == Some(id) {
-            self.pending_respawn_focus = None;
         }
         self.interaction.forget(id);
         self.forget_connect_source(id);

@@ -47,7 +47,7 @@ impl App {
         let (zoom_factor, title, muted) = (tab.zoom_factor, tab.title.clone(), tab.muted);
         let carry = TabCarry { pinned, color, zoom_factor, title, muted };
         let url = tab.url.clone();
-        self.wakes_in_flight.insert(id.to_string());
+        self.spawns.wakes_in_flight.insert(id.to_string());
         // Another engine is saved as the wake starts, not when it lands (2b-3 Ruling 5).
         self.edit_engine(id, kind);
         let (id, purpose, fallback_kind) = (id.to_string(), SpawnPurpose::Wake, None);

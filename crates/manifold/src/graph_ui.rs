@@ -746,7 +746,7 @@ impl App {
     /// Applies a pending frame-restore and the toolbar's Fit request to the camera.
     fn apply_camera_requests(&mut self, reset_view: bool) {
         // See `GraphCamera::frame_restored`.
-        if self.camera.frame_restored && self.tab_spawns_in_flight == 0 {
+        if self.camera.frame_restored && self.spawns.tab_spawns_in_flight == 0 {
             self.camera.frame_restored = false;
             // Settled first, as in `switch_group_level`: fitting the
             // pre-settle positions would leave spread-out nodes off screen.

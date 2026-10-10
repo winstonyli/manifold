@@ -4,6 +4,108 @@ use super::*;
 use ipc_protocol::PageState;
 use sleep_state::{PendingSleep, SavedScroll, SleepWhy, Verdict};
 
+/// Tab spawn and respawn bookkeeping (`App::spawns`): spawns in flight and what waits on them, the per-tab state
+/// that outlives a spawn (`host_loads`, `navigated_from`, `skip_convert`, `tab_crashes`), and the session generation
+/// that tells a result from a replaced session.
+#[derive(Default)]
+pub(crate) struct SpawnTracker {
+    /// Tab spawns started by `spawn_tab_async` whose `TabSpawned` result
+    /// hasn't been handled yet. Read by the headless `WAITTABS` command,
+    /// whose waiting senders sit in `tabs_spawned_waiters` until this
+    /// reaches zero.
+    pub(crate) tab_spawns_in_flight: usize,
+
+    /// Ids whose tab spawn is in flight (every `SpawnPurpose`), each with
+    /// the tab it was started as (`session_sync::spawn_snapshot`). No live
+    /// node yet (contract "In-flight spawns"); a save creates one the store
+    /// doesn't hold yet (a new, imported or reopened tab) from this snapshot
+    /// (`snapshot`), so a quit before it lands doesn't lose it. A respawn
+    /// queues no delete, so the store keeps the tab meanwhile.
+    pub(crate) spawning: HashMap<String, session_sync::Snapshot>,
+
+    /// Other replicas' latest change to a node in `spawning`, applied when
+    /// its spawn lands (`None`: deleted). The spawn itself carries only
+    /// what it was started with.
+    pub(crate) remote_in_flight: HashMap<String, Option<session_sync::RemoteNode>>,
+
+    /// Tabs loading a url the host gave them, with when each was last seen
+    /// loading; their url changes aren't shared meanwhile
+    /// (`App::shares_url_change`).
+    pub(crate) host_loads: HashMap<String, std::time::Instant>,
+
+    /// Tabs `navigate_tab` just moved on, with the url each left, when, and
+    /// whether the engine has reported loading since (`App::reported_url`).
+    pub(crate) navigated_from: HashMap<String, (String, std::time::Instant, bool)>,
+
+    pub(crate) tabs_spawned_waiters: Vec<std::sync::mpsc::Sender<()>>,
+
+    /// Bumped by `replace_running_session`. A tab spawn carries the value it
+    /// started under, and `handle_tab_spawn_result` drops a result from an
+    /// older one: it belongs to the replaced session, and inserting it would
+    /// add a stray tab to the new scene, so a spawn from a replaced session
+    /// never lands in it.
+    pub(crate) session_generation: u64,
+
+    /// Recent engine crash times per tab id (`tabs::crashes_too_often`): a
+    /// tab crashing too often is left as a failed card, not respawned.
+    pub(crate) tab_crashes: HashMap<String, Vec<std::time::Instant>>,
+
+    /// The tab id `respawn_tab` was called for *while it was the focused
+    /// tab* — i.e. an engine swap or crash recovery is currently respawning
+    /// the tab the user is looking at. `build_tab_view_ui`'s existing "focused
+    /// tab missing from `self.nodes`" guard (a pre-existing one-frame safety
+    /// net, from before spawning was async) would otherwise bounce the user
+    /// to Graph view for the tab's *entire* respawn duration — imperceptible
+    /// when spawning was synchronous, but a visible multi-second flicker
+    /// back to Graph and then back to Tab view now that a WebKit respawn can
+    /// take many seconds. Set in `respawn_tab`, cleared in
+    /// `handle_tab_spawn_result` once that same id's `Respawn` outcome
+    /// (`Ok` or `Err`) arrives.
+    pub(crate) pending_respawn_focus: Option<String>,
+
+    /// Unloaded tabs' cards whose `wake_tab` spawn is in flight. Unlike a
+    /// crash respawn, the card is still on the graph meanwhile, so it can
+    /// be moved or closed: the outcome takes the card's placement as it is
+    /// now, and is dropped if the card is gone. Set in `wake_tab`, cleared
+    /// by that outcome in `handle_tab_spawn_result`.
+    pub(crate) wakes_in_flight: HashSet<String>,
+
+    /// Tabs that stay tabs whatever they load, each with whether that load
+    /// has settled (reported `loading == false`): one opened by "Open as
+    /// tab", and one loading another replica's url (`materialize`), which
+    /// that replica converts itself. Every `RedirectableContent`/`JsonBody`
+    /// report is skipped while a tab is in here. It stays until a real url
+    /// change after the load settles (an HTTP redirect during it doesn't
+    /// count; see `skip_convert_after`) or the tab closes (`remove_tab`).
+    /// Not persisted (spec "Left open").
+    pub(crate) skip_convert: HashMap<String, bool>,
+}
+
+impl SpawnTracker {
+    /// Drops `id`, a node being removed for good, from the per-tab state that is not about a spawn in flight.
+    /// `spawning`, `remote_in_flight`, `wakes_in_flight` and `host_loads` are not here: the spawn lifecycle owns them.
+    pub(crate) fn forget(&mut self, id: &str) {
+        self.skip_convert.remove(id);
+        self.navigated_from.remove(id);
+        self.tab_crashes.remove(id);
+        if self.pending_respawn_focus.as_deref() == Some(id) {
+            self.pending_respawn_focus = None;
+        }
+    }
+
+    /// A session replace: drops the replaced session's spawns in flight and bumps `session_generation`, so their
+    /// results are dropped when they land. The headless wait counters, `skip_convert` and `tab_crashes` stay
+    /// (`forget` takes the per-tab ones, id by id).
+    pub(crate) fn reset(&mut self) {
+        self.wakes_in_flight.clear();
+        self.spawning.clear();
+        self.host_loads.clear();
+        self.navigated_from.clear();
+        self.remote_in_flight.clear();
+        self.session_generation += 1;
+    }
+}
+
 /// Which call site triggered a tab spawn — `handle_tab_spawn_result` uses
 /// this to know what to do once the (now-async) `process_manager::spawn_tab`
 /// call finishes, mirroring what `spawn_root_tab`/`spawn_new_tab`/
@@ -268,7 +370,7 @@ impl App {
     /// synchronous `Ok`/`Err` branches used to do, once the result actually
     /// arrives.
     pub(crate) fn spawn_tab_async(&mut self, spawn: TabSpawn) {
-        self.tab_spawns_in_flight += 1;
+        self.spawns.tab_spawns_in_flight += 1;
         // Shared at the pos, url, engine and jar the mirror holds for it (a respawn's `spawn.url` is the live one); a
         // new tab has no entry yet and shares the ones it starts with.
         let shared_url = Some(self.mirror.url(&spawn.id)).filter(|url| !url.is_empty());
@@ -278,10 +380,10 @@ impl App {
         let engine = if has { self.mirror.engine_code(&spawn.id) } else { session_sync::engine_code(spawn.kind) };
         let url = shared_url.unwrap_or(&spawn.url);
         let snapshot = session_sync::spawn_snapshot(&spawn, pos, url, engine, choice);
-        self.spawning.insert(spawn.id.clone(), snapshot);
+        self.spawns.spawning.insert(spawn.id.clone(), snapshot);
         // A new tab is created from that snapshot by the next save (Ruling 3); a respawn's id is already stored.
         self.queue_create(&spawn.id);
-        let generation = self.session_generation;
+        let generation = self.spawns.session_generation;
         // Resolved and loaded before the test early return, so tests see the load happen.
         let (jar, _) = self.resolved_jar(&choice);
         self.ensure_jar_loaded(jar);
@@ -536,17 +638,17 @@ impl App {
             seed_clears,
         } = outcome;
         let TabCarry { pinned, color, zoom_factor, title, muted } = carry;
-        self.spawning.remove(&id);
-        let remote = self.remote_in_flight.remove(&id);
-        self.tab_spawns_in_flight = self.tab_spawns_in_flight.saturating_sub(1);
-        if self.tab_spawns_in_flight == 0 {
-            for waiter in self.tabs_spawned_waiters.drain(..) {
+        self.spawns.spawning.remove(&id);
+        let remote = self.spawns.remote_in_flight.remove(&id);
+        self.spawns.tab_spawns_in_flight = self.spawns.tab_spawns_in_flight.saturating_sub(1);
+        if self.spawns.tab_spawns_in_flight == 0 {
+            for waiter in self.spawns.tabs_spawned_waiters.drain(..) {
                 let _ = waiter.send(());
             }
         }
         // Spawned for a session that's since been replaced: dropping the
         // `EngineTab` shuts its engine host down. See `session_generation`.
-        if generation != self.session_generation {
+        if generation != self.spawns.session_generation {
             return;
         }
         // A replaced engine (crash, wake, swap) knows only `url`: from here
@@ -560,7 +662,7 @@ impl App {
         // same guard `reopen_closed`'s relinking applies for the same
         // reason, centralized here since every spawn path funnels through
         // this one function.
-        let (parent, group, color, pinned, muted) = if self.wakes_in_flight.remove(&id) {
+        let (parent, group, color, pinned, muted) = if self.spawns.wakes_in_flight.remove(&id) {
             match self.nodes.get(&id).and_then(|n| n.as_unloaded()) {
                 Some(tab) => {
                     let Carried { color, pinned, parent, group, .. } = self.mirror.carried(&id);
@@ -578,9 +680,9 @@ impl App {
             (parent, group, color, pinned, muted)
         };
         if matches!(purpose, SpawnPurpose::Respawn | SpawnPurpose::Restore | SpawnPurpose::Wake)
-            && self.pending_respawn_focus.as_deref() == Some(id.as_str())
+            && self.spawns.pending_respawn_focus.as_deref() == Some(id.as_str())
         {
-            self.pending_respawn_focus = None;
+            self.spawns.pending_respawn_focus = None;
         }
         match result {
             Ok(mut tab) => {
@@ -740,7 +842,7 @@ impl App {
                         fallback_kind: None,
                     };
                     if let Some(remote) = remote {
-                        self.remote_in_flight.insert(spawn.id.clone(), remote);
+                        self.spawns.remote_in_flight.insert(spawn.id.clone(), remote);
                     }
                     self.respawn_tab(spawn);
                     return;
@@ -983,7 +1085,7 @@ impl App {
         // An unloaded tab opens by starting its engine; Tab view shows the
         // respawning placeholder until it lands (`pending_respawn_focus`).
         if self.nodes.get(id).and_then(|n| n.as_unloaded()).is_some() {
-            self.pending_respawn_focus = Some(id.to_string());
+            self.spawns.pending_respawn_focus = Some(id.to_string());
             self.wake_tab(id, self.mirror.engine(id));
         }
         self.send_resize_to(id);
@@ -1138,13 +1240,13 @@ impl App {
         // Tab view, focused on this card, falls back to Graph by itself
         // (`build_tab_view_ui`) unless a stale respawn spinner names it; a
         // split pane showing it has nothing left to show.
-        if self.pending_respawn_focus.as_deref() == Some(id) {
-            self.pending_respawn_focus = None;
+        if self.spawns.pending_respawn_focus.as_deref() == Some(id) {
+            self.spawns.pending_respawn_focus = None;
         }
         if self.split_tab.as_deref() == Some(id) {
             self.close_split();
         }
-        self.tab_crashes.remove(id);
+        self.spawns.tab_crashes.remove(id);
         let group = self.mirror.group(id).map(str::to_owned);
         // One failed card per intent: keep this one (its id is the live one) and drop another standing for it.
         if let Some(twin) = self.failed_twin(id, &url, kind, group.as_deref()) {
@@ -1432,7 +1534,7 @@ impl App {
     /// back (only the focused tab is ever visible).
     pub(crate) fn respawn_tab(&mut self, spawn: TabSpawn) {
         if self.focused.as_deref() == Some(spawn.id.as_str()) {
-            self.pending_respawn_focus = Some(spawn.id.clone());
+            self.spawns.pending_respawn_focus = Some(spawn.id.clone());
         }
         self.spawn_tab_async(spawn);
     }
@@ -1530,6 +1632,45 @@ mod crash_tests {
 
 #[cfg(test)]
 mod tests {
+    /// `SpawnTracker::forget` takes what `forget_id` cleared by hand (`skip_convert`, `navigated_from`,
+    /// `tab_crashes`, a matching `pending_respawn_focus`) and `reset` what `teardown_running_session` cleared (the
+    /// spawns in flight, `host_loads`, `navigated_from`) plus a generation bump; neither touches the rest.
+    #[test]
+    fn forget_and_reset_clear_what_the_old_sites_cleared() {
+        let now = std::time::Instant::now();
+        let filled = || {
+            let mut s = SpawnTracker::default();
+            s.skip_convert.insert("t".into(), true);
+            s.navigated_from.insert("t".into(), ("u".into(), now, false));
+            s.tab_crashes.insert("t".into(), vec![now]);
+            s.pending_respawn_focus = Some("t".into());
+            s.wakes_in_flight.insert("t".into());
+            s.host_loads.insert("t".into(), now);
+            s.remote_in_flight.insert("t".into(), None);
+            s.tab_spawns_in_flight = 2;
+            s
+        };
+        let mut s = filled();
+        s.forget("u");
+        assert!(s.skip_convert.contains_key("t") && s.pending_respawn_focus.is_some(), "another id's state stays");
+        s.forget("t");
+        assert!(s.skip_convert.is_empty() && s.navigated_from.is_empty() && s.tab_crashes.is_empty());
+        assert!(s.pending_respawn_focus.is_none());
+        assert!(
+            s.wakes_in_flight.contains("t") && s.host_loads.contains_key("t") && s.remote_in_flight.contains_key("t")
+        );
+
+        let mut s = filled();
+        s.reset();
+        assert!(s.wakes_in_flight.is_empty() && s.host_loads.is_empty() && s.remote_in_flight.is_empty());
+        assert!(s.spawning.is_empty() && s.navigated_from.is_empty());
+        assert_eq!(s.session_generation, 1);
+        assert!(
+            s.skip_convert.contains_key("t") && s.tab_crashes.contains_key("t") && s.pending_respawn_focus.is_some()
+        );
+        assert_eq!(s.tab_spawns_in_flight, 2);
+    }
+
     use super::*;
 
     #[test]

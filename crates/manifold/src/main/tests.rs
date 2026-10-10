@@ -8,7 +8,7 @@ fn forget_id_clears_every_id_keyed_table() {
     let mut app = App::default();
     let now = std::time::Instant::now();
     let t = || "t".to_string();
-    app.skip_convert.insert(t(), true);
+    app.spawns.skip_convert.insert(t(), true);
     app.pending_sleeps.insert(t(), sleep_state::PendingSleep { why: sleep_state::SleepWhy::Manual, sent: now });
     app.jar_tabs.insert(t(), (jar::JarKey::Default, jar::TabCookies::default()));
     app.jar_reseed.insert(t());
@@ -18,16 +18,16 @@ fn forget_id_clears_every_id_keyed_table() {
     app.saved_scroll.insert(t(), sleep_state::SavedScroll::new(0.0, 1.0));
     app.saved_scroll.insert("u".into(), sleep_state::SavedScroll::new(0.0, 1.0));
     app.nav_history.insert(t(), nav_history::NavHistory::default());
-    app.navigated_from.insert(t(), ("https://a.test/".into(), now, false));
+    app.spawns.navigated_from.insert(t(), ("https://a.test/".into(), now, false));
     for _ in 0..popup_gate::POPUP_BURST {
         app.popup_gate.admit("t", true, now);
     }
-    app.tab_crashes.insert(t(), vec![now]);
+    app.spawns.tab_crashes.insert(t(), vec![now]);
     app.interaction.selected_tabs.extend([t(), "u".to_string()]);
     app.naming_jar = Some((t(), String::new()));
     app.renaming_group = Some((t(), String::new()));
     app.node_menu = Some((t(), egui::Pos2::ZERO));
-    app.pending_respawn_focus = Some(t());
+    app.spawns.pending_respawn_focus = Some(t());
     app.interaction.peek_suppressed = Some(t());
     app.interaction.dragging = Some(t());
     app.link.connecting = Some((t(), crate::caps::LINK));
@@ -36,15 +36,15 @@ fn forget_id_clears_every_id_keyed_table() {
 
     app.forget_id("t");
 
-    assert!(app.skip_convert.is_empty() && app.pending_sleeps.is_empty());
+    assert!(app.spawns.skip_convert.is_empty() && app.pending_sleeps.is_empty());
     assert!(app.jar_tabs.is_empty() && app.jar_reseed.is_empty() && app.cookie_holds.is_empty());
     assert!(app.jar_pulls.is_empty() && app.jar_silent.is_empty());
     assert!(!app.saved_scroll.contains_key("t") && app.saved_scroll.contains_key("u"), "only t's entry goes");
-    assert!(app.nav_history.is_empty() && app.navigated_from.is_empty() && app.tab_crashes.is_empty());
+    assert!(app.nav_history.is_empty() && app.spawns.navigated_from.is_empty() && app.spawns.tab_crashes.is_empty());
     assert_eq!(app.popup_gate.admit("t", true, now), popup_gate::Admit::Open, "t's popup burst count went");
     assert_eq!(app.interaction.selected_tabs, HashSet::from(["u".to_string()]));
     assert!(app.naming_jar.is_none() && app.renaming_group.is_none() && app.node_menu.is_none());
-    assert!(app.pending_respawn_focus.is_none() && app.interaction.peek_suppressed.is_none());
+    assert!(app.spawns.pending_respawn_focus.is_none() && app.interaction.peek_suppressed.is_none());
     assert!(app.interaction.dragging.is_none() && app.link.connecting.is_none() && app.link.connect_drag.is_none());
     assert!(app.interaction.hovered.is_none());
 }
@@ -66,10 +66,10 @@ const NOT_FORGOTTEN: &[(&str, &str)] = &[
     ("jar_silent", "via `clear_cookie_state`"),
     ("link.connecting", "via `forget_connect_source`"),
     ("link.connect_drag", "via `forget_connect_source`"),
-    ("wakes_in_flight", "spawn lifecycle: a tab closed while waking needs it so the landing commits its delete"),
-    ("spawning", "spawn lifecycle: the landing or teardown removes it"),
-    ("remote_in_flight", "spawn lifecycle: replayed after the landing"),
-    ("host_loads", "spawn lifecycle: expired by `shares_url_change`, cleared at teardown"),
+    ("spawns.wakes_in_flight", "spawn lifecycle: a tab closed while waking needs it so the landing commits its delete"),
+    ("spawns.spawning", "spawn lifecycle: the landing or teardown removes it"),
+    ("spawns.remote_in_flight", "spawn lifecycle: replayed after the landing"),
+    ("spawns.host_loads", "spawn lifecycle: expired by `shares_url_change`, cleared at teardown"),
     ("interaction.drag_moved", "ends with the drag; a gone id is skipped at release"),
     ("link.line_press", "a link id, taken at release only if still hovered"),
     ("native_drag_tab", "taken at the button-up"),
@@ -95,9 +95,10 @@ const NOT_FORGOTTEN: &[(&str, &str)] = &[
 fn every_id_keyed_field_is_forgotten_or_excused() {
     /// A struct held by `App` (`App.<prefix>`): its source file, its header line, and the id-forgetting method
     /// (`forget`) it may have; its fields are named `<prefix>.<field>` in `NOT_FORGOTTEN`.
-    const GROUPS: [(&str, &str, &str); 2] = [
+    const GROUPS: [(&str, &str, &str); 3] = [
         ("link", include_str!("../links.rs"), "pub(crate) struct LinkGesture {"),
         ("interaction", include_str!("../graph_nav.rs"), "pub(crate) struct GraphInteraction {"),
+        ("spawns", include_str!("../tabs.rs"), "pub(crate) struct SpawnTracker {"),
     ];
     fn block<'a>(source: &'a str, header: &str, end: &str) -> Vec<&'a str> {
         source.lines().skip_while(|l| !l.trim_start().starts_with(header)).skip(1).take_while(|l| *l != end).collect()
@@ -115,11 +116,8 @@ fn every_id_keyed_field_is_forgotten_or_excused() {
         .map(|(n, t)| (n.to_string(), t))
         .collect();
     assert!(all.len() > 100, "App's fields were found ({})", all.len());
-    let body = block(include_str!("../node_store.rs"), "pub(crate) fn forget_id(", "    }").join(
-        "
-",
-    );
-    assert!(body.contains("self.skip_convert"), "forget_id's body was found");
+    let body = block(include_str!("../node_store.rs"), "pub(crate) fn forget_id(", "    }").join("\n");
+    assert!(body.contains("self.pending_sleeps"), "forget_id's body was found");
     let mentions = |haystack: &str, path: &str| {
         let needle = format!("self.{path}");
         haystack
@@ -132,10 +130,7 @@ fn every_id_keyed_field_is_forgotten_or_excused() {
     for (prefix, source, header) in GROUPS {
         let lines = block(source, header, "}");
         assert!(!lines.is_empty(), "{header} was found");
-        let forget = block(source, "pub(crate) fn forget(", "    }").join(
-            "
-",
-        );
+        let forget = block(source, "pub(crate) fn forget(", "    }").join("\n");
         for (name, ty) in fields(&lines) {
             if mentions(&forget, name) {
                 forgotten_by_group.push(format!("{prefix}.{name}"));

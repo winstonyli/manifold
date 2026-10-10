@@ -1241,10 +1241,10 @@ impl App {
             // Only ever intercepted by the stdin reader itself.
             DebugCommand::WaitTabs(_) => {}
             DebugCommand::NotifyWhenTabsSpawned(waiter) => {
-                if self.tab_spawns_in_flight == 0 {
+                if self.spawns.tab_spawns_in_flight == 0 {
                     let _ = waiter.send(());
                 } else {
-                    self.tabs_spawned_waiters.push(waiter);
+                    self.spawns.tabs_spawned_waiters.push(waiter);
                 }
             }
             DebugCommand::WaitIdle(_) => {}

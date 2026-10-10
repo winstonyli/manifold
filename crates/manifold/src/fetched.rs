@@ -404,7 +404,7 @@ impl App {
         let Some(url) = self.source_url(id).map(str::to_string) else { return };
         let (pos, group) = (self.layout_pos(id) + egui::vec2(40.0, 40.0), self.mirror.group(id).map(str::to_owned));
         let tab = self.spawn_tab_at(&url, pos, group, Some(id.to_string()));
-        self.skip_convert.insert(tab, false);
+        self.spawns.skip_convert.insert(tab, false);
     }
 
     /// The one way content becomes a node (see `content`): a picked,

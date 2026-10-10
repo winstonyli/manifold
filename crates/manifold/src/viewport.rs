@@ -216,7 +216,9 @@ impl App {
         }
         if let Some(node) = self.nodes.get_mut(tab_id).and_then(|n| n.as_tab_mut()) {
             if node.url != url {
-                self.navigated_from.insert(tab_id.to_string(), (node.url.clone(), std::time::Instant::now(), false));
+                self.spawns
+                    .navigated_from
+                    .insert(tab_id.to_string(), (node.url.clone(), std::time::Instant::now(), false));
             }
             node.url = url.clone();
             node.tab.send(&HostToEngine::Navigate { url: url.clone(), referrer: None });

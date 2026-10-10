@@ -509,7 +509,7 @@ fn open_as_tab_marks_the_new_tab_to_skip_its_first_conversion() {
     let tab_id = app.test_spawns[0].0.id.clone();
     assert_eq!(app.test_spawns[0].0.url, "https://x.test/a.png");
     assert_eq!(app.test_spawns[0].0.parent.as_deref(), Some("n"), "opened from the node");
-    assert_eq!(app.skip_convert.get(&tab_id), Some(&false));
+    assert_eq!(app.spawns.skip_convert.get(&tab_id), Some(&false));
 }
 
 /// Closing a node another node was opened from links that one to the closed node's own parent, as closing a
@@ -552,9 +552,9 @@ fn removing_a_tab_clears_its_skip_convert_flag() {
     use crate::session_sync::tests::{add, sleeping_tab};
     let mut app = App::default();
     let tab = add(&mut app, Kind::Tab, sleeping_tab("https://x.test/a.json", "A"));
-    app.skip_convert.insert(tab.clone(), true);
+    app.spawns.skip_convert.insert(tab.clone(), true);
     app.remove_tab(&tab);
-    assert!(!app.skip_convert.contains_key(&tab));
+    assert!(!app.spawns.skip_convert.contains_key(&tab));
 }
 
 /// A sleeping tab stands in for a live one: only its place is read.
@@ -596,7 +596,7 @@ fn a_converted_tab_clears_every_stale_reference() {
     app.focused = Some(tab.clone());
     app.split_tab = Some(tab.clone());
     app.interaction.selected_tabs.insert(tab.clone());
-    app.pending_respawn_focus = Some(tab.clone());
+    app.spawns.pending_respawn_focus = Some(tab.clone());
 
     let body = crate::redirect_fetch::save(&dir, "n", crate::content::ContentKind::Json, b"[1]".to_vec()).unwrap();
     app.redirect_tab_to_content(&tab, "n".into(), "https://x.test/a.json".into(), body);
@@ -605,7 +605,7 @@ fn a_converted_tab_clears_every_stale_reference() {
     assert_eq!(app.focused, None, "focused cleared");
     assert_eq!(app.split_tab, None, "split cleared");
     assert!(!app.interaction.selected_tabs.contains(&tab), "selected_tabs cleared");
-    assert_eq!(app.pending_respawn_focus, None, "pending respawn focus cleared");
+    assert_eq!(app.spawns.pending_respawn_focus, None, "pending respawn focus cleared");
     assert_eq!(app.view_mode, ViewMode::Graph, "falls back to Graph like any other close of the focused tab");
 }
 
