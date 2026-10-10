@@ -186,4 +186,50 @@ impl App {
         self.build_jar_confirm_popup(ui);
         self.build_session_delete_popup(ui);
     }
+
+    /// The "Keyboard Shortcuts (F1)" half of `render_universal_chip`.
+    /// Returns its own rect, which the shortcuts-help popup anchors to.
+    fn build_help_button(&mut self, ui: &mut egui::Ui) -> egui::Rect {
+        let help_response =
+            chip_icon_button(ui, egui::Id::new("icon_btn_shortcuts_help"), egui_phosphor::light::QUESTION)
+                .named_tip("Keyboard Shortcuts (F1)");
+        if help_response.clicked() {
+            self.shortcuts_help_open = !self.shortcuts_help_open;
+        }
+        help_response.rect
+    }
+
+    /// The Settings-gear half of `render_universal_chip`.
+    fn build_settings_button(&mut self, ui: &mut egui::Ui) -> egui::Rect {
+        let response = chip_icon_button(ui, egui::Id::new("icon_btn_settings_gear"), egui_phosphor::light::GEAR)
+            .named_tip("Settings");
+        if response.clicked() {
+            self.toggle_settings_page();
+        }
+        response.rect
+    }
+
+    /// Help + Settings, present in every toolbar (see the design spec's
+    /// "universal chip" layer -- layer 1, drawn frame-level by
+    /// `render_item_toolbar` for every Item-view kind, not just Tab).
+    /// Returns the same rect `build_help_button` already returns -- the
+    /// shortcuts-help popup anchors to that specific button, not to the
+    /// chip as a whole, so callers that need it (`ItemToolbarFrame`'s own
+    /// `shortcuts_help_button_rect`) keep working unchanged.
+    ///
+    /// Reads "Help, Settings" left to right whether `ui` is a left-to-right
+    /// row (the Graph toolbar) or a right-to-left child (the Item toolbar's
+    /// trailing cluster) -- see `in_reading_order`. Drawing both in one
+    /// fixed call order once silently reversed them in the right-to-left
+    /// caller (confirmed live: Tab and Graph view screenshotted side by side
+    /// disagreed).
+    pub(crate) fn render_universal_chip(&mut self, ui: &mut egui::Ui) -> egui::Rect {
+        let mut help_rect = egui::Rect::NOTHING;
+        toolbar_chip(ui, |ui| {
+            let (help, settings) = in_reading_order(ui, self, Self::build_help_button, Self::build_settings_button);
+            help_rect = help;
+            help.union(settings)
+        });
+        help_rect
+    }
 }
