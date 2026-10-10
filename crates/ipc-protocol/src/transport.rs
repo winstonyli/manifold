@@ -24,6 +24,11 @@ pub type LocalTransport = MessageChannel<LocalStream>;
 /// shared memory crosses the Windows/WSL2 boundary.
 pub type RemoteTransport = MessageChannel<TcpStream>;
 
+/// `HostToEngine` messages an engine has not taken yet (`spawn_host_reader`). Full, the reader stops reading, so an
+/// engine whose main loop is stuck backs up the app's writer for it, and the app shows the tab as not responding;
+/// unbounded, the engine's memory grew instead and the app never knew (wave 3b).
+pub const ENGINE_INBOX: usize = 256;
+
 /// An engine's reader thread: forwards each `HostToEngine` from
 /// `from_host` into the returned channel, so the engine's main thread (which
 /// has to keep driving its browser's event loop) only ever polls it. Stops
@@ -34,10 +39,11 @@ pub type RemoteTransport = MessageChannel<TcpStream>;
 /// the WebKit and Servo engines did that; WebKit's orphan was seen live at
 /// ~45% CPU after `taskkill /F /IM manifold.exe`.
 /// Reads the host's `PROTOCOL_VERSION` first; a mismatch is a `Shutdown`.
+/// The channel holds `ENGINE_INBOX` messages; past that the reader waits for the engine to take one.
 pub fn spawn_host_reader<S: Read + Write + Send + 'static>(
     mut from_host: MessageChannel<S>,
 ) -> mpsc::Receiver<HostToEngine> {
-    let (tx, rx) = mpsc::channel();
+    let (tx, rx) = mpsc::sync_channel(ENGINE_INBOX);
     std::thread::spawn(move || {
         match from_host.recv_version().map(crate::check_version) {
             Ok(Ok(())) => {}
@@ -444,6 +450,49 @@ mod tests {
         drop(silent);
         assert_eq!(result.err().map(|e| e.kind()), Some(io::ErrorKind::TimedOut));
         assert!(start.elapsed() < Duration::from_secs(2), "took {:?}", start.elapsed());
+    }
+
+    /// The engine's inbox is bounded (wave 3b): an engine whose main loop takes nothing stops its reader, which backs
+    /// the app up on the pipe, and no message is lost.
+    #[test]
+    fn the_engine_inbox_is_bounded_and_loses_nothing() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        const N: usize = 1000;
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let host = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (engine, _) = listener.accept().unwrap();
+        let written = Arc::new(AtomicUsize::new(0));
+        let progress = Arc::clone(&written);
+        std::thread::spawn(move || {
+            let mut out = MessageChannel::new(host);
+            out.send_version().unwrap();
+            for i in 0..N {
+                if out.send(&HostToEngine::SetCookies(format!("{}{i}", "0".repeat(65_530)))).is_err() {
+                    return;
+                }
+                progress.store(i + 1, Ordering::SeqCst);
+            }
+        });
+        let rx = spawn_host_reader(MessageChannel::new(engine));
+        // Proves an absence: the count stops moving once the inbox and the socket buffers are full.
+        let mut last = usize::MAX;
+        let end = Instant::now() + Duration::from_secs(20);
+        while Instant::now() < end {
+            std::thread::sleep(Duration::from_millis(300));
+            let now = written.load(Ordering::SeqCst);
+            if now == last {
+                break;
+            }
+            last = now;
+        }
+        assert!(last < N, "the app wrote all {N} while the engine took none: the inbox is unbounded");
+        for i in 0..N {
+            match rx.recv_timeout(Duration::from_secs(10)).unwrap() {
+                HostToEngine::SetCookies(s) => assert_eq!(s.trim_start_matches('0').parse::<usize>().unwrap_or(0), i),
+                _ => panic!("message {i} is not SetCookies"),
+            }
+        }
     }
 }
 
