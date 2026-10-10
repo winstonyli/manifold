@@ -76,9 +76,9 @@ const NOT_FORGOTTEN: &[(&str, &str)] = &[
     ("favicon_resolved", "origins, not node ids"),
     ("favicon_origin_cache", "urls, not node ids"),
     ("graph_settled_key", "a level fingerprint, rebuilt when it differs"),
-    ("debug_address_bar_typing", "typed text, not a node id"),
-    ("pending_screenshot", "a file path, not a node id"),
-    ("pending_print_to_pdf", "a file path, not a node id"),
+    ("debug.debug_address_bar_typing", "typed text, not a node id"),
+    ("debug.pending_screenshot", "a file path, not a node id"),
+    ("debug.pending_print_to_pdf", "a file path, not a node id"),
     ("save_toast", "a message, not a node id"),
     ("cef_dir_draft", "a path draft, not a node id"),
     ("home_page_draft", "a url draft, not a node id"),
@@ -92,13 +92,14 @@ const NOT_FORGOTTEN: &[(&str, &str)] = &[
 fn every_id_keyed_field_is_forgotten_or_excused() {
     /// A struct held by `App` (`App.<prefix>`): its source file, its header line, and the id-forgetting method
     /// (`forget`) it may have; its fields are named `<prefix>.<field>` in `NOT_FORGOTTEN`.
-    const GROUPS: [(&str, &str, &str); 6] = [
+    const GROUPS: [(&str, &str, &str); 7] = [
         ("writes", include_str!("../session_sync.rs"), "pub(crate) struct PendingWrites {"),
         ("cookies", include_str!("../jar.rs"), "pub(crate) struct CookieState {"),
         ("link", include_str!("../links.rs"), "pub(crate) struct LinkGesture {"),
         ("interaction", include_str!("../graph_nav.rs"), "pub(crate) struct GraphInteraction {"),
         ("spawns", include_str!("../tabs.rs"), "pub(crate) struct SpawnTracker {"),
         ("pacing", include_str!("../event_loop.rs"), "pub(crate) struct FramePacing {"),
+        ("debug", include_str!("../debug_control.rs"), "pub(crate) struct HeadlessDebug {"),
     ];
     fn block<'a>(source: &'a str, header: &str, end: &str) -> Vec<&'a str> {
         source.lines().skip_while(|l| !l.trim_start().starts_with(header)).skip(1).take_while(|l| *l != end).collect()

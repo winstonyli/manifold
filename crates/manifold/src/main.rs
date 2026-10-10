@@ -352,8 +352,6 @@ struct App {
     pending: std::collections::BTreeMap<(store::model::NodeId, u32), Vec<u8>>,
     /// The personal-state file's write bookkeeping (see `local_state::LocalPersist`).
     local_persist: local_state::LocalPersist,
-    /// Senders of the headless `WAITIDLE` commands waiting for `debug_idle`.
-    idle_waiters: Vec<std::sync::mpsc::Sender<()>>,
     /// Shared across every note's own rendered (non-`editing`) view --
     /// `egui_commonmark`'s own recommended usage (glyph-layout/heading-id
     /// state, not per-note content), not a fresh cache per card per frame.
@@ -448,49 +446,16 @@ struct App {
     /// stdin instead of real OS input. See `debug_control`'s doc comment
     /// for the full rationale and the text-command protocol.
     headless: bool,
+    /// Headless debug-control state (see `debug_control::HeadlessDebug`).
+    debug: debug_control::HeadlessDebug,
     /// Frame pacing: minimize and idle state (see `event_loop::FramePacing`).
     pacing: event_loop::FramePacing,
-    /// Key events from headless `ENTER`/`ESCAPE`/`ARROWDOWN`/`ARROWUP`,
-    /// added to the next frame's egui input exactly like real key presses
-    /// (see `run_egui_frame`), so they take the same code paths and, like
-    /// a real key, last one frame whether or not anything reads them.
-    debug_input_events: Vec<egui::Event>,
-    /// Text from a headless `ADDRESSBAR`, typed (select-all, then the text)
-    /// once the address bar actually has egui focus: the command requests
-    /// focus through `pending_focus`, which only takes hold in
-    /// the frame after, so typing waits for a frame where
-    /// `address_bar.focused` is true.
-    debug_address_bar_typing: Option<String>,
     /// A focus request waiting for its `TextEdit` to be built (see
     /// `FocusTarget`): set by `Ctrl+L`/`Ctrl+F`/`Ctrl+K`, starting a
     /// rename, and headless `FOCUSADDRESS`/`ADDRESSBAR`/`OPENFINDBAR`.
     /// Unlike the headless key events above, this drives a real
     /// `request_focus()` on the real widget.
     pending_focus: Option<FocusTarget>,
-    /// Set by a headless `QUIT` that arrived while debug input above (or
-    /// `pending_screenshot`) was still waiting for a frame — e.g. `ENTER`+`QUIT`,
-    /// or `SCREENSHOT`+`QUIT`, sent back-to-back with no delay. Exiting
-    /// immediately in that case could drop the pending command/screenshot
-    /// before any frame ever consumed it (`event_loop.exit()` gives no
-    /// guarantee a `RedrawRequested` runs first). Holds how many more frames
-    /// to wait: `headless_end_of_frame` exits once nothing is pending, or when
-    /// this runs out (an `ADDRESSBAR` needs two frames, focus then typing;
-    /// a screenshot on a stalled surface might never land).
-    quit_after_redraws: Option<u8>,
-    /// Set by a headless `SCREENSHOT` command; consumed on the next
-    /// `RedrawRequested` and passed into `gpu::GpuState::render` (`render_frame`).
-    pending_screenshot: Option<String>,
-    /// The stdin reader waiting on `pending_screenshot` (see
-    /// `DebugCommand::Screenshot`); sent `()` once it's been attempted.
-    screenshot_waiter: Option<std::sync::mpsc::Sender<()>>,
-    /// "Print to PDF": (temp PNG, PDF): the capture `start_print_to_pdf`
-    /// asked for, and where its PDF goes. Paired so an unrelated screenshot
-    /// can't take the PDF target. Set alongside `pending_screenshot` so the
-    /// GPU capture needn't know PDF exists; once that capture completes
-    /// (`handle_screenshot_result`), the temp PNG is converted via
-    /// `pdf::write_image_as_pdf` and deleted. `None` the rest of the time,
-    /// including for an ordinary "Screenshot" button click.
-    pending_print_to_pdf: Option<(String, String)>,
 
     /// "Recently Closed", oldest first: one entry per close, capped at
     /// `MAX_CLOSED`. The toolbar dropdown reopens any entry;
@@ -708,7 +673,6 @@ impl Default for App {
             mirror: mirror::Mirror::default(),
             pending: std::collections::BTreeMap::new(),
             local_persist: local_state::LocalPersist::default(),
-            idle_waiters: Vec::new(),
             commonmark_cache: egui_commonmark::CommonMarkCache::default(),
             cursor_pos: (0.0, 0.0),
             native_drag_tab: None,
@@ -731,14 +695,9 @@ impl Default for App {
             favicon_origin_cache: HashMap::new(),
             graph_settled_key: None,
             headless: false,
+            debug: debug_control::HeadlessDebug::default(),
             pacing: event_loop::FramePacing::default(),
-            debug_input_events: Vec::new(),
-            debug_address_bar_typing: None,
             pending_focus: None,
-            quit_after_redraws: None,
-            pending_screenshot: None,
-            screenshot_waiter: None,
-            pending_print_to_pdf: None,
             closed: Vec::new(),
             context_menu: None,
             context_menu_cache: None,

@@ -686,7 +686,7 @@ impl App {
             // is only set once `RenderOutcome::screenshot_result` actually
             // confirms success (see `handle_screenshot_result`).
             let path = screenshot_default_path();
-            self.pending_screenshot = Some(path.to_string_lossy().to_string());
+            self.debug.pending_screenshot = Some(path.to_string_lossy().to_string());
             if let Some(window) = &self.window {
                 window.request_redraw();
             }

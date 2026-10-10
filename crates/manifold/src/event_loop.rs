@@ -685,9 +685,9 @@ impl App {
                 if self.headless {
                     raw_input.focused = true;
                 }
-                raw_input.events.append(&mut self.debug_input_events);
+                raw_input.events.append(&mut self.debug.debug_input_events);
                 if self.address_bar.focused {
-                    if let Some(text) = self.debug_address_bar_typing.take() {
+                    if let Some(text) = self.debug.debug_address_bar_typing.take() {
                         raw_input.events.push(debug_key_event(egui::Key::A, egui::Modifiers::COMMAND));
                         raw_input.events.push(egui::Event::Text(text));
                     }
@@ -768,7 +768,7 @@ impl App {
         // (Outdated/Occluded/...) means the screenshot was never
         // attempted this frame, and the request must survive to
         // retry on a later one instead of being silently dropped.
-        let screenshot_path = self.pending_screenshot.clone();
+        let screenshot_path = self.debug.pending_screenshot.clone();
         let mut lost = None;
         if let Some(gpu) = &mut self.gpu {
             let outcome = match egui_output {
@@ -782,14 +782,14 @@ impl App {
             };
             lost = gpu.take_device_lost();
             if outcome.surface_ok {
-                self.pending_screenshot = None;
+                self.debug.pending_screenshot = None;
                 // The PNG is written by now (`render` saves it). A headless
                 // `SCREENSHOT` (one with a waiter) isn't toasted: the toast
                 // would sit over the window's bottom-left for 4s, in later
                 // screenshots and under the script's next clicks.
                 let mut headless = false;
                 if outcome.screenshot_result.is_some() {
-                    if let Some(waiter) = self.screenshot_waiter.take() {
+                    if let Some(waiter) = self.debug.screenshot_waiter.take() {
                         let _ = waiter.send(());
                         headless = true;
                     }
@@ -872,7 +872,7 @@ impl App {
             }
             return;
         };
-        let pdf = self.pending_print_to_pdf.take_if(|(png, _)| *png == path).map(|(_, pdf)| pdf);
+        let pdf = self.debug.pending_print_to_pdf.take_if(|(png, _)| *png == path).map(|(_, pdf)| pdf);
         match (result, pdf) {
             (Ok(()), Some(pdf_path)) => {
                 match pdf::write_image_as_pdf(std::path::Path::new(&path), std::path::Path::new(&pdf_path)) {
@@ -903,25 +903,25 @@ impl App {
         // `ADDRESSBAR` text is typed in the first frame the address
         // bar has focus; keep frames coming until then. Dropped if
         // Tab view went away, since the bar won't be built again.
-        if self.debug_address_bar_typing.is_some() {
+        if self.debug.debug_address_bar_typing.is_some() {
             if self.showing_tab_view() || self.transition.is_some() {
                 if let Some(window) = &self.window {
                     window.request_redraw();
                 }
             } else {
                 eprintln!("ADDRESSBAR: left Tab view before the address bar took focus; text dropped");
-                self.debug_address_bar_typing = None;
+                self.debug.debug_address_bar_typing = None;
             }
         }
 
         self.release_idle_waiters();
 
         // See `quit_after_redraws`'s doc comment.
-        if let Some(left) = self.quit_after_redraws {
+        if let Some(left) = self.debug.quit_after_redraws {
             if !self.debug_input_pending() || left == 0 {
                 event_loop.exit();
             } else {
-                self.quit_after_redraws = Some(left - 1);
+                self.debug.quit_after_redraws = Some(left - 1);
                 if let Some(window) = &self.window {
                     window.request_redraw();
                 }
@@ -947,10 +947,10 @@ impl App {
     /// Debug input that still needs a frame: queued keys, `ADDRESSBAR`
     /// text not typed yet, a focus request, or a screenshot.
     pub(crate) fn debug_input_pending(&self) -> bool {
-        !self.debug_input_events.is_empty()
-            || self.debug_address_bar_typing.is_some()
+        !self.debug.debug_input_events.is_empty()
+            || self.debug.debug_address_bar_typing.is_some()
             || self.pending_focus == Some(FocusTarget::AddressBar)
-            || self.pending_screenshot.is_some()
+            || self.debug.pending_screenshot.is_some()
     }
 
     /// What `WAITIDLE` waits for: no debug input still needs a frame, no
@@ -963,8 +963,8 @@ impl App {
 
     /// Releases the `WAITIDLE` commands waiting, if `debug_idle` holds.
     pub(crate) fn release_idle_waiters(&mut self) {
-        if !self.idle_waiters.is_empty() && self.debug_idle() {
-            for waiter in self.idle_waiters.drain(..) {
+        if !self.debug.idle_waiters.is_empty() && self.debug_idle() {
+            for waiter in self.debug.idle_waiters.drain(..) {
                 let _ = waiter.send(());
             }
         }
@@ -1571,18 +1571,20 @@ mod idle_tests {
 
     #[test]
     fn a_failed_print_capture_clears_the_pdf_target() {
-        let mut app = App { pending_print_to_pdf: Some(("p.png".into(), "out.pdf".into())), ..App::default() };
+        let mut app = App::default();
+        app.debug.pending_print_to_pdf = Some(("p.png".into(), "out.pdf".into()));
         app.handle_screenshot_result(Some("p.png".into()), Some(Err("no surface".into())));
-        assert!(app.pending_print_to_pdf.is_none());
+        assert!(app.debug.pending_print_to_pdf.is_none());
         assert!(app.save_toast_queue.iter().any(|t| t.contains("Couldn't print")), "{:?}", app.save_toast_queue);
     }
 
     #[test]
     fn an_ordinary_screenshot_never_takes_a_pdf_target() {
-        let mut app = App { pending_print_to_pdf: Some(("p.png".into(), "out.pdf".into())), ..App::default() };
+        let mut app = App::default();
+        app.debug.pending_print_to_pdf = Some(("p.png".into(), "out.pdf".into()));
         app.handle_screenshot_result(Some("shot.png".into()), Some(Ok(())));
         assert!(app.save_toast_queue.iter().any(|t| t == "Saved shot.png"));
-        assert!(app.pending_print_to_pdf.is_some(), "still waiting for its own capture");
+        assert!(app.debug.pending_print_to_pdf.is_some(), "still waiting for its own capture");
     }
 
     #[test]

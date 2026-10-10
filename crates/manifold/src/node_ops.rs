@@ -93,8 +93,8 @@ impl App {
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
         let temp_png = std::env::temp_dir().join(format!("manifold-print-{timestamp}.png"));
         let png = temp_png.to_string_lossy().into_owned();
-        self.pending_screenshot = Some(png.clone());
-        self.pending_print_to_pdf = Some((png, pdf_path));
+        self.debug.pending_screenshot = Some(png.clone());
+        self.debug.pending_print_to_pdf = Some((png, pdf_path));
         if let Some(window) = &self.window {
             window.request_redraw();
         }
