@@ -2285,3 +2285,5 @@ Three rounds, each re-reading the code at `9fce9d8` against the plan's code and 
 2. **Should a stall count only after the engine has answered once?** That would be a flag set by the reader on its first message, which would remove any startup false positive at the cost of one more cross-thread signal. Not planned, and only worth it if the probe or use shows startup toasts.
 3. **A Restart affordance in Tab view.** The badge and the menu rows are on the Graph card, so a user in Tab view only sees the toast. Parked until wanted.
 4. **`SEND_QUEUE_CAP = 256`, `UNRESPONSIVE_AFTER = 2 s`, `ENGINE_MESSAGES_PER_DRAIN = 64`** were chosen by reasoning, not measured. Keep them unless the probe or use says otherwise.
+
+**Resolved by the user (2026-10-10, "as recommended"):** 1 ship Task 7; 2 no first-message gate; 3 Tab-view Restart parked; 4 constants kept, lost-when-full accepted; 5 WebKit stuck-writer leak accepted and parked (separate send connection).
