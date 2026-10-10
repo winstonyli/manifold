@@ -202,28 +202,6 @@ pub(crate) mod engine_kind_serde {
     }
 }
 
-/// Either control channel an `EngineTab` might have, depending on whether
-/// its engine-host is a same-machine process (`Local`, shared memory for
-/// frames) or WSL2-hosted (`Remote`, TCP loopback, frames travel inline in
-/// `FrameReady` — see `ipc_protocol::messages::EngineToHost`).
-enum ToEngine {
-    Local(LocalTransport),
-    Remote(RemoteTransport),
-}
-
-impl ToEngine {
-    fn send(&mut self, msg: &HostToEngine) {
-        match self {
-            ToEngine::Local(t) => {
-                let _ = t.send(msg);
-            }
-            ToEngine::Remote(t) => {
-                let _ = t.send(msg);
-            }
-        }
-    }
-}
-
 /// A running engine-host child process plus the control channel
 /// manifold talks to it on. `manifold` is the process manager: it
 /// owns spawning, tearing down, and (from M2 on) swapping the engine
@@ -237,7 +215,9 @@ pub struct EngineTab {
     /// low-level socket/shared-memory lookups (e.g. `SharedFrameBuffer`)
     /// need it.
     pub socket_id: String,
-    to_engine: ToEngine,
+    /// Sends to the engine-host off the UI thread (`engine_io::Writer`), over its local pipe or, for the WSL2-hosted
+    /// WebKit, its TCP connection (frames then travel inline in `FrameReady`).
+    writer: engine_io::Writer,
     pub events_rx: mpsc::Receiver<EngineToHost>,
     /// `None` once `Drop` has handed it to its reaper thread.
     child: Option<Child>,
@@ -249,16 +229,23 @@ pub struct EngineTab {
 }
 
 impl EngineTab {
-    pub fn send(&mut self, msg: &HostToEngine) {
-        // A dead/crashed engine-host makes this an inert no-op for now;
-        // crash detection + auto-restart is M4 (`Crashed` handling).
-        self.to_engine.send(msg);
+    /// Queues `msg` for the engine and returns at once. A run of pointer moves, resizes or wheel steps the engine has
+    /// not read yet merges into one (`engine_io::coalesce`). Dropped when the engine has stopped reading and its queue
+    /// is full (the tab then reads as unresponsive), and after `Shutdown`.
+    pub fn send(&self, msg: &HostToEngine) {
+        self.writer.send(msg.clone());
     }
 
     /// M5: at most one tab is ever visible (actively capturing/sending
     /// frames) at a time — see `HostToEngine::SetVisible`'s doc comment.
-    pub fn set_visible(&mut self, visible: bool) {
+    pub fn set_visible(&self, visible: bool) {
         self.send(&HostToEngine::SetVisible(visible));
+    }
+
+    /// Queues `Shutdown` now. An app exit calls this on every tab before dropping them, so `Drop` then waits one
+    /// `engine_io::SHUTDOWN_FLUSH` for all of them together.
+    pub(crate) fn begin_shutdown(&self) {
+        self.writer.shutdown();
     }
 
     /// A live tab for unit tests: no process, its control channel a loopback TCP connection. The returned peer
@@ -270,11 +257,10 @@ impl EngineTab {
         let (peer, _) = listener.accept().expect("accept");
         peer.set_read_timeout(Some(Duration::from_millis(200))).expect("read timeout");
         let (_, events_rx) = mpsc::channel();
-        let to_engine = ToEngine::Remote(RemoteTransport::new(host));
         let tab = EngineTab {
             kind,
             socket_id: String::new(),
-            to_engine,
+            writer: engine_io::Writer::spawn(RemoteTransport::new(host), "engine writer (fake)"),
             events_rx,
             child: None,
             cache_dir: None,
@@ -286,16 +272,26 @@ impl EngineTab {
 
 impl Drop for EngineTab {
     fn drop(&mut self) {
-        self.to_engine.send(&HostToEngine::Shutdown);
+        // Read before `shutdown`, after which a writer never reads as unresponsive.
+        let stuck = self.writer.is_unresponsive(std::time::Instant::now());
+        self.writer.shutdown();
         let Some(child) = self.child.take() else { return };
         let (cache_dir, slot) = (self.cache_dir.take(), self.profile_slot.take());
         if self.kind == EngineKind::Webkit {
             // Off the UI thread: a WebKit host gets up to 3 s to exit on its own,
             // and dropping a session of N of them used to freeze the window for 3N s.
             // It has no frame file (frames arrive over TCP) and no cache dir.
+            // A writer stuck on its socket stays blocked until the Linux side dies: closing the
+            // socket on this side does not unblock a send on Windows (measured, wave 3b).
             let reaper = std::thread::spawn(move || reap_host(EngineKind::Webkit, child));
             CACHE_REMOVALS.lock().unwrap_or_else(|e| e.into_inner()).push(reaper);
             return;
+        }
+        // The queue and `Shutdown` get until `SHUTDOWN_FLUSH` after the first `shutdown` to go out.
+        // A stuck engine is not waited for: the kill below breaks its pipe, which ends the blocked
+        // write too (measured: about 0.2 ms after the engine's end closes).
+        if !stuck {
+            self.writer.wait_finished(engine_io::SHUTDOWN_FLUSH);
         }
         // A local host is killed at once, so this stays inline. It must: a respawn
         // of the same tab reuses `socket_id`, and Windows deletes a file even while
@@ -1297,15 +1293,8 @@ pub fn spawn_tab(
         };
     let events_rx = spawn_reader_thread(RemoteOrLocalReceiver::Local(from_engine));
 
-    let mut tab = EngineTab {
-        kind,
-        socket_id,
-        to_engine: ToEngine::Local(to_engine),
-        events_rx,
-        child: Some(child),
-        cache_dir,
-        profile_slot,
-    };
+    let writer = engine_io::Writer::spawn(to_engine, &format!("engine writer {socket_id}"));
+    let tab = EngineTab { kind, socket_id, writer, events_rx, child: Some(child), cache_dir, profile_slot };
     if matches!(kind, EngineKind::Webview2 | EngineKind::Cef) {
         // Serialised now that the host is connected, so cookies merged while it started are in the seed.
         tab.send(&HostToEngine::SetCookies(jar_json()));
@@ -1417,10 +1406,10 @@ fn spawn_webkit_tab(tab_id: &str, initial_url: &str) -> std::io::Result<EngineTa
     Ok(EngineTab {
         kind: EngineKind::Webkit,
         // No local named pipe/shared memory for the WSL2-hosted case (see
-        // ToEngine::Remote/RemoteTransport above), so there's nothing to
+        // `RemoteTransport`), so there's nothing to
         // disambiguate — tab_id is fine as-is.
         socket_id: tab_id.to_string(),
-        to_engine: ToEngine::Remote(to_engine),
+        writer: engine_io::Writer::spawn(to_engine, &format!("engine writer {tab_id}")),
         events_rx,
         child: Some(child),
         cache_dir: None,
@@ -1428,5 +1417,6 @@ fn spawn_webkit_tab(tab_id: &str, initial_url: &str) -> std::io::Result<EngineTa
     })
 }
 
+pub(crate) mod engine_io;
 #[cfg(test)]
 mod tests;

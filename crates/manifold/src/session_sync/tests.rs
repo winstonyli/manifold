@@ -4245,6 +4245,20 @@ fn sent(peer: &mut Peer) -> Vec<HostToEngine> {
     std::iter::from_fn(|| peer.recv().ok()).collect()
 }
 
+/// Quitting starts every engine's shutdown before the app is dropped: each fake host is sent `Shutdown` while the
+/// app is still alive.
+#[test]
+fn quitting_sends_every_engine_shutdown_before_the_drop() {
+    let mut app = app_on(&temp_dir("quit-shutdown").join("session.mnf"), 1);
+    let (_, mut a) = live_tab(&mut app, EngineKind::Servo, "https://a/");
+    let (_, mut b) = live_tab(&mut app, EngineKind::Servo, "https://b/");
+    app.begin_engine_shutdown();
+    for peer in [&mut a, &mut b] {
+        assert!(matches!(sent(peer).last(), Some(HostToEngine::Shutdown)));
+    }
+    drop(app);
+}
+
 fn engine(kind: EngineKind) -> FieldValue {
     FieldValue::Engine(engine_code(kind))
 }

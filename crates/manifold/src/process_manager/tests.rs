@@ -554,3 +554,40 @@ fn taking_a_slot_respects_its_lock_and_reuses_a_profile_folder_in_use() {
     assert!(super::take_webview2_slot(&udf, 1).is_some());
     assert!(!profile.exists(), "the leftover folder is deleted when the slot is taken");
 }
+
+/// An engine that stops reading must never block the app: 4096 sends of 64 KiB (far more than a pipe or a loopback
+/// socket buffers) return at once (survey E1).
+#[test]
+fn sends_to_an_engine_that_stopped_reading_never_block() {
+    let (tab, _peer) = EngineTab::fake(EngineKind::Servo);
+    let (done_tx, done_rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let big = HostToEngine::SetCookies("x".repeat(64 * 1024));
+        for _ in 0..4096 {
+            tab.send(&big);
+        }
+        let _ = done_tx.send(tab);
+    });
+    let tab = done_rx.recv_timeout(Duration::from_secs(5)).expect("the sends returned although the engine read none");
+    assert!(tab.writer.is_unresponsive(std::time::Instant::now()), "its queue filled, so it reads as unresponsive");
+    let start = std::time::Instant::now();
+    drop(tab);
+    assert!(start.elapsed() < Duration::from_secs(1), "closing a stuck tab does not wait on it");
+}
+
+/// A writer stuck on a local pipe its engine stopped reading ends when the engine's end closes, as killing the engine
+/// closes it (`Drop` relies on this; measured on Windows at about 0.2 ms).
+#[test]
+fn a_writer_stuck_on_a_local_pipe_ends_when_the_engine_end_closes() {
+    let id = format!("test-stuck-writer-{}", std::process::id());
+    let pair = transport::listen_local_pair(&id).unwrap();
+    let engine = std::thread::spawn(move || transport::connect_local_pair(&id).unwrap());
+    let (to_engine, _from_engine) = transport::accept_local_pair(&pair, Duration::from_secs(5)).unwrap();
+    let engine_end = engine.join().unwrap();
+    let writer = engine_io::Writer::spawn(to_engine, "test writer");
+    writer.wedge();
+    writer.shutdown();
+    assert!(!writer.wait_finished(Duration::from_millis(100)), "stuck while the engine end is open");
+    drop(engine_end);
+    assert!(writer.wait_finished(Duration::from_secs(5)), "the blocked write failed once the engine end closed");
+}

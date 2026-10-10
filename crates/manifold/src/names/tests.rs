@@ -432,8 +432,9 @@ const ALLOWED: [&str; 11] = [
     "settings_page.rs",
     "shortcuts.rs",
 ];
-/// Files whose `.name` is some other name: a cookie's (`jar.rs`), a string literal (`json_level_ui.rs`).
-const OTHER_NAMES: [&str; 2] = ["jar.rs", "json_level_ui.rs"];
+/// Files whose `.name` is some other name: a cookie's (`jar.rs`), a string literal (`json_level_ui.rs`), a thread's
+/// (`process_manager/engine_io.rs`).
+const OTHER_NAMES: [&str; 3] = ["jar.rs", "json_level_ui.rs", "process_manager/engine_io.rs"];
 const RULE_MARKS: [&str; 8] = [
     "display_name(",
     "clean_name(",
@@ -501,13 +502,16 @@ fn every_stored_name_reaches_the_screen_through_a_name_rule() {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut offenders = Vec::new();
     let mut seen = Vec::new();
-    // `caps/` is production code: its files are scanned as `caps/<file>`.
-    let entries = std::fs::read_dir(&dir).unwrap().chain(std::fs::read_dir(dir.join("caps")).unwrap());
+    // `caps/` and `process_manager/` are production code: their files are scanned as `<folder>/<file>`.
+    let entries = std::fs::read_dir(&dir)
+        .unwrap()
+        .chain(std::fs::read_dir(dir.join("caps")).unwrap())
+        .chain(std::fs::read_dir(dir.join("process_manager")).unwrap());
     for entry in entries {
         let path = entry.unwrap().path();
         let file = path.strip_prefix(&dir).unwrap().to_string_lossy().replace('\\', "/");
         if path.is_dir() {
-            if file == "caps" {
+            if file == "caps" || file == "process_manager" {
                 continue;
             }
             // A folder holding only `tests.rs` is its sibling module's test module, which `production` skips anyway.
@@ -519,7 +523,8 @@ fn every_stored_name_reaches_the_screen_through_a_name_rule() {
             assert_eq!(file, "store", "a new source folder: scan it here too");
             continue;
         }
-        if path.extension().is_none_or(|e| e != "rs") || file == "names.rs" {
+        // `process_manager/tests.rs` is a test module `production` cannot see as one.
+        if path.extension().is_none_or(|e| e != "rs") || file == "names.rs" || file == "process_manager/tests.rs" {
             continue;
         }
         seen.push(file.clone());

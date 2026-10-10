@@ -158,6 +158,7 @@ impl ApplicationHandler<UserEvent> for App {
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
         self.flush_pending_settings();
         self.final_cookie_pull();
+        self.begin_engine_shutdown();
         self.flush_dirty_jars(None); // the last pull's changes, and any round still open
         self.close_store();
         self.egui_state = None;

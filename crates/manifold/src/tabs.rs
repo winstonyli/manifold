@@ -620,6 +620,16 @@ impl App {
         }
     }
 
+    /// Starts every live tab's engine shutdown at once (`EngineTab::begin_shutdown`), so dropping the app waits one
+    /// `SHUTDOWN_FLUSH` for all of them rather than one per tab, and a stuck engine adds nothing.
+    pub(crate) fn begin_engine_shutdown(&self) {
+        for node in self.nodes.values() {
+            if let Some(tab) = node.as_tab() {
+                tab.tab.begin_shutdown();
+            }
+        }
+    }
+
     /// Applies a finished `spawn_tab_async` call — inserts the new tab node
     /// (or leaves a failed card, or toasts for a split), with per-`SpawnPurpose` follow-up
     /// matching what `spawn_root_tab`/`spawn_new_tab`/`respawn_tab` used to
@@ -683,7 +693,7 @@ impl App {
             self.spawns.pending_respawn_focus = None;
         }
         match result {
-            Ok(mut tab) => {
+            Ok(tab) => {
                 self.note_spawned_jar(&id, jar, seeded, seed_clears);
                 let is_focused = match purpose {
                     SpawnPurpose::Root => true,
