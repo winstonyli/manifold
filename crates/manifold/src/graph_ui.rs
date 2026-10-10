@@ -5,6 +5,24 @@
 use super::*;
 use crate::store::model::{TYPE_DOWNLOAD, TYPE_JSON, TYPE_JSON_LEAF, TYPE_NOTE, TYPE_TAB};
 
+/// Graph view's chrome is just the "+ New Tab" toolbar — no address bar,
+/// no per-tab back/forward, since there's no single focused tab there.
+/// Equal to `CHROME_HEIGHT_POINTS`, not independently tuned — a shorter
+/// value here used to fit the old bundled Ubuntu-Light font's line height
+/// but clipped button labels once `apply_fonts` switched to IBM Plex
+/// Serif's taller metrics (confirmed live: "+ New Group"/"Reset View"
+/// visibly cut off at the old 26.0).
+pub(crate) const GRAPH_TOOLBAR_HEIGHT_POINTS: f32 = CHROME_HEIGHT_POINTS;
+
+pub(crate) const GRAPH_PEEK_SIZE: egui::Vec2 = egui::vec2(360.0, 240.0);
+
+/// World-space room `bounds_for_level` leaves around a level's cards, so
+/// a fit doesn't leave one flush against the viewport edge.
+pub(crate) const GRAPH_FIT_MARGIN: f32 = 60.0;
+
+pub(crate) const GRAPH_ZOOM_MIN: f32 = 0.15;
+pub(crate) const GRAPH_ZOOM_MAX: f32 = 3.0;
+
 /// Visible-node count (post-cull, current level, see `build_graph_ui`'s
 /// LOD pre-pass) above which Graph view switches to simplified rendering
 /// -- skipping thumbnail/favicon textures and always-drawn title/label

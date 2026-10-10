@@ -40,3 +40,27 @@ pub(crate) fn human_bytes(bytes: u64) -> String {
 pub(crate) fn download_filename(path: &str) -> &str {
     std::path::Path::new(path).file_name().and_then(|n| n.to_str()).unwrap_or(path)
 }
+
+/// Cap on a truncation-style cache's size (`App::truncate_cache`, `App::favicon_origin_cache`) -- past this it is
+/// cleared outright rather than evicted incrementally. No LRU bookkeeping for what should, in steady state, only ever
+/// hold a small multiple of "how many labeled cards are visible at once"; a full clear is cheap insurance against
+/// unbounded growth if that assumption is ever wrong (e.g. many distinct titles cycling through over a long session).
+pub(crate) const TRUNCATE_CACHE_CAP: usize = 2000;
+
+/// Explorer's `/select,` argument for `path`, quoted: Explorer splits an
+/// unquoted argument at commas, so `a,b.pdf` opened the wrong folder.
+#[cfg(windows)]
+pub(crate) fn explorer_select_arg(path: &str) -> String {
+    format!("/select,\"{path}\"")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn explorer_select_quotes_the_path() {
+        assert_eq!(explorer_select_arg(r"C:\d\a,b.pdf"), r#"/select,"C:\d\a,b.pdf""#);
+    }
+}

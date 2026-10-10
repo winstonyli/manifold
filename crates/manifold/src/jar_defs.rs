@@ -8,8 +8,17 @@ use crate::process_manager::EngineKind;
 use crate::session_sync::{color_value, Fields};
 use crate::store::model::{field, FieldValue, Kind, NodeId};
 use crate::theme::TAG_COLOR_PALETTE;
-use crate::{App, JarDef};
+use crate::App;
 use std::collections::{BTreeMap, BTreeSet};
+
+/// A named jar's synced definition (a `Kind::Jar` node), decoded from its mirrored fields (`Mirror::jar_defs`). Not a
+/// graph node (spec "Data model").
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct JarDef {
+    pub(crate) name: String,
+    pub(crate) color: Option<egui::Color32>,
+    pub(crate) ephemeral: bool,
+}
 
 /// What a tab's card and Tab view show of its jar (spec "UI", chip).
 #[derive(Clone, Debug, PartialEq)]

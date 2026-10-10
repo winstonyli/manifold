@@ -70,10 +70,12 @@ mod view_modes;
 mod zoom_chip;
 
 use closed::*;
+use event_loop::UserEvent;
 use export::*;
 use fetched::*;
 use node_menu::*;
 use session::sanitize_session_name;
+use tabs::{SpawnPurpose, TabCarry, TabSpawn, TabSpawnOutcome};
 use text::*;
 use view_modes::*;
 use zoom_chip::*;
@@ -118,114 +120,13 @@ use winit::keyboard::{KeyCode as WinitKeyCode, ModifiersState, PhysicalKey};
 use winit::platform::windows::WindowAttributesExtWindows;
 use winit::window::{Window, WindowId};
 
-/// Tab view's chrome is a single top `Panel` of this exact height, in egui
-/// points — kept as a constant rather than read back from egui's layout so
-/// the compositor's content viewport (see `gpu::GpuState::render`'s
-/// `content_top_px`) always agrees with where egui actually painted,
-/// without a frame of lag. Was two stacked bars (a tab-identity strip above
-/// a separate navigation toolbar) until they were merged into one row —
-/// the identity info (favicon/spinner, engine dot) now lives inline with
-/// navigation controls in the same bar, and the separate page-title label
-/// was dropped as redundant with the address bar's URL.
-const CHROME_HEIGHT_POINTS: f32 = 38.0;
-/// Graph view's chrome is just the "+ New Tab" toolbar — no address bar,
-/// no per-tab back/forward, since there's no single focused tab there.
-/// Equal to `CHROME_HEIGHT_POINTS`, not independently tuned — a shorter
-/// value here used to fit the old bundled Ubuntu-Light font's line height
-/// but clipped button labels once `apply_fonts` switched to IBM Plex
-/// Serif's taller metrics (confirmed live: "+ New Group"/"Reset View"
-/// visibly cut off at the old 26.0).
-const GRAPH_TOOLBAR_HEIGHT_POINTS: f32 = CHROME_HEIGHT_POINTS;
-
 /// How long settings wait after the last change before they are written:
 /// a window drag sends dozens of moves a second.
 const SETTINGS_SAVE_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
 
-/// Below this on-screen card width (in points), a node's label is hidden
-/// entirely rather than truncated — a card this small can't fit more than
-/// one or two letters plus "…" anyway (see `truncate_to_width`), and a
-/// near-illegible sliver of text reads as noise, not information, at the
-/// zoom levels this app's `GRAPH_ZOOM_MIN` allows.
-const MIN_LABEL_CARD_SCREEN_WIDTH: f32 = 40.0;
-const GRAPH_THUMB_MARGIN: f32 = 6.0;
-const GRAPH_PEEK_SIZE: egui::Vec2 = egui::vec2(360.0, 240.0);
-const FAVICON_SIZE: egui::Vec2 = egui::vec2(16.0, 16.0);
-/// World-space room `bounds_for_level` leaves around a level's cards, so
-/// a fit doesn't leave one flush against the viewport edge.
-const GRAPH_FIT_MARGIN: f32 = 60.0;
-/// The graph's world-space center that the physics centering force pulls
-/// toward — independent of screen/window coordinates now that the graph is
-/// pannable/zoomable (`egui::Scene`), unlike pre-pan/zoom where node
-/// positions doubled as screen coordinates directly.
-pub(crate) const GRAPH_WORLD_CENTER: egui::Vec2 = egui::Vec2::ZERO;
-const GRAPH_ZOOM_MIN: f32 = 0.15;
-const GRAPH_ZOOM_MAX: f32 = 3.0;
-
-/// A group card's border tints `DANGER_COLOR` once its member count exceeds
-/// this threshold -- a cheap glanceable "this one's gotten big" cue. Only
-/// applies while the group has no explicit tag color of its own (see its use
-/// below) -- a deliberate user choice always wins over this automatic one,
-/// same precedent tag colors already have over the plain default `ACCENT`
-/// border.
-const GROUP_OVERLOAD_THRESHOLD: usize = 8;
-
 /// How long a "Saved <path>" toast stays on screen — see `App::save_toast`'s
 /// doc comment.
 const SAVE_TOAST_DURATION: std::time::Duration = std::time::Duration::from_secs(4);
-
-/// A minimal right-click context menu: just "Open in new tab" for a link,
-/// positioned where the click landed — see `ipc_protocol::EngineToHost::
-/// ContextMenuLink`'s doc comment for why this is the one action
-/// implemented rather than a full copy/paste/inspect menu. `x`/`y` are
-/// already in window (not content-area) point space — see where this is
-/// constructed in `drain_tab_events`.
-#[derive(Clone)]
-struct ContextMenuState {
-    x: f32,
-    y: f32,
-    href: String,
-}
-
-/// `Ctrl+K`'s tab quick-switcher: substring-search-by-title-or-url across
-/// *every* open tab regardless of level/group (unlike the graph views'
-/// own level-scoped listings — jumping to a tab buried in a different
-/// group is the whole point of this), then jump straight to whichever one
-/// is selected. `selected` indexes into whatever `App::quick_switcher_
-/// matches` currently returns for `query` -- clamped on every keystroke
-/// since the match list can shrink out from under a previously valid
-/// index (e.g. a query that used to match 5 tabs now matches 2).
-#[derive(Clone)]
-struct QuickSwitcher {
-    query: String,
-    selected: usize,
-}
-
-/// A `TextEdit` that a shortcut or click wants focused. The widget may not
-/// exist until a later frame (a rename field replaces its button, the find
-/// bar opens), so the request waits in `App::pending_focus` until the
-/// widget is built and takes it with `take_focus`. One at a time, since
-/// only one widget can hold focus.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum FocusTarget {
-    AddressBar,
-    FindBar,
-    QuickSwitcher,
-    GroupRename,
-    BookmarkFolder,
-    /// The tab menu's "New Jar..." name field (`App::naming_jar`).
-    JarName,
-}
-
-/// True, once, if `target` is the pending focus request: clears it so the
-/// caller can `request_focus()` its widget.
-fn take_focus(pending: &mut Option<FocusTarget>, target: FocusTarget) -> bool {
-    if *pending == Some(target) {
-        *pending = None;
-        true
-    } else {
-        false
-    }
-}
 
 /// Content on its way to becoming a node (`App::insert_content`).
 pub(crate) enum ContentSource {
@@ -240,174 +141,6 @@ pub(crate) enum WebBody {
     File { kind: content::ContentKind, path: String },
     /// A note's text.
     Text(String),
-}
-
-/// The event loop's real user-event type: headless debug commands, plus
-/// `TabSpawned` — see its own doc comment for why engine-host spawning needs
-/// to be async in the first place.
-enum UserEvent {
-    Debug(DebugCommand),
-    TabSpawned(Box<TabSpawnOutcome>),
-    /// A screen reader connected, acted on a node, or left (`egui_winit::accesskit_winit`).
-    Accessibility(egui_winit::accesskit_winit::Event),
-}
-
-impl From<egui_winit::accesskit_winit::Event> for UserEvent {
-    fn from(event: egui_winit::accesskit_winit::Event) -> Self {
-        UserEvent::Accessibility(event)
-    }
-}
-
-/// Which call site triggered a tab spawn — `handle_tab_spawn_result` uses
-/// this to know what to do once the (now-async) `process_manager::spawn_tab`
-/// call finishes, mirroring what `spawn_root_tab`/`spawn_new_tab`/
-/// `respawn_tab` used to do inline before the spawn was made async.
-enum SpawnPurpose {
-    /// The very first tab at startup: becomes focused, switches to Tab view.
-    Root,
-    /// Graph view's "+ New Tab" (or a page-triggered new tab): spawned
-    /// invisible, no focus change.
-    New,
-    /// Engine swap finishing, or crash recovery: visibility/focus depend on
-    /// whether `tab_id` is still the focused tab by the time the spawn
-    /// actually completes (checked at handling time, not capture time).
-    Respawn,
-    /// Startup session restore (see `App::restore_session`) — one of
-    /// potentially many concurrent spawns kicked off together, so (like
-    /// `Respawn`) visibility/focus is decided at completion time against
-    /// whatever `self.focused` was set to before any of them were issued,
-    /// not capture time.
-    Restore,
-    /// `App::start_split`'s secondary pane -- spawned invisible like `New`,
-    /// but once it completes it becomes `self.split_tab` and turns visible
-    /// (a split's secondary pane is always live, unlike an ordinary
-    /// background tab) rather than gaining focus. See `App::split_tab`'s
-    /// own doc comment.
-    Split,
-    /// `App::wake_tab`: an unloaded tab's engine starting (a sleeping tab
-    /// opened, a failed one retried). Lands like `Respawn`, decided at
-    /// completion against `self.focused`, and is a host-started load
-    /// (`note_host_load`), like a restore.
-    Wake,
-}
-
-/// A pending `process_manager::spawn_tab` call's outcome, carried back to
-/// the main/event-loop thread via `EventLoopProxy` — see `App::spawn_tab_async`
-/// for why this exists: spawning WebKit's engine-host blocks on a cold WSL2
-/// boot + Xvfb + WebKitGTK init (confirmed live to take several real seconds
-/// on first use, occasionally much longer — see `process_manager::
-/// spawn_webkit_tab`'s own doc comment), which would otherwise freeze the
-/// whole app (redraw, input, headless stdin) for that entire duration if run
-/// on this thread.
-struct TabSpawnOutcome {
-    spawn: TabSpawn,
-    /// `App::session_generation` when the spawn started -- see that field.
-    generation: u64,
-    result: Result<EngineTab, process_manager::SpawnError>,
-    /// The cookies the host was seeded with, as its starting `jar::TabCookies` (empty for hosts that are not).
-    seeded: jar::TabCookies,
-    /// The jar the host was seeded from, resolved when the spawn started: its pulls merge into this one.
-    jar: jar::JarKey,
-    /// That jar's clear count when the seed was read (`jar::Snapshots::seed`); `None` if it never was.
-    seed_clears: Option<u64>,
-}
-
-/// What `spawn_tab_async` needs to start a tab and, once it's up, to
-/// insert its graph node: `TabSpawn::new` for a new tab (no parent or
-/// group, nothing carried), `TabSpawn::respawn` for one that
-/// already has a node.
-struct TabSpawn {
-    id: String,
-    url: String,
-    kind: EngineKind,
-    parent: Option<String>,
-    group: Option<String>,
-    /// The jar a new tab starts with, which it lands with (`Carried::jar`). A tab the mirror already holds (a
-    /// respawn or wake) uses the mirror's instead, which a cascade may change while it is in flight.
-    jar: jar::JarChoice,
-    /// Where a new tab lands: its layout entry and its document pos start there (2b-4 Ruling 3). A tab already
-    /// placed (a respawn, a wake) keeps both (`App::layout` outlives the respawn, `Mirror::seed` never overwrites).
-    pos: egui::Vec2,
-    purpose: SpawnPurpose,
-    carry: TabCarry,
-    /// The engine to respawn with if this spawn fails: a swap's old
-    /// engine, whose process `finish_swap` has already had to drop.
-    fallback_kind: Option<EngineKind>,
-}
-
-/// What a tab keeps across a respawn (engine swap, crash recovery) or a
-/// wake. A new tab starts unpinned, untagged, at the default zoom, with no
-/// title or mute of its own yet. A new attribute that must survive a
-/// respawn or wake is one more field here.
-struct TabCarry {
-    /// See `Mirror::pinned`; seeds the mirror when the tab's id has no entry yet.
-    pinned: bool,
-    /// See `Mirror::color`; seeds the mirror when the tab's id has no entry yet.
-    color: Option<egui::Color32>,
-    /// See `TabPayload::zoom_factor`. A new tab takes
-    /// `Settings::zoom_factor`, having no value of its own yet.
-    zoom_factor: f64,
-    /// See `TabPayload::title`: shown until the page reports its own.
-    title: String,
-    /// See `TabPayload::muted`. Sent to the new engine on landing.
-    muted: bool,
-}
-
-impl TabSpawn {
-    fn new(
-        id: String,
-        url: String,
-        kind: EngineKind,
-        pos: egui::Vec2,
-        purpose: SpawnPurpose,
-        zoom_factor: f64,
-    ) -> Self {
-        TabSpawn {
-            id,
-            url,
-            kind,
-            parent: None,
-            group: None,
-            jar: Default::default(),
-            pos,
-            purpose,
-            carry: TabCarry { pinned: false, color: None, zoom_factor, title: String::new(), muted: false },
-            fallback_kind: None,
-        }
-    }
-
-    /// Tab `node` (`id`) respawned as `kind` at `url`, keeping its `TabCarry` (`carried` is the mirror's); its place
-    /// in the graph is its `App::layout` entry, which the respawn leaves alone. `None` if `node` isn't a tab.
-    fn respawn(id: &str, node: &GraphNode, carried: Carried, kind: EngineKind, url: String) -> Option<Self> {
-        let tab = node.as_tab()?;
-        Some(TabSpawn {
-            id: id.to_string(),
-            url,
-            kind,
-            parent: carried.parent.clone(),
-            group: carried.group.clone(),
-            jar: carried.jar,
-            pos: carried.pos.unwrap_or_default(),
-            purpose: SpawnPurpose::Respawn,
-            carry: TabCarry {
-                pinned: carried.pinned,
-                color: carried.color,
-                zoom_factor: tab.zoom_factor,
-                title: tab.title.clone(),
-                muted: tab.muted,
-            },
-            fallback_kind: None,
-        })
-    }
-}
-
-/// A named jar's synced definition (a `Kind::Jar` node), decoded from its mirrored fields (`Mirror::jar_defs`). Not a
-/// graph node (spec "Data model").
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) struct JarDef {
-    pub(crate) name: String,
-    pub(crate) color: Option<egui::Color32>,
-    pub(crate) ephemeral: bool,
 }
 
 struct App {
@@ -2651,13 +2384,6 @@ fn main() {
     event_loop.run_app(&mut app).expect("run event loop");
     drop(app);
     process_manager::finish_cache_removals();
-}
-
-/// Explorer's `/select,` argument for `path`, quoted: Explorer splits an
-/// unquoted argument at commas, so `a,b.pdf` opened the wrong folder.
-#[cfg(windows)]
-fn explorer_select_arg(path: &str) -> String {
-    format!("/select,\"{path}\"")
 }
 
 #[cfg(test)]

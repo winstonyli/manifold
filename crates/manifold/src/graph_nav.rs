@@ -446,7 +446,7 @@ impl App {
                 &edges,
                 &pinned,
                 &sizes,
-                GRAPH_WORLD_CENTER,
+                graph_layout::GRAPH_WORLD_CENTER,
                 SETTLE_DT,
             );
         }

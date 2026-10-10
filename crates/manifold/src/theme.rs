@@ -3,6 +3,17 @@
 
 use super::*;
 
+/// Tab view's chrome is a single top `Panel` of this exact height, in egui
+/// points — kept as a constant rather than read back from egui's layout so
+/// the compositor's content viewport (see `gpu::GpuState::render`'s
+/// `content_top_px`) always agrees with where egui actually painted,
+/// without a frame of lag. Was two stacked bars (a tab-identity strip above
+/// a separate navigation toolbar) until they were merged into one row —
+/// the identity info (favicon/spinner, engine dot) now lives inline with
+/// navigation controls in the same bar, and the separate page-title label
+/// was dropped as redundant with the address bar's URL.
+pub(crate) const CHROME_HEIGHT_POINTS: f32 = 38.0;
+
 /// Fixed tag-color choices a group or tab card's color swatch cycles
 /// through (see `next_tag_color`) -- vermillion/orange/yellow/bluish
 /// green/sky blue/reddish purple, chosen for mutual distinguishability

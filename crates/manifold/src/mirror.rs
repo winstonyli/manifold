@@ -9,11 +9,11 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use crate::jar::JarChoice;
+use crate::jar_defs::JarDef;
 use crate::json_view::JsonView;
 use crate::process_manager::EngineKind;
 use crate::session_sync::{color_of, color_value, engine_of, pos_value, Fields};
 use crate::store::model::{field, field_def, FieldValue, Kind, NodeId};
-use crate::JarDef;
 
 /// Every field of a node's type (`Kind::fields`, 2b-5 Ruling 2) but the two links, `parent` and `group`, which are
 /// `links`. A `Create` carries them, and on an existing node only `App::pending` writes them (nothing compares the

@@ -5,6 +5,60 @@
 use super::*;
 use crate::store::model::Kind;
 
+/// A minimal right-click context menu: just "Open in new tab" for a link,
+/// positioned where the click landed — see `ipc_protocol::EngineToHost::
+/// ContextMenuLink`'s doc comment for why this is the one action
+/// implemented rather than a full copy/paste/inspect menu. `x`/`y` are
+/// already in window (not content-area) point space — see where this is
+/// constructed in `drain_tab_events`.
+#[derive(Clone)]
+pub(crate) struct ContextMenuState {
+    pub(crate) x: f32,
+    pub(crate) y: f32,
+    pub(crate) href: String,
+}
+
+/// `Ctrl+K`'s tab quick-switcher: substring-search-by-title-or-url across
+/// *every* open tab regardless of level/group (unlike the graph views'
+/// own level-scoped listings — jumping to a tab buried in a different
+/// group is the whole point of this), then jump straight to whichever one
+/// is selected. `selected` indexes into whatever `App::quick_switcher_
+/// matches` currently returns for `query` -- clamped on every keystroke
+/// since the match list can shrink out from under a previously valid
+/// index (e.g. a query that used to match 5 tabs now matches 2).
+#[derive(Clone)]
+pub(crate) struct QuickSwitcher {
+    pub(crate) query: String,
+    pub(crate) selected: usize,
+}
+
+/// A `TextEdit` that a shortcut or click wants focused. The widget may not
+/// exist until a later frame (a rename field replaces its button, the find
+/// bar opens), so the request waits in `App::pending_focus` until the
+/// widget is built and takes it with `take_focus`. One at a time, since
+/// only one widget can hold focus.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum FocusTarget {
+    AddressBar,
+    FindBar,
+    QuickSwitcher,
+    GroupRename,
+    BookmarkFolder,
+    /// The tab menu's "New Jar..." name field (`App::naming_jar`).
+    JarName,
+}
+
+/// True, once, if `target` is the pending focus request: clears it so the
+/// caller can `request_focus()` its widget.
+pub(crate) fn take_focus(pending: &mut Option<FocusTarget>, target: FocusTarget) -> bool {
+    if *pending == Some(target) {
+        *pending = None;
+        true
+    } else {
+        false
+    }
+}
+
 /// A Tab actions row: label, the key shown at its edge, and what it does.
 type TabActionRow = (&'static str, &'static str, fn(&mut App));
 

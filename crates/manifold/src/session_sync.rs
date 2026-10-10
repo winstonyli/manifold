@@ -19,7 +19,8 @@ use crate::store::model::{
     decode_field, encode_field, field, field_def, Doc, FieldType, FieldValue, Kind, Node, NodeId,
 };
 use crate::store::ops::OpBody;
-use crate::{App, ClosedEntry, TabSpawn, ViewMode, MAX_CLOSED};
+use crate::tabs::TabSpawn;
+use crate::{App, ClosedEntry, ViewMode, MAX_CLOSED};
 
 /// How long after a save that didn't commit `poll_store` tries again:
 /// soon enough that an edit isn't left unsaved, slow enough that a failing
@@ -1855,7 +1856,7 @@ impl App {
         // member's file position is already relative to its own (possibly
         // nested) group and stays as-is, same as the old per-group export
         // format's own import behavior.
-        let pos = crate::GRAPH_WORLD_CENTER + crate::graph_layout::spawn_jitter(&root.to_string());
+        let pos = crate::graph_layout::GRAPH_WORLD_CENTER + crate::graph_layout::spawn_jitter(&root.to_string());
         let root = ImportRoot { group: self.insertion_group(), pos: Some(pos) };
         self.materialize_imported(imported, Some(root), false);
         self.save_session();
