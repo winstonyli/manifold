@@ -18,6 +18,7 @@ mod deselect;
 mod engine_info;
 mod engine_install;
 mod event_loop;
+mod export;
 mod failure_toasts;
 mod favicon_fetch;
 mod fetched;
@@ -63,13 +64,17 @@ mod store;
 mod suggestions;
 mod tab_view;
 mod tabs;
+mod text;
 mod theme;
 mod view_modes;
 mod zoom_chip;
 
 use closed::*;
+use export::*;
 use fetched::*;
 use node_menu::*;
+use session::sanitize_session_name;
+use text::*;
 use view_modes::*;
 use zoom_chip::*;
 
@@ -111,7 +116,7 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy}
 use winit::keyboard::{KeyCode as WinitKeyCode, ModifiersState, PhysicalKey};
 #[cfg(windows)]
 use winit::platform::windows::WindowAttributesExtWindows;
-use winit::window::{Icon, Window, WindowId};
+use winit::window::{Window, WindowId};
 
 /// Tab view's chrome is a single top `Panel` of this exact height, in egui
 /// points — kept as a constant rather than read back from egui's layout so
@@ -132,224 +137,9 @@ const CHROME_HEIGHT_POINTS: f32 = 38.0;
 /// visibly cut off at the old 26.0).
 const GRAPH_TOOLBAR_HEIGHT_POINTS: f32 = CHROME_HEIGHT_POINTS;
 
-/// Strips a "Save Session As..." name down to characters safe to use
-/// verbatim as a filename (`sessions/<name>.mnf`) -- alphanumeric, space,
-/// hyphen, underscore only. No path separators or `.` survive, so there's
-/// no path-traversal or extension-confusion risk from typed input, and no
-/// separate validation step is needed before treating the result as a bare
-/// file stem. Cleaned first and last by the name rules (`names::clean_name`), so a hidden character
-/// never reaches the file name and the spaces the filter leaves behind collapse.
-fn sanitize_session_name(raw: &str) -> String {
-    let clean = crate::names::clean_name(raw);
-    let safe: String = clean.chars().filter(|c| c.is_alphanumeric() || matches!(c, ' ' | '-' | '_')).collect();
-    crate::names::clean_name(&safe).into_owned()
-}
-
-/// Case-insensitive substring match against any of `haystacks` -- shared
-/// by the Graph toolbar's own filter (via `graph_filter_dims` below) and
-/// the History/Bookmarks popup filter boxes, so the three don't each
-/// reimplement the same `to_lowercase().contains()` check slightly
-/// differently. An empty `filter` always matches (nothing typed yet, so
-/// nothing should be filtered out).
-fn filter_matches(filter: &str, haystacks: &[&str]) -> bool {
-    let filter = filter.trim();
-    if filter.is_empty() {
-        return true;
-    }
-    let filter = filter.to_lowercase();
-    haystacks.iter().any(|h| h.to_lowercase().contains(&filter))
-}
-
-/// Graph toolbar filter box: `true` when the node should be painted
-/// dimmed -- exactly the negation of `filter_matches`, kept as its own
-/// named function since "dims" (not "doesn't match") is the meaning every
-/// call site actually cares about.
-fn graph_filter_dims(filter: &str, haystacks: &[&str]) -> bool {
-    !filter_matches(filter, haystacks)
-}
-
-/// The app's own window/taskbar icon -- embedded at compile time (`include_
-/// bytes!`, same posture `IBMPlexSerif-Regular.ttf` already uses) rather
-/// than loaded from disk at runtime, so the binary stays self-contained.
-/// `None` on decode failure rather than panicking -- a missing icon just
-/// means winit's own default, not a reason to fail to start.
-fn load_app_icon() -> Option<Icon> {
-    let bytes = include_bytes!("../assets/icon/icon-64.png");
-    let img = image::load_from_memory(bytes).ok()?.into_rgba8();
-    let (width, height) = img.dimensions();
-    Icon::from_rgba(img.into_raw(), width, height).ok()
-}
-
-/// One deferred `overlay_painter` paint call, queued during `Scene::show`'s
-/// content closure and actually painted only after it returns -- see
-/// `DeferredOverlays`'s own doc comment for why this exists at all. Takes
-/// the *real* `overlay_painter`/`project` (recomputed fresh post-`Scene`)
-/// as arguments at call time, not at queue time.
-type DeferredOverlay = Box<dyn FnOnce(&egui::Painter, &dyn Fn(egui::Pos2) -> egui::Pos2)>;
-
-/// A frame's worth of `overlay_painter` decorations (node labels, pin/audio/
-/// close/eject icons, the empty-canvas menu's own row labels, ...), queued
-/// during `Scene::show`'s content closure instead of painted immediately.
-///
-/// Root cause this works around: `overlay_painter` draws on a screen-space
-/// layer deliberately untransformed by `Scene` (see that field's own doc
-/// comment for why -- crisp text at any zoom, not blurry rescaled glyphs),
-/// so anything painted on it has to convert its own world position to
-/// screen space manually via `project`. But `project` is built from
-/// `self.camera.rect`, which -- confirmed by reading `egui::Scene::
-/// show`'s actual source (0.36.2) -- is only updated *after* the whole
-/// content closure returns for the frame; a live pan/zoom drag is applied
-/// to `Scene`'s own *internal* transform before the closure runs, which is
-/// why `ui.painter()`-drawn card content (rendered on `Scene`'s own
-/// transformed layer, where egui applies that internal transform
-/// automatically) is always correctly positioned, while anything computed
-/// from `project` during the same closure is exactly one frame stale --
-/// invisible at rest, but a growing pixel gap between a card and its own
-/// label/icons the faster the camera pans, since a fixed one-frame timing
-/// lag becomes a bigger on-screen offset the more distance the camera
-/// covers in that frame.
-///
-/// Fix: instead of painting through `overlay_painter` immediately (using
-/// the stale `project` captured before `Scene::show`), every such call
-/// queues a closure capturing its own world position and paint parameters.
-/// Once `Scene::show` returns and `self.camera.rect` has been updated
-/// to reflect this frame's actual pan/zoom, `project` is recomputed fresh
-/// and every queued closure is invoked with it -- so overlay decorations
-/// are painted using the *same* up-to-date transform the card content
-/// itself already reflects, closing the gap entirely rather than just
-/// making it smaller.
-type DeferredOverlays = Vec<DeferredOverlay>;
-
-/// Shows a native "Save As" dialog defaulting to `default_name`, filtered
-/// to `.json`; if a path was picked, returns it along with the exact
-/// "Saved <path>" toast text this app shows for every export (Session,
-/// Bookmarks, one Group) on success. Doesn't write anything itself, and
-/// deliberately isn't a method on `App` -- the caller still does its own
-/// serialization (`self.export_session_to(&path)`, etc.)
-/// and sets `self.save_toast`, which a `&mut self` helper here couldn't
-/// do without a borrow conflict against a closure also wanting to touch
-/// `self`. Previously this dialog-plus-toast tail was hand-copied three
-/// times, differing only in the default filename and the filter's label.
-fn save_dialog_with_toast(
-    default_name: impl Into<String>,
-    filter_label: &str,
-) -> Option<(std::path::PathBuf, (String, std::time::Instant))> {
-    let path =
-        rfd::FileDialog::new().set_file_name(default_name.into()).add_filter(filter_label, &["json"]).save_file()?;
-    let toast = (format!("Saved {}", path.display()), std::time::Instant::now());
-    Some((path, toast))
-}
-
-/// Writes a JSON snapshot (spec "JSON snapshots") to `path`, pretty-
-/// printed, logging (not toasting) a failure -- shared by every Export
-/// Group site (headless `EXPORTGROUP`, the node menu's own "Export
-/// Group..." and the popup's), matching the old per-group export file's
-/// own save, which likewise only logged. `what` names the file's kind for
-/// the log line, matching `json_file::load`'s own `what`.
-fn write_json_export(json: &store::json::JsonDoc, path: &std::path::Path, what: &str) {
-    let written = serde_json::to_string_pretty(json).map_err(|e| e.to_string()).and_then(|text| {
-        if let Some(dir) = path.parent() {
-            let _ = std::fs::create_dir_all(dir);
-        }
-        store::atomic::replace(path, text.as_bytes()).map_err(|e| e.to_string())
-    });
-    if let Err(err) = written {
-        eprintln!("{what}: couldn't export to {}: {err}", path.display());
-    }
-}
-
-/// The bare filename portion of a download's full path, for display --
-/// shared by the graph card's own label and the "Downloads (N)" toolbar
-/// dropdown so the two never show it differently. Falls back to the whole
-/// path if it has no separable filename component (shouldn't normally
-/// happen for a real downloaded file's path).
-fn download_filename(path: &str) -> &str {
-    std::path::Path::new(path).file_name().and_then(|n| n.to_str()).unwrap_or(path)
-}
-
 /// How long settings wait after the last change before they are written:
 /// a window drag sends dozens of moves a second.
 const SETTINGS_SAVE_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
-
-/// Where nodes' files are on this machine (spec "Where fetched files
-/// live"): this machine's own fetch in the content dir (`<id>.<ext>`, the
-/// newest if a Refresh changed the extension), which a Refresh replaces
-/// without touching the shared `path`; else the stored path. A missing
-/// stored path shows as missing, and `session_sync::materialize` refetches
-/// it when the node has a URL. An unfinished `.tmp` save is never picked.
-/// One directory read answers a whole restore or apply pass.
-#[derive(Debug, Default)]
-pub(crate) struct ContentIndex(HashMap<String, (std::time::SystemTime, std::path::PathBuf)>);
-
-impl ContentIndex {
-    pub(crate) fn scan(dir: Option<&std::path::Path>) -> Self {
-        let mut newest: HashMap<String, (std::time::SystemTime, std::path::PathBuf)> = HashMap::new();
-        let entries = dir.and_then(|dir| std::fs::read_dir(dir).ok()).into_iter().flatten().flatten();
-        for e in entries {
-            let name = e.file_name().to_string_lossy().into_owned();
-            let Some((id, _)) = name.split_once('.') else { continue };
-            if name.ends_with(".tmp") {
-                continue;
-            }
-            let modified = e.metadata().and_then(|m| m.modified()).unwrap_or(std::time::UNIX_EPOCH);
-            match newest.get(id) {
-                Some((at, _)) if *at >= modified => {}
-                _ => {
-                    newest.insert(id.to_string(), (modified, e.path()));
-                }
-            }
-        }
-        Self(newest)
-    }
-
-    pub(crate) fn resolve(&self, id: &str, stored: &str) -> String {
-        self.0.get(id).map_or_else(|| stored.to_string(), |(_, path)| path.to_string_lossy().into_owned())
-    }
-}
-
-/// A one-line shape summary for a JSON node's own small graph card:
-/// `{ N }`/`[ N ]` for a container,
-/// or the scalar's own compact `Display` form (truncated if it would
-/// otherwise overflow a card this small).
-fn json_summary(value: &serde_json::Value) -> String {
-    match value {
-        serde_json::Value::Object(map) => format!("{{ {} }}", map.len()),
-        serde_json::Value::Array(items) => format!("[ {} ]", items.len()),
-        other => {
-            let text = other.to_string();
-            if text.chars().count() > 24 {
-                format!("{}…", text.chars().take(23).collect::<String>())
-            } else {
-                text
-            }
-        }
-    }
-}
-
-/// A key press as egui receives it from a keyboard, for headless key
-/// commands (see `App::debug_input_events`).
-fn debug_key_event(key: egui::Key, modifiers: egui::Modifiers) -> egui::Event {
-    egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers }
-}
-
-/// `1234` -> `"1.2 KB"`, binary (1024-based) units -- matches Windows
-/// Explorer's own convention for a "how big is this file" readout, which is
-/// the nearest existing reference point a download progress display has in
-/// this app.
-fn human_bytes(bytes: u64) -> String {
-    const UNITS: &[&str] = &["B", "KB", "MB", "GB", "TB"];
-    let mut value = bytes as f64;
-    let mut unit = 0;
-    while value >= 1024.0 && unit + 1 < UNITS.len() {
-        value /= 1024.0;
-        unit += 1;
-    }
-    if unit == 0 {
-        format!("{bytes} {}", UNITS[unit])
-    } else {
-        format!("{value:.1} {}", UNITS[unit])
-    }
-}
 
 /// Below this on-screen card width (in points), a node's label is hidden
 /// entirely rather than truncated — a card this small can't fit more than
@@ -368,31 +158,8 @@ const GRAPH_FIT_MARGIN: f32 = 60.0;
 /// pannable/zoomable (`egui::Scene`), unlike pre-pan/zoom where node
 /// positions doubled as screen coordinates directly.
 pub(crate) const GRAPH_WORLD_CENTER: egui::Vec2 = egui::Vec2::ZERO;
-/// Initial visible world-space rect for the graph's `egui::Scene`, before
-/// any user panning/zooming — generous enough to show a handful of settled
-/// nodes around `GRAPH_WORLD_CENTER` at 1:1 zoom.
-const GRAPH_SCENE_DEFAULT_SIZE: egui::Vec2 = egui::vec2(900.0, 620.0);
 const GRAPH_ZOOM_MIN: f32 = 0.15;
 const GRAPH_ZOOM_MAX: f32 = 3.0;
-
-fn default_graph_scene_rect() -> egui::Rect {
-    egui::Rect::from_center_size(egui::Pos2::new(0.0, 0.0), GRAPH_SCENE_DEFAULT_SIZE)
-}
-
-/// `profile::pictures_dir()`\manifold-<unix-seconds>.png, or the temp folder without one — same
-/// "pick the obvious default, no save-as dialog" posture `downloads_dir()`
-/// (in each engine-host's own download-handling code) already takes, just
-/// on the manifold side for the toolbar's "Screenshot" button. The
-/// timestamp is the simplest collision-free name that needs no extra
-/// state; a real "Save As" dialog would be the alternative, but this
-/// project doesn't build custom save UI anywhere else either.
-fn screenshot_default_path() -> std::path::PathBuf {
-    let dir = profile::pictures_dir().unwrap_or_else(std::env::temp_dir);
-    let _ = std::fs::create_dir_all(&dir);
-    let timestamp =
-        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-    dir.join(format!("manifold-{timestamp}.png"))
-}
 
 /// A group card's border tints `DANGER_COLOR` once its member count exceeds
 /// this threshold -- a cheap glanceable "this one's gotten big" cue. Only
@@ -401,162 +168,6 @@ fn screenshot_default_path() -> std::path::PathBuf {
 /// same precedent tag colors already have over the plain default `ACCENT`
 /// border.
 const GROUP_OVERLOAD_THRESHOLD: usize = 8;
-
-/// `truncate_core`'s cache key: a hash of the text (the text itself is in
-/// the value, compared on a hit, so a lookup allocates nothing), the font
-/// size as bits (`f32` isn't `Hash`/`Eq`), the width bucket, and which end
-/// is cut. Every call site builds its `FontId` with `FontId::proportional`,
-/// so the family is not in the key. See `truncate_to_width` for why the
-/// width is bucketed rather than exact.
-type TruncateCacheKey = (u64, u32, i32, bool);
-
-/// Width granularity `truncate_to_width` bucket its cache key to -- see
-/// that function's own doc comment. A truncation result only actually
-/// changes at the specific width where one more character's glyph would
-/// fit, so nearby widths overwhelmingly share the same correct answer;
-/// this just needs to be small enough that a bucket rarely straddles one
-/// of those boundaries. Flooring (not rounding) to this bucket size
-/// means the width actually used for the search is always <= the real
-/// available width, so the visible failure mode of a stale/coarse bucket
-/// is "very occasionally one character more truncated than strictly
-/// necessary," never overflow past the card's own edge.
-const TRUNCATE_WIDTH_BUCKET: f32 = 4.0;
-
-/// Cap on `App::truncate_cache`'s size -- past this it's cleared outright
-/// rather than evicted incrementally. No LRU bookkeeping for what should,
-/// in steady state, only ever hold a small multiple of "how many labeled
-/// cards are visible at once"; a full clear is cheap insurance against
-/// unbounded growth if that assumption is ever wrong (e.g. many distinct
-/// titles cycling through over a long session).
-const TRUNCATE_CACHE_CAP: usize = 2000;
-
-/// Shortens `text` to the longest prefix (plus an ellipsis) that lays out
-/// no wider than `max_width` at `font_id`, or returns it unchanged if it
-/// already fits. Needed because graph-view node labels are now painted at
-/// a fixed screen-space font size regardless of zoom (see
-/// `build_graph_ui`'s `overlay_painter`/`project`) — at low zoom a node's
-/// card shrinks well below the label's natural width, and unlike a normal
-/// egui `Label` widget (which can `.truncate()` itself during layout),
-/// text painted directly via `Painter::text` has no such built-in limit.
-///
-/// Memoized on `cache` -- each search step needs a real text-shaping call
-/// (`ctx.fonts_mut(...).layout_no_wrap`), and the overwhelming common
-/// case frame to frame is "this exact label, this exact width, again",
-/// since neither a card's title nor its on-screen width usually change
-/// between two consecutive frames. **Found on a general (not just
-/// large-graph) performance audit**: this ran unconditionally, every
-/// frame, for every visible labeled card, regardless of graph size.
-///
-/// **`max_width` is bucketed, not used exactly, for both the cache key
-/// and the search bound.** Every call site derives it from
-/// `zoom_scale`, which changes continuously (as a raw float) on every
-/// frame during an active pan/zoom gesture -- keying on the exact width
-/// meant this cache hit approximately never while the user was actually
-/// zooming, the one time avoiding repeated font-shaping calls matters
-/// most. Found live, following up on the general audit above.
-fn truncate_to_width(
-    cache: &mut HashMap<TruncateCacheKey, (String, String)>,
-    ctx: &egui::Context,
-    text: &str,
-    font_id: &egui::FontId,
-    max_width: f32,
-) -> String {
-    truncate_core(cache, ctx, text, font_id, max_width, false)
-}
-
-/// `text` cut to fit `max_width` with "…" at the cut: at the end, or at the
-/// start when `from_start` (a path keeps its file name). Cuts fall on
-/// grapheme boundaries, so a ZWJ emoji or a combining mark is never split,
-/// and the width measured is the width drawn. A binary search over
-/// grapheme boundaries rather than a shrink-by-one loop, since
-/// `layout_no_wrap` (one text-shaping pass) is the expensive part and a
-/// title could in principle be long. Memoized on `cache`.
-fn truncate_core(
-    cache: &mut HashMap<TruncateCacheKey, (String, String)>,
-    ctx: &egui::Context,
-    text: &str,
-    font_id: &egui::FontId,
-    max_width: f32,
-    from_start: bool,
-) -> String {
-    use std::hash::{Hash, Hasher};
-    use unicode_segmentation::UnicodeSegmentation;
-    let bucketed_width = (max_width / TRUNCATE_WIDTH_BUCKET).floor() * TRUNCATE_WIDTH_BUCKET;
-    let width_bucket = (max_width / TRUNCATE_WIDTH_BUCKET).floor() as i32;
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    text.hash(&mut hasher);
-    let key: TruncateCacheKey = (hasher.finish(), font_id.size.to_bits(), width_bucket, from_start);
-    if let Some((cached_text, cut)) = cache.get(&key) {
-        if cached_text == text {
-            return cut.clone();
-        }
-    }
-    let width_of = |s: &str| -> f32 {
-        ctx.fonts_mut(|f| f.layout_no_wrap(s.to_owned(), font_id.clone(), egui::Color32::WHITE)).size().x
-    };
-    let result = if bucketed_width <= 0.0 {
-        String::new()
-    } else if width_of(text) <= bucketed_width {
-        text.to_owned()
-    } else {
-        // Byte offsets of every grapheme boundary, both ends included.
-        let mut bounds: Vec<usize> = text.grapheme_indices(true).map(|(i, _)| i).collect();
-        bounds.push(text.len());
-        let candidate = |k: usize| {
-            if from_start {
-                format!("\u{2026}{}", &text[bounds[bounds.len() - 1 - k]..])
-            } else {
-                format!("{}\u{2026}", &text[..bounds[k]])
-            }
-        };
-        // The most graphemes `k` kept that still fit.
-        let (mut lo, mut hi) = (0usize, bounds.len() - 1);
-        while lo < hi {
-            let mid = (lo + hi).div_ceil(2);
-            if width_of(&candidate(mid)) <= bucketed_width {
-                lo = mid;
-            } else {
-                hi = mid - 1;
-            }
-        }
-        candidate(lo)
-    };
-    if cache.len() >= TRUNCATE_CACHE_CAP {
-        cache.clear();
-    }
-    cache.insert(key, (text.to_owned(), result.clone()));
-    result
-}
-
-/// A soft glow tinted the card's own border color, grown outward with
-/// decreasing alpha: a plain black drop shadow was invisible against this
-/// app's near-black background. `intensity` scales the alpha only, not the
-/// spread, so a hover brightens it without resizing the card. Returned as
-/// shapes rather than painted, so a caller can still put the glow visually
-/// *behind* content laid out before the glow is known (the save toast: an
-/// `egui::Frame` that auto-sizes to its own label; a graph card, whose
-/// hover is only known after its body). `Painter::add` only ever appends
-/// (there's no "insert behind" for shapes already painted), so such a
-/// caller pre-reserves a placeholder slot with `Shape::Noop`, then fills it
-/// in with these via `Painter::set` -- the standard egui pattern for this,
-/// also how e.g. selection highlights behind not-yet-laid-out text are
-/// done.
-fn card_glow_shapes(
-    rect: egui::Rect,
-    base_corner_radius: f32,
-    color: egui::Color32,
-    inv_zoom: f32,
-    intensity: f32,
-) -> [egui::Shape; 2] {
-    [(85u8, 3.5_f32), (38u8, 8.5)].map(|(alpha, grow)| {
-        let alpha = ((alpha as f32) * intensity).min(255.0) as u8;
-        egui::Shape::rect_filled(
-            rect.expand(grow * inv_zoom),
-            (base_corner_radius + grow) * inv_zoom,
-            egui::Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), alpha),
-        )
-    })
-}
 
 /// How long a "Saved <path>" toast stays on screen — see `App::save_toast`'s
 /// doc comment.

@@ -2111,6 +2111,55 @@ fn digits_ready(digits: &str, count: usize, idle: f64) -> Option<usize> {
     final_.then_some(n)
 }
 
+/// One deferred `overlay_painter` paint call, queued during `Scene::show`'s
+/// content closure and actually painted only after it returns -- see
+/// `DeferredOverlays`'s own doc comment for why this exists at all. Takes
+/// the *real* `overlay_painter`/`project` (recomputed fresh post-`Scene`)
+/// as arguments at call time, not at queue time.
+type DeferredOverlay = Box<dyn FnOnce(&egui::Painter, &dyn Fn(egui::Pos2) -> egui::Pos2)>;
+
+/// A frame's worth of `overlay_painter` decorations (node labels, pin/audio/
+/// close/eject icons, the empty-canvas menu's own row labels, ...), queued
+/// during `Scene::show`'s content closure instead of painted immediately.
+///
+/// Root cause this works around: `overlay_painter` draws on a screen-space
+/// layer deliberately untransformed by `Scene` (see that field's own doc
+/// comment for why -- crisp text at any zoom, not blurry rescaled glyphs),
+/// so anything painted on it has to convert its own world position to
+/// screen space manually via `project`. But `project` is built from
+/// `self.camera.rect`, which -- confirmed by reading `egui::Scene::
+/// show`'s actual source (0.36.2) -- is only updated *after* the whole
+/// content closure returns for the frame; a live pan/zoom drag is applied
+/// to `Scene`'s own *internal* transform before the closure runs, which is
+/// why `ui.painter()`-drawn card content (rendered on `Scene`'s own
+/// transformed layer, where egui applies that internal transform
+/// automatically) is always correctly positioned, while anything computed
+/// from `project` during the same closure is exactly one frame stale --
+/// invisible at rest, but a growing pixel gap between a card and its own
+/// label/icons the faster the camera pans, since a fixed one-frame timing
+/// lag becomes a bigger on-screen offset the more distance the camera
+/// covers in that frame.
+///
+/// Fix: instead of painting through `overlay_painter` immediately (using
+/// the stale `project` captured before `Scene::show`), every such call
+/// queues a closure capturing its own world position and paint parameters.
+/// Once `Scene::show` returns and `self.camera.rect` has been updated
+/// to reflect this frame's actual pan/zoom, `project` is recomputed fresh
+/// and every queued closure is invoked with it -- so overlay decorations
+/// are painted using the *same* up-to-date transform the card content
+/// itself already reflects, closing the gap entirely rather than just
+/// making it smaller.
+pub(crate) type DeferredOverlays = Vec<DeferredOverlay>;
+
+/// Initial visible world-space rect for the graph's `egui::Scene`, before
+/// any user panning/zooming — generous enough to show a handful of settled
+/// nodes around `GRAPH_WORLD_CENTER` at 1:1 zoom.
+const GRAPH_SCENE_DEFAULT_SIZE: egui::Vec2 = egui::vec2(900.0, 620.0);
+
+pub(crate) fn default_graph_scene_rect() -> egui::Rect {
+    egui::Rect::from_center_size(egui::Pos2::new(0.0, 0.0), GRAPH_SCENE_DEFAULT_SIZE)
+}
+
 #[cfg(test)]
 mod tests {
     #[test]

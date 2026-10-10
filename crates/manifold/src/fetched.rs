@@ -684,5 +684,41 @@ impl App {
     }
 }
 
+/// Where nodes' files are on this machine (spec "Where fetched files
+/// live"): this machine's own fetch in the content dir (`<id>.<ext>`, the
+/// newest if a Refresh changed the extension), which a Refresh replaces
+/// without touching the shared `path`; else the stored path. A missing
+/// stored path shows as missing, and `session_sync::materialize` refetches
+/// it when the node has a URL. An unfinished `.tmp` save is never picked.
+/// One directory read answers a whole restore or apply pass.
+#[derive(Debug, Default)]
+pub(crate) struct ContentIndex(HashMap<String, (std::time::SystemTime, std::path::PathBuf)>);
+
+impl ContentIndex {
+    pub(crate) fn scan(dir: Option<&std::path::Path>) -> Self {
+        let mut newest: HashMap<String, (std::time::SystemTime, std::path::PathBuf)> = HashMap::new();
+        let entries = dir.and_then(|dir| std::fs::read_dir(dir).ok()).into_iter().flatten().flatten();
+        for e in entries {
+            let name = e.file_name().to_string_lossy().into_owned();
+            let Some((id, _)) = name.split_once('.') else { continue };
+            if name.ends_with(".tmp") {
+                continue;
+            }
+            let modified = e.metadata().and_then(|m| m.modified()).unwrap_or(std::time::UNIX_EPOCH);
+            match newest.get(id) {
+                Some((at, _)) if *at >= modified => {}
+                _ => {
+                    newest.insert(id.to_string(), (modified, e.path()));
+                }
+            }
+        }
+        Self(newest)
+    }
+
+    pub(crate) fn resolve(&self, id: &str, stored: &str) -> String {
+        self.0.get(id).map_or_else(|| stored.to_string(), |(_, path)| path.to_string_lossy().into_owned())
+    }
+}
+
 #[cfg(test)]
 mod tests;

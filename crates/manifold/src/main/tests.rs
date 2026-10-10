@@ -140,68 +140,6 @@ fn explorer_select_quotes_the_path() {
     assert_eq!(explorer_select_arg(r"C:\d\a,b.pdf"), r#"/select,"C:\d\a,b.pdf""#);
 }
 
-fn with_fonts(f: impl FnOnce(&egui::Context)) {
-    let ctx = egui::Context::default();
-    // `run_ui` takes an `FnMut`; the test body runs once.
-    let mut f = Some(f);
-    let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
-        if let Some(f) = f.take() {
-            f(ui.ctx());
-        }
-    });
-    // The font atlas upload is never applied here; dropping it unapplied is a debug assertion.
-    output.textures_delta.clear();
-}
-
-#[test]
-fn a_cut_from_the_start_keeps_a_true_suffix_on_grapheme_boundaries() {
-    use unicode_segmentation::UnicodeSegmentation;
-    with_fonts(|ctx| {
-        let mut cache = HashMap::new();
-        let font = egui::FontId::proportional(14.0);
-        let text = format!("{}e\u{301}\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}tail.jpg", "dir\\".repeat(30));
-        let cut = truncate_start_to_width(&mut cache, ctx, &text, &font, 80.0);
-        let kept = cut.strip_prefix('\u{2026}').expect("cut at the start");
-        assert!(text.ends_with(kept), "a true suffix, not a re-reversed one: {cut}");
-        let start = text.len() - kept.len();
-        assert!(text.grapheme_indices(true).any(|(i, _)| i == start), "starts on a grapheme boundary");
-    });
-}
-
-#[test]
-fn a_cut_from_the_end_never_splits_a_grapheme() {
-    use unicode_segmentation::UnicodeSegmentation;
-    with_fonts(|ctx| {
-        let mut cache = HashMap::new();
-        let font = egui::FontId::proportional(14.0);
-        // A ZWJ family, and a base letter with a combining mark; every width, so some cut lands
-        // inside a sequence if the search counts chars.
-        for text in ["\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}".repeat(40), "e\u{301}".repeat(60)] {
-            for width in (8..=200).step_by(4) {
-                let cut = truncate_to_width(&mut cache, ctx, &text, &font, width as f32);
-                let kept = cut.strip_suffix('\u{2026}').expect("cut at the end");
-                assert!(
-                    text.grapheme_indices(true).any(|(i, _)| i == kept.len()) || kept.is_empty(),
-                    "width {width}: {kept:?}"
-                );
-            }
-        }
-    });
-}
-
-#[test]
-fn a_repeated_cut_is_one_cache_entry() {
-    with_fonts(|ctx| {
-        let mut cache = HashMap::new();
-        let font = egui::FontId::proportional(14.0);
-        let a = truncate_to_width(&mut cache, ctx, "a long title that will not fit", &font, 40.0);
-        let b = truncate_to_width(&mut cache, ctx, "a long title that will not fit", &font, 40.0);
-        assert_eq!((a, cache.len()), (b, 1));
-        truncate_start_to_width(&mut cache, ctx, "a long title that will not fit", &font, 40.0);
-        assert_eq!(cache.len(), 2, "start and end cuts are cached apart");
-    });
-}
-
 #[test]
 fn window_geometry_is_saved_after_a_quiet_spell_not_per_event() {
     let mut app = App::default();
@@ -773,15 +711,6 @@ fn a_new_group_takes_the_smallest_free_number() {
     assert_eq!(app.default_group_name(), "Group 4");
 }
 
-/// Name rules: a session name is cleaned, made file-safe, then cleaned again (spaces the filter leaves collapse).
-#[test]
-fn a_session_name_is_cleaned_then_made_file_safe() {
-    assert_eq!(sanitize_session_name("  Trip\u{200B} to\u{00A0}\u{00A0}Rome: day 1 "), "Trip to Rome day 1");
-    assert_eq!(sanitize_session_name("a . b"), "a b");
-    assert_eq!(sanitize_session_name("\u{202E}..\\"), "");
-    assert_eq!(sanitize_session_name(&"é".repeat(80)).chars().count(), 64);
-}
-
 /// Save As (Settings or headless `SAVESESSIONAS`) with nothing left of the name does nothing; before, the headless
 /// path skipped `sanitize_session_name`.
 #[test]
@@ -821,17 +750,4 @@ fn save_as_a_device_name_says_why() {
     let mut app = App::default();
     app.save_named_session("Con");
     assert_eq!(Vec::from(app.save_toast_queue.clone()), ["Not a session name: Con"]);
-}
-
-/// Export Group writes through `store::atomic::replace`: a blocked target stays unwritten.
-#[test]
-fn a_group_export_is_written_through_the_atomic_replace() {
-    let path = store::testutil::temp_dir("group-export-atomic").join("g.group.json");
-    let json = store::json::JsonDoc::default();
-    store::atomic::block_for_test(&path, true);
-    write_json_export(&json, &path, "group");
-    assert!(!path.exists(), "the write went around store::atomic::replace");
-    store::atomic::block_for_test(&path, false);
-    write_json_export(&json, &path, "group");
-    assert_eq!(json_file::load::<store::json::JsonDoc>(&path, "group"), Ok(json));
 }

@@ -3,7 +3,9 @@
 //! the engine processes' messages.
 
 use super::*;
+use crate::debug_control::debug_key_event;
 use crate::tabs::{AfterCrash, Held};
+use winit::window::Icon;
 
 impl ApplicationHandler<UserEvent> for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
@@ -1498,6 +1500,18 @@ impl App {
         }
         false
     }
+}
+
+/// The app's own window/taskbar icon -- embedded at compile time (`include_
+/// bytes!`, same posture `IBMPlexSerif-Regular.ttf` already uses) rather
+/// than loaded from disk at runtime, so the binary stays self-contained.
+/// `None` on decode failure rather than panicking -- a missing icon just
+/// means winit's own default, not a reason to fail to start.
+fn load_app_icon() -> Option<Icon> {
+    let bytes = include_bytes!("../assets/icon/icon-64.png");
+    let img = image::load_from_memory(bytes).ok()?.into_rgba8();
+    let (width, height) = img.dimensions();
+    Icon::from_rgba(img.into_raw(), width, height).ok()
 }
 
 #[cfg(test)]
