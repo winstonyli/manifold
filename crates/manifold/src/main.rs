@@ -448,24 +448,8 @@ struct App {
     /// stdin instead of real OS input. See `debug_control`'s doc comment
     /// for the full rationale and the text-command protocol.
     headless: bool,
-    /// Whether the last `about_to_wait` found the window minimized: the
-    /// loop then ticks at `MINIMIZED_TICK` instead of redrawing, and on the
-    /// way back resumes redrawing.
-    was_minimized: bool,
-    /// The last input, engine message burst or egui repaint request: after
-    /// `IDLE_AFTER` without one the loop slows to `IDLE_FRAME` (see
-    /// `about_to_wait`).
-    last_activity: std::time::Instant,
-    /// Engine frames seen in the current second (a burst is activity).
-    frame_burst: (std::time::Instant, u32),
-    /// When an idle loop next draws.
-    next_idle_frame: std::time::Instant,
-    /// The wait between idle frames: `IDLE_FRAME`, or less when egui asked
-    /// for a repaint sooner (`request_repaint_after`).
-    idle_interval: std::time::Duration,
-    /// Tabs `SetVisible(false)` was sent to on minimize, to be shown again
-    /// on restore (`hide_tabs_for_minimize`).
-    hidden_for_minimize: Vec<String>,
+    /// Frame pacing: minimize and idle state (see `event_loop::FramePacing`).
+    pacing: event_loop::FramePacing,
     /// Key events from headless `ENTER`/`ESCAPE`/`ARROWDOWN`/`ARROWUP`,
     /// added to the next frame's egui input exactly like real key presses
     /// (see `run_egui_frame`), so they take the same code paths and, like
@@ -747,12 +731,7 @@ impl Default for App {
             favicon_origin_cache: HashMap::new(),
             graph_settled_key: None,
             headless: false,
-            was_minimized: false,
-            last_activity: std::time::Instant::now(),
-            frame_burst: (std::time::Instant::now(), 0),
-            next_idle_frame: std::time::Instant::now(),
-            idle_interval: event_loop::IDLE_FRAME,
-            hidden_for_minimize: Vec::new(),
+            pacing: event_loop::FramePacing::default(),
             debug_input_events: Vec::new(),
             debug_address_bar_typing: None,
             pending_focus: None,

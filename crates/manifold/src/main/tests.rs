@@ -70,7 +70,7 @@ const NOT_FORGOTTEN: &[(&str, &str)] = &[
     ("interaction.drag_moved", "ends with the drag; a gone id is skipped at release"),
     ("link.line_press", "a link id, taken at release only if still hovered"),
     ("native_drag_tab", "taken at the button-up"),
-    ("hidden_for_minimize", "drained at restore"),
+    ("pacing.hidden_for_minimize", "drained at restore"),
     ("node_menu_cache", "the closing menu's fade copy; `node_menu` is the live one"),
     ("pending_session_delete", "a session name, not a node id"),
     ("favicon_resolved", "origins, not node ids"),
@@ -92,12 +92,13 @@ const NOT_FORGOTTEN: &[(&str, &str)] = &[
 fn every_id_keyed_field_is_forgotten_or_excused() {
     /// A struct held by `App` (`App.<prefix>`): its source file, its header line, and the id-forgetting method
     /// (`forget`) it may have; its fields are named `<prefix>.<field>` in `NOT_FORGOTTEN`.
-    const GROUPS: [(&str, &str, &str); 5] = [
+    const GROUPS: [(&str, &str, &str); 6] = [
         ("writes", include_str!("../session_sync.rs"), "pub(crate) struct PendingWrites {"),
         ("cookies", include_str!("../jar.rs"), "pub(crate) struct CookieState {"),
         ("link", include_str!("../links.rs"), "pub(crate) struct LinkGesture {"),
         ("interaction", include_str!("../graph_nav.rs"), "pub(crate) struct GraphInteraction {"),
         ("spawns", include_str!("../tabs.rs"), "pub(crate) struct SpawnTracker {"),
+        ("pacing", include_str!("../event_loop.rs"), "pub(crate) struct FramePacing {"),
     ];
     fn block<'a>(source: &'a str, header: &str, end: &str) -> Vec<&'a str> {
         source.lines().skip_while(|l| !l.trim_start().starts_with(header)).skip(1).take_while(|l| *l != end).collect()

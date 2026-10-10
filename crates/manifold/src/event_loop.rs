@@ -23,6 +23,41 @@ impl From<egui_winit::accesskit_winit::Event> for UserEvent {
     }
 }
 
+/// The event loop's frame pacing (`App::pacing`): minimize, idle detection and the wait between idle frames.
+pub(crate) struct FramePacing {
+    /// Whether the last `about_to_wait` found the window minimized: the
+    /// loop then ticks at `MINIMIZED_TICK` instead of redrawing, and on the
+    /// way back resumes redrawing.
+    pub(crate) was_minimized: bool,
+    /// The last input, engine message burst or egui repaint request: after
+    /// `IDLE_AFTER` without one the loop slows to `IDLE_FRAME` (see
+    /// `about_to_wait`).
+    pub(crate) last_activity: std::time::Instant,
+    /// Engine frames seen in the current second (a burst is activity).
+    pub(crate) frame_burst: (std::time::Instant, u32),
+    /// When an idle loop next draws.
+    pub(crate) next_idle_frame: std::time::Instant,
+    /// The wait between idle frames: `IDLE_FRAME`, or less when egui asked
+    /// for a repaint sooner (`request_repaint_after`).
+    pub(crate) idle_interval: std::time::Duration,
+    /// Tabs `SetVisible(false)` was sent to on minimize, to be shown again
+    /// on restore (`hide_tabs_for_minimize`).
+    pub(crate) hidden_for_minimize: Vec<String>,
+}
+
+impl Default for FramePacing {
+    fn default() -> Self {
+        Self {
+            was_minimized: false,
+            last_activity: std::time::Instant::now(),
+            frame_burst: (std::time::Instant::now(), 0),
+            next_idle_frame: std::time::Instant::now(),
+            idle_interval: IDLE_FRAME,
+            hidden_for_minimize: Vec::new(),
+        }
+    }
+}
+
 impl ApplicationHandler<UserEvent> for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_some() {
@@ -139,13 +174,13 @@ impl ApplicationHandler<UserEvent> for App {
         let minimized = self.is_minimized();
         if minimized {
             event_loop.set_control_flow(ControlFlow::WaitUntil(std::time::Instant::now() + MINIMIZED_TICK));
-            if !self.was_minimized {
+            if !self.pacing.was_minimized {
                 self.hide_tabs_for_minimize();
             }
             self.minimized_tick();
-        } else if self.was_minimized {
+        } else if self.pacing.was_minimized {
             event_loop.set_control_flow(ControlFlow::Poll);
-            for id in std::mem::take(&mut self.hidden_for_minimize) {
+            for id in std::mem::take(&mut self.pacing.hidden_for_minimize) {
                 if let Some(node) = self.nodes.get_mut(&id).and_then(|n| n.as_tab_mut()) {
                     node.tab.set_visible(true);
                 }
@@ -158,20 +193,20 @@ impl ApplicationHandler<UserEvent> for App {
             // every vsync (a frame costs ~4 ms of CPU in the present wait
             // even when nothing moved). Any event wakes the loop at once.
             let now = std::time::Instant::now();
-            if now >= self.next_idle_frame {
-                self.next_idle_frame = now + self.idle_interval;
+            if now >= self.pacing.next_idle_frame {
+                self.pacing.next_idle_frame = now + self.pacing.idle_interval;
                 if let Some(window) = &self.window {
                     window.request_redraw();
                 }
             }
-            event_loop.set_control_flow(ControlFlow::WaitUntil(self.next_idle_frame));
+            event_loop.set_control_flow(ControlFlow::WaitUntil(self.pacing.next_idle_frame));
         } else if !self.headless {
             event_loop.set_control_flow(ControlFlow::Poll);
             if let Some(window) = &self.window {
                 window.request_redraw();
             }
         }
-        self.was_minimized = minimized;
+        self.pacing.was_minimized = minimized;
         self.release_expired_cookie_holds();
         if self.cookies.jar_last_pull.is_none_or(|t| t.elapsed() >= JAR_PULL_EVERY) {
             self.jar_pull_all();
@@ -505,7 +540,7 @@ impl ApplicationHandler<UserEvent> for App {
                 if repaint_in.is_some_and(|d| d.is_zero()) {
                     self.mark_active();
                 }
-                self.idle_interval = repaint_in.map_or(IDLE_FRAME, |d| d.min(IDLE_FRAME));
+                self.pacing.idle_interval = repaint_in.map_or(IDLE_FRAME, |d| d.min(IDLE_FRAME));
 
                 self.render_frame(egui_output);
                 if !self.is_idle() {
@@ -553,17 +588,17 @@ struct FrameUpdate {
 
 impl App {
     fn mark_active(&mut self) {
-        self.last_activity = std::time::Instant::now();
+        self.pacing.last_activity = std::time::Instant::now();
     }
 
     /// Counts engine frames; a burst of them is activity.
     fn note_engine_frames(&mut self, n: u32) {
         let now = std::time::Instant::now();
-        if now.duration_since(self.frame_burst.0) >= std::time::Duration::from_secs(1) {
-            self.frame_burst = (now, 0);
+        if now.duration_since(self.pacing.frame_burst.0) >= std::time::Duration::from_secs(1) {
+            self.pacing.frame_burst = (now, 0);
         }
-        self.frame_burst.1 += n;
-        if self.frame_burst.1 >= BUSY_FRAMES {
+        self.pacing.frame_burst.1 += n;
+        if self.pacing.frame_burst.1 >= BUSY_FRAMES {
             self.mark_active();
         }
     }
@@ -571,7 +606,7 @@ impl App {
     /// Whether the loop can run at `IDLE_FRAME`: a real window, nothing
     /// happened for `IDLE_AFTER`, and no view transition is under way.
     fn is_idle(&self) -> bool {
-        !self.headless && self.transition.is_none() && self.last_activity.elapsed() >= IDLE_AFTER
+        !self.headless && self.transition.is_none() && self.pacing.last_activity.elapsed() >= IDLE_AFTER
     }
 
     /// Whether the real (non-headless) window is minimized.
@@ -592,7 +627,7 @@ impl App {
         for id in ids {
             if let Some(node) = self.nodes.get_mut(&id).and_then(|n| n.as_tab_mut()) {
                 node.tab.set_visible(false);
-                self.hidden_for_minimize.push(id);
+                self.pacing.hidden_for_minimize.push(id);
             }
         }
     }
@@ -1607,7 +1642,10 @@ mod idle_tests {
 
     #[test]
     fn a_quiet_second_is_idle_and_a_burst_of_engine_frames_is_not() {
-        let mut app = App { last_activity: std::time::Instant::now() - IDLE_AFTER * 2, ..App::default() };
+        let mut app = App {
+            pacing: FramePacing { last_activity: std::time::Instant::now() - IDLE_AFTER * 2, ..Default::default() },
+            ..App::default()
+        };
         assert!(app.is_idle());
         app.note_engine_frames(BUSY_FRAMES - 1);
         assert!(app.is_idle(), "an idle page's few frames don't count");
@@ -1617,10 +1655,13 @@ mod idle_tests {
 
     #[test]
     fn input_ends_idle_and_headless_is_never_idle() {
-        let mut app = App { last_activity: std::time::Instant::now() - IDLE_AFTER * 2, ..App::default() };
+        let mut app = App {
+            pacing: FramePacing { last_activity: std::time::Instant::now() - IDLE_AFTER * 2, ..Default::default() },
+            ..App::default()
+        };
         app.mark_active();
         assert!(!app.is_idle());
-        app.last_activity = std::time::Instant::now() - IDLE_AFTER * 2;
+        app.pacing.last_activity = std::time::Instant::now() - IDLE_AFTER * 2;
         app.headless = true;
         assert!(!app.is_idle());
     }
