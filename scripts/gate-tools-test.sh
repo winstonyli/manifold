@@ -45,6 +45,10 @@ check "jar/tests.rs is full" "TIER full" "$(printf '%s\n' "$s/jar/tests.rs" | ti
 check "an unlisted file's tests.rs is light" "TIER light" "$(printf '%s\n' "$s/link_gestures/tests.rs" | tier)"
 check "the strictest path wins" "TIER full" "$(printf '%s\n' README.md "$s/main.rs" crates/ipc-protocol/src/lib.rs | tier)"
 check "an empty list is refused" "3" "$(printf '' | TIER_SRC="$s" bash "$repo_root/scripts/gate-tier.sh" --stdin >/dev/null 2>&1; echo $?)"
+check "a file in a layer directory is read by its module name (model/jar.rs is full)" "TIER full" "$(printf '%s\n' "$s/model/jar.rs" | tier)"
+check "a layer directory's test dir follows its module (model/jar/tests.rs is full)" "TIER full" "$(printf '%s\n' "$s/model/jar/tests.rs" | tier)"
+check "a ui-listed file in a layer directory is ui (view/theme.rs)" "TIER ui" "$(printf '%s\n' "$s/view/theme.rs" | tier)"
+check "an unlisted file in a layer directory is light (io/profile.rs)" "TIER light" "$(printf '%s\n' "$s/io/profile.rs" | tier)"
 # require_fresh_exe: judges manifold.exe and the WebView2 host beside it, each against its own dep-info.
 # shellcheck source=fresh-exe.sh
 . "$repo_root/scripts/fresh-exe.sh"

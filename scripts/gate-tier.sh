@@ -12,12 +12,17 @@ src="${TIER_SRC:-crates/manifold/src}"
 # A file here that imports a core module is demoted to light (classify checks the file itself).
 ui_files=" bookmarks click_count failure_toasts graph_layout history image_view input json_level_ui json_view pdf_render rgba shortcuts theme view_modes zoom_chip "
 core_import='crate::(store|session_sync|mirror|session|process_manager|net)\b'
+# Layer directories (view/, app/, ...) group module files without changing a module's name (`#[path = "model/jar.rs"] mod jar;`):
+# classify reads a file in one as if it sat directly under the source folder. None exists yet; the spike is in README.
+layers=" view app model network engine io "
 
 rank() { case $1 in ui) echo 1 ;; light) echo 2 ;; full) echo 3 ;; esac; }
 
 # classify PATH: "<tier> <reason>"
 classify() {
-    local b
+    local b rel first
+    rel=${1#"$src"/}; first=${rel%%/*}
+    if [ "$rel" != "$1" ] && [ "$rel" != "$first" ] && [[ "$layers" == *" $first "* ]]; then set -- "$src/${rel#*/}"; fi
     case "$1" in
     Cargo.toml | Cargo.lock | .cargo/* | rust-toolchain* | crates/*/Cargo.toml | crates/ipc-protocol/* | crates/manifold-engine-*/*)
         echo "full dependency, protocol or engine crate" ;;
