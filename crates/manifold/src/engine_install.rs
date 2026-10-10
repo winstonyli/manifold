@@ -1,5 +1,6 @@
 //! On-demand install of the CEF runtime: the pin, what is on disk, and the states the UI shows.
 
+use std::collections::HashMap;
 use std::fmt;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Component, Path, PathBuf};
@@ -648,6 +649,24 @@ pub(crate) fn dir_size(dir: &Path) -> u64 {
         .sum()
 }
 
+/// The engine runtime installs and their Settings UI (`App::engine_ui`).
+#[derive(Default)]
+pub(crate) struct EngineInstallUi {
+    /// Engine runtime installs, at most one per engine (see `InstallJob`).
+    pub(crate) engine_installs: HashMap<EngineKind, InstallJob>,
+    /// The last install's failure message per engine, until the next attempt starts.
+    pub(crate) engine_failures: HashMap<EngineKind, String>,
+    /// An engine download or removal waiting for its confirm dialog (`build_engine_confirm_popup`).
+    pub(crate) pending_engine_confirm: Option<crate::engine_info::EngineConfirm>,
+    /// `engine_state` per engine for the current frame: it stats the disk, and cards, pickers, menus
+    /// and Settings all ask. Cleared at the start of each frame and whenever an install changes.
+    pub(crate) engine_state_cache: std::cell::RefCell<HashMap<EngineKind, EngineState>>,
+    /// The bring-your-own CEF directory's last validation, with the path it was for (`custom_cef_dir`).
+    pub(crate) cef_dir_check: std::cell::RefCell<Option<DirCheck>>,
+    /// Settings' text field for that directory while it is being edited; committed on Enter or focus loss.
+    pub(crate) cef_dir_draft: Option<String>,
+}
+
 /// A running (or just cancelled) install of one engine's runtime, on its own thread.
 pub(crate) struct InstallJob {
     /// Bytes in the `.part` so far, written by the thread.
@@ -668,22 +687,23 @@ impl crate::App {
     ///
     /// Cached for the frame (`engine_state_cache`): the disk is read once per engine per frame.
     pub(crate) fn engine_state(&self, kind: EngineKind) -> EngineState {
-        if let Some(state) = self.engine_state_cache.borrow().get(&kind) {
+        if let Some(state) = self.engine_ui.engine_state_cache.borrow().get(&kind) {
             return state.clone();
         }
         let state = self.engine_state_at(kind, crate::process_manager::engine_on_disk(kind));
-        self.engine_state_cache.borrow_mut().insert(kind, state.clone());
+        self.engine_ui.engine_state_cache.borrow_mut().insert(kind, state.clone());
         state
     }
 
     /// `engine_state` with the engine's on-disk state (`engine_on_disk`) given (tests use a temporary directory).
     pub(crate) fn engine_state_at(&self, kind: EngineKind, on_disk: RuntimeOnDisk) -> EngineState {
         let installing = self
+            .engine_ui
             .engine_installs
             .get(&kind)
             .filter(|job| !job.cancelled)
             .map(|job| (job.progress.load(Ordering::Relaxed), job.total));
-        let failed = self.engine_failures.get(&kind).map(String::as_str);
+        let failed = self.engine_ui.engine_failures.get(&kind).map(String::as_str);
         let custom = (kind == EngineKind::Cef).then(|| self.custom_cef_dir()).flatten();
         crate::process_manager::engine_availability(kind, on_disk, installing, failed, custom.as_deref())
     }
@@ -698,7 +718,7 @@ impl crate::App {
     /// not every frame, so a folder deleted or replaced behind the app's back is noticed.
     pub(crate) fn cef_dir_verdict(&self) -> Option<(PathBuf, Result<(), String>)> {
         let configured = self.settings.cef_directory.as_deref().filter(|s| !s.trim().is_empty())?;
-        let mut cache = self.cef_dir_check.borrow_mut();
+        let mut cache = self.engine_ui.cef_dir_check.borrow_mut();
         if cache.as_ref().is_none_or(|(path, at, _)| path != configured || at.elapsed() > CEF_DIR_CHECK_TTL) {
             let verdict = match crate::cef_pin::pin_for_platform() {
                 Some(pin) => validate_custom(Path::new(configured), pin),
@@ -713,8 +733,8 @@ impl crate::App {
     /// Forget the cached verdict (and the states built on it, and the Settings page's disk reads) so the next
     /// read looks at the disk again.
     pub(crate) fn invalidate_cef_dir_check(&self) {
-        *self.cef_dir_check.borrow_mut() = None;
-        self.engine_state_cache.borrow_mut().clear();
+        *self.engine_ui.cef_dir_check.borrow_mut() = None;
+        self.engine_ui.engine_state_cache.borrow_mut().clear();
         crate::settings_page::forget_disk_cache(&self.egui_ctx);
     }
 
@@ -749,7 +769,7 @@ impl crate::App {
             return false;
         }
         let label = crate::engine_info::engine_label(kind);
-        if let Some(job) = self.engine_installs.get(&kind) {
+        if let Some(job) = self.engine_ui.engine_installs.get(&kind) {
             if !job.cancelled {
                 self.queue_toast(format!("{label} is already installing"));
             } else if !job.handle.is_finished() {
@@ -770,8 +790,8 @@ impl crate::App {
             self.queue_toast(format!("A tab is still starting; try installing {label} again in a moment"));
             return false;
         }
-        self.engine_failures.remove(&kind);
-        self.engine_state_cache.borrow_mut().clear();
+        self.engine_ui.engine_failures.remove(&kind);
+        self.engine_ui.engine_state_cache.borrow_mut().clear();
         let progress = Arc::new(AtomicU64::new(0));
         let cancel = Arc::new(AtomicBool::new(false));
         let (thread_progress, thread_cancel) = (progress.clone(), cancel.clone());
@@ -780,7 +800,7 @@ impl crate::App {
         let handle = std::thread::spawn(move || {
             install(&pin, &data_dir, &mut |n| thread_progress.store(n, Ordering::Relaxed), &thread_cancel)
         });
-        self.engine_installs.insert(kind, InstallJob { progress, cancel, total, cancelled: false, handle });
+        self.engine_ui.engine_installs.insert(kind, InstallJob { progress, cancel, total, cancelled: false, handle });
         self.egui_ctx.request_repaint();
         true
     }
@@ -792,15 +812,15 @@ impl crate::App {
         // A spawn still in flight may be this engine's host (it isn't a node yet), so it counts too.
         let running = !self.spawns.spawning.is_empty()
             || self.nodes.values().any(|n| n.as_tab().is_some_and(|t| t.tab.kind == kind));
-        let installing = self.engine_installs.contains_key(&kind);
+        let installing = self.engine_ui.engine_installs.contains_key(&kind);
         let removed = remove_runtime(&dir, running, installing);
         // Even a failed removal may have deleted some of it: the Settings page reads the disk again.
         crate::settings_page::forget_disk_cache(&self.egui_ctx);
         match removed {
             Ok(()) => {
                 // A recorded failure described the files just deleted.
-                self.engine_failures.remove(&kind);
-                self.engine_state_cache.borrow_mut().clear();
+                self.engine_ui.engine_failures.remove(&kind);
+                self.engine_ui.engine_state_cache.borrow_mut().clear();
                 self.queue_toast(format!("{label} removed"));
             }
             Err(why) => self.queue_toast(format!("Couldn't remove {label}: {why}")),
@@ -811,29 +831,34 @@ impl crate::App {
     /// while downloading (even on a stalled read), and between unpack entries and before the swap after
     /// that. The `.part` stays for resuming and no failure is recorded.
     pub(crate) fn cancel_engine_install(&mut self, kind: EngineKind) {
-        if let Some(job) = self.engine_installs.get_mut(&kind) {
+        if let Some(job) = self.engine_ui.engine_installs.get_mut(&kind) {
             job.cancel.store(true, Ordering::Relaxed);
             job.cancelled = true;
         }
-        self.engine_state_cache.borrow_mut().clear();
+        self.engine_ui.engine_state_cache.borrow_mut().clear();
         self.egui_ctx.request_repaint();
     }
 
     /// Collect finished jobs (once per frame): toast and record a failure, toast a success, drop a
     /// cancelled job's result. Keeps repainting while any job is running.
     pub(crate) fn poll_engine_installs(&mut self) {
-        if self.engine_installs.is_empty() {
+        if self.engine_ui.engine_installs.is_empty() {
             return;
         }
-        let finished: Vec<EngineKind> =
-            self.engine_installs.iter().filter(|(_, job)| job.handle.is_finished()).map(|(kind, _)| *kind).collect();
+        let finished: Vec<EngineKind> = self
+            .engine_ui
+            .engine_installs
+            .iter()
+            .filter(|(_, job)| job.handle.is_finished())
+            .map(|(kind, _)| *kind)
+            .collect();
         if !finished.is_empty() {
-            self.engine_state_cache.borrow_mut().clear();
+            self.engine_ui.engine_state_cache.borrow_mut().clear();
             // An install (or a cancelled one's leftovers) changed what the Settings page shows from disk.
             crate::settings_page::forget_disk_cache(&self.egui_ctx);
         }
         for kind in finished {
-            let Some(job) = self.engine_installs.remove(&kind) else { continue };
+            let Some(job) = self.engine_ui.engine_installs.remove(&kind) else { continue };
             let result =
                 job.handle.join().unwrap_or_else(|_| Err(InstallError::Io("the install thread panicked".into())));
             let label = crate::engine_info::engine_label(kind);
@@ -841,17 +866,17 @@ impl crate::App {
                 _ if job.cancelled => {}
                 Err(InstallError::Cancelled) => {}
                 Ok(_) => {
-                    self.engine_failures.remove(&kind);
+                    self.engine_ui.engine_failures.remove(&kind);
                     self.queue_toast(format!("{label} installed"));
                 }
                 Err(e) => {
                     self.queue_toast(format!("{label} install failed: {e}"));
-                    self.engine_failures.insert(kind, e.to_string());
+                    self.engine_ui.engine_failures.insert(kind, e.to_string());
                 }
             }
             self.egui_ctx.request_repaint();
         }
-        if !self.engine_installs.is_empty() {
+        if !self.engine_ui.engine_installs.is_empty() {
             self.egui_ctx.request_repaint_after(Duration::from_millis(100));
         }
     }

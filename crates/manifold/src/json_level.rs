@@ -310,7 +310,7 @@ impl App {
         Some(match what {
             CopyWhat::Value => json_view::copy_value_text(value),
             CopyWhat::Key => json_view::last_key(pointer).unwrap_or_default(),
-            CopyWhat::Path if self.json_accessor_paths => json_view::accessor_path(&level.value, pointer),
+            CopyWhat::Path if self.json_ui.json_accessor_paths => json_view::accessor_path(&level.value, pointer),
             CopyWhat::Path => pointer.to_string(),
         })
     }

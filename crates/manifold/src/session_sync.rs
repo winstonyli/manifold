@@ -748,7 +748,7 @@ impl App {
             Some((Kind::Group, ..)) => 1,
             _ => 2,
         });
-        let toasts = self.save_toast_queue.len();
+        let toasts = self.toasts.save_toast_queue.len();
         let pass = self.begin_content_pass();
         for (id, change) in changes {
             let key = id.to_string();
@@ -1190,9 +1190,9 @@ impl App {
     /// path. History doesn't depend on the store, so it's saved regardless of
     /// store success or failure.
     fn flush_history(&mut self) {
-        if self.history_dirty {
+        if self.history_ui.history_dirty {
             crate::history::save(&self.history);
-            self.history_dirty = false;
+            self.history_ui.history_dirty = false;
         }
         let nodes = &self.nodes;
         crate::nav_history::save(&mut self.nav_history, |id| nodes.contains_key(id));
@@ -1485,7 +1485,7 @@ impl App {
             self.log_local_unread(err);
         }
         let local = local_from(read);
-        let toasts = self.save_toast_queue.len();
+        let toasts = self.toasts.save_toast_queue.len();
         // Jars first: they are not graph nodes, so they survive a "fresh start" and the next save keeps them.
         // Links ride along: also stored, never graph nodes.
         for (id, kind, fields, _) in nodes.iter().filter(|(_, kind, ..)| matches!(kind, Kind::Jar | Kind::Link)) {
@@ -1642,9 +1642,9 @@ impl App {
             camera: Some(([rect.min.x, rect.min.y, rect.max.x, rect.max.y], self.current_group.clone())),
             nodes,
             closed: self.closed.iter().map(|e| e.doc.clone()).collect(),
-            json_accessor_paths: self.json_accessor_paths,
-            json_outline_hidden: !self.json_outline_visible,
-            json_outline_width: Some(self.json_outline_width),
+            json_accessor_paths: self.json_ui.json_accessor_paths,
+            json_outline_hidden: !self.json_ui.json_outline_visible,
+            json_outline_width: Some(self.json_ui.json_outline_width),
         }
     }
 
@@ -1673,10 +1673,10 @@ impl App {
         self.view_mode = if state.view_item { ViewMode::Item } else { ViewMode::Graph };
         self.groups_collapsed = state.groups_collapsed;
         self.restore_closed(state.closed);
-        self.json_accessor_paths = state.json_accessor_paths;
-        self.json_outline_visible = !state.json_outline_hidden;
+        self.json_ui.json_accessor_paths = state.json_accessor_paths;
+        self.json_ui.json_outline_visible = !state.json_outline_hidden;
         if let Some(width) = state.json_outline_width {
-            self.json_outline_width = width;
+            self.json_ui.json_outline_width = width;
         }
         // Item view showing a tab still spawning (`focused` names it, but
         // it's not in `self.nodes` yet -- a tab's restore is always async):
@@ -1947,7 +1947,7 @@ impl App {
             Kind::Link => 3, // after the cards it joins
             _ => 2,
         });
-        let toasts = self.save_toast_queue.len();
+        let toasts = self.toasts.save_toast_queue.len();
         let pass = self.begin_content_pass();
         for node in imported {
             // A link whose end did not resolve, or names no card in this batch or live, has nothing to join.
@@ -2103,10 +2103,10 @@ impl App {
     /// Collapses the toasts queued since `mark` into one, so a bulk restore
     /// or import with many missing files toasts once, not once per card.
     fn collapse_toasts_since(&mut self, mark: usize) {
-        let extra = self.save_toast_queue.len().saturating_sub(mark + 1);
+        let extra = self.toasts.save_toast_queue.len().saturating_sub(mark + 1);
         if extra > 0 {
-            let first = self.save_toast_queue.drain(mark..).next().expect("toasts past the mark");
-            self.save_toast_queue.push_back(format!("{first} (and {extra} more)"));
+            let first = self.toasts.save_toast_queue.drain(mark..).next().expect("toasts past the mark");
+            self.toasts.save_toast_queue.push_back(format!("{first} (and {extra} more)"));
         }
     }
 

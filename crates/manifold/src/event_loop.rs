@@ -23,6 +23,41 @@ impl From<egui_winit::accesskit_winit::Event> for UserEvent {
     }
 }
 
+/// The event loop's frame pacing (`App::pacing`): minimize, idle detection and the wait between idle frames.
+pub(crate) struct FramePacing {
+    /// Whether the last `about_to_wait` found the window minimized: the
+    /// loop then ticks at `MINIMIZED_TICK` instead of redrawing, and on the
+    /// way back resumes redrawing.
+    pub(crate) was_minimized: bool,
+    /// The last input, engine message burst or egui repaint request: after
+    /// `IDLE_AFTER` without one the loop slows to `IDLE_FRAME` (see
+    /// `about_to_wait`).
+    pub(crate) last_activity: std::time::Instant,
+    /// Engine frames seen in the current second (a burst is activity).
+    pub(crate) frame_burst: (std::time::Instant, u32),
+    /// When an idle loop next draws.
+    pub(crate) next_idle_frame: std::time::Instant,
+    /// The wait between idle frames: `IDLE_FRAME`, or less when egui asked
+    /// for a repaint sooner (`request_repaint_after`).
+    pub(crate) idle_interval: std::time::Duration,
+    /// Tabs `SetVisible(false)` was sent to on minimize, to be shown again
+    /// on restore (`hide_tabs_for_minimize`).
+    pub(crate) hidden_for_minimize: Vec<String>,
+}
+
+impl Default for FramePacing {
+    fn default() -> Self {
+        Self {
+            was_minimized: false,
+            last_activity: std::time::Instant::now(),
+            frame_burst: (std::time::Instant::now(), 0),
+            next_idle_frame: std::time::Instant::now(),
+            idle_interval: IDLE_FRAME,
+            hidden_for_minimize: Vec::new(),
+        }
+    }
+}
+
 impl ApplicationHandler<UserEvent> for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_some() {
@@ -139,13 +174,13 @@ impl ApplicationHandler<UserEvent> for App {
         let minimized = self.is_minimized();
         if minimized {
             event_loop.set_control_flow(ControlFlow::WaitUntil(std::time::Instant::now() + MINIMIZED_TICK));
-            if !self.was_minimized {
+            if !self.pacing.was_minimized {
                 self.hide_tabs_for_minimize();
             }
             self.minimized_tick();
-        } else if self.was_minimized {
+        } else if self.pacing.was_minimized {
             event_loop.set_control_flow(ControlFlow::Poll);
-            for id in std::mem::take(&mut self.hidden_for_minimize) {
+            for id in std::mem::take(&mut self.pacing.hidden_for_minimize) {
                 if let Some(node) = self.nodes.get_mut(&id).and_then(|n| n.as_tab_mut()) {
                     node.tab.set_visible(true);
                 }
@@ -158,20 +193,20 @@ impl ApplicationHandler<UserEvent> for App {
             // every vsync (a frame costs ~4 ms of CPU in the present wait
             // even when nothing moved). Any event wakes the loop at once.
             let now = std::time::Instant::now();
-            if now >= self.next_idle_frame {
-                self.next_idle_frame = now + self.idle_interval;
+            if now >= self.pacing.next_idle_frame {
+                self.pacing.next_idle_frame = now + self.pacing.idle_interval;
                 if let Some(window) = &self.window {
                     window.request_redraw();
                 }
             }
-            event_loop.set_control_flow(ControlFlow::WaitUntil(self.next_idle_frame));
+            event_loop.set_control_flow(ControlFlow::WaitUntil(self.pacing.next_idle_frame));
         } else if !self.headless {
             event_loop.set_control_flow(ControlFlow::Poll);
             if let Some(window) = &self.window {
                 window.request_redraw();
             }
         }
-        self.was_minimized = minimized;
+        self.pacing.was_minimized = minimized;
         self.release_expired_cookie_holds();
         if self.cookies.jar_last_pull.is_none_or(|t| t.elapsed() >= JAR_PULL_EVERY) {
             self.jar_pull_all();
@@ -505,7 +540,7 @@ impl ApplicationHandler<UserEvent> for App {
                 if repaint_in.is_some_and(|d| d.is_zero()) {
                     self.mark_active();
                 }
-                self.idle_interval = repaint_in.map_or(IDLE_FRAME, |d| d.min(IDLE_FRAME));
+                self.pacing.idle_interval = repaint_in.map_or(IDLE_FRAME, |d| d.min(IDLE_FRAME));
 
                 self.render_frame(egui_output);
                 if !self.is_idle() {
@@ -553,17 +588,17 @@ struct FrameUpdate {
 
 impl App {
     fn mark_active(&mut self) {
-        self.last_activity = std::time::Instant::now();
+        self.pacing.last_activity = std::time::Instant::now();
     }
 
     /// Counts engine frames; a burst of them is activity.
     fn note_engine_frames(&mut self, n: u32) {
         let now = std::time::Instant::now();
-        if now.duration_since(self.frame_burst.0) >= std::time::Duration::from_secs(1) {
-            self.frame_burst = (now, 0);
+        if now.duration_since(self.pacing.frame_burst.0) >= std::time::Duration::from_secs(1) {
+            self.pacing.frame_burst = (now, 0);
         }
-        self.frame_burst.1 += n;
-        if self.frame_burst.1 >= BUSY_FRAMES {
+        self.pacing.frame_burst.1 += n;
+        if self.pacing.frame_burst.1 >= BUSY_FRAMES {
             self.mark_active();
         }
     }
@@ -571,7 +606,7 @@ impl App {
     /// Whether the loop can run at `IDLE_FRAME`: a real window, nothing
     /// happened for `IDLE_AFTER`, and no view transition is under way.
     fn is_idle(&self) -> bool {
-        !self.headless && self.transition.is_none() && self.last_activity.elapsed() >= IDLE_AFTER
+        !self.headless && self.transition.is_none() && self.pacing.last_activity.elapsed() >= IDLE_AFTER
     }
 
     /// Whether the real (non-headless) window is minimized.
@@ -592,7 +627,7 @@ impl App {
         for id in ids {
             if let Some(node) = self.nodes.get_mut(&id).and_then(|n| n.as_tab_mut()) {
                 node.tab.set_visible(false);
-                self.hidden_for_minimize.push(id);
+                self.pacing.hidden_for_minimize.push(id);
             }
         }
     }
@@ -650,9 +685,9 @@ impl App {
                 if self.headless {
                     raw_input.focused = true;
                 }
-                raw_input.events.append(&mut self.debug_input_events);
+                raw_input.events.append(&mut self.debug.debug_input_events);
                 if self.address_bar.focused {
-                    if let Some(text) = self.debug_address_bar_typing.take() {
+                    if let Some(text) = self.debug.debug_address_bar_typing.take() {
                         raw_input.events.push(debug_key_event(egui::Key::A, egui::Modifiers::COMMAND));
                         raw_input.events.push(egui::Event::Text(text));
                     }
@@ -733,7 +768,7 @@ impl App {
         // (Outdated/Occluded/...) means the screenshot was never
         // attempted this frame, and the request must survive to
         // retry on a later one instead of being silently dropped.
-        let screenshot_path = self.pending_screenshot.clone();
+        let screenshot_path = self.debug.pending_screenshot.clone();
         let mut lost = None;
         if let Some(gpu) = &mut self.gpu {
             let outcome = match egui_output {
@@ -747,14 +782,14 @@ impl App {
             };
             lost = gpu.take_device_lost();
             if outcome.surface_ok {
-                self.pending_screenshot = None;
+                self.debug.pending_screenshot = None;
                 // The PNG is written by now (`render` saves it). A headless
                 // `SCREENSHOT` (one with a waiter) isn't toasted: the toast
                 // would sit over the window's bottom-left for 4s, in later
                 // screenshots and under the script's next clicks.
                 let mut headless = false;
                 if outcome.screenshot_result.is_some() {
-                    if let Some(waiter) = self.screenshot_waiter.take() {
+                    if let Some(waiter) = self.debug.screenshot_waiter.take() {
                         let _ = waiter.send(());
                         headless = true;
                     }
@@ -837,7 +872,7 @@ impl App {
             }
             return;
         };
-        let pdf = self.pending_print_to_pdf.take_if(|(png, _)| *png == path).map(|(_, pdf)| pdf);
+        let pdf = self.debug.pending_print_to_pdf.take_if(|(png, _)| *png == path).map(|(_, pdf)| pdf);
         match (result, pdf) {
             (Ok(()), Some(pdf_path)) => {
                 match pdf::write_image_as_pdf(std::path::Path::new(&path), std::path::Path::new(&pdf_path)) {
@@ -868,25 +903,25 @@ impl App {
         // `ADDRESSBAR` text is typed in the first frame the address
         // bar has focus; keep frames coming until then. Dropped if
         // Tab view went away, since the bar won't be built again.
-        if self.debug_address_bar_typing.is_some() {
+        if self.debug.debug_address_bar_typing.is_some() {
             if self.showing_tab_view() || self.transition.is_some() {
                 if let Some(window) = &self.window {
                     window.request_redraw();
                 }
             } else {
                 eprintln!("ADDRESSBAR: left Tab view before the address bar took focus; text dropped");
-                self.debug_address_bar_typing = None;
+                self.debug.debug_address_bar_typing = None;
             }
         }
 
         self.release_idle_waiters();
 
         // See `quit_after_redraws`'s doc comment.
-        if let Some(left) = self.quit_after_redraws {
+        if let Some(left) = self.debug.quit_after_redraws {
             if !self.debug_input_pending() || left == 0 {
                 event_loop.exit();
             } else {
-                self.quit_after_redraws = Some(left - 1);
+                self.debug.quit_after_redraws = Some(left - 1);
                 if let Some(window) = &self.window {
                     window.request_redraw();
                 }
@@ -912,10 +947,10 @@ impl App {
     /// Debug input that still needs a frame: queued keys, `ADDRESSBAR`
     /// text not typed yet, a focus request, or a screenshot.
     pub(crate) fn debug_input_pending(&self) -> bool {
-        !self.debug_input_events.is_empty()
-            || self.debug_address_bar_typing.is_some()
+        !self.debug.debug_input_events.is_empty()
+            || self.debug.debug_address_bar_typing.is_some()
             || self.pending_focus == Some(FocusTarget::AddressBar)
-            || self.pending_screenshot.is_some()
+            || self.debug.pending_screenshot.is_some()
     }
 
     /// What `WAITIDLE` waits for: no debug input still needs a frame, no
@@ -928,8 +963,8 @@ impl App {
 
     /// Releases the `WAITIDLE` commands waiting, if `debug_idle` holds.
     pub(crate) fn release_idle_waiters(&mut self) {
-        if !self.idle_waiters.is_empty() && self.debug_idle() {
-            for waiter in self.idle_waiters.drain(..) {
+        if !self.debug.idle_waiters.is_empty() && self.debug_idle() {
+            for waiter in self.debug.idle_waiters.drain(..) {
                 let _ = waiter.send(());
             }
         }
@@ -1300,8 +1335,8 @@ impl App {
                     if self.history.len() > history::MAX_HISTORY_ENTRIES {
                         self.history.remove(0);
                     }
-                    self.history_dirty = true;
-                    self.history_matches_cache = None;
+                    self.history_ui.history_dirty = true;
+                    self.history_ui.history_matches_cache = None;
                     // The origin is known as soon as the url is --
                     // no need to wait for the page to actually
                     // finish loading, unlike a page's own favicon
@@ -1480,7 +1515,7 @@ impl App {
                 // `CHROME_HEIGHT_POINTS`'s other call sites). Only
                 // meaningful for the tab currently on screen.
                 if self.focused.as_deref() == Some(tab_id) {
-                    self.context_menu =
+                    self.menus.context_menu =
                         Some(ContextMenuState { x: x as f32 / ppp, y: y as f32 / ppp + CHROME_HEIGHT_POINTS, href });
                 }
             }
@@ -1536,18 +1571,24 @@ mod idle_tests {
 
     #[test]
     fn a_failed_print_capture_clears_the_pdf_target() {
-        let mut app = App { pending_print_to_pdf: Some(("p.png".into(), "out.pdf".into())), ..App::default() };
+        let mut app = App::default();
+        app.debug.pending_print_to_pdf = Some(("p.png".into(), "out.pdf".into()));
         app.handle_screenshot_result(Some("p.png".into()), Some(Err("no surface".into())));
-        assert!(app.pending_print_to_pdf.is_none());
-        assert!(app.save_toast_queue.iter().any(|t| t.contains("Couldn't print")), "{:?}", app.save_toast_queue);
+        assert!(app.debug.pending_print_to_pdf.is_none());
+        assert!(
+            app.toasts.save_toast_queue.iter().any(|t| t.contains("Couldn't print")),
+            "{:?}",
+            app.toasts.save_toast_queue
+        );
     }
 
     #[test]
     fn an_ordinary_screenshot_never_takes_a_pdf_target() {
-        let mut app = App { pending_print_to_pdf: Some(("p.png".into(), "out.pdf".into())), ..App::default() };
+        let mut app = App::default();
+        app.debug.pending_print_to_pdf = Some(("p.png".into(), "out.pdf".into()));
         app.handle_screenshot_result(Some("shot.png".into()), Some(Ok(())));
-        assert!(app.save_toast_queue.iter().any(|t| t == "Saved shot.png"));
-        assert!(app.pending_print_to_pdf.is_some(), "still waiting for its own capture");
+        assert!(app.toasts.save_toast_queue.iter().any(|t| t == "Saved shot.png"));
+        assert!(app.debug.pending_print_to_pdf.is_some(), "still waiting for its own capture");
     }
 
     #[test]
@@ -1607,7 +1648,10 @@ mod idle_tests {
 
     #[test]
     fn a_quiet_second_is_idle_and_a_burst_of_engine_frames_is_not() {
-        let mut app = App { last_activity: std::time::Instant::now() - IDLE_AFTER * 2, ..App::default() };
+        let mut app = App {
+            pacing: FramePacing { last_activity: std::time::Instant::now() - IDLE_AFTER * 2, ..Default::default() },
+            ..App::default()
+        };
         assert!(app.is_idle());
         app.note_engine_frames(BUSY_FRAMES - 1);
         assert!(app.is_idle(), "an idle page's few frames don't count");
@@ -1617,10 +1661,13 @@ mod idle_tests {
 
     #[test]
     fn input_ends_idle_and_headless_is_never_idle() {
-        let mut app = App { last_activity: std::time::Instant::now() - IDLE_AFTER * 2, ..App::default() };
+        let mut app = App {
+            pacing: FramePacing { last_activity: std::time::Instant::now() - IDLE_AFTER * 2, ..Default::default() },
+            ..App::default()
+        };
         app.mark_active();
         assert!(!app.is_idle());
-        app.last_activity = std::time::Instant::now() - IDLE_AFTER * 2;
+        app.pacing.last_activity = std::time::Instant::now() - IDLE_AFTER * 2;
         app.headless = true;
         assert!(!app.is_idle());
     }

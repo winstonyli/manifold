@@ -26,7 +26,7 @@ fn forget_id_clears_every_id_keyed_table() {
     app.interaction.selected_tabs.extend([t(), "u".to_string()]);
     app.naming_jar = Some((t(), String::new()));
     app.renaming_group = Some((t(), String::new()));
-    app.node_menu = Some((t(), egui::Pos2::ZERO));
+    app.menus.node_menu = Some((t(), egui::Pos2::ZERO));
     app.spawns.pending_respawn_focus = Some(t());
     app.interaction.peek_suppressed = Some(t());
     app.interaction.dragging = Some(t());
@@ -45,7 +45,7 @@ fn forget_id_clears_every_id_keyed_table() {
     assert!(app.nav_history.is_empty() && app.spawns.navigated_from.is_empty() && app.spawns.tab_crashes.is_empty());
     assert_eq!(app.popup_gate.admit("t", true, now), popup_gate::Admit::Open, "t's popup burst count went");
     assert_eq!(app.interaction.selected_tabs, HashSet::from(["u".to_string()]));
-    assert!(app.naming_jar.is_none() && app.renaming_group.is_none() && app.node_menu.is_none());
+    assert!(app.naming_jar.is_none() && app.renaming_group.is_none() && app.menus.node_menu.is_none());
     assert!(app.spawns.pending_respawn_focus.is_none() && app.interaction.peek_suppressed.is_none());
     assert!(app.interaction.dragging.is_none() && app.link.connecting.is_none() && app.link.connect_drag.is_none());
     assert!(app.interaction.hovered.is_none());
@@ -70,20 +70,20 @@ const NOT_FORGOTTEN: &[(&str, &str)] = &[
     ("interaction.drag_moved", "ends with the drag; a gone id is skipped at release"),
     ("link.line_press", "a link id, taken at release only if still hovered"),
     ("native_drag_tab", "taken at the button-up"),
-    ("hidden_for_minimize", "drained at restore"),
-    ("node_menu_cache", "the closing menu's fade copy; `node_menu` is the live one"),
+    ("pacing.hidden_for_minimize", "drained at restore"),
+    ("menus.node_menu_cache", "the closing menu's fade copy; `node_menu` is the live one"),
     ("pending_session_delete", "a session name, not a node id"),
     ("favicon_resolved", "origins, not node ids"),
     ("favicon_origin_cache", "urls, not node ids"),
     ("graph_settled_key", "a level fingerprint, rebuilt when it differs"),
-    ("debug_address_bar_typing", "typed text, not a node id"),
-    ("pending_screenshot", "a file path, not a node id"),
-    ("pending_print_to_pdf", "a file path, not a node id"),
-    ("save_toast", "a message, not a node id"),
-    ("cef_dir_draft", "a path draft, not a node id"),
+    ("debug.debug_address_bar_typing", "typed text, not a node id"),
+    ("debug.pending_screenshot", "a file path, not a node id"),
+    ("debug.pending_print_to_pdf", "a file path, not a node id"),
+    ("toasts.save_toast", "a message, not a node id"),
+    ("engine_ui.cef_dir_draft", "a path draft, not a node id"),
     ("home_page_draft", "a url draft, not a node id"),
-    ("renaming_bookmark_folder", "a bookmark folder, not a node id"),
-    ("history_matches_cache", "a history query, not a node id"),
+    ("history_ui.renaming_bookmark_folder", "a bookmark folder, not a node id"),
+    ("history_ui.history_matches_cache", "a history query, not a node id"),
 ];
 
 /// C1: a new App table that can hold a node id must be decided: forgotten by `forget_id` (permanent removal)
@@ -92,12 +92,18 @@ const NOT_FORGOTTEN: &[(&str, &str)] = &[
 fn every_id_keyed_field_is_forgotten_or_excused() {
     /// A struct held by `App` (`App.<prefix>`): its source file, its header line, and the id-forgetting method
     /// (`forget`) it may have; its fields are named `<prefix>.<field>` in `NOT_FORGOTTEN`.
-    const GROUPS: [(&str, &str, &str); 5] = [
+    const GROUPS: [(&str, &str, &str); 11] = [
         ("writes", include_str!("../session_sync.rs"), "pub(crate) struct PendingWrites {"),
         ("cookies", include_str!("../jar.rs"), "pub(crate) struct CookieState {"),
         ("link", include_str!("../links.rs"), "pub(crate) struct LinkGesture {"),
         ("interaction", include_str!("../graph_nav.rs"), "pub(crate) struct GraphInteraction {"),
         ("spawns", include_str!("../tabs.rs"), "pub(crate) struct SpawnTracker {"),
+        ("pacing", include_str!("../event_loop.rs"), "pub(crate) struct FramePacing {"),
+        ("debug", include_str!("../debug_control.rs"), "pub(crate) struct HeadlessDebug {"),
+        ("toasts", include_str!("../failure_toasts.rs"), "pub(crate) struct Toasts {"),
+        ("menus", include_str!("../popups.rs"), "pub(crate) struct MenuPopups {"),
+        ("history_ui", include_str!("../history.rs"), "pub(crate) struct HistoryUi {"),
+        ("engine_ui", include_str!("../engine_install.rs"), "pub(crate) struct EngineInstallUi {"),
     ];
     fn block<'a>(source: &'a str, header: &str, end: &str) -> Vec<&'a str> {
         source.lines().skip_while(|l| !l.trim_start().starts_with(header)).skip(1).take_while(|l| *l != end).collect()
@@ -114,7 +120,7 @@ fn every_id_keyed_field_is_forgotten_or_excused() {
         .into_iter()
         .map(|(n, t)| (n.to_string(), t))
         .collect();
-    assert!(all.len() > 100, "App's fields were found ({})", all.len());
+    assert!(all.len() > 50, "App's fields were found ({})", all.len());
     let body = block(include_str!("../node_store.rs"), "pub(crate) fn forget_id(", "    }").join("\n");
     assert!(body.contains("self.pending_sleeps"), "forget_id's body was found");
     let mentions = |haystack: &str, path: &str| {
@@ -733,9 +739,9 @@ fn a_new_group_takes_the_smallest_free_number() {
 fn save_as_with_nothing_left_of_the_name_does_nothing() {
     let mut app = App::default();
     app.save_named_session("\u{200B} ..");
-    assert!(app.save_toast_queue.is_empty(), "{:?}", app.save_toast_queue);
+    assert!(app.toasts.save_toast_queue.is_empty(), "{:?}", app.toasts.save_toast_queue);
     app.save_named_session("Trip");
-    assert_eq!(app.save_toast_queue.len(), 1, "under test there is no session file");
+    assert_eq!(app.toasts.save_toast_queue.len(), 1, "under test there is no session file");
 }
 
 /// A toast shows a long URL's start and an ellipsis, cut on a character boundary.
@@ -766,5 +772,5 @@ fn save_as_while_personal_state_is_unread_carries_none() {
 fn save_as_a_device_name_says_why() {
     let mut app = App::default();
     app.save_named_session("Con");
-    assert_eq!(Vec::from(app.save_toast_queue.clone()), ["Not a session name: Con"]);
+    assert_eq!(Vec::from(app.toasts.save_toast_queue.clone()), ["Not a session name: Con"]);
 }

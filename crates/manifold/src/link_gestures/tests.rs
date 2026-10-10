@@ -295,7 +295,7 @@ fn a_line_click_is_ignored_in_pick_mode_and_with_a_menu_open() {
     h.click(&mut app, on);
     assert!(app.link.connecting.is_none(), "the click ended pick mode, as any click off a target does");
     assert_eq!(app.links_naming(&a), std::slice::from_ref(&ab), "and deleted nothing");
-    app.node_menu = Some((c.clone(), egui::pos2(5.0, 60.0)));
+    app.menus.node_menu = Some((c.clone(), egui::pos2(5.0, 60.0)));
     h.frame(&mut app, vec![]);
     h.click(&mut app, on);
     assert_eq!(app.links_naming(&a), [ab]);
@@ -357,7 +357,7 @@ fn a_right_press_during_a_connect_drag_opens_no_menu_and_starts_no_marquee() {
     let (on_b, on_c) = (screen_rect(&app, &b).center(), screen_rect(&app, &c).center());
     let canvas = on_b.lerp(on_c, 0.5);
     drag_from_handle(&h, &mut app, &a, HandleSide::Right, on_b, right_press_at(on_c));
-    assert!(app.node_menu.is_none(), "no menu on c");
+    assert!(app.menus.node_menu.is_none(), "no menu on c");
     assert_eq!(app.links_naming(&a).len(), 1, "linked to b");
     h.frame(&mut app, vec![right(on_b, false)]);
     drag_from_handle(&h, &mut app, &a, HandleSide::Bottom, on_c, right_press_at(canvas));
@@ -374,7 +374,7 @@ fn a_right_press_during_a_card_drag_opens_no_menu_and_starts_no_marquee() {
     let from = screen_rect(&app, &a).center();
     let to = from + egui::vec2(0.0, -40.0);
     h.drag_with(&mut app, from, to, right_press_at(on_c));
-    assert!(app.node_menu.is_none(), "no menu on c");
+    assert!(app.menus.node_menu.is_none(), "no menu on c");
     h.frame(&mut app, vec![right(to, false)]);
     let from = screen_rect(&app, &a).center();
     h.drag_with(&mut app, from, from + egui::vec2(40.0, 0.0), right_press_at(canvas));
@@ -432,7 +432,7 @@ fn ends(app: &App, link: &str) -> (Option<String>, Option<String>) {
 }
 
 fn toasts(app: &App) -> Vec<&String> {
-    app.save_toast.iter().map(|(m, _)| m).chain(&app.save_toast_queue).collect()
+    app.toasts.save_toast.iter().map(|(m, _)| m).chain(&app.toasts.save_toast_queue).collect()
 }
 
 /// Dragging a curve takes the end nearer the grab: that end follows the pointer, the card at the other end is the
@@ -757,8 +757,8 @@ fn a_release_the_link_cannot_take_keeps_it_and_toasts() {
         app.end_connect_drag(end);
         assert_eq!(ends(&app, &ab), (Some(a.clone()), Some(b.clone())), "kept");
         assert!(toasts(&app).iter().any(|m| m.as_str() == "Can't connect these cards"), "{:?}", toasts(&app));
-        app.save_toast_queue.clear();
-        app.save_toast = None;
+        app.toasts.save_toast_queue.clear();
+        app.toasts.save_toast = None;
     }
 }
 
@@ -918,16 +918,16 @@ fn a_click_dismissing_recently_closed_or_the_shortcuts_help_deletes_nothing() {
     let ab = app.create_link(&a, &b);
     h.frame(&mut app, vec![]);
     let on = line_middle(&app, &ab);
-    app.open_popup = Some(crate::popups::AnchoredPopup::RecentlyClosed);
+    app.menus.open_popup = Some(crate::popups::AnchoredPopup::RecentlyClosed);
     h.frame(&mut app, vec![]);
     h.click(&mut app, on);
     assert_eq!(app.links_naming(&a), std::slice::from_ref(&ab), "Recently Closed was open");
-    app.open_popup = None;
-    app.shortcuts_help_open = true;
+    app.menus.open_popup = None;
+    app.menus.shortcuts_help_open = true;
     h.frame(&mut app, vec![]);
     h.click(&mut app, on);
     assert_eq!(app.links_naming(&a), std::slice::from_ref(&ab), "the shortcuts help was open");
-    app.shortcuts_help_open = false;
+    app.menus.shortcuts_help_open = false;
     h.frame(&mut app, vec![]);
     h.pause(1.0); // past the double-click window: a second click there takes nothing
     h.click(&mut app, on);
@@ -1048,9 +1048,9 @@ fn handles_show_while_nothing_else_owns_the_pointer_and_on_every_card_during_a_d
     app.interaction.dragging = Some(b.clone());
     assert!(!app.shows_link_handles(), "a card drag");
     app.interaction.dragging = None;
-    app.node_menu = Some((b.clone(), egui::Pos2::ZERO));
+    app.menus.node_menu = Some((b.clone(), egui::Pos2::ZERO));
     assert!(!app.shows_link_handles(), "a menu");
-    app.node_menu = None;
+    app.menus.node_menu = None;
     app.start_connect_drag(&a);
     assert!(app.shows_link_handles(), "during a connect-drag every card shows them, not only the source");
     app.cancel_connect();
@@ -1190,7 +1190,7 @@ fn a_handle_drag_released_on_canvas_or_on_its_source_links_nothing_silently() {
     drag_from_handle(&h, &mut app, &a, HandleSide::Right, own, vec![]);
     assert!(app.links_naming(&a).is_empty());
     assert!(app.link.connect_drag.is_none() && app.link.connecting.is_none());
-    assert!(app.save_toast.is_none() && app.save_toast_queue.is_empty(), "no toast");
+    assert!(app.toasts.save_toast.is_none() && app.toasts.save_toast_queue.is_empty(), "no toast");
 }
 
 #[test]
@@ -1200,7 +1200,8 @@ fn a_handle_drag_onto_a_card_already_linked_says_so() {
     let onto = screen_rect(&app, &b).center();
     drag_from_handle(&h, &mut app, &a, HandleSide::Right, onto, vec![]);
     assert_eq!(app.links_naming(&a).len(), 1);
-    let toasts: Vec<&String> = app.save_toast.iter().map(|(m, _)| m).chain(&app.save_toast_queue).collect();
+    let toasts: Vec<&String> =
+        app.toasts.save_toast.iter().map(|(m, _)| m).chain(&app.toasts.save_toast_queue).collect();
     assert!(toasts.iter().any(|m| m.as_str() == "Can't connect these cards"), "{toasts:?}");
 }
 

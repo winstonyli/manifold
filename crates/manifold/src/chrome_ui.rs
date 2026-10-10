@@ -9,7 +9,7 @@ impl App {
     /// startup (an unreadable settings/session file) used to spend part of
     /// its time before the first frame.
     pub(crate) fn queue_toast(&mut self, message: String) {
-        self.save_toast_queue.push_back(message);
+        self.toasts.save_toast_queue.push_back(message);
     }
 
     /// A spawn-failure toast: held a moment so failures with one cause (engine and `error`) read as one message, counted
@@ -23,7 +23,7 @@ impl App {
         message: String,
     ) {
         let intent = format!("{url}\u{1f}{}\u{1f}{}", engine_label(kind), group.unwrap_or_default());
-        self.failure_notices.push(std::time::Instant::now(), engine_label(kind), error, &intent, message);
+        self.toasts.failure_notices.push(std::time::Instant::now(), engine_label(kind), error, &intent, message);
     }
 
     /// `url` short enough for a toast: its first `TOAST_URL_CHARS` characters and an ellipsis. A toast sizes to its
@@ -36,7 +36,7 @@ impl App {
         }
     }
 
-    /// A brief bottom-left toast, for `self.save_toast` — cleared once
+    /// A brief bottom-left toast, for `self.toasts.save_toast` — cleared once
     /// `SAVE_TOAST_DURATION` elapses. No dismiss interaction (unlike the
     /// context menu): it just times out, and clicks pass through it to the
     /// card or page underneath. Fades in over its first
@@ -55,19 +55,20 @@ impl App {
     fn build_save_toast(&mut self, ui: &mut egui::Ui) {
         const TOAST_FADE_IN: std::time::Duration = std::time::Duration::from_millis(150);
         const TOAST_FADE_OUT: std::time::Duration = std::time::Duration::from_millis(400);
-        for message in self.failure_notices.flush(std::time::Instant::now()) {
+        for message in self.toasts.failure_notices.flush(std::time::Instant::now()) {
             self.queue_toast(message);
         }
-        if self.failure_notices.is_pending() {
+        if self.toasts.failure_notices.is_pending() {
             ui.ctx().request_repaint_after(failure_toasts::WINDOW);
         }
-        if self.save_toast.is_none() {
-            self.save_toast = self.save_toast_queue.pop_front().map(|message| (message, std::time::Instant::now()));
+        if self.toasts.save_toast.is_none() {
+            self.toasts.save_toast =
+                self.toasts.save_toast_queue.pop_front().map(|message| (message, std::time::Instant::now()));
         }
-        let Some((message, shown_at)) = &self.save_toast else { return };
+        let Some((message, shown_at)) = &self.toasts.save_toast else { return };
         let elapsed = shown_at.elapsed();
         if elapsed >= SAVE_TOAST_DURATION {
-            self.save_toast = None;
+            self.toasts.save_toast = None;
             return;
         }
         ui.ctx().request_repaint();
@@ -107,14 +108,14 @@ impl App {
     /// One frame of UI. An open anchored popup takes Escape (the views skip theirs while one is
     /// open, `popup_open`), and when it closes from the keyboard focus goes back to its opening button.
     pub(crate) fn build_ui(&mut self, ui: &mut egui::Ui) {
-        self.engine_state_cache.borrow_mut().clear();
-        let open_at_start = self.open_popup;
+        self.engine_ui.engine_state_cache.borrow_mut().clear();
+        let open_at_start = self.menus.open_popup;
         let escape = open_at_start.is_some() && ui.input(|i| i.key_pressed(egui::Key::Escape));
         self.build_ui_inner(ui);
-        if escape && self.open_popup == open_at_start {
-            self.open_popup = None;
+        if escape && self.menus.open_popup == open_at_start {
+            self.menus.open_popup = None;
         }
-        if let Some(which) = open_at_start.filter(|_| self.open_popup.is_none()) {
+        if let Some(which) = open_at_start.filter(|_| self.menus.open_popup.is_none()) {
             if !ui.input(|i| i.pointer.any_click()) {
                 if let Some(button) = ui.data(|d| d.get_temp::<egui::Id>(App::popup_opener_key(which))) {
                     ui.memory_mut(|m| m.request_focus(button));
@@ -194,7 +195,7 @@ impl App {
             chip_icon_button(ui, egui::Id::new("icon_btn_shortcuts_help"), egui_phosphor::light::QUESTION)
                 .named_tip("Keyboard Shortcuts (F1)");
         if help_response.clicked() {
-            self.shortcuts_help_open = !self.shortcuts_help_open;
+            self.menus.shortcuts_help_open = !self.menus.shortcuts_help_open;
         }
         help_response.rect
     }

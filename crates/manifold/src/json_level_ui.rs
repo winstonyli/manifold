@@ -41,6 +41,22 @@ const CARET_SIZE: egui::Vec2 = egui::vec2(16.0, 16.0);
 /// The bar's selected-path label's widest, in points.
 const PATH_LABEL_MAX_WIDTH: f32 = 240.0;
 
+/// The JSON level's outline panel and copy-path settings (`App::json_ui`), all local state; `json_level` stays on `App`.
+pub(crate) struct JsonLevelUi {
+    /// The JSON outline panel shows (local state).
+    pub(crate) json_outline_visible: bool,
+    /// Its width in points, as last drawn (local state).
+    pub(crate) json_outline_width: f32,
+    /// Copy path's form on a JSON level (local state).
+    pub(crate) json_accessor_paths: bool,
+}
+
+impl Default for JsonLevelUi {
+    fn default() -> Self {
+        Self { json_outline_visible: true, json_outline_width: 260.0, json_accessor_paths: false }
+    }
+}
+
 /// Which colour a value's text takes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ValueKind {
@@ -683,12 +699,13 @@ impl App {
             // A phosphor caret, not a raw "▾": the app font's tofu-box rule.
             let form = ui
                 .menu_button(egui_phosphor::light::CARET_DOWN, |ui| {
-                    if selectable_label(ui, !self.json_accessor_paths, "JSON Pointer  /users/0/name").clicked() {
-                        self.json_accessor_paths = false;
+                    if selectable_label(ui, !self.json_ui.json_accessor_paths, "JSON Pointer  /users/0/name").clicked()
+                    {
+                        self.json_ui.json_accessor_paths = false;
                         ui.close();
                     }
-                    if selectable_label(ui, self.json_accessor_paths, "Accessor  users[0].name").clicked() {
-                        self.json_accessor_paths = true;
+                    if selectable_label(ui, self.json_ui.json_accessor_paths, "Accessor  users[0].name").clicked() {
+                        self.json_ui.json_accessor_paths = true;
                         ui.close();
                     }
                 })
@@ -702,11 +719,11 @@ impl App {
         }
         let outline = egui_phosphor::light::LIST_BULLETS;
         // On is a raised fill, not the gold selection color: gold is the primary action's.
-        let on = if self.json_outline_visible { SURFACE_HOVER } else { egui::Color32::TRANSPARENT };
+        let on = if self.json_ui.json_outline_visible { SURFACE_HOVER } else { egui::Color32::TRANSPARENT };
         let toggle =
             add_borderless(ui, true, egui::Button::new(egui::RichText::new(outline).color(TEXT_PRIMARY)).fill(on));
         if toggle.on_hover_text("Outline").clicked() {
-            self.json_outline_visible = !self.json_outline_visible;
+            self.json_ui.json_outline_visible = !self.json_ui.json_outline_visible;
         }
     }
 
@@ -785,7 +802,7 @@ impl App {
     /// consumes the key): shows the outline and focuses its search box.
     pub(crate) fn focus_json_search(&mut self) {
         if let Some(level) = self.json_level.as_mut() {
-            self.json_outline_visible = true;
+            self.json_ui.json_outline_visible = true;
             level.search.focus = true;
         }
     }
@@ -830,16 +847,16 @@ impl App {
     /// search box and the value as an indented list, virtualized with
     /// `show_rows`. Drawn before the canvas takes the remaining space.
     pub(crate) fn build_json_outline(&mut self, ui: &mut egui::Ui) {
-        if self.json_level.is_none() || !self.json_outline_visible {
+        if self.json_level.is_none() || !self.json_ui.json_outline_visible {
             return;
         }
         self.poll_json_search();
         let panel = egui::Panel::right("json_outline")
             .resizable(true)
-            .default_size(self.json_outline_width)
+            .default_size(self.json_ui.json_outline_width)
             .size_range(160.0..=640.0)
             .show(ui, |ui| self.json_outline_contents(ui));
-        self.json_outline_width = panel.response.rect.width();
+        self.json_ui.json_outline_width = panel.response.rect.width();
     }
 
     fn json_outline_contents(&mut self, ui: &mut egui::Ui) {

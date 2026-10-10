@@ -14,6 +14,31 @@ pub struct HistoryEntry {
 /// How many history entries to keep before dropping the oldest.
 pub const MAX_HISTORY_ENTRIES: usize = 200;
 
+/// The bookmarks and history popups' state (`App::history_ui`); the `history` and `bookmarks` lists stay on `App`.
+#[derive(Default)]
+pub(crate) struct HistoryUi {
+    /// The bookmarks popup's own filter box text -- cleared each time the
+    /// popup is opened, same "fresh state each open" reasoning
+    /// `FindState::match_case` resetting on a new find session already has.
+    pub(crate) bookmarks_filter: String,
+    /// `(bookmark_url, draft)` while a bookmark's folder label in the
+    /// popup is being renamed -- keyed by url (a bookmark's own natural
+    /// identity, same as `toggle_bookmark`'s own match) rather than index,
+    /// so it can't end up pointing at the wrong row if the list reorders.
+    /// Same "real `TextEdit` replaces the label, Enter/blur commits,
+    /// Escape cancels" shape `renaming_group` already has.
+    pub(crate) renaming_bookmark_folder: Option<(String, String)>,
+    /// Set whenever an entry is pushed to `history` or when history is cleared.
+    /// Saved by `save_session` or `close_store` when `true`.
+    pub(crate) history_dirty: bool,
+    /// The history popup's own filter box text -- same "cleared on each
+    /// open" reasoning as `bookmarks_filter`.
+    pub(crate) history_filter: String,
+    /// The History popup's filter, the history length it was computed at, and its matches: recomputed only when
+    /// either changes (or when `history_dirty` is set, which also covers an in-place title update).
+    pub(crate) history_matches_cache: Option<(String, usize, Vec<usize>)>,
+}
+
 fn history_path() -> Option<PathBuf> {
     Some(crate::profile::dir()?.join("history.json"))
 }

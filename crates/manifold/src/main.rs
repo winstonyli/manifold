@@ -232,12 +232,6 @@ struct App {
     /// The level of the Json node `current_group` names (spec "Level
     /// sources"); `None` on every other level.
     json_level: Option<JsonLevel>,
-    /// The JSON outline panel shows (local state).
-    json_outline_visible: bool,
-    /// Its width in points, as last drawn (local state).
-    json_outline_width: f32,
-    /// Copy path's form on a JSON level (local state).
-    json_accessor_paths: bool,
     /// `(group_id, draft_name)` once renaming has started -- either the
     /// toolbar's group-name button (only shown while `current_group` is
     /// `Some`) or the top-level right-click context menu's own "Rename"
@@ -253,31 +247,6 @@ struct App {
     pending_jar_confirm: Option<jar_defs::JarConfirm>,
     /// A named session's delete from Settings, waiting for its confirm dialog (`build_session_delete_popup`).
     pending_session_delete: Option<String>,
-    /// `(node_id, screen_pos)` while a right-click context menu is showing
-    /// for that node's card -- one field for every kind, so at most one
-    /// menu is ever open by construction. Right-click is otherwise the
-    /// rectangle-select gesture over the graph panel (see that gesture's
-    /// own doc comment on `handle_rect_select`); a press landing on any card
-    /// opens this instead of starting a marquee. Drawn by
-    /// `App::build_node_menu`, which dispatches on the node's kind.
-    node_menu: Option<(String, egui::Pos2)>,
-    /// Last real value of `node_menu`, kept around so `build_node_menu`
-    /// can keep drawing (fading out, not vanishing instantly) for a few
-    /// frames after `node_menu` itself goes back to `None` -- see
-    /// `fade_popup_state`.
-    node_menu_cache: Option<(String, egui::Pos2, NodeMenuView)>,
-    /// `Ctrl+K` quick-switcher, if currently open — see `QuickSwitcher`'s
-    /// own doc comment and `App::build_quick_switcher`.
-    quick_switcher: Option<QuickSwitcher>,
-    /// Same fade-out role as `node_menu_cache`, for `quick_switcher`
-    /// -- but rendered read-only (no live `TextEdit`, no clickable rows)
-    /// once actually closing, since editing/clicking needs `&mut self.
-    /// quick_switcher`, which no longer exists by then. See `build_quick_
-    /// switcher`'s own `is_live` branch.
-    quick_switcher_cache: Option<QuickSwitcher>,
-    /// `F1` / headless `TOGGLESHORTCUTSHELP` -- whether the keyboard-
-    /// shortcut reference popup is showing. See `App::build_shortcuts_help`.
-    shortcuts_help_open: bool,
     /// A session picked via "Import Session..." (or headless `IMPORTSESSION`),
     /// staged here rather than applied immediately -- `build_import_confirm_
     /// popup` shows its tab count against the currently running session's
@@ -342,7 +311,7 @@ struct App {
     journal: Option<store::journal::Journal>,
     /// Ids for nodes made while there is no journal (unit tests, a failed
     /// open): this launch's own actor, so they parse as store ids.
-    fallback_ids: (store::model::ActorId, u64),
+    fallback_ids: node_store::NodeIdFallback,
     /// What the next save commits besides `pending`, and when saves happened or are owed (see `session_sync::PendingWrites`).
     writes: session_sync::PendingWrites,
     /// The decoded copy of the document's mirrored fields (`mirror::Mirror`).
@@ -352,8 +321,6 @@ struct App {
     pending: std::collections::BTreeMap<(store::model::NodeId, u32), Vec<u8>>,
     /// The personal-state file's write bookkeeping (see `local_state::LocalPersist`).
     local_persist: local_state::LocalPersist,
-    /// Senders of the headless `WAITIDLE` commands waiting for `debug_idle`.
-    idle_waiters: Vec<std::sync::mpsc::Sender<()>>,
     /// Shared across every note's own rendered (non-`editing`) view --
     /// `egui_commonmark`'s own recommended usage (glyph-layout/heading-id
     /// state, not per-note content), not a fresh cache per card per frame.
@@ -448,65 +415,26 @@ struct App {
     /// stdin instead of real OS input. See `debug_control`'s doc comment
     /// for the full rationale and the text-command protocol.
     headless: bool,
-    /// Whether the last `about_to_wait` found the window minimized: the
-    /// loop then ticks at `MINIMIZED_TICK` instead of redrawing, and on the
-    /// way back resumes redrawing.
-    was_minimized: bool,
-    /// The last input, engine message burst or egui repaint request: after
-    /// `IDLE_AFTER` without one the loop slows to `IDLE_FRAME` (see
-    /// `about_to_wait`).
-    last_activity: std::time::Instant,
-    /// Engine frames seen in the current second (a burst is activity).
-    frame_burst: (std::time::Instant, u32),
-    /// When an idle loop next draws.
-    next_idle_frame: std::time::Instant,
-    /// The wait between idle frames: `IDLE_FRAME`, or less when egui asked
-    /// for a repaint sooner (`request_repaint_after`).
-    idle_interval: std::time::Duration,
-    /// Tabs `SetVisible(false)` was sent to on minimize, to be shown again
-    /// on restore (`hide_tabs_for_minimize`).
-    hidden_for_minimize: Vec<String>,
-    /// Key events from headless `ENTER`/`ESCAPE`/`ARROWDOWN`/`ARROWUP`,
-    /// added to the next frame's egui input exactly like real key presses
-    /// (see `run_egui_frame`), so they take the same code paths and, like
-    /// a real key, last one frame whether or not anything reads them.
-    debug_input_events: Vec<egui::Event>,
-    /// Text from a headless `ADDRESSBAR`, typed (select-all, then the text)
-    /// once the address bar actually has egui focus: the command requests
-    /// focus through `pending_focus`, which only takes hold in
-    /// the frame after, so typing waits for a frame where
-    /// `address_bar.focused` is true.
-    debug_address_bar_typing: Option<String>,
+    /// JSON level view settings (see `json_level_ui::JsonLevelUi`).
+    json_ui: json_level_ui::JsonLevelUi,
+    /// Bookmarks and history popup state (see `history::HistoryUi`).
+    history_ui: history::HistoryUi,
+    /// Engine install jobs, failures and the Settings drafts for them (see `engine_install::EngineInstallUi`).
+    engine_ui: engine_install::EngineInstallUi,
+    /// Open menus and popups (see `popups::MenuPopups`).
+    menus: popups::MenuPopups,
+    /// Toast state (see `failure_toasts::Toasts`).
+    toasts: failure_toasts::Toasts,
+    /// Headless debug-control state (see `debug_control::HeadlessDebug`).
+    debug: debug_control::HeadlessDebug,
+    /// Frame pacing: minimize and idle state (see `event_loop::FramePacing`).
+    pacing: event_loop::FramePacing,
     /// A focus request waiting for its `TextEdit` to be built (see
     /// `FocusTarget`): set by `Ctrl+L`/`Ctrl+F`/`Ctrl+K`, starting a
     /// rename, and headless `FOCUSADDRESS`/`ADDRESSBAR`/`OPENFINDBAR`.
     /// Unlike the headless key events above, this drives a real
     /// `request_focus()` on the real widget.
     pending_focus: Option<FocusTarget>,
-    /// Set by a headless `QUIT` that arrived while debug input above (or
-    /// `pending_screenshot`) was still waiting for a frame — e.g. `ENTER`+`QUIT`,
-    /// or `SCREENSHOT`+`QUIT`, sent back-to-back with no delay. Exiting
-    /// immediately in that case could drop the pending command/screenshot
-    /// before any frame ever consumed it (`event_loop.exit()` gives no
-    /// guarantee a `RedrawRequested` runs first). Holds how many more frames
-    /// to wait: `headless_end_of_frame` exits once nothing is pending, or when
-    /// this runs out (an `ADDRESSBAR` needs two frames, focus then typing;
-    /// a screenshot on a stalled surface might never land).
-    quit_after_redraws: Option<u8>,
-    /// Set by a headless `SCREENSHOT` command; consumed on the next
-    /// `RedrawRequested` and passed into `gpu::GpuState::render` (`render_frame`).
-    pending_screenshot: Option<String>,
-    /// The stdin reader waiting on `pending_screenshot` (see
-    /// `DebugCommand::Screenshot`); sent `()` once it's been attempted.
-    screenshot_waiter: Option<std::sync::mpsc::Sender<()>>,
-    /// "Print to PDF": (temp PNG, PDF): the capture `start_print_to_pdf`
-    /// asked for, and where its PDF goes. Paired so an unrelated screenshot
-    /// can't take the PDF target. Set alongside `pending_screenshot` so the
-    /// GPU capture needn't know PDF exists; once that capture completes
-    /// (`handle_screenshot_result`), the temp PNG is converted via
-    /// `pdf::write_image_as_pdf` and deleted. `None` the rest of the time,
-    /// including for an ordinary "Screenshot" button click.
-    pending_print_to_pdf: Option<(String, String)>,
 
     /// "Recently Closed", oldest first: one entry per close, capped at
     /// `MAX_CLOSED`. The toolbar dropdown reopens any entry;
@@ -514,31 +442,6 @@ struct App {
     /// `ClosedEntry`.
     closed: Vec<ClosedEntry>,
 
-    /// The minimal right-click context menu, if currently showing — see
-    /// `ContextMenuState`'s own doc comment.
-    context_menu: Option<ContextMenuState>,
-    /// Same fade-out role as `node_menu_cache`, for `context_menu`.
-    context_menu_cache: Option<ContextMenuState>,
-
-    /// A brief toast message (full text, not just a path -- see `build_
-    /// save_toast`'s own doc comment) for the most recent completed
-    /// download/save or crash/respawn notice, and when it was first drawn —
-    /// cleared once `SAVE_TOAST_DURATION` has passed, at which point the
-    /// next queued message (`save_toast_queue`) takes over, if any. Was
-    /// "latest wins" with no queue at all until this session, when a
-    /// second toast (e.g. a crash notice) arriving while a download's own
-    /// "Saved <path>" toast was still showing was confirmed to silently
-    /// replace it, unlike `FindState::result`'s own "latest wins" (correct
-    /// there -- a stale search count would be actively wrong, whereas a
-    /// dropped one-time notification like "tab crashed" is just gone).
-    save_toast: Option<(String, std::time::Instant)>,
-    /// See `save_toast`'s own doc comment -- messages waiting to be shown,
-    /// one at a time in order, each after the previous one's
-    /// `SAVE_TOAST_DURATION` elapses. Pushed to by `queue_toast` (and
-    /// directly by `DownloadCompleted`, for borrow reasons).
-    save_toast_queue: std::collections::VecDeque<String>,
-    /// Spawn-failure toasts held to merge by cause (`failure_toasts`).
-    failure_notices: failure_toasts::FailureNotices,
     /// Admits or drops page-opened tabs (`EngineToHost::OpenTabRequested`)
     /// per source tab: a user gesture and a rate budget.
     popup_gate: popup_gate::PopupGate,
@@ -562,19 +465,6 @@ struct App {
     /// Find-in-page, for the focused tab only. See `FindState`.
     find: FindState,
 
-    /// Engine runtime installs, at most one per engine (see `engine_install::InstallJob`).
-    engine_installs: HashMap<EngineKind, engine_install::InstallJob>,
-    /// The last install's failure message per engine, until the next attempt starts.
-    engine_failures: HashMap<EngineKind, String>,
-    /// An engine download or removal waiting for its confirm dialog (`build_engine_confirm_popup`).
-    pending_engine_confirm: Option<EngineConfirm>,
-    /// `engine_state` per engine for the current frame: it stats the disk, and cards, pickers, menus
-    /// and Settings all ask. Cleared at the start of each frame and whenever an install changes.
-    engine_state_cache: std::cell::RefCell<HashMap<EngineKind, engine_install::EngineState>>,
-    /// The bring-your-own CEF directory's last validation, with the path it was for (`custom_cef_dir`).
-    cef_dir_check: std::cell::RefCell<Option<engine_install::DirCheck>>,
-    /// Settings' text field for that directory while it is being edited; committed on Enter or focus loss.
-    cef_dir_draft: Option<String>,
     /// The Home page field's text while it's being edited; Escape drops it (`build_settings_page`).
     home_page_draft: Option<String>,
 
@@ -591,17 +481,6 @@ struct App {
     /// `%APPDATA%\manifold\bookmarks.json` on every change — see
     /// `bookmarks.rs`. Listed by `App::build_bookmarks_popup`.
     bookmarks: Vec<bookmarks::Bookmark>,
-    /// The bookmarks popup's own filter box text -- cleared each time the
-    /// popup is opened, same "fresh state each open" reasoning
-    /// `FindState::match_case` resetting on a new find session already has.
-    bookmarks_filter: String,
-    /// `(bookmark_url, draft)` while a bookmark's folder label in the
-    /// popup is being renamed -- keyed by url (a bookmark's own natural
-    /// identity, same as `toggle_bookmark`'s own match) rather than index,
-    /// so it can't end up pointing at the wrong row if the list reorders.
-    /// Same "real `TextEdit` replaces the label, Enter/blur commits,
-    /// Escape cancels" shape `renaming_group` already has.
-    renaming_bookmark_folder: Option<(String, String)>,
     /// Every distinct `(title, url)` this session has actually navigated
     /// to, most-recent-last, capped at `history::MAX_HISTORY_ENTRIES` (oldest
     /// dropped first) -- recorded once per real URL change in
@@ -609,19 +488,6 @@ struct App {
     /// in-page navigation (clicked links) the same as address-bar entries,
     /// not just the latter. Persisted to `history.json` whenever saved.
     history: Vec<history::HistoryEntry>,
-    /// Set whenever an entry is pushed to `history` or when history is cleared.
-    /// Saved by `save_session` or `close_store` when `true`.
-    history_dirty: bool,
-    /// The history popup's own filter box text -- same "cleared on each
-    /// open" reasoning as `bookmarks_filter`.
-    history_filter: String,
-    /// The History popup's filter, the history length it was computed at, and its matches: recomputed only when
-    /// either changes (or when `history_dirty` is set, which also covers an in-place title update).
-    history_matches_cache: Option<(String, usize, Vec<usize>)>,
-    /// Which popup anchored below a toolbar or Settings button is open, if
-    /// any; one at a time. See `AnchoredPopup`, `toggle_popup` and
-    /// `close_popup`.
-    open_popup: Option<AnchoredPopup>,
     /// A graph card or one of its controls had keyboard focus in the last card pass: the cards
     /// show their Tab-order numbers (`CardPass::show_order`).
     card_nav_active: bool,
@@ -691,18 +557,10 @@ impl Default for App {
             groups_collapsed: false,
             current_group: None,
             json_level: None,
-            json_outline_visible: true,
-            json_outline_width: 260.0,
-            json_accessor_paths: false,
             renaming_group: None,
             naming_jar: None,
             pending_jar_confirm: None,
             pending_session_delete: None,
-            node_menu: None,
-            node_menu_cache: None,
-            quick_switcher: None,
-            quick_switcher_cache: None,
-            shortcuts_help_open: false,
             pending_import: None,
             session_name_draft: String::new(),
             graph_filter: String::new(),
@@ -719,12 +577,11 @@ impl Default for App {
             drop_batch: 0,
             view_mode: ViewMode::Item,
             journal: None,
-            fallback_ids: (store::model::ActorId::random(), 0),
+            fallback_ids: node_store::NodeIdFallback::default(),
             writes: session_sync::PendingWrites::default(),
             mirror: mirror::Mirror::default(),
             pending: std::collections::BTreeMap::new(),
             local_persist: local_state::LocalPersist::default(),
-            idle_waiters: Vec::new(),
             commonmark_cache: egui_commonmark::CommonMarkCache::default(),
             cursor_pos: (0.0, 0.0),
             native_drag_tab: None,
@@ -747,48 +604,26 @@ impl Default for App {
             favicon_origin_cache: HashMap::new(),
             graph_settled_key: None,
             headless: false,
-            was_minimized: false,
-            last_activity: std::time::Instant::now(),
-            frame_burst: (std::time::Instant::now(), 0),
-            next_idle_frame: std::time::Instant::now(),
-            idle_interval: event_loop::IDLE_FRAME,
-            hidden_for_minimize: Vec::new(),
-            debug_input_events: Vec::new(),
-            debug_address_bar_typing: None,
+            json_ui: json_level_ui::JsonLevelUi::default(),
+            history_ui: history::HistoryUi::default(),
+            engine_ui: engine_install::EngineInstallUi::default(),
+            menus: popups::MenuPopups::default(),
+            toasts: failure_toasts::Toasts::default(),
+            debug: debug_control::HeadlessDebug::default(),
+            pacing: event_loop::FramePacing::default(),
             pending_focus: None,
-            quit_after_redraws: None,
-            pending_screenshot: None,
-            screenshot_waiter: None,
-            pending_print_to_pdf: None,
             closed: Vec::new(),
-            context_menu: None,
-            context_menu_cache: None,
-            save_toast: None,
-            save_toast_queue: std::collections::VecDeque::new(),
-            failure_notices: Default::default(),
             popup_gate: popup_gate::PopupGate::default(),
             store_recovered: false,
             settings_fingerprint,
             settings_save_due: None,
             content_index: None,
             find: FindState::default(),
-            engine_installs: HashMap::new(),
-            engine_failures: HashMap::new(),
-            pending_engine_confirm: None,
-            engine_state_cache: Default::default(),
-            cef_dir_check: Default::default(),
-            cef_dir_draft: None,
             home_page_draft: None,
             settings,
             settings_return_view: ViewMode::Item,
             bookmarks,
-            bookmarks_filter: String::new(),
-            renaming_bookmark_folder: None,
             history,
-            history_dirty: false,
-            history_filter: String::new(),
-            history_matches_cache: None,
-            open_popup: None,
             card_nav_active: false,
             hints_revealed: false,
             card_hint: None,

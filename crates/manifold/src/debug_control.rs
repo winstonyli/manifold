@@ -920,6 +920,48 @@ pub fn spawn_stdin_reader(proxy: EventLoopProxy<UserEvent>) {
     });
 }
 
+/// The headless debug channel's pending work (`App::debug`): synthetic input, deferred quits and the capture/idle waiters.
+#[derive(Default)]
+pub(crate) struct HeadlessDebug {
+    /// Key events from headless `ENTER`/`ESCAPE`/`ARROWDOWN`/`ARROWUP`,
+    /// added to the next frame's egui input exactly like real key presses
+    /// (see `run_egui_frame`), so they take the same code paths and, like
+    /// a real key, last one frame whether or not anything reads them.
+    pub(crate) debug_input_events: Vec<egui::Event>,
+    /// Text from a headless `ADDRESSBAR`, typed (select-all, then the text)
+    /// once the address bar actually has egui focus: the command requests
+    /// focus through `pending_focus`, which only takes hold in
+    /// the frame after, so typing waits for a frame where
+    /// `address_bar.focused` is true.
+    pub(crate) debug_address_bar_typing: Option<String>,
+    /// Set by a headless `QUIT` that arrived while debug input above (or
+    /// `pending_screenshot`) was still waiting for a frame — e.g. `ENTER`+`QUIT`,
+    /// or `SCREENSHOT`+`QUIT`, sent back-to-back with no delay. Exiting
+    /// immediately in that case could drop the pending command/screenshot
+    /// before any frame ever consumed it (`event_loop.exit()` gives no
+    /// guarantee a `RedrawRequested` runs first). Holds how many more frames
+    /// to wait: `headless_end_of_frame` exits once nothing is pending, or when
+    /// this runs out (an `ADDRESSBAR` needs two frames, focus then typing;
+    /// a screenshot on a stalled surface might never land).
+    pub(crate) quit_after_redraws: Option<u8>,
+    /// Set by a headless `SCREENSHOT` command; consumed on the next
+    /// `RedrawRequested` and passed into `gpu::GpuState::render` (`render_frame`).
+    pub(crate) pending_screenshot: Option<String>,
+    /// The stdin reader waiting on `pending_screenshot` (see
+    /// `DebugCommand::Screenshot`); sent `()` once it's been attempted.
+    pub(crate) screenshot_waiter: Option<std::sync::mpsc::Sender<()>>,
+    /// "Print to PDF": (temp PNG, PDF): the capture `start_print_to_pdf`
+    /// asked for, and where its PDF goes. Paired so an unrelated screenshot
+    /// can't take the PDF target. Set alongside `pending_screenshot` so the
+    /// GPU capture needn't know PDF exists; once that capture completes
+    /// (`handle_screenshot_result`), the temp PNG is converted via
+    /// `pdf::write_image_as_pdf` and deleted. `None` the rest of the time,
+    /// including for an ordinary "Screenshot" button click.
+    pub(crate) pending_print_to_pdf: Option<(String, String)>,
+    /// Senders of the headless `WAITIDLE` commands waiting for `debug_idle`.
+    pub(crate) idle_waiters: Vec<std::sync::mpsc::Sender<()>>,
+}
+
 impl App {
     /// `MOVETOGROUP`: what the node menu's "Move into <group>" row does (`NodeAction::MoveToGroup`, a Join drop,
     /// which saves), only when the menu would offer `group`. `false` when it wouldn't.
@@ -1014,7 +1056,7 @@ impl App {
             // the first frame the bar has it (see `debug_address_bar_typing`).
             DebugCommand::AddressBar(text) if self.showing_tab_view() => {
                 self.pending_focus = Some(FocusTarget::AddressBar);
-                self.debug_address_bar_typing = Some(text);
+                self.debug.debug_address_bar_typing = Some(text);
                 if let Some(window) = &self.window {
                     window.request_redraw();
                 }
@@ -1023,21 +1065,21 @@ impl App {
             // Real key presses for the next frame's egui input, so they go
             // through the same checks a keyboard does, in any view.
             DebugCommand::Enter => {
-                self.debug_input_events.push(debug_key_event(egui::Key::Enter, egui::Modifiers::NONE))
+                self.debug.debug_input_events.push(debug_key_event(egui::Key::Enter, egui::Modifiers::NONE))
             }
             DebugCommand::Escape => {
-                self.debug_input_events.push(debug_key_event(egui::Key::Escape, egui::Modifiers::NONE))
+                self.debug.debug_input_events.push(debug_key_event(egui::Key::Escape, egui::Modifiers::NONE))
             }
             DebugCommand::Backspace => {
-                self.debug_input_events.push(debug_key_event(egui::Key::Backspace, egui::Modifiers::NONE))
+                self.debug.debug_input_events.push(debug_key_event(egui::Key::Backspace, egui::Modifiers::NONE))
             }
             // The focused egui field takes it, as from a keyboard (`TYPE` goes to the page instead).
-            DebugCommand::EguiText(text) => self.debug_input_events.push(egui::Event::Text(text)),
+            DebugCommand::EguiText(text) => self.debug.debug_input_events.push(egui::Event::Text(text)),
             DebugCommand::ArrowDown => {
-                self.debug_input_events.push(debug_key_event(egui::Key::ArrowDown, egui::Modifiers::NONE))
+                self.debug.debug_input_events.push(debug_key_event(egui::Key::ArrowDown, egui::Modifiers::NONE))
             }
             DebugCommand::ArrowRight => {
-                self.debug_input_events.push(debug_key_event(egui::Key::ArrowRight, egui::Modifiers::NONE))
+                self.debug.debug_input_events.push(debug_key_event(egui::Key::ArrowRight, egui::Modifiers::NONE))
             }
             DebugCommand::DigitKey(d) => {
                 let key = [
@@ -1052,23 +1094,23 @@ impl App {
                     egui::Key::Num8,
                     egui::Key::Num9,
                 ][d as usize];
-                self.debug_input_events.push(debug_key_event(key, egui::Modifiers::NONE))
+                self.debug.debug_input_events.push(debug_key_event(key, egui::Modifiers::NONE))
             }
             DebugCommand::SpaceKey => {
-                self.debug_input_events.push(debug_key_event(egui::Key::Space, egui::Modifiers::NONE))
+                self.debug.debug_input_events.push(debug_key_event(egui::Key::Space, egui::Modifiers::NONE))
             }
             DebugCommand::ArrowLeft => {
-                self.debug_input_events.push(debug_key_event(egui::Key::ArrowLeft, egui::Modifiers::NONE))
+                self.debug.debug_input_events.push(debug_key_event(egui::Key::ArrowLeft, egui::Modifiers::NONE))
             }
             DebugCommand::ArrowUp => {
-                self.debug_input_events.push(debug_key_event(egui::Key::ArrowUp, egui::Modifiers::NONE))
+                self.debug.debug_input_events.push(debug_key_event(egui::Key::ArrowUp, egui::Modifiers::NONE))
             }
             DebugCommand::TabKey(shift) => {
                 let modifiers = if shift { egui::Modifiers::SHIFT } else { egui::Modifiers::NONE };
-                self.debug_input_events.push(debug_key_event(egui::Key::Tab, modifiers))
+                self.debug.debug_input_events.push(debug_key_event(egui::Key::Tab, modifiers))
             }
             DebugCommand::ShiftF10 => {
-                self.debug_input_events.push(debug_key_event(egui::Key::F10, egui::Modifiers::SHIFT))
+                self.debug.debug_input_events.push(debug_key_event(egui::Key::F10, egui::Modifiers::SHIFT))
             }
             DebugCommand::GraphFocusLeft => self.move_graph_focus(egui::vec2(-1.0, 0.0)),
             DebugCommand::GraphFocusRight => self.move_graph_focus(egui::vec2(1.0, 0.0)),
@@ -1134,8 +1176,8 @@ impl App {
             // Only ever intercepted by the stdin reader itself.
             DebugCommand::Screenshot(_) | DebugCommand::Sleep(_) => {}
             DebugCommand::NotifyWhenScreenshotTaken(path, waiter) => {
-                self.pending_screenshot = Some(path);
-                self.screenshot_waiter = Some(waiter);
+                self.debug.pending_screenshot = Some(path);
+                self.debug.screenshot_waiter = Some(waiter);
                 if let Some(window) = &self.window {
                     window.request_redraw();
                 }
@@ -1147,7 +1189,7 @@ impl App {
             }
             DebugCommand::QuickSwitchOpen => self.open_quick_switcher(),
             DebugCommand::QuickSwitchText(text) => {
-                if let Some(switcher) = &mut self.quick_switcher {
+                if let Some(switcher) = &mut self.menus.quick_switcher {
                     switcher.query = text;
                     switcher.selected = 0;
                 }
@@ -1155,7 +1197,7 @@ impl App {
             DebugCommand::QuickSwitchDown => self.quick_switcher_move(1),
             DebugCommand::QuickSwitchUp => self.quick_switcher_move(-1),
             DebugCommand::QuickSwitchEnter => self.quick_switcher_confirm(),
-            DebugCommand::QuickSwitchEscape => self.quick_switcher = None,
+            DebugCommand::QuickSwitchEscape => self.menus.quick_switcher = None,
             DebugCommand::SessionNameText(text) => self.session_name_draft = text,
             DebugCommand::SaveSessionAs(name) => self.save_named_session(&name),
             DebugCommand::OpenSession(name) => {
@@ -1163,8 +1205,8 @@ impl App {
                 self.close_settings_page();
             }
             DebugCommand::GraphFilterText(text) => self.graph_filter = text,
-            DebugCommand::HistoryFilterText(text) => self.history_filter = text,
-            DebugCommand::BookmarksFilterText(text) => self.bookmarks_filter = text,
+            DebugCommand::HistoryFilterText(text) => self.history_ui.history_filter = text,
+            DebugCommand::BookmarksFilterText(text) => self.history_ui.bookmarks_filter = text,
             DebugCommand::ToggleView => self.toggle_view_mode_shortcut(),
             DebugCommand::ToggleSettingsPage => self.toggle_settings_page(),
             DebugCommand::ExportSession(path) => {
@@ -1185,13 +1227,13 @@ impl App {
             }
             DebugCommand::RenameGroup => self.rename_current_group_shortcut(),
             DebugCommand::BookmarkFolderText(text) => {
-                if let Some((_, draft)) = &mut self.renaming_bookmark_folder {
+                if let Some((_, draft)) = &mut self.history_ui.renaming_bookmark_folder {
                     *draft = text;
                 }
             }
             DebugCommand::DismissPeek => self.dismiss_hover_peek(),
             DebugCommand::ExportGroup(path) => {
-                if let Some((group_id, _)) = self.node_menu.clone().filter(|(id, _)| self.is_container(id)) {
+                if let Some((group_id, _)) = self.menus.node_menu.clone().filter(|(id, _)| self.is_container(id)) {
                     if let Some(json) = self.export_group_json(&group_id) {
                         write_json_export(&json, std::path::Path::new(&path), "group");
                     }
@@ -1249,7 +1291,7 @@ impl App {
             }
             DebugCommand::WaitIdle(_) => {}
             DebugCommand::NotifyWhenIdle(waiter) => {
-                self.idle_waiters.push(waiter);
+                self.debug.idle_waiters.push(waiter);
                 self.release_idle_waiters();
                 // Pending input needs frames to land, and the check runs at the end of each.
                 if let Some(window) = &self.window {
@@ -1346,7 +1388,7 @@ impl App {
             DebugCommand::Help => debug_control::print_help(),
             DebugCommand::CloseAllLevel => self.close_all_at_current_level(),
             DebugCommand::ToggleShortcutsHelp => {
-                self.shortcuts_help_open = !self.shortcuts_help_open;
+                self.menus.shortcuts_help_open = !self.menus.shortcuts_help_open;
             }
             DebugCommand::Quit => {
                 // See `quit_after_redraws`'s doc comment: exiting right
@@ -1358,7 +1400,7 @@ impl App {
                 // lose the screenshot the same way an unconsumed Enter
                 // could).
                 if self.debug_input_pending() {
-                    self.quit_after_redraws = Some(3);
+                    self.debug.quit_after_redraws = Some(3);
                     if let Some(window) = &self.window {
                         window.request_redraw();
                     }
@@ -1524,7 +1566,7 @@ impl App {
             "json_level": self.json_level_state(),
             "selected_tabs": selected_tabs,
             // The toast showing, or else the next queued one.
-            "toast": self.save_toast.as_ref().map(|(message, _)| message).or(self.save_toast_queue.front()),
+            "toast": self.toasts.save_toast.as_ref().map(|(message, _)| message).or(self.toasts.save_toast_queue.front()),
         })
     }
 

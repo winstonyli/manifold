@@ -124,8 +124,8 @@ fn a_json_level_hides_the_links_section_and_ends_pick_target_mode() {
 fn screen_to_world_inverts_world_to_screen_with_the_outline_open() {
     let (mut app, j) = app_with_json("inverse", r#"{"a": 1}"#);
     app.switch_group_level(Some(j));
-    app.json_outline_visible = true;
-    app.json_outline_width = 300.0;
+    app.json_ui.json_outline_visible = true;
+    app.json_ui.json_outline_width = 300.0;
     let world = egui::Rect::from_min_size(egui::pos2(40.0, 60.0), egui::vec2(10.0, 10.0));
     let screen = app.graph_world_rect_to_screen(world);
     let back = app.graph_screen_point_to_world(screen.min);
@@ -285,7 +285,7 @@ fn copy_texts_follow_the_selection_and_the_path_form() {
     assert_eq!(copy(&app, "/users/0", CopyWhat::Value).as_deref(), Some("{\n  \"name\": \"Ada\",\n  \"a/b\": 1\n}"));
     assert_eq!(copy(&app, "/users/0/a~1b", CopyWhat::Key).as_deref(), Some("a/b"));
     assert_eq!(copy(&app, "/users/0/a~1b", CopyWhat::Path).as_deref(), Some("/users/0/a~1b"));
-    app.json_accessor_paths = true;
+    app.json_ui.json_accessor_paths = true;
     assert_eq!(copy(&app, "/users/0/a~1b", CopyWhat::Path).as_deref(), Some(r#"users[0]["a/b"]"#));
     assert_eq!(copy(&app, "/nope", CopyWhat::Value), None);
 }

@@ -67,7 +67,7 @@ impl App {
         if ui.input(|i| i.key_pressed(egui::Key::Escape))
             && !typing
             && !self.popup_open()
-            && self.pending_engine_confirm.is_none()
+            && self.engine_ui.pending_engine_confirm.is_none()
             && self.pending_jar_confirm.is_none()
         {
             self.close_settings_page();
@@ -349,7 +349,7 @@ impl App {
         let mut commit = None;
         let configured = self.settings.cef_directory.clone().unwrap_or_default();
         ui.horizontal(|ui| {
-            let draft = self.cef_dir_draft.get_or_insert_with(|| configured.clone());
+            let draft = self.engine_ui.cef_dir_draft.get_or_insert_with(|| configured.clone());
             let response = ui.add(
                 egui::TextEdit::singleline(draft)
                     .desired_width(220.0)
@@ -379,7 +379,7 @@ impl App {
                 // Same folder (Browse again, or Enter): its contents may have been fixed on disk.
                 self.invalidate_cef_dir_check();
             }
-            self.cef_dir_draft = None;
+            self.engine_ui.cef_dir_draft = None;
         }
         match self.cef_dir_verdict() {
             Some((_, Err(message))) => {
@@ -407,12 +407,12 @@ impl App {
         ui.horizontal(|ui| {
             let bookmarks_response = ui.button(format!("Bookmarks ({})", self.bookmarks.len()));
             if self.popup_opener_clicked(ui, AnchoredPopup::Bookmarks, &bookmarks_response) {
-                self.bookmarks_filter.clear();
+                self.history_ui.bookmarks_filter.clear();
             }
             req.bookmarks_button_rect = Some(bookmarks_response.rect);
             let history_response = ui.button(format!("History ({})", self.history.len()));
             if self.popup_opener_clicked(ui, AnchoredPopup::History, &history_response) {
-                self.history_filter.clear();
+                self.history_ui.history_filter.clear();
             }
             req.history_button_rect = Some(history_response.rect);
             // Not `self.nodes.len()` (every graph node, not just
@@ -686,7 +686,7 @@ impl App {
             // is only set once `RenderOutcome::screenshot_result` actually
             // confirms success (see `handle_screenshot_result`).
             let path = screenshot_default_path();
-            self.pending_screenshot = Some(path.to_string_lossy().to_string());
+            self.debug.pending_screenshot = Some(path.to_string_lossy().to_string());
             if let Some(window) = &self.window {
                 window.request_redraw();
             }
@@ -1121,7 +1121,7 @@ mod tests {
         assert!(!app.mirror.jar_defs()[&work].ephemeral, "the click was ignored, not acted on");
         let download = EngineConfirm::Download(crate::process_manager::EngineKind::Cef);
         assert!(!app.offer_engine_confirm(download));
-        assert_eq!(app.pending_engine_confirm, None, "no engine confirm over a jar confirm");
+        assert_eq!(app.engine_ui.pending_engine_confirm, None, "no engine confirm over a jar confirm");
 
         app.pending_jar_confirm = None;
         assert!(app.offer_engine_confirm(download));
@@ -1129,7 +1129,7 @@ mod tests {
         assert_eq!(app.pending_jar_confirm, None, "no jar confirm over an engine confirm");
         assert!(!app.mirror.jar_defs()[&work].ephemeral);
 
-        app.pending_engine_confirm = None;
+        app.engine_ui.pending_engine_confirm = None;
         app.apply_settings_requests(&SettingsRequests {
             jar_confirm: Some(JarConfirm::Delete(work)),
             ..Default::default()

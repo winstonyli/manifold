@@ -386,6 +386,45 @@ Missing system libraries: {}. Install them with your package manager, or CEF wil
     detail
 }
 
+/// The popups and menus on screen (`App::menus`), each fading menu with the copy that outlives it.
+#[derive(Default)]
+pub(crate) struct MenuPopups {
+    /// `(node_id, screen_pos)` while a right-click context menu is showing
+    /// for that node's card -- one field for every kind, so at most one
+    /// menu is ever open by construction. Right-click is otherwise the
+    /// rectangle-select gesture over the graph panel (see that gesture's
+    /// own doc comment on `handle_rect_select`); a press landing on any card
+    /// opens this instead of starting a marquee. Drawn by
+    /// `App::build_node_menu`, which dispatches on the node's kind.
+    pub(crate) node_menu: Option<(String, egui::Pos2)>,
+    /// Last real value of `node_menu`, kept around so `build_node_menu`
+    /// can keep drawing (fading out, not vanishing instantly) for a few
+    /// frames after `node_menu` itself goes back to `None` -- see
+    /// `fade_popup_state`.
+    pub(crate) node_menu_cache: Option<(String, egui::Pos2, NodeMenuView)>,
+    /// The minimal right-click context menu, if currently showing — see
+    /// `ContextMenuState`'s own doc comment.
+    pub(crate) context_menu: Option<ContextMenuState>,
+    /// Same fade-out role as `node_menu_cache`, for `context_menu`.
+    pub(crate) context_menu_cache: Option<ContextMenuState>,
+    /// `Ctrl+K` quick-switcher, if currently open — see `QuickSwitcher`'s
+    /// own doc comment and `App::build_quick_switcher`.
+    pub(crate) quick_switcher: Option<QuickSwitcher>,
+    /// Same fade-out role as `node_menu_cache`, for `quick_switcher`
+    /// -- but rendered read-only (no live `TextEdit`, no clickable rows)
+    /// once actually closing, since editing/clicking needs `&mut self.
+    /// quick_switcher`, which no longer exists by then. See `build_quick_
+    /// switcher`'s own `is_live` branch.
+    pub(crate) quick_switcher_cache: Option<QuickSwitcher>,
+    /// Which popup anchored below a toolbar or Settings button is open, if
+    /// any; one at a time. See `AnchoredPopup`, `toggle_popup` and
+    /// `close_popup`.
+    pub(crate) open_popup: Option<AnchoredPopup>,
+    /// `F1` / headless `TOGGLESHORTCUTSHELP` -- whether the keyboard-
+    /// shortcut reference popup is showing. See `App::build_shortcuts_help`.
+    pub(crate) shortcuts_help_open: bool,
+}
+
 impl App {
     /// `which`'s anchor rect and fade (0.0-1.0), or `None` once it has
     /// faded out or while its button isn't drawn. Call it every frame,
@@ -398,7 +437,7 @@ impl App {
         which: AnchoredPopup,
         anchor: Option<egui::Rect>,
     ) -> Option<(egui::Rect, f32)> {
-        let open = self.open_popup == Some(which);
+        let open = self.menus.open_popup == Some(which);
         let fade = ctx.animate_bool(egui::Id::new(("anchored_popup_fade", which)), open);
         if fade > 0.0 {
             anchor.map(|rect| (rect, fade))
@@ -420,7 +459,7 @@ impl App {
         highlighted: Option<EngineKind>,
     ) -> Option<EngineKind> {
         let (rect, fade) = self.anchored_popup_fade(ui.ctx(), which, anchor)?;
-        let open = self.open_popup == Some(which);
+        let open = self.menus.open_popup == Some(which);
         let states: Vec<(EngineKind, crate::engine_install::EngineState)> =
             ENGINE_PICKER_ORDER.into_iter().map(|kind| (kind, self.engine_state(kind))).collect();
         let state_of = |kind: EngineKind| {
@@ -437,7 +476,7 @@ impl App {
         // A click on an unavailable engine only explains: the picker stays open.
         let explains_only = matches!(outcome, Some(PickOutcome::Unavailable(..)));
         if (picked.is_some() && !explains_only) || escape || clicked_outside_popup(ui, area_rect, Some(rect)) {
-            close_popup(&mut self.open_popup, which);
+            close_popup(&mut self.menus.open_popup, which);
         }
         // An engine that isn't installed stays selectable, but choosing it asks to install it: no
         // silent switch, and no silent fallback to another engine.
@@ -460,7 +499,7 @@ impl App {
 
     /// Whether an engine, jar or session-delete confirm dialog is up (`offer_confirm`).
     pub(crate) fn confirm_open(&self) -> bool {
-        self.pending_engine_confirm.is_some()
+        self.engine_ui.pending_engine_confirm.is_some()
             || self.pending_jar_confirm.is_some()
             || self.pending_session_delete.is_some()
     }
@@ -468,18 +507,18 @@ impl App {
     /// Asks `confirm` unless a confirm is already up (`offer_confirm`).
     pub(crate) fn offer_engine_confirm(&mut self, confirm: EngineConfirm) -> bool {
         let other = self.pending_jar_confirm.is_some() || self.pending_session_delete.is_some();
-        offer_confirm(&mut self.pending_engine_confirm, other, confirm)
+        offer_confirm(&mut self.engine_ui.pending_engine_confirm, other, confirm)
     }
 
     /// Asks `confirm` unless a confirm is already up (`offer_confirm`).
     pub(crate) fn offer_jar_confirm(&mut self, confirm: crate::jar_defs::JarConfirm) -> bool {
-        let other = self.pending_engine_confirm.is_some() || self.pending_session_delete.is_some();
+        let other = self.engine_ui.pending_engine_confirm.is_some() || self.pending_session_delete.is_some();
         offer_confirm(&mut self.pending_jar_confirm, other, confirm)
     }
 
     /// Asks before deleting a named session (`offer_confirm`).
     pub(crate) fn offer_session_delete(&mut self, name: String) -> bool {
-        let other = self.pending_engine_confirm.is_some() || self.pending_jar_confirm.is_some();
+        let other = self.engine_ui.pending_engine_confirm.is_some() || self.pending_jar_confirm.is_some();
         offer_confirm(&mut self.pending_session_delete, other, name)
     }
 
@@ -508,7 +547,7 @@ impl App {
     /// The confirm before a large or destructive engine action: "Download CEF, 172 MB?" (always
     /// asked first, since it is a big network action) or removing the downloaded runtime.
     pub(crate) fn build_engine_confirm_popup(&mut self, ui: &mut egui::Ui) {
-        let Some(confirm) = self.pending_engine_confirm else { return };
+        let Some(confirm) = self.engine_ui.pending_engine_confirm else { return };
         let (title, detail, button) = match confirm {
             EngineConfirm::Download(kind) => {
                 let size = crate::engine_info::megabytes(crate::cef_pin::pin_for_platform().map_or(0, |pin| pin.size));
@@ -538,7 +577,7 @@ impl App {
         };
         match confirm_dialog(ui, "engine_confirm_popup", title, &detail, button) {
             Some(true) => {
-                self.pending_engine_confirm = None;
+                self.engine_ui.pending_engine_confirm = None;
                 match confirm {
                     EngineConfirm::Download(kind) => {
                         self.start_engine_install(kind);
@@ -546,7 +585,7 @@ impl App {
                     EngineConfirm::Remove(kind) => self.remove_engine(kind),
                 }
             }
-            Some(false) => self.pending_engine_confirm = None,
+            Some(false) => self.engine_ui.pending_engine_confirm = None,
             None => {}
         }
     }
@@ -620,15 +659,15 @@ impl App {
     ) -> bool {
         ui.data_mut(|d| d.insert_temp(Self::popup_opener_key(which), button.id));
         if button.clicked() {
-            toggle_popup(&mut self.open_popup, which);
+            toggle_popup(&mut self.menus.open_popup, which);
         }
-        button.clicked() && self.open_popup == Some(which)
+        button.clicked() && self.menus.open_popup == Some(which)
     }
 
     /// Whether an anchored popup is open: Escape closes it (`build_ui`), so the settings page and
     /// Tab view must not also act on the same press.
     pub(crate) fn popup_open(&self) -> bool {
-        self.open_popup.is_some()
+        self.menus.open_popup.is_some()
     }
 
     /// The "Recently Closed" dropdown's row for one entry: an icon (drawn
@@ -689,7 +728,7 @@ impl App {
     pub(crate) fn build_recently_closed_popup(&mut self, ui: &mut egui::Ui, anchor_rect: egui::Rect, fade: f32) {
         let mut close = false;
         let mut reopen_index: Option<usize> = None;
-        let open = self.open_popup == Some(AnchoredPopup::RecentlyClosed);
+        let open = self.menus.open_popup == Some(AnchoredPopup::RecentlyClosed);
         let area_rect =
             build_list_popup_frame(ui.ctx(), "recently_closed_popup", anchor_rect, 220.0, 320.0, fade, open, |ui| {
                 for (index, entry) in self.closed.iter().enumerate().rev() {
@@ -729,7 +768,7 @@ impl App {
             close = true;
         }
         if close || self.closed.is_empty() {
-            close_popup(&mut self.open_popup, AnchoredPopup::RecentlyClosed);
+            close_popup(&mut self.menus.open_popup, AnchoredPopup::RecentlyClosed);
         }
     }
 
@@ -746,11 +785,11 @@ impl App {
         let mut folder_rename_start: Option<(String, String)> = None;
         let mut folder_rename_commit: Option<String> = None;
         let mut folder_rename_cancel = false;
-        let open = self.open_popup == Some(AnchoredPopup::Bookmarks);
+        let open = self.menus.open_popup == Some(AnchoredPopup::Bookmarks);
         let area_rect =
             build_list_popup_frame(ui.ctx(), "bookmarks_popup", anchor_rect, 220.0, 320.0, fade, open, |ui| {
                 ui.add(
-                    egui::TextEdit::singleline(&mut self.bookmarks_filter)
+                    egui::TextEdit::singleline(&mut self.history_ui.bookmarks_filter)
                         .desired_width(f32::INFINITY)
                         .hint_text("Filter..."),
                 );
@@ -758,7 +797,7 @@ impl App {
                     .bookmarks
                     .iter()
                     .enumerate()
-                    .filter(|(_, b)| filter_matches(&self.bookmarks_filter, &[&b.title, &b.url]))
+                    .filter(|(_, b)| filter_matches(&self.history_ui.bookmarks_filter, &[&b.title, &b.url]))
                     .collect();
                 let mut folders: Vec<&str> = matches.iter().filter_map(|(_, b)| b.folder.as_deref()).collect();
                 folders.sort_unstable();
@@ -794,10 +833,13 @@ impl App {
                                     remove_index = Some(index);
                                 }
                             });
-                            let is_renaming =
-                                self.renaming_bookmark_folder.as_ref().is_some_and(|(url, _)| url == &bookmark.url);
+                            let is_renaming = self
+                                .history_ui
+                                .renaming_bookmark_folder
+                                .as_ref()
+                                .is_some_and(|(url, _)| url == &bookmark.url);
                             if is_renaming {
-                                if let Some((_, draft)) = &mut self.renaming_bookmark_folder {
+                                if let Some((_, draft)) = &mut self.history_ui.renaming_bookmark_folder {
                                     let response = ui.add(
                                         egui::TextEdit::singleline(draft)
                                             .desired_width(140.0)
@@ -840,14 +882,14 @@ impl App {
         let clicked_outside = clicked_outside_popup(ui, area_rect, Some(anchor_rect));
 
         if let Some((url, draft)) = folder_rename_start {
-            self.renaming_bookmark_folder = Some((url, draft));
+            self.history_ui.renaming_bookmark_folder = Some((url, draft));
             self.pending_focus = Some(FocusTarget::BookmarkFolder);
         }
         if folder_rename_cancel {
-            self.renaming_bookmark_folder = None;
+            self.history_ui.renaming_bookmark_folder = None;
         }
         if let Some(draft) = folder_rename_commit {
-            if let Some((url, _)) = self.renaming_bookmark_folder.take() {
+            if let Some((url, _)) = self.history_ui.renaming_bookmark_folder.take() {
                 if let Some(bookmark) = self.bookmarks.iter_mut().find(|b| b.url == url) {
                     bookmark.folder = folder_from_draft(&draft);
                     bookmarks::save(&self.bookmarks);
@@ -864,15 +906,15 @@ impl App {
             self.bookmarks.remove(index);
             bookmarks::save(&self.bookmarks);
         }
-        if clicked_outside && self.renaming_bookmark_folder.is_none() {
+        if clicked_outside && self.history_ui.renaming_bookmark_folder.is_none() {
             close = true;
         }
         // Not `|| self.bookmarks.is_empty()` any more -- the Settings page's
         // own "Lists" section can open this popup with an empty list, and
         // that used to close it again the very next frame.
         if close {
-            close_popup(&mut self.open_popup, AnchoredPopup::Bookmarks);
-            self.renaming_bookmark_folder = None;
+            close_popup(&mut self.menus.open_popup, AnchoredPopup::Bookmarks);
+            self.history_ui.renaming_bookmark_folder = None;
         }
     }
 
@@ -885,24 +927,25 @@ impl App {
         let mut close = false;
         let mut navigate_url: Option<String> = None;
         let mut clear_requested = false;
-        let open = self.open_popup == Some(AnchoredPopup::History);
+        let open = self.menus.open_popup == Some(AnchoredPopup::History);
         let area_rect =
             build_list_popup_frame(ui.ctx(), "history_popup", anchor_rect, 220.0, 320.0, fade, open, |ui| {
                 ui.add(
-                    egui::TextEdit::singleline(&mut self.history_filter)
+                    egui::TextEdit::singleline(&mut self.history_ui.history_filter)
                         .desired_width(f32::INFINITY)
                         .hint_text("Filter..."),
                 );
                 if self.history.is_empty() {
                     ui.label(egui::RichText::new("No history yet.").weak());
                 }
-                let key_ok = matches!(&self.history_matches_cache,
-                    Some((f, n, _)) if *f == self.history_filter && *n == self.history.len());
+                let key_ok = matches!(&self.history_ui.history_matches_cache,
+                    Some((f, n, _)) if *f == self.history_ui.history_filter && *n == self.history.len());
                 if !key_ok {
-                    let matches = history_matches(&self.history, &self.history_filter);
-                    self.history_matches_cache = Some((self.history_filter.clone(), self.history.len(), matches));
+                    let matches = history_matches(&self.history, &self.history_ui.history_filter);
+                    self.history_ui.history_matches_cache =
+                        Some((self.history_ui.history_filter.clone(), self.history.len(), matches));
                 }
-                let matches = self.history_matches_cache.as_ref().map_or(&[][..], |(_, _, m)| m.as_slice());
+                let matches = self.history_ui.history_matches_cache.as_ref().map_or(&[][..], |(_, _, m)| m.as_slice());
                 let row = |ui: &mut egui::Ui, i: usize, navigate_url: &mut Option<String>| {
                     let entry = &self.history[i];
                     let label = if entry.title.is_empty() { &entry.url } else { &entry.title };
@@ -961,8 +1004,8 @@ impl App {
         }
         if clear_requested {
             self.history.clear();
-            self.history_dirty = true;
-            self.history_matches_cache = None;
+            self.history_ui.history_dirty = true;
+            self.history_ui.history_matches_cache = None;
             close = true;
         }
         if clicked_outside {
@@ -971,7 +1014,7 @@ impl App {
         // Not `|| self.history.is_empty()` any more -- see the matching
         // comment in `build_bookmarks_popup`.
         if close {
-            close_popup(&mut self.open_popup, AnchoredPopup::History);
+            close_popup(&mut self.menus.open_popup, AnchoredPopup::History);
         }
     }
 
@@ -986,7 +1029,7 @@ impl App {
         let mut close = false;
         let mut reveal_id: Option<String> = None;
         let mut remove_id: Option<String> = None;
-        let open = self.open_popup == Some(AnchoredPopup::Downloads);
+        let open = self.menus.open_popup == Some(AnchoredPopup::Downloads);
         let area_rect =
             build_list_popup_frame(ui.ctx(), "downloads_popup", anchor_rect, 220.0, 320.0, fade, open, |ui| {
                 if !self.node_order.iter().any(|id| self.nodes.get(id).is_some_and(|n| n.as_download().is_some())) {
@@ -1067,7 +1110,7 @@ impl App {
         // longer a reason to self-close at all now that the "Lists" menu can
         // open this popup while empty.
         if close {
-            close_popup(&mut self.open_popup, AnchoredPopup::Downloads);
+            close_popup(&mut self.menus.open_popup, AnchoredPopup::Downloads);
         }
     }
 
@@ -1101,7 +1144,7 @@ impl App {
         let area = egui::Area::new(egui::Id::new("tab_actions_popup"))
             .fixed_pos(anchor_rect.left_bottom())
             .order(egui::Order::Foreground)
-            .interactable(self.open_popup == Some(AnchoredPopup::TabActions))
+            .interactable(self.menus.open_popup == Some(AnchoredPopup::TabActions))
             .show(ui.ctx(), |ui| {
                 ui.set_opacity(fade);
                 popup_frame(ui).show(ui, |ui| {
@@ -1163,7 +1206,7 @@ impl App {
             close = true;
         }
         if close {
-            close_popup(&mut self.open_popup, AnchoredPopup::TabActions);
+            close_popup(&mut self.menus.open_popup, AnchoredPopup::TabActions);
         }
     }
 
@@ -1352,7 +1395,7 @@ impl App {
 
     /// Opens the quick switcher, empty, with its field focused (Ctrl+K and `QUICKSWITCHOPEN`).
     pub(crate) fn open_quick_switcher(&mut self) {
-        self.quick_switcher = Some(QuickSwitcher { query: String::new(), selected: 0 });
+        self.menus.quick_switcher = Some(QuickSwitcher { query: String::new(), selected: 0 });
         self.pending_focus = Some(FocusTarget::QuickSwitcher);
     }
 
@@ -1362,9 +1405,9 @@ impl App {
     /// `QUICKSWITCHDOWN` debug commands (see `debug_control`'s own doc
     /// comment on why a real `KeyEvent` can't be synthesized).
     pub(crate) fn quick_switcher_move(&mut self, delta: i32) {
-        let Some(query) = self.quick_switcher.as_ref().map(|s| s.query.clone()) else { return };
+        let Some(query) = self.menus.quick_switcher.as_ref().map(|s| s.query.clone()) else { return };
         let len = self.quick_switcher_matches(&query).len();
-        let Some(switcher) = &mut self.quick_switcher else { return };
+        let Some(switcher) = &mut self.menus.quick_switcher else { return };
         if len == 0 {
             switcher.selected = 0;
         } else if delta > 0 {
@@ -1380,14 +1423,14 @@ impl App {
     /// `build_quick_switcher`'s own doc comment for why this calls
     /// `focus_tab` directly rather than the graph-node expand animation.
     pub(crate) fn quick_switcher_confirm(&mut self) {
-        let Some(switcher) = &self.quick_switcher else { return };
+        let Some(switcher) = &self.menus.quick_switcher else { return };
         let matches = self.quick_switcher_matches(&switcher.query);
         // Clamped: a query narrowed after moving down can leave `selected` past the end.
         if let Some(id) = matches.get(switcher.selected.min(matches.len().saturating_sub(1))).cloned() {
             self.show_level_of(&id);
             self.focus_tab(&id);
         }
-        self.quick_switcher = None;
+        self.menus.quick_switcher = None;
     }
 
     /// `Ctrl+K`'s tab quick-switcher: a centered search box plus a
@@ -1396,11 +1439,14 @@ impl App {
     /// from `build_ui` itself rather than `build_item_ui`/`build_graph_ui`
     /// so it works the same from either view.
     pub(crate) fn build_quick_switcher(&mut self, ui: &mut egui::Ui) {
-        let current = self.quick_switcher.clone();
+        let current = self.menus.quick_switcher.clone();
         let is_live = current.is_some();
-        let Some((switcher, fade)) =
-            fade_popup_state(ui.ctx(), egui::Id::new("quick_switcher_fade"), &current, &mut self.quick_switcher_cache)
-        else {
+        let Some((switcher, fade)) = fade_popup_state(
+            ui.ctx(),
+            egui::Id::new("quick_switcher_fade"),
+            &current,
+            &mut self.menus.quick_switcher_cache,
+        ) else {
             return;
         };
 
@@ -1427,7 +1473,7 @@ impl App {
                 self.quick_switcher_move(-1);
             }
             if escape {
-                self.quick_switcher = None;
+                self.menus.quick_switcher = None;
             }
             if enter {
                 self.quick_switcher_confirm();
@@ -1450,7 +1496,7 @@ impl App {
                     control_font(ui);
                     ui.set_width(360.0);
                     if is_live {
-                        if let Some(switcher) = &mut self.quick_switcher {
+                        if let Some(switcher) = &mut self.menus.quick_switcher {
                             let response = ui.add(
                                 egui::TextEdit::singleline(&mut switcher.query)
                                     .desired_width(f32::INFINITY)
@@ -1508,7 +1554,7 @@ impl App {
         if let Some(id) = jump_to {
             self.show_level_of(&id);
             self.focus_tab(&id);
-            self.quick_switcher = None;
+            self.menus.quick_switcher = None;
         }
     }
 
@@ -1519,11 +1565,11 @@ impl App {
     /// state to stage/commit), so unlike the quick-switcher this is just a
     /// plain `Area`/`Frame` with a scrollable list and a Close button.
     pub(crate) fn build_shortcuts_help(&mut self, ui: &mut egui::Ui, anchor_rect: Option<egui::Rect>) {
-        if !self.shortcuts_help_open {
+        if !self.menus.shortcuts_help_open {
             return;
         }
         if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-            self.shortcuts_help_open = false;
+            self.menus.shortcuts_help_open = false;
             return;
         }
 
@@ -1609,13 +1655,13 @@ impl App {
                     });
                     ui.separator();
                     if ui.button("Close").clicked() {
-                        self.shortcuts_help_open = false;
+                        self.menus.shortcuts_help_open = false;
                     }
                 });
             });
 
         if clicked_outside_popup(ui, area.response.rect, anchor_rect) {
-            self.shortcuts_help_open = false;
+            self.menus.shortcuts_help_open = false;
         }
     }
 
@@ -1764,7 +1810,7 @@ mod tests {
             folder: Some(folder.clone()),
         };
         app.bookmarks = vec![bookmark("a")];
-        app.open_popup = Some(AnchoredPopup::Bookmarks);
+        app.menus.open_popup = Some(AnchoredPopup::Bookmarks);
         let anchor = egui::Rect::from_min_size(egui::pos2(100.0, 40.0), egui::vec2(20.0, 20.0));
         let mut galleys = Vec::new();
         for _ in 0..3 {
@@ -1894,16 +1940,16 @@ mod tests {
         for _ in 0..5 {
             app.quick_switcher_move(1);
         }
-        assert_eq!(app.quick_switcher.as_ref().unwrap().selected, 5);
-        app.quick_switcher.as_mut().unwrap().query = "tab 2".into();
+        assert_eq!(app.menus.quick_switcher.as_ref().unwrap().selected, 5);
+        app.menus.quick_switcher.as_mut().unwrap().query = "tab 2".into();
         app.quick_switcher_confirm();
-        assert!(app.quick_switcher.is_none());
+        assert!(app.menus.quick_switcher.is_none());
         assert_eq!(app.focused.as_deref(), Some(ids[2].as_str()), "jumped to the one match");
 
         app.open_quick_switcher();
-        app.quick_switcher.as_mut().unwrap().query = "no such tab".into();
+        app.menus.quick_switcher.as_mut().unwrap().query = "no such tab".into();
         app.quick_switcher_confirm(); // nothing matches: closes, no panic
-        assert!(app.quick_switcher.is_none());
+        assert!(app.menus.quick_switcher.is_none());
         assert_eq!(app.focused.as_deref(), Some(ids[2].as_str()), "focus unchanged");
     }
 }
@@ -1976,7 +2022,8 @@ mod engine_picker_tests {
         let history = (0..300)
             .map(|i| crate::history::HistoryEntry { title: format!("entry {i}"), url: format!("https://e/{i}") })
             .collect();
-        let mut app = App { history, open_popup: Some(AnchoredPopup::History), ..App::default() };
+        let mut app = App { history, ..App::default() };
+        app.menus.open_popup = Some(AnchoredPopup::History);
         let anchor = egui::Rect::from_min_size(egui::pos2(100.0, 40.0), egui::vec2(20.0, 20.0));
         // A second a frame, so `scroll_to_me`'s scroll animation finishes between frames.
         let mut time = 0.0;
@@ -2033,7 +2080,7 @@ mod engine_picker_tests {
         }
         let (rows, at) = frame(vec![]);
         assert_eq!((rows[0], at), (299, Some(299)), "back at the top, scrolled back: {rows:?}");
-        assert_eq!(app.open_popup, Some(AnchoredPopup::History));
+        assert_eq!(app.menus.open_popup, Some(AnchoredPopup::History));
     }
 
     /// A list popup opens on its first row; Down and Up move (wrapping) and Enter clicks the focused row.
@@ -2064,13 +2111,13 @@ mod engine_picker_tests {
         for _ in 0..3 {
             frame(&mut app, &ctx, vec![]);
         }
-        app.open_popup = Some(AnchoredPopup::DefaultEngine);
+        app.menus.open_popup = Some(AnchoredPopup::DefaultEngine);
         for _ in 0..3 {
             frame(&mut app, &ctx, vec![]);
         }
-        assert_eq!(app.open_popup, Some(AnchoredPopup::DefaultEngine), "the picker should stay open");
+        assert_eq!(app.menus.open_popup, Some(AnchoredPopup::DefaultEngine), "the picker should stay open");
         frame(&mut app, &ctx, vec![escape()]);
-        assert_eq!(app.open_popup, None, "Escape should close the picker");
+        assert_eq!(app.menus.open_popup, None, "Escape should close the picker");
         assert_eq!(app.view_mode, ViewMode::Settings, "the same Escape must not leave the settings page");
         let opener = ctx.data(|d| d.get_temp::<egui::Id>(App::popup_opener_key(AnchoredPopup::DefaultEngine)));
         frame(&mut app, &ctx, vec![]);
@@ -2097,13 +2144,13 @@ mod engine_picker_tests {
             };
             let mut output = ctx.run_ui(input, |ui| {
                 let state = crate::engine_install::EngineState::Unavailable(reason.to_string());
-                app.engine_state_cache.borrow_mut().insert(first, state);
+                app.engine_ui.engine_state_cache.borrow_mut().insert(first, state);
                 app.build_ui_inner(ui);
             });
             output.textures_delta.clear();
         };
         let before = app.settings.default_starting_engine;
-        app.open_popup = Some(AnchoredPopup::DefaultEngine);
+        app.menus.open_popup = Some(AnchoredPopup::DefaultEngine);
         for _ in 0..4 {
             frame(&mut app, vec![]);
         }
@@ -2119,10 +2166,15 @@ mod engine_picker_tests {
         frame(&mut app, vec![button(true)]);
         frame(&mut app, vec![button(false)]);
         let toasted = |text: &str| {
-            app.save_toast.iter().map(|(t, _)| t).chain(app.save_toast_queue.iter()).any(|t| t.contains(text))
+            app.toasts
+                .save_toast
+                .iter()
+                .map(|(t, _)| t)
+                .chain(app.toasts.save_toast_queue.iter())
+                .any(|t| t.contains(text))
         };
         assert!(toasted(reason), "the reason should be toasted");
-        assert_eq!(app.open_popup, Some(AnchoredPopup::DefaultEngine), "the picker stays open");
+        assert_eq!(app.menus.open_popup, Some(AnchoredPopup::DefaultEngine), "the picker stays open");
         assert_eq!(app.settings.default_starting_engine, before, "nothing switched");
     }
 }

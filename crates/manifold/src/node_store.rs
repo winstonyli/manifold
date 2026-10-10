@@ -2,18 +2,34 @@
 
 use super::*;
 
+/// The ids of nodes made while there is no journal (unit tests, a failed open): this launch's own actor and a counter,
+/// so they parse as store ids.
+pub(crate) struct NodeIdFallback {
+    actor: store::model::ActorId,
+    counter: u64,
+}
+
+impl Default for NodeIdFallback {
+    fn default() -> Self {
+        Self { actor: store::model::ActorId::random(), counter: 0 }
+    }
+}
+
+impl NodeIdFallback {
+    fn next_id(&mut self) -> String {
+        let id = store::model::NodeId { actor: self.actor, counter: self.counter };
+        self.counter += 1;
+        id.to_string()
+    }
+}
+
 impl App {
     /// A fresh node id: the journal's counter (contract "Actors and ids"),
     /// or this launch's fallback actor without one.
     pub(crate) fn alloc_node_id(&mut self) -> String {
         match &mut self.journal {
             Some(journal) => journal.next_id().to_string(),
-            None => {
-                let (actor, counter) = &mut self.fallback_ids;
-                let id = store::model::NodeId { actor: *actor, counter: *counter };
-                *counter += 1;
-                id.to_string()
-            }
+            None => self.fallback_ids.next_id(),
         }
     }
 
@@ -113,8 +129,8 @@ impl App {
         if self.renaming_group.as_ref().is_some_and(|(g, _)| g == id) {
             self.renaming_group = None;
         }
-        if self.node_menu.as_ref().is_some_and(|(n, _)| n == id) {
-            self.node_menu = None;
+        if self.menus.node_menu.as_ref().is_some_and(|(n, _)| n == id) {
+            self.menus.node_menu = None;
         }
         self.interaction.forget(id);
         self.forget_connect_source(id);
