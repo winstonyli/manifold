@@ -450,8 +450,8 @@ mod tests {
     fn a_dead_engine_ends_the_writer_and_is_not_unresponsive() {
         let (writer, permit, _) = gated(false);
         writer.send(url(0));
-        drop(permit); // the engine died: the write fails
-                      // No `shutdown`: `wait_finished` then waits `flush` from now.
+        // The engine died: the write fails. No `shutdown`: `wait_finished` then waits `flush` from now.
+        drop(permit);
         assert!(writer.wait_finished(Duration::from_secs(5)), "the write failed, so the thread ended");
         assert!(
             !writer.is_unresponsive(Instant::now() + UNRESPONSIVE_AFTER),
