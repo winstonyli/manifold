@@ -15,6 +15,8 @@ pub(crate) enum UserEvent {
     TabSpawned(Box<TabSpawnOutcome>),
     /// A screen reader connected, acted on a node, or left (`egui_winit::accesskit_winit`).
     Accessibility(egui_winit::accesskit_winit::Event),
+    /// An engine reader handed over a message (`engine_wake`): apply it now. Posted at most once until handled.
+    EngineMessage,
 }
 
 impl From<egui_winit::accesskit_winit::Event> for UserEvent {
@@ -43,6 +45,9 @@ pub(crate) struct FramePacing {
     /// Tabs `SetVisible(false)` was sent to on minimize, to be shown again
     /// on restore (`hide_tabs_for_minimize`).
     pub(crate) hidden_for_minimize: Vec<String>,
+    /// Set by a reader when it posts `UserEvent::EngineMessage`, cleared when the loop handles it, so a burst of
+    /// messages posts one event (`engine_wake`).
+    pub(crate) engine_wake: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Default for FramePacing {
@@ -54,8 +59,42 @@ impl Default for FramePacing {
             next_idle_frame: std::time::Instant::now(),
             idle_interval: IDLE_FRAME,
             hidden_for_minimize: Vec::new(),
+            engine_wake: std::sync::Arc::default(),
         }
     }
+}
+
+/// Whether `event` counts as activity that ends idle pacing (`App::mark_active`). An engine wake does not: the drain
+/// it runs marks the loop active only when it applies a message, as a tick's drain does.
+fn is_activity(event: &UserEvent) -> bool {
+    !matches!(event, UserEvent::EngineMessage)
+}
+
+/// The `Wake` a tab's reader calls (`process_manager::spawn_tab`): posts `UserEvent::EngineMessage` unless one is
+/// already pending (`FramePacing::engine_wake`).
+pub(crate) fn engine_wake(
+    pending: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    proxy: EventLoopProxy<UserEvent>,
+) -> crate::process_manager::engine_io::Wake {
+    // In a Mutex: winit declares its proxy `Send`, not `Sync`.
+    let proxy = std::sync::Mutex::new(proxy);
+    coalesced_wake(pending, move || {
+        if let Ok(proxy) = proxy.lock() {
+            let _ = proxy.send_event(UserEvent::EngineMessage);
+        }
+    })
+}
+
+/// `post`, unless `pending` says a post is already waiting to be handled.
+fn coalesced_wake(
+    pending: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    post: impl Fn() + Send + Sync + 'static,
+) -> crate::process_manager::engine_io::Wake {
+    std::sync::Arc::new(move || {
+        if !pending.swap(true, std::sync::atomic::Ordering::AcqRel) {
+            post();
+        }
+    })
 }
 
 impl ApplicationHandler<UserEvent> for App {
@@ -223,8 +262,11 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {
-        self.mark_active();
+        if is_activity(&event) {
+            self.mark_active();
+        }
         match event {
+            UserEvent::EngineMessage => self.on_engine_wake(),
             UserEvent::Accessibility(event) => {
                 use egui_winit::accesskit_winit::WindowEvent as A11y;
                 match event.window_event {
@@ -561,6 +603,9 @@ impl ApplicationHandler<UserEvent> for App {
 const IDLE_AFTER: std::time::Duration = std::time::Duration::from_secs(1);
 /// An idle loop's frame interval.
 pub(crate) const IDLE_FRAME: std::time::Duration = std::time::Duration::from_millis(100);
+/// Engine messages one drain applies per tab; the rest wait for the next tick (survey E3). An applied message marks
+/// the loop active, so that tick comes at the active rate.
+pub(crate) const ENGINE_MESSAGES_PER_DRAIN: usize = 64;
 /// Engine frames per second that count as activity (video, an animation);
 /// an idle page still sends a few.
 const BUSY_FRAMES: u32 = 6;
@@ -590,6 +635,13 @@ struct FrameUpdate {
 impl App {
     fn mark_active(&mut self) {
         self.pacing.last_activity = std::time::Instant::now();
+    }
+
+    /// `UserEvent::EngineMessage`: clears the pending flag first (a message arriving during the drain posts again),
+    /// then applies what arrived (`drain_tab_events`).
+    fn on_engine_wake(&mut self) {
+        self.pacing.engine_wake.store(false, std::sync::atomic::Ordering::Release);
+        self.drain_tab_events();
     }
 
     /// Counts engine frames; a burst of them is activity.
@@ -1027,7 +1079,7 @@ impl App {
         self.upload_frames(frame_updates);
     }
 
-    /// Takes every message off every tab's `events_rx`, applies all but frames in
+    /// Takes up to `ENGINE_MESSAGES_PER_DRAIN` messages off each tab's `events_rx`, applies all but frames in
     /// arrival order, and returns each tab's newest frame (`drain_tab_events`).
     fn drain_engine_ipc(&mut self) -> std::collections::HashMap<String, FrameUpdate> {
         // Keyed by tab id, not a plain `Vec` -- only the *latest* `FrameReady`
@@ -1065,7 +1117,7 @@ impl App {
             let Some(tab) = self.nodes.get(tab_id).and_then(|n| n.as_tab()) else {
                 continue;
             };
-            while let Ok(msg) = tab.tab.events_rx.try_recv() {
+            for msg in tab.tab.events_rx.try_iter().take(ENGINE_MESSAGES_PER_DRAIN) {
                 match msg {
                     // Only the last of a run of same-path Progress events is
                     // ever visible (applying one overwrites `bytes_received`),
@@ -1571,6 +1623,58 @@ fn load_app_icon() -> Option<Icon> {
 #[cfg(test)]
 mod idle_tests {
     use super::*;
+
+    #[test]
+    fn a_burst_of_engine_messages_posts_one_wake_until_it_is_handled() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        use std::sync::Arc;
+        let pending = Arc::new(AtomicBool::new(false));
+        let posted = Arc::new(AtomicUsize::new(0));
+        let count = Arc::clone(&posted);
+        let wake = coalesced_wake(Arc::clone(&pending), move || {
+            count.fetch_add(1, Ordering::SeqCst);
+        });
+        for _ in 0..5 {
+            wake();
+        }
+        assert_eq!(posted.load(Ordering::SeqCst), 1);
+        pending.store(false, Ordering::Release); // what `on_engine_wake` does first
+        wake();
+        assert_eq!(posted.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn an_engine_wake_is_not_activity_but_a_command_is() {
+        assert!(!is_activity(&UserEvent::EngineMessage));
+        assert!(is_activity(&UserEvent::Debug(DebugCommand::Help)));
+    }
+
+    #[test]
+    fn one_drain_applies_at_most_its_cap_per_tab() {
+        use crate::node::TabPayload;
+        use crate::process_manager::{EngineKind, EngineTab};
+        let mut app = App::default();
+        let (tab, _peer, feed) = EngineTab::fake_fed(EngineKind::Servo);
+        let payload = TabPayload {
+            tab,
+            url: "https://a/".into(),
+            title: String::new(),
+            can_go_back: false,
+            can_go_forward: false,
+            loading: false,
+            audio_playing: false,
+            muted: false,
+            zoom_factor: 1.0,
+            swap_target: None,
+        };
+        app.test_node("t", crate::store::model::Kind::Tab, Runtime::Tab(payload));
+        for i in 0..ENGINE_MESSAGES_PER_DRAIN + 10 {
+            feed.send(EngineToHost::AudioPlayingChanged { playing: i.is_multiple_of(2) }).unwrap();
+        }
+        app.drain_engine_ipc();
+        let left = app.nodes.get("t").and_then(|n| n.as_tab()).map_or(0, |t| t.tab.events_rx.try_iter().count());
+        assert_eq!(left, 10, "the rest waits for the next drain");
+    }
 
     #[test]
     fn a_failed_print_capture_clears_the_pdf_target() {

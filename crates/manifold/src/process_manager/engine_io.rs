@@ -34,6 +34,10 @@ pub(crate) struct Frame {
 
 /// One tab's newest frame, written by its reader thread and taken by the drain.
 pub(crate) type FrameSlot = Arc<Mutex<Option<Frame>>>;
+
+/// Called by a reader after each message it hands over (frames aside): wakes the event loop to apply it now rather
+/// than at its next tick (`event_loop::engine_wake`).
+pub(crate) type Wake = Arc<dyn Fn() + Send + Sync>;
 /// The writer only serializes and writes.
 const WRITER_STACK: usize = 256 * 1024;
 

@@ -32,20 +32,25 @@ fn a_url_too_long_for_a_command_line_is_refused_by_name() {
 /// The host's reader of one engine connection; `feed` writes the engine's side of it, its version first.
 fn reader_fed(
     feed: impl FnOnce(std::net::TcpStream) + Send + 'static,
-) -> (mpsc::Receiver<EngineToHost>, engine_io::FrameSlot) {
+) -> (mpsc::Receiver<EngineToHost>, engine_io::FrameSlot, Arc<AtomicUsize>) {
     let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
     let port = listener.local_addr().unwrap().port();
     std::thread::spawn(move || feed(std::net::TcpStream::connect(("127.0.0.1", port)).unwrap()));
     let (stream, _) = listener.accept().unwrap();
     let frame = engine_io::FrameSlot::default();
-    (spawn_reader_thread(ipc_protocol::MessageChannel::new(stream), Arc::clone(&frame)), frame)
+    let wakes = Arc::new(AtomicUsize::new(0));
+    let count = Arc::clone(&wakes);
+    let wake: engine_io::Wake = Arc::new(move || {
+        count.fetch_add(1, Ordering::SeqCst);
+    });
+    (spawn_reader_thread(ipc_protocol::MessageChannel::new(stream), Arc::clone(&frame), wake), frame, wakes)
 }
 
 /// The host's reader of one engine connection, fed `version` and then a
 /// well-formed message; returns the first event it delivers.
 fn first_event_after_version(version: u32) -> EngineToHost {
     use std::io::Write as _;
-    let (rx, _) = reader_fed(move |mut stream| {
+    let (rx, ..) = reader_fed(move |mut stream| {
         stream.write_all(&version.to_le_bytes()).unwrap();
         // Best effort: on a mismatch the reader may already have hung up.
         let _ = ipc_protocol::MessageChannel::new(stream).send(&EngineToHost::Cookies("[]".into()));
@@ -60,7 +65,7 @@ fn frame(n: u32) -> EngineToHost {
 /// Frames never wait in the events channel (survey E3): a burst of them ahead of a message leaves the message first.
 #[test]
 fn frames_never_queue_on_the_events_channel() {
-    let (rx, frame) = reader_fed(|stream| {
+    let (rx, frame, wakes) = reader_fed(|stream| {
         let mut engine = ipc_protocol::MessageChannel::new(stream);
         engine.send_version().unwrap();
         for n in 0..100 {
@@ -71,6 +76,13 @@ fn frames_never_queue_on_the_events_channel() {
     assert!(matches!(rx.recv_timeout(Duration::from_secs(5)).unwrap(), EngineToHost::Cookies(_)), "a frame came first");
     let newest = frame.lock().unwrap().take().expect("the frames went to the slot");
     assert_eq!(newest.width, 99, "the newest frame wins");
+    // The engine end closed after the Cookies: the reader reports it, waking once more.
+    assert!(matches!(rx.recv_timeout(Duration::from_secs(5)).unwrap(), EngineToHost::Crashed { .. }));
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while wakes.load(Ordering::SeqCst) < 2 && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert_eq!(wakes.load(Ordering::SeqCst), 2, "one wake per message (Cookies, Crashed), none for the 100 frames");
 }
 
 /// `counter` once it has not moved for `quiet`, or at `deadline`. The `quiet` sleep proves an absence: nothing more
@@ -96,7 +108,7 @@ fn an_app_that_stops_draining_stops_the_reader_and_loses_nothing() {
     const N: usize = 1000;
     let written = Arc::new(AtomicUsize::new(0));
     let progress = Arc::clone(&written);
-    let (rx, _) = reader_fed(move |stream| {
+    let (rx, ..) = reader_fed(move |stream| {
         let mut engine = ipc_protocol::MessageChannel::new(stream);
         engine.send_version().unwrap();
         for i in 0..N {

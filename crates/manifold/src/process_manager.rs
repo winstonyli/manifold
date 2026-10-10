@@ -257,14 +257,17 @@ impl EngineTab {
     }
 
     /// A live tab for unit tests: no process, its control channel a loopback TCP connection. The returned peer
-    /// reads what the app sends it (`HostToEngine`), timing out after 200 ms when nothing more comes.
+    /// reads what the app sends it (`HostToEngine`), timing out after 200 ms when nothing more comes; the sender
+    /// feeds the tab's events as its reader would.
     #[cfg(test)]
-    pub(crate) fn fake(kind: EngineKind) -> (EngineTab, ipc_protocol::MessageChannel<std::net::TcpStream>) {
+    pub(crate) fn fake_fed(
+        kind: EngineKind,
+    ) -> (EngineTab, ipc_protocol::MessageChannel<std::net::TcpStream>, mpsc::SyncSender<EngineToHost>) {
         let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind loopback");
         let host = std::net::TcpStream::connect(listener.local_addr().expect("local addr")).expect("connect");
         let (peer, _) = listener.accept().expect("accept");
         peer.set_read_timeout(Some(Duration::from_millis(200))).expect("read timeout");
-        let (_, events_rx) = mpsc::channel();
+        let (feed, events_rx) = mpsc::sync_channel(engine_io::EVENTS_CAP);
         let tab = EngineTab {
             kind,
             socket_id: String::new(),
@@ -275,7 +278,14 @@ impl EngineTab {
             cache_dir: None,
             profile_slot: None,
         };
-        (tab, ipc_protocol::MessageChannel::new(peer))
+        (tab, ipc_protocol::MessageChannel::new(peer), feed)
+    }
+
+    /// `fake_fed` without the feed: its events channel is closed and empty.
+    #[cfg(test)]
+    pub(crate) fn fake(kind: EngineKind) -> (EngineTab, ipc_protocol::MessageChannel<std::net::TcpStream>) {
+        let (tab, peer, _) = Self::fake_fed(kind);
+        (tab, peer)
     }
 }
 
@@ -1138,6 +1148,7 @@ fn is_spawn_header(line: &str) -> bool {
 fn spawn_reader_thread<S: std::io::Read + std::io::Write + Send + 'static>(
     mut from_engine: ipc_protocol::MessageChannel<S>,
     frame: engine_io::FrameSlot,
+    wake: engine_io::Wake,
 ) -> mpsc::Receiver<EngineToHost> {
     let (tx, rx) = mpsc::sync_channel(engine_io::EVENTS_CAP);
     std::thread::spawn(move || {
@@ -1147,10 +1158,12 @@ fn spawn_reader_thread<S: std::io::Read + std::io::Write + Send + 'static>(
             Ok(Err(mismatch)) => {
                 eprintln!("{mismatch}");
                 let _ = tx.send(EngineToHost::Crashed { reason: mismatch });
+                wake();
                 return;
             }
             Err(_) => {
                 let _ = tx.send(lost());
+                wake();
                 return;
             }
         }
@@ -1162,13 +1175,16 @@ fn spawn_reader_thread<S: std::io::Read + std::io::Write + Send + 'static>(
                 }
                 // Fails once the tab is gone (its receiver dropped).
                 msg => {
-                    if tx.send(msg).is_err() {
+                    let sent = tx.send(msg);
+                    wake();
+                    if sent.is_err() {
                         return;
                     }
                 }
             }
         }
         let _ = tx.send(lost());
+        wake();
     });
     rx
 }
@@ -1190,12 +1206,15 @@ const LOCAL_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 ///
 /// `custom_cef` is a validated bring-your-own CEF directory: it satisfies the availability check, and the
 /// host runs from a copy inside it so Windows loads that directory's `libcef.dll` (`ensure_host_copy`).
+///
+/// `wake` is called by the tab's reader thread after each engine message (`event_loop::engine_wake`).
 pub fn spawn_tab(
     kind: EngineKind,
     tab_id: &str,
     initial_url: &str,
     custom_cef: Option<&Path>,
     jar_json: &dyn Fn() -> String,
+    wake: engine_io::Wake,
 ) -> Result<EngineTab, SpawnError> {
     if let Some(reason) = unsupported_on(std::env::consts::OS, kind) {
         return Err(SpawnError::Io(std::io::Error::new(std::io::ErrorKind::Unsupported, reason)));
@@ -1204,7 +1223,7 @@ pub fn spawn_tab(
         if let Some(reason) = webkit_host_missing(std::env::consts::OS) {
             return Err(SpawnError::Io(std::io::Error::new(std::io::ErrorKind::Unsupported, reason)));
         }
-        return Ok(spawn_webkit_tab(tab_id, initial_url)?);
+        return Ok(spawn_webkit_tab(tab_id, initial_url, wake)?);
     }
     let custom_cef = custom_cef.filter(|_| kind == EngineKind::Cef);
     // Read fresh, not through `engine_on_disk`'s cache: a Servo host built a moment ago should launch.
@@ -1299,7 +1318,7 @@ pub fn spawn_tab(
             }
         };
     let frame = engine_io::FrameSlot::default();
-    let events_rx = spawn_reader_thread(from_engine, Arc::clone(&frame));
+    let events_rx = spawn_reader_thread(from_engine, Arc::clone(&frame), wake);
 
     let writer = engine_io::Writer::spawn(to_engine, &format!("engine writer {socket_id}"));
     let tab = EngineTab { kind, socket_id, writer, events_rx, frame, child: Some(child), cache_dir, profile_slot };
@@ -1342,7 +1361,7 @@ fn webkit_shell_command(
     ))
 }
 
-fn spawn_webkit_tab(tab_id: &str, initial_url: &str) -> std::io::Result<EngineTab> {
+fn spawn_webkit_tab(tab_id: &str, initial_url: &str, wake: engine_io::Wake) -> std::io::Result<EngineTab> {
     // Bind an ephemeral port (0 = "pick one for me") so concurrent tabs
     // don't collide. Bound on all interfaces, not just loopback: WSL2's
     // NAT-mode networking refuses (ECONNREFUSED, verified directly) a
@@ -1410,7 +1429,7 @@ fn spawn_webkit_tab(tab_id: &str, initial_url: &str) -> std::io::Result<EngineTa
     let from_engine = ipc_protocol::MessageChannel::new(read_stream);
 
     let frame = engine_io::FrameSlot::default();
-    let events_rx = spawn_reader_thread(from_engine, Arc::clone(&frame));
+    let events_rx = spawn_reader_thread(from_engine, Arc::clone(&frame), wake);
 
     Ok(EngineTab {
         kind: EngineKind::Webkit,
