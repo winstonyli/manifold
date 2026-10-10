@@ -79,9 +79,8 @@ pub(crate) fn engine_wake(
     // In a Mutex: winit declares its proxy `Send`, not `Sync`.
     let proxy = std::sync::Mutex::new(proxy);
     coalesced_wake(pending, move || {
-        if let Ok(proxy) = proxy.lock() {
-            let _ = proxy.send_event(UserEvent::EngineMessage);
-        }
+        let proxy = proxy.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _ = proxy.send_event(UserEvent::EngineMessage);
     })
 }
 
@@ -91,7 +90,7 @@ fn coalesced_wake(
     post: impl Fn() + Send + Sync + 'static,
 ) -> crate::process_manager::engine_io::Wake {
     std::sync::Arc::new(move || {
-        if !pending.swap(true, std::sync::atomic::Ordering::AcqRel) {
+        if !pending.swap(true, std::sync::atomic::Ordering::SeqCst) {
             post();
         }
     })
@@ -640,7 +639,8 @@ impl App {
     /// `UserEvent::EngineMessage`: clears the pending flag first (a message arriving during the drain posts again),
     /// then applies what arrived (`drain_tab_events`).
     fn on_engine_wake(&mut self) {
-        self.pacing.engine_wake.store(false, std::sync::atomic::Ordering::Release);
+        // SeqCst on both sides: a reader whose `swap` still saw `true` must have its message seen by this drain.
+        self.pacing.engine_wake.store(false, std::sync::atomic::Ordering::SeqCst);
         self.drain_tab_events();
     }
 
