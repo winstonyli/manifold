@@ -2115,8 +2115,10 @@ impl App {
         zoom_scale: f32,
     ) -> CardBody {
         let mut body = CardBody { interact_rect: rect, tooltip: None };
-        let Some((title, url, engine_kind)) =
-            self.nodes.get(id).and_then(|n| n.as_tab()).map(|t| (t.title.clone(), t.url.clone(), t.tab.kind))
+        let Some((title, url, engine_kind, unresponsive)) =
+            self.nodes.get(id).and_then(|n| n.as_tab()).map(|t| {
+                (t.title.clone(), t.url.clone(), t.tab.kind, t.tab.is_unresponsive(std::time::Instant::now()))
+            })
         else {
             return body;
         };
@@ -2233,6 +2235,15 @@ impl App {
                 let max_width = thumb_rect.width() * zoom_scale - 8.0;
                 push_jar_chip(deferred_overlays, corner, offset, max_width, chip, ui.visuals().warn_fg_color);
             }
+        }
+        // At every level of detail: a stuck engine is the one thing on this card that needs the user.
+        if unresponsive {
+            let middle = tab_thumb_rect(rect, inv_zoom).center();
+            push_centered_text(deferred_overlays, middle, egui_phosphor::light::WARNING_CIRCLE, 24.0, DANGER_COLOR);
+            body.tooltip = chain_tooltip(
+                Some("Not responding. Right-click for Restart Engine or End Engine.".to_owned()),
+                body.tooltip.take(),
+            );
         }
         body
     }

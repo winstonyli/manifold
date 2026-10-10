@@ -28,6 +28,10 @@ pub(crate) enum NodeAction {
     Sleep,
     /// A group's live tabs all do (`App::sleep_group`).
     SleepGroup,
+    /// A live tab that stopped responding gets a new engine host (`App::restart_engine`).
+    RestartEngine,
+    /// A live tab that stopped responding has its engine host ended, leaving a failed card (`App::end_engine`).
+    EndEngine,
     CopyUrl,
     FitSubtree,
     /// Swaps the group menu's items for a name field (see
@@ -97,6 +101,8 @@ impl NodeAction {
         match self {
             NodeAction::FitSubtree => Some("Zoom the graph to frame just this tab and its children"),
             NodeAction::SwitchJarNow => Some("Reload this tab in its new jar now"),
+            NodeAction::RestartEngine => Some("Start a new engine for this tab at its current page"),
+            NodeAction::EndEngine => Some("Close this tab's engine; click the card to start it again"),
             _ => None,
         }
     }
@@ -547,12 +553,20 @@ pub(crate) fn node_menu_config(view: &NodeMenuView, headless: bool) -> NodeMenuC
             finish("json_context_menu", 170.0, items, delete("Delete"))
         }
         TYPE_TAB if view.kind.loaded() => {
-            let mut items = vec![
+            let mut items = Vec::new();
+            if view.unresponsive {
+                items.extend([
+                    Button("Restart Engine", A::RestartEngine),
+                    Button("End Engine", A::EndEngine),
+                    Separator,
+                ]);
+            }
+            items.extend([
                 Button(if view.pinned { "Unpin" } else { "Pin" }, A::TogglePin),
                 Button("Duplicate", A::Duplicate),
                 Button("Sleep", A::Sleep),
                 Button("Copy URL", A::CopyUrl),
-            ];
+            ]);
             items.push(Button("Fit Subtree", A::FitSubtree));
             items.extend(view.jars.iter().flat_map(|j| jar_items(j, true, true)));
             finish("tab_context_menu", 150.0, items, delete("Close"))
@@ -613,6 +627,9 @@ pub(crate) struct NodeMenuView {
     has_copy_url: bool,
     /// Tab only.
     pinned: bool,
+    /// Live tab only: its engine stopped reading (`EngineTab::is_unresponsive`), so the menu leads with Restart
+    /// Engine and End Engine.
+    unresponsive: bool,
     /// Unloaded only: the default engine isn't the one that failed, so
     /// the menu offers it.
     other_default_engine: bool,
@@ -773,6 +790,7 @@ impl App {
             has_url: self.source_url(id).is_some(),
             has_copy_url: self.copyable_url(id).is_some(),
             pinned: self.mirror.pinned(id),
+            unresponsive: node.as_tab().is_some_and(|t| t.tab.is_unresponsive(std::time::Instant::now())),
             other_default_engine: node.runtime.as_unloaded().is_some()
                 && self.mirror.engine(id) != self.settings.default_starting_engine,
             failed: node.runtime.as_unloaded().is_some_and(|t| matches!(t.state, UnloadedState::Failed(_))),
@@ -935,6 +953,12 @@ impl App {
             }
             NodeAction::SleepGroup => {
                 self.sleep_group(id);
+            }
+            NodeAction::RestartEngine => {
+                self.restart_engine(id);
+            }
+            NodeAction::EndEngine => {
+                self.end_engine(id);
             }
             NodeAction::CopyUrl => {
                 let node = self.nodes.get(id);

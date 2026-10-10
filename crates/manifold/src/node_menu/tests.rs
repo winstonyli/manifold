@@ -39,6 +39,7 @@ fn view_of(kind: CardKind) -> NodeMenuView {
         has_url: false,
         has_copy_url: false,
         pinned: false,
+        unresponsive: false,
         other_default_engine: false,
         failed: false,
         engine_missing: false,
@@ -774,4 +775,23 @@ fn new_jar_takes_the_clean_name() {
 fn a_group_exports_under_its_clean_name() {
     assert_eq!(export_file_name("Re\u{200B}ading\n"), "Reading.json");
     assert_eq!(export_file_name("\u{202E}"), "Untitled.json");
+}
+
+/// A live tab whose engine stopped responding leads its menu with Restart Engine and End Engine; a responsive one
+/// shows neither.
+#[test]
+fn an_unresponsive_tab_menu_leads_with_restart_and_end() {
+    let labels = |view: &NodeMenuView| -> Vec<&'static str> {
+        node_menu_config(view, false)
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                NodeMenuItem::Button(label, _) => Some(*label),
+                _ => None,
+            })
+            .collect()
+    };
+    let stuck = NodeMenuView { unresponsive: true, ..view_of(loaded_tab()) };
+    assert_eq!(labels(&stuck)[..2], ["Restart Engine", "End Engine"]);
+    assert!(!labels(&view_of(loaded_tab())).contains(&"Restart Engine"));
 }
