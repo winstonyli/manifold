@@ -296,8 +296,11 @@ impl App {
     /// outside the frame.
     pub(crate) fn graph_scene_outer_rect(&self) -> egui::Rect {
         let screen = self.screen_size_points();
-        let outline =
-            if self.json_level.is_some() && self.json_outline_visible { self.json_outline_width } else { 0.0 };
+        let outline = if self.json_level.is_some() && self.json_ui.json_outline_visible {
+            self.json_ui.json_outline_width
+        } else {
+            0.0
+        };
         egui::Rect::from_min_size(
             egui::pos2(0.0, GRAPH_TOOLBAR_HEIGHT_POINTS),
             egui::vec2((screen.x - outline).max(0.0), (screen.y - GRAPH_TOOLBAR_HEIGHT_POINTS).max(0.0)),

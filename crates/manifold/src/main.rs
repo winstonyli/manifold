@@ -232,12 +232,6 @@ struct App {
     /// The level of the Json node `current_group` names (spec "Level
     /// sources"); `None` on every other level.
     json_level: Option<JsonLevel>,
-    /// The JSON outline panel shows (local state).
-    json_outline_visible: bool,
-    /// Its width in points, as last drawn (local state).
-    json_outline_width: f32,
-    /// Copy path's form on a JSON level (local state).
-    json_accessor_paths: bool,
     /// `(group_id, draft_name)` once renaming has started -- either the
     /// toolbar's group-name button (only shown while `current_group` is
     /// `Some`) or the top-level right-click context menu's own "Rename"
@@ -421,6 +415,8 @@ struct App {
     /// stdin instead of real OS input. See `debug_control`'s doc comment
     /// for the full rationale and the text-command protocol.
     headless: bool,
+    /// JSON level view settings (see `json_level_ui::JsonLevelUi`).
+    json_ui: json_level_ui::JsonLevelUi,
     /// Bookmarks and history popup state (see `history::HistoryUi`).
     history_ui: history::HistoryUi,
     /// Engine install jobs, failures and the Settings drafts for them (see `engine_install::EngineInstallUi`).
@@ -561,9 +557,6 @@ impl Default for App {
             groups_collapsed: false,
             current_group: None,
             json_level: None,
-            json_outline_visible: true,
-            json_outline_width: 260.0,
-            json_accessor_paths: false,
             renaming_group: None,
             naming_jar: None,
             pending_jar_confirm: None,
@@ -611,6 +604,7 @@ impl Default for App {
             favicon_origin_cache: HashMap::new(),
             graph_settled_key: None,
             headless: false,
+            json_ui: json_level_ui::JsonLevelUi::default(),
             history_ui: history::HistoryUi::default(),
             engine_ui: engine_install::EngineInstallUi::default(),
             menus: popups::MenuPopups::default(),
