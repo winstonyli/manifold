@@ -39,6 +39,10 @@ check "a ui-listed file that imports store is light" "TIER light" "$(printf '%s\
 check "an unlisted source file is light" "TIER light" "$(printf '%s\n' "$s/main.rs" | tier)"
 check "a probe script is light" "TIER light" "$(printf '%s\n' scripts/link-probe.sh | tier)"
 check "the store is full" "TIER full" "$(printf '%s\n' "$s/store/journal.rs" | tier)"
+check "engine_install/tests.rs is full" "TIER full" "$(printf '%s\n' "$s/engine_install/tests.rs" | tier)"
+check "process_manager/tests.rs is full" "TIER full" "$(printf '%s\n' "$s/process_manager/tests.rs" | tier)"
+check "jar/tests.rs is full" "TIER full" "$(printf '%s\n' "$s/jar/tests.rs" | tier)"
+check "an unlisted file's tests.rs is light" "TIER light" "$(printf '%s\n' "$s/link_gestures/tests.rs" | tier)"
 check "the strictest path wins" "TIER full" "$(printf '%s\n' README.md "$s/main.rs" crates/ipc-protocol/src/lib.rs | tier)"
 check "an empty list is refused" "3" "$(printf '' | TIER_SRC="$s" bash "$repo_root/scripts/gate-tier.sh" --stdin >/dev/null 2>&1; echo $?)"
 # require_fresh_exe: judges manifold.exe and the WebView2 host beside it, each against its own dep-info.
