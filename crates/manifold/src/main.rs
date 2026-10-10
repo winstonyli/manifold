@@ -323,30 +323,8 @@ struct App {
     /// The cookie jars WebView2 and CEF tabs share, by key (see `jar`). The default jar loads at startup; a named jar
     /// loads the first time a tab spawns with it (`ensure_jar_loaded`). An ephemeral jar lives only here.
     jars: BTreeMap<jar::JarKey, jar::Jar>,
-    /// Per running host, the jar it was **spawned with** (spec "Live tabs when `jar` changes") and what its engine is
-    /// believed to hold (`jar::TabCookies`): only a cookie the tab itself changed reaches that jar, and only a cookie
-    /// the tab itself reported can be deleted by its absence.
-    jar_tabs: HashMap<String, (jar::JarKey, jar::TabCookies)>,
-    /// Hosts still holding cookies from a jar the user cleared (`clear_jar_cookies`): they switch (`will_switch`)
-    /// although their key is unchanged, and their pulls are dropped so the old cookies cannot refill the jar. An id
-    /// leaves when its host is replaced or closed (`clear_cookie_state`).
-    jar_reseed: HashSet<String>,
-    /// A copy of `jars` for spawn threads: the seed is read when the host connects, not when the spawn starts. Also
-    /// counts each jar's clears, so a host seeded before a clear is caught when it lands (`note_spawned_jar`).
-    jar_snapshots: Arc<std::sync::Mutex<jar::Snapshots>>,
-    /// A sleep's `PageState` or a swap's `StateSnapshot` waiting for the tab's `Cookies` reply (or its deadline), so
-    /// the host is not dropped before its last cookies arrive.
-    cookie_holds: HashMap<String, (std::time::Instant, tabs::Held)>,
-    /// When `jar_pull_all` last ran, for the 30 s pull in `about_to_wait`.
-    jar_last_pull: Option<std::time::Instant>,
-    /// Tabs with a `GetCookies` in flight, by tab id. A host may never answer, so an entry expires
-    /// (`JAR_PULL_TIMEOUT`) instead of blocking the next pull.
-    jar_pulls: HashMap<String, std::time::Instant>,
-    /// Consecutive unanswered pulls per tab (`tabs::start_pull`).
-    jar_silent: HashMap<String, u8>,
-    /// Jars a pull changed and not saved yet, each with when it first changed: saved once the pull round ends
-    /// (`flush_dirty_jars`), not once per tab's reply. Memory and `jar_snapshots` are current; only the file lags.
-    jar_dirty: std::collections::BTreeMap<jar::JarKey, std::time::Instant>,
+    /// Per-host cookie bookkeeping: pull rounds, holds, dirty jars (see `jar::CookieState`).
+    cookies: jar::CookieState,
     /// Scroll positions of woken tabs, restored once their first load finishes.
     saved_scroll: HashMap<String, sleep_state::SavedScroll>,
     /// Each tab's back/forward list as the host saw it, by tab id: kept
@@ -783,14 +761,7 @@ impl Default for App {
             idle_clock: idle_sleep::IdleClock::default(),
             pending_sleeps: HashMap::new(),
             jars,
-            jar_tabs: HashMap::new(),
-            jar_reseed: HashSet::new(),
-            jar_snapshots,
-            cookie_holds: HashMap::new(),
-            jar_last_pull: None,
-            jar_pulls: HashMap::new(),
-            jar_silent: HashMap::new(),
-            jar_dirty: std::collections::BTreeMap::new(),
+            cookies: jar::CookieState { jar_snapshots, ..Default::default() },
             saved_scroll: HashMap::new(),
             nav_history: nav_history::load(),
             drop_batch: 0,

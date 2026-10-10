@@ -246,7 +246,7 @@ impl App {
             return None;
         }
         let name = self.jar_label(key);
-        let was = self.jar_tabs.get(id).map_or(key, |(k, _)| *k);
+        let was = self.cookies.jar_tabs.get(id).map_or(key, |(k, _)| *k);
         let mut tips = Vec::new();
         if let Some(hint) = name.hidden_hint() {
             tips.push(hint);
@@ -258,7 +258,7 @@ impl App {
             tips.push("This engine does not use jars yet".to_string());
         }
         if will_switch {
-            let cleared = self.jar_reseed.contains(id);
+            let cleared = self.cookies.jar_reseed.contains(id);
             let target = if cleared && was == key { "the empty jar".to_string() } else { name.to_string() };
             tips.push(will_switch_tooltip(cleared, &target, can_switch_now));
         }
@@ -432,7 +432,7 @@ impl App {
     /// that file, its saved logins, is deleted. Anything else acts at once.
     pub(crate) fn request_jar_ephemeral(&mut self, id: NodeId, on: bool) {
         // A jar whose cookies are not on disk yet has logins to lose too: save them, so it asks first.
-        if on && self.jar_dirty.contains_key(&JarKey::Named(id)) {
+        if on && self.cookies.jar_dirty.contains_key(&JarKey::Named(id)) {
             self.save_jar(JarKey::Named(id));
         }
         if on && self.has_saved_file(JarKey::Named(id)) {
@@ -482,8 +482,8 @@ impl App {
         self.mirror.forget_jar(id);
         let key = JarKey::Named(id);
         self.jars.remove(&key);
-        self.jar_dirty.remove(&key);
-        if let Ok(mut snapshots) = self.jar_snapshots.lock() {
+        self.cookies.jar_dirty.remove(&key);
+        if let Ok(mut snapshots) = self.cookies.jar_snapshots.lock() {
             snapshots.remove(&key);
         }
         if let Some(dir) = self.jars_dir() {
@@ -688,7 +688,7 @@ impl App {
 
     /// Stores `jar` under `key` and copies it to the spawn threads' snapshot map.
     fn publish_jar(&mut self, key: JarKey, jar: Jar) {
-        if let Ok(mut snapshots) = self.jar_snapshots.lock() {
+        if let Ok(mut snapshots) = self.cookies.jar_snapshots.lock() {
             snapshots.insert(key, jar.clone());
         }
         self.jars.insert(key, jar);
@@ -701,7 +701,7 @@ impl App {
     /// Writes `key`'s file unless it is ephemeral. A failure is logged (never cookie values) and leaves other jars
     /// alone. Settles the jar's dirty mark (`jar_dirty`): every write goes through here.
     pub(crate) fn save_jar(&mut self, key: JarKey) {
-        self.jar_dirty.remove(&key); // written now, or never (ephemeral, no dir)
+        self.cookies.jar_dirty.remove(&key); // written now, or never (ephemeral, no dir)
         let (Some(dir), Some(jar)) = (self.jars_dir(), self.jars.get(&key)) else { return };
         if self.is_ephemeral(key) {
             return;
@@ -726,15 +726,15 @@ impl App {
         jar.cookies.clear();
         // Counted with the emptied copy, under one lock: a host still spawning whose seed was read before this is
         // caught when it lands (`note_spawned_jar`), as it has no `jar_tabs` entry to mark below.
-        if let Ok(mut snapshots) = self.jar_snapshots.lock() {
+        if let Ok(mut snapshots) = self.cookies.jar_snapshots.lock() {
             snapshots.insert_cleared(key, jar.clone());
         }
         self.jars.insert(key, jar);
         self.save_jar(key);
         // Their engines still hold the old cookies: they must be replaced although their key is unchanged.
         let running: Vec<String> =
-            self.jar_tabs.iter().filter(|(_, (k, _))| *k == key).map(|(id, _)| id.clone()).collect();
-        self.jar_reseed.extend(running);
+            self.cookies.jar_tabs.iter().filter(|(_, (k, _))| *k == key).map(|(id, _)| id.clone()).collect();
+        self.cookies.jar_reseed.extend(running);
         self.sweep_jar_switches();
     }
 
