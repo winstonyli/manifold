@@ -720,3 +720,65 @@ fn group_members_follow_node_order() {
     assert_eq!(app.group_members()[&g], made);
     assert_eq!(app.card_view(&g, &app.group_members()).unwrap().members, made);
 }
+
+fn with_fonts(f: impl FnOnce(&egui::Context)) {
+    let ctx = egui::Context::default();
+    // `run_ui` takes an `FnMut`; the test body runs once.
+    let mut f = Some(f);
+    let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+        if let Some(f) = f.take() {
+            f(ui.ctx());
+        }
+    });
+    // The font atlas upload is never applied here; dropping it unapplied is a debug assertion.
+    output.textures_delta.clear();
+}
+
+#[test]
+fn a_cut_from_the_start_keeps_a_true_suffix_on_grapheme_boundaries() {
+    use unicode_segmentation::UnicodeSegmentation;
+    with_fonts(|ctx| {
+        let mut cache = HashMap::new();
+        let font = egui::FontId::proportional(14.0);
+        let text = format!("{}e\u{301}\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}tail.jpg", "dir\\".repeat(30));
+        let cut = truncate_start_to_width(&mut cache, ctx, &text, &font, 80.0);
+        let kept = cut.strip_prefix('\u{2026}').expect("cut at the start");
+        assert!(text.ends_with(kept), "a true suffix, not a re-reversed one: {cut}");
+        let start = text.len() - kept.len();
+        assert!(text.grapheme_indices(true).any(|(i, _)| i == start), "starts on a grapheme boundary");
+    });
+}
+
+#[test]
+fn a_cut_from_the_end_never_splits_a_grapheme() {
+    use unicode_segmentation::UnicodeSegmentation;
+    with_fonts(|ctx| {
+        let mut cache = HashMap::new();
+        let font = egui::FontId::proportional(14.0);
+        // A ZWJ family, and a base letter with a combining mark; every width, so some cut lands
+        // inside a sequence if the search counts chars.
+        for text in ["\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}".repeat(40), "e\u{301}".repeat(60)] {
+            for width in (8..=200).step_by(4) {
+                let cut = truncate_to_width(&mut cache, ctx, &text, &font, width as f32);
+                let kept = cut.strip_suffix('\u{2026}').expect("cut at the end");
+                assert!(
+                    text.grapheme_indices(true).any(|(i, _)| i == kept.len()) || kept.is_empty(),
+                    "width {width}: {kept:?}"
+                );
+            }
+        }
+    });
+}
+
+#[test]
+fn a_repeated_cut_is_one_cache_entry() {
+    with_fonts(|ctx| {
+        let mut cache = HashMap::new();
+        let font = egui::FontId::proportional(14.0);
+        let a = truncate_to_width(&mut cache, ctx, "a long title that will not fit", &font, 40.0);
+        let b = truncate_to_width(&mut cache, ctx, "a long title that will not fit", &font, 40.0);
+        assert_eq!((a, cache.len()), (b, 1));
+        truncate_start_to_width(&mut cache, ctx, "a long title that will not fit", &font, 40.0);
+        assert_eq!(cache.len(), 2, "start and end cuts are cached apart");
+    });
+}

@@ -1537,6 +1537,12 @@ impl App {
     }
 }
 
+/// A key press as egui receives it from a keyboard, for headless key
+/// commands (see `App::debug_input_events`).
+pub(crate) fn debug_key_event(key: egui::Key, modifiers: egui::Modifiers) -> egui::Event {
+    egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

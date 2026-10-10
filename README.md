@@ -85,7 +85,7 @@ Everything from "Running" to the end is a dated log: each entry describes the co
 | `build_tab_ui`, `start_transition_to_tab` | `build_tab_view_ui` (`tab_view.rs`), `start_transition_to_item` (`view_modes.rs`) |
 | `bookmarks_open`, `history_open`, `downloads_open`, `*_engine_picker_open`, `show_anchored_popup`, ... | one `Option<AnchoredPopup>` with `toggle_popup`/`close_popup` (`popups.rs`) |
 | `advance_graph_camera`, `graph_camera_tween`, `pan_drag_history` | `GraphCamera::advance` and its `tween`, `momentum` and `drag_history` fields (`graph_ui.rs`) |
-| `draw_card_glow`, `GROUP_OVERLOAD_COLOR` | `card_glow_shapes` (`main.rs`); `theme::DANGER_COLOR` and `GROUP_OVERLOAD_THRESHOLD` |
+| `draw_card_glow`, `GROUP_OVERLOAD_COLOR` | `card_glow_shapes` (`card.rs`); `theme::DANGER_COLOR` and `GROUP_OVERLOAD_THRESHOLD` |
 | `FailedTab`, `FailedTabPayload`, `retry_failed_tab` | `UnloadedState::Failed` on an unloaded tab card; `retry_missing_file` is for fetched files |
 | `ImageRedirectFetcher`, `redirect_tab_to_image` | `RedirectFetcher` and the content-dispatch path (`redirect_fetch.rs`, `fetched.rs`) |
 

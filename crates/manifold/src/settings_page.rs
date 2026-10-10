@@ -860,6 +860,21 @@ pub(crate) fn forget_disk_cache(ctx: &egui::Context) {
     });
 }
 
+/// `profile::pictures_dir()`\manifold-<unix-seconds>.png, or the temp folder without one — same
+/// "pick the obvious default, no save-as dialog" posture `downloads_dir()`
+/// (in each engine-host's own download-handling code) already takes, just
+/// on the manifold side for the toolbar's "Screenshot" button. The
+/// timestamp is the simplest collision-free name that needs no extra
+/// state; a real "Save As" dialog would be the alternative, but this
+/// project doesn't build custom save UI anywhere else either.
+fn screenshot_default_path() -> std::path::PathBuf {
+    let dir = profile::pictures_dir().unwrap_or_else(std::env::temp_dir);
+    let _ = std::fs::create_dir_all(&dir);
+    let timestamp =
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    dir.join(format!("manifold-{timestamp}.png"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

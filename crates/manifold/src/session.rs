@@ -138,6 +138,19 @@ pub fn delete_named(name: &str) {
     }
 }
 
+/// Strips a "Save Session As..." name down to characters safe to use
+/// verbatim as a filename (`sessions/<name>.mnf`) -- alphanumeric, space,
+/// hyphen, underscore only. No path separators or `.` survive, so there's
+/// no path-traversal or extension-confusion risk from typed input, and no
+/// separate validation step is needed before treating the result as a bare
+/// file stem. Cleaned first and last by the name rules (`names::clean_name`), so a hidden character
+/// never reaches the file name and the spaces the filter leaves behind collapse.
+pub(crate) fn sanitize_session_name(raw: &str) -> String {
+    let clean = crate::names::clean_name(raw);
+    let safe: String = clean.chars().filter(|c| c.is_alphanumeric() || matches!(c, ' ' | '-' | '_')).collect();
+    crate::names::clean_name(&safe).into_owned()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -216,5 +229,14 @@ mod tests {
         for bad in bad_names {
             assert!(!session_name_is_safe(bad), "{bad:?}");
         }
+    }
+
+    /// Name rules: a session name is cleaned, made file-safe, then cleaned again (spaces the filter leaves collapse).
+    #[test]
+    fn a_session_name_is_cleaned_then_made_file_safe() {
+        assert_eq!(sanitize_session_name("  Trip\u{200B} to\u{00A0}\u{00A0}Rome: day 1 "), "Trip to Rome day 1");
+        assert_eq!(sanitize_session_name("a . b"), "a b");
+        assert_eq!(sanitize_session_name("\u{202E}..\\"), "");
+        assert_eq!(sanitize_session_name(&"é".repeat(80)).chars().count(), 64);
     }
 }
