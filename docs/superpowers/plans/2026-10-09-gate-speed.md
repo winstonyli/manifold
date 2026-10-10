@@ -597,7 +597,24 @@ opt-level = <N>
 
 ## Outcome
 
-(Filled in when the work is done.)
+Done 2026-10-09 (commits `ff21e63`, `9bee1e4`, `9014cc8`, `2f37641`, `195c89a`, `be837b1`). Tasks 7 and 8 not run: Task 6 adopted nothing.
+
+**A and B (landed).** Every probe step prints `TIMING`; `gate.sh` collects them with a CPU sampler and prints the slowest ten; `gate.sh LOG ui` and `scripts/gate-tier.sh` exist. Extra, decided with the user: the freshness check and the documented gate build now cover the WebView2 host (Decision 10 fixed, `2f37641`).
+
+**Baseline** (one run each, 30-35% CPU from other sessions, Defender off, so upper bounds): `ui` 2 min (unit 11 s, link 100 s), `light` 8.5 min (two-instance 156 s, smoke 237 s, launch-forms 18 s, link 83 s), `full` 11 min (two-instance 136/111/106 s, smoke 210 s, link 70 s). Slowest steps: smoke `json-level` 55 s, `group-drops` 40 s, `reopen-nested` 32 s, link `run4-persists` 26 s. The fixed waits of scenarios 3, 4, 5 are about 34 s of each ~110 s two-instance run (about 100 s of `full`): left parked, each guards a bounce loop.
+
+**Spike C: negative result, nothing adopted.** Dependencies' `opt-level` 0 / 1 / 3 in the dev profile, three rotated rounds each in a throwaway worktree, medians (seven of nine slots were non-quiet, so the absolute numbers are noisy; the direction is not):
+
+| Step | opt 0 | opt 1 | opt 3 |
+|---|---|---|---|
+| cold dependency build (s) | 97 | 247 (2.6x) | 287 (3.0x) |
+| smoke, sum of TIMING (s) | 245 | 207 (-16%) | 197 (-20%) |
+| link probe (s) | 72 | 64 | 76 |
+| incremental rebuild, 2nd (s) | 7.4 | 5.2 | 5.1 |
+| `cargo test` build (s) | 90 | 114 | 113 |
+| target size (MB) | 1380 | 1134 | 1141 |
+
+All runs passed the same checks (smoke 54/0, link 30/0). Rule as written: D1 (smoke drop at least 25%) fails for both (16%, 20%; 20% is outside the 22.5-27.5% rerun band); D2 (cold dependency build at most 2.0x) fails for both (2.6x, 3.0x). Individual smoke times swung 166-357 s within one variant, as large as the effect. `Cargo.toml` is unchanged.
 
 ## Review rounds
 
