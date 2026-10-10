@@ -435,7 +435,7 @@ impl App {
         self.interaction.selected_tabs.clear();
         self.interaction.rect_select_start = None;
         self.interaction.pending_new_node = None;
-        self.node_menu = None;
+        self.menus.node_menu = None;
     }
 
     pub(crate) fn build_graph_ui(&mut self, ui: &mut egui::Ui) {
@@ -816,7 +816,7 @@ impl App {
     /// While a graph card has keyboard focus, a strip of keycaps under it (above, near the bottom
     /// edge) lists the keys that act on it. Not while its menu is open.
     fn build_card_hint(&self, ui: &egui::Ui) {
-        let Some((kind, rect)) = self.card_hint.filter(|_| self.node_menu.is_none() && self.json_level.is_none())
+        let Some((kind, rect)) = self.card_hint.filter(|_| self.menus.node_menu.is_none() && self.json_level.is_none())
         else {
             return;
         };
@@ -844,7 +844,7 @@ impl App {
     /// While Ctrl is held on its own (`ctrl_reveal_step`), a strip of the Ctrl chords at the bottom of
     /// the Graph view; the cards show their number badges too.
     fn build_ctrl_hint(&self, ui: &egui::Ui) {
-        if !self.hints_revealed || self.json_level.is_some() || self.node_menu.is_some() {
+        if !self.hints_revealed || self.json_level.is_some() || self.menus.node_menu.is_some() {
             return;
         }
         let area = egui::Area::new(egui::Id::new("ctrl_key_hint")).anchor(egui::Align2::CENTER_BOTTOM, [0.0, -12.0]);
@@ -1232,7 +1232,7 @@ impl App {
             self.handle_json_keys(ui, typing);
             return;
         }
-        if !typing && self.renaming_group.is_none() && self.quick_switcher.is_none() {
+        if !typing && self.renaming_group.is_none() && self.menus.quick_switcher.is_none() {
             let dir = ui.input(|i| {
                 if i.key_pressed(egui::Key::ArrowRight) {
                     Some(egui::vec2(1.0, 0.0))
@@ -1247,7 +1247,7 @@ impl App {
                 }
             });
             // An open node menu keeps the arrows and Enter for itself.
-            let menu_open = self.node_menu.is_some();
+            let menu_open = self.menus.node_menu.is_some();
             if let Some(dir) = dir.filter(|_| !menu_open) {
                 self.move_graph_focus(dir);
             }
@@ -1274,7 +1274,7 @@ impl App {
                 self.cancel_connect();
             } else if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                 self.interaction.selected_tabs.clear();
-                if let Some((id, _)) = self.node_menu.take() {
+                if let Some((id, _)) = self.menus.node_menu.take() {
                     ui.memory_mut(|m| m.request_focus(egui::Id::new(("graph_card", id.as_str()))));
                 }
                 self.interaction.pending_new_node = None;
@@ -1328,7 +1328,7 @@ impl App {
                 let hit = self.level_items().into_iter().rev().find(|item| item.rect.contains(world_pos));
                 match hit {
                     Some(LevelItem { id, kind: LevelItemKind::Node(_), .. }) => {
-                        self.node_menu = Some((id, pos));
+                        self.menus.node_menu = Some((id, pos));
                         self.interaction.rect_select_start = None;
                     }
                     Some(LevelItem { kind: LevelItemKind::JsonCard, .. }) => {
@@ -1343,7 +1343,7 @@ impl App {
                         }
                     }
                     None => {
-                        self.node_menu = None;
+                        self.menus.node_menu = None;
                         if let Some(level) = self.json_level.as_mut() {
                             level.menu = None;
                         }
@@ -1858,7 +1858,7 @@ impl App {
         let now = ui.input(|i| i.time);
         let (mut buf, at): (String, f64) = ui.data(|d| d.get_temp(key)).unwrap_or_default();
         let free = self.json_level.is_none()
-            && self.node_menu.is_none()
+            && self.menus.node_menu.is_none()
             && !self.popup_open()
             && !self.showing_tab_view()
             && !ui.ctx().egui_wants_keyboard_input();
@@ -2406,10 +2406,10 @@ mod tests {
         run(&mut app, "pick-target mode (LINK)", vec![]);
         assert!(app.link.connecting.is_some(), "the mode stayed on");
         app.link.connecting = None;
-        app.node_menu = Some((note.clone(), egui::pos2(500.0, 400.0)));
+        app.menus.node_menu = Some((note.clone(), egui::pos2(500.0, 400.0)));
         run(&mut app, "node menu open", vec![]);
-        assert!(app.node_menu.is_some(), "the menu stayed open");
-        app.node_menu = None;
+        assert!(app.menus.node_menu.is_some(), "the menu stayed open");
+        app.menus.node_menu = None;
         app.graph_filter = "abc".into();
         run(&mut app, "filtered", vec![]);
         app.graph_filter.clear();

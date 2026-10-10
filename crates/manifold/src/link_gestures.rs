@@ -290,11 +290,11 @@ impl App {
             && self.interaction.dragging.is_none()
             && self.link.connecting.is_none()
             && self.link.connect_drag.is_none()
-            && self.node_menu.is_none()
+            && self.menus.node_menu.is_none()
             && self.interaction.pending_new_node.is_none()
             && self.interaction.rect_select_start.is_none()
-            && self.open_popup.is_none()
-            && !self.shortcuts_help_open
+            && self.menus.open_popup.is_none()
+            && !self.menus.shortcuts_help_open
     }
 
     /// The link line under the pointer. Called inside `build_graph_ui`'s Scene, where `ui.response()` is the Scene's
@@ -312,7 +312,8 @@ impl App {
         minimap: Option<egui::Rect>,
         typing: bool,
     ) -> Option<String> {
-        if !self.line_click_allowed() || typing || self.renaming_group.is_some() || self.quick_switcher.is_some() {
+        if !self.line_click_allowed() || typing || self.renaming_group.is_some() || self.menus.quick_switcher.is_some()
+        {
             return None;
         }
         let background = ui.response();

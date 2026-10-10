@@ -1189,7 +1189,7 @@ impl App {
             }
             DebugCommand::QuickSwitchOpen => self.open_quick_switcher(),
             DebugCommand::QuickSwitchText(text) => {
-                if let Some(switcher) = &mut self.quick_switcher {
+                if let Some(switcher) = &mut self.menus.quick_switcher {
                     switcher.query = text;
                     switcher.selected = 0;
                 }
@@ -1197,7 +1197,7 @@ impl App {
             DebugCommand::QuickSwitchDown => self.quick_switcher_move(1),
             DebugCommand::QuickSwitchUp => self.quick_switcher_move(-1),
             DebugCommand::QuickSwitchEnter => self.quick_switcher_confirm(),
-            DebugCommand::QuickSwitchEscape => self.quick_switcher = None,
+            DebugCommand::QuickSwitchEscape => self.menus.quick_switcher = None,
             DebugCommand::SessionNameText(text) => self.session_name_draft = text,
             DebugCommand::SaveSessionAs(name) => self.save_named_session(&name),
             DebugCommand::OpenSession(name) => {
@@ -1233,7 +1233,7 @@ impl App {
             }
             DebugCommand::DismissPeek => self.dismiss_hover_peek(),
             DebugCommand::ExportGroup(path) => {
-                if let Some((group_id, _)) = self.node_menu.clone().filter(|(id, _)| self.is_container(id)) {
+                if let Some((group_id, _)) = self.menus.node_menu.clone().filter(|(id, _)| self.is_container(id)) {
                     if let Some(json) = self.export_group_json(&group_id) {
                         write_json_export(&json, std::path::Path::new(&path), "group");
                     }
@@ -1388,7 +1388,7 @@ impl App {
             DebugCommand::Help => debug_control::print_help(),
             DebugCommand::CloseAllLevel => self.close_all_at_current_level(),
             DebugCommand::ToggleShortcutsHelp => {
-                self.shortcuts_help_open = !self.shortcuts_help_open;
+                self.menus.shortcuts_help_open = !self.menus.shortcuts_help_open;
             }
             DebugCommand::Quit => {
                 // See `quit_after_redraws`'s doc comment: exiting right

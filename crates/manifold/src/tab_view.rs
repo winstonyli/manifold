@@ -569,8 +569,9 @@ impl App {
         // same Escape press would also fire this chain (leaving to Graph,
         // or dismissing the address-bar dropdown) underneath it.
         let escape_pressed =
-            ui.input(|i| i.key_pressed(egui::Key::Escape)) && self.quick_switcher.is_none() && !self.popup_open();
-        if back_to_graph || (!has_suggestions && !self.find.open && self.context_menu.is_none() && escape_pressed) {
+            ui.input(|i| i.key_pressed(egui::Key::Escape)) && self.menus.quick_switcher.is_none() && !self.popup_open();
+        if back_to_graph || (!has_suggestions && !self.find.open && self.menus.context_menu.is_none() && escape_pressed)
+        {
             self.leave_to_graph();
             return;
         }
@@ -581,8 +582,8 @@ impl App {
             // right-clicking while the find bar is also open) — closes one
             // thing per Escape press, same layered-dismiss shape the
             // dropdown-vs-Graph-view case above already has.
-            if self.context_menu.is_some() {
-                self.context_menu = None;
+            if self.menus.context_menu.is_some() {
+                self.menus.context_menu = None;
             } else if self.find.open {
                 self.close_find_bar();
             } else if has_suggestions {

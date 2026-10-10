@@ -1050,7 +1050,7 @@ impl App {
         // Not while a card's menu is open: the pointer is usually still on
         // the card it right-clicked, and the tooltip would cover the menu.
         let response = match body.tooltip {
-            Some(tooltip) if self.node_menu.is_none() => response.on_hover_text(tooltip),
+            Some(tooltip) if self.menus.node_menu.is_none() => response.on_hover_text(tooltip),
             _ => response,
         };
         // Screen readers: the card is a button named by its kind and title (egui announces it on focus).
@@ -1156,7 +1156,7 @@ impl App {
         if response.has_focus() && ui.input_mut(|i| i.consume_key(egui::Modifiers::SHIFT, egui::Key::F10)) {
             let corner = rect.left_bottom();
             let at = ui.ctx().layer_transform_to_global(ui.layer_id()).map_or(corner, |t| t * corner);
-            self.node_menu = Some((id.to_string(), at));
+            self.menus.node_menu = Some((id.to_string(), at));
         }
         let mut control =
             (response.clicked_by(egui::PointerButton::Middle) || delete).then(|| CardControl::Close.action(view.kind));

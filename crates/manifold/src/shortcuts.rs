@@ -176,7 +176,7 @@ impl App {
         // its own Escape/arrow handling in `build_quick_switcher` -- a
         // `Ctrl+G` typed while it's open shouldn't also flip the view
         // underneath it.
-        if on(Shortcut::ViewToggle) && self.quick_switcher.is_none() {
+        if on(Shortcut::ViewToggle) && self.menus.quick_switcher.is_none() {
             self.toggle_view_mode_shortcut();
         }
         if on(Shortcut::PinToggle) {
@@ -192,7 +192,7 @@ impl App {
             self.duplicate_focused_tab_shortcut();
         }
         if on(Shortcut::ShortcutsHelp) {
-            self.shortcuts_help_open = !self.shortcuts_help_open;
+            self.menus.shortcuts_help_open = !self.menus.shortcuts_help_open;
         }
     }
 

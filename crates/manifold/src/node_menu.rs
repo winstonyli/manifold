@@ -633,15 +633,18 @@ pub(crate) struct NodeMenuView {
 
 impl App {
     /// The minimal right-click context menu: one "Open in new tab" item at
-    /// `self.context_menu`'s position, if a menu is currently showing.
+    /// `self.menus.context_menu`'s position, if a menu is currently showing.
     /// Dismissed by clicking the item (and acting on it), a click anywhere
     /// outside the menu's own rect, or Escape (see the Escape-priority
     /// chain in `build_tab_view_ui`).
     pub(crate) fn build_context_menu(&mut self, ui: &mut egui::Ui) {
-        let current = self.context_menu.clone();
-        let Some((menu, fade)) =
-            fade_popup_state(ui.ctx(), egui::Id::new("context_menu_fade"), &current, &mut self.context_menu_cache)
-        else {
+        let current = self.menus.context_menu.clone();
+        let Some((menu, fade)) = fade_popup_state(
+            ui.ctx(),
+            egui::Id::new("context_menu_fade"),
+            &current,
+            &mut self.menus.context_menu_cache,
+        ) else {
             return;
         };
         let mut open_tab = false;
@@ -682,7 +685,7 @@ impl App {
             }
         }
         if close {
-            self.context_menu = None;
+            self.menus.context_menu = None;
         }
     }
 
@@ -699,13 +702,14 @@ impl App {
     /// rather than just closing the menu; while a jar is being named, only
     /// Enter creates it, and a click outside cancels it, as Escape does.
     pub(crate) fn build_node_menu(&mut self, ui: &mut egui::Ui) {
-        if self.node_menu.as_ref().is_some_and(|(id, _)| !self.nodes.contains_key(id)) {
-            self.node_menu = None;
+        if self.menus.node_menu.as_ref().is_some_and(|(id, _)| !self.nodes.contains_key(id)) {
+            self.menus.node_menu = None;
         }
         self.drop_stray_jar_name();
-        let current = self.node_menu.clone().and_then(|(id, pos)| self.node_menu_view(&id).map(|view| (id, pos, view)));
+        let current =
+            self.menus.node_menu.clone().and_then(|(id, pos)| self.node_menu_view(&id).map(|view| (id, pos, view)));
         let Some(((id, pos, view), fade)) =
-            fade_popup_state(ui.ctx(), egui::Id::new("node_menu_fade"), &current, &mut self.node_menu_cache)
+            fade_popup_state(ui.ctx(), egui::Id::new("node_menu_fade"), &current, &mut self.menus.node_menu_cache)
         else {
             return;
         };
@@ -741,7 +745,7 @@ impl App {
             self.save_session();
         }
         if close {
-            self.node_menu = None;
+            self.menus.node_menu = None;
             // Closed from the keyboard: focus goes back to the card the menu belongs to.
             if !ui.input(|i| i.pointer.any_click()) {
                 ui.memory_mut(|m| m.request_focus(egui::Id::new(("graph_card", id.as_str()))));
@@ -754,7 +758,8 @@ impl App {
     /// field reporting it (a right-click on empty graph, a change of group level, the tab gone) and another node's menu
     /// opening. Enter, Escape and a click away are the field's own (`NewJar`, `CancelNewJar`).
     fn drop_stray_jar_name(&mut self) {
-        if self.naming_jar.as_ref().is_some_and(|(tid, _)| self.node_menu.as_ref().map(|(id, _)| id) != Some(tid)) {
+        if self.naming_jar.as_ref().is_some_and(|(tid, _)| self.menus.node_menu.as_ref().map(|(id, _)| id) != Some(tid))
+        {
             self.naming_jar = None;
         }
     }

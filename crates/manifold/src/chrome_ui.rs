@@ -109,13 +109,13 @@ impl App {
     /// open, `popup_open`), and when it closes from the keyboard focus goes back to its opening button.
     pub(crate) fn build_ui(&mut self, ui: &mut egui::Ui) {
         self.engine_state_cache.borrow_mut().clear();
-        let open_at_start = self.open_popup;
+        let open_at_start = self.menus.open_popup;
         let escape = open_at_start.is_some() && ui.input(|i| i.key_pressed(egui::Key::Escape));
         self.build_ui_inner(ui);
-        if escape && self.open_popup == open_at_start {
-            self.open_popup = None;
+        if escape && self.menus.open_popup == open_at_start {
+            self.menus.open_popup = None;
         }
-        if let Some(which) = open_at_start.filter(|_| self.open_popup.is_none()) {
+        if let Some(which) = open_at_start.filter(|_| self.menus.open_popup.is_none()) {
             if !ui.input(|i| i.pointer.any_click()) {
                 if let Some(button) = ui.data(|d| d.get_temp::<egui::Id>(App::popup_opener_key(which))) {
                     ui.memory_mut(|m| m.request_focus(button));
@@ -195,7 +195,7 @@ impl App {
             chip_icon_button(ui, egui::Id::new("icon_btn_shortcuts_help"), egui_phosphor::light::QUESTION)
                 .named_tip("Keyboard Shortcuts (F1)");
         if help_response.clicked() {
-            self.shortcuts_help_open = !self.shortcuts_help_open;
+            self.menus.shortcuts_help_open = !self.menus.shortcuts_help_open;
         }
         help_response.rect
     }

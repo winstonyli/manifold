@@ -253,31 +253,6 @@ struct App {
     pending_jar_confirm: Option<jar_defs::JarConfirm>,
     /// A named session's delete from Settings, waiting for its confirm dialog (`build_session_delete_popup`).
     pending_session_delete: Option<String>,
-    /// `(node_id, screen_pos)` while a right-click context menu is showing
-    /// for that node's card -- one field for every kind, so at most one
-    /// menu is ever open by construction. Right-click is otherwise the
-    /// rectangle-select gesture over the graph panel (see that gesture's
-    /// own doc comment on `handle_rect_select`); a press landing on any card
-    /// opens this instead of starting a marquee. Drawn by
-    /// `App::build_node_menu`, which dispatches on the node's kind.
-    node_menu: Option<(String, egui::Pos2)>,
-    /// Last real value of `node_menu`, kept around so `build_node_menu`
-    /// can keep drawing (fading out, not vanishing instantly) for a few
-    /// frames after `node_menu` itself goes back to `None` -- see
-    /// `fade_popup_state`.
-    node_menu_cache: Option<(String, egui::Pos2, NodeMenuView)>,
-    /// `Ctrl+K` quick-switcher, if currently open — see `QuickSwitcher`'s
-    /// own doc comment and `App::build_quick_switcher`.
-    quick_switcher: Option<QuickSwitcher>,
-    /// Same fade-out role as `node_menu_cache`, for `quick_switcher`
-    /// -- but rendered read-only (no live `TextEdit`, no clickable rows)
-    /// once actually closing, since editing/clicking needs `&mut self.
-    /// quick_switcher`, which no longer exists by then. See `build_quick_
-    /// switcher`'s own `is_live` branch.
-    quick_switcher_cache: Option<QuickSwitcher>,
-    /// `F1` / headless `TOGGLESHORTCUTSHELP` -- whether the keyboard-
-    /// shortcut reference popup is showing. See `App::build_shortcuts_help`.
-    shortcuts_help_open: bool,
     /// A session picked via "Import Session..." (or headless `IMPORTSESSION`),
     /// staged here rather than applied immediately -- `build_import_confirm_
     /// popup` shows its tab count against the currently running session's
@@ -446,6 +421,8 @@ struct App {
     /// stdin instead of real OS input. See `debug_control`'s doc comment
     /// for the full rationale and the text-command protocol.
     headless: bool,
+    /// Open menus and popups (see `popups::MenuPopups`).
+    menus: popups::MenuPopups,
     /// Toast state (see `failure_toasts::Toasts`).
     toasts: failure_toasts::Toasts,
     /// Headless debug-control state (see `debug_control::HeadlessDebug`).
@@ -464,12 +441,6 @@ struct App {
     /// `Ctrl+Shift+T`/headless `REOPENTAB` reopens the newest. See
     /// `ClosedEntry`.
     closed: Vec<ClosedEntry>,
-
-    /// The minimal right-click context menu, if currently showing — see
-    /// `ContextMenuState`'s own doc comment.
-    context_menu: Option<ContextMenuState>,
-    /// Same fade-out role as `node_menu_cache`, for `context_menu`.
-    context_menu_cache: Option<ContextMenuState>,
 
     /// Admits or drops page-opened tabs (`EngineToHost::OpenTabRequested`)
     /// per source tab: a user gesture and a rate budget.
@@ -550,10 +521,6 @@ struct App {
     /// The History popup's filter, the history length it was computed at, and its matches: recomputed only when
     /// either changes (or when `history_dirty` is set, which also covers an in-place title update).
     history_matches_cache: Option<(String, usize, Vec<usize>)>,
-    /// Which popup anchored below a toolbar or Settings button is open, if
-    /// any; one at a time. See `AnchoredPopup`, `toggle_popup` and
-    /// `close_popup`.
-    open_popup: Option<AnchoredPopup>,
     /// A graph card or one of its controls had keyboard focus in the last card pass: the cards
     /// show their Tab-order numbers (`CardPass::show_order`).
     card_nav_active: bool,
@@ -630,11 +597,6 @@ impl Default for App {
             naming_jar: None,
             pending_jar_confirm: None,
             pending_session_delete: None,
-            node_menu: None,
-            node_menu_cache: None,
-            quick_switcher: None,
-            quick_switcher_cache: None,
-            shortcuts_help_open: false,
             pending_import: None,
             session_name_draft: String::new(),
             graph_filter: String::new(),
@@ -678,13 +640,12 @@ impl Default for App {
             favicon_origin_cache: HashMap::new(),
             graph_settled_key: None,
             headless: false,
+            menus: popups::MenuPopups::default(),
             toasts: failure_toasts::Toasts::default(),
             debug: debug_control::HeadlessDebug::default(),
             pacing: event_loop::FramePacing::default(),
             pending_focus: None,
             closed: Vec::new(),
-            context_menu: None,
-            context_menu_cache: None,
             popup_gate: popup_gate::PopupGate::default(),
             store_recovered: false,
             settings_fingerprint,
@@ -707,7 +668,6 @@ impl Default for App {
             history_dirty: false,
             history_filter: String::new(),
             history_matches_cache: None,
-            open_popup: None,
             card_nav_active: false,
             hints_revealed: false,
             card_hint: None,
