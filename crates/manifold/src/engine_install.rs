@@ -685,7 +685,7 @@ impl crate::App {
     /// How `kind` is available now: the disk, then this app's running install (a cancelled one doesn't
     /// count) and its last failure.
     ///
-    /// Cached for the frame (`engine_state_cache`): the disk is read once per engine per frame.
+    /// Cached for the frame (`engine_state_cache`); the disk answers under it are reused for a few seconds (`engine_on_disk`).
     pub(crate) fn engine_state(&self, kind: EngineKind) -> EngineState {
         if let Some(state) = self.engine_ui.engine_state_cache.borrow().get(&kind) {
             return state.clone();
@@ -815,6 +815,7 @@ impl crate::App {
         let installing = self.engine_ui.engine_installs.contains_key(&kind);
         let removed = remove_runtime(&dir, running, installing);
         // Even a failed removal may have deleted some of it: the Settings page reads the disk again.
+        crate::process_manager::forget_on_disk();
         crate::settings_page::forget_disk_cache(&self.egui_ctx);
         match removed {
             Ok(()) => {
@@ -856,6 +857,7 @@ impl crate::App {
             self.engine_ui.engine_state_cache.borrow_mut().clear();
             // An install (or a cancelled one's leftovers) changed what the Settings page shows from disk.
             crate::settings_page::forget_disk_cache(&self.egui_ctx);
+            crate::process_manager::forget_on_disk();
         }
         for kind in finished {
             let Some(job) = self.engine_ui.engine_installs.remove(&kind) else { continue };

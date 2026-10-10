@@ -364,6 +364,28 @@ fn the_lists_read_the_same_servo_host_the_spawn_looks_for() {
     assert_eq!(engine_on_disk(EngineKind::Webview2), RuntimeOnDisk::Ready);
 }
 
+/// The lists' disk answers (CEF's and Servo's) are reread only after the TTL or an install/remove (`forget_on_disk`).
+#[test]
+fn on_disk_answers_are_reused_until_the_ttl_or_forgotten() {
+    let cache = OnDiskCache::default();
+    let t0 = std::time::Instant::now();
+    let reads = std::cell::Cell::new(0);
+    let read = |answer| {
+        reads.set(reads.get() + 1);
+        answer
+    };
+    let get = |kind, at, answer| on_disk_cached(&cache, kind, at, || read(answer));
+    assert_eq!(get(EngineKind::Cef, t0, RuntimeOnDisk::Missing), RuntimeOnDisk::Missing);
+    assert_eq!(get(EngineKind::Cef, t0 + ON_DISK_CHECK_TTL, RuntimeOnDisk::Ready), RuntimeOnDisk::Missing, "reused");
+    assert_eq!(reads.get(), 1);
+    assert_eq!(get(EngineKind::Servo, t0, RuntimeOnDisk::Ready), RuntimeOnDisk::Ready, "per engine");
+    let later = t0 + ON_DISK_CHECK_TTL + Duration::from_millis(1);
+    assert_eq!(get(EngineKind::Cef, later, RuntimeOnDisk::Ready), RuntimeOnDisk::Ready, "expired");
+    cache.lock().unwrap().clear(); // what `forget_on_disk` does
+    assert_eq!(get(EngineKind::Servo, later, RuntimeOnDisk::Missing), RuntimeOnDisk::Missing, "forgotten");
+    assert_eq!(reads.get(), 4);
+}
+
 /// Every OS case, from any host: the reason text is also what the spawn refusal and the lists show.
 #[test]
 fn engines_the_os_cannot_run_are_unavailable_with_a_reason() {

@@ -731,28 +731,47 @@ fn servo_on_disk() -> RuntimeOnDisk {
     }
 }
 
-/// How long `engine_on_disk` reuses its Servo answer: the engine lists read it every frame they draw.
-const SERVO_CHECK_TTL: Duration = Duration::from_secs(5);
+/// How long `engine_on_disk` reuses a CEF or Servo answer: the engine lists read it every frame they draw.
+const ON_DISK_CHECK_TTL: Duration = Duration::from_secs(5);
+
+/// The last disk answer per engine, with when it was read.
+type OnDiskCache = std::sync::Mutex<Vec<(EngineKind, std::time::Instant, RuntimeOnDisk)>>;
+static ON_DISK: OnDiskCache = std::sync::Mutex::new(Vec::new());
+
+/// `kind`'s answer from `cache` if read within `ON_DISK_CHECK_TTL` of `now`, else `read()`'s, remembered.
+fn on_disk_cached(
+    cache: &OnDiskCache,
+    kind: EngineKind,
+    now: std::time::Instant,
+    read: impl FnOnce() -> RuntimeOnDisk,
+) -> RuntimeOnDisk {
+    let mut entries = cache.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(&(_, at, on_disk)) = entries.iter().find(|e| e.0 == kind) {
+        if now.saturating_duration_since(at) <= ON_DISK_CHECK_TTL {
+            return on_disk;
+        }
+    }
+    let on_disk = read();
+    entries.retain(|e| e.0 != kind);
+    entries.push((kind, now, on_disk));
+    on_disk
+}
+
+/// Drops the remembered answers, so the next `engine_on_disk` reads the disk: an install, removal or cancel changed it.
+pub(crate) fn forget_on_disk() {
+    ON_DISK.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clear();
+}
 
 /// The `on_disk` that `engine_availability` takes for `kind`, for the engine lists: CEF's runtime
-/// (`cef_on_disk`), Servo's host exe (`servo_on_disk`, reread at most every `SERVO_CHECK_TTL`), Ready for the rest.
+/// (`cef_on_disk`) and Servo's host exe (`servo_on_disk`), each reread at most every `ON_DISK_CHECK_TTL`, Ready for
+/// the rest.
 pub(crate) fn engine_on_disk(kind: EngineKind) -> RuntimeOnDisk {
-    static SERVO: std::sync::Mutex<Option<(std::time::Instant, RuntimeOnDisk)>> = std::sync::Mutex::new(None);
-    match kind {
-        EngineKind::Cef => cef_on_disk(),
-        EngineKind::Servo => {
-            let mut check = SERVO.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            match *check {
-                Some((at, on_disk)) if at.elapsed() <= SERVO_CHECK_TTL => on_disk,
-                _ => {
-                    let on_disk = servo_on_disk();
-                    *check = Some((std::time::Instant::now(), on_disk));
-                    on_disk
-                }
-            }
-        }
-        EngineKind::Webview2 | EngineKind::Webkit => RuntimeOnDisk::Ready,
-    }
+    let read: fn() -> RuntimeOnDisk = match kind {
+        EngineKind::Cef => cef_on_disk,
+        EngineKind::Servo => servo_on_disk,
+        EngineKind::Webview2 | EngineKind::Webkit => return RuntimeOnDisk::Ready,
+    };
+    on_disk_cached(&ON_DISK, kind, std::time::Instant::now(), read)
 }
 
 /// How `kind` is available, in one place. `on_disk` is what the engine needs on disk (`engine_on_disk`):
@@ -1290,9 +1309,11 @@ pub fn spawn_tab(
         return Ok(spawn_webkit_tab(tab_id, initial_url, wake)?);
     }
     let custom_cef = custom_cef.filter(|_| kind == EngineKind::Cef);
-    // Read fresh, not through `engine_on_disk`'s cache: a Servo host built a moment ago should launch.
+    // Read fresh, not through `engine_on_disk`'s cache: a Servo host built or a CEF runtime copied a moment ago
+    // should launch.
     let on_disk = match kind {
         EngineKind::Servo => servo_on_disk(),
+        EngineKind::Cef => cef_on_disk(),
         _ => engine_on_disk(kind),
     };
     check_spawnable(kind, on_disk, custom_cef)?;
