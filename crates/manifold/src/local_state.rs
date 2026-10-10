@@ -106,6 +106,43 @@ pub(crate) fn differs(a: &LocalState, b: &LocalState) -> bool {
         (n.pos[0] - m.pos[0]).abs() > 1.0 || (n.pos[1] - m.pos[1]).abs() > 1.0
     })
 }
+/// The personal-state file's write bookkeeping (`App::local_persist`).
+pub(crate) struct LocalPersist {
+    /// Personal state (spec "Personal state") last written to
+    /// `session.mnf.local`, or read at startup: `maybe_write_local` skips
+    /// writing when the current state compares equal, so an idle session
+    /// never rewrites the file.
+    pub(crate) local_written: Option<LocalState>,
+    /// Set while startup couldn't read `session.mnf.local` (another
+    /// window held the lock, or the read failed): nothing writes it, so
+    /// this profile's saved state isn't replaced by defaults, and
+    /// `poll_store` retries the read.
+    pub(crate) local_unread: Option<crate::session_sync::LocalUnread>,
+    /// When `local_written` was last written (or, at startup, `Instant::now`
+    /// so the first `EVERY` window starts from launch, not from `UNIX_EPOCH`).
+    pub(crate) local_written_at: std::time::Instant,
+    /// Set when Recently Closed changes (Task 8); `maybe_write_local` writes
+    /// `AFTER_CLOSED` after this, instead of waiting for the `EVERY` timer.
+    pub(crate) closed_changed_at: Option<std::time::Instant>,
+    /// Personal-state entries for nodes `apply_local` found still spawning
+    /// (no live node yet): applied once each one's node is inserted
+    /// (`handle_tab_spawn_result`), then removed. Only `nodes` is ever
+    /// populated here -- the view fields are resolved once, in `apply_local`
+    /// itself, since spawning is enough for those to take effect.
+    pub(crate) pending_local: Option<LocalState>,
+}
+
+impl Default for LocalPersist {
+    fn default() -> Self {
+        Self {
+            local_written: None,
+            local_unread: None,
+            local_written_at: std::time::Instant::now(),
+            closed_changed_at: None,
+            pending_local: None,
+        }
+    }
+}
 
 impl LocalState {
     /// This state with ids renamed by `map` (an import gave nodes fresh

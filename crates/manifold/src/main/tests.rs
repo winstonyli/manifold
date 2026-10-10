@@ -755,7 +755,8 @@ fn a_toast_url_is_cut_to_eighty_characters() {
 fn save_as_while_personal_state_is_unread_carries_none() {
     let mut app = App::default();
     assert!(app.local_state_for_copy().is_some());
-    app.local_unread = Some(session_sync::LocalUnread { retry_at: std::time::Instant::now(), fresh: false });
+    app.local_persist.local_unread =
+        Some(session_sync::LocalUnread { retry_at: std::time::Instant::now(), fresh: false });
     assert_eq!(app.local_state_for_copy(), None);
 }
 

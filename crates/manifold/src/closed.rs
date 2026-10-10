@@ -205,7 +205,7 @@ impl App {
             if self.closed.len() > MAX_CLOSED {
                 self.closed.remove(0);
             }
-            self.closed_changed_at = Some(std::time::Instant::now());
+            self.local_persist.closed_changed_at = Some(std::time::Instant::now());
         }
     }
 

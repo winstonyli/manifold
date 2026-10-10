@@ -33,7 +33,7 @@ const SAVE_RETRY: std::time::Duration = std::time::Duration::from_secs(1);
 /// reports loaded.
 const HOST_LOAD_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
 
-/// Personal state startup couldn't read (`App::local_unread`): when
+/// Personal state startup couldn't read (`App::local_persist`.`local_unread`): when
 /// `poll_store` next tries, and whether startup was a fresh start (no
 /// graph node), when only Recently Closed is taken from what it reads.
 #[derive(Debug, Clone, Copy)]
@@ -1525,11 +1525,12 @@ impl App {
     /// that couldn't be read is retried instead, and never written over.
     fn arm_local(&mut self, unread: bool, fresh: bool) {
         if unread {
-            self.local_written = None;
-            self.local_unread = Some(LocalUnread { retry_at: std::time::Instant::now() + SAVE_RETRY, fresh });
+            self.local_persist.local_written = None;
+            self.local_persist.local_unread =
+                Some(LocalUnread { retry_at: std::time::Instant::now() + SAVE_RETRY, fresh });
         } else {
-            self.local_written = Some(self.local_state());
-            self.local_unread = None;
+            self.local_persist.local_written = Some(self.local_state());
+            self.local_persist.local_unread = None;
         }
     }
 
@@ -1554,7 +1555,7 @@ impl App {
     }
 
     /// Retries reading the personal state startup couldn't
-    /// (`App::local_unread`), at most every `SAVE_RETRY` and without
+    /// (`App::local_persist`.`local_unread`), at most every `SAVE_RETRY` and without
     /// waiting on the lock, so a busy peer never stalls a frame; `force`
     /// (at exit) tries now and waits as a save does. Once read, it's
     /// applied as startup would have, keeping what was closed since in
@@ -1563,7 +1564,7 @@ impl App {
     /// live view as the user has had it since startup. At exit nothing is
     /// woken (the read only feeds the write that follows).
     fn retry_read_local(&mut self, force: bool) {
-        let Some(unread) = self.local_unread else { return };
+        let Some(unread) = self.local_persist.local_unread else { return };
         let Some(journal) = self.journal.as_ref() else { return };
         let read = if force {
             journal.read_local()
@@ -1573,12 +1574,13 @@ impl App {
             return;
         };
         if matches!(read, Err(ref err) if !matches!(err, JournalError::Corrupt(_))) {
-            self.local_unread = Some(LocalUnread { retry_at: std::time::Instant::now() + SAVE_RETRY, ..unread });
+            self.local_persist.local_unread =
+                Some(LocalUnread { retry_at: std::time::Instant::now() + SAVE_RETRY, ..unread });
             return;
         }
-        self.local_unread = None;
+        self.local_persist.local_unread = None;
         // Unknown: the file holds what was read, not this merge (or nothing).
-        self.local_written = None;
+        self.local_persist.local_written = None;
         let Some(mut local) = read.ok().flatten().and_then(|bytes| LocalState::from_bytes(&bytes)) else { return };
         local.closed.extend(self.closed.iter().map(|e| e.doc.clone()));
         if unread.fresh {
@@ -1622,7 +1624,7 @@ impl App {
                 (id.clone(), local)
             })
             .collect();
-        if let Some(pending) = &self.pending_local {
+        if let Some(pending) = &self.local_persist.pending_local {
             for (id, node) in &pending.nodes {
                 if self.spawns.spawning.contains_key(id) && !nodes.contains_key(id) {
                     nodes.insert(id.clone(), node.clone());
@@ -1650,7 +1652,7 @@ impl App {
     /// imported/opened file) on top of the just-restored/imported live
     /// graph. A view field naming a node takes hold only when that node
     /// exists, live or still spawning; otherwise the caller's own default
-    /// stands. A node still spawning keeps its entry in `self.pending_local`
+    /// stands. A node still spawning keeps its entry in `self.local_persist.pending_local`
     /// for `handle_tab_spawn_result` to apply once it lands.
     pub(crate) fn apply_local(&mut self, state: LocalState) {
         let exists = |id: &Option<String>| {
@@ -1702,7 +1704,7 @@ impl App {
             }
         }
         if !pending.is_empty() {
-            self.pending_local = Some(LocalState { nodes: pending, ..LocalState::default() });
+            self.local_persist.pending_local = Some(LocalState { nodes: pending, ..LocalState::default() });
         }
 
         if let Some((rect, level)) = state.camera {
@@ -1754,10 +1756,10 @@ impl App {
     /// unloaded card now takes title/muted/zoom from personal state just
     /// like a live tab; every other kind only takes its position.
     pub(crate) fn apply_pending_local(&mut self, id: &str) {
-        let Some(pending) = &mut self.pending_local else { return };
+        let Some(pending) = &mut self.local_persist.pending_local else { return };
         let Some(node) = pending.nodes.remove(id) else { return };
         if pending.nodes.is_empty() {
-            self.pending_local = None;
+            self.local_persist.pending_local = None;
         }
         if let Some(live) = self.nodes.get_mut(id) {
             if let Runtime::Tab(_) | Runtime::Unloaded(_) | Runtime::Note(_) = &live.runtime {
@@ -1769,26 +1771,26 @@ impl App {
 
     /// Writes personal state when it changed (contract "Personal state"):
     /// at most every 30 s, 2.5 s after a Recently Closed change, and at
-    /// exit (`force`). Never while the file is unread (`App::local_unread`).
+    /// exit (`force`). Never while the file is unread (`App::local_persist`.`local_unread`).
     pub(crate) fn maybe_write_local(&mut self, force: bool) {
         const EVERY: std::time::Duration = std::time::Duration::from_secs(30);
         const AFTER_CLOSED: std::time::Duration = std::time::Duration::from_millis(2500);
         let due = force
-            || self.closed_changed_at.is_some_and(|t| t.elapsed() >= AFTER_CLOSED)
-            || self.local_written_at.elapsed() >= EVERY;
-        if !due || self.journal.is_none() || self.local_unread.is_some() {
+            || self.local_persist.closed_changed_at.is_some_and(|t| t.elapsed() >= AFTER_CLOSED)
+            || self.local_persist.local_written_at.elapsed() >= EVERY;
+        if !due || self.journal.is_none() || self.local_persist.local_unread.is_some() {
             return;
         }
         let state = self.local_state();
-        self.local_written_at = std::time::Instant::now();
-        if self.local_written.as_ref().is_some_and(|w| !crate::local_state::differs(w, &state)) {
-            self.closed_changed_at = None;
+        self.local_persist.local_written_at = std::time::Instant::now();
+        if self.local_persist.local_written.as_ref().is_some_and(|w| !crate::local_state::differs(w, &state)) {
+            self.local_persist.closed_changed_at = None;
             return;
         }
         match self.journal.as_ref().unwrap().write_local(&state.to_bytes()) {
             Ok(()) => {
-                self.local_written = Some(state);
-                self.closed_changed_at = None;
+                self.local_persist.local_written = Some(state);
+                self.local_persist.closed_changed_at = None;
             }
             Err(err) => self.store_error(err),
         }
@@ -2038,7 +2040,7 @@ impl App {
         // Personal state startup couldn't read is the old session's: a late
         // read may still bring back its Recently Closed, but not its view
         // state, which names nodes that are gone.
-        if let Some(unread) = self.local_unread.as_mut() {
+        if let Some(unread) = self.local_persist.local_unread.as_mut() {
             unread.fresh = true;
         }
         self.wake_focused();
@@ -2095,7 +2097,7 @@ impl App {
         self.interaction.rect_select_start = None;
         self.graph_settled_key = None;
         self.spawns.reset();
-        self.pending_local = None;
+        self.local_persist.pending_local = None;
     }
 
     /// Collapses the toasts queued since `mark` into one, so a bulk restore

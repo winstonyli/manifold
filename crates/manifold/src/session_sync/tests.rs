@@ -2535,7 +2535,7 @@ fn personal_state_startup_could_not_read_is_retried_not_overwritten() {
     let peer = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(&lock_path).unwrap();
     peer.try_lock().unwrap();
     assert!(app.restore_session());
-    assert!(app.local_unread.is_some(), "the read failed");
+    assert!(app.local_persist.local_unread.is_some(), "the read failed");
     assert!(app.closed.is_empty());
     let since =
         JsonDoc { nodes: vec![json_node("y", Kind::Note, serde_json::json!({ "text": "since" }))], local: None };
@@ -2543,16 +2543,16 @@ fn personal_state_startup_could_not_read_is_retried_not_overwritten() {
     // Due writes, a retry while the lock is still busy, and even exit's
     // forced write leave the file alone.
     app.maybe_write_local(true);
-    app.local_unread.as_mut().unwrap().retry_at = std::time::Instant::now();
+    app.local_persist.local_unread.as_mut().unwrap().retry_at = std::time::Instant::now();
     app.poll_store();
-    assert!(app.local_unread.is_some(), "still busy: retried later");
+    assert!(app.local_persist.local_unread.is_some(), "still busy: retried later");
     assert_eq!(std::fs::read(&side).unwrap(), saved, "not overwritten while unread");
 
     // The lock is free: the next retry reads and applies it.
     drop(peer);
-    app.local_unread.as_mut().unwrap().retry_at = std::time::Instant::now();
+    app.local_persist.local_unread.as_mut().unwrap().retry_at = std::time::Instant::now();
     app.poll_store();
-    assert!(app.local_unread.is_none());
+    assert!(app.local_persist.local_unread.is_none());
     assert_eq!(app.layout_pos(&note), egui::vec2(7.0, 8.0));
     let closed: Vec<&JsonDoc> = app.closed.iter().map(|e| &e.doc).collect();
     assert_eq!(closed, [&old, &since], "read entries first, then what closed since");
@@ -2577,7 +2577,7 @@ fn a_damaged_personal_state_file_is_not_retried() {
     std::fs::write(crate::store::local::path_for(&path), b"MNFL damaged").unwrap();
     let mut app = app_on(&path, 2);
     assert!(app.restore_session());
-    assert!(app.local_unread.is_none());
+    assert!(app.local_persist.local_unread.is_none());
     // An unchanged state isn't written (`local_written` is armed); a change is.
     add(&mut app, Kind::Note, Runtime::Note(NotePayload { text: "m".into(), editing: false }));
     app.maybe_write_local(true);
@@ -2589,8 +2589,8 @@ fn a_damaged_personal_state_file_is_not_retried() {
 /// unread: `local_unread` set by hand, without waiting out `LOCK_WAIT`.
 fn mark_unread_with(app: &mut App, path: &std::path::Path, state: &LocalState) {
     Journal::open(path, ActorId(9)).unwrap().write_local(&state.to_bytes()).unwrap();
-    app.local_unread = Some(LocalUnread { retry_at: std::time::Instant::now(), fresh: false });
-    app.local_written = None;
+    app.local_persist.local_unread = Some(LocalUnread { retry_at: std::time::Instant::now(), fresh: false });
+    app.local_persist.local_written = None;
 }
 
 /// Open Session while startup's personal state is unread: that state is the
@@ -2611,9 +2611,9 @@ fn opening_a_session_while_unread_takes_only_recently_closed_on_retry() {
     let json =
         JsonDoc { nodes: vec![json_node("t", Kind::Tab, serde_json::json!({ "url": "https://new/" }))], local: None };
     app.replace_running_session(&json, crate::store::json::Trust::Own);
-    assert!(app.local_unread.is_some_and(|u| u.fresh), "the open makes the retry a fresh start");
+    assert!(app.local_persist.local_unread.is_some_and(|u| u.fresh), "the open makes the retry a fresh start");
     app.poll_store();
-    assert!(app.local_unread.is_none(), "read");
+    assert!(app.local_persist.local_unread.is_none(), "read");
     assert_eq!(app.view_mode, ViewMode::Graph, "the old session's view isn't applied");
     let closed: Vec<&JsonDoc> = app.closed.iter().map(|e| &e.doc).collect();
     assert_eq!(closed, [&old], "its Recently Closed is");
@@ -2651,12 +2651,12 @@ fn a_late_read_of_no_personal_state_keeps_the_live_view() {
     let mut app = app_on(&path, 1);
     add(&mut app, Kind::Note, Runtime::Note(NotePayload { text: "n".into(), editing: false }));
     assert!(app.save_session());
-    app.local_unread = Some(LocalUnread { retry_at: std::time::Instant::now(), fresh: false });
-    app.local_written = None;
+    app.local_persist.local_unread = Some(LocalUnread { retry_at: std::time::Instant::now(), fresh: false });
+    app.local_persist.local_written = None;
     app.view_mode = ViewMode::Item;
     app.groups_collapsed = true;
     app.poll_store();
-    assert!(app.local_unread.is_none(), "read: there is none");
+    assert!(app.local_persist.local_unread.is_none(), "read: there is none");
     assert_eq!((app.view_mode, app.groups_collapsed), (ViewMode::Item, true), "not reset to defaults");
     app.maybe_write_local(true);
     let bytes = app.journal.as_ref().unwrap().read_local().unwrap().unwrap();

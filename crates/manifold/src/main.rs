@@ -350,28 +350,8 @@ struct App {
     /// Local edits to mirrored fields that the next save commits as `Set`s, by node and field. Cleared by a
     /// successful commit.
     pending: std::collections::BTreeMap<(store::model::NodeId, u32), Vec<u8>>,
-    /// Personal state (spec "Personal state") last written to
-    /// `session.mnf.local`, or read at startup: `maybe_write_local` skips
-    /// writing when the current state compares equal, so an idle session
-    /// never rewrites the file.
-    local_written: Option<local_state::LocalState>,
-    /// Set while startup couldn't read `session.mnf.local` (another
-    /// window held the lock, or the read failed): nothing writes it, so
-    /// this profile's saved state isn't replaced by defaults, and
-    /// `poll_store` retries the read.
-    local_unread: Option<session_sync::LocalUnread>,
-    /// When `local_written` was last written (or, at startup, `Instant::now`
-    /// so the first `EVERY` window starts from launch, not from `UNIX_EPOCH`).
-    local_written_at: std::time::Instant,
-    /// Set when Recently Closed changes (Task 8); `maybe_write_local` writes
-    /// `AFTER_CLOSED` after this, instead of waiting for the `EVERY` timer.
-    closed_changed_at: Option<std::time::Instant>,
-    /// Personal-state entries for nodes `apply_local` found still spawning
-    /// (no live node yet): applied once each one's node is inserted
-    /// (`handle_tab_spawn_result`), then removed. Only `nodes` is ever
-    /// populated here -- the view fields are resolved once, in `apply_local`
-    /// itself, since spawning is enough for those to take effect.
-    pending_local: Option<local_state::LocalState>,
+    /// The personal-state file's write bookkeeping (see `local_state::LocalPersist`).
+    local_persist: local_state::LocalPersist,
     /// Senders of the headless `WAITIDLE` commands waiting for `debug_idle`.
     idle_waiters: Vec<std::sync::mpsc::Sender<()>>,
     /// Shared across every note's own rendered (non-`editing`) view --
@@ -743,11 +723,7 @@ impl Default for App {
             writes: session_sync::PendingWrites::default(),
             mirror: mirror::Mirror::default(),
             pending: std::collections::BTreeMap::new(),
-            local_written: None,
-            local_unread: None,
-            local_written_at: std::time::Instant::now(),
-            closed_changed_at: None,
-            pending_local: None,
+            local_persist: local_state::LocalPersist::default(),
             idle_waiters: Vec::new(),
             commonmark_cache: egui_commonmark::CommonMarkCache::default(),
             cursor_pos: (0.0, 0.0),
