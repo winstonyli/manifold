@@ -98,13 +98,12 @@ pub fn listen_local_pair(socket_id: &str) -> io::Result<LocalListenerPair> {
 
 /// Bounded wait for a single same-machine engine-host (CEF/Servo) to dial
 /// back on one of the two sockets, rather than `Listener::accept`'s
-/// unbounded block — see `accept_remote`'s doc comment for the sibling bug
-/// this mirrors (there, a cold WSL2 boot; here, in principle a
-/// same-machine child process that fails to reach `connect_local_pair` at
-/// all — e.g. a corrupted/mismatched binary that exits before connecting —
-/// would otherwise hang manifold's main/event-loop thread just the same,
-/// just without the "it can take literal hours" cold-boot severity that
-/// made the remote case the first one actually hit in practice).
+/// unbounded block — see `accept_remote`'s doc comment for the sibling case
+/// (there, a cold WSL2 boot; here, a same-machine child process that fails
+/// to reach `connect_local_pair` at all, e.g. a corrupted/mismatched binary
+/// that exits before connecting). Callers run on a spawn worker thread, so
+/// the bound keeps that thread, its tab's "starting" card and the
+/// half-started child from lingering, rather than keeping the UI alive.
 fn accept_one(listener: &Listener, timeout: Duration, waiting: &mut dyn FnMut() -> bool) -> io::Result<LocalStream> {
     listener.set_nonblocking(interprocess::local_socket::ListenerNonblockingMode::Accept)?;
     let deadline = Instant::now() + timeout;
@@ -213,13 +212,12 @@ pub fn listen_remote(port: u16) -> io::Result<TcpListener> {
 /// Bounded wait for the WSL2-hosted engine-host to dial back, rather than
 /// `TcpListener::accept`'s unbounded block — a cold/idle WSL2 instance can
 /// take an extremely long, unpredictable time to boot its lightweight VM,
-/// start Xvfb, and get far enough into GTK/WebKit init to connect, and this
-/// call happens on manifold's own main/event-loop thread (`spawn_root_tab`
-/// runs from winit's `resumed()`), so an unbounded wait here freezes the
-/// entire app — window redraw, OS message pump, and headless stdin command
-/// dispatch alike — for as long as that takes (confirmed live: from
+/// start Xvfb, and get far enough into GTK/WebKit init to connect (from
 /// sub-second on an already-warm WSL2 instance up to several minutes on a
-/// cold one, and per an earlier investigation, occasionally hours). Polling
+/// cold one, and occasionally hours). The call runs on a spawn worker thread
+/// (`App::spawn_tab_async`; the UI thread is not blocked), but an unbounded
+/// wait would leave the tab on its "starting" card with no error or retry
+/// and its `wsl.exe` launcher running, forever. Polling
 /// via `set_nonblocking` rather than a dedicated accept-with-deadline API,
 /// since `std::net::TcpListener` has none.
 /// A connection is accepted only once it sends `token` (see `connect_remote`): the
@@ -323,11 +321,12 @@ mod tests {
 
     /// Regression test for the WebKit-engine-host hang: `accept_remote`
     /// used to call `TcpListener::accept()` directly, which blocks
-    /// indefinitely if nobody ever connects — on manifold's main/
-    /// event-loop thread, that meant the *entire app* froze (window,
-    /// input, headless stdin commands) for as long as a WSL2-hosted
-    /// engine-host took to dial back, unbounded, confirmed live to reach
-    /// multiple hours in one real incident. This doesn't reproduce a cold
+    /// indefinitely if nobody ever connects — back when spawns ran on the
+    /// UI thread, that froze the *entire app* (window, input, headless
+    /// stdin commands) for as long as a WSL2-hosted engine-host took to dial
+    /// back, confirmed live to reach multiple hours in one real incident.
+    /// Spawns now run on a worker thread, but an unbounded wait would still
+    /// strand the tab and its launcher. This doesn't reproduce a cold
     /// WSL2 boot (out of scope for a unit test), but it does pin the
     /// actual behavioral contract the fix promises: given nobody ever
     /// connects at all, `accept_remote` must return within (not much
@@ -438,7 +437,7 @@ mod tests {
 
     /// Peers that connect and then say nothing each used to cost a full 1 s
     /// read timeout, deadline or not, so a queue of them kept `accept_remote`
-    /// (on the UI thread) busy for as many seconds as there were peers.
+    /// busy for as many seconds as there were peers.
     #[test]
     fn accept_remote_times_out_under_silent_peers() {
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();

@@ -611,8 +611,8 @@ impl App {
         }
     }
 
-    /// One last pull as the app quits, so a login made since the last timed pull is kept. Waits at most
-    /// `QUIT_PULL_WAIT` for the replies. Any other engine message read meanwhile is dropped: nothing would act on it
+    /// One last pull as the app quits, so a login made since the last timed pull is kept. Asks every tab at once, then
+    /// waits at most `QUIT_PULL_WAIT` in total (one shared deadline, not per tab) for the replies. Any other engine message read meanwhile is dropped: nothing would act on it
     /// after quit anyway.
     pub(crate) fn final_cookie_pull(&mut self) {
         self.jar_pull_all();

@@ -1361,9 +1361,9 @@ pub fn spawn_tab(
 
     // The child connects to both sockets right after spawning — bounded by
     // LOCAL_CONNECT_TIMEOUT rather than an unbounded accept() (see its own
-    // doc comment, and accept_remote's, for why an unbounded wait here on
-    // manifold's main/event-loop thread is a real hazard, not just
-    // theoretical caution). On timeout (or the child crashing/exiting
+    // doc comment, and accept_remote's, for why an unbounded wait here would
+    // strand the tab on its "starting" card; this runs on a spawn worker
+    // thread (`App::spawn_tab_async`), not the UI thread). On timeout (or the child crashing/exiting
     // before connecting, e.g. missing runtime DLLs), kill it explicitly —
     // `Child`'s own `Drop` does not, so leaving this `?` to just propagate
     // would leak the process, exactly the kind of leftover
@@ -1396,7 +1396,7 @@ pub fn spawn_tab(
 /// Generous upper bound for a cold WSL2 VM boot + Xvfb readiness + GTK/
 /// WebKit init, not a tuned-tight value — see `accept_remote`'s doc comment
 /// for why this exists at all. Failing loudly (a failed card the user
-/// can see and retry) well within a minute beats an unbounded app freeze.
+/// can see and retry) well within a minute beats a tab stuck starting forever.
 const WEBKIT_CONNECT_TIMEOUT: Duration = Duration::from_secs(45);
 
 /// The `bash -c` string `spawn_webkit_tab` hands to `wsl.exe -d Ubuntu -- bash -c`. It crosses two
@@ -1469,13 +1469,12 @@ fn spawn_webkit_tab(tab_id: &str, initial_url: &str, wake: engine_io::Wake) -> s
     assign_to_engine_job(&child);
 
     // The child connects right after spawning. Bounded, not the unbounded
-    // wait `TcpListener::accept` alone would give: this runs on manifold's
-    // own main/event-loop thread (`spawn_root_tab` runs from winit's
-    // `resumed()`), so an engine-host that never connects — a cold WSL2 VM
-    // boot, Xvfb taking unusually long to come up, etc. — would otherwise
-    // freeze the entire app (redraw, input, headless stdin commands, all of
-    // it) indefinitely; confirmed live to occasionally take minutes-to-hours
-    // rather than the sub-second common case. On timeout, kill the
+    // wait `TcpListener::accept` alone would give: this runs on a spawn worker
+    // thread (`App::spawn_tab_async`; the UI thread is free), but an
+    // engine-host that never connects — a cold WSL2 VM boot, Xvfb taking
+    // unusually long to come up, etc.; observed minutes-to-hours rather than
+    // the sub-second common case — would otherwise leave the tab on its
+    // "starting" card with no error or retry, forever. On timeout, kill the
     // half-started `wsl.exe` launcher before surfacing the error — leaving
     // it running would just orphan a second attempt at the same port/tab
     // the next time this is retried.
