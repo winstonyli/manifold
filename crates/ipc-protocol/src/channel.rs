@@ -25,12 +25,15 @@ impl<S: Read + Write> MessageChannel<S> {
     }
 
     pub fn send<T: Serialize>(&mut self, msg: &T) -> io::Result<()> {
-        let bytes = postcard::to_allocvec(msg).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-        if bytes.len() > MAX_MESSAGE_BYTES {
+        // One buffer, one write: the 4-byte length is reserved up front and filled in after the body.
+        let mut frame =
+            postcard::to_extend(msg, vec![0u8; 4]).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        let len = frame.len() - 4;
+        if len > MAX_MESSAGE_BYTES {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "message larger than MAX_MESSAGE_BYTES"));
         }
-        self.stream.write_all(&(bytes.len() as u32).to_le_bytes())?;
-        self.stream.write_all(&bytes)?;
+        frame[..4].copy_from_slice(&(len as u32).to_le_bytes());
+        self.stream.write_all(&frame)?;
         self.stream.flush()
     }
 
@@ -83,6 +86,39 @@ mod tests {
         out.send(&"hello".to_string()).unwrap();
         let mut back = MessageChannel::new(Cursor::new(out.into_inner().into_inner()));
         assert_eq!(back.recv::<String>().unwrap(), "hello");
+    }
+
+    /// Counts `write` calls: one per message, so a writer thread blocked on a full pipe never leaves a length prefix
+    /// written without its body (survey E1).
+    struct CountWrites {
+        writes: usize,
+        bytes: Vec<u8>,
+    }
+
+    impl Write for CountWrites {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.writes += 1;
+            self.bytes.extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl Read for CountWrites {
+        fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+            Ok(0)
+        }
+    }
+
+    #[test]
+    fn a_message_is_one_write() {
+        let mut out = MessageChannel::new(CountWrites { writes: 0, bytes: Vec::new() });
+        out.send(&"hello".to_string()).unwrap();
+        let sink = out.into_inner();
+        assert_eq!(sink.writes, 1, "the length prefix and the body go out in one write");
+        assert_eq!(MessageChannel::new(Cursor::new(sink.bytes)).recv::<String>().unwrap(), "hello");
     }
 
     #[test]
