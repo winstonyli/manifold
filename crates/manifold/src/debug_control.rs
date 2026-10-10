@@ -1956,7 +1956,7 @@ mod tests {
         app.nodes.get_mut(&note).unwrap().as_note_mut().unwrap().editing = true;
         remote_set(&mut other, &note, field::TEXT, FieldValue::Str("theirs".into()));
         assert!(app.save_session());
-        assert!(app.held_text.contains_key(&note), "held");
+        assert!(app.writes.held_text.contains_key(&note), "held");
         assert!(app.debug_set_note_text(&note, "mine again".into()));
         assert_eq!(stored(&app, &note, field::TEXT), FieldValue::Str("mine again".into()));
         assert_eq!(app.mirror.text(&note), "mine again");

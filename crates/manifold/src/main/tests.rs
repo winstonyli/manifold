@@ -56,7 +56,7 @@ fn forget_id_clears_every_id_keyed_table() {
 const NOT_FORGOTTEN: &[(&str, &str)] = &[
     ("node_order", "removed with `nodes` by each caller (kind-specific order)"),
     ("layout", "pruned to live nodes at every save (`layout.retain`)"),
-    ("held_text", "pruned to live nodes at every save (`held_text.retain`)"),
+    ("writes.held_text", "pruned to live nodes at every save (`held_text.retain`)"),
     ("current_group", "kind-specific: `drop_node` and `dissolve_members` switch level"),
     ("focused", "`drop_tab`'s focus, split and view-mode logic"),
     ("split_tab", "`drop_tab`'s focus, split and view-mode logic"),
@@ -92,7 +92,8 @@ const NOT_FORGOTTEN: &[(&str, &str)] = &[
 fn every_id_keyed_field_is_forgotten_or_excused() {
     /// A struct held by `App` (`App.<prefix>`): its source file, its header line, and the id-forgetting method
     /// (`forget`) it may have; its fields are named `<prefix>.<field>` in `NOT_FORGOTTEN`.
-    const GROUPS: [(&str, &str, &str); 4] = [
+    const GROUPS: [(&str, &str, &str); 5] = [
+        ("writes", include_str!("../session_sync.rs"), "pub(crate) struct PendingWrites {"),
         ("cookies", include_str!("../jar.rs"), "pub(crate) struct CookieState {"),
         ("link", include_str!("../links.rs"), "pub(crate) struct LinkGesture {"),
         ("interaction", include_str!("../graph_nav.rs"), "pub(crate) struct GraphInteraction {"),

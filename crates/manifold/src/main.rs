@@ -343,26 +343,13 @@ struct App {
     /// Ids for nodes made while there is no journal (unit tests, a failed
     /// open): this launch's own actor, so they parse as store ids.
     fallback_ids: (store::model::ActorId, u64),
-    /// Nodes placed here that the next save creates (2b-5 Ruling 3): every way a node enters the live graph
-    /// (`place_node`, `spawn_tab_async`, a jar's `add_jar`) queues its id; the save creates each the document lacks,
-    /// from the mirror or the spawn's snapshot (`snapshot`). One the document already holds (a restore, another
-    /// replica's node) is dropped. Cleared of created ids by a successful commit.
-    pending_creates: std::collections::BTreeSet<store::model::NodeId>,
-    /// Nodes removed here that the next save deletes (Ruling 4: `queue_delete`). Only a local removal queues: a
-    /// node another replica deleted is already gone from the document, and a respawn, swap or reload only takes
-    /// the node out of `nodes` for a while. Cleared by a successful commit.
-    pending_deletes: std::collections::BTreeSet<store::model::NodeId>,
+    /// What the next save commits besides `pending`, and when saves happened or are owed (see `session_sync::PendingWrites`).
+    writes: session_sync::PendingWrites,
     /// The decoded copy of the document's mirrored fields (`mirror::Mirror`).
     mirror: mirror::Mirror,
     /// Local edits to mirrored fields that the next save commits as `Set`s, by node and field. Cleared by a
     /// successful commit.
     pending: std::collections::BTreeMap<(store::model::NodeId, u32), Vec<u8>>,
-    /// Local group moves the next save commits as `Move`s, by node: the target group, `None` for the top level.
-    /// Cleared by a successful commit.
-    pending_moves: std::collections::BTreeMap<store::model::NodeId, Option<store::model::NodeId>>,
-    /// Another replica's text for a note being typed in, held back from its mirror and box until the blur
-    /// (`end_note_edit`, 2b-4 Ruling 7), by node. Dropped when this replica commits its own text after it.
-    held_text: HashMap<String, String>,
     /// Personal state (spec "Personal state") last written to
     /// `session.mnf.local`, or read at startup: `maybe_write_local` skips
     /// writing when the current state compares equal, so an idle session
@@ -576,21 +563,6 @@ struct App {
     /// per source tab: a user gesture and a rate budget.
     popup_gate: popup_gate::PopupGate,
 
-    /// When `save_session` last committed to the store -- shown in the
-    /// settings popup's Sessions section next to a "Save Now" button, so a
-    /// save that's actually continuous (every mutation calls
-    /// `save_session`, not a timer) has some visible confirmation instead
-    /// of being purely invisible. `None` until the first save this run.
-    last_session_save: Option<std::time::Instant>,
-    /// When a save that didn't commit (another instance kept writing, or
-    /// the write failed) is tried again by `poll_store`; `None` when
-    /// nothing is owed. Without it an edit could sit unsaved until the next
-    /// local action or remote write.
-    save_retry_at: Option<std::time::Instant>,
-    /// Store errors and repair notices toasted since the last commit
-    /// (`store_error`, `take_store_recovery`), each shown once: a read-only
-    /// file with a damaged tail reports both at every reload.
-    store_notices: std::collections::BTreeSet<String>,
     /// Set once the store reports a repair (`take_store_recovery`): what
     /// was loaded may be missing nodes, so `prune_content_dir` doesn't run.
     store_recovered: bool,
@@ -768,12 +740,9 @@ impl Default for App {
             view_mode: ViewMode::Item,
             journal: None,
             fallback_ids: (store::model::ActorId::random(), 0),
-            pending_creates: std::collections::BTreeSet::new(),
-            pending_deletes: std::collections::BTreeSet::new(),
+            writes: session_sync::PendingWrites::default(),
             mirror: mirror::Mirror::default(),
             pending: std::collections::BTreeMap::new(),
-            held_text: HashMap::new(),
-            pending_moves: std::collections::BTreeMap::new(),
             local_written: None,
             local_unread: None,
             local_written_at: std::time::Instant::now(),
@@ -822,9 +791,6 @@ impl Default for App {
             save_toast_queue: std::collections::VecDeque::new(),
             failure_notices: Default::default(),
             popup_gate: popup_gate::PopupGate::default(),
-            last_session_save: None,
-            save_retry_at: None,
-            store_notices: std::collections::BTreeSet::new(),
             store_recovered: false,
             settings_fingerprint,
             settings_save_due: None,

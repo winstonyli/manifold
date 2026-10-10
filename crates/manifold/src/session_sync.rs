@@ -335,6 +335,42 @@ fn tab_common(payload: &Runtime) -> Option<TabCommon<'_>> {
     }
 }
 
+/// The session's write-back bookkeeping (`App::writes`): what the next save commits besides `App::pending`, and when
+/// saves happened or are owed.
+#[derive(Default)]
+pub(crate) struct PendingWrites {
+    /// Nodes placed here that the next save creates (2b-5 Ruling 3): every way a node enters the live graph
+    /// (`place_node`, `spawn_tab_async`, a jar's `add_jar`) queues its id; the save creates each the document lacks,
+    /// from the mirror or the spawn's snapshot (`snapshot`). One the document already holds (a restore, another
+    /// replica's node) is dropped. Cleared of created ids by a successful commit.
+    pub(crate) pending_creates: BTreeSet<NodeId>,
+    /// Nodes removed here that the next save deletes (Ruling 4: `queue_delete`). Only a local removal queues: a
+    /// node another replica deleted is already gone from the document, and a respawn, swap or reload only takes
+    /// the node out of `nodes` for a while. Cleared by a successful commit.
+    pub(crate) pending_deletes: BTreeSet<NodeId>,
+    /// Local group moves the next save commits as `Move`s, by node: the target group, `None` for the top level.
+    /// Cleared by a successful commit.
+    pub(crate) pending_moves: BTreeMap<NodeId, Option<NodeId>>,
+    /// Another replica's text for a note being typed in, held back from its mirror and box until the blur
+    /// (`end_note_edit`, 2b-4 Ruling 7), by node. Dropped when this replica commits its own text after it.
+    pub(crate) held_text: HashMap<String, String>,
+    /// Store errors and repair notices toasted since the last commit
+    /// (`store_error`, `take_store_recovery`), each shown once: a read-only
+    /// file with a damaged tail reports both at every reload.
+    pub(crate) store_notices: BTreeSet<String>,
+    /// When a save that didn't commit (another instance kept writing, or
+    /// the write failed) is tried again by `poll_store`; `None` when
+    /// nothing is owed. Without it an edit could sit unsaved until the next
+    /// local action or remote write.
+    pub(crate) save_retry_at: Option<std::time::Instant>,
+    /// When `save_session` last committed to the store -- shown in the
+    /// settings popup's Sessions section next to a "Save Now" button, so a
+    /// save that's actually continuous (every mutation calls
+    /// `save_session`, not a timer) has some visible confirmation instead
+    /// of being purely invisible. `None` until the first save this run.
+    pub(crate) last_session_save: Option<std::time::Instant>,
+}
+
 impl App {
     /// What the store holds for `id`, or is about to, as a `Snapshot`: a graph node's fields of its kind as the mirror
     /// holds them (2b-5: every stored field of a graph node is mirror state), a jar's definition, or the snapshot a
@@ -387,11 +423,11 @@ impl App {
     /// no create; an id that isn't a store id is never written.
     pub(crate) fn queue_create(&mut self, id: &str) {
         let Ok(node) = id.parse::<NodeId>() else { return };
-        self.pending_deletes.remove(&node);
+        self.writes.pending_deletes.remove(&node);
         if self.journal.as_ref().is_some_and(|j| j.doc().nodes.contains_key(&node)) {
             return;
         }
-        self.pending_creates.insert(node);
+        self.writes.pending_creates.insert(node);
     }
 
     /// Queues `id`, a node removed here, for the next save to delete (Ruling 4). The save deletes it if the document
@@ -402,8 +438,8 @@ impl App {
     /// and a content reload take a node out of `nodes` only for a while.
     pub(crate) fn queue_delete(&mut self, id: &str) {
         let Ok(node) = id.parse::<NodeId>() else { return };
-        self.pending_creates.remove(&node);
-        self.pending_deletes.insert(node);
+        self.writes.pending_creates.remove(&node);
+        self.writes.pending_deletes.insert(node);
         // A link goes with either end. `delete_link` forgets the link before it queues the delete, so a link naming
         // a link (remote data can) is found once at most: the recursion ends.
         for link in self.links_naming(id) {
@@ -448,7 +484,7 @@ impl App {
     ) {
         // A node or jar deleted here stays gone: a remote edit arriving before the save commits the queued delete
         // would otherwise re-show it, nameless from a partial change or whole (2b-5 Ruling 9, final review M1).
-        if id.parse::<NodeId>().is_ok_and(|node| self.pending_deletes.contains(&node)) {
+        if id.parse::<NodeId>().is_ok_and(|node| self.writes.pending_deletes.contains(&node)) {
             return;
         }
         // A jar's fields are mirror state like a node's (2b-5 Ruling 7), but it is never a graph node. Its file side
@@ -948,7 +984,7 @@ impl App {
     /// (`held_text`) is dropped; with nothing typed, the held text applies to the mirror and the box (Ruling 7). The
     /// caller saves.
     pub(crate) fn end_note_edit(&mut self, id: &str) {
-        let held = self.held_text.remove(id);
+        let held = self.writes.held_text.remove(id);
         let Some(note) = self.nodes.get_mut(id).and_then(|n| n.as_note_mut()) else { return };
         note.editing = false;
         let buffer = std::mem::take(&mut note.text);
@@ -1035,8 +1071,8 @@ impl App {
         if let Ok(node) = id.parse::<NodeId>() {
             // A target that isn't a store id is mirror-only: an earlier queued move must not commit.
             match parent_id(&group) {
-                Some(target) => self.pending_moves.insert(node, target),
-                None => self.pending_moves.remove(&node),
+                Some(target) => self.writes.pending_moves.insert(node, target),
+                None => self.writes.pending_moves.remove(&node),
             };
         }
         self.mirror.set_group(id, group);
@@ -1093,7 +1129,7 @@ impl App {
     /// `follow_remote_parent` for the group: a remote group delete's members move up in the mirror only, so a
     /// concurrent remote merge or move of them stands.
     pub(crate) fn follow_remote_group(&mut self, id: &str, group: Option<String>) {
-        if id.parse::<NodeId>().is_ok_and(|node| self.pending_moves.contains_key(&node)) {
+        if id.parse::<NodeId>().is_ok_and(|node| self.writes.pending_moves.contains_key(&node)) {
             self.edit_group(id, group);
         } else {
             self.mirror.set_group(id, group);
@@ -1126,11 +1162,11 @@ impl App {
                 held.push(no);
                 match value {
                     FieldValue::Str(theirs) if theirs != self.mirror.text(id) => {
-                        self.held_text.insert(id.to_owned(), theirs.clone());
+                        self.writes.held_text.insert(id.to_owned(), theirs.clone());
                     }
                     // Back to what the mirror shows: nothing left to apply.
                     _ => {
-                        self.held_text.remove(id);
+                        self.writes.held_text.remove(id);
                     }
                 }
                 continue;
@@ -1143,7 +1179,7 @@ impl App {
         if !node.is_some_and(|node| self.pending.contains_key(&(node, field::PARENT))) {
             self.mirror.set_parent(id, id_of(fields, field::PARENT));
         }
-        if !node.is_some_and(|node| self.pending_moves.contains_key(&node)) {
+        if !node.is_some_and(|node| self.writes.pending_moves.contains_key(&node)) {
             self.mirror.set_group(id, group.map(str::to_owned));
         }
         (held, changed)
@@ -1180,7 +1216,7 @@ impl App {
             // Projected before `begin`, since the `Txn` borrows the journal: what each queued node shows (one that
             // shows nothing yet, an in-progress download, waits).
             let candidates: BTreeMap<NodeId, Snapshot> =
-                self.pending_creates.iter().filter_map(|&id| Some((id, self.snapshot(id)?))).collect();
+                self.writes.pending_creates.iter().filter_map(|&id| Some((id, self.snapshot(id)?))).collect();
             let Some(journal) = self.journal.as_mut() else {
                 self.flush_history();
                 return false;
@@ -1189,7 +1225,7 @@ impl App {
                 Ok(txn) => txn,
                 Err(err) => {
                     self.store_error(err);
-                    self.save_retry_at = Some(std::time::Instant::now() + SAVE_RETRY);
+                    self.writes.save_retry_at = Some(std::time::Instant::now() + SAVE_RETRY);
                     self.flush_history();
                     return false;
                 }
@@ -1217,6 +1253,7 @@ impl App {
             // another replica deleted meanwhile, is just forgotten. Nothing queued is shown here: `materialize`
             // drops a remote edit to it, and showing it again locally withdraws the delete (`queue_create`).
             let deleted: BTreeSet<NodeId> = self
+                .writes
                 .pending_deletes
                 .iter()
                 .copied()
@@ -1236,7 +1273,7 @@ impl App {
             let mut moved: BTreeSet<NodeId> = BTreeSet::new();
             let mut links: BTreeMap<(NodeId, u32), Option<NodeId>> = BTreeMap::new();
             // Moves before sets (Ruling 4). A move to where the document already shows the node is left out.
-            for (&node, &group) in &self.pending_moves {
+            for (&node, &group) in &self.writes.pending_moves {
                 if !editable(&node) {
                     continue;
                 }
@@ -1310,9 +1347,9 @@ impl App {
                         }
                         // Created ids are done; one still queued shows nothing yet (an in-progress download) and
                         // waits for the save after it does.
-                        self.pending_creates.retain(|id| !doc.nodes.contains_key(id));
+                        self.writes.pending_creates.retain(|id| !doc.nodes.contains_key(id));
                     }
-                    self.pending_deletes.clear();
+                    self.writes.pending_deletes.clear();
                     // A link target this commit wrote as none (Ruling 5: deleted here) is none in the mirror too.
                     for (&(node, no), &target) in &links {
                         let id = node.to_string();
@@ -1336,7 +1373,7 @@ impl App {
                             fields.insert(no, value);
                         }
                     }
-                    for node in self.pending_moves.keys() {
+                    for node in self.writes.pending_moves.keys() {
                         let id = node.to_string();
                         if let Some(Some((_, _, group))) = self.spawns.remote_in_flight.get_mut(&id) {
                             *group = self.mirror.group(&id).map(str::to_owned);
@@ -1345,20 +1382,22 @@ impl App {
                     // Text committed here is newer than another replica's held before it: the held text is dropped.
                     for &(node, no) in self.pending.keys() {
                         if no == field::TEXT {
-                            self.held_text.remove(&node.to_string());
+                            self.writes.held_text.remove(&node.to_string());
                         }
                     }
                     self.pending.clear();
-                    self.pending_moves.clear();
+                    self.writes.pending_moves.clear();
                     // A tab still spawning keeps its entry, and its layout: a respawn has removed it from `nodes`
                     // until it lands, and `Mirror::init` then leaves an existing entry alone.
                     let (nodes, spawning) = (&self.nodes, &self.spawns.spawning);
                     self.mirror.retain(|id| nodes.contains_key(id) || spawning.contains_key(id));
                     self.layout.retain(|id, _| nodes.contains_key(id) || spawning.contains_key(id));
-                    self.held_text.retain(|id, _| nodes.get(id).and_then(|n| n.as_note()).is_some_and(|n| n.editing));
-                    self.store_notices.clear();
-                    self.last_session_save = Some(std::time::Instant::now());
-                    self.save_retry_at = None;
+                    self.writes
+                        .held_text
+                        .retain(|id, _| nodes.get(id).and_then(|n| n.as_note()).is_some_and(|n| n.editing));
+                    self.writes.store_notices.clear();
+                    self.writes.last_session_save = Some(std::time::Instant::now());
+                    self.writes.save_retry_at = None;
                     self.flush_history();
                     #[cfg(debug_assertions)]
                     self.check_graph_matches_document();
@@ -1366,13 +1405,13 @@ impl App {
                 }
                 Err(err) => {
                     self.store_error(err);
-                    self.save_retry_at = Some(std::time::Instant::now() + SAVE_RETRY);
+                    self.writes.save_retry_at = Some(std::time::Instant::now() + SAVE_RETRY);
                     self.flush_history();
                     return false;
                 }
             }
         }
-        self.save_retry_at = Some(std::time::Instant::now() + SAVE_RETRY);
+        self.writes.save_retry_at = Some(std::time::Instant::now() + SAVE_RETRY);
         self.flush_history();
         false
     }
@@ -1764,7 +1803,7 @@ impl App {
         if let Err(err) = synced {
             self.store_error(err);
         }
-        let retry_due = self.save_retry_at.is_some_and(|at| std::time::Instant::now() >= at);
+        let retry_due = self.writes.save_retry_at.is_some_and(|at| std::time::Instant::now() >= at);
         if changed || retry_due {
             self.save_session();
         }
@@ -2032,7 +2071,7 @@ impl App {
             self.delete_link(&link);
         }
         // The old session's nodes not created yet are not created at all.
-        self.pending_creates.clear();
+        self.writes.pending_creates.clear();
         // Each old node's per-id state and GPU textures (`forget_id`), including tabs whose spawn is still in flight
         // (no `nodes` entry yet, but cookie and popup state already). The session-wide clears below stay.
         let old_ids: Vec<String> = self.nodes.keys().chain(self.spawns.spawning.keys()).cloned().collect();
@@ -2042,7 +2081,7 @@ impl App {
         self.nodes.clear();
         self.node_order.clear();
         self.layout.clear();
-        self.held_text.clear();
+        self.writes.held_text.clear();
         self.focused = None;
         self.viewed_image = None;
         self.split_tab = None;
@@ -2090,12 +2129,12 @@ impl App {
     /// Logs and toasts `msg`, unless it was shown since the last commit: a
     /// failing store or a damage report repeats at each save.
     fn notice(&mut self, msg: String) {
-        if self.store_notices.contains(&msg) {
+        if self.writes.store_notices.contains(&msg) {
             return;
         }
         eprintln!("session: {msg}");
         self.queue_toast(msg.clone());
-        self.store_notices.insert(msg);
+        self.writes.store_notices.insert(msg);
     }
 }
 

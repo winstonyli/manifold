@@ -434,7 +434,7 @@ impl App {
         if ui.button("Save Now").on_hover_text("Write the auto-restored session (session.mnf) now").clicked() {
             req.save_now_requested = true;
         }
-        let last_saved = match self.last_session_save {
+        let last_saved = match self.writes.last_session_save {
             Some(at) => format!("Last saved {}s ago", at.elapsed().as_secs()),
             None => "Not saved yet this run".to_string(),
         };
