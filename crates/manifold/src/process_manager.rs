@@ -447,6 +447,43 @@ pub fn sweep_frame_files() {
     }
 }
 
+/// A per-tab engine log over this size is emptied at the next spawn (`per_tab_log_files`).
+const MAX_TAB_LOG_BYTES: u64 = 8 << 20;
+const MAX_TAB_LOG_AGE: Duration = Duration::from_secs(14 * 24 * 3600);
+const KEEP_CRASH_REPORTS: usize = 10;
+
+/// Startup sweep of `manifold-*.log` in the temp dir: per-tab engine logs untouched for 14 days go, and of the
+/// `manifold-crash-*.log` reports only the newest 10 stay.
+pub fn sweep_engine_logs() {
+    let removed = sweep_engine_logs_in(&std::env::temp_dir(), MAX_TAB_LOG_AGE, KEEP_CRASH_REPORTS);
+    if removed > 0 {
+        eprintln!("removed {removed} old engine log(s) and crash report(s)");
+    }
+}
+
+fn sweep_engine_logs_in(dir: &Path, max_age: Duration, keep_crashes: usize) -> usize {
+    let Ok(entries) = std::fs::read_dir(dir) else { return 0 };
+    let (mut crashes, mut logs) = (Vec::new(), Vec::new());
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if !(name.starts_with("manifold-") && name.ends_with(".log")) {
+            continue;
+        }
+        let Ok(meta) = entry.metadata() else { continue };
+        if !meta.is_file() {
+            continue;
+        }
+        let Ok(modified) = meta.modified() else { continue };
+        let list = if name.starts_with("manifold-crash-") { &mut crashes } else { &mut logs };
+        list.push((modified, entry.path()));
+    }
+    crashes.sort_by_key(|c| std::cmp::Reverse(c.0));
+    let old = std::time::SystemTime::now().checked_sub(max_age);
+    let doomed = crashes.into_iter().skip(keep_crashes).chain(logs.into_iter().filter(|(m, _)| Some(*m) < old));
+    doomed.filter(|(_, path)| std::fs::remove_file(path).is_ok()).count()
+}
+
 /// Deletes CEF cache dirs left by engines that `remove_cache_dir` never
 /// finished (manifold killed or crashed). (`sweep_webview2_profiles` does the
 /// same for WebView2's per-host profiles.) Another manifold on the same
@@ -1037,13 +1074,22 @@ fn per_tab_log_files(tab_id: &str) -> std::io::Result<(std::fs::File, std::fs::F
     // does not reliably propagate to a grandchild process spawned from
     // inside it, so an inherited engine-host produces no visible output at
     // all even though it runs fine.
-    let mut stdout_file = std::fs::OpenOptions::new().create(true).append(true).open(per_tab_log_path(tab_id))?;
+    let mut stdout_file = open_capped_log(&per_tab_log_path(tab_id), MAX_TAB_LOG_BYTES)?;
     // Appended, not truncated: a second manifold, or a respawn racing the old
     // host's last writes, used to wipe the log that explains a crash.
     use std::io::Write as _;
     let _ = writeln!(stdout_file, "{}", spawn_header(tab_id));
     let stderr_file = stdout_file.try_clone()?;
     Ok((stdout_file, stderr_file))
+}
+
+/// Opens `path` for appending, emptying it first if it is over `cap` bytes (a verbose engine respawned for weeks
+/// would otherwise fill %TEMP%).
+fn open_capped_log(path: &Path, cap: u64) -> std::io::Result<std::fs::File> {
+    if std::fs::metadata(path).is_ok_and(|m| m.len() > cap) {
+        let _ = std::fs::remove_file(path);
+    }
+    std::fs::OpenOptions::new().create(true).append(true).open(path)
 }
 
 fn per_tab_log_path(tab_id: &str) -> PathBuf {

@@ -152,6 +152,39 @@ fn per_tab_logs_append() {
     let _ = std::fs::remove_file(&path);
     assert_eq!(log.matches("spawning a host for").count(), 2, "{log}");
 }
+#[test]
+fn a_log_over_the_cap_is_emptied_at_open() {
+    let dir = crate::store::testutil::temp_dir("log-cap");
+    let path = dir.join("manifold-t.log");
+    std::fs::write(&path, [b'x'; 100]).unwrap();
+    drop(open_capped_log(&path, 100).unwrap());
+    assert_eq!(std::fs::metadata(&path).unwrap().len(), 100, "at the cap is kept");
+    drop(open_capped_log(&path, 99).unwrap());
+    assert_eq!(std::fs::metadata(&path).unwrap().len(), 0);
+}
+
+#[test]
+fn the_log_sweep_drops_old_tab_logs_and_all_but_the_newest_crash_reports() {
+    let dir = crate::store::testutil::temp_dir("log-sweep");
+    let now = std::time::SystemTime::now();
+    let make = |name: &str, age_days: u64| {
+        let f = std::fs::File::create(dir.join(name)).unwrap();
+        f.set_modified(now - Duration::from_secs(age_days * 24 * 3600)).unwrap();
+    };
+    make("manifold-fresh.log", 1);
+    make("manifold-stale.log", 20);
+    make("manifold-crash-1.log", 3);
+    make("manifold-crash-2.log", 2);
+    make("manifold-crash-3.log", 1);
+    make("other.log", 99);
+    let removed = sweep_engine_logs_in(&dir, Duration::from_secs(14 * 24 * 3600), 2);
+    let mut left: Vec<_> =
+        std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
+    left.sort();
+    assert_eq!(left, ["manifold-crash-2.log", "manifold-crash-3.log", "manifold-fresh.log", "other.log"]);
+    assert_eq!(removed, 2);
+}
+
 /// The host copy tests only need a file name; the platform's suffix is not what they check.
 const HOST: &str = "manifold-engine-cef";
 
