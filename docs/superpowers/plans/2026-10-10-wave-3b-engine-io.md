@@ -143,7 +143,7 @@
       3. Unless stuck, it waits `wait_finished(SHUTDOWN_FLUSH)` for the queue and `Shutdown` to go out. The deadline runs from the first `shutdown`.
       4. It kills, removes the frame file and removes the cache dir, all inline as now. Inline still matters, because a respawn reuses `socket_id` (comment in `Drop`).
     - **The kill frees a stuck writer** within about 0.2 ms (Decision 3). The writer's pipe handle closes just after. A same-id respawn's `listen_local_pair_with_retry` already retries for about 0.45 s (10 tries, 50 ms apart) before falling back to `fresh_fallback_socket_id`, so a late close is covered.
-    - **App exit.** `exiting` calls `begin_engine_shutdown()` (every live tab's `shutdown()`) right after `final_cookie_pull`. The later `drop(app)` then waits one `SHUTDOWN_FLUSH` for all tabs together, not one per tab. With N stuck tabs, each `Drop` skips the wait and kills, so exit time does not grow with stuck tabs.
+    - **App exit.** `exiting` calls `begin_engine_shutdown()` (every live tab's `shutdown()`) right after `final_cookie_pull`. The later `drop(app)` then waits one `SHUTDOWN_FLUSH` for all tabs together, not one per tab. Exit time does not grow with stuck tabs because `begin_engine_shutdown` has set every tab's deadline (`closed_at + SHUTDOWN_FLUSH`) before the first `Drop`, so the waits overlap; the "stuck: skip the wait" rule matters for a single tab closed on its own (final review M1: `stuck` is always false inside `drop(app)`).
     - **WebKit.** The reaper thread is unchanged: up to 3 s for a natural exit, then a kill. Today a stuck WebKit engine would block the UI thread in `Drop`'s `send(Shutdown)`; now it does not.
     - **A spawn still in flight at exit** (a `TabSpawned` event not yet handled) holds an `EngineTab` that `begin_engine_shutdown` cannot reach. It is dropped with the event loop and pays its own `SHUTDOWN_FLUSH` at most, and only if its writer is still busy; a just-connected host has only `SetCookies` queued. `TabPayload` is the only other holder of an `EngineTab` (`grep -rn "EngineTab" crates/manifold/src`).
 13. **Restart and End reuse the crash path.**
@@ -2200,19 +2200,19 @@ exit $status
 
 ## Outcome
 
-To fill when the wave runs.
+Run 2026-10-10 on branch `wave-3b-engine-io`, by subagent-driven development (per-task Sonnet reviews, final Opus review). Red first: the test failed on the old code before the change.
 
 | Task | Commit | Red first |
 |---|---|---|
-| 1 One write per message | | |
-| 2 Writer thread, `EngineTab` send and close | | |
-| 3 Frame slot, bounded events channel | | |
-| 4 Wake and the per-drain cap | | |
-| 5 Toast, Restart and End, headless commands | | |
-| 6 Menu rows and badge | | |
-| 7 Engine-side inbox bound | | |
-| 8 Probe and manual run | | |
-| 9 Docs and gate | | |
+| 1 One write per message | `d21e7d3` | `a_message_is_one_write` |
+| 2 Writer thread, `EngineTab` send and close | `5967c23`, `ed8e6fe` | `sends_to_an_engine_that_stopped_reading_never_block` failed after 5.02 s |
+| 3 Frame slot, bounded events channel | `b517a09` | both new tests ("a frame came first", "channel is unbounded") |
+| 4 Wake and the per-drain cap | `1647c1a`, `aa3961c` | the cap test (left 0, right 10) |
+| 5 Toast, Restart and End, headless commands | `68d9c5c` | engine_io test (compile error); the rest by absence of the new APIs |
+| 6 Menu rows and badge | `ed31b77` | by absence of the new variants |
+| 7 Engine-side inbox bound | `ed9d7a8` | "the inbox is unbounded" |
+| 8 Probe and manual run | `eefa526` | n/a (8 of 8 checks PASS; badge screenshot seen) |
+| 9 Docs and gate | `71ea375` (final-review fixes), docs commit | n/a (`gate.sh full` all steps exit 0 at 11:54, CPU 16% at start, Defender real-time off; `cargo test` 1108 + 47 + 9 pass) |
 
 ## Review rounds
 
@@ -2287,3 +2287,7 @@ Three rounds, each re-reading the code at `9fce9d8` against the plan's code and 
 4. **`SEND_QUEUE_CAP = 256`, `UNRESPONSIVE_AFTER = 2 s`, `ENGINE_MESSAGES_PER_DRAIN = 64`** were chosen by reasoning, not measured. Keep them unless the probe or use says otherwise.
 
 **Resolved by the user (2026-10-10, "as recommended"):** 1 ship Task 7; 2 no first-message gate; 3 Tab-view Restart parked; 4 constants kept, lost-when-full accepted; 5 WebKit stuck-writer leak accepted and parked (separate send connection).
+
+## Final review (Opus, whole branch)
+
+No Critical or Important findings. Fixed: M2 (a refused wake post left the coalescing flag set and muted later wakes) and M4 (the quit cookie pull waited its full second on tabs that had stopped reading; quit with a stuck tab went from about 4 s to about 2 s), plus M1's wrong claim in Decision 12, a test comment that overstated what `fake_fed` covers, and a stale `reap_host` comment. **Open, for the user:** M3, a healthy engine can be flagged (and drop input) when more than 256 unmergeable messages queue before the writer catches up, e.g. a long headless `TYPE`; recommended fix is to count a refusal as unresponsive only after the write in flight has been blocked a short while (about 50 ms). **Parked (minor):** M5 (group close of N just-stalled tabs costs up to N x 200 ms; share one deadline via `begin_shutdown` on the batch), M6 (`wedge` helper could in theory race a still-draining socket), M8 (test `.lock().unwrap()`), M9 (`EngineTab::send` clones before the drop checks).
