@@ -236,7 +236,7 @@ impl EngineTab {
     /// not read yet merges into one (`engine_io::coalesce`). Dropped when the engine has stopped reading and its queue
     /// is full (the tab then reads as unresponsive), and after `Shutdown`.
     pub fn send(&self, msg: &HostToEngine) {
-        self.writer.send(msg.clone());
+        self.writer.send(msg);
     }
 
     /// M5: at most one tab is ever visible (actively capturing/sending

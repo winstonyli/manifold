@@ -165,14 +165,14 @@ impl Writer {
         writer
     }
 
-    /// Queues `msg`; never blocks. Dropped once closed or finished, and when the queue is full (the tab then reads as
+    /// Queues a copy of `msg` (none when dropped for being closed); never blocks. Dropped once closed or finished, and when the queue is full (the tab then reads as
     /// unresponsive once a write is stuck).
-    pub(crate) fn send(&self, msg: HostToEngine) {
+    pub(crate) fn send(&self, msg: &HostToEngine) {
         let mut state = self.0.lock();
         if state.finished || state.closed_at.is_some() {
             return;
         }
-        if !state.queue.push(msg) {
+        if !state.queue.push(msg.clone()) {
             state.refused = true;
         }
         drop(state);
@@ -230,7 +230,7 @@ impl Writer {
         let deadline = Instant::now() + Duration::from_secs(10);
         while !self.is_unresponsive(Instant::now()) {
             assert!(Instant::now() < deadline, "the writer never wedged: is the engine end being read?");
-            self.send(big.clone());
+            self.send(&big);
             if self.0.lock().refused {
                 std::thread::sleep(Duration::from_millis(1));
             }
@@ -396,7 +396,7 @@ mod tests {
         fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
             assert!(!self.panic_on_write, "a writer bug");
             self.permits.recv().map_err(|_| io::Error::from(io::ErrorKind::BrokenPipe))?;
-            self.written.lock().unwrap().extend_from_slice(buf);
+            self.written.lock().unwrap_or_else(PoisonError::into_inner).extend_from_slice(buf);
             Ok(buf.len())
         }
         fn flush(&mut self) -> io::Result<()> {
@@ -440,7 +440,7 @@ mod tests {
         let (writer, _permit, _) = gated(false);
         let start = Instant::now();
         for n in 0..10 {
-            writer.send(url(n));
+            writer.send(&url(n));
         }
         assert!(start.elapsed() < Duration::from_secs(1), "ten sends to a stuck engine returned at once");
         assert!(
@@ -455,7 +455,7 @@ mod tests {
         let (writer, permit, _) = gated(false);
         let sent = SEND_QUEUE_CAP + 10;
         for n in 0..sent {
-            writer.send(url(n));
+            writer.send(&url(n));
         }
         // Some pushes were refused, but the write in flight has only just started.
         assert!(!writer.is_unresponsive(Instant::now()), "a refusal alone is not enough");
@@ -471,7 +471,7 @@ mod tests {
         let (writer, permit, written) = gated(false);
         let sent = SEND_QUEUE_CAP + 10;
         for n in 0..sent {
-            writer.send(url(n));
+            writer.send(&url(n));
         }
         assert!(
             eventually(Duration::from_secs(5), || writer.is_unresponsive(Instant::now() + REFUSED_BLOCKED_AFTER)),
@@ -481,10 +481,10 @@ mod tests {
             permit.send(()).unwrap();
         }
         assert!(eventually(Duration::from_secs(5), || !writer.is_unresponsive(Instant::now())), "a write clears it");
-        writer.send(url(sent));
+        writer.send(&url(sent));
         writer.shutdown();
         assert!(writer.wait_finished(Duration::from_secs(5)));
-        let out = decode(std::mem::take(&mut *written.lock().unwrap()));
+        let out = decode(std::mem::take(&mut *written.lock().unwrap_or_else(PoisonError::into_inner)));
         let got = urls(&out);
         assert!(got.windows(2).all(|w| w[0] < w[1]), "order kept: {got:?}");
         assert!(got.len() < sent, "some were refused while full");
@@ -496,7 +496,7 @@ mod tests {
     fn a_stall_is_reported_once_until_a_write_completes() {
         let (writer, permit, _) = gated(false);
         for n in 0..SEND_QUEUE_CAP + 2 {
-            writer.send(url(n));
+            writer.send(&url(n));
         }
         let later = || Instant::now() + REFUSED_BLOCKED_AFTER;
         assert!(eventually(Duration::from_secs(5), || writer.is_unresponsive(later())), "the first write is under way");
@@ -505,7 +505,7 @@ mod tests {
         permit.send(()).unwrap();
         assert!(eventually(Duration::from_secs(5), || !writer.is_unresponsive(Instant::now())));
         for n in 0..SEND_QUEUE_CAP + 2 {
-            writer.send(url(n)); // the writer is stuck on its next write again, and the queue refills
+            writer.send(&url(n)); // the writer is stuck on its next write again, and the queue refills
         }
         let later = || Instant::now() + REFUSED_BLOCKED_AFTER;
         assert!(eventually(Duration::from_secs(5), || writer.is_unresponsive(later())), "the next write is under way");
@@ -515,12 +515,12 @@ mod tests {
     #[test]
     fn closing_waits_at_most_its_deadline() {
         let (writer, permit, _) = gated(false);
-        writer.send(url(0));
+        writer.send(&url(0));
         writer.shutdown();
         let start = Instant::now();
         assert!(!writer.wait_finished(Duration::from_millis(100)), "the engine is stuck");
         assert!(start.elapsed() < Duration::from_secs(2));
-        writer.send(url(1)); // after shutdown: dropped, and never blocks
+        writer.send(&url(1)); // after shutdown: dropped, and never blocks
         drop(permit);
         assert!(writer.wait_finished(Duration::from_secs(5)), "the write failed, so the thread ended");
     }
@@ -528,7 +528,7 @@ mod tests {
     #[test]
     fn a_dead_engine_ends_the_writer_and_is_not_unresponsive() {
         let (writer, permit, _) = gated(false);
-        writer.send(url(0));
+        writer.send(&url(0));
         // The engine died: the write fails. No `shutdown`: `wait_finished` then waits `flush` from now.
         drop(permit);
         assert!(writer.wait_finished(Duration::from_secs(5)), "the write failed, so the thread ended");
@@ -536,13 +536,13 @@ mod tests {
             !writer.is_unresponsive(Instant::now() + UNRESPONSIVE_AFTER),
             "a dead engine is a crash for its reader to report, not a stuck one"
         );
-        writer.send(url(1)); // a finished writer drops it
+        writer.send(&url(1)); // a finished writer drops it
     }
 
     #[test]
     fn a_writer_that_panicked_is_unresponsive() {
         let (writer, _permit, _) = gated(true);
-        writer.send(url(0));
+        writer.send(&url(0));
         assert!(eventually(Duration::from_secs(5), || writer.is_unresponsive(Instant::now())));
     }
 }

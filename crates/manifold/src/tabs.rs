@@ -638,6 +638,14 @@ impl App {
         }
     }
 
+    /// `begin_engine_shutdown` for the live tabs among `ids`, which the caller is about to remove one after another:
+    /// their `SHUTDOWN_FLUSH` waits then share one deadline instead of adding up.
+    pub(crate) fn begin_tabs_shutdown<'a>(&self, ids: impl IntoIterator<Item = &'a String>) {
+        for tab in ids.into_iter().filter_map(|id| self.nodes.get(id)).filter_map(|node| node.as_tab()) {
+            tab.tab.begin_shutdown();
+        }
+    }
+
     /// Starts every live tab's engine shutdown at once (`EngineTab::begin_shutdown`), so dropping the app waits one
     /// `SHUTDOWN_FLUSH` for all of them rather than one per tab, and a stuck engine adds nothing.
     pub(crate) fn begin_engine_shutdown(&self) {

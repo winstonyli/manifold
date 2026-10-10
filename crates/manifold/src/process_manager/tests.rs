@@ -74,7 +74,8 @@ fn frames_never_queue_on_the_events_channel() {
         engine.send(&EngineToHost::Cookies("[]".into())).unwrap();
     });
     assert!(matches!(rx.recv_timeout(Duration::from_secs(5)).unwrap(), EngineToHost::Cookies(_)), "a frame came first");
-    let newest = frame.lock().unwrap().take().expect("the frames went to the slot");
+    let newest =
+        frame.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take().expect("the frames went to the slot");
     assert_eq!(newest.width, 99, "the newest frame wins");
     // The engine end closed after the Cookies: the reader reports it, waking once more.
     assert!(matches!(rx.recv_timeout(Duration::from_secs(5)).unwrap(), EngineToHost::Crashed { .. }));

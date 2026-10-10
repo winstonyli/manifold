@@ -80,10 +80,28 @@ impl App {
     /// Destroys a group and everything in it, at any depth, then the group itself, and saves once. Records nothing:
     /// `close_node` has already recorded the whole subtree as one entry.
     pub(crate) fn destroy_group(&mut self, id: &str) {
+        self.begin_tabs_shutdown(&self.tabs_under(id));
         self.destroy_group_members(id, &mut HashSet::new());
         // The one save for the whole subtree: no member's removal saves (`destroy_group_members`), so the group and
         // everything in it go in one commit, and another replica never reads it half deleted.
         self.save_session();
+    }
+
+    /// Every tab member of group `id` and of the groups inside it, each group once (as `destroy_group_members` walks).
+    pub(crate) fn tabs_under(&self, id: &str) -> Vec<String> {
+        let mut seen = HashSet::from([id.to_owned()]);
+        let mut groups = vec![id.to_owned()];
+        let mut tabs = Vec::new();
+        while let Some(group) = groups.pop() {
+            for member in self.members_of(&group) {
+                if !self.is_container(member) {
+                    tabs.push(member.to_owned());
+                } else if seen.insert(member.to_owned()) {
+                    groups.push(member.to_owned());
+                }
+            }
+        }
+        tabs
     }
 
     /// `destroy_group`'s walk, with no save: a tab member is `remove_tab`d (not `destroy_tab`, which saves), every

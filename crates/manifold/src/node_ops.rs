@@ -63,7 +63,9 @@ impl App {
     /// normal `close_node` path, same "just that action run once per tab"
     /// shape `close_all_except` already has.
     pub(crate) fn close_all_at_current_level(&mut self) {
-        for id in self.tabs_at_current_level() {
+        let ids = self.tabs_at_current_level();
+        self.begin_tabs_shutdown(&ids);
+        for id in ids {
             self.close_node(&id);
         }
     }
@@ -157,6 +159,7 @@ impl App {
             })
             .cloned()
             .collect();
+        self.begin_tabs_shutdown(&other_ids);
         for id in other_ids {
             self.close_node(&id);
         }

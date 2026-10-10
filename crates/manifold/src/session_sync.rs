@@ -2080,6 +2080,7 @@ impl App {
         for id in old_ids {
             self.forget_id(&id);
         }
+        self.begin_engine_shutdown(); // the tabs below drop together: one SHUTDOWN_FLUSH wait, not one each
         self.nodes.clear();
         self.node_order.clear();
         self.layout.clear();

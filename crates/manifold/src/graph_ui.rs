@@ -357,7 +357,9 @@ impl App {
                 }
             }
             GraphAction::CloseSelected => {
-                for id in std::mem::take(&mut self.interaction.selected_tabs) {
+                let ids = std::mem::take(&mut self.interaction.selected_tabs);
+                self.begin_tabs_shutdown(&ids);
+                for id in ids {
                     self.close_node(&id);
                 }
             }

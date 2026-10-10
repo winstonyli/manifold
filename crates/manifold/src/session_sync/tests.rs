@@ -4259,6 +4259,32 @@ fn quitting_sends_every_engine_shutdown_before_the_drop() {
     drop(app);
 }
 
+/// Closing several tabs at once starts all their shutdowns first (`begin_tabs_shutdown`), so their flush waits share
+/// one deadline: the tabs under a group, nested groups included, and no others.
+#[test]
+fn tabs_under_a_group_all_get_shutdown_together() {
+    let mut app = app_on(&temp_dir("group-shutdown").join("session.mnf"), 1);
+    let outer = add_group(&mut app, "outer");
+    let inner = add_group(&mut app, "inner");
+    app.edit_group(&inner, Some(outer.clone()));
+    let (a, mut pa) = live_tab(&mut app, EngineKind::Servo, "https://a/");
+    let (b, mut pb) = live_tab(&mut app, EngineKind::Servo, "https://b/");
+    let (_, mut pc) = live_tab(&mut app, EngineKind::Servo, "https://c/");
+    app.edit_group(&a, Some(outer.clone()));
+    app.edit_group(&b, Some(inner));
+    let mut under = app.tabs_under(&outer);
+    under.sort();
+    let mut want = vec![a, b];
+    want.sort();
+    assert_eq!(under, want);
+    app.begin_tabs_shutdown(&under);
+    for peer in [&mut pa, &mut pb] {
+        assert!(matches!(sent(peer).last(), Some(HostToEngine::Shutdown)));
+    }
+    assert!(!sent(&mut pc).iter().any(|m| matches!(m, HostToEngine::Shutdown)), "a tab outside is left running");
+    drop(app);
+}
+
 fn engine(kind: EngineKind) -> FieldValue {
     FieldValue::Engine(engine_code(kind))
 }
