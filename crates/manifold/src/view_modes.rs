@@ -299,14 +299,14 @@ impl App {
         self.nodes.remove(tab_id);
         // Same stale-state guard `destroy_tab` already applies: without it, a
         // drag in progress on this exact tab when its engine swap/crash
-        // fires would leave `self.dragging` pointing at an id invisible for
+        // fires would leave `self.interaction.dragging` pointing at an id invisible for
         // the whole respawn window, then get misread as "just dropped" the
         // instant the respawned node starts rendering again.
-        if self.dragging.as_deref() == Some(tab_id) {
-            self.dragging = None;
+        if self.interaction.dragging.as_deref() == Some(tab_id) {
+            self.interaction.dragging = None;
         }
-        if self.hovered.as_deref() == Some(tab_id) {
-            self.hovered = None;
+        if self.interaction.hovered.as_deref() == Some(tab_id) {
+            self.interaction.hovered = None;
         }
         self.respawn_tab(spawn);
     }

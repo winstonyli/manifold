@@ -287,12 +287,12 @@ impl App {
     /// the shortcuts help) owns the pointer: that click only dismisses.
     pub(crate) fn line_click_allowed(&self) -> bool {
         self.json_level.is_none()
-            && self.dragging.is_none()
+            && self.interaction.dragging.is_none()
             && self.link.connecting.is_none()
             && self.link.connect_drag.is_none()
             && self.node_menu.is_none()
-            && self.pending_new_node.is_none()
-            && self.rect_select_start.is_none()
+            && self.interaction.pending_new_node.is_none()
+            && self.interaction.rect_select_start.is_none()
             && self.open_popup.is_none()
             && !self.shortcuts_help_open
     }

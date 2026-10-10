@@ -23,16 +23,16 @@ fn forget_id_clears_every_id_keyed_table() {
         app.popup_gate.admit("t", true, now);
     }
     app.tab_crashes.insert(t(), vec![now]);
-    app.selected_tabs.extend([t(), "u".to_string()]);
+    app.interaction.selected_tabs.extend([t(), "u".to_string()]);
     app.naming_jar = Some((t(), String::new()));
     app.renaming_group = Some((t(), String::new()));
     app.node_menu = Some((t(), egui::Pos2::ZERO));
     app.pending_respawn_focus = Some(t());
-    app.peek_suppressed = Some(t());
-    app.dragging = Some(t());
+    app.interaction.peek_suppressed = Some(t());
+    app.interaction.dragging = Some(t());
     app.link.connecting = Some((t(), crate::caps::LINK));
     app.link.connect_drag = Some(t());
-    app.hovered = Some(t());
+    app.interaction.hovered = Some(t());
 
     app.forget_id("t");
 
@@ -42,11 +42,11 @@ fn forget_id_clears_every_id_keyed_table() {
     assert!(!app.saved_scroll.contains_key("t") && app.saved_scroll.contains_key("u"), "only t's entry goes");
     assert!(app.nav_history.is_empty() && app.navigated_from.is_empty() && app.tab_crashes.is_empty());
     assert_eq!(app.popup_gate.admit("t", true, now), popup_gate::Admit::Open, "t's popup burst count went");
-    assert_eq!(app.selected_tabs, HashSet::from(["u".to_string()]));
+    assert_eq!(app.interaction.selected_tabs, HashSet::from(["u".to_string()]));
     assert!(app.naming_jar.is_none() && app.renaming_group.is_none() && app.node_menu.is_none());
-    assert!(app.pending_respawn_focus.is_none() && app.peek_suppressed.is_none());
-    assert!(app.dragging.is_none() && app.link.connecting.is_none() && app.link.connect_drag.is_none());
-    assert!(app.hovered.is_none());
+    assert!(app.pending_respawn_focus.is_none() && app.interaction.peek_suppressed.is_none());
+    assert!(app.interaction.dragging.is_none() && app.link.connecting.is_none() && app.link.connect_drag.is_none());
+    assert!(app.interaction.hovered.is_none());
 }
 
 /// C1: App fields that can hold a node id, but that `forget_id` deliberately leaves alone, each with why. A
@@ -70,7 +70,7 @@ const NOT_FORGOTTEN: &[(&str, &str)] = &[
     ("spawning", "spawn lifecycle: the landing or teardown removes it"),
     ("remote_in_flight", "spawn lifecycle: replayed after the landing"),
     ("host_loads", "spawn lifecycle: expired by `shares_url_change`, cleared at teardown"),
-    ("drag_moved", "ends with the drag; a gone id is skipped at release"),
+    ("interaction.drag_moved", "ends with the drag; a gone id is skipped at release"),
     ("link.line_press", "a link id, taken at release only if still hovered"),
     ("native_drag_tab", "taken at the button-up"),
     ("hidden_for_minimize", "drained at restore"),
@@ -95,7 +95,10 @@ const NOT_FORGOTTEN: &[(&str, &str)] = &[
 fn every_id_keyed_field_is_forgotten_or_excused() {
     /// A struct held by `App` (`App.<prefix>`): its source file, its header line, and the id-forgetting method
     /// (`forget`) it may have; its fields are named `<prefix>.<field>` in `NOT_FORGOTTEN`.
-    const GROUPS: [(&str, &str, &str); 1] = [("link", include_str!("../links.rs"), "pub(crate) struct LinkGesture {")];
+    const GROUPS: [(&str, &str, &str); 2] = [
+        ("link", include_str!("../links.rs"), "pub(crate) struct LinkGesture {"),
+        ("interaction", include_str!("../graph_nav.rs"), "pub(crate) struct GraphInteraction {"),
+    ];
     fn block<'a>(source: &'a str, header: &str, end: &str) -> Vec<&'a str> {
         source.lines().skip_while(|l| !l.trim_start().starts_with(header)).skip(1).take_while(|l| *l != end).collect()
     }

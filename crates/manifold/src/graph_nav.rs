@@ -2,6 +2,80 @@
 
 use super::*;
 
+/// The Graph view's pointer-driven state (`App::interaction`): drag, hover, selection and the pending new-card choice.
+#[derive(Default)]
+pub(crate) struct GraphInteraction {
+    /// Graph view: the node currently being dragged (pinned in the physics
+    /// sim — see `graph_layout::step`'s `pinned` parameter) and the node
+    /// currently hovered (drives the peek-preview popup).
+    pub(crate) dragging: Option<String>,
+    /// Every node the current drag is moving (a lone card, or the whole
+    /// selection when the dragged card is selected — see `take_drag_unit`
+    /// and the `dragged()` branch that fills this in). Read and cleared at
+    /// release (`release_drag`), where each one's `pos` is written exactly
+    /// once (`edit_pos`, 2b-4 Ruling 2): writing every frame of the drag
+    /// instead would let an intermediate position reach the store, since a
+    /// save can fire mid-drag from an unrelated event (`poll_store`, or a
+    /// url change batched through `drain_tab_events`), independent of the
+    /// gesture. Until then a remote pos for any of them doesn't snap its
+    /// layout (`is_being_dragged`). Cleared without a write when the drag
+    /// stops being live (`end_stale_drag`).
+    pub(crate) drag_moved: Vec<String>,
+    pub(crate) hovered: Option<String>,
+    /// Set to `hovered` by an Escape press while a hover-peek preview
+    /// is showing, so that preview can be dismissed early without needing
+    /// the pointer to actually move away -- the peek drawing code skips
+    /// rendering while this matches the current `hovered` id. Cleared
+    /// whenever `hovered` changes to anything else (including `None`), so
+    /// hovering the same or a different node again always shows a fresh
+    /// peek.
+    pub(crate) peek_suppressed: Option<String>,
+    /// Graph view rectangle-select: `Some` (holding the screen-space anchor
+    /// point) for exactly the duration of a right-button drag over the
+    /// graph panel -- the right button specifically, since the primary
+    /// button is already Scene's own pan gesture (`drag_pan_buttons` is
+    /// restricted to `PRIMARY` in `build_graph_ui` so the two never fight
+    /// over the same drag). `selected_tabs` is the committed result, kept
+    /// until the next selection (a fresh right-drag) or an explicit clear
+    /// (a plain click on empty background, or Escape).
+    pub(crate) rect_select_start: Option<egui::Pos2>,
+    pub(crate) selected_tabs: HashSet<String>,
+    /// World position of the small "New Tab/Note/Group/File" card shown
+    /// after a plain right-click (no real drag) on empty Graph-view
+    /// background -- see the marquee-release logic below for where this
+    /// gets set (same gesture, disambiguated from a real rectangle-select
+    /// drag by movement distance) and `build_graph_ui`'s own rendering of
+    /// it. Deliberately *not* a `GraphNode`/`self.nodes` entry -- it's a
+    /// pending choice, not real graph content, so it never needs excluding
+    /// from `level_scan`/session persistence/drag-into-group/
+    /// filters the way a real new node kind would. Cleared on any camera
+    /// movement (pan/zoom/Reset View/entering or leaving a group/minimap
+    /// click), Escape, clicking elsewhere, or picking one of its own
+    /// actions -- deliberately short-lived rather than a droppable/
+    /// draggable placeholder (a real node's card lingers regardless of
+    /// camera movement; this one is a transient choice, not content, so
+    /// letting it silently drift out of sync with a moved camera would be
+    /// the wrong feel for it).
+    pub(crate) pending_new_node: Option<egui::Vec2>,
+}
+
+impl GraphInteraction {
+    /// Drops `id`, a node being removed, from the state that names a single node. `drag_moved` and `pending_new_node`
+    /// are not here: a gone id in `drag_moved` is skipped at release, and the pending card names no node.
+    pub(crate) fn forget(&mut self, id: &str) {
+        if self.dragging.as_deref() == Some(id) {
+            self.dragging = None;
+        }
+        if self.hovered.as_deref() == Some(id) {
+            self.hovered = None;
+        }
+        if self.peek_suppressed.as_deref() == Some(id) {
+            self.peek_suppressed = None;
+        }
+        self.selected_tabs.remove(id);
+    }
+}
+
 impl App {
     /// `parent`'s own group, if it has one and still exists — the natural
     /// "a tab opened from another tab lands in the same group" rule used
@@ -69,7 +143,7 @@ impl App {
     /// otherwise move, or Join would pull back in, a tab no longer shown.
     pub(crate) fn eject(&mut self, id: &str) {
         self.remove_from_group(id);
-        self.selected_tabs.remove(id);
+        self.interaction.selected_tabs.remove(id);
         self.refollow(id);
     }
 
@@ -77,8 +151,8 @@ impl App {
     /// when `id` is in it (it acts as one unit, as "Group Selected" does),
     /// which it empties, else just `id`.
     pub(crate) fn take_drag_unit(&mut self, id: &str) -> Vec<String> {
-        if self.selected_tabs.contains(id) {
-            self.selected_tabs.drain().collect()
+        if self.interaction.selected_tabs.contains(id) {
+            self.interaction.selected_tabs.drain().collect()
         } else {
             vec![id.to_string()]
         }
@@ -91,8 +165,8 @@ impl App {
     /// cleared at every removal site. A drag that is no longer live (`live_drag`) saves nothing.
     pub(crate) fn release_drag(&mut self) {
         let live = self.live_drag().is_some();
-        self.dragging = None;
-        let moved = std::mem::take(&mut self.drag_moved);
+        self.interaction.dragging = None;
+        let moved = std::mem::take(&mut self.interaction.drag_moved);
         if !live {
             return;
         }
@@ -490,14 +564,17 @@ impl App {
     /// Whether the user is dragging `id` right now: the card under the pointer, or one moving with it as part of
     /// the selection (`drag_moved`), while that drag is live (`live_drag`).
     pub(crate) fn is_being_dragged(&self, id: &str) -> bool {
-        self.live_drag().is_some_and(|dragged| dragged == id || self.drag_moved.iter().any(|m| m == id))
+        self.live_drag().is_some_and(|dragged| dragged == id || self.interaction.drag_moved.iter().any(|m| m == id))
     }
 
     /// The grabbed card (`dragging`) while its drag is live: the card is still on the level shown. A grabbed card
     /// that left it (a level switch with the button held, another replica moving it into another group, a removal)
     /// is no longer drawn, so its card never sees the release; its drag is over, with no drop.
     fn live_drag(&self) -> Option<&str> {
-        self.dragging.as_deref().filter(|dragged| self.nodes.contains_key(*dragged) && self.in_level(dragged))
+        self.interaction
+            .dragging
+            .as_deref()
+            .filter(|dragged| self.nodes.contains_key(*dragged) && self.in_level(dragged))
     }
 
     /// Ends a drag that is no longer live (`live_drag`), or any drag when Graph view isn't shown (`graph_shown`
@@ -505,9 +582,9 @@ impl App {
     /// while it ran); a later remote pos snaps again. Otherwise the card's next release, whenever it is drawn again,
     /// would save the stale layout pos over a remote one.
     pub(crate) fn end_stale_drag(&mut self, graph_shown: bool) {
-        if self.dragging.is_some() && !(graph_shown && self.live_drag().is_some()) {
-            self.dragging = None;
-            self.drag_moved.clear();
+        if self.interaction.dragging.is_some() && !(graph_shown && self.live_drag().is_some()) {
+            self.interaction.dragging = None;
+            self.interaction.drag_moved.clear();
         }
     }
 
@@ -515,14 +592,37 @@ impl App {
     /// another replica. It only ever holds this level's tabs (`eject`, `switch_group_level`); otherwise Close Selected
     /// or Group Selected would act on a tab the user can't see.
     pub(crate) fn end_stale_selection(&mut self) {
-        let mut selected = std::mem::take(&mut self.selected_tabs);
+        let mut selected = std::mem::take(&mut self.interaction.selected_tabs);
         selected.retain(|id| self.nodes.contains_key(id) && self.in_level(id));
-        self.selected_tabs = selected;
+        self.interaction.selected_tabs = selected;
     }
 }
 
 #[cfg(test)]
 mod tests {
+    /// `GraphInteraction::forget` clears what `forget_id` cleared by hand: the dragged, hovered and peek-suppressed
+    /// node if it is `id`, and `id` in the selection, leaving other nodes' state and the rest alone.
+    #[test]
+    fn forget_clears_only_the_removed_ids_state() {
+        let mut gi = GraphInteraction {
+            dragging: Some("t".into()),
+            drag_moved: vec!["t".into()],
+            hovered: Some("t".into()),
+            peek_suppressed: Some("t".into()),
+            selected_tabs: HashSet::from(["t".to_string(), "u".to_string()]),
+            pending_new_node: Some(egui::Vec2::ZERO),
+            ..Default::default()
+        };
+        gi.forget("t");
+        assert!(gi.dragging.is_none() && gi.hovered.is_none() && gi.peek_suppressed.is_none());
+        assert_eq!(gi.selected_tabs, HashSet::from(["u".to_string()]));
+        assert_eq!(gi.drag_moved, ["t"], "not forgotten: skipped at release");
+        assert!(gi.pending_new_node.is_some());
+        gi.dragging = Some("u".into());
+        gi.forget("t");
+        assert_eq!(gi.dragging.as_deref(), Some("u"), "another node's state stays");
+    }
+
     use super::*;
     use crate::store::model::Kind;
 
@@ -656,7 +756,7 @@ mod tests {
         let a = add(&mut app, Kind::Tab, sleeping_tab("https://a.test/", "a"));
         let b = add(&mut app, Kind::Tab, sleeping_tab("https://b.test/", "b"));
         let h = add_group(&mut app, "H");
-        app.selected_tabs.extend([a.clone(), b.clone()]);
+        app.interaction.selected_tabs.extend([a.clone(), b.clone()]);
         app.follow_remote_group(&b, Some(h)); // another replica's move
         let input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 1000.0))),
@@ -664,7 +764,7 @@ mod tests {
         };
         let mut output = ctx.run_ui(input, |ui| app.build_ui_inner(ui));
         output.textures_delta.clear();
-        assert_eq!(app.selected_tabs, std::collections::HashSet::from([a.clone()]));
+        assert_eq!(app.interaction.selected_tabs, std::collections::HashSet::from([a.clone()]));
         app.apply_graph_action(&ctx, crate::graph_ui::GraphAction::CloseSelected);
         assert!(!app.nodes.contains_key(&a), "the tab still shown is closed");
         assert!(app.nodes.contains_key(&b), "the tab moved away is not");

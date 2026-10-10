@@ -2047,13 +2047,13 @@ impl App {
         self.viewed_image = None;
         self.split_tab = None;
         self.current_group = None;
-        self.dragging = None;
-        self.drag_moved.clear();
+        self.interaction.dragging = None;
+        self.interaction.drag_moved.clear();
         self.link.end();
         self.link.line_press = None;
-        self.hovered = None;
-        self.selected_tabs.clear();
-        self.rect_select_start = None;
+        self.interaction.hovered = None;
+        self.interaction.selected_tabs.clear();
+        self.interaction.rect_select_start = None;
         self.graph_settled_key = None;
         self.wakes_in_flight.clear();
         self.spawning.clear();

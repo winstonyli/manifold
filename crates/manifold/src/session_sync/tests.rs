@@ -1072,8 +1072,8 @@ fn a_note_at(app: &mut App, pos: egui::Vec2) -> String {
 
 /// What a drag does to the layout every frame (`card.rs`), then its release.
 fn drag(app: &mut App, ids: &[&str], delta: egui::Vec2) {
-    app.dragging = Some(ids[0].to_owned());
-    app.drag_moved = ids.iter().map(|&id| id.to_owned()).collect();
+    app.interaction.dragging = Some(ids[0].to_owned());
+    app.interaction.drag_moved = ids.iter().map(|&id| id.to_owned()).collect();
     for &id in ids {
         app.layout.entry(id.to_owned()).or_default().pos += delta;
     }
@@ -1196,7 +1196,7 @@ fn a_stale_drag_does_not_overwrite_a_remote_pos() {
     // A level switch with the button held.
     drag(&mut app, &[&a, &b], egui::vec2(0.0, 50.0));
     app.switch_group_level(Some(g.clone()));
-    assert!(app.dragging.is_none() && app.drag_moved.is_empty());
+    assert!(app.interaction.dragging.is_none() && app.interaction.drag_moved.is_empty());
     remote_set(&mut other, &a, field::POS, FieldValue::Pos(5.0, 6.0));
     assert!(app.save_session());
     assert_eq!(app.layout_pos(&a), egui::vec2(5.0, 6.0), "no longer dragged, so the remote pos snaps it");
@@ -1215,7 +1215,10 @@ fn a_stale_drag_does_not_overwrite_a_remote_pos() {
     assert!(app.save_session());
     assert_eq!(app.layout_pos(&a), egui::vec2(7.0, 8.0), "off the level, the drag no longer holds the remote pos back");
     app.end_stale_drag(true);
-    assert!(app.dragging.is_none() && app.drag_moved.is_empty(), "the frame's check ends the drag");
+    assert!(
+        app.interaction.dragging.is_none() && app.interaction.drag_moved.is_empty(),
+        "the frame's check ends the drag"
+    );
     app.release_drag();
     assert!(app.save_session());
     assert_eq!(stored(&app, &a, field::POS), FieldValue::Pos(7.0, 8.0));
@@ -1223,7 +1226,7 @@ fn a_stale_drag_does_not_overwrite_a_remote_pos() {
     // Leaving Graph view ends a drag too.
     drag(&mut app, &[&b], egui::vec2(0.0, 50.0));
     app.end_stale_drag(false);
-    assert!(app.dragging.is_none() && app.drag_moved.is_empty());
+    assert!(app.interaction.dragging.is_none() && app.interaction.drag_moved.is_empty());
 }
 
 /// Ruling 1: the layout table is keyed by id and outlives a respawn's remove-and-reinsert; `TabSpawn` carries no

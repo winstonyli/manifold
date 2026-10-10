@@ -6,8 +6,8 @@ use crate::App;
 impl App {
     /// Puts tab `id` in the selection, or takes it out if it is in (Space on a focused card, Ctrl-click).
     pub(crate) fn toggle_tab_selected(&mut self, id: &str) {
-        if !self.selected_tabs.remove(id) {
-            self.selected_tabs.insert(id.to_string());
+        if !self.interaction.selected_tabs.remove(id) {
+            self.interaction.selected_tabs.insert(id.to_string());
         }
     }
 
@@ -66,7 +66,7 @@ mod tests {
             }
             rig.app.camera.jump_to(rig.app.fit_all_nodes_scene_rect());
             rig.frame(vec![], egui::Modifiers::NONE);
-            rig.app.selected_tabs.extend(rig.ids.iter().cloned());
+            rig.app.interaction.selected_tabs.extend(rig.ids.iter().cloned());
             rig
         }
 
@@ -136,7 +136,7 @@ mod tests {
         let mut rig = Rig::new();
         let at = rig.empty();
         rig.click(at);
-        assert!(rig.app.selected_tabs.is_empty());
+        assert!(rig.app.interaction.selected_tabs.is_empty());
     }
 
     #[test]
@@ -144,7 +144,7 @@ mod tests {
         let mut rig = Rig::new();
         let from = rig.empty();
         rig.drag(from, from + egui::vec2(60.0, -20.0));
-        assert_eq!(rig.app.selected_tabs, rig.both());
+        assert_eq!(rig.app.interaction.selected_tabs, rig.both());
     }
 
     #[test]
@@ -159,7 +159,7 @@ mod tests {
         let on = rig.app.graph_world_rect_to_screen(egui::Rect::from_min_max(world, world)).min;
         rig.click(on);
         assert!(rig.app.links_naming(&a).is_empty(), "the click deleted the link");
-        assert_eq!(rig.app.selected_tabs, rig.both());
+        assert_eq!(rig.app.interaction.selected_tabs, rig.both());
     }
 
     #[test]
@@ -169,7 +169,7 @@ mod tests {
         let at = rig.empty();
         rig.click(at);
         assert!(rig.app.link.connecting.is_none(), "the click ended pick mode");
-        assert_eq!(rig.app.selected_tabs, rig.both());
+        assert_eq!(rig.app.interaction.selected_tabs, rig.both());
     }
 
     #[test]
@@ -181,7 +181,7 @@ mod tests {
         rig.frame(vec![], egui::Modifiers::NONE);
         let minimap = rig.app.graph_scene_outer_rect().right_bottom() - egui::vec2(92.0, 67.0);
         rig.click(minimap);
-        assert_eq!(rig.app.selected_tabs, rig.both());
+        assert_eq!(rig.app.interaction.selected_tabs, rig.both());
     }
 
     #[test]
@@ -189,10 +189,10 @@ mod tests {
         let mut rig = Rig::new();
         let centre = rig.card(0).center();
         rig.click_with(centre, egui::Modifiers::CTRL);
-        assert_eq!(rig.app.selected_tabs, HashSet::from([rig.ids[1].clone()]), "out");
+        assert_eq!(rig.app.interaction.selected_tabs, HashSet::from([rig.ids[1].clone()]), "out");
         rig.app.transition = None;
         rig.click_with(centre, egui::Modifiers::CTRL);
-        assert_eq!(rig.app.selected_tabs, rig.both(), "and back in");
+        assert_eq!(rig.app.interaction.selected_tabs, rig.both(), "and back in");
         assert!(rig.app.transition.is_none(), "neither opened the tab");
     }
 
@@ -203,6 +203,6 @@ mod tests {
         let centre = rig.card(0).center();
         rig.click(centre);
         assert!(rig.app.transition.is_some(), "opened");
-        assert!(rig.app.selected_tabs.is_empty(), "Open ends the selection, as it did before");
+        assert!(rig.app.interaction.selected_tabs.is_empty(), "Open ends the selection, as it did before");
     }
 }

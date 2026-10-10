@@ -100,6 +100,7 @@ use card_kind::*;
 use debug_control::DebugCommand;
 use engine_info::*;
 use gpu::GpuState;
+use graph_nav::GraphInteraction;
 use graph_ui::*;
 use image_view::*;
 use input::*;
@@ -492,60 +493,10 @@ struct App {
     /// resolution was already attempted, not the result itself.
     favicon_resolved: HashSet<String>,
 
-    /// Graph view: the node currently being dragged (pinned in the physics
-    /// sim — see `graph_layout::step`'s `pinned` parameter) and the node
-    /// currently hovered (drives the peek-preview popup).
-    dragging: Option<String>,
-    /// Every node the current drag is moving (a lone card, or the whole
-    /// selection when the dragged card is selected — see `take_drag_unit`
-    /// and the `dragged()` branch that fills this in). Read and cleared at
-    /// release (`release_drag`), where each one's `pos` is written exactly
-    /// once (`edit_pos`, 2b-4 Ruling 2): writing every frame of the drag
-    /// instead would let an intermediate position reach the store, since a
-    /// save can fire mid-drag from an unrelated event (`poll_store`, or a
-    /// url change batched through `drain_tab_events`), independent of the
-    /// gesture. Until then a remote pos for any of them doesn't snap its
-    /// layout (`is_being_dragged`). Cleared without a write when the drag
-    /// stops being live (`end_stale_drag`).
-    drag_moved: Vec<String>,
     /// Pick-target mode and the connect-drag/retarget gestures. See `LinkGesture`.
     link: LinkGesture,
-    hovered: Option<String>,
-    /// Set to `self.hovered` by an Escape press while a hover-peek preview
-    /// is showing, so that preview can be dismissed early without needing
-    /// the pointer to actually move away -- the peek drawing code skips
-    /// rendering while this matches the current `hovered` id. Cleared
-    /// whenever `hovered` changes to anything else (including `None`), so
-    /// hovering the same or a different node again always shows a fresh
-    /// peek.
-    peek_suppressed: Option<String>,
-    /// Graph view rectangle-select: `Some` (holding the screen-space anchor
-    /// point) for exactly the duration of a right-button drag over the
-    /// graph panel -- the right button specifically, since the primary
-    /// button is already Scene's own pan gesture (`drag_pan_buttons` is
-    /// restricted to `PRIMARY` in `build_graph_ui` so the two never fight
-    /// over the same drag). `selected_tabs` is the committed result, kept
-    /// until the next selection (a fresh right-drag) or an explicit clear
-    /// (a plain click on empty background, or Escape).
-    rect_select_start: Option<egui::Pos2>,
-    selected_tabs: HashSet<String>,
-    /// World position of the small "New Tab/Note/Group/File" card shown
-    /// after a plain right-click (no real drag) on empty Graph-view
-    /// background -- see the marquee-release logic below for where this
-    /// gets set (same gesture, disambiguated from a real rectangle-select
-    /// drag by movement distance) and `build_graph_ui`'s own rendering of
-    /// it. Deliberately *not* a `GraphNode`/`self.nodes` entry -- it's a
-    /// pending choice, not real graph content, so it never needs excluding
-    /// from `level_scan`/session persistence/drag-into-group/
-    /// filters the way a real new node kind would. Cleared on any camera
-    /// movement (pan/zoom/Reset View/entering or leaving a group/minimap
-    /// click), Escape, clicking elsewhere, or picking one of its own
-    /// actions -- deliberately short-lived rather than a droppable/
-    /// draggable placeholder (a real node's card lingers regardless of
-    /// camera movement; this one is a transient choice, not content, so
-    /// letting it silently drift out of sync with a moved camera would be
-    /// the wrong feel for it).
-    pending_new_node: Option<egui::Vec2>,
+    /// Graph view drag, hover, selection and pending-card state. See `GraphInteraction`.
+    interaction: GraphInteraction,
     /// Graph view's pan/zoom and its animations.
     camera: GraphCamera,
     /// Level-of-detail: true once a frame's own count of viewport-visible
@@ -939,14 +890,8 @@ impl Default for App {
             pdf_renderer: PdfRenderer::new(),
             redirect_fetcher: RedirectFetcher::new(profile::content_dir()),
             favicon_resolved: HashSet::new(),
-            dragging: None,
-            drag_moved: Vec::new(),
             link: LinkGesture::default(),
-            hovered: None,
-            peek_suppressed: None,
-            rect_select_start: None,
-            selected_tabs: HashSet::new(),
-            pending_new_node: None,
+            interaction: GraphInteraction::default(),
             camera: GraphCamera::new(),
             graph_lod_simplified: false,
             truncate_cache: HashMap::new(),

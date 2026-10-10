@@ -813,7 +813,7 @@ impl App {
             self.swallowed_keys.clear();
             self.cancel_connect();
             self.link.line_press = None;
-            if self.dragging.is_some() {
+            if self.interaction.dragging.is_some() {
                 self.release_drag();
             }
             // Clears a press that is not a drag yet too, so the stale button can't start one.
@@ -1380,11 +1380,11 @@ impl App {
                 self.nodes.remove(tab_id);
                 // Same stale-state guard `destroy_tab`/`finish_swap` apply — see
                 // `finish_swap`'s own comment on this.
-                if self.dragging.as_deref() == Some(tab_id) {
-                    self.dragging = None;
+                if self.interaction.dragging.as_deref() == Some(tab_id) {
+                    self.interaction.dragging = None;
                 }
-                if self.hovered.as_deref() == Some(tab_id) {
-                    self.hovered = None;
+                if self.interaction.hovered.as_deref() == Some(tab_id) {
+                    self.interaction.hovered = None;
                 }
                 self.respawn_tab(spawn);
             }

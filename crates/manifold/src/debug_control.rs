@@ -1437,7 +1437,7 @@ impl App {
             .collect();
         let mirror_pos: std::collections::BTreeMap<&str, Option<[f32; 2]>> =
             self.linked_ids().map(|id| (id, self.mirror.pos(id).map(|p| [p.x, p.y]))).collect();
-        let mut selected_tabs: Vec<&String> = self.selected_tabs.iter().collect();
+        let mut selected_tabs: Vec<&String> = self.interaction.selected_tabs.iter().collect();
         selected_tabs.sort();
         // Every link this replica knows (ends null where unset), whether or not it is shown.
         let links: Vec<serde_json::Value> = self
@@ -1520,7 +1520,7 @@ impl App {
             // "refused" or "cancel"; else null.
             "retarget_preview": self.link.retarget.as_ref().and(self.link.retarget_preview).map(crate::links::RetargetOutcome::name),
             // The card being dragged (`App::dragging`), or null.
-            "dragging": self.dragging,
+            "dragging": self.interaction.dragging,
             "json_level": self.json_level_state(),
             "selected_tabs": selected_tabs,
             // The toast showing, or else the next queued one.
@@ -1898,7 +1898,7 @@ mod tests {
         assert_eq!(state["connect_drag"], a.as_str());
         assert!(state["link_handles"].get(b.as_str()).is_some(), "during a connect-drag every card has them");
         app.cancel_connect();
-        app.dragging = Some(b.clone());
+        app.interaction.dragging = Some(b.clone());
         assert_eq!(app.export_state()["dragging"], b.as_str());
     }
 

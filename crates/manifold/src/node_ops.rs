@@ -20,7 +20,7 @@ impl App {
     /// needing the pointer to move away first. See `peek_suppressed`'s own
     /// doc comment for why this can't just clear `hovered` directly.
     pub(crate) fn dismiss_hover_peek(&mut self) {
-        self.peek_suppressed = self.hovered.clone();
+        self.interaction.peek_suppressed = self.interaction.hovered.clone();
     }
 
     /// Like `insert_group_at`, for `new_note_shortcut` and the card's note.

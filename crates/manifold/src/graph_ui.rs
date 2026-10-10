@@ -334,8 +334,8 @@ impl App {
                 // Only the selected cards still shown: a tab mid-crash-respawn or mid-engine-swap has no card, so it
                 // is neither counted in the centroid nor moved (its selection is consumed with the rest).
                 let live: Vec<String> =
-                    self.selected_tabs.iter().filter(|id| self.nodes.contains_key(*id)).cloned().collect();
-                self.selected_tabs.clear();
+                    self.interaction.selected_tabs.iter().filter(|id| self.nodes.contains_key(*id)).cloned().collect();
+                self.interaction.selected_tabs.clear();
                 if live.is_empty() {
                     return;
                 }
@@ -354,7 +354,7 @@ impl App {
                 }
             }
             GraphAction::CloseSelected => {
-                for id in std::mem::take(&mut self.selected_tabs) {
+                for id in std::mem::take(&mut self.interaction.selected_tabs) {
                     self.close_node(&id);
                 }
             }
@@ -432,9 +432,9 @@ impl App {
         self.layout_current_level();
         self.graph_settled_key = Some(self.current_level_settle_key());
         self.camera.ease_to(self.fit_all_nodes_scene_rect());
-        self.selected_tabs.clear();
-        self.rect_select_start = None;
-        self.pending_new_node = None;
+        self.interaction.selected_tabs.clear();
+        self.interaction.rect_select_start = None;
+        self.interaction.pending_new_node = None;
         self.node_menu = None;
     }
 
@@ -649,7 +649,7 @@ impl App {
             overlay(&overlay_painter, &project);
         }
         if scene_rect != scene_rect_before_pan_zoom {
-            self.pending_new_node = None;
+            self.interaction.pending_new_node = None;
         }
 
         // A click on a link line deletes that link (link-gestures spec B). The Scene's background took the click, so
@@ -666,7 +666,7 @@ impl App {
         );
         let line_click = self.line_click(ui, line_hover, scene_background.clicked());
         if deselect {
-            self.selected_tabs.clear();
+            self.interaction.selected_tabs.clear();
         }
 
         self.track_pan_momentum(ui, scene_rect);
@@ -756,13 +756,13 @@ impl App {
         }
         if reset_view {
             self.camera.jump_to(self.fit_all_nodes_scene_rect());
-            self.pending_new_node = None;
+            self.interaction.pending_new_node = None;
         }
     }
 
     /// Re-lays-out the level when its node set changed size, unless a drag is in progress.
     fn settle_level_if_changed(&mut self, item_count: usize) {
-        if self.dragging.is_none() {
+        if self.interaction.dragging.is_none() {
             // Same formula `current_level_settle_key()` computes, just
             // built from this frame's already-cached `items` instead of
             // redoing the level scan a second time.
@@ -1191,14 +1191,14 @@ impl App {
         // Rectangle-select's own action bar: only shown once a
         // right-drag has actually selected something (see
         // `handle_rect_select`).
-        if !self.selected_tabs.is_empty() {
+        if !self.interaction.selected_tabs.is_empty() {
             // Matches "+ New Group" above: groups the selection
             // into a new subgroup of whichever level is
             // currently being viewed, not just the top.
-            if ui.button(format!("Group Selected ({})", self.selected_tabs.len())).clicked() {
+            if ui.button(format!("Group Selected ({})", self.interaction.selected_tabs.len())).clicked() {
                 actions.push(GraphAction::GroupSelected);
             }
-            if ui.button(format!("Close Selected ({})", self.selected_tabs.len())).clicked() {
+            if ui.button(format!("Close Selected ({})", self.interaction.selected_tabs.len())).clicked() {
                 actions.push(GraphAction::CloseSelected);
             }
         }
@@ -1260,7 +1260,7 @@ impl App {
             }
             // Escape clears a rectangle-select selection, dismisses any
             // node's context menu, and dismisses a hover-peek preview
-            // early -- `self.hovered` itself is left alone (clearing it
+            // early -- `self.interaction.hovered` itself is left alone (clearing it
             // here would just get overwritten later this same frame by the
             // card loop (`draw_graph_cards`) re-detecting the pointer still sitting over
             // it) and `peek_suppressed` is set instead, checked by the peek
@@ -1273,11 +1273,11 @@ impl App {
             if self.link.connecting.is_some() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                 self.cancel_connect();
             } else if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                self.selected_tabs.clear();
+                self.interaction.selected_tabs.clear();
                 if let Some((id, _)) = self.node_menu.take() {
                     ui.memory_mut(|m| m.request_focus(egui::Id::new(("graph_card", id.as_str()))));
                 }
-                self.pending_new_node = None;
+                self.interaction.pending_new_node = None;
                 self.dismiss_hover_peek();
             }
         }
@@ -1306,14 +1306,14 @@ impl App {
         // Not while a card drag or a connect-drag holds the primary button: a right-press then would open a menu
         // under the drag (whose release still drops or links) or start a marquee beside it.
         let secondary_pressed = ui.input(|i| i.pointer.button_pressed(egui::PointerButton::Secondary))
-            && self.dragging.is_none()
+            && self.interaction.dragging.is_none()
             && self.link.connect_drag.is_none();
         if secondary_pressed {
             // A fresh right-click press always cancels any still-open
             // "New Tab/Note/Group/File" card from a previous one -- same
             // "starting a new gesture dismisses the old one" rule every
             // other popup here already follows.
-            self.pending_new_node = None;
+            self.interaction.pending_new_node = None;
             if let Some(pos) = pointer_pos.filter(|p| scene_outer_rect.contains(*p)) {
                 // A right-press landing on any card opens that card's
                 // context menu instead of starting a marquee -- groups
@@ -1329,10 +1329,10 @@ impl App {
                 match hit {
                     Some(LevelItem { id, kind: LevelItemKind::Node(_), .. }) => {
                         self.node_menu = Some((id, pos));
-                        self.rect_select_start = None;
+                        self.interaction.rect_select_start = None;
                     }
                     Some(LevelItem { kind: LevelItemKind::JsonCard, .. }) => {
-                        self.rect_select_start = None;
+                        self.interaction.rect_select_start = None;
                         if let Some(level) = self.json_level.as_mut() {
                             if let Some(i) = level.card_at(world_pos) {
                                 let target =
@@ -1347,12 +1347,12 @@ impl App {
                         if let Some(level) = self.json_level.as_mut() {
                             level.menu = None;
                         }
-                        self.rect_select_start = Some(pos);
+                        self.interaction.rect_select_start = Some(pos);
                     }
                 }
             }
         }
-        if let Some(start) = self.rect_select_start {
+        if let Some(start) = self.interaction.rect_select_start {
             let current = pointer_pos.unwrap_or(start);
             let screen_rect = egui::Rect::from_two_pos(start, current);
             overlay_painter.rect_filled(
@@ -1362,7 +1362,7 @@ impl App {
             );
             overlay_painter.rect_stroke(screen_rect, 0.0, egui::Stroke::new(1.5, ACCENT), egui::StrokeKind::Inside);
             if !secondary_down {
-                self.rect_select_start = None;
+                self.interaction.rect_select_start = None;
                 // Barely moved -- a plain right-click, not a real
                 // rectangle-select drag. The level items'
                 // hit-testing above already ruled out landing on any real
@@ -1373,14 +1373,14 @@ impl App {
                     // A JSON level is read-only: no creation card there.
                     if self.json_level.is_none() {
                         let world_pos = ((start.to_vec2() - translation) / zoom_scale).to_pos2();
-                        self.pending_new_node = Some(egui::Vec2::new(world_pos.x, world_pos.y));
+                        self.interaction.pending_new_node = Some(egui::Vec2::new(world_pos.x, world_pos.y));
                     }
                 } else {
                     let world_rect = egui::Rect::from_two_pos(
                         ((screen_rect.min.to_vec2() - translation) / zoom_scale).to_pos2(),
                         ((screen_rect.max.to_vec2() - translation) / zoom_scale).to_pos2(),
                     );
-                    self.selected_tabs = self
+                    self.interaction.selected_tabs = self
                         .tabs_at_current_level()
                         .into_iter()
                         .filter(|id| {
@@ -1480,8 +1480,10 @@ impl App {
     /// `camera.rect` this frame).
     pub(crate) fn track_pan_momentum(&mut self, ui: &egui::Ui, scene_rect: egui::Rect) {
         let pointer_down = ui.input(|i| i.pointer.primary_down());
-        let actively_panning =
-            pointer_down && self.dragging.is_none() && self.link.connect_drag.is_none() && self.camera.tween.is_none();
+        let actively_panning = pointer_down
+            && self.interaction.dragging.is_none()
+            && self.link.connect_drag.is_none()
+            && self.camera.tween.is_none();
         if actively_panning {
             // A fresh grab of the background cancels any momentum still
             // gliding from an earlier release -- "grab it to stop it".
@@ -1548,7 +1550,7 @@ impl App {
             if let Some(click_pos) = ui.input(|i| i.pointer.interact_pos()) {
                 let world_click = world_bounds.center() + (click_pos - minimap_rect.center()) / minimap_scale;
                 self.camera.jump_to(egui::Rect::from_center_size(world_click, self.camera.rect.size()));
-                self.pending_new_node = None;
+                self.interaction.pending_new_node = None;
             }
         }
     }
@@ -1680,8 +1682,11 @@ impl App {
         // One drop target per frame, shared by the ring and the
         // release (see `drop_target`).
         let pointer = ui.input(|i| i.pointer.interact_pos());
-        let drop_preview =
-            self.dragging.clone().and_then(|dragged| self.drop_target(&dragged, pointer, leave_group_button_rect));
+        let drop_preview = self
+            .interaction
+            .dragging
+            .clone()
+            .and_then(|dragged| self.drop_target(&dragged, pointer, leave_group_button_rect));
 
         // Every card: one shared frame each (`draw_graph_card`),
         // layer by layer (`level_scan`, groups last), which is
@@ -1913,7 +1918,7 @@ impl App {
         inv_zoom: f32,
         project: &impl Fn(egui::Pos2) -> egui::Pos2,
     ) {
-        if let Some(pos) = self.pending_new_node {
+        if let Some(pos) = self.interaction.pending_new_node {
             let center_pos = egui::Pos2::new(pos.x, pos.y);
             let row_count = if self.headless { 3.0 } else { 4.0 };
             // `* inv_zoom`: the background box's own world-space
@@ -1982,19 +1987,19 @@ impl App {
                 );
             if clicked_tab {
                 actions.push(GraphAction::NewTab(self.focused.clone()));
-                self.pending_new_node = None;
+                self.interaction.pending_new_node = None;
             }
             if clicked_note {
                 actions.push(GraphAction::NewNote(pos));
-                self.pending_new_node = None;
+                self.interaction.pending_new_node = None;
             }
             if clicked_group {
                 actions.push(GraphAction::NewGroup(pos));
-                self.pending_new_node = None;
+                self.interaction.pending_new_node = None;
             }
             if clicked_file {
                 actions.push(GraphAction::NewFile(pos));
-                self.pending_new_node = None;
+                self.interaction.pending_new_node = None;
             }
             // Same dismiss-on-click-elsewhere mechanism every other
             // popup here uses, just projected to screen space first
@@ -2003,7 +2008,7 @@ impl App {
             // reads the real screen-space pointer position.
             let screen_rect = egui::Rect::from_min_max(project(rect.min), project(rect.max));
             if clicked_outside_popup(ui, screen_rect, None) {
-                self.pending_new_node = None;
+                self.interaction.pending_new_node = None;
             }
         }
     }
@@ -2017,10 +2022,14 @@ impl App {
     /// Escape press dismissing this exact node's peek early,
     /// see that field's own doc comment.
     pub(crate) fn draw_peek_preview(&mut self, ui: &mut egui::Ui, deferred_overlays: &mut DeferredOverlays) {
-        if self.peek_suppressed.is_some() && self.peek_suppressed != self.hovered {
-            self.peek_suppressed = None;
+        if self.interaction.peek_suppressed.is_some() && self.interaction.peek_suppressed != self.interaction.hovered {
+            self.interaction.peek_suppressed = None;
         }
-        let peek_target = self.hovered.clone().filter(|id| self.peek_suppressed.as_deref() != Some(id.as_str()));
+        let peek_target = self
+            .interaction
+            .hovered
+            .clone()
+            .filter(|id| self.interaction.peek_suppressed.as_deref() != Some(id.as_str()));
         // Polled every frame regardless of `peek_target`, same
         // "continuous polling, not just while shown" reasoning the
         // dropdown popups' own fade needs -- a plain `if let Some`
@@ -2211,7 +2220,7 @@ mod tests {
     #[test]
     fn keys_typed_into_a_text_field_stay_out_of_graph_navigation() {
         let mut app = App::default();
-        app.selected_tabs.insert("t".into());
+        app.interaction.selected_tabs.insert("t".into());
         let ctx = egui::Context::default();
         let field = egui::Id::new("test_field");
         let mut text = String::new();
@@ -2240,10 +2249,10 @@ mod tests {
             modifiers: egui::Modifiers::NONE,
         };
         frame(&mut app, vec![key(egui::Key::Escape)]);
-        assert!(app.selected_tabs.contains("t"), "Escape ended the edit only");
+        assert!(app.interaction.selected_tabs.contains("t"), "Escape ended the edit only");
         assert!(!ctx.memory(|m| m.has_focus(field)), "the field let go");
         frame(&mut app, vec![key(egui::Key::Escape)]);
-        assert!(app.selected_tabs.is_empty(), "with no field focused, Escape is the graph's");
+        assert!(app.interaction.selected_tabs.is_empty(), "with no field focused, Escape is the graph's");
     }
 
     /// L1: a selected id with no card (its tab mid-crash-respawn or mid-engine-swap) is left out of the centroid,
@@ -2257,12 +2266,12 @@ mod tests {
         app.insert_placeholder_node(a.clone(), egui::vec2(100.0, 0.0), Kind::Tab, sleeping_tab("https://a.test/", "a"));
         app.insert_placeholder_node(b.clone(), egui::vec2(300.0, 0.0), Kind::Tab, sleeping_tab("https://b.test/", "b"));
         let expected = (app.layout_pos(&a) + app.layout_pos(&b)) / 2.0;
-        app.selected_tabs.extend([a.clone(), b.clone(), "999".to_string()]);
+        app.interaction.selected_tabs.extend([a.clone(), b.clone(), "999".to_string()]);
         app.apply_graph_action(&egui::Context::default(), GraphAction::GroupSelected);
         let group = app.mirror.group(&a).expect("a was grouped").to_string();
         assert_eq!(app.mirror.group(&b), Some(group.as_str()));
         assert_eq!(app.mirror.pos(&group), Some(expected), "the mean of the two cards, not divided by three");
-        assert!(app.selected_tabs.is_empty());
+        assert!(app.interaction.selected_tabs.is_empty());
     }
 
     /// Links: Escape in pick-target mode ends the mode and does nothing else; the next one is the graph's as before.
@@ -2272,7 +2281,7 @@ mod tests {
         let note = app.alloc_node_id();
         app.insert_note_at(note.clone(), None);
         app.link.connecting = Some((note, crate::caps::LINK));
-        app.selected_tabs.insert("t".into());
+        app.interaction.selected_tabs.insert("t".into());
         let ctx = egui::Context::default();
         let escape = egui::Event::Key {
             key: egui::Key::Escape,
@@ -2288,9 +2297,9 @@ mod tests {
         };
         frame(&mut app);
         assert!(app.link.connecting.is_none());
-        assert!(app.selected_tabs.contains("t"), "that Escape was pick mode's only");
+        assert!(app.interaction.selected_tabs.contains("t"), "that Escape was pick mode's only");
         frame(&mut app);
-        assert!(app.selected_tabs.is_empty());
+        assert!(app.interaction.selected_tabs.is_empty());
     }
 
     /// Links: in pick-target mode a click on a target card draws the edge (and not the card's own click action), and

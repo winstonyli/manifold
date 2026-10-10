@@ -361,7 +361,7 @@ fn a_right_press_during_a_connect_drag_opens_no_menu_and_starts_no_marquee() {
     assert_eq!(app.links_naming(&a).len(), 1, "linked to b");
     h.frame(&mut app, vec![right(on_b, false)]);
     drag_from_handle(&h, &mut app, &a, HandleSide::Bottom, on_c, right_press_at(canvas));
-    assert!(app.rect_select_start.is_none(), "no marquee");
+    assert!(app.interaction.rect_select_start.is_none(), "no marquee");
     assert_eq!(app.links_naming(&a).len(), 2, "linked to c");
 }
 
@@ -378,7 +378,7 @@ fn a_right_press_during_a_card_drag_opens_no_menu_and_starts_no_marquee() {
     h.frame(&mut app, vec![right(to, false)]);
     let from = screen_rect(&app, &a).center();
     h.drag_with(&mut app, from, from + egui::vec2(40.0, 0.0), right_press_at(canvas));
-    assert!(app.rect_select_start.is_none(), "no marquee");
+    assert!(app.interaction.rect_select_start.is_none(), "no marquee");
 }
 
 /// A drag that starts on empty canvas near a link, but off its curve, still pans.
@@ -1045,9 +1045,9 @@ fn two_notes() -> (App, String, String) {
 fn handles_show_while_nothing_else_owns_the_pointer_and_on_every_card_during_a_drag() {
     let (mut app, a, b) = two_notes();
     assert!(app.shows_link_handles());
-    app.dragging = Some(b.clone());
+    app.interaction.dragging = Some(b.clone());
     assert!(!app.shows_link_handles(), "a card drag");
-    app.dragging = None;
+    app.interaction.dragging = None;
     app.node_menu = Some((b.clone(), egui::Pos2::ZERO));
     assert!(!app.shows_link_handles(), "a menu");
     app.node_menu = None;
@@ -1178,7 +1178,7 @@ fn dragging_a_handle_onto_a_card_links_them_and_moves_nothing() {
     assert_eq!(links.len(), 1);
     assert_eq!(app.mirror.link_ends(&links[0]), (a.parse().ok(), b.parse().ok()), "a -> b");
     assert_eq!(app.layout_pos(&a), before, "the card did not move");
-    assert!(app.dragging.is_none() && app.link.connect_drag.is_none() && app.link.connecting.is_none());
+    assert!(app.interaction.dragging.is_none() && app.link.connect_drag.is_none() && app.link.connecting.is_none());
 }
 
 #[test]
@@ -1480,7 +1480,7 @@ fn losing_window_focus_ends_a_card_drag_in_place() {
     for step in 1..=8 {
         h.frame(&mut app, vec![egui::Event::PointerMoved(from + (over_group - from) * (step as f32 / 8.0))]);
     }
-    assert_eq!(app.dragging.as_deref(), Some(note.as_str()), "mid-drag");
+    assert_eq!(app.interaction.dragging.as_deref(), Some(note.as_str()), "mid-drag");
     assert!(
         matches!(app.drop_target(&note, Some(over_group), None), Some((crate::card::DropEffect::Join, _))),
         "a release here would join the group"
@@ -1488,7 +1488,7 @@ fn losing_window_focus_ends_a_card_drag_in_place() {
     let held = app.layout_pos(&note);
 
     app.on_window_focus(false);
-    assert!(app.dragging.is_none() && app.drag_moved.is_empty(), "the drag ended");
+    assert!(app.interaction.dragging.is_none() && app.interaction.drag_moved.is_empty(), "the drag ended");
     assert_eq!(app.mirror.pos(&note), Some(held), "saved where it was");
     assert_eq!(app.group_of(&Some(note.clone())), None, "no drop: it joined nothing");
 
@@ -1497,7 +1497,7 @@ fn losing_window_focus_ends_a_card_drag_in_place() {
         h.frame(&mut app, vec![egui::Event::PointerMoved(over_group + egui::vec2(0.0, 30.0 * step as f32))]);
     }
     assert_eq!(app.layout_pos(&note), held, "the card no longer follows the pointer");
-    assert!(app.dragging.is_none());
+    assert!(app.interaction.dragging.is_none());
     let late = over_group + egui::vec2(0.0, 120.0);
     h.frame(&mut app, vec![press(late, false)]);
     h.frame(&mut app, vec![]);
