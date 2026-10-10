@@ -1,5 +1,11 @@
 use std::collections::{HashMap, HashSet};
 
+/// The graph's world-space center that the physics centering force pulls
+/// toward — independent of screen/window coordinates now that the graph is
+/// pannable/zoomable (`egui::Scene`), unlike pre-pan/zoom where node
+/// positions doubled as screen coordinates directly.
+pub(crate) const GRAPH_WORLD_CENTER: egui::Vec2 = egui::Vec2::ZERO;
+
 /// Pure force-directed layout for the M5 tab graph: nodes repel each other,
 /// parent→child edges pull toward a rest length, everything damps and
 /// settles. No `wgpu`/`winit` types here — this only manipulates plain

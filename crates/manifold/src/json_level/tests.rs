@@ -140,7 +140,7 @@ fn placement_leaves_a_json_level_and_uses_the_outer_group() {
     assert_eq!(at.group.as_deref(), Some(OUTER));
     assert_eq!(app.current_group.as_deref(), Some(OUTER), "the level was left");
     assert!(app.json_level.is_none());
-    assert_eq!(at.pos, GRAPH_WORLD_CENTER + graph_layout::spawn_jitter("n"), "no pos: jittered spawn");
+    assert_eq!(at.pos, graph_layout::GRAPH_WORLD_CENTER + graph_layout::spawn_jitter("n"), "no pos: jittered spawn");
     let explicit = egui::vec2(3.0, 4.0);
     assert_eq!(app.placement("n", Some(explicit)).pos, explicit, "an explicit pos wins");
 }

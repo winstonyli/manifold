@@ -7,6 +7,22 @@ use crate::debug_control::debug_key_event;
 use crate::tabs::{AfterCrash, Held};
 use winit::window::Icon;
 
+/// The event loop's real user-event type: headless debug commands, plus
+/// `TabSpawned` — see its own doc comment for why engine-host spawning needs
+/// to be async in the first place.
+pub(crate) enum UserEvent {
+    Debug(DebugCommand),
+    TabSpawned(Box<TabSpawnOutcome>),
+    /// A screen reader connected, acted on a node, or left (`egui_winit::accesskit_winit`).
+    Accessibility(egui_winit::accesskit_winit::Event),
+}
+
+impl From<egui_winit::accesskit_winit::Event> for UserEvent {
+    fn from(event: egui_winit::accesskit_winit::Event) -> Self {
+        UserEvent::Accessibility(event)
+    }
+}
+
 impl ApplicationHandler<UserEvent> for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_some() {

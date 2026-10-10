@@ -4,6 +4,149 @@ use super::*;
 use ipc_protocol::PageState;
 use sleep_state::{PendingSleep, SavedScroll, SleepWhy, Verdict};
 
+/// Which call site triggered a tab spawn — `handle_tab_spawn_result` uses
+/// this to know what to do once the (now-async) `process_manager::spawn_tab`
+/// call finishes, mirroring what `spawn_root_tab`/`spawn_new_tab`/
+/// `respawn_tab` used to do inline before the spawn was made async.
+pub(crate) enum SpawnPurpose {
+    /// The very first tab at startup: becomes focused, switches to Tab view.
+    Root,
+    /// Graph view's "+ New Tab" (or a page-triggered new tab): spawned
+    /// invisible, no focus change.
+    New,
+    /// Engine swap finishing, or crash recovery: visibility/focus depend on
+    /// whether `tab_id` is still the focused tab by the time the spawn
+    /// actually completes (checked at handling time, not capture time).
+    Respawn,
+    /// Startup session restore (see `App::restore_session`) — one of
+    /// potentially many concurrent spawns kicked off together, so (like
+    /// `Respawn`) visibility/focus is decided at completion time against
+    /// whatever `self.focused` was set to before any of them were issued,
+    /// not capture time.
+    Restore,
+    /// `App::start_split`'s secondary pane -- spawned invisible like `New`,
+    /// but once it completes it becomes `self.split_tab` and turns visible
+    /// (a split's secondary pane is always live, unlike an ordinary
+    /// background tab) rather than gaining focus. See `App::split_tab`'s
+    /// own doc comment.
+    Split,
+    /// `App::wake_tab`: an unloaded tab's engine starting (a sleeping tab
+    /// opened, a failed one retried). Lands like `Respawn`, decided at
+    /// completion against `self.focused`, and is a host-started load
+    /// (`note_host_load`), like a restore.
+    Wake,
+}
+
+/// A pending `process_manager::spawn_tab` call's outcome, carried back to
+/// the main/event-loop thread via `EventLoopProxy` — see `App::spawn_tab_async`
+/// for why this exists: spawning WebKit's engine-host blocks on a cold WSL2
+/// boot + Xvfb + WebKitGTK init (confirmed live to take several real seconds
+/// on first use, occasionally much longer — see `process_manager::
+/// spawn_webkit_tab`'s own doc comment), which would otherwise freeze the
+/// whole app (redraw, input, headless stdin) for that entire duration if run
+/// on this thread.
+pub(crate) struct TabSpawnOutcome {
+    pub(crate) spawn: TabSpawn,
+    /// `App::session_generation` when the spawn started -- see that field.
+    pub(crate) generation: u64,
+    pub(crate) result: Result<EngineTab, process_manager::SpawnError>,
+    /// The cookies the host was seeded with, as its starting `jar::TabCookies` (empty for hosts that are not).
+    pub(crate) seeded: jar::TabCookies,
+    /// The jar the host was seeded from, resolved when the spawn started: its pulls merge into this one.
+    pub(crate) jar: jar::JarKey,
+    /// That jar's clear count when the seed was read (`jar::Snapshots::seed`); `None` if it never was.
+    pub(crate) seed_clears: Option<u64>,
+}
+
+/// What `spawn_tab_async` needs to start a tab and, once it's up, to
+/// insert its graph node: `TabSpawn::new` for a new tab (no parent or
+/// group, nothing carried), `TabSpawn::respawn` for one that
+/// already has a node.
+pub(crate) struct TabSpawn {
+    pub(crate) id: String,
+    pub(crate) url: String,
+    pub(crate) kind: EngineKind,
+    pub(crate) parent: Option<String>,
+    pub(crate) group: Option<String>,
+    /// The jar a new tab starts with, which it lands with (`Carried::jar`). A tab the mirror already holds (a
+    /// respawn or wake) uses the mirror's instead, which a cascade may change while it is in flight.
+    pub(crate) jar: jar::JarChoice,
+    /// Where a new tab lands: its layout entry and its document pos start there (2b-4 Ruling 3). A tab already
+    /// placed (a respawn, a wake) keeps both (`App::layout` outlives the respawn, `Mirror::seed` never overwrites).
+    pub(crate) pos: egui::Vec2,
+    pub(crate) purpose: SpawnPurpose,
+    pub(crate) carry: TabCarry,
+    /// The engine to respawn with if this spawn fails: a swap's old
+    /// engine, whose process `finish_swap` has already had to drop.
+    pub(crate) fallback_kind: Option<EngineKind>,
+}
+
+/// What a tab keeps across a respawn (engine swap, crash recovery) or a
+/// wake. A new tab starts unpinned, untagged, at the default zoom, with no
+/// title or mute of its own yet. A new attribute that must survive a
+/// respawn or wake is one more field here.
+pub(crate) struct TabCarry {
+    /// See `Mirror::pinned`; seeds the mirror when the tab's id has no entry yet.
+    pub(crate) pinned: bool,
+    /// See `Mirror::color`; seeds the mirror when the tab's id has no entry yet.
+    pub(crate) color: Option<egui::Color32>,
+    /// See `TabPayload::zoom_factor`. A new tab takes
+    /// `Settings::zoom_factor`, having no value of its own yet.
+    pub(crate) zoom_factor: f64,
+    /// See `TabPayload::title`: shown until the page reports its own.
+    pub(crate) title: String,
+    /// See `TabPayload::muted`. Sent to the new engine on landing.
+    pub(crate) muted: bool,
+}
+
+impl TabSpawn {
+    pub(crate) fn new(
+        id: String,
+        url: String,
+        kind: EngineKind,
+        pos: egui::Vec2,
+        purpose: SpawnPurpose,
+        zoom_factor: f64,
+    ) -> Self {
+        TabSpawn {
+            id,
+            url,
+            kind,
+            parent: None,
+            group: None,
+            jar: Default::default(),
+            pos,
+            purpose,
+            carry: TabCarry { pinned: false, color: None, zoom_factor, title: String::new(), muted: false },
+            fallback_kind: None,
+        }
+    }
+
+    /// Tab `node` (`id`) respawned as `kind` at `url`, keeping its `TabCarry` (`carried` is the mirror's); its place
+    /// in the graph is its `App::layout` entry, which the respawn leaves alone. `None` if `node` isn't a tab.
+    pub(crate) fn respawn(id: &str, node: &GraphNode, carried: Carried, kind: EngineKind, url: String) -> Option<Self> {
+        let tab = node.as_tab()?;
+        Some(TabSpawn {
+            id: id.to_string(),
+            url,
+            kind,
+            parent: carried.parent.clone(),
+            group: carried.group.clone(),
+            jar: carried.jar,
+            pos: carried.pos.unwrap_or_default(),
+            purpose: SpawnPurpose::Respawn,
+            carry: TabCarry {
+                pinned: carried.pinned,
+                color: carried.color,
+                zoom_factor: tab.zoom_factor,
+                title: tab.title.clone(),
+                muted: tab.muted,
+            },
+            fallback_kind: None,
+        })
+    }
+}
+
 /// An engine answer parked until the tab's cookies arrive (`App::hold_for_cookies`).
 pub(crate) enum Held {
     PageState(PageState),

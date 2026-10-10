@@ -6,6 +6,25 @@ use crate::store::model::{
     TYPE_DOWNLOAD, TYPE_GROUP, TYPE_IMAGE, TYPE_JSON, TYPE_JSON_LEAF, TYPE_NOTE, TYPE_PDF, TYPE_TAB,
 };
 
+/// Below this on-screen card width (in points), a node's label is hidden
+/// entirely rather than truncated — a card this small can't fit more than
+/// one or two letters plus "…" anyway (see `truncate_to_width`), and a
+/// near-illegible sliver of text reads as noise, not information, at the
+/// zoom levels this app's `GRAPH_ZOOM_MIN` allows.
+pub(crate) const MIN_LABEL_CARD_SCREEN_WIDTH: f32 = 40.0;
+
+pub(crate) const GRAPH_THUMB_MARGIN: f32 = 6.0;
+
+pub(crate) const FAVICON_SIZE: egui::Vec2 = egui::vec2(16.0, 16.0);
+
+/// A group card's border tints `DANGER_COLOR` once its member count exceeds
+/// this threshold -- a cheap glanceable "this one's gotten big" cue. Only
+/// applies while the group has no explicit tag color of its own (see its use
+/// below) -- a deliberate user choice always wins over this automatic one,
+/// same precedent tag colors already have over the plain default `ACCENT`
+/// border.
+pub(crate) const GROUP_OVERLOAD_THRESHOLD: usize = 8;
+
 pub(crate) const GRAPH_NODE_SIZE: egui::Vec2 = egui::vec2(160.0, 110.0);
 
 /// What a card's header says (`App::paint_card_header`).
@@ -2313,14 +2332,6 @@ pub(crate) type TruncateCacheKey = (u64, u32, i32, bool);
 /// is "very occasionally one character more truncated than strictly
 /// necessary," never overflow past the card's own edge.
 const TRUNCATE_WIDTH_BUCKET: f32 = 4.0;
-
-/// Cap on `App::truncate_cache`'s size -- past this it's cleared outright
-/// rather than evicted incrementally. No LRU bookkeeping for what should,
-/// in steady state, only ever hold a small multiple of "how many labeled
-/// cards are visible at once"; a full clear is cheap insurance against
-/// unbounded growth if that assumption is ever wrong (e.g. many distinct
-/// titles cycling through over a long session).
-pub(crate) const TRUNCATE_CACHE_CAP: usize = 2000;
 
 /// Shortens `text` to the longest prefix (plus an ellipsis) that lays out
 /// no wider than `max_width` at `font_id`, or returns it unchanged if it

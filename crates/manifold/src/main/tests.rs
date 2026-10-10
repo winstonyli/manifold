@@ -134,12 +134,6 @@ fn every_id_keyed_field_is_forgotten_or_excused() {
     }
 }
 
-#[cfg(windows)]
-#[test]
-fn explorer_select_quotes_the_path() {
-    assert_eq!(explorer_select_arg(r"C:\d\a,b.pdf"), r#"/select,"C:\d\a,b.pdf""#);
-}
-
 #[test]
 fn window_geometry_is_saved_after_a_quiet_spell_not_per_event() {
     let mut app = App::default();

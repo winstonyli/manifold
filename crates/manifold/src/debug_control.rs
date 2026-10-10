@@ -5,10 +5,10 @@ use winit::event::MouseButton;
 use winit::event_loop::EventLoopProxy;
 
 use super::*;
+use crate::event_loop::UserEvent;
 use crate::nav_history::Dir;
 use crate::process_manager::EngineKind;
 use crate::sleep_state::SleepWhy;
-use crate::UserEvent;
 
 /// A headless-mode automation command, one per stdin line (see `parse_line`
 /// for the text grammar). Exists so live GUI testing on this project can

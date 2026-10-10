@@ -357,8 +357,8 @@ fn the_confirm_names_the_jar_and_what_it_costs() {
 }
 
 /// A jar def named `name`, for tests that need chosen ids.
-fn def(name: &str) -> crate::JarDef {
-    crate::JarDef { name: name.into(), color: None, ephemeral: false }
+fn def(name: &str) -> super::JarDef {
+    super::JarDef { name: name.into(), color: None, ephemeral: false }
 }
 
 fn id(counter: u64) -> NodeId {
@@ -371,7 +371,7 @@ fn a_label_is_the_name_unless_another_jar_shares_it() {
     let mut defs = BTreeMap::new();
     defs.insert(id(1), def("Work"));
     defs.insert(id(2), def("Home"));
-    let plain = |n, defs: &BTreeMap<NodeId, crate::JarDef>| named_jar_label(id(n), defs).map(|l| l.to_string());
+    let plain = |n, defs: &BTreeMap<NodeId, super::JarDef>| named_jar_label(id(n), defs).map(|l| l.to_string());
     assert_eq!(plain(1, &defs).as_deref(), Some("Work"));
     assert_eq!(jar_fragment(id(1), &defs), None);
     assert_eq!(named_jar_label(id(9), &defs), None, "no such jar");

@@ -3,7 +3,8 @@ use crate::redirect_fetch::{FetchResult, FetchTarget};
 use crate::store::journal::Journal;
 use crate::store::model::ActorId;
 use crate::store::testutil::{temp_dir, XorShift};
-use crate::{NodeAction, SpawnPurpose};
+use crate::tabs::SpawnPurpose;
+use crate::NodeAction;
 
 const A: ActorId = ActorId(0xA);
 
@@ -1249,7 +1250,7 @@ fn a_new_tab_lands_at_its_spawn_position_in_the_layout_and_the_document() {
     let mut app = app_on(&path, 1);
     let t = app.alloc_node_id();
     let at = egui::vec2(30.0, 40.0);
-    app.spawn_tab_async(crate::TabSpawn::new(
+    app.spawn_tab_async(crate::tabs::TabSpawn::new(
         t.clone(),
         "https://t/".into(),
         EngineKind::Servo,
@@ -1835,9 +1836,9 @@ fn fail_spawns(app: &mut App) {
     }
 }
 
-fn fail_spawn(app: &mut App, (spawn, generation): (crate::TabSpawn, u64)) {
+fn fail_spawn(app: &mut App, (spawn, generation): (crate::tabs::TabSpawn, u64)) {
     let result = Err(std::io::Error::other("no engine").into());
-    app.handle_tab_spawn_result(crate::TabSpawnOutcome {
+    app.handle_tab_spawn_result(crate::tabs::TabSpawnOutcome {
         spawn,
         generation,
         result,
@@ -1853,7 +1854,7 @@ fn succeed_spawn(app: &mut App, url: &str) -> String {
     let at = app.test_spawns.iter().position(|(spawn, _)| spawn.id == id).expect("the spawn is parked");
     let (spawn, generation) = app.test_spawns.remove(at);
     let (tab, _peer) = crate::process_manager::EngineTab::fake(spawn.kind);
-    app.handle_tab_spawn_result(crate::TabSpawnOutcome {
+    app.handle_tab_spawn_result(crate::tabs::TabSpawnOutcome {
         spawn,
         generation,
         result: Ok(tab),
@@ -1976,7 +1977,7 @@ fn clearing_failed_cards_does_not_save_before_a_parked_remote_delete_lands() {
     let at = app.test_spawns.iter().position(|(spawn, _)| spawn.id == id).expect("the spawn is parked");
     let (spawn, generation) = app.test_spawns.remove(at);
     let (tab, _peer) = crate::process_manager::EngineTab::fake(spawn.kind);
-    app.handle_tab_spawn_result(crate::TabSpawnOutcome {
+    app.handle_tab_spawn_result(crate::tabs::TabSpawnOutcome {
         spawn,
         generation,
         result: Ok(tab),
@@ -3292,7 +3293,7 @@ fn a_save_during_a_respawn_keeps_the_mirror_entry() {
     assert!(app.save_session());
     // What `finish_swap` and the crash path do: carry from the mirror, remove the node, respawn.
     app.nodes.remove(&tab).unwrap();
-    let mut spawn = crate::TabSpawn::new(
+    let mut spawn = crate::tabs::TabSpawn::new(
         tab.clone(),
         "https://a/".into(),
         EngineKind::Servo,
@@ -3776,7 +3777,7 @@ fn a_move_the_store_refuses_as_a_cycle_leaves_the_document_acyclic() {
 fn start_respawn(app: &mut App, tab: &str) {
     app.nodes.remove(tab).unwrap();
     let carried = app.mirror.carried(tab);
-    let mut spawn = crate::TabSpawn::new(
+    let mut spawn = crate::tabs::TabSpawn::new(
         tab.to_owned(),
         "https://t/".into(),
         EngineKind::Servo,
@@ -3911,7 +3912,7 @@ fn a_new_spawn_into_a_group_dissolved_in_flight_lands_where_the_document_shows_i
     app.edit_group(&g, Some(outer.clone()));
     assert!(app.save_session());
     let t = app.alloc_node_id();
-    let mut spawn = crate::TabSpawn::new(
+    let mut spawn = crate::tabs::TabSpawn::new(
         t.clone(),
         "https://t/".into(),
         EngineKind::Servo,
@@ -4033,7 +4034,7 @@ fn a_spawning_tab_is_created_and_lands_with_its_url() {
     let path = temp_dir("url-spawn").join("session.mnf");
     let mut app = app_on(&path, 1);
     let t = app.alloc_node_id();
-    let spawn = crate::TabSpawn::new(
+    let spawn = crate::tabs::TabSpawn::new(
         t.clone(),
         "https://t/".into(),
         EngineKind::Servo,
@@ -4191,7 +4192,7 @@ fn a_spawning_tab_is_created_and_lands_with_its_jar() {
     assert!(app.save_session());
     // A restored tab (a failed `New` spawn never lands), started with G's default as `spawn_tab_at` gives one.
     let t = app.alloc_node_id();
-    let mut spawn = crate::TabSpawn::new(
+    let mut spawn = crate::tabs::TabSpawn::new(
         t.clone(),
         "https://t/".into(),
         EngineKind::Servo,
@@ -4425,7 +4426,7 @@ fn land_spawns(app: &mut App) -> Vec<Peer> {
     let mut peers = Vec::new();
     for (spawn, generation) in std::mem::take(&mut app.test_spawns) {
         let (tab, peer) = crate::process_manager::EngineTab::fake(spawn.kind);
-        app.handle_tab_spawn_result(crate::TabSpawnOutcome {
+        app.handle_tab_spawn_result(crate::tabs::TabSpawnOutcome {
             spawn,
             generation,
             result: Ok(tab),
@@ -4600,7 +4601,7 @@ fn a_remote_engine_parked_during_a_swap_respawn_is_swapped_to_when_it_lands() {
 fn spawn_with_jar(app: &mut App, purpose: SpawnPurpose, jar: NodeId) -> String {
     let t = app.alloc_node_id();
     let mut spawn =
-        crate::TabSpawn::new(t.clone(), "https://t/".into(), EngineKind::Servo, egui::Vec2::ZERO, purpose, 1.0);
+        crate::tabs::TabSpawn::new(t.clone(), "https://t/".into(), EngineKind::Servo, egui::Vec2::ZERO, purpose, 1.0);
     spawn.jar = JarChoice { jar: Some(jar), set: true };
     app.spawn_tab_async(spawn);
     t
@@ -4741,7 +4742,7 @@ fn every_creation_path_seeds_the_node_type() {
 
     // A tab that lands from a spawn (`seed_landing`).
     let t = app.alloc_node_id();
-    let spawn = crate::TabSpawn::new(
+    let spawn = crate::tabs::TabSpawn::new(
         t.clone(),
         "https://t.test/".into(),
         EngineKind::Servo,
@@ -4753,7 +4754,7 @@ fn every_creation_path_seeds_the_node_type() {
     fail_spawns(&mut app);
     assert_eq!(app.mirror.ty(&t), ty(Kind::Tab), "a failed landing");
     let live = app.alloc_node_id();
-    let spawn = crate::TabSpawn::new(
+    let spawn = crate::tabs::TabSpawn::new(
         live.clone(),
         "https://l.test/".into(),
         EngineKind::Servo,
