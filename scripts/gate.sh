@@ -3,15 +3,15 @@
 #
 # The pre-merge gate: sequential, so load from other sessions is the only thing that stretches it.
 #   full  (default): two-instance-test x3 + headless-smoke-test x1 + launch-forms-probe + link-probe. Use for any
-#                    change to sync, the store, the mirror, session save/restore or the engines. ~FULL_MIN min on a
-#                    quiet machine (measured DATE).
+#                    change to sync, the store, the mirror, session save/restore or the engines. ~11 min on a
+#                    quiet-ish machine (measured 2026-10-09 at 30-35% CPU from other sessions, so an upper bound).
 #   light:           two-instance-test x1 + headless-smoke-test x1 + launch-forms-probe + link-probe. Allowed when
 #                    only UI code that writes the store or reaches an engine changed (gestures, menus), or scripts:
-#                    ~LIGHT_MIN min quiet. The repeats in `full` exist to catch flaky ordering in sync, which
+#                    ~8.5 min (same conditions). The repeats in `full` exist to catch flaky ordering in sync, which
 #                    UI-only changes cannot reach.
 #   ui:              `cargo test` of the three CI crates + link-probe. For changes to drawing, input and view-state
 #                    modules that import no store, sync or network module (the list is in gate-tier.sh), and docs:
-#                    ~UI_MIN min quiet.
+#                    ~2 min (same conditions).
 # Build first (`cargo build -j 8 -p manifold -p manifold-engine-webview2`; `-p manifold` alone leaves the WebView2 host
 # old): every probe stage runs the existing exes. Launch detached and low priority:
 #   cmd //c start "" //b //belownormal bash scripts/gate.sh LOG [mode]
