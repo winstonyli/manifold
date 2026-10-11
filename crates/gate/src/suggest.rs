@@ -7,18 +7,15 @@
 //! other path is a 404 here. It kept a `page.log` of those routes' requests; the smoke test never reads one, so
 //! the log here is the paths requested, in memory (`Server::requests`).
 //!
+//! The server itself is `http::Server`.
+//!
 //! Also here: the query-string decoding both the server and the smoke test's `q` variable need (python's
 //! `urllib.parse.parse_qs`).
 
-use std::io::{self, Read, Write};
-use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::io;
 use std::sync::{Arc, Mutex};
-use std::thread::{self, JoinHandle};
-use std::time::Duration;
 
-/// A connection that sends nothing is dropped after this long (python's server would wait forever in a thread).
-const READ_TIMEOUT: Duration = Duration::from_secs(5);
+use crate::http;
 
 /// Python's `unquote(s.replace('+', ' '))`: `+` is a space, `%XX` a byte, the bytes read as UTF-8 with invalid
 /// sequences replaced (`errors='replace'`). A `%` not followed by two hex digits stays as it is.
@@ -81,68 +78,32 @@ pub fn respond(request_line: &str) -> Vec<u8> {
     } else {
         ("404 Not Found", "text/plain", String::new())
     };
-    format!(
-        "HTTP/1.0 {status}\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-        body.len()
-    )
-    .into_bytes()
+    http::response(status, &[], ctype, body.as_bytes())
 }
 
-fn handle(mut stream: TcpStream, log: &Mutex<Vec<String>>) -> io::Result<()> {
-    stream.set_read_timeout(Some(READ_TIMEOUT))?;
-    let mut head = Vec::new();
-    let mut buf = [0u8; 1024];
-    while !head.windows(4).any(|w| w == b"\r\n\r\n") && head.len() < 16 * 1024 {
-        let n = stream.read(&mut buf)?;
-        if n == 0 {
-            break;
-        }
-        head.extend_from_slice(&buf[..n]);
-    }
-    let text = String::from_utf8_lossy(&head);
-    let line = text.lines().next().unwrap_or("");
-    if let Ok(mut l) = log.lock() {
-        l.push(line.split(' ').nth(1).unwrap_or("").to_string());
-    }
-    stream.write_all(&respond(line))?;
-    stream.shutdown(Shutdown::Both)
-}
-
-/// The running endpoint. Dropping it stops the accept loop.
+/// The running endpoint. Dropping it stops the server.
 pub struct Server {
-    addr: SocketAddr,
-    stop: Arc<AtomicBool>,
+    http: http::Server,
     log: Arc<Mutex<Vec<String>>>,
-    thread: Option<JoinHandle<()>>,
 }
 
 impl Server {
     /// Listens on `127.0.0.1` with an ephemeral port and answers each connection on a thread of its own.
     pub fn start() -> io::Result<Server> {
-        let listener = TcpListener::bind(("127.0.0.1", 0))?;
-        let addr = listener.local_addr()?;
-        let stop = Arc::new(AtomicBool::new(false));
         let log = Arc::new(Mutex::new(Vec::new()));
-        let (stop2, log2) = (stop.clone(), log.clone());
-        let thread = thread::spawn(move || {
-            for stream in listener.incoming() {
-                if stop2.load(Ordering::SeqCst) {
-                    break;
-                }
-                if let Ok(stream) = stream {
-                    let log = log2.clone();
-                    thread::spawn(move || {
-                        let _ = handle(stream, &log);
-                    });
-                }
+        let log2 = log.clone();
+        let http = http::Server::start(Arc::new(move |line: &str| {
+            if let Ok(mut l) = log2.lock() {
+                l.push(line.split(' ').nth(1).unwrap_or("").to_string());
             }
-        });
-        Ok(Server { addr, stop, log, thread: Some(thread) })
+            respond(line)
+        }))?;
+        Ok(Server { http, log })
     }
 
     /// The value for `MANIFOLD_SUGGESTIONS_URL`.
     pub fn url(&self) -> String {
-        format!("http://127.0.0.1:{}/ac/", self.addr.port())
+        format!("http://127.0.0.1:{}/ac/", self.http.port())
     }
 
     /// The request targets seen so far (path and query), oldest first.
@@ -151,19 +112,11 @@ impl Server {
     }
 }
 
-impl Drop for Server {
-    fn drop(&mut self) {
-        self.stop.store(true, Ordering::SeqCst);
-        // Wake the accept loop so it sees the flag.
-        let _ = TcpStream::connect(self.addr);
-        if let Some(t) = self.thread.take() {
-            let _ = t.join();
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
+    use std::io::{Read, Write};
+    use std::net::TcpStream;
+
     use super::*;
 
     #[test]

@@ -10,10 +10,13 @@
 
 mod check;
 mod fresh;
+mod http;
 #[cfg(windows)]
 mod instance;
 #[cfg(windows)]
 mod link;
+mod nonce;
+mod session;
 #[cfg(windows)]
 mod smoke;
 mod state;
