@@ -14,14 +14,9 @@ ipc-protocol.workspace = true
 # strip-outer-quotes trick `input.rs`'s href parsing gets away with isn't
 # safe there (a page body can contain literal `"`/`\n`/etc, a link href
 # effectively never does).
-serde_json = "1"
-# Pinned to match webview2-com's own workspace pin (wravery/webview2-rs
-# Cargo.toml) exactly -- COM/WinRT interface types from a mismatched
-# `windows` version are not interchangeable with webview2-com's, so this
-# must track whatever version webview2-com itself was built against, not
-# float independently.
-webview2-com = "0.39.1"
-windows = { version = "0.62", features = [
+serde_json.workspace = true
+webview2-com.workspace = true
+windows = { workspace = true, features = [
     "Win32_Foundation",
     "Win32_System_Com",
     "Win32_System_LibraryLoader",
@@ -53,15 +48,11 @@ windows = { version = "0.62", features = [
     "System",
     "Win32_UI_Input_KeyboardAndMouse",
 ] }
-# Real dependency now (`composition.rs`'s `Vector2` for visual sizing), not
-# example-only -- pinned to match the version `windows` 0.62.2 itself
-# depends on (see that crate's own `[dependencies.windows-numerics]`), same
-# reasoning as the `webview2-com` pin above.
-windows-numerics = { version = "0.3.1", default-features = false, features = ["std"] }
+windows-numerics.workspace = true
 
 [dev-dependencies]
 # Only used by the Phase-2 capture spike (examples/capture_spike.rs) to
 # dump a captured frame to a PNG for visual verification -- not needed by
 # the real engine-host binary, which writes raw bytes into SharedFrameBuffer
 # instead.
-image = { version = "0.25", default-features = false, features = ["png"] }
+image.workspace = true

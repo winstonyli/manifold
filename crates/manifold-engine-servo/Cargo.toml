@@ -8,10 +8,10 @@ description.workspace = true
 workspace = true
 
 [dependencies]
-dpi = "0.1.2"
-euclid = "0.22.14"
+dpi.workspace = true
+euclid.workspace = true
 ipc-protocol.workspace = true
-rustls = { version = "0.23.44", default-features = false, features = ["aws-lc-rs"] }
-servo = { version = "0.5.0", features = ["no-wgl"] }
-url = "2.5.8"
-webrender_api = "0.70.0"
+rustls = { workspace = true, features = ["aws-lc-rs"] }
+servo = { workspace = true, features = ["no-wgl"] }
+url.workspace = true
+webrender_api.workspace = true

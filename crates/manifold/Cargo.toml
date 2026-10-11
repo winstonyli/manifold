@@ -8,90 +8,35 @@ description.workspace = true
 workspace = true
 
 [dependencies]
-egui = "0.36.2"
-# `light` (not the default `regular`) -- see `apply_fonts`'s own doc comment
-# for why: a lighter icon weight sits better against the serif-forward,
-# less-heavy typography this app's chrome now uses.
-egui-phosphor = { version = "0.14.0", default-features = false, features = ["light"] }
-egui-wgpu = "0.36.2"
-egui-winit = { version = "0.36.2", features = ["accesskit"] }
-# Notes rendered as real Markdown -- `default-features = false` drops this
-# crate's own `load-images` (default-on): a note's body is user-typed text,
-# and rendering an `![alt](url)` inside it would otherwise fire a real,
-# unreviewed HTTP GET the instant a note renders, purely from typing a URL
-# into it -- the same passive-tracking-pixel concern email clients disable
-# remote image loading for by default. `pulldown_cmark` is the actual
-# Markdown parser backend; nothing here needs the crate's other optional
-# features (syntax highlighting, SVG, its own macros).
-egui_commonmark = { version = "0.25.0", default-features = false, features = ["pulldown_cmark"] }
-# Cross-platform per-user data dir (XDG on Linux, Known Folders on Windows,
-# Application Support on macOS) -- for the not-yet-built on-demand
-# engine-host download/install step, so that logic won't need rewriting
-# when this project ports off Windows-only.
-etcetera = "0.11"
-image = { version = "0.25", default-features = false, features = ["png", "jpeg", "ico", "webp", "bmp", "gif"] }
+egui.workspace = true
+egui-phosphor = { workspace = true, features = ["light"] }
+egui-wgpu.workspace = true
+egui-winit = { workspace = true, features = ["accesskit"] }
+egui_commonmark = { workspace = true, features = ["pulldown_cmark"] }
+etcetera.workspace = true
+image = { workspace = true, features = ["jpeg", "ico", "webp", "bmp", "gif"] }
 ipc-protocol.workspace = true
-# PDF node rendering. Pinned to `0.8.37` specifically, matching whatever
-# version `pdfium-auto` itself depends on exactly (`0.3.1` -> `0.8.37`, one
-# version older than this crate's own latest `0.9.4`) -- a mismatched pin
-# here resolves as two distinct, incompatible `Pdfium` types in the
-# dependency graph (confirmed live: `cargo build` failed with exactly that
-# type mismatch until pinned to match). Default features (pdfium_latest/
-# image_latest/thread_safe) already give the exact `image_025` ->
-# `image::RgbaImage` integration this project wants -- see README's own
-# research writeup for why this over mupdf-rs (AGPL) / poppler-rs (GTK,
-# Linux-first).
-pdfium-render = "=0.8.37"
-# Downloads and caches the actual `pdfium.dll` (pdfium-render only vendors
-# the FFI bindings, not a real binary) from the canonical bblanchon/
-# pdfium-binaries releases, lazily on first real use -- not a build.rs
-# fetch, so `cargo build` itself stays offline-friendly and there's no
-# `sync-runtime-deps.sh`-style copy step needed the way CEF/Servo's own
-# bundled runtimes require.
-pdfium-auto = "0.3"
-pollster = "1.0.1"
-# For pulling the window's raw HWND to force a dark native titlebar (see
-# `apply_dark_titlebar` in main.rs) -- winit 0.30 already implements this
-# trait internally, this just exposes its types to this crate directly.
-raw-window-handle = "0.6"
-# Hasher for `App::nodes` (a `HashMap<String, GraphNode>` keyed by an
-# app-generated, never untrusted-input-derived id, looked up many times
-# per frame across the Graph-view render loops) -- `std::collections::
-# HashMap`'s own default hasher (SipHash) is deliberately DoS-resistant
-# against adversarial keys, a guarantee this map has no use for and pays
-# for on every lookup regardless. Already fully resolved in this
-# workspace's own dependency tree (it's `hashbrown`'s own default-hasher
-# dependency, and this project already pulls in two `hashbrown` versions
-# transitively via `wgpu`/`naga`) -- adding it directly here is zero net
-# new dependency footprint, not a new crate. Used as a plain `BuildHasher`
-# for `std::collections::HashMap` directly (`foldhash::fast::RandomState`),
-# not via `hashbrown::HashMap` itself -- that keeps `self.nodes`'s actual
-# type identical to before (same `std::collections::HashMap`, just a
-# different third generic parameter), so every existing call site across
-# this file keeps compiling unchanged.
-foldhash = "0.2"
-# OS randomness for the session store's per-launch actor ids, document
-# ids and file generations (`store::model`, `store::journal`).
-getrandom = "0.3"
-bzip2 = "0.6.1"
-rfd = "0.15"
-serde = { version = "1", features = ["derive"] }
-serde_json = { version = "1", features = ["preserve_order"] }
-sha1 = "0.10.7"
-sha2 = "0.10.9"
-tar = "0.4.46"
-# Name rules (names.rs): general categories and Extended_Pictographic for the hidden characters and emoji
-# sequences (already built for url's idna), grapheme clusters for the 64 cap.
-icu_properties = "2.3.0"
-unicode-segmentation = "1.13.3"
-ureq = "3"
-wgpu = "30.0.1"
-winit = "0.30.13"
+pdfium-render.workspace = true
+pdfium-auto.workspace = true
+pollster.workspace = true
+raw-window-handle.workspace = true
+foldhash.workspace = true
+getrandom.workspace = true
+bzip2.workspace = true
+rfd.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true, features = ["preserve_order"] }
+sha1.workspace = true
+sha2.workspace = true
+tar.workspace = true
+icu_properties.workspace = true
+unicode-segmentation.workspace = true
+ureq.workspace = true
+wgpu.workspace = true
+winit.workspace = true
 
 [dev-dependencies]
-# Reads the monospace font's character map in names::tests (already in Cargo.lock through epaint). Exact, because
-# Cargo.lock holds two skrifa versions.
-skrifa = "=0.44.0"
+skrifa.workspace = true
 
 # Windows-only dependencies. `manifold` also compiles on Linux (`cargo check
 # -p manifold` under WSL), and `windows` pulls `windows-future`, which does not
@@ -99,10 +44,10 @@ skrifa = "=0.44.0"
 [target.'cfg(windows)'.dependencies]
 # Only for `SetProcessDpiAwarenessContext` at startup -- see `main()`'s own
 # doc comment on it.
-windows = { version = "0.62", features = ["Win32_UI_HiDpi", "Win32_Security_Cryptography"] }
+windows = { workspace = true, features = ["Win32_UI_HiDpi", "Win32_Security_Cryptography"] }
 # Forces the native titlebar dark regardless of the OS theme setting (see
 # `apply_dark_titlebar`'s own doc comment in theme.rs), plus the uses below.
-windows-sys = { version = "0.59", features = [
+windows-sys = { workspace = true, features = [
     "Win32_Foundation",
     "Win32_Graphics_Dwm",
     # For `App::cursor_point` (drag and drop): the drop point isn't

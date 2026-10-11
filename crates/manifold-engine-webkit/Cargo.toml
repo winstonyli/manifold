@@ -8,8 +8,8 @@ description.workspace = true
 workspace = true
 
 [dependencies]
-gtk = "0.18"
+gtk.workspace = true
 ipc-protocol.workspace = true
-javascriptcore = { package = "javascriptcore-rs", version = "1.1" }
-url = "2.5.8"
-webkit2gtk = { version = "2.0.2", features = ["v2_30"] }
+javascriptcore.workspace = true
+url.workspace = true
+webkit2gtk = { workspace = true, features = ["v2_30"] }

@@ -18,6 +18,116 @@ description = "A browser where each tab can run on a different rendering engine 
 [workspace.dependencies]
 ipc-protocol = { path = "crates/ipc-protocol" } # path only: nothing is published, so no version to bump
 
+bzip2 = "0.6.1"
+# `build-util` and `resources` are enabled by crates/manifold-engine-cef.
+cef = { version = "152.1.0", default-features = false }
+dpi = "0.1.2"
+egui = "0.36.2"
+# Notes rendered as real Markdown -- `default-features = false` drops this
+# crate's own `load-images` (default-on): a note's body is user-typed text,
+# and rendering an `![alt](url)` inside it would otherwise fire a real,
+# unreviewed HTTP GET the instant a note renders, purely from typing a URL
+# into it -- the same passive-tracking-pixel concern email clients disable
+# remote image loading for by default. `pulldown_cmark` is the actual
+# Markdown parser backend; nothing here needs the crate's other optional
+# features (syntax highlighting, SVG, its own macros).
+egui_commonmark = { version = "0.25.0", default-features = false }
+# `light` (not the default `regular`) -- see `apply_fonts`'s own doc comment
+# for why: a lighter icon weight sits better against the serif-forward,
+# less-heavy typography this app's chrome now uses.
+egui-phosphor = { version = "0.14.0", default-features = false }
+egui-wgpu = "0.36.2"
+egui-winit = "0.36.2"
+# Cross-platform per-user data dir (XDG on Linux, Known Folders on Windows,
+# Application Support on macOS) -- for the not-yet-built on-demand
+# engine-host download/install step, so that logic won't need rewriting
+# when this project ports off Windows-only.
+etcetera = "0.11"
+euclid = "0.22.14"
+# Hasher for `App::nodes` (a `HashMap<String, GraphNode>` keyed by an
+# app-generated, never untrusted-input-derived id, looked up many times
+# per frame across the Graph-view render loops) -- `std::collections::
+# HashMap`'s own default hasher (SipHash) is deliberately DoS-resistant
+# against adversarial keys, a guarantee this map has no use for and pays
+# for on every lookup regardless. Already fully resolved in this
+# workspace's own dependency tree (it's `hashbrown`'s own default-hasher
+# dependency, and this project already pulls in two `hashbrown` versions
+# transitively via `wgpu`/`naga`) -- adding it directly here is zero net
+# new dependency footprint, not a new crate. Used as a plain `BuildHasher`
+# for `std::collections::HashMap` directly (`foldhash::fast::RandomState`),
+# not via `hashbrown::HashMap` itself -- that keeps `self.nodes`'s actual
+# type identical to before (same `std::collections::HashMap`, just a
+# different third generic parameter), so every existing call site across
+# this file keeps compiling unchanged.
+foldhash = "0.2"
+# OS randomness for the session store's per-launch actor ids, document
+# ids and file generations (`store::model`, `store::journal`).
+getrandom = "0.3"
+gtk = "0.18"
+# Name rules (names.rs): general categories and Extended_Pictographic for the hidden characters and emoji
+# sequences (already built for url's idna), grapheme clusters for the 64 cap.
+icu_properties = "2.3.0"
+# PNG decoding only by default; crates/manifold adds the other codecs.
+image = { version = "0.25", default-features = false, features = ["png"] }
+interprocess = "2.4.4"
+javascriptcore = { package = "javascriptcore-rs", version = "1.1" }
+memmap2 = "0.9.11"
+# PDF node rendering. Pinned to `0.8.37` specifically, matching whatever
+# version `pdfium-auto` itself depends on exactly (`0.3.1` -> `0.8.37`, one
+# version older than this crate's own latest `0.9.4`) -- a mismatched pin
+# here resolves as two distinct, incompatible `Pdfium` types in the
+# dependency graph (confirmed live: `cargo build` failed with exactly that
+# type mismatch until pinned to match). Default features (pdfium_latest/
+# image_latest/thread_safe) already give the exact `image_025` ->
+# `image::RgbaImage` integration this project wants -- see README's own
+# research writeup for why this over mupdf-rs (AGPL) / poppler-rs (GTK,
+# Linux-first).
+pdfium-render = "=0.8.37"
+# Downloads and caches the actual `pdfium.dll` (pdfium-render only vendors
+# the FFI bindings, not a real binary) from the canonical bblanchon/
+# pdfium-binaries releases, lazily on first real use -- not a build.rs
+# fetch, so `cargo build` itself stays offline-friendly and there's no
+# `sync-runtime-deps.sh`-style copy step needed the way CEF/Servo's own
+# bundled runtimes require.
+pdfium-auto = "0.3"
+pollster = "1.0.1"
+postcard = { version = "1.1.3", default-features = false }
+# For pulling the window's raw HWND to force a dark native titlebar (see
+# `apply_dark_titlebar` in main.rs) -- winit 0.30 already implements this
+# trait internally, this just exposes its types to this crate directly.
+raw-window-handle = "0.6"
+rfd = "0.15"
+rustls = { version = "0.23.44", default-features = false }
+serde = "1.0.229" # crates/manifold had "1"; both resolve to the same locked version
+serde_json = "1"
+servo = "0.5.0"
+sha1 = "0.10.7"
+sha2 = "0.10.9"
+# Reads the monospace font's character map in names::tests (already in Cargo.lock through epaint). Exact, because
+# Cargo.lock holds two skrifa versions.
+skrifa = "=0.44.0"
+tar = "0.4.46"
+unicode-segmentation = "1.13.3"
+ureq = "3"
+url = "2.5.8"
+webkit2gtk = "2.0.2"
+webrender_api = "0.70.0"
+# Pinned to match webview2-com's own workspace pin (wravery/webview2-rs
+# Cargo.toml) exactly -- COM/WinRT interface types from a mismatched
+# `windows` version are not interchangeable with webview2-com's, so this
+# must track whatever version webview2-com itself was built against, not
+# float independently.
+webview2-com = "0.39.1"
+wgpu = "30.0.1"
+windows = "0.62"
+# Real dependency now (`composition.rs`'s `Vector2` for visual sizing), not
+# example-only -- pinned to match the version `windows` 0.62.2 itself
+# depends on (see that crate's own `[dependencies.windows-numerics]`), same
+# reasoning as the `webview2-com` pin above.
+windows-numerics = { version = "0.3.1", default-features = false, features = ["std"] }
+windows-sys = "0.59"
+winit = "0.30.13"
+
 [workspace.lints.clippy]
 # An #[allow] must say why. Not `allow_attributes` as well: it pushes toward #[expect], which on cfg-dependent
 # code (the Windows-only read-only tests, `cfg_attr(not(unix), ...)`) goes unfulfilled on one target and fails
