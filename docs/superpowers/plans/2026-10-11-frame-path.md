@@ -460,3 +460,14 @@ Five adversarial passes over the plan, each re-reading the code it cites. Design
   - `was_hidden`'s exact binding in the `cef` crate wasn't checked: hedged, implementer confirms.
   - "Zero downsample passes in Item view" ignored any card on screen: qualified.
 - **Round 5 (full pass).** Checked: the reader/drain race (a frame read while the next is written is covered by the next report's rows), the inline path (WebKit pixels are always whole, so a merged band reads from the newest full buffer), engine respawn (a new sink reports whole), and the Unix create path (rename, no 1224). Nothing material found.
+
+## Outcome (2026-10-11)
+
+Tasks 2-5 landed on `main`: `FrameSink` (7826f5a), the four engines on it (8abca96), band upload (ef32fdb), thumbnails flushed when drawn (0812a11). Task 7 (generation-named frame files) is parked on Decision 3.
+
+- **Gate:** `scripts/gate.sh full` at 0812a11 plus docs: `gate two` 66/66 three times (58-62 s), `gate smoke` 54/54 (63 s), launch-forms 7/7, `gate link` 30/30. 06:15-06:20, CPU 37.9% at start from other sessions, Defender real-time protection off. Total about 5 minutes.
+- **Live checks (headless, WebView2 and CEF):** a static tab shown again is byte-identical to its first screenshot; Graph cards show the page; a page that changes once ends byte-identical under band and whole uploads; the changed paragraph reaches the card after a Graph toggle and after a tab switch (the free-flush path); no downsample passes in Item view with one animated tab focused. Graph parity before/after: three static pages, identical (WebView2 only).
+- **Band sizes (800x562 spinner page):** uploads were 28-37 rows (5-7% of the frame); loads and resizes were whole.
+- **Not re-measured:** per-upload CPU time and frames sent per second after the change (Task 6 Step 3's counters were not re-run; only rows per upload were logged). M2b's whole-frame figure (8.5 ms) and band figure (0.6 ms) from Task 1 stand as the expected effect.
+- **Not run live:** Servo and WebKit (both build; Servo by `cargo check` in `target-servo`, WebKit in WSL). The stale-texture path (`mark_stale`) has no test since it needs a GPU.
+- **Open:** the capture adapter differs from the app's (iGPU vs eGPU); the cross-adapter copy is unmeasured. CEF screenshots render at a smaller scale than WebView2's, probably old, not investigated.
