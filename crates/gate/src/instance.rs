@@ -147,6 +147,17 @@ impl Instance {
     /// Starts `exe --headless --profile-dir PROFILE` at BelowNormal in the kill-on-close job, its output in
     /// `WORK/LOG_NAME`. The caller seeds the profile first (`seed_settings`). The exports go to `WORK`.
     pub fn launch(exe: &Path, profile: &Path, work: &Path, log_name: &str) -> io::Result<Instance> {
+        Self::launch_env(exe, profile, work, log_name, &[])
+    }
+
+    /// `launch` with extra environment variables for the instance (the smoke test's `MANIFOLD_SUGGESTIONS_URL`).
+    pub fn launch_env(
+        exe: &Path,
+        profile: &Path,
+        work: &Path,
+        log_name: &str,
+        envs: &[(&str, &str)],
+    ) -> io::Result<Instance> {
         fs::create_dir_all(work)?;
         let log = work.join(log_name);
         let out = File::create(&log)?;
@@ -155,6 +166,7 @@ impl Instance {
             .arg("--headless")
             .arg("--profile-dir")
             .arg(profile)
+            .envs(envs.iter().copied())
             .stdin(Stdio::piped())
             .stdout(out)
             .stderr(err)

@@ -20,7 +20,7 @@ use crate::windows_main::{manifold_exe, work_dir};
 /// How long an instance may take to exit after QUIT.
 const QUIT_TIMEOUT: Duration = Duration::from_secs(60);
 
-fn bad(msg: String) -> io::Error {
+pub(crate) fn bad(msg: String) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, msg)
 }
 
@@ -29,7 +29,7 @@ fn rnd(v: &Value) -> io::Result<i64> {
     v.as_f64().map(|f| round_half_even(f) as i64).ok_or_else(|| bad(format!("not a number: {v}")))
 }
 
-fn num(v: &Value) -> io::Result<f64> {
+pub(crate) fn num(v: &Value) -> io::Result<f64> {
     v.as_f64().ok_or_else(|| bad(format!("not a number: {v}")))
 }
 
@@ -56,7 +56,7 @@ fn summary(s: &State) -> (usize, String) {
 
 /// Python's `str()` of a JSON value, as `print(d[key])` shows it; a missing key is `<missing>` (the python would
 /// have raised KeyError and printed a traceback, so the check fails either way).
-fn py_str(v: Option<&Value>) -> String {
+pub(crate) fn py_str(v: Option<&Value>) -> String {
     match v {
         None => "<missing>".to_string(),
         Some(Value::Null) => "None".to_string(),
@@ -73,7 +73,7 @@ fn field(s: &State, key: &str) -> String {
 }
 
 /// Python truthiness of a JSON value (`if v`).
-fn truthy(v: &Value) -> bool {
+pub(crate) fn truthy(v: &Value) -> bool {
     match v {
         Value::Null => false,
         Value::Bool(b) => *b,
@@ -169,7 +169,7 @@ fn steps(i: &mut Instance, from: (i64, i64), to: (i64, i64)) -> io::Result<()> {
 }
 
 /// Replaces the verdict words, so a log line that happens to contain one is not counted by gate.sh.
-fn no_verdict_words(text: &str) -> String {
+pub(crate) fn no_verdict_words(text: &str) -> String {
     text.replace("PASS", "P-ASS").replace("FAIL", "F-AIL")
 }
 

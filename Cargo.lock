@@ -3090,6 +3090,7 @@ dependencies = [
 name = "gate"
 version = "0.4.1"
 dependencies = [
+ "image",
  "serde_json",
  "windows-sys 0.59.0",
 ]
