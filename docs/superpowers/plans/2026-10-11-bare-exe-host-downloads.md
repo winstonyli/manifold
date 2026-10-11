@@ -47,10 +47,10 @@
 
 Each is a throwaway in the session scratchpad; record the result in "Spike results" at the bottom of this file.
 
-- [ ] **Step 1: Servo host's file set.** Copy `target-servo/debug/manifold-engine-servo.exe` alone to an empty temp dir and run it as the app does (`ENGINE_*` env, see `spawn_tab`) or launch a headless manifold with it as sibling; add `libEGL.dll` and `libGLESv2.dll` and repeat. Record: DLL imports (`llvm-objdump -p`), which files it needs, whether anything else (resources, fonts) is read from beside the exe. Build a release Servo host if time allows (`CARGO_TARGET_DIR=target-servo cargo build --release -p manifold-engine-servo`, about 33 minutes, BelowNormal, check memory and disk first: 117 GB free, 3.9 GB build) to get the real download size.
-- [ ] **Step 2: WebKit ELF from DrvFs.** Copy `target-linux/debug/manifold-engine-webkit` to a path under `%APPDATA%` (via PowerShell `Copy-Item`, so the file has no Unix exec bit) and run it as `webkit_shell_command` does. Record whether WSL execs it, and if not whether `wsl.exe -- cp` into the distro plus `chmod +x` works.
-- [ ] **Step 3: Defender and SmartScreen on a manifold-written exe.** Write the CEF host from manifold-style code (plain `fs::write` then `rename`) into a fresh `engine-hosts/` and spawn it. Record any block, quarantine or sharing violation, Defender state, and whether a second spawn right after the write needs a retry.
-- [ ] **Step 4: Commit the spike results** into this plan (`docs: bare-exe spike results`).
+- [x] **Step 1: Servo host's file set.** Copy `target-servo/debug/manifold-engine-servo.exe` alone to an empty temp dir and run it as the app does (`ENGINE_*` env, see `spawn_tab`) or launch a headless manifold with it as sibling; add `libEGL.dll` and `libGLESv2.dll` and repeat. Record: DLL imports (`llvm-objdump -p`), which files it needs, whether anything else (resources, fonts) is read from beside the exe. Build a release Servo host if time allows (`CARGO_TARGET_DIR=target-servo cargo build --release -p manifold-engine-servo`, about 33 minutes, BelowNormal, check memory and disk first: 117 GB free, 3.9 GB build) to get the real download size.
+- [x] **Step 2: WebKit ELF from DrvFs.** Copy `target-linux/debug/manifold-engine-webkit` to a path under `%APPDATA%` (via PowerShell `Copy-Item`, so the file has no Unix exec bit) and run it as `webkit_shell_command` does. Record whether WSL execs it, and if not whether `wsl.exe -- cp` into the distro plus `chmod +x` works.
+- [x] **Step 3: Defender and SmartScreen on a manifold-written exe.** Write the CEF host from manifold-style code (plain `fs::write` then `rename`) into a fresh `engine-hosts/` and spawn it. Record any block, quarantine or sharing violation, Defender state, and whether a second spawn right after the write needs a retry.
+- [x] **Step 4: Commit the spike results** into this plan (`docs: bare-exe spike results`).
 
 If Step 1 shows Servo needs more than the three files, Task 4 pins that file set instead; if Step 2 fails, Task 6 is parked with the reason.
 
@@ -136,7 +136,12 @@ Rounds run against the survey and the plan text (2026-10-11):
 
 ## Spike results
 
-*(Task 0 fills this in.)*
+Task 0 ran 2026-10-11 (CPU 22-28% from other sessions, Defender real-time protection off; raw data in the git-ignored `.superpowers/sdd/bare-exe-task0-report.md`).
+
+1. **Servo file set: three files, flat in one folder:** `manifold-engine-servo.exe`, `libEGL.dll` (194 KB), `libGLESv2.dll` (12.5 MB). The host alone panics ("egl function was not loaded") and the tab fails; with both DLLs a tab loads a local page. Static imports are system DLLs only (`d3dcompiler_47.dll` from System32); nothing else is read from beside the exe. Task 4's file set holds. Debug host only (202 MB): the release size is still unknown (the 33-minute build was not run).
+2. **WebKit: Task 6 is go.** WSL runs the ELF straight from the Windows drive: a PowerShell `Copy-Item` of the file (no Unix exec bit) from a scratch dir and from `%APPDATA%` ran through `xvfb-run` and reached "connect to manifold: ConnectionRefused", not permission denied. The mount is 9p drvfs with no metadata option, `/etc/wsl.conf` has no automount section, files show as `rwxrwxrwx`. Untested: a machine with automount metadata enabled (could differ). The `wsl cp` + chmod fallback was not needed.
+3. **Spawn after write:** 26 fresh files, 52 spawns, 0 failures, 0 sharing violations, 0 quarantines, `Get-MpThreatDetection` empty; spawn took about 5.4 ms right after the write and 6.5 ms after 5 s. Not evidence for machines with real-time protection on. Task 3 keeps a small retry (3 attempts, 100 ms apart, on error 32 or 5) as insurance; re-run this spike with protection on before changing it.
+4. Harness note: wrapping `xvfb-run` in `timeout` hangs (`stty size` stops the process with SIGTTIN); it affects test harnesses only.
 
 ## Risks carried
 
