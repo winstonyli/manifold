@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/ipc-protocol",
     "crates/manifold",
+    "crates/gate",
     "crates/manifold-engine-servo",
     "crates/manifold-engine-cef",
     "crates/manifold-engine-webkit",

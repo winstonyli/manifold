@@ -3087,6 +3087,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "gate"
+version = "0.4.1"
+dependencies = [
+ "serde_json",
+ "windows-sys 0.59.0",
+]
+
+[[package]]
 name = "gdk"
 version = "0.18.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"

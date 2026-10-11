@@ -1,0 +1,21 @@
+[package]
+name = "gate"
+version.workspace = true
+edition.workspace = true
+description = "The headless gate flows (link probe, smoke test) as one Rust program: launches manifold --headless, drives it over stdin, checks the exported state."
+
+[lints]
+workspace = true
+
+[dependencies]
+serde_json = "1"
+
+# Windows-only: the Job Object that kills every launched instance if `gate` itself dies. Same crate, version and
+# feature set as crates/manifold's engine-host job (process_manager/job.rs).
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_System_JobObjects",
+    "Win32_Security",
+    "Win32_System_Threading",
+] }

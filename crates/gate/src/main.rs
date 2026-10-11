@@ -1,0 +1,156 @@
+//! `gate <stage>`: the headless gate flows as one Rust program (plan docs/superpowers/plans/2026-10-10-rust-gate-runner.md).
+//! It launches `manifold --headless` itself, drives it over stdin, reads the exported state back and prints the
+//! `PASS:`/`FAIL:`/`TIMING` lines the shell scripts print, so `scripts/gate.sh` can run it as a stage. The exit code is
+//! 0 when no check failed.
+//!
+//! Stages so far: `hello` (one instance: launch, WAITTABS, export, QUIT). Run from the repo after
+//! `cargo build -p manifold -p manifold-engine-webview2 -p gate`; the exe is `manifold.exe` beside `gate.exe`.
+
+#![allow(dead_code, reason = "the runner core's API is used by the link and smoke ports of later tasks, and by tests")]
+
+mod check;
+mod fresh;
+#[cfg(windows)]
+mod instance;
+mod state;
+
+#[cfg(not(windows))]
+fn main() -> std::process::ExitCode {
+    eprintln!("gate drives manifold.exe headless and runs on Windows only");
+    std::process::ExitCode::from(2)
+}
+
+#[cfg(windows)]
+fn main() -> std::process::ExitCode {
+    windows_main::run()
+}
+
+#[cfg(windows)]
+mod windows_main {
+    use std::path::{Path, PathBuf};
+    use std::process::ExitCode;
+    use std::time::Duration;
+
+    use crate::check::{check, check_eq, exit_code, note_failure, Section};
+    use crate::fresh::require_fresh_exe;
+    use crate::instance::{seed_settings, Instance};
+
+    pub fn run() -> ExitCode {
+        let mut args = std::env::args().skip(1);
+        let stage = args.next().unwrap_or_default();
+        let parent = args.next().map(PathBuf::from);
+        match stage.as_str() {
+            "hello" => hello(parent),
+            // Test aid for the "killed gate leaves no manifold.exe" proof; not a gate stage.
+            "hold" => hold(parent),
+            _ => {
+                eprintln!("usage: gate hello [WORKDIR_PARENT]");
+                ExitCode::from(2)
+            }
+        }
+    }
+
+    /// `manifold.exe` beside this exe (`target/debug`), checked fresh.
+    fn manifold_exe() -> Result<PathBuf, String> {
+        let me = std::env::current_exe().map_err(|e| format!("current_exe: {e}"))?;
+        let exe = me.with_file_name("manifold.exe");
+        if !exe.exists() {
+            return Err(format!(
+                "{} not found: cargo build -p manifold -p manifold-engine-webview2 -p gate",
+                exe.display()
+            ));
+        }
+        require_fresh_exe(&exe)?;
+        Ok(exe)
+    }
+
+    /// A fresh work dir (log, exports, profile) under `parent`, default the temp dir.
+    fn work_dir(parent: Option<PathBuf>, stage: &str) -> std::io::Result<PathBuf> {
+        let dir = parent.unwrap_or_else(std::env::temp_dir).join(format!("gate-{stage}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir)?;
+        Ok(dir)
+    }
+
+    fn launch(exe: &Path, work: &Path) -> std::io::Result<Instance> {
+        let profile = work.join("profile");
+        seed_settings(&profile, "webview2", "")?;
+        let inst = Instance::launch(exe, &profile, work, "hello.log")?;
+        // The chosen exe and profile, at the start of every run (LONG_RUNS.md asks for the device; here: the paths).
+        println!("launched pid {} exe {} profile {}", inst.pid(), exe.display(), profile.display());
+        Ok(inst)
+    }
+
+    fn hello(parent: Option<PathBuf>) -> ExitCode {
+        let setup = Section::start("setup");
+        let exe = match manifold_exe() {
+            Ok(exe) => exe,
+            Err(e) => {
+                eprintln!("{e}");
+                return ExitCode::from(1);
+            }
+        };
+        let work = match work_dir(parent, "hello") {
+            Ok(w) => w,
+            Err(e) => {
+                eprintln!("work dir: {e}");
+                return ExitCode::from(1);
+            }
+        };
+        let hello = setup.next("hello");
+        let result = (|| -> std::io::Result<()> {
+            let mut inst = launch(&exe, &work)?;
+            inst.send("WAITTABS")?;
+            let s = inst.export_state("s0")?;
+            check("hello: the headless app exports its state with a cards list", s.0["cards"].is_array());
+            check_eq("hello: one start tab is up", 1, s.tabs().len());
+            check("hello: the Graph view is showing", !s.tab_view());
+            let session = inst.export_session("session0")?;
+            check("hello: the exported session has a nodes list", session["nodes"].is_array());
+            let png = inst.screenshot("shot0")?;
+            check("hello: a screenshot is written", std::fs::metadata(&png).is_ok_and(|m| m.len() > 2000));
+            let status = inst.quit(Duration::from_secs(30))?;
+            check("hello: the app exits with 0 after QUIT", status.success());
+            check("hello: no instance is left running", !inst.is_running());
+            if crate::check::failures() > 0 {
+                println!("--- tail of {}\n{}", inst.log.display(), inst.log_tail(30));
+            }
+            Ok(())
+        })();
+        if let Err(e) = result {
+            // Not a PASS/FAIL line itself: gate.sh counts those words, and this failure is counted below.
+            println!("ERROR: hello stopped early: {e}");
+            note_failure();
+        }
+        drop(hello);
+        if std::env::var_os("KEEP").is_none() {
+            let _ = std::fs::remove_dir_all(&work);
+        }
+        exit_code()
+    }
+
+    /// Launches an instance and then sleeps, so a test can kill `gate` itself and look for leaked processes.
+    fn hold(parent: Option<PathBuf>) -> ExitCode {
+        let (exe, work) = match (manifold_exe(), work_dir(parent, "hold")) {
+            (Ok(exe), Ok(work)) => (exe, work),
+            (Err(e), _) => {
+                eprintln!("{e}");
+                return ExitCode::from(1);
+            }
+            (_, Err(e)) => {
+                eprintln!("work dir: {e}");
+                return ExitCode::from(1);
+            }
+        };
+        let result = launch(&exe, &work).and_then(|mut inst| {
+            inst.send("WAITTABS")?;
+            println!("gate pid {} holding", std::process::id());
+            std::thread::sleep(Duration::from_secs(600));
+            Ok(())
+        });
+        if let Err(e) = result {
+            eprintln!("hold: {e}");
+            return ExitCode::from(1);
+        }
+        ExitCode::SUCCESS
+    }
+}
