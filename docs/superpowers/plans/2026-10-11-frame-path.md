@@ -186,7 +186,65 @@ If nothing goes, record the negative results in survey E2, in this plan's Result
 
 ### Results
 
-(Filled in by Task 1.)
+Task 1 ran 2026-10-11 at `69dc59c` (branch `frame-measure`). Machine: Ryzen 7 7840U, shared with other sessions. Headless `drive.sh` sessions with `RESIZE 1920 1080` (WebView2 captured 1920x1042), debug builds. Windows Defender real-time protection: off (`RealTimeProtectionEnabled` False) throughout. `\Processor(_Total)` was 15-65% from other sessions during the runs (per-run values below); no one else was on the eGPU during M2b and no other GPU lease was live.
+
+**M1: what the engines send** (per-2 s lines; WebView2 means skip the first two lines after load, CEF figures are read off the 10 lines)
+
+| Engine | Page | Frames sent/s | Unchanged | Other |
+|---|---|---|---|---|
+| WebView2 | static | 0 after load (3-5 frames in the first 2-4 s) | n/a | no frames at all once loaded |
+| WebView2 | full-viewport animation | 25.8 | 0% | `Map` wait mean 0.93 ms, max 5.3 ms; alloc + row copy 2.1 ms; `write_frame` 0.48 ms |
+| WebView2 | 20x20 spinner | 26.0 | 0% | `Map` mean 0.93 ms, max 5.9 ms (one 12 ms); alloc + copy 2.0 ms; write 0.48 ms |
+| WebView2 | full-viewport animation, default 800x562 | 27.6 | 0% | `Map` mean 0.62 ms; alloc + copy 0.54 ms; write 0.10 ms |
+| CEF | static | 0 after load (2 paints, 2 frames, in the first 2 s) | n/a | |
+| CEF | full-viewport animation | 60 paints/s, 53 taken/s | 0% | `write_frame` 0.45 ms |
+| CEF | 20x20 spinner | 60 paints/s, 52 taken/s | 0% | `write_frame` 0.45 ms |
+| CEF | animation, tab hidden | 60 paints/s, 0 taken | n/a | a hidden tab keeps painting (Decision 4's premise confirmed) |
+
+- WGC (WebView2) and CEF both deliver nothing for a page that is not changing. The plan's largest suspected win (a static page sending 6 or more frames a second, keeping the app redrawing every vsync) does not exist for these two engines. Servo and WebKit were outside M1 (WebKit already deduplicates; Servo is untested).
+- The spinner page sends full frames at the full rate: nothing in the capture path reports that only 20x20 pixels changed, so the damage the sink would find is the only way to shrink the upload.
+- The frame loop takes about 53 of CEF's 60 paints a second (8 ms poll sleep); the rest are overwritten in the one-frame slot.
+- **Capture adapter: AMD Radeon(TM) 780M** (the iGPU; `D3D11CreateDevice(None, ...)`). **The app's adapter (`HighPerformance`): AMD Radeon RX 9060 XT (Vulkan)**, the eGPU (logged by M2b). They differ.
+- Plan error found: after `NEWTAB`, focus stays on the first tab and the new tab is the hidden one. The hidden CEF case needs `NEWTAB`, `WAITTABS`, `NEXTTAB` (the first run measured the hidden new-tab page: 3 paints, then 0).
+
+**M2a: copy and map costs** (`handoff_timing`, release, 1920x1080, pitch 7936, N = 200; best / median, three runs; CPU load at the start of each run 65%, 54%, 27%)
+
+| Item | Run 1 | Run 2 | Run 3 |
+|---|---|---|---|
+| 1 WebView2 today (vec + pitched row copy + file copy) | 1.8 / 2.2 ms | 1.8 / 2.3 ms | 1.7 / 1.9 ms |
+| 2 CEF today (`to_vec` + file copy) | 1.4 / 1.9 ms | 1.4 / 1.6 ms | 1.3 / 1.4 ms |
+| 3 direct pitched row copy | 279 / 378 us | 391 / 694 us | 260 / 312 us |
+| 4 compare-then-copy, every row changed | 335 / 447 us | 418 / 540 us | 244 / 324 us |
+| 5 compare-then-copy, nothing changed | 279 / 350 us | 309 / 349 us | 183 / 274 us |
+| 6 app: `open_existing` + read all + drop | 2.2 / 2.7 ms | 2.0 / 2.5 ms | 1.6 / 2.3 ms |
+| 7 persistent mapping: read all | 113 / 142 us | 69 / 104 us | 86 / 108 us |
+
+The compare costs little: item 4 is within 0.1 ms of item 3 (a changed frame pays about 50 us extra), so Risks' "skip the compare when the previous frame changed every row" is not needed.
+
+**M2b: upload costs** (`frame_upload_timing`, release, adapter AMD Radeon RX 9060 XT (Vulkan), N = 100; best / median; three runs; no other eGPU user or lease before or after each run; CPU 15-45% before, 20-29% after)
+
+| Item | Run 1 | Run 2 | Run 3 |
+|---|---|---|---|
+| 1 `write_texture`, whole frame, CPU time | 8.2 / 8.3 ms | 8.2 / 8.3 ms | 8.1 / 8.2 ms |
+| 2 whole frame: write + submit + poll | 8.7 / 8.8 ms | 8.6 / 8.7 ms | 8.5 / 8.7 ms |
+| 3 64-row band: write + submit + poll | 613 / 718 us | 633 / 723 us | 593 / 692 us |
+| 4 empty submit + poll | 4.7 / 5.2 us | 4.6 / 5.1 us | 6.6 / 7.2 us |
+| 5 thumbnail pass + submit + poll | 280 / 353 us | 252 / 307 us | 232 / 261 us |
+
+A whole-frame upload costs 8.5 ms of CPU time on the thread that calls `write_texture` (the transfer to the eGPU is paid inside the call), about 22% of that thread at 26 frames a second. That is 4-5 times the whole engine-side copy cost, so the app side is where the time goes.
+
+**Verdicts** (Decide step; best-of-three numbers, medians in parentheses)
+
+| Gate | Computation | Verdict |
+|---|---|---|
+| Task 2 + 3 (sink, engines) | M1 static: 0 frames/s on both engines, so that arm fails. M2a arm: WebView2 (item 1 - item 4) x 25.8 fps = (1.7 - 0.24) ms x 25.8 = 38 ms/s ((2.2 - 0.45) x 25.8 = 45); CEF (item 2 - item 4) x 53 taken/s = (1.3 - 0.24) x 53 = 56 ms/s ((1.6 - 0.45) x 53 = 61), both at or above 30 ms/s | **Go**, on the M2a arm only, and only while content animates |
+| Task 4 (band upload) | Task 2 goes; item 2 = 8.5 ms (at least 2 ms); item 3 / item 2 = 0.59 / 8.5 = 7% (at most 25%) | **Go** |
+| Task 5 (thumbnails) | item 5 = 0.23-0.28 ms best (0.26-0.35 median), at least 0.2 ms | **Go**, marginally |
+| Task 7 (generation names) | item 6 - item 7 = 1.6 - 0.09 = 1.5 ms best (2.0 ms in runs 1 and 2), at least 0.5 ms | **Go** (Decision 3 still the user's) |
+| WebView2 `Map` stall | mean `Map` wait 0.93 ms, below 2 ms (max 5-12 ms, rare) | No |
+| Capture adapter fix | capture on the 780M, app on the RX 9060 XT | **Go** (Out of scope item; its own plan) |
+
+Reading of the verdicts (not part of the table): the plan's central premise, that a static page keeps sending frames, is false for WebView2 and CEF. The dedup half of Task 2 therefore buys nothing for them. What the measurements do support is the damage half: Task 2's sink supplies the damaged rows, Task 4 turns them into a band upload (8.5 ms to 0.6 ms for a 64-row change, on pages that animate in a small region), and the intermediate-copy removal is worth about 40-60 ms/s of one core while a page animates. The unmeasured cross-adapter copy (the capture runs on the iGPU, the app on the eGPU) is not in these numbers.
 
 ---
 
