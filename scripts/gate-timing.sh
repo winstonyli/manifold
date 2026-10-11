@@ -4,10 +4,11 @@
 #        scripts/gate-timing.sh top LOG [N]                  the N (default 10) slowest TIMING lines of LOG
 # CPULOG is gate.sh's sampler file, lines "<unix seconds> <total cpu %>". cpu_start is the last sample taken at or
 # before the step began, cpu_mean the mean of the samples taken during it; "-" where there is none.
+# It is read through ENVIRON, not awk -v, so a Windows path keeps its backslashes.
 case "${1:-}" in
 collect)
-    grep '^TIMING ' "$3" | awk -v tag="$2" -v cpulog="${4:-/dev/null}" '
-        BEGIN { while ((getline l < cpulog) > 0) { split(l, f, " "); n++; ts[n] = f[1]; cp[n] = f[2] } close(cpulog) }
+    grep '^TIMING ' "$3" | CPULOG="${4:-/dev/null}" awk -v tag="$2" '
+        BEGIN { cpulog = ENVIRON["CPULOG"]; while ((getline l < cpulog) > 0) { split(l, f, " "); n++; ts[n] = f[1]; cp[n] = f[2] } close(cpulog) }
         {
             s = $4; e = s + $3; start = "-"; sum = 0; cnt = 0
             for (i = 1; i <= n; i++) {

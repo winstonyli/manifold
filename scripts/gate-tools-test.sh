@@ -23,6 +23,8 @@ printf '99 5.0\n101 10.0\n105 20.0\n130 40.0\n143 90.0\n150 80.0\n' >"$t/cpu.log
 check "collect joins each step with the cpu samples" "TIMING g/setup 12.345 100 cpu_start=5.0 cpu_mean=15.0
 TIMING g/s1 30.000 112 cpu_start=20.0 cpu_mean=40.0
 TIMING g/s2 3.5 142 cpu_start=40.0 cpu_mean=90.0" "$(bash "$repo_root/scripts/gate-timing.sh" collect g "$t/run.log" "$t/cpu.log")"
+check "collect reads a Windows-path cpu log" "TIMING g/setup 12.345 100 cpu_start=5.0 cpu_mean=15.0" \
+    "$(bash "$repo_root/scripts/gate-timing.sh" collect g "$t/run.log" "$(cygpath -w "$t/cpu.log")" | head -1)"
 check "collect without a cpu log says -" "TIMING g/setup 12.345 100 cpu_start=- cpu_mean=-" "$(bash "$repo_root/scripts/gate-timing.sh" collect g "$t/run.log" | head -1)"
 bash "$repo_root/scripts/gate-timing.sh" collect g "$t/run.log" "$t/cpu.log" >"$t/all.log"
 check "top lists the slowest first" "g/s1 g/setup" "$(bash "$repo_root/scripts/gate-timing.sh" top "$t/all.log" 2 | awk '{printf "%s%s", sep, $2; sep=" "}')"
