@@ -93,7 +93,58 @@ The survey estimated 20 to 30 s. Smoke's 4x gain (251 to 63 s) is not a guide he
 
 **Fork cost varies by session.** In the session that wrote this plan, one MSYS `$(...)` cost 2.2 to 2.8 s; a native `cmd /c exit` cost 23 ms. The 132 to 134 s gate runs imply far cheaper forks then. Task 1 therefore calibrates the fork cost before trusting its split.
 
-*(Task 1 results go here: fork calibration before and after, the per-section table from both traced runs, `S_lo`, and the untraced wall time.)*
+**Task 1 results (2026-10-10, taken under load).** The calibration clause triggered: `fork_ms_before` 375 and `fork_ms_after` 342, both above the 200 ms limit. The user reviewed this and overrode the stop: the numbers below are load-inflated (shared machine, CPU 27 to 40 %, Defender RT False), so read S_lo as an upper bound on the saving, not an estimate of it. No re-measure was done.
+
+- Traced wall: 292 s and 250 s; untraced wall: 239 s (all exit 0). The 20:38 gate ran the same script in about 133 s.
+- Python: 22.7 to 26.9 s over 34 spawns. MSYS: 58.4 to 64.6 s over 429 spawns. Fixed windows: 36.3 to 37.0 s (5 sleeps). `wait`: 1.8 to 4.5 s.
+- S_lo (python + msys): run 1 = 91.5 s, run 2 = 81.1 s; median 86.3 s (463 processes). It is above the 20 s stop line, but forks cost 340 to 375 ms here and `bash -x` adds its own cost.
+- Untraced CPU per section (cpu.log): mean 26.7 to 40.1 %.
+
+Run 1, seconds/spawn count per kind:
+
+```
+section                    python         msys         poll        fixed         wait        other
+pre                      0.0/0        3.3/10       0.0/0        0.0/0        0.0/0        2.9/429 
+setup                    0.0/0        1.4/9        0.0/0        0.0/0        0.0/0        4.0/39  
+s1-import                0.3/1        1.5/9        0.0/0        0.0/0        0.0/0        2.0/43  
+s2-compaction            0.5/1        0.9/11       0.0/0        0.0/0        0.0/0        3.7/452 
+s8-move-into-group       1.6/3        2.1/27       0.0/0        0.0/0        0.0/0        9.6/117 
+s9-two-moves             3.1/6        5.6/54       0.0/0        0.0/0        0.0/0       17.5/205 
+s10-cycle                6.4/6        9.5/58       0.0/0        0.0/0        0.0/0       22.4/187 
+s11-rename               4.6/5        5.6/54       0.0/0        0.0/0        0.0/0       23.4/224 
+s12-note-text            7.9/7        8.1/83       0.0/0        0.0/0        0.0/0       35.6/338 
+s3-nonce-site            0.0/0        3.9/13       0.8/1       17.6/2        0.0/0        3.5/63  
+s4-click-vs-script       0.0/0        8.5/38       0.0/0       11.1/2        0.0/0        8.7/108 
+s5-json-convert          1.7/3        1.6/18       0.0/0        8.3/1        0.0/0        4.3/69  
+s6-kill                  0.7/2        1.7/10       0.0/0        0.0/0        1.9/2        4.5/51  
+s7-restart               0.0/0        9.0/30       0.0/0        0.0/0        2.6/2       13.8/93  
+end                      0.0/0        1.9/5        0.0/0        0.0/0        0.0/0        1.7/40  
+TOTAL                   26.9/34      64.6/429      0.8/1       37.0/5        4.5/4      157.7/2458
+S_lo = python + msys = 91.5 s (463 processes)
+```
+
+Run 2:
+
+```
+section                    python         msys         poll        fixed         wait        other
+pre                      0.0/0        3.2/10       0.0/0        0.0/0        0.0/0        4.1/429 
+setup                    0.0/0        2.5/9        0.0/0        0.0/0        0.0/0        5.5/39  
+s1-import                0.6/1        1.3/9        0.0/0        0.0/0        0.0/0        1.9/43  
+s2-compaction            0.3/1        1.0/11       0.0/0        0.0/0        0.0/0        3.2/452 
+s8-move-into-group       2.1/3        2.6/27       0.0/0        0.0/0        0.0/0       10.4/117 
+s9-two-moves             3.7/6        6.5/54       0.0/0        0.0/0        0.0/0       16.5/204 
+s10-cycle                3.7/6        8.2/58       0.0/0        0.0/0        0.0/0       15.1/187 
+s11-rename               3.9/5        4.7/54       0.0/0        0.0/0        0.0/0       18.2/224 
+s12-note-text            6.3/7        9.1/83       0.0/0        0.0/0        0.0/0       28.8/337 
+s3-nonce-site            0.0/0        2.4/13       0.4/1       17.5/2        0.0/0        3.0/63  
+s4-click-vs-script       0.0/0        6.1/38       0.0/0       10.5/2        0.0/0        5.4/108 
+s5-json-convert          1.5/3        1.2/18       0.0/0        8.2/1        0.0/0        3.6/69  
+s6-kill                  0.6/2        1.0/10       0.0/0        0.0/0        0.6/2        4.1/51  
+s7-restart               0.0/0        6.8/30       0.0/0        0.0/0        1.3/2        9.4/93  
+end                      0.0/0        1.7/5        0.0/0        0.0/0        0.0/0        1.4/40  
+TOTAL                   22.7/34      58.4/429      0.4/1       36.3/5        1.8/4      130.5/2456
+S_lo = python + msys = 81.1 s (463 processes)
+```
 
 *(Task 7 results go here: the shell vs Rust per-section medians, wall times, CPU means, Defender state and race winners.)*
 
