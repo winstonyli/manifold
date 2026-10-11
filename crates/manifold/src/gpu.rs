@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use wgpu::util::DeviceExt;
@@ -77,24 +77,20 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 // compile-time-constant loop, no dynamic branching) and close enough to a
 // true box average for a thumbnail nobody examines pixel-by-pixel.
 // `box_size` is one output texel's width/height, in the *source* texture's
-// own [0,1] UV space -- since UV space is normalized identically for both
-// the render target and the sampled texture regardless of either's actual
-// pixel resolution, this is just `1.0 / thumbnail_size`, independent of
-// the source's own resolution.
-struct DownsampleParams {
-    box_size: vec2<f32>,
-};
-@group(0) @binding(2) var<uniform> downsample_params: DownsampleParams;
-
+// own [0,1] UV space: how far `in.uv` moves per output pixel, which the
+// derivatives give directly (`1.0 / thumbnail_size` for the full-screen
+// triangle), so no uniform is needed. Taken before the loop, in uniform
+// control flow.
 const DOWNSAMPLE_TAPS: i32 = 4;
 
 @fragment
 fn fs_downsample(in: VertexOutput) -> @location(0) vec4<f32> {
+    let box_size = abs(vec2<f32>(dpdx(in.uv).x, dpdy(in.uv).y));
     var sum = vec4<f32>(0.0, 0.0, 0.0, 0.0);
     for (var iy = 0; iy < DOWNSAMPLE_TAPS; iy = iy + 1) {
         for (var ix = 0; ix < DOWNSAMPLE_TAPS; ix = ix + 1) {
             let grid = (vec2<f32>(f32(ix), f32(iy)) + vec2<f32>(0.5, 0.5)) / f32(DOWNSAMPLE_TAPS);
-            let offset = (grid - vec2<f32>(0.5, 0.5)) * downsample_params.box_size;
+            let offset = (grid - vec2<f32>(0.5, 0.5)) * box_size;
             sum = sum + textureSample(tab_texture, tab_sampler, in.uv + offset);
         }
     }
@@ -172,7 +168,6 @@ pub struct GpuState {
     /// See `render_thumbnail`'s own doc comment.
     downsample_pipeline: wgpu::RenderPipeline,
     downsample_bind_group_layout: wgpu::BindGroupLayout,
-    downsample_params_buffer: wgpu::Buffer,
     /// Keyed by tab id -- see `TabTexture`'s own doc comment for why this
     /// isn't a single slot. Bounded by however many tabs are currently
     /// visible (at most two, focused + split partner) rather than every tab
@@ -181,6 +176,10 @@ pub struct GpuState {
     /// outright).
     tab_textures: HashMap<String, TabTexture>,
     thumbnails: HashMap<String, ThumbTexture>,
+    /// Tabs whose thumbnail is older than their frame texture. `upload_frame` adds a tab; `render` downsamples it
+    /// in the frame's encoder when egui draws its thumbnail; `free_tab_texture` flushes it before the frame is
+    /// freed; `free_tab_thumbnail` drops it.
+    thumbs_dirty: HashSet<String>,
     /// Keyed by *origin* (`scheme://host[:port]`, see `favicon_fetch::
     /// url_origin`), not tab id -- favicons are fetched independently of
     /// any specific tab (see `favicon_fetch`'s own module doc comment), so
@@ -212,8 +211,7 @@ pub struct GpuState {
 
 /// GPU thumbnail downsample -- see `GpuState::render_thumbnail`'s own
 /// doc comment. A separate bind group layout/pipeline from the one
-/// the tab pipeline: a third binding (the box-size uniform) `fs_main` doesn't
-/// use, and a fixed `Rgba8Unorm` target format instead of the
+/// the tab pipeline: a fixed `Rgba8Unorm` target format instead of the
 /// surface's own `config.format` (the thumbnail texture egui_wgpu
 /// registers must be exactly `Rgba8Unorm`, never sRGB -- see
 /// `ThumbTexture`'s own doc comment).
@@ -238,16 +236,6 @@ fn downsample_pipeline(
                 binding: 1,
                 visibility: wgpu::ShaderStages::FRAGMENT,
                 ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                count: None,
-            },
-            wgpu::BindGroupLayoutEntry {
-                binding: 2,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
                 count: None,
             },
         ],
@@ -441,16 +429,6 @@ impl GpuState {
         });
 
         let (downsample_bind_group_layout, downsample_pipeline) = downsample_pipeline(&device, &shader);
-        // 16 bytes: `vec2<f32>` (8 bytes) padded up to WGSL's own uniform
-        // address-space alignment for a struct containing one -- written
-        // fresh via `queue.write_buffer` before every downsample draw
-        // (see `render_thumbnail`), so this only ever needs to exist once.
-        let downsample_params_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("thumbnail downsample params"),
-            size: 16,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
 
         let egui_renderer = egui_wgpu::Renderer::new(&device, config.format, egui_wgpu::RendererOptions::default());
 
@@ -464,9 +442,9 @@ impl GpuState {
             sampler,
             downsample_pipeline,
             downsample_bind_group_layout,
-            downsample_params_buffer,
             tab_textures: HashMap::new(),
             thumbnails: HashMap::new(),
+            thumbs_dirty: HashSet::new(),
             favicons: HashMap::new(),
             favicon_order: std::collections::VecDeque::new(),
             images: HashMap::new(),
@@ -620,13 +598,9 @@ impl GpuState {
                 ThumbTexture { texture: thumb_texture, width: thumb_width, height: thumb_height, egui_id },
             );
         }
-        // Unlike the main texture's own reuse branch above (which can skip
-        // straight to the next frame once written), the thumbnail's
-        // *content* still needs refreshing every call regardless of
-        // whether its texture object was just reused or just created --
-        // `reuse_thumb` only ever answered "does a same-size destination
-        // already exist," never "is it already showing this frame."
-        self.render_thumbnail(tab_id, format, thumb_width, thumb_height);
+        // The thumbnail's content is older than this frame whether its texture was just reused or just created;
+        // `render` downsamples it when egui draws it.
+        self.thumbs_dirty.insert(tab_id.to_string());
     }
 
     /// The aspect-preserving target size `render_thumbnail`'s destination
@@ -691,55 +665,50 @@ impl GpuState {
     /// `to_thumbnail_rgba`'s own doc comment already called out and
     /// accepted -- this pass changes *where* that gap's bytes get produced
     /// (GPU instead of CPU), not what they are.
-    fn render_thumbnail(&mut self, tab_id: &str, format: wgpu::TextureFormat, thumb_width: u32, thumb_height: u32) {
-        // One output texel's width/height in the *source* texture's own
-        // [0,1] UV space -- see `fs_downsample`'s own doc comment for why
-        // this needs no dependency on the source's actual resolution.
-        let mut params = [0u8; 16];
-        params[0..4].copy_from_slice(&(1.0f32 / thumb_width as f32).to_le_bytes());
-        params[4..8].copy_from_slice(&(1.0f32 / thumb_height as f32).to_le_bytes());
-        self.queue.write_buffer(&self.downsample_params_buffer, 0, &params);
-
-        let source_view = self.tab_textures[tab_id].texture.create_view(&wgpu::TextureViewDescriptor {
-            format: Some(non_srgb_view_format(format)),
+    ///
+    /// Records into the caller's `encoder` (no submit of its own): `render` flushes the thumbnails egui draws that
+    /// frame, `free_tab_texture` the one about to lose its source.
+    fn render_thumbnail(
+        encoder: &mut wgpu::CommandEncoder,
+        device: &wgpu::Device,
+        pipeline: &wgpu::RenderPipeline,
+        layout: &wgpu::BindGroupLayout,
+        sampler: &wgpu::Sampler,
+        source: &TabTexture,
+        dest: &ThumbTexture,
+    ) {
+        let source_view = source.texture.create_view(&wgpu::TextureViewDescriptor {
+            format: Some(non_srgb_view_format(source.format)),
             ..Default::default()
         });
-        let dest_view = self.thumbnails[tab_id].texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let dest_view = dest.texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("thumbnail downsample bind group"),
-            layout: &self.downsample_bind_group_layout,
+            layout,
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&source_view) },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.sampler) },
-                wgpu::BindGroupEntry { binding: 2, resource: self.downsample_params_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(sampler) },
             ],
         });
-
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("thumbnail downsample encoder") });
-        {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("thumbnail downsample pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &dest_view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-            pass.set_pipeline(&self.downsample_pipeline);
-            pass.set_bind_group(0, &bind_group, &[]);
-            pass.draw(0..3, 0..1);
-        }
-        self.queue.submit(std::iter::once(encoder.finish()));
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("thumbnail downsample pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &dest_view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        pass.set_pipeline(pipeline);
+        pass.set_bind_group(0, &bind_group, &[]);
+        pass.draw(0..3, 0..1);
     }
 
     /// Uploads `rows` (all `height` rows when `None`, or when the range reaches past the frame) of tightly-packed
@@ -799,6 +768,7 @@ impl GpuState {
     /// via each frame's `textures_delta.free`, see `render`), this one
     /// leaks until explicitly freed here.
     pub fn free_tab_thumbnail(&mut self, tab_id: &str) {
+        self.thumbs_dirty.remove(tab_id);
         if let Some(thumb) = self.thumbnails.remove(tab_id) {
             self.egui_renderer.free_texture(&thumb.egui_id);
         }
@@ -816,7 +786,27 @@ impl GpuState {
     /// suspended tab's last frame doesn't sit on the GPU indefinitely for no
     /// reason (unlike `thumbnails`, which deliberately persists past
     /// suspension so a graph node keeps showing its last frame).
+    ///
+    /// A dirty thumbnail is downsampled first (own encoder and submit): the tab's last frame must reach its card.
+    /// The close and sleep paths call `free_tab_thumbnail` before this, so they never flush one about to be freed.
     pub fn free_tab_texture(&mut self, tab_id: &str) {
+        if self.thumbs_dirty.remove(tab_id) {
+            if let (Some(source), Some(dest)) = (self.tab_textures.get(tab_id), self.thumbnails.get(tab_id)) {
+                let mut encoder = self
+                    .device
+                    .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("thumbnail flush encoder") });
+                Self::render_thumbnail(
+                    &mut encoder,
+                    &self.device,
+                    &self.downsample_pipeline,
+                    &self.downsample_bind_group_layout,
+                    &self.sampler,
+                    source,
+                    dest,
+                );
+                self.queue.submit(std::iter::once(encoder.finish()));
+            }
+        }
         self.tab_textures.remove(tab_id);
     }
 
@@ -1110,6 +1100,36 @@ impl GpuState {
         let mut extra_command_buffers = Vec::new();
         let egui_draw = if let Some((ctx, full_output)) = egui_output {
             let clipped_primitives = ctx.tessellate(full_output.shapes, full_output.pixels_per_point);
+            // Downsample the dirty thumbnails egui draws this frame (the screenshot pass draws the same
+            // primitives), before any pass that samples them.
+            if !self.thumbs_dirty.is_empty() {
+                let drawn: HashSet<egui::TextureId> = clipped_primitives
+                    .iter()
+                    .filter_map(|p| match &p.primitive {
+                        egui::epaint::Primitive::Mesh(mesh) => Some(mesh.texture_id),
+                        egui::epaint::Primitive::Callback(_) => None,
+                    })
+                    .collect();
+                self.thumbs_dirty.retain(|tab_id| {
+                    let (Some(source), Some(dest)) = (self.tab_textures.get(tab_id), self.thumbnails.get(tab_id))
+                    else {
+                        return true;
+                    };
+                    if !drawn.contains(&dest.egui_id) {
+                        return true;
+                    }
+                    Self::render_thumbnail(
+                        &mut encoder,
+                        &self.device,
+                        &self.downsample_pipeline,
+                        &self.downsample_bind_group_layout,
+                        &self.sampler,
+                        source,
+                        dest,
+                    );
+                    false
+                });
+            }
             let screen_descriptor = egui_wgpu::ScreenDescriptor {
                 size_in_pixels: [width, height],
                 pixels_per_point: full_output.pixels_per_point,
@@ -1363,12 +1383,6 @@ mod upload_timing {
             min_filter: wgpu::FilterMode::Linear,
             ..Default::default()
         });
-        let params = device.create_buffer(&wgpu::BufferDescriptor {
-            label: None,
-            size: 16,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
         let (tw, th) = (256u32, 144u32);
         let thumb = device.create_texture(&wgpu::TextureDescriptor {
             label: None,
@@ -1380,11 +1394,7 @@ mod upload_timing {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
         });
-        let mut p = [0u8; 16];
-        p[0..4].copy_from_slice(&(1.0f32 / tw as f32).to_le_bytes());
-        p[4..8].copy_from_slice(&(1.0f32 / th as f32).to_le_bytes());
         let thumb_pass = || {
-            queue.write_buffer(&params, 0, &p);
             let source_view = texture.create_view(&wgpu::TextureViewDescriptor {
                 format: Some(non_srgb_view_format(format)),
                 ..Default::default()
@@ -1396,7 +1406,6 @@ mod upload_timing {
                 entries: &[
                     wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&source_view) },
                     wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&sampler) },
-                    wgpu::BindGroupEntry { binding: 2, resource: params.as_entire_binding() },
                 ],
             });
             let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
