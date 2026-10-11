@@ -2,17 +2,17 @@
 # Usage: scripts/gate.sh LOG [full|light|ui]    (scripts/gate-tier.sh says which tier a change needs)
 #
 # The pre-merge gate: sequential, so load from other sessions is the only thing that stretches it.
-#   full  (default): two-instance-test x3 + headless-smoke-test x1 + launch-forms-probe + link-probe. Use for any
+#   full  (default): two-instance-test x3 + gate smoke x1 + launch-forms-probe + gate link. Use for any
 #                    change to sync, the store, the mirror, session save/restore or the engines. ~11 min on a
 #                    quiet-ish machine (measured 2026-10-09 at 30-35% CPU from other sessions, so an upper bound).
-#   light:           two-instance-test x1 + headless-smoke-test x1 + launch-forms-probe + link-probe. Allowed when
+#   light:           two-instance-test x1 + gate smoke x1 + launch-forms-probe + gate link. Allowed when
 #                    only UI code that writes the store or reaches an engine changed (gestures, menus), or scripts:
 #                    ~8.5 min (same conditions). The repeats in `full` exist to catch flaky ordering in sync, which
 #                    UI-only changes cannot reach.
-#   ui:              `cargo test` of the three CI crates + link-probe. For changes to drawing, input and view-state
+#   ui:              `cargo test` of the three CI crates + gate link. For changes to drawing, input and view-state
 #                    modules that import no store, sync or network module (the list is in gate-tier.sh), and docs:
 #                    ~2 min (same conditions).
-# Build first (`cargo build -j 8 -p manifold -p manifold-engine-webview2`; `-p manifold` alone leaves the WebView2 host
+# Build first (`cargo build -j 8 -p manifold -p manifold-engine-webview2 -p gate`; `-p manifold` alone leaves the WebView2 host
 # old): every probe stage runs the existing exes. Launch detached and low priority:
 #   cmd //c start "" //b //belownormal bash scripts/gate.sh LOG [mode]
 # Progress and verdicts go to LOG; each stage's own output to LOG.two-N.log, LOG.smoke.log, LOG.launch-forms.log,
@@ -63,10 +63,10 @@ for i in $(seq "$runs"); do
     stage "two-$i" "$out.two-$i.log" bash scripts/two-instance-test.sh
 done
 if [ "$mode" != ui ]; then
-    stage smoke "$out.smoke.log" bash scripts/headless-smoke-test.sh
+    stage smoke "$out.smoke.log" target/debug/gate smoke
     stage launch-forms "$out.launch-forms.log" bash scripts/launch-forms-probe.sh
 fi
-stage link "$out.link.log" bash scripts/link-probe.sh
+stage link "$out.link.log" target/debug/gate link
 echo "GATE slowest steps (seconds, cpu at start, mean cpu):" >>"$out"
 bash scripts/gate-timing.sh top "$out" 10 >>"$out"
 echo "GATE done $(date +%H:%M:%S) cpu=$(cpu)% defender_rt=$(defender)" >>"$out"

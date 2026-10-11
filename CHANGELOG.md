@@ -78,7 +78,7 @@ Timings were taken on a shared machine, often at 40-90% CPU, so read them as upp
 
 - The toolchain is pinned to `nightly-2026-09-23`, and every `#[allow]` gives a reason.
 - CI runs fmt, clippy and tests on Windows, and tests on Linux, on every push.
-- `scripts/gate.sh` is the pre-merge gate (`full` and `light`). It waits on `WAITIDLE` rather than fixed sleeps, and also runs `launch-forms-probe.sh` and `link-probe.sh`. The smoke test clicks the JSON "+ N earlier" row.
+- `scripts/gate.sh` is the pre-merge gate (`full` and `light`). It waits on `WAITIDLE` rather than fixed sleeps, and also runs `launch-forms-probe.sh`, `gate smoke` and `gate link` (Rust, `crates/gate`). The smoke test clicks the JSON "+ N earlier" row.
 - `main` is the only long-lived branch; releases are tags.
 
 ### Known
