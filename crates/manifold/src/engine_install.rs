@@ -1,4 +1,5 @@
-//! On-demand install of the CEF runtime: the pin, what is on disk, and the states the UI shows.
+//! On-demand installs of what an engine needs besides `manifold.exe`: an engine is a list of components, a pinned
+//! host (one or more single files, `host_pin`) and, for CEF, the runtime archive (`Pin`). Also the states the UI shows.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -9,7 +10,8 @@ use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use crate::process_manager::EngineKind;
+use crate::host_pin::Component as HostFile;
+use crate::process_manager::{EngineKind, HostSource};
 
 use ipc_protocol::transport::to_hex;
 use sha1::Sha1;
@@ -41,13 +43,19 @@ pub(crate) enum EngineState {
     },
     Failed(String),
     Custom(PathBuf),
-    /// No CEF build is pinned for this platform (`cef_pin::pin_for_platform`): nothing to download, no
-    /// offer made. Holds the reason to show.
+    /// Nothing to download and nothing there: this platform has no CEF build (`NO_PIN_REASON`), or this build
+    /// pins no host for the engine (`no_download_reason`). No offer made. Holds the reason to show.
     Unavailable(String),
 }
 
-/// Why CEF cannot be installed where `cef_pin::pin_for_platform` is `None`.
+/// Why CEF's runtime cannot be installed where `cef_pin::pin_for_platform` is `None`.
 pub(crate) const NO_PIN_REASON: &str = "no CEF build for this platform yet";
+
+/// Why `kind` cannot be installed in a build whose `host_pin` table has no entry for it (the repo's table is empty;
+/// a release writes it): there is nothing to fetch and no sibling host.
+pub(crate) fn no_download_reason(kind: EngineKind) -> String {
+    format!("this build has no {} download", kind.desc().label)
+}
 
 /// What the install directory holds, judged by its marker alone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -57,7 +65,100 @@ pub(crate) enum RuntimeOnDisk {
     Stale,
 }
 
-/// The file written last by an install; holds the pinned version it installed.
+/// What the disk holds of an engine's two downloadable parts, each judged by a marker (never by hashing).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct OnDisk {
+    /// The host exe and the files that travel with it: `host_state`, or Ready when a sibling host is there.
+    pub(crate) host: RuntimeOnDisk,
+    /// CEF's runtime archive (`runtime_state`); Ready for an engine with none.
+    pub(crate) runtime: RuntimeOnDisk,
+}
+
+impl OnDisk {
+    pub(crate) const fn both(state: RuntimeOnDisk) -> Self {
+        Self { host: state, runtime: state }
+    }
+
+    /// The one answer for the parts that matter: Ready when all are, Missing when any is missing, else Stale.
+    /// A bring-your-own runtime (`custom_runtime`) stands in for the downloaded one, so only the host counts.
+    pub(crate) fn needed(self, custom_runtime: bool) -> RuntimeOnDisk {
+        let runtime = if custom_runtime { RuntimeOnDisk::Ready } else { self.runtime };
+        match (self.host, runtime) {
+            (RuntimeOnDisk::Ready, RuntimeOnDisk::Ready) => RuntimeOnDisk::Ready,
+            (RuntimeOnDisk::Missing, _) | (_, RuntimeOnDisk::Missing) => RuntimeOnDisk::Missing,
+            _ => RuntimeOnDisk::Stale,
+        }
+    }
+}
+
+/// What installing an engine fetches.
+#[derive(Debug, Clone)]
+pub(crate) struct Plan {
+    /// The pinned host files, in install order (`host_pin::Entry::components`).
+    pub(crate) host: &'static [HostFile],
+    /// CEF's runtime archive.
+    pub(crate) runtime: Option<Pin>,
+}
+
+impl Plan {
+    fn host_size(&self) -> u64 {
+        self.host.iter().map(|f| f.size).sum()
+    }
+
+    /// Every byte of every part: the total a running install reports progress against.
+    pub(crate) fn size(&self) -> u64 {
+        self.host_size() + self.runtime.as_ref().map_or(0, |pin| pin.size)
+    }
+
+    /// The bytes an install would fetch given `disk`: each part that is not Ready, whole. A bring-your-own runtime
+    /// (`custom_runtime`) is never fetched.
+    pub(crate) fn fetch_size(&self, disk: OnDisk, custom_runtime: bool) -> u64 {
+        let host = if disk.host == RuntimeOnDisk::Ready { 0 } else { self.host_size() };
+        let runtime = match &self.runtime {
+            Some(pin) if disk.runtime != RuntimeOnDisk::Ready && !custom_runtime => pin.size,
+            _ => 0,
+        };
+        host + runtime
+    }
+}
+
+/// Whether `kind` is installed by downloading (`HostSource::Download`), rather than found beside `manifold.exe`
+/// or carried inside it.
+pub(crate) fn downloads(kind: EngineKind) -> bool {
+    kind.desc().source == HostSource::Download
+}
+
+/// Whether `kind` also needs a runtime archive besides its host exe: only CEF's, the one component that is an
+/// archive (`Pin`, `unpack`, `cef-runtime/`) rather than single pinned files.
+pub(crate) fn has_runtime(kind: EngineKind) -> bool {
+    kind == EngineKind::Cef
+}
+
+/// `host_pin`'s name for the platform this build runs on.
+const HOST_PLATFORM: &str = if cfg!(windows) { "windows-x64" } else { "linux-x64" };
+
+/// The host files this build pins for `kind` on this platform; empty for an engine that is not downloaded.
+pub(crate) fn host_components(kind: EngineKind) -> &'static [HostFile] {
+    if downloads(kind) {
+        crate::host_pin::components_for(kind, HOST_PLATFORM)
+    } else {
+        &[]
+    }
+}
+
+/// What installing `kind` fetches in this build, or why nothing can be: it is not downloaded or pins no host
+/// (`no_download_reason`), or CEF has no runtime build for this platform (`NO_PIN_REASON`).
+pub(crate) fn plan_for(kind: EngineKind) -> Result<Plan, String> {
+    let host = host_components(kind);
+    if host.is_empty() {
+        return Err(no_download_reason(kind));
+    }
+    let runtime =
+        if has_runtime(kind) { Some(crate::cef_pin::pin_for_platform().ok_or(NO_PIN_REASON)?.clone()) } else { None };
+    Ok(Plan { host, runtime })
+}
+
+/// The file written last by a CEF runtime install; holds the pinned version it installed.
 pub(crate) const MARKER: &str = "ready";
 
 /// How a CEF runtime's version relates to the pin's, by CEF major version: the host is built against one
@@ -108,6 +209,41 @@ pub(crate) fn runtime_state(dir: &Path, pin: &Pin) -> RuntimeOnDisk {
         Ok(_) => RuntimeOnDisk::Stale,
         Err(_) => RuntimeOnDisk::Missing,
     }
+}
+
+/// `kind`'s host marker in the hosts directory `dir`: one `<sha256> <file>` line per installed file, written last
+/// by `install_host`.
+fn host_marker_path(dir: &Path, kind: EngineKind) -> PathBuf {
+    dir.join(format!("{}.host", kind.desc().name))
+}
+
+fn marker_text(files: &[HostFile]) -> String {
+    files.iter().map(|f| format!("{} {}\n", f.sha256, f.file)).collect()
+}
+
+/// What `dir` holds of the host `files`, judged without hashing (the 5 s on-disk poll reads this): Ready when the
+/// marker lists exactly these files and hashes and every file has its pinned size, Stale when the marker lists
+/// others (another release), Missing without a marker or when a listed file is gone or the wrong size. The hashes
+/// are checked at install and again when a tab spawns (`verify_installed_host`).
+pub(crate) fn host_state(dir: &Path, kind: EngineKind, files: &[HostFile]) -> RuntimeOnDisk {
+    if files.is_empty() {
+        return RuntimeOnDisk::Missing;
+    }
+    let Ok(marker) = std::fs::read_to_string(host_marker_path(dir, kind)) else { return RuntimeOnDisk::Missing };
+    if marker != marker_text(files) {
+        return RuntimeOnDisk::Stale;
+    }
+    if files.iter().all(|f| std::fs::metadata(dir.join(f.file)).is_ok_and(|m| m.len() == f.size)) {
+        RuntimeOnDisk::Ready
+    } else {
+        RuntimeOnDisk::Missing
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many files this thread has hashed (`sha256_file`), for the test that the on-disk poll hashes none.
+    static HASHED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// A bring-your-own CEF directory's last validation: the configured path, when it was checked, the verdict.
@@ -392,6 +528,35 @@ pub(crate) fn verify(path: &Path, pin: &Pin) -> Result<(), InstallError> {
     Ok(())
 }
 
+/// The lowercase hex SHA-256 of the file at `path`.
+fn sha256_file(path: &Path) -> Result<String, InstallError> {
+    #[cfg(test)]
+    HASHED.with(|n| n.set(n.get() + 1));
+    let io = |e: std::io::Error| InstallError::Io(e.to_string());
+    let mut file = std::fs::File::open(path).map_err(io)?;
+    let mut sha256 = Sha256::new();
+    let mut buf = vec![0u8; CHUNK];
+    loop {
+        let n = file.read(&mut buf).map_err(io)?;
+        if n == 0 {
+            break;
+        }
+        sha256.update(&buf[..n]);
+    }
+    Ok(to_hex(&sha256.finalize()))
+}
+
+/// Require the file at `path` to have SHA-256 `want` (hex, any case). A host has no SHA-1: that is the CEF
+/// archive's cross-check (`verify`).
+pub(crate) fn verify_sha256(path: &Path, want: &str) -> Result<(), InstallError> {
+    let got = sha256_file(path)?;
+    if want.eq_ignore_ascii_case(&got) {
+        Ok(())
+    } else {
+        Err(InstallError::BadHash { want: want.to_string(), got })
+    }
+}
+
 /// Where the runtime entry `path` goes under `into`, or None to skip it. The path is `<top>/Release/..`
 /// or `<top>/Resources/..`; both folders flatten into `into`. Errors on any component that could escape:
 /// `..`, a root or prefix, and any name containing `:` (on Windows `C:evil.dll` is a drive-relative name
@@ -599,54 +764,189 @@ fn swap(new: &Path, live: &Path) -> Result<(), InstallError> {
     Ok(())
 }
 
-/// The files an install leaves beside the runtime while it works (and after some failures).
-const LEFTOVERS: [&str; 3] = ["cef-runtime.part", "cef-runtime.tmp", "cef-runtime.old"];
-
-/// Whether any install leftover (`.part`, `.tmp`, `.old`) is in `data_dir`.
-pub(crate) fn has_leftovers(data_dir: &Path) -> bool {
-    LEFTOVERS.iter().any(|name| data_dir.join(name).exists())
+/// Install the host `files` of `kind` into the hosts directory `dir`: each file that is not already there with its
+/// pinned hash is downloaded to `<file>.<hash prefix>.part` (a partial of another release is never resumed),
+/// verified, and renamed into place; `<kind>.host`, the marker `host_state` reads, is written last, through a
+/// `.tmp`, only once every file is in. A bad hash deletes the `.part`; a network failure, a cancel or a file error
+/// keeps it. Files already finished stay, so a retry fetches only what is left. `progress` gets the bytes done
+/// across all the files (finished ones included). Blocking: run it on a worker thread.
+pub(crate) fn install_host(
+    dir: &Path,
+    kind: EngineKind,
+    files: &[HostFile],
+    progress: &mut dyn FnMut(u64),
+    cancel: &AtomicBool,
+) -> Result<(), InstallError> {
+    let io = |e: std::io::Error| InstallError::Io(e.to_string());
+    std::fs::create_dir_all(dir).map_err(io)?;
+    let mut done = 0u64;
+    for file in files {
+        let dest = dir.join(file.file);
+        let current =
+            std::fs::metadata(&dest).is_ok_and(|m| m.len() == file.size) && verify_sha256(&dest, file.sha256).is_ok();
+        if !current {
+            let part = dir.join(format!("{}.{}.part", file.file, file.sha256.get(..12).unwrap_or(file.sha256)));
+            download(file.url, &part, file.size, &mut |n| progress(done + n), cancel)?;
+            if let Err(e) = verify_sha256(&part, file.sha256) {
+                if matches!(e, InstallError::BadHash { .. }) {
+                    remove_file(&part);
+                }
+                return Err(e);
+            }
+            std::fs::rename(&part, &dest).map_err(io)?;
+        }
+        done += file.size;
+        progress(done);
+    }
+    let marker = host_marker_path(dir, kind);
+    let tmp = marker.with_extension("host.tmp");
+    std::fs::write(&tmp, marker_text(files)).map_err(io)?;
+    std::fs::rename(&tmp, &marker).map_err(io)
 }
 
-/// Delete the downloaded runtime (`data_dir/cef-runtime`) and the install leftovers beside it, and nothing
-/// else. The `ready` marker goes first, so a delete that stops partway never reads as Installed. Refused,
-/// with the reason, while an engine process is using it (`running`) or an install is writing next to it
-/// (`installing`).
-pub(crate) fn remove_runtime(data_dir: &Path, running: bool, installing: bool) -> Result<(), String> {
+/// Install everything `plan` names under the data directory `dir`: the host files, then CEF's runtime archive.
+/// One job, so `progress` runs from 0 to `plan.size()` across both. Returns `dir`.
+pub(crate) fn install_plan(
+    kind: EngineKind,
+    plan: &Plan,
+    dir: &Path,
+    progress: &mut dyn FnMut(u64),
+    cancel: &AtomicBool,
+) -> Result<PathBuf, InstallError> {
+    if !plan.host.is_empty() {
+        install_host(dir, kind, plan.host, progress, cancel)?;
+    }
+    if let Some(pin) = &plan.runtime {
+        let before = plan.host_size();
+        install(pin, dir, &mut |n| progress(before + n), cancel)?;
+    }
+    Ok(dir.to_path_buf())
+}
+
+/// Hash every host file in `dir` against its pin. Run when a tab is about to spawn the host, so a file changed
+/// after the install (the folder is user-writable) is refused instead of run. Not part of the on-disk poll.
+pub(crate) fn verify_installed_host(dir: &Path, files: &[HostFile]) -> Result<(), InstallError> {
+    files.iter().try_for_each(|file| verify_sha256(&dir.join(file.file), file.sha256))
+}
+
+/// The files an install leaves beside the CEF runtime while it works (and after some failures).
+const LEFTOVERS: [&str; 3] = ["cef-runtime.part", "cef-runtime.tmp", "cef-runtime.old"];
+
+/// The file names in the hosts directory that are `kind`'s host: the pinned `files`, those its marker lists (an
+/// install of another release) and the host exe's own name.
+fn host_file_names(dir: &Path, kind: EngineKind, files: &[HostFile]) -> Vec<String> {
+    let mut names: Vec<String> = files.iter().map(|f| f.file.to_string()).collect();
+    names.push(crate::cef_platform::PLATFORM.host_exe(kind.desc().binary));
+    if let Ok(marker) = std::fs::read_to_string(host_marker_path(dir, kind)) {
+        names.extend(marker.lines().filter_map(|line| line.split_once(' ')).map(|(_, name)| name.to_string()));
+    }
+    // The marker is a file in a user-writable folder: only plain names, never a path out of it.
+    names.retain(|n| Path::new(n).file_name().is_some_and(|f| f == n.as_str()));
+    names.sort();
+    names.dedup();
+    names
+}
+
+/// `kind`'s partial downloads and temporaries in `dir`: `<file>.<hash prefix>.part`, `<file>.tmp`, the marker's `.tmp`.
+fn host_leftovers(dir: &Path, kind: EngineKind, files: &[HostFile]) -> Vec<PathBuf> {
+    let names = host_file_names(dir, kind, files);
+    let marker_tmp = format!("{}.host.tmp", kind.desc().name);
+    let Ok(entries) = std::fs::read_dir(dir) else { return Vec::new() };
+    entries
+        .flatten()
+        .filter(|entry| {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            name == marker_tmp
+                || names.iter().any(|n| {
+                    name == format!("{n}.tmp") || (name.starts_with(&format!("{n}.")) && name.ends_with(".part"))
+                })
+        })
+        .map(|entry| entry.path())
+        .collect()
+}
+
+/// Whether `kind` has any install leftover (`.part`, `.tmp`, `.old`) in `dir`.
+pub(crate) fn has_leftovers(dir: &Path, kind: EngineKind, files: &[HostFile]) -> bool {
+    !host_leftovers(dir, kind, files).is_empty()
+        || (has_runtime(kind) && LEFTOVERS.iter().any(|name| dir.join(name).exists()))
+}
+
+/// What `kind` has installed in `dir`: its host files and marker that exist, and CEF's runtime directory.
+pub(crate) fn installed_paths_in(dir: &Path, kind: EngineKind, files: &[HostFile]) -> Vec<PathBuf> {
+    let mut paths: Vec<PathBuf> = host_file_names(dir, kind, files).iter().map(|n| dir.join(n)).collect();
+    paths.push(host_marker_path(dir, kind));
+    if has_runtime(kind) {
+        paths.push(dir.join("cef-runtime"));
+    }
+    paths.retain(|p| p.exists());
+    paths
+}
+
+/// `installed_paths_in` for the real hosts directory and this build's pins; empty without a data directory.
+pub(crate) fn installed_paths(kind: EngineKind) -> Vec<PathBuf> {
+    crate::process_manager::engine_hosts_dir()
+        .map(|dir| installed_paths_in(&dir, kind, host_components(kind)))
+        .unwrap_or_default()
+}
+
+/// `has_leftovers` for the real hosts directory and this build's pins.
+pub(crate) fn kind_has_leftovers(kind: EngineKind) -> bool {
+    crate::process_manager::engine_hosts_dir().is_some_and(|dir| has_leftovers(&dir, kind, host_components(kind)))
+}
+
+fn remove_if_present(path: &Path) -> Result<(), String> {
+    let removed = if path.is_dir() { std::fs::remove_dir_all(path) } else { std::fs::remove_file(path) };
+    match removed {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.to_string()),
+        _ => Ok(()),
+    }
+}
+
+/// Delete what `kind` installed in `dir` (its host files, `.part`/`.tmp` leftovers and marker, and for CEF the
+/// runtime directory and its leftovers) and nothing else. The markers go first, so a delete that stops partway
+/// never reads as Installed. Refused, with the reason, while an engine process is using it (`running`) or an
+/// install is writing next to it (`installing`).
+pub(crate) fn remove_engine_files(
+    dir: &Path,
+    kind: EngineKind,
+    files: &[HostFile],
+    running: bool,
+    installing: bool,
+) -> Result<(), String> {
     if running {
         return Err("Close the tabs using it first".into());
     }
     if installing {
         return Err("It is installing; cancel that first".into());
     }
-    let live = data_dir.join("cef-runtime");
-    match std::fs::remove_file(live.join(MARKER)) {
-        Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => return Err(e.to_string()),
+    let live = dir.join("cef-runtime");
+    remove_if_present(&host_marker_path(dir, kind))?;
+    if has_runtime(kind) {
+        remove_if_present(&live.join(MARKER))?;
     }
-    remove_dir(&live).map_err(|e| e.to_string())?;
-    for name in LEFTOVERS {
-        let path = data_dir.join(name);
-        if path.is_dir() {
-            remove_dir(&path).map_err(|e| e.to_string())?;
-        } else if path.exists() {
-            std::fs::remove_file(&path).map_err(|e| e.to_string())?;
+    for name in host_file_names(dir, kind, files) {
+        remove_if_present(&dir.join(name))?;
+    }
+    for leftover in host_leftovers(dir, kind, files) {
+        remove_if_present(&leftover)?;
+    }
+    if has_runtime(kind) {
+        remove_if_present(&live)?;
+        for name in LEFTOVERS {
+            remove_if_present(&dir.join(name))?;
         }
     }
     Ok(())
 }
 
-/// Total size in bytes of the files under `dir` (0 when it is missing).
-pub(crate) fn dir_size(dir: &Path) -> u64 {
-    let Ok(entries) = std::fs::read_dir(dir) else { return 0 };
-    entries
-        .flatten()
-        .map(|e| match e.metadata() {
-            Ok(m) if m.is_dir() => dir_size(&e.path()),
-            Ok(m) => m.len(),
-            Err(_) => 0,
-        })
-        .sum()
+/// Total size in bytes of the file, or of the files under the directory, `path` (0 when it is missing).
+pub(crate) fn dir_size(path: &Path) -> u64 {
+    let Ok(meta) = std::fs::metadata(path) else { return 0 };
+    if !meta.is_dir() {
+        return meta.len();
+    }
+    let Ok(entries) = std::fs::read_dir(path) else { return 0 };
+    entries.flatten().map(|e| dir_size(&e.path())).sum()
 }
 
 /// The engine runtime installs and their Settings UI (`App::engine_ui`).
@@ -667,12 +967,12 @@ pub(crate) struct EngineInstallUi {
     pub(crate) cef_dir_draft: Option<String>,
 }
 
-/// A running (or just cancelled) install of one engine's runtime, on its own thread.
+/// A running (or just cancelled) install of one engine's components, on its own thread.
 pub(crate) struct InstallJob {
-    /// Bytes in the `.part` so far, written by the thread.
+    /// Bytes done across the plan's parts so far, written by the thread.
     progress: Arc<AtomicU64>,
     cancel: Arc<AtomicBool>,
-    /// The pin's size, for `(received, total)`.
+    /// The plan's total size (host files plus runtime), for `(received, total)`.
     total: u64,
     /// Set by Cancel: the UI no longer shows the job, but the thread may linger briefly (until it next
     /// checks the flag), and its result is discarded. The job stays in the map until the thread has
@@ -690,13 +990,19 @@ impl crate::App {
         if let Some(state) = self.engine_ui.engine_state_cache.borrow().get(&kind) {
             return state.clone();
         }
-        let state = self.engine_state_at(kind, crate::process_manager::engine_on_disk(kind));
+        let state = self.engine_state_at(kind, crate::process_manager::engine_on_disk(kind), &plan_for(kind));
         self.engine_ui.engine_state_cache.borrow_mut().insert(kind, state.clone());
         state
     }
 
-    /// `engine_state` with the engine's on-disk state (`engine_on_disk`) given (tests use a temporary directory).
-    pub(crate) fn engine_state_at(&self, kind: EngineKind, on_disk: RuntimeOnDisk) -> EngineState {
+    /// `engine_state` with the engine's on-disk state (`engine_on_disk`) and install plan (`plan_for`) given (tests
+    /// use a temporary directory and a plan of their own).
+    pub(crate) fn engine_state_at(
+        &self,
+        kind: EngineKind,
+        on_disk: OnDisk,
+        plan: &Result<Plan, String>,
+    ) -> EngineState {
         let installing = self
             .engine_ui
             .engine_installs
@@ -705,7 +1011,15 @@ impl crate::App {
             .map(|job| (job.progress.load(Ordering::Relaxed), job.total));
         let failed = self.engine_ui.engine_failures.get(&kind).map(String::as_str);
         let custom = (kind == EngineKind::Cef).then(|| self.custom_cef_dir()).flatten();
-        crate::process_manager::engine_availability(kind, on_disk, installing, failed, custom.as_deref())
+        crate::process_manager::engine_availability(kind, plan, on_disk, installing, failed, custom.as_deref())
+    }
+
+    /// The bytes installing `kind` would fetch now, for the confirm dialog and the failed card's hint: what is not
+    /// on disk yet (a bring-your-own CEF runtime is never fetched).
+    pub(crate) fn engine_download_size(&self, kind: EngineKind) -> u64 {
+        plan_for(kind).map_or(0, |plan| {
+            plan.fetch_size(crate::process_manager::engine_on_disk(kind), self.custom_cef_dir().is_some())
+        })
     }
 
     /// The configured bring-your-own CEF directory, only when it validates against the pin.
@@ -747,25 +1061,31 @@ impl crate::App {
         self.save_settings();
     }
 
-    /// Download and install `kind`'s runtime into the data directory. See `start_engine_install_at`.
+    /// Download and install `kind`'s components into the data directory. See `start_engine_install_at`.
     pub(crate) fn start_engine_install(&mut self, kind: EngineKind) -> bool {
         let Some(data_dir) = crate::process_manager::engine_hosts_dir() else {
             self.queue_toast("No data directory to install into".into());
             return false;
         };
-        let Some(pin) = crate::cef_pin::pin_for_platform() else {
-            self.queue_toast(crate::engine_info::PickOutcome::unavailable_toast(kind, NO_PIN_REASON));
-            return false;
+        let mut plan = match plan_for(kind) {
+            Ok(plan) => plan,
+            Err(reason) => {
+                self.queue_toast(crate::engine_info::PickOutcome::unavailable_toast(kind, &reason));
+                return false;
+            }
         };
-        self.start_engine_install_at(kind, &data_dir, pin)
+        if self.custom_cef_dir().is_some() {
+            plan.runtime = None;
+        }
+        self.start_engine_install_at(kind, &data_dir, &plan)
     }
 
-    /// Start installing `kind` (only CEF downloads anything) under `data_dir`. Refused, with a toast
-    /// saying why, while that engine's install is running or its cancelled thread has not yet stopped
-    /// (it would share the `.part`), or while a CEF engine process is alive (it holds the runtime's
-    /// DLLs, so the swap would fail). Returns whether a job started.
-    pub(crate) fn start_engine_install_at(&mut self, kind: EngineKind, data_dir: &Path, pin: &Pin) -> bool {
-        if kind != EngineKind::Cef {
+    /// Start installing `plan` for `kind` (only a downloaded engine installs) under `data_dir`. Refused, with a
+    /// toast saying why, while that engine's install is running or its cancelled thread has not yet stopped (it
+    /// would share the `.part`), or while an engine process of that kind is alive (it holds the files, so the
+    /// replace would fail). Returns whether a job started.
+    pub(crate) fn start_engine_install_at(&mut self, kind: EngineKind, data_dir: &Path, plan: &Plan) -> bool {
+        if !downloads(kind) {
             return false;
         }
         let label = crate::engine_info::engine_label(kind);
@@ -777,7 +1097,7 @@ impl crate::App {
             } else {
                 // Finished: collect it first (its result is discarded), then start afresh.
                 self.poll_engine_installs();
-                return self.start_engine_install_at(kind, data_dir, pin);
+                return self.start_engine_install_at(kind, data_dir, plan);
             }
             return false;
         }
@@ -795,17 +1115,17 @@ impl crate::App {
         let progress = Arc::new(AtomicU64::new(0));
         let cancel = Arc::new(AtomicBool::new(false));
         let (thread_progress, thread_cancel) = (progress.clone(), cancel.clone());
-        let (data_dir, pin) = (data_dir.to_path_buf(), pin.clone());
-        let total = pin.size;
+        let (data_dir, plan) = (data_dir.to_path_buf(), plan.clone());
+        let total = plan.size();
         let handle = std::thread::spawn(move || {
-            install(&pin, &data_dir, &mut |n| thread_progress.store(n, Ordering::Relaxed), &thread_cancel)
+            install_plan(kind, &plan, &data_dir, &mut |n| thread_progress.store(n, Ordering::Relaxed), &thread_cancel)
         });
         self.engine_ui.engine_installs.insert(kind, InstallJob { progress, cancel, total, cancelled: false, handle });
         self.egui_ctx.request_repaint();
         true
     }
 
-    /// Delete `kind`'s downloaded runtime (Settings' Remove, after its confirm), toasting the outcome.
+    /// Delete what `kind` downloaded (Settings' Remove, after its confirm), toasting the outcome.
     pub(crate) fn remove_engine(&mut self, kind: EngineKind) {
         let label = crate::engine_info::engine_label(kind);
         let Some(dir) = crate::process_manager::engine_hosts_dir() else { return };
@@ -813,7 +1133,7 @@ impl crate::App {
         let running = !self.spawns.spawning.is_empty()
             || self.nodes.values().any(|n| n.as_tab().is_some_and(|t| t.tab.kind == kind));
         let installing = self.engine_ui.engine_installs.contains_key(&kind);
-        let removed = remove_runtime(&dir, running, installing);
+        let removed = remove_engine_files(&dir, kind, host_components(kind), running, installing);
         // Even a failed removal may have deleted some of it: the Settings page reads the disk again.
         crate::process_manager::forget_on_disk();
         crate::settings_page::forget_disk_cache(&self.egui_ctx);

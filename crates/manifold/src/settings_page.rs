@@ -288,12 +288,16 @@ impl App {
                     TEXT_PRIMARY
                 }));
             });
+            // What this engine has installed (host files, CEF's runtime): present means Remove and a size line.
             let runtime = cached(ui.ctx(), ("engine_runtime", kind), DISK_CACHE_AGE, || {
-                crate::process_manager::engine_runtime_dir(kind).filter(|dir| dir.exists())
+                Some(crate::engine_install::installed_paths(kind)).filter(|paths| !paths.is_empty())
             });
             match &state {
                 EngineState::Installed | EngineState::UpdateNeeded { .. } if runtime.is_some() => {
-                    let size = runtime.as_deref().map(|dir| cached_dir_size(ui.ctx(), dir)).unwrap_or(0);
+                    let size = runtime
+                        .as_deref()
+                        .map(|paths| paths.iter().map(|path| cached_dir_size(ui.ctx(), path)).sum::<u64>())
+                        .unwrap_or(0);
                     let (label, tone) = engine_state_label(&state);
                     ui.label(
                         egui::RichText::new(format!("{label} \u{b7} {} on disk", megabytes(size)))
@@ -305,10 +309,9 @@ impl App {
             }
             // Leftovers (a kept `.part`, a failed install's `.tmp`) can exist with no runtime; they get a
             // button too, since nothing else would ever delete them.
-            let leftovers = kind == EngineKind::Cef
-                && cached(ui.ctx(), "engine_leftovers", DISK_CACHE_AGE, || {
-                    crate::process_manager::engine_hosts_dir().is_some_and(|d| crate::engine_install::has_leftovers(&d))
-                });
+            let leftovers = cached(ui.ctx(), ("engine_leftovers", kind), DISK_CACHE_AGE, || {
+                crate::engine_install::kind_has_leftovers(kind)
+            });
             let removable = (runtime.is_some() || leftovers) && !matches!(state, EngineState::Installing { .. });
             if matches!(state, EngineState::Installed | EngineState::Custom(_)) && !removable {
                 continue;

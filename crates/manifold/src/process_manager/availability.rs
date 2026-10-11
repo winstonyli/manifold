@@ -28,9 +28,11 @@ pub(super) fn sibling_binary(name: &str) -> PathBuf {
 /// manual post-build step (see project memory), not automated — a real
 /// install/packaging step should do this, not a person running `cp`.
 ///
-/// Falls back to `engine_runtime_dir` (under `profile::engine_data_dir()`)
-/// when the sibling binary isn't there — for an engine fetched on demand
-/// after install rather than bundled next to `manifold.exe`.
+/// Falls back to the host file `engine_install::install_host` puts flat in
+/// `engine_hosts_dir()` (under `profile::engine_data_dir()`) when the sibling
+/// binary isn't there — for an engine fetched on demand after install rather
+/// than bundled next to `manifold.exe`. (A downloaded CEF host is never run
+/// from there: `spawn_tab` copies it beside the runtime's `libcef.dll`.)
 pub(super) fn engine_binary_path(kind: EngineKind) -> PathBuf {
     let file_name = crate::cef_platform::PLATFORM.host_exe(kind.desc().binary);
     let sibling = match kind {
@@ -47,12 +49,6 @@ pub(super) fn engine_binary_path(kind: EngineKind) -> PathBuf {
         return sibling;
     }
     let Some(mut fallback) = engine_hosts_dir() else { return sibling };
-    // Same isolation as the sibling-dir case above: CEF's own ANGLE DLLs
-    // would collide with Servo's if both engines' fallback files ever
-    // landed flat in the same `engine-hosts/` directory.
-    if let Some(runtime) = engine_runtime_dir(kind) {
-        fallback = runtime;
-    }
     fallback.push(file_name);
     fallback
 }
@@ -74,46 +70,57 @@ pub(super) fn cef_sibling_exe() -> PathBuf {
     path
 }
 
-/// The directory a downloaded runtime unpacks into (and whose `ready` marker
-/// `runtime_state` reads); `None` for engines that download nothing, or
-/// without a data directory.
-pub(crate) fn engine_runtime_dir(kind: EngineKind) -> Option<PathBuf> {
+/// The host exe of `kind` that ships beside `manifold.exe` (a dev tree's, or a packaged one's), when it is there.
+/// CEF also has the `cef-runtime/` copy a dev build keeps. A sibling host makes the host part Ready whatever the
+/// pin table says.
+pub(super) fn sibling_host(kind: EngineKind) -> Option<PathBuf> {
+    let flat = Some(sibling_binary(kind.desc().binary)).filter(|path| path.exists());
     match kind {
-        EngineKind::Cef => engine_hosts_dir().map(|dir| dir.join("cef-runtime")),
-        EngineKind::Servo | EngineKind::Webkit | EngineKind::Webview2 => None,
+        EngineKind::Cef => flat.or_else(|| Some(cef_sibling_exe()).filter(|path| path.exists())),
+        EngineKind::Servo | EngineKind::Webview2 => flat,
+        EngineKind::Webkit => None,
     }
 }
 
-/// What CEF's runtime looks like on disk right now: a bundled sibling
-/// `cef-runtime/` (dev builds) is Ready; otherwise the data-dir runtime is
-/// judged by its marker.
-pub(crate) fn cef_on_disk() -> RuntimeOnDisk {
-    if cef_sibling_exe().exists() {
+/// The directory a downloaded runtime unpacks into (and whose `ready` marker
+/// `runtime_state` reads); `None` for engines with no runtime archive, or
+/// without a data directory.
+pub(crate) fn engine_runtime_dir(kind: EngineKind) -> Option<PathBuf> {
+    if !has_runtime(kind) {
+        return None;
+    }
+    engine_hosts_dir().map(|dir| dir.join("cef-runtime"))
+}
+
+/// The host part of `kind` on disk: Ready when a sibling host is there, else what the `<kind>.host` marker says
+/// about this build's pinned files (`host_state`; Missing when it pins none).
+fn host_on_disk(kind: EngineKind) -> RuntimeOnDisk {
+    if sibling_host(kind).is_some() {
         return RuntimeOnDisk::Ready;
     }
-    match (engine_runtime_dir(EngineKind::Cef), crate::cef_pin::pin_for_platform()) {
+    match engine_hosts_dir() {
+        Some(dir) => host_state(&dir, kind, host_components(kind)),
+        None => RuntimeOnDisk::Missing,
+    }
+}
+
+/// The runtime part of `kind` on disk: Ready for an engine with none; for CEF, a bundled sibling
+/// `cef-runtime/` (dev builds) is Ready, otherwise the data-dir runtime is judged by its marker.
+fn runtime_on_disk(kind: EngineKind) -> RuntimeOnDisk {
+    if !has_runtime(kind) || cef_sibling_exe().exists() {
+        return RuntimeOnDisk::Ready;
+    }
+    match (engine_runtime_dir(kind), crate::cef_pin::pin_for_platform()) {
         (Some(dir), Some(pin)) => runtime_state(&dir, pin),
         _ => RuntimeOnDisk::Missing,
     }
 }
 
-/// Why Servo is Unavailable when its host exe is not where `engine_binary_path` looks.
-pub(super) const SERVO_HOST_MISSING: &str = "the Servo host wasn't found";
-
-/// Whether Servo's host exe is where `engine_binary_path` finds it: Ready, or Missing.
-pub(super) fn servo_on_disk() -> RuntimeOnDisk {
-    if engine_binary_path(EngineKind::Servo).exists() {
-        RuntimeOnDisk::Ready
-    } else {
-        RuntimeOnDisk::Missing
-    }
-}
-
-/// How long `engine_on_disk` reuses a CEF or Servo answer: the engine lists read it every frame they draw.
+/// How long `engine_on_disk` reuses an answer: the engine lists read it every frame they draw.
 pub(super) const ON_DISK_CHECK_TTL: Duration = Duration::from_secs(5);
 
 /// The last disk answer per engine, with when it was read.
-pub(super) type OnDiskCache = std::sync::Mutex<Vec<(EngineKind, std::time::Instant, RuntimeOnDisk)>>;
+pub(super) type OnDiskCache = std::sync::Mutex<Vec<(EngineKind, std::time::Instant, OnDisk)>>;
 static ON_DISK: OnDiskCache = std::sync::Mutex::new(Vec::new());
 
 /// `kind`'s answer from `cache` if read within `ON_DISK_CHECK_TTL` of `now`, else `read()`'s, remembered.
@@ -121,8 +128,8 @@ pub(super) fn on_disk_cached(
     cache: &OnDiskCache,
     kind: EngineKind,
     now: std::time::Instant,
-    read: impl FnOnce() -> RuntimeOnDisk,
-) -> RuntimeOnDisk {
+    read: impl FnOnce() -> OnDisk,
+) -> OnDisk {
     let mut entries = cache.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     if let Some(&(_, at, on_disk)) = entries.iter().find(|e| e.0 == kind) {
         if now.saturating_duration_since(at) <= ON_DISK_CHECK_TTL {
@@ -140,50 +147,46 @@ pub(crate) fn forget_on_disk() {
     ON_DISK.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clear();
 }
 
-/// The disk check `kind` needs before it can run: CEF's runtime (`cef_on_disk`) and Servo's host exe
-/// (`servo_on_disk`). `None`: nothing to check (WebView2 is part of Windows; WebKit's host is found in WSL only when
-/// a tab spawns). The one dispatch both `engine_on_disk` and `engine_on_disk_fresh` read.
-fn on_disk_reader(kind: EngineKind) -> Option<fn() -> RuntimeOnDisk> {
-    match kind {
-        EngineKind::Cef => Some(cef_on_disk),
-        EngineKind::Servo => Some(servo_on_disk),
-        EngineKind::Webview2 | EngineKind::Webkit => None,
+/// The disk check `kind` needs before it can run, read now: a downloaded engine's host (a sibling, or the marker
+/// of the pinned files) and CEF's runtime. Only markers and file sizes are read, never file contents. Nothing to
+/// check for the rest (an embedded host; WebKit's is found in WSL only when a tab spawns), which read Ready.
+fn read_on_disk(kind: EngineKind) -> OnDisk {
+    if downloads(kind) {
+        OnDisk { host: host_on_disk(kind), runtime: runtime_on_disk(kind) }
+    } else {
+        OnDisk::both(RuntimeOnDisk::Ready)
     }
 }
 
-/// The `on_disk` that `engine_availability` takes for `kind`, for the engine lists: `on_disk_reader`'s answer, reread
+/// The `on_disk` that `engine_availability` takes for `kind`, for the engine lists: `read_on_disk`'s answer, reread
 /// at most every `ON_DISK_CHECK_TTL`; Ready when there is nothing to check.
-pub(crate) fn engine_on_disk(kind: EngineKind) -> RuntimeOnDisk {
-    let Some(read) = on_disk_reader(kind) else { return RuntimeOnDisk::Ready };
-    on_disk_cached(&ON_DISK, kind, std::time::Instant::now(), read)
+pub(crate) fn engine_on_disk(kind: EngineKind) -> OnDisk {
+    if !downloads(kind) {
+        return OnDisk::both(RuntimeOnDisk::Ready);
+    }
+    on_disk_cached(&ON_DISK, kind, std::time::Instant::now(), || read_on_disk(kind))
 }
 
-/// `engine_on_disk` read now, not through the cache: a Servo host built or a CEF runtime copied a moment ago
+/// `engine_on_disk` read now, not through the cache: a host built or a CEF runtime copied a moment ago
 /// should launch.
-pub(super) fn engine_on_disk_fresh(kind: EngineKind) -> RuntimeOnDisk {
-    on_disk_reader(kind).map_or(RuntimeOnDisk::Ready, |read| read())
+pub(super) fn engine_on_disk_fresh(kind: EngineKind) -> OnDisk {
+    read_on_disk(kind)
 }
 
-/// How `kind` is available, in one place. `on_disk` is what the engine needs on disk (`engine_on_disk`):
-/// Servo is Installed when its host exe is there, else Unavailable (`SERVO_HOST_MISSING`); WebView2 and
-/// WebKit ignore it and are Installed; CEF follows its runtime. A custom path and a running install
-/// override CEF's; a failed install overrides Missing and Stale but not a current runtime.
+/// How `kind` is available, in one place. `plan` is what installing it would fetch in this build (`plan_for`), and
+/// `on_disk` what the engine has on disk (`engine_on_disk`). An engine that is not downloaded (embedded, or a sibling
+/// only) is Installed. A downloaded one follows its host and, for CEF, its runtime: a custom path (and a running
+/// install) override; a failed install overrides Missing and Stale but not parts that are current; with nothing to
+/// download and nothing there it is Unavailable with the plan's reason.
 pub(crate) fn engine_availability(
     kind: EngineKind,
-    on_disk: RuntimeOnDisk,
+    plan: &Result<Plan, String>,
+    on_disk: OnDisk,
     installing: Option<(u64, u64)>,
     failed: Option<&str>,
     custom: Option<&Path>,
 ) -> EngineState {
-    availability_with(
-        std::env::consts::OS,
-        crate::cef_pin::pin_for_platform(),
-        kind,
-        on_disk,
-        installing,
-        failed,
-        custom,
-    )
+    availability_with(std::env::consts::OS, plan, kind, on_disk, installing, failed, custom)
 }
 
 /// Why `kind` cannot run on `os` (a `std::env::consts::OS` value) at all, or `None` when it can. The one
@@ -194,7 +197,7 @@ pub(super) fn platform_unavailable_reason(os: &str, kind: EngineKind) -> Option<
     match kind {
         EngineKind::Webview2 => (os != "windows").then_some("needs Windows"),
         EngineKind::Webkit => (!matches!(os, "windows" | "linux")).then_some("needs Windows or Linux"),
-        // Servo's host builds wherever manifold does; CEF's platforms are its pin's (`availability_with`).
+        // Servo's host builds wherever manifold does; CEF's platforms are its pin's (`plan_for`).
         EngineKind::Servo | EngineKind::Cef => None,
     }
 }
@@ -208,13 +211,14 @@ pub(crate) fn platform_default_engine(os: &str) -> EngineKind {
         .unwrap_or(EngineKind::Servo)
 }
 
-/// `engine_availability` for a given OS and pin. `None` means this platform has no CEF build, so there is
-/// nothing to download: `Unavailable`, unless a runtime is already there (a dev tree's) or a custom one is set.
+/// `engine_availability` for a given OS. A plan that is an `Err` means there is nothing to download: `Unavailable`
+/// with its reason, unless the parts are already there (a dev tree's siblings) or, for CEF, a custom runtime is
+/// set and the host is there.
 pub(super) fn availability_with(
     os: &str,
-    pin: Option<&Pin>,
+    plan: &Result<Plan, String>,
     kind: EngineKind,
-    on_disk: RuntimeOnDisk,
+    on_disk: OnDisk,
     installing: Option<(u64, u64)>,
     failed: Option<&str>,
     custom: Option<&Path>,
@@ -222,31 +226,34 @@ pub(super) fn availability_with(
     if let Some(reason) = platform_unavailable_reason(os, kind) {
         return EngineState::Unavailable(reason.to_string());
     }
-    match kind {
-        EngineKind::Cef => {}
-        EngineKind::Servo if on_disk != RuntimeOnDisk::Ready => {
-            return EngineState::Unavailable(SERVO_HOST_MISSING.to_string());
-        }
-        EngineKind::Servo | EngineKind::Webview2 | EngineKind::Webkit => return EngineState::Installed,
+    if !downloads(kind) {
+        return EngineState::Installed;
     }
-    if let Some(path) = custom {
+    // A bring-your-own runtime replaces CEF's runtime archive, never its host.
+    let custom = custom.filter(|_| has_runtime(kind));
+    if let Some(path) = custom.filter(|_| on_disk.host == RuntimeOnDisk::Ready) {
         return EngineState::Custom(path.to_path_buf());
     }
     if let Some((received, total)) = installing {
         return EngineState::Installing { received, total };
     }
-    // A runtime that is there and current outranks a recorded failure (the failure was an update or a
-    // retry that did not matter in the end); a failure outranks Missing and Stale.
-    if on_disk == RuntimeOnDisk::Ready {
+    // Parts that are there and current outrank a recorded failure (the failure was an update or a retry that did
+    // not matter in the end); a failure outranks Missing and Stale.
+    let needed = on_disk.needed(custom.is_some());
+    if needed == RuntimeOnDisk::Ready {
         return EngineState::Installed;
     }
-    let Some(pin) = pin else { return EngineState::Unavailable(NO_PIN_REASON.to_string()) };
+    let plan = match plan {
+        Ok(plan) => plan,
+        Err(reason) => return EngineState::Unavailable(reason.clone()),
+    };
     if let Some(message) = failed {
         return EngineState::Failed(message.to_string());
     }
-    match on_disk {
+    let size = plan.fetch_size(on_disk, custom.is_some());
+    match needed {
         RuntimeOnDisk::Ready => EngineState::Installed,
-        RuntimeOnDisk::Missing => EngineState::NotInstalled { size: pin.size },
-        RuntimeOnDisk::Stale => EngineState::UpdateNeeded { size: pin.size },
+        RuntimeOnDisk::Missing => EngineState::NotInstalled { size },
+        RuntimeOnDisk::Stale => EngineState::UpdateNeeded { size },
     }
 }

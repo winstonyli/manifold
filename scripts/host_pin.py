@@ -67,6 +67,7 @@ def parse_entries(region):
 def render(version, entries):
     lines = [
         "/// The app version this table was cut for.",
+        '#[cfg_attr(not(test), allow(dead_code, reason = "only the table check in the tests reads it"))]',
         f'pub const PIN_VERSION: &str = "{version}";',
         "",
         "#[rustfmt::skip]",

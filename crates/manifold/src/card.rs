@@ -1306,20 +1306,17 @@ impl App {
         let missing_engine = matches!(state, UnloadedState::Failed(_))
             && !matches!(pick_outcome(kind, &self.engine_state(kind)), PickOutcome::Switch(_));
         body.tooltip = Some(match &state {
-            UnloadedState::Failed(_) if missing_engine => {
-                match (self.engine_state(kind), crate::cef_pin::pin_for_platform()) {
-                    (crate::engine_install::EngineState::Unavailable(reason), _) => {
-                        PickOutcome::unavailable_toast(kind, &reason)
-                    }
-                    (state, Some(pin)) => format!(
-                        "{} {}\nClick to download it ({}).",
-                        engine_label(kind),
-                        missing_engine_phrases(&state).0,
-                        crate::engine_info::megabytes(pin.size)
-                    ),
-                    (_, None) => PickOutcome::unavailable_toast(kind, crate::engine_install::NO_PIN_REASON),
+            UnloadedState::Failed(_) if missing_engine => match self.engine_state(kind) {
+                crate::engine_install::EngineState::Unavailable(reason) => {
+                    PickOutcome::unavailable_toast(kind, &reason)
                 }
-            }
+                state => format!(
+                    "{} {}\nClick to download it ({}).",
+                    engine_label(kind),
+                    missing_engine_phrases(&state).0,
+                    crate::engine_info::megabytes(self.engine_download_size(kind))
+                ),
+            },
             UnloadedState::Failed(error) => {
                 format!("Couldn't start {}: {error}\nClick to try again.", engine_label(kind))
             }

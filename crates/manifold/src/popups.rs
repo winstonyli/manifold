@@ -550,25 +550,27 @@ impl App {
         let Some(confirm) = self.engine_ui.pending_engine_confirm else { return };
         let (title, detail, button) = match confirm {
             EngineConfirm::Download(kind) => {
-                let size = crate::engine_info::megabytes(crate::cef_pin::pin_for_platform().map_or(0, |pin| pin.size));
+                let size = crate::engine_info::megabytes(self.engine_download_size(kind));
                 let verb = if matches!(self.engine_state(kind), crate::engine_install::EngineState::UpdateNeeded { .. })
                 {
                     "Update"
                 } else {
                     "Download"
                 };
-                let detail = download_detail(&crate::cef_platform::PLATFORM.missing_system_libs());
+                // The Linux system-library warning is CEF's (the runtime's NSS/NSPR needs).
+                let missing_libs = if crate::engine_install::has_runtime(kind) {
+                    crate::cef_platform::PLATFORM.missing_system_libs()
+                } else {
+                    Vec::new()
+                };
+                let detail = download_detail(&missing_libs);
                 (format!("{verb} {}, {size}?", engine_label(kind)), detail, verb)
             }
-            EngineConfirm::Remove(kind)
-                if !crate::process_manager::engine_hosts_dir().is_some_and(|d| d.join("cef-runtime").exists()) =>
-            {
-                (
-                    format!("Clear {} leftovers?", engine_label(kind)),
-                    "Deletes the partial download and install leftovers.".to_string(),
-                    "Clear",
-                )
-            }
+            EngineConfirm::Remove(kind) if crate::engine_install::installed_paths(kind).is_empty() => (
+                format!("Clear {} leftovers?", engine_label(kind)),
+                "Deletes the partial download and install leftovers.".to_string(),
+                "Clear",
+            ),
             EngineConfirm::Remove(kind) => (
                 format!("Remove {}?", engine_label(kind)),
                 "Deletes the downloaded runtime. You can download it again later.".to_string(),

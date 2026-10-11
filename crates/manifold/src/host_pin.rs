@@ -4,7 +4,6 @@
 //! `scripts/host_pin.py`; do not edit it by hand. A pin names the exact file a release built and uploaded (PE output
 //! is not bit-reproducible, so a rebuild is a different artifact). The table is empty in the repo until a release
 //! writes it: a kind with no entry has no download in this build.
-#![allow(dead_code, reason = "Task 2 of the bare-exe plan (engine_install) consumes this table")]
 
 use crate::process_manager::EngineKind;
 
@@ -31,6 +30,7 @@ pub struct Entry {
 
 // BEGIN TABLE
 /// The app version this table was cut for.
+#[cfg_attr(not(test), allow(dead_code, reason = "only the table check in the tests reads it"))]
 pub const PIN_VERSION: &str = "";
 
 #[rustfmt::skip]
@@ -49,6 +49,7 @@ fn lookup(table: &'static [Entry], kind: EngineKind, platform: &str) -> &'static
 
 /// What is wrong with `table`, if anything: well-formed hashes, sizes and URLs, stable order, and (once it holds
 /// entries) a `pin_version` equal to the app's `app_version`, so a version bump without re-cutting the table fails.
+#[cfg(test)]
 fn check_table(table: &[Entry], pin_version: &str, app_version: &str) -> Result<(), String> {
     if !table.is_empty() && pin_version != app_version {
         return Err(format!("table cut for version {pin_version:?}, app is {app_version:?}: re-cut it"));

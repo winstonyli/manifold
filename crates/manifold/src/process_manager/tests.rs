@@ -1,5 +1,5 @@
-use super::availability::servo_on_disk;
 use super::*;
+use crate::engine_install::{no_download_reason, NO_PIN_REASON};
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -361,61 +361,132 @@ fn a_host_that_exits_with_a_fatal_line_is_reported_by_that_line() {
     assert_eq!(err.to_string(), "CEF runtime too old");
     let _ = std::fs::remove_dir_all(dir);
 }
+const HASH: &str = "db3e0751979c3cb3068f732ed4f0ef12ade69d183d98ceee120ad08c8d00f74c";
+
+/// Servo's pinned host: the exe and the two ANGLE DLLs it needs beside it (1 + 2 + 90 MB).
+static SERVO_FILES: [crate::host_pin::Component; 3] = [
+    crate::host_pin::Component { file: "libEGL.dll", url: "http://x/egl", size: 1_000_000, sha256: HASH },
+    crate::host_pin::Component { file: "libGLESv2.dll", url: "http://x/gles", size: 2_000_000, sha256: HASH },
+    crate::host_pin::Component {
+        file: "manifold-engine-servo.exe",
+        url: "http://x/servo",
+        size: 90_000_000,
+        sha256: HASH,
+    },
+];
+const SERVO_SIZE: u64 = 93_000_000;
+
+/// CEF's pinned host (0.7 MB) and the platform's runtime archive.
+static CEF_FILES: [crate::host_pin::Component; 1] =
+    [crate::host_pin::Component { file: "manifold-engine-cef.exe", url: "http://x/cef", size: 700_000, sha256: HASH }];
+
+fn servo_plan() -> Result<Plan, String> {
+    Ok(Plan { host: &SERVO_FILES, runtime: None })
+}
+
+fn cef_plan() -> Result<Plan, String> {
+    let pin = crate::cef_pin::pin_for_platform().expect("a pin on a platform with tests");
+    Ok(Plan { host: &CEF_FILES, runtime: Some(pin.clone()) })
+}
+
+/// CEF with its host and runtime in the given states.
+fn cef_disk(host: RuntimeOnDisk, runtime: RuntimeOnDisk) -> OnDisk {
+    OnDisk { host, runtime }
+}
 
 #[test]
-fn bundled_engines_are_always_installed_where_the_os_can_run_them() {
-    let a = |os, kind, disk, installing, failed| availability_with(os, None, kind, disk, installing, failed, None);
+fn engines_that_are_not_downloaded_are_always_installed_where_the_os_can_run_them() {
+    let none = Err("unused".to_string());
+    let a = |os, kind, disk, installing, failed| availability_with(os, &none, kind, disk, installing, failed, None);
     for (os, kind) in
         [("windows", EngineKind::Webview2), ("windows", EngineKind::Webkit), ("linux", EngineKind::Webkit)]
     {
-        assert_eq!(a(os, kind, RuntimeOnDisk::Missing, None, None), EngineState::Installed, "{os} {kind:?}");
-        assert_eq!(a(os, kind, RuntimeOnDisk::Stale, Some((1, 2)), Some("x")), EngineState::Installed, "{os} {kind:?}");
+        assert!(!downloads(kind));
+        assert_eq!(
+            a(os, kind, OnDisk::both(RuntimeOnDisk::Missing), None, None),
+            EngineState::Installed,
+            "{os} {kind:?}"
+        );
+        assert_eq!(
+            a(os, kind, OnDisk::both(RuntimeOnDisk::Stale), Some((1, 2)), Some("x")),
+            EngineState::Installed,
+            "{os} {kind:?}"
+        );
     }
 }
 
-/// Servo follows its host exe on every OS: Installed when it is there, else Unavailable with the reason the
-/// lists show. An install or failure (Servo has neither) changes nothing.
+/// Servo follows its host files on every OS: Installed when they are there (a sibling host counts, whatever the pin
+/// table says), else offered for download when this build pins them, else Unavailable with the reason the lists show.
 #[test]
-fn servo_is_installed_only_when_its_host_is_on_disk() {
-    let a =
-        |os, disk, installing, failed| availability_with(os, None, EngineKind::Servo, disk, installing, failed, None);
-    let missing = EngineState::Unavailable(SERVO_HOST_MISSING.to_string());
+fn servo_is_installed_with_its_host_else_offered_or_unavailable() {
+    let reason = no_download_reason(EngineKind::Servo);
+    assert_eq!(reason, "this build has no Servo download");
+    let a = |os, plan: &Result<Plan, String>, disk, installing, failed| {
+        availability_with(os, plan, EngineKind::Servo, OnDisk::both(disk), installing, failed, None)
+    };
+    let no_pin = Err(reason.clone());
+    let missing = EngineState::Unavailable(reason.clone());
     for os in ["windows", "linux", "macos"] {
-        assert_eq!(a(os, RuntimeOnDisk::Ready, None, None), EngineState::Installed, "{os}");
-        assert_eq!(a(os, RuntimeOnDisk::Ready, Some((1, 2)), Some("x")), EngineState::Installed, "{os}");
-        assert_eq!(a(os, RuntimeOnDisk::Missing, None, None), missing, "{os}");
-        assert_eq!(a(os, RuntimeOnDisk::Stale, Some((1, 2)), Some("x")), missing, "{os}");
+        for plan in [&no_pin, &servo_plan()] {
+            assert_eq!(a(os, plan, RuntimeOnDisk::Ready, None, None), EngineState::Installed, "{os}");
+            assert_eq!(a(os, plan, RuntimeOnDisk::Ready, None, Some("x")), EngineState::Installed, "{os}");
+        }
+        // Nothing pinned and no sibling: Unavailable, an install or failure changing nothing (it cannot exist).
+        assert_eq!(a(os, &no_pin, RuntimeOnDisk::Missing, None, None), missing, "{os}");
+        assert_eq!(a(os, &no_pin, RuntimeOnDisk::Stale, None, Some("x")), missing, "{os}");
+        // Pinned: the same disk is a download.
+        let plan = servo_plan();
+        assert_eq!(a(os, &plan, RuntimeOnDisk::Missing, None, None), EngineState::NotInstalled { size: SERVO_SIZE });
+        assert_eq!(a(os, &plan, RuntimeOnDisk::Stale, None, None), EngineState::UpdateNeeded { size: SERVO_SIZE });
+        assert_eq!(
+            a(os, &plan, RuntimeOnDisk::Missing, Some((5, 9)), None),
+            EngineState::Installing { received: 5, total: 9 }
+        );
+        assert_eq!(a(os, &plan, RuntimeOnDisk::Missing, None, Some("boom")), EngineState::Failed("boom".into()));
     }
     assert_eq!(
         crate::engine_info::pick_outcome(EngineKind::Servo, &missing),
-        crate::engine_info::PickOutcome::Unavailable(EngineKind::Servo, SERVO_HOST_MISSING.to_string())
+        crate::engine_info::PickOutcome::Unavailable(EngineKind::Servo, reason.clone())
     );
-    assert!(crate::engine_info::engine_state_label(&missing).0.contains(SERVO_HOST_MISSING));
+    assert!(crate::engine_info::engine_state_label(&missing).0.contains(&reason));
+    assert_eq!(
+        crate::engine_info::engine_state_label(&EngineState::NotInstalled { size: SERVO_SIZE }).0,
+        "Not installed \u{b7} 93 MB"
+    );
 }
 
-/// A missing Servo host is refused by name before any launch, not by the os error a spawn would hit.
+/// A missing Servo host with nothing pinned is refused by name before any launch, not by the os error a spawn would
+/// hit; one that is pinned is refused as not installed.
 #[test]
 fn a_missing_servo_host_is_refused_with_the_reason() {
-    let err = check_spawnable(EngineKind::Servo, RuntimeOnDisk::Missing, None).unwrap_err();
-    assert!(
-        matches!(&err, SpawnError::EngineUnavailable(EngineKind::Servo, reason) if reason == SERVO_HOST_MISSING),
-        "{err:?}"
-    );
-    assert_eq!(err.to_string(), format!("Servo is unavailable: {SERVO_HOST_MISSING}"));
-    assert!(check_spawnable(EngineKind::Servo, RuntimeOnDisk::Ready, None).is_ok());
+    let reason = no_download_reason(EngineKind::Servo);
+    let none = Err(reason.clone());
+    let missing = OnDisk::both(RuntimeOnDisk::Missing);
+    let err = check_spawnable(EngineKind::Servo, &none, missing, None).unwrap_err();
+    assert!(matches!(&err, SpawnError::EngineUnavailable(EngineKind::Servo, r) if *r == reason), "{err:?}");
+    assert_eq!(err.to_string(), format!("Servo is unavailable: {reason}"));
+    assert!(check_spawnable(EngineKind::Servo, &none, OnDisk::both(RuntimeOnDisk::Ready), None).is_ok());
+    assert!(matches!(
+        check_spawnable(EngineKind::Servo, &servo_plan(), missing, None),
+        Err(SpawnError::EngineMissing(EngineKind::Servo))
+    ));
     // A custom CEF folder is CEF's alone (spawn_tab drops it for other kinds; it changes nothing here either).
-    assert!(check_spawnable(EngineKind::Servo, RuntimeOnDisk::Missing, Some(Path::new("D:/cef"))).is_err());
+    assert!(check_spawnable(EngineKind::Servo, &none, missing, Some(Path::new("D:/cef"))).is_err());
 }
 
-/// The lists' Servo answer matches the disk the spawn reads (the test exe has no Servo host beside it
-/// unless one was copied there, and the data dir is `None` under test).
+/// The lists' answer for a downloaded engine's host matches the disk the spawn reads: a sibling host (the test exe has
+/// none beside it unless one was copied there) is Ready, anything else Missing (the data dir is `None` under test).
 #[test]
-fn the_lists_read_the_same_servo_host_the_spawn_looks_for() {
-    assert_eq!(engine_on_disk(EngineKind::Servo), servo_on_disk());
-    assert_eq!(engine_on_disk(EngineKind::Webview2), RuntimeOnDisk::Ready);
+fn the_lists_read_the_same_host_the_spawn_looks_for() {
+    for kind in [EngineKind::Servo, EngineKind::Cef] {
+        let want = if sibling_host(kind).is_some() { RuntimeOnDisk::Ready } else { RuntimeOnDisk::Missing };
+        assert_eq!(engine_on_disk(kind).host, want, "{kind:?}");
+        assert_eq!(engine_on_disk_fresh(kind).host, want, "{kind:?}");
+    }
+    assert_eq!(engine_on_disk(EngineKind::Webview2), OnDisk::both(RuntimeOnDisk::Ready));
 }
 
-/// The lists' disk answers (CEF's and Servo's) are reread only after the TTL or an install/remove (`forget_on_disk`).
+/// The lists' disk answers are reread only after the TTL or an install/remove (`forget_on_disk`).
 #[test]
 fn on_disk_answers_are_reused_until_the_ttl_or_forgotten() {
     let cache = OnDiskCache::default();
@@ -423,24 +494,27 @@ fn on_disk_answers_are_reused_until_the_ttl_or_forgotten() {
     let reads = std::cell::Cell::new(0);
     let read = |answer| {
         reads.set(reads.get() + 1);
-        answer
+        OnDisk::both(answer)
     };
     let get = |kind, at, answer| on_disk_cached(&cache, kind, at, || read(answer));
-    assert_eq!(get(EngineKind::Cef, t0, RuntimeOnDisk::Missing), RuntimeOnDisk::Missing);
-    assert_eq!(get(EngineKind::Cef, t0 + ON_DISK_CHECK_TTL, RuntimeOnDisk::Ready), RuntimeOnDisk::Missing, "reused");
+    let (missing, ready) = (OnDisk::both(RuntimeOnDisk::Missing), OnDisk::both(RuntimeOnDisk::Ready));
+    assert_eq!(get(EngineKind::Cef, t0, RuntimeOnDisk::Missing), missing);
+    assert_eq!(get(EngineKind::Cef, t0 + ON_DISK_CHECK_TTL, RuntimeOnDisk::Ready), missing, "reused");
     assert_eq!(reads.get(), 1);
-    assert_eq!(get(EngineKind::Servo, t0, RuntimeOnDisk::Ready), RuntimeOnDisk::Ready, "per engine");
+    assert_eq!(get(EngineKind::Servo, t0, RuntimeOnDisk::Ready), ready, "per engine");
     let later = t0 + ON_DISK_CHECK_TTL + Duration::from_millis(1);
-    assert_eq!(get(EngineKind::Cef, later, RuntimeOnDisk::Ready), RuntimeOnDisk::Ready, "expired");
+    assert_eq!(get(EngineKind::Cef, later, RuntimeOnDisk::Ready), ready, "expired");
     cache.lock().unwrap().clear(); // what `forget_on_disk` does
-    assert_eq!(get(EngineKind::Servo, later, RuntimeOnDisk::Missing), RuntimeOnDisk::Missing, "forgotten");
+    assert_eq!(get(EngineKind::Servo, later, RuntimeOnDisk::Missing), missing, "forgotten");
     assert_eq!(reads.get(), 4);
 }
 
 /// Every OS case, from any host: the reason text is also what the spawn refusal and the lists show.
 #[test]
 fn engines_the_os_cannot_run_are_unavailable_with_a_reason() {
-    let unavailable = |os, kind| availability_with(os, None, kind, RuntimeOnDisk::Ready, None, None, None);
+    let none = Err("unused".to_string());
+    let unavailable =
+        |os, kind| availability_with(os, &none, kind, OnDisk::both(RuntimeOnDisk::Ready), None, None, None);
     let reason = |text: &str| EngineState::Unavailable(text.to_string());
     for os in ["linux", "macos", "freebsd"] {
         assert_eq!(unavailable(os, EngineKind::Webview2), reason("needs Windows"), "{os}");
@@ -483,40 +557,63 @@ fn the_platform_default_is_the_first_engine_the_os_can_run() {
 
 #[test]
 fn cef_state_follows_disk_then_overrides() {
+    use RuntimeOnDisk::{Missing, Ready, Stale};
     let pin = crate::cef_pin::pin_for_platform().expect("a pin on a platform with tests");
-    let a = |disk, installing, failed, custom| engine_availability(EngineKind::Cef, disk, installing, failed, custom);
-    assert_eq!(a(RuntimeOnDisk::Ready, None, None, None), EngineState::Installed);
-    assert_eq!(a(RuntimeOnDisk::Missing, None, None, None), EngineState::NotInstalled { size: pin.size });
-    assert_eq!(a(RuntimeOnDisk::Stale, None, None, None), EngineState::UpdateNeeded { size: pin.size });
-    assert_eq!(
-        a(RuntimeOnDisk::Missing, Some((5, 9)), Some("old"), None),
-        EngineState::Installing { received: 5, total: 9 }
-    );
-    assert_eq!(a(RuntimeOnDisk::Missing, None, Some("boom"), None), EngineState::Failed("boom".into()));
-    assert_eq!(a(RuntimeOnDisk::Stale, None, Some("boom"), None), EngineState::Failed("boom".into()));
-    // A current runtime outranks a recorded failure, so the list agrees with what a spawn would do.
-    assert_eq!(a(RuntimeOnDisk::Ready, None, Some("boom"), None), EngineState::Installed);
+    let host = CEF_FILES[0].size;
+    let plan = cef_plan();
+    let a = |disk, installing, failed, custom| {
+        engine_availability(EngineKind::Cef, &plan, disk, installing, failed, custom)
+    };
+    let ready = cef_disk(Ready, Ready);
+    assert_eq!(a(ready, None, None, None), EngineState::Installed);
+    // Installed needs the host and the runtime both; what is not there is what a download fetches.
+    assert_eq!(a(cef_disk(Missing, Missing), None, None, None), EngineState::NotInstalled { size: host + pin.size });
+    assert_eq!(a(cef_disk(Ready, Missing), None, None, None), EngineState::NotInstalled { size: pin.size });
+    assert_eq!(a(cef_disk(Missing, Ready), None, None, None), EngineState::NotInstalled { size: host });
+    assert_eq!(a(cef_disk(Ready, Stale), None, None, None), EngineState::UpdateNeeded { size: pin.size });
+    assert_eq!(a(cef_disk(Stale, Ready), None, None, None), EngineState::UpdateNeeded { size: host });
+    assert_eq!(a(cef_disk(Stale, Stale), None, None, None), EngineState::UpdateNeeded { size: host + pin.size });
+    assert_eq!(a(cef_disk(Stale, Missing), None, None, None), EngineState::NotInstalled { size: host + pin.size });
+    let missing = cef_disk(Missing, Missing);
+    assert_eq!(a(missing, Some((5, 9)), Some("old"), None), EngineState::Installing { received: 5, total: 9 });
+    assert_eq!(a(missing, None, Some("boom"), None), EngineState::Failed("boom".into()));
+    assert_eq!(a(cef_disk(Ready, Stale), None, Some("boom"), None), EngineState::Failed("boom".into()));
+    // Current parts outrank a recorded failure, so the list agrees with what a spawn would do.
+    assert_eq!(a(ready, None, Some("boom"), None), EngineState::Installed);
+    // A bring-your-own runtime replaces the runtime part only: with the host there it is Custom, whatever the runtime.
     let p = Path::new("C:/my/cef");
-    assert_eq!(a(RuntimeOnDisk::Missing, Some((1, 2)), Some("x"), Some(p)), EngineState::Custom(p.to_path_buf()));
+    assert_eq!(a(cef_disk(Ready, Missing), Some((1, 2)), Some("x"), Some(p)), EngineState::Custom(p.to_path_buf()));
+    assert_eq!(a(cef_disk(Ready, Stale), None, None, Some(p)), EngineState::Custom(p.to_path_buf()));
+    // ... and without the host it still needs the host: only the host is offered, never the 170 MB runtime.
+    assert_eq!(a(cef_disk(Missing, Missing), None, None, Some(p)), EngineState::NotInstalled { size: host });
+    assert_eq!(a(cef_disk(Stale, Missing), None, None, Some(p)), EngineState::UpdateNeeded { size: host });
+    assert_eq!(
+        a(cef_disk(Missing, Ready), Some((1, 2)), None, Some(p)),
+        EngineState::Installing { received: 1, total: 2 }
+    );
 }
 
 #[test]
 fn a_platform_without_a_pin_offers_no_install() {
-    let a = |disk, installing, failed, custom| {
-        availability_with("windows", None, EngineKind::Cef, disk, installing, failed, custom)
+    let none = Err(NO_PIN_REASON.to_string());
+    let a = |disk: OnDisk, installing, failed, custom| {
+        availability_with("windows", &none, EngineKind::Cef, disk, installing, failed, custom)
     };
     let unavailable = EngineState::Unavailable(NO_PIN_REASON.to_string());
     for disk in [RuntimeOnDisk::Missing, RuntimeOnDisk::Stale] {
-        assert_eq!(a(disk, None, None, None), unavailable);
+        assert_eq!(a(OnDisk::both(disk), None, None, None), unavailable);
         // A recorded failure cannot exist without a pin, and would not change the answer.
-        assert_eq!(a(disk, None, Some("boom"), None), unavailable);
+        assert_eq!(a(OnDisk::both(disk), None, Some("boom"), None), unavailable);
     }
     // What is already on disk (a dev tree) or configured still works, and other engines are untouched.
-    assert_eq!(a(RuntimeOnDisk::Ready, None, None, None), EngineState::Installed);
+    assert_eq!(a(OnDisk::both(RuntimeOnDisk::Ready), None, None, None), EngineState::Installed);
     let p = Path::new("C:/my/cef");
-    assert_eq!(a(RuntimeOnDisk::Missing, None, None, Some(p)), EngineState::Custom(p.to_path_buf()));
     assert_eq!(
-        availability_with("windows", None, EngineKind::Servo, RuntimeOnDisk::Ready, None, None, None),
+        a(cef_disk(RuntimeOnDisk::Ready, RuntimeOnDisk::Missing), None, None, Some(p)),
+        EngineState::Custom(p.to_path_buf())
+    );
+    assert_eq!(
+        availability_with("windows", &none, EngineKind::Servo, OnDisk::both(RuntimeOnDisk::Ready), None, None, None),
         EngineState::Installed
     );
     // The pick says so rather than asking to download, and the label gives the reason.
@@ -530,27 +627,40 @@ fn a_platform_without_a_pin_offers_no_install() {
 #[test]
 fn a_stale_marker_is_update_needed_not_a_spawn() {
     let pin = crate::cef_pin::pin_for_platform().expect("a pin on a platform with tests");
-    let state = engine_availability(EngineKind::Cef, RuntimeOnDisk::Stale, None, None, None);
+    let plan = cef_plan();
+    let stale = cef_disk(RuntimeOnDisk::Ready, RuntimeOnDisk::Stale);
+    let state = engine_availability(EngineKind::Cef, &plan, stale, None, None, None);
     assert_eq!(state, EngineState::UpdateNeeded { size: pin.size });
     assert!(matches!(
-        check_spawnable(EngineKind::Cef, RuntimeOnDisk::Stale, None),
+        check_spawnable(EngineKind::Cef, &plan, stale, None),
         Err(SpawnError::EngineOutdated(EngineKind::Cef))
     ));
     assert_eq!(SpawnError::EngineOutdated(EngineKind::Cef).to_string(), "Blink (CEF) needs an update");
     assert!(matches!(
-        check_spawnable(EngineKind::Cef, RuntimeOnDisk::Missing, None),
+        check_spawnable(EngineKind::Cef, &plan, cef_disk(RuntimeOnDisk::Ready, RuntimeOnDisk::Missing), None),
         Err(SpawnError::EngineMissing(EngineKind::Cef))
     ));
-    assert!(check_spawnable(EngineKind::Cef, RuntimeOnDisk::Ready, None).is_ok());
-    assert!(check_spawnable(EngineKind::Servo, RuntimeOnDisk::Ready, None).is_ok());
+    // A host that is not installed refuses the spawn too, whatever the runtime.
+    assert!(matches!(
+        check_spawnable(EngineKind::Cef, &plan, cef_disk(RuntimeOnDisk::Missing, RuntimeOnDisk::Ready), None),
+        Err(SpawnError::EngineMissing(EngineKind::Cef))
+    ));
+    assert!(check_spawnable(EngineKind::Cef, &plan, OnDisk::both(RuntimeOnDisk::Ready), None).is_ok());
+    assert!(check_spawnable(EngineKind::Servo, &servo_plan(), OnDisk::both(RuntimeOnDisk::Ready), None).is_ok());
 }
 
 #[test]
 fn a_custom_directory_allows_a_spawn_the_disk_would_refuse() {
     let custom = Path::new("D:/cef");
-    for disk in [RuntimeOnDisk::Missing, RuntimeOnDisk::Stale] {
-        assert!(check_spawnable(EngineKind::Cef, disk, Some(custom)).is_ok());
+    let plan = cef_plan();
+    for runtime in [RuntimeOnDisk::Missing, RuntimeOnDisk::Stale] {
+        let disk = cef_disk(RuntimeOnDisk::Ready, runtime);
+        assert!(check_spawnable(EngineKind::Cef, &plan, disk, None).is_err());
+        assert!(check_spawnable(EngineKind::Cef, &plan, disk, Some(custom)).is_ok());
     }
+    // The host is still needed.
+    let no_host = cef_disk(RuntimeOnDisk::Missing, RuntimeOnDisk::Ready);
+    assert!(check_spawnable(EngineKind::Cef, &plan, no_host, Some(custom)).is_err());
 }
 
 #[test]
@@ -646,7 +756,7 @@ fn only_cef_has_a_downloaded_runtime_dir() {
 #[test]
 fn bundled_engines_read_ready_without_a_disk_check() {
     for kind in [EngineKind::Webview2, EngineKind::Webkit] {
-        assert_eq!(engine_on_disk(kind), RuntimeOnDisk::Ready, "{kind:?}");
+        assert_eq!(engine_on_disk(kind), OnDisk::both(RuntimeOnDisk::Ready), "{kind:?}");
     }
 }
 

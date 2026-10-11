@@ -10,7 +10,10 @@ use std::sync::mpsc;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::engine_install::{runtime_state, EngineState, Pin, RuntimeOnDisk, NO_PIN_REASON};
+use crate::engine_install::{
+    downloads, has_runtime, host_components, host_state, plan_for, runtime_state, verify_installed_host, EngineState,
+    OnDisk, Plan, RuntimeOnDisk,
+};
 use ipc_protocol::transport::{self, LocalTransport};
 use ipc_protocol::{EngineToHost, HostToEngine};
 
@@ -24,6 +27,20 @@ pub enum EngineKind {
     /// Microsoft Edge WebView2 — native Windows API, same-machine process
     /// like Servo/Cef (no WSL2 relay needed).
     Webview2,
+}
+
+/// Where an engine's host executable comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HostSource {
+    /// Carried inside `manifold.exe` and extracted on demand (WebView2). Until the extraction exists
+    /// (bare-exe plan Task 3) it is found exactly like a sibling.
+    Embedded,
+    /// Pinned in `host_pin` and installed on demand into `engine-hosts/` (`engine_install`), unless a sibling
+    /// host (a dev tree's, or a Linux package's) is already there.
+    Download,
+    /// Only ever a sibling or a path computed from the repo layout; nothing installs it (WebKit, until the
+    /// bare-exe plan's Task 6).
+    SiblingOnly,
 }
 
 /// What each engine is: the one place its name, store code, binary, label,
@@ -48,6 +65,7 @@ pub(crate) struct EngineDesc {
     /// Answers `FindStart` with `FindResult` (all but Servo, whose embedding API has no find). Without it, Ctrl+F
     /// toasts instead of opening a find bar that never gets a result.
     pub(crate) find: bool,
+    pub(crate) source: HostSource,
 }
 
 impl EngineKind {
@@ -65,6 +83,7 @@ impl EngineKind {
                 jar: false,
                 devtools: false,
                 find: false,
+                source: HostSource::Download,
             },
             EngineKind::Cef => EngineDesc {
                 name: "cef",
@@ -75,6 +94,7 @@ impl EngineKind {
                 jar: true,
                 devtools: true,
                 find: true,
+                source: HostSource::Download,
             },
             EngineKind::Webkit => EngineDesc {
                 name: "webkit",
@@ -85,6 +105,7 @@ impl EngineKind {
                 jar: false,
                 devtools: false,
                 find: true,
+                source: HostSource::SiblingOnly,
             },
             EngineKind::Webview2 => EngineDesc {
                 name: "webview2",
@@ -95,6 +116,7 @@ impl EngineKind {
                 jar: true,
                 devtools: true,
                 find: true,
+                source: HostSource::Embedded,
             },
         }
     }
@@ -398,15 +420,15 @@ fn ensure_host_copy(custom_dir: &Path, host_exe: &Path) -> std::io::Result<PathB
     Ok(dest)
 }
 
-/// The CEF host exe that ships with the app: beside `manifold.exe` in a packaged build, else the
-/// `cef-runtime/` copy a dev build keeps. This is what gets copied next to a runtime that has no host.
+/// The CEF host exe to copy next to a runtime that has no host: beside `manifold.exe` in a packaged build, else the
+/// `cef-runtime/` copy a dev build keeps, else the one `engine_install::install_host` downloaded into `engine-hosts/`.
 fn shipped_cef_host() -> PathBuf {
-    let flat = sibling_binary(EngineKind::Cef.desc().binary);
-    if flat.exists() {
-        flat
-    } else {
-        cef_sibling_exe()
-    }
+    sibling_host(EngineKind::Cef)
+        .or_else(|| {
+            let file = crate::cef_platform::PLATFORM.host_exe(EngineKind::Cef.desc().binary);
+            engine_hosts_dir().map(|dir| dir.join(file)).filter(|path| path.exists())
+        })
+        .unwrap_or_else(cef_sibling_exe)
 }
 
 /// The directory a CEF host copy must live in (see `custom_host_path`), or None to run the host as
@@ -421,9 +443,15 @@ fn host_home(custom: Option<&Path>, dev_runtime_has_host: bool, downloaded: Opti
 }
 
 /// Refuses to launch an engine whose state (from disk alone) isn't Installed or Custom: by its reason when
-/// Unavailable (Servo without its host exe), as needing an update when Update needed, else as not installed.
-fn check_spawnable(kind: EngineKind, on_disk: RuntimeOnDisk, custom: Option<&Path>) -> Result<(), SpawnError> {
-    match engine_availability(kind, on_disk, None, None, custom) {
+/// Unavailable (no host and nothing pinned to download), as needing an update when Update needed, else as not
+/// installed.
+fn check_spawnable(
+    kind: EngineKind,
+    plan: &Result<Plan, String>,
+    on_disk: OnDisk,
+    custom: Option<&Path>,
+) -> Result<(), SpawnError> {
+    match engine_availability(kind, plan, on_disk, None, None, custom) {
         EngineState::Installed | EngineState::Custom(_) => Ok(()),
         EngineState::Unavailable(reason) => Err(SpawnError::EngineUnavailable(kind, reason)),
         EngineState::UpdateNeeded { .. } => Err(SpawnError::EngineOutdated(kind)),
@@ -722,7 +750,17 @@ pub fn spawn_tab(
     }
     let custom_cef = custom_cef.filter(|_| kind == EngineKind::Cef);
     let on_disk = engine_on_disk_fresh(kind);
-    check_spawnable(kind, on_disk, custom_cef)?;
+    check_spawnable(kind, &plan_for(kind), on_disk, custom_cef)?;
+    // A host that came from a download, not from beside manifold.exe, is hashed again here: the folder it sits in is
+    // writable, and the on-disk poll that said Ready only read a marker.
+    if downloads(kind) && sibling_host(kind).is_none() {
+        if let Some(dir) = engine_hosts_dir() {
+            verify_installed_host(&dir, host_components(kind)).map_err(|_| {
+                let reason = format!("{} host changed on disk; reinstall", crate::engine_info::engine_label(kind));
+                SpawnError::Io(std::io::Error::other(reason))
+            })?;
+        }
+    }
 
     // Normally the socket/shared-memory id is just tab_id. But a prior run
     // that crashed (rather than exiting cleanly) can leave a stale
@@ -828,9 +866,10 @@ mod job;
 mod profiles;
 mod webkit;
 #[cfg(test)]
-use availability::{availability_with, on_disk_cached, OnDiskCache, ON_DISK_CHECK_TTL, SERVO_HOST_MISSING};
+use availability::{availability_with, on_disk_cached, OnDiskCache, ON_DISK_CHECK_TTL};
 use availability::{
     cef_sibling_exe, engine_binary_path, engine_on_disk_fresh, platform_unavailable_reason, sibling_binary,
+    sibling_host,
 };
 pub(crate) use availability::{
     engine_availability, engine_hosts_dir, engine_on_disk, engine_runtime_dir, forget_on_disk, platform_default_engine,
