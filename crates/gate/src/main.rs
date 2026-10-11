@@ -3,7 +3,7 @@
 //! `PASS:`/`FAIL:`/`TIMING` lines the shell scripts print, so `scripts/gate.sh` can run it as a stage. The exit code is
 //! 0 when no check failed.
 //!
-//! Stages so far: `hello` (one instance: launch, WAITTABS, export, QUIT). Run from the repo after
+//! Stages so far: `hello` (one instance: launch, WAITTABS, export, QUIT), `link` (scripts/link-probe.sh). Run from the repo after
 //! `cargo build -p manifold -p manifold-engine-webview2 -p gate`; the exe is `manifold.exe` beside `gate.exe`.
 
 #![allow(dead_code, reason = "the runner core's API is used by the link and smoke ports of later tasks, and by tests")]
@@ -12,6 +12,8 @@ mod check;
 mod fresh;
 #[cfg(windows)]
 mod instance;
+#[cfg(windows)]
+mod link;
 mod state;
 
 #[cfg(not(windows))]
@@ -41,17 +43,18 @@ mod windows_main {
         let parent = args.next().map(PathBuf::from);
         match stage.as_str() {
             "hello" => hello(parent),
+            "link" => crate::link::link(parent),
             // Test aid for the "killed gate leaves no manifold.exe" proof; not a gate stage.
             "hold" => hold(parent),
             _ => {
-                eprintln!("usage: gate hello [WORKDIR_PARENT]");
+                eprintln!("usage: gate hello|link [WORKDIR_PARENT]");
                 ExitCode::from(2)
             }
         }
     }
 
     /// `manifold.exe` beside this exe (`target/debug`), checked fresh.
-    fn manifold_exe() -> Result<PathBuf, String> {
+    pub(crate) fn manifold_exe() -> Result<PathBuf, String> {
         let me = std::env::current_exe().map_err(|e| format!("current_exe: {e}"))?;
         let exe = me.with_file_name("manifold.exe");
         if !exe.exists() {
@@ -65,7 +68,7 @@ mod windows_main {
     }
 
     /// A fresh work dir (log, exports, profile) under `parent`, default the temp dir.
-    fn work_dir(parent: Option<PathBuf>, stage: &str) -> std::io::Result<PathBuf> {
+    pub(crate) fn work_dir(parent: Option<PathBuf>, stage: &str) -> std::io::Result<PathBuf> {
         let dir = parent.unwrap_or_else(std::env::temp_dir).join(format!("gate-{stage}-{}", std::process::id()));
         std::fs::create_dir_all(&dir)?;
         Ok(dir)

@@ -127,6 +127,13 @@ pub fn wait_file(path: &Path, timeout: Duration) -> io::Result<()> {
     }
 }
 
+/// The last `n` lines of a log file (empty if unreadable): `Instance::log_tail` for an instance already gone.
+pub fn log_tail(log: &Path, n: usize) -> String {
+    let text = fs::read_to_string(log).unwrap_or_default();
+    let lines: Vec<&str> = text.lines().collect();
+    lines[lines.len().saturating_sub(n)..].join("\n")
+}
+
 pub struct Instance {
     child: Child,
     stdin: Option<ChildStdin>,
@@ -221,9 +228,7 @@ impl Instance {
 
     /// The last `n` lines of the instance's log, for the diagnostics printed after a failure.
     pub fn log_tail(&self, n: usize) -> String {
-        let text = fs::read_to_string(&self.log).unwrap_or_default();
-        let lines: Vec<&str> = text.lines().collect();
-        lines[lines.len().saturating_sub(n)..].join("\n")
+        log_tail(&self.log, n)
     }
 
     /// `QUIT`, then waits for the process to exit (up to `timeout`, after which it is killed and an error returned).
