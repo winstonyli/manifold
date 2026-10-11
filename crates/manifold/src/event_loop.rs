@@ -630,6 +630,8 @@ struct FrameUpdate {
     kind: EngineKind,
     width: u32,
     height: u32,
+    /// The rows that changed since the last upload; `None` is the whole frame.
+    rows: Option<std::ops::Range<u32>>,
     pixels: Option<Vec<u8>>,
 }
 
@@ -1150,6 +1152,7 @@ impl App {
                         kind: tab.tab.kind,
                         width: frame.width,
                         height: frame.height,
+                        rows: frame.rows,
                         pixels: frame.pixels,
                     },
                 );
@@ -1317,7 +1320,7 @@ impl App {
                 // memory with this process, so the pixels travel inline in
                 // the message itself.
                 if let Some(gpu) = &mut self.gpu {
-                    gpu.upload_frame(&update.tab_id, &pixels, update.width, update.height, format);
+                    gpu.upload_frame(&update.tab_id, &pixels, update.width, update.height, format, update.rows);
                 }
             } else if let Ok(buf) =
                 SharedFrameBuffer::open_existing(frame_path(&update.socket_id), update.width, update.height)
@@ -1326,8 +1329,11 @@ impl App {
                 // regrows or replaces it on resize), so a frame caught mid-resize
                 // is skipped and the next redraw tries again.
                 if let Some(gpu) = &mut self.gpu {
-                    gpu.upload_frame(&update.tab_id, buf.as_slice(), update.width, update.height, format);
+                    gpu.upload_frame(&update.tab_id, buf.as_slice(), update.width, update.height, format, update.rows);
                 }
+            } else if let Some(gpu) = &mut self.gpu {
+                // The skipped frame's changed rows never reached the texture: the next upload writes it whole.
+                gpu.mark_stale(&update.tab_id);
             }
         }
     }

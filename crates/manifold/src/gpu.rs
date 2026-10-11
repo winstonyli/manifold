@@ -138,6 +138,8 @@ struct TabTexture {
     height: u32,
     format: wgpu::TextureFormat,
     bind_group: wgpu::BindGroup,
+    /// A frame for this tab was skipped or dropped, so the next upload must write the whole texture.
+    stale: bool,
 }
 
 /// A tab's cached frame re-uploaded as a plain `Rgba8Unorm` texture and
@@ -311,6 +313,8 @@ impl GpuState {
             apply_limit_buckets: false,
         }))
         .expect("request wgpu adapter");
+        let wgpu::AdapterInfo { name, backend, .. } = adapter.get_info();
+        eprintln!("gpu: {name} ({backend:?})");
 
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("manifold device"),
@@ -524,17 +528,32 @@ impl GpuState {
     /// pointed at a replacement texture via `update_egui_texture_from_wgpu_
     /// texture` when a new one is unavoidable, so callers holding onto that
     /// id never see it silently change.
-    pub fn upload_frame(&mut self, tab_id: &str, pixels: &[u8], width: u32, height: u32, format: wgpu::TextureFormat) {
+    ///
+    /// `rows` is the band of rows that changed since the previous upload (`None`: all of them). Only a texture that
+    /// exists, is not `stale` and keeps its size takes just that band.
+    pub fn upload_frame(
+        &mut self,
+        tab_id: &str,
+        pixels: &[u8],
+        width: u32,
+        height: u32,
+        format: wgpu::TextureFormat,
+        rows: Option<std::ops::Range<u32>>,
+    ) {
         // The size comes from an engine-host (over TCP for WebKit): a frame that isn't
         // `width * height * 4` bytes, or is empty or past the device limit, would panic in wgpu.
         if !frame_is_valid(pixels.len(), width, height, self.device.limits().max_texture_dimension_2d) {
             eprintln!("gpu: dropped a {width}x{height} frame of {} bytes for tab {tab_id}", pixels.len());
+            self.mark_stale(tab_id);
             return;
         }
         let reuse_main =
             self.tab_textures.get(tab_id).is_some_and(|t| t.width == width && t.height == height && t.format == format);
         if reuse_main {
-            Self::write_full_texture(&self.queue, &self.tab_textures[tab_id].texture, pixels, width, height);
+            let tab = self.tab_textures.get_mut(tab_id).expect("reuse_main found it");
+            let rows = if tab.stale { None } else { rows };
+            tab.stale = false;
+            Self::write_rows(&self.queue, &tab.texture, pixels, width, height, rows);
         } else {
             // `view_formats` includes this format's own non-sRGB
             // counterpart -- wgpu requires every format a texture will
@@ -566,7 +585,8 @@ impl GpuState {
                     wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.sampler) },
                 ],
             });
-            self.tab_textures.insert(tab_id.to_string(), TabTexture { texture, width, height, format, bind_group });
+            self.tab_textures
+                .insert(tab_id.to_string(), TabTexture { texture, width, height, format, bind_group, stale: false });
         }
 
         let (thumb_width, thumb_height) = Self::thumbnail_target_size(width, height, THUMBNAIL_MAX_SIZE);
@@ -722,24 +742,44 @@ impl GpuState {
         self.queue.submit(std::iter::once(encoder.finish()));
     }
 
-    /// Uploads a full frame of tightly-packed `pixels` (no row padding --
-    /// the same assumption every caller of this already makes: shared-
-    /// memory frame buffers and inline IPC pixels are both exactly
-    /// `width * height * 4` bytes) into `texture` in place, for the
-    /// "dimensions unchanged since last time" fast path both blocks in
-    /// `upload_frame` share.
-    fn write_full_texture(queue: &wgpu::Queue, texture: &wgpu::Texture, pixels: &[u8], width: u32, height: u32) {
+    /// Uploads `rows` (all `height` rows when `None`, or when the range reaches past the frame) of tightly-packed
+    /// `pixels` (no row padding -- shared-memory frame buffers and inline IPC pixels are both exactly
+    /// `width * height * 4` bytes) into `texture` in place, for `upload_frame`'s "dimensions unchanged since last
+    /// time" path.
+    fn write_rows(
+        queue: &wgpu::Queue,
+        texture: &wgpu::Texture,
+        pixels: &[u8],
+        width: u32,
+        height: u32,
+        rows: Option<std::ops::Range<u32>>,
+    ) {
+        let rows = rows.filter(|r| r.start < r.end && r.end <= height).unwrap_or(0..height);
+        let row_bytes = u64::from(width) * 4;
+        let count = rows.end - rows.start;
         queue.write_texture(
             wgpu::TexelCopyTextureInfo {
                 texture,
                 mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
+                origin: wgpu::Origin3d { x: 0, y: rows.start, z: 0 },
                 aspect: wgpu::TextureAspect::All,
             },
             pixels,
-            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(width * 4), rows_per_image: Some(height) },
-            wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+            wgpu::TexelCopyBufferLayout {
+                offset: u64::from(rows.start) * row_bytes,
+                bytes_per_row: Some(width * 4),
+                rows_per_image: Some(count),
+            },
+            wgpu::Extent3d { width, height: count, depth_or_array_layers: 1 },
         );
+    }
+
+    /// Makes `tab_id`'s next upload write the whole texture: a frame for it was skipped, so the rows that frame
+    /// changed never reached the texture.
+    pub fn mark_stale(&mut self, tab_id: &str) {
+        if let Some(tab) = self.tab_textures.get_mut(tab_id) {
+            tab.stale = true;
+        }
     }
 
     /// The `egui::TextureId` for a tab's cached thumbnail, if it has ever

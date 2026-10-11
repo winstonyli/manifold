@@ -7,6 +7,7 @@
 
 use std::collections::VecDeque;
 use std::io::{Read, Write};
+use std::ops::Range;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -27,12 +28,30 @@ pub(crate) const SHUTDOWN_FLUSH: Duration = Duration::from_millis(200);
 pub(crate) const EVENTS_CAP: usize = 256;
 
 /// The newest frame an engine reported. Only the newest is ever drawn, so a slow app holds one per tab, never a
-/// queue of them (survey E3). The host never reads `FrameReady`'s `frame_id` or `damage`.
+/// queue of them (survey E3). The host never reads `FrameReady`'s `frame_id`.
 pub(crate) struct Frame {
     pub(crate) width: u32,
     pub(crate) height: u32,
+    /// The rows that changed since the frame the app last took; `None` is the whole frame.
+    pub(crate) rows: Option<Range<u32>>,
     /// Inline pixels (WebKit over TCP); `None` for a local engine, whose pixels are in its shared frame file.
     pub(crate) pixels: Option<Vec<u8>>,
+}
+
+/// The rows `FrameReady`'s `damage` (x, y, w, h) covers in a frame `height` rows tall. `None` is the whole frame:
+/// no damage reported, or damage that is empty or reaches past the frame (an engine's bad damage degrades to a whole
+/// upload, never to a panic in wgpu).
+pub(crate) fn frame_rows(damage: Option<(u32, u32, u32, u32)>, height: u32) -> Option<Range<u32>> {
+    let (_, y, _, h) = damage?;
+    let end = y.checked_add(h)?;
+    (h > 0 && end <= height).then_some(y..end)
+}
+
+/// The rows covering both `prev` and `next` (the frame in between was never uploaded); `None` if either is the
+/// whole frame.
+pub(crate) fn merge_rows(prev: Option<Range<u32>>, next: Option<Range<u32>>) -> Option<Range<u32>> {
+    let (prev, next) = (prev?, next?);
+    Some(prev.start.min(next.start)..prev.end.max(next.end))
 }
 
 /// One tab's newest frame, written by its reader thread and taken by the drain.
@@ -286,6 +305,24 @@ fn write_queued<S: Read + Write>(mut channel: MessageChannel<S>, shared: &Shared
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn frame_rows_are_whole_rows_or_none() {
+        assert_eq!(frame_rows(None, 10), None);
+        assert_eq!(frame_rows(Some((0, 3, 8, 2)), 10), Some(3..5));
+        assert_eq!(frame_rows(Some((0, 8, 8, 2)), 10), Some(8..10));
+        assert_eq!(frame_rows(Some((0, 9, 8, 2)), 10), None, "past the bottom");
+        assert_eq!(frame_rows(Some((0, 3, 8, 0)), 10), None, "empty");
+        assert_eq!(frame_rows(Some((0, u32::MAX, 8, 2)), 10), None, "overflow");
+    }
+
+    #[test]
+    fn merged_rows_cover_both_or_are_whole() {
+        assert_eq!(merge_rows(Some(2..4), Some(7..9)), Some(2..9));
+        assert_eq!(merge_rows(Some(2..8), Some(3..4)), Some(2..8));
+        assert_eq!(merge_rows(None, Some(1..2)), None);
+        assert_eq!(merge_rows(Some(1..2), None), None);
+    }
     use std::io;
     use std::sync::mpsc;
 

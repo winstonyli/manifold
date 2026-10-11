@@ -87,6 +87,40 @@ fn frames_never_queue_on_the_events_channel() {
     assert_eq!(wakes.load(Ordering::SeqCst), 2, "one wake per message (Cookies, Crashed), none for the 100 frames");
 }
 
+fn damaged(width: u32, height: u32, first_row: u32, rows: u32) -> EngineToHost {
+    EngineToHost::FrameReady { frame_id: 0, width, height, damage: Some((0, first_row, width, rows)), pixels: None }
+}
+
+/// Frames the app never took fold into one: same-size damage unions its rows, a size change makes the frame whole.
+#[test]
+fn piled_up_frames_union_their_rows() {
+    for (frames, width, rows) in [
+        (vec![damaged(4, 10, 1, 1), damaged(4, 10, 5, 1)], 4, Some(1..6)),
+        (vec![damaged(4, 10, 1, 1), damaged(4, 10, 5, 1), damaged(6, 10, 2, 1)], 6, None),
+        (
+            vec![
+                damaged(4, 10, 1, 1),
+                EngineToHost::FrameReady { frame_id: 0, width: 4, height: 10, damage: None, pixels: None },
+            ],
+            4,
+            None,
+        ),
+        (vec![damaged(4, 10, 2, 1)], 4, Some(2..3)),
+    ] {
+        let (rx, frame_slot, _) = reader_fed(move |stream| {
+            let mut engine = ipc_protocol::MessageChannel::new(stream);
+            engine.send_version().unwrap();
+            for f in &frames {
+                engine.send(f).unwrap();
+            }
+            engine.send(&EngineToHost::Cookies("[]".into())).unwrap();
+        });
+        assert!(matches!(rx.recv_timeout(Duration::from_secs(5)).unwrap(), EngineToHost::Cookies(_)));
+        let newest = frame_slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take().unwrap();
+        assert_eq!((newest.width, newest.rows), (width, rows));
+    }
+}
+
 /// `counter` once it has not moved for `quiet`, or at `deadline`. The `quiet` sleep proves an absence: nothing more
 /// got through.
 fn still_at(counter: &AtomicUsize, quiet: Duration, deadline: Duration) -> usize {

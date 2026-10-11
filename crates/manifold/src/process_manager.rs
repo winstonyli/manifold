@@ -646,9 +646,18 @@ fn spawn_reader_thread<S: std::io::Read + std::io::Write + Send + 'static>(
         }
         while let Ok(msg) = from_engine.recv::<EngineToHost>() {
             match msg {
-                EngineToHost::FrameReady { width, height, pixels, .. } => {
-                    *frame.lock().unwrap_or_else(std::sync::PoisonError::into_inner) =
-                        Some(engine_io::Frame { width, height, pixels });
+                EngineToHost::FrameReady { width, height, damage, pixels, .. } => {
+                    let mut slot = frame.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                    // A frame the app never took folds its rows into this one's; a size change makes it whole.
+                    let rows = engine_io::frame_rows(damage, height);
+                    let rows = match slot.take() {
+                        Some(prev) if prev.width == width && prev.height == height => {
+                            engine_io::merge_rows(prev.rows, rows)
+                        }
+                        Some(_) => None,
+                        None => rows,
+                    };
+                    *slot = Some(engine_io::Frame { width, height, rows, pixels });
                 }
                 // Fails once the tab is gone (its receiver dropped).
                 msg => {
