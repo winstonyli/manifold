@@ -1,0 +1,145 @@
+# Bare executable, hosts on demand: implementation plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Distribute one file, `manifold.exe`, that works offline with WebView2 and downloads the CEF, Servo and WebKit hosts (and CEF's runtime) on demand, each pinned by a SHA-256 table compiled into the exe.
+
+**Architecture:** One mechanism: an engine is a list of *components* (host files, plus CEF's runtime archive), each with a pin `{version, url, size, sha256}` and a cheap ready check (a marker file, never a re-hash). The existing install job (`engine_install.rs`: Range download, verify, `.tmp` then rename, per-kind job, `EngineState`, confirm/Download/Retry/Cancel UI) generalizes from "CEF runtime" to "the missing components of an engine". WebView2's host is embedded in `manifold.exe` and extracted to a stable path under a lock; lookup order stays sibling first, so dev trees and CI are unchanged.
+
+**Tech stack:** Rust (edition 2024, nightly-2026-09-23), `sha2`, `ureq` (already used), `build.rs` in `crates/manifold`, bash release script, GitHub Releases as the host.
+
+**Inputs:** survey `.superpowers/host-download-survey.md` (git-ignored; file:line facts used below), `docs/superpowers/specs/2026-10-02-engine-install-design.md`, `docs/superpowers/specs/2026-10-04-packaging-and-cef-roadmap.md` (Parked 3: BLAKE3 stays parked; SHA-256 chosen).
+
+## Global constraints
+
+- Trust anchor is SHA-256 compiled into `manifold.exe`; the download URL is untrusted (decided 2026-10-11, scheme A). No new hash algorithm, no signing in this plan.
+- Work on `main`; nothing is pushed or tagged without the user's say-so. Tasks 1 and 7 need the user to create the GitHub release; the plan stops there.
+- No compatibility shims: the zip package, `PACKAGING.md` generation and the three-exe layout are deleted, not kept beside the new one.
+- `cargo fmt --all`, the CLAUDE.md clippy line with `-D warnings`, and `cargo test -j 8 -p manifold -p ipc-protocol` pass at every commit. `crates/manifold` must keep compiling and testing on Linux CI with no host built (`cargo test --locked -p manifold -p ipc-protocol`).
+- Tests never touch `%APPDATA%\manifold` (`profile::dir()` / `engine_data_dir()` are `None` under `cfg(test)`); tests that need files use `store::testutil::temp_dir`.
+- Gate tier is `full` (process_manager, engine_install, engine crates, scripts): `scripts/gate.sh LOG full` before merge, after `cargo build -j 8 -p manifold -p manifold-engine-webview2 -p gate`. Report CPU load and Defender state with it.
+- Measured sizes (2026-10-11): `manifold.exe` release 26.0 MB, WebView2 host 0.86 MB, CEF host 0.74 MB, Servo host (debug) 202 MB (release not built yet), WebKit ELF (debug) 7.2 MB. Embedding WebView2 adds under 1 MB.
+
+## Decisions (rulings, with what each costs if wrong)
+
+1. **Distribution is the bare exe, replacing the zip.** `dist/manifold-v<ver>-windows-x64.exe` plus a `.sha256` text file; host binaries are separate release assets. Cost if wrong: a user who wants an offline everything-bundle has none (CEF's runtime was never bundled anyway).
+2. **WebView2 is embedded, not downloaded**, so first launch works offline. Cost: +0.86 MB, an extract step.
+3. **CEF's host exe is a downloaded component**, installed flat in `engine-hosts/` like Servo's today; `ensure_host_copy` keeps copying it beside `libcef.dll`. The CEF "install" is then host + runtime in one job, one state.
+4. **The 5 s on-disk poll reads a marker, never hashes.** `engine-hosts/<kind>.host` lists each installed file's SHA-256, written last; Ready = the marker's hashes equal the pin's and every named file exists with the pinned size; a marker with other hashes is Stale (Update needed); no marker is Missing. Keyed on hashes, not on the app version, so a release that reuses an unchanged host artifact (Decision 11) does not re-download it.
+10. **The hash is re-checked at spawn, not at the poll.** `spawn_tab` (a worker thread) hashes the host file it is about to run and refuses on a mismatch ("<engine> host changed on disk; reinstall"). Cost at 2.2 GB/s (measured): under 1 ms for the 0.8 MB hosts, about 25-50 ms for a 50-100 MB Servo host. This closes "file swapped after install" in a user-writable folder. Residual: a swap between the hash and `CreateProcess` (same-user malware can already do anything).
+11. **A release reuses the previous host artifacts when their sources are unchanged** (`release.sh --reuse-hosts-from vX.Y.Z`: `git diff vX.Y.Z -- crates/ipc-protocol crates/manifold-engine-*` empty and the same `PROTOCOL_VERSION`). Each `Component` carries its own URL, so it can point at the older tag's asset. Otherwise every release would re-download a Servo host that did not change.
+5. **Update of a running host fails safely** (rename-over of a mapped exe fails; the install refuses while a tab of that kind is open in this process, as today; another manifold process holding it gives an `Io` failure that keeps the old install). No versioned directories: a stable path keeps WebView2's `<exe>.WebView2` user-data folder (keyed on the host path, survey section 6) from multiplying.
+6. **A pin table entry exists only for hosts the release built.** A kind with no entry reads `Unavailable("this build has no <engine> download")` (the `NO_PIN_REASON` idiom), never a silent absence. Dev builds and Linux CI have an empty table and keep sibling lookup.
+7. **Host pins refer to uploaded artifacts, not to a rebuild.** PE output is not bit-reproducible (PDB path, timestamps). The release script builds each host once, hashes that file, uploads that file, and compiles the hash into `manifold.exe`. A later rebuild of a host is a different artifact.
+8. **WebKit is spike-gated** (Task 6): its ELF must run from the Windows data dir through WSL; if DrvFs will not exec it, it is parked, not worked around.
+9. **Out of scope, parked:** Authenticode signing (SmartScreen/Defender prevalence risk stays, see Risks), Roaming vs Local AppData for the data dir (CEF's 423 MB runtime is already in Roaming), BLAKE3 (roadmap Parked 3), mismatch toast wording (`after_crash` shows "keeps crashing" for a protocol mismatch; with exact-pin hosts a mismatch cannot occur from a download, so it stays).
+
+## File structure
+
+- Create `crates/manifold/build.rs`: embeds the WebView2 host when `MANIFOLD_WEBVIEW2_HOST` names a file; else an empty stub. Emits the embedded host's SHA-256 as an env value.
+- Create `crates/manifold/src/host_pin.rs`: generated table `components_for(kind, platform) -> &'static [Component]` (empty in the repo until a release writes it); `Component { file, url, size, sha256 }` plus the pin version.
+- Create `crates/manifold/src/embedded_host.rs`: extraction of the embedded WebView2 host (lock, temp, hash check, rename-aside, marker).
+- Modify `crates/manifold/src/engine_install.rs` (components, single-file install, state), `process_manager.rs` and `process_manager/availability.rs` (lookup, availability arms, `EngineDesc` gets `source`), `engine_info.rs`, `settings_page.rs`, `popups.rs`, `card.rs` (sizes and tooltips read the generalized pin), `webkit.rs` (path).
+- Create `scripts/release.sh` (builds hosts, hashes, writes `host_pin.rs`, builds `manifold.exe` with the embed, writes `dist/`), delete `scripts/package.sh`'s zip path (rewrite as the bare-exe `--check`), update `scripts/failed-spawn-probe.sh`, `scripts/jar-probe.sh`, `crates/gate/src/fresh.rs`, `scripts/fresh-exe.sh`.
+- Docs: README (packaging bullet, engines section), CHANGELOG, `2026-10-04-packaging-and-cef-roadmap.md`, `2026-10-02-engine-install-design.md` (status line), this plan's Outcome.
+
+## Task 0: Spikes (answers, not code)
+
+Each is a throwaway in the session scratchpad; record the result in "Spike results" at the bottom of this file.
+
+- [ ] **Step 1: Servo host's file set.** Copy `target-servo/debug/manifold-engine-servo.exe` alone to an empty temp dir and run it as the app does (`ENGINE_*` env, see `spawn_tab`) or launch a headless manifold with it as sibling; add `libEGL.dll` and `libGLESv2.dll` and repeat. Record: DLL imports (`llvm-objdump -p`), which files it needs, whether anything else (resources, fonts) is read from beside the exe. Build a release Servo host if time allows (`CARGO_TARGET_DIR=target-servo cargo build --release -p manifold-engine-servo`, about 33 minutes, BelowNormal, check memory and disk first: 117 GB free, 3.9 GB build) to get the real download size.
+- [ ] **Step 2: WebKit ELF from DrvFs.** Copy `target-linux/debug/manifold-engine-webkit` to a path under `%APPDATA%` (via PowerShell `Copy-Item`, so the file has no Unix exec bit) and run it as `webkit_shell_command` does. Record whether WSL execs it, and if not whether `wsl.exe -- cp` into the distro plus `chmod +x` works.
+- [ ] **Step 3: Defender and SmartScreen on a manifold-written exe.** Write the CEF host from manifold-style code (plain `fs::write` then `rename`) into a fresh `engine-hosts/` and spawn it. Record any block, quarantine or sharing violation, Defender state, and whether a second spawn right after the write needs a retry.
+- [ ] **Step 4: Commit the spike results** into this plan (`docs: bare-exe spike results`).
+
+If Step 1 shows Servo needs more than the three files, Task 4 pins that file set instead; if Step 2 fails, Task 6 is parked with the reason.
+
+## Task 1: Release script, pin generator, hosting contract (needs the user for the GitHub release)
+
+**Files:** Create `scripts/release.sh`, `scripts/host_pin.py`, `crates/manifold/src/host_pin.rs` (empty table). Modify `scripts/package.sh` (removed in Task 7).
+
+**Interfaces — Produces:** `host_pin::components_for(kind: EngineKind, platform: &str) -> &'static [Component]` and `host_pin::PIN_VERSION: &str` (the app version the table was cut for). `Component { file: &'static str, url: &'static str, size: u64, sha256: &'static str }`. URL scheme: `https://github.com/winstonyli/manifold/releases/download/v<ver>/<file>-<platform>` where `<platform>` is `windows-x64` or `linux-x64` (matches `origin`; the user must create the release for the URLs to resolve).
+
+- [ ] **Step 1: Failing test first** (`host_pin.rs`): every `Component` has a 64-hex-char lowercase `sha256`, `size > 0`, an `https://` URL whose last path segment ends with its `file`-platform suffix; `components_for` returns an empty slice for an unknown platform; the table is sorted by `(kind, file)` so diffs are stable; when the table is non-empty `PIN_VERSION == env!("CARGO_PKG_VERSION")` (a version bump without re-cutting the table fails the test; skipped while the table is empty).
+- [ ] **Step 2: `host_pin.py`** (write to a file, run `python -P f.py < /dev/null`): takes `--out host_pin.rs --version V --asset kind=path ...`, hashes each asset, writes the table. It refuses a missing file or a size of zero, and prints the table's SHA-256 so the release notes can carry it.
+- [ ] **Step 3: `release.sh`** order: refuse a dirty tree; build WebView2, CEF (and Servo/WebKit if their outputs are present or `--with-servo`/`--with-webkit`) hosts once, release, `RUSTFLAGS="-C target-feature=+crt-static"`, `depot_tools` stripped from PATH (as `package.sh` does); `host_pin.py` writes `crates/manifold/src/host_pin.rs` with the CEF/Servo/WebKit hosts only; build `manifold.exe` with `MANIFOLD_WEBVIEW2_HOST=<built host>`; write `dist/manifold-v<ver>-windows-x64.exe` (+`.sha256`) and `dist/hosts/<file>-<platform>` for upload; print the commands to commit `host_pin.rs`, tag and upload. It never uploads or pushes. Because it writes `host_pin.rs` after the dirty-tree check, the finished tree is dirty by exactly that file: the script prints "commit `host_pin.rs` now, then tag; the exe was built from this tree", and `release.sh --verify vX.Y.Z` re-checks that the tag's `host_pin.rs` hashes equal `dist/hosts/*` and that the embedded host's hash equals the one recorded in `dist/`. `--reuse-hosts-from vX.Y.Z` implements Decision 11 (it refuses when the source diff is not empty or the protocol differs).
+- [ ] **Step 4: Stress the ordering** by running it in a scratch worktree with `SKIP_SERVO=1 SKIP_WEBKIT=1` and checking that rebuilding `manifold.exe` does not change any host file's hash (hosts do not depend on `manifold`).
+- [ ] **Step 5: Commit** `release script and host pin generator (bare-exe Task 1)`.
+
+## Task 2: Components and single-file install in `engine_install.rs`
+
+**Files:** Modify `engine_install.rs`, `engine_install/tests.rs`, `process_manager.rs` (`EngineDesc`), `process_manager/availability.rs`. Keep `Pin` for the CEF runtime archive; add components for hosts.
+
+**Interfaces — Consumes:** `host_pin::components_for`. **Produces:** `host_state(kind) -> RuntimeOnDisk` (Missing/Ready/Stale from the marker), `install_host(kind, components, cancel, progress) -> Result<(), InstallError>`, `EngineState` computed over host + runtime components, `EngineDesc.source: HostSource { Embedded, Download, SiblingOnly }`.
+
+- [ ] **Step 1: Tests first** against the existing local HTTP harness (`serve`, `serve_file`, `serve_held`): (a) a one-file host installs: `.part` resume, SHA-256 verified, `.tmp` then rename, marker written last; (b) a wrong hash deletes the `.part` and leaves no file or marker; (c) a two-file host (Servo exe + DLL) with the second hash wrong leaves neither the first file nor a marker as "Ready" (the marker is written only after both); (d) a marker with another version reads Stale (UpdateNeeded), no marker reads Missing; (e) the size in `NotInstalled{size}` is the sum of the missing components; (f) CEF's state is Installed only when host marker and runtime marker are both Ready; (g) the on-disk poll for a Ready host performs no hashing (assert via a counter or a file the test makes unreadable after the marker); (h) an install skips a component whose file already exists with the pinned hash (a cancelled multi-file install resumes without re-downloading the finished one); `.part` files are named by the pin's hash prefix so a partial of another version is never resumed; (i) spawn-time verification refuses a host file changed after install (same size, one byte flipped); (j) CEF in `Custom` state (bring-your-own runtime) still needs the host component and reads NotInstalled{host size} while it is missing; (k) a sibling host (dev tree) counts as Ready regardless of the pin table, so dev builds and Linux are unchanged; a kind with no sibling and no pin entry reads `Unavailable("this build has no <engine> download")`; (l) the harness gains a 302 redirect case (GitHub release URLs redirect to a CDN) and the download follows it.
+- [ ] **Step 2: Implement** the component model: `components(kind)` from `EngineDesc.source` and `host_pin`; `verify_sha256(path, want)` (SHA-256 only; the CEF archive keeps its SHA-1 cross-check); `install_host` downloads each missing or stale component with the existing `download`, verifies, writes `<file>.tmp`, renames, then writes `engine-hosts/<kind>.host` last. `start_engine_install_at` drops the `kind != Cef` guard in favour of `source == Download`; its "any tab of that kind is open" and "a tab is still spawning" guards stay.
+- [ ] **Step 3: Replace the scattered match arms** (survey 1.1) with reads of `EngineDesc.source` and the component list: `engine_runtime_dir`, `on_disk_reader`, `availability_with`, Servo's `SERVO_HOST_MISSING` (becomes NotInstalled with a size when a pin exists, `Unavailable` with the no-download reason otherwise), `remove_runtime`/`LEFTOVERS` (also remove host files, markers and `.part`/`.tmp` of that kind), and the CEF-only calls to `cef_pin::pin_for_platform()` in `popups.rs`, `card.rs`, `settings_page.rs`, `engine_info.rs`.
+- [ ] **Step 4: CEF as host + runtime:** one job downloads the host component first (small), then the runtime archive with the existing path; progress spans both (`total` = sum). `shipped_cef_host()` looks at `engine-hosts/manifold-engine-cef.exe` after the sibling. Tests: the existing CEF install tests keep passing; a new one installs host + runtime end to end.
+- [ ] **Step 5: Update the tests the survey lists** that assert the old shape (`only_cef_has_a_downloaded_runtime_dir`, `one_install_per_engine_and_only_cef_downloads`, `servo_is_installed_only_when_its_host_is_on_disk`, `the_lists_read_the_same_servo_host_the_spawn_looks_for`, `bundled_engines_read_ready_without_a_disk_check`) to the new rules; delete a test only if the rule it pinned is gone.
+- [ ] **Step 6: fmt, clippy line, `cargo test -j 8 -p manifold -p ipc-protocol`; headless `ENGINESTATE servo` / `ENGINESTATE cef` print the new labels with an empty pin table.** Commit `engines are components; hosts install like the CEF runtime (bare-exe Task 2)`.
+
+## Task 3: Embedded WebView2 host
+
+**Files:** Create `crates/manifold/build.rs`, `crates/manifold/src/embedded_host.rs`. Modify `process_manager.rs` (`spawn_tab` calls it before `claim_webview2_slot`), `availability.rs`, `Cargo.toml` (`sha2` as a build-dependency).
+
+**Interfaces — Produces:** `embedded_host::ensure(data_dir: &Path) -> io::Result<Option<PathBuf>>` (`None` when this build embeds nothing); `engine_binary_path(Webview2)` stays sibling-first and falls back to `<engine-hosts>/webview2/manifold-engine-webview2.exe`.
+
+- [ ] **Step 1: Tests first** (temp dir, bytes passed in, no real exe): extracts when missing; leaves a matching file alone (hash from the marker, no re-hash of the exe); replaces a differing file by renaming the old aside (`.old`, deleted on the next call) then renaming the new in; two threads racing leave one file and no temp files (template: `concurrent_spawns_copy_the_host_once_and_leave_no_temp_files`); an empty embed returns `None`; a rename onto a locked file returns an error that names the file and keeps the old one.
+- [ ] **Step 2: `build.rs`:** if `MANIFOLD_WEBVIEW2_HOST` is set and `CARGO_CFG_TARGET_OS == "windows"` (a build script's `cfg(windows)` describes the build machine, not the target), copy the file to `OUT_DIR/webview2-host.bin` and emit `cargo:rustc-env=MANIFOLD_WEBVIEW2_SHA256=<hex>`; else write an empty file and an empty hash. `rerun-if-env-changed` and `rerun-if-changed=<path>`. `include_bytes!(concat!(env!("OUT_DIR"), "/webview2-host.bin"))`.
+- [ ] **Step 3: `embedded_host::ensure`:** process-wide mutex + file lock (a second manifold must not race). Each call hashes the extracted file (0.86 MB, under 1 ms at the measured 2.2 GB/s) and compares it to the embedded hash, so no marker is needed and a tampered or half-written file is simply replaced: write `<dest>.<pid>-<n>.tmp`, verify its SHA-256, rename the old file aside (`.old`, best-effort delete at the start of the next call) then rename the new one in. An instance running an older build keeps its renamed-aside exe; its profile folder is InPrivate and independent. Called from `spawn_tab` on the worker thread before the host path is used (so the slot claim sees the final path); a sharing-violation or access-denied on the first spawn after the write retries a few times (Task 0 Step 3 decides the count).
+- [ ] **Step 4: WebView2 user-data folder:** confirm `webview2_user_data(host_exe)` now resolves under `engine-hosts/webview2/`; extend the sweep to remove the orphaned `<old exe dir>/manifold-engine-webview2.exe.WebView2` only if it lies under a manifold-owned path (never a sibling dev tree). Update `a_webview2_hosts_profile_dir_is_in_its_default_user_data_folder` and `scripts/jar-probe.sh:198` to the path they now see.
+- [ ] **Step 5: Staleness:** no change to `crates/gate/src/fresh.rs` or `scripts/fresh-exe.sh`: dev and gate builds leave `MANIFOLD_WEBVIEW2_HOST` unset, embed nothing and keep using the sibling host, so the existing freshness rules still describe them. The embedded path is exercised by one dedicated run with the env set (`MANIFOLD_WEBVIEW2_HOST=target/debug/manifold-engine-webview2.exe cargo test -p manifold embedded_host`, plus Task 7's `--check`). Say so in the README so nobody expects the gate to cover the embed.
+- [ ] **Step 6: Fix** `scripts/failed-spawn-probe.sh` (it relied on a copied manifold.exe having no host; with the embed that spawn succeeds in a release build, so the probe forces the failure with an unwritable `engine-hosts` or a Servo tab instead).
+- [ ] **Step 7: fmt, clippy, tests, gate `full`.** Commit `WebView2 host embedded in manifold.exe (bare-exe Task 3)`.
+
+## Task 4: Servo as a downloaded component
+
+**Files:** `host_pin.rs` entries come from the release script; this task wires the install, runtime dependencies and the UI.
+
+- [ ] **Step 1: Tests first:** Servo's state with a pin and nothing on disk is NotInstalled{size = exe + DLLs}; with the exe but no DLL it is Missing, not Ready (the marker is written last); the spawn refuses with "Servo is not installed" and the confirm dialog says "Download Servo, N MB?".
+- [ ] **Step 2: File set from Task 0 Step 1** into `components_for` (generated), installed flat into `engine-hosts/` beside each other (ANGLE DLLs must sit beside the exe).
+- [ ] **Step 3: `release.sh --with-servo`:** build Servo release into `target-servo/` (BelowNormal, 33 minutes, memory and disk checked first), add exe and DLLs to the asset list. A release without it omits the entries, so the picker reads "no Servo download in this build".
+- [ ] **Step 4: Live check, headless:** `ENGINESTATE servo`, install from a local HTTP server standing in for the release (`python -m http.server` is not allowed to read stdin; use the harness or a small Rust test server), spawn a Servo tab, screenshot, close. Record the size, CPU load and Defender state.
+- [ ] **Step 5: Commit** `Servo installs on demand (bare-exe Task 4)`.
+
+## Task 5: UI and docs generalization
+
+**Files:** `popups.rs`, `card.rs`, `settings_page.rs`, `engine_info.rs`, `README.md`.
+
+- [ ] **Step 1:** the Download/Update/Retry/Remove labels, the failed-card text ("<engine> is not installed. Click to download it (N MB)") and Settings' installed size read the component sizes for any kind; Remove and "Clear leftovers" work for hosts; the Linux NSS/NSPR warning stays CEF-only.
+- [ ] **Step 2:** headless export (`EXPORTSTATE`) and `ENGINESTATE` print host states; `scripts/chrome-shots.sh` seeds the new marker names where it fakes `cef-runtime/{libcef.dll,ready}`.
+- [ ] **Step 3:** README engines section and packaging bullet; CHANGELOG Unreleased ("The release is one exe; CEF, Servo and WebKit hosts download on demand, pinned by SHA-256; hosts must be reinstalled after an update"); the install-design spec's status line.
+- [ ] **Step 4: Commit** `engine picker and settings read the component model (bare-exe Task 5)`.
+
+## Task 6: WebKit (spike-gated; parked if Task 0 Step 2 fails)
+
+- [ ] **Step 1:** replace `webkit_binary_path_in_repo()` (three `pop()`s from `manifold.exe`) with the same lookup the other hosts use: sibling-style dev path `target-linux/debug/...` found by walking up only when it exists, else `engine-hosts/manifold-engine-webkit`; pass it through `windows_path_to_wsl`.
+- [ ] **Step 2:** availability: WebKit gains a real "installed" check (the ELF's marker) instead of "always Installed"; its WSL prerequisites (a distro named Ubuntu, `xvfb-run`, WebKitGTK libs) stay outside the download and the dialog says so.
+- [ ] **Step 3:** if Task 0 Step 2 needed `wsl.exe cp` + `chmod +x`, do that after verification and record that the verified file is the Windows-side copy.
+- [ ] **Step 4: Commit** or, on failure, record the parked item and why in this plan.
+
+## Task 7: Package check, CI, release dry run
+
+- [ ] **Step 1:** rewrite `scripts/package.sh --check` as the bare-exe check: the exe imports no `vcruntime|msvcp` (llvm-objdump), runs headless with APPDATA redirected, reports `engine-state cef: Not installed · N MB` (from the real pin table if the release script wrote one), a WebView2 tab loads a local page with the host extracted from the embed, and nothing but `manifold.exe` was needed beside it. Delete the zip and `PACKAGING.md` paths.
+- [ ] **Step 2:** CI needs no new job: the existing Windows clippy/test and Linux test already build `manifold` with `MANIFOLD_WEBVIEW2_HOST` unset (the empty stub), which is the case that must keep compiling. Confirm by reading the CI logs after the push the user chooses to make.
+- [ ] **Step 3: Dry run** `scripts/release.sh` in a scratch worktree with the WebView2/CEF hosts only: check that the exe is one file, that deleting every other file in `dist/` leaves it working with WebView2, that `ENGINESTATE cef` shows the real download size, and that a CEF install from a local server standing in for GitHub succeeds and a tampered host (one byte changed) is refused. Record sizes, CPU load, Defender.
+- [ ] **Step 4:** gate `full` at BelowNormal, record results here. **Stop:** pushing `main`, creating the GitHub release, uploading assets and tagging are the user's.
+
+## Stress test (rounds to run before this plan is handed over)
+
+Rounds run against the survey and the plan text (2026-10-11):
+
+- **Round 1 (found 8, all fixed above):** (1) Task 3 contradicted itself on `fresh.rs` (dev builds embed nothing, so no staleness rule changes); (2) `release.sh` writes `host_pin.rs` after the clean-tree check, so the exe is built from a tree that is dirty by one file: now stated, with `--verify`; (3) `build.rs` `cfg(windows)` describes the build machine: use `CARGO_CFG_TARGET_OS`; (4) a marker keyed on the app version re-downloads every host each release: keyed on hashes, plus `--reuse-hosts-from`; (5) a file swapped after install: spawn-time hash (Decision 10); (6) CEF `Custom` state would skip the host component: test (j); (7) Linux/dev regressions: test (k), sibling wins and an empty table means Unavailable only when there is no sibling; (8) a stale `PIN_VERSION` after a version bump: test in Task 1.
+- **Round 2 (found 6, all fixed):** (1) a cancelled multi-file install must resume without re-downloading finished files, and `.part` names must not collide across versions: test (h); (2) GitHub release URLs redirect: test (l); (3) the embedded host needs no marker (hash per call, under 1 ms), removing a second source of truth; (4) rename-aside leaves `.old` behind while an older instance runs: best-effort delete on the next call; (5) CI step was a test of "it compiles": replaced by reading the existing CI runs; (6) the 5 s poll must stay hash-free while spawn hashes: test (g) and (i) pin both.
+- **Round 3 (nothing material):** re-read for contradictions (tasks 2 and 3 both touch `availability.rs`: Task 2 first, Task 3 only adds the Webview2 arm), missing steps (Servo release build is in Task 4 Step 3; the gate does not exercise downloads: Task 7 Step 3 does), and unverified claims (the 2.2 GB/s figure is measured; Defender/SmartScreen behaviour and DrvFs exec are Task 0 spikes, not assumed; the 33-minute Servo build is from the README).
+
+## Spike results
+
+*(Task 0 fills this in.)*
+
+## Risks carried
+
+- **Defender / SmartScreen on a never-seen unsigned exe written to `%APPDATA%`**: unsigned Rust binaries attract ML false positives. Unmitigated by this plan; signing is parked. Task 0 Step 3 measures one case on this machine only.
+- **Host and app drift:** exact-pin hosts cannot mismatch from a download, but a hand-copied or old sibling host still can; `PROTOCOL_VERSION` stays the last guard.
+- **GitHub as sole host:** if the release is deleted or the account goes away, downloads fail with the existing network error and the pinned hash still protects against a replacement. Mirroring is a follow-up.
