@@ -4272,6 +4272,41 @@ fn only_jar_engines_switch_when_their_jar_is_cleared() {
     }
 }
 
+#[test]
+fn devtools_on_an_engine_without_them_toasts_instead_of_sending() {
+    let mut app = app_on(&temp_dir("caps-devtools").join("session.mnf"), 1);
+    for (kind, has) in
+        [(EngineKind::Cef, true), (EngineKind::Webview2, true), (EngineKind::Servo, false), (EngineKind::Webkit, false)]
+    {
+        let (id, mut peer) = live_tab(&mut app, kind, "https://a/");
+        app.focused = Some(id);
+        app.toasts.save_toast_queue.clear();
+        app.open_devtools_shortcut();
+        let sent_it = sent(&mut peer).iter().any(|m| matches!(m, HostToEngine::OpenDevTools));
+        assert_eq!(sent_it, has, "{kind:?}");
+        let toast = format!("{} has no DevTools", kind.desc().label);
+        assert_eq!(app.toasts.save_toast_queue.contains(&toast), !has, "{kind:?}");
+    }
+}
+
+#[test]
+fn find_on_an_engine_without_it_toasts_and_leaves_the_bar_shut() {
+    let mut app = app_on(&temp_dir("caps-find").join("session.mnf"), 1);
+    app.view_mode = ViewMode::Item;
+    for (kind, has) in
+        [(EngineKind::Cef, true), (EngineKind::Webview2, true), (EngineKind::Webkit, true), (EngineKind::Servo, false)]
+    {
+        let (id, _peer) = live_tab(&mut app, kind, "https://a/");
+        app.focused = Some(id);
+        app.find.open = false;
+        app.toasts.save_toast_queue.clear();
+        app.open_find_bar_shortcut();
+        assert_eq!(app.find.open, has, "{kind:?}");
+        let toast = format!("{} has no find in page", kind.desc().label);
+        assert_eq!(app.toasts.save_toast_queue.contains(&toast), !has, "{kind:?}");
+    }
+}
+
 /// Quitting starts every engine's shutdown before the app is dropped: each fake host is sent `Shutdown` while the
 /// app is still alive.
 #[test]

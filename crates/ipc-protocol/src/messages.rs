@@ -274,10 +274,10 @@ pub enum HostToEngine {
     /// content, so nothing comes back over `EngineToHost` for this. `F12`.
     /// CEF and WebView2 both have a real API for this
     /// (`BrowserHost::show_dev_tools`/`ICoreWebView2::OpenDevToolsWindow`);
-    /// WebKitGTK's `WebInspector` needs `developer-extras` enabled on the
-    /// `WebView`'s settings first (done once at startup) before `.show()`
-    /// does anything. Servo's embedding API has no DevTools/inspector
-    /// method at all — silent no-op, same per-engine gap as find-in-page.
+    /// WebKit's host ignores it: the inspector window would wait forever under
+    /// Xvfb, which has no window manager. Servo's embedding API has no
+    /// DevTools/inspector method at all. The host toasts for both instead of
+    /// sending (`EngineDesc::devtools`).
     OpenDevTools,
     /// Mutes/unmutes this tab's audio output — host-initiated (the mute
     /// button), unlike `EngineToHost::AudioPlayingChanged`'s passive

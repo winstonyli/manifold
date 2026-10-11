@@ -42,6 +42,12 @@ pub(crate) struct EngineDesc {
     /// answers `GetCookies` (spec 2026-10-02-jars-design). The rest are neither seeded nor pulled, and a jar choice
     /// on their tabs shows "This engine does not use jars yet".
     pub(crate) jar: bool,
+    /// Opens its own DevTools window on `OpenDevTools` (CEF, WebView2). Servo has no inspector API; WebKit's
+    /// inspector needs a window manager its Xvfb session doesn't have. Without it, F12 toasts instead.
+    pub(crate) devtools: bool,
+    /// Answers `FindStart` with `FindResult` (all but Servo, whose embedding API has no find). Without it, Ctrl+F
+    /// toasts instead of opening a find bar that never gets a result.
+    pub(crate) find: bool,
 }
 
 impl EngineKind {
@@ -57,6 +63,8 @@ impl EngineKind {
                 label: "Servo",
                 bgra: false,
                 jar: false,
+                devtools: false,
+                find: false,
             },
             EngineKind::Cef => EngineDesc {
                 name: "cef",
@@ -65,6 +73,8 @@ impl EngineKind {
                 label: "Blink (CEF)",
                 bgra: true,
                 jar: true,
+                devtools: true,
+                find: true,
             },
             EngineKind::Webkit => EngineDesc {
                 name: "webkit",
@@ -73,6 +83,8 @@ impl EngineKind {
                 label: "WebKit",
                 bgra: false,
                 jar: false,
+                devtools: false,
+                find: true,
             },
             EngineKind::Webview2 => EngineDesc {
                 name: "webview2",
@@ -81,6 +93,8 @@ impl EngineKind {
                 label: "WebView2",
                 bgra: true,
                 jar: true,
+                devtools: true,
+                find: true,
             },
         }
     }

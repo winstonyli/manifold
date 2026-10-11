@@ -11,9 +11,11 @@ Since v0.4.1. Becomes the next entry when a release is cut.
 - **A stuck engine no longer freezes the app.** Sends to an engine go through a per-tab writer thread, so an engine that stops reading cannot block the window, closing its tab, or quitting. While an engine is behind, pointer moves and resizes merge (latest wins) and wheel steps add up; nothing else merges or reorders.
 - **Not responding.** A tab whose send queue is full and whose write is blocked for 50 ms, or whose write is stuck for 2 s, shows a warning badge on its card and a "Not responding" toast. Its right-click menu leads with Restart Engine (a new engine at the tab's URL) and End Engine (leaves a failed card). Nothing is killed automatically. Headless: `RESTARTENGINE id`, `ENDENGINE id`, and `unresponsive` on `EXPORTSTATE` cards.
 - Engine messages wake the event loop instead of waiting for the next poll, and one frame applies at most 64 messages per tab.
+- F12 and Ctrl+F on an engine that can't (DevTools: Servo, WebKit; find: Servo) now say so in a toast instead of doing nothing.
 
 ### Internal
 
+- `EngineDesc::jar` replaces five engine lists; per-engine wildcard arms are exhaustive (`engine_runtime_dir`, `platform_unavailable_reason`, one `on_disk_reader` shared by the engine lists and spawn).
 - `main.rs` split into modules by concern (3,895 to 710 lines) and `App`'s fields grouped into 14 sub-structs; no behaviour change. `tabs.rs`, `process_manager.rs` and `gpu.rs` were split the same way (pure moves, same 1,124 tests).
 - The gate's headless flows are one Rust program, `crates/gate` (`gate link|smoke|two`), replacing `link-probe.sh`, `headless-smoke-test.sh` and `two-instance-test.sh` and their python helpers. Checks are closures over the exported state, `two` now prints a `PASS:` line per check, and a full gate takes about 5.5 min instead of about 11 (measured under 38-45% load from other sessions). `gate-timing.sh` also reads a Windows-path CPU log correctly now. CI lints and tests `gate` on Windows.
 - The engine's own inbox is bounded (`ENGINE_INBOX`, 256), so a stuck engine main loop backs the app up instead of growing the engine's memory. `ipc_protocol` writes each message in one `write`.
