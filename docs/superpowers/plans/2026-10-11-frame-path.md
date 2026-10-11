@@ -527,3 +527,10 @@ Reading: the band upload does what it was for, a 20-30x cut in app upload CPU on
 - **Parked:** the Unix `try_create` still writes a temp file and renames it over the path (names are no longer reused, but it cannot be tested on Windows), and `lock_shared` before the rename stays.
 
 - **Gate (Task 7):** `scripts/gate.sh full` at 4e991bf, 11:12-11:17, CPU 20.9% at start, Defender real-time protection off: `gate two` 66/66 x3 (56 s), smoke 54/54, launch-forms 7/7, link 30/30.
+
+### Live runs of Servo, WebKit and a release CEF host (main bd9669d, 2026-10-11)
+
+Report: `.superpowers/frame-live-report.md` (local). Defender real-time protection off; CPU 16-53% before the CEF runs; exclusive GPU lease around them.
+- **CEF release host:** sink offer 2.92 ms (spinner) and 3.46 ms (animation), against 2.70 and 2.97 ms in the debug host, so the cost is not a debug artifact. 2.4-3.0 ms is the first cold read of CEF's paint buffer (about 3 GB/s; a repeat read takes 0.35 ms); the compare and row copy are 0.4-0.5 ms. The old `to_vec` on the cold buffer costs 3.3-4.8 ms, so the sink saves about 0.7 ms per paint. Cause of the slow first read (page faults?) untested. Animation sent 50 frames/s here against 57 before; not separated from machine load.
+- **WebKit (WSL):** static, spinner and animation work; no frame file appears (inline path). Resize keeps the old picture size (documented). Windows auto-created two Block firewall rules for a worktree exe under `Temp\mt\debug`; the runs used the main checkout's exe.
+- **Servo:** static, spinner, animation and resize work; frame files `-g1`, `-g2`, `-g3` across resizes, one per live engine, one after closing one of two tabs, none after quit. A static Servo page does not repaint after a resize (identical in a build from before the engines adopted the sink): a possible fix is forcing a repaint on `Resize` in the Servo host. Not done.
