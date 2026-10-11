@@ -23,7 +23,7 @@ Since v0.4.1. Becomes the next entry when a release is cut.
 
 ### Known
 
-- A static Servo page does not repaint after a window resize, so the old frame shows stretched (not caused by the frame path: a build from before it behaves the same). WebKit's resize keeps the old picture size, as before.
+- WebKit's resize keeps the old picture size, as before.
 - **Rebuild every engine host after pulling: `PROTOCOL_VERSION` is 4** (`FrameReady` carries `generation` and drops `frame_id`; frame files are named by generation). A host built before is refused with the protocol-mismatch message and its tab shows a failed card.
 - **Rebuild every engine host after pulling.** A host built before the bounded inbox has an unbounded one. CEF, Servo and WebKit were not built or run with the bound (WebView2 was).
 - A WebKit tab force-closed while its writer is stuck leaves that thread until the Linux host exits.

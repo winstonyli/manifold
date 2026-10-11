@@ -251,6 +251,9 @@ fn main() {
                     height = h;
                     rendering_context.resize(PhysicalSize::new(w, h));
                     webview.resize(PhysicalSize::new(w, h));
+                    // A static page paints nothing by itself after a resize, so the old frame would stay on screen
+                    // stretched: force one paint at the new size (as `SetVisible` does).
+                    *delegate.frame_ready.borrow_mut() = true;
                 }
                 HostToEngine::Input(event) => {
                     if let Some(servo_event) = translate_input_event(event) {
