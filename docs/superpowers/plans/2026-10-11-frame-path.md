@@ -566,3 +566,7 @@ Why: CEF's paint buffer is unmapped after `on_paint`, so every paint pays one pa
 - **Full-viewport animation:** 4.54 / 4.12 ms hinted vs 5.21 / 4.31 ms unhinted; sent/s 92 / 97 vs 92 / 93. No regression.
 - **Parity:** a page that changes once (grey box turns green at 1.5 s, screenshot at 5 s): hinted and unhinted screenshots are byte-identical (md5 equal, the green box present). Spinner screenshots differ only by animation phase; both show the spinner and nothing else (444 vs 436 non-white pixels, rows 435-460 in both), so no stale trail.
 - Not measured: how often a hint misses with the pad (no stale row was seen); a release host.
+
+### Task 8 on a release CEF host (2026-10-11, 1920x1080, CPU 25-69% from other sessions, Defender off, no GPU timing)
+
+Spinner offer **0.235 ms hinted vs 3.27 ms unhinted** per paint (14x; debug host 0.242 vs 2.83), same sent/s and rows per frame (26.9). Multi-spot 3.39 vs 4.27 ms and full animation 4.58 vs 3.78 ms: two runs per mode at this load cannot separate those gaps from noise (rows per sent frame and sent/s match). One-change page: screenshots byte-identical hinted vs unhinted. Only the spinner result is robust. Raw data: `.superpowers/sdd/2026-10-11-frame-path/task-8-release-report.md` (git-ignored). Build note: depot_tools' extensionless `ninja` wrapper shadows a real one on PATH and breaks the cef-dll-sys cmake step; put scoop's ninja first.
