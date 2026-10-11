@@ -17,6 +17,18 @@ pub fn copy_changed_rows(dst: &mut [u8], src: &[u8], row_bytes: usize, pitch: us
     span
 }
 
+/// Rows read on each side of an engine's row hint (CEF's rect fell 1 px outside the changed rows now and then).
+pub const HINT_PAD: u32 = 8;
+/// Every this-many'th hinted offer compares the whole frame, bounding a row the hint missed to that many offers.
+pub const HINT_FULL_EVERY: u32 = 30;
+
+/// The rows to compare for a hint on a `height`-row frame: the hint clamped to the frame and padded by `HINT_PAD`
+/// each side. `None` for an empty, reversed or wholly out-of-frame hint, which means compare everything.
+fn hint_window(hint: &Range<u32>, height: u32) -> Option<Range<u32>> {
+    let (start, end) = (hint.start.min(height), hint.end.min(height));
+    (start < end).then(|| start.saturating_sub(HINT_PAD)..end.saturating_add(HINT_PAD).min(height))
+}
+
 enum Store {
     Shared(SharedFrameBuffer),
     Inline(Vec<u8>),
@@ -54,6 +66,8 @@ pub struct FrameSink {
     generation: u32,
     pending: Option<Pending>,
     create_failure_logged: bool,
+    /// Hinted offers since the last one that ignored its hint, modulo `HINT_FULL_EVERY`.
+    hinted_offers: u32,
 }
 
 impl FrameSink {
@@ -78,20 +92,43 @@ impl FrameSink {
             generation: 0,
             pending: None,
             create_failure_logged: false,
+            hinted_offers: 0,
         }
     }
 
     /// Offers a frame of `width` x `height` BGRA/RGBA rows `pitch` bytes apart. Returns false (and keeps nothing)
     /// for a malformed frame: zero size, `pitch < width * 4`, or `src` shorter than `pitch * (height - 1) + width * 4`.
     pub fn offer(&mut self, src: &[u8], pitch: usize, width: u32, height: u32) -> bool {
+        self.offer_hinted(src, pitch, width, height, None)
+    }
+
+    /// `offer` with the engine's claim of which rows changed. Against a same-size store only the hint's rows plus
+    /// `HINT_PAD` each side are read, so the rest of `src` is never touched (a cold engine buffer costs a page fault
+    /// per page read). Every `HINT_FULL_EVERY`th hinted offer ignores the hint, since the engine can be wrong. A new
+    /// or resized store takes the whole frame regardless; an empty or out-of-frame hint is no hint.
+    pub fn offer_hinted(
+        &mut self,
+        src: &[u8],
+        pitch: usize,
+        width: u32,
+        height: u32,
+        hint: Option<Range<u32>>,
+    ) -> bool {
         let row_bytes = width as usize * 4;
         if width == 0 || height == 0 || pitch < row_bytes || src.len() < pitch * (height as usize - 1) + row_bytes {
             return false;
         }
         let same_size = (self.width, self.height) == (width, height);
         if let (Some(store), true) = (self.store.as_mut(), same_size) {
-            let dst = store.bytes_mut();
-            if let Some(rows) = copy_changed_rows(dst, src, row_bytes, pitch) {
+            let window = hint.and_then(|h| hint_window(&h, height)).filter(|_| {
+                self.hinted_offers = (self.hinted_offers + 1) % HINT_FULL_EVERY;
+                self.hinted_offers != 0
+            });
+            let start = window.as_ref().map_or(0, |w| w.start);
+            let end = window.as_ref().map_or(height, |w| w.end);
+            let dst = &mut store.bytes_mut()[start as usize * row_bytes..end as usize * row_bytes];
+            if let Some(rows) = copy_changed_rows(dst, &src[start as usize * pitch..], row_bytes, pitch) {
+                let rows = rows.start + start..rows.end + start;
                 let span = self.changed.take().map_or(rows.clone(), |c| c.start.min(rows.start)..c.end.max(rows.end));
                 self.changed = Some(span);
             }
@@ -216,6 +253,120 @@ mod tests {
         for y in 0..h {
             assert!(dst[y * row..(y + 1) * row].iter().all(|&b| b == y as u8 + 1), "row {y}");
         }
+    }
+
+    #[test]
+    fn hint_window_pads_and_clamps() {
+        assert_eq!(hint_window(&(20..30), 100), Some(20 - HINT_PAD..30 + HINT_PAD));
+        assert_eq!(hint_window(&(2..5), 100), Some(0..5 + HINT_PAD), "clamped at the top");
+        assert_eq!(hint_window(&(95..99), 100), Some(95 - HINT_PAD..100), "clamped at the bottom");
+        assert_eq!(hint_window(&(5..1000), 10), Some(0..10), "a hint past the frame clamps");
+        assert_eq!(hint_window(&(1000..2000), 10), None, "wholly outside: no hint");
+        assert_eq!(hint_window(&(7..7), 10), None, "empty: no hint");
+        #[allow(clippy::reversed_empty_ranges, reason = "the case under test")]
+        let reversed = 9..3;
+        assert_eq!(hint_window(&reversed, 10), None, "reversed: no hint");
+    }
+
+    /// A 1-column sink of `h` rows (one pixel per row) already holding `base`.
+    fn hinted_sink(h: usize, base: &[u8]) -> FrameSink {
+        let mut sink = FrameSink::inline();
+        assert!(sink.offer(base, 4, 1, h as u32));
+        assert!(sink.take().is_some());
+        sink
+    }
+
+    fn rows(h: usize, fill: u8) -> Vec<u8> {
+        frame(1, h, fill)
+    }
+
+    fn row_span(msg: Option<EngineToHost>) -> Option<(u32, u32)> {
+        damage_of(msg).map(|d| d.map(|(_, y, _, n)| (y, n)).expect("not whole"))
+    }
+
+    #[test]
+    fn a_hinted_offer_reads_only_the_hint_and_its_pad() {
+        let h = 200usize;
+        let mut sink = hinted_sink(h, &rows(h, 1));
+        let mut px = rows(h, 1);
+        px[50 * 4] = 9; // inside the hint
+        px[150 * 4] = 9; // far outside hint + pad: must not be read
+        assert!(sink.offer_hinted(&px, 4, 1, h as u32, Some(48..53)));
+        assert_eq!(row_span(sink.take()), Some((50, 1)), "only the hinted change is reported");
+        // The far row was never read: the store still holds the old byte (another offer, unhinted, finds it).
+        assert!(sink.offer(&px, 4, 1, h as u32));
+        assert_eq!(row_span(sink.take()), Some((150, 1)));
+    }
+
+    #[test]
+    fn a_change_within_the_pad_is_still_found() {
+        let h = 200usize;
+        let mut sink = hinted_sink(h, &rows(h, 1));
+        let mut px = rows(h, 1);
+        px[(50 - HINT_PAD as usize) * 4] = 9; // HINT_PAD rows above the hint
+        px[(52 + HINT_PAD as usize) * 4] = 9; // HINT_PAD rows below its last row (52)
+        assert!(sink.offer_hinted(&px, 4, 1, h as u32, Some(50..53)));
+        let (top, bottom) = (50 - HINT_PAD, 52 + HINT_PAD);
+        assert_eq!(row_span(sink.take()), Some((top, bottom - top + 1)));
+    }
+
+    #[test]
+    fn every_nth_hinted_offer_compares_everything() {
+        let h = 200usize;
+        let mut sink = hinted_sink(h, &rows(h, 1));
+        let mut px = rows(h, 1);
+        px[150 * 4] = 9; // far outside the hint
+        for n in 1..HINT_FULL_EVERY {
+            assert!(sink.offer_hinted(&px, 4, 1, h as u32, Some(10..12)), "offer {n}");
+            assert!(sink.take().is_none(), "offer {n} must not see the far row");
+        }
+        assert!(sink.offer_hinted(&px, 4, 1, h as u32, Some(10..12)));
+        assert_eq!(row_span(sink.take()), Some((150, 1)), "the full compare finds it");
+        // The count starts over.
+        px[160 * 4] = 9;
+        assert!(sink.offer_hinted(&px, 4, 1, h as u32, Some(10..12)));
+        assert!(sink.take().is_none());
+    }
+
+    #[test]
+    fn a_hint_on_a_new_or_resized_store_stores_the_whole_frame() {
+        let mut sink = FrameSink::inline();
+        let px: Vec<u8> = (0..40u8).collect(); // 1 x 10
+        assert!(sink.offer_hinted(&px, 4, 1, 10, Some(4..5)));
+        match sink.take() {
+            Some(EngineToHost::FrameReady { damage: None, pixels: Some(p), .. }) => assert_eq!(p, px),
+            other => panic!("{other:?}"),
+        }
+        let big: Vec<u8> = (0..80u8).collect(); // 1 x 20
+        assert!(sink.offer_hinted(&big, 4, 1, 20, Some(4..5)));
+        match sink.take() {
+            Some(EngineToHost::FrameReady { damage: None, pixels: Some(p), height: 20, .. }) => assert_eq!(p, big),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_hint_beyond_the_frame_clamps() {
+        let h = 20usize;
+        let mut sink = hinted_sink(h, &rows(h, 1));
+        let mut px = rows(h, 1);
+        px[19 * 4] = 9;
+        assert!(sink.offer_hinted(&px, 4, 1, h as u32, Some(15..5000)));
+        assert_eq!(row_span(sink.take()), Some((19, 1)));
+        px[2 * 4] = 9;
+        assert!(sink.offer_hinted(&px, 4, 1, h as u32, Some(5000..6000)), "wholly outside: compares everything");
+        assert_eq!(row_span(sink.take()), Some((2, 1)));
+    }
+
+    #[test]
+    fn an_unhinted_offer_still_compares_everything() {
+        let h = 200usize;
+        let mut sink = hinted_sink(h, &rows(h, 1));
+        let mut px = rows(h, 1);
+        px[3 * 4] = 9;
+        px[180 * 4] = 9;
+        assert!(sink.offer(&px, 4, 1, h as u32));
+        assert_eq!(row_span(sink.take()), Some((3, 178)));
     }
 
     #[test]

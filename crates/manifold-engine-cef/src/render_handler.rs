@@ -8,6 +8,17 @@ pub type SharedSize = std::rc::Rc<RefCell<(f32, f32)>>;
 /// inside the CEF pump), so the loop must not hold a borrow across that pump.
 pub type SharedFrameSink = std::rc::Rc<RefCell<FrameSink>>;
 
+/// The rows `dirty_rects` cover (their union, clamped to `0..height`), as the sink's row hint. `None` for a missing or
+/// empty list or rects wholly outside the frame.
+fn dirty_rows(dirty_rects: Option<&[Rect]>, height: i32) -> Option<std::ops::Range<u32>> {
+    let rows = dirty_rects?
+        .iter()
+        .map(|r| r.y.clamp(0, height)..r.y.saturating_add(r.height).clamp(0, height))
+        .filter(|r| r.start < r.end)
+        .reduce(|a, b| a.start.min(b.start)..a.end.max(b.end))?;
+    Some(rows.start as u32..rows.end as u32)
+}
+
 /// Headless OSR render handler. No window, no wgpu — CEF's classic
 /// software OSR path, matching manifold-engine-servo's shared-memory frame
 /// hand-off instead of the accelerated/shared-texture path (which only
@@ -58,7 +69,7 @@ wrap_render_handler! {
             &self,
             _browser: Option<&mut Browser>,
             type_: PaintElementType,
-            _dirty_rects: Option<&[Rect]>,
+            dirty_rects: Option<&[Rect]>,
             buffer: *const u8,
             width: ::std::os::raw::c_int,
             height: ::std::os::raw::c_int,
@@ -70,7 +81,8 @@ wrap_render_handler! {
             let len = (width as usize) * (height as usize) * 4;
             // SAFETY: CEF hands `on_paint` a `width * height * 4` byte BGRA buffer, valid for the call.
             let bgra = unsafe { std::slice::from_raw_parts(buffer, len) };
-            self.handler.sink.borrow_mut().offer(bgra, width as usize * 4, width as u32, height as u32);
+            let hint = dirty_rows(dirty_rects, height);
+            self.handler.sink.borrow_mut().offer_hinted(bgra, width as usize * 4, width as u32, height as u32, hint);
         }
     }
 }
@@ -78,5 +90,25 @@ wrap_render_handler! {
 impl RenderHandlerBuilder {
     pub fn build(handler: EngineRenderHandler) -> RenderHandler {
         Self::new(handler)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rect(y: i32, height: i32) -> Rect {
+        Rect { x: 0, y, width: 10, height }
+    }
+
+    #[test]
+    fn dirty_rows_are_the_clamped_union() {
+        assert_eq!(dirty_rows(None, 100), None);
+        assert_eq!(dirty_rows(Some(&[]), 100), None);
+        assert_eq!(dirty_rows(Some(&[rect(10, 5)]), 100), Some(10..15));
+        assert_eq!(dirty_rows(Some(&[rect(10, 5), rect(60, 10)]), 100), Some(10..70));
+        assert_eq!(dirty_rows(Some(&[rect(-5, 10), rect(95, 50)]), 100), Some(0..100), "clamped to the frame");
+        assert_eq!(dirty_rows(Some(&[rect(200, 10)]), 100), None, "wholly outside");
+        assert_eq!(dirty_rows(Some(&[rect(10, 0), rect(5, -3)]), 100), None, "empty rects");
     }
 }
