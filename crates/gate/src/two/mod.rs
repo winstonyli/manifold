@@ -6,6 +6,7 @@
 //! `ENGINE` (default webview2) is the engine new tabs start in, which scenarios 3, 4, 5 and 7 navigate.
 
 mod groups;
+mod web;
 
 use std::fs;
 use std::io;
@@ -241,6 +242,20 @@ impl Two {
         }
     }
 
+    /// Scenario 4's failure dump: each instance's tab urls and the site's requests.
+    fn dump_urls(&mut self, tag: &str) -> Step {
+        for who in [Who::A, Who::B] {
+            let doc = self.session(who, &format!("{}{tag}-urls", who.tag()))?;
+            for n in session::nodes(&doc) {
+                if let Some(url) = n.get("url").and_then(Value::as_str) {
+                    info(&format!("{} {} {url}", who.name(), n.get("id").and_then(Value::as_str).unwrap_or("?")));
+                }
+            }
+        }
+        info(&self.counters()?.report());
+        Ok(())
+    }
+
     /// The script's wait_field (wait_mirror for groups): until each id's field is the same in what A shows, what B
     /// shows and A's document. A precondition. Returns (A's EXPORTSTATE, the document).
     fn wait_field(&mut self, field: Field, label: &str, tag: &str, ids: &[&str]) -> Step<(Value, Value)> {
@@ -301,7 +316,10 @@ fn run(t: &mut Two) -> Step {
     groups::s9(t)?;
     groups::s10(t)?;
     groups::s11(t)?;
-    groups::s12(t)
+    groups::s12(t)?;
+    web::s3(t)?;
+    web::s4(t)?;
+    web::s5(t)
 }
 
 pub fn two(parent: Option<PathBuf>) -> ExitCode {
