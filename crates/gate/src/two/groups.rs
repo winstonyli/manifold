@@ -1,6 +1,6 @@
 //! Scenarios 1, 2 and 8 to 12: the shared document. Instances A and B are up; nothing navigates.
 
-use serde_json::json;
+use serde_json::{json, Value};
 
 use super::{observe, require, Step, Two, Who, WAIT_FILE};
 use crate::instance::wait_file;
@@ -147,5 +147,130 @@ pub(super) fn s10(t: &mut Two) -> Step {
         observe("scenario 10: no group cycle", cycle.is_ok(), cycle.as_ref().err().map_or("", String::as_str));
         let (gg, hg) = (show_group(&session::group_of(&doc, &g)), show_group(&session::group_of(&doc, &h)));
         Ok(format!(" (G in {gg}, H in {hg})"))
+    })
+}
+
+/// The JSON text of an EXPORTSTATE value, as the script's `shown` printed it ("<absent>" if missing).
+fn shown(v: &Option<Value>) -> String {
+    v.as_ref().map_or_else(|| "<absent>".to_string(), Value::to_string)
+}
+
+pub(super) fn s11(t: &mut Two) -> Step {
+    t.scenario("s11-rename", 11, "a group rename reaches the other instance", |t| {
+        let g = t.new_node("NEWGROUP", "scenario 11: A's NEWGROUP adds exactly one node", "s11g")?;
+        // B needs the group before it can rename it.
+        t.wait_field(
+            Field::Name,
+            "scenario 11: A, B and the document agree on the new group's name",
+            "s11-setup",
+            &[&g],
+        )?;
+        t.send(Who::A, &format!("RENAMEGROUP {g} Renamed by A"))?;
+        t.wait_agree("scenario 11: A and B agree on the shared nodes after A's rename", "11")?;
+        let (a, _) = t.wait_field(
+            Field::Name,
+            "scenario 11: A, B and the document agree on the name after A's rename",
+            "s11",
+            &[&g],
+        )?;
+        let name = session::field_of(&a, Field::Name, &g);
+        observe(
+            "scenario 11: the group has A's name",
+            name == Some(json!("Renamed by A")),
+            &format!("{g} is named {}, not A's rename", shown(&name)),
+        );
+        // Back to back, so each rename is likely made before that instance picks up the other's.
+        t.send(Who::A, &format!("RENAMEGROUP {g} Both A"))?;
+        t.send(Who::B, &format!("RENAMEGROUP {g} Both B"))?;
+        t.show_local(Field::Name, "s11c", "edits", &[&g])?;
+        t.wait_agree("scenario 11: A and B agree on the shared nodes after both renames", "11c")?;
+        let (a, _) = t.wait_field(
+            Field::Name,
+            "scenario 11: A, B and the document agree on the name after both renames",
+            "s11c",
+            &[&g],
+        )?;
+        let got = session::field_of(&a, Field::Name, &g);
+        observe(
+            "scenario 11: the group ends with A's or B's name",
+            got == Some(json!("Both A")) || got == Some(json!("Both B")),
+            &format!("{g} ended named {}, neither A's nor B's rename", shown(&got)),
+        );
+        Ok(format!(" ({g} named {})", shown(&got)))
+    })
+}
+
+pub(super) fn s12(t: &mut Two) -> Step {
+    t.scenario("s12-note-text", 12, "a note's text and a move reach the other instance", |t| {
+        let n = t.new_node("NEWNOTE", "scenario 12: A's NEWNOTE adds exactly one node", "s12n")?;
+        t.wait_field(
+            Field::Text,
+            "scenario 12: A, B and the document agree on the new note's text",
+            "s12-setup",
+            &[&n],
+        )?;
+        t.send(Who::A, &format!("SETNOTETEXT {n} Typed by A"))?;
+        t.wait_agree("scenario 12: A and B agree on the shared nodes after A's edit", "12")?;
+        let (a, _) = t.wait_field(
+            Field::Text,
+            "scenario 12: A, B and the document agree on the text after A's edit",
+            "s12",
+            &[&n],
+        )?;
+        let text = session::field_of(&a, Field::Text, &n);
+        observe(
+            "scenario 12: the note holds A's text",
+            text == Some(json!("Typed by A")),
+            &format!("{n} holds {}, not A's text", shown(&text)),
+        );
+        t.send(Who::A, &format!("SETNOTETEXT {n} Both typed A"))?;
+        t.send(Who::B, &format!("SETNOTETEXT {n} Both typed B"))?;
+        t.show_local(Field::Text, "s12c", "edits", &[&n])?;
+        t.wait_agree("scenario 12: A and B agree on the shared nodes after both edits", "12c")?;
+        let (a, _) = t.wait_field(
+            Field::Text,
+            "scenario 12: A, B and the document agree on the text after both edits",
+            "s12c",
+            &[&n],
+        )?;
+        let got = session::field_of(&a, Field::Text, &n);
+        observe(
+            "scenario 12: the note ends with A's or B's text",
+            got == Some(json!("Both typed A")) || got == Some(json!("Both typed B")),
+            &format!("{n} ended holding {}, neither A's nor B's text", shown(&got)),
+        );
+        // The mirror and the document must stay agreed, not just reach agreement once: a later save on either side
+        // (B's here, A's in wait_field's EXPORTSESSION) mustn't bring a losing text back (`commit_note_buffers` commits
+        // any box that differs from the mirror).
+        t.session(Who::B, "s12c2-b-save")?;
+        let (a, _) = t.wait_field(
+            Field::Text,
+            "scenario 12: A, B and the document still agree on the text after B saves",
+            "s12c2",
+            &[&n],
+        )?;
+        let again = session::field_of(&a, Field::Text, &n);
+        observe(
+            "scenario 12: B's save leaves the winning text in place",
+            again == got,
+            &format!("{n} went from {} to {} with no edit", shown(&got), shown(&again)),
+        );
+        t.send(Who::A, &format!("MOVENODE {n} 321 -123"))?;
+        t.wait_agree("scenario 12: A and B agree on the shared nodes after A's move", "12m")?;
+        let (a, _) = t.wait_field(
+            Field::Pos,
+            "scenario 12: A, B and the document agree on the pos after A's move",
+            "s12m",
+            &[&n],
+        )?;
+        let pos = session::field_of(&a, Field::Pos, &n);
+        // Exact, as the script's string compare with '[321.0, -123.0]': f32 through serde writes 321.0, and an integer
+        // 321 would fail both.
+        observe(
+            "scenario 12: the note is where A dropped it",
+            pos == Some(json!([321.0, -123.0])),
+            &format!("{n} is at {}, not where A dropped it", shown(&pos)),
+        );
+        Ok(format!(" ({n} holds {})", shown(&got)))
     })
 }

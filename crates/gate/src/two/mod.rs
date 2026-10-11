@@ -299,7 +299,9 @@ fn run(t: &mut Two) -> Step {
     groups::s2(t)?;
     groups::s8(t)?;
     groups::s9(t)?;
-    groups::s10(t)
+    groups::s10(t)?;
+    groups::s11(t)?;
+    groups::s12(t)
 }
 
 pub fn two(parent: Option<PathBuf>) -> ExitCode {
