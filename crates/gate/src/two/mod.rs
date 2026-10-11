@@ -6,6 +6,7 @@
 //! `ENGINE` (default webview2) is the engine new tabs start in, which scenarios 3, 4, 5 and 7 navigate.
 
 mod groups;
+mod restart;
 mod web;
 
 use std::fs;
@@ -319,7 +320,9 @@ fn run(t: &mut Two) -> Step {
     groups::s12(t)?;
     web::s3(t)?;
     web::s4(t)?;
-    web::s5(t)
+    web::s5(t)?;
+    restart::s6(t)?;
+    restart::s7(t)
 }
 
 pub fn two(parent: Option<PathBuf>) -> ExitCode {
