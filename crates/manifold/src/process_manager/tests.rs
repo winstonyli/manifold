@@ -590,6 +590,15 @@ fn only_cef_has_a_downloaded_runtime_dir() {
     assert_eq!(engine_runtime_dir(EngineKind::Servo), None);
 }
 
+/// Engines that need nothing on disk read as Ready without touching it, cached or fresh; spawn and the engine lists
+/// share one reader per engine (`on_disk_reader`).
+#[test]
+fn bundled_engines_read_ready_without_a_disk_check() {
+    for kind in [EngineKind::Webview2, EngineKind::Webkit] {
+        assert_eq!(engine_on_disk(kind), RuntimeOnDisk::Ready, "{kind:?}");
+    }
+}
+
 /// A dir whose files a live CEF holds (opened without share-delete, as
 /// Chromium's SQLite does) survives the sweep untouched; a dead one and
 /// one an earlier sweep renamed aside are deleted.

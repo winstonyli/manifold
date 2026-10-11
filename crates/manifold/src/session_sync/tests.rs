@@ -4245,6 +4245,33 @@ fn sent(peer: &mut Peer) -> Vec<HostToEngine> {
     std::iter::from_fn(|| peer.recv().ok()).collect()
 }
 
+/// The engines that take part in the cookie jar (spec 2026-10-02-jars-design): only their tabs are asked for
+/// cookies, and only they count as "will switch" when their jar changes. The rest neither seed nor pull.
+const JAR_ENGINES: [EngineKind; 2] = [EngineKind::Webview2, EngineKind::Cef];
+
+#[test]
+fn only_jar_engines_are_asked_for_cookies() {
+    let mut app = app_on(&temp_dir("jar-engines-pull").join("session.mnf"), 1);
+    for kind in EngineKind::ALL {
+        let (id, mut peer) = live_tab(&mut app, kind, "https://a/");
+        app.pull_cookies(&id);
+        let asked = sent(&mut peer).iter().any(|m| matches!(m, HostToEngine::GetCookies));
+        assert_eq!(asked, JAR_ENGINES.contains(&kind), "{kind:?}");
+    }
+}
+
+#[test]
+fn only_jar_engines_switch_when_their_jar_is_cleared() {
+    let mut app = app_on(&temp_dir("jar-engines-switch").join("session.mnf"), 1);
+    for kind in EngineKind::ALL {
+        let (id, _peer) = live_tab(&mut app, kind, "https://a/");
+        // Running on the default jar, which the user cleared: a jar engine must respawn into it.
+        app.cookies.jar_tabs.insert(id.clone(), (crate::jar::JarKey::Default, crate::jar::TabCookies::default()));
+        app.cookies.jar_reseed.insert(id.clone());
+        assert_eq!(app.will_switch(&id), JAR_ENGINES.contains(&kind), "{kind:?}");
+    }
+}
+
 /// Quitting starts every engine's shutdown before the app is dropped: each fake host is sent `Shutdown` while the
 /// app is still alive.
 #[test]
