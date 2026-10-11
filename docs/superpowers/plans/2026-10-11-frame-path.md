@@ -499,3 +499,19 @@ Tasks 2-5 landed on `main`: `FrameSink` (7826f5a), the four engines on it (8abca
 - **Not re-measured:** per-upload CPU time and frames sent per second after the change (Task 6 Step 3's counters were not re-run; only rows per upload were logged). M2b's whole-frame figure (8.5 ms) and band figure (0.6 ms) from Task 1 stand as the expected effect.
 - **Not run live:** Servo and WebKit (both build; Servo by `cargo check` in `target-servo`, WebKit in WSL). The stale-texture path (`mark_stale`) has no test since it needs a GPU.
 - **Open:** the capture adapter differs from the app's (iGPU vs eGPU); the cross-adapter copy is unmeasured. CEF screenshots render at a smaller scale than WebView2's, probably old, not investigated.
+
+### Re-measure after Tasks 2-5 (main e27114b; 1920x1080 headless, debug engines, spinner and animation means of 3 runs)
+
+Conditions: Defender real-time protection off; CPU 11-23% for most drive runs (two started at 41-42% and were re-run); scratchtape `tier_eval` jobs held shared GPU leases throughout, so M2b is best-of-3 on a shared eGPU. Full table and raw lines: `.superpowers/frame-remeasure-report.md` (local).
+
+| Measure | Before | After |
+|---|---|---|
+| Static page frames/s, WebView2 and CEF | 0 | 0 |
+| 20x20 spinner, WebView2: frames/s; rows uploaded; app `upload_frame` CPU | 26.0; 1042; 8.5 ms (about 221 ms/s) | 28.4; 34; 0.43 ms (about 12 ms/s) |
+| 20x20 spinner, CEF: frames/s; rows uploaded; app `upload_frame` CPU | 52 taken; 1042; 8.5 ms (about 440 ms/s) | 57.6; 27; 0.39 ms (about 19 ms/s) |
+| WebView2 engine copy per frame | about 2.5 ms (alloc, row copy, write) | 0.60 ms (sink offer) |
+| Full-viewport animation, frames/s | 25.8 WebView2, 53 CEF | 28.3, 57.4; every row changes, so the upload is still whole (8.3-8.4 ms) |
+| CEF animation, tab hidden | 60 paints/s | 0 paints, 0 frames |
+| Benches M2a, M2b | | reproduce the baseline within noise (M2b thumbnail pass read 0.16-0.17 ms against 0.23-0.28, no code reason) |
+
+Reading: the band upload does what it was for, a 20-30x cut in app upload CPU on partial changes. Concerns: (1) CEF's sink offer costs 2.6-3.0 ms per paint in the debug engine, 4x WebView2's for the same compare-and-copy and 7x the release bench; Task 1 never timed CEF's `to_vec` in situ, so a CEF copy saving is unconfirmed (a release CEF host run would settle whether it is a debug artifact). (2) Frame rates rose 8-11% because each frame is cheaper, so a full-frame animation costs slightly more app CPU per second (about 235 against 221 ms/s). (3) Not measured: Servo, WebKit, the cross-adapter copy.
