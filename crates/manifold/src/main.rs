@@ -29,6 +29,7 @@ mod graph_nav;
 mod graph_ui;
 mod groups;
 mod history;
+mod host_pin;
 mod idle_sleep;
 mod image_view;
 mod input;
