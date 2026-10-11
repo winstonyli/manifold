@@ -54,7 +54,7 @@
 - **Proof:** one full gate through `gate.sh`: green, PASS counts equal, TIMING lines present; report CPU and Defender state.
 
 ### Task 5 (decision, not committed): two-instance-test
-- It has no `PASS:` lines (only `scenario N: ok`, about 41 `FAIL` exits), four instances sharing a profile, `taskkill` of A, the `nonce_server.py` counters and the longest fixed windows (5 to 10 s). Port only after Tasks 2 to 4 land and show a real gain; decide then whether it should emit `PASS:` lines (a gate-format change).
+- It has no `PASS:` lines (only `scenario N: ok`, about 41 `FAIL` exits), four instances sharing a profile, `taskkill` of A, the `nonce_server.py` counters and the longest fixed windows (5 to 10 s). Port only after Tasks 2 to 4 land and show a real gain; decide then whether it should emit `PASS:` lines (a gate-format change). Decided 2026-10-10: ported; see 2026-10-10-rust-gate-two.md.
 
 ## Stress test (2 rounds so far)
 
