@@ -1,12 +1,14 @@
 pub mod channel;
 pub mod downloads;
 pub mod frame_buffer;
+pub mod frame_sink;
 pub mod messages;
 pub mod nav_label;
 pub mod transport;
 
 pub use channel::MessageChannel;
 pub use frame_buffer::{frame_path, remove_frame_file, sweep_stale_frames_in, SharedFrameBuffer};
+pub use frame_sink::{copy_changed_rows, FrameSink};
 pub use messages::{
     modifiers, restore_scroll_script, EngineToHost, HostToEngine, InputEvent, KeyCode, MouseButton, PageKindReply,
     PageState, TabState, PAGE_KIND_SCRIPT, PAGE_STATE_SCRIPT,

@@ -214,6 +214,10 @@ impl SharedFrameBuffer {
         self.mmap[..n].copy_from_slice(&bgra[..n]);
     }
 
+    pub fn as_mut_slice(&mut self) -> &mut [u8] {
+        &mut self.mmap
+    }
+
     pub fn as_slice(&self) -> &[u8] {
         &self.mmap
     }
@@ -230,6 +234,7 @@ impl SharedFrameBuffer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::copy_changed_rows;
     use std::time::Duration;
 
     #[cfg(not(windows))]
@@ -376,21 +381,6 @@ mod tests {
             .collect();
         let (best, median) = best_median(runs);
         println!("  {what:<58} best {best:>10.1?}  median {median:>10.1?}");
-    }
-
-    /// Writes only the rows of `src` (rows `pitch` apart) that differ from `dst` (tightly packed `row_bytes` rows);
-    /// returns the span of rows that differed. Task 2 replaces this with the real `copy_changed_rows`.
-    fn copy_changed_rows(dst: &mut [u8], src: &[u8], row_bytes: usize, pitch: usize) -> Option<std::ops::Range<u32>> {
-        let mut span: Option<std::ops::Range<u32>> = None;
-        for (y, row) in dst.chunks_exact_mut(row_bytes).enumerate() {
-            let s = &src[y * pitch..y * pitch + row_bytes];
-            if row != s {
-                row.copy_from_slice(s);
-                let y = y as u32;
-                span = Some(span.map_or(y..y + 1, |r| r.start..y + 1));
-            }
-        }
-        span
     }
 
     /// Frame-path Task 1, M2a: what the engines' frame copies and the app's per-frame map cost at 1920x1080

@@ -386,6 +386,8 @@ pub enum EngineToHost {
         frame_id: u64,
         width: u32,
         height: u32,
+        /// `None`: the whole frame changed. `Some((x, y, w, h))`: only that rectangle changed since this tab's
+        /// previous `FrameReady`; engines report whole rows (`x == 0`, `w == width`).
         damage: Option<(u32, u32, u32, u32)>,
         pixels: Option<Vec<u8>>,
     },
