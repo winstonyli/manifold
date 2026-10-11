@@ -22,7 +22,8 @@ pub use transport::{LocalTransport, RemoteTransport};
 /// they carry. The `wire_shape_tests` test in `messages.rs` fails when that shape changes without a bump.
 /// 2: `EngineToHost::OpenTabRequested` carries `user_gesture`.
 /// 3: `InputEvent::MouseDown`/`MouseUp` carry `click_count`; `TabState` drops `zoom`.
-pub const PROTOCOL_VERSION: u32 = 3;
+/// 4: `EngineToHost::FrameReady` carries `generation` (frame files are named by generation) and drops `frame_id`.
+pub const PROTOCOL_VERSION: u32 = 4;
 
 /// Starts the `EngineToHost::Crashed` reason for a version mismatch, so the
 /// host shows a failed card instead of respawning the same stale binary.

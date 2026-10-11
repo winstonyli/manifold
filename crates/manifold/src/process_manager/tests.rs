@@ -60,7 +60,7 @@ fn first_event_after_version(version: u32) -> EngineToHost {
 }
 
 fn frame(n: u32) -> EngineToHost {
-    EngineToHost::FrameReady { frame_id: u64::from(n), width: n, height: 1, damage: None, pixels: None }
+    EngineToHost::FrameReady { generation: 1, width: n, height: 1, damage: None, pixels: None }
 }
 
 /// Frames never wait in the events channel (survey E3): a burst of them ahead of a message leaves the message first.
@@ -88,10 +88,11 @@ fn frames_never_queue_on_the_events_channel() {
 }
 
 fn damaged(width: u32, height: u32, first_row: u32, rows: u32) -> EngineToHost {
-    EngineToHost::FrameReady { frame_id: 0, width, height, damage: Some((0, first_row, width, rows)), pixels: None }
+    EngineToHost::FrameReady { generation: 1, width, height, damage: Some((0, first_row, width, rows)), pixels: None }
 }
 
-/// Frames the app never took fold into one: same-size damage unions its rows, a size change makes the frame whole.
+/// Frames the app never took fold into one: same-file damage unions its rows, a size or generation change makes the
+/// frame whole.
 #[test]
 fn piled_up_frames_union_their_rows() {
     for (frames, width, rows) in [
@@ -100,12 +101,27 @@ fn piled_up_frames_union_their_rows() {
         (
             vec![
                 damaged(4, 10, 1, 1),
-                EngineToHost::FrameReady { frame_id: 0, width: 4, height: 10, damage: None, pixels: None },
+                EngineToHost::FrameReady { generation: 1, width: 4, height: 10, damage: None, pixels: None },
             ],
             4,
             None,
         ),
         (vec![damaged(4, 10, 2, 1)], 4, Some(2..3)),
+        (
+            // The same size in another generation is another file: whole.
+            vec![
+                damaged(4, 10, 1, 1),
+                EngineToHost::FrameReady {
+                    generation: 2,
+                    width: 4,
+                    height: 10,
+                    damage: Some((0, 5, 4, 1)),
+                    pixels: None,
+                },
+            ],
+            4,
+            None,
+        ),
     ] {
         let (rx, frame_slot, _) = reader_fed(move |stream| {
             let mut engine = ipc_protocol::MessageChannel::new(stream);

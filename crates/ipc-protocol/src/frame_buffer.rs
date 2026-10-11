@@ -28,19 +28,31 @@ pub struct SharedFrameBuffer {
     _lock: std::fs::File,
 }
 
-/// Deterministic from `name` alone so manifold can re-derive the path of
+/// Deterministic from `name` and `generation` alone so manifold can re-derive the path of
 /// a frame buffer the engine-host created, without the engine having to
-/// send the path over the control channel.
-pub fn frame_path(name: &str) -> PathBuf {
-    std::env::temp_dir().join(format!("manifold-frame-{name}.bin"))
+/// send the path over the control channel. A file is never rewritten at a new size:
+/// the engine creates the next generation's file, so a reader's mapping of the
+/// old one stays valid (Windows refuses to truncate a mapped file, error 1224).
+pub fn frame_path(name: &str, generation: u32) -> PathBuf {
+    std::env::temp_dir().join(format!("manifold-frame-{name}-g{generation}.bin"))
 }
 
-/// Deletes `name`'s frame file (errors ignored). Only call once its engine-host
-/// has exited and before anything can create a new file under the same name:
-/// Windows deletes a file another process still maps (measured, Windows 11
-/// 26200), so a late call would take a successor's file out from under it.
+/// Deletes every generation's frame file of `name` (errors ignored): the files named
+/// `manifold-frame-{name}-g<digits>.bin` exactly, so a name that starts with another's
+/// does not match. Only call once its engine-host has exited and the caller's own
+/// mappings are dropped. Windows deletes a file another process still maps (measured,
+/// Windows 11 26200), so a call while a successor runs would take its file away.
 pub fn remove_frame_file(name: &str) {
-    let _ = std::fs::remove_file(frame_path(name));
+    let Ok(entries) = std::fs::read_dir(std::env::temp_dir()) else { return };
+    let prefix = format!("manifold-frame-{name}-g");
+    for entry in entries.flatten() {
+        let file = entry.file_name();
+        let Some(rest) = file.to_str().and_then(|f| f.strip_prefix(prefix.as_str())) else { continue };
+        let Some(digits) = rest.strip_suffix(".bin") else { continue };
+        if !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()) {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
 }
 
 /// Deletes `manifold-frame-*.bin` files in `dir` last modified more than
@@ -111,49 +123,27 @@ fn lock_shared(file: &std::fs::File) -> io::Result<()> {
 }
 
 impl SharedFrameBuffer {
-    /// `name` should be unique per tab (e.g. a tab id) so concurrent tabs
-    /// don't collide on the same backing file.
-    ///
-    /// Retries a few times on Windows error 1224 ("a file with a
-    /// user-mapped section open"): manifold opens and drops its own
-    /// mapping of this same file on every redraw to read the latest frame,
-    /// so an engine-host resizing/recreating the file (a new size means a
-    /// new call here — see `open_existing`'s width/height contract) can
-    /// transiently race a concurrent read from the other process. This is
-    /// cheaper than a cross-process locking protocol for how rarely a
-    /// resize actually happens.
-    pub fn create(name: &str, width: u32, height: u32) -> io::Result<Self> {
-        // A zero-length mapping is rejected by `memmap2` on every platform,
-        // deterministically — not the transient Windows error 1224 this
-        // retry loop exists to ride out, so retrying it 20 times would
-        // just waste ~190ms before returning the same error anyway.
+    /// Creates `frame_path(name, generation)`. `name` should be unique per tab (e.g. a tab id)
+    /// so concurrent tabs don't collide on the same backing file. A new size means a new
+    /// generation, hence a new file: no reader's mapping can block this call.
+    pub fn create(name: &str, generation: u32, width: u32, height: u32) -> io::Result<Self> {
+        // A zero-length mapping is rejected by `memmap2` on every platform.
         if width == 0 || height == 0 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 format!("SharedFrameBuffer::create: zero-sized buffer requested ({width}x{height})"),
             ));
         }
-        let mut last_err = None;
-        for attempt in 0..20 {
-            if attempt > 0 {
-                std::thread::sleep(std::time::Duration::from_millis(10));
-            }
-            match Self::try_create(name, width, height) {
-                Ok(buf) => return Ok(buf),
-                Err(err) => last_err = Some(err),
-            }
-        }
-        Err(last_err.unwrap())
+        Self::try_create(name, generation, width, height)
     }
 
     /// On Unix the new buffer is a new file renamed over `path`, never the old
     /// one truncated: Unix lets a file be truncated while another process has
     /// it mapped, and that reader's next access past the new end dies with
     /// SIGBUS (manifold did, in `upload_frame`, when a CEF tab resized under
-    /// WSL). A reader keeps the old file until it drops its mapping. Windows
-    /// refuses to truncate a mapped file instead (error 1224, retried above).
-    fn try_create(name: &str, width: u32, height: u32) -> io::Result<Self> {
-        let path = frame_path(name);
+    /// WSL). Names are no longer reused, but this stays (parked: untestable on Windows).
+    fn try_create(name: &str, generation: u32, width: u32, height: u32) -> io::Result<Self> {
+        let path = frame_path(name, generation);
         let len = (width as u64) * (height as u64) * 4;
         #[cfg(unix)]
         let open_path = path.with_extension(format!("bin.{}.tmp", std::process::id()));
@@ -178,9 +168,8 @@ impl SharedFrameBuffer {
         })
     }
 
-    /// `InvalidData` when the file isn't `width * height * 4` bytes: on resize the
-    /// engine-host truncates and regrows it (Windows) or replaces it (Unix), so a
-    /// reader can briefly see the wrong size.
+    /// `InvalidData` when the file isn't `width * height * 4` bytes (a `FrameReady` whose
+    /// file the engine has since replaced).
     pub fn open_existing(path: PathBuf, width: u32, height: u32) -> io::Result<Self> {
         let file = OpenOptions::new().read(true).write(true).open(&path)?;
         let expected = u64::from(width) * u64::from(height) * 4;
@@ -312,51 +301,64 @@ mod tests {
     #[test]
     fn a_created_buffer_holds_its_lock_across_a_resize() {
         let name = format!("test-create-lock-{}", std::process::id());
-        let first = SharedFrameBuffer::create(&name, 4, 4).unwrap();
-        assert!(!unused(&frame_path(&name)));
-        let second = SharedFrameBuffer::create(&name, 2, 2).unwrap();
+        let first = SharedFrameBuffer::create(&name, 1, 4, 4).unwrap();
+        assert!(!unused(&frame_path(&name, 1)));
+        let second = SharedFrameBuffer::create(&name, 2, 2, 2).unwrap();
         drop(first);
-        assert!(!unused(&frame_path(&name)), "the resized file is locked");
+        assert!(!unused(&frame_path(&name, 2)), "the resized file is locked");
         drop(second);
-        assert!(unused(&frame_path(&name)));
-        let _ = std::fs::remove_file(frame_path(&name));
+        assert!(unused(&frame_path(&name, 2)));
+        remove_frame_file(&name);
     }
 
     #[test]
-    fn remove_frame_file_deletes_a_released_buffer() {
+    fn frame_paths_carry_the_generation() {
+        let (one, two) = (frame_path("a", 1), frame_path("a", 2));
+        assert_ne!(one, two);
+        assert!(one.to_str().unwrap().ends_with("-g1.bin") && two.to_str().unwrap().ends_with("-g2.bin"));
+    }
+
+    #[test]
+    fn remove_frame_file_deletes_every_generation_of_exactly_that_name() {
         let name = format!("test-remove-frame-{}", std::process::id());
-        drop(SharedFrameBuffer::create(&name, 4, 4).unwrap());
-        assert!(frame_path(&name).exists());
+        let longer = format!("{name}-b");
+        drop(SharedFrameBuffer::create(&name, 1, 4, 4).unwrap());
+        drop(SharedFrameBuffer::create(&name, 2, 4, 4).unwrap());
+        drop(SharedFrameBuffer::create(&longer, 1, 4, 4).unwrap());
         remove_frame_file(&name);
-        assert!(!frame_path(&name).exists());
+        assert!(!frame_path(&name, 1).exists() && !frame_path(&name, 2).exists());
+        assert!(frame_path(&longer, 1).exists(), "a name that starts with another's is left alone");
+        remove_frame_file(&longer);
+        assert!(!frame_path(&longer, 1).exists());
     }
 
     #[test]
     fn open_existing_refuses_a_file_of_the_wrong_size() {
         let name = format!("test-open-existing-{}", std::process::id());
-        let created = SharedFrameBuffer::create(&name, 4, 2).unwrap();
-        assert!(SharedFrameBuffer::open_existing(frame_path(&name), 4, 2).is_ok());
-        let err = SharedFrameBuffer::open_existing(frame_path(&name), 8, 8).err().expect("size mismatch");
+        let created = SharedFrameBuffer::create(&name, 1, 4, 2).unwrap();
+        assert!(SharedFrameBuffer::open_existing(frame_path(&name, 1), 4, 2).is_ok());
+        let err = SharedFrameBuffer::open_existing(frame_path(&name, 1), 8, 8).err().expect("size mismatch");
         assert_eq!(err.kind(), io::ErrorKind::InvalidData);
         drop(created);
-        let _ = std::fs::remove_file(frame_path(&name));
+        remove_frame_file(&name);
     }
 
-    /// A resize (a second `create` under the same name) must leave a reader's
-    /// existing mapping readable to its end. Before the fix this failed on Linux:
-    /// the reader's bytes read back zeroed, and past the new end they fault.
-    #[cfg(unix)]
+    /// A resize is a new generation: it succeeds at once while a reader maps the old
+    /// file (a rewrite of that file fails with error 1224 on Windows), and the reader's
+    /// mapping stays readable after the old file is deleted.
     #[test]
-    fn a_resize_leaves_an_open_reader_whole() {
+    fn a_new_generation_does_not_wait_for_a_reader_and_leaves_it_whole() {
         let name = format!("test-resize-reader-{}", std::process::id());
-        let mut first = SharedFrameBuffer::create(&name, 64, 64).unwrap();
+        let mut first = SharedFrameBuffer::create(&name, 1, 64, 64).unwrap();
         first.as_mut_slice().copy_from_slice(&[7; 64 * 64 * 4]);
-        let reader = SharedFrameBuffer::open_existing(frame_path(&name), 64, 64).unwrap();
-        let second = SharedFrameBuffer::create(&name, 2, 2).unwrap();
+        let reader = SharedFrameBuffer::open_existing(frame_path(&name, 1), 64, 64).unwrap();
+        let second = SharedFrameBuffer::create(&name, 2, 2, 2).unwrap();
+        drop(first);
+        let _ = std::fs::remove_file(frame_path(&name, 1));
         assert!(reader.as_slice().iter().all(|&b| b == 7), "the old frame is intact");
-        assert!(SharedFrameBuffer::open_existing(frame_path(&name), 2, 2).is_ok(), "the path has the new size");
-        drop((first, second, reader));
-        let _ = std::fs::remove_file(frame_path(&name));
+        assert!(SharedFrameBuffer::open_existing(frame_path(&name, 2), 2, 2).is_ok(), "the new file has the new size");
+        drop((second, reader));
+        remove_frame_file(&name);
     }
 
     /// The best and the median of `runs` (ipc-protocol cannot see `manifold::bench`).
@@ -397,7 +399,7 @@ mod tests {
             .collect();
 
         let name = format!("handoff-timing-{}", std::process::id());
-        let mut buf = SharedFrameBuffer::create(&name, w as u32, h as u32).unwrap();
+        let mut buf = SharedFrameBuffer::create(&name, 1, w as u32, h as u32).unwrap();
         println!("handoff_timing: {w}x{h}, {} bytes/frame, pitch {pitch}, N = {N}", row_bytes * h);
 
         let mut k = 0usize;
@@ -432,7 +434,7 @@ mod tests {
         time_it("5 compare-then-copy, no row changed", N, || {
             black_box(copy_changed_rows(&mut buf.mmap, &pitched[0], row_bytes, pitch));
         });
-        let path = frame_path(&name);
+        let path = frame_path(&name, 1);
         time_it("6 app today: open_existing + read every byte + drop", N, || {
             let r = SharedFrameBuffer::open_existing(path.clone(), w as u32, h as u32).unwrap();
             black_box(r.as_slice().iter().fold(0u8, |a, &b| a ^ b));
@@ -442,6 +444,6 @@ mod tests {
             black_box(reader.as_slice().iter().fold(0u8, |a, &b| a ^ b));
         });
         drop((reader, buf));
-        let _ = std::fs::remove_file(frame_path(&name));
+        remove_frame_file(&name);
     }
 }

@@ -518,7 +518,7 @@ fn main() {
             // `DEFAULT_HEIGHT` forever in testing, regardless of how many
             // `Resize` messages arrived, so gating on an exact match meant
             // *zero* frames were ever sent post-respawn (confirmed via
-            // debug logging: `frame_id` stuck at 0 indefinitely). Sending
+            // debug logging: no frame was ever sent). Sending
             // the pixbuf's own real dimensions sidesteps needing to
             // understand or fix GTK's offscreen-resize negotiation at all
             // — manifold's reader already takes width/height from each

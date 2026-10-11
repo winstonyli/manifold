@@ -156,6 +156,7 @@ pub(super) fn spawn_webkit_tab(tab_id: &str, initial_url: &str, wake: engine_io:
         writer: engine_io::Writer::spawn(to_engine, &format!("engine writer {tab_id}")),
         events_rx,
         frame,
+        frame_map: engine_io::FrameMap::default(),
         child: Some(child),
         cache_dir: None,
         profile_slot: None,

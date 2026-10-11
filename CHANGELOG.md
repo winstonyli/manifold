@@ -11,7 +11,7 @@ Since v0.4.1. Becomes the next entry when a release is cut.
 - **A stuck engine no longer freezes the app.** Sends to an engine go through a per-tab writer thread, so an engine that stops reading cannot block the window, closing its tab, or quitting. While an engine is behind, pointer moves and resizes merge (latest wins) and wheel steps add up; nothing else merges or reorders.
 - **Not responding.** A tab whose send queue is full and whose write is blocked for 50 ms, or whose write is stuck for 2 s, shows a warning badge on its card and a "Not responding" toast. Its right-click menu leads with Restart Engine (a new engine at the tab's URL) and End Engine (leaves a failed card). Nothing is killed automatically. Headless: `RESTARTENGINE id`, `ENDENGINE id`, and `unresponsive` on `EXPORTSTATE` cards.
 - Engine messages wake the event loop instead of waiting for the next poll, and one frame applies at most 64 messages per tab.
-- **Less work per frame.** An engine copies a frame once, straight into the shared frame file, and reports which rows changed; the app uploads only that band to the GPU (a whole 1080p upload cost 8.5 ms of CPU, a 64-row band 0.6 ms), and tab thumbnails are redrawn only when drawn. CEF stops painting hidden tabs. WebView2 and CEF already sent nothing for a static page, so the gain is on pages that animate. Details and measurements: `docs/superpowers/plans/2026-10-11-frame-path.md`.
+- **Less work per frame.** An engine copies a frame once, straight into the shared frame file, and reports which rows changed; the app uploads only that band to the GPU (a whole 1080p upload cost 8.5 ms of CPU, a 64-row band 0.6 ms), and tab thumbnails are redrawn only when drawn. CEF stops painting hidden tabs. Frame files are named by generation and the app keeps one mapping per engine instead of reopening it every frame (about 2.9 ms down to 0.1 ms per frame at 1080p). WebView2 and CEF already sent nothing for a static page, so the gain is on pages that animate. Details and measurements: `docs/superpowers/plans/2026-10-11-frame-path.md`.
 - F12 and Ctrl+F on an engine that can't (DevTools: Servo, WebKit; find: Servo) now say so in a toast instead of doing nothing.
 
 ### Internal
@@ -23,8 +23,9 @@ Since v0.4.1. Becomes the next entry when a release is cut.
 
 ### Known
 
-- The frame-path change builds for Servo and WebKit but they were not run live. An engine host built before it still works (it sends whole frames).
-- **Rebuild every engine host after pulling.** The wire format and `PROTOCOL_VERSION` are unchanged, but a host built before has an unbounded inbox. CEF, Servo and WebKit were not built or run with the bound (WebView2 was).
+- The frame-path change builds for Servo and WebKit but they were not run live.
+- **Rebuild every engine host after pulling: `PROTOCOL_VERSION` is 4** (`FrameReady` carries `generation` and drops `frame_id`; frame files are named by generation). A host built before is refused with the protocol-mismatch message and its tab shows a failed card.
+- **Rebuild every engine host after pulling.** A host built before the bounded inbox has an unbounded one. CEF, Servo and WebKit were not built or run with the bound (WebView2 was).
 - A WebKit tab force-closed while its writer is stuck leaves that thread until the Linux host exits.
 - A Restart affordance in Tab view is not done: the badge and menu rows are on the Graph card.
 

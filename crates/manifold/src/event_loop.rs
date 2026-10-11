@@ -620,14 +620,9 @@ const MINIMIZED_TICK: std::time::Duration = std::time::Duration::from_millis(100
 /// A tab's newest frame, which `App::drain_engine_ipc` collects and `App::upload_frames` uploads.
 struct FrameUpdate {
     tab_id: String,
-    /// Socket/shared-memory id this tab's engine-host actually used
-    /// (see `EngineTab::socket_id`) — usually equal to `tab_id`,
-    /// but can diverge after the stale-pipe fallback in
-    /// `process_manager::spawn_tab`. Only used to look up the
-    /// shared frame buffer in `App::upload_frames`; GPU texture bookkeeping stays
-    /// keyed by `tab_id`.
-    socket_id: String,
     kind: EngineKind,
+    /// The frame file the pixels are in (`FrameReady::generation`).
+    generation: u32,
     width: u32,
     height: u32,
     /// The rows that changed since the last upload; `None` is the whole frame.
@@ -1148,8 +1143,8 @@ impl App {
                     tab_id.clone(),
                     FrameUpdate {
                         tab_id: tab_id.clone(),
-                        socket_id: tab.tab.socket_id.clone(),
                         kind: tab.tab.kind,
+                        generation: frame.generation,
                         width: frame.width,
                         height: frame.height,
                         rows: frame.rows,
@@ -1322,14 +1317,16 @@ impl App {
                 if let Some(gpu) = &mut self.gpu {
                     gpu.upload_frame(&update.tab_id, &pixels, update.width, update.height, format, update.rows);
                 }
-            } else if let Ok(buf) =
-                SharedFrameBuffer::open_existing(frame_path(&update.socket_id), update.width, update.height)
+            } else if let Some(Ok(pixels)) = self
+                .nodes
+                .get_mut(&update.tab_id)
+                .and_then(|n| n.as_tab_mut())
+                .map(|t| t.tab.frame_pixels(update.generation, update.width, update.height))
             {
-                // `open_existing` refuses a file of the wrong size (the engine-host
-                // regrows or replaces it on resize), so a frame caught mid-resize
-                // is skipped and the next redraw tries again.
+                // The tab keeps one mapping per frame file. A file the engine has already replaced (a resize) no
+                // longer opens, or opens at the wrong size, so that frame is skipped; the next one names the new file.
                 if let Some(gpu) = &mut self.gpu {
-                    gpu.upload_frame(&update.tab_id, buf.as_slice(), update.width, update.height, format, update.rows);
+                    gpu.upload_frame(&update.tab_id, pixels, update.width, update.height, format, update.rows);
                 }
             } else if let Some(gpu) = &mut self.gpu {
                 // The skipped frame's changed rows never reached the texture: the next upload writes it whole.

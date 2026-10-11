@@ -143,6 +143,8 @@ pub struct EngineTab {
     pub events_rx: mpsc::Receiver<EngineToHost>,
     /// The newest frame its reader saw (`engine_io::FrameSlot`), taken by `take_frame`.
     frame: engine_io::FrameSlot,
+    /// The mapping of the engine's current frame file (`engine_io::FrameMap`), used by `frame_pixels`.
+    frame_map: engine_io::FrameMap,
     /// `None` once `Drop` has handed it to its reaper thread.
     child: Option<Child>,
     /// A directory only this host uses, deleted on drop: CEF's `root_cache_path`, or WebView2's named profile
@@ -175,6 +177,11 @@ impl EngineTab {
     /// The newest frame since the last call, if any.
     pub(crate) fn take_frame(&self) -> Option<engine_io::Frame> {
         self.frame.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take()
+    }
+
+    /// The pixels of the engine's frame file of `generation` (`engine_io::FrameMap::pixels`).
+    pub(crate) fn frame_pixels(&mut self, generation: u32, width: u32, height: u32) -> std::io::Result<&[u8]> {
+        self.frame_map.pixels(&self.socket_id, generation, width, height)
     }
 
     /// The engine has stopped reading: a send was refused while a write had been blocked for
@@ -213,6 +220,7 @@ impl EngineTab {
             writer: engine_io::Writer::spawn(transport::RemoteTransport::new(host), "engine writer (fake)"),
             events_rx,
             frame: engine_io::FrameSlot::default(),
+            frame_map: engine_io::FrameMap::default(),
             child: None,
             cache_dir: None,
             profile_slot: None,
@@ -256,7 +264,8 @@ impl Drop for EngineTab {
         // another process maps it (measured), so a delete that ran late on another
         // thread could take the new host's frame file.
         reap_host(self.kind, child);
-        // The host has exited, so its frame file is no longer mapped by it.
+        // The host has exited, so its frame file is no longer mapped by it; ours is dropped first.
+        self.frame_map.clear();
         ipc_protocol::remove_frame_file(&self.socket_id);
         // The profile slot is freed after the folder's deletion is tried.
         if let Some(dir) = cache_dir {
@@ -646,18 +655,18 @@ fn spawn_reader_thread<S: std::io::Read + std::io::Write + Send + 'static>(
         }
         while let Ok(msg) = from_engine.recv::<EngineToHost>() {
             match msg {
-                EngineToHost::FrameReady { width, height, damage, pixels, .. } => {
+                EngineToHost::FrameReady { generation, width, height, damage, pixels } => {
                     let mut slot = frame.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-                    // A frame the app never took folds its rows into this one's; a size change makes it whole.
+                    // A frame the app never took folds its rows into this one's; a new size or file makes it whole.
                     let rows = engine_io::frame_rows(damage, height);
                     let rows = match slot.take() {
-                        Some(prev) if prev.width == width && prev.height == height => {
+                        Some(prev) if (prev.generation, prev.width, prev.height) == (generation, width, height) => {
                             engine_io::merge_rows(prev.rows, rows)
                         }
                         Some(_) => None,
                         None => rows,
                     };
-                    *slot = Some(engine_io::Frame { width, height, rows, pixels });
+                    *slot = Some(engine_io::Frame { generation, width, height, rows, pixels });
                 }
                 // Fails once the tab is gone (its receiver dropped).
                 msg => {
@@ -803,7 +812,9 @@ pub fn spawn_tab(
     let events_rx = spawn_reader_thread(from_engine, Arc::clone(&frame), wake);
 
     let writer = engine_io::Writer::spawn(to_engine, &format!("engine writer {socket_id}"));
-    let tab = EngineTab { kind, socket_id, writer, events_rx, frame, child: Some(child), cache_dir, profile_slot };
+    let frame_map = engine_io::FrameMap::default();
+    let tab =
+        EngineTab { kind, socket_id, writer, events_rx, frame, frame_map, child: Some(child), cache_dir, profile_slot };
     if kind.desc().jar {
         // Serialised now that the host is connected, so cookies merged while it started are in the seed.
         tab.send(&HostToEngine::SetCookies(jar_json()));

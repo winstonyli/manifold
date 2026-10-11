@@ -50,7 +50,8 @@ pub struct FrameSink {
     changed: Option<Range<u32>>,
     /// The next report covers the whole frame.
     whole: bool,
-    frame_id: u64,
+    /// The generation of the current shared frame file; 0 before the first create and always for inline.
+    generation: u32,
     pending: Option<Pending>,
     create_failure_logged: bool,
 }
@@ -74,7 +75,7 @@ impl FrameSink {
             height: 0,
             changed: None,
             whole: false,
-            frame_id: 0,
+            generation: 0,
             pending: None,
             create_failure_logged: false,
         }
@@ -109,13 +110,19 @@ impl FrameSink {
     /// Creates the store for the pending frame and writes it in; leaves it pending if the create fails.
     fn install_pending(&mut self) {
         let Some(pending) = self.pending.take() else { return };
-        // The old shared store is unmapped first: Windows refuses to truncate a file another mapping holds.
-        self.store = None;
         let store = match &self.socket_id {
-            Some(id) => match SharedFrameBuffer::create(id, pending.width, pending.height) {
-                Ok(buf) => Store::Shared(buf),
+            Some(id) => match SharedFrameBuffer::create(id, self.generation + 1, pending.width, pending.height) {
+                Ok(buf) => {
+                    // The previous generation's file goes (best effort); a reader still mapping it keeps its view.
+                    self.store = None;
+                    if self.generation > 0 {
+                        let _ = std::fs::remove_file(crate::frame_path(id, self.generation));
+                    }
+                    self.generation += 1;
+                    Store::Shared(buf)
+                }
                 Err(err) => {
-                    // The app still maps the old file (stalled on upload): `take` retries.
+                    // The create failed (a full disk, say): `take` retries.
                     if !self.create_failure_logged {
                         eprintln!(
                             "frame buffer: create at {}x{} failed, retrying each frame: {err}",
@@ -156,13 +163,12 @@ impl FrameSink {
         };
         self.whole = false;
         self.changed = None;
-        self.frame_id += 1;
         let pixels = match store {
             Store::Inline(vec) => Some(vec.clone()),
             Store::Shared(_) => None,
         };
         Some(EngineToHost::FrameReady {
-            frame_id: self.frame_id,
+            generation: self.generation,
             width: self.width,
             height: self.height,
             damage,
@@ -174,7 +180,7 @@ impl FrameSink {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{frame_path, SharedFrameBuffer};
+    use crate::{frame_path, remove_frame_file, SharedFrameBuffer};
 
     fn frame(w: usize, h: usize, fill: u8) -> Vec<u8> {
         vec![fill; w * h * 4]
@@ -246,20 +252,15 @@ mod tests {
     }
 
     #[test]
-    fn frame_ids_increase_and_show_waits_for_a_frame() {
+    fn show_waits_for_a_frame() {
         let mut sink = FrameSink::inline();
         sink.show();
         assert!(sink.take().is_none(), "no stored frame yet");
         let px = frame(2, 2, 1);
         sink.offer(&px, 8, 2, 2);
-        let id = |m| match m {
-            Some(EngineToHost::FrameReady { frame_id, .. }) => frame_id,
-            other => panic!("{other:?}"),
-        };
-        let a = id(sink.take());
+        assert_eq!(generation_of(sink.take()), 0, "an inline sink has no file");
         sink.show();
-        let b = id(sink.take());
-        assert!(b > a);
+        assert_eq!(damage_of(sink.take()), Some(None));
     }
 
     #[test]
@@ -283,35 +284,55 @@ mod tests {
             Some(EngineToHost::FrameReady { damage: None, pixels: None, width: 4, height: 3, .. }) => {}
             other => panic!("{other:?}"),
         }
-        let reader = SharedFrameBuffer::open_existing(frame_path(&id), 4, 3).unwrap();
+        let reader = SharedFrameBuffer::open_existing(frame_path(&id, 1), 4, 3).unwrap();
         assert_eq!(reader.as_slice(), &px[..]);
         drop(reader);
         drop(sink);
-        let _ = std::fs::remove_file(frame_path(&id));
+        remove_frame_file(&id);
     }
 
-    #[cfg(windows)]
-    #[test]
-    fn a_shared_sink_retries_a_failed_create() {
-        let id = format!("sink-retry-{}", std::process::id());
-        let mut sink = FrameSink::shared(&id);
-        let small = frame(2, 2, 1);
-        assert!(sink.offer(&small, 8, 2, 2));
-        assert!(sink.take().is_some());
-        // The app still maps the file: recreating it at a new size fails (error 1224).
-        let held = SharedFrameBuffer::open_existing(frame_path(&id), 2, 2).unwrap();
-        let big: Vec<u8> = (0..4 * 4 * 4).map(|i| i as u8).collect();
-        assert!(sink.offer(&big, 16, 4, 4));
-        assert!(sink.take().is_none(), "the create failed");
-        drop(held);
-        match sink.take() {
-            Some(EngineToHost::FrameReady { damage: None, width: 4, height: 4, .. }) => {}
+    fn generation_of(msg: Option<EngineToHost>) -> u32 {
+        match msg {
+            Some(EngineToHost::FrameReady { generation, .. }) => generation,
             other => panic!("{other:?}"),
         }
-        let reader = SharedFrameBuffer::open_existing(frame_path(&id), 4, 4).unwrap();
-        assert_eq!(reader.as_slice(), &big[..]);
-        drop(reader);
+    }
+
+    #[test]
+    fn generations_follow_the_size_and_old_files_go() {
+        let id = format!("sink-gen-{}", std::process::id());
+        let mut sink = FrameSink::shared(&id);
+        assert!(sink.offer(&frame(2, 2, 1), 8, 2, 2));
+        assert_eq!(generation_of(sink.take()), 1);
+        assert!(frame_path(&id, 1).exists());
+        assert!(sink.offer(&frame(2, 2, 2), 8, 2, 2));
+        assert_eq!(generation_of(sink.take()), 1, "same size, same file");
+        assert!(sink.offer(&frame(4, 4, 3), 16, 4, 4));
+        assert_eq!(generation_of(sink.take()), 2);
+        assert!(!frame_path(&id, 1).exists(), "the old generation's file is gone");
+        assert!(frame_path(&id, 2).exists());
+        sink.show();
+        assert_eq!(generation_of(sink.take()), 2);
         drop(sink);
-        let _ = std::fs::remove_file(frame_path(&id));
+        remove_frame_file(&id);
+    }
+
+    #[test]
+    fn a_resize_does_not_wait_for_a_reader() {
+        let id = format!("sink-resize-{}", std::process::id());
+        let mut sink = FrameSink::shared(&id);
+        assert!(sink.offer(&frame(2, 2, 1), 8, 2, 2));
+        assert!(sink.take().is_some());
+        let held = SharedFrameBuffer::open_existing(frame_path(&id, 1), 2, 2).unwrap();
+        let big: Vec<u8> = (0..4 * 4 * 4).map(|i| i as u8).collect();
+        assert!(sink.offer(&big, 16, 4, 4));
+        match sink.take() {
+            Some(EngineToHost::FrameReady { damage: None, width: 4, height: 4, generation: 2, .. }) => {}
+            other => panic!("{other:?}"),
+        }
+        let reader = SharedFrameBuffer::open_existing(frame_path(&id, 2), 4, 4).unwrap();
+        assert_eq!(reader.as_slice(), &big[..]);
+        drop((held, reader, sink));
+        remove_frame_file(&id);
     }
 }

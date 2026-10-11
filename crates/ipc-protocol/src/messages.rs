@@ -383,7 +383,9 @@ pub fn restore_scroll_script(x: f64, y: f64) -> String {
 #[rustfmt::skip]
 pub enum EngineToHost {
     FrameReady {
-        frame_id: u64,
+        /// Which frame file the frame is in (`frame_path(socket_id, generation)`); unchanged while the size is
+        /// unchanged, a new value means a new file. Always 0 on the inline transport (WebKit).
+        generation: u32,
         width: u32,
         height: u32,
         /// `None`: the whole frame changed. `Some((x, y, w, h))`: only that rectangle changed since this tab's
@@ -680,7 +682,7 @@ mod wire_shape_tests {
     use std::io::Cursor;
 
     /// The `PROTOCOL_VERSION` that `RECORDED_FINGERPRINT` was recorded for.
-    const RECORDED_FOR_VERSION: u32 = 3;
+    const RECORDED_FOR_VERSION: u32 = 4;
     /// The fingerprint of the wire shape at `RECORDED_FOR_VERSION`.
     const RECORDED_FINGERPRINT: u64 = 0x6634_ca5c_7cb1_04de;
     const HOST_TO_ENGINE_VARIANTS: usize = 20;
@@ -812,7 +814,7 @@ mod wire_shape_tests {
     fn engine_samples() -> Vec<EngineToHost> {
         vec![
             EngineToHost::FrameReady {
-                frame_id: 7,
+                generation: 7,
                 width: 800,
                 height: 600,
                 damage: Some((0, 0, 10, 10)),

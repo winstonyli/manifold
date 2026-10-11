@@ -6,12 +6,12 @@
 //! and the user restarts or ends it; nothing here kills an engine.
 
 use std::collections::VecDeque;
-use std::io::{Read, Write};
+use std::io::{self, Read, Write};
 use std::ops::Range;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
-use ipc_protocol::{HostToEngine, InputEvent, MessageChannel};
+use ipc_protocol::{frame_path, HostToEngine, InputEvent, MessageChannel, SharedFrameBuffer};
 
 /// Messages a tab's send queue holds before it refuses more (the tab is then unresponsive).
 pub(crate) const SEND_QUEUE_CAP: usize = 256;
@@ -28,8 +28,10 @@ pub(crate) const SHUTDOWN_FLUSH: Duration = Duration::from_millis(200);
 pub(crate) const EVENTS_CAP: usize = 256;
 
 /// The newest frame an engine reported. Only the newest is ever drawn, so a slow app holds one per tab, never a
-/// queue of them (survey E3). The host never reads `FrameReady`'s `frame_id`.
+/// queue of them (survey E3).
 pub(crate) struct Frame {
+    /// The frame file the pixels are in (`FrameReady::generation`); rows merge only between frames of one generation.
+    pub(crate) generation: u32,
     pub(crate) width: u32,
     pub(crate) height: u32,
     /// The rows that changed since the frame the app last took; `None` is the whole frame.
@@ -52,6 +54,37 @@ pub(crate) fn frame_rows(damage: Option<(u32, u32, u32, u32)>, height: u32) -> O
 pub(crate) fn merge_rows(prev: Option<Range<u32>>, next: Option<Range<u32>>) -> Option<Range<u32>> {
     let (prev, next) = (prev?, next?);
     Some(prev.start.min(next.start)..prev.end.max(next.end))
+}
+
+/// An engine's frame file mapped once and kept (survey E2): `FrameReady` names a generation, and a file of one
+/// generation is never rewritten or resized, so the app reopens only when the generation changes. It lives in
+/// `EngineTab`, not in the event loop: a respawn of the same tab reuses `socket_id`, and a new `EngineTab` starts
+/// empty, so a dead host's file is never read.
+#[derive(Default)]
+pub(crate) struct FrameMap {
+    /// Boxed: `EngineTab` sits inside a node enum clippy keeps small.
+    mapped: Option<Box<(u32, SharedFrameBuffer)>>,
+}
+
+impl FrameMap {
+    /// The pixels of `socket_id`'s frame file of `generation`, `width` x `height`: the cached mapping while the key
+    /// matches, else a fresh `open_existing` of that file. A failed open leaves the cache empty, so the next call
+    /// retries.
+    pub(crate) fn pixels(&mut self, socket_id: &str, generation: u32, width: u32, height: u32) -> io::Result<&[u8]> {
+        let hit =
+            self.mapped.as_ref().is_some_and(|m| m.0 == generation && m.1.width() == width && m.1.height() == height);
+        if !hit {
+            self.mapped = None;
+            let buf = SharedFrameBuffer::open_existing(frame_path(socket_id, generation), width, height)?;
+            self.mapped = Some(Box::new((generation, buf)));
+        }
+        Ok(self.mapped.as_ref().map(|m| m.1.as_slice()).unwrap_or_default())
+    }
+
+    /// Unmaps the file (before `remove_frame_file`).
+    pub(crate) fn clear(&mut self) {
+        self.mapped = None;
+    }
 }
 
 /// One tab's newest frame, written by its reader thread and taken by the drain.
@@ -581,5 +614,31 @@ mod tests {
         let (writer, _permit, _) = gated(true);
         writer.send(&url(0));
         assert!(eventually(Duration::from_secs(5), || writer.is_unresponsive(Instant::now())));
+    }
+
+    #[test]
+    fn the_frame_map_reuses_reopens_and_retries() {
+        let id = format!("framemap-test-{}", std::process::id());
+        let mut map = FrameMap::default();
+        let mut first = SharedFrameBuffer::create(&id, 1, 2, 2).unwrap();
+        first.as_mut_slice().fill(7);
+        assert_eq!(map.pixels(&id, 1, 2, 2).unwrap(), &[7; 16][..]);
+        // Reused: the file is gone, the mapping answers.
+        ipc_protocol::remove_frame_file(&id);
+        assert_eq!(map.pixels(&id, 1, 2, 2).unwrap(), &[7; 16][..]);
+        // A new generation reopens.
+        let mut second = SharedFrameBuffer::create(&id, 2, 2, 2).unwrap();
+        second.as_mut_slice().fill(9);
+        assert_eq!(map.pixels(&id, 2, 2, 2).unwrap(), &[9; 16][..]);
+        // A failed open leaves the cache empty (generation 2 is not served again), and the next call retries.
+        assert!(map.pixels(&id, 3, 2, 2).is_err());
+        ipc_protocol::remove_frame_file(&id);
+        assert!(map.pixels(&id, 2, 2, 2).is_err(), "the failed open dropped the old mapping");
+        let mut third = SharedFrameBuffer::create(&id, 3, 2, 2).unwrap();
+        third.as_mut_slice().fill(5);
+        assert_eq!(map.pixels(&id, 3, 2, 2).unwrap(), &[5; 16][..]);
+        map.clear();
+        drop((first, second, third));
+        ipc_protocol::remove_frame_file(&id);
     }
 }

@@ -104,9 +104,7 @@ use graph_nav::GraphInteraction;
 use graph_ui::*;
 use image_view::*;
 use input::*;
-use ipc_protocol::{
-    frame_path, modifiers, EngineToHost, HostToEngine, InputEvent, KeyCode, MouseButton, SharedFrameBuffer,
-};
+use ipc_protocol::{modifiers, EngineToHost, HostToEngine, InputEvent, KeyCode, MouseButton};
 use json_level::{JsonEdit, JsonLevel};
 use level::{EdgeCurve, EdgeKind, LevelEdge, LevelItem, LevelItemKind, LevelScan};
 use links::LinkGesture;
