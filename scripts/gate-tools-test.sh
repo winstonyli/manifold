@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Usage: scripts/gate-tools-test.sh
-# Checks timing.sh, gate-timing.sh and gate-tier.sh in about a second, without the app or git.
+# Checks gate-timing.sh, gate-tier.sh and fresh-exe.sh in about a second, without the app or git.
 set -u
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck source=lib.sh
@@ -8,14 +8,6 @@ repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 t="$(mktemp -d)"
 trap 'rm -rf "$t"' EXIT
 status=0
-
-# timing_mark: one TIMING line per closed step, name then seconds with three decimals then a start epoch; a mark
-# with no step open prints nothing.
-# shellcheck source=timing.sh
-. "$repo_root/scripts/timing.sh"
-got="$({ timing_mark one; timing_mark two; timing_mark; timing_mark; } | sed -E 's/ [0-9]+\.[0-9]{3} [0-9]{10}$/ SECS EPOCH/')"
-check "timing_mark prints one line per closed step" "TIMING one SECS EPOCH
-TIMING two SECS EPOCH" "$got"
 
 # collect: cpu_start is the last sample at or before the start, cpu_mean the mean of those inside the step.
 printf 'TIMING setup 12.345 100\nTIMING s1 30.000 112\nnoise\nTIMING s2 3.5 142\n' >"$t/run.log"

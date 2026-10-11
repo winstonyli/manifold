@@ -3,7 +3,8 @@
 //! `PASS:`/`FAIL:`/`TIMING` lines the shell scripts print, so `scripts/gate.sh` can run it as a stage. The exit code is
 //! 0 when no check failed.
 //!
-//! Stages so far: `hello` (one instance: launch, WAITTABS, export, QUIT), `link` (scripts/link-probe.sh), `smoke` (scripts/headless-smoke-test.sh), `two` (scripts/two-instance-test.sh, until Task 8 deletes it). Run from the repo after
+//! Stages: `hello` (one instance: launch, WAITTABS, export, QUIT), `link` (was scripts/link-probe.sh), `smoke` (was
+//! scripts/headless-smoke-test.sh) and `two` (the two-instance test, was scripts/two-instance-test.sh). Run from the repo after
 //! `cargo build -p manifold -p manifold-engine-webview2 -p gate`; the exe is `manifold.exe` beside `gate.exe`.
 
 #![allow(dead_code, reason = "the runner core's API is used by the link and smoke ports of later tasks, and by tests")]

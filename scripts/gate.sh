@@ -2,10 +2,10 @@
 # Usage: scripts/gate.sh LOG [full|light|ui]    (scripts/gate-tier.sh says which tier a change needs)
 #
 # The pre-merge gate: sequential, so load from other sessions is the only thing that stretches it.
-#   full  (default): two-instance-test x3 + gate smoke x1 + launch-forms-probe + gate link. Use for any
+#   full  (default): gate two x3 + gate smoke x1 + launch-forms-probe + gate link. Use for any
 #                    change to sync, the store, the mirror, session save/restore or the engines. ~11 min on a
 #                    quiet-ish machine (measured 2026-10-09 at 30-35% CPU from other sessions, so an upper bound).
-#   light:           two-instance-test x1 + gate smoke x1 + launch-forms-probe + gate link. Allowed when
+#   light:           gate two x1 + gate smoke x1 + launch-forms-probe + gate link. Allowed when
 #                    only UI code that writes the store or reaches an engine changed (gestures, menus), or scripts:
 #                    ~8.5 min (same conditions). The repeats in `full` exist to catch flaky ordering in sync, which
 #                    UI-only changes cannot reach.
@@ -60,7 +60,7 @@ if [ "$mode" = ui ]; then
     stage unit "$out.unit.log" cargo test -j 8 -p manifold -p ipc-protocol -p manifold-engine-webview2
 fi
 for i in $(seq "$runs"); do
-    stage "two-$i" "$out.two-$i.log" bash scripts/two-instance-test.sh
+    stage "two-$i" "$out.two-$i.log" target/debug/gate two
 done
 if [ "$mode" != ui ]; then
     stage smoke "$out.smoke.log" target/debug/gate smoke

@@ -29,8 +29,7 @@ classify() {
     "$src"/session_sync.rs | "$src"/session_sync/* | "$src"/store/* | "$src"/mirror.rs | "$src"/mirror/* | "$src"/session.rs | "$src"/session/* | "$src"/local_state.rs | "$src"/local_state/* | \
         "$src"/process_manager.rs | "$src"/process_manager/* | "$src"/net.rs | "$src"/net/* | "$src"/engine_install.rs | "$src"/engine_install/* | "$src"/redirect_fetch.rs | "$src"/redirect_fetch/* | "$src"/favicon_fetch.rs | "$src"/favicon_fetch/* | "$src"/jar.rs | "$src"/jar/*)
         echo "full sync, store, mirror, session, engine or network core" ;;
-    scripts/two-instance-test.sh | scripts/compare_sessions.py | scripts/session_asserts.py | scripts/nonce_server.py | scripts/gate*.sh | crates/gate/* | \
-        scripts/timing.sh | scripts/fresh-exe.sh | scripts/winpid.sh | scripts/lib.sh | scripts/cpu-sampler.ps1)
+    scripts/gate*.sh | crates/gate/* | scripts/fresh-exe.sh | scripts/winpid.sh | scripts/lib.sh | scripts/cpu-sampler.ps1)
         echo "full the gate's own scripts and their helpers" ;;
     "$src"/*/*) echo "light a module directory on no list" ;;
     "$src"/*.rs)

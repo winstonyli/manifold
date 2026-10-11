@@ -1,4 +1,4 @@
-//! The scripts' `check` and `timing_mark`: `PASS:`/`FAIL:` lines, a failure count that becomes the exit code, and
+//! The scripts' `check` and the `TIMING` format: `PASS:`/`FAIL:` lines, a failure count that becomes the exit code, and
 //! `TIMING` lines for `scripts/gate-timing.sh`.
 //!
 //! `scripts/gate.sh` counts the lines containing `PASS` or `FAIL` in a stage's log, so nothing else the runner prints
@@ -63,15 +63,15 @@ pub fn exit_code() -> std::process::ExitCode {
     std::process::ExitCode::from(u8::from(failures() > 0))
 }
 
-/// `TIMING <name> <secs>.<ms> <start epoch>`, the format of scripts/timing.sh `timing_mark`: whole seconds, then
+/// `TIMING <name> <secs>.<ms> <start epoch>`, the `TIMING` format `scripts/gate-timing.sh` reads: whole seconds, then
 /// the milliseconds truncated (not rounded) to 3 digits, then the step's start in whole epoch seconds.
 pub fn timing_line(name: &str, elapsed: Duration, start_epoch: u64) -> String {
     let us = elapsed.as_micros();
     format!("TIMING {name} {}.{:03} {start_epoch}", us / 1_000_000, us % 1_000_000 / 1000)
 }
 
-/// A timed step: prints its `TIMING` line when dropped (also on a panic or an early return, like the scripts'
-/// EXIT-trap `timing_mark`). `Section::start("a")` then `.next("b")` ends "a" and opens "b".
+/// A timed step: prints its `TIMING` line when dropped (also on a panic or an early return, like the old
+/// scripts' EXIT trap). `Section::start("a")` then `.next("b")` ends "a" and opens "b".
 pub struct Section {
     name: String,
     t0: Instant,

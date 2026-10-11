@@ -2,7 +2,7 @@
 name = "gate"
 version.workspace = true
 edition.workspace = true
-description = "The headless gate flows (link probe, smoke test) as one Rust program: launches manifold --headless, drives it over stdin, checks the exported state."
+description = "The headless gate flows (link probe, smoke test, two-instance test) as one Rust program: launches manifold --headless, drives it over stdin, checks the exported state."
 
 [lints]
 workspace = true
