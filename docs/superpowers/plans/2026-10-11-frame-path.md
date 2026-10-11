@@ -1,9 +1,9 @@
 # Frame path (survey E2) Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans (Tasks 2-6 are sequential and share one mechanism, so subagent-driven development buys little; if it is used, implementers and reviewers are Sonnet). Steps use checkbox (`- [ ]`) syntax for tracking. Task 1 decides whether Tasks 2-6 happen at all.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans (Tasks 2-6 are sequential and share one mechanism, so subagent-driven development buys little; if it is used, implementers and reviewers are Sonnet). Steps use checkbox (`- [ ]`) syntax for tracking. Task 1 is done (Results below): Tasks 2-5 go, Task 7 waits on Decision 3.
 
-**Goal:** An engine frame costs only what changed:
-- An engine that produced the same pixels as last time sends nothing: no copy into the frame file, no `FrameReady`, no upload, and no redraw. A static page goes idle.
+**Goal:** An engine frame costs only what changed. **Reframed after Task 1 (2026-10-11):** WebView2 and CEF already send nothing for a static page, so deduplication is not the win. The win is damage: a small change (a spinner) sends and uploads a whole 1080p frame today, 8.5 ms of app-thread CPU per frame. Task 2's sink exists to produce the damaged rows, Task 4 (band upload, 8.5 to 0.6 ms) is the main payoff, and the removed intermediate copy is worth 40-60 ms/s of one core while a page animates. Dedup stays as a free by-product (and WebKit/Servo may need it; Servo is unmeasured).
+- An engine that produced the same pixels as last time sends nothing: no copy into the frame file, no `FrameReady`, no upload, and no redraw. A static page goes idle (already true for WebView2 and CEF; the sink keeps it true for every engine).
 - An engine copies a frame once, from wherever its pixels already are (the WebView2 staging map, the CEF paint buffer) straight into the shared frame file. No intermediate `Vec`.
 - An engine reports which rows changed (`FrameReady::damage`), and the app uploads only those rows to the GPU.
 - The tab thumbnail is re-rendered only when it is drawn, inside the frame's own encoder, not with its own submit after every upload.
