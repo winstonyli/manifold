@@ -21,3 +21,9 @@ Status: v0.2.0 ships the small packaging fixes (step 1). Steps 2 and 3 are parke
 
 - Write the full spec: portable zip, CI on tag, local `package.sh`, and the CEF options (A: pin per app release as today, B: accept same-or-later major as now, C: matched packs per app version, only if B proves insufficient).
 - Open questions: Linux packaging (AppImage or tarball), a code-signing story if others will run it, a Servo host in the zip (a product decision; Servo is "Unavailable" when its host is missing), and CEF "Phase 3" matched packs.
+
+## Parked 3: BLAKE3 instead of SHA-256 for pins (decided 2026-10-11: keep SHA-256)
+
+Measured on this machine (Ryzen 7 7840U with SHA-NI, release build, 256 MiB in memory, best of 7, CPU 27-29% from other sessions, Defender off): SHA-256 2,200 MB/s (122 ms), BLAKE3 one thread 5,270 MB/s (51 ms), BLAKE3 four rayon threads 17,547 MB/s (15 ms); 1 MiB-chunk streaming 2,187 vs 4,963 MB/s. The 172 MB CEF archive hashes in about 80 ms with SHA-256, so the gap is invisible next to the download and unpack.
+
+Not adopted: BLAKE3 adds a dependency, few tools print it (`certutil` and `sha256sum` do SHA-256), and SHA-256 is what CEF's pin, winget, scoop and GitHub attestations use. Revisit if (a) hosts or runtimes are verified while downloading (BLAKE3's tree allows per-chunk checks on a resumed Range download), (b) hosts are re-hashed at every spawn and the cost shows in a profile, or (c) a much larger payload is pinned. A second algorithm pinned beside SHA-256 would add no protection: a match on either proves the file.
