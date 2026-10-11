@@ -208,6 +208,81 @@ pub struct GpuState {
     device_lost: Arc<std::sync::Mutex<Option<String>>>,
 }
 
+/// GPU thumbnail downsample -- see `GpuState::render_thumbnail`'s own
+/// doc comment. A separate bind group layout/pipeline from the one
+/// the tab pipeline: a third binding (the box-size uniform) `fs_main` doesn't
+/// use, and a fixed `Rgba8Unorm` target format instead of the
+/// surface's own `config.format` (the thumbnail texture egui_wgpu
+/// registers must be exactly `Rgba8Unorm`, never sRGB -- see
+/// `ThumbTexture`'s own doc comment).
+fn downsample_pipeline(
+    device: &wgpu::Device,
+    shader: &wgpu::ShaderModule,
+) -> (wgpu::BindGroupLayout, wgpu::RenderPipeline) {
+    let downsample_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("thumbnail downsample bind group layout"),
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 2,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+        ],
+    });
+    let downsample_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("thumbnail downsample pipeline layout"),
+        bind_group_layouts: &[Some(&downsample_bind_group_layout)],
+        immediate_size: 0,
+    });
+    let downsample_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("thumbnail downsample pipeline"),
+        layout: Some(&downsample_pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: shader,
+            entry_point: Some("vs_main"),
+            buffers: &[],
+            compilation_options: Default::default(),
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: shader,
+            entry_point: Some("fs_downsample"),
+            targets: &[Some(wgpu::ColorTargetState {
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                blend: Some(wgpu::BlendState::REPLACE),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+            compilation_options: Default::default(),
+        }),
+        primitive: wgpu::PrimitiveState::default(),
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        multiview_mask: None,
+        cache: None,
+    });
+    (downsample_bind_group_layout, downsample_pipeline)
+}
+
 impl GpuState {
     pub fn new(window: Arc<Window>) -> Self {
         let size = window.inner_size();
@@ -361,74 +436,7 @@ impl GpuState {
             cache: None,
         });
 
-        // GPU thumbnail downsample -- see `GpuState::render_thumbnail`'s own
-        // doc comment. A separate bind group layout/pipeline from the one
-        // above: a third binding (the box-size uniform) `fs_main` doesn't
-        // use, and a fixed `Rgba8Unorm` target format instead of the
-        // surface's own `config.format` (the thumbnail texture egui_wgpu
-        // registers must be exactly `Rgba8Unorm`, never sRGB -- see
-        // `ThumbTexture`'s own doc comment).
-        let downsample_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("thumbnail downsample bind group layout"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 2,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-            ],
-        });
-        let downsample_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("thumbnail downsample pipeline layout"),
-            bind_group_layouts: &[Some(&downsample_bind_group_layout)],
-            immediate_size: 0,
-        });
-        let downsample_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("thumbnail downsample pipeline"),
-            layout: Some(&downsample_pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
-                buffers: &[],
-                compilation_options: Default::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_downsample"),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: wgpu::TextureFormat::Rgba8Unorm,
-                    blend: Some(wgpu::BlendState::REPLACE),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: Default::default(),
-            }),
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            multiview_mask: None,
-            cache: None,
-        });
+        let (downsample_bind_group_layout, downsample_pipeline) = downsample_pipeline(&device, &shader);
         // 16 bytes: `vec2<f32>` (8 bytes) padded up to WGSL's own uniform
         // address-space alignment for a struct containing one -- written
         // fresh via `queue.write_buffer` before every downsample draw
@@ -1203,5 +1211,182 @@ mod frame_tests {
         assert!(!frame_is_valid(2 * 3 * 4 + 1, 2, 3, 8192), "long");
         assert!(!frame_is_valid(0, 0, 3, 8192), "empty");
         assert!(!frame_is_valid(16384 * 4, 16384, 1, 8192), "past the limit");
+    }
+}
+
+/// Frame-path Task 1, M2b: what a frame upload and a thumbnail pass cost on the real adapter (survey E2).
+/// `cargo test --release -p manifold --bins frame_upload_timing -- --ignored --nocapture`.
+#[cfg(test)]
+mod upload_timing {
+    use super::{downsample_pipeline, non_srgb_view_format, SHADER};
+    use crate::bench::{best_median, report, timed};
+    use std::time::Instant;
+
+    const W: u32 = 1920;
+    const H: u32 = 1080;
+    const N: usize = 100;
+
+    #[test]
+    #[ignore = "timing bench; needs a GPU; run by hand"]
+    fn frame_upload_timing() {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::PRIMARY,
+            ..wgpu::InstanceDescriptor::new_without_display_handle()
+        });
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::HighPerformance,
+            compatible_surface: None,
+            force_fallback_adapter: false,
+            apply_limit_buckets: false,
+        }))
+        .expect("request wgpu adapter");
+        let info = adapter.get_info();
+        println!("frame_upload_timing: adapter {} ({:?}), {W}x{H}, N = {N}", info.name, info.backend);
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            label: Some("upload timing device"),
+            required_features: wgpu::Features::empty(),
+            required_limits: wgpu::Limits::default(),
+            memory_hints: wgpu::MemoryHints::default(),
+            trace: wgpu::Trace::Off,
+            experimental_features: wgpu::ExperimentalFeatures::disabled(),
+        }))
+        .expect("request wgpu device");
+
+        let format = wgpu::TextureFormat::Bgra8UnormSrgb;
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("tab frame texture"),
+            size: wgpu::Extent3d { width: W, height: H, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[non_srgb_view_format(format)],
+        });
+        let pixels: Vec<u8> = (0..W as usize * H as usize * 4).map(|i| (i as u8).wrapping_mul(7)).collect();
+        let write_rows = |rows: u32| {
+            queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                &pixels[..(W * rows * 4) as usize],
+                wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(W * 4), rows_per_image: Some(rows) },
+                wgpu::Extent3d { width: W, height: rows, depth_or_array_layers: 1 },
+            );
+        };
+        let drain = || {
+            queue.submit([]);
+            device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        };
+        drain();
+
+        // 1: the CPU side only; each write is drained outside the timed span so staging memory stays bounded.
+        write_rows(H);
+        drain();
+        let cpu: Vec<_> = (0..N)
+            .map(|_| {
+                let start = Instant::now();
+                write_rows(H);
+                let t = start.elapsed();
+                drain();
+                t
+            })
+            .collect();
+        report("1 write_texture, whole frame, CPU time only", best_median(cpu));
+        report(
+            "2 whole frame: write + submit + poll",
+            timed(N, || {
+                write_rows(H);
+                drain();
+            }),
+        );
+        report(
+            "3 64-row band: write + submit + poll",
+            timed(N, || {
+                write_rows(64);
+                drain();
+            }),
+        );
+        report("4 empty submit + poll", timed(N, drain));
+
+        // 5: the current thumbnail pass, 1920x1080 source into a 256x144 target.
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: None,
+            source: wgpu::ShaderSource::Wgsl(SHADER.into()),
+        });
+        let (layout, pipeline) = downsample_pipeline(&device, &shader);
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+        let params = device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: 16,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let (tw, th) = (256u32, 144u32);
+        let thumb = device.create_texture(&wgpu::TextureDescriptor {
+            label: None,
+            size: wgpu::Extent3d { width: tw, height: th, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let mut p = [0u8; 16];
+        p[0..4].copy_from_slice(&(1.0f32 / tw as f32).to_le_bytes());
+        p[4..8].copy_from_slice(&(1.0f32 / th as f32).to_le_bytes());
+        let thumb_pass = || {
+            queue.write_buffer(&params, 0, &p);
+            let source_view = texture.create_view(&wgpu::TextureViewDescriptor {
+                format: Some(non_srgb_view_format(format)),
+                ..Default::default()
+            });
+            let dest_view = thumb.create_view(&wgpu::TextureViewDescriptor::default());
+            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: None,
+                layout: &layout,
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&source_view) },
+                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&sampler) },
+                    wgpu::BindGroupEntry { binding: 2, resource: params.as_entire_binding() },
+                ],
+            });
+            let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+            {
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: None,
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &dest_view,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                });
+                pass.set_pipeline(&pipeline);
+                pass.set_bind_group(0, &bind_group, &[]);
+                pass.draw(0..3, 0..1);
+            }
+            queue.submit(std::iter::once(encoder.finish()));
+            device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        };
+        write_rows(H);
+        drain();
+        thumb_pass();
+        report("5 thumbnail pass: bind group + encoder + pass + submit + poll", timed(N, thumb_pass));
     }
 }
