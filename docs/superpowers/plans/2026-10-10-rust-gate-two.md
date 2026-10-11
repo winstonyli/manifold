@@ -146,7 +146,47 @@ TOTAL                   22.7/34      58.4/429      0.4/1       36.3/5        1.8
 S_lo = python + msys = 81.1 s (463 processes)
 ```
 
-*(Task 7 results go here: the shell vs Rust per-section medians, wall times, CPU means, Defender state and race winners.)*
+**Task 7 results (2026-10-10 23:25 to 23:49, `.superpowers/two/ab.sh`, alternating shell/rust x3, BelowNormal, taken under load).** Machine CPU was 73 to 79 % at start and 74 % at end, from another session's work (a python process from a different repo, not ours). Defender real-time protection was False at start and at end. Forks were slower than in Task 1: `fork_ms_before` 640 and `fork_ms_after` 255, both over the 200 ms limit, so the shell figures are load-inflated and the saving is an upper bound (reported, not re-measured). The Rust run does not fork, so its figures are less affected.
+
+All six runs exit 0. The three Rust runs each have `pass=66 fail=0`; the sorted `PASS:` lines of the three runs are identical to each other and to `.superpowers/two/labels.txt` (prefix `PASS: ` stripped); each Rust log has the 13 TIMING names. The shell runs show `pass=0 fail=0` as expected.
+
+Wall (s): shell 419, 377, 337 (median 377); Rust 76, 69, 59 (median 69). Total saving 308 s per run against Task 1's `S_lo` of 86.3 s (median of its two traced runs); Rust is faster by far more than `S_lo - 5`. The saving exceeds `S_lo` because `S_lo` counts only python and MSYS spawns, not the `$(...)`/`sleep` fork overhead that lands in `other`, and because forks cost more in this run (640 ms vs 340 to 375 ms).
+
+Per-section medians in seconds (CPU is the machine-wide mean from `cpu.log` during the section, shell / Rust, so it includes the other session's load). The Rust `setup` is 0.0 s because the instance launch happens outside its TIMING span; the sections sum to 355.0 (shell) and 63.9 (Rust), and the remaining 22 s (shell) and 5 s (Rust) of the wall time lie outside the 13 spans.
+
+| section | shell s | Rust s | delta | mean CPU % (shell / Rust) |
+|---|---|---|---|---|
+| setup | 8.1 | 0.0 | -8.1 | 86 / - |
+| s1-import | 6.1 | 2.8 | -3.3 | 87 / 77 |
+| s2-compaction | 6.6 | 0.5 | -6.1 | 81 / 66 |
+| s8-move-into-group | 12.3 | 0.9 | -11.5 | 67 / - |
+| s9-two-moves | 32.7 | 1.4 | -31.3 | 81 / 100 |
+| s10-cycle | 47.0 | 1.1 | -45.9 | 76 / 71 |
+| s11-rename | 51.2 | 1.3 | -49.9 | 70 / 79 |
+| s12-note-text | 51.0 | 1.9 | -49.1 | 76 / 95 |
+| s3-nonce-site | 26.0 | 17.7 | -8.4 | 79 / 71 |
+| s4-click-vs-script | 42.3 | 11.6 | -30.7 | 70 / 85 |
+| s5-json-convert | 23.3 | 8.7 | -14.6 | 73 / 81 |
+| s6-kill | 10.5 | 3.4 | -7.1 | 72 / 85 |
+| s7-restart | 38.0 | 12.5 | -25.5 | 72 / 90 |
+| sum | 355.0 | 63.9 | -291.2 | |
+
+(A `-` CPU mean means the sampler had no sample inside a very short Rust section in any of the three runs. In other Rust sections, runs with no sample were left out of the mean, so a Rust mean may rest on one or two samples; the 100 for s9 is such a case.)
+
+Every section gained; the smallest gains are the ones dominated by the kept fixed windows (s3, s5, s6, s7).
+
+Race winners (ok-lines), shell then Rust, runs 1 to 3:
+
+| scenario | shell | Rust |
+|---|---|---|
+| s9 (group) | A, B, A | B, B, A |
+| s10 (G in, H in) | H wins, H wins, H wins | H wins, H wins, G wins |
+| s11 (named) | Both A, Both B, Both A | Both A, Both A, Both B |
+| s12 (holds) | Both typed A x3 | Both typed B x3 |
+
+Three runs per side is too few to call a shift: s12 went to A in all three shell runs and to B in all three Rust runs, which is the one pattern that could be a real change in who wins (the Rust driver may send B's typing later or earlier than the shell). Every outcome passed its scenario's own assertions, so this is a distribution note, not a failure.
+
+**ENGINE=cef (run once each, after the A/B).** `ENGINE=cef target/debug/gate two`: exit 0, 66 PASS lines, s7 10.2 s. `ENGINE=cef bash scripts/two-instance-test.sh`: exit 0, s7 31.9 s. Logs: `.superpowers/two/ab/cef-rust.log` and `cef-shell.log` (git-ignored).
 
 ## Stop rule
 
