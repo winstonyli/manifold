@@ -26,9 +26,9 @@ pub enum EngineKind {
     Webview2,
 }
 
-/// What each engine is: the one place its name, store code, binary, label and
-/// pixel order live. `desc` is an exhaustive `match`, so a new `EngineKind`
-/// fails to compile until it has a row here.
+/// What each engine is: the one place its name, store code, binary, label,
+/// pixel order and jar use live. `desc` is an exhaustive `match`, so a new
+/// `EngineKind` fails to compile until it has a row here.
 pub(crate) struct EngineDesc {
     /// The string `settings.json`, session exports and the `engine` store field hold.
     pub(crate) name: &'static str,
@@ -38,6 +38,10 @@ pub(crate) struct EngineDesc {
     pub(crate) label: &'static str,
     /// Frames arrive as BGRA (CEF, WebView2) rather than RGBA (Servo, WebKit).
     pub(crate) bgra: bool,
+    /// Takes part in the cookie jar: waits for `SetCookies` before its first navigation (`ENGINE_AWAIT_COOKIES`), and
+    /// answers `GetCookies` (spec 2026-10-02-jars-design). The rest are neither seeded nor pulled, and a jar choice
+    /// on their tabs shows "This engine does not use jars yet".
+    pub(crate) jar: bool,
 }
 
 impl EngineKind {
@@ -46,21 +50,37 @@ impl EngineKind {
 
     pub(crate) fn desc(self) -> EngineDesc {
         match self {
-            EngineKind::Servo => {
-                EngineDesc { name: "servo", code: 1, binary: "manifold-engine-servo", label: "Servo", bgra: false }
-            }
-            EngineKind::Cef => {
-                EngineDesc { name: "cef", code: 2, binary: "manifold-engine-cef", label: "Blink (CEF)", bgra: true }
-            }
-            EngineKind::Webkit => {
-                EngineDesc { name: "webkit", code: 3, binary: "manifold-engine-webkit", label: "WebKit", bgra: false }
-            }
+            EngineKind::Servo => EngineDesc {
+                name: "servo",
+                code: 1,
+                binary: "manifold-engine-servo",
+                label: "Servo",
+                bgra: false,
+                jar: false,
+            },
+            EngineKind::Cef => EngineDesc {
+                name: "cef",
+                code: 2,
+                binary: "manifold-engine-cef",
+                label: "Blink (CEF)",
+                bgra: true,
+                jar: true,
+            },
+            EngineKind::Webkit => EngineDesc {
+                name: "webkit",
+                code: 3,
+                binary: "manifold-engine-webkit",
+                label: "WebKit",
+                bgra: false,
+                jar: false,
+            },
             EngineKind::Webview2 => EngineDesc {
                 name: "webview2",
                 code: 4,
                 binary: "manifold-engine-webview2",
                 label: "WebView2",
                 bgra: true,
+                jar: true,
             },
         }
     }
@@ -669,13 +689,7 @@ pub fn spawn_tab(
         return Ok(spawn_webkit_tab(tab_id, initial_url, wake)?);
     }
     let custom_cef = custom_cef.filter(|_| kind == EngineKind::Cef);
-    // Read fresh, not through `engine_on_disk`'s cache: a Servo host built or a CEF runtime copied a moment ago
-    // should launch.
-    let on_disk = match kind {
-        EngineKind::Servo => servo_on_disk(),
-        EngineKind::Cef => cef_on_disk(),
-        _ => engine_on_disk(kind),
-    };
+    let on_disk = engine_on_disk_fresh(kind);
     check_spawnable(kind, on_disk, custom_cef)?;
 
     // Normally the socket/shared-memory id is just tab_id. But a prior run
@@ -716,8 +730,8 @@ pub fn spawn_tab(
         .env("ENGINE_INITIAL_URL", initial_url)
         .stdout(stdout_file)
         .stderr(stderr_file);
-    // These hosts wait for the jar (`SetCookies`) before their first navigation.
-    if matches!(kind, EngineKind::Webview2 | EngineKind::Cef) {
+    // Jar engines wait for the jar (`SetCookies`) before their first navigation.
+    if kind.desc().jar {
         command.env("ENGINE_AWAIT_COOKIES", "1");
     }
     if let Some(dir) = &cache_dir {
@@ -767,7 +781,7 @@ pub fn spawn_tab(
 
     let writer = engine_io::Writer::spawn(to_engine, &format!("engine writer {socket_id}"));
     let tab = EngineTab { kind, socket_id, writer, events_rx, frame, child: Some(child), cache_dir, profile_slot };
-    if matches!(kind, EngineKind::Webview2 | EngineKind::Cef) {
+    if kind.desc().jar {
         // Serialised now that the host is connected, so cookies merged while it started are in the seed.
         tab.send(&HostToEngine::SetCookies(jar_json()));
     }
@@ -781,11 +795,12 @@ mod profiles;
 mod webkit;
 #[cfg(test)]
 use availability::{availability_with, on_disk_cached, OnDiskCache, ON_DISK_CHECK_TTL, SERVO_HOST_MISSING};
-pub(crate) use availability::{
-    cef_on_disk, engine_availability, engine_hosts_dir, engine_on_disk, engine_runtime_dir, forget_on_disk,
-    platform_default_engine,
+use availability::{
+    cef_sibling_exe, engine_binary_path, engine_on_disk_fresh, platform_unavailable_reason, sibling_binary,
 };
-use availability::{cef_sibling_exe, engine_binary_path, platform_unavailable_reason, servo_on_disk, sibling_binary};
+pub(crate) use availability::{
+    engine_availability, engine_hosts_dir, engine_on_disk, engine_runtime_dir, forget_on_disk, platform_default_engine,
+};
 use job::assign_to_engine_job;
 use profiles::{
     cef_cache_root, claim_webview2_slot, free_webview2_slot, remove_cache_dir, webview2_profile_dir,

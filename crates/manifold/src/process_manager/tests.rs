@@ -1,3 +1,4 @@
+use super::availability::servo_on_disk;
 use super::*;
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};

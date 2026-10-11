@@ -80,7 +80,7 @@ pub(super) fn cef_sibling_exe() -> PathBuf {
 pub(crate) fn engine_runtime_dir(kind: EngineKind) -> Option<PathBuf> {
     match kind {
         EngineKind::Cef => engine_hosts_dir().map(|dir| dir.join("cef-runtime")),
-        _ => None,
+        EngineKind::Servo | EngineKind::Webkit | EngineKind::Webview2 => None,
     }
 }
 
@@ -140,16 +140,28 @@ pub(crate) fn forget_on_disk() {
     ON_DISK.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clear();
 }
 
-/// The `on_disk` that `engine_availability` takes for `kind`, for the engine lists: CEF's runtime
-/// (`cef_on_disk`) and Servo's host exe (`servo_on_disk`), each reread at most every `ON_DISK_CHECK_TTL`, Ready for
-/// the rest.
+/// The disk check `kind` needs before it can run: CEF's runtime (`cef_on_disk`) and Servo's host exe
+/// (`servo_on_disk`). `None`: nothing to check (WebView2 is part of Windows; WebKit's host is found in WSL only when
+/// a tab spawns). The one dispatch both `engine_on_disk` and `engine_on_disk_fresh` read.
+fn on_disk_reader(kind: EngineKind) -> Option<fn() -> RuntimeOnDisk> {
+    match kind {
+        EngineKind::Cef => Some(cef_on_disk),
+        EngineKind::Servo => Some(servo_on_disk),
+        EngineKind::Webview2 | EngineKind::Webkit => None,
+    }
+}
+
+/// The `on_disk` that `engine_availability` takes for `kind`, for the engine lists: `on_disk_reader`'s answer, reread
+/// at most every `ON_DISK_CHECK_TTL`; Ready when there is nothing to check.
 pub(crate) fn engine_on_disk(kind: EngineKind) -> RuntimeOnDisk {
-    let read: fn() -> RuntimeOnDisk = match kind {
-        EngineKind::Cef => cef_on_disk,
-        EngineKind::Servo => servo_on_disk,
-        EngineKind::Webview2 | EngineKind::Webkit => return RuntimeOnDisk::Ready,
-    };
+    let Some(read) = on_disk_reader(kind) else { return RuntimeOnDisk::Ready };
     on_disk_cached(&ON_DISK, kind, std::time::Instant::now(), read)
+}
+
+/// `engine_on_disk` read now, not through the cache: a Servo host built or a CEF runtime copied a moment ago
+/// should launch.
+pub(super) fn engine_on_disk_fresh(kind: EngineKind) -> RuntimeOnDisk {
+    on_disk_reader(kind).map_or(RuntimeOnDisk::Ready, |read| read())
 }
 
 /// How `kind` is available, in one place. `on_disk` is what the engine needs on disk (`engine_on_disk`):
@@ -180,9 +192,10 @@ pub(crate) fn engine_availability(
 /// no WebKit host wired yet. (WSL is not probed: on Windows it is only found missing when a tab spawns.)
 pub(super) fn platform_unavailable_reason(os: &str, kind: EngineKind) -> Option<&'static str> {
     match kind {
-        EngineKind::Webview2 if os != "windows" => Some("needs Windows"),
-        EngineKind::Webkit if !matches!(os, "windows" | "linux") => Some("needs Windows or Linux"),
-        _ => None,
+        EngineKind::Webview2 => (os != "windows").then_some("needs Windows"),
+        EngineKind::Webkit => (!matches!(os, "windows" | "linux")).then_some("needs Windows or Linux"),
+        // Servo's host builds wherever manifold does; CEF's platforms are its pin's (`availability_with`).
+        EngineKind::Servo | EngineKind::Cef => None,
     }
 }
 

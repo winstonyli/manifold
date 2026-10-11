@@ -4,7 +4,6 @@
 
 use crate::jar::{Jar, JarChoice, JarKey};
 use crate::node::Runtime;
-use crate::process_manager::EngineKind;
 use crate::session_sync::{color_value, Fields};
 use crate::store::model::{field, FieldValue, Kind, NodeId};
 use crate::theme::TAG_COLOR_PALETTE;
@@ -239,7 +238,7 @@ impl App {
             Runtime::Unloaded(_) => self.mirror.engine(id),
             _ => return None,
         };
-        let engine_ignores = !matches!(engine, EngineKind::Webview2 | EngineKind::Cef) && key != JarKey::Default;
+        let engine_ignores = !engine.desc().jar && key != JarKey::Default;
         let group = self.nodes.get(id).and(self.mirror.group(id));
         let following = !choice.set && self.inherited_jar(group) == choice.jar;
         if key == JarKey::Default && !missing && !will_switch {

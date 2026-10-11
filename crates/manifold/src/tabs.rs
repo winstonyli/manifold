@@ -744,12 +744,12 @@ impl App {
         true
     }
 
-    /// A live WebView2 or CEF tab running on a jar other than the one it now resolves to, or on a jar the user
-    /// cleared (`jar_reseed`): it switches when it next qualifies (chip "will switch").
+    /// A live tab on a jar engine (`EngineDesc::jar`) running on a jar other than the one it now resolves to, or on a
+    /// jar the user cleared (`jar_reseed`): it switches when it next qualifies (chip "will switch").
     pub(crate) fn will_switch(&self, id: &str) -> bool {
         let Some(tab) = self.nodes.get(id).and_then(|n| n.as_tab()) else { return false };
         let Some((had, _)) = self.cookies.jar_tabs.get(id) else { return false };
-        matches!(tab.tab.kind, EngineKind::Webview2 | EngineKind::Cef)
+        tab.tab.kind.desc().jar
             && (*had != self.resolved_jar(&self.mirror.jar_choice(id)).0 || self.cookies.jar_reseed.contains(id))
     }
 
