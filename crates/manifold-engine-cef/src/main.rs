@@ -177,7 +177,9 @@ fn main() {
         ipc_protocol::transport::connect_local_pair(&socket_id).expect("connect to manifold control sockets");
     let rx = ipc_protocol::transport::spawn_host_reader(host_to_engine);
 
-    let (render_handler, size, latest_frame) = EngineRenderHandler::new(DEFAULT_WIDTH, DEFAULT_HEIGHT);
+    let sink: render_handler::SharedFrameSink =
+        std::rc::Rc::new(std::cell::RefCell::new(ipc_protocol::FrameSink::shared(&socket_id)));
+    let (render_handler, size) = EngineRenderHandler::new(DEFAULT_WIDTH, DEFAULT_HEIGHT, sink.clone());
     let nav_state = new_shared_nav_state(initial_url.clone());
     let muted_state = new_shared_muted();
     let pending_open_tab = new_shared_pending_open_tab();
@@ -240,15 +242,6 @@ fn main() {
     )
     .expect("create CEF browser");
 
-    let mut buffer_size = (DEFAULT_WIDTH, DEFAULT_HEIGHT);
-    // Whether the last recreate failed: a run of failures (one per frame) logs only its first.
-    let mut recreate_failing = false;
-    // `None` only while a recreate at a new size fails (retried on the next frame); the first one is fatal.
-    let mut frame_buffer = Some(
-        ipc_protocol::SharedFrameBuffer::create(&socket_id, DEFAULT_WIDTH, DEFAULT_HEIGHT)
-            .expect("create shared frame buffer"),
-    );
-    let mut frame_id: u64 = 0;
     // M5: background tabs stay alive but stop sending frames; see
     // HostToEngine::SetVisible's doc comment.
     let mut visible = true;
@@ -289,13 +282,8 @@ fn main() {
                     if let Some(host) = browser.host() {
                         host.was_resized();
                     }
-                    // Note: this does NOT resize `frame_buffer` itself.
-                    // CEF's next `on_paint` after `was_resized()` is what
-                    // actually determines the real output size (it may
-                    // still deliver one more frame at the *old* size first)
-                    // — the buffer is resized lazily below, keyed off each
-                    // painted frame's own reported dimensions, which is the
-                    // only way to avoid writing/reporting mismatched sizes.
+                    // The sink resizes its store from the next painted frame's own dimensions: CEF may still
+                    // deliver one more frame at the old size after `was_resized()`.
                 }
                 HostToEngine::Input(event) => {
                     if matches!(event, InputEvent::MouseDown { .. } | InputEvent::KeyDown { .. }) {
@@ -315,7 +303,14 @@ fn main() {
                     }
                 }
                 HostToEngine::SetVisible(v) => {
+                    if v && !visible {
+                        sink.borrow_mut().show();
+                    }
                     visible = v;
+                    // A hidden browser stops painting; showing it repaints.
+                    if let Some(host) = browser.host() {
+                        host.was_hidden(!v as _);
+                    }
                 }
                 HostToEngine::GetState => {
                     let _ =
@@ -505,47 +500,11 @@ fn main() {
         }
 
         if visible {
-            // Taken in its own statement: the `RefMut` would otherwise live through the block (edition 2021),
-            // and putting a frame back for the retry below would panic on a second borrow.
-            let painted = latest_frame.borrow_mut().take();
-            if let Some(frame) = painted {
-                if frame_buffer.is_none() || buffer_size != (frame.width, frame.height) {
-                    // Unmapped before `create` truncates the file by name.
-                    drop(frame_buffer.take());
-                    frame_buffer = match ipc_protocol::SharedFrameBuffer::create(&socket_id, frame.width, frame.height)
-                    {
-                        Ok(buffer) => {
-                            recreate_failing = false;
-                            Some(buffer)
-                        }
-                        Err(e) => {
-                            // The host still maps the old file (stalled on upload): retried on the next frame.
-                            if !recreate_failing {
-                                eprintln!(
-                                    "frame buffer: recreate at {}x{} failed, retrying each frame: {e}",
-                                    frame.width, frame.height
-                                );
-                            }
-                            recreate_failing = true;
-                            None
-                        }
-                    };
-                    buffer_size = (frame.width, frame.height);
-                }
-                if let Some(buffer) = frame_buffer.as_mut() {
-                    buffer.write_frame(&frame.bgra);
-                    frame_id += 1;
-                    let _ = control.send(&EngineToHost::FrameReady {
-                        frame_id,
-                        width: frame.width,
-                        height: frame.height,
-                        damage: None,
-                        pixels: None,
-                    });
-                } else {
-                    // Kept for the retry unless a newer paint already replaced it.
-                    latest_frame.borrow_mut().get_or_insert(frame);
-                }
+            // Taken in its own statement so the `RefMut` is released before the send, and before the next CEF pump
+            // (whose `on_paint` borrows the sink again).
+            let frame = sink.borrow_mut().take();
+            if let Some(msg) = frame {
+                let _ = control.send(&msg);
             }
         }
 

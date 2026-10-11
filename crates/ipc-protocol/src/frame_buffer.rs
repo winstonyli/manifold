@@ -209,11 +209,6 @@ impl SharedFrameBuffer {
         &self.path
     }
 
-    pub fn write_frame(&mut self, bgra: &[u8]) {
-        let n = bgra.len().min(self.mmap.len());
-        self.mmap[..n].copy_from_slice(&bgra[..n]);
-    }
-
     pub fn as_mut_slice(&mut self) -> &mut [u8] {
         &mut self.mmap
     }
@@ -355,7 +350,7 @@ mod tests {
     fn a_resize_leaves_an_open_reader_whole() {
         let name = format!("test-resize-reader-{}", std::process::id());
         let mut first = SharedFrameBuffer::create(&name, 64, 64).unwrap();
-        first.write_frame(&[7; 64 * 64 * 4]);
+        first.as_mut_slice().copy_from_slice(&[7; 64 * 64 * 4]);
         let reader = SharedFrameBuffer::open_existing(frame_path(&name), 64, 64).unwrap();
         let second = SharedFrameBuffer::create(&name, 2, 2).unwrap();
         assert!(reader.as_slice().iter().all(|&b| b == 7), "the old frame is intact");

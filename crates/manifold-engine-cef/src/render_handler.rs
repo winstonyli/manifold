@@ -1,19 +1,12 @@
 use cef::{rc::Rc, *};
+use ipc_protocol::FrameSink;
 use std::cell::RefCell;
-
-/// A single painted frame handed from CEF's `on_paint` (BGRA8, CEF's native
-/// OSR pixel format — unlike Servo's `read_to_image()`, which is RGBA8; see
-/// `ipc_protocol::frame_buffer`'s doc comment) to the main loop.
-pub struct PaintedFrame {
-    pub bgra: Vec<u8>,
-    pub width: u32,
-    pub height: u32,
-}
 
 /// The view size in pixels, shared between the handler and the main loop.
 pub type SharedSize = std::rc::Rc<RefCell<(f32, f32)>>;
-/// The newest frame from `on_paint`, taken by the main loop.
-pub type SharedLatestFrame = std::rc::Rc<RefCell<Option<PaintedFrame>>>;
+/// The frame store `on_paint` offers into and the main loop takes from. Both run on the main thread (`on_paint` fires
+/// inside the CEF pump), so the loop must not hold a borrow across that pump.
+pub type SharedFrameSink = std::rc::Rc<RefCell<FrameSink>>;
 
 /// Headless OSR render handler. No window, no wgpu — CEF's classic
 /// software OSR path, matching manifold-engine-servo's shared-memory frame
@@ -23,14 +16,13 @@ pub type SharedLatestFrame = std::rc::Rc<RefCell<Option<PaintedFrame>>>;
 #[derive(Clone)]
 pub struct EngineRenderHandler {
     size: SharedSize,
-    latest_frame: SharedLatestFrame,
+    sink: SharedFrameSink,
 }
 
 impl EngineRenderHandler {
-    pub fn new(initial_width: u32, initial_height: u32) -> (Self, SharedSize, SharedLatestFrame) {
+    pub fn new(initial_width: u32, initial_height: u32, sink: SharedFrameSink) -> (Self, SharedSize) {
         let size = std::rc::Rc::new(RefCell::new((initial_width as f32, initial_height as f32)));
-        let latest_frame = std::rc::Rc::new(RefCell::new(None));
-        (Self { size: size.clone(), latest_frame: latest_frame.clone() }, size, latest_frame)
+        (Self { size: size.clone(), sink }, size)
     }
 }
 
@@ -76,12 +68,9 @@ wrap_render_handler! {
                 return;
             }
             let len = (width as usize) * (height as usize) * 4;
-            let bgra = unsafe { std::slice::from_raw_parts(buffer, len) }.to_vec();
-            *self.handler.latest_frame.borrow_mut() = Some(PaintedFrame {
-                bgra,
-                width: width as u32,
-                height: height as u32,
-            });
+            // SAFETY: CEF hands `on_paint` a `width * height * 4` byte BGRA buffer, valid for the call.
+            let bgra = unsafe { std::slice::from_raw_parts(buffer, len) };
+            self.handler.sink.borrow_mut().offer(bgra, width as usize * 4, width as u32, height as u32);
         }
     }
 }

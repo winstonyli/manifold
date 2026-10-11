@@ -33,7 +33,7 @@ pub struct Capture {
     session: GraphicsCaptureSession,
     latest: Arc<Mutex<Option<Direct3D11CaptureFrame>>>,
     // Staging texture is recreated lazily whenever the captured frame's own
-    // size changes (window resize) -- tracked here so `try_get_latest_frame`
+    // size changes (window resize) -- tracked here so `with_latest_frame`
     // doesn't recreate it every single call.
     staging: Option<(ID3D11Texture2D, u32, u32)>,
 }
@@ -64,9 +64,9 @@ impl Capture {
                         if let Ok(frame) = pool.TryGetNextFrame() {
                             // If a previous frame was still sitting here
                             // unconsumed (the main loop hasn't called
-                            // `try_get_latest_frame` since it arrived), it
+                            // `with_latest_frame` since it arrived), it
                             // gets replaced here and must be explicitly
-                            // `Close()`d -- same real leak `try_get_latest_
+                            // `Close()`d -- same real leak `with_latest_
                             // frame` below fixes on the consume side, just
                             // hit here on the discard side instead.
                             if let Some(old) = latest.lock().unwrap().replace(frame) {
@@ -87,12 +87,11 @@ impl Capture {
     /// Non-blocking: `None` most calls (no new frame since the last one --
     /// capture cadence is tied to the compositor's own vsync, not something
     /// this process can throttle, see the M6 plan's own note on this).
-    /// Copies out a tightly-packed BGRA8 buffer, handling the D3D11 staging
-    /// texture's row-pitch padding explicitly -- a naive `RowPitch*height`
-    /// copy into a tightly-packed destination produces a visibly skewed
-    /// image whenever `RowPitch != width*4` (common; textures are often
-    /// pitch-aligned wider than their nominal width).
-    pub fn try_get_latest_frame(&mut self) -> Option<(Vec<u8>, u32, u32)> {
+    /// Calls `f(bytes, row_pitch, width, height)` on the mapped staging
+    /// texture between `Map` and `Unmap`; `bytes` is
+    /// `row_pitch * (height - 1) + width * 4` long, so the last row is not
+    /// padded. Rows are `row_pitch` apart (often wider than `width * 4`).
+    pub fn with_latest_frame<R>(&mut self, f: impl FnOnce(&[u8], usize, u32, u32) -> R) -> Option<R> {
         let frame = self.latest.lock().unwrap().take()?;
         // `Direct3D11CaptureFrame::Close()` must be called explicitly once
         // we're done reading it -- dropping the COM wrapper alone (plain
@@ -145,18 +144,13 @@ impl Capture {
             // whole window including non-client chrome, requiring the old
             // `client_rect_in_window` crop), `CreateFromVisual` captures exactly
             // the visual's own content, nothing else.
-            let mut pixels = vec![0u8; (desc.Width * desc.Height * 4) as usize];
-            unsafe {
-                let src = mapped.pData as *const u8;
-                for row in 0..desc.Height as usize {
-                    let src_row = src.add(row * mapped.RowPitch as usize);
-                    let dst_row = pixels.as_mut_ptr().add(row * desc.Width as usize * 4);
-                    std::ptr::copy_nonoverlapping(src_row, dst_row, desc.Width as usize * 4);
-                }
-                self.d3d_context.Unmap(staging, 0);
-            }
-
-            Some((pixels, desc.Width, desc.Height))
+            let pitch = mapped.RowPitch as usize;
+            let len = pitch * (desc.Height as usize - 1) + desc.Width as usize * 4;
+            // SAFETY: a successful Map gives `RowPitch * Height` readable bytes at `pData`, valid until Unmap.
+            let bytes = unsafe { std::slice::from_raw_parts(mapped.pData as *const u8, len) };
+            let out = f(bytes, pitch, desc.Width, desc.Height);
+            unsafe { self.d3d_context.Unmap(staging, 0) };
+            Some(out)
         })();
         let _ = frame.Close();
         result

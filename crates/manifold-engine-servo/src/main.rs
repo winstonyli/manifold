@@ -5,7 +5,6 @@ use std::time::Duration;
 use dpi::PhysicalSize;
 use ipc_protocol::{
     modifiers as host_modifiers, EngineToHost, HostToEngine, InputEvent as HostInputEvent, KeyCode as HostKeyCode,
-    SharedFrameBuffer,
 };
 use servo::{
     Code, EmbedderControl, EventLoopWaker, InputEvent as ServoInputEvent, JSValue, Key, KeyState, KeyboardEvent,
@@ -207,10 +206,7 @@ fn main() {
         .delegate(delegate.clone())
         .build();
 
-    // `None` only while a recreate at a new size fails (retried before the next frame); the first one is fatal.
-    let mut frame_buffer =
-        Some(SharedFrameBuffer::create(&socket_id, DEFAULT_WIDTH, DEFAULT_HEIGHT).expect("create shared frame buffer"));
-    let mut frame_id: u64 = 0;
+    let mut sink = ipc_protocol::FrameSink::shared(&socket_id);
     let mut width = DEFAULT_WIDTH;
     let mut height = DEFAULT_HEIGHT;
     // M5: background tabs stay alive but stop sending frames; manifold
@@ -255,17 +251,6 @@ fn main() {
                     height = h;
                     rendering_context.resize(PhysicalSize::new(w, h));
                     webview.resize(PhysicalSize::new(w, h));
-                    // Must unmap the old buffer before truncating/recreating
-                    // its backing file — Windows refuses to resize a file
-                    // that still has a mapped section open, and assignment
-                    // below wouldn't drop the old value until after the
-                    // right-hand side (the new create() call) already ran.
-                    drop(frame_buffer.take());
-                    // Fails while the host still maps the old file (stalled on upload): retried before the next
-                    // frame is written.
-                    frame_buffer = SharedFrameBuffer::create(&socket_id, w, h)
-                        .inspect_err(|e| eprintln!("frame buffer: recreate at {w}x{h} failed, retrying: {e}"))
-                        .ok();
                 }
                 HostToEngine::Input(event) => {
                     if let Some(servo_event) = translate_input_event(event) {
@@ -288,6 +273,7 @@ fn main() {
                     // texture to display.
                     if v && !visible {
                         *delegate.frame_ready.borrow_mut() = true;
+                        sink.show();
                     }
                     visible = v;
                 }
@@ -364,22 +350,18 @@ fn main() {
         }
 
         if visible && *delegate.frame_ready.borrow() {
-            if frame_buffer.is_none() {
-                frame_buffer = SharedFrameBuffer::create(&socket_id, width, height).ok();
+            *delegate.frame_ready.borrow_mut() = false;
+            webview.paint();
+            let rect = euclid::Box2D::from_size(euclid::Size2D::new(width as i32, height as i32));
+            if let Some(image) = rendering_context.read_to_image(rect) {
+                sink.offer(image.as_raw(), image.width() as usize * 4, image.width(), image.height());
             }
-            // With no buffer yet, `frame_ready` stays set, so the frame is retried on the next tick rather than
-            // lost until the page repaints.
-            if let Some(buffer) = frame_buffer.as_mut() {
-                *delegate.frame_ready.borrow_mut() = false;
-                webview.paint();
-                let rect = euclid::Box2D::from_size(euclid::Size2D::new(width as i32, height as i32));
-                if let Some(image) = rendering_context.read_to_image(rect) {
-                    buffer.write_frame(image.as_raw());
-                    frame_id += 1;
-                    let _ =
-                        control.send(&EngineToHost::FrameReady { frame_id, width, height, damage: None, pixels: None });
-                }
-                rendering_context.present();
+            rendering_context.present();
+        }
+        // Outside the paint gate: a failed create is retried on later ticks without a new paint.
+        if visible {
+            if let Some(msg) = sink.take() {
+                let _ = control.send(&msg);
             }
         }
 

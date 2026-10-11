@@ -29,7 +29,7 @@ use std::rc::Rc;
 use std::sync::mpsc;
 use std::time::Duration;
 
-use ipc_protocol::{transport, EngineToHost, HostToEngine, InputEvent, SharedFrameBuffer};
+use ipc_protocol::{transport, EngineToHost, FrameSink, HostToEngine, InputEvent};
 use webview2_com::Microsoft::Web::WebView2::Win32::{
     ICoreWebView2, ICoreWebView2CompositionController, ICoreWebView2Controller, ICoreWebView2Environment,
     ICoreWebView2Environment10, ICoreWebView2Environment3, ICoreWebView2_8,
@@ -270,8 +270,8 @@ fn main() {
 
     let mut capture = Capture::new(&root_visual).expect("create capture pipeline");
     window::hide_from_taskbar(hwnd);
-    let mut frame_buffer: Option<SharedFrameBuffer> = None;
-    let mut frame_id: u64 = 0;
+    let mut sink = FrameSink::shared(&socket_id);
+    let mut last_size = (0, 0);
     let mut visible = true;
     // Unlike CEF/Servo (which only paint on invalidation, so a static page
     // naturally settles to a low steady-state frame rate) or WebKit (its
@@ -334,6 +334,9 @@ fn main() {
                     let _ = controller.SetZoomFactor(factor);
                 },
                 HostToEngine::SetVisible(v) => {
+                    if v && !visible {
+                        sink.show();
+                    }
                     visible = v;
                 }
                 HostToEngine::GetState => {
@@ -493,35 +496,25 @@ fn main() {
         }
 
         if visible && last_frame_sent.elapsed() >= FRAME_INTERVAL {
-            if let Some((pixels, width, height)) = capture.try_get_latest_frame() {
+            if let Some(size) = capture.with_latest_frame(|src, pitch, w, h| {
+                sink.offer(src, pitch, w, h);
+                (w, h)
+            }) {
                 last_frame_sent = std::time::Instant::now();
-                let needs_new_buffer = match &frame_buffer {
-                    Some(buf) => buf.width() != width || buf.height() != height,
-                    None => true,
-                };
-                if needs_new_buffer {
+                if size != last_size {
                     // Logged permanently -- a frame-size change is rare
                     // enough post-migration that seeing it in the log is
                     // useful signal, not noise.
-                    eprintln!("[capture] captured frame size changed to {width}x{height}");
-                    // Drop the old mapping before recreating -- `create`
-                    // truncates the same backing file by name, and Windows
-                    // rejects resizing a file with a live mapped section
-                    // still open. Plain assignment wouldn't drop the old
-                    // value until after this call already ran.
-                    drop(frame_buffer);
-                    frame_buffer = SharedFrameBuffer::create(&socket_id, width, height).ok();
+                    eprintln!("[capture] captured frame size changed to {}x{}", size.0, size.1);
+                    last_size = size;
                 }
-                if let Some(buf) = &mut frame_buffer {
-                    buf.write_frame(&pixels);
-                    frame_id += 1;
-                    let _ =
-                        control.send(&EngineToHost::FrameReady { frame_id, width, height, damage: None, pixels: None });
-                }
+            }
+            if let Some(msg) = sink.take() {
+                let _ = control.send(&msg);
             }
         }
 
-        // `try_get_latest_frame` swallows the failures a removed device causes, so the tab would freeze silently:
+        // `with_latest_frame` swallows the failures a removed device causes, so the tab would freeze silently:
         // report it instead, and manifold respawns the host on a working device.
         if last_device_check.elapsed() >= DEVICE_CHECK_INTERVAL {
             last_device_check = std::time::Instant::now();
