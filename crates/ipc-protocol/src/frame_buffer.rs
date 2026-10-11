@@ -358,4 +358,105 @@ mod tests {
         drop((first, second, reader));
         let _ = std::fs::remove_file(frame_path(&name));
     }
+
+    /// The best and the median of `runs` (ipc-protocol cannot see `manifold::bench`).
+    fn best_median(mut runs: Vec<Duration>) -> (Duration, Duration) {
+        runs.sort();
+        (runs[0], runs[runs.len() / 2])
+    }
+
+    fn time_it(what: &str, n: usize, mut f: impl FnMut()) {
+        f(); // warm up (first touch of the mapping, caches)
+        let runs: Vec<Duration> = (0..n)
+            .map(|_| {
+                let start = std::time::Instant::now();
+                f();
+                start.elapsed()
+            })
+            .collect();
+        let (best, median) = best_median(runs);
+        println!("  {what:<58} best {best:>10.1?}  median {median:>10.1?}");
+    }
+
+    /// Writes only the rows of `src` (rows `pitch` apart) that differ from `dst` (tightly packed `row_bytes` rows);
+    /// returns the span of rows that differed. Task 2 replaces this with the real `copy_changed_rows`.
+    fn copy_changed_rows(dst: &mut [u8], src: &[u8], row_bytes: usize, pitch: usize) -> Option<std::ops::Range<u32>> {
+        let mut span: Option<std::ops::Range<u32>> = None;
+        for (y, row) in dst.chunks_exact_mut(row_bytes).enumerate() {
+            let s = &src[y * pitch..y * pitch + row_bytes];
+            if row != s {
+                row.copy_from_slice(s);
+                let y = y as u32;
+                span = Some(span.map_or(y..y + 1, |r| r.start..y + 1));
+            }
+        }
+        span
+    }
+
+    /// Frame-path Task 1, M2a: what the engines' frame copies and the app's per-frame map cost at 1920x1080
+    /// (survey E2). Run: `cargo test --release -p ipc-protocol handoff_timing -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "timing bench; run by hand"]
+    fn handoff_timing() {
+        use std::hint::black_box;
+        const N: usize = 200;
+        let (w, h) = (1920usize, 1080usize);
+        let row_bytes = w * 4;
+        let pitch = row_bytes + 256; // a padded D3D-style source
+        let pitched_len = pitch * (h - 1) + row_bytes;
+        // Two different frames, so "every row changed" can alternate between them.
+        let pitched: Vec<Vec<u8>> =
+            (0..2u8).map(|k| (0..pitched_len).map(|i| (i as u8).wrapping_mul(7).wrapping_add(k)).collect()).collect();
+        let tight: Vec<Vec<u8>> = (0..2u8)
+            .map(|k| (0..row_bytes * h).map(|i| (i as u8).wrapping_mul(13).wrapping_add(k)).collect())
+            .collect();
+
+        let name = format!("handoff-timing-{}", std::process::id());
+        let mut buf = SharedFrameBuffer::create(&name, w as u32, h as u32).unwrap();
+        println!("handoff_timing: {w}x{h}, {} bytes/frame, pitch {pitch}, N = {N}", row_bytes * h);
+
+        let mut k = 0usize;
+        time_it("1 WebView2 today: vec + pitched row copy + file copy", N, || {
+            k ^= 1;
+            let mut v = vec![0u8; w * h * 4];
+            for y in 0..h {
+                v[y * row_bytes..(y + 1) * row_bytes].copy_from_slice(&pitched[k][y * pitch..y * pitch + row_bytes]);
+            }
+            let v = black_box(v);
+            let n = v.len().min(buf.mmap.len());
+            buf.mmap[..n].copy_from_slice(&v[..n]);
+        });
+        time_it("2 CEF today: to_vec + file copy", N, || {
+            k ^= 1;
+            let v = black_box(tight[k].to_vec());
+            let n = v.len().min(buf.mmap.len());
+            buf.mmap[..n].copy_from_slice(&v[..n]);
+        });
+        time_it("3 direct pitched row copy into the mapping", N, || {
+            k ^= 1;
+            for (y, row) in buf.mmap.chunks_exact_mut(row_bytes).enumerate() {
+                row.copy_from_slice(&pitched[k][y * pitch..y * pitch + row_bytes]);
+            }
+            black_box(&buf.mmap);
+        });
+        time_it("4 compare-then-copy, every row changed", N, || {
+            k ^= 1;
+            black_box(copy_changed_rows(&mut buf.mmap, &pitched[k], row_bytes, pitch));
+        });
+        black_box(copy_changed_rows(&mut buf.mmap, &pitched[0], row_bytes, pitch));
+        time_it("5 compare-then-copy, no row changed", N, || {
+            black_box(copy_changed_rows(&mut buf.mmap, &pitched[0], row_bytes, pitch));
+        });
+        let path = frame_path(&name);
+        time_it("6 app today: open_existing + read every byte + drop", N, || {
+            let r = SharedFrameBuffer::open_existing(path.clone(), w as u32, h as u32).unwrap();
+            black_box(r.as_slice().iter().fold(0u8, |a, &b| a ^ b));
+        });
+        let reader = SharedFrameBuffer::open_existing(path.clone(), w as u32, h as u32).unwrap();
+        time_it("7 persistent mapping: read every byte", N, || {
+            black_box(reader.as_slice().iter().fold(0u8, |a, &b| a ^ b));
+        });
+        drop((reader, buf));
+        let _ = std::fs::remove_file(frame_path(&name));
+    }
 }
