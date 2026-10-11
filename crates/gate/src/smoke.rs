@@ -22,8 +22,8 @@ use std::time::Duration;
 
 use serde_json::Value;
 
-use crate::check::{exit_code, fail_line, failures, note_failure, pass_line, Section};
-use crate::instance::{file_url, log_tail, Instance};
+use crate::check::{exit_code, fail_line, failures, note_failure, pass_line, Marks};
+use crate::instance::{file_url, log_tail, remove_dir_with_retries, Instance};
 use crate::link::{bad, no_verdict_words, truthy};
 use crate::state::{fmt0, round_half_even, State, DOWNLOAD, IMAGE, JSON, NOTE, PDF, TAB};
 use crate::suggest::{query_param, url_query, Server};
@@ -286,19 +286,6 @@ fn xy(s: &State, id: &str) -> io::Result<String> {
 
 fn first<'a>(v: &'a [String], what: &str) -> io::Result<&'a String> {
     v.first().ok_or_else(|| bad(format!("no {what}")))
-}
-
-/// The timing marks of `timing_mark`: opening one ends the previous.
-struct Marks(Option<Section>);
-
-impl Marks {
-    fn mark(&mut self, name: &str) {
-        self.0 = self.0.take().map(|s| s.next(name));
-    }
-
-    fn end(&mut self) {
-        self.0 = None;
-    }
 }
 
 struct Smoke {
@@ -972,19 +959,8 @@ fn repo_root(exe: &Path) -> Option<PathBuf> {
     exe.ancestors().find(|d| d.join(r"crates\manifold\assets\icon\icon-64.png").is_file()).map(Path::to_path_buf)
 }
 
-/// Removes the work dir, retrying: the profile's `session.mnf.lock` goes only once manifold.exe is gone.
-fn remove_with_retries(dir: &Path) {
-    for _ in 0..5 {
-        let _ = fs::remove_dir_all(dir);
-        if !dir.exists() {
-            return;
-        }
-        sleep(Duration::from_secs(1));
-    }
-}
-
 pub fn smoke(parent: Option<PathBuf>) -> ExitCode {
-    let mut marks = Marks(Some(Section::start("setup")));
+    let mut marks = Marks::start("setup");
     let fatal = |e: String| {
         eprintln!("{e}");
         ExitCode::from(1)
@@ -1047,7 +1023,7 @@ pub fn smoke(parent: Option<PathBuf>) -> ExitCode {
         println!("Some checks failed. Screenshots in {}", out.display());
     }
     if std::env::var_os("KEEP").is_none() {
-        remove_with_retries(&work);
+        remove_dir_with_retries(&work);
     }
     exit_code()
 }

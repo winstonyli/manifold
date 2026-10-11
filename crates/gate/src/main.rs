@@ -3,7 +3,7 @@
 //! `PASS:`/`FAIL:`/`TIMING` lines the shell scripts print, so `scripts/gate.sh` can run it as a stage. The exit code is
 //! 0 when no check failed.
 //!
-//! Stages so far: `hello` (one instance: launch, WAITTABS, export, QUIT), `link` (scripts/link-probe.sh), `smoke` (scripts/headless-smoke-test.sh). Run from the repo after
+//! Stages so far: `hello` (one instance: launch, WAITTABS, export, QUIT), `link` (scripts/link-probe.sh), `smoke` (scripts/headless-smoke-test.sh), `two` (scripts/two-instance-test.sh, until Task 8 deletes it). Run from the repo after
 //! `cargo build -p manifold -p manifold-engine-webview2 -p gate`; the exe is `manifold.exe` beside `gate.exe`.
 
 #![allow(dead_code, reason = "the runner core's API is used by the link and smoke ports of later tasks, and by tests")]
@@ -21,6 +21,8 @@ mod session;
 mod smoke;
 mod state;
 mod suggest;
+#[cfg(windows)]
+mod two;
 
 #[cfg(not(windows))]
 fn main() -> std::process::ExitCode {
@@ -51,10 +53,11 @@ mod windows_main {
             "hello" => hello(parent),
             "link" => crate::link::link(parent),
             "smoke" => crate::smoke::smoke(parent),
+            "two" => crate::two::two(parent),
             // Test aid for the "killed gate leaves no manifold.exe" proof; not a gate stage.
             "hold" => hold(parent),
             _ => {
-                eprintln!("usage: gate hello|link|smoke [WORKDIR_PARENT]");
+                eprintln!("usage: gate hello|link|smoke|two [WORKDIR_PARENT]");
                 ExitCode::from(2)
             }
         }

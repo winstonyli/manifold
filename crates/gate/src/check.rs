@@ -99,6 +99,23 @@ impl Drop for Section {
     }
 }
 
+/// The timing marks: opening one ends the previous (`Section::next`), `end` closes the last.
+pub struct Marks(Option<Section>);
+
+impl Marks {
+    pub fn start(name: &str) -> Marks {
+        Marks(Some(Section::start(name)))
+    }
+
+    pub fn mark(&mut self, name: &str) {
+        self.0 = self.0.take().map(|s| s.next(name));
+    }
+
+    pub fn end(&mut self) {
+        self.0 = None;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

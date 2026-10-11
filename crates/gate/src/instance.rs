@@ -127,6 +127,17 @@ pub fn wait_file(path: &Path, timeout: Duration) -> io::Result<()> {
     }
 }
 
+/// Removes a work dir, retrying while a just-killed instance still holds files in it.
+pub fn remove_dir_with_retries(dir: &Path) {
+    for _ in 0..5 {
+        let _ = fs::remove_dir_all(dir);
+        if !dir.exists() {
+            return;
+        }
+        sleep(Duration::from_secs(1));
+    }
+}
+
 /// The last `n` lines of a log file (empty if unreadable): `Instance::log_tail` for an instance already gone.
 pub fn log_tail(log: &Path, n: usize) -> String {
     let text = fs::read_to_string(log).unwrap_or_default();
