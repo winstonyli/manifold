@@ -580,11 +580,12 @@ pub(crate) fn apply_dark_titlebar(_window: &Window) {}
 /// has no built-in `Color32::lerp`. Used to ease a card's border color
 /// between its resting and hovered tint instead of snapping instantly,
 /// matching the same eased feel `animate_bool_responsive` already gives
-/// the hover glow.
+/// the hover glow. Interpolates the premultiplied channels `Color32` stores, so easing in from `TRANSPARENT` fades
+/// the target's own color in rather than passing through a darker tint of it.
 pub(crate) fn lerp_color32(a: egui::Color32, b: egui::Color32, t: f32) -> egui::Color32 {
     let t = t.clamp(0.0, 1.0);
     let lerp_u8 = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round() as u8;
-    egui::Color32::from_rgba_unmultiplied(
+    egui::Color32::from_rgba_premultiplied(
         lerp_u8(a.r(), b.r()),
         lerp_u8(a.g(), b.g()),
         lerp_u8(a.b(), b.b()),
@@ -778,6 +779,20 @@ pub(crate) fn toolbar_chip(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// Easing in from transparent keeps the target's color and only raises its opacity: a lerp of the unmultiplied
+    /// channels from transparent black dipped through a darker tint than either end (the chip buttons' hover flash).
+    #[test]
+    fn lerp_from_transparent_keeps_the_targets_color() {
+        let hover = egui::Color32::from_rgb(58, 50, 37);
+        for t in [0.2, 0.5, 0.8, 1.0] {
+            let [r, g, b, a] = lerp_color32(egui::Color32::TRANSPARENT, hover, t).to_srgba_unmultiplied();
+            assert!(r.abs_diff(58) <= 3 && g.abs_diff(50) <= 3 && b.abs_diff(37) <= 3, "t={t}: {r},{g},{b}");
+            assert_eq!(a, (255.0 * t).round() as u8, "t={t}");
+        }
+        assert_eq!(lerp_color32(egui::Color32::TRANSPARENT, hover, 0.0), egui::Color32::TRANSPARENT);
+        let (a, b) = (egui::Color32::from_rgb(10, 20, 30), egui::Color32::from_rgb(110, 120, 130));
+        assert_eq!(lerp_color32(a, b, 0.5), egui::Color32::from_rgb(60, 70, 80));
+    }
 
     /// A click on a `toggle` reports `clicked()`; the toggle is 30x17 and draws no text.
     #[test]
