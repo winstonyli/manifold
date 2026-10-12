@@ -1639,7 +1639,9 @@ impl App {
                     ui.set_width(360.0);
                     ui.label(heading_text("Keyboard Shortcuts"));
                     ui.separator();
-                    egui::ScrollArea::vertical().max_height(520.0).show(ui, |ui| {
+                    // Leaves room for the title above and the Close button below on a short window.
+                    let list_height = (ui.ctx().content_rect().height() - 170.0).clamp(120.0, 520.0);
+                    egui::ScrollArea::vertical().max_height(list_height).show(ui, |ui| {
                         egui::Grid::new("shortcuts_help_grid").num_columns(2).spacing(egui::vec2(16.0, 6.0)).show(
                             ui,
                             |ui| {

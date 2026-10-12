@@ -1947,7 +1947,10 @@ impl App {
                     deferred_overlays.push(Box::new(move |painter, project| {
                         let (min, max) = (project(rect.min), project(rect.max));
                         let rounding = 6.0 * (max.x - min.x) / rect.width();
-                        let rect = egui::Rect::from_min_max(min, max);
+                        // Slid back inside the graph panel when the node is near its edge.
+                        let view = painter.clip_rect();
+                        let shift = (view.max - max).min(egui::Vec2::ZERO) + (view.min - min).max(egui::Vec2::ZERO);
+                        let rect = egui::Rect::from_min_max(min + shift, max + shift);
                         painter.rect_filled(rect, rounding, bg);
                         painter.image(
                             tex_id,
