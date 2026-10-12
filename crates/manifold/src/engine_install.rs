@@ -134,13 +134,20 @@ pub(crate) fn has_runtime(kind: EngineKind) -> bool {
     kind == EngineKind::Cef
 }
 
-/// `host_pin`'s name for the platform this build runs on.
-const HOST_PLATFORM: &str = if cfg!(windows) { "windows-x64" } else { "linux-x64" };
+/// `host_pin`'s name for the platform `kind`'s host runs on: this build's own, except WebKit, whose host is a Linux
+/// ELF even when manifold runs on Windows (WSL runs it).
+pub(crate) fn host_platform(kind: EngineKind) -> &'static str {
+    if kind == EngineKind::Webkit || !cfg!(windows) {
+        "linux-x64"
+    } else {
+        "windows-x64"
+    }
+}
 
 /// The host files this build pins for `kind` on this platform; empty for an engine that is not downloaded.
 pub(crate) fn host_components(kind: EngineKind) -> &'static [HostFile] {
     if downloads(kind) {
-        crate::host_pin::components_for(kind, HOST_PLATFORM)
+        crate::host_pin::components_for(kind, host_platform(kind))
     } else {
         &[]
     }

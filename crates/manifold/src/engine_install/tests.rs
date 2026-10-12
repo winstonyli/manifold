@@ -1076,7 +1076,7 @@ fn cancel_is_immediate_keeps_the_part_and_records_no_failure() {
 }
 
 #[test]
-fn one_install_per_engine_and_only_cef_downloads() {
+fn one_install_per_engine_and_an_embedded_engine_downloads_nothing() {
     let dir = temp_dir("ei33");
     let a = archive(&dir, &GOOD);
     let (url, release) = serve_held(Arc::new(std::fs::read(&a).unwrap()));
@@ -1090,8 +1090,8 @@ fn one_install_per_engine_and_only_cef_downloads() {
     release.send(()).unwrap();
     settle(&mut app);
     assert!(
-        !app.start_engine_install_at(EngineKind::Webkit, &data, &Plan { host: &[], runtime: None }),
-        "only CEF downloads anything"
+        !app.start_engine_install_at(EngineKind::Webview2, &data, &Plan { host: &[], runtime: None }),
+        "an embedded engine downloads nothing"
     );
 }
 
@@ -1364,4 +1364,26 @@ fn servo_installs_its_exe_and_both_dlls_flat_and_the_exe_alone_is_missing() {
         assert_eq!(std::fs::read(dir.join(name)).unwrap(), **bytes, "{name} sits directly in the folder");
     }
     verify_installed_host(&dir, f).unwrap();
+}
+
+/// WebKit's one file is the Linux ELF (no extension), installed flat under its own `webkit.host` marker, which is
+/// the only thing that makes it Ready; the file alone, or the marker without the file, is Missing.
+#[test]
+fn webkit_installs_its_elf_under_its_own_marker() {
+    let dir = temp_dir("webkit-elf");
+    let elf = body(5000);
+    let f = files(vec![component("manifold-engine-webkit", &elf, serve_bytes(&elf))]);
+    assert_eq!(host_state(&dir, EngineKind::Webkit, f), RuntimeOnDisk::Missing, "nothing on disk");
+    std::fs::write(dir.join("manifold-engine-webkit"), &*elf).unwrap();
+    assert_eq!(host_state(&dir, EngineKind::Webkit, f), RuntimeOnDisk::Missing, "the ELF without its marker");
+    install_host(&dir, EngineKind::Webkit, f, &mut |_| {}, &never()).unwrap();
+    assert_eq!(host_state(&dir, EngineKind::Webkit, f), RuntimeOnDisk::Ready);
+    assert_eq!(std::fs::read(dir.join("manifold-engine-webkit")).unwrap(), *elf);
+    assert_eq!(
+        std::fs::read_to_string(dir.join("webkit.host")).unwrap(),
+        format!("{} manifold-engine-webkit\n", f[0].sha256)
+    );
+    verify_installed_host(&dir, f).unwrap();
+    std::fs::remove_file(dir.join("manifold-engine-webkit")).unwrap();
+    assert_eq!(host_state(&dir, EngineKind::Webkit, f), RuntimeOnDisk::Missing, "the marker without the ELF");
 }

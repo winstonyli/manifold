@@ -1,6 +1,6 @@
 # On-demand engine install (CEF) — design
 
-Status: built 2026-10-02 (plan `docs/superpowers/plans/2026-10-02-engine-install.md`); the README's "On-demand CEF install" entry describes what shipped. Generalized 2026-10-11 (plan `docs/superpowers/plans/2026-10-11-bare-exe-host-downloads.md`): CEF's host exe now downloads with its runtime, Servo (and later WebKit) download too, and the release is one exe; where this spec says a packaged build ships the CEF host, that plan supersedes it. Survey and decisions came from a brainstorm.
+Status: built 2026-10-02 (plan `docs/superpowers/plans/2026-10-02-engine-install.md`); the README's "On-demand CEF install" entry describes what shipped. Generalized 2026-10-11 (plan `docs/superpowers/plans/2026-10-11-bare-exe-host-downloads.md`): CEF's host exe now downloads with its runtime, Servo and WebKit download too (WebKit's ELF runs from the Windows data folder through WSL), and the release is one exe; where this spec says a packaged build ships the CEF host, that plan supersedes it. Survey and decisions came from a brainstorm.
 
 ## Goal
 
@@ -128,10 +128,10 @@ The download-and-verify unit takes its URL from the pin, so tests point it at a 
 - **Launching verified (2026-10-02):** a real CEF host ran and loaded a page from a runtime unpacked by `unpack` into the data directory, and from a custom directory (with the host copied in). The first attempt failed: no code put a host beside the downloaded runtime (spawn looked for `engine-hosts/cef-runtime/manifold-engine-cef.exe`), fixed in `process_manager::spawn_tab` with `host_home`/`shipped_cef_host`.
 - Whether to trim locales or other files after unpack.
 - Where the Settings "Engines" section lives relative to the existing sections.
-- Servo and WebKit availability: WebKit is "Installed" where the OS can run it, else Unavailable. Servo is "Installed"
-  when its host exe is present (`engine_binary_path`: beside the app, else `engine-hosts/`), Unavailable ("the Servo
-  host wasn't found") otherwise, on every OS (2026-10-04). The same states apply if either ever
-  becomes downloadable.
+- Servo and WebKit availability (2026-10-04, superseded 2026-10-11 by the bare-exe plan): both follow their host
+  file like CEF's host does: Installed with a sibling host or the marker-checked download in `engine-hosts/`, a
+  download offer when this build pins one, else Unavailable ("this build has no WebKit download"), on every OS
+  that can run them (WebKit: Windows through WSL, Linux).
 
 ## System-library preflight (2026-10-02)
 

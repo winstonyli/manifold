@@ -82,8 +82,35 @@ pub(super) fn sibling_host(kind: EngineKind) -> Option<PathBuf> {
     match kind {
         EngineKind::Cef => flat.or_else(|| Some(cef_sibling_exe()).filter(|path| path.exists())),
         EngineKind::Servo | EngineKind::Webview2 => flat,
-        EngineKind::Webkit => None,
+        EngineKind::Webkit => built_webkit_host(&current_exe_dir()),
     }
+}
+
+fn current_exe_dir() -> PathBuf {
+    let mut dir = std::env::current_exe().expect("current_exe");
+    dir.pop();
+    dir
+}
+
+/// The WebKit host ELF that is already built where `exe_dir` (the folder of `manifold.exe`) can see it: beside it
+/// (a Linux package), else a dev tree's `target-linux/debug/` (WebKit is built inside WSL into its own target dir,
+/// README "Building"), found by walking up at most as far as the repo root of a worktree under `.claude/`.
+pub(super) fn built_webkit_host(exe_dir: &Path) -> Option<PathBuf> {
+    const NAME: &str = "manifold-engine-webkit";
+    let flat = exe_dir.join(NAME);
+    let dev = |dir: &Path| dir.join("target-linux").join("debug").join(NAME);
+    std::iter::once(flat).chain(exe_dir.ancestors().take(5).map(dev)).find(|path| path.is_file())
+}
+
+/// Where WebKit's host is: a built one (`built_webkit_host`), else the copy `engine_install` puts in `hosts_dir`
+/// (`engine-hosts/`), whether or not it is there yet. `None` without a data directory.
+pub(super) fn pick_webkit_host(exe_dir: &Path, hosts_dir: Option<&Path>) -> Option<PathBuf> {
+    built_webkit_host(exe_dir).or_else(|| hosts_dir.map(|dir| dir.join(EngineKind::Webkit.desc().binary)))
+}
+
+/// `pick_webkit_host` for the running exe.
+pub(super) fn webkit_host_path() -> Option<PathBuf> {
+    pick_webkit_host(&current_exe_dir(), engine_hosts_dir().as_deref())
 }
 
 /// The directory a downloaded runtime unpacks into (and whose `ready` marker

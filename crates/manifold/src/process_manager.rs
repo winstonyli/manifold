@@ -39,9 +39,6 @@ pub(crate) enum HostSource {
     /// Pinned in `host_pin` and installed on demand into `engine-hosts/` (`engine_install`), unless a sibling
     /// host (a dev tree's, or a Linux package's) is already there.
     Download,
-    /// Only ever a sibling or a path computed from the repo layout; nothing installs it (WebKit, until the
-    /// bare-exe plan's Task 6).
-    SiblingOnly,
 }
 
 /// What each engine is: the one place its name, store code, binary, label,
@@ -106,7 +103,7 @@ impl EngineKind {
                 jar: false,
                 devtools: false,
                 find: true,
-                source: HostSource::SiblingOnly,
+                source: HostSource::Download,
             },
             EngineKind::Webview2 => EngineDesc {
                 name: "webview2",
@@ -747,7 +744,6 @@ pub fn spawn_tab(
         if let Some(reason) = webkit_host_missing(std::env::consts::OS) {
             return Err(SpawnError::Io(std::io::Error::new(std::io::ErrorKind::Unsupported, reason)));
         }
-        return Ok(spawn_webkit_tab(tab_id, initial_url, wake)?);
     }
     let custom_cef = custom_cef.filter(|_| kind == EngineKind::Cef);
     let on_disk = engine_on_disk_fresh(kind);
@@ -761,6 +757,9 @@ pub fn spawn_tab(
                 SpawnError::Io(std::io::Error::other(reason))
             })?;
         }
+    }
+    if kind == EngineKind::Webkit {
+        return Ok(spawn_webkit_tab(tab_id, initial_url, wake)?);
     }
     // An embedded WebView2 host is put in place before its path is used (the profile slot is keyed on it). A sibling
     // host wins as it does everywhere else; a build that embeds nothing returns `None` and touches no file.
@@ -874,10 +873,14 @@ mod job;
 mod profiles;
 mod webkit;
 #[cfg(test)]
-use availability::{availability_with, on_disk_cached, OnDiskCache, ON_DISK_CHECK_TTL};
+use crate::engine_install::host_platform;
+#[cfg(test)]
 use availability::{
-    cef_sibling_exe, engine_binary_path, engine_on_disk_fresh, platform_unavailable_reason, sibling_binary,
-    sibling_host,
+    availability_with, built_webkit_host, on_disk_cached, pick_webkit_host, OnDiskCache, ON_DISK_CHECK_TTL,
+};
+use availability::{
+    cef_sibling_exe, engine_binary_path, engine_on_disk_fresh, platform_unavailable_reason, sibling_host,
+    webkit_host_path,
 };
 pub(crate) use availability::{
     engine_availability, engine_hosts_dir, engine_on_disk, engine_runtime_dir, forget_on_disk, platform_default_engine,

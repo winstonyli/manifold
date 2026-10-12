@@ -30,22 +30,6 @@ fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', r"'\''"))
 }
 
-/// manifold-engine-webkit is built *inside* WSL2 (it links against WebKitGTK, a
-/// Linux-only library) into its own `target-linux/` directory rather than
-/// the shared `target/` — that directory is also being written to by the
-/// Windows-native build for every other crate, and a Linux host's "default
-/// target" build and a Windows host's would otherwise collide there.
-fn webkit_binary_path_in_repo() -> PathBuf {
-    let mut path = sibling_binary("manifold"); // .../target/debug/manifold.exe
-    path.pop(); // .../target/debug
-    path.pop(); // .../target
-    path.pop(); // repo root
-    path.push("target-linux");
-    path.push("debug");
-    path.push("manifold-engine-webkit");
-    path
-}
-
 /// Generous upper bound for a cold WSL2 VM boot + Xvfb readiness + GTK/
 /// WebKit init, not a tuned-tight value — see `accept_remote`'s doc comment
 /// for why this exists at all. Failing loudly (a failed card the user
@@ -90,7 +74,10 @@ pub(super) fn spawn_webkit_tab(tab_id: &str, initial_url: &str, wake: engine_io:
     let port = listener.local_addr()?.port();
 
     let (stdout_file, stderr_file) = per_tab_log_files(tab_id)?;
-    let binary_path = windows_path_to_wsl(&webkit_binary_path_in_repo());
+    // The file `spawn_tab` just hashed when it came from a download: WSL runs it straight from the Windows drive
+    // (drvfs gives every file the exec bit; plan "Spike results" 2), so there is no copy into the distro.
+    let host = webkit_host_path().ok_or_else(|| std::io::Error::other("no data directory for the WebKit host"))?;
+    let binary_path = windows_path_to_wsl(&host);
 
     // `wsl.exe` does NOT forward this Command's environment into the
     // Linux process (verified: env vars set via `.env()` here simply don't

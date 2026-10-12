@@ -373,9 +373,16 @@ pub(crate) fn offer_confirm<T>(slot: &mut Option<T>, other_open: bool, confirm: 
     free
 }
 
+/// What WebKit's download does not include: its host is a Linux program that runs inside WSL.
+const WEBKIT_PREREQUISITES: &str = "
+Not included: WebKit runs inside WSL, which needs a distro named Ubuntu with xvfb-run and the WebKitGTK libraries installed.";
+
 /// The download dialog's detail text, with a warning line when system libraries the host needs are missing.
-fn download_detail(missing: &[&str]) -> String {
+fn download_detail(kind: EngineKind, missing: &[&str]) -> String {
     let mut detail = "Downloaded once, checked against a pinned hash, then kept in your profile.".to_string();
+    if kind == EngineKind::Webkit {
+        detail.push_str(WEBKIT_PREREQUISITES);
+    }
     if !missing.is_empty() {
         detail.push_str(&format!(
             "
@@ -563,7 +570,7 @@ impl App {
                 } else {
                     Vec::new()
                 };
-                let detail = download_detail(&missing_libs);
+                let detail = download_detail(kind, &missing_libs);
                 (download_confirm_title(verb, kind, &size), detail, verb)
             }
             EngineConfirm::Remove(kind) if crate::engine_install::installed_paths(kind).is_empty() => (
@@ -1737,9 +1744,18 @@ mod tests {
 
     #[test]
     fn download_detail_warns_only_when_libraries_are_missing() {
-        assert!(!super::download_detail(&[]).contains("Missing"));
-        let d = super::download_detail(&["libnss3.so", "libnspr4.so"]);
+        assert!(!super::download_detail(EngineKind::Cef, &[]).contains("Missing"));
+        let d = super::download_detail(EngineKind::Cef, &["libnss3.so", "libnspr4.so"]);
         assert!(d.contains("Missing system libraries: libnss3.so, libnspr4.so."), "{d}");
+    }
+
+    #[test]
+    fn the_webkit_download_says_what_wsl_needs_and_the_others_do_not() {
+        let d = super::download_detail(EngineKind::Webkit, &[]);
+        assert!(
+            d.contains("Ubuntu") && d.contains("xvfb-run") && d.contains("WebKitGTK") && d.contains("Not included")
+        );
+        assert!(!super::download_detail(EngineKind::Servo, &[]).contains("WSL"));
     }
 
     use super::*;

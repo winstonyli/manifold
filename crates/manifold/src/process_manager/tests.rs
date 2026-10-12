@@ -398,21 +398,71 @@ fn cef_disk(host: RuntimeOnDisk, runtime: RuntimeOnDisk) -> OnDisk {
 fn engines_that_are_not_downloaded_are_always_installed_where_the_os_can_run_them() {
     let none = Err("unused".to_string());
     let a = |os, kind, disk, installing, failed| availability_with(os, &none, kind, disk, installing, failed, None);
-    for (os, kind) in
-        [("windows", EngineKind::Webview2), ("windows", EngineKind::Webkit), ("linux", EngineKind::Webkit)]
-    {
-        assert!(!downloads(kind));
-        assert_eq!(
-            a(os, kind, OnDisk::both(RuntimeOnDisk::Missing), None, None),
-            EngineState::Installed,
-            "{os} {kind:?}"
-        );
-        assert_eq!(
-            a(os, kind, OnDisk::both(RuntimeOnDisk::Stale), Some((1, 2)), Some("x")),
-            EngineState::Installed,
-            "{os} {kind:?}"
-        );
+    let kind = EngineKind::Webview2;
+    assert!(!downloads(kind));
+    assert_eq!(a("windows", kind, OnDisk::both(RuntimeOnDisk::Missing), None, None), EngineState::Installed);
+    assert_eq!(a("windows", kind, OnDisk::both(RuntimeOnDisk::Stale), Some((1, 2)), Some("x")), EngineState::Installed);
+}
+
+/// WebKit's host is the Linux ELF, pinned for linux-x64 whichever OS runs manifold (WSL runs it on Windows).
+static WEBKIT_FILES: [crate::host_pin::Component; 1] = [crate::host_pin::Component {
+    file: "manifold-engine-webkit",
+    url: "http://x/webkit",
+    size: 7_000_000,
+    sha256: HASH,
+}];
+
+/// WebKit follows its host on Windows and Linux alike: Ready with the ELF there (a sibling or dev-tree host counts),
+/// else offered for download when this build pins it, else Unavailable with the reason; macOS stays unsupported.
+#[test]
+fn webkit_is_installed_with_its_host_else_offered_or_unavailable() {
+    assert!(downloads(EngineKind::Webkit));
+    assert_eq!(host_platform(EngineKind::Webkit), "linux-x64");
+    assert_eq!(host_platform(EngineKind::Servo), if cfg!(windows) { "windows-x64" } else { "linux-x64" });
+    let reason = no_download_reason(EngineKind::Webkit);
+    assert_eq!(reason, "this build has no WebKit download");
+    let a = |os, plan: &Result<Plan, String>, disk| {
+        availability_with(os, plan, EngineKind::Webkit, OnDisk::both(disk), None, None, None)
+    };
+    let (no_pin, pinned) = (Err(reason.clone()), Ok(Plan { host: &WEBKIT_FILES, runtime: None }));
+    for os in ["windows", "linux"] {
+        assert_eq!(a(os, &no_pin, RuntimeOnDisk::Ready), EngineState::Installed, "{os}");
+        assert_eq!(a(os, &no_pin, RuntimeOnDisk::Missing), EngineState::Unavailable(reason.clone()), "{os}");
+        assert_eq!(a(os, &pinned, RuntimeOnDisk::Missing), EngineState::NotInstalled { size: 7_000_000 }, "{os}");
+        assert_eq!(a(os, &pinned, RuntimeOnDisk::Stale), EngineState::UpdateNeeded { size: 7_000_000 }, "{os}");
+        assert_eq!(a(os, &pinned, RuntimeOnDisk::Ready), EngineState::Installed, "{os}");
     }
+    assert!(matches!(
+        check_spawnable(EngineKind::Webkit, &pinned, OnDisk::both(RuntimeOnDisk::Missing), None),
+        Err(SpawnError::EngineMissing(EngineKind::Webkit))
+    ));
+    assert_eq!(SpawnError::EngineMissing(EngineKind::Webkit).to_string(), "WebKit is not installed");
+}
+
+/// Where WebKit's host is looked for, in order: beside the exe (a Linux package), a dev tree's
+/// `target-linux/debug/` found by walking up from the exe's folder, then the downloaded copy in `engine-hosts/`.
+#[test]
+fn the_webkit_host_is_found_beside_the_exe_then_in_a_dev_tree_then_in_engine_hosts() {
+    let root = crate::store::testutil::temp_dir("webkit-lookup");
+    let exe_dir = root.join("repo").join("target").join("debug");
+    std::fs::create_dir_all(&exe_dir).unwrap();
+    let hosts = root.join("engine-hosts");
+    let downloaded = hosts.join("manifold-engine-webkit");
+    // Nothing built: the downloaded path, even though no file is there yet (the install puts it there).
+    assert_eq!(pick_webkit_host(&exe_dir, Some(&hosts)), Some(downloaded.clone()));
+    assert_eq!(pick_webkit_host(&exe_dir, None), None);
+    assert!(built_webkit_host(&exe_dir).is_none());
+    // A dev tree three folders up, as the old fixed lookup assumed.
+    let dev = root.join("repo").join("target-linux").join("debug");
+    std::fs::create_dir_all(&dev).unwrap();
+    assert!(built_webkit_host(&exe_dir).is_none(), "the folder alone is not a host");
+    std::fs::write(dev.join("manifold-engine-webkit"), b"elf").unwrap();
+    assert_eq!(built_webkit_host(&exe_dir), Some(dev.join("manifold-engine-webkit")));
+    assert_eq!(pick_webkit_host(&exe_dir, Some(&hosts)), Some(dev.join("manifold-engine-webkit")));
+    // A host beside the exe wins over both.
+    let flat = exe_dir.join("manifold-engine-webkit");
+    std::fs::write(&flat, b"elf").unwrap();
+    assert_eq!(pick_webkit_host(&exe_dir, Some(&hosts)), Some(flat));
 }
 
 /// Servo follows its host files on every OS: Installed when they are there (a sibling host counts, whatever the pin
@@ -479,7 +529,7 @@ fn a_missing_servo_host_is_refused_with_the_reason() {
 /// none beside it unless one was copied there) is Ready, anything else Missing (the data dir is `None` under test).
 #[test]
 fn the_lists_read_the_same_host_the_spawn_looks_for() {
-    for kind in [EngineKind::Servo, EngineKind::Cef] {
+    for kind in [EngineKind::Servo, EngineKind::Cef, EngineKind::Webkit] {
         let want = if sibling_host(kind).is_some() { RuntimeOnDisk::Ready } else { RuntimeOnDisk::Missing };
         assert_eq!(engine_on_disk(kind).host, want, "{kind:?}");
         assert_eq!(engine_on_disk_fresh(kind).host, want, "{kind:?}");
@@ -756,9 +806,7 @@ fn only_cef_has_a_downloaded_runtime_dir() {
 /// share one reader per engine (`on_disk_reader`).
 #[test]
 fn bundled_engines_read_ready_without_a_disk_check() {
-    for kind in [EngineKind::Webview2, EngineKind::Webkit] {
-        assert_eq!(engine_on_disk(kind), OnDisk::both(RuntimeOnDisk::Ready), "{kind:?}");
-    }
+    assert_eq!(engine_on_disk(EngineKind::Webview2), OnDisk::both(RuntimeOnDisk::Ready));
 }
 
 /// A dir whose files a live CEF holds (opened without share-delete, as
