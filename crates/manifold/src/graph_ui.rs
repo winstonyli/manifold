@@ -67,48 +67,6 @@ pub(crate) enum GraphAction {
     ImportGroup,
 }
 
-/// One row of the empty-canvas "New Tab/Note/Group/File" menu -- see
-/// `App::pending_new_node`'s own doc comment for the menu itself. Paints its
-/// own hover-highlighted background in world-space (scales with zoom like
-/// the rest of the card, via `ui.painter()`), but its label through
-/// `overlay_painter` at a fixed screen font size instead of as a real
-/// `egui::Button`'s text -- a real widget's text would scale down with zoom
-/// the same way a note's own body text does, which is exactly what made
-/// this specific menu illegible/overflowing at low zoom (every other
-/// right-click menu in this app is a plain screen-space `Area`, so this was
-/// the only one with the problem at all). Same world-space-hit-rect-plus-
-/// fixed-screen-text split `paint_card_control` above already uses, for
-/// the same reason. The label paint itself is deferred -- see
-/// `DeferredOverlays`'s own doc comment -- so `overlay_painter`/`project`
-/// are no longer parameters here at all. Returns whether it was clicked.
-pub(crate) fn draw_new_node_menu_row(
-    ui: &egui::Ui,
-    deferred_overlays: &mut DeferredOverlays,
-    row_rect: egui::Rect,
-    id_salt: &str,
-    inv_zoom: f32,
-    label: &str,
-) -> bool {
-    let response = ui
-        .interact(row_rect, egui::Id::new(id_salt), egui::Sense::click())
-        .on_hover_cursor(egui::CursorIcon::PointingHand);
-    if response.hovered() {
-        ui.painter().rect_filled(row_rect, 3.0 * inv_zoom, ACCENT.gamma_multiply(0.35));
-    }
-    let label = label.to_string();
-    let text_pos = row_rect.left_center();
-    deferred_overlays.push(Box::new(move |overlay_painter, project| {
-        overlay_painter.text(
-            project(text_pos) + egui::vec2(6.0, 0.0),
-            egui::Align2::LEFT_CENTER,
-            &label,
-            egui::FontId::proportional(13.0),
-            TEXT_PRIMARY,
-        );
-    }));
-    response.clicked()
-}
-
 /// What the Graph toolbar (`App::render_graph_toolbar`) hands back to
 /// `build_graph_ui`: the actions its buttons pushed, the zoom-chip
 /// requests, and the button rects that popups and drops anchor to.
@@ -628,7 +586,7 @@ impl App {
                         leave_group_button_rect,
                         connect_target.as_deref(),
                     );
-                    self.draw_pending_new_node_menu(ui, &mut deferred_overlays, &mut actions, inv_zoom, &project);
+                    self.draw_pending_new_node_menu(ui, &mut actions, &project);
                     self.draw_peek_preview(ui, &mut deferred_overlays);
                 }
                 (deferred_overlays, line_hover)
@@ -1903,118 +1861,45 @@ impl App {
         }
     }
 
-    /// The empty-canvas "New Tab/Note/Group/File" card -- see
-    /// `pending_new_node`'s own doc comment for what spawns/
-    /// dismisses it. A vertical text-label list, same visual
-    /// language every other right-click menu in this app
-    /// already uses (tab/group/note/image/pdf/json), rather
-    /// than the icon-only horizontal row this started as --
-    /// this was the one context menu here that didn't match.
-    /// Drawn the same "real egui widgets embedded in the
-    /// Scene's own transformed `Ui`" way a note's `TextEdit`
-    /// already is, so it scales/repositions with zoom exactly
-    /// like a real card's own contents would, without this
-    /// needing to be a real node itself.
+    /// The empty-canvas "New Tab/Note/Group/File" menu -- see `pending_new_node`'s own doc comment for what
+    /// spawns/dismisses it. A screen-space `Foreground` `Area` at the clicked point, like every other context menu:
+    /// drawn inside the Scene it sat under the cards' overlay text and chips, and its label size followed the zoom.
     pub(crate) fn draw_pending_new_node_menu(
         &mut self,
         ui: &mut egui::Ui,
-        deferred_overlays: &mut DeferredOverlays,
         actions: &mut Vec<GraphAction>,
-        inv_zoom: f32,
         project: &impl Fn(egui::Pos2) -> egui::Pos2,
     ) {
-        if let Some(pos) = self.interaction.pending_new_node {
-            let center_pos = egui::Pos2::new(pos.x, pos.y);
-            let row_count = if self.headless { 3.0 } else { 4.0 };
-            // `* inv_zoom`: the background box's own world-space
-            // size must grow as zoom shrinks, the same trick
-            // `paint_card_control`'s own control rect already
-            // uses, so it still renders at a constant on-screen size
-            // after Scene's transform scales it back down -- without
-            // this, the box shrinks with zoom exactly like ordinary
-            // card content does, while the now-fixed-size row text
-            // below stays constant, and would visibly overflow a
-            // background that's shrunk out from under it.
-            let card_size = egui::vec2(150.0, 12.0 + row_count * 26.0) * inv_zoom;
-            let rect = egui::Rect::from_center_size(center_pos, card_size);
-            ui.painter().rect_filled(rect, 2.0 * inv_zoom, TOOLBAR_FILL);
-            ui.painter().rect_stroke(
-                rect,
-                2.0 * inv_zoom,
-                egui::Stroke::new(1.0 * inv_zoom, ui.visuals().weak_text_color()),
-                egui::StrokeKind::Inside,
-            );
-            let row_height = 26.0 * inv_zoom;
-            let mut row_top = rect.min.y + 6.0 * inv_zoom;
-            let mut next_row_rect = || {
-                let row_rect = egui::Rect::from_min_size(
-                    egui::pos2(rect.min.x + 6.0 * inv_zoom, row_top),
-                    egui::vec2(rect.width() - 12.0 * inv_zoom, row_height - 4.0 * inv_zoom),
-                );
-                row_top += row_height;
-                row_rect
-            };
-            let clicked_tab = draw_new_node_menu_row(
-                ui,
-                deferred_overlays,
-                next_row_rect(),
-                "pending_new_node_tab",
-                inv_zoom,
-                &format!("{} New Tab", egui_phosphor::light::PLUS),
-            );
-            let clicked_note = draw_new_node_menu_row(
-                ui,
-                deferred_overlays,
-                next_row_rect(),
-                "pending_new_node_note",
-                inv_zoom,
-                &format!("{} New Note", egui_phosphor::light::NOTE_PENCIL),
-            );
-            let clicked_group = draw_new_node_menu_row(
-                ui,
-                deferred_overlays,
-                next_row_rect(),
-                "pending_new_node_group",
-                inv_zoom,
-                &format!("{} New Group", egui_phosphor::light::FOLDER_PLUS),
-            );
-            // Same reasoning as every other file-dialog button in
-            // this app -- a real picker blocks on OS/human input
-            // neither exists in headless mode.
-            let clicked_file = !self.headless
-                && draw_new_node_menu_row(
-                    ui,
-                    deferred_overlays,
-                    next_row_rect(),
-                    "pending_new_node_file",
-                    inv_zoom,
-                    &format!("{} Add File...", egui_phosphor::light::FILE_PLUS),
-                );
-            if clicked_tab {
-                actions.push(GraphAction::NewTab(self.focused.clone()));
-                self.interaction.pending_new_node = None;
-            }
-            if clicked_note {
-                actions.push(GraphAction::NewNote(pos));
-                self.interaction.pending_new_node = None;
-            }
-            if clicked_group {
-                actions.push(GraphAction::NewGroup(pos));
-                self.interaction.pending_new_node = None;
-            }
-            if clicked_file {
-                actions.push(GraphAction::NewFile(pos));
-                self.interaction.pending_new_node = None;
-            }
-            // Same dismiss-on-click-elsewhere mechanism every other
-            // popup here uses, just projected to screen space first
-            // -- this card's own rect is in world-space (Scene's
-            // transformed coordinates), but `clicked_outside_popup`
-            // reads the real screen-space pointer position.
-            let screen_rect = egui::Rect::from_min_max(project(rect.min), project(rect.max));
-            if clicked_outside_popup(ui, screen_rect, None) {
-                self.interaction.pending_new_node = None;
-            }
+        let Some(pos) = self.interaction.pending_new_node else { return };
+        let screen_pos = project(egui::Pos2::new(pos.x, pos.y));
+        let (mut tab, mut note, mut group, mut file) = (false, false, false, false);
+        let id = egui::Id::new("pending_new_node_menu");
+        // The right-click that opens the menu is still this frame's click: it must not dismiss it.
+        let opened_now = ui.ctx().memory(|m| m.area_rect(id)).is_none();
+        let area = egui::Area::new(id).fixed_pos(screen_pos).order(egui::Order::Foreground).show(ui.ctx(), |ui| {
+            popup_frame(ui).show(ui, |ui| {
+                menu_item_style(ui);
+                ui.set_min_width(150.0);
+                tab = ui.button(format!("{} New Tab", egui_phosphor::light::PLUS)).clicked();
+                note = ui.button(format!("{} New Note", egui_phosphor::light::NOTE_PENCIL)).clicked();
+                group = ui.button(format!("{} New Group", egui_phosphor::light::FOLDER_PLUS)).clicked();
+                // A real picker blocks on OS/human input, which headless mode has neither of.
+                if !self.headless {
+                    file = ui.button(format!("{} Add File...", egui_phosphor::light::FILE_PLUS)).clicked();
+                }
+            });
+        });
+        if tab {
+            actions.push(GraphAction::NewTab(self.focused.clone()));
+        } else if note {
+            actions.push(GraphAction::NewNote(pos));
+        } else if group {
+            actions.push(GraphAction::NewGroup(pos));
+        } else if file {
+            actions.push(GraphAction::NewFile(pos));
+        }
+        if tab || note || group || file || !opened_now && clicked_outside_popup(ui, area.response.rect, None) {
+            self.interaction.pending_new_node = None;
         }
     }
 
