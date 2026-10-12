@@ -5,8 +5,8 @@
 # Cuts the bare-exe release (plan docs/superpowers/plans/2026-10-11-bare-exe-host-downloads.md, Task 1). In order:
 #   1. refuses a dirty tree;
 #   2. builds the engine hosts ONCE, in release: WebView2 (to embed in manifold.exe) and CEF, plus Servo with
-#      --with-servo and WebKit with --with-webkit (built inside WSL into target-linux/, see README). Windows hosts use
-#      a static CRT with depot_tools stripped from PATH, as the old package.sh did;
+#      --with-servo and WebKit with --with-webkit (built inside WSL into target-linux/, see README). Windows hosts but Servo
+#      use a static CRT (Servo's mozjs/mozangle are /MD) with depot_tools stripped from PATH, as the old package.sh did;
 #   3. scripts/host_pin.py hashes the CEF/Servo/WebKit hosts and writes crates/manifold/src/host_pin.rs (WebView2 is
 #      embedded, so it has no row);
 #   4. builds manifold.exe with MANIFOLD_WEBVIEW2_HOST naming the built WebView2 host; crates/manifold/build.rs
@@ -155,7 +155,9 @@ if [ -z "${SKIP_BUILD:-}" ]; then
             [ "$free_gb" -ge 30 ] || die "Servo's release build needs about 30 GB of disk; $free_gb GB free"
             free_mb="$(powershell.exe -NoProfile -Command '[int]((Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory/1024)' </dev/null | tr -dc 0-9)"
             [ "$free_mb" -ge 8000 ] || die "Servo's release build needs about 8 GB of free memory; $free_mb MB free"
-            CARGO_TARGET_DIR=target-servo run_low cargo build --release -j "$jobs" -p manifold-engine-servo
+            # Not with the static CRT: mozjs and mozangle are built against the dynamic one (/MD) and the linker refuses to
+            # mix them (LNK2038, found by the Task 7 dry run), so this host imports vcruntime140/msvcp140.
+            (unset RUSTFLAGS; CARGO_TARGET_DIR=target-servo run_low cargo build --release -j "$jobs" -p manifold-engine-servo)
         fi
     )
     if [ -n "$build_webkit" ]; then
