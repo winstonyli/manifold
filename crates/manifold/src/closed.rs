@@ -119,13 +119,12 @@ fn live_fields(app: &App, id: &str, fields: &session_sync::Fields) -> session_sy
 /// The `ClosedEntry` closing `id` should record: `id` and, for a group,
 /// every node under it at any depth (in `app.node_order`, i.e. draw
 /// order), minus what `worth_reopening` skips. `None` when `id` itself
-/// isn't worth reopening, which includes a lone "Expand as Graph" leaf:
-/// it's one of many, and each would push a real entry out of `MAX_CLOSED`.
+/// isn't worth reopening.
 pub(crate) fn closed_entry(app: &App, id: &str) -> Option<ClosedEntry> {
     let root_id: store::model::NodeId = id.parse().ok()?;
     let root = app.snapshot(root_id)?;
     let root_fields = live_fields(app, id, &root.fields);
-    if root.kind == store::model::Kind::JsonLeaf || !worth_reopening(app.mirror.ty(id), &root_fields) {
+    if !worth_reopening(app.mirror.ty(id), &root_fields) {
         return None;
     }
     let mut nodes = vec![store::json::node_json(id, root.kind, &root_fields, None)];
@@ -301,13 +300,8 @@ mod tests {
         put_in(&mut app, &img0, &inner);
         let json0 = add(
             &mut app,
-            Kind::JsonLeaf,
-            Runtime::Json(JsonPayload {
-                path: "d.json".into(),
-                value: std::sync::Arc::new(1.into()),
-                leaf: true,
-                error: None,
-            }),
+            Kind::Json,
+            Runtime::Json(JsonPayload { path: "d.json".into(), value: std::sync::Arc::new(1.into()), error: None }),
         );
         put_in(&mut app, &json0, &inner);
         let dl0 = add(
@@ -335,17 +329,6 @@ mod tests {
         assert!(entry.doc.nodes[0].fields.get("group").is_none(), "the root's group isn't recorded");
         assert_eq!(entry.doc.nodes[3].fields.get("group").and_then(|v| v.as_str()), Some(inner.as_str()));
 
-        let leaf_outside = add(
-            &mut app,
-            Kind::JsonLeaf,
-            Runtime::Json(JsonPayload {
-                path: "d.json".into(),
-                value: std::sync::Arc::new(1.into()),
-                leaf: true,
-                error: None,
-            }),
-        );
-        assert!(closed_entry(&app, &leaf_outside).is_none(), "a JSON leaf outside a group gives None");
         assert!(closed_entry(&app, &note1).is_none(), "a blank note gives None");
         assert_eq!(closed_entry(&app, &note2).unwrap().doc.nodes.len(), 1);
     }
@@ -436,7 +419,6 @@ mod tests {
             (Kind::Image, &none, true),
             (Kind::Pdf, &none, true),
             (Kind::Json, &none, true),
-            (Kind::JsonLeaf, &none, true),
             (Kind::Download, &none, false),
             (Kind::Jar, &none, false),
             (Kind::Link, &none, false),

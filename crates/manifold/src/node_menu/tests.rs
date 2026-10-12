@@ -105,16 +105,14 @@ fn node_menu_config_matches_each_kinds_menu() {
                 format!("Open Containing Folder | Copy Path | Pin | <colors>{g} | --- | Delete")
             )
         );
-        for json in [TYPE_JSON, TYPE_JSON_LEAF] {
-            assert_eq!(
-                menu(plain(json), false),
-                (
-                    "json_context_menu",
-                    170.0,
-                    format!("Open Containing Folder | Copy Path | Pin | <colors>{g} | --- | Delete")
-                )
-            );
-        }
+        assert_eq!(
+            menu(plain(TYPE_JSON), false),
+            (
+                "json_context_menu",
+                170.0,
+                format!("Open Containing Folder | Copy Path | Pin | <colors>{g} | --- | Delete")
+            )
+        );
         assert_eq!(
             menu(loaded_tab(), false),
             (

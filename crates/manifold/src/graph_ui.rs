@@ -3,7 +3,7 @@
 //! menu and the hover peek.
 
 use super::*;
-use crate::store::model::{TYPE_DOWNLOAD, TYPE_JSON, TYPE_JSON_LEAF, TYPE_NOTE, TYPE_TAB};
+use crate::store::model::{TYPE_DOWNLOAD, TYPE_JSON, TYPE_NOTE, TYPE_TAB};
 
 /// Graph view's chrome is just the "+ New Tab" toolbar — no address bar,
 /// no per-tab back/forward, since there's no single focused tab there.
@@ -786,7 +786,7 @@ impl App {
         let screen = ui.ctx().content_rect();
         let extra: &[(&str, &str)] = match kind.ty {
             TYPE_TAB => &[("Enter", "open"), ("Space", "select")],
-            TYPE_JSON | TYPE_JSON_LEAF => &[("Enter", "enter")],
+            TYPE_JSON => &[("Enter", "enter")],
             ty if is_container(ty) => &[("Enter", "enter")],
             TYPE_NOTE => &[("Enter", "edit")],
             _ => &[],
@@ -1750,10 +1750,9 @@ impl App {
                     // The editor appears next frame; focus it so typing can start at once.
                     ui.memory_mut(|m| m.request_focus(egui::Id::new(("note_edit", id))));
                 }
-                // Enters the node's JSON level, unless it's a leaf, its
-                // file failed to load (plan ruling 10) or it's still
-                // being refetched (`JsonPayload::enterable`).
-                (TYPE_JSON | TYPE_JSON_LEAF, _)
+                // Enters the node's JSON level, unless its file failed to
+                // load (plan ruling 10) or it's still being refetched (`JsonPayload::enterable`).
+                (TYPE_JSON, _)
                     if activated && self.nodes.get(id).and_then(|n| n.as_json()).is_some_and(|j| j.enterable()) =>
                 {
                     // Entered from the keyboard: the level's root card takes focus

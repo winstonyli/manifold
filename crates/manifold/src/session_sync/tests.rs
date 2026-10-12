@@ -12,7 +12,7 @@ const A: ActorId = ActorId(0xA);
 fn jar_fields_belong_to_tabs_groups_and_jars() {
     use field::*;
     assert_eq!(Kind::Tab.fields(), &[POS, COLOR, PARENT, URL, ENGINE, PINNED, JAR, JAR_SET]);
-    assert_eq!(Kind::Group.fields(), &[POS, COLOR, NAME, FROM_JSON, DEFAULT_JAR]);
+    assert_eq!(Kind::Group.fields(), &[POS, COLOR, NAME, DEFAULT_JAR]);
     assert_eq!(Kind::Jar.fields(), &[COLOR, NAME, EPHEMERAL]);
     assert_eq!(Kind::Link.fields(), &[NAME, FROM, TO]);
     assert!(Kind::Unknown.fields().is_empty());
@@ -558,26 +558,8 @@ fn a_restored_note_group_and_leaf_project_back_to_their_fields() {
                 ],
             ),
         ),
-        (
-            id(1),
-            shared(
-                Kind::Group,
-                None,
-                &[(field::NAME, FieldValue::Str("G".into())), (field::FROM_JSON, FieldValue::Bool(true))],
-            ),
-        ),
-        (
-            id(2),
-            shared(
-                Kind::JsonLeaf,
-                Some(id(1)),
-                &[
-                    (field::PATH, FieldValue::Str("C:/data.json".into())),
-                    (field::KEY, FieldValue::Str("answer".into())),
-                    (field::VALUE, FieldValue::Str("42".into())),
-                ],
-            ),
-        ),
+        (id(1), shared(Kind::Group, None, &[(field::NAME, FieldValue::Str("G".into()))])),
+        (id(2), shared(Kind::Json, Some(id(1)), &[(field::PATH, FieldValue::Str("C:/data.json".into()))])),
     ]);
     assert_eq!(snapshots(&app_with(&nodes)), nodes);
 }
@@ -638,7 +620,6 @@ fn a_missing_content_file_with_a_known_url_becomes_a_placeholder_that_refetches(
     match &app.nodes[&node_id].runtime {
         Runtime::Json(p) => {
             assert!(p.error.is_none(), "a known-URL miss never reaches insert_json_node_with_id's own toast");
-            assert!(!p.leaf);
         }
         _ => panic!("expected a Json placeholder"),
     }
@@ -4840,14 +4821,12 @@ fn a_remote_deleted_default_jar_stays_stored() {
 fn every_creation_path_seeds_the_node_type() {
     let ty = |kind: Kind| kind.type_str().unwrap();
     let mut app = App::default();
-    let json =
-        |leaf| Runtime::Json(JsonPayload { path: "d.json".into(), value: Default::default(), leaf, error: None });
+    let json = Runtime::Json(JsonPayload { path: "d.json".into(), value: Default::default(), error: None });
     let placed = [
         (add(&mut app, Kind::Note, Runtime::Note(NotePayload { text: "n".into(), editing: false })), Kind::Note),
         (add_group(&mut app, "G"), Kind::Group),
         (add(&mut app, Kind::Tab, sleeping_tab("https://a.test/", "A")), Kind::Tab),
-        (add(&mut app, Kind::Json, json(false)), Kind::Json),
-        (add(&mut app, Kind::JsonLeaf, json(true)), Kind::JsonLeaf),
+        (add(&mut app, Kind::Json, json), Kind::Json),
         (add(&mut app, Kind::Pdf, Runtime::Pdf(PdfPayload { path: "d.pdf".into(), outcome: None })), Kind::Pdf),
         (
             add(
@@ -4890,52 +4869,15 @@ fn every_creation_path_seeds_the_node_type() {
     assert_eq!(app.mirror.ty(&live), ty(Kind::Tab), "a live landing");
 
     // Materialized from the document.
-    let leaf = [(field::KEY, FieldValue::Str("k".into())), (field::VALUE, FieldValue::Str("1".into()))];
     let nodes = BTreeMap::from([
         (id(1), shared(Kind::Group, None, &[(field::NAME, FieldValue::Str("G".into()))])),
         (id(2), shared(Kind::Note, None, &[(field::TEXT, FieldValue::Str("n".into()))])),
         (id(3), shared(Kind::Tab, None, &[(field::URL, FieldValue::Str("https://a.test/".into()))])),
-        (id(4), shared(Kind::JsonLeaf, Some(id(1)), &leaf)),
     ]);
     let app = app_with(&nodes);
     for (id, node) in &nodes {
         assert_eq!(app.mirror.ty(&id.to_string()), ty(node.kind), "materialized {:?}", node.kind);
     }
-}
-
-/// Ruling 8: a leaf's key and stored value are the mirror's, so importing a group of leaves, closing it and reopening
-/// it from Recently Closed all carry them.
-#[test]
-fn importing_or_reopening_a_group_of_leaves_carries_key_and_value() {
-    let json = serde_json::json!({ "nodes": [
-        json_node("g", Kind::Group, serde_json::json!({ "name": "G", "from_json": true })),
-        json_node("l", Kind::JsonLeaf, serde_json::json!({ "group": "g", "path": "d.json", "key": "k", "value": "[1,2]" })),
-    ]});
-    let doc: JsonDoc = serde_json::from_value(json).unwrap();
-    let mut app = App::default();
-    app.import_group_json(&doc);
-    let find = |app: &App| {
-        let leaf = app.nodes.iter().find(|(_, n)| n.as_json().is_some_and(|j| j.leaf)).map(|(id, _)| id.clone());
-        let group = app.nodes.keys().find(|id| app.is_container(id)).cloned();
-        (group.expect("a group"), leaf.expect("a leaf"))
-    };
-    let (g, l) = find(&app);
-    assert!(app.mirror.from_json(&g));
-    assert_eq!((app.mirror.key(&l), app.mirror.value(&l)), ("k", "[1,2]"));
-    assert_eq!(*app.nodes[&l].as_json().unwrap().value, serde_json::json!([1, 2]), "the payload holds it parsed");
-    let shared = snapshots(&app);
-    let fields = &shared[&l.parse().unwrap()].fields;
-    assert_eq!(fields[&field::KEY], FieldValue::Str("k".into()));
-    assert_eq!(fields[&field::VALUE], FieldValue::Str("[1,2]".into()));
-
-    app.close_node(&g);
-    assert!(app.nodes.is_empty(), "closed with its leaf");
-    let entry = app.closed.pop().expect("recorded");
-    app.reopen_closed(entry);
-    let (g2, l2) = find(&app);
-    assert_ne!(l2, l, "reopened with a fresh id");
-    assert!(app.mirror.from_json(&g2));
-    assert_eq!((app.mirror.key(&l2), app.mirror.value(&l2)), ("k", "[1,2]"));
 }
 
 /// A node's `Create` resolves its Id fields (`create_ops`'s `valid`): a link to a node deleted meanwhile is written as

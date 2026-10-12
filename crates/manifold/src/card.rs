@@ -2,9 +2,7 @@
 //! styles, corner controls and drop rules, and each kind's body painter.
 
 use super::*;
-use crate::store::model::{
-    TYPE_DOWNLOAD, TYPE_GROUP, TYPE_IMAGE, TYPE_JSON, TYPE_JSON_LEAF, TYPE_NOTE, TYPE_PDF, TYPE_TAB,
-};
+use crate::store::model::{TYPE_DOWNLOAD, TYPE_GROUP, TYPE_IMAGE, TYPE_JSON, TYPE_NOTE, TYPE_PDF, TYPE_TAB};
 
 /// Below this on-screen card width (in points), a node's label is hidden
 /// entirely rather than truncated — a card this small can't fit more than
@@ -376,9 +374,8 @@ pub(crate) const IMAGE_NODE_MAX_SIZE: egui::Vec2 = egui::vec2(220.0, 220.0);
 /// page dimensions `PdfOutcome` carries.
 pub(crate) const PDF_PENDING_NODE_SIZE: egui::Vec2 = egui::vec2(150.0, 90.0);
 
-/// A JSON leaf's (from an old "Expand as Graph") or error card's fixed box
-/// -- there's no root to preview in either case, just a one-line summary or
-/// the missing-file card. A file-backed Json card is sized by
+/// A JSON error card's fixed box -- there's no root to preview, just the
+/// missing-file card. A file-backed Json card is sized by
 /// `json_view::preview_size` instead (see `node_card_size`).
 pub(crate) const JSON_NODE_SIZE: egui::Vec2 = egui::vec2(160.0, 90.0);
 
@@ -880,8 +877,8 @@ pub(crate) fn node_card_size(runtime: &Runtime) -> egui::Vec2 {
         Runtime::Image(image) => image_node_card_size(image.width, image.height),
         Runtime::Pdf(pdf) => pdf_card_size(pdf),
         // A file's own card previews its root (spec "The card at the
-        // parent level"); a leaf or an error card keeps the small box.
-        Runtime::Json(json) if !json.leaf && json.error.is_none() => crate::json_view::preview_size(&json.value),
+        // parent level"); an error card keeps the small box.
+        Runtime::Json(json) if json.error.is_none() => crate::json_view::preview_size(&json.value),
         Runtime::Json(_) => JSON_NODE_SIZE,
         // A group is the one kind with no runtime (2b-6 Ruling 8: no unknown-type card yet).
         Runtime::None => GROUP_NODE_SIZE,
@@ -1263,7 +1260,7 @@ impl App {
             TYPE_NOTE => self.paint_note_body(ui, deferred_overlays, id, rect, inv_zoom, zoom_scale),
             TYPE_IMAGE => self.paint_image_body(ui, deferred_overlays, id, rect, inv_zoom, zoom_scale),
             TYPE_PDF => self.paint_pdf_body(ui, deferred_overlays, id, rect, inv_zoom, zoom_scale),
-            TYPE_JSON | TYPE_JSON_LEAF => self.paint_json_body(ui, deferred_overlays, id, rect, zoom_scale),
+            TYPE_JSON => self.paint_json_body(ui, deferred_overlays, id, rect, zoom_scale),
             // Presentation matches the type, not `is_container` (see `card_style`).
             TYPE_GROUP => self.paint_group_body(ui, pass, id, view, rect),
             TYPE_TAB if view.kind.loaded() => {
@@ -1790,9 +1787,8 @@ impl App {
         body
     }
 
-    /// Json: an error card keeps the missing-file box, and a leaf from an
-    /// old "Expand as Graph" keeps its one-line summary (both fixed at
-    /// `JSON_NODE_SIZE`). A file-backed node instead previews its root --
+    /// Json: an error card keeps the missing-file box (fixed at
+    /// `JSON_NODE_SIZE`). A node with a file instead previews its root --
     /// the file name, `{n}`/`[n]`, up to `PREVIEW_ROWS` root rows and
     /// `+ N more` -- sized by `json_view::preview_size` and painted by the
     /// JSON level's own `paint_json_content`, so the two never disagree
@@ -1818,17 +1814,6 @@ impl App {
         }
         let Some(json) = self.nodes.get(id).and_then(|n| n.as_json()) else { return body };
         let text = !self.graph_lod_simplified && rect.width() * zoom_scale >= MIN_LABEL_CARD_SCREEN_WIDTH;
-        if json.leaf {
-            // A leaf from an old "Expand as Graph": its one-line summary. Its key is the mirror's.
-            let key = self.mirror.key(id).to_owned();
-            let key_display =
-                if key.chars().count() > 16 { format!("{}…", key.chars().take(15).collect::<String>()) } else { key };
-            let summary = format!("{key_display}: {}", json_summary(&json.value));
-            if text {
-                push_centered_text(deferred_overlays, rect.center(), summary, 12.0, ui.visuals().text_color());
-            }
-            return body;
-        }
         let len = crate::json_view::entry_count(&json.value);
         // The header is 40 screen points, so at other zooms the rows get more or less of the card:
         // show only the rows that fit, with a `+ N more` row when some are cut. A card too short for
@@ -2267,25 +2252,6 @@ fn paint_card_title(
 /// call site actually cares about.
 fn graph_filter_dims(filter: &str, haystacks: &[&str]) -> bool {
     !filter_matches(filter, haystacks)
-}
-
-/// A one-line shape summary for a JSON node's own small graph card:
-/// `{ N }`/`[ N ]` for a container,
-/// or the scalar's own compact `Display` form (truncated if it would
-/// otherwise overflow a card this small).
-fn json_summary(value: &serde_json::Value) -> String {
-    match value {
-        serde_json::Value::Object(map) => format!("{{ {} }}", map.len()),
-        serde_json::Value::Array(items) => format!("[ {} ]", items.len()),
-        other => {
-            let text = other.to_string();
-            if text.chars().count() > 24 {
-                format!("{}…", text.chars().take(23).collect::<String>())
-            } else {
-                text
-            }
-        }
-    }
 }
 
 /// A soft glow tinted the card's own border color, grown outward with

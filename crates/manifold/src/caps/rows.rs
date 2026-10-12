@@ -93,7 +93,7 @@ impl Registry {
 /// What today's `worth_reopening` decided per kind: only a completed download, a jar, a blank note and an unknown kind
 /// are not recorded when closed. Also the draw layer of each type (`draw_layer`).
 pub(crate) fn builtin_rows() -> Vec<Row> {
-    use crate::store::model::{TYPE_DOWNLOAD, TYPE_GROUP, TYPE_JSON_LEAF, TYPE_NOTE, TYPE_TAB};
+    use crate::store::model::{TYPE_DOWNLOAD, TYPE_GROUP, TYPE_NOTE, TYPE_TAB};
     vec![
         Row::new("*/*").restorable(false).draw_layer(0),
         Row::new(TYPE_TAB).restorable(true).draw_layer(1), // a sleeping tab; a loaded one draws under it
@@ -103,7 +103,6 @@ pub(crate) fn builtin_rows() -> Vec<Row> {
         Row::new("image/*").restorable(true).draw_layer(4),
         Row::new("application/pdf").restorable(true).draw_layer(5),
         Row::new("application/json").restorable(true).draw_layer(6),
-        Row::new(TYPE_JSON_LEAF).restorable(true).draw_layer(6),
         Row::new(TYPE_NOTE).restorable(true).draw_layer(3),
         Row::new(TYPE_NOTE).requires(&[Tag::Blank]).restorable(false),
         Row::new(TYPE_DOWNLOAD).draw_layer(2), // a download
@@ -185,7 +184,6 @@ mod tests {
             ("image/png", TagSet::EMPTY),
             ("image/png", loaded),
             ("application/json", TagSet::EMPTY),
-            ("application/vnd.manifold.json-leaf", TagSet::EMPTY),
             ("text/markdown", TagSet::of(&[Tag::Blank])),
             ("application/octet-stream", TagSet::EMPTY),
             ("video/mp4", TagSet::EMPTY),

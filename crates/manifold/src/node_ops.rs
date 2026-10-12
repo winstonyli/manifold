@@ -196,9 +196,7 @@ impl App {
     /// Image/Pdf, then `remove_node`s it.
     /// (Before this was shared, `destroy_tab`'s own no-op-on-non-tab guard
     /// left every non-tab, non-group member of a closed group merely
-    /// reparented by `dissolve_group`, never actually destroyed -- a gap
-    /// confirmed while building "Expand as Graph", whose whole output is
-    /// `JsonPayload` leaves nested inside Groups.)
+    /// reparented by `dissolve_group`, never actually destroyed.)
     pub(crate) fn destroy_node(&mut self, id: &str) {
         let Some(kind) = self.card_kind(id) else {
             return;

@@ -391,7 +391,6 @@ fn a_refetch_placeholder_is_not_entered_and_keeps_its_view() {
     let payload = JsonPayload {
         path: dir.join("not-fetched-yet.json").to_string_lossy().into_owned(),
         value: Default::default(),
-        leaf: false,
         error: None,
     };
     app.insert_placeholder_node(J.into(), egui::Vec2::ZERO, Kind::Json, Runtime::Json(payload));

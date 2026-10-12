@@ -284,7 +284,7 @@ impl App {
         let kind = match &node.runtime {
             Runtime::Image(_) => K::Image,
             Runtime::Pdf(_) => K::Pdf,
-            Runtime::Json(j) if !j.leaf => K::Json,
+            Runtime::Json(_) => K::Json,
             _ => return,
         };
         let Some(url) = self.source_url(id).map(str::to_string) else { return };
@@ -330,12 +330,7 @@ impl App {
                 K::Pdf => (Kind::Pdf, Runtime::Pdf(PdfPayload { path, outcome: Some(Err(error.clone())) })),
                 K::Json => (
                     Kind::Json,
-                    Runtime::Json(JsonPayload {
-                        path,
-                        value: Default::default(),
-                        leaf: false,
-                        error: Some(error.clone()),
-                    }),
+                    Runtime::Json(JsonPayload { path, value: Default::default(), error: Some(error.clone()) }),
                 ),
                 // Guarded above: `kind` is one of the three arms this
                 // matches.
@@ -611,7 +606,7 @@ impl App {
                 return Err(err);
             }
         };
-        let payload = Runtime::Json(JsonPayload { path, value: value.into(), leaf: false, error: None });
+        let payload = Runtime::Json(JsonPayload { path, value: value.into(), error: None });
         self.place_node(Some(id), Kind::Json, payload, Placement { group, pos });
         Ok(())
     }

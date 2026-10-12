@@ -452,10 +452,9 @@ fn rich_file(path: &Path) -> Vec<u8> {
     let mut txn = journal.begin().unwrap();
     let leaf = txn.next_id();
     let mut leaf_fields = encode_field(field::PARENT, &FieldValue::Id(Some(tab)));
-    leaf_fields.extend(encode_field(field::KEY, &FieldValue::Str("k".into())));
-    leaf_fields.extend(encode_field(field::VALUE, &FieldValue::Str("v".into())));
+    leaf_fields.extend(encode_field(field::TEXT, &FieldValue::Str("v".into())));
     let bodies = vec![
-        OpBody::create(leaf, Kind::JsonLeaf, leaf_fields),
+        OpBody::create(leaf, Kind::Note, leaf_fields),
         OpBody::Delete { node: group },
         OpBody::Move { node: note, group: None },
         set(note, field::COLOR, FieldValue::Color(None)),

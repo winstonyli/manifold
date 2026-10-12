@@ -252,7 +252,7 @@ fn pruning_keeps_files_live_or_recently_closed_nodes_name() {
         "1-7".into(),
         egui::Vec2::ZERO,
         Kind::Json,
-        Runtime::Json(JsonPayload { path: r"Z:\x.json".into(), value: Default::default(), leaf: false, error: None }),
+        Runtime::Json(JsonPayload { path: r"Z:\x.json".into(), value: Default::default(), error: None }),
     );
     app.closed.push(ClosedEntry {
         doc: store::json::JsonDoc {

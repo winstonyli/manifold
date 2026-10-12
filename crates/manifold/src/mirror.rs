@@ -28,8 +28,7 @@ use crate::store::model::{field, field_def, FieldValue, Kind, NodeId};
 /// `App::create_jar`, `App::rename_jar` and `App::set_jar_ephemeral` (2b-5 Ruling 7).
 /// `DEFAULT_JAR` is a group's default jar (`default_jar`), written by `App::edit_default_jar` and resolved at commit
 /// like `JAR` (2b-5 Ruling 6). `PATH` is the stored, create-time path (`path`), never rewritten: the payload holds the
-/// path resolved on this machine (2b-5 Ruling 5). `FROM_JSON`, `KEY` and `VALUE` are written once, at creation
-/// (Ruling 8). `TYPE` is the node's type string (`ty`), seeded at every creation and never changed (Ruling 10).
+/// path resolved on this machine (2b-5 Ruling 5). `TYPE` is the node's type string (`ty`), seeded at every creation and never changed (Ruling 10).
 #[derive(Default)]
 pub(crate) struct Mirror {
     nodes: HashMap<String, Fields>,
@@ -266,15 +265,6 @@ impl Mirror {
         self.str_field(id, field::PATH)
     }
 
-    /// A group made by an older build's "Expand as Graph" (`field::FROM_JSON`): written once, at creation.
-    #[allow(
-        clippy::wrong_self_convention,
-        reason = "named after the field it reads (`from_json`), as the other accessors are; it converts nothing"
-    )]
-    pub(crate) fn from_json(&self, id: &str) -> bool {
-        matches!(self.get(id, field::FROM_JSON), FieldValue::Bool(true))
-    }
-
     /// A group's default jar (`field::DEFAULT_JAR`): the jar new tabs in it start with (`App::inherited_jar`). `None`
     /// inherits from the group above. It may name a jar that no longer exists (2b-5 Ruling 6).
     pub(crate) fn default_jar(&self, id: &str) -> Option<NodeId> {
@@ -282,16 +272,6 @@ impl Mirror {
             FieldValue::Id(jar) => jar,
             _ => None,
         }
-    }
-
-    /// A Json leaf's key (`field::KEY`): the JSON key, or `[index]`, its value came from. Written once.
-    pub(crate) fn key(&self, id: &str) -> &str {
-        self.str_field(id, field::KEY)
-    }
-
-    /// A Json leaf's value as stored (`field::VALUE`, JSON text). Written once; the parsed value is the payload's.
-    pub(crate) fn value(&self, id: &str) -> &str {
-        self.str_field(id, field::VALUE)
     }
 
     /// The node's type string (`field::TYPE`, `Kind::type_str`), seeded at every creation and never changed. Read by
@@ -345,10 +325,7 @@ impl Mirror {
             jar: self.jar_choice(id),
             ty: self.ty(id).to_owned(),
             path: self.path(id).to_owned(),
-            from_json: self.from_json(id),
             default_jar: self.default_jar(id),
-            key: self.key(id).to_owned(),
-            value: self.value(id).to_owned(),
         }
     }
 
@@ -362,17 +339,10 @@ impl Mirror {
         let engine = (carried.engine != 0).then_some((field::ENGINE, FieldValue::Engine(carried.engine)));
         let jar = carried.jar.jar.is_some().then_some((field::JAR, FieldValue::Id(carried.jar.jar)));
         let jar_set = carried.jar.set.then_some((field::JAR_SET, FieldValue::Bool(true)));
-        let from_json = carried.from_json.then_some((field::FROM_JSON, FieldValue::Bool(true)));
         let default_jar = carried.default_jar.map(|jar| (field::DEFAULT_JAR, FieldValue::Id(Some(jar))));
-        let strings = [
-            str(field::URL, &carried.url),
-            str(field::TEXT, &carried.text),
-            str(field::PATH, &carried.path),
-            str(field::KEY, &carried.key),
-            str(field::VALUE, &carried.value),
-        ];
+        let strings = [str(field::URL, &carried.url), str(field::TEXT, &carried.text), str(field::PATH, &carried.path)];
         let fields = [(field::COLOR, color_value(carried.color)), (field::PINNED, FieldValue::Bool(carried.pinned))];
-        let optional = [pos, engine, jar, jar_set, from_json, default_jar];
+        let optional = [pos, engine, jar, jar_set, default_jar];
         self.init(id, fields.into_iter().chain(optional.into_iter().flatten()).chain(strings.into_iter().flatten()));
         // After `init`, which seeds nothing once the entry exists: the type is the one field that still lands.
         if !carried.ty.is_empty() {
@@ -409,13 +379,8 @@ pub(crate) struct Carried {
     pub ty: String,
     /// The stored path (`Mirror::path`); "" for a node without a file.
     pub path: String,
-    /// `Mirror::from_json`; `false` for a node that isn't a group.
-    pub from_json: bool,
     /// `Mirror::default_jar`; `None` for a node that isn't a group.
     pub default_jar: Option<NodeId>,
-    /// A Json leaf's key and stored value (`Mirror::key`, `Mirror::value`); "" for other kinds.
-    pub key: String,
-    pub value: String,
 }
 
 #[cfg(test)]
@@ -440,10 +405,7 @@ mod tests {
             },
             ty: "text/x".into(),
             path: "C:/a.json".into(),
-            from_json: true,
             default_jar: Some(NodeId { actor: crate::store::model::ActorId(1), counter: 3 }),
-            key: "k".into(),
-            value: "42".into(),
         };
         mirror.seed("7", &first);
         assert_eq!(mirror.carried("7"), first);
@@ -504,14 +466,14 @@ mod tests {
     }
 
     #[test]
-    fn a_node_without_group_leaf_or_file_fields_seeds_none_and_reads_them_as_absent() {
+    fn a_node_without_group_or_file_fields_seeds_none_and_reads_them_as_absent() {
         let mut mirror = Mirror::default();
         mirror.seed("8", &Carried::default());
-        for no in [field::TYPE, field::PATH, field::FROM_JSON, field::DEFAULT_JAR, field::KEY, field::VALUE] {
+        for no in [field::TYPE, field::PATH, field::DEFAULT_JAR] {
             assert!(!mirror.nodes["8"].contains_key(&no), "field {no} seeds nothing");
         }
-        assert_eq!((mirror.ty("8"), mirror.path("8"), mirror.key("8"), mirror.value("8")), ("", "", "", ""));
-        assert!(!mirror.from_json("8") && mirror.default_jar("8").is_none());
+        assert_eq!((mirror.ty("8"), mirror.path("8")), ("", ""));
+        assert!(mirror.default_jar("8").is_none());
     }
 
     #[test]

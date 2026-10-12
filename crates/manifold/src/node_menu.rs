@@ -3,9 +3,7 @@
 use super::*;
 use crate::jar_defs::JarLabel;
 use crate::sleep_state::SleepWhy;
-use crate::store::model::{
-    NodeId, TYPE_DOWNLOAD, TYPE_GROUP, TYPE_IMAGE, TYPE_JSON, TYPE_JSON_LEAF, TYPE_NOTE, TYPE_PDF, TYPE_TAB,
-};
+use crate::store::model::{NodeId, TYPE_DOWNLOAD, TYPE_GROUP, TYPE_IMAGE, TYPE_JSON, TYPE_NOTE, TYPE_PDF, TYPE_TAB};
 
 /// Something done to one node, from its right-click menu or its card's
 /// own buttons, applied by `App::apply_node_action`.
@@ -546,7 +544,7 @@ pub(crate) fn node_menu_config(view: &NodeMenuView, headless: bool) -> NodeMenuC
             items.extend(file_items());
             finish("pdf_context_menu", 170.0, items, delete("Delete"))
         }
-        TYPE_JSON | TYPE_JSON_LEAF => {
+        TYPE_JSON => {
             let mut items = url_items(true);
             items.extend(file_items());
             finish("json_context_menu", 170.0, items, delete("Delete"))

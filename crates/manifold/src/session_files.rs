@@ -204,10 +204,7 @@ impl App {
         // double-click this exact kind of node themselves, so entering its
         // level here would rob them of the discovery the copy is pointing
         // at. Synthetic, not file-backed (`path` is a display-only label, not a
-        // real path -- see `JsonPayload`'s own doc comment on `leaf` for the
-        // same "inherited path, no real ownership" reasoning leaves use,
-        // though this node is a genuine standalone JSON node, not an
-        // exploded leaf).
+        // real path).
         let json = Runtime::Json(JsonPayload {
             path: "(demo).json".to_string(),
             value: std::sync::Arc::new(serde_json::json!({
@@ -215,7 +212,6 @@ impl App {
                 "tags": ["browser", "graph-ui"],
                 "version": {"major": 0, "minor": 1}
             })),
-            leaf: false,
             error: None,
         });
         self.place_node(None, store::model::Kind::Json, json, Placement { group: None, pos: egui::vec2(0.0, -260.0) });

@@ -6,9 +6,7 @@ use super::*;
 use crate::caps::{edges, registry, Caps, Tag, TagSet, CONTAINS};
 use crate::store::model::Kind;
 #[cfg(test)]
-use crate::store::model::{
-    TYPE_DOWNLOAD, TYPE_GROUP, TYPE_IMAGE, TYPE_JSON, TYPE_JSON_LEAF, TYPE_NOTE, TYPE_PDF, TYPE_TAB,
-};
+use crate::store::model::{TYPE_DOWNLOAD, TYPE_GROUP, TYPE_IMAGE, TYPE_JSON, TYPE_NOTE, TYPE_PDF, TYPE_TAB};
 
 /// The row string for a type this build doesn't know: only the `*/*` row matches it.
 const UNKNOWN_TYPE: &str = "*/*";
@@ -80,7 +78,7 @@ pub(crate) mod fixtures {
 
     /// Every card kind, in draw order: each `TYPES` entry a node can show (`kinds_cover_every_node_type` pins that)
     /// plus the loaded tab, which shares the sleeping tab's type.
-    pub(crate) fn kinds() -> [CardKind; 9] {
+    pub(crate) fn kinds() -> [CardKind; 8] {
         [
             loaded_tab(),
             sleeping_tab(),
@@ -89,7 +87,6 @@ pub(crate) mod fixtures {
             plain(TYPE_IMAGE),
             plain(TYPE_PDF),
             plain(TYPE_JSON),
-            plain(TYPE_JSON_LEAF),
             plain(TYPE_GROUP),
         ]
     }
@@ -149,14 +146,8 @@ mod tests {
             completed: false,
             failed: false,
         });
-        let json = |leaf| {
-            Runtime::Json(JsonPayload {
-                path: "a.json".into(),
-                value: std::sync::Arc::new(1.into()),
-                leaf,
-                error: None,
-            })
-        };
+        let json =
+            Runtime::Json(JsonPayload { path: "a.json".into(), value: std::sync::Arc::new(1.into()), error: None });
         let image = Runtime::Image(ImagePayload { path: "i.png".into(), width: 1, height: 1, error: None });
         vec![
             (Kind::Tab, live, loaded_tab()),
@@ -165,8 +156,7 @@ mod tests {
             (Kind::Note, Runtime::Note(NotePayload { text: "t".into(), editing: false }), plain(TYPE_NOTE)),
             (Kind::Image, image, plain(TYPE_IMAGE)),
             (Kind::Pdf, Runtime::Pdf(PdfPayload { path: "d.pdf".into(), outcome: None }), plain(TYPE_PDF)),
-            (Kind::Json, json(false), plain(TYPE_JSON)),
-            (Kind::JsonLeaf, json(true), plain(TYPE_JSON_LEAF)),
+            (Kind::Json, json, plain(TYPE_JSON)),
             (Kind::Group, Runtime::None, plain(TYPE_GROUP)),
         ]
     }
@@ -208,15 +198,12 @@ mod tests {
             (plain(TYPE_IMAGE), 4),
             (plain(TYPE_PDF), 5),
             (plain(TYPE_JSON), 6),
-            (plain(TYPE_JSON_LEAF), 6),
             (plain(TYPE_GROUP), 7),
         ];
         for (kind, layer) in order {
             assert_eq!(kind.caps().draw_layer, layer, "{kind:?}");
             assert!(usize::from(layer) < DRAW_LAYERS);
         }
-        // A leaf drew as a Json card (the old card enum had one Json kind for both types).
-        assert_eq!(plain(TYPE_JSON_LEAF).caps().draw_layer, plain(TYPE_JSON).caps().draw_layer);
     }
 
     #[test]

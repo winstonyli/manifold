@@ -117,7 +117,6 @@ pub const TYPE_TAB: &str = "application/vnd.manifold.tab";
 pub const TYPE_GROUP: &str = "application/vnd.manifold.group";
 pub const TYPE_JAR: &str = "application/vnd.manifold.jar";
 pub const TYPE_LINK: &str = "application/vnd.manifold.link";
-pub const TYPE_JSON_LEAF: &str = "application/vnd.manifold.json-leaf";
 pub const TYPE_NOTE: &str = "text/markdown";
 pub const TYPE_PDF: &str = "application/pdf";
 pub const TYPE_JSON: &str = "application/json";
@@ -133,7 +132,6 @@ pub enum Kind {
     Image,
     Pdf,
     Json,
-    JsonLeaf,
     Download,
     Jar,
     /// A connection between two cards: a stored node, never a graph card (like a jar), with `from` and `to` ends.
@@ -149,16 +147,15 @@ pub enum Kind {
 /// register, and a `Create` only writes the fields listed here). Fields a type does not list stay raw in the document
 /// untouched (2b-5 Ruling 2).
 #[rustfmt::skip]
-pub(crate) const TYPES: [(Kind, &str, &[u32]); 10] = {
+pub(crate) const TYPES: [(Kind, &str, &[u32]); 9] = {
     use field::*;
     [
         (Kind::Tab, TYPE_TAB, &[POS, COLOR, PARENT, URL, ENGINE, PINNED, JAR, JAR_SET]),
-        (Kind::Group, TYPE_GROUP, &[POS, COLOR, NAME, FROM_JSON, DEFAULT_JAR]),
+        (Kind::Group, TYPE_GROUP, &[POS, COLOR, NAME, DEFAULT_JAR]),
         (Kind::Note, TYPE_NOTE, &[POS, COLOR, PARENT, URL, TEXT]),
         (Kind::Image, TYPE_IMAGE, &[POS, COLOR, PARENT, URL, PATH]),
         (Kind::Pdf, TYPE_PDF, &[POS, COLOR, PARENT, URL, PATH]),
         (Kind::Json, TYPE_JSON, &[POS, COLOR, PARENT, URL, PATH, VIEW]),
-        (Kind::JsonLeaf, TYPE_JSON_LEAF, &[POS, COLOR, PATH, KEY, VALUE]),
         (Kind::Download, TYPE_DOWNLOAD, &[POS, COLOR, PARENT, URL, PATH]),
         (Kind::Jar, TYPE_JAR, &[COLOR, NAME, EPHEMERAL]),
         (Kind::Link, TYPE_LINK, &[NAME, FROM, TO]),
@@ -224,11 +221,10 @@ pub mod field {
     pub const ENGINE: u32 = 6;
     pub const PINNED: u32 = 7;
     pub const NAME: u32 = 8;
-    pub const FROM_JSON: u32 = 9;
+    // 9, 12 and 13 were `from_json`, `key` and `value` (the JSON leaf, retired 2026-10-12): never reuse them. A
+    // document that still holds them keeps them raw, like any field a type does not list.
     pub const TEXT: u32 = 10;
     pub const PATH: u32 = 11;
-    pub const KEY: u32 = 12;
-    pub const VALUE: u32 = 13;
     /// A Json node's view overrides (`json_view::JsonView`), compact JSON; "" when none.
     pub const VIEW: u32 = 14;
     /// A tab's cookie jar: a `Kind::Jar` node, absent for the default jar.
@@ -247,7 +243,7 @@ pub mod field {
     pub const TO: u32 = 21;
 }
 
-pub static FIELDS: [FieldDef; 21] = [
+pub static FIELDS: [FieldDef; 18] = [
     FieldDef { no: field::POS, name: "pos", ty: FieldType::Pos },
     FieldDef { no: field::COLOR, name: "color", ty: FieldType::Color },
     FieldDef { no: field::GROUP, name: "group", ty: FieldType::Id },
@@ -256,13 +252,10 @@ pub static FIELDS: [FieldDef; 21] = [
     FieldDef { no: field::ENGINE, name: "engine", ty: FieldType::Engine },
     FieldDef { no: field::PINNED, name: "pinned", ty: FieldType::Bool },
     FieldDef { no: field::NAME, name: "name", ty: FieldType::Str },
-    FieldDef { no: field::FROM_JSON, name: "from_json", ty: FieldType::Bool },
     FieldDef { no: field::TEXT, name: "text", ty: FieldType::Str },
     // Machine-local: a replica that refetches a missing file saves it under
     // its own content dir, and that path must not be written back.
     FieldDef { no: field::PATH, name: "path", ty: FieldType::Str },
-    FieldDef { no: field::KEY, name: "key", ty: FieldType::Str },
-    FieldDef { no: field::VALUE, name: "value", ty: FieldType::Str },
     FieldDef { no: field::VIEW, name: "view", ty: FieldType::Str },
     FieldDef { no: field::JAR, name: "jar", ty: FieldType::Id },
     FieldDef { no: field::JAR_SET, name: "jar_set", ty: FieldType::Bool },
@@ -671,7 +664,6 @@ mod tests {
             Kind::Image,
             Kind::Pdf,
             Kind::Json,
-            Kind::JsonLeaf,
             Kind::Download,
             Kind::Jar,
             Kind::Link,
@@ -688,6 +680,8 @@ mod tests {
         assert_eq!(Kind::from_type("image/jpeg"), Kind::Image);
         assert_eq!(Kind::from_type("IMAGE/webp"), Kind::Image);
         assert_eq!(Kind::from_type("video/mp4"), Kind::Unknown);
+        // The retired JSON leaf: an old document's leaf loads as a node nothing shows.
+        assert_eq!(Kind::from_type("application/vnd.manifold.json-leaf"), Kind::Unknown);
         assert_eq!(Kind::from_type(""), Kind::Unknown);
     }
 

@@ -89,16 +89,14 @@ pub(crate) fn color_of(value: &FieldValue) -> Option<egui::Color32> {
 /// A tab's runtime is one type whether it is loaded or asleep; a group has none (2b-6 Ruling 8).
 #[cfg(debug_assertions)]
 fn runtime_has_type(runtime: &Runtime, ty: &str) -> bool {
-    use crate::store::model::{
-        TYPE_DOWNLOAD, TYPE_GROUP, TYPE_IMAGE, TYPE_JSON, TYPE_JSON_LEAF, TYPE_NOTE, TYPE_PDF, TYPE_TAB,
-    };
+    use crate::store::model::{TYPE_DOWNLOAD, TYPE_GROUP, TYPE_IMAGE, TYPE_JSON, TYPE_NOTE, TYPE_PDF, TYPE_TAB};
     match runtime {
         Runtime::Tab(_) | Runtime::Unloaded(_) => ty == TYPE_TAB,
         Runtime::Download(_) => ty == TYPE_DOWNLOAD,
         Runtime::Note(_) => ty == TYPE_NOTE,
         Runtime::Image(_) => ty == TYPE_IMAGE,
         Runtime::Pdf(_) => ty == TYPE_PDF,
-        Runtime::Json(json) => ty == if json.leaf { TYPE_JSON_LEAF } else { TYPE_JSON },
+        Runtime::Json(_) => ty == TYPE_JSON,
         Runtime::None => ty == TYPE_GROUP,
     }
 }
@@ -687,17 +685,9 @@ impl App {
                     self.insert_json_node_with_id(id.clone(), path.clone(), pos, None).err()
                 };
                 if missing_with_url || error.is_some() {
-                    let payload = JsonPayload { path, value: Default::default(), leaf: false, error };
+                    let payload = JsonPayload { path, value: Default::default(), error };
                     self.insert_placeholder_node(id.clone(), pos, kind, Runtime::Json(payload));
                 }
-            }
-            Kind::JsonLeaf => {
-                let text = str_of(fields, field::VALUE);
-                let value = serde_json::from_str(&text).unwrap_or(serde_json::Value::String(text));
-                // Its key and stored value are already the mirror's (`mirror_remote`); the payload holds the parsed one.
-                let payload =
-                    JsonPayload { path: str_of(fields, field::PATH), value: value.into(), leaf: true, error: None };
-                self.insert_placeholder_node(id.clone(), pos, kind, Runtime::Json(payload));
             }
             Kind::Download => {
                 let path = str_of(fields, field::PATH);
@@ -1845,10 +1835,7 @@ impl App {
     /// A group's own subtree as a JSON snapshot (Export Group; spec "JSON
     /// snapshots"), root first (`store::json::subtree_to_json`'s own
     /// contract), saved first like `export_session_json`. Only *saved*
-    /// nodes are exported -- a synthetic "Expand as Graph" group
-    /// (`from_json`) is itself a saved node since Task 5, so it exports
-    /// too, unlike the old per-group export format, which walked live
-    /// nodes and always skipped it. `None` without a store or for an
+    /// nodes are exported. `None` without a store or for an
     /// unknown group; toasted when the store doesn't hold the group live
     /// (its save failed), rather than exporting an empty file.
     pub(crate) fn export_group_json(&mut self, group: &str) -> Option<JsonDoc> {

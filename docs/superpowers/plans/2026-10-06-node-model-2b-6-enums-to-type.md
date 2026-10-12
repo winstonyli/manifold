@@ -88,7 +88,7 @@ Recorded so a new session does not re-derive them (also in the spec, "Deferred f
 - **`Runtime` as per-family maps or a plugin runtime slot** (D2): a plugin type's live state is an additive variant (a boxed
   `dyn Any`) now; per-family maps are a local rewrite behind the accessors if the enum ever hurts.
 - **Raw TYPE** (D): store the real mime, match `image/*` through the caps matcher; needs sniffing.
-- **Unknown-type card, JsonLeaf/FROM_JSON/KEY/VALUE retirement** (Rulings 7, 8).
+- **Unknown-type card** (Ruling 7). The JsonLeaf/FROM_JSON/KEY/VALUE retirement (Ruling 8) shipped 2026-10-12; see README.
 - **Selection state** (`selected_tabs`) and runtime maps keyed by id (`layout`, `held_text`, ...) stay as they are; unifying
   them into the runtime table is not part of this work.
 

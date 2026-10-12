@@ -731,7 +731,7 @@ impl App {
                 str_field("path")
             }
             _ => {
-                // Json / JsonLeaf, and anything a newer build added.
+                // Json, and anything a newer build added.
                 ui.label(egui_phosphor::light::BRACKETS_CURLY);
                 str_field("path")
             }

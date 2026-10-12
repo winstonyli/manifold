@@ -197,8 +197,7 @@ struct App {
     /// second nested one running inside the group's own node. It has no
     /// runtime state of its own (`Runtime::None`): its name (`Mirror::name`,
     /// written by `App::edit_name`; a new group's is seeded by
-    /// `App::place_group`), whether an older build's "Expand as Graph" made it
-    /// (`Mirror::from_json`) and the jar new tabs in it start with
+    /// `App::place_group`), and the jar new tabs in it start with
     /// (`Mirror::default_jar`) are the mirror's, as are its document pos and
     /// `color`; the drawn position is `App::layout`.
     ///

@@ -87,7 +87,7 @@ impl Runtime {
         }
     }
 
-    /// The file a content card shows on this machine (an image, PDF, Json file or leaf, or download): its stored
+    /// The file a content card shows on this machine (an image, PDF, Json file, or download): its stored
     /// path resolved here (`ContentIndex::resolve`), or a reload's new file. `None` for other kinds. The stored path is
     /// the mirror's (`Mirror::path`, 2b-5 Ruling 5).
     pub(crate) fn file_path(&self) -> Option<&str> {
@@ -220,11 +220,6 @@ pub(crate) struct JsonPayload {
     pub(crate) path: String,
     /// Shared with an open `JsonLevel` (entering the node doesn't copy it).
     pub(crate) value: std::sync::Arc<serde_json::Value>,
-    /// A leaf that an older build's "Expand as Graph" made (a `JsonLeaf` node), whose card shows `"{key}: {value}"`
-    /// (`Mirror::key`) so it's clear which field it is; `false` for a genuine top-level file-backed JSON node (its card
-    /// just shows the value's own shape). A leaf still loads from a session saved before that feature was removed; see
-    /// `Mirror::from_json`.
-    pub(crate) leaf: bool,
     /// Same as `ImagePayload::error`: a restored card whose file couldn't
     /// be loaded (`value` is `Null`).
     pub(crate) error: Option<String>,
@@ -234,12 +229,12 @@ pub(crate) struct JsonPayload {
 
 impl JsonPayload {
     /// Whether this node has a level to enter and a view to edit: a file's
-    /// node whose value parsed. Not a leaf, not an error card (plan ruling
+    /// node whose value parsed. Not an error card (plan ruling
     /// 10), and not a refetch placeholder (`Null`, no error, its file not
     /// here yet), whose view must outlive the fetch. A file that really
     /// holds `null` is still on disk, so the stat runs only for `Null`.
     pub(crate) fn enterable(&self) -> bool {
-        !self.leaf && self.error.is_none() && !(self.value.is_null() && !std::path::Path::new(&self.path).exists())
+        self.error.is_none() && !(self.value.is_null() && !std::path::Path::new(&self.path).exists())
     }
 }
 
@@ -418,14 +413,13 @@ impl GraphNode {
 }
 
 impl App {
-    /// The web source of an Image, Pdf, Json (not a leaf) or Note node (`Mirror::url`): Refresh and Open as tab use it,
+    /// The web source of an Image, Pdf, Json or Note node (`Mirror::url`): Refresh and Open as tab use it,
     /// and a missing file is fetched again from it. `None` for a local file and for other kinds.
     pub(crate) fn source_url(&self, id: &str) -> Option<&str> {
-        let content = match &self.nodes.get(id)?.runtime {
-            Runtime::Image(_) | Runtime::Pdf(_) | Runtime::Note(_) => true,
-            Runtime::Json(p) => !p.leaf,
-            _ => false,
-        };
+        let content = matches!(
+            &self.nodes.get(id)?.runtime,
+            Runtime::Image(_) | Runtime::Pdf(_) | Runtime::Json(_) | Runtime::Note(_)
+        );
         Some(self.mirror.url(id)).filter(|url| content && !url.is_empty())
     }
 
@@ -490,12 +484,8 @@ second"
         let image =
             node(Runtime::Image(ImagePayload { path: "/home/u/cat.png".into(), width: 1, height: 1, error: None }));
         assert_eq!(image.accessible_name("", None), "Image: cat.png");
-        let json = node(Runtime::Json(JsonPayload {
-            path: r"D:\data\x.json".into(),
-            value: Default::default(),
-            leaf: false,
-            error: None,
-        }));
+        let json =
+            node(Runtime::Json(JsonPayload { path: r"D:\data\x.json".into(), value: Default::default(), error: None }));
         assert_eq!(json.accessible_name("", None), "JSON: x.json");
     }
 

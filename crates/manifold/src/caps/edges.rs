@@ -3,7 +3,7 @@
 //! reads them.
 
 use super::pattern::Pattern;
-use crate::store::model::{field, TYPE_GROUP, TYPE_JSON_LEAF, TYPE_LINK, TYPE_NOTE, TYPE_TAB};
+use crate::store::model::{field, TYPE_GROUP, TYPE_LINK, TYPE_NOTE, TYPE_TAB};
 
 /// The containment edge: a node is shown inside a group.
 pub(crate) const CONTAINS: &str = "contains";
@@ -24,20 +24,9 @@ pub(crate) enum Storage {
 }
 
 /// Every card type that may sit inside a group.
-const CARD_TYPES: [&str; 8] = [
-    TYPE_TAB,
-    TYPE_GROUP,
-    TYPE_NOTE,
-    "image/*",
-    "application/pdf",
-    "application/json",
-    TYPE_JSON_LEAF,
-    "application/octet-stream",
-];
-/// The card types a link may join, and an opened-from edge may end on: all but the JSON leaf.
-const LINKABLE: [&str; 7] =
+const CARD_TYPES: [&str; 7] =
     [TYPE_TAB, TYPE_GROUP, TYPE_NOTE, "image/*", "application/pdf", "application/json", "application/octet-stream"];
-/// The cards that may be opened from another: the linkable ones with a `parent` field, so all but a group (a group
+/// The cards that may be opened from another: the card types with a `parent` field, so all but a group (a group
 /// is made, never opened; `TYPES` gives it no `parent`, so the save could not keep one).
 const OPENER_SOURCES: [&str; 6] =
     [TYPE_TAB, TYPE_NOTE, "image/*", "application/pdf", "application/json", "application/octet-stream"];
@@ -145,12 +134,14 @@ impl EdgeTable {
 pub(crate) fn builtin_edges() -> EdgeTable {
     EdgeTable::new(vec![
         EdgeRow::new(CONTAINS, &CARD_TYPES, &[TYPE_GROUP]).stored_in(Storage::Tree).acyclic(),
-        EdgeRow::new(OPENED_FROM, &OPENER_SOURCES, &LINKABLE)
+        EdgeRow::new(OPENED_FROM, &OPENER_SOURCES, &CARD_TYPES)
             .stored_in(Storage::Field(field::PARENT))
             .acyclic()
             .layout()
             .user_creatable("Opened from\u{2026}"),
-        EdgeRow::new(LINK, &LINKABLE, &LINKABLE).stored_in(Storage::Node(TYPE_LINK)).user_creatable("Link to\u{2026}"),
+        EdgeRow::new(LINK, &CARD_TYPES, &CARD_TYPES)
+            .stored_in(Storage::Node(TYPE_LINK))
+            .user_creatable("Link to\u{2026}"),
     ])
 }
 
@@ -227,16 +218,14 @@ mod tests {
         }
         assert!(!t.can_connect(LINK, "application/vnd.manifold.jar", TYPE_TAB));
         assert!(!t.can_connect(LINK, TYPE_TAB, "application/vnd.manifold.link"));
-        assert!(!t.can_connect(LINK, TYPE_JSON_LEAF, TYPE_TAB));
     }
 
     #[test]
-    fn opened_from_excludes_a_jar_and_a_json_leaf() {
+    fn opened_from_excludes_a_jar() {
         let t = edges();
-        for end in ["application/vnd.manifold.jar", TYPE_JSON_LEAF] {
-            assert!(!t.can_connect(OPENED_FROM, end, TYPE_TAB), "{end} as source");
-            assert!(!t.can_connect(OPENED_FROM, TYPE_TAB, end), "{end} as target");
-        }
+        let jar = "application/vnd.manifold.jar";
+        assert!(!t.can_connect(OPENED_FROM, jar, TYPE_TAB), "a jar as source");
+        assert!(!t.can_connect(OPENED_FROM, TYPE_TAB, jar), "a jar as target");
     }
 
     /// A `Field(no)` edge lives on its source node, so every stored type its sources accept must carry `no` in
@@ -255,12 +244,6 @@ mod tests {
                 }
             }
         }
-    }
-
-    #[test]
-    fn linkable_is_every_card_type_but_the_json_leaf() {
-        let expected: Vec<_> = CARD_TYPES.iter().filter(|&&t| t != TYPE_JSON_LEAF).collect();
-        assert_eq!(LINKABLE.iter().collect::<Vec<_>>(), expected, "CARD_TYPES and LINKABLE diverged");
     }
 
     #[test]

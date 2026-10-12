@@ -193,10 +193,10 @@ impl JsonLevel {
 }
 
 impl App {
-    /// The file-backed Json node `current_group` names, if it does.
+    /// The Json node `current_group` names, if it does.
     pub(crate) fn current_json_node(&self) -> Option<&JsonPayload> {
         let node = self.nodes.get(self.current_group.as_ref()?)?;
-        node.as_json().filter(|json| !json.leaf)
+        node.as_json()
     }
 
     /// Leaves a JSON level for the Json node's group, before placing a new

@@ -541,7 +541,7 @@ fn click_action_gives_a_pdf_the_download_click() {
     for kind in [loaded_tab(), sleeping_tab(), plain(TYPE_IMAGE)] {
         assert_eq!(click_action(kind), Some(NodeAction::Open), "{kind:?}");
     }
-    for kind in [plain(TYPE_NOTE), plain(TYPE_GROUP), plain(TYPE_JSON), plain(TYPE_JSON_LEAF)] {
+    for kind in [plain(TYPE_NOTE), plain(TYPE_GROUP), plain(TYPE_JSON)] {
         assert_eq!(click_action(kind), None, "{kind:?}: handled by the caller");
     }
 }
@@ -583,15 +583,14 @@ fn node_card_size_matches_each_kinds_card() {
     assert_eq!(node_card_size(&download), DOWNLOAD_NODE_SIZE);
     assert_eq!(node_card_size(&Runtime::Note(NotePayload { text: String::new(), editing: false })), NOTE_NODE_SIZE);
     assert_eq!(node_card_size(&Runtime::None), GROUP_NODE_SIZE, "a group has no runtime");
-    let json = |value: serde_json::Value, leaf: bool, error: Option<&str>| {
-        Runtime::Json(JsonPayload { path: "a.json".into(), value: value.into(), leaf, error: error.map(Into::into) })
+    let json = |value: serde_json::Value, error: Option<&str>| {
+        Runtime::Json(JsonPayload { path: "a.json".into(), value: value.into(), error: error.map(Into::into) })
     };
     let five = serde_json::json!({"a": 1, "b": 2, "c": 3, "d": 4, "e": 5});
-    assert_eq!(node_card_size(&json(five.clone(), false, None)), crate::json_view::preview_size(&five));
-    assert_eq!(node_card_size(&json(serde_json::json!({}), false, None)).x, crate::json_view::PREVIEW_CARD_WIDTH);
-    // A leaf from an old "Expand as Graph" and an error card keep the small size.
-    assert_eq!(node_card_size(&json(serde_json::json!(1), true, None)), JSON_NODE_SIZE);
-    assert_eq!(node_card_size(&json(five, false, Some("missing"))), JSON_NODE_SIZE);
+    assert_eq!(node_card_size(&json(five.clone(), None)), crate::json_view::preview_size(&five));
+    assert_eq!(node_card_size(&json(serde_json::json!({}), None)).x, crate::json_view::PREVIEW_CARD_WIDTH);
+    // An error card keeps the small size.
+    assert_eq!(node_card_size(&json(five, Some("missing"))), JSON_NODE_SIZE);
     assert_eq!(
         node_card_size(&Runtime::Unloaded(UnloadedTabPayload {
             url: "https://example.org/".into(),
@@ -648,7 +647,6 @@ fn card_filter_text_matches_each_kinds_filter_input() {
         filter(&Runtime::Json(JsonPayload {
             path: "C:/data/x.json".into(),
             value: std::sync::Arc::new(serde_json::json!(1)),
-            leaf: false,
             error: None,
         })),
         ["x.json"]
