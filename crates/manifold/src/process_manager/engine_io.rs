@@ -551,6 +551,13 @@ mod tests {
             permit.send(()).unwrap();
         }
         assert!(eventually(Duration::from_secs(5), || !writer.is_unresponsive(Instant::now())), "a write clears it");
+        // That holds at once (the first write is young), so wait for the queue to drain: sent into a full queue, the
+        // message below would be refused too.
+        let drained = || {
+            let bytes = written.lock().unwrap_or_else(PoisonError::into_inner).clone();
+            urls(&decode(bytes)).len() >= SEND_QUEUE_CAP
+        };
+        assert!(eventually(Duration::from_secs(5), drained), "the queue drains");
         writer.send(&url(sent));
         writer.shutdown();
         assert!(writer.wait_finished(Duration::from_secs(5)));
