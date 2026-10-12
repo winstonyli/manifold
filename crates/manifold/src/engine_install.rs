@@ -529,7 +529,7 @@ pub(crate) fn verify(path: &Path, pin: &Pin) -> Result<(), InstallError> {
 }
 
 /// The lowercase hex SHA-256 of the file at `path`.
-fn sha256_file(path: &Path) -> Result<String, InstallError> {
+pub(crate) fn sha256_file(path: &Path) -> Result<String, InstallError> {
     #[cfg(test)]
     HASHED.with(|n| n.set(n.get() + 1));
     let io = |e: std::io::Error| InstallError::Io(e.to_string());

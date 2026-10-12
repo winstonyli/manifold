@@ -49,6 +49,10 @@ pub(super) fn engine_binary_path(kind: EngineKind) -> PathBuf {
         return sibling;
     }
     let Some(mut fallback) = engine_hosts_dir() else { return sibling };
+    if kind == EngineKind::Webview2 {
+        // Where `spawn_tab` extracts the embedded host (`embedded_host::ensure`), in a folder of its own.
+        return crate::embedded_host::host_path(&fallback);
+    }
     fallback.push(file_name);
     fallback
 }

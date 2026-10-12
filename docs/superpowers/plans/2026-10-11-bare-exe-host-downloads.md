@@ -147,6 +147,7 @@ Task 0 ran 2026-10-11 (CPU 22-28% from other sessions, Defender real-time protec
 
 - **Defender / SmartScreen on a never-seen unsigned exe written to `%APPDATA%`**: unsigned Rust binaries attract ML false positives. Unmitigated by this plan; signing is parked. Task 0 Step 3 measures one case on this machine only.
 - **Host and app drift:** exact-pin hosts cannot mismatch from a download, but a hand-copied or old sibling host still can; `PROTOCOL_VERSION` stays the last guard.
+- **Parked (Task 3): the old `<exe dir>/manifold-engine-webview2.exe.WebView2` folder is not swept.** A packaged zip's WebView2 user-data folder sits beside the user's own `manifold.exe`, in a directory that cannot be told from a dev tree (`target/debug` has the same shape), and nothing before Task 3 ever put a host under `engine-hosts/`, so no manifold-owned orphan exists to sweep. Deleting by guess is not safe; a user can delete the folder by hand (about 2 MB per pooled profile).
 - **GitHub as sole host:** if the release is deleted or the account goes away, downloads fail with the existing network error and the pinned hash still protects against a replacement. Mirroring is a follow-up.
 
 ## Outcome log

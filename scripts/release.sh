@@ -9,8 +9,8 @@
 #      a static CRT with depot_tools stripped from PATH, as the old package.sh did;
 #   3. scripts/host_pin.py hashes the CEF/Servo/WebKit hosts and writes crates/manifold/src/host_pin.rs (WebView2 is
 #      embedded, so it has no row);
-#   4. builds manifold.exe with MANIFOLD_WEBVIEW2_HOST naming the built WebView2 host. build.rs arrives in Task 3, so
-#      today the variable is harmless and the embed is NOT yet effective;
+#   4. builds manifold.exe with MANIFOLD_WEBVIEW2_HOST naming the built WebView2 host; crates/manifold/build.rs
+#      embeds that file (and its SHA-256) in the exe;
 #   5. writes dist/manifold-v<ver>-windows-x64.exe (+ .exe.sha256), dist/hosts/<file>-<platform> (the exact files to
 #      upload, which the pin hashes) and the embedded host's hash under dist/, and prints the commands to commit
 #      host_pin.rs, tag and upload. It never uploads, commits, tags or pushes.
@@ -102,7 +102,7 @@ if [ -n "$verify_tag" ]; then
     if [ -f "$rec" ] && [ "$(cut -d' ' -f1 "$rec")" = "$(sha dist/embedded/manifold-engine-webview2.exe)" ]; then
         ok "the embedded WebView2 host copy matches the recorded hash"
     else bad "$rec is missing or does not match dist/embedded/manifold-engine-webview2.exe"; fi
-    echo "NOTE: that the exe really contains those bytes is not checked until build.rs embeds the host (Task 3)."
+    echo "NOTE: that the exe really contains those bytes is not checked here (build.rs embeds the file and hashes it at build time; bare-exe Task 7's --check runs the exe)."
     exit $status
 fi
 
@@ -177,7 +177,7 @@ keep_args=()
 [ -n "$keep" ] && keep_args=(--keep-from "$(wp "$keep/pin.rs")")
 table_sha="$(pin --version "$version" "${keep_args[@]}" "${assets[@]}")"
 
-# Build manifold.exe after the table is written, with the WebView2 host to embed (build.rs: Task 3).
+# Build manifold.exe after the table is written, with the WebView2 host to embed (crates/manifold/build.rs).
 (
     PATH="$(echo "$PATH" | tr ':' '\n' | grep -v -F depot_tools | tr '\n' ':')"
     export PATH RUSTFLAGS="-C target-feature=+crt-static"

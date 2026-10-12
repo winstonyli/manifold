@@ -810,6 +810,17 @@ fn a_webview2_hosts_profile_dir_is_in_its_default_user_data_folder() {
 }
 
 #[test]
+fn an_extracted_webview2_host_keeps_its_user_data_folder_in_its_own_engine_hosts_folder() {
+    let hosts = Path::new("data/engine-hosts");
+    let host = crate::embedded_host::host_path(hosts);
+    assert_eq!(host, hosts.join("webview2").join("manifold-engine-webview2.exe"));
+    assert_eq!(
+        super::webview2_profile_dir(&host, 0),
+        hosts.join("webview2/manifold-engine-webview2.exe.WebView2/EBWebView/WV2Profile_manifold_0")
+    );
+}
+
+#[test]
 fn profile_slots_are_the_lowest_free_and_reused_once_freed() {
     let mut busy = std::collections::BTreeMap::new();
     let all = |_| Some(());

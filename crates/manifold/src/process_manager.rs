@@ -10,6 +10,7 @@ use std::sync::mpsc;
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::embedded_host;
 use crate::engine_install::{
     downloads, has_runtime, host_components, host_state, plan_for, runtime_state, verify_installed_host, EngineState,
     OnDisk, Plan, RuntimeOnDisk,
@@ -32,8 +33,8 @@ pub enum EngineKind {
 /// Where an engine's host executable comes from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum HostSource {
-    /// Carried inside `manifold.exe` and extracted on demand (WebView2). Until the extraction exists
-    /// (bare-exe plan Task 3) it is found exactly like a sibling.
+    /// Carried inside `manifold.exe` when the build embeds it (`MANIFOLD_WEBVIEW2_HOST`, see `embedded_host`) and
+    /// extracted at spawn when no sibling host is there. A build that embeds nothing finds it like a sibling.
     Embedded,
     /// Pinned in `host_pin` and installed on demand into `engine-hosts/` (`engine_install`), unless a sibling
     /// host (a dev tree's, or a Linux package's) is already there.
@@ -761,6 +762,12 @@ pub fn spawn_tab(
             })?;
         }
     }
+    // An embedded WebView2 host is put in place before its path is used (the profile slot is keyed on it). A sibling
+    // host wins as it does everywhere else; a build that embeds nothing returns `None` and touches no file.
+    let extracted_host = match engine_hosts_dir() {
+        Some(dir) if kind == EngineKind::Webview2 && sibling_host(kind).is_none() => embedded_host::ensure(&dir)?,
+        _ => None,
+    };
 
     // Normally the socket/shared-memory id is just tab_id. But a prior run
     // that crashed (rather than exiting cleanly) can leave a stale
@@ -812,7 +819,8 @@ pub fn spawn_tab(
     if let Some(n) = profile_slot {
         command.env("ENGINE_WEBVIEW2_PROFILE", webview2_profile_name(n));
     }
-    let mut child = match command.spawn() {
+    let spawned = if extracted_host.is_some() { embedded_host::spawn_fresh(&mut command) } else { command.spawn() };
+    let mut child = match spawned {
         Ok(child) => child,
         Err(e) => {
             if let Some(n) = profile_slot {

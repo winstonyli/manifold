@@ -16,6 +16,7 @@ mod debug_control;
 #[cfg(test)]
 mod deleted_names;
 mod deselect;
+mod embedded_host;
 mod engine_info;
 mod engine_install;
 mod event_loop;

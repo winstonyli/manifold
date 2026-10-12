@@ -38,6 +38,9 @@ winit.workspace = true
 [dev-dependencies]
 skrifa.workspace = true
 
+[build-dependencies]
+sha2.workspace = true
+
 # Windows-only dependencies. `manifold` also compiles on Linux (`cargo check
 # -p manifold` under WSL), and `windows` pulls `windows-future`, which does not
 # build off Windows, so neither crate may be a plain dependency.

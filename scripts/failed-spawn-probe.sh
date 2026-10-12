@@ -32,12 +32,17 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# The failure is forced by running a copy of the exe with no engine host beside it.
+# The failure is forced by running a copy of the exe with no engine host beside it. A build that embeds the WebView2
+# host (release.sh) would still extract it and succeed, so the folder it extracts into is also made unusable: a file
+# stands where `engine-hosts` should be. This dev build embeds nothing and fails on the missing sibling alone; the
+# file changes nothing for it.
 mkdir -p "$out/bin"
 cp "$exe" "$out/bin/manifold.exe"
 exe="$out/bin/manifold.exe"
 profile="$out/appdata"
 seed_settings "$profile"
+mkdir -p "$profile/manifold/manifold/data"
+echo "not a folder" >"$profile/manifold/manifold/data/engine-hosts"
 echo '{"nodes": []}' >"$profile/seed.json"
 "$exe" --import-json "$(cygpath -w "$profile/seed.json")" --out "$(cygpath -w "$profile/manifold/session.mnf")" >/dev/null
 
