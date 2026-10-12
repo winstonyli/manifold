@@ -260,6 +260,8 @@ pub enum DebugCommand {
     /// (the one showing, else the next queued), or null. Suggestions arriving from the network show up
     /// only once a frame has drained them, and every command draws one, so
     /// a test can poll this until `suggestions` fills.
+    /// `window` is the window's `[width, height]` in points; `popups` lists the visible menus, dialogs, dropdowns and
+    /// toasts as `{id, order, rect}` (see `App::popups_state`).
     /// The file is replaced atomically (`store::atomic::replace`), so a test may read it as soon as it exists.
     ExportState(String),
     /// "Import..." with an explicit path, same "bypass the real file
@@ -1454,6 +1456,7 @@ impl App {
         // aim a click or drag at a card. A card is named by its type
         // (`CardKind`), never a kind enum (plan 2b-6, Ruling 9).
         let now = std::time::Instant::now();
+        let window = self.egui_ctx.content_rect();
         let cards: Vec<serde_json::Value> = self
             .level_items()
             .into_iter()
@@ -1597,6 +1600,32 @@ impl App {
             // The toast showing, or else the next queued one.
             "toast": self.toasts.save_toast.as_ref().map(|(message, _)| message).or(self.toasts.save_toast_queue.front()),
             "engines": self.engines_state(),
+            "window": [window.width(), window.height()],
+            "popups": self.popups_state(),
+        })
+    }
+
+    /// `export_state`'s `popups`: every visible egui `Area` above the panels (menus, dialogs, dropdowns, toasts,
+    /// tooltips), as `{id, order, rect: [left, top, right, bottom]}` in points, so a layout check can see one run past
+    /// the window.
+    fn popups_state(&self) -> Vec<serde_json::Value> {
+        self.egui_ctx.memory(|m| {
+            let mut layers: Vec<_> = m
+                .areas()
+                .visible_layer_ids()
+                .into_iter()
+                .filter(|layer| matches!(layer.order, egui::Order::Foreground | egui::Order::Tooltip))
+                .filter_map(|layer| m.area_rect(layer.id).map(|rect| (layer, rect)))
+                .map(|(layer, rect)| {
+                    serde_json::json!({
+                        "id": format!("{:?}", layer.id),
+                        "order": format!("{:?}", layer.order),
+                        "rect": [rect.min.x, rect.min.y, rect.max.x, rect.max.y],
+                    })
+                })
+                .collect();
+            layers.sort_by_key(|v| v["id"].to_string());
+            layers
         })
     }
 
@@ -1856,6 +1885,27 @@ mod tests {
         assert_eq!(engines["webview2"]["disk"], "host ready");
         assert_eq!(engines["cef"]["disk"], "host missing, runtime missing");
         assert!(engines["servo"]["state"].as_str().unwrap().starts_with("Unavailable"), "{engines:?}");
+    }
+
+    /// `window` is the window's size and `popups` the visible Foreground layers' rects (`gate layout` reads both).
+    #[test]
+    fn export_state_gives_the_window_and_each_foreground_popup() {
+        let app = App::default();
+        let mut output = app.egui_ctx.run_ui(egui::RawInput::default(), |ui| {
+            egui::Area::new(egui::Id::new("probe_popup")).order(egui::Order::Foreground).fixed_pos([10.0, 20.0]).show(
+                ui.ctx(),
+                |ui| {
+                    ui.label("x");
+                },
+            );
+        });
+        output.textures_delta.clear();
+        let state = app.export_state();
+        assert_eq!(state["window"].as_array().map(Vec::len), Some(2));
+        let popups = state["popups"].as_array().unwrap();
+        let probe = popups.iter().find(|p| p["id"].as_str().is_some_and(|id| id.contains("probe_popup"))).unwrap();
+        assert_eq!(probe["rect"][0], 10.0);
+        assert_eq!(probe["rect"][1], 20.0);
     }
 
     #[test]

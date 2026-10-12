@@ -2,21 +2,21 @@
 # Usage: scripts/gate.sh LOG [full|light|ui]    (scripts/gate-tier.sh says which tier a change needs)
 #
 # The pre-merge gate: sequential, so load from other sessions is the only thing that stretches it.
-#   full  (default): gate two x3 + gate smoke x1 + launch-forms-probe + gate link. Use for any
+#   full  (default): gate two x3 + gate smoke x1 + launch-forms-probe + gate link + gate layout. Use for any
 #                    change to sync, the store, the mirror, session save/restore or the engines. ~5.5 min on a
 #                    quiet-ish machine (measured 2026-10-11 at 38-45% CPU from other sessions, so an upper bound).
-#   light:           gate two x1 + gate smoke x1 + launch-forms-probe + gate link. Allowed when
+#   light:           gate two x1 + gate smoke x1 + launch-forms-probe + gate link + gate layout. Allowed when
 #                    only UI code that writes the store or reaches an engine changed (gestures, menus), or scripts:
 #                    ~3.5 min (same conditions). The repeats in `full` exist to catch flaky ordering in sync, which
 #                    UI-only changes cannot reach.
-#   ui:              `cargo test` of the three CI crates + gate link. For changes to drawing, input and view-state
+#   ui:              `cargo test` of the three CI crates + gate link + gate layout. For changes to drawing, input and view-state
 #                    modules that import no store, sync or network module (the list is in gate-tier.sh), and docs:
-#                    ~2 min (measured 2026-10-09).
+#                    ~5 min (gate layout is ~3 of them; measured 2026-10-11).
 # Build first (`cargo build -j 8 -p manifold -p manifold-engine-webview2 -p gate`; `-p manifold` alone leaves the WebView2 host
 # old): every probe stage runs the existing exes. Launch detached and low priority:
 #   cmd //c start "" //b //belownormal bash scripts/gate.sh LOG [mode]
 # Progress and verdicts go to LOG; each stage's own output to LOG.two-N.log, LOG.smoke.log, LOG.launch-forms.log,
-# LOG.link.log and LOG.unit.log. After each stage LOG gets its TIMING lines (see scripts/gate-timing.sh) and at the end
+# LOG.link.log, LOG.layout.log and LOG.unit.log. After each stage LOG gets its TIMING lines (see scripts/gate-timing.sh) and at the end
 # the slowest ten; LOG.cpu holds the machine's CPU load sampled every few seconds while it ran. Running the runs in
 # parallel was tried (2026-10-07) and was worse: 53 min, all four runs failed on timing waits under load.
 cd "$(dirname "$0")/.." || exit 1
@@ -67,6 +67,7 @@ if [ "$mode" != ui ]; then
     stage launch-forms "$out.launch-forms.log" bash scripts/launch-forms-probe.sh
 fi
 stage link "$out.link.log" target/debug/gate link
+stage layout "$out.layout.log" target/debug/gate layout
 echo "GATE slowest steps (seconds, cpu at start, mean cpu):" >>"$out"
 bash scripts/gate-timing.sh top "$out" 10 >>"$out"
 echo "GATE done $(date +%H:%M:%S) cpu=$(cpu)% defender_rt=$(defender)" >>"$out"

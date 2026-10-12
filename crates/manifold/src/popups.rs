@@ -78,6 +78,9 @@ pub(crate) fn clicked_outside_popup(ui: &egui::Ui, area_rect: egui::Rect, anchor
     })
 }
 
+/// The room `build_list_popup_frame` leaves above and below a popup that is as tall as the window.
+const POPUP_WINDOW_MARGIN: f32 = 8.0;
+
 /// The `Area`/`Frame` shell every toolbar list-dropdown (Recently Closed,
 /// Bookmarks, History, Downloads) wraps its own contents in -- pinned below
 /// `anchor_rect`, same fill/stroke/corner-radius/margin, same min/max width
@@ -115,7 +118,9 @@ pub(crate) fn build_list_popup_frame(
                 if max_width.is_finite() {
                     ui.set_max_width(max_width);
                 }
-                add_contents(ui);
+                // A list taller than the window scrolls instead of running off it.
+                let fit = ctx.content_rect().height() - 2.0 * POPUP_WINDOW_MARGIN;
+                egui::ScrollArea::vertical().max_height(fit.max(120.0)).show(ui, add_contents);
                 list_row_nav(ui, interactable);
             });
         })
@@ -1636,15 +1641,19 @@ impl App {
             .show(ui.ctx(), |ui| {
                 dialog_frame(ui).show(ui, |ui| {
                     control_font(ui);
-                    ui.set_width(360.0);
+                    // Narrower than 360 in a narrow window; the descriptions wrap to the room left of the keys.
+                    let width = 360.0_f32.min(ui.ctx().content_rect().width() - 60.0);
+                    ui.set_width(width);
                     ui.label(heading_text("Keyboard Shortcuts"));
                     ui.separator();
                     // Leaves room for the title above and the Close button below on a short window.
                     let list_height = (ui.ctx().content_rect().height() - 170.0).clamp(120.0, 520.0);
                     egui::ScrollArea::vertical().max_height(list_height).show(ui, |ui| {
-                        egui::Grid::new("shortcuts_help_grid").num_columns(2).spacing(egui::vec2(16.0, 6.0)).show(
-                            ui,
-                            |ui| {
+                        egui::Grid::new("shortcuts_help_grid")
+                            .num_columns(2)
+                            .spacing(egui::vec2(16.0, 6.0))
+                            .max_col_width(width * 0.6)
+                            .show(ui, |ui| {
                                 for (keys, desc) in SHORTCUTS {
                                     if *keys == "#" {
                                         ui.label(egui::RichText::new(*desc).strong().color(ACCENT));
@@ -1655,8 +1664,7 @@ impl App {
                                     }
                                     ui.end_row();
                                 }
-                            },
-                        );
+                            });
                     });
                     ui.separator();
                     if ui.button("Close").clicked() {
