@@ -997,7 +997,7 @@ impl App {
                     });
                     mark_list_partial(ui);
                 }
-                ui.separator();
+                menu_separator(ui);
                 if ui.button("Clear").clicked() {
                     clear_requested = true;
                 }
@@ -1179,7 +1179,7 @@ impl App {
                             close = true;
                         }
                     }
-                    ui.separator();
+                    menu_separator(ui);
                     if ui.button("Mute Others").on_hover_text("Mute every other open tab").clicked() {
                         mute_others = true;
                         close = true;
@@ -1534,13 +1534,7 @@ impl App {
                     if matches.is_empty() {
                         ui.label("No matching tabs");
                     }
-                    ui.horizontal(|ui| {
-                        for (keys, what) in [("Up / Down", "move"), ("Enter", "jump"), ("Esc", "close")] {
-                            kbd_keys(ui, keys);
-                            ui.label(egui::RichText::new(what).small().weak());
-                            ui.add_space(4.0);
-                        }
-                    });
+                    key_hint_row(ui, [("Up / Down", "move"), ("Enter", "jump"), ("Esc", "close")].into_iter());
                     egui::ScrollArea::vertical().max_height(240.0).show(ui, |ui| {
                         for (i, id) in matches.iter().enumerate() {
                             let Some(label) = self.quick_switcher_row_label(id) else { continue };

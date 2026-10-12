@@ -127,15 +127,33 @@ pub(crate) fn paint_keycaps(ui: &egui::Ui, right_center: egui::Pos2, keys: &[&st
 /// A key combination as keycaps in the current row: "Ctrl+Shift+C" is three, and "A / B"
 /// is two combinations around a weak slash.
 pub(crate) fn kbd_keys(ui: &mut egui::Ui, keys: &str) {
-    ui.spacing_mut().item_spacing.x = 3.0;
-    for (i, alternative) in keys.split(" / ").enumerate() {
-        if i > 0 {
-            ui.label(egui::RichText::new("/").weak());
+    // Scoped: the tight keycap gap must not reach what the caller lays out next.
+    ui.scope(|ui| {
+        ui.spacing_mut().item_spacing.x = KEY_GAP;
+        for (i, alternative) in keys.split(" / ").enumerate() {
+            if i > 0 {
+                ui.label(egui::RichText::new("/").weak());
+            }
+            for key in alternative.split('+').filter(|k| !k.is_empty()) {
+                kbd(ui, key);
+            }
         }
-        for key in alternative.split('+').filter(|k| !k.is_empty()) {
-            kbd(ui, key);
+    });
+}
+
+/// Gap between keycaps, and between a hint row's items.
+const KEY_GAP: f32 = 3.0;
+
+/// One row of "keycaps + what they do" pairs, with the tight hint-row spacing.
+pub(crate) fn key_hint_row<'a>(ui: &mut egui::Ui, hints: impl Iterator<Item = (&'a str, &'a str)>) {
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = KEY_GAP;
+        for (keys, what) in hints {
+            kbd_keys(ui, keys);
+            ui.label(egui::RichText::new(what).small().weak());
+            ui.add_space(4.0);
         }
-    }
+    });
 }
 
 /// A floating, non-interactive bar of "keycaps + what they do" pairs.
@@ -147,13 +165,7 @@ pub(crate) fn key_hint_strip<'a>(
     area.order(egui::Order::Foreground).interactable(false).show(ctx, |ui| {
         popup_frame(ui).show(ui, |ui| {
             control_font(ui);
-            ui.horizontal(|ui| {
-                for (keys, what) in hints {
-                    kbd_keys(ui, keys);
-                    ui.label(egui::RichText::new(what).small().weak());
-                    ui.add_space(4.0);
-                }
-            });
+            key_hint_row(ui, hints);
         });
     });
 }
@@ -250,6 +262,16 @@ pub(crate) fn menu_item_style(ui: &mut egui::Ui) {
     style.visuals.widgets.inactive.weak_bg_fill = egui::Color32::TRANSPARENT;
     style.visuals.widgets.inactive.bg_stroke = egui::Stroke::NONE;
     style.visuals.widgets.hovered.bg_stroke = egui::Stroke::NONE;
+}
+
+/// Space above and below a menu's divider line.
+pub(crate) const MENU_SEPARATOR_PAD: f32 = 3.0;
+
+/// The divider between groups of rows in a menu: one rule, padded alike in every menu.
+pub(crate) fn menu_separator(ui: &mut egui::Ui) {
+    ui.add_space(MENU_SEPARATOR_PAD);
+    ui.separator();
+    ui.add_space(MENU_SEPARATOR_PAD);
 }
 
 /// `popup_frame` for centered dialogs (quick switcher, shortcuts help,
@@ -820,6 +842,27 @@ mod tests {
         });
         out.textures_delta.clear();
         assert_eq!(gaps, (2.0, 2.0), "left and right padding of the chip");
+    }
+
+    /// A menu divider takes the same height wherever it sits, whatever spacing the menu has, and a keycap row
+    /// leaves the caller's item spacing alone.
+    #[test]
+    fn menu_separator_height_is_fixed_and_kbd_keys_do_not_leak_spacing() {
+        let ctx = egui::Context::default();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(400.0, 100.0));
+        let (mut height, mut before, mut after) = (0.0, 0.0, 0.0);
+        let mut out = ctx.run_ui(egui::RawInput { screen_rect: Some(screen), ..Default::default() }, |ui| {
+            menu_item_style(ui);
+            let top = ui.cursor().min.y;
+            menu_separator(ui);
+            height = ui.cursor().min.y - top;
+            before = ui.spacing().item_spacing.x;
+            kbd_keys(ui, "Ctrl+A");
+            after = ui.spacing().item_spacing.x;
+        });
+        out.textures_delta.clear();
+        assert_eq!(height, 2.0 * MENU_SEPARATOR_PAD + 6.0, "pad + rule + pad");
+        assert_eq!(after, before, "kbd_keys leaves the caller's spacing alone");
     }
 
     /// A click on a `toggle` reports `clicked()`; the toggle is 30x17 and draws no text.

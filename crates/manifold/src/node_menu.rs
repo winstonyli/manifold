@@ -315,9 +315,7 @@ pub(crate) fn build_node_context_menu(
                         }
                     }
                     NodeMenuItem::Separator => {
-                        ui.add_space(3.0);
-                        ui.separator();
-                        ui.add_space(3.0);
+                        menu_separator(ui);
                     }
                 }
             }

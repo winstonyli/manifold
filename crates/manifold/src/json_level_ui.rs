@@ -769,9 +769,7 @@ impl App {
                         }
                     }
                     if let Some(collapsed) = collapsed {
-                        ui.add_space(3.0);
-                        ui.separator();
-                        ui.add_space(3.0);
+                        menu_separator(ui);
                         if ui.button(if collapsed { "Expand" } else { "Collapse" }).clicked() {
                             edit = Some(JsonEdit::Toggle(pointer.clone()));
                             close = true;

@@ -6,6 +6,18 @@ use crate::jar::JarKey;
 use crate::jar_defs::{JarConfirm, JarLabel};
 use crate::store::model::NodeId;
 
+/// Space above the first and below the last section of the settings page.
+const PAGE_PAD: f32 = 12.0;
+/// Space between a section's stacked fields.
+const FIELD_GAP: f32 = 8.0;
+
+/// The start of a settings section: a gap, a rule, then the section's heading.
+fn section_start(ui: &mut egui::Ui, title: &str) {
+    ui.add_space(10.0);
+    ui.separator();
+    ui.label(heading_text(title));
+}
+
 /// What the Settings page's sections (`App::settings_general_section`
 /// and the rest) asked for or laid out this frame. `build_settings_page`
 /// acts on it after its scroll area: `apply_settings_requests`, then
@@ -92,7 +104,7 @@ impl App {
             egui::Frame::default().inner_margin(egui::Margin::symmetric(16, 0)).show(ui, |ui| {
                 ui.set_max_width(ui.available_width().min(480.0)); // never wider than the window
                 control_font(ui);
-                ui.add_space(12.0);
+                ui.add_space(PAGE_PAD);
 
                 self.settings_general_section(ui, &mut req);
                 self.settings_current_tab_section(ui, &mut req);
@@ -102,7 +114,7 @@ impl App {
                 self.settings_jars_section(ui, &mut req);
                 self.settings_bookmarks_section(ui, &mut req);
 
-                ui.add_space(12.0);
+                ui.add_space(PAGE_PAD);
             });
         });
         self.apply_settings_requests(&req);
@@ -135,7 +147,7 @@ impl App {
             .wrap(),
         );
 
-        ui.add_space(8.0);
+        ui.add_space(FIELD_GAP);
         ui.label("Default starting engine (new tabs)");
         let default_engine_response =
             self.engine_opener_button(ui, AnchoredPopup::DefaultEngine, self.settings.default_starting_engine);
@@ -146,7 +158,7 @@ impl App {
             engine_state_line(ui, &default_state);
         }
 
-        ui.add_space(8.0);
+        ui.add_space(FIELD_GAP);
         ui.label("Zoom (new tabs; also applies to the current tab now)");
         ui.horizontal(|ui| {
             // Reads/writes the *focused tab's own* zoom, not the raw
@@ -164,7 +176,7 @@ impl App {
             }
         });
 
-        ui.add_space(8.0);
+        ui.add_space(FIELD_GAP);
         ui.label("Home page (new tabs)");
         let saved = self.settings.home_page.clone();
         let draft = self.home_page_draft.get_or_insert_with(|| saved.clone());
@@ -184,7 +196,7 @@ impl App {
             self.home_page_draft = None;
         }
 
-        ui.add_space(8.0);
+        ui.add_space(FIELD_GAP);
         let mut minutes = self.settings.idle_sleep_minutes;
         setting_row(
             ui,
@@ -222,9 +234,7 @@ impl App {
 
     /// Settings, "Current Tab": engine, mute, screenshot, print.
     pub(crate) fn settings_current_tab_section(&mut self, ui: &mut egui::Ui, req: &mut SettingsRequests) {
-        ui.add_space(10.0);
-        ui.separator();
-        ui.label(heading_text("Current Tab"));
+        section_start(ui, "Current Tab");
         // Engine swap, Mute, Screenshot, and Print to PDF used to
         // be live toolbar controls next to the address bar --
         // moved here to keep that toolbar down to nav + address
@@ -273,9 +283,7 @@ impl App {
     /// (asks first) with the installed size for downloaded files.
     pub(crate) fn settings_engines_section(&mut self, ui: &mut egui::Ui) {
         use crate::engine_install::EngineState;
-        ui.add_space(10.0);
-        ui.separator();
-        ui.label(heading_text("Engines"));
+        section_start(ui, "Engines");
         for kind in ENGINE_PICKER_ORDER {
             let state = self.engine_state(kind);
             ui.add_space(4.0);
@@ -404,9 +412,7 @@ impl App {
 
     /// Settings, "Lists": the bookmarks/history/downloads buttons.
     pub(crate) fn settings_lists_section(&mut self, ui: &mut egui::Ui, req: &mut SettingsRequests) {
-        ui.add_space(10.0);
-        ui.separator();
-        ui.label(heading_text("Lists"));
+        section_start(ui, "Lists");
         ui.horizontal(|ui| {
             let bookmarks_response = ui.button(format!("Bookmarks ({})", self.bookmarks.len()));
             if self.popup_opener_clicked(ui, AnchoredPopup::Bookmarks, &bookmarks_response) {
@@ -431,9 +437,7 @@ impl App {
 
     /// Settings, "Sessions": save, save as, open/delete, export/import.
     pub(crate) fn settings_sessions_section(&mut self, ui: &mut egui::Ui, req: &mut SettingsRequests) {
-        ui.add_space(10.0);
-        ui.separator();
-        ui.label(heading_text("Sessions"));
+        section_start(ui, "Sessions");
         if ui.button("Save Now").on_hover_text("Write the auto-restored session (session.mnf) now").clicked() {
             req.save_now_requested = true;
         }
@@ -496,9 +500,7 @@ impl App {
     /// Settings, "Jars" (spec "UI"): the default jar first (it can only be cleared), then one row per named jar with
     /// its swatch, name, tab count, ephemeral toggle, Clear Cookies and Delete. Clearing and deleting ask first.
     pub(crate) fn settings_jars_section(&mut self, ui: &mut egui::Ui, req: &mut SettingsRequests) {
-        ui.add_space(10.0);
-        ui.separator();
-        ui.label(heading_text("Jars"));
+        section_start(ui, "Jars");
         // Each jar takes two lines, so a narrow window (480 px) clips nothing: its swatch, name and tab count (counts
         // aligned on the right, the name field taking the rest), then its actions under the name, wrapping if need be.
         // A jar whose name another jar shares shows its marker (`JarLabel::marker_text`, "#1a2b", in the marker style)
@@ -591,9 +593,7 @@ impl App {
 
     /// Settings, "Bookmarks": export/import.
     pub(crate) fn settings_bookmarks_section(&mut self, ui: &mut egui::Ui, req: &mut SettingsRequests) {
-        ui.add_space(10.0);
-        ui.separator();
-        ui.label(heading_text("Bookmarks"));
+        section_start(ui, "Bookmarks");
         // Same "real file dialog blocks on OS/human input
         // neither exists in headless mode" reasoning as
         // Export/Import Session (`settings_sessions_section`) -- `EXPORTBOOKMARKS`/
