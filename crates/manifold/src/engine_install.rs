@@ -134,6 +134,29 @@ pub(crate) fn has_runtime(kind: EngineKind) -> bool {
     kind == EngineKind::Cef
 }
 
+/// The Visual C++ runtime DLLs Servo's Windows host imports (its mozjs and ANGLE are built against the dynamic CRT, so
+/// it cannot carry them; the Microsoft Visual C++ Redistributable installs them in System32).
+const SERVO_VC_RUNTIME: &[&str] = &["vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll"];
+
+/// The files of `names` that `dir` lacks.
+fn missing_files(dir: &Path, names: &[&'static str]) -> Vec<&'static str> {
+    names.iter().copied().filter(|name| !dir.join(name).is_file()).collect()
+}
+
+/// System libraries `kind`'s host needs that the system lacks, so the download dialog can warn before a host that
+/// cannot start: CEF's NSS/NSPR on Linux, the Visual C++ runtime for Servo on Windows. Empty when none are needed,
+/// when all are present, or when that cannot be read.
+pub(crate) fn missing_system_libs(kind: EngineKind) -> Vec<&'static str> {
+    if has_runtime(kind) {
+        crate::cef_platform::PLATFORM.missing_system_libs()
+    } else if cfg!(windows) && kind == EngineKind::Servo {
+        std::env::var_os("SystemRoot")
+            .map_or_else(Vec::new, |root| missing_files(&Path::new(&root).join("System32"), SERVO_VC_RUNTIME))
+    } else {
+        Vec::new()
+    }
+}
+
 /// `host_pin`'s name for the platform `kind`'s host runs on: this build's own, except WebKit, whose host is a Linux
 /// ELF even when manifold runs on Windows (WSL runs it).
 pub(crate) fn host_platform(kind: EngineKind) -> &'static str {

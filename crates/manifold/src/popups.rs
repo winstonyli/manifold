@@ -384,10 +384,16 @@ fn download_detail(kind: EngineKind, missing: &[&str]) -> String {
         detail.push_str(WEBKIT_PREREQUISITES);
     }
     if !missing.is_empty() {
+        let fix = if cfg!(windows) {
+            "Install the Microsoft Visual C++ Redistributable (x64)"
+        } else {
+            "Install them with your package manager"
+        };
         detail.push_str(&format!(
             "
-Missing system libraries: {}. Install them with your package manager, or CEF will not start.",
-            missing.join(", ")
+Missing system libraries: {}. {fix}, or {} will not start.",
+            missing.join(", "),
+            engine_label(kind)
         ));
     }
     detail
@@ -564,13 +570,7 @@ impl App {
                 } else {
                     "Download"
                 };
-                // The Linux system-library warning is CEF's (the runtime's NSS/NSPR needs).
-                let missing_libs = if crate::engine_install::has_runtime(kind) {
-                    crate::cef_platform::PLATFORM.missing_system_libs()
-                } else {
-                    Vec::new()
-                };
-                let detail = download_detail(kind, &missing_libs);
+                let detail = download_detail(kind, &crate::engine_install::missing_system_libs(kind));
                 (download_confirm_title(verb, kind, &size), detail, verb)
             }
             EngineConfirm::Remove(kind) if crate::engine_install::installed_paths(kind).is_empty() => (
@@ -1747,6 +1747,7 @@ mod tests {
         assert!(!super::download_detail(EngineKind::Cef, &[]).contains("Missing"));
         let d = super::download_detail(EngineKind::Cef, &["libnss3.so", "libnspr4.so"]);
         assert!(d.contains("Missing system libraries: libnss3.so, libnspr4.so."), "{d}");
+        assert!(d.ends_with("Blink (CEF) will not start."), "{d}");
     }
 
     #[test]

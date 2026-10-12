@@ -1387,3 +1387,20 @@ fn webkit_installs_its_elf_under_its_own_marker() {
     std::fs::remove_file(dir.join("manifold-engine-webkit")).unwrap();
     assert_eq!(host_state(&dir, EngineKind::Webkit, f), RuntimeOnDisk::Missing, "the marker without the ELF");
 }
+
+#[test]
+fn missing_files_names_only_what_the_folder_lacks() {
+    let dir = temp_dir("missing-files");
+    std::fs::write(dir.join("a.dll"), b"x").unwrap();
+    assert_eq!(missing_files(&dir, &["a.dll", "b.dll"]), vec!["b.dll"]);
+    assert!(missing_files(&dir, &["a.dll"]).is_empty());
+}
+
+#[test]
+fn only_servo_on_windows_needs_the_visual_cpp_runtime() {
+    assert!(missing_system_libs(EngineKind::Webview2).is_empty());
+    assert!(missing_system_libs(EngineKind::Webkit).is_empty());
+    if !cfg!(windows) {
+        assert!(missing_system_libs(EngineKind::Servo).is_empty());
+    }
+}
