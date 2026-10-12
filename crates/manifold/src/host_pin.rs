@@ -31,10 +31,13 @@ pub struct Entry {
 // BEGIN TABLE
 /// The app version this table was cut for.
 #[cfg_attr(not(test), allow(dead_code, reason = "only the table check in the tests reads it"))]
-pub const PIN_VERSION: &str = "";
+pub const PIN_VERSION: &str = "0.5.0";
 
 #[rustfmt::skip]
 const TABLE: &[Entry] = &[
+    Entry { kind: EngineKind::Cef, platform: "windows-x64", components: &[
+        Component { file: "manifold-engine-cef.exe", url: "https://github.com/winstonyli/manifold/releases/download/v0.5.0/manifold-engine-cef.exe-windows-x64", size: 763392, sha256: "c680f15228430f455e53ddd7aa5a54d08aad5272fd1a886c56d4f6df7915cd1d" },
+    ] },
 ];
 // END TABLE
 
