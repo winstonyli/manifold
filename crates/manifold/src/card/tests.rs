@@ -135,6 +135,54 @@ fn the_jar_dots_show_a_waiting_switch() {
     }
 }
 
+/// A painted chip's rect is remembered per card: a point on it hits, one off it or on another card does not, and a
+/// chip that stops being painted stops being hit.
+#[test]
+fn a_painted_jar_chip_can_be_hit_until_it_stops_being_painted() {
+    let ctx = egui::Context::default();
+    crate::theme::apply_fonts(&ctx);
+    let chip = crate::jar_defs::JarChip {
+        name: crate::jar_defs::JarLabel { name: "Work".into(), marker: None },
+        color: egui::Color32::RED,
+        following: false,
+        missing: false,
+        will_switch: false,
+        can_switch_now: false,
+        was_color: egui::Color32::GRAY,
+        engine_ignores: false,
+        tooltip: None,
+    };
+    let frame = |paint: bool| {
+        let mut overlays: crate::graph_ui::DeferredOverlays = Vec::new();
+        if paint {
+            push_jar_chip(
+                &mut overlays,
+                "card",
+                egui::pos2(10.0, 10.0),
+                egui::Vec2::ZERO,
+                300.0,
+                chip.clone(),
+                egui::Color32::YELLOW,
+            );
+        }
+        let mut overlays = Some(overlays);
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            for overlay in overlays.take().unwrap_or_default() {
+                overlay(ui.painter(), &|p| p);
+            }
+        });
+        output.textures_delta.clear();
+    };
+    frame(true);
+    let on = egui::pos2(10.0 + JAR_CHIP_PAD + JAR_CHIP_R, 10.0 + JAR_CHIP_HEIGHT / 2.0);
+    assert!(on_jar_chip(&ctx, "card", on));
+    assert!(!on_jar_chip(&ctx, "card", egui::pos2(10.0, 10.0 + JAR_CHIP_HEIGHT + 20.0)), "below it");
+    assert!(!on_jar_chip(&ctx, "other", on), "another card's chip");
+    frame(false);
+    frame(false);
+    assert!(!on_jar_chip(&ctx, "card", on), "no longer painted");
+}
+
 /// The painted scrim honours `fit_jar_chip`, with the long name ellipsized rather than overflowing.
 #[test]
 fn a_painted_jar_chip_stays_inside_its_width() {

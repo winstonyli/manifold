@@ -1291,6 +1291,10 @@ impl App {
                 let hit = self.level_items().into_iter().rev().find(|item| item.rect.contains(world_pos));
                 match hit {
                     Some(LevelItem { id, kind: LevelItemKind::Node(_), .. }) => {
+                        // A right-click on the jar chip opens the menu on its Jar page.
+                        if crate::card::on_jar_chip(ui.ctx(), &id, pos) {
+                            self.menus.node_menu_page = Some((id.clone(), pos, crate::node_menu::MenuPage::Jar));
+                        }
                         self.menus.node_menu = Some((id, pos));
                         self.interaction.rect_select_start = None;
                     }
@@ -2247,6 +2251,54 @@ mod tests {
         click(&mut app, below);
         assert!(app.link.connecting.is_none(), "a click on empty canvas ends the mode");
         assert_eq!(app.mirror.parent(&a), None, "and draws nothing");
+    }
+
+    /// A right-click on a card opens its menu; on the swatch it opens on the Color page. Driven through
+    /// `build_graph_ui` with real egui input.
+    #[test]
+    fn a_right_click_on_the_swatch_opens_the_menu_on_its_color_page() {
+        let ctx = egui::Context::default();
+        crate::theme::apply_fonts(&ctx);
+        let mut app = App::default();
+        let note_id = app.alloc_node_id();
+        let note = Runtime::Note(NotePayload { text: "n".into(), editing: false });
+        app.insert_placeholder_node(note_id.clone(), egui::vec2(0.0, 0.0), crate::store::model::Kind::Note, note);
+        let frame = |app: &mut App, events: Vec<egui::Event>| {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1024.0, 768.0))),
+                events,
+                ..Default::default()
+            };
+            let mut output = ctx.run_ui(input, |ui| app.build_graph_ui(ui));
+            output.textures_delta.clear();
+        };
+        let right_click = |app: &mut App, at: egui::Pos2| {
+            let press = |pressed| egui::Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Secondary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            };
+            frame(app, vec![egui::Event::PointerMoved(at), press(true)]);
+            frame(app, vec![press(false)]);
+            frame(app, vec![]);
+        };
+        for _ in 0..3 {
+            frame(&mut app, vec![]);
+        }
+        app.camera.jump_to(app.fit_all_nodes_scene_rect());
+        frame(&mut app, vec![]);
+        let card = {
+            let item = app.level_items().into_iter().find(|i| i.id == note_id).expect("on the level");
+            app.graph_world_rect_to_screen(item.rect)
+        };
+        right_click(&mut app, card.center());
+        assert_eq!(app.menus.node_menu.as_ref().map(|(id, _)| id), Some(&note_id), "the card's menu opens");
+        assert!(app.menus.node_menu_page.is_none(), "on its items");
+        app.menus.node_menu = None;
+        right_click(&mut app, card.right_bottom() - egui::vec2(1.0, 1.0));
+        let page = app.menus.node_menu_page.as_ref().map(|(id, _, page)| (id.clone(), *page));
+        assert_eq!(page, Some((note_id, crate::node_menu::MenuPage::Color)), "the swatch opens the Color page");
     }
 
     /// Wave 2 (H2 / P2): whole `build_graph_ui` frames over the 2000-node fixture spread on a grid: idle at the top

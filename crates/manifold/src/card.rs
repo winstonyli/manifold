@@ -293,17 +293,37 @@ pub(crate) fn paint_jar_dots(
 /// most `max_width` screen points wide: the card's width less the chip's inset on both sides.
 fn push_jar_chip(
     deferred_overlays: &mut DeferredOverlays,
+    id: &str,
     world: egui::Pos2,
     offset: egui::Vec2,
     max_width: f32,
     chip: crate::jar_defs::JarChip,
     warn: egui::Color32,
 ) {
+    let key = jar_chip_key(id);
     deferred_overlays.push(Box::new(move |overlay_painter, project| {
         let font = egui::FontId::proportional(11.0);
         let text = egui::Color32::from_gray(240);
-        paint_jar_chip(overlay_painter, project(world) + offset, max_width, &chip, font, text, warn);
+        if let Some(scrim) =
+            paint_jar_chip(overlay_painter, project(world) + offset, max_width, &chip, font, text, warn)
+        {
+            let ctx = overlay_painter.ctx();
+            let frame = ctx.cumulative_frame_nr();
+            ctx.data_mut(|d| d.insert_temp(key, (frame, scrim)));
+        }
     }));
+}
+
+fn jar_chip_key(id: &str) -> egui::Id {
+    egui::Id::new(("jar_chip_rect", id))
+}
+
+/// Whether screen point `at` is on card `id`'s jar chip, as last painted (this frame or the one before: a chip no
+/// longer drawn is not hit).
+pub(crate) fn on_jar_chip(ctx: &egui::Context, id: &str, at: egui::Pos2) -> bool {
+    let now = ctx.cumulative_frame_nr();
+    ctx.data(|d| d.get_temp::<(u64, egui::Rect)>(jar_chip_key(id)))
+        .is_some_and(|(frame, scrim)| frame + 1 >= now && scrim.contains(at))
 }
 
 /// `tooltip`, with `more` on a line of its own when both exist.
@@ -1391,7 +1411,7 @@ impl App {
             let body_rect = card_body_rect(rect, tall, inv_zoom);
             let max_width = body_rect.width() * zoom_scale - 8.0;
             let warn = ui.visuals().warn_fg_color;
-            push_jar_chip(deferred_overlays, body_rect.left_top(), egui::vec2(4.0, 4.0), max_width, chip, warn);
+            push_jar_chip(deferred_overlays, id, body_rect.left_top(), egui::vec2(4.0, 4.0), max_width, chip, warn);
         }
         body
     }
@@ -2216,7 +2236,7 @@ impl App {
                 let corner = thumb_rect.left_bottom() + egui::vec2(0.0, -strip);
                 let offset = egui::vec2(4.0, -4.0 - JAR_CHIP_HEIGHT);
                 let max_width = thumb_rect.width() * zoom_scale - 8.0;
-                push_jar_chip(deferred_overlays, corner, offset, max_width, chip, ui.visuals().warn_fg_color);
+                push_jar_chip(deferred_overlays, id, corner, offset, max_width, chip, ui.visuals().warn_fg_color);
             }
         }
         // At every level of detail: a stuck engine is the one thing on this card that needs the user.
