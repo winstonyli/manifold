@@ -566,6 +566,9 @@ impl App {
         let Some(kind) = self.card_kind(id) else { return };
         match kind.ty {
             crate::store::model::TYPE_TAB => self.focus_tab(id),
+            // Nothing to view until the decode lands (`ImagePayload::decoding`).
+            crate::store::model::TYPE_IMAGE
+                if self.nodes.get(id).and_then(|n| n.as_image()).is_some_and(|i| i.decoding()) => {}
             crate::store::model::TYPE_IMAGE => {
                 self.end_note_edits();
                 self.hide_focused_tab();

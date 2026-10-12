@@ -649,3 +649,32 @@ fn a_failed_conversion_keeps_the_tab() {
     assert_eq!(app.mirror.parent(&child), Some(tab.as_str()));
     assert_eq!(app.toasts.save_toast_queue.len() + usize::from(app.toasts.save_toast.is_some()), 1, "toasted");
 }
+
+/// Retrying an error card decodes the file again: the card goes back to a placeholder, then comes out sized once the
+/// file is good. An image still decoding can't be opened.
+#[test]
+fn retrying_an_image_error_card_decodes_again_and_a_decoding_image_does_not_open() {
+    let dir = crate::store::testutil::temp_dir("image_retry");
+    let path = dir.join("p.png");
+    std::fs::write(&path, b"\x89PNG\r\n\x1a\n not really").unwrap();
+    let mut app = App::default();
+    let id = app.alloc_node_id();
+    app.insert_content(ContentSource::Local(path.clone()), id.clone(), egui::Vec2::ZERO, None).unwrap();
+    app.focus_item(&id);
+    assert_eq!(app.viewed_image, None, "no Item view while decoding");
+    app.finish_image_decodes();
+    assert!(app.nodes[&id].runtime.as_image().unwrap().error.is_some());
+
+    let mut png = Vec::new();
+    image::DynamicImage::new_rgba8(3, 2)
+        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+        .unwrap();
+    std::fs::write(&path, png).unwrap();
+    app.retry_missing_file(&id);
+    assert!(app.nodes[&id].runtime.as_image().unwrap().decoding(), "back to a placeholder");
+    app.finish_image_decodes();
+    let image = app.nodes[&id].runtime.as_image().unwrap();
+    assert_eq!((image.width, image.height, image.error.is_none()), (3, 2, true));
+    app.focus_item(&id);
+    assert_eq!(app.viewed_image.as_deref(), Some(id.as_str()));
+}
