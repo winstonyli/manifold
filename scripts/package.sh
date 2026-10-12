@@ -68,8 +68,9 @@ kill -0 "$inst" 2>/dev/null && bad "headless manifold did not exit after QUIT wi
 # A pinned host (host_pin.rs written by release.sh) makes the state carry the real download size.
 pins="$(python -P scripts/host_pin.py --list "$(cygpath -m crates/manifold/src/host_pin.rs)" </dev/null)"
 for engine in cef servo; do
-    want='^engine-state '"$engine"': Not installed'
-    grep -q "^$engine " <<<"$pins" && want="$want · [0-9]+ MB"
+    # An engine this build pins no download for (a release made without --with-servo) reads Unavailable.
+    want='^engine-state '"$engine"': Unavailable: this build has no [A-Za-z]+ download'
+    grep -q "^$engine " <<<"$pins" && want='^engine-state '"$engine"': Not installed · [0-9]+ MB'
     grep -qE "$want" "$profile/log" && ok "$engine reports $(grep -E "^engine-state $engine:" "$profile/log" | head -1)" ||
         { bad "$engine state line missing or wrong (wanted /$want/)"; sed 's/^/    log: /' "$profile/log" | tail -5; }
 done

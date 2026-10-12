@@ -572,8 +572,12 @@ mod tests {
         assert!(eventually(Duration::from_secs(5), || writer.is_unresponsive(later())), "the first write is under way");
         assert!(writer.take_newly_unresponsive(later()));
         assert!(!writer.take_newly_unresponsive(later()), "once per stall");
+        // The old write started before `probe`, a new one after it: only the old one is blocked for
+        // `UNRESPONSIVE_AFTER` at `probe + UNRESPONSIVE_AFTER`. (`!is_unresponsive(now)` would hold at once, the old
+        // write being young, and the refill below could race the writer's reset of `reported`.)
+        let probe = Instant::now();
         permit.send(()).unwrap();
-        assert!(eventually(Duration::from_secs(5), || !writer.is_unresponsive(Instant::now())));
+        assert!(eventually(Duration::from_secs(5), || !writer.is_unresponsive(probe + UNRESPONSIVE_AFTER)));
         for n in 0..SEND_QUEUE_CAP + 2 {
             writer.send(&url(n)); // the writer is stuck on its next write again, and the queue refills
         }
