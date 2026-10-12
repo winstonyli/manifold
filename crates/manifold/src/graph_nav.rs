@@ -35,11 +35,11 @@ pub(crate) struct GraphInteraction {
     /// graph panel -- the right button specifically, since the primary
     /// button is already Scene's own pan gesture (`drag_pan_buttons` is
     /// restricted to `PRIMARY` in `build_graph_ui` so the two never fight
-    /// over the same drag). `selected_tabs` is the committed result, kept
+    /// over the same drag). `selected` is the committed result, kept
     /// until the next selection (a fresh right-drag) or an explicit clear
     /// (a plain click on empty background, or Escape).
     pub(crate) rect_select_start: Option<egui::Pos2>,
-    pub(crate) selected_tabs: HashSet<String>,
+    pub(crate) selected: HashSet<String>,
     /// World position of the small "New Tab/Note/Group/File" card shown
     /// after a plain right-click (no real drag) on empty Graph-view
     /// background -- see the marquee-release logic below for where this
@@ -72,7 +72,7 @@ impl GraphInteraction {
         if self.peek_suppressed.as_deref() == Some(id) {
             self.peek_suppressed = None;
         }
-        self.selected_tabs.remove(id);
+        self.selected.remove(id);
     }
 }
 
@@ -143,16 +143,17 @@ impl App {
     /// otherwise move, or Join would pull back in, a tab no longer shown.
     pub(crate) fn eject(&mut self, id: &str) {
         self.remove_from_group(id);
-        self.interaction.selected_tabs.remove(id);
+        self.interaction.selected.remove(id);
         self.refollow(id);
     }
 
     /// What a drop moves along with `id`: the whole rectangle selection
     /// when `id` is in it (it acts as one unit, as "Group Selected" does),
-    /// which it empties, else just `id`.
-    pub(crate) fn take_drag_unit(&mut self, id: &str) -> Vec<String> {
-        if self.interaction.selected_tabs.contains(id) {
-            self.interaction.selected_tabs.drain().collect()
+    /// which it empties, else just `id`. `target` (the group or card dropped on) is never part of the unit: it would
+    /// be moved into itself.
+    pub(crate) fn take_drag_unit(&mut self, id: &str, target: &str) -> Vec<String> {
+        if self.interaction.selected.contains(id) {
+            self.interaction.selected.drain().filter(|member| member != target).collect()
         } else {
             vec![id.to_string()]
         }
@@ -184,7 +185,7 @@ impl App {
         match target {
             Some((DropEffect::Eject, _)) => self.eject(id),
             Some((DropEffect::Join, Some(group))) => {
-                for member in self.take_drag_unit(id) {
+                for member in self.take_drag_unit(id, &group) {
                     if self.nodes.contains_key(&member) {
                         self.edit_group(&member, Some(group.clone()));
                     }
@@ -195,7 +196,7 @@ impl App {
                 let group = self.alloc_node_id();
                 let pos = self.layout_pos(&other);
                 self.insert_group_at(group.clone(), Some(pos));
-                let unit = self.take_drag_unit(id);
+                let unit = self.take_drag_unit(id, &other);
                 for member in std::iter::once(other).chain(unit) {
                     if self.nodes.contains_key(&member) {
                         self.edit_group(&member, Some(group.clone()));
@@ -592,9 +593,9 @@ impl App {
     /// another replica. It only ever holds this level's tabs (`eject`, `switch_group_level`); otherwise Close Selected
     /// or Group Selected would act on a tab the user can't see.
     pub(crate) fn end_stale_selection(&mut self) {
-        let mut selected = std::mem::take(&mut self.interaction.selected_tabs);
+        let mut selected = std::mem::take(&mut self.interaction.selected);
         selected.retain(|id| self.nodes.contains_key(id) && self.in_level(id));
-        self.interaction.selected_tabs = selected;
+        self.interaction.selected = selected;
     }
 }
 
@@ -609,13 +610,13 @@ mod tests {
             drag_moved: vec!["t".into()],
             hovered: Some("t".into()),
             peek_suppressed: Some("t".into()),
-            selected_tabs: HashSet::from(["t".to_string(), "u".to_string()]),
+            selected: HashSet::from(["t".to_string(), "u".to_string()]),
             pending_new_node: Some(egui::Vec2::ZERO),
             ..Default::default()
         };
         gi.forget("t");
         assert!(gi.dragging.is_none() && gi.hovered.is_none() && gi.peek_suppressed.is_none());
-        assert_eq!(gi.selected_tabs, HashSet::from(["u".to_string()]));
+        assert_eq!(gi.selected, HashSet::from(["u".to_string()]));
         assert_eq!(gi.drag_moved, ["t"], "not forgotten: skipped at release");
         assert!(gi.pending_new_node.is_some());
         gi.dragging = Some("u".into());
@@ -756,7 +757,7 @@ mod tests {
         let a = add(&mut app, Kind::Tab, sleeping_tab("https://a.test/", "a"));
         let b = add(&mut app, Kind::Tab, sleeping_tab("https://b.test/", "b"));
         let h = add_group(&mut app, "H");
-        app.interaction.selected_tabs.extend([a.clone(), b.clone()]);
+        app.interaction.selected.extend([a.clone(), b.clone()]);
         app.follow_remote_group(&b, Some(h)); // another replica's move
         let input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 1000.0))),
@@ -764,9 +765,31 @@ mod tests {
         };
         let mut output = ctx.run_ui(input, |ui| app.build_ui_inner(ui));
         output.textures_delta.clear();
-        assert_eq!(app.interaction.selected_tabs, std::collections::HashSet::from([a.clone()]));
+        assert_eq!(app.interaction.selected, std::collections::HashSet::from([a.clone()]));
         app.apply_graph_action(&ctx, crate::graph_ui::GraphAction::CloseSelected);
         assert!(!app.nodes.contains_key(&a), "the tab still shown is closed");
         assert!(app.nodes.contains_key(&b), "the tab moved away is not");
+    }
+
+    /// A selection of groups and notes dragged onto one of its own groups: the target stays out of the unit, so no
+    /// group becomes its own parent, and the others join it.
+    #[test]
+    fn dropping_a_mixed_selection_on_a_selected_group_never_nests_it_in_itself() {
+        use crate::session_sync::tests::add_group;
+        let mut app = App::default();
+        let (g1, g2) = (add_group(&mut app, "G1"), add_group(&mut app, "G2"));
+        app.new_note_shortcut();
+        let note = app
+            .node_order
+            .iter()
+            .find(|id| app.card_kind(id).is_some_and(|k| k.ty == crate::store::model::TYPE_NOTE))
+            .cloned()
+            .unwrap();
+        app.interaction.selected.extend([g1.clone(), g2.clone(), note.clone()]);
+        app.apply_drop(&g1, Some((DropEffect::Join, Some(g2.clone()))));
+        assert_eq!(app.mirror.group(&g2), None, "the target is not moved into itself");
+        assert_eq!(app.mirror.group(&g1), Some(g2.as_str()));
+        assert_eq!(app.mirror.group(&note), Some(g2.as_str()));
+        assert!(app.interaction.selected.is_empty());
     }
 }

@@ -295,8 +295,8 @@ impl App {
                 // Only the selected cards still shown: a tab mid-crash-respawn or mid-engine-swap has no card, so it
                 // is neither counted in the centroid nor moved (its selection is consumed with the rest).
                 let live: Vec<String> =
-                    self.interaction.selected_tabs.iter().filter(|id| self.nodes.contains_key(*id)).cloned().collect();
-                self.interaction.selected_tabs.clear();
+                    self.interaction.selected.iter().filter(|id| self.nodes.contains_key(*id)).cloned().collect();
+                self.interaction.selected.clear();
                 if live.is_empty() {
                     return;
                 }
@@ -315,7 +315,7 @@ impl App {
                 }
             }
             GraphAction::CloseSelected => {
-                let ids = std::mem::take(&mut self.interaction.selected_tabs);
+                let ids = std::mem::take(&mut self.interaction.selected);
                 self.begin_tabs_shutdown(&ids);
                 for id in ids {
                     self.close_node(&id);
@@ -395,7 +395,7 @@ impl App {
         self.layout_current_level();
         self.graph_settled_key = Some(self.current_level_settle_key());
         self.camera.ease_to(self.fit_all_nodes_scene_rect());
-        self.interaction.selected_tabs.clear();
+        self.interaction.selected.clear();
         self.interaction.rect_select_start = None;
         self.interaction.pending_new_node = None;
         self.menus.node_menu = None;
@@ -629,7 +629,7 @@ impl App {
         );
         let line_click = self.line_click(ui, line_hover, scene_background.clicked());
         if deselect {
-            self.interaction.selected_tabs.clear();
+            self.interaction.selected.clear();
         }
 
         self.track_pan_momentum(ui, scene_rect);
@@ -1154,14 +1154,14 @@ impl App {
         // Rectangle-select's own action bar: only shown once a
         // right-drag has actually selected something (see
         // `handle_rect_select`).
-        if !self.interaction.selected_tabs.is_empty() {
+        if !self.interaction.selected.is_empty() {
             // Matches "+ New Group" above: groups the selection
             // into a new subgroup of whichever level is
             // currently being viewed, not just the top.
-            if ui.button(format!("Group Selected ({})", self.interaction.selected_tabs.len())).clicked() {
+            if ui.button(format!("Group Selected ({})", self.interaction.selected.len())).clicked() {
                 actions.push(GraphAction::GroupSelected);
             }
-            if ui.button(format!("Close Selected ({})", self.interaction.selected_tabs.len())).clicked() {
+            if ui.button(format!("Close Selected ({})", self.interaction.selected.len())).clicked() {
                 actions.push(GraphAction::CloseSelected);
             }
         }
@@ -1236,7 +1236,7 @@ impl App {
             if self.link.connecting.is_some() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                 self.cancel_connect();
             } else if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                self.interaction.selected_tabs.clear();
+                self.interaction.selected.clear();
                 if let Some((id, _)) = self.menus.node_menu.take() {
                     ui.memory_mut(|m| m.request_focus(egui::Id::new(("graph_card", id.as_str()))));
                 }
@@ -1343,15 +1343,11 @@ impl App {
                         ((screen_rect.min.to_vec2() - translation) / zoom_scale).to_pos2(),
                         ((screen_rect.max.to_vec2() - translation) / zoom_scale).to_pos2(),
                     );
-                    self.interaction.selected_tabs = self
-                        .tabs_at_current_level()
+                    self.interaction.selected = self
+                        .level_items()
                         .into_iter()
-                        .filter(|id| {
-                            self.nodes.contains_key(id) && {
-                                let card = egui::Rect::from_center_size(self.layout_pos(id).to_pos2(), GRAPH_NODE_SIZE);
-                                world_rect.intersects(card)
-                            }
-                        })
+                        .filter(|item| matches!(item.kind, LevelItemKind::Node(_)) && world_rect.intersects(item.rect))
+                        .map(|item| item.id)
                         .collect();
                 }
             }
@@ -1720,9 +1716,9 @@ impl App {
                 }
                 continue;
             }
-            // Ctrl-click on a tab toggles it in the selection and opens nothing.
-            if kind.ty == TYPE_TAB && card.response.clicked() && ui.input(|i| i.modifiers.ctrl) {
-                self.toggle_tab_selected(id);
+            // Ctrl-click on a card toggles it in the selection and opens nothing.
+            if card.response.clicked() && ui.input(|i| i.modifiers.ctrl) {
+                self.toggle_selected(id);
                 continue;
             }
             // A placeholder (see `ImagePayload::error`) has nothing
@@ -2113,7 +2109,7 @@ mod tests {
     #[test]
     fn keys_typed_into_a_text_field_stay_out_of_graph_navigation() {
         let mut app = App::default();
-        app.interaction.selected_tabs.insert("t".into());
+        app.interaction.selected.insert("t".into());
         let ctx = egui::Context::default();
         let field = egui::Id::new("test_field");
         let mut text = String::new();
@@ -2142,10 +2138,10 @@ mod tests {
             modifiers: egui::Modifiers::NONE,
         };
         frame(&mut app, vec![key(egui::Key::Escape)]);
-        assert!(app.interaction.selected_tabs.contains("t"), "Escape ended the edit only");
+        assert!(app.interaction.selected.contains("t"), "Escape ended the edit only");
         assert!(!ctx.memory(|m| m.has_focus(field)), "the field let go");
         frame(&mut app, vec![key(egui::Key::Escape)]);
-        assert!(app.interaction.selected_tabs.is_empty(), "with no field focused, Escape is the graph's");
+        assert!(app.interaction.selected.is_empty(), "with no field focused, Escape is the graph's");
     }
 
     /// L1: a selected id with no card (its tab mid-crash-respawn or mid-engine-swap) is left out of the centroid,
@@ -2159,12 +2155,12 @@ mod tests {
         app.insert_placeholder_node(a.clone(), egui::vec2(100.0, 0.0), Kind::Tab, sleeping_tab("https://a.test/", "a"));
         app.insert_placeholder_node(b.clone(), egui::vec2(300.0, 0.0), Kind::Tab, sleeping_tab("https://b.test/", "b"));
         let expected = (app.layout_pos(&a) + app.layout_pos(&b)) / 2.0;
-        app.interaction.selected_tabs.extend([a.clone(), b.clone(), "999".to_string()]);
+        app.interaction.selected.extend([a.clone(), b.clone(), "999".to_string()]);
         app.apply_graph_action(&egui::Context::default(), GraphAction::GroupSelected);
         let group = app.mirror.group(&a).expect("a was grouped").to_string();
         assert_eq!(app.mirror.group(&b), Some(group.as_str()));
         assert_eq!(app.mirror.pos(&group), Some(expected), "the mean of the two cards, not divided by three");
-        assert!(app.interaction.selected_tabs.is_empty());
+        assert!(app.interaction.selected.is_empty());
     }
 
     /// Links: Escape in pick-target mode ends the mode and does nothing else; the next one is the graph's as before.
@@ -2174,7 +2170,7 @@ mod tests {
         let note = app.alloc_node_id();
         app.insert_note_at(note.clone(), None);
         app.link.connecting = Some((note, crate::caps::LINK));
-        app.interaction.selected_tabs.insert("t".into());
+        app.interaction.selected.insert("t".into());
         let ctx = egui::Context::default();
         let escape = egui::Event::Key {
             key: egui::Key::Escape,
@@ -2190,9 +2186,9 @@ mod tests {
         };
         frame(&mut app);
         assert!(app.link.connecting.is_none());
-        assert!(app.interaction.selected_tabs.contains("t"), "that Escape was pick mode's only");
+        assert!(app.interaction.selected.contains("t"), "that Escape was pick mode's only");
         frame(&mut app);
-        assert!(app.interaction.selected_tabs.is_empty());
+        assert!(app.interaction.selected.is_empty());
     }
 
     /// Links: in pick-target mode a click on a target card draws the edge (and not the card's own click action), and

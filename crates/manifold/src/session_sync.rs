@@ -2094,7 +2094,7 @@ impl App {
         self.link.end();
         self.link.line_press = None;
         self.interaction.hovered = None;
-        self.interaction.selected_tabs.clear();
+        self.interaction.selected.clear();
         self.interaction.rect_select_start = None;
         self.graph_settled_key = None;
         self.spawns.reset();

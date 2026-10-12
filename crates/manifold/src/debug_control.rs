@@ -239,7 +239,7 @@ pub enum DebugCommand {
     /// `pinned`, `editing` (a note being edited), `screen` (its center) and
     /// `rect` (`[left, top, right, bottom]`), in points, which are pixels
     /// headless. `scripts/export_state.py` reads these for the probe
-    /// scripts. `selected_tabs` is the rectangle
+    /// scripts. `selected` is the rectangle
     /// selection's ids, sorted. `mirror_groups` maps every node id (any
     /// level) to its group as this replica shows it (the mirror), or null.
     /// `mirror_names` (groups), `mirror_texts` (notes) and `mirror_pos` (every node, `[x, y]`) map ids to the
@@ -1524,8 +1524,8 @@ impl App {
             .collect();
         let mirror_pos: std::collections::BTreeMap<&str, Option<[f32; 2]>> =
             self.linked_ids().map(|id| (id, self.mirror.pos(id).map(|p| [p.x, p.y]))).collect();
-        let mut selected_tabs: Vec<&String> = self.interaction.selected_tabs.iter().collect();
-        selected_tabs.sort();
+        let mut selected: Vec<&String> = self.interaction.selected.iter().collect();
+        selected.sort();
         // Every link this replica knows (ends null where unset), whether or not it is shown.
         let links: Vec<serde_json::Value> = self
             .mirror
@@ -1609,7 +1609,7 @@ impl App {
             // The card being dragged (`App::dragging`), or null.
             "dragging": self.interaction.dragging,
             "json_level": self.json_level_state(),
-            "selected_tabs": selected_tabs,
+            "selected": selected,
             // The toast showing, or else the next queued one.
             "toast": self.toasts.save_toast.as_ref().map(|(message, _)| message).or(self.toasts.save_toast_queue.front()),
             "engines": self.engines_state(),

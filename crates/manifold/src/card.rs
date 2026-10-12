@@ -977,7 +977,7 @@ impl App {
             pinned: self.mirror.pinned(id),
             muted: tab.is_some_and(|t| t.muted),
             audio_playing: tab.is_some_and(|t| t.audio_playing),
-            selected: self.interaction.selected_tabs.contains(id),
+            selected: self.interaction.selected.contains(id),
         })
     }
 
@@ -1036,13 +1036,12 @@ impl App {
         } else {
             egui::Sense::CLICK | egui::Sense::DRAG
         };
-        // Space on a focused tab card toggles it in the selection, as the marquee would select it. Taken
+        // Space on a focused card toggles it in the selection, as the marquee would select it. Taken
         // before the interact, which would otherwise read it as a click and open the tab.
-        if view.kind.ty == TYPE_TAB
-            && ui.memory(|m| m.has_focus(card_id))
+        if ui.memory(|m| m.has_focus(card_id))
             && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Space))
         {
-            self.toggle_tab_selected(id);
+            self.toggle_selected(id);
         }
         let response = ui.interact(body.interact_rect, card_id, sense);
         // Not while a card's menu is open: the pointer is usually still on
@@ -1213,11 +1212,8 @@ impl App {
             // `drag_moved` holds when the drag ends is the full, correct
             // set to save -- see the release branch below.
             let delta = response.drag_delta();
-            let moved: Vec<String> = if view.selected {
-                self.interaction.selected_tabs.iter().cloned().collect()
-            } else {
-                vec![id.to_string()]
-            };
+            let moved: Vec<String> =
+                if view.selected { self.interaction.selected.iter().cloned().collect() } else { vec![id.to_string()] };
             // The layout only: the document pos is written once, at release (`release_drag`).
             for moved_id in &moved {
                 if self.nodes.contains_key(moved_id) {

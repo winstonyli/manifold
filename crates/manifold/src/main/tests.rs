@@ -23,7 +23,7 @@ fn forget_id_clears_every_id_keyed_table() {
         app.popup_gate.admit("t", true, now);
     }
     app.spawns.tab_crashes.insert(t(), vec![now]);
-    app.interaction.selected_tabs.extend([t(), "u".to_string()]);
+    app.interaction.selected.extend([t(), "u".to_string()]);
     app.naming_jar = Some((t(), String::new()));
     app.renaming_group = Some((t(), String::new()));
     app.menus.node_menu = Some((t(), egui::Pos2::ZERO));
@@ -44,7 +44,7 @@ fn forget_id_clears_every_id_keyed_table() {
     assert!(!app.saved_scroll.contains_key("t") && app.saved_scroll.contains_key("u"), "only t's entry goes");
     assert!(app.nav_history.is_empty() && app.spawns.navigated_from.is_empty() && app.spawns.tab_crashes.is_empty());
     assert_eq!(app.popup_gate.admit("t", true, now), popup_gate::Admit::Open, "t's popup burst count went");
-    assert_eq!(app.interaction.selected_tabs, HashSet::from(["u".to_string()]));
+    assert_eq!(app.interaction.selected, HashSet::from(["u".to_string()]));
     assert!(app.naming_jar.is_none() && app.renaming_group.is_none() && app.menus.node_menu.is_none());
     assert!(app.spawns.pending_respawn_focus.is_none() && app.interaction.peek_suppressed.is_none());
     assert!(app.interaction.dragging.is_none() && app.link.connecting.is_none() && app.link.connect_drag.is_none());

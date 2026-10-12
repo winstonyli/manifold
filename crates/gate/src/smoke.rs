@@ -115,9 +115,9 @@ fn in_group(s: &State, id: &str) -> bool {
     s.current_group() == Some(id)
 }
 
-/// `s['selected_tabs']` as a list of ids.
+/// `s['selected']` as a list of ids.
 fn selected(s: &State) -> Option<Vec<String>> {
-    str_list(key(s, "selected_tabs")?)
+    str_list(key(s, "selected")?)
 }
 
 fn str_list(v: &Value) -> Option<Vec<String>> {
@@ -587,7 +587,7 @@ fn drive(sm: &mut Smoke, m: &mut Marks) -> io::Result<()> {
     let [bx0, by0, bx1, by1] = bbox[..] else { return Err(bad(format!("no tab bounding box: {bbox:?}"))) };
     sm.drag((bx0, by0), (bx1, by1), Some("right"))?;
     let selected_s = sm.settle("selected")?;
-    check_query(&selected_s, "selected", "a right-drag marquee selects both tabs", "s['selected_tabs'] == tabs", |s| {
+    check_query(&selected_s, "selected", "a right-drag marquee selects both tabs", "s['selected'] == tabs", |s| {
         selected(s).is_some_and(|sel| sel == s.tabs())
     });
     let (px, py) = pair(&xy(&selected_s, &m1)?)?;
@@ -601,7 +601,7 @@ fn drive(sm: &mut Smoke, m: &mut Marks) -> io::Result<()> {
         &ejected,
         "ejected",
         "ejecting a selected tab also drops it from the selection",
-        "len(tabs) == 1 and s['selected_tabs'] == tabs",
+        "len(tabs) == 1 and s['selected'] == tabs",
         |s| s.tabs().len() == 1 && selected(s).is_some_and(|sel| sel == s.tabs()),
     );
 
@@ -618,7 +618,7 @@ fn drive(sm: &mut Smoke, m: &mut Marks) -> io::Result<()> {
         &ctrl_out,
         "ctrl_out",
         "a Ctrl-click on a selected tab takes it out of the selection without opening it",
-        "s['selected_tabs'] == [] and not s['tab_view']",
+        "s['selected'] == [] and not s['tab_view']",
         |s| selected(s).is_some_and(|sel| sel.is_empty()) && falsy_key(s, "tab_view"),
     );
     sm.send(&format!("CLICK {x} {y} ctrl"))?;
@@ -627,7 +627,7 @@ fn drive(sm: &mut Smoke, m: &mut Marks) -> io::Result<()> {
         &ctrl_in,
         "ctrl_in",
         "a Ctrl-click on an unselected tab selects it without opening it",
-        "s['selected_tabs'] == tabs and not s['tab_view']",
+        "s['selected'] == tabs and not s['tab_view']",
         |s| selected(s).is_some_and(|sel| sel == s.tabs()) && falsy_key(s, "tab_view"),
     );
     sm.send(&format!("MOUSEMOVE {bx} {by}"))?;
@@ -637,7 +637,7 @@ fn drive(sm: &mut Smoke, m: &mut Marks) -> io::Result<()> {
         &deselected,
         "deselected",
         "a click on empty canvas clears the selection",
-        "s['selected_tabs'] == []",
+        "s['selected'] == []",
         |s| selected(s).is_some_and(|sel| sel.is_empty()),
     );
 
@@ -1068,7 +1068,7 @@ mod tests {
     #[test]
     fn queries_match_the_python_expressions() {
         let s = state(
-            r#"{"tab_view":false,"current_group":"g","selected_tabs":["t1"],"suggestions":[],"toast":null,
+            r#"{"tab_view":false,"current_group":"g","selected":["t1"],"suggestions":[],"toast":null,
                 "highlighted":1,"json_level":null,
                 "cards":[{"id":"t1","type":"application/vnd.manifold.tab","loaded":false,"json_card":false,
                            "parent":null,"screen":[400.0,300.0],"rect":[0.0,0.0,10.0,10.0]},

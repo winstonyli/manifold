@@ -926,7 +926,7 @@ impl App {
         match action {
             NodeAction::Open => {
                 if self.nodes.contains_key(id) {
-                    self.interaction.selected_tabs.clear();
+                    self.interaction.selected.clear();
                     self.start_transition_to_item(id);
                 }
             }

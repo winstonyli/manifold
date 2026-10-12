@@ -179,7 +179,7 @@ mod tests {
         State::parse(
             r#"{
               "tab_view": false,"transition": null, "focused_url": null, "address_bar_text": "",
-              "current_group": null, "toast": "Saved", "selected_tabs": [],
+              "current_group": null, "toast": "Saved", "selected": [],
               "cards": [
                 {"id":"t2","type":"application/vnd.manifold.tab","loaded":true,"json_card":false,"group":null,
                  "screen":[407.4,332.5],"rect":[300.0,250.0,520.0,420.0]},

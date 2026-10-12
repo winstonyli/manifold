@@ -599,7 +599,7 @@ fn a_converted_tab_clears_every_stale_reference() {
     app.view_mode = ViewMode::Item;
     app.focused = Some(tab.clone());
     app.split_tab = Some(tab.clone());
-    app.interaction.selected_tabs.insert(tab.clone());
+    app.interaction.selected.insert(tab.clone());
     app.spawns.pending_respawn_focus = Some(tab.clone());
 
     let body = crate::redirect_fetch::save(&dir, "n", crate::content::ContentKind::Json, b"[1]".to_vec()).unwrap();
@@ -608,7 +608,7 @@ fn a_converted_tab_clears_every_stale_reference() {
     assert!(!app.nodes.contains_key(&tab));
     assert_eq!(app.focused, None, "focused cleared");
     assert_eq!(app.split_tab, None, "split cleared");
-    assert!(!app.interaction.selected_tabs.contains(&tab), "selected_tabs cleared");
+    assert!(!app.interaction.selected.contains(&tab), "selected cleared");
     assert_eq!(app.spawns.pending_respawn_focus, None, "pending respawn focus cleared");
     assert_eq!(app.view_mode, ViewMode::Graph, "falls back to Graph like any other close of the focused tab");
 }
