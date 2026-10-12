@@ -2,9 +2,7 @@
 
 One entry per tagged release, newest first. The annotated tag `vX.Y.Z` carries the same text. Releases before v0.4.0 have no entry: see `git log --first-parent --decorate`.
 
-## Unreleased
-
-Since v0.4.1. Becomes the next entry when a release is cut.
+## v0.5.0 (2026-10-12)
 
 ### Features
 
