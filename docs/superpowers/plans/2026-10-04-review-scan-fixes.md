@@ -7276,7 +7276,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ## Deferred
 
 - **D-R1, image decode on a worker:** shipped 2026-10-12 (`image_decode.rs`: two workers, drained in `tick_fetchers`, the texture uploaded on the UI thread). A new image node is a spinner card (`ImagePayload::decoding`) until its decode returns; `content::passes(Image)` now reads the header only, so a body corrupt past it becomes an error card with a toast instead of a refusal.
-- **D-R6, JSON parse on a worker:** same shape as D-R1; the 64 MB body cap (Task 22) bounds the stall meanwhile.
+- **D-R6, JSON parse on a worker:** parked 2026-10-12, bigger than D-R1's shape. `insert_json_node_with_id` is followed at once by `reload_fetched_node` pruning the synced view against the new value, resetting the open level and deleting the old file; `enterable()` reads `Null` without an error as a refetch placeholder; and pruning against a not-yet-loaded `Null` would wipe views synced from other replicas. Doing it needs an explicit `loading` flag and the prune, level reset and old-file removal moved to the result's arrival, with the full gate. The 64 MB body cap (Task 22) bounds the stall meanwhile (tens to a few hundred ms), against seconds for a large image.
 - **D-R4, jar cookies for app-side fetches:** sending cookies outside the engines is a privacy decision for the user; Task 22 sets the User-Agent and documents the limit.
 - **D-R9, PDF rendering in a child process:** isolates a PDFium crash, but needs an IPC design; the render already runs off the UI thread.
 - **C-P1, cache markdown layout:** the borrow fix (Task 25) removes the copy; caching parsed layout needs `egui_commonmark` support or a fork.
