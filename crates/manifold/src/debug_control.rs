@@ -270,7 +270,7 @@ pub enum DebugCommand {
     /// "Print to PDF" with an explicit path instead of a real file dialog —
     /// same "bypass the dialog entirely" reason as `ExportSession`.
     PrintToPdf(String),
-    /// `Ctrl+P` equivalent — see `App::pin_focused_tab_shortcut`.
+    /// `Ctrl+P` equivalent — see `App::pin_shortcut`.
     TogglePin,
     /// `Ctrl+R`/`F5` equivalent — see `App::reload_focused_tab_shortcut`.
     Reload,
@@ -541,7 +541,7 @@ const COMMAND_HELP: &[(&str, &str)] = &[
     ("IMPORTGROUP path", "Import a group from `path`"),
     ("DUPLICATETAB", "Ctrl+D -- duplicate the focused tab"),
     ("PRINTTOPDF path", "Print the focused tab to a PDF at `path`"),
-    ("TOGGLEPIN", "Ctrl+P -- pin/unpin the focused tab"),
+    ("TOGGLEPIN", "Ctrl+P -- pin/unpin the selected cards, or the focused one"),
     ("RELOAD", "Ctrl+R/F5 -- reload the focused tab"),
     ("GOBACK", "Back button on the focused tab"),
     ("GOFORWARD", "Forward button on the focused tab"),
@@ -1292,7 +1292,7 @@ impl App {
                 Err(err) => self.queue_toast(err),
             },
             DebugCommand::PrintToPdf(path) => self.start_print_to_pdf(path),
-            DebugCommand::TogglePin => self.pin_focused_tab_shortcut(),
+            DebugCommand::TogglePin => self.pin_shortcut(),
             DebugCommand::Reload => self.reload_focused_tab_shortcut(),
             DebugCommand::GoBack | DebugCommand::GoForward => {
                 if let Some(id) = self.focused.clone() {

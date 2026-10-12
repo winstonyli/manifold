@@ -3243,8 +3243,22 @@ fn the_pin_shortcut_pins_a_focused_note() {
     let mut app = App::default();
     let note = a_note(&mut app);
     app.focused = Some(note.clone());
-    app.pin_focused_tab_shortcut();
+    app.pin_shortcut();
     assert!(app.mirror.pinned(&note));
+}
+
+#[test]
+fn the_pin_shortcut_pins_a_whole_selection_then_unpins_it() {
+    let mut app = App::default();
+    let (a, b, c) = (a_note(&mut app), a_note(&mut app), a_note(&mut app));
+    app.toggle_pin(&a);
+    app.focused = Some(c.clone());
+    app.interaction.selected.extend([a.clone(), b.clone()]);
+    app.pin_shortcut();
+    assert!([&a, &b].iter().all(|id| app.mirror.pinned(id)), "one was unpinned, so all get pinned");
+    assert!(!app.mirror.pinned(&c), "the focused card is not in the selection");
+    app.pin_shortcut();
+    assert!([&a, &b].iter().all(|id| !app.mirror.pinned(id)), "all were pinned, so all get unpinned");
 }
 
 #[test]

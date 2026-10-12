@@ -180,7 +180,7 @@ impl App {
             self.toggle_view_mode_shortcut();
         }
         if on(Shortcut::PinToggle) {
-            self.pin_focused_tab_shortcut();
+            self.pin_shortcut();
         }
         if on(Shortcut::Reload) {
             self.reload_focused_tab_shortcut();
@@ -196,8 +196,22 @@ impl App {
         }
     }
 
-    /// `Ctrl+P` / headless `TOGGLEPIN` — pins/unpins the focused tab, same
-    /// effect as its graph card's own pin dot or the context menu's Pin/Unpin entry.
+    /// `Ctrl+P` / headless `TOGGLEPIN` — pins the selected cards, or unpins them all when every one is pinned; with
+    /// nothing selected it toggles the focused card (the same effect as its pin dot or the menu's Pin/Unpin row).
+    pub(crate) fn pin_shortcut(&mut self) {
+        let ids: Vec<String> = if self.interaction.selected.is_empty() {
+            self.focused.iter().cloned().collect()
+        } else {
+            self.interaction.selected.iter().cloned().collect()
+        };
+        let ids: Vec<String> = ids.into_iter().filter(|id| self.nodes.contains_key(id)).collect();
+        let pin = ids.iter().any(|id| !self.mirror.pinned(id));
+        for id in ids {
+            self.edit_field(&id, field::PINNED, FieldValue::Bool(pin));
+        }
+    }
+
+    /// The tab menu's Pin/Unpin row: toggles the focused tab alone, whatever is selected.
     pub(crate) fn pin_focused_tab_shortcut(&mut self) {
         let Some(id) = self.focused.clone() else { return };
         self.toggle_pin(&id);
