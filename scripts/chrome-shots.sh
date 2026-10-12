@@ -11,7 +11,7 @@
 #   sheet.png           every view in one grid (needs Pillow, which is optional)
 # Each view starts from Graph view at the top level and leaves the app
 # there, so VIEWS picks any subset and a run is ~40 s. Views:
-#   graph graph-hover graph-menu-tab graph-menu-group graph-menu-note graph-menu-jars graph-menu-color graph-menu-group-jars
+#   graph graph-hover graph-menu-tab graph-menu-group graph-menu-note graph-menu-jars graph-menu-chip graph-menu-color graph-menu-group-jars
 #   graph-link graph-menu-links graph-link-hover graph-link-handles graph-link-drag
 #   graph-filter graph-group json-level json-menu
 #   tabview tabview-dropdown tabview-find tabview-actions
@@ -111,9 +111,13 @@ d = json.load(open(sys.argv[1], encoding="utf-8"))
 ty, where, W, H = sys.argv[2], sys.argv[3], float(sys.argv[4]), float(sys.argv[5])
 loaded = {"loaded": True, "asleep": False, "": None}[sys.argv[6]]
 for c in d["cards"]:
-    if card_is(c, ty, loaded) and (where == "any" or c["group"] is None):
+    if card_is(c, ty, loaded) and (where in ("any", "chip") or c["group"] is None):
         x0, y0, x1, y1 = c["rect"]
-        print(int((max(x0, 0) + min(x1, W)) / 2), int((max(y0, 36) + min(y1, H)) / 2))
+        if where == "chip":
+            # The jar chip hangs a fixed number of screen points above the card'"'"'s bottom-left corner.
+            print(int(x0 + 18), int(y1 - 33))
+        else:
+            print(int((max(x0, 0) + min(x1, W)) / 2), int((max(y0, 36) + min(y1, H)) / 2))
         break
 ' "$(w "$work/state.json")" "$1" "${2:-top}" "${SIZE% *}" "${SIZE#* }" "${3:-}" </dev/null | tr -d '\r'
 }
@@ -225,6 +229,11 @@ done
 # both jars) with the current one selected.
 if has graph-menu-jars; then
     read -r x y < <(center "$TAB" top loaded); send "MOUSEMOVE $x $y" "MOUSEDOWN $x $y right" "MOUSEUP $x $y right" "SLEEP 1" ESCAPE "SETJAR Alpha" "SETJAR Beta" "SLEEP 1"         "MOUSEMOVE $x $y" "MOUSEDOWN $x $y right" "MOUSEUP $x $y right" "SLEEP 1" "MENUPAGE jar" "SLEEP 1"; shot graph-menu-jars; reset
+fi
+# A right-click on the jar chip: the menu opens straight on the Jar page, with no MENUPAGE.
+if has graph-menu-chip; then
+    read -r x y < <(center "$TAB" top loaded); send "MOUSEMOVE $x $y" "MOUSEDOWN $x $y right" "MOUSEUP $x $y right" "SLEEP 1" ESCAPE "SETJAR Alpha" "SETJAR Beta" "SLEEP 1"
+    read -r x y < <(center "$TAB" chip loaded); send "MOUSEMOVE $x $y" "MOUSEDOWN $x $y right" "MOUSEUP $x $y right" "SLEEP 1"; shot graph-menu-chip; reset
 fi
 # The same menu's Color page.
 if has graph-menu-color; then
