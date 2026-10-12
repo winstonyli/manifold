@@ -54,7 +54,7 @@ pub(crate) struct Fixture {
     /// The 2000 nodes, in creation order.
     pub(crate) nodes: Vec<String>,
     /// The live tabs' peers, kept so their sockets stay open.
-    _peers: Vec<ipc_protocol::MessageChannel<std::net::TcpStream>>,
+    _peers: Vec<crate::process_manager::FakePeer>,
 }
 
 /// 2000 nodes of every kind, with store ids (`alloc_node_id`): every third at the top level, the rest spread over

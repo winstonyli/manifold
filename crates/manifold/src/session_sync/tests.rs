@@ -4220,7 +4220,7 @@ fn a_spawning_tab_is_created_and_lands_with_its_jar() {
 
 // ---- 2b-3: the engine in the mirror -----------------------------------------
 
-type Peer = ipc_protocol::MessageChannel<std::net::TcpStream>;
+type Peer = crate::process_manager::FakePeer;
 
 /// A live tab on `kind` (a fake host, `EngineTab::fake`), as a landing inserts it. The peer reads what it is sent.
 fn live_tab(app: &mut App, kind: EngineKind, url: &str) -> (String, Peer) {
@@ -4242,7 +4242,7 @@ fn live_tab(app: &mut App, kind: EngineKind, url: &str) -> (String, Peer) {
 
 /// What the app sent the fake host so far.
 fn sent(peer: &mut Peer) -> Vec<HostToEngine> {
-    std::iter::from_fn(|| peer.recv().ok()).collect()
+    peer.sent()
 }
 
 /// The engines that take part in the cookie jar (spec 2026-10-02-jars-design): only their tabs are asked for

@@ -226,9 +226,7 @@ impl EngineTab {
     /// reads what the app sends it (`HostToEngine`), timing out after 200 ms when nothing more comes; the sender
     /// feeds the tab's events as its reader would.
     #[cfg(test)]
-    pub(crate) fn fake_fed(
-        kind: EngineKind,
-    ) -> (EngineTab, ipc_protocol::MessageChannel<std::net::TcpStream>, mpsc::SyncSender<EngineToHost>) {
+    pub(crate) fn fake_fed(kind: EngineKind) -> (EngineTab, FakePeer, mpsc::SyncSender<EngineToHost>) {
         let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind loopback");
         let host = std::net::TcpStream::connect(listener.local_addr().expect("local addr")).expect("connect");
         let (peer, _) = listener.accept().expect("accept");
@@ -245,14 +243,47 @@ impl EngineTab {
             cache_dir: None,
             profile_slot: None,
         };
-        (tab, ipc_protocol::MessageChannel::new(peer), feed)
+        let writer = tab.writer.clone();
+        (tab, FakePeer { channel: ipc_protocol::MessageChannel::new(peer), writer }, feed)
     }
 
     /// `fake_fed` without the feed: its events channel is closed and empty.
     #[cfg(test)]
-    pub(crate) fn fake(kind: EngineKind) -> (EngineTab, ipc_protocol::MessageChannel<std::net::TcpStream>) {
+    pub(crate) fn fake(kind: EngineKind) -> (EngineTab, FakePeer) {
         let (tab, peer, _) = Self::fake_fed(kind);
         (tab, peer)
+    }
+}
+
+/// The engine end of a `fake_fed` tab: its channel, plus the tab's writer to know when everything sent has arrived.
+#[cfg(test)]
+pub(crate) struct FakePeer {
+    channel: ipc_protocol::MessageChannel<std::net::TcpStream>,
+    writer: engine_io::Writer,
+}
+
+#[cfg(test)]
+impl FakePeer {
+    /// Everything the app has sent so far: waits for the writer thread to get it all out (under load it can lag
+    /// further behind than the channel's 200 ms read timeout), then reads until nothing more comes.
+    pub(crate) fn sent(&mut self) -> Vec<ipc_protocol::HostToEngine> {
+        assert!(self.writer.wait_idle(Duration::from_secs(10)), "the writer never went idle");
+        std::iter::from_fn(|| self.channel.recv().ok()).collect()
+    }
+}
+
+#[cfg(test)]
+impl std::ops::Deref for FakePeer {
+    type Target = ipc_protocol::MessageChannel<std::net::TcpStream>;
+    fn deref(&self) -> &Self::Target {
+        &self.channel
+    }
+}
+
+#[cfg(test)]
+impl std::ops::DerefMut for FakePeer {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.channel
     }
 }
 

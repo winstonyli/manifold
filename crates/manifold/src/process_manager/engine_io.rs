@@ -152,6 +152,11 @@ impl SendQueue {
     pub(crate) fn pop(&mut self) -> Option<HostToEngine> {
         self.items.pop_front()
     }
+
+    #[cfg(test)]
+    fn is_empty(&self) -> bool {
+        self.items.is_empty()
+    }
 }
 
 #[derive(Default)]
@@ -270,6 +275,23 @@ impl Writer {
                 return false;
             }
             state = self.0.changed.wait_timeout(state, deadline - now).unwrap_or_else(PoisonError::into_inner).0;
+        }
+        true
+    }
+
+    /// Waits until everything pushed so far has been written (or the thread ended), at most `within`. True when so.
+    #[cfg(test)]
+    pub(crate) fn wait_idle(&self, within: Duration) -> bool {
+        let deadline = Instant::now() + within;
+        let mut state = self.0.lock();
+        // A write's end signals nothing, so look again every few milliseconds.
+        while !(state.finished || (state.queue.is_empty() && state.writing_since.is_none())) {
+            let now = Instant::now();
+            if now >= deadline {
+                return false;
+            }
+            let tick = (deadline - now).min(Duration::from_millis(2));
+            state = self.0.changed.wait_timeout(state, tick).unwrap_or_else(PoisonError::into_inner).0;
         }
         true
     }
