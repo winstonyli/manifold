@@ -295,6 +295,8 @@ pub enum DebugCommand {
     AddDownload(String),
     /// `F1` equivalent — toggles the keyboard-shortcut reference popup.
     ToggleShortcutsHelp,
+    /// Opens (or closes) one of the Settings page's list popups, opening the page for its anchor.
+    TogglePopup(AnchoredPopup),
     /// Sets the History popup's own filter box directly, same "direct call,
     /// not a synthetic key event" reason as `GraphFilterText`.
     HistoryFilterText(String),
@@ -556,6 +558,7 @@ const COMMAND_HELP: &[(&str, &str)] = &[
     ),
     ("SLEEP secs", "Hold later commands for `secs` (in order, unlike a driver script's own sleep)"),
     ("TOGGLESHORTCUTSHELP", "F1 -- toggle the keyboard-shortcut reference popup"),
+    ("TOGGLEPOPUP name", "Toggle the Settings page's bookmarks|history|downloads popup (opens the page)"),
     ("SPLIT engine", "Open a Split pane running `engine` (servo|cef|webkit|webview2)"),
     ("CLOSESPLIT", "Close the Split pane"),
     ("JSONSELECT [pointer]", "Select an entry on the current JSON level (no pointer: the root)"),
@@ -821,6 +824,12 @@ pub fn parse_line(line: &str) -> Option<DebugCommand> {
         })),
         "SLEEP" => Some(DebugCommand::Sleep(parse_secs(rest)?)),
         "TOGGLESHORTCUTSHELP" => Some(DebugCommand::ToggleShortcutsHelp),
+        "TOGGLEPOPUP" => match rest.trim() {
+            "bookmarks" => Some(DebugCommand::TogglePopup(AnchoredPopup::Bookmarks)),
+            "history" => Some(DebugCommand::TogglePopup(AnchoredPopup::History)),
+            "downloads" => Some(DebugCommand::TogglePopup(AnchoredPopup::Downloads)),
+            _ => None,
+        },
         "SPLIT" => parse_engine_kind(rest).map(DebugCommand::Split),
         "CLOSESPLIT" => Some(DebugCommand::CloseSplit),
         "CLOSEGROUP" => non_empty(DebugCommand::CloseGroup),
@@ -1417,6 +1426,10 @@ impl App {
             DebugCommand::ToggleShortcutsHelp => {
                 self.menus.shortcuts_help_open = !self.menus.shortcuts_help_open;
             }
+            DebugCommand::TogglePopup(which) => {
+                self.open_settings_page();
+                popups::toggle_popup(&mut self.menus.open_popup, which);
+            }
             DebugCommand::Quit => {
                 // See `quit_after_redraws`'s doc comment: exiting right
                 // now could drop a pending Enter/Escape/arrow command, or a
@@ -1795,6 +1808,7 @@ mod tests {
             "WAITIDLE 5",
             "SLEEP 0.5",
             "TOGGLESHORTCUTSHELP",
+            "TOGGLEPOPUP history",
             "SPLIT cef",
             "CLOSESPLIT",
             "CLOSEGROUP g1",

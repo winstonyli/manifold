@@ -58,9 +58,11 @@ enum Open {
     CanvasMenu,
     /// A right-click on the first card of this type.
     CardMenu(&'static str),
+    /// One of the Settings page's list popups (`bookmarks`, `history`, `downloads`).
+    Settings(&'static str),
 }
 
-static SCENARIOS: [Scenario; 6] = [
+static SCENARIOS: [Scenario; 9] = [
     Scenario {
         name: "shortcuts-help",
         open: Open::Command("TOGGLESHORTCUTSHELP"),
@@ -77,6 +79,19 @@ static SCENARIOS: [Scenario; 6] = [
     Scenario { name: "tab-menu", open: Open::CardMenu(TAB), close: "ESCAPE", list_below: None },
     Scenario { name: "note-menu", open: Open::CardMenu(NOTE), close: "ESCAPE", list_below: None },
     Scenario { name: "group-menu", open: Open::CardMenu(GROUP), close: "ESCAPE", list_below: None },
+    Scenario {
+        name: "bookmarks-popup",
+        open: Open::Settings("bookmarks"),
+        close: "TOGGLEPOPUP bookmarks",
+        list_below: None,
+    },
+    Scenario { name: "history-popup", open: Open::Settings("history"), close: "TOGGLEPOPUP history", list_below: None },
+    Scenario {
+        name: "downloads-popup",
+        open: Open::Settings("downloads"),
+        close: "TOGGLEPOPUP downloads",
+        list_below: None,
+    },
 ];
 
 fn bad(msg: String) -> io::Error {
@@ -165,6 +180,7 @@ fn right_click(inst: &mut Instance, x: f64, y: f64) -> io::Result<()> {
 fn open(inst: &mut Instance, sc: &Scenario, s: &State, w: f64, h: f64) -> io::Result<Option<String>> {
     match &sc.open {
         Open::Command(cmd) => inst.send(cmd).map(|()| None),
+        Open::Settings(name) => inst.send(&format!("TOGGLEPOPUP {name}")).map(|()| None),
         Open::CanvasMenu => {
             let (x, y) = empty_point(s, w, h).ok_or_else(|| bad("no empty canvas point".into()))?;
             right_click(inst, x, y).map(|()| None)
@@ -338,8 +354,10 @@ fn run(exe: &Path, work: &Path) -> io::Result<()> {
     let mut group = 0;
     for size in SIZES {
         // The scenarios that are not tied to a card share one instance; each card menu gets its own.
-        let free: Vec<&Scenario> = SCENARIOS.iter().filter(|sc| !matches!(sc.open, Open::CardMenu(_))).collect();
-        let mut batches = vec![free];
+        let on = |f: fn(&Open) -> bool| SCENARIOS.iter().filter(move |sc| f(&sc.open)).collect::<Vec<&Scenario>>();
+        // The Settings page replaces the canvas, so its popups share an instance apart from the canvas ones.
+        let mut batches =
+            vec![on(|o| matches!(o, Open::Command(_) | Open::CanvasMenu)), on(|o| matches!(o, Open::Settings(_)))];
         batches.extend(SCENARIOS.iter().filter(|sc| matches!(sc.open, Open::CardMenu(_))).map(|sc| vec![sc]));
         for batch in batches {
             group += 1;
