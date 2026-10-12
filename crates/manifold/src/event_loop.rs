@@ -1203,6 +1203,17 @@ impl App {
         }
     }
 
+    /// Waits for every queued image decode and applies the results, as the frames would.
+    #[cfg(test)]
+    pub(crate) fn finish_image_decodes(&mut self) {
+        let end = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while self.image_decoder.pending() > 0 && std::time::Instant::now() < end {
+            self.tick_fetchers();
+            std::thread::yield_now();
+        }
+        self.tick_fetchers();
+    }
+
     /// Applies what the favicon fetcher, PDF renderer and redirect fetcher finished since the last drain.
     fn tick_fetchers(&mut self) {
         for (origin, result) in self.favicon_fetcher.tick() {
@@ -1210,6 +1221,29 @@ impl App {
             if let Some(image) = result {
                 if let Some(gpu) = &mut self.gpu {
                     gpu.upload_favicon(&origin, &image.rgba, image.width, image.height);
+                }
+            }
+        }
+
+        for (id, result) in self.image_decoder.tick() {
+            // A node deleted (or already failed and retried) while its decode ran has nothing to receive it.
+            if self.nodes.get(&id).and_then(|n| n.as_image()).is_none() {
+                continue;
+            }
+            match result {
+                Ok(decoded) => {
+                    if let Some(gpu) = &mut self.gpu {
+                        gpu.upload_image(&id, &decoded.rgba, decoded.width, decoded.height);
+                    }
+                    if let Some(image) = self.nodes.get_mut(&id).and_then(|n| n.as_image_mut()) {
+                        (image.width, image.height, image.error) = (decoded.width, decoded.height, None);
+                    }
+                }
+                Err(error) => {
+                    self.queue_toast(error.clone());
+                    if let Some(image) = self.nodes.get_mut(&id).and_then(|n| n.as_image_mut()) {
+                        image.error = Some(error);
+                    }
                 }
             }
         }

@@ -1463,7 +1463,7 @@ fn an_opened_from_link_survives_a_restart_on_file_cards_and_a_tab_opened_from_on
     let mut app = app_on(&path, 1);
     let opener = add(&mut app, Kind::Tab, sleeping_tab("https://x.test/", "Opener"));
     let (image, pdf, json) = (app.alloc_node_id(), app.alloc_node_id(), app.alloc_node_id());
-    app.insert_image_node_with_id(image.clone(), file(&png_path), egui::Vec2::ZERO, None).unwrap();
+    app.insert_image_node_with_id(image.clone(), file(&png_path), egui::Vec2::ZERO, None);
     app.insert_pdf_node_with_id(pdf.clone(), file(&dir.join("a.pdf")), egui::Vec2::ZERO, None);
     app.insert_json_node_with_id(json.clone(), file(&json_path), egui::Vec2::ZERO, None).unwrap();
     for id in [&image, &pdf, &json] {
@@ -5241,7 +5241,7 @@ fn connect_opened_from_survives_a_restart_and_a_remote_edit_on_every_allowed_sou
             Kind::Note => add(&mut app, kind, Runtime::Note(NotePayload { text: "n".into(), editing: false })),
             Kind::Image => {
                 let id = app.alloc_node_id();
-                app.insert_image_node_with_id(id.clone(), file(&png_path), egui::Vec2::ZERO, None).unwrap();
+                app.insert_image_node_with_id(id.clone(), file(&png_path), egui::Vec2::ZERO, None);
                 id
             }
             Kind::Pdf => {

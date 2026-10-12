@@ -52,7 +52,12 @@ pub(crate) fn kind_of(mime: &str) -> ContentKind {
 /// sniffed type, isn't trusted on its own.
 pub(crate) fn passes(kind: ContentKind, bytes: &[u8]) -> bool {
     match kind {
-        ContentKind::Image => image::load_from_memory(bytes).is_ok(),
+        // The header only: a full decode here would run on the UI thread, and the image node decodes the file
+        // anyway, off that thread (`ImageDecoder`), where a body that is corrupt past its header becomes an error
+        // card.
+        ContentKind::Image => image::ImageReader::new(std::io::Cursor::new(bytes))
+            .with_guessed_format()
+            .is_ok_and(|reader| reader.into_dimensions().is_ok()),
         ContentKind::Pdf => bytes.starts_with(b"%PDF-"),
         ContentKind::Json => serde_json::from_slice::<IgnoredAny>(strip_bom(bytes)).is_ok(),
         ContentKind::Note => bytes.len() <= NOTE_MAX_BYTES && std::str::from_utf8(bytes).is_ok(),

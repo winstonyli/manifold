@@ -21,6 +21,7 @@ fn insert_content_dispatches_local_files_by_content() {
         std::fs::write(&path, bytes).unwrap();
         let id = app.alloc_node_id();
         app.insert_content(ContentSource::Local(path), id.clone(), egui::Vec2::ZERO, None).unwrap();
+        app.finish_image_decodes();
         kinds.push(match &app.nodes[&id].runtime {
             Runtime::Image(p) => format!("image {}x{}", p.width, p.height),
             Runtime::Pdf(_) => "pdf".into(),
@@ -53,19 +54,34 @@ fn insert_content_refuses_a_failing_local_file() {
     let dir = crate::store::testutil::temp_dir("insert_content_refuse");
     let big = dir.join("big.txt");
     std::fs::write(&big, vec![b'a'; crate::content::NOTE_MAX_BYTES + 1]).unwrap();
-    let broken = dir.join("broken.png");
-    std::fs::write(&broken, b"\x89PNG\r\n\x1a\n not really").unwrap();
     let mut app = App::default();
-    for path in [big, broken, dir.join("missing.txt")] {
+    for path in [big, dir.join("missing.txt")] {
         let id = app.alloc_node_id();
         assert!(app.insert_content(ContentSource::Local(path), id.clone(), egui::Vec2::ZERO, None).is_err());
         assert!(!app.nodes.contains_key(&id));
     }
     assert_eq!(
         app.toasts.save_toast_queue.len() + usize::from(app.toasts.save_toast.is_some()),
-        3,
+        2,
         "each refusal toasts"
     );
+}
+
+/// A file with an image's signature but a corrupt body gets a card at once; the worker then turns it into an error
+/// card with a toast.
+#[test]
+fn a_corrupt_image_becomes_an_error_card_and_a_toast() {
+    let dir = crate::store::testutil::temp_dir("insert_content_corrupt_image");
+    let broken = dir.join("broken.png");
+    std::fs::write(&broken, b"\x89PNG\r\n\x1a\n not really").unwrap();
+    let mut app = App::default();
+    let id = app.alloc_node_id();
+    app.insert_content(ContentSource::Local(broken), id.clone(), egui::Vec2::ZERO, None).unwrap();
+    assert!(app.nodes[&id].runtime.as_image().unwrap().decoding(), "placeholder first");
+    app.finish_image_decodes();
+    let image = app.nodes[&id].runtime.as_image().unwrap();
+    assert!(image.error.is_some() && !image.decoding());
+    assert_eq!(app.toasts.save_toast_queue.len() + usize::from(app.toasts.save_toast.is_some()), 1);
 }
 
 #[test]
@@ -623,10 +639,10 @@ fn a_failed_conversion_keeps_the_tab() {
     let child = add(&mut app, Kind::Tab, sleeping_tab("https://x.test/child", "Child"));
     app.edit_parent(&child, Some(tab.clone()));
     app.focused = Some(tab.clone());
-    let path = dir.join("n.png");
-    std::fs::write(&path, b"not a picture").unwrap();
-    let body = WebBody::File { kind: content::ContentKind::Image, path: path.to_string_lossy().into_owned() };
-    app.redirect_tab_to_content(&tab, "n".into(), "https://x.test/a.png".into(), body);
+    let path = dir.join("n.json");
+    std::fs::write(&path, b"{\"a\": ").unwrap();
+    let body = WebBody::File { kind: content::ContentKind::Json, path: path.to_string_lossy().into_owned() };
+    app.redirect_tab_to_content(&tab, "n".into(), "https://x.test/a.json".into(), body);
     assert!(app.nodes.contains_key(&tab), "the tab stays");
     assert!(!app.nodes.contains_key("n"));
     assert_eq!(app.focused.as_deref(), Some(tab.as_str()));

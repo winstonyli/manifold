@@ -7275,7 +7275,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 ## Deferred
 
-- **D-R1, image decode on a worker:** decode runs on the UI thread once per load; needs a texture-upload handoff design, not a local fix.
+- **D-R1, image decode on a worker:** shipped 2026-10-12 (`image_decode.rs`: two workers, drained in `tick_fetchers`, the texture uploaded on the UI thread). A new image node is a spinner card (`ImagePayload::decoding`) until its decode returns; `content::passes(Image)` now reads the header only, so a body corrupt past it becomes an error card with a toast instead of a refusal.
 - **D-R6, JSON parse on a worker:** same shape as D-R1; the 64 MB body cap (Task 22) bounds the stall meanwhile.
 - **D-R4, jar cookies for app-side fetches:** sending cookies outside the engines is a privacy decision for the user; Task 22 sets the User-Agent and documents the limit.
 - **D-R9, PDF rendering in a child process:** isolates a PDFium crash, but needs an IPC design; the render already runs off the UI thread.

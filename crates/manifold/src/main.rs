@@ -32,6 +32,7 @@ mod groups;
 mod history;
 mod host_pin;
 mod idle_sleep;
+mod image_decode;
 mod image_view;
 mod input;
 mod jar;
@@ -93,6 +94,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
 use favicon_fetch::FaviconFetcher;
+use image_decode::ImageDecoder;
 use pdf_render::PdfRenderer;
 use redirect_fetch::{FetchJob, FetchResult, FetchTarget, RedirectFetcher};
 use suggestions::{resolve_navigation_url, Suggestion, SuggestionFetcher};
@@ -363,6 +365,8 @@ struct App {
     favicon_fetcher: FaviconFetcher,
     /// See `PdfPayload::outcome`'s own doc comment.
     pdf_renderer: PdfRenderer,
+    /// Decodes image nodes' files off the UI thread (`insert_image_node_with_id`).
+    image_decoder: ImageDecoder,
     /// See `redirect_fetch`'s own module doc comment.
     redirect_fetcher: RedirectFetcher,
     /// Origins already resolved (successfully or not) by `favicon_fetcher`
@@ -592,6 +596,7 @@ impl Default for App {
             address_bar: AddressBar::new(settings.home_page.clone()),
             favicon_fetcher: FaviconFetcher::new(profile::favicon_cache_dir()),
             pdf_renderer: PdfRenderer::new(),
+            image_decoder: ImageDecoder::new(),
             redirect_fetcher: RedirectFetcher::new(profile::content_dir()),
             favicon_resolved: HashSet::new(),
             link: LinkGesture::default(),

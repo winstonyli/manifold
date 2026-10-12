@@ -893,7 +893,8 @@ pub(crate) fn node_card_size(runtime: &Runtime) -> egui::Vec2 {
         Runtime::Download(_) => DOWNLOAD_NODE_SIZE,
         Runtime::Note(_) => NOTE_NODE_SIZE,
         // A placeholder has no real size: the same box a failed PDF gets.
-        Runtime::Image(image) if image.error.is_some() => PDF_PENDING_NODE_SIZE,
+        // No size yet (still decoding, `ImagePayload::decoding`) or a placeholder: the box a pending PDF gets.
+        Runtime::Image(image) if image.error.is_some() || image.decoding() => PDF_PENDING_NODE_SIZE,
         Runtime::Image(image) => image_node_card_size(image.width, image.height),
         Runtime::Pdf(pdf) => pdf_card_size(pdf),
         // A file's own card previews its root (spec "The card at the
@@ -1688,12 +1689,15 @@ impl App {
                         self.paint_card_header(ui, deferred_overlays, rect, inv_zoom, zoom_scale, header);
                     }
                 }
-                // Only reachable if the node somehow outlived its
-                // own texture (freed but not removed) -- a broken-
-                // image glyph is a more honest placeholder here
-                // than the loading `Spinner` a tab/download
-                // placeholder uses, since this picture isn't *about*
-                // to arrive the way a first frame or fetch is.
+                // Still decoding (`ImageDecoder`): the loading spinner a waking tab shows.
+                None if self.nodes.get(id).and_then(|n| n.as_image()).is_some_and(|i| i.decoding()) => {
+                    ui.put(
+                        egui::Rect::from_center_size(rect.center(), egui::vec2(24.0, 24.0) * inv_zoom),
+                        egui::Spinner::new().size(24.0 * inv_zoom),
+                    );
+                }
+                // Only reachable if the node somehow outlived its own texture (freed but not removed): a
+                // broken-image glyph, since this picture isn't about to arrive.
                 None => {
                     push_centered_text(
                         deferred_overlays,

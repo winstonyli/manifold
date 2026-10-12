@@ -244,21 +244,21 @@ impl App {
             }
             return;
         }
+        if let Some(image) = self.nodes.get_mut(id).and_then(|n| n.as_image_mut()) {
+            if image.error.take().is_some() {
+                self.image_decoder.request(id.to_string(), image.path.clone());
+            }
+            return;
+        }
         let Some(node) = self.nodes.get(id) else { return };
-        let (path, is_image) = match &node.runtime {
-            Runtime::Image(image) if image.error.is_some() => (image.path.clone(), true),
-            Runtime::Json(json) if json.error.is_some() => (json.path.clone(), false),
+        let path = match &node.runtime {
+            Runtime::Json(json) if json.error.is_some() => json.path.clone(),
             _ => return,
         };
         let (group, parent) = (self.mirror.group(id).map(str::to_owned), self.mirror.parent(id).map(str::to_owned));
         let pos = self.layout_pos(id);
         let in_order = self.node_order.iter().any(|n| n == id);
-        let result = if is_image {
-            self.insert_image_node_with_id(id.to_string(), path, pos, group)
-        } else {
-            self.insert_json_node_with_id(id.to_string(), path, pos, group)
-        };
-        match result {
+        match self.insert_json_node_with_id(id.to_string(), path, pos, group) {
             Ok(()) => {
                 // The insert replaced the node and pushed its id again;
                 // keep it where it was.
@@ -268,11 +268,11 @@ impl App {
                 self.edit_parent(id, parent);
                 self.save_session();
             }
-            Err(error) => match self.nodes.get_mut(id).map(|n| &mut n.runtime) {
-                Some(Runtime::Image(image)) => image.error = Some(error),
-                Some(Runtime::Json(json)) => json.error = Some(error),
-                _ => {}
-            },
+            Err(error) => {
+                if let Some(json) = self.nodes.get_mut(id).and_then(|n| n.as_json_mut()) {
+                    json.error = Some(error);
+                }
+            }
         }
     }
 
@@ -464,7 +464,7 @@ impl App {
             }
         };
         match kind {
-            K::Image => self.insert_image_node_with_id(id.clone(), path, pos, group)?,
+            K::Image => self.insert_image_node_with_id(id.clone(), path, pos, group),
             K::Pdf => self.insert_pdf_node_with_id(id.clone(), path, pos, group),
             K::Json => self.insert_json_node_with_id(id.clone(), path, pos, group)?,
             // A web page never reaches here as a file (see `redirect_fetch`).
@@ -499,47 +499,23 @@ impl App {
     /// position and group -- `insert_content` a fresh id at the current
     /// level for a picked/dropped/`ADDFILE` image, session restore the saved
     /// id and position with no group, "Recently Closed" the old position and
-    /// group (`reopen_closed`), among others.
+    /// group (`reopen_closed`), among others. The node appears at once as a
+    /// decoding placeholder (`ImagePayload::decoding`); `ImageDecoder`
+    /// fills in the size, or the error, from a worker.
     pub(crate) fn insert_image_node_with_id(
         &mut self,
         id: String,
         path: String,
         pos: egui::Vec2,
         group: Option<String>,
-    ) -> Result<(), String> {
-        // Toasted here, not by callers: session restore, add-file and
-        // reopen all used to drop a missing or undecodable file silently.
-        // The error comes back too, for restore's placeholder card. Decoded
-        // by content (`image::load_from_memory` guesses the format from the
-        // bytes), not by `path`'s own extension: `insert_content` already
-        // sniffed this file as an image, which a lying extension (a `.pdf`
-        // that's really a PNG) would otherwise defeat.
-        let img = match std::fs::read(&path)
-            .map_err(image::ImageError::IoError)
-            .and_then(|bytes| image::load_from_memory(&bytes))
-        {
-            Ok(img) => img,
-            Err(err) => {
-                eprintln!("image: couldn't open {path}: {err}");
-                let name = crate::json_file::file_name(std::path::Path::new(&path));
-                let err = format!("Couldn't open image {name}: {err}");
-                self.queue_toast(err.clone());
-                return Err(err);
-            }
-        };
-        // `into_rgba8` moves when the image is already RGBA8; `to_rgba8` copied it.
-        let rgba = crate::rgba::fit_image(img.into_rgba8(), crate::rgba::MAX_TEXTURE_SIDE);
-        let (width, height) = rgba.dimensions();
-        if let Some(gpu) = &mut self.gpu {
-            gpu.upload_image(&id, rgba.as_raw(), width, height);
-        }
-        self.place_node(
-            Some(id),
-            Kind::Image,
-            Runtime::Image(ImagePayload { path, width, height, error: None }),
-            Placement { group, pos },
-        );
-        Ok(())
+    ) {
+        // The card is placed at once with no size (`ImagePayload::decoding`); the file is read and decoded on a
+        // worker (`ImageDecoder`), and `tick_fetchers` sizes the card, uploads the texture, or toasts and keeps
+        // the error as the card's tooltip. Decoded by content, not by `path`'s extension: `insert_content` already
+        // sniffed this file as an image, which a lying extension (a `.pdf` that's really a PNG) would defeat.
+        self.image_decoder.request(id.clone(), path.clone());
+        let payload = ImagePayload { path, width: 0, height: 0, error: None };
+        self.place_node(Some(id), Kind::Image, Runtime::Image(payload), Placement { group, pos });
     }
 
     /// Converts a tab whose page is content the table maps to a node (see
@@ -569,13 +545,11 @@ impl App {
     /// position and group -- `insert_content` a fresh id at the current
     /// level for a picked/dropped/`ADDFILE` PDF, session restore the saved
     /// id and position with no group, "Recently Closed" the old position and
-    /// group (`reopen_closed`), among others. Unlike `insert_image_node_
+    /// group (`reopen_closed`), among others. Like `insert_image_node_
     /// with_id`, this always inserts the node immediately (`outcome: None`,
     /// "still loading") rather than checking the file synchronously first --
-    /// decoding a PDF is genuinely slow (see `PdfPayload`'s own doc comment),
-    /// so there's nothing worth checking synchronously here; a bad/missing
-    /// file surfaces later as a `Some(Err(_))` outcome instead of the node
-    /// never having existed the way a bad image file does.
+    /// decoding a PDF is genuinely slow (see `PdfPayload`'s own doc comment);
+    /// a bad/missing file surfaces later as a `Some(Err(_))` outcome.
     pub(crate) fn insert_pdf_node_with_id(&mut self, id: String, path: String, pos: egui::Vec2, group: Option<String>) {
         self.pdf_renderer.request(id.clone(), path.clone());
         let pdf = Runtime::Pdf(PdfPayload { path, outcome: None });
@@ -588,9 +562,8 @@ impl App {
     /// saved id and position with no group, "Recently Closed" the old
     /// position and group (`reopen_closed`), among others. Returns `Err`
     /// (doing nothing) if the file doesn't exist or isn't valid JSON, same
-    /// fail-fast posture `insert_image_node_with_id` already has (a JSON
-    /// parse is just as fast as decoding an image, so there's nothing here
-    /// that needs `Pdf`'s own background-render treatment).
+    /// fail-fast posture (a JSON parse on the UI thread is bounded by the
+    /// body cap; moving it to a worker like `ImageDecoder` is parked as D-R6).
     pub(crate) fn insert_json_node_with_id(
         &mut self,
         id: String,

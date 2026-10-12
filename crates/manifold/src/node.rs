@@ -66,9 +66,9 @@ runtime_accessors! {
     Unloaded(UnloadedTabPayload) => as_unloaded;
     Download(DownloadPayload) => as_download, as_download_mut;
     Note(NotePayload) => as_note, as_note_mut;
-    Image(ImagePayload) => as_image;
+    Image(ImagePayload) => as_image, as_image_mut;
     Pdf(PdfPayload) => as_pdf, as_pdf_mut;
-    Json(JsonPayload) => as_json;
+    Json(JsonPayload) => as_json, as_json_mut;
 }
 
 impl Runtime {
@@ -148,10 +148,11 @@ pub(crate) struct NotePayload {
 /// A locally-added picture, embedded directly on the graph -- the second
 /// new node kind built on the unified model (see `NotePayload`'s own doc
 /// comment for the first). Unlike a tab's thumbnail or a favicon, this
-/// isn't fetched or re-rendered continuously: `path` is decoded at
+/// isn't fetched or re-rendered continuously: `path` is decoded, on a worker (`ImageDecoder`), at
 /// creation (`App::insert_content`, from the picker, a drop, `ADDFILE`
 /// or a converted tab), at session restore, or after a Refresh into the
-/// texture `GpuState::images` keeps under this node's own id. `width`/`height` are the *decoded* image's
+/// texture `GpuState::images` keeps under this node's own id; the card exists meanwhile with no size
+/// (`decoding`). `width`/`height` are the *decoded* image's
 /// real pixel dimensions, kept so the card can size itself to the image's
 /// own aspect ratio instead of stretching/squashing it into a fixed box.
 /// Persisted in the session store (`field::PATH`) as just the file
@@ -171,12 +172,19 @@ pub(crate) struct ImagePayload {
     pub(crate) error: Option<String>,
 }
 
+impl ImagePayload {
+    /// No pixels yet and no error: the decode is queued or running (`ImageDecoder`), or the card waits for its file
+    /// to be fetched again. `width` and `height` are 0 until the texture is uploaded.
+    pub(crate) fn decoding(&self) -> bool {
+        self.width == 0 && self.error.is_none()
+    }
+}
+
 /// A locally-added PDF, rendered as its own graph node -- the third new
 /// kind built on the unified model. Unlike an image, rendering a PDF page
 /// is genuinely slow the first time (`pdf_render::PdfRenderer` may need to
 /// download and cache a real `pdfium.dll` before it can render anything at
-/// all), so this can't decode synchronously at creation the way
-/// `ImagePayload` does -- `outcome` starts `None` (rendering in the
+/// all), so `outcome` starts `None` (rendering in the
 /// background) and is filled in once `PdfRenderer::tick` reports a result
 /// for this node's own id, the same "spawn a thread, `mpsc` channel, main
 /// loop `tick()`s it" pattern `SuggestionFetcher`/`FaviconFetcher` already

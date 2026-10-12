@@ -658,14 +658,11 @@ impl App {
             }
             Kind::Image => {
                 let path = content_path.clone().unwrap_or_default();
-                let error = if missing_with_url {
-                    None
-                } else {
-                    self.insert_image_node_with_id(id.clone(), path.clone(), pos, None).err()
-                };
-                if missing_with_url || error.is_some() {
-                    let payload = ImagePayload { path, width: 0, height: 0, error };
+                if missing_with_url {
+                    let payload = ImagePayload { path, width: 0, height: 0, error: None };
                     self.insert_placeholder_node(id.clone(), pos, kind, Runtime::Image(payload));
+                } else {
+                    self.insert_image_node_with_id(id.clone(), path, pos, None);
                 }
             }
             Kind::Pdf => {
