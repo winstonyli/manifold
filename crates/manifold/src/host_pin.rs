@@ -31,7 +31,7 @@ pub struct Entry {
 // BEGIN TABLE
 /// The app version this table was cut for.
 #[cfg_attr(not(test), allow(dead_code, reason = "only the table check in the tests reads it"))]
-pub const PIN_VERSION: &str = "0.5.0";
+pub const PIN_VERSION: &str = "0.5.1";
 
 #[rustfmt::skip]
 const TABLE: &[Entry] = &[
