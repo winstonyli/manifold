@@ -18,4 +18,6 @@ Keep the store as is (kind plus registers keyed by field number; it already hold
 
 Sub-project A is designed in `2026-10-04-node-model-design.md`. Decisions made there: no migration or compatibility; vendor MIME types; a closed tag enum; an edge-type table; one transaction-shaped history (delete-only for now).
 
+Pinning for every node kind shipped 2026-10-12 (see the README entry "Pin on every card").
+
 Plan 1 (tables and behavior-neutral consumers) shipped: see `../plans/2026-10-04-node-model-1-tables.md`.

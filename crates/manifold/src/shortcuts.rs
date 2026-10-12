@@ -197,16 +197,15 @@ impl App {
     }
 
     /// `Ctrl+P` / headless `TOGGLEPIN` — pins/unpins the focused tab, same
-    /// effect as its graph card's own pin dot or the tab context menu's
-    /// Pin/Unpin entry.
+    /// effect as its graph card's own pin dot or the context menu's Pin/Unpin entry.
     pub(crate) fn pin_focused_tab_shortcut(&mut self) {
         let Some(id) = self.focused.clone() else { return };
         self.toggle_pin(&id);
     }
 
-    /// Pins or unpins tab `id` (live or unloaded); any other kind is left alone.
+    /// Pins or unpins node `id` of any kind: a pinned card is left out of the graph layout.
     pub(crate) fn toggle_pin(&mut self, id: &str) {
-        if self.nodes.get(id).is_some_and(|n| n.runtime.saved_tab().is_some()) {
+        if self.nodes.contains_key(id) {
             let on = !self.mirror.pinned(id);
             self.edit_field(id, field::PINNED, FieldValue::Bool(on));
         }

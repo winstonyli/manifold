@@ -488,6 +488,7 @@ pub(crate) fn node_menu_config(view: &NodeMenuView, headless: bool) -> NodeMenuC
     // Every menu ends in the Colors row, the Links section (when it has rows), Remove from Group (when the node
     // is grouped), then the kind's delete items.
     let finish = |area_id, min_width, mut items: Vec<NodeMenuItem>, delete_items: Vec<NodeMenuItem>| {
+        items.push(Button(if view.pinned { "Unpin" } else { "Pin" }, A::TogglePin));
         items.push(Colors);
         if !view.edges.is_empty() {
             items.push(NodeMenuItem::Edges(view.edges.clone()));
@@ -560,7 +561,6 @@ pub(crate) fn node_menu_config(view: &NodeMenuView, headless: bool) -> NodeMenuC
                 ]);
             }
             items.extend([
-                Button(if view.pinned { "Unpin" } else { "Pin" }, A::TogglePin),
                 Button("Duplicate", A::Duplicate),
                 Button("Sleep", A::Sleep),
                 Button("Copy URL", A::CopyUrl),
@@ -580,7 +580,6 @@ pub(crate) fn node_menu_config(view: &NodeMenuView, headless: bool) -> NodeMenuC
             if view.failed && view.other_default_engine {
                 items.push(Button("Open in Default Engine", A::OpenInDefaultEngine));
             }
-            items.push(Button(if view.pinned { "Unpin" } else { "Pin" }, A::TogglePin));
             // The same as a live tab's, and Ctrl+D's (`duplicate_tab` takes either). Not for a failed tab: the copy
             // would start on the same engine and fail the same way.
             if !view.failed {

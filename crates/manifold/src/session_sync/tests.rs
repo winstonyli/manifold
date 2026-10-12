@@ -1832,6 +1832,23 @@ fn a_sleeping_tab_saves_as_its_tab() {
     assert_eq!(stored(&app, &tab, field::ENGINE), engine);
 }
 
+/// Pinning is not a tab's alone: a group toggles like a tab, and an unknown id is left alone.
+#[test]
+fn toggle_pin_works_on_any_node() {
+    let mut app = app_on(&temp_dir("pin-any").join("session.mnf"), 1);
+    let group = add_group(&mut app, "g");
+    let tab = add(&mut app, Kind::Tab, sleeping_tab("https://s/", ""));
+    for id in [&group, &tab] {
+        assert!(!app.mirror.pinned(id));
+        app.toggle_pin(id);
+        assert!(app.mirror.pinned(id), "{id} pinned");
+        app.toggle_pin(id);
+        assert!(!app.mirror.pinned(id), "{id} unpinned");
+    }
+    app.toggle_pin("no-such-node");
+    assert!(!app.mirror.pinned("no-such-node"));
+}
+
 /// Fails every spawn parked in `test_spawns`, as a missing engine would.
 fn fail_spawns(app: &mut App) {
     for parked in std::mem::take(&mut app.test_spawns) {
@@ -3241,12 +3258,12 @@ fn a_tab_pin_is_committed_and_a_remote_pin_reaches_the_mirror() {
 }
 
 #[test]
-fn pinning_skips_a_node_that_is_not_a_tab() {
+fn the_pin_shortcut_pins_a_focused_note() {
     let mut app = App::default();
     let note = a_note(&mut app);
     app.focused = Some(note.clone());
     app.pin_focused_tab_shortcut();
-    assert!(!app.mirror.pinned(&note));
+    assert!(app.mirror.pinned(&note));
 }
 
 #[test]

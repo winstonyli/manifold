@@ -567,13 +567,11 @@ pub(crate) fn click_action(kind: CardKind) -> Option<NodeAction> {
 }
 
 /// The buttons `view`'s card shows, in registration order (see
-/// `CardControl`): the swatch on every card, a tab's (live or unloaded)
-/// pin, and a live tab's audio indicator while playing or muted, eject on
+/// `CardControl`): the swatch and the pin on every card, and a live tab's audio indicator while playing or muted, eject on
 /// a grouped one, and the ✕ last, so it wins over anything under it.
 pub(crate) fn card_controls(view: &CardView) -> Vec<CardControl> {
-    let mut controls = vec![CardControl::Swatch];
+    let mut controls = vec![CardControl::Swatch, CardControl::Pin];
     if view.kind.ty == TYPE_TAB {
-        controls.push(CardControl::Pin);
         // Also while muted after audio stops, so a mute can always be
         // seen and undone from Graph view. An unloaded card has no engine
         // to be playing or muted, so it never gets this control.

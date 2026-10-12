@@ -459,13 +459,13 @@ fn tab_thumb_rect_leaves_room_for_the_header_only_on_tall_cards() {
 fn card_controls_list_each_cards_buttons_in_pointer_order() {
     use CardControl::*;
     for kind in kinds().into_iter().filter(|k| k.ty != TYPE_TAB) {
-        assert_eq!(card_controls(&test_view(kind)), vec![Swatch, Close], "{kind:?}");
+        assert_eq!(card_controls(&test_view(kind)), vec![Swatch, Pin, Close], "{kind:?}");
         let grouped = CardView { in_group: true, ..test_view(kind) };
-        assert_eq!(card_controls(&grouped), vec![Swatch, Eject, Close], "{kind:?}");
+        assert_eq!(card_controls(&grouped), vec![Swatch, Pin, Eject, Close], "{kind:?}");
         let close = if kind.ty == TYPE_GROUP { NodeAction::Dissolve } else { NodeAction::Delete };
         assert_eq!(Close.action(kind), close, "{kind:?}");
     }
-    // An unloaded card shows its pin too, but never the audio
+    // Every card shows its pin; an unloaded tab never shows the audio
     // indicator -- it has no engine to be playing or muted.
     assert_eq!(card_controls(&test_view(sleeping_tab())), vec![Swatch, Pin, Close]);
     assert_eq!(
