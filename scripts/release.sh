@@ -179,10 +179,13 @@ cp "$tdir/manifold-engine-webview2.exe" "$win_host" || die "$tdir/manifold-engin
 is_reused cef/windows-x64 || take cef/windows-x64 "$tdir/manifold-engine-cef.exe"
 if [ -n "$build_servo" ]; then
     take servo/windows-x64 target-servo/release/manifold-engine-servo.exe
-    # The exe loads ANGLE's two DLLs from beside itself (Task 0); mozangle's build script leaves them in its out dir.
-    angle_egl="$(ls -t target-servo/release/build/mozangle*/out/libEGL.dll target-servo/release/build/mozangle/*/out/libEGL.dll 2>/dev/null | head -1 || true)"
-    [ -n "$angle_egl" ] || die "ANGLE's libEGL.dll is not under target-servo/release/build/mozangle*/out"
-    angle_dir="$(dirname "$angle_egl")"
+    # The exe loads ANGLE's two DLLs from beside itself (Task 0). Ask cargo where the mozangle build script that this
+    # build used left them (a no-op rebuild, same environment as the Servo build): the out dirs under
+    # target-servo/release/build/ pile up across rebuilds, so the newest by mtime can be a stale one.
+    angle_out="$( (unset RUSTFLAGS; CARGO_TARGET_DIR=target-servo cargo build --release -j "$jobs" -p manifold-engine-servo --message-format=json </dev/null) \
+        | grep '"reason":"build-script-executed"' | grep 'mozangle@' | sed -n 's/.*"out_dir":"\([^"]*\)".*/\1/p' | head -1 | sed 's/\\\\/\//g')"
+    [ -n "$angle_out" ] && [ -f "$angle_out/libEGL.dll" ] || die "cargo did not report a mozangle out_dir holding libEGL.dll (got '$angle_out')"
+    angle_dir="$(cygpath -u "$angle_out")"
     take servo/windows-x64 "$angle_dir/libEGL.dll"
     take servo/windows-x64 "$angle_dir/libGLESv2.dll"
 fi
