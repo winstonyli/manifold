@@ -85,6 +85,19 @@ pub(crate) enum NodeAction {
         other: String,
         link: Option<String>,
     },
+    /// "Color…", "Jar…": swaps the menu's items for that page; the menu stays open.
+    OpenPage(MenuPage),
+    /// A page's "Back" row: the menu's own items again.
+    MenuBack,
+}
+
+/// A page of a node's menu that replaces its items while open (`MenuPopups::node_menu_page`): the long or wide
+/// sections, so the menu itself stays short.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum MenuPage {
+    Color,
+    /// A tab's jar list and its actions, or a group's default jar.
+    Jar,
 }
 
 impl NodeAction {
@@ -145,9 +158,10 @@ pub(crate) struct EdgeMenuRow {
 #[derive(Debug, PartialEq)]
 pub(crate) enum NodeMenuItem {
     Button(&'static str, NodeAction),
-    /// The "Color" label and tag-color swatch row, ending in a "no color"
-    /// ring.
+    /// The "Color" label and tag-color swatch row, ending in a "no color" ring: the Color page's body.
     Colors,
+    /// A row that opens a page of the menu.
+    Page(&'static str, MenuPage),
     /// One "Move into <name>" button per `(group id, name)`: the sibling groups a card can join.
     MoveTo(Vec<(String, String)>),
     /// A small heading, then one row per jar with its colour dot and a tick on the current one. `group`: the rows
@@ -173,6 +187,10 @@ pub(crate) struct NodeMenuConfig {
     area_id: &'static str,
     min_width: f32,
     items: Vec<NodeMenuItem>,
+    /// What the Jar page holds (tab and group menus).
+    jar_page: Vec<NodeMenuItem>,
+    /// The page showing instead of `items`, if any (`MenuPopups::node_menu_page`); the caller sets it.
+    page: Option<MenuPage>,
 }
 
 /// Draws a node's right-click menu and reports what was clicked this
@@ -226,101 +244,137 @@ pub(crate) fn build_node_context_menu(
                 }
                 return;
             }
-            for item in &config.items {
-                match item {
-                    NodeMenuItem::Button(label, item_action) => {
-                        let mut response = menu_button(ui, *label, item_action.key_hint(config.kind), &mut first_item);
-                        if let Some(text) = item_action.hover_text() {
-                            response = response.on_hover_text(text);
+            if let Some(page) = config.page {
+                // A page: a Back row, then the one section it holds.
+                if menu_button(ui, "\u{2039} Back", None, &mut first_item).clicked() {
+                    action = Some(NodeAction::MenuBack);
+                }
+                menu_separator(ui);
+                match page {
+                    MenuPage::Color => {
+                        draw_menu_item(ui, &NodeMenuItem::Colors, config.kind, color, &mut first_item, &mut action)
+                    }
+                    MenuPage::Jar => {
+                        for item in &config.jar_page {
+                            draw_menu_item(ui, item, config.kind, color, &mut first_item, &mut action);
                         }
-                        if response.clicked() {
-                            action = Some(item_action.clone());
-                        }
-                    }
-                    NodeMenuItem::MoveTo(targets) => {
-                        for (group, name) in targets {
-                            // Cut to `ROW_UNITS`, so a long name cannot widen the menu; the hover has all of it.
-                            let segs = crate::names::display_name(name, crate::names::UNTITLED);
-                            let shown = crate::names::shorten(&segs, crate::names::ROW_UNITS);
-                            let text = crate::names::name_job(ui, "Move into ", shown.as_deref().unwrap_or(&segs), "");
-                            let mut response = menu_button(ui, text, None, &mut first_item);
-                            let hover = crate::names::name_hover(name, crate::names::ROW_UNITS, "", str::to_string);
-                            if !hover.is_empty() {
-                                response = response.on_hover_text(hover);
-                            }
-                            if response.clicked() {
-                                action = Some(NodeAction::MoveToGroup(group.clone()));
-                            }
-                        }
-                    }
-                    NodeMenuItem::Jars { heading, rows, group } => {
-                        menu_section(ui, heading, |ui, grid| {
-                            for row in rows {
-                                // The label's marker in its own style (`JarLabel::append_to`); the rest in the button's.
-                                let font = egui::FontSelection::Default.resolve(ui.style());
-                                let plain = egui::TextFormat::simple(font.clone(), egui::Color32::PLACEHOLDER);
-                                let mut text = egui::text::LayoutJob::default();
-                                // The colour dot is painted in this leading gap, at the menu text's margin.
-                                text.append("", MenuGrid::MARKER_SLOT, plain.clone());
-                                row.name.append_to(&mut text, font, ui.visuals().weak_text_color());
-                                if let Some(n) = row.count {
-                                    text.append(&format!("({n})"), 8.0, plain);
-                                }
-                                // The current jar is the selected row: no tick to widen it.
-                                let response = menu_row(ui, text, None, &mut first_item, row.ticked);
-                                let dot = grid.marker_center(response.rect);
-                                // The default jar has no colour: an outlined dot.
-                                match row.color {
-                                    Some(c) => {
-                                        ui.painter().circle_filled(dot, 4.0, c);
-                                    }
-                                    None => {
-                                        let stroke = egui::Stroke::new(1.0, ui.visuals().weak_text_color());
-                                        ui.painter().circle_stroke(dot, 4.0, stroke);
-                                    }
-                                }
-                                let response = match row.count {
-                                    Some(n) if *group => response
-                                        .on_hover_text(format!("Tabs following this group that would change: {n}")),
-                                    _ => response,
-                                };
-                                if response.clicked() {
-                                    action = Some(match (group, row.id) {
-                                        (true, Some(id)) => NodeAction::SetGroupDefaultJar(id),
-                                        (true, None) => NodeAction::ClearGroupDefaultJar,
-                                        (false, id) => NodeAction::SetJar(id),
-                                    });
-                                }
-                            }
-                        });
-                    }
-                    NodeMenuItem::Edges(rows) => {
-                        menu_section(ui, "Links", |ui, _| {
-                            for row in rows {
-                                let mut response = menu_button(ui, row.label.as_str(), None, &mut first_item);
-                                if let Some(hover) = &row.hover {
-                                    response = response.on_hover_text(hover);
-                                }
-                                if response.clicked() {
-                                    action = Some(row.action.clone());
-                                }
-                            }
-                        });
-                    }
-                    NodeMenuItem::Colors => {
-                        if let Some(picked) = color_swatch_row(ui, color) {
-                            action = Some(NodeAction::SetColor(picked));
-                        }
-                    }
-                    NodeMenuItem::Separator => {
-                        menu_separator(ui);
                     }
                 }
+                return;
+            }
+            for item in &config.items {
+                draw_menu_item(ui, item, config.kind, color, &mut first_item, &mut action);
             }
         },
     );
     let clicked_outside = clicked_outside_popup(ui, area_rect, None);
     (action, clicked_outside)
+}
+
+/// One item of a node menu (or of one of its pages), reporting a click in `action`.
+fn draw_menu_item(
+    ui: &mut egui::Ui,
+    item: &NodeMenuItem,
+    kind: CardKind,
+    color: Option<egui::Color32>,
+    first_item: &mut bool,
+    action: &mut Option<NodeAction>,
+) {
+    match item {
+        NodeMenuItem::Button(label, item_action) => {
+            let mut response = menu_button(ui, *label, item_action.key_hint(kind), first_item);
+            if let Some(text) = item_action.hover_text() {
+                response = response.on_hover_text(text);
+            }
+            if response.clicked() {
+                *action = Some(item_action.clone());
+            }
+        }
+        NodeMenuItem::MoveTo(targets) => {
+            for (group, name) in targets {
+                // Cut to `ROW_UNITS`, so a long name cannot widen the menu; the hover has all of it.
+                let segs = crate::names::display_name(name, crate::names::UNTITLED);
+                let shown = crate::names::shorten(&segs, crate::names::ROW_UNITS);
+                let text = crate::names::name_job(ui, "Move into ", shown.as_deref().unwrap_or(&segs), "");
+                let mut response = menu_button(ui, text, None, first_item);
+                let hover = crate::names::name_hover(name, crate::names::ROW_UNITS, "", str::to_string);
+                if !hover.is_empty() {
+                    response = response.on_hover_text(hover);
+                }
+                if response.clicked() {
+                    *action = Some(NodeAction::MoveToGroup(group.clone()));
+                }
+            }
+        }
+        NodeMenuItem::Jars { heading, rows, group } => {
+            menu_section(ui, heading, |ui, grid| {
+                for row in rows {
+                    // The label's marker in its own style (`JarLabel::append_to`); the rest in the button's.
+                    let font = egui::FontSelection::Default.resolve(ui.style());
+                    let plain = egui::TextFormat::simple(font.clone(), egui::Color32::PLACEHOLDER);
+                    let mut text = egui::text::LayoutJob::default();
+                    // The colour dot is painted in this leading gap, at the menu text's margin.
+                    text.append("", MenuGrid::MARKER_SLOT, plain.clone());
+                    row.name.append_to(&mut text, font, ui.visuals().weak_text_color());
+                    if let Some(n) = row.count {
+                        text.append(&format!("({n})"), 8.0, plain);
+                    }
+                    // The current jar is the selected row: no tick to widen it.
+                    let response = menu_row(ui, text, None, first_item, row.ticked);
+                    let dot = grid.marker_center(response.rect);
+                    // The default jar has no colour: an outlined dot.
+                    match row.color {
+                        Some(c) => {
+                            ui.painter().circle_filled(dot, 4.0, c);
+                        }
+                        None => {
+                            let stroke = egui::Stroke::new(1.0, ui.visuals().weak_text_color());
+                            ui.painter().circle_stroke(dot, 4.0, stroke);
+                        }
+                    }
+                    let response = match row.count {
+                        Some(n) if *group => {
+                            response.on_hover_text(format!("Tabs following this group that would change: {n}"))
+                        }
+                        _ => response,
+                    };
+                    if response.clicked() {
+                        *action = Some(match (group, row.id) {
+                            (true, Some(id)) => NodeAction::SetGroupDefaultJar(id),
+                            (true, None) => NodeAction::ClearGroupDefaultJar,
+                            (false, id) => NodeAction::SetJar(id),
+                        });
+                    }
+                }
+            });
+        }
+        NodeMenuItem::Edges(rows) => {
+            menu_section(ui, "Links", |ui, _| {
+                for row in rows {
+                    let mut response = menu_button(ui, row.label.as_str(), None, first_item);
+                    if let Some(hover) = &row.hover {
+                        response = response.on_hover_text(hover);
+                    }
+                    if response.clicked() {
+                        *action = Some(row.action.clone());
+                    }
+                }
+            });
+        }
+        NodeMenuItem::Page(label, page) => {
+            if menu_button(ui, *label, None, first_item).clicked() {
+                *action = Some(NodeAction::OpenPage(*page));
+            }
+        }
+        NodeMenuItem::Colors => {
+            if let Some(picked) = color_swatch_row(ui, color) {
+                *action = Some(NodeAction::SetColor(picked));
+            }
+        }
+        NodeMenuItem::Separator => {
+            menu_separator(ui);
+        }
+    }
 }
 
 /// Export Group's suggested file name: the group's clean name (name rules), or "Untitled" when nothing is left, then
@@ -466,7 +520,7 @@ pub(crate) fn color_swatch_row(ui: &mut egui::Ui, current: Option<egui::Color32>
 /// saves directly instead).
 pub(crate) fn node_menu_config(view: &NodeMenuView, headless: bool) -> NodeMenuConfig {
     use NodeAction as A;
-    use NodeMenuItem::{Button, Colors, MoveTo, Separator};
+    use NodeMenuItem::{Button, MoveTo, Page, Separator};
     let file_items = || vec![Button("Open Containing Folder", A::Reveal), Button("Copy Path", A::CopyPath)];
     // Refresh (Image/Pdf/Json only), Open as Tab (any kind with a url) and
     // Copy URL (also a Download's), first in the menu.
@@ -485,9 +539,9 @@ pub(crate) fn node_menu_config(view: &NodeMenuView, headless: bool) -> NodeMenuC
     };
     // Every menu ends in the Colors row, the Links section (when it has rows), Remove from Group (when the node
     // is grouped), then the kind's delete items.
-    let finish = |area_id, min_width, mut items: Vec<NodeMenuItem>, delete_items: Vec<NodeMenuItem>| {
+    let finish = |area_id, min_width, mut items: Vec<NodeMenuItem>, delete_items: Vec<NodeMenuItem>, jar_page| {
         items.push(Button(if view.pinned { "Unpin" } else { "Pin" }, A::TogglePin));
-        items.push(Colors);
+        items.push(Page("Color...", MenuPage::Color));
         if !view.edges.is_empty() {
             items.push(NodeMenuItem::Edges(view.edges.clone()));
         }
@@ -499,7 +553,7 @@ pub(crate) fn node_menu_config(view: &NodeMenuView, headless: bool) -> NodeMenuC
         }
         items.push(Separator);
         items.extend(delete_items);
-        NodeMenuConfig { kind: view.kind, area_id, min_width, items }
+        NodeMenuConfig { kind: view.kind, area_id, min_width, items, jar_page, page: None }
     };
     let delete = |label| vec![Button(label, A::Delete)];
     // Tab, Unloaded and Group: the jar list and its actions, after the kind's own items. `live`: only a running tab
@@ -523,31 +577,37 @@ pub(crate) fn node_menu_config(view: &NodeMenuView, headless: bool) -> NodeMenuC
         }
         out
     };
+    // The Jar row, in the place the jar section was; the rows themselves are the Jar page's.
+    let jar_row = |items: &mut Vec<NodeMenuItem>, tab: bool, live: bool| -> Vec<NodeMenuItem> {
+        let Some(jars) = &view.jars else { return Vec::new() };
+        items.push(Page(if tab { "Jar..." } else { "Default jar..." }, MenuPage::Jar));
+        jar_items(jars, tab, live)
+    };
     match view.kind.ty {
         TYPE_DOWNLOAD => {
             let mut items = url_items(false);
             items.extend(file_items());
-            finish("download_context_menu", 170.0, items, delete("Remove from List"))
+            finish("download_context_menu", 170.0, items, delete("Remove from List"), Vec::new())
         }
         TYPE_NOTE => {
             let mut items = url_items(false);
             items.push(Button("Copy Text", A::CopyText));
-            finish("note_context_menu", 150.0, items, delete("Delete"))
+            finish("note_context_menu", 150.0, items, delete("Delete"), Vec::new())
         }
         TYPE_IMAGE => {
             let mut items = url_items(true);
             items.extend(file_items());
-            finish("image_context_menu", 170.0, items, delete("Delete"))
+            finish("image_context_menu", 170.0, items, delete("Delete"), Vec::new())
         }
         TYPE_PDF => {
             let mut items = url_items(true);
             items.extend(file_items());
-            finish("pdf_context_menu", 170.0, items, delete("Delete"))
+            finish("pdf_context_menu", 170.0, items, delete("Delete"), Vec::new())
         }
         TYPE_JSON => {
             let mut items = url_items(true);
             items.extend(file_items());
-            finish("json_context_menu", 170.0, items, delete("Delete"))
+            finish("json_context_menu", 170.0, items, delete("Delete"), Vec::new())
         }
         TYPE_TAB if view.kind.loaded() => {
             let mut items = Vec::new();
@@ -564,8 +624,8 @@ pub(crate) fn node_menu_config(view: &NodeMenuView, headless: bool) -> NodeMenuC
                 Button("Copy URL", A::CopyUrl),
             ]);
             items.push(Button("Fit Subtree", A::FitSubtree));
-            items.extend(view.jars.iter().flat_map(|j| jar_items(j, true, true)));
-            finish("tab_context_menu", 150.0, items, delete("Close"))
+            let jar_page = jar_row(&mut items, true, true);
+            finish("tab_context_menu", 150.0, items, delete("Close"), jar_page)
         }
         TYPE_TAB => {
             // Retrying a tab whose engine isn't installed asks to install it (`retry_missing_file`).
@@ -584,8 +644,8 @@ pub(crate) fn node_menu_config(view: &NodeMenuView, headless: bool) -> NodeMenuC
                 items.push(Button("Duplicate", A::Duplicate));
             }
             items.push(Button("Copy URL", A::CopyUrl));
-            items.extend(view.jars.iter().flat_map(|j| jar_items(j, true, false)));
-            finish("unloaded_tab_context_menu", 170.0, items, delete("Close"))
+            let jar_page = jar_row(&mut items, true, false);
+            finish("unloaded_tab_context_menu", 170.0, items, delete("Close"), jar_page)
         }
         // Presentation matches the type, not `is_container` (see `card_style`).
         TYPE_GROUP => {
@@ -596,11 +656,11 @@ pub(crate) fn node_menu_config(view: &NodeMenuView, headless: bool) -> NodeMenuC
                 delete_items.push(Button("Export Group...", A::ExportGroup));
             }
             let mut items = vec![Button("Rename", A::Rename), Button("Sleep Tabs", A::SleepGroup)];
-            items.extend(view.jars.iter().flat_map(|j| jar_items(j, false, false)));
-            finish("group_context_menu", 150.0, items, delete_items)
+            let jar_page = jar_row(&mut items, false, false);
+            finish("group_context_menu", 150.0, items, delete_items, jar_page)
         }
         // A type this build doesn't know has no menu of its own yet (2b-6 Ruling 8): the shared tail only.
-        _ => finish("node_context_menu", 150.0, Vec::new(), delete("Delete")),
+        _ => finish("node_context_menu", 150.0, Vec::new(), delete("Delete"), Vec::new()),
     }
 }
 
@@ -718,6 +778,11 @@ impl App {
             self.menus.node_menu = None;
         }
         self.drop_stray_jar_name();
+        if self.menus.node_menu_page.as_ref().is_some_and(|(id, pos, _)| {
+            self.menus.node_menu.as_ref().is_some_and(|(open_id, open_pos)| (id, pos) != (open_id, open_pos))
+        }) {
+            self.menus.node_menu_page = None;
+        }
         let current =
             self.menus.node_menu.clone().and_then(|(id, pos)| self.node_menu_view(&id).map(|view| (id, pos, view)));
         let Some(((id, pos, view), fade)) =
@@ -726,7 +791,7 @@ impl App {
             return;
         };
         let live = current.is_some();
-        let config = node_menu_config(&view, self.headless);
+        let mut config = node_menu_config(&view, self.headless);
         let naming = self.naming_jar.as_ref().is_some_and(|(tid, _)| *tid == id);
         let mut frozen_draft = view.renaming.clone();
         let rename = match (&mut self.renaming_group, &mut self.naming_jar) {
@@ -738,7 +803,14 @@ impl App {
             }
             _ => frozen_draft.as_mut().map(|draft| (draft, false, naming.then_some("Jar name"))),
         };
+        config.page =
+            self.menus.node_menu_page.as_ref().filter(|(pid, ppos, _)| *pid == id && *ppos == pos).map(|p| p.2);
         let (action, clicked_outside) = build_node_context_menu(ui, pos, fade, live, &config, view.color, rename);
+        match action {
+            Some(NodeAction::OpenPage(page)) => self.menus.node_menu_page = Some((id.clone(), pos, page)),
+            Some(NodeAction::MenuBack) => self.menus.node_menu_page = None,
+            _ => {}
+        }
         // The name field reports the generic rename actions; while naming a jar they mean the jar's. Only Enter
         // creates it: losing focus any other way (a click away) cancels, unlike a group rename (user decision).
         let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
@@ -748,11 +820,13 @@ impl App {
             (a, _) => a,
         });
         let close = match action {
-            Some(NodeAction::Rename | NodeAction::StartNewJar) => false,
+            Some(NodeAction::Rename | NodeAction::StartNewJar | NodeAction::OpenPage(_) | NodeAction::MenuBack) => {
+                false
+            }
             Some(_) => true,
             None => clicked_outside && view.renaming.is_none(),
         };
-        if let Some(action) = action {
+        if let Some(action) = action.filter(|a| !matches!(a, NodeAction::OpenPage(_) | NodeAction::MenuBack)) {
             self.apply_node_action(ui.ctx(), &id, action);
             self.save_session();
         }
@@ -999,6 +1073,8 @@ impl App {
                 }
             }
             NodeAction::Delete => self.close_node_and_save(id),
+            // The menu's own state (`build_node_menu`): nothing to apply.
+            NodeAction::OpenPage(_) | NodeAction::MenuBack => {}
             NodeAction::SetJar(jar) => self.set_tab_jar(id, jar),
             NodeAction::StartNewJar => {
                 self.naming_jar = Some((id.to_string(), String::new()));

@@ -422,6 +422,10 @@ pub(crate) struct MenuPopups {
     /// frames after `node_menu` itself goes back to `None` -- see
     /// `fade_popup_state`.
     pub(crate) node_menu_cache: Option<(String, egui::Pos2, NodeMenuView)>,
+    /// The page of `node_menu` showing instead of its items (`MenuPage`), with the `(node, pos)` it belongs to. Left
+    /// as it is when the menu closes, so the fade-out keeps the page the click was on; a different menu drops it
+    /// (`App::build_node_menu`).
+    pub(crate) node_menu_page: Option<(String, egui::Pos2, crate::node_menu::MenuPage)>,
     /// The minimal right-click context menu, if currently showing — see
     /// `ContextMenuState`'s own doc comment.
     pub(crate) context_menu: Option<ContextMenuState>,
