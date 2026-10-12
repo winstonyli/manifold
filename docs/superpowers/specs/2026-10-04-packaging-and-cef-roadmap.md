@@ -1,6 +1,6 @@
 # Packaging and CEF versioning: decisions and parked work
 
-Status: v0.2.0 ships the small packaging fixes (step 1). Steps 2 and 3 are parked until the user picks them up.
+Superseded 2026-10-11 by the bare-exe release (plan `2026-10-11-bare-exe-host-downloads.md`): `scripts/release.sh` replaces the zip, and `scripts/package.sh` is now only `--check` on the exe. Original status: v0.2.0 ships the small packaging fixes (step 1). Steps 2 and 3 are parked until the user picks them up.
 
 ## Decisions (2026-10-04)
 
