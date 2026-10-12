@@ -9,6 +9,8 @@ members = [
     "crates/manifold-engine-webkit",
     "crates/manifold-engine-webview2",
 ]
+# Bare `cargo run/build/test` act on the app alone; hosts and the gate are built with -p.
+default-members = ["crates/manifold"]
 
 [workspace.package]
 version = "0.4.1"
