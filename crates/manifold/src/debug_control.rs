@@ -297,6 +297,8 @@ pub enum DebugCommand {
     ToggleShortcutsHelp,
     /// Opens (or closes) one of the Settings page's list popups, opening the page for its anchor.
     TogglePopup(AnchoredPopup),
+    /// Shows a page of the open card menu (`MenuPage`), or the menu's items again for `None`. Nothing without a menu.
+    MenuPage(Option<crate::node_menu::MenuPage>),
     /// Sets the History popup's own filter box directly, same "direct call,
     /// not a synthetic key event" reason as `GraphFilterText`.
     HistoryFilterText(String),
@@ -558,6 +560,7 @@ const COMMAND_HELP: &[(&str, &str)] = &[
     ),
     ("SLEEP secs", "Hold later commands for `secs` (in order, unlike a driver script's own sleep)"),
     ("TOGGLESHORTCUTSHELP", "F1 -- toggle the keyboard-shortcut reference popup"),
+    ("MENUPAGE name", "Show the open card menu's color|jar page, or its items for none"),
     ("TOGGLEPOPUP name", "Toggle the Settings page's bookmarks|history|downloads popup (opens the page)"),
     ("SPLIT engine", "Open a Split pane running `engine` (servo|cef|webkit|webview2)"),
     ("CLOSESPLIT", "Close the Split pane"),
@@ -828,6 +831,12 @@ pub fn parse_line(line: &str) -> Option<DebugCommand> {
             "bookmarks" => Some(DebugCommand::TogglePopup(AnchoredPopup::Bookmarks)),
             "history" => Some(DebugCommand::TogglePopup(AnchoredPopup::History)),
             "downloads" => Some(DebugCommand::TogglePopup(AnchoredPopup::Downloads)),
+            _ => None,
+        },
+        "MENUPAGE" => match rest.trim() {
+            "color" => Some(DebugCommand::MenuPage(Some(crate::node_menu::MenuPage::Color))),
+            "jar" => Some(DebugCommand::MenuPage(Some(crate::node_menu::MenuPage::Jar))),
+            "none" => Some(DebugCommand::MenuPage(None)),
             _ => None,
         },
         "SPLIT" => parse_engine_kind(rest).map(DebugCommand::Split),
@@ -1430,6 +1439,10 @@ impl App {
                 self.open_settings_page();
                 popups::toggle_popup(&mut self.menus.open_popup, which);
             }
+            DebugCommand::MenuPage(page) => {
+                self.menus.node_menu_page =
+                    self.menus.node_menu.clone().and_then(|(id, pos)| page.map(|page| (id, pos, page)));
+            }
             DebugCommand::Quit => {
                 // See `quit_after_redraws`'s doc comment: exiting right
                 // now could drop a pending Enter/Escape/arrow command, or a
@@ -1809,6 +1822,7 @@ mod tests {
             "SLEEP 0.5",
             "TOGGLESHORTCUTSHELP",
             "TOGGLEPOPUP history",
+            "MENUPAGE jar",
             "SPLIT cef",
             "CLOSESPLIT",
             "CLOSEGROUP g1",

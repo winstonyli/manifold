@@ -11,7 +11,7 @@
 #   sheet.png           every view in one grid (needs Pillow, which is optional)
 # Each view starts from Graph view at the top level and leaves the app
 # there, so VIEWS picks any subset and a run is ~40 s. Views:
-#   graph graph-hover graph-menu-tab graph-menu-group graph-menu-note graph-menu-jars graph-menu-group-jars
+#   graph graph-hover graph-menu-tab graph-menu-group graph-menu-note graph-menu-jars graph-menu-color graph-menu-group-jars
 #   graph-link graph-menu-links graph-link-hover graph-link-handles graph-link-drag
 #   graph-filter graph-group json-level json-menu
 #   tabview tabview-dropdown tabview-find tabview-actions
@@ -221,15 +221,19 @@ for v in "tab $TAB loaded" "group $GROUP" "note $NOTE"; do
         read -r x y < <(center "$2" top "${3:-}"); send "MOUSEMOVE $x $y" "MOUSEDOWN $x $y right" "MOUSEUP $x $y right" "SLEEP 1"; shot "$name"; reset
     fi
 done
-# Jar rows: two named jars exist and the focused tab uses the second, so the menu lists three rows (Default and
+# The Jar page: two named jars exist and the focused tab uses the second, so it lists three rows (Default and
 # both jars) with the current one selected.
 if has graph-menu-jars; then
-    read -r x y < <(center "$TAB" top loaded); send "MOUSEMOVE $x $y" "MOUSEDOWN $x $y right" "MOUSEUP $x $y right" "SLEEP 1" ESCAPE "SETJAR Alpha" "SETJAR Beta" "SLEEP 1"         "MOUSEMOVE $x $y" "MOUSEDOWN $x $y right" "MOUSEUP $x $y right" "SLEEP 1"; shot graph-menu-jars; reset
+    read -r x y < <(center "$TAB" top loaded); send "MOUSEMOVE $x $y" "MOUSEDOWN $x $y right" "MOUSEUP $x $y right" "SLEEP 1" ESCAPE "SETJAR Alpha" "SETJAR Beta" "SLEEP 1"         "MOUSEMOVE $x $y" "MOUSEDOWN $x $y right" "MOUSEUP $x $y right" "SLEEP 1" "MENUPAGE jar" "SLEEP 1"; shot graph-menu-jars; reset
 fi
-# The group's menu with those jars: the default-jar rows, none chosen (so Default is the selected row).
+# The same menu's Color page.
+if has graph-menu-color; then
+    read -r x y < <(center "$TAB" top loaded); send "MOUSEMOVE $x $y" "MOUSEDOWN $x $y right" "MOUSEUP $x $y right" "SLEEP 1" "MENUPAGE color" "SLEEP 1"; shot graph-menu-color; reset
+fi
+# The group's Default jar page with those jars: none chosen (so Default is the selected row).
 if has graph-menu-group-jars; then
     read -r x y < <(center "$TAB" top loaded); send "MOUSEMOVE $x $y" "MOUSEDOWN $x $y right" "MOUSEUP $x $y right" "SLEEP 1" ESCAPE "SETJAR Alpha" "SETJAR Beta" "SLEEP 1"
-    read -r x y < <(center "$GROUP" top); send "MOUSEMOVE $x $y" "MOUSEDOWN $x $y right" "MOUSEUP $x $y right" "SLEEP 1"; shot graph-menu-group-jars; reset
+    read -r x y < <(center "$GROUP" top); send "MOUSEMOVE $x $y" "MOUSEDOWN $x $y right" "MOUSEUP $x $y right" "SLEEP 1" "MENUPAGE jar" "SLEEP 1"; shot graph-menu-group-jars; reset
 fi
 # The id of the first top-level card of type $1 (import gives the seeded nodes fresh ids).
 cardid() {

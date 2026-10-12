@@ -56,13 +56,13 @@ enum Open {
     Command(&'static str),
     /// A right-click on the empty canvas.
     CanvasMenu,
-    /// A right-click on the first card of this type.
-    CardMenu(&'static str),
+    /// A right-click on the first card of this type, then (when given) the menu page `MENUPAGE` shows.
+    CardMenu(&'static str, Option<&'static str>),
     /// One of the Settings page's list popups (`bookmarks`, `history`, `downloads`).
     Settings(&'static str),
 }
 
-static SCENARIOS: [Scenario; 9] = [
+static SCENARIOS: [Scenario; 12] = [
     Scenario {
         name: "shortcuts-help",
         open: Open::Command("TOGGLESHORTCUTSHELP"),
@@ -76,9 +76,12 @@ static SCENARIOS: [Scenario; 9] = [
         list_below: Some(70.0),
     },
     Scenario { name: "canvas-menu", open: Open::CanvasMenu, close: "ESCAPE", list_below: None },
-    Scenario { name: "tab-menu", open: Open::CardMenu(TAB), close: "ESCAPE", list_below: None },
-    Scenario { name: "note-menu", open: Open::CardMenu(NOTE), close: "ESCAPE", list_below: None },
-    Scenario { name: "group-menu", open: Open::CardMenu(GROUP), close: "ESCAPE", list_below: None },
+    Scenario { name: "tab-menu", open: Open::CardMenu(TAB, None), close: "ESCAPE", list_below: None },
+    Scenario { name: "note-menu", open: Open::CardMenu(NOTE, None), close: "ESCAPE", list_below: None },
+    Scenario { name: "group-menu", open: Open::CardMenu(GROUP, None), close: "ESCAPE", list_below: None },
+    Scenario { name: "tab-menu-jar", open: Open::CardMenu(TAB, Some("jar")), close: "ESCAPE", list_below: None },
+    Scenario { name: "tab-menu-color", open: Open::CardMenu(TAB, Some("color")), close: "ESCAPE", list_below: None },
+    Scenario { name: "group-menu-jar", open: Open::CardMenu(GROUP, Some("jar")), close: "ESCAPE", list_below: None },
     Scenario {
         name: "bookmarks-popup",
         open: Open::Settings("bookmarks"),
@@ -185,7 +188,7 @@ fn open(inst: &mut Instance, sc: &Scenario, s: &State, w: f64, h: f64) -> io::Re
             let (x, y) = empty_point(s, w, h).ok_or_else(|| bad("no empty canvas point".into()))?;
             right_click(inst, x, y).map(|()| None)
         }
-        Open::CardMenu(ty) => {
+        Open::CardMenu(ty, page) => {
             let card = s
                 .cards()
                 .iter()
@@ -193,6 +196,9 @@ fn open(inst: &mut Instance, sc: &Scenario, s: &State, w: f64, h: f64) -> io::Re
                 .ok_or_else(|| bad(format!("no {ty} card in the demo session")))?;
             let (x, y) = (card["screen"][0].as_f64().unwrap_or(0.0), card["screen"][1].as_f64().unwrap_or(0.0));
             right_click(inst, x, y)?;
+            if let Some(page) = page {
+                inst.send(&format!("MENUPAGE {page}"))?;
+            }
             Ok(card["id"].as_str().map(str::to_owned))
         }
     }
@@ -358,7 +364,7 @@ fn run(exe: &Path, work: &Path) -> io::Result<()> {
         // The Settings page replaces the canvas, so its popups share an instance apart from the canvas ones.
         let mut batches =
             vec![on(|o| matches!(o, Open::Command(_) | Open::CanvasMenu)), on(|o| matches!(o, Open::Settings(_)))];
-        batches.extend(SCENARIOS.iter().filter(|sc| matches!(sc.open, Open::CardMenu(_))).map(|sc| vec![sc]));
+        batches.extend(SCENARIOS.iter().filter(|sc| matches!(sc.open, Open::CardMenu(..))).map(|sc| vec![sc]));
         for batch in batches {
             group += 1;
             let profile = work.join(format!("profile{group}"));

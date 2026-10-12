@@ -1171,6 +1171,13 @@ impl App {
                 self.graph_lod_simplified,
             );
             control_hovered |= control_response.hovered();
+            // A right-click on the swatch opens the menu (the right-press already did) on its Color page.
+            if card_control == CardControl::Swatch && control_response.secondary_clicked() {
+                if let Some((menu_id, pos)) = self.menus.node_menu.clone().filter(|(menu_id, _)| menu_id == id) {
+                    self.menus.node_menu_page = Some((menu_id, pos, crate::node_menu::MenuPage::Color));
+                    ui.ctx().request_repaint();
+                }
+            }
             if control_response.clicked() && control.is_none() {
                 control = Some(card_control.action(view.kind));
             }
