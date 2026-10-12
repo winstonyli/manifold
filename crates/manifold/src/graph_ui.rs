@@ -1149,6 +1149,21 @@ impl App {
         recently_closed_button_rect
     }
 
+    /// How many cards inside the selected groups (at any depth) are not themselves selected: they close with the
+    /// group (`GraphAction::CloseSelected`).
+    fn unselected_members_of_selection(&self) -> usize {
+        let mut inside = std::collections::HashSet::new();
+        let mut frontier: Vec<&str> = self.interaction.selected.iter().map(String::as_str).collect();
+        while let Some(group) = frontier.pop() {
+            for member in self.members_of(group) {
+                if inside.insert(member) {
+                    frontier.push(member);
+                }
+            }
+        }
+        inside.iter().filter(|id| !self.interaction.selected.contains(**id)).count()
+    }
+
     /// Group/Close Selected, shown once a rectangle select has picked something.
     fn toolbar_selection(&self, ui: &mut egui::Ui, actions: &mut Vec<GraphAction>) {
         // Rectangle-select's own action bar: only shown once a
@@ -1161,7 +1176,12 @@ impl App {
             if ui.button(format!("Group Selected ({})", self.interaction.selected.len())).clicked() {
                 actions.push(GraphAction::GroupSelected);
             }
-            if ui.button(format!("Close Selected ({})", self.interaction.selected.len())).clicked() {
+            let inside = self.unselected_members_of_selection();
+            let label = match inside {
+                0 => format!("Close Selected ({})", self.interaction.selected.len()),
+                n => format!("Close Selected ({} + {n} inside)", self.interaction.selected.len()),
+            };
+            if ui.button(label).on_hover_text("A group closes with everything in it").clicked() {
                 actions.push(GraphAction::CloseSelected);
             }
         }
@@ -2590,6 +2610,31 @@ mod tests {
                 .collect();
         }
         assert_eq!(hints.len(), 1, "the hint is painted once");
+    }
+
+    /// Close Selected names the cards that close with a selected group and are not selected themselves, at any depth.
+    #[test]
+    fn close_selected_counts_what_a_selected_group_takes_with_it() {
+        use crate::fetched::Placement;
+        let mut app = App::default();
+        let top = Placement { group: None, pos: egui::Vec2::ZERO };
+        app.place_group(Some("outer".into()), "Outer", top);
+        app.place_group(
+            Some("inner".into()),
+            "Inner",
+            Placement { group: Some("outer".into()), pos: egui::Vec2::ZERO },
+        );
+        for (id, group) in [("a", "outer"), ("b", "inner"), ("c", "inner")] {
+            let note = Runtime::Note(NotePayload { text: "n".into(), editing: false });
+            app.insert_placeholder_node(id.into(), egui::Vec2::ZERO, crate::store::model::Kind::Note, note);
+            app.edit_group(id, Some(group.into()));
+        }
+        app.interaction.selected.insert("a".into());
+        assert_eq!(app.unselected_members_of_selection(), 0, "a note holds nothing");
+        app.interaction.selected.insert("outer".into());
+        assert_eq!(app.unselected_members_of_selection(), 3, "inner, b and c; a is selected itself");
+        app.interaction.selected.insert("c".into());
+        assert_eq!(app.unselected_members_of_selection(), 2, "c is selected too");
     }
 
     /// The hint is per level: an empty group shows it; a level with a node (a group card counts) does not.
