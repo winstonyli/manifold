@@ -1,6 +1,6 @@
 # On-demand engine install (CEF) — design
 
-Status: built 2026-10-02 (plan `docs/superpowers/plans/2026-10-02-engine-install.md`); the README's "On-demand CEF install" entry describes what shipped. Survey and decisions came from a brainstorm.
+Status: built 2026-10-02 (plan `docs/superpowers/plans/2026-10-02-engine-install.md`); the README's "On-demand CEF install" entry describes what shipped. Generalized 2026-10-11 (plan `docs/superpowers/plans/2026-10-11-bare-exe-host-downloads.md`): CEF's host exe now downloads with its runtime, Servo (and later WebKit) download too, and the release is one exe; where this spec says a packaged build ships the CEF host, that plan supersedes it. Survey and decisions came from a brainstorm.
 
 ## Goal
 

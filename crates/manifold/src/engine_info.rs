@@ -8,6 +8,22 @@ pub(crate) fn engine_label(kind: EngineKind) -> &'static str {
     kind.desc().label
 }
 
+/// What the disk holds of `kind`'s downloadable parts, for the headless `ENGINESTATE` and `EXPORTSTATE`:
+/// "host ready", and for CEF also "runtime missing" (Ready, Missing or Stale each).
+pub(crate) fn on_disk_text(kind: EngineKind, disk: crate::engine_install::OnDisk) -> String {
+    use crate::engine_install::RuntimeOnDisk;
+    let word = |part: RuntimeOnDisk| match part {
+        RuntimeOnDisk::Ready => "ready",
+        RuntimeOnDisk::Missing => "missing",
+        RuntimeOnDisk::Stale => "stale",
+    };
+    let mut text = format!("host {}", word(disk.host));
+    if crate::engine_install::has_runtime(kind) {
+        text.push_str(&format!(", runtime {}", word(disk.runtime)));
+    }
+    text
+}
+
 /// How an engine state's label is colored: weak text, or `DANGER_COLOR` for a failure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Tone {
@@ -444,6 +460,18 @@ mod tests {
         assert_eq!(
             label(EngineState::Custom(std::path::PathBuf::from("D:/cef"))),
             ("Custom: D:/cef".to_string(), Tone::Weak)
+        );
+    }
+
+    #[test]
+    fn the_disk_text_names_the_parts_the_engine_has() {
+        use crate::engine_install::{OnDisk, RuntimeOnDisk};
+        let disk = OnDisk { host: RuntimeOnDisk::Ready, runtime: RuntimeOnDisk::Stale };
+        assert_eq!(on_disk_text(EngineKind::Servo, disk), "host ready");
+        assert_eq!(on_disk_text(EngineKind::Cef, disk), "host ready, runtime stale");
+        assert_eq!(
+            on_disk_text(EngineKind::Cef, OnDisk::both(RuntimeOnDisk::Missing)),
+            "host missing, runtime missing"
         );
     }
 

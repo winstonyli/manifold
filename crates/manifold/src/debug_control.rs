@@ -254,6 +254,8 @@ pub enum DebugCommand {
     /// handles (every card when nothing else owns the pointer; every card during a connect-drag) to
     /// `{top, right, bottom, left}` (those shown at this zoom), each `[left, top, right, bottom]` on screen.
     /// `connect_drag` is the source card of a running connect-drag, or null.
+    /// `engines` maps each engine name to `{state, disk}`: the state label the engine lists show and what the disk
+    /// holds of its downloadable parts ("host ready", for CEF "host ready, runtime missing").
     /// `toast` is the bottom-left toast's text
     /// (the one showing, else the next queued), or null. Suggestions arriving from the network show up
     /// only once a frame has drained them, and every command draws one, so
@@ -479,7 +481,7 @@ const COMMAND_HELP: &[(&str, &str)] = &[
     ("GRAPHOPEN", "Open whichever Graph-view node is currently focused"),
     ("TYPE text", "Send each character to the focused tab's own page (not the address bar)"),
     ("KEYPAGE key", "Send a KeyDown+KeyUp of `key` to the focused tab's own page"),
-    ("INSTALLENGINE kind", "Start downloading and installing the engine's runtime (CEF only)"),
+    ("INSTALLENGINE kind", "Start downloading and installing the engine's host files (and CEF's runtime)"),
     ("ENGINESTATE kind", "Print the engine's state (Installed, Installing n%, Failed: ..) to stderr"),
     ("REOPENTAB", "Ctrl+Shift+T -- reopen the newest Recently Closed entry"),
     ("ZOOMIN", "Ctrl+=/Ctrl++ -- zoom in"),
@@ -1152,9 +1154,10 @@ impl App {
             }
             DebugCommand::EngineState(kind) => {
                 eprintln!(
-                    "engine-state {}: {}",
+                    "engine-state {}: {} [{}]",
                     kind.desc().name,
-                    crate::engine_info::engine_state_label(&self.engine_state(kind)).0
+                    crate::engine_info::engine_state_label(&self.engine_state(kind)).0,
+                    crate::engine_info::on_disk_text(kind, crate::process_manager::engine_on_disk(kind))
                 )
             }
             DebugCommand::ZoomIn => self.zoom_in_shortcut(),
@@ -1593,7 +1596,19 @@ impl App {
             "selected_tabs": selected_tabs,
             // The toast showing, or else the next queued one.
             "toast": self.toasts.save_toast.as_ref().map(|(message, _)| message).or(self.toasts.save_toast_queue.front()),
+            "engines": self.engines_state(),
         })
+    }
+
+    /// `export_state`'s `engines`: each engine's name mapped to `{state, disk}`, the label the lists show
+    /// (`engine_state_label`) and what the disk holds of its downloadable parts (`on_disk_text`).
+    fn engines_state(&self) -> serde_json::Value {
+        let engines = crate::engine_info::ENGINE_PICKER_ORDER.iter().map(|&kind| {
+            let state = crate::engine_info::engine_state_label(&self.engine_state(kind)).0;
+            let disk = crate::engine_info::on_disk_text(kind, crate::process_manager::engine_on_disk(kind));
+            (kind.desc().name.to_string(), serde_json::json!({"state": state, "disk": disk}))
+        });
+        serde_json::Value::Object(engines.collect())
     }
 
     /// `EXPORTSTATE`: writes `export_state` to `path` through `store::atomic::replace`, so a probe never reads
@@ -1831,6 +1846,18 @@ mod tests {
 
     /// `EXPORTSTATE` names a card by its type (plan 2b-6, Ruling 9): `type` (the mime), `loaded` (true for a live tab
     /// only) and `json_card` (a JSON level's card, not a stored node); the old card enum's `kind` is gone.
+    /// `engines` has every engine, each with its state label and what the disk holds (no data dir under test, so
+    /// the downloaded engines read as not installed with nothing pinned).
+    #[test]
+    fn export_state_lists_each_engines_state_and_disk() {
+        let state = App::default().export_state();
+        let engines = state["engines"].as_object().unwrap();
+        assert_eq!(engines.len(), 4);
+        assert_eq!(engines["webview2"]["disk"], "host ready");
+        assert_eq!(engines["cef"]["disk"], "host missing, runtime missing");
+        assert!(engines["servo"]["state"].as_str().unwrap().starts_with("Unavailable"), "{engines:?}");
+    }
+
     #[test]
     fn export_state_names_cards_by_type_loaded_and_json_card() {
         use crate::node::{NotePayload, TabPayload, UnloadedState, UnloadedTabPayload};

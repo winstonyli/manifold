@@ -8,6 +8,7 @@ Since v0.4.1. Becomes the next entry when a release is cut.
 
 ### Features
 
+- **The release is one exe.** CEF, Servo and (once its download lands; it still ships beside the exe until then) WebKit hosts download on demand, each file pinned by SHA-256 in the exe; the WebView2 host is embedded and extracted on first use. The engine picker, failed cards and Settings, Engines show each engine's size, Download/Update/Retry/Remove and "Clear leftovers" from the same component model. Hosts must be reinstalled after an update: a downloaded host belongs to the release that pinned it and reads Update needed until reinstalled. `ENGINESTATE` and `EXPORTSTATE` report what the disk holds per engine.
 - **A stuck engine no longer freezes the app.** Sends to an engine go through a per-tab writer thread, so an engine that stops reading cannot block the window, closing its tab, or quitting. While an engine is behind, pointer moves and resizes merge (latest wins) and wheel steps add up; nothing else merges or reorders.
 - **Not responding.** A tab whose send queue is full and whose write is blocked for 50 ms, or whose write is stuck for 2 s, shows a warning badge on its card and a "Not responding" toast. Its right-click menu leads with Restart Engine (a new engine at the tab's URL) and End Engine (leaves a failed card). Nothing is killed automatically. Headless: `RESTARTENGINE id`, `ENDENGINE id`, and `unresponsive` on `EXPORTSTATE` cards.
 - Engine messages wake the event loop instead of waiting for the next poll, and one frame applies at most 64 messages per tab.

@@ -545,7 +545,7 @@ impl App {
     }
 
     /// The confirm before a large or destructive engine action: "Download CEF, 172 MB?" (always
-    /// asked first, since it is a big network action) or removing the downloaded runtime.
+    /// asked first, since it is a big network action) or removing the downloaded files.
     pub(crate) fn build_engine_confirm_popup(&mut self, ui: &mut egui::Ui) {
         let Some(confirm) = self.engine_ui.pending_engine_confirm else { return };
         let (title, detail, button) = match confirm {
@@ -573,7 +573,7 @@ impl App {
             ),
             EngineConfirm::Remove(kind) => (
                 format!("Remove {}?", engine_label(kind)),
-                "Deletes the downloaded runtime. You can download it again later.".to_string(),
+                "Deletes the downloaded files. You can download them again later.".to_string(),
                 "Remove",
             ),
         };

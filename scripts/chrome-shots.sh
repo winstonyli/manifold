@@ -583,15 +583,20 @@ send QUIT
 wait "$inst" 2>/dev/null
 inst=""
 
-# Engine states (CEF install) need what the instance above can't give: a manifold.exe with no `cef-runtime/`
-# beside it (the dev tree has one, so CEF would always read Installed) and a runtime directory that changes
-# state mid-run. So a second instance (fresh profile, a copy of the exe in $work) walks Not installed ->
+# Engine states (CEF install) need what the instance above can't give: a manifold.exe with no CEF host or
+# `cef-runtime/` beside it (the dev tree has them, so CEF would always read Installed) and an install that changes
+# state mid-run. CEF installs two parts (its host exe, marked by `cef.host`, and the runtime), so the block needs
+# a build that pins a CEF host (crates/manifold/src/host_pin.rs, written by scripts/release.sh): without one CEF
+# reads "Unavailable: this build has no Blink (CEF) download" and the block is skipped. So a second instance (fresh profile, a copy of the exe in $work) walks Not installed ->
 # Failed -> Installing -> Installed -> Update needed with nothing mocked in the app: the runtime is files in
 # the profile's data dir, and the download goes through HTTPS_PROXY (ureq honours it) to scripts/fake_proxy.py,
 # which answers 502 (Failed) or opens the tunnel and goes silent (Installing at 0 bytes; the half-filled
 # bar would need a real transfer, so it isn't shot). Custom is two more instances whose settings.json names
 # a directory that matches the pin, or doesn't.
-if has engine-states-picker || has engine-states-settings || has engine-install-confirm; then
+cef_pin_lines="$(python -P "$repo_root/scripts/host_pin.py" --list "$repo_root/crates/manifold/src/host_pin.rs" </dev/null | grep '^cef windows-x64 ')"
+if { has engine-states-picker || has engine-states-settings || has engine-install-confirm; } && [ -z "$cef_pin_lines" ]; then
+    echo "SKIP engine-states-*: host_pin.rs pins no CEF host for windows-x64 (cut a release table first)"
+elif has engine-states-picker || has engine-states-settings || has engine-install-confirm; then
     eng="$work/eng"; mkdir -p "$eng"
     cp "$exe" "$eng/manifold.exe"; cp "$(dirname "$exe")/manifold-engine-webview2.exe" "$eng/"
     pin_version="$(grep -o 'version: "[^"]*"' "$repo_root/crates/manifold/src/cef_pin.rs" | head -1 | cut -d'"' -f2)"
@@ -618,6 +623,17 @@ SEED
         send "RESIZE ${SIZE% *} 1000" WAITTABS "SLEEP 3"
     }
     engine_stop() { send QUIT; wait "$inst" 2>/dev/null; inst=""; }
+    # fake_host current|old: CEF's pinned host files (sparse, at their pinned sizes) and the `cef.host` marker that
+    # lists their hashes (`old`: other hashes, so the host reads Update needed).
+    fake_host() {
+        : >"$eng_data/cef.host"
+        while read -r _ _ file size sha _; do
+            truncate -s "$size" "$eng_data/$file"
+            [ "$1" = old ] && sha="$(printf '%064d' 0)"
+            printf '%s %s
+' "$sha" "$file" >>"$eng_data/cef.host"
+        done <<<"$cef_pin_lines"
+    }
     # fake_runtime MARKER: a runtime directory with a (sparse) 423 MB libcef.dll and MARKER in `ready`.
     fake_runtime() { mkdir -p "$eng_data/cef-runtime"; truncate -s 423M "$eng_data/cef-runtime/libcef.dll"; printf '%s' "$1" >"$eng_data/cef-runtime/ready"; }
     engine_app states
@@ -640,8 +656,8 @@ SEED
     engine_stop
     # Files on disk, judged by their marker: this pin's is Installed (size, Remove), another's is Update needed.
     # Fresh instances: a failed install outranks the disk in the state, so they can't follow the one above.
-    engine_app installed; fake_runtime "$pin_version"; send TOGGLESETTINGSPAGE "SLEEP 2"; shot engine-states-settings-installed; engine_stop
-    engine_app stale; fake_runtime "old-version"; send TOGGLESETTINGSPAGE "SLEEP 2"; shot engine-states-settings-stale
+    engine_app installed; fake_host current; fake_runtime "$pin_version"; send TOGGLESETTINGSPAGE "SLEEP 2"; shot engine-states-settings-installed; engine_stop
+    engine_app stale; fake_host old; fake_runtime "old-version"; send TOGGLESETTINGSPAGE "SLEEP 2"; shot engine-states-settings-stale
     send "CLICK 63 180" "SLEEP 1"; shot engine-states-picker-stale; send "CLICK 1100 300" "SLEEP 1"
     engine_stop
     # Bring-your-own folders: one whose archive.json names this pin (Custom), one that names another build.
@@ -650,6 +666,7 @@ SEED
         mkdir -p "$work/mycef-$1"; : >"$work/mycef-$1/libcef.dll"
         echo "{\"type\": \"minimal\", \"name\": \"cef_binary_$2_windows64_minimal.tar.bz2\"}" >"$work/mycef-$1/archive.json"
         engine_app "$1" ", \"cef_directory\": \"$(cygpath -m "$work/mycef-$1")\""
+        fake_host current  # a bring-your-own runtime still needs the downloaded host
         send TOGGLESETTINGSPAGE "SLEEP 2"; shot "engine-states-settings-$1"
         send "CLICK 63 180" "SLEEP 1"; shot "engine-states-picker-$1"; send "CLICK 1100 300" "SLEEP 1"
         engine_stop

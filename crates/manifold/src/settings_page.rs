@@ -270,7 +270,7 @@ impl App {
 
     /// Settings, "Engines": each engine's state, and the actions that state allows -- Download/Update
     /// (both ask first, naming the size), Cancel while installing, Retry after a failure, and Remove
-    /// (asks first) with the installed size for a downloaded runtime.
+    /// (asks first) with the installed size for downloaded files.
     pub(crate) fn settings_engines_section(&mut self, ui: &mut egui::Ui) {
         use crate::engine_install::EngineState;
         ui.add_space(10.0);
@@ -331,7 +331,7 @@ impl App {
                     _ => {}
                 }
                 let (label, hint) = if runtime.is_some() {
-                    ("Remove", "Delete the downloaded runtime")
+                    ("Remove", "Delete the downloaded files")
                 } else {
                     ("Clear leftovers", "Delete the partial download and install leftovers")
                 };
