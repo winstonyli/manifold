@@ -564,7 +564,7 @@ impl App {
                     Vec::new()
                 };
                 let detail = download_detail(&missing_libs);
-                (format!("{verb} {}, {size}?", engine_label(kind)), detail, verb)
+                (download_confirm_title(verb, kind, &size), detail, verb)
             }
             EngineConfirm::Remove(kind) if crate::engine_install::installed_paths(kind).is_empty() => (
                 format!("Clear {} leftovers?", engine_label(kind)),
@@ -1721,8 +1721,20 @@ impl App {
     }
 }
 
+/// "Download Servo, 93 MB?" (`size` from `engine_info::megabytes`).
+fn download_confirm_title(verb: &str, kind: EngineKind, size: &str) -> String {
+    format!("{verb} {}, {size}?", engine_label(kind))
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_download_confirm_names_the_engine_and_its_size() {
+        use crate::process_manager::EngineKind;
+        let size = crate::engine_info::megabytes(93_000_000);
+        assert_eq!(super::download_confirm_title("Download", EngineKind::Servo, &size), "Download Servo, 93 MB?");
+    }
+
     #[test]
     fn download_detail_warns_only_when_libraries_are_missing() {
         assert!(!super::download_detail(&[]).contains("Missing"));

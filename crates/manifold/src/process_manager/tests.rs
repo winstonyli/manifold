@@ -470,6 +470,7 @@ fn a_missing_servo_host_is_refused_with_the_reason() {
         check_spawnable(EngineKind::Servo, &servo_plan(), missing, None),
         Err(SpawnError::EngineMissing(EngineKind::Servo))
     ));
+    assert_eq!(SpawnError::EngineMissing(EngineKind::Servo).to_string(), "Servo is not installed");
     // A custom CEF folder is CEF's alone (spawn_tab drops it for other kinds; it changes nothing here either).
     assert!(check_spawnable(EngineKind::Servo, &none, missing, Some(Path::new("D:/cef"))).is_err());
 }

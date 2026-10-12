@@ -1341,3 +1341,27 @@ fn a_cef_install_fetches_the_host_then_the_runtime_in_one_progress() {
         EngineState::NotInstalled { size: f[0].size }
     );
 }
+
+/// Servo's three files land flat beside each other (the ANGLE DLLs must sit next to the exe); the exe alone, without
+/// a DLL or the marker, is Missing, and Ready only when the marker (written last) names all three.
+#[test]
+fn servo_installs_its_exe_and_both_dlls_flat_and_the_exe_alone_is_missing() {
+    let dir = temp_dir("servo-flat");
+    let (egl, gles, exe) = (body(1000), body(2000), body(4000));
+    let f = files(vec![
+        component("libEGL.dll", &egl, serve_bytes(&egl)),
+        component("libGLESv2.dll", &gles, serve_bytes(&gles)),
+        component("manifold-engine-servo.exe", &exe, serve_bytes(&exe)),
+    ]);
+    std::fs::write(dir.join("manifold-engine-servo.exe"), &*exe).unwrap();
+    assert_eq!(host_state(&dir, EngineKind::Servo, f), RuntimeOnDisk::Missing, "exe without DLLs or marker");
+    std::fs::write(dir.join("servo.host"), marker_text(f)).unwrap();
+    assert_eq!(host_state(&dir, EngineKind::Servo, f), RuntimeOnDisk::Missing, "marker but no DLL");
+    std::fs::remove_file(dir.join("servo.host")).unwrap();
+    install_host(&dir, EngineKind::Servo, f, &mut |_| {}, &never()).unwrap();
+    assert_eq!(host_state(&dir, EngineKind::Servo, f), RuntimeOnDisk::Ready);
+    for (name, bytes) in [("libEGL.dll", &egl), ("libGLESv2.dll", &gles), ("manifold-engine-servo.exe", &exe)] {
+        assert_eq!(std::fs::read(dir.join(name)).unwrap(), **bytes, "{name} sits directly in the folder");
+    }
+    verify_installed_host(&dir, f).unwrap();
+}

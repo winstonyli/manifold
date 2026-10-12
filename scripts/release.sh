@@ -150,6 +150,11 @@ if [ -z "${SKIP_BUILD:-}" ]; then
         export PATH RUSTFLAGS="-C target-feature=+crt-static"
         run_low cargo build --release -j "$jobs" "${win_pkgs[@]}"
         if [ -n "$build_servo" ]; then
+            # About 33 minutes and several GB of disk and RAM: refuse early rather than fail at minute 30.
+            free_gb="$(df -BG --output=avail . | tail -1 | tr -dc 0-9)"
+            [ "$free_gb" -ge 30 ] || die "Servo's release build needs about 30 GB of disk; $free_gb GB free"
+            free_mb="$(powershell.exe -NoProfile -Command '[int]((Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory/1024)' </dev/null | tr -dc 0-9)"
+            [ "$free_mb" -ge 8000 ] || die "Servo's release build needs about 8 GB of free memory; $free_mb MB free"
             CARGO_TARGET_DIR=target-servo run_low cargo build --release -j "$jobs" -p manifold-engine-servo
         fi
     )
@@ -170,7 +175,15 @@ take() { # take <kind/platform> <built path>
 win_host="$stage/manifold-engine-webview2.exe"
 cp "$tdir/manifold-engine-webview2.exe" "$win_host" || die "$tdir/manifold-engine-webview2.exe is missing"
 is_reused cef/windows-x64 || take cef/windows-x64 "$tdir/manifold-engine-cef.exe"
-[ -n "$build_servo" ] && take servo/windows-x64 target-servo/release/manifold-engine-servo.exe
+if [ -n "$build_servo" ]; then
+    take servo/windows-x64 target-servo/release/manifold-engine-servo.exe
+    # The exe loads ANGLE's two DLLs from beside itself (Task 0); mozangle's build script leaves them in its out dir.
+    angle_egl="$(ls -t target-servo/release/build/mozangle*/out/libEGL.dll target-servo/release/build/mozangle/*/out/libEGL.dll 2>/dev/null | head -1 || true)"
+    [ -n "$angle_egl" ] || die "ANGLE's libEGL.dll is not under target-servo/release/build/mozangle*/out"
+    angle_dir="$(dirname "$angle_egl")"
+    take servo/windows-x64 "$angle_dir/libEGL.dll"
+    take servo/windows-x64 "$angle_dir/libGLESv2.dll"
+fi
 [ -n "$build_webkit" ] && take webkit/linux-x64 target-linux/release/manifold-engine-webkit
 
 keep_args=()
@@ -192,6 +205,7 @@ for f in "${assets[@]}"; do
     built="${f#*=}"
     case "$built" in *manifold-engine-webkit) src=target-linux/release/manifold-engine-webkit ;;
         *manifold-engine-servo.exe) src=target-servo/release/manifold-engine-servo.exe ;;
+        *libEGL.dll | *libGLESv2.dll) src="$angle_dir/$(basename "$built")" ;;
         *) src="$tdir/$(basename "$built")" ;;
     esac
     [ "$(sha "$src")" = "$(sha "$built")" ] || die "$src changed while manifold.exe was built"
