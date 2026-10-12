@@ -120,6 +120,8 @@ pub(crate) fn build_list_popup_frame(
                 }
                 // A list taller than the window scrolls instead of running off it.
                 let fit = ctx.content_rect().height() - 2.0 * POPUP_WINDOW_MARGIN;
+                // A solid scrollbar, not the floating one that hides until hovered: it says there is more below.
+                ui.spacing_mut().scroll = egui::style::ScrollStyle::solid();
                 egui::ScrollArea::vertical().max_height(fit.max(120.0)).show(ui, add_contents);
                 list_row_nav(ui, interactable);
             });
