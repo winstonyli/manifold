@@ -758,10 +758,13 @@ pub(crate) fn toolbar_chip(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui
     }
     let chip_bg_slot = ui.painter().add(egui::Shape::Noop);
     // 2 px of chip padding around 26 px buttons: a 30 px chip in a 28 px row.
-    let (lead_rect, _) = ui.allocate_exact_size(egui::Vec2::new(2.0, 0.0), egui::Sense::hover());
+    // The spacing that follows a widget is the one in force when it is laid out, so the lead padding is laid out
+    // with none (else the first button sits `item_spacing` further in than the last is from the right edge), and the
+    // trailing padding with the row's own, which is the gap to whatever follows the chip.
     let (outer_spacing, outer_interact_y) = (ui.spacing().item_spacing.x, ui.spacing().interact_size.y);
     ui.spacing_mut().item_spacing.x = 0.0;
     ui.spacing_mut().interact_size.y = 26.0;
+    let (lead_rect, _) = ui.allocate_exact_size(egui::Vec2::new(2.0, 0.0), egui::Sense::hover());
     let content_rect = content(ui);
     ui.spacing_mut().item_spacing.x = outer_spacing;
     ui.spacing_mut().interact_size.y = outer_interact_y;
@@ -792,6 +795,31 @@ mod tests {
         assert_eq!(lerp_color32(egui::Color32::TRANSPARENT, hover, 0.0), egui::Color32::TRANSPARENT);
         let (a, b) = (egui::Color32::from_rgb(10, 20, 30), egui::Color32::from_rgb(110, 120, 130));
         assert_eq!(lerp_color32(a, b, 0.5), egui::Color32::from_rgb(60, 70, 80));
+    }
+
+    /// A button cluster is padded evenly: the first button sits as far from the chip's left edge as the last does
+    /// from its right (the lead padding used to be followed by a full `item_spacing`).
+    #[test]
+    fn a_toolbar_chip_pads_both_sides_alike() {
+        let ctx = egui::Context::default();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(400.0, 100.0));
+        let mut gaps = (0.0, 0.0);
+        let mut out = ctx.run_ui(egui::RawInput { screen_rect: Some(screen), ..Default::default() }, |ui| {
+            ui.horizontal(|ui| {
+                let start = ui.cursor().min.x;
+                let (mut first, mut last) = (0.0, 0.0);
+                toolbar_chip(ui, |ui| {
+                    let a = chip_icon_button(ui, egui::Id::new("a"), "a").rect;
+                    let b = chip_icon_button(ui, egui::Id::new("b"), "b").rect;
+                    (first, last) = (a.min.x, b.max.x);
+                    a.union(b)
+                });
+                let after = ui.cursor().min.x - ui.spacing().item_spacing.x;
+                gaps = (first - start, after - last);
+            });
+        });
+        out.textures_delta.clear();
+        assert_eq!(gaps, (2.0, 2.0), "left and right padding of the chip");
     }
 
     /// A click on a `toggle` reports `clicked()`; the toggle is 30x17 and draws no text.
