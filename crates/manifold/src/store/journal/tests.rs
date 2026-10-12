@@ -284,6 +284,37 @@ fn a_type_this_build_does_not_know_survives_snapshots_and_compaction() {
     assert!(!doc.nodes[&node].is_live());
 }
 
+/// The retired JSON leaf, written as an older build did (type string, `key` 12, `value` 13, group `from_json` 9):
+/// a document that holds them reads as unknown and keeps every byte through a snapshot and compaction.
+#[test]
+fn a_retired_json_leaf_and_its_group_flag_survive_compaction() {
+    let dir = temp_dir("retired-leaf");
+    let path = dir.join("session.mnf");
+    let mut journal = Journal::open(&path, ActorId(1)).unwrap();
+    let mut txn = journal.begin().unwrap();
+    let (group, leaf) = (txn.next_id(), txn.next_id());
+    let mut group_fields = encode_field(field::TYPE, &FieldValue::Str("application/vnd.manifold.group".into()));
+    group_fields.extend(encode_field(9, &FieldValue::Bool(true)));
+    let mut leaf_fields = encode_field(field::TYPE, &FieldValue::Str("application/vnd.manifold.json-leaf".into()));
+    leaf_fields.extend(encode_field(field::PARENT, &FieldValue::Id(Some(group))));
+    leaf_fields.extend(encode_field(12, &FieldValue::Str("k".into())));
+    leaf_fields.extend(encode_field(13, &FieldValue::Str("[1,2]".into())));
+    txn.commit(vec![
+        OpBody::Create { node: group, fields: group_fields },
+        OpBody::Create { node: leaf, fields: leaf_fields },
+    ])
+    .unwrap();
+    let before = journal.doc().clone();
+    journal.close().unwrap();
+
+    let doc = Journal::read(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(doc.nodes, before.nodes, "every field, known or not, is kept");
+    assert_eq!(doc.nodes[&leaf].kind(), Kind::Unknown);
+    assert!(!doc.nodes[&leaf].is_live(), "nothing shows it");
+    assert_eq!(doc.nodes[&group].kind(), Kind::Group);
+    assert!(doc.nodes[&group].is_live());
+}
+
 #[test]
 fn a_create_op_carries_its_type_in_its_fields_and_no_kind_slot() {
     let node = NodeId { actor: ActorId(1), counter: 3 };
