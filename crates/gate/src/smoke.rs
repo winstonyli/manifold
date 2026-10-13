@@ -193,6 +193,12 @@ fn skip_is(s: &State, n: f64) -> bool {
     items_card(s).is_some_and(|c| c["skip"].as_f64() == Some(n))
 }
 
+/// The `/items` card's `rows`, `more` and `collapsed`, for the paging and toggle checks.
+fn items_rows_more(s: &State) -> Option<(f64, f64, bool)> {
+    let c = items_card(s)?;
+    Some((c["rows"].as_f64()?, c["more"].as_f64()?, c["collapsed"].as_bool()?))
+}
+
 /// `' '.join('%.0f' % v for v in ITEMS['earlier'])`.
 fn earlier_point(s: &State) -> Option<String> {
     let a = items_card(s)?.get("earlier")?.as_array()?;
@@ -869,6 +875,44 @@ fn drive(sm: &mut Smoke, m: &mut Marks) -> io::Result<()> {
         "clicking the + N earlier row grows the window up by one page (skip 880)",
         "ITEMS['skip'] == 880",
         |s| skip_is(s, 880.0),
+    );
+
+    // JSONMORE reveals one more page (20 rows) of the card; JSONTOGGLE collapses it (no rows) and expands it again;
+    // JSONRELAYOUT keeps the cards.
+    let (rows0, more0, _) = items_rows_more(&big_earlier).unwrap_or_default();
+    sm.send("JSONMORE /items")?;
+    sm.send("WAITIDLE")?;
+    let big_more = sm.settle("big_more")?;
+    check_query(
+        &big_more,
+        "big_more",
+        "JSONMORE /items reveals one more page (20 rows)",
+        "ITEMS['rows'] == rows0 + 20 and ITEMS['more'] == more0 - 20",
+        |s| items_rows_more(s).is_some_and(|(r, m, _)| r == rows0 + 20.0 && m == more0 - 20.0),
+    );
+    sm.send("JSONTOGGLE /items")?;
+    sm.send("WAITIDLE")?;
+    let big_folded = sm.settle("big_folded")?;
+    check_query(
+        &big_folded,
+        "big_folded",
+        "JSONTOGGLE /items collapses the card (no rows)",
+        "ITEMS['collapsed'] and ITEMS['rows'] == 0",
+        |s| items_rows_more(s).is_some_and(|(r, _, c)| c && r == 0.0),
+    );
+    sm.send("JSONTOGGLE /items")?;
+    sm.send("JSONRELAYOUT")?;
+    sm.send("WAITIDLE")?;
+    let big_unfolded = sm.settle("big_unfolded")?;
+    check_query(
+        &big_unfolded,
+        "big_unfolded",
+        "a second JSONTOGGLE expands it again with its rows, and JSONRELAYOUT keeps the level",
+        "not ITEMS['collapsed'] and ITEMS['rows'] == rows0 + 20 and s['json_level']['root'] == big_id",
+        |s| {
+            items_rows_more(s).is_some_and(|(r, _, c)| !c && r == rows0 + 20.0)
+                && json_level(s)["root"] == big_id.as_str()
+        },
     );
     sm.send("CLICK 22 17")?;
     sm.check_state("big_out", "the back button leaves the big JSON level", "s['json_level'] is None", |v| {

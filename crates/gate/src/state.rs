@@ -1,6 +1,5 @@
-//! EXPORTSTATE as the checks read it: a thin wrapper over the JSON with the accessors scripts/export_state.py and
-//! scripts/smoke_eval.py's `query` namespace give a python expression (`cards`, `tabs`, `groups`, `xy`, `lt`,
-//! `bbox`, `card_is`). The producer is `App::export_state` (debug_control.rs, doc comment on `ExportState`).
+//! EXPORTSTATE as the checks read it: a thin wrapper over the JSON with accessors for the cards, tabs, groups,
+//! positions, labels and the bbox. The producer is `App::export_state` (debug_control.rs, doc comment on `ExportState`).
 
 use serde_json::Value;
 
@@ -56,7 +55,7 @@ impl State {
         self.cards().iter().find(|c| c["id"] == id)
     }
 
-    /// export_state.py `card_is`: a stored node of type `ty` (a JSON level's card is never one); `loaded` also
+    /// `card_is`: a stored node of type `ty` (a JSON level's card is never one); `loaded` also
     /// requires that engine state (`Some(true)` a live tab, `Some(false)` a sleeping/waking/failed one).
     pub fn card_is(card: &Value, ty: &str, loaded: Option<bool>) -> bool {
         if card["json_card"].as_bool().unwrap_or(false) || card["type"] != ty {
@@ -94,7 +93,7 @@ impl State {
         fmt_pair(x, y)
     }
 
-    /// export_state.py `label`: the card's type, `;loaded` for a live tab, `json-card` for a JSON level's card.
+    /// `label`: the card's type, `;loaded` for a live tab, `json-card` for a JSON level's card.
     pub fn label(&self, id: &str) -> String {
         match self.card(id) {
             None => "missing".to_string(),
