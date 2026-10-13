@@ -5047,6 +5047,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "manifold-view-pdfium"
+version = "0.5.1"
+dependencies = [
+ "ipc-protocol",
+ "pdfium-auto",
+ "pdfium-render",
+]
+
+[[package]]
 name = "manifold-view-servo"
 version = "0.5.1"
 dependencies = [

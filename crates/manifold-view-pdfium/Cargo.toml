@@ -1,0 +1,13 @@
+[package]
+name = "manifold-view-pdfium"
+version.workspace = true
+edition.workspace = true
+description = "Renders the first page of a PDF for manifold, in its own process so a PDFium crash can't take the app down."
+
+[lints]
+workspace = true
+
+[dependencies]
+ipc-protocol.workspace = true
+pdfium-render.workspace = true
+pdfium-auto.workspace = true

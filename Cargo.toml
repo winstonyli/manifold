@@ -8,6 +8,7 @@ members = [
     "crates/manifold-view-cef",
     "crates/manifold-view-webkit",
     "crates/manifold-view-webview2",
+    "crates/manifold-view-pdfium",
 ]
 # Bare `cargo run/build/test` act on the app alone; hosts and the gate are built with -p.
 default-members = ["crates/manifold"]
