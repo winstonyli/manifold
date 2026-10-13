@@ -53,7 +53,7 @@ fn a_painted_jar_chip_draws_the_marker_whole() {
         will_switch: false,
         can_switch_now: false,
         was_color: egui::Color32::GRAY,
-        engine_ignores: false,
+        view_ignores: false,
         tooltip: None,
     };
     for (max, full) in [(300.0, true), (90.0, false), (20.0, false)] {
@@ -106,7 +106,7 @@ fn the_jar_dots_show_a_waiting_switch() {
             will_switch,
             can_switch_now: true,
             was_color: egui::Color32::GRAY,
-            engine_ignores: false,
+            view_ignores: false,
             tooltip: None,
         };
         let mut end = 0.0;
@@ -149,7 +149,7 @@ fn a_painted_jar_chip_can_be_hit_until_it_stops_being_painted() {
         will_switch: false,
         can_switch_now: false,
         was_color: egui::Color32::GRAY,
-        engine_ignores: false,
+        view_ignores: false,
         tooltip: None,
     };
     let frame = |paint: bool| {
@@ -196,7 +196,7 @@ fn a_painted_jar_chip_stays_inside_its_width() {
         will_switch: true,
         can_switch_now: true,
         was_color: egui::Color32::GRAY,
-        engine_ignores: false,
+        view_ignores: false,
         tooltip: None,
     };
     for max in [200.0, 80.0, 40.0, 20.0, 10.0] {
@@ -231,7 +231,7 @@ fn a_jar_chip_shows_a_hidden_character_as_a_placeholder() {
         will_switch: false,
         can_switch_now: false,
         was_color: egui::Color32::GRAY,
-        engine_ignores: false,
+        view_ignores: false,
         tooltip: None,
     };
     let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
@@ -726,11 +726,11 @@ fn card_filter_text_matches_each_kinds_filter_input() {
 
 /// A CEF runtime with an older marker (Update needed) is named as needing an update, not as missing.
 #[test]
-fn a_failed_card_names_an_outdated_engine_as_needing_an_update() {
-    use crate::engine_install::EngineState;
-    assert_eq!(missing_engine_phrases(&EngineState::UpdateNeeded { size: 1 }), ("needs an update", "needs an update"));
-    assert_eq!(missing_engine_phrases(&EngineState::NotInstalled { size: 1 }), ("is not installed", "not installed"));
-    assert_eq!(missing_engine_phrases(&EngineState::Failed("x".into())), ("is not installed", "not installed"));
+fn a_failed_card_names_an_outdated_view_as_needing_an_update() {
+    use crate::view_install::ViewStatus;
+    assert_eq!(missing_view_phrases(&ViewStatus::UpdateNeeded { size: 1 }), ("needs an update", "needs an update"));
+    assert_eq!(missing_view_phrases(&ViewStatus::NotInstalled { size: 1 }), ("is not installed", "not installed"));
+    assert_eq!(missing_view_phrases(&ViewStatus::Failed("x".into())), ("is not installed", "not installed"));
 }
 
 #[test]

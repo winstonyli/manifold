@@ -73,7 +73,7 @@ start() {
 run() {
   local name="$1" engine="$2" path="$3" stay="$4"
   shift 4
-  seed "{\"nodes\": [{\"id\": \"t\", \"type\": \"application/vnd.manifold.tab\", \"url\": \"$base$path\", \"engine\": \"$engine\", \"pos\": [0.0, 0.0]}]}"
+  seed "{\"nodes\": [{\"id\": \"t\", \"type\": \"application/vnd.manifold.tab\", \"url\": \"$base$path\", \"view_kind\": \"$engine\", \"pos\": [0.0, 0.0]}]}"
   echo "--- run $name ($engine $path)"
   start "$name" WAITTABS GRAPHRIGHT GRAPHOPEN "$@" "SLEEP $stay"
 }
@@ -250,8 +250,8 @@ rm -rf "$profile/manifold/jars"
 seed "{\"nodes\": [
   {\"id\": \"ja\", \"type\": \"application/vnd.manifold.jar\", \"name\": \"Alice\"},
   {\"id\": \"jb\", \"type\": \"application/vnd.manifold.jar\", \"name\": \"Bob\"},
-  {\"id\": \"a\", \"type\": \"application/vnd.manifold.tab\", \"url\": \"$base/login?u=alice\", \"engine\": \"webview2\", \"jar\": \"ja\", \"jar_set\": true, \"pos\": [0.0, 0.0]},
-  {\"id\": \"b\", \"type\": \"application/vnd.manifold.tab\", \"url\": \"$base/login?u=bob\", \"engine\": \"webview2\", \"jar\": \"jb\", \"jar_set\": true, \"pos\": [400.0, 0.0]}
+  {\"id\": \"a\", \"type\": \"application/vnd.manifold.tab\", \"url\": \"$base/login?u=alice\", \"view_kind\": \"webview2\", \"jar\": \"ja\", \"jar_set\": true, \"pos\": [0.0, 0.0]},
+  {\"id\": \"b\", \"type\": \"application/vnd.manifold.tab\", \"url\": \"$base/login?u=bob\", \"view_kind\": \"webview2\", \"jar\": \"jb\", \"jar_set\": true, \"pos\": [400.0, 0.0]}
 ]}"
 echo "--- run perjar (two WebView2 tabs on jars Alice and Bob)"
 start perjar WAITTABS GRAPHRIGHT GRAPHOPEN NEXTTAB "SLEEP 38" "EXPORTSESSION $(cygpath -w "$out/s.json")"
@@ -321,8 +321,8 @@ rm -rf "$profile/manifold/jars"
 seed "{\"nodes\": [
   {\"id\": \"ja\", \"type\": \"application/vnd.manifold.jar\", \"name\": \"Alice\"},
   {\"id\": \"jb\", \"type\": \"application/vnd.manifold.jar\", \"name\": \"Bob\"},
-  {\"id\": \"k\", \"type\": \"application/vnd.manifold.tab\", \"url\": \"$base/whoami?keep\", \"engine\": \"webview2\", \"pos\": [0.0, 0.0]},
-  {\"id\": \"a\", \"type\": \"application/vnd.manifold.tab\", \"url\": \"$base/login?u=alice\", \"engine\": \"webview2\", \"jar\": \"ja\", \"jar_set\": true, \"pos\": [400.0, 0.0]}
+  {\"id\": \"k\", \"type\": \"application/vnd.manifold.tab\", \"url\": \"$base/whoami?keep\", \"view_kind\": \"webview2\", \"pos\": [0.0, 0.0]},
+  {\"id\": \"a\", \"type\": \"application/vnd.manifold.tab\", \"url\": \"$base/login?u=alice\", \"view_kind\": \"webview2\", \"jar\": \"ja\", \"jar_set\": true, \"pos\": [400.0, 0.0]}
 ]}"
 # sn_req <log> <path> <n>: the user (or "-") on the n-th request for <path>, "no request" if there is none.
 sn_req() { local u; u="$(awk -v p="$2" '$3 == p {print $5}' <<<"$1" | sed -n "$3p")"; echo "${u:-no request}"; }

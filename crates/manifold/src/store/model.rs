@@ -150,7 +150,7 @@ pub enum Kind {
 pub(crate) const TYPES: [(Kind, &str, &[u32]); 9] = {
     use field::*;
     [
-        (Kind::Tab, TYPE_TAB, &[POS, COLOR, PARENT, URL, ENGINE, PINNED, JAR, JAR_SET]),
+        (Kind::Tab, TYPE_TAB, &[POS, COLOR, PARENT, URL, VIEW_KIND, PINNED, JAR, JAR_SET]),
         (Kind::Group, TYPE_GROUP, &[POS, COLOR, NAME, DEFAULT_JAR]),
         (Kind::Note, TYPE_NOTE, &[POS, COLOR, PARENT, URL, TEXT]),
         (Kind::Image, TYPE_IMAGE, &[POS, COLOR, PARENT, URL, PATH]),
@@ -183,9 +183,9 @@ impl Kind {
     }
 }
 
-/// Engine codes for the `engine` field: code `n` is `ENGINES[n - 1]`,
-/// spelled as `process_manager::engine_kind_serde` spells it.
-pub const ENGINES: [&str; 4] = ["servo", "cef", "webkit", "webview2"];
+/// Engine codes for the `view_kind` field: code `n` is `ENGINES[n - 1]`,
+/// spelled as `process_manager::view_kind_serde` spells it.
+pub const VIEW_KINDS: [&str; 4] = ["servo", "cef", "webkit", "webview2"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FieldType {
@@ -199,8 +199,8 @@ pub enum FieldType {
     Id,
     Str,
     Bool,
-    /// An `ENGINES` code.
-    Engine,
+    /// An `VIEW_KINDS` code.
+    ViewCode,
 }
 
 #[derive(Debug)]
@@ -218,7 +218,7 @@ pub mod field {
     pub const GROUP: u32 = 3;
     pub const PARENT: u32 = 4;
     pub const URL: u32 = 5;
-    pub const ENGINE: u32 = 6;
+    pub const VIEW_KIND: u32 = 6;
     pub const PINNED: u32 = 7;
     pub const NAME: u32 = 8;
     // 9, 12 and 13 were `from_json`, `key` and `value` (the JSON leaf, retired 2026-10-12): never reuse them. A
@@ -249,7 +249,7 @@ pub static FIELDS: [FieldDef; 18] = [
     FieldDef { no: field::GROUP, name: "group", ty: FieldType::Id },
     FieldDef { no: field::PARENT, name: "parent", ty: FieldType::Id },
     FieldDef { no: field::URL, name: "url", ty: FieldType::Str },
-    FieldDef { no: field::ENGINE, name: "engine", ty: FieldType::Engine },
+    FieldDef { no: field::VIEW_KIND, name: "view_kind", ty: FieldType::ViewCode },
     FieldDef { no: field::PINNED, name: "pinned", ty: FieldType::Bool },
     FieldDef { no: field::NAME, name: "name", ty: FieldType::Str },
     FieldDef { no: field::TEXT, name: "text", ty: FieldType::Str },
@@ -285,7 +285,7 @@ pub enum FieldValue {
     Id(Option<NodeId>),
     Str(String),
     Bool(bool),
-    Engine(u64),
+    ViewCode(u64),
 }
 
 impl FieldValue {
@@ -297,7 +297,7 @@ impl FieldValue {
             FieldType::Id => FieldValue::Id(None),
             FieldType::Str => FieldValue::Str(String::new()),
             FieldType::Bool => FieldValue::Bool(false),
-            FieldType::Engine => FieldValue::Engine(0),
+            FieldType::ViewCode => FieldValue::ViewCode(0),
         }
     }
 }
@@ -331,13 +331,13 @@ pub fn encode_field_into(out: &mut Vec<u8>, no: u32, value: &FieldValue) {
         FieldValue::Id(Some(id)) => w.message(no, &id_message(*id)),
         FieldValue::Str(s) if !s.is_empty() => w.str(no, s),
         FieldValue::Bool(true) => w.varint(no, 1),
-        FieldValue::Engine(code) if *code != 0 => w.varint(no, *code),
+        FieldValue::ViewCode(code) if *code != 0 => w.varint(no, *code),
         // The empty or zero value of each type is "absent": nothing is written.
         FieldValue::Color(None)
         | FieldValue::Id(None)
         | FieldValue::Str(_)
         | FieldValue::Bool(false)
-        | FieldValue::Engine(_) => {}
+        | FieldValue::ViewCode(_) => {}
     }
     *out = w.into_bytes();
 }
@@ -394,7 +394,7 @@ pub fn decode_field(def: &FieldDef, encoded: &[u8]) -> Result<FieldValue, TlvErr
             FieldType::Id => FieldValue::Id(Some(decode_id(v.bytes()?)?)),
             FieldType::Str => FieldValue::Str(v.str()?.to_owned()),
             FieldType::Bool => FieldValue::Bool(v.bool()?),
-            FieldType::Engine => FieldValue::Engine(v.u64()?),
+            FieldType::ViewCode => FieldValue::ViewCode(v.u64()?),
         };
     }
     Ok(value)
@@ -632,7 +632,7 @@ mod tests {
             (field::PARENT, FieldValue::Id(Some(id))),
             (field::URL, FieldValue::Str("https://example.com/".into())),
             (field::PINNED, FieldValue::Bool(true)),
-            (field::ENGINE, FieldValue::Engine(4)),
+            (field::VIEW_KIND, FieldValue::ViewCode(4)),
             (field::JAR, FieldValue::Id(Some(id))),
             (field::JAR_SET, FieldValue::Bool(true)),
             (field::DEFAULT_JAR, FieldValue::Id(Some(id))),

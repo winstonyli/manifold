@@ -5,7 +5,7 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use gtk::prelude::*;
-use ipc_protocol::{transport, EngineToHost, HostToEngine, MessageChannel, TabState};
+use ipc_protocol::{transport, HostToView, MessageChannel, TabState, ViewToHost};
 use javascriptcore::ValueExt;
 use webkit2gtk::{
     DownloadExt, FindControllerExt, FindOptions, URIRequestExt, URIResponseExt, WebContextExt, WebView, WebViewExt,
@@ -20,21 +20,21 @@ const FRAME_INTERVAL: Duration = Duration::from_millis(33);
 fn main() {
     // Hex of the UTF-8 URL (process_manager.rs's webkit_shell_command): page text crosses the WSL shells
     // only as hex. A missing variable keeps the old default; a malformed one is a bug in the host.
-    let initial_url = match std::env::var("ENGINE_INITIAL_URL_HEX") {
-        Ok(hex) => String::from_utf8(transport::from_hex(&hex).expect("ENGINE_INITIAL_URL_HEX must be hex"))
-            .expect("ENGINE_INITIAL_URL_HEX must spell UTF-8"),
+    let initial_url = match std::env::var("VIEW_INITIAL_URL_HEX") {
+        Ok(hex) => String::from_utf8(transport::from_hex(&hex).expect("VIEW_INITIAL_URL_HEX must be hex"))
+            .expect("VIEW_INITIAL_URL_HEX must spell UTF-8"),
         Err(_) => "https://example.com".to_string(),
     };
-    let port: u16 = std::env::var("ENGINE_TCP_PORT")
-        .expect("ENGINE_TCP_PORT env var required")
+    let port: u16 = std::env::var("VIEW_TCP_PORT")
+        .expect("VIEW_TCP_PORT env var required")
         .parse()
-        .expect("ENGINE_TCP_PORT must be a u16");
+        .expect("VIEW_TCP_PORT must be a u16");
     // The Windows host's own gateway IP, computed by process_manager.rs's
     // spawn command (`ip route`'s default gateway) — not 127.0.0.1. WSL2's
     // NAT networking refuses a guest-to-127.0.0.1-on-host connection
     // outright (ECONNREFUSED), so the host is only reachable this way. See
     // ipc_protocol::transport::listen_remote's doc comment.
-    let host_ip = std::env::var("ENGINE_HOST_IP").expect("ENGINE_HOST_IP env var required");
+    let host_ip = std::env::var("VIEW_HOST_IP").expect("VIEW_HOST_IP env var required");
 
     // Single TCP connection back to manifold, used for both directions
     // via a cloned handle — mirrors process_manager.rs's spawn_webkit_tab
@@ -44,8 +44,8 @@ fn main() {
     // use).
     // The secret process_manager.rs generated for this spawn; manifold drops any
     // connection that doesn't send it first.
-    let token = transport::token_from_hex(&std::env::var("ENGINE_TOKEN").expect("ENGINE_TOKEN env var required"))
-        .expect("ENGINE_TOKEN must be 32 hex digits");
+    let token = transport::token_from_hex(&std::env::var("VIEW_TOKEN").expect("VIEW_TOKEN env var required"))
+        .expect("VIEW_TOKEN must be 32 hex digits");
     let control = transport::connect_remote(&host_ip, port, &token).expect("connect to manifold");
     let stream = control.into_inner();
     let read_stream = stream.try_clone().expect("clone control stream");
@@ -94,7 +94,7 @@ fn main() {
     //
     // A queue, not a single slot -- two downloads progressing within the
     // same ~16ms tick would otherwise silently clobber each other.
-    let pending_download: Rc<RefCell<Vec<EngineToHost>>> = Rc::new(RefCell::new(Vec::new()));
+    let pending_download: Rc<RefCell<Vec<ViewToHost>>> = Rc::new(RefCell::new(Vec::new()));
     let reserved: Rc<RefCell<std::collections::HashSet<std::path::PathBuf>>> = Rc::default();
     if let Some(context) = &web_context {
         let pending_for_started = pending_download.clone();
@@ -118,7 +118,7 @@ fn main() {
                 *dest_for_destination.borrow_mut() = Some(path.clone());
                 let total_bytes = download.response().map(|r| r.content_length()).filter(|&n| n > 0);
                 let url = download.request().and_then(|r| r.uri()).map(|u| u.to_string());
-                pending_for_destination.borrow_mut().push(EngineToHost::DownloadStarted { path, total_bytes, url });
+                pending_for_destination.borrow_mut().push(ViewToHost::DownloadStarted { path, total_bytes, url });
                 true
             });
 
@@ -127,7 +127,7 @@ fn main() {
             download.connect_received_data(move |download, _data_length_delta| {
                 if let Some(path) = dest_for_progress.borrow().clone() {
                     let bytes_received = download.received_data_length();
-                    pending_for_progress.borrow_mut().push(EngineToHost::DownloadProgress { path, bytes_received });
+                    pending_for_progress.borrow_mut().push(ViewToHost::DownloadProgress { path, bytes_received });
                 }
             });
 
@@ -139,7 +139,7 @@ fn main() {
             download.connect_failed(move |_download, _error| {
                 failed_for_handler.set(true);
                 if let Some(path) = dest_for_failed.borrow().clone() {
-                    pending_for_failed.borrow_mut().push(EngineToHost::DownloadFailed { path });
+                    pending_for_failed.borrow_mut().push(ViewToHost::DownloadFailed { path });
                 }
             });
 
@@ -155,7 +155,7 @@ fn main() {
                     return;
                 }
                 if let Some(path) = dest {
-                    pending_for_finished.borrow_mut().push(EngineToHost::DownloadCompleted { path });
+                    pending_for_finished.borrow_mut().push(ViewToHost::DownloadCompleted { path });
                 }
             });
         });
@@ -206,7 +206,7 @@ fn main() {
     // Audio-playing indicator: `is-playing-audio` is a real GObject notify
     // property, unlike CEF's only
     // equivalent (a full `AudioHandler` that takes over raw audio output
-    // entirely) -- see `ipc_protocol::EngineToHost::AudioPlayingChanged`'s
+    // entirely) -- see `ipc_protocol::ViewToHost::AudioPlayingChanged`'s
     // doc comment.
     let pending_audio_playing: Rc<RefCell<Option<bool>>> = Rc::new(RefCell::new(None));
     {
@@ -216,7 +216,7 @@ fn main() {
         });
     }
 
-    // See `ipc_protocol::EngineToHost::JsonBody`/`RedirectableContent`'s own
+    // See `ipc_protocol::ViewToHost::JsonBody`/`RedirectableContent`'s own
     // doc comments -- filled in once per navigation, right after `loading`
     // transitions true -> false below, by the same `document.contentType`
     // script-eval check every engine that sends either message uses.
@@ -229,7 +229,7 @@ fn main() {
     // native `ButtonRelease` (input.rs, unchanged), which makes WebKitGTK
     // fire its own real `context-menu` signal -- suppressed here (`true` =
     // "handled, don't show your own") unconditionally, same
-    // don't-risk-a-real-popup-window caution `HostToEngine::OpenDevTools`
+    // don't-risk-a-real-popup-window caution `HostToView::OpenDevTools`
     // already has to (a real GTK popup here would be override-redirect,
     // not a toplevel, so likely wouldn't hit that exact hang -- but this
     // project has no way to verify that live in this sandboxed session,
@@ -249,7 +249,7 @@ fn main() {
     // API has no notion of "which match is currently active" the way CEF's
     // `active_match_ordinal`/WebView2's `ActiveMatchIndex` do, so
     // `active_index` is always reported as 0 here; see
-    // `ipc_protocol::EngineToHost::FindResult`'s own doc comment.
+    // `ipc_protocol::ViewToHost::FindResult`'s own doc comment.
     let find_controller = webview.find_controller();
     let pending_find_result: Rc<RefCell<Option<(u32, u32)>>> = Rc::new(RefCell::new(None));
     if let Some(controller) = &find_controller {
@@ -265,7 +265,7 @@ fn main() {
 
     let mut sink = ipc_protocol::FrameSink::inline();
     // M5: background tabs stay alive but stop sending frames; see
-    // HostToEngine::SetVisible's doc comment.
+    // HostToView::SetVisible's doc comment.
     let mut visible = true;
     // When the last frame was sent: `FRAME_INTERVAL` paces `take`.
     let mut sent_at = Instant::now();
@@ -301,27 +301,27 @@ fn main() {
 
         while let Ok(msg) = rx.try_recv() {
             match msg {
-                HostToEngine::Navigate { url, .. } => {
+                HostToView::Navigate { url, .. } => {
                     webview.load_uri(&url);
                 }
-                HostToEngine::GoBack => {
+                HostToView::GoBack => {
                     if webview.can_go_back() {
                         webview.go_back();
                     }
                 }
-                HostToEngine::GoForward => {
+                HostToView::GoForward => {
                     if webview.can_go_forward() {
                         webview.go_forward();
                     }
                 }
-                HostToEngine::Reload => {
+                HostToView::Reload => {
                     webview.reload();
                 }
-                HostToEngine::Resize { width: w, height: h, .. } => {
+                HostToView::Resize { width: w, height: h, .. } => {
                     webview.set_size_request(w as i32, h as i32);
                     offscreen.resize(w as i32, h as i32);
                 }
-                HostToEngine::Input(event) => {
+                HostToView::Input(event) => {
                     input::send_input(
                         &webview,
                         event,
@@ -330,23 +330,23 @@ fn main() {
                         &pending_context_menu,
                     );
                 }
-                HostToEngine::SetZoom { factor } => {
+                HostToView::SetZoom { factor } => {
                     webview.set_zoom_level(factor);
                 }
-                HostToEngine::SetVisible(v) => {
+                HostToView::SetVisible(v) => {
                     visible = v;
                     if v {
                         // A tab shown again gets a frame at once, changed or not.
                         sink.show();
                     }
                 }
-                HostToEngine::GetState => {
+                HostToView::GetState => {
                     let url = webview.uri().map(|u| u.to_string()).unwrap_or_else(|| last_nav.0.clone());
-                    let _ = to_host.send(&EngineToHost::StateSnapshot(TabState { url }));
+                    let _ = to_host.send(&ViewToHost::StateSnapshot(TabState { url }));
                 }
                 // This engine has no cookie jar to seed or read; stays silent.
-                HostToEngine::SetCookies(_) | HostToEngine::GetCookies => {}
-                HostToEngine::QueryPageState => {
+                HostToView::SetCookies(_) | HostToView::GetCookies => {}
+                HostToView::QueryPageState => {
                     let pending = pending_page_state.clone();
                     webview.run_javascript(
                         ipc_protocol::PAGE_STATE_SCRIPT,
@@ -364,14 +364,14 @@ fn main() {
                         },
                     );
                 }
-                HostToEngine::RestoreScroll { x, y } => {
+                HostToView::RestoreScroll { x, y } => {
                     webview.run_javascript(
                         &ipc_protocol::restore_scroll_script(x, y),
                         gtk::gio::Cancellable::NONE,
                         |_| {},
                     );
                 }
-                HostToEngine::FindStart { text, match_case } => {
+                HostToView::FindStart { text, match_case } => {
                     if let Some(controller) = &find_controller {
                         let mut options = FindOptions::WRAP_AROUND;
                         if !match_case {
@@ -380,17 +380,17 @@ fn main() {
                         controller.search(&text, options.bits(), 0);
                     }
                 }
-                HostToEngine::FindNext => {
+                HostToView::FindNext => {
                     if let Some(controller) = &find_controller {
                         controller.search_next();
                     }
                 }
-                HostToEngine::FindPrevious => {
+                HostToView::FindPrevious => {
                     if let Some(controller) = &find_controller {
                         controller.search_previous();
                     }
                 }
-                HostToEngine::FindStop => {
+                HostToView::FindStop => {
                     if let Some(controller) = &find_controller {
                         controller.search_finish();
                     }
@@ -410,11 +410,11 @@ fn main() {
                 // manager to the Xvfb session (a bigger change than this
                 // warranted) -- silent no-op instead, same per-engine gap
                 // as Servo's own missing DevTools API.
-                HostToEngine::OpenDevTools => {}
-                HostToEngine::SetMuted { muted } => {
+                HostToView::OpenDevTools => {}
+                HostToView::SetMuted { muted } => {
                     webview.set_is_muted(muted);
                 }
-                HostToEngine::Shutdown => {
+                HostToView::Shutdown => {
                     return;
                 }
             }
@@ -430,7 +430,7 @@ fn main() {
         if nav_now != last_nav {
             let was_loading = last_nav.4;
             last_nav = nav_now.clone();
-            let _ = to_host.send(&EngineToHost::NavigationStateChanged {
+            let _ = to_host.send(&ViewToHost::NavigationStateChanged {
                 url: nav_now.0,
                 title: nav_now.1,
                 can_go_back: nav_now.2,
@@ -443,7 +443,7 @@ fn main() {
             });
             // Loading just finished -- check once whether the page that
             // loaded is a raw JSON response, or anything else non-HTML (see
-            // `EngineToHost::JsonBody`/`RedirectableContent`'s own doc
+            // `ViewToHost::JsonBody`/`RedirectableContent`'s own doc
             // comments for why this checks `document.contentType` rather
             // than guessing from the url). The `"json\n"`/`"type\n"`
             // prefixes disambiguate the two outcomes over one script-eval
@@ -474,31 +474,31 @@ fn main() {
         }
 
         for (url, user_gesture) in pending_open_tab.borrow_mut().drain(..) {
-            let _ = to_host.send(&EngineToHost::OpenTabRequested { url, user_gesture });
+            let _ = to_host.send(&ViewToHost::OpenTabRequested { url, user_gesture });
         }
 
         if let Some((count, active_index)) = pending_find_result.borrow_mut().take() {
-            let _ = to_host.send(&EngineToHost::FindResult { count, active_index });
+            let _ = to_host.send(&ViewToHost::FindResult { count, active_index });
         }
 
         if let Some(body) = pending_json_body.borrow_mut().take() {
-            let _ = to_host.send(&EngineToHost::JsonBody { body });
+            let _ = to_host.send(&ViewToHost::JsonBody { body });
         }
 
         if let Some(state) = pending_page_state.borrow_mut().take() {
-            let _ = to_host.send(&EngineToHost::PageState(state));
+            let _ = to_host.send(&ViewToHost::PageState(state));
         }
 
         if let Some(content_type) = pending_redirect_content_type.borrow_mut().take() {
-            let _ = to_host.send(&EngineToHost::RedirectableContent { content_type });
+            let _ = to_host.send(&ViewToHost::RedirectableContent { content_type });
         }
 
         if let Some(playing) = pending_audio_playing.borrow_mut().take() {
-            let _ = to_host.send(&EngineToHost::AudioPlayingChanged { playing });
+            let _ = to_host.send(&ViewToHost::AudioPlayingChanged { playing });
         }
 
         if let Some((x, y, href)) = pending_context_menu.borrow_mut().take() {
-            let _ = to_host.send(&EngineToHost::ContextMenuLink { x, y, href });
+            let _ = to_host.send(&ViewToHost::ContextMenuLink { x, y, href });
         }
 
         let download_msgs = std::mem::take(&mut *pending_download.borrow_mut());

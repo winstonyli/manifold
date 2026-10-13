@@ -15,8 +15,8 @@ pub(crate) enum UserEvent {
     TabSpawned(Box<TabSpawnOutcome>),
     /// A screen reader connected, acted on a node, or left (`egui_winit::accesskit_winit`).
     Accessibility(egui_winit::accesskit_winit::Event),
-    /// An engine reader handed over a message (`engine_wake`): apply it now. Posted at most once until handled.
-    EngineMessage,
+    /// An engine reader handed over a message (`view_wake`): apply it now. Posted at most once until handled.
+    ViewMessage,
 }
 
 impl From<egui_winit::accesskit_winit::Event> for UserEvent {
@@ -45,9 +45,9 @@ pub(crate) struct FramePacing {
     /// Tabs `SetVisible(false)` was sent to on minimize, to be shown again
     /// on restore (`hide_tabs_for_minimize`).
     pub(crate) hidden_for_minimize: Vec<String>,
-    /// Set by a reader when it posts `UserEvent::EngineMessage`, cleared when the loop handles it, so a burst of
-    /// messages posts one event (`engine_wake`).
-    pub(crate) engine_wake: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Set by a reader when it posts `UserEvent::ViewMessage`, cleared when the loop handles it, so a burst of
+    /// messages posts one event (`view_wake`).
+    pub(crate) view_wake: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Default for FramePacing {
@@ -59,7 +59,7 @@ impl Default for FramePacing {
             next_idle_frame: std::time::Instant::now(),
             idle_interval: IDLE_FRAME,
             hidden_for_minimize: Vec::new(),
-            engine_wake: std::sync::Arc::default(),
+            view_wake: std::sync::Arc::default(),
         }
     }
 }
@@ -67,20 +67,20 @@ impl Default for FramePacing {
 /// Whether `event` counts as activity that ends idle pacing (`App::mark_active`). An engine wake does not: the drain
 /// it runs marks the loop active only when it applies a message, as a tick's drain does.
 fn is_activity(event: &UserEvent) -> bool {
-    !matches!(event, UserEvent::EngineMessage)
+    !matches!(event, UserEvent::ViewMessage)
 }
 
-/// The `Wake` a tab's reader calls (`process_manager::spawn_tab`): posts `UserEvent::EngineMessage` unless one is
-/// already pending (`FramePacing::engine_wake`).
-pub(crate) fn engine_wake(
+/// The `Wake` a tab's reader calls (`process_manager::spawn_tab`): posts `UserEvent::ViewMessage` unless one is
+/// already pending (`FramePacing::view_wake`).
+pub(crate) fn view_wake(
     pending: std::sync::Arc<std::sync::atomic::AtomicBool>,
     proxy: EventLoopProxy<UserEvent>,
-) -> crate::process_manager::engine_io::Wake {
+) -> crate::process_manager::view_io::Wake {
     // In a Mutex: winit declares its proxy `Send`, not `Sync`.
     let proxy = std::sync::Mutex::new(proxy);
     coalesced_wake(pending, move || {
         let proxy = proxy.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        proxy.send_event(UserEvent::EngineMessage).is_ok()
+        proxy.send_event(UserEvent::ViewMessage).is_ok()
     })
 }
 
@@ -88,7 +88,7 @@ pub(crate) fn engine_wake(
 fn coalesced_wake(
     pending: std::sync::Arc<std::sync::atomic::AtomicBool>,
     post: impl Fn() -> bool + Send + Sync + 'static,
-) -> crate::process_manager::engine_io::Wake {
+) -> crate::process_manager::view_io::Wake {
     std::sync::Arc::new(move || {
         // A post that was not queued (the loop is gone, or the OS refused) clears the flag again: left set, it would mute
         // every later wake.
@@ -198,7 +198,7 @@ impl ApplicationHandler<UserEvent> for App {
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
         self.flush_pending_settings();
         self.final_cookie_pull();
-        self.begin_engine_shutdown();
+        self.begin_view_shutdown();
         self.flush_dirty_jars(None); // the last pull's changes, and any round still open
         self.close_store();
         self.egui_state = None;
@@ -267,7 +267,7 @@ impl ApplicationHandler<UserEvent> for App {
             self.mark_active();
         }
         match event {
-            UserEvent::EngineMessage => self.on_engine_wake(),
+            UserEvent::ViewMessage => self.on_view_wake(),
             UserEvent::Accessibility(event) => {
                 use egui_winit::accesskit_winit::WindowEvent as A11y;
                 match event.window_event {
@@ -404,7 +404,7 @@ impl ApplicationHandler<UserEvent> for App {
                 if in_tab_view && !consumed_by_egui && position.y >= chrome_height && in_primary_pane {
                     if let Some(id) = self.focused.clone() {
                         if let Some(node) = self.nodes.get_mut(&id).and_then(|n| n.as_tab_mut()) {
-                            node.tab.send(&HostToEngine::Input(InputEvent::MouseMove {
+                            node.tab.send(&HostToView::Input(InputEvent::MouseMove {
                                 x: position.x,
                                 y: position.y - chrome_height,
                                 modifiers: self.key_modifiers,
@@ -473,7 +473,7 @@ impl ApplicationHandler<UserEvent> for App {
                                     click_count: self.click_counter.current(),
                                 },
                             };
-                            node.tab.send(&HostToEngine::Input(event));
+                            node.tab.send(&HostToView::Input(event));
                             if state == ElementState::Pressed && matches!(button, MouseButton::Left) {
                                 self.native_drag_tab = Some(id);
                             }
@@ -498,7 +498,7 @@ impl ApplicationHandler<UserEvent> for App {
                                 winit::event::MouseScrollDelta::LineDelta(x, y) => (x as f64 * 20.0, y as f64 * 20.0),
                                 winit::event::MouseScrollDelta::PixelDelta(p) => (p.x, p.y),
                             };
-                            node.tab.send(&HostToEngine::Input(InputEvent::Scroll {
+                            node.tab.send(&HostToView::Input(InputEvent::Scroll {
                                 x,
                                 y: y - chrome_height,
                                 delta_x: dx,
@@ -532,7 +532,7 @@ impl ApplicationHandler<UserEvent> for App {
                                     ElementState::Pressed => InputEvent::KeyDown { key, modifiers: self.key_modifiers },
                                     ElementState::Released => InputEvent::KeyUp { key, modifiers: self.key_modifiers },
                                 };
-                                node.tab.send(&HostToEngine::Input(input));
+                                node.tab.send(&HostToView::Input(input));
                             }
                             // The produced text (after layout/shift/dead-key
                             // processing) is separate from the physical key
@@ -542,7 +542,7 @@ impl ApplicationHandler<UserEvent> for App {
                             if event.state == ElementState::Pressed {
                                 if let Some(text) = &event.text {
                                     for ch in text.chars() {
-                                        node.tab.send(&HostToEngine::Input(InputEvent::Char { codepoint: ch as u32 }));
+                                        node.tab.send(&HostToView::Input(InputEvent::Char { codepoint: ch as u32 }));
                                     }
                                 }
                             }
@@ -555,7 +555,7 @@ impl ApplicationHandler<UserEvent> for App {
             WindowEvent::RedrawRequested if self.is_minimized() => {}
             WindowEvent::RedrawRequested => {
                 self.poll_store();
-                self.poll_engine_installs();
+                self.poll_view_installs();
                 let focused_tab = self
                     .focused
                     .as_deref()
@@ -606,7 +606,7 @@ const IDLE_AFTER: std::time::Duration = std::time::Duration::from_secs(1);
 pub(crate) const IDLE_FRAME: std::time::Duration = std::time::Duration::from_millis(100);
 /// Engine messages one drain applies per tab; the rest wait for the next tick (survey E3). An applied message marks
 /// the loop active, so that tick comes at the active rate.
-pub(crate) const ENGINE_MESSAGES_PER_DRAIN: usize = 64;
+pub(crate) const VIEW_MESSAGES_PER_DRAIN: usize = 64;
 /// Engine frames per second that count as activity (video, an animation);
 /// an idle page still sends a few.
 const BUSY_FRAMES: u32 = 6;
@@ -617,10 +617,10 @@ const JAR_PULL_EVERY: std::time::Duration = std::time::Duration::from_secs(30);
 /// How often a minimized window's loop wakes (see `about_to_wait`).
 const MINIMIZED_TICK: std::time::Duration = std::time::Duration::from_millis(100);
 
-/// A tab's newest frame, which `App::drain_engine_ipc` collects and `App::upload_frames` uploads.
+/// A tab's newest frame, which `App::drain_view_ipc` collects and `App::upload_frames` uploads.
 struct FrameUpdate {
     tab_id: String,
-    kind: EngineKind,
+    kind: ViewKind,
     /// The frame file the pixels are in (`FrameReady::generation`).
     generation: u32,
     width: u32,
@@ -635,16 +635,16 @@ impl App {
         self.pacing.last_activity = std::time::Instant::now();
     }
 
-    /// `UserEvent::EngineMessage`: clears the pending flag first (a message arriving during the drain posts again),
+    /// `UserEvent::ViewMessage`: clears the pending flag first (a message arriving during the drain posts again),
     /// then applies what arrived (`drain_tab_events`).
-    fn on_engine_wake(&mut self) {
+    fn on_view_wake(&mut self) {
         // SeqCst on both sides: a reader whose `swap` still saw `true` must have its message seen by this drain.
-        self.pacing.engine_wake.store(false, std::sync::atomic::Ordering::SeqCst);
+        self.pacing.view_wake.store(false, std::sync::atomic::Ordering::SeqCst);
         self.drain_tab_events();
     }
 
     /// Counts engine frames; a burst of them is activity.
-    fn note_engine_frames(&mut self, n: u32) {
+    fn note_view_frames(&mut self, n: u32) {
         let now = std::time::Instant::now();
         if now.duration_since(self.pacing.frame_burst.0) >= std::time::Duration::from_secs(1) {
             self.pacing.frame_burst = (now, 0);
@@ -687,7 +687,7 @@ impl App {
     /// What a frame does before building its UI, minus the UI itself.
     fn minimized_tick(&mut self) {
         self.poll_store();
-        self.poll_engine_installs();
+        self.poll_view_installs();
         self.drain_tab_events();
         self.finish_transition_if_done();
     }
@@ -1064,7 +1064,7 @@ impl App {
     /// Drains every tab's `events_rx` (not just the focused one — a
     /// background tab can still crash, or finish an in-flight swap, while
     /// suspended), applies every message but frames in arrival order through
-    /// `handle_engine_message`, and then uploads each tab's newest frame.
+    /// `handle_view_message`, and then uploads each tab's newest frame.
     /// Draining first means no tab node stays borrowed while a message is
     /// applied, so any message can touch any node. Frames go last because a
     /// crash or swap in the same drain replaces the tab they came from.
@@ -1072,15 +1072,15 @@ impl App {
     /// sweep looks at them, the sweep and the fetches can remove tabs
     /// too, and frame uploads run last so none lands on a removed tab.
     pub(crate) fn drain_tab_events(&mut self) {
-        let frame_updates = self.drain_engine_ipc();
+        let frame_updates = self.drain_view_ipc();
         self.idle_sweep();
         self.tick_fetchers();
         self.upload_frames(frame_updates);
     }
 
-    /// Takes up to `ENGINE_MESSAGES_PER_DRAIN` messages off each tab's `events_rx`, applies all but frames in
+    /// Takes up to `VIEW_MESSAGES_PER_DRAIN` messages off each tab's `events_rx`, applies all but frames in
     /// arrival order, and returns each tab's newest frame (`drain_tab_events`).
-    fn drain_engine_ipc(&mut self) -> std::collections::HashMap<String, FrameUpdate> {
+    fn drain_view_ipc(&mut self) -> std::collections::HashMap<String, FrameUpdate> {
         // Keyed by tab id, not a plain `Vec` -- only the *latest* `FrameReady`
         // for a tab ever matters (each one fully supersedes the last in
         // `GpuState::upload_frame`'s own `tab_textures.insert`), matching the
@@ -1108,24 +1108,24 @@ impl App {
         // idle page, staying well within what this loop could already keep
         // up with (confirmed live: an otherwise-identical idle-memory test
         // with CEF as the default engine stayed flat).
-        // Since wave 3b the reader keeps one frame per tab itself (`EngineTab::take_frame`), so the burst described
+        // Since wave 3b the reader keeps one frame per tab itself (`ViewTab::take_frame`), so the burst described
         // above cannot build up in the first place.
         let mut frame_updates: std::collections::HashMap<String, FrameUpdate> = std::collections::HashMap::new();
-        let mut messages: Vec<(String, EngineToHost)> = Vec::new();
+        let mut messages: Vec<(String, ViewToHost)> = Vec::new();
         let now = std::time::Instant::now();
         let mut stuck: Vec<String> = Vec::new();
         for tab_id in &self.node_order {
             let Some(tab) = self.nodes.get(tab_id).and_then(|n| n.as_tab()) else {
                 continue;
             };
-            for msg in tab.tab.events_rx.try_iter().take(ENGINE_MESSAGES_PER_DRAIN) {
+            for msg in tab.tab.events_rx.try_iter().take(VIEW_MESSAGES_PER_DRAIN) {
                 match msg {
                     // Only the last of a run of same-path Progress events is
                     // ever visible (applying one overwrites `bytes_received`),
                     // and each costs a scan of every node, so a run collapses
                     // into its newest.
-                    EngineToHost::DownloadProgress { path, bytes_received } => {
-                        if let Some((_, EngineToHost::DownloadProgress { path: last, bytes_received: last_bytes })) =
+                    ViewToHost::DownloadProgress { path, bytes_received } => {
+                        if let Some((_, ViewToHost::DownloadProgress { path: last, bytes_received: last_bytes })) =
                             messages.last_mut()
                         {
                             if *last == path {
@@ -1133,7 +1133,7 @@ impl App {
                                 continue;
                             }
                         }
-                        messages.push((tab_id.clone(), EngineToHost::DownloadProgress { path, bytes_received }));
+                        messages.push((tab_id.clone(), ViewToHost::DownloadProgress { path, bytes_received }));
                     }
                     msg => messages.push((tab_id.clone(), msg)),
                 }
@@ -1168,13 +1168,13 @@ impl App {
         if !messages.is_empty() {
             self.mark_active();
         }
-        self.note_engine_frames(frame_updates.len() as u32);
+        self.note_view_frames(frame_updates.len() as u32);
         for (tab_id, msg) in messages {
             let user_started = match &msg {
-                EngineToHost::NavigationStateChanged { user_started, .. } => *user_started,
+                ViewToHost::NavigationStateChanged { user_started, .. } => *user_started,
                 _ => None,
             };
-            let url_changed = self.handle_engine_message(&tab_id, msg);
+            let url_changed = self.handle_view_message(&tab_id, msg);
             if url_changed && self.shares_url_change(&tab_id, user_started) {
                 // Ruling 3: every reported url change is shared, whichever
                 // tab it came from -- share it here rather than leaving it
@@ -1400,21 +1400,21 @@ impl App {
     /// session for happened: the tab's settled url changed (title/history-
     /// only changes and a same-url reload don't count), or a download
     /// completed (the store keeps completed downloads).
-    pub(crate) fn handle_engine_message(&mut self, tab_id: &str, msg: EngineToHost) -> bool {
+    pub(crate) fn handle_view_message(&mut self, tab_id: &str, msg: ViewToHost) -> bool {
         match msg {
-            EngineToHost::FrameReady { .. } => {}
-            EngineToHost::PageState(state) => {
+            ViewToHost::FrameReady { .. } => {}
+            ViewToHost::PageState(state) => {
                 if let Some(Held::PageState(state)) = self.hold_for_cookies(tab_id, Held::PageState(state)) {
                     self.finish_sleep(tab_id, state);
                 }
             }
-            EngineToHost::Cookies(json) => {
+            ViewToHost::Cookies(json) => {
                 self.cookies.jar_pulls.remove(tab_id);
                 self.cookies.jar_silent.remove(tab_id);
                 self.apply_pulled_cookies(tab_id, &json);
                 self.release_cookie_hold(tab_id);
             }
-            EngineToHost::StateSnapshot(state) => {
+            ViewToHost::StateSnapshot(state) => {
                 let target = self.nodes.get_mut(tab_id).and_then(|n| n.as_tab_mut()).and_then(|t| t.swap_target.take());
                 if let Some(target) = target {
                     if let Some(Held::Snapshot(target, url)) =
@@ -1424,7 +1424,7 @@ impl App {
                     }
                 }
             }
-            EngineToHost::NavigationStateChanged { url, title, can_go_back, can_go_forward, loading, .. } => {
+            ViewToHost::NavigationStateChanged { url, title, can_go_back, can_go_forward, loading, .. } => {
                 let Some(current) = self.nodes.get(tab_id).and_then(|n| n.as_tab()).map(|t| t.url.clone()) else {
                     return false;
                 };
@@ -1470,13 +1470,13 @@ impl App {
                 if restore {
                     if let Some(s) = self.saved_scroll.remove(tab_id) {
                         if let Some(tab) = self.nodes.get_mut(tab_id).and_then(|n| n.as_tab_mut()) {
-                            tab.tab.send(&HostToEngine::RestoreScroll { x: s.x, y: s.y });
+                            tab.tab.send(&HostToView::RestoreScroll { x: s.x, y: s.y });
                         }
                     }
                 }
                 return url_changed;
             }
-            EngineToHost::Crashed { reason } => {
+            ViewToHost::Crashed { reason } => {
                 let Some(spawn) = self.restart_spawn(tab_id) else { return false };
                 // A stale engine binary (protocol mismatch) or a host that cannot
                 // start would fail the same way again, and a page or install that
@@ -1514,12 +1514,12 @@ impl App {
                 self.restart_with(tab_id, spawn);
             }
             // Page-triggered new tab (target=_blank/window.open()/ctrl+click,
-            // intercepted by CEF/WebKit/WebView2 - see EngineToHost::OpenTabRequested's
+            // intercepted by CEF/WebKit/WebView2 - see ViewToHost::OpenTabRequested's
             // doc comment): a child of whichever tab requested it, staying in
             // the current view rather than auto-focusing, same as an explicit
             // "+ New Tab" click. Only web/internal schemes, only with a user
             // gesture, and only a few per source tab (`popup_gate.rs`).
-            EngineToHost::OpenTabRequested { url, user_gesture } => {
+            ViewToHost::OpenTabRequested { url, user_gesture } => {
                 if !crate::popup_gate::page_tab_url_allowed(&url) {
                     match crate::popup_gate::scheme_for_log(&url) {
                         Some(scheme) => eprintln!("popup to a disallowed scheme dropped: {scheme}:"),
@@ -1538,7 +1538,7 @@ impl App {
                     }
                 }
             }
-            EngineToHost::FindResult { count, active_index } => {
+            ViewToHost::FindResult { count, active_index } => {
                 // Ignore a result from a tab that isn't the one the find bar
                 // is currently searching — shouldn't normally happen
                 // (`close_find_bar` sends `FindStop` on every focus change),
@@ -1548,7 +1548,7 @@ impl App {
                     self.find.result = Some((count, active_index));
                 }
             }
-            EngineToHost::AudioPlayingChanged { playing } => {
+            ViewToHost::AudioPlayingChanged { playing } => {
                 if let Some(tab) = self.nodes.get_mut(tab_id).and_then(|n| n.as_tab_mut()) {
                     tab.audio_playing = playing;
                 }
@@ -1557,7 +1557,7 @@ impl App {
             // saved and converted right away, same as any other content
             // kind. Written on the UI thread, unlike every other kind's
             // fetch: it's already in hand, so there's nothing to background.
-            EngineToHost::JsonBody { body } => {
+            ViewToHost::JsonBody { body } => {
                 let url = self.nodes.get(tab_id).and_then(|n| n.as_tab()).map(|tab| tab.url.clone());
                 if self.spawns.skip_convert.contains_key(tab_id) {
                     return false;
@@ -1574,12 +1574,12 @@ impl App {
                     }
                 }
             }
-            // See `ipc_protocol::EngineToHost::RedirectableContent`'s own doc
+            // See `ipc_protocol::ViewToHost::RedirectableContent`'s own doc
             // comment -- kicks off `manifold`'s own independent fetch of this
             // tab's current url; the actual tab-to-node conversion happens
             // once that completes, in `redirect_fetcher`'s own `tick()` drain
             // in `drain_tab_events`, not here.
-            EngineToHost::RedirectableContent { content_type } => {
+            ViewToHost::RedirectableContent { content_type } => {
                 use crate::content::ContentKind as K;
                 if self.spawns.skip_convert.contains_key(tab_id) {
                     return false;
@@ -1592,7 +1592,7 @@ impl App {
                     self.redirect_fetcher.request(FetchJob { target, node_id, url, kind });
                 }
             }
-            EngineToHost::ContextMenuLink { x, y, href } => {
+            ViewToHost::ContextMenuLink { x, y, href } => {
                 let ppp = self.ppp() as f32;
                 // Content-area coordinates -> window point space.
                 // The engine echoes back the same physical-pixel
@@ -1609,19 +1609,19 @@ impl App {
                         Some(ContextMenuState { x: x as f32 / ppp, y: y as f32 / ppp + CHROME_HEIGHT_POINTS, href });
                 }
             }
-            EngineToHost::DownloadStarted { path, total_bytes, url } => {
+            ViewToHost::DownloadStarted { path, total_bytes, url } => {
                 self.insert_download_node(tab_id.to_string(), path, total_bytes, url);
             }
             // Each finds its node with `in_flight_download_id`: the in-flight
             // one this tab started, never a finished one with the same path.
-            EngineToHost::DownloadProgress { path, bytes_received } => {
+            ViewToHost::DownloadProgress { path, bytes_received } => {
                 if let Some(id) = self.in_flight_download_id(tab_id, &path) {
                     if let Some(dl) = self.nodes.get_mut(&id).and_then(|n| n.as_download_mut()) {
                         dl.bytes_received = bytes_received;
                     }
                 }
             }
-            EngineToHost::DownloadFailed { path } => {
+            ViewToHost::DownloadFailed { path } => {
                 self.queue_toast(format!("Download failed: {path}"));
                 if let Some(id) = self.in_flight_download_id(tab_id, &path) {
                     if let Some(dl) = self.nodes.get_mut(&id).and_then(|n| n.as_download_mut()) {
@@ -1629,7 +1629,7 @@ impl App {
                     }
                 }
             }
-            EngineToHost::DownloadCompleted { path } => {
+            ViewToHost::DownloadCompleted { path } => {
                 self.queue_toast(format!("Saved {path}"));
                 if let Some(id) = self.in_flight_download_id(tab_id, &path) {
                     if let Some(dl) = self.nodes.get_mut(&id).and_then(|n| n.as_download_mut()) {
@@ -1660,7 +1660,7 @@ mod idle_tests {
     use super::*;
 
     #[test]
-    fn a_burst_of_engine_messages_posts_one_wake_until_it_is_handled() {
+    fn a_burst_of_view_messages_posts_one_wake_until_it_is_handled() {
         use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
         use std::sync::Arc;
         let pending = Arc::new(AtomicBool::new(false));
@@ -1674,23 +1674,23 @@ mod idle_tests {
             wake();
         }
         assert_eq!(posted.load(Ordering::SeqCst), 1);
-        pending.store(false, Ordering::Release); // what `on_engine_wake` does first
+        pending.store(false, Ordering::Release); // what `on_view_wake` does first
         wake();
         assert_eq!(posted.load(Ordering::SeqCst), 2);
     }
 
     #[test]
-    fn an_engine_wake_is_not_activity_but_a_command_is() {
-        assert!(!is_activity(&UserEvent::EngineMessage));
+    fn a_view_wake_is_not_activity_but_a_command_is() {
+        assert!(!is_activity(&UserEvent::ViewMessage));
         assert!(is_activity(&UserEvent::Debug(DebugCommand::Help)));
     }
 
     #[test]
     fn one_drain_applies_at_most_its_cap_per_tab() {
         use crate::node::TabPayload;
-        use crate::process_manager::{EngineKind, EngineTab};
+        use crate::process_manager::{ViewKind, ViewTab};
         let mut app = App::default();
-        let (tab, _peer, feed) = EngineTab::fake_fed(EngineKind::Servo);
+        let (tab, _peer, feed) = ViewTab::fake_fed(ViewKind::Servo);
         let payload = TabPayload {
             tab,
             url: "https://a/".into(),
@@ -1704,10 +1704,10 @@ mod idle_tests {
             swap_target: None,
         };
         app.test_node("t", crate::store::model::Kind::Tab, Runtime::Tab(payload));
-        for i in 0..ENGINE_MESSAGES_PER_DRAIN + 10 {
-            feed.send(EngineToHost::AudioPlayingChanged { playing: i.is_multiple_of(2) }).unwrap();
+        for i in 0..VIEW_MESSAGES_PER_DRAIN + 10 {
+            feed.send(ViewToHost::AudioPlayingChanged { playing: i.is_multiple_of(2) }).unwrap();
         }
-        app.drain_engine_ipc();
+        app.drain_view_ipc();
         let left = app.nodes.get("t").and_then(|n| n.as_tab()).map_or(0, |t| t.tab.events_rx.try_iter().count());
         assert_eq!(left, 10, "the rest waits for the next drain");
     }
@@ -1750,7 +1750,7 @@ mod idle_tests {
         let in_flight =
             |app: &App| app.nodes.values().any(|n| n.as_download().is_some_and(|d| !d.completed && !d.failed));
         assert!(in_flight(&app));
-        app.handle_engine_message("n", EngineToHost::DownloadFailed { path: "f.zip".into() });
+        app.handle_view_message("n", ViewToHost::DownloadFailed { path: "f.zip".into() });
         let download = app.nodes.values().find_map(|n| n.as_download()).unwrap();
         assert!(download.failed && !download.completed);
         assert!(!in_flight(&app));
@@ -1761,9 +1761,9 @@ mod idle_tests {
         let mut app = App::default();
         app.insert_note_at("n".into(), None);
         app.insert_download_node("n".into(), "f.zip".into(), Some(10), None);
-        app.handle_engine_message("n", EngineToHost::DownloadCompleted { path: "f.zip".into() });
+        app.handle_view_message("n", ViewToHost::DownloadCompleted { path: "f.zip".into() });
         app.insert_download_node("n".into(), "f.zip".into(), Some(20), None);
-        app.handle_engine_message("n", EngineToHost::DownloadProgress { path: "f.zip".into(), bytes_received: 7 });
+        app.handle_view_message("n", ViewToHost::DownloadProgress { path: "f.zip".into(), bytes_received: 7 });
         let downloads: Vec<_> = app.node_order.iter().filter_map(|id| app.nodes[id].as_download()).collect();
         assert_eq!(downloads.len(), 2);
         assert!(downloads[0].completed && downloads[0].bytes_received == 0, "the old node is untouched");
@@ -1777,7 +1777,7 @@ mod idle_tests {
         app.insert_note_at("b".into(), None);
         app.insert_download_node("a".into(), "f.zip".into(), None, None);
         app.insert_download_node("b".into(), "f.zip".into(), None, None);
-        app.handle_engine_message("a", EngineToHost::DownloadFailed { path: "f.zip".into() });
+        app.handle_view_message("a", ViewToHost::DownloadFailed { path: "f.zip".into() });
         let by_parent = |p: &str| {
             app.nodes
                 .iter()
@@ -1790,15 +1790,15 @@ mod idle_tests {
     }
 
     #[test]
-    fn a_quiet_second_is_idle_and_a_burst_of_engine_frames_is_not() {
+    fn a_quiet_second_is_idle_and_a_burst_of_view_frames_is_not() {
         let mut app = App {
             pacing: FramePacing { last_activity: std::time::Instant::now() - IDLE_AFTER * 2, ..Default::default() },
             ..App::default()
         };
         assert!(app.is_idle());
-        app.note_engine_frames(BUSY_FRAMES - 1);
+        app.note_view_frames(BUSY_FRAMES - 1);
         assert!(app.is_idle(), "an idle page's few frames don't count");
-        app.note_engine_frames(1);
+        app.note_view_frames(1);
         assert!(!app.is_idle());
     }
 

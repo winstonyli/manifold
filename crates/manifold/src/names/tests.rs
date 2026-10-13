@@ -433,8 +433,8 @@ const ALLOWED: [&str; 11] = [
     "shortcuts.rs",
 ];
 /// Files whose `.name` is some other name: a cookie's (`jar.rs`), a string literal (`json_level_ui.rs`), a thread's
-/// (`process_manager/engine_io.rs`).
-const OTHER_NAMES: [&str; 3] = ["jar.rs", "json_level_ui.rs", "process_manager/engine_io.rs"];
+/// (`process_manager/view_io.rs`).
+const OTHER_NAMES: [&str; 3] = ["jar.rs", "json_level_ui.rs", "process_manager/view_io.rs"];
 const RULE_MARKS: [&str; 8] = [
     "display_name(",
     "clean_name(",

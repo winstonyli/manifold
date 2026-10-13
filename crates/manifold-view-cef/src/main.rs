@@ -14,9 +14,9 @@ use std::time::Duration;
 
 use cef::args::Args;
 use cef::*;
-use ipc_protocol::{EngineToHost, HostToEngine, InputEvent, TabState};
+use ipc_protocol::{HostToView, InputEvent, TabState, ViewToHost};
 
-use app::{AppBuilder, EngineApp};
+use app::{AppBuilder, ViewApp};
 use client::{
     new_shared_audio_playing, new_shared_json_body, new_shared_page_state, new_shared_redirect_content_type,
     ClientBuilder,
@@ -26,15 +26,15 @@ use download_handler::new_shared_download_path;
 use find_handler::new_shared_find_result;
 use life_span_handler::{new_shared_closed, new_shared_pending_open_tab};
 use nav_handler::{new_shared_muted, new_shared_nav_state};
-use render_handler::EngineRenderHandler;
+use render_handler::ViewRenderHandler;
 use render_process_handler::{CHECK_AUDIO_PLAYING, CHECK_PAGE_STATE};
 
-/// How long a host started with `ENGINE_AWAIT_COOKIES` waits for manifold's `SetCookies` before navigating.
+/// How long a host started with `VIEW_AWAIT_COOKIES` waits for manifold's `SetCookies` before navigating.
 const COOKIE_SEED_WAIT: Duration = Duration::from_secs(5);
 const DEFAULT_WIDTH: u32 = 1024;
 const DEFAULT_HEIGHT: u32 = 768;
 /// How often to poll for audio-playing state -- see `ipc_protocol::
-/// EngineToHost::AudioPlayingChanged`'s own doc comment for why CEF needs a
+/// ViewToHost::AudioPlayingChanged`'s own doc comment for why CEF needs a
 /// poll at all instead of a real native event. A full second is generous
 /// (nothing here needs sub-second precision) against the real cost of an
 /// extra `V8Context::eval` round trip every tick.
@@ -107,7 +107,7 @@ fn main() {
     // Harmless for the actual browser-process invocation below despite
     // being the same instance -- CEF never calls that getter outside a
     // renderer subprocess.
-    let mut cef_app = AppBuilder::build(EngineApp::new());
+    let mut cef_app = AppBuilder::build(ViewApp::new());
     let ret = execute_process(Some(args.as_main_args()), Some(&mut cef_app), std::ptr::null_mut());
 
     if !is_browser_process {
@@ -139,20 +139,20 @@ fn main() {
     // line (parsed above via Args::new()/as_cmd_line()) — mixing in our own
     // positional args risks CEF's Chromium-style parser misinterpreting
     // them as its own flags/URLs-to-open.
-    // ENGINE_SOCKET_ID names our control pipes/shared memory — normally
-    // equal to ENGINE_TAB_ID, but manifold may pass a different id if a
-    // stale engine-host from a prior crashed run still held ENGINE_TAB_ID's
+    // VIEW_SOCKET_ID names our control pipes/shared memory — normally
+    // equal to VIEW_TAB_ID, but manifold may pass a different id if a
+    // stale engine-host from a prior crashed run still held VIEW_TAB_ID's
     // pipes (see process_manager::spawn_tab's fallback). Only this id
-    // matters here; we never need ENGINE_TAB_ID itself.
-    let socket_id = std::env::var("ENGINE_SOCKET_ID").expect("ENGINE_SOCKET_ID env var required");
-    let initial_url = std::env::var("ENGINE_INITIAL_URL").unwrap_or_else(|_| "https://example.com".to_string());
-    // ENGINE_CACHE_DIR is this process's own `root_cache_path`, fresh per
+    // matters here; we never need VIEW_TAB_ID itself.
+    let socket_id = std::env::var("VIEW_SOCKET_ID").expect("VIEW_SOCKET_ID env var required");
+    let initial_url = std::env::var("VIEW_INITIAL_URL").unwrap_or_else(|_| "https://example.com".to_string());
+    // VIEW_CACHE_DIR is this process's own `root_cache_path`, fresh per
     // spawn and deleted afterwards (see process_manager::spawn_tab).
     // Chromium's process singleton lets one browser process at a time use a
     // given root, so CEF's machine-wide default would allow one CEF tab at
     // a time. `cache_path` stays empty: browsing data lives in memory, since
     // the directory doesn't outlive the tab anyway.
-    let cache_dir = std::env::var("ENGINE_CACHE_DIR").expect("ENGINE_CACHE_DIR env var required");
+    let cache_dir = std::env::var("VIEW_CACHE_DIR").expect("VIEW_CACHE_DIR env var required");
 
     let settings = Settings {
         root_cache_path: cache_dir.as_str().into(),
@@ -173,13 +173,13 @@ fn main() {
 
     // Two one-directional control sockets back to manifold — same
     // convention as manifold-engine-servo (see ipc_protocol::transport).
-    let (host_to_engine, mut control) =
+    let (host_to_view, mut control) =
         ipc_protocol::transport::connect_local_pair(&socket_id).expect("connect to manifold control sockets");
-    let rx = ipc_protocol::transport::spawn_host_reader(host_to_engine);
+    let rx = ipc_protocol::transport::spawn_host_reader(host_to_view);
 
     let sink: render_handler::SharedFrameSink =
         std::rc::Rc::new(std::cell::RefCell::new(ipc_protocol::FrameSink::shared(&socket_id)));
-    let (render_handler, size) = EngineRenderHandler::new(DEFAULT_WIDTH, DEFAULT_HEIGHT, sink.clone());
+    let (render_handler, size) = ViewRenderHandler::new(DEFAULT_WIDTH, DEFAULT_HEIGHT, sink.clone());
     let nav_state = new_shared_nav_state(initial_url.clone());
     let muted_state = new_shared_muted();
     let pending_open_tab = new_shared_pending_open_tab();
@@ -205,14 +205,14 @@ fn main() {
     };
     let browser_settings = BrowserSettings { windowless_frame_rate: 60, ..Default::default() };
     // Cookie-jar seeding: manifold sends `SetCookies` as its very first message to hosts started with
-    // `ENGINE_AWAIT_COOKIES`. Wait for it (bounded) so the cookies are in place before the first navigation.
+    // `VIEW_AWAIT_COOKIES`. Wait for it (bounded) so the cookies are in place before the first navigation.
     // Any other first message is kept for the loop below rather than dropped.
-    let mut first_message: Option<HostToEngine> = None;
+    let mut first_message: Option<HostToView> = None;
     // Whether this host was seeded with cookies or has reported some (`jar_cookies::JarPull::poll`).
     let mut may_hold_cookies = false;
-    if std::env::var_os("ENGINE_AWAIT_COOKIES").is_some() {
+    if std::env::var_os("VIEW_AWAIT_COOKIES").is_some() {
         match ipc_protocol::transport::wait_for_first_message(&rx, COOKIE_SEED_WAIT, do_message_loop_work) {
-            Some(HostToEngine::SetCookies(json)) => may_hold_cookies |= jar_cookies::seed(&json) > 0,
+            Some(HostToView::SetCookies(json)) => may_hold_cookies |= jar_cookies::seed(&json) > 0,
             Some(other) => first_message = Some(other),
             None => eprintln!("jar: no seed received"),
         }
@@ -243,9 +243,9 @@ fn main() {
     .expect("create CEF browser");
 
     // M5: background tabs stay alive but stop sending frames; see
-    // HostToEngine::SetVisible's doc comment.
+    // HostToView::SetVisible's doc comment.
     let mut visible = true;
-    // Set once `HostToEngine::Shutdown` calls `close_browser` -- the loop
+    // Set once `HostToView::Shutdown` calls `close_browser` -- the loop
     // keeps pumping (`do_message_loop_work` below) until `closed` flips,
     // which is what actually drives `on_before_close` to fire, or until
     // `SHUTDOWN_GRACE` passes (`shutdown_due`).
@@ -256,28 +256,28 @@ fn main() {
 
         while let Some(msg) = first_message.take().or_else(|| rx.try_recv().ok()) {
             match msg {
-                HostToEngine::Navigate { url, .. } => {
+                HostToView::Navigate { url, .. } => {
                     nav_state.borrow_mut().label.host_started = Some((false, std::time::Instant::now()));
                     if let Some(frame) = browser.main_frame() {
                         frame.load_url(Some(&url.as_str().into()));
                     }
                 }
-                HostToEngine::GoBack => {
+                HostToView::GoBack => {
                     if browser.can_go_back() != 0 {
                         nav_state.borrow_mut().label.host_started = Some((true, std::time::Instant::now()));
                         browser.go_back();
                     }
                 }
-                HostToEngine::GoForward => {
+                HostToView::GoForward => {
                     if browser.can_go_forward() != 0 {
                         nav_state.borrow_mut().label.host_started = Some((true, std::time::Instant::now()));
                         browser.go_forward();
                     }
                 }
-                HostToEngine::Reload => {
+                HostToView::Reload => {
                     browser.reload();
                 }
-                HostToEngine::Resize { width: w, height: h, .. } => {
+                HostToView::Resize { width: w, height: h, .. } => {
                     *size.borrow_mut() = (w as f32, h as f32);
                     if let Some(host) = browser.host() {
                         host.was_resized();
@@ -285,13 +285,13 @@ fn main() {
                     // The sink resizes its store from the next painted frame's own dimensions: CEF may still
                     // deliver one more frame at the old size after `was_resized()`.
                 }
-                HostToEngine::Input(event) => {
+                HostToView::Input(event) => {
                     if matches!(event, InputEvent::MouseDown { .. } | InputEvent::KeyDown { .. }) {
                         nav_state.borrow_mut().label.last_input = Some(std::time::Instant::now());
                     }
                     input::send_input(&browser, event);
                 }
-                HostToEngine::SetZoom { factor } => {
+                HostToView::SetZoom { factor } => {
                     // CEF's own `zoom_level` is log-scale (Chromium's
                     // internal representation, each whole step ~20%
                     // larger/smaller), not a linear multiplier like
@@ -302,7 +302,7 @@ fn main() {
                         host.set_zoom_level(factor.max(0.01).ln() / 1.2_f64.ln());
                     }
                 }
-                HostToEngine::SetVisible(v) => {
+                HostToView::SetVisible(v) => {
                     if v && !visible {
                         sink.borrow_mut().show();
                     }
@@ -312,20 +312,19 @@ fn main() {
                         host.was_hidden(!v as _);
                     }
                 }
-                HostToEngine::GetState => {
-                    let _ =
-                        control.send(&EngineToHost::StateSnapshot(TabState { url: nav_state.borrow().url.clone() }));
+                HostToView::GetState => {
+                    let _ = control.send(&ViewToHost::StateSnapshot(TabState { url: nav_state.borrow().url.clone() }));
                 }
-                HostToEngine::SetCookies(json) => may_hold_cookies |= jar_cookies::seed(&json) > 0,
-                HostToEngine::GetCookies => pull = Some(jar_cookies::start_pull()),
-                HostToEngine::QueryPageState => {
+                HostToView::SetCookies(json) => may_hold_cookies |= jar_cookies::seed(&json) > 0,
+                HostToView::GetCookies => pull = Some(jar_cookies::start_pull()),
+                HostToView::QueryPageState => {
                     if let Some(frame) = browser.main_frame() {
                         if let Some(mut message) = process_message_create(Some(&CHECK_PAGE_STATE.into())) {
                             frame.send_process_message(ProcessId::RENDERER, Some(&mut message));
                         }
                     }
                 }
-                HostToEngine::RestoreScroll { x, y } => {
+                HostToView::RestoreScroll { x, y } => {
                     if let Some(frame) = browser.main_frame() {
                         frame.execute_java_script(
                             Some(&ipc_protocol::restore_scroll_script(x, y).as_str().into()),
@@ -334,29 +333,29 @@ fn main() {
                         );
                     }
                 }
-                HostToEngine::FindStart { text, match_case } => {
+                HostToView::FindStart { text, match_case } => {
                     if let Some(host) = browser.host() {
                         host.find(Some(&text.as_str().into()), true as _, match_case as _, false as _);
                     }
                     find_term = Some((text, match_case));
                 }
-                HostToEngine::FindNext => {
+                HostToView::FindNext => {
                     if let (Some(host), Some((text, match_case))) = (browser.host(), &find_term) {
                         host.find(Some(&text.as_str().into()), true as _, *match_case as _, true as _);
                     }
                 }
-                HostToEngine::FindPrevious => {
+                HostToView::FindPrevious => {
                     if let (Some(host), Some((text, match_case))) = (browser.host(), &find_term) {
                         host.find(Some(&text.as_str().into()), false as _, *match_case as _, true as _);
                     }
                 }
-                HostToEngine::FindStop => {
+                HostToView::FindStop => {
                     find_term = None;
                     if let Some(host) = browser.host() {
                         host.stop_finding(true as _);
                     }
                 }
-                HostToEngine::OpenDevTools => {
+                HostToView::OpenDevTools => {
                     // All `None`: a default (real, windowed, OS-visible)
                     // `WindowInfo` rather than inheriting this browser's own
                     // `windowless_rendering_enabled` client/settings --
@@ -368,7 +367,7 @@ fn main() {
                     }
                 }
                 // A real native mute would still mean the full `AudioHandler`
-                // `ipc_protocol::HostToEngine::SetMuted`'s own doc comment
+                // `ipc_protocol::HostToView::SetMuted`'s own doc comment
                 // rules out -- but muting is a *write*, unlike the audio-
                 // playing indicator's read, so it doesn't need a value back
                 // at all: `Frame::execute_java_script` (fire-and-forget,
@@ -379,7 +378,7 @@ fn main() {
                 // with no element behind it, but covers the common case
                 // (YouTube, most players) a `<video>`/`<audio>` tag actually
                 // backs.
-                HostToEngine::SetMuted { muted } => {
+                HostToView::SetMuted { muted } => {
                     // Recorded so `nav_handler`'s `on_loading_state_change`
                     // can re-apply it on every future navigation -- this
                     // JS write only ever affects elements that already
@@ -393,7 +392,7 @@ fn main() {
                         frame.execute_java_script(Some(&code.as_str().into()), None, 0);
                     }
                 }
-                HostToEngine::Shutdown => {
+                HostToView::Shutdown => {
                     // Must call `close_browser` and wait for
                     // `LifeSpanHandler::on_before_close` before
                     // `cef::shutdown()` -- CEF's own documented contract.
@@ -416,7 +415,7 @@ fn main() {
                 let n = serde_json::from_str::<Vec<serde_json::Value>>(&json).map_or(0, |v| v.len());
                 eprintln!("jar: reported {n} cookies");
                 may_hold_cookies |= n > 0;
-                let _ = control.send(&EngineToHost::Cookies(json));
+                let _ = control.send(&ViewToHost::Cookies(json));
                 pull = None;
             }
             Some(jar_cookies::PullState::Silent) => {
@@ -430,7 +429,7 @@ fn main() {
             let mut nav = nav_state.borrow_mut();
             if nav.dirty {
                 nav.dirty = false;
-                let _ = control.send(&EngineToHost::NavigationStateChanged {
+                let _ = control.send(&ViewToHost::NavigationStateChanged {
                     url: nav.url.clone(),
                     title: nav.title.clone(),
                     can_go_back: nav.can_go_back,
@@ -445,28 +444,28 @@ fn main() {
         }
 
         for (url, user_gesture) in pending_open_tab.borrow_mut().drain(..) {
-            let _ = control.send(&EngineToHost::OpenTabRequested { url, user_gesture });
+            let _ = control.send(&ViewToHost::OpenTabRequested { url, user_gesture });
         }
 
         if let Some((count, active_index)) = find_result.borrow_mut().take() {
-            let _ = control.send(&EngineToHost::FindResult { count, active_index });
+            let _ = control.send(&ViewToHost::FindResult { count, active_index });
         }
 
         if let Some((x, y, href)) = context_menu_link.borrow_mut().take() {
-            let _ = control.send(&EngineToHost::ContextMenuLink { x, y, href });
+            let _ = control.send(&ViewToHost::ContextMenuLink { x, y, href });
         }
 
         if let Some(body) = json_body.borrow_mut().take() {
-            let _ = control.send(&EngineToHost::JsonBody { body });
+            let _ = control.send(&ViewToHost::JsonBody { body });
         }
 
         if let Some(content_type) = redirect_content_type.borrow_mut().take() {
-            let _ = control.send(&EngineToHost::RedirectableContent { content_type });
+            let _ = control.send(&ViewToHost::RedirectableContent { content_type });
         }
 
         if let Some(text) = page_state.borrow_mut().take() {
             if let Some(state) = ipc_protocol::PageState::parse(&text) {
-                let _ = control.send(&EngineToHost::PageState(state));
+                let _ = control.send(&ViewToHost::PageState(state));
             }
         }
 
@@ -482,7 +481,7 @@ fn main() {
                 }
             }
         }
-        // Only sent on an actual change, matching `EngineToHost::
+        // Only sent on an actual change, matching `ViewToHost::
         // AudioPlayingChanged`'s own documented contract -- `audio_playing`
         // itself is overwritten on every reply regardless (see
         // `SharedAudioPlaying`'s own doc comment), so the dedupe has to
@@ -490,7 +489,7 @@ fn main() {
         if let Some(playing) = *audio_playing.borrow() {
             if playing != last_reported_audio_playing {
                 last_reported_audio_playing = playing;
-                let _ = control.send(&EngineToHost::AudioPlayingChanged { playing });
+                let _ = control.send(&ViewToHost::AudioPlayingChanged { playing });
             }
         }
 

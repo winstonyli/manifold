@@ -46,7 +46,7 @@ for engine in ${ENGINES:-webview2 cef}; do
         name="$engine${path//[\/.]/-}"
         profile="$out/appdata-$name"
         seed_settings "$profile" "$engine"
-        echo "{\"nodes\": [{\"id\": \"t1\", \"type\": \"application/vnd.manifold.tab\", \"url\": \"http://127.0.0.1:$port$path\", \"engine\": \"$engine\", \"pos\": [0.0, 0.0]}]}" >"$profile/seed.json"
+        echo "{\"nodes\": [{\"id\": \"t1\", \"type\": \"application/vnd.manifold.tab\", \"url\": \"http://127.0.0.1:$port$path\", \"view_kind\": \"$engine\", \"pos\": [0.0, 0.0]}]}" >"$profile/seed.json"
         "$exe" --import-json "$(cygpath -w "$profile/seed.json")" --out "$(cygpath -w "$profile/manifold/session.mnf")" >/dev/null
 
         cmd="$profile/cmd"

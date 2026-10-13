@@ -3,7 +3,7 @@
 use super::*;
 
 /// A Windows Job Object every engine-host child (`spawn_tab`/
-/// `spawn_webkit_tab`, both call `assign_to_engine_job` right after
+/// `spawn_webkit_tab`, both call `assign_to_view_job` right after
 /// spawning) gets assigned to, configured with `JOB_OBJECT_LIMIT_KILL_ON_
 /// JOB_CLOSE` -- Windows itself then guarantees every process in the job
 /// dies the instant this job's last handle closes, which happens
@@ -40,31 +40,31 @@ use super::*;
 /// by a session that ran before this existed; those still need a one-time
 /// manual Task Manager cleanup.
 #[cfg(target_os = "windows")]
-struct EngineJobHandle(windows_sys::Win32::Foundation::HANDLE);
+struct ViewJobHandle(windows_sys::Win32::Foundation::HANDLE);
 // Safety: a Win32 `HANDLE` is a plain kernel object reference, valid to
 // use from any thread -- Rust's blanket `!Send`/`!Sync` on raw pointers is
 // only being overly cautious here, not flagging a real hazard.
 #[cfg(target_os = "windows")]
-unsafe impl Send for EngineJobHandle {}
+unsafe impl Send for ViewJobHandle {}
 #[cfg(target_os = "windows")]
-unsafe impl Sync for EngineJobHandle {}
+unsafe impl Sync for ViewJobHandle {}
 
 #[cfg(target_os = "windows")]
-static ENGINE_JOB: std::sync::OnceLock<EngineJobHandle> = std::sync::OnceLock::new();
+static VIEW_JOB: std::sync::OnceLock<ViewJobHandle> = std::sync::OnceLock::new();
 
 /// Creates (once) and returns the Job Object every engine-host child gets
-/// assigned to -- see `EngineJobHandle`'s own doc comment. A null handle
+/// assigned to -- see `ViewJobHandle`'s own doc comment. A null handle
 /// (creation failed) is a silent no-op everywhere it's used, and a job whose
 /// kill-on-close setup failed is logged once and used anyway: this is a
 /// crash-safety net, not a feature any spawn should fail over losing.
 #[cfg(target_os = "windows")]
-fn engine_job() -> windows_sys::Win32::Foundation::HANDLE {
+fn view_job() -> windows_sys::Win32::Foundation::HANDLE {
     use windows_sys::Win32::Foundation::HANDLE;
     use windows_sys::Win32::System::JobObjects::{
         JobObjectExtendedLimitInformation, SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
         JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
     };
-    ENGINE_JOB
+    VIEW_JOB
         .get_or_init(|| unsafe {
             let job = windows_sys::Win32::System::JobObjects::CreateJobObjectW(std::ptr::null(), std::ptr::null());
             if !job.is_null() {
@@ -81,22 +81,22 @@ fn engine_job() -> windows_sys::Win32::Foundation::HANDLE {
                     eprintln!("engine job: kill-on-close not set: {}", std::io::Error::last_os_error());
                 }
             }
-            EngineJobHandle(job as HANDLE)
+            ViewJobHandle(job as HANDLE)
         })
         .0
 }
 
-/// Adds a just-spawned engine-host child to `engine_job()` -- called right
+/// Adds a just-spawned engine-host child to `view_job()` -- called right
 /// after every successful `Command::spawn()` in this module. A no-op (not
 /// an error) if the job itself failed to create/configure, or if this one
 /// assignment fails (e.g. the child already exited) -- either way, the
 /// worst case is falling back to this app's prior behavior (no automatic
 /// cleanup), not a spawn failure over a crash-safety extra.
 #[cfg(target_os = "windows")]
-pub(super) fn assign_to_engine_job(child: &Child) {
+pub(super) fn assign_to_view_job(child: &Child) {
     use std::os::windows::io::AsRawHandle;
     use windows_sys::Win32::System::JobObjects::AssignProcessToJobObject;
-    let job = engine_job();
+    let job = view_job();
     if job.is_null() {
         return;
     }
@@ -110,7 +110,7 @@ pub(super) fn assign_to_engine_job(child: &Child) {
 /// live CEF tab left no CEF process after 1 s, so `PR_SET_PDEATHSIG` or a process group is not needed there. Said once
 /// on stderr rather than silently, since other hosts (WebKit in WSL) are not covered by that measurement.
 #[cfg(not(target_os = "windows"))]
-pub(super) fn assign_to_engine_job(_child: &Child) {
+pub(super) fn assign_to_view_job(_child: &Child) {
     static WARNED: std::sync::Once = std::sync::Once::new();
     WARNED.call_once(|| {
         eprintln!(

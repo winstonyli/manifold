@@ -6,13 +6,13 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use ipc_protocol::HostToEngine;
+use ipc_protocol::HostToView;
 
 use crate::local_state::{LiveUrl, LocalNode, LocalState};
 use crate::node::{
     DownloadPayload, ImagePayload, JsonPayload, NotePayload, PdfPayload, Runtime, UnloadedState, UnloadedTabPayload,
 };
-use crate::process_manager::EngineKind;
+use crate::process_manager::ViewKind;
 use crate::store::journal::{JournalError, Recovery};
 use crate::store::json::{Imported, JsonDoc};
 use crate::store::model::{
@@ -102,14 +102,14 @@ fn runtime_has_type(runtime: &Runtime, ty: &str) -> bool {
 }
 
 /// `store::model::ENGINES` order: code `n` is `ENGINES[n - 1]`.
-pub(crate) fn engine_code(kind: EngineKind) -> u64 {
+pub(crate) fn view_code(kind: ViewKind) -> u64 {
     kind.desc().code
 }
 
 /// The engine for a stored code. `0` is an absent field (a tab whose engine
 /// was never set), which is Servo, the first engine.
-pub(crate) fn engine_of(code: u64) -> EngineKind {
-    EngineKind::from_code(code).unwrap_or(EngineKind::Servo)
+pub(crate) fn view_kind_of(code: u64) -> ViewKind {
+    ViewKind::from_code(code).unwrap_or(ViewKind::Servo)
 }
 
 /// The one resolver of the links a commit writes (2b-5 Ruling 12): `target` stands if the document shows it live
@@ -228,9 +228,9 @@ fn id_of(fields: &Fields, no: u32) -> Option<String> {
     }
 }
 
-fn engine_field(fields: &Fields) -> EngineKind {
-    engine_of(match fields.get(&field::ENGINE) {
-        Some(FieldValue::Engine(code)) => *code,
+fn view_field(fields: &Fields) -> ViewKind {
+    view_kind_of(match fields.get(&field::VIEW_KIND) {
+        Some(FieldValue::ViewCode(code)) => *code,
         _ => 0,
     })
 }
@@ -262,7 +262,7 @@ pub(crate) fn link_id(id: Option<&str>) -> Option<NodeId> {
 }
 
 /// The tab `spawn` starts, as a `Snapshot`: what `save_session` writes for a
-/// tab whose spawn hasn't landed yet (`App::spawning`). `pos`, `url`, `engine` (a
+/// tab whose spawn hasn't landed yet (`App::spawning`). `pos`, `url`, `view_kind` (a
 /// stored code) and `jar` are its shared ones (`App::spawn_tab_async`): the
 /// mirror's for a tab that has an entry, which a respawn's live `spawn.url`
 /// may not be.
@@ -270,29 +270,29 @@ pub(crate) fn spawn_snapshot(
     spawn: &TabSpawn,
     pos: Option<egui::Vec2>,
     url: &str,
-    engine: u64,
+    view_kind: u64,
     jar: crate::jar::JarChoice,
 ) -> Snapshot {
     let pos = pos.map_or(FieldValue::Pos(0.0, 0.0), pos_value);
     let mut fields = Fields::from([(field::POS, pos), (field::COLOR, color_value(spawn.carry.color))]);
     let (pinned, parent) = (spawn.carry.pinned, parse_id(&spawn.parent));
-    let (url, engine) = (FieldValue::Str(url.to_owned()), FieldValue::Engine(engine));
-    let kind = tab_fields(&mut fields, url, engine, pinned, parent, jar);
+    let (url, view_kind) = (FieldValue::Str(url.to_owned()), FieldValue::ViewCode(view_kind));
+    let kind = tab_fields(&mut fields, url, view_kind, pinned, parent, jar);
     Snapshot { kind, group: parse_id(&spawn.group), fields }
 }
 
-/// A tab's fields beyond `pos` and `color`, live or failed. `url`, `engine` and `jar` are the shared ones
+/// A tab's fields beyond `pos` and `color`, live or failed. `url`, `view_kind` and `jar` are the shared ones
 /// (`Mirror::url`, the mirror's raw engine code, `Mirror::jar_choice`).
 fn tab_fields(
     fields: &mut Fields,
     url: FieldValue,
-    engine: FieldValue,
+    view_kind: FieldValue,
     pinned: bool,
     parent: Option<NodeId>,
     jar: crate::jar::JarChoice,
 ) -> Kind {
     fields.insert(field::URL, url);
-    fields.insert(field::ENGINE, engine);
+    fields.insert(field::VIEW_KIND, view_kind);
     fields.insert(field::PINNED, FieldValue::Bool(pinned));
     fields.insert(field::PARENT, FieldValue::Id(parent));
     fields.insert(field::JAR, FieldValue::Id(jar.jar));
@@ -541,14 +541,14 @@ impl App {
                 let url = str_of(fields, field::URL);
                 if changed(field::URL) && tab.url != url {
                     tab.url = url.clone();
-                    tab.tab.send(&HostToEngine::Navigate { url, referrer: None });
+                    tab.tab.send(&HostToView::Navigate { url, referrer: None });
                     store_load = true;
                 }
                 // A swap in flight here (`swap_in_flight`, parked for cookies too) wins: `mirror_remote` held the
                 // remote engine back while the swap's edit is unsaved; once saved, its target is written again
                 // (`reassert`), so the document ends on the engine this tab lands on.
-                let want = engine_field(fields);
-                if changed(field::ENGINE) {
+                let want = view_field(fields);
+                if changed(field::VIEW_KIND) {
                     match in_flight {
                         Some(target) if target != want => reassert = Some(target),
                         Some(_) => {}
@@ -590,7 +590,7 @@ impl App {
             self.start_swap_to(id, target);
         }
         if let Some(target) = reassert {
-            self.edit_engine(id, target);
+            self.edit_view_kind(id, target);
         }
         true
     }
@@ -835,7 +835,7 @@ impl App {
     pub(crate) fn wake_focused(&mut self) {
         let asleep = |id: &str, this: &Self| {
             let card = this.nodes.get(id).and_then(|n| n.as_unloaded());
-            card.is_some_and(|t| t.state == UnloadedState::Sleeping).then(|| this.mirror.engine(id))
+            card.is_some_and(|t| t.state == UnloadedState::Sleeping).then(|| this.mirror.view_kind(id))
         };
         if let Some(id) = self.focused.clone() {
             if let Some(kind) = asleep(&id, self) {
@@ -1022,9 +1022,9 @@ impl App {
     /// The one writer of a tab's engine (2b-3 Ruling 5): called when a switch starts (`start_swap_to`, a wake into
     /// another engine), and with the old engine when a switch fails and falls back. Compared as decoded, so asking for
     /// the engine the mirror already shows queues nothing and keeps a code this build doesn't know (Ruling 6).
-    pub(crate) fn edit_engine(&mut self, id: &str, kind: EngineKind) {
-        if self.mirror.engine(id) != kind {
-            self.edit_field(id, field::ENGINE, FieldValue::Engine(engine_code(kind)));
+    pub(crate) fn edit_view_kind(&mut self, id: &str, kind: ViewKind) {
+        if self.mirror.view_kind(id) != kind {
+            self.edit_field(id, field::VIEW_KIND, FieldValue::ViewCode(view_code(kind)));
         }
     }
 
@@ -2035,7 +2035,7 @@ impl App {
     /// Clears the running session's nodes and the state naming them, and
     /// queues a delete for every graph node the document holds (Ruling 4:
     /// jars stay, they are not part of the graph being replaced). Each
-    /// tab's `EngineTab::Drop` shuts its engine host down, as `destroy_tab`
+    /// tab's `ViewTab::Drop` shuts its engine host down, as `destroy_tab`
     /// relies on, so clearing the map is enough; spawns still in flight are
     /// dropped when they land (`session_generation`), and a PDF's render
     /// not yet started is skipped, as `remove_node` does.
@@ -2064,7 +2064,7 @@ impl App {
         for id in old_ids {
             self.forget_id(&id);
         }
-        self.begin_engine_shutdown(); // the tabs below drop together: one SHUTDOWN_FLUSH wait, not one each
+        self.begin_view_shutdown(); // the tabs below drop together: one SHUTDOWN_FLUSH wait, not one each
         self.nodes.clear();
         self.node_order.clear();
         self.layout.clear();

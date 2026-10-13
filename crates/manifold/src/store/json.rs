@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use super::model::{
-    encode_field, field, field_by_name, field_def, Doc, FieldType, FieldValue, Kind, Node, NodeId, ENGINES,
+    encode_field, field, field_by_name, field_def, Doc, FieldType, FieldValue, Kind, Node, NodeId, VIEW_KINDS,
 };
 use super::ops::OpBody;
 
@@ -48,14 +48,14 @@ fn value_to_json(value: &FieldValue) -> Option<Value> {
         FieldValue::Id(Some(id)) => Value::String(id.to_string()),
         FieldValue::Str(s) if !s.is_empty() => Value::String(s.clone()),
         FieldValue::Bool(true) => Value::Bool(true),
-        FieldValue::Engine(code) if *code != 0 => Value::String(ENGINES.get(*code as usize - 1)?.to_string()),
+        FieldValue::ViewCode(code) if *code != 0 => Value::String(VIEW_KINDS.get(*code as usize - 1)?.to_string()),
         // The empty or zero value of each type is "absent", so it has no JSON.
         FieldValue::Pos(..)
         | FieldValue::Color(None)
         | FieldValue::Id(None)
         | FieldValue::Str(_)
         | FieldValue::Bool(false)
-        | FieldValue::Engine(_) => return None,
+        | FieldValue::ViewCode(_) => return None,
     })
 }
 
@@ -224,9 +224,9 @@ pub fn import(json: &JsonDoc, mut next_id: impl FnMut() -> NodeId, trust: Trust)
                 },
                 (FieldType::Str, Value::String(s)) => FieldValue::Str(s.clone()),
                 (FieldType::Bool, Value::Bool(b)) => FieldValue::Bool(*b),
-                (FieldType::Engine, Value::String(s)) => {
-                    let code = ENGINES.iter().position(|e| e == s).ok_or_else(bad)?;
-                    FieldValue::Engine(code as u64 + 1)
+                (FieldType::ViewCode, Value::String(s)) => {
+                    let code = VIEW_KINDS.iter().position(|e| e == s).ok_or_else(bad)?;
+                    FieldValue::ViewCode(code as u64 + 1)
                 }
                 _ => return Err(bad()),
             };
@@ -283,7 +283,7 @@ mod tests {
 
     const HAND_WRITTEN: &str = r##"{"nodes": [
         {"id": "g", "type": "application/vnd.manifold.group", "name": "Reading", "color": "#000000"},
-        {"id": "t1", "type": "application/vnd.manifold.tab", "group": "g", "url": "https://a.example/", "pos": [10.5, -3], "engine": "cef", "pinned": true},
+        {"id": "t1", "type": "application/vnd.manifold.tab", "group": "g", "url": "https://a.example/", "pos": [10.5, -3], "view_kind": "cef", "pinned": true},
         {"id": "t2", "type": "application/vnd.manifold.tab", "group": "g", "parent": "t1", "url": "https://b.example/", "future_field": 7},
         {"id": "n", "type": "text/markdown", "text": "hi"}
     ]}"##;
@@ -330,7 +330,7 @@ mod tests {
         assert_eq!(tab2.group, Some(group));
         assert_eq!(tab2.get(field::PARENT), FieldValue::Id(Some(t1)));
         assert_eq!(tab1.get(field::POS), FieldValue::Pos(10.5, -3.0));
-        assert_eq!(tab1.get(field::ENGINE), FieldValue::Engine(2));
+        assert_eq!(tab1.get(field::VIEW_KIND), FieldValue::ViewCode(2));
         assert_eq!(tab1.get(field::PINNED), FieldValue::Bool(true));
     }
 
@@ -388,7 +388,7 @@ mod tests {
     fn bad_input_is_an_error() {
         let bad = |json: &str| import(&serde_json::from_str(json).unwrap(), ids(1), Trust::Own).unwrap_err();
         bad(r#"{"nodes": [{"id": "a", "type": "application/x-spaceship"}]}"#);
-        bad(r#"{"nodes": [{"id": "a", "type": "application/vnd.manifold.tab", "engine": "gecko"}]}"#);
+        bad(r#"{"nodes": [{"id": "a", "type": "application/vnd.manifold.tab", "view_kind": "gecko"}]}"#);
         bad(r#"{"nodes": [{"id": "a", "type": "application/vnd.manifold.tab", "color": "red"}]}"#);
         bad(
             r#"{"nodes": [{"id": "a", "type": "application/vnd.manifold.tab"}, {"id": "a", "type": "application/vnd.manifold.tab"}]}"#,

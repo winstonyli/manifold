@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use dpi::PhysicalSize;
 use ipc_protocol::{
-    modifiers as host_modifiers, EngineToHost, HostToEngine, InputEvent as HostInputEvent, KeyCode as HostKeyCode,
+    modifiers as host_modifiers, HostToView, InputEvent as HostInputEvent, KeyCode as HostKeyCode, ViewToHost,
 };
 use servo::{
     Code, EmbedderControl, EventLoopWaker, InputEvent as ServoInputEvent, JSValue, Key, KeyState, KeyboardEvent,
@@ -45,13 +45,13 @@ struct Delegate {
     frame_ready: RefCell<bool>,
     nav: RefCell<NavState>,
     /// `(x, y, href)` for a right-click that landed on a link -- see
-    /// `ipc_protocol::EngineToHost::ContextMenuLink`'s doc comment. Servo
+    /// `ipc_protocol::ViewToHost::ContextMenuLink`'s doc comment. Servo
     /// hands this over directly via `ContextMenuElementInformation::link_url`
     /// on the `EmbedderControl::ContextMenu` it requests for every right-
     /// click, unlike WebKit/WebView2's own `document.elementFromPoint`
     /// JS-query workaround -- no script round-trip needed here.
     context_menu_link: RefCell<Option<(f64, f64, String)>>,
-    /// See `ipc_protocol::EngineToHost::JsonBody`'s own doc comment --
+    /// See `ipc_protocol::ViewToHost::JsonBody`'s own doc comment --
     /// filled in once per navigation by `notify_load_status_changed`'s own
     /// `WebView::evaluate_javascript` call. `Rc`-wrapped (unlike every
     /// other field here) specifically so its own callback -- a `'static`
@@ -59,7 +59,7 @@ struct Delegate {
     /// this method's `&self` borrow has ended -- can hold an owned clone of
     /// just this one cell, not the whole `Delegate`.
     json_body: Rc<RefCell<Option<String>>>,
-    /// See `ipc_protocol::EngineToHost::RedirectableContent`'s own doc
+    /// See `ipc_protocol::ViewToHost::RedirectableContent`'s own doc
     /// comment -- same `evaluate_javascript` call as `json_body`, just the
     /// other branch of the same `document.contentType` check, `Rc`-wrapped
     /// for the same reason.
@@ -110,7 +110,7 @@ impl WebViewDelegate for Delegate {
         nav.dirty = true;
         drop(nav);
 
-        // See `ipc_protocol::EngineToHost::JsonBody`/`RedirectableContent`'s
+        // See `ipc_protocol::ViewToHost::JsonBody`/`RedirectableContent`'s
         // own doc comments. Unlike WebKit/WebView2's `ExecuteScript`,
         // Servo's own `evaluate_javascript` hands back a real structured
         // `JSValue`, not a JSON-encoded string -- no unescaping step needed
@@ -150,13 +150,13 @@ fn main() {
     // reserved for CEF's own command-line parsing. Kept consistent here too
     // so manifold's process manager has one spawn convention for every
     // engine-host.
-    // ENGINE_SOCKET_ID names our control pipes/shared memory — normally
-    // equal to ENGINE_TAB_ID, but manifold may pass a different id if a
-    // stale engine-host from a prior crashed run still held ENGINE_TAB_ID's
+    // VIEW_SOCKET_ID names our control pipes/shared memory — normally
+    // equal to VIEW_TAB_ID, but manifold may pass a different id if a
+    // stale engine-host from a prior crashed run still held VIEW_TAB_ID's
     // pipes (see process_manager::spawn_tab's fallback). Only this id
-    // matters here; we never need ENGINE_TAB_ID itself.
-    let socket_id = std::env::var("ENGINE_SOCKET_ID").expect("ENGINE_SOCKET_ID env var required");
-    let initial_url = std::env::var("ENGINE_INITIAL_URL").unwrap_or_else(|_| "https://example.com".to_string());
+    // matters here; we never need VIEW_TAB_ID itself.
+    let socket_id = std::env::var("VIEW_SOCKET_ID").expect("VIEW_SOCKET_ID env var required");
+    let initial_url = std::env::var("VIEW_INITIAL_URL").unwrap_or_else(|_| "https://example.com".to_string());
 
     // Two one-directional control sockets back to manifold (it already
     // created both listeners before spawning this process — see
@@ -164,13 +164,13 @@ fn main() {
     // instead of one bidirectional stream means the reader thread below
     // never needs to duplicate a stream handle to read concurrently with
     // the main thread's sends.
-    let (host_to_engine, mut control) =
+    let (host_to_view, mut control) =
         ipc_protocol::transport::connect_local_pair(&socket_id).expect("connect to manifold control sockets");
 
-    // A dedicated IO thread owns receiving HostToEngine messages so the
+    // A dedicated IO thread owns receiving HostToView messages so the
     // main thread stays free to drive Servo's event loop (Servo is not
     // Send, so it must live entirely on this thread).
-    let rx = ipc_protocol::transport::spawn_host_reader(host_to_engine);
+    let rx = ipc_protocol::transport::spawn_host_reader(host_to_view);
 
     let rendering_context = Rc::new(
         SoftwareRenderingContext::new(PhysicalSize::new(DEFAULT_WIDTH, DEFAULT_HEIGHT))
@@ -220,25 +220,25 @@ fn main() {
 
         while let Ok(msg) = rx.try_recv() {
             match msg {
-                HostToEngine::Navigate { url, .. } => {
+                HostToView::Navigate { url, .. } => {
                     if let Ok(parsed) = Url::parse(&url) {
                         webview.load(parsed);
                     }
                 }
-                HostToEngine::GoBack => {
+                HostToView::GoBack => {
                     if delegate.nav.borrow().can_go_back {
                         webview.go_back(1);
                     }
                 }
-                HostToEngine::GoForward => {
+                HostToView::GoForward => {
                     if delegate.nav.borrow().can_go_forward {
                         webview.go_forward(1);
                     }
                 }
-                HostToEngine::Reload => {
+                HostToView::Reload => {
                     webview.reload();
                 }
-                HostToEngine::Resize { width: w, height: h, .. } => {
+                HostToView::Resize { width: w, height: h, .. } => {
                     // A minimized window delivers a real 0x0 `inner_size()`
                     // on Windows — nothing to render either way, and a
                     // zero-length shared frame buffer can't be mapped at
@@ -255,19 +255,19 @@ fn main() {
                     // stretched: force one paint at the new size (as `SetVisible` does).
                     *delegate.frame_ready.borrow_mut() = true;
                 }
-                HostToEngine::Input(event) => {
+                HostToView::Input(event) => {
                     if let Some(servo_event) = translate_input_event(event) {
                         webview.notify_input_event(servo_event);
                     }
                 }
-                HostToEngine::SetZoom { factor } => {
+                HostToView::SetZoom { factor } => {
                     // `set_page_zoom` is a plain linear multiplier (1.0 =
                     // 100%, clamped internally to [0.1, 10.0]) — matches
                     // `factor`'s own semantics directly, no conversion
                     // needed (contrast CEF's log-scale zoom_level).
                     webview.set_page_zoom(factor as f32);
                 }
-                HostToEngine::SetVisible(v) => {
+                HostToView::SetVisible(v) => {
                     // Resuming from background: force one repaint even if
                     // `notify_new_frame_ready` never fired while hidden
                     // (static page, nothing changed) — otherwise the
@@ -280,15 +280,15 @@ fn main() {
                     }
                     visible = v;
                 }
-                HostToEngine::GetState => {
+                HostToView::GetState => {
                     // The url is the only piece the swap sequence replays.
-                    let _ = control.send(&EngineToHost::StateSnapshot(ipc_protocol::TabState {
+                    let _ = control.send(&ViewToHost::StateSnapshot(ipc_protocol::TabState {
                         url: delegate.nav.borrow().url.clone(),
                     }));
                 }
                 // This engine has no cookie jar to seed or read; stays silent.
-                HostToEngine::SetCookies(_) | HostToEngine::GetCookies => {}
-                HostToEngine::QueryPageState => {
+                HostToView::SetCookies(_) | HostToView::GetCookies => {}
+                HostToView::QueryPageState => {
                     let pending = pending_page_state.clone();
                     webview.evaluate_javascript(ipc_protocol::PAGE_STATE_SCRIPT, move |result| {
                         if let Ok(JSValue::String(text)) = result {
@@ -298,25 +298,25 @@ fn main() {
                         }
                     });
                 }
-                HostToEngine::RestoreScroll { x, y } => {
+                HostToView::RestoreScroll { x, y } => {
                     webview.evaluate_javascript(ipc_protocol::restore_scroll_script(x, y), |_| {});
                 }
                 // Servo's embedding API (the pinned 0.5.0 `WebView`) has no
                 // find-in-page method at all — silent no-op, same per-engine
                 // support gap as popup interception (see
-                // `ipc_protocol::EngineToHost::OpenTabRequested`'s doc
+                // `ipc_protocol::ViewToHost::OpenTabRequested`'s doc
                 // comment). `manifold`'s find bar still opens on a Servo
                 // tab; it just never receives a `FindResult`.
                 // Same gap for DevTools: no inspector/DevTools method
                 // exists in Servo's embedding API either. Same gap again
                 // for mute: no audio control at all in this embedding API.
-                HostToEngine::FindStart { .. }
-                | HostToEngine::FindNext
-                | HostToEngine::FindPrevious
-                | HostToEngine::FindStop
-                | HostToEngine::OpenDevTools
-                | HostToEngine::SetMuted { .. } => {}
-                HostToEngine::Shutdown => return,
+                HostToView::FindStart { .. }
+                | HostToView::FindNext
+                | HostToView::FindPrevious
+                | HostToView::FindStop
+                | HostToView::OpenDevTools
+                | HostToView::SetMuted { .. } => {}
+                HostToView::Shutdown => return,
             }
         }
 
@@ -324,7 +324,7 @@ fn main() {
             let mut nav = delegate.nav.borrow_mut();
             if nav.dirty {
                 nav.dirty = false;
-                let _ = control.send(&EngineToHost::NavigationStateChanged {
+                let _ = control.send(&ViewToHost::NavigationStateChanged {
                     url: nav.url.clone(),
                     title: nav.title.clone(),
                     can_go_back: nav.can_go_back,
@@ -337,19 +337,19 @@ fn main() {
         }
 
         if let Some((x, y, href)) = delegate.context_menu_link.borrow_mut().take() {
-            let _ = control.send(&EngineToHost::ContextMenuLink { x, y, href });
+            let _ = control.send(&ViewToHost::ContextMenuLink { x, y, href });
         }
 
         if let Some(body) = delegate.json_body.borrow_mut().take() {
-            let _ = control.send(&EngineToHost::JsonBody { body });
+            let _ = control.send(&ViewToHost::JsonBody { body });
         }
 
         if let Some(state) = pending_page_state.borrow_mut().take() {
-            let _ = control.send(&EngineToHost::PageState(state));
+            let _ = control.send(&ViewToHost::PageState(state));
         }
 
         if let Some(content_type) = delegate.redirect_content_type.borrow_mut().take() {
-            let _ = control.send(&EngineToHost::RedirectableContent { content_type });
+            let _ = control.send(&ViewToHost::RedirectableContent { content_type });
         }
 
         if visible && *delegate.frame_ready.borrow() {

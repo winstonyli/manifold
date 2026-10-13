@@ -31,11 +31,11 @@ impl App {
         self.place_node(Some(id), store::model::Kind::Note, Runtime::Note(note), at);
     }
 
-    /// Starts an unloaded tab's engine (`UnloadedTabPayload`) on `kind`, which becomes its engine (`edit_engine`).
+    /// Starts an unloaded tab's engine (`UnloadedTabPayload`) on `kind`, which becomes its engine (`edit_view_kind`).
     /// The card stays, showing a spinner, until the outcome replaces it:
     /// the live tab under the same id, or a failed card with the new
     /// error. Ignored while a wake is already in flight.
-    pub(crate) fn wake_tab(&mut self, id: &str, kind: EngineKind) {
+    pub(crate) fn wake_tab(&mut self, id: &str, kind: ViewKind) {
         let Carried { pos, color, pinned, parent, group, jar, .. } = self.mirror.carried(id);
         let pos = pos.unwrap_or_default(); // unused: the card's layout entry stays (`TabSpawn::pos`)
         let Some(node) = self.nodes.get_mut(id) else { return };
@@ -49,7 +49,7 @@ impl App {
         let url = tab.url.clone();
         self.spawns.wakes_in_flight.insert(id.to_string());
         // Another engine is saved as the wake starts, not when it lands (2b-3 Ruling 5).
-        self.edit_engine(id, kind);
+        self.edit_view_kind(id, kind);
         let (id, purpose, fallback_kind) = (id.to_string(), SpawnPurpose::Wake, None);
         self.respawn_tab(TabSpawn { id, url, kind, parent, group, jar, pos, purpose, carry, fallback_kind });
     }
@@ -78,7 +78,7 @@ impl App {
         if let Some(node) = self.nodes.get_mut(id).and_then(|n| n.as_tab_mut()) {
             node.muted = !node.muted;
             let muted = node.muted;
-            node.tab.send(&HostToEngine::SetMuted { muted });
+            node.tab.send(&HostToView::SetMuted { muted });
         }
     }
 
@@ -138,7 +138,7 @@ impl App {
             match &mut node.runtime {
                 Runtime::Tab(tab) if !tab.muted => {
                     tab.muted = true;
-                    tab.tab.send(&HostToEngine::SetMuted { muted: true });
+                    tab.tab.send(&HostToView::SetMuted { muted: true });
                 }
                 Runtime::Unloaded(tab) => tab.muted = true,
                 _ => {}

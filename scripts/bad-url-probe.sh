@@ -4,7 +4,7 @@
 # Checks (spec 2026-10-07-wave-0-tooling, BT-5) that an engine host given an initial URL it can't open shows
 # about:blank instead of panicking, for two tabs:
 #   garbage: stored url "not a url";
-#   missing: no url (the host gets ENGINE_INITIAL_URL="").
+#   missing: no url (the host gets VIEW_INITIAL_URL="").
 # Each is one headless instance on a fresh profile seeded with that one tab. Imported tabs sleep, so GRAPHDOWN
 # (focus the first card) and GRAPHOPEN wake it. EXPORTSTATE is polled until the tab is loaded and its focused_url
 # reads about:blank (or 30 tries); then a host log must exist, hold the host's "opening about:blank" line and no
@@ -47,7 +47,7 @@ run_case() {
     seed_settings "$profile" "$1"
     mkdir -p "$dir/tmp"
     tmp="$(cygpath -w "$dir/tmp")"
-    echo "{\"nodes\": [{\"id\": \"t1\", \"type\": \"application/vnd.manifold.tab\"$3, \"engine\": \"$1\", \"pos\": [0.0, 0.0]}]}" >"$profile/seed.json"
+    echo "{\"nodes\": [{\"id\": \"t1\", \"type\": \"application/vnd.manifold.tab\"$3, \"view_kind\": \"$1\", \"pos\": [0.0, 0.0]}]}" >"$profile/seed.json"
     "$exe" --import-json "$(cygpath -w "$profile/seed.json")" --out "$(cygpath -w "$profile/manifold/session.mnf")" >/dev/null ||
         { check "$1 $2: the seed imports" 0 1; return; }
     cmd="$dir/cmd"

@@ -6,7 +6,7 @@ use super::*;
 use crate::store::model::Kind;
 
 /// A minimal right-click context menu: just "Open in new tab" for a link,
-/// positioned where the click landed — see `ipc_protocol::EngineToHost::
+/// positioned where the click landed — see `ipc_protocol::ViewToHost::
 /// ContextMenuLink`'s doc comment for why this is the one action
 /// implemented rather than a full copy/paste/inspect menu. `x`/`y` are
 /// already in window (not content-area) point space — see where this is
@@ -283,9 +283,9 @@ pub(crate) enum AnchoredPopup {
     History,
     Downloads,
     TabActions,
-    DefaultEngine,
-    CurrentEngine,
-    SplitEngine,
+    DefaultViewKind,
+    CurrentViewKind,
+    SplitView,
 }
 
 /// Opens `which`, or closes it if it's the one open.
@@ -305,7 +305,7 @@ pub(crate) fn close_popup(open: &mut Option<AnchoredPopup>, which: AnchoredPopup
 /// Find-in-page state: tied to the focused tab only, not persisted per-tab,
 /// and closed (with `FindStop`) on tab switch or close, the same "not a full
 /// session" scope as the address bar's suggestions. See
-/// `EngineToHost::FindResult`'s doc comment for why `active_index` is always
+/// `ViewToHost::FindResult`'s doc comment for why `active_index` is always
 /// 0 on a WebKit tab and Servo tabs never populate `result`.
 #[derive(Default)]
 pub(crate) struct FindState {
@@ -385,9 +385,9 @@ const WEBKIT_PREREQUISITES: &str = "
 Not included: WebKit runs inside WSL, which needs a distro named Ubuntu with xvfb-run and the WebKitGTK libraries installed.";
 
 /// The download dialog's detail text, with a warning line when system libraries the host needs are missing.
-fn download_detail(kind: EngineKind, missing: &[&str]) -> String {
+fn download_detail(kind: ViewKind, missing: &[&str]) -> String {
     let mut detail = "Downloaded once, checked against a pinned hash, then kept in your profile.".to_string();
-    if kind == EngineKind::Webkit {
+    if kind == ViewKind::Webkit {
         detail.push_str(WEBKIT_PREREQUISITES);
     }
     if !missing.is_empty() {
@@ -400,7 +400,7 @@ fn download_detail(kind: EngineKind, missing: &[&str]) -> String {
             "
 Missing system libraries: {}. {fix}, or {} will not start.",
             missing.join(", "),
-            engine_label(kind)
+            view_label(kind)
         ));
     }
     detail
@@ -472,29 +472,29 @@ impl App {
 
     /// One of the three engine pickers (Settings' default and current-tab
     /// engines, the Tab toolbar's Split): the tier/pros/cons cards of
-    /// `build_engine_picker_popup` below `anchor`, with `highlighted`
+    /// `build_view_picker_popup` below `anchor`, with `highlighted`
     /// marked. Closes on a pick or a click outside, and returns the engine
     /// picked; what picking does is the caller's.
-    pub(crate) fn build_anchored_engine_picker(
+    pub(crate) fn build_anchored_view_picker(
         &mut self,
         ui: &egui::Ui,
         which: AnchoredPopup,
         anchor: Option<egui::Rect>,
-        highlighted: Option<EngineKind>,
-    ) -> Option<EngineKind> {
+        highlighted: Option<ViewKind>,
+    ) -> Option<ViewKind> {
         let (rect, fade) = self.anchored_popup_fade(ui.ctx(), which, anchor)?;
         let open = self.menus.open_popup == Some(which);
-        let states: Vec<(EngineKind, crate::engine_install::EngineState)> =
-            ENGINE_PICKER_ORDER.into_iter().map(|kind| (kind, self.engine_state(kind))).collect();
-        let state_of = |kind: EngineKind| {
+        let states: Vec<(ViewKind, crate::view_install::ViewStatus)> =
+            VIEW_PICKER_ORDER.into_iter().map(|kind| (kind, self.view_status(kind))).collect();
+        let state_of = |kind: ViewKind| {
             states
                 .iter()
                 .find(|(k, _)| *k == kind)
                 .map(|(_, s)| s.clone())
-                .unwrap_or(crate::engine_install::EngineState::Installed)
+                .unwrap_or(crate::view_install::ViewStatus::Installed)
         };
         let (area_rect, picked) =
-            build_engine_picker_popup(ui.ctx(), &format!("{which:?}_popup"), rect, highlighted, &state_of, fade, open);
+            build_view_picker_popup(ui.ctx(), &format!("{which:?}_popup"), rect, highlighted, &state_of, fade, open);
         let escape = open && ui.input(|i| i.key_pressed(egui::Key::Escape));
         let outcome = picked.map(|kind| pick_outcome(kind, &state_of(kind)));
         // A click on an unavailable engine only explains: the picker stays open.
@@ -507,11 +507,11 @@ impl App {
         match outcome? {
             PickOutcome::Switch(kind) => Some(kind),
             PickOutcome::AskInstall(kind) => {
-                self.offer_engine_confirm(EngineConfirm::Download(kind));
+                self.offer_view_confirm(ViewConfirm::Download(kind));
                 None
             }
             PickOutcome::AlreadyInstalling(kind) => {
-                self.queue_toast(format!("{} is already installing", engine_label(kind)));
+                self.queue_toast(format!("{} is already installing", view_label(kind)));
                 None
             }
             PickOutcome::Unavailable(kind, reason) => {
@@ -523,26 +523,26 @@ impl App {
 
     /// Whether an engine, jar or session-delete confirm dialog is up (`offer_confirm`).
     pub(crate) fn confirm_open(&self) -> bool {
-        self.engine_ui.pending_engine_confirm.is_some()
+        self.view_ui.pending_view_confirm.is_some()
             || self.pending_jar_confirm.is_some()
             || self.pending_session_delete.is_some()
     }
 
     /// Asks `confirm` unless a confirm is already up (`offer_confirm`).
-    pub(crate) fn offer_engine_confirm(&mut self, confirm: EngineConfirm) -> bool {
+    pub(crate) fn offer_view_confirm(&mut self, confirm: ViewConfirm) -> bool {
         let other = self.pending_jar_confirm.is_some() || self.pending_session_delete.is_some();
-        offer_confirm(&mut self.engine_ui.pending_engine_confirm, other, confirm)
+        offer_confirm(&mut self.view_ui.pending_view_confirm, other, confirm)
     }
 
     /// Asks `confirm` unless a confirm is already up (`offer_confirm`).
     pub(crate) fn offer_jar_confirm(&mut self, confirm: crate::jar_defs::JarConfirm) -> bool {
-        let other = self.engine_ui.pending_engine_confirm.is_some() || self.pending_session_delete.is_some();
+        let other = self.view_ui.pending_view_confirm.is_some() || self.pending_session_delete.is_some();
         offer_confirm(&mut self.pending_jar_confirm, other, confirm)
     }
 
     /// Asks before deleting a named session (`offer_confirm`).
     pub(crate) fn offer_session_delete(&mut self, name: String) -> bool {
-        let other = self.engine_ui.pending_engine_confirm.is_some() || self.pending_jar_confirm.is_some();
+        let other = self.view_ui.pending_view_confirm.is_some() || self.pending_jar_confirm.is_some();
         offer_confirm(&mut self.pending_session_delete, other, name)
     }
 
@@ -570,42 +570,41 @@ impl App {
 
     /// The confirm before a large or destructive engine action: "Download CEF, 172 MB?" (always
     /// asked first, since it is a big network action) or removing the downloaded files.
-    pub(crate) fn build_engine_confirm_popup(&mut self, ui: &mut egui::Ui) {
-        let Some(confirm) = self.engine_ui.pending_engine_confirm else { return };
+    pub(crate) fn build_view_confirm_popup(&mut self, ui: &mut egui::Ui) {
+        let Some(confirm) = self.view_ui.pending_view_confirm else { return };
         let (title, detail, button) = match confirm {
-            EngineConfirm::Download(kind) => {
-                let size = crate::engine_info::megabytes(self.engine_download_size(kind));
-                let verb = if matches!(self.engine_state(kind), crate::engine_install::EngineState::UpdateNeeded { .. })
-                {
+            ViewConfirm::Download(kind) => {
+                let size = crate::view_info::megabytes(self.view_download_size(kind));
+                let verb = if matches!(self.view_status(kind), crate::view_install::ViewStatus::UpdateNeeded { .. }) {
                     "Update"
                 } else {
                     "Download"
                 };
-                let detail = download_detail(kind, &crate::engine_install::missing_system_libs(kind));
+                let detail = download_detail(kind, &crate::view_install::missing_system_libs(kind));
                 (download_confirm_title(verb, kind, &size), detail, verb)
             }
-            EngineConfirm::Remove(kind) if crate::engine_install::installed_paths(kind).is_empty() => (
-                format!("Clear {} leftovers?", engine_label(kind)),
+            ViewConfirm::Remove(kind) if crate::view_install::installed_paths(kind).is_empty() => (
+                format!("Clear {} leftovers?", view_label(kind)),
                 "Deletes the partial download and install leftovers.".to_string(),
                 "Clear",
             ),
-            EngineConfirm::Remove(kind) => (
-                format!("Remove {}?", engine_label(kind)),
+            ViewConfirm::Remove(kind) => (
+                format!("Remove {}?", view_label(kind)),
                 "Deletes the downloaded files. You can download them again later.".to_string(),
                 "Remove",
             ),
         };
-        match confirm_dialog(ui, "engine_confirm_popup", title, &detail, button) {
+        match confirm_dialog(ui, "view_confirm_popup", title, &detail, button) {
             Some(true) => {
-                self.engine_ui.pending_engine_confirm = None;
+                self.view_ui.pending_view_confirm = None;
                 match confirm {
-                    EngineConfirm::Download(kind) => {
-                        self.start_engine_install(kind);
+                    ViewConfirm::Download(kind) => {
+                        self.start_view_install(kind);
                     }
-                    EngineConfirm::Remove(kind) => self.remove_engine(kind),
+                    ViewConfirm::Remove(kind) => self.remove_view(kind),
                 }
             }
-            Some(false) => self.engine_ui.pending_engine_confirm = None,
+            Some(false) => self.view_ui.pending_view_confirm = None,
             None => {}
         }
     }
@@ -646,24 +645,24 @@ impl App {
     /// The settings page's button showing `kind`, opening engine picker `which`. Its label is
     /// the engine's color, which is unreadable on the gold a focused button gets, so a
     /// focused one uses the dark label instead.
-    pub(crate) fn engine_opener_button(
+    pub(crate) fn view_opener_button(
         &mut self,
         ui: &mut egui::Ui,
         which: AnchoredPopup,
-        kind: EngineKind,
+        kind: ViewKind,
     ) -> egui::Response {
         let focused = ui
             .data(|d| d.get_temp::<egui::Id>(Self::popup_opener_key(which)))
             .is_some_and(|id| ui.memory(|m| m.has_focus(id)));
-        let unavailable = matches!(self.engine_state(kind), crate::engine_install::EngineState::Unavailable(_));
+        let unavailable = matches!(self.view_status(kind), crate::view_install::ViewStatus::Unavailable(_));
         let color = if focused {
             BG
         } else if unavailable {
             TEXT_WEAK
         } else {
-            engine_color(kind)
+            view_color(kind)
         };
-        let response = ui.button(egui::RichText::new(engine_label(kind)).color(color));
+        let response = ui.button(egui::RichText::new(view_label(kind)).color(color));
         self.popup_opener_clicked(ui, which, &response);
         response
     }
@@ -723,7 +722,7 @@ impl App {
         }
         let text: String = match node.kind() {
             Some(Kind::Tab) => {
-                engine_dot(ui, EngineKind::from_name(&str_field("engine")).unwrap_or(EngineKind::Servo), 8.0);
+                view_dot(ui, ViewKind::from_name(&str_field("view_kind")).unwrap_or(ViewKind::Servo), 8.0);
                 title.map_or_else(|| str_field("url"), str::to_string)
             }
             Some(Kind::Image) => {
@@ -1247,9 +1246,9 @@ impl App {
         let Some(id) = self.focused.clone() else { return };
         let Some(node) = self.nodes.get_mut(&id).and_then(|n| n.as_tab_mut()) else { return };
         if self.find.text.is_empty() {
-            node.tab.send(&HostToEngine::FindStop);
+            node.tab.send(&HostToView::FindStop);
         } else {
-            node.tab.send(&HostToEngine::FindStart { text: self.find.text.clone(), match_case: self.find.match_case });
+            node.tab.send(&HostToView::FindStart { text: self.find.text.clone(), match_case: self.find.match_case });
         }
     }
 
@@ -1268,7 +1267,7 @@ impl App {
         }
         if let Some(id) = self.focused.clone() {
             if let Some(node) = self.nodes.get_mut(&id).and_then(|n| n.as_tab_mut()) {
-                node.tab.send(&HostToEngine::FindStop);
+                node.tab.send(&HostToView::FindStop);
             }
         }
     }
@@ -1280,7 +1279,7 @@ impl App {
         }
         let Some(id) = self.focused.clone() else { return };
         let Some(node) = self.nodes.get_mut(&id).and_then(|n| n.as_tab_mut()) else { return };
-        node.tab.send(&if forward { HostToEngine::FindNext } else { HostToEngine::FindPrevious });
+        node.tab.send(&if forward { HostToView::FindNext } else { HostToView::FindPrevious });
     }
 
     /// `Ctrl+F`'s floating find bar: a text field, prev/next, a match count,
@@ -1332,7 +1331,7 @@ impl App {
                                 ui.label("No results");
                             }
                             // WebKit never reports `active_index` (see
-                            // `EngineToHost::FindResult`'s doc comment)
+                            // `ViewToHost::FindResult`'s doc comment)
                             // — show just the count, not "0 of N".
                             Some((count, 0)) => {
                                 ui.label(format!("{count}"));
@@ -1738,35 +1737,35 @@ impl App {
     }
 }
 
-/// "Download Servo, 93 MB?" (`size` from `engine_info::megabytes`).
-fn download_confirm_title(verb: &str, kind: EngineKind, size: &str) -> String {
-    format!("{verb} {}, {size}?", engine_label(kind))
+/// "Download Servo, 93 MB?" (`size` from `view_info::megabytes`).
+fn download_confirm_title(verb: &str, kind: ViewKind, size: &str) -> String {
+    format!("{verb} {}, {size}?", view_label(kind))
 }
 
 #[cfg(test)]
 mod tests {
     #[test]
-    fn the_download_confirm_names_the_engine_and_its_size() {
-        use crate::process_manager::EngineKind;
-        let size = crate::engine_info::megabytes(93_000_000);
-        assert_eq!(super::download_confirm_title("Download", EngineKind::Servo, &size), "Download Servo, 93 MB?");
+    fn the_download_confirm_names_the_view_and_its_size() {
+        use crate::process_manager::ViewKind;
+        let size = crate::view_info::megabytes(93_000_000);
+        assert_eq!(super::download_confirm_title("Download", ViewKind::Servo, &size), "Download Servo, 93 MB?");
     }
 
     #[test]
     fn download_detail_warns_only_when_libraries_are_missing() {
-        assert!(!super::download_detail(EngineKind::Cef, &[]).contains("Missing"));
-        let d = super::download_detail(EngineKind::Cef, &["libnss3.so", "libnspr4.so"]);
+        assert!(!super::download_detail(ViewKind::Cef, &[]).contains("Missing"));
+        let d = super::download_detail(ViewKind::Cef, &["libnss3.so", "libnspr4.so"]);
         assert!(d.contains("Missing system libraries: libnss3.so, libnspr4.so."), "{d}");
         assert!(d.ends_with("Blink (CEF) will not start."), "{d}");
     }
 
     #[test]
     fn the_webkit_download_says_what_wsl_needs_and_the_others_do_not() {
-        let d = super::download_detail(EngineKind::Webkit, &[]);
+        let d = super::download_detail(ViewKind::Webkit, &[]);
         assert!(
             d.contains("Ubuntu") && d.contains("xvfb-run") && d.contains("WebKitGTK") && d.contains("Not included")
         );
-        assert!(!super::download_detail(EngineKind::Servo, &[]).contains("WSL"));
+        assert!(!super::download_detail(ViewKind::Servo, &[]).contains("WSL"));
     }
 
     use super::*;
@@ -1996,7 +1995,7 @@ mod tests {
 }
 
 #[cfg(test)]
-mod engine_picker_tests {
+mod view_picker_tests {
     use super::*;
 
     fn escape() -> egui::Event {
@@ -2152,15 +2151,15 @@ mod engine_picker_tests {
         for _ in 0..3 {
             frame(&mut app, &ctx, vec![]);
         }
-        app.menus.open_popup = Some(AnchoredPopup::DefaultEngine);
+        app.menus.open_popup = Some(AnchoredPopup::DefaultViewKind);
         for _ in 0..3 {
             frame(&mut app, &ctx, vec![]);
         }
-        assert_eq!(app.menus.open_popup, Some(AnchoredPopup::DefaultEngine), "the picker should stay open");
+        assert_eq!(app.menus.open_popup, Some(AnchoredPopup::DefaultViewKind), "the picker should stay open");
         frame(&mut app, &ctx, vec![escape()]);
         assert_eq!(app.menus.open_popup, None, "Escape should close the picker");
         assert_eq!(app.view_mode, ViewMode::Settings, "the same Escape must not leave the settings page");
-        let opener = ctx.data(|d| d.get_temp::<egui::Id>(App::popup_opener_key(AnchoredPopup::DefaultEngine)));
+        let opener = ctx.data(|d| d.get_temp::<egui::Id>(App::popup_opener_key(AnchoredPopup::DefaultViewKind)));
         frame(&mut app, &ctx, vec![]);
         assert!(opener.is_some_and(|id| ctx.memory(|m| m.has_focus(id))), "focus should return to the opening button");
         frame(&mut app, &ctx, vec![escape()]);
@@ -2170,12 +2169,12 @@ mod engine_picker_tests {
     /// Clicking an unavailable engine in the open picker toasts its reason, switches nothing and leaves the
     /// picker open.
     #[test]
-    fn clicking_an_unavailable_engine_explains_and_keeps_the_picker_open() {
+    fn clicking_an_unavailable_view_explains_and_keeps_the_picker_open() {
         let ctx = egui::Context::default();
         theme::apply_fonts(&ctx);
         theme::apply_style(&ctx);
         let mut app = App { view_mode: ViewMode::Settings, ..App::default() };
-        let (first, reason) = (ENGINE_PICKER_ORDER[0], "needs Windows");
+        let (first, reason) = (VIEW_PICKER_ORDER[0], "needs Windows");
         // `build_ui` clears the per-frame state cache, so seed it inside each frame, past that clear.
         let frame = |app: &mut App, events: Vec<egui::Event>| {
             let input = egui::RawInput {
@@ -2184,18 +2183,18 @@ mod engine_picker_tests {
                 ..Default::default()
             };
             let mut output = ctx.run_ui(input, |ui| {
-                let state = crate::engine_install::EngineState::Unavailable(reason.to_string());
-                app.engine_ui.engine_state_cache.borrow_mut().insert(first, state);
+                let state = crate::view_install::ViewStatus::Unavailable(reason.to_string());
+                app.view_ui.view_status_cache.borrow_mut().insert(first, state);
                 app.build_ui_inner(ui);
             });
             output.textures_delta.clear();
         };
-        let before = app.settings.default_starting_engine;
-        app.menus.open_popup = Some(AnchoredPopup::DefaultEngine);
+        let before = app.settings.default_starting_view_kind;
+        app.menus.open_popup = Some(AnchoredPopup::DefaultViewKind);
         for _ in 0..4 {
             frame(&mut app, vec![]);
         }
-        let area = ctx.memory(|m| m.area_rect(egui::Id::new("DefaultEngine_popup"))).expect("the picker is drawn");
+        let area = ctx.memory(|m| m.area_rect(egui::Id::new("DefaultViewKind_popup"))).expect("the picker is drawn");
         let at = area.min + egui::vec2(120.0, 30.0); // inside the first card
         let button = |pressed| egui::Event::PointerButton {
             pos: at,
@@ -2215,7 +2214,7 @@ mod engine_picker_tests {
                 .any(|t| t.contains(text))
         };
         assert!(toasted(reason), "the reason should be toasted");
-        assert_eq!(app.menus.open_popup, Some(AnchoredPopup::DefaultEngine), "the picker stays open");
-        assert_eq!(app.settings.default_starting_engine, before, "nothing switched");
+        assert_eq!(app.menus.open_popup, Some(AnchoredPopup::DefaultViewKind), "the picker stays open");
+        assert_eq!(app.settings.default_starting_view_kind, before, "nothing switched");
     }
 }

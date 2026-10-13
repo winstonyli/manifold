@@ -13,22 +13,22 @@ use std::rc::Rc;
 
 use cef::{rc::Rc as CefRc, *};
 
-use crate::context_menu_handler::{ContextMenuHandlerBuilder, EngineContextMenuHandler, SharedContextMenuLink};
-use crate::download_handler::{DownloadHandlerBuilder, EngineDownloadHandler, SharedDownloadPath};
-use crate::find_handler::{EngineFindHandler, FindHandlerBuilder, SharedFindResult};
-use crate::life_span_handler::{EngineLifeSpanHandler, LifeSpanHandlerBuilder, SharedClosed, SharedPendingOpenTab};
+use crate::context_menu_handler::{ContextMenuHandlerBuilder, SharedContextMenuLink, ViewContextMenuHandler};
+use crate::download_handler::{DownloadHandlerBuilder, SharedDownloadPath, ViewDownloadHandler};
+use crate::find_handler::{FindHandlerBuilder, SharedFindResult, ViewFindHandler};
+use crate::life_span_handler::{LifeSpanHandlerBuilder, SharedClosed, SharedPendingOpenTab, ViewLifeSpanHandler};
 use crate::nav_handler::{
-    DisplayHandlerBuilder, EngineDisplayHandler, EngineLoadHandler, EngineRequestHandler, LoadHandlerBuilder,
-    RequestHandlerBuilder, SharedMuted, SharedNavState,
+    DisplayHandlerBuilder, LoadHandlerBuilder, RequestHandlerBuilder, SharedMuted, SharedNavState, ViewDisplayHandler,
+    ViewLoadHandler, ViewRequestHandler,
 };
-use crate::render_handler::{EngineRenderHandler, RenderHandlerBuilder};
+use crate::render_handler::{RenderHandlerBuilder, ViewRenderHandler};
 use crate::render_process_handler::{AUDIO_PLAYING_RESULT, JSON_BODY_RESULT, PAGE_STATE_RESULT, REDIRECT_RESULT};
 
 /// The renderer subprocess's own answer to a `check-json-body`
 /// `ProcessMessage` (see `render_process_handler.rs`) -- `Client::
 /// on_process_message_received` below is where a reply *arrives* in the
 /// browser process; `main.rs`'s own poll loop drains it into
-/// `EngineToHost::JsonBody`, same "shared-RefCell-drained-by-the-main-loop"
+/// `ViewToHost::JsonBody`, same "shared-RefCell-drained-by-the-main-loop"
 /// shape `find_handler.rs`/`download_handler.rs` already use.
 pub type SharedJsonBody = Rc<RefCell<Option<String>>>;
 
@@ -37,7 +37,7 @@ pub fn new_shared_json_body() -> SharedJsonBody {
 }
 
 /// Same shape as `SharedJsonBody`, for the `redirect-content-result` reply
-/// -- see `ipc_protocol::EngineToHost::RedirectableContent`'s own doc
+/// -- see `ipc_protocol::ViewToHost::RedirectableContent`'s own doc
 /// comment.
 pub type SharedRedirectContentType = Rc<RefCell<Option<String>>>;
 
@@ -50,7 +50,7 @@ pub fn new_shared_redirect_content_type() -> SharedRedirectContentType {
 /// every reply (never cleared to `None` in between), since `nav_handler.rs`'s
 /// polling timer sends a request continuously rather than once per
 /// navigation; `main.rs`'s own drain loop is what dedupes against the
-/// last-known value before ever emitting `EngineToHost::AudioPlayingChanged`.
+/// last-known value before ever emitting `ViewToHost::AudioPlayingChanged`.
 pub type SharedAudioPlaying = Rc<RefCell<Option<bool>>>;
 
 pub fn new_shared_audio_playing() -> SharedAudioPlaying {
@@ -155,7 +155,7 @@ wrap_client! {
 
 impl ClientBuilder {
     pub fn build(
-        render_handler: EngineRenderHandler,
+        render_handler: ViewRenderHandler,
         nav_state: SharedNavState,
         muted: SharedMuted,
         pending_open_tab: SharedPendingOpenTab,
@@ -170,13 +170,13 @@ impl ClientBuilder {
     ) -> Client {
         Self::new(
             RenderHandlerBuilder::build(render_handler),
-            DisplayHandlerBuilder::build(EngineDisplayHandler::new(nav_state.clone())),
-            LoadHandlerBuilder::build(EngineLoadHandler::new(nav_state.clone(), muted)),
-            RequestHandlerBuilder::build(EngineRequestHandler::new(nav_state)),
-            LifeSpanHandlerBuilder::build(EngineLifeSpanHandler::new(pending_open_tab, closed)),
-            FindHandlerBuilder::build(EngineFindHandler::new(find_result)),
-            DownloadHandlerBuilder::build(EngineDownloadHandler::new(download_path)),
-            ContextMenuHandlerBuilder::build(EngineContextMenuHandler::new(context_menu_link)),
+            DisplayHandlerBuilder::build(ViewDisplayHandler::new(nav_state.clone())),
+            LoadHandlerBuilder::build(ViewLoadHandler::new(nav_state.clone(), muted)),
+            RequestHandlerBuilder::build(ViewRequestHandler::new(nav_state)),
+            LifeSpanHandlerBuilder::build(ViewLifeSpanHandler::new(pending_open_tab, closed)),
+            FindHandlerBuilder::build(ViewFindHandler::new(find_result)),
+            DownloadHandlerBuilder::build(ViewDownloadHandler::new(download_path)),
+            ContextMenuHandlerBuilder::build(ViewContextMenuHandler::new(context_menu_link)),
             json_body,
             redirect_content_type,
             audio_playing,

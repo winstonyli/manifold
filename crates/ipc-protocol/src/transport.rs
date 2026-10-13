@@ -8,11 +8,11 @@ use interprocess::local_socket::{
 };
 
 use crate::channel::MessageChannel;
-use crate::messages::HostToEngine;
+use crate::messages::HostToView;
 
 /// Control-channel connection between `manifold` and a same-machine
 /// engine-host (CEF, Servo). Frame pixels travel separately via
-/// `SharedFrameBuffer`; this only carries `HostToEngine`/`EngineToHost`
+/// `SharedFrameBuffer`; this only carries `HostToView`/`ViewToHost`
 /// messages. Each `LocalTransport` is one-directional by convention (see
 /// `listen_local_pair`/`connect_local_pair`) — one socket per tab carries
 /// host-to-engine messages, a second carries engine-to-host messages, so
@@ -24,12 +24,12 @@ pub type LocalTransport = MessageChannel<LocalStream>;
 /// shared memory crosses the Windows/WSL2 boundary.
 pub type RemoteTransport = MessageChannel<TcpStream>;
 
-/// `HostToEngine` messages an engine has not taken yet (`spawn_host_reader`). Full, the reader stops reading, so an
+/// `HostToView` messages an engine has not taken yet (`spawn_host_reader`). Full, the reader stops reading, so an
 /// engine whose main loop is stuck backs up the app's writer for it, and the app shows the tab as not responding;
 /// unbounded, the engine's memory grew instead and the app never knew (wave 3b).
-pub const ENGINE_INBOX: usize = 256;
+pub const VIEW_INBOX: usize = 256;
 
-/// An engine's reader thread: forwards each `HostToEngine` from
+/// An engine's reader thread: forwards each `HostToView` from
 /// `from_host` into the returned channel, so the engine's main thread (which
 /// has to keep driving its browser's event loop) only ever polls it. Stops
 /// after forwarding `Shutdown`. If the connection drops instead,
@@ -39,27 +39,27 @@ pub const ENGINE_INBOX: usize = 256;
 /// the WebKit and Servo engines did that; WebKit's orphan was seen live at
 /// ~45% CPU after `taskkill /F /IM manifold.exe`.
 /// Reads the host's `PROTOCOL_VERSION` first; a mismatch is a `Shutdown`.
-/// The channel holds `ENGINE_INBOX` messages; past that the reader waits for the engine to take one.
+/// The channel holds `VIEW_INBOX` messages; past that the reader waits for the engine to take one.
 pub fn spawn_host_reader<S: Read + Write + Send + 'static>(
     mut from_host: MessageChannel<S>,
-) -> mpsc::Receiver<HostToEngine> {
-    let (tx, rx) = mpsc::sync_channel(ENGINE_INBOX);
+) -> mpsc::Receiver<HostToView> {
+    let (tx, rx) = mpsc::sync_channel(VIEW_INBOX);
     std::thread::spawn(move || {
         match from_host.recv_version().map(crate::check_version) {
             Ok(Ok(())) => {}
             Ok(Err(mismatch)) => {
                 eprintln!("{mismatch}");
-                let _ = tx.send(HostToEngine::Shutdown);
+                let _ = tx.send(HostToView::Shutdown);
                 return;
             }
             Err(_) => {
-                let _ = tx.send(HostToEngine::Shutdown);
+                let _ = tx.send(HostToView::Shutdown);
                 return;
             }
         }
         loop {
-            let msg = from_host.recv::<HostToEngine>().unwrap_or(HostToEngine::Shutdown);
-            let is_shutdown = matches!(msg, HostToEngine::Shutdown);
+            let msg = from_host.recv::<HostToView>().unwrap_or(HostToView::Shutdown);
+            let is_shutdown = matches!(msg, HostToView::Shutdown);
             if tx.send(msg).is_err() || is_shutdown {
                 break;
             }
@@ -75,10 +75,10 @@ fn socket_name(socket_id: &str, suffix: &str) -> io::Result<Name<'static>> {
 }
 
 pub struct LocalListenerPair {
-    /// manifold writes `HostToEngine` here; the engine-host reads it.
-    pub host_to_engine: Listener,
-    /// the engine-host writes `EngineToHost` here; manifold reads it.
-    pub engine_to_host: Listener,
+    /// manifold writes `HostToView` here; the engine-host reads it.
+    pub host_to_view: Listener,
+    /// the engine-host writes `ViewToHost` here; manifold reads it.
+    pub view_to_host: Listener,
 }
 
 /// Called by manifold (the process manager) right before spawning an
@@ -91,8 +91,8 @@ pub struct LocalListenerPair {
 /// pipes) — it never needs to match manifold's own tab bookkeeping.
 pub fn listen_local_pair(socket_id: &str) -> io::Result<LocalListenerPair> {
     Ok(LocalListenerPair {
-        host_to_engine: ListenerOptions::new().name(socket_name(socket_id, "h2e")?).create_sync()?,
-        engine_to_host: ListenerOptions::new().name(socket_name(socket_id, "e2h")?).create_sync()?,
+        host_to_view: ListenerOptions::new().name(socket_name(socket_id, "h2e")?).create_sync()?,
+        view_to_host: ListenerOptions::new().name(socket_name(socket_id, "e2h")?).create_sync()?,
     })
 }
 
@@ -129,8 +129,8 @@ fn accept_one(listener: &Listener, timeout: Duration, waiting: &mut dyn FnMut() 
 
 /// Called by manifold once the engine-host child process has connected.
 /// Writes `PROTOCOL_VERSION` on the sender before returning.
-/// Returns `(sender, receiver)`: send `HostToEngine` on the first, recv
-/// `EngineToHost` on the second. `timeout` applies to each socket in turn
+/// Returns `(sender, receiver)`: send `HostToView` on the first, recv
+/// `ViewToHost` on the second. `timeout` applies to each socket in turn
 /// (so the real worst case is up to `2 * timeout`, not shared/split between
 /// them) — the two accepts are cheap and effectively sequential in
 /// practice (`connect_local_pair` dials both back within microseconds of
@@ -149,20 +149,20 @@ pub fn accept_local_pair_while(
     timeout: Duration,
     waiting: &mut dyn FnMut() -> bool,
 ) -> io::Result<(LocalTransport, LocalTransport)> {
-    let mut sender = MessageChannel::new(accept_one(&pair.host_to_engine, timeout, waiting)?);
+    let mut sender = MessageChannel::new(accept_one(&pair.host_to_view, timeout, waiting)?);
     sender.send_version()?;
-    let receiver = MessageChannel::new(accept_one(&pair.engine_to_host, timeout, waiting)?);
+    let receiver = MessageChannel::new(accept_one(&pair.view_to_host, timeout, waiting)?);
     Ok((sender, receiver))
 }
 
 /// Called by an engine-host child process on startup to connect back to
 /// the two control sockets its parent (`manifold`) already created.
-/// Returns `(receiver, sender)`: recv `HostToEngine` on the first, send
-/// `EngineToHost` on the second.
+/// Returns `(receiver, sender)`: recv `HostToView` on the first, send
+/// `ViewToHost` on the second.
 ///
 /// `socket_id` must match whatever id `listen_local_pair` was called
-/// with for this tab (manifold passes it down as `ENGINE_SOCKET_ID`,
-/// separate from the user-visible `ENGINE_TAB_ID`).
+/// with for this tab (manifold passes it down as `VIEW_SOCKET_ID`,
+/// separate from the user-visible `VIEW_TAB_ID`).
 /// Writes `PROTOCOL_VERSION` on the sender; `spawn_host_reader` reads the
 /// host's from the receiver.
 pub fn connect_local_pair(socket_id: &str) -> io::Result<(LocalTransport, LocalTransport)> {
@@ -174,7 +174,7 @@ pub fn connect_local_pair(socket_id: &str) -> io::Result<(LocalTransport, LocalT
 
 /// Bytes in the one-time token a remote engine host sends first.
 pub const TOKEN_LEN: usize = 16;
-/// The secret a spawned WSL engine-host must present (`ENGINE_TOKEN`, as hex).
+/// The secret a spawned WSL engine-host must present (`VIEW_TOKEN`, as hex).
 pub type Token = [u8; TOKEN_LEN];
 
 /// Lowercase hex of `bytes`. The only form in which text that came from a page crosses a shell boundary.
@@ -278,10 +278,10 @@ pub fn connect_remote(host: &str, port: u16, token: &Token) -> io::Result<Remote
 /// `pump` between polls so the engine's own loop keeps running (CEF work,
 /// window messages). `None` on timeout or a closed channel.
 pub fn wait_for_first_message(
-    rx: &mpsc::Receiver<HostToEngine>,
+    rx: &mpsc::Receiver<HostToView>,
     timeout: Duration,
     mut pump: impl FnMut(),
-) -> Option<HostToEngine> {
+) -> Option<HostToView> {
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
         pump();
@@ -305,16 +305,16 @@ mod tests {
         let got = wait_for_first_message(&rx, std::time::Duration::from_secs(5), || {
             pumps += 1;
             if pumps == 3 {
-                tx.send(crate::HostToEngine::GetState).unwrap();
+                tx.send(crate::HostToView::GetState).unwrap();
             }
         });
-        assert!(matches!(got, Some(crate::HostToEngine::GetState)));
+        assert!(matches!(got, Some(crate::HostToView::GetState)));
         assert_eq!(pumps, 3);
     }
 
     #[test]
     fn the_first_message_wait_ends_on_a_closed_channel() {
-        let (tx, rx) = std::sync::mpsc::channel::<crate::HostToEngine>();
+        let (tx, rx) = std::sync::mpsc::channel::<crate::HostToView>();
         drop(tx);
         assert!(wait_for_first_message(&rx, std::time::Duration::from_secs(5), || {}).is_none());
     }
@@ -389,7 +389,7 @@ mod tests {
         });
         let rx = spawn_host_reader(MessageChannel::new(TcpStream::connect(("127.0.0.1", port)).unwrap()));
         host.join().unwrap();
-        assert!(matches!(rx.recv_timeout(Duration::from_secs(5)).unwrap(), HostToEngine::Shutdown));
+        assert!(matches!(rx.recv_timeout(Duration::from_secs(5)).unwrap(), HostToView::Shutdown));
     }
 
     #[test]
@@ -401,12 +401,11 @@ mod tests {
             stream.write_all(&(crate::PROTOCOL_VERSION + 1).to_le_bytes()).unwrap();
             // A well-formed Navigate after it must never be delivered. Best
             // effort: the reader may already have hung up on the bad version.
-            let _ =
-                MessageChannel::new(stream).send(&HostToEngine::Navigate { url: "https://x".into(), referrer: None });
+            let _ = MessageChannel::new(stream).send(&HostToView::Navigate { url: "https://x".into(), referrer: None });
         });
         let rx = spawn_host_reader(MessageChannel::new(TcpStream::connect(("127.0.0.1", port)).unwrap()));
         host.join().unwrap();
-        assert!(matches!(rx.recv_timeout(Duration::from_secs(5)).unwrap(), HostToEngine::Shutdown));
+        assert!(matches!(rx.recv_timeout(Duration::from_secs(5)).unwrap(), HostToView::Shutdown));
     }
 
     /// An intruder that keeps reconnecting with a bad token must not keep
@@ -454,26 +453,26 @@ mod tests {
     /// The engine's inbox is bounded (wave 3b): an engine whose main loop takes nothing stops its reader, which backs
     /// the app up on the pipe, and no message is lost.
     #[test]
-    fn the_engine_inbox_is_bounded_and_loses_nothing() {
+    fn the_view_inbox_is_bounded_and_loses_nothing() {
         use std::sync::atomic::{AtomicUsize, Ordering};
         use std::sync::Arc;
         const N: usize = 1000;
         let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let host = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
-        let (engine, _) = listener.accept().unwrap();
+        let (view_kind, _) = listener.accept().unwrap();
         let written = Arc::new(AtomicUsize::new(0));
         let progress = Arc::clone(&written);
         std::thread::spawn(move || {
             let mut out = MessageChannel::new(host);
             out.send_version().unwrap();
             for i in 0..N {
-                if out.send(&HostToEngine::SetCookies(format!("{}{i}", "0".repeat(65_530)))).is_err() {
+                if out.send(&HostToView::SetCookies(format!("{}{i}", "0".repeat(65_530)))).is_err() {
                     return;
                 }
                 progress.store(i + 1, Ordering::SeqCst);
             }
         });
-        let rx = spawn_host_reader(MessageChannel::new(engine));
+        let rx = spawn_host_reader(MessageChannel::new(view_kind));
         // Proves an absence: the count stops moving once the inbox and the socket buffers are full.
         let mut last = usize::MAX;
         let end = Instant::now() + Duration::from_secs(20);
@@ -488,7 +487,7 @@ mod tests {
         assert!(last < N, "the app wrote all {N} while the engine took none: the inbox is unbounded");
         for i in 0..N {
             match rx.recv_timeout(Duration::from_secs(10)).unwrap() {
-                HostToEngine::SetCookies(s) => assert_eq!(s.trim_start_matches('0').parse::<usize>().unwrap_or(0), i),
+                HostToView::SetCookies(s) => assert_eq!(s.trim_start_matches('0').parse::<usize>().unwrap_or(0), i),
                 _ => panic!("message {i} is not SetCookies"),
             }
         }
@@ -527,17 +526,17 @@ mod token_tests {
         let intruder = std::thread::spawn(move || {
             let _ = connect_remote("127.0.0.1", port, &[1; TOKEN_LEN]);
         });
-        let engine = std::thread::spawn(move || {
+        let view_kind = std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(300));
             connect_remote("127.0.0.1", port, &[9; TOKEN_LEN]).unwrap()
         });
         let mut accepted = accept_remote(&listener, Duration::from_secs(5), &token).expect("the real engine");
-        let mut engine = engine.join().unwrap();
+        let mut view_kind = view_kind.join().unwrap();
         intruder.join().unwrap();
         // Each side wrote its version as soon as the token was through.
         assert_eq!(accepted.recv_version().unwrap(), crate::PROTOCOL_VERSION);
-        assert_eq!(engine.recv_version().unwrap(), crate::PROTOCOL_VERSION);
-        engine.send(&1u8).unwrap();
+        assert_eq!(view_kind.recv_version().unwrap(), crate::PROTOCOL_VERSION);
+        view_kind.send(&1u8).unwrap();
         assert_eq!(accepted.recv::<u8>().unwrap(), 1);
     }
 }

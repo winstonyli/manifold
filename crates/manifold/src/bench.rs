@@ -8,7 +8,7 @@ use crate::node::{
     DownloadPayload, ImagePayload, JsonPayload, NotePayload, PdfPayload, Runtime, TabPayload, UnloadedState,
     UnloadedTabPayload,
 };
-use crate::process_manager::{EngineKind, EngineTab};
+use crate::process_manager::{ViewKind, ViewTab};
 use crate::store::model::Kind;
 use crate::App;
 
@@ -59,7 +59,7 @@ pub(crate) struct Fixture {
 
 /// 2000 nodes of every kind, with store ids (`alloc_node_id`): every third at the top level, the rest spread over
 /// eight groups. Each node's kind cycles through the constructible payloads. With `live_tabs`, every 280th (8 of
-/// 2000) is a live tab (`EngineTab::fake`); without, those are sleeping tabs too.
+/// 2000) is a live tab (`ViewTab::fake`); without, those are sleeping tabs too.
 pub(crate) fn level_fixture(live_tabs: bool) -> Fixture {
     let mut app = App::default();
     let mut peers = Vec::new();
@@ -76,7 +76,7 @@ pub(crate) fn level_fixture(live_tabs: bool) -> Fixture {
         let id = app.alloc_node_id();
         let (kind, payload) = match i % 7 {
             0 if live_tabs && i.is_multiple_of(40) => {
-                let (tab, peer) = EngineTab::fake(EngineKind::Servo);
+                let (tab, peer) = ViewTab::fake(ViewKind::Servo);
                 peers.push(peer);
                 let live = TabPayload {
                     tab,

@@ -100,7 +100,7 @@ mod tests {
     use crate::node::{
         DownloadPayload, ImagePayload, JsonPayload, NotePayload, PdfPayload, UnloadedState, UnloadedTabPayload,
     };
-    use crate::process_manager::{EngineKind, EngineTab};
+    use crate::process_manager::{ViewKind, ViewTab};
 
     /// The fixture lists one card per node type (a jar is never a card) and the loaded tab, in draw order.
     #[test]
@@ -119,7 +119,7 @@ mod tests {
 
     /// Every constructible payload with the type it is stored under and the `CardKind` it must read as.
     fn payloads() -> Vec<(Kind, Runtime, CardKind)> {
-        let (tab, _peer) = EngineTab::fake(EngineKind::Servo);
+        let (tab, _peer) = ViewTab::fake(ViewKind::Servo);
         let live = Runtime::Tab(crate::node::TabPayload {
             tab,
             url: "https://a/".into(),

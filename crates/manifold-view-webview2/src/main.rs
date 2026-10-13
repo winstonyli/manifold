@@ -29,7 +29,7 @@ use std::rc::Rc;
 use std::sync::mpsc;
 use std::time::Duration;
 
-use ipc_protocol::{transport, EngineToHost, FrameSink, HostToEngine, InputEvent};
+use ipc_protocol::{transport, FrameSink, HostToView, InputEvent, ViewToHost};
 use webview2_com::Microsoft::Web::WebView2::Win32::{
     ICoreWebView2, ICoreWebView2CompositionController, ICoreWebView2Controller, ICoreWebView2Environment,
     ICoreWebView2Environment10, ICoreWebView2Environment3, ICoreWebView2_8,
@@ -56,7 +56,7 @@ const DEFAULT_HEIGHT: u32 = 768;
 const FRAME_INTERVAL: Duration = Duration::from_millis(33);
 /// How often the capture's D3D device is checked for removal (`Capture::device_lost`).
 const DEVICE_CHECK_INTERVAL: Duration = Duration::from_secs(1);
-/// How long a host started with `ENGINE_AWAIT_COOKIES` waits for manifold's `SetCookies` before navigating.
+/// How long a host started with `VIEW_AWAIT_COOKIES` waits for manifold's `SetCookies` before navigating.
 const COOKIE_SEED_WAIT: Duration = Duration::from_secs(5);
 
 fn main() {
@@ -138,8 +138,8 @@ fn main() {
     // after this.
     let _job = setup_kill_on_exit_job();
 
-    let socket_id = std::env::var("ENGINE_SOCKET_ID").expect("ENGINE_SOCKET_ID env var required");
-    let initial_url = std::env::var("ENGINE_INITIAL_URL").unwrap_or_else(|_| "https://example.com".to_string());
+    let socket_id = std::env::var("VIEW_SOCKET_ID").expect("VIEW_SOCKET_ID env var required");
+    let initial_url = std::env::var("VIEW_INITIAL_URL").unwrap_or_else(|_| "https://example.com".to_string());
 
     // A machine without the WebView2 runtime fails here, before connecting, with one `HOST_FATAL` line that
     // manifold shows as the reason, instead of a panic creating the environment that reads as a crash.
@@ -150,10 +150,10 @@ fn main() {
 
     // Same convention as manifold-engine-cef/-servo: manifold already created
     // both named pipes before spawning us (listen_local_pair), we just
-    // connect. `host_to_engine`/`control` are one-directional (HostToEngine
-    // in, EngineToHost out) -- see transport.rs's own doc comment.
-    let (host_to_engine, mut control) = transport::connect_local_pair(&socket_id).expect("connect to manifold");
-    let rx = ipc_protocol::transport::spawn_host_reader(host_to_engine);
+    // connect. `host_to_view`/`control` are one-directional (HostToView
+    // in, ViewToHost out) -- see transport.rs's own doc comment.
+    let (host_to_view, mut control) = transport::connect_local_pair(&socket_id).expect("connect to manifold");
+    let rx = ipc_protocol::transport::spawn_host_reader(host_to_view);
 
     // Composition hosting against a real, off-screen host window -- see
     // docs/superpowers/specs/2026-09-20-composition-hosting-migration-design.md
@@ -190,7 +190,7 @@ fn main() {
     // visual tree). `manifold` already has its own complete
     // link-context-menu UI built on this tab's JS-based `elementFromPoint`
     // href-detection (`input.rs`'s `MouseUp` right-click arm; see
-    // `ipc_protocol::EngineToHost::ContextMenuLink`) -- live-verified after
+    // `ipc_protocol::ViewToHost::ContextMenuLink`) -- live-verified after
     // this fix to still work correctly (the custom "Open in new tab" pill
     // still appears right where expected) -- so Chromium's native menu is
     // pure downside: a second, wrongly-positioned menu with no corresponding
@@ -248,12 +248,12 @@ fn main() {
     let _ = scheme::register(&environment, &webview);
 
     // Cookie-jar seeding: manifold sends `SetCookies` as its very first message to hosts started with
-    // `ENGINE_AWAIT_COOKIES`. Wait for it (bounded) so the cookies are in place before the first navigation.
+    // `VIEW_AWAIT_COOKIES`. Wait for it (bounded) so the cookies are in place before the first navigation.
     // Any other first message is kept for the loop below rather than dropped.
-    let mut first_message: Option<HostToEngine> = None;
-    if std::env::var_os("ENGINE_AWAIT_COOKIES").is_some() {
+    let mut first_message: Option<HostToView> = None;
+    if std::env::var_os("VIEW_AWAIT_COOKIES").is_some() {
         match transport::wait_for_first_message(&rx, COOKIE_SEED_WAIT, window::pump_messages) {
-            Some(HostToEngine::SetCookies(json)) => seed_cookies(&webview, in_private, &json),
+            Some(HostToView::SetCookies(json)) => seed_cookies(&webview, in_private, &json),
             Some(other) => first_message = Some(other),
             None => eprintln!("jar: no seed received"),
         }
@@ -294,11 +294,11 @@ fn main() {
 
         while let Some(msg) = first_message.take().or_else(|| rx.try_recv().ok()) {
             match msg {
-                HostToEngine::Navigate { url, .. } => unsafe {
+                HostToView::Navigate { url, .. } => unsafe {
                     nav_state.borrow_mut().label.host_started = Some((false, std::time::Instant::now()));
                     let _ = webview.Navigate(&HSTRING::from(&url));
                 },
-                HostToEngine::GoBack => unsafe {
+                HostToView::GoBack => unsafe {
                     let mut can_go = BOOL(0);
                     let _ = webview.CanGoBack(&mut can_go);
                     if can_go.as_bool() {
@@ -306,10 +306,10 @@ fn main() {
                         let _ = webview.GoBack();
                     }
                 },
-                HostToEngine::Reload => unsafe {
+                HostToView::Reload => unsafe {
                     let _ = webview.Reload();
                 },
-                HostToEngine::GoForward => unsafe {
+                HostToView::GoForward => unsafe {
                     let mut can_go = BOOL(0);
                     let _ = webview.CanGoForward(&mut can_go);
                     if can_go.as_bool() {
@@ -317,35 +317,35 @@ fn main() {
                         let _ = webview.GoForward();
                     }
                 },
-                HostToEngine::Resize { width, height, .. } => {
+                HostToView::Resize { width, height, .. } => {
                     window::resize(hwnd, width, height);
                     resize_controller(&controller, &root_visual, width, height);
                     capture.resize(width, height);
                 }
-                HostToEngine::Input(event) => {
+                HostToView::Input(event) => {
                     if matches!(event, InputEvent::MouseDown { .. } | InputEvent::KeyDown { .. }) {
                         nav_state.borrow_mut().label.last_input = Some(std::time::Instant::now());
                     }
                     input::send_input(&webview, &comp_controller, event, &pending_context_menu, &drag_state);
                 }
-                HostToEngine::SetZoom { factor } => unsafe {
+                HostToView::SetZoom { factor } => unsafe {
                     // Linear, unlike CEF's log-scale zoom_level -- direct
                     // match to this project's own `factor` semantics.
                     let _ = controller.SetZoomFactor(factor);
                 },
-                HostToEngine::SetVisible(v) => {
+                HostToView::SetVisible(v) => {
                     if v && !visible {
                         sink.show();
                     }
                     visible = v;
                 }
-                HostToEngine::GetState => {
+                HostToView::GetState => {
                     let url = nav_state.borrow().url.clone();
-                    let _ = control.send(&EngineToHost::StateSnapshot(ipc_protocol::TabState { url }));
+                    let _ = control.send(&ViewToHost::StateSnapshot(ipc_protocol::TabState { url }));
                 }
                 // A seed that arrives after the first navigation (not the expected path) still goes in.
-                HostToEngine::SetCookies(json) => seed_cookies(&webview, in_private, &json),
-                HostToEngine::GetCookies => {
+                HostToView::SetCookies(json) => seed_cookies(&webview, in_private, &json),
+                HostToView::GetCookies => {
                     // On the shared profile the answer would hold the user's real cookies, and an empty answer
                     // would read as a logout: say nothing.
                     if in_private {
@@ -378,7 +378,7 @@ fn main() {
                         };
                     }
                 }
-                HostToEngine::QueryPageState => {
+                HostToView::QueryPageState => {
                     let pending = pending_page_state.clone();
                     let handler = ExecuteScriptCompletedHandler::create(Box::new(move |_error, result| {
                         // `ExecuteScript` returns the string JSON-encoded (quoted).
@@ -391,41 +391,41 @@ fn main() {
                     }));
                     let _ = unsafe { webview.ExecuteScript(&HSTRING::from(ipc_protocol::PAGE_STATE_SCRIPT), &handler) };
                 }
-                HostToEngine::RestoreScroll { x, y } => {
+                HostToView::RestoreScroll { x, y } => {
                     let handler = ExecuteScriptCompletedHandler::create(Box::new(|_error, _result| Ok(())));
                     let script = ipc_protocol::restore_scroll_script(x, y);
                     let _ = unsafe { webview.ExecuteScript(&HSTRING::from(script), &handler) };
                 }
-                HostToEngine::FindStart { text, match_case } => {
+                HostToView::FindStart { text, match_case } => {
                     if let Some(find) = &find_state {
                         find.start(&text, match_case);
                     }
                 }
-                HostToEngine::FindNext => {
+                HostToView::FindNext => {
                     if let Some(find) = &find_state {
                         find.next();
                     }
                 }
-                HostToEngine::FindPrevious => {
+                HostToView::FindPrevious => {
                     if let Some(find) = &find_state {
                         find.previous();
                     }
                 }
-                HostToEngine::FindStop => {
+                HostToView::FindStop => {
                     if let Some(find) = &find_state {
                         find.stop();
                     }
                 }
-                HostToEngine::OpenDevTools => unsafe {
+                HostToView::OpenDevTools => unsafe {
                     let _ = webview.OpenDevToolsWindow();
                 },
-                HostToEngine::SetMuted { muted } => {
+                HostToView::SetMuted { muted } => {
                     let webview8: windows::core::Result<ICoreWebView2_8> = windows::core::Interface::cast(&webview);
                     if let Ok(webview8) = webview8 {
                         let _ = unsafe { webview8.SetIsMuted(muted) };
                     }
                 }
-                HostToEngine::Shutdown => {
+                HostToView::Shutdown => {
                     unsafe {
                         let _ = controller.Close();
                     }
@@ -438,7 +438,7 @@ fn main() {
             let mut state = nav_state.borrow_mut();
             if state.dirty {
                 state.dirty = false;
-                let _ = control.send(&EngineToHost::NavigationStateChanged {
+                let _ = control.send(&ViewToHost::NavigationStateChanged {
                     url: state.url.clone(),
                     title: state.title.clone(),
                     can_go_back: state.can_go_back,
@@ -453,39 +453,39 @@ fn main() {
         }
 
         if let Some(body) = pending_json_body.borrow_mut().take() {
-            let _ = control.send(&EngineToHost::JsonBody { body });
+            let _ = control.send(&ViewToHost::JsonBody { body });
         }
 
         if let Some(json) = pending_cookies.borrow_mut().take() {
-            let _ = control.send(&EngineToHost::Cookies(json));
+            let _ = control.send(&ViewToHost::Cookies(json));
         }
 
         if let Some(state) = pending_page_state.borrow_mut().take() {
-            let _ = control.send(&EngineToHost::PageState(state));
+            let _ = control.send(&ViewToHost::PageState(state));
         }
 
         if let Some(content_type) = pending_redirect_content_type.borrow_mut().take() {
-            let _ = control.send(&EngineToHost::RedirectableContent { content_type });
+            let _ = control.send(&ViewToHost::RedirectableContent { content_type });
         }
 
         for (url, user_gesture) in pending_popup.borrow_mut().drain(..) {
-            let _ = control.send(&EngineToHost::OpenTabRequested { url, user_gesture });
+            let _ = control.send(&ViewToHost::OpenTabRequested { url, user_gesture });
         }
 
         if let Some(find) = &find_state {
             if let Some((count, active_index)) = find.pending().borrow_mut().take() {
-                let _ = control.send(&EngineToHost::FindResult { count, active_index });
+                let _ = control.send(&ViewToHost::FindResult { count, active_index });
             }
         }
 
         if let Some(pending) = &pending_audio_playing {
             if let Some(playing) = pending.borrow_mut().take() {
-                let _ = control.send(&EngineToHost::AudioPlayingChanged { playing });
+                let _ = control.send(&ViewToHost::AudioPlayingChanged { playing });
             }
         }
 
         if let Some((x, y, href)) = pending_context_menu.borrow_mut().take() {
-            let _ = control.send(&EngineToHost::ContextMenuLink { x, y, href });
+            let _ = control.send(&ViewToHost::ContextMenuLink { x, y, href });
         }
 
         if let Some(pending) = &pending_download {
@@ -520,7 +520,7 @@ fn main() {
             last_device_check = std::time::Instant::now();
             if let Some(reason) = capture.device_lost() {
                 eprintln!("[capture] graphics device lost: {reason}");
-                let _ = control.send(&EngineToHost::Crashed { reason: format!("graphics device lost: {reason}") });
+                let _ = control.send(&ViewToHost::Crashed { reason: format!("graphics device lost: {reason}") });
                 return;
             }
         }
@@ -593,7 +593,7 @@ fn startup_failure(what: &str, err: &webview2_com::Error) -> String {
 fn exit_fatal(control: &mut transport::LocalTransport, reason: &str) -> ! {
     let reason = format!("{}{}", ipc_protocol::HOST_FATAL, reason.replace(['\r', '\n'], " "));
     eprintln!("{reason}");
-    let _ = control.send(&EngineToHost::Crashed { reason });
+    let _ = control.send(&ViewToHost::Crashed { reason });
     std::process::exit(1)
 }
 
@@ -675,7 +675,7 @@ fn set_cookies(webview: &ICoreWebView2, cookies: &[serde_json::Value]) -> bool {
 /// (`ICoreWebView2`) for navigation/events/keyboard input, also unchanged.
 ///
 /// The controller is InPrivate (an in-memory profile, so the jar is the only source of cookies) in the profile
-/// manifold names in `ENGINE_WEBVIEW2_PROFILE`, one no other live host uses, so no two tabs share a cookie store
+/// manifold names in `VIEW_WEBVIEW2_PROFILE`, one no other live host uses, so no two tabs share a cookie store
 /// (`manifold_<pid>` if it is unset). If the runtime
 /// lacks `ICoreWebView2Environment10` or the options fail, it falls back to the shared profile and `in_private`
 /// is `false`; callers must then neither seed nor report cookies.
@@ -692,7 +692,7 @@ fn create_composition_controller(
         // reuses names from a small pool (WebView2 remembers every profile name in `Local State`) and deletes the
         // directory a profile leaves (`process_manager::claim_webview2_slot`).
         let name =
-            std::env::var("ENGINE_WEBVIEW2_PROFILE").unwrap_or_else(|_| format!("manifold_{}", std::process::id()));
+            std::env::var("VIEW_WEBVIEW2_PROFILE").unwrap_or_else(|_| format!("manifold_{}", std::process::id()));
         options.SetProfileName(&HSTRING::from(name.as_str()))?;
         eprintln!("jar: InPrivate profile {name}");
         Ok((env10, options))

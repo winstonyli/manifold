@@ -140,7 +140,7 @@ impl App {
 
     /// Whether the first-launch demo can render here: its `manifold://` pages need WebView2.
     pub(crate) fn demo_available(&self) -> bool {
-        !matches!(self.engine_state(EngineKind::Webview2), engine_install::EngineState::Unavailable(_))
+        !matches!(self.view_status(ViewKind::Webview2), view_install::ViewStatus::Unavailable(_))
     }
 
     /// The one-time first-launch experience for a brand-new install -- see
@@ -163,7 +163,7 @@ impl App {
     /// `docs/superpowers/specs/2026-09-19-manifold-scheme-design.md`). Where WebView2 is unavailable the caller opens
     /// a normal root tab instead (`demo_available`).
     pub(crate) fn spawn_first_launch_demo(&mut self) {
-        let kind = EngineKind::Webview2;
+        let kind = ViewKind::Webview2;
         let zoom = self.settings.zoom_factor;
 
         let welcome_id = self.alloc_node_id();

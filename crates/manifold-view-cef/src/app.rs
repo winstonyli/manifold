@@ -1,15 +1,15 @@
 use cef::{self, rc::Rc, BrowserProcessHandler, ImplBrowserProcessHandler, WrapBrowserProcessHandler, *};
 
-use crate::render_process_handler::{EngineRenderProcessHandler, RenderProcessHandlerBuilder};
+use crate::render_process_handler::{RenderProcessHandlerBuilder, ViewRenderProcessHandler};
 
 /// Top-level CEF app callbacks. Mirrors tauri-apps/cef-rs's `examples/osr`
 /// reference: append the switches that make windowless (OSR) rendering
 /// behave in a headless-friendly way (no crash-restore UI, no error
 /// dialogs — this process has no window at all).
 #[derive(Clone)]
-pub struct EngineApp {}
+pub struct ViewApp {}
 
-impl EngineApp {
+impl ViewApp {
     pub fn new() -> Self {
         Self {}
     }
@@ -17,7 +17,7 @@ impl EngineApp {
 
 wrap_app! {
     pub struct AppBuilder {
-        app: EngineApp,
+        app: ViewApp,
     }
 
     impl App {
@@ -49,7 +49,7 @@ wrap_app! {
 
         fn browser_process_handler(&self) -> Option<cef::BrowserProcessHandler> {
             Some(BrowserProcessHandlerBuilder::build(
-                EngineBrowserProcessHandler::new(),
+                ViewBrowserProcessHandler::new(),
             ))
         }
 
@@ -59,22 +59,22 @@ wrap_app! {
         // returning a real handler unconditionally is harmless there.
         fn render_process_handler(&self) -> Option<cef::RenderProcessHandler> {
             Some(RenderProcessHandlerBuilder::build(
-                EngineRenderProcessHandler::new(),
+                ViewRenderProcessHandler::new(),
             ))
         }
     }
 }
 
 impl AppBuilder {
-    pub fn build(app: EngineApp) -> cef::App {
+    pub fn build(app: ViewApp) -> cef::App {
         Self::new(app)
     }
 }
 
 #[derive(Clone)]
-pub struct EngineBrowserProcessHandler {}
+pub struct ViewBrowserProcessHandler {}
 
-impl EngineBrowserProcessHandler {
+impl ViewBrowserProcessHandler {
     pub fn new() -> Self {
         Self {}
     }
@@ -82,14 +82,14 @@ impl EngineBrowserProcessHandler {
 
 wrap_browser_process_handler! {
     pub struct BrowserProcessHandlerBuilder {
-        handler: EngineBrowserProcessHandler,
+        handler: ViewBrowserProcessHandler,
     }
 
     impl BrowserProcessHandler {}
 }
 
 impl BrowserProcessHandlerBuilder {
-    pub fn build(handler: EngineBrowserProcessHandler) -> BrowserProcessHandler {
+    pub fn build(handler: ViewBrowserProcessHandler) -> BrowserProcessHandler {
         Self::new(handler)
     }
 }

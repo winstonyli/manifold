@@ -187,7 +187,7 @@ pub fn hide_from_taskbar(hwnd: HWND) {
 /// which `composition::resize_root_visual` sizes directly), but WebView2
 /// still lays out against its parent window: leaving the window at its
 /// original fixed size while `SetBounds` grew past it is a mismatch with no
-/// upside, so the window tracks `HostToEngine::Resize` too.
+/// upside, so the window tracks `HostToView::Resize` too.
 pub fn resize(hwnd: HWND, width: u32, height: u32) {
     unsafe {
         let _ = SetWindowPos(hwnd, None, 0, 0, width as i32, height as i32, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);

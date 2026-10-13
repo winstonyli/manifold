@@ -45,7 +45,7 @@ pub fn new_shared_nav_state(initial_url: String) -> SharedNavState {
     std::rc::Rc::new(RefCell::new(NavState::new(initial_url)))
 }
 
-/// The last `HostToEngine::SetMuted` value requested for this tab -- CEF's
+/// The last `HostToView::SetMuted` value requested for this tab -- CEF's
 /// own mute (`main.rs`'s `SetMuted` handler) is a one-shot JS write against
 /// whatever `<video>`/`<audio>` elements exist at that instant, unlike
 /// WebView2/WebKit's real view-level mute property, which persists through
@@ -59,11 +59,11 @@ pub fn new_shared_muted() -> SharedMuted {
 }
 
 #[derive(Clone)]
-pub struct EngineDisplayHandler {
+pub struct ViewDisplayHandler {
     state: SharedNavState,
 }
 
-impl EngineDisplayHandler {
+impl ViewDisplayHandler {
     pub fn new(state: SharedNavState) -> Self {
         Self { state }
     }
@@ -71,7 +71,7 @@ impl EngineDisplayHandler {
 
 wrap_display_handler! {
     pub struct DisplayHandlerBuilder {
-        handler: EngineDisplayHandler,
+        handler: ViewDisplayHandler,
     }
 
     impl DisplayHandler {
@@ -126,18 +126,18 @@ wrap_display_handler! {
 }
 
 impl DisplayHandlerBuilder {
-    pub fn build(handler: EngineDisplayHandler) -> DisplayHandler {
+    pub fn build(handler: ViewDisplayHandler) -> DisplayHandler {
         Self::new(handler)
     }
 }
 
 #[derive(Clone)]
-pub struct EngineLoadHandler {
+pub struct ViewLoadHandler {
     state: SharedNavState,
     muted: SharedMuted,
 }
 
-impl EngineLoadHandler {
+impl ViewLoadHandler {
     pub fn new(state: SharedNavState, muted: SharedMuted) -> Self {
         Self { state, muted }
     }
@@ -145,7 +145,7 @@ impl EngineLoadHandler {
 
 wrap_load_handler! {
     pub struct LoadHandlerBuilder {
-        handler: EngineLoadHandler,
+        handler: ViewLoadHandler,
     }
 
     impl LoadHandler {
@@ -169,7 +169,7 @@ wrap_load_handler! {
             // edge WebKit's own poll loop has to detect manually. Ask the
             // renderer whether the page that just finished loading is raw
             // JSON; see `render_process_handler.rs` for the reply side and
-            // `ipc_protocol::EngineToHost::JsonBody`'s own doc comment.
+            // `ipc_protocol::ViewToHost::JsonBody`'s own doc comment.
             if is_loading == 0 {
                 if let Some(frame) = browser.and_then(|b| b.main_frame()) {
                     if let Some(mut message) =
@@ -192,17 +192,17 @@ wrap_load_handler! {
 }
 
 impl LoadHandlerBuilder {
-    pub fn build(handler: EngineLoadHandler) -> LoadHandler {
+    pub fn build(handler: ViewLoadHandler) -> LoadHandler {
         Self::new(handler)
     }
 }
 
 #[derive(Clone)]
-pub struct EngineRequestHandler {
+pub struct ViewRequestHandler {
     state: SharedNavState,
 }
 
-impl EngineRequestHandler {
+impl ViewRequestHandler {
     pub fn new(state: SharedNavState) -> Self {
         Self { state }
     }
@@ -210,7 +210,7 @@ impl EngineRequestHandler {
 
 wrap_request_handler! {
     pub struct RequestHandlerBuilder {
-        handler: EngineRequestHandler,
+        handler: ViewRequestHandler,
     }
 
     impl RequestHandler {
@@ -242,7 +242,7 @@ wrap_request_handler! {
 }
 
 impl RequestHandlerBuilder {
-    pub fn build(handler: EngineRequestHandler) -> RequestHandler {
+    pub fn build(handler: ViewRequestHandler) -> RequestHandler {
         Self::new(handler)
     }
 }

@@ -1,6 +1,6 @@
 //! Engine kinds and the engine-host child process behind a tab: spawn, connect, read and reap. Its child modules hold
 //! the kill-on-exit job (`job`), profile and cache folders (`profiles`), engine availability (`availability`), the
-//! WSL-hosted WebKit spawn (`webkit`) and the control channel (`engine_io`).
+//! WSL-hosted WebKit spawn (`webkit`) and the control channel (`view_io`).
 
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
@@ -11,15 +11,15 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::embedded_host;
-use crate::engine_install::{
-    downloads, has_runtime, host_components, host_state, plan_for, runtime_state, verify_installed_host, EngineState,
-    OnDisk, Plan, RuntimeOnDisk,
+use crate::view_install::{
+    downloads, has_runtime, host_components, host_state, plan_for, runtime_state, verify_installed_host, OnDisk, Plan,
+    RuntimeOnDisk, ViewStatus,
 };
 use ipc_protocol::transport::{self, LocalTransport};
-use ipc_protocol::{EngineToHost, HostToEngine};
+use ipc_protocol::{HostToView, ViewToHost};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum EngineKind {
+pub enum ViewKind {
     Servo,
     Cef,
     /// WebKit, via WebKitGTK — hosted inside WSL2 (no native Windows
@@ -36,24 +36,24 @@ pub(crate) enum HostSource {
     /// Carried inside `manifold.exe` when the build embeds it (`MANIFOLD_WEBVIEW2_HOST`, see `embedded_host`) and
     /// extracted at spawn when no sibling host is there. A build that embeds nothing finds it like a sibling.
     Embedded,
-    /// Pinned in `host_pin` and installed on demand into `engine-hosts/` (`engine_install`), unless a sibling
+    /// Pinned in `host_pin` and installed on demand into `engine-hosts/` (`view_install`), unless a sibling
     /// host (a dev tree's, or a Linux package's) is already there.
     Download,
 }
 
 /// What each engine is: the one place its name, store code, binary, label,
 /// pixel order and jar use live. `desc` is an exhaustive `match`, so a new
-/// `EngineKind` fails to compile until it has a row here.
-pub(crate) struct EngineDesc {
-    /// The string `settings.json`, session exports and the `engine` store field hold.
+/// `ViewKind` fails to compile until it has a row here.
+pub(crate) struct ViewDesc {
+    /// The string `settings.json`, session exports and the `view_kind` store field hold.
     pub(crate) name: &'static str,
-    /// The store's `engine` field code: `store::model::ENGINES[code - 1]` is `name`.
+    /// The store's `view_kind` field code: `store::model::ENGINES[code - 1]` is `name`.
     pub(crate) code: u64,
     pub(crate) binary: &'static str,
     pub(crate) label: &'static str,
     /// Frames arrive as BGRA (CEF, WebView2) rather than RGBA (Servo, WebKit).
     pub(crate) bgra: bool,
-    /// Takes part in the cookie jar: waits for `SetCookies` before its first navigation (`ENGINE_AWAIT_COOKIES`), and
+    /// Takes part in the cookie jar: waits for `SetCookies` before its first navigation (`VIEW_AWAIT_COOKIES`), and
     /// answers `GetCookies` (spec 2026-10-02-jars-design). The rest are neither seeded nor pulled, and a jar choice
     /// on their tabs shows "This engine does not use jars yet".
     pub(crate) jar: bool,
@@ -66,13 +66,12 @@ pub(crate) struct EngineDesc {
     pub(crate) source: HostSource,
 }
 
-impl EngineKind {
-    pub(crate) const ALL: [EngineKind; 4] =
-        [EngineKind::Servo, EngineKind::Cef, EngineKind::Webkit, EngineKind::Webview2];
+impl ViewKind {
+    pub(crate) const ALL: [ViewKind; 4] = [ViewKind::Servo, ViewKind::Cef, ViewKind::Webkit, ViewKind::Webview2];
 
-    pub(crate) fn desc(self) -> EngineDesc {
+    pub(crate) fn desc(self) -> ViewDesc {
         match self {
-            EngineKind::Servo => EngineDesc {
+            ViewKind::Servo => ViewDesc {
                 name: "servo",
                 code: 1,
                 binary: "manifold-engine-servo",
@@ -83,7 +82,7 @@ impl EngineKind {
                 find: false,
                 source: HostSource::Download,
             },
-            EngineKind::Cef => EngineDesc {
+            ViewKind::Cef => ViewDesc {
                 name: "cef",
                 code: 2,
                 binary: "manifold-engine-cef",
@@ -94,7 +93,7 @@ impl EngineKind {
                 find: true,
                 source: HostSource::Download,
             },
-            EngineKind::Webkit => EngineDesc {
+            ViewKind::Webkit => ViewDesc {
                 name: "webkit",
                 code: 3,
                 binary: "manifold-engine-webkit",
@@ -105,7 +104,7 @@ impl EngineKind {
                 find: true,
                 source: HostSource::Download,
             },
-            EngineKind::Webview2 => EngineDesc {
+            ViewKind::Webview2 => ViewDesc {
                 name: "webview2",
                 code: 4,
                 binary: "manifold-engine-webview2",
@@ -121,25 +120,25 @@ impl EngineKind {
 
     /// Case-insensitive, so the headless `SPLIT` argument and the stored
     /// lowercase names share one parser.
-    pub(crate) fn from_name(name: &str) -> Option<EngineKind> {
+    pub(crate) fn from_name(name: &str) -> Option<ViewKind> {
         Self::ALL.into_iter().find(|k| k.desc().name.eq_ignore_ascii_case(name))
     }
 
-    pub(crate) fn from_code(code: u64) -> Option<EngineKind> {
+    pub(crate) fn from_code(code: u64) -> Option<ViewKind> {
         Self::ALL.into_iter().find(|k| k.desc().code == code)
     }
 }
 
-/// `EngineKind` itself has no reason to derive serde (it's an internal
+/// `ViewKind` itself has no reason to derive serde (it's an internal
 /// process-management type) — a small manual string mapping instead, written
 /// by the two independent persistence formats that each need to store one
 /// (`settings.rs`'s default-starting-engine, `session.rs`'s per-tab engine).
 /// Serialize only: each format reads it back its own way (settings, leniently).
-pub(crate) mod engine_kind_serde {
-    use super::EngineKind;
+pub(crate) mod view_kind_serde {
+    use super::ViewKind;
     use serde::{Serialize, Serializer};
 
-    pub fn serialize<S: Serializer>(kind: &EngineKind, s: S) -> Result<S::Ok, S::Error> {
+    pub fn serialize<S: Serializer>(kind: &ViewKind, s: S) -> Result<S::Ok, S::Error> {
         kind.desc().name.serialize(s)
     }
 }
@@ -148,8 +147,8 @@ pub(crate) mod engine_kind_serde {
 /// manifold talks to it on. `manifold` is the process manager: it
 /// owns spawning, tearing down, and (from M2 on) swapping the engine
 /// backing a tab.
-pub struct EngineTab {
-    pub kind: EngineKind,
+pub struct ViewTab {
+    pub kind: ViewKind,
     /// The id used to name this tab's control-pipe/shared-memory socket —
     /// normally equal to its `tab_id`, but can diverge after the
     /// stale-pipe fallback in `spawn_tab`. manifold's own bookkeeping
@@ -157,14 +156,14 @@ pub struct EngineTab {
     /// low-level socket/shared-memory lookups (e.g. `SharedFrameBuffer`)
     /// need it.
     pub socket_id: String,
-    /// Sends to the engine-host off the UI thread (`engine_io::Writer`), over its local pipe or, for the WSL2-hosted
+    /// Sends to the engine-host off the UI thread (`view_io::Writer`), over its local pipe or, for the WSL2-hosted
     /// WebKit, its TCP connection (frames then travel inline in `FrameReady`).
-    writer: engine_io::Writer,
-    pub events_rx: mpsc::Receiver<EngineToHost>,
-    /// The newest frame its reader saw (`engine_io::FrameSlot`), taken by `take_frame`.
-    frame: engine_io::FrameSlot,
-    /// The mapping of the engine's current frame file (`engine_io::FrameMap`), used by `frame_pixels`.
-    frame_map: engine_io::FrameMap,
+    writer: view_io::Writer,
+    pub events_rx: mpsc::Receiver<ViewToHost>,
+    /// The newest frame its reader saw (`view_io::FrameSlot`), taken by `take_frame`.
+    frame: view_io::FrameSlot,
+    /// The mapping of the engine's current frame file (`view_io::FrameMap`), used by `frame_pixels`.
+    frame_map: view_io::FrameMap,
     /// `None` once `Drop` has handed it to its reaper thread.
     child: Option<Child>,
     /// A directory only this host uses, deleted on drop: CEF's `root_cache_path`, or WebView2's named profile
@@ -174,38 +173,38 @@ pub struct EngineTab {
     profile_slot: Option<usize>,
 }
 
-impl EngineTab {
+impl ViewTab {
     /// Queues `msg` for the engine and returns at once. A run of pointer moves, resizes or wheel steps the engine has
-    /// not read yet merges into one (`engine_io::coalesce`). Dropped when the engine has stopped reading and its queue
+    /// not read yet merges into one (`view_io::coalesce`). Dropped when the engine has stopped reading and its queue
     /// is full (the tab then reads as unresponsive), and after `Shutdown`.
-    pub fn send(&self, msg: &HostToEngine) {
+    pub fn send(&self, msg: &HostToView) {
         self.writer.send(msg);
     }
 
     /// M5: at most one tab is ever visible (actively capturing/sending
-    /// frames) at a time — see `HostToEngine::SetVisible`'s doc comment.
+    /// frames) at a time — see `HostToView::SetVisible`'s doc comment.
     pub fn set_visible(&self, visible: bool) {
-        self.send(&HostToEngine::SetVisible(visible));
+        self.send(&HostToView::SetVisible(visible));
     }
 
     /// Queues `Shutdown` now. An app exit calls this on every tab before dropping them, so `Drop` then waits one
-    /// `engine_io::SHUTDOWN_FLUSH` for all of them together.
+    /// `view_io::SHUTDOWN_FLUSH` for all of them together.
     pub(crate) fn begin_shutdown(&self) {
         self.writer.shutdown();
     }
 
     /// The newest frame since the last call, if any.
-    pub(crate) fn take_frame(&self) -> Option<engine_io::Frame> {
+    pub(crate) fn take_frame(&self) -> Option<view_io::Frame> {
         self.frame.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take()
     }
 
-    /// The pixels of the engine's frame file of `generation` (`engine_io::FrameMap::pixels`).
+    /// The pixels of the engine's frame file of `generation` (`view_io::FrameMap::pixels`).
     pub(crate) fn frame_pixels(&mut self, generation: u32, width: u32, height: u32) -> std::io::Result<&[u8]> {
         self.frame_map.pixels(&self.socket_id, generation, width, height)
     }
 
     /// The engine has stopped reading: a send was refused while a write had been blocked for
-    /// `engine_io::REFUSED_BLOCKED_AFTER`, or one write has been stuck for `engine_io::UNRESPONSIVE_AFTER` (the card
+    /// `view_io::REFUSED_BLOCKED_AFTER`, or one write has been stuck for `view_io::UNRESPONSIVE_AFTER` (the card
     /// badge and the menu's Restart and End rows).
     pub(crate) fn is_unresponsive(&self, now: std::time::Instant) -> bool {
         self.writer.is_unresponsive(now)
@@ -223,22 +222,22 @@ impl EngineTab {
     }
 
     /// A live tab for unit tests: no process, its control channel a loopback TCP connection. The returned peer
-    /// reads what the app sends it (`HostToEngine`), timing out after 200 ms when nothing more comes; the sender
+    /// reads what the app sends it (`HostToView`), timing out after 200 ms when nothing more comes; the sender
     /// feeds the tab's events as its reader would.
     #[cfg(test)]
-    pub(crate) fn fake_fed(kind: EngineKind) -> (EngineTab, FakePeer, mpsc::SyncSender<EngineToHost>) {
+    pub(crate) fn fake_fed(kind: ViewKind) -> (ViewTab, FakePeer, mpsc::SyncSender<ViewToHost>) {
         let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind loopback");
         let host = std::net::TcpStream::connect(listener.local_addr().expect("local addr")).expect("connect");
         let (peer, _) = listener.accept().expect("accept");
         peer.set_read_timeout(Some(Duration::from_millis(200))).expect("read timeout");
-        let (feed, events_rx) = mpsc::sync_channel(engine_io::EVENTS_CAP);
-        let tab = EngineTab {
+        let (feed, events_rx) = mpsc::sync_channel(view_io::EVENTS_CAP);
+        let tab = ViewTab {
             kind,
             socket_id: String::new(),
-            writer: engine_io::Writer::spawn(transport::RemoteTransport::new(host), "engine writer (fake)"),
+            writer: view_io::Writer::spawn(transport::RemoteTransport::new(host), "engine writer (fake)"),
             events_rx,
-            frame: engine_io::FrameSlot::default(),
-            frame_map: engine_io::FrameMap::default(),
+            frame: view_io::FrameSlot::default(),
+            frame_map: view_io::FrameMap::default(),
             child: None,
             cache_dir: None,
             profile_slot: None,
@@ -249,7 +248,7 @@ impl EngineTab {
 
     /// `fake_fed` without the feed: its events channel is closed and empty.
     #[cfg(test)]
-    pub(crate) fn fake(kind: EngineKind) -> (EngineTab, FakePeer) {
+    pub(crate) fn fake(kind: ViewKind) -> (ViewTab, FakePeer) {
         let (tab, peer, _) = Self::fake_fed(kind);
         (tab, peer)
     }
@@ -259,14 +258,14 @@ impl EngineTab {
 #[cfg(test)]
 pub(crate) struct FakePeer {
     channel: ipc_protocol::MessageChannel<std::net::TcpStream>,
-    writer: engine_io::Writer,
+    writer: view_io::Writer,
 }
 
 #[cfg(test)]
 impl FakePeer {
     /// Everything the app has sent so far: waits for the writer thread to get it all out (under load it can lag
     /// further behind than the channel's 200 ms read timeout), then reads until nothing more comes.
-    pub(crate) fn sent(&mut self) -> Vec<ipc_protocol::HostToEngine> {
+    pub(crate) fn sent(&mut self) -> Vec<ipc_protocol::HostToView> {
         assert!(self.writer.wait_idle(Duration::from_secs(10)), "the writer never went idle");
         std::iter::from_fn(|| self.channel.recv().ok()).collect()
     }
@@ -287,20 +286,20 @@ impl std::ops::DerefMut for FakePeer {
     }
 }
 
-impl Drop for EngineTab {
+impl Drop for ViewTab {
     fn drop(&mut self) {
         // Read before `shutdown`, after which a writer never reads as unresponsive.
         let stuck = self.writer.is_unresponsive(std::time::Instant::now());
         self.writer.shutdown();
         let Some(child) = self.child.take() else { return };
         let (cache_dir, slot) = (self.cache_dir.take(), self.profile_slot.take());
-        if self.kind == EngineKind::Webkit {
+        if self.kind == ViewKind::Webkit {
             // Off the UI thread: a WebKit host gets up to 3 s to exit on its own,
             // and dropping a session of N of them used to freeze the window for 3N s.
             // It has no frame file (frames arrive over TCP) and no cache dir.
             // A writer stuck on its socket stays blocked until the Linux side dies: closing the
             // socket on this side does not unblock a send on Windows (measured, wave 3b).
-            let reaper = std::thread::spawn(move || reap_host(EngineKind::Webkit, child));
+            let reaper = std::thread::spawn(move || reap_host(ViewKind::Webkit, child));
             CACHE_REMOVALS.lock().unwrap_or_else(|e| e.into_inner()).push(reaper);
             return;
         }
@@ -308,7 +307,7 @@ impl Drop for EngineTab {
         // A stuck engine is not waited for: the kill below breaks its pipe, which ends the blocked
         // write too (measured: about 0.2 ms after the engine's end closes).
         if !stuck {
-            self.writer.wait_finished(engine_io::SHUTDOWN_FLUSH);
+            self.writer.wait_finished(view_io::SHUTDOWN_FLUSH);
         }
         // A local host is killed at once, so this stays inline. It must: a respawn
         // of the same tab reuses `socket_id`, and Windows deletes a file even while
@@ -326,8 +325,8 @@ impl Drop for EngineTab {
 }
 
 /// Waits for an engine host to exit after `Shutdown`, killing it if needed.
-fn reap_host(kind: EngineKind, mut child: Child) {
-    if kind == EngineKind::Webkit {
+fn reap_host(kind: ViewKind, mut child: Child) {
+    if kind == ViewKind::Webkit {
         // For the WSL2-hosted case, `child` is only the Windows-side
         // `wsl.exe` relay — force-killing it immediately (the
         // local-engine path below) does NOT terminate the actual
@@ -362,25 +361,25 @@ fn reap_host(kind: EngineKind, mut child: Child) {
 #[derive(Debug)]
 pub enum SpawnError {
     /// The engine's runtime isn't on disk; nothing was launched.
-    EngineMissing(EngineKind),
+    ViewMissing(ViewKind),
     /// The engine's runtime is out of date (Update needed); nothing was launched.
-    EngineOutdated(EngineKind),
+    ViewOutdated(ViewKind),
     /// The engine's state is Unavailable (the reason is the state's), so nothing was launched.
-    EngineUnavailable(EngineKind, String),
+    ViewUnavailable(ViewKind, String),
     Io(std::io::Error),
 }
 
 impl std::fmt::Display for SpawnError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            SpawnError::EngineMissing(kind) => {
-                write!(f, "{} is not installed", crate::engine_info::engine_label(*kind))
+            SpawnError::ViewMissing(kind) => {
+                write!(f, "{} is not installed", crate::view_info::view_label(*kind))
             }
-            SpawnError::EngineOutdated(kind) => {
-                write!(f, "{} needs an update", crate::engine_info::engine_label(*kind))
+            SpawnError::ViewOutdated(kind) => {
+                write!(f, "{} needs an update", crate::view_info::view_label(*kind))
             }
-            SpawnError::EngineUnavailable(kind, reason) => {
-                f.write_str(&crate::engine_info::PickOutcome::unavailable_toast(*kind, reason))
+            SpawnError::ViewUnavailable(kind, reason) => {
+                f.write_str(&crate::view_info::PickOutcome::unavailable_toast(*kind, reason))
             }
             SpawnError::Io(e) => e.fmt(f),
         }
@@ -450,18 +449,18 @@ fn ensure_host_copy(custom_dir: &Path, host_exe: &Path) -> std::io::Result<PathB
 }
 
 /// The CEF host exe to copy next to a runtime that has no host: beside `manifold.exe` in a packaged build, else the
-/// `cef-runtime/` copy a dev build keeps, else the one `engine_install::install_host` downloaded into `engine-hosts/`.
+/// `cef-runtime/` copy a dev build keeps, else the one `view_install::install_host` downloaded into `engine-hosts/`.
 fn shipped_cef_host() -> PathBuf {
-    sibling_host(EngineKind::Cef)
+    sibling_host(ViewKind::Cef)
         .or_else(|| {
-            let file = crate::cef_platform::PLATFORM.host_exe(EngineKind::Cef.desc().binary);
-            engine_hosts_dir().map(|dir| dir.join(file)).filter(|path| path.exists())
+            let file = crate::cef_platform::PLATFORM.host_exe(ViewKind::Cef.desc().binary);
+            view_hosts_dir().map(|dir| dir.join(file)).filter(|path| path.exists())
         })
         .unwrap_or_else(cef_sibling_exe)
 }
 
 /// The directory a CEF host copy must live in (see `custom_host_path`), or None to run the host as
-/// `engine_binary_path` finds it. A custom directory wins; a dev build's own `cef-runtime/` already holds
+/// `view_binary_path` finds it. A custom directory wins; a dev build's own `cef-runtime/` already holds
 /// its host; otherwise the downloaded runtime, which holds libcef but never a host, so it gets a copy too.
 fn host_home(custom: Option<&Path>, dev_runtime_has_host: bool, downloaded: Option<PathBuf>) -> Option<PathBuf> {
     match custom {
@@ -475,23 +474,23 @@ fn host_home(custom: Option<&Path>, dev_runtime_has_host: bool, downloaded: Opti
 /// Unavailable (no host and nothing pinned to download), as needing an update when Update needed, else as not
 /// installed.
 fn check_spawnable(
-    kind: EngineKind,
+    kind: ViewKind,
     plan: &Result<Plan, String>,
     on_disk: OnDisk,
     custom: Option<&Path>,
 ) -> Result<(), SpawnError> {
-    match engine_availability(kind, plan, on_disk, None, None, custom) {
-        EngineState::Installed | EngineState::Custom(_) => Ok(()),
-        EngineState::Unavailable(reason) => Err(SpawnError::EngineUnavailable(kind, reason)),
-        EngineState::UpdateNeeded { .. } => Err(SpawnError::EngineOutdated(kind)),
-        _ => Err(SpawnError::EngineMissing(kind)),
+    match view_availability(kind, plan, on_disk, None, None, custom) {
+        ViewStatus::Installed | ViewStatus::Custom(_) => Ok(()),
+        ViewStatus::Unavailable(reason) => Err(SpawnError::ViewUnavailable(kind, reason)),
+        ViewStatus::UpdateNeeded { .. } => Err(SpawnError::ViewOutdated(kind)),
+        _ => Err(SpawnError::ViewMissing(kind)),
     }
 }
 
 /// The spawn refusal for an engine this OS cannot run, from the same `platform_unavailable_reason` the
 /// engine lists show, so a spawn fails by name instead of a bare "file not found".
-fn unsupported_on(os: &str, kind: EngineKind) -> Option<String> {
-    platform_unavailable_reason(os, kind).map(|reason| crate::engine_info::PickOutcome::unavailable_toast(kind, reason))
+fn unsupported_on(os: &str, kind: ViewKind) -> Option<String> {
+    platform_unavailable_reason(os, kind).map(|reason| crate::view_info::PickOutcome::unavailable_toast(kind, reason))
 }
 
 /// During a swap, the old engine-host on this same `tab_id` was just killed
@@ -673,12 +672,12 @@ fn is_spawn_header(line: &str) -> bool {
     line.starts_with(SPAWN_HEADER_START) && line.contains(" spawning a host for ")
 }
 
-/// Synthesizes `EngineToHost::Crashed` when the connection to an
+/// Synthesizes `ViewToHost::Crashed` when the connection to an
 /// engine-host drops, since a hard-killed/panicked process cannot send a
 /// message about its own death. Also fires on an *intentional* teardown
 /// (a swap's old tab getting dropped, which sends `Shutdown` then kills
 /// the child) — harmless there: `tx`'s paired `rx` was owned by that same
-/// now-dropped `EngineTab`, so the `send` below simply fails and is
+/// now-dropped `ViewTab`, so the `send` below simply fails and is
 /// ignored; only a tab that's still the *current* one has a live `rx` to
 /// actually receive this.
 ///
@@ -686,21 +685,21 @@ fn is_spawn_header(line: &str) -> bool {
 /// older `messages.rs`) gets a `Crashed` whose reason starts with
 /// `PROTOCOL_MISMATCH`, so no message of it is ever misread.
 ///
-/// Frames go to `frame` (newest wins); everything else goes through a channel of `engine_io::EVENTS_CAP`, whose
+/// Frames go to `frame` (newest wins); everything else goes through a channel of `view_io::EVENTS_CAP`, whose
 /// `send` waits while the app is that far behind (survey E3).
 fn spawn_reader_thread<S: std::io::Read + std::io::Write + Send + 'static>(
-    mut from_engine: ipc_protocol::MessageChannel<S>,
-    frame: engine_io::FrameSlot,
-    wake: engine_io::Wake,
-) -> mpsc::Receiver<EngineToHost> {
-    let (tx, rx) = mpsc::sync_channel(engine_io::EVENTS_CAP);
+    mut from_view: ipc_protocol::MessageChannel<S>,
+    frame: view_io::FrameSlot,
+    wake: view_io::Wake,
+) -> mpsc::Receiver<ViewToHost> {
+    let (tx, rx) = mpsc::sync_channel(view_io::EVENTS_CAP);
     std::thread::spawn(move || {
-        let lost = || EngineToHost::Crashed { reason: "engine-host connection lost".to_string() };
-        match from_engine.recv_version().map(ipc_protocol::check_version) {
+        let lost = || ViewToHost::Crashed { reason: "engine-host connection lost".to_string() };
+        match from_view.recv_version().map(ipc_protocol::check_version) {
             Ok(Ok(())) => {}
             Ok(Err(mismatch)) => {
                 eprintln!("{mismatch}");
-                let _ = tx.send(EngineToHost::Crashed { reason: mismatch });
+                let _ = tx.send(ViewToHost::Crashed { reason: mismatch });
                 wake();
                 return;
             }
@@ -710,20 +709,20 @@ fn spawn_reader_thread<S: std::io::Read + std::io::Write + Send + 'static>(
                 return;
             }
         }
-        while let Ok(msg) = from_engine.recv::<EngineToHost>() {
+        while let Ok(msg) = from_view.recv::<ViewToHost>() {
             match msg {
-                EngineToHost::FrameReady { generation, width, height, damage, pixels } => {
+                ViewToHost::FrameReady { generation, width, height, damage, pixels } => {
                     let mut slot = frame.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                     // A frame the app never took folds its rows into this one's; a new size or file makes it whole.
-                    let rows = engine_io::frame_rows(damage, height);
+                    let rows = view_io::frame_rows(damage, height);
                     let rows = match slot.take() {
                         Some(prev) if (prev.generation, prev.width, prev.height) == (generation, width, height) => {
-                            engine_io::merge_rows(prev.rows, rows)
+                            view_io::merge_rows(prev.rows, rows)
                         }
                         Some(_) => None,
                         None => rows,
                     };
-                    *slot = Some(engine_io::Frame { generation, width, height, rows, pixels });
+                    *slot = Some(view_io::Frame { generation, width, height, rows, pixels });
                 }
                 // Fails once the tab is gone (its receiver dropped).
                 msg => {
@@ -759,43 +758,43 @@ const LOCAL_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// `custom_cef` is a validated bring-your-own CEF directory: it satisfies the availability check, and the
 /// host runs from a copy inside it so Windows loads that directory's `libcef.dll` (`ensure_host_copy`).
 ///
-/// `wake` is called by the tab's reader thread after each engine message (`event_loop::engine_wake`).
+/// `wake` is called by the tab's reader thread after each engine message (`event_loop::view_wake`).
 pub fn spawn_tab(
-    kind: EngineKind,
+    kind: ViewKind,
     tab_id: &str,
     initial_url: &str,
     custom_cef: Option<&Path>,
     jar_json: &dyn Fn() -> String,
-    wake: engine_io::Wake,
-) -> Result<EngineTab, SpawnError> {
+    wake: view_io::Wake,
+) -> Result<ViewTab, SpawnError> {
     if let Some(reason) = unsupported_on(std::env::consts::OS, kind) {
         return Err(SpawnError::Io(std::io::Error::new(std::io::ErrorKind::Unsupported, reason)));
     }
-    if kind == EngineKind::Webkit {
+    if kind == ViewKind::Webkit {
         if let Some(reason) = webkit_host_missing(std::env::consts::OS) {
             return Err(SpawnError::Io(std::io::Error::new(std::io::ErrorKind::Unsupported, reason)));
         }
     }
-    let custom_cef = custom_cef.filter(|_| kind == EngineKind::Cef);
-    let on_disk = engine_on_disk_fresh(kind);
+    let custom_cef = custom_cef.filter(|_| kind == ViewKind::Cef);
+    let on_disk = view_on_disk_fresh(kind);
     check_spawnable(kind, &plan_for(kind), on_disk, custom_cef)?;
     // A host that came from a download, not from beside manifold.exe, is hashed again here: the folder it sits in is
     // writable, and the on-disk poll that said Ready only read a marker.
     if downloads(kind) && sibling_host(kind).is_none() {
-        if let Some(dir) = engine_hosts_dir() {
+        if let Some(dir) = view_hosts_dir() {
             verify_installed_host(&dir, host_components(kind)).map_err(|_| {
-                let reason = format!("{} host changed on disk; reinstall", crate::engine_info::engine_label(kind));
+                let reason = format!("{} host changed on disk; reinstall", crate::view_info::view_label(kind));
                 SpawnError::Io(std::io::Error::other(reason))
             })?;
         }
     }
-    if kind == EngineKind::Webkit {
+    if kind == ViewKind::Webkit {
         return Ok(spawn_webkit_tab(tab_id, initial_url, wake)?);
     }
     // An embedded WebView2 host is put in place before its path is used (the profile slot is keyed on it). A sibling
     // host wins as it does everywhere else; a build that embeds nothing returns `None` and touches no file.
-    let extracted_host = match engine_hosts_dir() {
-        Some(dir) if kind == EngineKind::Webview2 && sibling_host(kind).is_none() => {
+    let extracted_host = match view_hosts_dir() {
+        Some(dir) if kind == ViewKind::Webview2 && sibling_host(kind).is_none() => {
             embedded_host::Embedded::Webview2.ensure(&dir)?
         }
         _ => None,
@@ -819,37 +818,37 @@ pub fn spawn_tab(
         }
     };
     let (stdout_file, stderr_file) = per_tab_log_files(tab_id)?;
-    let host_exe = match (kind, host_home(custom_cef, cef_sibling_exe().exists(), engine_runtime_dir(kind))) {
-        (EngineKind::Cef, Some(dir)) => ensure_host_copy(&dir, &shipped_cef_host())?,
-        _ => engine_binary_path(kind),
+    let host_exe = match (kind, host_home(custom_cef, cef_sibling_exe().exists(), view_runtime_dir(kind))) {
+        (ViewKind::Cef, Some(dir)) => ensure_host_copy(&dir, &shipped_cef_host())?,
+        _ => view_binary_path(kind),
     };
 
     // Each CEF engine-host gets its own throwaway cache dir, so CEF tabs
     // don't share cookies or logins and keep none across a restart (see
     // manifold-engine-cef's main.rs for why they can't share one).
-    let cache_dir = (kind == EngineKind::Cef).then(|| {
+    let cache_dir = (kind == ViewKind::Cef).then(|| {
         let n = CEF_CACHE_COUNTER.fetch_add(1, Ordering::Relaxed);
         cef_cache_root().join(format!("{}-{n}", std::process::id()))
     });
 
     let mut command = Command::new(&host_exe);
     command
-        .env("ENGINE_TAB_ID", tab_id)
-        .env("ENGINE_SOCKET_ID", &socket_id)
-        .env("ENGINE_INITIAL_URL", initial_url)
+        .env("VIEW_TAB_ID", tab_id)
+        .env("VIEW_SOCKET_ID", &socket_id)
+        .env("VIEW_INITIAL_URL", initial_url)
         .stdout(stdout_file)
         .stderr(stderr_file);
     // Jar engines wait for the jar (`SetCookies`) before their first navigation.
     if kind.desc().jar {
-        command.env("ENGINE_AWAIT_COOKIES", "1");
+        command.env("VIEW_AWAIT_COOKIES", "1");
     }
     if let Some(dir) = &cache_dir {
-        command.env("ENGINE_CACHE_DIR", dir);
+        command.env("VIEW_CACHE_DIR", dir);
     }
     // Each WebView2 host gets a profile name of its own among the live hosts, reused once a host is gone.
-    let profile_slot = (kind == EngineKind::Webview2).then(|| claim_webview2_slot(&host_exe));
+    let profile_slot = (kind == ViewKind::Webview2).then(|| claim_webview2_slot(&host_exe));
     if let Some(n) = profile_slot {
-        command.env("ENGINE_WEBVIEW2_PROFILE", webview2_profile_name(n));
+        command.env("VIEW_WEBVIEW2_PROFILE", webview2_profile_name(n));
     }
     let spawned = if extracted_host.is_some() { embedded_host::spawn_fresh(&mut command) } else { command.spawn() };
     let mut child = match spawned {
@@ -861,7 +860,7 @@ pub fn spawn_tab(
             return Err(e.into());
         }
     };
-    assign_to_engine_job(&child);
+    assign_to_view_job(&child);
     let cache_dir = cache_dir.or_else(|| profile_slot.map(|n| webview2_profile_dir(&host_exe, n)));
 
     // The child connects to both sockets right after spawning — bounded by
@@ -876,7 +875,7 @@ pub fn spawn_tab(
     // about. Same cleanup `spawn_webkit_tab`'s own accept-timeout path
     // already does. `connect_host` does the kill, stops waiting as soon as
     // the child exits, and names its exit code and last log lines.
-    let (to_engine, from_engine) =
+    let (to_view, from_view) =
         match connect_host(&listeners, &mut child, &per_tab_log_path(tab_id), LOCAL_CONNECT_TIMEOUT) {
             Ok(pair) => pair,
             Err(e) => {
@@ -886,50 +885,50 @@ pub fn spawn_tab(
                 return Err(e.into());
             }
         };
-    let frame = engine_io::FrameSlot::default();
-    let events_rx = spawn_reader_thread(from_engine, Arc::clone(&frame), wake);
+    let frame = view_io::FrameSlot::default();
+    let events_rx = spawn_reader_thread(from_view, Arc::clone(&frame), wake);
 
-    let writer = engine_io::Writer::spawn(to_engine, &format!("engine writer {socket_id}"));
-    let frame_map = engine_io::FrameMap::default();
+    let writer = view_io::Writer::spawn(to_view, &format!("engine writer {socket_id}"));
+    let frame_map = view_io::FrameMap::default();
     let tab =
-        EngineTab { kind, socket_id, writer, events_rx, frame, frame_map, child: Some(child), cache_dir, profile_slot };
+        ViewTab { kind, socket_id, writer, events_rx, frame, frame_map, child: Some(child), cache_dir, profile_slot };
     if kind.desc().jar {
         // Serialised now that the host is connected, so cookies merged while it started are in the seed.
-        tab.send(&HostToEngine::SetCookies(jar_json()));
+        tab.send(&HostToView::SetCookies(jar_json()));
     }
     Ok(tab)
 }
 
 mod availability;
-pub(crate) mod engine_io;
 mod job;
 mod profiles;
+pub(crate) mod view_io;
 mod webkit;
 #[cfg(test)]
-use crate::engine_install::host_platform;
+use crate::view_install::host_platform;
 #[cfg(test)]
 use availability::{
     availability_with, built_webkit_host, on_disk_cached, pick_webkit_host, OnDiskCache, ON_DISK_CHECK_TTL,
 };
 use availability::{
-    cef_sibling_exe, engine_binary_path, engine_on_disk_fresh, platform_unavailable_reason, sibling_binary,
-    sibling_host, webkit_host_path,
+    cef_sibling_exe, platform_unavailable_reason, sibling_binary, sibling_host, view_binary_path, view_on_disk_fresh,
+    webkit_host_path,
 };
 pub(crate) use availability::{
-    engine_availability, engine_hosts_dir, engine_on_disk, engine_runtime_dir, forget_on_disk, platform_default_engine,
+    forget_on_disk, platform_default_view_kind, view_availability, view_hosts_dir, view_on_disk, view_runtime_dir,
 };
-use job::assign_to_engine_job;
+use job::assign_to_view_job;
 use profiles::{
     cef_cache_root, claim_webview2_slot, free_webview2_slot, remove_cache_dir, webview2_profile_dir,
     webview2_profile_name, CACHE_REMOVALS, CEF_CACHE_COUNTER, MAX_TAB_LOG_BYTES,
 };
 #[cfg(test)]
 use profiles::{
-    claim_slot, sweep_cache_dirs, sweep_engine_logs_in, take_webview2_slot, WEBVIEW2_PROFILE_POOL,
+    claim_slot, sweep_cache_dirs, sweep_view_logs_in, take_webview2_slot, WEBVIEW2_PROFILE_POOL,
     WEBVIEW2_PROFILE_PREFIX,
 };
 pub use profiles::{
-    finish_cache_removals, sweep_cef_cache, sweep_engine_logs, sweep_frame_files, sweep_webview2_profiles,
+    finish_cache_removals, sweep_cef_cache, sweep_frame_files, sweep_view_logs, sweep_webview2_profiles,
 };
 #[cfg(test)]
 use webkit::webkit_shell_command;
@@ -944,7 +943,7 @@ pub(crate) fn pdf_view_exe() -> std::io::Result<Option<std::path::PathBuf>> {
     if sibling.exists() {
         return Ok(Some(sibling));
     }
-    match engine_hosts_dir() {
+    match view_hosts_dir() {
         Some(dir) => embedded_host::Embedded::Pdfium.ensure(&dir),
         None => Ok(None),
     }
@@ -952,5 +951,5 @@ pub(crate) fn pdf_view_exe() -> std::io::Result<Option<std::path::PathBuf>> {
 
 /// Puts a spawned view process in the kill-on-close job, so it dies with manifold.
 pub(crate) fn contain_view_process(child: &std::process::Child) {
-    assign_to_engine_job(child);
+    assign_to_view_job(child);
 }

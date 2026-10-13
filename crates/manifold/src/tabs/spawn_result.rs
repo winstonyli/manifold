@@ -28,14 +28,14 @@ impl App {
             }
         }
         // Spawned for a session that's since been replaced: dropping the
-        // `EngineTab` shuts its engine host down. See `session_generation`.
+        // `ViewTab` shuts its engine host down. See `session_generation`.
         if generation != self.spawns.session_generation {
             return;
         }
         // A replaced engine (crash, wake, swap) knows only `url`: from here
         // Back and Forward come from the host's list.
         if let Some(history) = self.nav_history.get_mut(&id) {
-            history.engine_reset(&url);
+            history.view_reset(&url);
         }
         // A group dissolved while this spawn was still in flight (spawning
         // is async, see this fn's own doc comment) would otherwise leave
@@ -89,7 +89,7 @@ impl App {
                 let visible = spawned_tab_visible(is_focused, is_split, self.showing_image_view());
                 tab.set_visible(visible);
                 if muted {
-                    tab.send(&HostToEngine::SetMuted { muted: true });
+                    tab.send(&HostToView::SetMuted { muted: true });
                 }
                 self.nodes.insert(
                     id.clone(),
@@ -108,7 +108,7 @@ impl App {
                         }),
                     },
                 );
-                let engine = session_sync::engine_code(kind);
+                let view_kind = session_sync::view_code(kind);
                 let pos = Some(pos);
                 self.seed_landing(
                     &id,
@@ -119,7 +119,7 @@ impl App {
                         parent,
                         group,
                         url: url.clone(),
-                        engine,
+                        view_kind,
                         jar: spawn_jar,
                         ..Default::default()
                     },
@@ -203,11 +203,11 @@ impl App {
                 eprintln!("spawn tab failed for {id}: {err}");
                 if let Some(fallback) = fallback_kind {
                     // The switch failed: the old engine is written back (2b-3 Ruling 5).
-                    self.edit_engine(&id, fallback);
+                    self.edit_view_kind(&id, fallback);
                     self.queue_toast(format!(
                         "Couldn't switch to {}: {err}. Kept {}.",
-                        engine_label(kind),
-                        engine_label(fallback)
+                        view_label(kind),
+                        view_label(fallback)
                     ));
                     let carry = TabCarry { pinned, color, zoom_factor, title, muted };
                     let spawn = TabSpawn {
@@ -234,12 +234,12 @@ impl App {
                 if !matches!(purpose, SpawnPurpose::Split) {
                     // "Couldn't start Blink (CEF): Blink (CEF) is not installed" says it twice.
                     let toast = match err {
-                        process_manager::SpawnError::EngineMissing(_)
-                        | process_manager::SpawnError::EngineOutdated(_)
-                        | process_manager::SpawnError::EngineUnavailable(..) => {
+                        process_manager::SpawnError::ViewMissing(_)
+                        | process_manager::SpawnError::ViewOutdated(_)
+                        | process_manager::SpawnError::ViewUnavailable(..) => {
                             format!("Couldn't open {}: {err}", Self::toast_url(&url))
                         }
-                        _ => format!("Couldn't start {} for {}: {err}", engine_label(kind), Self::toast_url(&url)),
+                        _ => format!("Couldn't start {} for {}: {err}", view_label(kind), Self::toast_url(&url)),
                     };
                     self.queue_failure_toast(kind, &url, group.as_deref(), &err.to_string(), toast);
                     // The same intent failing again refreshes the card already standing for it.
@@ -272,12 +272,12 @@ impl App {
                     let runtime = Runtime::Unloaded(failed);
                     self.nodes.insert(id.clone(), GraphNode { runtime });
                     // A tab the mirror holds already shows the engine that failed: a switch's target, written when
-                    // it started (`edit_engine`); a new one lands on it here.
-                    let engine = session_sync::engine_code(kind);
+                    // it started (`edit_view_kind`); a new one lands on it here.
+                    let view_kind = session_sync::view_code(kind);
                     let (pos, jar) = (Some(pos), spawn_jar);
                     self.seed_landing(
                         &id,
-                        Carried { pos, color, pinned, parent, group, url, engine, jar, ..Default::default() },
+                        Carried { pos, color, pinned, parent, group, url, view_kind, jar, ..Default::default() },
                     );
                     if !self.node_order.iter().any(|t| t == &id) {
                         self.node_order.push(id.clone());

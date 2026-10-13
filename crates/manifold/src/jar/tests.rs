@@ -506,7 +506,7 @@ fn an_unreadable_named_jar_goes_aside_under_its_own_name() {
 }
 
 #[test]
-fn engine_json_parses_into_cookies() {
+fn view_json_parses_into_cookies() {
     let json = r#"[{"name":"a","value":"b","domain":"x.com","path":"/","expires":null,"secure":true,"http_only":false,"same_site":"Strict"}]"#;
     let cookies = from_json(json).unwrap();
     assert_eq!(cookies[0].same_site, SameSite::Strict);
@@ -534,9 +534,7 @@ fn cookie_state_forget_drops_one_tabs_entries_and_returns_its_hold() {
     for id in ["a", "b"] {
         state.jar_tabs.insert(id.into(), (JarKey::Default, TabCookies::default()));
         state.jar_reseed.insert(id.into());
-        state
-            .cookie_holds
-            .insert(id.into(), (now, crate::tabs::Held::Snapshot(crate::EngineKind::Webview2, id.into())));
+        state.cookie_holds.insert(id.into(), (now, crate::tabs::Held::Snapshot(crate::ViewKind::Webview2, id.into())));
         state.jar_pulls.insert(id.into(), now);
         state.jar_silent.insert(id.into(), 1);
     }

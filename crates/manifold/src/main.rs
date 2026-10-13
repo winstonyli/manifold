@@ -17,8 +17,6 @@ mod debug_control;
 mod deleted_names;
 mod deselect;
 mod embedded_host;
-mod engine_info;
-mod engine_install;
 mod event_loop;
 mod export;
 mod failure_toasts;
@@ -75,6 +73,8 @@ mod tab_view;
 mod tabs;
 mod text;
 mod theme;
+mod view_info;
+mod view_install;
 mod view_modes;
 mod viewport;
 mod zoom_chip;
@@ -102,24 +102,24 @@ use suggestions::{resolve_navigation_url, Suggestion, SuggestionFetcher};
 use card::*;
 use card_kind::*;
 use debug_control::DebugCommand;
-use engine_info::*;
 use gpu::GpuState;
 use graph_nav::GraphInteraction;
 use graph_ui::*;
 use image_view::*;
 use input::*;
-use ipc_protocol::{modifiers, EngineToHost, HostToEngine, InputEvent, KeyCode, MouseButton};
+use ipc_protocol::{modifiers, HostToView, InputEvent, KeyCode, MouseButton, ViewToHost};
 use json_level::{JsonEdit, JsonLevel};
 use level::{EdgeCurve, EdgeKind, LevelEdge, LevelItem, LevelItemKind, LevelScan};
 use links::LinkGesture;
 use mirror::Carried;
 use node::*;
 use popups::*;
-use process_manager::{EngineKind, EngineTab};
+use process_manager::{ViewKind, ViewTab};
 use settings::{SearchEngine, Settings};
 use store::model::{field, FieldValue};
 use tab_view::*;
 use theme::*;
+use view_info::*;
 use winit::application::ApplicationHandler;
 use winit::dpi::{PhysicalPosition, PhysicalSize};
 use winit::event::{
@@ -422,8 +422,8 @@ struct App {
     json_ui: json_level_ui::JsonLevelUi,
     /// Bookmarks and history popup state (see `history::HistoryUi`).
     history_ui: history::HistoryUi,
-    /// Engine install jobs, failures and the Settings drafts for them (see `engine_install::EngineInstallUi`).
-    engine_ui: engine_install::EngineInstallUi,
+    /// Engine install jobs, failures and the Settings drafts for them (see `view_install::ViewInstallUi`).
+    view_ui: view_install::ViewInstallUi,
     /// Open menus and popups (see `popups::MenuPopups`).
     menus: popups::MenuPopups,
     /// Toast state (see `failure_toasts::Toasts`).
@@ -445,7 +445,7 @@ struct App {
     /// `ClosedEntry`.
     closed: Vec<ClosedEntry>,
 
-    /// Admits or drops page-opened tabs (`EngineToHost::OpenTabRequested`)
+    /// Admits or drops page-opened tabs (`ViewToHost::OpenTabRequested`)
     /// per source tab: a user gesture and a rate budget.
     popup_gate: popup_gate::PopupGate,
 
@@ -487,7 +487,7 @@ struct App {
     /// Every distinct `(title, url)` this session has actually navigated
     /// to, most-recent-last, capped at `history::MAX_HISTORY_ENTRIES` (oldest
     /// dropped first) -- recorded once per real URL change in
-    /// `EngineToHost::NavigationStateChanged`'s own handling, so it covers
+    /// `ViewToHost::NavigationStateChanged`'s own handling, so it covers
     /// in-page navigation (clicked links) the same as address-bar entries,
     /// not just the latter. Persisted to `history.json` whenever saved.
     history: Vec<history::HistoryEntry>,
@@ -610,7 +610,7 @@ impl Default for App {
             headless: false,
             json_ui: json_level_ui::JsonLevelUi::default(),
             history_ui: history::HistoryUi::default(),
-            engine_ui: engine_install::EngineInstallUi::default(),
+            view_ui: view_install::ViewInstallUi::default(),
             menus: popups::MenuPopups::default(),
             toasts: failure_toasts::Toasts::default(),
             debug: debug_control::HeadlessDebug::default(),
@@ -688,7 +688,7 @@ fn main() {
     std::thread::spawn(process_manager::sweep_cef_cache);
     std::thread::spawn(process_manager::sweep_webview2_profiles);
     std::thread::spawn(process_manager::sweep_frame_files);
-    std::thread::spawn(process_manager::sweep_engine_logs);
+    std::thread::spawn(process_manager::sweep_view_logs);
 
     let event_loop = EventLoop::<UserEvent>::with_user_event().build().expect("create event loop");
     event_loop.set_control_flow(ControlFlow::Poll);

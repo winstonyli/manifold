@@ -250,7 +250,7 @@ impl App {
     /// dropdown: `GetState` -> spawn new engine at the same tab_id -> new
     /// engine's first `FrameReady` becomes the displayed texture (once
     /// focused) -> old engine-host dropped when its graph node is replaced.
-    pub(crate) fn start_swap_to(&mut self, tab_id: &str, target: EngineKind) {
+    pub(crate) fn start_swap_to(&mut self, tab_id: &str, target: ViewKind) {
         if self.swap_in_flight(tab_id).is_some() {
             return; // one swap at a time for this tab
         }
@@ -263,11 +263,11 @@ impl App {
         node.swap_target = Some(target);
         // Saved as the swap starts (2b-3 Ruling 5): a save before the snapshot writes the target, and a failure
         // that falls back writes the old engine back (`handle_tab_spawn_result`).
-        self.edit_engine(tab_id, target);
+        self.edit_view_kind(tab_id, target);
         // Cookies first: the old host is dropped once its snapshot arrives (`hold_for_cookies` waits for them).
         self.pull_cookies(tab_id);
         if let Some(node) = self.nodes.get_mut(tab_id).and_then(|n| n.as_tab_mut()) {
-            node.tab.send(&HostToEngine::GetState);
+            node.tab.send(&HostToView::GetState);
         }
     }
 
@@ -275,7 +275,7 @@ impl App {
     /// arrives, then the snapshot parked for the host's cookies (`hold_for_cookies`; "Switch Jar Now" parks one on
     /// the running engine). The one lock: `start_swap_to` starts no second swap, whose snapshot would never come once
     /// the first drops the host, and a remote engine meanwhile is written over (`update_live_node`).
-    pub(crate) fn swap_in_flight(&self, id: &str) -> Option<EngineKind> {
+    pub(crate) fn swap_in_flight(&self, id: &str) -> Option<ViewKind> {
         let tab = self.nodes.get(id)?.as_tab()?;
         tab.swap_target.or(match self.cookies.cookie_holds.get(id) {
             Some((_, crate::tabs::Held::Snapshot(target, _))) => Some(*target),
@@ -283,7 +283,7 @@ impl App {
         })
     }
 
-    pub(crate) fn finish_swap(&mut self, tab_id: &str, target: EngineKind, url: String) {
+    pub(crate) fn finish_swap(&mut self, tab_id: &str, target: ViewKind, url: String) {
         let Some(spawn) = self.nodes.get(tab_id).and_then(|n| {
             let old = n.as_tab()?.tab.kind;
             Some(TabSpawn {

@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use serde::Deserialize as _;
 
-use crate::process_manager::{engine_kind_serde, EngineKind};
+use crate::process_manager::{view_kind_serde, ViewKind};
 
 /// Which search engine `resolve_navigation_url`/the autocomplete dropdown's
 /// "Search for X" rows actually navigate to. Deliberately separate from
@@ -58,8 +58,8 @@ impl SearchEngine {
 pub struct Settings {
     #[serde(deserialize_with = "search_engine")]
     pub default_search_engine: SearchEngine,
-    #[serde(serialize_with = "engine_kind_serde::serialize", deserialize_with = "starting_engine")]
-    pub default_starting_engine: EngineKind,
+    #[serde(serialize_with = "view_kind_serde::serialize", deserialize_with = "starting_view_kind")]
+    pub default_starting_view_kind: ViewKind,
     /// A linear multiplier (1.0 = 100%), matching WebKit's own
     /// `WebView::set_zoom_level`'s semantics directly — CEF's zoom API is
     /// log-scale internally (Chromium's own `zoom_level`, not a linear
@@ -117,7 +117,7 @@ pub struct Settings {
     /// the session store: it needs to survive exactly the case the session
     /// doesn't (a user with zero saved tabs), and `Settings` is the one
     /// file already guaranteed to persist across an empty session the same
-    /// way `home_page`/`default_starting_engine` do.
+    /// way `home_page`/`default_starting_view_kind` do.
     #[serde(default = "default_already_shown")]
     pub has_shown_first_launch_demo: bool,
     /// Minutes a background tab may sit out of sight before it goes back to
@@ -126,7 +126,7 @@ pub struct Settings {
     /// `idle_sleep`.
     #[serde(default)]
     pub idle_sleep_minutes: Option<u32>,
-    /// A CEF runtime directory the user supplied instead of downloading one (`engine_install::
+    /// A CEF runtime directory the user supplied instead of downloading one (`view_install::
     /// validate_custom`); used for launches only while it validates.
     #[serde(default)]
     pub cef_directory: Option<String>,
@@ -140,7 +140,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             default_search_engine: SearchEngine::DuckDuckGo,
-            default_starting_engine: crate::process_manager::platform_default_engine(std::env::consts::OS),
+            default_starting_view_kind: crate::process_manager::platform_default_view_kind(std::env::consts::OS),
             zoom_factor: 1.0,
             home_page: "https://example.com".to_string(),
             window_width: None,
@@ -182,12 +182,12 @@ fn search_engine<'de, D: serde::Deserializer<'de>>(d: D) -> Result<SearchEngine,
     )
 }
 
-fn starting_engine<'de, D: serde::Deserializer<'de>>(d: D) -> Result<EngineKind, D::Error> {
+fn starting_view_kind<'de, D: serde::Deserializer<'de>>(d: D) -> Result<ViewKind, D::Error> {
     lenient(
         d,
-        "default_starting_engine",
-        |v| v.as_str().and_then(EngineKind::from_name),
-        || Settings::default().default_starting_engine,
+        "default_starting_view_kind",
+        |v| v.as_str().and_then(ViewKind::from_name),
+        || Settings::default().default_starting_view_kind,
     )
 }
 
@@ -298,11 +298,14 @@ mod tests {
 
     /// A file without the field takes the platform default; a saved engine is kept even where it can't run.
     #[test]
-    fn the_starting_engine_defaults_per_platform_and_a_saved_one_is_kept() {
+    fn the_starting_view_defaults_per_platform_and_a_saved_one_is_kept() {
         let old: Settings = serde_json::from_str(r#"{"home_page":"https://a.test"}"#).unwrap();
-        assert_eq!(old.default_starting_engine, crate::process_manager::platform_default_engine(std::env::consts::OS));
-        let saved: Settings = serde_json::from_str(r#"{"default_starting_engine":"webview2"}"#).unwrap();
-        assert_eq!(saved.default_starting_engine, EngineKind::Webview2);
+        assert_eq!(
+            old.default_starting_view_kind,
+            crate::process_manager::platform_default_view_kind(std::env::consts::OS)
+        );
+        let saved: Settings = serde_json::from_str(r#"{"default_starting_view_kind":"webview2"}"#).unwrap();
+        assert_eq!(saved.default_starting_view_kind, ViewKind::Webview2);
     }
 
     /// H4: a value this build can't read resets that setting alone, not the whole file.
@@ -310,13 +313,13 @@ mod tests {
     fn an_unknown_value_resets_only_its_own_setting() {
         let s: Settings = serde_json::from_str(
             r#"{"home_page":"https://a.test","default_search_engine":"Kagi",
-                "default_starting_engine":"chrome","zoom_factor":0,"cef_directory":"D:/cef"}"#,
+                "default_starting_view_kind":"chrome","zoom_factor":0,"cef_directory":"D:/cef"}"#,
         )
         .unwrap();
         assert_eq!(s.home_page, "https://a.test");
         assert_eq!(s.cef_directory.as_deref(), Some("D:/cef"));
         assert_eq!(s.default_search_engine, SearchEngine::DuckDuckGo);
-        assert_eq!(s.default_starting_engine, Settings::default().default_starting_engine);
+        assert_eq!(s.default_starting_view_kind, Settings::default().default_starting_view_kind);
         assert_eq!(s.zoom_factor, 0.5, "clamped into the range the UI steps through");
     }
 
@@ -330,7 +333,7 @@ mod tests {
         let defaults = Settings::default();
         let back: Settings = serde_json::from_str(&serde_json::to_string(&defaults).unwrap()).unwrap();
         assert_eq!(back.default_search_engine, defaults.default_search_engine);
-        assert_eq!(back.default_starting_engine, defaults.default_starting_engine);
+        assert_eq!(back.default_starting_view_kind, defaults.default_starting_view_kind);
         assert_eq!(back.zoom_factor, defaults.zoom_factor);
     }
 }

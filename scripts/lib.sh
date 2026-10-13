@@ -7,7 +7,7 @@
 # starts tabs on ENGINE (default webview2). MORE is extra JSON members, starting with ", ".
 seed_settings() {
     mkdir -p "$1/manifold"
-    echo "{\"has_shown_first_launch_demo\": true, \"default_starting_engine\": \"${2:-webview2}\"${3:-}}" >"$1/manifold/settings.json"
+    echo "{\"has_shown_first_launch_demo\": true, \"default_starting_view_kind\": \"${2:-webview2}\"${3:-}}" >"$1/manifold/settings.json"
 }
 
 # launch_headless EXE PROFILE CMDFILE LOG: one `EXE --headless` instance in the background, APPDATA set to

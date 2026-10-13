@@ -5,7 +5,7 @@
 //! is not bit-reproducible, so a rebuild is a different artifact). The table is empty in the repo until a release
 //! writes it: a kind with no entry has no download in this build.
 
-use crate::process_manager::EngineKind;
+use crate::process_manager::ViewKind;
 
 /// One downloadable host file.
 #[derive(Debug, PartialEq, Eq)]
@@ -23,7 +23,7 @@ pub struct Component {
 /// The components of one engine on one platform (`windows-x64` or `linux-x64`).
 #[derive(Debug)]
 pub struct Entry {
-    pub kind: EngineKind,
+    pub kind: ViewKind,
     pub platform: &'static str,
     pub components: &'static [Component],
 }
@@ -35,18 +35,18 @@ pub const PIN_VERSION: &str = "0.5.1";
 
 #[rustfmt::skip]
 const TABLE: &[Entry] = &[
-    Entry { kind: EngineKind::Cef, platform: "windows-x64", components: &[
+    Entry { kind: ViewKind::Cef, platform: "windows-x64", components: &[
         Component { file: "manifold-engine-cef.exe", url: "https://github.com/winstonyli/manifold/releases/download/v0.5.0/manifold-engine-cef.exe-windows-x64", size: 763392, sha256: "c680f15228430f455e53ddd7aa5a54d08aad5272fd1a886c56d4f6df7915cd1d" },
     ] },
 ];
 // END TABLE
 
 /// The components `kind` needs on `platform`, or an empty slice when this build pins none.
-pub fn components_for(kind: EngineKind, platform: &str) -> &'static [Component] {
+pub fn components_for(kind: ViewKind, platform: &str) -> &'static [Component] {
     lookup(TABLE, kind, platform)
 }
 
-fn lookup(table: &'static [Entry], kind: EngineKind, platform: &str) -> &'static [Component] {
+fn lookup(table: &'static [Entry], kind: ViewKind, platform: &str) -> &'static [Component] {
     table.iter().find(|e| e.kind == kind && e.platform == platform).map_or(&[], |e| e.components)
 }
 
@@ -103,19 +103,19 @@ mod tests {
 
     static GOOD: &[Entry] = &[
         Entry {
-            kind: EngineKind::Cef,
+            kind: ViewKind::Cef,
             platform: "windows-x64",
             components: &[comp("manifold-engine-cef.exe", URL_CEF, 740_000, HASH)],
         },
         Entry {
-            kind: EngineKind::Servo,
+            kind: ViewKind::Servo,
             platform: "windows-x64",
             components: &[comp("manifold-engine-servo.exe", URL_SERVO, 90_000_000, HASH)],
         },
     ];
 
     fn one(c: &'static [Component]) -> Vec<Entry> {
-        vec![Entry { kind: EngineKind::Cef, platform: "windows-x64", components: c }]
+        vec![Entry { kind: ViewKind::Cef, platform: "windows-x64", components: c }]
     }
 
     #[test]
@@ -141,10 +141,10 @@ mod tests {
 
     #[test]
     fn lookup_finds_by_kind_and_platform_and_is_empty_otherwise() {
-        assert_eq!(lookup(GOOD, EngineKind::Cef, "windows-x64")[0].file, "manifold-engine-cef.exe");
-        assert!(lookup(GOOD, EngineKind::Cef, "plan9-x64").is_empty());
-        assert!(lookup(GOOD, EngineKind::Webkit, "windows-x64").is_empty());
-        assert!(components_for(EngineKind::Cef, "plan9-x64").is_empty());
+        assert_eq!(lookup(GOOD, ViewKind::Cef, "windows-x64")[0].file, "manifold-engine-cef.exe");
+        assert!(lookup(GOOD, ViewKind::Cef, "plan9-x64").is_empty());
+        assert!(lookup(GOOD, ViewKind::Webkit, "windows-x64").is_empty());
+        assert!(components_for(ViewKind::Cef, "plan9-x64").is_empty());
     }
 
     #[test]
@@ -188,12 +188,12 @@ mod tests {
         // Entries out of order (servo before cef; kinds sort by store name).
         static BAD_KINDS: &[Entry] = &[
             Entry {
-                kind: EngineKind::Servo,
+                kind: ViewKind::Servo,
                 platform: "windows-x64",
                 components: &[comp("manifold-engine-servo.exe", URL_SERVO, 1, HASH)],
             },
             Entry {
-                kind: EngineKind::Cef,
+                kind: ViewKind::Cef,
                 platform: "windows-x64",
                 components: &[comp("manifold-engine-cef.exe", URL_CEF, 1, HASH)],
             },
@@ -201,7 +201,7 @@ mod tests {
         assert!(check_table(BAD_KINDS, "1.2.3", "1.2.3").is_err());
         // Files out of order within one entry.
         static BAD_FILES: &[Entry] = &[Entry {
-            kind: EngineKind::Cef,
+            kind: ViewKind::Cef,
             platform: "windows-x64",
             components: &[
                 comp("b.exe", "https://x/v/b.exe-windows-x64", 1, HASH),
@@ -211,8 +211,8 @@ mod tests {
         assert!(check_table(BAD_FILES, "1.2.3", "1.2.3").is_err());
         // A duplicated (kind, platform) is not strictly increasing either.
         static DUP: &[Entry] = &[
-            Entry { kind: EngineKind::Cef, platform: "windows-x64", components: &[] },
-            Entry { kind: EngineKind::Cef, platform: "windows-x64", components: &[] },
+            Entry { kind: ViewKind::Cef, platform: "windows-x64", components: &[] },
+            Entry { kind: ViewKind::Cef, platform: "windows-x64", components: &[] },
         ];
         assert!(check_table(DUP, "1.2.3", "1.2.3").is_err());
     }

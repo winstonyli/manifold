@@ -96,13 +96,13 @@ fn timed_out(what: String) -> io::Error {
 }
 
 /// scripts/lib.sh `seed_settings`: `PROFILE/settings.json` that skips the first-launch demo and starts tabs on
-/// `engine`. (`--profile-dir DIR` names the manifold folder itself, so there is no `manifold/` level as under
+/// `view_kind`. (`--profile-dir DIR` names the manifold folder itself, so there is no `manifold/` level as under
 /// `%APPDATA%`.) `more` is extra JSON members, starting with `", "`.
-pub fn seed_settings(profile: &Path, engine: &str, more: &str) -> io::Result<()> {
+pub fn seed_settings(profile: &Path, view_kind: &str, more: &str) -> io::Result<()> {
     fs::create_dir_all(profile)?;
     fs::write(
         profile.join("settings.json"),
-        format!("{{\"has_shown_first_launch_demo\": true, \"default_starting_engine\": \"{engine}\"{more}}}"),
+        format!("{{\"has_shown_first_launch_demo\": true, \"default_starting_view_kind\": \"{view_kind}\"{more}}}"),
     )
 }
 
@@ -304,7 +304,7 @@ mod tests {
         seed_settings(&dir, "webview2", ", \"x\": 1").unwrap();
         let v: serde_json::Value = serde_json::from_slice(&fs::read(dir.join("settings.json")).unwrap()).unwrap();
         assert_eq!(v["has_shown_first_launch_demo"], true);
-        assert_eq!(v["default_starting_engine"], "webview2");
+        assert_eq!(v["default_starting_view_kind"], "webview2");
         assert_eq!(v["x"], 1);
         let _ = fs::remove_dir_all(&dir);
     }

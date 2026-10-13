@@ -7,7 +7,7 @@
 # and asserted on:
 #   - it imports no vcruntime/msvcp (llvm-objdump; the check fails without it);
 #   - it runs headless with APPDATA redirected to a temp folder (never the real one);
-#   - ENGINESTATE cef reads "Not installed", with " · N MB" when crates/manifold/src/host_pin.rs pins a CEF host
+#   - VIEWSTATE cef reads "Not installed", with " · N MB" when crates/manifold/src/host_pin.rs pins a CEF host
 #     (release.sh wrote it), and likewise for Servo when it is pinned;
 #   - a WebView2 tab loads a local page, so the host was extracted from the embed (no sibling host exists);
 #   - a PDF node renders the fixture (1000x500, 1 page) through the embedded PDF view, extracted beside the WebView2
@@ -57,14 +57,14 @@ python -P "$repo_root/scripts/probe_server.py" "$(cygpath -w "$out/port")" "$(cy
 srv=$!
 for _ in $(seq 50); do [ -s "$out/port" ] && break; sleep 0.1; done
 port="$(cat "$out/port")"
-echo '{"has_shown_first_launch_demo": true, "default_starting_engine": "webview2"}' >"$profile/manifold/settings.json"
-echo "{\"nodes\": [{\"id\": \"t1\", \"type\": \"application/vnd.manifold.tab\", \"url\": \"http://127.0.0.1:$port/tall\", \"engine\": \"webview2\", \"pos\": [0.0, 0.0]}]}" >"$profile/seed.json"
+echo '{"has_shown_first_launch_demo": true, "default_starting_view_kind": "webview2"}' >"$profile/manifold/settings.json"
+echo "{\"nodes\": [{\"id\": \"t1\", \"type\": \"application/vnd.manifold.tab\", \"url\": \"http://127.0.0.1:$port/tall\", \"view_kind\": \"webview2\", \"pos\": [0.0, 0.0]}]}" >"$profile/seed.json"
 "$exe" --import-json "$(cygpath -w "$profile/seed.json")" --out "$(cygpath -w "$profile/manifold/session.mnf")" >/dev/null
 cmd="$profile/cmd"
 : >"$cmd"
 APPDATA="$(cygpath -w "$profile")" "$exe" --headless < <(exec tail -n +1 -f --pid=$$ "$cmd" 2>/dev/null) >"$profile/log" 2>&1 &
 inst=$!
-{ echo WAITTABS; echo "SLEEP 6"; echo "ENGINESTATE cef"; echo "ENGINESTATE servo"; echo "ADDFILE $(cygpath -w "$out/fixture.pdf") 600 500"; echo WAITTABS; } >>"$cmd"
+{ echo WAITTABS; echo "SLEEP 6"; echo "VIEWSTATE cef"; echo "VIEWSTATE servo"; echo "ADDFILE $(cygpath -w "$out/fixture.pdf") 600 500"; echo WAITTABS; } >>"$cmd"
 # The first render downloads PDFium: wait up to 180 s for either outcome, then quit.
 for _ in $(seq 900); do grep -qE '^pdf: (rendered|couldn.t open) ' "$profile/log" && break; sleep 0.2; done
 echo QUIT >>"$cmd"

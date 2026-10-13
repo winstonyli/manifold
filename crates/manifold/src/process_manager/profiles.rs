@@ -44,7 +44,7 @@ pub(super) fn remove_cache_dir(dir: PathBuf, slot: Option<usize>) {
 pub(super) static CACHE_REMOVALS: std::sync::Mutex<Vec<std::thread::JoinHandle<()>>> =
     std::sync::Mutex::new(Vec::new());
 
-/// Waits for every WebKit host reap (`Drop for EngineTab`) and
+/// Waits for every WebKit host reap (`Drop for ViewTab`) and
 /// `remove_cache_dir` so far, at most their few seconds each: `main` calls
 /// this after dropping the app's tabs, since the process exiting would
 /// otherwise cut the waits and deletes short. A WebKit host's wait for its
@@ -81,14 +81,14 @@ const KEEP_CRASH_REPORTS: usize = 10;
 
 /// Startup sweep of `manifold-*.log` in the temp dir: per-tab engine logs untouched for 14 days go, and of the
 /// `manifold-crash-*.log` reports only the newest 10 stay.
-pub fn sweep_engine_logs() {
-    let removed = sweep_engine_logs_in(&std::env::temp_dir(), MAX_TAB_LOG_AGE, KEEP_CRASH_REPORTS);
+pub fn sweep_view_logs() {
+    let removed = sweep_view_logs_in(&std::env::temp_dir(), MAX_TAB_LOG_AGE, KEEP_CRASH_REPORTS);
     if removed > 0 {
         eprintln!("removed {removed} old engine log(s) and crash report(s)");
     }
 }
 
-pub(super) fn sweep_engine_logs_in(dir: &Path, max_age: Duration, keep_crashes: usize) -> usize {
+pub(super) fn sweep_view_logs_in(dir: &Path, max_age: Duration, keep_crashes: usize) -> usize {
     let Ok(entries) = std::fs::read_dir(dir) else { return 0 };
     let (mut crashes, mut logs) = (Vec::new(), Vec::new());
     for entry in entries.flatten() {
@@ -123,7 +123,7 @@ pub fn sweep_cef_cache() {
 }
 
 /// What a WebView2 host's profile directory is named: manifold hands each host a profile name `manifold_<slot>`
-/// (`ENGINE_WEBVIEW2_PROFILE`; manifold-engine-webview2's `create_composition_controller`), and WebView2 keeps a named
+/// (`VIEW_WEBVIEW2_PROFILE`; manifold-engine-webview2's `create_composition_controller`), and WebView2 keeps a named
 /// profile in `WV2Profile_<name>` (observed, not documented: runtime 154.0.4258.53, 2026-10-03). InPrivate holds no
 /// cookies there, but caches and empty databases (~2 MB) stay behind.
 pub(super) const WEBVIEW2_PROFILE_PREFIX: &str = "WV2Profile_manifold_";
@@ -225,7 +225,7 @@ pub(super) fn free_webview2_slot(n: usize) {
 /// Deletes WebView2 host profiles `remove_cache_dir` could not (the shared browser process still held them, or
 /// manifold was killed), as `sweep_cef_cache` does; only `WEBVIEW2_PROFILE_PREFIX` dirs are touched.
 pub fn sweep_webview2_profiles() {
-    let root = webview2_profiles_root(&engine_binary_path(EngineKind::Webview2));
+    let root = webview2_profiles_root(&view_binary_path(ViewKind::Webview2));
     sweep_cache_dirs(&root, WEBVIEW2_PROFILE_PREFIX, Duration::from_secs(60));
 }
 

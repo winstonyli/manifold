@@ -17,7 +17,7 @@ pub fn new_shared_pending_open_tab() -> SharedPendingOpenTab {
 }
 
 /// Set by `on_before_close`, once CEF has actually finished tearing down
-/// the browser -- `HostToEngine::Shutdown`'s handler polls this before
+/// the browser -- `HostToView::Shutdown`'s handler polls this before
 /// calling `cef::shutdown()`, per CEF's own documented contract (call
 /// `close_browser`, wait for `on_before_close`, only then shut down the
 /// whole CEF runtime).
@@ -28,12 +28,12 @@ pub fn new_shared_closed() -> SharedClosed {
 }
 
 #[derive(Clone)]
-pub struct EngineLifeSpanHandler {
+pub struct ViewLifeSpanHandler {
     pending: SharedPendingOpenTab,
     closed: SharedClosed,
 }
 
-impl EngineLifeSpanHandler {
+impl ViewLifeSpanHandler {
     pub fn new(pending: SharedPendingOpenTab, closed: SharedClosed) -> Self {
         Self { pending, closed }
     }
@@ -41,7 +41,7 @@ impl EngineLifeSpanHandler {
 
 wrap_life_span_handler! {
     pub struct LifeSpanHandlerBuilder {
-        handler: EngineLifeSpanHandler,
+        handler: ViewLifeSpanHandler,
     }
 
     impl LifeSpanHandler {
@@ -83,7 +83,7 @@ wrap_life_span_handler! {
 }
 
 impl LifeSpanHandlerBuilder {
-    pub fn build(handler: EngineLifeSpanHandler) -> LifeSpanHandler {
+    pub fn build(handler: ViewLifeSpanHandler) -> LifeSpanHandler {
         Self::new(handler)
     }
 }

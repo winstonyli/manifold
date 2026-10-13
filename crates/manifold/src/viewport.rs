@@ -7,14 +7,14 @@ impl App {
     ///
     /// **Not applied to outgoing `InputEvent::Mouse*`/`Scroll` coordinates.**
     /// Those are sent in the engine's own *physical-pixel surface* space,
-    /// the exact same space as `HostToEngine::Resize`'s `width`/`height`
+    /// the exact same space as `HostToView::Resize`'s `width`/`height`
     /// (see `ipc_protocol::InputEvent`'s doc comment) — every engine-host
     /// renders a surface of precisely that pixel size, so a physical offset
     /// into the on-screen content quad is already the right value to send,
     /// with no conversion at all. Used instead for the two places that
     /// genuinely need logical points: saving window geometry
     /// (`Settings::window_width`) and placing egui UI at a coordinate an
-    /// engine reported back (`EngineToHost::ContextMenuLink`).
+    /// engine reported back (`ViewToHost::ContextMenuLink`).
     pub(crate) fn ppp(&self) -> f64 {
         self.window.as_ref().map_or(1.0, |w| w.scale_factor())
     }
@@ -137,7 +137,7 @@ impl App {
         let (width, height) = self.content_size_px();
         let dpi_scale = self.window.as_ref().map_or(1.0, |w| w.scale_factor());
         if let Some(node) = self.nodes.get_mut(tab_id).and_then(|n| n.as_tab_mut()) {
-            node.tab.send(&HostToEngine::Resize { width, height, dpi_scale });
+            node.tab.send(&HostToView::Resize { width, height, dpi_scale });
         }
     }
 
@@ -151,7 +151,7 @@ impl App {
     pub(crate) fn send_zoom_to(&mut self, tab_id: &str) {
         if let Some(node) = self.nodes.get_mut(tab_id).and_then(|n| n.as_tab_mut()) {
             let factor = node.zoom_factor;
-            node.tab.send(&HostToEngine::SetZoom { factor });
+            node.tab.send(&HostToView::SetZoom { factor });
         }
     }
 
@@ -221,7 +221,7 @@ impl App {
                     .insert(tab_id.to_string(), (node.url.clone(), std::time::Instant::now(), false));
             }
             node.url = url.clone();
-            node.tab.send(&HostToEngine::Navigate { url: url.clone(), referrer: None });
+            node.tab.send(&HostToView::Navigate { url: url.clone(), referrer: None });
             // Until the engine labels the navigation, a report can still
             // carry the old url (CEF reported loading before the new address,
             // unlabelled): that isn't the user's either.

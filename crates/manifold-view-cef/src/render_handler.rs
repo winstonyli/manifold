@@ -25,12 +25,12 @@ fn dirty_rows(dirty_rects: Option<&[Rect]>, height: i32) -> Option<std::ops::Ran
 /// makes sense for a single-process embedder, not our separate-process
 /// engine-host architecture).
 #[derive(Clone)]
-pub struct EngineRenderHandler {
+pub struct ViewRenderHandler {
     size: SharedSize,
     sink: SharedFrameSink,
 }
 
-impl EngineRenderHandler {
+impl ViewRenderHandler {
     pub fn new(initial_width: u32, initial_height: u32, sink: SharedFrameSink) -> (Self, SharedSize) {
         let size = std::rc::Rc::new(RefCell::new((initial_width as f32, initial_height as f32)));
         (Self { size: size.clone(), sink }, size)
@@ -39,7 +39,7 @@ impl EngineRenderHandler {
 
 wrap_render_handler! {
     pub struct RenderHandlerBuilder {
-        handler: EngineRenderHandler,
+        handler: ViewRenderHandler,
     }
 
     impl RenderHandler {
@@ -88,7 +88,7 @@ wrap_render_handler! {
 }
 
 impl RenderHandlerBuilder {
-    pub fn build(handler: EngineRenderHandler) -> RenderHandler {
+    pub fn build(handler: ViewRenderHandler) -> RenderHandler {
         Self::new(handler)
     }
 }

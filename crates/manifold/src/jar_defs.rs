@@ -39,7 +39,7 @@ pub(crate) struct JarChip {
     pub(crate) can_switch_now: bool,
     pub(crate) was_color: egui::Color32,
     /// A Servo or WebKit tab on a named jar: its engine ignores jars (spec "Hosts").
-    pub(crate) engine_ignores: bool,
+    pub(crate) view_ignores: bool,
     /// The name's hidden-character hint (`JarLabel::hidden_hint`, name rules), then the warnings above, one per line,
     /// for the card's hover text; `None` when there are none.
     pub(crate) tooltip: Option<String>,
@@ -233,12 +233,12 @@ impl App {
         let (key, missing) = self.resolved_jar(&choice);
         let will_switch = self.will_switch(id);
         let can_switch_now = self.can_switch_jar_now(id);
-        let engine = match &self.nodes.get(id)?.runtime {
+        let view_kind = match &self.nodes.get(id)?.runtime {
             Runtime::Tab(t) => t.tab.kind,
-            Runtime::Unloaded(_) => self.mirror.engine(id),
+            Runtime::Unloaded(_) => self.mirror.view_kind(id),
             _ => return None,
         };
-        let engine_ignores = !engine.desc().jar && key != JarKey::Default;
+        let view_ignores = !view_kind.desc().jar && key != JarKey::Default;
         let group = self.nodes.get(id).and(self.mirror.group(id));
         let following = !choice.set && self.inherited_jar(group) == choice.jar;
         if key == JarKey::Default && !missing && !will_switch {
@@ -253,7 +253,7 @@ impl App {
         if missing {
             tips.push("This tab's jar was deleted; it uses the default jar".to_string());
         }
-        if engine_ignores {
+        if view_ignores {
             tips.push("This engine does not use jars yet".to_string());
         }
         if will_switch {
@@ -269,7 +269,7 @@ impl App {
             missing,
             will_switch,
             can_switch_now,
-            engine_ignores,
+            view_ignores,
             tooltip: (!tips.is_empty()).then(|| tips.join("\n")),
         })
     }

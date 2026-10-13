@@ -11,7 +11,7 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use crate::host_pin::Component as HostFile;
-use crate::process_manager::{EngineKind, HostSource};
+use crate::process_manager::{HostSource, ViewKind};
 
 use ipc_protocol::transport::to_hex;
 use sha1::Sha1;
@@ -29,7 +29,7 @@ pub(crate) struct Pin {
 
 /// How an engine is available, as every engine list shows it.
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) enum EngineState {
+pub(crate) enum ViewStatus {
     Installed,
     NotInstalled {
         size: u64,
@@ -53,7 +53,7 @@ pub(crate) const NO_PIN_REASON: &str = "no CEF build for this platform yet";
 
 /// Why `kind` cannot be installed in a build whose `host_pin` table has no entry for it (the repo's table is empty;
 /// a release writes it): there is nothing to fetch and no sibling host.
-pub(crate) fn no_download_reason(kind: EngineKind) -> String {
+pub(crate) fn no_download_reason(kind: ViewKind) -> String {
     format!("this build has no {} download", kind.desc().label)
 }
 
@@ -124,14 +124,14 @@ impl Plan {
 
 /// Whether `kind` is installed by downloading (`HostSource::Download`), rather than found beside `manifold.exe`
 /// or carried inside it.
-pub(crate) fn downloads(kind: EngineKind) -> bool {
+pub(crate) fn downloads(kind: ViewKind) -> bool {
     kind.desc().source == HostSource::Download
 }
 
 /// Whether `kind` also needs a runtime archive besides its host exe: only CEF's, the one component that is an
 /// archive (`Pin`, `unpack`, `cef-runtime/`) rather than single pinned files.
-pub(crate) fn has_runtime(kind: EngineKind) -> bool {
-    kind == EngineKind::Cef
+pub(crate) fn has_runtime(kind: ViewKind) -> bool {
+    kind == ViewKind::Cef
 }
 
 /// The Visual C++ runtime DLLs Servo's Windows host imports (its mozjs and ANGLE are built against the dynamic CRT, so
@@ -146,10 +146,10 @@ fn missing_files(dir: &Path, names: &[&'static str]) -> Vec<&'static str> {
 /// System libraries `kind`'s host needs that the system lacks, so the download dialog can warn before a host that
 /// cannot start: CEF's NSS/NSPR on Linux, the Visual C++ runtime for Servo on Windows. Empty when none are needed,
 /// when all are present, or when that cannot be read.
-pub(crate) fn missing_system_libs(kind: EngineKind) -> Vec<&'static str> {
+pub(crate) fn missing_system_libs(kind: ViewKind) -> Vec<&'static str> {
     if has_runtime(kind) {
         crate::cef_platform::PLATFORM.missing_system_libs()
-    } else if cfg!(windows) && kind == EngineKind::Servo {
+    } else if cfg!(windows) && kind == ViewKind::Servo {
         std::env::var_os("SystemRoot")
             .map_or_else(Vec::new, |root| missing_files(&Path::new(&root).join("System32"), SERVO_VC_RUNTIME))
     } else {
@@ -159,8 +159,8 @@ pub(crate) fn missing_system_libs(kind: EngineKind) -> Vec<&'static str> {
 
 /// `host_pin`'s name for the platform `kind`'s host runs on: this build's own, except WebKit, whose host is a Linux
 /// ELF even when manifold runs on Windows (WSL runs it).
-pub(crate) fn host_platform(kind: EngineKind) -> &'static str {
-    if kind == EngineKind::Webkit || !cfg!(windows) {
+pub(crate) fn host_platform(kind: ViewKind) -> &'static str {
+    if kind == ViewKind::Webkit || !cfg!(windows) {
         "linux-x64"
     } else {
         "windows-x64"
@@ -168,7 +168,7 @@ pub(crate) fn host_platform(kind: EngineKind) -> &'static str {
 }
 
 /// The host files this build pins for `kind` on this platform; empty for an engine that is not downloaded.
-pub(crate) fn host_components(kind: EngineKind) -> &'static [HostFile] {
+pub(crate) fn host_components(kind: ViewKind) -> &'static [HostFile] {
     if downloads(kind) {
         crate::host_pin::components_for(kind, host_platform(kind))
     } else {
@@ -178,7 +178,7 @@ pub(crate) fn host_components(kind: EngineKind) -> &'static [HostFile] {
 
 /// What installing `kind` fetches in this build, or why nothing can be: it is not downloaded or pins no host
 /// (`no_download_reason`), or CEF has no runtime build for this platform (`NO_PIN_REASON`).
-pub(crate) fn plan_for(kind: EngineKind) -> Result<Plan, String> {
+pub(crate) fn plan_for(kind: ViewKind) -> Result<Plan, String> {
     let host = host_components(kind);
     if host.is_empty() {
         return Err(no_download_reason(kind));
@@ -243,7 +243,7 @@ pub(crate) fn runtime_state(dir: &Path, pin: &Pin) -> RuntimeOnDisk {
 
 /// `kind`'s host marker in the hosts directory `dir`: one `<sha256> <file>` line per installed file, written last
 /// by `install_host`.
-fn host_marker_path(dir: &Path, kind: EngineKind) -> PathBuf {
+fn host_marker_path(dir: &Path, kind: ViewKind) -> PathBuf {
     dir.join(format!("{}.host", kind.desc().name))
 }
 
@@ -255,7 +255,7 @@ fn marker_text(files: &[HostFile]) -> String {
 /// marker lists exactly these files and hashes and every file has its pinned size, Stale when the marker lists
 /// others (another release), Missing without a marker or when a listed file is gone or the wrong size. The hashes
 /// are checked at install and again when a tab spawns (`verify_installed_host`).
-pub(crate) fn host_state(dir: &Path, kind: EngineKind, files: &[HostFile]) -> RuntimeOnDisk {
+pub(crate) fn host_state(dir: &Path, kind: ViewKind, files: &[HostFile]) -> RuntimeOnDisk {
     if files.is_empty() {
         return RuntimeOnDisk::Missing;
     }
@@ -802,7 +802,7 @@ fn swap(new: &Path, live: &Path) -> Result<(), InstallError> {
 /// across all the files (finished ones included). Blocking: run it on a worker thread.
 pub(crate) fn install_host(
     dir: &Path,
-    kind: EngineKind,
+    kind: ViewKind,
     files: &[HostFile],
     progress: &mut dyn FnMut(u64),
     cancel: &AtomicBool,
@@ -837,7 +837,7 @@ pub(crate) fn install_host(
 /// Install everything `plan` names under the data directory `dir`: the host files, then CEF's runtime archive.
 /// One job, so `progress` runs from 0 to `plan.size()` across both. Returns `dir`.
 pub(crate) fn install_plan(
-    kind: EngineKind,
+    kind: ViewKind,
     plan: &Plan,
     dir: &Path,
     progress: &mut dyn FnMut(u64),
@@ -864,7 +864,7 @@ const LEFTOVERS: [&str; 3] = ["cef-runtime.part", "cef-runtime.tmp", "cef-runtim
 
 /// The file names in the hosts directory that are `kind`'s host: the pinned `files`, those its marker lists (an
 /// install of another release) and the host exe's own name.
-fn host_file_names(dir: &Path, kind: EngineKind, files: &[HostFile]) -> Vec<String> {
+fn host_file_names(dir: &Path, kind: ViewKind, files: &[HostFile]) -> Vec<String> {
     let mut names: Vec<String> = files.iter().map(|f| f.file.to_string()).collect();
     names.push(crate::cef_platform::PLATFORM.host_exe(kind.desc().binary));
     if let Ok(marker) = std::fs::read_to_string(host_marker_path(dir, kind)) {
@@ -878,7 +878,7 @@ fn host_file_names(dir: &Path, kind: EngineKind, files: &[HostFile]) -> Vec<Stri
 }
 
 /// `kind`'s partial downloads and temporaries in `dir`: `<file>.<hash prefix>.part`, `<file>.tmp`, the marker's `.tmp`.
-fn host_leftovers(dir: &Path, kind: EngineKind, files: &[HostFile]) -> Vec<PathBuf> {
+fn host_leftovers(dir: &Path, kind: ViewKind, files: &[HostFile]) -> Vec<PathBuf> {
     let names = host_file_names(dir, kind, files);
     let marker_tmp = format!("{}.host.tmp", kind.desc().name);
     let Ok(entries) = std::fs::read_dir(dir) else { return Vec::new() };
@@ -896,13 +896,13 @@ fn host_leftovers(dir: &Path, kind: EngineKind, files: &[HostFile]) -> Vec<PathB
 }
 
 /// Whether `kind` has any install leftover (`.part`, `.tmp`, `.old`) in `dir`.
-pub(crate) fn has_leftovers(dir: &Path, kind: EngineKind, files: &[HostFile]) -> bool {
+pub(crate) fn has_leftovers(dir: &Path, kind: ViewKind, files: &[HostFile]) -> bool {
     !host_leftovers(dir, kind, files).is_empty()
         || (has_runtime(kind) && LEFTOVERS.iter().any(|name| dir.join(name).exists()))
 }
 
 /// What `kind` has installed in `dir`: its host files and marker that exist, and CEF's runtime directory.
-pub(crate) fn installed_paths_in(dir: &Path, kind: EngineKind, files: &[HostFile]) -> Vec<PathBuf> {
+pub(crate) fn installed_paths_in(dir: &Path, kind: ViewKind, files: &[HostFile]) -> Vec<PathBuf> {
     let mut paths: Vec<PathBuf> = host_file_names(dir, kind, files).iter().map(|n| dir.join(n)).collect();
     paths.push(host_marker_path(dir, kind));
     if has_runtime(kind) {
@@ -913,15 +913,15 @@ pub(crate) fn installed_paths_in(dir: &Path, kind: EngineKind, files: &[HostFile
 }
 
 /// `installed_paths_in` for the real hosts directory and this build's pins; empty without a data directory.
-pub(crate) fn installed_paths(kind: EngineKind) -> Vec<PathBuf> {
-    crate::process_manager::engine_hosts_dir()
+pub(crate) fn installed_paths(kind: ViewKind) -> Vec<PathBuf> {
+    crate::process_manager::view_hosts_dir()
         .map(|dir| installed_paths_in(&dir, kind, host_components(kind)))
         .unwrap_or_default()
 }
 
 /// `has_leftovers` for the real hosts directory and this build's pins.
-pub(crate) fn kind_has_leftovers(kind: EngineKind) -> bool {
-    crate::process_manager::engine_hosts_dir().is_some_and(|dir| has_leftovers(&dir, kind, host_components(kind)))
+pub(crate) fn kind_has_leftovers(kind: ViewKind) -> bool {
+    crate::process_manager::view_hosts_dir().is_some_and(|dir| has_leftovers(&dir, kind, host_components(kind)))
 }
 
 fn remove_if_present(path: &Path) -> Result<(), String> {
@@ -936,9 +936,9 @@ fn remove_if_present(path: &Path) -> Result<(), String> {
 /// runtime directory and its leftovers) and nothing else. The markers go first, so a delete that stops partway
 /// never reads as Installed. Refused, with the reason, while an engine process is using it (`running`) or an
 /// install is writing next to it (`installing`).
-pub(crate) fn remove_engine_files(
+pub(crate) fn remove_view_files(
     dir: &Path,
-    kind: EngineKind,
+    kind: ViewKind,
     files: &[HostFile],
     running: bool,
     installing: bool,
@@ -979,18 +979,18 @@ pub(crate) fn dir_size(path: &Path) -> u64 {
     entries.flatten().map(|e| dir_size(&e.path())).sum()
 }
 
-/// The engine runtime installs and their Settings UI (`App::engine_ui`).
+/// The engine runtime installs and their Settings UI (`App::view_ui`).
 #[derive(Default)]
-pub(crate) struct EngineInstallUi {
+pub(crate) struct ViewInstallUi {
     /// Engine runtime installs, at most one per engine (see `InstallJob`).
-    pub(crate) engine_installs: HashMap<EngineKind, InstallJob>,
+    pub(crate) view_installs: HashMap<ViewKind, InstallJob>,
     /// The last install's failure message per engine, until the next attempt starts.
-    pub(crate) engine_failures: HashMap<EngineKind, String>,
-    /// An engine download or removal waiting for its confirm dialog (`build_engine_confirm_popup`).
-    pub(crate) pending_engine_confirm: Option<crate::engine_info::EngineConfirm>,
-    /// `engine_state` per engine for the current frame: it stats the disk, and cards, pickers, menus
+    pub(crate) view_failures: HashMap<ViewKind, String>,
+    /// An engine download or removal waiting for its confirm dialog (`build_view_confirm_popup`).
+    pub(crate) pending_view_confirm: Option<crate::view_info::ViewConfirm>,
+    /// `view_status` per engine for the current frame: it stats the disk, and cards, pickers, menus
     /// and Settings all ask. Cleared at the start of each frame and whenever an install changes.
-    pub(crate) engine_state_cache: std::cell::RefCell<HashMap<EngineKind, EngineState>>,
+    pub(crate) view_status_cache: std::cell::RefCell<HashMap<ViewKind, ViewStatus>>,
     /// The bring-your-own CEF directory's last validation, with the path it was for (`custom_cef_dir`).
     pub(crate) cef_dir_check: std::cell::RefCell<Option<DirCheck>>,
     /// Settings' text field for that directory while it is being edited; committed on Enter or focus loss.
@@ -1015,40 +1015,35 @@ impl crate::App {
     /// How `kind` is available now: the disk, then this app's running install (a cancelled one doesn't
     /// count) and its last failure.
     ///
-    /// Cached for the frame (`engine_state_cache`); the disk answers under it are reused for a few seconds (`engine_on_disk`).
-    pub(crate) fn engine_state(&self, kind: EngineKind) -> EngineState {
-        if let Some(state) = self.engine_ui.engine_state_cache.borrow().get(&kind) {
+    /// Cached for the frame (`view_status_cache`); the disk answers under it are reused for a few seconds (`view_on_disk`).
+    pub(crate) fn view_status(&self, kind: ViewKind) -> ViewStatus {
+        if let Some(state) = self.view_ui.view_status_cache.borrow().get(&kind) {
             return state.clone();
         }
-        let state = self.engine_state_at(kind, crate::process_manager::engine_on_disk(kind), &plan_for(kind));
-        self.engine_ui.engine_state_cache.borrow_mut().insert(kind, state.clone());
+        let state = self.view_status_at(kind, crate::process_manager::view_on_disk(kind), &plan_for(kind));
+        self.view_ui.view_status_cache.borrow_mut().insert(kind, state.clone());
         state
     }
 
-    /// `engine_state` with the engine's on-disk state (`engine_on_disk`) and install plan (`plan_for`) given (tests
+    /// `view_status` with the engine's on-disk state (`view_on_disk`) and install plan (`plan_for`) given (tests
     /// use a temporary directory and a plan of their own).
-    pub(crate) fn engine_state_at(
-        &self,
-        kind: EngineKind,
-        on_disk: OnDisk,
-        plan: &Result<Plan, String>,
-    ) -> EngineState {
+    pub(crate) fn view_status_at(&self, kind: ViewKind, on_disk: OnDisk, plan: &Result<Plan, String>) -> ViewStatus {
         let installing = self
-            .engine_ui
-            .engine_installs
+            .view_ui
+            .view_installs
             .get(&kind)
             .filter(|job| !job.cancelled)
             .map(|job| (job.progress.load(Ordering::Relaxed), job.total));
-        let failed = self.engine_ui.engine_failures.get(&kind).map(String::as_str);
-        let custom = (kind == EngineKind::Cef).then(|| self.custom_cef_dir()).flatten();
-        crate::process_manager::engine_availability(kind, plan, on_disk, installing, failed, custom.as_deref())
+        let failed = self.view_ui.view_failures.get(&kind).map(String::as_str);
+        let custom = (kind == ViewKind::Cef).then(|| self.custom_cef_dir()).flatten();
+        crate::process_manager::view_availability(kind, plan, on_disk, installing, failed, custom.as_deref())
     }
 
     /// The bytes installing `kind` would fetch now, for the confirm dialog and the failed card's hint: what is not
     /// on disk yet (a bring-your-own CEF runtime is never fetched).
-    pub(crate) fn engine_download_size(&self, kind: EngineKind) -> u64 {
+    pub(crate) fn view_download_size(&self, kind: ViewKind) -> u64 {
         plan_for(kind).map_or(0, |plan| {
-            plan.fetch_size(crate::process_manager::engine_on_disk(kind), self.custom_cef_dir().is_some())
+            plan.fetch_size(crate::process_manager::view_on_disk(kind), self.custom_cef_dir().is_some())
         })
     }
 
@@ -1062,7 +1057,7 @@ impl crate::App {
     /// not every frame, so a folder deleted or replaced behind the app's back is noticed.
     pub(crate) fn cef_dir_verdict(&self) -> Option<(PathBuf, Result<(), String>)> {
         let configured = self.settings.cef_directory.as_deref().filter(|s| !s.trim().is_empty())?;
-        let mut cache = self.engine_ui.cef_dir_check.borrow_mut();
+        let mut cache = self.view_ui.cef_dir_check.borrow_mut();
         if cache.as_ref().is_none_or(|(path, at, _)| path != configured || at.elapsed() > CEF_DIR_CHECK_TTL) {
             let verdict = match crate::cef_pin::pin_for_platform() {
                 Some(pin) => validate_custom(Path::new(configured), pin),
@@ -1077,8 +1072,8 @@ impl crate::App {
     /// Forget the cached verdict (and the states built on it, and the Settings page's disk reads) so the next
     /// read looks at the disk again.
     pub(crate) fn invalidate_cef_dir_check(&self) {
-        *self.engine_ui.cef_dir_check.borrow_mut() = None;
-        self.engine_ui.engine_state_cache.borrow_mut().clear();
+        *self.view_ui.cef_dir_check.borrow_mut() = None;
+        self.view_ui.view_status_cache.borrow_mut().clear();
         crate::settings_page::forget_disk_cache(&self.egui_ctx);
     }
 
@@ -1091,43 +1086,43 @@ impl crate::App {
         self.save_settings();
     }
 
-    /// Download and install `kind`'s components into the data directory. See `start_engine_install_at`.
-    pub(crate) fn start_engine_install(&mut self, kind: EngineKind) -> bool {
-        let Some(data_dir) = crate::process_manager::engine_hosts_dir() else {
+    /// Download and install `kind`'s components into the data directory. See `start_view_install_at`.
+    pub(crate) fn start_view_install(&mut self, kind: ViewKind) -> bool {
+        let Some(data_dir) = crate::process_manager::view_hosts_dir() else {
             self.queue_toast("No data directory to install into".into());
             return false;
         };
         let mut plan = match plan_for(kind) {
             Ok(plan) => plan,
             Err(reason) => {
-                self.queue_toast(crate::engine_info::PickOutcome::unavailable_toast(kind, &reason));
+                self.queue_toast(crate::view_info::PickOutcome::unavailable_toast(kind, &reason));
                 return false;
             }
         };
         if self.custom_cef_dir().is_some() {
             plan.runtime = None;
         }
-        self.start_engine_install_at(kind, &data_dir, &plan)
+        self.start_view_install_at(kind, &data_dir, &plan)
     }
 
     /// Start installing `plan` for `kind` (only a downloaded engine installs) under `data_dir`. Refused, with a
     /// toast saying why, while that engine's install is running or its cancelled thread has not yet stopped (it
     /// would share the `.part`), or while an engine process of that kind is alive (it holds the files, so the
     /// replace would fail). Returns whether a job started.
-    pub(crate) fn start_engine_install_at(&mut self, kind: EngineKind, data_dir: &Path, plan: &Plan) -> bool {
+    pub(crate) fn start_view_install_at(&mut self, kind: ViewKind, data_dir: &Path, plan: &Plan) -> bool {
         if !downloads(kind) {
             return false;
         }
-        let label = crate::engine_info::engine_label(kind);
-        if let Some(job) = self.engine_ui.engine_installs.get(&kind) {
+        let label = crate::view_info::view_label(kind);
+        if let Some(job) = self.view_ui.view_installs.get(&kind) {
             if !job.cancelled {
                 self.queue_toast(format!("{label} is already installing"));
             } else if !job.handle.is_finished() {
                 self.queue_toast(format!("The cancelled {label} download is still stopping; try again in a moment"));
             } else {
                 // Finished: collect it first (its result is discarded), then start afresh.
-                self.poll_engine_installs();
-                return self.start_engine_install_at(kind, data_dir, plan);
+                self.poll_view_installs();
+                return self.start_view_install_at(kind, data_dir, plan);
             }
             return false;
         }
@@ -1140,8 +1135,8 @@ impl crate::App {
             self.queue_toast(format!("A tab is still starting; try installing {label} again in a moment"));
             return false;
         }
-        self.engine_ui.engine_failures.remove(&kind);
-        self.engine_ui.engine_state_cache.borrow_mut().clear();
+        self.view_ui.view_failures.remove(&kind);
+        self.view_ui.view_status_cache.borrow_mut().clear();
         let progress = Arc::new(AtomicU64::new(0));
         let cancel = Arc::new(AtomicBool::new(false));
         let (thread_progress, thread_cancel) = (progress.clone(), cancel.clone());
@@ -1150,28 +1145,28 @@ impl crate::App {
         let handle = std::thread::spawn(move || {
             install_plan(kind, &plan, &data_dir, &mut |n| thread_progress.store(n, Ordering::Relaxed), &thread_cancel)
         });
-        self.engine_ui.engine_installs.insert(kind, InstallJob { progress, cancel, total, cancelled: false, handle });
+        self.view_ui.view_installs.insert(kind, InstallJob { progress, cancel, total, cancelled: false, handle });
         self.egui_ctx.request_repaint();
         true
     }
 
     /// Delete what `kind` downloaded (Settings' Remove, after its confirm), toasting the outcome.
-    pub(crate) fn remove_engine(&mut self, kind: EngineKind) {
-        let label = crate::engine_info::engine_label(kind);
-        let Some(dir) = crate::process_manager::engine_hosts_dir() else { return };
+    pub(crate) fn remove_view(&mut self, kind: ViewKind) {
+        let label = crate::view_info::view_label(kind);
+        let Some(dir) = crate::process_manager::view_hosts_dir() else { return };
         // A spawn still in flight may be this engine's host (it isn't a node yet), so it counts too.
         let running = !self.spawns.spawning.is_empty()
             || self.nodes.values().any(|n| n.as_tab().is_some_and(|t| t.tab.kind == kind));
-        let installing = self.engine_ui.engine_installs.contains_key(&kind);
-        let removed = remove_engine_files(&dir, kind, host_components(kind), running, installing);
+        let installing = self.view_ui.view_installs.contains_key(&kind);
+        let removed = remove_view_files(&dir, kind, host_components(kind), running, installing);
         // Even a failed removal may have deleted some of it: the Settings page reads the disk again.
         crate::process_manager::forget_on_disk();
         crate::settings_page::forget_disk_cache(&self.egui_ctx);
         match removed {
             Ok(()) => {
                 // A recorded failure described the files just deleted.
-                self.engine_ui.engine_failures.remove(&kind);
-                self.engine_ui.engine_state_cache.borrow_mut().clear();
+                self.view_ui.view_failures.remove(&kind);
+                self.view_ui.view_status_cache.borrow_mut().clear();
                 self.queue_toast(format!("{label} removed"));
             }
             Err(why) => self.queue_toast(format!("Couldn't remove {label}: {why}")),
@@ -1181,54 +1176,54 @@ impl crate::App {
     /// Stop showing `kind`'s install at once and tell its thread to stop: it notices within about 100 ms
     /// while downloading (even on a stalled read), and between unpack entries and before the swap after
     /// that. The `.part` stays for resuming and no failure is recorded.
-    pub(crate) fn cancel_engine_install(&mut self, kind: EngineKind) {
-        if let Some(job) = self.engine_ui.engine_installs.get_mut(&kind) {
+    pub(crate) fn cancel_view_install(&mut self, kind: ViewKind) {
+        if let Some(job) = self.view_ui.view_installs.get_mut(&kind) {
             job.cancel.store(true, Ordering::Relaxed);
             job.cancelled = true;
         }
-        self.engine_ui.engine_state_cache.borrow_mut().clear();
+        self.view_ui.view_status_cache.borrow_mut().clear();
         self.egui_ctx.request_repaint();
     }
 
     /// Collect finished jobs (once per frame): toast and record a failure, toast a success, drop a
     /// cancelled job's result. Keeps repainting while any job is running.
-    pub(crate) fn poll_engine_installs(&mut self) {
-        if self.engine_ui.engine_installs.is_empty() {
+    pub(crate) fn poll_view_installs(&mut self) {
+        if self.view_ui.view_installs.is_empty() {
             return;
         }
-        let finished: Vec<EngineKind> = self
-            .engine_ui
-            .engine_installs
+        let finished: Vec<ViewKind> = self
+            .view_ui
+            .view_installs
             .iter()
             .filter(|(_, job)| job.handle.is_finished())
             .map(|(kind, _)| *kind)
             .collect();
         if !finished.is_empty() {
-            self.engine_ui.engine_state_cache.borrow_mut().clear();
+            self.view_ui.view_status_cache.borrow_mut().clear();
             // An install (or a cancelled one's leftovers) changed what the Settings page shows from disk.
             crate::settings_page::forget_disk_cache(&self.egui_ctx);
             crate::process_manager::forget_on_disk();
         }
         for kind in finished {
-            let Some(job) = self.engine_ui.engine_installs.remove(&kind) else { continue };
+            let Some(job) = self.view_ui.view_installs.remove(&kind) else { continue };
             let result =
                 job.handle.join().unwrap_or_else(|_| Err(InstallError::Io("the install thread panicked".into())));
-            let label = crate::engine_info::engine_label(kind);
+            let label = crate::view_info::view_label(kind);
             match result {
                 _ if job.cancelled => {}
                 Err(InstallError::Cancelled) => {}
                 Ok(_) => {
-                    self.engine_ui.engine_failures.remove(&kind);
+                    self.view_ui.view_failures.remove(&kind);
                     self.queue_toast(format!("{label} installed"));
                 }
                 Err(e) => {
                     self.queue_toast(format!("{label} install failed: {e}"));
-                    self.engine_ui.engine_failures.insert(kind, e.to_string());
+                    self.view_ui.view_failures.insert(kind, e.to_string());
                 }
             }
             self.egui_ctx.request_repaint();
         }
-        if !self.engine_ui.engine_installs.is_empty() {
+        if !self.view_ui.view_installs.is_empty() {
             self.egui_ctx.request_repaint_after(Duration::from_millis(100));
         }
     }

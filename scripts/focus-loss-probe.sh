@@ -65,8 +65,8 @@ launch() {
     seed_settings "$profile"
     cat >"$profile/seed.json" <<'EOF'
 {"nodes": [
- {"id": "t1", "type": "application/vnd.manifold.tab", "url": "about:blank", "engine": "webview2", "pos": [0.0, 0.0]},
- {"id": "t2", "type": "application/vnd.manifold.tab", "url": "about:blank", "engine": "webview2", "pos": [400.0, 0.0]}
+ {"id": "t1", "type": "application/vnd.manifold.tab", "url": "about:blank", "view_kind": "webview2", "pos": [0.0, 0.0]},
+ {"id": "t2", "type": "application/vnd.manifold.tab", "url": "about:blank", "view_kind": "webview2", "pos": [400.0, 0.0]}
 ]}
 EOF
     "$exe" --import-json "$(cygpath -w "$profile/seed.json")" --out "$(cygpath -w "$profile/manifold/session.mnf")" >/dev/null || return 1

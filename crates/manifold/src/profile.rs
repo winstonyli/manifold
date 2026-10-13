@@ -2,7 +2,7 @@
 //! `settings.json`, `bookmarks.json`, `history.json`, `tab-history.json`, the session store,
 //! the named sessions, fetched content (`content_dir`) and CEF's throwaway
 //! cache dirs, under `cef-cache`. Every path into it starts from `dir()`
-//! or, for engines, `engine_data_dir()`. The one user folder outside it,
+//! or, for engines, `view_data_dir()`. The one user folder outside it,
 //! the screenshot folder, comes from `pictures_dir()`.
 
 use std::path::PathBuf;
@@ -76,10 +76,10 @@ pub fn jars_dir() -> Option<PathBuf> {
 
 /// The per-user data directory (Known Folders on Windows, which puts it at
 /// `%APPDATA%\manifold\manifold\data`; XDG on Linux; Application Support on
-/// macOS) where `process_manager::engine_binary_path` looks for an engine
+/// macOS) where `process_manager::view_binary_path` looks for an engine
 /// that isn't next to `manifold.exe`. `None` with no home directory, and
 /// always under `cargo test`, like `dir()`.
-pub fn engine_data_dir() -> Option<PathBuf> {
+pub fn view_data_dir() -> Option<PathBuf> {
     use etcetera::{app_strategy::AppStrategyArgs, choose_app_strategy, AppStrategy};
     if cfg!(test) {
         return None;
@@ -96,7 +96,7 @@ mod tests {
     #[test]
     fn tests_have_no_profile_dir() {
         assert_eq!(super::dir(), None);
-        assert_eq!(super::engine_data_dir(), None);
+        assert_eq!(super::view_data_dir(), None);
         assert_eq!(super::cef_cache_dir(), None);
         assert_eq!(super::content_dir(), None);
         assert_eq!(super::jars_dir(), None);

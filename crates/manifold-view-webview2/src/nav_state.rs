@@ -58,7 +58,7 @@ pub fn new_shared_nav_state(initial_url: String) -> SharedNavState {
     }))
 }
 
-/// See `ipc_protocol::EngineToHost::JsonBody`'s own doc comment -- filled
+/// See `ipc_protocol::ViewToHost::JsonBody`'s own doc comment -- filled
 /// in once per navigation, from the same `NavigationCompleted` handler
 /// below that also updates `NavState`.
 pub type SharedJsonBody = Rc<RefCell<Option<String>>>;
@@ -67,7 +67,7 @@ pub fn new_shared_json_body() -> SharedJsonBody {
     Rc::new(RefCell::new(None))
 }
 
-/// See `ipc_protocol::EngineToHost::RedirectableContent`'s own doc comment
+/// See `ipc_protocol::ViewToHost::RedirectableContent`'s own doc comment
 /// -- same `NavigationCompleted` handler as `SharedJsonBody`, just the
 /// other branch of the same `document.contentType` check.
 pub type SharedRedirectContentType = Rc<RefCell<Option<String>>>;
@@ -170,7 +170,7 @@ pub fn register_handlers(
             s.dirty = true;
             drop(s);
 
-            // See `ipc_protocol::EngineToHost::JsonBody`/`RedirectableContent`'s
+            // See `ipc_protocol::ViewToHost::JsonBody`/`RedirectableContent`'s
             // own doc comments. `ExecuteScript`'s own return value comes
             // back JSON-encoded (an already-quoted-and-escaped string, or
             // the literal text `null`) -- `serde_json::from_str::<Option<String>>`

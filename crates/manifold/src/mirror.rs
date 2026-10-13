@@ -11,16 +11,16 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use crate::jar::JarChoice;
 use crate::jar_defs::JarDef;
 use crate::json_view::JsonView;
-use crate::process_manager::EngineKind;
-use crate::session_sync::{color_of, color_value, engine_of, pos_value, Fields};
+use crate::process_manager::ViewKind;
+use crate::session_sync::{color_of, color_value, pos_value, view_kind_of, Fields};
 use crate::store::model::{field, field_def, FieldValue, Kind, NodeId};
 
 /// Every field of a node's type (`Kind::fields`, 2b-5 Ruling 2) but the two links, `parent` and `group`, which are
 /// `links`. A `Create` carries them, and on an existing node only `App::pending` writes them (nothing compares the
 /// mirror with the document). `URL` is a tab's shared url
 /// (2b-3 Ruling 2) and a content node's web source (`App::source_url`), seeded at creation since 2b-5. `JAR` and
-/// `JAR_SET` are a tab's jar choice (`jar_choice`), written together by `App::edit_jar`. `ENGINE` is a tab's engine as
-/// its stored code (`engine`), written by `App::edit_engine`. `POS` is the document pos (`pos`), written by
+/// `JAR_SET` are a tab's jar choice (`jar_choice`), written together by `App::edit_jar`. `VIEW_KIND` is a tab's engine as
+/// its stored code (`view_kind`), written by `App::edit_view_kind`. `POS` is the document pos (`pos`), written by
 /// `App::edit_pos`; where a card is drawn is `App::layout`, which the document never reads (2b-4 Ruling 1). `TEXT` is a
 /// note's text (`text`), written by `App::edit_text` at a save or blur; the note's payload is its edit buffer. `VIEW`
 /// is a Json node's view (`view`, decoded), written by `App::edit_view`. `NAME` is a group's name (`name`), written by
@@ -291,17 +291,17 @@ impl Mirror {
         JarChoice { jar, set: matches!(self.get(id, field::JAR_SET), FieldValue::Bool(true)) }
     }
 
-    /// A tab's engine: the one it runs or is switching to (`App::edit_engine`), the document's otherwise. The mirror
+    /// A tab's engine: the one it runs or is switching to (`App::edit_view_kind`), the document's otherwise. The mirror
     /// holds the stored code as is, so a code from a newer build survives a save; it, and an absent one, read as
-    /// Servo (`engine_of`, 2b-3 Ruling 6). `EngineTab::kind` is the engine actually running.
-    pub(crate) fn engine(&self, id: &str) -> EngineKind {
-        engine_of(self.engine_code(id))
+    /// Servo (`view_kind_of`, 2b-3 Ruling 6). `ViewTab::kind` is the engine actually running.
+    pub(crate) fn view_kind(&self, id: &str) -> ViewKind {
+        view_kind_of(self.view_code(id))
     }
 
     /// A tab's engine as the stored code, kept as is (0: none).
-    pub(crate) fn engine_code(&self, id: &str) -> u64 {
-        match self.get(id, field::ENGINE) {
-            FieldValue::Engine(code) => code,
+    pub(crate) fn view_code(&self, id: &str) -> u64 {
+        match self.get(id, field::VIEW_KIND) {
+            FieldValue::ViewCode(code) => code,
             _ => 0,
         }
     }
@@ -321,7 +321,7 @@ impl Mirror {
             group: self.group(id).map(str::to_owned),
             url: self.url(id).to_owned(),
             text: self.text(id).to_owned(),
-            engine: self.engine_code(id),
+            view_kind: self.view_code(id),
             jar: self.jar_choice(id),
             ty: self.ty(id).to_owned(),
             path: self.path(id).to_owned(),
@@ -336,13 +336,13 @@ impl Mirror {
     pub(crate) fn seed(&mut self, id: &str, carried: &Carried) {
         let str = |no: u32, s: &String| (!s.is_empty()).then(|| (no, FieldValue::Str(s.clone())));
         let pos = carried.pos.map(|pos| (field::POS, pos_value(pos)));
-        let engine = (carried.engine != 0).then_some((field::ENGINE, FieldValue::Engine(carried.engine)));
+        let view_kind = (carried.view_kind != 0).then_some((field::VIEW_KIND, FieldValue::ViewCode(carried.view_kind)));
         let jar = carried.jar.jar.is_some().then_some((field::JAR, FieldValue::Id(carried.jar.jar)));
         let jar_set = carried.jar.set.then_some((field::JAR_SET, FieldValue::Bool(true)));
         let default_jar = carried.default_jar.map(|jar| (field::DEFAULT_JAR, FieldValue::Id(Some(jar))));
         let strings = [str(field::URL, &carried.url), str(field::TEXT, &carried.text), str(field::PATH, &carried.path)];
         let fields = [(field::COLOR, color_value(carried.color)), (field::PINNED, FieldValue::Bool(carried.pinned))];
-        let optional = [pos, engine, jar, jar_set, default_jar];
+        let optional = [pos, view_kind, jar, jar_set, default_jar];
         self.init(id, fields.into_iter().chain(optional.into_iter().flatten()).chain(strings.into_iter().flatten()));
         // After `init`, which seeds nothing once the entry exists: the type is the one field that still lands.
         if !carried.ty.is_empty() {
@@ -370,9 +370,9 @@ pub(crate) struct Carried {
     pub url: String,
     /// A note's text (`Mirror::text`): what a new note starts with, which its `Create` carries; "" for other kinds.
     pub text: String,
-    /// The engine's stored code (`Mirror::engine` decodes it, `session_sync::engine_code` makes one); 0, the absent
+    /// The engine's stored code (`Mirror::engine` decodes it, `session_sync::view_code` makes one); 0, the absent
     /// value, for a node that isn't a tab.
-    pub engine: u64,
+    pub view_kind: u64,
     /// The jar choice (`Mirror::jar_choice`); the default for a node that isn't a tab.
     pub jar: JarChoice,
     /// The type string (`Mirror::ty`); "" for none.
@@ -398,7 +398,7 @@ mod tests {
             group: Some("g".into()),
             url: "https://a/".into(),
             text: "note".into(),
-            engine: 99,
+            view_kind: 99,
             jar: JarChoice {
                 jar: Some(crate::store::model::NodeId { actor: crate::store::model::ActorId(1), counter: 2 }),
                 set: true,
@@ -442,17 +442,17 @@ mod tests {
     }
 
     #[test]
-    fn an_engine_reads_back_decoded_and_keeps_an_unknown_code() {
+    fn a_view_reads_back_decoded_and_keeps_an_unknown_code() {
         let mut mirror = Mirror::default();
-        assert_eq!(mirror.engine("7"), EngineKind::Servo, "absent is Servo");
+        assert_eq!(mirror.view_kind("7"), ViewKind::Servo, "absent is Servo");
         mirror.seed("8", &Carried::default());
-        assert!(!mirror.nodes["8"].contains_key(&field::ENGINE), "code 0 seeds nothing");
-        let cef = crate::session_sync::engine_code(EngineKind::Cef);
-        mirror.set("7", field::ENGINE, FieldValue::Engine(cef));
-        assert_eq!(mirror.engine("7"), EngineKind::Cef);
-        mirror.set("7", field::ENGINE, FieldValue::Engine(99));
-        assert_eq!(mirror.engine("7"), EngineKind::Servo, "a newer build's code reads as Servo");
-        assert_eq!(mirror.carried("7").engine, 99, "and is carried as is");
+        assert!(!mirror.nodes["8"].contains_key(&field::VIEW_KIND), "code 0 seeds nothing");
+        let cef = crate::session_sync::view_code(ViewKind::Cef);
+        mirror.set("7", field::VIEW_KIND, FieldValue::ViewCode(cef));
+        assert_eq!(mirror.view_kind("7"), ViewKind::Cef);
+        mirror.set("7", field::VIEW_KIND, FieldValue::ViewCode(99));
+        assert_eq!(mirror.view_kind("7"), ViewKind::Servo, "a newer build's code reads as Servo");
+        assert_eq!(mirror.carried("7").view_kind, 99, "and is carried as is");
     }
 
     #[test]
@@ -607,7 +607,7 @@ mod tests {
             FieldType::Id => FieldValue::Id(Some(NodeId { actor: ActorId(1), counter: 2 })),
             FieldType::Str => FieldValue::Str("s".into()),
             FieldType::Bool => FieldValue::Bool(true),
-            FieldType::Engine => FieldValue::Engine(3),
+            FieldType::ViewCode => FieldValue::ViewCode(3),
         };
         let fields: Vec<u32> = Kind::Tab.fields().iter().copied().filter(|&no| no != field::PARENT).collect();
         assert!(!fields.is_empty());

@@ -4,7 +4,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::EngineToHost;
+use crate::ViewToHost;
 
 /// `~/Downloads`: `USERPROFILE` on Windows, `HOME` elsewhere (CEF on Linux
 /// used `USERPROFILE` and so saved into its working directory).
@@ -156,19 +156,19 @@ fn ntfs_upper(s: &str) -> String {
 /// One tick's engine messages with each download's progress reduced to the
 /// latest, kept at its last position; every other message keeps its order.
 /// Fast downloads report per network chunk, hundreds of times a tick.
-pub fn coalesce_progress(msgs: Vec<EngineToHost>) -> Vec<EngineToHost> {
+pub fn coalesce_progress(msgs: Vec<ViewToHost>) -> Vec<ViewToHost> {
     let last_progress: std::collections::HashMap<String, usize> = msgs
         .iter()
         .enumerate()
         .filter_map(|(i, m)| match m {
-            EngineToHost::DownloadProgress { path, .. } => Some((path.clone(), i)),
+            ViewToHost::DownloadProgress { path, .. } => Some((path.clone(), i)),
             _ => None,
         })
         .collect();
     msgs.into_iter()
         .enumerate()
         .filter(|(i, m)| match m {
-            EngineToHost::DownloadProgress { path, .. } => last_progress.get(path) == Some(i),
+            ViewToHost::DownloadProgress { path, .. } => last_progress.get(path) == Some(i),
             _ => true,
         })
         .map(|(_, m)| m)
@@ -323,7 +323,7 @@ mod tests {
 
     #[test]
     fn progress_is_coalesced_to_the_latest_per_path_in_order() {
-        use crate::EngineToHost::*;
+        use crate::ViewToHost::*;
         let path = |p: &str| p.to_string();
         let msgs = vec![
             DownloadStarted { path: path("a"), total_bytes: None, url: None },

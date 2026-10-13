@@ -7,7 +7,7 @@ use winit::event_loop::EventLoopProxy;
 use super::*;
 use crate::event_loop::UserEvent;
 use crate::nav_history::Dir;
-use crate::process_manager::EngineKind;
+use crate::process_manager::ViewKind;
 use crate::sleep_state::SleepWhy;
 
 /// A headless-mode automation command, one per stdin line (see `parse_line`
@@ -120,10 +120,10 @@ pub enum DebugCommand {
     KeyPage(KeyCode),
     /// `Ctrl+Shift+T` equivalent — see `App::reopen_closed_shortcut`.
     ReopenTab,
-    /// Starts `App::start_engine_install` for the engine, as the picker's Download does.
-    InstallEngine(EngineKind),
-    /// Prints the engine's `EngineState` to stderr as `engine-state <name>: <label>`.
-    EngineState(EngineKind),
+    /// Starts `App::start_view_install` for the engine, as the picker's Download does.
+    InstallView(ViewKind),
+    /// Prints the engine's `ViewStatus` to stderr as `engine-state <name>: <label>`.
+    ViewStatus(ViewKind),
     /// `Ctrl+=`/`Ctrl++` equivalent — see `App::zoom_in_shortcut`.
     ZoomIn,
     /// `Ctrl+-` equivalent — see `App::zoom_out_shortcut`.
@@ -162,7 +162,7 @@ pub enum DebugCommand {
     /// `Escape` (or the find bar's own close button) — sends `FindStop` and
     /// closes the bar.
     CloseFindBar,
-    /// Sends `HostToEngine::SetVisible` to the focused tab directly —
+    /// Sends `HostToView::SetVisible` to the focused tab directly —
     /// bypassing `focus_tab`/`leave_to_graph`'s own visibility changes,
     /// which always come bundled with a `Resize` (Tab vs. Graph view's
     /// chrome heights differ). Exists for testing the `SetVisible(false)`→
@@ -254,7 +254,7 @@ pub enum DebugCommand {
     /// handles (every card when nothing else owns the pointer; every card during a connect-drag) to
     /// `{top, right, bottom, left}` (those shown at this zoom), each `[left, top, right, bottom]` on screen.
     /// `connect_drag` is the source card of a running connect-drag, or null.
-    /// `engines` maps each engine name to `{state, disk}`: the state label the engine lists show and what the disk
+    /// `view_kinds` maps each engine name to `{state, disk}`: the state label the engine lists show and what the disk
     /// holds of its downloadable parts ("host ready", for CEF "host ready, runtime missing").
     /// `toast` is the bottom-left toast's text
     /// (the one showing, else the next queued), or null. Suggestions arriving from the network show up
@@ -341,7 +341,7 @@ pub enum DebugCommand {
     DuplicateTab,
     /// The Tab-view toolbar's "Split" picker with an explicit engine
     /// instead of a real click-through dropdown — see `App::start_split`.
-    Split(EngineKind),
+    Split(ViewKind),
     /// The Tab-view toolbar's "Close Split" button — see `App::close_split`.
     CloseSplit,
     /// Select the entry at this JSON Pointer on the current JSON level
@@ -386,10 +386,10 @@ pub enum DebugCommand {
     /// action, targeting an explicit id for the same reason as `CloseGroup`.
     /// See `App::request_sleep`.
     SleepNode(String),
-    /// `RESTARTENGINE id` -- the "Restart Engine" row of live tab `id`'s menu (`App::restart_engine`).
-    RestartEngine(String),
-    /// `ENDENGINE id` -- the "End Engine" row of live tab `id`'s menu (`App::end_engine`).
-    EndEngine(String),
+    /// `RESTARTVIEW id` -- the "Restart Engine" row of live tab `id`'s menu (`App::restart_view`).
+    RestartView(String),
+    /// `ENDVIEW id` -- the "End Engine" row of live tab `id`'s menu (`App::end_view`).
+    EndView(String),
     /// `IDLESWEEP secs` -- one idle auto-sleep sweep with a limit of `secs`
     /// seconds instead of the setting's minutes. See `App::sweep_idle_tabs`.
     IdleSweep(u64),
@@ -487,8 +487,8 @@ const COMMAND_HELP: &[(&str, &str)] = &[
     ("GRAPHOPEN", "Open whichever Graph-view node is currently focused"),
     ("TYPE text", "Send each character to the focused tab's own page (not the address bar)"),
     ("KEYPAGE key", "Send a KeyDown+KeyUp of `key` to the focused tab's own page"),
-    ("INSTALLENGINE kind", "Start downloading and installing the engine's host files (and CEF's runtime)"),
-    ("ENGINESTATE kind", "Print the engine's state (Installed, Installing n%, Failed: ..) to stderr"),
+    ("INSTALLVIEW kind", "Start downloading and installing the engine's host files (and CEF's runtime)"),
+    ("VIEWSTATE kind", "Print the engine's state (Installed, Installing n%, Failed: ..) to stderr"),
     ("REOPENTAB", "Ctrl+Shift+T -- reopen the newest Recently Closed entry"),
     ("ZOOMIN", "Ctrl+=/Ctrl++ -- zoom in"),
     ("ZOOMOUT", "Ctrl+- -- zoom out"),
@@ -582,11 +582,11 @@ const COMMAND_HELP: &[(&str, &str)] = &[
          context-menu action; it sleeps when the engine answers the page-state query (wait a second)",
     ),
     (
-        "RESTARTENGINE id",
+        "RESTARTVIEW id",
         "Start a new engine host for live tab `id` at its URL, same as its \"Restart Engine\" row \
          (offered while it is not responding)",
     ),
-    ("ENDENGINE id", "End live tab `id`'s engine host and leave a failed card, same as its \"End Engine\" row"),
+    ("ENDVIEW id", "End live tab `id`'s engine host and leave a failed card, same as its \"End Engine\" row"),
     (
         "IDLESWEEP secs",
         "Run one idle auto-sleep sweep: tabs out of sight for `secs` seconds are asked to sleep, \
@@ -610,11 +610,11 @@ pub(crate) fn parse_secs(s: &str) -> Option<std::time::Duration> {
     (secs.is_finite() && (0.0..=MAX_WAIT_SECS).contains(&secs)).then(|| std::time::Duration::from_secs_f64(secs))
 }
 
-/// Case-insensitive, matching `engine_kind_serde`'s own lowercase
+/// Case-insensitive, matching `view_kind_serde`'s own lowercase
 /// convention (`settings.json` and session exports use the same strings) --
 /// `SPLIT`'s one argument.
-fn parse_engine_kind(name: &str) -> Option<EngineKind> {
-    EngineKind::from_name(name)
+fn parse_view_kind(name: &str) -> Option<ViewKind> {
+    ViewKind::from_name(name)
 }
 
 fn parse_mouse_button(name: &str) -> MouseButton {
@@ -735,8 +735,8 @@ pub fn parse_line(line: &str) -> Option<DebugCommand> {
         "TYPE" => Some(DebugCommand::TypeIntoPage(rest.to_string())),
         "KEYPAGE" => Some(DebugCommand::KeyPage(parse_key_code(parts.next()?)?)),
         "REOPENTAB" => Some(DebugCommand::ReopenTab),
-        "INSTALLENGINE" => parse_engine_kind(rest).map(DebugCommand::InstallEngine),
-        "ENGINESTATE" => parse_engine_kind(rest).map(DebugCommand::EngineState),
+        "INSTALLVIEW" => parse_view_kind(rest).map(DebugCommand::InstallView),
+        "VIEWSTATE" => parse_view_kind(rest).map(DebugCommand::ViewStatus),
         "ZOOMIN" => Some(DebugCommand::ZoomIn),
         "ZOOMOUT" => Some(DebugCommand::ZoomOut),
         "ZOOMRESET" => Some(DebugCommand::ZoomReset),
@@ -839,7 +839,7 @@ pub fn parse_line(line: &str) -> Option<DebugCommand> {
             "none" => Some(DebugCommand::MenuPage(None)),
             _ => None,
         },
-        "SPLIT" => parse_engine_kind(rest).map(DebugCommand::Split),
+        "SPLIT" => parse_view_kind(rest).map(DebugCommand::Split),
         "CLOSESPLIT" => Some(DebugCommand::CloseSplit),
         "CLOSEGROUP" => non_empty(DebugCommand::CloseGroup),
         "MOVETOGROUP" => {
@@ -851,8 +851,8 @@ pub fn parse_line(line: &str) -> Option<DebugCommand> {
             Some(DebugCommand::OpenedFrom { child: parts.next()?.to_string(), parent: parts.next()?.to_string() })
         }
         "SLEEPNODE" => non_empty(DebugCommand::SleepNode),
-        "RESTARTENGINE" => non_empty(DebugCommand::RestartEngine),
-        "ENDENGINE" => non_empty(DebugCommand::EndEngine),
+        "RESTARTVIEW" => non_empty(DebugCommand::RestartView),
+        "ENDVIEW" => non_empty(DebugCommand::EndView),
         "IDLESWEEP" => rest.parse().ok().map(DebugCommand::IdleSweep),
         "SETJAR" => non_empty(DebugCommand::SetJar),
         "SWITCHJARNOW" => Some(DebugCommand::SwitchJarNow),
@@ -1155,7 +1155,7 @@ impl App {
                 if let Some(id) = self.focused.clone() {
                     if let Some(node) = self.nodes.get_mut(&id).and_then(|n| n.as_tab_mut()) {
                         for ch in text.chars() {
-                            node.tab.send(&HostToEngine::Input(InputEvent::Char { codepoint: ch as u32 }));
+                            node.tab.send(&HostToView::Input(InputEvent::Char { codepoint: ch as u32 }));
                         }
                     }
                 }
@@ -1163,21 +1163,21 @@ impl App {
             DebugCommand::KeyPage(key) => {
                 if let Some(id) = self.focused.clone() {
                     if let Some(node) = self.nodes.get_mut(&id).and_then(|n| n.as_tab_mut()) {
-                        node.tab.send(&HostToEngine::Input(InputEvent::KeyDown { key, modifiers: self.key_modifiers }));
-                        node.tab.send(&HostToEngine::Input(InputEvent::KeyUp { key, modifiers: self.key_modifiers }));
+                        node.tab.send(&HostToView::Input(InputEvent::KeyDown { key, modifiers: self.key_modifiers }));
+                        node.tab.send(&HostToView::Input(InputEvent::KeyUp { key, modifiers: self.key_modifiers }));
                     }
                 }
             }
             DebugCommand::ReopenTab => self.reopen_closed_shortcut(),
-            DebugCommand::InstallEngine(kind) => {
-                self.start_engine_install(kind);
+            DebugCommand::InstallView(kind) => {
+                self.start_view_install(kind);
             }
-            DebugCommand::EngineState(kind) => {
+            DebugCommand::ViewStatus(kind) => {
                 eprintln!(
                     "engine-state {}: {} [{}]",
                     kind.desc().name,
-                    crate::engine_info::engine_state_label(&self.engine_state(kind)).0,
-                    crate::engine_info::on_disk_text(kind, crate::process_manager::engine_on_disk(kind))
+                    crate::view_info::view_status_label(&self.view_status(kind)).0,
+                    crate::view_info::on_disk_text(kind, crate::process_manager::view_on_disk(kind))
                 )
             }
             DebugCommand::ZoomIn => self.zoom_in_shortcut(),
@@ -1398,14 +1398,14 @@ impl App {
                     self.request_sleep(&id, SleepWhy::Manual);
                 }
             }
-            DebugCommand::RestartEngine(id) => {
-                if !self.restart_engine(&id) {
-                    eprintln!("RESTARTENGINE: no live tab {id}; ignored");
+            DebugCommand::RestartView(id) => {
+                if !self.restart_view(&id) {
+                    eprintln!("RESTARTVIEW: no live tab {id}; ignored");
                 }
             }
-            DebugCommand::EndEngine(id) => {
-                if !self.end_engine(&id) {
-                    eprintln!("ENDENGINE: no live tab {id}; ignored");
+            DebugCommand::EndView(id) => {
+                if !self.end_view(&id) {
+                    eprintln!("ENDVIEW: no live tab {id}; ignored");
                 }
             }
             DebugCommand::SetJar(name) => {
@@ -1511,7 +1511,7 @@ impl App {
                     "parent": self.mirror.parent(&item.id),
                     "color": self.mirror.color(&item.id).is_some(),
                     "pinned": self.mirror.pinned(&item.id),
-                    // A live tab whose engine stopped reading (`EngineTab::is_unresponsive`).
+                    // A live tab whose engine stopped reading (`ViewTab::is_unresponsive`).
                     "unresponsive": node.as_tab().is_some_and(|t| t.tab.is_unresponsive(now)),
                     "editing": node.as_note().is_some_and(|n| n.editing),
                     "screen": [screen.center().x, screen.center().y],
@@ -1625,7 +1625,7 @@ impl App {
             "selected": selected,
             // The toast showing, or else the next queued one.
             "toast": self.toasts.save_toast.as_ref().map(|(message, _)| message).or(self.toasts.save_toast_queue.front()),
-            "engines": self.engines_state(),
+            "view_kinds": self.view_kinds_state(),
             "window": [window.width(), window.height()],
             "popups": self.popups_state(),
         })
@@ -1655,15 +1655,15 @@ impl App {
         })
     }
 
-    /// `export_state`'s `engines`: each engine's name mapped to `{state, disk}`, the label the lists show
-    /// (`engine_state_label`) and what the disk holds of its downloadable parts (`on_disk_text`).
-    fn engines_state(&self) -> serde_json::Value {
-        let engines = crate::engine_info::ENGINE_PICKER_ORDER.iter().map(|&kind| {
-            let state = crate::engine_info::engine_state_label(&self.engine_state(kind)).0;
-            let disk = crate::engine_info::on_disk_text(kind, crate::process_manager::engine_on_disk(kind));
+    /// `export_state`'s `view_kinds`: each engine's name mapped to `{state, disk}`, the label the lists show
+    /// (`view_status_label`) and what the disk holds of its downloadable parts (`on_disk_text`).
+    fn view_kinds_state(&self) -> serde_json::Value {
+        let view_kinds = crate::view_info::VIEW_PICKER_ORDER.iter().map(|&kind| {
+            let state = crate::view_info::view_status_label(&self.view_status(kind)).0;
+            let disk = crate::view_info::on_disk_text(kind, crate::process_manager::view_on_disk(kind));
             (kind.desc().name.to_string(), serde_json::json!({"state": state, "disk": disk}))
         });
-        serde_json::Value::Object(engines.collect())
+        serde_json::Value::Object(view_kinds.collect())
     }
 
     /// `EXPORTSTATE`: writes `export_state` to `path` through `store::atomic::replace`, so a probe never reads
@@ -1759,8 +1759,8 @@ mod tests {
             "TYPE abc",
             "KEYPAGE Enter",
             "REOPENTAB",
-            "INSTALLENGINE cef",
-            "ENGINESTATE cef",
+            "INSTALLVIEW cef",
+            "VIEWSTATE cef",
             "ZOOMIN",
             "ZOOMOUT",
             "ZOOMRESET",
@@ -1833,8 +1833,8 @@ mod tests {
             "SETNOTETEXT n1 hello",
             "MOVENODE n1 10 -20",
             "SLEEPNODE t1",
-            "RESTARTENGINE t1",
-            "ENDENGINE t1",
+            "RESTARTVIEW t1",
+            "ENDVIEW t1",
             "IDLESWEEP 30",
             "SETJAR default",
             "SWITCHJARNOW",
@@ -1903,16 +1903,16 @@ mod tests {
 
     /// `EXPORTSTATE` names a card by its type (plan 2b-6, Ruling 9): `type` (the mime), `loaded` (true for a live tab
     /// only) and `json_card` (a JSON level's card, not a stored node); the old card enum's `kind` is gone.
-    /// `engines` has every engine, each with its state label and what the disk holds (no data dir under test, so
+    /// `view_kinds` has every engine, each with its state label and what the disk holds (no data dir under test, so
     /// the downloaded engines read as not installed with nothing pinned).
     #[test]
-    fn export_state_lists_each_engines_state_and_disk() {
+    fn export_state_lists_each_view_kinds_state_and_disk() {
         let state = App::default().export_state();
-        let engines = state["engines"].as_object().unwrap();
-        assert_eq!(engines.len(), 4);
-        assert_eq!(engines["webview2"]["disk"], "host ready");
-        assert_eq!(engines["cef"]["disk"], "host missing, runtime missing");
-        assert!(engines["servo"]["state"].as_str().unwrap().starts_with("Unavailable"), "{engines:?}");
+        let view_kinds = state["view_kinds"].as_object().unwrap();
+        assert_eq!(view_kinds.len(), 4);
+        assert_eq!(view_kinds["webview2"]["disk"], "host ready");
+        assert_eq!(view_kinds["cef"]["disk"], "host missing, runtime missing");
+        assert!(view_kinds["servo"]["state"].as_str().unwrap().starts_with("Unavailable"), "{view_kinds:?}");
     }
 
     /// `window` is the window's size and `popups` the visible Foreground layers' rects (`gate layout` reads both).
@@ -1939,13 +1939,13 @@ mod tests {
     #[test]
     fn export_state_names_cards_by_type_loaded_and_json_card() {
         use crate::node::{NotePayload, TabPayload, UnloadedState, UnloadedTabPayload};
-        use crate::process_manager::{EngineKind, EngineTab};
+        use crate::process_manager::{ViewKind, ViewTab};
         use crate::store::model::{Kind, TYPE_GROUP, TYPE_JSON, TYPE_NOTE, TYPE_TAB};
         let dir = crate::store::testutil::temp_dir("export_state");
         let path = dir.join("a.json");
         std::fs::write(&path, r#"{"a": {"b": 1}}"#).unwrap();
         let mut app = App::default();
-        let (tab, _peer) = EngineTab::fake(EngineKind::Servo);
+        let (tab, _peer) = ViewTab::fake(ViewKind::Servo);
         let live = Runtime::Tab(TabPayload {
             tab,
             url: "https://a/".into(),
@@ -2166,10 +2166,10 @@ mod tests {
     }
 
     #[test]
-    fn parses_engine_install_commands() {
-        assert!(matches!(parse_line("INSTALLENGINE cef"), Some(DebugCommand::InstallEngine(EngineKind::Cef))));
-        assert!(matches!(parse_line("ENGINESTATE CEF"), Some(DebugCommand::EngineState(EngineKind::Cef))));
-        assert!(parse_line("INSTALLENGINE nope").is_none());
+    fn parses_view_install_commands() {
+        assert!(matches!(parse_line("INSTALLVIEW cef"), Some(DebugCommand::InstallView(ViewKind::Cef))));
+        assert!(matches!(parse_line("VIEWSTATE CEF"), Some(DebugCommand::ViewStatus(ViewKind::Cef))));
+        assert!(parse_line("INSTALLVIEW nope").is_none());
     }
 
     #[test]

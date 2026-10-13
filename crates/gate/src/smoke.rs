@@ -421,14 +421,14 @@ fn check_found(s: &State, name: &str, label: &str, id: &str) {
 
 const PAIR_GROUP: &str = r#"{"nodes": [
  {"id": "g", "type": "application/vnd.manifold.group", "name": "Pair"},
- {"id": "a", "type": "application/vnd.manifold.tab", "url": "manifold://welcome", "engine": "webview2", "pos": [-150.0, 0.0], "group": "g"},
- {"id": "b", "type": "application/vnd.manifold.tab", "url": "manifold://welcome", "engine": "webview2", "pos": [150.0, 0.0], "group": "g"}]}
+ {"id": "a", "type": "application/vnd.manifold.tab", "url": "manifold://welcome", "view_kind": "webview2", "pos": [-150.0, 0.0], "group": "g"},
+ {"id": "b", "type": "application/vnd.manifold.tab", "url": "manifold://welcome", "view_kind": "webview2", "pos": [150.0, 0.0], "group": "g"}]}
 "#;
 
 /// smoke_eval.py `nine`: a group "Nine" of nine tabs, for IMPORTGROUP.
 fn nine_group() -> Value {
     let tab = |i: usize| {
-        serde_json::json!({"id": format!("t{i}"), "type": TAB, "url": "manifold://welcome", "engine": "webview2",
+        serde_json::json!({"id": format!("t{i}"), "type": TAB, "url": "manifold://welcome", "view_kind": "webview2",
             "group": "g"})
     };
     let mut nodes = vec![serde_json::json!({"id": "g", "type": "application/vnd.manifold.group", "name": "Nine"})];

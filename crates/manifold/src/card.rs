@@ -940,9 +940,9 @@ pub(crate) fn sleeping_or_waking_tooltip(state: &UnloadedState) -> &'static str 
 
 /// How a failed card whose engine can't run names why: (tooltip phrase, card-body phrase), after the
 /// engine's label. A runtime that is there but out of date needs an update; anything else is not installed.
-fn missing_engine_phrases(state: &crate::engine_install::EngineState) -> (&'static str, &'static str) {
+fn missing_view_phrases(state: &crate::view_install::ViewStatus) -> (&'static str, &'static str) {
     match state {
-        crate::engine_install::EngineState::UpdateNeeded { .. } => ("needs an update", "needs an update"),
+        crate::view_install::ViewStatus::UpdateNeeded { .. } => ("needs an update", "needs an update"),
         _ => ("is not installed", "not installed"),
     }
 }
@@ -1320,24 +1320,22 @@ impl App {
             return body;
         };
         let (url, title, state) = (tab.url.clone(), tab.title.clone(), tab.state.clone());
-        let kind = self.mirror.engine(id);
+        let kind = self.mirror.view_kind(id);
         // A failed card whose engine isn't installed offers its Download, not a retry that can't work.
-        let missing_engine = matches!(state, UnloadedState::Failed(_))
-            && !matches!(pick_outcome(kind, &self.engine_state(kind)), PickOutcome::Switch(_));
+        let missing_view_kind = matches!(state, UnloadedState::Failed(_))
+            && !matches!(pick_outcome(kind, &self.view_status(kind)), PickOutcome::Switch(_));
         body.tooltip = Some(match &state {
-            UnloadedState::Failed(_) if missing_engine => match self.engine_state(kind) {
-                crate::engine_install::EngineState::Unavailable(reason) => {
-                    PickOutcome::unavailable_toast(kind, &reason)
-                }
+            UnloadedState::Failed(_) if missing_view_kind => match self.view_status(kind) {
+                crate::view_install::ViewStatus::Unavailable(reason) => PickOutcome::unavailable_toast(kind, &reason),
                 state => format!(
                     "{} {}\nClick to download it ({}).",
-                    engine_label(kind),
-                    missing_engine_phrases(&state).0,
-                    crate::engine_info::megabytes(self.engine_download_size(kind))
+                    view_label(kind),
+                    missing_view_phrases(&state).0,
+                    crate::view_info::megabytes(self.view_download_size(kind))
                 ),
             },
             UnloadedState::Failed(error) => {
-                format!("Couldn't start {}: {error}\nClick to try again.", engine_label(kind))
+                format!("Couldn't start {}: {error}\nClick to try again.", view_label(kind))
             }
             UnloadedState::Sleeping | UnloadedState::Waking => sleeping_or_waking_tooltip(&state).to_string(),
         });
@@ -1374,7 +1372,7 @@ impl App {
         // moon of a sleeping tab.
         let middle = card_body_rect(rect, tall, inv_zoom).center();
         match &state {
-            UnloadedState::Failed(_) if missing_engine => {
+            UnloadedState::Failed(_) if missing_view_kind => {
                 let up = egui::vec2(0.0, 8.0 * inv_zoom);
                 push_centered_text(
                     deferred_overlays,
@@ -1383,8 +1381,8 @@ impl App {
                     24.0,
                     DANGER_COLOR,
                 );
-                let phrase = missing_engine_phrases(&self.engine_state(kind)).1;
-                let text = format!("{} {phrase} (click to download)", engine_label(kind));
+                let phrase = missing_view_phrases(&self.view_status(kind)).1;
+                let text = format!("{} {phrase} (click to download)", view_label(kind));
                 push_centered_text(deferred_overlays, middle + up * 2.5, text, 11.0, DANGER_COLOR);
             }
             UnloadedState::Failed(_) => {
@@ -2122,7 +2120,7 @@ impl App {
         zoom_scale: f32,
     ) -> CardBody {
         let mut body = CardBody { interact_rect: rect, tooltip: None };
-        let Some((title, url, engine_kind, unresponsive)) =
+        let Some((title, url, tab_view_kind, unresponsive)) =
             self.nodes.get(id).and_then(|n| n.as_tab()).map(|t| {
                 (t.title.clone(), t.url.clone(), t.tab.kind, t.tab.is_unresponsive(std::time::Instant::now()))
             })
@@ -2178,7 +2176,7 @@ impl App {
                         );
                     }
                     None => {
-                        ui.painter().circle_filled(icon_center, 4.0 * inv_zoom, engine_color(engine_kind));
+                        ui.painter().circle_filled(icon_center, 4.0 * inv_zoom, view_color(tab_view_kind));
                     }
                 }
                 // Title and source line: the shared header, which leaves the icon above to this card.
@@ -2205,7 +2203,7 @@ impl App {
                 ui.painter().circle_filled(
                     egui::Pos2::new(title_strip.left() + 8.0 * inv_zoom, title_strip.center().y),
                     4.0 * inv_zoom,
-                    engine_color(engine_kind),
+                    view_color(tab_view_kind),
                 );
                 // Below `MIN_LABEL_CARD_SCREEN_WIDTH` the label would be a sliver; the dot alone remains.
                 if show_text {

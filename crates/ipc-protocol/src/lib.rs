@@ -11,29 +11,29 @@ pub use channel::MessageChannel;
 pub use frame_buffer::{frame_path, remove_frame_file, sweep_stale_frames_in, SharedFrameBuffer};
 pub use frame_sink::{copy_changed_rows, FrameSink};
 pub use messages::{
-    modifiers, restore_scroll_script, EngineToHost, HostToEngine, InputEvent, KeyCode, MouseButton, PageKindReply,
-    PageState, TabState, PAGE_KIND_SCRIPT, PAGE_STATE_SCRIPT,
+    modifiers, restore_scroll_script, HostToView, InputEvent, KeyCode, MouseButton, PageKindReply, PageState, TabState,
+    ViewToHost, PAGE_KIND_SCRIPT, PAGE_STATE_SCRIPT,
 };
 pub use transport::{LocalTransport, RemoteTransport};
 
 /// Written as the first 4 bytes (u32 LE) of every control stream, before any
 /// postcard message. postcard encodes enum variants by position, so a host
 /// and engine built from different `messages.rs` would silently misread each
-/// other. Bump it on any change to `HostToEngine`, `EngineToHost` or a type
+/// other. Bump it on any change to `HostToView`, `ViewToHost` or a type
 /// they carry. The `wire_shape_tests` test in `messages.rs` fails when that shape changes without a bump.
-/// 2: `EngineToHost::OpenTabRequested` carries `user_gesture`.
+/// 2: `ViewToHost::OpenTabRequested` carries `user_gesture`.
 /// 3: `InputEvent::MouseDown`/`MouseUp` carry `click_count`; `TabState` drops `zoom`.
-/// 4: `EngineToHost::FrameReady` carries `generation` (frame files are named by generation) and drops `frame_id`.
+/// 4: `ViewToHost::FrameReady` carries `generation` (frame files are named by generation) and drops `frame_id`.
 pub const PROTOCOL_VERSION: u32 = 4;
 
-/// Starts the `EngineToHost::Crashed` reason for a version mismatch, so the
+/// Starts the `ViewToHost::Crashed` reason for a version mismatch, so the
 /// host shows a failed card instead of respawning the same stale binary.
 pub const PROTOCOL_MISMATCH: &str = "protocol mismatch";
 
 /// Starts the one line an engine host writes to stderr (its per-tab log) when it cannot start at all and
 /// exits before connecting, e.g. a CEF runtime that doesn't support the host's API version. manifold shows the rest
 /// of that line as the failure (`process_manager::connect_host`) instead of the raw log tail. A host that fails
-/// to start after connecting (WebView2 creating its environment) also sends that line as an `EngineToHost::Crashed`
+/// to start after connecting (WebView2 creating its environment) also sends that line as an `ViewToHost::Crashed`
 /// reason, and manifold leaves a failed card naming the rest instead of respawning (`tabs::after_crash`).
 pub const HOST_FATAL: &str = "engine-host fatal: ";
 
@@ -53,7 +53,7 @@ mod tests {
     use super::*;
     use std::thread;
 
-    /// M0 acceptance test: a `HostToEngine`/`EngineToHost` round trip over
+    /// M0 acceptance test: a `HostToView`/`ViewToHost` round trip over
     /// the real transport each side will use in M1 — `LocalTransport`
     /// (named pipe on Windows) for the control channel.
     #[test]
@@ -62,15 +62,15 @@ mod tests {
         let listeners = transport::listen_local_pair(tab_id).expect("listen_local_pair");
 
         let server = thread::spawn(move || {
-            let (mut to_engine, mut from_engine) =
+            let (mut to_view, mut from_view) =
                 transport::accept_local_pair(&listeners, std::time::Duration::from_secs(5)).expect("accept_local_pair");
-            assert_eq!(from_engine.recv_version().expect("engine's version"), PROTOCOL_VERSION);
-            to_engine
-                .send(&HostToEngine::Navigate { url: "https://example.com".into(), referrer: None })
+            assert_eq!(from_view.recv_version().expect("engine's version"), PROTOCOL_VERSION);
+            to_view
+                .send(&HostToView::Navigate { url: "https://example.com".into(), referrer: None })
                 .expect("send Navigate");
-            let reply: EngineToHost = from_engine.recv().expect("recv NavigationStateChanged");
+            let reply: ViewToHost = from_view.recv().expect("recv NavigationStateChanged");
             match reply {
-                EngineToHost::NavigationStateChanged { url, .. } => {
+                ViewToHost::NavigationStateChanged { url, .. } => {
                     assert_eq!(url, "https://example.com")
                 }
                 other => panic!("unexpected reply: {other:?}"),
@@ -82,13 +82,13 @@ mod tests {
 
         let (mut from_host, mut to_host) = transport::connect_local_pair(tab_id).expect("connect_local_pair");
         assert_eq!(from_host.recv_version().expect("host's version"), PROTOCOL_VERSION);
-        let msg: HostToEngine = from_host.recv().expect("recv Navigate");
+        let msg: HostToView = from_host.recv().expect("recv Navigate");
         match msg {
-            HostToEngine::Navigate { url, .. } => assert_eq!(url, "https://example.com"),
+            HostToView::Navigate { url, .. } => assert_eq!(url, "https://example.com"),
             other => panic!("unexpected message: {other:?}"),
         }
         to_host
-            .send(&EngineToHost::NavigationStateChanged {
+            .send(&ViewToHost::NavigationStateChanged {
                 url: "https://example.com".into(),
                 title: "Example".into(),
                 can_go_back: false,

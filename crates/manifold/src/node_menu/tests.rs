@@ -40,9 +40,9 @@ fn view_of(kind: CardKind) -> NodeMenuView {
         has_copy_url: false,
         pinned: false,
         unresponsive: false,
-        other_default_engine: false,
+        other_default_view_kind: false,
         failed: false,
-        engine_missing: false,
+        view_missing: false,
         move_targets: Vec::new(),
         renaming: None,
         jars: None,
@@ -149,9 +149,9 @@ fn node_menu_config_matches_each_kinds_menu() {
     // A failed tab offers Retry (and the default engine, when it isn't
     // the engine that failed) instead of Open; a sleeping/waking one
     // just offers Open. Neither failed one offers Duplicate, which would fail the same way.
-    let failed = NodeMenuView { other_default_engine: true, failed: true, ..view_of(sleeping_tab()) };
+    let failed = NodeMenuView { other_default_view_kind: true, failed: true, ..view_of(sleeping_tab()) };
     assert_eq!(menu_of(&failed, false).2, "Retry | Open in Default Engine | Copy URL | Pin | Color... | --- | Close");
-    let missing = NodeMenuView { failed: true, engine_missing: true, ..view_of(sleeping_tab()) };
+    let missing = NodeMenuView { failed: true, view_missing: true, ..view_of(sleeping_tab()) };
     assert_eq!(menu_of(&missing, false).2, "Download Engine | Copy URL | Pin | Color... | --- | Close");
     // Export Group's file dialog can't run headless.
     assert_eq!(
@@ -294,7 +294,7 @@ fn duplicate_from_an_unloaded_tabs_menu_spawns_a_copy() {
     assert_eq!(app.test_spawns.len(), 1);
     let spawn = &app.test_spawns[0].0;
     assert_ne!(spawn.id, t);
-    assert_eq!((spawn.url.as_str(), spawn.kind), ("https://a/", EngineKind::Servo));
+    assert_eq!((spawn.url.as_str(), spawn.kind), ("https://a/", ViewKind::Servo));
 }
 
 #[test]

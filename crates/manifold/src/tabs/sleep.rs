@@ -18,7 +18,7 @@ impl App {
         let Some(node) = self.nodes.get_mut(id) else { return false };
         let Runtime::Tab(tab) = &node.runtime else { return false };
         let asleep = unloaded_from(tab, UnloadedState::Sleeping);
-        // Replacing the payload drops the `EngineTab`, whose `Drop` shuts
+        // Replacing the payload drops the `ViewTab`, whose `Drop` shuts
         // the engine host down (see `teardown_running_session`).
         node.runtime = Runtime::Unloaded(asleep);
         if let Some(gpu) = &mut self.gpu {
@@ -38,7 +38,7 @@ impl App {
 
     /// First phase of every sleep: validates as `sleep_now` does, asks the
     /// engine for its page state, and notes the request. `finish_sleep`
-    /// completes it when `EngineToHost::PageState` arrives;
+    /// completes it when `ViewToHost::PageState` arrives;
     /// `expire_pending_sleeps` (run by `sweep_idle_tabs`) settles requests
     /// nobody answered. Returns whether a query was sent.
     pub(crate) fn request_sleep(&mut self, id: &str, why: SleepWhy) -> bool {
@@ -53,7 +53,7 @@ impl App {
         }
         self.pull_cookies(id);
         let Some(tab) = self.nodes.get_mut(id).and_then(|n| n.as_tab_mut()) else { return false };
-        tab.tab.send(&HostToEngine::QueryPageState);
+        tab.tab.send(&HostToView::QueryPageState);
         self.pending_sleeps.insert(id.to_string(), PendingSleep { why, sent: std::time::Instant::now() });
         true
     }

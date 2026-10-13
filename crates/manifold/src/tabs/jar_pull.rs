@@ -6,7 +6,7 @@ use super::*;
 /// An engine answer parked until the tab's cookies arrive (`App::hold_for_cookies`).
 pub(crate) enum Held {
     PageState(PageState),
-    Snapshot(EngineKind, String),
+    Snapshot(ViewKind, String),
 }
 
 /// How long a sleep or swap waits for the host's `Cookies` reply before going ahead without it.
@@ -125,7 +125,7 @@ impl App {
         }
     }
 
-    /// Asks one jar engine's tab (`EngineDesc::jar`) for its cookies; the answer arrives as `EngineToHost::Cookies`. Best effort:
+    /// Asks one jar engine's tab (`ViewDesc::jar`) for its cookies; the answer arrives as `ViewToHost::Cookies`. Best effort:
     /// a host may never answer, so nothing waits on it, and a pull still pending (under `JAR_PULL_TIMEOUT`) is not
     /// stacked.
     pub(crate) fn pull_cookies(&mut self, id: &str) {
@@ -133,7 +133,7 @@ impl App {
         if node.tab.kind.desc().jar
             && start_pull(&mut self.cookies.jar_pulls, &mut self.cookies.jar_silent, id, std::time::Instant::now())
         {
-            node.tab.send(&HostToEngine::GetCookies);
+            node.tab.send(&HostToView::GetCookies);
         }
     }
 
@@ -245,7 +245,7 @@ impl App {
                 };
                 let reply = std::iter::from_fn(|| tab.tab.events_rx.try_recv().ok())
                     .filter_map(|msg| match msg {
-                        EngineToHost::Cookies(json) => Some(json),
+                        ViewToHost::Cookies(json) => Some(json),
                         _ => None,
                     })
                     .last();

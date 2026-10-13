@@ -34,7 +34,7 @@ pub(crate) struct Toasts {
 
 /// One cause's burst: its intents (distinct, first-seen order) and the first message, shown when there is one intent.
 struct Held {
-    engine: String,
+    view_kind: String,
     error: String,
     intents: Vec<String>,
     message: String,
@@ -48,14 +48,14 @@ pub(crate) struct FailureNotices {
 }
 
 impl FailureNotices {
-    /// Notes a failure of `intent` on `engine` with `error`; `message` is what one such failure reads as.
-    pub(crate) fn push(&mut self, now: Instant, engine: &str, error: &str, intent: &str, message: String) {
+    /// Notes a failure of `intent` on `view_kind` with `error`; `message` is what one such failure reads as.
+    pub(crate) fn push(&mut self, now: Instant, view_kind: &str, error: &str, intent: &str, message: String) {
         self.first_at.get_or_insert(now);
-        match self.held.iter_mut().find(|h| h.engine == engine && h.error == error) {
+        match self.held.iter_mut().find(|h| h.view_kind == view_kind && h.error == error) {
             Some(h) if !h.intents.iter().any(|i| i == intent) => h.intents.push(intent.to_owned()),
             Some(_) => {}
             None => self.held.push(Held {
-                engine: engine.to_owned(),
+                view_kind: view_kind.to_owned(),
                 error: error.to_owned(),
                 intents: vec![intent.to_owned()],
                 message,
@@ -126,7 +126,7 @@ mod tests {
     }
 
     #[test]
-    fn the_same_text_on_two_engines_is_two_messages() {
+    fn the_same_text_on_two_view_kinds_is_two_messages() {
         let t0 = Instant::now();
         let mut notices = FailureNotices::default();
         notices.push(t0, "Servo", "boom", "a", "ma".into());

@@ -4,7 +4,7 @@ use std::rc::Rc;
 use cef::{rc::Rc as CefRc, *};
 
 /// `(x, y, href)` for a right-click that landed on a link -- see
-/// `ipc_protocol::EngineToHost::ContextMenuLink`'s doc comment. CEF hands
+/// `ipc_protocol::ViewToHost::ContextMenuLink`'s doc comment. CEF hands
 /// this over directly via `ContextMenuParams` (`link_url`/`xcoord`/
 /// `ycoord`), unlike WebKit/WebView2's own `document.elementFromPoint`
 /// JS-query workaround -- no script round-trip needed here.
@@ -15,11 +15,11 @@ pub fn new_shared_context_menu_link() -> SharedContextMenuLink {
 }
 
 #[derive(Clone)]
-pub struct EngineContextMenuHandler {
+pub struct ViewContextMenuHandler {
     link: SharedContextMenuLink,
 }
 
-impl EngineContextMenuHandler {
+impl ViewContextMenuHandler {
     pub fn new(link: SharedContextMenuLink) -> Self {
         Self { link }
     }
@@ -27,7 +27,7 @@ impl EngineContextMenuHandler {
 
 wrap_context_menu_handler! {
     pub struct ContextMenuHandlerBuilder {
-        handler: EngineContextMenuHandler,
+        handler: ViewContextMenuHandler,
     }
 
     impl ContextMenuHandler {
@@ -66,7 +66,7 @@ wrap_context_menu_handler! {
 }
 
 impl ContextMenuHandlerBuilder {
-    pub fn build(handler: EngineContextMenuHandler) -> ContextMenuHandler {
+    pub fn build(handler: ViewContextMenuHandler) -> ContextMenuHandler {
         Self::new(handler)
     }
 }

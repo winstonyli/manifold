@@ -1,6 +1,6 @@
 use std::ops::Range;
 
-use crate::{EngineToHost, SharedFrameBuffer};
+use crate::{SharedFrameBuffer, ViewToHost};
 
 /// Copies `src` (`dst.len() / row_bytes` rows, `pitch` bytes apart) over `dst` (the same rows, tightly packed),
 /// writing only the rows that differ. Returns the span of rows that differed, or `None` if none did.
@@ -189,7 +189,7 @@ impl FrameSink {
     }
 
     /// The `FrameReady` to send now, if anything changed since the last one.
-    pub fn take(&mut self) -> Option<EngineToHost> {
+    pub fn take(&mut self) -> Option<ViewToHost> {
         self.install_pending();
         let store = self.store.as_ref()?;
         let damage = if self.whole {
@@ -204,7 +204,7 @@ impl FrameSink {
             Store::Inline(vec) => Some(vec.clone()),
             Store::Shared(_) => None,
         };
-        Some(EngineToHost::FrameReady {
+        Some(ViewToHost::FrameReady {
             generation: self.generation,
             width: self.width,
             height: self.height,
@@ -223,9 +223,9 @@ mod tests {
         vec![fill; w * h * 4]
     }
 
-    fn damage_of(msg: Option<EngineToHost>) -> Option<Option<(u32, u32, u32, u32)>> {
+    fn damage_of(msg: Option<ViewToHost>) -> Option<Option<(u32, u32, u32, u32)>> {
         match msg? {
-            EngineToHost::FrameReady { damage, .. } => Some(damage),
+            ViewToHost::FrameReady { damage, .. } => Some(damage),
             other => panic!("not a FrameReady: {other:?}"),
         }
     }
@@ -280,7 +280,7 @@ mod tests {
         frame(1, h, fill)
     }
 
-    fn row_span(msg: Option<EngineToHost>) -> Option<(u32, u32)> {
+    fn row_span(msg: Option<ViewToHost>) -> Option<(u32, u32)> {
         damage_of(msg).map(|d| d.map(|(_, y, _, n)| (y, n)).expect("not whole"))
     }
 
@@ -334,13 +334,13 @@ mod tests {
         let px: Vec<u8> = (0..40u8).collect(); // 1 x 10
         assert!(sink.offer_hinted(&px, 4, 1, 10, Some(4..5)));
         match sink.take() {
-            Some(EngineToHost::FrameReady { damage: None, pixels: Some(p), .. }) => assert_eq!(p, px),
+            Some(ViewToHost::FrameReady { damage: None, pixels: Some(p), .. }) => assert_eq!(p, px),
             other => panic!("{other:?}"),
         }
         let big: Vec<u8> = (0..80u8).collect(); // 1 x 20
         assert!(sink.offer_hinted(&big, 4, 1, 20, Some(4..5)));
         match sink.take() {
-            Some(EngineToHost::FrameReady { damage: None, pixels: Some(p), height: 20, .. }) => assert_eq!(p, big),
+            Some(ViewToHost::FrameReady { damage: None, pixels: Some(p), height: 20, .. }) => assert_eq!(p, big),
             other => panic!("{other:?}"),
         }
     }
@@ -376,7 +376,7 @@ mod tests {
         let mut px = frame(w, h, 1);
         assert!(sink.offer(&px, w * 4, w as u32, h as u32));
         match sink.take() {
-            Some(EngineToHost::FrameReady { damage: None, pixels: Some(p), width: 4, height: 6, .. }) => {
+            Some(ViewToHost::FrameReady { damage: None, pixels: Some(p), width: 4, height: 6, .. }) => {
                 assert_eq!(p, px)
             }
             other => panic!("{other:?}"),
@@ -432,7 +432,7 @@ mod tests {
         let px: Vec<u8> = (0..4 * 3 * 4).map(|i| i as u8).collect();
         assert!(sink.offer(&px, 16, 4, 3));
         match sink.take() {
-            Some(EngineToHost::FrameReady { damage: None, pixels: None, width: 4, height: 3, .. }) => {}
+            Some(ViewToHost::FrameReady { damage: None, pixels: None, width: 4, height: 3, .. }) => {}
             other => panic!("{other:?}"),
         }
         let reader = SharedFrameBuffer::open_existing(frame_path(&id, 1), 4, 3).unwrap();
@@ -442,9 +442,9 @@ mod tests {
         remove_frame_file(&id);
     }
 
-    fn generation_of(msg: Option<EngineToHost>) -> u32 {
+    fn generation_of(msg: Option<ViewToHost>) -> u32 {
         match msg {
-            Some(EngineToHost::FrameReady { generation, .. }) => generation,
+            Some(ViewToHost::FrameReady { generation, .. }) => generation,
             other => panic!("{other:?}"),
         }
     }
@@ -478,7 +478,7 @@ mod tests {
         let big: Vec<u8> = (0..4 * 4 * 4).map(|i| i as u8).collect();
         assert!(sink.offer(&big, 16, 4, 4));
         match sink.take() {
-            Some(EngineToHost::FrameReady { damage: None, width: 4, height: 4, generation: 2, .. }) => {}
+            Some(ViewToHost::FrameReady { damage: None, width: 4, height: 4, generation: 2, .. }) => {}
             other => panic!("{other:?}"),
         }
         let reader = SharedFrameBuffer::open_existing(frame_path(&id, 2), 4, 4).unwrap();

@@ -472,7 +472,7 @@ fn rich_file(path: &Path) -> Vec<u8> {
         OpBody::create(group, Kind::Group, encode_field(field::NAME, &FieldValue::Str("g".into()))),
         create,
         OpBody::create(note, Kind::Note, note_fields),
-        set(tab, field::ENGINE, FieldValue::Engine(2)),
+        set(tab, field::VIEW_KIND, FieldValue::ViewCode(2)),
         set(tab, field::PINNED, FieldValue::Bool(true)),
         OpBody::Move { node: tab, group: Some(group) },
     ];
@@ -1379,7 +1379,7 @@ fn save_path_costs() {
             let url = format!("https://www.example{}.com/articles/2026/09/some-long-article-slug-{i}?ref=home", i % 50);
             let mut fields = encode_field(field::URL, &FieldValue::Str(url));
             fields.extend(encode_field(field::POS, &FieldValue::Pos(i as f32 * 3.5, i as f32 * -2.25)));
-            fields.extend(encode_field(field::ENGINE, &FieldValue::Engine(1 + (i % 4) as u64)));
+            fields.extend(encode_field(field::VIEW_KIND, &FieldValue::ViewCode(1 + (i % 4) as u64)));
             fields.extend(encode_field(field::GROUP, &FieldValue::Id(Some(groups[i % groups.len()]))));
             bodies.push(OpBody::create(node, Kind::Tab, fields));
             ids.push(node);

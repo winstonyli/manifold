@@ -93,7 +93,7 @@ public static class Fw {
 $Exe = (Resolve-Path $Exe).Path
 $root = Join-Path ([IO.Path]::GetTempPath()) ("fgwatch-" + [guid]::NewGuid().ToString('N').Substring(0, 8))
 New-Item -ItemType Directory -Force (Join-Path $root 'manifold') | Out-Null
-"{`"has_shown_first_launch_demo`": true, `"default_starting_engine`": `"$Engine`"}" |
+"{`"has_shown_first_launch_demo`": true, `"default_starting_view_kind`": `"$Engine`"}" |
     Out-File -Encoding ascii (Join-Path $root 'manifold\settings.json')
 
 $sw = [Diagnostics.Stopwatch]::StartNew()

@@ -143,7 +143,7 @@ mod tests {
     fn garbage_payload_is_invalid_data_not_a_panic() {
         let mut bytes = 4u32.to_le_bytes().to_vec();
         bytes.extend_from_slice(&[0xff, 0xff, 0xff, 0xff]);
-        let err = MessageChannel::new(Cursor::new(bytes)).recv::<crate::HostToEngine>().unwrap_err();
+        let err = MessageChannel::new(Cursor::new(bytes)).recv::<crate::HostToView>().unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::InvalidData);
     }
 }

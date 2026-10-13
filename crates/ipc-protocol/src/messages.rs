@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 /// Servo's, going by the pinned 0.5.0 `WebView`) only expose *relative*
 /// back/forward navigation plus can-go-back/can-go-forward flags, not an
 /// enumerable/indexable entry list, so there is nothing to snapshot beyond
-/// the current URL. See `HostToEngine::GoBack`/`GoForward`.
+/// the current URL. See `HostToView::GoBack`/`GoForward`.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct TabState {
     pub url: String,
@@ -169,7 +169,7 @@ pub mod modifiers {
 
 /// Every `x`/`y` below (and `Scroll`'s `delta_x`/`delta_y`) is in **physical
 /// pixels of the engine's own rendered surface**, relative to its top-left
-/// corner — the exact same space as `HostToEngine::Resize`'s `width`/
+/// corner — the exact same space as `HostToView::Resize`'s `width`/
 /// `height`. Not CSS pixels, and not DPI-independent logical points.
 ///
 /// That is the one space that needs no per-engine translation: each
@@ -216,7 +216,7 @@ pub enum InputEvent {
 /// Messages sent from the manifold process manager to an engine-host.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[rustfmt::skip]
-pub enum HostToEngine {
+pub enum HostToView {
     Navigate { url: String, referrer: Option<String> },
     GoBack,
     GoForward,
@@ -237,17 +237,17 @@ pub enum HostToEngine {
     SetVisible(bool),
     GetState,
     /// Asks for the page's scroll position and dirty-form flag
-    /// (`PAGE_STATE_SCRIPT`); the engine answers with `EngineToHost::PageState`.
+    /// (`PAGE_STATE_SCRIPT`); the engine answers with `ViewToHost::PageState`.
     /// Sent before a tab sleeps. An engine that cannot answer stays silent
     /// and the host gives up after a few seconds.
     QueryPageState,
     /// Seeds the engine's cookie jar from a JSON array of `jar::Cookie`. Sent once, first, right after connect, to
-    /// hosts started with `ENGINE_AWAIT_COOKIES=1`, which wait for it before their first navigation.
+    /// hosts started with `VIEW_AWAIT_COOKIES=1`, which wait for it before their first navigation.
     ///
     /// The payload holds cookie values (session credentials): the derived `Debug` would print them, so never format
-    /// this message (or `EngineToHost::Cookies`) with `{:?}`.
+    /// this message (or `ViewToHost::Cookies`) with `{:?}`.
     SetCookies(String),
-    /// Asks for every cookie in the engine's jar; the engine answers with `EngineToHost::Cookies`.
+    /// Asks for every cookie in the engine's jar; the engine answers with `ViewToHost::Cookies`.
     /// An engine that cannot answer, or whose read failed or may be incomplete, stays silent: an answer is only ever a
     /// complete read, since a cookie missing from it can be taken as deleted.
     GetCookies,
@@ -260,7 +260,7 @@ pub enum HostToEngine {
     /// WebView2 — all three have a real native find API (see each
     /// engine-host's own find-handling code); Servo's embedding API has
     /// none, so this is a silent no-op there, same per-engine support gap
-    /// as `EngineToHost::OpenTabRequested`.
+    /// as `ViewToHost::OpenTabRequested`.
     FindStart { text: String, match_case: bool },
     /// Advance to the next/previous match of the current find session (the
     /// most recent `FindStart`'s term) — Enter/Shift+Enter in the find bar.
@@ -271,17 +271,17 @@ pub enum HostToEngine {
     FindStop,
     /// Opens this engine's own native DevTools UI — a separate real window
     /// the engine manages itself, not part of the tab's own captured
-    /// content, so nothing comes back over `EngineToHost` for this. `F12`.
+    /// content, so nothing comes back over `ViewToHost` for this. `F12`.
     /// CEF and WebView2 both have a real API for this
     /// (`BrowserHost::show_dev_tools`/`ICoreWebView2::OpenDevToolsWindow`);
     /// WebKit's host ignores it: the inspector window would wait forever under
     /// Xvfb, which has no window manager. Servo's embedding API has no
     /// DevTools/inspector method at all. The host toasts for both instead of
-    /// sending (`EngineDesc::devtools`).
+    /// sending (`ViewDesc::devtools`).
     OpenDevTools,
     /// Mutes/unmutes this tab's audio output — host-initiated (the mute
-    /// button), unlike `EngineToHost::AudioPlayingChanged`'s passive
-    /// engine-reported state, so there's no matching `EngineToHost` reply:
+    /// button), unlike `ViewToHost::AudioPlayingChanged`'s passive
+    /// engine-reported state, so there's no matching `ViewToHost` reply:
     /// `manifold` already knows the state it just asked for, same
     /// fire-and-forget shape as `SetZoom`. WebView2 (`ICoreWebView2_8::
     /// SetIsMuted` — the same interface `IsDocumentPlayingAudio` already
@@ -334,7 +334,7 @@ impl PageKindReply {
 /// ignored. Pages that keep state outside form elements are not detected.
 pub const PAGE_STATE_SCRIPT: &str = "(function(){var d=false;var els=document.querySelectorAll('input,textarea,select,[contenteditable]');for(var i=0;i<els.length&&!d;i++){var e=els[i];var t=(e.type||'').toLowerCase();if(e.tagName==='INPUT'){if(t==='button'||t==='submit'||t==='reset'||t==='image'||t==='hidden'||t==='file'){continue;}if(t==='checkbox'||t==='radio'){d=e.checked!==e.defaultChecked;}else{d=e.value!==e.defaultValue;}}else if(e.tagName==='TEXTAREA'){d=e.value!==e.defaultValue;}else if(e.tagName==='SELECT'){for(var j=0;j<e.options.length;j++){if(e.options[j].selected!==e.options[j].defaultSelected){d=true;break;}}}else if(e.isContentEditable){d=(e.textContent||'')!=='';}}return (window.scrollX||0)+' '+(window.scrollY||0)+' '+(d?1:0);})();";
 
-/// A tab's page state at the moment of `HostToEngine::QueryPageState`.
+/// A tab's page state at the moment of `HostToView::QueryPageState`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PageState {
     pub scroll_x: f64,
@@ -381,7 +381,7 @@ pub fn restore_scroll_script(x: f64, y: f64) -> String {
 /// process, so it sends the raw pixel bytes inline here instead.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[rustfmt::skip]
-pub enum EngineToHost {
+pub enum ViewToHost {
     FrameReady {
         /// Which frame file the frame is in (`frame_path(socket_id, generation)`); unchanged while the size is
         /// unchanged, a new value means a new file. Always 0 on the inline transport (WebKit).
@@ -410,7 +410,7 @@ pub enum EngineToHost {
     StateSnapshot(TabState),
     PageState(PageState),
     /// The engine's whole cookie jar as a JSON array of `jar::Cookie` (name, value, domain, path, expires,
-    /// secure, http_only, same_site), the answer to `HostToEngine::GetCookies`.
+    /// secure, http_only, same_site), the answer to `HostToView::GetCookies`.
     Cookies(String),
     Crashed { reason: String },
     /// The page asked to open a new tab (`target=_blank`, `window.open()`,
@@ -577,7 +577,7 @@ mod key_code_tests {
     }
 
     #[test]
-    fn spot_checks_against_the_old_per_engine_tables() {
+    fn spot_checks_against_the_old_per_view_tables() {
         assert_eq!(KeyCode::KeyA.windows_vk(), 0x41);
         assert_eq!(KeyCode::Digit9.windows_vk(), 0x39);
         assert_eq!(KeyCode::PageUp.windows_vk(), 0x21);
@@ -622,9 +622,9 @@ mod cookie_message_tests {
 
     #[test]
     fn the_cookie_messages_round_trip() {
-        assert!(matches!(round_trip(&HostToEngine::GetCookies), HostToEngine::GetCookies));
-        assert!(matches!(round_trip(&HostToEngine::SetCookies("[]".into())), HostToEngine::SetCookies(s) if s == "[]"));
-        assert!(matches!(round_trip(&EngineToHost::Cookies("[]".into())), EngineToHost::Cookies(s) if s == "[]"));
+        assert!(matches!(round_trip(&HostToView::GetCookies), HostToView::GetCookies));
+        assert!(matches!(round_trip(&HostToView::SetCookies("[]".into())), HostToView::SetCookies(s) if s == "[]"));
+        assert!(matches!(round_trip(&ViewToHost::Cookies("[]".into())), ViewToHost::Cookies(s) if s == "[]"));
     }
 }
 
@@ -671,7 +671,7 @@ mod page_state_tests {
     }
 }
 
-/// Fails when the wire shape of `HostToEngine` or `EngineToHost` changes without `PROTOCOL_VERSION` changing.
+/// Fails when the wire shape of `HostToView` or `ViewToHost` changes without `PROTOCOL_VERSION` changing.
 /// The fingerprint is FNV-1a over the frames `MessageChannel::send` writes for one representative value per variant,
 /// including every `InputEvent`, `MouseButton` and `KeyCode`.
 #[cfg(test)]
@@ -685,61 +685,61 @@ mod wire_shape_tests {
     const RECORDED_FOR_VERSION: u32 = 4;
     /// The fingerprint of the wire shape at `RECORDED_FOR_VERSION`.
     const RECORDED_FINGERPRINT: u64 = 0x6634_ca5c_7cb1_04de;
-    const HOST_TO_ENGINE_VARIANTS: usize = 20;
-    const ENGINE_TO_HOST_VARIANTS: usize = 16;
+    const HOST_TO_VIEW_VARIANTS: usize = 20;
+    const VIEW_TO_HOST_VARIANTS: usize = 16;
     const INPUT_EVENT_VARIANTS: usize = 7;
     const MOUSE_BUTTON_VARIANTS: usize = 3;
 
     /// The index of each variant's representative in `host_samples`. Exhaustive on purpose: a new variant does not
     /// compile until it has an index here, and then `host_samples` needs a value at that index.
-    fn host_slot(m: &HostToEngine) -> usize {
+    fn host_slot(m: &HostToView) -> usize {
         match m {
-            HostToEngine::Navigate { .. } => 0,
-            HostToEngine::GoBack => 1,
-            HostToEngine::GoForward => 2,
-            HostToEngine::Reload => 3,
-            HostToEngine::Resize { .. } => 4,
-            HostToEngine::Input(_) => 5,
-            HostToEngine::SetZoom { .. } => 6,
-            HostToEngine::SetVisible(_) => 7,
-            HostToEngine::GetState => 8,
-            HostToEngine::QueryPageState => 9,
-            HostToEngine::SetCookies(_) => 10,
-            HostToEngine::GetCookies => 11,
-            HostToEngine::RestoreScroll { .. } => 12,
-            HostToEngine::FindStart { .. } => 13,
-            HostToEngine::FindNext => 14,
-            HostToEngine::FindPrevious => 15,
-            HostToEngine::FindStop => 16,
-            HostToEngine::OpenDevTools => 17,
-            HostToEngine::SetMuted { .. } => 18,
-            HostToEngine::Shutdown => 19,
+            HostToView::Navigate { .. } => 0,
+            HostToView::GoBack => 1,
+            HostToView::GoForward => 2,
+            HostToView::Reload => 3,
+            HostToView::Resize { .. } => 4,
+            HostToView::Input(_) => 5,
+            HostToView::SetZoom { .. } => 6,
+            HostToView::SetVisible(_) => 7,
+            HostToView::GetState => 8,
+            HostToView::QueryPageState => 9,
+            HostToView::SetCookies(_) => 10,
+            HostToView::GetCookies => 11,
+            HostToView::RestoreScroll { .. } => 12,
+            HostToView::FindStart { .. } => 13,
+            HostToView::FindNext => 14,
+            HostToView::FindPrevious => 15,
+            HostToView::FindStop => 16,
+            HostToView::OpenDevTools => 17,
+            HostToView::SetMuted { .. } => 18,
+            HostToView::Shutdown => 19,
         }
     }
 
-    /// As `host_slot`, for `EngineToHost`.
-    fn engine_slot(m: &EngineToHost) -> usize {
+    /// As `host_slot`, for `ViewToHost`.
+    fn view_slot(m: &ViewToHost) -> usize {
         match m {
-            EngineToHost::FrameReady { .. } => 0,
-            EngineToHost::NavigationStateChanged { .. } => 1,
-            EngineToHost::StateSnapshot(_) => 2,
-            EngineToHost::PageState(_) => 3,
-            EngineToHost::Cookies(_) => 4,
-            EngineToHost::Crashed { .. } => 5,
-            EngineToHost::OpenTabRequested { .. } => 6,
-            EngineToHost::FindResult { .. } => 7,
-            EngineToHost::AudioPlayingChanged { .. } => 8,
-            EngineToHost::ContextMenuLink { .. } => 9,
-            EngineToHost::DownloadStarted { .. } => 10,
-            EngineToHost::DownloadProgress { .. } => 11,
-            EngineToHost::DownloadCompleted { .. } => 12,
-            EngineToHost::DownloadFailed { .. } => 13,
-            EngineToHost::JsonBody { .. } => 14,
-            EngineToHost::RedirectableContent { .. } => 15,
+            ViewToHost::FrameReady { .. } => 0,
+            ViewToHost::NavigationStateChanged { .. } => 1,
+            ViewToHost::StateSnapshot(_) => 2,
+            ViewToHost::PageState(_) => 3,
+            ViewToHost::Cookies(_) => 4,
+            ViewToHost::Crashed { .. } => 5,
+            ViewToHost::OpenTabRequested { .. } => 6,
+            ViewToHost::FindResult { .. } => 7,
+            ViewToHost::AudioPlayingChanged { .. } => 8,
+            ViewToHost::ContextMenuLink { .. } => 9,
+            ViewToHost::DownloadStarted { .. } => 10,
+            ViewToHost::DownloadProgress { .. } => 11,
+            ViewToHost::DownloadCompleted { .. } => 12,
+            ViewToHost::DownloadFailed { .. } => 13,
+            ViewToHost::JsonBody { .. } => 14,
+            ViewToHost::RedirectableContent { .. } => 15,
         }
     }
 
-    /// As `host_slot`, for `InputEvent`, which `HostToEngine::Input` carries.
+    /// As `host_slot`, for `InputEvent`, which `HostToView::Input` carries.
     fn input_slot(e: &InputEvent) -> usize {
         match e {
             InputEvent::MouseMove { .. } => 0,
@@ -786,41 +786,41 @@ mod wire_shape_tests {
         ]
     }
 
-    fn host_samples() -> Vec<HostToEngine> {
+    fn host_samples() -> Vec<HostToView> {
         vec![
-            HostToEngine::Navigate { url: "https://example.com".into(), referrer: Some("https://a.test".into()) },
-            HostToEngine::GoBack,
-            HostToEngine::GoForward,
-            HostToEngine::Reload,
-            HostToEngine::Resize { width: 800, height: 600, dpi_scale: 1.25 },
-            HostToEngine::Input(input_samples().remove(1)),
-            HostToEngine::SetZoom { factor: 1.5 },
-            HostToEngine::SetVisible(true),
-            HostToEngine::GetState,
-            HostToEngine::QueryPageState,
-            HostToEngine::SetCookies("[]".into()),
-            HostToEngine::GetCookies,
-            HostToEngine::RestoreScroll { x: 3.0, y: 4.0 },
-            HostToEngine::FindStart { text: "needle".into(), match_case: true },
-            HostToEngine::FindNext,
-            HostToEngine::FindPrevious,
-            HostToEngine::FindStop,
-            HostToEngine::OpenDevTools,
-            HostToEngine::SetMuted { muted: true },
-            HostToEngine::Shutdown,
+            HostToView::Navigate { url: "https://example.com".into(), referrer: Some("https://a.test".into()) },
+            HostToView::GoBack,
+            HostToView::GoForward,
+            HostToView::Reload,
+            HostToView::Resize { width: 800, height: 600, dpi_scale: 1.25 },
+            HostToView::Input(input_samples().remove(1)),
+            HostToView::SetZoom { factor: 1.5 },
+            HostToView::SetVisible(true),
+            HostToView::GetState,
+            HostToView::QueryPageState,
+            HostToView::SetCookies("[]".into()),
+            HostToView::GetCookies,
+            HostToView::RestoreScroll { x: 3.0, y: 4.0 },
+            HostToView::FindStart { text: "needle".into(), match_case: true },
+            HostToView::FindNext,
+            HostToView::FindPrevious,
+            HostToView::FindStop,
+            HostToView::OpenDevTools,
+            HostToView::SetMuted { muted: true },
+            HostToView::Shutdown,
         ]
     }
 
-    fn engine_samples() -> Vec<EngineToHost> {
+    fn view_samples() -> Vec<ViewToHost> {
         vec![
-            EngineToHost::FrameReady {
+            ViewToHost::FrameReady {
                 generation: 7,
                 width: 800,
                 height: 600,
                 damage: Some((0, 0, 10, 10)),
                 pixels: None,
             },
-            EngineToHost::NavigationStateChanged {
+            ViewToHost::NavigationStateChanged {
                 url: "https://example.com".into(),
                 title: "Example".into(),
                 can_go_back: true,
@@ -828,24 +828,24 @@ mod wire_shape_tests {
                 loading: true,
                 user_started: Some(true),
             },
-            EngineToHost::StateSnapshot(TabState { url: "https://example.com".into() }),
-            EngineToHost::PageState(PageState { scroll_x: 1.0, scroll_y: 2.0, dirty_form: true }),
-            EngineToHost::Cookies("[]".into()),
-            EngineToHost::Crashed { reason: "gone".into() },
-            EngineToHost::OpenTabRequested { url: "https://example.com".into(), user_gesture: true },
-            EngineToHost::FindResult { count: 3, active_index: 1 },
-            EngineToHost::AudioPlayingChanged { playing: true },
-            EngineToHost::ContextMenuLink { x: 5.0, y: 6.0, href: "https://example.com".into() },
-            EngineToHost::DownloadStarted {
+            ViewToHost::StateSnapshot(TabState { url: "https://example.com".into() }),
+            ViewToHost::PageState(PageState { scroll_x: 1.0, scroll_y: 2.0, dirty_form: true }),
+            ViewToHost::Cookies("[]".into()),
+            ViewToHost::Crashed { reason: "gone".into() },
+            ViewToHost::OpenTabRequested { url: "https://example.com".into(), user_gesture: true },
+            ViewToHost::FindResult { count: 3, active_index: 1 },
+            ViewToHost::AudioPlayingChanged { playing: true },
+            ViewToHost::ContextMenuLink { x: 5.0, y: 6.0, href: "https://example.com".into() },
+            ViewToHost::DownloadStarted {
                 path: "a.bin".into(),
                 total_bytes: Some(1 << 40),
                 url: Some("https://example.com/a.bin".into()),
             },
-            EngineToHost::DownloadProgress { path: "a.bin".into(), bytes_received: 1 << 40 },
-            EngineToHost::DownloadCompleted { path: "a.bin".into() },
-            EngineToHost::DownloadFailed { path: "a.bin".into() },
-            EngineToHost::JsonBody { body: "{}".into() },
-            EngineToHost::RedirectableContent { content_type: "image/png".into() },
+            ViewToHost::DownloadProgress { path: "a.bin".into(), bytes_received: 1 << 40 },
+            ViewToHost::DownloadCompleted { path: "a.bin".into() },
+            ViewToHost::DownloadFailed { path: "a.bin".into() },
+            ViewToHost::JsonBody { body: "{}".into() },
+            ViewToHost::RedirectableContent { content_type: "image/png".into() },
         ]
     }
 
@@ -866,14 +866,14 @@ mod wire_shape_tests {
     #[test]
     fn wire_shape_matches_the_recorded_fingerprint() {
         let host = host_samples();
-        let engine = engine_samples();
-        assert_eq!(host.len(), HOST_TO_ENGINE_VARIANTS, "HostToEngine has a new variant: add its sample and index");
-        assert_eq!(engine.len(), ENGINE_TO_HOST_VARIANTS, "EngineToHost has a new variant: add its sample and index");
+        let view_kind = view_samples();
+        assert_eq!(host.len(), HOST_TO_VIEW_VARIANTS, "HostToView has a new variant: add its sample and index");
+        assert_eq!(view_kind.len(), VIEW_TO_HOST_VARIANTS, "ViewToHost has a new variant: add its sample and index");
         for (i, m) in host.iter().enumerate() {
             assert_eq!(host_slot(m), i, "host_samples is out of step with host_slot");
         }
-        for (i, m) in engine.iter().enumerate() {
-            assert_eq!(engine_slot(m), i, "engine_samples is out of step with engine_slot");
+        for (i, m) in view_kind.iter().enumerate() {
+            assert_eq!(view_slot(m), i, "view_samples is out of step with view_slot");
         }
 
         let inputs = input_samples();
@@ -894,11 +894,11 @@ mod wire_shape_tests {
             &KeyCode::ALL.iter().map(|&key| InputEvent::KeyDown { key, modifiers: 0 }).collect::<Vec<_>>(),
         ));
         bytes.extend(frames(&host));
-        bytes.extend(frames(&engine));
+        bytes.extend(frames(&view_kind));
         let actual = fnv1a(&bytes);
         assert!(
             actual == RECORDED_FINGERPRINT,
-            "the HostToEngine/EngineToHost wire shape changed (fingerprint {actual:#018x}, recorded \
+            "the HostToView/ViewToHost wire shape changed (fingerprint {actual:#018x}, recorded \
              {RECORDED_FINGERPRINT:#018x}). Bump PROTOCOL_VERSION in ipc-protocol/src/lib.rs, then in this test set \
              RECORDED_FOR_VERSION to the new PROTOCOL_VERSION and RECORDED_FINGERPRINT to {actual:#018x}."
         );

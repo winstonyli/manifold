@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use cef::{rc::Rc as CefRc, *};
-use ipc_protocol::EngineToHost;
+use ipc_protocol::ViewToHost;
 
 /// Download messages for the host, queued rather than a single slot -- two downloads
 /// progressing within the same tick would otherwise silently clobber each
@@ -14,7 +14,7 @@ use ipc_protocol::EngineToHost;
 /// `assigned` makes `Completed` or `Failed` the last message about it;
 /// every other call in between is a `Progress`.
 pub struct DownloadResults {
-    pub queue: Vec<EngineToHost>,
+    pub queue: Vec<ViewToHost>,
     started: HashSet<u32>,
     /// The path `on_before_download` handed out, by item id, until the
     /// download ends. Every message reports this string, never
@@ -32,11 +32,11 @@ pub fn new_shared_download_path() -> SharedDownloadPath {
 }
 
 #[derive(Clone)]
-pub struct EngineDownloadHandler {
+pub struct ViewDownloadHandler {
     result: SharedDownloadPath,
 }
 
-impl EngineDownloadHandler {
+impl ViewDownloadHandler {
     pub fn new(result: SharedDownloadPath) -> Self {
         Self { result }
     }
@@ -44,7 +44,7 @@ impl EngineDownloadHandler {
 
 wrap_download_handler! {
     pub struct DownloadHandlerBuilder {
-        handler: EngineDownloadHandler,
+        handler: ViewDownloadHandler,
     }
 
     impl DownloadHandler {
@@ -111,22 +111,22 @@ wrap_download_handler! {
                     let total = item.total_bytes();
                     let total_bytes = (total > 0).then_some(total as u64);
                     let url = Some(CefString::from(&item.url()).to_string()).filter(|u| !u.is_empty());
-                    results.queue.push(EngineToHost::DownloadStarted { path: path.clone(), total_bytes, url });
+                    results.queue.push(ViewToHost::DownloadStarted { path: path.clone(), total_bytes, url });
                 }
                 let complete = item.is_complete() != 0;
                 if complete || item.is_canceled() != 0 || item.is_interrupted() != 0 {
                     results.assigned.remove(&id);
                     results.started.remove(&id);
                     let event = if complete {
-                        EngineToHost::DownloadCompleted { path }
+                        ViewToHost::DownloadCompleted { path }
                     } else {
-                        EngineToHost::DownloadFailed { path }
+                        ViewToHost::DownloadFailed { path }
                     };
                     results.queue.push(event);
                 } else {
                     let received = item.received_bytes();
                     if received >= 0 {
-                        results.queue.push(EngineToHost::DownloadProgress { path, bytes_received: received as u64 });
+                        results.queue.push(ViewToHost::DownloadProgress { path, bytes_received: received as u64 });
                     }
                 }
             }
@@ -135,7 +135,7 @@ wrap_download_handler! {
 }
 
 impl DownloadHandlerBuilder {
-    pub fn build(handler: EngineDownloadHandler) -> DownloadHandler {
+    pub fn build(handler: ViewDownloadHandler) -> DownloadHandler {
         Self::new(handler)
     }
 }

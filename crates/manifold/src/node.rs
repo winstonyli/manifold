@@ -283,19 +283,19 @@ pub(crate) enum UnloadedState {
 /// document pos live in the `Mirror`; where its card is drawn is `App::layout`). See
 /// `Runtime`'s own doc comment.
 pub(crate) struct TabPayload {
-    pub(crate) tab: EngineTab,
+    pub(crate) tab: ViewTab,
     pub(crate) url: String,
     pub(crate) title: String,
     pub(crate) can_go_back: bool,
     pub(crate) can_go_forward: bool,
     pub(crate) loading: bool,
     /// Shown as a speaker icon on this tab's graph node — see
-    /// `ipc_protocol::EngineToHost::AudioPlayingChanged`'s doc comment for
+    /// `ipc_protocol::ViewToHost::AudioPlayingChanged`'s doc comment for
     /// which engines actually send this (WebView2, WebKit; never CEF or
     /// Servo, so this just stays `false` for those tabs).
     pub(crate) audio_playing: bool,
     /// User-toggled via the toolbar's "Muted" button — host-tracked (not
-    /// read back from the engine), see `ipc_protocol::HostToEngine::
+    /// read back from the engine), see `ipc_protocol::HostToView::
     /// SetMuted`'s doc comment. Resets to `false` on a fresh spawn/respawn/
     /// engine swap, same as every other per-tab UI-only flag here (nothing
     /// about mute state survives a swap to a different engine process).
@@ -319,7 +319,7 @@ pub(crate) struct TabPayload {
     /// *to*, once this tab's `GetState` reply (its `StateSnapshot`) comes
     /// back. Per-tab (not a flat `App` field) so a swap on one tab can't
     /// block or interfere with a concurrent swap/crash on another.
-    pub(crate) swap_target: Option<EngineKind>,
+    pub(crate) swap_target: Option<ViewKind>,
 }
 
 /// A download's own data -- was `DownloadNode`'s non-shared fields (`path`,
@@ -331,7 +331,7 @@ pub(crate) struct DownloadPayload {
     // What the engine fetched, if it said, is the mirror's (`Mirror::url`): not a refetch source, a download has no
     // Refresh.
     /// Bytes received so far -- created (node included) at
-    /// `EngineToHost::DownloadStarted`, not only once finished, so a
+    /// `ViewToHost::DownloadStarted`, not only once finished, so a
     /// download is visible with live progress for its whole lifetime
     /// instead of only appearing once done. `None` total (see below) still
     /// updates this field; it just can't be shown as a fraction/percentage.

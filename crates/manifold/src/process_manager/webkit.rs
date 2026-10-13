@@ -55,21 +55,21 @@ pub(super) fn webkit_shell_command(
         ));
     }
     Ok(format!(
-        "ENGINE_INITIAL_URL_HEX={url_hex} ENGINE_TCP_PORT={port} ENGINE_TOKEN={} \
-         ENGINE_HOST_IP=$(ip route | awk '/^default/ {{print $3}}') xvfb-run -a {}",
+        "VIEW_INITIAL_URL_HEX={url_hex} VIEW_TCP_PORT={port} VIEW_TOKEN={} \
+         VIEW_HOST_IP=$(ip route | awk '/^default/ {{print $3}}') xvfb-run -a {}",
         transport::to_hex(token),
         shell_quote(binary_path),
     ))
 }
 
-pub(super) fn spawn_webkit_tab(tab_id: &str, initial_url: &str, wake: engine_io::Wake) -> std::io::Result<EngineTab> {
+pub(super) fn spawn_webkit_tab(tab_id: &str, initial_url: &str, wake: view_io::Wake) -> std::io::Result<ViewTab> {
     // Bind an ephemeral port (0 = "pick one for me") so concurrent tabs
     // don't collide. Bound on all interfaces, not just loopback: WSL2's
     // NAT-mode networking refuses (ECONNREFUSED, verified directly) a
     // WSL2-side connection to 127.0.0.1:port on the Windows host — the
     // guest must instead reach the host at its own default-gateway IP,
     // which the command string below discovers at spawn time (see
-    // ENGINE_HOST_IP).
+    // VIEW_HOST_IP).
     let listener = TcpListener::bind(("0.0.0.0", 0))?;
     let port = listener.local_addr()?.port();
 
@@ -102,11 +102,11 @@ pub(super) fn spawn_webkit_tab(tab_id: &str, initial_url: &str, wake: engine_io:
         .stderr(stderr_file)
         .spawn()?;
     // Only reaches the Windows-side `wsl.exe` relay, same limitation
-    // `Drop for EngineTab`'s own doc comment already calls out for
+    // `Drop for ViewTab`'s own doc comment already calls out for
     // explicit `Shutdown`-then-kill -- the actual Linux-side process tree
     // isn't part of this job and survives a crash regardless. Still a
     // strict improvement over today (the relay itself no longer orphans).
-    assign_to_engine_job(&child);
+    assign_to_view_job(&child);
 
     // The child connects right after spawning. Bounded, not the unbounded
     // wait `TcpListener::accept` alone would give: this runs on a spawn worker
@@ -128,22 +128,22 @@ pub(super) fn spawn_webkit_tab(tab_id: &str, initial_url: &str, wake: engine_io:
     };
     let stream = control.into_inner();
     let read_stream = stream.try_clone()?;
-    let to_engine = ipc_protocol::MessageChannel::new(stream);
-    let from_engine = ipc_protocol::MessageChannel::new(read_stream);
+    let to_view = ipc_protocol::MessageChannel::new(stream);
+    let from_view = ipc_protocol::MessageChannel::new(read_stream);
 
-    let frame = engine_io::FrameSlot::default();
-    let events_rx = spawn_reader_thread(from_engine, Arc::clone(&frame), wake);
+    let frame = view_io::FrameSlot::default();
+    let events_rx = spawn_reader_thread(from_view, Arc::clone(&frame), wake);
 
-    Ok(EngineTab {
-        kind: EngineKind::Webkit,
+    Ok(ViewTab {
+        kind: ViewKind::Webkit,
         // No local named pipe/shared memory for the WSL2-hosted case (see
         // `RemoteTransport`), so there's nothing to
         // disambiguate — tab_id is fine as-is.
         socket_id: tab_id.to_string(),
-        writer: engine_io::Writer::spawn(to_engine, &format!("engine writer {tab_id}")),
+        writer: view_io::Writer::spawn(to_view, &format!("engine writer {tab_id}")),
         events_rx,
         frame,
-        frame_map: engine_io::FrameMap::default(),
+        frame_map: view_io::FrameMap::default(),
         child: Some(child),
         cache_dir: None,
         profile_slot: None,

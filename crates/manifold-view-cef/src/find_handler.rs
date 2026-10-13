@@ -3,7 +3,7 @@ use std::rc::Rc;
 
 use cef::{rc::Rc as CefRc, *};
 
-/// `(count, active_match_ordinal)` — mirrors `ipc_protocol::EngineToHost::
+/// `(count, active_match_ordinal)` — mirrors `ipc_protocol::ViewToHost::
 /// FindResult` exactly. CEF's own `on_find_result` fires multiple times per
 /// search as matches are found incrementally (`final_update == 0` for all
 /// but the last) — only the final one is worth a message, so intermediate
@@ -16,11 +16,11 @@ pub fn new_shared_find_result() -> SharedFindResult {
 }
 
 #[derive(Clone)]
-pub struct EngineFindHandler {
+pub struct ViewFindHandler {
     result: SharedFindResult,
 }
 
-impl EngineFindHandler {
+impl ViewFindHandler {
     pub fn new(result: SharedFindResult) -> Self {
         Self { result }
     }
@@ -28,7 +28,7 @@ impl EngineFindHandler {
 
 wrap_find_handler! {
     pub struct FindHandlerBuilder {
-        handler: EngineFindHandler,
+        handler: ViewFindHandler,
     }
 
     impl FindHandler {
@@ -50,7 +50,7 @@ wrap_find_handler! {
 }
 
 impl FindHandlerBuilder {
-    pub fn build(handler: EngineFindHandler) -> FindHandler {
+    pub fn build(handler: ViewFindHandler) -> FindHandler {
         Self::new(handler)
     }
 }

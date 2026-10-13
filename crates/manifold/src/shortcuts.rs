@@ -226,13 +226,13 @@ impl App {
     }
 
     /// `Ctrl+R`/`F5` / headless `RELOAD` — reloads the focused tab. Every
-    /// engine exposes a plain no-argument reload (see `HostToEngine::
+    /// engine exposes a plain no-argument reload (see `HostToView::
     /// Reload`'s own doc comment), so there's no can-reload guard the way
     /// `GoBack`/`GoForward` need one.
     pub(crate) fn reload_focused_tab_shortcut(&mut self) {
         let Some(id) = self.focused.clone() else { return };
         if let Some(node) = self.nodes.get_mut(&id).and_then(|n| n.as_tab_mut()) {
-            node.tab.send(&HostToEngine::Reload);
+            node.tab.send(&HostToView::Reload);
         }
     }
 
@@ -339,14 +339,14 @@ impl App {
     /// own native DevTools UI (a separate real window the engine manages
     /// itself; nothing comes back to `manifold` for this, so there's no
     /// state to track here beyond sending the message). See
-    /// `HostToEngine::OpenDevTools`'s doc comment for per-engine support. An
-    /// engine without DevTools (`EngineDesc::devtools`) gets a toast instead.
+    /// `HostToView::OpenDevTools`'s doc comment for per-engine support. An
+    /// engine without DevTools (`ViewDesc::devtools`) gets a toast instead.
     pub(crate) fn open_devtools_shortcut(&mut self) {
         let Some(id) = self.focused.clone() else { return };
         let Some(node) = self.nodes.get_mut(&id).and_then(|n| n.as_tab_mut()) else { return };
         let kind = node.tab.kind;
         if kind.desc().devtools {
-            node.tab.send(&HostToEngine::OpenDevTools);
+            node.tab.send(&HostToView::OpenDevTools);
         } else {
             self.queue_toast(format!("{} has no DevTools", kind.desc().label));
         }
@@ -423,7 +423,7 @@ impl App {
     /// outline's search box on a JSON level (`focus_json_search`), nothing
     /// elsewhere in Graph view. Opening the find bar with existing text
     /// re-searches for it (matches a real browser's find bar remembering
-    /// the last term). An engine without find (`EngineDesc::find`) gets a toast
+    /// the last term). An engine without find (`ViewDesc::find`) gets a toast
     /// instead.
     pub(crate) fn open_find_bar_shortcut(&mut self) {
         // On a JSON level, Ctrl+F searches the value instead.

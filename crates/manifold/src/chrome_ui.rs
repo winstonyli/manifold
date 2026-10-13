@@ -16,14 +16,14 @@ impl App {
     /// by distinct intent (`url`, engine, `group`; `failure_toasts`).
     pub(crate) fn queue_failure_toast(
         &mut self,
-        kind: EngineKind,
+        kind: ViewKind,
         url: &str,
         group: Option<&str>,
         error: &str,
         message: String,
     ) {
-        let intent = format!("{url}\u{1f}{}\u{1f}{}", engine_label(kind), group.unwrap_or_default());
-        self.toasts.failure_notices.push(std::time::Instant::now(), engine_label(kind), error, &intent, message);
+        let intent = format!("{url}\u{1f}{}\u{1f}{}", view_label(kind), group.unwrap_or_default());
+        self.toasts.failure_notices.push(std::time::Instant::now(), view_label(kind), error, &intent, message);
     }
 
     /// `url` short enough for a toast: its first `TOAST_URL_CHARS` characters and an ellipsis. A toast sizes to its
@@ -51,7 +51,7 @@ impl App {
     /// full text now, not just a path this function used to prepend
     /// "Saved " to -- every original "Saved <path>" call site now includes
     /// that itself, freeing this up for unrelated short-lived messages too
-    /// (e.g. a crash/respawn notice, see `EngineToHost` handling below).
+    /// (e.g. a crash/respawn notice, see `ViewToHost` handling below).
     fn build_save_toast(&mut self, ui: &mut egui::Ui) {
         const TOAST_FADE_IN: std::time::Duration = std::time::Duration::from_millis(150);
         const TOAST_FADE_OUT: std::time::Duration = std::time::Duration::from_millis(400);
@@ -108,7 +108,7 @@ impl App {
     /// One frame of UI. An open anchored popup takes Escape (the views skip theirs while one is
     /// open, `popup_open`), and when it closes from the keyboard focus goes back to its opening button.
     pub(crate) fn build_ui(&mut self, ui: &mut egui::Ui) {
-        self.engine_ui.engine_state_cache.borrow_mut().clear();
+        self.view_ui.view_status_cache.borrow_mut().clear();
         let open_at_start = self.menus.open_popup;
         let escape = open_at_start.is_some() && ui.input(|i| i.key_pressed(egui::Key::Escape));
         self.build_ui_inner(ui);
@@ -183,7 +183,7 @@ impl App {
         }
         self.build_quick_switcher(ui);
         self.build_import_confirm_popup(ui);
-        self.build_engine_confirm_popup(ui);
+        self.build_view_confirm_popup(ui);
         self.build_jar_confirm_popup(ui);
         self.build_session_delete_popup(ui);
     }

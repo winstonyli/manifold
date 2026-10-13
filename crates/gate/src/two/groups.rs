@@ -11,8 +11,8 @@ pub(super) fn s1(t: &mut Two) -> Step {
     t.scenario("s1-import", 1, "import + note", |t| {
         let pair = json!({"nodes": [
             {"id": "g", "type": GROUP, "name": "Pair"},
-            {"id": "a", "type": TAB, "url": "manifold://welcome", "engine": "webview2", "pos": [-150.0, 0.0], "group": "g"},
-            {"id": "b", "type": TAB, "url": "manifold://welcome", "engine": "webview2", "pos": [150.0, 0.0], "group": "g"}
+            {"id": "a", "type": TAB, "url": "manifold://welcome", "view_kind": "webview2", "pos": [-150.0, 0.0], "group": "g"},
+            {"id": "b", "type": TAB, "url": "manifold://welcome", "view_kind": "webview2", "pos": [150.0, 0.0], "group": "g"}
         ]});
         let path = t.write_json("pair.json", &pair)?;
         t.send(Who::A, &format!("IMPORTGROUP {}", path.display()))?;

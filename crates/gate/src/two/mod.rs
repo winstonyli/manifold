@@ -3,7 +3,7 @@
 //! docs/superpowers/plans/2026-10-10-rust-gate-two.md). The scenarios run in the script's order, 1, 2, 8 to 12, 3 to 7,
 //! each building on the document the previous ones left. A failed precondition (`require`) stops the run at once; a
 //! failed observation (`observe`) lets its scenario finish, then the run stops: later scenarios would only cascade.
-//! `ENGINE` (default webview2) is the engine new tabs start in, which scenarios 3, 4, 5 and 7 navigate.
+//! `VIEW_KIND` (default webview2) is the engine new tabs start in, which scenarios 3, 4, 5 and 7 navigate.
 
 mod groups;
 mod restart;
@@ -341,11 +341,11 @@ pub fn two(parent: Option<PathBuf>) -> ExitCode {
         Err(e) => return fatal(format!("work dir: {e}")),
     };
     let (out, profile) = (work.join("out"), work.join("profile"));
-    let engine = std::env::var("ENGINE").unwrap_or_else(|_| "webview2".to_string());
-    if let Err(e) = fs::create_dir_all(&out).and_then(|()| seed_settings(&profile, &engine, "")) {
+    let view_kind = std::env::var("ENGINE").unwrap_or_else(|_| "webview2".to_string());
+    if let Err(e) = fs::create_dir_all(&out).and_then(|()| seed_settings(&profile, &view_kind, "")) {
         return fatal(format!("setup: {e}"));
     }
-    println!("two-instance test: exe {} profile {} engine {engine}", exe.display(), profile.display());
+    println!("two-instance test: exe {} profile {} engine {view_kind}", exe.display(), profile.display());
     let mut t = Two { exe, profile, out, insts: [None, None, None, None], site: None, marks };
     if let Err(Halt::Error(e)) = run(&mut t) {
         // Not a verdict line: gate.sh counts those words, and this failure is counted here.

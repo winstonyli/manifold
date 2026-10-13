@@ -200,7 +200,7 @@ impl Run {
         let seed = self.profile.join("seed.json");
         let tab = |id: &str, x: f64, y: f64| {
             serde_json::json!({"id": id, "type": "application/vnd.manifold.tab", "url": "about:blank",
-                "engine": "webview2", "pos": [x, y]})
+                "view_kind": "webview2", "pos": [x, y]})
         };
         let doc = serde_json::json!({"nodes": [tab("t1", 0.0, 0.0), tab("t2", 400.0, 0.0), tab("t3", 0.0, 400.0)]});
         std::fs::write(&seed, doc.to_string())?;

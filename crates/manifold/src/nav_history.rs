@@ -107,7 +107,7 @@ impl NavHistory {
     /// The tab's engine was replaced and now knows only the page at `url`.
     /// A list that doesn't end up at `url` (the tab moved while the app was
     /// closed, or the file is stale) is dropped.
-    pub(crate) fn engine_reset(&mut self, url: &str) {
+    pub(crate) fn view_reset(&mut self, url: &str) {
         if self.entries.get(self.index).is_some_and(|e| e != url) {
             self.entries.clear();
             self.index = 0;
@@ -120,26 +120,26 @@ impl NavHistory {
     }
 
     /// Whether Back is available, given what the engine reports.
-    pub(crate) fn can_go_back(&self, engine: bool) -> bool {
+    pub(crate) fn can_go_back(&self, view_kind: bool) -> bool {
         if self.hosted {
             self.index > 0
         } else {
-            engine
+            view_kind
         }
     }
 
-    pub(crate) fn can_go_forward(&self, engine: bool) -> bool {
+    pub(crate) fn can_go_forward(&self, view_kind: bool) -> bool {
         if self.hosted {
             self.index + 1 < self.entries.len()
         } else {
-            engine
+            view_kind
         }
     }
 
     /// A Back or Forward click: what to send, with the list updated.
-    pub(crate) fn go(&mut self, dir: Dir, engine_can: bool) -> NavAction {
+    pub(crate) fn go(&mut self, dir: Dir, view_can: bool) -> NavAction {
         if !self.hosted {
-            if !engine_can {
+            if !view_can {
                 return NavAction::None;
             }
             self.pending = Some(dir);
@@ -244,10 +244,10 @@ mod tests {
     }
 
     #[test]
-    fn a_replaced_engine_keeps_back_and_forward() {
+    fn a_replaced_view_keeps_back_and_forward() {
         let mut h = NavHistory::default();
         visit(&mut h, &["x", "y", "z"]);
-        h.engine_reset("z");
+        h.view_reset("z");
         // The new engine reports only the page it loaded, and no history.
         visit(&mut h, &["z"]);
         assert!(h.can_go_back(false));
@@ -269,7 +269,7 @@ mod tests {
     fn a_hosted_load_that_redirects_replaces_the_entry() {
         let mut h = NavHistory::default();
         visit(&mut h, &["x", "y"]);
-        h.engine_reset("y");
+        h.view_reset("y");
         visit(&mut h, &["y"]);
         h.go(Dir::Back, false);
         visit(&mut h, &["x2"]);
@@ -281,7 +281,7 @@ mod tests {
     fn a_single_page_tab_stays_native_after_a_reset() {
         let mut h = NavHistory::default();
         visit(&mut h, &["a"]);
-        h.engine_reset("a");
+        h.view_reset("a");
         assert!(h.can_go_back(true));
         assert_eq!(h.go(Dir::Back, false), NavAction::None);
     }
@@ -290,7 +290,7 @@ mod tests {
     fn a_list_that_no_longer_ends_at_the_tabs_url_is_dropped() {
         let mut h = NavHistory::default();
         visit(&mut h, &["x", "y"]);
-        h.engine_reset("elsewhere");
+        h.view_reset("elsewhere");
         assert!(!h.can_go_back(false));
         visit(&mut h, &["elsewhere"]);
         assert_eq!(h.entries, ["elsewhere"]);
@@ -304,7 +304,7 @@ mod tests {
         let text = serde_json::to_string(&Saved { entries: h.entries.clone(), index: h.index }).unwrap();
         let saved: Saved = serde_json::from_str(&text).unwrap();
         let mut restored = NavHistory { entries: saved.entries, index: saved.index, ..NavHistory::default() };
-        restored.engine_reset("z");
+        restored.view_reset("z");
         visit(&mut restored, &["z"]);
         assert_eq!(restored.go(Dir::Back, false), NavAction::Load("y".into()));
     }

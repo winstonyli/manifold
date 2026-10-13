@@ -74,7 +74,7 @@ impl App {
         // the document's (`materialize` runs `mirror_remote` first), so a live url it reopens at isn't taken for it.
         // A live tab's engine is the one it runs; an unloaded card has none of its own (`Mirror::engine`).
         let url = runtime.saved_tab().map(str::to_owned).unwrap_or_default();
-        let engine = runtime.as_tab().map_or(0, |t| crate::session_sync::engine_code(t.tab.kind));
+        let view_kind = runtime.as_tab().map_or(0, |t| crate::session_sync::view_code(t.tab.kind));
         // A new note's text starts as what it was made with (its payload, the edit buffer, 2b-4 Ruling 6).
         let text = runtime.as_note().map(|n| n.text.clone()).unwrap_or_default();
         let ty = kind.type_str().unwrap_or_default().to_owned();
@@ -84,7 +84,7 @@ impl App {
         self.queue_create(&id);
         self.snap_layout(&id, at.pos);
         let (pos, group) = (Some(at.pos), at.group);
-        let carried = crate::mirror::Carried { pos, group, url, text, engine, ty, path, ..Default::default() };
+        let carried = crate::mirror::Carried { pos, group, url, text, view_kind, ty, path, ..Default::default() };
         self.mirror.seed(&id, &carried);
         self.node_order.push(id.clone());
         id
@@ -216,15 +216,15 @@ impl App {
     /// spinner).
     pub(crate) fn retry_missing_file(&mut self, id: &str) {
         if self.nodes.get(id).and_then(|n| n.as_unloaded()).is_some() {
-            let kind = self.mirror.engine(id);
+            let kind = self.mirror.view_kind(id);
             // A tab that failed for want of its engine's runtime can't succeed by retrying: ask to
             // install the engine instead (the card's Download).
-            match pick_outcome(kind, &self.engine_state(kind)) {
+            match pick_outcome(kind, &self.view_status(kind)) {
                 PickOutcome::AskInstall(kind) => {
-                    self.offer_engine_confirm(EngineConfirm::Download(kind));
+                    self.offer_view_confirm(ViewConfirm::Download(kind));
                 }
                 PickOutcome::AlreadyInstalling(kind) => {
-                    self.queue_toast(format!("{} is already installing", engine_label(kind)))
+                    self.queue_toast(format!("{} is already installing", view_label(kind)))
                 }
                 PickOutcome::Unavailable(kind, reason) => {
                     self.queue_toast(PickOutcome::unavailable_toast(kind, &reason))
@@ -519,7 +519,7 @@ impl App {
     }
 
     /// Converts a tab whose page is content the table maps to a node (see
-    /// `ipc_protocol::EngineToHost::RedirectableContent`): `body` is what
+    /// `ipc_protocol::ViewToHost::RedirectableContent`): `body` is what
     /// `redirect_fetch` saved, inserted through `insert_content` at the
     /// tab's place, opened from where the tab was (its `parent`). Only once
     /// that succeeds does the tab go, through `remove_tab` (a close that

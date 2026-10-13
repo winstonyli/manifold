@@ -54,7 +54,7 @@ impl App {
     /// Opens a node's file's containing folder with the file pre-selected
     /// (a plain click on a download card does this too -- same "just show
     /// the obvious thing, no custom UI" posture as the download itself, see
-    /// `EngineToHost::DownloadCompleted`'s doc comment). No-op for kinds
+    /// `ViewToHost::DownloadCompleted`'s doc comment). No-op for kinds
     /// with no file; a file node with no path (`node_file_path`) is toasted.
     pub(crate) fn reveal_node(&mut self, id: &str) {
         let Some(node) = self.nodes.get(id) else { return };

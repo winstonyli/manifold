@@ -26,10 +26,10 @@ pub(crate) enum NodeAction {
     Sleep,
     /// A group's live tabs all do (`App::sleep_group`).
     SleepGroup,
-    /// A live tab that stopped responding gets a new engine host (`App::restart_engine`).
-    RestartEngine,
-    /// A live tab that stopped responding has its engine host ended, leaving a failed card (`App::end_engine`).
-    EndEngine,
+    /// A live tab that stopped responding gets a new engine host (`App::restart_view`).
+    RestartView,
+    /// A live tab that stopped responding has its engine host ended, leaving a failed card (`App::end_view`).
+    EndView,
     CopyUrl,
     FitSubtree,
     /// Swaps the group menu's items for a name field (see
@@ -49,7 +49,7 @@ pub(crate) enum NodeAction {
     ToggleMute,
     RetryMissingFile,
     /// A failed tab's card: tries again on the default engine.
-    OpenInDefaultEngine,
+    OpenInDefaultViewKind,
     RemoveFromGroup,
     /// The keyboard route for dragging a card onto a sibling group (`DropEffect::Join`). On a group it differs
     /// from the drag: "Move into" nests the group inside the other, where dropping it there merges the two
@@ -112,8 +112,8 @@ impl NodeAction {
         match self {
             NodeAction::FitSubtree => Some("Zoom the graph to frame just this tab and its children"),
             NodeAction::SwitchJarNow => Some("Reload this tab in its new jar now"),
-            NodeAction::RestartEngine => Some("Start a new engine for this tab at its current page"),
-            NodeAction::EndEngine => Some("Close this tab's engine; click the card to start it again"),
+            NodeAction::RestartView => Some("Start a new engine for this tab at its current page"),
+            NodeAction::EndView => Some("Close this tab's engine; click the card to start it again"),
             _ => None,
         }
     }
@@ -612,11 +612,7 @@ pub(crate) fn node_menu_config(view: &NodeMenuView, headless: bool) -> NodeMenuC
         TYPE_TAB if view.kind.loaded() => {
             let mut items = Vec::new();
             if view.unresponsive {
-                items.extend([
-                    Button("Restart Engine", A::RestartEngine),
-                    Button("End Engine", A::EndEngine),
-                    Separator,
-                ]);
+                items.extend([Button("Restart Engine", A::RestartView), Button("End Engine", A::EndView), Separator]);
             }
             items.extend([
                 Button("Duplicate", A::Duplicate),
@@ -629,14 +625,14 @@ pub(crate) fn node_menu_config(view: &NodeMenuView, headless: bool) -> NodeMenuC
         }
         TYPE_TAB => {
             // Retrying a tab whose engine isn't installed asks to install it (`retry_missing_file`).
-            let first = match (view.failed, view.engine_missing) {
+            let first = match (view.failed, view.view_missing) {
                 (true, true) => Button("Download Engine", A::RetryMissingFile),
                 (true, false) => Button("Retry", A::RetryMissingFile),
                 (false, _) => Button("Open", A::Open),
             };
             let mut items = vec![first];
-            if view.failed && view.other_default_engine {
-                items.push(Button("Open in Default Engine", A::OpenInDefaultEngine));
+            if view.failed && view.other_default_view_kind {
+                items.push(Button("Open in Default Engine", A::OpenInDefaultViewKind));
             }
             // The same as a live tab's, and Ctrl+D's (`duplicate_tab` takes either). Not for a failed tab: the copy
             // would start on the same engine and fail the same way.
@@ -682,16 +678,16 @@ pub(crate) struct NodeMenuView {
     has_copy_url: bool,
     /// Tab only.
     pinned: bool,
-    /// Live tab only: its engine stopped reading (`EngineTab::is_unresponsive`), so the menu leads with Restart
+    /// Live tab only: its engine stopped reading (`ViewTab::is_unresponsive`), so the menu leads with Restart
     /// Engine and End Engine.
     unresponsive: bool,
     /// Unloaded only: the default engine isn't the one that failed, so
     /// the menu offers it.
-    other_default_engine: bool,
+    other_default_view_kind: bool,
     /// Unloaded only: its engine failed, so the menu offers a retry.
     failed: bool,
     /// Unloaded only: it failed because its engine isn't installed, so the menu offers the download.
-    engine_missing: bool,
+    view_missing: bool,
     /// Sibling groups (same level, not this node) it can move into, as `(id, name)`.
     /// `pub(crate)` for headless `MOVETOGROUP`, which moves only where the menu would offer.
     pub(crate) move_targets: Vec<(String, String)>,
@@ -860,13 +856,13 @@ impl App {
             has_copy_url: self.copyable_url(id).is_some(),
             pinned: self.mirror.pinned(id),
             unresponsive: node.as_tab().is_some_and(|t| t.tab.is_unresponsive(std::time::Instant::now())),
-            other_default_engine: node.runtime.as_unloaded().is_some()
-                && self.mirror.engine(id) != self.settings.default_starting_engine,
+            other_default_view_kind: node.runtime.as_unloaded().is_some()
+                && self.mirror.view_kind(id) != self.settings.default_starting_view_kind,
             failed: node.runtime.as_unloaded().is_some_and(|t| matches!(t.state, UnloadedState::Failed(_))),
-            engine_missing: node.runtime.as_unloaded().is_some_and(|t| {
-                let kind = self.mirror.engine(id);
+            view_missing: node.runtime.as_unloaded().is_some_and(|t| {
+                let kind = self.mirror.view_kind(id);
                 matches!(t.state, UnloadedState::Failed(_))
-                    && !matches!(pick_outcome(kind, &self.engine_state(kind)), PickOutcome::Switch(_))
+                    && !matches!(pick_outcome(kind, &self.view_status(kind)), PickOutcome::Switch(_))
             }),
             move_targets: self
                 .node_order
@@ -1023,11 +1019,11 @@ impl App {
             NodeAction::SleepGroup => {
                 self.sleep_group(id);
             }
-            NodeAction::RestartEngine => {
-                self.restart_engine(id);
+            NodeAction::RestartView => {
+                self.restart_view(id);
             }
-            NodeAction::EndEngine => {
-                self.end_engine(id);
+            NodeAction::EndView => {
+                self.end_view(id);
             }
             NodeAction::CopyUrl => {
                 let node = self.nodes.get(id);
@@ -1059,7 +1055,7 @@ impl App {
             }
             NodeAction::ToggleMute => self.toggle_muted(id),
             NodeAction::RetryMissingFile => self.retry_missing_file(id),
-            NodeAction::OpenInDefaultEngine => self.wake_tab(id, self.settings.default_starting_engine),
+            NodeAction::OpenInDefaultViewKind => self.wake_tab(id, self.settings.default_starting_view_kind),
             NodeAction::RemoveFromGroup => self.eject(id),
             NodeAction::MoveToGroup(group) => self.apply_drop(id, Some((DropEffect::Join, Some(group)))),
             NodeAction::Dissolve => self.dissolve_group(id),

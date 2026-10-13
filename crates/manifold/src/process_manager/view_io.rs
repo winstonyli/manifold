@@ -1,6 +1,6 @@
 //! The app's side of an engine's control channel, off the UI thread (survey E1).
 //!
-//! `EngineTab::send` only queues (`SendQueue`); one writer thread per tab (`Writer`) writes the queue out, so the UI
+//! `ViewTab::send` only queues (`SendQueue`); one writer thread per tab (`Writer`) writes the queue out, so the UI
 //! thread never waits on an engine. While the writer is behind, a new message merges into the newest queued one where
 //! only the result matters (`coalesce`). A tab whose writer is stuck reads as unresponsive (`Writer::is_unresponsive`)
 //! and the user restarts or ends it; nothing here kills an engine.
@@ -11,7 +11,7 @@ use std::ops::Range;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
-use ipc_protocol::{frame_path, HostToEngine, InputEvent, MessageChannel, SharedFrameBuffer};
+use ipc_protocol::{frame_path, HostToView, InputEvent, MessageChannel, SharedFrameBuffer};
 
 /// Messages a tab's send queue holds before it refuses more (the tab is then unresponsive).
 pub(crate) const SEND_QUEUE_CAP: usize = 256;
@@ -58,11 +58,11 @@ pub(crate) fn merge_rows(prev: Option<Range<u32>>, next: Option<Range<u32>>) -> 
 
 /// An engine's frame file mapped once and kept (survey E2): `FrameReady` names a generation, and a file of one
 /// generation is never rewritten or resized, so the app reopens only when the generation changes. It lives in
-/// `EngineTab`, not in the event loop: a respawn of the same tab reuses `socket_id`, and a new `EngineTab` starts
+/// `ViewTab`, not in the event loop: a respawn of the same tab reuses `socket_id`, and a new `ViewTab` starts
 /// empty, so a dead host's file is never read.
 #[derive(Default)]
 pub(crate) struct FrameMap {
-    /// Boxed: `EngineTab` sits inside a node enum clippy keeps small.
+    /// Boxed: `ViewTab` sits inside a node enum clippy keeps small.
     mapped: Option<Box<(u32, SharedFrameBuffer)>>,
 }
 
@@ -91,7 +91,7 @@ impl FrameMap {
 pub(crate) type FrameSlot = Arc<Mutex<Option<Frame>>>;
 
 /// Called by a reader after each message it hands over (frames aside): wakes the event loop to apply it now rather
-/// than at its next tick (`event_loop::engine_wake`).
+/// than at its next tick (`event_loop::view_wake`).
 pub(crate) type Wake = Arc<dyn Fn() + Send + Sync>;
 /// The writer only serializes and writes.
 const WRITER_STACK: usize = 256 * 1024;
@@ -99,8 +99,8 @@ const WRITER_STACK: usize = 256 * 1024;
 /// `next` folded into `prev` when the engine needs only the result: the latest pointer position or size, or the sum of
 /// a run of wheel steps. `None` keeps both. Only the queue's newest unwritten message is ever `prev`, so a merge never
 /// moves a message past another one. A modifier change ends a run (the page may react to it).
-pub(crate) fn coalesce(prev: &HostToEngine, next: &HostToEngine) -> Option<HostToEngine> {
-    use HostToEngine::{Input, Resize};
+pub(crate) fn coalesce(prev: &HostToView, next: &HostToView) -> Option<HostToView> {
+    use HostToView::{Input, Resize};
     use InputEvent::{MouseMove, Scroll};
     match (prev, next) {
         (Input(MouseMove { modifiers: a, .. }), Input(MouseMove { modifiers: b, .. })) if a == b => Some(next.clone()),
@@ -117,7 +117,7 @@ pub(crate) fn coalesce(prev: &HostToEngine, next: &HostToEngine) -> Option<HostT
 
 /// A bounded FIFO of messages not yet written.
 pub(crate) struct SendQueue {
-    items: VecDeque<HostToEngine>,
+    items: VecDeque<HostToView>,
     cap: usize,
 }
 
@@ -130,7 +130,7 @@ impl Default for SendQueue {
 impl SendQueue {
     /// Queues `msg`, or merges it into the newest queued message (`coalesce`, allowed even when full). False when
     /// the queue is full and `msg` was dropped.
-    pub(crate) fn push(&mut self, msg: HostToEngine) -> bool {
+    pub(crate) fn push(&mut self, msg: HostToView) -> bool {
         if let Some(last) = self.items.back_mut() {
             if let Some(merged) = coalesce(last, &msg) {
                 *last = merged;
@@ -145,11 +145,11 @@ impl SendQueue {
     }
 
     /// Queues `msg` last whatever the cap: `Shutdown`, which nothing follows.
-    pub(crate) fn push_last(&mut self, msg: HostToEngine) {
+    pub(crate) fn push_last(&mut self, msg: HostToView) {
         self.items.push_back(msg);
     }
 
-    pub(crate) fn pop(&mut self) -> Option<HostToEngine> {
+    pub(crate) fn pop(&mut self) -> Option<HostToView> {
         self.items.pop_front()
     }
 
@@ -224,7 +224,7 @@ impl Writer {
 
     /// Queues a copy of `msg` (none when dropped for being closed); never blocks. Dropped once closed or finished, and when the queue is full (the tab then reads as
     /// unresponsive once a write is stuck).
-    pub(crate) fn send(&self, msg: &HostToEngine) {
+    pub(crate) fn send(&self, msg: &HostToView) {
         let mut state = self.0.lock();
         if state.finished || state.closed_at.is_some() {
             return;
@@ -259,7 +259,7 @@ impl Writer {
             return;
         }
         state.closed_at = Some(Instant::now());
-        state.queue.push_last(HostToEngine::Shutdown);
+        state.queue.push_last(HostToView::Shutdown);
         drop(state);
         self.0.changed.notify_all();
     }
@@ -300,7 +300,7 @@ impl Writer {
     /// reads as unresponsive (`REFUSED_BLOCKED_AFTER` passes once the queue is full).
     #[cfg(test)]
     pub(crate) fn wedge(&self) {
-        let big = HostToEngine::SetCookies("x".repeat(64 * 1024));
+        let big = HostToView::SetCookies("x".repeat(64 * 1024));
         let deadline = Instant::now() + Duration::from_secs(10);
         while !self.is_unresponsive(Instant::now()) {
             assert!(Instant::now() < deadline, "the writer never wedged: is the engine end being read?");
@@ -343,7 +343,7 @@ fn write_queued<S: Read + Write>(mut channel: MessageChannel<S>, shared: &Shared
                 state = shared.changed.wait(state).unwrap_or_else(PoisonError::into_inner);
             }
         };
-        let last = matches!(msg, HostToEngine::Shutdown);
+        let last = matches!(msg, HostToView::Shutdown);
         let written = channel.send(&msg).is_ok();
         {
             let mut state = shared.lock();
@@ -381,32 +381,32 @@ mod tests {
     use std::io;
     use std::sync::mpsc;
 
-    fn url(n: usize) -> HostToEngine {
-        HostToEngine::Navigate { url: n.to_string(), referrer: None }
+    fn url(n: usize) -> HostToView {
+        HostToView::Navigate { url: n.to_string(), referrer: None }
     }
 
-    fn urls(msgs: &[HostToEngine]) -> Vec<usize> {
+    fn urls(msgs: &[HostToView]) -> Vec<usize> {
         msgs.iter()
             .filter_map(|m| match m {
-                HostToEngine::Navigate { url, .. } => url.parse().ok(),
+                HostToView::Navigate { url, .. } => url.parse().ok(),
                 _ => None,
             })
             .collect()
     }
 
-    fn mouse(x: f64, modifiers: u8) -> HostToEngine {
-        HostToEngine::Input(InputEvent::MouseMove { x, y: 0.0, modifiers })
+    fn mouse(x: f64, modifiers: u8) -> HostToView {
+        HostToView::Input(InputEvent::MouseMove { x, y: 0.0, modifiers })
     }
 
-    fn scroll(delta_y: f64) -> HostToEngine {
-        HostToEngine::Input(InputEvent::Scroll { x: 1.0, y: 2.0, delta_x: 0.0, delta_y, modifiers: 0 })
+    fn scroll(delta_y: f64) -> HostToView {
+        HostToView::Input(InputEvent::Scroll { x: 1.0, y: 2.0, delta_x: 0.0, delta_y, modifiers: 0 })
     }
 
-    fn resize(width: u32) -> HostToEngine {
-        HostToEngine::Resize { width, height: 10, dpi_scale: 1.0 }
+    fn resize(width: u32) -> HostToView {
+        HostToView::Resize { width, height: 10, dpi_scale: 1.0 }
     }
 
-    fn drain(queue: &mut SendQueue) -> Vec<HostToEngine> {
+    fn drain(queue: &mut SendQueue) -> Vec<HostToView> {
         std::iter::from_fn(|| queue.pop()).collect()
     }
 
@@ -430,8 +430,8 @@ mod tests {
         }
         let out = drain(&mut queue);
         assert_eq!(out.len(), 2);
-        assert!(matches!(out[0], HostToEngine::Input(InputEvent::MouseMove { x, .. }) if x == 9.0));
-        assert!(matches!(out[1], HostToEngine::Resize { width: 9, .. }));
+        assert!(matches!(out[0], HostToView::Input(InputEvent::MouseMove { x, .. }) if x == 9.0));
+        assert!(matches!(out[1], HostToView::Resize { width: 9, .. }));
     }
 
     #[test]
@@ -444,14 +444,14 @@ mod tests {
         assert_eq!(out.len(), 1);
         assert!(matches!(
             out[0],
-            HostToEngine::Input(InputEvent::Scroll { x, y, delta_y, .. }) if delta_y == -6.0 && x == 1.0 && y == 2.0
+            HostToView::Input(InputEvent::Scroll { x, y, delta_y, .. }) if delta_y == -6.0 && x == 1.0 && y == 2.0
         ));
     }
 
     #[test]
     fn nothing_merges_across_another_message_or_a_modifier_change() {
         let mut queue = SendQueue::default();
-        for msg in [mouse(1.0, 0), url(0), mouse(2.0, 0), mouse(3.0, 1), HostToEngine::Shutdown, resize(1), resize(2)] {
+        for msg in [mouse(1.0, 0), url(0), mouse(2.0, 0), mouse(3.0, 1), HostToView::Shutdown, resize(1), resize(2)] {
             queue.push(msg);
         }
         // Only the two resizes at the end merge.
@@ -466,15 +466,15 @@ mod tests {
         assert!(queue.push(mouse(2.0, 0)), "a move still merges into the newest");
         let out = drain(&mut queue);
         assert_eq!(out.len(), 2);
-        assert!(matches!(out[1], HostToEngine::Input(InputEvent::MouseMove { x, .. }) if x == 2.0));
+        assert!(matches!(out[1], HostToView::Input(InputEvent::MouseMove { x, .. }) if x == 2.0));
     }
 
     #[test]
     fn shutdown_goes_last_even_when_full() {
         let mut queue = SendQueue { items: VecDeque::new(), cap: 1 };
         assert!(queue.push(resize(1)));
-        queue.push_last(HostToEngine::Shutdown);
-        assert!(matches!(drain(&mut queue).as_slice(), [HostToEngine::Resize { .. }, HostToEngine::Shutdown]));
+        queue.push_last(HostToView::Shutdown);
+        assert!(matches!(drain(&mut queue).as_slice(), [HostToView::Resize { .. }, HostToView::Shutdown]));
     }
 
     /// An engine end whose every write waits for a permit: no permits, a stuck engine; the sender dropped, a dead one.
@@ -510,7 +510,7 @@ mod tests {
     }
 
     /// Every message in `bytes`, in order.
-    fn decode(bytes: Vec<u8>) -> Vec<HostToEngine> {
+    fn decode(bytes: Vec<u8>) -> Vec<HostToView> {
         let mut channel = MessageChannel::new(io::Cursor::new(bytes));
         std::iter::from_fn(|| channel.recv().ok()).collect()
     }
@@ -543,7 +543,7 @@ mod tests {
     }
 
     #[test]
-    fn a_burst_past_the_cap_to_an_engine_that_keeps_reading_is_not_unresponsive() {
+    fn a_burst_past_the_cap_to_a_view_that_keeps_reading_is_not_unresponsive() {
         let (writer, permit, _) = gated(false);
         let sent = SEND_QUEUE_CAP + 10;
         for n in 0..sent {
@@ -588,7 +588,7 @@ mod tests {
         assert!(got.windows(2).all(|w| w[0] < w[1]), "order kept: {got:?}");
         assert!(got.len() < sent, "some were refused while full");
         assert_eq!(got.last(), Some(&sent), "a message sent after the recovery arrives");
-        assert!(matches!(out.last(), Some(HostToEngine::Shutdown)));
+        assert!(matches!(out.last(), Some(HostToView::Shutdown)));
     }
 
     #[test]
@@ -629,7 +629,7 @@ mod tests {
     }
 
     #[test]
-    fn a_dead_engine_ends_the_writer_and_is_not_unresponsive() {
+    fn a_dead_view_ends_the_writer_and_is_not_unresponsive() {
         let (writer, permit, _) = gated(false);
         writer.send(&url(0));
         // The engine died: the write fails. No `shutdown`: `wait_finished` then waits `flush` from now.

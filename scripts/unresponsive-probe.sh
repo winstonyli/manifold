@@ -4,7 +4,7 @@
 # Checks "not responding" on WebView2 (wave 3b, survey E1). A seeded tab is opened, its engine host is suspended
 # (NtSuspendProcess on the instance's own child, found by parent pid), and 1000 characters are typed into the page:
 # the app's writer for it blocks and its queue fills. EXPORTSTATE must then read the card `unresponsive` with a
-# "Not responding" toast, while the app keeps answering commands. `RESTARTENGINE id` must bring the tab back live and
+# "Not responding" toast, while the app keeps answering commands. `RESTARTVIEW id` must bring the tab back live and
 # responsive and end the suspended host. Last, the new host is suspended too and `QUIT` must end the app within 10 s:
 # closing a stuck tab never waits on it.
 # One headless instance on a fresh isolated APPDATA. Build first:
@@ -54,7 +54,7 @@ st() { cygpath -w "$out/$1.json"; }
 status=0
 profile="$out/appdata"
 seed_settings "$profile" webview2
-echo '{"nodes": [{"id": "t1", "type": "application/vnd.manifold.tab", "url": "about:blank", "engine": "webview2", "pos": [0.0, 0.0]}]}' >"$profile/seed.json"
+echo '{"nodes": [{"id": "t1", "type": "application/vnd.manifold.tab", "url": "about:blank", "view_kind": "webview2", "pos": [0.0, 0.0]}]}' >"$profile/seed.json"
 "$exe" --import-json "$(cygpath -w "$profile/seed.json")" --out "$(cygpath -w "$profile/manifold/session.mnf")" >/dev/null
 cmd="$profile/cmd"
 : >"$cmd"
@@ -84,7 +84,7 @@ case "$(toast "$out/stuck.json")" in
 *) echo "FAIL: toast: got [$(toast "$out/stuck.json")]"; status=1 ;;
 esac
 
-send "RESTARTENGINE $id" WAITTABS "SLEEP 4" "EXPORTSTATE $(st restarted)"
+send "RESTARTVIEW $id" WAITTABS "SLEEP 4" "EXPORTSTATE $(st restarted)"
 wait_file "$out/restarted.json" || exit 1
 check "restarted: live" "true" "$(card "$out/restarted.json" "$id" loaded)"
 check "restarted: responsive" "false" "$(card "$out/restarted.json" "$id" unresponsive)"

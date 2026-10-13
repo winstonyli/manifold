@@ -29,16 +29,16 @@ fn disk(runtime: RuntimeOnDisk) -> OnDisk {
 }
 
 #[test]
-fn engine_state_is_reused_within_a_frame_and_refreshed_when_an_install_changes() {
+fn view_status_is_reused_within_a_frame_and_refreshed_when_an_install_changes() {
     let mut app = App::default();
-    let kind = EngineKind::Cef;
-    app.engine_ui.engine_state_cache.borrow_mut().insert(kind, EngineState::Failed("cached".into()));
-    assert_eq!(app.engine_state(kind), EngineState::Failed("cached".into()), "reused");
-    app.cancel_engine_install(kind);
-    assert_ne!(app.engine_state(kind), EngineState::Failed("cached".into()), "refreshed");
-    app.engine_ui.engine_state_cache.borrow_mut().insert(kind, EngineState::Failed("cached".into()));
-    app.engine_ui.engine_state_cache.borrow_mut().clear(); // what each new frame does
-    assert_ne!(app.engine_state(kind), EngineState::Failed("cached".into()));
+    let kind = ViewKind::Cef;
+    app.view_ui.view_status_cache.borrow_mut().insert(kind, ViewStatus::Failed("cached".into()));
+    assert_eq!(app.view_status(kind), ViewStatus::Failed("cached".into()), "reused");
+    app.cancel_view_install(kind);
+    assert_ne!(app.view_status(kind), ViewStatus::Failed("cached".into()), "refreshed");
+    app.view_ui.view_status_cache.borrow_mut().insert(kind, ViewStatus::Failed("cached".into()));
+    app.view_ui.view_status_cache.borrow_mut().clear(); // what each new frame does
+    assert_ne!(app.view_status(kind), ViewStatus::Failed("cached".into()));
 }
 
 #[test]
@@ -48,13 +48,13 @@ fn remove_deletes_the_runtime_and_its_leftovers_only_when_idle() {
     std::fs::write(dir.join("cef-runtime").join(lib()), vec![0u8; 5]).unwrap();
     std::fs::write(dir.join("cef-runtime.part"), b"keep").unwrap();
     assert_eq!(dir_size(&dir.join("cef-runtime")), 5);
-    assert!(remove_engine_files(&dir, EngineKind::Cef, &[], true, false).is_err());
-    assert!(remove_engine_files(&dir, EngineKind::Cef, &[], false, true).is_err());
+    assert!(remove_view_files(&dir, ViewKind::Cef, &[], true, false).is_err());
+    assert!(remove_view_files(&dir, ViewKind::Cef, &[], false, true).is_err());
     assert!(dir.join("cef-runtime").exists());
-    remove_engine_files(&dir, EngineKind::Cef, &[], false, false).unwrap();
+    remove_view_files(&dir, ViewKind::Cef, &[], false, false).unwrap();
     assert!(!dir.join("cef-runtime").exists());
     assert!(!dir.join("cef-runtime.part").exists(), "Remove also clears the leftovers");
-    remove_engine_files(&dir, EngineKind::Cef, &[], false, false).unwrap(); // already gone is fine
+    remove_view_files(&dir, ViewKind::Cef, &[], false, false).unwrap(); // already gone is fine
 }
 
 #[test]
@@ -102,10 +102,10 @@ fn the_marker_is_installed_for_the_pin_or_a_later_major_and_update_needed_otherw
     let state = |marker: &str| {
         std::fs::write(dir.join(MARKER), marker).unwrap();
         let on_disk = runtime_state(&dir, &pin);
-        (on_disk, app.engine_state_at(EngineKind::Cef, disk(on_disk), &cef_plan()))
+        (on_disk, app.view_status_at(ViewKind::Cef, disk(on_disk), &cef_plan()))
     };
-    let update = (RuntimeOnDisk::Stale, EngineState::UpdateNeeded { size: cef_pin().size });
-    let installed = (RuntimeOnDisk::Ready, EngineState::Installed);
+    let update = (RuntimeOnDisk::Stale, ViewStatus::UpdateNeeded { size: cef_pin().size });
+    let installed = (RuntimeOnDisk::Ready, ViewStatus::Installed);
     assert_eq!(state(V152), installed);
     assert_eq!(state(V154), installed, "installed by a newer app: the host runs on it");
     assert_eq!(state(V151), update);
@@ -139,8 +139,8 @@ fn a_runtime_without_angle_dlls_counts_as_installed() {
     assert!(!dir.join("libEGL.dll").exists() && !dir.join("libGLESv2.dll").exists());
     assert_eq!(runtime_state(&dir, pin), RuntimeOnDisk::Ready);
     assert_eq!(
-        App::default().engine_state_at(EngineKind::Cef, disk(runtime_state(&dir, pin)), &cef_plan()),
-        EngineState::Installed
+        App::default().view_status_at(ViewKind::Cef, disk(runtime_state(&dir, pin)), &cef_plan()),
+        ViewStatus::Installed
     );
     assert_eq!(validate_custom(&dir, pin), Ok(()));
 }
@@ -239,7 +239,7 @@ fn a_custom_directory_deleted_later_stops_being_custom() {
     assert!(app.cef_dir_verdict().unwrap().1.is_ok(), "still inside the TTL: the cached verdict stands");
     // Age the cached verdict past the TTL, as waiting would.
     let aged = std::time::Instant::now().checked_sub(CEF_DIR_CHECK_TTL * 2).unwrap();
-    app.engine_ui.cef_dir_check.borrow_mut().as_mut().unwrap().1 = aged;
+    app.view_ui.cef_dir_check.borrow_mut().as_mut().unwrap().1 = aged;
     assert!(app.cef_dir_verdict().unwrap().1.is_err());
     assert_eq!(app.custom_cef_dir(), None);
 }
@@ -251,25 +251,25 @@ fn a_valid_custom_directory_makes_cef_custom_and_an_invalid_one_does_not() {
     let mut app = App::default();
     app.set_cef_directory(good.to_str().unwrap());
     assert_eq!(
-        app.engine_state_at(EngineKind::Cef, disk(RuntimeOnDisk::Missing), &cef_plan()),
-        EngineState::Custom(good.clone())
+        app.view_status_at(ViewKind::Cef, disk(RuntimeOnDisk::Missing), &cef_plan()),
+        ViewStatus::Custom(good.clone())
     );
     // The CEF folder is CEF's alone: Servo still follows its own host exe.
     assert_eq!(
-        app.engine_state_at(
-            EngineKind::Servo,
+        app.view_status_at(
+            ViewKind::Servo,
             OnDisk::both(RuntimeOnDisk::Ready),
-            &Err(no_download_reason(EngineKind::Servo))
+            &Err(no_download_reason(ViewKind::Servo))
         ),
-        EngineState::Installed
+        ViewStatus::Installed
     );
     assert!(matches!(
-        app.engine_state_at(
-            EngineKind::Servo,
+        app.view_status_at(
+            ViewKind::Servo,
             OnDisk::both(RuntimeOnDisk::Missing),
-            &Err(no_download_reason(EngineKind::Servo))
+            &Err(no_download_reason(ViewKind::Servo))
         ),
-        EngineState::Unavailable(_)
+        ViewStatus::Unavailable(_)
     ));
 
     let bad = custom_dir("vc8", Some(&crate::cef_platform::PLATFORM.archive_name("1.0")), true);
@@ -278,10 +278,10 @@ fn a_valid_custom_directory_makes_cef_custom_and_an_invalid_one_does_not() {
     assert!(app.cef_dir_verdict().unwrap().1.is_err(), "the page shows why");
     // No silent fallback and no Custom: the normal on-disk state.
     assert_eq!(
-        app.engine_state_at(EngineKind::Cef, disk(RuntimeOnDisk::Missing), &cef_plan()),
-        EngineState::NotInstalled { size: pin.size }
+        app.view_status_at(ViewKind::Cef, disk(RuntimeOnDisk::Missing), &cef_plan()),
+        ViewStatus::NotInstalled { size: pin.size }
     );
-    assert_eq!(app.engine_state_at(EngineKind::Cef, disk(RuntimeOnDisk::Ready), &cef_plan()), EngineState::Installed);
+    assert_eq!(app.view_status_at(ViewKind::Cef, disk(RuntimeOnDisk::Ready), &cef_plan()), ViewStatus::Installed);
 
     app.set_cef_directory("  ");
     assert_eq!(app.settings.cef_directory, None);
@@ -830,13 +830,13 @@ fn remove_deletes_the_marker_first_and_the_leftovers() {
     std::fs::write(dir.join("cef-runtime.part"), b"x").unwrap();
     std::fs::create_dir_all(dir.join("cef-runtime.tmp")).unwrap();
     std::fs::create_dir_all(dir.join("cef-runtime.old")).unwrap();
-    assert!(has_leftovers(&dir, EngineKind::Cef, &[]));
-    remove_engine_files(&dir, EngineKind::Cef, &[], false, false).unwrap();
-    assert!(!live.exists() && !has_leftovers(&dir, EngineKind::Cef, &[]));
+    assert!(has_leftovers(&dir, ViewKind::Cef, &[]));
+    remove_view_files(&dir, ViewKind::Cef, &[], false, false).unwrap();
+    assert!(!live.exists() && !has_leftovers(&dir, ViewKind::Cef, &[]));
     // Leftovers with no runtime: still deletable.
     std::fs::write(dir.join("cef-runtime.part"), b"x").unwrap();
-    remove_engine_files(&dir, EngineKind::Cef, &[], false, false).unwrap();
-    assert!(!has_leftovers(&dir, EngineKind::Cef, &[]));
+    remove_view_files(&dir, ViewKind::Cef, &[], false, false).unwrap();
+    assert!(!has_leftovers(&dir, ViewKind::Cef, &[]));
 }
 
 #[test]
@@ -954,15 +954,15 @@ fn a_network_failure_keeps_the_part_file_and_the_previous_install() {
 use crate::App;
 
 /// The state the engine list would show for CEF with `data` as the data directory.
-fn cef_state(app: &App, data: &Path, pin: &Pin) -> EngineState {
-    app.engine_state_at(EngineKind::Cef, disk(runtime_state(&data.join("cef-runtime"), pin)), &Ok(runtime_plan(pin)))
+fn cef_state(app: &App, data: &Path, pin: &Pin) -> ViewStatus {
+    app.view_status_at(ViewKind::Cef, disk(runtime_state(&data.join("cef-runtime"), pin)), &Ok(runtime_plan(pin)))
 }
 
 /// Poll until no job is left (the thread has finished and been collected).
 fn settle(app: &mut App) {
     let deadline = std::time::Instant::now() + Duration::from_secs(30);
-    while !app.engine_ui.engine_installs.is_empty() {
-        app.poll_engine_installs();
+    while !app.view_ui.view_installs.is_empty() {
+        app.poll_view_installs();
         assert!(std::time::Instant::now() < deadline, "the job never finished");
         std::thread::sleep(Duration::from_millis(10));
     }
@@ -979,13 +979,13 @@ fn a_job_installs_and_toasts() {
     let pin = pin_for(&a, serve_file(&a));
     let data = dir.join("data");
     let mut app = App::default();
-    assert!(matches!(cef_state(&app, &data, &pin), EngineState::NotInstalled { .. }));
-    assert!(app.start_engine_install_at(EngineKind::Cef, &data, &runtime_plan(&pin)));
-    assert!(matches!(cef_state(&app, &data, &pin), EngineState::Installing { total, .. } if total == pin.size));
+    assert!(matches!(cef_state(&app, &data, &pin), ViewStatus::NotInstalled { .. }));
+    assert!(app.start_view_install_at(ViewKind::Cef, &data, &runtime_plan(&pin)));
+    assert!(matches!(cef_state(&app, &data, &pin), ViewStatus::Installing { total, .. } if total == pin.size));
     settle(&mut app);
-    assert_eq!(cef_state(&app, &data, &pin), EngineState::Installed);
+    assert_eq!(cef_state(&app, &data, &pin), ViewStatus::Installed);
     assert_eq!(toasts(&app), ["Blink (CEF) installed"]);
-    assert!(app.engine_ui.engine_failures.is_empty());
+    assert!(app.view_ui.view_failures.is_empty());
 }
 
 #[test]
@@ -998,11 +998,11 @@ fn an_install_waits_while_a_tab_is_still_starting() {
     let pending =
         crate::session_sync::Snapshot { kind: crate::store::model::Kind::Tab, group: None, fields: Default::default() };
     app.spawns.spawning.insert("t1".into(), pending);
-    assert!(!app.start_engine_install_at(EngineKind::Cef, &data, &runtime_plan(&pin)));
-    assert!(app.engine_ui.engine_installs.is_empty());
+    assert!(!app.start_view_install_at(ViewKind::Cef, &data, &runtime_plan(&pin)));
+    assert!(app.view_ui.view_installs.is_empty());
     assert_eq!(toasts(&app), ["A tab is still starting; try installing Blink (CEF) again in a moment"]);
     app.spawns.spawning.clear();
-    assert!(app.start_engine_install_at(EngineKind::Cef, &data, &runtime_plan(&pin)));
+    assert!(app.start_view_install_at(ViewKind::Cef, &data, &runtime_plan(&pin)));
     settle(&mut app);
 }
 
@@ -1014,15 +1014,15 @@ fn a_failed_job_records_the_reason_and_a_retry_clears_it() {
     let bad = Pin { sha256: "0000", ..good.clone() };
     let data = dir.join("data");
     let mut app = App::default();
-    assert!(app.start_engine_install_at(EngineKind::Cef, &data, &runtime_plan(&bad)));
+    assert!(app.start_view_install_at(ViewKind::Cef, &data, &runtime_plan(&bad)));
     settle(&mut app);
-    let EngineState::Failed(message) = cef_state(&app, &data, &bad) else { panic!("not failed") };
+    let ViewStatus::Failed(message) = cef_state(&app, &data, &bad) else { panic!("not failed") };
     assert!(message.contains("checksum"), "{message}");
     assert_eq!(toasts(&app), [format!("Blink (CEF) install failed: {message}")]);
-    assert!(app.start_engine_install_at(EngineKind::Cef, &data, &runtime_plan(&good)));
-    assert!(matches!(cef_state(&app, &data, &good), EngineState::Installing { .. }), "failure cleared");
+    assert!(app.start_view_install_at(ViewKind::Cef, &data, &runtime_plan(&good)));
+    assert!(matches!(cef_state(&app, &data, &good), ViewStatus::Installing { .. }), "failure cleared");
     settle(&mut app);
-    assert_eq!(cef_state(&app, &data, &good), EngineState::Installed);
+    assert_eq!(cef_state(&app, &data, &good), ViewStatus::Installed);
 }
 
 /// A server that sends half of `body`, then holds the connection until `release` is sent.
@@ -1056,41 +1056,41 @@ fn cancel_is_immediate_keeps_the_part_and_records_no_failure() {
     let pin = pin_for(&a, url);
     let data = dir.join("data");
     let mut app = App::default();
-    assert!(app.start_engine_install_at(EngineKind::Cef, &data, &runtime_plan(&pin)));
+    assert!(app.start_view_install_at(ViewKind::Cef, &data, &runtime_plan(&pin)));
     let deadline = std::time::Instant::now() + Duration::from_secs(30);
-    while !matches!(cef_state(&app, &data, &pin), EngineState::Installing { received, .. } if received > 0) {
+    while !matches!(cef_state(&app, &data, &pin), ViewStatus::Installing { received, .. } if received > 0) {
         assert!(std::time::Instant::now() < deadline, "no progress");
         std::thread::sleep(Duration::from_millis(10));
     }
-    app.cancel_engine_install(EngineKind::Cef);
-    assert!(matches!(cef_state(&app, &data, &pin), EngineState::NotInstalled { .. }), "at once");
+    app.cancel_view_install(ViewKind::Cef);
+    assert!(matches!(cef_state(&app, &data, &pin), ViewStatus::NotInstalled { .. }), "at once");
     // The helper thread is still blocked on its read, but the job sees the cancel within ~100 ms.
     release.send(()).unwrap();
     settle(&mut app);
-    assert!(matches!(cef_state(&app, &data, &pin), EngineState::NotInstalled { .. }));
-    assert!(app.engine_ui.engine_failures.is_empty() && toasts(&app).is_empty(), "a cancel is not a failure");
+    assert!(matches!(cef_state(&app, &data, &pin), ViewStatus::NotInstalled { .. }));
+    assert!(app.view_ui.view_failures.is_empty() && toasts(&app).is_empty(), "a cancel is not a failure");
     assert!(std::fs::metadata(data.join("cef-runtime.part")).unwrap().len() > 0, "the part is kept");
     // Once the thread is gone a new install starts (and resumes the part).
-    assert!(app.start_engine_install_at(EngineKind::Cef, &data, &runtime_plan(&Pin { url: pin.url, ..pin.clone() })));
-    app.cancel_engine_install(EngineKind::Cef);
+    assert!(app.start_view_install_at(ViewKind::Cef, &data, &runtime_plan(&Pin { url: pin.url, ..pin.clone() })));
+    app.cancel_view_install(ViewKind::Cef);
 }
 
 #[test]
-fn one_install_per_engine_and_an_embedded_engine_downloads_nothing() {
+fn one_install_per_view_and_an_embedded_view_downloads_nothing() {
     let dir = temp_dir("ei33");
     let a = archive(&dir, &GOOD);
     let (url, release) = serve_held(Arc::new(std::fs::read(&a).unwrap()));
     let pin = pin_for(&a, url);
     let data = dir.join("data");
     let mut app = App::default();
-    assert!(app.start_engine_install_at(EngineKind::Cef, &data, &runtime_plan(&pin)));
-    assert!(!app.start_engine_install_at(EngineKind::Cef, &data, &runtime_plan(&pin)), "already installing");
-    assert_eq!(app.engine_ui.engine_installs.len(), 1);
-    app.cancel_engine_install(EngineKind::Cef);
+    assert!(app.start_view_install_at(ViewKind::Cef, &data, &runtime_plan(&pin)));
+    assert!(!app.start_view_install_at(ViewKind::Cef, &data, &runtime_plan(&pin)), "already installing");
+    assert_eq!(app.view_ui.view_installs.len(), 1);
+    app.cancel_view_install(ViewKind::Cef);
     release.send(()).unwrap();
     settle(&mut app);
     assert!(
-        !app.start_engine_install_at(EngineKind::Webview2, &data, &Plan { host: &[], runtime: None }),
+        !app.start_view_install_at(ViewKind::Webview2, &data, &Plan { host: &[], runtime: None }),
         "an embedded engine downloads nothing"
     );
 }
@@ -1191,13 +1191,13 @@ fn a_one_file_host_resumes_a_part_verifies_and_writes_the_marker_last() {
     let part = dir.join(format!("host.exe.{}.part", &f[0].sha256[..12]));
     std::fs::write(&part, &bytes[..70_000]).unwrap();
     let mut last = 0;
-    install_host(&dir, EngineKind::Servo, f, &mut |n| last = n, &never()).unwrap();
+    install_host(&dir, ViewKind::Servo, f, &mut |n| last = n, &never()).unwrap();
     assert_eq!(std::fs::read(dir.join("host.exe")).unwrap(), *bytes);
     assert_eq!(last, f[0].size);
     assert!(!part.exists());
     assert_eq!(std::fs::read_to_string(dir.join("servo.host")).unwrap(), format!("{} host.exe\n", f[0].sha256));
     assert!(!dir.join("servo.host.tmp").exists());
-    assert_eq!(host_state(&dir, EngineKind::Servo, f), RuntimeOnDisk::Ready);
+    assert_eq!(host_state(&dir, ViewKind::Servo, f), RuntimeOnDisk::Ready);
 }
 
 #[test]
@@ -1207,11 +1207,11 @@ fn a_wrong_hash_deletes_the_part_and_leaves_no_file_and_no_marker() {
     let mut c = component("host.exe", &bytes, serve_bytes(&bytes));
     c.sha256 = sha_of(b"something else");
     let f = files(vec![c]);
-    let result = install_host(&dir, EngineKind::Servo, f, &mut |_| {}, &never());
+    let result = install_host(&dir, ViewKind::Servo, f, &mut |_| {}, &never());
     assert!(matches!(result, Err(InstallError::BadHash { .. })));
     assert!(!dir.join("host.exe").exists() && !dir.join("servo.host").exists());
-    assert!(host_leftovers(&dir, EngineKind::Servo, f).is_empty(), "no .part left");
-    assert_eq!(host_state(&dir, EngineKind::Servo, f), RuntimeOnDisk::Missing);
+    assert!(host_leftovers(&dir, ViewKind::Servo, f).is_empty(), "no .part left");
+    assert_eq!(host_state(&dir, ViewKind::Servo, f), RuntimeOnDisk::Missing);
 }
 
 #[test]
@@ -1222,14 +1222,14 @@ fn a_two_file_host_with_a_bad_second_file_gets_no_marker_and_a_retry_skips_the_f
     let mut second = component("b.exe", &two, serve_bytes(&two));
     second.sha256 = sha_of(b"other");
     let bad = files(vec![HostFile { ..first }, second]);
-    assert!(install_host(&dir, EngineKind::Servo, bad, &mut |_| {}, &never()).is_err());
+    assert!(install_host(&dir, ViewKind::Servo, bad, &mut |_| {}, &never()).is_err());
     assert!(!dir.join("servo.host").exists(), "no Ready marker");
-    assert_eq!(host_state(&dir, EngineKind::Servo, bad), RuntimeOnDisk::Missing);
+    assert_eq!(host_state(&dir, ViewKind::Servo, bad), RuntimeOnDisk::Missing);
     assert!(dir.join("a.dll").exists() && !dir.join("b.exe").exists());
     // The retry (a corrected pin) does not fetch the finished first file again.
     let good = files(vec![HostFile { url: leak(dead_url()), ..first }, component("b.exe", &two, serve_bytes(&two))]);
-    install_host(&dir, EngineKind::Servo, good, &mut |_| {}, &never()).unwrap();
-    assert_eq!(host_state(&dir, EngineKind::Servo, good), RuntimeOnDisk::Ready);
+    install_host(&dir, ViewKind::Servo, good, &mut |_| {}, &never()).unwrap();
+    assert_eq!(host_state(&dir, ViewKind::Servo, good), RuntimeOnDisk::Ready);
 }
 
 #[test]
@@ -1237,15 +1237,15 @@ fn a_host_marker_of_another_release_is_stale_and_no_marker_is_missing() {
     let dir = temp_dir("host-d");
     let bytes = body(1000);
     let f = files(vec![component("host.exe", &bytes, dead_url())]);
-    assert_eq!(host_state(&dir, EngineKind::Servo, f), RuntimeOnDisk::Missing);
+    assert_eq!(host_state(&dir, ViewKind::Servo, f), RuntimeOnDisk::Missing);
     std::fs::write(dir.join("host.exe"), &*bytes).unwrap();
-    assert_eq!(host_state(&dir, EngineKind::Servo, f), RuntimeOnDisk::Missing, "a file without its marker");
+    assert_eq!(host_state(&dir, ViewKind::Servo, f), RuntimeOnDisk::Missing, "a file without its marker");
     std::fs::write(dir.join("servo.host"), format!("{} host.exe\n", sha_of(b"old release"))).unwrap();
-    assert_eq!(host_state(&dir, EngineKind::Servo, f), RuntimeOnDisk::Stale);
+    assert_eq!(host_state(&dir, ViewKind::Servo, f), RuntimeOnDisk::Stale);
     std::fs::write(dir.join("servo.host"), marker_text(f)).unwrap();
-    assert_eq!(host_state(&dir, EngineKind::Servo, f), RuntimeOnDisk::Ready);
+    assert_eq!(host_state(&dir, ViewKind::Servo, f), RuntimeOnDisk::Ready);
     std::fs::write(dir.join("host.exe"), b"short").unwrap();
-    assert_eq!(host_state(&dir, EngineKind::Servo, f), RuntimeOnDisk::Missing, "a truncated file");
+    assert_eq!(host_state(&dir, ViewKind::Servo, f), RuntimeOnDisk::Missing, "a truncated file");
 }
 
 #[test]
@@ -1257,9 +1257,9 @@ fn not_installed_is_the_sum_of_the_missing_components() {
         component("c.exe", &[2; 4000], dead_url()),
     ]);
     let plan = Ok(Plan { host: f, runtime: None });
-    let state = |host| app.engine_state_at(EngineKind::Servo, OnDisk::both(host), &plan);
-    assert_eq!(state(RuntimeOnDisk::Missing), EngineState::NotInstalled { size: 7000 });
-    assert_eq!(state(RuntimeOnDisk::Ready), EngineState::Installed);
+    let state = |host| app.view_status_at(ViewKind::Servo, OnDisk::both(host), &plan);
+    assert_eq!(state(RuntimeOnDisk::Missing), ViewStatus::NotInstalled { size: 7000 });
+    assert_eq!(state(RuntimeOnDisk::Ready), ViewStatus::Installed);
 }
 
 #[test]
@@ -1267,10 +1267,10 @@ fn a_host_poll_hashes_nothing_but_the_spawn_check_does() {
     let dir = temp_dir("host-g");
     let bytes = body(100_000);
     let f = files(vec![component("host.exe", &bytes, serve_bytes(&bytes))]);
-    install_host(&dir, EngineKind::Servo, f, &mut |_| {}, &never()).unwrap();
+    install_host(&dir, ViewKind::Servo, f, &mut |_| {}, &never()).unwrap();
     let before = HASHED.with(|n| n.get());
     for _ in 0..3 {
-        assert_eq!(host_state(&dir, EngineKind::Servo, f), RuntimeOnDisk::Ready);
+        assert_eq!(host_state(&dir, ViewKind::Servo, f), RuntimeOnDisk::Ready);
     }
     assert_eq!(HASHED.with(|n| n.get()), before, "the on-disk poll must not hash");
     verify_installed_host(&dir, f).unwrap();
@@ -1284,8 +1284,8 @@ fn an_install_skips_a_component_that_is_already_there_with_its_hash() {
     // The URL is dead: only an untouched network lets this succeed.
     let f = files(vec![component("host.exe", &bytes, dead_url())]);
     std::fs::write(dir.join("host.exe"), &*bytes).unwrap();
-    install_host(&dir, EngineKind::Servo, f, &mut |_| {}, &never()).unwrap();
-    assert_eq!(host_state(&dir, EngineKind::Servo, f), RuntimeOnDisk::Ready);
+    install_host(&dir, ViewKind::Servo, f, &mut |_| {}, &never()).unwrap();
+    assert_eq!(host_state(&dir, ViewKind::Servo, f), RuntimeOnDisk::Ready);
 }
 
 #[test]
@@ -1293,12 +1293,12 @@ fn a_host_file_changed_after_install_fails_the_spawn_check() {
     let dir = temp_dir("host-i");
     let bytes = body(10_000);
     let f = files(vec![component("host.exe", &bytes, serve_bytes(&bytes))]);
-    install_host(&dir, EngineKind::Servo, f, &mut |_| {}, &never()).unwrap();
+    install_host(&dir, ViewKind::Servo, f, &mut |_| {}, &never()).unwrap();
     verify_installed_host(&dir, f).unwrap();
     let mut changed = (*bytes).clone();
     changed[5000] ^= 1;
     std::fs::write(dir.join("host.exe"), changed).unwrap();
-    assert_eq!(host_state(&dir, EngineKind::Servo, f), RuntimeOnDisk::Ready, "same size: the poll cannot tell");
+    assert_eq!(host_state(&dir, ViewKind::Servo, f), RuntimeOnDisk::Ready, "same size: the poll cannot tell");
     assert!(matches!(verify_installed_host(&dir, f), Err(InstallError::BadHash { .. })));
 }
 
@@ -1307,7 +1307,7 @@ fn a_download_follows_a_redirect() {
     let dir = temp_dir("host-l");
     let bytes = body(40_000);
     let f = files(vec![component("host.exe", &bytes, serve_redirect(serve_bytes(&bytes)))]);
-    install_host(&dir, EngineKind::Servo, f, &mut |_| {}, &never()).unwrap();
+    install_host(&dir, ViewKind::Servo, f, &mut |_| {}, &never()).unwrap();
     assert_eq!(std::fs::read(dir.join("host.exe")).unwrap(), *bytes);
 }
 
@@ -1327,18 +1327,18 @@ fn a_cef_install_fetches_the_host_then_the_runtime_in_one_progress() {
         monotonic &= n >= last;
         last = n;
     };
-    install_plan(EngineKind::Cef, &plan, &data, &mut progress, &never()).unwrap();
+    install_plan(ViewKind::Cef, &plan, &data, &mut progress, &never()).unwrap();
     assert!(monotonic);
     assert_eq!(last, plan.size());
     let app = App::default();
     let runtime = runtime_state(&data.join("cef-runtime"), &pin);
-    let both = OnDisk { host: host_state(&data, EngineKind::Cef, f), runtime };
-    assert_eq!(app.engine_state_at(EngineKind::Cef, both, &Ok(plan.clone())), EngineState::Installed);
+    let both = OnDisk { host: host_state(&data, ViewKind::Cef, f), runtime };
+    assert_eq!(app.view_status_at(ViewKind::Cef, both, &Ok(plan.clone())), ViewStatus::Installed);
     std::fs::remove_file(data.join("cef.host")).unwrap();
-    let no_host = OnDisk { host: host_state(&data, EngineKind::Cef, f), runtime };
+    let no_host = OnDisk { host: host_state(&data, ViewKind::Cef, f), runtime };
     assert_eq!(
-        app.engine_state_at(EngineKind::Cef, no_host, &Ok(plan.clone())),
-        EngineState::NotInstalled { size: f[0].size }
+        app.view_status_at(ViewKind::Cef, no_host, &Ok(plan.clone())),
+        ViewStatus::NotInstalled { size: f[0].size }
     );
 }
 
@@ -1354,12 +1354,12 @@ fn servo_installs_its_exe_and_both_dlls_flat_and_the_exe_alone_is_missing() {
         component("manifold-engine-servo.exe", &exe, serve_bytes(&exe)),
     ]);
     std::fs::write(dir.join("manifold-engine-servo.exe"), &*exe).unwrap();
-    assert_eq!(host_state(&dir, EngineKind::Servo, f), RuntimeOnDisk::Missing, "exe without DLLs or marker");
+    assert_eq!(host_state(&dir, ViewKind::Servo, f), RuntimeOnDisk::Missing, "exe without DLLs or marker");
     std::fs::write(dir.join("servo.host"), marker_text(f)).unwrap();
-    assert_eq!(host_state(&dir, EngineKind::Servo, f), RuntimeOnDisk::Missing, "marker but no DLL");
+    assert_eq!(host_state(&dir, ViewKind::Servo, f), RuntimeOnDisk::Missing, "marker but no DLL");
     std::fs::remove_file(dir.join("servo.host")).unwrap();
-    install_host(&dir, EngineKind::Servo, f, &mut |_| {}, &never()).unwrap();
-    assert_eq!(host_state(&dir, EngineKind::Servo, f), RuntimeOnDisk::Ready);
+    install_host(&dir, ViewKind::Servo, f, &mut |_| {}, &never()).unwrap();
+    assert_eq!(host_state(&dir, ViewKind::Servo, f), RuntimeOnDisk::Ready);
     for (name, bytes) in [("libEGL.dll", &egl), ("libGLESv2.dll", &gles), ("manifold-engine-servo.exe", &exe)] {
         assert_eq!(std::fs::read(dir.join(name)).unwrap(), **bytes, "{name} sits directly in the folder");
     }
@@ -1373,11 +1373,11 @@ fn webkit_installs_its_elf_under_its_own_marker() {
     let dir = temp_dir("webkit-elf");
     let elf = body(5000);
     let f = files(vec![component("manifold-engine-webkit", &elf, serve_bytes(&elf))]);
-    assert_eq!(host_state(&dir, EngineKind::Webkit, f), RuntimeOnDisk::Missing, "nothing on disk");
+    assert_eq!(host_state(&dir, ViewKind::Webkit, f), RuntimeOnDisk::Missing, "nothing on disk");
     std::fs::write(dir.join("manifold-engine-webkit"), &*elf).unwrap();
-    assert_eq!(host_state(&dir, EngineKind::Webkit, f), RuntimeOnDisk::Missing, "the ELF without its marker");
-    install_host(&dir, EngineKind::Webkit, f, &mut |_| {}, &never()).unwrap();
-    assert_eq!(host_state(&dir, EngineKind::Webkit, f), RuntimeOnDisk::Ready);
+    assert_eq!(host_state(&dir, ViewKind::Webkit, f), RuntimeOnDisk::Missing, "the ELF without its marker");
+    install_host(&dir, ViewKind::Webkit, f, &mut |_| {}, &never()).unwrap();
+    assert_eq!(host_state(&dir, ViewKind::Webkit, f), RuntimeOnDisk::Ready);
     assert_eq!(std::fs::read(dir.join("manifold-engine-webkit")).unwrap(), *elf);
     assert_eq!(
         std::fs::read_to_string(dir.join("webkit.host")).unwrap(),
@@ -1385,7 +1385,7 @@ fn webkit_installs_its_elf_under_its_own_marker() {
     );
     verify_installed_host(&dir, f).unwrap();
     std::fs::remove_file(dir.join("manifold-engine-webkit")).unwrap();
-    assert_eq!(host_state(&dir, EngineKind::Webkit, f), RuntimeOnDisk::Missing, "the marker without the ELF");
+    assert_eq!(host_state(&dir, ViewKind::Webkit, f), RuntimeOnDisk::Missing, "the marker without the ELF");
 }
 
 #[test]
@@ -1398,9 +1398,9 @@ fn missing_files_names_only_what_the_folder_lacks() {
 
 #[test]
 fn only_servo_on_windows_needs_the_visual_cpp_runtime() {
-    assert!(missing_system_libs(EngineKind::Webview2).is_empty());
-    assert!(missing_system_libs(EngineKind::Webkit).is_empty());
+    assert!(missing_system_libs(ViewKind::Webview2).is_empty());
+    assert!(missing_system_libs(ViewKind::Webkit).is_empty());
     if !cfg!(windows) {
-        assert!(missing_system_libs(EngineKind::Servo).is_empty());
+        assert!(missing_system_libs(ViewKind::Servo).is_empty());
     }
 }

@@ -11,7 +11,7 @@ const A: ActorId = ActorId(0xA);
 #[test]
 fn jar_fields_belong_to_tabs_groups_and_jars() {
     use field::*;
-    assert_eq!(Kind::Tab.fields(), &[POS, COLOR, PARENT, URL, ENGINE, PINNED, JAR, JAR_SET]);
+    assert_eq!(Kind::Tab.fields(), &[POS, COLOR, PARENT, URL, VIEW_KIND, PINNED, JAR, JAR_SET]);
     assert_eq!(Kind::Group.fields(), &[POS, COLOR, NAME, DEFAULT_JAR]);
     assert_eq!(Kind::Jar.fields(), &[COLOR, NAME, EPHEMERAL]);
     assert_eq!(Kind::Link.fields(), &[NAME, FROM, TO]);
@@ -338,7 +338,7 @@ fn a_failed_root_spawn_shows_its_card_in_graph_view() {
 #[test]
 fn a_failed_split_spawn_toasts_and_makes_no_card() {
     let mut app = app_on(&temp_dir("failed-split-spawn").join("session.mnf"), 1);
-    let id = app.spawn_new_tab_with_kind(None, None, "https://s/", crate::EngineKind::Servo, SpawnPurpose::Split, None);
+    let id = app.spawn_new_tab_with_kind(None, None, "https://s/", crate::ViewKind::Servo, SpawnPurpose::Split, None);
     assert!(app.save_session());
     fail_spawns(&mut app);
     assert!(!app.nodes.contains_key(&id), "no card for a split pane");
@@ -396,14 +396,14 @@ fn a_crash_respawn_a_swap_and_a_reload_delete_nothing() {
     let dir = temp_dir("respawn-swap-reload-keep");
     let mut app = app_on(&dir.join("session.mnf"), 1);
     let crashed = add(&mut app, Kind::Tab, sleeping_tab("https://c/", ""));
-    let (swapped, _peer) = live_tab(&mut app, EngineKind::Servo, "https://s/");
+    let (swapped, _peer) = live_tab(&mut app, ViewKind::Servo, "https://s/");
     let json = app.alloc_node_id();
     let body = crate::redirect_fetch::save(&dir, &json, crate::content::ContentKind::Json, b"[1]".to_vec()).unwrap();
     let source = crate::ContentSource::Web { url: "https://x.test/j".into(), body };
     app.insert_content(source, json.clone(), egui::Vec2::ZERO, None).unwrap();
     assert!(app.save_session());
     start_respawn(&mut app, &crashed);
-    app.finish_swap(&swapped, EngineKind::Webview2, "https://s/".into());
+    app.finish_swap(&swapped, ViewKind::Webview2, "https://s/".into());
     assert!(app.spawns.spawning.contains_key(&swapped) && !app.nodes.contains_key(&swapped), "swapping");
     let moved = dir.join("moved.json");
     std::fs::write(&moved, b"[2]").unwrap();
@@ -508,7 +508,7 @@ fn a_tabs_jar_and_a_groups_default_project_to_fields_and_back() {
                 None,
                 &[
                     (field::URL, FieldValue::Str("https://a.com/".into())),
-                    (field::ENGINE, FieldValue::Engine(engine_code(EngineKind::Servo))),
+                    (field::VIEW_KIND, FieldValue::ViewCode(view_code(ViewKind::Servo))),
                     (field::JAR, FieldValue::Id(Some(jar))),
                     (field::JAR_SET, FieldValue::Bool(true)),
                 ],
@@ -1004,7 +1004,7 @@ fn url_changes_after_a_host_started_load_stay_local_until_it_settles() {
 
 /// An engine that says how a navigation started overrides the grace.
 #[test]
-fn the_engines_cause_decides_whether_a_url_change_is_shared() {
+fn the_view_kinds_cause_decides_whether_a_url_change_is_shared() {
     let mut app = App::default();
     assert!(!app.shares_url_change("7", Some(false)), "a script's navigation stays local");
     app.note_host_load("7");
@@ -1237,7 +1237,7 @@ fn a_new_tab_lands_at_its_spawn_position_in_the_layout_and_the_document() {
     app.spawn_tab_async(crate::tabs::TabSpawn::new(
         t.clone(),
         "https://t/".into(),
-        EngineKind::Servo,
+        ViewKind::Servo,
         at,
         SpawnPurpose::Restore,
         1.0,
@@ -1287,21 +1287,21 @@ fn a_read_only_store_saves_nothing() {
 }
 
 #[test]
-fn engine_table_matches_the_store_and_round_trips() {
-    for (i, kind) in EngineKind::ALL.into_iter().enumerate() {
+fn view_table_matches_the_store_and_round_trips() {
+    for (i, kind) in ViewKind::ALL.into_iter().enumerate() {
         let desc = kind.desc();
         assert_eq!(desc.code, i as u64 + 1, "codes are 1-based positions in ALL");
-        assert_eq!(crate::store::model::ENGINES[i], desc.name, "the store names the same engine");
+        assert_eq!(crate::store::model::VIEW_KINDS[i], desc.name, "the store names the same engine");
         assert_eq!(serde_json::to_value(Wrap(kind)).unwrap(), serde_json::json!(desc.name));
-        assert_eq!(engine_of(engine_code(kind)), kind);
-        assert_eq!(EngineKind::from_name(&desc.name.to_uppercase()), Some(kind));
+        assert_eq!(view_kind_of(view_code(kind)), kind);
+        assert_eq!(ViewKind::from_name(&desc.name.to_uppercase()), Some(kind));
     }
-    assert_eq!(EngineKind::from_name("gecko"), None);
-    assert_eq!(EngineKind::from_code(0), None);
+    assert_eq!(ViewKind::from_name("gecko"), None);
+    assert_eq!(ViewKind::from_code(0), None);
 }
 
 #[derive(serde::Serialize)]
-struct Wrap(#[serde(with = "crate::process_manager::engine_kind_serde")] EngineKind);
+struct Wrap(#[serde(with = "crate::process_manager::view_kind_serde")] ViewKind);
 
 #[test]
 fn colors_round_trip() {
@@ -1725,7 +1725,7 @@ fn closing_a_tab_while_it_wakes_deletes_it_from_the_store() {
     app.destroy_tab(&tab);
     assert!(!app.nodes.contains_key(&tab), "closed");
     // Deliver the parked wake's result -- a failed one, the only kind a
-    // unit test can produce (no fake `EngineTab` for a success).
+    // unit test can produce (no fake `ViewTab` for a success).
     fail_spawns(&mut app);
     let still_live = app.journal.as_ref().unwrap().doc().live().any(|(id, _)| id.to_string() == tab);
     assert!(!still_live, "should have been deleted once the wake landed on a closed tab");
@@ -1802,7 +1802,7 @@ fn a_sleeping_tab_saves_as_its_tab() {
     };
     let mut app = app_on(&path, 2);
     assert!(app.restore_session());
-    let engine = stored(&app, &tab, field::ENGINE);
+    let view_kind = stored(&app, &tab, field::VIEW_KIND);
     // The single tab is the focused one, so the restore woke it; fail
     // that wake too: a waking and a failed card save the same way.
     assert!(app.save_session());
@@ -1810,7 +1810,7 @@ fn a_sleeping_tab_saves_as_its_tab() {
     assert!(app.save_session());
     assert_eq!(stored(&app, &tab, field::URL), FieldValue::Str("https://s/".into()));
     assert_eq!(stored(&app, &tab, field::PINNED), FieldValue::Bool(true));
-    assert_eq!(stored(&app, &tab, field::ENGINE), engine);
+    assert_eq!(stored(&app, &tab, field::VIEW_KIND), view_kind);
 }
 
 /// Pinning is not a tab's alone: a group toggles like a tab, and an unknown id is left alone.
@@ -1854,7 +1854,7 @@ fn succeed_spawn(app: &mut App, url: &str) -> String {
     let id = app.spawn_tab_at(url, egui::Vec2::ZERO, None, None);
     let at = app.test_spawns.iter().position(|(spawn, _)| spawn.id == id).expect("the spawn is parked");
     let (spawn, generation) = app.test_spawns.remove(at);
-    let (tab, _peer) = crate::process_manager::EngineTab::fake(spawn.kind);
+    let (tab, _peer) = crate::process_manager::ViewTab::fake(spawn.kind);
     app.handle_tab_spawn_result(crate::tabs::TabSpawnOutcome {
         spawn,
         generation,
@@ -1977,7 +1977,7 @@ fn clearing_failed_cards_does_not_save_before_a_parked_remote_delete_lands() {
 
     let at = app.test_spawns.iter().position(|(spawn, _)| spawn.id == id).expect("the spawn is parked");
     let (spawn, generation) = app.test_spawns.remove(at);
-    let (tab, _peer) = crate::process_manager::EngineTab::fake(spawn.kind);
+    let (tab, _peer) = crate::process_manager::ViewTab::fake(spawn.kind);
     app.handle_tab_spawn_result(crate::tabs::TabSpawnOutcome {
         spawn,
         generation,
@@ -1997,12 +1997,12 @@ fn clearing_failed_cards_does_not_save_before_a_parked_remote_delete_lands() {
 #[test]
 fn a_respawn_landing_leaves_a_same_url_failed_card() {
     let mut app = app_on(&temp_dir("failed-kept-on-respawn").join("session.mnf"), 1);
-    let (tab, _peer) = live_tab(&mut app, EngineKind::Servo, "https://a/");
+    let (tab, _peer) = live_tab(&mut app, ViewKind::Servo, "https://a/");
     assert!(app.save_session());
     app.spawn_tab_at("https://a/", egui::Vec2::ZERO, None, None);
     fail_spawns(&mut app);
     assert_eq!(failed_cards(&app).len(), 1);
-    app.handle_engine_message(&tab, ipc_protocol::EngineToHost::Crashed { reason: "boom".into() });
+    app.handle_view_message(&tab, ipc_protocol::ViewToHost::Crashed { reason: "boom".into() });
     assert!(app.test_spawns.iter().any(|(s, _)| matches!(s.purpose, SpawnPurpose::Respawn)), "restarting");
     let _peers = land_spawns(&mut app);
     assert_eq!(failed_cards(&app).len(), 1, "the failed card stays");
@@ -3311,7 +3311,7 @@ fn a_save_during_a_respawn_keeps_the_mirror_entry() {
     let mut spawn = crate::tabs::TabSpawn::new(
         tab.clone(),
         "https://a/".into(),
-        EngineKind::Servo,
+        ViewKind::Servo,
         egui::Vec2::ZERO,
         SpawnPurpose::Respawn,
         1.0,
@@ -3795,7 +3795,7 @@ fn start_respawn(app: &mut App, tab: &str) {
     let mut spawn = crate::tabs::TabSpawn::new(
         tab.to_owned(),
         "https://t/".into(),
-        EngineKind::Servo,
+        ViewKind::Servo,
         egui::Vec2::ZERO,
         SpawnPurpose::Respawn,
         1.0,
@@ -3930,7 +3930,7 @@ fn a_new_spawn_into_a_group_dissolved_in_flight_lands_where_the_document_shows_i
     let mut spawn = crate::tabs::TabSpawn::new(
         t.clone(),
         "https://t/".into(),
-        EngineKind::Servo,
+        ViewKind::Servo,
         egui::Vec2::ZERO,
         SpawnPurpose::Restore,
         1.0,
@@ -4052,7 +4052,7 @@ fn a_spawning_tab_is_created_and_lands_with_its_url() {
     let spawn = crate::tabs::TabSpawn::new(
         t.clone(),
         "https://t/".into(),
-        EngineKind::Servo,
+        ViewKind::Servo,
         egui::Vec2::ZERO,
         SpawnPurpose::Restore,
         1.0,
@@ -4210,7 +4210,7 @@ fn a_spawning_tab_is_created_and_lands_with_its_jar() {
     let mut spawn = crate::tabs::TabSpawn::new(
         t.clone(),
         "https://t/".into(),
-        EngineKind::Servo,
+        ViewKind::Servo,
         egui::Vec2::ZERO,
         SpawnPurpose::Restore,
         1.0,
@@ -4234,9 +4234,9 @@ fn a_spawning_tab_is_created_and_lands_with_its_jar() {
 
 type Peer = crate::process_manager::FakePeer;
 
-/// A live tab on `kind` (a fake host, `EngineTab::fake`), as a landing inserts it. The peer reads what it is sent.
-fn live_tab(app: &mut App, kind: EngineKind, url: &str) -> (String, Peer) {
-    let (tab, peer) = crate::process_manager::EngineTab::fake(kind);
+/// A live tab on `kind` (a fake host, `ViewTab::fake`), as a landing inserts it. The peer reads what it is sent.
+fn live_tab(app: &mut App, kind: ViewKind, url: &str) -> (String, Peer) {
+    let (tab, peer) = crate::process_manager::ViewTab::fake(kind);
     let payload = Runtime::Tab(crate::node::TabPayload {
         tab,
         url: url.into(),
@@ -4253,48 +4253,48 @@ fn live_tab(app: &mut App, kind: EngineKind, url: &str) -> (String, Peer) {
 }
 
 /// What the app sent the fake host so far.
-fn sent(peer: &mut Peer) -> Vec<HostToEngine> {
+fn sent(peer: &mut Peer) -> Vec<HostToView> {
     peer.sent()
 }
 
 /// The engines that take part in the cookie jar (spec 2026-10-02-jars-design): only their tabs are asked for
 /// cookies, and only they count as "will switch" when their jar changes. The rest neither seed nor pull.
-const JAR_ENGINES: [EngineKind; 2] = [EngineKind::Webview2, EngineKind::Cef];
+const JAR_VIEW_KINDS: [ViewKind; 2] = [ViewKind::Webview2, ViewKind::Cef];
 
 #[test]
-fn only_jar_engines_are_asked_for_cookies() {
+fn only_jar_view_kinds_are_asked_for_cookies() {
     let mut app = app_on(&temp_dir("jar-engines-pull").join("session.mnf"), 1);
-    for kind in EngineKind::ALL {
+    for kind in ViewKind::ALL {
         let (id, mut peer) = live_tab(&mut app, kind, "https://a/");
         app.pull_cookies(&id);
-        let asked = sent(&mut peer).iter().any(|m| matches!(m, HostToEngine::GetCookies));
-        assert_eq!(asked, JAR_ENGINES.contains(&kind), "{kind:?}");
+        let asked = sent(&mut peer).iter().any(|m| matches!(m, HostToView::GetCookies));
+        assert_eq!(asked, JAR_VIEW_KINDS.contains(&kind), "{kind:?}");
     }
 }
 
 #[test]
-fn only_jar_engines_switch_when_their_jar_is_cleared() {
+fn only_jar_view_kinds_switch_when_their_jar_is_cleared() {
     let mut app = app_on(&temp_dir("jar-engines-switch").join("session.mnf"), 1);
-    for kind in EngineKind::ALL {
+    for kind in ViewKind::ALL {
         let (id, _peer) = live_tab(&mut app, kind, "https://a/");
         // Running on the default jar, which the user cleared: a jar engine must respawn into it.
         app.cookies.jar_tabs.insert(id.clone(), (crate::jar::JarKey::Default, crate::jar::TabCookies::default()));
         app.cookies.jar_reseed.insert(id.clone());
-        assert_eq!(app.will_switch(&id), JAR_ENGINES.contains(&kind), "{kind:?}");
+        assert_eq!(app.will_switch(&id), JAR_VIEW_KINDS.contains(&kind), "{kind:?}");
     }
 }
 
 #[test]
-fn devtools_on_an_engine_without_them_toasts_instead_of_sending() {
+fn devtools_on_a_view_without_them_toasts_instead_of_sending() {
     let mut app = app_on(&temp_dir("caps-devtools").join("session.mnf"), 1);
     for (kind, has) in
-        [(EngineKind::Cef, true), (EngineKind::Webview2, true), (EngineKind::Servo, false), (EngineKind::Webkit, false)]
+        [(ViewKind::Cef, true), (ViewKind::Webview2, true), (ViewKind::Servo, false), (ViewKind::Webkit, false)]
     {
         let (id, mut peer) = live_tab(&mut app, kind, "https://a/");
         app.focused = Some(id);
         app.toasts.save_toast_queue.clear();
         app.open_devtools_shortcut();
-        let sent_it = sent(&mut peer).iter().any(|m| matches!(m, HostToEngine::OpenDevTools));
+        let sent_it = sent(&mut peer).iter().any(|m| matches!(m, HostToView::OpenDevTools));
         assert_eq!(sent_it, has, "{kind:?}");
         let toast = format!("{} has no DevTools", kind.desc().label);
         assert_eq!(app.toasts.save_toast_queue.contains(&toast), !has, "{kind:?}");
@@ -4302,11 +4302,11 @@ fn devtools_on_an_engine_without_them_toasts_instead_of_sending() {
 }
 
 #[test]
-fn find_on_an_engine_without_it_toasts_and_leaves_the_bar_shut() {
+fn find_on_a_view_without_it_toasts_and_leaves_the_bar_shut() {
     let mut app = app_on(&temp_dir("caps-find").join("session.mnf"), 1);
     app.view_mode = ViewMode::Item;
     for (kind, has) in
-        [(EngineKind::Cef, true), (EngineKind::Webview2, true), (EngineKind::Webkit, true), (EngineKind::Servo, false)]
+        [(ViewKind::Cef, true), (ViewKind::Webview2, true), (ViewKind::Webkit, true), (ViewKind::Servo, false)]
     {
         let (id, _peer) = live_tab(&mut app, kind, "https://a/");
         app.focused = Some(id);
@@ -4322,13 +4322,13 @@ fn find_on_an_engine_without_it_toasts_and_leaves_the_bar_shut() {
 /// Quitting starts every engine's shutdown before the app is dropped: each fake host is sent `Shutdown` while the
 /// app is still alive.
 #[test]
-fn quitting_sends_every_engine_shutdown_before_the_drop() {
+fn quitting_sends_every_view_shutdown_before_the_drop() {
     let mut app = app_on(&temp_dir("quit-shutdown").join("session.mnf"), 1);
-    let (_, mut a) = live_tab(&mut app, EngineKind::Servo, "https://a/");
-    let (_, mut b) = live_tab(&mut app, EngineKind::Servo, "https://b/");
-    app.begin_engine_shutdown();
+    let (_, mut a) = live_tab(&mut app, ViewKind::Servo, "https://a/");
+    let (_, mut b) = live_tab(&mut app, ViewKind::Servo, "https://b/");
+    app.begin_view_shutdown();
     for peer in [&mut a, &mut b] {
-        assert!(matches!(sent(peer).last(), Some(HostToEngine::Shutdown)));
+        assert!(matches!(sent(peer).last(), Some(HostToView::Shutdown)));
     }
     drop(app);
 }
@@ -4341,9 +4341,9 @@ fn tabs_under_a_group_all_get_shutdown_together() {
     let outer = add_group(&mut app, "outer");
     let inner = add_group(&mut app, "inner");
     app.edit_group(&inner, Some(outer.clone()));
-    let (a, mut pa) = live_tab(&mut app, EngineKind::Servo, "https://a/");
-    let (b, mut pb) = live_tab(&mut app, EngineKind::Servo, "https://b/");
-    let (_, mut pc) = live_tab(&mut app, EngineKind::Servo, "https://c/");
+    let (a, mut pa) = live_tab(&mut app, ViewKind::Servo, "https://a/");
+    let (b, mut pb) = live_tab(&mut app, ViewKind::Servo, "https://b/");
+    let (_, mut pc) = live_tab(&mut app, ViewKind::Servo, "https://c/");
     app.edit_group(&a, Some(outer.clone()));
     app.edit_group(&b, Some(inner));
     let mut under = app.tabs_under(&outer);
@@ -4353,17 +4353,17 @@ fn tabs_under_a_group_all_get_shutdown_together() {
     assert_eq!(under, want);
     app.begin_tabs_shutdown(&under);
     for peer in [&mut pa, &mut pb] {
-        assert!(matches!(sent(peer).last(), Some(HostToEngine::Shutdown)));
+        assert!(matches!(sent(peer).last(), Some(HostToView::Shutdown)));
     }
-    assert!(!sent(&mut pc).iter().any(|m| matches!(m, HostToEngine::Shutdown)), "a tab outside is left running");
+    assert!(!sent(&mut pc).iter().any(|m| matches!(m, HostToView::Shutdown)), "a tab outside is left running");
     drop(app);
 }
 
-fn engine(kind: EngineKind) -> FieldValue {
-    FieldValue::Engine(engine_code(kind))
+fn view_kind(kind: ViewKind) -> FieldValue {
+    FieldValue::ViewCode(view_code(kind))
 }
 
-fn swap_target(app: &App, tab: &str) -> Option<EngineKind> {
+fn swap_target(app: &App, tab: &str) -> Option<ViewKind> {
     app.nodes[tab].as_tab().unwrap().swap_target
 }
 
@@ -4373,131 +4373,131 @@ fn swap_target(app: &App, tab: &str) -> Option<EngineKind> {
 fn a_swap_saves_its_target_before_the_state_snapshot() {
     let path = temp_dir("engine-swap-start").join("session.mnf");
     let mut app = app_on(&path, 1);
-    let (tab, mut peer) = live_tab(&mut app, EngineKind::Servo, "https://s/");
+    let (tab, mut peer) = live_tab(&mut app, ViewKind::Servo, "https://s/");
     assert!(app.save_session());
-    assert_eq!(stored(&app, &tab, field::ENGINE), engine(EngineKind::Servo));
-    app.start_swap_to(&tab, EngineKind::Cef);
-    assert_eq!(app.mirror.engine(&tab), EngineKind::Cef, "shown at once");
-    assert!(app.pending.contains_key(&(tab.parse().unwrap(), field::ENGINE)), "queued when the swap starts");
-    assert!(sent(&mut peer).iter().any(|m| matches!(m, HostToEngine::GetState)), "the swap asked for the state");
+    assert_eq!(stored(&app, &tab, field::VIEW_KIND), view_kind(ViewKind::Servo));
+    app.start_swap_to(&tab, ViewKind::Cef);
+    assert_eq!(app.mirror.view_kind(&tab), ViewKind::Cef, "shown at once");
+    assert!(app.pending.contains_key(&(tab.parse().unwrap(), field::VIEW_KIND)), "queued when the swap starts");
+    assert!(sent(&mut peer).iter().any(|m| matches!(m, HostToView::GetState)), "the swap asked for the state");
     assert!(app.save_session());
-    assert_eq!(stored(&app, &tab, field::ENGINE), engine(EngineKind::Cef));
-    assert_eq!(app.nodes[&tab].as_tab().unwrap().tab.kind, EngineKind::Servo, "the old engine still runs");
-    assert_eq!(swap_target(&app, &tab), Some(EngineKind::Cef));
+    assert_eq!(stored(&app, &tab, field::VIEW_KIND), view_kind(ViewKind::Cef));
+    assert_eq!(app.nodes[&tab].as_tab().unwrap().tab.kind, ViewKind::Servo, "the old engine still runs");
+    assert_eq!(swap_target(&app, &tab), Some(ViewKind::Cef));
 }
 
 /// Ruling 5: a switch whose new engine fails to start falls back to the old one, and writes it back when the
 /// fallback starts; a fallback that fails too leaves a failed card on the old engine.
 #[test]
-fn a_failed_swap_writes_the_old_engine_back() {
+fn a_failed_swap_writes_the_old_view_back() {
     let path = temp_dir("engine-swap-fails").join("session.mnf");
     let mut app = app_on(&path, 1);
-    let (tab, _peer) = live_tab(&mut app, EngineKind::Servo, "https://s/");
-    app.start_swap_to(&tab, EngineKind::Cef);
+    let (tab, _peer) = live_tab(&mut app, ViewKind::Servo, "https://s/");
+    app.start_swap_to(&tab, ViewKind::Cef);
     assert!(app.save_session());
-    assert_eq!(stored(&app, &tab, field::ENGINE), engine(EngineKind::Cef));
+    assert_eq!(stored(&app, &tab, field::VIEW_KIND), view_kind(ViewKind::Cef));
     // The old engine's state arrived: its host is dropped and the new one spawns.
-    app.finish_swap(&tab, EngineKind::Cef, "https://s/".into());
+    app.finish_swap(&tab, ViewKind::Cef, "https://s/".into());
     assert_eq!(app.test_spawns.len(), 1);
     fail_spawns(&mut app);
     let fallback = &app.test_spawns.first().expect("the fallback is in flight").0;
-    assert_eq!((fallback.kind, fallback.fallback_kind), (EngineKind::Servo, None));
-    assert_eq!(app.mirror.engine(&tab), EngineKind::Servo);
+    assert_eq!((fallback.kind, fallback.fallback_kind), (ViewKind::Servo, None));
+    assert_eq!(app.mirror.view_kind(&tab), ViewKind::Servo);
     assert!(app.save_session());
-    assert_eq!(stored(&app, &tab, field::ENGINE), engine(EngineKind::Servo), "written back as the fallback starts");
+    assert_eq!(stored(&app, &tab, field::VIEW_KIND), view_kind(ViewKind::Servo), "written back as the fallback starts");
     fail_spawns(&mut app);
     assert!(matches!(app.nodes[&tab].as_unloaded().unwrap().state, UnloadedState::Failed(_)));
-    assert_eq!(app.mirror.engine(&tab), EngineKind::Servo);
+    assert_eq!(app.mirror.view_kind(&tab), ViewKind::Servo);
     assert!(app.save_session());
-    assert_eq!(stored(&app, &tab, field::ENGINE), engine(EngineKind::Servo));
+    assert_eq!(stored(&app, &tab, field::VIEW_KIND), view_kind(ViewKind::Servo));
 }
 
 /// Ruling 3: another replica's engine reaches the mirror and switches a live tab to it; nothing is written back.
 #[test]
-fn a_remote_engine_change_on_a_live_tab_starts_a_swap() {
+fn a_remote_view_change_on_a_live_tab_starts_a_swap() {
     let path = temp_dir("engine-remote-live").join("session.mnf");
     let mut app = app_on(&path, 1);
-    let (tab, mut peer) = live_tab(&mut app, EngineKind::Servo, "https://s/");
+    let (tab, mut peer) = live_tab(&mut app, ViewKind::Servo, "https://s/");
     assert!(app.save_session());
     let mut other = Journal::open(&path, ActorId(2)).unwrap();
-    remote_set(&mut other, &tab, field::ENGINE, engine(EngineKind::Cef));
+    remote_set(&mut other, &tab, field::VIEW_KIND, view_kind(ViewKind::Cef));
     assert!(app.save_session());
-    assert_eq!(app.mirror.engine(&tab), EngineKind::Cef);
-    assert_eq!(swap_target(&app, &tab), Some(EngineKind::Cef), "the swap started");
-    assert!(sent(&mut peer).iter().any(|m| matches!(m, HostToEngine::GetState)));
+    assert_eq!(app.mirror.view_kind(&tab), ViewKind::Cef);
+    assert_eq!(swap_target(&app, &tab), Some(ViewKind::Cef), "the swap started");
+    assert!(sent(&mut peer).iter().any(|m| matches!(m, HostToView::GetState)));
     assert!(app.pending.is_empty(), "nothing queued");
-    assert_eq!(stored(&app, &tab, field::ENGINE), engine(EngineKind::Cef));
+    assert_eq!(stored(&app, &tab, field::VIEW_KIND), view_kind(ViewKind::Cef));
 }
 
 /// Ruling 3: a swap in flight here beats another replica's engine, while its edit is unsaved (the mirror holds the
 /// remote value back) and after it is saved (written again), so the document ends on the engine this tab lands on.
 #[test]
-fn a_local_swap_in_flight_wins_over_a_remote_engine() {
+fn a_local_swap_in_flight_wins_over_a_remote_view_kind() {
     let path = temp_dir("engine-local-wins").join("session.mnf");
     let mut app = app_on(&path, 1);
-    let (tab, mut peer) = live_tab(&mut app, EngineKind::Servo, "https://s/");
+    let (tab, mut peer) = live_tab(&mut app, ViewKind::Servo, "https://s/");
     assert!(app.save_session());
     let mut other = Journal::open(&path, ActorId(2)).unwrap();
-    app.start_swap_to(&tab, EngineKind::Cef);
-    remote_set(&mut other, &tab, field::ENGINE, engine(EngineKind::Webview2));
+    app.start_swap_to(&tab, ViewKind::Cef);
+    remote_set(&mut other, &tab, field::VIEW_KIND, view_kind(ViewKind::Webview2));
     remote_set(&mut other, &tab, field::PINNED, FieldValue::Bool(true));
     assert!(app.save_session());
-    assert_eq!(app.mirror.engine(&tab), EngineKind::Cef);
-    assert_eq!(stored(&app, &tab, field::ENGINE), engine(EngineKind::Cef));
+    assert_eq!(app.mirror.view_kind(&tab), ViewKind::Cef);
+    assert_eq!(stored(&app, &tab, field::VIEW_KIND), view_kind(ViewKind::Cef));
     assert!(app.mirror.pinned(&tab), "their other field arrives");
     // Saved, and the old engine's state is still on its way: a later remote engine loses too.
-    remote_set(&mut other, &tab, field::ENGINE, engine(EngineKind::Webview2));
+    remote_set(&mut other, &tab, field::VIEW_KIND, view_kind(ViewKind::Webview2));
     assert!(app.save_session());
-    assert_eq!(app.mirror.engine(&tab), EngineKind::Cef);
-    assert_eq!(stored(&app, &tab, field::ENGINE), engine(EngineKind::Cef), "written again");
-    assert_eq!(swap_target(&app, &tab), Some(EngineKind::Cef), "still the one swap");
-    let asked = sent(&mut peer).iter().filter(|m| matches!(m, HostToEngine::GetState)).count();
+    assert_eq!(app.mirror.view_kind(&tab), ViewKind::Cef);
+    assert_eq!(stored(&app, &tab, field::VIEW_KIND), view_kind(ViewKind::Cef), "written again");
+    assert_eq!(swap_target(&app, &tab), Some(ViewKind::Cef), "still the one swap");
+    let asked = sent(&mut peer).iter().filter(|m| matches!(m, HostToView::GetState)).count();
     assert_eq!(asked, 1, "no second swap started");
 }
 
 /// Ruling 5: waking a tab into another engine saves that engine when the wake starts, not when it lands. A wake
 /// ignored because one is in flight changes nothing.
 #[test]
-fn a_wake_into_another_engine_is_saved_at_wake_start() {
+fn a_wake_into_another_view_is_saved_at_wake_start() {
     let path = temp_dir("engine-wake").join("session.mnf");
     let mut app = app_on(&path, 1);
     let tab = add(&mut app, Kind::Tab, sleeping_tab("https://s/", ""));
     assert!(app.save_session());
-    app.wake_tab(&tab, EngineKind::Cef);
-    assert_eq!(app.mirror.engine(&tab), EngineKind::Cef, "shown at once");
-    assert_eq!(app.test_spawns[0].0.kind, EngineKind::Cef);
-    app.wake_tab(&tab, EngineKind::Webview2);
-    assert_eq!(app.mirror.engine(&tab), EngineKind::Cef, "an ignored wake changes nothing");
+    app.wake_tab(&tab, ViewKind::Cef);
+    assert_eq!(app.mirror.view_kind(&tab), ViewKind::Cef, "shown at once");
+    assert_eq!(app.test_spawns[0].0.kind, ViewKind::Cef);
+    app.wake_tab(&tab, ViewKind::Webview2);
+    assert_eq!(app.mirror.view_kind(&tab), ViewKind::Cef, "an ignored wake changes nothing");
     assert!(app.save_session());
-    assert_eq!(stored(&app, &tab, field::ENGINE), engine(EngineKind::Cef), "saved while the wake is in flight");
+    assert_eq!(stored(&app, &tab, field::VIEW_KIND), view_kind(ViewKind::Cef), "saved while the wake is in flight");
     fail_spawns(&mut app);
     assert!(matches!(app.nodes[&tab].as_unloaded().unwrap().state, UnloadedState::Failed(_)));
-    assert_eq!(app.mirror.engine(&tab), EngineKind::Cef, "the failed card is on the engine that failed");
+    assert_eq!(app.mirror.view_kind(&tab), ViewKind::Cef, "the failed card is on the engine that failed");
     assert!(app.save_session());
-    assert_eq!(stored(&app, &tab, field::ENGINE), engine(EngineKind::Cef));
+    assert_eq!(stored(&app, &tab, field::VIEW_KIND), view_kind(ViewKind::Cef));
 }
 
 /// Ruling 6: an engine code this build doesn't know (a newer build's) reads as Servo, and is not overwritten by a
 /// save or by waking the tab on the engine it reads as.
 #[test]
-fn an_unknown_engine_code_survives_a_save() {
+fn an_unknown_view_code_survives_a_save() {
     let path = temp_dir("engine-unknown").join("session.mnf");
     let mut app = app_on(&path, 1);
     let tab = add(&mut app, Kind::Tab, sleeping_tab("https://s/", ""));
     assert!(app.save_session());
     let mut other = Journal::open(&path, ActorId(2)).unwrap();
-    remote_set(&mut other, &tab, field::ENGINE, FieldValue::Engine(99));
+    remote_set(&mut other, &tab, field::VIEW_KIND, FieldValue::ViewCode(99));
     assert!(app.save_session());
-    assert_eq!(app.mirror.engine(&tab), EngineKind::Servo);
+    assert_eq!(app.mirror.view_kind(&tab), ViewKind::Servo);
     app.edit_field(&tab, field::PINNED, FieldValue::Bool(true));
     assert!(app.save_session());
-    assert_eq!(stored(&app, &tab, field::ENGINE), FieldValue::Engine(99), "not overwritten by a save");
+    assert_eq!(stored(&app, &tab, field::VIEW_KIND), FieldValue::ViewCode(99), "not overwritten by a save");
     app.focus_tab(&tab);
-    assert_eq!(app.test_spawns[0].0.kind, EngineKind::Servo, "wakes on the engine it reads as");
+    assert_eq!(app.test_spawns[0].0.kind, ViewKind::Servo, "wakes on the engine it reads as");
     assert!(app.save_session());
     fail_spawns(&mut app);
     assert!(app.save_session());
-    assert_eq!(stored(&app, &tab, field::ENGINE), FieldValue::Engine(99), "nor by a wake");
+    assert_eq!(stored(&app, &tab, field::VIEW_KIND), FieldValue::ViewCode(99), "nor by a wake");
 }
 
 /// Sleeping mid-swap is reachable: `request_sleep` doesn't wait for a swap, and the page state can answer before the
@@ -4507,42 +4507,42 @@ fn an_unknown_engine_code_survives_a_save() {
 fn a_tab_put_to_sleep_mid_swap_keeps_the_target() {
     let path = temp_dir("engine-sleep-mid-swap").join("session.mnf");
     let mut app = app_on(&path, 1);
-    let (tab, _peer) = live_tab(&mut app, EngineKind::Servo, "https://s/");
+    let (tab, _peer) = live_tab(&mut app, ViewKind::Servo, "https://s/");
     assert!(app.save_session());
-    app.start_swap_to(&tab, EngineKind::Cef);
+    app.start_swap_to(&tab, ViewKind::Cef);
     assert!(app.request_sleep(&tab, crate::sleep_state::SleepWhy::Manual), "a sleep is not refused mid-swap");
     app.finish_sleep(&tab, ipc_protocol::PageState { scroll_x: 0.0, scroll_y: 0.0, dirty_form: false });
     assert_eq!(app.nodes[&tab].as_unloaded().unwrap().state, UnloadedState::Sleeping, "asleep");
-    assert_eq!(app.mirror.engine(&tab), EngineKind::Cef);
+    assert_eq!(app.mirror.view_kind(&tab), ViewKind::Cef);
     assert!(app.save_session());
-    assert_eq!(stored(&app, &tab, field::ENGINE), engine(EngineKind::Cef));
+    assert_eq!(stored(&app, &tab, field::VIEW_KIND), view_kind(ViewKind::Cef));
     app.focus_tab(&tab);
-    assert_eq!(app.test_spawns[0].0.kind, EngineKind::Cef, "wakes into the target");
+    assert_eq!(app.test_spawns[0].0.kind, ViewKind::Cef, "wakes into the target");
 }
 
 /// A crash mid-swap restarts the tab on the target the mirror holds, with the old engine as its fallback, so the
 /// tab runs what the document says either way.
 #[test]
-fn a_crash_mid_swap_restarts_on_the_target_with_the_old_engine_as_fallback() {
+fn a_crash_mid_swap_restarts_on_the_target_with_the_old_view_as_fallback() {
     let path = temp_dir("engine-crash-mid-swap").join("session.mnf");
     let mut app = app_on(&path, 1);
-    let (tab, _peer) = live_tab(&mut app, EngineKind::Servo, "https://s/");
+    let (tab, _peer) = live_tab(&mut app, ViewKind::Servo, "https://s/");
     assert!(app.save_session());
-    app.start_swap_to(&tab, EngineKind::Cef);
-    app.handle_engine_message(&tab, ipc_protocol::EngineToHost::Crashed { reason: "boom".into() });
+    app.start_swap_to(&tab, ViewKind::Cef);
+    app.handle_view_message(&tab, ipc_protocol::ViewToHost::Crashed { reason: "boom".into() });
     let spawn = &app.test_spawns.first().expect("restarting").0;
-    assert_eq!((spawn.kind, spawn.fallback_kind), (EngineKind::Cef, Some(EngineKind::Servo)));
+    assert_eq!((spawn.kind, spawn.fallback_kind), (ViewKind::Cef, Some(ViewKind::Servo)));
     fail_spawns(&mut app);
-    assert_eq!(app.mirror.engine(&tab), EngineKind::Servo, "the target failed: back to the old engine");
+    assert_eq!(app.mirror.view_kind(&tab), ViewKind::Servo, "the target failed: back to the old engine");
     assert!(app.save_session());
-    assert_eq!(stored(&app, &tab, field::ENGINE), engine(EngineKind::Servo));
+    assert_eq!(stored(&app, &tab, field::VIEW_KIND), view_kind(ViewKind::Servo));
 }
 
 /// Lands every spawn in flight on a fake host of the kind it asked for. The peers keep the hosts' channels open.
 fn land_spawns(app: &mut App) -> Vec<Peer> {
     let mut peers = Vec::new();
     for (spawn, generation) in std::mem::take(&mut app.test_spawns) {
-        let (tab, peer) = crate::process_manager::EngineTab::fake(spawn.kind);
+        let (tab, peer) = crate::process_manager::ViewTab::fake(spawn.kind);
         app.handle_tab_spawn_result(crate::tabs::TabSpawnOutcome {
             spawn,
             generation,
@@ -4564,68 +4564,68 @@ fn land_spawns(app: &mut App) -> Vec<Peer> {
 fn a_swap_waiting_for_its_cookies_is_still_the_one_swap() {
     let path = temp_dir("engine-swap-cookie-hold").join("session.mnf");
     let mut app = app_on(&path, 1);
-    let (tab, mut peer) = live_tab(&mut app, EngineKind::Cef, "https://s/");
+    let (tab, mut peer) = live_tab(&mut app, ViewKind::Cef, "https://s/");
     assert!(app.save_session());
     let mut other = Journal::open(&path, ActorId(2)).unwrap();
-    app.start_swap_to(&tab, EngineKind::Webview2);
+    app.start_swap_to(&tab, ViewKind::Webview2);
     assert!(app.save_session());
     let snapshot = ipc_protocol::TabState { url: "https://s/".into() };
-    app.handle_engine_message(&tab, ipc_protocol::EngineToHost::StateSnapshot(snapshot));
+    app.handle_view_message(&tab, ipc_protocol::ViewToHost::StateSnapshot(snapshot));
     assert!(app.cookies.cookie_holds.contains_key(&tab), "parked for the cookies");
     assert_eq!(swap_target(&app, &tab), None);
-    app.start_swap_to(&tab, EngineKind::Servo);
-    assert_eq!(app.mirror.engine(&tab), EngineKind::Webview2, "a local pick is refused");
-    remote_set(&mut other, &tab, field::ENGINE, engine(EngineKind::Servo));
+    app.start_swap_to(&tab, ViewKind::Servo);
+    assert_eq!(app.mirror.view_kind(&tab), ViewKind::Webview2, "a local pick is refused");
+    remote_set(&mut other, &tab, field::VIEW_KIND, view_kind(ViewKind::Servo));
     assert!(app.save_session());
     assert_eq!(swap_target(&app, &tab), None, "no second swap");
-    let asked = sent(&mut peer).iter().filter(|m| matches!(m, HostToEngine::GetState)).count();
+    let asked = sent(&mut peer).iter().filter(|m| matches!(m, HostToView::GetState)).count();
     assert_eq!(asked, 1, "the old host was asked once");
-    assert_eq!(app.mirror.engine(&tab), EngineKind::Webview2, "the remote engine is written over");
-    app.handle_engine_message(&tab, ipc_protocol::EngineToHost::Cookies("[]".into()));
+    assert_eq!(app.mirror.view_kind(&tab), ViewKind::Webview2, "the remote engine is written over");
+    app.handle_view_message(&tab, ipc_protocol::ViewToHost::Cookies("[]".into()));
     let spawn = &app.test_spawns.first().expect("the swap goes on").0;
-    assert_eq!((spawn.kind, spawn.fallback_kind), (EngineKind::Webview2, Some(EngineKind::Cef)));
+    assert_eq!((spawn.kind, spawn.fallback_kind), (ViewKind::Webview2, Some(ViewKind::Cef)));
     let _peers = land_spawns(&mut app);
-    assert_eq!(app.nodes[&tab].as_tab().unwrap().tab.kind, EngineKind::Webview2, "landed on the target");
-    assert_eq!(app.mirror.engine(&tab), EngineKind::Webview2, "the document holds what runs");
+    assert_eq!(app.nodes[&tab].as_tab().unwrap().tab.kind, ViewKind::Webview2, "landed on the target");
+    assert_eq!(app.mirror.view_kind(&tab), ViewKind::Webview2, "the document holds what runs");
     assert!(app.save_session());
-    assert_eq!(stored(&app, &tab, field::ENGINE), engine(EngineKind::Webview2));
+    assert_eq!(stored(&app, &tab, field::VIEW_KIND), view_kind(ViewKind::Webview2));
 }
 
 /// Review M8: another replica's engine reaches a sleeping card through the mirror alone (nothing spawns, nothing is
 /// queued), and the card wakes into it.
 #[test]
-fn a_remote_engine_change_on_a_sleeping_card_is_the_one_it_wakes_into() {
+fn a_remote_view_change_on_a_sleeping_card_is_the_one_it_wakes_into() {
     let path = temp_dir("engine-remote-sleeping").join("session.mnf");
     let mut app = app_on(&path, 1);
     let tab = add(&mut app, Kind::Tab, sleeping_tab("https://s/", ""));
     assert!(app.save_session());
     let mut other = Journal::open(&path, ActorId(2)).unwrap();
-    remote_set(&mut other, &tab, field::ENGINE, engine(EngineKind::Cef));
+    remote_set(&mut other, &tab, field::VIEW_KIND, view_kind(ViewKind::Cef));
     assert!(app.save_session());
-    assert_eq!(app.mirror.engine(&tab), EngineKind::Cef);
+    assert_eq!(app.mirror.view_kind(&tab), ViewKind::Cef);
     assert!(app.pending.is_empty() && app.test_spawns.is_empty(), "nothing queued or started");
     assert_eq!(app.nodes[&tab].as_unloaded().unwrap().state, UnloadedState::Sleeping);
     app.focus_tab(&tab);
-    assert_eq!(app.test_spawns[0].0.kind, EngineKind::Cef, "wakes into it");
+    assert_eq!(app.test_spawns[0].0.kind, ViewKind::Cef, "wakes into it");
 }
 
 /// Review M8, Ruling 6: an unknown engine code survives a wake that lands live too: the live tab's save reads the
 /// mirror's raw value, not the engine it runs.
 #[test]
-fn an_unknown_engine_code_survives_a_tab_landing_live() {
+fn an_unknown_view_code_survives_a_tab_landing_live() {
     let path = temp_dir("engine-unknown-live").join("session.mnf");
     let mut app = app_on(&path, 1);
     let tab = add(&mut app, Kind::Tab, sleeping_tab("https://s/", ""));
     assert!(app.save_session());
     let mut other = Journal::open(&path, ActorId(2)).unwrap();
-    remote_set(&mut other, &tab, field::ENGINE, FieldValue::Engine(99));
+    remote_set(&mut other, &tab, field::VIEW_KIND, FieldValue::ViewCode(99));
     assert!(app.save_session());
     app.focus_tab(&tab);
     let _peers = land_spawns(&mut app);
-    assert_eq!(app.nodes[&tab].as_tab().expect("landed live").tab.kind, EngineKind::Servo);
+    assert_eq!(app.nodes[&tab].as_tab().expect("landed live").tab.kind, ViewKind::Servo);
     app.edit_field(&tab, field::PINNED, FieldValue::Bool(true));
     assert!(app.save_session());
-    assert_eq!(stored(&app, &tab, field::ENGINE), FieldValue::Engine(99), "not overwritten by a live tab's save");
+    assert_eq!(stored(&app, &tab, field::VIEW_KIND), FieldValue::ViewCode(99), "not overwritten by a live tab's save");
 }
 
 // ---- 2b-3 final review -------------------------------------------------------
@@ -4636,21 +4636,20 @@ fn an_unknown_engine_code_survives_a_tab_landing_live() {
 fn a_remote_url_navigates_a_live_tab_unless_a_local_url_is_pending() {
     let path = temp_dir("url-remote-live").join("session.mnf");
     let mut app = app_on(&path, 1);
-    let (tab, mut peer) = live_tab(&mut app, EngineKind::Servo, "https://a/");
+    let (tab, mut peer) = live_tab(&mut app, ViewKind::Servo, "https://a/");
     assert!(app.save_session());
     let mut other = Journal::open(&path, ActorId(2)).unwrap();
     remote_set(&mut other, &tab, field::URL, FieldValue::Str("https://b/".into()));
     assert!(app.save_session());
-    let navigated = |sent: &[HostToEngine], to: &str| {
-        sent.iter().any(|m| matches!(m, HostToEngine::Navigate { url, .. } if url == to))
-    };
+    let navigated =
+        |sent: &[HostToView], to: &str| sent.iter().any(|m| matches!(m, HostToView::Navigate { url, .. } if url == to));
     assert!(navigated(&sent(&mut peer), "https://b/"), "the live tab is sent there");
     assert_eq!(app.nodes[&tab].as_tab().unwrap().url, "https://b/");
     app.edit_url(&tab, "https://local/");
     remote_set(&mut other, &tab, field::URL, FieldValue::Str("https://c/".into()));
     assert!(app.save_session());
     let after = sent(&mut peer);
-    assert!(!after.iter().any(|m| matches!(m, HostToEngine::Navigate { .. })), "held back: no Navigate, got {after:?}");
+    assert!(!after.iter().any(|m| matches!(m, HostToView::Navigate { .. })), "held back: no Navigate, got {after:?}");
     assert_eq!(app.mirror.url(&tab), "https://local/");
     assert_eq!(stored(&app, &tab, field::URL), FieldValue::Str("https://local/".into()));
 }
@@ -4675,8 +4674,7 @@ fn a_remote_url_parked_during_a_wake_navigates_the_tab_when_it_lands() {
     assert!(app.save_session());
     assert!(!app.journal.as_ref().unwrap().doc().nodes[&note.parse().unwrap()].is_live(), "the Delete committed");
     let mut peers = land_spawns(&mut app);
-    let to_r =
-        sent(&mut peers[0]).iter().any(|m| matches!(m, HostToEngine::Navigate { url, .. } if url == "https://r/"));
+    let to_r = sent(&mut peers[0]).iter().any(|m| matches!(m, HostToView::Navigate { url, .. } if url == "https://r/"));
     assert!(to_r, "the landed tab is sent to the remote url");
     assert_eq!(app.mirror.url(&tab), "https://r/");
 }
@@ -4686,39 +4684,39 @@ fn a_remote_url_parked_during_a_wake_navigates_the_tab_when_it_lands() {
 /// a Set for the tab in between (the parked change takes the committed jar, so the landing does not replay the old
 /// one over it). The document and the running engine end up agreeing: the landing starts a swap to it.
 #[test]
-fn a_remote_engine_parked_during_a_swap_respawn_is_swapped_to_when_it_lands() {
+fn a_remote_view_parked_during_a_swap_respawn_is_swapped_to_when_it_lands() {
     let path = temp_dir("engine-parked-swap").join("session.mnf");
     let mut app = app_on(&path, 1);
     let work = app.create_jar("Work");
     let g = add_group(&mut app, "G");
-    let (tab, _peer) = live_tab(&mut app, EngineKind::Servo, "https://s/");
+    let (tab, _peer) = live_tab(&mut app, ViewKind::Servo, "https://s/");
     app.edit_group(&tab, Some(g.clone()));
     assert!(app.save_session());
-    app.start_swap_to(&tab, EngineKind::Cef);
+    app.start_swap_to(&tab, ViewKind::Cef);
     assert!(app.save_session());
     let snapshot = ipc_protocol::TabState { url: "https://s/".into() };
-    app.handle_engine_message(&tab, ipc_protocol::EngineToHost::StateSnapshot(snapshot));
+    app.handle_view_message(&tab, ipc_protocol::ViewToHost::StateSnapshot(snapshot));
     assert_eq!(app.test_spawns.len(), 1, "the swap's respawn is in flight");
     let mut other = Journal::open(&path, ActorId(2)).unwrap();
-    remote_set(&mut other, &tab, field::ENGINE, engine(EngineKind::Webview2));
+    remote_set(&mut other, &tab, field::VIEW_KIND, view_kind(ViewKind::Webview2));
     assert!(app.save_session());
     assert!(app.spawns.remote_in_flight.contains_key(&tab), "parked for the landing");
     assert_eq!(app.set_group_default_jar(&g, work), 1, "the cascade reaches the respawning tab");
     assert!(app.save_session());
     assert_eq!(stored(&app, &tab, field::JAR), FieldValue::Id(Some(work)), "the cascade committed for the tab");
     let _peers = land_spawns(&mut app);
-    assert_eq!(app.nodes[&tab].as_tab().unwrap().tab.kind, EngineKind::Cef, "landed on the swap's target");
-    assert_eq!(app.mirror.engine(&tab), EngineKind::Webview2);
-    assert_eq!(app.swap_in_flight(&tab), Some(EngineKind::Webview2), "and swaps on to the remote engine");
+    assert_eq!(app.nodes[&tab].as_tab().unwrap().tab.kind, ViewKind::Cef, "landed on the swap's target");
+    assert_eq!(app.mirror.view_kind(&tab), ViewKind::Webview2);
+    assert_eq!(app.swap_in_flight(&tab), Some(ViewKind::Webview2), "and swaps on to the remote engine");
     assert!(app.save_session());
-    assert_eq!(stored(&app, &tab, field::ENGINE), engine(EngineKind::Webview2));
+    assert_eq!(stored(&app, &tab, field::VIEW_KIND), view_kind(ViewKind::Webview2));
 }
 
 /// A new tab spawned with `jar`, as `spawn_tab_at` starts one.
 fn spawn_with_jar(app: &mut App, purpose: SpawnPurpose, jar: NodeId) -> String {
     let t = app.alloc_node_id();
     let mut spawn =
-        crate::tabs::TabSpawn::new(t.clone(), "https://t/".into(), EngineKind::Servo, egui::Vec2::ZERO, purpose, 1.0);
+        crate::tabs::TabSpawn::new(t.clone(), "https://t/".into(), ViewKind::Servo, egui::Vec2::ZERO, purpose, 1.0);
     spawn.jar = JarChoice { jar: Some(jar), set: true };
     app.spawn_tab_async(spawn);
     t
@@ -4770,11 +4768,11 @@ fn deleting_a_jar_writes_none_for_saved_and_respawning_tabs() {
     let mut app = app_on(&path, 1);
     let work = app.create_jar("Work");
     let asleep = add(&mut app, Kind::Tab, sleeping_tab("https://a/", ""));
-    let (live, _peer) = live_tab(&mut app, EngineKind::Servo, "https://l/");
+    let (live, _peer) = live_tab(&mut app, ViewKind::Servo, "https://l/");
     app.set_tab_jar(&asleep, Some(work));
     app.set_tab_jar(&live, Some(work));
     assert!(app.save_session());
-    app.handle_engine_message(&live, ipc_protocol::EngineToHost::Crashed { reason: "boom".into() });
+    app.handle_view_message(&live, ipc_protocol::ViewToHost::Crashed { reason: "boom".into() });
     assert!(app.spawns.spawning.contains_key(&live) && !app.nodes.contains_key(&live), "mid-respawn");
     app.delete_jar(work);
     assert!(app.save_session());
@@ -4860,7 +4858,7 @@ fn every_creation_path_seeds_the_node_type() {
     let spawn = crate::tabs::TabSpawn::new(
         t.clone(),
         "https://t.test/".into(),
-        EngineKind::Servo,
+        ViewKind::Servo,
         egui::Vec2::ZERO,
         SpawnPurpose::Restore,
         1.0,
@@ -4872,7 +4870,7 @@ fn every_creation_path_seeds_the_node_type() {
     let spawn = crate::tabs::TabSpawn::new(
         live.clone(),
         "https://l.test/".into(),
-        EngineKind::Servo,
+        ViewKind::Servo,
         egui::Vec2::ZERO,
         SpawnPurpose::Restore,
         1.0,
@@ -4968,7 +4966,7 @@ fn a_failed_retry_and_a_new_failure_of_one_intent_leave_one_card() {
     app.spawn_tab_at("https://a/", egui::Vec2::ZERO, None, None);
     fail_spawns(&mut app);
     let card = failed_cards(&app).remove(0);
-    let kind = app.mirror.engine(&card);
+    let kind = app.mirror.view_kind(&card);
     app.wake_tab(&card, kind);
     assert_eq!(app.nodes[&card].as_unloaded().unwrap().state, UnloadedState::Waking);
     app.spawn_tab_at("https://a/", egui::Vec2::ZERO, None, None);
@@ -4999,7 +4997,7 @@ fn a_crashed_tab_beside_a_failed_card_for_its_intent_leaves_one_card() {
 #[test]
 fn a_tab_that_stops_responding_is_toasted_once() {
     let mut app = app_on(&temp_dir("not-responding").join("session.mnf"), 1);
-    let (id, _peer) = live_tab(&mut app, EngineKind::Servo, "https://a/");
+    let (id, _peer) = live_tab(&mut app, ViewKind::Servo, "https://a/");
     app.nodes.get(&id).and_then(|n| n.as_tab()).unwrap().tab.wedge();
     let toasts = |app: &App| app.toasts.save_toast_queue.iter().filter(|t| t.starts_with("Not responding: ")).count();
     app.drain_tab_events();
@@ -5010,24 +5008,24 @@ fn a_tab_that_stops_responding_is_toasted_once() {
 
 /// "Restart Engine" starts a new host for the tab under the same id, and says so.
 #[test]
-fn restart_engine_respawns_the_tab_under_its_id() {
+fn restart_view_respawns_the_tab_under_its_id() {
     let mut app = app_on(&temp_dir("restart-engine").join("session.mnf"), 1);
     let live = succeed_spawn(&mut app, "https://a/");
-    assert!(app.restart_engine(&live));
+    assert!(app.restart_view(&live));
     assert!(app.test_spawns.iter().any(|(s, _)| s.id == live), "a respawn under the same id");
     assert!(app.toasts.save_toast_queue.iter().any(|t| t == "Restarted: https://a/"));
-    assert!(!app.restart_engine("no-such-tab"));
+    assert!(!app.restart_view("no-such-tab"));
 }
 
 /// "End Engine" leaves a failed card for the tab, and says so.
 #[test]
-fn end_engine_leaves_a_failed_card() {
+fn end_view_leaves_a_failed_card() {
     let mut app = app_on(&temp_dir("end-engine").join("session.mnf"), 1);
     let live = succeed_spawn(&mut app, "https://a/");
-    assert!(app.end_engine(&live));
+    assert!(app.end_view(&live));
     assert_eq!(failed_cards(&app), std::slice::from_ref(&live));
     assert!(app.toasts.save_toast_queue.iter().any(|t| t == "Ended (not responding): https://a/"));
-    assert!(!app.end_engine(&live), "a failed card is no live tab");
+    assert!(!app.end_view(&live), "a failed card is no live tab");
 }
 
 /// A startup Root spawn that failed leaves a saved failed card; the next launch restores it as the focused tab and

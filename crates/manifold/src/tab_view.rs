@@ -121,7 +121,7 @@ pub(crate) struct ItemToolbarActions {
     /// The Graph button inside the Tab toolbar's nav chip was clicked.
     pub(crate) back_to_graph: bool,
     pub(crate) tab_actions_button_rect: Option<egui::Rect>,
-    pub(crate) split_engine_button_rect: Option<egui::Rect>,
+    pub(crate) split_view_button_rect: Option<egui::Rect>,
     pub(crate) address_bar_rect: Option<egui::Rect>,
 }
 
@@ -141,13 +141,13 @@ impl App {
     /// URL (see `nav_history`).
     pub(crate) fn navigate_history(&mut self, id: &str, dir: Dir) {
         let Some(node) = self.nodes.get_mut(id).and_then(|n| n.as_tab_mut()) else { return };
-        let engine_can = if dir == Dir::Back { node.can_go_back } else { node.can_go_forward };
-        let action = self.nav_history.entry(id.to_string()).or_default().go(dir, engine_can);
+        let view_can = if dir == Dir::Back { node.can_go_back } else { node.can_go_forward };
+        let action = self.nav_history.entry(id.to_string()).or_default().go(dir, view_can);
         match action {
             NavAction::Native => {
-                node.tab.send(&if dir == Dir::Back { HostToEngine::GoBack } else { HostToEngine::GoForward })
+                node.tab.send(&if dir == Dir::Back { HostToView::GoBack } else { HostToView::GoForward })
             }
-            NavAction::Load(url) => node.tab.send(&HostToEngine::Navigate { url, referrer: None }),
+            NavAction::Load(url) => node.tab.send(&HostToView::Navigate { url, referrer: None }),
             NavAction::None => {}
         }
     }
@@ -326,12 +326,12 @@ impl App {
         // secondary pane is view-only in this first cut, so its
         // own toolbar/address-bar controls only ever apply to
         // the primary (left) pane.
-        let split_engine_response =
+        let split_view_response =
             icon_button_eased(trailing_ui, egui::Id::new("icon_btn_split"), egui_phosphor::light::COLUMNS).named_tip(
                 if self.split_tab.is_some() { "Split view: change engine" } else { "Split view: compare engines" },
             );
-        self.popup_opener_clicked(trailing_ui, AnchoredPopup::SplitEngine, &split_engine_response);
-        actions.split_engine_button_rect = Some(split_engine_response.rect);
+        self.popup_opener_clicked(trailing_ui, AnchoredPopup::SplitView, &split_view_response);
+        actions.split_view_button_rect = Some(split_view_response.rect);
         let is_bookmarked = self
             .nodes
             .get(focused_id)
@@ -510,7 +510,7 @@ impl App {
                     // Folded into `back_to_graph` by `render_item_toolbar`.
                     back_to_graph: _,
                     tab_actions_button_rect,
-                    split_engine_button_rect,
+                    split_view_button_rect,
                     address_bar_rect,
                 },
         } = self.render_item_toolbar(&focused_id, ui);
@@ -641,7 +641,7 @@ impl App {
         let split_kind =
             self.split_tab.as_ref().and_then(|id| self.nodes.get(id)).and_then(|n| n.as_tab()).map(|t| t.tab.kind);
         if let Some(kind) =
-            self.build_anchored_engine_picker(ui, AnchoredPopup::SplitEngine, split_engine_button_rect, split_kind)
+            self.build_anchored_view_picker(ui, AnchoredPopup::SplitView, split_view_button_rect, split_kind)
         {
             self.start_split(kind);
         }
@@ -778,9 +778,9 @@ impl App {
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
                             if let Some(kind) = kind {
-                                engine_dot(ui, kind, 8.0);
+                                view_dot(ui, kind, 8.0);
                             }
-                            ui.label(kind.map(engine_label).unwrap_or("?"));
+                            ui.label(kind.map(view_label).unwrap_or("?"));
                         });
                     });
             });

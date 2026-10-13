@@ -2,7 +2,7 @@
 //! `ICoreWebView2_8::IsDocumentPlayingAudio` property and its matching
 //! `IsDocumentPlayingAudioChanged` event -- a passive read of state
 //! Chromium already tracks internally, no different in kind from reading
-//! `title`, unlike CEF's only equivalent (see `ipc_protocol::EngineToHost::
+//! `title`, unlike CEF's only equivalent (see `ipc_protocol::ViewToHost::
 //! AudioPlayingChanged`'s doc comment for why CEF doesn't get this).
 
 use std::cell::RefCell;

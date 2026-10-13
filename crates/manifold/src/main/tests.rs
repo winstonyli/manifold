@@ -12,7 +12,7 @@ fn forget_id_clears_every_id_keyed_table() {
     app.pending_sleeps.insert(t(), sleep_state::PendingSleep { why: sleep_state::SleepWhy::Manual, sent: now });
     app.cookies.jar_tabs.insert(t(), (jar::JarKey::Default, jar::TabCookies::default()));
     app.cookies.jar_reseed.insert(t());
-    app.cookies.cookie_holds.insert(t(), (now, tabs::Held::Snapshot(EngineKind::Webview2, String::new())));
+    app.cookies.cookie_holds.insert(t(), (now, tabs::Held::Snapshot(ViewKind::Webview2, String::new())));
     app.cookies.jar_pulls.insert(t(), now);
     app.cookies.jar_silent.insert(t(), 1);
     app.saved_scroll.insert(t(), sleep_state::SavedScroll::new(0.0, 1.0));
@@ -80,7 +80,7 @@ const NOT_FORGOTTEN: &[(&str, &str)] = &[
     ("debug.pending_screenshot", "a file path, not a node id"),
     ("debug.pending_print_to_pdf", "a file path, not a node id"),
     ("toasts.save_toast", "a message, not a node id"),
-    ("engine_ui.cef_dir_draft", "a path draft, not a node id"),
+    ("view_ui.cef_dir_draft", "a path draft, not a node id"),
     ("home_page_draft", "a url draft, not a node id"),
     ("history_ui.renaming_bookmark_folder", "a bookmark folder, not a node id"),
     ("history_ui.history_matches_cache", "a history query, not a node id"),
@@ -103,7 +103,7 @@ fn every_id_keyed_field_is_forgotten_or_excused() {
         ("toasts", include_str!("../failure_toasts.rs"), "pub(crate) struct Toasts {"),
         ("menus", include_str!("../popups.rs"), "pub(crate) struct MenuPopups {"),
         ("history_ui", include_str!("../history.rs"), "pub(crate) struct HistoryUi {"),
-        ("engine_ui", include_str!("../engine_install.rs"), "pub(crate) struct EngineInstallUi {"),
+        ("view_ui", include_str!("../view_install.rs"), "pub(crate) struct ViewInstallUi {"),
     ];
     fn block<'a>(source: &'a str, header: &str, end: &str) -> Vec<&'a str> {
         source.lines().skip_while(|l| !l.trim_start().starts_with(header)).skip(1).take_while(|l| *l != end).collect()
@@ -561,7 +561,7 @@ fn sleep_answer() -> tabs::Held {
 }
 
 fn swap_answer() -> tabs::Held {
-    tabs::Held::Snapshot(process_manager::EngineKind::Cef, "http://x/".into())
+    tabs::Held::Snapshot(process_manager::ViewKind::Cef, "http://x/".into())
 }
 
 #[test]
@@ -609,7 +609,7 @@ fn closing_a_tab_clears_its_cookie_bookkeeping() {
     app.cookies.jar_silent.insert(tab.clone(), 2);
     app.cookies.cookie_holds.insert(
         tab.clone(),
-        (std::time::Instant::now(), tabs::Held::Snapshot(process_manager::EngineKind::Cef, String::new())),
+        (std::time::Instant::now(), tabs::Held::Snapshot(process_manager::ViewKind::Cef, String::new())),
     );
     app.remove_tab(&tab);
     assert!(

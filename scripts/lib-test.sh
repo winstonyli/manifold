@@ -15,12 +15,12 @@ expect() { # name want got
 }
 
 seed_settings "$t/p1"
-expect "seed_settings: webview2 by default" '{"has_shown_first_launch_demo": true, "default_starting_engine": "webview2"}' "$(cat "$t/p1/manifold/settings.json")"
+expect "seed_settings: webview2 by default" '{"has_shown_first_launch_demo": true, "default_starting_view_kind": "webview2"}' "$(cat "$t/p1/manifold/settings.json")"
 expect "seed_settings: ends in a newline" 1 "$(tail -c1 "$t/p1/manifold/settings.json" | wc -l)"
 seed_settings "$t/p2" cef
-expect "seed_settings: the engine" '{"has_shown_first_launch_demo": true, "default_starting_engine": "cef"}' "$(cat "$t/p2/manifold/settings.json")"
+expect "seed_settings: the engine" '{"has_shown_first_launch_demo": true, "default_starting_view_kind": "cef"}' "$(cat "$t/p2/manifold/settings.json")"
 seed_settings "$t/p3" webview2 ', "home_page": "http://x/"'
-expect "seed_settings: extra members" '{"has_shown_first_launch_demo": true, "default_starting_engine": "webview2", "home_page": "http://x/"}' "$(cat "$t/p3/manifold/settings.json")"
+expect "seed_settings: extra members" '{"has_shown_first_launch_demo": true, "default_starting_view_kind": "webview2", "home_page": "http://x/"}' "$(cat "$t/p3/manifold/settings.json")"
 
 # A fake instance: prints its first argument, APPDATA, HTTPS_PROXY and the first command line, then waits for an
 # END line, so it is still running while launch_headless looks up its Windows pid.

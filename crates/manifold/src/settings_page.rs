@@ -45,8 +45,8 @@ pub(crate) struct SettingsRequests {
     pub(crate) bookmarks_button_rect: Option<egui::Rect>,
     pub(crate) history_button_rect: Option<egui::Rect>,
     pub(crate) downloads_button_rect: Option<egui::Rect>,
-    pub(crate) default_engine_button_rect: Option<egui::Rect>,
-    pub(crate) current_engine_button_rect: Option<egui::Rect>,
+    pub(crate) default_view_button_rect: Option<egui::Rect>,
+    pub(crate) current_view_button_rect: Option<egui::Rect>,
     /// `settings_jars_section`: a jar's name field committed a new name.
     pub(crate) rename_jar: Option<(NodeId, String)>,
     /// The Ephemeral checkbox changed; on, for a jar with a saved file, asks first (`App::request_jar_ephemeral`).
@@ -79,7 +79,7 @@ impl App {
         if ui.input(|i| i.key_pressed(egui::Key::Escape))
             && !typing
             && !self.popup_open()
-            && self.engine_ui.pending_engine_confirm.is_none()
+            && self.view_ui.pending_view_confirm.is_none()
             && self.pending_jar_confirm.is_none()
         {
             self.close_settings_page();
@@ -108,7 +108,7 @@ impl App {
 
                 self.settings_general_section(ui, &mut req);
                 self.settings_current_tab_section(ui, &mut req);
-                self.settings_engines_section(ui);
+                self.settings_view_kinds_section(ui);
                 self.settings_lists_section(ui, &mut req);
                 self.settings_sessions_section(ui, &mut req);
                 self.settings_jars_section(ui, &mut req);
@@ -128,10 +128,10 @@ impl App {
             .selected_text(self.settings.default_search_engine.label())
             .show_ui(ui, |ui| {
                 menu_item_style(ui);
-                for engine in SearchEngine::ALL {
-                    let selected = self.settings.default_search_engine == engine;
-                    if selectable_label(ui, selected, engine.label()).clicked() && !selected {
-                        self.settings.default_search_engine = engine;
+                for view_kind in SearchEngine::ALL {
+                    let selected = self.settings.default_search_engine == view_kind;
+                    if selectable_label(ui, selected, view_kind.label()).clicked() && !selected {
+                        self.settings.default_search_engine = view_kind;
                         self.save_settings();
                     }
                 }
@@ -149,13 +149,13 @@ impl App {
 
         ui.add_space(FIELD_GAP);
         ui.label("Default starting engine (new tabs)");
-        let default_engine_response =
-            self.engine_opener_button(ui, AnchoredPopup::DefaultEngine, self.settings.default_starting_engine);
-        req.default_engine_button_rect = Some(default_engine_response.rect);
+        let default_view_response =
+            self.view_opener_button(ui, AnchoredPopup::DefaultViewKind, self.settings.default_starting_view_kind);
+        req.default_view_button_rect = Some(default_view_response.rect);
         // A saved default this platform cannot run is kept, not replaced; say why new tabs will fail.
-        let default_state = self.engine_state(self.settings.default_starting_engine);
-        if matches!(default_state, crate::engine_install::EngineState::Unavailable(_)) {
-            engine_state_line(ui, &default_state);
+        let default_state = self.view_status(self.settings.default_starting_view_kind);
+        if matches!(default_state, crate::view_install::ViewStatus::Unavailable(_)) {
+            view_status_line(ui, &default_state);
         }
 
         ui.add_space(FIELD_GAP);
@@ -253,8 +253,8 @@ impl App {
                 req.current_tab_id = Some(id.clone());
                 ui.horizontal(|ui| {
                     ui.label("Engine");
-                    let current_engine_response = self.engine_opener_button(ui, AnchoredPopup::CurrentEngine, kind);
-                    req.current_engine_button_rect = Some(current_engine_response.rect);
+                    let current_view_response = self.view_opener_button(ui, AnchoredPopup::CurrentViewKind, kind);
+                    req.current_view_button_rect = Some(current_view_response.rect);
                 });
                 let node_muted = self.nodes.get(&id).and_then(|n| n.as_tab()).is_some_and(|n| n.muted);
                 setting_row(ui, "Mute", None, |ui| {
@@ -281,61 +281,61 @@ impl App {
     /// Settings, "Engines": each engine's state, and the actions that state allows -- Download/Update
     /// (both ask first, naming the size), Cancel while installing, Retry after a failure, and Remove
     /// (asks first) with the installed size for downloaded files.
-    pub(crate) fn settings_engines_section(&mut self, ui: &mut egui::Ui) {
-        use crate::engine_install::EngineState;
+    pub(crate) fn settings_view_kinds_section(&mut self, ui: &mut egui::Ui) {
+        use crate::view_install::ViewStatus;
         section_start(ui, "Engines");
-        for kind in ENGINE_PICKER_ORDER {
-            let state = self.engine_state(kind);
+        for kind in VIEW_PICKER_ORDER {
+            let state = self.view_status(kind);
             ui.add_space(4.0);
             ui.horizontal(|ui| {
-                engine_dot(ui, kind, 10.0);
-                let unavailable = matches!(state, EngineState::Unavailable(_));
-                ui.label(egui::RichText::new(engine_label(kind)).color(if unavailable {
+                view_dot(ui, kind, 10.0);
+                let unavailable = matches!(state, ViewStatus::Unavailable(_));
+                ui.label(egui::RichText::new(view_label(kind)).color(if unavailable {
                     TEXT_WEAK
                 } else {
                     TEXT_PRIMARY
                 }));
             });
             // What this engine has installed (host files, CEF's runtime): present means Remove and a size line.
-            let runtime = cached(ui.ctx(), ("engine_runtime", kind), DISK_CACHE_AGE, || {
-                Some(crate::engine_install::installed_paths(kind)).filter(|paths| !paths.is_empty())
+            let runtime = cached(ui.ctx(), ("view_runtime", kind), DISK_CACHE_AGE, || {
+                Some(crate::view_install::installed_paths(kind)).filter(|paths| !paths.is_empty())
             });
             match &state {
-                EngineState::Installed | EngineState::UpdateNeeded { .. } if runtime.is_some() => {
+                ViewStatus::Installed | ViewStatus::UpdateNeeded { .. } if runtime.is_some() => {
                     let size = runtime
                         .as_deref()
                         .map(|paths| paths.iter().map(|path| cached_dir_size(ui.ctx(), path)).sum::<u64>())
                         .unwrap_or(0);
-                    let (label, tone) = engine_state_label(&state);
+                    let (label, tone) = view_status_label(&state);
                     ui.label(
                         egui::RichText::new(format!("{label} \u{b7} {} on disk", megabytes(size)))
                             .small()
                             .color(tone.color()),
                     );
                 }
-                _ => engine_state_line(ui, &state),
+                _ => view_status_line(ui, &state),
             }
             // Leftovers (a kept `.part`, a failed install's `.tmp`) can exist with no runtime; they get a
             // button too, since nothing else would ever delete them.
-            let leftovers = cached(ui.ctx(), ("engine_leftovers", kind), DISK_CACHE_AGE, || {
-                crate::engine_install::kind_has_leftovers(kind)
+            let leftovers = cached(ui.ctx(), ("view_leftovers", kind), DISK_CACHE_AGE, || {
+                crate::view_install::kind_has_leftovers(kind)
             });
-            let removable = (runtime.is_some() || leftovers) && !matches!(state, EngineState::Installing { .. });
-            if matches!(state, EngineState::Installed | EngineState::Custom(_)) && !removable {
+            let removable = (runtime.is_some() || leftovers) && !matches!(state, ViewStatus::Installing { .. });
+            if matches!(state, ViewStatus::Installed | ViewStatus::Custom(_)) && !removable {
                 continue;
             }
             ui.horizontal(|ui| {
                 match &state {
-                    EngineState::NotInstalled { .. } if ui.button("Download").clicked() => {
-                        self.offer_engine_confirm(EngineConfirm::Download(kind));
+                    ViewStatus::NotInstalled { .. } if ui.button("Download").clicked() => {
+                        self.offer_view_confirm(ViewConfirm::Download(kind));
                     }
-                    EngineState::UpdateNeeded { .. } if ui.button("Update").clicked() => {
-                        self.offer_engine_confirm(EngineConfirm::Download(kind));
+                    ViewStatus::UpdateNeeded { .. } if ui.button("Update").clicked() => {
+                        self.offer_view_confirm(ViewConfirm::Download(kind));
                     }
-                    EngineState::Failed(_) if ui.button("Retry").clicked() => {
-                        self.offer_engine_confirm(EngineConfirm::Download(kind));
+                    ViewStatus::Failed(_) if ui.button("Retry").clicked() => {
+                        self.offer_view_confirm(ViewConfirm::Download(kind));
                     }
-                    EngineState::Installing { .. } if ui.button("Cancel").clicked() => self.cancel_engine_install(kind),
+                    ViewStatus::Installing { .. } if ui.button("Cancel").clicked() => self.cancel_view_install(kind),
                     _ => {}
                 }
                 let (label, hint) = if runtime.is_some() {
@@ -344,7 +344,7 @@ impl App {
                     ("Clear leftovers", "Delete the partial download and install leftovers")
                 };
                 if removable && ui.button(label).on_hover_text(hint).clicked() {
-                    self.offer_engine_confirm(EngineConfirm::Remove(kind));
+                    self.offer_view_confirm(ViewConfirm::Remove(kind));
                 }
             });
         }
@@ -360,7 +360,7 @@ impl App {
         let mut commit = None;
         let configured = self.settings.cef_directory.clone().unwrap_or_default();
         ui.horizontal(|ui| {
-            let draft = self.engine_ui.cef_dir_draft.get_or_insert_with(|| configured.clone());
+            let draft = self.view_ui.cef_dir_draft.get_or_insert_with(|| configured.clone());
             let response = ui.add(
                 egui::TextEdit::singleline(draft)
                     .desired_width(220.0)
@@ -390,7 +390,7 @@ impl App {
                 // Same folder (Browse again, or Enter): its contents may have been fixed on disk.
                 self.invalidate_cef_dir_check();
             }
-            self.engine_ui.cef_dir_draft = None;
+            self.view_ui.cef_dir_draft = None;
         }
         match self.cef_dir_verdict() {
             Some((_, Err(message))) => {
@@ -399,7 +399,7 @@ impl App {
             Some((dir, Ok(()))) => {
                 let note = crate::cef_pin::pin_for_platform().and_then(|pin| {
                     cached(ui.ctx(), ("cef_newer_than_tested", &dir), DISK_CACHE_AGE, || {
-                        crate::engine_install::newer_than_tested(&dir, pin)
+                        crate::view_install::newer_than_tested(&dir, pin)
                     })
                 });
                 if let Some(note) = note {
@@ -717,22 +717,22 @@ impl App {
         {
             self.build_downloads_popup(ui, rect, fade);
         }
-        let default_engine = Some(self.settings.default_starting_engine);
-        if let Some(kind) = self.build_anchored_engine_picker(
+        let default_view_kind = Some(self.settings.default_starting_view_kind);
+        if let Some(kind) = self.build_anchored_view_picker(
             ui,
-            AnchoredPopup::DefaultEngine,
-            req.default_engine_button_rect,
-            default_engine,
+            AnchoredPopup::DefaultViewKind,
+            req.default_view_button_rect,
+            default_view_kind,
         ) {
-            self.settings.default_starting_engine = kind;
+            self.settings.default_starting_view_kind = kind;
             self.save_settings();
         }
         let current_kind =
             req.current_tab_id.as_ref().and_then(|id| self.nodes.get(id)).and_then(|n| n.as_tab()).map(|t| t.tab.kind);
-        if let Some(kind) = self.build_anchored_engine_picker(
+        if let Some(kind) = self.build_anchored_view_picker(
             ui,
-            AnchoredPopup::CurrentEngine,
-            req.current_engine_button_rect,
+            AnchoredPopup::CurrentViewKind,
+            req.current_view_button_rect,
             current_kind,
         ) {
             if let Some(id) = &req.current_tab_id {
@@ -820,7 +820,7 @@ fn jar_name_draft(ui: &egui::Ui, id: NodeId, name: &str) -> String {
 /// `dir`'s size, recomputed at most every few seconds (egui memory) so the Settings page doesn't walk the
 /// runtime's files on every frame.
 fn cached_dir_size(ctx: &egui::Context, dir: &std::path::Path) -> u64 {
-    cached(ctx, ("engine_dir_size", dir), DISK_CACHE_AGE, || crate::engine_install::dir_size(dir))
+    cached(ctx, ("view_dir_size", dir), DISK_CACHE_AGE, || crate::view_install::dir_size(dir))
 }
 
 /// How long the page's disk reads (`cached`) are reused before they are read again.
@@ -1109,7 +1109,7 @@ mod tests {
     /// replaces it nor acts, and a jar confirm and an engine confirm never show together.
     #[test]
     fn a_pending_confirm_ignores_further_jar_actions() {
-        use crate::engine_info::EngineConfirm;
+        use crate::view_info::ViewConfirm;
         let mut app = App::default();
         let work = app.create_jar("Work");
         let clear = JarConfirm::Clear(JarKey::Default);
@@ -1122,17 +1122,17 @@ mod tests {
         app.apply_settings_requests(&req);
         assert_eq!(app.pending_jar_confirm, Some(clear), "the first confirm stays");
         assert!(!app.mirror.jar_defs()[&work].ephemeral, "the click was ignored, not acted on");
-        let download = EngineConfirm::Download(crate::process_manager::EngineKind::Cef);
-        assert!(!app.offer_engine_confirm(download));
-        assert_eq!(app.engine_ui.pending_engine_confirm, None, "no engine confirm over a jar confirm");
+        let download = ViewConfirm::Download(crate::process_manager::ViewKind::Cef);
+        assert!(!app.offer_view_confirm(download));
+        assert_eq!(app.view_ui.pending_view_confirm, None, "no engine confirm over a jar confirm");
 
         app.pending_jar_confirm = None;
-        assert!(app.offer_engine_confirm(download));
+        assert!(app.offer_view_confirm(download));
         app.apply_settings_requests(&req);
         assert_eq!(app.pending_jar_confirm, None, "no jar confirm over an engine confirm");
         assert!(!app.mirror.jar_defs()[&work].ephemeral);
 
-        app.engine_ui.pending_engine_confirm = None;
+        app.view_ui.pending_view_confirm = None;
         app.apply_settings_requests(&SettingsRequests {
             jar_confirm: Some(JarConfirm::Delete(work)),
             ..Default::default()
