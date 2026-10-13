@@ -217,6 +217,9 @@ pub(crate) fn build_node_context_menu(
     ui.data_mut(|d| d.insert_temp(open_key, interactable));
     let mut first_item = just_opened;
     let anchor = egui::Rect::from_min_size(pos, egui::Vec2::ZERO);
+    // egui keeps an area's last size: a menu that opens measures itself again instead of keeping the last
+    // one's (the plain menu reopened after the Jar page would be clipped to it).
+    let resize = interactable && just_opened;
     let area_rect = build_list_popup_frame(
         ui.ctx(),
         config.area_id,
@@ -225,6 +228,7 @@ pub(crate) fn build_node_context_menu(
         f32::INFINITY,
         fade,
         interactable,
+        resize,
         |ui| {
             if let Some((draft, focus, hint)) = rename {
                 let mut edit = egui::TextEdit::singleline(draft).desired_width(140.0);
@@ -784,6 +788,8 @@ impl App {
         let Some(((id, pos, view), fade)) =
             fade_popup_state(ui.ctx(), egui::Id::new("node_menu_fade"), &current, &mut self.menus.node_menu_cache)
         else {
+            // Closed and faded out: the next menu opens on its items, even at the same card and point.
+            self.menus.node_menu_page = None;
             return;
         };
         let live = current.is_some();
