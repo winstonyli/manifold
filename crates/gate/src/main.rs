@@ -5,7 +5,7 @@
 //!
 //! Stages: `hello` (one instance: launch, WAITTABS, export, QUIT), `layout` (popups inside the window and opaque, see layout.rs), `link` (was scripts/link-probe.sh), `smoke` (was
 //! scripts/headless-smoke-test.sh) and `two` (the two-instance test, was scripts/two-instance-test.sh). Run from the repo after
-//! `cargo build -p manifold -p manifold-view-webview2 -p gate`; the exe is `manifold.exe` beside `gate.exe`.
+//! `cargo build -p manifold -p manifold-view-webview2 -p manifold-view-pdfium -p gate`; the exe is `manifold.exe` beside `gate.exe`.
 
 #![allow(dead_code, reason = "the runner core's API is used by the link and smoke ports of later tasks, and by tests")]
 
@@ -73,7 +73,7 @@ mod windows_main {
         let exe = me.with_file_name("manifold.exe");
         if !exe.exists() {
             return Err(format!(
-                "{} not found: cargo build -p manifold -p manifold-view-webview2 -p gate",
+                "{} not found: cargo build -p manifold -p manifold-view-webview2 -p manifold-view-pdfium -p gate",
                 exe.display()
             ));
         }

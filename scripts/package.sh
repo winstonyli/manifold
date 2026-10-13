@@ -10,8 +10,10 @@
 #   - ENGINESTATE cef reads "Not installed", with " · N MB" when crates/manifold/src/host_pin.rs pins a CEF host
 #     (release.sh wrote it), and likewise for Servo when it is pinned;
 #   - a WebView2 tab loads a local page, so the host was extracted from the embed (no sibling host exists);
+#   - a PDF node renders the fixture (1000x500, 1 page) through the embedded PDF view, extracted beside the WebView2
+#     host (the first run downloads PDFium, so it needs the network once and waits up to 180 s);
 #   - the folder still holds only manifold.exe, plus the new engine-hosts/ under the redirected APPDATA.
-# Downloads nothing. Build the release with scripts/release.sh.
+# Downloads nothing but PDFium. Build the release with scripts/release.sh.
 set -euo pipefail
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck source=winpid.sh
@@ -37,6 +39,7 @@ bad() { echo "FAIL: $1"; status=1; }
 mkdir -p "$out/bin"
 cp "$exe_src" "$out/bin/manifold.exe"
 exe="$out/bin/manifold.exe"
+cp crates/manifold-view-pdfium/tests/fixture.pdf "$out/fixture.pdf"
 echo "    $(basename "$exe_src"): $(stat -c %s "$exe") bytes"
 
 # The CRT is linked statically, so the exe needs no Visual C++ Redistributable (vcruntime140, msvcp140).
@@ -61,7 +64,10 @@ cmd="$profile/cmd"
 : >"$cmd"
 APPDATA="$(cygpath -w "$profile")" "$exe" --headless < <(exec tail -n +1 -f --pid=$$ "$cmd" 2>/dev/null) >"$profile/log" 2>&1 &
 inst=$!
-{ echo WAITTABS; echo "SLEEP 6"; echo "ENGINESTATE cef"; echo "ENGINESTATE servo"; echo QUIT; } >>"$cmd"
+{ echo WAITTABS; echo "SLEEP 6"; echo "ENGINESTATE cef"; echo "ENGINESTATE servo"; echo "ADDFILE $(cygpath -w "$out/fixture.pdf") 600 500"; echo WAITTABS; } >>"$cmd"
+# The first render downloads PDFium: wait up to 180 s for either outcome, then quit.
+for _ in $(seq 900); do grep -qE '^pdf: (rendered|couldn.t open) ' "$profile/log" && break; sleep 0.2; done
+echo QUIT >>"$cmd"
 for _ in $(seq 300); do kill -0 "$inst" 2>/dev/null || break; sleep 0.2; done
 kill -0 "$inst" 2>/dev/null && bad "headless manifold did not exit after QUIT within 60 s" || { wait "$inst" 2>/dev/null || true; inst=""; }
 
@@ -78,5 +84,9 @@ grep -q '^load ' "$out/page.log" 2>/dev/null && ok "a WebView2 tab loaded the lo
     bad "the local page never reported its load"
 [ -f "$profile/manifold/manifold/data/engine-hosts/webview2/manifold-engine-webview2.exe" ] &&
     ok "the WebView2 host was extracted under the redirected APPDATA" || bad "no extracted WebView2 host under the redirected APPDATA"
+grep -qE '^pdf: rendered .*fixture\.pdf: 1000x500, 1 page' "$profile/log" && ok "the PDF view rendered the fixture (1000x500, 1 page)" ||
+    { bad "the fixture PDF did not render"; grep '^pdf: ' "$profile/log" | sed 's/^/    log: /'; }
+[ -f "$profile/manifold/manifold/data/engine-hosts/pdfium/manifold-view-pdfium.exe" ] &&
+    ok "the PDF view was extracted under the redirected APPDATA" || bad "no extracted PDF view under the redirected APPDATA"
 [ "$(ls "$out/bin")" = "manifold.exe" ] && ok "nothing but manifold.exe sits beside the exe" || bad "extra files beside the exe: $(ls "$out/bin" | tr '\n' ' ')"
 exit $status

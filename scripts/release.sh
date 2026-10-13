@@ -9,10 +9,10 @@
 #      use a static CRT (Servo's mozjs/mozangle are /MD) with depot_tools stripped from PATH, as the old package.sh did;
 #   3. scripts/host_pin.py hashes the CEF/Servo/WebKit hosts and writes crates/manifold/src/host_pin.rs (WebView2 is
 #      embedded, so it has no row);
-#   4. builds manifold.exe with MANIFOLD_WEBVIEW2_HOST naming the built WebView2 host; crates/manifold/build.rs
-#      embeds that file (and its SHA-256) in the exe;
+#   4. builds manifold.exe with MANIFOLD_WEBVIEW2_HOST and MANIFOLD_PDFIUM_HOST naming the built WebView2 host and
+#      PDF view; crates/manifold/build.rs embeds those files (and their SHA-256) in the exe;
 #   5. writes dist/manifold-v<ver>-windows-x64.exe (+ .exe.sha256), dist/hosts/<file>-<platform> (the exact files to
-#      upload, which the pin hashes) and the embedded host's hash under dist/, and prints the commands to commit
+#      upload, which the pin hashes) and the embedded hosts' hashes under dist/, and prints the commands to commit
 #      host_pin.rs, tag and upload. It never uploads, commits, tags or pushes.
 # Host pins name uploaded artifacts: PE output is not bit-reproducible, so the hosts are built here once and the
 # hash is taken from that file (plan Decision 7). Step 4 builds only `-p manifold`, which cannot relink a host
@@ -26,7 +26,8 @@
 #                            `git diff vX.Y.Z -- crates/ipc-protocol crates/manifold-view-*` is empty and
 #                            PROTOCOL_VERSION is the same at that tag.
 # --verify vX.Y.Z            re-checks dist/ against that tag: its host_pin.rs hashes equal dist/hosts/*, the exe matches
-#                            its .sha256, and the embedded host's recorded hash matches the saved copy.
+#                            its .sha256, and the embedded hosts' recorded hashes match the saved copies
+#                            (the PDF view's only for tags whose tree has that crate).
 # SKIP_BUILD=1  use the hosts already in target/ (target-servo/, target-linux/) instead of building them (a build you
 #               ran yourself, e.g. at BelowNormal; build with RUSTFLAGS="-C target-feature=+crt-static"). manifold.exe
 #               is always built, because it must carry the table written in step 3.
@@ -102,6 +103,13 @@ if [ -n "$verify_tag" ]; then
     if [ -f "$rec" ] && [ "$(cut -d' ' -f1 "$rec")" = "$(sha dist/embedded/manifold-engine-webview2.exe)" ]; then
         ok "the embedded WebView2 host copy matches the recorded hash"
     else bad "$rec is missing or does not match dist/embedded/manifold-engine-webview2.exe"; fi
+    # A second record file: the tags shipped before the PDF view (v0.4.1, v0.5.0, v0.5.1) have only the first.
+    if git cat-file -e "$verify_tag:crates/manifold-view-pdfium/Cargo.toml" 2>/dev/null; then
+        rec="dist/manifold-$verify_tag-windows-x64.embedded-pdf-view.sha256"
+        if [ -f "$rec" ] && [ "$(cut -d' ' -f1 "$rec")" = "$(sha dist/embedded/manifold-view-pdfium.exe)" ]; then
+            ok "the embedded PDF view copy matches the recorded hash"
+        else bad "$rec is missing or does not match dist/embedded/manifold-view-pdfium.exe"; fi
+    fi
     echo "NOTE: that the exe really contains those bytes is not checked here (build.rs embeds the file and hashes it at build time; bare-exe Task 7's --check runs the exe)."
     exit $status
 fi
@@ -135,8 +143,8 @@ stage="$(mktemp -d)"
 trap 'rm -rf "$stage" "$keep"' EXIT
 mkdir -p "$repo_root/dist/hosts" "$repo_root/dist/embedded"
 
-# Which hosts to build: WebView2 always (it is embedded); the rest unless reused or not asked for.
-win_pkgs=(-p manifold-view-webview2)
+# Which hosts to build: WebView2 and the PDF view always (they are embedded); the rest unless reused or not asked for.
+win_pkgs=(-p manifold-view-webview2 -p manifold-view-pdfium)
 is_reused cef/windows-x64 || win_pkgs+=(-p manifold-view-cef)
 build_servo="" build_webkit=""
 { [ -n "$with_servo" ] && ! is_reused servo/windows-x64; } && build_servo=1
@@ -176,6 +184,8 @@ take() { # take <kind/platform> <built path>
 }
 win_host="$stage/manifold-engine-webview2.exe"
 cp "$tdir/manifold-engine-webview2.exe" "$win_host" || die "$tdir/manifold-engine-webview2.exe is missing"
+pdf_host="$stage/manifold-view-pdfium.exe"
+cp "$tdir/manifold-view-pdfium.exe" "$pdf_host" || die "$tdir/manifold-view-pdfium.exe is missing"
 is_reused cef/windows-x64 || take cef/windows-x64 "$tdir/manifold-engine-cef.exe"
 if [ -n "$build_servo" ]; then
     take servo/windows-x64 target-servo/release/manifold-engine-servo.exe
@@ -201,6 +211,8 @@ table_sha="$(pin --version "$version" "${keep_args[@]}" "${assets[@]}")"
     export PATH RUSTFLAGS="-C target-feature=+crt-static"
     export MANIFOLD_WEBVIEW2_HOST
     MANIFOLD_WEBVIEW2_HOST="$(wp "$win_host")"
+    export MANIFOLD_PDFIUM_HOST
+    MANIFOLD_PDFIUM_HOST="$(wp "$pdf_host")"
     run_low cargo build --release -j "$jobs" -p manifold
 )
 
@@ -216,6 +228,7 @@ for f in "${assets[@]}"; do
     [ "$(sha "$src")" = "$(sha "$built")" ] || die "$src changed while manifold.exe was built"
 done
 [ "$(sha "$tdir/manifold-engine-webview2.exe")" = "$(sha "$win_host")" ] || die "the WebView2 host changed while manifold.exe was built"
+[ "$(sha "$tdir/manifold-view-pdfium.exe")" = "$(sha "$pdf_host")" ] || die "the PDF view changed while manifold.exe was built"
 
 # dist/: what to upload, and what --verify checks.
 exe="dist/manifold-$tag-windows-x64.exe"
@@ -223,6 +236,8 @@ cp "$tdir/manifold.exe" "$exe"
 (cd dist && sha256sum "$(basename "$exe")" >"$(basename "$exe").sha256")
 cp "$win_host" dist/embedded/manifold-engine-webview2.exe
 echo "$(sha "$win_host")  manifold-engine-webview2.exe" >"dist/manifold-$tag-windows-x64.embedded-host.sha256"
+cp "$pdf_host" dist/embedded/manifold-view-pdfium.exe
+echo "$(sha "$pdf_host")  manifold-view-pdfium.exe" >"dist/manifold-$tag-windows-x64.embedded-pdf-view.sha256"
 listing="$(pin --list "$(wp "$pin_rs")")"
 while read -r kind platform file _size _sha url; do
     [ "$kind" = version ] && continue
@@ -234,6 +249,7 @@ echo
 echo "built $exe ($(stat -c %s "$exe") bytes, sha256 $(sha "$exe"))"
 echo "host table sha256 (for the release notes): $table_sha"
 echo "embedded WebView2 host sha256: $(sha "$win_host")"
+echo "embedded PDF view sha256: $(sha "$pdf_host")"
 echo
 echo "The tree is now dirty by exactly $pin_rs. Commit it now, then tag; the exe was built from this tree:"
 echo "  git add $pin_rs && git commit -m 'host pins for $tag'"

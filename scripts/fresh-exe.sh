@@ -18,11 +18,12 @@ require_fresh_exe() {
         echo "cef-runtime/manifold-engine-cef.exe is older than the built one: run scripts/sync-runtime-deps.sh, or set ALLOW_STALE=1." >&2
         return 1
     fi
-    # The WebView2 host is a separate crate that `-p manifold` does not build; judge it by its own dep-info.
-    host=$(dirname "$exe")/manifold-engine-webview2.exe
+    # The WebView2 host and the PDF view are separate crates that `-p manifold` does not build; judge each by its own
+    # dep-info, and skip one that is absent.
+    dir=$(dirname "$exe")
     stale=0
-    for e in "$exe" "$host"; do
-        [ "$e" = "$host" ] && [ ! -f "$e" ] && continue
+    for e in "$exe" "$dir/manifold-engine-webview2.exe" "$dir/manifold-view-pdfium.exe"; do
+        [ "$e" != "$exe" ] && [ ! -f "$e" ] && continue
         newer=$(_sources_newer_than "$e")
         if [ -n "$newer" ]; then
             echo "$e is older than:" >&2
@@ -31,7 +32,7 @@ require_fresh_exe() {
         fi
     done
     if [ "$stale" = 1 ]; then
-        echo "Build first (cargo build -j 8 -p manifold -p manifold-view-webview2), or set ALLOW_STALE=1." >&2
+        echo "Build first (cargo build -j 8 -p manifold -p manifold-view-webview2 -p manifold-view-pdfium), or set ALLOW_STALE=1." >&2
         return 1
     fi
 }

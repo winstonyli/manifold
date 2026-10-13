@@ -12,7 +12,7 @@
 #   ui:              `cargo test` of the three CI crates + gate link + gate layout. For changes to drawing, input and view-state
 #                    modules that import no store, sync or network module (the list is in gate-tier.sh), and docs:
 #                    ~5 min (gate layout is ~3 of them; measured 2026-10-11).
-# Build first (`cargo build -j 8 -p manifold -p manifold-view-webview2 -p gate`; `-p manifold` alone leaves the WebView2 host
+# Build first (`cargo build -j 8 -p manifold -p manifold-view-webview2 -p manifold-view-pdfium -p gate`; `-p manifold` alone leaves the WebView2 host
 # old): every probe stage runs the existing exes. Launch detached and low priority:
 #   cmd //c start "" //b //belownormal bash scripts/gate.sh LOG [mode]
 # Progress and verdicts go to LOG; each stage's own output to LOG.two-N.log, LOG.smoke.log, LOG.launch-forms.log,

@@ -1,6 +1,6 @@
 # File views as separate processes, and the `manifold-view-*` crate family (design)
 
-Status: draft for approval, 2026-10-12 (rename added the same day: crates are `manifold-view-*`, named for what they run, so the PDF one is `manifold-view-pdfium`). Supersedes the review item D-R9 ("PDF rendering in a child process"), which this design folds in.
+Status: shipped 2026-10-12 by plan `docs/superpowers/plans/2026-10-12-file-views.md`, steps 0 and 1 (step 0b parked). Originally a draft for approval, 2026-10-12 (rename added the same day: crates are `manifold-view-*`, named for what they run, so the PDF one is `manifold-view-pdfium`). Supersedes the review item D-R9 ("PDF rendering in a child process"), which this design folds in.
 
 ## Step 0: rename `manifold-engine-*` to `manifold-view-*`
 
@@ -92,8 +92,8 @@ One constant, 120 s, covering the first-run PDFium download (`pdfium-auto`, a on
 - `embedded_host.rs` becomes a table of embedded hosts (`Webview2`, `Pdfium`), each with its folder, file name, bytes and SHA-256; `ensure_with` and `host_path` take the entry. The extraction logic (lock file, hash-compare, temp write, rename-aside, `spawn_fresh` retry) is unchanged and shared. The error texts say "the WebView2 host" today and become per-entry.
 - `build.rs` embeds `MANIFOLD_PDFIUM_HOST` the same way as `MANIFOLD_WEBVIEW2_HOST` (an empty stub when unset: dev builds, the gate and Linux CI use the sibling exe), and exports `MANIFOLD_PDFIUM_SHA256`.
 - Lookup order matches WebView2: the sibling exe beside `manifold.exe` wins, else the embedded copy is extracted under `engine-hosts/pdfium/`, else the "not installed" error.
-- `release.sh` builds `-p manifold-view-pdfium`, passes it as `MANIFOLD_PDFIUM_HOST`, checks that it did not change while `manifold.exe` built, copies it to `dist/embedded/`, and records its hash: a second line in the existing `dist/manifold-$tag-windows-x64.embedded-host.sha256` (one record per release, one line per embedded host), which `--verify` also checks. `package.sh` additionally asserts the extracted PDFium host exists after a PDF is added.
-- Size cost: the PDF view exe is small (it links `pdfium-render`, not PDFium itself, whose DLL downloads at first use), so the embed grows `manifold.exe` by a few MB. To be measured and recorded in the plan's first release step.
+- `release.sh` builds `-p manifold-view-pdfium`, passes it as `MANIFOLD_PDFIUM_HOST`, checks that it did not change while `manifold.exe` built, copies it to `dist/embedded/`, and records its hash: a second record file, `dist/manifold-$tag-windows-x64.embedded-pdf-view.sha256`, because the tags already shipped have only the first; `--verify` also checks it, for tags whose tree has the crate. `package.sh` additionally asserts the extracted PDFium host exists after a PDF is added.
+- Size cost (measured 2026-10-12, release build): the PDF view exe is 4.6 MB (it links `pdfium-render`, not PDFium itself, whose DLL downloads at first use), and embedding it grew `manifold.exe` from 23.5 MB to 28.8 MB.
 
 ## Stress test of this draft (round 1)
 

@@ -63,11 +63,12 @@ pub fn require_fresh_exe(exe: &Path) -> Result<(), String> {
             );
         }
     }
-    // The WebView2 host is a separate crate that `-p manifold` does not build; judge it by its own dep-info.
-    let host = dir.join("manifold-engine-webview2.exe");
+    // The WebView2 host and the PDF view are separate crates that `-p manifold` does not build; judge each by its own
+    // dep-info, and skip one that is absent.
+    let hosts = [dir.join("manifold-engine-webview2.exe"), dir.join("manifold-view-pdfium.exe")];
     let mut report = String::new();
-    for e in [exe, host.as_path()] {
-        if e == host && !host.exists() {
+    for e in std::iter::once(exe).chain(hosts.iter().map(PathBuf::as_path)) {
+        if e != exe && !e.exists() {
             continue;
         }
         let newer = sources_newer_than(e);
@@ -82,7 +83,7 @@ pub fn require_fresh_exe(exe: &Path) -> Result<(), String> {
         Ok(())
     } else {
         Err(format!(
-            "{report}Build first (cargo build -j 8 -p manifold -p manifold-view-webview2), or set ALLOW_STALE=1."
+            "{report}Build first (cargo build -j 8 -p manifold -p manifold-view-webview2 -p manifold-view-pdfium), or set ALLOW_STALE=1."
         ))
     }
 }
