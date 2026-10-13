@@ -367,6 +367,7 @@ fn run(exe: &Path, work: &Path) -> io::Result<()> {
         batches.extend(SCENARIOS.iter().filter(|sc| matches!(sc.open, Open::CardMenu(..))).map(|sc| vec![sc]));
         for batch in batches {
             group += 1;
+            let _timing = Section::start(&format!("group{group}-{}x{}", size.0, size.1));
             let profile = work.join(format!("profile{group}"));
             seed_settings(&profile, "webview2", "")?;
             let mut inst = Instance::launch(exe, &profile, work, &format!("layout{group}.log"))?;
