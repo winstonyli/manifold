@@ -23,7 +23,7 @@
 # same id. One headless instance on a fresh isolated APPDATA per case and
 # engine, tab at a local page (scripts/probe_server.py, which logs the page's
 # scroll reports), state read back through EXPORTSTATE.
-# Build first: cargo build -p manifold -p manifold-engine-cef -p manifold-engine-webview2.
+# Build first: cargo build -p manifold -p manifold-view-cef -p manifold-view-webview2.
 set -u
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 exe="$repo_root/target/debug/manifold.exe"

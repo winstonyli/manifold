@@ -4,10 +4,10 @@ members = [
     "crates/ipc-protocol",
     "crates/manifold",
     "crates/gate",
-    "crates/manifold-engine-servo",
-    "crates/manifold-engine-cef",
-    "crates/manifold-engine-webkit",
-    "crates/manifold-engine-webview2",
+    "crates/manifold-view-servo",
+    "crates/manifold-view-cef",
+    "crates/manifold-view-webkit",
+    "crates/manifold-view-webview2",
 ]
 # Bare `cargo run/build/test` act on the app alone; hosts and the gate are built with -p.
 default-members = ["crates/manifold"]
@@ -21,7 +21,7 @@ description = "A browser where each tab can run on a different rendering engine 
 ipc-protocol = { path = "crates/ipc-protocol" } # path only: nothing is published, so no version to bump
 
 bzip2 = "0.6.1"
-# `build-util` and `resources` are enabled by crates/manifold-engine-cef.
+# `build-util` and `resources` are enabled by crates/manifold-view-cef.
 cef = { version = "152.1.0", default-features = false }
 dpi = "0.1.2"
 egui = "0.36.2"

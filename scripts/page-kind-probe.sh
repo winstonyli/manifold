@@ -8,7 +8,7 @@
 # `application/json` or `image/png`, and the tab must turn into a Json or
 # Image graph node (read back through EXPORTSTATE, as the card's `type`). A
 # plain HTML page must stay a live tab.
-# Build first: cargo build -p manifold -p manifold-engine-cef -p manifold-engine-webview2.
+# Build first: cargo build -p manifold -p manifold-view-cef -p manifold-view-webview2.
 set -u
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 exe="$repo_root/target/debug/manifold.exe"

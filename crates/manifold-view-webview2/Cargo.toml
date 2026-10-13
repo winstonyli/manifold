@@ -1,5 +1,5 @@
 [package]
-name = "manifold-engine-webview2"
+name = "manifold-view-webview2"
 version.workspace = true
 edition.workspace = true
 description.workspace = true
@@ -56,3 +56,9 @@ windows-numerics.workspace = true
 # the real engine-host binary, which writes raw bytes into SharedFrameBuffer
 # instead.
 image.workspace = true
+
+# The exe keeps the name released builds, host_pin.rs and the scripts know; it changes with a release that
+# publishes assets under the new names (spec 2026-10-12, Step 0).
+[[bin]]
+name = "manifold-engine-webview2"
+path = "src/main.rs"

@@ -8,7 +8,7 @@
 # own (`WindowEvent::MouseWheel`), so the sign checked here is the one a real
 # touchpad or tilt wheel produces.
 # One headless instance on a fresh isolated APPDATA per engine.
-# Build first: cargo build -p manifold -p manifold-engine-cef -p manifold-engine-webview2.
+# Build first: cargo build -p manifold -p manifold-view-cef -p manifold-view-webview2.
 set -u
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 exe="$repo_root/target/debug/manifold.exe"

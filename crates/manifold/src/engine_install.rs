@@ -633,7 +633,7 @@ pub(crate) fn unpack(archive: &Path, into: &Path, pin: &Pin, cancel: &AtomicBool
 /// The permission bits an unpacked file gets: the archive's own, minus
 /// setuid/setgid/sticky and group/other write. `chrome-sandbox` needs setuid
 /// root only for the setuid sandbox, which manifold doesn't use (the CEF host
-/// passes `--no-sandbox`, see `manifold-engine-cef/src/app.rs`).
+/// passes `--no-sandbox`, see `manifold-view-cef/src/app.rs`).
 #[cfg_attr(not(unix), allow(dead_code, reason = "only applied on Unix; tested everywhere"))]
 fn unpacked_mode(header_mode: u32) -> u32 {
     header_mode & 0o755

@@ -1,5 +1,5 @@
 [package]
-name = "manifold-engine-servo"
+name = "manifold-view-servo"
 version.workspace = true
 edition.workspace = true
 description.workspace = true
@@ -15,3 +15,9 @@ rustls = { workspace = true, features = ["aws-lc-rs"] }
 servo = { workspace = true, features = ["no-wgl"] }
 url.workspace = true
 webrender_api.workspace = true
+
+# The exe keeps the name released builds, host_pin.rs and the scripts know; it changes with a release that
+# publishes assets under the new names (spec 2026-10-12, Step 0).
+[[bin]]
+name = "manifold-engine-servo"
+path = "src/main.rs"

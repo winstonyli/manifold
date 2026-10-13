@@ -29,7 +29,7 @@
 # other than the hovered widget (see scripts/hover_diff.py).
 # mouse-regress is asserted instead of shot: it prints PASS/FAIL for drag, swatch click and middle-click close.
 # The app has no light theme, so there is one set of images.
-# Build first: cargo build -p manifold -p manifold-engine-webview2.
+# Build first: cargo build -p manifold -p manifold-view-webview2.
 set -u
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 exe="$repo_root/target/debug/manifold.exe"

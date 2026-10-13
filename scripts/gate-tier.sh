@@ -24,7 +24,7 @@ classify() {
     rel=${1#"$src"/}; first=${rel%%/*}
     if [ "$rel" != "$1" ] && [ "$rel" != "$first" ] && [[ "$layers" == *" $first "* ]]; then set -- "$src/${rel#*/}"; fi
     case "$1" in
-    Cargo.toml | Cargo.lock | .cargo/* | rust-toolchain* | crates/*/Cargo.toml | crates/ipc-protocol/* | crates/manifold-engine-*/*)
+    Cargo.toml | Cargo.lock | .cargo/* | rust-toolchain* | crates/*/Cargo.toml | crates/ipc-protocol/* | crates/manifold-view-*/*)
         echo "full dependency, protocol or engine crate" ;;
     "$src"/session_sync.rs | "$src"/session_sync/* | "$src"/store/* | "$src"/mirror.rs | "$src"/mirror/* | "$src"/session.rs | "$src"/session/* | "$src"/local_state.rs | "$src"/local_state/* | \
         "$src"/process_manager.rs | "$src"/process_manager/* | "$src"/net.rs | "$src"/net/* | "$src"/engine_install.rs | "$src"/engine_install/* | "$src"/redirect_fetch.rs | "$src"/redirect_fetch/* | "$src"/favicon_fetch.rs | "$src"/favicon_fetch/* | "$src"/jar.rs | "$src"/jar/*)

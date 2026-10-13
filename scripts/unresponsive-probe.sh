@@ -8,7 +8,7 @@
 # responsive and end the suspended host. Last, the new host is suspended too and `QUIT` must end the app within 10 s:
 # closing a stuck tab never waits on it.
 # One headless instance on a fresh isolated APPDATA. Build first:
-# cargo build -j 4 -p manifold -p manifold-engine-webview2.
+# cargo build -j 4 -p manifold -p manifold-view-webview2.
 set -u
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 exe="$repo_root/target/debug/manifold.exe"

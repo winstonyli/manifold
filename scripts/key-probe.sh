@@ -12,7 +12,7 @@
 #     not compared there;
 #   - modifiers' keyCode is the generic VK_SHIFT (16) on WebView2 and the
 #     side-specific VK_LSHIFT (160) on CEF.
-# Build first: cargo build -p manifold -p manifold-engine-cef -p manifold-engine-webview2.
+# Build first: cargo build -p manifold -p manifold-view-cef -p manifold-view-webview2.
 set -u
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 exe="$repo_root/target/debug/manifold.exe"

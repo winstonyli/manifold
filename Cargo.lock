@@ -5037,7 +5037,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "manifold-engine-cef"
+name = "manifold-view-cef"
 version = "0.5.1"
 dependencies = [
  "cef",
@@ -5047,7 +5047,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "manifold-engine-servo"
+name = "manifold-view-servo"
 version = "0.5.1"
 dependencies = [
  "dpi",
@@ -5060,7 +5060,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "manifold-engine-webkit"
+name = "manifold-view-webkit"
 version = "0.5.1"
 dependencies = [
  "gtk",
@@ -5071,7 +5071,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "manifold-engine-webview2"
+name = "manifold-view-webview2"
 version = "0.5.1"
 dependencies = [
  "image",

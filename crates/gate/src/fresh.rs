@@ -82,7 +82,7 @@ pub fn require_fresh_exe(exe: &Path) -> Result<(), String> {
         Ok(())
     } else {
         Err(format!(
-            "{report}Build first (cargo build -j 8 -p manifold -p manifold-engine-webview2), or set ALLOW_STALE=1."
+            "{report}Build first (cargo build -j 8 -p manifold -p manifold-view-webview2), or set ALLOW_STALE=1."
         ))
     }
 }

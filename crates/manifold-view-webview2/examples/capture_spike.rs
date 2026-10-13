@@ -15,7 +15,7 @@
 //! standing in for WebView2 (no WebView2 involved yet) -- real integration
 //! happens in `src/capture.rs` once this confirms the chain works.
 //!
-//! Run with `cargo run -p manifold-engine-webview2 --example capture_spike`.
+//! Run with `cargo run -p manifold-view-webview2 --example capture_spike`.
 
 use std::time::Duration;
 

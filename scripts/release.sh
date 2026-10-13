@@ -23,7 +23,7 @@
 #
 # --reuse-hosts-from vX.Y.Z  (Decision 11) keep that tag's CEF/Servo/WebKit entries unchanged, pointing at its
 #                            uploaded assets, and build only what it lacks. Refused unless
-#                            `git diff vX.Y.Z -- crates/ipc-protocol crates/manifold-engine-*` is empty and
+#                            `git diff vX.Y.Z -- crates/ipc-protocol crates/manifold-view-*` is empty and
 #                            PROTOCOL_VERSION is the same at that tag.
 # --verify vX.Y.Z            re-checks dist/ against that tag: its host_pin.rs hashes equal dist/hosts/*, the exe matches
 #                            its .sha256, and the embedded host's recorded hash matches the saved copy.
@@ -113,7 +113,7 @@ keep=""
 reused=" "
 if [ -n "$reuse" ]; then
     git rev-parse -q --verify "refs/tags/$reuse" >/dev/null || die "no tag $reuse"
-    git diff --quiet "$reuse" -- crates/ipc-protocol 'crates/manifold-engine-*' ||
+    git diff --quiet "$reuse" -- crates/ipc-protocol 'crates/manifold-view-*' ||
         die "crates/ipc-protocol or an engine crate changed since $reuse; the hosts cannot be reused"
     old_proto="$(git show "$reuse:crates/ipc-protocol/src/lib.rs" | sed -n 's/^pub const PROTOCOL_VERSION: u32 = \([0-9]*\);/\1/p')"
     new_proto="$(sed -n 's/^pub const PROTOCOL_VERSION: u32 = \([0-9]*\);/\1/p' crates/ipc-protocol/src/lib.rs)"
@@ -136,8 +136,8 @@ trap 'rm -rf "$stage" "$keep"' EXIT
 mkdir -p "$repo_root/dist/hosts" "$repo_root/dist/embedded"
 
 # Which hosts to build: WebView2 always (it is embedded); the rest unless reused or not asked for.
-win_pkgs=(-p manifold-engine-webview2)
-is_reused cef/windows-x64 || win_pkgs+=(-p manifold-engine-cef)
+win_pkgs=(-p manifold-view-webview2)
+is_reused cef/windows-x64 || win_pkgs+=(-p manifold-view-cef)
 build_servo="" build_webkit=""
 { [ -n "$with_servo" ] && ! is_reused servo/windows-x64; } && build_servo=1
 { [ -n "$with_webkit" ] && ! is_reused webkit/linux-x64; } && build_webkit=1
@@ -157,12 +157,12 @@ if [ -z "${SKIP_BUILD:-}" ]; then
             [ "$free_mb" -ge 8000 ] || die "Servo's release build needs about 8 GB of free memory; $free_mb MB free"
             # Not with the static CRT: mozjs and mozangle are built against the dynamic one (/MD) and the linker refuses to
             # mix them (LNK2038, found by the Task 7 dry run), so this host imports vcruntime140/msvcp140.
-            (unset RUSTFLAGS; CARGO_TARGET_DIR=target-servo run_low cargo build --release -j "$jobs" -p manifold-engine-servo)
+            (unset RUSTFLAGS; CARGO_TARGET_DIR=target-servo run_low cargo build --release -j "$jobs" -p manifold-view-servo)
         fi
     )
     if [ -n "$build_webkit" ]; then
         # Inside WSL, into target-linux/ (git-ignored). Neither the static CRT nor depot_tools applies there.
-        wsl.exe -d Ubuntu -- bash -c 'cd "$(wslpath -u "$1")" && CARGO_TARGET_DIR=target-linux nice cargo build --release -j "$2" -p manifold-engine-webkit' \
+        wsl.exe -d Ubuntu -- bash -c 'cd "$(wslpath -u "$1")" && CARGO_TARGET_DIR=target-linux nice cargo build --release -j "$2" -p manifold-view-webkit' \
             _ "$(cygpath -w "$repo_root")" "$jobs" </dev/null
     fi
 fi
@@ -182,7 +182,7 @@ if [ -n "$build_servo" ]; then
     # The exe loads ANGLE's two DLLs from beside itself (Task 0). Ask cargo where the mozangle build script that this
     # build used left them (a no-op rebuild, same environment as the Servo build): the out dirs under
     # target-servo/release/build/ pile up across rebuilds, so the newest by mtime can be a stale one.
-    angle_out="$( (unset RUSTFLAGS; CARGO_TARGET_DIR=target-servo cargo build --release -j "$jobs" -p manifold-engine-servo --message-format=json </dev/null) \
+    angle_out="$( (unset RUSTFLAGS; CARGO_TARGET_DIR=target-servo cargo build --release -j "$jobs" -p manifold-view-servo --message-format=json </dev/null) \
         | grep '"reason":"build-script-executed"' | grep 'mozangle@' | sed -n 's/.*"out_dir":"\([^"]*\)".*/\1/p' | head -1 | sed 's/\\\\/\//g')"
     [ -n "$angle_out" ] && [ -f "$angle_out/libEGL.dll" ] || die "cargo did not report a mozangle out_dir holding libEGL.dll (got '$angle_out')"
     angle_dir="$(cygpath -u "$angle_out")"

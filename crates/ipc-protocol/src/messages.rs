@@ -417,7 +417,7 @@ pub enum EngineToHost {
     /// ctrl+click) and the engine-host intercepted and cancelled it in
     /// place — `manifold` spawns a real child tab for `url` instead.
     /// CEF, WebKit, and WebView2 (`ICoreWebView2::NewWindowRequested`, see
-    /// `manifold-engine-webview2/src/popup.rs`) send this: their
+    /// `manifold-view-webview2/src/popup.rs`) send this: their
     /// popup-interception APIs all hand over the target URL before creating
     /// anything. Servo's equivalent
     /// (`WebViewDelegate::request_create_new`) doesn't expose a URL until
@@ -470,7 +470,7 @@ pub enum EngineToHost {
     /// reuses that directly — `document.elementFromPoint(x, y)`, walking up
     /// to the nearest `<a href>` ancestor (see `input.rs` in each). CEF
     /// drives input via real native mouse-event injection instead (a
-    /// completely different mechanism — see `manifold-engine-cef/src/input.rs`)
+    /// completely different mechanism — see `manifold-view-cef/src/input.rs`)
     /// but has its own native `ContextMenuHandler::on_before_context_menu`
     /// API that hands over `link_url`/`xcoord`/`ycoord` directly, no script
     /// round-trip needed (`context_menu_handler.rs`); `run_context_menu`

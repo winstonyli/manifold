@@ -1,5 +1,5 @@
 //! WebView2 engine-host (see the M6 plan). Structured to mirror
-//! `manifold-engine-cef/src/main.rs`'s shape (fixed-tick poll loop,
+//! `manifold-view-cef/src/main.rs`'s shape (fixed-tick poll loop,
 //! `SharedNavState` + `dirty` flag) since CEF is the closest existing
 //! analog: a real Windows process, no visible window, same-machine IPC.
 //! WebView2 is hosted via the Composition controller against a

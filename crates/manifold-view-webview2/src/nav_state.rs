@@ -1,4 +1,4 @@
-//! Navigation state tracking -- mirrors `manifold-engine-cef/src/nav_handler.rs`'s
+//! Navigation state tracking -- mirrors `manifold-view-cef/src/nav_handler.rs`'s
 //! `SharedNavState`/`dirty`-flag pattern exactly, since WebView2's real
 //! native events (`NavigationStarting`/`NavigationCompleted`/
 //! `SourceChanged`/`DocumentTitleChanged`/`HistoryChanged`) play the same role CEF's

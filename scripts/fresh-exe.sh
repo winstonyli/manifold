@@ -31,7 +31,7 @@ require_fresh_exe() {
         fi
     done
     if [ "$stale" = 1 ]; then
-        echo "Build first (cargo build -j 8 -p manifold -p manifold-engine-webview2), or set ALLOW_STALE=1." >&2
+        echo "Build first (cargo build -j 8 -p manifold -p manifold-view-webview2), or set ALLOW_STALE=1." >&2
         return 1
     fi
 }

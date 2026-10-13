@@ -1,5 +1,5 @@
 [package]
-name = "manifold-engine-cef"
+name = "manifold-view-cef"
 version.workspace = true
 edition.workspace = true
 description.workspace = true
@@ -17,3 +17,9 @@ ipc-protocol.workspace = true
 # CEF renderer/GPU subprocesses on exit) -- same crate/features
 # engine-host-webview2 already uses for the identical purpose.
 windows = { workspace = true, features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading"] }
+
+# The exe keeps the name released builds, host_pin.rs and the scripts know; it changes with a release that
+# publishes assets under the new names (spec 2026-10-12, Step 0).
+[[bin]]
+name = "manifold-engine-cef"
+path = "src/main.rs"
