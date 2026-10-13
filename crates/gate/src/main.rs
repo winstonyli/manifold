@@ -44,6 +44,7 @@ mod state;
 #[cfg(windows)]
 mod stress;
 mod suggest;
+mod tier;
 mod timing;
 #[cfg(windows)]
 mod two;
@@ -83,6 +84,7 @@ mod windows_main {
             "chrome-shots" => crate::shots::chrome_shots(parent),
             "chrome-shots-sizes" => crate::shots::chrome_shots_sizes(parent),
             "jar" => crate::jar::jar(parent),
+            "tier" => crate::tier::tier(&std::env::args().skip(2).collect::<Vec<_>>()),
             "package" => crate::package::package(&std::env::args().skip(2).collect::<Vec<_>>()),
             "focus-loss" => crate::focus::focus_loss(parent),
             "sleep" => crate::sleep::sleep(parent),
@@ -94,7 +96,7 @@ mod windows_main {
             "link" => crate::link::link(parent),
             "smoke" => crate::smoke::smoke(parent),
             "two" => crate::two::two(parent),
-            // scripts/fresh-exe.sh: exit 1 and name the stale files if EXE (the next argument) is older than its sources.
+            // Was scripts/fresh-exe.sh: exit 1 and name the stale files if EXE (the next argument) is older than its sources.
             "fresh" => match parent.as_deref().map(require_fresh_exe) {
                 Some(Ok(())) => ExitCode::SUCCESS,
                 Some(Err(e)) => {
@@ -109,7 +111,7 @@ mod windows_main {
             // Test aid for the "killed gate leaves no manifold.exe" proof; not a gate stage.
             "hold" => hold(parent),
             _ => {
-                eprintln!("usage: gate all LOG [full|light|ui] | gate hello|launch-forms|unresponsive|layout|link|smoke|two [WORKDIR_PARENT] | gate chrome-shots|chrome-shots-sizes [WORKDIR_PARENT] | gate sleep | gate jar | gate package [EXE] | gate focus-loss | gate scale TABS... | gate fresh EXE");
+                eprintln!("usage: gate all LOG [full|light|ui] | gate hello|launch-forms|unresponsive|layout|link|smoke|two [WORKDIR_PARENT] | gate chrome-shots|chrome-shots-sizes [WORKDIR_PARENT] | gate sleep | gate jar | gate package [EXE] | gate focus-loss | gate scale TABS... | gate tier [BASE|--stdin] | gate fresh EXE");
                 ExitCode::from(2)
             }
         }

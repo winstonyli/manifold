@@ -42,12 +42,14 @@
 # reports a death by signal N as N<<8 to a Windows parent, so 3840
 # means this script got SIGTERM from outside (README, Known limitations).
 #
-# Build first: cargo build -p manifold (a stale exe is refused; see
-# fresh-exe.sh).
+# Build first: cargo build -j 8 -p manifold -p manifold-view-webview2 -p manifold-view-pdfium -p gate (`gate fresh`
+# refuses a stale exe; ALLOW_STALE=1 skips that).
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
-. scripts/fresh-exe.sh
-require_fresh_exe target/debug/manifold.exe
+if [ -z "${ALLOW_STALE:-}" ]; then
+  [ -x target/debug/gate.exe ] || { echo "target/debug/gate.exe not found: cargo build -j 8 -p gate (or set ALLOW_STALE=1)." >&2; exit 1; }
+  target/debug/gate.exe fresh target/debug/manifold.exe
+fi
 CMDS="$1"
 REPO_WIN=$(cygpath -w "$PWD")
 if [ -n "${APPDATA_DIR:-}" ]; then

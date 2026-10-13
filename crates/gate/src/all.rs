@@ -7,7 +7,7 @@
 //! - `light`: the same with `two` once. For UI code that writes the store or reaches a view, and scripts. The repeats in
 //!   `full` exist to catch flaky ordering in sync, which UI-only changes cannot reach.
 //! - `ui`: `cargo test` of the three CI crates, then `link` and `layout`. For drawing, input and view-state modules
-//!   that import no store, sync or network module (the list is in scripts/gate-tier.sh), and docs.
+//!   that import no store, sync or network module (the list is in tier.rs), and docs.
 //!
 //! Build first (`cargo build -j 8 -p manifold -p manifold-view-webview2 -p manifold-view-pdfium -p gate`) and run from
 //! the repo root, detached and low priority: `cmd //c start "" //b //belownormal target/debug/gate.exe all LOG [mode]`.

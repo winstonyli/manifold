@@ -1,4 +1,4 @@
-//! scripts/fresh-exe.sh: refuse to drive an exe older than the sources it was built from. `cargo check`, `test` and
+//! Was scripts/fresh-exe.sh: refuse to drive an exe older than the sources it was built from. `cargo check`, `test` and
 //! `clippy` do not rebuild it, and `cargo build -p manifold` does not build the WebView2 host, so each exe is judged
 //! by its own cargo dep-info file (`manifold.d` beside `manifold.exe`).
 
@@ -97,5 +97,75 @@ mod tests {
         let text = "C:\\Users\\Winston\\ Li\\t\\manifold.exe: C:\\Users\\Winston\\ Li\\a.rs C:\\b.rs\n\nC:\\b.rs:\n";
         assert_eq!(parse_dep_info(text), [PathBuf::from("C:\\Users\\Winston Li\\a.rs"), PathBuf::from("C:\\b.rs")]);
         assert!(parse_dep_info("garbage").is_empty());
+    }
+
+    /// A folder with manifold.exe, the WebView2 host and the PDF view, each with a `.d` naming `src.rs`; `src.rs` and
+    /// every exe get the mtimes (seconds since the epoch) the test sets.
+    struct Bin(PathBuf);
+
+    impl Bin {
+        fn new(name: &str) -> Bin {
+            let dir = std::env::temp_dir().join(format!("gate-fresh-test-{name}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            let bin = Bin(dir);
+            bin.touch("src.rs", 1);
+            for n in ["manifold", "manifold-engine-webview2", "manifold-view-pdfium"] {
+                let rule = format!("{}: {}", bin.0.join(format!("{n}.exe")).display(), bin.0.join("src.rs").display());
+                std::fs::write(
+                    bin.0.join(format!("{n}.d")),
+                    rule.replace(' ', "\\ ").replacen(".exe:\\ ", ".exe: ", 1),
+                )
+                .unwrap();
+                bin.touch(&format!("{n}.exe"), 2);
+            }
+            bin
+        }
+
+        fn touch(&self, file: &str, secs: u64) {
+            let f = std::fs::OpenOptions::new().create(true).append(true).open(self.0.join(file)).unwrap();
+            f.set_modified(SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(secs)).unwrap();
+        }
+
+        fn check(&self) -> Result<(), String> {
+            require_fresh_exe(&self.0.join("manifold.exe"))
+        }
+    }
+
+    impl Drop for Bin {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn fresh_exes_pass_and_each_stale_one_is_named() {
+        if std::env::var_os("ALLOW_STALE").is_some() {
+            return;
+        }
+        let bin = Bin::new("each");
+        assert_eq!(bin.check(), Ok(()), "all exes fresh");
+
+        // The source changes after the WebView2 host was built, but manifold.exe and the PDF view are rebuilt.
+        bin.touch("src.rs", 3);
+        bin.touch("manifold.exe", 4);
+        bin.touch("manifold-view-pdfium.exe", 4);
+        let err = bin.check().unwrap_err();
+        assert!(err.contains("manifold-engine-webview2.exe is older"), "{err}");
+        assert!(err.contains("-p manifold -p manifold-view-webview2"), "{err}");
+        assert!(!err.contains("manifold-view-pdfium.exe is older"), "{err}");
+
+        bin.touch("manifold-engine-webview2.exe", 4);
+        bin.touch("manifold-view-pdfium.exe", 2);
+        let err = bin.check().unwrap_err();
+        assert!(err.contains("manifold-view-pdfium.exe is older"), "{err}");
+
+        // A host that is absent is skipped.
+        std::fs::remove_file(bin.0.join("manifold-engine-webview2.exe")).unwrap();
+        std::fs::remove_file(bin.0.join("manifold-view-pdfium.exe")).unwrap();
+        assert_eq!(bin.check(), Ok(()), "a missing host is skipped");
+
+        bin.touch("manifold.exe", 2);
+        assert!(bin.check().unwrap_err().contains("manifold.exe is older"), "only manifold.exe stale");
     }
 }
