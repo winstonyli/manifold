@@ -1,6 +1,18 @@
-# File renderers as separate processes (design)
+# File views as separate processes, and the `manifold-view-*` crate family (design)
 
-Status: draft for approval, 2026-10-12. Supersedes the review item D-R9 ("PDF rendering in a child process"), which this design folds in.
+Status: draft for approval, 2026-10-12 (rename added the same day: crates are `manifold-view-*`, named for what they run, so the PDF one is `manifold-view-pdfium`). Supersedes the review item D-R9 ("PDF rendering in a child process"), which this design folds in.
+
+## Step 0: rename `manifold-engine-*` to `manifold-view-*`
+
+Done first, so the new crate is born with its final name. `cef`, `servo`, `webkit`, `webview2` become `manifold-view-cef` and so on; `pdfium` joins them. Only the crate layer is renamed: `EngineKind`, `HostToEngine`, `EngineToHost`, the engine picker and the other uses of "engine" in code and UI stay, since a web engine is still an engine to the user.
+
+About 760 mentions in 116 files, in three tiers by risk:
+
+1. **Source layout (mechanical, no runtime effect):** `git mv crates/manifold-engine-X crates/manifold-view-X`; package `name` in each `Cargo.toml`; the workspace member list; `Cargo.lock` (regenerated); `-p` lists in `CLAUDE.md`, `.githooks/pre-commit`, `.github/workflows/ci.yml`, `scripts/gate.sh`, `scripts/fresh-exe.sh`, `scripts/chrome-shots.sh`, `scripts/gate-tier.sh` (its `crates/manifold-engine-*/*` glob), `scripts/gate-tools-test.sh`, `scripts/bad-url-probe.sh`; doc comments and the README's current-state text; the `manifold_engine_*` Rust paths in `crates/gate`.
+2. **Binary and file names (runtime effect, deferred):** a package rename changes the built exe name, and the exe name is how a host is found (`sibling_binary`, `availability.rs`), pinned and downloaded (`host_pin.rs`: `manifold-engine-cef.exe` and the release URLs under v0.5.0), and embedded (`embedded_host.rs`: `HOST_FILE`). To keep step 0 from changing any of that, each renamed crate declares `[[bin]] name = "manifold-engine-X"` so the **exe keeps its old name**. The exe rename waits for a release that publishes assets under the new names: that release changes the `[[bin]]` names, `host_pin` file names and URLs, `HOST_FILE`, and the scripts' exe paths together, with a pin entry check in the gate. Until then `manifold-view-pdfium` is the one exception: it is new, so its exe is `manifold-view-pdfium.exe` from the start.
+3. **History (left alone):** `CHANGELOG.md` entries, `dist/*.embedded-host.sha256` of shipped releases, the dated specs and plans, and the review plan text. They record what was true then.
+
+Verification: `grep -rn "manifold-engine-\|manifold_engine_"` outside tier 3 returns only the intended `[[bin]]` names, `host_pin`, `embedded_host` and the scripts that name exes; `cargo fmt`, the pinned clippy line (with the new package names) and the unit tests pass; the **full** gate passes (it spawns the real hosts by exe name, so a missed lookup fails there).
 
 ## Problem
 
@@ -22,7 +34,7 @@ PDFium is native code that runs on a thread inside `manifold.exe` (`pdf_render.r
 
 ### Contract: one process per render
 
-`manifold-render-pdf <input-path>` renders and exits. The result goes to stdout; diagnostics to stderr.
+`manifold-view-pdfium <input-path>` renders and exits. The result goes to stdout; diagnostics to stderr.
 
 stdout, on success, is one frame:
 
@@ -59,7 +71,7 @@ A format is identified by `ContentKind` (`content.rs`), so the registry is a fun
 | no exit within the timeout, child killed | "PDF renderer timed out" |
 | binary not found next to `manifold.exe` | "PDF renderer is not installed" plus the expected path |
 | stdout is not a valid frame (bad magic, short read, size mismatch) | "PDF renderer returned a bad frame" |
-| version mismatch | "render protocol mismatch: rebuild manifold-render-pdf" |
+| version mismatch | "render protocol mismatch: rebuild manifold-view-pdfium" |
 
 All are `Err(String)`, which `tick_fetchers` already turns into `PdfPayload.outcome = Some(Err(..))` and a toast. A failed render is retried by the existing card click.
 
@@ -69,15 +81,15 @@ One constant, 120 s, covering the first-run PDFium download (`pdfium-auto`, a on
 
 ### Crate and build
 
-- New `crates/manifold-render-pdf` (binary only). It takes over `pdfium-render`, `pdfium-auto` and `render_first_page`, `bind_once` and `pdfium_error` from `pdf_render.rs`. `manifold` drops both dependencies.
-- Workspace member, built with `-p manifold-render-pdf`. Added to the documented build line (`CLAUDE.md` "Gate" and the `scripts/gate.sh` header; the script itself does not build) and to the clippy package list in `CLAUDE.md` and `.githooks/pre-commit`.
+- New `crates/manifold-view-pdfium` (binary only). It takes over `pdfium-render`, `pdfium-auto` and `render_first_page`, `bind_once` and `pdfium_error` from `pdf_render.rs`. `manifold` drops both dependencies.
+- Workspace member, built with `-p manifold-view-pdfium`. Added to the documented build line (`CLAUDE.md` "Gate" and the `scripts/gate.sh` header; the script itself does not build) and to the clippy package list in `CLAUDE.md` and `.githooks/pre-commit`.
 - Runtime placement: like `manifold-engine-webview2`, it needs nothing beyond the exe (PDFium's DLL is fetched into the user cache at first use, as now).
 
 ## Stress test of this draft (round 1)
 
 1. *Pipe deadlock*: a child blocks writing a 4 MB frame if the parent waits for exit first. The worker reads to EOF before `wait`, and the timeout kills from a watchdog thread. Covered.
 2. *First-run download inside the timeout*: a slow connection could exceed 120 s and be reported as a hang. Accepted: the retry via card click resumes where the cache left off. Recorded as a known limit, not hidden.
-3. *Smoke coverage is thin*: `gate smoke` adds a fake `%PDF-1.4\n` file, which exercises only the error path. The success path needs a real one-page PDF. Plan: a tiny valid PDF committed as a test fixture, used by one `manifold` test that is skipped (with a printed reason) when the renderer binary is not built, and by one gate smoke step that is not skippable because the gate builds it.
+3. *Smoke coverage is thin*: `gate smoke` adds a fake `%PDF-1.4\n` file, which exercises only the error path. The success path needs a real one-page PDF. Plan: a tiny valid PDF committed as a test fixture, used by one `manifold` test that is skipped (with a printed reason) when the renderer binary is not built, and by one gate smoke step that is not skippable (the documented build line includes the crate, and the gate stage fails loudly if its exe is missing).
 4. *Orphans*: killed on cancel, killed by the job object at exit, killed by the watchdog on timeout. Test: after a timeout, the stand-in child is gone.
 5. *Stale binary*: the frame carries a version, so an old renderer next to a new manifold yields the mismatch reason, not a misread bitmap.
 6. *Packaging*: nothing in the repo packages releases today beyond the build outputs, so there is no installer to update; the README's runtime-placement section gets one line.
@@ -90,7 +102,7 @@ Four corrections folded in above: the host lookup is keyed by `EngineKind` (use 
 
 - `ipc-protocol`: frame header round trip, each malformed frame, and a layout test pinning the field order and sizes (the existing `wire_shape_tests` fingerprint covers only the engine messages).
 - `run_renderer` with stand-in commands: success frame, exit 1 with a message, crash exit, timeout (short, injected), garbage output, short output.
-- `manifold-render-pdf`: renders the fixture to the expected size; a garbage file exits 1 with one line.
+- `manifold-view-pdfium`: renders the fixture to the expected size; a garbage file exits 1 with one line.
 - Gate: `light` tier (PDF smoke) plus the new real-PDF smoke step.
 
 ## Parked, with why
@@ -102,5 +114,5 @@ Four corrections folded in above: the host lookup is keyed by `EngineKind` (use 
 ## Open decisions for the user
 
 1. Per-render process (recommended) or one long-lived renderer per format.
-2. Crate name: `manifold-render-pdf` (recommended), alongside the `manifold-engine-*` hosts.
+2. Crate name: `manifold-view-pdfium` (decided, with the rename below).
 3. Timeout 120 s with one constant, or a longer first-run allowance.
