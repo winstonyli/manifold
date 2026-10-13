@@ -64,7 +64,7 @@ impl From<io::Error> for Halt {
 
 type Step<T = ()> = Result<T, Halt>;
 
-/// Prints `PASS:`/`FAIL:` and, on a failure, `detail` indented (never the verdict words: gate.sh counts them).
+/// Prints `PASS:`/`FAIL:` and, on a failure, `detail` indented (never the verdict words: gate all counts them).
 fn verdict(label: &str, ok: bool, detail: &str) -> bool {
     let ok = check(label, ok);
     if !ok {
@@ -348,7 +348,7 @@ pub fn two(parent: Option<PathBuf>) -> ExitCode {
     println!("two-instance test: exe {} profile {} engine {view_kind}", exe.display(), profile.display());
     let mut t = Two { exe, profile, out, insts: [None, None, None, None], site: None, marks };
     if let Err(Halt::Error(e)) = run(&mut t) {
-        // Not a verdict line: gate.sh counts those words, and this failure is counted here.
+        // Not a verdict line: gate all counts those words, and this failure is counted here.
         println!("ERROR: two stopped early: {e}");
         note_failure();
     }

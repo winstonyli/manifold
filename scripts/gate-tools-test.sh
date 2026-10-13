@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Usage: scripts/gate-tools-test.sh
-# Checks gate-timing.sh, gate-tier.sh and fresh-exe.sh in about a second, without the app or git.
+# Checks gate-tier.sh and fresh-exe.sh (the timing join is a unit test in crates/gate/src/timing.rs) in about a second, without the app or git.
 set -u
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck source=lib.sh
@@ -8,18 +8,6 @@ repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 t="$(mktemp -d)"
 trap 'rm -rf "$t"' EXIT
 status=0
-
-# collect: cpu_start is the last sample at or before the start, cpu_mean the mean of those inside the step.
-printf 'TIMING setup 12.345 100\nTIMING s1 30.000 112\nnoise\nTIMING s2 3.5 142\n' >"$t/run.log"
-printf '99 5.0\n101 10.0\n105 20.0\n130 40.0\n143 90.0\n150 80.0\n' >"$t/cpu.log"
-check "collect joins each step with the cpu samples" "TIMING g/setup 12.345 100 cpu_start=5.0 cpu_mean=15.0
-TIMING g/s1 30.000 112 cpu_start=20.0 cpu_mean=40.0
-TIMING g/s2 3.5 142 cpu_start=40.0 cpu_mean=90.0" "$(bash "$repo_root/scripts/gate-timing.sh" collect g "$t/run.log" "$t/cpu.log")"
-check "collect reads a Windows-path cpu log" "TIMING g/setup 12.345 100 cpu_start=5.0 cpu_mean=15.0" \
-    "$(bash "$repo_root/scripts/gate-timing.sh" collect g "$t/run.log" "$(cygpath -w "$t/cpu.log")" | head -1)"
-check "collect without a cpu log says -" "TIMING g/setup 12.345 100 cpu_start=- cpu_mean=-" "$(bash "$repo_root/scripts/gate-timing.sh" collect g "$t/run.log" | head -1)"
-bash "$repo_root/scripts/gate-timing.sh" collect g "$t/run.log" "$t/cpu.log" >"$t/all.log"
-check "top lists the slowest first" "g/s1 g/setup" "$(bash "$repo_root/scripts/gate-timing.sh" top "$t/all.log" 2 | awk '{printf "%s%s", sep, $2; sep=" "}')"
 
 # gate-tier --stdin: the strictest path wins; a ui-listed file that imports a core module is demoted.
 mkdir -p "$t/src"

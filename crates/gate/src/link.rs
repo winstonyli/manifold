@@ -168,7 +168,7 @@ fn steps(i: &mut Instance, from: (i64, i64), to: (i64, i64)) -> io::Result<()> {
     Ok(())
 }
 
-/// Replaces the verdict words, so a log line that happens to contain one is not counted by gate.sh.
+/// Replaces the verdict words, so a log line that happens to contain one is not counted by gate all.
 pub(crate) fn no_verdict_words(text: &str) -> String {
     text.replace("PASS", "P-ASS").replace("FAIL", "F-AIL")
 }
@@ -495,7 +495,7 @@ pub fn link(parent: Option<PathBuf>) -> ExitCode {
         Ok(exports) => {
             sec = sec.take().map(|s| s.next("verdicts"));
             if let Err(e) = verdicts(&exports) {
-                // Not a verdict line: gate.sh counts those words, and this failure is counted below.
+                // Not a verdict line: gate all counts those words, and this failure is counted below.
                 println!("ERROR: link verdicts stopped early: {e}");
                 note_failure();
             }

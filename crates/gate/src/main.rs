@@ -1,6 +1,6 @@
 //! `gate <stage>`: the headless gate flows as one Rust program (plan docs/superpowers/plans/2026-10-10-rust-gate-runner.md).
 //! It launches `manifold --headless` itself, drives it over stdin, reads the exported state back and prints the
-//! `PASS:`/`FAIL:`/`TIMING` lines the shell scripts print, so `scripts/gate.sh` can run it as a stage. The exit code is
+//! `PASS:`/`FAIL:`/`TIMING` lines the shell scripts print, so `gate all` can run it as a stage. The exit code is
 //! 0 when no check failed.
 //!
 //! Stages: `hello` (one instance: launch, WAITTABS, export, QUIT), `launch-forms` (was scripts/launch-forms-probe.sh), `layout` (popups inside the window and opaque, see layout.rs), `link` (was scripts/link-probe.sh), `smoke` (was
@@ -9,6 +9,8 @@
 
 #![allow(dead_code, reason = "the runner core's API is used by the link and smoke ports of later tasks, and by tests")]
 
+#[cfg(windows)]
+mod all;
 mod check;
 mod fresh;
 mod http;
@@ -26,6 +28,7 @@ mod session;
 mod smoke;
 mod state;
 mod suggest;
+mod timing;
 #[cfg(windows)]
 mod two;
 
@@ -55,16 +58,29 @@ mod windows_main {
         let stage = args.next().unwrap_or_default();
         let parent = args.next().map(PathBuf::from);
         match stage.as_str() {
+            "all" => crate::all::all(parent, args.next()),
             "hello" => hello(parent),
             "launch-forms" => crate::launch_forms::launch_forms(parent),
             "layout" => crate::layout::layout(parent),
             "link" => crate::link::link(parent),
             "smoke" => crate::smoke::smoke(parent),
             "two" => crate::two::two(parent),
+            // scripts/fresh-exe.sh: exit 1 and name the stale files if EXE (the next argument) is older than its sources.
+            "fresh" => match parent.as_deref().map(require_fresh_exe) {
+                Some(Ok(())) => ExitCode::SUCCESS,
+                Some(Err(e)) => {
+                    eprintln!("{e}");
+                    ExitCode::from(1)
+                }
+                None => {
+                    eprintln!("usage: gate fresh EXE");
+                    ExitCode::from(2)
+                }
+            },
             // Test aid for the "killed gate leaves no manifold.exe" proof; not a gate stage.
             "hold" => hold(parent),
             _ => {
-                eprintln!("usage: gate hello|launch-forms|layout|link|smoke|two [WORKDIR_PARENT]");
+                eprintln!("usage: gate all LOG [full|light|ui] | gate hello|launch-forms|layout|link|smoke|two [WORKDIR_PARENT] | gate fresh EXE");
                 ExitCode::from(2)
             }
         }
@@ -137,7 +153,7 @@ mod windows_main {
             Ok(())
         })();
         if let Err(e) = result {
-            // Not a PASS/FAIL line itself: gate.sh counts those words, and this failure is counted below.
+            // Not a PASS/FAIL line itself: gate all counts those words, and this failure is counted below.
             println!("ERROR: hello stopped early: {e}");
             note_failure();
         }

@@ -1006,7 +1006,7 @@ pub fn smoke(parent: Option<PathBuf>) -> ExitCode {
     let log = inst.log.clone();
     let mut sm = Smoke { inst, out: out.clone(), repo };
     if let Err(e) = drive(&mut sm, &mut marks) {
-        // Not a verdict line: gate.sh counts those words, and this failure is counted here.
+        // Not a verdict line: gate all counts those words, and this failure is counted here.
         println!("ERROR: smoke stopped early: {e}");
         note_failure();
     }

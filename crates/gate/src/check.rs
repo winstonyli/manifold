@@ -1,7 +1,7 @@
 //! The scripts' `check` and the `TIMING` format: `PASS:`/`FAIL:` lines, a failure count that becomes the exit code, and
-//! `TIMING` lines for `scripts/gate-timing.sh`.
+//! `TIMING` lines for `gate all` (timing.rs).
 //!
-//! `scripts/gate.sh` counts the lines containing `PASS` or `FAIL` in a stage's log, so nothing else the runner prints
+//! `gate all` counts the lines containing `PASS` or `FAIL` in a stage's log, so nothing else the runner prints
 //! may contain either word (section names included).
 
 use std::fmt::Display;
@@ -63,7 +63,7 @@ pub fn exit_code() -> std::process::ExitCode {
     std::process::ExitCode::from(u8::from(failures() > 0))
 }
 
-/// `TIMING <name> <secs>.<ms> <start epoch>`, the `TIMING` format `scripts/gate-timing.sh` reads: whole seconds, then
+/// `TIMING <name> <secs>.<ms> <start epoch>`, the `TIMING` format timing.rs reads: whole seconds, then
 /// the milliseconds truncated (not rounded) to 3 digits, then the step's start in whole epoch seconds.
 pub fn timing_line(name: &str, elapsed: Duration, start_epoch: u64) -> String {
     let us = elapsed.as_micros();
