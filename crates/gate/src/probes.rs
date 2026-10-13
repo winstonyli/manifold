@@ -9,7 +9,7 @@
 //! - `failed-spawn` (was failed-spawn-probe.sh): a failed spawn leaves one failed tab card, kept by New and Retry
 //!
 //! `VIEWS="webview2 cef"` picks the view kinds (default `webview2`; CEF needs its host built). The local site is served
-//! in process (was scripts/probe_server.py, which sleep-probe.sh still uses).
+//! in process (was scripts/probe_server.py).
 
 use std::fs;
 use std::io::{self, Cursor};
@@ -37,15 +37,23 @@ const WIDE: &str = "<!doctype html><title>wide</title>\n\
 <div style=\"width:6000px;height:400px;background:linear-gradient(90deg,#fff,#9cf)\"></div>\n<script>\nlet t;\n\
 addEventListener('scroll', () => {\n  clearTimeout(t);\n  t = setTimeout(() => fetch('/s?e=hscroll&y=' + Math.round(scrollX)), 300);\n});\n</script>";
 
-/// The local site: `/` reports keydowns (`/k`), `/wide` reports horizontal scrolls (`/s`), `/data.json` and
-/// `/pixel.png` answer with their real content types. Everything the page reports lands in `lines`.
-struct Site {
+/// A page taller than any window, for the sleep probe: it reports its scroll position on load and after each scroll
+/// settles, and `?dirty` makes its input differ from the default.
+const TALL: &str = "<!doctype html><title>tall</title><input id=i>\n\
+<div style=\"height:6000px;background:linear-gradient(#fff,#9cf)\"></div>\n<script>\n\
+if (location.search.includes('dirty')) document.getElementById('i').value = 'draft';\n\
+fetch('/s?e=load&y=' + Math.round(scrollY));\nlet t;\n\
+addEventListener('scroll', () => {\n  clearTimeout(t);\n  t = setTimeout(() => fetch('/s?e=scroll&y=' + Math.round(scrollY)), 300);\n});\n</script>";
+
+/// The local site: `/` reports keydowns (`/k`), `/wide` reports horizontal scrolls (`/s`), `/tall` vertical ones,
+/// `/data.json` and `/pixel.png` answer with their real content types. Everything the page reports lands in `lines`.
+pub(crate) struct Site {
     server: http::Server,
     lines: Arc<Mutex<Vec<String>>>,
 }
 
 impl Site {
-    fn start() -> io::Result<Site> {
+    pub(crate) fn start() -> io::Result<Site> {
         let lines = Arc::new(Mutex::new(Vec::new()));
         let log = lines.clone();
         let mut png = Cursor::new(Vec::new());
@@ -71,17 +79,18 @@ impl Site {
                 "/data.json" => response("200 OK", &[], "application/json", br#"{"probe": [1, 2, 3]}"#),
                 "/pixel.png" => response("200 OK", &[], "image/png", &png),
                 "/wide" => response("200 OK", &[], "text/html", WIDE.as_bytes()),
+                "/tall" => response("200 OK", &[], "text/html", TALL.as_bytes()),
                 _ => response("200 OK", &[], "text/html", PAGE.as_bytes()),
             }
         }))?;
         Ok(Site { server, lines })
     }
 
-    fn url(&self, path: &str) -> String {
+    pub(crate) fn url(&self, path: &str) -> String {
         format!("http://127.0.0.1:{}{path}", self.server.port())
     }
 
-    fn lines(&self) -> Vec<String> {
+    pub(crate) fn lines(&self) -> Vec<String> {
         self.lines.lock().unwrap_or_else(PoisonError::into_inner).clone()
     }
 
@@ -121,7 +130,7 @@ pub(crate) fn finish(work: &Path) -> ExitCode {
 }
 
 /// The view kinds to run: `VIEWS` (space separated), default `webview2`.
-fn views() -> Vec<String> {
+pub(crate) fn views() -> Vec<String> {
     std::env::var("VIEWS").unwrap_or_else(|_| "webview2".into()).split_whitespace().map(str::to_owned).collect()
 }
 

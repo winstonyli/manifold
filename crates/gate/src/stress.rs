@@ -21,7 +21,7 @@ use crate::probes::{finish, guarded, quit, seed, setup, tab_node};
 use crate::state::{State, TAB};
 
 /// Runs `script` in PowerShell (a file, so no quoting) and returns its non-empty output lines.
-fn powershell(work: &Path, name: &str, script: &str, args: &[&str]) -> io::Result<Vec<String>> {
+pub(crate) fn powershell(work: &Path, name: &str, script: &str, args: &[&str]) -> io::Result<Vec<String>> {
     let file = work.join(format!("{name}.ps1"));
     fs::write(&file, script)?;
     let out = Command::new("powershell")

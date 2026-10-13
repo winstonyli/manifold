@@ -1,4 +1,4 @@
-# Foreground-window helper for scripts/focus-loss-probe.sh (Windows only).
+# Foreground-window helper for `gate focus-loss` (Windows only).
 #
 #   foreground.ps1 -ProcessId <pid> [-HoldSeconds 1.0]
 #
