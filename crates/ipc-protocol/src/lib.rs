@@ -4,6 +4,7 @@ pub mod frame_buffer;
 pub mod frame_sink;
 pub mod messages;
 pub mod nav_label;
+pub mod render;
 pub mod transport;
 
 pub use channel::MessageChannel;

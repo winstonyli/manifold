@@ -12,3 +12,9 @@ interprocess.workspace = true
 memmap2.workspace = true
 postcard = { workspace = true, features = ["use-std"] }
 serde = { workspace = true, features = ["derive"] }
+
+[[bin]]
+name = "render_stub"
+path = "src/bin/render_stub.rs"
+test = false
+doc = false
