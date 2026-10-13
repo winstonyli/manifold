@@ -101,7 +101,7 @@ impl Site {
 }
 
 /// `manifold.exe` and a fresh work dir, or the exit code to stop with.
-fn setup(parent: Option<PathBuf>, name: &str) -> Result<(PathBuf, PathBuf), ExitCode> {
+pub(crate) fn setup(parent: Option<PathBuf>, name: &str) -> Result<(PathBuf, PathBuf), ExitCode> {
     let exe = manifold_exe().map_err(|e| {
         eprintln!("{e}");
         ExitCode::from(1)
@@ -113,7 +113,7 @@ fn setup(parent: Option<PathBuf>, name: &str) -> Result<(PathBuf, PathBuf), Exit
     Ok((exe, work))
 }
 
-fn finish(work: &Path) -> ExitCode {
+pub(crate) fn finish(work: &Path) -> ExitCode {
     if failures() == 0 && std::env::var_os("KEEP").is_none() {
         remove_dir_with_retries(work);
     }
@@ -127,7 +127,7 @@ fn views() -> Vec<String> {
 
 /// scripts' seed step: `PROFILE/settings.json` starting tabs on `view_kind`, and `PROFILE/session.mnf` built from
 /// `nodes` with `--import-json`.
-fn seed(exe: &Path, profile: &Path, view_kind: &str, nodes: &[Value]) -> io::Result<()> {
+pub(crate) fn seed(exe: &Path, profile: &Path, view_kind: &str, nodes: &[Value]) -> io::Result<()> {
     seed_settings(profile, view_kind, "")?;
     let seed = profile.join("seed.json");
     fs::write(&seed, json!({ "nodes": nodes }).to_string())?;
@@ -145,7 +145,7 @@ fn seed(exe: &Path, profile: &Path, view_kind: &str, nodes: &[Value]) -> io::Res
     }
 }
 
-fn tab_node(url: Option<&str>, view_kind: &str) -> Value {
+pub(crate) fn tab_node(url: Option<&str>, view_kind: &str) -> Value {
     let mut node = json!({"id": "t1", "type": TAB, "view_kind": view_kind, "pos": [0.0, 0.0]});
     if let Some(url) = url {
         node["url"] = json!(url);
@@ -154,7 +154,7 @@ fn tab_node(url: Option<&str>, view_kind: &str) -> Value {
 }
 
 /// Quits the instance and counts a refusal to exit as a failure.
-fn quit(inst: &mut Instance, label: &str) {
+pub(crate) fn quit(inst: &mut Instance, label: &str) {
     if let Err(e) = inst.quit(QUIT_TIMEOUT) {
         println!("FAIL: {label}: {e}");
         note_failure();
@@ -162,7 +162,7 @@ fn quit(inst: &mut Instance, label: &str) {
 }
 
 /// Runs `body`; an I/O error (a timeout, a dead instance) is a failure, not a crash.
-fn guarded(label: &str, body: impl FnOnce() -> io::Result<()>) {
+pub(crate) fn guarded(label: &str, body: impl FnOnce() -> io::Result<()>) {
     if let Err(e) = body() {
         println!("FAIL: {label}: {e}");
         note_failure();

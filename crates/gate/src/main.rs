@@ -29,6 +29,8 @@ mod session;
 #[cfg(windows)]
 mod smoke;
 mod state;
+#[cfg(windows)]
+mod stress;
 mod suggest;
 mod timing;
 #[cfg(windows)]
@@ -66,6 +68,8 @@ mod windows_main {
             "hscroll" => crate::probes::hscroll(parent),
             "key" => crate::probes::key(parent),
             "page-kind" => crate::probes::page_kind(parent),
+            "scale" => crate::stress::scale(&std::env::args().skip(2).collect::<Vec<_>>()),
+            "unresponsive" => crate::stress::unresponsive(parent),
             "hello" => hello(parent),
             "launch-forms" => crate::launch_forms::launch_forms(parent),
             "layout" => crate::layout::layout(parent),
@@ -87,7 +91,7 @@ mod windows_main {
             // Test aid for the "killed gate leaves no manifold.exe" proof; not a gate stage.
             "hold" => hold(parent),
             _ => {
-                eprintln!("usage: gate all LOG [full|light|ui] | gate hello|launch-forms|layout|link|smoke|two [WORKDIR_PARENT] | gate fresh EXE");
+                eprintln!("usage: gate all LOG [full|light|ui] | gate hello|launch-forms|unresponsive|layout|link|smoke|two [WORKDIR_PARENT] | gate scale TABS... | gate fresh EXE");
                 ExitCode::from(2)
             }
         }
