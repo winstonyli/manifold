@@ -138,6 +138,16 @@ pub(crate) fn views() -> Vec<String> {
 /// `nodes` with `--import-json`.
 pub(crate) fn seed(exe: &Path, profile: &Path, view_kind: &str, nodes: &[Value]) -> io::Result<()> {
     seed_settings(profile, view_kind, "")?;
+    import_session(exe, profile, nodes)
+}
+
+/// The profile's session becomes a fresh import of `nodes` (any earlier `session.mnf*` is removed first).
+pub(crate) fn import_session(exe: &Path, profile: &Path, nodes: &[Value]) -> io::Result<()> {
+    for entry in fs::read_dir(profile)?.flatten() {
+        if entry.file_name().to_string_lossy().starts_with("session.mnf") {
+            fs::remove_file(entry.path())?;
+        }
+    }
     let seed = profile.join("seed.json");
     fs::write(&seed, json!({ "nodes": nodes }).to_string())?;
     let status = Command::new(exe)

@@ -16,6 +16,9 @@ const READ_TIMEOUT: Duration = Duration::from_secs(5);
 /// The request line (`GET /r?n=1 HTTP/1.1`) to the complete response bytes.
 pub type Handler = dyn Fn(&str) -> Vec<u8> + Send + Sync;
 
+/// The request line and the whole request head (line and headers) to the complete response bytes.
+pub type HeadHandler = dyn Fn(&str, &str) -> Vec<u8> + Send + Sync;
+
 /// `HTTP/1.0 <status>` with Content-Type, Content-Length, the `extra` headers and `Connection: close`, then `body`.
 pub fn response(status: &str, extra: &[(&str, &str)], ctype: &str, body: &[u8]) -> Vec<u8> {
     let mut head = format!("HTTP/1.0 {status}\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\n", body.len());
@@ -28,7 +31,7 @@ pub fn response(status: &str, extra: &[(&str, &str)], ctype: &str, body: &[u8]) 
     out
 }
 
-fn handle(mut stream: TcpStream, handler: &Handler) -> io::Result<()> {
+fn handle(mut stream: TcpStream, handler: &HeadHandler) -> io::Result<()> {
     stream.set_read_timeout(Some(READ_TIMEOUT))?;
     let mut head = Vec::new();
     let mut buf = [0u8; 1024];
@@ -41,7 +44,7 @@ fn handle(mut stream: TcpStream, handler: &Handler) -> io::Result<()> {
     }
     let text = String::from_utf8_lossy(&head);
     let line = text.lines().next().unwrap_or("");
-    stream.write_all(&handler(line))?;
+    stream.write_all(&handler(line, &text))?;
     stream.shutdown(Shutdown::Both)
 }
 
@@ -54,6 +57,11 @@ pub struct Server {
 
 impl Server {
     pub fn start(handler: Arc<Handler>) -> io::Result<Server> {
+        Self::start_head(Arc::new(move |line, _head| handler(line)))
+    }
+
+    /// `start` for a handler that reads the request headers too (cookies, user agent).
+    pub fn start_head(handler: Arc<HeadHandler>) -> io::Result<Server> {
         let listener = TcpListener::bind(("127.0.0.1", 0))?;
         let addr = listener.local_addr()?;
         let stop = Arc::new(AtomicBool::new(false));

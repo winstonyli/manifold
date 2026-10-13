@@ -2,7 +2,7 @@
 name = "gate"
 version.workspace = true
 edition.workspace = true
-description = "The headless gate flows (link probe, smoke test, two-instance test) as one Rust program: launches manifold --headless, drives it over stdin, checks the exported state."
+description = "The headless gate flows (link probe, smoke test, two-instance test, engine and jar probes) as one Rust program: launches manifold --headless, drives it over stdin, checks the exported state."
 
 [lints]
 workspace = true
@@ -19,6 +19,7 @@ windows-sys = { workspace = true, features = [
     "Win32_Foundation",
     "Win32_System_JobObjects",
     "Win32_Security",
+    "Win32_Security_Cryptography",
     "Win32_System_Threading",
     "Win32_System_SystemInformation",
 ] }

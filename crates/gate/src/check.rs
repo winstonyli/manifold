@@ -49,6 +49,18 @@ pub fn check_eq<T: PartialEq + Display>(label: &str, want: T, got: T) -> bool {
     ok
 }
 
+/// `check_eq` for values that only print with `{:?}` (an `Option`, a `Vec`, a tuple).
+pub fn check_is<T: PartialEq + std::fmt::Debug>(label: &str, want: T, got: T) -> bool {
+    let ok = want == got;
+    if ok {
+        println!("{}", pass_line(label));
+    } else {
+        println!("FAIL: {label}: got {got:?}, wanted {want:?}");
+        FAILURES.fetch_add(1, Ordering::SeqCst);
+    }
+    ok
+}
+
 /// Counts a failure the runner detected itself (a timeout, a launch error) after printing its own `FAIL:` line.
 pub fn note_failure() {
     FAILURES.fetch_add(1, Ordering::SeqCst);
