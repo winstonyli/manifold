@@ -23,6 +23,8 @@ mod layout;
 #[cfg(windows)]
 mod link;
 mod nonce;
+#[cfg(windows)]
+mod probes;
 mod session;
 #[cfg(windows)]
 mod smoke;
@@ -59,6 +61,11 @@ mod windows_main {
         let parent = args.next().map(PathBuf::from);
         match stage.as_str() {
             "all" => crate::all::all(parent, args.next()),
+            "bad-url" => crate::probes::bad_url(parent),
+            "failed-spawn" => crate::probes::failed_spawn(parent),
+            "hscroll" => crate::probes::hscroll(parent),
+            "key" => crate::probes::key(parent),
+            "page-kind" => crate::probes::page_kind(parent),
             "hello" => hello(parent),
             "launch-forms" => crate::launch_forms::launch_forms(parent),
             "layout" => crate::layout::layout(parent),

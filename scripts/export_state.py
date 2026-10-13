@@ -1,4 +1,4 @@
-"""EXPORTSTATE card helpers shared by the probe scripts (chrome-shots.sh, page-kind-probe.sh, sleep-probe.sh, scale-test.sh,
+"""EXPORTSTATE card helpers shared by the probe scripts (chrome-shots.sh, sleep-probe.sh, scale-test.sh,
 json-level-probe.py).
 
 An EXPORTSTATE `cards[]` entry names a card by its type (plan 2b-6, Ruling 9):

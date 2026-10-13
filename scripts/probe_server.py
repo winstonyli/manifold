@@ -1,4 +1,4 @@
-"""Local pages for the probe scripts (key-probe.sh, page-kind-probe.sh, sleep-probe.sh).
+"""Local pages for the probe scripts (sleep-probe.sh; the gate probes in crates/gate/src/probes.rs serve their own).
 
 Usage: python -P scripts/probe_server.py <port-file> <log-file> <seconds> < /dev/null
 
