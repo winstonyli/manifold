@@ -102,11 +102,9 @@ pub(crate) fn build_list_popup_frame(
     max_width: f32,
     fade: f32,
     interactable: bool,
-    resize: bool,
     add_contents: impl FnOnce(&mut egui::Ui),
 ) -> egui::Rect {
     egui::Area::new(egui::Id::new(id))
-        .sizing_pass(resize)
         .fixed_pos(anchor_rect.left_bottom())
         .order(egui::Order::Foreground)
         .interactable(interactable)
@@ -122,6 +120,9 @@ pub(crate) fn build_list_popup_frame(
                 }
                 // A list taller than the window scrolls instead of running off it.
                 let fit = ctx.content_rect().height() - 2.0 * POPUP_WINDOW_MARGIN;
+                // The area lays its contents out inside its last size: without this a list that grew since (another page
+                // of the same menu) stays clipped to the old height.
+                ui.set_max_height(fit.max(120.0));
                 // A solid scrollbar, not the floating one that hides until hovered: it says there is more below.
                 ui.spacing_mut().scroll = egui::style::ScrollStyle::solid();
                 egui::ScrollArea::vertical().max_height(fit.max(120.0)).show(ui, add_contents);
@@ -750,16 +751,8 @@ impl App {
         let mut close = false;
         let mut reopen_index: Option<usize> = None;
         let open = self.menus.open_popup == Some(AnchoredPopup::RecentlyClosed);
-        let area_rect = build_list_popup_frame(
-            ui.ctx(),
-            "recently_closed_popup",
-            anchor_rect,
-            220.0,
-            320.0,
-            fade,
-            open,
-            false,
-            |ui| {
+        let area_rect =
+            build_list_popup_frame(ui.ctx(), "recently_closed_popup", anchor_rect, 220.0, 320.0, fade, open, |ui| {
                 for (index, entry) in self.closed.iter().enumerate().rev() {
                     ui.horizontal(|ui| {
                         let root = &entry.doc.nodes[0];
@@ -783,8 +776,7 @@ impl App {
                         }
                     });
                 }
-            },
-        );
+            });
 
         let clicked_outside = clicked_outside_popup(ui, area_rect, Some(anchor_rect));
 
@@ -817,7 +809,7 @@ impl App {
         let mut folder_rename_cancel = false;
         let open = self.menus.open_popup == Some(AnchoredPopup::Bookmarks);
         let area_rect =
-            build_list_popup_frame(ui.ctx(), "bookmarks_popup", anchor_rect, 220.0, 320.0, fade, open, false, |ui| {
+            build_list_popup_frame(ui.ctx(), "bookmarks_popup", anchor_rect, 220.0, 320.0, fade, open, |ui| {
                 ui.add(
                     egui::TextEdit::singleline(&mut self.history_ui.bookmarks_filter)
                         .desired_width(f32::INFINITY)
@@ -959,7 +951,7 @@ impl App {
         let mut clear_requested = false;
         let open = self.menus.open_popup == Some(AnchoredPopup::History);
         let area_rect =
-            build_list_popup_frame(ui.ctx(), "history_popup", anchor_rect, 220.0, 320.0, fade, open, false, |ui| {
+            build_list_popup_frame(ui.ctx(), "history_popup", anchor_rect, 220.0, 320.0, fade, open, |ui| {
                 ui.add(
                     egui::TextEdit::singleline(&mut self.history_ui.history_filter)
                         .desired_width(f32::INFINITY)
@@ -1061,7 +1053,7 @@ impl App {
         let mut remove_id: Option<String> = None;
         let open = self.menus.open_popup == Some(AnchoredPopup::Downloads);
         let area_rect =
-            build_list_popup_frame(ui.ctx(), "downloads_popup", anchor_rect, 220.0, 320.0, fade, open, false, |ui| {
+            build_list_popup_frame(ui.ctx(), "downloads_popup", anchor_rect, 220.0, 320.0, fade, open, |ui| {
                 if !self.node_order.iter().any(|id| self.nodes.get(id).is_some_and(|n| n.as_download().is_some())) {
                     ui.label(egui::RichText::new("No downloads yet.").weak());
                 }
@@ -2050,7 +2042,7 @@ mod view_picker_tests {
         let mut clicked = None;
         let mut output = ctx.run_ui(input, |ui| {
             let anchor = egui::Rect::from_min_size(egui::pos2(10.0, 10.0), egui::vec2(60.0, 20.0));
-            build_list_popup_frame(ui.ctx(), "test_list", anchor, 100.0, 300.0, 1.0, true, false, |ui| {
+            build_list_popup_frame(ui.ctx(), "test_list", anchor, 100.0, 300.0, 1.0, true, |ui| {
                 for row in 0..3 {
                     if list_row(ui, format!("row {row}")).clicked() {
                         clicked = Some(row);
