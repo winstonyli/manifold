@@ -2,10 +2,10 @@
 # Usage: scripts/gate.sh LOG [full|light|ui]    (scripts/gate-tier.sh says which tier a change needs)
 #
 # The pre-merge gate: sequential, so load from other sessions is the only thing that stretches it.
-#   full  (default): gate two x3 + gate smoke x1 + launch-forms-probe + gate link + gate layout. Use for any
+#   full  (default): gate two x3 + gate smoke x1 + gate launch-forms + gate link + gate layout. Use for any
 #                    change to sync, the store, the mirror, session save/restore or the engines. ~5.5 min on a
 #                    quiet-ish machine (measured 2026-10-11 at 38-45% CPU from other sessions, so an upper bound).
-#   light:           gate two x1 + gate smoke x1 + launch-forms-probe + gate link + gate layout. Allowed when
+#   light:           gate two x1 + gate smoke x1 + gate launch-forms + gate link + gate layout. Allowed when
 #                    only UI code that writes the store or reaches an engine changed (gestures, menus), or scripts:
 #                    ~3.5 min (same conditions). The repeats in `full` exist to catch flaky ordering in sync, which
 #                    UI-only changes cannot reach.
@@ -64,7 +64,7 @@ for i in $(seq "$runs"); do
 done
 if [ "$mode" != ui ]; then
     stage smoke "$out.smoke.log" target/debug/gate smoke
-    stage launch-forms "$out.launch-forms.log" bash scripts/launch-forms-probe.sh
+    stage launch-forms "$out.launch-forms.log" target/debug/gate launch-forms
 fi
 stage link "$out.link.log" target/debug/gate link
 stage layout "$out.layout.log" target/debug/gate layout

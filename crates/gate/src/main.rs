@@ -3,7 +3,7 @@
 //! `PASS:`/`FAIL:`/`TIMING` lines the shell scripts print, so `scripts/gate.sh` can run it as a stage. The exit code is
 //! 0 when no check failed.
 //!
-//! Stages: `hello` (one instance: launch, WAITTABS, export, QUIT), `layout` (popups inside the window and opaque, see layout.rs), `link` (was scripts/link-probe.sh), `smoke` (was
+//! Stages: `hello` (one instance: launch, WAITTABS, export, QUIT), `launch-forms` (was scripts/launch-forms-probe.sh), `layout` (popups inside the window and opaque, see layout.rs), `link` (was scripts/link-probe.sh), `smoke` (was
 //! scripts/headless-smoke-test.sh) and `two` (the two-instance test, was scripts/two-instance-test.sh). Run from the repo after
 //! `cargo build -p manifold -p manifold-view-webview2 -p manifold-view-pdfium -p gate`; the exe is `manifold.exe` beside `gate.exe`.
 
@@ -14,6 +14,8 @@ mod fresh;
 mod http;
 #[cfg(windows)]
 mod instance;
+#[cfg(windows)]
+mod launch_forms;
 #[cfg(windows)]
 mod layout;
 #[cfg(windows)]
@@ -54,6 +56,7 @@ mod windows_main {
         let parent = args.next().map(PathBuf::from);
         match stage.as_str() {
             "hello" => hello(parent),
+            "launch-forms" => crate::launch_forms::launch_forms(parent),
             "layout" => crate::layout::layout(parent),
             "link" => crate::link::link(parent),
             "smoke" => crate::smoke::smoke(parent),
@@ -61,7 +64,7 @@ mod windows_main {
             // Test aid for the "killed gate leaves no manifold.exe" proof; not a gate stage.
             "hold" => hold(parent),
             _ => {
-                eprintln!("usage: gate hello|layout|link|smoke|two [WORKDIR_PARENT]");
+                eprintln!("usage: gate hello|launch-forms|layout|link|smoke|two [WORKDIR_PARENT]");
                 ExitCode::from(2)
             }
         }

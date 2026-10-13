@@ -31,7 +31,7 @@ const EXPORT_TIMEOUT: Duration = Duration::from_secs(60);
 const SCREENSHOT_TIMEOUT: Duration = Duration::from_secs(35);
 
 /// The Job Object every instance is assigned to; same construction as crates/manifold `process_manager/job.rs`.
-mod job {
+pub(crate) mod job {
     use std::process::Child;
     use std::sync::OnceLock;
 
