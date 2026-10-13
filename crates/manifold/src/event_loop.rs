@@ -1264,6 +1264,10 @@ impl App {
                         gpu.upload_image(&id, &rendered.rgba, rendered.width, rendered.height);
                     }
                     if let Some(pdf) = self.nodes.get_mut(&id).and_then(|n| n.as_pdf_mut()) {
+                        eprintln!(
+                            "pdf: rendered {}: {}x{}, {} page(s)",
+                            pdf.path, rendered.width, rendered.height, rendered.page_count
+                        );
                         pdf.outcome = Some(Ok(PdfOutcome {
                             width: rendered.width,
                             height: rendered.height,

@@ -16,8 +16,6 @@ egui_commonmark = { workspace = true, features = ["pulldown_cmark"] }
 etcetera.workspace = true
 image = { workspace = true, features = ["jpeg", "ico", "webp", "bmp", "gif"] }
 ipc-protocol.workspace = true
-pdfium-render.workspace = true
-pdfium-auto.workspace = true
 pollster.workspace = true
 raw-window-handle.workspace = true
 foldhash.workspace = true

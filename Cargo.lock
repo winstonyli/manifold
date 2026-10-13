@@ -5017,8 +5017,6 @@ dependencies = [
  "icu_properties 2.3.0",
  "image",
  "ipc-protocol",
- "pdfium-auto",
- "pdfium-render",
  "pollster 1.0.1",
  "raw-window-handle",
  "rfd",

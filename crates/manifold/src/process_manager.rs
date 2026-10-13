@@ -795,7 +795,9 @@ pub fn spawn_tab(
     // An embedded WebView2 host is put in place before its path is used (the profile slot is keyed on it). A sibling
     // host wins as it does everywhere else; a build that embeds nothing returns `None` and touches no file.
     let extracted_host = match engine_hosts_dir() {
-        Some(dir) if kind == EngineKind::Webview2 && sibling_host(kind).is_none() => embedded_host::ensure(&dir)?,
+        Some(dir) if kind == EngineKind::Webview2 && sibling_host(kind).is_none() => {
+            embedded_host::Embedded::Webview2.ensure(&dir)?
+        }
         _ => None,
     };
 
@@ -910,8 +912,8 @@ use availability::{
     availability_with, built_webkit_host, on_disk_cached, pick_webkit_host, OnDiskCache, ON_DISK_CHECK_TTL,
 };
 use availability::{
-    cef_sibling_exe, engine_binary_path, engine_on_disk_fresh, platform_unavailable_reason, sibling_host,
-    webkit_host_path,
+    cef_sibling_exe, engine_binary_path, engine_on_disk_fresh, platform_unavailable_reason, sibling_binary,
+    sibling_host, webkit_host_path,
 };
 pub(crate) use availability::{
     engine_availability, engine_hosts_dir, engine_on_disk, engine_runtime_dir, forget_on_disk, platform_default_engine,
@@ -934,3 +936,21 @@ use webkit::webkit_shell_command;
 use webkit::{spawn_webkit_tab, webkit_host_missing};
 #[cfg(test)]
 mod tests;
+
+/// The PDF view exe: beside `manifold.exe` when built there (dev trees, the gate), else the copy embedded in this
+/// build, extracted on first use. `None` when neither exists.
+pub(crate) fn pdf_view_exe() -> std::io::Result<Option<std::path::PathBuf>> {
+    let sibling = sibling_binary("manifold-view-pdfium");
+    if sibling.exists() {
+        return Ok(Some(sibling));
+    }
+    match engine_hosts_dir() {
+        Some(dir) => embedded_host::Embedded::Pdfium.ensure(&dir),
+        None => Ok(None),
+    }
+}
+
+/// Puts a spawned view process in the kill-on-close job, so it dies with manifold.
+pub(crate) fn contain_view_process(child: &std::process::Child) {
+    assign_to_engine_job(child);
+}
