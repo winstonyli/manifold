@@ -1514,6 +1514,8 @@ impl App {
                     // A live tab whose engine stopped reading (`ViewTab::is_unresponsive`).
                     "unresponsive": node.as_tab().is_some_and(|t| t.tab.is_unresponsive(now)),
                     "editing": node.as_note().is_some_and(|n| n.editing),
+                    // Where MOVENODE puts the card back after it was parked (gate layout).
+                    "world": [self.layout_pos(&item.id).x, self.layout_pos(&item.id).y],
                     "screen": [screen.center().x, screen.center().y],
                     "rect": [screen.min.x, screen.min.y, screen.max.x, screen.max.y],
                 }))
@@ -1990,7 +1992,7 @@ mod tests {
             assert_eq!(card["loaded"], loaded, "{id}: {card}");
             assert_eq!(card["json_card"], false, "{id}: {card}");
             assert!(card.get("kind").is_none(), "{id}: {card}");
-            for key in ["group", "parent", "color", "pinned", "editing", "screen", "rect"] {
+            for key in ["group", "parent", "color", "pinned", "editing", "world", "screen", "rect"] {
                 assert!(card.get(key).is_some(), "{id} keeps {key}: {card}");
             }
         }

@@ -1,5 +1,6 @@
 //! `gate layout`: every menu, dialog and dropdown the headless app can open, at several window sizes, checked for the
-//! layout oddities a person finds by eye. One instance on the default (demo) session.
+//! layout oddities a person finds by eye. Per window size, one instance on the default (demo) session for the canvas
+//! popups and one for the Settings page's.
 //!
 //! Two checks per popup and size:
 //! - *inside the window*: every new `popups` entry of the exported state (`App::popups_state`) lies within `window`.
@@ -179,8 +180,16 @@ fn right_click(inst: &mut Instance, x: f64, y: f64) -> io::Result<()> {
     inst.send(&format!("MOUSEUP {x:.0} {y:.0} right"))
 }
 
-/// Opens `sc`; returns the id of the card it is anchored to (kept in place for the second shot).
-fn open(inst: &mut Instance, sc: &Scenario, s: &State, w: f64, h: f64) -> io::Result<Option<String>> {
+/// Opens `sc`; returns the id of the card it is anchored to (kept in place for the second shot). `anchor` names the card
+/// to use again (the first of its type otherwise).
+fn open(
+    inst: &mut Instance,
+    sc: &Scenario,
+    s: &State,
+    w: f64,
+    h: f64,
+    anchor: Option<&str>,
+) -> io::Result<Option<String>> {
     match &sc.open {
         Open::Command(cmd) => inst.send(cmd).map(|()| None),
         Open::Settings(name) => inst.send(&format!("TOGGLEPOPUP {name}")).map(|()| None),
@@ -192,7 +201,7 @@ fn open(inst: &mut Instance, sc: &Scenario, s: &State, w: f64, h: f64) -> io::Re
             let card = s
                 .cards()
                 .iter()
-                .find(|c| c["type"] == *ty)
+                .find(|c| c["type"] == *ty && anchor.is_none_or(|a| c["id"] == a))
                 .ok_or_else(|| bad(format!("no {ty} card in the demo session")))?;
             let (x, y) = (card["screen"][0].as_f64().unwrap_or(0.0), card["screen"][1].as_f64().unwrap_or(0.0));
             right_click(inst, x, y)?;
@@ -235,11 +244,13 @@ struct Shot {
     scenario: &'static Scenario,
     region: Rect,
     over_cards: PathBuf,
+    /// The card the popup is anchored to, kept in place for the second shot.
+    anchor: Option<String>,
 }
 
 /// Checks `scenarios` at one window size on `inst`: each is opened over the demo cards and shot, then every card but
-/// `anchor` is parked far away and each is opened and shot again. The cards are not put back (their auto-layout
-/// positions are not in the session), so a scenario anchored to a card runs alone on its own instance.
+/// `anchor` is parked far away and each is opened and shot again; the cards are put back (EXPORTSTATE's `world`)
+/// before the next scenario parks all but its own anchor.
 fn run_group(inst: &mut Instance, (width, height): (u32, u32), scenarios: &[&'static Scenario]) -> io::Result<()> {
     inst.send("WAITTABS")?;
     // The first-launch demo: a tab, a note, a group and a JSON file, so there is something under every popup.
@@ -253,13 +264,24 @@ fn run_group(inst: &mut Instance, (width, height): (u32, u32), scenarios: &[&'st
     let (w, h) = window(&s0)?;
     check(&format!("layout {width}x{height}: the window resized (got {w}x{h})"), w == f64::from(width));
 
-    let mut shots = Vec::new();
-    let mut anchor = None;
+    // Where each card lives, so the parking below can be undone for the next scenario's anchor.
+    let home: Vec<(String, f64, f64)> = s0
+        .cards()
+        .iter()
+        .filter_map(|c| Some((c["id"].as_str()?.to_owned(), c["world"][0].as_f64()?, c["world"][1].as_f64()?)))
+        .collect();
+    let mut parked: Vec<String> = Vec::new();
     for &sc in scenarios {
+        // Back home from the last scenario's parking.
+        for (id, x, y) in home.iter().filter(|(id, ..)| parked.contains(id)) {
+            inst.send(&format!("MOVENODE {id} {x} {y}"))?;
+        }
+        parked.clear();
+        settle(inst)?;
         let label = format!("layout {width}x{height} {}", sc.name);
         let before = inst.export_state("layout-before")?;
         let known = popups(&before);
-        anchor = open(inst, sc, &before, w, h)?.or(anchor);
+        let anchor = open(inst, sc, &before, w, h, None)?;
         settle(inst)?;
         let shown = inst.export_state("layout-open")?;
         let fresh = new_popups(&known, &shown);
@@ -279,7 +301,7 @@ fn run_group(inst: &mut Instance, (width, height): (u32, u32), scenarios: &[&'st
         let [l, t, r, b] = union(&fresh);
         let region = [l + EDGE, t + EDGE, r - EDGE, b - EDGE];
         let over_cards = inst.screenshot(&format!("layout-over-cards-{}", sc.name))?;
-        shots.push(Shot { label: label.clone(), scenario: sc, region, over_cards });
+        let shot = Shot { label: label.clone(), scenario: sc, region, over_cards, anchor };
         inst.send(sc.close)?;
         settle(inst)?;
         let after = inst.export_state("layout-closed")?;
@@ -287,33 +309,31 @@ fn run_group(inst: &mut Instance, (width, height): (u32, u32), scenarios: &[&'st
         if !check(&format!("{label}: it closes"), left.is_empty()) {
             println!("  still showing: {left:?}");
         }
-    }
 
-    // Every other card parked far outside the window.
-    let state = inst.export_state("layout-cards")?;
-    let others: Vec<String> = state
-        .cards()
-        .iter()
-        .filter_map(|c| c["id"].as_str())
-        .filter(|id| Some(*id) != anchor.as_deref())
-        .map(str::to_owned)
-        .collect();
-    for id in &others {
-        inst.send(&format!("MOVENODE {id} {FAR} {FAR}"))?;
-    }
-    settle(inst)?;
-    let parked = inst.export_state("layout-parked")?;
-    for shot in shots {
+        // Straight away, with every card but its anchor parked far outside the window (the others are put back
+        // first): a popup's remembered size from another scenario's page would otherwise differ between the shots.
         let (label, sc) = (&shot.label, shot.scenario);
-        let still_there = parked
+        let others: Vec<String> =
+            home.iter().map(|(id, ..)| id.clone()).filter(|id| Some(id) != shot.anchor.as_ref()).collect();
+        for (id, x, y) in &home {
+            let want_parked = others.contains(id);
+            if want_parked != parked.contains(id) {
+                let (x, y) = if want_parked { (FAR, FAR) } else { (*x, *y) };
+                inst.send(&format!("MOVENODE {id} {x} {y}"))?;
+            }
+        }
+        parked = others.clone();
+        settle(inst)?;
+        let parked_state = inst.export_state("layout-parked")?;
+        let still_there = parked_state
             .cards()
             .iter()
             .filter(|c| c["id"].as_str().is_some_and(|id| others.iter().any(|o| o == id)))
             .filter_map(|c| rect_of(&c["rect"]))
             .any(|r| overlaps(r, shot.region));
         check(&format!("{label}: the other cards are out of the way"), !still_there);
-        let known = popups(&parked);
-        open(inst, sc, &parked, w, h)?;
+        let known = popups(&parked_state);
+        open(inst, sc, &parked_state, w, h, shot.anchor.as_deref())?;
         settle(inst)?;
         let reshown = inst.export_state("layout-reopen")?;
         let again = new_popups(&known, &reshown);
@@ -359,12 +379,9 @@ fn run_group(inst: &mut Instance, (width, height): (u32, u32), scenarios: &[&'st
 fn run(exe: &Path, work: &Path) -> io::Result<()> {
     let mut group = 0;
     for size in SIZES {
-        // The scenarios that are not tied to a card share one instance; each card menu gets its own.
-        let on = |f: fn(&Open) -> bool| SCENARIOS.iter().filter(move |sc| f(&sc.open)).collect::<Vec<&Scenario>>();
         // The Settings page replaces the canvas, so its popups share an instance apart from the canvas ones.
-        let mut batches =
-            vec![on(|o| matches!(o, Open::Command(_) | Open::CanvasMenu)), on(|o| matches!(o, Open::Settings(_)))];
-        batches.extend(SCENARIOS.iter().filter(|sc| matches!(sc.open, Open::CardMenu(..))).map(|sc| vec![sc]));
+        let on = |f: fn(&Open) -> bool| SCENARIOS.iter().filter(move |sc| f(&sc.open)).collect::<Vec<&Scenario>>();
+        let batches = [on(|o| !matches!(o, Open::Settings(_))), on(|o| matches!(o, Open::Settings(_)))];
         for batch in batches {
             group += 1;
             let _timing = Section::start(&format!("group{group}-{}x{}", size.0, size.1));
