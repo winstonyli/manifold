@@ -3,7 +3,7 @@
 
 use super::*;
 
-/// The engine-host binaries are sibling executables in the same
+/// The view-host binaries are sibling executables in the same
 /// target/{debug,release} directory as manifold itself — standard
 /// Cargo workspace layout, no separate install/discovery step needed.
 pub(super) fn sibling_binary(name: &str) -> PathBuf {
@@ -12,7 +12,7 @@ pub(super) fn sibling_binary(name: &str) -> PathBuf {
     path
 }
 
-/// Where to find each engine-host's executable.
+/// Where to find each view-host's executable.
 ///
 /// CEF is the one exception to the plain-sibling rule: it ships its own
 /// `libEGL.dll`/`libGLESv2.dll` (ANGLE), which collide with Servo's

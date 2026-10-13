@@ -280,7 +280,7 @@ struct App {
     /// for ordinary single-pane Tab view. Set once the tab `start_split`
     /// spawns actually finishes (`SpawnPurpose::Split`). Unlike `focused`,
     /// this tab never receives keyboard/mouse input in this first cut --
-    /// it's a live, real graph node (its own engine-host process, closable
+    /// it's a live, real graph node (its own view-host process, closable
     /// and reachable from Graph view like any other tab), just view-only
     /// while shown here. Cleared (not the tab itself closed) whenever the
     /// split closes, `focused` changes to a different tab, or this tab
@@ -341,7 +341,7 @@ struct App {
     /// keeps extending a text selection under every later hover. Tracking
     /// the in-progress drag here lets the release be forwarded to the same
     /// tab unconditionally, wherever it lands — the `manifold`-side mirror
-    /// of the engine-side `DragState` each native-input engine-host keeps.
+    /// of the engine-side `DragState` each native-input view-host keeps.
     native_drag_tab: Option<String>,
     /// Bitflags (see `ipc_protocol::modifiers`), tracked from winit's
     /// `WindowEvent::ModifiersChanged` so every forwarded `KeyDown`/`KeyUp`

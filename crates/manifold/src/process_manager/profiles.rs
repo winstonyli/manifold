@@ -3,7 +3,7 @@
 
 use super::*;
 
-/// Parent of every CEF engine-host's own `root_cache_path`. Temp when
+/// Parent of every CEF view-host's own `root_cache_path`. Temp when
 /// there's no profile (always under `cargo test`), so CEF never falls back
 /// to its machine-wide default, which only one CEF process can use at once.
 pub(super) fn cef_cache_root() -> PathBuf {

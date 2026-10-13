@@ -8,7 +8,7 @@ use crate::tabs::{AfterCrash, Held, LeftClosed};
 use winit::window::Icon;
 
 /// The event loop's real user-event type: headless debug commands, plus
-/// `TabSpawned` — see its own doc comment for why engine-host spawning needs
+/// `TabSpawned` — see its own doc comment for why view-host spawning needs
 /// to be async in the first place.
 pub(crate) enum UserEvent {
     Debug(DebugCommand),
@@ -433,7 +433,7 @@ impl ApplicationHandler<UserEvent> for App {
                 // right and middle specifically so a right/middle-click on
                 // tab content still reaches `InputEvent::MouseDown`/
                 // `MouseUp` the same way every left-click already does.
-                // Middle was missing this even though every engine-host's
+                // Middle was missing this even though every view-host's
                 // own `translate_mouse_button`/native input path already
                 // fully implements `MouseButton::Middle`.
                 let egui_wants_it =
@@ -711,7 +711,7 @@ impl App {
                 // background), so losing scroll-as-pan costs nothing.
                 // Tab view's own page-content scroll is untouched:
                 // that's a distinct `InputEvent::Scroll` forwarded to
-                // the focused tab's engine-host, not egui's Scene.
+                // the focused tab's view-host, not egui's Scene.
                 // `egui` treats "is this scroll a zoom gesture" as a
                 // single frame-wide flag (`InputState::begin_pass`
                 // computes it once from the whole event list, not
@@ -1085,11 +1085,11 @@ impl App {
         // for a tab ever matters (each one fully supersedes the last in
         // `GpuState::upload_frame`'s own `tab_textures.insert`), matching the
         // same "keep only the newest, drop the rest" policy the WebView2
-        // engine-host's own capture code already applies one layer down (see
+        // view-host's own capture code already applies one layer down (see
         // `capture.rs`'s `latest` field). A plain `Vec` here used to `push`
         // every buffered `FrameReady` this drain found and then process each
         // one in turn -- harmless while the main loop keeps up with the
-        // engine-host's own frame rate, but a real, confirmed bug once it
+        // view-host's own frame rate, but a real, confirmed bug once it
         // falls behind even slightly: found live via temporary
         // instrumentation showing bursts of up to 81 queued frames processed
         // in a single tick for one idle tab, each one a real, wasted GPU
@@ -1349,7 +1349,7 @@ impl App {
                 wgpu::TextureFormat::Rgba8UnormSrgb
             };
             if let Some(pixels) = update.pixels {
-                // RemoteTransport engine-host (WebKit over WSL2): no shared
+                // RemoteTransport view-host (WebKit over WSL2): no shared
                 // memory with this process, so the pixels travel inline in
                 // the message itself.
                 if let Some(gpu) = &mut self.gpu {
@@ -1486,12 +1486,12 @@ impl App {
                 match crate::tabs::after_crash(&reason, times, std::time::Instant::now()) {
                     AfterCrash::Restart => {}
                     AfterCrash::GiveUp => {
-                        eprintln!("engine-host for {tab_id} crashed ({reason}); not restarting");
+                        eprintln!("view-host for {tab_id} crashed ({reason}); not restarting");
                         self.leave_failed_card(tab_id, &reason, LeftClosed::KeepsCrashing);
                         return false;
                     }
                     AfterCrash::CannotStart(why) => {
-                        eprintln!("engine-host for {tab_id} could not start ({why}); not restarting");
+                        eprintln!("view-host for {tab_id} could not start ({why}); not restarting");
                         self.leave_failed_card(tab_id, why, LeftClosed::CannotStart);
                         return false;
                     }
@@ -1499,7 +1499,7 @@ impl App {
                 let url = &spawn.url;
                 // The origin only (`redacted_url`): a path or query can carry a token.
                 eprintln!(
-                    "engine-host crashed ({reason}) for {tab_id}, restarting at {}",
+                    "view-host crashed ({reason}) for {tab_id}, restarting at {}",
                     crash_report::redacted_url(url)
                 );
                 // Previously silent from the actual app's own UI -- this only

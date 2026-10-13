@@ -1,4 +1,4 @@
-//! WebView2 engine-host (see the M6 plan). Structured to mirror
+//! WebView2 view-host (see the M6 plan). Structured to mirror
 //! `manifold-view-cef/src/main.rs`'s shape (fixed-tick poll loop,
 //! `SharedNavState` + `dirty` flag) since CEF is the closest existing
 //! analog: a real Windows process, no visible window, same-machine IPC.
@@ -98,7 +98,7 @@ fn main() {
     // work at all in this real process -- confirmed live: without this,
     // `ICompositorDesktopInterop::CreateDesktopWindowTarget` fails with
     // `HRESULT(0x80070005)` ("Access is denied.") on every single launch,
-    // crashing the engine-host in a respawn loop. `examples/
+    // crashing the view-host in a respawn loop. `examples/
     // composition_capture_spike.rs` (Task 1's own verification vehicle,
     // since deleted by Task 6 along with the other throwaway spikes)
     // already did exactly this before creating its `Compositor` -- a plain

@@ -8,7 +8,7 @@ impl App {
     /// **Not applied to outgoing `InputEvent::Mouse*`/`Scroll` coordinates.**
     /// Those are sent in the engine's own *physical-pixel surface* space,
     /// the exact same space as `HostToView::Resize`'s `width`/`height`
-    /// (see `ipc_protocol::InputEvent`'s doc comment) — every engine-host
+    /// (see `ipc_protocol::InputEvent`'s doc comment) — every view-host
     /// renders a surface of precisely that pixel size, so a physical offset
     /// into the on-screen content quad is already the right value to send,
     /// with no conversion at all. Used instead for the two places that
@@ -98,7 +98,7 @@ impl App {
         (self.chrome_height_points() * ppp).round() as u32
     }
 
-    /// The engine-host's rendered surface only needs to cover the area
+    /// The view-host's rendered surface only needs to cover the area
     /// below chrome — telling it to render at the full window size (when
     /// the compositor only ever displays it in the smaller content
     /// viewport, see `gpu::GpuState::render`) would waste work and,

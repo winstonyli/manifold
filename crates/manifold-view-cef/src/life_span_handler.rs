@@ -66,7 +66,7 @@ wrap_life_span_handler! {
                 self.handler.pending.borrow_mut().push((url.to_string(), user_gesture != 0));
             }
             // Non-zero cancels popup creation - we spawn a real child tab
-            // (a separate engine-host process) instead of letting CEF
+            // (a separate view-host process) instead of letting CEF
             // create an in-process popup browser we have no IPC contract
             // for.
             true as _

@@ -23,7 +23,7 @@ fn dirty_rows(dirty_rects: Option<&[Rect]>, height: i32) -> Option<std::ops::Ran
 /// software OSR path, matching manifold-engine-servo's shared-memory frame
 /// hand-off instead of the accelerated/shared-texture path (which only
 /// makes sense for a single-process embedder, not our separate-process
-/// engine-host architecture).
+/// view-host architecture).
 #[derive(Clone)]
 pub struct ViewRenderHandler {
     size: SharedSize,

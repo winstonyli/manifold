@@ -1,8 +1,8 @@
-//! The Windows Job Object every engine-host child is assigned to, so the hosts die with manifold.exe.
+//! The Windows Job Object every view-host child is assigned to, so the hosts die with manifold.exe.
 
 use super::*;
 
-/// A Windows Job Object every engine-host child (`spawn_tab`/
+/// A Windows Job Object every view-host child (`spawn_tab`/
 /// `spawn_webkit_tab`, both call `assign_to_view_job` right after
 /// spawning) gets assigned to, configured with `JOB_OBJECT_LIMIT_KILL_ON_
 /// JOB_CLOSE` -- Windows itself then guarantees every process in the job
@@ -15,13 +15,13 @@ use super::*;
 /// Exists because engine-hosts becoming orphaned was already a known, if
 /// only ever partially worked around, problem: `spawn_tab`'s own comment
 /// above already notes "a prior run that crashed... can leave a stale
-/// engine-host-*.exe still holding tab_id's named pipe indefinitely," with
+/// view-host-*.exe still holding tab_id's named pipe indefinitely," with
 /// a fallback-socket-id workaround for *that* one symptom. Found live to
 /// be worse than a stale pipe, though -- orphaned `manifold-engine-
 /// webview2.exe` processes accumulating across several crashed/force-
 /// killed sessions were confirmed to silently starve *new* engine-hosts'
 /// own frame capture (`Windows.Graphics.Capture`, which every WebView2
-/// engine-host's off-screen hosting window uses -- see that crate's own
+/// view-host's off-screen hosting window uses -- see that crate's own
 /// `window.rs`), reproducing as tab content stuck on its loading spinner
 /// forever, not a speed problem. Diagnosed by instrumenting the frame-
 /// receive path directly: zero `FrameReady` messages arrived for over a
@@ -52,7 +52,7 @@ unsafe impl Sync for ViewJobHandle {}
 #[cfg(target_os = "windows")]
 static VIEW_JOB: std::sync::OnceLock<ViewJobHandle> = std::sync::OnceLock::new();
 
-/// Creates (once) and returns the Job Object every engine-host child gets
+/// Creates (once) and returns the Job Object every view-host child gets
 /// assigned to -- see `ViewJobHandle`'s own doc comment. A null handle
 /// (creation failed) is a silent no-op everywhere it's used, and a job whose
 /// kill-on-close setup failed is logged once and used anyway: this is a
@@ -86,7 +86,7 @@ fn view_job() -> windows_sys::Win32::Foundation::HANDLE {
         .0
 }
 
-/// Adds a just-spawned engine-host child to `view_job()` -- called right
+/// Adds a just-spawned view-host child to `view_job()` -- called right
 /// after every successful `Command::spawn()` in this module. A no-op (not
 /// an error) if the job itself failed to create/configure, or if this one
 /// assignment fails (e.g. the child already exited) -- either way, the
@@ -105,7 +105,7 @@ pub(super) fn assign_to_view_job(child: &Child) {
         let _ = AssignProcessToJobObject(job, process_handle);
     }
 }
-/// No kill-on-exit job off Windows: an engine-host sees the socket drop when manifold dies and shuts itself down
+/// No kill-on-exit job off Windows: an view-host sees the socket drop when manifold dies and shuts itself down
 /// (`ipc_protocol::transport::spawn_host_reader`). Measured on Linux (WSL2, 2026-10-02): `kill -9` of manifold with a
 /// live CEF tab left no CEF process after 1 s, so `PR_SET_PDEATHSIG` or a process group is not needed there. Said once
 /// on stderr rather than silently, since other hosts (WebKit in WSL) are not covered by that measurement.

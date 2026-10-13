@@ -868,7 +868,7 @@ fn a_group_exports_under_its_clean_name() {
     assert_eq!(export_file_name("\u{202E}"), "Untitled.json");
 }
 
-/// A live tab whose engine stopped responding leads its menu with Restart Engine and End Engine; a responsive one
+/// A live tab whose engine stopped responding leads its menu with Restart View and End View; a responsive one
 /// shows neither.
 #[test]
 fn an_unresponsive_tab_menu_leads_with_restart_and_end() {
@@ -883,6 +883,6 @@ fn an_unresponsive_tab_menu_leads_with_restart_and_end() {
             .collect()
     };
     let stuck = NodeMenuView { unresponsive: true, ..view_of(loaded_tab()) };
-    assert_eq!(labels(&stuck)[..2], ["Restart Engine", "End Engine"]);
-    assert!(!labels(&view_of(loaded_tab())).contains(&"Restart Engine"));
+    assert_eq!(labels(&stuck)[..2], ["Restart View", "End View"]);
+    assert!(!labels(&view_of(loaded_tab())).contains(&"Restart View"));
 }

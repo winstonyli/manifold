@@ -249,7 +249,7 @@ impl App {
     /// M2's swap sequence, now per-tab and driven by the engine-picker
     /// dropdown: `GetState` -> spawn new engine at the same tab_id -> new
     /// engine's first `FrameReady` becomes the displayed texture (once
-    /// focused) -> old engine-host dropped when its graph node is replaced.
+    /// focused) -> old view-host dropped when its graph node is replaced.
     pub(crate) fn start_swap_to(&mut self, tab_id: &str, target: ViewKind) {
         if self.swap_in_flight(tab_id).is_some() {
             return; // one swap at a time for this tab
@@ -294,7 +294,7 @@ impl App {
             return;
         };
         // Must drop (and thus Shutdown + kill) the old tab before spawning
-        // the new one at the same tab_id — the new engine-host's named-pipe
+        // the new one at the same tab_id — the new view-host's named-pipe
         // listeners would collide with the old ones otherwise.
         self.nodes.remove(tab_id);
         // Same stale-state guard `destroy_tab` already applies: without it, a

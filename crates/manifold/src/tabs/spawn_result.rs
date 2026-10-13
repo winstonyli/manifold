@@ -163,7 +163,7 @@ impl App {
                         if matches!(purpose, SpawnPurpose::Wake) {
                             self.note_host_load(&id);
                         }
-                        // A respawned tab is a fresh engine-host process
+                        // A respawned tab is a fresh view-host process
                         // that starts at that engine's own default zoom --
                         // unlike Root/New/Split/Restore above, this arm
                         // never told it about `zoom_factor` at all, so a

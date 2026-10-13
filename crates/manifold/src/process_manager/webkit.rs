@@ -111,7 +111,7 @@ pub(super) fn spawn_webkit_tab(tab_id: &str, initial_url: &str, wake: view_io::W
     // The child connects right after spawning. Bounded, not the unbounded
     // wait `TcpListener::accept` alone would give: this runs on a spawn worker
     // thread (`App::spawn_tab_async`; the UI thread is free), but an
-    // engine-host that never connects — a cold WSL2 VM boot, Xvfb taking
+    // view-host that never connects — a cold WSL2 VM boot, Xvfb taking
     // unusually long to come up, etc.; observed minutes-to-hours rather than
     // the sub-second common case — would otherwise leave the tab on its
     // "starting" card with no error or retry, forever. On timeout, kill the

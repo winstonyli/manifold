@@ -150,7 +150,7 @@ impl App {
     /// `\\wsl.localhost\<distro>\...` UNC form both Explorer and a pasted
     /// clipboard path understand, using the same "Ubuntu" distro name
     /// `process_manager` already hardcodes for spawning the WebKit
-    /// engine-host. Used by `node_file_path`.
+    /// view-host. Used by `node_file_path`.
     pub(crate) fn windows_path_for_download(&self, id: &str) -> Option<String> {
         let download = self.nodes.get(id)?.as_download()?;
         // Off Windows a download's path is already native (WebKit is not run through WSL there).

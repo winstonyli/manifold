@@ -39,7 +39,7 @@ fn main() {
     // Single TCP connection back to manifold, used for both directions
     // via a cloned handle — mirrors process_manager.rs's spawn_webkit_tab
     // on the Windows side (see that file's comment for why: WSL2 has no
-    // shared memory with the Windows host process, so this engine-host
+    // shared memory with the Windows host process, so this view-host
     // uses RemoteTransport, not the SharedFrameBuffer the other engines
     // use).
     // The secret process_manager.rs generated for this spawn; manifold drops any
@@ -523,7 +523,7 @@ fn main() {
             // understand or fix GTK's offscreen-resize negotiation at all
             // — manifold's reader already takes width/height from each
             // `FrameReady` message directly (no separate shared-memory
-            // sizing contract for this RemoteTransport-based engine-host),
+            // sizing contract for this RemoteTransport-based view-host),
             // so there is no requirement that it match what was requested.
             // Unchanged frames are not sent (`FrameSink`).
             if let Some(pixbuf) = offscreen.pixbuf() {

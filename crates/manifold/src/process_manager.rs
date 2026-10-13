@@ -1,4 +1,4 @@
-//! Engine kinds and the engine-host child process behind a tab: spawn, connect, read and reap. Its child modules hold
+//! Engine kinds and the view-host child process behind a tab: spawn, connect, read and reap. Its child modules hold
 //! the kill-on-exit job (`job`), profile and cache folders (`profiles`), engine availability (`availability`), the
 //! WSL-hosted WebKit spawn (`webkit`) and the control channel (`view_io`).
 
@@ -55,7 +55,7 @@ pub(crate) struct ViewDesc {
     pub(crate) bgra: bool,
     /// Takes part in the cookie jar: waits for `SetCookies` before its first navigation (`VIEW_AWAIT_COOKIES`), and
     /// answers `GetCookies` (spec 2026-10-02-jars-design). The rest are neither seeded nor pulled, and a jar choice
-    /// on their tabs shows "This engine does not use jars yet".
+    /// on their tabs shows "This view does not use jars yet".
     pub(crate) jar: bool,
     /// Opens its own DevTools window on `OpenDevTools` (CEF, WebView2). Servo has no inspector API; WebKit's
     /// inspector needs a window manager its Xvfb session doesn't have. Without it, F12 toasts instead.
@@ -143,7 +143,7 @@ pub(crate) mod view_kind_serde {
     }
 }
 
-/// A running engine-host child process plus the control channel
+/// A running view-host child process plus the control channel
 /// manifold talks to it on. `manifold` is the process manager: it
 /// owns spawning, tearing down, and (from M2 on) swapping the engine
 /// backing a tab.
@@ -156,7 +156,7 @@ pub struct ViewTab {
     /// low-level socket/shared-memory lookups (e.g. `SharedFrameBuffer`)
     /// need it.
     pub socket_id: String,
-    /// Sends to the engine-host off the UI thread (`view_io::Writer`), over its local pipe or, for the WSL2-hosted
+    /// Sends to the view-host off the UI thread (`view_io::Writer`), over its local pipe or, for the WSL2-hosted
     /// WebKit, its TCP connection (frames then travel inline in `FrameReady`).
     writer: view_io::Writer,
     pub events_rx: mpsc::Receiver<ViewToHost>,
@@ -493,7 +493,7 @@ fn unsupported_on(os: &str, kind: ViewKind) -> Option<String> {
     platform_unavailable_reason(os, kind).map(|reason| crate::view_info::PickOutcome::unavailable_toast(kind, reason))
 }
 
-/// During a swap, the old engine-host on this same `tab_id` was just killed
+/// During a swap, the old view-host on this same `tab_id` was just killed
 /// (see `App::finish_swap`'s `drop(self.tab.take())`) — but a named pipe's
 /// OS-level cleanup after `TerminateProcess` isn't always instantaneous
 /// relative to `child.wait()` returning, so creating a new listener with
@@ -516,7 +516,7 @@ fn listen_local_pair_with_retry(socket_id: &str) -> std::io::Result<transport::L
     // A collision this persistent (as opposed to the transient
     // "Access is denied" this retry loop is normally for, see the doc
     // comment above) usually means some *other* process — often a stale
-    // engine-host left over from a previous crashed/killed run — is still
+    // view-host left over from a previous crashed/killed run — is still
     // holding `socket_id`'s named pipe. Surface the OS error code and the
     // name we tried, since the bare `err` alone (e.g. just "os error 5")
     // gives no hint of which pipe or that a leftover process is the likely
@@ -526,7 +526,7 @@ fn listen_local_pair_with_retry(socket_id: &str) -> std::io::Result<transport::L
         err.kind(),
         format!(
             "failed to create named pipe for '{socket_id}' after {ATTEMPTS} attempts \
-             ({:.1}s): {err} (raw OS error: {:?}). A leftover engine-host process from a \
+             ({:.1}s): {err} (raw OS error: {:?}). A leftover view-host process from a \
              previous run may still be holding this pipe.",
             (ATTEMPTS.saturating_sub(1)) as f64 * 0.05,
             err.raw_os_error(),
@@ -550,7 +550,7 @@ fn per_tab_log_files(tab_id: &str) -> std::io::Result<(std::fs::File, std::fs::F
     // stdout/stderr: when manifold itself is launched with its stdio
     // redirected (e.g. `manifold.exe > file` from bash), that redirection
     // does not reliably propagate to a grandchild process spawned from
-    // inside it, so an inherited engine-host produces no visible output at
+    // inside it, so an inherited view-host produces no visible output at
     // all even though it runs fine.
     let mut stdout_file = open_capped_log(&per_tab_log_path(tab_id), MAX_TAB_LOG_BYTES)?;
     // Appended, not truncated: a second manifold, or a respawn racing the old
@@ -621,10 +621,10 @@ fn connect_host(
             };
             let tail = lines.join(" | ");
             let tail = if tail.is_empty() { String::from(" (its log is empty)") } else { format!(": {tail}") };
-            format!("engine-host exited {how} before connecting{tail}")
+            format!("view-host exited {how} before connecting{tail}")
         }
         None if err.kind() == std::io::ErrorKind::TimedOut => {
-            format!("engine-host is still running but did not connect within {timeout:?} (log: {})", log_path.display())
+            format!("view-host is still running but did not connect within {timeout:?} (log: {})", log_path.display())
         }
         None => return Err(err),
     };
@@ -673,7 +673,7 @@ fn is_spawn_header(line: &str) -> bool {
 }
 
 /// Synthesizes `ViewToHost::Crashed` when the connection to an
-/// engine-host drops, since a hard-killed/panicked process cannot send a
+/// view-host drops, since a hard-killed/panicked process cannot send a
 /// message about its own death. Also fires on an *intentional* teardown
 /// (a swap's old tab getting dropped, which sends `Shutdown` then kills
 /// the child) — harmless there: `tx`'s paired `rx` was owned by that same
@@ -694,7 +694,7 @@ fn spawn_reader_thread<S: std::io::Read + std::io::Write + Send + 'static>(
 ) -> mpsc::Receiver<ViewToHost> {
     let (tx, rx) = mpsc::sync_channel(view_io::EVENTS_CAP);
     std::thread::spawn(move || {
-        let lost = || ViewToHost::Crashed { reason: "engine-host connection lost".to_string() };
+        let lost = || ViewToHost::Crashed { reason: "view-host connection lost".to_string() };
         match from_view.recv_version().map(ipc_protocol::check_version) {
             Ok(Ok(())) => {}
             Ok(Err(mismatch)) => {
@@ -747,7 +747,7 @@ fn spawn_reader_thread<S: std::io::Read + std::io::Write + Send + 'static>(
 /// merely slow to start.
 const LOCAL_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Spawns an engine-host for `kind`, wires up its control channel(s), and
+/// Spawns an view-host for `kind`, wires up its control channel(s), and
 /// returns a handle the process manager (and the tab-swap logic) can drive.
 ///
 /// `tab_id`/`initial_url` are passed via env vars, not argv, for
@@ -802,7 +802,7 @@ pub fn spawn_tab(
 
     // Normally the socket/shared-memory id is just tab_id. But a prior run
     // that crashed (rather than exiting cleanly) can leave a stale
-    // engine-host-*.exe still holding tab_id's named pipe indefinitely —
+    // view-host-*.exe still holding tab_id's named pipe indefinitely —
     // listen_local_pair_with_retry's short retries won't outlast that. In
     // that case, fall back once to a fresh disambiguating id for
     // socket/shared-memory naming only; tab_id itself keeps meaning what it
@@ -823,7 +823,7 @@ pub fn spawn_tab(
         _ => view_binary_path(kind),
     };
 
-    // Each CEF engine-host gets its own throwaway cache dir, so CEF tabs
+    // Each CEF view-host gets its own throwaway cache dir, so CEF tabs
     // don't share cookies or logins and keep none across a restart (see
     // manifold-engine-cef's main.rs for why they can't share one).
     let cache_dir = (kind == ViewKind::Cef).then(|| {

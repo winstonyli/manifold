@@ -47,7 +47,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
 /// `Windows.Graphics.Capture`'s `CreateForWindow`, which rejects
 /// `WS_POPUP`, `WS_EX_TOOLWINDOW`, and owned windows alike with
 /// `E_INVALIDARG` ("Could not capture the given window") -- all three
-/// confirmed live, the owned-window attempt crashing the engine-host in a
+/// confirmed live, the owned-window attempt crashing the view-host in a
 /// respawn loop. Capture now reads the Composition visual
 /// (`CreateFromVisual`), which doesn't inspect the window at all, so those
 /// constraints no longer apply to anything. `WS_OVERLAPPEDWINDOW` is kept
@@ -76,7 +76,7 @@ pub fn create_hidden_window() -> Result<HWND> {
             ..Default::default()
         };
         // A stale registration from a prior process is fine to ignore --
-        // each engine-host is a fresh process, but RegisterClassW can still
+        // each view-host is a fresh process, but RegisterClassW can still
         // race with itself across rapid respawns of the same binary if the
         // OS hasn't fully unregistered the class yet.
         let _ = RegisterClassW(&class);
@@ -149,7 +149,7 @@ pub fn create_hidden_window() -> Result<HWND> {
 /// record here since an earlier commit message overstated this as
 /// "confirmed live." The real reason to background it: the retry loop
 /// below is a synchronous sleep totalling up to 2s, and blocking
-/// engine-host startup for that long before the first frame is captured
+/// view-host startup for that long before the first frame is captured
 /// would be a real, avoidable regression, hang or not. Kept backgrounded
 /// on that basis, with the same best-effort shape as `favicon::register`.
 /// `HWND` isn't `Send` (wraps a raw pointer Rust can't prove is
@@ -199,7 +199,7 @@ pub fn resize(hwnd: HWND, width: u32, height: u32) {
 /// Composition hosting runs on, see `main`) needs this pumped regularly;
 /// `PM_REMOVE` (not a blocking `GetMessageW`)
 /// keeps this composing with the tick loop's own fixed-interval sleep
-/// rather than blocking the whole engine-host on window messages.
+/// rather than blocking the whole view-host on window messages.
 pub fn pump_messages() {
     unsafe {
         let mut msg = MSG::default();

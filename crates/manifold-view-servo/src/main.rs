@@ -74,7 +74,7 @@ impl WebViewDelegate for Delegate {
     /// Fires for every kind of native-ish prompt Servo wants to show
     /// (`<select>`/color/file pickers, IME, `alert()`/`confirm()`, and a
     /// right-click's own context menu) -- only `ContextMenu` is handled
-    /// here, since none of the others are wired up by this engine-host at
+    /// here, since none of the others are wired up by this view-host at
     /// all. Dropping `menu` without calling `.select()`/`.dismiss()`
     /// explicitly still tells Servo the menu was dismissed with no
     /// selection (see `ContextMenu`'s own `Drop` impl) -- exactly the
@@ -149,10 +149,10 @@ fn main() {
     // Env vars, not argv — matches manifold-engine-cef, whose argv must stay
     // reserved for CEF's own command-line parsing. Kept consistent here too
     // so manifold's process manager has one spawn convention for every
-    // engine-host.
+    // view-host.
     // VIEW_SOCKET_ID names our control pipes/shared memory — normally
     // equal to VIEW_TAB_ID, but manifold may pass a different id if a
-    // stale engine-host from a prior crashed run still held VIEW_TAB_ID's
+    // stale view-host from a prior crashed run still held VIEW_TAB_ID's
     // pipes (see process_manager::spawn_tab's fallback). Only this id
     // matters here; we never need VIEW_TAB_ID itself.
     let socket_id = std::env::var("VIEW_SOCKET_ID").expect("VIEW_SOCKET_ID env var required");

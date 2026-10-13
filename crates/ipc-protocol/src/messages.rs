@@ -29,7 +29,7 @@ macro_rules! key_codes {
         /// (not guaranteed FFI/serialization-stable across winit versions) or any
         /// one engine's native representation (Windows `VK_*` for CEF, a GDK keyval
         /// for WebKitGTK, `keyboard_types::Code` for Servo). `manifold` translates
-        /// winit's key into this; each engine-host translates this into whatever
+        /// winit's key into this; each view-host translates this into whatever
         /// its own embedding API wants. Two encodings are standards rather than one
         /// engine's own, so they live here with the table (`key_codes!`): the DOM
         /// `code`/`key` strings and Windows virtual-key codes. GDK keyvals and
@@ -173,7 +173,7 @@ pub mod modifiers {
 /// `height`. Not CSS pixels, and not DPI-independent logical points.
 ///
 /// That is the one space that needs no per-engine translation: each
-/// engine-host renders a surface of precisely the pixel size `Resize` gave
+/// view-host renders a surface of precisely the pixel size `Resize` gave
 /// it (CEF pins `device_scale_factor` to 1.0, Servo/WebKit size their
 /// offscreen surface directly in those pixels), and `manifold` composites
 /// that surface 1:1 into its content quad, so a physical offset into the
@@ -213,7 +213,7 @@ pub enum InputEvent {
     Char { codepoint: u32 },
 }
 
-/// Messages sent from the manifold process manager to an engine-host.
+/// Messages sent from the manifold process manager to an view-host.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[rustfmt::skip]
 pub enum HostToView {
@@ -258,7 +258,7 @@ pub enum HostToView {
     /// jumping to the nearest match. Sent when the find bar's text changes,
     /// or the bar opens with existing text. Supported by CEF, WebKit, and
     /// WebView2 — all three have a real native find API (see each
-    /// engine-host's own find-handling code); Servo's embedding API has
+    /// view-host's own find-handling code); Servo's embedding API has
     /// none, so this is a silent no-op there, same per-engine support gap
     /// as `ViewToHost::OpenTabRequested`.
     FindStart { text: String, match_case: bool },
@@ -371,12 +371,12 @@ pub fn restore_scroll_script(x: f64, y: f64) -> String {
     )
 }
 
-/// Messages sent from an engine-host back to the manifold process manager.
+/// Messages sent from an view-host back to the manifold process manager.
 ///
 /// `FrameReady`'s `pixels` field distinguishes the two transports: a
-/// same-machine engine-host (Servo, CEF) leaves it `None` and writes pixels
+/// same-machine view-host (Servo, CEF) leaves it `None` and writes pixels
 /// into the `SharedFrameBuffer` named after the tab id instead (cheaper —
-/// no copy through serialization); a WSL2-hosted engine-host (WPE/WebKit,
+/// no copy through serialization); a WSL2-hosted view-host (WPE/WebKit,
 /// over `RemoteTransport`) has no shared memory with the Windows host
 /// process, so it sends the raw pixel bytes inline here instead.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -414,7 +414,7 @@ pub enum ViewToHost {
     Cookies(String),
     Crashed { reason: String },
     /// The page asked to open a new tab (`target=_blank`, `window.open()`,
-    /// ctrl+click) and the engine-host intercepted and cancelled it in
+    /// ctrl+click) and the view-host intercepted and cancelled it in
     /// place — `manifold` spawns a real child tab for `url` instead.
     /// CEF, WebKit, and WebView2 (`ICoreWebView2::NewWindowRequested`, see
     /// `manifold-view-webview2/src/popup.rs`) send this: their
@@ -432,7 +432,7 @@ pub enum ViewToHost {
     /// matches found, `active_index` the 1-based position of the currently
     /// selected match among them (0 if `count` is 0). WebKitGTK's
     /// `WebKitFindController` only ever reports a total count, never which
-    /// match is currently selected — its engine-host always sends
+    /// match is currently selected — its view-host always sends
     /// `active_index: 0`, so `manifold` shows just the count for a WebKit
     /// tab rather than "3 of 12".
     FindResult { count: u32, active_index: u32 },

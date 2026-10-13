@@ -1,6 +1,6 @@
 //! Throwaway pre-integration spike (see the M6 plan, Phase 2): proves the
 //! Windows.Graphics.Capture + Direct3D11-interop chain works in isolation
-//! before wiring it into the real engine-host's tick loop.
+//! before wiring it into the real view-host's tick loop.
 //!
 //! Originally planned to capture an off-screen DirectComposition `Visual`
 //! (per the approved plan), but this windows-rs version's

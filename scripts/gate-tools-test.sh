@@ -33,7 +33,7 @@ check "a ui-listed file that imports store is light" "TIER light" "$(printf '%s\
 check "an unlisted source file is light" "TIER light" "$(printf '%s\n' "$s/main.rs" | tier)"
 check "a probe script is light" "TIER light" "$(printf '%s\n' scripts/launch-forms-probe.sh | tier)"
 check "the store is full" "TIER full" "$(printf '%s\n' "$s/store/journal.rs" | tier)"
-check "engine_install/tests.rs is full" "TIER full" "$(printf '%s\n' "$s/engine_install/tests.rs" | tier)"
+check "view_install/tests.rs is full" "TIER full" "$(printf '%s\n' "$s/view_install/tests.rs" | tier)"
 check "process_manager/tests.rs is full" "TIER full" "$(printf '%s\n' "$s/process_manager/tests.rs" | tier)"
 check "jar/tests.rs is full" "TIER full" "$(printf '%s\n' "$s/jar/tests.rs" | tier)"
 check "an unlisted file's tests.rs is light" "TIER light" "$(printf '%s\n' "$s/link_gestures/tests.rs" | tier)"

@@ -35,7 +35,7 @@ pub const PROTOCOL_MISMATCH: &str = "protocol mismatch";
 /// of that line as the failure (`process_manager::connect_host`) instead of the raw log tail. A host that fails
 /// to start after connecting (WebView2 creating its environment) also sends that line as an `ViewToHost::Crashed`
 /// reason, and manifold leaves a failed card naming the rest instead of respawning (`tabs::after_crash`).
-pub const HOST_FATAL: &str = "engine-host fatal: ";
+pub const HOST_FATAL: &str = "view-host fatal: ";
 
 /// `Ok` when the peer speaks `PROTOCOL_VERSION`.
 pub fn check_version(theirs: u32) -> Result<(), String> {

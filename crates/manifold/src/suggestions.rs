@@ -114,7 +114,7 @@ const DEBOUNCE: Duration = Duration::from_millis(200);
 /// makes (rustls/ureq's one-time TLS setup — root store loading, cipher
 /// negotiation tables, etc. — plus a cold DNS+TLS handshake) is slow enough
 /// that doing it for the first time exactly when the user starts typing a
-/// search query reliably tripped Servo's engine-host into a crash/respawn
+/// search query reliably tripped Servo's view-host into a crash/respawn
 /// loop (confirmed reproducible: never happened on the *second* search of a
 /// session, only ever the first). Absorbing that one-time cost here, at
 /// startup on a throwaway background thread, keeps it off the critical path

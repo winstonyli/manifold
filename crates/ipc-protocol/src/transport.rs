@@ -11,7 +11,7 @@ use crate::channel::MessageChannel;
 use crate::messages::HostToView;
 
 /// Control-channel connection between `manifold` and a same-machine
-/// engine-host (CEF, Servo). Frame pixels travel separately via
+/// view-host (CEF, Servo). Frame pixels travel separately via
 /// `SharedFrameBuffer`; this only carries `HostToView`/`ViewToHost`
 /// messages. Each `LocalTransport` is one-directional by convention (see
 /// `listen_local_pair`/`connect_local_pair`) — one socket per tab carries
@@ -20,7 +20,7 @@ use crate::messages::HostToView;
 /// concurrently from different threads.
 pub type LocalTransport = MessageChannel<LocalStream>;
 
-/// Control-channel connection to a WSL2-hosted engine-host (WPE). No
+/// Control-channel connection to a WSL2-hosted view-host (WPE). No
 /// shared memory crosses the Windows/WSL2 boundary.
 pub type RemoteTransport = MessageChannel<TcpStream>;
 
@@ -75,19 +75,19 @@ fn socket_name(socket_id: &str, suffix: &str) -> io::Result<Name<'static>> {
 }
 
 pub struct LocalListenerPair {
-    /// manifold writes `HostToView` here; the engine-host reads it.
+    /// manifold writes `HostToView` here; the view-host reads it.
     pub host_to_view: Listener,
-    /// the engine-host writes `ViewToHost` here; manifold reads it.
+    /// the view-host writes `ViewToHost` here; manifold reads it.
     pub view_to_host: Listener,
 }
 
 /// Called by manifold (the process manager) right before spawning an
-/// engine-host child process, so both sockets exist before the child
+/// view-host child process, so both sockets exist before the child
 /// tries to connect to them.
 ///
 /// `socket_id` names the pipes and is normally the tab's `tab_id`, but
 /// callers may pass a distinct disambiguating id instead (e.g. when a
-/// stale engine-host from a prior crashed run still holds `tab_id`'s
+/// stale view-host from a prior crashed run still holds `tab_id`'s
 /// pipes) — it never needs to match manifold's own tab bookkeeping.
 pub fn listen_local_pair(socket_id: &str) -> io::Result<LocalListenerPair> {
     Ok(LocalListenerPair {
@@ -96,7 +96,7 @@ pub fn listen_local_pair(socket_id: &str) -> io::Result<LocalListenerPair> {
     })
 }
 
-/// Bounded wait for a single same-machine engine-host (CEF/Servo) to dial
+/// Bounded wait for a single same-machine view-host (CEF/Servo) to dial
 /// back on one of the two sockets, rather than `Listener::accept`'s
 /// unbounded block — see `accept_remote`'s doc comment for the sibling case
 /// (there, a cold WSL2 boot; here, a same-machine child process that fails
@@ -114,11 +114,11 @@ fn accept_one(listener: &Listener, timeout: Duration, waiting: &mut dyn FnMut() 
                 if Instant::now() >= deadline {
                     return Err(io::Error::new(
                         io::ErrorKind::TimedOut,
-                        format!("timed out after {timeout:?} waiting for engine-host to connect"),
+                        format!("timed out after {timeout:?} waiting for view-host to connect"),
                     ));
                 }
                 if !waiting() {
-                    return Err(io::Error::new(io::ErrorKind::Interrupted, "stopped waiting for engine-host"));
+                    return Err(io::Error::new(io::ErrorKind::Interrupted, "stopped waiting for view-host"));
                 }
                 std::thread::sleep(Duration::from_millis(20));
             }
@@ -127,7 +127,7 @@ fn accept_one(listener: &Listener, timeout: Duration, waiting: &mut dyn FnMut() 
     }
 }
 
-/// Called by manifold once the engine-host child process has connected.
+/// Called by manifold once the view-host child process has connected.
 /// Writes `PROTOCOL_VERSION` on the sender before returning.
 /// Returns `(sender, receiver)`: send `HostToView` on the first, recv
 /// `ViewToHost` on the second. `timeout` applies to each socket in turn
@@ -155,7 +155,7 @@ pub fn accept_local_pair_while(
     Ok((sender, receiver))
 }
 
-/// Called by an engine-host child process on startup to connect back to
+/// Called by an view-host child process on startup to connect back to
 /// the two control sockets its parent (`manifold`) already created.
 /// Returns `(receiver, sender)`: recv `HostToView` on the first, send
 /// `ViewToHost` on the second.
@@ -174,7 +174,7 @@ pub fn connect_local_pair(socket_id: &str) -> io::Result<(LocalTransport, LocalT
 
 /// Bytes in the one-time token a remote engine host sends first.
 pub const TOKEN_LEN: usize = 16;
-/// The secret a spawned WSL engine-host must present (`VIEW_TOKEN`, as hex).
+/// The secret a spawned WSL view-host must present (`VIEW_TOKEN`, as hex).
 pub type Token = [u8; TOKEN_LEN];
 
 /// Lowercase hex of `bytes`. The only form in which text that came from a page crosses a shell boundary.
@@ -195,7 +195,7 @@ pub fn token_from_hex(hex: &str) -> Option<Token> {
     from_hex(hex)?.try_into().ok()
 }
 
-/// Used only for the WSL2-hosted WebKit engine-host: manifold listens on
+/// Used only for the WSL2-hosted WebKit view-host: manifold listens on
 /// a TCP port, the WebKit host (spawned via `wsl.exe`) connects to it.
 ///
 /// Bound on all interfaces (0.0.0.0), not just loopback: WSL2's NAT-mode
@@ -209,7 +209,7 @@ pub fn listen_remote(port: u16) -> io::Result<TcpListener> {
     TcpListener::bind(("0.0.0.0", port))
 }
 
-/// Bounded wait for the WSL2-hosted engine-host to dial back, rather than
+/// Bounded wait for the WSL2-hosted view-host to dial back, rather than
 /// `TcpListener::accept`'s unbounded block — a cold/idle WSL2 instance can
 /// take an extremely long, unpredictable time to boot its lightweight VM,
 /// start Xvfb, and get far enough into GTK/WebKit init to connect (from
@@ -228,10 +228,7 @@ pub fn listen_remote(port: u16) -> io::Result<TcpListener> {
 /// arrive. Writes `PROTOCOL_VERSION` once the token is accepted.
 pub fn accept_remote(listener: &TcpListener, timeout: Duration, token: &Token) -> io::Result<RemoteTransport> {
     let timed_out = || {
-        io::Error::new(
-            io::ErrorKind::TimedOut,
-            format!("timed out after {timeout:?} waiting for engine-host to connect"),
-        )
+        io::Error::new(io::ErrorKind::TimedOut, format!("timed out after {timeout:?} waiting for view-host to connect"))
     };
     listener.set_nonblocking(true)?;
     let deadline = Instant::now() + timeout;
@@ -319,11 +316,11 @@ mod tests {
         assert!(wait_for_first_message(&rx, std::time::Duration::from_secs(5), || {}).is_none());
     }
 
-    /// Regression test for the WebKit-engine-host hang: `accept_remote`
+    /// Regression test for the WebKit-view-host hang: `accept_remote`
     /// used to call `TcpListener::accept()` directly, which blocks
     /// indefinitely if nobody ever connects — back when spawns ran on the
     /// UI thread, that froze the *entire app* (window, input, headless
-    /// stdin commands) for as long as a WSL2-hosted engine-host took to dial
+    /// stdin commands) for as long as a WSL2-hosted view-host took to dial
     /// back, confirmed live to reach multiple hours in one real incident.
     /// Spawns now run on a worker thread, but an unbounded wait would still
     /// strand the tab and its launcher. This doesn't reproduce a cold

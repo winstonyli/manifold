@@ -2246,7 +2246,7 @@ impl App {
             let middle = tab_thumb_rect(rect, inv_zoom).center();
             push_centered_text(deferred_overlays, middle, egui_phosphor::light::WARNING_CIRCLE, 24.0, DANGER_COLOR);
             body.tooltip = chain_tooltip(
-                Some("Not responding. Right-click for Restart Engine or End Engine.".to_owned()),
+                Some("Not responding. Right-click for Restart View or End View.".to_owned()),
                 body.tooltip.take(),
             );
         }

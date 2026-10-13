@@ -27,7 +27,7 @@ classify() {
     Cargo.toml | Cargo.lock | .cargo/* | rust-toolchain* | crates/*/Cargo.toml | crates/ipc-protocol/* | crates/manifold-view-*/*)
         echo "full dependency, protocol or engine crate" ;;
     "$src"/session_sync.rs | "$src"/session_sync/* | "$src"/store/* | "$src"/mirror.rs | "$src"/mirror/* | "$src"/session.rs | "$src"/session/* | "$src"/local_state.rs | "$src"/local_state/* | \
-        "$src"/process_manager.rs | "$src"/process_manager/* | "$src"/net.rs | "$src"/net/* | "$src"/engine_install.rs | "$src"/engine_install/* | "$src"/redirect_fetch.rs | "$src"/redirect_fetch/* | "$src"/favicon_fetch.rs | "$src"/favicon_fetch/* | "$src"/jar.rs | "$src"/jar/*)
+        "$src"/process_manager.rs | "$src"/process_manager/* | "$src"/net.rs | "$src"/net/* | "$src"/view_install.rs | "$src"/view_install/* | "$src"/redirect_fetch.rs | "$src"/redirect_fetch/* | "$src"/favicon_fetch.rs | "$src"/favicon_fetch/* | "$src"/jar.rs | "$src"/jar/*)
         echo "full sync, store, mirror, session, engine or network core" ;;
     scripts/gate*.sh | crates/gate/* | scripts/fresh-exe.sh | scripts/winpid.sh | scripts/lib.sh | scripts/cpu-sampler.ps1)
         echo "full the gate's own scripts and their helpers" ;;

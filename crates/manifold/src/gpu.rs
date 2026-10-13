@@ -518,7 +518,7 @@ impl GpuState {
         format: wgpu::TextureFormat,
         rows: Option<std::ops::Range<u32>>,
     ) {
-        // The size comes from an engine-host (over TCP for WebKit): a frame that isn't
+        // The size comes from an view-host (over TCP for WebKit): a frame that isn't
         // `width * height * 4` bytes, or is empty or past the device limit, would panic in wgpu.
         if !frame_is_valid(pixels.len(), width, height, self.device.limits().max_texture_dimension_2d) {
             eprintln!("gpu: dropped a {width}x{height} frame of {} bytes for tab {tab_id}", pixels.len());
@@ -811,7 +811,7 @@ impl GpuState {
     }
 
     /// Whether `upload_frame` has ever run for this tab -- `false` right
-    /// after a fresh spawn/respawn, until its engine-host's first real
+    /// after a fresh spawn/respawn, until its view-host's first real
     /// frame arrives. Lets Tab view show a loading spinner instead of the
     /// plain black clear `record_content_pass` draws for a pane with no
     /// texture yet (see that function's own doc comment).

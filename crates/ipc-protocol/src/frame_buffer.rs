@@ -5,14 +5,14 @@ use std::path::{Path, PathBuf};
 use memmap2::MmapMut;
 
 /// A file-backed memory-mapped raw pixel buffer shared between a
-/// same-machine engine-host and `manifold`. Backed by a temp file rather
+/// same-machine view-host and `manifold`. Backed by a temp file rather
 /// than a raw Windows shared-memory section or POSIX shm — file-backed
 /// mmap works identically on Windows and Linux, which keeps `wpe-sys`'s
 /// eventual native (non-WSL2) port free of a second implementation later.
 ///
 /// Pixel format is NOT fixed across engines: Servo's
 /// `SoftwareRenderingContext::read_to_image()` writes RGBA8, while CEF's
-/// OSR `OnPaint` writes BGRA8 natively. Each engine-host's `FrameReady`
+/// OSR `OnPaint` writes BGRA8 natively. Each view-host's `FrameReady`
 /// consumer on the manifold side must know which format that engine
 /// produces — this buffer just carries opaque bytes.
 pub struct SharedFrameBuffer {
@@ -29,7 +29,7 @@ pub struct SharedFrameBuffer {
 }
 
 /// Deterministic from `name` and `generation` alone so manifold can re-derive the path of
-/// a frame buffer the engine-host created, without the engine having to
+/// a frame buffer the view-host created, without the engine having to
 /// send the path over the control channel. A file is never rewritten at a new size:
 /// the engine creates the next generation's file, so a reader's mapping of the
 /// old one stays valid (Windows refuses to truncate a mapped file, error 1224).
@@ -39,7 +39,7 @@ pub fn frame_path(name: &str, generation: u32) -> PathBuf {
 
 /// Deletes every generation's frame file of `name` (errors ignored): the files named
 /// `manifold-frame-{name}-g<digits>.bin` exactly, so a name that starts with another's
-/// does not match. Only call once its engine-host has exited and the caller's own
+/// does not match. Only call once its view-host has exited and the caller's own
 /// mappings are dropped. Windows deletes a file another process still maps (measured,
 /// Windows 11 26200), so a call while a successor runs would take its file away.
 pub fn remove_frame_file(name: &str) {
@@ -56,7 +56,7 @@ pub fn remove_frame_file(name: &str) {
 }
 
 /// Deletes `manifold-frame-*.bin` files in `dir` last modified more than
-/// `older_than` ago and not in use. A live engine-host keeps its file
+/// `older_than` ago and not in use. A live view-host keeps its file
 /// mapped. On Windows that makes an exclusive open fail, so a file that opens
 /// with `share_mode(0)` belongs to no one. On Unix a mapping blocks nothing,
 /// so every `SharedFrameBuffer` holds a shared `flock` on its file instead,

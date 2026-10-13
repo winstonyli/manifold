@@ -10,7 +10,7 @@ Run `cargo fmt --all` before each commit. `cargo fmt --all --check` and `cargo c
 
 ## Tests and the user's profile
 
-No test may read or write the real `%APPDATA%\manifold`. Every path into it starts from `profile::dir()` (or `profile::engine_data_dir()`, the `etcetera` directory inside it), both `None` under `cfg(test)`, so `App::default()` in a test loads defaults. A test that needs files uses `store::testutil::temp_dir` and passes the path in. `profile::tests` fails if any other source file mentions `"APPDATA"` or `etcetera`.
+No test may read or write the real `%APPDATA%\manifold`. Every path into it starts from `profile::dir()` (or `profile::view_data_dir()`, the `etcetera` directory inside it), both `None` under `cfg(test)`, so `App::default()` in a test loads defaults. A test that needs files uses `store::testutil::temp_dir` and passes the path in. `profile::tests` fails if any other source file mentions `"APPDATA"` or `etcetera`.
 
 ## Gate
 

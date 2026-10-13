@@ -865,7 +865,7 @@ pub(crate) fn forget_disk_cache(ctx: &egui::Context) {
 
 /// `profile::pictures_dir()`\manifold-<unix-seconds>.png, or the temp folder without one — same
 /// "pick the obvious default, no save-as dialog" posture `downloads_dir()`
-/// (in each engine-host's own download-handling code) already takes, just
+/// (in each view-host's own download-handling code) already takes, just
 /// on the manifold side for the toolbar's "Screenshot" button. The
 /// timestamp is the simplest collision-free name that needs no extra
 /// state; a real "Save As" dialog would be the alternative, but this

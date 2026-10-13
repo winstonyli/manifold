@@ -614,7 +614,7 @@ impl App {
             self.build_split_pane_label(ui, &split_id);
         }
         // A freshly-spawned or just-respawned tab's content pane draws as
-        // plain black until its engine-host's first real frame arrives (see
+        // plain black until its view-host's first real frame arrives (see
         // `record_content_pass`'s own doc comment -- the pane still clears,
         // it just has nothing to draw) -- confirmed live, a genuinely jarring
         // blank screen with zero feedback, unlike the Graph-view card's own

@@ -98,7 +98,7 @@ pub type PendingContextMenu = Rc<RefCell<Option<(f64, f64, String)>>>;
 /// Is the left button currently down? Tracked across `MouseDown`/
 /// `MouseMove`/`MouseUp` because `ipc_protocol::InputEvent::MouseMove`
 /// carries no button state of its own (only the held modifier keys), so
-/// this project's own engine-host has to remember it, to know whether to
+/// this project's own view-host has to remember it, to know whether to
 /// include the left-button virtual key on a `SendMouseInput` move (so
 /// Chromium's own drag/selection handling sees the button as held).
 pub type DragState = Rc<Cell<bool>>;

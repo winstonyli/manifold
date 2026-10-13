@@ -612,7 +612,7 @@ pub(crate) fn node_menu_config(view: &NodeMenuView, headless: bool) -> NodeMenuC
         TYPE_TAB if view.kind.loaded() => {
             let mut items = Vec::new();
             if view.unresponsive {
-                items.extend([Button("Restart Engine", A::RestartView), Button("End Engine", A::EndView), Separator]);
+                items.extend([Button("Restart View", A::RestartView), Button("End View", A::EndView), Separator]);
             }
             items.extend([
                 Button("Duplicate", A::Duplicate),
@@ -679,7 +679,7 @@ pub(crate) struct NodeMenuView {
     /// Tab only.
     pinned: bool,
     /// Live tab only: its engine stopped reading (`ViewTab::is_unresponsive`), so the menu leads with Restart
-    /// Engine and End Engine.
+    /// Engine and End View.
     unresponsive: bool,
     /// Unloaded only: the default engine isn't the one that failed, so
     /// the menu offers it.

@@ -254,7 +254,7 @@ impl App {
             tips.push("This tab's jar was deleted; it uses the default jar".to_string());
         }
         if view_ignores {
-            tips.push("This engine does not use jars yet".to_string());
+            tips.push("This view does not use jars yet".to_string());
         }
         if will_switch {
             let cleared = self.cookies.jar_reseed.contains(id);

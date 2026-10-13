@@ -40,7 +40,7 @@ const DEFAULT_HEIGHT: u32 = 768;
 /// extra `V8Context::eval` round trip every tick.
 const AUDIO_PLAYING_POLL_INTERVAL: Duration = Duration::from_millis(1000);
 
-/// Same job-object setup `engine-host-webview2` already uses for its own
+/// Same job-object setup `view-host-webview2` already uses for its own
 /// multi-process tree -- see this function's own call site for why.
 #[cfg(windows)]
 fn setup_kill_on_exit_job() -> windows::core::Result<windows::Win32::Foundation::HANDLE> {
@@ -126,7 +126,7 @@ fn main() {
     // job the moment this process's own job handle closes, on any exit
     // path (graceful, crashed, or force-killed), since child processes
     // created by a process already in a job join the same job
-    // automatically. Same fix `engine-host-webview2` already applies for
+    // automatically. Same fix `view-host-webview2` already applies for
     // its own equivalent multi-process tree; `_job`'s only purpose is to
     // stay alive for the whole process lifetime. Elsewhere there is no job;
     // on Linux CEF's subprocesses exited by themselves within 5 s of a
@@ -141,7 +141,7 @@ fn main() {
     // them as its own flags/URLs-to-open.
     // VIEW_SOCKET_ID names our control pipes/shared memory — normally
     // equal to VIEW_TAB_ID, but manifold may pass a different id if a
-    // stale engine-host from a prior crashed run still held VIEW_TAB_ID's
+    // stale view-host from a prior crashed run still held VIEW_TAB_ID's
     // pipes (see process_manager::spawn_tab's fallback). Only this id
     // matters here; we never need VIEW_TAB_ID itself.
     let socket_id = std::env::var("VIEW_SOCKET_ID").expect("VIEW_SOCKET_ID env var required");

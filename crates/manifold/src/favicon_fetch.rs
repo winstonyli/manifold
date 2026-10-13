@@ -4,7 +4,7 @@
 //! had their own working-but-different mechanism, and CEF's never actually
 //! worked at all (`on_favicon_urlchange` fires but its `icon_urls` list is
 //! always empty under CEF's windowless/Alloy runtime -- a confirmed
-//! platform limitation, not fixable from that engine-host's side). Fetching
+//! platform limitation, not fixable from that view-host's side). Fetching
 //! `{origin}/favicon.ico` directly, independent of whichever engine is
 //! rendering a given tab, gets identical behavior across all four --
 //! including Servo, which never had *any* favicon support before this.

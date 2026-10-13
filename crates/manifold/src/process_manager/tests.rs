@@ -280,7 +280,7 @@ fn a_host_that_exits_on_start_is_reported_with_its_code_and_log() {
     let err = connect_host(&listeners, &mut child, &log, Duration::from_secs(20)).err().expect("no host connected");
     let message = err.to_string();
     assert!(started.elapsed() < Duration::from_secs(10), "gave up when the child exited, took {:?}", started.elapsed());
-    assert!(message.starts_with("engine-host exited with code 3 before connecting: "), "{message}");
+    assert!(message.starts_with("view-host exited with code 3 before connecting: "), "{message}");
     assert!(message.contains("starting"), "{message}");
     assert!(message.contains("libfake.so: cannot open shared object file"), "{message}");
     let _ = std::fs::remove_dir_all(dir);
@@ -294,7 +294,7 @@ fn a_host_that_never_connects_is_reported_as_still_running_and_killed() {
     let mut child = fake_host("ping -n 30 127.0.0.1", "sleep 30", &log);
     let err = connect_host(&listeners, &mut child, &log, Duration::from_millis(300)).err().expect("no host connected");
     let message = err.to_string();
-    assert!(message.starts_with("engine-host is still running but did not connect within 300ms"), "{message}");
+    assert!(message.starts_with("view-host is still running but did not connect within 300ms"), "{message}");
     assert!(matches!(child.try_wait(), Ok(Some(_))), "the child was killed and reaped");
     let _ = std::fs::remove_dir_all(dir);
 }
@@ -341,7 +341,7 @@ fn an_earlier_spawns_fatal_line_is_not_the_reason_for_the_next() {
     let mut child = fake_host_to("exit /b 4", "exit 4", out);
     let err = connect_host(&listeners, &mut child, &log, Duration::from_secs(20)).err().expect("no host connected");
     let message = err.to_string();
-    assert!(message.starts_with("engine-host exited with code 4 before connecting: "), "{message}");
+    assert!(message.starts_with("view-host exited with code 4 before connecting: "), "{message}");
     assert!(!message.contains("too old"), "only this spawn's lines: {message}");
     assert_eq!(message.matches("spawning a host for").count(), 1, "{message}");
     let _ = std::fs::remove_dir_all(dir);
@@ -353,8 +353,8 @@ fn a_host_that_exits_with_a_fatal_line_is_reported_by_that_line() {
     let log = dir.join("host.log");
     let listeners = transport::listen_local_pair(&format!("test-fatal-{}", std::process::id())).unwrap();
     let mut child = fake_host(
-        "echo noise 1>&2 & echo engine-host fatal: CEF runtime too old 1>&2 & exit /b 1",
-        "echo noise >&2; echo 'engine-host fatal: CEF runtime too old' >&2; exit 1",
+        "echo noise 1>&2 & echo view-host fatal: CEF runtime too old 1>&2 & exit /b 1",
+        "echo noise >&2; echo 'view-host fatal: CEF runtime too old' >&2; exit 1",
         &log,
     );
     let err = connect_host(&listeners, &mut child, &log, Duration::from_secs(20)).err().expect("no host connected");

@@ -149,7 +149,7 @@ pub(crate) enum SpawnPurpose {
 
 /// A pending `process_manager::spawn_tab` call's outcome, carried back to
 /// the main/event-loop thread via `EventLoopProxy` — see `App::spawn_tab_async`
-/// for why this exists: spawning WebKit's engine-host blocks on a cold WSL2
+/// for why this exists: spawning WebKit's view-host blocks on a cold WSL2
 /// boot + Xvfb + WebKitGTK init (confirmed live to take several real seconds
 /// on first use, occasionally much longer — see `process_manager::
 /// spawn_webkit_tab`'s own doc comment), which would otherwise freeze the
@@ -276,7 +276,7 @@ pub(crate) enum LeftClosed {
     KeepsCrashing,
     /// `AfterCrash::CannotStart`: the host could not start; the toast says why.
     CannotStart,
-    /// "End Engine" on a tab that stopped responding.
+    /// "End View" on a tab that stopped responding.
     Ended,
 }
 
@@ -473,7 +473,7 @@ impl App {
     /// hardcoded, since those cases genuinely differ in what should happen once the
     /// spawn completes (see `handle_tab_spawn_result`'s own per-purpose
     /// match). Returns the new tab's id, allocated synchronously even
-    /// though the real engine-host process spawn (and thus the node's own
+    /// though the real view-host process spawn (and thus the node's own
     /// insertion into `self.nodes`) completes asynchronously -- see
     /// `spawn_tab_async`'s own doc comment. `jar` is the opener's choice to copy; `None` inherits from `group`.
     pub(crate) fn spawn_new_tab_with_kind(
@@ -728,7 +728,7 @@ impl App {
         self.respawn_tab(spawn);
     }
 
-    /// "Restart Engine": a new host for live tab `id` at its current URL, as a crash restart does, without counting
+    /// "Restart View": a new host for live tab `id` at its current URL, as a crash restart does, without counting
     /// toward the crash limit. False when `id` is no live tab.
     pub(crate) fn restart_view(&mut self, id: &str) -> bool {
         let Some(spawn) = self.restart_spawn(id) else { return false };
@@ -737,7 +737,7 @@ impl App {
         true
     }
 
-    /// "End Engine": ends live tab `id`'s host and leaves a failed card, which a click starts again. False when `id`
+    /// "End View": ends live tab `id`'s host and leaves a failed card, which a click starts again. False when `id`
     /// is no live tab.
     pub(crate) fn end_view(&mut self, id: &str) -> bool {
         if self.nodes.get(id).and_then(|n| n.as_tab()).is_none() {

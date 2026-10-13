@@ -195,7 +195,7 @@ fn the_chip_shows_only_non_default_or_warning_states() {
     let chip = app.jar_chip(&t).unwrap();
     assert_eq!((chip.name.to_string().as_str(), chip.following, chip.missing), ("Work", false, false));
     assert!(chip.view_ignores, "`sleeping_tab` is a Servo tab");
-    assert_eq!(chip.tooltip.as_deref(), Some("This engine does not use jars yet"));
+    assert_eq!(chip.tooltip.as_deref(), Some("This view does not use jars yet"));
     app.follow_group_jar(&t); // no group default: back to the default jar
     assert!(app.jar_chip(&t).is_none());
     app.set_tab_jar(&t, Some(work));
@@ -493,7 +493,7 @@ fn the_tab_view_hover_styles_the_label() {
     let mut want = egui::text::LayoutJob::default();
     want.append("Jar: ", 0.0, egui::TextFormat::simple(font.clone(), egui::Color32::PLACEHOLDER));
     chip.name.append_to(&mut want, font.clone(), weak);
-    want.append("\nThis engine does not use jars yet", 0.0, egui::TextFormat::simple(font, egui::Color32::PLACEHOLDER));
+    want.append("\nThis view does not use jars yet", 0.0, egui::TextFormat::simple(font, egui::Color32::PLACEHOLDER));
     assert_eq!(job, want);
     let mut chip = chip;
     chip.following = true;

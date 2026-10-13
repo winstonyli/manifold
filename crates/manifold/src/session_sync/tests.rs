@@ -5006,7 +5006,7 @@ fn a_tab_that_stops_responding_is_toasted_once() {
     assert_eq!(toasts(&app), 1, "once per stall");
 }
 
-/// "Restart Engine" starts a new host for the tab under the same id, and says so.
+/// "Restart View" starts a new host for the tab under the same id, and says so.
 #[test]
 fn restart_view_respawns_the_tab_under_its_id() {
     let mut app = app_on(&temp_dir("restart-engine").join("session.mnf"), 1);
@@ -5017,7 +5017,7 @@ fn restart_view_respawns_the_tab_under_its_id() {
     assert!(!app.restart_view("no-such-tab"));
 }
 
-/// "End Engine" leaves a failed card for the tab, and says so.
+/// "End View" leaves a failed card for the tab, and says so.
 #[test]
 fn end_view_leaves_a_failed_card() {
     let mut app = app_on(&temp_dir("end-engine").join("session.mnf"), 1);

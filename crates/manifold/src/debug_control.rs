@@ -386,9 +386,9 @@ pub enum DebugCommand {
     /// action, targeting an explicit id for the same reason as `CloseGroup`.
     /// See `App::request_sleep`.
     SleepNode(String),
-    /// `RESTARTVIEW id` -- the "Restart Engine" row of live tab `id`'s menu (`App::restart_view`).
+    /// `RESTARTVIEW id` -- the "Restart View" row of live tab `id`'s menu (`App::restart_view`).
     RestartView(String),
-    /// `ENDVIEW id` -- the "End Engine" row of live tab `id`'s menu (`App::end_view`).
+    /// `ENDVIEW id` -- the "End View" row of live tab `id`'s menu (`App::end_view`).
     EndView(String),
     /// `IDLESWEEP secs` -- one idle auto-sleep sweep with a limit of `secs`
     /// seconds instead of the setting's minutes. See `App::sweep_idle_tabs`.
@@ -487,8 +487,8 @@ const COMMAND_HELP: &[(&str, &str)] = &[
     ("GRAPHOPEN", "Open whichever Graph-view node is currently focused"),
     ("TYPE text", "Send each character to the focused tab's own page (not the address bar)"),
     ("KEYPAGE key", "Send a KeyDown+KeyUp of `key` to the focused tab's own page"),
-    ("INSTALLVIEW kind", "Start downloading and installing the engine's host files (and CEF's runtime)"),
-    ("VIEWSTATE kind", "Print the engine's state (Installed, Installing n%, Failed: ..) to stderr"),
+    ("INSTALLVIEW kind", "Start downloading and installing the view's host files (and CEF's runtime)"),
+    ("VIEWSTATE kind", "Print the view's state (Installed, Installing n%, Failed: ..) to stderr"),
     ("REOPENTAB", "Ctrl+Shift+T -- reopen the newest Recently Closed entry"),
     ("ZOOMIN", "Ctrl+=/Ctrl++ -- zoom in"),
     ("ZOOMOUT", "Ctrl+- -- zoom out"),
@@ -562,7 +562,7 @@ const COMMAND_HELP: &[(&str, &str)] = &[
     ("TOGGLESHORTCUTSHELP", "F1 -- toggle the keyboard-shortcut reference popup"),
     ("MENUPAGE name", "Show the open card menu's color|jar page, or its items for none"),
     ("TOGGLEPOPUP name", "Toggle the Settings page's bookmarks|history|downloads popup (opens the page)"),
-    ("SPLIT engine", "Open a Split pane running `engine` (servo|cef|webkit|webview2)"),
+    ("SPLIT kind", "Open a Split pane running `kind` (servo|cef|webkit|webview2)"),
     ("CLOSESPLIT", "Close the Split pane"),
     ("JSONSELECT [pointer]", "Select an entry on the current JSON level (no pointer: the root)"),
     ("JSONTOGGLE [pointer]", "Collapse or expand a card on the current JSON level"),
@@ -583,10 +583,10 @@ const COMMAND_HELP: &[(&str, &str)] = &[
     ),
     (
         "RESTARTVIEW id",
-        "Start a new engine host for live tab `id` at its URL, same as its \"Restart Engine\" row \
+        "Start a new view host for live tab `id` at its URL, same as its \"Restart View\" row \
          (offered while it is not responding)",
     ),
-    ("ENDVIEW id", "End live tab `id`'s engine host and leave a failed card, same as its \"End Engine\" row"),
+    ("ENDVIEW id", "End live tab `id`'s view host and leave a failed card, same as its \"End View\" row"),
     (
         "IDLESWEEP secs",
         "Run one idle auto-sleep sweep: tabs out of sight for `secs` seconds are asked to sleep, \
@@ -1174,7 +1174,7 @@ impl App {
             }
             DebugCommand::ViewStatus(kind) => {
                 eprintln!(
-                    "engine-state {}: {} [{}]",
+                    "view-state {}: {} [{}]",
                     kind.desc().name,
                     crate::view_info::view_status_label(&self.view_status(kind)).0,
                     crate::view_info::on_disk_text(kind, crate::process_manager::view_on_disk(kind))

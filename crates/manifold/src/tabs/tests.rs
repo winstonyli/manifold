@@ -21,7 +21,7 @@ fn a_host_that_cannot_start_is_not_restarted_and_says_why() {
     let mismatch = format!("{}: host 2, engine 3", ipc_protocol::PROTOCOL_MISMATCH);
     assert_eq!(after_crash(&mismatch, &mut times, t0), AfterCrash::GiveUp);
     // A plain crash still restarts, up to the cap.
-    let lost = "engine-host connection lost";
+    let lost = "view-host connection lost";
     assert_eq!(after_crash(lost, &mut times, t0), AfterCrash::Restart);
     assert_eq!(after_crash(lost, &mut times, t0 + Duration::from_secs(1)), AfterCrash::Restart);
     assert_eq!(after_crash(lost, &mut times, t0 + Duration::from_secs(2)), AfterCrash::GiveUp);
