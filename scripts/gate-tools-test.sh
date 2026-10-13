@@ -3,8 +3,10 @@
 # Checks gate-tier.sh and fresh-exe.sh (the timing join is a unit test in crates/gate/src/timing.rs) in about a second, without the app or git.
 set -u
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
-# shellcheck source=lib.sh
-. "$repo_root/scripts/lib.sh"
+# check NAME WANT GOT: a PASS or FAIL line; a FAIL sets status=1.
+check() {
+    if [ "$2" = "$3" ]; then echo "PASS: $1"; else echo "FAIL: $1: got [$3], wanted [$2]"; status=1; fi
+}
 t="$(mktemp -d)"
 trap 'rm -rf "$t"' EXIT
 status=0
@@ -19,7 +21,6 @@ check "docs only is ui" "TIER ui" "$(printf '%s\n' README.md docs/x.md | tier)"
 check "a ui-listed file with no core import is ui" "TIER ui" "$(printf '%s\n' "$s/theme.rs" | tier)"
 check "a ui-listed file that imports store is light" "TIER light" "$(printf '%s\n' "$s/zoom_chip.rs" | tier)"
 check "an unlisted source file is light" "TIER light" "$(printf '%s\n' "$s/main.rs" | tier)"
-check "a probe script is light" "TIER light" "$(printf '%s\n' scripts/chrome-shots.sh | tier)"
 check "the store is full" "TIER full" "$(printf '%s\n' "$s/store/journal.rs" | tier)"
 check "view_install/tests.rs is full" "TIER full" "$(printf '%s\n' "$s/view_install/tests.rs" | tier)"
 check "process_manager/tests.rs is full" "TIER full" "$(printf '%s\n' "$s/process_manager/tests.rs" | tier)"

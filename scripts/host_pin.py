@@ -31,7 +31,7 @@ KINDS = {"servo": "Servo", "cef": "Cef", "webkit": "Webkit", "webview2": "Webvie
 PLATFORMS = ("windows-x64", "linux-x64")
 
 REGION = re.compile(r"(// BEGIN TABLE\n)(.*?)(// END TABLE\n)", re.S)
-ENTRY_LINE = re.compile(r'^\s*Entry \{ kind: EngineKind::(\w+), platform: "([^"]+)", components: &\[$')
+ENTRY_LINE = re.compile(r'^\s*Entry \{ kind: ViewKind::(\w+), platform: "([^"]+)", components: &\[$')
 COMPONENT_LINE = re.compile(
     r'^\s*Component \{ file: "([^"]+)", url: "([^"]+)", size: (\d+), sha256: "([0-9a-f]{64})" \},$')
 
@@ -74,7 +74,7 @@ def render(version, entries):
         "const TABLE: &[Entry] = &[",
     ]
     for (kind, platform), files in sorted(entries.items()):
-        lines.append(f'    Entry {{ kind: EngineKind::{KINDS[kind]}, platform: "{platform}", components: &[')
+        lines.append(f'    Entry {{ kind: ViewKind::{KINDS[kind]}, platform: "{platform}", components: &[')
         for file, (url, size, sha) in sorted(files.items()):
             lines.append(f'        Component {{ file: "{file}", url: "{url}", size: {size}, sha256: "{sha}" }},')
         lines.append("    ] },")

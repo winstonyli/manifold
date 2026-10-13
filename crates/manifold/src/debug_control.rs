@@ -238,7 +238,7 @@ pub enum DebugCommand {
     /// `json_card`, `screen` and `rect`), `group`, `parent`, `color` (whether it has a tag color),
     /// `pinned`, `editing` (a note being edited), `screen` (its center) and
     /// `rect` (`[left, top, right, bottom]`), in points, which are pixels
-    /// headless. `scripts/export_state.py` reads these for the probe
+    /// headless. `gate` reads these for the probe
     /// scripts. `selected` is the rectangle
     /// selection's ids, sorted. `mirror_groups` maps every node id (any
     /// level) to its group as this replica shows it (the mirror), or null.

@@ -232,14 +232,21 @@ impl Instance {
     /// non-empty, wait until its size stops changing (headless-smoke-test.sh `wait_for_file`).
     pub fn screenshot(&mut self, name: &str) -> io::Result<PathBuf> {
         let path = self.fresh_path(format!("{name}.png"));
+        self.screenshot_to(&path)?;
+        Ok(path)
+    }
+
+    /// `screenshot` to a path of the caller's choosing (any file there is replaced).
+    pub fn screenshot_to(&mut self, path: &Path) -> io::Result<()> {
+        let _ = fs::remove_file(path);
         self.send(&format!("SCREENSHOT {}", path.display()))?;
-        wait_file(&path, SCREENSHOT_TIMEOUT)?;
+        wait_file(path, SCREENSHOT_TIMEOUT)?;
         let mut prev = None;
         let deadline = Instant::now() + SCREENSHOT_TIMEOUT;
         loop {
-            let now = fs::metadata(&path)?.len();
+            let now = fs::metadata(path)?.len();
             if prev == Some(now) {
-                return Ok(path);
+                return Ok(());
             }
             if Instant::now() >= deadline {
                 return Err(timed_out(format!("{} kept changing size", path.display())));

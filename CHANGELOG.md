@@ -25,7 +25,7 @@ One entry per tagged release, newest first. The annotated tag `vX.Y.Z` carries t
 
 - `EngineDesc::jar` replaces five engine lists; per-engine wildcard arms are exhaustive (`engine_runtime_dir`, `platform_unavailable_reason`, one `on_disk_reader` shared by the engine lists and spawn).
 - `main.rs` split into modules by concern (3,895 to 710 lines) and `App`'s fields grouped into 14 sub-structs; no behaviour change. `tabs.rs`, `process_manager.rs` and `gpu.rs` were split the same way (pure moves, same 1,124 tests).
-- `gate layout` opens every menu and dialog at three window sizes and checks each lies inside the window and that no card shows through it (`EXPORTSTATE` gained `window` and `popups`); `scripts/chrome-shots-sizes.sh` shoots the chrome at several sizes.
+- `gate layout` opens every menu and dialog at three window sizes and checks each lies inside the window and that no card shows through it (`EXPORTSTATE` gained `window` and `popups`); `gate chrome-shots-sizes` shoots the chrome at several sizes.
 - The gate's headless flows are one Rust program, `crates/gate` (`gate link|smoke|two`), replacing `link-probe.sh`, `headless-smoke-test.sh` and `two-instance-test.sh` and their python helpers. Checks are closures over the exported state, `two` now prints a `PASS:` line per check, and a full gate takes about 5.5 min instead of about 11 (measured under 38-45% load from other sessions). `gate-timing.sh` also reads a Windows-path CPU log correctly now. CI lints and tests `gate` on Windows.
 - The engine's own inbox is bounded (`ENGINE_INBOX`, 256), so a stuck engine main loop backs the app up instead of growing the engine's memory. `ipc_protocol` writes each message in one `write`.
 
