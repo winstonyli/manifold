@@ -36,8 +36,6 @@
 # CARGO_TARGET_DIR is honoured for the Windows hosts and manifold.exe (a short path avoids cef-dll-sys path limits).
 set -euo pipefail
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
-# shellcheck source=winpid.sh
-. "$repo_root/scripts/winpid.sh"
 cd "$repo_root"
 
 pin_rs=crates/manifold/src/host_pin.rs
@@ -65,14 +63,8 @@ wp() { cygpath -m "$1"; } # native path for python / MANIFOLD_WEBVIEW2_HOST
 sha() { sha256sum "$1" | cut -d' ' -f1; }
 pin() { python -P "$repo_root/scripts/host_pin.py" "$@" </dev/null; }
 
-# run_low <cmd...>: runs it at BelowNormal and returns its exit status (`cmd /c start /belownormal` loses it).
-run_low() {
-    "$@" &
-    local p=$! rc=0
-    below_normal "$p" >/dev/null || true
-    wait "$p" || rc=$?
-    return $rc
-}
+# Everything below (cargo and the compilers it starts) runs at BelowNormal: children inherit this shell's priority.
+powershell -NoProfile -Command "(Get-Process -Id $(cat /proc/$$/winpid)).PriorityClass = 'BelowNormal'" </dev/null || echo "WARNING: release.sh runs at normal priority" >&2
 
 if [ -n "$verify_tag" ]; then
     ver="${verify_tag#v}"
@@ -156,7 +148,7 @@ if [ -z "${SKIP_BUILD:-}" ]; then
     (
         PATH="$(echo "$PATH" | tr ':' '\n' | grep -v -F depot_tools | tr '\n' ':')"
         export PATH RUSTFLAGS="-C target-feature=+crt-static"
-        run_low cargo build --release -j "$jobs" "${win_pkgs[@]}"
+        cargo build --release -j "$jobs" "${win_pkgs[@]}"
         if [ -n "$build_servo" ]; then
             # About 33 minutes and several GB of disk and RAM: refuse early rather than fail at minute 30.
             free_gb="$(df -BG --output=avail . | tail -1 | tr -dc 0-9)"
@@ -165,7 +157,7 @@ if [ -z "${SKIP_BUILD:-}" ]; then
             [ "$free_mb" -ge 8000 ] || die "Servo's release build needs about 8 GB of free memory; $free_mb MB free"
             # Not with the static CRT: mozjs and mozangle are built against the dynamic one (/MD) and the linker refuses to
             # mix them (LNK2038, found by the Task 7 dry run), so this host imports vcruntime140/msvcp140.
-            (unset RUSTFLAGS; CARGO_TARGET_DIR=target-servo run_low cargo build --release -j "$jobs" -p manifold-view-servo)
+            (unset RUSTFLAGS; CARGO_TARGET_DIR=target-servo cargo build --release -j "$jobs" -p manifold-view-servo)
         fi
     )
     if [ -n "$build_webkit" ]; then
@@ -213,7 +205,7 @@ table_sha="$(pin --version "$version" "${keep_args[@]}" "${assets[@]}")"
     MANIFOLD_WEBVIEW2_HOST="$(wp "$win_host")"
     export MANIFOLD_PDFIUM_HOST
     MANIFOLD_PDFIUM_HOST="$(wp "$pdf_host")"
-    run_low cargo build --release -j "$jobs" -p manifold
+    cargo build --release -j "$jobs" -p manifold
 )
 
 # The hosts must be the files that were hashed: building manifold.exe cannot have relinked them.
