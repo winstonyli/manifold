@@ -21,6 +21,8 @@ mod instance;
 #[cfg(windows)]
 mod jar;
 #[cfg(windows)]
+mod json_pan;
+#[cfg(windows)]
 mod launch_forms;
 #[cfg(windows)]
 mod layout;
@@ -84,6 +86,7 @@ mod windows_main {
             "chrome-shots" => crate::shots::chrome_shots(parent),
             "chrome-shots-sizes" => crate::shots::chrome_shots_sizes(parent),
             "jar" => crate::jar::jar(parent),
+            "json-pan" => crate::json_pan::json_pan(&std::env::args().skip(2).collect::<Vec<_>>()),
             "tier" => crate::tier::tier(&std::env::args().skip(2).collect::<Vec<_>>()),
             "package" => crate::package::package(&std::env::args().skip(2).collect::<Vec<_>>()),
             "focus-loss" => crate::focus::focus_loss(parent),
@@ -111,7 +114,7 @@ mod windows_main {
             // Test aid for the "killed gate leaves no manifold.exe" proof; not a gate stage.
             "hold" => hold(parent),
             _ => {
-                eprintln!("usage: gate all LOG [full|light|ui] | gate hello|launch-forms|unresponsive|layout|link|smoke|two [WORKDIR_PARENT] | gate chrome-shots|chrome-shots-sizes [WORKDIR_PARENT] | gate sleep | gate jar | gate package [EXE] | gate focus-loss | gate scale TABS... | gate tier [BASE|--stdin] | gate fresh EXE");
+                eprintln!("usage: gate all LOG [full|light|ui] | gate hello|launch-forms|unresponsive|layout|link|smoke|two [WORKDIR_PARENT] | gate chrome-shots|chrome-shots-sizes [WORKDIR_PARENT] | gate sleep | gate jar | gate json-pan [MODE] [SECONDS] [--samply] | gate package [EXE] | gate focus-loss | gate scale TABS... | gate tier [BASE|--stdin] | gate fresh EXE");
                 ExitCode::from(2)
             }
         }
