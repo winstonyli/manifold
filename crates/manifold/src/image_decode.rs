@@ -34,7 +34,7 @@ impl ImageDecoder {
             thread::spawn(move || loop {
                 // The lock is held only while waiting for the next request, never while decoding.
                 let Ok((id, path)) = queue.lock().map(|q| q.recv()).unwrap_or(Err(mpsc::RecvError)) else { return };
-                if result_tx.send((id, decode(&path))).is_err() {
+                if result_tx.send((id, guarded(&path, decode))).is_err() {
                     return;
                 }
             });
@@ -61,6 +61,16 @@ impl ImageDecoder {
     pub fn pending(&self) -> usize {
         self.pending.load(Ordering::SeqCst)
     }
+}
+
+/// Runs `decode` on `path`, turning a panic inside it (a decoder bug on a hostile file) into the error for that one
+/// image: left alone it would kill the worker thread, and the node would wait for a result forever.
+fn guarded(path: &str, decode: impl FnOnce(&str) -> Result<Decoded, String>) -> Result<Decoded, String> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| decode(path))).unwrap_or_else(|_| {
+        let name = crate::json_file::file_name(std::path::Path::new(path));
+        eprintln!("image: decoder panicked on {path}");
+        Err(format!("Couldn't open image {name}: the decoder crashed"))
+    })
 }
 
 /// Reads and decodes `path`, by content rather than extension (a lying extension must not defeat the sniff
@@ -113,5 +123,12 @@ mod tests {
         assert_eq!((good.width, good.height, good.rgba.len()), (3, 2, 24));
         assert!(done[0].1.as_ref().is_err_and(|e| e.starts_with("Couldn't open image bad.png: ")));
         assert!(done[1].1.is_err());
+    }
+
+    #[test]
+    fn a_panicking_decode_is_an_error_for_that_image_only() {
+        let err = guarded("dir/p.png", |_| panic!("boom")).err().unwrap();
+        assert_eq!(err, "Couldn't open image p.png: the decoder crashed");
+        assert!(guarded("x", |_| Ok(Decoded { width: 1, height: 1, rgba: vec![0; 4] })).is_ok());
     }
 }
