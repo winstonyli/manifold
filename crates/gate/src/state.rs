@@ -11,7 +11,7 @@ pub const PDF: &str = "application/pdf";
 pub const JSON: &str = "application/json";
 pub const DOWNLOAD: &str = "application/octet-stream";
 
-/// The headless window the smoke test sizes with RESIZE, and the graph toolbar's height rounded up: smoke_eval.py's
+/// The headless window the smoke test sizes with RESIZE, and the graph toolbar's height rounded up:
 /// `W, H, TOP`. `xy`/`lt` warn on stderr about a point outside it, as the python did.
 pub const W: f64 = 816.0;
 pub const H: f64 = 639.0;
@@ -85,7 +85,7 @@ impl State {
         self.ids_of(GROUP)
     }
 
-    /// smoke_eval.py `pt`: `"%.0f %.0f"`, after a stderr warning if the point is off the graph canvas.
+    /// `pt`: `"%.0f %.0f"`, after a stderr warning if the point is off the graph canvas.
     fn pt(&self, id: &str, x: f64, y: f64) -> String {
         if !((0.0..W).contains(&x) && (TOP..H).contains(&y)) {
             eprintln!("query: {x:.0},{y:.0} ({} {id}) is off the graph canvas", self.label(id));
@@ -148,7 +148,7 @@ impl State {
         )
     }
 
-    /// `focused_url`, `""` when null (smoke_eval.py's `url = s["focused_url"] or ""`).
+    /// `focused_url`, `""` when null (the python's `s["focused_url"] or ""`).
     pub fn focused_url(&self) -> &str {
         self.0["focused_url"].as_str().unwrap_or("")
     }

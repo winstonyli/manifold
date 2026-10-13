@@ -1,8 +1,7 @@
-//! `gate smoke`: scripts/headless-smoke-test.sh as a Rust flow. One headless instance on a fresh profile, driven
-//! through the 11 sections of the script (labels and TIMING names verbatim), with the suggestions endpoint of
-//! `suggest.rs` standing in for DuckDuckGo. Each python expression the script `eval`ed (scripts/smoke_eval.py's
-//! `state` and `query` namespaces) is an inline closure over the exported `State`; the expression's text rides along
-//! only for the FAIL line, which quotes it as the script's does.
+//! `gate smoke` (was scripts/headless-smoke-test.sh): one headless instance on a fresh profile, driven through 11
+//! sections (labels and TIMING names as the script had them), with the suggestions endpoint of `suggest.rs` standing
+//! in for DuckDuckGo. Each check is an inline closure over the exported `State`; the expression's text rides along
+//! only for the FAIL line.
 //!
 //! The script's waits are kept as they are (this is a port, not a tuning pass): `wait_for_file`'s 30 s window and
 //! size-stability rule apply to every export, `settle` re-exports until two in a row agree (0.3 s apart, 40 tries),
@@ -74,7 +73,7 @@ fn wait_for_file(path: &Path) {
 
 // ---- the `state` namespace: `s`, `url`, `q`; the closure captures `row` ----
 
-/// What `smoke_eval.py state` gives an expression: the export, the focused tab's URL (`url`) and that URL's `q=`
+/// What a check closure gets: the export, the focused tab's URL (`url`) and that URL's `q=`
 /// search query (`q`, parse_qs without blanks).
 struct View<'a> {
     s: &'a State,
@@ -235,7 +234,7 @@ fn saw(s: &State) -> String {
     )
 }
 
-/// smoke_eval.py `converted`: a node of `kind` ("json" or "pdf") whose url is a `file://` one ending in `/NAME`,
+/// `converted`: a node of `kind` ("json" or "pdf") whose url is a `file://` one ending in `/NAME`,
 /// and no tab node at such a url.
 fn converted(session: &Value, name: &str, kind: &str) -> bool {
     let want = match kind {
@@ -249,7 +248,7 @@ fn converted(session: &Value, name: &str, kind: &str) -> bool {
     nodes.iter().any(|n| n["type"] == want && at(n)) && !nodes.iter().any(|n| n["type"] == TAB && at(n))
 }
 
-/// smoke_eval.py `border`: whether a pixel on the card's left edge (x from round(left) - 1 to round(left) + 2), at
+/// `border`: whether a pixel on the card's left edge (x from round(left) - 1 to round(left) + 2), at
 /// mid-height, is within 40 (RGB distance) of `want`. A card or pixel that is not there fails, as python's
 /// KeyError / IndexError exit does.
 fn border_near(s: &State, png: &Path, id: &str, want: [u8; 3]) -> bool {
@@ -431,7 +430,7 @@ const PAIR_GROUP: &str = r#"{"nodes": [
  {"id": "b", "type": "application/vnd.manifold.tab", "url": "manifold://welcome", "view_kind": "webview2", "pos": [150.0, 0.0], "group": "g"}]}
 "#;
 
-/// smoke_eval.py `nine`: a group "Nine" of nine tabs, for IMPORTGROUP.
+/// `nine`: a group "Nine" of nine tabs, for IMPORTGROUP.
 fn nine_group() -> Value {
     let tab = |i: usize| {
         serde_json::json!({"id": format!("t{i}"), "type": TAB, "url": "manifold://welcome", "view_kind": "webview2",
