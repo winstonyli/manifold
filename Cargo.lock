@@ -3092,6 +3092,8 @@ version = "0.5.1"
 dependencies = [
  "image",
  "serde_json",
+ "sha1 0.10.7",
+ "sha2 0.10.9",
  "windows-sys 0.59.0",
 ]
 

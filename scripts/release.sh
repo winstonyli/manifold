@@ -7,7 +7,7 @@
 #   2. builds the engine hosts ONCE, in release: WebView2 (to embed in manifold.exe) and CEF, plus Servo with
 #      --with-servo and WebKit with --with-webkit (built inside WSL into target-linux/, see README). Windows hosts but Servo
 #      use a static CRT (Servo's mozjs/mozangle are /MD) with depot_tools stripped from PATH, as the old package.sh did (now `gate package`);
-#   3. scripts/host_pin.py hashes the CEF/Servo/WebKit hosts and writes crates/manifold/src/host_pin.rs (WebView2 is
+#   3. `gate host-pin` hashes the CEF/Servo/WebKit hosts and writes crates/manifold/src/host_pin.rs (WebView2 is
 #      embedded, so it has no row);
 #   4. builds manifold.exe with MANIFOLD_WEBVIEW2_HOST and MANIFOLD_PDFIUM_HOST naming the built WebView2 host and
 #      PDF view; crates/manifold/build.rs embeds those files (and their SHA-256) in the exe;
@@ -61,7 +61,9 @@ done
 die() { echo "release.sh: $*" >&2; exit 1; }
 wp() { cygpath -m "$1"; } # native path for python / MANIFOLD_WEBVIEW2_HOST
 sha() { sha256sum "$1" | cut -d' ' -f1; }
-pin() { python -P "$repo_root/scripts/host_pin.py" "$@" </dev/null; }
+gate="$repo_root/target/debug/gate.exe"
+[ -x "$gate" ] || die "build the gate first: cargo build -j 8 -p gate"
+pin() { "$gate" host-pin "$@" </dev/null; }
 
 # Everything below (cargo and the compilers it starts) runs at BelowNormal: children inherit this shell's priority.
 powershell -NoProfile -Command "(Get-Process -Id $(cat /proc/$$/winpid)).PriorityClass = 'BelowNormal'" </dev/null || echo "WARNING: release.sh runs at normal priority" >&2
