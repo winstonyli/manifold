@@ -7,7 +7,7 @@ One entry per tagged release, newest first. The annotated tag `vX.Y.Z` carries t
 ### Internal
 
 - A racy unit test (`a_stall_is_reported_once_until_a_write_completes`) failed on the v0.5.0 tag's CI; it now waits for the old write to complete. No app change.
-- `scripts/package.sh --check` expects "Unavailable: this build has no Servo download" when the pin table has no Servo row (a release made without `--with-servo`).
+- `gate package` expects "Unavailable: this build has no Servo download" when the pin table has no Servo row (a release made without `--with-servo`).
 
 ## v0.5.0 (2026-10-12)
 

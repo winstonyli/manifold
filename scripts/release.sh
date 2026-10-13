@@ -6,7 +6,7 @@
 #   1. refuses a dirty tree;
 #   2. builds the engine hosts ONCE, in release: WebView2 (to embed in manifold.exe) and CEF, plus Servo with
 #      --with-servo and WebKit with --with-webkit (built inside WSL into target-linux/, see README). Windows hosts but Servo
-#      use a static CRT (Servo's mozjs/mozangle are /MD) with depot_tools stripped from PATH, as the old package.sh did;
+#      use a static CRT (Servo's mozjs/mozangle are /MD) with depot_tools stripped from PATH, as the old package.sh did (now `gate package`);
 #   3. scripts/host_pin.py hashes the CEF/Servo/WebKit hosts and writes crates/manifold/src/host_pin.rs (WebView2 is
 #      embedded, so it has no row);
 #   4. builds manifold.exe with MANIFOLD_WEBVIEW2_HOST and MANIFOLD_PDFIUM_HOST naming the built WebView2 host and

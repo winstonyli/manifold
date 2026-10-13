@@ -1,4 +1,4 @@
-# Sourced by the probes and tests that run manifold.exe in the background.
+# Sourced by scripts/release.sh, which runs its cargo builds in the background.
 #
 # A native exe started from bash (`"$exe" ... &`) has an MSYS pid ($!) and a
 # separate Windows pid, which taskkill and Get-Process need. Right after the
@@ -24,10 +24,6 @@ _winpid_retry() {
 # winpid_of <msys pid> [tries]: the Windows pid of the exe that `$!` names.
 winpid_of() { _winpid_retry '$1 == p' "$@"; }
 
-# winpid_of_child <msys pid> [tries]: the Windows pid of the manifold process
-# whose parent is <msys pid> (a coproc's subshell runs the exe as its child).
-winpid_of_child() { _winpid_retry '$2 == p && $0 ~ /manifold/' "$@"; }
-
 # below_normal <msys pid>: sets the instance BelowNormal and prints its Windows
 # pid. Warns on stderr and fails if there is no Windows pid or the priority
 # could not be set (the pid, if found, is still printed).
@@ -37,14 +33,4 @@ below_normal() {
     echo "$w"
     powershell -NoProfile -Command "(Get-Process -Id $w -ErrorAction Stop).PriorityClass = 'BelowNormal'" \
         </dev/null >/dev/null 2>&1 || { echo "WARNING: could not set Windows pid $w BelowNormal" >&2; return 1; }
-}
-
-# kill_tree <msys pid>: for EXIT traps. If that instance is still running,
-# taskkill /F /T its Windows pid (its own tree only, never by image name).
-# Always succeeds.
-kill_tree() {
-    local w
-    kill -0 "$1" 2>/dev/null || return 0
-    if w="$(winpid_of "$1")"; then taskkill //F //T //PID "$w" >/dev/null 2>&1; else kill "$1" 2>/dev/null; fi
-    return 0
 }

@@ -95,7 +95,7 @@ impl Site {
     }
 
     /// Waits until the page has reported at least `n` lines starting with `prefix`, or `limit` passes.
-    fn wait_for(&self, prefix: &str, n: usize, limit: Duration) -> bool {
+    pub(crate) fn wait_for(&self, prefix: &str, n: usize, limit: Duration) -> bool {
         let deadline = Instant::now() + limit;
         loop {
             if self.lines().iter().filter(|l| l.starts_with(prefix)).count() >= n {

@@ -28,6 +28,8 @@ mod layout;
 mod link;
 mod nonce;
 #[cfg(windows)]
+mod package;
+#[cfg(windows)]
 mod probes;
 mod session;
 #[cfg(windows)]
@@ -81,6 +83,7 @@ mod windows_main {
             "chrome-shots" => crate::shots::chrome_shots(parent),
             "chrome-shots-sizes" => crate::shots::chrome_shots_sizes(parent),
             "jar" => crate::jar::jar(parent),
+            "package" => crate::package::package(&std::env::args().skip(2).collect::<Vec<_>>()),
             "focus-loss" => crate::focus::focus_loss(parent),
             "sleep" => crate::sleep::sleep(parent),
             "scale" => crate::stress::scale(&std::env::args().skip(2).collect::<Vec<_>>()),
@@ -106,7 +109,7 @@ mod windows_main {
             // Test aid for the "killed gate leaves no manifold.exe" proof; not a gate stage.
             "hold" => hold(parent),
             _ => {
-                eprintln!("usage: gate all LOG [full|light|ui] | gate hello|launch-forms|unresponsive|layout|link|smoke|two [WORKDIR_PARENT] | gate chrome-shots|chrome-shots-sizes [WORKDIR_PARENT] | gate sleep | gate jar | gate focus-loss | gate scale TABS... | gate fresh EXE");
+                eprintln!("usage: gate all LOG [full|light|ui] | gate hello|launch-forms|unresponsive|layout|link|smoke|two [WORKDIR_PARENT] | gate chrome-shots|chrome-shots-sizes [WORKDIR_PARENT] | gate sleep | gate jar | gate package [EXE] | gate focus-loss | gate scale TABS... | gate fresh EXE");
                 ExitCode::from(2)
             }
         }

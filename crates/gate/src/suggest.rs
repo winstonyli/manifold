@@ -1,4 +1,4 @@
-//! The smoke test's local suggestions endpoint: what `scripts/probe_server.py` answers on `GET /ac/?q=X` (the only
+//! The smoke test's local suggestions endpoint: what the old `scripts/probe_server.py` answered on `GET /ac/?q=X` (the only
 //! route `scripts/headless-smoke-test.sh` uses), as a `std::net` server on an ephemeral port. The app reaches it
 //! through `MANIFOLD_SUGGESTIONS_URL` (crates/manifold/src/suggestions.rs), so the address-bar checks need no
 //! network. The body is DuckDuckGo's `type=list` shape: `[q, [q one, q two, q three]]`.
