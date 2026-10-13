@@ -69,7 +69,7 @@ A format is identified by `ContentKind` (`content.rs`), so the registry is a fun
 | exit 1 with a stderr line | that line (e.g. the existing one-line PDFium error) |
 | any other non-zero exit or signal | "PDF renderer crashed" |
 | no exit within the timeout, child killed | "PDF renderer timed out" |
-| binary not found next to `manifold.exe` | "PDF renderer is not installed" plus the expected path |
+| no renderer exe beside `manifold.exe` and none embedded (a dev build that did not build it) | "PDF renderer is not installed: build manifold-view-pdfium" |
 | stdout is not a valid frame (bad magic, short read, size mismatch) | "PDF renderer returned a bad frame" |
 | version mismatch | "render protocol mismatch: rebuild manifold-view-pdfium" |
 
@@ -83,7 +83,17 @@ One constant, 120 s, covering the first-run PDFium download (`pdfium-auto`, a on
 
 - New `crates/manifold-view-pdfium` (binary only). It takes over `pdfium-render`, `pdfium-auto` and `render_first_page`, `bind_once` and `pdfium_error` from `pdf_render.rs`. `manifold` drops both dependencies.
 - Workspace member, built with `-p manifold-view-pdfium`. Added to the documented build line (`CLAUDE.md` "Gate" and the `scripts/gate.sh` header; the script itself does not build) and to the clippy package list in `CLAUDE.md` and `.githooks/pre-commit`.
-- Runtime placement: like `manifold-engine-webview2`, it needs nothing beyond the exe (PDFium's DLL is fetched into the user cache at first use, as now).
+- Runtime placement: the exe ships embedded in `manifold.exe` (next section); PDFium's DLL is still fetched into the user cache at first use, as now.
+
+## Shipping: embedded like the WebView2 host (decided 2026-10-12)
+
+`manifold-view-pdfium.exe` is embedded in `manifold.exe` and extracted on first use, by the mechanism the WebView2 host already uses (`embedded_host.rs`, `build.rs`, `release.sh`). Chosen over a same-exe `--view` mode (smaller change, but not a standalone exe) and over a pinned download (breaks PDF offline).
+
+- `embedded_host.rs` becomes a table of embedded hosts (`Webview2`, `Pdfium`), each with its folder, file name, bytes and SHA-256; `ensure_with` and `host_path` take the entry. The extraction logic (lock file, hash-compare, temp write, rename-aside, `spawn_fresh` retry) is unchanged and shared. The error texts say "the WebView2 host" today and become per-entry.
+- `build.rs` embeds `MANIFOLD_PDFIUM_HOST` the same way as `MANIFOLD_WEBVIEW2_HOST` (an empty stub when unset: dev builds, the gate and Linux CI use the sibling exe), and exports `MANIFOLD_PDFIUM_SHA256`.
+- Lookup order matches WebView2: the sibling exe beside `manifold.exe` wins, else the embedded copy is extracted under `engine-hosts/pdfium/`, else the "not installed" error.
+- `release.sh` builds `-p manifold-view-pdfium`, passes it as `MANIFOLD_PDFIUM_HOST`, checks that it did not change while `manifold.exe` built, copies it to `dist/embedded/`, and records its hash: a second line in the existing `dist/manifold-$tag-windows-x64.embedded-host.sha256` (one record per release, one line per embedded host), which `--verify` also checks. `package.sh` additionally asserts the extracted PDFium host exists after a PDF is added.
+- Size cost: the PDF view exe is small (it links `pdfium-render`, not PDFium itself, whose DLL downloads at first use), so the embed grows `manifold.exe` by a few MB. To be measured and recorded in the plan's first release step.
 
 ## Stress test of this draft (round 1)
 
@@ -92,7 +102,7 @@ One constant, 120 s, covering the first-run PDFium download (`pdfium-auto`, a on
 3. *Smoke coverage is thin*: `gate smoke` adds a fake `%PDF-1.4\n` file, which exercises only the error path. The success path needs a real one-page PDF. Plan: a tiny valid PDF committed as a test fixture, used by one `manifold` test that is skipped (with a printed reason) when the renderer binary is not built, and by one gate smoke step that is not skippable (the documented build line includes the crate, and the gate stage fails loudly if its exe is missing).
 4. *Orphans*: killed on cancel, killed by the job object at exit, killed by the watchdog on timeout. Test: after a timeout, the stand-in child is gone.
 5. *Stale binary*: the frame carries a version, so an old renderer next to a new manifold yields the mismatch reason, not a misread bitmap.
-6. *Packaging*: nothing in the repo packages releases today beyond the build outputs, so there is no installer to update; the README's runtime-placement section gets one line.
+6. *Packaging* (corrected after checking `package.sh`/`release.sh`): the first draft said there was no installer to update. A packaged build must be a bare `manifold.exe` (`package.sh` asserts nothing else sits beside it), so the renderer exe has to be embedded like the WebView2 host. See "Shipping".
 
 ## Stress test (round 2: claims checked against the code)
 
