@@ -4,7 +4,7 @@
 
 **Goal:** Rename the `manifold-engine-*` crates to `manifold-view-*`, then render PDFs in a separate, embedded `manifold-view-pdfium.exe` so a PDFium crash can't take the app down.
 
-**Architecture:** Task 1 renames packages and directories but pins each `[[bin]]` name, so no exe name, pin, URL or script exe path changes. Tasks 2-3 add a one-shot render protocol (`ipc-protocol::render`: frame, child runner with timeout and cancel) and the `manifold-view-pdfium` binary. Task 4 generalizes `embedded_host` to two embedded hosts. Task 5 moves `PdfRenderer` onto the child runner and drops the PDFium dependencies from `manifold`. Task 6 updates the release and package scripts and adds a real-PDF gate step.
+**Architecture:** Task 1 renames packages and directories but pins each `[[bin]]` name, so no exe name, pin, URL or script exe path changes. Tasks 2-3 add a one-shot render protocol (`ipc-protocol::render`: frame, child runner with timeout and cancel) and the `manifold-view-pdfium` binary. Task 4 generalizes `embedded_host` to two embedded hosts. Task 5 moves `PdfRenderer` onto the child runner and drops the PDFium dependencies from `manifold`. Task 6 updates the release and package scripts (`package.sh` renders a real PDF through the shipped bare exe) and the gate's staleness check. Tasks 4 and 5 land as one commit: the `Embedded::Pdfium` variant is dead code, which clippy rejects, until Task 5 constructs it.
 
 **Tech Stack:** Rust (nightly-2026-09-23), `pdfium-render =0.8.37`, `pdfium-auto 0.3`, std `process`/`mpsc`, bash release scripts.
 
@@ -91,7 +91,7 @@ Do not compile CEF (needs the CEF download) or Servo (about 33 minutes) for this
 
 - [ ] **Step 9: Full gate, then commit**
 
-Run the `full` gate (Global Constraints). Then:
+Run the `full` gate after `cargo build -j 8 -p manifold -p manifold-view-webview2 -p gate` (the PDF view crate does not exist yet). Then:
 
 ```bash
 git add -A
@@ -201,6 +201,8 @@ pub const HEADER_LEN: usize = 20;
 /// A bound on what a child may claim, so a corrupt header can't make the app allocate gigabytes.
 pub const MAX_FRAME_SIDE: u32 = 16_384;
 
+/// `Debug` because the tests call `unwrap_err` on `Result<Frame, _>`.
+#[derive(Debug)]
 pub struct Frame {
     pub width: u32,
     pub height: u32,
@@ -615,7 +617,7 @@ mod tests {
 }
 ```
 
-`bind_once`, `take_cancelled` and their tests stay behind in `pdf_render.rs` (Task 5 decides their fate: `bind_once` is dead here because the process binds once per run).
+`bind_once`, `take_cancelled` and the cancel set are not copied: the process binds PDFium once per run, and cancelling is the app's business (Task 5 deletes them from `pdf_render.rs`). Concurrent first-use downloads by two view processes are safe: `pdfium-auto` extracts under an advisory lock, re-checks under it, and renames a temp file into place (read in `pdfium-auto-0.3.1/src/lib.rs`).
 
 - [ ] **Step 3: Add the fixture**
 
@@ -717,7 +719,7 @@ impl Embedded {
 
 - [ ] **Step 1: Make the existing tests parametric first (they must keep passing)**
 
-In `embedded_host.rs` tests, change each call `ensure_with(dir, bytes, sha)` to `ensure_with(Embedded::Webview2, dir, bytes, sha)`, `host_path(dir)` to `Embedded::Webview2.host_path(dir)`, every `HOST_FILE` to `Embedded::Webview2.file()` (lines ~161-238), and the two tests that read the real embed (`EMBEDDED`, `EMBEDDED_SHA256`, ~lines 149 and 272-281) to `let (embedded, embedded_sha) = Embedded::Webview2.bytes();`. Add one test that the two entries extract side by side without touching each other:
+In `embedded_host.rs` tests, change each call `ensure_with(dir, bytes, sha)` to `ensure_with(Embedded::Webview2, dir, bytes, sha)`, `host_path(dir)` to `Embedded::Webview2.host_path(dir)`, every `HOST_FILE` to `Embedded::Webview2.file()` (lines ~161-238), every `ensure(&hosts)` to `Embedded::Webview2.ensure(&hosts)`, and the two tests that read the real embed (`EMBEDDED`, `EMBEDDED_SHA256`, ~lines 149 and 272-281) to `let (embedded, embedded_sha) = Embedded::Webview2.bytes();`. In the first of those (an empty embed returns `None`), also assert `Embedded::Pdfium.ensure(&hosts).unwrap() == None` when `Embedded::Pdfium.bytes().0` is empty. Add one test that the two entries extract side by side without touching each other:
 
 ```rust
 #[test]
@@ -800,25 +802,22 @@ Replace the single-host body with a loop over `[("MANIFOLD_WEBVIEW2_HOST", "webv
 
 ```bash
 cargo fmt --all
-cargo clippy -j 8 -p manifold --all-targets -- -D warnings
-cargo test -j 8 -p manifold
-git add -A
-git commit -m "embedded_host: a table of embedded hosts, WebView2 and the PDF view"
+cargo test -j 8 -p manifold embedded_host
 ```
 
-Expected: all tests pass; the existing embedded-host tests behave as before.
+Expected: all embedded-host tests pass, the existing ones unchanged in behavior. Do not run clippy or commit yet: until Task 5 constructs `Embedded::Pdfium`, clippy fails with `dead_code`. Task 5 commits both.
 
 ---
 
 ### Task 5: `PdfRenderer` on the child runner
 
 **Files:**
-- Modify: `crates/manifold/src/pdf_render.rs`, `crates/manifold/src/process_manager.rs` (re-export or a small `pdf_view_path` function), `crates/manifold/Cargo.toml` (drop `pdfium-render`, `pdfium-auto`), root `Cargo.toml` (the two pdfium entries stay as workspace dependencies for `manifold-view-pdfium`)
+- Modify: `crates/manifold/src/pdf_render.rs`, `crates/manifold/src/process_manager.rs` (`pdf_view_exe` and `contain_view_process`), `crates/manifold/src/event_loop.rs` (one log line), `crates/manifold/Cargo.toml` (drop `pdfium-render`, `pdfium-auto`), root `Cargo.toml` (the two pdfium entries stay as workspace dependencies for `manifold-view-pdfium`)
 - Test: unit tests in `pdf_render.rs`
 
 **Interfaces:**
 - Consumes: `ipc_protocol::render::{channel, run_child, Cancel, Frame}`, `Embedded::Pdfium`, `sibling_binary`, `assign_to_engine_job`, `engine_hosts_dir`
-- Produces: `PdfRenderer::{new, request, cancel, tick}` with unchanged signatures; `PdfRenderResult` keeps its fields except `page_count: usize` stays `usize`.
+- Produces: `PdfRenderer::{new, request, cancel, tick}` with unchanged signatures; `PdfRenderResult` is unchanged (`page_count: usize`).
 
 - [ ] **Step 1: Add the view locator to `process_manager`**
 
@@ -1058,7 +1057,7 @@ cargo fmt --all
 cargo clippy -j 8 -p manifold -p ipc-protocol -p manifold-view-webview2 -p manifold-view-pdfium -p gate --all-targets -- -D warnings
 cargo test -j 8 -p manifold -p ipc-protocol -p manifold-view-pdfium
 git add -A
-git commit -m "Render PDFs in the manifold-view-pdfium process (D-R9)"
+git commit -m "Render PDFs in the manifold-view-pdfium process (D-R9); embedded_host becomes a table"
 ```
 
 The glue (`pdf_view_exe`, `render`) is covered end to end by `package.sh` in Task 6, on the shipped bare exe. A `manifold` unit test would have to find a built view exe beside `target/debug/deps/`, which needs a test-only lookup branch; not worth it.
@@ -1154,4 +1153,5 @@ git commit -m "Ship the PDF view: release and package scripts, gate staleness, d
 
 - **Round 1** (every factual claim checked against the code and scripts): 12 defects. `PdfRenderer::is_cancelled` is used by `session_sync` tests; the extracted exe needs `spawn_fresh`'s retry, so `run_child` takes a spawn closure instead of `on_spawn`; a valid frame must not wait on a lingering child; `release.sh --verify` reads one hash per record, so the PDF view gets its own record file; the existing `embedded_host` tests use `HOST_FILE`/`EMBEDDED`; `package.sh` has no signal for a finished render, so the app logs one; the in-crate end-to-end test needed a test-only lookup branch, so it was dropped for `package.sh`; the fixture's stream `/Length` was wrong; `fresh.rs` judges staleness, it does not require the exe; the lint lists belong in Task 3, not 6; Task 1's file list was incomplete (now "whatever the grep lists"); a muddled cancel test.
 - **Round 2** (re-read of every changed passage): 3 defects. A stale instruction to delete `is_cancelled`; `sibling_binary` may not be imported in `process_manager.rs`; Task 1's Linux-check step still carried a forbidden stdin pipe.
-- **Round 3** (full pass, nothing material found): see the status line of the session that wrote this plan.
+- **Round 3** (full read of Tasks 1-5 and the Task 6 text): 7 defects. `Frame` lacked `Debug` (`unwrap_err` would not compile); Task 4 alone cannot pass clippy (the `Pdfium` variant is dead until Task 5), so the two land as one commit; Task 1's gate used a build line naming a crate that does not exist yet; stale Architecture text, a stale Task 3 note and a stale Task 5 file list; the real-embed `embedded_host` tests also call the free `ensure`. Checked and fine: two workers downloading PDFium at once (`pdfium-auto` locks and renames atomically).
+- **Round 4** (re-read of the Round 3 edits and the Task 6 shell snippets): nothing material.
