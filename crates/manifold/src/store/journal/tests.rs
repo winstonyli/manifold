@@ -5,7 +5,7 @@ use crate::store::testutil::{shown, temp_dir, version_one_file, XorShift};
 fn create_tab(txn: &mut Txn, url: &str) -> (NodeId, OpBody) {
     let node = txn.next_id();
     let fields = encode_field(field::URL, &FieldValue::Str(url.into()));
-    (node, OpBody::create(node, Kind::Tab, fields))
+    (node, OpBody::create(node, Kind::Tab.type_str().unwrap(), fields))
 }
 
 fn url(doc: &Doc, id: NodeId) -> FieldValue {
@@ -154,7 +154,7 @@ fn two_replicas_on_one_file_merge_each_others_ops() {
 
     let mut txn = a.begin().unwrap();
     let group = txn.next_id();
-    txn.commit(vec![OpBody::create(group, Kind::Group, Vec::new())]).unwrap();
+    txn.commit(vec![OpBody::create(group, Kind::Group.type_str().unwrap(), Vec::new())]).unwrap();
     let mut txn = b.begin().unwrap();
     assert!(txn.remote.contains(&group));
     let (tab, create) = create_tab(&mut txn, "https://c.example/");
@@ -322,7 +322,7 @@ fn a_create_op_carries_its_type_in_its_fields_and_no_kind_slot() {
     let op = Op {
         id: NodeId { actor: ActorId(1), counter: 4 },
         hlc: Hlc { ms: 10, logical: 0 },
-        body: OpBody::create(node, Kind::Tab, fields),
+        body: OpBody::create(node, Kind::Tab.type_str().unwrap(), fields),
     };
     let message = ops_message(std::slice::from_ref(&op));
     assert_eq!(decode_ops(&message).unwrap(), vec![op]);
@@ -469,9 +469,9 @@ fn rich_file(path: &Path) -> Vec<u8> {
     note_fields.extend(encode_field(field::TEXT, &FieldValue::Str("hi".into())));
     let set = |node, no, value| OpBody::Set { node, field: no, enc: encode_field(no, &value) };
     let bodies = vec![
-        OpBody::create(group, Kind::Group, encode_field(field::NAME, &FieldValue::Str("g".into()))),
+        OpBody::create(group, Kind::Group.type_str().unwrap(), encode_field(field::NAME, &FieldValue::Str("g".into()))),
         create,
-        OpBody::create(note, Kind::Note, note_fields),
+        OpBody::create(note, Kind::Note.type_str().unwrap(), note_fields),
         set(tab, field::VIEW_KIND, FieldValue::ViewCode(2)),
         set(tab, field::PINNED, FieldValue::Bool(true)),
         OpBody::Move { node: tab, group: Some(group) },
@@ -485,7 +485,7 @@ fn rich_file(path: &Path) -> Vec<u8> {
     let mut leaf_fields = encode_field(field::PARENT, &FieldValue::Id(Some(tab)));
     leaf_fields.extend(encode_field(field::TEXT, &FieldValue::Str("v".into())));
     let bodies = vec![
-        OpBody::create(leaf, Kind::Note, leaf_fields),
+        OpBody::create(leaf, Kind::Note.type_str().unwrap(), leaf_fields),
         OpBody::Delete { node: group },
         OpBody::Move { node: note, group: None },
         set(note, field::COLOR, FieldValue::Color(None)),
@@ -759,7 +759,7 @@ fn every_frame_reads_on_its_own() {
     let mut b = Journal::open(&path, ActorId(2)).unwrap();
     let mut txn = a.begin().unwrap();
     let group = txn.next_id();
-    txn.commit(vec![OpBody::create(group, Kind::Group, Vec::new())]).unwrap();
+    txn.commit(vec![OpBody::create(group, Kind::Group.type_str().unwrap(), Vec::new())]).unwrap();
     let mut txn = b.begin().unwrap();
     let (tab, create) = create_tab(&mut txn, "https://f.example/");
     txn.commit(vec![create, OpBody::Move { node: tab, group: Some(group) }]).unwrap();
@@ -1370,7 +1370,7 @@ fn save_path_costs() {
             .enumerate()
             .map(|(i, &node)| {
                 let fields = encode_field(field::NAME, &FieldValue::Str(format!("Group {i}")));
-                OpBody::create(node, Kind::Group, fields)
+                OpBody::create(node, Kind::Group.type_str().unwrap(), fields)
             })
             .collect();
         let mut ids = Vec::new();
@@ -1381,7 +1381,7 @@ fn save_path_costs() {
             fields.extend(encode_field(field::POS, &FieldValue::Pos(i as f32 * 3.5, i as f32 * -2.25)));
             fields.extend(encode_field(field::VIEW_KIND, &FieldValue::ViewCode(1 + (i % 4) as u64)));
             fields.extend(encode_field(field::GROUP, &FieldValue::Id(Some(groups[i % groups.len()]))));
-            bodies.push(OpBody::create(node, Kind::Tab, fields));
+            bodies.push(OpBody::create(node, Kind::Tab.type_str().unwrap(), fields));
             ids.push(node);
         }
         txn.commit(bodies).unwrap();

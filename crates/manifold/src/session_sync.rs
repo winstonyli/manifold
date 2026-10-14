@@ -16,7 +16,7 @@ use crate::process_manager::ViewKind;
 use crate::store::journal::{JournalError, Recovery};
 use crate::store::json::{Imported, JsonDoc};
 use crate::store::model::{
-    decode_field, encode_field, field, field_def, Doc, FieldType, FieldValue, Kind, Node, NodeId,
+    decode_field, encode_field, field, field_def, Doc, FieldType, FieldValue, Kind, Node, NodeId, TYPE_LINK, TYPE_TAB,
 };
 use crate::store::ops::OpBody;
 use crate::tabs::TabSpawn;
@@ -56,14 +56,27 @@ fn local_from(read: Option<Result<Option<Vec<u8>>, JournalError>>) -> LocalState
     }
 }
 
-/// A node as the store holds it, or is about to (`App::snapshot`): its kind, its group and its fields of that kind
-/// (`Kind::fields`, every one present). A `Create` writes one, Recently Closed records one, and a tab's spawn starts
-/// from one (`App::spawning`).
+/// A node as the store holds it, or is about to (`App::snapshot`): its type string as stored, its group and its
+/// fields of that type's kind (`Kind::fields`, every one present). A `Create` writes one, Recently Closed records
+/// one, and a tab's spawn starts from one (`App::spawning`).
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Snapshot {
-    pub kind: Kind,
+    /// The stored `type` (`Node::ty`, `Mirror::ty`), kept as written: a type this build doesn't know included.
+    pub ty: String,
     pub group: Option<NodeId>,
     pub fields: Fields,
+}
+
+impl Snapshot {
+    /// What the document shows for its node `id`: its type, its effective group and its fields (`fields_of`).
+    pub(crate) fn of(doc: &Doc, id: NodeId, node: &Node) -> Snapshot {
+        Snapshot { ty: node.ty().to_owned(), group: doc.effective_group(id), fields: fields_of(node) }
+    }
+
+    /// The kind its type means (`Kind::from_type`).
+    pub(crate) fn kind(&self) -> Kind {
+        Kind::from_type(&self.ty)
+    }
 }
 
 /// A document node's fields for its kind, shaped like `Snapshot::fields`.
@@ -164,7 +177,7 @@ fn create_ops(doc: &Doc, new: &BTreeMap<NodeId, Snapshot>, deleted: &BTreeSet<No
         }
         fields.insert(field::GROUP, FieldValue::Id(group));
         let enc = fields.iter().flat_map(|(&no, value)| encode_field(no, value)).collect();
-        ops.push(OpBody::create(id, node.kind, enc));
+        ops.push(OpBody::create(id, &node.ty, enc));
         created.insert(id);
     }
     ops
@@ -190,9 +203,9 @@ pub(crate) fn recovery_notice(r: &Recovery) -> String {
 
 // ---- The live graph and the store -----------------------------------------
 
-/// One node another replica changed: its kind, fields and effective
-/// group, or `None` when it is no longer live (deleted or pruned).
-pub(crate) type RemoteChange = (NodeId, Option<(Kind, Fields, Option<NodeId>)>);
+/// One node another replica changed: what the document shows for it (`Snapshot::of`), or `None` when it is no
+/// longer live (deleted or pruned).
+pub(crate) type RemoteChange = (NodeId, Option<Snapshot>);
 
 /// Where `App::materialize_imported` puts an imported file's root (its
 /// first node): the level it's brought into, and optionally a fresh
@@ -202,8 +215,8 @@ pub(crate) struct ImportRoot {
     pub pos: Option<egui::Vec2>,
 }
 
-/// A node's kind, fields and group, as `materialize` takes them.
-pub(crate) type RemoteNode = (Kind, Fields, Option<String>);
+/// A node's type string, fields and group, as `materialize` takes them.
+pub(crate) type RemoteNode = (String, Fields, Option<String>);
 
 fn str_of(fields: &Fields, no: u32) -> String {
     match fields.get(&no) {
@@ -283,8 +296,8 @@ pub(crate) fn spawn_snapshot(
     let mut fields = Fields::from([(field::POS, pos), (field::COLOR, color_value(spawn.carry.color))]);
     let (pinned, parent) = (spawn.carry.pinned, parse_id(&spawn.parent));
     let (url, view_kind) = (FieldValue::Str(url.to_owned()), FieldValue::ViewCode(view_kind));
-    let kind = tab_fields(&mut fields, url, view_kind, pinned, parent, jar);
-    Snapshot { kind, group: parse_id(&spawn.group), fields }
+    let ty = tab_fields(&mut fields, url, view_kind, pinned, parent, jar);
+    Snapshot { ty: ty.to_owned(), group: parse_id(&spawn.group), fields }
 }
 
 /// A tab's fields beyond `pos` and `color`, live or failed. `url`, `view_kind` and `jar` are the shared ones
@@ -296,13 +309,13 @@ fn tab_fields(
     pinned: bool,
     parent: Option<NodeId>,
     jar: Option<NodeId>,
-) -> Kind {
+) -> &'static str {
     fields.insert(field::URL, url);
     fields.insert(field::VIEW_KIND, view_kind);
     fields.insert(field::PINNED, FieldValue::Bool(pinned));
     fields.insert(field::PARENT, FieldValue::Id(parent));
     fields.insert(field::JAR, FieldValue::Id(jar));
-    Kind::Tab
+    TYPE_TAB
 }
 
 /// `raw` (an imported node's field values, as `store::json::import` gave
@@ -380,7 +393,7 @@ impl App {
     /// tab's spawn started with (`spawning`, for one not shown yet). A tab's url is the shared one, not the live one
     /// its payload holds (2b-3 Ruling 1); its engine is the one a swap in progress already shows as its target
     /// (`start_swap_to`); a file card's path is the stored one, not the one its payload resolved here (2b-5 Ruling
-    /// 5). Its kind is its type (`Mirror::ty`, the one source of a node's type). `None` for an in-progress download
+    /// 5). Its type is the mirror's string (`Mirror::ty`, the one source of a node's type), kept as written. `None` for an in-progress download
     /// (it can't resume, so it isn't created until it completes), for a node of a type this build doesn't know (never
     /// placed today: every way in seeds a known type), and for an id that is none of these.
     pub(crate) fn snapshot(&self, id: NodeId) -> Option<Snapshot> {
@@ -389,7 +402,8 @@ impl App {
             if self.is_running_download(&key) {
                 return None;
             }
-            let kind = Kind::from_type(self.mirror.ty(&key));
+            let ty = self.mirror.ty(&key);
+            let kind = Kind::from_type(ty);
             if kind == Kind::Unknown {
                 return None;
             }
@@ -401,11 +415,11 @@ impl App {
                     _ => (no, self.mirror.get(&key, no)),
                 })
                 .collect();
-            return Some(Snapshot { kind, group: link_id(self.mirror.group(&key)), fields });
+            return Some(Snapshot { ty: ty.to_owned(), group: link_id(self.mirror.group(&key)), fields });
         }
         if self.mirror.is_link(id) {
             let fields = Kind::Link.fields().iter().map(|&no| (no, self.mirror.get(&key, no))).collect();
-            return Some(Snapshot { kind: Kind::Link, group: None, fields });
+            return Some(Snapshot { ty: TYPE_LINK.to_owned(), group: None, fields });
         }
         self.spawns.spawning.get(&key).cloned()
     }
@@ -465,8 +479,8 @@ impl App {
     /// and the save deletes it: another replica's edit to it is dropped
     /// rather than bringing it back (Ruling 9).
     ///
-    /// A kind mismatch between the live node and `kind` is ignored (the
-    /// store never changes a node's kind). A file card whose file can't be
+    /// A type mismatch between the live node and `ty` is ignored (the
+    /// store never changes a node's type, so the mirror's first string stands). A file card whose file can't be
     /// loaded is kept, showing its error: the node stays in the store.
     ///
     /// `local`, personal state's entry for a new node, lays it out at its
@@ -476,11 +490,12 @@ impl App {
     pub(crate) fn materialize(
         &mut self,
         id: String,
-        kind: Kind,
+        ty: &str,
         fields: &Fields,
         group: Option<String>,
         local: Option<&LocalNode>,
     ) {
+        let kind = Kind::from_type(ty);
         // A node or jar deleted here stays gone: a remote edit arriving before the save commits the queued delete
         // would otherwise re-show it, nameless from a partial change or whole (2b-5 Ruling 9, final review M1).
         if id.parse::<NodeId>().is_ok_and(|node| self.writes.pending_deletes.contains(&node)) {
@@ -495,12 +510,12 @@ impl App {
             return;
         }
         if self.spawns.spawning.contains_key(&id) {
-            self.spawns.remote_in_flight.insert(id, Some((kind, fields.clone(), group)));
+            self.spawns.remote_in_flight.insert(id, Some((ty.to_owned(), fields.clone(), group)));
             return;
         }
         let (held, changed) = self.mirror_remote(&id, fields, group.as_deref());
-        // The store never changes a node's type, so the first one seen stands (2b-5 Ruling 10).
-        if let Some(ty) = kind.type_str() {
+        // The store never changes a node's type, so the first one seen stands (2b-5 Ruling 10). Kept as written.
+        if !ty.is_empty() {
             self.mirror.init_field(&id, field::TYPE, FieldValue::Str(ty.to_owned()));
         }
         let pos = local.map_or_else(|| pos_of(&id, fields), |l| egui::vec2(l.pos[0], l.pos[1]));
@@ -727,7 +742,7 @@ impl App {
             .iter()
             .map(|&id| {
                 let live = doc.nodes.get(&id).filter(|n| n.is_live());
-                (id, live.map(|n| (n.kind(), fields_of(n), doc.effective_group(id))))
+                (id, live.map(|n| Snapshot::of(doc, id, n)))
             })
             .collect()
     }
@@ -744,7 +759,7 @@ impl App {
     /// engine here for every tab in it.
     pub(crate) fn apply_remote(&mut self, mut changes: Vec<RemoteChange>) {
         changes.sort_by_key(|(_, c)| match c {
-            Some((Kind::Group, ..)) => 0,
+            Some(s) if s.kind() == Kind::Group => 0,
             _ => 1,
         });
         let toasts = self.toasts.save_toast_queue.len();
@@ -753,7 +768,7 @@ impl App {
         for (id, change) in changes {
             let key = id.to_string();
             match change {
-                Some((kind, fields, group)) => self.materialize(key, kind, &fields, group.map(|g| g.to_string()), None),
+                Some(s) => self.materialize(key, &s.ty, &s.fields, s.group.map(|g| g.to_string()), None),
                 None if self.spawns.spawning.contains_key(&key) => {
                     self.spawns.remote_in_flight.insert(key, None);
                 }
@@ -829,7 +844,7 @@ impl App {
     /// now that its node exists (`handle_tab_spawn_result`).
     pub(crate) fn land_remote_in_flight(&mut self, id: &str, remote: Option<Option<RemoteNode>>) {
         match remote {
-            Some(Some((kind, fields, group))) => self.materialize(id.to_string(), kind, &fields, group, None),
+            Some(Some((ty, fields, group))) => self.materialize(id.to_string(), &ty, &fields, group, None),
             Some(None) => self.remove_remotely_deleted(id),
             None => {}
         }
@@ -1461,8 +1476,7 @@ impl App {
     pub(crate) fn restore_session(&mut self) -> bool {
         let Some(journal) = self.journal.as_ref() else { return false };
         let doc = journal.doc();
-        let mut nodes: Vec<(NodeId, Kind, Fields, Option<NodeId>)> =
-            doc.live().map(|(id, n)| (id, n.kind(), fields_of(n), doc.effective_group(id))).collect();
+        let mut nodes: Vec<(NodeId, Snapshot)> = doc.live().map(|(id, n)| (id, Snapshot::of(doc, id, n))).collect();
         self.take_store_recovery();
         // Contract: `None` (no file, another document's, or a newer format
         // version) or a damaged file is a fresh start, same as a session
@@ -1478,34 +1492,34 @@ impl App {
         let local = local_from(read);
         let toasts = self.toasts.save_toast_queue.len();
         // Links ride along: stored, never graph nodes.
-        for (id, kind, fields, _) in nodes.iter().filter(|(_, kind, ..)| *kind == Kind::Link) {
-            self.materialize(id.to_string(), *kind, fields, None, None);
+        for (id, s) in nodes.iter().filter(|(_, s)| s.kind() == Kind::Link) {
+            self.materialize(id.to_string(), &s.ty, &s.fields, None, None);
         }
-        nodes.retain(|(_, kind, ..)| *kind != Kind::Link);
+        nodes.retain(|(_, s)| s.kind() != Kind::Link);
         // Only jars (with Task 3, the Default at least): a fresh start, which keeps them where they are.
-        if nodes.iter().all(|(_, kind, ..)| *kind == Kind::Jar) {
-            for (id, kind, fields, group) in &nodes {
-                self.materialize(id.to_string(), *kind, fields, group.map(|g| g.to_string()), None);
+        if nodes.iter().all(|(_, s)| s.kind() == Kind::Jar) {
+            for (id, s) in &nodes {
+                self.materialize(id.to_string(), &s.ty, &s.fields, s.group.map(|g| g.to_string()), None);
             }
             self.restore_closed(local.closed);
             self.arm_local(unread, true);
             return false;
         }
-        nodes.sort_by_key(|(_, kind, ..)| *kind != Kind::Group);
+        nodes.sort_by_key(|(_, s)| s.kind() != Kind::Group);
         let pass = self.begin_content_pass();
-        for (id, kind, fields, group) in &nodes {
-            let group = group.map(|g| g.to_string());
+        for (id, s) in &nodes {
+            let group = s.group.map(|g| g.to_string());
             // The store's own `pos` still reaches the mirror inside
             // `materialize`; only the live placement is overridden.
             let entry = local.nodes.get(&id.to_string());
-            self.materialize(id.to_string(), *kind, fields, group, entry);
+            self.materialize(id.to_string(), &s.ty, &s.fields, group, entry);
         }
         self.end_content_pass(pass);
         self.collapse_toasts_since(toasts);
         // Graph view with the first tab focused, re-fit once restored tabs
         // land; `apply_local` below overrides both from personal state when
         // it has them.
-        self.focused = nodes.iter().find(|(_, kind, ..)| *kind == Kind::Tab).map(|(id, ..)| id.to_string());
+        self.focused = nodes.iter().find(|(_, s)| s.kind() == Kind::Tab).map(|(id, _)| id.to_string());
         self.view_mode = ViewMode::Graph;
         self.camera.frame_restored = true;
         self.apply_local(local);
@@ -1932,7 +1946,7 @@ impl App {
         // re-pointed at it (spec "The Default jar").
         let file_defaults: Vec<NodeId> = imported
             .iter()
-            .filter(|i| i.kind == Kind::Jar && i.fields.get(&field::IS_DEFAULT) == Some(&FieldValue::Bool(true)))
+            .filter(|i| i.kind() == Kind::Jar && i.fields.get(&field::IS_DEFAULT) == Some(&FieldValue::Bool(true)))
             .map(|i| i.id)
             .collect();
         imported.retain(|i| !file_defaults.contains(&i.id));
@@ -1942,11 +1956,11 @@ impl App {
                 i.fields.insert(field::JAR, FieldValue::Id(running));
             }
         }
-        let groups: BTreeSet<NodeId> = imported.iter().filter(|i| i.kind == Kind::Group).map(|i| i.id).collect();
+        let groups: BTreeSet<NodeId> = imported.iter().filter(|i| i.kind() == Kind::Group).map(|i| i.id).collect();
         let ids: BTreeSet<NodeId> = imported.iter().map(|i| i.id).collect();
         let root_id = root.as_ref().and(imported.first()).map(|i| i.id);
         let (dest, root_pos) = root.map_or((None, None), |r| (r.group, r.pos));
-        imported.sort_by_key(|i| match i.kind {
+        imported.sort_by_key(|i| match i.kind() {
             Kind::Group => 1,
             Kind::Link => 3, // after the cards it joins
             _ => 2,
@@ -1965,7 +1979,7 @@ impl App {
                 Some(FieldValue::Id(Some(g))) if !is_root && groups.contains(g) => Some(g.to_string()),
                 _ => dest.clone(),
             };
-            let mut fields = imported_fields(node.kind, &node.fields);
+            let mut fields = imported_fields(node.kind(), &node.fields);
             if let Some(FieldValue::Id(parent)) = fields.get_mut(&field::PARENT) {
                 let live = |p: &NodeId| keep_live_parents && self.nodes.contains_key(&p.to_string());
                 *parent = parent.filter(|p| ids.contains(p) || live(p));
@@ -1973,7 +1987,7 @@ impl App {
             if let (true, Some(pos)) = (is_root, root_pos) {
                 fields.insert(field::POS, FieldValue::Pos(pos.x, pos.y));
             }
-            self.materialize(node.id.to_string(), node.kind, &fields, group, None);
+            self.materialize(node.id.to_string(), &node.ty, &fields, group, None);
         }
         self.end_content_pass(pass);
         self.collapse_toasts_since(toasts);
@@ -2018,7 +2032,7 @@ impl App {
                 return HashMap::new();
             }
         };
-        if !imported.iter().any(|i| i.kind == Kind::Tab) {
+        if !imported.iter().any(|i| i.kind() == Kind::Tab) {
             self.queue_toast("The session has no tabs".into());
             return HashMap::new();
         }
@@ -2026,7 +2040,7 @@ impl App {
         self.rebind_jar_files(json, &imported);
         let map: HashMap<String, String> =
             json.nodes.iter().zip(&imported).map(|(node, i)| (node.id.clone(), i.id.to_string())).collect();
-        let first_tab = imported.iter().find(|i| i.kind == Kind::Tab).map(|i| i.id.to_string());
+        let first_tab = imported.iter().find(|i| i.kind() == Kind::Tab).map(|i| i.id.to_string());
         // No root: a group or parent outside the file (import keeps real
         // node ids) names nothing once the old session is gone.
         self.materialize_imported(imported, None, false);

@@ -161,7 +161,7 @@ pub(crate) fn subtree_entry(
         if let Some(store::model::FieldValue::Pos(x, y)) = root_fields.get_mut(&field::POS) {
             (*x, *y) = (*x + offset.x, *y + offset.y);
         }
-        nodes.push(store::json::node_json(id, root.kind, &root_fields, None));
+        nodes.push(store::json::node_json(id, &root.ty, &root_fields, None));
         record(id);
         // Only a group has members; for anything else this finds none. Membership and containment are the mirror's.
         let members = members_under(
@@ -179,7 +179,7 @@ pub(crate) fn subtree_entry(
             }
             let fields = live_fields(app, &label, &member.fields);
             if keep(app.mirror.ty(&label), &fields) {
-                nodes.push(store::json::node_json(&label, member.kind, &fields, member.group));
+                nodes.push(store::json::node_json(&label, &member.ty, &fields, member.group));
                 record(&label);
             }
         }
@@ -197,7 +197,7 @@ pub(crate) fn subtree_entry(
         let (from, to) = app.mirror.link_ends(&label);
         if from.is_some_and(|n| kept.contains(&n)) && to.is_some_and(|n| kept.contains(&n)) {
             if let Some(snap) = app.snapshot(link) {
-                nodes.push(store::json::node_json(&label, snap.kind, &snap.fields, None));
+                nodes.push(store::json::node_json(&label, &snap.ty, &snap.fields, None));
             }
         }
     }
@@ -300,7 +300,7 @@ impl App {
     pub(crate) fn rebind_jar_files(&self, doc: &store::json::JsonDoc, imported: &[store::json::Imported]) {
         let Some(dir) = self.jars_dir() else { return };
         for (old, new) in doc.nodes.iter().zip(imported) {
-            if new.kind != Kind::Jar || self.nodes.contains_key(&old.id) {
+            if new.kind() != Kind::Jar || self.nodes.contains_key(&old.id) {
                 continue;
             }
             let (from, to) = (dir.join(format!("{}.json", old.id)), crate::jar::Jar::path(&dir, new.id));

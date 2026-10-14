@@ -4,9 +4,7 @@
 
 use std::collections::BTreeSet;
 
-use super::model::{
-    decode_field, encode_field, field, field_def, Doc, FieldValue, Hlc, Kind, Node, NodeId, Reg, Stamp,
-};
+use super::model::{decode_field, encode_field, field, field_def, Doc, FieldValue, Hlc, Node, NodeId, Reg, Stamp};
 use super::tlv::Reader;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -30,9 +28,10 @@ pub enum OpBody {
 }
 
 impl OpBody {
-    /// A `Create` whose node message carries `kind`'s type string after `fields`.
-    pub fn create(node: NodeId, kind: Kind, mut fields: Vec<u8>) -> OpBody {
-        let ty = kind.type_str().expect("a created node has a known kind");
+    /// A `Create` whose node message carries the type string `ty` after `fields`. `ty` is the node's own string
+    /// (`Node::ty`, `Snapshot::ty`), a type this build doesn't know included.
+    pub fn create(node: NodeId, ty: &str, mut fields: Vec<u8>) -> OpBody {
+        debug_assert!(!ty.is_empty(), "a created node has a type");
         fields.extend(encode_field(field::TYPE, &FieldValue::Str(ty.to_owned())));
         OpBody::Create { node, fields }
     }
@@ -189,7 +188,7 @@ fn set_reg(node: &mut Node, no: u32, stamp: Stamp, enc: Vec<u8>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::model::{ActorId, DocId};
+    use crate::store::model::{ActorId, DocId, Kind};
     use crate::store::testutil::{shown, XorShift};
 
     fn id(actor: u64, counter: u64) -> NodeId {
@@ -202,7 +201,7 @@ mod tests {
     }
 
     fn create(node: NodeId, kind: Kind, group: Option<NodeId>) -> OpBody {
-        OpBody::create(node, kind, encode_field(field::GROUP, &FieldValue::Id(group)))
+        OpBody::create(node, kind.type_str().unwrap(), encode_field(field::GROUP, &FieldValue::Id(group)))
     }
 
     #[test]
@@ -229,6 +228,33 @@ mod tests {
         assert!(!doc.nodes.contains_key(&ghost));
         assert!(doc.nodes.contains_key(&future));
         assert_eq!(doc.nodes[&future].kind(), Kind::Unknown);
+    }
+
+    #[test]
+    fn a_create_writes_the_type_string_it_is_given() {
+        let t = id(1, 0);
+        let mut doc = Doc::new(DocId([0; 16]));
+        doc.apply(&op(1, 0, 1, OpBody::create(t, "application/x-from-the-future", Vec::new())));
+        assert_eq!(doc.nodes[&t].ty(), "application/x-from-the-future");
+        assert_eq!(doc.nodes[&t].kind(), Kind::Unknown);
+    }
+
+    /// A `Set` of a generic field on a node of an unknown type leaves a newer client's field byte-identical (spec
+    /// "Testing", 2b-5 Ruling 2).
+    #[test]
+    fn a_set_on_an_unknown_node_leaves_its_raw_fields_alone() {
+        let t = id(1, 0);
+        let mut fields = encode_field(40, &FieldValue::Str("theirs".into()));
+        fields.extend(encode_field(field::GROUP, &FieldValue::Id(None)));
+        let mut doc = Doc::new(DocId([0; 16]));
+        doc.apply(&op(1, 0, 1, OpBody::create(t, "application/x-from-the-future", fields)));
+        let raw = doc.nodes[&t].fields[&40].enc.clone();
+        doc.apply(&op(1, 1, 2, name(t, "renamed")));
+        let pos = encode_field(field::POS, &FieldValue::Pos(5.0, 6.0));
+        doc.apply(&op(1, 2, 3, OpBody::Set { node: t, field: field::POS, enc: pos }));
+        assert_eq!(doc.nodes[&t].fields[&40].enc, raw);
+        assert_eq!(doc.nodes[&t].get(field::NAME), FieldValue::Str("renamed".into()));
+        assert_eq!(doc.nodes[&t].get(field::POS), FieldValue::Pos(5.0, 6.0));
     }
 
     fn name(node: NodeId, text: &str) -> OpBody {

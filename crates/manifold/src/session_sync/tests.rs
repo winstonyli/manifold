@@ -15,7 +15,7 @@ fn jar_fields_belong_to_tabs_groups_and_jars() {
     assert_eq!(Kind::Group.fields(), &[POS, COLOR, NAME, JAR]);
     assert_eq!(Kind::Jar.fields(), &[POS, COLOR, NAME, EPHEMERAL, IS_DEFAULT]);
     assert_eq!(Kind::Link.fields(), &[NAME, FROM, TO]);
-    assert!(Kind::Unknown.fields().is_empty());
+    assert_eq!(Kind::Unknown.fields(), &[POS, COLOR, PARENT, NAME]);
 }
 
 /// Waits up to ~1 s for `app.redirect_fetcher` to report something.
@@ -68,7 +68,7 @@ fn shared(kind: Kind, group: Option<NodeId>, set: &[(u32, FieldValue)]) -> Snaps
     for (no, value) in set {
         fields.insert(*no, value.clone());
     }
-    Snapshot { kind, group, fields }
+    Snapshot { ty: kind.type_str().unwrap().to_owned(), group, fields }
 }
 
 fn note(text: &str, group: Option<NodeId>) -> Snapshot {
@@ -79,11 +79,14 @@ fn group(name: &str) -> Snapshot {
     shared(Kind::Group, None, &[(field::NAME, FieldValue::Str(name.into()))])
 }
 
+/// A remote change's snapshot of a `kind` node: its type string, `fields` and `group`.
+fn snap(kind: Kind, fields: Fields, group: Option<NodeId>) -> Snapshot {
+    Snapshot { ty: kind.type_str().unwrap().to_owned(), group, fields }
+}
+
 /// What `doc` shows, shaped like `snapshots`.
 fn shown(doc: &Doc) -> BTreeMap<NodeId, Snapshot> {
-    doc.live()
-        .map(|(id, node)| (id, Snapshot { kind: node.kind(), group: doc.effective_group(id), fields: fields_of(node) }))
-        .collect()
+    doc.live().map(|(id, node)| (id, Snapshot::of(doc, id, node))).collect()
 }
 
 /// What the store holds for every live node (`App::snapshot`), by store id: an in-progress download, a
@@ -494,7 +497,7 @@ fn a_node_whose_runtime_does_not_match_its_type_trips_the_invariant() {
 /// show another replica's new nodes.
 fn app_with(nodes: &BTreeMap<NodeId, Snapshot>) -> App {
     let mut app = App::default();
-    let changes = nodes.iter().map(|(&id, s)| (id, Some((s.kind, s.fields.clone(), s.group)))).collect();
+    let changes = nodes.iter().map(|(&id, s)| (id, Some(s.clone()))).collect();
     app.apply_remote(changes);
     app
 }
@@ -535,8 +538,8 @@ fn a_remote_jar_edit_updates_a_sleeping_tab_and_a_group() {
     let mut group_fields = group.fields.clone();
     group_fields.insert(field::JAR, FieldValue::Id(Some(jar)));
     app.apply_remote(vec![
-        (id(1), Some((Kind::Tab, tab_fields, None))),
-        (id(2), Some((Kind::Group, group_fields, None))),
+        (id(1), Some(snap(Kind::Tab, tab_fields, None))),
+        (id(2), Some(snap(Kind::Group, group_fields, None))),
     ]);
     assert_eq!(app.mirror.jar(&id(1).to_string()), Some(jar));
     assert_eq!(app.mirror.jar(&id(2).to_string()), Some(jar));
@@ -586,7 +589,7 @@ fn a_json_nodes_view_round_trips_through_the_store() {
 
     // Restoring those fields gives the same view back.
     let mut restored = App::default();
-    restored.materialize(node.clone(), Kind::Json, fields, None, None);
+    restored.materialize(node.clone(), crate::store::model::TYPE_JSON, fields, None, None);
     assert_eq!(restored.mirror.view(&node).unwrap().get("/users").unwrap().collapsed, Some(true));
 }
 
@@ -596,10 +599,23 @@ fn a_remote_view_change_updates_the_node_in_place() {
     let (value, path) = app.nodes[&node].as_json().map(|j| (j.value.clone(), j.path.clone())).unwrap();
     let mut fields = snapshots(&app)[&id(1)].fields.clone();
     fields.insert(field::VIEW, FieldValue::Str(r#"{"":{"collapsed":true}}"#.into()));
-    app.materialize(node.clone(), Kind::Json, &fields, None, None);
+    app.materialize(node.clone(), crate::store::model::TYPE_JSON, &fields, None, None);
     assert_eq!(app.mirror.view(&node).unwrap().get("").unwrap().collapsed, Some(true));
     let json = app.nodes[&node].as_json().unwrap();
     assert_eq!((&json.value, &json.path), (&value, &path), "only the view changed");
+}
+
+/// `materialize` seeds the mirror's `type` with the stored string as written, and a snapshot carries it back to the
+/// store unchanged; the row it reads as is the canonical one.
+#[test]
+fn materialize_keeps_the_stored_type_string() {
+    let mut app = App::default();
+    let node = id(1).to_string();
+    let fields = shared(Kind::Note, None, &[(field::TEXT, FieldValue::Str("n".into()))]).fields;
+    app.materialize(node.clone(), "Text/Markdown", &fields, None, None);
+    assert_eq!(app.mirror.ty(&node), "Text/Markdown");
+    assert_eq!(app.card_kind(&node).unwrap().ty, crate::store::model::TYPE_NOTE);
+    assert_eq!(app.snapshot(id(1)).unwrap().ty, "Text/Markdown");
 }
 
 #[test]
@@ -708,7 +724,7 @@ fn a_remotely_removed_group_leaves_no_member_naming_it() {
     // What `remote_changes` reports when another replica deletes Inner:
     // the group gone, its stored member now shown in Outer.
     let member = nodes[&id(2)].fields.clone();
-    app.apply_remote(vec![(id(1), None), (id(2), Some((Kind::Note, member, Some(id(0)))))]);
+    app.apply_remote(vec![(id(1), None), (id(2), Some(snap(Kind::Note, member, Some(id(0)))))]);
     let inner = id(1).to_string();
     assert!(!app.nodes.contains_key(&inner) && !app.node_order.contains(&inner));
     let outer = Some(id(0).to_string());
@@ -1501,7 +1517,7 @@ fn an_older_sessions_download_without_a_parent_loads_unchanged() {
         .iter()
         .flat_map(|(no, value)| encode_field(*no, value))
         .collect();
-        old.begin().unwrap().commit(vec![OpBody::create(node, Kind::Download, fields)]).unwrap();
+        old.begin().unwrap().commit(vec![OpBody::create(node, crate::store::model::TYPE_DOWNLOAD, fields)]).unwrap();
     }
     let mut app = app_on(&path, 1);
     assert!(app.restore_session());
@@ -2051,7 +2067,7 @@ fn remote_jar_create_rename_and_delete_reach_jar_defs() {
     let mut app = app_with(&BTreeMap::from([(jar, named("Home"))]));
     assert_eq!(app.jar_defs()[&jar].name, "Home");
     assert!(app.nodes.contains_key(&jar.to_string()), "a jar is a card");
-    app.apply_remote(vec![(jar, Some((Kind::Jar, named("House").fields, None)))]);
+    app.apply_remote(vec![(jar, Some(snap(Kind::Jar, named("House").fields, None)))]);
     assert_eq!(app.jar_defs()[&jar].name, "House");
     assert_eq!(snapshots(&app)[&jar], named("House"), "projects back unchanged");
     app.apply_remote(vec![(jar, None)]);
@@ -2230,7 +2246,7 @@ fn a_remote_ephemeral_change_deletes_and_saves_the_jar_file() {
     let toggled = |app: &App, on: bool| {
         let mut fields = snapshots(app)[&jar].fields.clone();
         fields.insert(field::EPHEMERAL, FieldValue::Bool(on));
-        vec![(jar, Some((Kind::Jar, fields, None)))]
+        vec![(jar, Some(snap(Kind::Jar, fields, None)))]
     };
     app.apply_remote(toggled(&app, true));
     assert!(app.jar_defs()[&jar].ephemeral);
@@ -2286,7 +2302,7 @@ fn a_jar_first_seen_ephemeral_deletes_its_leftover_file_and_queues_nothing() {
         (field::NAME, FieldValue::Str("Theirs".into())),
         (field::EPHEMERAL, FieldValue::Bool(true)),
     ]);
-    app.apply_remote(vec![(remote, Some((Kind::Jar, fields, None)))]);
+    app.apply_remote(vec![(remote, Some(snap(Kind::Jar, fields, None)))]);
     assert!(app.jar_defs()[&remote].ephemeral);
     assert!(!file.exists(), "remote-created: the leftover file goes");
     assert!(app.pending.is_empty(), "remote-created: nothing queued");
@@ -2836,7 +2852,7 @@ fn the_mirror_matches_the_store_after_every_save() {
     fn check(app: &App, step: &str) {
         let doc = app.journal.as_ref().unwrap().doc();
         for (id, node) in doc.live() {
-            let want = Snapshot { kind: node.kind(), group: doc.effective_group(id), fields: fields_of(node) };
+            let want = Snapshot::of(doc, id, node);
             assert_eq!(app.snapshot(id), Some(want), "{step}: node {id}");
         }
     }
@@ -4904,7 +4920,7 @@ fn every_creation_path_seeds_the_node_type() {
     ]);
     let app = app_with(&nodes);
     for (id, node) in &nodes {
-        assert_eq!(app.mirror.ty(&id.to_string()), ty(node.kind), "materialized {:?}", node.kind);
+        assert_eq!(app.mirror.ty(&id.to_string()), ty(node.kind()), "materialized {:?}", node.kind());
     }
 }
 

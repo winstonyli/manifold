@@ -995,8 +995,11 @@ fn an_install_waits_while_a_tab_is_still_starting() {
     let pin = pin_for(&a, serve_file(&a));
     let data = dir.join("data");
     let mut app = App::default();
-    let pending =
-        crate::session_sync::Snapshot { kind: crate::store::model::Kind::Tab, group: None, fields: Default::default() };
+    let pending = crate::session_sync::Snapshot {
+        ty: crate::store::model::TYPE_TAB.into(),
+        group: None,
+        fields: Default::default(),
+    };
     app.spawns.spawning.insert("t1".into(), pending);
     assert!(!app.start_view_install_at(ViewKind::Cef, &data, &runtime_plan(&pin)));
     assert!(app.view_ui.view_installs.is_empty());

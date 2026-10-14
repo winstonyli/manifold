@@ -202,7 +202,7 @@ fn the_store_sees_nothing_of_the_level_but_view() {
             .into_iter()
             .map(|(id, mut s)| {
                 s.fields.remove(&field::VIEW);
-                (id, s.kind, s.group, s.fields)
+                (id, s.kind(), s.group, s.fields)
             })
             .collect::<Vec<_>>()
     };

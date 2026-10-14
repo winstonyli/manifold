@@ -136,8 +136,8 @@ pub enum Kind {
     Jar,
     /// A connection between two cards: a stored node, never a graph card, with `from` and `to` ends.
     Link,
-    /// No `type` yet (an op named the node before its `Create` arrived), or a type a newer build wrote
-    /// (kept, never shown).
+    /// No `type` yet (an op named the node before its `Create` arrived), or a type a newer build wrote. The node
+    /// keeps its type string (`Node::ty`); the app reads only its generic fields (`GENERIC`).
     Unknown,
 }
 
@@ -162,6 +162,10 @@ pub(crate) const TYPES: [(Kind, &str, &[u32]); 9] = {
     ]
 };
 
+/// The fields every card carries whatever its type: all the app reads, mirrors and copies of a node of a type this
+/// build doesn't know (`Kind::Unknown`, spec decision 3). Its other fields stay raw in the document.
+pub(crate) const GENERIC: &[u32] = &[field::POS, field::COLOR, field::PARENT, field::NAME];
+
 impl Kind {
     /// The type string a created node of this kind is stored under.
     pub fn type_str(self) -> Option<&'static str> {
@@ -169,9 +173,10 @@ impl Kind {
     }
 
     /// The fields a node of this kind carries, `group` aside (`TYPES`): what a `Create` writes, what another
-    /// replica's change hands the app (2b-5 Ruling 11), and what a snapshot of the node holds. Empty for `Unknown`.
+    /// replica's change hands the app (2b-5 Ruling 11), and what a snapshot of the node holds. `GENERIC` for
+    /// `Unknown`.
     pub fn fields(self) -> &'static [u32] {
-        TYPES.iter().find(|t| t.0 == self).map_or(&[], |t| t.2)
+        TYPES.iter().find(|t| t.0 == self).map_or(GENERIC, |t| t.2)
     }
 
     /// The kind a stored type string means; any `image/*` is an image.
@@ -429,16 +434,22 @@ impl Node {
         self.fields.contains_key(&field::TYPE)
     }
 
-    /// What kind of node this is, read from its `type`.
-    pub fn kind(&self) -> Kind {
-        let Some(reg) = self.fields.get(&field::TYPE) else { return Kind::Unknown };
+    /// Its stored `type` string as written ("" before its `Create` arrives): the last occurrence in the register,
+    /// as `decode_field` reads it.
+    pub fn ty(&self) -> &str {
+        let Some(reg) = self.fields.get(&field::TYPE) else { return "" };
         let mut ty = "";
         for f in Reader::new(&reg.enc).map_while(Result::ok) {
             if let Ok(s) = f.value.str() {
-                ty = s; // the last occurrence wins, as `decode_field` reads it
+                ty = s;
             }
         }
-        Kind::from_type(ty)
+        ty
+    }
+
+    /// What kind of node this is, read from its `type`.
+    pub fn kind(&self) -> Kind {
+        Kind::from_type(self.ty())
     }
 
     /// Shown in the graph: created, not deleted, and of a kind this build knows.
@@ -691,6 +702,17 @@ mod tests {
         assert_eq!((node.kind(), node.has_type(), node.is_live()), (Kind::Jar, true, true));
         node.fields.insert(field::TYPE, reg(2, "application/x-from-the-future"));
         assert_eq!((node.kind(), node.has_type(), node.is_live()), (Kind::Unknown, true, false));
+    }
+
+    /// A type this build doesn't know carries the generic fields (spec decision 3): what the app reads, mirrors and
+    /// copies of it. Its type string is kept as written.
+    #[test]
+    fn an_unknown_kind_carries_the_generic_fields() {
+        use field::*;
+        assert_eq!(Kind::Unknown.fields(), &[POS, COLOR, PARENT, NAME]);
+        assert_eq!(Node::with_type("application/x-from-the-future").ty(), "application/x-from-the-future");
+        assert_eq!(Node::with_type("Text/Markdown").ty(), "Text/Markdown", "kept as written, case and all");
+        assert_eq!(Node::placeholder().ty(), "");
     }
 
     #[test]

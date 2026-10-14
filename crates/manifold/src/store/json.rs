@@ -60,10 +60,10 @@ fn value_to_json(value: &FieldValue) -> Option<Value> {
 }
 
 /// A node as JSON from its field values, `group` given separately and
-/// `type` from `kind`: what `doc_to_json` writes for a document node, for
+/// `type` from `ty`: what `doc_to_json` writes for a document node, for
 /// callers holding values rather than a `Node` (Recently Closed,
 /// `session_sync`).
-pub fn node_json(id: &str, kind: Kind, fields: &BTreeMap<u32, FieldValue>, group: Option<NodeId>) -> JsonNode {
+pub fn node_json(id: &str, ty: &str, fields: &BTreeMap<u32, FieldValue>, group: Option<NodeId>) -> JsonNode {
     let mut out = Map::new();
     let mut put = |no: u32, value: &FieldValue| {
         if let (Some(def), Some(json)) = (field_def(no), value_to_json(value)) {
@@ -76,7 +76,7 @@ pub fn node_json(id: &str, kind: Kind, fields: &BTreeMap<u32, FieldValue>, group
         }
     }
     put(field::GROUP, &FieldValue::Id(group));
-    out.insert("type".into(), Value::String(kind.type_str().expect("a known kind").into()));
+    out.insert("type".into(), Value::String(ty.to_owned()));
     JsonNode { id: id.to_owned(), fields: out }
 }
 
@@ -88,7 +88,7 @@ fn node_to_json(id: NodeId, node: &Node, group: Option<NodeId>) -> JsonNode {
         .filter(|&&no| no != field::TYPE && field_def(no).is_some())
         .map(|&no| (no, node.get(no)))
         .collect();
-    node_json(&id.to_string(), node.kind(), &fields, group)
+    node_json(&id.to_string(), node.ty(), &fields, group)
 }
 
 /// Every live node, in id order, each under its effective group.
@@ -143,19 +143,26 @@ pub fn subtree_to_json(doc: &Doc, root: NodeId) -> JsonDoc {
     JsonDoc { nodes, local: None }
 }
 
-/// A node read from JSON, with its fresh id and field values.
+/// A node read from JSON, with its fresh id, its type string as the file wrote it and its field values.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Imported {
     pub id: NodeId,
-    pub kind: Kind,
+    pub ty: String,
     pub fields: BTreeMap<u32, FieldValue>,
+}
+
+impl Imported {
+    /// The kind its type string means (`Kind::from_type`).
+    pub fn kind(&self) -> Kind {
+        Kind::from_type(&self.ty)
+    }
 }
 
 /// How far an import trusts the file's machine-local fields.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Trust {
     /// A file this app wrote for this profile (Recently Closed, a named
-    /// session): every field is kept.
+    /// session): every field its kind carries is kept.
     Own,
     /// Anything else (Import Session/Group, `--import`): a Download's `path`
     /// is dropped (it would point "Show in folder" anywhere), and a `jar` is kept only when it names a node in the same file
@@ -167,8 +174,11 @@ pub enum Trust {
 
 /// Reads `json`'s nodes, giving each a fresh id from `next_id`. Ids
 /// naming a node in the file are rewritten to its fresh id; others are
-/// kept when they are real node ids and dropped otherwise. Unknown field
-/// names are ignored (a newer build's export); a bad value is an error.
+/// kept when they are real node ids and dropped otherwise. A node keeps its
+/// `type` string, one this build doesn't know included, and only the fields
+/// its kind carries (`Kind::fields`, the generic ones for an unknown type)
+/// plus its group; unknown field names are ignored (a newer build's export).
+/// A missing or empty `type`, or a bad value, is an error.
 /// Under `Trust::Foreign` the machine-local fields are filtered first (see
 /// `Trust`): a Download's `path` is dropped, and a `jar`/
 /// link `from`/`to` naming no node in the file is dropped rather than kept
@@ -186,11 +196,22 @@ pub fn import(json: &JsonDoc, mut next_id: impl FnMut() -> NodeId, trust: Trust)
     let kinds: HashMap<&str, Option<Kind>> = json.nodes.iter().map(|n| (n.id.as_str(), n.kind())).collect();
     let mut out = Vec::new();
     for node in &json.nodes {
-        let kind = node.kind().ok_or_else(|| format!("node {:?}: missing or unknown type", node.id))?;
+        let ty = node
+            .fields
+            .get("type")
+            .and_then(Value::as_str)
+            .filter(|ty| !ty.is_empty())
+            .ok_or_else(|| format!("node {:?}: missing type", node.id))?;
+        let kind = Kind::from_type(ty);
         let mut fields = BTreeMap::new();
         for (name, value) in &node.fields {
-            // The kind is carried separately; `creates` writes its type.
+            // The type is carried separately; `creates` writes it.
             let Some(def) = field_by_name(name).filter(|def| def.no != field::TYPE) else { continue };
+            // Only what its kind carries, and its group: a newer build's field on an unknown type can't be remapped,
+            // so it is never copied (spec decision 4).
+            if def.no != field::GROUP && !kind.fields().contains(&def.no) {
+                continue;
+            }
             if trust == Trust::Foreign {
                 if def.no == field::PATH && kind == Kind::Download {
                     continue;
@@ -231,7 +252,7 @@ pub fn import(json: &JsonDoc, mut next_id: impl FnMut() -> NodeId, trust: Trust)
             };
             fields.insert(def.no, parsed);
         }
-        out.push(Imported { id: fresh[node.id.as_str()], kind, fields });
+        out.push(Imported { id: fresh[node.id.as_str()], ty: ty.to_owned(), fields });
     }
     Ok(out)
 }
@@ -240,19 +261,19 @@ pub fn import(json: &JsonDoc, mut next_id: impl FnMut() -> NodeId, trust: Trust)
 /// created. `import` has already dropped ends naming a jar, a link or the link itself.
 pub fn is_half_made_link(node: &Imported, is_card: impl Fn(NodeId) -> bool) -> bool {
     let end = |no| matches!(node.fields.get(&no), Some(FieldValue::Id(Some(n))) if is_card(*n));
-    node.kind == Kind::Link && !(end(field::FROM) && end(field::TO))
+    node.kind() == Kind::Link && !(end(field::FROM) && end(field::TO))
 }
 
 fn create_op(node: &Imported) -> OpBody {
     let fields = node.fields.iter().flat_map(|(no, value)| encode_field(*no, value)).collect();
-    OpBody::create(node.id, node.kind, fields)
+    OpBody::create(node.id, &node.ty, fields)
 }
 
 /// The `Create` ops that add `imported` to a document. A link whose end is not a card in `imported` is skipped
 /// (the same rule `materialize_imported` applies, there also accepting live cards).
 pub fn creates(imported: &[Imported]) -> Vec<OpBody> {
     let cards: std::collections::BTreeSet<NodeId> =
-        imported.iter().filter(|n| n.kind != Kind::Link).map(|n| n.id).collect();
+        imported.iter().filter(|n| n.kind() != Kind::Link).map(|n| n.id).collect();
     imported.iter().filter(|n| !is_half_made_link(n, |id| cards.contains(&id))).map(create_op).collect()
 }
 
@@ -386,7 +407,6 @@ mod tests {
     #[test]
     fn bad_input_is_an_error() {
         let bad = |json: &str| import(&serde_json::from_str(json).unwrap(), ids(1), Trust::Own).unwrap_err();
-        bad(r#"{"nodes": [{"id": "a", "type": "application/x-spaceship"}]}"#);
         bad(r#"{"nodes": [{"id": "a", "type": "application/vnd.manifold.tab", "view_kind": "gecko"}]}"#);
         bad(r#"{"nodes": [{"id": "a", "type": "application/vnd.manifold.tab", "color": "red"}]}"#);
         bad(
@@ -410,8 +430,8 @@ mod tests {
         assert_eq!(text["nodes"][0]["type"], "application/vnd.manifold.group");
 
         let imported = import(&export, ids(2), Trust::Own).unwrap();
-        assert_eq!(imported.iter().map(|n| n.kind).collect::<Vec<_>>(), [Kind::Group, Kind::Tab, Kind::Tab]);
-        assert!(imported.iter().all(|n| !n.fields.contains_key(&field::TYPE)), "the kind is carried separately");
+        assert_eq!(imported.iter().map(Imported::kind).collect::<Vec<_>>(), [Kind::Group, Kind::Tab, Kind::Tab]);
+        assert!(imported.iter().all(|n| !n.fields.contains_key(&field::TYPE)), "the type is carried separately");
         let mut again = Doc::new(DocId([0; 16]));
         let mut op_ids = ids(3);
         for (i, body) in creates(&imported).into_iter().enumerate() {
@@ -423,10 +443,40 @@ mod tests {
     }
 
     #[test]
-    fn import_rejects_a_missing_or_unknown_type() {
+    fn import_rejects_a_missing_or_empty_type() {
         let bad = |json: &str| import(&serde_json::from_str(json).unwrap(), ids(1), Trust::Own).unwrap_err();
         bad(r#"{"nodes": [{"id": "a"}]}"#);
-        bad(r#"{"nodes": [{"id": "a", "type": "application/x-spaceship"}]}"#);
+        bad(r#"{"nodes": [{"id": "a", "type": 7}]}"#);
+        bad(r#"{"nodes": [{"id": "a", "type": ""}]}"#);
+    }
+
+    /// A type this build doesn't know is kept with its string and the generic fields only: a newer build's field,
+    /// an `Id` among them, can't be remapped, so it is never copied (spec decision 4). A known kind keeps only its own
+    /// fields too.
+    #[test]
+    fn import_keeps_an_unknown_type_with_the_generic_fields_only() {
+        let json = doc(serde_json::json!([
+            {"id": "u", "type": "application/x-from-the-future", "name": "Old", "pos": [1, 2], "color": "#ff0000",
+             "url": "https://x/", "jar": "g", "text": "dropped", "future_field": 7, "group": "g"},
+            {"id": "g", "type": "application/vnd.manifold.group", "name": "G", "parent": "u"},
+        ]));
+        let imported = import(&json, ids(1), Trust::Own).unwrap();
+        assert_eq!(imported[0].ty, "application/x-from-the-future");
+        assert_eq!(imported[0].kind(), Kind::Unknown);
+        let kept: Vec<u32> = imported[0].fields.keys().copied().collect();
+        assert_eq!(kept, [field::POS, field::COLOR, field::GROUP, field::NAME]);
+        assert_eq!(imported[0].fields[&field::GROUP], FieldValue::Id(Some(imported[1].id)));
+        assert!(!imported[1].fields.contains_key(&field::PARENT), "a group has no `parent`");
+        let made = creates(&imported);
+        let mut d = Doc::new(DocId([0; 16]));
+        let mut op_ids = ids(3);
+        for (i, body) in made.into_iter().enumerate() {
+            d.apply(&Op { id: op_ids(), hlc: Hlc { ms: 1, logical: i as u32 }, body });
+        }
+        assert_eq!(d.nodes[&imported[0].id].ty(), "application/x-from-the-future", "creates() writes the string back");
+        let uid = imported[0].id;
+        let out = node_to_json(uid, &d.nodes[&uid], None);
+        assert_eq!(out.fields["type"], "application/x-from-the-future", "export writes the real string");
     }
 
     #[test]
@@ -435,7 +485,7 @@ mod tests {
         fields.insert(field::URL, FieldValue::Str("https://a.example/".into()));
         fields.insert(field::PINNED, FieldValue::Bool(true));
         fields.insert(field::COLOR, FieldValue::Color(None));
-        let json = node_json("n1", Kind::Tab, &fields, None);
+        let json = node_json("n1", crate::store::model::TYPE_TAB, &fields, None);
         assert_eq!(json.kind(), Some(Kind::Tab));
         assert_eq!(json.fields.get("url"), Some(&Value::String("https://a.example/".into())));
         assert_eq!(json.fields.get("pinned"), Some(&Value::Bool(true)));
