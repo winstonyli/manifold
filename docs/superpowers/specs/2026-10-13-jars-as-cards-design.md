@@ -95,10 +95,18 @@ declares it in the type table:
   it. `content_keep` is already that rule for content; it generalises to take each kind's `backing_file`, and
   `prune_unnamed` and `prune_jar_files` become one prune over each file-backed directory. Nothing else deletes a
   backing file except an explicit wipe (Clear Cookies).
-- **One release point:** when a node is removed (local close or a remote delete arriving) or a Recently Closed
-  entry leaves the list (eviction past `MAX_CLOSED`, or the list cleared), the files it named that nothing else
-  names are deleted. This replaces `forget_jar`'s unconditional `Jar::delete_files`. If the closed list cannot be
-  read at startup, prune is skipped (the guard `may_prune_content` already gives).
+- **A name stands for a family.** Content already matches `<id>.<ext>` by stem; a jar's name likewise covers its
+  `.unreadable-*` copies and crashed saves' `.tmp` files (`Jar::delete_files` today). Release and prune act on the
+  family.
+- **One release point:** when a node is removed (local close or a remote delete arriving) and no live node or
+  held entry names its file, the file family is deleted at once (cookies do not linger after a plain delete).
+  This replaces `forget_jar`'s unconditional `Jar::delete_files`. A Recently Closed entry leaving the list
+  (eviction past `MAX_CLOSED`, or the list cleared) does **not** delete at once: the persisted list is shared by
+  instances, and another instance's list may still hold the file, which is why content files get `PRUNE_GRACE`
+  and `touch_owned_content`. The file is left for the next launch's prune, which skips files modified within the
+  grace period; closing a jar touches its file, as closing a content card does today. Cost: after an eviction a
+  cookie file can outlive its last reference until the next launch; Clear Cookies wipes at once. If the closed
+  list cannot be read at startup, prune is skipped (the guard `may_prune_content` already gives).
 - **One reopen rule:** `reopen_closed` imports with fresh ids. A path-derived name needs no change. An id-derived
   name (a jar) is moved to the new id's file when the **old id is no longer a live node**; when it is still live
   (Duplicate, which reuses `subtree_entry` and `reopen_closed`) nothing is moved, so the original keeps its
@@ -175,7 +183,9 @@ and the developer's own session is simply reset if it looks wrong:
   fall out of scope.
 - Close a group holding a jar, reopen: card back, cookie file moved to the new id, inside edges remapped, outside
   edges dangling. Duplicate: cookie file not moved.
-- Eviction: the entry past `MAX_CLOSED` releases its jars' files; startup prune keeps held ones.
+- Eviction: the entry past `MAX_CLOSED` leaves its jars' files for the next prune, which deletes unheld files
+  older than the grace period and keeps held and recently touched ones. A plain jar delete with nothing holding
+  it removes the family at once.
 - Backing files, both kinds through the same tests: Duplicate of an Image shares the file and refreshing the
   original keeps it; Duplicate of a jar leaves the original's cookie file in place and starts the copy empty;
   closing and reopening each restores the file under the new id's expectations.
@@ -185,4 +195,6 @@ and the developer's own session is simply reset if it looks wrong:
 ## Decided and open
 
 - Decided: a group's `jar` edge, inherited by every tab inside, replaces "Set default jar".
-- Open: whether a duplicated jar starts logged out (`Fresh`, as written) or with a copy of the cookies.
+- Decided, revisit later: a duplicated jar starts logged out (`Fresh`, as written). Duplicating a group that
+  holds a jar gives the copy its own fresh jar with the copied tabs' edges remapped, which is the useful case. A
+  "Duplicate with cookies" item is parked until there is a real use.
