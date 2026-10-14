@@ -104,6 +104,14 @@ declares it in the type table:
   (Duplicate, which reuses `subtree_entry` and `reopen_closed`) nothing is moved, so the original keeps its
   cookies and the copy starts empty.
 
+**Invariant that makes `Share` safe: a content file is write-once.** Today no code writes to a node's content file
+after it is saved (`redirect_fetch::save` writes `<id>.<ext>` once; a Refresh writes a new file and repoints
+`PATH`, deleting the old one only if `replaced_file_unused` finds no other node naming it). A card's own edits
+(note text, JSON view overrides, name, color) live in the store, per node, so duplicates diverge without touching
+the file. Any future feature that changes file content must therefore write a new file and repoint that node's
+`PATH`: copy-on-write by construction, never in-place. A kind whose file is edited in place declares `Fresh`
+(as a jar does), which copies on duplicate instead.
+
 What it cannot cover: a `PATH` pointing outside the owned directory (a user's own file) is a reference, never
 deleted (`owned_content_file` still decides this for the refresh-replace deletion); a note's text lives in the
 store, not a file.
