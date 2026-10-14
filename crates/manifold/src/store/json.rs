@@ -116,9 +116,9 @@ fn link_ends_among(node: &Node, ok: impl Fn(NodeId) -> bool) -> bool {
     [field::FROM, field::TO].iter().all(|&no| matches!(node.get(no), FieldValue::Id(Some(end)) if ok(end)))
 }
 
-/// Whether `id` is a live node that a link can join (not a jar, not a link).
+/// Whether `id` is a live node that a link can join (any card, a jar included; not a link).
 fn is_live_card(doc: &Doc, id: NodeId) -> bool {
-    doc.nodes.get(&id).is_some_and(|n| n.is_live() && !matches!(n.kind(), Kind::Jar | Kind::Link))
+    doc.nodes.get(&id).is_some_and(|n| n.is_live() && n.kind() != Kind::Link)
 }
 
 /// `root` and its live subtree, root first (a group export). The root
@@ -201,10 +201,10 @@ pub fn import(json: &JsonDoc, mut next_id: impl FnMut() -> NodeId, trust: Trust)
                     continue;
                 }
             }
-            // A link joins cards: an end naming a jar, another link or itself is no end.
+            // A link joins cards: an end naming another link or itself is no end.
             if matches!(def.no, field::FROM | field::TO) {
                 let label = value.as_str().unwrap_or_default();
-                if label == node.id || matches!(kinds.get(label), Some(Some(Kind::Jar | Kind::Link))) {
+                if label == node.id || matches!(kinds.get(label), Some(Some(Kind::Link))) {
                     continue;
                 }
             }
@@ -253,7 +253,7 @@ fn create_op(node: &Imported) -> OpBody {
 /// (the same rule `materialize_imported` applies, there also accepting live cards).
 pub fn creates(imported: &[Imported]) -> Vec<OpBody> {
     let cards: std::collections::BTreeSet<NodeId> =
-        imported.iter().filter(|n| !matches!(n.kind, Kind::Jar | Kind::Link)).map(|n| n.id).collect();
+        imported.iter().filter(|n| n.kind != Kind::Link).map(|n| n.id).collect();
     imported.iter().filter(|n| !is_half_made_link(n, |id| cards.contains(&id))).map(create_op).collect()
 }
 

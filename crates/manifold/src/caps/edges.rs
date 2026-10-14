@@ -3,7 +3,7 @@
 //! reads them.
 
 use super::pattern::Pattern;
-use crate::store::model::{field, TYPE_GROUP, TYPE_LINK, TYPE_NOTE, TYPE_TAB};
+use crate::store::model::{field, TYPE_GROUP, TYPE_JAR, TYPE_LINK, TYPE_NOTE, TYPE_TAB};
 
 /// The containment edge: a node is shown inside a group.
 pub(crate) const CONTAINS: &str = "contains";
@@ -24,7 +24,18 @@ pub(crate) enum Storage {
 }
 
 /// Every card type that may sit inside a group.
-const CARD_TYPES: [&str; 7] =
+const CARD_TYPES: [&str; 8] = [
+    TYPE_TAB,
+    TYPE_GROUP,
+    TYPE_NOTE,
+    TYPE_JAR,
+    "image/*",
+    "application/pdf",
+    "application/json",
+    "application/octet-stream",
+];
+/// What a card may be opened from: every card but a jar (a jar opens nothing).
+const OPENER_TARGETS: [&str; 7] =
     [TYPE_TAB, TYPE_GROUP, TYPE_NOTE, "image/*", "application/pdf", "application/json", "application/octet-stream"];
 /// The cards that may be opened from another: the card types with a `parent` field, so all but a group (a group
 /// is made, never opened; `TYPES` gives it no `parent`, so the save could not keep one).
@@ -134,7 +145,7 @@ impl EdgeTable {
 pub(crate) fn builtin_edges() -> EdgeTable {
     EdgeTable::new(vec![
         EdgeRow::new(CONTAINS, &CARD_TYPES, &[TYPE_GROUP]).stored_in(Storage::Tree).acyclic(),
-        EdgeRow::new(OPENED_FROM, &OPENER_SOURCES, &CARD_TYPES)
+        EdgeRow::new(OPENED_FROM, &OPENER_SOURCES, &OPENER_TARGETS)
             .stored_in(Storage::Field(field::PARENT))
             .acyclic()
             .layout()
@@ -180,12 +191,13 @@ mod tests {
     }
 
     #[test]
-    fn builtin_contains_takes_every_card_into_a_group_only() {
-        use crate::store::model::{TYPE_GROUP, TYPE_TAB};
+    fn builtin_contains_takes_every_card_a_jar_included_into_a_group_only() {
+        use crate::store::model::{TYPE_GROUP, TYPE_JAR, TYPE_TAB};
         let t = edges();
         for source in [
             TYPE_TAB,
             TYPE_GROUP,
+            TYPE_JAR,
             "text/markdown",
             "image/png",
             "application/pdf",
@@ -195,11 +207,11 @@ mod tests {
             assert!(t.can_connect(CONTAINS, source, TYPE_GROUP), "{source}");
             assert!(!t.can_connect(CONTAINS, source, TYPE_TAB), "{source}");
         }
-        assert!(!t.can_connect(CONTAINS, "application/vnd.manifold.jar", TYPE_GROUP));
     }
 
     #[test]
-    fn link_takes_any_card_to_any_card_and_opened_from_any_but_a_group_never_a_jar_or_a_link_node() {
+    fn link_takes_any_card_a_jar_included_and_opened_from_any_but_a_group_never_a_jar_or_a_link_node() {
+        use crate::store::model::TYPE_JAR;
         let t = edges();
         for a in [
             TYPE_TAB,
@@ -216,7 +228,7 @@ mod tests {
                 assert_eq!(t.can_connect(OPENED_FROM, a, b), a != TYPE_GROUP, "{a} -> {b}");
             }
         }
-        assert!(!t.can_connect(LINK, "application/vnd.manifold.jar", TYPE_TAB));
+        assert!(t.can_connect(LINK, TYPE_JAR, TYPE_TAB) && t.can_connect(LINK, TYPE_TAB, TYPE_JAR));
         assert!(!t.can_connect(LINK, TYPE_TAB, "application/vnd.manifold.link"));
     }
 

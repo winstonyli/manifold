@@ -188,6 +188,8 @@ impl App {
     pub(crate) fn close_node(&mut self, id: &str) {
         self.record_closed(id);
         self.destroy_node(id);
+        // A closed jar's tabs now resolve to the Default jar.
+        self.sweep_jar_switches();
     }
 
     /// Removes one node with its kind's full cleanup, recording nothing: a

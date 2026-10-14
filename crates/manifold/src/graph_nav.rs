@@ -653,7 +653,7 @@ mod tests {
                 Runtime::Tab(_) => 0,
                 Runtime::Unloaded(_) => 1,
                 Runtime::Download(_) => 2,
-                Runtime::Note(_) => 3,
+                Runtime::Note(_) | Runtime::Jar => 3,
                 Runtime::Image(_) => 4,
                 Runtime::Pdf(_) => 5,
                 Runtime::Json(_) => 6,

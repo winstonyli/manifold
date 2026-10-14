@@ -134,7 +134,7 @@ pub enum Kind {
     Json,
     Download,
     Jar,
-    /// A connection between two cards: a stored node, never a graph card (like a jar), with `from` and `to` ends.
+    /// A connection between two cards: a stored node, never a graph card, with `from` and `to` ends.
     Link,
     /// No `type` yet (an op named the node before its `Create` arrived), or a type a newer build wrote
     /// (kept, never shown).
@@ -157,7 +157,7 @@ pub(crate) const TYPES: [(Kind, &str, &[u32]); 9] = {
         (Kind::Pdf, TYPE_PDF, &[POS, COLOR, PARENT, URL, PATH, NAME]),
         (Kind::Json, TYPE_JSON, &[POS, COLOR, PARENT, URL, PATH, VIEW, NAME]),
         (Kind::Download, TYPE_DOWNLOAD, &[POS, COLOR, PARENT, URL, PATH, NAME]),
-        (Kind::Jar, TYPE_JAR, &[COLOR, NAME, EPHEMERAL]),
+        (Kind::Jar, TYPE_JAR, &[POS, COLOR, NAME, EPHEMERAL]),
         (Kind::Link, TYPE_LINK, &[NAME, FROM, TO]),
     ]
 };

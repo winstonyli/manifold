@@ -1,17 +1,16 @@
-//! Named cookie jars as synced definitions (`Mirror::jar_defs`, spec "Data model"). A jar is a `Kind::Jar` store
-//! node but never a graph node. Its fields are mirror state (2b-5 Ruling 7): written through `App::edit_field` here,
-//! applied from the document by `materialize` (`materialize_jar`), and dropped by `forget_jar`.
+//! Named cookie jars as synced definitions (`App::jar_defs`, spec "Data model"). A jar is a `Kind::Jar` card: a
+//! `App::nodes` entry with a unit `Runtime::Jar`. Its fields are mirror state (2b-5 Ruling 7): written through
+//! `App::edit_field` here and applied from the document by `materialize` like any card's.
 
 use crate::jar::{Jar, JarChoice, JarKey};
 use crate::node::Runtime;
-use crate::session_sync::{color_value, Fields};
+use crate::session_sync::color_value;
 use crate::store::model::{field, FieldValue, Kind, NodeId};
 use crate::theme::TAG_COLOR_PALETTE;
 use crate::App;
 use std::collections::{BTreeMap, BTreeSet};
 
-/// A named jar's synced definition (a `Kind::Jar` node), decoded from its mirrored fields (`Mirror::jar_defs`). Not a
-/// graph node (spec "Data model").
+/// A named jar's synced definition (a `Kind::Jar` card), decoded from its mirrored fields (`Mirror::jar_def`).
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct JarDef {
     pub(crate) name: String,
@@ -278,7 +277,7 @@ impl App {
     /// gone, as that is what its tabs use).
     pub(crate) fn jar_label(&self, key: JarKey) -> JarLabel {
         match key {
-            JarKey::Named(id) => named_jar_label(id, self.mirror.jar_defs()).unwrap_or_else(JarLabel::built_in),
+            JarKey::Named(id) => named_jar_label(id, &self.jar_defs()).unwrap_or_else(JarLabel::built_in),
             JarKey::Default => JarLabel::built_in(),
         }
     }
@@ -287,7 +286,7 @@ impl App {
     pub(crate) fn jar_color(&self, key: JarKey) -> egui::Color32 {
         match key {
             JarKey::Named(id) => {
-                self.mirror.jar_defs().get(&id).map_or(egui::Color32::GRAY, |d| d.color.unwrap_or(TAG_COLOR_PALETTE[0]))
+                self.jar_defs().get(&id).map_or(egui::Color32::GRAY, |d| d.color.unwrap_or(TAG_COLOR_PALETTE[0]))
             }
             JarKey::Default => egui::Color32::GRAY,
         }
@@ -301,7 +300,7 @@ impl App {
     /// The confirm dialog's title, detail and button. `None` once a named jar it asks about is gone (deleted on
     /// another device meanwhile): there is nothing left to confirm.
     pub(crate) fn jar_confirm_text(&self, confirm: JarConfirm) -> Option<(String, String, &'static str)> {
-        let exists = |key| !matches!(key, JarKey::Named(id) if !self.mirror.jar_defs().contains_key(&id));
+        let exists = |key| !matches!(key, JarKey::Named(id) if !self.jar_exists(id));
         match confirm {
             JarConfirm::Clear(key) if exists(key) => Some((
                 format!("Clear cookies in {}?", self.jar_label(key)),
@@ -320,7 +319,7 @@ impl App {
                     "Delete",
                 ))
             }
-            JarConfirm::Ephemeral(id) if self.mirror.jar_defs().get(&id).is_some_and(|d| !d.ephemeral) => Some((
+            JarConfirm::Ephemeral(id) if self.jar_exists(id) && !self.mirror.jar_def(&id.to_string()).ephemeral => Some((
                 format!("Make {} ephemeral?", self.jar_label(JarKey::Named(id))),
                 "Its saved sign-ins are deleted from disk now. Tabs keep them until Manifold quits; after that this \
                  jar starts empty each time."
@@ -333,20 +332,25 @@ impl App {
 
     /// A new named jar under `name`'s clean form (name rules), with the first palette colour no jar shows (one without
     /// a colour shows the first, `jar_color`), so deleting a jar doesn't make the next one repeat a colour; with every
-    /// colour taken, they cycle by count.
-    /// Its fields go through `edit_field`; the caller's `save_session` creates it.
-    pub(crate) fn create_jar(&mut self, name: &str) -> NodeId {
-        let id: NodeId = self.alloc_node_id().parse().expect("alloc_node_id returns a store id");
-        let defs = self.mirror.jar_defs();
+    /// colour taken, they cycle by count. A card placed at `at`; its fields go through `edit_field`, and the caller's
+    /// `save_session` creates it.
+    pub(crate) fn create_jar(&mut self, name: &str, at: crate::fetched::Placement) -> NodeId {
+        let defs = self.jar_defs();
         let shown = |c: &egui::Color32| defs.values().any(|d| d.color.unwrap_or(TAG_COLOR_PALETTE[0]) == *c);
         let free = TAG_COLOR_PALETTE.iter().find(|c| !shown(c));
         let color = *free.unwrap_or(&TAG_COLOR_PALETTE[defs.len() % TAG_COLOR_PALETTE.len()]);
-        self.mirror.add_jar(id);
-        let key = id.to_string();
-        self.queue_create(&key);
+        let key = self.place_node(None, Kind::Jar, Runtime::Jar, at);
         self.edit_field(&key, field::NAME, FieldValue::Str(crate::names::clean_name(name).into_owned()));
         self.edit_field(&key, field::COLOR, color_value(Some(color)));
-        id
+        key.parse().expect("place_node returns a store id")
+    }
+
+    /// Where a jar made for `tab` goes: its level (group), just above it.
+    pub(crate) fn jar_placement_beside(&self, tab: &str) -> crate::fetched::Placement {
+        crate::fetched::Placement {
+            group: self.mirror.group(tab).map(str::to_owned),
+            pos: self.layout_pos(tab) + egui::vec2(0.0, -80.0),
+        }
     }
 
     /// The jar whose label (`named_jar_label`) is `text`, else one whose stored name is: of several with that name, the
@@ -354,13 +358,10 @@ impl App {
     /// compared exactly, after trimming `text`.
     pub(crate) fn jar_named(&self, text: &str) -> Option<NodeId> {
         let text = text.trim();
-        let label = self
-            .mirror
-            .jar_defs()
-            .keys()
-            .find(|&&id| named_jar_label(id, self.mirror.jar_defs()).is_some_and(|l| l.to_string() == text));
+        let defs = self.jar_defs();
+        let label = defs.keys().find(|&&id| named_jar_label(id, &defs).is_some_and(|l| l.to_string() == text));
         // name rule: SETJAR matches the stored name
-        label.or_else(|| self.mirror.jar_defs().iter().find(|(_, d)| d.name == text).map(|(id, _)| id)).copied()
+        label.or_else(|| defs.iter().find(|(_, d)| d.name == text).map(|(id, _)| id)).copied()
     }
 
     /// `SETJAR`: the focused tab picks the jar `name` names (`jar_named`: a label or a stored name, tried as typed and
@@ -376,7 +377,8 @@ impl App {
         let jar = if clean.eq_ignore_ascii_case("default") {
             None
         } else {
-            Some(self.jar_named(name).or_else(|| self.jar_named(&clean)).unwrap_or_else(|| self.create_jar(&clean)))
+            let existing = self.jar_named(name).or_else(|| self.jar_named(&clean));
+            Some(existing.unwrap_or_else(|| self.create_jar(&clean, self.jar_placement_beside(&tab))))
         };
         self.set_tab_jar(&tab, jar);
         true
@@ -386,7 +388,7 @@ impl App {
     /// name as it is.
     pub(crate) fn rename_jar(&mut self, id: NodeId, name: &str) {
         let clean = crate::names::clean_name(name);
-        if !clean.is_empty() && self.mirror.jar_defs().contains_key(&id) {
+        if !clean.is_empty() && self.jar_exists(id) {
             self.edit_field(&id.to_string(), field::NAME, FieldValue::Str(clean.into_owned()));
         }
     }
@@ -394,37 +396,39 @@ impl App {
     /// Turns jar `id`'s ephemeral flag on or off (deviation 10; final review I1), a local toggle (after
     /// `request_jar_ephemeral`'s confirm): the flag goes through `edit_field`. See `switch_jar_ephemeral`.
     pub(crate) fn set_jar_ephemeral(&mut self, id: NodeId, on: bool) {
-        self.switch_jar_ephemeral(id, on, true);
+        self.switch_jar_ephemeral(id, on);
     }
 
-    /// The flag's switch, the same for a local toggle (`set_jar_ephemeral`, `local`: written through `edit_field`)
-    /// and a remote one (`materialize_jar`: the mirror takes the document's value, queuing nothing). The jar is loaded
-    /// from its file first, while it still counts as saved, so nothing on disk is dropped unread:
-    /// - on: its files are deleted now (`Jar::delete_files`); its cookies stay in memory until quit. Not a locked
-    ///   jar's: an unreadable file is never touched, and a locked jar saves nothing anyway.
-    /// - off: the loaded jar is saved (a locked one writes nothing).
-    fn switch_jar_ephemeral(&mut self, id: NodeId, on: bool, local: bool) {
-        if self.mirror.jar_defs().get(&id).is_none_or(|d| d.ephemeral == on) {
-            return;
-        }
+    /// Jar `id`'s ephemeral flag has just changed to `on`, locally or from another replica (the mirror already
+    /// holds it). Turning it on: the jar's cookies are kept in memory for the running tabs (loaded from its file
+    /// first if they were not, whatever the flag now says), then the file is deleted unless the jar is locked (an
+    /// unreadable file is never touched, and a locked jar saves nothing anyway). Turning it off: the jar's cookies
+    /// are written to a new file (a locked one writes nothing).
+    pub(crate) fn after_jar_ephemeral_changed(&mut self, id: NodeId, on: bool) {
         let key = JarKey::Named(id);
         if on {
-            self.ensure_jar_loaded(key);
-        }
-        let flag = FieldValue::Bool(on);
-        if local {
-            self.edit_field(&id.to_string(), field::EPHEMERAL, flag);
+            if let (false, Some(dir)) = (self.jars.contains_key(&key), self.jars_dir()) {
+                let jar = Jar::load(&dir, key);
+                self.publish_jar(key, jar);
+            }
+            if let (Some(dir), Some(false)) = (self.jars_dir(), self.jars.get(&key).map(Jar::is_locked)) {
+                if let Err(e) = Jar::delete_files(&dir, key) {
+                    eprintln!("jar: could not delete {}: {e}", key.file_stem());
+                }
+            }
         } else {
-            self.mirror.set(&id.to_string(), field::EPHEMERAL, flag);
-        }
-        if !on {
             self.ensure_jar_loaded(key);
             self.save_jar(key);
-        } else if let (Some(dir), Some(false)) = (self.jars_dir(), self.jars.get(&key).map(Jar::is_locked)) {
-            if let Err(e) = Jar::delete_files(&dir, key) {
-                eprintln!("jar: could not delete {}: {e}", key.file_stem());
-            }
         }
+    }
+
+    /// A local Make/Stop Ephemeral (`set_jar_ephemeral`, after any confirm): writes the flag, then its effects.
+    fn switch_jar_ephemeral(&mut self, id: NodeId, on: bool) {
+        if !self.jar_exists(id) || self.mirror.jar_def(&id.to_string()).ephemeral == on {
+            return;
+        }
+        self.edit_field(&id.to_string(), field::EPHEMERAL, FieldValue::Bool(on));
+        self.after_jar_ephemeral_changed(id, on);
     }
 
     /// Settings' Ephemeral checkbox. Turning it on for a jar with a saved file asks first (`JarConfirm::Ephemeral`):
@@ -445,57 +449,24 @@ impl App {
         self.jars_dir().is_some_and(|dir| Jar::path(&dir, key).exists())
     }
 
-    /// The user deleted jar `id`: tabs (a respawning one too, `linked_ids`) and groups that named it fall back to the
-    /// default jar (deviation 9), then it is forgotten and the live tabs that used it switch. Its document node is
-    /// deleted by the next save (`queue_delete`). A new spawn in flight is not reached: it has no mirror entry until
-    /// it lands (`tab_jar`), and its landing clears the jar instead (`seed_landing`).
-    pub(crate) fn delete_jar(&mut self, id: NodeId) {
-        let tabs: Vec<String> = self
-            .linked_ids()
-            .filter(|t| self.tab_jar(t).is_some_and(|c| c.jar == Some(id)))
-            .map(str::to_owned)
-            .collect();
-        for t in tabs {
-            self.edit_jar(&t, JarChoice::default());
-        }
-        let groups: Vec<String> = self
-            .nodes
-            .iter()
-            .filter(|(g, _)| self.is_container(g) && self.mirror.default_jar(g) == Some(id))
-            .map(|(g, _)| g.clone())
-            .collect();
-        for g in groups {
-            self.edit_default_jar(&g, None);
-        }
-        self.forget_jar(id);
-        self.queue_delete(&id.to_string());
-        self.sweep_jar_switches();
-    }
-
-    /// Drops jar `id` (a local or remote delete): its mirror entry and definition (`Mirror::forget_jar`), its cookies
-    /// and its files, unreadable copies and crashed saves' temp files included (`Jar::delete_files`). A tab still
-    /// running on it has its pulls dropped (`apply_pulled_cookies`) and now resolves to the default jar, so it
-    /// switches: the caller sweeps (`delete_jar`, or `apply_remote` once the whole remote batch is in). After a local
-    /// delete, the queued delete is what keeps a remote edit from recreating the jar before the save (`materialize`).
-    pub(crate) fn forget_jar(&mut self, id: NodeId) {
-        self.mirror.forget_jar(id);
+    /// A removed jar's in-memory state: its cookies saved if dirty (a Recently Closed entry may bring it back, and
+    /// its file is what comes back with it), then dropped. Files are not touched here: closing never wipes
+    /// credentials (spec "Backing files"); the startup prune deletes a file nothing holds.
+    pub(crate) fn forget_jar_memory(&mut self, id: NodeId) {
         let key = JarKey::Named(id);
+        if self.cookies.jar_dirty.contains_key(&key) {
+            self.save_jar(key);
+        }
         self.jars.remove(&key);
-        self.cookies.jar_dirty.remove(&key);
         if let Ok(mut snapshots) = self.cookies.jar_snapshots.lock() {
             snapshots.remove(&key);
-        }
-        if let Some(dir) = self.jars_dir() {
-            if let Err(e) = Jar::delete_files(&dir, key) {
-                eprintln!("jar: could not delete {}: {e}", key.file_stem());
-            }
         }
     }
 
     /// Startup, after `restore_session` (final review I2b): a jar deleted on another device while this one was not
-    /// running never reaches `forget_jar` here, so its files (`jars\<id>.json`, unreadable copies, crashed saves'
-    /// temp files) are deleted now: the file goes with the delete. Kept: every jar in `jar_defs` or live in the
-    /// document. Skipped when the document may not name every jar: no journal, a repaired one (`store_recovered`,
+    /// running never reaches `forget_id` here, so its files (`jars\<id>.json`, unreadable copies, crashed saves'
+    /// temp files) are deleted now: the file goes with the delete. Kept: every live jar card, every jar live in the
+    /// document and every jar in a Recently Closed entry. Skipped when the document may not name every jar: no journal, a repaired one (`store_recovered`,
     /// which includes a lost snapshot rebuilt as a new document), one a newer build wrote (read-only), or one with
     /// no live node at all (a new or replaced session file).
     pub(crate) fn prune_jar_files(&self) {
@@ -505,7 +476,13 @@ impl App {
             return;
         }
         let in_doc = doc.live().filter(|(_, n)| n.kind() == Kind::Jar).map(|(id, _)| id);
-        let keep: BTreeSet<NodeId> = self.mirror.jar_defs().keys().copied().chain(in_doc).collect();
+        let closed = self
+            .closed
+            .iter()
+            .flat_map(|e| &e.doc.nodes)
+            .filter(|n| n.kind() == Some(Kind::Jar))
+            .filter_map(|n| n.id.parse::<NodeId>().ok());
+        let keep: BTreeSet<NodeId> = self.jar_defs().into_keys().chain(in_doc).chain(closed).collect();
         crate::jar::prune_orphans(&dir, &keep);
     }
 
@@ -523,7 +500,7 @@ impl App {
     pub(crate) fn resolved_jar(&self, choice: &JarChoice) -> (JarKey, bool) {
         match choice.jar {
             None => (JarKey::Default, false),
-            Some(id) if self.mirror.jar_defs().contains_key(&id) => (JarKey::Named(id), false),
+            Some(id) if self.jar_exists(id) => (JarKey::Named(id), false),
             Some(_) => (JarKey::Default, true),
         }
     }
@@ -694,7 +671,8 @@ impl App {
     }
 
     fn is_ephemeral(&self, key: JarKey) -> bool {
-        matches!(key, JarKey::Named(id) if self.mirror.jar_defs().get(&id).is_some_and(|d| d.ephemeral))
+        // The mirror, not `jar_defs`: a jar being removed (`forget_jar_memory`) has left `nodes` but not yet the mirror.
+        matches!(key, JarKey::Named(id) if self.mirror.jar_def(&id.to_string()).ephemeral)
     }
 
     /// Writes `key`'s file unless it is ephemeral. A failure is logged (never cookie values) and leaves other jars
@@ -715,7 +693,7 @@ impl App {
     /// Empties `key`'s jar and saves it, then switches the live tabs running on it (deviation 14): their engines still
     /// hold the old cookies. A named jar that no longer exists is left alone, so no file is written for it.
     pub(crate) fn clear_jar_cookies(&mut self, key: JarKey) {
-        if matches!(key, JarKey::Named(id) if !self.mirror.jar_defs().contains_key(&id)) {
+        if matches!(key, JarKey::Named(id) if !self.jar_exists(id)) {
             return;
         }
         self.ensure_jar_loaded(key);
@@ -737,20 +715,18 @@ impl App {
         self.sweep_jar_switches();
     }
 
-    /// A `Kind::Jar` change from the document, before `materialize` gives the mirror its fields (`mirror_remote`, which
-    /// refreshes `jar_defs`). A jar deleted here whose delete is pending never gets this far (`materialize` drops the
-    /// change, final review M1 / Ruling 9). The jar is known from now on (and queued for creation, which only an
-    /// imported jar's fresh id needs: `queue_create`), and a changed ephemeral flag that no local edit holds runs its
-    /// file side effects first (`switch_jar_ephemeral`, which compares against `jar_defs`), while the mirror still
-    /// shows the old flag: a jar still saved is loaded from its file before the flag says it has none.
-    pub(crate) fn materialize_jar(&mut self, id: NodeId, fields: &Fields) {
-        self.mirror.add_jar(id);
-        self.queue_create(&id.to_string());
-        if let Some(value) = fields.get(&field::EPHEMERAL) {
-            if !self.pending.contains_key(&(id, field::EPHEMERAL)) {
-                self.switch_jar_ephemeral(id, matches!(value, FieldValue::Bool(true)), false);
-            }
-        }
+    /// The live jar cards' definitions, in id order (the order labels and pickers use).
+    pub(crate) fn jar_defs(&self) -> BTreeMap<NodeId, JarDef> {
+        self.nodes
+            .iter()
+            .filter(|(_, n)| matches!(n.runtime, Runtime::Jar))
+            .filter_map(|(id, _)| Some((id.parse().ok()?, self.mirror.jar_def(id))))
+            .collect()
+    }
+
+    /// Whether `id` is a live jar card.
+    pub(crate) fn jar_exists(&self, id: NodeId) -> bool {
+        self.nodes.get(&id.to_string()).is_some_and(|n| matches!(n.runtime, Runtime::Jar))
     }
 }
 

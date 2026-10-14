@@ -542,7 +542,8 @@ impl App {
                 req.jar_confirm = Some(JarConfirm::Clear(JarKey::Default));
             }
         });
-        for (&id, def) in self.mirror.jar_defs() {
+        let defs = self.jar_defs();
+        for (&id, def) in &defs {
             let marker = self.jar_label(JarKey::Named(id)).marker_text();
             head(ui, self.jar_color(JarKey::Named(id)), self.jar_tab_count(JarKey::Named(id)), marker, &mut |ui| {
                 let mut draft = jar_name_draft(ui, id, &def.name); // name rule: the field edits the stored name
@@ -585,7 +586,7 @@ impl App {
                 }
             });
         }
-        if self.mirror.jar_defs().is_empty() {
+        if defs.is_empty() {
             let hint = "Make a jar from a tab's right-click menu (New Jar...) to keep a second set of sign-ins.";
             ui.add(egui::Label::new(egui::RichText::new(hint).small().weak()).wrap());
         }
@@ -989,7 +990,7 @@ mod tests {
         crate::theme::apply_fonts(&ctx);
         crate::theme::apply_style(&ctx);
         let mut app = App::default();
-        app.create_jar("Default");
+        crate::session_sync::tests::add_jar(&mut app, "Default");
         galleys(&ctx, &mut app);
         let shown = galleys(&ctx, &mut app);
         let weak = ctx.global_style().visuals.weak_text_color();
@@ -1025,7 +1026,7 @@ mod tests {
             crate::theme::apply_fonts(&ctx);
             crate::theme::apply_style(&ctx);
             let mut app = App::default();
-            let work = app.create_jar("Work");
+            let work = crate::session_sync::tests::add_jar(&mut app, "Work");
             let input =
                 |events: Vec<egui::Event>| egui::RawInput { focused: window_focused, events, ..Default::default() };
             ctx.memory_mut(|m| m.request_focus(jar_name_edit_id(work)));
@@ -1052,7 +1053,7 @@ mod tests {
         let mut app = App::default();
         // Two of a name (and a long one) draw their markers too (jar name labels).
         for name in ["Work", "Home", "A much longer jar name than most", "A much longer jar name than most", "Work"] {
-            app.create_jar(name);
+            crate::session_sync::tests::add_jar(&mut app, name);
         }
         let input = || egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(480.0, 800.0))),
@@ -1082,7 +1083,7 @@ mod tests {
         crate::theme::apply_fonts(&ctx);
         crate::theme::apply_style(&ctx);
         let mut app = App::default();
-        app.create_jar("Personal accounts");
+        crate::session_sync::tests::add_jar(&mut app, "Personal accounts");
         let input = || egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(480.0, 3000.0))),
             ..Default::default()
@@ -1111,7 +1112,7 @@ mod tests {
     fn a_pending_confirm_ignores_further_jar_actions() {
         use crate::view_info::ViewConfirm;
         let mut app = App::default();
-        let work = app.create_jar("Work");
+        let work = crate::session_sync::tests::add_jar(&mut app, "Work");
         let clear = JarConfirm::Clear(JarKey::Default);
         app.pending_jar_confirm = Some(clear);
         let req = SettingsRequests {
@@ -1121,7 +1122,7 @@ mod tests {
         };
         app.apply_settings_requests(&req);
         assert_eq!(app.pending_jar_confirm, Some(clear), "the first confirm stays");
-        assert!(!app.mirror.jar_defs()[&work].ephemeral, "the click was ignored, not acted on");
+        assert!(!app.jar_defs()[&work].ephemeral, "the click was ignored, not acted on");
         let download = ViewConfirm::Download(crate::process_manager::ViewKind::Cef);
         assert!(!app.offer_view_confirm(download));
         assert_eq!(app.view_ui.pending_view_confirm, None, "no engine confirm over a jar confirm");
@@ -1130,7 +1131,7 @@ mod tests {
         assert!(app.offer_view_confirm(download));
         app.apply_settings_requests(&req);
         assert_eq!(app.pending_jar_confirm, None, "no jar confirm over an engine confirm");
-        assert!(!app.mirror.jar_defs()[&work].ephemeral);
+        assert!(!app.jar_defs()[&work].ephemeral);
 
         app.view_ui.pending_view_confirm = None;
         app.apply_settings_requests(&SettingsRequests {
@@ -1148,8 +1149,11 @@ mod tests {
         crate::theme::apply_fonts(&ctx);
         crate::theme::apply_style(&ctx);
         let mut app = App::default();
-        let (w1, w2) = (app.create_jar("Work"), app.create_jar("Work"));
-        app.create_jar("Home");
+        let (w1, w2) = (
+            crate::session_sync::tests::add_jar(&mut app, "Work"),
+            crate::session_sync::tests::add_jar(&mut app, "Work"),
+        );
+        crate::session_sync::tests::add_jar(&mut app, "Home");
         let texts = |app: &mut App, input: egui::RawInput| {
             let mut req = SettingsRequests::default();
             let mut output = ctx.run_ui(input, |ui| app.settings_jars_section(ui, &mut req));
@@ -1171,7 +1175,7 @@ mod tests {
         let weak = ctx.global_style().visuals.weak_text_color();
         let body = ctx.global_style().text_styles[&egui::TextStyle::Body].size;
         for w in [w1, w2] {
-            let frag = crate::jar_defs::jar_fragment(w, app.mirror.jar_defs()).unwrap();
+            let frag = crate::jar_defs::jar_fragment(w, &app.jar_defs()).unwrap();
             let marker = marker_galleys.iter().find(|g| g.text() == format!("#{frag}"));
             let marker = marker.unwrap_or_else(|| panic!("{w}'s marker in {shown:?}"));
             let want = crate::jar_defs::JarLabel::marker_format(body, weak);
@@ -1199,7 +1203,7 @@ mod tests {
         assert_eq!(id, w2);
         assert!(name.contains('X') && name.contains("Work") && name.len() == 5, "{name:?}");
         app.apply_settings_requests(&SettingsRequests { rename_jar: Some((id, name.clone())), ..Default::default() });
-        assert_eq!(app.mirror.jar_defs()[&w2].name, name, "stored as typed");
+        assert_eq!(app.jar_defs()[&w2].name, name, "stored as typed");
         assert_eq!(app.jar_label(JarKey::Named(w1)).to_string(), "Work", "no twin left");
     }
 
@@ -1216,7 +1220,7 @@ mod tests {
         crate::theme::apply_fonts(&ctx);
         crate::theme::apply_style(&ctx);
         let mut app = App::default();
-        let work = app.create_jar("Work");
+        let work = crate::session_sync::tests::add_jar(&mut app, "Work");
         let key = egui::Id::new(("jar_name", work));
         ctx.data_mut(|d| d.insert_temp(key, "Stale".to_string()));
         jars_frame(&mut app, &ctx);
@@ -1254,8 +1258,8 @@ mod tests {
         crate::theme::apply_fonts(&ctx);
         crate::theme::apply_style(&ctx);
         let mut app = App::default();
-        let work = app.create_jar("Work");
-        let synced = app.create_jar("x");
+        let work = crate::session_sync::tests::add_jar(&mut app, "Work");
+        let synced = crate::session_sync::tests::add_jar(&mut app, "x");
         app.mirror.set(
             &synced.to_string(),
             crate::store::model::field::NAME,
@@ -1288,7 +1292,7 @@ mod tests {
             crate::theme::apply_fonts(&ctx);
             crate::theme::apply_style(&ctx);
             let mut app = App::default();
-            let jar = app.create_jar("x");
+            let jar = crate::session_sync::tests::add_jar(&mut app, "x");
             app.mirror.set(
                 &jar.to_string(),
                 crate::store::model::field::NAME,

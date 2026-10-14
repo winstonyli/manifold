@@ -32,7 +32,7 @@ pub(crate) const MAX_CLOSED: usize = 20;
 
 /// Whether a node of type `ty` (`Mirror::ty`) with `fields` (its snapshot's) is
 /// worth keeping in a `ClosedEntry`. `false` for a completed download (it
-/// has no closed state -- starting it over isn't "reopening"), a jar, a
+/// has no closed state -- starting it over isn't "reopening"), a
 /// blank note (nothing to restore; the `Blank` tag) and a type this build
 /// doesn't know; everything else -- tabs, groups, images, PDFs, JSON files
 /// and leaves -- is. The capability rows in `caps/rows.rs` decide.
@@ -513,7 +513,7 @@ mod tests {
             (Kind::Pdf, &none, true),
             (Kind::Json, &none, true),
             (Kind::Download, &none, false),
-            (Kind::Jar, &none, false),
+            (Kind::Jar, &none, true),
             (Kind::Link, &none, false),
             (Kind::Note, &text("hi"), true),
             (Kind::Note, &text("  \n"), false),

@@ -89,8 +89,11 @@ pub(crate) fn color_of(value: &FieldValue) -> Option<egui::Color32> {
 /// A tab's runtime is one type whether it is loaded or asleep; a group has none (2b-6 Ruling 8).
 #[cfg(debug_assertions)]
 fn runtime_has_type(runtime: &Runtime, ty: &str) -> bool {
-    use crate::store::model::{TYPE_DOWNLOAD, TYPE_GROUP, TYPE_IMAGE, TYPE_JSON, TYPE_NOTE, TYPE_PDF, TYPE_TAB};
+    use crate::store::model::{
+        TYPE_DOWNLOAD, TYPE_GROUP, TYPE_IMAGE, TYPE_JAR, TYPE_JSON, TYPE_NOTE, TYPE_PDF, TYPE_TAB,
+    };
     match runtime {
+        Runtime::Jar => ty == TYPE_JAR,
         Runtime::Tab(_) | Runtime::Unloaded(_) => ty == TYPE_TAB,
         Runtime::Download(_) => ty == TYPE_DOWNLOAD,
         Runtime::Note(_) => ty == TYPE_NOTE,
@@ -214,10 +217,13 @@ fn url_of(fields: &Fields) -> Option<String> {
     Some(str_of(fields, field::URL)).filter(|u| !u.is_empty())
 }
 
-fn pos_of(fields: &Fields) -> egui::Vec2 {
+/// A stored node's document pos, or, for one that has none (an old jar from before jars were cards), a jittered
+/// spawn around the world center: the rule `App::placement` uses for a new node with no position. A missing `POS`
+/// decodes as (0, 0) (`FieldValue::absent`), so the exact origin reads as unplaced, as `Mirror::pos` reads it.
+pub(crate) fn pos_of(id: &str, fields: &Fields) -> egui::Vec2 {
     match fields.get(&field::POS) {
-        Some(FieldValue::Pos(x, y)) => egui::vec2(*x, *y),
-        _ => egui::Vec2::ZERO,
+        Some(FieldValue::Pos(x, y)) if (*x, *y) != (0.0, 0.0) => egui::vec2(*x, *y),
+        _ => crate::graph_layout::GRAPH_WORLD_CENTER + crate::graph_layout::spawn_jitter(id),
     }
 }
 
@@ -371,7 +377,7 @@ pub(crate) struct PendingWrites {
 
 impl App {
     /// What the store holds for `id`, or is about to, as a `Snapshot`: a graph node's fields of its kind as the mirror
-    /// holds them (2b-5: every stored field of a graph node is mirror state), a jar's definition, or the snapshot a
+    /// holds them (2b-5: every stored field of a graph node is mirror state), or the snapshot a
     /// tab's spawn started with (`spawning`, for one not shown yet). A tab's url is the shared one, not the live one
     /// its payload holds (2b-3 Ruling 1); its engine is the one a swap in progress already shows as its target
     /// (`start_swap_to`); a file card's path is the stored one, not the one its payload resolved here (2b-5 Ruling
@@ -397,10 +403,6 @@ impl App {
                 })
                 .collect();
             return Some(Snapshot { kind, group: link_id(self.mirror.group(&key)), fields });
-        }
-        if self.mirror.jar_defs().contains_key(&id) {
-            let fields = Kind::Jar.fields().iter().map(|&no| (no, self.mirror.get(&key, no))).collect();
-            return Some(Snapshot { kind: Kind::Jar, group: None, fields });
         }
         if self.mirror.is_link(id) {
             let fields = Kind::Link.fields().iter().map(|&no| (no, self.mirror.get(&key, no))).collect();
@@ -485,15 +487,7 @@ impl App {
         if id.parse::<NodeId>().is_ok_and(|node| self.writes.pending_deletes.contains(&node)) {
             return;
         }
-        // A jar's fields are mirror state like a node's (2b-5 Ruling 7), but it is never a graph node. Its file side
-        // effects run first, while the mirror still shows the old flag (`materialize_jar`).
-        if kind == Kind::Jar {
-            let Ok(jar) = id.parse::<NodeId>() else { return };
-            self.materialize_jar(jar, fields);
-            self.mirror_remote(&id, fields, None);
-            return;
-        }
-        // A link is stored and mirrored like a jar, and is never a graph node.
+        // A link is stored and mirrored, and is never a graph node.
         if kind == Kind::Link {
             let Ok(link) = id.parse::<NodeId>() else { return };
             self.mirror.add_link(link);
@@ -510,7 +504,7 @@ impl App {
         if let Some(ty) = kind.type_str() {
             self.mirror.init_field(&id, field::TYPE, FieldValue::Str(ty.to_owned()));
         }
-        let pos = local.map_or_else(|| pos_of(fields), |l| egui::vec2(l.pos[0], l.pos[1]));
+        let pos = local.map_or_else(|| pos_of(&id, fields), |l| egui::vec2(l.pos[0], l.pos[1]));
         if self.update_live_node(&id, fields, pos, &changed, &held) {
             return;
         }
@@ -530,6 +524,14 @@ impl App {
         }
         if changed(field::POS) && !self.is_being_dragged(id) {
             self.snap_layout(id, pos);
+        }
+        // Only a jar has `ephemeral`. The mirror already holds the new flag (`mirror_remote`), so this applies its
+        // effects without comparing (`after_jar_ephemeral_changed`).
+        if changed(field::EPHEMERAL) {
+            if let Ok(jar) = id.parse::<NodeId>() {
+                let on = matches!(fields.get(&field::EPHEMERAL), Some(FieldValue::Bool(true)));
+                self.after_jar_ephemeral_changed(jar, on);
+            }
         }
         let Some(node) = self.nodes.get_mut(id) else {
             return false;
@@ -568,10 +570,15 @@ impl App {
                     n.text = str_of(fields, field::TEXT);
                 }
             }
-            // A group's fields (it has no runtime), a content node's url and a Json node's view are the mirror's alone
-            // (`mirror_remote`; the level shown is relaid out below). Paths, keys and values never change after
-            // creation.
-            Runtime::None | Runtime::Download(_) | Runtime::Image(_) | Runtime::Pdf(_) | Runtime::Json(_) => {}
+            // A group's fields (it has no runtime), a jar's, a content node's url and a Json node's view are the
+            // mirror's alone (`mirror_remote`; the level shown is relaid out below). Paths, keys and values never
+            // change after creation.
+            Runtime::None
+            | Runtime::Jar
+            | Runtime::Download(_)
+            | Runtime::Image(_)
+            | Runtime::Pdf(_)
+            | Runtime::Json(_) => {}
         }
         // Another replica changed the view of the level being shown:
         // relaid out on the next sync.
@@ -614,7 +621,7 @@ impl App {
 
     /// Creates the node `id` of `kind` from `fields` (a file card whose file is gone gets a placeholder).
     fn insert_materialized(&mut self, id: String, kind: Kind, fields: &Fields, local: Option<&LocalNode>) {
-        let pos = local.map_or_else(|| pos_of(fields), |l| egui::vec2(l.pos[0], l.pos[1]));
+        let pos = local.map_or_else(|| pos_of(&id, fields), |l| egui::vec2(l.pos[0], l.pos[1]));
         // Resolved once up front for the arms below and the missing-file
         // refetch check: this machine's newest `<id>.*` in the content dir,
         // else `stored` (`ContentIndex`): the pass's own index when one is
@@ -698,7 +705,15 @@ impl App {
                 };
                 self.insert_placeholder_node(id.clone(), pos, kind, Runtime::Download(payload));
             }
-            Kind::Jar | Kind::Link | Kind::Unknown => return,
+            Kind::Jar => {
+                self.insert_placeholder_node(id.clone(), pos, kind, Runtime::Jar);
+                // A jar first seen already ephemeral (made on another device, or restored) has no file of its own:
+                // a leftover one goes, as a toggle on would delete it (`update_live_node` does that for a change).
+                if let (Ok(jar), Some(FieldValue::Bool(true))) = (id.parse::<NodeId>(), fields.get(&field::EPHEMERAL)) {
+                    self.after_jar_ephemeral_changed(jar, true);
+                }
+            }
+            Kind::Link | Kind::Unknown => return,
         }
         // A content node's url, its stored path and a Json node's view are already the mirror's (`mirror_remote`).
         // The placeholder just inserted above (see `missing_with_url`)
@@ -729,11 +744,9 @@ impl App {
     /// tabs"): another replica opening a big session mustn't start an
     /// engine here for every tab in it.
     pub(crate) fn apply_remote(&mut self, mut changes: Vec<RemoteChange>) {
-        // Jars first, then groups: a tab naming a jar created in the same batch resolves at once.
         changes.sort_by_key(|(_, c)| match c {
-            Some((Kind::Jar, ..)) => 0,
-            Some((Kind::Group, ..)) => 1,
-            _ => 2,
+            Some((Kind::Group, ..)) => 0,
+            _ => 1,
         });
         let toasts = self.toasts.save_toast_queue.len();
         let pass = self.begin_content_pass();
@@ -762,10 +775,6 @@ impl App {
     /// from there, and one only this replica has lands where the store
     /// would show it. Either way no live node names a removed group.
     pub(crate) fn remove_remotely_deleted(&mut self, id: &str) {
-        if let Some(jar) = id.parse::<NodeId>().ok().filter(|j| self.mirror.jar_defs().contains_key(j)) {
-            self.forget_jar(jar);
-            return;
-        }
         // The links naming a node another replica deleted go with it. Unlike the node, a link may still be live in the
         // document (the deleting replica did not know it, or an older build left it), and a link forgotten here
         // while live would fail `check_graph_matches_document`: so these deletes are queued (`delete_link`).
@@ -935,15 +944,20 @@ impl App {
         }
     }
 
-    /// The stored text a card is known by, borrowed: a note's (`note_text`), a group's raw name (`Mirror::name`),
-    /// which the caller draws through a name rule or matches as stored. "" for other kinds.
+    /// Whether node `id` is known by its stored name alone (a group, a jar): no derived label to fall back on, so
+    /// the name is its own text.
+    pub(crate) fn named_by_name(&self, id: &str) -> bool {
+        matches!(self.nodes.get(id).map(|n| &n.runtime), Some(Runtime::None | Runtime::Jar))
+    }
+
+    /// The stored text a card is known by, borrowed: a note's (`note_text`), a group's or a jar's raw name
+    /// (`Mirror::name`), which the caller draws through a name rule or matches as stored. "" for other kinds.
     pub(crate) fn own_text(&self, id: &str) -> &str {
-        match self.nodes.get(id).map(|n| &n.runtime) {
-            // A group is the one kind with no runtime (2b-6 Ruling 8: no unknown-type card yet).
+        if self.named_by_name(id) {
             // name rule: raw, for `accessible_name` (display_name) and the filter (matches the stored text)
-            Some(Runtime::None) => self.mirror.name(id),
-            _ => self.note_text(id),
+            return self.mirror.name(id);
         }
+        self.note_text(id)
     }
 
     /// Whether `id` is a note being typed in: its box holds the text, and another replica's is held (Ruling 7).
@@ -1012,8 +1026,8 @@ impl App {
         self.edit_field(id, field::JAR_SET, FieldValue::Bool(choice.set));
     }
 
-    /// The one writer of a group's default jar (2b-5 Task 1): `set_group_default_jar`, `clear_group_default_jar` and
-    /// `delete_jar`'s cascade. Resolved at commit like a tab's `JAR` (2b-5 Ruling 6): a jar deleted by the save is written
+    /// The one writer of a group's default jar (2b-5 Task 1): `set_group_default_jar` and `clear_group_default_jar`.
+    /// Resolved at commit like a tab's `JAR` (2b-5 Ruling 6): a jar deleted by the save is written
     /// as none, and one another replica deleted earlier stays stored, dangling, until a new edit.
     pub(crate) fn edit_default_jar(&mut self, group: &str, jar: Option<NodeId>) {
         self.edit_field(group, field::DEFAULT_JAR, FieldValue::Id(jar));
@@ -1427,9 +1441,6 @@ impl App {
                 "node {key} has type {ty:?} that its runtime does not run: a create funnel passed a mismatched kind"
             );
         }
-        for id in self.mirror.jar_defs().keys() {
-            assert!(live(id), "jar {id} is shown but not live in the document: a create funnel was missed");
-        }
         for id in self.mirror.link_ids() {
             assert!(live(&id), "link {id} is shown but not live in the document: a create funnel was missed");
         }
@@ -1442,10 +1453,8 @@ impl App {
         }
         for (id, _) in doc.live() {
             let key = id.to_string();
-            let shown = self.nodes.contains_key(&key)
-                || self.spawns.spawning.contains_key(&key)
-                || self.mirror.jar_defs().contains_key(&id)
-                || self.mirror.is_link(id);
+            let shown =
+                self.nodes.contains_key(&key) || self.spawns.spawning.contains_key(&key) || self.mirror.is_link(id);
             assert!(shown, "node {key} is live in the document but not shown: a delete funnel was missed");
         }
     }
@@ -1473,13 +1482,16 @@ impl App {
         }
         let local = local_from(read);
         let toasts = self.toasts.save_toast_queue.len();
-        // Jars first: they are not graph nodes, so they survive a "fresh start" and the next save keeps them.
-        // Links ride along: also stored, never graph nodes.
-        for (id, kind, fields, _) in nodes.iter().filter(|(_, kind, ..)| matches!(kind, Kind::Jar | Kind::Link)) {
+        // Links ride along: stored, never graph nodes.
+        for (id, kind, fields, _) in nodes.iter().filter(|(_, kind, ..)| *kind == Kind::Link) {
             self.materialize(id.to_string(), *kind, fields, None, None);
         }
-        nodes.retain(|(_, kind, ..)| !matches!(kind, Kind::Jar | Kind::Link));
-        if nodes.is_empty() {
+        nodes.retain(|(_, kind, ..)| *kind != Kind::Link);
+        // Only jars (with Task 3, the Default at least): a fresh start, which keeps them where they are.
+        if nodes.iter().all(|(_, kind, ..)| *kind == Kind::Jar) {
+            for (id, kind, fields, group) in &nodes {
+                self.materialize(id.to_string(), *kind, fields, group.map(|g| g.to_string()), None);
+            }
             self.restore_closed(local.closed);
             self.arm_local(unread, true);
             return false;
@@ -1926,7 +1938,6 @@ impl App {
         let root_id = root.as_ref().and(imported.first()).map(|i| i.id);
         let (dest, root_pos) = root.map_or((None, None), |r| (r.group, r.pos));
         imported.sort_by_key(|i| match i.kind {
-            Kind::Jar => 0,
             Kind::Group => 1,
             Kind::Link => 3, // after the cards it joins
             _ => 2,
@@ -2033,8 +2044,8 @@ impl App {
     }
 
     /// Clears the running session's nodes and the state naming them, and
-    /// queues a delete for every graph node the document holds (Ruling 4:
-    /// jars stay, they are not part of the graph being replaced). Each
+    /// queues a delete for every card the document holds (a jar included: it is a card;
+    /// links go below). Each
     /// tab's `ViewTab::Drop` shuts its engine host down, as `destroy_tab`
     /// relies on, so clearing the map is enough; spawns still in flight are
     /// dropped when they land (`session_generation`), and a PDF's render
@@ -2043,16 +2054,13 @@ impl App {
         for (id, _) in self.nodes.iter().filter(|(_, node)| node.as_pdf().is_some()) {
             self.pdf_renderer.cancel(id);
         }
-        let old: Vec<NodeId> = self
-            .journal
-            .as_ref()
-            .map(|j| j.doc().live().filter(|(_, n)| n.kind() != Kind::Jar).map(|(id, _)| id).collect())
-            .unwrap_or_default();
+        let old: Vec<NodeId> =
+            self.journal.as_ref().map(|j| j.doc().live().map(|(id, _)| id).collect()).unwrap_or_default();
         for id in old {
             self.queue_delete(&id.to_string());
         }
         // A link is not a card, so no endpoint's cascade is certain to reach it (a dangling one has none): the
-        // replaced session's links all go, as its cards do. Jars stay.
+        // replaced session's links all go, as its cards do.
         for link in self.mirror.link_ids().map(|l| l.to_string()).collect::<Vec<_>>() {
             self.delete_link(&link);
         }

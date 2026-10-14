@@ -77,7 +77,7 @@ impl App {
         };
         let Some((key, _)) = self.cookies.jar_tabs.get(tab_id) else { return false };
         let key = *key;
-        if matches!(key, crate::jar::JarKey::Named(id) if !self.mirror.jar_defs().contains_key(&id)) {
+        if matches!(key, crate::jar::JarKey::Named(id) if !self.jar_exists(id)) {
             return false;
         }
         self.ensure_jar_loaded(key);
@@ -117,7 +117,7 @@ impl App {
             .map(|(key, _)| *key)
             .collect();
         for key in due {
-            if matches!(key, crate::jar::JarKey::Named(id) if !self.mirror.jar_defs().contains_key(&id)) {
+            if matches!(key, crate::jar::JarKey::Named(id) if !self.jar_exists(id)) {
                 self.cookies.jar_dirty.remove(&key);
                 continue;
             }

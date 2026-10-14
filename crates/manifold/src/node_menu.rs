@@ -930,8 +930,7 @@ impl App {
     /// The tab and group menus' jar list (spec "UI"); `None` for every other kind.
     pub(crate) fn jar_menu(&self, id: &str) -> Option<JarMenu> {
         let named = |ticked: &dyn Fn(NodeId) -> bool, count: &dyn Fn(NodeId) -> Option<usize>| -> Vec<JarRow> {
-            self.mirror
-                .jar_defs()
+            self.jar_defs()
                 .iter()
                 .map(|(jid, d)| JarRow {
                     id: Some(*jid),
@@ -965,7 +964,7 @@ impl App {
             return None;
         }
         let default = self.mirror.default_jar(id);
-        if self.mirror.jar_defs().is_empty() && default.is_none() {
+        if self.jar_defs().is_empty() && default.is_none() {
             return None; // nothing to pick: jars are made from a tab's menu
         }
         Some(JarMenu {
@@ -1089,7 +1088,7 @@ impl App {
             NodeAction::NewJar(name) => {
                 self.naming_jar = None;
                 if !crate::names::clean_name(&name).is_empty() {
-                    let jar = self.create_jar(&name);
+                    let jar = self.create_jar(&name, self.jar_placement_beside(id));
                     self.set_tab_jar(id, Some(jar));
                 }
             }

@@ -20,6 +20,9 @@ pub(crate) enum Runtime {
     Image(ImagePayload),
     Pdf(PdfPayload),
     Json(JsonPayload),
+    /// A cookie jar's card. Everything it shows is the mirror's (name, colour, ephemeral flag); its cookies are
+    /// `App::jars`, keyed by its id.
+    Jar,
     None,
 }
 
@@ -83,6 +86,7 @@ impl Runtime {
             | Runtime::Image(_)
             | Runtime::Pdf(_)
             | Runtime::Json(_)
+            | Runtime::Jar
             | Runtime::None => None,
         }
     }
@@ -96,7 +100,7 @@ impl Runtime {
             Runtime::Pdf(p) => Some(&p.path),
             Runtime::Json(p) => Some(&p.path),
             Runtime::Download(p) => Some(&p.path),
-            Runtime::Tab(_) | Runtime::Unloaded(_) | Runtime::Note(_) | Runtime::None => None,
+            Runtime::Tab(_) | Runtime::Unloaded(_) | Runtime::Note(_) | Runtime::Jar | Runtime::None => None,
         }
     }
 
@@ -111,6 +115,7 @@ impl Runtime {
             | Runtime::Image(_)
             | Runtime::Pdf(_)
             | Runtime::Json(_)
+            | Runtime::Jar
             | Runtime::None => None,
         }
     }
@@ -404,6 +409,10 @@ impl GraphNode {
             Runtime::None => {
                 ("Group", Some(crate::names::to_plain(&crate::names::display_name(text, crate::names::UNTITLED))))
             }
+            // A jar is named like a group: its stored name is `text` (`App::own_text`).
+            Runtime::Jar => {
+                ("Cookie jar", Some(crate::names::to_plain(&crate::names::display_name(text, crate::names::UNTITLED))))
+            }
             Runtime::Note(_) => {
                 // The note's text is never cleaned; its first non-blank line is shown by the display rule.
                 let first = text.lines().map(str::trim).find(|l| !l.is_empty());
@@ -525,5 +534,6 @@ second"
             Some("https://example.org/")
         );
         assert_eq!(Runtime::None.saved_tab(), None);
+        assert_eq!(Runtime::Jar.saved_tab(), None);
     }
 }

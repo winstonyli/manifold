@@ -1,7 +1,7 @@
 use super::{id_digest, jar_fragment, named_jar_label, JarConfirm, JarLabel, JarMarker};
 use crate::card::DropEffect;
 use crate::jar::{JarChoice, JarKey};
-use crate::session_sync::tests::{add, sleeping_tab};
+use crate::session_sync::tests::{add, add_jar, sleeping_tab};
 use crate::store::model::{Kind, NodeId};
 use crate::App;
 use std::collections::{BTreeMap, BTreeSet};
@@ -23,7 +23,7 @@ fn jar_of(app: &App, tab: &str) -> JarChoice {
 #[test]
 fn a_new_tab_snapshots_the_nearest_group_default() {
     let mut app = App::default();
-    let work = app.create_jar("Work");
+    let work = add_jar(&mut app, "Work");
     let outer = group_in(&mut app, None);
     let inner = group_in(&mut app, Some(&outer));
     assert_eq!(app.new_tab_jar(Some(&inner)), JarChoice::default(), "no default anywhere: no jar");
@@ -35,7 +35,7 @@ fn a_new_tab_snapshots_the_nearest_group_default() {
 #[test]
 fn a_cascade_reaches_unset_tabs_in_nested_groups_without_their_own_default() {
     let mut app = App::default();
-    let (work, home) = (app.create_jar("Work"), app.create_jar("Home"));
+    let (work, home) = (add_jar(&mut app, "Work"), add_jar(&mut app, "Home"));
     let outer = group_in(&mut app, None);
     let plain = group_in(&mut app, Some(&outer)); // no default of its own
     let own = group_in(&mut app, Some(&outer));
@@ -60,7 +60,7 @@ fn a_cascade_reaches_unset_tabs_in_nested_groups_without_their_own_default() {
 #[test]
 fn moving_an_unset_tab_re_snapshots_and_a_set_tab_keeps_its_jar() {
     let mut app = App::default();
-    let work = app.create_jar("Work");
+    let work = add_jar(&mut app, "Work");
     let g = group_in(&mut app, None);
     app.set_group_default_jar(&g, work);
     let unset = tab_in(&mut app, None);
@@ -80,7 +80,7 @@ fn moving_an_unset_tab_re_snapshots_and_a_set_tab_keeps_its_jar() {
 #[test]
 fn follow_group_jar_clears_set_and_re_snapshots() {
     let mut app = App::default();
-    let work = app.create_jar("Work");
+    let work = add_jar(&mut app, "Work");
     let g = group_in(&mut app, None);
     app.set_group_default_jar(&g, work);
     let t = tab_in(&mut app, Some(&g));
@@ -92,7 +92,7 @@ fn follow_group_jar_clears_set_and_re_snapshots() {
 #[test]
 fn a_new_tab_inherits_and_an_opened_tab_copies_its_opener() {
     let mut app = App::default();
-    let (work, home) = (app.create_jar("Work"), app.create_jar("Home"));
+    let (work, home) = (add_jar(&mut app, "Work"), add_jar(&mut app, "Home"));
     let g = group_in(&mut app, None);
     app.set_group_default_jar(&g, work);
     app.spawn_new_tab(None, Some(g.clone()), "https://new/");
@@ -118,7 +118,7 @@ fn a_new_tab_inherits_and_an_opened_tab_copies_its_opener() {
 #[test]
 fn a_merge_leaves_the_targets_own_tabs_alone() {
     let mut app = App::default();
-    let (work, home) = (app.create_jar("Work"), app.create_jar("Home"));
+    let (work, home) = (add_jar(&mut app, "Work"), add_jar(&mut app, "Home"));
     let h = group_in(&mut app, None);
     let stayed = tab_in(&mut app, Some(&h));
     app.set_group_default_jar(&h, home);
@@ -136,7 +136,7 @@ fn a_merge_leaves_the_targets_own_tabs_alone() {
 #[test]
 fn every_move_between_groups_re_snapshots_unset_tabs() {
     let mut app = App::default();
-    let (work, home) = (app.create_jar("Work"), app.create_jar("Home"));
+    let (work, home) = (add_jar(&mut app, "Work"), add_jar(&mut app, "Home"));
     let w = group_in(&mut app, None);
     app.set_group_default_jar(&w, work);
     let h = group_in(&mut app, None);
@@ -188,7 +188,7 @@ fn every_move_between_groups_re_snapshots_unset_tabs() {
 #[test]
 fn the_chip_shows_only_non_default_or_warning_states() {
     let mut app = App::default();
-    let work = app.create_jar("Work");
+    let work = add_jar(&mut app, "Work");
     let t = tab_in(&mut app, None);
     assert!(app.jar_chip(&t).is_none(), "default jar: no chip");
     app.set_tab_jar(&t, Some(work));
@@ -199,7 +199,7 @@ fn the_chip_shows_only_non_default_or_warning_states() {
     app.follow_group_jar(&t); // no group default: back to the default jar
     assert!(app.jar_chip(&t).is_none());
     app.set_tab_jar(&t, Some(work));
-    app.mirror.forget_jar(work); // a remote delete arrives before the tab's own field edit
+    app.remove_remotely_deleted(&work.to_string()); // a remote delete arrives before the tab's own field edit
     let chip = app.jar_chip(&t).unwrap();
     assert!(chip.missing);
     assert_eq!(chip.tooltip.as_deref(), Some("This tab's jar was deleted; it uses the default jar"));
@@ -212,20 +212,19 @@ fn the_chip_shows_only_non_default_or_warning_states() {
 fn a_new_jar_takes_a_colour_no_jar_uses() {
     use crate::theme::TAG_COLOR_PALETTE;
     let mut app = App::default();
-    let colour = |app: &App, id| app.mirror.jar_defs()[&id].color.unwrap();
-    let ids: Vec<_> = ["A", "B", "C"].iter().map(|n| app.create_jar(n)).collect();
+    let colour = |app: &App, id| app.jar_defs()[&id].color.unwrap();
+    let ids: Vec<_> = ["A", "B", "C"].iter().map(|n| add_jar(&mut app, n)).collect();
     assert_eq!(ids.iter().map(|&id| colour(&app, id)).collect::<Vec<_>>(), TAG_COLOR_PALETTE[..3]);
-    app.delete_jar(ids[1]);
-    let d = app.create_jar("D");
+    app.close_node_and_save(&ids[1].to_string());
+    let d = add_jar(&mut app, "D");
     assert_eq!(colour(&app, d), TAG_COLOR_PALETTE[1], "the freed colour");
-    let distinct =
-        |app: &App| app.mirror.jar_defs().values().map(|j| j.color.unwrap().to_array()).collect::<BTreeSet<_>>();
-    assert_eq!(distinct(&app).len(), app.mirror.jar_defs().len(), "no colour repeats");
-    while app.mirror.jar_defs().len() < TAG_COLOR_PALETTE.len() {
-        app.create_jar("More");
+    let distinct = |app: &App| app.jar_defs().values().map(|j| j.color.unwrap().to_array()).collect::<BTreeSet<_>>();
+    assert_eq!(distinct(&app).len(), app.jar_defs().len(), "no colour repeats");
+    while app.jar_defs().len() < TAG_COLOR_PALETTE.len() {
+        add_jar(&mut app, "More");
     }
     assert_eq!(distinct(&app).len(), TAG_COLOR_PALETTE.len(), "every palette colour once");
-    let extra = app.create_jar("Extra");
+    let extra = add_jar(&mut app, "Extra");
     assert!(TAG_COLOR_PALETTE.contains(&colour(&app, extra)), "all taken: still a palette colour");
 }
 
@@ -234,7 +233,7 @@ fn a_new_jar_takes_a_colour_no_jar_uses() {
 #[test]
 fn the_chip_follows_only_while_a_group_default_names_its_jar() {
     let mut app = App::default();
-    let (work, home) = (app.create_jar("Work"), app.create_jar("Home"));
+    let (work, home) = (add_jar(&mut app, "Work"), add_jar(&mut app, "Home"));
     let g = group_in(&mut app, None);
     app.set_group_default_jar(&g, work);
     let t = tab_in(&mut app, Some(&g));
@@ -260,17 +259,17 @@ fn setjar_acts_only_on_a_focused_tab() {
     let g = group_in(&mut app, None);
     app.focused = Some(g);
     assert!(!app.set_focused_tab_jar_named("Stray"));
-    assert!(app.mirror.jar_defs().is_empty(), "a focused group makes no jar");
+    assert!(app.jar_defs().is_empty(), "a focused group makes no jar");
     app.focused = None;
     assert!(!app.set_focused_tab_jar_named("Stray"));
-    assert!(app.mirror.jar_defs().is_empty());
+    assert!(app.jar_defs().is_empty());
     let t = tab_in(&mut app, None);
     app.focused = Some(t.clone());
     assert!(app.set_focused_tab_jar_named("Work"));
     let work = app.jar_named("Work").expect("made for the tab");
     assert_eq!(jar_of(&app, &t), JarChoice { jar: Some(work), set: true });
     assert!(app.set_focused_tab_jar_named("Work"));
-    assert_eq!(app.mirror.jar_defs().len(), 1, "an existing name is reused");
+    assert_eq!(app.jar_defs().len(), 1, "an existing name is reused");
     assert!(app.set_focused_tab_jar_named("DEFAULT"));
     assert_eq!(jar_of(&app, &t).jar, None);
 }
@@ -280,7 +279,7 @@ fn setjar_acts_only_on_a_focused_tab() {
 #[test]
 fn setjar_takes_a_label_or_an_ambiguous_stored_name() {
     let mut app = App::default();
-    let (w1, w2, home) = (app.create_jar("Work"), app.create_jar("Work"), app.create_jar("Home"));
+    let (w1, w2, home) = (add_jar(&mut app, "Work"), add_jar(&mut app, "Work"), add_jar(&mut app, "Home"));
     assert!(w1 < w2, "made in order");
     let t = tab_in(&mut app, None);
     app.focused = Some(t.clone());
@@ -292,9 +291,9 @@ fn setjar_takes_a_label_or_an_ambiguous_stored_name() {
     assert_eq!(jar_of(&app, &t).jar, Some(w1), "an ambiguous stored name: the lowest id");
     assert!(app.set_focused_tab_jar_named("Home"));
     assert_eq!(jar_of(&app, &t).jar, Some(home), "a unique name is its own label");
-    assert_eq!(app.mirror.jar_defs().len(), 3, "no jar made");
+    assert_eq!(app.jar_defs().len(), 3, "no jar made");
     // A jar literally named like another's label: the label wins, as it is matched first.
-    app.create_jar(&l2);
+    add_jar(&mut app, &l2);
     assert_eq!(app.jar_named(&l2), Some(w2));
 }
 
@@ -316,21 +315,21 @@ fn the_will_switch_tooltip_says_where_and_what_a_clear_loses() {
 #[test]
 fn jar_tab_count_counts_live_and_sleeping_tabs_by_resolved_jar() {
     let mut app = App::default();
-    let work = app.create_jar("Work");
+    let work = add_jar(&mut app, "Work");
     let (a, b) = (tab_in(&mut app, None), tab_in(&mut app, None));
     group_in(&mut app, None);
     app.set_tab_jar(&b, Some(work));
     assert_eq!((app.jar_tab_count(JarKey::Default), app.jar_tab_count(JarKey::Named(work))), (1, 1));
     app.set_tab_jar(&a, Some(work));
     assert_eq!((app.jar_tab_count(JarKey::Default), app.jar_tab_count(JarKey::Named(work))), (0, 2));
-    app.mirror.forget_jar(work);
+    app.remove_remotely_deleted(&work.to_string());
     assert_eq!(app.jar_tab_count(JarKey::Default), 2, "a missing jar's tabs use the default jar");
 }
 
 #[test]
 fn the_confirm_names_the_jar_and_what_it_costs() {
     let mut app = App::default();
-    let work = app.create_jar("Work");
+    let work = add_jar(&mut app, "Work");
     let t = tab_in(&mut app, None);
     app.set_tab_jar(&t, Some(work));
     let (title, detail, button) = app.jar_confirm_text(JarConfirm::Clear(JarKey::Named(work))).unwrap();
@@ -351,7 +350,7 @@ fn the_confirm_names_the_jar_and_what_it_costs() {
         app.jar_confirm_text(JarConfirm::Delete(work)).unwrap().1,
         "2 tabs use this; they'll use Default (built-in)."
     );
-    app.mirror.forget_jar(work);
+    app.remove_remotely_deleted(&work.to_string());
     assert!(app.jar_confirm_text(JarConfirm::Delete(work)).is_none(), "deleted elsewhere meanwhile: nothing to ask");
     assert!(app.jar_confirm_text(JarConfirm::Clear(JarKey::Named(work))).is_none());
 }
@@ -428,7 +427,7 @@ fn a_label_is_a_name_and_an_optional_marker() {
 #[test]
 fn the_built_in_jar_is_marked_apart_from_a_user_jar_named_default() {
     let mut app = App::default();
-    let user = app.create_jar("Default");
+    let user = add_jar(&mut app, "Default");
     assert_eq!(app.jar_label(JarKey::Named(user)), JarLabel { name: "Default".into(), marker: None });
     assert_eq!(app.jar_label(JarKey::Default), JarLabel::built_in());
     assert_eq!(app.jar_confirm_text(JarConfirm::Clear(JarKey::Named(user))).unwrap().0, "Clear cookies in Default?");
@@ -436,7 +435,7 @@ fn the_built_in_jar_is_marked_apart_from_a_user_jar_named_default() {
         app.jar_confirm_text(JarConfirm::Clear(JarKey::Default)).unwrap().0,
         "Clear cookies in Default (built-in)?"
     );
-    app.mirror.forget_jar(user);
+    app.remove_remotely_deleted(&user.to_string());
     assert_eq!(app.jar_label(JarKey::Named(user)), JarLabel::built_in(), "gone: its tabs use the built-in jar");
 }
 
@@ -483,7 +482,7 @@ fn a_marker_is_drawn_smaller_monospace_and_weak_after_its_name() {
 #[test]
 fn the_tab_view_hover_styles_the_label() {
     let mut app = App::default();
-    let (_, w2) = (app.create_jar("Work"), app.create_jar("Work"));
+    let (_, w2) = (add_jar(&mut app, "Work"), add_jar(&mut app, "Work"));
     let t = tab_in(&mut app, None);
     app.set_tab_jar(&t, Some(w2));
     let chip = app.jar_chip(&t).unwrap();
@@ -527,17 +526,17 @@ fn colliding_fragments_lengthen_just_enough() {
 #[test]
 fn a_label_is_stable_while_other_jars_come_and_go() {
     let mut app = App::default();
-    let (w1, w2) = (app.create_jar("Work"), app.create_jar("Work"));
+    let (w1, w2) = (add_jar(&mut app, "Work"), add_jar(&mut app, "Work"));
     let label = |app: &App, j| app.jar_label(JarKey::Named(j)).to_string();
     let (l1, l2) = (label(&app, w1), label(&app, w2));
     assert_ne!(l1, l2);
-    let home = app.create_jar("Home");
+    let home = add_jar(&mut app, "Home");
     assert_eq!((label(&app, w1), label(&app, w2)), (l1.clone(), l2.clone()), "a third jar added elsewhere");
-    app.delete_jar(home);
+    app.close_node_and_save(&home.to_string());
     assert_eq!((label(&app, w1), label(&app, w2)), (l1.clone(), l2), "and deleted");
-    app.delete_jar(w2);
+    app.close_node_and_save(&w2.to_string());
     assert_eq!(label(&app, w1), "Work", "no twin left: plain again");
-    let w3 = app.create_jar("work");
+    let w3 = add_jar(&mut app, "work");
     // The same marker when a twin comes back (longer only in the 1-in-65536 case that the two collide).
     assert!(label(&app, w1).starts_with(&l1), "{} vs {l1}", label(&app, w1));
     assert!(label(&app, w3).starts_with("work · #"));
@@ -547,7 +546,7 @@ fn a_label_is_stable_while_other_jars_come_and_go() {
 #[test]
 fn the_chip_and_confirms_show_the_label() {
     let mut app = App::default();
-    let (w1, w2) = (app.create_jar("Work"), app.create_jar("Work"));
+    let (w1, w2) = (add_jar(&mut app, "Work"), add_jar(&mut app, "Work"));
     let l2 = app.jar_label(JarKey::Named(w2));
     assert!(l2.to_string().starts_with("Work · #"), "{l2}");
     let t = tab_in(&mut app, None);
@@ -588,12 +587,12 @@ fn a_pending_sleep_or_hold_blocks_switch_jar_now() {
 #[test]
 fn a_jar_is_made_and_renamed_with_the_clean_name() {
     let mut app = App::default();
-    let jar = app.create_jar(" Wo\u{200B}rk\n");
-    assert_eq!(app.mirror.jar_defs()[&jar].name, "Work");
+    let jar = add_jar(&mut app, " Wo\u{200B}rk\n");
+    assert_eq!(app.jar_defs()[&jar].name, "Work");
     app.rename_jar(jar, "\u{00A0}Home\u{2028}Office");
-    assert_eq!(app.mirror.jar_defs()[&jar].name, "Home Office");
+    assert_eq!(app.jar_defs()[&jar].name, "Home Office");
     app.rename_jar(jar, "\u{200B}");
-    assert_eq!(app.mirror.jar_defs()[&jar].name, "Home Office");
+    assert_eq!(app.jar_defs()[&jar].name, "Home Office");
 }
 
 /// Name rules: `SETJAR` with nothing left of the name does nothing; a name that is clean only after cleaning
@@ -608,13 +607,13 @@ fn setjar_matches_and_makes_by_the_clean_name() {
     );
     app.focused = Some(t.clone());
     assert!(!app.set_focused_tab_jar_named("\u{200B} "));
-    assert!(app.mirror.jar_defs().is_empty());
-    let work = app.create_jar("Work");
+    assert!(app.jar_defs().is_empty());
+    let work = add_jar(&mut app, "Work");
     assert!(app.set_focused_tab_jar_named("Wo\u{200B}rk"));
-    assert_eq!(app.mirror.jar_defs().len(), 1, "no twin made");
+    assert_eq!(app.jar_defs().len(), 1, "no twin made");
     assert_eq!(app.tab_jar(&t).map(|c| c.jar), Some(Some(work)));
     assert!(app.set_focused_tab_jar_named(" New\u{00A0}\u{00A0}one "));
-    assert!(app.mirror.jar_defs().values().any(|d| d.name == "New one"));
+    assert!(app.jar_defs().values().any(|d| d.name == "New one"));
 }
 
 /// Name rules: a label draws a hidden character as a placeholder in the marker style, between the plain name
@@ -648,7 +647,7 @@ fn a_jar_chip_hover_names_a_hidden_character() {
         crate::store::model::Kind::Tab,
         crate::session_sync::tests::sleeping_tab("https://a/", "A"),
     );
-    let jar = app.create_jar("x");
+    let jar = add_jar(&mut app, "x");
     app.mirror.set(
         &jar.to_string(),
         crate::store::model::field::NAME,

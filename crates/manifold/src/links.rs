@@ -1,5 +1,5 @@
-//! Links: stored `Kind::Link` nodes joining two cards by `from` and `to`. Like a jar, a link is mirror and store
-//! state, never a graph card; it goes with either end (`queue_delete`, `remove_remotely_deleted`).
+//! Links: stored `Kind::Link` nodes joining two cards by `from` and `to`. A link is mirror and store state, never a
+//! graph card; it goes with either end (`queue_delete`, `remove_remotely_deleted`).
 
 use std::collections::HashSet;
 

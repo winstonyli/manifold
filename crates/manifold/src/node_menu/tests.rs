@@ -1,5 +1,6 @@
 use super::*;
 use crate::card_kind::fixtures::{kinds, loaded_tab, plain, sleeping_tab};
+use crate::session_sync::tests::add_jar;
 
 // One row per kind, pinned to the exact menus each kind showed before
 // the per-kind builders were merged (see the node-menu spec), and
@@ -321,7 +322,7 @@ fn new_jar_names_a_jar_and_picks_it_for_the_tab() {
     assert_eq!(app.tab_jar(&t).unwrap(), crate::jar::JarChoice { jar: Some(work), set: true });
     app.apply_node_action(&ctx, &t, NodeAction::StartNewJar);
     app.apply_node_action(&ctx, &t, NodeAction::NewJar("   ".into()));
-    assert_eq!(app.mirror.jar_defs().len(), 1, "an empty name creates nothing");
+    assert_eq!(app.jar_defs().len(), 1, "an empty name creates nothing");
     app.apply_node_action(&ctx, &t, NodeAction::StartNewJar);
     app.remove_tab(&t);
     assert_eq!(app.naming_jar, None, "closing the tab drops its draft");
@@ -330,7 +331,7 @@ fn new_jar_names_a_jar_and_picks_it_for_the_tab() {
 #[test]
 fn the_tab_menu_lists_default_then_named_jars_with_a_tick() {
     let mut app = App::default();
-    let work = app.create_jar("Work");
+    let work = add_jar(&mut app, "Work");
     let t = crate::session_sync::tests::add(
         &mut app,
         crate::store::model::Kind::Tab,
@@ -344,10 +345,10 @@ fn the_tab_menu_lists_default_then_named_jars_with_a_tick() {
     let plain = |name: &str| JarLabel { name: name.into(), marker: None };
     assert_eq!(shown(&app), [(JarLabel::built_in(), false), (plain("Work"), true)]);
     // Styled jar label markers: a user jar named "Default" is listed plainly, after the marked built-in one.
-    let user = app.create_jar("Default");
+    let user = add_jar(&mut app, "Default");
     assert_eq!(shown(&app), [(JarLabel::built_in(), false), (plain("Work"), true), (plain("Default"), false)]);
-    app.mirror.forget_jar(user);
-    app.mirror.forget_jar(work); // deleted on another device; the tab's field still names it
+    app.remove_remotely_deleted(&user.to_string());
+    app.remove_remotely_deleted(&work.to_string()); // deleted on another device; the tab's field still names it
     assert_eq!(shown(&app), [(JarLabel::built_in(), true)]);
 }
 
@@ -355,7 +356,7 @@ fn the_tab_menu_lists_default_then_named_jars_with_a_tick() {
 #[test]
 fn the_jar_menus_list_same_named_jars_by_label() {
     let mut app = App::default();
-    let (w1, w2, home) = (app.create_jar("Work"), app.create_jar("Work"), app.create_jar("Home"));
+    let (w1, w2, home) = (add_jar(&mut app, "Work"), add_jar(&mut app, "Work"), add_jar(&mut app, "Home"));
     let label = |app: &App, j| app.jar_label(crate::jar::JarKey::Named(j));
     let want = [label(&app, w1), label(&app, w2), label(&app, home)];
     let plain = want.clone().map(|l| l.to_string());
@@ -513,9 +514,9 @@ fn menu_frame(ctx: &egui::Context, app: &mut App, events: Vec<egui::Event>) {
 fn the_jar_menu_draws_markers_in_their_own_style() {
     let ctx = menu_ctx();
     let mut app = App::default();
-    let (w1, _) = (app.create_jar("Work"), app.create_jar("Work"));
-    app.create_jar("Default");
-    app.create_jar("Work · #3f2a");
+    let (w1, _) = (add_jar(&mut app, "Work"), add_jar(&mut app, "Work"));
+    add_jar(&mut app, "Default");
+    add_jar(&mut app, "Work · #3f2a");
     let t = crate::session_sync::tests::add(
         &mut app,
         crate::store::model::Kind::Tab,
@@ -570,7 +571,7 @@ fn the_jar_menu_draws_markers_in_their_own_style() {
     };
     assert_eq!(row("Default built-in"), (true, vec![" built-in".to_string()]));
     assert_eq!(row("Default"), (false, vec![]), "a user jar named Default is plain");
-    let frag = crate::jar_defs::jar_fragment(w1, app.mirror.jar_defs()).unwrap();
+    let frag = crate::jar_defs::jar_fragment(w1, &app.jar_defs()).unwrap();
     assert_eq!(row(&format!("Work #{frag}")), (false, vec![format!(" #{frag}")]));
     assert_eq!(row("Work · #3f2a"), (false, vec![]), "the typed look-alike is all name");
 }
@@ -734,7 +735,7 @@ fn the_new_jar_field_creates_only_on_enter() {
         frame(&mut app, vec![]);
         assert_eq!(app.naming_jar, None, "{how}: no draft left");
         let made = app.jar_named("Work");
-        assert_eq!(made.is_some(), creates, "{how}: jars {:?}", app.mirror.jar_defs());
+        assert_eq!(made.is_some(), creates, "{how}: jars {:?}", app.jar_defs());
         let expected = crate::jar::JarChoice { jar: made, set: creates };
         assert_eq!(app.tab_jar(&t).unwrap(), expected, "{how}: the tab's jar");
     }
@@ -802,7 +803,7 @@ fn a_jar_name_draft_does_not_outlive_its_menu() {
 fn the_group_menu_counts_the_cascade_and_a_set_tab_can_follow() {
     let mut app = App::default();
     let ctx = egui::Context::default();
-    let work = app.create_jar("Work");
+    let work = add_jar(&mut app, "Work");
     let g = app.alloc_node_id();
     app.insert_group_at(g.clone(), None);
     let t = crate::session_sync::tests::add(
@@ -879,9 +880,9 @@ fn new_jar_takes_the_clean_name() {
         crate::session_sync::tests::sleeping_tab("https://a/", "A"),
     );
     app.apply_node_action(&ctx, &t, NodeAction::NewJar("\u{200B} ".into()));
-    assert!(app.mirror.jar_defs().is_empty());
+    assert!(app.jar_defs().is_empty());
     app.apply_node_action(&ctx, &t, NodeAction::NewJar(" Wo\u{200B}rk ".into()));
-    assert_eq!(app.mirror.jar_defs().values().map(|d| d.name.as_str()).collect::<Vec<_>>(), ["Work"]);
+    assert_eq!(app.jar_defs().values().map(|d| d.name.as_str()).collect::<Vec<_>>(), ["Work"]);
 }
 
 #[test]

@@ -123,6 +123,9 @@ impl App {
         self.saved_scroll.remove(id);
         self.nav_history.remove(id);
         self.popup_gate.forget(id);
+        if let Ok(jar) = id.parse::<crate::store::model::NodeId>() {
+            self.forget_jar_memory(jar);
+        }
         if self.naming_jar.as_ref().is_some_and(|(t, _)| t == id) {
             self.naming_jar = None;
         }

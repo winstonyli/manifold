@@ -627,8 +627,7 @@ impl App {
                 match confirm {
                     crate::jar_defs::JarConfirm::Clear(key) => self.clear_jar_cookies(key),
                     crate::jar_defs::JarConfirm::Delete(id) => {
-                        self.delete_jar(id);
-                        self.save_session();
+                        self.close_node_and_save(&id.to_string());
                     }
                     crate::jar_defs::JarConfirm::Ephemeral(id) => {
                         self.set_jar_ephemeral(id, true);

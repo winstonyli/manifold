@@ -37,7 +37,7 @@ impl App {
     /// download's path may be a WSL-side POSIX path (WebKit downloads), so
     /// it goes through `windows_path_for_download`; an image/PDF/JSON path
     /// always came from a real Windows file picker, so it's used as-is.
-    /// `None` for kinds with no backing file (Tab, Group, Note), and for an
+    /// `None` for kinds with no backing file (Tab, Group, Note, Jar), and for an
     /// empty path: "no file" (a Download from a `Trust::Foreign` import has
     /// its machine-local path dropped).
     pub(crate) fn node_file_path(&self, id: &str) -> Option<String> {
@@ -46,7 +46,7 @@ impl App {
             Runtime::Image(image) => Some(image.path.clone()),
             Runtime::Pdf(pdf) => Some(pdf.path.clone()),
             Runtime::Json(json) => Some(json.path.clone()),
-            Runtime::Tab(_) | Runtime::Unloaded(_) | Runtime::Note(_) | Runtime::None => None,
+            Runtime::Tab(_) | Runtime::Unloaded(_) | Runtime::Note(_) | Runtime::Jar | Runtime::None => None,
         };
         path.filter(|p| !p.is_empty())
     }

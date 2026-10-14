@@ -6,7 +6,7 @@ use super::*;
 use crate::caps::{edges, registry, Caps, Tag, TagSet, CONTAINS};
 use crate::store::model::Kind;
 #[cfg(test)]
-use crate::store::model::{TYPE_DOWNLOAD, TYPE_GROUP, TYPE_IMAGE, TYPE_JSON, TYPE_NOTE, TYPE_PDF, TYPE_TAB};
+use crate::store::model::{TYPE_DOWNLOAD, TYPE_GROUP, TYPE_IMAGE, TYPE_JAR, TYPE_JSON, TYPE_NOTE, TYPE_PDF, TYPE_TAB};
 
 /// The row string for a type this build doesn't know: only the `*/*` row matches it.
 const UNKNOWN_TYPE: &str = "*/*";
@@ -78,12 +78,13 @@ pub(crate) mod fixtures {
 
     /// Every card kind, in draw order: each `TYPES` entry a node can show (`kinds_cover_every_node_type` pins that)
     /// plus the loaded tab, which shares the sleeping tab's type.
-    pub(crate) fn kinds() -> [CardKind; 8] {
+    pub(crate) fn kinds() -> [CardKind; 9] {
         [
             loaded_tab(),
             sleeping_tab(),
             plain(TYPE_DOWNLOAD),
             plain(TYPE_NOTE),
+            plain(TYPE_JAR),
             plain(TYPE_IMAGE),
             plain(TYPE_PDF),
             plain(TYPE_JSON),
@@ -102,11 +103,11 @@ mod tests {
     };
     use crate::process_manager::{ViewKind, ViewTab};
 
-    /// The fixture lists one card per node type (a jar is never a card) and the loaded tab, in draw order.
+    /// The fixture lists one card per node type (a link is never a card) and the loaded tab, in draw order.
     #[test]
     fn kinds_cover_every_node_type() {
-        use crate::store::model::{TYPES, TYPE_JAR, TYPE_LINK};
-        let types: Vec<&str> = TYPES.iter().map(|t| t.1).filter(|&ty| ty != TYPE_JAR && ty != TYPE_LINK).collect();
+        use crate::store::model::{TYPES, TYPE_LINK};
+        let types: Vec<&str> = TYPES.iter().map(|t| t.1).filter(|&ty| ty != TYPE_LINK).collect();
         let listed: Vec<&str> = kinds().iter().filter(|kind| !kind.loaded()).map(|kind| kind.ty).collect();
         for ty in &types {
             assert!(listed.contains(ty), "{ty} is not in kinds()");
@@ -157,6 +158,7 @@ mod tests {
             (Kind::Image, image, plain(TYPE_IMAGE)),
             (Kind::Pdf, Runtime::Pdf(PdfPayload { path: "d.pdf".into(), outcome: None }), plain(TYPE_PDF)),
             (Kind::Json, json, plain(TYPE_JSON)),
+            (Kind::Jar, Runtime::Jar, plain(TYPE_JAR)),
             (Kind::Group, Runtime::None, plain(TYPE_GROUP)),
         ]
     }
@@ -195,6 +197,7 @@ mod tests {
             (plain(TYPE_TAB), 1),
             (plain(TYPE_DOWNLOAD), 2),
             (plain(TYPE_NOTE), 3),
+            (plain(TYPE_JAR), 3),
             (plain(TYPE_IMAGE), 4),
             (plain(TYPE_PDF), 5),
             (plain(TYPE_JSON), 6),

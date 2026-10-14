@@ -90,10 +90,10 @@ impl Registry {
     }
 }
 
-/// What today's `worth_reopening` decided per kind: only a completed download, a jar, a blank note and an unknown kind
+/// What today's `worth_reopening` decided per kind: only a completed download, a blank note and an unknown kind
 /// are not recorded when closed. Also the draw layer of each type (`draw_layer`).
 pub(crate) fn builtin_rows() -> Vec<Row> {
-    use crate::store::model::{TYPE_DOWNLOAD, TYPE_GROUP, TYPE_NOTE, TYPE_TAB};
+    use crate::store::model::{TYPE_DOWNLOAD, TYPE_GROUP, TYPE_JAR, TYPE_NOTE, TYPE_TAB};
     vec![
         Row::new("*/*").restorable(false).draw_layer(0),
         Row::new(TYPE_TAB).restorable(true).draw_layer(1), // a sleeping tab; a loaded one draws under it
@@ -104,6 +104,7 @@ pub(crate) fn builtin_rows() -> Vec<Row> {
         Row::new("application/pdf").restorable(true).draw_layer(5),
         Row::new("application/json").restorable(true).draw_layer(6),
         Row::new(TYPE_NOTE).restorable(true).draw_layer(3),
+        Row::new(TYPE_JAR).restorable(true).draw_layer(3), // a jar card, drawn with notes
         Row::new(TYPE_NOTE).requires(&[Tag::Blank]).restorable(false),
         Row::new(TYPE_DOWNLOAD).draw_layer(2), // a download
     ]

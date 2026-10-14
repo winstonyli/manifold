@@ -2,7 +2,7 @@
 //! styles, corner controls and drop rules, and each kind's body painter.
 
 use super::*;
-use crate::store::model::{TYPE_DOWNLOAD, TYPE_GROUP, TYPE_IMAGE, TYPE_JSON, TYPE_NOTE, TYPE_PDF, TYPE_TAB};
+use crate::store::model::{TYPE_DOWNLOAD, TYPE_GROUP, TYPE_IMAGE, TYPE_JAR, TYPE_JSON, TYPE_NOTE, TYPE_PDF, TYPE_TAB};
 
 /// Below this on-screen card width (in points), a node's label is hidden
 /// entirely rather than truncated — a card this small can't fit more than
@@ -24,6 +24,10 @@ pub(crate) const FAVICON_SIZE: egui::Vec2 = egui::vec2(16.0, 16.0);
 pub(crate) const GROUP_OVERLOAD_THRESHOLD: usize = 8;
 
 pub(crate) const GRAPH_NODE_SIZE: egui::Vec2 = egui::vec2(160.0, 110.0);
+
+/// A jar card's fixed size: a header and nothing under it (spec "The jar card"). Exactly
+/// `TAB_HEADER_MIN_CARD_POINTS` tall, so `tab_has_header` draws the header rather than the bottom strip from zoom 1 up.
+pub(crate) const JAR_NODE_SIZE: egui::Vec2 = egui::vec2(160.0, TAB_HEADER_MIN_CARD_POINTS);
 
 /// What a card's header says (`App::paint_card_header`).
 pub(crate) struct CardHeader<'a> {
@@ -892,6 +896,7 @@ pub(crate) fn node_card_size(runtime: &Runtime) -> egui::Vec2 {
         Runtime::Tab(_) | Runtime::Unloaded(_) => GRAPH_NODE_SIZE,
         Runtime::Download(_) => DOWNLOAD_NODE_SIZE,
         Runtime::Note(_) => NOTE_NODE_SIZE,
+        Runtime::Jar => JAR_NODE_SIZE,
         // A placeholder has no real size: the same box a failed PDF gets.
         // No size yet (still decoding, `ImagePayload::decoding`) or a placeholder: the box a pending PDF gets.
         Runtime::Image(image) if image.error.is_some() || image.decoding() => PDF_PENDING_NODE_SIZE,
@@ -923,8 +928,9 @@ pub(crate) fn card_filter_text<'a>(runtime: &'a Runtime, text: &'a str) -> Vec<&
         Runtime::Image(image) => vec![download_filename(&image.path)],
         Runtime::Pdf(pdf) => vec![download_filename(&pdf.path)],
         Runtime::Json(json) => vec![download_filename(&json.path)],
-        // A group is the one kind with no runtime (2b-6 Ruling 8: no unknown-type card yet); it matches on its name, `text`.
-        Runtime::None => vec![text],
+        // A group is the one kind with no runtime (2b-6 Ruling 8: no unknown-type card yet); it matches on its name,
+        // `text`, as a jar does.
+        Runtime::None | Runtime::Jar => vec![text],
     }
 }
 
@@ -1282,6 +1288,7 @@ impl App {
         match view.kind.ty {
             TYPE_DOWNLOAD => self.paint_download_body(ui, deferred_overlays, id, rect, inv_zoom, zoom_scale),
             TYPE_NOTE => self.paint_note_body(ui, deferred_overlays, id, rect, inv_zoom, zoom_scale),
+            TYPE_JAR => self.paint_jar_body(ui, deferred_overlays, id, rect, inv_zoom, zoom_scale),
             TYPE_IMAGE => self.paint_image_body(ui, deferred_overlays, id, rect, inv_zoom, zoom_scale),
             TYPE_PDF => self.paint_pdf_body(ui, deferred_overlays, id, rect, inv_zoom, zoom_scale),
             TYPE_JSON => self.paint_json_body(ui, deferred_overlays, id, rect, zoom_scale),
@@ -1493,6 +1500,38 @@ impl App {
                 ui.painter().rect_filled(fill_rect, 2.0, ACCENT);
             }
         }
+        body
+    }
+
+    /// A jar card (spec "The jar card"): a cookie glyph in the jar's colour, its name through the display rule, and
+    /// "Ephemeral" when it keeps no file. No body.
+    pub(crate) fn paint_jar_body(
+        &mut self,
+        ui: &mut egui::Ui,
+        deferred_overlays: &mut DeferredOverlays,
+        id: &str,
+        rect: egui::Rect,
+        inv_zoom: f32,
+        zoom_scale: f32,
+    ) -> CardBody {
+        let body = CardBody { interact_rect: rect, tooltip: None };
+        if self.graph_lod_simplified {
+            return body;
+        }
+        let def = self.mirror.jar_def(id);
+        let segs = crate::names::display_name(&def.name, crate::names::UNTITLED);
+        let header = CardHeader {
+            glyph: Some(egui_phosphor::light::COOKIE),
+            glyph_color: Some(def.color.unwrap_or(crate::theme::TAG_COLOR_PALETTE[0])),
+            icon_image: None,
+            name: "Jar".to_owned(),
+            user_name: Some(&segs),
+            source: if def.ephemeral { "Ephemeral".to_owned() } else { String::new() },
+            source_is_path: false,
+            scrim: false,
+            right_margin: 0.0,
+        };
+        self.paint_card_header(ui, deferred_overlays, id, rect, inv_zoom, zoom_scale, header);
         body
     }
 
