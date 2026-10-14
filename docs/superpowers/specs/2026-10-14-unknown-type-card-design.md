@@ -19,12 +19,13 @@ and nothing else.
    placeholder with no type yet stays hidden, as now. Every `is_live` consumer follows (`Doc::live`, `shown`,
    `restore_session`, `remote_changes`, `resolve_id`, `create_ops`' `in_doc`, `editable`, the journal reload diff,
    `store/json.rs` export and subtree export), so an unknown node is also exported and torn down with its session.
-2. **A node that cannot contain is never an effective group.** `effective_group` and `with_descendants` today skip a
-   group only when it is not live (`store/model.rs:508-519`). With unknown nodes live, a newer client's container type
-   would become the group of its members. They skip any node that is not a container (`is_container`: the `contains`
-   target, i.e. a group), so members of an unknown-typed parent are lifted to its nearest container, or the root. The
-   document keeps their `GROUP` unchanged. The comment at `model.rs:508` and the retired-leaf test at
-   `store/journal/tests.rs:312` (which asserts `!is_live`) change with it.
+2. **Only a group is an effective group.** `effective_group` (`store/model.rs:515-530`) skips a parent only when it is
+   not live. With unknown nodes live, a newer client's container type would become the group of its members. The
+   store has no type-string accessor and must not depend on caps, so `Node::is_group()` (`kind() == Kind::Group`) is
+   added and `effective_group` accepts a parent only when `is_live() && is_group()`; members of any other parent (an
+   unknown type, and also a live Tab or Jar) are lifted to its nearest group, or the root. The document keeps their
+   `GROUP` unchanged. `with_descendants` (`model.rs:534-548`) walks the raw `group` chain and needs no change. The
+   comment above `effective_group` changes; the `model.rs:722-729` expectations hold.
 3. **Generic fields only.** The app reads and writes five fields on it: `POS`, `COLOR`, `NAME`, `PARENT` ("opened
    from") and its group. Every other field stays raw in the document, untouched (2b-5 Ruling 2). A move, rename,
    recolor or regroup is an ordinary `Set` or `Move` op, so a newer client's fields survive them.
@@ -43,25 +44,30 @@ and nothing else.
    kind is Unknown. A mirror's first-seen type string stands (`TYPE` is a last-writer register, but the store never
    changes a node's type, which `session_sync.rs:502` already relies on).
 6. **A runtime of its own.** `Runtime::Unknown` (unit variant, like `Runtime::Jar`). `Runtime::None` already means
-   "group" in six places (`session_sync.rs:103/956`, `card.rs:914`, `graph_nav.rs:293/660`, `node.rs:90-119/409`), so it
-   must not be reused.
+   "group" in several places, so it must not be reused. `named_by_name` (`session_sync.rs:955`, a `matches!` on
+   `Runtime::None | Runtime::Jar`) gains `Runtime::Unknown`, or `own_text` returns "" and the NAME label, filter text
+   (`card.rs:1273`) and accessible name ignore the node's name.
 7. **One canonical type for rows and edges.** `card_kind` today maps a raw type to a row string, and `closed.rs:45/171`
    and `links.rs:116` pass the raw string instead, so the two disagree for an unknown type. One function,
    `card_kind::canonical_type(raw) -> &'static str`, maps a raw type to the row string a known kind uses, and anything
    else to a reserved sentinel `application/vnd.manifold.unknown`. Every call into `registry().caps` and
-   `edges().*` goes through it. The wildcard row `*/*` (`caps/rows.rs:98`, `restorable(false)`, layer 0) is replaced
-   by a row for the sentinel: renamable, pinnable, `portable(true)` and `restorable(true)` (a copy is a shell, decision
-   4, so the old reason for refusing it, unvalidated raw fields, is gone), draw layer 3 (with notes and jars; tabs
-   are 0 and 1, downloads 2, groups 7). `TYPE_DOWNLOAD` says `restorable(false)` itself instead of inheriting it. A raw
-   type that matches no row now falls to the `Caps` default; with the canonical function nothing reaches the registry
-   unmapped.
+   `edges().*` goes through it.
+   (`CARD_TYPES` is at `caps/edges.rs:39`.) The wildcard row `*/*` (`caps/rows.rs:98`, `restorable(false)`, layer 0) is replaced
+   by `Row::new(SENTINEL).restorable(true).draw_layer(3)` (a `Row` has only those two capabilities; Rename, Pin and
+   Duplicate come from the `_` arms of `node_menu.rs:651` and `card.rs:1307`, not from caps). A copy is a shell
+   (decision 4), so the old reason for refusing it, unvalidated raw fields, is gone. Layer 3 sits with notes and jars
+   (tabs 0 and 1, downloads 2, groups 7). `TYPE_DOWNLOAD` says `restorable(false)` itself instead of inheriting it. A
+   raw type that matches no row falls to the `Caps` default; with the canonical function nothing reaches the registry
+   unmapped. `closed.rs:171` already agrees with the sentinel (no `contains` target matches either string); `closed.rs:45`
+   and `links.rs:116` are the callers that pass a raw string today.
 8. **Edges.** The sentinel is added to the `contains` source list and to both `link` lists (`CARD_TYPES`,
    `caps/edges.rs:36`; `link` is symmetric). It is not a `contains` target, not an `opened-from` end and has no `jar`
    edge. `Pattern::Any` is not used for it: `*/*` also matches groups and jars, which `opened-from` and `jar`
    exclude on purpose.
-9. **Look.** A card with the type string as its label and the node's `NAME` if it has one; a bare frame body, like
-   the other body-less cards; a size constant. Menu: the generic rows only (Rename, Duplicate, Pin, Color, Edges,
-   Move to, Remove from Group, Delete).
+9. **Look.** A card whose title bar shows the node's `NAME` if it has one, else the type string (the title bar, not
+   the body, carries the label: `paint_card_body` paints nothing for it, like the other body-less cards); a size
+   constant. Recently Closed rows (`popups.rs:728-732`, which would send an unknown kind to the Json arm) show the
+   same text. Menu: the generic rows only (Rename, Duplicate, Pin, Color, Edges, Move to, Remove from Group, Delete).
 10. **Retired types become visible.** `application/vnd.manifold.json-leaf` (retired; `store/journal/tests.rs:297`)
     and any other type an older build wrote are now unknown, so an existing session holding one shows a card for
     it. Accepted: no migration (`no-migration-until-users`), and Close removes it.
@@ -88,7 +94,10 @@ and nothing else.
   (`closed.rs:174`, via `snapshot`). Reopen creates a node of that type string with the generic fields.
 - **Duplicate.** The same shell, beside the original.
 - **Import.** `store/json.rs` `import` stops rejecting an unknown type (`json.rs:189`): it keeps the string and the
-  generic fields it recognises and ignores the rest. `JsonNode::kind()` keeps returning `None` for Unknown; the link
+  generic fields it recognises and ignores the rest. A missing `type` stays an error; only a present, unrecognised
+  string is kept.
+- **Fresh-start check.** `restore_session`'s all-jars test for a fresh profile (`session_sync.rs:1486`) now counts a
+  lone unknown node as real content, which is right: it is a card the user can see. `JsonNode::kind()` keeps returning `None` for Unknown; the link
   end check is unaffected. Export writes the real string and the fields it has a name for. Import Session
   (`materialize_imported`) carries the string through `Imported`.
 - **Import Session** also tears down unknown nodes with the old document.
@@ -97,11 +106,18 @@ and nothing else.
 
 - `store/model.rs` (`is_live`, `generic_fields`, `effective_group`, `with_descendants`); `store/json.rs`
   (`node_json`/`node_to_json` panic for Unknown at `:79`, `Imported`, `import`); `store/ops.rs` (`OpBody::create`).
-- `session_sync.rs`: `snapshot`, `materialize` (503), `RemoteChange`/`RemoteNode`/`Carried`, `insert_materialized`
-  (715), `fields_of` (70), `create_ops` (136-171), `imported_fields`, `materialize_imported`, `runtime_has_type`,
-  `check_graph_matches_document`, `teardown_running_session`. `fetched.rs` `place_node`.
-- Exhaustive `Runtime` matches: `node.rs` (90, 103, 119, 409), `card.rs` (914, 937 plus the stale "no unknown-type card
-  yet" comments), `reveal.rs:49`, `graph_nav.rs` (293, 660), `session_sync.rs:103`.
+- `session_sync.rs`: `snapshot`, `spawn_snapshot` (287), `materialize` (503), `RemoteChange`/`RemoteNode`/`Carried`,
+  `apply_remote` (746), `restore_session`'s local tuple (1464-1501), `insert_materialized` (715), `fields_of` (70),
+  `create_ops` (136-171), `imported_fields`, `materialize_imported`, `runtime_has_type` (95-104: accept the sentinel),
+  `check_graph_matches_document`, `teardown_running_session`, `named_by_name` (955), `update_live_node` (575-580: add
+  Unknown to the no-op arm). `closed.rs:164/182/200` (`node_json` callers). `store/ops.rs:205` (test helper calling
+  `OpBody::create`). `fetched.rs` `place_node`. `popups.rs:728-732`.
+- Exhaustive `Runtime` matches: `node.rs` (84, 103, 118, 409), `card.rs` (901, 930, 937 plus the stale "no unknown-type
+  card yet" comments), `reveal.rs:49`, `session_sync.rs:103`. `graph_nav.rs:293` is a `_` match and `:660` a bench
+  closure; check, no change expected.
+- Tests that flip: `card_kind.rs:181-190` (asserts `*/*` not restorable, layer 0) and the `kinds()` fixture and
+  layer-order test (`:107`, `:194`); `closed.rs:536` (`worth_reopening("application/x-future")`); `model.rs:693`;
+  `store/journal/tests.rs:313` (`!is_live`); `store/json.rs:426`.
 - `caps/rows.rs`, `caps/edges.rs`, `card_kind.rs`, `closed.rs` (`worth_reopening`, `subtree_entry`, 158/171),
   `links.rs:116`.
 - Gate: `debug_control.rs` EXPORTSTATE type; `state.rs` `cards()` now counts an unknown card (no existing seed has
