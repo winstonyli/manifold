@@ -566,7 +566,7 @@ pub(crate) fn del_verb(kind: CardKind) -> &'static str {
         return "dissolve";
     }
     match kind.ty {
-        TYPE_TAB => "close",
+        TYPE_TAB | TYPE_JAR => "close",
         TYPE_DOWNLOAD => "remove",
         _ => "delete",
     }

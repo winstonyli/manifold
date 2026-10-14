@@ -2184,7 +2184,7 @@ fn a_jar_create_rename_and_ephemeral_save_and_a_remote_change_reaches_jar_defs()
     assert_eq!(stored(&app, &key, field::NAME), work);
     assert_eq!(stored(&app, &key, field::COLOR), color_value(app.jar_defs()[&jar].color));
     assert_eq!(app.mirror.get(&key, field::NAME), work, "kept by the save's retain");
-    app.rename_jar(jar, "Job");
+    app.commit_rename(&jar.to_string(), "Job");
     assert!(app.pending.contains_key(&(jar, field::NAME)), "a rename queues its field");
     app.set_jar_ephemeral(jar, true);
     assert!(app.pending.contains_key(&(jar, field::EPHEMERAL)), "so does a toggle");
@@ -2210,7 +2210,7 @@ fn a_pending_local_jar_rename_wins_over_a_remote_one() {
     assert!(app.save_session());
     let mut other = Journal::open(&path, ActorId(2)).unwrap();
     remote_set(&mut other, &jar.to_string(), field::NAME, FieldValue::Str("House".into()));
-    app.rename_jar(jar, "Job");
+    app.commit_rename(&jar.to_string(), "Job");
     assert!(app.save_session());
     assert_eq!(app.jar_defs()[&jar].name, "Job");
     assert_eq!(stored(&app, &jar.to_string(), field::NAME), FieldValue::Str("Job".into()));

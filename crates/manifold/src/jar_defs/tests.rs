@@ -338,20 +338,8 @@ fn the_confirm_names_the_jar_and_what_it_costs() {
     assert!(detail.contains("restart on the empty jar") && detail.contains("not kept"), "{detail}");
     let (title, _, _) = app.jar_confirm_text(JarConfirm::Clear(JarKey::Default)).unwrap();
     assert_eq!(title, "Clear cookies in Default (built-in)?");
-    let (title, detail, button) = app.jar_confirm_text(JarConfirm::Delete(work)).unwrap();
-    assert_eq!(
-        (title.as_str(), detail.as_str(), button),
-        ("Delete jar Work?", "1 tab uses this; it'll use Default (built-in).", "Delete")
-    );
-    tab_in(&mut app, None);
-    let other = tab_in(&mut app, None);
-    app.set_tab_jar(&other, Some(work));
-    assert_eq!(
-        app.jar_confirm_text(JarConfirm::Delete(work)).unwrap().1,
-        "2 tabs use this; they'll use Default (built-in)."
-    );
     app.remove_remotely_deleted(&work.to_string());
-    assert!(app.jar_confirm_text(JarConfirm::Delete(work)).is_none(), "deleted elsewhere meanwhile: nothing to ask");
+    assert!(app.jar_confirm_text(JarConfirm::Ephemeral(work)).is_none(), "deleted elsewhere meanwhile: nothing to ask");
     assert!(app.jar_confirm_text(JarConfirm::Clear(JarKey::Named(work))).is_none());
 }
 
@@ -546,7 +534,7 @@ fn a_label_is_stable_while_other_jars_come_and_go() {
 #[test]
 fn the_chip_and_confirms_show_the_label() {
     let mut app = App::default();
-    let (w1, w2) = (add_jar(&mut app, "Work"), add_jar(&mut app, "Work"));
+    let (_w1, w2) = (add_jar(&mut app, "Work"), add_jar(&mut app, "Work"));
     let l2 = app.jar_label(JarKey::Named(w2));
     assert!(l2.to_string().starts_with("Work · #"), "{l2}");
     let t = tab_in(&mut app, None);
@@ -556,10 +544,7 @@ fn the_chip_and_confirms_show_the_label() {
         app.jar_confirm_text(JarConfirm::Clear(JarKey::Named(w2))).unwrap().0,
         format!("Clear cookies in {l2}?")
     );
-    assert_eq!(app.jar_confirm_text(JarConfirm::Delete(w2)).unwrap().0, format!("Delete jar {l2}?"));
     assert_eq!(app.jar_confirm_text(JarConfirm::Ephemeral(w2)).unwrap().0, format!("Make {l2} ephemeral?"));
-    let l1 = app.jar_label(JarKey::Named(w1));
-    assert_eq!(app.jar_confirm_text(JarConfirm::Delete(w1)).unwrap().0, format!("Delete jar {l1}?"));
 }
 
 /// Task 6 review M3: "Switch Jar Now" waits out an engine swap or a sleep already on its way, since either
@@ -589,9 +574,9 @@ fn a_jar_is_made_and_renamed_with_the_clean_name() {
     let mut app = App::default();
     let jar = add_jar(&mut app, " Wo\u{200B}rk\n");
     assert_eq!(app.jar_defs()[&jar].name, "Work");
-    app.rename_jar(jar, "\u{00A0}Home\u{2028}Office");
+    app.commit_rename(&jar.to_string(), "\u{00A0}Home\u{2028}Office");
     assert_eq!(app.jar_defs()[&jar].name, "Home Office");
-    app.rename_jar(jar, "\u{200B}");
+    app.commit_rename(&jar.to_string(), "\u{200B}");
     assert_eq!(app.jar_defs()[&jar].name, "Home Office");
 }
 

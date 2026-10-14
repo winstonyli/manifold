@@ -48,6 +48,7 @@ fn view_of(kind: CardKind) -> NodeMenuView {
         renaming: None,
         jars: None,
         edges: Vec::new(),
+        ephemeral: false,
     }
 }
 
@@ -908,4 +909,47 @@ fn an_unresponsive_tab_menu_leads_with_restart_and_end() {
     let stuck = NodeMenuView { unresponsive: true, ..view_of(loaded_tab()) };
     assert_eq!(labels(&stuck)[..2], ["Restart View", "End View"]);
     assert!(!labels(&view_of(loaded_tab())).contains(&"Restart View"));
+}
+
+#[test]
+fn a_jar_cards_menu_has_the_generic_items_and_its_cookie_items() {
+    let labels = |app: &App, id: &str| -> Vec<&'static str> {
+        node_menu_config(&app.node_menu_view(id).unwrap(), false)
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                NodeMenuItem::Button(label, _) => Some(*label),
+                _ => None,
+            })
+            .collect()
+    };
+    let mut app = App::default();
+    let jar = crate::session_sync::tests::add_jar(&mut app, "Work").to_string();
+    let shown = labels(&app, &jar);
+    for want in ["Clear Cookies...", "Make Ephemeral", "Rename", "Duplicate", "Pin", "Close"] {
+        assert!(shown.contains(&want), "{want} missing from {shown:?}");
+    }
+    assert!(!shown.iter().any(|l| l.starts_with("Delete")), "{shown:?}");
+    app.set_jar_ephemeral(jar.parse().unwrap(), true);
+    assert!(labels(&app, &jar).contains(&"Stop Ephemeral"));
+}
+
+#[test]
+fn make_ephemeral_on_a_jar_card_with_a_saved_file_asks_first() {
+    let dir = crate::store::testutil::temp_dir("jar-menu-eph");
+    let mut app = App { jars_dir_override: Some(dir.clone()), ..App::default() };
+    let jar = crate::session_sync::tests::add_jar(&mut app, "Work");
+    std::fs::write(dir.join(format!("{jar}.json")), b"x").unwrap();
+    app.apply_node_action(&egui::Context::default(), &jar.to_string(), NodeAction::SetJarEphemeral(true));
+    assert_eq!(app.pending_jar_confirm, Some(crate::jar_defs::JarConfirm::Ephemeral(jar)));
+}
+
+#[test]
+fn an_empty_rename_leaves_a_jar_its_name() {
+    let mut app = App::default();
+    let jar = crate::session_sync::tests::add_jar(&mut app, "Work").to_string();
+    app.commit_rename(&jar, "   ");
+    assert_eq!(app.mirror.name(&jar), "Work", "a jar is known by its name alone, like a group");
+    app.commit_rename(&jar, "Home");
+    assert_eq!(app.mirror.name(&jar), "Home");
 }

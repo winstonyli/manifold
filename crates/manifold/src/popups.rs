@@ -524,13 +524,6 @@ impl App {
         }
     }
 
-    /// Whether an engine, jar or session-delete confirm dialog is up (`offer_confirm`).
-    pub(crate) fn confirm_open(&self) -> bool {
-        self.view_ui.pending_view_confirm.is_some()
-            || self.pending_jar_confirm.is_some()
-            || self.pending_session_delete.is_some()
-    }
-
     /// Asks `confirm` unless a confirm is already up (`offer_confirm`).
     pub(crate) fn offer_view_confirm(&mut self, confirm: ViewConfirm) -> bool {
         let other = self.pending_jar_confirm.is_some() || self.pending_session_delete.is_some();
@@ -626,9 +619,6 @@ impl App {
                 self.pending_jar_confirm = None;
                 match confirm {
                     crate::jar_defs::JarConfirm::Clear(key) => self.clear_jar_cookies(key),
-                    crate::jar_defs::JarConfirm::Delete(id) => {
-                        self.close_node_and_save(&id.to_string());
-                    }
                     crate::jar_defs::JarConfirm::Ephemeral(id) => {
                         self.set_jar_ephemeral(id, true);
                         self.save_session();
@@ -1915,7 +1905,7 @@ mod tests {
         assert!(!app.offer_session_delete("work".into()));
         app.pending_jar_confirm = None;
         assert!(app.offer_session_delete("work".into()));
-        assert!(app.confirm_open());
+        assert!(app.pending_session_delete.is_some());
     }
 
     #[test]

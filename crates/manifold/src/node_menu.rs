@@ -1,9 +1,12 @@
 //! The node context menu: its actions, config and the App methods that build and apply it.
 
 use super::*;
-use crate::jar_defs::JarLabel;
+use crate::jar::JarKey;
+use crate::jar_defs::{JarConfirm, JarLabel};
 use crate::sleep_state::SleepWhy;
-use crate::store::model::{NodeId, TYPE_DOWNLOAD, TYPE_GROUP, TYPE_IMAGE, TYPE_JSON, TYPE_NOTE, TYPE_PDF, TYPE_TAB};
+use crate::store::model::{
+    NodeId, TYPE_DOWNLOAD, TYPE_GROUP, TYPE_IMAGE, TYPE_JAR, TYPE_JSON, TYPE_NOTE, TYPE_PDF, TYPE_TAB,
+};
 
 /// Something done to one node, from its right-click menu or its card's
 /// own buttons, applied by `App::apply_node_action`.
@@ -72,6 +75,10 @@ pub(crate) enum NodeAction {
     CancelNewJar,
     FollowGroupJar,
     SwitchJarNow,
+    /// A jar card's "Clear Cookies...": asks first (`JarConfirm::Clear`).
+    ClearJarCookies,
+    /// A jar card's "Make Ephemeral" (`true`) / "Stop Ephemeral": asks first when a saved file exists.
+    SetJarEphemeral(bool),
     /// A group's jar row: its default for new tabs, cascaded to the unset tabs it governs.
     SetGroupDefaultJar(NodeId),
     ClearGroupDefaultJar,
@@ -660,6 +667,15 @@ pub(crate) fn node_menu_config(view: &NodeMenuView, headless: bool) -> NodeMenuC
             let jar_page = jar_row(&mut items, false, false);
             finish("group_context_menu", 150.0, items, delete_items, jar_page)
         }
+        TYPE_JAR => {
+            let ephemeral = if view.ephemeral {
+                Button("Stop Ephemeral", A::SetJarEphemeral(false))
+            } else {
+                Button("Make Ephemeral", A::SetJarEphemeral(true))
+            };
+            let items = vec![Button("Clear Cookies...", A::ClearJarCookies), ephemeral];
+            finish("jar_context_menu", 150.0, items, delete("Close"), Vec::new())
+        }
         // A type this build doesn't know has no menu of its own yet (2b-6 Ruling 8): the shared tail only.
         _ => finish("node_context_menu", 150.0, Vec::new(), delete("Delete"), Vec::new()),
     }
@@ -698,6 +714,8 @@ pub(crate) struct NodeMenuView {
     pub(crate) move_targets: Vec<(String, String)>,
     /// Group: the rename draft, while this group is being renamed. Tab: the "New Jar..." name draft.
     renaming: Option<String>,
+    /// Jar only: the jar is ephemeral, so the menu offers to stop.
+    ephemeral: bool,
     /// Tab, Unloaded and Group: their jar list (`App::jar_menu`).
     jars: Option<JarMenu>,
     /// The Links section (`App::edge_menu`): empty in a JSON level and for a node no edge may join.
@@ -886,6 +904,7 @@ impl App {
                 .map(|(_, draft)| draft.clone()),
             jars: self.jar_menu(id),
             edges: self.edge_menu(id),
+            ephemeral: matches!(node.runtime, Runtime::Jar) && self.mirror.jar_def(id).ephemeral,
         })
     }
 
@@ -981,9 +1000,9 @@ impl App {
     pub(crate) fn commit_rename(&mut self, id: &str, name: &str) {
         self.renaming_group = None;
         let clean = crate::names::clean_name(name);
-        // A group always has a name (an empty draft changes nothing); any other node's name is an override of its
-        // derived label, which an empty draft clears.
-        if self.is_container(id) {
+        // A group or jar always has a name (an empty draft changes nothing); any other node's name is an override of
+        // its derived label, which an empty draft clears.
+        if self.named_by_name(id) {
             if !clean.is_empty() {
                 self.edit_name(id, &clean);
             }
@@ -1093,6 +1112,16 @@ impl App {
                 }
             }
             NodeAction::CancelNewJar => self.naming_jar = None,
+            NodeAction::ClearJarCookies => {
+                if let Ok(jar) = id.parse() {
+                    self.offer_jar_confirm(JarConfirm::Clear(JarKey::Named(jar)));
+                }
+            }
+            NodeAction::SetJarEphemeral(on) => {
+                if let Ok(jar) = id.parse() {
+                    self.request_jar_ephemeral(jar, on);
+                }
+            }
             NodeAction::FollowGroupJar => self.follow_group_jar(id),
             NodeAction::SwitchJarNow => self.switch_jar_now(id),
             NodeAction::SetGroupDefaultJar(jar) => {

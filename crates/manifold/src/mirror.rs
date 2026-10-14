@@ -25,7 +25,7 @@ use crate::store::model::{field, field_def, FieldValue, Kind, NodeId};
 /// note's text (`text`), written by `App::edit_text` at a save or blur; the note's payload is its edit buffer. `VIEW`
 /// is a Json node's view (`view`, decoded), written by `App::edit_view`. `NAME` is a group's name (`name`), written by
 /// `App::edit_name`. A jar's `NAME`, `COLOR` and `EPHEMERAL` are its definition (`jar_def`), written by
-/// `App::create_jar`, `App::rename_jar` and `App::set_jar_ephemeral` (2b-5 Ruling 7).
+/// `App::create_jar`, the generic rename (`App::commit_rename`) and `App::set_jar_ephemeral` (2b-5 Ruling 7).
 /// `DEFAULT_JAR` is a group's default jar (`default_jar`), written by `App::edit_default_jar` and resolved at commit
 /// like `JAR` (2b-5 Ruling 6). `PATH` is the stored, create-time path (`path`), never rewritten: the payload holds the
 /// path resolved on this machine (2b-5 Ruling 5). `TYPE` is the node's type string (`ty`), seeded at every creation and never changed (Ruling 10).

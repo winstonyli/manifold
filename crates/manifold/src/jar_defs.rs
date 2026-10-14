@@ -63,11 +63,10 @@ impl JarChip {
     }
 }
 
-/// A Settings jar action waiting for its confirm dialog (`App::build_jar_confirm_popup`).
+/// A jar action waiting for its confirm dialog (`App::build_jar_confirm_popup`).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum JarConfirm {
     Clear(JarKey),
-    Delete(NodeId),
     /// Ephemeral turned on for a jar with a saved file (`App::request_jar_ephemeral`).
     Ephemeral(NodeId),
 }
@@ -292,7 +291,7 @@ impl App {
         }
     }
 
-    /// Tabs (live, asleep or mid-respawn) that resolve to `key`, for Settings' count and the delete confirm.
+    /// Tabs (live, asleep or mid-respawn) that resolve to `key`, for Settings' count.
     pub(crate) fn jar_tab_count(&self, key: JarKey) -> usize {
         self.linked_ids().filter_map(|t| self.tab_jar(t)).filter(|c| self.resolved_jar(c).0 == key).count()
     }
@@ -309,16 +308,6 @@ impl App {
                     .to_string(),
                 "Clear",
             )),
-            JarConfirm::Delete(id) if exists(JarKey::Named(id)) => {
-                let n = self.jar_tab_count(JarKey::Named(id));
-                let uses =
-                    if n == 1 { "1 tab uses this; it'll".to_string() } else { format!("{n} tabs use this; they'll") };
-                Some((
-                    format!("Delete jar {}?", self.jar_label(JarKey::Named(id))),
-                    format!("{uses} use {}.", JarLabel::built_in()),
-                    "Delete",
-                ))
-            }
             JarConfirm::Ephemeral(id) if self.jar_exists(id) && !self.mirror.jar_def(&id.to_string()).ephemeral => Some((
                 format!("Make {} ephemeral?", self.jar_label(JarKey::Named(id))),
                 "Its saved sign-ins are deleted from disk now. Tabs keep them until Manifold quits; after that this \
@@ -384,15 +373,6 @@ impl App {
         true
     }
 
-    /// Renames jar `id` to `name`'s clean form (name rules) through `edit_field`; nothing left once cleaned leaves the
-    /// name as it is.
-    pub(crate) fn rename_jar(&mut self, id: NodeId, name: &str) {
-        let clean = crate::names::clean_name(name);
-        if !clean.is_empty() && self.jar_exists(id) {
-            self.edit_field(&id.to_string(), field::NAME, FieldValue::Str(clean.into_owned()));
-        }
-    }
-
     /// Turns jar `id`'s ephemeral flag on or off (deviation 10; final review I1), a local toggle (after
     /// `request_jar_ephemeral`'s confirm): the flag goes through `edit_field`. See `switch_jar_ephemeral`.
     pub(crate) fn set_jar_ephemeral(&mut self, id: NodeId, on: bool) {
@@ -431,7 +411,7 @@ impl App {
         self.after_jar_ephemeral_changed(id, on);
     }
 
-    /// Settings' Ephemeral checkbox. Turning it on for a jar with a saved file asks first (`JarConfirm::Ephemeral`):
+    /// A jar card's Make Ephemeral. Turning it on for a jar with a saved file asks first (`JarConfirm::Ephemeral`):
     /// that file, its saved logins, is deleted. Anything else acts at once.
     pub(crate) fn request_jar_ephemeral(&mut self, id: NodeId, on: bool) {
         // A jar whose cookies are not on disk yet has logins to lose too: save them, so it asks first.

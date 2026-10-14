@@ -927,7 +927,7 @@ impl App {
     }
 
     /// The one writer of a group's name (2b-4 Ruling 9): the rename commit (`NodeAction::CommitRename`), with the
-    /// name already cleaned. A new group's is seeded at placement instead (`place_group`). A jar's is `rename_jar`'s.
+    /// name already cleaned. A new group's is seeded at placement instead (`place_group`). A jar's is `commit_rename`'s.
     pub(crate) fn edit_name(&mut self, id: &str, name: &str) {
         // name rule: compares stored names
         if self.mirror.name(id) != name {

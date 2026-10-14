@@ -4,7 +4,6 @@
 use super::*;
 use crate::jar::JarKey;
 use crate::jar_defs::{JarConfirm, JarLabel};
-use crate::store::model::NodeId;
 
 /// Space above the first and below the last section of the settings page.
 const PAGE_PAD: f32 = 12.0;
@@ -47,11 +46,7 @@ pub(crate) struct SettingsRequests {
     pub(crate) downloads_button_rect: Option<egui::Rect>,
     pub(crate) default_view_button_rect: Option<egui::Rect>,
     pub(crate) current_view_button_rect: Option<egui::Rect>,
-    /// `settings_jars_section`: a jar's name field committed a new name.
-    pub(crate) rename_jar: Option<(NodeId, String)>,
-    /// The Ephemeral checkbox changed; on, for a jar with a saved file, asks first (`App::request_jar_ephemeral`).
-    pub(crate) jar_ephemeral: Option<(NodeId, bool)>,
-    /// "Clear Cookies" or "Delete": asks first (`build_jar_confirm_popup`).
+    /// "Clear Cookies": asks first (`build_jar_confirm_popup`).
     pub(crate) jar_confirm: Option<JarConfirm>,
 }
 
@@ -497,99 +492,32 @@ impl App {
         }
     }
 
-    /// Settings, "Jars" (spec "UI"): the default jar first (it can only be cleared), then one row per named jar with
-    /// its swatch, name, tab count, ephemeral toggle, Clear Cookies and Delete. Clearing and deleting ask first.
+    /// Settings, "Jars": the built-in jar's row, which can only be cleared. Named jars are cards (their menu holds
+    /// Clear Cookies and Ephemeral; Close removes one). Clearing asks first.
     pub(crate) fn settings_jars_section(&mut self, ui: &mut egui::Ui, req: &mut SettingsRequests) {
         section_start(ui, "Jars");
-        // Each jar takes two lines, so a narrow window (480 px) clips nothing: its swatch, name and tab count (counts
-        // aligned on the right, the name field taking the rest), then its actions under the name, wrapping if need be.
-        // A jar whose name another jar shares shows its marker (`JarLabel::marker_text`, "#1a2b", in the marker style)
-        // between the name field and the count: read-only text of its own, so it is never part of the name the field
-        // edits and saves. The built-in jar shows its styled label (italic "Default", then "built-in").
-        let count_text = |n: usize| egui::RichText::new(tab_count_label(n)).small().weak();
-        let head =
-            |ui: &mut egui::Ui, color, count: usize, marker: Option<String>, name: &mut dyn FnMut(&mut egui::Ui)| {
-                ui.horizontal(|ui| {
-                    jar_swatch(ui, color);
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.label(count_text(count));
-                        if let Some(marker) = marker {
-                            let size = egui::FontSelection::Default.resolve(ui.style()).size;
-                            let format = JarLabel::marker_format(size, ui.visuals().weak_text_color());
-                            ui.label(egui::text::LayoutJob::single_section(marker, format))
-                                .on_hover_text("Another jar has this name; this marks which one it is");
-                        }
-                        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| name(ui));
-                    });
+        // Two lines, so a narrow window (480 px) clips nothing: its swatch, label and tab count (aligned on the
+        // right, the label taking the rest), then its action under the label. The label is styled as in the menus
+        // (`JarLabel::append_to`).
+        ui.horizontal(|ui| {
+            jar_swatch(ui, egui::Color32::GRAY);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.label(egui::RichText::new(tab_count_label(self.jar_tab_count(JarKey::Default))).small().weak());
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    let mut job = egui::text::LayoutJob::default();
+                    let font = egui::FontSelection::Default.resolve(ui.style());
+                    JarLabel::built_in().append_to(&mut job, font, ui.visuals().weak_text_color());
+                    ui.label(job);
                 });
-            };
-        let actions = |ui: &mut egui::Ui, add: &mut dyn FnMut(&mut egui::Ui)| {
-            ui.horizontal_wrapped(|ui| {
-                ui.add_space(JAR_SWATCH_WIDTH + ui.spacing().item_spacing.x);
-                add(ui);
             });
-            ui.add_space(4.0);
-        };
-        head(ui, egui::Color32::GRAY, self.jar_tab_count(JarKey::Default), None, &mut |ui| {
-            // The built-in jar's label, styled as in the menus (`JarLabel::append_to`).
-            let mut job = egui::text::LayoutJob::default();
-            let font = egui::FontSelection::Default.resolve(ui.style());
-            JarLabel::built_in().append_to(&mut job, font, ui.visuals().weak_text_color());
-            ui.label(job);
         });
-        actions(ui, &mut |ui| {
+        ui.horizontal_wrapped(|ui| {
+            ui.add_space(JAR_SWATCH_WIDTH + ui.spacing().item_spacing.x);
             if ui.button("Clear Cookies").clicked() {
                 req.jar_confirm = Some(JarConfirm::Clear(JarKey::Default));
             }
         });
-        let defs = self.jar_defs();
-        for (&id, def) in &defs {
-            let marker = self.jar_label(JarKey::Named(id)).marker_text();
-            head(ui, self.jar_color(JarKey::Named(id)), self.jar_tab_count(JarKey::Named(id)), marker, &mut |ui| {
-                let mut draft = jar_name_draft(ui, id, &def.name); // name rule: the field edits the stored name
-                let key = egui::Id::new(("jar_name", id));
-                let edit =
-                    egui::TextEdit::singleline(&mut draft).id(jar_name_edit_id(id)).desired_width(ui.available_width());
-                let response = ui.add(edit);
-                let hint = crate::names::hidden_hint(&crate::names::display_name(&def.name, crate::names::UNTITLED));
-                let response = match hint {
-                    Some(hint) => response.on_hover_text(hint),
-                    None => response,
-                };
-                if response.lost_focus() {
-                    ui.data_mut(|d| d.remove::<String>(key));
-                    let escape = ui.input(|i| i.key_pressed(egui::Key::Escape));
-                    if !escape && draft != def.name && *crate::names::clean_name(&draft) != *def.name {
-                        req.rename_jar = Some((id, draft));
-                    }
-                } else if ui.memory(|m| m.has_focus(response.id)) {
-                    // Not `response.has_focus()`: that is also false while the OS window is unfocused, yet the field
-                    // still takes typed text (`TextEdit` and `jar_name_draft` ask egui memory alone), so the draft
-                    // would be dropped each frame.
-                    ui.data_mut(|d| d.insert_temp(key, draft));
-                }
-            });
-            actions(ui, &mut |ui| {
-                let mut ephemeral = def.ephemeral;
-                if ui
-                    .checkbox(&mut ephemeral, "Ephemeral")
-                    .on_hover_text("Never saved to disk: its cookies are forgotten when Manifold quits")
-                    .changed()
-                {
-                    req.jar_ephemeral = Some((id, ephemeral));
-                }
-                if ui.button("Clear Cookies").clicked() {
-                    req.jar_confirm = Some(JarConfirm::Clear(JarKey::Named(id)));
-                }
-                if ui.button("Delete").clicked() {
-                    req.jar_confirm = Some(JarConfirm::Delete(id));
-                }
-            });
-        }
-        if defs.is_empty() {
-            let hint = "Make a jar from a tab's right-click menu (New Jar...) to keep a second set of sign-ins.";
-            ui.add(egui::Label::new(egui::RichText::new(hint).small().weak()).wrap());
-        }
+        ui.add_space(4.0);
     }
 
     /// Settings, "Bookmarks": export/import.
@@ -618,20 +546,8 @@ impl App {
         if req.save_now_requested {
             self.save_session();
         }
-        if let Some((id, name)) = &req.rename_jar {
-            self.rename_jar(*id, name);
-        }
-        // A jar action clicked while a confirm dialog is up (they are non-modal) is ignored, so it neither replaces
-        // the question being asked nor acts behind it (`offer_confirm`).
-        let jar_ephemeral = req.jar_ephemeral.filter(|_| !self.confirm_open());
-        if let Some((id, on)) = jar_ephemeral {
-            self.request_jar_ephemeral(id, on); // may ask first instead (`JarConfirm::Ephemeral`)
-        }
         if let Some(confirm) = req.jar_confirm {
             self.offer_jar_confirm(confirm);
-        }
-        if req.rename_jar.is_some() || jar_ephemeral.is_some() {
-            self.save_session();
         }
         if req.save_as_requested {
             let draft = self.session_name_draft.clone();
@@ -795,29 +711,6 @@ fn tab_count_label(n: usize) -> String {
     format!("{n} tab{}", if n == 1 { "" } else { "s" })
 }
 
-/// A Settings jar-name field's widget id.
-fn jar_name_edit_id(id: NodeId) -> egui::Id {
-    egui::Id::new(("jar_name_edit", id))
-}
-
-/// What a Settings jar-name field shows. The draft lives in egui memory while the field has focus, so typing writes
-/// nothing until it is committed on focus loss (Escape gives the edit up); it is read in the frame that reports the
-/// loss too, which is when it is committed (egui may report it a frame late, after focus moved between frames, so
-/// this asks the field's last response rather than `had_focus_last_frame`). Otherwise the jar's name: a draft left
-/// by a field that went away while focused (the page closed mid-edit) is dropped, not shown when the page reopens.
-fn jar_name_draft(ui: &egui::Ui, id: NodeId, name: &str) -> String {
-    let key = egui::Id::new(("jar_name", id));
-    let edit = jar_name_edit_id(id);
-    if ui.memory(|m| m.has_focus(edit)) || ui.ctx().read_response(edit).is_some_and(|r| r.lost_focus()) {
-        if let Some(draft) = ui.data(|d| d.get_temp::<String>(key)) {
-            return draft;
-        }
-    } else {
-        ui.data_mut(|d| d.remove::<String>(key));
-    }
-    name.to_string()
-}
-
 /// `dir`'s size, recomputed at most every few seconds (egui memory) so the Settings page doesn't walk the
 /// runtime's files on every frame.
 fn cached_dir_size(ctx: &egui::Context, dir: &std::path::Path) -> u64 {
@@ -966,10 +859,6 @@ mod tests {
         assert_ne!(app.view_mode, ViewMode::Settings, "Escape outside a field closes Settings");
     }
 
-    fn jars_frame(app: &mut App, ctx: &egui::Context) -> SettingsRequests {
-        jars_frame_with(app, ctx, egui::RawInput::default())
-    }
-
     /// The text the Jars section draws in one frame, as galleys (their `job` keeps each section's format).
     fn galleys(ctx: &egui::Context, app: &mut App) -> Vec<std::sync::Arc<egui::Galley>> {
         let mut req = SettingsRequests::default();
@@ -982,15 +871,13 @@ mod tests {
         text.collect()
     }
 
-    /// Styled jar label markers: the built-in jar's row shows its label as menus do, an italic "Default" and a
-    /// `built-in` marker, while a user jar named "Default" is a plain name in its field.
+    /// The built-in jar row shows its label as menus do: an italic "Default" and a `built-in` marker.
     #[test]
-    fn the_built_in_jar_row_is_marked_apart_from_a_user_default() {
+    fn the_built_in_jar_row_shows_its_styled_label() {
         let ctx = egui::Context::default();
         crate::theme::apply_fonts(&ctx);
         crate::theme::apply_style(&ctx);
         let mut app = App::default();
-        crate::session_sync::tests::add_jar(&mut app, "Default");
         galleys(&ctx, &mut app);
         let shown = galleys(&ctx, &mut app);
         let weak = ctx.global_style().visuals.weak_text_color();
@@ -1000,46 +887,6 @@ mod tests {
         let built_in: Vec<_> = shown.iter().filter(|g| g.text() == "Default built-in").collect();
         assert_eq!(built_in.len(), 1, "{:?}", shown.iter().map(|g| g.text()).collect::<Vec<_>>());
         assert_eq!(built_in[0].job.sections, want.sections);
-        let user: Vec<_> = shown.iter().filter(|g| g.text() == "Default").collect();
-        assert_eq!(user.len(), 1, "the user jar's field");
-        assert!(user[0]
-            .job
-            .sections
-            .iter()
-            .all(|s| !s.format.italics && s.format.font_id.family != egui::FontFamily::Monospace));
-    }
-
-    fn jars_frame_with(app: &mut App, ctx: &egui::Context, input: egui::RawInput) -> SettingsRequests {
-        let mut req = SettingsRequests::default();
-        let mut output = ctx.run_ui(input, |ui| app.settings_jars_section(ui, &mut req));
-        output.textures_delta.clear(); // nothing uploads the font atlas here
-        req
-    }
-
-    /// Fix batch A1: typing into a jar's name field keeps the draft and commits it on focus loss whether or not the OS
-    /// window has focus. `Response::has_focus` is also false while the window is unfocused (`RawInput::focused`), but
-    /// the `TextEdit` still takes the typed text, so a draft kept only under that check was dropped every frame.
-    #[test]
-    fn a_typed_jar_name_survives_with_the_window_focused_or_not() {
-        for window_focused in [true, false] {
-            let ctx = egui::Context::default();
-            crate::theme::apply_fonts(&ctx);
-            crate::theme::apply_style(&ctx);
-            let mut app = App::default();
-            let work = crate::session_sync::tests::add_jar(&mut app, "Work");
-            let input =
-                |events: Vec<egui::Event>| egui::RawInput { focused: window_focused, events, ..Default::default() };
-            ctx.memory_mut(|m| m.request_focus(jar_name_edit_id(work)));
-            jars_frame_with(&mut app, &ctx, input(vec![]));
-            jars_frame_with(&mut app, &ctx, input(vec![egui::Event::Text("Home".into())]));
-            jars_frame_with(&mut app, &ctx, input(vec![]));
-            let key = egui::Id::new(("jar_name", work));
-            let draft = ctx.data(|d| d.get_temp::<String>(key));
-            assert!(draft.as_deref().is_some_and(|d| d.contains("Home")), "window focused {window_focused}: {draft:?}");
-            ctx.memory_mut(|m| m.surrender_focus(jar_name_edit_id(work)));
-            let req = jars_frame_with(&mut app, &ctx, input(vec![]));
-            assert_eq!(req.rename_jar, Some((work, draft.unwrap())), "window focused {window_focused}: committed");
-        }
     }
 
     /// Fix batch B1: at a 480 px window (the page's 480 max, less its 16 px margins and a scroll bar) no jar row runs
@@ -1051,10 +898,6 @@ mod tests {
         crate::theme::apply_fonts(&ctx);
         crate::theme::apply_style(&ctx);
         let mut app = App::default();
-        // Two of a name (and a long one) draw their markers too (jar name labels).
-        for name in ["Work", "Home", "A much longer jar name than most", "A much longer jar name than most", "Work"] {
-            crate::session_sync::tests::add_jar(&mut app, name);
-        }
         let input = || egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(480.0, 800.0))),
             ..Default::default()
@@ -1115,14 +958,9 @@ mod tests {
         let work = crate::session_sync::tests::add_jar(&mut app, "Work");
         let clear = JarConfirm::Clear(JarKey::Default);
         app.pending_jar_confirm = Some(clear);
-        let req = SettingsRequests {
-            jar_confirm: Some(JarConfirm::Delete(work)),
-            jar_ephemeral: Some((work, true)),
-            ..Default::default()
-        };
+        let req = SettingsRequests { jar_confirm: Some(JarConfirm::Clear(JarKey::Named(work))), ..Default::default() };
         app.apply_settings_requests(&req);
         assert_eq!(app.pending_jar_confirm, Some(clear), "the first confirm stays");
-        assert!(!app.jar_defs()[&work].ephemeral, "the click was ignored, not acted on");
         let download = ViewConfirm::Download(crate::process_manager::ViewKind::Cef);
         assert!(!app.offer_view_confirm(download));
         assert_eq!(app.view_ui.pending_view_confirm, None, "no engine confirm over a jar confirm");
@@ -1131,190 +969,14 @@ mod tests {
         assert!(app.offer_view_confirm(download));
         app.apply_settings_requests(&req);
         assert_eq!(app.pending_jar_confirm, None, "no jar confirm over an engine confirm");
-        assert!(!app.jar_defs()[&work].ephemeral);
 
         app.view_ui.pending_view_confirm = None;
-        app.apply_settings_requests(&SettingsRequests {
-            jar_confirm: Some(JarConfirm::Delete(work)),
-            ..Default::default()
-        });
-        assert_eq!(app.pending_jar_confirm, Some(JarConfirm::Delete(work)), "with none up, it opens");
-    }
-
-    /// Jar name labels: two same-named jars each show their marker as text of its own beside the name field. The field
-    /// holds and saves the stored name only, so the marker can never end up in a name.
-    #[test]
-    fn a_same_named_jars_marker_sits_beside_a_field_that_edits_only_the_name() {
-        let ctx = egui::Context::default();
-        crate::theme::apply_fonts(&ctx);
-        crate::theme::apply_style(&ctx);
-        let mut app = App::default();
-        let (w1, w2) = (
-            crate::session_sync::tests::add_jar(&mut app, "Work"),
-            crate::session_sync::tests::add_jar(&mut app, "Work"),
-        );
-        crate::session_sync::tests::add_jar(&mut app, "Home");
-        let texts = |app: &mut App, input: egui::RawInput| {
-            let mut req = SettingsRequests::default();
-            let mut output = ctx.run_ui(input, |ui| app.settings_jars_section(ui, &mut req));
-            output.textures_delta.clear();
-            let texts: Vec<String> = output
-                .shapes
-                .iter()
-                .filter_map(|s| match &s.shape {
-                    egui::Shape::Text(t) => Some(t.galley.text().to_string()),
-                    _ => None,
-                })
-                .collect();
-            (texts, req)
-        };
-        texts(&mut app, egui::RawInput::default());
-        let (shown, _) = texts(&mut app, egui::RawInput::default());
-        // Styled jar label markers: the marker is drawn in the marker style, as `JarLabel::append_to` draws it.
-        let marker_galleys = galleys(&ctx, &mut app);
-        let weak = ctx.global_style().visuals.weak_text_color();
-        let body = ctx.global_style().text_styles[&egui::TextStyle::Body].size;
-        for w in [w1, w2] {
-            let frag = crate::jar_defs::jar_fragment(w, &app.jar_defs()).unwrap();
-            let marker = marker_galleys.iter().find(|g| g.text() == format!("#{frag}"));
-            let marker = marker.unwrap_or_else(|| panic!("{w}'s marker in {shown:?}"));
-            let want = crate::jar_defs::JarLabel::marker_format(body, weak);
-            assert!(marker.job.sections.iter().all(|s| s.format == want), "{:?}", marker.job.sections);
-        }
-        assert_eq!(shown.iter().filter(|t| *t == "Work").count(), 2, "both fields hold the bare name: {shown:?}");
-        assert!(shown.iter().any(|t| t == "Home") && !shown.iter().any(|t| t.starts_with("Home ·")), "{shown:?}");
-
-        // Focused and left unchanged: no rename.
-        ctx.memory_mut(|m| m.request_focus(jar_name_edit_id(w2)));
-        jars_frame(&mut app, &ctx);
-        ctx.memory_mut(|m| m.surrender_focus(jar_name_edit_id(w2)));
-        assert_eq!(jars_frame(&mut app, &ctx).rename_jar, None);
-        // Typed into: the request is the stored name as typed, with no marker in it.
-        ctx.memory_mut(|m| m.request_focus(jar_name_edit_id(w2)));
-        jars_frame(&mut app, &ctx);
-        jars_frame_with(
-            &mut app,
-            &ctx,
-            egui::RawInput { events: vec![egui::Event::Text("X".into())], ..Default::default() },
-        );
-        jars_frame(&mut app, &ctx);
-        ctx.memory_mut(|m| m.surrender_focus(jar_name_edit_id(w2)));
-        let (id, name) = jars_frame(&mut app, &ctx).rename_jar.expect("committed");
-        assert_eq!(id, w2);
-        assert!(name.contains('X') && name.contains("Work") && name.len() == 5, "{name:?}");
-        app.apply_settings_requests(&SettingsRequests { rename_jar: Some((id, name.clone())), ..Default::default() });
-        assert_eq!(app.jar_defs()[&w2].name, name, "stored as typed");
-        assert_eq!(app.jar_label(JarKey::Named(w1)).to_string(), "Work", "no twin left");
+        app.apply_settings_requests(&req);
+        assert_eq!(app.pending_jar_confirm, Some(JarConfirm::Clear(JarKey::Named(work))), "with none up, it opens");
     }
 
     #[test]
     fn a_jar_row_counts_tabs_in_the_singular_for_one() {
         assert_eq!([tab_count_label(0), tab_count_label(1), tab_count_label(2)], ["0 tabs", "1 tab", "2 tabs"]);
-    }
-
-    /// Task 6/7 review: a draft left by a field that lost its page while focused must not come back later, while a
-    /// focused field keeps its draft and commits it when it loses focus.
-    #[test]
-    fn a_jar_name_draft_lives_only_while_its_field_has_focus() {
-        let ctx = egui::Context::default();
-        crate::theme::apply_fonts(&ctx);
-        crate::theme::apply_style(&ctx);
-        let mut app = App::default();
-        let work = crate::session_sync::tests::add_jar(&mut app, "Work");
-        let key = egui::Id::new(("jar_name", work));
-        ctx.data_mut(|d| d.insert_temp(key, "Stale".to_string()));
-        jars_frame(&mut app, &ctx);
-        assert_eq!(ctx.data(|d| d.get_temp::<String>(key)), None, "an orphaned draft is dropped");
-
-        ctx.memory_mut(|m| m.request_focus(jar_name_edit_id(work)));
-        jars_frame(&mut app, &ctx);
-        ctx.data_mut(|d| d.insert_temp(key, "Home".to_string()));
-        jars_frame(&mut app, &ctx);
-        assert_eq!(ctx.data(|d| d.get_temp::<String>(key)).as_deref(), Some("Home"), "kept while focused");
-        ctx.memory_mut(|m| m.surrender_focus(jar_name_edit_id(work)));
-        let req = jars_frame(&mut app, &ctx);
-        assert_eq!(req.rename_jar, Some((work, "Home".to_string())), "committed on focus loss");
-        assert_eq!(ctx.data(|d| d.get_temp::<String>(key)), None);
-
-        // The page closes while the field has focus: the draft is orphaned and must not show on reopening.
-        ctx.memory_mut(|m| m.request_focus(jar_name_edit_id(work)));
-        jars_frame(&mut app, &ctx);
-        ctx.data_mut(|d| d.insert_temp(key, "Half-typed".to_string()));
-        jars_frame(&mut app, &ctx);
-        for _ in 0..3 {
-            let mut output = ctx.run_ui(egui::RawInput::default(), |_| {});
-            output.textures_delta.clear();
-        }
-        let req = jars_frame(&mut app, &ctx);
-        assert_eq!(req.rename_jar, None);
-        assert_eq!(ctx.data(|d| d.get_temp::<String>(key)), None, "the closed page's draft is dropped");
-    }
-
-    /// Name rules: an edit that cleans back to the stored name requests no rename, and neither does focusing a
-    /// synced name that holds a hidden character and leaving it unchanged (stored names are never rewritten).
-    #[test]
-    fn a_jar_field_requests_no_rename_for_the_same_clean_name() {
-        let ctx = egui::Context::default();
-        crate::theme::apply_fonts(&ctx);
-        crate::theme::apply_style(&ctx);
-        let mut app = App::default();
-        let work = crate::session_sync::tests::add_jar(&mut app, "Work");
-        let synced = crate::session_sync::tests::add_jar(&mut app, "x");
-        app.mirror.set(
-            &synced.to_string(),
-            crate::store::model::field::NAME,
-            crate::store::model::FieldValue::Str("Ho\u{200B}me".into()),
-        );
-        let text = |t: &str| egui::RawInput { events: vec![egui::Event::Text(t.into())], ..Default::default() };
-        for (jar, typed) in [(work, Some("\u{200B}")), (synced, None)] {
-            ctx.memory_mut(|m| m.request_focus(jar_name_edit_id(jar)));
-            jars_frame(&mut app, &ctx);
-            if let Some(typed) = typed {
-                jars_frame_with(&mut app, &ctx, text(typed));
-            }
-            jars_frame(&mut app, &ctx);
-            let draft = ctx.data(|d| d.get_temp::<String>(egui::Id::new(("jar_name", jar))));
-            assert!(
-                draft.as_deref().is_some_and(|d| d.contains('\u{200B}')),
-                "the draft holds the hidden character: {draft:?}"
-            );
-            ctx.memory_mut(|m| m.surrender_focus(jar_name_edit_id(jar)));
-            assert_eq!(jars_frame(&mut app, &ctx).rename_jar, None, "{typed:?}");
-        }
-    }
-
-    /// Name rules: a jar's name field shows its stored name as typed, so its hover names any hidden character in it;
-    /// a clean name's field has no hover.
-    #[test]
-    fn a_jar_field_hover_names_a_hidden_character() {
-        for (name, want) in [("Wo\u{200B}rk", true), ("Work", false)] {
-            let ctx = egui::Context::default();
-            crate::theme::apply_fonts(&ctx);
-            crate::theme::apply_style(&ctx);
-            let mut app = App::default();
-            let jar = crate::session_sync::tests::add_jar(&mut app, "x");
-            app.mirror.set(
-                &jar.to_string(),
-                crate::store::model::field::NAME,
-                crate::store::model::FieldValue::Str(name.into()),
-            );
-            jars_frame(&mut app, &ctx);
-            let field = ctx.read_response(jar_name_edit_id(jar)).expect("the jar's field").rect.center();
-            let mut texts = Vec::new();
-            for i in 0..4 {
-                // The pointer moves onto the field once, then rests there past the tooltip delay.
-                let events = if i == 0 { vec![egui::Event::PointerMoved(field)] } else { Vec::new() };
-                let input = egui::RawInput { time: Some(f64::from(i)), events, ..Default::default() };
-                let mut req = SettingsRequests::default();
-                let mut output = ctx.run_ui(input, |ui| app.settings_jars_section(ui, &mut req));
-                output.textures_delta.clear();
-                texts.extend(output.shapes.into_iter().filter_map(|s| match s.shape {
-                    egui::Shape::Text(t) => Some(t.galley.text().to_string()),
-                    _ => None,
-                }));
-            }
-            let hinted = texts.iter().any(|t| t == "Hidden characters: U+200B zero width space");
-            assert_eq!(hinted, want, "{name:?}: {texts:?}");
-        }
     }
 }
