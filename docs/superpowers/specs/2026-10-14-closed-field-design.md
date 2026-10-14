@@ -28,16 +28,27 @@ the flag.
    skipped and the member passes up to the nearest shown ancestor, as `effective_group` does now. A node is *shown*
    when it is live, not itself closed, and not `Hidden`. Display consumers use shown: `Doc::shown()` (the old
    `Doc::live()` call sites split by purpose: `restore_session`, `remote_changes`, `store::shown`,
-   `check_graph_matches_document`, `store/json.rs:121,129` export, the journal diff `journal.rs:1087`, `:749`, `:1446`,
-   `:1871`; the plan lists each). A remote move into a closed group is covered because the remote change set already
+   `check_graph_matches_document`, `store/json.rs:121,129` export, `:749`, `:1446`, `:1871`; the plan lists each; the
+   reload-diff change detection `journal.rs:1087` stays `is_live`). `effective_group` itself is unchanged: a shown
+   node never has a closed ancestor, so `session_sync.rs:1298,1359` keep their meaning. A remote move into a closed group is covered because the remote change set already
    includes descendants (`journal.rs:1095`). Cost is O(n · depth) per call, fine.
 3. **Live model B, with a hide path separate from the delete path.** A closed or hidden node is not in `App.nodes`, the
    mirror's node entries or `node_order`. `remove_remotely_deleted` (`session_sync.rs:802-846`) is a delete path: it
    re-parents children (`follow_remote_parent`), dissolves a group's members up (`dissolve_group_quietly`), deletes
    the node's links (`links_naming`) and releases backing files. The hide path does none of that; it only drops the
    node and its hidden descendants from `App.nodes`, `node_order` and the mirror (a new `Mirror::forget_node`),
-   unloads engines and runs `forget_id`. `RemoteChange` becomes three-state (shown, hidden, deleted) instead of an
-   `Option`. A later clear re-materialises with `materialize`, groups first, as `apply_remote` orders them.
+   unloads engines and runs `forget_id`, after one shared helper `leave_hidden(id)` (also used by a local close) has
+   cleaned view state: if the current level is the hidden node or inside it, the level falls to the nearest shown
+   ancestor (as `dissolve_members` does with `switch_group_level`, `groups.rs:63`); it clears selection, hover, drag,
+   a link in progress, `focused`, `viewed_image`, `split_tab` and `wakes_in_flight` that name the id, and a
+   `remote_in_flight` spawn needs its own third state. Persisted `LocalState.current_group`, `focused`,
+   `viewed_image`, `split_tab` and the camera level id that name a hidden id fall back the same way on restore. The
+   hide path keeps the id's `LocalNode` (zoom, title, live url), so a close by another replica loses nothing.
+   `RemoteChange` becomes three-state (shown, hidden, deleted) instead of an `Option`. A later clear re-materialises
+   with `materialize`, groups first, as `apply_remote` orders them. A Delete of a node that is not in `App.nodes` (an
+   evicted hidden subtree, local or remote) still runs `release_backing`, drops the `LocalNode` and runs `forget_id`:
+   `remove_remotely_deleted` returns early for an id missing from `App.nodes` (`:813`), so that cleanup is keyed by
+   the document's ids, and `teardown_running_session`'s per-id loop (`:2107`) walks the document, not `App.nodes`.
 4. **Close writes a flush, a flag, and the Deletes of what cannot come back.** `close_node` first writes the state the
    snapshot used to capture (`live_fields`, `closed.rs:104-123`) into the document: a note's typed text, the position as
    drawn, a file's resolved path. A node's live url stays personal (decision 8). Then it sets `closed` on the root. A
@@ -49,8 +60,8 @@ the flag.
    asleep.
 5. **History is derived.** The history is the nodes with `closed == true` that are not `Hidden` (a closed node under
    another closed node is part of that node's entry, not its own), newest first by the `closed` register's own stamp
-   (`Reg.stamp`, `model.rs:412`: `Doc::closed_roots() -> Vec<(NodeId, Stamp)>`); the order is total and identical on
-   every replica. `LocalState.closed`, `ClosedEntry`, `record_closed`, `closed_changed_at`, `restore_closed` and the
+   (`Reg.stamp`, `model.rs:412`: `Doc::closed_roots() -> Vec<(NodeId, Stamp)>`, excluding Deleted nodes); the order
+   is total and identical on every replica. `LocalState.closed`, `ClosedEntry`, `record_closed`, `closed_changed_at`, `restore_closed` and the
    load-time repair pass go away. A nested closed node becomes a history entry when the node above it is reopened.
 6. **Eviction deletes the whole subtree.** Whenever the history holds more than `MAX_CLOSED` (20) roots, after a local
    close, after applying remote ops, and at load, every root past 20 has its entire subtree Deleted: the root and
@@ -62,7 +73,10 @@ the flag.
    edge as none (the grandparent link is lost, as when a closed parent was Deleted before).
 7. **Reopen is un-close.** The shortcut and the Recently Closed popup set `closed` to false on the chosen root: same
    ids, group, position, links, fields. If its group was Deleted it shows at the nearest shown ancestor; if its group
-   is still closed it is restored but stays hidden with it, and a toast says so. It lands where it was, so the app
+   is still closed it is restored but stays hidden with it, and a toast says so. Reopening a node G also re-stamps
+   every closed root nested directly under it (`Set closed = true` again), so they enter the history newest, in
+   their old relative order; otherwise their old stamps would sort them oldest and a reopen at 20 roots would evict
+   them at once with their whole subtree. "Undo" in this document means Reopen. It lands where it was, so the app
    reveals it (`reveal.rs`) when it is not at the current level. `Ctrl+Shift+T` reopens the newest root this replica
    closed (the stamp's `actor`); this is a behaviour change from `shortcuts.rs:375`, which pops any entry, and the
    popup lists every closed root, any replica's.
@@ -88,7 +102,7 @@ the flag.
     group; `ensure_default_jar` gains the invariant "a Default with a group sets its group to none", checked over
     every document jar, hidden ones included (a Default that arrives inside an already-closed group is repaired, not
     shadowed by a second Default). That deletes `destroy_group_members`' eject branch and `destroy_node`'s second
-    guard. `IS_DEFAULT` uniqueness ignores a closed jar.
+    guard. `IS_DEFAULT` uniqueness ignores a jar that is closed or hidden, with the repair rule as the backstop.
 11. **Backing files.** The id survives a reopen, so `touch_backing` and the close-path call of `rebind_jar_files` go
     away (`rebind_jar_files` stays for Duplicate and session import, `session_sync.rs:2045`). `backing_keep` is every
     non-deleted node in the document, closed ones included; files are released only on Delete, and the release runs
@@ -104,7 +118,7 @@ the flag.
     history: shell copies for unknown types (the unknown-type spec's decision 4 holds for it), `IS_DEFAULT` stripped,
     the Default jar skipped, links copied when both ends are inside, tabs asleep.
 14. **Sessions and mixed versions.** Replacing a session (Open or Import Session, `teardown_running_session`,
-    `session_sync.rs:2092`) Deletes every non-deleted node of the old document, closed ones included: a closed node is
+    `session_sync.rs:2083`, whose `live()` call is at `:2092`) Deletes every non-deleted node of the old document, closed ones included: a closed node is
     history, and history belongs to its document. That changes `:2057-2063`, which kept the history across a
     replacement. Export Session and the JSON export write shown nodes only. No migration: an existing profile's
     `LocalState.closed` is dropped (those entries are lost; the nodes were already Deleted), and a session with no
@@ -123,17 +137,25 @@ the flag.
   `sweep_jar_switches`, evict past 20. **Reopen**: clear `closed`, materialise the node and every shown descendant,
   `sweep_jar_switches`, reveal.
 - **Sync**: close and reopen are ordinary `Set`s; concurrent close and edit converge per field (last writer wins); a
-  closed node costs journal space until Deleted (compaction keeps closed nodes, `ops.rs:162-179`; it also keeps a
-  Deleted node still named by a group edge, so evicted roots persist as tombstones).
+  closed node costs journal space until Deleted (the prune at `ops.rs:162-179` runs only on a never-shared document
+  and keeps closed nodes; an evicted subtree is deleted whole, so its tombstones are freed there).
 - **Failed-twin / spawn-resolution duplicates** (`tabs.rs:691`, `spawn_result.rs:266,323`) call `record_closed` today
-  for a system-made duplicate; they stop recording (a node the user never saw gets no history entry) and Delete it.
+  for a system-made duplicate, which can be an arranged tab's card (`spawn_result.rs:304-307`). They stop recording
+  and Delete it: a deliberate behaviour change, since the user can no longer reopen such a card from history.
+- **Recently Closed rows** read the document: the label from the node's fields (`name`, text, `url`, `path`,
+  `view_kind`; `popups.rs:695-745`), the title from the node's `LocalNode`, the member count is the number of
+  non-deleted descendants (nested closed nodes included), and the toolbar count is `closed_roots().len()`
+  (`graph_ui.rs:1144`).
+- **Export and named sessions.** `session.rs` `backing_names` (`:39-61`) builds the kept set for named sessions from
+  the shown-only JSON export plus `LocalState.closed`; it must read every non-deleted node of the document instead,
+  or a closed node's files in another session would be pruned.
 
 ## Touch points (the plan verifies each by reading the code)
 
 - `store/model.rs` (field table and per-kind lists, `placement`, `shown`, `closed_roots`, `effective_group`),
   `store/ops.rs`, `store/mod.rs` (`shown`), `store/json.rs` (`is_live_card`, export), `store/journal.rs` (`:1087`,
   `:1095`).
-- `session_sync.rs`: `remote_changes`/`RemoteChange` (three-state), `apply_remote`, `remove_remotely_deleted` (split),
+- `session.rs` (`backing_names`), `session_sync.rs`: `remote_changes`/`RemoteChange` (three-state), `leave_hidden`, `apply_remote`, `remove_remotely_deleted` (split),
   `restore_session`, `check_graph_matches_document`, `resolve_id`, `create_ops`, `editable`, `links_naming`,
   `queue_delete`, `materialize`, `teardown_running_session`.
 - `closed.rs` (shrinks to history queries, eviction, reopen), the new `duplicate.rs`, `local_state.rs`,
