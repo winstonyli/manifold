@@ -1,8 +1,7 @@
 //! Command-line tools for session files (spec "JSON snapshots", CLI):
 //! `--dump <file.mnf>` prints frames and the document as JSON, `--check
 //! <file.mnf>` reports damage and a torn tail, and `--import-json <in>
-//! --out <file.mnf>` builds a session file from a JSON snapshot (used by
-//! drive.sh's `SEED`).
+//! --out <file.mnf>` builds a session file from a JSON snapshot.
 
 use std::path::Path;
 

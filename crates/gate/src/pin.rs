@@ -34,7 +34,7 @@ const RELEASES: &str = "https://github.com/winstonyli/manifold/releases/download
 const KINDS: [(&str, &str); 4] = [("servo", "Servo"), ("cef", "Cef"), ("webkit", "Webkit"), ("webview2", "Webview2")];
 const PLATFORMS: [&str; 2] = ["windows-x64", "linux-x64"];
 
-fn repo() -> PathBuf {
+pub(crate) fn repo() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
@@ -46,7 +46,7 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 /// (SHA-256 hex, SHA-1 hex, byte count) of a file, read in 1 MiB chunks.
-fn hash_file(path: &Path) -> Result<(String, String, u64), String> {
+pub(crate) fn hash_file(path: &Path) -> Result<(String, String, u64), String> {
     let mut f = std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let (mut s256, mut s1, mut n) = (Sha256::new(), Sha1::new(), 0u64);
     let mut buf = vec![0u8; 1 << 20];
@@ -68,20 +68,25 @@ type Files = BTreeMap<String, (String, u64, String)>;
 /// Files per (kind name, platform).
 type Table = BTreeMap<(String, String), Files>;
 
-fn region(text: &str) -> Result<(usize, usize), String> {
+pub(crate) fn region(text: &str) -> Result<(usize, usize), String> {
     let begin = text.find("// BEGIN TABLE\n").ok_or("no `// BEGIN TABLE` line")? + "// BEGIN TABLE\n".len();
     let end = text[begin..].find("// END TABLE\n").ok_or("no `// END TABLE` line")? + begin;
     Ok((begin, end))
 }
 
-fn parse_table(body: &str) -> Result<Table, String> {
+pub(crate) fn parse_table(body: &str) -> Result<Table, String> {
     let mut table = Table::new();
     let mut cur: Option<(String, String)> = None;
     for line in body.lines() {
         let t = line.trim();
         let q: Vec<&str> = t.split('"').collect();
         if t.starts_with("Entry {") {
-            let variant = t.split("ViewKind::").nth(1).and_then(|r| r.split(',').next()).unwrap_or("");
+            let variant = t
+                .split("kind: ")
+                .nth(1)
+                .and_then(|r| r.split(',').next())
+                .and_then(|p| p.rsplit("::").next())
+                .unwrap_or("");
             let kind = KINDS.iter().find(|k| k.1 == variant).ok_or(format!("unknown kind in {t}"))?.0;
             cur = Some((kind.to_owned(), q.get(1).ok_or("Entry without a platform")?.to_string()));
             table.entry(cur.clone().unwrap_or_default()).or_default();

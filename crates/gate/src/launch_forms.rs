@@ -2,7 +2,7 @@
 //! native spawn costs milliseconds). Launches the exe once in each form its launchers and the session tools use
 //! (argument checking, wave 1 M4) and checks each exit code:
 //!
-//! - `drive`: the form scripts/drive.sh uses: `--import-json`/`--out` into an isolated `APPDATA`, then `--headless`
+//! - `drive`: `--import-json`/`--out` into an isolated `APPDATA`, then `--headless`
 //!   with the commands piped on stdin (exit 0)
 //! - `script`: `--headless --profile-dir --script` (exit 0)
 //! - `import`, `dump`, `check`: the file tools (exit 0)
@@ -10,7 +10,7 @@
 //!
 //! `--debug-commands` is not launched: it opens a real window (a unit test covers it). Every run is headless or a file
 //! tool, on a temp profile (never the real `%APPDATA%\manifold`), under a 60 s limit so a hang fails instead of
-//! stalling. scripts/drive.sh itself is no longer exercised here; its form is.
+//! stalling.
 
 use std::fs::{self, File};
 use std::io::Write;

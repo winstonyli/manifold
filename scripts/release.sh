@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
 # Usage: scripts/release.sh [--with-servo] [--with-webkit] [--reuse-hosts-from vX.Y.Z]
-#        scripts/release.sh --verify vX.Y.Z
 #
 # Cuts the bare-exe release (plan docs/superpowers/plans/2026-10-11-bare-exe-host-downloads.md, Task 1). In order:
 #   1. refuses a dirty tree;
@@ -25,9 +24,7 @@
 #                            uploaded assets, and build only what it lacks. Refused unless
 #                            `git diff vX.Y.Z -- crates/ipc-protocol crates/manifold-view-*` is empty and
 #                            PROTOCOL_VERSION is the same at that tag.
-# --verify vX.Y.Z            re-checks dist/ against that tag: its host_pin.rs hashes equal dist/hosts/*, the exe matches
-#                            its .sha256, and the embedded hosts' recorded hashes match the saved copies
-#                            (the PDF view's only for tags whose tree has that crate).
+# Verify a finished build with `target/debug/gate.exe release-verify vX.Y.Z` (see crates/gate/src/release_verify.rs).
 # SKIP_BUILD=1  use the hosts already in target/ (target-servo/, target-linux/) instead of building them (a build you
 #               ran yourself, e.g. at BelowNormal; build with RUSTFLAGS="-C target-feature=+crt-static"). manifold.exe
 #               is always built, because it must carry the table written in step 3.
@@ -44,13 +41,12 @@ jobs="${JOBS:-8}"
 tdir="${CARGO_TARGET_DIR:-target}/release"
 version="$(sed -n '/^\[workspace.package\]/,/^\[/{s/^version = "\(.*\)"/\1/p}' Cargo.toml | head -1)"
 tag="v$version"
-with_servo="" with_webkit="" reuse="" verify_tag=""
+with_servo="" with_webkit="" reuse=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --with-servo) with_servo=1 ;;
         --with-webkit) with_webkit=1 ;;
         --reuse-hosts-from) reuse="${2:?--reuse-hosts-from needs a tag}"; shift ;;
-        --verify) verify_tag="${2:?--verify needs a tag}"; shift ;;
         *) sed -n '2,3p' "$0" >&2; exit 2 ;;
     esac
     shift
@@ -67,46 +63,6 @@ pin() { "$gate" host-pin "$@" </dev/null; }
 
 # Everything below (cargo and the compilers it starts) runs at BelowNormal: children inherit this shell's priority.
 powershell -NoProfile -Command "(Get-Process -Id $(cat /proc/$$/winpid)).PriorityClass = 'BelowNormal'" </dev/null || echo "WARNING: release.sh runs at normal priority" >&2
-
-if [ -n "$verify_tag" ]; then
-    ver="${verify_tag#v}"
-    tmp="$(mktemp -d)"
-    trap 'rm -rf "$tmp"' EXIT
-    git show "$verify_tag:$pin_rs" >"$tmp/pin.rs" || die "$verify_tag has no $pin_rs"
-    list="$(pin --list "$(wp "$tmp/pin.rs")")"
-    status=0
-    ok() { echo "PASS: $1"; }
-    bad() { echo "FAIL: $1"; status=1; }
-    [ "$(sed -n 's/^version //p' <<<"$list")" = "$ver" ] && ok "PIN_VERSION is $ver" || bad "PIN_VERSION is not $ver"
-    while read -r kind platform file size sha256 url; do
-        [ "$kind" = version ] && continue
-        asset="$file-$platform"
-        if [ "${url#*/download/$verify_tag/}" = "$url" ]; then
-            echo "SKIP: $kind $asset is reused from an older release (${url#*/download/}); not in dist/"
-            continue
-        fi
-        f="dist/hosts/$asset"
-        if [ ! -f "$f" ]; then bad "$f is missing"
-        elif [ "$(sha "$f")" = "$sha256" ] && [ "$(stat -c %s "$f")" = "$size" ]; then ok "$asset matches the pin"
-        else bad "$asset differs from the pin in $verify_tag"; fi
-    done <<<"$list"
-    exe="dist/manifold-$verify_tag-windows-x64.exe"
-    if [ -f "$exe" ] && (cd dist && sha256sum -c --status "$(basename "$exe").sha256"); then ok "$(basename "$exe") matches its .sha256"
-    else bad "$exe is missing or does not match its .sha256"; fi
-    rec="dist/manifold-$verify_tag-windows-x64.embedded-host.sha256"
-    if [ -f "$rec" ] && [ "$(cut -d' ' -f1 "$rec")" = "$(sha dist/embedded/manifold-engine-webview2.exe)" ]; then
-        ok "the embedded WebView2 host copy matches the recorded hash"
-    else bad "$rec is missing or does not match dist/embedded/manifold-engine-webview2.exe"; fi
-    # A second record file: the tags shipped before the PDF view (v0.4.1, v0.5.0, v0.5.1) have only the first.
-    if git cat-file -e "$verify_tag:crates/manifold-view-pdfium/Cargo.toml" 2>/dev/null; then
-        rec="dist/manifold-$verify_tag-windows-x64.embedded-pdf-view.sha256"
-        if [ -f "$rec" ] && [ "$(cut -d' ' -f1 "$rec")" = "$(sha dist/embedded/manifold-view-pdfium.exe)" ]; then
-            ok "the embedded PDF view copy matches the recorded hash"
-        else bad "$rec is missing or does not match dist/embedded/manifold-view-pdfium.exe"; fi
-    fi
-    echo "NOTE: that the exe really contains those bytes is not checked here (build.rs embeds the file and hashes it at build time; bare-exe Task 7's --check runs the exe)."
-    exit $status
-fi
 
 [ -z "$(git status --porcelain)" ] || die "the working tree is dirty; commit first"
 
@@ -224,7 +180,7 @@ done
 [ "$(sha "$tdir/manifold-engine-webview2.exe")" = "$(sha "$win_host")" ] || die "the WebView2 host changed while manifold.exe was built"
 [ "$(sha "$tdir/manifold-view-pdfium.exe")" = "$(sha "$pdf_host")" ] || die "the PDF view changed while manifold.exe was built"
 
-# dist/: what to upload, and what --verify checks.
+# dist/: what to upload, and what `gate release-verify` checks.
 exe="dist/manifold-$tag-windows-x64.exe"
 cp "$tdir/manifold.exe" "$exe"
 (cd dist && sha256sum "$(basename "$exe")" >"$(basename "$exe").sha256")
@@ -247,6 +203,6 @@ echo "embedded PDF view sha256: $(sha "$pdf_host")"
 echo
 echo "The tree is now dirty by exactly $pin_rs. Commit it now, then tag; the exe was built from this tree:"
 echo "  git add $pin_rs && git commit -m 'host pins for $tag'"
-echo "  git tag -a $tag -m '$tag' && scripts/release.sh --verify $tag"
+echo "  git tag -a $tag -m '$tag' && target/debug/gate.exe release-verify $tag"
 echo "  (after you push the tag and create the release:)"
 echo "  gh release create $tag $exe dist/manifold-$tag-windows-x64.exe.sha256 dist/hosts/* --title '$tag'"
