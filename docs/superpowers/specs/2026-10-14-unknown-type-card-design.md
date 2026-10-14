@@ -40,13 +40,14 @@ and nothing else.
    `Kind::type_str()` (`None` for Unknown). Concretely: `Snapshot`, `Imported`, `RemoteNode`/`RemoteChange` and
    `Carried` gain `ty: String`; `OpBody::create` takes the type as `&str`; `node_json` and `node_to_json` take it;
    `materialize` seeds the mirror's `TYPE` from it (`session_sync.rs:503` skips Unknown today); `place_node` takes it
-   (`fetched.rs`). `fields_of`, `snapshot`, `imported_fields` and `create_ops` pick `Kind::generic_fields()` when the
-   kind is Unknown. A mirror's first-seen type string stands (`TYPE` is a last-writer register, but the store never
+   (`fetched.rs`). `fields_of`, `snapshot`, `imported_fields` and `create_ops` need no branch: `Kind::fields()` returns
+   the generic list for Unknown (plan D1). An empty `type` string counts as no type (plan D8). A mirror's first-seen type string stands (`TYPE` is a last-writer register, but the store never
    changes a node's type, which `session_sync.rs:502` already relies on).
 6. **A runtime of its own.** `Runtime::Unknown` (unit variant, like `Runtime::Jar`). `Runtime::None` already means
-   "group" in several places, so it must not be reused. `named_by_name` (`session_sync.rs:955`, a `matches!` on
-   `Runtime::None | Runtime::Jar`) gains `Runtime::Unknown`, or `own_text` returns "" and the NAME label, filter text
-   (`card.rs:1273`) and accessible name ignore the node's name.
+   "group" in several places, so it must not be reused. `named_by_name` (`session_sync.rs:955`) is left unchanged
+   (plan D4): adding `Runtime::Unknown` would make the name the card's only label, refuse an empty rename and make
+   `accessible_name` ignore the type. Like every non-group card, a stored `NAME` overrides the label and an empty one
+   clears it; the title bar, filter text (`card.rs:1274`) and accessible name already read the stored name.
 7. **One canonical type for rows and edges.** `card_kind` today maps a raw type to a row string, and `closed.rs:45/171`
    and `links.rs:116` pass the raw string instead, so the two disagree for an unknown type. One function,
    `card_kind::canonical_type(raw) -> &'static str`, maps a raw type to the row string a known kind uses, and anything
@@ -74,14 +75,16 @@ and nothing else.
 
 ## Model
 
-- `Node::is_live`: `has_type() && !deleted`. `Kind::Unknown` keeps meaning "a type this build lacks".
-- `Kind::fields()` stays the list a `Create` writes for a known kind (empty for Unknown). `Kind::generic_fields()` (`POS,
-  COLOR, PARENT, NAME`) is what the app reads, mirrors and copies for an Unknown node. No code reads an unknown node
-  through the Create list.
+- `Node::is_live`: `!deleted && !ty().is_empty()` (an empty type string is no type, plan D8). `Kind::Unknown` keeps
+  meaning "a type this build lacks".
+- There is no `generic_fields()` (plan D1). `Kind::fields()` returns the generic list (`POS, COLOR, PARENT, NAME`, a
+  `GENERIC` const) for Unknown, so everything that reads, mirrors, snapshots or copies "the kind's fields" handles an
+  unknown node with no branch.
 - `Node::get` and `Mirror::get` panic on a field number with no definition. The generic list holds only known
   numbers, so they are safe; a raw passthrough would not be, which is one more reason for decision 4.
 - The mirror's `TYPE` for an unknown node is its real string. `card_kind` and `closed.rs`/`links.rs` agree through
-  `canonical_type`. `EXPORTSTATE` reports the real string.
+  `canonical_type`. `EXPORTSTATE` keeps `type` as the canonical row string and adds `stored_type`, the raw string
+  (plan D6). `CLOSENODE id` replaces `CLOSEGROUP id` so a gate can close an unknown card by id (plan D7).
 
 ## Behaviour
 
@@ -94,8 +97,8 @@ and nothing else.
   (`closed.rs:174`, via `snapshot`). Reopen creates a node of that type string with the generic fields.
 - **Duplicate.** The same shell, beside the original.
 - **Import.** `store/json.rs` `import` stops rejecting an unknown type (`json.rs:189`): it keeps the string and the
-  generic fields it recognises and ignores the rest. A missing `type` stays an error; only a present, unrecognised
-  string is kept.
+  generic fields it recognises and ignores the rest. For every kind, `import` keeps only `kind.fields()` plus the group
+  (plan D5). A missing, non-string or empty `type` stays an error; only a present, unrecognised string is kept.
 - **Fresh-start check.** `restore_session`'s all-jars test for a fresh profile (`session_sync.rs:1486`) now counts a
   lone unknown node as real content, which is right: it is a card the user can see. `JsonNode::kind()` keeps returning `None` for Unknown; the link
   end check is unaffected. Export writes the real string and the fields it has a name for. Import Session
@@ -104,12 +107,12 @@ and nothing else.
 
 ## Touch points (survey 2026-10-14, plus the review)
 
-- `store/model.rs` (`is_live`, `generic_fields`, `effective_group`, `with_descendants`); `store/json.rs`
+- `store/model.rs` (`is_live`, `Kind::fields()` generic list, `Node::ty`, `effective_group`, `with_descendants`); `store/json.rs`
   (`node_json`/`node_to_json` panic for Unknown at `:79`, `Imported`, `import`); `store/ops.rs` (`OpBody::create`).
 - `session_sync.rs`: `snapshot`, `spawn_snapshot` (287), `materialize` (503), `RemoteChange`/`RemoteNode`/`Carried`,
   `apply_remote` (746), `restore_session`'s local tuple (1464-1501), `insert_materialized` (715), `fields_of` (70),
   `create_ops` (136-171), `imported_fields`, `materialize_imported`, `runtime_has_type` (95-104: accept the sentinel),
-  `check_graph_matches_document`, `teardown_running_session`, `named_by_name` (955), `update_live_node` (575-580: add
+  `check_graph_matches_document`, `teardown_running_session`, `update_live_node` (575-580: add
   Unknown to the no-op arm). `closed.rs:164/182/200` (`node_json` callers). `store/ops.rs:205` (test helper calling
   `OpBody::create`). `fetched.rs` `place_node`. `popups.rs:728-732`.
 - Exhaustive `Runtime` matches: `node.rs` (84, 103, 118, 409), `card.rs` (901, 930, 937 plus the stale "no unknown-type
@@ -120,7 +123,8 @@ and nothing else.
   `store/journal/tests.rs:313` (`!is_live`); `store/json.rs:426`.
 - `caps/rows.rs`, `caps/edges.rs`, `card_kind.rs`, `closed.rs` (`worth_reopening`, `subtree_entry`, 158/171),
   `links.rs:116`.
-- Gate: `debug_control.rs` EXPORTSTATE type; `state.rs` `cards()` now counts an unknown card (no existing seed has
+- `named_by_name` (`session_sync.rs:955`): unchanged (decision 6, plan D4).
+- Gate: `debug_control.rs` EXPORTSTATE adds `stored_type` beside `type`, and `CLOSENODE` replaces `CLOSEGROUP`; `state.rs` `cards()` now counts an unknown card (no existing seed has
   one); a new stage `unknown-type` seeds one and runs the verbs below.
 
 ## Testing
