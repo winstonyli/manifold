@@ -114,7 +114,7 @@ fn clear_of_cards(s: &State) -> io::Result<&'static str> {
         (num(&e["screen"][0])?, num(&e["screen"][1])?)
     };
     let mut on_card = false;
-    for c in s.cards() {
+    for c in s.all_cards() {
         let r = &c["rect"];
         on_card |= num(&r[0])? <= x && x <= num(&r[2])? && num(&r[1])? <= y && y <= num(&r[3])?;
     }

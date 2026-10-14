@@ -266,7 +266,7 @@ impl Shots {
         let s = self.state()?;
         let (w, h) = (f64::from(self.size.0), f64::from(self.size.1));
         let c = s
-            .cards()
+            .all_cards()
             .iter()
             .find(|c| State::card_is(c, ty, loaded) && (place != "top" || c["group"].is_null()))
             .ok_or_else(|| io::Error::other(format!("no {place} card of type {ty}")))?;
@@ -281,7 +281,7 @@ impl Shots {
     /// The id of the first top-level card of type `ty` (import gives the seeded nodes fresh ids).
     fn card_id(&mut self, ty: &str) -> io::Result<String> {
         let s = self.state()?;
-        s.cards()
+        s.all_cards()
             .iter()
             .find(|c| State::card_is(c, ty, None) && c["group"].is_null())
             .and_then(|c| c["id"].as_str().map(str::to_string))
@@ -293,7 +293,7 @@ impl Shots {
     fn settle(&mut self) -> io::Result<()> {
         let mut prev = String::new();
         for _ in 0..20 {
-            let cur: String = self.state()?.cards().iter().map(|c| format!("{}{};", c["id"], c["rect"])).collect();
+            let cur: String = self.state()?.all_cards().iter().map(|c| format!("{}{};", c["id"], c["rect"])).collect();
             if cur == prev {
                 break;
             }
@@ -871,8 +871,11 @@ impl Shots {
     fn mouse_regress(&mut self) -> io::Result<()> {
         let note_rect = |s: &mut Self| -> io::Result<[i64; 4]> {
             let st = s.state()?;
-            let c =
-                st.cards().iter().find(|c| State::card_is(c, NOTE, None)).ok_or_else(|| io::Error::other("no note"))?;
+            let c = st
+                .all_cards()
+                .iter()
+                .find(|c| State::card_is(c, NOTE, None))
+                .ok_or_else(|| io::Error::other("no note"))?;
             Ok(rect(c)?.map(|v| v as i64))
         };
         let [x0, y0, x1, y1] = note_rect(self)?;
@@ -894,7 +897,7 @@ impl Shots {
         self.shot("mouse-regress-swatch")?;
         let st = self.state()?;
         let tagged = st
-            .cards()
+            .all_cards()
             .iter()
             .find(|c| State::card_is(c, NOTE, None))
             .is_some_and(|c| c["color"].as_bool() == Some(true));

@@ -143,12 +143,18 @@ fn rect_of(s: &State, id: &str) -> Option<Vec<f64>> {
 
 /// `sorted(cards)`: every card id, sorted.
 fn sorted_ids(s: &State) -> Vec<String> {
-    s.cards().iter().filter_map(|c| c["id"].as_str()).map(str::to_string).collect::<BTreeSet<_>>().into_iter().collect()
+    s.all_cards()
+        .iter()
+        .filter_map(|c| c["id"].as_str())
+        .map(str::to_string)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
 }
 
 /// `([i for i, c in cards.items() if card_is(c, TYPE, loaded) and i not in before] or ["none"])[0]`.
 fn new_card(s: &State, ty: &str, loaded: Option<bool>, before: &[String]) -> String {
-    s.cards()
+    s.all_cards()
         .iter()
         .filter(|c| State::card_is(c, ty, loaded))
         .filter_map(|c| c["id"].as_str())
@@ -163,7 +169,7 @@ fn new_group(s: &State, before: &[String]) -> Option<String> {
 }
 
 fn count_of(s: &State, ty: &str) -> usize {
-    s.cards().iter().filter(|c| State::card_is(c, ty, None)).count()
+    s.all_cards().iter().filter(|c| State::card_is(c, ty, None)).count()
 }
 
 /// `abs(cards[id]['screen'][0] - x) < 200 and abs(...[1] - y) < 200`.
@@ -209,7 +215,7 @@ fn earlier_point(s: &State) -> Option<String> {
 /// two floats print the same only if they are the same.
 fn rect_key(s: &State) -> String {
     let mut cards = std::collections::BTreeMap::new();
-    for c in s.cards() {
+    for c in s.all_cards() {
         let rect = c["rect"].as_array().map_or_else(String::new, |r| {
             r.iter().map(|v| format!("{:.1}", v.as_f64().unwrap_or(f64::NAN))).collect::<Vec<_>>().join(",")
         });
@@ -870,8 +876,12 @@ fn drive(sm: &mut Smoke, m: &mut Marks) -> io::Result<()> {
     let made = sm.settle("jar_made")?;
     let jar_id = new_card(&made, JAR, None, &before);
     check_found(&made, "jar_made", "NEWJAR adds a jar card", &jar_id);
-    let tab_id =
-        made.cards().iter().find(|c| State::card_is(c, TAB, None)).and_then(|c| c["id"].as_str()).map(str::to_string);
+    let tab_id = made
+        .all_cards()
+        .iter()
+        .find(|c| State::card_is(c, TAB, None))
+        .and_then(|c| c["id"].as_str())
+        .map(str::to_string);
     let Some(tab_id) = tab_id else { return Err(io::Error::other("no tab card on the level for the jar section")) };
     sm.send(&format!("USEJAR {tab_id} {jar_id}"))?;
     let used = sm.settle("jar_used")?;

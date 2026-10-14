@@ -70,7 +70,7 @@ struct Cards {
 }
 
 fn cards(s: &State) -> Option<Cards> {
-    let mut c: Vec<&Value> = s.cards().iter().collect();
+    let mut c: Vec<&Value> = s.cards();
     c.sort_by(|x, y| {
         x["screen"][0].as_f64().partial_cmp(&y["screen"][0].as_f64()).unwrap_or(std::cmp::Ordering::Equal)
     });

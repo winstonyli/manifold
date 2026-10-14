@@ -162,7 +162,7 @@ fn settle(inst: &mut Instance) -> io::Result<()> {
 
 /// A point on the canvas under no card, clear of the toolbar.
 fn empty_point(s: &State, w: f64, h: f64) -> Option<(f64, f64)> {
-    let cards: Vec<Rect> = s.cards().iter().filter_map(|c| rect_of(&c["rect"])).collect();
+    let cards: Vec<Rect> = s.all_cards().iter().filter_map(|c| rect_of(&c["rect"])).collect();
     for fy in [0.85, 0.75, 0.65, 0.55] {
         for fx in [0.5, 0.3, 0.7, 0.15, 0.85] {
             let (x, y) = (w * fx, h * fy);
@@ -199,7 +199,7 @@ fn open(
         }
         Open::CardMenu(ty, page) => {
             let card = s
-                .cards()
+                .all_cards()
                 .iter()
                 .find(|c| c["type"] == *ty && anchor.is_none_or(|a| c["id"] == a))
                 .ok_or_else(|| bad(format!("no {ty} card in the demo session")))?;
@@ -266,7 +266,7 @@ fn run_group(inst: &mut Instance, (width, height): (u32, u32), scenarios: &[&'st
 
     // Where each card lives, so the parking below can be undone for the next scenario's anchor.
     let home: Vec<(String, f64, f64)> = s0
-        .cards()
+        .all_cards()
         .iter()
         .filter_map(|c| Some((c["id"].as_str()?.to_owned(), c["world"][0].as_f64()?, c["world"][1].as_f64()?)))
         .collect();
@@ -326,7 +326,7 @@ fn run_group(inst: &mut Instance, (width, height): (u32, u32), scenarios: &[&'st
         settle(inst)?;
         let parked_state = inst.export_state("layout-parked")?;
         let still_there = parked_state
-            .cards()
+            .all_cards()
             .iter()
             .filter(|c| c["id"].as_str().is_some_and(|id| others.iter().any(|o| o == id)))
             .filter_map(|c| rect_of(&c["rect"]))

@@ -283,6 +283,8 @@ pub(crate) fn hscroll(parent: Option<PathBuf>) -> ExitCode {
                 inst.send(line)?;
             }
             inst.step(&["GRAPHDOWN", "GRAPHOPEN"], "the /wide page to load", || site.hits("/wide") > 0)?;
+            // A wheel event sent before Tab view is drawn goes nowhere.
+            inst.export_until(&format!("tabview-{view}"), State::tab_view)?;
             inst.send("SCROLL 300 200 240 0")?;
             // Each scroll reports once it settles; the second must not start before the first has.
             site.wait_for("hscroll", 1, Duration::from_secs(20));
@@ -394,7 +396,7 @@ fn host_logs(tmp: &Path) -> Vec<String> {
 
 /// "<tab card count> <all loaded> <focused_url>" of one export.
 fn tab_state(s: &State) -> (usize, bool, String) {
-    let tabs: Vec<&Value> = s.cards().iter().filter(|c| c["type"] == TAB).collect();
+    let tabs: Vec<&Value> = s.cards().into_iter().filter(|c| c["type"] == TAB).collect();
     (tabs.len(), tabs.iter().all(|c| c["loaded"].as_bool() == Some(true)), s.focused_url().to_string())
 }
 

@@ -47,13 +47,21 @@ impl State {
         serde_json::from_str(text).map(State)
     }
 
-    /// The current level's cards in draw order (empty if the key is missing).
-    pub fn cards(&self) -> &[Value] {
+    /// Every card of the current level in draw order, jar cards included (empty if the key is missing): what is on
+    /// screen, for hit tests and layout.
+    pub fn all_cards(&self) -> &[Value] {
         self.0.get("cards").and_then(Value::as_array).map_or(&[], Vec::as_slice)
     }
 
+    /// The cards a stage means by "the cards": `all_cards` without the jar cards (the Default jar card exists in every
+    /// session and is no part of what the tab, sleep and spawn stages count).
+    pub fn cards(&self) -> Vec<&Value> {
+        self.all_cards().iter().filter(|c| c["type"] != JAR).collect()
+    }
+
+    /// Any card by id, jar cards included.
     pub fn card(&self, id: &str) -> Option<&Value> {
-        self.cards().iter().find(|c| c["id"] == id)
+        self.all_cards().iter().find(|c| c["id"] == id)
     }
 
     /// `card_is`: a stored node of type `ty` (a JSON level's card is never one); `loaded` also
@@ -232,6 +240,8 @@ mod tests {
         assert_eq!(s.card("t1").unwrap()["jar"], "j1");
         assert_eq!(s.card("t1").unwrap()["effective_jar"], "j1");
         assert_eq!(s.card("j1").unwrap()["is_default"], true);
+        // `cards` is what the tab stages count: no jar cards; `all_cards` keeps them.
+        assert_eq!((s.cards().len(), s.all_cards().len()), (1, 2));
     }
 
     #[test]
