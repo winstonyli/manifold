@@ -204,3 +204,11 @@ and the developer's own session is simply reset if it looks wrong:
 - Decided, revisit later: a duplicated jar starts logged out (as written). Duplicating a group that
   holds a jar gives the copy its own fresh jar with the copied tabs' edges remapped, which is the useful case. A
   "Duplicate with cookies" item is parked until there is a real use.
+- Decided (2026-10-14, built): a plain or remote delete releases a jar's backing file at once when nothing holds it
+  (no live node, no Recently Closed entry); eviction defers to the next launch's prune with grace. A group's own `jar`
+  edge reaches jars inside that group.
+- Accepted limit: the startup prune keeps a jar file if the open session, Recently Closed or a session saved under
+  `sessions\` names it, and never touches a file under 7 days old. A jar untouched 7+ days and held only by an
+  instance running a session file outside `sessions\` loses its cookies when another instance prunes (the card stays,
+  logged out). Closing this means the prune reading session files it cannot find today; revisit with several instances
+  on separate session files, or real users.
