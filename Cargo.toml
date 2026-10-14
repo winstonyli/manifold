@@ -90,7 +90,7 @@ pdfium-render = "=0.8.37"
 # the FFI bindings, not a real binary) from the canonical bblanchon/
 # pdfium-binaries releases, lazily on first real use -- not a build.rs
 # fetch, so `cargo build` itself stays offline-friendly and there's no
-# `sync-runtime-deps.sh`-style copy step needed the way CEF/Servo's own
+# `gate sync-runtime-deps`-style copy step needed the way CEF/Servo's own
 # bundled runtimes require.
 pdfium-auto = "0.3"
 pollster = "1.0.1"

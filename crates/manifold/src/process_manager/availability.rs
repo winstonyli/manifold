@@ -64,7 +64,7 @@ pub(crate) fn view_hosts_dir() -> Option<PathBuf> {
     })
 }
 
-/// `cef-runtime/<exe>` next to `manifold.exe`: where `scripts/sync-runtime-deps.sh` puts it for dev builds.
+/// `cef-runtime/<exe>` next to `manifold.exe`: where `gate sync-runtime-deps` puts it for dev builds.
 pub(super) fn cef_sibling_exe() -> PathBuf {
     let mut path = sibling_binary(ViewKind::Cef.desc().binary);
     let file_name = path.file_name().map(|n| n.to_owned()).unwrap_or_default();

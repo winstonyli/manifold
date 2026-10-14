@@ -65,7 +65,7 @@ Cargo doesn't do this itself — see the `TODO` in `crates/manifold/src/process_
 
 Run this after every build that touches `manifold-engine-servo` or `manifold-engine-cef`:
 ```bash
-bash scripts/sync-runtime-deps.sh
+target/debug/gate.exe sync-runtime-deps
 ```
 It finds Servo's ANGLE DLLs and CEF's runtime under `target/debug/build/{mozangle,cef-dll-sys}-*/` (or `…/{mozangle,cef-dll-sys}/*/`, where newer cargo nightlies put build-script output; it takes the newest of either), `cmp`s each against the copy already in place, and only recopies what's actually stale (safe to run any time — a no-op if nothing changed). Not a build.rs: a build script only sees its own crate's `OUT_DIR`, not a sibling crate's, and there's no reliable cross-crate coordination here without those upstream crates cooperating (they don't) — a plain script is simpler and more honest than fighting Cargo's model.
 

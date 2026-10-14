@@ -51,14 +51,14 @@ pub fn require_fresh_exe(exe: &Path) -> Result<(), String> {
         return Ok(());
     }
     let dir = exe.parent().unwrap_or(Path::new("."));
-    // CEF runs from an isolated copy that only sync-runtime-deps.sh refreshes; a stale one speaks an old message
+    // CEF runs from an isolated copy that only `gate sync-runtime-deps` refreshes; a stale one speaks an old message
     // numbering and its host crashes.
     let cef = dir.join("manifold-engine-cef.exe");
     let cef_copy = dir.join("cef-runtime").join("manifold-engine-cef.exe");
     if let (Some(built), Some(copy)) = (mtime(&cef), mtime(&cef_copy)) {
         if built > copy {
             return Err(
-                "cef-runtime/manifold-engine-cef.exe is older than the built one: run scripts/sync-runtime-deps.sh, or set ALLOW_STALE=1."
+                "cef-runtime/manifold-engine-cef.exe is older than the built one: run `target/debug/gate.exe sync-runtime-deps`, or set ALLOW_STALE=1."
                     .into(),
             );
         }
