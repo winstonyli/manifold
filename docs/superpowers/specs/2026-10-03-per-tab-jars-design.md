@@ -1,6 +1,8 @@
 # Per-tab jars: design, 2026-10-03
 
 Status: built (plan `docs/superpowers/plans/2026-10-03-per-tab-jars.md`). Builds on the shipped cookie jar v1 (`2026-10-02-jars-design.md`, `jar.rs`, the per-tab merge
+
+> **Superseded by `2026-10-13-jars-as-cards-design.md` (built 2026-10-14):** the jar reference is now a `jar` edge resolved by walking up groups, not a snapshot field with a cascade; jars are cards, not off-graph nodes.
 state, the WebView2 and CEF hosts). Decisions from the user on 2026-10-03: a jar choice **per tab**, a **group default**
 that tabs inherit, and **ephemeral** jars; the group default is a **snapshot that cascades** (it behaves as if live, but
 every tab stores a plain value); live tabs **switch by sleeping**; jars are **nodes in the synced document**; the jar

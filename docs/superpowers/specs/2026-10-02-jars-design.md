@@ -1,6 +1,8 @@
 # Cookie jars: design, 2026-10-02
 
 Status: built (v1), 2026-10-03: one default jar, WebView2 and CEF only (plan `docs/superpowers/plans/2026-10-02-cookie-jar-v1.md`,
+
+> **Superseded in part by `2026-10-13-jars-as-cards-design.md` (built 2026-10-14):** jars are cards on the graph, the Default is a card, and one `jar` edge replaces the per-tab field and the group-default snapshot.
 final review fixes in `.superpowers/sdd/2026-10-02-cookie-jar-v1/`). Decisions from the user on 2026-10-02: **persistent per
 jar**; **cookies only for v1**.
 
