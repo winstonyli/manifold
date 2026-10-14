@@ -2,6 +2,11 @@ use super::*;
 use crate::store::model::{ActorId, NodeId};
 use crate::store::testutil::temp_dir;
 
+/// A fixed jar id for tests that need one jar; its file is `000000000000000d-1.json`.
+fn d() -> NodeId {
+    NodeId { actor: ActorId(0xd), counter: 1 }
+}
+
 fn c(name: &str, value: &str) -> Cookie {
     Cookie {
         name: name.into(),
@@ -24,7 +29,7 @@ fn jar_save_cost() {
     let dir = temp_dir("jar-save-cost");
     let cookies = (0..3000).map(|i| c(&format!("n{i}"), &format!("value-{i}-0123456789abcdef"))).collect();
     let jar = Jar { cookies, ..Jar::default() };
-    report("save, 3000 cookies", timed(40, || jar.save(&dir, JarKey::Default).unwrap()));
+    report("save, 3000 cookies", timed(40, || jar.save(&dir, d()).unwrap()));
 }
 
 fn key(name: &str) -> Key {
@@ -224,15 +229,15 @@ fn an_expired_cookie_is_dropped_on_merge() {
 fn the_jar_round_trips_through_its_file() {
     let dir = temp_dir("jar-roundtrip");
     let jar = Jar { locked: false, cookies: vec![c("sid", "1")] };
-    jar.save(&dir, JarKey::Default).unwrap();
-    assert_eq!(Jar::load(&dir, JarKey::Default), jar);
+    jar.save(&dir, d()).unwrap();
+    assert_eq!(Jar::load(&dir, d()), jar);
 }
 
 fn asides(dir: &Path) -> Vec<PathBuf> {
     let mut v: Vec<PathBuf> = std::fs::read_dir(dir)
         .unwrap()
         .map(|e| e.unwrap().path())
-        .filter(|p| p.file_name().unwrap().to_string_lossy().starts_with("default.json.unreadable-"))
+        .filter(|p| p.file_name().unwrap().to_string_lossy().starts_with("000000000000000d-1.json.unreadable-"))
         .collect();
     v.sort();
     v
@@ -241,10 +246,10 @@ fn asides(dir: &Path) -> Vec<PathBuf> {
 #[test]
 fn a_second_failure_keeps_the_first_aside() {
     let dir = temp_dir("jar-two-asides");
-    std::fs::write(Jar::path(&dir, JarKey::Default), "first").unwrap();
-    Jar::load(&dir, JarKey::Default);
-    std::fs::write(Jar::path(&dir, JarKey::Default), "second").unwrap();
-    Jar::load(&dir, JarKey::Default);
+    std::fs::write(Jar::path(&dir, d()), "first").unwrap();
+    Jar::load(&dir, d());
+    std::fs::write(Jar::path(&dir, d()), "second").unwrap();
+    Jar::load(&dir, d());
     let a = asides(&dir);
     assert_eq!(a.len(), 2);
     let mut contents: Vec<_> = a.iter().map(|p| std::fs::read(p).unwrap()).collect();
@@ -255,13 +260,13 @@ fn a_second_failure_keeps_the_first_aside() {
 #[test]
 fn a_header_only_or_truncated_file_goes_aside() {
     let dir = temp_dir("jar-header-only");
-    std::fs::write(Jar::path(&dir, JarKey::Default), b"MJR1").unwrap();
-    assert_eq!(Jar::load(&dir, JarKey::Default), Jar::default());
+    std::fs::write(Jar::path(&dir, d()), b"MJR1").unwrap();
+    assert_eq!(Jar::load(&dir, d()), Jar::default());
     assert_eq!(asides(&dir).len(), 1);
-    Jar { locked: false, cookies: vec![c("sid", "1")] }.save(&dir, JarKey::Default).unwrap();
-    let bytes = std::fs::read(Jar::path(&dir, JarKey::Default)).unwrap();
-    std::fs::write(Jar::path(&dir, JarKey::Default), &bytes[..bytes.len() / 2]).unwrap();
-    assert_eq!(Jar::load(&dir, JarKey::Default), Jar::default());
+    Jar { locked: false, cookies: vec![c("sid", "1")] }.save(&dir, d()).unwrap();
+    let bytes = std::fs::read(Jar::path(&dir, d())).unwrap();
+    std::fs::write(Jar::path(&dir, d()), &bytes[..bytes.len() / 2]).unwrap();
+    assert_eq!(Jar::load(&dir, d()), Jar::default());
     assert_eq!(asides(&dir).len(), 2);
 }
 
@@ -269,11 +274,11 @@ fn a_header_only_or_truncated_file_goes_aside() {
 fn an_unreadable_path_locks_the_jar_and_save_leaves_it_alone() {
     let dir = temp_dir("jar-locked");
     // A directory where the file should be: reading it fails with something other than NotFound.
-    std::fs::create_dir(Jar::path(&dir, JarKey::Default)).unwrap();
-    let jar = Jar::load(&dir, JarKey::Default);
+    std::fs::create_dir(Jar::path(&dir, d())).unwrap();
+    let jar = Jar::load(&dir, d());
     assert!(jar.locked);
-    Jar { cookies: vec![c("sid", "1")], ..jar }.save(&dir, JarKey::Default).unwrap();
-    assert!(Jar::path(&dir, JarKey::Default).is_dir());
+    Jar { cookies: vec![c("sid", "1")], ..jar }.save(&dir, d()).unwrap();
+    assert!(Jar::path(&dir, d()).is_dir());
 }
 
 #[cfg(windows)]
@@ -281,51 +286,51 @@ fn an_unreadable_path_locks_the_jar_and_save_leaves_it_alone() {
 fn a_failed_aside_rename_locks_the_jar_and_the_file_survives() {
     use std::os::windows::fs::OpenOptionsExt;
     let dir = temp_dir("jar-rename-fails");
-    std::fs::write(Jar::path(&dir, JarKey::Default), "not json").unwrap();
+    std::fs::write(Jar::path(&dir, d()), "not json").unwrap();
     // Opened without FILE_SHARE_DELETE, so the rename fails while it is held (read allowed).
-    let held = std::fs::OpenOptions::new().read(true).share_mode(1).open(Jar::path(&dir, JarKey::Default)).unwrap();
-    let jar = Jar::load(&dir, JarKey::Default);
+    let held = std::fs::OpenOptions::new().read(true).share_mode(1).open(Jar::path(&dir, d())).unwrap();
+    let jar = Jar::load(&dir, d());
     assert!(jar.locked);
-    jar.save(&dir, JarKey::Default).unwrap();
+    jar.save(&dir, d()).unwrap();
     drop(held);
-    assert_eq!(std::fs::read(Jar::path(&dir, JarKey::Default)).unwrap(), b"not json");
+    assert_eq!(std::fs::read(Jar::path(&dir, d())).unwrap(), b"not json");
 }
 
 #[test]
 fn load_leaves_a_live_instances_tmp_alone_and_save_leaves_no_tmp() {
     let dir = temp_dir("jar-tmp");
     // This test's own process stands in for another running instance mid-save.
-    let live = dir.join(format!("default.json.{}.tmp", std::process::id()));
+    let live = dir.join(format!("000000000000000d-1.json.{}.tmp", std::process::id()));
     std::fs::write(&live, "theirs").unwrap();
-    Jar::load(&dir, JarKey::Default);
+    Jar::load(&dir, d());
     assert_eq!(std::fs::read(&live).unwrap(), b"theirs", "a live instance may be mid-save");
     std::fs::remove_file(&live).unwrap();
-    Jar { locked: false, cookies: vec![c("sid", "1")] }.save(&dir, JarKey::Default).unwrap();
+    Jar { locked: false, cookies: vec![c("sid", "1")] }.save(&dir, d()).unwrap();
     let names: Vec<String> =
         std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
-    assert_eq!(names, ["default.json"], "the save's own temp file is gone");
+    assert_eq!(names, ["000000000000000d-1.json"], "the save's own temp file is gone");
 }
 
 #[test]
 fn load_deletes_a_tmp_whose_process_is_gone() {
     let dir = temp_dir("jar-dead-tmp");
     // A pid no process has (Windows pids are multiples of 4; Linux caps them far below this).
-    let dead = dir.join("default.json.4294967295.tmp");
-    let other = dir.join("default.json.notapid.tmp");
+    let dead = dir.join("000000000000000d-1.json.4294967295.tmp");
+    let other = dir.join("000000000000000d-1.json.notapid.tmp");
     std::fs::write(&dead, "crashed save").unwrap();
     std::fs::write(&other, "x").unwrap();
-    Jar::load(&dir, JarKey::Default);
+    Jar::load(&dir, d());
     assert!(!dead.exists(), "a crashed save's copy of the jar");
-    assert!(other.exists(), "only default.json.<pid>.tmp files are touched");
+    assert!(other.exists(), "only 000000000000000d-1.json.<pid>.tmp files are touched");
     assert!(process_alive(std::process::id()) && !process_alive(4_294_967_295));
 }
 
 #[test]
 fn a_dead_counter_form_tmp_is_deleted_too() {
     let dir = temp_dir("jar-dead-tmp-n");
-    let dead = dir.join("default.json.4294967295-3.tmp");
+    let dead = dir.join("000000000000000d-1.json.4294967295-3.tmp");
     std::fs::write(&dead, "crashed save").unwrap();
-    Jar::load(&dir, JarKey::Default);
+    Jar::load(&dir, d());
     assert!(!dead.exists());
 }
 
@@ -333,8 +338,8 @@ fn a_dead_counter_form_tmp_is_deleted_too() {
 fn only_the_five_newest_unreadable_files_are_kept() {
     let dir = temp_dir("jar-aside-cap");
     for i in 0..7 {
-        std::fs::write(Jar::path(&dir, JarKey::Default), format!("bad{i}")).unwrap();
-        Jar::load(&dir, JarKey::Default);
+        std::fs::write(Jar::path(&dir, d()), format!("bad{i}")).unwrap();
+        Jar::load(&dir, d());
     }
     let mut kept: Vec<_> = asides(&dir).iter().map(|p| std::fs::read_to_string(p).unwrap()).collect();
     kept.sort();
@@ -343,15 +348,15 @@ fn only_the_five_newest_unreadable_files_are_kept() {
 
 #[test]
 fn a_missing_file_loads_as_an_empty_jar() {
-    assert_eq!(Jar::load(&temp_dir("jar-missing"), JarKey::Default), Jar::default());
+    assert_eq!(Jar::load(&temp_dir("jar-missing"), d()), Jar::default());
 }
 
 #[test]
 fn a_corrupt_file_loads_empty_and_is_moved_aside() {
     let dir = temp_dir("jar-corrupt");
-    std::fs::write(Jar::path(&dir, JarKey::Default), "not json").unwrap();
-    assert_eq!(Jar::load(&dir, JarKey::Default), Jar::default());
-    assert!(!Jar::path(&dir, JarKey::Default).exists());
+    std::fs::write(Jar::path(&dir, d()), "not json").unwrap();
+    assert_eq!(Jar::load(&dir, d()), Jar::default());
+    assert!(!Jar::path(&dir, d()).exists());
     assert_eq!(std::fs::read(&asides(&dir)[0]).unwrap(), b"not json");
 }
 
@@ -366,65 +371,65 @@ fn protect_and_unprotect_round_trip() {
 fn a_saved_jar_is_protected_on_disk() {
     let dir = temp_dir("jar-protected");
     let jar = Jar { locked: false, cookies: vec![c("sid", "SECRET123")] };
-    jar.save(&dir, JarKey::Default).unwrap();
-    let bytes = std::fs::read(Jar::path(&dir, JarKey::Default)).unwrap();
+    jar.save(&dir, d()).unwrap();
+    let bytes = std::fs::read(Jar::path(&dir, d())).unwrap();
     assert!(bytes.starts_with(b"MJR1"));
     if cfg!(windows) {
         assert!(!String::from_utf8_lossy(&bytes).contains("SECRET123"), "the value must not appear on disk");
     }
-    assert_eq!(Jar::load(&dir, JarKey::Default), jar);
+    assert_eq!(Jar::load(&dir, d()), jar);
 }
 
 #[test]
 fn a_legacy_plaintext_jar_loads_and_the_next_save_protects_it() {
     let dir = temp_dir("jar-legacy");
     let jar = Jar { locked: false, cookies: vec![c("sid", "1")] };
-    std::fs::write(Jar::path(&dir, JarKey::Default), serde_json::to_vec(&jar).unwrap()).unwrap();
-    assert_eq!(Jar::load(&dir, JarKey::Default), jar);
-    jar.save(&dir, JarKey::Default).unwrap();
-    assert!(std::fs::read(Jar::path(&dir, JarKey::Default)).unwrap().starts_with(b"MJR1"));
+    std::fs::write(Jar::path(&dir, d()), serde_json::to_vec(&jar).unwrap()).unwrap();
+    assert_eq!(Jar::load(&dir, d()), jar);
+    jar.save(&dir, d()).unwrap();
+    assert!(std::fs::read(Jar::path(&dir, d())).unwrap().starts_with(b"MJR1"));
 }
 
 #[test]
 fn a_tampered_protected_file_loads_empty_and_is_kept_aside() {
     let dir = temp_dir("jar-tamper");
-    Jar { locked: false, cookies: vec![c("sid", "1")] }.save(&dir, JarKey::Default).unwrap();
-    let mut bytes = std::fs::read(Jar::path(&dir, JarKey::Default)).unwrap();
+    Jar { locked: false, cookies: vec![c("sid", "1")] }.save(&dir, d()).unwrap();
+    let mut bytes = std::fs::read(Jar::path(&dir, d())).unwrap();
     let last = bytes.len() - 1;
     bytes[last] ^= 0xff;
-    std::fs::write(Jar::path(&dir, JarKey::Default), &bytes).unwrap();
-    assert_eq!(Jar::load(&dir, JarKey::Default), Jar::default());
+    std::fs::write(Jar::path(&dir, d()), &bytes).unwrap();
+    assert_eq!(Jar::load(&dir, d()), Jar::default());
     assert_eq!(std::fs::read(&asides(&dir)[0]).unwrap(), bytes);
     // A save after the failed load writes a fresh file and leaves the aside copy alone.
-    Jar::default().save(&dir, JarKey::Default).unwrap();
+    Jar::default().save(&dir, d()).unwrap();
     assert_eq!(asides(&dir).len(), 1);
 }
 
 #[test]
-fn a_named_jar_has_its_own_file_beside_the_default() {
+fn a_jar_file_is_named_by_its_node_id() {
     let dir = temp_dir("jar-named-file");
-    let named = JarKey::Named(NodeId { actor: ActorId(0xab), counter: 3 });
-    assert_eq!(Jar::path(&dir, JarKey::Default), dir.join("default.json"));
+    let named = NodeId { actor: ActorId(0xab), counter: 3 };
+    assert_eq!(Jar::path(&dir, d()), dir.join("000000000000000d-1.json"));
     assert_eq!(Jar::path(&dir, named), dir.join("00000000000000ab-3.json"));
     let a = Jar { locked: false, cookies: vec![c("sid", "alice")] };
     let b = Jar { locked: false, cookies: vec![c("sid", "bob")] };
-    a.save(&dir, JarKey::Default).unwrap();
+    a.save(&dir, d()).unwrap();
     b.save(&dir, named).unwrap();
-    assert_eq!(Jar::load(&dir, JarKey::Default), a);
+    assert_eq!(Jar::load(&dir, d()), a);
     assert_eq!(Jar::load(&dir, named), b);
     Jar::delete_files(&dir, named).unwrap();
     assert!(!Jar::path(&dir, named).exists());
     Jar::delete_files(&dir, named).unwrap(); // already gone: fine
-    assert_eq!(Jar::load(&dir, JarKey::Default), a, "the default jar is untouched");
+    assert_eq!(Jar::load(&dir, d()), a, "the default jar is untouched");
 }
 
 /// Final review I2: every copy of a deleted jar goes, and only that jar's: `…-12` shares `…-1`'s prefix.
 #[test]
 fn delete_files_takes_only_that_jars_copies() {
     let dir = temp_dir("jar-delete-files");
-    let one = JarKey::Named(NodeId { actor: ActorId(7), counter: 1 });
-    let twelve = JarKey::Named(NodeId { actor: ActorId(7), counter: 12 });
-    let (a, b) = (one.file_name(), twelve.file_name());
+    let one = NodeId { actor: ActorId(7), counter: 1 };
+    let twelve = NodeId { actor: ActorId(7), counter: 12 };
+    let (a, b) = (file_name(one), file_name(twelve));
     let gone = [a.clone(), format!("{a}.unreadable-5"), format!("{a}.unreadable-5-1"), format!("{a}.4294967295.tmp")];
     let kept =
         [format!("{a}.{}.tmp", std::process::id()), b.clone(), format!("{b}.unreadable-5"), "default.json".into()];
@@ -471,7 +476,7 @@ fn prune_orphans_deletes_only_unkept_named_jars_files() {
     let dir = temp_dir("jar-prune-orphans");
     let kept = NodeId { actor: ActorId(1), counter: 1 };
     let gone = NodeId { actor: ActorId(1), counter: 2 };
-    let (k, g) = (JarKey::Named(kept).file_name(), JarKey::Named(gone).file_name());
+    let (k, g) = (file_name(kept), file_name(gone));
     let doomed = [g.clone(), format!("{g}.unreadable-5"), format!("{g}.4294967295.tmp")];
     let stays = [
         k.clone(),
@@ -496,13 +501,13 @@ fn prune_orphans_deletes_only_unkept_named_jars_files() {
 #[test]
 fn an_unreadable_named_jar_goes_aside_under_its_own_name() {
     let dir = temp_dir("jar-named-aside");
-    let named = JarKey::Named(NodeId { actor: ActorId(1), counter: 2 });
+    let named = NodeId { actor: ActorId(1), counter: 2 };
     std::fs::write(Jar::path(&dir, named), "garbage").unwrap();
     assert!(Jar::load(&dir, named).cookies.is_empty());
     let names: Vec<String> =
         std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
     assert!(names.iter().any(|n| n.starts_with("0000000000000001-2.json.unreadable-")), "{names:?}");
-    assert!(asides(&dir).is_empty(), "no default.json aside");
+    assert!(asides(&dir).is_empty(), "no aside for the other jar");
 }
 
 #[test]
@@ -532,13 +537,13 @@ fn cookie_state_forget_drops_one_tabs_entries_and_returns_its_hold() {
     let now = std::time::Instant::now();
     let mut state = CookieState::default();
     for id in ["a", "b"] {
-        state.jar_tabs.insert(id.into(), (JarKey::Default, TabCookies::default()));
+        state.jar_tabs.insert(id.into(), (d(), TabCookies::default()));
         state.jar_reseed.insert(id.into());
         state.cookie_holds.insert(id.into(), (now, crate::tabs::Held::Snapshot(crate::ViewKind::Webview2, id.into())));
         state.jar_pulls.insert(id.into(), now);
         state.jar_silent.insert(id.into(), 1);
     }
-    state.jar_dirty.insert(JarKey::Default, now);
+    state.jar_dirty.insert(d(), now);
     state.jar_last_pull = Some(now);
 
     let held = state.forget("a");
@@ -552,4 +557,10 @@ fn cookie_state_forget_drops_one_tabs_entries_and_returns_its_hold() {
     assert!(state.jar_pulls.contains_key("b") && state.jar_silent.contains_key("b"));
     assert!(state.jar_dirty.len() == 1 && state.jar_last_pull.is_some(), "jar-wide state stays");
     assert!(state.forget("nobody").is_none());
+}
+
+#[test]
+fn a_jar_file_is_named_by_its_node_id_alone() {
+    let id = NodeId { actor: ActorId(3), counter: 7 };
+    assert_eq!(Jar::path(Path::new("d"), id), Path::new("d").join(format!("{id}.json")));
 }

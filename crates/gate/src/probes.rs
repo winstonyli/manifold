@@ -24,7 +24,7 @@ use serde_json::{json, Value};
 use crate::check::{check, check_eq, exit_code, failures, note_failure, Section};
 use crate::http::{self, response};
 use crate::instance::{remove_dir_with_retries, seed_settings, Instance};
-use crate::state::{State, TAB};
+use crate::state::{State, JAR, TAB};
 use crate::suggest::{query_param, url_query};
 use crate::windows_main::{manifold_exe, work_dir};
 
@@ -162,6 +162,31 @@ pub(crate) fn import_session(exe: &Path, profile: &Path, nodes: &[Value]) -> io:
     } else {
         Err(io::Error::other(format!("--import-json exited with {status}")))
     }
+}
+
+/// The id of the Default jar card in the session file `session`, read with `exe --dump`: its stdout is header lines,
+/// then the pretty JSON document, which starts at the first line beginning with `{`.
+pub(crate) fn default_jar_id(exe: &Path, session: &Path) -> io::Result<String> {
+    let out = Command::new(exe).arg("--dump").arg(session).stdout(Stdio::piped()).stderr(Stdio::null()).output()?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    let json = text.lines().skip_while(|l| !l.starts_with('{')).collect::<Vec<_>>().join(
+        "
+",
+    );
+    let doc: Value = serde_json::from_str(&json).map_err(io::Error::other)?;
+    doc["nodes"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|n| n["type"] == JAR && n["is_default"] == true)
+        .and_then(|n| n["id"].as_str().map(str::to_owned))
+        .ok_or_else(|| io::Error::other(format!("no Default jar in {}", session.display())))
+}
+
+/// The Default jar card a seed carries so its id is known before the app runs (`default_jar_id`); a seed without one
+/// gets a Default with an id of the app's choosing at startup.
+pub(crate) fn default_jar_node() -> Value {
+    json!({"id": "d", "type": JAR, "name": "Default", "is_default": true, "pos": [300.0, 0.0]})
 }
 
 pub(crate) fn tab_node(url: Option<&str>, view_kind: &str) -> Value {

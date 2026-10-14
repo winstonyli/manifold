@@ -1899,7 +1899,10 @@ mod tests {
     #[test]
     fn a_session_delete_waits_for_a_free_confirm_slot() {
         let mut app = App {
-            pending_jar_confirm: Some(crate::jar_defs::JarConfirm::Clear(crate::jar::JarKey::Default)),
+            pending_jar_confirm: Some(crate::jar_defs::JarConfirm::Clear(crate::store::model::NodeId {
+                actor: crate::store::model::ActorId(1),
+                counter: 1,
+            })),
             ..App::default()
         };
         assert!(!app.offer_session_delete("work".into()));

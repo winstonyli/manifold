@@ -18,28 +18,6 @@ pub struct JarChoice {
     pub set: bool,
 }
 
-/// Which jar a running host merges into, and which file it saves (spec "Resolution").
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum JarKey {
-    #[default]
-    Default,
-    Named(NodeId),
-}
-
-impl JarKey {
-    /// `default` or the node id (`{actor:016x}-{counter}`): safe as a file name on every OS.
-    pub fn file_stem(&self) -> String {
-        match self {
-            JarKey::Default => "default".to_string(),
-            JarKey::Named(id) => id.to_string(),
-        }
-    }
-
-    fn file_name(&self) -> String {
-        format!("{}.json", self.file_stem())
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SameSite {
     Strict,
@@ -231,7 +209,7 @@ fn process_alive(pid: u32) -> bool {
     !proc.is_dir() || proc.join(pid.to_string()).exists()
 }
 
-/// Deletes the `<file>.<pid>[-<n>].tmp` files in `dir` (`file` is a jar's file name, e.g. `default.json`) whose process
+/// Deletes the `<file>.<pid>[-<n>].tmp` files in `dir` (`file` is a jar's file name, e.g. `3-7.json`) whose process
 /// is gone: a save interrupted by a crash, each a full copy of the jar. A live process's file is its save in progress
 /// and is left alone.
 fn remove_dead_tmps(dir: &Path, file: &str) {
@@ -270,6 +248,11 @@ fn asides_in(dir: &Path, file: &str) -> Vec<((u64, u64), PathBuf)> {
         .collect()
 }
 
+/// Jar `id`'s file name, `<node id>.json`: safe as a file name on every OS.
+fn file_name(id: NodeId) -> String {
+    format!("{id}.json")
+}
+
 /// Deletes all but the `KEEP_ASIDES` newest unreadable copies of `file` in `dir`.
 fn prune_asides(dir: &Path, file: &str) {
     let mut asides = asides_in(dir, file);
@@ -283,7 +266,7 @@ fn prune_asides(dir: &Path, file: &str) {
 
 /// The named jar a file in the jars folder belongs to: `<id>.json`, `<id>.json.unreadable-…` or
 /// `<id>.json.<pid>[-<n>].tmp`, with `<id>` spelled exactly as a node id prints. `None` for any other name,
-/// `default.json` and its copies included.
+/// a `default.json` left by an older build included.
 fn named_jar_of(file: &str) -> Option<NodeId> {
     let (stem, rest) = file.split_once(".json")?;
     let id: NodeId = stem.parse().ok().filter(|id: &NodeId| id.to_string() == stem)?;
@@ -303,10 +286,9 @@ pub fn prune_orphans(dir: &Path, keep: &BTreeSet<NodeId>) -> usize {
         .filter(|id| !keep.contains(id))
         .collect();
     for &id in &orphans {
-        let key = JarKey::Named(id);
-        match Jar::delete_files(dir, key) {
-            Ok(()) => eprintln!("jar: deleted the files of jar {}, which no longer exists", key.file_stem()),
-            Err(e) => eprintln!("jar: could not delete the files of deleted jar {}: {e}", key.file_stem()),
+        match Jar::delete_files(dir, id) {
+            Ok(()) => eprintln!("jar: deleted the files of jar {id}, which no longer exists"),
+            Err(e) => eprintln!("jar: could not delete the files of deleted jar {id}: {e}"),
         }
     }
     orphans.len()
@@ -329,19 +311,19 @@ fn unique_aside(dir: &Path, file: &str) -> PathBuf {
 }
 
 impl Jar {
-    /// `<dir>\<key>.json`; `default.json` for the default jar, `<node id>.json` for a named one.
-    pub fn path(dir: &Path, key: JarKey) -> PathBuf {
-        dir.join(key.file_name())
+    /// `<dir>/<node id>.json`.
+    pub fn path(dir: &Path, id: NodeId) -> PathBuf {
+        dir.join(file_name(id))
     }
 
-    /// Removes every file holding key `key`'s cookies (a deleted or newly ephemeral jar): its file, its
+    /// Removes every file holding jar `id`'s cookies (a deleted or newly ephemeral jar): its file, its
     /// `.unreadable-*` copies and the `.<pid>-<n>.tmp` files of crashed saves, each a full copy of its
     /// credentials. A live process's temp file is its save in progress and stays (`remove_dead_tmps`). A file
     /// already gone is fine; the first other failure is returned after trying the rest.
-    pub fn delete_files(dir: &Path, key: JarKey) -> std::io::Result<()> {
-        let file = key.file_name();
+    pub fn delete_files(dir: &Path, id: NodeId) -> std::io::Result<()> {
+        let file = file_name(id);
         remove_dead_tmps(dir, &file);
-        let paths = std::iter::once(Self::path(dir, key)).chain(asides_in(dir, &file).into_iter().map(|(_, p)| p));
+        let paths = std::iter::once(Self::path(dir, id)).chain(asides_in(dir, &file).into_iter().map(|(_, p)| p));
         let mut first = Ok(());
         for path in paths {
             match std::fs::remove_file(&path) {
@@ -352,16 +334,16 @@ impl Jar {
         first
     }
 
-    /// Key `key`'s saved jar, or an empty one when its file is missing. A file that exists but cannot be read (wrong
+    /// Jar `id`'s saved jar, or an empty one when its file is missing. A file that exists but cannot be read (wrong
     /// user or machine, tampered, truncated, not JSON) is renamed to `<file>.unreadable-<unix seconds>` (never over
     /// an earlier one; only the `KEEP_ASIDES` newest are kept). If it cannot be read at all, or cannot be moved
     /// aside, the jar is `locked`: usable in memory, but `save` writes nothing, so the file is never overwritten.
     /// Only reasons are logged, never contents. A `<file>.<pid>-<n>.tmp` is deleted only when process `pid` is gone:
     /// a live one may be another running instance's save in progress. Each jar's helpers touch only its own files.
-    pub fn load(dir: &Path, key: JarKey) -> Jar {
-        let file = key.file_name();
+    pub fn load(dir: &Path, id: NodeId) -> Jar {
+        let file = file_name(id);
         remove_dead_tmps(dir, &file);
-        let path = Self::path(dir, key);
+        let path = Self::path(dir, id);
         let bytes = match std::fs::read(&path) {
             Ok(b) => b,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Jar::default(),
@@ -404,14 +386,14 @@ impl Jar {
     /// one file, and it is removed when the write or rename fails, so no stray copy of the credentials is left. (They
     /// still overwrite each other's jar: two instances on one profile are not supported in v1.) The file is `MJR1` then
     /// the protected JSON. A locked jar writes nothing (`load` already logged why).
-    pub fn save(&self, dir: &Path, key: JarKey) -> std::io::Result<()> {
+    pub fn save(&self, dir: &Path, id: NodeId) -> std::io::Result<()> {
         if self.locked {
             return Ok(());
         }
         std::fs::create_dir_all(dir)?;
         let mut out = MAGIC.to_vec();
         out.extend(protect(&serde_json::to_vec(self).map_err(std::io::Error::other)?)?);
-        crate::store::atomic::replace_private(&Self::path(dir, key), &out)
+        crate::store::atomic::replace_private(&Self::path(dir, id), &out)
     }
 
     /// Folds tab `tab`'s cookie dump into the jar and updates what the tab is believed to hold. Returns whether the
@@ -493,7 +475,7 @@ pub(crate) struct CookieState {
     /// Per running host, the jar it was **spawned with** (spec "Live tabs when `jar` changes") and what its engine is
     /// believed to hold (`jar::TabCookies`): only a cookie the tab itself changed reaches that jar, and only a cookie
     /// the tab itself reported can be deleted by its absence.
-    pub(crate) jar_tabs: HashMap<String, (JarKey, TabCookies)>,
+    pub(crate) jar_tabs: HashMap<String, (NodeId, TabCookies)>,
     /// Hosts still holding cookies from a jar the user cleared (`clear_jar_cookies`): they switch (`will_switch`)
     /// although their key is unchanged, and their pulls are dropped so the old cookies cannot refill the jar. An id
     /// leaves when its host is replaced or closed (`forget`).
@@ -513,7 +495,7 @@ pub(crate) struct CookieState {
     pub(crate) jar_silent: HashMap<String, u8>,
     /// Jars a pull changed and not saved yet, each with when it first changed: saved once the pull round ends
     /// (`flush_dirty_jars`), not once per tab's reply. Memory and `jar_snapshots` are current; only the file lags.
-    pub(crate) jar_dirty: BTreeMap<JarKey, std::time::Instant>,
+    pub(crate) jar_dirty: BTreeMap<NodeId, std::time::Instant>,
 }
 
 impl CookieState {
@@ -532,38 +514,38 @@ impl CookieState {
 /// was cleared. Both sit under one lock, so a seed and the clear count it was read at agree (final review I3).
 #[derive(Debug, Default)]
 pub struct Snapshots {
-    jars: BTreeMap<JarKey, Jar>,
-    clears: HashMap<JarKey, u64>,
+    jars: BTreeMap<NodeId, Jar>,
+    clears: HashMap<NodeId, u64>,
 }
 
 impl Snapshots {
-    pub fn new(jars: BTreeMap<JarKey, Jar>) -> Snapshots {
+    pub fn new(jars: BTreeMap<NodeId, Jar>) -> Snapshots {
         Snapshots { jars, clears: HashMap::new() }
     }
 
-    pub fn insert(&mut self, key: JarKey, jar: Jar) {
-        self.jars.insert(key, jar);
+    pub fn insert(&mut self, id: NodeId, jar: Jar) {
+        self.jars.insert(id, jar);
     }
 
-    /// Drops `key`'s copy. Its clear count stays, so a host seeded from it still compares against it.
-    pub fn remove(&mut self, key: &JarKey) {
-        self.jars.remove(key);
+    /// Drops jar `id`'s copy. Its clear count stays, so a host seeded from it still compares against it.
+    pub fn remove(&mut self, id: &NodeId) {
+        self.jars.remove(id);
     }
 
-    /// `key` was just cleared (Clear Cookies): `jar` is the emptied jar, and the clear is counted.
-    pub fn insert_cleared(&mut self, key: JarKey, jar: Jar) {
-        self.jars.insert(key, jar);
-        *self.clears.entry(key).or_default() += 1;
+    /// Jar `id` was just cleared (Clear Cookies): `jar` is the emptied jar, and the clear is counted.
+    pub fn insert_cleared(&mut self, id: NodeId, jar: Jar) {
+        self.jars.insert(id, jar);
+        *self.clears.entry(id).or_default() += 1;
     }
 
-    /// How many times `key` has been cleared this run.
-    pub fn clears(&self, key: JarKey) -> u64 {
-        self.clears.get(&key).copied().unwrap_or(0)
+    /// How many times jar `id` has been cleared this run.
+    pub fn clears(&self, id: NodeId) -> u64 {
+        self.clears.get(&id).copied().unwrap_or(0)
     }
 
-    /// A new host's seed: `key`'s cookies, and its clear count as of that read.
-    pub fn seed(&self, key: JarKey) -> (Vec<Cookie>, u64) {
-        (self.jars.get(&key).map(|j| j.cookies.clone()).unwrap_or_default(), self.clears(key))
+    /// A new host's seed: jar `id`'s cookies, and its clear count as of that read.
+    pub fn seed(&self, id: NodeId) -> (Vec<Cookie>, u64) {
+        (self.jars.get(&id).map(|j| j.cookies.clone()).unwrap_or_default(), self.clears(id))
     }
 }
 

@@ -5,6 +5,7 @@ use serde_json::Value;
 
 pub const TAB: &str = "application/vnd.manifold.tab";
 pub const GROUP: &str = "application/vnd.manifold.group";
+pub const JAR: &str = "application/vnd.manifold.jar";
 pub const NOTE: &str = "text/markdown";
 pub const IMAGE: &str = "image/png";
 pub const PDF: &str = "application/pdf";

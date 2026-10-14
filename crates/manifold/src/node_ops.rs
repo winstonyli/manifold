@@ -186,6 +186,10 @@ impl App {
     /// Selected and the rest. It doesn't save (callers decide:
     /// `close_node_and_save`); a tab's or group's destroy saves itself.
     pub(crate) fn close_node(&mut self, id: &str) {
+        if self.is_default_jar(id) {
+            self.queue_toast("The Default jar can't be closed".to_string());
+            return;
+        }
         self.record_closed(id);
         self.destroy_node(id);
         // A closed jar's tabs now resolve to the Default jar.
@@ -203,6 +207,10 @@ impl App {
         let Some(kind) = self.card_kind(id) else {
             return;
         };
+        // Never the Default jar, whichever way a group close or a remote delete's cascade reaches it.
+        if self.is_default_jar(id) {
+            return;
+        }
         if is_container(kind.ty) {
             self.destroy_group(id);
         } else if kind.ty == store::model::TYPE_TAB {

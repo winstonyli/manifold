@@ -37,11 +37,10 @@ use serde_json::{json, Value};
 use crate::check::{check, check_eq, check_is, note_failure, Section};
 use crate::http::{self, response};
 use crate::instance::{seed_settings, wait_file, Instance};
-use crate::probes::{finish, guarded, import_session, setup};
-use crate::state::TAB;
+use crate::probes::{default_jar_id, default_jar_node, finish, guarded, import_session, setup};
+use crate::state::{JAR, TAB};
 use crate::suggest::{query_param, url_query};
 
-const JAR: &str = "application/vnd.manifold.jar";
 /// A run's commands (stays of 38 s and more) are all processed before its QUIT.
 const RUN_TIMEOUT: Duration = Duration::from_secs(300);
 
@@ -280,7 +279,7 @@ impl Probe {
         extra: &[String],
     ) -> io::Result<Vec<(usize, String)>> {
         let tab = json!({"id": "t", "type": TAB, "url": format!("{}{path}", self.base), "view_kind": engine, "pos": [0.0, 0.0]});
-        import_session(&self.exe, &self.profile, &[tab])?;
+        self.import(&[default_jar_node(), tab])?;
         println!("--- run {name} ({engine} {path})");
         let mut cmds = strs(&["WAITTABS", "GRAPHRIGHT", "GRAPHOPEN"]);
         cmds.extend_from_slice(extra);
@@ -336,14 +335,42 @@ impl Probe {
         check_is("sid is exactly one host-only cookie on the probe host", vec![self.host.clone()], domains(&sid));
     }
 
-    fn default_jar(&self) -> PathBuf {
-        self.jars_dir().join("default.json")
+    /// The Default jar's cookie file in this profile: `<id>.json`, the id read from the session (`default_jar_id`).
+    fn default_jar(&self) -> io::Result<PathBuf> {
+        let id = default_jar_id(&self.exe, &self.profile.join("session.mnf"))?;
+        Ok(self.jars_dir().join(format!("{id}.json")))
+    }
+
+    /// `import_session` of `nodes`, which must carry the Default card (`default_jar_node`). Each import makes a new
+    /// Default id, so the login a run left in the previous Default's file is carried over: if the new Default has no
+    /// file yet, the newest `<node id>.json` in the jars dir is copied to it. (A node id's name has a `-`, so an old
+    /// `default.json` is never picked, and asides and temp files do not end in `.json`.)
+    fn import(&self, nodes: &[Value]) -> io::Result<()> {
+        import_session(&self.exe, &self.profile, nodes)?;
+        let file = self.default_jar()?;
+        if file.exists() {
+            return Ok(());
+        }
+        let newest = fs::read_dir(self.jars_dir())
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|e| {
+                let name = e.file_name().to_string_lossy().into_owned();
+                name.strip_suffix(".json").is_some_and(|stem| stem.contains('-') && !stem.contains('.'))
+            })
+            .filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.path())))
+            .max();
+        if let Some((_, from)) = newest {
+            fs::copy(from, file)?;
+        }
+        Ok(())
     }
 
     /// login, fresh, cef, webview2: the sign-in reaches the jar file and the next runs start authenticated.
     fn login_runs(&self) -> io::Result<()> {
         self.run("login", "webview2", "/login", 38, &[])?;
-        self.jar_summary(&self.default_jar());
+        self.jar_summary(&self.default_jar()?);
         // Fresh jar, same user-data folder: this run's tab reuses the login run's profile name and must not be signed in.
         let kept = self.profile.join("jars.kept");
         fs::rename(self.jars_dir(), &kept)?;
@@ -358,7 +385,7 @@ impl Probe {
         self.rm_jars();
         fs::rename(&kept, self.jars_dir())?;
         self.run("cef", "cef", "/whoami", 12, &[])?;
-        self.jar_summary(&self.default_jar());
+        self.jar_summary(&self.default_jar()?);
         self.run("webview2", "webview2", "/whoami", 12, &[])?;
         println!("=== requests (engine path auth user cookie-names)");
         for r in self.since(0) {
@@ -369,7 +396,7 @@ impl Probe {
             println!("{engine}: {}", first.as_ref().map_or("no request".to_owned(), |r| format!("auth={}", r.auth)));
             check_is(&format!("{engine}'s first /whoami was authenticated"), Some(true), first.map(|r| r.auth));
         }
-        self.jar_summary(&self.default_jar());
+        self.jar_summary(&self.default_jar()?);
         Ok(())
     }
 
@@ -494,12 +521,17 @@ impl Probe {
     }
 
     /// "perjar: alice jar=<..> bob jar=<..> default=<..>" from the exported session and the jar files.
-    fn perjar_line(&self, doc: &Value) -> String {
+    fn perjar_line(&self, doc: &Value) -> io::Result<String> {
         let ids = Self::jar_ids(doc);
         let user = |name: &str| {
             ids.get(name).map_or("no-jar-node".to_owned(), |id| jar_user(&self.jars_dir().join(format!("{id}.json"))))
         };
-        format!("perjar: alice jar={} bob jar={} default={}", user("Alice"), user("Bob"), jar_user(&self.default_jar()))
+        Ok(format!(
+            "perjar: alice jar={} bob jar={} default={}",
+            user("Alice"),
+            user("Bob"),
+            jar_user(&self.default_jar()?)
+        ))
     }
 
     fn jar_node(id: &str, name: &str) -> Value {
@@ -520,23 +552,20 @@ impl Probe {
     /// opens the first tab and NEXTTAB the second, so both are live and both log in.
     fn perjar(&self) -> io::Result<bool> {
         self.rm_jars();
-        import_session(
-            &self.exe,
-            &self.profile,
-            &[
-                Self::jar_node("ja", "Alice"),
-                Self::jar_node("jb", "Bob"),
-                self.jar_tab("a", "/login?u=alice", Some("ja"), 0.0),
-                self.jar_tab("b", "/login?u=bob", Some("jb"), 400.0),
-            ],
-        )?;
+        self.import(&[
+            default_jar_node(),
+            Self::jar_node("ja", "Alice"),
+            Self::jar_node("jb", "Bob"),
+            self.jar_tab("a", "/login?u=alice", Some("ja"), 0.0),
+            self.jar_tab("b", "/login?u=bob", Some("jb"), 400.0),
+        ])?;
         println!("--- run perjar (two WebView2 tabs on jars Alice and Bob)");
         let (_, doc) =
             self.start_export("perjar", &strs(&["WAITTABS", "GRAPHRIGHT", "GRAPHOPEN", "NEXTTAB", "SLEEP 38"]), "s")?;
         for r in self.since(0).iter().filter(|r| r.path.starts_with("/login?u=")) {
             println!("    {} {} auth={} {}", r.engine, r.path, r.auth, r.user_field());
         }
-        let line = self.perjar_line(&doc);
+        let line = self.perjar_line(&doc)?;
         println!("{line}");
         let ok = line == "perjar: alice jar=alice bob jar=bob default=none"
             || line == "perjar: alice jar=alice bob jar=bob default=none(no file)";
@@ -620,16 +649,13 @@ impl Probe {
     fn switchnow(&self) -> io::Result<()> {
         self.rm_jars();
         let keeper = self.jar_tab("k", "/whoami?keep", None, 0.0);
-        import_session(
-            &self.exe,
-            &self.profile,
-            &[
-                Self::jar_node("ja", "Alice"),
-                Self::jar_node("jb", "Bob"),
-                keeper,
-                self.jar_tab("a", "/login?u=alice", Some("ja"), 400.0),
-            ],
-        )?;
+        self.import(&[
+            default_jar_node(),
+            Self::jar_node("ja", "Alice"),
+            Self::jar_node("jb", "Bob"),
+            keeper,
+            self.jar_tab("a", "/login?u=alice", Some("ja"), 400.0),
+        ])?;
         let n0 = self.seen();
         println!("--- run switchnow (alice's tab moves to the empty jar Bob)");
         let mut cmds = strs(&[
@@ -654,7 +680,7 @@ impl Probe {
             Self::nth_user(&log, "/whoami?sn2", 1),
             Self::nth_user(&log, "/whoami?sn3", 1),
         );
-        let jars = self.perjar_line(&doc);
+        let jars = self.perjar_line(&doc)?;
         println!("switchnow: before {before}; reload after the switch {reload}; next {next}; after bob's login {bob}; {jars}");
         check_eq("signed in as alice, so the switch proves something", "user=alice".to_owned(), before);
         check_is(
@@ -683,7 +709,7 @@ impl Probe {
             Self::nth_user(&log, "/whoami?sc1", 2),
             Self::nth_user(&log, "/whoami?sc2", 1),
         );
-        let jars = self.perjar_line(&doc);
+        let jars = self.perjar_line(&doc)?;
         println!("switchclear: before {before}; reload after the clear {reload}; next {next}; {jars}");
         check_eq("signed in as bob, so the clear proves something", "user=bob".to_owned(), before);
         check_is(

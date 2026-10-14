@@ -102,6 +102,8 @@ pub(crate) fn tab_title(app: &App, id: &str) -> Option<String> {
 /// where it was shown, not at its document pos (2b-4 Ruling 10), from the file this machine read (2b-5 Ruling 5).
 fn live_fields(app: &App, id: &str, fields: &session_sync::Fields) -> session_sync::Fields {
     let mut fields = fields.clone();
+    // Never recorded: a Duplicate or reopen of the Default is an ordinary jar (only one jar is the Default).
+    fields.remove(&field::IS_DEFAULT);
     if let Some(url) = app.nodes.get(id).and_then(|n| n.runtime.saved_tab()) {
         fields.insert(field::URL, store::model::FieldValue::Str(url.to_owned()));
     }
@@ -170,6 +172,10 @@ pub(crate) fn subtree_entry(
         for member_id in members {
             let Some(member) = app.snapshot(member_id) else { continue };
             let label = member_id.to_string();
+            // The Default is not closed with its group (it moves out), so a reopen must not bring a copy.
+            if app.is_default_jar(&label) {
+                continue;
+            }
             let fields = live_fields(app, &label, &member.fields);
             if keep(app.mirror.ty(&label), &fields) {
                 nodes.push(store::json::node_json(&label, member.kind, &fields, member.group));

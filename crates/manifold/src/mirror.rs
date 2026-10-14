@@ -35,6 +35,9 @@ pub(crate) struct Mirror {
     links: HashMap<String, Links>,
     /// `field::VIEW` of `nodes`, decoded (`view`); only non-empty views.
     views: HashMap<String, JsonView>,
+    /// The ids of the nodes whose `IS_DEFAULT` is true (`default_jar_ids`), kept by `set` and `retain` like `views`. It may hold
+    /// a removed jar until the next `retain`; `App::default_jar` checks liveness.
+    defaults: BTreeSet<NodeId>,
     /// Every `Kind::Link` node this replica knows (`link_ids`); their ends are plain fields of `nodes` (`link_ends`).
     link_nodes: BTreeSet<NodeId>,
 }
@@ -68,6 +71,15 @@ impl Mirror {
                 self.views.remove(id);
             } else {
                 self.views.insert(id.to_owned(), view);
+            }
+        }
+        if no == field::IS_DEFAULT {
+            if let Ok(node) = id.parse::<NodeId>() {
+                if value == FieldValue::Bool(true) {
+                    self.defaults.insert(node);
+                } else {
+                    self.defaults.remove(&node);
+                }
             }
         }
         self.nodes.entry(id.to_owned()).or_default().insert(no, value);
@@ -116,7 +128,13 @@ impl Mirror {
             name: self.str_field(id, field::NAME).to_owned(), // name rule: the stored name, as `JarDef` holds it
             color: self.color(id),
             ephemeral: matches!(self.get(id, field::EPHEMERAL), FieldValue::Bool(true)),
+            is_default: matches!(self.get(id, field::IS_DEFAULT), FieldValue::Bool(true)),
         }
+    }
+
+    /// The ids whose mirrored `IS_DEFAULT` is true, lowest first: what `App::default_jar` picks from.
+    pub(crate) fn default_jar_ids(&self) -> impl Iterator<Item = NodeId> + '_ {
+        self.defaults.iter().copied()
     }
 
     /// Gives `id` these values only if it has no entry yet (a spawn landing: a new tab takes what it was started
@@ -171,6 +189,7 @@ impl Mirror {
         self.nodes.retain(|id, _| keep(id));
         self.links.retain(|id, _| keep(id));
         self.views.retain(|id, _| keep(id));
+        self.defaults.retain(|n| keep(&n.to_string()));
     }
 
     /// A node's document pos: where it was placed or last dropped (`App::edit_pos`), or where another replica put
@@ -361,6 +380,22 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_default_index_follows_is_default_writes_and_retain() {
+        let mut m = Mirror::default();
+        let (a, b) = (
+            NodeId { actor: crate::store::model::ActorId(1), counter: 1 },
+            NodeId { actor: crate::store::model::ActorId(1), counter: 2 },
+        );
+        let (sa, sb) = (a.to_string(), b.to_string());
+        m.set(&sb, field::IS_DEFAULT, FieldValue::Bool(true));
+        m.set(&sa, field::IS_DEFAULT, FieldValue::Bool(true));
+        assert_eq!(m.default_jar_ids().collect::<Vec<_>>(), [a, b], "lowest first");
+        m.set(&sa, field::IS_DEFAULT, FieldValue::Bool(false));
+        m.retain(|id| id != sb);
+        assert_eq!(m.default_jar_ids().count(), 0);
+    }
+
+    #[test]
     fn seed_then_carried_round_trips_and_never_overwrites() {
         let mut mirror = Mirror::default();
         let first = Carried {
@@ -538,11 +573,14 @@ mod tests {
     #[test]
     fn a_jar_def_reads_its_mirrored_fields() {
         let mut mirror = Mirror::default();
-        assert_eq!(mirror.jar_def("5"), JarDef { name: String::new(), color: None, ephemeral: false });
+        assert_eq!(
+            mirror.jar_def("5"),
+            JarDef { name: String::new(), color: None, ephemeral: false, is_default: false }
+        );
         mirror.set("5", field::NAME, FieldValue::Str("Job".into()));
         mirror.set("5", field::COLOR, color_value(Some(egui::Color32::RED)));
         mirror.set("5", field::EPHEMERAL, FieldValue::Bool(true));
-        let job = JarDef { name: "Job".into(), color: Some(egui::Color32::RED), ephemeral: true };
+        let job = JarDef { name: "Job".into(), color: Some(egui::Color32::RED), ephemeral: true, is_default: false };
         assert_eq!(mirror.jar_def("5"), job);
     }
 

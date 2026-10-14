@@ -290,9 +290,9 @@ struct App {
     idle_clock: idle_sleep::IdleClock,
     /// Sleep requests awaiting the engine's `PageState` answer, by tab id.
     pending_sleeps: HashMap<String, sleep_state::PendingSleep>,
-    /// The cookie jars WebView2 and CEF tabs share, by key (see `jar`). The default jar loads at startup; a named jar
-    /// loads the first time a tab spawns with it (`ensure_jar_loaded`). An ephemeral jar lives only here.
-    jars: BTreeMap<jar::JarKey, jar::Jar>,
+    /// The cookie jars WebView2 and CEF tabs share, by jar card id (see `jar`). A jar loads the first time a tab
+    /// spawns with it (`ensure_jar_loaded`). An ephemeral jar lives only here.
+    jars: BTreeMap<store::model::NodeId, jar::Jar>,
     /// Per-host cookie bookkeeping: pull rounds, holds, dirty jars (see `jar::CookieState`).
     cookies: jar::CookieState,
     /// Scroll positions of woken tabs, restored once their first load finishes.
@@ -545,10 +545,7 @@ impl Default for App {
         // its own redundant warm-up (or, worse, one racing a real request
         // against another's not-yet-finished warm-up).
         suggestions::warm_up_https_client();
-        let jars: BTreeMap<jar::JarKey, jar::Jar> = profile::jars_dir()
-            .map(|dir| (jar::JarKey::Default, jar::Jar::load(&dir, jar::JarKey::Default)))
-            .into_iter()
-            .collect();
+        let jars: BTreeMap<store::model::NodeId, jar::Jar> = BTreeMap::new();
         let jar_snapshots = Arc::new(std::sync::Mutex::new(jar::Snapshots::new(jars.clone())));
         let mut app = Self {
             window: None,

@@ -502,6 +502,8 @@ pub(crate) struct CardView {
     /// In the rectangle selection (tabs only): washed in ACCENT, and
     /// dragged as one unit.
     pub(crate) selected: bool,
+    /// False for the Default jar, which has no Close.
+    pub(crate) closable: bool,
 }
 
 /// A card's border width and color at hover progress `hover_t` (0 at
@@ -589,7 +591,7 @@ pub(crate) fn click_action(kind: CardKind) -> Option<NodeAction> {
 
 /// The buttons `view`'s card shows, in registration order (see
 /// `CardControl`): the swatch and the pin on every card, and a live tab's audio indicator while playing or muted, eject on
-/// a grouped one, and the ✕ last, so it wins over anything under it.
+/// a grouped one, and a closable card's ✕ last, so it wins over anything under it.
 pub(crate) fn card_controls(view: &CardView) -> Vec<CardControl> {
     let mut controls = vec![CardControl::Swatch, CardControl::Pin];
     if view.kind.ty == TYPE_TAB {
@@ -603,7 +605,9 @@ pub(crate) fn card_controls(view: &CardView) -> Vec<CardControl> {
     if view.in_group {
         controls.push(CardControl::Eject);
     }
-    controls.push(CardControl::Close);
+    if view.closable {
+        controls.push(CardControl::Close);
+    }
     controls
 }
 
@@ -1002,6 +1006,7 @@ impl App {
             muted: tab.is_some_and(|t| t.muted),
             audio_playing: tab.is_some_and(|t| t.audio_playing),
             selected: self.interaction.selected.contains(id),
+            closable: !self.is_default_jar(id),
         })
     }
 

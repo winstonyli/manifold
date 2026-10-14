@@ -749,6 +749,7 @@ impl App {
             _ => 1,
         });
         let toasts = self.toasts.save_toast_queue.len();
+        let had_default = self.default_jar().is_some();
         let pass = self.begin_content_pass();
         for (id, change) in changes {
             let key = id.to_string();
@@ -762,6 +763,11 @@ impl App {
         }
         self.end_content_pass(pass);
         self.collapse_toasts_since(toasts);
+        // Two Defaults arriving from replicas' concurrent first launches converge, and a remote delete of the Default
+        // is repaired. Only once this replica has had a Default, so a sync test that never made one gets no surprise card.
+        if had_default && self.ensure_default_jar() {
+            self.save_session();
+        }
         // A remote jar edit follows the same table (spec "Live tabs when `jar` changes"); once the whole batch is
         // in, so a tab is judged by where the batch leaves it.
         self.sweep_jar_switches();
@@ -1067,6 +1073,10 @@ impl App {
     /// A non-store id or target only updates the mirror.
     pub(crate) fn edit_group(&mut self, id: &str, group: Option<String>) {
         if self.mirror.group(id) == group.as_deref() {
+            return;
+        }
+        // The Default stays at the top level (spec "The Default jar").
+        if group.is_some() && self.is_default_jar(id) {
             return;
         }
         if let Ok(node) = id.parse::<NodeId>() {
@@ -1933,6 +1943,22 @@ impl App {
         keep_live_parents: bool,
     ) {
         let mut imported = imported;
+        // A file's Default jar is not placed: this profile has its own, and every `jar` edge naming the file's is
+        // re-pointed at it (spec "The Default jar").
+        let file_defaults: Vec<NodeId> = imported
+            .iter()
+            .filter(|i| i.kind == Kind::Jar && i.fields.get(&field::IS_DEFAULT) == Some(&FieldValue::Bool(true)))
+            .map(|i| i.id)
+            .collect();
+        imported.retain(|i| !file_defaults.contains(&i.id));
+        let running = self.default_jar();
+        for i in &mut imported {
+            for no in [field::JAR, field::DEFAULT_JAR] {
+                if matches!(i.fields.get(&no), Some(FieldValue::Id(Some(j))) if file_defaults.contains(j)) {
+                    i.fields.insert(no, FieldValue::Id(running));
+                }
+            }
+        }
         let groups: BTreeSet<NodeId> = imported.iter().filter(|i| i.kind == Kind::Group).map(|i| i.id).collect();
         let ids: BTreeSet<NodeId> = imported.iter().map(|i| i.id).collect();
         let root_id = root.as_ref().and(imported.first()).map(|i| i.id);
@@ -2020,6 +2046,7 @@ impl App {
         // No root: a group or parent outside the file (import keeps real
         // node ids) names nothing once the old session is gone.
         self.materialize_imported(imported, None, false);
+        self.ensure_default_jar();
         self.focused = first_tab;
         self.view_mode = ViewMode::Graph;
         self.camera.frame_restored = true;
@@ -2054,8 +2081,13 @@ impl App {
         for (id, _) in self.nodes.iter().filter(|(_, node)| node.as_pdf().is_some()) {
             self.pdf_renderer.cancel(id);
         }
-        let old: Vec<NodeId> =
-            self.journal.as_ref().map(|j| j.doc().live().map(|(id, _)| id).collect()).unwrap_or_default();
+        // The Default jar is the profile's own: the replaced session's cards go, it stays (spec "The Default jar").
+        let default = self.default_jar();
+        let old: Vec<NodeId> = self
+            .journal
+            .as_ref()
+            .map(|j| j.doc().live().map(|(id, _)| id).filter(|&id| Some(id) != default).collect())
+            .unwrap_or_default();
         for id in old {
             self.queue_delete(&id.to_string());
         }
@@ -2065,17 +2097,24 @@ impl App {
             self.delete_link(&link);
         }
         // The old session's nodes not created yet are not created at all.
-        self.writes.pending_creates.clear();
+        self.writes.pending_creates.retain(|&id| Some(id) == default);
         // Each old node's per-id state and GPU textures (`forget_id`), including tabs whose spawn is still in flight
         // (no `nodes` entry yet, but cookie and popup state already). The session-wide clears below stay.
-        let old_ids: Vec<String> = self.nodes.keys().chain(self.spawns.spawning.keys()).cloned().collect();
+        let keep = default.map(|d| d.to_string());
+        let old_ids: Vec<String> = self
+            .nodes
+            .keys()
+            .chain(self.spawns.spawning.keys())
+            .filter(|id| Some(*id) != keep.as_ref())
+            .cloned()
+            .collect();
         for id in old_ids {
             self.forget_id(&id);
         }
         self.begin_view_shutdown(); // the tabs below drop together: one SHUTDOWN_FLUSH wait, not one each
-        self.nodes.clear();
-        self.node_order.clear();
-        self.layout.clear();
+        self.nodes.retain(|id, _| Some(id) == keep.as_ref());
+        self.node_order.retain(|id| Some(id) == keep.as_ref());
+        self.layout.retain(|id, _| Some(id) == keep.as_ref());
         self.writes.held_text.clear();
         self.focused = None;
         self.viewed_image = None;

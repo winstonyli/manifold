@@ -439,6 +439,7 @@ fn test_view(kind: CardKind) -> CardView {
         muted: false,
         audio_playing: false,
         selected: false,
+        closable: true,
     }
 }
 

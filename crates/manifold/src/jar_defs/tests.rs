@@ -1,10 +1,16 @@
 use super::{id_digest, jar_fragment, named_jar_label, JarConfirm, JarLabel, JarMarker};
 use crate::card::DropEffect;
-use crate::jar::{JarChoice, JarKey};
+use crate::jar::JarChoice;
+use crate::session_sync::tests::default_jar_id;
 use crate::session_sync::tests::{add, add_jar, sleeping_tab};
-use crate::store::model::{Kind, NodeId};
+use crate::store::model::{field, FieldValue, Kind, NodeId};
 use crate::App;
 use std::collections::{BTreeMap, BTreeSet};
+
+/// The Default jar's label.
+fn built_in() -> JarLabel {
+    JarLabel { name: "Default".into(), marker: Some(JarMarker::BuiltIn) }
+}
 
 fn tab_in(app: &mut App, group: Option<&str>) -> String {
     let id = add(app, Kind::Tab, sleeping_tab("https://a.com/", "A"));
@@ -188,6 +194,7 @@ fn every_move_between_groups_re_snapshots_unset_tabs() {
 #[test]
 fn the_chip_shows_only_non_default_or_warning_states() {
     let mut app = App::default();
+    app.ensure_default_jar();
     let work = add_jar(&mut app, "Work");
     let t = tab_in(&mut app, None);
     assert!(app.jar_chip(&t).is_none(), "default jar: no chip");
@@ -283,7 +290,7 @@ fn setjar_takes_a_label_or_an_ambiguous_stored_name() {
     assert!(w1 < w2, "made in order");
     let t = tab_in(&mut app, None);
     app.focused = Some(t.clone());
-    let l2 = app.jar_label(JarKey::Named(w2)).to_string();
+    let l2 = app.jar_label(w2).to_string();
     assert_eq!(app.jar_named(&l2), Some(w2));
     assert!(app.set_focused_tab_jar_named(&l2));
     assert_eq!(jar_of(&app, &t).jar, Some(w2), "by label");
@@ -313,39 +320,26 @@ fn the_will_switch_tooltip_says_where_and_what_a_clear_loses() {
 }
 
 #[test]
-fn jar_tab_count_counts_live_and_sleeping_tabs_by_resolved_jar() {
-    let mut app = App::default();
-    let work = add_jar(&mut app, "Work");
-    let (a, b) = (tab_in(&mut app, None), tab_in(&mut app, None));
-    group_in(&mut app, None);
-    app.set_tab_jar(&b, Some(work));
-    assert_eq!((app.jar_tab_count(JarKey::Default), app.jar_tab_count(JarKey::Named(work))), (1, 1));
-    app.set_tab_jar(&a, Some(work));
-    assert_eq!((app.jar_tab_count(JarKey::Default), app.jar_tab_count(JarKey::Named(work))), (0, 2));
-    app.remove_remotely_deleted(&work.to_string());
-    assert_eq!(app.jar_tab_count(JarKey::Default), 2, "a missing jar's tabs use the default jar");
-}
-
-#[test]
 fn the_confirm_names_the_jar_and_what_it_costs() {
     let mut app = App::default();
     let work = add_jar(&mut app, "Work");
+    let default = default_jar_id(&mut app);
     let t = tab_in(&mut app, None);
     app.set_tab_jar(&t, Some(work));
-    let (title, detail, button) = app.jar_confirm_text(JarConfirm::Clear(JarKey::Named(work))).unwrap();
+    let (title, detail, button) = app.jar_confirm_text(JarConfirm::Clear(work)).unwrap();
     assert_eq!((title.as_str(), button), ("Clear cookies in Work?", "Clear"));
     assert!(detail.starts_with("Tabs using it are signed out."), "{detail}");
     assert!(detail.contains("restart on the empty jar") && detail.contains("not kept"), "{detail}");
-    let (title, _, _) = app.jar_confirm_text(JarConfirm::Clear(JarKey::Default)).unwrap();
+    let (title, _, _) = app.jar_confirm_text(JarConfirm::Clear(default)).unwrap();
     assert_eq!(title, "Clear cookies in Default (built-in)?");
     app.remove_remotely_deleted(&work.to_string());
     assert!(app.jar_confirm_text(JarConfirm::Ephemeral(work)).is_none(), "deleted elsewhere meanwhile: nothing to ask");
-    assert!(app.jar_confirm_text(JarConfirm::Clear(JarKey::Named(work))).is_none());
+    assert!(app.jar_confirm_text(JarConfirm::Clear(work)).is_none());
 }
 
 /// A jar def named `name`, for tests that need chosen ids.
 fn def(name: &str) -> super::JarDef {
-    super::JarDef { name: name.into(), color: None, ephemeral: false }
+    super::JarDef { name: name.into(), color: None, ephemeral: false, is_default: false }
 }
 
 fn id(counter: u64) -> NodeId {
@@ -388,7 +382,7 @@ fn a_hidden_character_does_not_make_a_name_distinct() {
     }
     let label = named_jar_label(id(2), &defs).unwrap().to_string();
     assert!(label.starts_with("Wo<U+200B>rk · #"), "{label}");
-    assert_eq!(JarLabel::built_in().to_string(), "Default (built-in)");
+    assert_eq!(built_in().to_string(), "Default (built-in)");
 }
 
 /// Styled jar label markers: a label is a name and an optional marker, and its plain string is the text every view
@@ -406,8 +400,8 @@ fn a_label_is_a_name_and_an_optional_marker() {
     let clash = named_jar_label(id(1), &defs).unwrap();
     assert_eq!(clash, JarLabel { name: "Work".into(), marker: Some(JarMarker::Fragment(frag.clone())) });
     assert_eq!(clash.to_string(), format!("Work · #{frag}"));
-    assert_eq!(JarLabel::built_in(), JarLabel { name: "Default".into(), marker: Some(JarMarker::BuiltIn) });
-    assert_eq!(JarLabel::built_in().to_string(), "Default (built-in)");
+    assert_eq!(built_in(), JarLabel { name: "Default".into(), marker: Some(JarMarker::BuiltIn) });
+    assert_eq!(built_in().to_string(), "Default (built-in)");
 }
 
 /// A user jar named "Default" is shown as stored; the built-in jar (and a deleted jar's tabs, which use it) is
@@ -415,16 +409,18 @@ fn a_label_is_a_name_and_an_optional_marker() {
 #[test]
 fn the_built_in_jar_is_marked_apart_from_a_user_jar_named_default() {
     let mut app = App::default();
+    let default = default_jar_id(&mut app);
     let user = add_jar(&mut app, "Default");
-    assert_eq!(app.jar_label(JarKey::Named(user)), JarLabel { name: "Default".into(), marker: None });
-    assert_eq!(app.jar_label(JarKey::Default), JarLabel::built_in());
-    assert_eq!(app.jar_confirm_text(JarConfirm::Clear(JarKey::Named(user))).unwrap().0, "Clear cookies in Default?");
-    assert_eq!(
-        app.jar_confirm_text(JarConfirm::Clear(JarKey::Default)).unwrap().0,
-        "Clear cookies in Default (built-in)?"
+    let user_label = app.jar_label(user);
+    assert!(
+        matches!(user_label.marker, Some(JarMarker::Fragment(_))),
+        "a clash with the Default's name: {user_label:?}"
     );
+    assert_eq!(app.jar_label(default), built_in());
+    assert_eq!(app.jar_confirm_text(JarConfirm::Clear(default)).unwrap().0, "Clear cookies in Default (built-in)?");
+    assert!(app.jar_confirm_text(JarConfirm::Clear(user)).unwrap().0.starts_with("Clear cookies in Default · #"));
     app.remove_remotely_deleted(&user.to_string());
-    assert_eq!(app.jar_label(JarKey::Named(user)), JarLabel::built_in(), "gone: its tabs use the built-in jar");
+    assert_eq!(app.jar_label(user), built_in(), "gone: its tabs use the Default jar");
 }
 
 /// Styled jar label markers: rich text draws a marker after its name in monospace, smaller, in the weak colour and
@@ -458,7 +454,7 @@ fn a_marker_is_drawn_smaller_monospace_and_weak_after_its_name() {
     let clash = JarLabel { name: "Work".into(), marker: Some(JarMarker::Fragment("3f2a".into())) };
     assert_eq!(clash.marker_text().as_deref(), Some("#3f2a"));
     assert_eq!(parts(&job(&clash)), [("Work".into(), name_format.clone()), (" #3f2a".into(), marker_format.clone())]);
-    let built_in = JarLabel::built_in();
+    let built_in = built_in();
     assert_eq!(built_in.marker_text().as_deref(), Some("built-in"));
     let italic = egui::TextFormat { italics: true, ..name_format };
     assert_eq!(parts(&job(&built_in)), [("Default".into(), italic), (" built-in".into(), marker_format)]);
@@ -515,7 +511,7 @@ fn colliding_fragments_lengthen_just_enough() {
 fn a_label_is_stable_while_other_jars_come_and_go() {
     let mut app = App::default();
     let (w1, w2) = (add_jar(&mut app, "Work"), add_jar(&mut app, "Work"));
-    let label = |app: &App, j| app.jar_label(JarKey::Named(j)).to_string();
+    let label = |app: &App, j| app.jar_label(j).to_string();
     let (l1, l2) = (label(&app, w1), label(&app, w2));
     assert_ne!(l1, l2);
     let home = add_jar(&mut app, "Home");
@@ -535,15 +531,12 @@ fn a_label_is_stable_while_other_jars_come_and_go() {
 fn the_chip_and_confirms_show_the_label() {
     let mut app = App::default();
     let (_w1, w2) = (add_jar(&mut app, "Work"), add_jar(&mut app, "Work"));
-    let l2 = app.jar_label(JarKey::Named(w2));
+    let l2 = app.jar_label(w2);
     assert!(l2.to_string().starts_with("Work · #"), "{l2}");
     let t = tab_in(&mut app, None);
     app.set_tab_jar(&t, Some(w2));
     assert_eq!(app.jar_chip(&t).unwrap().name, l2);
-    assert_eq!(
-        app.jar_confirm_text(JarConfirm::Clear(JarKey::Named(w2))).unwrap().0,
-        format!("Clear cookies in {l2}?")
-    );
+    assert_eq!(app.jar_confirm_text(JarConfirm::Clear(w2)).unwrap().0, format!("Clear cookies in {l2}?"));
     assert_eq!(app.jar_confirm_text(JarConfirm::Ephemeral(w2)).unwrap().0, format!("Make {l2} ephemeral?"));
 }
 
@@ -620,7 +613,7 @@ fn a_label_shows_a_hidden_character_in_the_marker_style() {
     let want = [("Wo", false), ("⟦200B⟧", true), ("rk", false), (" #3f2a", true)];
     assert_eq!(parts, want.map(|(t, m)| (t.to_string(), m)));
     assert_eq!(label.hidden_hint().as_deref(), Some("Hidden characters: U+200B zero width space"));
-    assert_eq!(JarLabel::built_in().hidden_hint(), None);
+    assert_eq!(built_in().hidden_hint(), None);
 }
 
 /// Name rules: a chip on a jar whose synced name holds a hidden character says so in its hover.
@@ -641,4 +634,55 @@ fn a_jar_chip_hover_names_a_hidden_character() {
     app.set_tab_jar(&t, Some(jar));
     let tip = app.jar_chip(&t).and_then(|c| c.tooltip).unwrap_or_default();
     assert!(tip.contains("Hidden characters: U+200B zero width space"), "{tip}");
+}
+
+#[test]
+fn the_default_jar_is_made_once_at_the_top_level() {
+    let mut app = App::default();
+    assert_eq!(app.default_jar(), None);
+    assert!(app.ensure_default_jar(), "made");
+    let default = app.default_jar().expect("a Default");
+    assert_eq!(app.mirror.group(&default.to_string()), None);
+    assert_eq!(app.jar_defs()[&default].name, "Default");
+    assert!(!app.ensure_default_jar(), "already there: nothing to do");
+    assert_eq!(app.jar_defs().len(), 1);
+}
+
+#[test]
+fn two_defaults_converge_on_the_lowest_id() {
+    let mut app = App::default();
+    let (a, b) = (add_jar(&mut app, "Default"), add_jar(&mut app, "Default"));
+    for jar in [a, b] {
+        app.edit_field(&jar.to_string(), field::IS_DEFAULT, FieldValue::Bool(true));
+    }
+    let (low, high) = (a.min(b), a.max(b));
+    assert!(app.ensure_default_jar());
+    assert_eq!(app.default_jar(), Some(low));
+    let defs = app.jar_defs();
+    assert!(!defs[&high].is_default);
+    assert_eq!(defs[&high].name, "Default (old)");
+    assert!(!app.ensure_default_jar(), "converged: a second pass writes nothing");
+}
+
+#[test]
+fn the_default_jar_cannot_be_closed_and_an_unset_tab_resolves_to_it() {
+    let mut app = App::default();
+    app.ensure_default_jar();
+    let default = app.default_jar().unwrap();
+    app.close_node(&default.to_string());
+    assert!(app.jar_exists(default), "still there");
+    let tab = tab_in(&mut app, None);
+    assert_eq!(app.resolved_jar(&jar_of(&app, &tab)), Some((default, false)));
+}
+
+#[test]
+fn duplicating_the_default_makes_an_ordinary_jar() {
+    let mut app = App::default();
+    app.ensure_default_jar();
+    let default = app.default_jar().unwrap();
+    app.duplicate_nodes(&[default.to_string()]);
+    let defs = app.jar_defs();
+    assert_eq!(defs.len(), 2);
+    assert_eq!(defs.values().filter(|d| d.is_default).count(), 1);
+    assert_eq!(app.default_jar(), Some(default));
 }

@@ -163,7 +163,7 @@ pub(crate) struct TabSpawnOutcome {
     /// The cookies the host was seeded with, as its starting `jar::TabCookies` (empty for hosts that are not).
     pub(crate) seeded: jar::TabCookies,
     /// The jar the host was seeded from, resolved when the spawn started: its pulls merge into this one.
-    pub(crate) jar: jar::JarKey,
+    pub(crate) jar: Option<store::model::NodeId>,
     /// That jar's clear count when the seed was read (`jar::Snapshots::seed`); `None` if it never was.
     pub(crate) seed_clears: Option<u64>,
 }
@@ -352,8 +352,10 @@ impl App {
         self.queue_create(&spawn.id);
         let generation = self.spawns.session_generation;
         // Resolved and loaded before the test early return, so tests see the load happen.
-        let (jar, _) = self.resolved_jar(&choice);
-        self.ensure_jar_loaded(jar);
+        let jar = self.resolved_jar(&choice).map(|(jar, _)| jar);
+        if let Some(jar) = jar {
+            self.ensure_jar_loaded(jar);
+        }
         #[cfg(test)]
         if self.event_proxy.is_none() {
             self.test_spawns.push((spawn, generation));
@@ -368,12 +370,12 @@ impl App {
             // jar's clear count then, so a clear before it lands is caught (`note_spawned_jar`).
             let seeded = std::cell::RefCell::new((crate::jar::TabCookies::default(), None));
             let seed = || {
-                let (cookies, clears) = match snapshots.lock() {
-                    Ok(s) => {
+                let (cookies, clears) = match (jar, snapshots.lock()) {
+                    (Some(jar), Ok(s)) => {
                         let (cookies, clears) = s.seed(jar);
                         (cookies, Some(clears))
                     }
-                    Err(_) => (Vec::new(), None),
+                    _ => (Vec::new(), None),
                 };
                 *seeded.borrow_mut() = (crate::jar::TabCookies::seeded(&cookies), clears);
                 serde_json::to_string(&cookies).unwrap_or_else(|_| "[]".to_owned())
@@ -752,8 +754,8 @@ impl App {
     pub(crate) fn will_switch(&self, id: &str) -> bool {
         let Some(tab) = self.nodes.get(id).and_then(|n| n.as_tab()) else { return false };
         let Some((had, _)) = self.cookies.jar_tabs.get(id) else { return false };
-        tab.tab.kind.desc().jar
-            && (*had != self.resolved_jar(&self.mirror.jar_choice(id)).0 || self.cookies.jar_reseed.contains(id))
+        let Some((now, _)) = self.resolved_jar(&self.mirror.jar_choice(id)) else { return false };
+        tab.tab.kind.desc().jar && (*had != now || self.cookies.jar_reseed.contains(id))
     }
 
     /// Puts every live tab whose jar changed and that is not busy, focused or showing to sleep; it wakes into the
@@ -771,7 +773,7 @@ impl App {
                 let had = self.cookies.jar_tabs.get(v.id).map(|(k, _)| *k);
                 let focused = self.focused.as_deref() == Some(v.id);
                 let reseed = self.cookies.jar_reseed.contains(v.id);
-                let now = self.resolved_jar(&self.mirror.jar_choice(v.id)).0;
+                let Some((now, _)) = self.resolved_jar(&self.mirror.jar_choice(v.id)) else { return false };
                 sleep_state::jar_switch(had, now, reseed, v.busy(), focused) == sleep_state::JarSwitch::SleepNow
             })
             .map(|v| v.id.to_string())

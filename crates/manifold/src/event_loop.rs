@@ -172,7 +172,11 @@ impl ApplicationHandler<UserEvent> for App {
         self.egui_state = Some(egui_state);
         self.window = Some(window);
         self.open_store();
-        if !self.restore_session() {
+        let restored = self.restore_session();
+        if self.ensure_default_jar() {
+            self.save_session();
+        }
+        if !restored {
             if self.settings.has_shown_first_launch_demo || !self.demo_available() {
                 self.spawn_root_tab();
             } else {

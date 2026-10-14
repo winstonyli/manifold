@@ -1427,13 +1427,13 @@ impl App {
                 }
             }
             DebugCommand::ClearJar(name) => {
-                let key = if name.trim().eq_ignore_ascii_case("default") {
-                    Some(crate::jar::JarKey::Default)
+                let jar = if name.trim().eq_ignore_ascii_case("default") {
+                    self.default_jar()
                 } else {
-                    self.jar_named(&name).map(crate::jar::JarKey::Named)
+                    self.jar_named(&name)
                 };
-                match key {
-                    Some(key) => self.clear_jar_cookies(key),
+                match jar {
+                    Some(jar) => self.clear_jar_cookies(jar),
                     None => eprintln!("CLEARJAR: no jar named {name:?}"),
                 }
             }

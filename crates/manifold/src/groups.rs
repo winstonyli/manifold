@@ -116,6 +116,10 @@ impl App {
                 if !visited.contains(&tid) {
                     self.destroy_group_members(&tid, visited);
                 }
+            } else if self.is_default_jar(&tid) {
+                // The Default is never closed: it moves to the top level (a plain dissolve could refuse, as moves
+                // into a group are refused for it, `edit_group`).
+                self.edit_group(&tid, None);
             } else if self.card_kind(&tid).is_some_and(|k| k.ty == store::model::TYPE_TAB) {
                 // No save per tab: `destroy_group` commits the whole subtree once.
                 self.remove_tab(&tid);

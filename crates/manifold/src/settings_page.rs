@@ -2,8 +2,6 @@
 //! deferred effects and popups that run after the scroll area.
 
 use super::*;
-use crate::jar::JarKey;
-use crate::jar_defs::{JarConfirm, JarLabel};
 
 /// Space above the first and below the last section of the settings page.
 const PAGE_PAD: f32 = 12.0;
@@ -46,8 +44,6 @@ pub(crate) struct SettingsRequests {
     pub(crate) downloads_button_rect: Option<egui::Rect>,
     pub(crate) default_view_button_rect: Option<egui::Rect>,
     pub(crate) current_view_button_rect: Option<egui::Rect>,
-    /// "Clear Cookies": asks first (`build_jar_confirm_popup`).
-    pub(crate) jar_confirm: Option<JarConfirm>,
 }
 
 /// The Home page field's id, so tests (and focus requests) can name it.
@@ -106,7 +102,6 @@ impl App {
                 self.settings_view_kinds_section(ui);
                 self.settings_lists_section(ui, &mut req);
                 self.settings_sessions_section(ui, &mut req);
-                self.settings_jars_section(ui, &mut req);
                 self.settings_bookmarks_section(ui, &mut req);
 
                 ui.add_space(PAGE_PAD);
@@ -492,34 +487,6 @@ impl App {
         }
     }
 
-    /// Settings, "Jars": the built-in jar's row, which can only be cleared. Named jars are cards (their menu holds
-    /// Clear Cookies and Ephemeral; Close removes one). Clearing asks first.
-    pub(crate) fn settings_jars_section(&mut self, ui: &mut egui::Ui, req: &mut SettingsRequests) {
-        section_start(ui, "Jars");
-        // Two lines, so a narrow window (480 px) clips nothing: its swatch, label and tab count (aligned on the
-        // right, the label taking the rest), then its action under the label. The label is styled as in the menus
-        // (`JarLabel::append_to`).
-        ui.horizontal(|ui| {
-            jar_swatch(ui, egui::Color32::GRAY);
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label(egui::RichText::new(tab_count_label(self.jar_tab_count(JarKey::Default))).small().weak());
-                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                    let mut job = egui::text::LayoutJob::default();
-                    let font = egui::FontSelection::Default.resolve(ui.style());
-                    JarLabel::built_in().append_to(&mut job, font, ui.visuals().weak_text_color());
-                    ui.label(job);
-                });
-            });
-        });
-        ui.horizontal_wrapped(|ui| {
-            ui.add_space(JAR_SWATCH_WIDTH + ui.spacing().item_spacing.x);
-            if ui.button("Clear Cookies").clicked() {
-                req.jar_confirm = Some(JarConfirm::Clear(JarKey::Default));
-            }
-        });
-        ui.add_space(4.0);
-    }
-
     /// Settings, "Bookmarks": export/import.
     pub(crate) fn settings_bookmarks_section(&mut self, ui: &mut egui::Ui, req: &mut SettingsRequests) {
         section_start(ui, "Bookmarks");
@@ -545,9 +512,6 @@ impl App {
     pub(crate) fn apply_settings_requests(&mut self, req: &SettingsRequests) {
         if req.save_now_requested {
             self.save_session();
-        }
-        if let Some(confirm) = req.jar_confirm {
-            self.offer_jar_confirm(confirm);
         }
         if req.save_as_requested {
             let draft = self.session_name_draft.clone();
@@ -695,20 +659,6 @@ impl App {
             self.open_settings_page();
         }
     }
-}
-
-/// A Settings jar swatch's width; its actions line is indented by this much plus one item gap, under the name.
-const JAR_SWATCH_WIDTH: f32 = 12.0;
-
-/// A jar's colour dot in the Settings rows.
-fn jar_swatch(ui: &mut egui::Ui, color: egui::Color32) {
-    let (rect, _) = ui.allocate_exact_size(egui::Vec2::splat(JAR_SWATCH_WIDTH), egui::Sense::hover());
-    ui.painter().circle_filled(rect.center(), 5.0, color);
-}
-
-/// A Settings jar row's tab count: "1 tab", "2 tabs".
-fn tab_count_label(n: usize) -> String {
-    format!("{n} tab{}", if n == 1 { "" } else { "s" })
 }
 
 /// `dir`'s size, recomputed at most every few seconds (egui memory) so the Settings page doesn't walk the
@@ -859,64 +809,6 @@ mod tests {
         assert_ne!(app.view_mode, ViewMode::Settings, "Escape outside a field closes Settings");
     }
 
-    /// The text the Jars section draws in one frame, as galleys (their `job` keeps each section's format).
-    fn galleys(ctx: &egui::Context, app: &mut App) -> Vec<std::sync::Arc<egui::Galley>> {
-        let mut req = SettingsRequests::default();
-        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| app.settings_jars_section(ui, &mut req));
-        output.textures_delta.clear();
-        let text = output.shapes.into_iter().filter_map(|s| match s.shape {
-            egui::Shape::Text(t) => Some(t.galley),
-            _ => None,
-        });
-        text.collect()
-    }
-
-    /// The built-in jar row shows its label as menus do: an italic "Default" and a `built-in` marker.
-    #[test]
-    fn the_built_in_jar_row_shows_its_styled_label() {
-        let ctx = egui::Context::default();
-        crate::theme::apply_fonts(&ctx);
-        crate::theme::apply_style(&ctx);
-        let mut app = App::default();
-        galleys(&ctx, &mut app);
-        let shown = galleys(&ctx, &mut app);
-        let weak = ctx.global_style().visuals.weak_text_color();
-        let mut want = egui::text::LayoutJob::default();
-        let body = egui::FontSelection::Default.resolve(&ctx.global_style());
-        crate::jar_defs::JarLabel::built_in().append_to(&mut want, body, weak);
-        let built_in: Vec<_> = shown.iter().filter(|g| g.text() == "Default built-in").collect();
-        assert_eq!(built_in.len(), 1, "{:?}", shown.iter().map(|g| g.text()).collect::<Vec<_>>());
-        assert_eq!(built_in[0].job.sections, want.sections);
-    }
-
-    /// Fix batch B1: at a 480 px window (the page's 480 max, less its 16 px margins and a scroll bar) no jar row runs
-    /// past the page's width; before, a named jar's one row put Delete under the scroll bar.
-    #[test]
-    fn the_jar_rows_fit_a_480_px_window() {
-        const CONTENT: f32 = 480.0 - 2.0 * 16.0 - 8.0;
-        let ctx = egui::Context::default();
-        crate::theme::apply_fonts(&ctx);
-        crate::theme::apply_style(&ctx);
-        let mut app = App::default();
-        let input = || egui::RawInput {
-            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(480.0, 800.0))),
-            ..Default::default()
-        };
-        let mut width = 0.0;
-        for _ in 0..2 {
-            let mut req = SettingsRequests::default();
-            let mut output = ctx.run_ui(input(), |ui| {
-                ui.set_max_width(CONTENT);
-                control_font(ui);
-                let left = ui.min_rect().left();
-                app.settings_jars_section(ui, &mut req);
-                width = ui.min_rect().right() - left;
-            });
-            output.textures_delta.clear();
-        }
-        assert!(width <= CONTENT + 0.5, "the Jars section is {width} wide in {CONTENT}");
-    }
-
     /// Fix batch B1, live check: the whole page in a 480 px window keeps every text inside it. The page's
     /// `set_max_width(480)` widened its column past the window when the window was under 480 plus margins, so the
     /// jar rows' right-aligned tab counts ran off the edge.
@@ -926,7 +818,6 @@ mod tests {
         crate::theme::apply_fonts(&ctx);
         crate::theme::apply_style(&ctx);
         let mut app = App::default();
-        crate::session_sync::tests::add_jar(&mut app, "Personal accounts");
         let input = || egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(480.0, 3000.0))),
             ..Default::default()
@@ -947,36 +838,5 @@ mod tests {
             }
         }
         assert!(texts > 20, "the page drew its text ({texts})");
-    }
-
-    /// Fix batch B5: while a confirm dialog is up (they are non-modal), a second jar action from Settings neither
-    /// replaces it nor acts, and a jar confirm and an engine confirm never show together.
-    #[test]
-    fn a_pending_confirm_ignores_further_jar_actions() {
-        use crate::view_info::ViewConfirm;
-        let mut app = App::default();
-        let work = crate::session_sync::tests::add_jar(&mut app, "Work");
-        let clear = JarConfirm::Clear(JarKey::Default);
-        app.pending_jar_confirm = Some(clear);
-        let req = SettingsRequests { jar_confirm: Some(JarConfirm::Clear(JarKey::Named(work))), ..Default::default() };
-        app.apply_settings_requests(&req);
-        assert_eq!(app.pending_jar_confirm, Some(clear), "the first confirm stays");
-        let download = ViewConfirm::Download(crate::process_manager::ViewKind::Cef);
-        assert!(!app.offer_view_confirm(download));
-        assert_eq!(app.view_ui.pending_view_confirm, None, "no engine confirm over a jar confirm");
-
-        app.pending_jar_confirm = None;
-        assert!(app.offer_view_confirm(download));
-        app.apply_settings_requests(&req);
-        assert_eq!(app.pending_jar_confirm, None, "no jar confirm over an engine confirm");
-
-        app.view_ui.pending_view_confirm = None;
-        app.apply_settings_requests(&req);
-        assert_eq!(app.pending_jar_confirm, Some(JarConfirm::Clear(JarKey::Named(work))), "with none up, it opens");
-    }
-
-    #[test]
-    fn a_jar_row_counts_tabs_in_the_singular_for_one() {
-        assert_eq!([tab_count_label(0), tab_count_label(1), tab_count_label(2)], ["0 tabs", "1 tab", "2 tabs"]);
     }
 }

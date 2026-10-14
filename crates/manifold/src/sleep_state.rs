@@ -1,7 +1,7 @@
 //! Pure parts of two-phase sleep (`App::request_sleep` / `finish_sleep`) and
 //! of scroll restore after a wake (`App::saved_scroll`).
 
-use crate::jar::JarKey;
+use crate::store::model::NodeId;
 use ipc_protocol::PageState;
 use std::time::{Duration, Instant};
 
@@ -50,8 +50,8 @@ pub(crate) enum JarSwitch {
 /// running host's jar (`None`: no host, so it will spawn into `wanted`). `reseed`: the host must be replaced although
 /// its key is unchanged (its jar was cleared).
 pub(crate) fn jar_switch(
-    spawned_with: Option<JarKey>,
-    wanted: JarKey,
+    spawned_with: Option<NodeId>,
+    wanted: NodeId,
     reseed: bool,
     busy: bool,
     focused: bool,
@@ -115,10 +115,9 @@ mod tests {
 
     #[test]
     fn the_jar_switch_table() {
-        use crate::jar::JarKey;
         use crate::store::model::{ActorId, NodeId};
-        let work = JarKey::Named(NodeId { actor: ActorId(1), counter: 1 });
-        let d = JarKey::Default;
+        let work = NodeId { actor: ActorId(1), counter: 1 };
+        let d = NodeId { actor: ActorId(1), counter: 2 };
         assert_eq!(jar_switch(None, work, false, false, false), JarSwitch::Nothing, "asleep or not spawned yet");
         assert_eq!(jar_switch(None, work, true, false, false), JarSwitch::Nothing, "no host to reseed");
         assert_eq!(jar_switch(Some(work), work, false, false, false), JarSwitch::Nothing, "already on it");

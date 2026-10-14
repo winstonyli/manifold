@@ -1,7 +1,6 @@
 //! The node context menu: its actions, config and the App methods that build and apply it.
 
 use super::*;
-use crate::jar::JarKey;
 use crate::jar_defs::{JarConfirm, JarLabel};
 use crate::sleep_state::SleepWhy;
 use crate::store::model::{
@@ -563,8 +562,10 @@ pub(crate) fn node_menu_config(view: &NodeMenuView, headless: bool) -> NodeMenuC
         if view.has_group {
             items.extend([Separator, Button("Remove from Group", A::RemoveFromGroup)]);
         }
-        items.push(Separator);
-        items.extend(delete_items);
+        if !delete_items.is_empty() {
+            items.push(Separator);
+            items.extend(delete_items);
+        }
         NodeMenuConfig { kind: view.kind, area_id, min_width, items, jar_page, page: None }
     };
     let delete = |label| vec![Button(label, A::Delete)];
@@ -674,7 +675,13 @@ pub(crate) fn node_menu_config(view: &NodeMenuView, headless: bool) -> NodeMenuC
                 Button("Make Ephemeral", A::SetJarEphemeral(true))
             };
             let items = vec![Button("Clear Cookies...", A::ClearJarCookies), ephemeral];
-            finish("jar_context_menu", 150.0, items, delete("Close"), Vec::new())
+            finish(
+                "jar_context_menu",
+                150.0,
+                items,
+                if view.closable { delete("Close") } else { Vec::new() },
+                Vec::new(),
+            )
         }
         // A type this build doesn't know has no menu of its own yet (2b-6 Ruling 8): the shared tail only.
         _ => finish("node_context_menu", 150.0, Vec::new(), delete("Delete"), Vec::new()),
@@ -716,6 +723,8 @@ pub(crate) struct NodeMenuView {
     renaming: Option<String>,
     /// Jar only: the jar is ephemeral, so the menu offers to stop.
     ephemeral: bool,
+    /// False for the Default jar, whose menu has no Close.
+    closable: bool,
     /// Tab, Unloaded and Group: their jar list (`App::jar_menu`).
     jars: Option<JarMenu>,
     /// The Links section (`App::edge_menu`): empty in a JSON level and for a node no edge may join.
@@ -905,6 +914,7 @@ impl App {
             jars: self.jar_menu(id),
             edges: self.edge_menu(id),
             ephemeral: matches!(node.runtime, Runtime::Jar) && self.mirror.jar_def(id).ephemeral,
+            closable: !self.is_default_jar(id),
         })
     }
 
@@ -948,30 +958,38 @@ impl App {
 
     /// The tab and group menus' jar list (spec "UI"); `None` for every other kind.
     pub(crate) fn jar_menu(&self, id: &str) -> Option<JarMenu> {
-        let named = |ticked: &dyn Fn(NodeId) -> bool, count: &dyn Fn(NodeId) -> Option<usize>| -> Vec<JarRow> {
-            self.jar_defs()
+        let default = self.default_jar();
+        let named = |ticked: &dyn Fn(NodeId) -> bool, count: &dyn Fn(NodeId) -> Option<usize>, skip_default: bool| {
+            let rows: Vec<JarRow> = self
+                .jar_defs()
                 .iter()
+                .filter(|(_, d)| !(skip_default && d.is_default))
                 .map(|(jid, d)| JarRow {
                     id: Some(*jid),
-                    name: self.jar_label(crate::jar::JarKey::Named(*jid)),
+                    name: self.jar_label(*jid),
                     color: d.color,
                     ticked: ticked(*jid),
                     count: count(*jid),
                 })
-                .collect()
+                .collect();
+            rows
         };
         if let Some(choice) = self.tab_jar(id) {
             let group_default = self.inherited_jar(self.mirror.group(id));
-            // Tick the jar the tab uses: Default for one naming a jar deleted elsewhere.
-            let (key, _) = self.resolved_jar(&choice);
-            let mut rows = vec![JarRow {
-                id: None,
-                name: JarLabel::built_in(),
-                color: None,
-                ticked: key == crate::jar::JarKey::Default,
-                count: None,
-            }];
-            rows.extend(named(&|j| key == crate::jar::JarKey::Named(j), &|_| None));
+            // Tick the jar the tab uses: the Default for one naming a jar deleted elsewhere.
+            let used = self.resolved_jar(&choice).map(|(jar, _)| jar);
+            // The Default's row comes first and picks `None` ("the Default"), which a group's default does not override.
+            let mut rows: Vec<JarRow> = default
+                .map(|d| JarRow {
+                    id: None,
+                    name: self.jar_label(d),
+                    color: self.jar_defs().get(&d).and_then(|def| def.color),
+                    ticked: used == Some(d),
+                    count: None,
+                })
+                .into_iter()
+                .collect();
+            rows.extend(named(&|j| used == Some(j), &|_| None, true));
             return Some(JarMenu {
                 rows,
                 can_follow: choice.set && group_default.is_some(),
@@ -982,15 +1000,15 @@ impl App {
         if !self.is_container(id) {
             return None;
         }
-        let default = self.mirror.default_jar(id);
-        if self.jar_defs().is_empty() && default.is_none() {
+        let group_default = self.mirror.default_jar(id);
+        if self.jar_defs().len() <= 1 && group_default.is_none() {
             return None; // nothing to pick: jars are made from a tab's menu
         }
         Some(JarMenu {
-            rows: named(&|j| default == Some(j), &|j| Some(self.cascade_count(id, j)).filter(|&n| n > 0)),
+            rows: named(&|j| group_default == Some(j), &|j| Some(self.cascade_count(id, j)).filter(|&n| n > 0), false),
             can_follow: false,
             will_switch: false,
-            has_default: default.is_some(),
+            has_default: group_default.is_some(),
         })
     }
 
@@ -1114,7 +1132,7 @@ impl App {
             NodeAction::CancelNewJar => self.naming_jar = None,
             NodeAction::ClearJarCookies => {
                 if let Ok(jar) = id.parse() {
-                    self.offer_jar_confirm(JarConfirm::Clear(JarKey::Named(jar)));
+                    self.offer_jar_confirm(JarConfirm::Clear(jar));
                 }
             }
             NodeAction::SetJarEphemeral(on) => {

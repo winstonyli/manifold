@@ -157,7 +157,7 @@ pub(crate) const TYPES: [(Kind, &str, &[u32]); 9] = {
         (Kind::Pdf, TYPE_PDF, &[POS, COLOR, PARENT, URL, PATH, NAME]),
         (Kind::Json, TYPE_JSON, &[POS, COLOR, PARENT, URL, PATH, VIEW, NAME]),
         (Kind::Download, TYPE_DOWNLOAD, &[POS, COLOR, PARENT, URL, PATH, NAME]),
-        (Kind::Jar, TYPE_JAR, &[POS, COLOR, NAME, EPHEMERAL]),
+        (Kind::Jar, TYPE_JAR, &[POS, COLOR, NAME, EPHEMERAL, IS_DEFAULT]),
         (Kind::Link, TYPE_LINK, &[NAME, FROM, TO]),
     ]
 };
@@ -241,9 +241,11 @@ pub mod field {
     pub const FROM: u32 = 20;
     /// A link's end card.
     pub const TO: u32 = 21;
+    /// A jar that is the built-in Default: exactly one live jar has it once `App::ensure_default_jar` has run.
+    pub const IS_DEFAULT: u32 = 22;
 }
 
-pub static FIELDS: [FieldDef; 18] = [
+pub static FIELDS: [FieldDef; 19] = [
     FieldDef { no: field::POS, name: "pos", ty: FieldType::Pos },
     FieldDef { no: field::COLOR, name: "color", ty: FieldType::Color },
     FieldDef { no: field::GROUP, name: "group", ty: FieldType::Id },
@@ -264,6 +266,7 @@ pub static FIELDS: [FieldDef; 18] = [
     FieldDef { no: field::TYPE, name: "type", ty: FieldType::Str },
     FieldDef { no: field::FROM, name: "from", ty: FieldType::Id },
     FieldDef { no: field::TO, name: "to", ty: FieldType::Id },
+    FieldDef { no: field::IS_DEFAULT, name: "is_default", ty: FieldType::Bool },
 ];
 
 /// Retired field numbers, never to be reused (checked by a test).
@@ -612,6 +615,7 @@ mod tests {
             (field::JAR_SET, "jar_set", FieldType::Bool),
             (field::DEFAULT_JAR, "default_jar", FieldType::Id),
             (field::EPHEMERAL, "ephemeral", FieldType::Bool),
+            (field::IS_DEFAULT, "is_default", FieldType::Bool),
         ] {
             let def = field_by_name(name).unwrap();
             assert_eq!((def.no, def.ty), (no, ty), "{name}");
@@ -637,6 +641,7 @@ mod tests {
             (field::JAR_SET, FieldValue::Bool(true)),
             (field::DEFAULT_JAR, FieldValue::Id(Some(id))),
             (field::EPHEMERAL, FieldValue::Bool(true)),
+            (field::IS_DEFAULT, FieldValue::Bool(true)),
         ];
         for (no, value) in cases {
             let enc = encode_field(no, &value);

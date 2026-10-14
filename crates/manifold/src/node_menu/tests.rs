@@ -2,6 +2,17 @@ use super::*;
 use crate::card_kind::fixtures::{kinds, loaded_tab, plain, sleeping_tab};
 use crate::session_sync::tests::add_jar;
 
+/// The Default jar's label.
+fn built_in() -> JarLabel {
+    JarLabel { name: "Default".into(), marker: Some(crate::jar_defs::JarMarker::BuiltIn) }
+}
+
+/// The Default jar's label, making the Default first.
+fn default_label(app: &mut App) -> JarLabel {
+    let id = crate::session_sync::tests::default_jar_id(app);
+    app.jar_label(id)
+}
+
 // One row per kind, pinned to the exact menus each kind showed before
 // the per-kind builders were merged (see the node-menu spec), and
 // before the tab and group menus joined them.
@@ -49,6 +60,7 @@ fn view_of(kind: CardKind) -> NodeMenuView {
         jars: None,
         edges: Vec::new(),
         ephemeral: false,
+        closable: true,
     }
 }
 
@@ -185,7 +197,7 @@ fn node_menu_config_matches_each_kinds_menu() {
         "Open as Tab | Copy URL | Copy Text | Rename | Duplicate | Pin | Color... | --- | Delete"
     );
     // Jars: tabs and groups have a Jar row ahead of the colours; the jar list and its actions are the Jar page.
-    let rows = vec![JarRow { id: None, name: JarLabel::built_in(), color: None, ticked: true, count: None }];
+    let rows = vec![JarRow { id: None, name: built_in(), color: None, ticked: true, count: None }];
     let jars = |can_follow, will_switch, has_default| {
         Some(JarMenu { rows: rows.clone(), can_follow, will_switch, has_default })
     };
@@ -332,6 +344,7 @@ fn new_jar_names_a_jar_and_picks_it_for_the_tab() {
 #[test]
 fn the_tab_menu_lists_default_then_named_jars_with_a_tick() {
     let mut app = App::default();
+    app.ensure_default_jar();
     let work = add_jar(&mut app, "Work");
     let t = crate::session_sync::tests::add(
         &mut app,
@@ -344,21 +357,24 @@ fn the_tab_menu_lists_default_then_named_jars_with_a_tick() {
         rows.into_iter().map(|r| (r.name, r.ticked)).collect::<Vec<_>>()
     };
     let plain = |name: &str| JarLabel { name: name.into(), marker: None };
-    assert_eq!(shown(&app), [(JarLabel::built_in(), false), (plain("Work"), true)]);
-    // Styled jar label markers: a user jar named "Default" is listed plainly, after the marked built-in one.
+    assert_eq!(shown(&app), [(built_in(), false), (plain("Work"), true)]);
+    // A user jar named "Default" is listed after the marked built-in one, with a fragment to tell them apart.
     let user = add_jar(&mut app, "Default");
-    assert_eq!(shown(&app), [(JarLabel::built_in(), false), (plain("Work"), true), (plain("Default"), false)]);
+    let user_label = app.jar_label(user);
+    assert!(user_label.marker.is_some());
+    assert_eq!(shown(&app), [(built_in(), false), (plain("Work"), true), (user_label, false)]);
     app.remove_remotely_deleted(&user.to_string());
     app.remove_remotely_deleted(&work.to_string()); // deleted on another device; the tab's field still names it
-    assert_eq!(shown(&app), [(JarLabel::built_in(), true)]);
+    assert_eq!(shown(&app), [(built_in(), true)]);
 }
 
 /// Jar name labels: the tab and group menus list two same-named jars by their labels, a unique one plainly.
 #[test]
 fn the_jar_menus_list_same_named_jars_by_label() {
     let mut app = App::default();
+    let default = default_label(&mut app);
     let (w1, w2, home) = (add_jar(&mut app, "Work"), add_jar(&mut app, "Work"), add_jar(&mut app, "Home"));
-    let label = |app: &App, j| app.jar_label(crate::jar::JarKey::Named(j));
+    let label = |app: &App, j| app.jar_label(j);
     let want = [label(&app, w1), label(&app, w2), label(&app, home)];
     let plain = want.clone().map(|l| l.to_string());
     assert!(plain[0].starts_with("Work · #") && plain[1].starts_with("Work · #") && want[0] != want[1], "{plain:?}");
@@ -372,7 +388,7 @@ fn the_jar_menus_list_same_named_jars_by_label() {
     assert_eq!(rows.iter().map(|r| r.name.clone()).collect::<Vec<_>>()[1..], want);
     let g = crate::session_sync::tests::add_group(&mut app, "G");
     let rows = app.node_menu_view(&g).unwrap().jars.unwrap().rows;
-    assert_eq!(rows.iter().map(|r| r.name.clone()).collect::<Vec<_>>(), want);
+    assert_eq!(rows.iter().map(|r| r.name.clone()).collect::<Vec<_>>(), [&[default][..], &want[..]].concat());
 }
 
 /// Name rules: "Move into <group>" draws a hidden character in the group's name as a placeholder.
@@ -454,7 +470,7 @@ fn menu_ctx() -> egui::Context {
 #[test]
 fn menu_sections_share_one_left_margin() {
     let ctx = menu_ctx();
-    let row = |ticked, color| JarRow { id: None, name: JarLabel::built_in(), color, ticked, count: None };
+    let row = |ticked, color| JarRow { id: None, name: built_in(), color, ticked, count: None };
     let rows = vec![row(true, None), row(false, Some(egui::Color32::RED))];
     let view = NodeMenuView {
         jars: Some(JarMenu { rows, can_follow: false, will_switch: false, has_default: false }),
@@ -509,14 +525,14 @@ fn menu_frame(ctx: &egui::Context, app: &mut App, events: Vec<egui::Event>) {
 }
 
 /// Styled jar label markers: the tab menu draws a marker in the marker style (monospace, the weak colour), so a
-/// same-named jar's `#frag` and the built-in's italic "Default" + `built-in` stand apart from a user jar named
-/// "Default" and one typed as "Work · #3f2a", which are drawn as plain names.
+/// same-named jar's `#frag` and the built-in's italic "Default" + `built-in` stand apart from one typed as
+/// "Work · #3f2a", which is drawn as a plain name.
 #[test]
 fn the_jar_menu_draws_markers_in_their_own_style() {
     let ctx = menu_ctx();
     let mut app = App::default();
+    app.ensure_default_jar();
     let (w1, _) = (add_jar(&mut app, "Work"), add_jar(&mut app, "Work"));
-    add_jar(&mut app, "Default");
     add_jar(&mut app, "Work · #3f2a");
     let t = crate::session_sync::tests::add(
         &mut app,
@@ -571,7 +587,6 @@ fn the_jar_menu_draws_markers_in_their_own_style() {
         (italic, markers)
     };
     assert_eq!(row("Default built-in"), (true, vec![" built-in".to_string()]));
-    assert_eq!(row("Default"), (false, vec![]), "a user jar named Default is plain");
     let frag = crate::jar_defs::jar_fragment(w1, &app.jar_defs()).unwrap();
     assert_eq!(row(&format!("Work #{frag}")), (false, vec![format!(" #{frag}")]));
     assert_eq!(row("Work · #3f2a"), (false, vec![]), "the typed look-alike is all name");
@@ -798,12 +813,13 @@ fn a_jar_name_draft_does_not_outlive_its_menu() {
     assert_eq!(app.naming_jar, None, "the menu closed");
 }
 
-/// A group lists only named jars, each with how many tabs picking it would change, and offers "Clear Default
+/// A group lists every jar, the Default first, each with how many tabs picking it would change, and offers "Clear Default
 /// Jar" once it has one; "Follow Group's Jar" appears only for a set tab under a group default.
 #[test]
 fn the_group_menu_counts_the_cascade_and_a_set_tab_can_follow() {
     let mut app = App::default();
     let ctx = egui::Context::default();
+    app.ensure_default_jar();
     let work = add_jar(&mut app, "Work");
     let g = app.alloc_node_id();
     app.insert_group_at(g.clone(), None);
@@ -814,21 +830,25 @@ fn the_group_menu_counts_the_cascade_and_a_set_tab_can_follow() {
     );
     app.edit_group(&t, Some(g.clone()));
     let menu = app.node_menu_view(&g).unwrap().jars.unwrap();
+    let default = app.default_jar().unwrap();
+    let ids: Vec<_> = menu.rows.iter().map(|r| r.id).collect();
+    assert_eq!(ids, [Some(default), Some(work)], "the Default is a row like any jar");
+    assert_eq!(menu.rows[0].name, built_in());
     assert_eq!(
-        menu.rows,
-        [JarRow {
+        menu.rows[1],
+        JarRow {
             id: Some(work),
             name: JarLabel { name: "Work".into(), marker: None },
-            color: menu.rows[0].color,
+            color: menu.rows[1].color,
             ticked: false,
             count: Some(1)
-        }]
+        }
     );
     assert!(!menu.has_default);
     app.apply_node_action(&ctx, &g, NodeAction::SetGroupDefaultJar(work));
     let menu = app.node_menu_view(&g).unwrap().jars.unwrap();
-    assert!(menu.has_default && menu.rows[0].ticked);
-    assert_eq!(menu.rows[0].count, None, "the tab already took it: no \"(0)\"");
+    assert!(menu.has_default && menu.rows[1].ticked);
+    assert_eq!(menu.rows[1].count, None, "the tab already took it: no \"(0)\"");
     assert!(!app.node_menu_view(&t).unwrap().jars.unwrap().can_follow, "an unset tab already follows");
     app.apply_node_action(&ctx, &t, NodeAction::SetJar(None));
     assert!(app.node_menu_view(&t).unwrap().jars.unwrap().can_follow);

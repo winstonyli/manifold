@@ -13,7 +13,7 @@ fn jar_fields_belong_to_tabs_groups_and_jars() {
     use field::*;
     assert_eq!(Kind::Tab.fields(), &[POS, COLOR, PARENT, URL, VIEW_KIND, PINNED, JAR, JAR_SET, NAME]);
     assert_eq!(Kind::Group.fields(), &[POS, COLOR, NAME, DEFAULT_JAR]);
-    assert_eq!(Kind::Jar.fields(), &[POS, COLOR, NAME, EPHEMERAL]);
+    assert_eq!(Kind::Jar.fields(), &[POS, COLOR, NAME, EPHEMERAL, IS_DEFAULT]);
     assert_eq!(Kind::Link.fields(), &[NAME, FROM, TO]);
     assert!(Kind::Unknown.fields().is_empty());
 }
@@ -2227,7 +2227,7 @@ fn a_remote_ephemeral_change_deletes_and_saves_the_jar_file() {
     add(&mut app, Kind::Tab, sleeping_tab("https://a.com/", "A"));
     let jar = add_jar(&mut app, "Work");
     assert!(app.save_session());
-    let file = crate::jar::Jar::path(&jars, crate::jar::JarKey::Named(jar));
+    let file = crate::jar::Jar::path(&jars, jar);
     std::fs::write(&file, r#"{"cookies":[]}"#).unwrap();
     let toggled = |app: &App, on: bool| {
         let mut fields = snapshots(app)[&jar].fields.clone();
@@ -2256,7 +2256,7 @@ fn a_remote_ephemeral_toggle_under_a_pending_local_one_touches_no_file() {
     let jar = add_jar(&mut app, "Work");
     app.set_jar_ephemeral(jar, true);
     assert!(app.save_session());
-    let file = crate::jar::Jar::path(&jars, crate::jar::JarKey::Named(jar));
+    let file = crate::jar::Jar::path(&jars, jar);
     app.set_jar_ephemeral(jar, false);
     assert!(file.exists(), "the local off saved the file");
     let mut other = Journal::open(&path, ActorId(2)).unwrap();
@@ -2275,7 +2275,7 @@ fn a_jar_first_seen_ephemeral_deletes_its_leftover_file_and_queues_nothing() {
     let (path, jars) = (dir.join("session.mnf"), dir.join("jars"));
     std::fs::create_dir(&jars).unwrap();
     let leftover = |jar| {
-        let file = crate::jar::Jar::path(&jars, crate::jar::JarKey::Named(jar));
+        let file = crate::jar::Jar::path(&jars, jar);
         std::fs::write(&file, r#"{"cookies":[]}"#).unwrap();
         file
     };
@@ -2319,9 +2319,8 @@ fn startup_deletes_the_files_of_jars_the_document_no_longer_has() {
     app.save_session();
     drop(app);
     let gone = NodeId { actor: ActorId(0xdead), counter: 9 };
-    let (w, g) = (crate::jar::JarKey::Named(work).file_stem(), crate::jar::JarKey::Named(gone).file_stem());
+    let (w, g) = (work.to_string(), gone.to_string());
     let files = [format!("{w}.json"), format!("{g}.json"), format!("{g}.json.unreadable-5"), "default.json".into()];
-    // A readable (legacy plaintext) empty jar: the restore wakes a tab, which loads the default jar.
     let write_all = || files.iter().for_each(|f| std::fs::write(jars.join(f), r#"{"cookies":[]}"#).unwrap());
     let left = || files.iter().filter(|f| jars.join(f).exists()).cloned().collect::<Vec<_>>();
     let on = |actor| App { jars_dir_override: Some(jars.clone()), ..app_on(&path, actor) };
@@ -2347,20 +2346,25 @@ fn startup_deletes_the_files_of_jars_the_document_no_longer_has() {
     let mut back = on(4);
     assert!(back.restore_session());
     back.prune_jar_files();
-    assert_eq!(left(), [format!("{w}.json"), "default.json".to_string()], "the deleted jar's files go");
+    assert_eq!(
+        left(),
+        [format!("{w}.json"), "default.json".to_string()],
+        "the deleted jar's files go; an old default.json is no jar's"
+    );
 }
 
 #[test]
 fn closing_a_jar_leaves_the_tabs_that_named_it_on_the_default_jar() {
     let mut app = App::default();
+    let default = default_jar_id(&mut app);
     let jar = add_jar(&mut app, "Work");
     let tab = add(&mut app, Kind::Tab, sleeping_tab("https://a.com/", "A"));
     app.edit_jar(&tab, crate::jar::JarChoice { jar: Some(jar), set: true });
     app.close_node_and_save(&jar.to_string());
-    assert!(app.jar_defs().is_empty());
+    assert_eq!(app.jar_defs().len(), 1, "only the Default is left");
     // No cascade: the field still names the closed jar, and the read rule resolves it to the Default jar (flagged).
     assert_eq!(app.mirror.jar_choice(&tab).jar, Some(jar));
-    assert_eq!(app.resolved_jar(&app.mirror.jar_choice(&tab)), (crate::jar::JarKey::Default, true));
+    assert_eq!(app.resolved_jar(&app.mirror.jar_choice(&tab)), Some((default, true)));
 }
 
 /// A file with a jar "Work" (label j), a group defaulting to it and a tab in the group using it.
@@ -2385,9 +2389,9 @@ fn opening_a_session_gives_each_imported_jar_a_new_jar() {
     let mut app = App::default();
     let work = add_jar(&mut app, "Work");
     app.replace_running_session(&file_with_a_work_jar(), crate::store::json::Trust::Foreign);
-    assert_eq!(app.jar_defs().len(), 1, "the file's Work replaces the old one");
+    assert_eq!(app.jar_defs().len(), 2, "the Default and the file's Work, which replaces the old one");
     assert!(!app.jar_defs().contains_key(&work), "the old jar card is torn down with its session");
-    let new = *app.jar_defs().keys().next().unwrap();
+    let new = *app.jar_defs().iter().find(|(_, d)| !d.is_default).unwrap().0;
     assert_eq!(app.jar_defs()[&new].name, "Work");
     let tab =
         app.nodes.iter().find(|(_, n)| n.runtime.as_unloaded().is_some()).map(|(id, _)| id).expect("tab imported");
@@ -2674,7 +2678,8 @@ fn tabs_still_spawning_at_quit_are_saved() {
     drop(app);
     let journal = Journal::open(&path, ActorId(3)).unwrap();
     let live: Vec<(Kind, FieldValue)> = journal.doc().live().map(|(_, n)| (n.kind(), n.get(field::URL))).collect();
-    assert_eq!(live, [(Kind::Tab, FieldValue::Str("https://new/".into()))]);
+    let tabs: Vec<_> = live.into_iter().filter(|(k, _)| *k == Kind::Tab).collect();
+    assert_eq!(tabs, [(Kind::Tab, FieldValue::Str("https://new/".into()))]);
 }
 
 /// Open Session (`replace_running_session`) restores every tab asleep,
@@ -4135,6 +4140,7 @@ fn a_created_tab_naming_a_jar_deleted_in_this_commit_is_created_with_none() {
 fn a_dangling_remote_deleted_jar_survives_a_save() {
     let path = temp_dir("jar-dangling").join("session.mnf");
     let mut app = app_on(&path, 1);
+    app.ensure_default_jar();
     let work = add_jar(&mut app, "Work");
     let tab = add(&mut app, Kind::Tab, sleeping_tab("https://s/", ""));
     app.set_tab_jar(&tab, Some(work));
@@ -4273,7 +4279,8 @@ fn only_jar_view_kinds_switch_when_their_jar_is_cleared() {
     for kind in ViewKind::ALL {
         let (id, _peer) = live_tab(&mut app, kind, "https://a/");
         // Running on the default jar, which the user cleared: a jar engine must respawn into it.
-        app.cookies.jar_tabs.insert(id.clone(), (crate::jar::JarKey::Default, crate::jar::TabCookies::default()));
+        let default = default_jar_id(&mut app);
+        app.cookies.jar_tabs.insert(id.clone(), (default, crate::jar::TabCookies::default()));
         app.cookies.jar_reseed.insert(id.clone());
         assert_eq!(app.will_switch(&id), JAR_VIEW_KINDS.contains(&kind), "{kind:?}");
     }
@@ -4771,7 +4778,7 @@ fn closing_a_jar_leaves_saved_and_respawning_tabs_resolving_to_the_default_jar()
     assert!(app.spawns.spawning.contains_key(&live) && !app.nodes.contains_key(&live), "mid-respawn");
     app.close_node_and_save(&work.to_string());
     assert!(app.save_session());
-    let default = (crate::jar::JarKey::Default, true);
+    let default = Some((default_jar_id(&mut app), true));
     for t in [&asleep, &live] {
         assert_eq!(stored(&app, t, field::JAR), FieldValue::Id(Some(work)), "no cascade writes");
         assert_eq!(app.resolved_jar(&app.mirror.jar_choice(t)), default);
@@ -5738,6 +5745,12 @@ pub(crate) fn add_jar(app: &mut App, name: &str) -> NodeId {
     app.create_jar(name, crate::fetched::Placement { group: None, pos: egui::vec2(40.0, 40.0) })
 }
 
+/// The Default jar's id, making it first if the app has none (startup does this).
+pub(crate) fn default_jar_id(app: &mut App) -> NodeId {
+    app.ensure_default_jar();
+    app.default_jar().expect("ensure_default_jar made one")
+}
+
 #[test]
 fn a_jar_is_a_card_that_round_trips_with_its_position_and_group() {
     let path = temp_dir("jar-card").join("session.mnf");
@@ -5794,4 +5807,69 @@ fn a_session_of_only_jars_is_a_fresh_start_that_keeps_them() {
     let mut back = app_on(&path, 2);
     assert!(!back.restore_session(), "only jars is a fresh start");
     assert!(back.nodes.contains_key(&jar));
+}
+
+#[test]
+fn replacing_the_running_session_keeps_the_default_jar() {
+    let dir = temp_dir("default-replace");
+    let mut app = app_on(&dir.join("session.mnf"), 1);
+    app.ensure_default_jar();
+    let default = app.default_jar().unwrap();
+    add(&mut app, Kind::Tab, sleeping_tab("https://a.com/", "A"));
+    assert!(app.save_session());
+    app.teardown_running_session();
+    assert!(app.jar_exists(default));
+    assert_eq!(app.nodes.len(), 1, "only the Default survives a teardown");
+}
+
+/// A file's own Default jar is dropped on import, and the tabs that named it name the running one.
+#[test]
+fn an_imported_default_jar_is_the_running_one() {
+    let mut app = App::default();
+    app.ensure_default_jar();
+    let running = app.default_jar().unwrap();
+    let doc = JsonDoc {
+        nodes: vec![
+            json_node("a", Kind::Jar, serde_json::json!({ "name": "Default", "is_default": true })),
+            json_node("t", Kind::Tab, serde_json::json!({ "url": "https://a/", "jar": "a", "jar_set": true })),
+        ],
+        local: None,
+    };
+    app.replace_running_session(&doc, crate::store::json::Trust::Foreign);
+    assert_eq!(app.jar_defs().len(), 1, "no second Default");
+    let tab = app
+        .nodes
+        .iter()
+        .find(|(_, n)| n.runtime.as_unloaded().is_some())
+        .map(|(id, _)| id.clone())
+        .expect("tab imported");
+    assert_eq!(app.mirror.jar_choice(&tab).jar, Some(running), "an edge to the file's Default names the running one");
+}
+
+/// Replacing a session keeps the running Default; the file's other jars come with it, and tabs naming its Default
+/// or a named jar get the right one.
+#[test]
+fn a_replaced_sessions_tabs_use_the_running_default() {
+    let mut app = App::default();
+    app.ensure_default_jar();
+    let running = app.default_jar().unwrap();
+    add(&mut app, Kind::Tab, sleeping_tab("https://old/", "Old"));
+    let doc = JsonDoc {
+        nodes: vec![
+            json_node("d", Kind::Jar, serde_json::json!({ "name": "Default", "is_default": true })),
+            json_node("w", Kind::Jar, serde_json::json!({ "name": "Work" })),
+            json_node("t", Kind::Tab, serde_json::json!({ "url": "https://a/", "jar": "d", "jar_set": true })),
+            json_node("u", Kind::Tab, serde_json::json!({ "url": "https://b/", "jar": "w", "jar_set": true })),
+        ],
+        local: None,
+    };
+    app.replace_running_session(&doc, crate::store::json::Trust::Foreign);
+    assert_eq!(app.jar_defs().len(), 2, "the running Default and the file's Work");
+    let work = *app.jar_defs().iter().find(|(_, d)| d.name == "Work").unwrap().0;
+    let jar_of_url = |url: &str| {
+        let id = app.nodes.iter().find(|(_, n)| n.runtime.as_unloaded().is_some_and(|u| u.url == url)).unwrap().0;
+        app.mirror.jar_choice(id).jar
+    };
+    assert_eq!(jar_of_url("https://a/"), Some(running), "the file's Default is the running one");
+    assert_eq!(jar_of_url("https://b/"), Some(work), "a named jar comes with the session");
 }

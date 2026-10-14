@@ -2,7 +2,7 @@
 //! `App::nodes` entry with a unit `Runtime::Jar`. Its fields are mirror state (2b-5 Ruling 7): written through
 //! `App::edit_field` here and applied from the document by `materialize` like any card's.
 
-use crate::jar::{Jar, JarChoice, JarKey};
+use crate::jar::{Jar, JarChoice};
 use crate::node::Runtime;
 use crate::session_sync::color_value;
 use crate::store::model::{field, FieldValue, Kind, NodeId};
@@ -16,6 +16,8 @@ pub(crate) struct JarDef {
     pub(crate) name: String,
     pub(crate) color: Option<egui::Color32>,
     pub(crate) ephemeral: bool,
+    /// The built-in Default jar (`field::IS_DEFAULT`); exactly one live jar has it once `ensure_default_jar` has run.
+    pub(crate) is_default: bool,
 }
 
 /// What a tab's card and Tab view show of its jar (spec "UI", chip).
@@ -63,10 +65,14 @@ impl JarChip {
     }
 }
 
+/// The Default jar's name when it is made, and the name a losing duplicate takes (spec "The Default jar").
+const DEFAULT_NAME: &str = "Default";
+const OLD_DEFAULT_NAME: &str = "Default (old)";
+
 /// A jar action waiting for its confirm dialog (`App::build_jar_confirm_popup`).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum JarConfirm {
-    Clear(JarKey),
+    Clear(NodeId),
     /// Ephemeral turned on for a jar with a saved file (`App::request_jar_ephemeral`).
     Ephemeral(NodeId),
 }
@@ -143,11 +149,6 @@ pub(crate) enum JarMarker {
 pub(crate) const MARKER_SCALE: f32 = 0.8;
 
 impl JarLabel {
-    /// The built-in Default jar's label.
-    pub(crate) fn built_in() -> Self {
-        Self { name: "Default".into(), marker: Some(JarMarker::BuiltIn) }
-    }
-
     /// The marker as rich text shows it, `#3f2a` or `built-in`: without the plain text's " · " or brackets, which the
     /// marker's own style replaces.
     pub(crate) fn marker_text(&self) -> Option<String> {
@@ -228,7 +229,8 @@ impl App {
     /// The card's jar chip (spec "UI"): `None` for a tab on the default jar with nothing to warn about.
     pub(crate) fn jar_chip(&self, id: &str) -> Option<JarChip> {
         let choice = self.tab_jar(id)?;
-        let (key, missing) = self.resolved_jar(&choice);
+        let (key, missing) = self.resolved_jar(&choice)?;
+        let default = self.default_jar();
         let will_switch = self.will_switch(id);
         let can_switch_now = self.can_switch_jar_now(id);
         let view_kind = match &self.nodes.get(id)?.runtime {
@@ -236,10 +238,10 @@ impl App {
             Runtime::Unloaded(_) => self.mirror.view_kind(id),
             _ => return None,
         };
-        let view_ignores = !view_kind.desc().jar && key != JarKey::Default;
+        let view_ignores = !view_kind.desc().jar && Some(key) != default;
         let group = self.nodes.get(id).and(self.mirror.group(id));
         let following = !choice.set && self.inherited_jar(group) == choice.jar;
-        if key == JarKey::Default && !missing && !will_switch {
+        if Some(key) == default && !missing && !will_switch {
             return None;
         }
         let name = self.jar_label(key);
@@ -272,44 +274,40 @@ impl App {
         })
     }
 
-    /// The built-in jar's label (`JarLabel::built_in`), or a named jar's (`named_jar_label`; the built-in's once it is
-    /// gone, as that is what its tabs use).
-    pub(crate) fn jar_label(&self, key: JarKey) -> JarLabel {
-        match key {
-            JarKey::Named(id) => named_jar_label(id, &self.jar_defs()).unwrap_or_else(JarLabel::built_in),
-            JarKey::Default => JarLabel::built_in(),
+    /// Jar `id`'s label: its stored name, marked `BuiltIn` for the Default and with a fragment when another jar
+    /// shares the name (`named_jar_label`). A jar that is gone reads as the Default's label, as that is what its tabs
+    /// use.
+    pub(crate) fn jar_label(&self, id: NodeId) -> JarLabel {
+        let defs = self.jar_defs();
+        let shown = if defs.contains_key(&id) { Some(id) } else { self.default_jar() };
+        let Some(shown) = shown else {
+            return JarLabel { name: DEFAULT_NAME.into(), marker: Some(JarMarker::BuiltIn) };
+        };
+        let mut label = named_jar_label(shown, &defs).expect("a live jar");
+        if defs[&shown].is_default {
+            label.marker = Some(JarMarker::BuiltIn);
         }
+        label
     }
 
-    /// A named jar's colour (the first palette colour if it has none); grey for the default jar.
-    pub(crate) fn jar_color(&self, key: JarKey) -> egui::Color32 {
-        match key {
-            JarKey::Named(id) => {
-                self.jar_defs().get(&id).map_or(egui::Color32::GRAY, |d| d.color.unwrap_or(TAG_COLOR_PALETTE[0]))
-            }
-            JarKey::Default => egui::Color32::GRAY,
-        }
-    }
-
-    /// Tabs (live, asleep or mid-respawn) that resolve to `key`, for Settings' count.
-    pub(crate) fn jar_tab_count(&self, key: JarKey) -> usize {
-        self.linked_ids().filter_map(|t| self.tab_jar(t)).filter(|c| self.resolved_jar(c).0 == key).count()
+    /// Jar `id`'s colour (the first palette colour if it has none); grey when it is not a live jar.
+    pub(crate) fn jar_color(&self, id: NodeId) -> egui::Color32 {
+        self.jar_defs().get(&id).map_or(egui::Color32::GRAY, |d| d.color.unwrap_or(TAG_COLOR_PALETTE[0]))
     }
 
     /// The confirm dialog's title, detail and button. `None` once a named jar it asks about is gone (deleted on
     /// another device meanwhile): there is nothing left to confirm.
     pub(crate) fn jar_confirm_text(&self, confirm: JarConfirm) -> Option<(String, String, &'static str)> {
-        let exists = |key| !matches!(key, JarKey::Named(id) if !self.jar_exists(id));
         match confirm {
-            JarConfirm::Clear(key) if exists(key) => Some((
-                format!("Clear cookies in {}?", self.jar_label(key)),
+            JarConfirm::Clear(id) if self.jar_exists(id) => Some((
+                format!("Clear cookies in {}?", self.jar_label(id)),
                 "Tabs using it are signed out. Open ones restart on the empty jar when next out of sight; anything \
                  signed in before then is not kept."
                     .to_string(),
                 "Clear",
             )),
             JarConfirm::Ephemeral(id) if self.jar_exists(id) && !self.mirror.jar_def(&id.to_string()).ephemeral => Some((
-                format!("Make {} ephemeral?", self.jar_label(JarKey::Named(id))),
+                format!("Make {} ephemeral?", self.jar_label(id)),
                 "Its saved sign-ins are deleted from disk now. Tabs keep them until Manifold quits; after that this \
                  jar starts empty each time."
                     .to_string(),
@@ -317,6 +315,38 @@ impl App {
             )),
             _ => None,
         }
+    }
+
+    /// The Default jar: the lowest-id live jar with `IS_DEFAULT` (`ensure_default_jar` leaves exactly one). Cheap
+    /// enough per card per frame: the mirror's index holds one id, two for a moment after two replicas' first
+    /// launches, plus a closed one until the next save; each costs a `to_string` and a hash lookup.
+    pub(crate) fn default_jar(&self) -> Option<NodeId> {
+        self.mirror.default_jar_ids().find(|&id| self.jar_exists(id))
+    }
+
+    /// Whether node `id` is the Default jar.
+    pub(crate) fn is_default_jar(&self, id: &str) -> bool {
+        id.parse().ok().is_some_and(|id| self.default_jar() == Some(id))
+    }
+
+    /// The startup and sync invariant (spec "The Default jar"): with no Default, one is made at the top level; with
+    /// several (two replicas' concurrent first launches), the lowest id keeps the flag and each other is cleared and
+    /// renamed, a deterministic repair every replica makes alike. Returns whether it wrote anything; the caller
+    /// saves.
+    pub(crate) fn ensure_default_jar(&mut self) -> bool {
+        let defaults: Vec<NodeId> = self.mirror.default_jar_ids().filter(|&id| self.jar_exists(id)).collect();
+        let Some((_, losers)) = defaults.split_first() else {
+            let pos = crate::graph_layout::GRAPH_WORLD_CENTER + crate::graph_layout::spawn_jitter(DEFAULT_NAME);
+            let id = self.create_jar(DEFAULT_NAME, crate::fetched::Placement { group: None, pos });
+            self.edit_field(&id.to_string(), field::IS_DEFAULT, FieldValue::Bool(true));
+            return true;
+        };
+        for loser in losers {
+            let key = loser.to_string();
+            self.edit_field(&key, field::IS_DEFAULT, FieldValue::Bool(false));
+            self.edit_field(&key, field::NAME, FieldValue::Str(OLD_DEFAULT_NAME.to_owned()));
+        }
+        !losers.is_empty()
     }
 
     /// A new named jar under `name`'s clean form (name rules), with the first palette colour no jar shows (one without
@@ -385,20 +415,19 @@ impl App {
     /// unreadable file is never touched, and a locked jar saves nothing anyway). Turning it off: the jar's cookies
     /// are written to a new file (a locked one writes nothing).
     pub(crate) fn after_jar_ephemeral_changed(&mut self, id: NodeId, on: bool) {
-        let key = JarKey::Named(id);
         if on {
-            if let (false, Some(dir)) = (self.jars.contains_key(&key), self.jars_dir()) {
-                let jar = Jar::load(&dir, key);
-                self.publish_jar(key, jar);
+            if let (false, Some(dir)) = (self.jars.contains_key(&id), self.jars_dir()) {
+                let jar = Jar::load(&dir, id);
+                self.publish_jar(id, jar);
             }
-            if let (Some(dir), Some(false)) = (self.jars_dir(), self.jars.get(&key).map(Jar::is_locked)) {
-                if let Err(e) = Jar::delete_files(&dir, key) {
-                    eprintln!("jar: could not delete {}: {e}", key.file_stem());
+            if let (Some(dir), Some(false)) = (self.jars_dir(), self.jars.get(&id).map(Jar::is_locked)) {
+                if let Err(e) = Jar::delete_files(&dir, id) {
+                    eprintln!("jar: could not delete {id}: {e}");
                 }
             }
         } else {
-            self.ensure_jar_loaded(key);
-            self.save_jar(key);
+            self.ensure_jar_loaded(id);
+            self.save_jar(id);
         }
     }
 
@@ -415,31 +444,30 @@ impl App {
     /// that file, its saved logins, is deleted. Anything else acts at once.
     pub(crate) fn request_jar_ephemeral(&mut self, id: NodeId, on: bool) {
         // A jar whose cookies are not on disk yet has logins to lose too: save them, so it asks first.
-        if on && self.cookies.jar_dirty.contains_key(&JarKey::Named(id)) {
-            self.save_jar(JarKey::Named(id));
+        if on && self.cookies.jar_dirty.contains_key(&id) {
+            self.save_jar(id);
         }
-        if on && self.has_saved_file(JarKey::Named(id)) {
+        if on && self.has_saved_file(id) {
             self.offer_jar_confirm(JarConfirm::Ephemeral(id));
         } else {
             self.set_jar_ephemeral(id, on);
         }
     }
 
-    fn has_saved_file(&self, key: JarKey) -> bool {
-        self.jars_dir().is_some_and(|dir| Jar::path(&dir, key).exists())
+    fn has_saved_file(&self, id: NodeId) -> bool {
+        self.jars_dir().is_some_and(|dir| Jar::path(&dir, id).exists())
     }
 
     /// A removed jar's in-memory state: its cookies saved if dirty (a Recently Closed entry may bring it back, and
     /// its file is what comes back with it), then dropped. Files are not touched here: closing never wipes
     /// credentials (spec "Backing files"); the startup prune deletes a file nothing holds.
     pub(crate) fn forget_jar_memory(&mut self, id: NodeId) {
-        let key = JarKey::Named(id);
-        if self.cookies.jar_dirty.contains_key(&key) {
-            self.save_jar(key);
+        if self.cookies.jar_dirty.contains_key(&id) {
+            self.save_jar(id);
         }
-        self.jars.remove(&key);
+        self.jars.remove(&id);
         if let Ok(mut snapshots) = self.cookies.jar_snapshots.lock() {
-            snapshots.remove(&key);
+            snapshots.remove(&id);
         }
     }
 
@@ -475,13 +503,13 @@ impl App {
         crate::profile::jars_dir()
     }
 
-    /// The only place a `jar` field becomes a key (spec "Resolution"). `true` when it names a jar that no longer
-    /// exists (deleted, or not synced yet): the tab uses the default jar and its chip warns.
-    pub(crate) fn resolved_jar(&self, choice: &JarChoice) -> (JarKey, bool) {
+    /// The only place a tab's jar choice becomes a jar (spec "Resolution"), and whether it dangles: a choice naming a
+    /// jar that is not a live card resolves to the Default with `true` (the chip warns). `None` only with no Default.
+    pub(crate) fn resolved_jar(&self, choice: &JarChoice) -> Option<(NodeId, bool)> {
         match choice.jar {
-            None => (JarKey::Default, false),
-            Some(id) if self.jar_exists(id) => (JarKey::Named(id), false),
-            Some(_) => (JarKey::Default, true),
+            Some(id) if self.jar_exists(id) => Some((id, false)),
+            Some(_) => self.default_jar().map(|d| (d, true)),
+            None => self.default_jar().map(|d| (d, false)),
         }
     }
 
@@ -631,66 +659,66 @@ impl App {
 
     /// Loads `key`'s jar the first time a tab needs it (spec "Manifold state": named jars load lazily). An ephemeral
     /// jar starts empty and is never read from disk.
-    pub(crate) fn ensure_jar_loaded(&mut self, key: JarKey) {
-        if self.jars.contains_key(&key) {
+    pub(crate) fn ensure_jar_loaded(&mut self, id: NodeId) {
+        if self.jars.contains_key(&id) {
             return;
         }
         let jar = match self.jars_dir() {
-            Some(dir) if !self.is_ephemeral(key) => Jar::load(&dir, key),
+            Some(dir) if !self.is_ephemeral(id) => Jar::load(&dir, id),
             _ => Jar::default(),
         };
-        self.publish_jar(key, jar);
+        self.publish_jar(id, jar);
     }
 
-    /// Stores `jar` under `key` and copies it to the spawn threads' snapshot map.
-    fn publish_jar(&mut self, key: JarKey, jar: Jar) {
+    /// Stores `jar` under `id` and copies it to the spawn threads' snapshot map.
+    fn publish_jar(&mut self, id: NodeId, jar: Jar) {
         if let Ok(mut snapshots) = self.cookies.jar_snapshots.lock() {
-            snapshots.insert(key, jar.clone());
+            snapshots.insert(id, jar.clone());
         }
-        self.jars.insert(key, jar);
+        self.jars.insert(id, jar);
     }
 
-    fn is_ephemeral(&self, key: JarKey) -> bool {
+    fn is_ephemeral(&self, id: NodeId) -> bool {
         // The mirror, not `jar_defs`: a jar being removed (`forget_jar_memory`) has left `nodes` but not yet the mirror.
-        matches!(key, JarKey::Named(id) if self.mirror.jar_def(&id.to_string()).ephemeral)
+        self.mirror.jar_def(&id.to_string()).ephemeral
     }
 
-    /// Writes `key`'s file unless it is ephemeral. A failure is logged (never cookie values) and leaves other jars
+    /// Writes jar `id`'s file unless it is ephemeral. A failure is logged (never cookie values) and leaves other jars
     /// alone. Settles the jar's dirty mark (`jar_dirty`): every write goes through here.
-    pub(crate) fn save_jar(&mut self, key: JarKey) {
-        self.cookies.jar_dirty.remove(&key); // written now, or never (ephemeral, no dir)
-        let (Some(dir), Some(jar)) = (self.jars_dir(), self.jars.get(&key)) else { return };
-        if self.is_ephemeral(key) {
+    pub(crate) fn save_jar(&mut self, id: NodeId) {
+        self.cookies.jar_dirty.remove(&id); // written now, or never (ephemeral, no dir)
+        let (Some(dir), Some(jar)) = (self.jars_dir(), self.jars.get(&id)) else { return };
+        if self.is_ephemeral(id) {
             return;
         }
         #[cfg(test)]
         self.jar_saves.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        if let Err(e) = jar.save(&dir, key) {
-            eprintln!("jar: could not save {}: {e}", key.file_stem());
+        if let Err(e) = jar.save(&dir, id) {
+            eprintln!("jar: could not save {id}: {e}");
         }
     }
 
-    /// Empties `key`'s jar and saves it, then switches the live tabs running on it (deviation 14): their engines still
-    /// hold the old cookies. A named jar that no longer exists is left alone, so no file is written for it.
-    pub(crate) fn clear_jar_cookies(&mut self, key: JarKey) {
-        if matches!(key, JarKey::Named(id) if !self.jar_exists(id)) {
+    /// Empties jar `id` and saves it, then switches the live tabs running on it (deviation 14): their engines still
+    /// hold the old cookies. A jar that no longer exists is left alone, so no file is written for it.
+    pub(crate) fn clear_jar_cookies(&mut self, id: NodeId) {
+        if !self.jar_exists(id) {
             return;
         }
-        self.ensure_jar_loaded(key);
-        let Some(jar) = self.jars.get(&key) else { return };
+        self.ensure_jar_loaded(id);
+        let Some(jar) = self.jars.get(&id) else { return };
         // Cleared in place, so a locked jar stays locked and its unreadable file is still never overwritten.
         let mut jar = jar.clone();
         jar.cookies.clear();
         // Counted with the emptied copy, under one lock: a host still spawning whose seed was read before this is
         // caught when it lands (`note_spawned_jar`), as it has no `jar_tabs` entry to mark below.
         if let Ok(mut snapshots) = self.cookies.jar_snapshots.lock() {
-            snapshots.insert_cleared(key, jar.clone());
+            snapshots.insert_cleared(id, jar.clone());
         }
-        self.jars.insert(key, jar);
-        self.save_jar(key);
-        // Their engines still hold the old cookies: they must be replaced although their key is unchanged.
+        self.jars.insert(id, jar);
+        self.save_jar(id);
+        // Their engines still hold the old cookies: they must be replaced although their jar is unchanged.
         let running: Vec<String> =
-            self.cookies.jar_tabs.iter().filter(|(_, (k, _))| *k == key).map(|(id, _)| id.clone()).collect();
+            self.cookies.jar_tabs.iter().filter(|(_, (j, _))| *j == id).map(|(tab, _)| tab.clone()).collect();
         self.cookies.jar_reseed.extend(running);
         self.sweep_jar_switches();
     }

@@ -77,7 +77,7 @@ impl App {
         };
         let Some((key, _)) = self.cookies.jar_tabs.get(tab_id) else { return false };
         let key = *key;
-        if matches!(key, crate::jar::JarKey::Named(id) if !self.jar_exists(id)) {
+        if !self.jar_exists(key) {
             return false;
         }
         self.ensure_jar_loaded(key);
@@ -107,7 +107,7 @@ impl App {
         }
         let round_over = now
             .is_none_or(|now| !self.cookies.jar_pulls.keys().any(|id| pull_pending(&self.cookies.jar_pulls, id, now)));
-        let due: Vec<crate::jar::JarKey> = self
+        let due: Vec<crate::store::model::NodeId> = self
             .cookies
             .jar_dirty
             .iter()
@@ -117,7 +117,7 @@ impl App {
             .map(|(key, _)| *key)
             .collect();
         for key in due {
-            if matches!(key, crate::jar::JarKey::Named(id) if !self.jar_exists(id)) {
+            if !self.jar_exists(key) {
                 self.cookies.jar_dirty.remove(&key);
                 continue;
             }
@@ -178,11 +178,12 @@ impl App {
     pub(crate) fn note_spawned_jar(
         &mut self,
         id: &str,
-        jar: crate::jar::JarKey,
+        jar: Option<crate::store::model::NodeId>,
         seeded: crate::jar::TabCookies,
         seed_clears: Option<u64>,
     ) {
         self.clear_cookie_state(id);
+        let Some(jar) = jar else { return };
         let clears = self.cookies.jar_snapshots.lock().ok().map(|s| s.clears(jar));
         let stale = seed_clears.is_some() && clears.is_some() && seed_clears != clears;
         if stale && !seeded.baseline.is_empty() {
