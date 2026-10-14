@@ -1,7 +1,7 @@
 # The unknown-type card: design, 2026-10-14
 
-Status: design, approved in outline by the user on 2026-10-14 ("go" to: live card; Close and Reopen work; links
-allowed). Revised after an adversarial review (9 findings, all addressed below). Item 5 of
+Status: built 2026-10-14 (plan `../plans/2026-10-14-unknown-type-card.md`; deviations D1-D8 there). Design approved in
+outline by the user on 2026-10-14 ("go" to: live card; Close and Reopen work; links allowed). Revised after an adversarial review (9 findings, all addressed below). Item 5 of
 `2026-10-04-homogeneity-decisions.md`. Supersedes `2026-10-04-node-model-design.md` line 75 (the `*/*` row is
 `portable` and `restorable` false), see decision 7.
 

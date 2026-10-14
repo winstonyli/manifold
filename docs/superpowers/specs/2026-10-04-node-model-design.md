@@ -73,7 +73,7 @@ Rows are plain data registered through `register(row)` (compiled-in now, so plug
   ones, such as `url`, `path`, `text`; section 6). Derived, not flags: containment/groupable and movable (from the `contains` edge row), copy
   forms (from backing). There is no `selectable` flag until a kind needs to refuse selection.
 - The `*/*` row sets `renamable` and `pinnable` true and `portable`, `restorable` false: an unknown node's raw fields
-  are not validated, so it can be closed for good but not duplicated or undone.
+  are not validated, so it can be closed for good but not duplicated or undone. (Superseded 2026-10-14: the unknown-type card replaced the `*/*` row with the sentinel `application/vnd.manifold.unknown`, restorable, layer 3; see `2026-10-14-unknown-type-card-design.md` decision 7.)
 
 ## 3. Edge-type table
 

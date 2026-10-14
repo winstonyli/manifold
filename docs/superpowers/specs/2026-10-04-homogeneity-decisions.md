@@ -36,4 +36,4 @@ Open:
 2. **Generic verbs.** Done (`98867a3`, `cc922a9`): Rename and Duplicate work on any node (a stored `NAME` overrides the label; Duplicate reuses the Recently Closed snapshot, multi-root), and the selection already held any node.
 3. **Jars as cards.** Designed in `2026-10-13-jars-as-cards-design.md`. Done (built 2026-10-14, tasks 1-6 of `plans/2026-10-14-jars-as-cards.md`): jars are cards with a position and group, the Default is a card, one `jar` edge replaces `JAR_SET`/`DEFAULT_JAR`, and cookie files share one keep set with fetched content.
 4. **Link follow-ups.** No `edge-type` field (`link` is the only Node-stored edge), cardinality, or removal variants.
-5. **The unknown-type card** (`Runtime::None` makes it possible; `card.rs` says there is none yet).
+5. **The unknown-type card.** Designed in `2026-10-14-unknown-type-card-design.md`. Done (built 2026-10-14, `plans/2026-10-14-unknown-type-card.md`): a node of a type this build doesn't know is a live card with the generic fields, shell copies, links and groups.

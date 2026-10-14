@@ -232,7 +232,8 @@ pub enum DebugCommand {
     /// id, or null at the top). `cards` lists the current level's cards in
     /// draw order, each as `id`, `type` (the card's mime type, e.g.
     /// `application/vnd.manifold.tab` or `text/markdown`; `store::model`'s
-    /// `TYPE_*`), `loaded` (true for a tab with a running engine only),
+    /// `TYPE_*`), `stored_type` (the type string as stored: the same but for an `image/*` other than `image/png`, a
+    /// different case, or a type this build doesn't know, whose `type` is `TYPE_UNKNOWN`), `loaded` (true for a tab with a running engine only),
     /// `json_card` (true for a JSON level's card, which is no stored node:
     /// its keys are only `id`, `type` (`application/json`), `loaded` (false),
     /// `json_card`, `screen` and `rect`), `group`, `parent`, `color` (whether it has a tag color),
@@ -357,13 +358,11 @@ pub enum DebugCommand {
     JsonRelayout,
     /// Search the current JSON level.
     JsonSearch(String),
-    /// A group card's own "Close" context-menu action, targeting an
-    /// explicit group id instead of `self.focused`, since a headless test
-    /// can't rely on focus. No-ops if `id` isn't actually a group. See
-    /// `App::close_group`.
-    CloseGroup(String),
+    /// `CLOSENODE id` -- closes node `id` (any kind) as its card's Close or Delete does (`close_node_and_save`), by
+    /// id since a headless test can't rely on focus. An unknown id is ignored with a note on stderr.
+    CloseNode(String),
     /// `MOVETOGROUP id group` -- the node menu's "Move into <group>" with explicit ids, for the same reason as
-    /// `CloseGroup`: only when the menu would offer `group` (a sibling group, `NodeMenuView::move_targets`), else
+    /// `CloseNode`: only when the menu would offer `group` (a sibling group, `NodeMenuView::move_targets`), else
     /// ignored with a note on stderr. See `NodeAction::MoveToGroup`.
     MoveToGroup { id: String, group: String },
     /// `LINK a b` -- links card `a` to card `b` (`App::connect`, the node menu's "Link to…" and a click on `b`), and
@@ -375,7 +374,7 @@ pub enum DebugCommand {
     /// from…"), and saves. A refused edge is ignored with the reason on stderr.
     OpenedFrom { child: String, parent: String },
     /// `RENAMEGROUP id name` -- node `id`'s rename field committed with `name` (`NodeAction::CommitRename`: the clean
-    /// name; a group ignores an empty one, any other node clears its name with it), by id for the same reason as `CloseGroup`. Saves, as the
+    /// name; a group ignores an empty one, any other node clears its name with it), by id for the same reason as `CloseNode`. Saves, as the
     /// menu does. `RENAMEGROUP` alone is `RenameGroup` (F2).
     RenameGroupTo { id: String, name: String },
     /// `SETNOTETEXT id text` -- note `id`'s box typed to hold `text` and then blurred (`App::blur_note`, which
@@ -385,7 +384,7 @@ pub enum DebugCommand {
     /// `edit_pos` writes it, as `release_drag` does, then the save a drop makes.
     MoveNode { id: String, x: f32, y: f32 },
     /// `SLEEPNODE id` -- a tab's (or a group's tabs') "Sleep" context-menu
-    /// action, targeting an explicit id for the same reason as `CloseGroup`.
+    /// action, targeting an explicit id for the same reason as `CloseNode`.
     /// See `App::request_sleep`.
     SleepNode(String),
     /// `RESTARTVIEW id` -- the "Restart View" row of live tab `id`'s menu (`App::restart_view`).
@@ -580,7 +579,7 @@ const COMMAND_HELP: &[(&str, &str)] = &[
     ("JSONMORE [pointer]", "Reveal the next page of a card on the current JSON level"),
     ("JSONRELAYOUT", "Relayout the current JSON level (clears saved card positions)"),
     ("JSONSEARCH text", "Search the current JSON level's keys and values"),
-    ("CLOSEGROUP id", "Close the group `id`, same as its own \"Close\" context-menu action"),
+    ("CLOSENODE id", "Close node `id` (any kind), as its card's Close does, and save"),
     ("MOVETOGROUP id group", "Move node `id` into the sibling group `group`, same as its \"Move into\" menu row"),
     ("LINK a b", "Link card `a` to card `b`, same as `a`'s \"Link to...\" row and a click on `b`"),
     ("UNLINK a b", "Remove the link between cards `a` and `b`, in either order"),
@@ -859,7 +858,7 @@ pub fn parse_line(line: &str) -> Option<DebugCommand> {
         },
         "SPLIT" => parse_view_kind(rest).map(DebugCommand::Split),
         "CLOSESPLIT" => Some(DebugCommand::CloseSplit),
-        "CLOSEGROUP" => non_empty(DebugCommand::CloseGroup),
+        "CLOSENODE" => non_empty(DebugCommand::CloseNode),
         "MOVETOGROUP" => {
             Some(DebugCommand::MoveToGroup { id: parts.next()?.to_string(), group: parts.next()?.to_string() })
         }
@@ -1062,6 +1061,15 @@ impl App {
         self.layout.entry(id.to_owned()).or_default().pos = pos;
         self.edit_pos(id, Some(self.layout_pos(id)));
         self.save_session();
+        true
+    }
+
+    /// `CLOSENODE`: `close_node_and_save` on node `id`. `false` when there is no such node.
+    fn debug_close_node(&mut self, id: &str) -> bool {
+        if !self.nodes.contains_key(id) {
+            return false;
+        }
+        self.close_node_and_save(id);
         true
     }
 
@@ -1382,9 +1390,9 @@ impl App {
             DebugCommand::JsonMore(pointer) => self.apply_json_edit(JsonEdit::More(pointer)),
             DebugCommand::JsonRelayout => self.apply_json_edit(JsonEdit::Relayout),
             DebugCommand::JsonSearch(text) => self.set_json_search(text),
-            DebugCommand::CloseGroup(id) => {
-                if self.is_container(&id) {
-                    self.close_node(&id);
+            DebugCommand::CloseNode(id) => {
+                if !self.debug_close_node(&id) {
+                    eprintln!("CLOSENODE: no node {id}; ignored");
                 }
             }
             DebugCommand::MoveToGroup { id, group } => {
@@ -1561,6 +1569,7 @@ impl App {
                 Some(serde_json::json!({
                     "id": item.id,
                     "type": kind.ty,
+                    "stored_type": self.mirror.ty(&item.id), // the raw string; `type` is its row (`canonical_type`)
                     "loaded": kind.loaded(),
                     "json_card": false,
                     "group": self.mirror.group(&item.id),
@@ -1890,7 +1899,7 @@ mod tests {
             "MENUPAGE jar",
             "SPLIT cef",
             "CLOSESPLIT",
-            "CLOSEGROUP g1",
+            "CLOSENODE g1",
             "MOVETOGROUP n1 g1",
             "LINK n1 n2",
             "UNLINK n1 n2",
@@ -1967,6 +1976,21 @@ mod tests {
         assert_eq!(app.mirror.group(&note), Some(g.as_str()));
         assert!(app.debug_move_to_group(&g, &h), "a group nests, as the menu row does");
         assert_eq!(app.mirror.group(&g), Some(h.as_str()));
+    }
+
+    /// `CLOSENODE id` closes any node by id, as its card's Close does, and saves.
+    #[test]
+    fn close_node_takes_any_node() {
+        assert!(matches!(parse_line("CLOSENODE n1"), Some(DebugCommand::CloseNode(id)) if id == "n1"));
+        assert!(parse_line("CLOSENODE").is_none(), "the id is required");
+        let mut app = App::default();
+        let (g, note) = (app.alloc_node_id(), app.alloc_node_id());
+        app.insert_group_at(g.clone(), None);
+        app.insert_note_at(note.clone(), None);
+        assert!(app.debug_close_node(&note));
+        assert!(app.debug_close_node(&g), "a group closes too");
+        assert!(!app.nodes.contains_key(&note) && !app.nodes.contains_key(&g));
+        assert!(!app.debug_close_node("missing"));
     }
 
     /// `EXPORTSTATE` names a card by its type (plan 2b-6, Ruling 9): `type` (the mime), `loaded` (true for a live tab
@@ -2070,6 +2094,7 @@ mod tests {
                 "jar",
                 "effective_jar",
                 "is_default",
+                "stored_type",
             ] {
                 assert!(card.get(key).is_some(), "{id} keeps {key}: {card}");
             }

@@ -698,7 +698,7 @@ fn drive(sm: &mut Smoke, m: &mut Marks) -> io::Result<()> {
     );
     sm.send("CLICK 22 17")?;
     sm.settle("outer_back")?;
-    sm.send(&format!("CLOSEGROUP {empty}"))?;
+    sm.send(&format!("CLOSENODE {empty}"))?;
     let outer_closed = sm.settle("outer_closed")?;
     check_query(
         &outer_closed,
@@ -932,7 +932,7 @@ fn drive(sm: &mut Smoke, m: &mut Marks) -> io::Result<()> {
         &format!("'{tab_id}' not in cards and '{jar_id}' not in cards and '{copy_jar}' not in cards"),
         |s| s.card(&tab_id).is_none() && s.card(&jar_id).is_none() && s.card(&copy_jar).is_none(),
     );
-    sm.send(&format!("CLOSEGROUP {group_id}"))?;
+    sm.send(&format!("CLOSENODE {group_id}"))?;
     let closed = sm.settle("jar_group_closed")?;
     check_query(
         &closed,
@@ -961,7 +961,7 @@ fn drive(sm: &mut Smoke, m: &mut Marks) -> io::Result<()> {
     );
     sm.send("CLICK 22 17")?;
     sm.settle("jar_group_out")?;
-    sm.send(&format!("CLOSEGROUP {outer}"))?;
+    sm.send(&format!("CLOSENODE {outer}"))?;
     sm.settle("jar_group_gone")?;
 
     // A far reveal moves a card's window (skip > 0, a `+ N earlier` row under the header); a real CLICK on that row
