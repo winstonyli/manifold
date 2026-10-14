@@ -182,7 +182,7 @@ and the developer's own session is simply reset if it looks wrong:
 - Default invariant: created when absent, not duplicated when present; two Defaults converge.
 - Gate smoke: `NEWJAR`, link a tab to it, rename, duplicate, close and reopen the group.
 
-## Open questions for the user
+## Decided and open
 
-1. Is a group's `jar` edge (inherited by every tab inside) the intended replacement for "Set default jar"?
-2. Is a duplicated jar logged out the right default?
+- Decided: a group's `jar` edge, inherited by every tab inside, replaces "Set default jar".
+- Open: whether a duplicated jar starts logged out (`Fresh`, as written) or with a copy of the cookies.
