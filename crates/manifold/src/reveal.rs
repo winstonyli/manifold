@@ -46,7 +46,12 @@ impl App {
             Runtime::Image(image) => Some(image.path.clone()),
             Runtime::Pdf(pdf) => Some(pdf.path.clone()),
             Runtime::Json(json) => Some(json.path.clone()),
-            Runtime::Tab(_) | Runtime::Unloaded(_) | Runtime::Note(_) | Runtime::Jar | Runtime::None => None,
+            Runtime::Tab(_)
+            | Runtime::Unloaded(_)
+            | Runtime::Note(_)
+            | Runtime::Jar
+            | Runtime::Unknown
+            | Runtime::None => None,
         };
         path.filter(|p| !p.is_empty())
     }

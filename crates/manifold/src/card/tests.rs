@@ -410,7 +410,7 @@ fn every_card_body_draws_a_header() {
     let src = include_str!("../card.rs");
     let production = &src[..src.find("mod tests;").unwrap()];
     let markers = ["paint_card_header(", "paint_missing_file_card(", "tab_has_header("];
-    for name in ["unloaded_tab", "download", "note", "image", "pdf", "json", "group", "tab"] {
+    for name in ["unloaded_tab", "download", "note", "image", "pdf", "json", "group", "tab", "jar", "unknown"] {
         let start = production.find(&format!("fn paint_{name}_body(")).unwrap_or_else(|| panic!("no {name} body"));
         let rest = &production[start + 1..];
         let body = &rest[..rest
@@ -632,6 +632,7 @@ fn node_card_size_matches_each_kinds_card() {
     assert_eq!(node_card_size(&download), DOWNLOAD_NODE_SIZE);
     assert_eq!(node_card_size(&Runtime::Note(NotePayload { text: String::new(), editing: false })), NOTE_NODE_SIZE);
     assert_eq!(node_card_size(&Runtime::None), GROUP_NODE_SIZE, "a group has no runtime");
+    assert_eq!(node_card_size(&Runtime::Unknown), UNKNOWN_NODE_SIZE);
     let json = |value: serde_json::Value, error: Option<&str>| {
         Runtime::Json(JsonPayload { path: "a.json".into(), value: value.into(), error: error.map(Into::into) })
     };
@@ -692,6 +693,7 @@ fn card_filter_text_matches_each_kinds_filter_input() {
         ["cat.png"]
     );
     assert_eq!(filter(&Runtime::Pdf(PdfPayload { path: "C:/docs/paper.pdf".into(), outcome: None })), ["paper.pdf"]);
+    assert!(filter(&Runtime::Unknown).is_empty(), "matched by its stored name, which the caller pushes");
     assert_eq!(
         filter(&Runtime::Json(JsonPayload {
             path: "C:/data/x.json".into(),

@@ -29,6 +29,9 @@ pub(crate) const GRAPH_NODE_SIZE: egui::Vec2 = egui::vec2(160.0, 110.0);
 /// `TAB_HEADER_MIN_CARD_POINTS` tall, so `tab_has_header` draws the header rather than the bottom strip from zoom 1 up.
 pub(crate) const JAR_NODE_SIZE: egui::Vec2 = egui::vec2(160.0, TAB_HEADER_MIN_CARD_POINTS);
 
+/// A card of a type this build doesn't know: a header and nothing under it, like a jar's.
+pub(crate) const UNKNOWN_NODE_SIZE: egui::Vec2 = JAR_NODE_SIZE;
+
 /// What a card's header says (`App::paint_card_header`).
 pub(crate) struct CardHeader<'a> {
     /// `None`: the caller draws its own icon in the glyph's place (a live tab's favicon or engine dot).
@@ -910,8 +913,9 @@ pub(crate) fn node_card_size(runtime: &Runtime) -> egui::Vec2 {
         // parent level"); an error card keeps the small box.
         Runtime::Json(json) if json.error.is_none() => crate::json_view::preview_size(&json.value),
         Runtime::Json(_) => JSON_NODE_SIZE,
-        // A group is the one kind with no runtime (2b-6 Ruling 8: no unknown-type card yet).
+        // A group has no runtime of its own (2b-6 Ruling 8).
         Runtime::None => GROUP_NODE_SIZE,
+        Runtime::Unknown => UNKNOWN_NODE_SIZE,
     }
 }
 
@@ -921,8 +925,9 @@ pub(crate) fn node_card_rect(pos: egui::Vec2, runtime: &Runtime) -> egui::Rect {
 }
 
 /// What the Graph filter box matches a card against: a tab's title and
-/// URL, a download's full path, a note's text, a file node's filename, a group's name (`text`, `App::own_text`, for
-/// a note or a group).
+/// URL, a download's full path, a note's text, a file node's filename, a group's or jar's name (`text`,
+/// `App::own_text`, for a note or a group). A card of a type this build doesn't know has nothing of its own: its
+/// stored name is pushed beside it by the caller.
 pub(crate) fn card_filter_text<'a>(runtime: &'a Runtime, text: &'a str) -> Vec<&'a str> {
     match runtime {
         Runtime::Tab(tab) => vec![&tab.title, &tab.url],
@@ -932,9 +937,9 @@ pub(crate) fn card_filter_text<'a>(runtime: &'a Runtime, text: &'a str) -> Vec<&
         Runtime::Image(image) => vec![download_filename(&image.path)],
         Runtime::Pdf(pdf) => vec![download_filename(&pdf.path)],
         Runtime::Json(json) => vec![download_filename(&json.path)],
-        // A group is the one kind with no runtime (2b-6 Ruling 8: no unknown-type card yet); it matches on its name,
-        // `text`, as a jar does.
+        // A group has no runtime of its own (2b-6 Ruling 8); it matches on its name, `text`, as a jar does.
         Runtime::None | Runtime::Jar => vec![text],
+        Runtime::Unknown => Vec::new(),
     }
 }
 
@@ -1303,8 +1308,8 @@ impl App {
                 self.paint_tab_body(ui, deferred_overlays, id, rect, inv_zoom, zoom_scale)
             }
             TYPE_TAB => self.paint_unloaded_tab_body(ui, deferred_overlays, id, rect, inv_zoom, zoom_scale),
-            // A type this build doesn't know has no card of its own yet (2b-6 Ruling 8): the bare frame.
-            _ => CardBody { interact_rect: rect, tooltip: None },
+            // `TYPE_UNKNOWN` (`card_kind::canonical_type`): every other row is matched above.
+            _ => self.paint_unknown_body(ui, deferred_overlays, id, rect, inv_zoom, zoom_scale),
         }
     }
 
@@ -1532,6 +1537,39 @@ impl App {
             name: "Jar".to_owned(),
             user_name: Some(&segs),
             source: if def.ephemeral { "Ephemeral".to_owned() } else { String::new() },
+            source_is_path: false,
+            scrim: false,
+            right_margin: 0.0,
+        };
+        self.paint_card_header(ui, deferred_overlays, id, rect, inv_zoom, zoom_scale, header);
+        body
+    }
+
+    /// A card of a type this build doesn't know (spec 2026-10-14 decision 9): a question-mark glyph and its type
+    /// string in the header. A stored name takes the title's place (`paint_card_header`) and the type moves under it.
+    /// No body.
+    pub(crate) fn paint_unknown_body(
+        &mut self,
+        ui: &mut egui::Ui,
+        deferred_overlays: &mut DeferredOverlays,
+        id: &str,
+        rect: egui::Rect,
+        inv_zoom: f32,
+        zoom_scale: f32,
+    ) -> CardBody {
+        let body = CardBody { interact_rect: rect, tooltip: None };
+        if self.graph_lod_simplified {
+            return body;
+        }
+        let ty = self.mirror.ty(id).to_owned();
+        let named = !self.mirror.name(id).is_empty(); // name rule: only whether one is stored
+        let header = CardHeader {
+            glyph: Some(egui_phosphor::light::QUESTION),
+            glyph_color: None,
+            icon_image: None,
+            source: if named { ty.clone() } else { String::new() },
+            name: ty,
+            user_name: None,
             source_is_path: false,
             scrim: false,
             right_margin: 0.0,

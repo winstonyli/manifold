@@ -110,6 +110,7 @@ mod tests {
         DownloadPayload, ImagePayload, JsonPayload, NotePayload, PdfPayload, UnloadedState, UnloadedTabPayload,
     };
     use crate::process_manager::{ViewKind, ViewTab};
+    use crate::store::model::FieldValue;
 
     /// The fixture lists one card per node type (a link is never a card) and the loaded tab, in draw order.
     #[test]
@@ -168,6 +169,7 @@ mod tests {
             (Kind::Pdf, Runtime::Pdf(PdfPayload { path: "d.pdf".into(), outcome: None }), plain(TYPE_PDF)),
             (Kind::Json, json, plain(TYPE_JSON)),
             (Kind::Jar, Runtime::Jar, plain(TYPE_JAR)),
+            (Kind::Unknown, Runtime::Unknown, plain(TYPE_UNKNOWN)),
             (Kind::Group, Runtime::None, plain(TYPE_GROUP)),
         ]
     }
@@ -179,6 +181,10 @@ mod tests {
             let id = format!("n{i}");
             let live = payload.as_tab().is_some();
             app.test_node(&id, kind, payload);
+            if kind == Kind::Unknown {
+                let future = FieldValue::Str("application/x-from-the-future".into());
+                app.mirror.init_field(&id, crate::store::model::field::TYPE, future);
+            }
             let got = app.card_kind(&id).unwrap();
             assert_eq!(got, want, "{kind:?}");
             assert_eq!(got.loaded(), live, "{kind:?}");
@@ -192,7 +198,7 @@ mod tests {
     fn an_unknown_stored_type_reads_as_the_unknown_row() {
         use crate::store::model::{field, FieldValue};
         let mut app = App::default();
-        app.test_node("u", Kind::Unknown, Runtime::None);
+        app.test_node("u", Kind::Unknown, Runtime::Unknown);
         app.mirror.init_field("u", field::TYPE, FieldValue::Str("application/x-from-the-future".into()));
         let kind = app.card_kind("u").unwrap();
         assert_eq!(kind.ty, TYPE_UNKNOWN);

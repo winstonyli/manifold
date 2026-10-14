@@ -288,7 +288,7 @@ impl App {
             let Some(node) = self.nodes.get(&id) else { break };
             // A JSON level's crumb is its Json node, named by its file.
             let name = match &node.runtime {
-                // A group is the one kind with no runtime (2b-6 Ruling 8: no unknown-type card yet).
+                // A group has no runtime of its own (2b-6 Ruling 8).
                 // name rule: drawn by display_name in toolbar_breadcrumb.
                 Runtime::None => self.mirror.name(&id).to_owned(),
                 Runtime::Json(json) => download_filename(&json.path).to_string(),
@@ -653,7 +653,7 @@ mod tests {
                 Runtime::Tab(_) => 0,
                 Runtime::Unloaded(_) => 1,
                 Runtime::Download(_) => 2,
-                Runtime::Note(_) | Runtime::Jar => 3,
+                Runtime::Note(_) | Runtime::Jar | Runtime::Unknown => 3,
                 Runtime::Image(_) => 4,
                 Runtime::Pdf(_) => 5,
                 Runtime::Json(_) => 6,

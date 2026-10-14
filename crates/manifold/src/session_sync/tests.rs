@@ -5902,3 +5902,170 @@ fn a_replaced_sessions_tabs_use_the_running_default() {
     assert_eq!(jar_of_url("https://a/"), Some(running), "the file's Default is the running one");
     assert_eq!(jar_of_url("https://b/"), Some(work), "a named jar comes with the session");
 }
+
+/// A newer build's type: the unknown-type card (spec 2026-10-14).
+const FUTURE: &str = "application/x-from-the-future";
+
+/// A session another replica (actor 2) wrote holding one node of type `FUTURE`, named "Old" at (5, 5), with a newer
+/// build's raw field 40 and two known fields its kind doesn't carry (`url`, an `Id`-typed `jar`), restored by actor 1.
+fn restored_unknown() -> (App, NodeId, std::path::PathBuf) {
+    let path = temp_dir("unknown-card").join("session.mnf");
+    let node = {
+        let mut other = Journal::open(&path, ActorId(2)).unwrap();
+        let mut txn = other.begin().unwrap();
+        let node = txn.next_id();
+        let mut fields = encode_field(field::NAME, &FieldValue::Str("Old".into()));
+        fields.extend(encode_field(field::POS, &FieldValue::Pos(5.0, 5.0)));
+        fields.extend(encode_field(field::URL, &FieldValue::Str("https://x/".into())));
+        fields.extend(encode_field(field::JAR, &FieldValue::Id(Some(node))));
+        fields.extend(encode_field(40, &FieldValue::Str("theirs".into())));
+        txn.commit(vec![OpBody::create(node, FUTURE, fields)]).unwrap();
+        node
+    };
+    let mut app = app_on(&path, 1);
+    assert!(app.restore_session(), "a lone unknown card is real content, not a fresh start");
+    (app, node, path)
+}
+
+/// The fields `node` holds in `app`'s document, by number.
+fn doc_fields(app: &App, node: NodeId) -> Vec<u32> {
+    app.journal.as_ref().unwrap().doc().nodes[&node].fields.keys().copied().collect()
+}
+
+#[test]
+fn an_unknown_type_is_a_card_from_a_restore_and_from_a_remote_create() {
+    let (mut app, node, path) = restored_unknown();
+    let key = node.to_string();
+    assert!(matches!(app.nodes[&key].runtime, Runtime::Unknown));
+    assert_eq!(app.mirror.ty(&key), FUTURE);
+    assert_eq!(app.card_kind(&key).unwrap().ty, crate::store::model::TYPE_UNKNOWN);
+    assert_eq!(app.mirror.name(&key), "Old");
+    assert_eq!(app.mirror.pos(&key), Some(egui::vec2(5.0, 5.0)));
+    assert_eq!(app.accessible_name(&key).as_deref(), Some("Card: Old"));
+    let mut third = Journal::open(&path, ActorId(3)).unwrap();
+    let mut txn = third.begin().unwrap();
+    let second = txn.next_id();
+    txn.commit(vec![OpBody::create(second, FUTURE, encode_field(field::NAME, &FieldValue::Str("New".into())))])
+        .unwrap();
+    assert!(app.save_session());
+    assert!(matches!(app.nodes[&second.to_string()].runtime, Runtime::Unknown), "another replica's shows too");
+    let doc = app.journal.as_ref().unwrap().doc();
+    assert_eq!(shown(doc), snapshots(&app));
+}
+
+#[test]
+fn moving_an_unknown_card_writes_one_set_and_keeps_its_raw_fields() {
+    let (mut app, node, _path) = restored_unknown();
+    let key = node.to_string();
+    assert!(app.save_session());
+    let raw = app.journal.as_ref().unwrap().doc().nodes[&node].fields[&40].enc.clone();
+    let before = ops_of(&app);
+    app.edit_pos(&key, Some(egui::vec2(50.0, 60.0)));
+    assert!(app.save_session());
+    assert_eq!(ops_of(&app), before + 1, "one Set");
+    assert_eq!(stored(&app, &key, field::POS), FieldValue::Pos(50.0, 60.0));
+    let doc = app.journal.as_ref().unwrap().doc();
+    assert_eq!(doc.nodes[&node].fields[&40].enc, raw, "a newer build's field is untouched");
+    assert_eq!(doc.nodes[&node].get(field::URL), FieldValue::Str("https://x/".into()), "so is an off-list one");
+}
+
+#[test]
+fn a_remote_delete_removes_an_unknown_card() {
+    let (mut app, node, path) = restored_unknown();
+    let mut other = Journal::open(&path, ActorId(3)).unwrap();
+    other.begin().unwrap().commit(vec![OpBody::Delete { node }]).unwrap();
+    assert!(app.save_session());
+    assert!(!app.nodes.contains_key(&node.to_string()));
+}
+
+/// A node an op named before its `Create` arrived stays hidden; once its type lands it is a card.
+#[test]
+fn a_typeless_placeholder_gets_its_card_when_its_type_arrives() {
+    let node = id(5);
+    let mut doc = Doc::new(crate::store::model::DocId([0; 16]));
+    doc.nodes.insert(node, Node::placeholder());
+    assert_eq!(App::remote_changes(&doc, &[node]), vec![(node, None)]);
+    doc.nodes.insert(node, Node::with_type(FUTURE));
+    let changes = App::remote_changes(&doc, &[node]);
+    assert_eq!(changes[0].1.as_ref().map(|s| s.ty.as_str()), Some(FUTURE));
+    let mut app = App::default();
+    app.apply_remote(changes);
+    assert!(matches!(app.nodes[&node.to_string()].runtime, Runtime::Unknown));
+}
+
+/// Duplicate, Close then Reopen, and a JSON round trip each make a shell of the type: the type string and the
+/// generic fields, never a newer build's field or a known one its kind doesn't carry (spec decision 4).
+#[test]
+fn an_unknown_card_copies_as_a_shell_of_its_type() {
+    use crate::store::model::GENERIC;
+    let (mut app, node, _path) = restored_unknown();
+    let key = node.to_string();
+    app.edit_name(&key, "Mine");
+    assert!(app.save_session());
+    assert_eq!(app.accessible_name(&key).as_deref(), Some("Card: Mine"));
+    let shell = |app: &App, id: NodeId| {
+        let doc = app.journal.as_ref().unwrap().doc();
+        assert_eq!(doc.nodes[&id].ty(), FUTURE);
+        doc_fields(app, id).iter().all(|no| *no == field::TYPE || *no == field::GROUP || GENERIC.contains(no))
+    };
+
+    app.duplicate_nodes(std::slice::from_ref(&key));
+    let copies: Vec<String> = app
+        .nodes
+        .iter()
+        .filter(|(k, n)| **k != key && matches!(n.runtime, Runtime::Unknown))
+        .map(|(k, _)| k.clone())
+        .collect();
+    assert_eq!(copies.len(), 1);
+    assert_eq!(app.mirror.name(&copies[0]), "Mine");
+    assert!(shell(&app, copies[0].parse().unwrap()), "{:?}", doc_fields(&app, copies[0].parse().unwrap()));
+
+    app.close_node_and_save(&key);
+    assert!(!app.nodes.contains_key(&key));
+    assert_eq!(
+        app.closed.last().unwrap().doc.nodes[0].fields["type"],
+        FUTURE,
+        "the closed entry holds the real string"
+    );
+    app.reopen_closed_shortcut();
+    let reopened: Vec<NodeId> = app
+        .nodes
+        .iter()
+        .filter(|(k, n)| **k != copies[0] && matches!(n.runtime, Runtime::Unknown))
+        .map(|(k, _)| k.parse().unwrap())
+        .collect();
+    assert_eq!(reopened.len(), 1, "a fresh shell, not the tombstone");
+    assert!(shell(&app, reopened[0]));
+
+    let json = crate::store::json::doc_to_json(app.journal.as_ref().unwrap().doc());
+    let mut counter = 0;
+    let next = || {
+        counter += 1;
+        NodeId { actor: ActorId(9), counter }
+    };
+    let imported = crate::store::json::import(&json, next, crate::store::json::Trust::Foreign).unwrap();
+    let shells: Vec<_> = imported.iter().filter(|i| i.ty == FUTURE).collect();
+    assert_eq!(shells.len(), 2);
+    for s in shells {
+        assert!(s.fields.keys().all(|no| *no == field::GROUP || GENERIC.contains(no)), "{:?}", s.fields);
+    }
+}
+
+#[test]
+fn a_link_and_a_group_take_an_unknown_card() {
+    let (mut app, node, _path) = restored_unknown();
+    let key = node.to_string();
+    let note = add(&mut app, Kind::Note, Runtime::Note(NotePayload { text: "n".into(), editing: false }));
+    let g = add_group(&mut app, "G");
+    assert!(app.save_session());
+    assert!(app.connect(crate::caps::LINK, &key, &note).is_ok());
+    assert!(app.connect(crate::caps::OPENED_FROM, &key, &note).is_err(), "it opens nothing");
+    assert!(app.save_session());
+    let links = |app: &App| app.journal.as_ref().unwrap().doc().live().filter(|(_, n)| n.kind() == Kind::Link).count();
+    assert_eq!(links(&app), 1);
+    app.edit_group(&key, Some(g.clone()));
+    assert!(app.save_session());
+    let doc = app.journal.as_ref().unwrap().doc();
+    assert_eq!(doc.effective_group(node), Some(g.parse().unwrap()));
+    assert_eq!(app.mirror.group(&key), Some(g.as_str()));
+}

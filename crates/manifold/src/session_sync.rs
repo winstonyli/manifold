@@ -99,13 +99,15 @@ pub(crate) fn color_of(value: &FieldValue) -> Option<egui::Color32> {
 }
 
 /// Whether a card of stored type `ty` can run on `runtime`: the pairing `place_node` and the landings establish.
-/// A tab's runtime is one type whether it is loaded or asleep; a group has none (2b-6 Ruling 8).
+/// A tab's runtime is one type whether it is loaded or asleep; a group has none (2b-6 Ruling 8); a type this build
+/// doesn't know reads as `TYPE_UNKNOWN` (`card_kind::canonical_type`).
 #[cfg(debug_assertions)]
 fn runtime_has_type(runtime: &Runtime, ty: &str) -> bool {
     use crate::store::model::{
-        TYPE_DOWNLOAD, TYPE_GROUP, TYPE_IMAGE, TYPE_JAR, TYPE_JSON, TYPE_NOTE, TYPE_PDF, TYPE_TAB,
+        TYPE_DOWNLOAD, TYPE_GROUP, TYPE_IMAGE, TYPE_JAR, TYPE_JSON, TYPE_NOTE, TYPE_PDF, TYPE_TAB, TYPE_UNKNOWN,
     };
     match runtime {
+        Runtime::Unknown => ty == TYPE_UNKNOWN,
         Runtime::Jar => ty == TYPE_JAR,
         Runtime::Tab(_) | Runtime::Unloaded(_) => ty == TYPE_TAB,
         Runtime::Download(_) => ty == TYPE_DOWNLOAD,
@@ -394,8 +396,9 @@ impl App {
     /// its payload holds (2b-3 Ruling 1); its engine is the one a swap in progress already shows as its target
     /// (`start_swap_to`); a file card's path is the stored one, not the one its payload resolved here (2b-5 Ruling
     /// 5). Its type is the mirror's string (`Mirror::ty`, the one source of a node's type), kept as written. `None` for an in-progress download
-    /// (it can't resume, so it isn't created until it completes), for a node of a type this build doesn't know (never
-    /// placed today: every way in seeds a known type), and for an id that is none of these.
+    /// (it can't resume, so it isn't created until it completes), for a node with no type yet, and for an id that is
+    /// none of these. A type this build doesn't know is snapshotted with its string and the generic fields
+    /// (`Kind::fields`).
     pub(crate) fn snapshot(&self, id: NodeId) -> Option<Snapshot> {
         let key = id.to_string();
         if self.nodes.contains_key(&key) {
@@ -403,10 +406,10 @@ impl App {
                 return None;
             }
             let ty = self.mirror.ty(&key);
-            let kind = Kind::from_type(ty);
-            if kind == Kind::Unknown {
+            if ty.is_empty() {
                 return None;
             }
+            let kind = Kind::from_type(ty);
             let fields = kind
                 .fields()
                 .iter()
@@ -584,11 +587,12 @@ impl App {
                     n.text = str_of(fields, field::TEXT);
                 }
             }
-            // A group's fields (it has no runtime), a jar's, a content node's url and a Json node's view are the
-            // mirror's alone (`mirror_remote`; the level shown is relaid out below). Paths, keys and values never
-            // change after creation.
+            // A group's fields (it has no runtime), a jar's, an unknown-type card's (all generic), a content node's
+            // url and a Json node's view are the mirror's alone (`mirror_remote`; the level shown is relaid out
+            // below). Paths, keys and values never change after creation.
             Runtime::None
             | Runtime::Jar
+            | Runtime::Unknown
             | Runtime::Download(_)
             | Runtime::Image(_)
             | Runtime::Pdf(_)
@@ -727,7 +731,8 @@ impl App {
                     self.after_jar_ephemeral_changed(jar, true);
                 }
             }
-            Kind::Link | Kind::Unknown => return,
+            Kind::Unknown => self.insert_placeholder_node(id.clone(), pos, kind, Runtime::Unknown),
+            Kind::Link => return,
         }
         // A content node's url, its stored path and a Json node's view are already the mirror's (`mirror_remote`).
         // The placeholder just inserted above (see `missing_with_url`)

@@ -712,6 +712,17 @@ impl App {
             let segs = crate::names::display_name(first, crate::names::UNTITLED);
             return (crate::names::name_job(ui, "", &segs, "").into(), crate::names::hidden_hint(&segs));
         }
+        // A type this build doesn't know (`JsonNode::kind` is `None`): its stored name, else its type string, as its
+        // card's header shows them.
+        if node.kind().is_none() {
+            ui.label(egui_phosphor::light::QUESTION);
+            let name = str_field("name");
+            if name.is_empty() {
+                return (str_field("type").into(), None);
+            }
+            let segs = crate::names::display_name(&name, crate::names::UNTITLED);
+            return (crate::names::name_job(ui, "", &segs, "").into(), crate::names::hidden_hint(&segs));
+        }
         let text: String = match node.kind() {
             Some(Kind::Tab) => {
                 view_dot(ui, ViewKind::from_name(&str_field("view_kind")).unwrap_or(ViewKind::Servo), 8.0);
@@ -726,7 +737,7 @@ impl App {
                 str_field("path")
             }
             _ => {
-                // Json, and anything a newer build added.
+                // Json, a jar, a download.
                 ui.label(egui_phosphor::light::BRACKETS_CURLY);
                 str_field("path")
             }

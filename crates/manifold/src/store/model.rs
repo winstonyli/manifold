@@ -454,9 +454,15 @@ impl Node {
         Kind::from_type(self.ty())
     }
 
-    /// Shown in the graph: created, not deleted, and of a kind this build knows.
+    /// Shown in the graph: created with a type (any, one this build doesn't know included: an unknown-type card),
+    /// and not deleted. An empty `type` is no type.
     pub fn is_live(&self) -> bool {
-        !self.deleted && self.kind() != Kind::Unknown
+        !self.deleted && !self.ty().is_empty()
+    }
+
+    /// A group: the only kind other nodes are shown inside (`Doc::effective_group`).
+    pub fn is_group(&self) -> bool {
+        self.kind() == Kind::Group
     }
 
     /// A live, groupless node of a known `kind`.
@@ -525,16 +531,15 @@ impl Doc {
         self.nodes.iter().filter(|(_, node)| node.is_live()).map(|(id, node)| (*id, node))
     }
 
-    /// The group `id` is shown in: its own, or, when that group isn't live
-    /// (deleted, not created yet, or of a kind this build doesn't know),
-    /// its nearest live ancestor (spec "Semantics"). `None` is the top
-    /// level, also for a group missing from the document or a cycle, which
-    /// only a damaged snapshot can hold.
+    /// The group `id` is shown in: its own, or, when that isn't a live group (deleted, not created yet, or another
+    /// card, a type this build doesn't know included), its nearest live group ancestor (spec "Semantics"; unknown-type
+    /// card decision 2). The document keeps the raw `group`. `None` is the top level, also for a group missing from
+    /// the document or a cycle, which only a damaged snapshot can hold.
     pub fn effective_group(&self, id: NodeId) -> Option<NodeId> {
         let mut group = self.nodes.get(&id)?.group;
         for _ in 0..=self.nodes.len() {
             let node = self.nodes.get(&group?)?;
-            if node.is_live() {
+            if node.is_live() && node.is_group() {
                 return group;
             }
             group = node.group;
@@ -690,7 +695,7 @@ mod tests {
         assert_eq!(Kind::from_type("image/jpeg"), Kind::Image);
         assert_eq!(Kind::from_type("IMAGE/webp"), Kind::Image);
         assert_eq!(Kind::from_type("video/mp4"), Kind::Unknown);
-        // The retired JSON leaf: an old document's leaf loads as a node nothing shows.
+        // The retired JSON leaf: an old document's leaf is now a type this build doesn't know (an unknown-type card).
         assert_eq!(Kind::from_type("application/vnd.manifold.json-leaf"), Kind::Unknown);
         assert_eq!(Kind::from_type(""), Kind::Unknown);
     }
@@ -703,7 +708,9 @@ mod tests {
         node.fields.insert(field::TYPE, reg(1, "application/vnd.manifold.jar"));
         assert_eq!((node.kind(), node.has_type(), node.is_live()), (Kind::Jar, true, true));
         node.fields.insert(field::TYPE, reg(2, "application/x-from-the-future"));
-        assert_eq!((node.kind(), node.has_type(), node.is_live()), (Kind::Unknown, true, false));
+        assert_eq!((node.kind(), node.has_type(), node.is_live()), (Kind::Unknown, true, true), "a card of its own");
+        node.fields.insert(field::TYPE, reg(3, ""));
+        assert!(node.has_type() && !node.is_live(), "an empty type is no type");
     }
 
     /// A type this build doesn't know carries the generic fields (spec decision 3): what the app reads, mirrors and
@@ -730,7 +737,7 @@ mod tests {
     }
 
     #[test]
-    fn nodes_show_at_their_nearest_live_group() {
+    fn nodes_show_at_their_nearest_live_group_never_inside_another_card() {
         let id = |counter| NodeId { actor: ActorId(1), counter };
         let at = |mut node: Node, group: Option<u64>, deleted| {
             node.group = group.map(id);
@@ -743,16 +750,18 @@ mod tests {
         doc.nodes.insert(id(2), node(Kind::Group, Some(1), true)); // deleted, in 1
         doc.nodes.insert(id(3), node(Kind::Tab, Some(2), false)); // shown in 1
         doc.nodes.insert(id(4), node(Kind::Tab, Some(99), false)); // group missing
-        doc.nodes.insert(id(5), at(Node::with_type("application/x-future"), Some(1), false)); // a newer build's group
+        doc.nodes.insert(id(5), at(Node::with_type("application/x-future"), Some(1), false)); // a newer build's container: live, not a group
         doc.nodes.insert(id(6), node(Kind::Tab, Some(5), false)); // shown in 1
         doc.nodes.insert(id(7), node(Kind::Group, Some(8), true)); // 7 and 8: a damaged cycle
         doc.nodes.insert(id(8), node(Kind::Group, Some(7), true));
         doc.nodes.insert(id(9), node(Kind::Tab, Some(7), false));
+        doc.nodes.insert(id(10), node(Kind::Note, Some(3), false)); // in a tab: shown in 1
         assert_eq!(doc.effective_group(id(3)), Some(id(1)));
         assert_eq!(doc.effective_group(id(4)), None);
         assert_eq!(doc.effective_group(id(6)), Some(id(1)));
         assert_eq!(doc.effective_group(id(9)), None);
-        assert_eq!(doc.with_descendants(BTreeSet::from([id(2)])), BTreeSet::from([id(2), id(3)]));
-        assert_eq!(doc.with_descendants(BTreeSet::from([id(1)])), BTreeSet::from([1, 2, 3, 5, 6].map(id)));
+        assert_eq!(doc.effective_group(id(10)), Some(id(1)), "a tab is no group");
+        assert_eq!(doc.with_descendants(BTreeSet::from([id(2)])), BTreeSet::from([id(2), id(3), id(10)]));
+        assert_eq!(doc.with_descendants(BTreeSet::from([id(1)])), BTreeSet::from([1, 2, 3, 5, 6, 10].map(id)));
     }
 }

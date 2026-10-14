@@ -23,6 +23,8 @@ pub(crate) enum Runtime {
     /// A cookie jar's card. Everything it shows is the mirror's (name, colour, ephemeral flag); its cookies are
     /// `App::jars`, keyed by its id.
     Jar,
+    /// A card of a type this build doesn't know: the generic fields only, all the mirror's (spec 2026-10-14).
+    Unknown,
     None,
 }
 
@@ -87,6 +89,7 @@ impl Runtime {
             | Runtime::Pdf(_)
             | Runtime::Json(_)
             | Runtime::Jar
+            | Runtime::Unknown
             | Runtime::None => None,
         }
     }
@@ -100,7 +103,12 @@ impl Runtime {
             Runtime::Pdf(p) => Some(&p.path),
             Runtime::Json(p) => Some(&p.path),
             Runtime::Download(p) => Some(&p.path),
-            Runtime::Tab(_) | Runtime::Unloaded(_) | Runtime::Note(_) | Runtime::Jar | Runtime::None => None,
+            Runtime::Tab(_)
+            | Runtime::Unloaded(_)
+            | Runtime::Note(_)
+            | Runtime::Jar
+            | Runtime::Unknown
+            | Runtime::None => None,
         }
     }
 
@@ -116,6 +124,7 @@ impl Runtime {
             | Runtime::Pdf(_)
             | Runtime::Json(_)
             | Runtime::Jar
+            | Runtime::Unknown
             | Runtime::None => None,
         }
     }
@@ -394,7 +403,8 @@ impl Layout {
 impl GraphNode {
     /// What a screen reader announces for the node's card: its kind, then what identifies it. A content card is named
     /// by its web `source` (`App::source_url`), or by its file name when it has none; a note by the first line of
-    /// `text` and a group by `text`, the stored text its card shows (`App::own_text`), ignored for other kinds.
+    /// `text` and a group or jar by `text`, the stored text its card shows (`App::own_text`), ignored for other kinds;
+    /// a card of a type this build doesn't know is "Card", which a stored name follows (`App::accessible_name`).
     pub(crate) fn accessible_name(&self, text: &str, source: Option<&str>) -> String {
         let first_nonempty = |parts: &[&str]| parts.iter().find(|p| !p.trim().is_empty()).map(|p| p.trim().to_string());
         // Either separator: a saved path may come from the other platform.
@@ -405,7 +415,7 @@ impl GraphNode {
             Runtime::Tab(t) => ("Tab", first_nonempty(&[&t.title, &t.url])),
             Runtime::Unloaded(t) => ("Sleeping tab", first_nonempty(&[&t.title, &t.url])),
             Runtime::Download(d) => ("Download", file_name(&d.path)),
-            // A group is the one kind with no runtime (2b-6 Ruling 8: no unknown-type card yet); its name is `text`.
+            // A group has no runtime of its own (2b-6 Ruling 8); its name is `text`.
             Runtime::None => {
                 ("Group", Some(crate::names::to_plain(&crate::names::display_name(text, crate::names::UNTITLED))))
             }
@@ -413,6 +423,7 @@ impl GraphNode {
             Runtime::Jar => {
                 ("Cookie jar", Some(crate::names::to_plain(&crate::names::display_name(text, crate::names::UNTITLED))))
             }
+            Runtime::Unknown => ("Card", None),
             Runtime::Note(_) => {
                 // The note's text is never cleaned; its first non-blank line is shown by the display rule.
                 let first = text.lines().map(str::trim).find(|l| !l.is_empty());
@@ -535,5 +546,6 @@ second"
         );
         assert_eq!(Runtime::None.saved_tab(), None);
         assert_eq!(Runtime::Jar.saved_tab(), None);
+        assert_eq!(Runtime::Unknown.saved_tab(), None);
     }
 }

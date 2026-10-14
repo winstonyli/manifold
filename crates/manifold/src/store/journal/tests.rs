@@ -281,11 +281,11 @@ fn a_type_this_build_does_not_know_survives_snapshots_and_compaction() {
     let doc = Journal::read(&std::fs::read(&path).unwrap()).unwrap();
     assert_eq!(doc.nodes[&node].fields[&field::TYPE].enc, ty, "the raw `type` register is kept");
     assert_eq!(doc.nodes[&node].kind(), Kind::Unknown);
-    assert!(!doc.nodes[&node].is_live());
+    assert!(doc.nodes[&node].is_live(), "a type this build doesn't know is a card");
 }
 
 /// The retired JSON leaf, written as an older build did (type string, `key` 12, `value` 13, group `from_json` 9):
-/// a document that holds them reads as unknown and keeps every byte through a snapshot and compaction.
+/// a document that holds them reads as unknown (a card) and keeps every byte through a snapshot and compaction.
 #[test]
 fn a_retired_json_leaf_and_its_group_flag_survive_compaction() {
     let dir = temp_dir("retired-leaf");
@@ -310,7 +310,7 @@ fn a_retired_json_leaf_and_its_group_flag_survive_compaction() {
     let doc = Journal::read(&std::fs::read(&path).unwrap()).unwrap();
     assert_eq!(doc.nodes, before.nodes, "every field, known or not, is kept");
     assert_eq!(doc.nodes[&leaf].kind(), Kind::Unknown);
-    assert!(!doc.nodes[&leaf].is_live(), "nothing shows it");
+    assert!(doc.nodes[&leaf].is_live(), "an unknown type is a card now");
     assert_eq!(doc.nodes[&group].kind(), Kind::Group);
     assert!(doc.nodes[&group].is_live());
 }

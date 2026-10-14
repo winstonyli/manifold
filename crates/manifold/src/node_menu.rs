@@ -647,7 +647,8 @@ pub(crate) fn node_menu_config(view: &NodeMenuView, headless: bool) -> NodeMenuC
                 Vec::new(),
             )
         }
-        // A type this build doesn't know has no menu of its own yet (2b-6 Ruling 8): the shared tail only.
+        // A type this build doesn't know (`TYPE_UNKNOWN`): the shared rows only (Rename, Duplicate, Pin, Color, links,
+        // Move to) and Delete.
         _ => finish("node_context_menu", 150.0, Vec::new(), delete("Delete"), Vec::new()),
     }
 }
