@@ -113,7 +113,8 @@ impl App {
         if !stored_card(from) || !stored_card(to) {
             return Err(ConnectError::NotLive);
         }
-        if from == to || !crate::caps::edges().can_connect(edge, self.mirror.ty(from), self.mirror.ty(to)) {
+        let ty = |id: &str| crate::card_kind::canonical_type(self.mirror.ty(id));
+        if from == to || !crate::caps::edges().can_connect(edge, ty(from), ty(to)) {
             return Err(ConnectError::NotAllowed);
         }
         if !self.in_scope(row.scope(), from, to) {

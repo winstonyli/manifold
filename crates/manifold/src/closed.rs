@@ -31,14 +31,14 @@ const DUPLICATE_OFFSET: f32 = 40.0;
 /// browser's own bounded "Recently closed" list.
 pub(crate) const MAX_CLOSED: usize = 20;
 
-/// Whether a node of type `ty` (`Mirror::ty`) with `fields` (its snapshot's) is
-/// worth keeping in a `ClosedEntry`. `false` for a completed download (it
-/// has no closed state -- starting it over isn't "reopening"), a
-/// blank note (nothing to restore; the `Blank` tag) and a type this build
-/// doesn't know; everything else -- tabs, groups, images, PDFs, JSON files
-/// and leaves -- is. The capability rows in `caps/rows.rs` decide.
+/// Whether a node of stored type `ty` (`Mirror::ty`) with `fields` (its snapshot's) is worth keeping in a
+/// `ClosedEntry`. `false` for a completed download (it has no closed state -- starting it over isn't "reopening"), a
+/// blank note (nothing to restore; the `Blank` tag) and no type at all; everything else -- tabs, groups, images,
+/// PDFs, JSON files, jars and a type this build doesn't know (a shell, spec decision 4) -- is. The capability rows
+/// in `caps/rows.rs` decide, by the row the type reads as (`card_kind::canonical_type`).
 pub(crate) fn worth_reopening(ty: &str, fields: &session_sync::Fields) -> bool {
     use crate::caps::{Tag, TagSet};
+    let ty = crate::card_kind::canonical_type(ty);
     let text = fields.get(&field::TEXT);
     let blank = !matches!(text, Some(store::model::FieldValue::Str(text)) if !text.trim().is_empty());
     let tags = if ty == store::model::TYPE_NOTE && blank { TagSet::of(&[Tag::Blank]) } else { TagSet::EMPTY };
@@ -168,7 +168,7 @@ pub(crate) fn subtree_entry(
             root_id,
             &order,
             |id| app.mirror.group(&id.to_string()).and_then(|g| g.parse().ok()),
-            |id| crate::caps::edges().target_accepts(crate::caps::CONTAINS, app.mirror.ty(&id.to_string())),
+            |id| app.is_container(&id.to_string()),
         );
         for member_id in members {
             let Some(member) = app.snapshot(member_id) else { continue };
@@ -531,11 +531,15 @@ mod tests {
         assert_eq!(entry.doc.nodes[0].fields.get("text"), Some(&serde_json::json!("typed")));
     }
 
-    /// A type this build doesn't know, and no type at all (`Mirror::ty` of a node the mirror lacks), are not.
+    /// A type this build doesn't know comes back as a shell of its type (spec decision 4), whatever its case; no type
+    /// at all (`Mirror::ty` of a node the mirror lacks) does not; a blank note is not, whatever the case of its type.
     #[test]
-    fn an_unknown_type_is_not_worth_reopening() {
-        assert!(!worth_reopening("application/x-future", &Default::default()));
+    fn an_unknown_type_is_worth_reopening_as_a_shell() {
+        assert!(worth_reopening("application/x-future", &Default::default()));
+        assert!(worth_reopening("application/vnd.manifold.json-leaf", &Default::default()), "a retired type");
         assert!(!worth_reopening("", &Default::default()));
+        assert!(!worth_reopening("Text/Markdown", &Default::default()), "a blank note, its type in another case");
+        assert!(!worth_reopening(store::model::TYPE_DOWNLOAD, &Default::default()));
     }
 
     /// Decided by the node's type string (`Mirror::ty`) and, for a note, whether its text is blank.

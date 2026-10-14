@@ -4,12 +4,19 @@
 
 use super::*;
 use crate::caps::{edges, registry, Caps, Tag, TagSet, CONTAINS};
-use crate::store::model::Kind;
+use crate::store::model::{Kind, TYPE_UNKNOWN};
 #[cfg(test)]
 use crate::store::model::{TYPE_DOWNLOAD, TYPE_GROUP, TYPE_IMAGE, TYPE_JAR, TYPE_JSON, TYPE_NOTE, TYPE_PDF, TYPE_TAB};
 
-/// The row string for a type this build doesn't know: only the `*/*` row matches it.
-const UNKNOWN_TYPE: &str = "*/*";
+/// The row string a stored type reads as, for `caps::registry` and `caps::edges` (spec decision 7): a known kind's
+/// own type string (case ignored; any `image/*` is the image row), `TYPE_UNKNOWN` for a type this build doesn't
+/// know, and "" for no type (an id the mirror holds no `type` for), which no row matches.
+pub(crate) fn canonical_type(raw: &str) -> &'static str {
+    if raw.is_empty() {
+        return "";
+    }
+    Kind::from_type(raw).type_str().unwrap_or(TYPE_UNKNOWN)
+}
 
 /// A card's type and tags, as `caps::registry().caps(ty, tags)` takes them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,11 +48,11 @@ pub(crate) fn can_contain(member: CardKind, group: CardKind) -> bool {
 }
 
 impl App {
-    /// The identity of card `id`: its stored type (`Mirror::ty`, canonicalised: any `image/*` is the image row), plus
-    /// `Tag::Loaded` while a tab has an engine. `None` when `id` has no node.
+    /// The identity of card `id`: its stored type as its row reads it (`canonical_type`), plus `Tag::Loaded` while a
+    /// tab has an engine. `None` when `id` has no node.
     pub(crate) fn card_kind(&self, id: &str) -> Option<CardKind> {
         let node = self.nodes.get(id)?;
-        let ty = Kind::from_type(self.mirror.ty(id)).type_str().unwrap_or(UNKNOWN_TYPE);
+        let ty = canonical_type(self.mirror.ty(id));
         let tags = if node.runtime.as_tab().is_some() { TagSet::of(&[Tag::Loaded]) } else { TagSet::EMPTY };
         Some(CardKind { ty, tags })
     }
@@ -76,15 +83,16 @@ pub(crate) mod fixtures {
         plain(TYPE_TAB)
     }
 
-    /// Every card kind, in draw order: each `TYPES` entry a node can show (`kinds_cover_every_node_type` pins that)
-    /// plus the loaded tab, which shares the sleeping tab's type.
-    pub(crate) fn kinds() -> [CardKind; 9] {
+    /// Every card kind, in draw order: each `TYPES` entry a node can show and the unknown-type row
+    /// (`kinds_cover_every_node_type` pins that), plus the loaded tab, which shares the sleeping tab's type.
+    pub(crate) fn kinds() -> [CardKind; 10] {
         [
             loaded_tab(),
             sleeping_tab(),
             plain(TYPE_DOWNLOAD),
             plain(TYPE_NOTE),
             plain(TYPE_JAR),
+            plain(TYPE_UNKNOWN),
             plain(TYPE_IMAGE),
             plain(TYPE_PDF),
             plain(TYPE_JSON),
@@ -107,7 +115,8 @@ mod tests {
     #[test]
     fn kinds_cover_every_node_type() {
         use crate::store::model::{TYPES, TYPE_LINK};
-        let types: Vec<&str> = TYPES.iter().map(|t| t.1).filter(|&ty| ty != TYPE_LINK).collect();
+        let mut types: Vec<&str> = TYPES.iter().map(|t| t.1).filter(|&ty| ty != TYPE_LINK).collect();
+        types.push(TYPE_UNKNOWN);
         let listed: Vec<&str> = kinds().iter().filter(|kind| !kind.loaded()).map(|kind| kind.ty).collect();
         for ty in &types {
             assert!(listed.contains(ty), "{ty} is not in kinds()");
@@ -177,16 +186,35 @@ mod tests {
         assert_eq!(app.card_kind("missing"), None);
     }
 
+    /// A type this build doesn't know reads as the sentinel row: a restorable card drawn with notes and jars, not a
+    /// container.
     #[test]
-    fn an_unknown_stored_type_falls_back_to_the_catch_all_row() {
+    fn an_unknown_stored_type_reads_as_the_unknown_row() {
+        use crate::store::model::{field, FieldValue};
         let mut app = App::default();
         app.test_node("u", Kind::Unknown, Runtime::None);
+        app.mirror.init_field("u", field::TYPE, FieldValue::Str("application/x-from-the-future".into()));
         let kind = app.card_kind("u").unwrap();
-        assert_eq!(kind.ty, UNKNOWN_TYPE);
-        assert!(!kind.caps().restorable);
-        assert_eq!(kind.caps().draw_layer, 0);
+        assert_eq!(kind.ty, TYPE_UNKNOWN);
+        assert!(kind.caps().restorable);
+        assert_eq!(kind.caps().draw_layer, 3);
         assert!(!is_container(kind.ty));
         assert!(!app.is_container("u") && !app.is_container("missing"));
+    }
+
+    /// One mapping from a stored type to its row (spec decision 7): a known kind's own string (any image, any case),
+    /// the sentinel for anything else, and "" (no row) for no type.
+    #[test]
+    fn canonical_type_maps_known_kinds_to_their_row_and_the_rest_to_the_sentinel() {
+        use crate::store::model::TYPE_LINK;
+        assert_eq!(canonical_type("Text/Markdown"), TYPE_NOTE);
+        assert_eq!(canonical_type("image/jpeg"), TYPE_IMAGE);
+        assert_eq!(canonical_type(TYPE_TAB), TYPE_TAB);
+        assert_eq!(canonical_type(TYPE_LINK), TYPE_LINK);
+        assert_eq!(canonical_type("application/x-from-the-future"), TYPE_UNKNOWN);
+        assert_eq!(canonical_type("application/vnd.manifold.json-leaf"), TYPE_UNKNOWN, "a retired type");
+        assert_eq!(canonical_type(TYPE_UNKNOWN), TYPE_UNKNOWN);
+        assert_eq!(canonical_type(""), "");
     }
 
     /// The layers in the order Graph view always drew the kinds: a later one draws on top.
@@ -198,6 +226,7 @@ mod tests {
             (plain(TYPE_DOWNLOAD), 2),
             (plain(TYPE_NOTE), 3),
             (plain(TYPE_JAR), 3),
+            (plain(TYPE_UNKNOWN), 3),
             (plain(TYPE_IMAGE), 4),
             (plain(TYPE_PDF), 5),
             (plain(TYPE_JSON), 6),

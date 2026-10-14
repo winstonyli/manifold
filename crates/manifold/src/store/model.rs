@@ -123,6 +123,8 @@ pub const TYPE_JSON: &str = "application/json";
 /// What a created image is stored as until sniffed types arrive (plan 2c); any `image/*` reads back as an image.
 pub const TYPE_IMAGE: &str = "image/png";
 pub const TYPE_DOWNLOAD: &str = "application/octet-stream";
+/// Never stored: the row and edge string a type this build doesn't know reads as (`card_kind::canonical_type`).
+pub const TYPE_UNKNOWN: &str = "application/vnd.manifold.unknown";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Kind {

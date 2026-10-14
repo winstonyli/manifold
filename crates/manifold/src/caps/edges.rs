@@ -3,7 +3,7 @@
 //! reads them.
 
 use super::pattern::Pattern;
-use crate::store::model::{field, TYPE_GROUP, TYPE_JAR, TYPE_LINK, TYPE_NOTE, TYPE_TAB};
+use crate::store::model::{field, TYPE_GROUP, TYPE_JAR, TYPE_LINK, TYPE_NOTE, TYPE_TAB, TYPE_UNKNOWN};
 
 /// The containment edge: a node is shown inside a group.
 pub(crate) const CONTAINS: &str = "contains";
@@ -35,8 +35,9 @@ pub(crate) enum Storage {
     Tree,
 }
 
-/// Every card type that may sit inside a group.
-const CARD_TYPES: [&str; 8] = [
+/// Every card type that may sit inside a group and be linked; `TYPE_UNKNOWN` is a type this build doesn't know
+/// (`card_kind::canonical_type`), which opens nothing and takes no jar.
+const CARD_TYPES: [&str; 9] = [
     TYPE_TAB,
     TYPE_GROUP,
     TYPE_NOTE,
@@ -45,6 +46,7 @@ const CARD_TYPES: [&str; 8] = [
     "application/pdf",
     "application/json",
     "application/octet-stream",
+    TYPE_UNKNOWN,
 ];
 /// What a card may be opened from: every card but a jar (a jar opens nothing).
 const OPENER_TARGETS: [&str; 7] =
@@ -235,6 +237,25 @@ mod tests {
             assert!(t.can_connect(CONTAINS, source, TYPE_GROUP), "{source}");
             assert!(!t.can_connect(CONTAINS, source, TYPE_TAB), "{source}");
         }
+    }
+
+    /// The unknown-type card's row (spec decision 8): it sits in a group and links to any card both ways, but it is
+    /// no container, opens nothing, is opened from nothing and takes no jar.
+    #[test]
+    fn the_unknown_row_links_and_sits_in_a_group_but_opens_nothing_and_takes_no_jar() {
+        use crate::store::model::{TYPE_GROUP, TYPE_JAR, TYPE_NOTE, TYPE_TAB, TYPE_UNKNOWN};
+        let t = edges();
+        assert!(t.can_connect(CONTAINS, TYPE_UNKNOWN, TYPE_GROUP));
+        assert!(!t.target_accepts(CONTAINS, TYPE_UNKNOWN), "not a container");
+        for other in [TYPE_TAB, TYPE_GROUP, TYPE_NOTE, TYPE_JAR, TYPE_UNKNOWN] {
+            assert!(t.can_connect(LINK, TYPE_UNKNOWN, other) && t.can_connect(LINK, other, TYPE_UNKNOWN), "{other}");
+        }
+        assert!(
+            !t.can_connect(OPENED_FROM, TYPE_UNKNOWN, TYPE_TAB) && !t.can_connect(OPENED_FROM, TYPE_TAB, TYPE_UNKNOWN)
+        );
+        assert!(!t.can_connect(JAR_EDGE, TYPE_UNKNOWN, TYPE_JAR) && !t.can_connect(JAR_EDGE, TYPE_TAB, TYPE_UNKNOWN));
+        // Unchanged: a group is opened from nothing, and a jar opens nothing.
+        assert!(!t.can_connect(OPENED_FROM, TYPE_GROUP, TYPE_TAB) && !t.can_connect(OPENED_FROM, TYPE_TAB, TYPE_JAR));
     }
 
     #[test]

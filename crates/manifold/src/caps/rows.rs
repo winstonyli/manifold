@@ -90,12 +90,13 @@ impl Registry {
     }
 }
 
-/// What today's `worth_reopening` decided per kind: only a completed download, a blank note and an unknown kind
-/// are not recorded when closed. Also the draw layer of each type (`draw_layer`).
+/// What `worth_reopening` decides per type: only a completed download and a blank note are not recorded when closed
+/// (a type this build doesn't know comes back as a shell, spec decision 4). Also the draw layer of each type
+/// (`draw_layer`). A string no row matches gets the `Caps` default; `card_kind::canonical_type` maps every stored
+/// type to a row first.
 pub(crate) fn builtin_rows() -> Vec<Row> {
-    use crate::store::model::{TYPE_DOWNLOAD, TYPE_GROUP, TYPE_JAR, TYPE_NOTE, TYPE_TAB};
+    use crate::store::model::{TYPE_DOWNLOAD, TYPE_GROUP, TYPE_JAR, TYPE_NOTE, TYPE_TAB, TYPE_UNKNOWN};
     vec![
-        Row::new("*/*").restorable(false).draw_layer(0),
         Row::new(TYPE_TAB).restorable(true).draw_layer(1), // a sleeping tab; a loaded one draws under it
         // Outranks the row above for a loaded tab: same pattern, more `requires` tags (`Row::rank`).
         Row::new(TYPE_TAB).requires(&[Tag::Loaded]).draw_layer(0),
@@ -105,8 +106,9 @@ pub(crate) fn builtin_rows() -> Vec<Row> {
         Row::new("application/json").restorable(true).draw_layer(6),
         Row::new(TYPE_NOTE).restorable(true).draw_layer(3),
         Row::new(TYPE_JAR).restorable(true).draw_layer(3), // a jar card, drawn with notes
+        Row::new(TYPE_UNKNOWN).restorable(true).draw_layer(3), // a type this build doesn't know, drawn with notes
         Row::new(TYPE_NOTE).requires(&[Tag::Blank]).restorable(false),
-        Row::new(TYPE_DOWNLOAD).draw_layer(2), // a download
+        Row::new(TYPE_DOWNLOAD).restorable(false).draw_layer(2), // a download
     ]
 }
 
