@@ -79,21 +79,34 @@ name), an ephemeral marker, no body. Hit-testing, selection, z-order, pin and th
 like a note. Its menu: Rename, Duplicate, Pin, Link, Use jar\u{2026} omitted, Clear Cookies, Ephemeral, Close
 (Default: no Close). A tab keeps its small chip showing its effective jar.
 
-## Cookie lifetime: one rule
+## Backing files: one concept for jars and content files
 
-**A jar's cookie files exist exactly while its node is live or a Recently Closed entry holds it.** One function,
-`release_jar_files(id)`, deletes them when neither holds; nothing else deletes cookie files.
+Today two mechanisms keep a node's file alive: fetched content (`PATH` into `content_dir`: `content_keep`,
+`prune_unnamed`, `touch_owned_content`) and, new here, jar cookies. They become one. A kind that has a file
+declares it in the type table:
 
-It is called when a jar node is removed (local close, or a remote delete arriving), when a Recently Closed entry
-leaves the list (eviction past `MAX_CLOSED`, or the list cleared), and by the startup `prune_jar_files` for
-anything neither live nor held. This replaces `forget_jar`'s unconditional `Jar::delete_files`. The held set is
-derived from the closed list, loaded at startup; if it cannot be read, prune is skipped (the guard
-`may_prune_content` already gives owned content files).
+- **`backing_file(node) -> Option<Name>`**: the file's name in its directory. Content kinds (Image, Pdf, Json,
+  Download) derive it from `PATH` (so it survives an id change); a Jar derives it from its id (`<id>.json`).
+- **`on_duplicate`**: `Share` or `Fresh`. Content files are immutable per file, so a duplicate shares the
+  file (its `PATH` names the same one; this is what Duplicate already does today, and `replaced_file_unused`
+  keeps a refreshed original's old file while the copy names it). A jar's file is mutable per jar, so a duplicate
+  is `Fresh`: it starts logged out.
+- **One liveness rule:** a backing file exists exactly while some live node or some Recently Closed entry names
+  it. `content_keep` is already that rule for content; it generalises to take each kind's `backing_file`, and
+  `prune_unnamed` and `prune_jar_files` become one prune over each file-backed directory. Nothing else deletes a
+  backing file except an explicit wipe (Clear Cookies).
+- **One release point:** when a node is removed (local close or a remote delete arriving) or a Recently Closed
+  entry leaves the list (eviction past `MAX_CLOSED`, or the list cleared), the files it named that nothing else
+  names are deleted. This replaces `forget_jar`'s unconditional `Jar::delete_files`. If the closed list cannot be
+  read at startup, prune is skipped (the guard `may_prune_content` already gives).
+- **One reopen rule:** `reopen_closed` imports with fresh ids. A path-derived name needs no change. An id-derived
+  name (a jar) is moved to the new id's file when the **old id is no longer a live node**; when it is still live
+  (Duplicate, which reuses `subtree_entry` and `reopen_closed`) nothing is moved, so the original keeps its
+  cookies and the copy starts empty.
 
-`reopen_closed` imports with fresh ids. For each imported jar whose **old id is no longer a live node**, the old
-cookie file is renamed to the new id's file (a move: the entry is consumed). When the old id is still live
-(Duplicate, which reuses `subtree_entry` and `reopen_closed`), nothing is moved, so a duplicate starts logged out
-and the original keeps its cookies.
+What it cannot cover: a `PATH` pointing outside the owned directory (a user's own file) is a reference, never
+deleted (`owned_content_file` still decides this for the refresh-replace deletion); a note's text lives in the
+store, not a file.
 
 Consequences, stated plainly:
 - Closing a jar or a group holding jars does not wipe credentials; Clear Cookies does, at once.
@@ -119,6 +132,8 @@ Consequences, stated plainly:
 - Fields `JAR_SET`, `DEFAULT_JAR`; `JarChoice`; `Carried.jar` and `jar_set`; `Mirror::jar_choice`.
 - `jar_defs.rs`: the functions listed under Resolution, `tab_jar`, `set_tab_jar`, `linked_group`, `is_inside`,
   the `delete_jar` cascade over tabs and groups, and `forget_jar`'s unconditional file delete (see above).
+- The separate jar prune (`prune_jar_files`, `jar::prune_orphans`) and the content-only keep/touch/prune triple
+  (`content_keep`, `touch_owned_content`, `prune_unnamed`): one backing-file implementation replaces both.
 - `Mirror::jar_defs`/`mirror.jars` and their sync special-casing: jars become ordinary `App::nodes` entries with a
   `Runtime::Jar` variant (about 10 exhaustive match sites, each gaining a no-view arm).
 - The "jars are not cards" exemptions: `closed.rs` (`worth_reopening` refusing a jar), `store/json.rs`
@@ -153,6 +168,9 @@ and the developer's own session is simply reset if it looks wrong:
 - Close a group holding a jar, reopen: card back, cookie file moved to the new id, inside edges remapped, outside
   edges dangling. Duplicate: cookie file not moved.
 - Eviction: the entry past `MAX_CLOSED` releases its jars' files; startup prune keeps held ones.
+- Backing files, both kinds through the same tests: Duplicate of an Image shares the file and refreshing the
+  original keeps it; Duplicate of a jar leaves the original's cookie file in place and starts the copy empty;
+  closing and reopening each restores the file under the new id's expectations.
 - Default invariant: created when absent, not duplicated when present; two Defaults converge.
 - Gate smoke: `NEWJAR`, link a tab to it, rename, duplicate, close and reopen the group.
 
