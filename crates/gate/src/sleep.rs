@@ -24,16 +24,17 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 
 use crate::check::{check, check_eq, Section};
-use crate::instance::Instance;
+use crate::instance::{poll, Instance, STEP_TIMEOUT};
 use crate::probes::{finish, guarded, quit, seed, setup, tab_node, views, Site};
 use crate::state::{State, TAB};
 use crate::stress::powershell;
 
-/// Seconds from a sleep request to the tab being asleep. WebView2 sleeps at once, but a CEF tab's sleep waits for its
-/// last cookies: the host's jar pull answers only after `EMPTY_PULL_TIMEOUT` (2 s, manifold-engine-cef jar_cookies.rs)
-/// on an empty jar, and the app holds the page state up to `COOKIE_HOLD` (2 s, tabs.rs) for it, so CEF sleeps ~2 s
-/// after the request. A 1-2 s wait exported (or woke) a CEF tab before it slept, and the dirty case's "idle sleep left
-/// it awake" check passed on CEF without proving it.
+/// The window in which a tab that must STAY awake is given the chance to sleep (the dirty case's "idle sleep left it
+/// awake"): a negative wait, so a real sleep and never shortened. WebView2 sleeps at once, but a CEF tab's sleep waits
+/// for its last cookies: the host's jar pull answers only after `EMPTY_PULL_TIMEOUT` (2 s, manifold-engine-cef
+/// jar_cookies.rs) on an empty jar, and the app holds the page state up to `COOKIE_HOLD` (2 s, tabs.rs) for it, so CEF
+/// sleeps ~2 s after the request. A 1-2 s wait exported a CEF tab before it slept, and the check passed on CEF without
+/// proving it. Positive waits for a tab to sleep or wake poll its exported state instead (`Instance::export_until`).
 const ASLEEP_WAIT: &str = "SLEEP 4";
 
 /// The cards in an exported state, "id:label" each.
@@ -47,14 +48,26 @@ fn send_all(inst: &mut Instance, lines: &[&str]) -> io::Result<()> {
 }
 
 /// Back, Back, Forward with a state export after each, as `back1`, `back2`, `fwd` (the last path segment of the focused
-/// url, `/` for none).
-fn back_and_forward(inst: &mut Instance) -> io::Result<Vec<String>> {
+/// url, `/` for none). Each navigation is waited for as the focused url changing from `url`, the one before it (a
+/// history navigation may be served from cache, so the probe server need not see a request).
+fn back_and_forward(inst: &mut Instance, mut url: String) -> io::Result<Vec<String>> {
     let mut urls = Vec::new();
     for (command, name) in [("GOBACK", "back1"), ("GOBACK", "back2"), ("GOFORWARD", "fwd")] {
-        send_all(inst, &[command, "SLEEP 3"])?;
-        urls.push(last_segment(&inst.export_state(name)?));
+        inst.send(command)?;
+        inst.export_until(name, |s| s.focused_url() != url)?;
+        // The url changes as the navigation starts: the next command, sent mid-load, would be lost. WAITIDLE holds the
+        // export behind it until the load ends.
+        inst.send("WAITIDLE")?;
+        let state = inst.export_state(name)?;
+        url = state.focused_url().to_owned();
+        urls.push(last_segment(&state));
     }
     Ok(urls)
+}
+
+/// Waits until the page has reported a line `want` accepts (the lines are the page's own, in order).
+fn wait_page(site: &Site, what: &str, want: impl Fn(&[String]) -> bool) -> io::Result<()> {
+    poll(what, STEP_TIMEOUT, || want(&site.lines()))
 }
 
 fn last_segment(state: &State) -> String {
@@ -107,10 +120,16 @@ fn run_case(exe: &Path, work: &Path, case: &str, view: &str) -> io::Result<()> {
     };
     seed(exe, &profile, view, &[tab_node(Some(&site.url(path)), view)])?;
     let mut inst = Instance::launch(exe, &profile, work, &format!("{name}.log"))?;
-    send_all(&mut inst, &["WAITTABS", "SLEEP 4"])?;
-    let live = inst.export_state(&format!("{name}-live"))?;
-    let id = live.cards().first().and_then(|c| c["id"].as_str()).unwrap_or("t1").to_owned();
     let (live_label, asleep_label) = (format!("{TAB};loaded"), TAB.to_owned());
+    inst.send("WAITTABS")?;
+    let live = inst.export_until(&format!("{name}-live"), |s| {
+        s.cards().first().and_then(|c| c["id"].as_str()).is_some_and(|id| s.label(id) == live_label)
+    })?;
+    let id = live.cards().first().and_then(|c| c["id"].as_str()).unwrap_or("t1").to_owned();
+    // Exports until the tab's card has `label` (asleep, or live again); the last export if it never does.
+    let until = |inst: &mut Instance, what: &str, label: &str| {
+        inst.export_until(&format!("{name}-{what}"), |s| s.label(&id) == label)
+    };
     let want_cards = |labels: [&String; 3]| labels.map(|l| format!("{id}:{l}")).join(" | ");
     let title = format!("{case} {view}");
 
@@ -119,13 +138,13 @@ fn run_case(exe: &Path, work: &Path, case: &str, view: &str) -> io::Result<()> {
             if case == "manual" {
                 inst.send(&format!("SLEEPNODE {id}"))?;
             } else {
+                // The 3 s is the app's own idle clock (the first sweep starts it, the threshold is 2 s).
                 send_all(&mut inst, &["IDLESWEEP 9999", "SLEEP 3", "IDLESWEEP 2"])?;
             }
+            let asleep = until(&mut inst, "asleep", &asleep_label)?;
             // Opening the card wakes it; the open is a click on the card in Graph view.
-            send_all(&mut inst, &[ASLEEP_WAIT])?;
-            let asleep = inst.export_state(&format!("{name}-asleep"))?;
-            send_all(&mut inst, &["GRAPHOPEN", "WAITTABS", "SLEEP 4"])?;
-            let woken = inst.export_state(&format!("{name}-woken"))?;
+            send_all(&mut inst, &["GRAPHOPEN", "WAITTABS"])?;
+            let woken = until(&mut inst, "woken", &live_label)?;
             quit(&mut inst, &title);
             let got = [&live, &asleep, &woken].map(cards).join(" | ");
             check_eq(
@@ -136,10 +155,18 @@ fn run_case(exe: &Path, work: &Path, case: &str, view: &str) -> io::Result<()> {
         }
         "scroll" => {
             // Into Tab view, focus the page, scroll it, back to Graph view.
-            send_all(&mut inst, &["GRAPHDOWN", "GRAPHOPEN", "SLEEP 6", "CLICK 300 200"])?;
-            send_all(&mut inst, &["KEYPAGE PageDown", "KEYPAGE PageDown", "KEYPAGE PageDown", "SLEEP 1", "ESCAPE"])?;
-            send_all(&mut inst, &["SLEEP 2", &format!("SLEEPNODE {id}"), ASLEEP_WAIT, "GRAPHOPEN", "WAITTABS"])?;
-            inst.send("SLEEP 6")?;
+            let loaded = |lines: &[String]| lines.iter().any(|l| l.starts_with("load"));
+            inst.step(&["GRAPHDOWN", "GRAPHOPEN"], "the tall page's load report", || loaded(&site.lines()))?;
+            send_all(&mut inst, &["CLICK 300 200", "KEYPAGE PageDown", "KEYPAGE PageDown", "KEYPAGE PageDown"])?;
+            // The page reports where the scroll settled (300 ms after the last key).
+            // A report that never comes leaves a/b unset, and the check below fails with that.
+            let _ = wait_page(&site, "the page's scroll report", |l| scroll_reports(l).0.is_some_and(|y| y > 0));
+            send_all(&mut inst, &["ESCAPE", "WAITIDLE", &format!("SLEEPNODE {id}")])?;
+            until(&mut inst, "asleep", &asleep_label)?;
+            send_all(&mut inst, &["GRAPHOPEN", "WAITTABS"])?;
+            // The woken page loads again and reports where it ended up (B, after its second load).
+            let _ = wait_page(&site, "the woken page's scroll report", |l| scroll_reports(l).1.is_some());
+            inst.send("WAITIDLE")?;
             inst.export_state(&format!("{name}-end"))?;
             quit(&mut inst, &title);
             let lines = site.lines();
@@ -152,21 +179,28 @@ fn run_case(exe: &Path, work: &Path, case: &str, view: &str) -> io::Result<()> {
         }
         "history" | "crash" | "restart" => {
             // Two more pages in Tab view, then sleep (history) or kill the engine host (crash), then Back twice.
-            send_all(&mut inst, &["GRAPHDOWN", "GRAPHOPEN", "SLEEP 6"])?;
+            inst.step(&["GRAPHDOWN", "GRAPHOPEN"], "the first page to load", || site.hits("/") > 0)?;
             for page in ["p2", "p3"] {
-                send_all(&mut inst, &[&format!("ADDRESSBAR {}", site.url(&format!("/{page}"))), "SLEEP 1", "ENTER"])?;
-                inst.send("SLEEP 3")?;
+                let path = format!("/{page}");
+                let typed = format!("ADDRESSBAR {}", site.url(&path));
+                let before = site.hits(&path);
+                inst.step(&[&typed, "WAITIDLE", "ENTER"], &format!("a request for {path}"), || {
+                    site.hits(&path) > before
+                })?;
             }
             inst.export_state(&format!("{name}-pre"))?;
+            let before = site.hits("/p3");
             let urls = match case {
                 "restart" => {
                     // Quit here; the second instance restores the tab on the same profile.
                     quit(&mut inst, &title);
                     let mut second = Instance::launch(exe, &profile, work, &format!("{name}-2.log"))?;
-                    send_all(&mut second, &["WAITTABS", "SLEEP 3", "GRAPHDOWN", "GRAPHOPEN", "SLEEP 6"])?;
-                    let woken = last_segment(&second.export_state(&format!("{name}-woken"))?);
-                    let mut urls = vec![woken];
-                    urls.extend(back_and_forward(&mut second)?);
+                    send_all(&mut second, &["WAITTABS", "WAITIDLE"])?;
+                    second
+                        .step(&["GRAPHDOWN", "GRAPHOPEN"], "the restored page to load", || site.hits("/p3") > before)?;
+                    let woken = until(&mut second, "woken", &live_label)?;
+                    let mut urls = vec![last_segment(&woken)];
+                    urls.extend(back_and_forward(&mut second, woken.focused_url().to_owned())?);
                     quit(&mut second, &title);
                     urls
                 }
@@ -174,13 +208,15 @@ fn run_case(exe: &Path, work: &Path, case: &str, view: &str) -> io::Result<()> {
                     if case == "crash" {
                         // The app restarts the tab at its URL.
                         kill_hosts(work, inst.pid(), view)?;
-                        inst.send("SLEEP 8")?;
+                        inst.step(&["WAITTABS"], "the restarted tab to load", || site.hits("/p3") > before)?;
                     } else {
-                        send_all(&mut inst, &["ESCAPE", "SLEEP 2", &format!("SLEEPNODE {id}"), ASLEEP_WAIT])?;
-                        send_all(&mut inst, &["GRAPHOPEN", "WAITTABS", "SLEEP 5"])?;
+                        send_all(&mut inst, &["ESCAPE", "WAITIDLE", &format!("SLEEPNODE {id}")])?;
+                        until(&mut inst, "asleep", &asleep_label)?;
+                        send_all(&mut inst, &["GRAPHOPEN", "WAITTABS"])?;
                     }
-                    let mut urls = vec![last_segment(&inst.export_state(&format!("{name}-woken"))?)];
-                    urls.extend(back_and_forward(&mut inst)?);
+                    let woken = until(&mut inst, "woken", &live_label)?;
+                    let mut urls = vec![last_segment(&woken)];
+                    urls.extend(back_and_forward(&mut inst, woken.focused_url().to_owned())?);
                     quit(&mut inst, &title);
                     urls
                 }
@@ -193,10 +229,12 @@ fn run_case(exe: &Path, work: &Path, case: &str, view: &str) -> io::Result<()> {
             );
         }
         "dirty" => {
+            // Both waits are the app's timers or a negative window: the 3 s outlasts the idle threshold, and the tab must
+            // then STAY awake for `ASLEEP_WAIT`.
             send_all(&mut inst, &["IDLESWEEP 9999", "SLEEP 3", "IDLESWEEP 2", ASLEEP_WAIT])?;
             let stay = inst.export_state(&format!("{name}-stay"))?;
-            send_all(&mut inst, &[&format!("SLEEPNODE {id}"), ASLEEP_WAIT])?;
-            let slept = inst.export_state(&format!("{name}-slept"))?;
+            inst.send(&format!("SLEEPNODE {id}"))?;
+            let slept = until(&mut inst, "slept", &asleep_label)?;
             quit(&mut inst, &title);
             check_eq(
                 &format!("{title}: idle sleep skipped the dirty tab, manual Sleep did not"),

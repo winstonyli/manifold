@@ -23,7 +23,7 @@ use serde_json::{json, Value};
 
 use crate::check::{check, check_eq, exit_code, failures, note_failure, Section};
 use crate::http::{self, response};
-use crate::instance::{remove_dir_with_retries, seed_settings, Instance};
+use crate::instance::{remove_dir_with_retries, seed_settings, Instance, STEP_TIMEOUT};
 use crate::state::{State, JAR, TAB};
 use crate::suggest::{query_param, url_query};
 use crate::windows_main::{manifold_exe, work_dir};
@@ -50,12 +50,16 @@ addEventListener('scroll', () => {\n  clearTimeout(t);\n  t = setTimeout(() => f
 pub(crate) struct Site {
     server: http::Server,
     lines: Arc<Mutex<Vec<String>>>,
+    /// Every request target the server has answered, in order.
+    requests: Arc<Mutex<Vec<String>>>,
 }
 
 impl Site {
     pub(crate) fn start() -> io::Result<Site> {
         let lines = Arc::new(Mutex::new(Vec::new()));
         let log = lines.clone();
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let seen = requests.clone();
         let mut png = Cursor::new(Vec::new());
         image::RgbImage::from_pixel(4, 4, image::Rgb([0xd7, 0xa2, 0x4a]))
             .write_to(&mut png, image::ImageFormat::Png)
@@ -63,6 +67,7 @@ impl Site {
         let png = png.into_inner();
         let server = http::Server::start(Arc::new(move |request_line: &str| {
             let target = request_line.split(' ').nth(1).unwrap_or("");
+            seen.lock().unwrap_or_else(PoisonError::into_inner).push(target.to_owned());
             let path = target.split_once('?').map_or(target, |(p, _)| p);
             let query = url_query(target).to_string();
             let param = |k: &str| query_param(&query, k, true).unwrap_or_default();
@@ -83,7 +88,12 @@ impl Site {
                 _ => response("200 OK", &[], "text/html", PAGE.as_bytes()),
             }
         }))?;
-        Ok(Site { server, lines })
+        Ok(Site { server, lines, requests })
+    }
+
+    /// The requests so far for `target` (path and query, as the browser sent it).
+    pub(crate) fn hits(&self, target: &str) -> usize {
+        self.requests.lock().unwrap_or_else(PoisonError::into_inner).iter().filter(|t| *t == target).count()
     }
 
     pub(crate) fn url(&self, path: &str) -> String {
@@ -237,13 +247,19 @@ pub(crate) fn page_kind(parent: Option<PathBuf>) -> ExitCode {
                 seed(&exe, &profile, &view, &[tab_node(Some(&site.url(path)), &view)])?;
                 let mut inst = Instance::launch(&exe, &profile, &work, &format!("{name}.log"))?;
                 inst.send("WAITTABS")?;
-                // The detection runs when the load finishes, after the tab spawns.
-                inst.send("SLEEP 6")?;
-                let state = inst.export_state(&format!("state-{name}"))?;
+                let labels = |s: &State| -> String {
+                    s.cards()
+                        .iter()
+                        .filter_map(|c| c["id"].as_str())
+                        .map(|id| s.label(id))
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                };
+                // The detection runs when the load finishes, after the tab spawns: export until the card is what it
+                // should become (the last export, if it never is, fails the check below).
+                let state = inst.export_until(&format!("state-{name}"), |s| labels(s) == want)?;
                 quit(&mut inst, &name);
-                let got: Vec<String> =
-                    state.cards().iter().filter_map(|c| c["id"].as_str()).map(|id| state.label(id)).collect();
-                check_eq(&format!("{view} {path} becomes {want}"), want.to_string(), got.join(" "));
+                check_eq(&format!("{view} {path} becomes {want}"), want.to_string(), labels(&state));
                 Ok(())
             });
         }
@@ -263,9 +279,11 @@ pub(crate) fn hscroll(parent: Option<PathBuf>) -> ExitCode {
             let profile = work.join(format!("appdata-{view}"));
             seed(&exe, &profile, &view, &[tab_node(Some(&site.url("/wide")), &view)])?;
             let mut inst = Instance::launch(&exe, &profile, &work, &format!("{view}.log"))?;
-            for line in ["WAITTABS", "SLEEP 4", "GRAPHDOWN", "GRAPHOPEN", "SLEEP 6", "SCROLL 300 200 240 0"] {
+            for line in ["WAITTABS", "WAITIDLE"] {
                 inst.send(line)?;
             }
+            inst.step(&["GRAPHDOWN", "GRAPHOPEN"], "the /wide page to load", || site.hits("/wide") > 0)?;
+            inst.send("SCROLL 300 200 240 0")?;
             // Each scroll reports once it settles; the second must not start before the first has.
             site.wait_for("hscroll", 1, Duration::from_secs(20));
             inst.send("SCROLL 300 200 -120 0")?;
@@ -328,13 +346,14 @@ pub(crate) fn key(parent: Option<PathBuf>) -> ExitCode {
             let profile = work.join(format!("appdata-{view}"));
             seed(&exe, &profile, &view, &[tab_node(Some(&site.url("/")), &view)])?;
             let mut inst = Instance::launch(&exe, &profile, &work, &format!("{view}.log"))?;
-            for line in ["WAITTABS", "SLEEP 3", "GRAPHDOWN", "GRAPHOPEN", "SLEEP 8"] {
+            for line in ["WAITTABS", "WAITIDLE"] {
                 inst.send(line)?;
             }
+            inst.step(&["GRAPHDOWN", "GRAPHOPEN"], "the page to load", || site.hits("/") > 0)?;
             // Each command draws a frame, and the view change needs one.
             inst.export_state(&format!("state-{view}"))?;
             inst.send("CLICK 300 200")?;
-            inst.send("SLEEP 1")?;
+            inst.send("WAITIDLE")?;
             for k in ["Enter", "ArrowLeft", "ShiftLeft", "Digit7", "PageDown", "KeyA"] {
                 inst.send(&format!("KEYPAGE {k}"))?;
             }
@@ -397,16 +416,17 @@ pub(crate) fn bad_url(parent: Option<PathBuf>) -> ExitCode {
                 seed(&exe, &profile, &view, &[tab_node(url, &view)])?;
                 let tmp_s = tmp.display().to_string();
                 let mut inst = Instance::launch_env(&exe, &profile, &dir, "log", &[("TEMP", &tmp_s), ("TMP", &tmp_s)])?;
-                // Imported tabs sleep, so GRAPHDOWN (focus the first card) and GRAPHOPEN wake it. `SLEEP 4` is the
-                // settle for the graph's first layout; every wait after it is a condition with a deadline.
-                for line in ["WAITTABS", "SLEEP 4", "GRAPHDOWN", "GRAPHOPEN"] {
+                // Imported tabs sleep, so GRAPHDOWN (focus the first card) and GRAPHOPEN wake it, once the graph's
+                // first layout is done (WAITIDLE).
+                for line in ["WAITTABS", "WAITIDLE", "GRAPHDOWN", "GRAPHOPEN"] {
                     inst.send(line)?;
                 }
-                // Poll until the tab is loaded on about:blank, up to 30 exports. A host that panics never gets there:
-                // CRASH_LIMIT respawns it up to 3 times, then the tab fails.
+                // Poll until the tab is loaded on about:blank, within STEP_TIMEOUT. A host that panics never gets
+                // there: CRASH_LIMIT respawns it up to 3 times, then the tab fails.
                 let mut got = (0, false, String::new());
                 let mut exports = 0;
-                while exports < 30 {
+                let deadline = Instant::now() + STEP_TIMEOUT;
+                while Instant::now() < deadline {
                     exports += 1;
                     match inst.export_state(&format!("s{exports}")) {
                         Ok(s) => got = tab_state(&s),
@@ -418,7 +438,7 @@ pub(crate) fn bad_url(parent: Option<PathBuf>) -> ExitCode {
                     if got == (1, true, "about:blank".to_string()) {
                         break;
                     }
-                    sleep(Duration::from_secs(2));
+                    sleep(Duration::from_millis(250));
                 }
                 quit(&mut inst, &label);
                 let logs = host_logs(&tmp);

@@ -30,37 +30,21 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::{Arc, Mutex, PoisonError};
-use std::thread::sleep;
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, SystemTime};
 
 use serde_json::{json, Value};
 
 use crate::check::{check, check_eq, check_is, note_failure, Section};
 use crate::http::{self, response};
-use crate::instance::{seed_settings, wait_file, Instance};
+use crate::instance::{poll, seed_settings, wait_file, Instance};
 use crate::probes::{default_jar_id, default_jar_node, finish, guarded, import_session, setup};
 use crate::state::{JAR, TAB};
 use crate::suggest::{query_param, url_query};
 
 /// How long QUIT and an export may wait behind the commands still queued in the app (a `SLEEP 30`).
 const RUN_TIMEOUT: Duration = Duration::from_secs(300);
-/// How long a command's request may take to reach the probe server (a slow start or load under load).
-const STEP_TIMEOUT: Duration = Duration::from_secs(90);
 /// How long the app's 30 s pull may take to write a jar file, with room for a loaded machine.
 const PULL_TIMEOUT: Duration = Duration::from_secs(120);
-
-/// Polls `cond` every 250 ms until it holds; an error naming `what` once `timeout` passes. Every positive wait here
-/// goes through this, so a slow machine costs time, not a spurious failure.
-fn poll(what: &str, timeout: Duration, mut cond: impl FnMut() -> bool) -> io::Result<()> {
-    let deadline = Instant::now() + timeout;
-    while !cond() {
-        if Instant::now() >= deadline {
-            return Err(io::Error::new(io::ErrorKind::TimedOut, format!("timed out waiting for {what}")));
-        }
-        sleep(Duration::from_millis(250));
-    }
-    Ok(())
-}
 
 /// One request the cookie server saw.
 #[derive(Clone)]
@@ -294,11 +278,7 @@ impl Probe {
     /// input landed, the focused tab loaded: its response and cookies are in).
     fn step(&self, inst: &mut Instance, cmds: &[&str], path: &str) -> io::Result<()> {
         let before = self.hits(path);
-        for c in cmds {
-            inst.send(c)?;
-        }
-        poll(&format!("a request for {path}"), STEP_TIMEOUT, || self.hits(path) > before)?;
-        inst.send("WAITIDLE")
+        inst.step(cmds, &format!("a request for {path}"), || self.hits(path) > before)
     }
 
     /// Types `path` (on the probe host) into the focused tab's address bar and goes there.

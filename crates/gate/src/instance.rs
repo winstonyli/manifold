@@ -127,6 +127,24 @@ pub fn wait_file(path: &Path, timeout: Duration) -> io::Result<()> {
     }
 }
 
+/// How long a positive wait on the app (a request reaching a probe server, a card changing state) may take: far more
+/// than a normal run needs, so a loaded machine costs time and not a spurious failure.
+pub const STEP_TIMEOUT: Duration = Duration::from_secs(90);
+
+/// Polls `cond` every 250 ms until it holds; an error naming `what` once `timeout` passes. Every positive wait on an
+/// observable goes through this (or `Instance::step` / `export_until`); a fixed `SLEEP` stays only where the app's own
+/// timer is what is waited out, or a negative window must pass.
+pub fn poll(what: &str, timeout: Duration, mut cond: impl FnMut() -> bool) -> io::Result<()> {
+    let deadline = Instant::now() + timeout;
+    while !cond() {
+        if Instant::now() >= deadline {
+            return Err(timed_out(format!("timed out waiting for {what}")));
+        }
+        sleep(Duration::from_millis(250));
+    }
+    Ok(())
+}
+
 /// Removes a work dir, retrying while a just-killed instance still holds files in it.
 pub fn remove_dir_with_retries(dir: &Path) {
     for _ in 0..5 {
@@ -217,6 +235,30 @@ impl Instance {
         self.send(&format!("EXPORTSTATE {}", path.display()))?;
         wait_file(&path, EXPORT_TIMEOUT)?;
         State::parse(&fs::read_to_string(&path)?).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+    }
+
+    /// Sends `cmds`, waits (`STEP_TIMEOUT`) for `seen` to hold (an observable of the commands' effect, such as the
+    /// probe server having seen the request they cause), then for the app to be idle (`WAITIDLE`: typed input landed,
+    /// the focused tab loaded).
+    pub fn step(&mut self, cmds: &[&str], what: &str, seen: impl FnMut() -> bool) -> io::Result<()> {
+        for c in cmds {
+            self.send(c)?;
+        }
+        poll(what, STEP_TIMEOUT, seen)?;
+        self.send("WAITIDLE")
+    }
+
+    /// Exports the state (as `name`) until `want` holds of it or `STEP_TIMEOUT` passes; returns the last export either
+    /// way, so the caller's own check reports a state that never arrived.
+    pub fn export_until(&mut self, name: &str, mut want: impl FnMut(&State) -> bool) -> io::Result<State> {
+        let deadline = Instant::now() + STEP_TIMEOUT;
+        loop {
+            let state = self.export_state(name)?;
+            if want(&state) || Instant::now() >= deadline {
+                return Ok(state);
+            }
+            sleep(Duration::from_millis(250));
+        }
     }
 
     /// `EXPORTSESSION` (a `JsonDoc`: `{nodes: [...], local: ...}`), then polls for the file and parses it.
