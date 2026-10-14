@@ -34,6 +34,6 @@ Open:
 
 1. **Plan 3, the `closed` field and transaction history.** A close is still a snapshot in `closed.rs`; there is no `closed` field. Generic undo waits on it.
 2. **Generic verbs.** Duplicate is tab-only (`duplicate_tab`), the rectangle selection holds tabs only, and rename is a group and jar-name action. These are the rows and menu edits plan 3 lists for selection, rename and duplicate.
-3. **Jars as cards.** Jars are already `Kind::Jar` store nodes (so no persistence migration), but they draw as chips on cards, and the edge table refuses a link to or from one. Missing: a jar card, and `jar` and `contains` edge rows.
+3. **Jars as cards.** Designed in `2026-10-13-jars-as-cards-design.md` (not yet built). Jars are already `Kind::Jar` store nodes (so no persistence migration), but they draw as chips on cards, and the edge table refuses a link to or from one. Missing: a jar card, and `jar` and `contains` edge rows.
 4. **Link follow-ups.** No `edge-type` field (`link` is the only Node-stored edge), cardinality, or removal variants.
 5. **The unknown-type card** (`Runtime::None` makes it possible; `card.rs` says there is none yet).
