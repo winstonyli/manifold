@@ -24,7 +24,7 @@ use serde_json::Value;
 use crate::check::{exit_code, fail_line, failures, note_failure, pass_line, Marks};
 use crate::instance::{file_url, log_tail, remove_dir_with_retries, Instance};
 use crate::link::{bad, no_verdict_words, truthy};
-use crate::state::{fmt0, round_half_even, State, DOWNLOAD, IMAGE, JSON, NOTE, PDF, TAB};
+use crate::state::{fmt0, round_half_even, State, DOWNLOAD, IMAGE, JAR, JSON, NOTE, PDF, TAB};
 use crate::suggest::{query_param, url_query, Server};
 use crate::windows_main::{manifold_exe, work_dir};
 
@@ -862,6 +862,97 @@ fn drive(sm: &mut Smoke, m: &mut Marks) -> io::Result<()> {
         &format!("cards['{copy_id}']['name'] == 'Groceries' and '{note_id}' in cards"),
         |s| s.card(&copy_id).is_some_and(|c| c["name"] == "Groceries") && s.card(&note_id).is_some(),
     );
+
+    // Jars are cards: make one, link a tab to it, rename and duplicate it, then close and reopen a group holding
+    // all of them, and the tab's edge follows the reopened jar.
+    let before = sorted_ids(&duplicated);
+    sm.send("NEWJAR Personal")?;
+    let made = sm.settle("jar_made")?;
+    let jar_id = new_card(&made, JAR, None, &before);
+    check_found(&made, "jar_made", "NEWJAR adds a jar card", &jar_id);
+    let tab_id =
+        made.cards().iter().find(|c| State::card_is(c, TAB, None)).and_then(|c| c["id"].as_str()).map(str::to_string);
+    let Some(tab_id) = tab_id else { return Err(io::Error::other("no tab card on the level for the jar section")) };
+    sm.send(&format!("USEJAR {tab_id} {jar_id}"))?;
+    let used = sm.settle("jar_used")?;
+    check_query(
+        &used,
+        "jar_used",
+        "USEJAR draws the tab's jar edge",
+        &format!("cards['{tab_id}']['jar'] == '{jar_id}' and cards['{tab_id}']['effective_jar'] == '{jar_id}'"),
+        |s| s.card(&tab_id).is_some_and(|c| c["jar"] == jar_id.as_str() && c["effective_jar"] == jar_id.as_str()),
+    );
+    sm.send(&format!("RENAMEGROUP {jar_id} Work"))?;
+    let renamed_jar = sm.settle("jar_renamed")?;
+    check_query(
+        &renamed_jar,
+        "jar_renamed",
+        "a jar card renames like any card",
+        &format!("cards['{jar_id}']['name'] == 'Work'"),
+        |s| s.card(&jar_id).is_some_and(|c| c["name"] == "Work"),
+    );
+    let before = sorted_ids(&renamed_jar);
+    sm.send(&format!("DUPLICATENODE {jar_id}"))?;
+    let dup_jar = sm.settle("jar_duplicated")?;
+    let copy_jar = new_card(&dup_jar, JAR, None, &before);
+    check_query(
+        &dup_jar,
+        "jar_duplicated",
+        "the jar copy keeps the name; the tab keeps the original",
+        &format!("cards['{copy_jar}']['name'] == 'Work' and cards['{tab_id}']['jar'] == '{jar_id}'"),
+        |s| {
+            s.card(&copy_jar).is_some_and(|c| c["name"] == "Work")
+                && s.card(&tab_id).is_some_and(|c| c["jar"] == jar_id.as_str())
+        },
+    );
+    let before = sorted_ids(&dup_jar);
+    let groups_before = dup_jar.groups();
+    sm.send("NEWGROUP")?;
+    let grouped = sm.settle("jar_group_made")?;
+    let group_id = new_group(&grouped, &groups_before).unwrap_or_else(|| "none".into());
+    check_found(&grouped, "jar_group_made", "NEWGROUP adds a group for the jar section", &group_id);
+    for id in [&tab_id, &jar_id, &copy_jar] {
+        sm.send(&format!("MOVETOGROUP {id} {group_id}"))?;
+    }
+    let moved = sm.settle("jar_moved")?;
+    check_query(
+        &moved,
+        "jar_moved",
+        "a tab and its jars move into the group together",
+        &format!("'{tab_id}' not in cards and '{jar_id}' not in cards and '{copy_jar}' not in cards"),
+        |s| s.card(&tab_id).is_none() && s.card(&jar_id).is_none() && s.card(&copy_jar).is_none(),
+    );
+    sm.send(&format!("CLOSEGROUP {group_id}"))?;
+    let closed = sm.settle("jar_group_closed")?;
+    check_query(
+        &closed,
+        "jar_group_closed",
+        "closing the group removes it and its jars from the level",
+        &format!("'{group_id}' not in groups"),
+        |s| !s.groups().contains(&group_id),
+    );
+    sm.send("REOPENTAB")?;
+    sm.send("WAITTABS")?;
+    let reopened = sm.settle("jar_group_reopened")?;
+    let outer = new_group(&reopened, &closed.groups()).unwrap_or_else(|| "none".into());
+    check_found(&reopened, "jar_group_reopened", "REOPENTAB brings the jar group back", &outer);
+    sm.send(&format!("DOUBLECLICK {}", xy(&reopened, &outer)?))?;
+    let inside = sm.settle("jar_group_in")?;
+    let new_tab = new_card(&inside, TAB, None, &before);
+    check_query(
+        &inside,
+        "jar_group_in",
+        "the reopened tab's edge names a reopened jar, not the old one",
+        &format!("cards['{new_tab}']['jar'] in cards and cards['{new_tab}']['jar'] != '{jar_id}' and len(jars) == 2"),
+        |s| {
+            let edge = s.card(&new_tab).and_then(|c| c["jar"].as_str());
+            edge.is_some_and(|j| j != jar_id && s.card(j).is_some()) && count_of(s, JAR) == 2
+        },
+    );
+    sm.send("CLICK 22 17")?;
+    sm.settle("jar_group_out")?;
+    sm.send(&format!("CLOSEGROUP {outer}"))?;
+    sm.settle("jar_group_gone")?;
 
     // A far reveal moves a card's window (skip > 0, a `+ N earlier` row under the header); a real CLICK on that row
     // grows the window up by one page.

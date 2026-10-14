@@ -220,6 +220,21 @@ mod tests {
     }
 
     #[test]
+    fn jar_cards_and_their_edge_keys() {
+        let s = State::parse(
+            r#"{"cards":[
+              {"id":"j1","type":"application/vnd.manifold.jar","json_card":false,"jar":null,"effective_jar":null,"is_default":true},
+              {"id":"t1","type":"application/vnd.manifold.tab","json_card":false,"loaded":false,"jar":"j1","effective_jar":"j1","is_default":false}]}"#,
+        )
+        .unwrap();
+        assert!(State::card_is(s.card("j1").unwrap(), JAR, None));
+        assert!(!State::card_is(s.card("j1").unwrap(), TAB, None));
+        assert_eq!(s.card("t1").unwrap()["jar"], "j1");
+        assert_eq!(s.card("t1").unwrap()["effective_jar"], "j1");
+        assert_eq!(s.card("j1").unwrap()["is_default"], true);
+    }
+
+    #[test]
     fn points_and_bbox() {
         let s = fixture();
         assert_eq!(s.xy("t2").as_deref(), Some("407 332")); // 332.5 ties to even

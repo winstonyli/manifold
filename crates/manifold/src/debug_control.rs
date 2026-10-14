@@ -408,6 +408,14 @@ pub enum DebugCommand {
     /// (`App::clear_jar_cookies`). `name` as for `SETJAR`; an unknown name
     /// does nothing.
     ClearJar(String),
+    /// `NEWJAR <name>` -- a new jar card at the current level, as the Jar page's "New Jar..." makes, without an
+    /// edge. See `App::create_jar`.
+    NewJar(String),
+    /// `USEJAR <id> <jar-id|none>` -- tab or group `id` uses that jar card (or inherits), as a Jar page row does.
+    /// See `App::set_jar_edge`.
+    UseJar { from: String, jar: Option<String> },
+    /// `JAREPHEMERAL <id> on|off` -- jar card `id`'s Make/Stop Ephemeral, confirmed. See `App::set_jar_ephemeral`.
+    JarEphemeral { id: String, on: bool },
     /// Dev-only: re-runs the one-time first-launch demo graph on demand
     /// (see `Settings::has_shown_first_launch_demo`'s own doc comment for
     /// why it otherwise only ever fires once) -- adds a fresh copy of the
@@ -595,9 +603,15 @@ const COMMAND_HELP: &[(&str, &str)] = &[
         "Run one idle auto-sleep sweep: tabs out of sight for `secs` seconds are asked to sleep, \
          and those with a changed form stay awake (the clock updates on every sweep)",
     ),
-    ("SETJAR <name|default>", "The focused tab uses that jar, by label or name (a new named jar if none has it)"),
+    (
+        "SETJAR <name|default>",
+        "The focused tab's jar edge to that jar, by label or name (a new jar card at its level if none has it)",
+    ),
     ("SWITCHJARNOW", "The focused tab moves to its new jar now, if it is waiting to switch"),
     ("CLEARJAR <name|default>", "Clear that jar's cookies, as its confirmed \"Clear cookies\" does"),
+    ("NEWJAR <name>", "A new jar card at the current level, as \"New Jar...\" makes (no edge)"),
+    ("USEJAR <id> <jar|none>", "Tab or group `id` uses jar card `jar`, or inherits with `none`, as a Jar page row"),
+    ("JAREPHEMERAL <id> on|off", "Jar card `id`'s Make/Stop Ephemeral, confirmed"),
     ("TRIGGERFIRSTLAUNCHDEMO", "Dev-only: re-spawn the first-launch demo graph on demand"),
     ("HELP", "Print this command list"),
 ];
@@ -861,6 +875,21 @@ pub fn parse_line(line: &str) -> Option<DebugCommand> {
         "SETJAR" => non_empty(DebugCommand::SetJar),
         "SWITCHJARNOW" => Some(DebugCommand::SwitchJarNow),
         "CLEARJAR" => non_empty(DebugCommand::ClearJar),
+        "NEWJAR" => non_empty(DebugCommand::NewJar),
+        "USEJAR" => {
+            let from = parts.next()?.to_string();
+            let jar = parts.next()?;
+            Some(DebugCommand::UseJar { from, jar: (!jar.eq_ignore_ascii_case("none")).then(|| jar.to_string()) })
+        }
+        "JAREPHEMERAL" => {
+            let id = parts.next()?.to_string();
+            let on = match parts.next()? {
+                "on" => true,
+                "off" => false,
+                _ => return None,
+            };
+            Some(DebugCommand::JarEphemeral { id, on })
+        }
         "JSONSELECT" => Some(DebugCommand::JsonSelect(rest.to_string())),
         "JSONTOGGLE" => Some(DebugCommand::JsonToggle(rest.to_string())),
         "JSONMORE" => Some(DebugCommand::JsonMore(rest.to_string())),
@@ -1437,6 +1466,25 @@ impl App {
                     None => eprintln!("CLEARJAR: no jar named {name:?}"),
                 }
             }
+            DebugCommand::NewJar(name) => {
+                // `placement` jitters by the string it is given and leaves a JSON level first, as a new card does.
+                let at = self.placement(&name, None);
+                let id = self.create_jar(&name, at);
+                eprintln!("NEWJAR: {id}");
+                self.save_session();
+            }
+            DebugCommand::UseJar { from, jar } => {
+                let jar = jar.and_then(|j| j.parse().ok());
+                self.set_jar_edge(&from, jar);
+                self.save_session();
+            }
+            DebugCommand::JarEphemeral { id, on } => match id.parse() {
+                Ok(jar) if self.jar_exists(jar) => {
+                    self.set_jar_ephemeral(jar, on);
+                    self.save_session();
+                }
+                _ => eprintln!("JAREPHEMERAL: {id} isn't a jar card; ignored"),
+            },
             DebugCommand::TriggerFirstLaunchDemo => self.spawn_first_launch_demo(),
             DebugCommand::Help => debug_control::print_help(),
             DebugCommand::CloseAllLevel => self.close_all_at_current_level(),
@@ -1520,6 +1568,10 @@ impl App {
                     "color": self.mirror.color(&item.id).is_some(),
                     "pinned": self.mirror.pinned(&item.id),
                     "name": self.mirror.name(&item.id), // name rule: reported as stored
+                    // The tab's or group's own jar edge, the jar it resolves to, and whether a jar card is the Default.
+                    "jar": self.mirror.jar(&item.id).map(|j| j.to_string()),
+                    "effective_jar": self.effective_jar(&item.id).map(|(j, _)| j.to_string()),
+                    "is_default": self.is_default_jar(&item.id),
                     // A live tab whose engine stopped reading (`ViewTab::is_unresponsive`).
                     "unresponsive": node.as_tab().is_some_and(|t| t.tab.is_unresponsive(now)),
                     "editing": node.as_note().is_some_and(|n| n.editing),
@@ -1852,6 +1904,9 @@ mod tests {
             "SETJAR default",
             "SWITCHJARNOW",
             "CLEARJAR Work",
+            "NEWJAR Work",
+            "USEJAR t1 none",
+            "JAREPHEMERAL j1 on",
             "JSONSELECT /a/0",
             "JSONTOGGLE",
             "JSONMORE /a",
@@ -2003,7 +2058,19 @@ mod tests {
             assert_eq!(card["loaded"], loaded, "{id}: {card}");
             assert_eq!(card["json_card"], false, "{id}: {card}");
             assert!(card.get("kind").is_none(), "{id}: {card}");
-            for key in ["group", "parent", "color", "pinned", "editing", "world", "screen", "rect"] {
+            for key in [
+                "group",
+                "parent",
+                "color",
+                "pinned",
+                "editing",
+                "world",
+                "screen",
+                "rect",
+                "jar",
+                "effective_jar",
+                "is_default",
+            ] {
                 assert!(card.get(key).is_some(), "{id} keeps {key}: {card}");
             }
         }
@@ -2168,6 +2235,23 @@ mod tests {
         assert!(matches!(parse_line("SWITCHJARNOW"), Some(DebugCommand::SwitchJarNow)));
         assert!(matches!(parse_line("CLEARJAR Work"), Some(DebugCommand::ClearJar(n)) if n == "Work"));
         assert!(parse_line("CLEARJAR").is_none(), "a jar name is required");
+        assert!(matches!(parse_line("NEWJAR Work Stuff"), Some(DebugCommand::NewJar(n)) if n == "Work Stuff"));
+        assert!(parse_line("NEWJAR").is_none(), "a jar name is required");
+        assert!(matches!(
+            parse_line("USEJAR 1-2 1-5"),
+            Some(DebugCommand::UseJar { from, jar: Some(j) }) if from == "1-2" && j == "1-5"
+        ));
+        assert!(matches!(
+            parse_line("USEJAR 1-2 none"),
+            Some(DebugCommand::UseJar { from, jar: None }) if from == "1-2"
+        ));
+        assert!(parse_line("USEJAR 1-2").is_none());
+        assert!(matches!(
+            parse_line("JAREPHEMERAL 1-5 on"),
+            Some(DebugCommand::JarEphemeral { id, on: true }) if id == "1-5"
+        ));
+        assert!(matches!(parse_line("JAREPHEMERAL 1-5 off"), Some(DebugCommand::JarEphemeral { on: false, .. })));
+        assert!(parse_line("JAREPHEMERAL 1-5 maybe").is_none());
     }
 
     #[test]
