@@ -339,6 +339,8 @@ pub enum DebugCommand {
     ImportGroup(String),
     /// `Ctrl+D` equivalent — see `App::duplicate_focused_tab_shortcut`.
     DuplicateTab,
+    /// `DUPLICATENODE id` -- the node menu's Duplicate on `id` (`App::duplicate_selection`), any kind. Saves.
+    DuplicateNode(String),
     /// The Tab-view toolbar's "Split" picker with an explicit engine
     /// instead of a real click-through dropdown — see `App::start_split`.
     Split(ViewKind),
@@ -372,8 +374,8 @@ pub enum DebugCommand {
     /// `OPENEDFROM child parent` -- sets the card `child` was opened from (`App::connect`, the node menu's "Opened
     /// from…"), and saves. A refused edge is ignored with the reason on stderr.
     OpenedFrom { child: String, parent: String },
-    /// `RENAMEGROUP id name` -- a group's rename field committed with `name` (`NodeAction::CommitRename`: the clean
-    /// name, groups only, an empty clean name ignored), by id for the same reason as `CloseGroup`. Saves, as the
+    /// `RENAMEGROUP id name` -- node `id`'s rename field committed with `name` (`NodeAction::CommitRename`: the clean
+    /// name; a group ignores an empty one, any other node clears its name with it), by id for the same reason as `CloseGroup`. Saves, as the
     /// menu does. `RENAMEGROUP` alone is `RenameGroup` (F2).
     RenameGroupTo { id: String, name: String },
     /// `SETNOTETEXT id text` -- note `id`'s box typed to hold `text` and then blurred (`App::blur_note`, which
@@ -534,12 +536,13 @@ const COMMAND_HELP: &[(&str, &str)] = &[
     ("CLOSEALLLEVEL", "Ctrl+Shift+W -- close every tab at the current level"),
     ("CONFIRMIMPORT", "Click the \"Import Session...\" confirm popup's Import button"),
     ("CANCELIMPORT", "Click the confirm popup's Cancel button"),
-    ("RENAMEGROUP [id name]", "F2 -- rename the current group; with `id name`, commit `name` as group `id`'s new name"),
+    ("RENAMEGROUP [id name]", "F2 -- rename the current group; with `id name`, commit `name` as node `id`'s new name"),
     ("BOOKMARKFOLDERTEXT text", "Set the bookmarks popup's own folder-rename draft"),
     ("DISMISSPEEK", "Escape-dismisses-peek equivalent in Graph view"),
     ("EXPORTGROUP path", "Export whichever group's context menu is currently open"),
     ("IMPORTGROUP path", "Import a group from `path`"),
     ("DUPLICATETAB", "Ctrl+D -- duplicate the focused tab"),
+    ("DUPLICATENODE id", "Duplicate on card `id`: the whole selection when `id` is in it (any kind)"),
     ("PRINTTOPDF path", "Print the focused tab to a PDF at `path`"),
     ("TOGGLEPIN", "Ctrl+P -- pin/unpin the selected cards, or the focused one"),
     ("RELOAD", "Ctrl+R/F5 -- reload the focused tab"),
@@ -806,6 +809,7 @@ pub fn parse_line(line: &str) -> Option<DebugCommand> {
         "EXPORTGROUP" => non_empty(DebugCommand::ExportGroup),
         "IMPORTGROUP" => non_empty(DebugCommand::ImportGroup),
         "DUPLICATETAB" => Some(DebugCommand::DuplicateTab),
+        "DUPLICATENODE" if !rest.is_empty() => Some(DebugCommand::DuplicateNode(rest.to_string())),
         "PRINTTOPDF" => non_empty(DebugCommand::PrintToPdf),
         "TOGGLEPIN" => Some(DebugCommand::TogglePin),
         "RELOAD" => Some(DebugCommand::Reload),
@@ -1281,6 +1285,10 @@ impl App {
                 }
             }
             DebugCommand::DuplicateTab => self.duplicate_focused_tab_shortcut(),
+            DebugCommand::DuplicateNode(id) => {
+                self.duplicate_selection(&id);
+                self.save_session();
+            }
             DebugCommand::ExportBookmarks(path) => {
                 bookmarks::save_to(&self.bookmarks, std::path::Path::new(&path));
             }
@@ -1373,11 +1381,11 @@ impl App {
                 Err(err) => eprintln!("OPENEDFROM: {child} -> {parent} refused: {err:?}"),
             },
             DebugCommand::RenameGroupTo { id, name } => {
-                if self.is_container(&id) {
+                if self.nodes.contains_key(&id) {
                     self.commit_rename(&id, &name);
                     self.save_session();
                 } else {
-                    eprintln!("RENAMEGROUP: {id} isn't a group; ignored");
+                    eprintln!("RENAMEGROUP: {id} isn't a node; ignored");
                 }
             }
             DebugCommand::SetNoteText { id, text } => {
@@ -1511,6 +1519,7 @@ impl App {
                     "parent": self.mirror.parent(&item.id),
                     "color": self.mirror.color(&item.id).is_some(),
                     "pinned": self.mirror.pinned(&item.id),
+                    "name": self.mirror.name(&item.id), // name rule: reported as stored
                     // A live tab whose engine stopped reading (`ViewTab::is_unresponsive`).
                     "unresponsive": node.as_tab().is_some_and(|t| t.tab.is_unresponsive(now)),
                     "editing": node.as_note().is_some_and(|n| n.editing),
@@ -1810,6 +1819,7 @@ mod tests {
             r"EXPORTGROUP C:\x.json",
             r"IMPORTGROUP C:\x.json",
             "DUPLICATETAB",
+            "DUPLICATENODE n1",
             r"PRINTTOPDF C:\x.pdf",
             "TOGGLEPIN",
             "RELOAD",

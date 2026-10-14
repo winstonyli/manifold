@@ -840,6 +840,29 @@ fn drive(sm: &mut Smoke, m: &mut Marks) -> io::Result<()> {
         |s| count_of(s, NOTE) == notes_before + 1,
     );
 
+    // Rename and Duplicate work on any node: the new note takes a name, and its copy keeps it.
+    let note_id = new_card(&json_note, NOTE, None, &sorted_ids(&json_out2));
+    sm.send(&format!("RENAMEGROUP {note_id} Groceries"))?;
+    let renamed = sm.settle("note_renamed")?;
+    check_query(
+        &renamed,
+        "note_renamed",
+        "RENAMEGROUP names a note",
+        &format!("cards['{note_id}']['name'] == 'Groceries'"),
+        |s| s.card(&note_id).is_some_and(|c| c["name"] == "Groceries"),
+    );
+    sm.send(&format!("DUPLICATENODE {note_id}"))?;
+    let duplicated = sm.settle("note_duplicated")?;
+    let copy_id = new_card(&duplicated, NOTE, None, &sorted_ids(&renamed));
+    check_found(&duplicated, "note_duplicated", "DUPLICATENODE adds a second note", &copy_id);
+    check_query(
+        &duplicated,
+        "note_duplicated",
+        "the copy keeps the name and the original stays",
+        &format!("cards['{copy_id}']['name'] == 'Groceries' and '{note_id}' in cards"),
+        |s| s.card(&copy_id).is_some_and(|c| c["name"] == "Groceries") && s.card(&note_id).is_some(),
+    );
+
     // A far reveal moves a card's window (skip > 0, a `+ N earlier` row under the header); a real CLICK on that row
     // grows the window up by one page.
     let big = (0..1000).map(|i| i.to_string()).collect::<Vec<_>>().join(",");
