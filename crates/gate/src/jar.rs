@@ -30,7 +30,8 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::{Duration, SystemTime};
+use std::thread::sleep;
+use std::time::{Duration, Instant, SystemTime};
 
 use serde_json::{json, Value};
 
@@ -41,8 +42,25 @@ use crate::probes::{default_jar_id, default_jar_node, finish, guarded, import_se
 use crate::state::{JAR, TAB};
 use crate::suggest::{query_param, url_query};
 
-/// A run's commands (stays of 38 s and more) are all processed before its QUIT.
+/// How long QUIT and an export may wait behind the commands still queued in the app (a `SLEEP 30`).
 const RUN_TIMEOUT: Duration = Duration::from_secs(300);
+/// How long a command's request may take to reach the probe server (a slow start or load under load).
+const STEP_TIMEOUT: Duration = Duration::from_secs(90);
+/// How long the app's 30 s pull may take to write a jar file, with room for a loaded machine.
+const PULL_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// Polls `cond` every 250 ms until it holds; an error naming `what` once `timeout` passes. Every positive wait here
+/// goes through this, so a slow machine costs time, not a spurious failure.
+fn poll(what: &str, timeout: Duration, mut cond: impl FnMut() -> bool) -> io::Result<()> {
+    let deadline = Instant::now() + timeout;
+    while !cond() {
+        if Instant::now() >= deadline {
+            return Err(io::Error::new(io::ErrorKind::TimedOut, format!("timed out waiting for {what}")));
+        }
+        sleep(Duration::from_millis(250));
+    }
+    Ok(())
+}
 
 /// One request the cookie server saw.
 #[derive(Clone)]
@@ -218,10 +236,6 @@ fn profile_names(local_state: &Path) -> Option<Vec<String>> {
     Some(names)
 }
 
-fn strs(l: &[&str]) -> Vec<String> {
-    l.iter().map(|s| (*s).to_owned()).collect()
-}
-
 struct Probe {
     exe: PathBuf,
     work: PathBuf,
@@ -254,37 +268,62 @@ impl Probe {
         let _ = fs::remove_dir_all(self.jars_dir());
     }
 
-    /// One headless app run on the profile's session as it stands; the commands run in order, then QUIT. Returns the
-    /// hosts' `jar:` log lines, printed as it goes.
-    fn start(&self, name: &str, cmds: &[String]) -> io::Result<Vec<(usize, String)>> {
+    /// The requests the probe server has seen for `path` (the request target, query included).
+    fn hits(&self, path: &str) -> usize {
+        self.log.lock().unwrap_or_else(PoisonError::into_inner).iter().filter(|r| r.path == path).count()
+    }
+
+    /// One headless app run on the profile's session as it stands: `drive` talks to the live app, then QUIT. Returns the
+    /// hosts' `jar:` log lines, printed as it goes, and what `drive` returned.
+    fn start<T>(
+        &self,
+        name: &str,
+        drive: impl FnOnce(&mut Instance) -> io::Result<T>,
+    ) -> io::Result<(Vec<(usize, String)>, T)> {
         let mark = SystemTime::now();
         let mut inst = Instance::launch(&self.exe, &self.profile, &self.work, &format!("log-{name}.log"))?;
         println!("    app pid {}, log {}", inst.pid(), inst.log.display());
-        for c in cmds {
-            inst.send(c)?;
-        }
+        let out = drive(&mut inst)?;
         inst.quit(RUN_TIMEOUT)?;
         let lines = host_jar_lines(mark);
         lines.iter().for_each(|(n, l)| println!("    {n:>5} {l}"));
-        Ok(lines)
+        Ok((lines, out))
     }
 
-    /// One headless app run with a single tab; the extra commands run after the tab opens, before the stay.
+    /// Sends `cmds`, waits for the probe server to see one more request for `path`, then for the app to be idle (typed
+    /// input landed, the focused tab loaded: its response and cookies are in).
+    fn step(&self, inst: &mut Instance, cmds: &[&str], path: &str) -> io::Result<()> {
+        let before = self.hits(path);
+        for c in cmds {
+            inst.send(c)?;
+        }
+        poll(&format!("a request for {path}"), STEP_TIMEOUT, || self.hits(path) > before)?;
+        inst.send("WAITIDLE")
+    }
+
+    /// Types `path` (on the probe host) into the focused tab's address bar and goes there.
+    fn navigate(&self, inst: &mut Instance, path: &str) -> io::Result<()> {
+        let typed = format!("ADDRESSBAR {}{path}", self.base);
+        self.step(inst, &[&typed, "WAITIDLE", "ENTER"], path)
+    }
+
+    /// One headless app run with a single tab, opened and loaded before `then` (which gets the Default jar's file) runs.
     fn run(
         &self,
         name: &str,
         engine: &str,
         path: &str,
-        stay: u32,
-        extra: &[String],
+        then: impl FnOnce(&mut Instance, &Path) -> io::Result<()>,
     ) -> io::Result<Vec<(usize, String)>> {
         let tab = json!({"id": "t", "type": TAB, "url": format!("{}{path}", self.base), "view_kind": engine, "pos": [0.0, 0.0]});
         self.import(&[default_jar_node(), tab])?;
+        let jar = self.default_jar()?;
         println!("--- run {name} ({engine} {path})");
-        let mut cmds = strs(&["WAITTABS", "GRAPHRIGHT", "GRAPHOPEN"]);
-        cmds.extend_from_slice(extra);
-        cmds.push(format!("SLEEP {stay}"));
-        self.start(name, &cmds)
+        let (lines, ()) = self.start(name, |inst| {
+            self.step(inst, &["WAITTABS", "GRAPHRIGHT", "GRAPHOPEN"], path)?;
+            then(inst, &jar)
+        })?;
+        Ok(lines)
     }
 
     fn export_session(&self, inst: &mut Instance, name: &str) -> io::Result<Value> {
@@ -295,19 +334,15 @@ impl Probe {
         serde_json::from_slice(&fs::read(&path)?).map_err(io::Error::other)
     }
 
-    /// `start` whose last command exports the session as `export`; returns the exported document.
-    fn start_export(&self, name: &str, cmds: &[String], export: &str) -> io::Result<(Vec<(usize, String)>, Value)> {
-        let mark = SystemTime::now();
-        let mut inst = Instance::launch(&self.exe, &self.profile, &self.work, &format!("log-{name}.log"))?;
-        println!("    app pid {}, log {}", inst.pid(), inst.log.display());
-        for c in cmds {
-            inst.send(c)?;
-        }
-        let doc = self.export_session(&mut inst, export)?;
-        inst.quit(RUN_TIMEOUT)?;
-        let lines = host_jar_lines(mark);
-        lines.iter().for_each(|(n, l)| println!("    {n:>5} {l}"));
-        Ok((lines, doc))
+    /// Waits for the 30 s pull (the app's own timer) to write a sign-in into each of the jars Alice and Bob, whichever
+    /// user it holds (the checks judge that). Returns the session exported to read the jar ids from.
+    fn wait_jars(&self, inst: &mut Instance) -> io::Result<Value> {
+        let doc = self.export_session(inst, "ids")?;
+        poll("the pull to write the jars Alice and Bob", PULL_TIMEOUT, || {
+            let line = self.jars_line(&doc);
+            !line.contains("=none") && !line.contains("unreadable")
+        })?;
+        Ok(doc)
     }
 
     /// Prints the jar's summary and checks it holds one HttpOnly sid, host-only on the probe host.
@@ -369,13 +404,16 @@ impl Probe {
 
     /// login, fresh, cef, webview2: the sign-in reaches the jar file and the next runs start authenticated.
     fn login_runs(&self) -> io::Result<()> {
-        self.run("login", "webview2", "/login", 38, &[])?;
+        // The 30 s pull is the app's own timer: wait until it has put the sign-in in the Default jar's file.
+        self.run("login", "webview2", "/login", |_, jar| {
+            poll("the pull to write the sign-in", PULL_TIMEOUT, || jar_user(jar) == "default")
+        })?;
         self.jar_summary(&self.default_jar()?);
         // Fresh jar, same user-data folder: this run's tab reuses the login run's profile name and must not be signed in.
         let kept = self.profile.join("jars.kept");
         fs::rename(self.jars_dir(), &kept)?;
         let n0 = self.seen();
-        self.run("fresh", "webview2", "/whoami?fresh", 6, &[])?;
+        self.run("fresh", "webview2", "/whoami?fresh", |_, _| Ok(()))?;
         let f = self.since(n0).into_iter().find(|r| r.engine == "webview2" && r.path == "/whoami?fresh");
         println!(
             "fresh jar, reused profile: /whoami?fresh {}",
@@ -384,9 +422,9 @@ impl Probe {
         check_is("a reused profile name carried no cookies across runs", Some(false), f.map(|r| r.auth));
         self.rm_jars();
         fs::rename(&kept, self.jars_dir())?;
-        self.run("cef", "cef", "/whoami", 12, &[])?;
+        self.run("cef", "cef", "/whoami", |_, _| Ok(()))?;
         self.jar_summary(&self.default_jar()?);
-        self.run("webview2", "webview2", "/whoami", 12, &[])?;
+        self.run("webview2", "webview2", "/whoami", |_, _| Ok(()))?;
         println!("=== requests (engine path auth user cookie-names)");
         for r in self.since(0) {
             println!("{} {} auth={} {} names={}", r.engine, r.path, r.auth, r.user_field(), r.names);
@@ -406,7 +444,11 @@ impl Probe {
     fn twotab(&self) -> io::Result<()> {
         self.rm_jars();
         let n0 = self.seen();
-        self.run("twotab", "webview2", "/login", 6, &strs(&["SLEEP 4", "NEWTAB", "WAITTABS"]))?;
+        self.run("twotab", "webview2", "/login", |inst, _| {
+            // Informational: a tab B that never asks is reported below as inconclusive, not as a failure.
+            let _ = self.step(inst, &["NEWTAB", "WAITTABS"], "/whoami?b");
+            Ok(())
+        })?;
         println!("=== two-tab requests");
         for r in self.since(n0) {
             println!("{} {} auth={} {} names={}", r.engine, r.path, r.auth, r.user_field(), r.names);
@@ -425,31 +467,19 @@ impl Probe {
     /// deleted. A closes well within the first 30 s, so no pull carries A's login into the jar. NEWTAB leaves focus on C,
     /// so NEXTTAB (tabs cycle in creation order) moves it to the new tab before ADDRESSBAR and CLOSETAB. A's slot is freed
     /// only after `remove_cache_dir` gives up on its folder, which C's live browser holds: 50 tries, measured 5.1 to 9.6 s
-    /// (2026-10-04), so B waits 14 s.
+    /// (2026-10-04), so B waits 14 s: the one fixed sleep left here, since nothing outside the app shows the slot freed.
     fn reuse(&self) -> io::Result<()> {
         self.rm_jars();
         let n0 = self.seen();
-        let base = &self.base;
-        let extra = [
-            "SLEEP 4".to_owned(),
-            "NEWTAB".into(),
-            "WAITTABS".into(),
-            "NEXTTAB".into(),
-            format!("ADDRESSBAR {base}/login"),
-            "SLEEP 1".into(),
-            "ENTER".into(),
-            "SLEEP 3".into(),
-            format!("ADDRESSBAR {base}/whoami?a"),
-            "SLEEP 1".into(),
-            "ENTER".into(),
-            "SLEEP 3".into(),
-            "CLOSETAB".into(),
-            "SLEEP 14".into(),
-            "NEWTAB".into(),
-            "WAITTABS".into(),
-            "SLEEP 3".into(),
-        ];
-        let jar_log = self.run("reuse", "webview2", "/whoami?c", 4, &extra)?;
+        let jar_log = self.run("reuse", "webview2", "/whoami?c", |inst, _| {
+            self.step(inst, &["NEWTAB", "WAITTABS"], "/whoami?b")?;
+            inst.send("NEXTTAB")?;
+            self.navigate(inst, "/login")?;
+            self.navigate(inst, "/whoami?a")?;
+            inst.send("CLOSETAB")?;
+            inst.send("SLEEP 14")?;
+            self.step(inst, &["NEWTAB", "WAITTABS"], "/whoami?b")
+        })?;
         let log = self.since(n0);
         let on =
             |p: &str| log.iter().filter(|r| r.engine == "webview2" && r.path == p).map(|r| r.auth).collect::<Vec<_>>();
@@ -470,19 +500,22 @@ impl Probe {
     fn ten(&self) -> io::Result<()> {
         let local_state = self.exe.with_file_name("manifold-engine-webview2.exe.WebView2/EBWebView/Local State");
         let before = profile_names(&local_state).unwrap_or_default();
-        // Focus is on C at first and on nothing after a close; NEXTTAB from nothing lands on C (the first tab), so later
-        // rounds need two to reach the new tab.
-        let mut cycle = strs(&["SLEEP 4"]);
-        for i in 1..=10 {
-            cycle.extend(strs(&["NEWTAB", "WAITTABS", "NEXTTAB"]));
-            if i != 1 {
-                cycle.push("NEXTTAB".into());
-            }
-            cycle.extend([format!("ADDRESSBAR {}/whoami?t{i}", self.base)]);
-            cycle.extend(strs(&["SLEEP 1", "ENTER", "SLEEP 2", "CLOSETAB", "SLEEP 6"]));
-        }
         self.rm_jars();
-        let jar_log = self.run("ten", "webview2", "/whoami?c", 2, &cycle)?;
+        let jar_log = self.run("ten", "webview2", "/whoami?c", |inst, _| {
+            // Focus is on C at first and on nothing after a close; NEXTTAB from nothing lands on C (the first tab), so
+            // later rounds need two to reach the new tab. The 6 s after a close lets the slot be freed (see `reuse`).
+            for i in 1..=10 {
+                self.step(inst, &["NEWTAB", "WAITTABS"], "/whoami?b")?;
+                inst.send("NEXTTAB")?;
+                if i != 1 {
+                    inst.send("NEXTTAB")?;
+                }
+                self.navigate(inst, &format!("/whoami?t{i}"))?;
+                inst.send("CLOSETAB")?;
+                inst.send("SLEEP 6")?;
+            }
+            Ok(())
+        })?;
         let after = profile_names(&local_state).unwrap_or_default();
         let added: Vec<&String> = after.iter().filter(|n| !before.contains(n)).collect();
         let pool =
@@ -522,16 +555,17 @@ impl Probe {
 
     /// "perjar: alice jar=<..> bob jar=<..> default=<..>" from the exported session and the jar files.
     fn perjar_line(&self, doc: &Value) -> io::Result<String> {
+        Ok(format!("perjar: {} default={}", self.jars_line(doc), jar_user(&self.default_jar()?)))
+    }
+
+    /// "alice jar=<..> bob jar=<..>": the users the named jars Alice and Bob hold (no app is asked, so this is cheap to
+    /// poll).
+    fn jars_line(&self, doc: &Value) -> String {
         let ids = Self::jar_ids(doc);
         let user = |name: &str| {
             ids.get(name).map_or("no-jar-node".to_owned(), |id| jar_user(&self.jars_dir().join(format!("{id}.json"))))
         };
-        Ok(format!(
-            "perjar: alice jar={} bob jar={} default={}",
-            user("Alice"),
-            user("Bob"),
-            jar_user(&self.default_jar()?)
-        ))
+        format!("alice jar={} bob jar={}", user("Alice"), user("Bob"))
     }
 
     fn jar_node(id: &str, name: &str) -> Value {
@@ -546,9 +580,9 @@ impl Probe {
         n
     }
 
-    /// Per-tab jars: named jars Alice and Bob, a WebView2 tab on each signing in as its own probe user. One 30 s pull (the
-    /// 38 s stay) and the quit pull carry each login into its tab's jar file; the default jar must get none. GRAPHOPEN
-    /// opens the first tab and NEXTTAB the second, so both are live and both log in.
+    /// Per-tab jars: named jars Alice and Bob, a WebView2 tab on each signing in as its own probe user. A 30 s pull
+    /// (waited for, not slept) and the quit pull carry each login into its tab's jar file; the default jar must get none.
+    /// GRAPHOPEN opens the first tab and NEXTTAB the second, so both are live and both log in.
     fn perjar(&self) -> io::Result<bool> {
         self.rm_jars();
         self.import(&[
@@ -559,8 +593,12 @@ impl Probe {
             self.jar_tab("b", "/login?u=bob", Some("jb"), 400.0),
         ])?;
         println!("--- run perjar (two WebView2 tabs on jars Alice and Bob)");
-        let (_, doc) =
-            self.start_export("perjar", &strs(&["WAITTABS", "GRAPHRIGHT", "GRAPHOPEN", "NEXTTAB", "SLEEP 38"]), "s")?;
+        let (_, doc) = self.start("perjar", |inst| {
+            for c in ["WAITTABS", "GRAPHRIGHT", "GRAPHOPEN", "NEXTTAB"] {
+                inst.send(c)?;
+            }
+            self.wait_jars(inst)
+        })?;
         for r in self.since(0).iter().filter(|r| r.path.starts_with("/login?u=")) {
             println!("    {} {} auth={} {}", r.engine, r.path, r.auth, r.user_field());
         }
@@ -578,28 +616,14 @@ impl Probe {
     fn jarswitch(&self) -> io::Result<()> {
         let n0 = self.seen();
         println!("--- run jarswitch (Alice's tab moves to jar Bob)");
-        let base = &self.base;
-        let cmds = [
-            "WAITTABS".to_owned(),
-            "QUICKSWITCHOPEN".into(),
-            "QUICKSWITCHTEXT u=alice".into(),
-            "QUICKSWITCHENTER".into(),
-            "WAITTABS".into(),
-            "SLEEP 3".into(),
-            format!("ADDRESSBAR {base}/whoami?switch"),
-            "SLEEP 1".into(),
-            "ENTER".into(),
-            "SLEEP 3".into(),
-            "SETJAR Bob".into(),
-            "SWITCHJARNOW".into(),
-            "WAITTABS".into(),
-            "SLEEP 8".into(),
-            format!("ADDRESSBAR {base}/whoami?switch2"),
-            "SLEEP 1".into(),
-            "ENTER".into(),
-            "SLEEP 3".into(),
-        ];
-        let (_, doc) = self.start_export("jarswitch", &cmds, "s2")?;
+        let (_, doc) = self.start("jarswitch", |inst| {
+            self.quick_switch(inst, "u=alice", "/login?u=alice")?;
+            self.navigate(inst, "/whoami?switch")?;
+            // The switched host reloads the page: a second /whoami?switch.
+            self.step(inst, &["SETJAR Bob", "SWITCHJARNOW", "WAITTABS"], "/whoami?switch")?;
+            self.navigate(inst, "/whoami?switch2")?;
+            self.export_session(inst, "s2")
+        })?;
         let log = self.since(n0);
         println!("=== jarswitch requests (engine path auth user)");
         log.iter().for_each(|r| println!("    {} {} auth={} {}", r.engine, r.path, r.auth, r.user_field()));
@@ -635,8 +659,11 @@ impl Probe {
         log.iter().filter(|r| r.path == path).nth(n - 1).map_or("no request".to_owned(), Req::user_field)
     }
 
-    fn address(&self, path: &str) -> [String; 4] {
-        [format!("ADDRESSBAR {}{path}", self.base), "SLEEP 1".into(), "ENTER".into(), "SLEEP 3".into()]
+    /// Focuses (opening it if need be) the tab whose card matches `text` in the quick switcher; its page then loads and
+    /// asks the probe server for `path`.
+    fn quick_switch(&self, inst: &mut Instance, text: &str, path: &str) -> io::Result<()> {
+        let typed = format!("QUICKSWITCHTEXT {text}");
+        self.step(inst, &["WAITTABS", "QUICKSWITCHOPEN", &typed, "QUICKSWITCHENTER", "WAITTABS"], path)
     }
 
     /// Switch Jar Now and Clear cookies on a live WebView2 tab: the replacing host must not start with the old jar's
@@ -657,21 +684,17 @@ impl Probe {
         ])?;
         let n0 = self.seen();
         println!("--- run switchnow (alice's tab moves to the empty jar Bob)");
-        let mut cmds = strs(&[
-            "WAITTABS",
-            "QUICKSWITCHOPEN",
-            "QUICKSWITCHTEXT u=alice",
-            "QUICKSWITCHENTER",
-            "WAITTABS",
-            "SLEEP 3",
-        ]);
-        cmds.extend(self.address("/whoami?sn1"));
-        cmds.extend(strs(&["SETJAR Bob", "SWITCHJARNOW", "WAITTABS", "SLEEP 4"]));
-        cmds.extend(self.address("/whoami?sn2"));
-        cmds.extend(self.address("/login?u=bob"));
-        cmds.extend(self.address("/whoami?sn3"));
-        cmds.push("SLEEP 30".into());
-        let (_, doc) = self.start_export("switchnow", &cmds, "sn")?;
+        let (_, doc) = self.start("switchnow", |inst| {
+            self.quick_switch(inst, "u=alice", "/login?u=alice")?;
+            self.navigate(inst, "/whoami?sn1")?;
+            // The replacing host reloads the page: a second /whoami?sn1, at once.
+            self.step(inst, &["SETJAR Bob", "SWITCHJARNOW", "WAITTABS"], "/whoami?sn1")?;
+            self.navigate(inst, "/whoami?sn2")?;
+            self.navigate(inst, "/login?u=bob")?;
+            self.navigate(inst, "/whoami?sn3")?;
+            // A pull after bob's login must have run (it would also have carried any leaked sign-in into a jar).
+            self.wait_jars(inst)
+        })?;
         let log = self.since(n0);
         let (before, reload, next, bob) = (
             Self::nth_user(&log, "/whoami?sn1", 1),
@@ -695,13 +718,15 @@ impl Probe {
 
         let n0 = self.seen();
         println!("--- run switchclear (bob's tab, its jar cleared, switches now)");
-        let mut cmds =
-            strs(&["WAITTABS", "QUICKSWITCHOPEN", "QUICKSWITCHTEXT sn3", "QUICKSWITCHENTER", "WAITTABS", "SLEEP 3"]);
-        cmds.extend(self.address("/whoami?sc1"));
-        cmds.extend(strs(&["CLEARJAR Bob", "SWITCHJARNOW", "WAITTABS", "SLEEP 4"]));
-        cmds.extend(self.address("/whoami?sc2"));
-        cmds.push("SLEEP 30".into());
-        let (_, doc) = self.start_export("switchclear", &cmds, "sc")?;
+        let (_, doc) = self.start("switchclear", |inst| {
+            self.quick_switch(inst, "sn3", "/whoami?sn3")?;
+            self.navigate(inst, "/whoami?sc1")?;
+            self.step(inst, &["CLEARJAR Bob", "SWITCHJARNOW", "WAITTABS"], "/whoami?sc1")?;
+            self.navigate(inst, "/whoami?sc2")?;
+            // Negative expectation (Bob's jar gets no sid): a real wait, one full pull of the app's 30 s timer.
+            inst.send("SLEEP 30")?;
+            self.export_session(inst, "sc")
+        })?;
         let log = self.since(n0);
         let (before, reload, next) = (
             Self::nth_user(&log, "/whoami?sc1", 1),
