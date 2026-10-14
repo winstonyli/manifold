@@ -281,7 +281,7 @@ fn a_group_header_draws_its_name_by_the_display_rule() {
                 right_margin: 0.0,
             };
             let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(300.0, 200.0));
-            app.paint_card_header(ui, &mut overlays, rect, 1.0, 1.0, header);
+            app.paint_card_header(ui, &mut overlays, "n", rect, 1.0, 1.0, header);
             for overlay in overlays {
                 overlay(ui.painter(), &|p| p);
             }
@@ -325,7 +325,7 @@ fn a_header_without_a_glyph_draws_title_and_source_at_the_header_lines() {
             right_margin: 0.0,
         };
         let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(300.0, 200.0));
-        assert!(app.paint_card_header(ui, &mut overlays, rect, 1.0, 1.0, header));
+        assert!(app.paint_card_header(ui, &mut overlays, "n", rect, 1.0, 1.0, header));
         for overlay in overlays {
             overlay(ui.painter(), &|p| p);
         }

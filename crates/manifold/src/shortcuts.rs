@@ -387,12 +387,12 @@ impl App {
         }
     }
 
-    /// `Ctrl+D` / headless `DUPLICATETAB` — keyboard parity for the tab
-    /// context menu's own "Duplicate" entry, applied to the focused tab. A
-    /// no-op if none is focused (Graph view with nothing selected).
+    /// `Ctrl+D` / headless `DUPLICATETAB` — keyboard parity for the node
+    /// context menu's own "Duplicate" entry: the selection when one is
+    /// made, else the focused card. A no-op if neither exists.
     pub(crate) fn duplicate_focused_tab_shortcut(&mut self) {
-        if let Some(id) = self.focused.clone() {
-            self.duplicate_tab(&id);
+        if let Some(id) = self.interaction.selected.iter().next().cloned().or_else(|| self.focused.clone()) {
+            self.duplicate_selection(&id);
         }
     }
 

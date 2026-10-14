@@ -2127,7 +2127,7 @@ mod tests {
         assert!(app.save_session());
         assert_eq!(stored(&app, &g, field::NAME), FieldValue::Str("Errands".into()));
         app.commit_rename(&note, "Not a group");
-        assert_eq!(app.mirror.name(&note), "", "a note has no name");
+        assert_eq!(app.mirror.name(&note), "Not a group", "any node takes a rename");
 
         assert!(app.debug_set_note_text(&note, "mine".into()));
         assert_eq!(stored(&app, &note, field::TEXT), FieldValue::Str("mine".into()), "the blur saved it");

@@ -1069,10 +1069,10 @@ impl App {
             _ => response,
         };
         // Screen readers: the card is a button named by its kind and title (egui announces it on focus).
-        if let Some(node) = self.nodes.get(id) {
-            let (text, source) = (self.own_text(id), self.source_url(id));
+        if self.nodes.contains_key(id) {
             response.widget_info(|| {
-                egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), node.accessible_name(text, source))
+                let name = self.accessible_name(id).unwrap_or_default();
+                egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), name)
             });
         }
         // Keyboard: a focus ring, the camera follows focus, and the Tab-order number while navigating.
@@ -1259,13 +1259,9 @@ impl App {
         }
 
         if let Some(node) = self.nodes.get(id) {
-            dim_if_filtered_out(
-                deferred_overlays,
-                &self.graph_filter,
-                &card_filter_text(&node.runtime, self.own_text(id)),
-                rect,
-                style.dim_rounding,
-            );
+            let mut needles = card_filter_text(&node.runtime, self.own_text(id));
+            needles.push(self.mirror.name(id)); // name rule: the filter matches the stored text (a rename; a group is matched twice)
+            dim_if_filtered_out(deferred_overlays, &self.graph_filter, &needles, rect, style.dim_rounding);
         }
         Some(CardOutput { response, control })
     }
@@ -1367,7 +1363,7 @@ impl App {
             scrim: false,
             right_margin: 0.0,
         };
-        let tall = self.paint_card_header(ui, deferred_overlays, rect, inv_zoom, zoom_scale, header);
+        let tall = self.paint_card_header(ui, deferred_overlays, id, rect, inv_zoom, zoom_scale, header);
         // The middle of the body below the header: the failure icon, the waking spinner, or the
         // moon of a sleeping tab.
         let middle = card_body_rect(rect, tall, inv_zoom).center();
@@ -1451,7 +1447,7 @@ impl App {
                 scrim: false,
                 right_margin: 0.0,
             };
-            let tall = self.paint_card_header(ui, deferred_overlays, rect, inv_zoom, zoom_scale, header);
+            let tall = self.paint_card_header(ui, deferred_overlays, id, rect, inv_zoom, zoom_scale, header);
             // The size (or how much has arrived) in the middle of the body below the header.
             if tall {
                 let size = match (completed, total_bytes) {
@@ -1546,7 +1542,7 @@ impl App {
                 scrim: false,
                 right_margin: 0.0,
             };
-            self.paint_card_header(ui, deferred_overlays, rect, inv_zoom, zoom_scale, header);
+            self.paint_card_header(ui, deferred_overlays, id, rect, inv_zoom, zoom_scale, header);
         }
 
         if is_editing {
@@ -1603,10 +1599,15 @@ impl App {
     /// A restored image/JSON card whose file couldn't be loaded: header F (a `FILE_X` glyph in the
     /// danger colour, the file name, its path) with the same glyph a failed PDF card shows in the
     /// middle of the body below it (see `ImagePayload::error`).
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the card's id, rect and zoom travel beside the header, as at every sibling painter"
+    )]
     pub(crate) fn paint_missing_file_card(
         &mut self,
         ui: &egui::Ui,
         deferred_overlays: &mut DeferredOverlays,
+        id: &str,
         rect: egui::Rect,
         inv_zoom: f32,
         zoom_scale: f32,
@@ -1626,7 +1627,7 @@ impl App {
             scrim: false,
             right_margin: 0.0,
         };
-        let tall = self.paint_card_header(ui, deferred_overlays, rect, inv_zoom, zoom_scale, header);
+        let tall = self.paint_card_header(ui, deferred_overlays, id, rect, inv_zoom, zoom_scale, header);
         let icon_pos = card_body_rect(rect, tall, inv_zoom).center();
         push_centered_text(deferred_overlays, icon_pos, egui_phosphor::light::FILE_X, 24.0, DANGER_COLOR);
     }
@@ -1654,7 +1655,7 @@ impl App {
         if let Some(error) = error {
             if let Some(path) = self.nodes.get(id).and_then(|n| n.as_image()).map(|i| i.path.clone()) {
                 let text = file_header_text(&path, self.source_url(id));
-                self.paint_missing_file_card(ui, deferred_overlays, rect, inv_zoom, zoom_scale, text);
+                self.paint_missing_file_card(ui, deferred_overlays, id, rect, inv_zoom, zoom_scale, text);
             }
             body.tooltip = Some(error);
             return body;
@@ -1684,7 +1685,7 @@ impl App {
                             scrim: true,
                             right_margin: 0.0,
                         };
-                        self.paint_card_header(ui, deferred_overlays, rect, inv_zoom, zoom_scale, header);
+                        self.paint_card_header(ui, deferred_overlays, id, rect, inv_zoom, zoom_scale, header);
                     }
                 }
                 // Still decoding (`ImageDecoder`): the loading spinner a waking tab shows.
@@ -1768,7 +1769,7 @@ impl App {
                             scrim: true,
                             right_margin: 60.0,
                         };
-                        self.paint_card_header(ui, deferred_overlays, rect, inv_zoom, zoom_scale, header);
+                        self.paint_card_header(ui, deferred_overlays, id, rect, inv_zoom, zoom_scale, header);
                     }
                     // Shown even for a one-page PDF -- a glanceable
                     // "this is a PDF, not a plain image" cue on top
@@ -1836,7 +1837,7 @@ impl App {
         if let Some(error) = error {
             if let Some(path) = self.nodes.get(id).and_then(|n| n.as_json()).map(|j| j.path.clone()) {
                 let text = file_header_text(&path, None);
-                self.paint_missing_file_card(ui, deferred_overlays, rect, 1.0 / zoom_scale, zoom_scale, text);
+                self.paint_missing_file_card(ui, deferred_overlays, id, rect, 1.0 / zoom_scale, zoom_scale, text);
             }
             body.tooltip = Some(error);
             return body;
@@ -1938,7 +1939,7 @@ impl App {
                     scrim: false,
                     right_margin: 0.0,
                 };
-                let tall = self.paint_card_header(ui, deferred_overlays, rect, inv_zoom, zoom_scale, header);
+                let tall = self.paint_card_header(ui, deferred_overlays, id, rect, inv_zoom, zoom_scale, header);
                 // Up to 4 member thumbnails, a 2x2 grid in the body below the header, like a folder
                 // previewing its contents (`GpuState::thumbnail_id`, as a tab's own card does). A cell
                 // with no thumbnail yet gets a plain tinted square. "Collapse Groups" leaves the
@@ -1991,10 +1992,15 @@ impl App {
     /// line, 40 screen points tall. A card under `TAB_HEADER_MIN_CARD_POINTS` tall gets the name on
     /// a strip along the bottom instead. Returns whether the full header was drawn, so a caller
     /// can place its own content below it.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the card's id, rect and zoom travel beside the header, as at every sibling painter"
+    )]
     pub(crate) fn paint_card_header(
         &mut self,
         ui: &egui::Ui,
         deferred_overlays: &mut DeferredOverlays,
+        id: &str,
         rect: egui::Rect,
         inv_zoom: f32,
         zoom_scale: f32,
@@ -2006,6 +2012,10 @@ impl App {
         }
         let CardHeader { glyph, glyph_color, icon_image, name, user_name, source, source_is_path, scrim, right_margin } =
             header;
+        // A stored `name` (any kind's rename) takes the title's place, drawn by the display rule like a group's.
+        let stored = self.mirror.name(id).to_owned(); // name rule: drawn through display_name
+        let own_segs = crate::names::display_name(&stored, crate::names::UNTITLED);
+        let user_name = user_name.or((!stored.is_empty()).then_some(own_segs.as_slice()));
         let band_height = if tall { TAB_HEADER_POINTS } else { TAB_STRIP_POINTS } * inv_zoom;
         let band = if tall {
             egui::Rect::from_min_size(rect.left_top(), egui::vec2(rect.width(), band_height))
@@ -2191,7 +2201,7 @@ impl App {
                     scrim: false,
                     right_margin: 0.0,
                 };
-                self.paint_card_header(ui, deferred_overlays, rect, inv_zoom, zoom_scale, card_header);
+                self.paint_card_header(ui, deferred_overlays, id, rect, inv_zoom, zoom_scale, card_header);
             } else {
                 // A flat scrim behind the title strip so it stays legible over a light thumbnail.
                 let title_strip = egui::Rect::from_min_max(

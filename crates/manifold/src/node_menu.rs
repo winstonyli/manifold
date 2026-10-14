@@ -540,6 +540,11 @@ pub(crate) fn node_menu_config(view: &NodeMenuView, headless: bool) -> NodeMenuC
     // Every menu ends in the Colors row, the Links section (when it has rows), Remove from Group (when the node
     // is grouped), then the kind's delete items.
     let finish = |area_id, min_width, mut items: Vec<NodeMenuItem>, delete_items: Vec<NodeMenuItem>, jar_page| {
+        items.push(Button("Rename", A::Rename));
+        // A tab's own menu offers Duplicate where it can work (not on a failed tab).
+        if view.kind.ty != TYPE_TAB {
+            items.push(Button("Duplicate", A::Duplicate));
+        }
         items.push(Button(if view.pinned { "Unpin" } else { "Pin" }, A::TogglePin));
         items.push(Page("Color...", MenuPage::Color));
         if !view.edges.is_empty() {
@@ -651,7 +656,7 @@ pub(crate) fn node_menu_config(view: &NodeMenuView, headless: bool) -> NodeMenuC
             if !headless {
                 delete_items.push(Button("Export Group...", A::ExportGroup));
             }
-            let mut items = vec![Button("Rename", A::Rename), Button("Sleep Tabs", A::SleepGroup)];
+            let mut items = vec![Button("Sleep Tabs", A::SleepGroup)];
             let jar_page = jar_row(&mut items, false, false);
             finish("group_context_menu", 150.0, items, delete_items, jar_page)
         }
@@ -901,10 +906,7 @@ impl App {
         });
         let disconnects = self.edges_of(id).into_iter().map(|e| {
             // The other card as a screen reader names it, cut to a row's length.
-            let name = self
-                .nodes
-                .get(&e.other)
-                .map_or_else(String::new, |n| n.accessible_name(self.own_text(&e.other), self.source_url(&e.other)));
+            let name = self.accessible_name(&e.other).unwrap_or_default();
             let segs = crate::names::display_name(&name, crate::names::UNTITLED);
             let short = crate::names::shorten(&segs, crate::names::ROW_UNITS);
             // Which edge it is, since a pair can be joined by both (spec "Two lines on one pair").
@@ -980,7 +982,13 @@ impl App {
     pub(crate) fn commit_rename(&mut self, id: &str, name: &str) {
         self.renaming_group = None;
         let clean = crate::names::clean_name(name);
-        if !clean.is_empty() && self.is_container(id) {
+        // A group always has a name (an empty draft changes nothing); any other node's name is an override of its
+        // derived label, which an empty draft clears.
+        if self.is_container(id) {
+            if !clean.is_empty() {
+                self.edit_name(id, &clean);
+            }
+        } else if self.nodes.contains_key(id) {
             self.edit_name(id, &clean);
         }
     }
@@ -1014,7 +1022,7 @@ impl App {
             NodeAction::Refresh => self.refresh_node(id),
             NodeAction::OpenAsTab => self.open_as_tab(id),
             NodeAction::TogglePin => self.toggle_pin(id),
-            NodeAction::Duplicate => self.duplicate_tab(id),
+            NodeAction::Duplicate => self.duplicate_selection(id),
             NodeAction::Sleep => {
                 self.request_sleep(id, SleepWhy::Manual);
             }

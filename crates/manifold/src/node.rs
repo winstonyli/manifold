@@ -421,6 +421,19 @@ impl GraphNode {
 }
 
 impl App {
+    /// `GraphNode::accessible_name` of node `id` with a rename (`NodeAction::CommitRename`) in place of the derived
+    /// detail; a group's own name is already its detail. `None` for an id that isn't a node.
+    pub(crate) fn accessible_name(&self, id: &str) -> Option<String> {
+        let base = self.nodes.get(id)?.accessible_name(self.own_text(id), self.source_url(id));
+        let renamed = self.mirror.name(id); // name rule: drawn through display_name
+        if renamed.is_empty() || self.is_container(id) {
+            return Some(base);
+        }
+        let kind = base.split(": ").next().unwrap_or(&base);
+        let shown = crate::names::to_plain(&crate::names::display_name(renamed, crate::names::UNTITLED));
+        Some(format!("{kind}: {shown}"))
+    }
+
     /// The web source of an Image, Pdf, Json or Note node (`Mirror::url`): Refresh and Open as tab use it,
     /// and a missing file is fetched again from it. `None` for a local file and for other kinds.
     pub(crate) fn source_url(&self, id: &str) -> Option<&str> {

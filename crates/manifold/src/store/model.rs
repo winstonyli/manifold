@@ -150,13 +150,13 @@ pub enum Kind {
 pub(crate) const TYPES: [(Kind, &str, &[u32]); 9] = {
     use field::*;
     [
-        (Kind::Tab, TYPE_TAB, &[POS, COLOR, PARENT, URL, VIEW_KIND, PINNED, JAR, JAR_SET]),
+        (Kind::Tab, TYPE_TAB, &[POS, COLOR, PARENT, URL, VIEW_KIND, PINNED, JAR, JAR_SET, NAME]),
         (Kind::Group, TYPE_GROUP, &[POS, COLOR, NAME, DEFAULT_JAR]),
-        (Kind::Note, TYPE_NOTE, &[POS, COLOR, PARENT, URL, TEXT]),
-        (Kind::Image, TYPE_IMAGE, &[POS, COLOR, PARENT, URL, PATH]),
-        (Kind::Pdf, TYPE_PDF, &[POS, COLOR, PARENT, URL, PATH]),
-        (Kind::Json, TYPE_JSON, &[POS, COLOR, PARENT, URL, PATH, VIEW]),
-        (Kind::Download, TYPE_DOWNLOAD, &[POS, COLOR, PARENT, URL, PATH]),
+        (Kind::Note, TYPE_NOTE, &[POS, COLOR, PARENT, URL, TEXT, NAME]),
+        (Kind::Image, TYPE_IMAGE, &[POS, COLOR, PARENT, URL, PATH, NAME]),
+        (Kind::Pdf, TYPE_PDF, &[POS, COLOR, PARENT, URL, PATH, NAME]),
+        (Kind::Json, TYPE_JSON, &[POS, COLOR, PARENT, URL, PATH, VIEW, NAME]),
+        (Kind::Download, TYPE_DOWNLOAD, &[POS, COLOR, PARENT, URL, PATH, NAME]),
         (Kind::Jar, TYPE_JAR, &[COLOR, NAME, EPHEMERAL]),
         (Kind::Link, TYPE_LINK, &[NAME, FROM, TO]),
     ]

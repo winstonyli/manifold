@@ -326,6 +326,8 @@ impl Mirror {
             ty: self.ty(id).to_owned(),
             path: self.path(id).to_owned(),
             default_jar: self.default_jar(id),
+            // name rule: carried as stored
+            name: self.name(id).to_owned(),
         }
     }
 
@@ -340,7 +342,13 @@ impl Mirror {
         let jar = carried.jar.jar.is_some().then_some((field::JAR, FieldValue::Id(carried.jar.jar)));
         let jar_set = carried.jar.set.then_some((field::JAR_SET, FieldValue::Bool(true)));
         let default_jar = carried.default_jar.map(|jar| (field::DEFAULT_JAR, FieldValue::Id(Some(jar))));
-        let strings = [str(field::URL, &carried.url), str(field::TEXT, &carried.text), str(field::PATH, &carried.path)];
+        let strings = [
+            str(field::URL, &carried.url),
+            str(field::TEXT, &carried.text),
+            str(field::PATH, &carried.path),
+            // name rule: seeded as stored
+            str(field::NAME, &carried.name),
+        ];
         let fields = [(field::COLOR, color_value(carried.color)), (field::PINNED, FieldValue::Bool(carried.pinned))];
         let optional = [pos, view_kind, jar, jar_set, default_jar];
         self.init(id, fields.into_iter().chain(optional.into_iter().flatten()).chain(strings.into_iter().flatten()));
@@ -381,6 +389,8 @@ pub(crate) struct Carried {
     pub path: String,
     /// `Mirror::default_jar`; `None` for a node that isn't a group.
     pub default_jar: Option<NodeId>,
+    /// `Mirror::name`: a rename of any node, or a group's name; "" for none.
+    pub name: String,
 }
 
 #[cfg(test)]
@@ -406,6 +416,7 @@ mod tests {
             ty: "text/x".into(),
             path: "C:/a.json".into(),
             default_jar: Some(NodeId { actor: crate::store::model::ActorId(1), counter: 3 }),
+            name: "Mine".into(),
         };
         mirror.seed("7", &first);
         assert_eq!(mirror.carried("7"), first);

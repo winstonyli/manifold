@@ -23,6 +23,9 @@ impl ClosedEntry {
     }
 }
 
+/// How far a duplicate lands from its original, in the level's world units (`App::duplicate_nodes`).
+const DUPLICATE_OFFSET: f32 = 40.0;
+
 /// How many entries `App::closed` keeps before dropping the oldest, like a
 /// browser's own bounded "Recently closed" list.
 pub(crate) const MAX_CLOSED: usize = 20;
@@ -121,14 +124,22 @@ fn live_fields(app: &App, id: &str, fields: &session_sync::Fields) -> session_sy
 /// order), minus what `worth_reopening` skips. `None` when `id` itself
 /// isn't worth reopening.
 pub(crate) fn closed_entry(app: &App, id: &str) -> Option<ClosedEntry> {
-    let root_id: store::model::NodeId = id.parse().ok()?;
-    let root = app.snapshot(root_id)?;
-    let root_fields = live_fields(app, id, &root.fields);
-    if !worth_reopening(app.mirror.ty(id), &root_fields) {
-        return None;
-    }
-    let mut nodes = vec![store::json::node_json(id, root.kind, &root_fields, None)];
-    let (mut zoom, mut title) = (serde_json::Map::new(), serde_json::Map::new());
+    subtree_entry(app, &[id], egui::Vec2::ZERO, worth_reopening)
+}
+
+/// The snapshot of the live subtrees under `roots` (each node and, for a group, everything under it), the shape
+/// `closed_entry` records and `App::duplicate_nodes` copies: each root first, written without a group, and the
+/// members after, in draw order. `keep` (a node's type and snapshot fields) drops the nodes it refuses, a root
+/// among them; `offset` moves each root's pos, so a copy lands beside what it copies. A link comes along when both
+/// its ends do. `None` when nothing is kept.
+pub(crate) fn subtree_entry(
+    app: &App,
+    roots: &[&str],
+    offset: egui::Vec2,
+    keep: impl Fn(&str, &session_sync::Fields) -> bool,
+) -> Option<ClosedEntry> {
+    let order: Vec<store::model::NodeId> = app.node_order.iter().filter_map(|s| s.parse().ok()).collect();
+    let (mut nodes, mut zoom, mut title) = (Vec::new(), serde_json::Map::new(), serde_json::Map::new());
     let mut record = |label: &str| {
         if let Some(z) = tab_zoom(app, label) {
             zoom.insert(label.to_string(), serde_json::json!(z));
@@ -137,23 +148,37 @@ pub(crate) fn closed_entry(app: &App, id: &str) -> Option<ClosedEntry> {
             title.insert(label.to_string(), serde_json::json!(t));
         }
     };
-    record(id);
-    // Only a group has members; for anything else this finds none. Membership and containment are the mirror's.
-    let order: Vec<store::model::NodeId> = app.node_order.iter().filter_map(|s| s.parse().ok()).collect();
-    let members = members_under(
-        root_id,
-        &order,
-        |id| app.mirror.group(&id.to_string()).and_then(|g| g.parse().ok()),
-        |id| crate::caps::edges().target_accepts(crate::caps::CONTAINS, app.mirror.ty(&id.to_string())),
-    );
-    for member_id in members {
-        let Some(member) = app.snapshot(member_id) else { continue };
-        let label = member_id.to_string();
-        let fields = live_fields(app, &label, &member.fields);
-        if worth_reopening(app.mirror.ty(&label), &fields) {
-            nodes.push(store::json::node_json(&label, member.kind, &fields, member.group));
-            record(&label);
+    for &id in roots {
+        let Ok(root_id) = id.parse::<store::model::NodeId>() else { continue };
+        let Some(root) = app.snapshot(root_id) else { continue };
+        let mut root_fields = live_fields(app, id, &root.fields);
+        if !keep(app.mirror.ty(id), &root_fields) {
+            continue;
         }
+        if let Some(store::model::FieldValue::Pos(x, y)) = root_fields.get_mut(&field::POS) {
+            (*x, *y) = (*x + offset.x, *y + offset.y);
+        }
+        nodes.push(store::json::node_json(id, root.kind, &root_fields, None));
+        record(id);
+        // Only a group has members; for anything else this finds none. Membership and containment are the mirror's.
+        let members = members_under(
+            root_id,
+            &order,
+            |id| app.mirror.group(&id.to_string()).and_then(|g| g.parse().ok()),
+            |id| crate::caps::edges().target_accepts(crate::caps::CONTAINS, app.mirror.ty(&id.to_string())),
+        );
+        for member_id in members {
+            let Some(member) = app.snapshot(member_id) else { continue };
+            let label = member_id.to_string();
+            let fields = live_fields(app, &label, &member.fields);
+            if keep(app.mirror.ty(&label), &fields) {
+                nodes.push(store::json::node_json(&label, member.kind, &fields, member.group));
+                record(&label);
+            }
+        }
+    }
+    if nodes.is_empty() {
+        return None;
     }
     // A link comes back only between cards that do (both ends recorded above); import remaps its ends to the new ids.
     let kept: std::collections::BTreeSet<store::model::NodeId> =
@@ -206,6 +231,48 @@ impl App {
             }
             self.local_persist.closed_changed_at = Some(std::time::Instant::now());
         }
+    }
+
+    /// Duplicate: a copy of each of `ids` beside it. A tab is a fresh page at its saved url and engine (`duplicate_tab`),
+    /// sharing no session state. Any other node, with everything under it for a group, is copied through the same
+    /// snapshot Recently Closed uses (`subtree_entry`, `reopen_closed`): fresh ids, content and name kept, links
+    /// between the copied cards remapped, tabs inside a group arriving asleep. A node whose group is also in `ids`
+    /// is copied with that group, not again.
+    pub(crate) fn duplicate_nodes(&mut self, ids: &[String]) {
+        let covered = |app: &App, id: &str| {
+            let mut group = app.mirror.group(id);
+            for _ in 0..app.nodes.len() {
+                let Some(g) = group else { return false };
+                if ids.iter().any(|i| i == g) {
+                    return true;
+                }
+                group = app.mirror.group(g);
+            }
+            false
+        };
+        let ids: Vec<&String> = ids.iter().filter(|id| self.nodes.contains_key(*id) && !covered(self, id)).collect();
+        let (tabs, roots): (Vec<&String>, Vec<&String>) =
+            ids.into_iter().partition(|id| self.nodes[*id].runtime.saved_tab().is_some());
+        let roots: Vec<&str> = roots.into_iter().map(String::as_str).collect();
+        let entry = subtree_entry(self, &roots, egui::Vec2::splat(DUPLICATE_OFFSET), |_, _| true);
+        for tab in tabs.into_iter().cloned().collect::<Vec<_>>() {
+            self.duplicate_tab(&tab);
+        }
+        if let Some(entry) = entry {
+            self.reopen_closed(entry);
+        }
+    }
+
+    /// Duplicate on `id` as the menu and Ctrl+D mean it: the whole selection when `id` is in it, else `id` alone.
+    pub(crate) fn duplicate_selection(&mut self, id: &str) {
+        let ids: Vec<String> = if self.interaction.selected.contains(id) {
+            let mut all: Vec<String> = self.interaction.selected.iter().cloned().collect();
+            all.sort();
+            all
+        } else {
+            vec![id.to_owned()]
+        };
+        self.duplicate_nodes(&ids);
     }
 
     /// Rebuilds a closed entry where it was: fresh ids via `store::json::
@@ -385,6 +452,32 @@ mod tests {
         let reopened = app.nodes.keys().find(|id| **id != note).unwrap().clone();
         assert_eq!(app.layout_pos(&reopened), egui::vec2(70.0, 80.0));
         assert_eq!(app.mirror.pos(&reopened), Some(egui::vec2(70.0, 80.0)));
+    }
+
+    /// Duplicate copies a renamed note beside the original with its name and text, and a group with its member (not
+    /// again when the member is selected too); the originals stay.
+    #[test]
+    fn duplicating_a_note_and_a_group_copies_them_beside_the_originals() {
+        use crate::session_sync::tests::app_on;
+        let path = store::testutil::temp_dir("duplicate-nodes").join("session.mnf");
+        let mut app = app_on(&path, 1);
+        let text = |t: &str| Runtime::Note(crate::node::NotePayload { text: t.into(), editing: false });
+        let note = crate::session_sync::tests::add(&mut app, Kind::Note, text("n"));
+        app.edit_pos(&note, Some(egui::vec2(10.0, 20.0)));
+        app.snap_layout(&note, egui::vec2(10.0, 20.0));
+        app.edit_name(&note, "Mine");
+        let group = crate::session_sync::tests::add_group(&mut app, "G");
+        let inner = crate::session_sync::tests::add(&mut app, Kind::Note, text("inner"));
+        app.edit_group(&inner, Some(group.clone()));
+        assert!(app.save_session());
+        let before = app.nodes.len();
+        app.duplicate_nodes(&[note.clone(), group.clone(), inner.clone()]);
+        assert_eq!(app.nodes.len(), before + 3, "note, group and its one member, the member not twice");
+        let copies: Vec<&String> = app.nodes.keys().filter(|id| ![&note, &group, &inner].contains(id)).collect();
+        assert!(copies.iter().any(|id| app.mirror.name(id) == "Mine" && app.mirror.text(id) == "n"));
+        let copy = copies.iter().find(|id| app.mirror.name(id) == "Mine").unwrap();
+        assert_eq!(app.mirror.pos(copy), Some(egui::vec2(10.0 + DUPLICATE_OFFSET, 20.0 + DUPLICATE_OFFSET)));
+        assert!(app.nodes.contains_key(&note) && app.nodes.contains_key(&inner));
     }
 
     /// A note closed while it is typed in records what the box held, which no save has committed yet.
