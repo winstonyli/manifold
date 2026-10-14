@@ -128,7 +128,8 @@ fn handle_cards(s: &State) -> String {
         .map(|o| o.iter().filter(|(_, v)| truthy(v)).map(|(k, _)| k.as_str()).collect())
         .unwrap_or_default();
     with.sort_unstable();
-    let mut all: Vec<&str> = s.cards().iter().filter_map(|c| c["id"].as_str()).collect();
+    // Every card on screen, the Default jar's included: `link_handles` covers every node card.
+    let mut all: Vec<&str> = s.all_cards().iter().filter_map(|c| c["id"].as_str()).collect();
     all.sort_unstable();
     if with == all { "True" } else { "False" }.to_string()
 }
