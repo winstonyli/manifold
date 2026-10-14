@@ -54,8 +54,13 @@ pub(super) fn s3(t: &mut Two) -> Step {
             followed,
             &format!("only {} requests; B never followed A's navigation", c.hits()),
         )?;
-        // Negative window (plan "Negative windows"): past HOST_LOAD_GRACE (5 s), then a window as long again; a bounce
-        // is a round trip every second or two, so the count would keep climbing.
+        // Both loads must be finished before `settled` is read: under load B's follow can still be in flight after
+        // the 4th request, and its later requests would read as a bounce. Idle is an observable, so wait on it.
+        t.wait_agree("scenario 3: A and B agree before the window", "3")?;
+        t.send(Who::A, "WAITIDLE")?;
+        t.send(Who::B, "WAITIDLE")?;
+        // Negative window (plan "Negative windows"): past HOST_LOAD_GRACE (5 s, the app's own timer, so a real wait),
+        // then a window as long again; a bounce is a round trip every second or two, so the count would keep climbing.
         sleep(Duration::from_secs(6));
         let settled = c.hits();
         sleep(Duration::from_secs(10));
