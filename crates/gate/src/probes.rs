@@ -486,18 +486,18 @@ pub(crate) fn failed_spawn(parent: Option<PathBuf>) -> ExitCode {
     };
     let _t = Section::start("failed-spawn");
     guarded("failed-spawn", || {
-        // The failure is forced by running a copy of the exe with no view host beside it. A build that embeds the
-        // WebView2 host (release.sh) would still extract it and succeed, so the folder it extracts into is also made
-        // unusable: a file stands where `engine-hosts` should be.
+        // The failure is forced by running a copy of the exe with a view host beside it that is not a program: a
+        // sibling host is used as it stands (`view_binary_path`), so the spawn fails. With none beside it the app
+        // falls back to the host it extracted into `engine-hosts/`, which `--profile-dir` does not redirect (it is the
+        // user's real data dir, `profile::view_data_dir`) and which exists on any machine that has run the app, so the
+        // spawn succeeded and the stage proved nothing.
         let bin = work.join("bin");
         fs::create_dir_all(&bin)?;
         let lone = bin.join("manifold.exe");
         fs::copy(&exe, &lone)?;
+        fs::write(bin.join("manifold-engine-webview2.exe"), "not a program")?;
         let profile = work.join("appdata");
         seed(&lone, &profile, "webview2", &[])?;
-        let data = profile.join("manifold").join("data");
-        fs::create_dir_all(&data)?;
-        fs::write(data.join("engine-hosts"), "not a folder")?;
         let mut inst = Instance::launch(&lone, &profile, &work, "log")?;
         let snap = |inst: &mut Instance, name: &str| -> io::Result<(usize, String, String)> {
             let s = inst.export_state(name)?;
