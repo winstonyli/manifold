@@ -8,7 +8,6 @@
 
 use std::collections::{BTreeSet, HashMap};
 
-use crate::jar::JarChoice;
 use crate::jar_defs::JarDef;
 use crate::json_view::JsonView;
 use crate::process_manager::ViewKind;
@@ -18,16 +17,15 @@ use crate::store::model::{field, field_def, FieldValue, Kind, NodeId};
 /// Every field of a node's type (`Kind::fields`, 2b-5 Ruling 2) but the two links, `parent` and `group`, which are
 /// `links`. A `Create` carries them, and on an existing node only `App::pending` writes them (nothing compares the
 /// mirror with the document). `URL` is a tab's shared url
-/// (2b-3 Ruling 2) and a content node's web source (`App::source_url`), seeded at creation since 2b-5. `JAR` and
-/// `JAR_SET` are a tab's jar choice (`jar_choice`), written together by `App::edit_jar`. `VIEW_KIND` is a tab's engine as
+/// (2b-3 Ruling 2) and a content node's web source (`App::source_url`), seeded at creation since 2b-5. `JAR` is
+/// a tab's or group's jar edge (`jar`), written by `App::set_jar_edge`. `VIEW_KIND` is a tab's engine as
 /// its stored code (`view_kind`), written by `App::edit_view_kind`. `POS` is the document pos (`pos`), written by
 /// `App::edit_pos`; where a card is drawn is `App::layout`, which the document never reads (2b-4 Ruling 1). `TEXT` is a
 /// note's text (`text`), written by `App::edit_text` at a save or blur; the note's payload is its edit buffer. `VIEW`
 /// is a Json node's view (`view`, decoded), written by `App::edit_view`. `NAME` is a group's name (`name`), written by
 /// `App::edit_name`. A jar's `NAME`, `COLOR` and `EPHEMERAL` are its definition (`jar_def`), written by
 /// `App::create_jar`, the generic rename (`App::commit_rename`) and `App::set_jar_ephemeral` (2b-5 Ruling 7).
-/// `DEFAULT_JAR` is a group's default jar (`default_jar`), written by `App::edit_default_jar` and resolved at commit
-/// like `JAR` (2b-5 Ruling 6). `PATH` is the stored, create-time path (`path`), never rewritten: the payload holds the
+/// `PATH` is the stored, create-time path (`path`), never rewritten: the payload holds the
 /// path resolved on this machine (2b-5 Ruling 5). `TYPE` is the node's type string (`ty`), seeded at every creation and never changed (Ruling 10).
 #[derive(Default)]
 pub(crate) struct Mirror {
@@ -247,15 +245,6 @@ impl Mirror {
         self.str_field(id, field::PATH)
     }
 
-    /// A group's default jar (`field::DEFAULT_JAR`): the jar new tabs in it start with (`App::inherited_jar`). `None`
-    /// inherits from the group above. It may name a jar that no longer exists (2b-5 Ruling 6).
-    pub(crate) fn default_jar(&self, id: &str) -> Option<NodeId> {
-        match self.get(id, field::DEFAULT_JAR) {
-            FieldValue::Id(jar) => jar,
-            _ => None,
-        }
-    }
-
     /// The node's type string (`field::TYPE`, `Kind::type_str`), seeded at every creation and never changed. Read by
     /// Recently Closed (`worth_reopening`, containment) and, for every card, `App::card_kind`. "" when the mirror
     /// has none.
@@ -263,14 +252,13 @@ impl Mirror {
         self.str_field(id, field::TYPE)
     }
 
-    /// A tab's jar choice (`field::JAR`, `field::JAR_SET`): the document's, or the one a local edit is about to write.
-    /// The default jar, unset, when the mirror has none. It may name a jar that no longer exists (`App::resolved_jar`).
-    pub(crate) fn jar_choice(&self, id: &str) -> JarChoice {
-        let jar = match self.get(id, field::JAR) {
+    /// A tab's or group's `jar` edge (`field::JAR`): the jar it names, `None` to inherit. It may name a jar that no
+    /// longer exists or sits out of reach (`App::resolve_jar`).
+    pub(crate) fn jar(&self, id: &str) -> Option<NodeId> {
+        match self.get(id, field::JAR) {
             FieldValue::Id(jar) => jar,
             _ => None,
-        };
-        JarChoice { jar, set: matches!(self.get(id, field::JAR_SET), FieldValue::Bool(true)) }
+        }
     }
 
     /// A tab's engine: the one it runs or is switching to (`App::edit_view_kind`), the document's otherwise. The mirror
@@ -304,10 +292,9 @@ impl Mirror {
             url: self.url(id).to_owned(),
             text: self.text(id).to_owned(),
             view_kind: self.view_code(id),
-            jar: self.jar_choice(id),
+            jar: self.jar(id),
             ty: self.ty(id).to_owned(),
             path: self.path(id).to_owned(),
-            default_jar: self.default_jar(id),
             // name rule: carried as stored
             name: self.name(id).to_owned(),
         }
@@ -321,9 +308,7 @@ impl Mirror {
         let str = |no: u32, s: &String| (!s.is_empty()).then(|| (no, FieldValue::Str(s.clone())));
         let pos = carried.pos.map(|pos| (field::POS, pos_value(pos)));
         let view_kind = (carried.view_kind != 0).then_some((field::VIEW_KIND, FieldValue::ViewCode(carried.view_kind)));
-        let jar = carried.jar.jar.is_some().then_some((field::JAR, FieldValue::Id(carried.jar.jar)));
-        let jar_set = carried.jar.set.then_some((field::JAR_SET, FieldValue::Bool(true)));
-        let default_jar = carried.default_jar.map(|jar| (field::DEFAULT_JAR, FieldValue::Id(Some(jar))));
+        let jar = carried.jar.map(|jar| (field::JAR, FieldValue::Id(Some(jar))));
         let strings = [
             str(field::URL, &carried.url),
             str(field::TEXT, &carried.text),
@@ -332,7 +317,7 @@ impl Mirror {
             str(field::NAME, &carried.name),
         ];
         let fields = [(field::COLOR, color_value(carried.color)), (field::PINNED, FieldValue::Bool(carried.pinned))];
-        let optional = [pos, view_kind, jar, jar_set, default_jar];
+        let optional = [pos, view_kind, jar];
         self.init(id, fields.into_iter().chain(optional.into_iter().flatten()).chain(strings.into_iter().flatten()));
         // After `init`, which seeds nothing once the entry exists: the type is the one field that still lands.
         if !carried.ty.is_empty() {
@@ -363,14 +348,12 @@ pub(crate) struct Carried {
     /// The engine's stored code (`Mirror::engine` decodes it, `session_sync::view_code` makes one); 0, the absent
     /// value, for a node that isn't a tab.
     pub view_kind: u64,
-    /// The jar choice (`Mirror::jar_choice`); the default for a node that isn't a tab.
-    pub jar: JarChoice,
+    /// The `jar` edge (`Mirror::jar`); `None` inherits, and for a node that is neither a tab nor a group.
+    pub jar: Option<NodeId>,
     /// The type string (`Mirror::ty`); "" for none.
     pub ty: String,
     /// The stored path (`Mirror::path`); "" for a node without a file.
     pub path: String,
-    /// `Mirror::default_jar`; `None` for a node that isn't a group.
-    pub default_jar: Option<NodeId>,
     /// `Mirror::name`: a rename of any node, or a group's name; "" for none.
     pub name: String,
 }
@@ -407,13 +390,9 @@ mod tests {
             url: "https://a/".into(),
             text: "note".into(),
             view_kind: 99,
-            jar: JarChoice {
-                jar: Some(crate::store::model::NodeId { actor: crate::store::model::ActorId(1), counter: 2 }),
-                set: true,
-            },
+            jar: Some(crate::store::model::NodeId { actor: crate::store::model::ActorId(1), counter: 2 }),
             ty: "text/x".into(),
             path: "C:/a.json".into(),
-            default_jar: Some(NodeId { actor: crate::store::model::ActorId(1), counter: 3 }),
             name: "Mine".into(),
         };
         mirror.seed("7", &first);
@@ -439,15 +418,15 @@ mod tests {
     }
 
     #[test]
-    fn a_jar_choice_reads_back_and_a_node_without_one_has_the_default() {
+    fn a_jar_edge_reads_back_and_a_node_without_one_inherits() {
         let mut mirror = Mirror::default();
-        assert_eq!(mirror.jar_choice("7"), JarChoice::default());
+        assert_eq!(mirror.jar("7"), None);
         mirror.seed("8", &Carried::default());
-        assert!(!mirror.nodes["8"].contains_key(&field::JAR), "the default jar seeds nothing");
-        assert!(!mirror.nodes["8"].contains_key(&field::JAR_SET));
+        assert!(!mirror.nodes["8"].contains_key(&field::JAR), "no edge seeds nothing");
         assert!(mirror.has("8") && !mirror.has("7"));
-        mirror.set("7", field::JAR_SET, FieldValue::Bool(true));
-        assert_eq!(mirror.jar_choice("7"), JarChoice { jar: None, set: true });
+        let jar = NodeId { actor: crate::store::model::ActorId(1), counter: 2 };
+        mirror.set("7", field::JAR, FieldValue::Id(Some(jar)));
+        assert_eq!(mirror.jar("7"), Some(jar));
     }
 
     #[test]
@@ -478,11 +457,10 @@ mod tests {
     fn a_node_without_group_or_file_fields_seeds_none_and_reads_them_as_absent() {
         let mut mirror = Mirror::default();
         mirror.seed("8", &Carried::default());
-        for no in [field::TYPE, field::PATH, field::DEFAULT_JAR] {
+        for no in [field::TYPE, field::PATH, field::JAR] {
             assert!(!mirror.nodes["8"].contains_key(&no), "field {no} seeds nothing");
         }
         assert_eq!((mirror.ty("8"), mirror.path("8")), ("", ""));
-        assert!(mirror.default_jar("8").is_none());
     }
 
     #[test]

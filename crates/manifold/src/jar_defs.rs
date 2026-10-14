@@ -2,7 +2,8 @@
 //! `App::nodes` entry with a unit `Runtime::Jar`. Its fields are mirror state (2b-5 Ruling 7): written through
 //! `App::edit_field` here and applied from the document by `materialize` like any card's.
 
-use crate::jar::{Jar, JarChoice};
+use crate::caps::{Scope, Storage, JAR_EDGE};
+use crate::jar::Jar;
 use crate::node::Runtime;
 use crate::session_sync::color_value;
 use crate::store::model::{field, FieldValue, Kind, NodeId};
@@ -26,9 +27,7 @@ pub(crate) struct JarChip {
     /// The jar's label (`App::jar_label`), shown on the chip and in Tab view's hover text.
     pub(crate) name: JarLabel,
     pub(crate) color: egui::Color32,
-    /// Unset, and the nearest group default (`inherited_jar`) is this jar: the dot is outlined. An unset tab whose
-    /// group default was cleared or is another jar (spec: "Clear default" leaves existing tabs alone) follows nothing,
-    /// so its dot is plain.
+    /// The tab has no jar edge of its own: it inherits (from a group's edge, or the Default), and the dot is outlined.
     pub(crate) following: bool,
     /// Names a jar that no longer exists; it uses the default jar. The dot takes the warning colour.
     pub(crate) missing: bool,
@@ -228,8 +227,10 @@ pub(crate) fn named_jar_label(id: NodeId, defs: &BTreeMap<NodeId, JarDef>) -> Op
 impl App {
     /// The card's jar chip (spec "UI"): `None` for a tab on the default jar with nothing to warn about.
     pub(crate) fn jar_chip(&self, id: &str) -> Option<JarChip> {
-        let choice = self.tab_jar(id)?;
-        let (key, missing) = self.resolved_jar(&choice)?;
+        if !self.is_tab(id) {
+            return None;
+        }
+        let (key, missing) = self.effective_jar(id)?;
         let default = self.default_jar();
         let will_switch = self.will_switch(id);
         let can_switch_now = self.can_switch_jar_now(id);
@@ -239,8 +240,7 @@ impl App {
             _ => return None,
         };
         let view_ignores = !view_kind.desc().jar && Some(key) != default;
-        let group = self.nodes.get(id).and(self.mirror.group(id));
-        let following = !choice.set && self.inherited_jar(group) == choice.jar;
+        let following = self.mirror.jar(id).is_none();
         if Some(key) == default && !missing && !will_switch {
             return None;
         }
@@ -251,7 +251,7 @@ impl App {
             tips.push(hint);
         }
         if missing {
-            tips.push("This tab's jar was deleted; it uses the default jar".to_string());
+            tips.push("This tab's jar is gone or out of reach; it uses the Default jar".to_string());
         }
         if view_ignores {
             tips.push("This view does not use jars yet".to_string());
@@ -388,18 +388,18 @@ impl App {
     /// Nothing happens, and no jar is made, when the focused node is not a tab or nothing is left of the name once
     /// cleaned (name rules). Returns whether it acted.
     pub(crate) fn set_focused_tab_jar_named(&mut self, name: &str) -> bool {
-        let Some(tab) = self.focused.clone().filter(|t| self.tab_jar(t).is_some()) else { return false };
+        let Some(tab) = self.focused.clone().filter(|t| self.is_tab(t)) else { return false };
         let clean = crate::names::clean_name(name).into_owned();
         if clean.is_empty() {
             return false;
         }
         let jar = if clean.eq_ignore_ascii_case("default") {
-            None
+            self.default_jar()
         } else {
             let existing = self.jar_named(name).or_else(|| self.jar_named(&clean));
             Some(existing.unwrap_or_else(|| self.create_jar(&clean, self.jar_placement_beside(&tab))))
         };
-        self.set_tab_jar(&tab, jar);
+        self.set_jar_edge(&tab, jar);
         true
     }
 
@@ -503,158 +503,97 @@ impl App {
         crate::profile::jars_dir()
     }
 
-    /// The only place a tab's jar choice becomes a jar (spec "Resolution"), and whether it dangles: a choice naming a
-    /// jar that is not a live card resolves to the Default with `true` (the chip warns). `None` only with no Default.
-    pub(crate) fn resolved_jar(&self, choice: &JarChoice) -> Option<(NodeId, bool)> {
-        match choice.jar {
-            Some(id) if self.jar_exists(id) => Some((id, false)),
-            Some(_) => self.default_jar().map(|d| (d, true)),
-            None => self.default_jar().map(|d| (d, false)),
-        }
-    }
-
-    /// The nearest default jar walking up from `group` (spec "Inheritance").
-    pub(crate) fn inherited_jar(&self, group: Option<&str>) -> Option<NodeId> {
-        let mut at = group.map(str::to_string);
+    /// The jar a source resolves to (spec "Resolution") and whether it dangles. `own` is the source's own edge and
+    /// `origin` the level that edge reaches out from (`reach_origin`). The walk stops at the first edge it meets,
+    /// from `own` outward through each enclosing group's edge (a group's edge reaching out from its own contents).
+    /// A live jar in reach is the jar. A jar gone, or out of reach (an edge that arrived so from another device), is
+    /// the Default with `true`: an explicit edge to nothing warns rather than climbing on. No edge anywhere: the
+    /// Default. `None` only when there is no Default.
+    ///
+    /// Per card per frame (`jar_chip`, `will_switch`, `sweep_jar_switches`): one mirror lookup per enclosing group,
+    /// and at the edge it meets one `to_string` and a reach walk of the same depth; `default_jar` is an index read.
+    /// No other allocation.
+    pub(crate) fn resolve_jar(&self, own: Option<NodeId>, origin: Option<&str>) -> Option<(NodeId, bool)> {
+        let (mut edge, mut reach, mut next) = (own, origin, origin);
         for _ in 0..=self.nodes.len() {
-            let here = at.as_deref()?;
-            if !self.nodes.contains_key(here) {
-                return None;
+            if let Some(jar) = edge {
+                let at = self.mirror.group(&jar.to_string());
+                let in_reach = self.levels_from(reach).any(|level| level == at);
+                return if self.jar_exists(jar) && in_reach {
+                    Some((jar, false))
+                } else {
+                    self.default_jar().map(|d| (d, true))
+                };
             }
-            if let Some(jar) = self.mirror.default_jar(here).filter(|_| self.is_container(here)) {
-                return Some(jar);
-            }
-            at = self.mirror.group(here).map(str::to_owned);
+            let Some(g) = next.filter(|g| self.nodes.contains_key(*g)) else { break };
+            edge = self.mirror.jar(g);
+            reach = Some(g);
+            next = self.mirror.group(g);
         }
-        None // a group cycle (never built, but the loop must end)
+        self.default_jar().map(|d| (d, false))
     }
 
-    /// What a new tab in `group` starts with: the inherited jar, unset, so a later cascade or move updates it.
-    pub(crate) fn new_tab_jar(&self, group: Option<&str>) -> JarChoice {
-        JarChoice { jar: self.inherited_jar(group), set: false }
+    /// `resolve_jar` for a tab or group the mirror holds (live, asleep or mid-respawn).
+    pub(crate) fn effective_jar(&self, id: &str) -> Option<(NodeId, bool)> {
+        self.resolve_jar(self.mirror.jar(id), self.reach_origin(id))
     }
 
-    /// Tab `id`'s jar choice (`Mirror::jar_choice`), live, unloaded or mid-respawn (`linked_ids`); `None` for any
-    /// other node, and for a new spawn, which has no mirror entry until it lands.
-    pub(crate) fn tab_jar(&self, id: &str) -> Option<JarChoice> {
-        let is_tab = match self.nodes.get(id) {
+    /// Whether `id` is a tab (live, unloaded or mid-respawn: `linked_ids`); false for any other node and for a new
+    /// spawn, which has no mirror entry until it lands.
+    pub(crate) fn is_tab(&self, id: &str) -> bool {
+        match self.nodes.get(id) {
             Some(node) => node.runtime.saved_tab().is_some(),
             None => self.is_linked(id), // only a tab respawns
-        };
-        is_tab.then(|| self.mirror.jar_choice(id))
+        }
     }
 
-    /// The user picked a jar for tab `id` (`None`: the default jar). Cascades and moves leave it alone from now on.
-    pub(crate) fn set_tab_jar(&mut self, id: &str, jar: Option<NodeId>) {
-        if self.tab_jar(id).is_some() {
-            self.edit_jar(id, JarChoice { jar, set: true });
+    /// The menu's and SETJAR's pick for tab or group `id`: draw its `jar` edge to `jar`, or clear it (`None`,
+    /// "Inherit"). A refused edge (out of reach, not a jar) changes nothing. Live tabs whose jar changed switch.
+    pub(crate) fn set_jar_edge(&mut self, id: &str, jar: Option<NodeId>) {
+        match jar {
+            Some(jar) => {
+                let _ = self.connect(JAR_EDGE, id, &jar.to_string());
+            }
+            None => {
+                if let Some(old) = self.mirror.jar(id) {
+                    self.disconnect(JAR_EDGE, id, &old.to_string());
+                }
+            }
         }
         self.sweep_jar_switches();
     }
 
-    /// "Follow group's jar": clears the pick and re-snapshots from where the tab sits.
-    pub(crate) fn follow_group_jar(&mut self, id: &str) {
-        self.resnapshot(id);
-        self.sweep_jar_switches();
-    }
-
-    /// `follow_group_jar` without the sweep, for `refollow`'s loop.
-    fn resnapshot(&mut self, id: &str) {
-        if self.tab_jar(id).is_none() {
-            return;
-        }
-        let group = self.mirror.group(id).map(str::to_owned);
-        self.edit_jar(id, self.new_tab_jar(group.as_deref()));
-    }
-
-    /// Re-snapshots every unset tab at `id` (a tab, or each tab in a group's subtree) from its new place, a tab
-    /// mid-respawn included (`linked_ids`; 2b-3 Ruling 9). Called after a local move between groups (deviation 12); a
-    /// remote move's jar edits arrive with it.
-    pub(crate) fn refollow(&mut self, id: &str) {
-        let tabs: Vec<String> = self
-            .linked_ids()
-            .filter(|t| self.tab_jar(t).is_some_and(|c| !c.set) && (*t == id || self.is_inside(t, id)))
-            .map(str::to_owned)
+    /// After a local move of `moved` (a card, or a group with its contents): every edge whose row reaches beyond
+    /// one level (`Scope::SameLevelOrAncestor`) with an end in `moved`'s subtree is checked again, and one whose live
+    /// target is now out of reach is cleared, with a toast naming it (spec "Scope"). A dangling edge (target gone)
+    /// is left: it warns, and is never rewritten. Then live tabs whose jar changed switch.
+    pub(crate) fn recheck_edge_scope(&mut self, moved: &str) {
+        let rows: Vec<(&'static str, u32)> = crate::caps::edges()
+            .user_creatable()
+            .filter(|r| r.scope() == Scope::SameLevelOrAncestor)
+            .filter_map(|r| match r.storage() {
+                Storage::Field(no) => Some((r.id(), no)),
+                _ => None,
+            })
             .collect();
-        for t in tabs {
-            self.resnapshot(&t);
+        let mut cleared = Vec::new();
+        for (edge, no) in rows {
+            let scope = crate::caps::edges().row(edge).expect("a listed row").scope();
+            for source in self.linked_ids().map(str::to_owned).collect::<Vec<_>>() {
+                let FieldValue::Id(Some(target)) = self.mirror.get(&source, no) else { continue };
+                let to = target.to_string();
+                let touched = self.within(&source, moved) || self.within(&to, moved);
+                if touched && self.nodes.contains_key(&to) && !self.in_scope(scope, &source, &to) {
+                    self.edit_field(&source, no, FieldValue::Id(None));
+                    cleared.push(target);
+                }
+            }
+        }
+        for jar in cleared {
+            let name = self.jar_label(jar);
+            self.queue_toast(format!("{name} is out of reach here; the edge to it was removed"));
         }
         self.sweep_jar_switches();
-    }
-
-    /// The group `at` is in, when `at` is one of `linked_ids` (the mirror may still hold a removed node's entry).
-    fn linked_group(&self, at: &str) -> Option<String> {
-        self.mirror.group(at).filter(|_| self.is_linked(at)).map(str::to_owned)
-    }
-
-    /// Whether `at` sits somewhere inside group `group`.
-    fn is_inside(&self, at: &str, group: &str) -> bool {
-        let mut cur = self.linked_group(at);
-        for _ in 0..=self.nodes.len() {
-            match cur {
-                Some(g) if g == group => return true,
-                Some(g) => cur = self.nodes.get(&g).and(self.mirror.group(&g)).map(str::to_owned),
-                None => return false,
-            }
-        }
-        false
-    }
-
-    /// Whether `group` governs tab-or-group `at`'s jar: `group` is `at`'s group or an ancestor, and no group between
-    /// them has a default of its own (spec: "nested groups with no default of their own included").
-    fn governed_by(&self, at: &str, group: &str) -> bool {
-        let mut cur = self.linked_group(at);
-        for _ in 0..=self.nodes.len() {
-            let Some(g) = cur else { return false };
-            if g == group {
-                return true;
-            }
-            if self.is_container(&g) && self.mirror.default_jar(&g).is_some() {
-                return false; // a nearer default wins
-            }
-            cur = self.nodes.get(&g).and(self.mirror.group(&g)).map(str::to_owned);
-        }
-        false
-    }
-
-    /// The unset tabs a change of `group`'s default to `jar` would rewrite, a tab mid-respawn included
-    /// (`linked_ids`).
-    fn cascade_targets(&self, group: &str, jar: NodeId) -> Vec<String> {
-        self.linked_ids()
-            .filter(|t| self.tab_jar(t).is_some_and(|c| !c.set && c.jar != Some(jar)))
-            .filter(|t| self.governed_by(t, group))
-            .map(str::to_owned)
-            .collect()
-    }
-
-    /// How many tabs `set_group_default_jar(group, jar)` would change, shown on the group menu's entry for `jar`
-    /// (spec "UI": no confirm dialog).
-    pub(crate) fn cascade_count(&self, group: &str, jar: NodeId) -> usize {
-        self.cascade_targets(group, jar).len()
-    }
-
-    /// Writes `group`'s default, then the new jar into every unset tab it governs (spec "Changing a group's
-    /// `default_jar`"). The default goes through `edit_default_jar`, the tabs through `edit_jar`. The next save writes
-    /// them. Returns how many tabs changed.
-    pub(crate) fn set_group_default_jar(&mut self, group: &str, jar: NodeId) -> usize {
-        if !self.is_container(group) {
-            return 0;
-        }
-        self.edit_default_jar(group, Some(jar));
-        // After the write, so `governed_by` sees it; harmless, as it stops only at groups strictly between.
-        let targets = self.cascade_targets(group, jar);
-        for t in &targets {
-            self.edit_jar(t, JarChoice { jar: Some(jar), set: false });
-        }
-        self.sweep_jar_switches();
-        targets.len()
-    }
-
-    /// "Clear default": new tabs stop inheriting it; existing tabs keep their jar.
-    pub(crate) fn clear_group_default_jar(&mut self, group: &str) {
-        if self.is_container(group) {
-            self.edit_default_jar(group, None);
-        }
     }
 
     /// Loads `key`'s jar the first time a tab needs it (spec "Manifold state": named jars load lazily). An ephemeral

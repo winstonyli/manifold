@@ -277,7 +277,7 @@ pub(crate) fn spawn_snapshot(
     pos: Option<egui::Vec2>,
     url: &str,
     view_kind: u64,
-    jar: crate::jar::JarChoice,
+    jar: Option<NodeId>,
 ) -> Snapshot {
     let pos = pos.map_or(FieldValue::Pos(0.0, 0.0), pos_value);
     let mut fields = Fields::from([(field::POS, pos), (field::COLOR, color_value(spawn.carry.color))]);
@@ -288,21 +288,20 @@ pub(crate) fn spawn_snapshot(
 }
 
 /// A tab's fields beyond `pos` and `color`, live or failed. `url`, `view_kind` and `jar` are the shared ones
-/// (`Mirror::url`, the mirror's raw engine code, `Mirror::jar_choice`).
+/// (`Mirror::url`, the mirror's raw engine code, `Mirror::jar`).
 fn tab_fields(
     fields: &mut Fields,
     url: FieldValue,
     view_kind: FieldValue,
     pinned: bool,
     parent: Option<NodeId>,
-    jar: crate::jar::JarChoice,
+    jar: Option<NodeId>,
 ) -> Kind {
     fields.insert(field::URL, url);
     fields.insert(field::VIEW_KIND, view_kind);
     fields.insert(field::PINNED, FieldValue::Bool(pinned));
     fields.insert(field::PARENT, FieldValue::Id(parent));
-    fields.insert(field::JAR, FieldValue::Id(jar.jar));
-    fields.insert(field::JAR_SET, FieldValue::Bool(jar.set));
+    fields.insert(field::JAR, FieldValue::Id(jar));
     Kind::Tab
 }
 
@@ -1022,21 +1021,6 @@ impl App {
     /// calls it: a settle moves only `App::layout`. `None` (and a non-finite pos) writes the absent value, Pos (0,0).
     pub(crate) fn edit_pos(&mut self, id: &str, pos: Option<egui::Vec2>) {
         self.edit_field(id, field::POS, pos.map_or(FieldValue::Pos(0.0, 0.0), pos_value));
-    }
-
-    /// The one writer of a tab's jar choice (2b-3 Ruling 7): `JAR` and `JAR_SET` go through `edit_field`, so only the
-    /// one that changed is queued, and re-picking the same jar queues nothing. A pending `JAR` naming a jar that is
-    /// gone by the save is written as none (`save_session`, Ruling 8). The caller sweeps (`sweep_jar_switches`).
-    pub(crate) fn edit_jar(&mut self, id: &str, choice: crate::jar::JarChoice) {
-        self.edit_field(id, field::JAR, FieldValue::Id(choice.jar));
-        self.edit_field(id, field::JAR_SET, FieldValue::Bool(choice.set));
-    }
-
-    /// The one writer of a group's default jar (2b-5 Task 1): `set_group_default_jar` and `clear_group_default_jar`.
-    /// Resolved at commit like a tab's `JAR` (2b-5 Ruling 6): a jar deleted by the save is written
-    /// as none, and one another replica deleted earlier stays stored, dangling, until a new edit.
-    pub(crate) fn edit_default_jar(&mut self, group: &str, jar: Option<NodeId>) {
-        self.edit_field(group, field::DEFAULT_JAR, FieldValue::Id(jar));
     }
 
     /// The one writer of a tab's engine (2b-3 Ruling 5): called when a switch starts (`start_swap_to`, a wake into
@@ -1953,10 +1937,8 @@ impl App {
         imported.retain(|i| !file_defaults.contains(&i.id));
         let running = self.default_jar();
         for i in &mut imported {
-            for no in [field::JAR, field::DEFAULT_JAR] {
-                if matches!(i.fields.get(&no), Some(FieldValue::Id(Some(j))) if file_defaults.contains(j)) {
-                    i.fields.insert(no, FieldValue::Id(running));
-                }
+            if matches!(i.fields.get(&field::JAR), Some(FieldValue::Id(Some(j))) if file_defaults.contains(j)) {
+                i.fields.insert(field::JAR, FieldValue::Id(running));
             }
         }
         let groups: BTreeSet<NodeId> = imported.iter().filter(|i| i.kind == Kind::Group).map(|i| i.id).collect();

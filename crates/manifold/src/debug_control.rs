@@ -395,11 +395,11 @@ pub enum DebugCommand {
     /// `IDLESWEEP secs` -- one idle auto-sleep sweep with a limit of `secs`
     /// seconds instead of the setting's minutes. See `App::sweep_idle_tabs`.
     IdleSweep(u64),
-    /// `SETJAR <name|default>` -- the focused tab picks that jar (a new
+    /// `SETJAR <name|default>` -- the focused tab draws its `jar` edge to that jar (a new
     /// named jar if none has the name), as from its menu. `name` is a
     /// label ("Work · #1a2b") or a stored name; a stored name several jars
     /// share picks the lowest node id (`App::jar_named`). See
-    /// `App::set_tab_jar`.
+    /// `App::set_jar_edge`.
     SetJar(String),
     /// `SWITCHJARNOW` -- the focused tab's "Switch Jar Now". See
     /// `App::switch_jar_now`.
@@ -1576,6 +1576,7 @@ impl App {
                 let (mid, near_from, near_to) = (on_screen(0.5), on_screen(0.2), on_screen(0.8));
                 let kind = match edge.kind {
                     crate::level::EdgeKind::Link => "link",
+                    crate::level::EdgeKind::Jar => "jar",
                     crate::level::EdgeKind::Opened => "opened",
                 };
                 serde_json::json!({

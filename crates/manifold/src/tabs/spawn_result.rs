@@ -335,18 +335,12 @@ impl App {
     /// shows it instead, in the mirror only (`follow_remote_group`): the removal was a cascade, not a move of this
     /// tab, and a queued move would override another replica's placement of it (final review I1).
     ///
-    /// Likewise a jar deleted while a new spawn was in flight (no mirror entry yet, so the tab names a dead jar): the
-    /// tab lands on the default jar, and the document is told so whether its
-    /// `Create` already named the jar or resolved it to none (2b-3 final review Minor 1).
+    /// A jar deleted while a new spawn was in flight needs no fix-up: the edge dangles and resolves to the Default.
     fn seed_landing(&mut self, id: &str, carried: Carried) {
         let ty = crate::store::model::Kind::Tab.type_str().unwrap_or_default().to_owned();
         let carried = Carried { ty, ..carried };
         self.layout.entry(id.to_owned()).or_insert(Layout::at(carried.pos.unwrap_or_default()));
-        let new = !self.mirror.has(id);
         self.mirror.seed(id, &carried);
-        if new && self.mirror.jar_choice(id).jar.is_some_and(|jar| !self.jar_exists(jar)) {
-            self.edit_jar(id, crate::jar::JarChoice::default());
-        }
         if self.mirror.group(id).is_some_and(|g| !self.nodes.contains_key(g)) {
             let group = self.shown_group(id);
             self.follow_remote_group(id, group);

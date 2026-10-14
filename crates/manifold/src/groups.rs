@@ -30,14 +30,14 @@ impl App {
     /// button that calls this only ever renders one level up from the
     /// group being closed, never on the level currently being viewed).
     ///
-    /// A local dissolve: unset tabs among the members re-snapshot their jar from the new level (deviation 12).
+    /// A local dissolve: a member whose `jar` edge now reaches nothing it did before loses it (`recheck_edge_scope`).
     pub(crate) fn dissolve_group(&mut self, id: &str) {
         for member in self.dissolve_members(id, false) {
-            self.refollow(&member);
+            self.recheck_edge_scope(&member);
         }
     }
 
-    /// `dissolve_group` without the jar re-snapshot, for a remote delete: the remote device's own refollow arrives as
+    /// `dissolve_group` without the edge recheck, for a remote delete: the remote device's own recheck arrives as
     /// ordinary tab edits (spec "Inheritance"). The members move up in the mirror only (`follow_remote_group`).
     pub(crate) fn dissolve_group_quietly(&mut self, id: &str) {
         self.dissolve_members(id, true);

@@ -144,7 +144,7 @@ impl App {
     pub(crate) fn eject(&mut self, id: &str) {
         self.remove_from_group(id);
         self.interaction.selected.remove(id);
-        self.refollow(id);
+        self.recheck_edge_scope(id);
     }
 
     /// What a drop moves along with `id`: the whole rectangle selection
@@ -189,7 +189,7 @@ impl App {
                     if self.nodes.contains_key(&member) {
                         self.edit_group(&member, Some(group.clone()));
                     }
-                    self.refollow(&member);
+                    self.recheck_edge_scope(&member);
                 }
             }
             Some((DropEffect::GroupWith, Some(other))) => {
@@ -201,7 +201,7 @@ impl App {
                     if self.nodes.contains_key(&member) {
                         self.edit_group(&member, Some(group.clone()));
                     }
-                    self.refollow(&member);
+                    self.recheck_edge_scope(&member);
                 }
             }
             Some((DropEffect::Reparent, Some(parent))) => {
@@ -240,9 +240,9 @@ impl App {
         self.queue_delete(source);
         self.node_order.retain(|g| g != source);
         self.forget_id(source);
-        // Only the members that moved: `target`'s own tabs keep their jar (deviation 12).
+        // Only the members that moved can have an edge taken out of reach.
         for member in moved {
-            self.refollow(&member);
+            self.recheck_edge_scope(&member);
         }
     }
 

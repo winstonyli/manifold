@@ -158,8 +158,7 @@ pub enum Trust {
     /// session): every field is kept.
     Own,
     /// Anything else (Import Session/Group, `--import`): a Download's `path`
-    /// is dropped (it would point "Show in folder" anywhere), and `jar` /
-    /// `default_jar` are kept only when they name a node in the same file
+    /// is dropped (it would point "Show in folder" anywhere), and a `jar` is kept only when it names a node in the same file
     /// (an export re-imported on its source machine must not re-link tabs to
     /// that machine's logins); so are a link's `from` and `to` (it must not
     /// join the file's cards to this session's).
@@ -171,7 +170,7 @@ pub enum Trust {
 /// kept when they are real node ids and dropped otherwise. Unknown field
 /// names are ignored (a newer build's export); a bad value is an error.
 /// Under `Trust::Foreign` the machine-local fields are filtered first (see
-/// `Trust`): a Download's `path` is dropped, and a `jar`/`default_jar`/
+/// `Trust`): a Download's `path` is dropped, and a `jar`/
 /// link `from`/`to` naming no node in the file is dropped rather than kept
 /// as a real id. Under either trust a link end naming a jar, a link or
 /// the link itself is dropped.
@@ -197,7 +196,7 @@ pub fn import(json: &JsonDoc, mut next_id: impl FnMut() -> NodeId, trust: Trust)
                     continue;
                 }
                 let names_in_file = value.as_str().is_some_and(|s| fresh.contains_key(s));
-                if matches!(def.no, field::JAR | field::DEFAULT_JAR | field::FROM | field::TO) && !names_in_file {
+                if matches!(def.no, field::JAR | field::FROM | field::TO) && !names_in_file {
                     continue;
                 }
             }
@@ -468,16 +467,16 @@ mod tests {
             { "id": "d", "type": "application/octet-stream", "path": "C:\\Windows\\x.exe" },
             { "id": "t", "type": "application/vnd.manifold.tab", "url": "https://a", "jar": "j" },
             { "id": "u", "type": "application/vnd.manifold.tab", "url": "https://b", "jar": outside },
-            { "id": "g", "type": "application/vnd.manifold.group", "default_jar": outside },
+            { "id": "g", "type": "application/vnd.manifold.group", "jar": outside },
         ]));
         let foreign = import(&json, ids(1), Trust::Foreign).unwrap();
         assert!(!foreign[1].fields.contains_key(&field::PATH));
         assert_eq!(foreign[2].fields.get(&field::JAR), Some(&FieldValue::Id(Some(foreign[0].id))), "in-file jar kept");
         assert!(!foreign[3].fields.contains_key(&field::JAR), "a jar outside the file is dropped");
-        assert!(!foreign[4].fields.contains_key(&field::DEFAULT_JAR), "so is an outside default jar");
+        assert!(!foreign[4].fields.contains_key(&field::JAR), "so is a group's outside jar");
         let own = import(&json, ids(2), Trust::Own).unwrap();
         assert!(own[1].fields.contains_key(&field::PATH));
         assert!(own[3].fields.contains_key(&field::JAR));
-        assert!(own[4].fields.contains_key(&field::DEFAULT_JAR));
+        assert!(own[4].fields.contains_key(&field::JAR));
     }
 }

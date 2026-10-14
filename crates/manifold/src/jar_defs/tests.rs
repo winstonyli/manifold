@@ -1,6 +1,5 @@
 use super::{id_digest, jar_fragment, named_jar_label, JarConfirm, JarLabel, JarMarker};
 use crate::card::DropEffect;
-use crate::jar::JarChoice;
 use crate::session_sync::tests::default_jar_id;
 use crate::session_sync::tests::{add, add_jar, sleeping_tab};
 use crate::store::model::{field, FieldValue, Kind, NodeId};
@@ -22,173 +21,164 @@ fn group_in(app: &mut App, parent: Option<&str>) -> String {
     app.edit_group(&id, parent.map(str::to_string));
     id
 }
-fn jar_of(app: &App, tab: &str) -> JarChoice {
-    app.tab_jar(tab).unwrap()
+fn with_default() -> (App, NodeId) {
+    let mut app = App::default();
+    app.ensure_default_jar();
+    let default = app.default_jar().unwrap();
+    (app, default)
+}
+fn jar_at(app: &mut App, name: &str, group: Option<&str>) -> NodeId {
+    let at = crate::fetched::Placement { group: group.map(str::to_owned), pos: egui::Vec2::ZERO };
+    app.create_jar(name, at)
 }
 
 #[test]
-fn a_new_tab_snapshots_the_nearest_group_default() {
-    let mut app = App::default();
-    let work = add_jar(&mut app, "Work");
+fn a_tab_resolves_its_own_edge_then_each_enclosing_groups_then_the_default() {
+    let (mut app, default) = with_default();
     let outer = group_in(&mut app, None);
     let inner = group_in(&mut app, Some(&outer));
-    assert_eq!(app.new_tab_jar(Some(&inner)), JarChoice::default(), "no default anywhere: no jar");
-    app.set_group_default_jar(&outer, work);
-    assert_eq!(app.new_tab_jar(Some(&inner)), JarChoice { jar: Some(work), set: false });
-    assert_eq!(app.new_tab_jar(None), JarChoice::default());
+    let tab = tab_in(&mut app, Some(&inner));
+    assert_eq!(app.effective_jar(&tab), Some((default, false)), "no edge anywhere");
+    let work = jar_at(&mut app, "Work", None);
+    app.set_jar_edge(&outer, Some(work));
+    assert_eq!(app.effective_jar(&tab), Some((work, false)), "the grandparent's edge");
+    let home = jar_at(&mut app, "Home", Some(&outer));
+    app.set_jar_edge(&inner, Some(home));
+    assert_eq!(app.effective_jar(&tab), Some((home, false)), "the nearer group's edge");
+    let mine = jar_at(&mut app, "Mine", Some(&inner));
+    app.set_jar_edge(&tab, Some(mine));
+    assert_eq!(app.effective_jar(&tab), Some((mine, false)), "its own edge");
+    app.set_jar_edge(&tab, None);
+    assert_eq!(app.effective_jar(&tab), Some((home, false)), "cleared: inherits again");
 }
 
 #[test]
-fn a_cascade_reaches_unset_tabs_in_nested_groups_without_their_own_default() {
-    let mut app = App::default();
-    let (work, home) = (add_jar(&mut app, "Work"), add_jar(&mut app, "Home"));
-    let outer = group_in(&mut app, None);
-    let plain = group_in(&mut app, Some(&outer)); // no default of its own
-    let own = group_in(&mut app, Some(&outer));
-    let a = tab_in(&mut app, Some(&outer));
-    let b = tab_in(&mut app, Some(&plain));
-    let c = tab_in(&mut app, Some(&own));
-    // Set after `c` exists, so the cascade gives `c` its group's own jar.
-    app.set_group_default_jar(&own, home);
-    let picked = tab_in(&mut app, Some(&outer));
-    app.set_tab_jar(&picked, None);
-    assert_eq!(app.cascade_count(&outer, work), 2);
-    assert_eq!(app.set_group_default_jar(&outer, work), 2);
-    assert_eq!(jar_of(&app, &a), JarChoice { jar: Some(work), set: false });
-    assert_eq!(jar_of(&app, &b), JarChoice { jar: Some(work), set: false });
-    assert_eq!(jar_of(&app, &c).jar, Some(home), "a nested group with its own default is skipped");
-    assert_eq!(jar_of(&app, &picked), JarChoice { jar: None, set: true }, "a hand-picked tab is skipped");
-    app.clear_group_default_jar(&outer);
-    assert_eq!(jar_of(&app, &a).jar, Some(work), "clearing the default leaves tabs alone");
-    assert_eq!(app.new_tab_jar(Some(&outer)), JarChoice::default(), "but new tabs no longer inherit it");
+fn an_edge_to_a_closed_jar_dangles_to_the_default_and_does_not_climb() {
+    let (mut app, default) = with_default();
+    let group = group_in(&mut app, None);
+    let tab = tab_in(&mut app, Some(&group));
+    let work = jar_at(&mut app, "Work", None);
+    let mine = jar_at(&mut app, "Mine", Some(&group));
+    app.set_jar_edge(&group, Some(work));
+    app.set_jar_edge(&tab, Some(mine));
+    app.close_node(&mine.to_string());
+    assert_eq!(app.effective_jar(&tab), Some((default, true)), "dangling, not the group's Work");
 }
 
 #[test]
-fn moving_an_unset_tab_re_snapshots_and_a_set_tab_keeps_its_jar() {
-    let mut app = App::default();
-    let work = add_jar(&mut app, "Work");
-    let g = group_in(&mut app, None);
-    app.set_group_default_jar(&g, work);
-    let unset = tab_in(&mut app, None);
-    let set = tab_in(&mut app, None);
-    app.set_tab_jar(&set, None);
-    for t in [&unset, &set] {
-        app.edit_group(t, Some(g.clone()));
-        app.refollow(t);
+fn an_out_of_scope_edge_from_another_device_is_kept_and_dangles() {
+    let (mut app, default) = with_default();
+    let (a, b) = (group_in(&mut app, None), group_in(&mut app, None));
+    let tab = tab_in(&mut app, Some(&a));
+    let far = jar_at(&mut app, "Far", Some(&b));
+    // What a remote write looks like: the field set directly, with no scope check.
+    app.mirror.set(&tab, field::JAR, FieldValue::Id(Some(far)));
+    assert_eq!(app.effective_jar(&tab), Some((default, true)));
+    assert_eq!(app.mirror.jar(&tab), Some(far), "never rewritten");
+}
+
+#[test]
+fn connect_reaches_a_jar_at_the_level_or_above_but_not_in_a_sibling_group() {
+    let (mut app, _) = with_default();
+    let (a, b) = (group_in(&mut app, None), group_in(&mut app, None));
+    let tab = tab_in(&mut app, Some(&a));
+    let here = jar_at(&mut app, "Here", Some(&a)).to_string();
+    let above = jar_at(&mut app, "Above", None).to_string();
+    let sibling = jar_at(&mut app, "Sibling", Some(&b)).to_string();
+    let edge = crate::caps::JAR_EDGE;
+    assert_eq!(app.connect(edge, &tab, &here), Ok(()));
+    assert_eq!(app.connect(edge, &tab, &here), Err(crate::links::ConnectError::Exists));
+    assert_eq!(app.connect(edge, &tab, &above), Ok(()), "replaces the edge: a field holds one");
+    assert_eq!(app.mirror.jar(&tab), above.parse().ok());
+    assert_eq!(app.connect(edge, &tab, &sibling), Err(crate::links::ConnectError::OutOfScope));
+    app.disconnect(edge, &tab, &above);
+    assert_eq!(app.mirror.jar(&tab), None);
+}
+
+#[test]
+fn a_groups_edge_reaches_a_jar_inside_it_and_its_tabs_use_it() {
+    let (mut app, _) = with_default();
+    let (a, b) = (group_in(&mut app, None), group_in(&mut app, None));
+    let inner = group_in(&mut app, Some(&a));
+    let tab = tab_in(&mut app, Some(&inner));
+    let inside = jar_at(&mut app, "Inside", Some(&a)).to_string();
+    let deeper = jar_at(&mut app, "Deeper", Some(&inner)).to_string();
+    let elsewhere = jar_at(&mut app, "Elsewhere", Some(&b)).to_string();
+    let edge = crate::caps::JAR_EDGE;
+    // Decision 2026-10-14 (pending the user's confirmation): a group's own contents count as its level.
+    assert_eq!(app.connect(edge, &a, &inside), Ok(()), "a jar inside the group");
+    assert_eq!(app.effective_jar(&tab), Some((inside.parse().unwrap(), false)), "inherited through `inner`");
+    assert_eq!(app.connect(edge, &a, &deeper), Err(crate::links::ConnectError::OutOfScope), "not a nested group's");
+    assert_eq!(app.connect(edge, &a, &elsewhere), Err(crate::links::ConnectError::OutOfScope), "not a sibling's");
+    // A tab's edge still reaches its own level and above only.
+    let top_tab = tab_in(&mut app, Some(&a));
+    assert_eq!(app.connect(edge, &top_tab, &deeper), Err(crate::links::ConnectError::OutOfScope));
+}
+
+#[test]
+fn a_move_clears_an_edge_it_takes_out_of_reach_and_keeps_one_in_reach() {
+    let (mut app, _) = with_default();
+    let (a, b) = (group_in(&mut app, None), group_in(&mut app, None));
+    let kept = tab_in(&mut app, Some(&a));
+    let lost = tab_in(&mut app, Some(&a));
+    let plain = tab_in(&mut app, Some(&a));
+    let top = jar_at(&mut app, "Top", None);
+    let local = jar_at(&mut app, "Local", Some(&a));
+    // Inside `b`: a group's edge reaches its own contents (decision 2026-10-14).
+    let b_jar = jar_at(&mut app, "B", Some(&b));
+    app.set_jar_edge(&kept, Some(top));
+    app.set_jar_edge(&lost, Some(local));
+    app.set_jar_edge(&b, Some(b_jar));
+    for tab in [&kept, &lost, &plain] {
+        app.edit_group(tab, Some(b.clone()));
+        app.recheck_edge_scope(tab);
     }
-    assert_eq!(jar_of(&app, &unset).jar, Some(work));
-    assert_eq!(jar_of(&app, &set), JarChoice { jar: None, set: true });
-    app.edit_group(&unset, None);
-    app.refollow(&unset);
-    assert_eq!(jar_of(&app, &unset), JarChoice::default(), "moved out: no default, no jar");
+    assert_eq!(app.mirror.jar(&kept), Some(top), "an ancestor jar is still in reach");
+    assert_eq!(app.mirror.jar(&lost), None, "cleared");
+    assert_eq!(app.effective_jar(&plain), Some((b_jar, false)), "no edge: takes its new group's jar");
+    // Moving a jar out of reach clears the edges to it.
+    app.edit_group(&local.to_string(), Some(b.clone()));
+    app.set_jar_edge(&kept, Some(local));
+    app.edit_group(&local.to_string(), Some(a.clone()));
+    app.recheck_edge_scope(&local.to_string());
+    assert_eq!(app.mirror.jar(&kept), None);
+    assert!(app.toasts.save_toast_queue.iter().any(|t| t.contains("Local")), "a toast names it");
+}
+
+/// The real move paths call `recheck_edge_scope`: a drop into another group clears an edge it leaves out of reach.
+#[test]
+fn a_drop_into_another_group_rechecks_the_edge() {
+    let (mut app, _) = with_default();
+    let (a, b) = (group_in(&mut app, None), group_in(&mut app, None));
+    let tab = tab_in(&mut app, Some(&a));
+    let local = jar_at(&mut app, "Local", Some(&a));
+    app.set_jar_edge(&tab, Some(local));
+    app.apply_drop(&tab, Some((DropEffect::Join, Some(b))));
+    assert_eq!(app.mirror.jar(&tab), None);
 }
 
 #[test]
-fn follow_group_jar_clears_set_and_re_snapshots() {
-    let mut app = App::default();
-    let work = add_jar(&mut app, "Work");
+fn a_new_tab_inherits_and_an_opened_tab_copies_its_openers_edge() {
+    let (mut app, _) = with_default();
+    let (work, home) = (jar_at(&mut app, "Work", None), jar_at(&mut app, "Home", None));
     let g = group_in(&mut app, None);
-    app.set_group_default_jar(&g, work);
-    let t = tab_in(&mut app, Some(&g));
-    app.set_tab_jar(&t, None);
-    app.follow_group_jar(&t);
-    assert_eq!(jar_of(&app, &t), JarChoice { jar: Some(work), set: false });
-}
-
-#[test]
-fn a_new_tab_inherits_and_an_opened_tab_copies_its_opener() {
-    let mut app = App::default();
-    let (work, home) = (add_jar(&mut app, "Work"), add_jar(&mut app, "Home"));
-    let g = group_in(&mut app, None);
-    app.set_group_default_jar(&g, work);
+    app.set_jar_edge(&g, Some(work));
     app.spawn_new_tab(None, Some(g.clone()), "https://new/");
     let (spawn, _) = app.test_spawns.last().unwrap();
-    assert_eq!(spawn.jar, JarChoice { jar: Some(work), set: false });
+    assert_eq!(spawn.jar, None, "a new tab has no edge of its own: it inherits");
     let opener = tab_in(&mut app, Some(&g));
-    app.set_tab_jar(&opener, Some(home));
+    app.set_jar_edge(&opener, Some(home));
     app.spawn_tab_from(&opener, "https://opened/");
     let (spawn, _) = app.test_spawns.last().unwrap();
-    assert_eq!(spawn.jar, JarChoice { jar: Some(home), set: true }, "deviation 3");
+    assert_eq!(spawn.jar, Some(home), "deviation 3");
     assert_eq!(spawn.parent.as_deref(), Some(opener.as_str()));
     assert_eq!(spawn.group.as_deref(), Some(g.as_str()));
     app.duplicate_tab(&opener);
     let (spawn, _) = app.test_spawns.last().unwrap();
-    assert_eq!(spawn.jar, JarChoice { jar: Some(home), set: true }, "a duplicate copies too");
+    assert_eq!(spawn.jar, Some(home), "a duplicate copies too");
     app.spawn_tab_at("https://dropped/", egui::Vec2::ZERO, Some(g.clone()), None);
     let (spawn, _) = app.test_spawns.last().unwrap();
-    assert_eq!(spawn.jar, JarChoice { jar: Some(work), set: false }, "a dropped page inherits");
-}
-
-/// A merge re-snapshots only the members that moved: a tab already in the target keeps its jar, even one that
-/// differs from what it would inherit now (spec: "Clear default" leaves existing tabs alone).
-#[test]
-fn a_merge_leaves_the_targets_own_tabs_alone() {
-    let mut app = App::default();
-    let (work, home) = (add_jar(&mut app, "Work"), add_jar(&mut app, "Home"));
-    let h = group_in(&mut app, None);
-    let stayed = tab_in(&mut app, Some(&h));
-    app.set_group_default_jar(&h, home);
-    app.clear_group_default_jar(&h);
-    let w = group_in(&mut app, None);
-    let moved = tab_in(&mut app, Some(&w));
-    app.set_group_default_jar(&w, work);
-    app.apply_drop(&w, Some((DropEffect::Merge, Some(h.clone()))));
-    assert_eq!(app.mirror.group(&moved), Some(h.as_str()));
-    assert_eq!(jar_of(&app, &moved), JarChoice::default(), "a moved member re-snapshots: `h` has no default");
-    assert_eq!(jar_of(&app, &stayed), JarChoice { jar: Some(home), set: false }, "a tab that never moved");
-}
-
-/// The real move paths, not `refollow` called by hand: each re-snapshots unset tabs and leaves set ones.
-#[test]
-fn every_move_between_groups_re_snapshots_unset_tabs() {
-    let mut app = App::default();
-    let (work, home) = (add_jar(&mut app, "Work"), add_jar(&mut app, "Home"));
-    let w = group_in(&mut app, None);
-    app.set_group_default_jar(&w, work);
-    let h = group_in(&mut app, None);
-    app.set_group_default_jar(&h, home);
-    let unset = tab_in(&mut app, None);
-    let set = tab_in(&mut app, None);
-    app.set_tab_jar(&set, None);
-    let unset_jar = |app: &App| jar_of(app, &unset);
-
-    // Join: dropped onto group card `w`.
-    app.apply_drop(&unset, Some((DropEffect::Join, Some(w.clone()))));
-    app.apply_drop(&set, Some((DropEffect::Join, Some(w.clone()))));
-    assert_eq!(unset_jar(&app), JarChoice { jar: Some(work), set: false }, "join");
-    assert_eq!(jar_of(&app, &set), JarChoice { jar: None, set: true }, "join leaves a set tab");
-
-    // Eject: out of `w` to the top level, where nothing has a default.
-    app.eject(&unset);
-    assert_eq!(unset_jar(&app), JarChoice::default(), "eject");
-
-    // Merge: `w` (holding the tab again) dropped onto `h`; its members now take `h`'s default.
-    app.apply_drop(&unset, Some((DropEffect::Join, Some(w.clone()))));
-    app.apply_drop(&w, Some((DropEffect::Merge, Some(h.clone()))));
-    assert_eq!(app.mirror.group(&unset), Some(h.as_str()));
-    assert_eq!(unset_jar(&app), JarChoice { jar: Some(home), set: false }, "merge");
-    assert_eq!(jar_of(&app, &set), JarChoice { jar: None, set: true }, "merge leaves a set tab");
-
-    // Dissolve: `inner` (no default) inside `h` is dissolved into `h`, then `h` itself to the top level.
-    let inner = group_in(&mut app, Some(&h));
-    app.edit_group(&unset, Some(inner.clone()));
-    app.edit_jar(&unset, JarChoice { jar: Some(work), set: false }); // stale, so the dissolve must fix it
-    app.dissolve_group(&inner);
-    assert_eq!(unset_jar(&app), JarChoice { jar: Some(home), set: false }, "dissolve into a defaulted group");
-    app.dissolve_group(&h);
-    assert_eq!(unset_jar(&app), JarChoice::default(), "dissolve to the top level");
-
-    // GroupWith: viewing group `level` (default Work), the tab, moved in by hand, is dropped onto `other`. The
-    // new group has no default of its own, so the tab takes `level`'s.
-    let level = group_in(&mut app, None);
-    app.set_group_default_jar(&level, work);
-    let other = tab_in(&mut app, Some(&level));
-    app.edit_group(&unset, Some(level.clone()));
-    app.current_group = Some(level.clone());
-    app.apply_drop(&unset, Some((DropEffect::GroupWith, Some(other.clone()))));
-    let made = app.mirror.group(&unset).unwrap().to_owned();
-    assert_eq!(app.mirror.group(&made), Some(level.as_str()), "the new group sits inside `level`");
-    assert_eq!(unset_jar(&app), JarChoice { jar: Some(work), set: false }, "group with");
+    assert_eq!(spawn.jar, None, "a dropped page inherits");
 }
 
 #[test]
@@ -198,18 +188,18 @@ fn the_chip_shows_only_non_default_or_warning_states() {
     let work = add_jar(&mut app, "Work");
     let t = tab_in(&mut app, None);
     assert!(app.jar_chip(&t).is_none(), "default jar: no chip");
-    app.set_tab_jar(&t, Some(work));
+    app.set_jar_edge(&t, Some(work));
     let chip = app.jar_chip(&t).unwrap();
     assert_eq!((chip.name.to_string().as_str(), chip.following, chip.missing), ("Work", false, false));
     assert!(chip.view_ignores, "`sleeping_tab` is a Servo tab");
     assert_eq!(chip.tooltip.as_deref(), Some("This view does not use jars yet"));
-    app.follow_group_jar(&t); // no group default: back to the default jar
+    app.set_jar_edge(&t, None); // no group edge: back to the Default
     assert!(app.jar_chip(&t).is_none());
-    app.set_tab_jar(&t, Some(work));
+    app.set_jar_edge(&t, Some(work));
     app.remove_remotely_deleted(&work.to_string()); // a remote delete arrives before the tab's own field edit
     let chip = app.jar_chip(&t).unwrap();
     assert!(chip.missing);
-    assert_eq!(chip.tooltip.as_deref(), Some("This tab's jar was deleted; it uses the default jar"));
+    assert_eq!(chip.tooltip.as_deref(), Some("This tab's jar is gone or out of reach; it uses the Default jar"));
     assert!(app.jar_chip("nobody").is_none());
 }
 
@@ -235,28 +225,20 @@ fn a_new_jar_takes_a_colour_no_jar_uses() {
     assert!(TAG_COLOR_PALETTE.contains(&colour(&app, extra)), "all taken: still a palette colour");
 }
 
-/// Fix batch A4: the dot is outlined ("following") only while the tab's nearest group default is its jar. After
-/// "Clear Default Jar" the tab keeps its jar, unset, but follows nothing, so the dot is plain.
+/// The dot is outlined ("following") while the tab has no edge of its own: it inherits its group's.
 #[test]
-fn the_chip_follows_only_while_a_group_default_names_its_jar() {
-    let mut app = App::default();
-    let (work, home) = (add_jar(&mut app, "Work"), add_jar(&mut app, "Home"));
+fn the_chip_follows_while_the_tab_has_no_edge_of_its_own() {
+    let (mut app, _) = with_default();
+    let (work, home) = (jar_at(&mut app, "Work", None), jar_at(&mut app, "Home", None));
     let g = group_in(&mut app, None);
-    app.set_group_default_jar(&g, work);
+    app.set_jar_edge(&g, Some(work));
     let t = tab_in(&mut app, Some(&g));
-    app.refollow(&t);
-    assert_eq!(jar_of(&app, &t), JarChoice { jar: Some(work), set: false });
-    assert!(app.jar_chip(&t).unwrap().following, "follows its group's Work");
-    app.clear_group_default_jar(&g);
-    assert_eq!(jar_of(&app, &t), JarChoice { jar: Some(work), set: false }, "stored values unchanged");
-    assert!(!app.jar_chip(&t).unwrap().following, "no group default: a plain dot");
-    app.mirror.set(&g, crate::store::model::field::DEFAULT_JAR, crate::store::model::FieldValue::Id(Some(home))); // remote, uncascaded
-    assert!(!app.jar_chip(&t).unwrap().following, "the group's default is another jar");
-    let outer = group_in(&mut app, None);
-    app.mirror.set(&g, crate::store::model::field::DEFAULT_JAR, crate::store::model::FieldValue::Id(None));
-    app.edit_group(&g, Some(outer.clone()));
-    app.mirror.set(&outer, crate::store::model::field::DEFAULT_JAR, crate::store::model::FieldValue::Id(Some(work)));
-    assert!(app.jar_chip(&t).unwrap().following, "an outer group's default counts when it is the nearest");
+    assert_eq!(app.effective_jar(&t), Some((work, false)));
+    assert!(app.jar_chip(&t).unwrap().following, "inherits its group's Work");
+    app.set_jar_edge(&t, Some(home));
+    assert!(!app.jar_chip(&t).unwrap().following, "its own edge: a plain dot");
+    app.set_jar_edge(&t, None);
+    assert!(app.jar_chip(&t).unwrap().following);
 }
 
 /// `SETJAR` (Task 8 review): makes a jar only for a focused tab, reuses one by name, and "default" picks Default.
@@ -274,11 +256,11 @@ fn setjar_acts_only_on_a_focused_tab() {
     app.focused = Some(t.clone());
     assert!(app.set_focused_tab_jar_named("Work"));
     let work = app.jar_named("Work").expect("made for the tab");
-    assert_eq!(jar_of(&app, &t), JarChoice { jar: Some(work), set: true });
+    assert_eq!(app.mirror.jar(&t), Some(work));
     assert!(app.set_focused_tab_jar_named("Work"));
     assert_eq!(app.jar_defs().len(), 1, "an existing name is reused");
     assert!(app.set_focused_tab_jar_named("DEFAULT"));
-    assert_eq!(jar_of(&app, &t).jar, None);
+    assert_eq!(app.mirror.jar(&t), None);
 }
 
 /// Jar name labels: `SETJAR` takes a label first, then a stored name; a stored name several jars share picks the
@@ -293,11 +275,11 @@ fn setjar_takes_a_label_or_an_ambiguous_stored_name() {
     let l2 = app.jar_label(w2).to_string();
     assert_eq!(app.jar_named(&l2), Some(w2));
     assert!(app.set_focused_tab_jar_named(&l2));
-    assert_eq!(jar_of(&app, &t).jar, Some(w2), "by label");
+    assert_eq!(app.mirror.jar(&t), Some(w2), "by label");
     assert!(app.set_focused_tab_jar_named("Work"));
-    assert_eq!(jar_of(&app, &t).jar, Some(w1), "an ambiguous stored name: the lowest id");
+    assert_eq!(app.mirror.jar(&t), Some(w1), "an ambiguous stored name: the lowest id");
     assert!(app.set_focused_tab_jar_named("Home"));
-    assert_eq!(jar_of(&app, &t).jar, Some(home), "a unique name is its own label");
+    assert_eq!(app.mirror.jar(&t), Some(home), "a unique name is its own label");
     assert_eq!(app.jar_defs().len(), 3, "no jar made");
     // A jar literally named like another's label: the label wins, as it is matched first.
     add_jar(&mut app, &l2);
@@ -325,7 +307,7 @@ fn the_confirm_names_the_jar_and_what_it_costs() {
     let work = add_jar(&mut app, "Work");
     let default = default_jar_id(&mut app);
     let t = tab_in(&mut app, None);
-    app.set_tab_jar(&t, Some(work));
+    app.set_jar_edge(&t, Some(work));
     let (title, detail, button) = app.jar_confirm_text(JarConfirm::Clear(work)).unwrap();
     assert_eq!((title.as_str(), button), ("Clear cookies in Work?", "Clear"));
     assert!(detail.starts_with("Tabs using it are signed out."), "{detail}");
@@ -468,7 +450,7 @@ fn the_tab_view_hover_styles_the_label() {
     let mut app = App::default();
     let (_, w2) = (add_jar(&mut app, "Work"), add_jar(&mut app, "Work"));
     let t = tab_in(&mut app, None);
-    app.set_tab_jar(&t, Some(w2));
+    app.set_jar_edge(&t, Some(w2));
     let chip = app.jar_chip(&t).unwrap();
     let font = egui::FontId::proportional(14.0);
     let weak = egui::Color32::from_gray(120);
@@ -534,7 +516,7 @@ fn the_chip_and_confirms_show_the_label() {
     let l2 = app.jar_label(w2);
     assert!(l2.to_string().starts_with("Work · #"), "{l2}");
     let t = tab_in(&mut app, None);
-    app.set_tab_jar(&t, Some(w2));
+    app.set_jar_edge(&t, Some(w2));
     assert_eq!(app.jar_chip(&t).unwrap().name, l2);
     assert_eq!(app.jar_confirm_text(JarConfirm::Clear(w2)).unwrap().0, format!("Clear cookies in {l2}?"));
     assert_eq!(app.jar_confirm_text(JarConfirm::Ephemeral(w2)).unwrap().0, format!("Make {l2} ephemeral?"));
@@ -589,7 +571,7 @@ fn setjar_matches_and_makes_by_the_clean_name() {
     let work = add_jar(&mut app, "Work");
     assert!(app.set_focused_tab_jar_named("Wo\u{200B}rk"));
     assert_eq!(app.jar_defs().len(), 1, "no twin made");
-    assert_eq!(app.tab_jar(&t).map(|c| c.jar), Some(Some(work)));
+    assert_eq!(app.mirror.jar(&t), Some(work));
     assert!(app.set_focused_tab_jar_named(" New\u{00A0}\u{00A0}one "));
     assert!(app.jar_defs().values().any(|d| d.name == "New one"));
 }
@@ -631,7 +613,7 @@ fn a_jar_chip_hover_names_a_hidden_character() {
         crate::store::model::field::NAME,
         crate::store::model::FieldValue::Str("Wo\u{200B}rk".into()),
     );
-    app.set_tab_jar(&t, Some(jar));
+    app.set_jar_edge(&t, Some(jar));
     let tip = app.jar_chip(&t).and_then(|c| c.tooltip).unwrap_or_default();
     assert!(tip.contains("Hidden characters: U+200B zero width space"), "{tip}");
 }
@@ -672,7 +654,7 @@ fn the_default_jar_cannot_be_closed_and_an_unset_tab_resolves_to_it() {
     app.close_node(&default.to_string());
     assert!(app.jar_exists(default), "still there");
     let tab = tab_in(&mut app, None);
-    assert_eq!(app.resolved_jar(&jar_of(&app, &tab)), Some((default, false)));
+    assert_eq!(app.effective_jar(&tab), Some((default, false)));
 }
 
 #[test]

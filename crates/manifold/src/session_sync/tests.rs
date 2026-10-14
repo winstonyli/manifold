@@ -11,8 +11,8 @@ const A: ActorId = ActorId(0xA);
 #[test]
 fn jar_fields_belong_to_tabs_groups_and_jars() {
     use field::*;
-    assert_eq!(Kind::Tab.fields(), &[POS, COLOR, PARENT, URL, VIEW_KIND, PINNED, JAR, JAR_SET, NAME]);
-    assert_eq!(Kind::Group.fields(), &[POS, COLOR, NAME, DEFAULT_JAR]);
+    assert_eq!(Kind::Tab.fields(), &[POS, COLOR, PARENT, URL, VIEW_KIND, PINNED, JAR, NAME]);
+    assert_eq!(Kind::Group.fields(), &[POS, COLOR, NAME, JAR]);
     assert_eq!(Kind::Jar.fields(), &[POS, COLOR, NAME, EPHEMERAL, IS_DEFAULT]);
     assert_eq!(Kind::Link.fields(), &[NAME, FROM, TO]);
     assert!(Kind::Unknown.fields().is_empty());
@@ -500,7 +500,7 @@ fn app_with(nodes: &BTreeMap<NodeId, Snapshot>) -> App {
 }
 
 #[test]
-fn a_tabs_jar_and_a_groups_default_project_to_fields_and_back() {
+fn a_tabs_and_a_groups_jar_edge_project_to_fields_and_back() {
     let jar = NodeId { actor: ActorId(7), counter: 1 };
     let nodes = BTreeMap::from([
         (
@@ -512,16 +512,15 @@ fn a_tabs_jar_and_a_groups_default_project_to_fields_and_back() {
                     (field::URL, FieldValue::Str("https://a.com/".into())),
                     (field::VIEW_KIND, FieldValue::ViewCode(view_code(ViewKind::Servo))),
                     (field::JAR, FieldValue::Id(Some(jar))),
-                    (field::JAR_SET, FieldValue::Bool(true)),
                 ],
             ),
         ),
-        (id(2), shared(Kind::Group, None, &[(field::DEFAULT_JAR, FieldValue::Id(Some(jar)))])),
+        (id(2), shared(Kind::Group, None, &[(field::JAR, FieldValue::Id(Some(jar)))])),
     ]);
     let app = app_with(&nodes);
     assert!(app.nodes[&id(1).to_string()].runtime.as_unloaded().is_some());
-    assert_eq!(app.mirror.jar_choice(&id(1).to_string()), crate::jar::JarChoice { jar: Some(jar), set: true });
-    assert_eq!(app.mirror.default_jar(&id(2).to_string()), Some(jar));
+    assert_eq!(app.mirror.jar(&id(1).to_string()), Some(jar));
+    assert_eq!(app.mirror.jar(&id(2).to_string()), Some(jar));
     assert_eq!(snapshots(&app), nodes, "the live payloads project back to the same fields");
 }
 
@@ -534,14 +533,13 @@ fn a_remote_jar_edit_updates_a_sleeping_tab_and_a_group() {
     let mut tab_fields = tab.fields.clone();
     tab_fields.insert(field::JAR, FieldValue::Id(Some(jar)));
     let mut group_fields = group.fields.clone();
-    group_fields.insert(field::DEFAULT_JAR, FieldValue::Id(Some(jar)));
+    group_fields.insert(field::JAR, FieldValue::Id(Some(jar)));
     app.apply_remote(vec![
         (id(1), Some((Kind::Tab, tab_fields, None))),
         (id(2), Some((Kind::Group, group_fields, None))),
     ]);
-    assert_eq!(app.mirror.jar_choice(&id(1).to_string()).jar, Some(jar));
-    assert_eq!(app.mirror.default_jar(&id(2).to_string()), Some(jar));
-    assert_eq!(app.inherited_jar(Some(&id(2).to_string())), Some(jar), "new tabs in the group start in it");
+    assert_eq!(app.mirror.jar(&id(1).to_string()), Some(jar));
+    assert_eq!(app.mirror.jar(&id(2).to_string()), Some(jar));
 }
 
 #[test]
@@ -2359,23 +2357,23 @@ fn closing_a_jar_leaves_the_tabs_that_named_it_on_the_default_jar() {
     let default = default_jar_id(&mut app);
     let jar = add_jar(&mut app, "Work");
     let tab = add(&mut app, Kind::Tab, sleeping_tab("https://a.com/", "A"));
-    app.edit_jar(&tab, crate::jar::JarChoice { jar: Some(jar), set: true });
+    app.set_jar_edge(&tab, Some(jar));
     app.close_node_and_save(&jar.to_string());
     assert_eq!(app.jar_defs().len(), 1, "only the Default is left");
-    // No cascade: the field still names the closed jar, and the read rule resolves it to the Default jar (flagged).
-    assert_eq!(app.mirror.jar_choice(&tab).jar, Some(jar));
-    assert_eq!(app.resolved_jar(&app.mirror.jar_choice(&tab)), Some((default, true)));
+    // The edge dangles: the field still names the closed jar, and the read rule resolves it to the Default jar.
+    assert_eq!(app.mirror.jar(&tab), Some(jar));
+    assert_eq!(app.effective_jar(&tab), Some((default, true)));
 }
 
-/// A file with a jar "Work" (label j), a group defaulting to it and a tab in the group using it.
+/// A file with a jar "Work" (label j), a group with an edge to it and a tab in the group with one too.
 fn file_with_a_work_jar() -> JsonDoc {
     let json = serde_json::json!({ "nodes": [
-        json_node("g", Kind::Group, serde_json::json!({ "name": "G", "default_jar": "j" })),
+        json_node("g", Kind::Group, serde_json::json!({ "name": "G", "jar": "j" })),
         json_node("j", Kind::Jar, serde_json::json!({ "name": "Work" })),
         json_node(
             "t",
             Kind::Tab,
-            serde_json::json!({ "url": "https://a.com/", "group": "g", "jar": "j", "jar_set": true }),
+            serde_json::json!({ "url": "https://a.com/", "group": "g", "jar": "j" }),
         ),
     ]});
     serde_json::from_value(json).unwrap()
@@ -2395,9 +2393,9 @@ fn opening_a_session_gives_each_imported_jar_a_new_jar() {
     assert_eq!(app.jar_defs()[&new].name, "Work");
     let tab =
         app.nodes.iter().find(|(_, n)| n.runtime.as_unloaded().is_some()).map(|(id, _)| id).expect("tab imported");
-    assert_eq!(app.mirror.jar_choice(tab), crate::jar::JarChoice { jar: Some(new), set: true });
+    assert_eq!(app.mirror.jar(tab), Some(new));
     let group = app.nodes.keys().find(|id| app.is_container(id)).expect("group imported");
-    assert_eq!(app.mirror.default_jar(group), Some(new));
+    assert_eq!(app.mirror.jar(group), Some(new));
 }
 
 /// Import Group the same, twice over: each import is another new jar.
@@ -2414,10 +2412,10 @@ fn importing_a_group_gives_each_imported_jar_a_new_jar() {
         .nodes
         .iter()
         .filter(|(_, n)| n.runtime.as_unloaded().is_some())
-        .filter_map(|(id, _)| app.mirror.jar_choice(id).jar)
+        .filter_map(|(id, _)| app.mirror.jar(id))
         .collect();
     let groups: BTreeSet<NodeId> =
-        app.nodes.keys().filter(|id| app.is_container(id)).filter_map(|id| app.mirror.default_jar(id)).collect();
+        app.nodes.keys().filter(|id| app.is_container(id)).filter_map(|id| app.mirror.jar(id)).collect();
     assert_eq!((&tabs, &groups), (&new, &new), "each import's tab and group name its own new jar");
 }
 
@@ -4066,31 +4064,28 @@ fn a_spawning_tab_is_created_and_lands_with_its_url() {
     assert_eq!(stored(&app, &t, field::URL), FieldValue::Str("https://t/".into()));
 }
 
-// ---- 2b-3: jar and jar_set in the mirror ------------------------------------
+// ---- 2b-3: the jar edge in the mirror ---------------------------------------
 
-use crate::jar::JarChoice;
-
-/// Ruling 7: one writer for both fields, queuing only the one that changed. Re-picking the same jar queues nothing.
+/// Ruling 7: one writer for the field, queuing it only when it changed. Re-picking the same jar queues nothing.
 #[test]
-fn a_jar_pick_saves_both_fields_and_only_the_changed_one() {
+fn a_jar_pick_saves_the_field_and_only_when_it_changed() {
     let path = temp_dir("jar-pick").join("session.mnf");
     let mut app = app_on(&path, 1);
     let work = add_jar(&mut app, "Work");
     let tab = add(&mut app, Kind::Tab, sleeping_tab("https://s/", ""));
     assert!(app.save_session());
     let key = |no| (tab.parse::<NodeId>().unwrap(), no);
-    app.set_tab_jar(&tab, Some(work));
-    assert_eq!(app.mirror.jar_choice(&tab), JarChoice { jar: Some(work), set: true }, "shown at once");
-    assert_eq!(app.pending.keys().copied().collect::<Vec<_>>(), [key(field::JAR), key(field::JAR_SET)]);
+    app.set_jar_edge(&tab, Some(work));
+    assert_eq!(app.mirror.jar(&tab), Some(work), "shown at once");
+    assert_eq!(app.pending.keys().copied().collect::<Vec<_>>(), [key(field::JAR)]);
     assert!(app.save_session());
     assert_eq!(stored(&app, &tab, field::JAR), FieldValue::Id(Some(work)));
-    assert_eq!(stored(&app, &tab, field::JAR_SET), FieldValue::Bool(true));
-    app.edit_jar(&tab, JarChoice { jar: Some(work), set: false });
-    assert_eq!(app.pending.keys().copied().collect::<Vec<_>>(), [key(field::JAR_SET)], "only the changed field");
-    assert!(app.save_session());
-    assert_eq!(stored(&app, &tab, field::JAR_SET), FieldValue::Bool(false));
-    app.edit_jar(&tab, JarChoice { jar: Some(work), set: false });
+    app.set_jar_edge(&tab, Some(work));
     assert!(app.pending.is_empty(), "re-picking the same jar queues nothing");
+    app.set_jar_edge(&tab, None);
+    assert_eq!(app.pending.keys().copied().collect::<Vec<_>>(), [key(field::JAR)]);
+    assert!(app.save_session());
+    assert_eq!(stored(&app, &tab, field::JAR), FieldValue::Id(None));
 }
 
 /// Ruling 8: a pending `jar` is resolved at commit like `parent`: a jar this commit deletes is written as none, and
@@ -4102,15 +4097,14 @@ fn a_pending_jar_naming_a_jar_deleted_in_this_commit_is_written_as_none() {
     let work = add_jar(&mut app, "Work");
     let tab = add(&mut app, Kind::Tab, sleeping_tab("https://s/", ""));
     assert!(app.save_session());
-    app.set_tab_jar(&tab, Some(work));
+    app.set_jar_edge(&tab, Some(work));
     // Gone here with the tab's field still naming it: this commit deletes its node.
     app.remove_remotely_deleted(&work.to_string());
     app.queue_delete(&work.to_string());
     assert!(app.save_session());
     assert!(!app.journal.as_ref().unwrap().doc().nodes[&work].is_live(), "the jar's delete is in this commit");
     assert_eq!(stored(&app, &tab, field::JAR), FieldValue::Id(None));
-    assert_eq!(stored(&app, &tab, field::JAR_SET), FieldValue::Bool(true));
-    assert_eq!(app.mirror.jar_choice(&tab), JarChoice { jar: None, set: true }, "the mirror shows what was written");
+    assert_eq!(app.mirror.jar(&tab), None, "the mirror shows what was written");
 }
 
 /// Ruling 8, `Create`: a new tab naming a jar the same commit deletes is created with none; one naming a jar the same
@@ -4122,15 +4116,15 @@ fn a_created_tab_naming_a_jar_deleted_in_this_commit_is_created_with_none() {
     let work = add_jar(&mut app, "Work");
     assert!(app.save_session());
     let tab = add(&mut app, Kind::Tab, sleeping_tab("https://s/", ""));
-    app.set_tab_jar(&tab, Some(work));
+    app.set_jar_edge(&tab, Some(work));
     app.remove_remotely_deleted(&work.to_string()); // the pending field still names it
     app.queue_delete(&work.to_string());
     let home = add_jar(&mut app, "Home");
     let other = add(&mut app, Kind::Tab, sleeping_tab("https://o/", ""));
-    app.set_tab_jar(&other, Some(home));
+    app.set_jar_edge(&other, Some(home));
     assert!(app.save_session());
     assert_eq!(stored(&app, &tab, field::JAR), FieldValue::Id(None), "created with none");
-    assert_eq!(app.mirror.jar_choice(&tab).jar, None, "the mirror shows what was written");
+    assert_eq!(app.mirror.jar(&tab), None, "the mirror shows what was written");
     assert_eq!(stored(&app, &other, field::JAR), FieldValue::Id(Some(home)), "a jar created here is kept");
 }
 
@@ -4143,7 +4137,7 @@ fn a_dangling_remote_deleted_jar_survives_a_save() {
     app.ensure_default_jar();
     let work = add_jar(&mut app, "Work");
     let tab = add(&mut app, Kind::Tab, sleeping_tab("https://s/", ""));
-    app.set_tab_jar(&tab, Some(work));
+    app.set_jar_edge(&tab, Some(work));
     assert!(app.save_session());
     let mut other = Journal::open(&path, ActorId(2)).unwrap();
     other.begin().unwrap().commit(vec![OpBody::Delete { node: work }]).unwrap();
@@ -4151,7 +4145,7 @@ fn a_dangling_remote_deleted_jar_survives_a_save() {
     assert!(!app.jar_defs().contains_key(&work), "the remote delete arrived");
     assert!(app.save_session());
     assert_eq!(stored(&app, &tab, field::JAR), FieldValue::Id(Some(work)), "not cleared by a save");
-    assert_eq!(app.mirror.jar_choice(&tab).jar, Some(work));
+    assert_eq!(app.mirror.jar(&tab), Some(work));
     assert!(app.jar_chip(&tab).is_some_and(|c| c.missing), "the chip says the jar is missing");
 }
 
@@ -4164,49 +4158,50 @@ fn a_local_jar_pick_wins_over_a_remote_one() {
     let tab = add(&mut app, Kind::Tab, sleeping_tab("https://s/", ""));
     assert!(app.save_session());
     let mut other = Journal::open(&path, ActorId(2)).unwrap();
-    app.set_tab_jar(&tab, Some(mine));
+    app.set_jar_edge(&tab, Some(mine));
     remote_set(&mut other, &tab, field::JAR, FieldValue::Id(Some(theirs)));
     remote_set(&mut other, &tab, field::PINNED, FieldValue::Bool(true));
     assert!(app.save_session());
-    assert_eq!(app.mirror.jar_choice(&tab), JarChoice { jar: Some(mine), set: true });
+    assert_eq!(app.mirror.jar(&tab), Some(mine));
     assert_eq!(stored(&app, &tab, field::JAR), FieldValue::Id(Some(mine)));
     assert!(app.mirror.pinned(&tab), "their other field arrives");
 }
 
-/// Ruling 9 (2b-2's parked item): `refollow` reaches a tab mid-respawn, so a local dissolve re-snapshots its jar
-/// from the level it moves to, and it lands with that jar.
+/// Ruling 9 (2b-2's parked item): `recheck_edge_scope` reaches a tab mid-respawn, so a local move that takes its
+/// edge out of reach clears it, and it lands without it.
 #[test]
-fn a_respawning_tab_follows_a_local_dissolve_s_jar_snapshot() {
-    let path = temp_dir("jar-respawn-dissolve").join("session.mnf");
+fn a_respawning_tab_follows_a_local_moves_edge_recheck() {
+    let path = temp_dir("jar-respawn-move").join("session.mnf");
     let mut app = app_on(&path, 1);
-    let work = add_jar(&mut app, "Work");
     let (_outer, g, t) = nested_tab(&mut app);
-    assert_eq!(app.set_group_default_jar(&g, work), 1);
+    let local = app.create_jar("Local", crate::fetched::Placement { group: Some(g.clone()), pos: egui::Vec2::ZERO });
+    app.set_jar_edge(&t, Some(local));
     assert!(app.save_session());
-    assert_eq!(stored(&app, &t, field::JAR), FieldValue::Id(Some(work)));
+    assert_eq!(stored(&app, &t, field::JAR), FieldValue::Id(Some(local)));
     start_respawn(&mut app, &t);
-    app.dissolve_group(&g); // O has no default: T follows it to none
-    assert_eq!(app.mirror.jar_choice(&t), JarChoice::default());
+    app.edit_group(&t, None); // out of G: the jar inside G is no longer in reach
+    app.recheck_edge_scope(&t);
+    assert_eq!(app.mirror.jar(&t), None);
     assert!(app.save_session());
     assert_eq!(stored(&app, &t, field::JAR), FieldValue::Id(None));
     fail_spawns(&mut app);
-    assert_eq!(app.mirror.jar_choice(&t), JarChoice::default(), "it lands with it");
+    assert_eq!(app.mirror.jar(&t), None, "it lands without it");
     assert!(app.save_session());
     assert_eq!(stored(&app, &t, field::JAR), FieldValue::Id(None));
 }
 
-/// A new tab is created with the jar it starts with and lands with it in the mirror. A cascade meanwhile does not
-/// reach it (it has no mirror entry until it lands, as before 2b-3), so it never gives it a partial entry that would
-/// stop the landing from seeding its colour; the tab keeps the jar it started with.
+/// A new tab is created with the jar it starts with and lands with it in the mirror. An edit to its group meanwhile
+/// does not reach it (it has no mirror entry until it lands), so it never gives it a partial entry that would stop
+/// the landing from seeding its colour; the tab keeps the jar it started with.
 #[test]
 fn a_spawning_tab_is_created_and_lands_with_its_jar() {
     let path = temp_dir("jar-spawn").join("session.mnf");
     let mut app = app_on(&path, 1);
     let (work, home) = (add_jar(&mut app, "Work"), add_jar(&mut app, "Home"));
     let g = add_group(&mut app, "G");
-    app.edit_default_jar(&g, Some(work));
+    app.set_jar_edge(&g, Some(work));
     assert!(app.save_session());
-    // A restored tab (a failed `New` spawn never lands), started with G's default as `spawn_tab_at` gives one.
+    // A restored tab, started with its own edge to Work.
     let t = app.alloc_node_id();
     let mut spawn = crate::tabs::TabSpawn::new(
         t.clone(),
@@ -4216,16 +4211,16 @@ fn a_spawning_tab_is_created_and_lands_with_its_jar() {
         SpawnPurpose::Restore,
         1.0,
     );
-    (spawn.group, spawn.jar) = (Some(g.clone()), app.new_tab_jar(Some(&g)));
+    (spawn.group, spawn.jar) = (Some(g.clone()), Some(work));
     spawn.carry.color = Some(egui::Color32::RED);
     app.spawn_tab_async(spawn);
     assert!(app.save_session());
     assert_eq!(stored(&app, &t, field::JAR), FieldValue::Id(Some(work)), "created with its jar");
-    assert!(!app.linked_ids().any(|id| id == t) && app.tab_jar(&t).is_none(), "out of the cascades' reach");
-    app.set_group_default_jar(&g, home);
+    assert!(!app.linked_ids().any(|id| id == t) && app.mirror.jar(&t).is_none(), "out of the edits' reach");
+    app.set_jar_edge(&g, Some(home));
     assert!(!app.mirror.has(&t), "no partial entry");
     fail_spawns(&mut app);
-    assert_eq!(app.mirror.jar_choice(&t), JarChoice { jar: Some(work), set: false }, "lands with it");
+    assert_eq!(app.mirror.jar(&t), Some(work), "lands with it");
     assert_eq!(app.mirror.color(&t), Some(egui::Color32::RED), "the landing seeded the whole entry");
     assert!(app.save_session());
     assert_eq!(stored(&app, &t, field::JAR), FieldValue::Id(Some(work)));
@@ -4682,7 +4677,7 @@ fn a_remote_url_parked_during_a_wake_navigates_the_tab_when_it_lands() {
 }
 
 /// Final review I1, engine: another replica's engine, parked while a swap's respawn is in flight, still reaches
-/// the tab when it lands, though a jar cascade (a group default, which reaches a respawning tab, Ruling 9) committed
+/// the tab when it lands, though a jar edit (which reaches a respawning tab, Ruling 9) committed
 /// a Set for the tab in between (the parked change takes the committed jar, so the landing does not replay the old
 /// one over it). The document and the running engine end up agreeing: the landing starts a swap to it.
 #[test]
@@ -4703,9 +4698,9 @@ fn a_remote_view_parked_during_a_swap_respawn_is_swapped_to_when_it_lands() {
     remote_set(&mut other, &tab, field::VIEW_KIND, view_kind(ViewKind::Webview2));
     assert!(app.save_session());
     assert!(app.spawns.remote_in_flight.contains_key(&tab), "parked for the landing");
-    assert_eq!(app.set_group_default_jar(&g, work), 1, "the cascade reaches the respawning tab");
+    app.edit_field(&tab, field::JAR, FieldValue::Id(Some(work)));
     assert!(app.save_session());
-    assert_eq!(stored(&app, &tab, field::JAR), FieldValue::Id(Some(work)), "the cascade committed for the tab");
+    assert_eq!(stored(&app, &tab, field::JAR), FieldValue::Id(Some(work)), "the edit committed for the tab");
     let _peers = land_spawns(&mut app);
     assert_eq!(app.nodes[&tab].as_tab().unwrap().tab.kind, ViewKind::Cef, "landed on the swap's target");
     assert_eq!(app.mirror.view_kind(&tab), ViewKind::Webview2);
@@ -4719,17 +4714,18 @@ fn spawn_with_jar(app: &mut App, purpose: SpawnPurpose, jar: NodeId) -> String {
     let t = app.alloc_node_id();
     let mut spawn =
         crate::tabs::TabSpawn::new(t.clone(), "https://t/".into(), ViewKind::Servo, egui::Vec2::ZERO, purpose, 1.0);
-    spawn.jar = JarChoice { jar: Some(jar), set: true };
+    spawn.jar = Some(jar);
     app.spawn_tab_async(spawn);
     t
 }
 
-/// Final review Minor 1 (Task 2 Minor 1), variant 1: a jar deleted while a new tab spawned with it is in flight,
-/// before the tab's `Create` commits. The Create writes none; the tab lands showing none too, not the dead jar.
+/// A jar deleted while a new tab spawned with it is in flight, before the tab's `Create` commits. The Create writes
+/// none (it resolves its Id fields); the tab lands naming the dead jar, which resolves to the Default.
 #[test]
-fn a_new_tab_whose_jar_is_deleted_before_its_create_lands_with_none() {
+fn a_new_tab_whose_jar_is_deleted_before_its_create_lands_on_the_default() {
     let path = temp_dir("jar-deleted-mid-spawn-1").join("session.mnf");
     let mut app = app_on(&path, 1);
+    let default = default_jar_id(&mut app);
     let work = add_jar(&mut app, "Work");
     assert!(app.save_session());
     let t = spawn_with_jar(&mut app, SpawnPurpose::New, work);
@@ -4737,18 +4733,16 @@ fn a_new_tab_whose_jar_is_deleted_before_its_create_lands_with_none() {
     assert!(app.save_session());
     assert_eq!(stored(&app, &t, field::JAR), FieldValue::Id(None), "created with none");
     let _peers = land_spawns(&mut app);
-    assert_eq!(app.mirror.jar_choice(&t).jar, None, "lands with none");
-    assert!(app.save_session());
-    assert_eq!(stored(&app, &t, field::JAR), FieldValue::Id(None));
+    assert_eq!(app.effective_jar(&t), Some((default, true)), "lands on the Default");
 }
 
-/// Final review Minor 1, variant 2: the tab's `Create` committed with the jar before it was deleted. The delete
-/// could not reach the tab (no mirror entry yet), so the landing clears it, and the
-/// document does not keep the dead jar.
+/// The tab's `Create` committed with the jar before it was deleted. The delete could not reach the tab (no mirror
+/// entry yet), so the edge dangles: the document keeps it and the tab resolves to the Default.
 #[test]
-fn a_new_tab_whose_jar_is_deleted_after_its_create_lands_with_none() {
+fn a_new_tab_whose_jar_is_deleted_after_its_create_dangles_to_the_default() {
     let path = temp_dir("jar-deleted-mid-spawn-2").join("session.mnf");
     let mut app = app_on(&path, 1);
+    let default = default_jar_id(&mut app);
     let work = add_jar(&mut app, "Work");
     assert!(app.save_session());
     let t = spawn_with_jar(&mut app, SpawnPurpose::Restore, work);
@@ -4757,13 +4751,13 @@ fn a_new_tab_whose_jar_is_deleted_after_its_create_lands_with_none() {
     app.close_node_and_save(&work.to_string());
     assert!(app.save_session());
     fail_spawns(&mut app);
-    assert_eq!(app.mirror.jar_choice(&t).jar, None, "the failed card lands with none");
+    assert_eq!(app.effective_jar(&t), Some((default, true)), "the failed card lands on the Default");
     assert!(app.save_session());
-    assert_eq!(stored(&app, &t, field::JAR), FieldValue::Id(None), "and the document drops the dead jar");
+    assert_eq!(stored(&app, &t, field::JAR), FieldValue::Id(Some(work)), "dangling, never rewritten");
 }
 
 /// Closing a jar leaves a saved tab and a tab mid-respawn (its mirror entry outlives the respawn, Ruling 9) naming it,
-/// and both resolve to the Default jar by the read rule (`resolved_jar`).
+/// and both resolve to the Default jar by the read rule (`resolve_jar`).
 #[test]
 fn closing_a_jar_leaves_saved_and_respawning_tabs_resolving_to_the_default_jar() {
     let path = temp_dir("jar-delete-doc").join("session.mnf");
@@ -4771,8 +4765,8 @@ fn closing_a_jar_leaves_saved_and_respawning_tabs_resolving_to_the_default_jar()
     let work = add_jar(&mut app, "Work");
     let asleep = add(&mut app, Kind::Tab, sleeping_tab("https://a/", ""));
     let (live, _peer) = live_tab(&mut app, ViewKind::Servo, "https://l/");
-    app.set_tab_jar(&asleep, Some(work));
-    app.set_tab_jar(&live, Some(work));
+    app.set_jar_edge(&asleep, Some(work));
+    app.set_jar_edge(&live, Some(work));
     assert!(app.save_session());
     app.handle_view_message(&live, ipc_protocol::ViewToHost::Crashed { reason: "boom".into() });
     assert!(app.spawns.spawning.contains_key(&live) && !app.nodes.contains_key(&live), "mid-respawn");
@@ -4780,54 +4774,54 @@ fn closing_a_jar_leaves_saved_and_respawning_tabs_resolving_to_the_default_jar()
     assert!(app.save_session());
     let default = Some((default_jar_id(&mut app), true));
     for t in [&asleep, &live] {
-        assert_eq!(stored(&app, t, field::JAR), FieldValue::Id(Some(work)), "no cascade writes");
-        assert_eq!(app.resolved_jar(&app.mirror.jar_choice(t)), default);
+        assert_eq!(stored(&app, t, field::JAR), FieldValue::Id(Some(work)), "nothing rewrites the edge");
+        assert_eq!(app.effective_jar(t), default);
     }
     let _peers = land_spawns(&mut app);
-    assert_eq!(app.resolved_jar(&app.mirror.jar_choice(&live)), default, "the respawn lands on the Default jar");
+    assert_eq!(app.effective_jar(&live), default, "the respawn lands on the Default jar");
 }
 
 // ---- 2b-5 Task 1: group, leaf and content fields in the mirror ---------------
 
-/// A group's default jar is the mirror's: `set_group_default_jar` and `clear_group_default_jar` write it through
-/// `edit_default_jar` and the save stores it; a remote change reaches the mirror and the jar new tabs in it start with.
+/// A group's jar edge is the mirror's: `set_jar_edge` writes it through `edit_field` and the save stores it; a remote
+/// change reaches the mirror and the jar its tabs use.
 #[test]
-fn a_group_default_jar_saves_and_a_remote_change_reaches_it() {
-    let path = temp_dir("default-jar-sync").join("session.mnf");
+fn a_groups_jar_edge_saves_and_a_remote_change_reaches_it() {
+    let path = temp_dir("group-jar-sync").join("session.mnf");
     let mut app = app_on(&path, 1);
     let (work, home) = (add_jar(&mut app, "Work"), add_jar(&mut app, "Home"));
     let g = add_group(&mut app, "G");
-    app.set_group_default_jar(&g, work);
-    assert_eq!(app.mirror.default_jar(&g), Some(work));
+    app.set_jar_edge(&g, Some(work));
+    assert_eq!(app.mirror.jar(&g), Some(work));
     assert!(app.save_session());
-    assert_eq!(stored(&app, &g, field::DEFAULT_JAR), FieldValue::Id(Some(work)));
-    app.clear_group_default_jar(&g);
+    assert_eq!(stored(&app, &g, field::JAR), FieldValue::Id(Some(work)));
+    app.set_jar_edge(&g, None);
     assert!(app.save_session());
-    assert_eq!(stored(&app, &g, field::DEFAULT_JAR), FieldValue::Id(None));
+    assert_eq!(stored(&app, &g, field::JAR), FieldValue::Id(None));
     let mut other = Journal::open(&path, ActorId(2)).unwrap();
-    remote_set(&mut other, &g, field::DEFAULT_JAR, FieldValue::Id(Some(home)));
+    remote_set(&mut other, &g, field::JAR, FieldValue::Id(Some(home)));
     assert!(app.save_session());
-    assert_eq!(app.mirror.default_jar(&g), Some(home));
-    assert_eq!(app.inherited_jar(Some(&g)), Some(home), "new tabs in it start in Home");
+    assert_eq!(app.mirror.jar(&g), Some(home));
+    assert_eq!(app.effective_jar(&g), Some((home, false)), "its tabs use Home");
 }
 
-/// Ruling 6: a default jar deleted on another device stays stored (dangling, it reads as the default jar) instead of
-/// being cleared by this device's next save.
+/// Ruling 6: a jar deleted on another device stays stored (dangling, it reads as the Default jar) instead of being
+/// cleared by this device's next save.
 #[test]
-fn a_remote_deleted_default_jar_stays_stored() {
-    let path = temp_dir("default-jar-dangling").join("session.mnf");
+fn a_remote_deleted_group_jar_stays_stored() {
+    let path = temp_dir("group-jar-dangling").join("session.mnf");
     let mut app = app_on(&path, 1);
     let work = add_jar(&mut app, "Work");
     let g = add_group(&mut app, "G");
-    app.set_group_default_jar(&g, work);
+    app.set_jar_edge(&g, Some(work));
     assert!(app.save_session());
     let mut other = Journal::open(&path, ActorId(2)).unwrap();
     other.begin().unwrap().commit(vec![OpBody::Delete { node: work }]).unwrap();
     assert!(app.save_session());
     assert!(!app.jar_defs().contains_key(&work), "the jar is gone here");
     assert!(app.save_session());
-    assert_eq!(stored(&app, &g, field::DEFAULT_JAR), FieldValue::Id(Some(work)), "not cleared");
-    assert_eq!(app.mirror.default_jar(&g), Some(work));
+    assert_eq!(stored(&app, &g, field::JAR), FieldValue::Id(Some(work)), "not cleared");
+    assert_eq!(app.mirror.jar(&g), Some(work));
 }
 
 /// Ruling 10: every way a node is made seeds its type in the mirror (`Mirror::ty`): placed here, landed from a spawn,
@@ -4898,20 +4892,20 @@ fn every_creation_path_seeds_the_node_type() {
 /// A node's `Create` resolves its Id fields (`create_ops`'s `valid`): a link to a node deleted meanwhile is written as
 /// none, and the mirror shows what the document holds, as after an edit (2b-5 Task 1 review).
 #[test]
-fn a_created_group_shows_the_default_jar_its_create_resolved() {
-    let path = temp_dir("default-jar-create").join("session.mnf");
+fn a_created_group_shows_the_jar_its_create_resolved() {
+    let path = temp_dir("group-jar-create").join("session.mnf");
     let mut app = app_on(&path, 1);
     let work = add_jar(&mut app, "Work");
     assert!(app.save_session());
     let g = add_group(&mut app, "G");
-    app.set_group_default_jar(&g, work);
+    app.set_jar_edge(&g, Some(work));
     let mut other = Journal::open(&path, ActorId(2)).unwrap();
     other.begin().unwrap().commit(vec![OpBody::Delete { node: work }]).unwrap();
     assert!(app.save_session());
-    assert_eq!(stored(&app, &g, field::DEFAULT_JAR), FieldValue::Id(None), "created without the deleted jar");
-    assert_eq!(app.mirror.default_jar(&g), None, "the mirror shows what the document holds");
+    assert_eq!(stored(&app, &g, field::JAR), FieldValue::Id(None), "created without the deleted jar");
+    assert_eq!(app.mirror.jar(&g), None, "the mirror shows what the document holds");
     assert!(app.save_session());
-    assert_eq!(stored(&app, &g, field::DEFAULT_JAR), FieldValue::Id(None));
+    assert_eq!(stored(&app, &g, field::JAR), FieldValue::Id(None));
 }
 
 /// The same for a created node's `parent`: an opener deleted elsewhere before the first save.
@@ -5831,7 +5825,7 @@ fn an_imported_default_jar_is_the_running_one() {
     let doc = JsonDoc {
         nodes: vec![
             json_node("a", Kind::Jar, serde_json::json!({ "name": "Default", "is_default": true })),
-            json_node("t", Kind::Tab, serde_json::json!({ "url": "https://a/", "jar": "a", "jar_set": true })),
+            json_node("t", Kind::Tab, serde_json::json!({ "url": "https://a/", "jar": "a" })),
         ],
         local: None,
     };
@@ -5843,7 +5837,7 @@ fn an_imported_default_jar_is_the_running_one() {
         .find(|(_, n)| n.runtime.as_unloaded().is_some())
         .map(|(id, _)| id.clone())
         .expect("tab imported");
-    assert_eq!(app.mirror.jar_choice(&tab).jar, Some(running), "an edge to the file's Default names the running one");
+    assert_eq!(app.mirror.jar(&tab), Some(running), "an edge to the file's Default names the running one");
 }
 
 /// Replacing a session keeps the running Default; the file's other jars come with it, and tabs naming its Default
@@ -5858,8 +5852,8 @@ fn a_replaced_sessions_tabs_use_the_running_default() {
         nodes: vec![
             json_node("d", Kind::Jar, serde_json::json!({ "name": "Default", "is_default": true })),
             json_node("w", Kind::Jar, serde_json::json!({ "name": "Work" })),
-            json_node("t", Kind::Tab, serde_json::json!({ "url": "https://a/", "jar": "d", "jar_set": true })),
-            json_node("u", Kind::Tab, serde_json::json!({ "url": "https://b/", "jar": "w", "jar_set": true })),
+            json_node("t", Kind::Tab, serde_json::json!({ "url": "https://a/", "jar": "d" })),
+            json_node("u", Kind::Tab, serde_json::json!({ "url": "https://b/", "jar": "w" })),
         ],
         local: None,
     };
@@ -5868,7 +5862,7 @@ fn a_replaced_sessions_tabs_use_the_running_default() {
     let work = *app.jar_defs().iter().find(|(_, d)| d.name == "Work").unwrap().0;
     let jar_of_url = |url: &str| {
         let id = app.nodes.iter().find(|(_, n)| n.runtime.as_unloaded().is_some_and(|u| u.url == url)).unwrap().0;
-        app.mirror.jar_choice(id).jar
+        app.mirror.jar(id)
     };
     assert_eq!(jar_of_url("https://a/"), Some(running), "the file's Default is the running one");
     assert_eq!(jar_of_url("https://b/"), Some(work), "a named jar comes with the session");

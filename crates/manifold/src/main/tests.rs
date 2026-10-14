@@ -255,16 +255,17 @@ fn a_pull_with_no_entry_or_a_deleted_jar_is_dropped() {
 }
 
 #[test]
-fn resolved_jar_falls_back_to_default_and_flags_a_missing_jar() {
+fn resolve_jar_falls_back_to_default_and_flags_a_missing_jar() {
     let mut app = App::default();
     let work = add_jar(&mut app, "Work");
     let gone = store::model::NodeId { actor: store::model::ActorId(5), counter: 5 };
-    let pick = |jar| jar::JarChoice { jar, set: true };
-    assert_eq!(app.resolved_jar(&pick(None)), None, "no Default yet");
+    let pick = |jar| app.resolve_jar(jar, None);
+    assert_eq!(pick(None), None, "no Default yet");
     let default = default_jar_id(&mut app);
-    assert_eq!(app.resolved_jar(&pick(None)), Some((default, false)));
-    assert_eq!(app.resolved_jar(&pick(Some(work))), Some((work, false)));
-    assert_eq!(app.resolved_jar(&pick(Some(gone))), Some((default, true)));
+    let pick = |jar| app.resolve_jar(jar, None);
+    assert_eq!(pick(None), Some((default, false)));
+    assert_eq!(pick(Some(work)), Some((work, false)));
+    assert_eq!(pick(Some(gone)), Some((default, true)));
 }
 
 #[test]
@@ -458,7 +459,7 @@ fn a_sleeping_tab_never_needs_a_switch_and_a_deleted_jar_switches_to_default() {
     // A stale entry from before it slept, on a key other than the one it now resolves to.
     let default = default_jar_id(&mut app);
     app.cookies.jar_tabs.insert(t.clone(), (default, jar::TabCookies::default()));
-    app.set_tab_jar(&t, Some(work));
+    app.set_jar_edge(&t, Some(work));
     assert!(!app.will_switch(&t), "asleep: it spawns into the new jar");
     app.cookies.jar_reseed.insert(t.clone());
     assert!(!app.will_switch(&t), "asleep: a reseed spawns into the cleared jar anyway");
@@ -466,7 +467,7 @@ fn a_sleeping_tab_never_needs_a_switch_and_a_deleted_jar_switches_to_default() {
     // A host spawned with Work whose jar is then deleted must head for Default.
     app.cookies.jar_tabs.insert(t.clone(), (work, jar::TabCookies::default()));
     app.remove_remotely_deleted(&work.to_string());
-    assert_eq!(app.resolved_jar(&app.tab_jar(&t).unwrap()).map(|r| r.0), Some(default));
+    assert_eq!(app.effective_jar(&t).map(|r| r.0), Some(default));
 }
 
 #[test]

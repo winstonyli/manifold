@@ -40,6 +40,9 @@ pub(crate) enum EdgeKind {
     Opened,
     /// A Link node: drawn dashed, and never a layout spring.
     Link,
+    /// A tab's or group's `jar` edge to a jar card on the same level: drawn dashed and faint, never clicked
+    /// (`link` is `None`) and never a spring.
+    Jar,
 }
 
 /// One edge on the current level, in world space.
@@ -119,7 +122,7 @@ impl App {
     }
 
     /// The current level's edges: each stored node's `parent` link, then each Link node, whose two ends are both on
-    /// this level. Between stored nodes an edge runs between the facing side midpoints of the two cards
+    /// this level, then each `jar` edge whose two ends are. Between stored nodes an edge runs between the facing side midpoints of the two cards
     /// (`link_gestures::facing_sides`), not their centres. Link lines come in `link_ids` order, so the last of two on one pair is the greater id
     /// (`nearest_link`'s tie rule).
     pub(crate) fn level_edges(&self) -> Vec<LevelEdge> {
@@ -184,7 +187,24 @@ impl App {
                 link: Some(link.to_string()),
             })
         });
-        opened.chain(links).collect()
+        // A jar edge shows while its source and its jar are both live cards at this level. One reaching a jar in an
+        // enclosing group, or a group's edge to a jar inside it, has no line here: its far end is on another level.
+        let jars = self.nodes.keys().filter(|id| self.in_level(id)).filter_map(|id| {
+            let jar = self.mirror.jar(id)?.to_string();
+            self.nodes.get(&jar).filter(|_| self.in_level(&jar))?;
+            let (from, to) = crate::link_gestures::facing_ends(rect_of(id), rect_of(&jar));
+            Some(LevelEdge {
+                from,
+                to,
+                from_id: id.clone(),
+                to_id: jar,
+                curve: EdgeCurve::Bow,
+                highlight: false,
+                kind: EdgeKind::Jar,
+                link: None,
+            })
+        });
+        opened.chain(links).chain(jars).collect()
     }
 
     /// Lays out the current level with its source's own strategy: the
@@ -314,5 +334,18 @@ mod tests {
             ("p", "c", None),
             "an opened-from line names its ends and no Link node"
         );
+    }
+
+    #[test]
+    fn a_jar_edge_draws_only_when_both_ends_are_on_this_level() {
+        use crate::session_sync::tests::{add, add_jar, sleeping_tab};
+        let mut app = App::default();
+        let tab = add(&mut app, Kind::Tab, sleeping_tab("https://a/", "A"));
+        let here = add_jar(&mut app, "Here");
+        app.set_jar_edge(&tab, Some(here));
+        let jar_lines = |app: &App| app.level_edges().into_iter().filter(|e| e.kind == EdgeKind::Jar).count();
+        assert_eq!(jar_lines(&app), 1);
+        app.edit_group(&here.to_string(), Some("elsewhere".into()));
+        assert_eq!(jar_lines(&app), 0, "the jar is on another level");
     }
 }

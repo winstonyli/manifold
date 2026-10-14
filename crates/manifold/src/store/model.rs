@@ -150,8 +150,8 @@ pub enum Kind {
 pub(crate) const TYPES: [(Kind, &str, &[u32]); 9] = {
     use field::*;
     [
-        (Kind::Tab, TYPE_TAB, &[POS, COLOR, PARENT, URL, VIEW_KIND, PINNED, JAR, JAR_SET, NAME]),
-        (Kind::Group, TYPE_GROUP, &[POS, COLOR, NAME, DEFAULT_JAR]),
+        (Kind::Tab, TYPE_TAB, &[POS, COLOR, PARENT, URL, VIEW_KIND, PINNED, JAR, NAME]),
+        (Kind::Group, TYPE_GROUP, &[POS, COLOR, NAME, JAR]),
         (Kind::Note, TYPE_NOTE, &[POS, COLOR, PARENT, URL, TEXT, NAME]),
         (Kind::Image, TYPE_IMAGE, &[POS, COLOR, PARENT, URL, PATH, NAME]),
         (Kind::Pdf, TYPE_PDF, &[POS, COLOR, PARENT, URL, PATH, NAME]),
@@ -227,12 +227,9 @@ pub mod field {
     pub const PATH: u32 = 11;
     /// A Json node's view overrides (`json_view::JsonView`), compact JSON; "" when none.
     pub const VIEW: u32 = 14;
-    /// A tab's cookie jar: a `Kind::Jar` node, absent for the default jar.
+    /// The `jar` edge of a tab or group: the `Kind::Jar` node it uses; absent to inherit (`App::effective_jar`).
+    /// Numbers 16 and 17 were a tab's `jar_set` and a group's `default_jar` (`RESERVED`).
     pub const JAR: u32 = 15;
-    /// The tab's jar was picked by hand, so group-default cascades skip it.
-    pub const JAR_SET: u32 = 16;
-    /// A group's jar for new tabs (and unset tabs, by cascade).
-    pub const DEFAULT_JAR: u32 = 17;
     /// A jar with no file: dropped at quit.
     pub const EPHEMERAL: u32 = 18;
     /// A node's MIME type, written by `Create`.
@@ -245,7 +242,7 @@ pub mod field {
     pub const IS_DEFAULT: u32 = 22;
 }
 
-pub static FIELDS: [FieldDef; 19] = [
+pub static FIELDS: [FieldDef; 17] = [
     FieldDef { no: field::POS, name: "pos", ty: FieldType::Pos },
     FieldDef { no: field::COLOR, name: "color", ty: FieldType::Color },
     FieldDef { no: field::GROUP, name: "group", ty: FieldType::Id },
@@ -260,8 +257,6 @@ pub static FIELDS: [FieldDef; 19] = [
     FieldDef { no: field::PATH, name: "path", ty: FieldType::Str },
     FieldDef { no: field::VIEW, name: "view", ty: FieldType::Str },
     FieldDef { no: field::JAR, name: "jar", ty: FieldType::Id },
-    FieldDef { no: field::JAR_SET, name: "jar_set", ty: FieldType::Bool },
-    FieldDef { no: field::DEFAULT_JAR, name: "default_jar", ty: FieldType::Id },
     FieldDef { no: field::EPHEMERAL, name: "ephemeral", ty: FieldType::Bool },
     FieldDef { no: field::TYPE, name: "type", ty: FieldType::Str },
     FieldDef { no: field::FROM, name: "from", ty: FieldType::Id },
@@ -269,9 +264,10 @@ pub static FIELDS: [FieldDef; 19] = [
     FieldDef { no: field::IS_DEFAULT, name: "is_default", ty: FieldType::Bool },
 ];
 
-/// Retired field numbers, never to be reused (checked by a test).
+/// Retired: a tab's `jar_set` and a group's `default_jar`, replaced by the `jar` edge (jars-as-cards spec). Never
+/// reused; old documents keep them raw (checked by a test).
 #[cfg(test)]
-pub const RESERVED: [u32; 0] = [];
+pub const RESERVED: [u32; 2] = [16, 17];
 
 pub fn field_def(no: u32) -> Option<&'static FieldDef> {
     FIELDS.iter().find(|f| f.no == no)
@@ -612,15 +608,13 @@ mod tests {
         assert_eq!(view.ty, FieldType::Str);
         for (no, name, ty) in [
             (field::JAR, "jar", FieldType::Id),
-            (field::JAR_SET, "jar_set", FieldType::Bool),
-            (field::DEFAULT_JAR, "default_jar", FieldType::Id),
             (field::EPHEMERAL, "ephemeral", FieldType::Bool),
             (field::IS_DEFAULT, "is_default", FieldType::Bool),
         ] {
             let def = field_by_name(name).unwrap();
             assert_eq!((def.no, def.ty), (no, ty), "{name}");
         }
-        assert_eq!((field::JAR, field::JAR_SET, field::DEFAULT_JAR, field::EPHEMERAL), (15, 16, 17, 18));
+        assert_eq!((field::JAR, field::EPHEMERAL), (15, 18));
         let ty = field_by_name("type").unwrap();
         assert_eq!((ty.no, ty.ty), (19, FieldType::Str));
     }
@@ -638,8 +632,6 @@ mod tests {
             (field::PINNED, FieldValue::Bool(true)),
             (field::VIEW_KIND, FieldValue::ViewCode(4)),
             (field::JAR, FieldValue::Id(Some(id))),
-            (field::JAR_SET, FieldValue::Bool(true)),
-            (field::DEFAULT_JAR, FieldValue::Id(Some(id))),
             (field::EPHEMERAL, FieldValue::Bool(true)),
             (field::IS_DEFAULT, FieldValue::Bool(true)),
         ];

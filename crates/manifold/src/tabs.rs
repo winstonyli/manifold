@@ -2,6 +2,7 @@
 //! (`jar_pull`), landing a finished spawn (`spawn_result`) and sleeping (`sleep`) live in child modules.
 
 use super::*;
+use crate::store::model::NodeId;
 use ipc_protocol::PageState;
 use sleep_state::{PendingSleep, SavedScroll, SleepWhy, Verdict};
 
@@ -178,9 +179,9 @@ pub(crate) struct TabSpawn {
     pub(crate) kind: ViewKind,
     pub(crate) parent: Option<String>,
     pub(crate) group: Option<String>,
-    /// The jar a new tab starts with, which it lands with (`Carried::jar`). A tab the mirror already holds (a
-    /// respawn or wake) uses the mirror's instead, which a cascade may change while it is in flight.
-    pub(crate) jar: jar::JarChoice,
+    /// The `jar` edge a new tab starts with, which it lands with (`Carried::jar`); `None` inherits. A tab the mirror
+    /// already holds (a respawn or wake) uses the mirror's instead, which an edit may change while it is in flight.
+    pub(crate) jar: Option<NodeId>,
     /// Where a new tab lands: its layout entry and its document pos start there (2b-4 Ruling 3). A tab already
     /// placed (a respawn, a wake) keeps both (`App::layout` outlives the respawn, `Mirror::seed` never overwrites).
     pub(crate) pos: egui::Vec2,
@@ -343,16 +344,16 @@ impl App {
         let shared_url = Some(self.mirror.url(&spawn.id)).filter(|url| !url.is_empty());
         let has = self.mirror.has(&spawn.id);
         let pos = if has { self.mirror.pos(&spawn.id) } else { Some(spawn.pos) };
-        let choice = if has { self.mirror.jar_choice(&spawn.id) } else { spawn.jar };
+        let own = if has { self.mirror.jar(&spawn.id) } else { spawn.jar };
         let view_kind = if has { self.mirror.view_code(&spawn.id) } else { session_sync::view_code(spawn.kind) };
         let url = shared_url.unwrap_or(&spawn.url);
-        let snapshot = session_sync::spawn_snapshot(&spawn, pos, url, view_kind, choice);
+        let snapshot = session_sync::spawn_snapshot(&spawn, pos, url, view_kind, own);
         self.spawns.spawning.insert(spawn.id.clone(), snapshot);
         // A new tab is created from that snapshot by the next save (Ruling 3); a respawn's id is already stored.
         self.queue_create(&spawn.id);
         let generation = self.spawns.session_generation;
         // Resolved and loaded before the test early return, so tests see the load happen.
-        let jar = self.resolved_jar(&choice).map(|(jar, _)| jar);
+        let jar = self.resolve_jar(own, spawn.group.as_deref()).map(|(jar, _)| jar);
         if let Some(jar) = jar {
             self.ensure_jar_loaded(jar);
         }
@@ -444,7 +445,7 @@ impl App {
         }) else {
             return;
         };
-        let jar = self.tab_jar(id);
+        let jar = self.mirror.jar(id);
         self.spawn_new_tab_with_kind(parent, group, &url, kind, SpawnPurpose::New, jar);
     }
 
@@ -464,7 +465,7 @@ impl App {
     pub(crate) fn spawn_tab_from(&mut self, opener: &str, url: &str) -> String {
         let parent = Some(opener.to_string());
         let group = self.group_of(&parent);
-        let (kind, jar) = (self.settings.default_starting_view_kind, self.tab_jar(opener));
+        let (kind, jar) = (self.settings.default_starting_view_kind, self.mirror.jar(opener));
         self.spawn_new_tab_with_kind(parent, group, url, kind, SpawnPurpose::New, jar)
     }
 
@@ -485,7 +486,7 @@ impl App {
         url: &str,
         kind: ViewKind,
         purpose: SpawnPurpose,
-        jar: Option<crate::jar::JarChoice>,
+        jar: Option<NodeId>,
     ) -> String {
         let id = self.alloc_node_id();
         // `parent`'s own position only if it actually shares `group` --
@@ -504,7 +505,6 @@ impl App {
             .map_or(egui::Vec2::ZERO, |id| self.layout_pos(id));
         let pos = parent_pos + graph_layout::spawn_jitter(&id);
         let spawn = TabSpawn::new(id.clone(), url.to_string(), kind, pos, purpose, self.settings.zoom_factor);
-        let jar = jar.unwrap_or_else(|| self.new_tab_jar(group.as_deref()));
         self.spawn_tab_async(TabSpawn { parent, group, jar, ..spawn });
         id
     }
@@ -600,7 +600,7 @@ impl App {
             return;
         };
         let group = self.group_of(&Some(focused_id.clone()));
-        let jar = self.tab_jar(&focused_id);
+        let jar = self.mirror.jar(&focused_id);
         self.spawn_new_tab_with_kind(Some(focused_id), group, &url, kind, SpawnPurpose::Split, jar);
     }
 
@@ -754,7 +754,7 @@ impl App {
     pub(crate) fn will_switch(&self, id: &str) -> bool {
         let Some(tab) = self.nodes.get(id).and_then(|n| n.as_tab()) else { return false };
         let Some((had, _)) = self.cookies.jar_tabs.get(id) else { return false };
-        let Some((now, _)) = self.resolved_jar(&self.mirror.jar_choice(id)) else { return false };
+        let Some((now, _)) = self.effective_jar(id) else { return false };
         tab.tab.kind.desc().jar && (*had != now || self.cookies.jar_reseed.contains(id))
     }
 
@@ -773,7 +773,7 @@ impl App {
                 let had = self.cookies.jar_tabs.get(v.id).map(|(k, _)| *k);
                 let focused = self.focused.as_deref() == Some(v.id);
                 let reseed = self.cookies.jar_reseed.contains(v.id);
-                let Some((now, _)) = self.resolved_jar(&self.mirror.jar_choice(v.id)) else { return false };
+                let Some((now, _)) = self.effective_jar(v.id) else { return false };
                 sleep_state::jar_switch(had, now, reseed, v.busy(), focused) == sleep_state::JarSwitch::SleepNow
             })
             .map(|v| v.id.to_string())
@@ -884,8 +884,7 @@ impl App {
         let id = self.alloc_node_id();
         let (kind, zoom) = (self.settings.default_starting_view_kind, self.settings.zoom_factor);
         let spawn = TabSpawn::new(id.clone(), url.to_string(), kind, pos, SpawnPurpose::New, zoom);
-        let jar = self.new_tab_jar(group.as_deref());
-        self.spawn_tab_async(TabSpawn { group, parent, jar, ..spawn });
+        self.spawn_tab_async(TabSpawn { group, parent, ..spawn });
         id
     }
 

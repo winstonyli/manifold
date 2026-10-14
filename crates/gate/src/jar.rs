@@ -542,7 +542,6 @@ impl Probe {
         let mut n = json!({"id": id, "type": TAB, "url": format!("{}{path}", self.base), "view_kind": "webview2", "pos": [x, 0.0]});
         if let Some(j) = jar {
             n["jar"] = j.into();
-            n["jar_set"] = true.into();
         }
         n
     }

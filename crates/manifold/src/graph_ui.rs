@@ -1620,6 +1620,7 @@ impl App {
                     };
                     egui::Stroke::new(width * inv_zoom, ACCENT)
                 }
+                EdgeKind::Jar => egui::Stroke::new(1.0 * inv_zoom, ui.visuals().weak_text_color().gamma_multiply(0.6)),
                 EdgeKind::Opened => egui::Stroke::new(
                     2.0 * inv_zoom,
                     if edge.highlight { ACCENT } else { ui.visuals().weak_text_color() },
@@ -1627,7 +1628,7 @@ impl App {
             };
             match edge.curve {
                 EdgeCurve::Bow => {
-                    let dash = (edge.kind == EdgeKind::Link).then_some(inv_zoom);
+                    let dash = matches!(edge.kind, EdgeKind::Link | EdgeKind::Jar).then_some(inv_zoom);
                     crate::link_gestures::paint_bow(ui.painter(), edge.from, edge.to, stroke, dash);
                 }
                 EdgeCurve::Horizontal => {

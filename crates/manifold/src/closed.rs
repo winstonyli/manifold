@@ -545,4 +545,30 @@ mod tests {
         let out = members_under(a, &[a, b, c], group_of, |n| n.counter < 3);
         assert_eq!(out, [b, c], "b and c, once each");
     }
+
+    #[test]
+    fn reopening_a_group_points_its_tab_at_the_reopened_jar_and_keeps_an_outside_one() {
+        use crate::session_sync::tests::{add, add_group, add_jar, sleeping_tab};
+        let mut app = App::default();
+        app.ensure_default_jar();
+        let group = add_group(&mut app, "G");
+        let at = crate::fetched::Placement { group: Some(group.clone()), pos: egui::vec2(40.0, 40.0) };
+        let inside = app.create_jar("In", at);
+        let outside = add_jar(&mut app, "Out");
+        let tab = add(&mut app, Kind::Tab, sleeping_tab("https://a/", "A"));
+        let other = add(&mut app, Kind::Tab, sleeping_tab("https://b/", "B"));
+        for t in [&tab, &other] {
+            app.edit_group(t, Some(group.clone()));
+        }
+        app.set_jar_edge(&tab, Some(inside));
+        app.set_jar_edge(&other, Some(outside));
+        app.close_node(&group);
+        let entry = app.closed.pop().unwrap();
+        app.reopen_closed(entry);
+        let by_url = |app: &App, url: &str| app.nodes.keys().find(|id| app.mirror.url(id) == url).cloned().unwrap();
+        let new_inside = *app.jar_defs().iter().find(|(_, d)| d.name == "In").unwrap().0;
+        assert_ne!(new_inside, inside);
+        assert_eq!(app.mirror.jar(&by_url(&app, "https://a/")), Some(new_inside), "follows the reopened jar");
+        assert_eq!(app.mirror.jar(&by_url(&app, "https://b/")), Some(outside), "an outside jar keeps its id");
+    }
 }

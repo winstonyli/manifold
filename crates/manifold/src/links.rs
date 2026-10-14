@@ -3,7 +3,7 @@
 
 use std::collections::HashSet;
 
-use crate::caps::{Storage, LINK, OPENED_FROM};
+use crate::caps::{Scope, Storage, LINK, OPENED_FROM};
 use crate::link_gestures::{DragEnd, LinkRetarget};
 use crate::session_sync::link_id;
 use crate::store::model::{field, FieldValue, NodeId};
@@ -51,6 +51,8 @@ pub(crate) enum ConnectError {
     NotLive,
     /// The ends sit in different groups.
     DifferentLevel,
+    /// The target is outside the edge's reach (`Scope`): for `jar`, not at the source's level or above it.
+    OutOfScope,
     /// An acyclic edge would close a loop.
     Cycle,
     /// The ends are already joined by this edge.
@@ -114,19 +116,26 @@ impl App {
         if from == to || !crate::caps::edges().can_connect(edge, self.mirror.ty(from), self.mirror.ty(to)) {
             return Err(ConnectError::NotAllowed);
         }
-        if self.mirror.group(from) != self.mirror.group(to) {
-            return Err(ConnectError::DifferentLevel);
+        if !self.in_scope(row.scope(), from, to) {
+            return Err(match row.scope() {
+                Scope::SameLevel => ConnectError::DifferentLevel,
+                Scope::SameLevelOrAncestor => ConnectError::OutOfScope,
+            });
         }
         if row.is_acyclic() && self.would_create_cycle(from, to) {
             return Err(ConnectError::Cycle);
         }
         let exists = match row.storage() {
+            // `parent` lives in the mirror's links, not its field map.
             Storage::Field(field::PARENT) => self.mirror.parent(from) == Some(to),
+            Storage::Field(no) => {
+                to.parse::<NodeId>().is_ok_and(|to| self.mirror.get(from, no) == FieldValue::Id(Some(to)))
+            }
             Storage::Node(_) => match linked {
                 Some(linked) => to.parse::<NodeId>().is_ok_and(|to| linked.contains(&to)),
                 None => self.link_between(from, to).is_some(),
             },
-            _ => return Err(ConnectError::NotAllowed),
+            Storage::Tree => return Err(ConnectError::NotAllowed),
         };
         if exists {
             return Err(ConnectError::Exists);
@@ -134,11 +143,13 @@ impl App {
         Ok(())
     }
 
-    /// Draws an `edge` edge from `from` to `to`: a parent link, or a Link node, as the edge's table row stores it.
+    /// Draws an `edge` edge from `from` to `to`: a parent link, a field, or a Link node, as the edge's table row
+    /// stores it.
     pub(crate) fn connect(&mut self, edge: &str, from: &str, to: &str) -> Result<(), ConnectError> {
         self.check_connect(edge, from, to, None)?;
         match crate::caps::edges().row(edge).map(|r| r.storage()) {
             Some(Storage::Field(field::PARENT)) => self.edit_parent(from, Some(to.to_string())),
+            Some(Storage::Field(no)) => self.edit_field(from, no, FieldValue::Id(to.parse().ok())),
             Some(Storage::Node(_)) => {
                 self.create_link(from, to);
             }
@@ -155,6 +166,11 @@ impl App {
                     self.edit_parent(from, None);
                 }
             }
+            Some(Storage::Field(no)) => {
+                if to.parse::<NodeId>().is_ok_and(|to| self.mirror.get(from, no) == FieldValue::Id(Some(to))) {
+                    self.edit_field(from, no, FieldValue::Id(None));
+                }
+            }
             Some(Storage::Node(_)) => {
                 if let Some(link) = self.link_between(from, to) {
                     self.delete_link(&link);
@@ -162,6 +178,37 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    /// `level` and every group enclosing it, out to the top level (`None`), nearest first. Borrowed and
+    /// allocation-free: `effective_jar` runs it per card per frame. Bounded so a cycle in bad data ends.
+    pub(crate) fn levels_from<'a>(&'a self, level: Option<&'a str>) -> impl Iterator<Item = Option<&'a str>> + 'a {
+        std::iter::successors(Some(level), move |at| at.map(|g| self.mirror.group(g))).take(self.nodes.len() + 2)
+    }
+
+    /// The level an edge from `id` reaches out from (spec "Scope", decision 2026-10-14): a group's own contents,
+    /// so its edge may name a card inside it; any other card's group.
+    pub(crate) fn reach_origin<'a>(&'a self, id: &'a str) -> Option<&'a str> {
+        if self.is_container(id) {
+            Some(id)
+        } else {
+            self.mirror.group(id)
+        }
+    }
+
+    /// Whether `to` is in reach of `from` under `scope`. `SameLevel`: both in one group. `SameLevelOrAncestor`:
+    /// `to` sits at `from`'s `reach_origin` or in a group enclosing it.
+    pub(crate) fn in_scope(&self, scope: Scope, from: &str, to: &str) -> bool {
+        let at = self.mirror.group(to);
+        match scope {
+            Scope::SameLevel => self.mirror.group(from) == at,
+            Scope::SameLevelOrAncestor => self.levels_from(self.reach_origin(from)).any(|level| level == at),
+        }
+    }
+
+    /// Whether `node` is `root` or sits anywhere inside it.
+    pub(crate) fn within(&self, node: &str, root: &str) -> bool {
+        node == root || self.levels_from(self.mirror.group(node)).any(|level| level == Some(root))
     }
 
     /// The Link node joining `a` and `b`, in either order.
@@ -209,6 +256,27 @@ impl App {
             edges.push(EdgeRef { edge: OPENED_FROM, other: child.to_string(), link: None, outgoing: false });
         }
         let me = node.parse::<NodeId>().ok();
+        // Field edges other than `parent` (the `jar` edge): the one a source names, and the sources naming this node.
+        let field_rows: Vec<(&'static str, u32)> = crate::caps::edges()
+            .user_creatable()
+            .filter_map(|r| match r.storage() {
+                Storage::Field(no) if no != field::PARENT => Some((r.id(), no)),
+                _ => None,
+            })
+            .collect();
+        for (edge, no) in field_rows {
+            if let FieldValue::Id(Some(to)) = self.mirror.get(node, no) {
+                let other = to.to_string();
+                if self.shown_with(node, &other) {
+                    edges.push(EdgeRef { edge, other, link: None, outgoing: true });
+                }
+            }
+            for other in self.nodes.keys().filter(|o| self.shown_with(node, o)) {
+                if me.is_some() && self.mirror.get(other, no) == FieldValue::Id(me) {
+                    edges.push(EdgeRef { edge, other: other.clone(), link: None, outgoing: false });
+                }
+            }
+        }
         for link in self.links_naming(node) {
             let (from, to) = self.mirror.link_ends(&link);
             let outgoing = from == me;

@@ -197,34 +197,27 @@ fn node_menu_config_matches_each_kinds_menu() {
         "Open as Tab | Copy URL | Copy Text | Rename | Duplicate | Pin | Color... | --- | Delete"
     );
     // Jars: tabs and groups have a Jar row ahead of the colours; the jar list and its actions are the Jar page.
-    let rows = vec![JarRow { id: None, name: built_in(), color: None, ticked: true, count: None }];
-    let jars = |can_follow, will_switch, has_default| {
-        Some(JarMenu { rows: rows.clone(), can_follow, will_switch, has_default })
-    };
+    let rows = vec![JarRow { id: None, name: built_in(), color: None, ticked: true }];
+    let jars = |will_switch| Some(JarMenu { rows: rows.clone(), will_switch });
     let tab = |j| NodeMenuView { jars: j, ..view_of(loaded_tab()) };
     assert_eq!(
-        menu_of(&tab(jars(false, false, false)), false).2,
+        menu_of(&tab(jars(false)), false).2,
         "Duplicate | Sleep | Copy URL | Fit Subtree | Jar... | Rename | Pin | Color... | --- | Close"
     );
     assert_eq!(
-        menu_of(&tab(jars(true, true, false)), false).2,
+        menu_of(&tab(jars(true)), false).2,
         "Duplicate | Sleep | Copy URL | Fit Subtree | Jar... | Rename | Pin | Color... | --- | Close"
     );
-    let unloaded = NodeMenuView { jars: jars(true, true, false), ..view_of(sleeping_tab()) };
+    let unloaded = NodeMenuView { jars: jars(true), ..view_of(sleeping_tab()) };
     assert_eq!(
         menu_of(&unloaded, false).2,
         "Open | Duplicate | Copy URL | Jar... | Rename | Pin | Color... | --- | Close"
     );
-    let group = |has_default| NodeMenuView { jars: jars(false, false, has_default), ..view_of(plain(TYPE_GROUP)) };
+    let group = NodeMenuView { jars: jars(false), ..view_of(plain(TYPE_GROUP)) };
     assert_eq!(
-        menu_of(&group(false), false).2,
-        "Sleep Tabs | Default jar... | Rename | Duplicate | Pin | Color... | --- | Dissolve Group | Close Group and Contents | \
+        menu_of(&group, false).2,
+        "Sleep Tabs | Jar... | Rename | Duplicate | Pin | Color... | --- | Dissolve Group | Close Group and Contents | \
              Export Group..."
-    );
-    assert_eq!(
-        menu_of(&group(true), false).2,
-        "Sleep Tabs | Default jar... | Rename | Duplicate | Pin | Color... | --- | Dissolve Group | \
-             Close Group and Contents | Export Group..."
     );
     let page = |view: &NodeMenuView| -> Vec<&'static str> {
         node_menu_config(view, false)
@@ -237,9 +230,9 @@ fn node_menu_config_matches_each_kinds_menu() {
             })
             .collect()
     };
-    assert_eq!(page(&tab(jars(true, true, false))), ["<jars>", "New Jar...", "Follow Group's Jar", "Switch Jar Now"]);
-    assert_eq!(page(&unloaded), ["<jars>", "New Jar...", "Follow Group's Jar"]);
-    assert_eq!(page(&group(true)), ["<jars>", "Clear Default Jar"]);
+    assert_eq!(page(&tab(jars(true))), ["<jars>", "New Jar...", "Switch Jar Now"]);
+    assert_eq!(page(&unloaded), ["<jars>", "New Jar..."]);
+    assert_eq!(page(&group), ["<jars>", "New Jar..."]);
     assert!(page(&view_of(loaded_tab())).is_empty(), "no jar menu, no page");
     // Links (links plan, Task 6): their section follows the colours, on every kind.
     let row = EdgeMenuRow { action: NodeAction::Connect(crate::caps::LINK), label: "Link to…".into(), hover: None };
@@ -332,7 +325,7 @@ fn new_jar_names_a_jar_and_picks_it_for_the_tab() {
     app.apply_node_action(&ctx, &t, NodeAction::NewJar("  Work ".into()));
     assert_eq!(app.naming_jar, None);
     let work = app.jar_named("Work").expect("created, trimmed");
-    assert_eq!(app.tab_jar(&t).unwrap(), crate::jar::JarChoice { jar: Some(work), set: true });
+    assert_eq!(app.mirror.jar(&t), Some(work));
     app.apply_node_action(&ctx, &t, NodeAction::StartNewJar);
     app.apply_node_action(&ctx, &t, NodeAction::NewJar("   ".into()));
     assert_eq!(app.jar_defs().len(), 1, "an empty name creates nothing");
@@ -351,21 +344,25 @@ fn the_tab_menu_lists_default_then_named_jars_with_a_tick() {
         crate::store::model::Kind::Tab,
         crate::session_sync::tests::sleeping_tab("https://a/", "A"),
     );
-    app.set_tab_jar(&t, Some(work));
+    app.set_jar_edge(&t, Some(work));
     let shown = |app: &App| {
         let rows = app.node_menu_view(&t).unwrap().jars.unwrap().rows;
         rows.into_iter().map(|r| (r.name, r.ticked)).collect::<Vec<_>>()
     };
     let plain = |name: &str| JarLabel { name: name.into(), marker: None };
-    assert_eq!(shown(&app), [(built_in(), false), (plain("Work"), true)]);
+    let inherit = plain("Inherit");
+    assert_eq!(shown(&app), [(inherit.clone(), false), (built_in(), false), (plain("Work"), true)]);
     // A user jar named "Default" is listed after the marked built-in one, with a fragment to tell them apart.
     let user = add_jar(&mut app, "Default");
     let user_label = app.jar_label(user);
     assert!(user_label.marker.is_some());
-    assert_eq!(shown(&app), [(built_in(), false), (plain("Work"), true), (user_label, false)]);
+    assert_eq!(
+        shown(&app),
+        [(inherit.clone(), false), (built_in(), false), (plain("Work"), true), (user_label, false)]
+    );
     app.remove_remotely_deleted(&user.to_string());
     app.remove_remotely_deleted(&work.to_string()); // deleted on another device; the tab's field still names it
-    assert_eq!(shown(&app), [(built_in(), true)]);
+    assert_eq!(shown(&app), [(inherit, false), (built_in(), false)], "a dangling edge ticks nothing");
 }
 
 /// Jar name labels: the tab and group menus list two same-named jars by their labels, a unique one plainly.
@@ -385,10 +382,11 @@ fn the_jar_menus_list_same_named_jars_by_label() {
         crate::session_sync::tests::sleeping_tab("https://a/", "A"),
     );
     let rows = app.node_menu_view(&t).unwrap().jars.unwrap().rows;
-    assert_eq!(rows.iter().map(|r| r.name.clone()).collect::<Vec<_>>()[1..], want);
+    let listed = [&[default][..], &want[..]].concat();
+    assert_eq!(rows.iter().map(|r| r.name.clone()).collect::<Vec<_>>()[1..], listed, "after Inherit");
     let g = crate::session_sync::tests::add_group(&mut app, "G");
     let rows = app.node_menu_view(&g).unwrap().jars.unwrap().rows;
-    assert_eq!(rows.iter().map(|r| r.name.clone()).collect::<Vec<_>>(), [&[default][..], &want[..]].concat());
+    assert_eq!(rows.iter().map(|r| r.name.clone()).collect::<Vec<_>>()[1..], listed);
 }
 
 /// Name rules: "Move into <group>" draws a hidden character in the group's name as a placeholder.
@@ -470,12 +468,9 @@ fn menu_ctx() -> egui::Context {
 #[test]
 fn menu_sections_share_one_left_margin() {
     let ctx = menu_ctx();
-    let row = |ticked, color| JarRow { id: None, name: built_in(), color, ticked, count: None };
+    let row = |ticked, color| JarRow { id: None, name: built_in(), color, ticked };
     let rows = vec![row(true, None), row(false, Some(egui::Color32::RED))];
-    let view = NodeMenuView {
-        jars: Some(JarMenu { rows, can_follow: false, will_switch: false, has_default: false }),
-        ..view_of(loaded_tab())
-    };
+    let view = NodeMenuView { jars: Some(JarMenu { rows, will_switch: false }), ..view_of(loaded_tab()) };
     // The x of what a page draws: its circles of `radius` and its heading `text`.
     let page_xs = |page: MenuPage, radius: f32, heading: &str| {
         let (mut circles, mut headings) = (Vec::new(), Vec::new());
@@ -752,8 +747,7 @@ fn the_new_jar_field_creates_only_on_enter() {
         assert_eq!(app.naming_jar, None, "{how}: no draft left");
         let made = app.jar_named("Work");
         assert_eq!(made.is_some(), creates, "{how}: jars {:?}", app.jar_defs());
-        let expected = crate::jar::JarChoice { jar: made, set: creates };
-        assert_eq!(app.tab_jar(&t).unwrap(), expected, "{how}: the tab's jar");
+        assert_eq!(app.mirror.jar(&t), made, "{how}: the tab's jar");
     }
 }
 
@@ -813,49 +807,28 @@ fn a_jar_name_draft_does_not_outlive_its_menu() {
     assert_eq!(app.naming_jar, None, "the menu closed");
 }
 
-/// A group lists every jar, the Default first, each with how many tabs picking it would change, and offers "Clear Default
-/// Jar" once it has one; "Follow Group's Jar" appears only for a set tab under a group default.
+/// The Jar page lists "Inherit", then every jar the card's edge could name (the Default above the group, one inside
+/// it), and ticks the card's own edge.
 #[test]
-fn the_group_menu_counts_the_cascade_and_a_set_tab_can_follow() {
+fn the_jar_page_offers_inherit_and_the_jars_in_reach() {
     let mut app = App::default();
-    let ctx = egui::Context::default();
     app.ensure_default_jar();
-    let work = add_jar(&mut app, "Work");
-    let g = app.alloc_node_id();
-    app.insert_group_at(g.clone(), None);
-    let t = crate::session_sync::tests::add(
+    let group = crate::session_sync::tests::add_group(&mut app, "G");
+    let tab = crate::session_sync::tests::add(
         &mut app,
         crate::store::model::Kind::Tab,
         crate::session_sync::tests::sleeping_tab("https://a/", "A"),
     );
-    app.edit_group(&t, Some(g.clone()));
-    let menu = app.node_menu_view(&g).unwrap().jars.unwrap();
-    let default = app.default_jar().unwrap();
-    let ids: Vec<_> = menu.rows.iter().map(|r| r.id).collect();
-    assert_eq!(ids, [Some(default), Some(work)], "the Default is a row like any jar");
-    assert_eq!(menu.rows[0].name, built_in());
-    assert_eq!(
-        menu.rows[1],
-        JarRow {
-            id: Some(work),
-            name: JarLabel { name: "Work".into(), marker: None },
-            color: menu.rows[1].color,
-            ticked: false,
-            count: Some(1)
-        }
-    );
-    assert!(!menu.has_default);
-    app.apply_node_action(&ctx, &g, NodeAction::SetGroupDefaultJar(work));
-    let menu = app.node_menu_view(&g).unwrap().jars.unwrap();
-    assert!(menu.has_default && menu.rows[1].ticked);
-    assert_eq!(menu.rows[1].count, None, "the tab already took it: no \"(0)\"");
-    assert!(!app.node_menu_view(&t).unwrap().jars.unwrap().can_follow, "an unset tab already follows");
-    app.apply_node_action(&ctx, &t, NodeAction::SetJar(None));
-    assert!(app.node_menu_view(&t).unwrap().jars.unwrap().can_follow);
-    app.apply_node_action(&ctx, &t, NodeAction::FollowGroupJar);
-    assert_eq!(app.tab_jar(&t).unwrap(), crate::jar::JarChoice { jar: Some(work), set: false });
-    app.apply_node_action(&ctx, &g, NodeAction::ClearGroupDefaultJar);
-    assert!(!app.node_menu_view(&g).unwrap().jars.unwrap().has_default);
+    app.edit_group(&tab, Some(group.clone()));
+    let inside = app.create_jar("Inside", crate::fetched::Placement { group: Some(group), pos: egui::Vec2::ZERO });
+    let menu = app.jar_menu(&tab).unwrap();
+    let names: Vec<String> = menu.rows.iter().map(|r| r.name.name.clone()).collect();
+    assert_eq!(names, ["Inherit", "Default", "Inside"]);
+    assert!(menu.rows[0].ticked);
+    app.apply_node_action(&egui::Context::default(), &tab, NodeAction::SetJar(Some(inside)));
+    assert!(app.jar_menu(&tab).unwrap().rows.iter().any(|r| r.id == Some(inside) && r.ticked));
+    app.apply_node_action(&egui::Context::default(), &tab, NodeAction::SetJar(None));
+    assert!(app.jar_menu(&tab).unwrap().rows[0].ticked, "Inherit clears the edge");
     let note = app.alloc_node_id();
     app.insert_note_at(note.clone(), None);
     assert!(app.node_menu_view(&note).unwrap().jars.is_none(), "only tabs and groups have jars");

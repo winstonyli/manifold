@@ -1,6 +1,7 @@
 //! The node context menu: its actions, config and the App methods that build and apply it.
 
 use super::*;
+use crate::caps::JAR_EDGE;
 use crate::jar_defs::{JarConfirm, JarLabel};
 use crate::sleep_state::SleepWhy;
 use crate::store::model::{
@@ -62,7 +63,7 @@ pub(crate) enum NodeAction {
     /// Delete for a file card, "Remove from List" for a download, Close
     /// for a tab, "Close Group and Contents" for a group.
     Delete,
-    /// A tab's jar row: that jar (`None`: the default jar), picked by hand (`App::set_tab_jar`).
+    /// A tab's or group's jar row: draw its `jar` edge to that jar, or (`None`, "Inherit") clear it (`App::set_jar_edge`).
     SetJar(Option<NodeId>),
     /// "New Jar...": swaps the tab menu's items for a name field (`App::naming_jar`); the menu stays open.
     StartNewJar,
@@ -72,15 +73,11 @@ pub(crate) enum NodeAction {
     /// Escape in the name field, or the field losing focus without Enter (a click away; user decision, unlike a
     /// group rename): nothing is created.
     CancelNewJar,
-    FollowGroupJar,
     SwitchJarNow,
     /// A jar card's "Clear Cookies...": asks first (`JarConfirm::Clear`).
     ClearJarCookies,
     /// A jar card's "Make Ephemeral" (`true`) / "Stop Ephemeral": asks first when a saved file exists.
     SetJarEphemeral(bool),
-    /// A group's jar row: its default for new tabs, cascaded to the unset tabs it governs.
-    SetGroupDefaultJar(NodeId),
-    ClearGroupDefaultJar,
     /// "Link to…", "Opened from…": starts pick-target mode for this edge (`App::connecting`); the next click on a
     /// valid target draws it (`App::finish_connect`).
     Connect(&'static str),
@@ -102,7 +99,7 @@ pub(crate) enum NodeAction {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum MenuPage {
     Color,
-    /// A tab's jar list and its actions, or a group's default jar.
+    /// A tab's or group's jar list and its actions.
     Jar,
 }
 
@@ -128,28 +125,21 @@ impl NodeAction {
 /// One jar in a tab's or group's menu.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct JarRow {
-    /// `None`: the default jar (tab menus only).
+    /// `None`: the "Inherit" row, which clears the card's own edge.
     pub(crate) id: Option<NodeId>,
     pub(crate) name: JarLabel,
     pub(crate) color: Option<egui::Color32>,
-    /// The tab's jar, or the group's default.
+    /// The card's own edge names this jar (or, for the Inherit row, it has none).
     pub(crate) ticked: bool,
-    /// Group menus: how many tabs picking it would change (`App::cascade_count`); `None` when none would, so no
-    /// "(0)" shows.
-    pub(crate) count: Option<usize>,
 }
 
 /// The jar part of a tab's or group's menu (`App::jar_menu`).
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct JarMenu {
     pub(crate) rows: Vec<JarRow>,
-    /// A hand-picked tab whose group has a default: offers "Follow Group's Jar".
-    pub(crate) can_follow: bool,
     /// A live tab waiting to switch with nothing else replacing its host (`App::can_switch_jar_now`): offers
     /// "Switch Jar Now".
     pub(crate) will_switch: bool,
-    /// A group with a default: offers "Clear Default Jar".
-    pub(crate) has_default: bool,
 }
 
 /// One row of a node menu's "Links" section: a verb that starts pick-target mode, or a "Disconnect from X".
@@ -170,12 +160,10 @@ pub(crate) enum NodeMenuItem {
     Page(&'static str, MenuPage),
     /// One "Move into <name>" button per `(group id, name)`: the sibling groups a card can join.
     MoveTo(Vec<(String, String)>),
-    /// A small heading, then one row per jar with its colour dot and a tick on the current one. `group`: the rows
-    /// set the group's default rather than the tab's jar.
+    /// A small heading, then one row per jar with its colour dot and a tick on the card's own edge.
     Jars {
         heading: &'static str,
         rows: Vec<JarRow>,
-        group: bool,
     },
     /// The "Links" heading, then its rows (`NodeMenuView::edges`).
     Edges(Vec<EdgeMenuRow>),
@@ -312,7 +300,7 @@ fn draw_menu_item(
                 }
             }
         }
-        NodeMenuItem::Jars { heading, rows, group } => {
+        NodeMenuItem::Jars { heading, rows } => {
             menu_section(ui, heading, |ui, grid| {
                 for row in rows {
                     // The label's marker in its own style (`JarLabel::append_to`); the rest in the button's.
@@ -322,9 +310,6 @@ fn draw_menu_item(
                     // The colour dot is painted in this leading gap, at the menu text's margin.
                     text.append("", MenuGrid::MARKER_SLOT, plain.clone());
                     row.name.append_to(&mut text, font, ui.visuals().weak_text_color());
-                    if let Some(n) = row.count {
-                        text.append(&format!("({n})"), 8.0, plain);
-                    }
                     // The current jar is the selected row: no tick to widen it.
                     let response = menu_row(ui, text, None, first_item, row.ticked);
                     let dot = grid.marker_center(response.rect);
@@ -338,18 +323,8 @@ fn draw_menu_item(
                             ui.painter().circle_stroke(dot, 4.0, stroke);
                         }
                     }
-                    let response = match row.count {
-                        Some(n) if *group => {
-                            response.on_hover_text(format!("Tabs following this group that would change: {n}"))
-                        }
-                        _ => response,
-                    };
                     if response.clicked() {
-                        *action = Some(match (group, row.id) {
-                            (true, Some(id)) => NodeAction::SetGroupDefaultJar(id),
-                            (true, None) => NodeAction::ClearGroupDefaultJar,
-                            (false, id) => NodeAction::SetJar(id),
-                        });
+                        *action = Some(NodeAction::SetJar(row.id));
                     }
                 }
             });
@@ -571,30 +546,19 @@ pub(crate) fn node_menu_config(view: &NodeMenuView, headless: bool) -> NodeMenuC
     let delete = |label| vec![Button(label, A::Delete)];
     // Tab, Unloaded and Group: the jar list and its actions, after the kind's own items. `live`: only a running tab
     // can need "Switch Jar Now" (a sleeping one spawns into its jar).
-    let jar_items = |jars: &JarMenu, tab: bool, live: bool| -> Vec<NodeMenuItem> {
-        let mut out = vec![NodeMenuItem::Jars {
-            heading: if tab { "Jar" } else { "Default jar for new tabs" },
-            rows: jars.rows.clone(),
-            group: !tab,
-        }];
-        if tab {
-            out.push(Button("New Jar...", A::StartNewJar));
-            if jars.can_follow {
-                out.push(Button("Follow Group's Jar", A::FollowGroupJar));
-            }
-            if live && jars.will_switch {
-                out.push(Button("Switch Jar Now", A::SwitchJarNow));
-            }
-        } else if jars.has_default {
-            out.push(Button("Clear Default Jar", A::ClearGroupDefaultJar));
+    let jar_items = |jars: &JarMenu, live: bool| -> Vec<NodeMenuItem> {
+        let mut out =
+            vec![NodeMenuItem::Jars { heading: "Jar", rows: jars.rows.clone() }, Button("New Jar...", A::StartNewJar)];
+        if live && jars.will_switch {
+            out.push(Button("Switch Jar Now", A::SwitchJarNow));
         }
         out
     };
     // The Jar row, in the place the jar section was; the rows themselves are the Jar page's.
-    let jar_row = |items: &mut Vec<NodeMenuItem>, tab: bool, live: bool| -> Vec<NodeMenuItem> {
+    let jar_row = |items: &mut Vec<NodeMenuItem>, live: bool| -> Vec<NodeMenuItem> {
         let Some(jars) = &view.jars else { return Vec::new() };
-        items.push(Page(if tab { "Jar..." } else { "Default jar..." }, MenuPage::Jar));
-        jar_items(jars, tab, live)
+        items.push(Page("Jar...", MenuPage::Jar));
+        jar_items(jars, live)
     };
     match view.kind.ty {
         TYPE_DOWNLOAD => {
@@ -633,7 +597,7 @@ pub(crate) fn node_menu_config(view: &NodeMenuView, headless: bool) -> NodeMenuC
                 Button("Copy URL", A::CopyUrl),
             ]);
             items.push(Button("Fit Subtree", A::FitSubtree));
-            let jar_page = jar_row(&mut items, true, true);
+            let jar_page = jar_row(&mut items, true);
             finish("tab_context_menu", 150.0, items, delete("Close"), jar_page)
         }
         TYPE_TAB => {
@@ -653,7 +617,7 @@ pub(crate) fn node_menu_config(view: &NodeMenuView, headless: bool) -> NodeMenuC
                 items.push(Button("Duplicate", A::Duplicate));
             }
             items.push(Button("Copy URL", A::CopyUrl));
-            let jar_page = jar_row(&mut items, true, false);
+            let jar_page = jar_row(&mut items, false);
             finish("unloaded_tab_context_menu", 170.0, items, delete("Close"), jar_page)
         }
         // Presentation matches the type, not `is_container` (see `card_style`).
@@ -665,7 +629,7 @@ pub(crate) fn node_menu_config(view: &NodeMenuView, headless: bool) -> NodeMenuC
                 delete_items.push(Button("Export Group...", A::ExportGroup));
             }
             let mut items = vec![Button("Sleep Tabs", A::SleepGroup)];
-            let jar_page = jar_row(&mut items, false, false);
+            let jar_page = jar_row(&mut items, false);
             finish("group_context_menu", 150.0, items, delete_items, jar_page)
         }
         TYPE_JAR => {
@@ -942,6 +906,8 @@ impl App {
             let what = match (e.edge, e.outgoing) {
                 (crate::caps::OPENED_FROM, true) => "opened from it",
                 (crate::caps::OPENED_FROM, false) => "opened from here",
+                (crate::caps::JAR_EDGE, true) => "uses it",
+                (crate::caps::JAR_EDGE, false) => "used by it",
                 _ => "link",
             };
             EdgeMenuRow {
@@ -956,60 +922,36 @@ impl App {
         verbs.chain(disconnects).collect()
     }
 
-    /// The tab and group menus' jar list (spec "UI"); `None` for every other kind.
+    /// The tab and group menus' jar list (spec "UI"): "Inherit", then every jar the card's edge could name
+    /// (`valid_targets`) and the one it does. `None` for every other kind.
     pub(crate) fn jar_menu(&self, id: &str) -> Option<JarMenu> {
-        let default = self.default_jar();
-        let named = |ticked: &dyn Fn(NodeId) -> bool, count: &dyn Fn(NodeId) -> Option<usize>, skip_default: bool| {
-            let rows: Vec<JarRow> = self
-                .jar_defs()
-                .iter()
-                .filter(|(_, d)| !(skip_default && d.is_default))
-                .map(|(jid, d)| JarRow {
-                    id: Some(*jid),
-                    name: self.jar_label(*jid),
-                    color: d.color,
-                    ticked: ticked(*jid),
-                    count: count(*jid),
-                })
-                .collect();
-            rows
-        };
-        if let Some(choice) = self.tab_jar(id) {
-            let group_default = self.inherited_jar(self.mirror.group(id));
-            // Tick the jar the tab uses: the Default for one naming a jar deleted elsewhere.
-            let used = self.resolved_jar(&choice).map(|(jar, _)| jar);
-            // The Default's row comes first and picks `None` ("the Default"), which a group's default does not override.
-            let mut rows: Vec<JarRow> = default
-                .map(|d| JarRow {
-                    id: None,
-                    name: self.jar_label(d),
-                    color: self.jar_defs().get(&d).and_then(|def| def.color),
-                    ticked: used == Some(d),
-                    count: None,
-                })
-                .into_iter()
-                .collect();
-            rows.extend(named(&|j| used == Some(j), &|_| None, true));
-            return Some(JarMenu {
-                rows,
-                can_follow: choice.set && group_default.is_some(),
-                will_switch: self.can_switch_jar_now(id),
-                has_default: false,
-            });
-        }
-        if !self.is_container(id) {
+        if !self.is_tab(id) && !self.is_container(id) {
             return None;
         }
-        let group_default = self.mirror.default_jar(id);
-        if self.jar_defs().len() <= 1 && group_default.is_none() {
-            return None; // nothing to pick: jars are made from a tab's menu
-        }
-        Some(JarMenu {
-            rows: named(&|j| group_default == Some(j), &|j| Some(self.cascade_count(id, j)).filter(|&n| n > 0), false),
-            can_follow: false,
-            will_switch: false,
-            has_default: group_default.is_some(),
-        })
+        let own = self.mirror.jar(id);
+        let inherit = JarRow {
+            id: None,
+            name: JarLabel { name: "Inherit".into(), marker: None },
+            color: None,
+            ticked: own.is_none(),
+        };
+        let targets = self.valid_targets(JAR_EDGE, id).into_iter().filter_map(|t| t.parse::<NodeId>().ok());
+        let defs = self.jar_defs();
+        let rows = std::iter::once(inherit)
+            .chain(
+                targets
+                    .chain(own.filter(|j| defs.contains_key(j)))
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .into_iter()
+                    .map(|jar| JarRow {
+                        id: Some(jar),
+                        name: self.jar_label(jar),
+                        color: defs.get(&jar).and_then(|d| d.color),
+                        ticked: own == Some(jar),
+                    }),
+            )
+            .collect();
+        Some(JarMenu { rows, will_switch: self.can_switch_jar_now(id) })
     }
 
     /// The rename field committed with `name` (`NodeAction::CommitRename`, and headless `RENAMEGROUP id name`): the
@@ -1117,7 +1059,7 @@ impl App {
             NodeAction::Delete => self.close_node_and_save(id),
             // The menu's own state (`build_node_menu`): nothing to apply.
             NodeAction::OpenPage(_) | NodeAction::MenuBack => {}
-            NodeAction::SetJar(jar) => self.set_tab_jar(id, jar),
+            NodeAction::SetJar(jar) => self.set_jar_edge(id, jar),
             NodeAction::StartNewJar => {
                 self.naming_jar = Some((id.to_string(), String::new()));
                 self.pending_focus = Some(FocusTarget::JarName);
@@ -1126,7 +1068,7 @@ impl App {
                 self.naming_jar = None;
                 if !crate::names::clean_name(&name).is_empty() {
                     let jar = self.create_jar(&name, self.jar_placement_beside(id));
-                    self.set_tab_jar(id, Some(jar));
+                    self.set_jar_edge(id, Some(jar));
                 }
             }
             NodeAction::CancelNewJar => self.naming_jar = None,
@@ -1140,12 +1082,7 @@ impl App {
                     self.request_jar_ephemeral(jar, on);
                 }
             }
-            NodeAction::FollowGroupJar => self.follow_group_jar(id),
             NodeAction::SwitchJarNow => self.switch_jar_now(id),
-            NodeAction::SetGroupDefaultJar(jar) => {
-                self.set_group_default_jar(id, jar);
-            }
-            NodeAction::ClearGroupDefaultJar => self.clear_group_default_jar(id),
             NodeAction::Connect(edge) => {
                 if self.nodes.contains_key(id) {
                     self.link.connecting = Some((id.to_string(), edge));

@@ -11,6 +11,18 @@ pub(crate) const CONTAINS: &str = "contains";
 pub(crate) const OPENED_FROM: &str = "opened-from";
 /// A user-drawn link between two cards, stored as a link node.
 pub(crate) const LINK: &str = "link";
+/// The edge from a tab or group to the cookie jar it uses (spec "Store").
+pub(crate) const JAR_EDGE: &str = "jar";
+
+/// Where an edge's target may sit, relative to its source's level (spec "Scope").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Scope {
+    /// In the source's group (both at the top level counts).
+    SameLevel,
+    /// In the level the source reaches out from or any group enclosing it. A group source reaches out from its own
+    /// contents (so inside it, beside it, or above); any other source from its group (`App::reach_origin`).
+    SameLevelOrAncestor,
+}
 
 /// Where an edge lives in the store.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -52,6 +64,7 @@ pub(crate) struct EdgeRow {
     acyclic: bool,
     affects_layout: bool,
     verb: Option<&'static str>,
+    scope: Scope,
 }
 
 impl EdgeRow {
@@ -64,7 +77,14 @@ impl EdgeRow {
             acyclic: false,
             affects_layout: false,
             verb: None,
+            scope: Scope::SameLevel,
         }
+    }
+
+    /// The edge reaches targets under `scope` rather than at its source's level only.
+    pub(crate) fn reach(mut self, scope: Scope) -> EdgeRow {
+        self.scope = scope;
+        self
     }
 
     pub(crate) fn stored_in(mut self, storage: Storage) -> EdgeRow {
@@ -107,6 +127,10 @@ impl EdgeRow {
     pub(crate) fn verb(&self) -> Option<&'static str> {
         self.verb
     }
+
+    pub(crate) fn scope(&self) -> Scope {
+        self.scope
+    }
 }
 
 /// Every edge type, looked up by id.
@@ -141,7 +165,7 @@ impl EdgeTable {
     }
 }
 
-/// The builtin edge rows: `contains`, `opened-from` and `link`.
+/// The builtin edge rows: `contains`, `opened-from`, `link` and `jar`.
 pub(crate) fn builtin_edges() -> EdgeTable {
     EdgeTable::new(vec![
         EdgeRow::new(CONTAINS, &CARD_TYPES, &[TYPE_GROUP]).stored_in(Storage::Tree).acyclic(),
@@ -153,6 +177,10 @@ pub(crate) fn builtin_edges() -> EdgeTable {
         EdgeRow::new(LINK, &CARD_TYPES, &CARD_TYPES)
             .stored_in(Storage::Node(TYPE_LINK))
             .user_creatable("Link to\u{2026}"),
+        EdgeRow::new(JAR_EDGE, &[TYPE_TAB, TYPE_GROUP], &[TYPE_JAR])
+            .stored_in(Storage::Field(field::JAR))
+            .reach(Scope::SameLevelOrAncestor)
+            .user_creatable("Use jar\u{2026}"),
     ])
 }
 
@@ -265,11 +293,24 @@ mod tests {
     }
 
     #[test]
+    fn the_jar_edge_joins_a_tab_or_group_to_a_jar_in_reach() {
+        use crate::store::model::{TYPE_GROUP, TYPE_JAR, TYPE_TAB};
+        let t = edges();
+        assert!(t.can_connect(JAR_EDGE, TYPE_TAB, TYPE_JAR) && t.can_connect(JAR_EDGE, TYPE_GROUP, TYPE_JAR));
+        assert!(!t.can_connect(JAR_EDGE, "text/markdown", TYPE_JAR) && !t.can_connect(JAR_EDGE, TYPE_TAB, TYPE_TAB));
+        let row = t.row(JAR_EDGE).unwrap();
+        assert_eq!(row.storage(), Storage::Field(field::JAR));
+        assert_eq!(row.scope(), Scope::SameLevelOrAncestor);
+        assert_eq!(row.verb(), Some("Use jar\u{2026}"));
+        assert!(t.rows.iter().filter(|r| r.id() != JAR_EDGE).all(|r| r.scope() == Scope::SameLevel));
+    }
+
+    #[test]
     fn the_columns_say_what_each_edge_does() {
         let t = edges();
         assert!(t.row(OPENED_FROM).unwrap().affects_layout() && t.row(OPENED_FROM).unwrap().is_acyclic());
         assert!(!t.row(LINK).unwrap().affects_layout() && !t.row(LINK).unwrap().is_acyclic());
-        assert_eq!(t.user_creatable().map(|r| r.id()).collect::<Vec<_>>(), [OPENED_FROM, LINK]);
+        assert_eq!(t.user_creatable().map(|r| r.id()).collect::<Vec<_>>(), [OPENED_FROM, LINK, JAR_EDGE]);
         assert_eq!(t.row(LINK).unwrap().verb(), Some("Link to\u{2026}"));
         assert_eq!(t.row(CONTAINS).unwrap().storage(), Storage::Tree);
         assert_eq!(t.row(OPENED_FROM).unwrap().storage(), Storage::Field(field::PARENT));

@@ -9,15 +9,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::store::model::NodeId;
 
-/// What a tab's `jar` / `jar_set` fields hold (spec "Data model").
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct JarChoice {
-    /// A `Kind::Jar` node; `None` is the default jar.
-    pub jar: Option<NodeId>,
-    /// Picked by hand: a group-default cascade leaves it alone.
-    pub set: bool,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SameSite {
     Strict,
