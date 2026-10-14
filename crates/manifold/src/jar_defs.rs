@@ -9,7 +9,7 @@ use crate::session_sync::color_value;
 use crate::store::model::{field, FieldValue, Kind, NodeId};
 use crate::theme::TAG_COLOR_PALETTE;
 use crate::App;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 /// A named jar's synced definition (a `Kind::Jar` card), decoded from its mirrored fields (`Mirror::jar_def`).
 #[derive(Debug, Clone, PartialEq)]
@@ -469,29 +469,6 @@ impl App {
         if let Ok(mut snapshots) = self.cookies.jar_snapshots.lock() {
             snapshots.remove(&id);
         }
-    }
-
-    /// Startup, after `restore_session` (final review I2b): a jar deleted on another device while this one was not
-    /// running never reaches `forget_id` here, so its files (`jars\<id>.json`, unreadable copies, crashed saves'
-    /// temp files) are deleted now: the file goes with the delete. Kept: every live jar card, every jar live in the
-    /// document and every jar in a Recently Closed entry. Skipped when the document may not name every jar: no journal, a repaired one (`store_recovered`,
-    /// which includes a lost snapshot rebuilt as a new document), one a newer build wrote (read-only), or one with
-    /// no live node at all (a new or replaced session file).
-    pub(crate) fn prune_jar_files(&self) {
-        let (Some(journal), Some(dir)) = (&self.journal, self.jars_dir()) else { return };
-        let doc = journal.doc();
-        if !self.may_prune_content() || journal.read_only() || doc.live().next().is_none() {
-            return;
-        }
-        let in_doc = doc.live().filter(|(_, n)| n.kind() == Kind::Jar).map(|(id, _)| id);
-        let closed = self
-            .closed
-            .iter()
-            .flat_map(|e| &e.doc.nodes)
-            .filter(|n| n.kind() == Some(Kind::Jar))
-            .filter_map(|n| n.id.parse::<NodeId>().ok());
-        let keep: BTreeSet<NodeId> = self.jar_defs().into_keys().chain(in_doc).chain(closed).collect();
-        crate::jar::prune_orphans(&dir, &keep);
     }
 
     /// `profile::jars_dir()`, or a test's temp dir. Never the real profile under test (`profile::dir()` is None).

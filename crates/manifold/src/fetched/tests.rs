@@ -282,8 +282,9 @@ fn pruning_keeps_files_live_or_recently_closed_nodes_name() {
             local: None,
         },
     });
-    let keep = app.content_keep(None);
-    let pruned = crate::content::prune(&dir, std::time::SystemTime::now(), |f| crate::content::kept(&keep, f));
+    let keep = app.backing_keep(None);
+    let cutoff = std::time::SystemTime::now() - crate::content::PRUNE_GRACE;
+    let pruned = crate::content::prune(&dir, cutoff, |f| crate::content::kept(&keep, f));
     assert_eq!(pruned, 1);
     assert!(!dir.join("orphan.png").exists());
     assert!(dir.join("a.png").exists());
@@ -320,8 +321,11 @@ fn pruning_keeps_files_a_named_session_names() {
         write_aged(&content_dir.join(name), OLD);
     }
     // The running session names none of them.
-    let pruned = prune_unnamed(&content_dir, std::time::SystemTime::now(), HashSet::new(), Some(&sessions));
+    let cutoff = std::time::SystemTime::now() - crate::content::PRUNE_GRACE;
+    let pruned = prune_unnamed(&content_dir, cutoff, HashSet::new(), Some(&sessions), |_| true);
     assert_eq!(pruned, Some(1));
+    let named = session::backing_names(&sessions).unwrap();
+    assert!(named.contains(&closed), "a closed entry's node id is named too");
     assert!(!content_dir.join("orphan.png").exists());
     assert!(content_dir.join("by-path.png").exists());
     assert!(content_dir.join(format!("{by_id}.json")).exists());
@@ -338,7 +342,8 @@ fn a_named_session_that_cant_be_read_whole_stops_the_prune() {
     let orphan = content_dir.join("orphan.png");
     let prune = || {
         write_aged(&orphan, OLD);
-        prune_unnamed(&content_dir, std::time::SystemTime::now(), HashSet::new(), Some(&sessions))
+        let cutoff = std::time::SystemTime::now() - crate::content::PRUNE_GRACE;
+        prune_unnamed(&content_dir, cutoff, HashSet::new(), Some(&sessions), |_| true)
     };
     // No sessions dir yet names nothing.
     assert_eq!(prune(), Some(1));
@@ -372,7 +377,7 @@ fn a_repaired_store_is_never_pruned_against() {
     let mut app = app_on(&path, 1);
     add(&mut app, Kind::Note, Runtime::Note(NotePayload { text: "x".into(), editing: false }));
     assert!(app.save_session());
-    assert!(app.may_prune_content());
+    assert!(app.may_prune());
     drop(app);
     // Damage the last byte: the repair skips that part and says so.
     let mut bytes = std::fs::read(&path).unwrap();
@@ -381,7 +386,7 @@ fn a_repaired_store_is_never_pruned_against() {
     let mut app = app_on(&path, 2);
     app.restore_session();
     assert!(app.store_recovered);
-    assert!(!app.may_prune_content());
+    assert!(!app.may_prune());
 }
 
 /// Review fix: a store that wasn't a journal is set aside and a new one started; that launch must not prune
@@ -394,7 +399,7 @@ fn a_store_set_aside_is_never_pruned_against() {
     app.open_store_at(&path);
     assert!(app.journal.is_some());
     assert!(app.store_recovered);
-    assert!(!app.may_prune_content());
+    assert!(!app.may_prune());
 }
 
 #[test]
@@ -407,10 +412,10 @@ fn a_refresh_keeps_its_old_file_while_another_node_names_it() {
         let payload = Runtime::Image(ImagePayload { path, width: 1, height: 1, error: None });
         app.insert_placeholder_node(id.into(), egui::Vec2::ZERO, Kind::Image, payload);
     }
-    assert!(!replaced_file_unused(&dir, "r", &old, &new, &app.content_keep(Some("r"))));
+    assert!(!replaced_file_unused(&dir, "r", &old, &new, &app.backing_keep(Some("r"))));
     app.nodes.remove("s");
-    assert!(replaced_file_unused(&dir, "r", &old, &new, &app.content_keep(Some("r"))));
-    assert!(!replaced_file_unused(&dir, "r", &old, &old, &app.content_keep(Some("r"))));
+    assert!(replaced_file_unused(&dir, "r", &old, &new, &app.backing_keep(Some("r"))));
+    assert!(!replaced_file_unused(&dir, "r", &old, &old, &app.backing_keep(Some("r"))));
 }
 
 #[test]
@@ -428,7 +433,7 @@ fn closing_a_node_touches_its_own_content_file_only() {
         ]),
     };
     let entry = ClosedEntry { doc: store::json::JsonDoc { nodes: vec![node(&own), node(&picked)], local: None } };
-    touch_owned_content(&dir, &entry);
+    touch_backing(&entry, Some(&dir), None);
     let age = |p: &std::path::Path| std::fs::metadata(p).unwrap().modified().unwrap().elapsed().unwrap_or_default();
     assert!(age(&own) < std::time::Duration::from_secs(60), "touched");
     assert!(age(&picked) > crate::content::PRUNE_GRACE, "not its own <id>.<ext>: untouched");
@@ -677,4 +682,41 @@ fn retrying_an_image_error_card_decodes_again_and_a_decoding_image_does_not_open
     assert_eq!((image.width, image.height, image.error.is_none()), (3, 2, true));
     app.focus_item(&id);
     assert_eq!(app.viewed_image.as_deref(), Some(id.as_str()));
+}
+
+#[test]
+fn one_prune_keeps_held_jar_files_and_drops_unheld_old_ones() {
+    use crate::content::tests::{write_aged, OLD};
+    let jars = crate::store::testutil::temp_dir("backing-jars");
+    let mut app = App { jars_dir_override: Some(jars.clone()), ..App::default() };
+    let live = crate::session_sync::tests::add_jar(&mut app, "Live");
+    let closed = crate::session_sync::tests::add_jar(&mut app, "Closed");
+    app.close_node(&closed.to_string());
+    for name in [format!("{live}.json"), format!("{closed}.json"), "9-9.json".into(), "default.json".into()] {
+        write_aged(&jars.join(name), OLD);
+    }
+    write_aged(&jars.join("9-8.json"), std::time::Duration::ZERO); // recent: inside the grace
+    let cutoff = std::time::SystemTime::now() - crate::content::PRUNE_GRACE;
+    let pruned = prune_unnamed(&jars, cutoff, app.backing_keep(None), None, |_| true);
+    assert_eq!(pruned, Some(2), "9-9.json and the old default.json");
+    for kept in [format!("{live}.json"), format!("{closed}.json"), "9-8.json".into()] {
+        assert!(jars.join(&kept).exists(), "{kept}");
+    }
+}
+
+#[test]
+fn releasing_a_removed_jar_deletes_only_its_unheld_family_at_once() {
+    let jars = crate::store::testutil::temp_dir("release-jars");
+    let keep: HashSet<String> = ["1-1".to_string()].into();
+    let files = ["1-1.json", "1-2.json", "1-2.json.unreadable-5", "1-3.json"];
+    for name in files {
+        std::fs::write(jars.join(name), b"x").unwrap(); // brand new: no grace applies to a release
+    }
+    // A release's cutoff: now, plus a second for a coarse filesystem clock (`release_backing`).
+    let cutoff = std::time::SystemTime::now() + std::time::Duration::from_secs(1);
+    let only = |file: &str| crate::content::stem(file) == "1-2";
+    assert_eq!(prune_unnamed(&jars, cutoff, keep.clone(), None, only), Some(2));
+    assert!(jars.join("1-1.json").exists() && jars.join("1-3.json").exists(), "other jars untouched");
+    let only = |file: &str| crate::content::stem(file) == "1-1";
+    assert_eq!(prune_unnamed(&jars, cutoff, keep, None, only), Some(0), "held");
 }

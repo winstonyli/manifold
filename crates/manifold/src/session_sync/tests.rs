@@ -2304,10 +2304,12 @@ fn a_jar_first_seen_ephemeral_deletes_its_leftover_file_and_queues_nothing() {
     assert!(!back.pending.keys().any(|(node, _)| *node == jar), "restored: nothing queued for it");
 }
 
-/// Final review I2b: a jar deleted on another device while this one was not running never reaches `forget_id`
-/// here, so startup deletes the files of named jars the document no longer has, unless it may not know them all.
+/// A jar deleted on another device while this one was not running never reaches `remove_remotely_deleted` here, so
+/// the startup prune deletes the files of jars nothing holds (old enough, past the grace), unless it may not know
+/// them all.
 #[test]
 fn startup_deletes_the_files_of_jars_the_document_no_longer_has() {
+    use crate::content::tests::{write_aged, OLD};
     let dir = crate::store::testutil::temp_dir("jar-prune-startup");
     let (path, jars) = (dir.join("session.mnf"), dir.join("jars"));
     std::fs::create_dir(&jars).unwrap();
@@ -2319,36 +2321,53 @@ fn startup_deletes_the_files_of_jars_the_document_no_longer_has() {
     let gone = NodeId { actor: ActorId(0xdead), counter: 9 };
     let (w, g) = (work.to_string(), gone.to_string());
     let files = [format!("{w}.json"), format!("{g}.json"), format!("{g}.json.unreadable-5"), "default.json".into()];
-    let write_all = || files.iter().for_each(|f| std::fs::write(jars.join(f), r#"{"cookies":[]}"#).unwrap());
+    files.iter().for_each(|f| write_aged(&jars.join(f), OLD));
     let left = || files.iter().filter(|f| jars.join(f).exists()).cloned().collect::<Vec<_>>();
     let on = |actor| App { jars_dir_override: Some(jars.clone()), ..app_on(&path, actor) };
-    write_all();
 
     // No journal: nothing is known, nothing goes.
-    App { jars_dir_override: Some(jars.clone()), ..App::default() }.prune_jar_files();
-    assert_eq!(left().len(), 4);
+    assert!(!App { jars_dir_override: Some(jars.clone()), ..App::default() }.may_prune());
     // A repaired store may have lost jar nodes.
     let mut repaired = on(2);
     repaired.restore_session();
     repaired.store_recovered = true;
-    repaired.prune_jar_files();
-    assert_eq!(left().len(), 4);
+    assert!(!repaired.may_prune());
     drop(repaired);
-    // A new, empty session file (deleted or moved away) knows no jars at all.
-    let mut fresh = App { jars_dir_override: Some(jars.clone()), ..app_on(&dir.join("other.mnf"), 3) };
-    fresh.restore_session();
-    fresh.prune_jar_files();
-    assert_eq!(left().len(), 4);
-    drop(fresh);
 
     let mut back = on(4);
     assert!(back.restore_session());
-    back.prune_jar_files();
-    assert_eq!(
-        left(),
-        [format!("{w}.json"), "default.json".to_string()],
-        "the deleted jar's files go; an old default.json is no jar's"
-    );
+    assert!(back.may_prune());
+    back.prune_backing_dirs();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while left().len() > 1 && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(10)); // a poll interval, not a wait for a guessed duration
+    }
+    assert_eq!(left(), [format!("{w}.json")], "the deleted jar's files and an old default.json go");
+}
+
+/// A remote delete releases the removed jar's files at once, unless Recently Closed holds them.
+#[test]
+fn a_remote_jar_delete_releases_its_file_unless_recently_closed_holds_it() {
+    let dir = crate::store::testutil::temp_dir("release-remote");
+    let jars = dir.join("jars");
+    std::fs::create_dir_all(&jars).unwrap();
+    let mut app = App { jars_dir_override: Some(jars.clone()), ..app_on(&dir.join("session.mnf"), 1) };
+    let (gone, held) = (add_jar(&mut app, "Gone"), add_jar(&mut app, "Held"));
+    assert!(app.save_session());
+    for jar in [gone, held] {
+        std::fs::write(jars.join(format!("{jar}.json")), b"x").unwrap();
+    }
+    // `held` was closed here earlier, so this instance's Recently Closed names it.
+    app.record_closed(&held.to_string());
+    for jar in [gone, held] {
+        app.remove_remotely_deleted(&jar.to_string());
+    }
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while jars.join(format!("{gone}.json")).exists() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(10)); // a poll interval, not a wait for a guessed duration
+    }
+    assert!(!jars.join(format!("{gone}.json")).exists(), "released");
+    assert!(jars.join(format!("{held}.json")).exists(), "held by Recently Closed");
 }
 
 #[test]

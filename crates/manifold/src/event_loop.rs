@@ -185,8 +185,7 @@ impl ApplicationHandler<UserEvent> for App {
                 self.save_settings();
             }
         }
-        self.prune_content_dir();
-        self.prune_jar_files();
+        self.prune_backing_dirs();
     }
 
     /// A clean exit (a window close, or headless `QUIT`): a window geometry

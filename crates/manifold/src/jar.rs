@@ -2,7 +2,7 @@
 //! carries between engines (spec docs/superpowers/specs/2026-10-02-jars-design.md). Pure: no egui, no `App`; it
 //! names jars by store `NodeId`.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -253,36 +253,6 @@ fn prune_asides(dir: &Path, file: &str) {
             eprintln!("jar: could not delete an old unreadable jar file: {e}");
         }
     }
-}
-
-/// The named jar a file in the jars folder belongs to: `<id>.json`, `<id>.json.unreadable-…` or
-/// `<id>.json.<pid>[-<n>].tmp`, with `<id>` spelled exactly as a node id prints. `None` for any other name,
-/// a `default.json` left by an older build included.
-fn named_jar_of(file: &str) -> Option<NodeId> {
-    let (stem, rest) = file.split_once(".json")?;
-    let id: NodeId = stem.parse().ok().filter(|id: &NodeId| id.to_string() == stem)?;
-    let tmp = rest.strip_prefix('.').and_then(crate::store::atomic::temp_pid);
-    let ours = rest.is_empty() || rest.starts_with(".unreadable-") || tmp.is_some();
-    ours.then_some(id)
-}
-
-/// Deletes the files (`Jar::delete_files`) of every named jar in `dir` that `keep` does not name: jars deleted while
-/// this device was not running (final review I2b). Touches only names `named_jar_of` reads, so never the default jar's.
-/// Returns how many jars it found to remove.
-pub fn prune_orphans(dir: &Path, keep: &BTreeSet<NodeId>) -> usize {
-    let Ok(entries) = std::fs::read_dir(dir) else { return 0 };
-    let orphans: BTreeSet<NodeId> = entries
-        .flatten()
-        .filter_map(|e| named_jar_of(e.file_name().to_str()?))
-        .filter(|id| !keep.contains(id))
-        .collect();
-    for &id in &orphans {
-        match Jar::delete_files(dir, id) {
-            Ok(()) => eprintln!("jar: deleted the files of jar {id}, which no longer exists"),
-            Err(e) => eprintln!("jar: could not delete the files of deleted jar {id}: {e}"),
-        }
-    }
-    orphans.len()
 }
 
 /// `<file>.unreadable-<unix seconds>`, or, when that second already has one, `-<n>` past its highest `n`, so a new

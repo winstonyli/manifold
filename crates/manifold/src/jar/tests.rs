@@ -445,59 +445,6 @@ fn delete_files_takes_only_that_jars_copies() {
     }
 }
 
-/// Final review I2b: only a named jar's own file names count, in their exact spelling.
-#[test]
-fn named_jar_of_reads_only_named_jar_file_names() {
-    let id = NodeId { actor: ActorId(0xab), counter: 3 };
-    for name in [
-        "00000000000000ab-3.json",
-        "00000000000000ab-3.json.unreadable-9-1",
-        "00000000000000ab-3.json.42.tmp",
-        "00000000000000ab-3.json.42-7.tmp",
-    ] {
-        assert_eq!(named_jar_of(name), Some(id), "{name}");
-    }
-    for name in [
-        "default.json",
-        "default.json.unreadable-9",
-        "00000000000000AB-3.json", // not how ids are spelled
-        "00000000000000ab-03.json",
-        "00000000000000ab-3.jsonx",
-        "00000000000000ab-3.json.x.tmp",
-        "00000000000000ab-3.json.bak",
-        "notes.txt",
-    ] {
-        assert_eq!(named_jar_of(name), None, "{name}");
-    }
-}
-
-#[test]
-fn prune_orphans_deletes_only_unkept_named_jars_files() {
-    let dir = temp_dir("jar-prune-orphans");
-    let kept = NodeId { actor: ActorId(1), counter: 1 };
-    let gone = NodeId { actor: ActorId(1), counter: 2 };
-    let (k, g) = (file_name(kept), file_name(gone));
-    let doomed = [g.clone(), format!("{g}.unreadable-5"), format!("{g}.4294967295.tmp")];
-    let stays = [
-        k.clone(),
-        format!("{k}.unreadable-5"),
-        format!("{g}.{}.tmp", std::process::id()), // a live save in progress
-        "default.json".into(),
-        "default.json.unreadable-5".into(),
-        "notes.txt".into(),
-    ];
-    for name in doomed.iter().chain(&stays) {
-        std::fs::write(dir.join(name), "x").unwrap();
-    }
-    assert_eq!(prune_orphans(&dir, &[kept].into()), 1);
-    for name in &doomed {
-        assert!(!dir.join(name).exists(), "{name}");
-    }
-    for name in &stays {
-        assert!(dir.join(name).exists(), "{name}");
-    }
-}
-
 #[test]
 fn an_unreadable_named_jar_goes_aside_under_its_own_name() {
     let dir = temp_dir("jar-named-aside");

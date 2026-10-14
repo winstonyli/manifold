@@ -3,24 +3,26 @@
 use super::*;
 use crate::store::model::Kind;
 
-/// Prunes `dir` of files neither `keep` nor any named session in
-/// `sessions` names. `None`, deleting nothing, when a session can't be
-/// read whole (`session::content_names`).
+/// Prunes `dir` of the files `only` picks that neither `keep` nor any named session in `sessions` names and that
+/// were last modified before `cutoff`. The startup prune picks every file with `cutoff` a grace before its snapshot;
+/// a release picks one node's files with no grace. `None`, deleting nothing, when a session can't be read whole
+/// (`session::backing_names`).
 pub(crate) fn prune_unnamed(
     dir: &std::path::Path,
-    snapshot: std::time::SystemTime,
+    cutoff: std::time::SystemTime,
     mut keep: HashSet<String>,
     sessions: Option<&std::path::Path>,
+    only: impl Fn(&str) -> bool,
 ) -> Option<usize> {
     if let Some(sessions) = sessions {
-        keep.extend(session::content_names(sessions)?);
+        keep.extend(session::backing_names(sessions)?);
     }
-    Some(content::prune(dir, snapshot, |file| content::kept(&keep, file)))
+    Some(content::prune(dir, cutoff, |file| !only(file) || content::kept(&keep, file)))
 }
 
 /// Whether a Refresh of node `id` that saved `new` may delete the file it
 /// replaced, `old`: only its own `<id>.<ext>` in `dir`, and only when
-/// nothing else names it (`others`: `App::content_keep` without `id`).
+/// nothing else names it (`others`: `App::backing_keep` without `id`).
 pub(crate) fn replaced_file_unused(
     dir: &std::path::Path,
     id: &str,
@@ -161,46 +163,67 @@ impl App {
         self.place_node(Some(id), kind, runtime, Placement { group: None, pos });
     }
 
-    /// Content-dir names this session still uses, for `content::kept`:
-    /// live nodes' ids (a replica's own copy is `<id>.<ext>`) and `path`
-    /// file names, and Recently Closed entries' `path` file names. `except`
-    /// leaves out one live node.
-    pub(crate) fn content_keep(&self, except: Option<&str>) -> HashSet<String> {
+    /// The backing-file names this session still uses, for `content::kept` (spec "Backing files"): live nodes' ids
+    /// (a replica's own content copy is `<id>.<ext>`, a jar's cookies `<id>.json`) and `path` file names, and the
+    /// same for every Recently Closed entry, which holds its nodes' files until it leaves the list. `except` leaves
+    /// out one live node.
+    pub(crate) fn backing_keep(&self, except: Option<&str>) -> HashSet<String> {
         let mut keep: HashSet<String> = HashSet::new();
         for (id, node) in self.nodes.iter().filter(|(id, _)| Some(id.as_str()) != except) {
             keep.extend(node.runtime.file_path().and_then(content::file_name));
             keep.insert(id.clone());
         }
-        for entry in &self.closed {
-            for node in &entry.doc.nodes {
-                keep.extend(node.fields.get("path").and_then(|v| v.as_str()).and_then(content::file_name));
-            }
+        for node in self.closed.iter().flat_map(|entry| &entry.doc.nodes) {
+            keep.extend(node.fields.get("path").and_then(|v| v.as_str()).and_then(content::file_name));
+            keep.insert(node.id.clone());
         }
         keep
     }
 
-    /// Whether this launch knows enough to prune: with no journal, or one
-    /// that was rebuilt (`store_recovered`), nothing or not everything was
-    /// loaded, so an unnamed file may still belong to the real session.
-    pub(crate) fn may_prune_content(&self) -> bool {
-        self.journal.is_some() && !self.store_recovered
+    /// Whether this launch knows every node that may hold a backing file: not with no journal, a rebuilt one
+    /// (`store_recovered`), or one a newer build wrote (read-only), any of which may not have loaded everything.
+    pub(crate) fn may_prune(&self) -> bool {
+        self.journal.as_ref().is_some_and(|j| !j.read_only()) && !self.store_recovered
     }
 
-    /// Deletes content-dir files nothing uses (spec "Where fetched files
-    /// live"), on a thread. Called once at launch, after restore. The
-    /// thread also reads the named sessions, which keep their files too.
-    pub(crate) fn prune_content_dir(&self) {
-        if !self.may_prune_content() {
+    /// Deletes the backing files nothing holds (spec "Backing files"), in the content and jars dirs, on a thread.
+    /// Called once at launch, after restore. The thread also reads the named sessions, which hold their files too;
+    /// a file touched within `content::PRUNE_GRACE` stays (a sibling instance's Recently Closed may hold it, and
+    /// one it wrote after this keep set was built is never a candidate).
+    pub(crate) fn prune_backing_dirs(&self) {
+        if !self.may_prune() {
             return;
         }
-        let Some(dir) = profile::content_dir() else { return };
-        let keep = self.content_keep(None);
+        let cutoff = std::time::SystemTime::now().checked_sub(content::PRUNE_GRACE).unwrap_or(std::time::UNIX_EPOCH);
+        self.prune_backing_files(cutoff, None, "pruned");
+    }
+
+    /// A removed node's backing files (stem `id`, in the content and jars dirs), deleted at once unless something
+    /// still holds them: the startup prune's keep rule with no grace. Called where a removal records no Recently
+    /// Closed entry (`remove_remotely_deleted`), after the node has left `nodes`.
+    pub(crate) fn release_backing(&self, id: &str) {
+        if !self.may_prune() || self.backing_keep(None).contains(id) {
+            return;
+        }
+        let cutoff = std::time::SystemTime::now() + std::time::Duration::from_secs(1);
+        self.prune_backing_files(cutoff, Some(id.to_owned()), "released");
+    }
+
+    /// The shared body: on a thread, prunes each backing dir of the files `only` picks (every file with `None`)
+    /// that nothing holds and that were modified before `cutoff`.
+    fn prune_backing_files(&self, cutoff: std::time::SystemTime, only: Option<String>, verb: &'static str) {
+        let dirs: Vec<std::path::PathBuf> = [profile::content_dir(), self.jars_dir()].into_iter().flatten().collect();
+        let keep = self.backing_keep(None);
         let sessions = session::named_sessions_dir();
-        let snapshot = std::time::SystemTime::now();
-        std::thread::spawn(move || match prune_unnamed(&dir, snapshot, keep, sessions.as_deref()) {
-            Some(0) => {}
-            Some(n) => eprintln!("content: pruned {n} unused file(s)"),
-            None => eprintln!("content: a named session couldn't be read whole; not pruning"),
+        std::thread::spawn(move || {
+            let pick = |file: &str| only.as_deref().is_none_or(|id| content::stem(file) == id);
+            for dir in dirs {
+                match prune_unnamed(&dir, cutoff, keep.clone(), sessions.as_deref(), pick) {
+                    Some(0) => {}
+                    Some(n) => eprintln!("backing files: {verb} {n} file(s) in {}", dir.display()),
+                    None => eprintln!("backing files: a named session couldn't be read whole; not deleting"),
+                }
+            }
         });
     }
 
@@ -363,7 +386,7 @@ impl App {
         if result.is_ok() {
             if let (Some(old_path), Some(dir)) = (&old_path, crate::profile::content_dir()) {
                 let (old, new) = (std::path::Path::new(old_path), std::path::Path::new(&new_path));
-                if replaced_file_unused(&dir, id, old, new, &self.content_keep(Some(id))) {
+                if replaced_file_unused(&dir, id, old, new, &self.backing_keep(Some(id))) {
                     let _ = std::fs::remove_file(old);
                 }
             }

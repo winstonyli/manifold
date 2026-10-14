@@ -184,12 +184,15 @@ pub(crate) fn file_name(path: &str) -> Option<String> {
     Path::new(path).file_name().map(|n| n.to_string_lossy().into_owned())
 }
 
-/// Whether content-dir file `file` is one `names` keeps: named outright (a
-/// node's `path`), or `<id>.<ext>` for an id in `names`. A `.tmp` is an
-/// unfinished save (`redirect_fetch::save`), never a node's file.
+/// The node id a backing file belongs to: its name before the first dot (`<id>.<ext>`, `<id>.json.unreadable-..`).
+pub(crate) fn stem(file: &str) -> &str {
+    file.split_once('.').map_or(file, |(stem, _)| stem)
+}
+
+/// Whether backing file `file` (content or jars dir) is one `names` keeps: named outright (a node's `path`), or
+/// `<id>.<ext>` for an id in `names`. A `.tmp` is an unfinished save (`redirect_fetch::save`), never a node's file.
 pub(crate) fn kept(names: &HashSet<String>, file: &str) -> bool {
-    !file.ends_with(".tmp")
-        && (names.contains(file) || file.split_once('.').is_some_and(|(stem, _)| names.contains(stem)))
+    !file.ends_with(".tmp") && (names.contains(file) || names.contains(stem(file)))
 }
 
 /// How recently modified a file `prune` never deletes: covers a file whose
@@ -197,16 +200,12 @@ pub(crate) fn kept(names: &HashSet<String>, file: &str) -> bool {
 /// entry that instance's own list overwrote (`App::record_closed` touches it).
 pub(crate) const PRUNE_GRACE: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 
-/// Deletes each file in `dir` whose name `keep` rejects and that was last
-/// modified more than `PRUNE_GRACE` before `snapshot`; returns how many. A
-/// missing `dir` deletes nothing.
-///
-/// `snapshot` is when `keep`'s name set was built: a file another instance
-/// fetched after that, for a node this one hasn't seen yet, is never a
-/// candidate, whatever `keep` says.
-pub(crate) fn prune(dir: &Path, snapshot: SystemTime, keep: impl Fn(&str) -> bool) -> usize {
+/// Deletes each file in `dir` whose name `keep` rejects and that was last modified before `cutoff`; returns how many.
+/// A missing `dir` deletes nothing. The startup prune passes a grace before the moment `keep`'s name set was built
+/// (a file another instance fetched after that, for a node this one hasn't seen yet, is never a candidate); a
+/// release passes a moment just after now.
+pub(crate) fn prune(dir: &Path, cutoff: SystemTime, keep: impl Fn(&str) -> bool) -> usize {
     let Ok(entries) = std::fs::read_dir(dir) else { return 0 };
-    let cutoff = snapshot.checked_sub(PRUNE_GRACE).unwrap_or(SystemTime::UNIX_EPOCH);
     entries
         .flatten()
         .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
@@ -333,10 +332,10 @@ pub(crate) mod tests {
         for name in ["1-2.png", "3-4.json", "old.bin"] {
             write_aged(&dir.join(name), OLD);
         }
-        let snapshot = SystemTime::now();
-        assert_eq!(prune(&dir, snapshot, |name| name != "old.bin"), 1);
+        let cutoff = SystemTime::now() - PRUNE_GRACE;
+        assert_eq!(prune(&dir, cutoff, |name| name != "old.bin"), 1);
         assert!(dir.join("1-2.png").exists() && !dir.join("old.bin").exists());
-        assert_eq!(prune(&dir.join("missing"), snapshot, |_| false), 0);
+        assert_eq!(prune(&dir.join("missing"), cutoff, |_| false), 0);
     }
 
     #[test]
@@ -349,11 +348,11 @@ pub(crate) mod tests {
         let recent = dir.join("recent.bin");
         write_aged(&recent, Duration::from_secs(24 * 60 * 60));
         // Fetched by another instance after this one's keep set was built.
-        let snapshot = SystemTime::now() - Duration::from_secs(60);
+        let cutoff = SystemTime::now() - Duration::from_secs(60) - PRUNE_GRACE;
         let new = dir.join("new.bin");
         write_aged(&new, Duration::ZERO);
 
-        assert_eq!(prune(&dir, snapshot, |_| false), 1);
+        assert_eq!(prune(&dir, cutoff, |_| false), 1);
         assert!(!old.exists(), "unkept and past the grace period: pruned");
         assert!(recent.exists(), "modified within the grace period: kept");
         assert!(new.exists(), "modified after the snapshot: kept");
@@ -366,6 +365,13 @@ pub(crate) mod tests {
         assert!(kept(&names, "1-7.json"));
         assert!(!kept(&names, "1-7.json.1234.tmp"));
         assert!(!kept(&names, "b.png"));
+    }
+
+    #[test]
+    fn a_stem_is_the_name_before_the_first_dot() {
+        assert_eq!(stem("1-7.png"), "1-7");
+        assert_eq!(stem("1-7.json.unreadable-5"), "1-7");
+        assert_eq!(stem("noext"), "noext");
     }
 
     #[test]

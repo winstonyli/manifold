@@ -822,6 +822,7 @@ impl App {
             self.focused = None;
         }
         self.spawns.wakes_in_flight.remove(id);
+        self.release_backing(id);
     }
 
     /// Applies what other replicas changed while `id`'s spawn was in flight,
@@ -2022,6 +2023,7 @@ impl App {
             return HashMap::new();
         }
         self.teardown_running_session();
+        self.rebind_jar_files(json, &imported);
         let map: HashMap<String, String> =
             json.nodes.iter().zip(&imported).map(|(node, i)| (node.id.clone(), i.id.to_string())).collect();
         let first_tab = imported.iter().find(|i| i.kind == Kind::Tab).map(|i| i.id.to_string());

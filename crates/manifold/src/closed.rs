@@ -1,6 +1,7 @@
 //! Recently Closed: what closing a node records and how reopening rebuilds it.
 
 use super::*;
+use crate::store::model::Kind;
 
 /// closed node and, if it's a group, every live member at any depth, as
 /// `closed_entry` built it. `doc.nodes[0]` is the node that was closed.
@@ -210,15 +211,27 @@ pub(crate) fn subtree_entry(
     Some(ClosedEntry { doc: store::json::JsonDoc { nodes, local } })
 }
 
-/// Marks each content-dir file `entry`'s nodes own as modified now, so a
-/// recent close keeps its file through `content::PRUNE_GRACE` even if
-/// another instance's Recently Closed list overwrites this one's.
-pub(crate) fn touch_owned_content(dir: &std::path::Path, entry: &ClosedEntry) {
+/// Marks each backing file `entry`'s nodes hold as modified now (an owned content file in `content_dir`, a jar's
+/// cookie file in `jars_dir`), so a recent close keeps its file through `content::PRUNE_GRACE` even if another
+/// instance's Recently Closed list overwrites this one's.
+pub(crate) fn touch_backing(
+    entry: &ClosedEntry,
+    content_dir: Option<&std::path::Path>,
+    jars_dir: Option<&std::path::Path>,
+) {
+    let touch = |path: &std::path::Path| {
+        let file = std::fs::OpenOptions::new().write(true).open(path);
+        let _ = file.and_then(|f| f.set_modified(std::time::SystemTime::now()));
+    };
     for node in &entry.doc.nodes {
-        let Some(path) = node.fields.get("path").and_then(|p| p.as_str()).map(std::path::Path::new) else { continue };
-        if content::owned_content_file(dir, &node.id, path) {
-            let file = std::fs::OpenOptions::new().write(true).open(path);
-            let _ = file.and_then(|f| f.set_modified(std::time::SystemTime::now()));
+        let path = node.fields.get("path").and_then(|p| p.as_str()).map(std::path::Path::new);
+        if let (Some(dir), Some(path)) = (content_dir, path) {
+            if content::owned_content_file(dir, &node.id, path) {
+                touch(path);
+            }
+        }
+        if let (Some(dir), Some(Kind::Jar)) = (jars_dir, node.kind()) {
+            touch(&dir.join(format!("{}.json", node.id)));
         }
     }
 }
@@ -228,9 +241,7 @@ impl App {
     /// oldest entry past `MAX_CLOSED`. Called before anything is removed.
     pub(crate) fn record_closed(&mut self, id: &str) {
         if let Some(entry) = closed_entry(self, id) {
-            if let Some(dir) = profile::content_dir() {
-                touch_owned_content(&dir, &entry);
-            }
+            touch_backing(&entry, profile::content_dir().as_deref(), self.jars_dir().as_deref());
             self.closed.push(entry);
             if self.closed.len() > MAX_CLOSED {
                 self.closed.remove(0);
@@ -281,6 +292,26 @@ impl App {
         self.duplicate_nodes(&ids);
     }
 
+    /// After an import with fresh ids: each jar whose old id is no longer a live node gets a copy of its cookie file
+    /// under its new id, so a reopened jar comes back signed in (spec "One reopen rule"). One whose old id is still
+    /// live (a Duplicate) gets nothing: the copy starts signed out. A copy, not a move: a named session or another
+    /// instance's Recently Closed list may still name the old id, and the startup prune removes the old file once
+    /// nothing holds it. `imported[i]` is `doc.nodes[i]` (`store::json::import`).
+    pub(crate) fn rebind_jar_files(&self, doc: &store::json::JsonDoc, imported: &[store::json::Imported]) {
+        let Some(dir) = self.jars_dir() else { return };
+        for (old, new) in doc.nodes.iter().zip(imported) {
+            if new.kind != Kind::Jar || self.nodes.contains_key(&old.id) {
+                continue;
+            }
+            let (from, to) = (dir.join(format!("{}.json", old.id)), crate::jar::Jar::path(&dir, new.id));
+            if from.exists() && !to.exists() {
+                if let Err(e) = std::fs::copy(&from, &to) {
+                    eprintln!("jar: could not carry jar {} over to {}: {e}", old.id, new.id);
+                }
+            }
+        }
+    }
+
     /// Rebuilds a closed entry where it was: fresh ids via `store::json::
     /// import`, the old positions/colors/zooms, links inside the entry
     /// remapped (import resolves labels within the file), and a node's
@@ -310,6 +341,7 @@ impl App {
         // label, carried over to its fresh id (`imported[i]` is
         // `entry.doc.nodes[i]`, per `import`'s contract) and set on its
         // sleeping card once it's in place.
+        self.rebind_jar_files(&entry.doc, &imported);
         let personal: Vec<(String, Option<f64>, Option<String>)> = entry
             .doc
             .nodes
@@ -570,5 +602,37 @@ mod tests {
         assert_ne!(new_inside, inside);
         assert_eq!(app.mirror.jar(&by_url(&app, "https://a/")), Some(new_inside), "follows the reopened jar");
         assert_eq!(app.mirror.jar(&by_url(&app, "https://b/")), Some(outside), "an outside jar keeps its id");
+    }
+
+    #[test]
+    fn reopening_a_closed_jar_carries_its_cookie_file_and_a_duplicate_starts_empty() {
+        let jars = crate::store::testutil::temp_dir("rebind-jars");
+        let mut app = App { jars_dir_override: Some(jars.clone()), ..App::default() };
+        let jar = crate::session_sync::tests::add_jar(&mut app, "Work");
+        std::fs::write(jars.join(format!("{jar}.json")), b"cookies").unwrap();
+
+        app.duplicate_nodes(&[jar.to_string()]);
+        let copy = *app.jar_defs().keys().find(|&&id| id != jar).unwrap();
+        assert!(!jars.join(format!("{copy}.json")).exists(), "a duplicate starts signed out");
+
+        app.close_node(&jar.to_string());
+        let entry = app.closed.pop().unwrap();
+        app.reopen_closed(entry);
+        let back = *app.jar_defs().keys().find(|&&id| id != copy).unwrap();
+        assert_ne!(back, jar, "a fresh id");
+        assert_eq!(std::fs::read(jars.join(format!("{back}.json"))).unwrap(), b"cookies");
+    }
+
+    #[test]
+    fn closing_a_jar_touches_its_cookie_file() {
+        use crate::content::tests::{write_aged, OLD};
+        let jars = crate::store::testutil::temp_dir("touch-jars");
+        let mut app = App { jars_dir_override: Some(jars.clone()), ..App::default() };
+        let jar = crate::session_sync::tests::add_jar(&mut app, "Work");
+        let file = jars.join(format!("{jar}.json"));
+        write_aged(&file, OLD);
+        app.close_node(&jar.to_string());
+        let age = file.metadata().unwrap().modified().unwrap().elapsed().unwrap();
+        assert!(age < crate::content::PRUNE_GRACE, "touched");
     }
 }

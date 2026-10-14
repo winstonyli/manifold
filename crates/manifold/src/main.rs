@@ -450,7 +450,7 @@ struct App {
     popup_gate: popup_gate::PopupGate,
 
     /// Set once the store reports a repair (`take_store_recovery`): what
-    /// was loaded may be missing nodes, so `prune_content_dir` doesn't run.
+    /// was loaded may be missing nodes, so `prune_backing_dirs` doesn't run.
     store_recovered: bool,
     /// `settings::fingerprint()` as this process last saw it (set at load,
     /// updated after every successful save) -- see `save_settings`. `None`

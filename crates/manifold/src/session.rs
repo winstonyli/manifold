@@ -33,12 +33,10 @@ pub(crate) fn named_sessions_dir() -> Option<PathBuf> {
     Some(crate::profile::dir()?.join("sessions"))
 }
 
-/// What the named sessions in `dir` still use of the content dir, for
-/// `content::kept`: each one's live nodes' ids and `path` file names, and
-/// its Recently Closed entries' `path` file names. `None` when any save or
-/// its personal state can't be read whole, so pruning never runs against
-/// a partial list; a missing `dir` names nothing.
-pub(crate) fn content_names(dir: &Path) -> Option<HashSet<String>> {
+/// What the named sessions in `dir` still use of the backing-file dirs, for `content::kept`: the ids and `path` file
+/// names of each one's live and Recently Closed nodes. `None` when any save or its personal state can't be read
+/// whole, so pruning never runs against a partial list; a missing `dir` names nothing.
+pub(crate) fn backing_names(dir: &Path) -> Option<HashSet<String>> {
     let mut names = HashSet::new();
     let entries = match std::fs::read_dir(dir) {
         Ok(entries) => entries,
@@ -56,10 +54,9 @@ pub(crate) fn content_names(dir: &Path) -> Option<HashSet<String>> {
             None => Vec::new(),
         };
         let live = crate::store::json::doc_to_json(&doc).nodes;
-        for node in &live {
-            names.insert(node.id.clone());
-        }
-        let paths = live.iter().chain(closed.iter().flat_map(|c| &c.nodes)).filter_map(|n| n.fields.get("path"));
+        let nodes = live.iter().chain(closed.iter().flat_map(|c| &c.nodes));
+        names.extend(nodes.clone().map(|n| n.id.clone()));
+        let paths = nodes.filter_map(|n| n.fields.get("path"));
         names.extend(paths.filter_map(|p| p.as_str()).filter_map(crate::content::file_name));
     }
     Some(names)
