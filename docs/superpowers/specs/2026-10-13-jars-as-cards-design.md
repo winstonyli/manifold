@@ -27,8 +27,9 @@ every other edge. The machinery that exists only because jars were not cards is 
   has. Jars are stored like notes.
 - `JAR` (15) stays and now means the `jar` edge on **both** tabs and groups (`Id`, absent = inherit). Tabs lose
   `JAR_SET` (16); groups lose `DEFAULT_JAR` (17). 16 and 17 go in `RESERVED`; they are never reused.
-- Edge row `jar`: sources `TYPE_TAB, TYPE_GROUP`, targets `TYPE_JAR`, `Storage::Field(field::JAR)`, new column
-  `at_most_one`, new column `scope: SameLevelOrAncestor` (every existing row is `SameLevel`), user-creatable with
+- Edge row `jar`: sources `TYPE_TAB, TYPE_GROUP`, targets `TYPE_JAR`, `Storage::Field(field::JAR)` (a field holds
+  one value, so no cardinality column), new column `scope: SameLevelOrAncestor` (every existing row is `SameLevel`),
+  user-creatable with
   verb "Use jar\u{2026}". A jar joins `contains` (as a source) and `link` (both ends) by way of `CARD_TYPES`; the
   `opened-from` row keeps its own target list without it, so a jar is never "opened from" (the existing
   `opened_from_excludes_a_jar` test still holds).
@@ -59,11 +60,13 @@ This one function replaces `inherited_jar`, `new_tab_jar`, `governed_by`, `casca
 
 ### Scope
 
-A `jar` edge is legal when the jar sits at the source's level or in any ancestor group of it. After any move
-(a tab, a group with its contents, or a jar), every edge touching the moved subtree is re-checked and an
-out-of-scope one is cleared, with a toast naming it. This is the code path that already drops cross-level
-`link` edges on a move, run for every row. An edge that arrives out of scope from another device is kept and
-resolves as dangling (Default plus warning chip); it is never rewritten behind the user's back.
+A `jar` edge is legal when the jar sits in the source's group or in any ancestor of it. For a group source,
+the group's own contents count as its level too, so a group's edge may name a jar inside that group (the
+workspace case: a group holding its own jar and tabs). After any move (a tab, a group with its contents, or a
+jar), every `jar` edge touching the moved subtree is re-checked and an out-of-scope one is cleared, with a toast
+naming it. Only rows whose scope reaches beyond one level need this recheck; no code does it for the same-level
+rows today. An edge that arrives out of scope from another device is kept and resolves as dangling (Default plus
+warning chip); it is never rewritten behind the user's back.
 
 ### Live tabs and cookies
 
@@ -87,10 +90,11 @@ declares it in the type table:
 
 - **`backing_file(node) -> Option<Name>`**: the file's name in its directory. Content kinds (Image, Pdf, Json,
   Download) derive it from `PATH` (so it survives an id change); a Jar derives it from its id (`<id>.json`).
-- **`on_duplicate`**: `Share` or `Fresh`. Content files are immutable per file, so a duplicate shares the
-  file (its `PATH` names the same one; this is what Duplicate already does today, and `replaced_file_unused`
-  keeps a refreshed original's old file while the copy names it). A jar's file is mutable per jar, so a duplicate
-  is `Fresh`: it starts logged out.
+- **Duplicate behavior falls out of the name, with no declared column.** A path-derived name is shared: content
+  files are immutable per file, a duplicate's `PATH` names the same one (what Duplicate already does today, and
+  `replaced_file_unused` keeps a refreshed original's old file while the copy names it). An id-derived name
+  (a jar) has nothing to share, and reopen copies a file only when the old id is no longer live, so a duplicate
+  starts logged out.
 - **One liveness rule:** a backing file exists exactly while some live node or some Recently Closed entry names
   it. `content_keep` is already that rule for content; it generalises to take each kind's `backing_file`, and
   `prune_unnamed` and `prune_jar_files` become one prune over each file-backed directory. Nothing else deletes a
@@ -98,9 +102,10 @@ declares it in the type table:
 - **A name stands for a family.** Content already matches `<id>.<ext>` by stem; a jar's name likewise covers its
   `.unreadable-*` copies and crashed saves' `.tmp` files (`Jar::delete_files` today). Release and prune act on the
   family.
-- **One release point:** when a node is removed (local close or a remote delete arriving) and no live node or
-  held entry names its file, the file family is deleted at once (cookies do not linger after a plain delete).
-  This replaces `forget_jar`'s unconditional `Jar::delete_files`. A Recently Closed entry leaving the list
+- **One release point:** when a node is removed and no live node or held entry names its file, the file family is
+  deleted at once (cookies do not linger after a plain delete). A local close is always held by its own Recently
+  Closed entry, so in practice this fires for a remote delete arriving. This replaces `forget_jar`'s
+  unconditional `Jar::delete_files`. A Recently Closed entry leaving the list
   (eviction past `MAX_CLOSED`, or the list cleared) does **not** delete at once: the persisted list is shared by
   instances, and another instance's list may still hold the file, which is why content files get `PRUNE_GRACE`
   and `touch_owned_content`. The file is left for the next launch's prune, which skips files modified within the
@@ -108,16 +113,17 @@ declares it in the type table:
   cookie file can outlive its last reference until the next launch; Clear Cookies wipes at once. If the closed
   list cannot be read at startup, prune is skipped (the guard `may_prune_content` already gives).
 - **One reopen rule:** `reopen_closed` imports with fresh ids. A path-derived name needs no change. An id-derived
-  name (a jar) is moved to the new id's file when the **old id is no longer a live node**; when it is still live
-  (Duplicate, which reuses `subtree_entry` and `reopen_closed`) nothing is moved, so the original keeps its
-  cookies and the copy starts empty.
+  name (a jar) is copied to the new id's file when the **old id is no longer a live node** (copied, not moved: a
+  sibling instance's Recently Closed list may still name the old file, and the prune deletes it once nothing
+  holds it); when it is still live (Duplicate, which reuses `subtree_entry` and `reopen_closed`) nothing is
+  copied, so the original keeps its cookies and the copy starts empty.
 
 **Invariant that makes `Share` safe: a content file is write-once.** Today no code writes to a node's content file
 after it is saved (`redirect_fetch::save` writes `<id>.<ext>` once; a Refresh writes a new file and repoints
 `PATH`, deleting the old one only if `replaced_file_unused` finds no other node naming it). A card's own edits
 (note text, JSON view overrides, name, color) live in the store, per node, so duplicates diverge without touching
 the file. Any future feature that changes file content must therefore write a new file and repoint that node's
-`PATH`: copy-on-write by construction, never in-place. A kind whose file is edited in place declares `Fresh`
+`PATH`: copy-on-write by construction, never in-place. A kind whose file is edited in place must be named by its node id
 (as a jar does), which copies on duplicate instead.
 
 What it cannot cover: a `PATH` pointing outside the owned directory (a user's own file) is a reference, never
@@ -181,8 +187,8 @@ and the developer's own session is simply reset if it looks wrong:
 - `check_connect`: jar in the same group, in an ancestor, in a sibling group (`OutOfScope`).
 - Move: no-edge tab changes jar; in-scope edge kept; out-of-scope edge cleared; moving a jar clears edges that
   fall out of scope.
-- Close a group holding a jar, reopen: card back, cookie file moved to the new id, inside edges remapped, outside
-  edges dangling. Duplicate: cookie file not moved.
+- Close a group holding a jar, reopen: card back, cookie file copied to the new id, inside edges remapped, outside
+  edges dangling. Duplicate: cookie file not copied.
 - Eviction: the entry past `MAX_CLOSED` leaves its jars' files for the next prune, which deletes unheld files
   older than the grace period and keeps held and recently touched ones. A plain jar delete with nothing holding
   it removes the family at once.
@@ -195,6 +201,6 @@ and the developer's own session is simply reset if it looks wrong:
 ## Decided and open
 
 - Decided: a group's `jar` edge, inherited by every tab inside, replaces "Set default jar".
-- Decided, revisit later: a duplicated jar starts logged out (`Fresh`, as written). Duplicating a group that
+- Decided, revisit later: a duplicated jar starts logged out (as written). Duplicating a group that
   holds a jar gives the copy its own fresh jar with the copied tabs' edges remapped, which is the useful case. A
   "Duplicate with cookies" item is parked until there is a real use.
