@@ -16,7 +16,8 @@ every other edge. The machinery that exists only because jars were not cards is 
 3. **Dynamic inheritance.** A tab's jar is its own edge, else the nearest enclosing group's edge, else the Default.
 4. **Default is a built-in card**, not a `JarKey::Default` special case.
 5. **Cookie files live as long as the jar card or a Recently Closed entry that holds it.**
-6. Elegance over upfront cost: one startup migration, then the old fields are gone; no shims.
+6. Elegance over upfront cost. **No migration code and no shims**: there are no users yet, so existing sessions
+   are not carried forward (see "Existing sessions").
 
 ## Model
 
@@ -36,14 +37,14 @@ every other edge. The machinery that exists only because jars were not cards is 
 
 ### The Default jar
 
-- Exactly one jar has `IS_DEFAULT`. It is created at first launch (or by the migration), named "Default", top
-  level. It cannot be closed or deleted; Rename, Ephemeral, Clear Cookies stay.
-- Two replicas that both created one (concurrent first migrations) converge by the lowest `NodeId` keeping the
+- Exactly one jar has `IS_DEFAULT`. A startup invariant creates it when none exists (a new profile, or a document
+  from before this change), named "Default", top level. It cannot be closed or deleted; Rename, Ephemeral,
+  Clear Cookies stay.
+- Two replicas that both created one (concurrent first launches) converge by the lowest `NodeId` keeping the
   flag; the other's flag is cleared by a deterministic repair at load and renamed "Default (old)". Its tabs
-  resolve to the winner, and that device's old logins stay reachable by rebinding to "Default (old)". A one-time
-  cost of a double migration, accepted.
-- `jars\default.json` is renamed to the Default card's id file during migration. `JarKey::Default` is deleted;
-  every `JarKey` is a node id.
+  resolve to the winner, and that device's logins stay reachable by rebinding to "Default (old)".
+- `JarKey::Default` is deleted; every `JarKey` is a node id. The old `jars\default.json` is not adopted: the new
+  Default starts with no cookies, and the orphan file is removed by the startup prune.
 
 ### Resolution
 
@@ -130,25 +131,18 @@ Consequences, stated plainly:
 - Docs: homogeneity spec item 3 and the `Links reach jars` line marked done; "superseded by" header on the two
   older jar specs.
 
-## Migration (once, in `restore_session`, one journal commit)
+## Existing sessions: no migration
 
-1. Create the Default card; rename `jars\default.json` to its id.
-2. Give every existing jar a `POS`, in a row below the existing cards, top level.
-3. Tab `JAR` values stay as edges.
-4. Group `DEFAULT_JAR` (17) values are written to the group's field 15. A tab with `JAR_SET` false whose `JAR`
-   equals what inheritance now gives is cleared to inherit; one whose snapshot differs (stale) keeps its edge.
-5. Fields 16 and 17 stay raw on old nodes and are never read (the store already keeps retired fields 9, 12 and
-   13 this way); `RESERVED` lists them.
+There are no users yet, so no migration code is written. A session saved by an earlier build opens as follows,
+and the developer's own session is simply reset if it looks wrong:
 
-Every jar is top level after step 2, so every migrated edge is in scope. The migration runs only when no jar has
-`IS_DEFAULT`, so it is idempotent by construction. It is tested on all three tab shapes and deleted after one
-release.
-
-## Compatibility
-
-No format-version bump: the field layout is a superset. An older build opening the document would ignore group
-field 15 and the new jar fields and draw no jar cards, so its tabs would lose inheritance (their own edges still
-work). Accepted: a single-user project builds from one tree.
+- Tab `JAR` (15) values keep their meaning as edges. Fields 16 and 17 stay raw on old nodes and are never read
+  (the store already keeps retired fields 9, 12 and 13 this way); `RESERVED` lists them. An old group default is
+  therefore ignored.
+- The startup invariant creates the Default card. Old `jars\default.json` is not adopted.
+- An old jar has no `POS`. The plan must check how a card without one is placed and add a placement rule only if
+  none exists. This is the one open implementation question.
+- No format-version bump: the field layout is a superset, and an older build would ignore the new fields.
 
 ## Testing
 
@@ -159,7 +153,7 @@ work). Accepted: a single-user project builds from one tree.
 - Close a group holding a jar, reopen: card back, cookie file moved to the new id, inside edges remapped, outside
   edges dangling. Duplicate: cookie file not moved.
 - Eviction: the entry past `MAX_CLOSED` releases its jars' files; startup prune keeps held ones.
-- Migration: set, unset-in-step and unset-stale tabs; run twice is a no-op; two Defaults converge.
+- Default invariant: created when absent, not duplicated when present; two Defaults converge.
 - Gate smoke: `NEWJAR`, link a tab to it, rename, duplicate, close and reopen the group.
 
 ## Open questions for the user
