@@ -21,3 +21,19 @@ Sub-project A is designed in `2026-10-04-node-model-design.md`. Decisions made t
 Pinning for every node kind shipped 2026-10-12 (see the README entry "Pin on every card").
 
 Plan 1 (tables and behavior-neutral consumers) shipped: see `../plans/2026-10-04-node-model-1-tables.md`.
+
+## Status (2026-10-13, checked against the code)
+
+Done:
+
+- Plans 1, 2a and 2b (live state is the node, sync by ops), and B (links: `Kind::Link`, `App::connect`/`disconnect`, the node menu's Links section, drag to connect). `JsonLeaf`, `FROM_JSON`, `KEY` and `VALUE` are gone.
+- Pin on every card (2026-10-12).
+- The scan's fix-first list: Duplicate on an unloaded tab (not a failed one), the per-kind Del hint (now `NodeAction::key_hint`, and Close Contents is never hinted Del), the Pdf click (reveals the file), a download's opened-from (stored as `PARENT`), and Move to sibling group (`move_targets`). Not re-tested: the group Del/close/menu contradictions, and Move to sibling group against drop-merge.
+
+Open:
+
+1. **Plan 3, the `closed` field and transaction history.** A close is still a snapshot in `closed.rs`; there is no `closed` field. Generic undo waits on it.
+2. **Generic verbs.** Duplicate is tab-only (`duplicate_tab`), the rectangle selection holds tabs only, and rename is a group and jar-name action. These are the rows and menu edits plan 3 lists for selection, rename and duplicate.
+3. **Jars as cards.** Jars are already `Kind::Jar` store nodes (so no persistence migration), but they draw as chips on cards, and the edge table refuses a link to or from one. Missing: a jar card, and `jar` and `contains` edge rows.
+4. **Link follow-ups.** No `edge-type` field (`link` is the only Node-stored edge), cardinality, or removal variants.
+5. **The unknown-type card** (`Runtime::None` makes it possible; `card.rs` says there is none yet).
