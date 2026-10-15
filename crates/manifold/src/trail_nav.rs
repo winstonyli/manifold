@@ -321,6 +321,46 @@ mod tests {
         assert!(!app.trail_enabled(&child).0);
     }
 
+    /// A reopen that does not take (the append fails on a read-only file) must end the reopen loop with a toast, not
+    /// spin or focus a card that is still hidden.
+    #[test]
+    fn a_reopen_that_does_not_take_toasts_and_focuses_nothing() {
+        let path = session("trail-reopen-stuck");
+        let (mut app, parent, child, _peer) = opened_from(&path);
+        app.close_node(&parent);
+        assert!(!app.nodes.contains_key(&parent));
+        let set_readonly = |readonly: bool| {
+            let mut perms = std::fs::metadata(&path).unwrap().permissions();
+            #[allow(
+                clippy::permissions_set_readonly_false,
+                reason = "the Windows read-only attribute makes the append fail; a temp file this test owns"
+            )]
+            perms.set_readonly(readonly);
+            std::fs::set_permissions(&path, perms).unwrap();
+        };
+        set_readonly(true);
+        app.navigate_history(&child, Dir::Back);
+        set_readonly(false);
+        assert!(app.toasts.save_toast_queue.iter().any(|t| t.contains("Couldn't reopen")), "toasted");
+        assert!(!app.nodes.contains_key(&parent), "still closed");
+        assert_eq!(app.focused.as_deref(), Some(child.as_str()), "the press focused nothing");
+        assert_eq!(app.spawns.pending_trail_focus, None, "and waits for nothing");
+    }
+
+    /// Back from a tab whose parent was closed reopens the parent; the reopen must keep the `left_to` Back just
+    /// recorded there, so Forward returns to the child.
+    #[test]
+    fn forward_after_back_to_a_closed_parent_returns_to_the_child() {
+        let (mut app, parent, child, _peer) = opened_from(&session("trail-back-closed-forward"));
+        app.close_node(&parent);
+        app.navigate_history(&child, Dir::Back);
+        assert_eq!(app.focused.as_deref(), Some(parent.as_str()), "the parent reopened");
+        assert_eq!(app.nav_history.get(&parent).and_then(|h| h.left_to()), Some(child.as_str()), "left_to survived");
+        assert_eq!(app.trail_enabled(&parent), (false, true));
+        app.navigate_history(&parent, Dir::Forward);
+        assert_eq!(app.focused.as_deref(), Some(child.as_str()));
+    }
+
     #[test]
     fn forward_on_the_parent_reopens_a_closed_child() {
         let mut app = app_on(&session("trail-forward-closed"), 1);
@@ -438,5 +478,36 @@ mod tests {
         let rect = ctx.memory(|m| m.area_rect(id)).expect("the popup's area");
         assert!(rect.width() >= 200.0, "{rect:?}");
         assert_eq!(app.menus.open_popup, Some(AnchoredPopup::BackBranches), "no click: it stays open");
+    }
+
+    #[test]
+    fn clicking_a_branch_row_moves_the_tab_and_closes_the_popup() {
+        let (mut app, tab, mut peer) = tab_with_a_sibling("trail-popup-click");
+        assert_eq!(app.nav_history[&tab].branches(Dir::Back), [(1, "https://b/".to_string())]);
+        app.menus.open_popup = Some(AnchoredPopup::BackBranches);
+        let ctx = app.egui_ctx.clone();
+        let anchor = egui::Rect::from_min_size(egui::pos2(10.0, 10.0), egui::vec2(20.0, 20.0));
+        let frame = |app: &mut App, events: Vec<egui::Event>| {
+            let input = egui::RawInput { events, ..Default::default() };
+            let mut output = ctx.run_ui(input, |ui| app.build_trail_branches_popup(ui, Dir::Back, anchor, &tab, 1.0));
+            output.textures_delta.clear();
+        };
+        frame(&mut app, vec![]);
+        let id = egui::Id::new(("trail_branches_popup", AnchoredPopup::BackBranches));
+        let at = ctx.memory(|m| m.area_rect(id)).expect("the popup's area").center();
+        let button = |pressed| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        frame(&mut app, vec![egui::Event::PointerMoved(at)]);
+        frame(&mut app, vec![button(true), button(false)]);
+        assert_eq!(app.menus.open_popup, None, "a pick closes the popup");
+        assert!(peer.sent().iter().any(|m| matches!(m, HostToView::Navigate { url, .. } if url == "https://b/")));
+        // The engine reports the arrival: the cursor is at b, so c is now its sibling.
+        let h = app.nav_history.get_mut(&tab).unwrap();
+        h.observe("https://b/", "", false, false, Instant::now() + std::time::Duration::from_secs(1));
+        assert_eq!(h.branches(Dir::Back), [(2, "https://c/".to_string())]);
     }
 }
