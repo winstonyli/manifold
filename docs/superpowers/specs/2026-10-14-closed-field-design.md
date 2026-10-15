@@ -1,7 +1,8 @@
 # The `closed` field and a history derived from the document: design, 2026-10-14
 
 Status: design, decisions confirmed by the user on 2026-10-14 (live model B, history derived from the document, the
-Default jar forbidden inside a closeable group, Dissolve undo parked). Revised after an adversarial review (12
+Default jar forbidden inside a closeable group, Dissolve undo parked). Implemented 2026-10-14 (plan
+`2026-10-14-closed-field.md`); deviations D1-D12 there. Revised after an adversarial review (12
 findings, all addressed below). Plan 3 of `2026-10-04-node-model-design.md`; item 1 of
 `2026-10-04-homogeneity-decisions.md`. Supersedes that design's section 5 (History), the "Correction (B, 2026-10-07)"
 paragraph of section 3, and the `closed` bullet of section 1, where they differ from this document. Surveys behind it:

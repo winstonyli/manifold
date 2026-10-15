@@ -29,7 +29,9 @@ and nothing else.
 3. **Generic fields only.** The app reads and writes five fields on it: `POS`, `COLOR`, `NAME`, `PARENT` ("opened
    from") and its group. Every other field stays raw in the document, untouched (2b-5 Ruling 2). A move, rename,
    recolor or regroup is an ordinary `Set` or `Move` op, so a newer client's fields survive them.
-4. **A copy carries the generic fields and the type, not the raw extras.** Duplicate, Reopen from Recently Closed and
+4. **A copy carries the generic fields and the type, not the raw extras.** *Superseded for Close and Reopen by
+   `2026-10-14-closed-field-design.md`: a closed unknown node keeps its raw fields and reopens whole; only Duplicate
+   and import make shells.* Duplicate, Reopen from Recently Closed and
    JSON import make a new node. A field number this build does not know has an unknowable type, so an `Id` inside it
    can't be remapped: copying it verbatim would alias the original node or a dead one. So a copy is a shell of the
    type. Close then Reopen likewise brings back the shell: Close tombstones the node in the document (its raw fields
@@ -92,7 +94,8 @@ and nothing else.
   rename, recolor or regroup writes only its own field. A remote delete removes the card (`drop_node` is generic). A
   node whose `TYPE` has not arrived stays hidden until it does; apply order is already safe (`apply_remote` sorts
   only groups first, and `kind()` is read at apply time).
-- **Close and Reopen.** Close records the shell in Recently Closed (`LocalState.closed`, `JsonDoc` entries; its
+- **Close and Reopen.** *Superseded for Close and Reopen by `2026-10-14-closed-field-design.md`: Close sets `closed`
+  on the node and Reopen clears it; the node keeps its raw fields.* Close records the shell in Recently Closed (`LocalState.closed`, `JsonDoc` entries; its
   `"type"` key holds the real string) and `subtree_entry` stops skipping an unknown group member
   (`closed.rs:174`, via `snapshot`). Reopen creates a node of that type string with the generic fields.
 - **Duplicate.** The same shell, beside the original.

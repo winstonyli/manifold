@@ -32,7 +32,7 @@ Done:
 
 Open:
 
-1. **Plan 3, the `closed` field and transaction history.** A close is still a snapshot in `closed.rs`; there is no `closed` field. Generic undo waits on it.
+1. **Plan 3, the `closed` field and transaction history.** Done 2026-10-14 (closed field): Close sets `closed` on the root, Reopen clears it, and Recently Closed is a query over the document (`2026-10-14-closed-field-design.md`, plan `2026-10-14-closed-field.md`). Generic undo (a transaction history) is still open.
 2. **Generic verbs.** Done (`98867a3`, `cc922a9`): Rename and Duplicate work on any node (a stored `NAME` overrides the label; Duplicate reuses the Recently Closed snapshot, multi-root), and the selection already held any node.
 3. **Jars as cards.** Designed in `2026-10-13-jars-as-cards-design.md`. Done (built 2026-10-14, tasks 1-6 of `plans/2026-10-14-jars-as-cards.md`): jars are cards with a position and group, the Default is a card, one `jar` edge replaces `JAR_SET`/`DEFAULT_JAR`, and cookie files share one keep set with fetched content.
 4. **Link follow-ups.** No `edge-type` field (`link` is the only Node-stored edge), cardinality, or removal variants.

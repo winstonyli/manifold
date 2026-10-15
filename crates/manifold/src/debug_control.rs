@@ -120,6 +120,9 @@ pub enum DebugCommand {
     KeyPage(KeyCode),
     /// `Ctrl+Shift+T` equivalent — see `App::reopen_closed_shortcut`.
     ReopenTab,
+    /// `REOPENNODE id` -- reopens closed node `id` as the Recently Closed popup does (`reopen_node`), whichever
+    /// replica closed it. An unparseable id is ignored with a note on stderr.
+    ReopenNode(String),
     /// Starts `App::start_view_install` for the engine, as the picker's Download does.
     InstallView(ViewKind),
     /// Prints the engine's `ViewStatus` to stderr as `engine-state <name>: <label>`.
@@ -499,6 +502,7 @@ const COMMAND_HELP: &[(&str, &str)] = &[
     ("INSTALLVIEW kind", "Start downloading and installing the view's host files (and CEF's runtime)"),
     ("VIEWSTATE kind", "Print the view's state (Installed, Installing n%, Failed: ..) to stderr"),
     ("REOPENTAB", "Ctrl+Shift+T -- reopen the newest Recently Closed entry"),
+    ("REOPENNODE id", "Reopen closed node `id`, as the Recently Closed popup does, whichever replica closed it"),
     ("ZOOMIN", "Ctrl+=/Ctrl++ -- zoom in"),
     ("ZOOMOUT", "Ctrl+- -- zoom out"),
     ("ZOOMRESET", "Ctrl+0 -- reset zoom"),
@@ -751,6 +755,7 @@ pub fn parse_line(line: &str) -> Option<DebugCommand> {
         "TYPE" => Some(DebugCommand::TypeIntoPage(rest.to_string())),
         "KEYPAGE" => Some(DebugCommand::KeyPage(parse_key_code(parts.next()?)?)),
         "REOPENTAB" => Some(DebugCommand::ReopenTab),
+        "REOPENNODE" => non_empty(DebugCommand::ReopenNode),
         "INSTALLVIEW" => parse_view_kind(rest).map(DebugCommand::InstallView),
         "VIEWSTATE" => parse_view_kind(rest).map(DebugCommand::ViewStatus),
         "ZOOMIN" => Some(DebugCommand::ZoomIn),
@@ -1064,6 +1069,13 @@ impl App {
         true
     }
 
+    /// `REOPENNODE`: `reopen_node` on node `id`. `false` when `id` is not a node id.
+    fn debug_reopen_node(&mut self, id: &str) -> bool {
+        let Ok(node) = id.parse() else { return false };
+        self.reopen_node(node);
+        true
+    }
+
     /// `CLOSENODE`: `close_node` on node `id`. `false` when there is no such node.
     fn debug_close_node(&mut self, id: &str) -> bool {
         if !self.nodes.contains_key(id) {
@@ -1210,6 +1222,11 @@ impl App {
                 }
             }
             DebugCommand::ReopenTab => self.reopen_closed_shortcut(),
+            DebugCommand::ReopenNode(id) => {
+                if !self.debug_reopen_node(&id) {
+                    eprintln!("REOPENNODE: {id} is not a node id; ignored");
+                }
+            }
             DebugCommand::InstallView(kind) => {
                 self.start_view_install(kind);
             }
@@ -1611,16 +1628,25 @@ impl App {
             self.linked_ids().map(|id| (id, self.mirror.pos(id).map(|p| [p.x, p.y]))).collect();
         let mut selected: Vec<&String> = self.interaction.selected.iter().collect();
         selected.sort();
-        // Every link this replica knows (ends null where unset), whether or not it is shown.
+        // Every link this replica knows (ends null where unset), whether or not it is shown. `shown` is true when
+        // both ends are in `nodes`, so a link whose end is hidden (closed) reads false and a deleted one is absent.
         let links: Vec<serde_json::Value> = self
             .mirror
             .link_ids()
             .map(|link| {
                 let id = link.to_string();
                 let (from, to) = self.mirror.link_ends(&id);
-                serde_json::json!({ "id": id, "from": from.map(|n| n.to_string()), "to": to.map(|n| n.to_string()) })
+                let shown = [from, to].iter().all(|e| e.is_some_and(|n| self.nodes.contains_key(&n.to_string())));
+                serde_json::json!({
+                    "id": id, "from": from.map(|n| n.to_string()), "to": to.map(|n| n.to_string()), "shown": shown,
+                })
             })
             .collect();
+        // Recently Closed as the document orders it, newest first (`Doc::closed_roots`).
+        let closed: Vec<String> = self
+            .journal
+            .as_ref()
+            .map_or_else(Vec::new, |j| j.doc().closed_roots().into_iter().map(|(id, _)| id.to_string()).collect());
         // The lines drawn at this level, with the point halfway along each curve (t = 0.5) on screen: where a probe
         // clicks a link line.
         let edges: Vec<serde_json::Value> = self
@@ -1680,6 +1706,7 @@ impl App {
             "mirror_texts": mirror_texts,
             "mirror_pos": mirror_pos,
             "links": links,
+            "closed": closed,
             "edges": edges,
             // Pick-target mode: the source card, the edge and the cards a click would finish it on.
             "connecting": self.link.connecting.as_ref().map(|(from, edge)| {
@@ -1832,6 +1859,7 @@ mod tests {
             "TYPE abc",
             "KEYPAGE Enter",
             "REOPENTAB",
+            "REOPENNODE n1",
             "INSTALLVIEW cef",
             "VIEWSTATE cef",
             "ZOOMIN",
@@ -1991,6 +2019,23 @@ mod tests {
         assert!(app.debug_close_node(&g), "a group closes too");
         assert!(!app.nodes.contains_key(&note) && !app.nodes.contains_key(&g));
         assert!(!app.debug_close_node("missing"));
+    }
+
+    /// `REOPENNODE id` reopens a closed node by id, and `EXPORTSTATE` lists the Recently Closed history.
+    #[test]
+    fn reopennode_reopens_by_id_and_exportstate_lists_the_history() {
+        assert!(matches!(parse_line("REOPENNODE n1"), Some(DebugCommand::ReopenNode(id)) if id == "n1"));
+        assert!(parse_line("REOPENNODE").is_none(), "the id is required");
+        let path = crate::store::testutil::temp_dir("debug-reopennode").join("session.mnf");
+        let mut app = crate::session_sync::tests::app_on(&path, 1);
+        let g = crate::session_sync::tests::add_group(&mut app, "G");
+        assert!(app.save_session());
+        assert!(app.debug_close_node(&g));
+        assert_eq!(app.export_state()["closed"], serde_json::json!([g]));
+        assert!(!app.debug_reopen_node("not an id"));
+        assert!(app.debug_reopen_node(&g));
+        assert!(app.nodes.contains_key(&g));
+        assert_eq!(app.export_state()["closed"], serde_json::json!([]));
     }
 
     /// `EXPORTSTATE` names a card by its type (plan 2b-6, Ruling 9): `type` (the mime), `loaded` (true for a live tab

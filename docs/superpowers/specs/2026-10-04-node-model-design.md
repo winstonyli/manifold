@@ -36,7 +36,7 @@ A node's identity is its MIME type, a common field replacing `kind`. Manifold's 
 | images | real `image/*` |
 | other files | sniffed MIME (existing `content.rs` table), else `application/octet-stream` |
 
-- Common data fields, on every node: `type`, `pos`, `color`, `name`, `pinned`, `closed`. (The per-kind carve-outs
+- Common data fields, on every node: `type`, `pos`, `color`, `name`, `pinned`, `closed`. (*Superseded by `2026-10-14-closed-field-design.md` where it differs: a closed node stays in `live()`; display and export read `Doc::shown`.*) (The per-kind carve-outs
   today, `pinned` only on tabs and `name` only on groups and jars, go away.) Lifecycle is live, closed, deleted: `closed` is a
   reversible boolean (section 5); `deleted` is the store's final tombstone (`store/ops.rs`: fields cleared, later Sets
   and re-Creates ignored). Only `closed` is writable by a verb; history eviction turns closed into deleted. The single
@@ -87,7 +87,7 @@ Built-in rows:
 |---|---|---|---|---|---|
 | `contains` | tab, group, note, file, ... | group | at-most-one, acyclic | Adopt (Cascade for "Close Group and Contents") | nests inside the card |
 | `opened-from` | any | any | at-most-one, acyclic | Clear | drawn as a line; persists for all kinds |
-| `jar` | tab, group | jar | at-most-one | Clear | added by sub-project C, not A; effective jar = own edge, else nearest ancestor via `contains`; edge presence means explicit (replaces `JAR_SET`, which stays until then) |
+| `jar` | tab, group | jar | at-most-one | Clear | added by sub-project C, not A; effective jar = own edge, else nearest ancestor via `contains`; edge presence means explicit (replaced `JAR_SET`, now gone: jars as cards) |
 | `link` | any | any | many | Clear | stored as a Link node |
 
 - **`Clear` is a read rule, not an op.** An edge whose target is not live (closed, deleted or missing) reads as none,
@@ -95,7 +95,7 @@ Built-in rows:
   close brings every such edge back for free. (Deleted targets use the same rule, the existing "missing means deleted"
   contract; eviction also deletes Link nodes that name a node it deletes.) Only the structural variants, `Adopt` and
   `Cascade`, change the document.
-  **Correction (B, 2026-10-07):** this assumes plan 3's `closed` field. Until it lands a close is a delete, so closing
+  **Correction (B, 2026-10-07)** (*superseded by `2026-10-14-closed-field-design.md`: a close deletes no link; links stay in the mirror and are drawn only when both ends are shown*): this assumes plan 3's `closed` field. Until it lands a close is a delete, so closing
   a node deletes every Link node naming it; Recently Closed records a link only when both ends are inside the closed
   subtree, and reopening restores only those. A link to a node outside the subtree is lost, and an undo of the
   close cannot bring it back (links spec, "Reading and lifecycle").
@@ -129,6 +129,8 @@ Built-in rows:
 
 ## 5. History: delete-only undo, built to widen
 
+> Superseded by `2026-10-14-closed-field-design.md` where it differs: Recently Closed is a query over the document (`Doc::closed_roots`), not a per-replica list, and Reopen clears the flag on the same node. Generic undo is still open.
+
 One history replaces both undo and Recently Closed.
 
 - **Close is reversible by a flag, not by deletion.** The store's Delete is final (fields cleared, later Sets and
@@ -147,9 +149,9 @@ One history replaces both undo and Recently Closed.
   (`Doc::effective_group`). A closed group hides its descendants with it, and only the root is flagged. So
   "Close Group and Contents" (`Cascade`) is one Set. A plain close and "Dissolve" are `Adopt`, today's behavior (a
   deleted group's children survive; the card's close button on a group is `NodeAction::Dissolve`, `card.rs:501`): Move
-  the children to the group's parent, then close the group; both undo by inverse ops. Until C removes `JAR_SET`,
-  `Adopt` keeps `dissolve_group`'s side effect (unset tabs re-snapshot their jar from the new level), and the old jar
-  fields it writes are part of the recorded inverse. `effective_group` gets a closed-aware branch for this.
+  the children to the group's parent, then close the group; both undo by inverse ops. (`JAR_SET` and `dissolve_group`'s
+  jar re-snapshot are gone since jars became cards, so `Adopt` writes no jar fields.)
+  `effective_group` gets a closed-aware branch for this.
 - A kind with `restorable` false is deleted for real on close, with no entry; the close confirmation says so.
 - **Eviction** keeps the history bounded: when an entry falls off (`MAX_CLOSED` in `closed.rs`, currently 20), the
   whole closed subtree is Deleted for real, not just its root (a deleted root would otherwise pass its children up and
@@ -177,16 +179,16 @@ The journal and session code shrink as a result of sections 1-5. No compatibilit
    `FORMAT_VERSION` 2 refuses version-1 files (set aside, not migrated).
 2. **Field lists are row data.** `kind_fields` (`session_sync.rs`) gives nine kinds near-identical lists. The row `fields`
    list appends by layer: `*/*` carries the common fields, file-backed rows add `url` and `path`, `text/markdown` adds
-   `text`, and so on. `diff`, `fields_of` and `imported_fields` read the merged list.
+   `text`, and so on. `fields_of` and `imported_fields` read the merged list (`diff` is gone: verbs emit ops directly).
 3. **Common fields on every node** (section 1: `type`, `pos`, `color`, `name`, `pinned`, `closed`), so the common part
    of every `fields` list is written once, on `*/*`.
-4. **Edge validity is one rule.** `diff` hard-codes `PARENT` (`valid(...)` on the create and set paths). The rule it
+4. **Edge validity is one rule.** (`diff` is gone; this was written against it.) The old `diff` hard-coded `PARENT` (`valid(...)` on the create and set paths). The rule it
    applies, "a target that is neither live nor new reads as none", is the same as section 3's `Clear` read rule, so it
    is stated once and applied to every Id-typed edge field from the edge table (`jar`, link endpoints, later edges)
    instead of to `PARENT` alone. Write side versus read side: a closed target keeps the stored edge (reads as none,
-   undo restores it), so `diff`'s `valid(...)` must treat a closed node as a valid target and write `none` only for a
+   undo restores it), so the validity check must treat a closed node as a valid target and write `none` only for a
    deleted or unknown one. Testing `is_live` there would erase every edge into a node the moment it is closed.
-5. **No separate closed-entry format.** `LocalState.closed: Vec<JsonDoc>` (a JSON serialization of each closed subtree)
+5. **No separate closed-entry format.** (Done differently: `LocalState.closed` is gone and Recently Closed is derived from the document, see `2026-10-14-closed-field-design.md`.) `LocalState.closed: Vec<JsonDoc>` (a JSON serialization of each closed subtree)
    and `closed.rs`'s entry type are replaced by the `closed` flag plus a short list of `{label, inverse}` entries.
    Decision for the plan: the list stays in local state as now (history is per replica); closed nodes are in the shared
    document either way.
@@ -197,7 +199,7 @@ The journal and session code shrink as a result of sections 1-5. No compatibilit
    is the largest cut and the largest refactor; it is plan 2 (see "Rename plan and order").
 7. **One "viewed" id in local state.** `viewed_image` (an image-specific field) becomes `viewed: Option<Id>` for any
    node; with D it names the node a view is open on.
-8. After C: `JAR_SET` and `DEFAULT_JAR` retire into the single `jar` edge field (18 fields to 16).
+8. After C: `JAR_SET` and `DEFAULT_JAR` retire into the single `jar` edge field. Done: the store has 18 numbered fields, `closed` among them.
 9. **`Create` drops its `kind` slot.** `type` is an ordinary field written at create, so `Create{node, fields}` is
    uniform. "Not yet created" (today `Kind::Unknown(0)`, `Node::placeholder`, and its compaction special case at
    `ops.rs:158`) becomes "has no `type`". Behavior change: unknown types are no longer hidden (`is_live` today rejects

@@ -112,7 +112,9 @@ declares it in the type table:
   grace period; closing a jar touches its file, as closing a content card does today. Cost: after an eviction a
   cookie file can outlive its last reference until the next launch; Clear Cookies wipes at once. If the closed
   list cannot be read at startup, prune is skipped (the guard `may_prune_content` already gives).
-- **One reopen rule:** `reopen_closed` imports with fresh ids. A path-derived name needs no change. An id-derived
+- **One reopen rule.** *Superseded by `2026-10-14-closed-field-design.md`: a reopened jar is the same node and keeps its
+  file; `rebind_jar_files` serves session import only. The text below, and the "fresh id" lines under Edges and Tests,
+  describe the old snapshot reopen.* `reopen_closed` imports with fresh ids. A path-derived name needs no change. An id-derived
   name (a jar) is copied to the new id's file when the **old id is no longer a live node** (copied, not moved: a
   sibling instance's Recently Closed list may still name the old file, and the prune deletes it once nothing
   holds it); when it is still live (Duplicate, which reuses `subtree_entry` and `reopen_closed`) nothing is

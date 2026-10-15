@@ -1,8 +1,8 @@
 //! `gate unknown-type`: a node of a type this build doesn't know, end to end (spec
 //! docs/superpowers/specs/2026-10-14-unknown-type-card-design.md, "Testing"). Two headless runs on one fresh profile
 //! seeded with a tab, a group and one `application/x-from-the-future` node. The first moves, renames, links,
-//! duplicates and groups the unknown card; the second checks that all of it persisted, then closes it and reopens
-//! it from Recently Closed.
+//! duplicates and groups the unknown card; the second checks that all of it persisted, then closes it (it stays
+//! stored, hidden) and reopens it from Recently Closed with its id, group and link.
 //!
 //! A failing check does not stop the run; a runner error (a timeout, a launch failure) prints an `ERROR:` line, counts
 //! as a failure and ends the run early. Instances are killed on every exit path (`Instance`'s Drop plus the job).
@@ -134,12 +134,16 @@ fn drive(run: &Run, sec: &mut Option<Section>) -> io::Result<()> {
     let session = i.export_session("session4")?;
     check_eq("the document keeps its real type and name, the copy's too", 2, stored_named(&session, "Future"));
     i.send(&format!("CLOSENODE {u}"))?;
-    let s5 = i.export_until("s5", |s| s.card(&u).is_none())?;
-    check("Close removes it", s5.card(&u).is_none());
+    let s5 = i.export_until("s5", |s| s.0["mirror_groups"].get(u.as_str()).is_none())?;
+    check("Close hides it", s5.0["mirror_groups"].get(u.as_str()).is_none());
+    check_eq("Recently Closed lists it", serde_json::json!([u]), s5.0["closed"].clone());
+    let session = i.export_session("session5")?;
+    check_eq("a closed node is not exported", 1, stored_named(&session, "Future"));
     i.send("REOPENTAB")?;
     i.send("WAITIDLE")?;
-    let s6 = i.export_until("s6", |s| named(s, "Future") == 2)?;
-    check_eq("Reopen brings a shell back beside the copy", 2, named(&s6, "Future"));
+    let s6 = i.export_until("s6", |s| py(&s.0["mirror_groups"][u.as_str()]) == g)?;
+    check_eq("Reopen brings the same node back into its group", g.clone(), py(&s6.0["mirror_groups"][u.as_str()]));
+    check("its link to the tab is back", linked(&s6, &u, &t));
     let session = i.export_session("session6")?;
     check_eq("both are stored with the real type", 2, stored_named(&session, "Future"));
     Run::stop(i)

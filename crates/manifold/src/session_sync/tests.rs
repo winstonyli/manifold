@@ -5591,14 +5591,14 @@ fn a_foreign_import_drops_a_link_naming_a_card_outside_the_file() {
     assert!(app.save_session());
 }
 
-/// EXPORTSTATE lists every link with its ends.
+/// EXPORTSTATE lists every link with its ends and whether both ends are shown.
 #[test]
 fn export_state_lists_links() {
     let mut app = app_on(&temp_dir("link-state").join("session.mnf"), 1);
     let (a, b) = (succeed_spawn(&mut app, "https://a/"), succeed_spawn(&mut app, "https://b/"));
     let link = app.create_link(&a, &b);
     let state = app.export_state();
-    assert_eq!(state["links"], serde_json::json!([{ "id": link, "from": a, "to": b }]));
+    assert_eq!(state["links"], serde_json::json!([{ "id": link, "from": a, "to": b, "shown": true }]));
 }
 
 fn link_count(app: &App) -> usize {

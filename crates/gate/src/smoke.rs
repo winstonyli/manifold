@@ -682,7 +682,7 @@ fn drive(sm: &mut Smoke, m: &mut Marks) -> io::Result<()> {
 
     m.mark("reopen-nested");
     // Recently Closed keeps nesting: fill the empty group with an image and the Pair group, close it from the top
-    // level, and REOPENTAB brings the whole subtree back as one entry, still nested.
+    // level, and REOPENTAB brings the same group back with its whole subtree, still nested.
     sm.send(&format!("DOUBLECLICK {}", xy(&nine_s, &empty)?))?;
     sm.settle("outer_in")?;
     sm.send(&format!("ADDFILE {}", sm.repo.join(r"crates\manifold\assets\icon\icon-64.png").display()))?;
@@ -710,32 +710,31 @@ fn drive(sm: &mut Smoke, m: &mut Marks) -> io::Result<()> {
     sm.send("REOPENTAB")?;
     sm.send("WAITTABS")?;
     let reopened = sm.settle("reopened")?;
-    match new_group(&reopened, &outer_closed.groups()) {
-        None => failed("REOPENTAB brought no group back"),
-        Some(outer) => {
-            sm.send(&format!("DOUBLECLICK {}", xy(&reopened, &outer)?))?;
-            let reopened_in = sm.settle("reopened_in")?;
-            check_query(
-                &reopened_in,
-                "reopened_in",
-                "the reopened group has its image and nested group back",
-                &format!(
-                    "s['current_group'] == '{outer}' and len(groups) == 1 and sum(card_is(c, IMAGE) for c in cards.values()) == 1"
-                ),
-                |s| in_group(s, &outer) && s.groups().len() == 1 && count_of(s, IMAGE) == 1,
-            );
-            let inner = first(&reopened_in.groups(), "nested group")?.clone();
-            sm.send(&format!("DOUBLECLICK {}", xy(&reopened_in, &inner)?))?;
-            let reopened_inner = sm.settle("reopened_inner")?;
-            check_query(
-                &reopened_inner,
-                "reopened_inner",
-                "the nested group comes back with both tabs",
-                &format!("s['current_group'] == '{inner}' and len(tabs) == 2"),
-                |s| in_group(s, &inner) && s.tabs().len() == 2,
-            );
-        }
-    }
+    check_query(&reopened, "reopened", "REOPENTAB brings the same group back", &format!("'{empty}' in groups"), |s| {
+        s.groups().contains(&empty)
+    });
+    let outer = empty.clone();
+    sm.send(&format!("DOUBLECLICK {}", xy(&reopened, &outer)?))?;
+    let reopened_in = sm.settle("reopened_in")?;
+    check_query(
+        &reopened_in,
+        "reopened_in",
+        "the reopened group has its image and nested group back",
+        &format!(
+            "s['current_group'] == '{outer}' and len(groups) == 1 and sum(card_is(c, IMAGE) for c in cards.values()) == 1"
+        ),
+        |s| in_group(s, &outer) && s.groups().len() == 1 && count_of(s, IMAGE) == 1,
+    );
+    let inner = first(&reopened_in.groups(), "nested group")?.clone();
+    sm.send(&format!("DOUBLECLICK {}", xy(&reopened_in, &inner)?))?;
+    let reopened_inner = sm.settle("reopened_inner")?;
+    check_query(
+        &reopened_inner,
+        "reopened_inner",
+        "the nested group comes back with both tabs",
+        &format!("s['current_group'] == '{inner}' and len(tabs) == 2"),
+        |s| in_group(s, &inner) && s.tabs().len() == 2,
+    );
 
     m.mark("file-drops");
     // Drag and drop: `ADDFILE <path> X Y` places a file the way a real drop does, in Graph view here.
@@ -870,7 +869,7 @@ fn drive(sm: &mut Smoke, m: &mut Marks) -> io::Result<()> {
     );
 
     // Jars are cards: make one, link a tab to it, rename and duplicate it, then close and reopen a group holding
-    // all of them, and the tab's edge follows the reopened jar.
+    // all of them: the same group, tab and jars come back, and the tab's edge still names its jar.
     let before = sorted_ids(&duplicated);
     sm.send("NEWJAR Personal")?;
     let made = sm.settle("jar_made")?;
@@ -915,7 +914,6 @@ fn drive(sm: &mut Smoke, m: &mut Marks) -> io::Result<()> {
                 && s.card(&tab_id).is_some_and(|c| c["jar"] == jar_id.as_str())
         },
     );
-    let before = sorted_ids(&dup_jar);
     let groups_before = dup_jar.groups();
     sm.send("NEWGROUP")?;
     let grouped = sm.settle("jar_group_made")?;
@@ -944,24 +942,20 @@ fn drive(sm: &mut Smoke, m: &mut Marks) -> io::Result<()> {
     sm.send("REOPENTAB")?;
     sm.send("WAITTABS")?;
     let reopened = sm.settle("jar_group_reopened")?;
-    let outer = new_group(&reopened, &closed.groups()).unwrap_or_else(|| "none".into());
-    check_found(&reopened, "jar_group_reopened", "REOPENTAB brings the jar group back", &outer);
+    check_found(&reopened, "jar_group_reopened", "REOPENTAB brings the jar group back", &group_id);
+    let outer = group_id.clone();
     // The reopened group keeps the spot it had when closed, which can sit under the toolbar (seen once at y = 24,
     // where the double-click missed it): drag it to the world origin, the middle of the canvas, first.
     sm.send(&format!("MOVENODE {outer} 0 0"))?;
     let placed = sm.settle("jar_group_placed")?;
     sm.send(&format!("DOUBLECLICK {}", xy(&placed, &outer)?))?;
     let inside = sm.settle("jar_group_in")?;
-    let new_tab = new_card(&inside, TAB, None, &before);
     check_query(
         &inside,
         "jar_group_in",
-        "the reopened tab's edge names a reopened jar, not the old one",
-        &format!("cards['{new_tab}']['jar'] in cards and cards['{new_tab}']['jar'] != '{jar_id}' and len(jars) == 2"),
-        |s| {
-            let edge = s.card(&new_tab).and_then(|c| c["jar"].as_str());
-            edge.is_some_and(|j| j != jar_id && s.card(j).is_some()) && count_of(s, JAR) == 2
-        },
+        "the reopened tab is the same card and its edge names the same jar",
+        &format!("cards['{tab_id}']['jar'] == '{jar_id}' and len(jars) == 2"),
+        |s| s.card(&tab_id).is_some_and(|c| c["jar"] == jar_id.as_str()) && count_of(s, JAR) == 2,
     );
     sm.send("CLICK 22 17")?;
     sm.settle("jar_group_out")?;
