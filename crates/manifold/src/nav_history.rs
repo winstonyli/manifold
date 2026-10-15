@@ -108,6 +108,9 @@ pub(crate) struct NavHistory {
     fresh: bool,
     /// Changed since the last save.
     dirty: bool,
+    /// The child tab Back last left this tab for, at the root of the child's trail (decision 7): Forward goes there
+    /// when the trail has no Forward of its own. Not saved, not part of `dirty`.
+    left_to: Option<String>,
 }
 
 impl NavHistory {
@@ -220,6 +223,14 @@ impl NavHistory {
         }
     }
 
+    pub(crate) fn left_to(&self) -> Option<&str> {
+        self.left_to.as_deref()
+    }
+
+    pub(crate) fn set_left_to(&mut self, child: Option<String>) {
+        self.left_to = child;
+    }
+
     /// The tree's neighbour whose URL is `url` and that the engine's list holds next to its cursor (4b's candidates).
     fn inferred(&self, url: &str) -> Option<(Dir, usize)> {
         [Dir::Back, Dir::Forward].into_iter().find_map(|dir| {
@@ -268,7 +279,7 @@ impl NavHistory {
         self.start(target, native, now)
     }
 
-    fn move_pending(&self, now: Instant) -> bool {
+    pub(crate) fn move_pending(&self, now: Instant) -> bool {
         self.pending.is_some_and(|m| now <= m.deadline)
     }
 
@@ -303,6 +314,7 @@ impl NavHistory {
         }
         self.at = target;
         self.fresh = true;
+        self.left_to = None;
         match step {
             LinStep::Native if back => self.lin_at = self.lin_at.saturating_sub(1),
             LinStep::Native => self.lin_at = (self.lin_at + 1).min(self.lin.len().saturating_sub(1)),
@@ -327,6 +339,7 @@ impl NavHistory {
 
     /// The cursor's child at `url`, pushed as a new child if there is none (the fork rule).
     fn child_or_push(&mut self, url: &str) -> usize {
+        self.left_to = None;
         if let Some(c) =
             (0..self.entries.len()).find(|&c| self.entries[c].parent == Some(self.at) && self.entries[c].url == url)
         {
@@ -760,6 +773,31 @@ mod tests {
         let left = tree(&[("a", None, Some(1)), ("b", Some(0), None), ("c", Some(0), None)], 0);
         let right = tree(&[("a", None, Some(2)), ("b", Some(0), None), ("c", Some(0), None)], 0);
         assert_ne!(left.saved_form(), right.saved_form(), "a fwd");
+    }
+
+    #[test]
+    fn left_to_is_cleared_by_a_move_or_a_fork_but_not_by_a_report() {
+        let now = Instant::now();
+        let mut h = NavHistory::visited(&["a", "b"]);
+        h.set_left_to(Some("child".into()));
+        h.observe("b", "B", false, false, now);
+        assert_eq!(h.left_to(), Some("child"));
+        visit(&mut h, &["c"], now);
+        assert_eq!(h.left_to(), None, "a fork");
+        h.set_left_to(Some("child".into()));
+        back(&mut h, now);
+        assert_eq!(h.left_to(), None, "a commit");
+    }
+
+    #[test]
+    fn a_history_with_only_left_to_is_not_saved() {
+        let path = temp_dir("nav-history-left-to-only").join("tab-history.json");
+        let mut parent = NavHistory::default();
+        parent.set_left_to(Some("child".into()));
+        assert!(!parent.dirty);
+        let mut lists = HashMap::from([("p".to_string(), parent), ("t".to_string(), NavHistory::visited(&["a", "b"]))]);
+        save_to(&mut lists, |_| true, Some(&path));
+        assert_eq!(load_from(&path).keys().collect::<Vec<_>>(), ["t"]);
     }
 
     #[test]

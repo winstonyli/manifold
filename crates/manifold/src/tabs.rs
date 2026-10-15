@@ -72,6 +72,10 @@ pub(crate) struct SpawnTracker {
     /// (`Ok` or `Err`) arrives.
     pub(crate) pending_respawn_focus: Option<String>,
 
+    /// The opened-from step's target (trail spec decision 6) while a reopen has not put it in `nodes` yet;
+    /// `App::poll_trail_focus` finishes it.
+    pub(crate) pending_trail_focus: Option<String>,
+
     /// Unloaded tabs' cards whose `wake_tab` spawn is in flight. Unlike a
     /// crash respawn, the card is still on the graph meanwhile, so it can
     /// be moved or closed: the outcome takes the card's placement as it is
@@ -100,6 +104,9 @@ impl SpawnTracker {
         if self.pending_respawn_focus.as_deref() == Some(id) {
             self.pending_respawn_focus = None;
         }
+        if self.pending_trail_focus.as_deref() == Some(id) {
+            self.pending_trail_focus = None;
+        }
     }
 
     /// A session replace: drops the replaced session's spawns in flight and bumps `session_generation`, so their
@@ -111,6 +118,7 @@ impl SpawnTracker {
         self.host_loads.clear();
         self.navigated_from.clear();
         self.remote_in_flight.clear();
+        self.pending_trail_focus = None;
         self.session_generation += 1;
     }
 }
@@ -537,6 +545,7 @@ impl App {
     /// paired with the specific tab it was opened against. An unloaded tab
     /// (`UnloadedTabPayload`) is woken.
     pub(crate) fn focus_tab(&mut self, id: &str) {
+        self.spawns.pending_trail_focus = None;
         self.end_note_edits();
         if self.focused.as_deref() != Some(id) {
             self.hide_focused_tab();

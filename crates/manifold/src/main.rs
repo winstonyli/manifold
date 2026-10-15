@@ -74,6 +74,7 @@ mod tab_view;
 mod tabs;
 mod text;
 mod theme;
+mod trail_nav;
 mod view_info;
 mod view_install;
 mod view_modes;

@@ -919,11 +919,12 @@ impl App {
     }
 
     /// Hides `id` (spec decision 3): out of `nodes`, `node_order`, the layout and the mirror, its engine unloaded
-    /// (`unshow`), its personal state kept in `hidden_local` for a reopen, and its trail kept in `nav_history`. Nothing in the document changes: no
-    /// re-parent, no link delete, no backing-file release. A tab whose spawn is in flight (in `spawning`: a respawn,
-    /// or a wake, whose placeholder is dropped here) is parked as `Remote::Hidden` and hidden when it lands (plan D3).
-    /// A wake stops being one (`wakes_in_flight`), so its landing is an ordinary spawn that applies the parked change:
-    /// a reopen before then replaces the `Hidden` with a `Shown` (`materialize`), and the tab shows when it lands.
+    /// (`unshow`), its personal state kept in `hidden_local` for a reopen, and its trail kept in `nav_history`. Nothing
+    /// in the document changes: no re-parent, no link delete, no backing-file release. A tab whose spawn is in flight
+    /// (in `spawning`: a respawn, or a wake, whose placeholder is dropped here) is parked as `Remote::Hidden` and hidden
+    /// when it lands (plan D3). A wake stops being one (`wakes_in_flight`), so its landing is an ordinary spawn that
+    /// applies the parked change: a reopen before then replaces the `Hidden` with a `Shown` (`materialize`), and the tab
+    /// shows when it lands.
     pub(crate) fn hide_node(&mut self, id: &str) {
         if self.spawns.spawning.contains_key(id) {
             self.spawns.remote_in_flight.insert(id.to_owned(), Remote::Hidden);
@@ -938,7 +939,8 @@ impl App {
         self.mirror.forget_node(id);
         self.layout.remove(id);
         self.hidden_local.insert(id.to_owned(), local);
-        if let Some(trail) = trail {
+        if let Some(mut trail) = trail {
+            trail.set_left_to(None);
             self.nav_history.insert(id.to_owned(), trail);
         }
     }

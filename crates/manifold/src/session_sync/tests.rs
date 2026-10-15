@@ -4412,10 +4412,10 @@ fn a_spawning_tab_is_created_and_lands_with_its_jar() {
 
 // ---- 2b-3: the engine in the mirror -----------------------------------------
 
-type Peer = crate::process_manager::FakePeer;
+pub(crate) type Peer = crate::process_manager::FakePeer;
 
 /// A live tab on `kind` (a fake host, `ViewTab::fake`), as a landing inserts it. The peer reads what it is sent.
-fn live_tab(app: &mut App, kind: ViewKind, url: &str) -> (String, Peer) {
+pub(crate) fn live_tab(app: &mut App, kind: ViewKind, url: &str) -> (String, Peer) {
     let (tab, peer) = crate::process_manager::ViewTab::fake(kind);
     let payload = Runtime::Tab(crate::node::TabPayload {
         tab,

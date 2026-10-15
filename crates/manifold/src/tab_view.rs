@@ -2,7 +2,7 @@
 //! toolbar, address bar and the spawned engine's content pane).
 
 use super::*;
-use crate::nav_history::{Dir, NavAction};
+use crate::nav_history::Dir;
 
 /// Tab view's address bar and its autocomplete dropdown.
 pub(crate) struct AddressBar {
@@ -136,25 +136,6 @@ pub(crate) struct ItemToolbarFrame {
 }
 
 impl App {
-    /// A Back or Forward click on tab `id`: a move in the tab's trail (`nav_history`), sent as the engine's own
-    /// `GoBack`/`GoForward` when its list agrees, else as a `Navigate` to the entry's URL.
-    pub(crate) fn navigate_history(&mut self, id: &str, dir: Dir) {
-        let Some(node) = self.nodes.get_mut(id).and_then(|n| n.as_tab_mut()) else { return };
-        let action = self.nav_history.entry(id.to_string()).or_default().go(
-            dir,
-            node.can_go_back,
-            node.can_go_forward,
-            std::time::Instant::now(),
-        );
-        let message = match action {
-            NavAction::GoBack => HostToView::GoBack,
-            NavAction::GoForward => HostToView::GoForward,
-            NavAction::Navigate(url) => HostToView::Navigate { url, referrer: None },
-            NavAction::None => return,
-        };
-        node.tab.send(&message);
-    }
-
     /// The Item toolbar's shared frame -- the design spec's three layers,
     /// outer to inner. Layer 2 ("Graph") sits at the leading edge. Layer 1
     /// (the Universal chip) is drawn *first* into a right-to-left trailing
@@ -228,9 +209,7 @@ impl App {
         trailing_ui: &mut egui::Ui,
     ) -> ItemToolbarActions {
         let mut actions = ItemToolbarActions::default();
-        let history = self.nav_history.get(focused_id);
-        let can_go_back = history.is_some_and(|h| h.can_go_back());
-        let can_go_forward = history.is_some_and(|h| h.can_go_forward());
+        let (can_go_back, can_go_forward) = self.trail_enabled(focused_id);
         toolbar_chip(ui, |ui| {
             let mut bounds: Option<egui::Rect> = None;
             let mut grow = |r: egui::Rect| {
