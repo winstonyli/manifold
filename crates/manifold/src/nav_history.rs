@@ -321,6 +321,24 @@ impl NavHistory {
         self.branches(Dir::Forward).len() > 1
     }
 
+    /// EXPORTSTATE's view of this trail (plan D10): entry count, the cursor's depth (0 at the root) and URL, the
+    /// branch markers, the engine-list shadow's cursor and length, and `left_to`.
+    pub(crate) fn export(&self) -> serde_json::Value {
+        let depth =
+            std::iter::successors(self.entries.get(self.at).and_then(|e| e.parent), |&p| self.entries[p].parent)
+                .count();
+        serde_json::json!({
+            "entries": self.entries.len(),
+            "depth": depth,
+            "url": self.entries.get(self.at).map(|e| e.url.as_str()),
+            "back_fork": self.back_fork(),
+            "forward_fork": self.forward_fork(),
+            "lin_at": self.lin_at,
+            "lin_len": self.lin.len(),
+            "left_to": self.left_to,
+        })
+    }
+
     pub(crate) fn entry_url(&self, entry: usize) -> Option<&str> {
         self.entries.get(entry).map(|e| e.url.as_str())
     }

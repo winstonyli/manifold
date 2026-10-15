@@ -266,6 +266,9 @@ pub enum DebugCommand {
     /// a test can poll this until `suggestions` fills.
     /// `window` is the window's `[width, height]` in points; `popups` lists the visible menus, dialogs, dropdowns and
     /// toasts as `{id, order, rect}` (see `App::popups_state`).
+    /// `trail` maps each tab with a trail to `{entries, depth, url, back_fork, forward_fork, lin_at, lin_len,
+    /// left_to, back, forward}` (`App::trail_state`): `depth` is 0 at the trail's first page, `back`/`forward` the
+    /// chips' enablement.
     /// The file is replaced atomically (`store::atomic::replace`), so a test may read it as soon as it exists.
     ExportState(String),
     /// "Import..." with an explicit path, same "bypass the real file
@@ -1728,7 +1731,23 @@ impl App {
             "view_kinds": self.view_kinds_state(),
             "window": [window.width(), window.height()],
             "popups": self.popups_state(),
+            "trail": self.trail_state(),
         })
+    }
+
+    /// `export_state`'s `trail`: each tab with a trail, by id, as `NavHistory::export` plus `back` and `forward`, the
+    /// chips' enablement (`trail_enabled`).
+    fn trail_state(&self) -> serde_json::Map<String, serde_json::Value> {
+        self.nav_history
+            .iter()
+            .map(|(id, h)| {
+                let mut v = h.export();
+                let (back, forward) = self.trail_enabled(id);
+                v["back"] = back.into();
+                v["forward"] = forward.into();
+                (id.clone(), v)
+            })
+            .collect()
     }
 
     /// `export_state`'s `popups`: every visible egui `Area` above the panels (menus, dialogs, dropdowns, toasts,
@@ -2071,6 +2090,27 @@ mod tests {
         let probe = popups.iter().find(|p| p["id"].as_str().is_some_and(|id| id.contains("probe_popup"))).unwrap();
         assert_eq!(probe["rect"][0], 10.0);
         assert_eq!(probe["rect"][1], 20.0);
+    }
+
+    /// `trail` gives each tab's trail and the chips' enablement (`gate trail` reads it).
+    #[test]
+    fn export_state_gives_each_trail() {
+        let mut app = App::default();
+        app.nav_history.insert("t".into(), crate::nav_history::NavHistory::visited(&["a", "b"]));
+        let state = app.export_state();
+        let trail = &state["trail"]["t"];
+        assert_eq!(
+            (trail["entries"].as_u64(), trail["depth"].as_u64(), trail["url"].as_str()),
+            (Some(2), Some(1), Some("b"))
+        );
+        assert_eq!(
+            (trail["back"].as_bool(), trail["forward"].as_bool(), trail["back_fork"].as_bool()),
+            (Some(true), Some(false), Some(false))
+        );
+        assert_eq!(
+            (trail["lin_at"].as_u64(), trail["lin_len"].as_u64(), trail["left_to"].is_null()),
+            (Some(1), Some(2), true)
+        );
     }
 
     #[test]

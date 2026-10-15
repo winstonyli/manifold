@@ -8,7 +8,7 @@
 //! - `scroll`: a tall page scrolled with PageDown in Tab view, slept from Graph view and woken: the page must come back
 //!   at the position it had (|before - after| <= 2 px, before > 0)
 //! - `history`: two more pages, then sleep and wake; Back twice and Forward once must retrace them (the host keeps the
-//!   list, `nav_history`)
+//!   trail, `nav_history`)
 //! - `crash`: as history, but the engine host is killed instead of slept: the app restarts the tab and Back and
 //!   Forward must still work
 //! - `restart`: as history, but the app is quit and started again on the same profile (`tab-history.json`)

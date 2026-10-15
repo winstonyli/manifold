@@ -1,6 +1,6 @@
 # The trail: Back and Forward over a tab's pages and over opened-from
 
-Status: design, 2026-10-15 (draft 3: draft 1 plus the owner's calls J1-J7 and review rounds 1-8; round 8 found only clarifications, all applied; step 4b (inferred move) added after and revised twice from its reviews). Decisions
+Status: implemented 2026-10-15 (plan docs/superpowers/plans/2026-10-15-trail.md); design draft 3 as before. (draft 3: draft 1 plus the owner's calls J1-J7 and review rounds 1-8; round 8 found only clarifications, all applied; step 4b (inferred move) added after and revised twice from its reviews). Decisions
 were made with the owner in one session.
 
 ## Goal
@@ -176,7 +176,7 @@ middle of the trail stay reachable as branches. Nothing creates a card unless th
      `pending_respawn_focus` does) that is consumed, with the level change and selection, when the id appears in `nodes`;
      the nested-closed repeat re-reads closed state from the document each time it runs;
    The parent is resolved once: p = `PARENT` from `mirror.parent`; while p is not live in the document, p = that node's own
-   `PARENT` from `doc.nodes` (bounded by `doc.nodes.len()`). Back is disabled when the walk finds no live ancestor. The
+   `PARENT` from `doc.nodes` (bounded by `doc.nodes.len()`). Back is disabled when the walk finds no live ancestor. A closed or never-shown parent deleted (remotely, or evicted past MAX_CLOSED) ends the walk: `OpBody::Delete` clears the node's fields (`store/ops.rs`), and nothing reparents a hidden node's children, so it has no `PARENT` to follow, and Back is disabled (plan D16); a local delete reparents the children first, so it reaches the grandparent. The
    reopen loop above breaks if the outermost closed id is unchanged after a reopen (a failed or read-only save leaves the
    closed flag), and then toasts. A non-tab parent: the step also leaves the Item view for the Graph view
    (`leave_to_graph`, `tabs.rs:636`, which also hides the focused tab or image), since the Back chip exists only in the Item view; an image parent can use

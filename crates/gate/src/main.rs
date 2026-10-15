@@ -3,7 +3,7 @@
 //! `PASS:`/`FAIL:`/`TIMING` lines the shell scripts print, so `gate all` can run it as a stage. The exit code is
 //! 0 when no check failed.
 //!
-//! Stages: `hello` (one instance: launch, WAITTABS, export, QUIT), `launch-forms` (was scripts/launch-forms-probe.sh), `layout` (popups inside the window and opaque, see layout.rs), `link` (was scripts/link-probe.sh), `unknown-type` (a node of a type this build doesn't know, end to end, see unknown_type.rs), `closed` (the closed field end to end, see closed.rs), `smoke` (was
+//! Stages: `hello` (one instance: launch, WAITTABS, export, QUIT), `launch-forms` (was scripts/launch-forms-probe.sh), `layout` (popups inside the window and opaque, see layout.rs), `link` (was scripts/link-probe.sh), `unknown-type` (a node of a type this build doesn't know, end to end, see unknown_type.rs), `closed` (the closed field end to end, see closed.rs), `trail` (Back and Forward over a tab's pages and opened-from, see trail.rs),`smoke` (was
 //! scripts/headless-smoke-test.sh) and `two` (the two-instance test, was scripts/two-instance-test.sh). Run from the repo after
 //! `cargo build -p manifold -p manifold-view-webview2 -p manifold-view-pdfium -p gate`; the exe is `manifold.exe` beside `gate.exe`.
 
@@ -56,6 +56,8 @@ mod suggest;
 mod sync_deps;
 mod tier;
 mod timing;
+#[cfg(windows)]
+mod trail;
 #[cfg(windows)]
 mod two;
 #[cfg(windows)]
@@ -115,6 +117,7 @@ mod windows_main {
             "two" => crate::two::two(parent),
             "unknown-type" => crate::unknown_type::unknown_type(parent),
             "closed" => crate::closed::closed(parent),
+            "trail" => crate::trail::trail(parent),
             // Was scripts/fresh-exe.sh: exit 1 and name the stale files if EXE (the next argument) is older than its sources.
             "fresh" => match parent.as_deref().map(require_fresh_exe) {
                 Some(Ok(())) => ExitCode::SUCCESS,
@@ -130,7 +133,7 @@ mod windows_main {
             // Test aid for the "killed gate leaves no manifold.exe" proof; not a gate stage.
             "hold" => hold(parent),
             _ => {
-                eprintln!("usage: gate all LOG [full|light|ui] | gate hello|launch-forms|unresponsive|layout|link|smoke|two|unknown-type|closed [WORKDIR_PARENT] | gate chrome-shots|chrome-shots-sizes [WORKDIR_PARENT] | gate sleep | gate jar | gate release-verify vX.Y.Z | gate sync-runtime-deps | gate host-pin ARGS | gate cef-pin [--platform ID] PREFIX | gate json-pan [MODE] [SECONDS] [--samply] | gate package [EXE] | gate focus-loss | gate scale TABS... | gate tier [BASE|--stdin] | gate fresh EXE");
+                eprintln!("usage: gate all LOG [full|light|ui] | gate hello|launch-forms|unresponsive|layout|link|smoke|two|unknown-type|closed|trail [WORKDIR_PARENT] | gate chrome-shots|chrome-shots-sizes [WORKDIR_PARENT] | gate sleep | gate jar | gate release-verify vX.Y.Z | gate sync-runtime-deps | gate host-pin ARGS | gate cef-pin [--platform ID] PREFIX | gate json-pan [MODE] [SECONDS] [--samply] | gate package [EXE] | gate focus-loss | gate scale TABS... | gate tier [BASE|--stdin] | gate fresh EXE");
                 ExitCode::from(2)
             }
         }
