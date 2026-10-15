@@ -261,6 +261,7 @@ impl App {
             if cur == node_id || !visited.insert(cur.clone()) {
                 return true;
             }
+            // The raw edge on purpose: a cycle through a closed card would come back with a reopen.
             current = self.mirror.parent(&cur).map(str::to_owned);
         }
         false
@@ -341,7 +342,7 @@ impl App {
         let mut frontier = vec![root_id.to_string()];
         while let Some(current) = frontier.pop() {
             for id in self.nodes.keys() {
-                if self.mirror.parent(id) == Some(current.as_str())
+                if self.opened_from(id) == Some(current.as_str())
                     && self.mirror.group(id) == level_group
                     && !result.contains(id)
                 {
@@ -542,7 +543,7 @@ impl App {
         self.nodes
             .keys()
             .filter(|id| live(id))
-            .filter_map(|id| self.mirror.parent(id).map(|p| (p.to_owned(), id.clone())))
+            .filter_map(|id| self.opened_from(id).map(|p| (p.to_owned(), id.clone())))
             .filter(|(p, _)| live(p))
             .collect()
     }

@@ -166,7 +166,7 @@ impl App {
                 .and_then(|n| n.as_download())
                 .is_some_and(|d| d.path == path && !d.completed && !d.failed)
         };
-        let from_tab = |id: &&String| self.mirror.parent(id) == Some(tab_id);
+        let from_tab = |id: &&String| self.opened_from(id) == Some(tab_id);
         let mut newest_first = self.node_order.iter().rev().filter(|id| in_flight(id));
         let first = newest_first.clone().next();
         newest_first.find(from_tab).or(first).cloned()

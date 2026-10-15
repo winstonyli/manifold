@@ -246,11 +246,19 @@ impl App {
         other != node && self.nodes.contains_key(other) && self.mirror.group(other) == self.mirror.group(node)
     }
 
+    /// The card `id` was opened from, when that card is live here (spec decision 9). The stored edge survives a
+    /// close of its parent and reads as none until the parent is reopened; a deleted parent reads as none forever.
+    /// Every reader of the `opened-from` edge goes through this; the writers (`edit_parent`, a spawn's carried
+    /// `parent`, the save) read `Mirror::parent` directly.
+    pub(crate) fn opened_from(&self, id: &str) -> Option<&str> {
+        self.mirror.parent(id).filter(|p| self.nodes.contains_key(*p))
+    }
+
     /// The live edges at `node`: the card it was opened from (outgoing), the cards opened from it, and its links.
     /// An edge whose far end is missing, not live, or at another level is left out, as the read rule hides it.
     pub(crate) fn edges_of(&self, node: &str) -> Vec<EdgeRef> {
         let mut edges = Vec::new();
-        if let Some(opener) = self.mirror.parent(node).filter(|o| self.shown_with(node, o)) {
+        if let Some(opener) = self.opened_from(node).filter(|o| self.shown_with(node, o)) {
             edges.push(EdgeRef { edge: OPENED_FROM, other: opener.to_string(), link: None, outgoing: true });
         }
         for child in self.children_of(node).filter(|c| self.shown_with(node, c)) {

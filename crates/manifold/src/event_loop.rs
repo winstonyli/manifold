@@ -1784,7 +1784,7 @@ mod idle_tests {
         let by_parent = |p: &str| {
             app.nodes
                 .iter()
-                .find(|(id, _)| app.mirror.parent(id) == Some(p))
+                .find(|(id, _)| app.opened_from(id) == Some(p))
                 .and_then(|(_, n)| n.as_download())
                 .unwrap()
                 .failed

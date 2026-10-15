@@ -1727,6 +1727,9 @@ fn closing_an_unloaded_tab_keeps_its_childrens_edge() {
     app.close_node(&mid);
     assert!(!app.nodes.contains_key(&mid));
     assert_eq!(app.mirror.parent(&leaf), Some(mid.as_str()), "the edge stays: mid is closed, not gone");
+    assert_eq!(app.opened_from(&leaf), None, "and reads as none while its parent is closed");
+    app.reopen_node(mid.parse().unwrap());
+    assert_eq!(app.opened_from(&leaf), Some(mid.as_str()), "and is back after a reopen");
 }
 
 /// A restore starts only the focused tab; every other tab is a

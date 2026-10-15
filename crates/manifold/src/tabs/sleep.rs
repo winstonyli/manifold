@@ -120,7 +120,7 @@ impl App {
             .nodes
             .iter()
             .filter(|(_, n)| n.as_download().is_some_and(|d| !d.completed && !d.failed))
-            .filter_map(|(id, _)| self.mirror.parent(id))
+            .filter_map(|(id, _)| self.opened_from(id))
             .collect();
         self.nodes
             .iter()

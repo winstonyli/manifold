@@ -153,7 +153,7 @@ impl App {
         }
         let rect_of = |id: &str| node_card_rect(self.layout_pos(id), &self.nodes[id].runtime);
         let opened = self.nodes.iter().filter(|(id, _)| self.in_level(id)).filter_map(|(id, _)| {
-            let parent_id = self.mirror.parent(id)?;
+            let parent_id = self.opened_from(id)?;
             self.nodes.get(parent_id).filter(|_| self.in_level(parent_id))?;
             let (from, to) = crate::link_gestures::facing_ends(rect_of(parent_id), rect_of(id));
             Some(LevelEdge {

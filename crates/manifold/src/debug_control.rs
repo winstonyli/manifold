@@ -1573,7 +1573,7 @@ impl App {
                     "loaded": kind.loaded(),
                     "json_card": false,
                     "group": self.mirror.group(&item.id),
-                    "parent": self.mirror.parent(&item.id),
+                    "parent": self.opened_from(&item.id),
                     "color": self.mirror.color(&item.id).is_some(),
                     "pinned": self.mirror.pinned(&item.id),
                     "name": self.mirror.name(&item.id), // name rule: reported as stored

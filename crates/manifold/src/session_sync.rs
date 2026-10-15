@@ -1254,7 +1254,7 @@ impl App {
 
     /// Every node whose mirror parent is `id` (`linked_ids`).
     pub(crate) fn children_of<'a>(&'a self, id: &'a str) -> impl Iterator<Item = &'a str> + 'a {
-        self.linked_ids().filter(move |child| self.mirror.parent(child) == Some(id))
+        self.linked_ids().filter(move |child| self.opened_from(child) == Some(id))
     }
 
     /// Shows another replica's values of `fields` (the node's type's fields, Ruling 11) and its effective `group`,
