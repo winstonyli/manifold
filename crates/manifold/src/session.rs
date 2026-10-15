@@ -13,7 +13,6 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-use crate::local_state::LocalState;
 use crate::store::journal::Journal;
 
 /// Where the session store (spec "Journal") lives.
@@ -34,8 +33,8 @@ pub(crate) fn named_sessions_dir() -> Option<PathBuf> {
 }
 
 /// What the named sessions in `dir` still use of the backing-file dirs, for `content::kept`: the ids and `path` file
-/// names of each one's live and Recently Closed nodes. `None` when any save or its personal state can't be read
-/// whole, so pruning never runs against a partial list; a missing `dir` names nothing.
+/// names of each one's live nodes, closed ones included (they are live in the document). `None` when any save can't
+/// be read whole, so pruning never runs against a partial list; a missing `dir` names nothing.
 pub(crate) fn backing_names(dir: &Path) -> Option<HashSet<String>> {
     let mut names = HashSet::new();
     let entries = match std::fs::read_dir(dir) {
@@ -49,16 +48,7 @@ pub(crate) fn backing_names(dir: &Path) -> Option<HashSet<String>> {
             continue;
         }
         let doc = Journal::read_intact(&std::fs::read(&path).ok()?).ok()??;
-        let closed = match crate::store::local::read(&path, doc.id).ok()? {
-            Some(bytes) => LocalState::from_bytes(&bytes)?.closed,
-            None => Vec::new(),
-        };
         names.extend(crate::fetched::doc_backing_names(&doc, None));
-        // Task 3 deletes the snapshot list this reads.
-        let nodes = closed.iter().flat_map(|c| &c.nodes);
-        names.extend(nodes.clone().map(|n| n.id.clone()));
-        let paths = nodes.filter_map(|n| n.fields.get("path"));
-        names.extend(paths.filter_map(|p| p.as_str()).filter_map(crate::content::file_name));
     }
     Some(names)
 }

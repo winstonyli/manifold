@@ -1140,8 +1140,9 @@ impl App {
     /// "Recently Closed (n)"; returns its rect for the popup anchor.
     fn toolbar_recently_closed(&mut self, ui: &mut egui::Ui) -> Option<egui::Rect> {
         let mut recently_closed_button_rect: Option<egui::Rect> = None;
-        if !self.closed.is_empty() {
-            let label = format!("Recently Closed ({})", self.closed.len());
+        let count = self.journal.as_ref().map_or(0, |j| j.doc().closed_roots().len());
+        if count > 0 {
+            let label = format!("Recently Closed ({count})");
             let response = ui.button(label).on_hover_text("Reopen the last closed tab (Ctrl+Shift+T)");
             self.popup_opener_clicked(ui, AnchoredPopup::RecentlyClosed, &response);
             recently_closed_button_rect = Some(response.rect);

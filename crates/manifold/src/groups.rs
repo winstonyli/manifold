@@ -77,8 +77,7 @@ impl App {
         self.place_group(Some(id), &name, at);
     }
 
-    /// Destroys a group and everything in it, at any depth, then the group itself, and saves once. Records nothing:
-    /// `close_node` has already recorded the whole subtree as one entry.
+    /// Destroys a group and everything in it, at any depth, then the group itself, and saves once. Records nothing.
     pub(crate) fn destroy_group(&mut self, id: &str) {
         self.begin_tabs_shutdown(&self.tabs_under(id));
         self.destroy_group_members(id, &mut HashSet::new());
@@ -116,10 +115,6 @@ impl App {
                 if !visited.contains(&tid) {
                     self.destroy_group_members(&tid, visited);
                 }
-            } else if self.is_default_jar(&tid) {
-                // The Default is never closed: it moves to the top level (a plain dissolve could refuse, as moves
-                // into a group are refused for it, `edit_group`).
-                self.edit_group(&tid, None);
             } else if self.card_kind(&tid).is_some_and(|k| k.ty == store::model::TYPE_TAB) {
                 // No save per tab: `destroy_group` commits the whole subtree once.
                 self.remove_tab(&tid);

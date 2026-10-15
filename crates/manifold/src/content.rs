@@ -196,8 +196,7 @@ pub(crate) fn kept(names: &HashSet<String>, file: &str) -> bool {
 }
 
 /// How recently modified a file `prune` never deletes: covers a file whose
-/// node only another instance knows of, e.g. a close whose Recently Closed
-/// entry that instance's own list overwrote (`App::record_closed` touches it).
+/// node only another instance knows of, e.g. a node it created or closed that this replica has not yet seen.
 pub(crate) const PRUNE_GRACE: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 
 /// Deletes each file in `dir` whose name `keep` rejects and that was last modified before `cutoff`; returns how many.
@@ -343,8 +342,8 @@ pub(crate) mod tests {
         let dir = crate::store::testutil::temp_dir("content_prune_race");
         let old = dir.join("old.bin");
         write_aged(&old, OLD);
-        // Closed a day ago by an instance whose Recently Closed list was
-        // then overwritten by another's.
+        // Written a day ago by an instance whose node this replica has
+        // not seen.
         let recent = dir.join("recent.bin");
         write_aged(&recent, Duration::from_secs(24 * 60 * 60));
         // Fetched by another instance after this one's keep set was built.

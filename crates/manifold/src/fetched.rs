@@ -193,11 +193,6 @@ impl App {
         if let Some(j) = &self.journal {
             keep.extend(doc_backing_names(j.doc(), except.and_then(|e| e.parse().ok())));
         }
-        // Task 3 deletes the snapshot list this reads.
-        for node in self.closed.iter().flat_map(|entry| &entry.doc.nodes) {
-            keep.extend(node.fields.get("path").and_then(|v| v.as_str()).and_then(content::file_name));
-            keep.insert(node.id.clone());
-        }
         keep
     }
 
@@ -209,7 +204,7 @@ impl App {
 
     /// Deletes the backing files nothing holds (spec "Backing files"), in the content and jars dirs, on a thread.
     /// Called once at launch, after restore. The thread also reads the named sessions, which hold their files too;
-    /// a file touched within `content::PRUNE_GRACE` stays (a sibling instance's Recently Closed may hold it, and
+    /// a file touched within `content::PRUNE_GRACE` stays (a sibling instance may hold it, and
     /// one it wrote after this keep set was built is never a candidate).
     pub(crate) fn prune_backing_dirs(&self) {
         if !self.may_prune() {
@@ -542,8 +537,8 @@ impl App {
     /// The insert every `image` card goes through: the caller picks the id,
     /// position and group -- `insert_content` a fresh id at the current
     /// level for a picked/dropped/`ADDFILE` image, session restore the saved
-    /// id and position with no group, "Recently Closed" the old position and
-    /// group (`reopen_closed`), among others. The node appears at once as a
+    /// id and position with no group, a reopen the stored position and
+    /// group (`reopen_node`), among others. The node appears at once as a
     /// decoding placeholder (`ImagePayload::decoding`); `ImageDecoder`
     /// fills in the size, or the error, from a worker.
     pub(crate) fn insert_image_node_with_id(
@@ -588,8 +583,8 @@ impl App {
     /// The insert every `pdf` card goes through: the caller picks the id,
     /// position and group -- `insert_content` a fresh id at the current
     /// level for a picked/dropped/`ADDFILE` PDF, session restore the saved
-    /// id and position with no group, "Recently Closed" the old position and
-    /// group (`reopen_closed`), among others. Like `insert_image_node_
+    /// id and position with no group, a reopen the stored position and
+    /// group (`reopen_node`), among others. Like `insert_image_node_
     /// with_id`, this always inserts the node immediately (`outcome: None`,
     /// "still loading") rather than checking the file synchronously first --
     /// decoding a PDF is genuinely slow (see `PdfPayload`'s own doc comment);
@@ -603,8 +598,8 @@ impl App {
     /// The insert every `json` card goes through: the caller picks the id,
     /// position and group -- `insert_content` a fresh id at the current
     /// level for a picked/dropped/`ADDFILE` JSON file, session restore the
-    /// saved id and position with no group, "Recently Closed" the old
-    /// position and group (`reopen_closed`), among others. Returns `Err`
+    /// saved id and position with no group, a reopen the stored
+    /// position and group (`reopen_node`), among others. Returns `Err`
     /// (doing nothing) if the file doesn't exist or isn't valid JSON, same
     /// fail-fast posture (a JSON parse on the UI thread is bounded by the
     /// body cap; moving it to a worker like `ImageDecoder` is parked as D-R6).

@@ -178,9 +178,9 @@ fn a_new_download_has_its_url_and_type_in_the_mirror() {
 }
 
 /// 2b-5 Ruling 5: a reload that lands in a new file keeps the stored (create-time) path in the mirror, which the
-/// save writes, while the payload reads the new one, and Recently Closed records that resolved one.
+/// save writes, while the payload reads the new one.
 #[test]
-fn a_reload_keeps_the_stored_path_and_closing_records_the_resolved_one() {
+fn a_reload_keeps_the_stored_path() {
     let dir = crate::store::testutil::temp_dir("reload_path");
     let mut app = App::default();
     let id = app.alloc_node_id();
@@ -203,8 +203,6 @@ fn a_reload_keeps_the_stored_path_and_closing_records_the_resolved_one() {
     assert_eq!(app.mirror.path(&id), stored, "the mirror keeps the stored path");
     let snapshot = app.snapshot(id.parse().unwrap()).unwrap();
     assert_eq!(snapshot.fields[&field::PATH], FieldValue::Str(stored.clone()), "a save writes the stored path");
-    let entry = crate::closed::closed_entry(&app, &id).unwrap();
-    assert_eq!(entry.doc.nodes[0].fields.get("path").and_then(|v| v.as_str()), Some(moved.as_str()));
 }
 
 #[test]
@@ -246,50 +244,29 @@ fn one_index_answers_every_node_of_a_pass() {
 
 #[test]
 fn pruning_keeps_files_live_or_recently_closed_nodes_name() {
+    use crate::session_sync::tests::{add, app_on};
     let dir = crate::store::testutil::temp_dir("prune_content");
-    let mut app = App::default();
-    // A live node by path, a live node by id (a refetched copy), a
-    // closed entry by its path field, and an orphan.
-    for name in ["a.png", "1-7.json", "c.pdf", "orphan.png"] {
+    let mut app = app_on(&dir.join("session.mnf"), 1);
+    let image = |path: std::path::PathBuf| {
+        let path = path.to_string_lossy().into_owned();
+        Runtime::Image(ImagePayload { path, width: 1, height: 1, error: None })
+    };
+    // A live node by path, a live node by id (a refetched copy), a closed node by its path, and an orphan.
+    add(&mut app, Kind::Image, image(dir.join("a.png")));
+    let by_id = add(&mut app, Kind::Image, image(r"Z:\x.png".into()));
+    let closed = add(&mut app, Kind::Image, image(dir.join("c.png")));
+    app.close_node(&closed);
+    for name in ["a.png", &format!("{by_id}.png"), "c.png", "orphan.png"] {
         crate::content::tests::write_aged(&dir.join(name), crate::content::tests::OLD);
     }
-    app.insert_placeholder_node(
-        "1".into(),
-        egui::Vec2::ZERO,
-        Kind::Image,
-        Runtime::Image(ImagePayload {
-            path: dir.join("a.png").to_string_lossy().into_owned(),
-            width: 0,
-            height: 0,
-            error: None,
-        }),
-    );
-    app.insert_placeholder_node(
-        "1-7".into(),
-        egui::Vec2::ZERO,
-        Kind::Json,
-        Runtime::Json(JsonPayload { path: r"Z:\x.json".into(), value: Default::default(), error: None }),
-    );
-    app.closed.push(ClosedEntry {
-        doc: store::json::JsonDoc {
-            nodes: vec![store::json::JsonNode {
-                id: "99".into(),
-                fields: serde_json::Map::from_iter([
-                    ("type".to_string(), serde_json::Value::String(store::model::TYPE_PDF.into())),
-                    ("path".to_string(), serde_json::Value::String(dir.join("c.pdf").to_string_lossy().into_owned())),
-                ]),
-            }],
-            local: None,
-        },
-    });
     let keep = app.backing_keep(None);
     let cutoff = std::time::SystemTime::now() - crate::content::PRUNE_GRACE;
     let pruned = crate::content::prune(&dir, cutoff, |f| crate::content::kept(&keep, f));
     assert_eq!(pruned, 1);
     assert!(!dir.join("orphan.png").exists());
     assert!(dir.join("a.png").exists());
-    assert!(dir.join("1-7.json").exists());
-    assert!(dir.join("c.pdf").exists());
+    assert!(dir.join(format!("{by_id}.png")).exists());
+    assert!(dir.join("c.png").exists(), "the closed node is live in the document");
 }
 
 #[test]
@@ -313,8 +290,8 @@ fn pruning_keeps_files_a_named_session_names() {
     assert!(app.save_session());
     app.close_node(&closed);
     assert!(app.save_session());
-    assert_eq!(app.closed.len(), 1);
     let journal = app.journal.as_ref().unwrap();
+    assert!(journal.doc().nodes[&closed.parse().unwrap()].closed(), "closed in the document, not recorded aside");
     journal.save_copy(&sessions.join("saved.mnf"), Some(&app.local_state().to_bytes())).unwrap();
 
     for name in ["by-path.png", &format!("{by_id}.json"), "closed.png", "orphan.png"] {
@@ -325,7 +302,7 @@ fn pruning_keeps_files_a_named_session_names() {
     let pruned = prune_unnamed(&content_dir, cutoff, HashSet::new(), Some(&sessions), |_| true);
     assert_eq!(pruned, Some(1));
     let named = session::backing_names(&sessions).unwrap();
-    assert!(named.contains(&closed), "a closed entry's node id is named too");
+    assert!(named.contains(&closed), "a closed node's id is named too");
     assert!(!content_dir.join("orphan.png").exists());
     assert!(content_dir.join("by-path.png").exists());
     assert!(content_dir.join(format!("{by_id}.json")).exists());
@@ -354,11 +331,6 @@ fn a_named_session_that_cant_be_read_whole_stops_the_prune() {
     assert!(app.save_session());
     app.journal.as_ref().unwrap().save_copy(&saved, None).unwrap();
     assert_eq!(prune(), Some(1));
-
-    let local = crate::store::local::path_for(&saved);
-    std::fs::write(&local, b"garbage").unwrap();
-    assert_eq!(prune(), None, "a corrupt .mnf.local");
-    std::fs::remove_file(&local).unwrap();
 
     let good = std::fs::read(&saved).unwrap();
     let mut damaged = good.clone();
@@ -416,27 +388,6 @@ fn a_refresh_keeps_its_old_file_while_another_node_names_it() {
     app.nodes.remove("s");
     assert!(replaced_file_unused(&dir, "r", &old, &new, &app.backing_keep(Some("r"))));
     assert!(!replaced_file_unused(&dir, "r", &old, &old, &app.backing_keep(Some("r"))));
-}
-
-#[test]
-fn closing_a_node_touches_its_own_content_file_only() {
-    use crate::content::tests::{write_aged, OLD};
-    let dir = crate::store::testutil::temp_dir("touch_closed");
-    let (own, picked) = (dir.join("7-1.png"), dir.join("picked.png"));
-    write_aged(&own, OLD);
-    write_aged(&picked, OLD);
-    let node = |path: &std::path::Path| store::json::JsonNode {
-        id: "7-1".into(),
-        fields: serde_json::Map::from_iter([
-            ("type".into(), store::model::TYPE_IMAGE.into()),
-            ("path".into(), path.to_string_lossy().into_owned().into()),
-        ]),
-    };
-    let entry = ClosedEntry { doc: store::json::JsonDoc { nodes: vec![node(&own), node(&picked)], local: None } };
-    touch_backing(&entry, Some(&dir), None);
-    let age = |p: &std::path::Path| std::fs::metadata(p).unwrap().modified().unwrap().elapsed().unwrap_or_default();
-    assert!(age(&own) < std::time::Duration::from_secs(60), "touched");
-    assert!(age(&picked) > crate::content::PRUNE_GRACE, "not its own <id>.<ext>: untouched");
 }
 
 /// A Refresh whose fetch fails, with the file still there, only toasts.
@@ -688,7 +639,8 @@ fn retrying_an_image_error_card_decodes_again_and_a_decoding_image_does_not_open
 fn one_prune_keeps_held_jar_files_and_drops_unheld_old_ones() {
     use crate::content::tests::{write_aged, OLD};
     let jars = crate::store::testutil::temp_dir("backing-jars");
-    let mut app = App { jars_dir_override: Some(jars.clone()), ..App::default() };
+    let session = crate::store::testutil::temp_dir("backing-jars-session").join("session.mnf");
+    let mut app = App { jars_dir_override: Some(jars.clone()), ..crate::session_sync::tests::app_on(&session, 1) };
     let live = crate::session_sync::tests::add_jar(&mut app, "Live");
     let closed = crate::session_sync::tests::add_jar(&mut app, "Closed");
     app.close_node(&closed.to_string());

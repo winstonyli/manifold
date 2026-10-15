@@ -688,7 +688,6 @@ impl App {
         let group = self.mirror.group(id).map(str::to_owned);
         // One failed card per intent: keep this one (its id is the live one) and drop another standing for it.
         if let Some(twin) = self.failed_twin(id, &url, kind, group.as_deref()) {
-            self.record_closed(&twin);
             self.remove_tab(&twin);
         }
         match why {

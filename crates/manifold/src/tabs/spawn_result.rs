@@ -40,7 +40,7 @@ impl App {
         // A group dissolved while this spawn was still in flight (spawning
         // is async, see this fn's own doc comment) would otherwise leave
         // the new tab pointing at a group id nothing can navigate into —
-        // same guard `reopen_closed`'s relinking applies for the same
+        // same guard `reopen_node`'s placement applies for the same
         // reason, centralized here since every spawn path funnels through
         // this one function.
         let (parent, group, color, pinned, muted) = if self.spawns.wakes_in_flight.remove(&id) {
@@ -263,7 +263,6 @@ impl App {
                     // drops the other: one card per intent, with this error.
                     if matches!(purpose, SpawnPurpose::Respawn | SpawnPurpose::Wake) {
                         if let Some(twin) = self.failed_twin(&id, &url, kind, group.as_deref()) {
-                            self.record_closed(&twin);
                             self.remove_tab(&twin);
                         }
                     }
@@ -302,8 +301,7 @@ impl App {
     }
 
     /// A tab for `url` landed (`landed`): failed cards for the same url in the landing tab's group (any engine),
-    /// other than `landed`, are resolved. Each is recorded in Recently Closed first (it may be an arranged
-    /// tab's card), then removed without a save: the landing's own save commits the delete, after the parked remote changes
+    /// other than `landed`, are resolved. Each is deleted, not recorded in Recently Closed, and removed without a save: the landing's own save commits the delete, after the parked remote changes
     /// land. Another url's card, or the same url's card in another group, stays.
     fn clear_failed_cards(&mut self, url: &str, landed: &str) {
         let group = self.mirror.group(landed);
@@ -320,7 +318,6 @@ impl App {
             .map(|(id, _)| id.clone())
             .collect();
         for id in stale {
-            self.record_closed(&id);
             self.remove_tab(&id);
         }
     }

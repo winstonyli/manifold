@@ -79,7 +79,6 @@ mod view_modes;
 mod viewport;
 mod zoom_chip;
 
-use closed::*;
 use event_loop::UserEvent;
 use export::*;
 use fetched::*;
@@ -439,12 +438,6 @@ struct App {
     /// `request_focus()` on the real widget.
     pending_focus: Option<FocusTarget>,
 
-    /// "Recently Closed", oldest first: one entry per close, capped at
-    /// `MAX_CLOSED`. The toolbar dropdown reopens any entry;
-    /// `Ctrl+Shift+T`/headless `REOPENTAB` reopens the newest. See
-    /// `ClosedEntry`.
-    closed: Vec<ClosedEntry>,
-
     /// Personal state (`LocalNode`: settled pos, title, zoom, muted, live url) of nodes this replica keeps out of
     /// the graph because they are closed or under a closed node (spec decision 8). Filled by `hide_node`, read
     /// back by a reopen (`apply_remote`), written to `session.mnf.local` with the rest. `forget_id` drops it.
@@ -618,7 +611,6 @@ impl Default for App {
             debug: debug_control::HeadlessDebug::default(),
             pacing: event_loop::FramePacing::default(),
             pending_focus: None,
-            closed: Vec::new(),
             hidden_local: HashMap::new(),
             popup_gate: popup_gate::PopupGate::default(),
             store_recovered: false,

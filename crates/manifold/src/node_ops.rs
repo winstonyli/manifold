@@ -179,23 +179,6 @@ impl App {
         }
     }
 
-    /// Closes one node: records it (and, for a group, everything under it)
-    /// as one "Recently Closed" entry, then `destroy_node`s it. The single
-    /// user-facing close: a card's hover ✕, its context-menu Delete/Close/
-    /// "Remove from List", the Downloads popup's Remove, Ctrl+W, Close
-    /// Selected and the rest. It doesn't save (callers decide:
-    /// `close_node_and_save`); a tab's or group's destroy saves itself.
-    pub(crate) fn close_node(&mut self, id: &str) {
-        if self.is_default_jar(id) {
-            self.queue_toast("The Default jar can't be closed".to_string());
-            return;
-        }
-        self.record_closed(id);
-        self.destroy_node(id);
-        // A closed jar's tabs now resolve to the Default jar.
-        self.sweep_jar_switches();
-    }
-
     /// Removes one node with its kind's full cleanup, recording nothing: a
     /// Group recurses (`destroy_group`), a Tab goes through `destroy_tab`,
     /// and a Download/Note/Image/Pdf/Json frees its GPU texture if it's an
@@ -207,29 +190,12 @@ impl App {
         let Some(kind) = self.card_kind(id) else {
             return;
         };
-        // Never the Default jar, whichever way a group close or a remote delete's cascade reaches it.
-        if self.is_default_jar(id) {
-            return;
-        }
         if is_container(kind.ty) {
             self.destroy_group(id);
         } else if kind.ty == store::model::TYPE_TAB {
             self.destroy_tab(id);
         } else {
             self.remove_node(id);
-        }
-    }
-
-    /// `close_node` for a single user action (hover ✕, context-menu
-    /// Delete/Close, Downloads popup Remove), then persists the session --
-    /// except for a tab or group, whose `destroy_tab`/`destroy_group`
-    /// already save.
-    pub(crate) fn close_node_and_save(&mut self, id: &str) {
-        let persisted =
-            self.card_kind(id).is_some_and(|kind| kind.ty != store::model::TYPE_TAB && !is_container(kind.ty));
-        self.close_node(id);
-        if persisted {
-            self.save_session();
         }
     }
 }

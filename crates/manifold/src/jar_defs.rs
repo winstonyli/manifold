@@ -319,7 +319,7 @@ impl App {
 
     /// The Default jar: the lowest-id live jar with `IS_DEFAULT` (`ensure_default_jar` leaves exactly one). Cheap
     /// enough per card per frame: the mirror's index holds one id, two for a moment after two replicas' first
-    /// launches, plus a closed one until the next save; each costs a `to_string` and a hash lookup.
+    /// launches; shown jars only, a closed or hidden one has left the mirror. Each costs a `to_string` and a hash lookup.
     pub(crate) fn default_jar(&self) -> Option<NodeId> {
         self.mirror.default_jar_ids().find(|&id| self.jar_exists(id))
     }
@@ -332,8 +332,36 @@ impl App {
     /// The startup and sync invariant (spec "The Default jar"): with no Default, one is made at the top level; with
     /// several (two replicas' concurrent first launches), the lowest id keeps the flag and each other is cleared and
     /// renamed, a deterministic repair every replica makes alike. Returns whether it wrote anything; the caller
-    /// saves.
+    /// saves. A Default inside a group moves to the top level.
     pub(crate) fn ensure_default_jar(&mut self) -> bool {
+        // A Default never sits in a group, hidden ones included (spec decision 10): one that arrived inside a group
+        // moves out. One this replica shows moves now; one hidden under a closed group is queued, and the save's
+        // visibility pass shows it, so no second Default is made meanwhile.
+        let grouped: Vec<(NodeId, bool)> = self
+            .journal
+            .as_ref()
+            .map(|j| {
+                let doc = j.doc();
+                doc.live()
+                    .filter(|&(id, n)| n.kind() == Kind::Jar && doc.effective_group(id).is_some())
+                    .filter(|(_, n)| n.get(field::IS_DEFAULT) == FieldValue::Bool(true))
+                    .map(|(id, _)| (id, self.nodes.contains_key(&id.to_string())))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let (mut queued_hidden, mut moved_here) = (false, false);
+        for (id, here) in grouped {
+            if here {
+                self.edit_group(&id.to_string(), None);
+                moved_here = true;
+            } else {
+                self.writes.pending_moves.insert(id, None);
+                queued_hidden = true;
+            }
+        }
+        if queued_hidden {
+            return true;
+        }
         let defaults: Vec<NodeId> = self.mirror.default_jar_ids().filter(|&id| self.jar_exists(id)).collect();
         let Some((_, losers)) = defaults.split_first() else {
             let pos = crate::graph_layout::GRAPH_WORLD_CENTER + crate::graph_layout::spawn_jitter(DEFAULT_NAME);
@@ -346,7 +374,7 @@ impl App {
             self.edit_field(&key, field::IS_DEFAULT, FieldValue::Bool(false));
             self.edit_field(&key, field::NAME, FieldValue::Str(OLD_DEFAULT_NAME.to_owned()));
         }
-        !losers.is_empty()
+        moved_here || !losers.is_empty()
     }
 
     /// A new named jar under `name`'s clean form (name rules), with the first palette colour no jar shows (one without

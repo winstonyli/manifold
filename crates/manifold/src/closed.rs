@@ -1,10 +1,11 @@
-//! Recently Closed: what closing a node records and how reopening rebuilds it.
+//! Recently Closed: close, reopen and eviction over the document's `closed` field; and Duplicate's snapshot (moves
+//! to `duplicate.rs` in Task 4).
 
 use super::*;
-use crate::store::model::Kind;
+use crate::store::model::{Kind, Stamp};
 
-/// closed node and, if it's a group, every live member at any depth, as
-/// `closed_entry` built it. `doc.nodes[0]` is the node that was closed.
+/// A snapshot of a node and, if it's a group, every live member at any depth, as
+/// `subtree_entry` builds it. `doc.nodes[0]` is the first node copied.
 /// `App::reopen_closed` imports the whole snapshot with fresh ids. Not
 /// cookies/localStorage/scroll position, the same "graph shape only"
 /// limit session restore and an engine swap have. `doc.local` carries a
@@ -27,12 +28,12 @@ impl ClosedEntry {
 /// How far a duplicate lands from its original, in the level's world units (`App::duplicate_nodes`).
 const DUPLICATE_OFFSET: f32 = 40.0;
 
-/// How many entries `App::closed` keeps before dropping the oldest, like a
-/// browser's own bounded "Recently closed" list.
+/// How many roots the history keeps before `evict_closed` deletes the oldest, like a browser's own bounded
+/// "Recently closed" list.
 pub(crate) const MAX_CLOSED: usize = 20;
 
-/// Whether a node of stored type `ty` (`Mirror::ty`) with `fields` (its snapshot's) is worth keeping in a
-/// `ClosedEntry`. `false` for a completed download (it has no closed state -- starting it over isn't "reopening"), a
+/// Whether a node of stored type `ty` (`Mirror::ty`) with `fields` (its snapshot's) is worth keeping when it is
+/// closed. `false` for a completed download (it has no closed state -- starting it over isn't "reopening"), a
 /// blank note (nothing to restore; the `Blank` tag) and no type at all; everything else -- tabs, groups, images,
 /// PDFs, JSON files, jars and a type this build doesn't know (a shell, spec decision 4) -- is. The capability rows
 /// in `caps/rows.rs` decide, by the row the type reads as (`card_kind::canonical_type`).
@@ -47,7 +48,7 @@ pub(crate) fn worth_reopening(ty: &str, fields: &session_sync::Fields) -> bool {
 
 /// Every node under `root` at any depth, in `order`, each group visited
 /// once: a group cycle (never built, but the loop must end) can't hang it.
-fn members_under(
+pub(crate) fn members_under(
     root: store::model::NodeId,
     order: &[store::model::NodeId],
     group_of: impl Fn(&store::model::NodeId) -> Option<store::model::NodeId>,
@@ -122,16 +123,8 @@ fn live_fields(app: &App, id: &str, fields: &session_sync::Fields) -> session_sy
     fields
 }
 
-/// The `ClosedEntry` closing `id` should record: `id` and, for a group,
-/// every node under it at any depth (in `app.node_order`, i.e. draw
-/// order), minus what `worth_reopening` skips. `None` when `id` itself
-/// isn't worth reopening.
-pub(crate) fn closed_entry(app: &App, id: &str) -> Option<ClosedEntry> {
-    subtree_entry(app, &[id], egui::Vec2::ZERO, worth_reopening)
-}
-
 /// The snapshot of the live subtrees under `roots` (each node and, for a group, everything under it), the shape
-/// `closed_entry` records and `App::duplicate_nodes` copies: each root first, written without a group, and the
+/// `App::duplicate_nodes` copies: each root first, written without a group, and the
 /// members after, in draw order. `keep` (a node's type and snapshot fields) drops the nodes it refuses, a root
 /// among them; `offset` moves each root's pos, so a copy lands beside what it copies. A link comes along when both
 /// its ends do. `None` when nothing is kept.
@@ -211,42 +204,155 @@ pub(crate) fn subtree_entry(
     Some(ClosedEntry { doc: store::json::JsonDoc { nodes, local } })
 }
 
-/// Marks each backing file `entry`'s nodes hold as modified now (an owned content file in `content_dir`, a jar's
-/// cookie file in `jars_dir`), so a recent close keeps its file through `content::PRUNE_GRACE` even if another
-/// instance's Recently Closed list overwrites this one's.
-pub(crate) fn touch_backing(
-    entry: &ClosedEntry,
-    content_dir: Option<&std::path::Path>,
-    jars_dir: Option<&std::path::Path>,
-) {
-    let touch = |path: &std::path::Path| {
-        let file = std::fs::OpenOptions::new().write(true).open(path);
-        let _ = file.and_then(|f| f.set_modified(std::time::SystemTime::now()));
-    };
-    for node in &entry.doc.nodes {
-        let path = node.fields.get("path").and_then(|p| p.as_str()).map(std::path::Path::new);
-        if let (Some(dir), Some(path)) = (content_dir, path) {
-            if content::owned_content_file(dir, &node.id, path) {
-                touch(path);
+impl App {
+    /// Whether closing `id` keeps it (spec decision 4): a node the document can hold whose kind and value are worth
+    /// reopening (`worth_reopening`). Without a journal nothing is kept: the close is a plain destroy.
+    fn restorable(&self, id: &str) -> bool {
+        let Some(node) = id.parse::<store::model::NodeId>().ok() else { return false };
+        self.journal.is_some() && self.snapshot(node).is_some_and(|s| worth_reopening(&s.ty, &s.fields))
+    }
+
+    /// Closes one node (spec decision 4), the single user-facing close: a card's hover ✕, its context-menu
+    /// Delete/Close/"Remove from List", the Downloads popup's Remove, Ctrl+W, Close Selected and the rest. Typed text
+    /// and the drawn position are written first; a node not worth reopening is destroyed as before; otherwise the
+    /// members not worth reopening go (a blank note, a download), `closed` is queued on the root, and the subtree is
+    /// hidden in place with its engines unloaded. Saves, then evicts past `MAX_CLOSED`.
+    pub(crate) fn close_node(&mut self, id: &str) {
+        if self.is_default_jar(id) {
+            self.queue_toast("The Default jar can't be closed".to_string());
+            return;
+        }
+        self.commit_note_buffers();
+        // A node created this tick has no snapshot yet and its `closed` flag would be dropped as not editable (the
+        // hide below would then lose it): flush the pending creates first.
+        if !self.writes.pending_creates.is_empty() {
+            self.save_session();
+        }
+        if !self.restorable(id) {
+            self.destroy_node(id);
+            // A closed jar's tabs now resolve to the Default jar.
+            self.sweep_jar_switches();
+            self.save_session();
+            return;
+        }
+        let root: store::model::NodeId = id.parse().expect("restorable ids parse");
+        // The subtree as this replica holds it: the mirror's membership over `node_order`, so a tab mid-respawn and a
+        // member not saved yet are found too.
+        let order: Vec<store::model::NodeId> = self.node_order.iter().filter_map(|s| s.parse().ok()).collect();
+        let members = members_under(
+            root,
+            &order,
+            |m| self.mirror.group(&m.to_string()).and_then(|g| g.parse().ok()),
+            |m| self.is_container(&m.to_string()),
+        );
+        let subtree: Vec<String> = std::iter::once(root).chain(members).map(|n| n.to_string()).collect();
+        // Where each card was drawn becomes its document pos (2b-4 Ruling 10: a reopen lands where it was shown).
+        for key in &subtree {
+            let carries_pos = Kind::from_type(self.mirror.ty(key)).fields().contains(&field::POS);
+            if carries_pos && self.layout.contains_key(key) {
+                self.edit_pos(key, Some(self.layout_pos(key)));
             }
         }
-        if let (Some(dir), Some(Kind::Jar)) = (jars_dir, node.kind()) {
-            touch(&dir.join(format!("{}.json", node.id)));
+        let (kept, gone): (Vec<String>, Vec<String>) =
+            subtree.into_iter().partition(|key| key == id || self.restorable(key));
+        for key in &gone {
+            self.remove_node(key);
+        }
+        self.writes.closed_flags.push((root, true));
+        let tabs: Vec<String> = kept
+            .iter()
+            .filter(|k| self.nodes.get(*k).is_some_and(|n| n.runtime.saved_tab().is_some()))
+            .cloned()
+            .collect();
+        self.begin_tabs_shutdown(&tabs);
+        self.leave_hidden(root);
+        for key in &kept {
+            self.hide_node(key);
+        }
+        self.sweep_jar_switches();
+        self.save_session();
+        self.evict_closed();
+    }
+
+    /// Reopen (spec decision 7): clears `closed` on `id` and re-stamps each closed root directly under it, oldest
+    /// first, so they enter the history newest in their old order. The save's visibility pass shows what is no
+    /// longer hidden (`apply_visibility`), and `apply_remote` sweeps the jar switches. A node that stays hidden
+    /// (its group is closed) or lands at another level says so (plan D8).
+    pub(crate) fn reopen_node(&mut self, id: store::model::NodeId) {
+        let Some(doc) = self.journal.as_ref().map(|j| j.doc()) else { return };
+        // A closed node `d` under `id` with no other closed node between them.
+        let directly_under = |d: store::model::NodeId| {
+            let mut cur = doc.nodes.get(&d).and_then(|n| n.group);
+            for _ in 0..=doc.nodes.len() {
+                let Some(c) = cur else { return false };
+                if c == id {
+                    return true;
+                }
+                let Some(n) = doc.nodes.get(&c) else { return false };
+                if !n.deleted && n.closed() {
+                    return false;
+                }
+                cur = n.group;
+            }
+            false
+        };
+        let mut nested: Vec<(Stamp, store::model::NodeId)> = doc
+            .with_descendants(std::collections::BTreeSet::from([id]))
+            .into_iter()
+            .filter(|&d| d != id && directly_under(d))
+            .filter_map(|d| {
+                let n = doc.nodes.get(&d).filter(|n| n.is_live() && n.closed())?;
+                Some((n.fields.get(&field::CLOSED)?.stamp, d))
+            })
+            .collect();
+        nested.sort();
+        self.writes.closed_flags.push((id, false));
+        self.writes.closed_flags.extend(nested.into_iter().map(|(_, d)| (d, true)));
+        self.save_session();
+        let key = id.to_string();
+        let reopened =
+            self.journal.as_ref().is_some_and(|j| j.doc().nodes.get(&id).is_some_and(|n| n.is_live() && !n.closed()));
+        if !reopened {
+            return;
+        }
+        if !self.nodes.contains_key(&key) && !self.spawns.spawning.contains_key(&key) {
+            self.queue_toast("Reopened inside a closed group: it shows when that group is reopened".to_string());
+        } else if self.mirror.group(&key) != self.current_group.as_deref() {
+            let level = match self.mirror.group(&key) {
+                None => "the top level".to_string(),
+                Some(g) => {
+                    let shown = crate::names::display_name(self.mirror.name(g), crate::names::UNTITLED);
+                    let shown = crate::names::to_plain(&shown);
+                    format!("“{shown}”")
+                }
+            };
+            self.queue_toast(format!("Reopened in {level}"));
         }
     }
-}
 
-impl App {
-    /// Records what closing `id` loses (see `closed_entry`), dropping the
-    /// oldest entry past `MAX_CLOSED`. Called before anything is removed.
-    pub(crate) fn record_closed(&mut self, id: &str) {
-        if let Some(entry) = closed_entry(self, id) {
-            touch_backing(&entry, profile::content_dir().as_deref(), self.jars_dir().as_deref());
-            self.closed.push(entry);
-            if self.closed.len() > MAX_CLOSED {
-                self.closed.remove(0);
+    /// Eviction (spec decision 6): every root past `MAX_CLOSED` has its whole subtree Deleted, nested closed nodes
+    /// included, so nothing under it resurfaces. Idempotent across replicas; the only place `closed` becomes
+    /// `deleted`. After a local close, after remote ops (`apply_remote`) and at load.
+    pub(crate) fn evict_closed(&mut self) {
+        let Some(doc) = self.journal.as_ref().map(|j| j.doc()) else { return };
+        let roots = doc.closed_roots();
+        if roots.len() <= MAX_CLOSED {
+            return;
+        }
+        let evicted: Vec<String> = doc
+            .with_descendants(roots[MAX_CLOSED..].iter().map(|&(id, _)| id).collect())
+            .into_iter()
+            .filter(|id| doc.nodes.get(id).is_some_and(|n| !n.deleted))
+            .map(|id| id.to_string())
+            .collect();
+        for id in &evicted {
+            self.queue_delete(id);
+        }
+        // Files are released only after the Delete committed (decision 11: `release_backing` reads `backing_keep`).
+        if self.save_session() {
+            for id in &evicted {
+                self.forget_deleted(id);
             }
-            self.local_persist.closed_changed_at = Some(std::time::Instant::now());
         }
     }
 
@@ -373,139 +479,89 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::model::Kind;
+    use crate::session_sync::tests::{add, add_group, app_on, stored};
+    use crate::store::model::{field, FieldValue, Kind, NodeId};
 
-    /// Closing a group records it and every live member at any depth as
-    /// one store-shaped entry, root first: `entry.doc.nodes[0]` is the
-    /// group itself, and `worth_reopening` drops a blank note and a
-    /// completed download along the way (a download has nothing sensible
-    /// to reopen, the same as before this test's rewrite for Task 8).
-    /// These are today's selection rules -- which ids, in what order, and
-    /// which roots give `None` -- kept exactly as the pre-store-snapshot
-    /// version of this test pinned them.
-    #[test]
-    fn closed_entry_snapshots_the_whole_subtree() {
-        use crate::session_sync::tests::{add, app_on};
-        let path = store::testutil::temp_dir("closed-entry").join("session.mnf");
-        let mut app = app_on(&path, 1);
-        let put_in = |app: &mut App, id: &str, group: &str| app.edit_group(id, Some(group.into()));
-
-        let outer = crate::session_sync::tests::add_group(&mut app, "Outer");
-        let note0 = add(&mut app, Kind::Note, Runtime::Note(NotePayload { text: "kept".into(), editing: false }));
-        put_in(&mut app, &note0, &outer);
-        let note1 = add(&mut app, Kind::Note, Runtime::Note(NotePayload { text: " ".into(), editing: false }));
-        put_in(&mut app, &note1, &outer);
-        let inner = crate::session_sync::tests::add_group(&mut app, "Inner");
-        put_in(&mut app, &inner, &outer);
-        let img0 = add(
-            &mut app,
-            Kind::Image,
-            Runtime::Image(ImagePayload { path: "i.png".into(), width: 1, height: 1, error: None }),
-        );
-        put_in(&mut app, &img0, &inner);
-        let json0 = add(
-            &mut app,
-            Kind::Json,
-            Runtime::Json(JsonPayload { path: "d.json".into(), value: std::sync::Arc::new(1.into()), error: None }),
-        );
-        put_in(&mut app, &json0, &inner);
-        let dl0 = add(
-            &mut app,
-            Kind::Download,
-            Runtime::Download(DownloadPayload {
-                path: "f.bin".into(),
-                bytes_received: 1,
-                total_bytes: Some(1),
-                completed: true,
-                failed: false,
-            }),
-        );
-        put_in(&mut app, &dl0, &inner);
-        let note2 = add(&mut app, Kind::Note, Runtime::Note(NotePayload { text: "outside".into(), editing: false }));
-
-        let entry = closed_entry(&app, &outer).unwrap();
-        let ids: Vec<&str> = entry.doc.nodes.iter().map(|n| n.id.as_str()).collect();
-        assert_eq!(
-            ids,
-            [outer.as_str(), note0.as_str(), inner.as_str(), img0.as_str(), json0.as_str()],
-            "a blank note and a completed download are both skipped"
-        );
-        assert_eq!(entry.doc.nodes[0].kind(), Some(Kind::Group));
-        assert!(entry.doc.nodes[0].fields.get("group").is_none(), "the root's group isn't recorded");
-        assert_eq!(entry.doc.nodes[3].fields.get("group").and_then(|v| v.as_str()), Some(inner.as_str()));
-
-        assert!(closed_entry(&app, &note1).is_none(), "a blank note gives None");
-        assert_eq!(closed_entry(&app, &note2).unwrap().doc.nodes.len(), 1);
+    fn note(app: &mut App, text: &str) -> String {
+        add(app, Kind::Note, Runtime::Note(NotePayload { text: text.into(), editing: false }))
     }
 
-    /// A tab whose page moved on without sharing it (a redirect, a script, a restore at its `LiveUrl`) reopens from
-    /// Recently Closed at the page that was closed, not at the shared url.
+    fn closed_ids(app: &App) -> Vec<String> {
+        app.journal.as_ref().unwrap().doc().closed_roots().into_iter().map(|(n, _)| n.to_string()).collect()
+    }
+
+    #[test]
+    fn close_flags_the_root_hides_the_subtree_and_reopen_brings_the_same_ids_back() {
+        let path = store::testutil::temp_dir("closed-same-ids").join("session.mnf");
+        let mut app = app_on(&path, 1);
+        let g = add_group(&mut app, "G");
+        let inner = note(&mut app, "kept");
+        app.edit_group(&inner, Some(g.clone()));
+        let outside = note(&mut app, "outside");
+        let _link = app.create_link(&inner, &outside);
+        assert!(app.save_session());
+        let link: Vec<NodeId> = app.mirror.link_ids().collect();
+        app.close_node(&g);
+        assert_eq!(stored(&app, &g, field::CLOSED), FieldValue::Bool(true));
+        assert_eq!(stored(&app, &inner, field::CLOSED), FieldValue::Bool(false), "only the root is flagged");
+        assert!(!app.nodes.contains_key(&g) && !app.nodes.contains_key(&inner));
+        assert_eq!(closed_ids(&app), std::slice::from_ref(&g));
+        app.reopen_node(g.parse().unwrap());
+        assert!(app.nodes.contains_key(&g) && app.nodes.contains_key(&inner), "same ids");
+        assert_eq!(app.mirror.group(&inner), Some(g.as_str()));
+        assert_eq!(app.mirror.link_ids().collect::<Vec<_>>(), link, "the link to the outside node survived");
+        assert!(closed_ids(&app).is_empty());
+    }
+
+    #[test]
+    fn a_close_flushes_typed_text_and_the_drawn_position() {
+        let path = store::testutil::temp_dir("closed-flush").join("session.mnf");
+        let mut app = app_on(&path, 1);
+        let n = note(&mut app, "v1");
+        assert!(app.save_session());
+        app.nodes.get_mut(&n).unwrap().as_note_mut().unwrap().text = "typed".into();
+        app.snap_layout(&n, egui::vec2(120.0, 80.0));
+        app.close_node(&n);
+        assert_eq!(stored(&app, &n, field::TEXT), FieldValue::Str("typed".into()));
+        assert_eq!(stored(&app, &n, field::POS), FieldValue::Pos(120.0, 80.0));
+        app.reopen_node(n.parse().unwrap());
+        assert_eq!(app.note_text(&n), "typed");
+        assert_eq!(app.layout_pos(&n), egui::vec2(120.0, 80.0));
+    }
+
+    /// A tab whose page moved on without sharing it (a redirect, a script, a restore at its `LiveUrl`) reopens at the
+    /// page that was closed, not at the shared url: its personal state is kept in `hidden_local`.
     #[test]
     fn a_closed_tab_reopens_at_its_live_url() {
-        use crate::session_sync::tests::{add, app_on, sleeping_tab};
+        use crate::session_sync::tests::sleeping_tab;
         let path = store::testutil::temp_dir("closed-live-url").join("session.mnf");
         let mut app = app_on(&path, 1);
-        let group = crate::session_sync::tests::add_group(&mut app, "G");
         let tab = add(&mut app, Kind::Tab, sleeping_tab("https://shared/", "T"));
-        let member = add(&mut app, Kind::Tab, sleeping_tab("https://m-shared/", "M"));
-        app.edit_group(&member, Some(group.clone()));
         assert!(app.save_session());
-        for (id, live) in [(&tab, "https://live/"), (&member, "https://m-live/")] {
-            if let Runtime::Unloaded(t) = &mut app.nodes.get_mut(id).unwrap().runtime {
-                t.url = live.into();
-            }
+        if let Runtime::Unloaded(t) = &mut app.nodes.get_mut(&tab).unwrap().runtime {
+            t.url = "https://live/".into();
         }
         assert_eq!(app.mirror.url(&tab), "https://shared/", "the shared url is unchanged");
-        let url_of = |entry: &ClosedEntry, i: usize| entry.doc.nodes[i].fields.get("url").cloned();
-        let entry = closed_entry(&app, &tab).unwrap();
-        assert_eq!(url_of(&entry, 0), Some(serde_json::json!("https://live/")));
-        let entry = closed_entry(&app, &group).unwrap();
-        assert_eq!(url_of(&entry, 1), Some(serde_json::json!("https://m-live/")), "a group member's too");
-
         app.close_node(&tab);
-        let entry = app.closed.pop().unwrap();
-        app.reopen_closed(entry);
-        let reopened = app.nodes.values().filter_map(|n| n.as_unloaded()).find(|t| t.title == "T").unwrap();
-        assert_eq!(reopened.url, "https://live/");
-    }
-
-    /// Recently Closed records where the card was shown (its layout position), not its document pos, and reopens it
-    /// there (2b-4 Ruling 10).
-    #[test]
-    fn a_closed_node_reopens_where_it_was_shown() {
-        use crate::session_sync::tests::app_on;
-        let path = store::testutil::temp_dir("closed-layout-pos").join("session.mnf");
-        let mut app = app_on(&path, 1);
-        let note = Runtime::Note(crate::node::NotePayload { text: "n".into(), editing: false });
-        let at = crate::fetched::Placement { group: None, pos: egui::vec2(10.0, 20.0) };
-        let note = app.place_node(None, Kind::Note, note, at);
-        assert!(app.save_session());
-        app.snap_layout(&note, egui::vec2(70.0, 80.0));
-        let entry = closed_entry(&app, &note).unwrap();
-        assert_eq!(entry.doc.nodes[0].fields.get("pos"), Some(&serde_json::json!([70.0, 80.0])));
-
-        app.close_node(&note);
-        let entry = app.closed.pop().unwrap();
-        app.reopen_closed(entry);
-        let reopened = app.nodes.keys().find(|id| **id != note).unwrap().clone();
-        assert_eq!(app.layout_pos(&reopened), egui::vec2(70.0, 80.0));
-        assert_eq!(app.mirror.pos(&reopened), Some(egui::vec2(70.0, 80.0)));
+        assert_eq!(app.hidden_local[&tab].live_url.as_ref().map(|l| l.url.as_str()), Some("https://live/"));
+        app.reopen_node(tab.parse().unwrap());
+        let reopened = app.nodes[&tab].as_unloaded().unwrap();
+        assert_eq!((reopened.url.as_str(), reopened.title.as_str()), ("https://live/", "T"));
     }
 
     /// Duplicate copies a renamed note beside the original with its name and text, and a group with its member (not
     /// again when the member is selected too); the originals stay.
     #[test]
     fn duplicating_a_note_and_a_group_copies_them_beside_the_originals() {
-        use crate::session_sync::tests::app_on;
         let path = store::testutil::temp_dir("duplicate-nodes").join("session.mnf");
         let mut app = app_on(&path, 1);
         let text = |t: &str| Runtime::Note(crate::node::NotePayload { text: t.into(), editing: false });
-        let note = crate::session_sync::tests::add(&mut app, Kind::Note, text("n"));
+        let note = add(&mut app, Kind::Note, text("n"));
         app.edit_pos(&note, Some(egui::vec2(10.0, 20.0)));
         app.snap_layout(&note, egui::vec2(10.0, 20.0));
         app.edit_name(&note, "Mine");
-        let group = crate::session_sync::tests::add_group(&mut app, "G");
-        let inner = crate::session_sync::tests::add(&mut app, Kind::Note, text("inner"));
+        let group = add_group(&mut app, "G");
+        let inner = add(&mut app, Kind::Note, text("inner"));
         app.edit_group(&inner, Some(group.clone()));
         assert!(app.save_session());
         let before = app.nodes.len();
@@ -516,19 +572,6 @@ mod tests {
         let copy = copies.iter().find(|id| app.mirror.name(id) == "Mine").unwrap();
         assert_eq!(app.mirror.pos(copy), Some(egui::vec2(10.0 + DUPLICATE_OFFSET, 20.0 + DUPLICATE_OFFSET)));
         assert!(app.nodes.contains_key(&note) && app.nodes.contains_key(&inner));
-    }
-
-    /// A note closed while it is typed in records what the box held, which no save has committed yet.
-    #[test]
-    fn a_closed_note_records_what_was_typed() {
-        let mut app = App::default();
-        let note = Runtime::Note(crate::node::NotePayload { text: "n".into(), editing: false });
-        let at = crate::fetched::Placement { group: None, pos: egui::vec2(10.0, 20.0) };
-        let note = app.place_node(None, Kind::Note, note, at);
-        let n = app.nodes.get_mut(&note).unwrap().as_note_mut().unwrap();
-        (n.editing, n.text) = (true, "typed".into());
-        let entry = closed_entry(&app, &note).unwrap();
-        assert_eq!(entry.doc.nodes[0].fields.get("text"), Some(&serde_json::json!("typed")));
     }
 
     /// A type this build doesn't know comes back as a shell of its type (spec decision 4), whatever its case; no type
@@ -545,7 +588,6 @@ mod tests {
     /// Decided by the node's type string (`Mirror::ty`) and, for a note, whether its text is blank.
     #[test]
     fn worth_reopening_is_what_it_was_for_every_kind() {
-        use store::model::{FieldValue, Kind};
         let text = |s: &str| session_sync::Fields::from([(field::TEXT, FieldValue::Str(s.into()))]);
         let none = session_sync::Fields::new();
         for (kind, fields, want) in [
@@ -568,7 +610,7 @@ mod tests {
 
     #[test]
     fn a_group_cycle_ends_the_walk() {
-        use store::model::{ActorId, NodeId};
+        use store::model::ActorId;
         let id = |n| NodeId { actor: ActorId(1), counter: n };
         let (a, b, c) = (id(1), id(2), id(3));
         // a contains b, b contains a (a cycle), and c is in b.
@@ -583,9 +625,10 @@ mod tests {
     }
 
     #[test]
-    fn reopening_a_group_points_its_tab_at_the_reopened_jar_and_keeps_an_outside_one() {
-        use crate::session_sync::tests::{add, add_group, add_jar, sleeping_tab};
-        let mut app = App::default();
+    fn closing_a_group_keeps_its_jar_and_a_tab_follows_it_back_on_reopen() {
+        use crate::session_sync::tests::{add_jar, sleeping_tab};
+        let path = store::testutil::temp_dir("closed-group-jar").join("session.mnf");
+        let mut app = app_on(&path, 1);
         app.ensure_default_jar();
         let group = add_group(&mut app, "G");
         let at = crate::fetched::Placement { group: Some(group.clone()), pos: egui::vec2(40.0, 40.0) };
@@ -598,45 +641,192 @@ mod tests {
         }
         app.set_jar_edge(&tab, Some(inside));
         app.set_jar_edge(&other, Some(outside));
+        assert!(app.save_session());
         app.close_node(&group);
-        let entry = app.closed.pop().unwrap();
-        app.reopen_closed(entry);
-        let by_url = |app: &App, url: &str| app.nodes.keys().find(|id| app.mirror.url(id) == url).cloned().unwrap();
-        let new_inside = *app.jar_defs().iter().find(|(_, d)| d.name == "In").unwrap().0;
-        assert_ne!(new_inside, inside);
-        assert_eq!(app.mirror.jar(&by_url(&app, "https://a/")), Some(new_inside), "follows the reopened jar");
-        assert_eq!(app.mirror.jar(&by_url(&app, "https://b/")), Some(outside), "an outside jar keeps its id");
+        app.reopen_node(group.parse().unwrap());
+        assert!(app.jar_defs().contains_key(&inside), "the reopened jar has the same id");
+        assert_eq!(app.mirror.jar(&tab), Some(inside), "follows the reopened jar");
+        assert_eq!(app.mirror.jar(&other), Some(outside), "an outside jar keeps its id");
     }
 
     #[test]
-    fn reopening_a_closed_jar_carries_its_cookie_file_and_a_duplicate_starts_empty() {
-        let jars = crate::store::testutil::temp_dir("rebind-jars");
-        let mut app = App { jars_dir_override: Some(jars.clone()), ..App::default() };
+    fn closing_and_reopening_a_jar_keeps_its_id_and_its_cookie_file() {
+        let path = store::testutil::temp_dir("closed-jar-cookies").join("session.mnf");
+        let jars = store::testutil::temp_dir("rebind-jars");
+        let mut app = App { jars_dir_override: Some(jars.clone()), ..app_on(&path, 1) };
         let jar = crate::session_sync::tests::add_jar(&mut app, "Work");
-        std::fs::write(jars.join(format!("{jar}.json")), b"cookies").unwrap();
-
-        app.duplicate_nodes(&[jar.to_string()]);
-        let copy = *app.jar_defs().keys().find(|&&id| id != jar).unwrap();
-        assert!(!jars.join(format!("{copy}.json")).exists(), "a duplicate starts signed out");
-
-        app.close_node(&jar.to_string());
-        let entry = app.closed.pop().unwrap();
-        app.reopen_closed(entry);
-        let back = *app.jar_defs().keys().find(|&&id| id != copy).unwrap();
-        assert_ne!(back, jar, "a fresh id");
-        assert_eq!(std::fs::read(jars.join(format!("{back}.json"))).unwrap(), b"cookies");
-    }
-
-    #[test]
-    fn closing_a_jar_touches_its_cookie_file() {
-        use crate::content::tests::{write_aged, OLD};
-        let jars = crate::store::testutil::temp_dir("touch-jars");
-        let mut app = App { jars_dir_override: Some(jars.clone()), ..App::default() };
-        let jar = crate::session_sync::tests::add_jar(&mut app, "Work");
+        assert!(app.save_session());
         let file = jars.join(format!("{jar}.json"));
-        write_aged(&file, OLD);
+        std::fs::write(&file, b"cookies").unwrap();
         app.close_node(&jar.to_string());
-        let age = file.metadata().unwrap().modified().unwrap().elapsed().unwrap();
-        assert!(age < crate::content::PRUNE_GRACE, "touched");
+        assert!(!app.jar_defs().contains_key(&jar), "hidden while closed");
+        assert!(file.exists(), "the cookie file was never copied or touched");
+        app.reopen_node(jar);
+        assert!(app.jar_defs().contains_key(&jar), "the same id back");
+        assert_eq!(std::fs::read(&file).unwrap(), b"cookies");
+    }
+
+    #[test]
+    fn a_blank_note_in_a_closing_group_is_deleted_and_a_blank_root_is_not_recorded() {
+        let path = store::testutil::temp_dir("closed-blank").join("session.mnf");
+        let mut app = app_on(&path, 1);
+        let g = add_group(&mut app, "G");
+        let blank = note(&mut app, "  ");
+        app.edit_group(&blank, Some(g.clone()));
+        let lone = note(&mut app, "");
+        assert!(app.save_session());
+        app.close_node(&g);
+        let doc = app.journal.as_ref().unwrap().doc();
+        assert!(doc.nodes[&blank.parse().unwrap()].deleted, "dropped as the snapshot dropped it");
+        app.close_node(&lone);
+        assert!(app.journal.as_ref().unwrap().doc().nodes[&lone.parse().unwrap()].deleted);
+        assert_eq!(closed_ids(&app), [g]);
+    }
+
+    #[test]
+    fn an_in_progress_download_in_a_closing_group_is_removed() {
+        let path = store::testutil::temp_dir("closed-download").join("session.mnf");
+        let mut app = app_on(&path, 1);
+        let g = add_group(&mut app, "G");
+        let tab = add(&mut app, Kind::Tab, crate::session_sync::tests::sleeping_tab("https://x.test/", "T"));
+        app.edit_group(&tab, Some(g.clone()));
+        assert!(app.save_session());
+        // An in-progress download takes its tab's group and has no document node (`restorable` is false).
+        app.insert_download_node(tab.clone(), "f.bin".into(), Some(3), Some("https://x.test/f.bin".into()));
+        let download = app.nodes.iter().find(|(_, n)| n.as_download().is_some()).map(|(id, _)| id.clone()).unwrap();
+        assert_eq!(app.mirror.group(&download), Some(g.as_str()));
+        app.close_node(&g);
+        assert!(!app.nodes.contains_key(&download), "the download went with the closing group");
+        app.reopen_node(g.parse().unwrap());
+        assert!(!app.nodes.contains_key(&download), "reopening the group doesn't bring it back");
+        assert!(app.nodes.contains_key(&tab), "the tab came back");
+    }
+
+    #[test]
+    fn closing_past_twenty_evicts_the_oldest_whole_subtree() {
+        let path = store::testutil::temp_dir("closed-evict").join("session.mnf");
+        let mut app = app_on(&path, 1);
+        let g = add_group(&mut app, "Oldest");
+        let nested = note(&mut app, "nested");
+        app.edit_group(&nested, Some(g.clone()));
+        let rest: Vec<String> = (0..MAX_CLOSED).map(|i| note(&mut app, &format!("n{i}"))).collect();
+        assert!(app.save_session());
+        app.close_node(&nested); // a closed node nested in the oldest root: evicted with it
+        app.close_node(&g);
+        for n in &rest {
+            app.close_node(n);
+        }
+        let doc = app.journal.as_ref().unwrap().doc();
+        assert!(doc.nodes[&g.parse().unwrap()].deleted && doc.nodes[&nested.parse().unwrap()].deleted);
+        assert_eq!(closed_ids(&app).len(), MAX_CLOSED);
+    }
+
+    #[test]
+    fn reopening_a_group_re_stamps_its_nested_roots_newest_in_old_order() {
+        let path = store::testutil::temp_dir("closed-restamp").join("session.mnf");
+        let mut app = app_on(&path, 1);
+        let g = add_group(&mut app, "G");
+        let (a, b) = (note(&mut app, "a"), note(&mut app, "b"));
+        app.edit_group(&a, Some(g.clone()));
+        app.edit_group(&b, Some(g.clone()));
+        let other = note(&mut app, "other");
+        assert!(app.save_session());
+        app.close_node(&a);
+        app.close_node(&b);
+        app.close_node(&g);
+        app.close_node(&other);
+        app.reopen_node(g.parse().unwrap());
+        assert_eq!(closed_ids(&app), [b, a, other], "the nested ones are newest, b after a as before");
+    }
+
+    #[test]
+    fn ctrl_shift_t_skips_another_replicas_close() {
+        let path = store::testutil::temp_dir("closed-mine").join("session.mnf");
+        let mut app = app_on(&path, 1);
+        let (mine, theirs) = (note(&mut app, "mine"), note(&mut app, "theirs"));
+        assert!(app.save_session());
+        app.close_node(&mine);
+        let mut other = store::journal::Journal::open(&path, store::model::ActorId(2)).unwrap();
+        crate::session_sync::tests::remote_set(&mut other, &theirs, field::CLOSED, FieldValue::Bool(true));
+        assert!(app.save_session());
+        assert_eq!(closed_ids(&app)[0], theirs, "theirs is newest");
+        app.reopen_closed_shortcut();
+        assert!(app.nodes.contains_key(&mine) && !app.nodes.contains_key(&theirs));
+    }
+
+    #[test]
+    fn a_replica_that_only_receives_closes_evicts_and_agrees() {
+        let path = store::testutil::temp_dir("closed-remote-evict").join("session.mnf");
+        let mut a = app_on(&path, 1);
+        let notes: Vec<String> = (0..=MAX_CLOSED).map(|i| note(&mut a, &format!("n{i}"))).collect();
+        assert!(a.save_session());
+        // Another replica closes all MAX_CLOSED + 1 notes; A closes none, it only receives them.
+        let mut other = store::journal::Journal::open(&path, store::model::ActorId(2)).unwrap();
+        for n in &notes {
+            crate::session_sync::tests::remote_set(&mut other, n, field::CLOSED, FieldValue::Bool(true));
+        }
+        assert!(a.save_session());
+        let doc = a.journal.as_ref().unwrap().doc();
+        assert!(doc.nodes[&notes[0].parse().unwrap()].deleted, "A evicted the oldest on receipt");
+        assert_eq!(closed_ids(&a).len(), MAX_CLOSED);
+        // A replica restored from the same file agrees on the same set and order.
+        let mut b = app_on(&path, 3);
+        b.restore_session();
+        assert_eq!(closed_ids(&a), closed_ids(&b), "one order on every replica");
+    }
+
+    #[test]
+    fn a_reopen_concurrent_with_its_eviction_loses() {
+        let path = store::testutil::temp_dir("closed-reopen-vs-evict").join("session.mnf");
+        let mut a = app_on(&path, 1);
+        let notes: Vec<String> = (0..=MAX_CLOSED).map(|i| note(&mut a, &format!("n{i}"))).collect();
+        assert!(a.save_session());
+        for n in &notes[..MAX_CLOSED] {
+            a.close_node(n);
+        }
+        // B opens now, so it still sees notes[0] closed and has not seen A's 21st close.
+        let mut b = store::journal::Journal::open(&path, store::model::ActorId(2)).unwrap();
+        a.close_node(&notes[MAX_CLOSED]); // A's 21st close evicts notes[0] ...
+        crate::session_sync::tests::remote_set(&mut b, &notes[0], field::CLOSED, FieldValue::Bool(false)); // ... B's stale reopen.
+        assert!(a.save_session());
+        assert!(a.journal.as_ref().unwrap().doc().nodes[&notes[0].parse().unwrap()].deleted, "Delete wins");
+        assert!(!a.nodes.contains_key(&notes[0]));
+    }
+
+    #[test]
+    fn a_tab_on_a_closed_jar_uses_the_default_and_returns() {
+        let path = store::testutil::temp_dir("closed-jar-fallback").join("session.mnf");
+        let mut app = app_on(&path, 1);
+        app.ensure_default_jar();
+        let default = app.default_jar().unwrap();
+        let work = app.create_jar("Work", crate::fetched::Placement { group: None, pos: egui::Vec2::ZERO });
+        let tab = add(&mut app, Kind::Tab, crate::session_sync::tests::sleeping_tab("https://a.com/", "A"));
+        app.set_jar_edge(&tab, Some(work));
+        assert!(app.save_session());
+        assert_eq!(app.effective_jar(&tab), Some((work, false)));
+        app.close_node(&work.to_string());
+        assert_eq!(app.effective_jar(&tab), Some((default, true)), "the closed jar dangles to the Default");
+        app.reopen_node(work);
+        assert_eq!(app.effective_jar(&tab), Some((work, false)), "reopened: Work again; the stored edge never changed");
+    }
+
+    #[test]
+    fn a_default_arriving_inside_a_closed_group_is_moved_out_not_shadowed() {
+        let path = store::testutil::temp_dir("closed-default").join("session.mnf");
+        let mut app = app_on(&path, 1);
+        app.ensure_default_jar();
+        let g = add_group(&mut app, "G");
+        assert!(app.save_session());
+        let default = app.default_jar().unwrap();
+        let mut other = store::journal::Journal::open(&path, store::model::ActorId(2)).unwrap();
+        crate::session_sync::tests::remote_set(&mut other, &g, field::CLOSED, FieldValue::Bool(true));
+        let op = store::ops::OpBody::Move { node: default, group: Some(g.parse().unwrap()) };
+        other.begin().unwrap().commit(vec![op]).unwrap();
+        assert!(app.save_session());
+        assert_eq!(app.default_jar(), Some(default), "the same Default, shown again");
+        let doc = app.journal.as_ref().unwrap().doc();
+        assert_eq!(doc.nodes[&default].group, None);
+        let defaults = doc.live().filter(|(_, n)| n.get(field::IS_DEFAULT) == FieldValue::Bool(true)).count();
+        assert_eq!(defaults, 1, "no second Default was made");
     }
 }

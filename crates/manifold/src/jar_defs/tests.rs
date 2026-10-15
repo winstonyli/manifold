@@ -212,7 +212,7 @@ fn a_new_jar_takes_a_colour_no_jar_uses() {
     let colour = |app: &App, id| app.jar_defs()[&id].color.unwrap();
     let ids: Vec<_> = ["A", "B", "C"].iter().map(|n| add_jar(&mut app, n)).collect();
     assert_eq!(ids.iter().map(|&id| colour(&app, id)).collect::<Vec<_>>(), TAG_COLOR_PALETTE[..3]);
-    app.close_node_and_save(&ids[1].to_string());
+    app.close_node(&ids[1].to_string());
     let d = add_jar(&mut app, "D");
     assert_eq!(colour(&app, d), TAG_COLOR_PALETTE[1], "the freed colour");
     let distinct = |app: &App| app.jar_defs().values().map(|j| j.color.unwrap().to_array()).collect::<BTreeSet<_>>();
@@ -498,9 +498,9 @@ fn a_label_is_stable_while_other_jars_come_and_go() {
     assert_ne!(l1, l2);
     let home = add_jar(&mut app, "Home");
     assert_eq!((label(&app, w1), label(&app, w2)), (l1.clone(), l2.clone()), "a third jar added elsewhere");
-    app.close_node_and_save(&home.to_string());
+    app.close_node(&home.to_string());
     assert_eq!((label(&app, w1), label(&app, w2)), (l1.clone(), l2), "and deleted");
-    app.close_node_and_save(&w2.to_string());
+    app.close_node(&w2.to_string());
     assert_eq!(label(&app, w1), "Work", "no twin left: plain again");
     let w3 = add_jar(&mut app, "work");
     // The same marker when a twin comes back (longer only in the 1-in-65536 case that the two collide).

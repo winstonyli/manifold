@@ -358,7 +358,7 @@ pub enum DebugCommand {
     JsonRelayout,
     /// Search the current JSON level.
     JsonSearch(String),
-    /// `CLOSENODE id` -- closes node `id` (any kind) as its card's Close or Delete does (`close_node_and_save`), by
+    /// `CLOSENODE id` -- closes node `id` (any kind) as its card's Close or Delete does (`close_node`), by
     /// id since a headless test can't rely on focus. An unknown id is ignored with a note on stderr.
     CloseNode(String),
     /// `MOVETOGROUP id group` -- the node menu's "Move into <group>" with explicit ids, for the same reason as
@@ -1064,12 +1064,12 @@ impl App {
         true
     }
 
-    /// `CLOSENODE`: `close_node_and_save` on node `id`. `false` when there is no such node.
+    /// `CLOSENODE`: `close_node` on node `id`. `false` when there is no such node.
     fn debug_close_node(&mut self, id: &str) -> bool {
         if !self.nodes.contains_key(id) {
             return false;
         }
-        self.close_node_and_save(id);
+        self.close_node(id);
         true
     }
 

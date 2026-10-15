@@ -6,8 +6,6 @@ use std::collections::{BTreeMap, HashMap};
 
 use serde::{Deserialize, Serialize};
 
-use crate::store::json::JsonDoc;
-
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub(crate) struct LocalState {
     #[serde(default)]
@@ -30,9 +28,6 @@ pub(crate) struct LocalState {
     /// Per node, by live id.
     #[serde(default)]
     pub nodes: BTreeMap<String, LocalNode>,
-    /// Recently Closed, oldest first (plan ruling 7).
-    #[serde(default)]
-    pub closed: Vec<JsonDoc>,
     /// Copy path on a JSON level gives the accessor form
     /// (`users[0].name`) rather than a JSON Pointer.
     #[serde(default)]
@@ -121,9 +116,6 @@ pub(crate) struct LocalPersist {
     /// When `local_written` was last written (or, at startup, `Instant::now`
     /// so the first `EVERY` window starts from launch, not from `UNIX_EPOCH`).
     pub(crate) local_written_at: std::time::Instant,
-    /// Set when Recently Closed changes (Task 8); `maybe_write_local` writes
-    /// `AFTER_CLOSED` after this, instead of waiting for the `EVERY` timer.
-    pub(crate) closed_changed_at: Option<std::time::Instant>,
     /// Personal-state entries for nodes `apply_local` found still spawning
     /// (no live node yet): applied once each one's node is inserted
     /// (`handle_tab_spawn_result`), then removed. Only `nodes` is ever
@@ -138,7 +130,6 @@ impl Default for LocalPersist {
             local_written: None,
             local_unread: None,
             local_written_at: std::time::Instant::now(),
-            closed_changed_at: None,
             pending_local: None,
         }
     }
@@ -233,9 +224,7 @@ mod tests {
         state.nodes.insert("b".into(), LocalNode { pos: [5.0, 6.0], title: "kept".into(), ..LocalNode::default() });
         state.camera = Some(([0.0, f32::INFINITY, 1.0, 1.0], None));
         state.json_outline_width = Some(f32::NAN);
-        state.closed = vec![JsonDoc::default()];
         let back = LocalState::from_bytes(&state.to_bytes()).expect("still readable");
-        assert_eq!(back.closed.len(), 1, "Recently Closed survives");
         assert!(!back.nodes.contains_key("a"), "the bad position is dropped");
         assert_eq!(back.nodes["b"].title, "kept");
         assert_eq!((back.camera, back.json_outline_width), (None, None));
@@ -248,7 +237,7 @@ mod tests {
         let state = LocalState::from_bytes(bytes).expect("lenient");
         assert_eq!(state.nodes["a"].pos, [0.0, 2.0]);
         assert_eq!(state.camera, None);
-        assert_eq!(state.closed.len(), 1);
+        assert_eq!(state.nodes.len(), 1, "an old file's Recently Closed list is ignored, not an error");
     }
 
     #[test]

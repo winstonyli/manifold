@@ -299,11 +299,8 @@ fn closing_a_jar_keeps_its_file_and_clearing_empties_it() {
     app.clear_jar_cookies(key);
     assert!(app.jars[&key].cookies.is_empty());
     assert!(jar::Jar::load(&dir, key).cookies.is_empty(), "cleared on disk too");
-    app.close_node_and_save(&work.to_string());
-    assert!(
-        jar::Jar::path(&dir, key).exists(),
-        "closing never wipes credentials: its Recently Closed entry may bring it back"
-    );
+    app.close_node(&work.to_string());
+    assert!(jar::Jar::path(&dir, key).exists(), "closing never wipes credentials");
     assert!(!app.jars.contains_key(&key));
 }
 

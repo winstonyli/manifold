@@ -1057,7 +1057,7 @@ impl App {
                     }
                 }
             }
-            NodeAction::Delete => self.close_node_and_save(id),
+            NodeAction::Delete => self.close_node(id),
             // The menu's own state (`build_node_menu`): nothing to apply.
             NodeAction::OpenPage(_) | NodeAction::MenuBack => {}
             NodeAction::SetJar(jar) => self.set_jar_edge(id, jar),

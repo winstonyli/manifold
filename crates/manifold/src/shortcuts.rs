@@ -369,13 +369,14 @@ impl App {
         self.spawn_new_tab(parent, group, &home_page);
     }
 
-    /// `Ctrl+Shift+T` / headless `REOPENTAB` — reopens the newest "Recently
-    /// Closed" entry of any kind, where it was (`reopen_closed`); a no-op
-    /// if there's none.
+    /// `Ctrl+Shift+T` / headless `REOPENTAB` — reopens the newest node this replica closed (spec decision 7: the
+    /// `closed` stamp's actor), where it was. Another replica's closes are left to the popup. A no-op with none.
     pub(crate) fn reopen_closed_shortcut(&mut self) {
-        if let Some(entry) = self.closed.pop() {
-            self.local_persist.closed_changed_at = Some(std::time::Instant::now());
-            self.reopen_closed(entry);
+        let Some(journal) = &self.journal else { return };
+        let mine = journal.actor();
+        let newest = journal.doc().closed_roots().into_iter().find(|(_, stamp)| stamp.actor == mine);
+        if let Some((id, _)) = newest {
+            self.reopen_node(id);
         }
     }
 

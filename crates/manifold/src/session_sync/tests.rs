@@ -1714,11 +1714,10 @@ fn personal_state_keeps_an_unloaded_tabs_title_and_mute() {
     assert_eq!((t.title.as_str(), t.muted), ("Saved title", true));
 }
 
-/// Closing an unloaded card moves its children to its parent, as
-/// closing a live tab does, instead of leaving them naming a node
-/// that's gone.
+/// Closing an unloaded card leaves its children naming it (decision 9): it is closed, not gone, and a reopen
+/// restores the edge as it was.
 #[test]
-fn closing_an_unloaded_tab_reparents_its_children() {
+fn closing_an_unloaded_tab_keeps_its_childrens_edge() {
     let mut app = app_on(&temp_dir("unloaded-close").join("session.mnf"), 1);
     let root = add(&mut app, Kind::Tab, sleeping_tab("https://root/", ""));
     let mid = add(&mut app, Kind::Tab, failed_tab("https://mid/", 1.0));
@@ -1727,7 +1726,7 @@ fn closing_an_unloaded_tab_reparents_its_children() {
     app.edit_parent(&leaf, Some(mid.clone()));
     app.close_node(&mid);
     assert!(!app.nodes.contains_key(&mid));
-    assert_eq!(app.mirror.parent(&leaf), Some(root.as_str()));
+    assert_eq!(app.mirror.parent(&leaf), Some(mid.as_str()), "the edge stays: mid is closed, not gone");
 }
 
 /// A restore starts only the focused tab; every other tab is a
@@ -2052,32 +2051,16 @@ fn a_successful_spawn_clears_failed_cards_for_its_url() {
     app.spawn_tab_at("https://b/", egui::Vec2::ZERO, None, None);
     fail_spawns(&mut app);
     assert_eq!(failed_cards(&app).len(), 2);
+    let stale = failed_cards(&app).into_iter().find(|id| app.nodes[id].as_unloaded().unwrap().url == "https://a/");
+    let stale = stale.unwrap();
     let landed = succeed_spawn(&mut app, "https://a/");
     let left = failed_cards(&app);
     assert_eq!(left.len(), 1, "a/'s failed card is gone, b/'s stays");
     assert!(app.nodes[&left[0]].as_unloaded().unwrap().url == "https://b/");
     assert!(app.nodes.contains_key(&landed));
-    assert_eq!(app.closed.len(), 1, "the cleared card is recorded in Recently Closed first, so it can come back");
-}
-
-/// The recorded entry is restorable: reopening it brings the cleared card back as a sleeping tab at its url.
-#[test]
-fn a_cleared_failed_card_reopens_from_recently_closed() {
-    let mut app = app_on(&temp_dir("failed-cleared-reopen").join("session.mnf"), 1);
-    app.spawn_tab_at("https://a/", egui::Vec2::ZERO, None, None);
-    fail_spawns(&mut app);
-    let card = failed_cards(&app).remove(0);
-    let landed = succeed_spawn(&mut app, "https://a/");
-    assert!(!app.nodes.contains_key(&card), "the card is cleared");
-    let entry = app.closed.pop().expect("the cleared card was recorded");
-    app.reopen_closed(entry);
-    let back: Vec<&String> = app
-        .nodes
-        .iter()
-        .filter(|(id, n)| *id != &landed && n.as_unloaded().is_some_and(|t| t.url == "https://a/"))
-        .map(|(id, _)| id)
-        .collect();
-    assert_eq!(back.len(), 1, "one sleeping card for a/ is back beside the landed tab");
+    assert!(!live_in_doc(&app, &stale), "the stale card is deleted in the document");
+    let closed = app.journal.as_ref().unwrap().doc().closed_roots();
+    assert!(closed.is_empty(), "and not in the history");
 }
 
 /// The group is part of the intent: a failed card for the same url in another group stays when a tab lands.
@@ -2227,7 +2210,7 @@ fn a_remote_edit_does_not_bring_back_a_jar_deleted_here() {
         assert!(app.save_session());
         let mut other = Journal::open(&path, ActorId(2)).unwrap();
         remote_set(&mut other, &jar.to_string(), no, value);
-        app.close_node_and_save(&jar.to_string());
+        app.remove_node(&jar.to_string());
         assert!(app.save_session());
         assert!(!app.jar_defs().contains_key(&jar), "field {no}: deleted here, not recreated");
         assert_eq!(app.mirror.get(&jar.to_string(), field::NAME), FieldValue::Str(String::new()), "field {no}");
@@ -2481,7 +2464,7 @@ fn startup_deletes_the_files_of_jars_the_document_no_longer_has() {
     assert_eq!(left(), [format!("{w}.json")], "the deleted jar's files and an old default.json go");
 }
 
-/// A remote delete releases the removed jar's files at once, unless Recently Closed holds them.
+/// A remote delete releases the removed jar's files at once, unless a closed node in the document holds them.
 #[test]
 fn a_remote_jar_delete_releases_its_file_unless_recently_closed_holds_it() {
     let dir = crate::store::testutil::temp_dir("release-remote");
@@ -2493,8 +2476,8 @@ fn a_remote_jar_delete_releases_its_file_unless_recently_closed_holds_it() {
     for jar in [gone, held] {
         std::fs::write(jars.join(format!("{jar}.json")), b"x").unwrap();
     }
-    // `held` was closed here earlier, so this instance's Recently Closed names it.
-    app.record_closed(&held.to_string());
+    // `held` was closed here earlier: closed is live in the document, and the document holds its file.
+    app.close_node(&held.to_string());
     // The remote delete is real: the document no longer holds `gone` (a hold by the document is what keeps a file now).
     let mut other = Journal::open(&dir.join("session.mnf"), ActorId(2)).unwrap();
     other.begin().unwrap().commit(vec![OpBody::Delete { node: gone }]).unwrap();
@@ -2507,7 +2490,7 @@ fn a_remote_jar_delete_releases_its_file_unless_recently_closed_holds_it() {
         std::thread::sleep(std::time::Duration::from_millis(10)); // a poll interval, not a wait for a guessed duration
     }
     assert!(!jars.join(format!("{gone}.json")).exists(), "released");
-    assert!(jars.join(format!("{held}.json")).exists(), "held by Recently Closed");
+    assert!(jars.join(format!("{held}.json")).exists(), "held by the document: closed is not deleted");
 }
 
 #[test]
@@ -2517,7 +2500,7 @@ fn closing_a_jar_leaves_the_tabs_that_named_it_on_the_default_jar() {
     let jar = add_jar(&mut app, "Work");
     let tab = add(&mut app, Kind::Tab, sleeping_tab("https://a.com/", "A"));
     app.set_jar_edge(&tab, Some(jar));
-    app.close_node_and_save(&jar.to_string());
+    app.close_node(&jar.to_string());
     assert_eq!(app.jar_defs().len(), 1, "only the Default is left");
     // The edge dangles: the field still names the closed jar, and the read rule resolves it to the Default jar.
     assert_eq!(app.mirror.jar(&tab), Some(jar));
@@ -2587,14 +2570,17 @@ fn a_reopened_tab_comes_back_asleep_with_its_zoom_and_title() {
     if let Runtime::Unloaded(t) = &mut app.nodes.get_mut(&tab).unwrap().runtime {
         t.zoom_factor = 1.5;
     }
-    let entry = crate::closed_entry(&app, &tab).unwrap();
-    app.remove_tab(&tab);
-    app.reopen_closed(entry);
+    assert!(app.save_session());
+    app.close_node(&tab);
+    assert!(!app.nodes.contains_key(&tab));
+    app.reopen_node(tab.parse().unwrap());
     assert!(app.test_spawns.is_empty());
-    let cards: Vec<&UnloadedTabPayload> = app.nodes.values().filter_map(|n| n.as_unloaded()).collect();
+    assert_eq!(app.nodes.len(), 1, "the same node, no copy");
+    let cards: Vec<(&String, &UnloadedTabPayload)> =
+        app.nodes.iter().filter_map(|(id, n)| Some((id, n.as_unloaded()?))).collect();
     assert!(
-        matches!(&cards[..], [t] if t.url == "https://r/" && t.title == "Page R" && t.zoom_factor == 1.5
-            && t.state == UnloadedState::Sleeping),
+        matches!(&cards[..], [(id, t)] if **id == tab && t.url == "https://r/" && t.title == "Page R"
+            && t.zoom_factor == 1.5 && t.state == UnloadedState::Sleeping),
         "no sleeping card"
     );
 }
@@ -2635,30 +2621,28 @@ fn an_imported_member_whose_group_is_outside_the_file_joins_the_roots_level() {
     assert_eq!(app.mirror.group(note), Some(level.as_str()));
 }
 
-/// A session with no nodes still keeps Recently Closed: the launch
-/// starts fresh, but the next personal-state write carries the list.
+/// A session with nothing shown still keeps Recently Closed: the launch starts fresh, but the closed tab is still in
+/// the document's history, and its personal state (the title) is kept for a reopen.
 #[test]
 fn an_empty_session_keeps_recently_closed_across_a_launch() {
     let path = temp_dir("empty-closed").join("session.mnf");
-    let entry = JsonDoc { nodes: vec![json_node("x", Kind::Note, serde_json::json!({ "text": "gone" }))], local: None };
-    {
-        let journal = Journal::open(&path, ActorId(1)).unwrap();
-        let state = LocalState { closed: vec![entry.clone()], ..LocalState::default() };
-        journal.write_local(&state.to_bytes()).unwrap();
-    }
+    let tab = {
+        let mut app = app_on(&path, 1);
+        let tab = add(&mut app, Kind::Tab, sleeping_tab("https://r/", "Page R"));
+        assert!(app.save_session());
+        app.close_node(&tab);
+        app.close_store();
+        tab
+    };
     let mut app = app_on(&path, 2);
-    assert!(!app.restore_session(), "no nodes: the caller starts fresh");
-    assert_eq!(app.closed.len(), 1);
-    add(&mut app, Kind::Note, Runtime::Note(NotePayload { text: "n".into(), editing: false }));
-    app.maybe_write_local(true);
-    let bytes = app.journal.as_ref().unwrap().read_local().unwrap().unwrap();
-    assert_eq!(LocalState::from_bytes(&bytes).unwrap().closed, vec![entry]);
+    assert!(!app.restore_session(), "nothing shown: the caller starts fresh");
+    assert_eq!(app.journal.as_ref().unwrap().doc().closed_roots().len(), 1);
+    assert_eq!(app.hidden_local[&tab].title, "Page R");
 }
 
 /// Final-review fix: personal state startup couldn't read (another window
 /// held the lock past `LOCK_WAIT`) is never written over with defaults,
-/// even at exit; once a retry reads it, it is applied, and what was
-/// closed since stays in Recently Closed. Takes `LOCK_WAIT` (5 s) once.
+/// even at exit; once a retry reads it, it is applied. Takes `LOCK_WAIT` (5 s) once.
 #[test]
 fn personal_state_startup_could_not_read_is_retried_not_overwritten() {
     let path = temp_dir("local-unread").join("session.mnf");
@@ -2668,16 +2652,11 @@ fn personal_state_startup_could_not_read_is_retried_not_overwritten() {
         app.close_store();
         note
     };
-    let old = JsonDoc { nodes: vec![json_node("x", Kind::Note, serde_json::json!({ "text": "gone" }))], local: None };
     let entry = LocalNode { pos: [7.0, 8.0], ..LocalNode::default() };
     let side = crate::store::local::path_for(&path);
     {
         let journal = Journal::open(&path, ActorId(2)).unwrap();
-        let state = LocalState {
-            nodes: BTreeMap::from([(note.clone(), entry.clone())]),
-            closed: vec![old.clone()],
-            ..LocalState::default()
-        };
+        let state = LocalState { nodes: BTreeMap::from([(note.clone(), entry.clone())]), ..LocalState::default() };
         journal.write_local(&state.to_bytes()).unwrap();
     }
     let saved = std::fs::read(&side).unwrap();
@@ -2690,10 +2669,6 @@ fn personal_state_startup_could_not_read_is_retried_not_overwritten() {
     peer.try_lock().unwrap();
     assert!(app.restore_session());
     assert!(app.local_persist.local_unread.is_some(), "the read failed");
-    assert!(app.closed.is_empty());
-    let since =
-        JsonDoc { nodes: vec![json_node("y", Kind::Note, serde_json::json!({ "text": "since" }))], local: None };
-    app.closed.push(ClosedEntry { doc: since.clone() });
     // Due writes, a retry while the lock is still busy, and even exit's
     // forced write leave the file alone.
     app.maybe_write_local(true);
@@ -2708,12 +2683,9 @@ fn personal_state_startup_could_not_read_is_retried_not_overwritten() {
     app.poll_store();
     assert!(app.local_persist.local_unread.is_none());
     assert_eq!(app.layout_pos(&note), egui::vec2(7.0, 8.0));
-    let closed: Vec<&JsonDoc> = app.closed.iter().map(|e| &e.doc).collect();
-    assert_eq!(closed, [&old, &since], "read entries first, then what closed since");
     app.close_store();
     let bytes = Journal::open(&path, ActorId(4)).unwrap().read_local().unwrap().unwrap();
     let written = LocalState::from_bytes(&bytes).unwrap();
-    assert_eq!(written.closed, vec![old, since]);
     assert_eq!(written.nodes[&note].pos, [7.0, 8.0]);
 }
 
@@ -2748,20 +2720,14 @@ fn mark_unread_with(app: &mut App, path: &std::path::Path, state: &LocalState) {
 }
 
 /// Open Session while startup's personal state is unread: that state is the
-/// old session's, so a late read keeps only its Recently Closed and none of
-/// its view (here Item view, which would otherwise replace Graph).
+/// old session's, so a late read applies none of its view (here Item view, which would otherwise replace Graph).
 #[test]
-fn opening_a_session_while_unread_takes_only_recently_closed_on_retry() {
+fn opening_a_session_while_unread_applies_nothing_on_retry() {
     let path = temp_dir("local-unread-open").join("session.mnf");
     let mut app = app_on(&path, 1);
     add(&mut app, Kind::Note, Runtime::Note(NotePayload { text: "n".into(), editing: false }));
     assert!(app.save_session());
-    let old = JsonDoc { nodes: vec![json_node("x", Kind::Note, serde_json::json!({ "text": "gone" }))], local: None };
-    mark_unread_with(
-        &mut app,
-        &path,
-        &LocalState { view_item: true, closed: vec![old.clone()], ..LocalState::default() },
-    );
+    mark_unread_with(&mut app, &path, &LocalState { view_item: true, ..LocalState::default() });
     let json =
         JsonDoc { nodes: vec![json_node("t", Kind::Tab, serde_json::json!({ "url": "https://new/" }))], local: None };
     app.replace_running_session(&json, crate::store::json::Trust::Own);
@@ -2769,8 +2735,6 @@ fn opening_a_session_while_unread_takes_only_recently_closed_on_retry() {
     app.poll_store();
     assert!(app.local_persist.local_unread.is_none(), "read");
     assert_eq!(app.view_mode, ViewMode::Graph, "the old session's view isn't applied");
-    let closed: Vec<&JsonDoc> = app.closed.iter().map(|e| &e.doc).collect();
-    assert_eq!(closed, [&old], "its Recently Closed is");
 }
 
 /// Exit's forced retry applies what it reads so the write that follows
@@ -4888,7 +4852,7 @@ fn a_new_tab_whose_jar_is_deleted_before_its_create_lands_on_the_default() {
     let work = add_jar(&mut app, "Work");
     assert!(app.save_session());
     let t = spawn_with_jar(&mut app, SpawnPurpose::New, work);
-    app.close_node_and_save(&work.to_string());
+    app.remove_node(&work.to_string());
     assert!(app.save_session());
     assert_eq!(stored(&app, &t, field::JAR), FieldValue::Id(None), "created with none");
     let _peers = land_spawns(&mut app);
@@ -4907,7 +4871,7 @@ fn a_new_tab_whose_jar_is_deleted_after_its_create_dangles_to_the_default() {
     let t = spawn_with_jar(&mut app, SpawnPurpose::Restore, work);
     assert!(app.save_session());
     assert_eq!(stored(&app, &t, field::JAR), FieldValue::Id(Some(work)), "created with the jar");
-    app.close_node_and_save(&work.to_string());
+    app.close_node(&work.to_string());
     assert!(app.save_session());
     fail_spawns(&mut app);
     assert_eq!(app.effective_jar(&t), Some((default, true)), "the failed card lands on the Default");
@@ -4929,7 +4893,7 @@ fn closing_a_jar_leaves_saved_and_respawning_tabs_resolving_to_the_default_jar()
     assert!(app.save_session());
     app.handle_view_message(&live, ipc_protocol::ViewToHost::Crashed { reason: "boom".into() });
     assert!(app.spawns.spawning.contains_key(&live) && !app.nodes.contains_key(&live), "mid-respawn");
-    app.close_node_and_save(&work.to_string());
+    app.close_node(&work.to_string());
     assert!(app.save_session());
     let default = Some((default_jar_id(&mut app), true));
     for t in [&asleep, &live] {
@@ -5136,7 +5100,7 @@ fn a_failed_retry_and_a_new_failure_of_one_intent_leave_one_card() {
 }
 
 /// A live tab that crash-loops into a failed card beside a failed card for its own intent leaves one card: the
-/// crashed tab's, which keeps its id; the other is recorded in Recently Closed.
+/// crashed tab's, which keeps its id; the other is deleted.
 #[test]
 fn a_crashed_tab_beside_a_failed_card_for_its_intent_leaves_one_card() {
     let mut app = app_on(&temp_dir("crash-twin").join("session.mnf"), 1);
@@ -5146,7 +5110,7 @@ fn a_crashed_tab_beside_a_failed_card_for_its_intent_leaves_one_card() {
     assert_eq!(failed_cards(&app).len(), 1, "setup: a failed card beside the live tab");
     app.leave_failed_card(&live, "keeps crashing", LeftClosed::KeepsCrashing);
     assert_eq!(failed_cards(&app), std::slice::from_ref(&live));
-    assert_eq!(app.closed.len(), 1, "the other card is recorded in Recently Closed");
+    assert!(app.journal.as_ref().unwrap().doc().closed_roots().is_empty(), "the other card is deleted, not recorded");
 }
 
 /// A tab whose engine stops reading is toasted once per stall, not once per drain.
@@ -5581,9 +5545,9 @@ fn a_refused_drag_reparent_leaves_the_parent_alone() {
     assert_eq!(app.mirror.parent(&a), None, "a cycle");
 }
 
-/// A link inside a closed group comes back with it, between the new ids; a link to a card outside is not restored.
+/// Every link survives a close and comes back with the group under the same id, the outside one included.
 #[test]
-fn reopening_a_closed_group_restores_links_inside_it_only() {
+fn reopening_a_closed_group_restores_every_link_with_its_id() {
     let mut app = app_on(&temp_dir("link-closed").join("session.mnf"), 1);
     let outside = succeed_spawn(&mut app, "https://out/");
     let (x, y) = (succeed_spawn(&mut app, "https://x/"), succeed_spawn(&mut app, "https://y/"));
@@ -5592,16 +5556,18 @@ fn reopening_a_closed_group_restores_links_inside_it_only() {
     app.edit_group(&y, Some(group.clone()));
     app.connect(crate::caps::LINK, &x, &y).unwrap();
     app.create_link(&x, &outside); // `connect` would refuse another level, so build this one directly
+    assert!(app.save_session());
+    let before: std::collections::BTreeSet<_> = app.mirror.link_ids().collect();
+    assert_eq!(before.len(), 2);
     app.close_node(&group);
-    assert!(app.mirror.link_ids().next().is_none(), "closing deletes every link naming a closed card");
-    let entry = app.closed.pop().unwrap();
-    app.reopen_closed(entry);
-    let links: Vec<_> = app.mirror.link_ids().collect();
-    assert_eq!(links.len(), 1, "only the link between x and y returns");
-    let (from, to) = app.mirror.link_ends(&links[0].to_string());
-    let (from, to) = (from.unwrap().to_string(), to.unwrap().to_string());
-    assert!(app.nodes.contains_key(&from) && app.nodes.contains_key(&to), "between live cards");
-    assert!(![&x, &y, &outside].contains(&&from) && ![&x, &y, &outside].contains(&&to), "the new ids");
+    app.reopen_node(group.parse().unwrap());
+    let after: std::collections::BTreeSet<_> = app.mirror.link_ids().collect();
+    assert_eq!(after, before, "every link returns with its id");
+    for l in &after {
+        let (from, to) = app.mirror.link_ends(&l.to_string());
+        let (from, to) = (from.unwrap().to_string(), to.unwrap().to_string());
+        assert!(app.nodes.contains_key(&from) && app.nodes.contains_key(&to), "between live cards");
+    }
     assert!(app.save_session());
 }
 
@@ -5734,10 +5700,10 @@ fn an_import_keeps_a_link_to_a_jar_and_drops_one_whose_end_is_a_link_or_itself()
     }
 }
 
-/// Which links a close records: a link between a member and the closed root, and one across nested groups, come
-/// back; one to a member `worth_reopening` drops (a blank note) is not recorded.
+/// Closing an outer group: a link between a member and the root, and one across nested groups, come back; the blank
+/// note is deleted with its link.
 #[test]
-fn closing_records_links_to_the_root_and_across_nesting_but_not_to_dropped_members() {
+fn closing_keeps_links_to_the_root_and_across_nesting_and_deletes_a_blank_members_link() {
     let mut app = app_on(&temp_dir("link-closed-kept").join("session.mnf"), 1);
     let outer = add_group(&mut app, "outer");
     let inner = add_group(&mut app, "inner");
@@ -5750,11 +5716,14 @@ fn closing_records_links_to_the_root_and_across_nesting_but_not_to_dropped_membe
     app.edit_group(&blank, Some(outer.clone()));
     app.create_link(&x, &outer); // member and root
     app.create_link(&x, &y); // across nested groups
-    app.create_link(&x, &blank); // to a member the entry drops
+    app.create_link(&x, &blank); // to a member that is deleted on close
+    assert!(app.save_session());
     app.close_node(&outer);
-    let entry = app.closed.pop().unwrap();
-    assert_eq!(entry.doc.nodes.iter().filter(|n| n.kind() == Some(Kind::Link)).count(), 2);
-    app.reopen_closed(entry);
+    assert!(
+        !app.journal.as_ref().unwrap().doc().nodes.contains_key(&blank.parse().unwrap())
+            || !app.journal.as_ref().unwrap().doc().nodes[&blank.parse().unwrap()].is_live()
+    );
+    app.reopen_node(outer.parse().unwrap());
     assert_eq!(link_count(&app), 2);
     assert!(app.save_session());
 }
@@ -5872,7 +5841,8 @@ fn closing_a_group_commits_one_frame() {
     let before = frames();
     app.close_node(&g);
     assert_eq!(frames() - before, 1, "one commit for the group and its tabs");
-    assert!(!live_in_doc(&app, &g));
+    let doc = app.journal.as_ref().unwrap().doc();
+    assert!(live_in_doc(&app, &g) && doc.nodes[&g.parse().unwrap()].closed(), "closed, not deleted");
 }
 
 /// C1: replacing the running session forgets the old tabs' per-id state (and, with a GPU, frees their textures).
@@ -5937,17 +5907,17 @@ fn a_stored_card_without_a_position_lands_jittered_around_the_world_center() {
 }
 
 #[test]
-fn closing_a_jar_records_it_and_reopen_brings_the_card_back() {
+fn closing_a_jar_keeps_it_for_reopen() {
     let path = temp_dir("jar-close").join("session.mnf");
     let mut app = app_on(&path, 1);
     let jar = app.create_jar("Work", crate::fetched::Placement { group: None, pos: egui::vec2(5.0, 5.0) }).to_string();
     assert!(app.save_session());
-    app.close_node_and_save(&jar);
+    app.close_node(&jar);
     assert!(!app.nodes.contains_key(&jar) && app.jar_defs().is_empty());
-    let entry = app.closed.pop().expect("a jar is worth reopening");
-    app.reopen_closed(entry);
+    app.reopen_node(jar.parse().unwrap());
     let defs = app.jar_defs();
     assert_eq!(defs.len(), 1);
+    assert!(defs.contains_key(&jar.parse().unwrap()), "the same id");
     assert_eq!(defs.values().next().unwrap().name, "Work");
 }
 
@@ -6144,13 +6114,10 @@ fn an_unknown_card_copies_as_a_shell_of_its_type() {
     assert_eq!(app.mirror.name(&copies[0]), "Mine");
     assert!(shell(&app, copies[0].parse().unwrap()), "{:?}", doc_fields(&app, copies[0].parse().unwrap()));
 
-    app.close_node_and_save(&key);
+    let orig = doc_fields(&app, key.parse().unwrap());
+    app.close_node(&key);
     assert!(!app.nodes.contains_key(&key));
-    assert_eq!(
-        app.closed.last().unwrap().doc.nodes[0].fields["type"],
-        FUTURE,
-        "the closed entry holds the real string"
-    );
+    assert_eq!(app.journal.as_ref().unwrap().doc().nodes[&key.parse().unwrap()].ty(), FUTURE, "the real string stays");
     app.reopen_closed_shortcut();
     let reopened: Vec<NodeId> = app
         .nodes
@@ -6158,8 +6125,9 @@ fn an_unknown_card_copies_as_a_shell_of_its_type() {
         .filter(|(k, n)| **k != copies[0] && matches!(n.runtime, Runtime::Unknown))
         .map(|(k, _)| k.parse().unwrap())
         .collect();
-    assert_eq!(reopened.len(), 1, "a fresh shell, not the tombstone");
-    assert!(shell(&app, reopened[0]));
+    assert_eq!(reopened, [key.parse::<NodeId>().unwrap()], "the same node comes back whole");
+    let kept = doc_fields(&app, reopened[0]);
+    assert!(orig.iter().all(|no| kept.contains(no)), "raw fields intact: {orig:?} vs {kept:?}");
 
     let json = crate::store::json::doc_to_json(app.journal.as_ref().unwrap().doc());
     let mut counter = 0;

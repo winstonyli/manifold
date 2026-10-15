@@ -608,6 +608,18 @@ impl Doc {
         None
     }
 
+    /// Recently Closed (spec decision 5): the live closed nodes that are not hidden by another closed node, newest
+    /// first by their `closed` register's stamp (ties by id, newest first), the same order on every replica.
+    pub fn closed_roots(&self) -> Vec<(NodeId, Stamp)> {
+        let mut roots: Vec<(NodeId, Stamp)> = self
+            .live()
+            .filter(|&(id, n)| n.closed() && self.placement(id) != Placement::Hidden)
+            .filter_map(|(id, n)| Some((id, n.fields.get(&field::CLOSED)?.stamp)))
+            .collect();
+        roots.sort_by_key(|&(id, stamp)| std::cmp::Reverse((stamp, id)));
+        roots
+    }
+
     /// `nodes` and every node below one of them: where a node is shown
     /// depends on each group above it (`effective_group`).
     pub fn with_descendants(&self, nodes: BTreeSet<NodeId>) -> BTreeSet<NodeId> {
@@ -881,6 +893,23 @@ mod tests {
         assert!(doc.is_shown(id(2)), "the mirror keeps every live link (D2)");
         doc.nodes.get_mut(&id(2)).unwrap().deleted = true;
         assert!(!doc.is_shown(id(2)));
+    }
+
+    #[test]
+    fn closed_roots_are_newest_first_and_skip_nested_and_deleted_ones() {
+        let (mut doc, id) = doc_of(&[
+            (1, Kind::Note, None, true),    // stamp 1
+            (2, Kind::Group, None, true),   // stamp 2
+            (3, Kind::Note, Some(2), true), // stamp 3, nested: part of 2's entry
+            (4, Kind::Tab, None, true),     // stamp 4
+            (5, Kind::Tab, None, false),
+        ]);
+        let ids = |doc: &Doc| doc.closed_roots().into_iter().map(|(n, _)| n).collect::<Vec<_>>();
+        assert_eq!(ids(&doc), [id(4), id(2), id(1)]);
+        doc.nodes.get_mut(&id(4)).unwrap().deleted = true;
+        let reg = doc.nodes.get_mut(&id(2)).unwrap().fields.get_mut(&field::CLOSED).unwrap();
+        reg.enc = encode_field(field::CLOSED, &FieldValue::Bool(false));
+        assert_eq!(ids(&doc), [id(3), id(1)], "clearing the outer one makes the nested one an entry");
     }
 
     #[test]

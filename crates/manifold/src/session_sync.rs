@@ -20,7 +20,7 @@ use crate::store::model::{
 };
 use crate::store::ops::OpBody;
 use crate::tabs::TabSpawn;
-use crate::{App, ClosedEntry, ViewMode, MAX_CLOSED};
+use crate::{App, ViewMode};
 
 /// How long after a save that didn't commit `poll_store` tries again:
 /// soon enough that an edit isn't left unsaved, slow enough that a failing
@@ -35,7 +35,7 @@ const HOST_LOAD_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Personal state startup couldn't read (`App::local_persist`.`local_unread`): when
 /// `poll_store` next tries, and whether startup was a fresh start (no
-/// graph node), when only Recently Closed is taken from what it reads.
+/// graph node), when nothing is applied from what it reads.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct LocalUnread {
     pub(crate) retry_at: std::time::Instant,
@@ -387,6 +387,10 @@ pub(crate) struct PendingWrites {
     /// Local group moves the next save commits as `Move`s, by node: the target group, `None` for the top level.
     /// Cleared by a successful commit.
     pub(crate) pending_moves: BTreeMap<NodeId, Option<NodeId>>,
+    /// `closed` writes from Close and Reopen (spec decisions 1 and 7), in the order they were made: a reopen's
+    /// re-stamps of nested roots must commit in their old relative order, which `pending`'s key order would lose.
+    /// Each commits as one `Set` per entry, after the other sets; a node the document doesn't hold live is skipped.
+    pub(crate) closed_flags: Vec<(NodeId, bool)>,
     /// Another replica's text for a note being typed in, held back from its mirror and box until the blur
     /// (`end_note_edit`, 2b-4 Ruling 7), by node. Dropped when this replica commits its own text after it.
     pub(crate) held_text: HashMap<String, String>,
@@ -771,9 +775,36 @@ impl App {
             .collect()
     }
 
+    /// Shows or hides `touched` and everything under them to match the document, for the nodes whose shown state
+    /// differs from the graph's: the local half of what `apply_remote` does for other replicas' changes. A local close
+    /// already hid its subtree (`close_node`), so this only finds what a reopen or a repair brought back.
+    fn apply_visibility(&mut self, touched: BTreeSet<NodeId>) {
+        let Some(doc) = self.journal.as_ref().map(|j| j.doc()) else { return };
+        if touched.is_empty() {
+            return;
+        }
+        let changes: Vec<RemoteChange> = doc
+            .with_descendants(touched)
+            .into_iter()
+            .filter_map(|id| {
+                let node = doc.nodes.get(&id).filter(|n| n.is_live() && n.kind() != Kind::Link)?;
+                let key = id.to_string();
+                let here = self.nodes.contains_key(&key) || self.spawns.spawning.contains_key(&key);
+                match (doc.is_shown(id), here) {
+                    (true, false) => Some((id, Remote::Shown(Snapshot::of(doc, id, node)))),
+                    (false, true) => Some((id, Remote::Hidden)),
+                    _ => None,
+                }
+            })
+            .collect();
+        if !changes.is_empty() {
+            self.apply_remote(changes);
+        }
+    }
+
     /// Shows other replicas' changes, before the next commit (contract
     /// "Missing means deleted"). A deleted node is removed without a
-    /// Recently Closed entry and without queueing a delete of its own
+    /// document entry of its own and without queueing a delete of its own
     /// (`remove_remotely_deleted`: the document already lacks it; it does queue the deletes of the links naming
     /// the node), and a
     /// tab's engine host is shut down. Groups are materialized before the
@@ -821,6 +852,8 @@ impl App {
         // A remote jar edit follows the same table (spec "Live tabs when `jar` changes"); once the whole batch is
         // in, so a tab is judged by where the batch leaves it.
         self.sweep_jar_switches();
+        // Closes past the cap arriving from other replicas are evicted here too (spec decision 6).
+        self.evict_closed();
     }
 
     /// Removes a node another replica deleted, recording nothing and saving
@@ -1060,7 +1093,7 @@ impl App {
 
     /// Commits every note's box that differs from the mirror (`edit_text`), so a save commits what is being typed.
     /// A note nobody is typing in has its box equal to the mirror, so it compares and copies nothing.
-    fn commit_note_buffers(&mut self) {
+    pub(crate) fn commit_note_buffers(&mut self) {
         let typed: Vec<(String, String)> = self
             .nodes
             .iter()
@@ -1384,6 +1417,12 @@ impl App {
                 };
                 ops.push(OpBody::Set { node, field: no, enc });
             }
+            for &(node, closed) in &self.writes.closed_flags {
+                if editable(&node) {
+                    let enc = encode_field(field::CLOSED, &FieldValue::Bool(closed));
+                    ops.push(OpBody::Set { node, field: field::CLOSED, enc });
+                }
+            }
             ops.extend(deleted.iter().map(|&node| OpBody::Delete { node }));
             let result = if ops.is_empty() {
                 drop(txn);
@@ -1470,6 +1509,7 @@ impl App {
                     }
                     self.pending.clear();
                     self.writes.pending_moves.clear();
+                    let flagged: BTreeSet<NodeId> = self.writes.closed_flags.drain(..).map(|(n, _)| n).collect();
                     // A tab still spawning keeps its entry, and its layout: a respawn has removed it from `nodes`
                     // until it lands, and `Mirror::init` then leaves an existing entry alone.
                     let (nodes, spawning) = (&self.nodes, &self.spawns.spawning);
@@ -1482,6 +1522,9 @@ impl App {
                     self.writes.last_session_save = Some(std::time::Instant::now());
                     self.writes.save_retry_at = None;
                     self.flush_history();
+                    // What this commit's flags and moves changed about visibility (a reopen, a nested root
+                    // re-stamped, a hidden Default moved out) is shown or hidden the way a remote change is.
+                    self.apply_visibility(flagged.into_iter().chain(moved).collect());
                     #[cfg(debug_assertions)]
                     self.check_graph_matches_document();
                     return true;
@@ -1543,8 +1586,7 @@ impl App {
 
     /// Startup: shows the document, then applies personal state
     /// (`session.mnf.local`) on top. `false` when it has no live node, so
-    /// the caller starts fresh; Recently Closed is still restored then,
-    /// or the next personal-state write would drop it.
+    /// the caller starts fresh. Closes past `MAX_CLOSED` are evicted at load (spec decision 6).
     pub(crate) fn restore_session(&mut self) -> bool {
         let Some(journal) = self.journal.as_ref() else { return false };
         let doc = journal.doc();
@@ -1573,8 +1615,8 @@ impl App {
             for (id, s) in &nodes {
                 self.materialize(id.to_string(), &s.ty, &s.fields, s.group.map(|g| g.to_string()), None);
             }
-            self.restore_closed(local.closed);
             self.keep_hidden_local(local.nodes);
+            self.evict_closed();
             self.arm_local(unread, true);
             return false;
         }
@@ -1597,6 +1639,7 @@ impl App {
         self.camera.frame_restored = true;
         self.apply_local(local);
         self.wake_focused();
+        self.evict_closed();
         self.arm_local(unread, false);
         true
     }
@@ -1639,8 +1682,7 @@ impl App {
     /// (`App::local_persist`.`local_unread`), at most every `SAVE_RETRY` and without
     /// waiting on the lock, so a busy peer never stalls a frame; `force`
     /// (at exit) tries now and waits as a save does. Once read, it's
-    /// applied as startup would have, keeping what was closed since in
-    /// Recently Closed, and the next due write saves the result. Only a
+    /// applied as startup would have, and the next due write saves the result. Only a
     /// state that decodes is applied: none, or a damaged one, leaves the
     /// live view as the user has had it since startup. At exit nothing is
     /// woken (the read only feeds the write that follows).
@@ -1662,10 +1704,8 @@ impl App {
         self.local_persist.local_unread = None;
         // Unknown: the file holds what was read, not this merge (or nothing).
         self.local_persist.local_written = None;
-        let Some(mut local) = read.ok().flatten().and_then(|bytes| LocalState::from_bytes(&bytes)) else { return };
-        local.closed.extend(self.closed.iter().map(|e| e.doc.clone()));
+        let Some(local) = read.ok().flatten().and_then(|bytes| LocalState::from_bytes(&bytes)) else { return };
         if unread.fresh {
-            self.restore_closed(local.closed);
             self.keep_hidden_local(local.nodes);
         } else {
             self.apply_local(local);
@@ -1731,7 +1771,6 @@ impl App {
             groups_collapsed: self.groups_collapsed,
             camera: Some(([rect.min.x, rect.min.y, rect.max.x, rect.max.y], self.current_group.clone())),
             nodes,
-            closed: self.closed.iter().map(|e| e.doc.clone()).collect(),
             json_accessor_paths: self.json_ui.json_accessor_paths,
             json_outline_hidden: !self.json_ui.json_outline_visible,
             json_outline_width: Some(self.json_ui.json_outline_width),
@@ -1767,7 +1806,6 @@ impl App {
         }
         self.view_mode = if state.view_item { ViewMode::Item } else { ViewMode::Graph };
         self.groups_collapsed = state.groups_collapsed;
-        self.restore_closed(state.closed);
         self.json_ui.json_accessor_paths = state.json_accessor_paths;
         self.json_ui.json_outline_visible = !state.json_outline_hidden;
         if let Some(width) = state.json_outline_width {
@@ -1812,19 +1850,6 @@ impl App {
                 self.camera.frame_restored = false;
             }
         }
-    }
-
-    /// Recently Closed from personal state, oldest first like `closed`
-    /// itself, capped at `MAX_CLOSED`. A blank entry (a format this build
-    /// doesn't recognize inside `doc.nodes`, or one some other bug
-    /// produced) is dropped rather than shown as an empty row.
-    fn restore_closed(&mut self, closed: Vec<JsonDoc>) {
-        let mut closed: Vec<ClosedEntry> =
-            closed.into_iter().filter(|doc| !doc.nodes.is_empty()).map(|doc| ClosedEntry { doc }).collect();
-        if closed.len() > MAX_CLOSED {
-            closed.drain(..closed.len() - MAX_CLOSED);
-        }
-        self.closed = closed;
     }
 
     /// Personal-state entries for nodes the document holds but the graph doesn't show (closed, or under a closed
@@ -1879,28 +1904,20 @@ impl App {
     }
 
     /// Writes personal state when it changed (contract "Personal state"):
-    /// at most every 30 s, 2.5 s after a Recently Closed change, and at
-    /// exit (`force`). Never while the file is unread (`App::local_persist`.`local_unread`).
+    /// at most every 30 s, and at exit (`force`). Never while the file is unread (`App::local_persist`.`local_unread`).
     pub(crate) fn maybe_write_local(&mut self, force: bool) {
         const EVERY: std::time::Duration = std::time::Duration::from_secs(30);
-        const AFTER_CLOSED: std::time::Duration = std::time::Duration::from_millis(2500);
-        let due = force
-            || self.local_persist.closed_changed_at.is_some_and(|t| t.elapsed() >= AFTER_CLOSED)
-            || self.local_persist.local_written_at.elapsed() >= EVERY;
+        let due = force || self.local_persist.local_written_at.elapsed() >= EVERY;
         if !due || self.journal.is_none() || self.local_persist.local_unread.is_some() {
             return;
         }
         let state = self.local_state();
         self.local_persist.local_written_at = std::time::Instant::now();
         if self.local_persist.local_written.as_ref().is_some_and(|w| !crate::local_state::differs(w, &state)) {
-            self.local_persist.closed_changed_at = None;
             return;
         }
         match self.journal.as_ref().unwrap().write_local(&state.to_bytes()) {
-            Ok(()) => {
-                self.local_persist.local_written = Some(state);
-                self.local_persist.closed_changed_at = None;
-            }
+            Ok(()) => self.local_persist.local_written = Some(state),
             Err(err) => self.store_error(err),
         }
     }
@@ -1983,7 +2000,7 @@ impl App {
     /// root itself does. A `group` link only within this file's own nodes
     /// is kept; a member whose group was outside the exported subtree
     /// lands with the root (`materialize_imported`). Ends with
-    /// `save_session`, same as `replace_running_session`/`reopen_closed`.
+    /// `save_session`, same as `replace_running_session`.
     pub(crate) fn import_group_json(&mut self, json: &JsonDoc) {
         self.leave_json_level();
         let next_id = || self.alloc_node_id().parse().expect("a store id");
@@ -2150,17 +2167,9 @@ impl App {
         self.view_mode = ViewMode::Graph;
         self.camera.frame_restored = true;
         if let Some(state) = json.local.clone().and_then(|value| serde_json::from_value::<LocalState>(value).ok()) {
-            // Recently Closed is this profile's own history, not document
-            // content: an imported/opened file's `local.closed` (if any)
-            // never replaces it, so `apply_local`'s own restore of
-            // `self.closed` is undone right after.
-            let closed = std::mem::take(&mut self.closed);
             self.apply_local(state.remap(&map));
-            self.closed = closed;
         }
-        // Personal state startup couldn't read is the old session's: a late
-        // read may still bring back its Recently Closed, but not its view
-        // state, which names nodes that are gone.
+        // Personal state startup couldn't read is the old session's: its view state names nodes that are gone.
         if let Some(unread) = self.local_persist.local_unread.as_mut() {
             unread.fresh = true;
         }

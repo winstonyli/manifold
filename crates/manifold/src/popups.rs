@@ -749,27 +749,48 @@ impl App {
     /// every entry, newest first; click one to reopen it where it was.
     pub(crate) fn build_recently_closed_popup(&mut self, ui: &mut egui::Ui, anchor_rect: egui::Rect, fade: f32) {
         let mut close = false;
-        let mut reopen_index: Option<usize> = None;
+        // Every closed root, any replica's, newest first (spec "Recently Closed rows"): label from its fields, title
+        // from its kept personal state, a group's member count from its non-deleted descendants.
+        let rows: Vec<(store::model::NodeId, store::json::JsonNode, Option<String>, Option<usize>)> = self
+            .journal
+            .as_ref()
+            .map(|j| {
+                let doc = j.doc();
+                doc.closed_roots()
+                    .into_iter()
+                    .filter_map(|(id, _)| {
+                        let node = doc.nodes.get(&id)?;
+                        let key = id.to_string();
+                        let json = store::json::node_json(&key, node.ty(), &session_sync::fields_of(node), None);
+                        let title = self.hidden_local.get(&key).map(|l| l.title.clone()).filter(|t| !t.is_empty());
+                        let members = (node.kind() == Kind::Group).then(|| {
+                            let under = doc.with_descendants(std::collections::BTreeSet::from([id]));
+                            under.iter().filter(|d| **d != id && doc.nodes.get(d).is_some_and(|n| !n.deleted)).count()
+                        });
+                        Some((id, json, title, members))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let mut reopen: Option<store::model::NodeId> = None;
         let open = self.menus.open_popup == Some(AnchoredPopup::RecentlyClosed);
         let area_rect =
             build_list_popup_frame(ui.ctx(), "recently_closed_popup", anchor_rect, 220.0, 320.0, fade, open, |ui| {
-                for (index, entry) in self.closed.iter().enumerate().rev() {
+                for (id, root, title, members) in &rows {
                     ui.horizontal(|ui| {
-                        let root = &entry.doc.nodes[0];
-                        let title = entry.local("title", &root.id).and_then(|v| v.as_str());
                         let mut row_ui = |ui: &mut egui::Ui| {
-                            let (label, hint) = Self::closed_entry_label(ui, root, title);
+                            let (label, hint) = Self::closed_entry_label(ui, root, title.as_deref());
                             let mut row = list_row(ui, label);
                             if let Some(hint) = hint {
                                 row = row.on_hover_text(hint);
                             }
                             if row.clicked() {
-                                reopen_index = Some(index);
+                                reopen = Some(*id);
                             }
                         };
-                        if root.kind() == Some(Kind::Group) {
+                        if let Some(count) = members {
                             // The count is laid out first, at the right, so a name cut short keeps it.
-                            let count = member_count_text(entry.doc.nodes.len() - 1);
+                            let count = member_count_text(*count);
                             egui::Sides::new().shrink_left().truncate().show(ui, row_ui, |ui| ui.weak(count));
                         } else {
                             row_ui(ui);
@@ -780,16 +801,14 @@ impl App {
 
         let clicked_outside = clicked_outside_popup(ui, area_rect, Some(anchor_rect));
 
-        if let Some(index) = reopen_index {
-            let entry = self.closed.remove(index);
-            self.local_persist.closed_changed_at = Some(std::time::Instant::now());
-            self.reopen_closed(entry);
+        if let Some(id) = reopen {
+            self.reopen_node(id);
             close = true;
         }
         if clicked_outside {
             close = true;
         }
-        if close || self.closed.is_empty() {
+        if close || rows.is_empty() {
             close_popup(&mut self.menus.open_popup, AnchoredPopup::RecentlyClosed);
         }
     }
@@ -1045,7 +1064,7 @@ impl App {
     /// nodes/context menu show, see `App::node_menu`), most-
     /// recently-downloaded first, click a filename to open its containing
     /// folder (same as `reveal_node`), "x" to remove it from the list
-    /// (same as `close_node_and_save`). Exists so a completed download can
+    /// (same as `close_node`). Exists so a completed download can
     /// be found without first switching to Graph view.
     pub(crate) fn build_downloads_popup(&mut self, ui: &mut egui::Ui, anchor_rect: egui::Rect, fade: f32) {
         let mut close = false;
@@ -1120,7 +1139,7 @@ impl App {
             close = true;
         }
         if let Some(id) = remove_id {
-            self.close_node_and_save(&id);
+            self.close_node(&id);
         }
         if clicked_outside {
             close = true;
