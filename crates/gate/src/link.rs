@@ -151,36 +151,6 @@ fn rnd_f(f: f64) -> i64 {
     round_half_even(f) as i64
 }
 
-/// A screen point at least `CLEAR` px from every card rect (jar cards included) and inside the window, away from
-/// the toolbar: tried at `(x, y)` first, then at growing offsets. The release point of a "dropped on empty canvas"
-/// check, picked from the exported rects instead of assumed clear (b's column on c's row can sit on c itself, which
-/// previews "refused").
-fn empty_canvas_point(s: &State, x: i64, y: i64) -> io::Result<(i64, i64)> {
-    const CLEAR: f64 = 40.0;
-    let (w, h) = (num(&s.0["window"][0])?, num(&s.0["window"][1])?);
-    let mut rects = Vec::new();
-    for c in s.all_cards() {
-        let r = &c["rect"];
-        rects.push([num(&r[0])?, num(&r[1])?, num(&r[2])?, num(&r[3])?]);
-    }
-    let clear = |px: f64, py: f64| {
-        px >= CLEAR
-            && px <= w - CLEAR
-            && py >= 80.0
-            && py <= h - CLEAR
-            && rects.iter().all(|r| px < r[0] - CLEAR || px > r[2] + CLEAR || py < r[1] - CLEAR || py > r[3] + CLEAR)
-    };
-    for step in 0..=8 {
-        for (dx, dy) in [(0, 0), (1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (-1, -1), (1, -1), (-1, 1)] {
-            let (px, py) = (x + dx * step * 60, y + dy * step * 60);
-            if clear(px as f64, py as f64) {
-                return Ok((px, py));
-            }
-        }
-    }
-    Err(bad(format!("no empty canvas point near ({x}, {y}) in a {w}x{h} window")))
-}
-
 /// The script's `drag_to X0 Y0 X1 Y1`: hover, press, then six steps to (X1, Y1) (bash integer arithmetic, truncating
 /// division); the button stays down. Ends with WAITIDLE.
 fn drag_to(i: &mut Instance, from: (i64, i64), to: (i64, i64)) -> io::Result<()> {
@@ -403,12 +373,12 @@ fn drive(run: &Run, sec: &mut Option<Section>) -> io::Result<Exports> {
     i.send(&format!("MOUSEUP {} {}", cc.0, cc.1))?;
     i.send("WAITIDLE")?;
     let s10d = i.export_state("s10d")?;
-    // Released on empty canvas (near b's column and c's row, picked clear of every card): the dragged link is deleted.
+    // Released on empty canvas (b's column, c's row, clear of every card): the dragged link is deleted.
     let g = edge_pt(&s10d, "near_from", None)?;
-    let (ex, ey) = empty_canvas_point(&s10d, bc.0, card_pt(&s10d, &c)?.1)?;
-    drag_to(&mut i, g, (ex, ey))?;
+    let ey = card_pt(&s10d, &c)?.1;
+    drag_to(&mut i, g, (bc.0, ey))?;
     let s11m = i.export_state("s11m")?;
-    i.send(&format!("MOUSEUP {ex} {ey}"))?;
+    i.send(&format!("MOUSEUP {} {ey}", bc.0))?;
     i.send("WAITIDLE")?;
     let s11 = i.export_state("s11")?;
     Run::stop(i)?;
