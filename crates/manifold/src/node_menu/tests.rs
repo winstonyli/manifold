@@ -248,8 +248,8 @@ fn node_menu_config_matches_each_kinds_menu() {
     );
 }
 
-/// The row hinted Del is the one the card's Del does, for every kind: a group's is Dissolve Group, never
-/// "Close Group and Contents", which closes the members too.
+/// The row hinted Del is the one the card's Del does, for every kind: a group's is "Close Group and Contents", never
+/// "Dissolve Group" (the explicit menu row).
 #[test]
 fn del_hint_names_what_del_does_on_the_card() {
     for kind in kinds() {
@@ -258,11 +258,11 @@ fn del_hint_names_what_del_does_on_the_card() {
             .items
             .iter()
             .filter_map(|item| match item {
-                NodeMenuItem::Button(label, action) if action.key_hint(kind).is_some() => Some(*label),
+                NodeMenuItem::Button(label, action) if action.key_hint().is_some() => Some(*label),
                 _ => None,
             })
             .collect();
-        let del = CardControl::Close.action(kind);
+        let del = CardControl::Close.action();
         let want: Vec<&str> = config
             .items
             .iter()
@@ -274,9 +274,8 @@ fn del_hint_names_what_del_does_on_the_card() {
         assert_eq!(hinted, want, "{kind:?}");
         assert_eq!(hinted.len(), 1, "{kind:?}: one row hinted Del");
     }
-    assert_eq!(NodeAction::Dissolve.key_hint(plain(TYPE_GROUP)), Some("Del"));
-    assert_eq!(NodeAction::Delete.key_hint(plain(TYPE_GROUP)), None, "closing the members isn't Del");
-    assert_eq!(NodeAction::Delete.key_hint(loaded_tab()), Some("Del"));
+    assert_eq!(NodeAction::Delete.key_hint(), Some("Del"));
+    assert_eq!(NodeAction::Dissolve.key_hint(), None, "dissolving is the explicit menu row, not Del");
 }
 
 /// The focused card's "Del <verb>" hint names the same action as the menu row hinted Del.
@@ -285,13 +284,13 @@ fn card_del_hint_matches_the_menu_row_hinted_del() {
     for kind in kinds() {
         let config = node_menu_config(&view_of(kind), false);
         let label = config.items.iter().find_map(|item| match item {
-            NodeMenuItem::Button(label, action) if action.key_hint(kind).is_some() => Some(*label),
+            NodeMenuItem::Button(label, action) if action.key_hint().is_some() => Some(*label),
             _ => None,
         });
         let first = label.and_then(|l| l.split(' ').next()).map(str::to_lowercase);
         assert_eq!(first.as_deref(), Some(del_verb(kind)), "{kind:?}");
     }
-    assert_eq!(del_verb(plain(TYPE_GROUP)), "dissolve");
+    assert_eq!(del_verb(plain(TYPE_GROUP)), "close");
 }
 
 /// An unloaded tab's menu Duplicate opens a copy at its url and engine, as Ctrl+D does.

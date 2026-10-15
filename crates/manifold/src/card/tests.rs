@@ -511,9 +511,9 @@ fn card_controls_list_each_cards_buttons_in_pointer_order() {
         assert_eq!(card_controls(&test_view(kind)), vec![Swatch, Pin, Close], "{kind:?}");
         let grouped = CardView { in_group: true, ..test_view(kind) };
         assert_eq!(card_controls(&grouped), vec![Swatch, Pin, Eject, Close], "{kind:?}");
-        let close = if kind.ty == TYPE_GROUP { NodeAction::Dissolve } else { NodeAction::Delete };
-        assert_eq!(Close.action(kind), close, "{kind:?}");
     }
+    // Close is the one close on every kind, a group included (Dissolve is a menu row, not the card's close).
+    assert_eq!(Close.action(), NodeAction::Delete);
     // Every card shows its pin; an unloaded tab never shows the audio
     // indicator -- it has no engine to be playing or muted.
     assert_eq!(card_controls(&test_view(sleeping_tab())), vec![Swatch, Pin, Close]);
@@ -539,13 +539,11 @@ fn card_controls_list_each_cards_buttons_in_pointer_order() {
         }),
         vec![Swatch, Pin, Audio, Eject, Close]
     );
-    let (tab, note) = (loaded_tab(), plain(TYPE_NOTE));
-    assert_eq!(Close.action(tab), NodeAction::Delete);
-    assert_eq!(Pin.action(tab), NodeAction::TogglePin);
-    assert_eq!(Audio.action(tab), NodeAction::ToggleMute);
+    assert_eq!(Pin.action(), NodeAction::TogglePin);
+    assert_eq!(Audio.action(), NodeAction::ToggleMute);
     assert!(!Pin.hover_only() && !Audio.hover_only());
-    assert_eq!(Eject.action(note), NodeAction::RemoveFromGroup);
-    assert_eq!(Swatch.action(note), NodeAction::CycleColor);
+    assert_eq!(Eject.action(), NodeAction::RemoveFromGroup);
+    assert_eq!(Swatch.action(), NodeAction::CycleColor);
     assert!(Close.hover_only() && Eject.hover_only() && !Swatch.hover_only());
 }
 

@@ -184,7 +184,9 @@ impl App {
     pub(crate) fn apply_drop(&mut self, id: &str, target: Option<(DropEffect, Option<String>)>) {
         match target {
             Some((DropEffect::Eject, _)) => self.eject(id),
-            Some((DropEffect::Join, Some(group))) => {
+            // A group closed or deleted since the drop began (a remote close after the menu opened) is not shown: a
+            // node joined to it would vanish with it.
+            Some((DropEffect::Join, Some(group))) if self.nodes.contains_key(&group) => {
                 for member in self.take_drag_unit(id, &group) {
                     if self.nodes.contains_key(&member) {
                         self.edit_group(&member, Some(group.clone()));
@@ -222,6 +224,10 @@ impl App {
     /// Refused too when the walk meets a group cycle in the mirror (two
     /// replicas' moves raced; the next save shows the document's groups).
     pub(crate) fn merge_groups(&mut self, source: &str, target: &str) {
+        // Refused too when `target` is not shown (closed or deleted remotely): its new members would vanish with it.
+        if !self.nodes.contains_key(target) {
+            return;
+        }
         let mut ancestor = Some(target.to_string());
         let mut visited = HashSet::new();
         while let Some(cur) = ancestor {

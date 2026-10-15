@@ -657,4 +657,94 @@ mod tests {
         assert!(doc.nodes[&fresh_id].is_live() && !doc.nodes[&fresh_id].closed());
         assert!(app.nodes.contains_key(&keep));
     }
+
+    /// A group with one kept note inside, saved.
+    fn group_with_note(app: &mut App) -> (String, String) {
+        let g = add_group(app, "G");
+        let inner = note(app, "kept");
+        app.edit_group(&inner, Some(g.clone()));
+        assert!(app.save_session());
+        (g, inner)
+    }
+
+    /// The group card's close (the ✕, Del and a middle-click all resolve to `CardControl::Close.action()`) closes the
+    /// group with its members, restorable like any card; only the explicit "Dissolve Group" row dissolves it.
+    #[test]
+    fn a_groups_close_control_closes_it_and_dissolve_stays_explicit() {
+        use crate::card::CardControl;
+        use crate::node_menu::NodeAction;
+        let ctx = egui::Context::default();
+        let path = store::testutil::temp_dir("closed-group-x").join("session.mnf");
+        let mut app = app_on(&path, 1);
+        let (g, inner) = group_with_note(&mut app);
+        app.apply_node_action(&ctx, &g, CardControl::Close.action());
+        assert!(!app.nodes.contains_key(&g) && !app.nodes.contains_key(&inner), "hidden with its members");
+        assert_eq!(closed_ids(&app), std::slice::from_ref(&g), "a Recently Closed root, not a delete");
+        app.reopen_node(g.parse().unwrap());
+        assert!(app.nodes.contains_key(&g) && app.nodes.contains_key(&inner));
+        assert_eq!(app.mirror.group(&inner), Some(g.as_str()), "the members are still in it");
+
+        app.apply_node_action(&ctx, &g, NodeAction::Dissolve);
+        assert!(!app.nodes.contains_key(&g) && app.nodes.contains_key(&inner), "dissolved: the member stays");
+        assert_eq!(app.mirror.group(&inner), None);
+        assert!(closed_ids(&app).is_empty(), "a dissolve is not a close");
+    }
+
+    /// Close Selected with a group and a member inside it both selected: the group closes first (outermost first), the
+    /// member is already hidden at its turn and is skipped, so only the group is a closed root and a reopen of it
+    /// brings the member back.
+    #[test]
+    fn close_selected_with_a_group_and_its_member_closes_only_the_group() {
+        let ctx = egui::Context::default();
+        for _ in 0..8 {
+            let path = store::testutil::temp_dir("closed-selected-nested").join("session.mnf");
+            let mut app = app_on(&path, 1);
+            let (g, inner) = group_with_note(&mut app);
+            app.interaction.selected.extend([inner.clone(), g.clone()]);
+            app.apply_graph_action(&ctx, crate::graph_ui::GraphAction::CloseSelected);
+            assert!(app.interaction.selected.is_empty());
+            assert_eq!(closed_ids(&app), std::slice::from_ref(&g), "the group is the only closed root");
+            assert_eq!(
+                stored(&app, &inner, field::CLOSED),
+                FieldValue::Replica(0),
+                "the member has no close of its own"
+            );
+            app.reopen_node(g.parse().unwrap());
+            assert!(app.nodes.contains_key(&inner));
+            assert_eq!(app.mirror.group(&inner), Some(g.as_str()));
+        }
+    }
+
+    /// A merge drops the source group from the selection with the rest of its UI state (`forget_id`).
+    #[test]
+    fn a_merged_away_group_leaves_the_selection() {
+        let mut app = App::default();
+        let (source, target) = (add_group(&mut app, "S"), add_group(&mut app, "T"));
+        app.interaction.selected.extend([source.clone(), target.clone()]);
+        app.merge_groups(&source, &target);
+        assert!(!app.nodes.contains_key(&source));
+        assert_eq!(app.interaction.selected, HashSet::from([target]));
+    }
+
+    /// A Join (or a menu's Move into) onto a group another replica closed after the menu opened is a no-op: the node
+    /// stays where it is rather than vanishing into the hidden group. A merge onto it is refused the same way.
+    #[test]
+    fn a_join_onto_a_group_closed_remotely_does_nothing() {
+        use crate::card::DropEffect;
+        let path = store::testutil::temp_dir("closed-join-hidden").join("session.mnf");
+        let mut app = app_on(&path, 1);
+        let g = add_group(&mut app, "G");
+        let (n, other_group) = (note(&mut app, "n"), add_group(&mut app, "H"));
+        assert!(app.save_session());
+        let mut other = store::journal::Journal::open(&path, store::model::ActorId(2)).unwrap();
+        crate::session_sync::tests::remote_set(&mut other, &g, field::CLOSED, FieldValue::Replica(99));
+        assert!(app.save_session());
+        assert!(!app.nodes.contains_key(&g), "closed remotely, so not shown");
+        app.apply_drop(&n, Some((DropEffect::Join, Some(g.clone()))));
+        app.apply_node_action(&egui::Context::default(), &n, crate::node_menu::NodeAction::MoveToGroup(g.clone()));
+        assert_eq!(app.mirror.group(&n), None, "still at the top level");
+        assert!(app.nodes.contains_key(&n));
+        app.apply_drop(&other_group, Some((DropEffect::Merge, Some(g.clone()))));
+        assert!(app.nodes.contains_key(&other_group), "the merge into a hidden group is refused");
+    }
 }

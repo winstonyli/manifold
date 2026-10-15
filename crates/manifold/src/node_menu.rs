@@ -104,11 +104,11 @@ pub(crate) enum MenuPage {
 }
 
 impl NodeAction {
-    /// The key that does this to a keyboard-focused card of `kind`, shown at the row's right edge. Del is
-    /// whatever the card's Close does (`CardControl::Close`): Dissolve on a group, so "Close Group and
-    /// Contents" (`Delete`), which closes the members too, is never hinted Del.
-    pub(crate) fn key_hint(&self, kind: CardKind) -> Option<&'static str> {
-        (*self == CardControl::Close.action(kind)).then_some("Del")
+    /// The key that does this to a keyboard-focused card, shown at the row's right edge. Del is whatever the card's
+    /// Close does (`CardControl::Close`): `Delete` on every kind, so on a group "Close Group and Contents" is hinted
+    /// Del and "Dissolve Group" is not.
+    pub(crate) fn key_hint(&self) -> Option<&'static str> {
+        (*self == CardControl::Close.action()).then_some("Del")
     }
 
     pub(crate) fn hover_text(&self) -> Option<&'static str> {
@@ -176,8 +176,6 @@ pub(crate) enum NodeMenuItem {
 /// maximum, so it grows to fit the swatch row.
 #[derive(Debug, PartialEq)]
 pub(crate) struct NodeMenuConfig {
-    /// Whose menu: picks the row hinted Del (`NodeAction::key_hint`).
-    kind: CardKind,
     area_id: &'static str,
     min_width: f32,
     items: Vec<NodeMenuItem>,
@@ -245,19 +243,17 @@ pub(crate) fn build_node_context_menu(
                 }
                 menu_separator(ui);
                 match page {
-                    MenuPage::Color => {
-                        draw_menu_item(ui, &NodeMenuItem::Colors, config.kind, color, &mut first_item, &mut action)
-                    }
+                    MenuPage::Color => draw_menu_item(ui, &NodeMenuItem::Colors, color, &mut first_item, &mut action),
                     MenuPage::Jar => {
                         for item in &config.jar_page {
-                            draw_menu_item(ui, item, config.kind, color, &mut first_item, &mut action);
+                            draw_menu_item(ui, item, color, &mut first_item, &mut action);
                         }
                     }
                 }
                 return;
             }
             for item in &config.items {
-                draw_menu_item(ui, item, config.kind, color, &mut first_item, &mut action);
+                draw_menu_item(ui, item, color, &mut first_item, &mut action);
             }
         },
     );
@@ -269,14 +265,13 @@ pub(crate) fn build_node_context_menu(
 fn draw_menu_item(
     ui: &mut egui::Ui,
     item: &NodeMenuItem,
-    kind: CardKind,
     color: Option<egui::Color32>,
     first_item: &mut bool,
     action: &mut Option<NodeAction>,
 ) {
     match item {
         NodeMenuItem::Button(label, item_action) => {
-            let mut response = menu_button(ui, *label, item_action.key_hint(kind), first_item);
+            let mut response = menu_button(ui, *label, item_action.key_hint(), first_item);
             if let Some(text) = item_action.hover_text() {
                 response = response.on_hover_text(text);
             }
@@ -541,7 +536,7 @@ pub(crate) fn node_menu_config(view: &NodeMenuView, headless: bool) -> NodeMenuC
             items.push(Separator);
             items.extend(delete_items);
         }
-        NodeMenuConfig { kind: view.kind, area_id, min_width, items, jar_page, page: None }
+        NodeMenuConfig { area_id, min_width, items, jar_page, page: None }
     };
     let delete = |label| vec![Button(label, A::Delete)];
     // Tab, Unloaded and Group: the jar list and its actions, after the kind's own items. `live`: only a running tab
@@ -622,7 +617,7 @@ pub(crate) fn node_menu_config(view: &NodeMenuView, headless: bool) -> NodeMenuC
         }
         // Presentation matches the type, not `is_container` (see `card_style`).
         TYPE_GROUP => {
-            // Dissolve keeps the members (the card's Del, ✕ and middle-click do it); the second closes them all.
+            // Dissolve keeps the members; the second closes them all, as the card's Del, ✕ and middle-click do.
             let mut delete_items =
                 vec![Button("Dissolve Group", A::Dissolve), Button("Close Group and Contents", A::Delete)];
             if !headless {

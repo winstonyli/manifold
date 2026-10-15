@@ -540,13 +540,15 @@ impl CardControl {
         matches!(self, CardControl::Eject | CardControl::Close)
     }
 
-    pub(crate) fn action(self, kind: CardKind) -> NodeAction {
+    /// What clicking it does. Close is `Delete` (`App::close_node`) on every kind, a group included: the ✕, Del and
+    /// middle-click close a group with its members, restorable from Recently Closed. Dissolving one is the explicit
+    /// "Dissolve Group" menu row and the toolbar's Ungroup All.
+    pub(crate) fn action(self) -> NodeAction {
         match self {
             CardControl::Swatch => NodeAction::CycleColor,
             CardControl::Pin => NodeAction::TogglePin,
             CardControl::Audio => NodeAction::ToggleMute,
             CardControl::Eject => NodeAction::RemoveFromGroup,
-            CardControl::Close if is_container(kind.ty) => NodeAction::Dissolve,
             CardControl::Close => NodeAction::Delete,
         }
     }
@@ -568,7 +570,7 @@ impl CardControl {
 /// node menu's row hinted Del.
 pub(crate) fn del_verb(kind: CardKind) -> &'static str {
     if is_container(kind.ty) {
-        return "dissolve";
+        return "close";
     }
     match kind.ty {
         TYPE_TAB | TYPE_JAR => "close",
@@ -697,7 +699,7 @@ pub(crate) fn card_focus_ring(ui: &egui::Ui, rect: egui::Rect, inv_zoom: f32) {
 
 /// One of a card's `card_controls`, hit-tested and drawn at its corner.
 /// Returns its response: the frame turns a click into
-/// `control.action(kind)` and counts its hover as the card's. Icons are
+/// `control.action()` and counts its hover as the card's. Icons are
 /// painted on the overlay layer (see `DeferredOverlays`), like card text.
 #[allow(
     clippy::too_many_arguments,
@@ -1190,7 +1192,7 @@ impl App {
             self.menus.node_menu = Some((id.to_string(), at));
         }
         let mut control =
-            (response.clicked_by(egui::PointerButton::Middle) || delete).then(|| CardControl::Close.action(view.kind));
+            (response.clicked_by(egui::PointerButton::Middle) || delete).then(|| CardControl::Close.action());
         let mut control_hovered = false;
         for card_control in card_controls(&view) {
             if card_control.hover_only() && !is_hovered {
@@ -1216,7 +1218,7 @@ impl App {
                 }
             }
             if control_response.clicked() && control.is_none() {
-                control = Some(card_control.action(view.kind));
+                control = Some(card_control.action());
             }
         }
 

@@ -116,8 +116,9 @@ the flag.
     before the commit). A replica that never receives an eviction keeps the file until the launch-time prune.
 12. **Destructive verbs other than close stay as they are.** Dissolve, merge and Remove from Group record nothing and
     have no undo today; they remain plain edits. Parked: undoing a Dissolve (needs a recorded transaction, an
-    `adopted_from` field, or a txn id on ops; revisit with general undo). The group card's X stays
-    `NodeAction::Dissolve` (`card.rs:549`).
+    `adopted_from` field, or a txn id on ops; revisit with general undo). The group card's X, Del and
+    middle-click close it (`CardControl::Close` is `NodeAction::Delete` on every kind, decided 2026-10-14); Dissolve is
+    the menu row "Dissolve Group" and the toolbar's Ungroup All.
 13. **Duplicate keeps a snapshot path.** `duplicate_nodes` copies a subtree with fresh ids through `subtree_entry`,
     `live_fields` and `rebind_jar_files` (so a copy never aliases a jar file) and the import half of `reopen_closed`.
     That survives as a pure export of a shown subtree (`duplicate.rs`, moved out of `closed.rs`), independent of
@@ -219,5 +220,5 @@ the flag.
 - Decided: the 14 decisions above.
 - Parked: a portable file reference written on close (the content copy name or hash, for syncing file content between replicas; revisit then); undo of Dissolve and merge (needs a recorded transaction mechanism); a shared-history UI; a redo stack;
   keeping scroll and navigation history across close.
-- Open: whether the group card's X should become Close (children hidden) instead of Dissolve; whether a reopened
+- Decided 2026-10-14: the group card's X is Close (children hidden), not Dissolve. Open: whether a reopened
   node that lands at another level should navigate there (this spec reveals it without leaving the level).

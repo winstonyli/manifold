@@ -317,8 +317,15 @@ impl App {
             GraphAction::CloseSelected => {
                 let ids = std::mem::take(&mut self.interaction.selected);
                 self.begin_tabs_shutdown(&ids);
+                // Outermost first (then by id, so the order is the same on every run, not the set's): a closed group
+                // hides its whole subtree, so a selected member inside it is already gone at its turn and is
+                // skipped, rather than given a closed root of its own beside the group's.
+                let mut ids: Vec<String> = ids.into_iter().collect();
+                ids.sort_by_cached_key(|id| (self.group_depth(id), id.clone()));
                 for id in ids {
-                    self.close_node(&id);
+                    if self.is_linked(&id) {
+                        self.close_node(&id);
+                    }
                 }
             }
             GraphAction::UngroupAll => {

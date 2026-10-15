@@ -19,6 +19,20 @@ impl App {
         (1..).map(|n| format!("Group {n}")).find(|name| !taken.contains(name.as_str())).expect("a free number")
     }
 
+    /// How many groups `id` is nested in, by the mirror's `group` chain; capped at the chain's length so a cycle
+    /// (two replicas' moves raced) ends.
+    pub(crate) fn group_depth(&self, id: &str) -> usize {
+        let (mut depth, mut cur) = (0, id);
+        while let Some(group) = self.mirror.group(cur) {
+            depth += 1;
+            if depth > self.nodes.len() {
+                break;
+            }
+            cur = group;
+        }
+        depth
+    }
+
     /// Dissolves a group: members rejoin *its own parent's* level again
     /// (never closed — grouping is purely a display grouping, not an
     /// ownership one), and the group card itself is removed. A top-level
@@ -26,9 +40,10 @@ impl App {
     /// exactly as before nesting existed -- reads the group's own parent
     /// before removing it, rather than assuming `None`. `current_group`
     /// moves to that same parent if it happened to be the group just
-    /// dissolved (should only actually matter defensively — the close
-    /// button that calls this only ever renders one level up from the
-    /// group being closed, never on the level currently being viewed).
+    /// dissolved (should only actually matter defensively — the "Dissolve
+    /// Group" row and Ungroup All only reach groups one level up from the
+    /// level currently being viewed). Not the card's close: that is
+    /// `close_node`.
     ///
     /// A local dissolve: a member whose `jar` edge now reaches nothing it did before loses it (`recheck_edge_scope`).
     pub(crate) fn dissolve_group(&mut self, id: &str) {
