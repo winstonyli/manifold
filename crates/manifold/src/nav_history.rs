@@ -159,6 +159,10 @@ impl NavHistory {
                 return true;
             }
             if self.entries[m.from].url == url {
+                // Servo reports only when a document commits: a slow target is quiet time, not total time.
+                if let Some(p) = self.pending.as_mut() {
+                    p.deadline = now + MOVE_WINDOW;
+                }
                 self.settle(loading);
                 return true;
             }
@@ -893,6 +897,30 @@ mod tests {
         assert_eq!((h.entries.clone(), h.at, h.lin.clone(), h.lin_at), before);
         assert!(h.pending.is_none());
         assert_eq!(h.go(Dir::Back, true, false, later), NavAction::GoBack);
+    }
+
+    #[test]
+    fn a_slow_plain_move_keeps_its_deadline_alive_while_the_origin_reports() {
+        let now = Instant::now();
+        let mut h = NavHistory::visited(&["a", "b"]);
+        assert_eq!(h.go(Dir::Back, false, false, now), NavAction::Navigate("a".into()));
+        for s in [2, 4, 6] {
+            h.observe("b", "", true, false, now + Duration::from_secs(s));
+        }
+        h.observe("a", "", false, false, now + Duration::from_secs(8));
+        assert_eq!(urls(&h), ["a", "b"], "no fork");
+        assert_eq!((h.at, h.pending.is_none()), (0, true));
+    }
+
+    #[test]
+    fn a_move_with_no_reports_expires_after_the_window() {
+        let now = Instant::now();
+        let mut h = NavHistory::visited(&["a", "b"]);
+        assert_eq!(h.go(Dir::Back, false, false, now), NavAction::Navigate("a".into()));
+        assert!(h.move_pending(now + Duration::from_secs(3)));
+        assert!(!h.move_pending(now + Duration::from_secs(4)));
+        h.observe("a", "", false, false, now + Duration::from_secs(4));
+        assert_eq!(urls(&h), ["a", "b", "a"], "a late arrival with no reports in between forks");
     }
 
     #[test]

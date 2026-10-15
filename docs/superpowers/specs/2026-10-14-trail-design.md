@@ -61,7 +61,7 @@ middle of the trail stay reachable as branches. Nothing creates a card unless th
    1. empty: create the root, `lin = [0]`, `lin_at = 0`.
    2. a stale pending move (past its deadline) is dropped.
    3. pending move, native or plain: a report whose URL equals `target`'s URL commits it. A report equal to `from`'s URL is
-      ignored and the move kept (some engines repeat the old URL once). A report equal to neither drops the move and falls
+      ignored and the move kept (some engines repeat the old URL once; Servo reports only when a document commits, so the 3 s deadline restarts on each report at the origin's URL). A report equal to neither drops the move and falls
       to the rules below, no rewrite (an unrelated navigation during the window, an error page; a redirect that skips the
       `target` URL report is a known limit and forks).
       If `target`'s URL equals `from`'s URL no report can tell them apart, so `go()` commits at once. Native: the engine
