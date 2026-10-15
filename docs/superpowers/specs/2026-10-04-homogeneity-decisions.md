@@ -37,3 +37,9 @@ Open:
 3. **Jars as cards.** Designed in `2026-10-13-jars-as-cards-design.md`. Done (built 2026-10-14, tasks 1-6 of `plans/2026-10-14-jars-as-cards.md`): jars are cards with a position and group, the Default is a card, one `jar` edge replaces `JAR_SET`/`DEFAULT_JAR`, and cookie files share one keep set with fetched content.
 4. **Link follow-ups.** No `edge-type` field (`link` is the only Node-stored edge), cardinality, or removal variants.
 5. **The unknown-type card.** Designed in `2026-10-14-unknown-type-card-design.md`. Done (built 2026-10-14, `plans/2026-10-14-unknown-type-card.md`): a node of a type this build doesn't know is a live card with the generic fields, shell copies, links and groups.
+
+## Update (2026-10-14, after plan 3)
+
+- Re-tested against the code: group Del/close/menu. X, Del and middle-click on a group now close it (`close_node`, restorable); Dissolve is the explicit menu item and the toolbar's Ungroup All only. Move to sibling group and drop-merge share `apply_drop(Join)`; group-onto-group nests from the menu and merges on a drag, on purpose.
+- Plan 3 questions settled: group X is Close; a reopen at another level stays a toast.
+- Parked: undo of Dissolve and merge (options: record the old parent on the closed group so Reopen undoes it, or a transaction id on ops); a portable file reference written on close (when file content syncs between replicas); a shared-history UI; a redo stack. Open only if needed: item 4 (link follow-ups).
