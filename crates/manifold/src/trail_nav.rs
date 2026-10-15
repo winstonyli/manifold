@@ -47,7 +47,8 @@ impl App {
         let message = match action {
             NavAction::GoBack => HostToView::GoBack,
             NavAction::GoForward => HostToView::GoForward,
-            NavAction::Navigate(url) => HostToView::Navigate { url, referrer: None },
+            // A plain move is a navigation like a typed one: `navigate_tab` notes it and shares the url.
+            NavAction::Navigate(url) => return self.navigate_tab(id, url),
             NavAction::None => return,
         };
         if let Some(node) = self.nodes.get_mut(id).and_then(|n| n.as_tab_mut()) {
@@ -402,6 +403,15 @@ mod tests {
         let (mut app, tab, mut peer) = tab_with_a_sibling("trail-pick");
         app.trail_pick(&tab, 1);
         assert!(peer.sent().iter().any(|m| matches!(m, HostToView::Navigate { url, .. } if url == "https://b/")));
+    }
+
+    #[test]
+    fn a_plain_move_records_what_navigate_tab_records() {
+        let (mut app, tab, _peer) = tab_with_a_sibling("trail-pick-books");
+        app.trail_pick(&tab, 1);
+        assert_eq!(app.nodes.get(&tab).and_then(|n| n.as_tab()).map(|n| n.url.as_str()), Some("https://b/"));
+        assert!(app.spawns.navigated_from.contains_key(&tab), "the origin is noted");
+        assert_eq!(app.mirror.url(&tab), "https://b/", "the url is edited, so it is shared");
     }
 
     #[test]
