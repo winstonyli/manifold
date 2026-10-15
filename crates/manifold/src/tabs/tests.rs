@@ -1,4 +1,5 @@
 use super::*;
+use crate::session_sync::Remote;
 use std::time::{Duration, Instant};
 
 #[test]
@@ -50,7 +51,7 @@ fn forget_and_reset_clear_what_the_old_sites_cleared() {
         s.pending_respawn_focus = Some("t".into());
         s.wakes_in_flight.insert("t".into());
         s.host_loads.insert("t".into(), now);
-        s.remote_in_flight.insert("t".into(), None);
+        s.remote_in_flight.insert("t".into(), Remote::Deleted);
         s.tab_spawns_in_flight = 2;
         s
     };

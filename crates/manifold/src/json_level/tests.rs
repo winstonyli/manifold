@@ -1,4 +1,5 @@
 use super::*;
+use crate::session_sync::Remote;
 use crate::store::model::Kind;
 
 // Real node ids: `snapshots()` skips any id that doesn't parse as
@@ -305,7 +306,7 @@ fn a_remotely_deleted_json_node_leaves_its_level() {
     let (mut app, j) = app_with_json("remote_delete", r#"{"a": [1]}"#);
     app.switch_group_level(Some(j.clone()));
     // What `remote_changes` reports when another replica deletes J.
-    app.apply_remote(vec![(j.parse().unwrap(), None)]);
+    app.apply_remote(vec![(j.parse().unwrap(), Remote::Deleted)]);
     assert!(!app.nodes.contains_key(&j));
     assert_eq!(app.current_group.as_deref(), Some(OUTER), "the view leaves the removed level");
     assert!(app.json_level.is_none());

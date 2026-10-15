@@ -594,6 +594,20 @@ impl Doc {
         self.live().filter(|&(id, _)| self.is_shown(id))
     }
 
+    /// `id` when it is shown, else the nearest shown node above it on the raw `group` chain; `None` (the top level)
+    /// when there is none. Where a level falls back to when the one it names is hidden or gone.
+    pub fn shown_level(&self, id: NodeId) -> Option<NodeId> {
+        let mut cur = Some(id);
+        for _ in 0..=self.nodes.len() {
+            let at = cur?;
+            if self.is_shown(at) {
+                return Some(at);
+            }
+            cur = self.nodes.get(&at).and_then(|n| n.group);
+        }
+        None
+    }
+
     /// `nodes` and every node below one of them: where a node is shown
     /// depends on each group above it (`effective_group`).
     pub fn with_descendants(&self, nodes: BTreeSet<NodeId>) -> BTreeSet<NodeId> {
@@ -850,6 +864,15 @@ mod tests {
         doc.nodes.get_mut(&id(2)).unwrap().deleted = true;
         assert_eq!(doc.placement(id(3)), Placement::Shown(Some(id(1))));
         assert!(doc.is_shown(id(3)));
+    }
+
+    #[test]
+    fn shown_level_is_the_nearest_shown_node_up_the_raw_chain() {
+        let (doc, id) =
+            doc_of(&[(1, Kind::Group, None, false), (2, Kind::Group, Some(1), true), (3, Kind::Group, Some(2), false)]);
+        assert_eq!(doc.shown_level(id(1)), Some(id(1)));
+        assert_eq!(doc.shown_level(id(3)), Some(id(1)), "hidden by 2, closed itself: both skipped");
+        assert_eq!(doc.shown_level(id(9)), None, "unknown: the top level");
     }
 
     #[test]

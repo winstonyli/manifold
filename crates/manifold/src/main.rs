@@ -445,6 +445,11 @@ struct App {
     /// `ClosedEntry`.
     closed: Vec<ClosedEntry>,
 
+    /// Personal state (`LocalNode`: settled pos, title, zoom, muted, live url) of nodes this replica keeps out of
+    /// the graph because they are closed or under a closed node (spec decision 8). Filled by `hide_node`, read
+    /// back by a reopen (`apply_remote`), written to `session.mnf.local` with the rest. `forget_id` drops it.
+    pub(crate) hidden_local: HashMap<String, local_state::LocalNode>,
+
     /// Admits or drops page-opened tabs (`ViewToHost::OpenTabRequested`)
     /// per source tab: a user gesture and a rate budget.
     popup_gate: popup_gate::PopupGate,
@@ -614,6 +619,7 @@ impl Default for App {
             pacing: event_loop::FramePacing::default(),
             pending_focus: None,
             closed: Vec::new(),
+            hidden_local: HashMap::new(),
             popup_gate: popup_gate::PopupGate::default(),
             store_recovered: false,
             settings_fingerprint,

@@ -33,9 +33,9 @@ pub(crate) struct SpawnTracker {
     pub(crate) spawning: HashMap<String, session_sync::Snapshot>,
 
     /// Other replicas' latest change to a node in `spawning`, applied when
-    /// its spawn lands (`None`: deleted). The spawn itself carries only
-    /// what it was started with.
-    pub(crate) remote_in_flight: HashMap<String, Option<session_sync::RemoteNode>>,
+    /// its spawn lands (`Shown`: the change to apply; `Hidden`: hide it once it lands; `Deleted`: remove it). The
+    /// spawn itself carries only what it was started with.
+    pub(crate) remote_in_flight: HashMap<String, session_sync::Remote<session_sync::RemoteNode>>,
 
     /// Tabs loading a url the host gave them, with when each was last seen
     /// loading; their url changes aren't shared meanwhile
@@ -832,33 +832,7 @@ impl App {
         for child in children {
             self.edit_parent(&child, parent.clone());
         }
-        self.nodes.remove(id);
-        self.node_order.retain(|t| t != id);
-        self.forget_id(id);
-        // A split only ever makes sense paired with a specific focused tab
-        // (see `focus_tab`'s own doc comment) -- closing either half of it
-        // (the tab node is already gone either way, so no `set_visible`/
-        // resize cleanup to do the way `close_split` normally would) clears
-        // the whole thing rather than leaving a dangling reference to a
-        // node that no longer exists.
-        if self.split_tab.as_deref() == Some(id) || self.focused.as_deref() == Some(id) {
-            self.split_tab = None;
-        }
-        if self.focused.as_deref() == Some(id) {
-            self.focused = None;
-            // Only drop to Graph if a Tab was actually showing -- while an
-            // Image is maximized, `focused` is just the hidden last tab
-            // (see the Image Item View spec's "Plan-time corrections"), so
-            // closing it should leave Image view showing exactly as
-            // closing it from Graph view wouldn't change `view_mode`
-            // either.
-            if self.showing_tab_view() {
-                self.view_mode = ViewMode::Graph;
-            }
-            // The tab (and its `ViewTab`) is already gone — nothing left
-            // to send `FindStop` to, so only the UI side of the close.
-            self.find.close();
-        }
+        self.unshow(id);
         true
     }
 

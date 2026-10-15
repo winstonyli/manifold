@@ -94,10 +94,18 @@ impl Mirror {
     /// Drops link `id` and its fields (a local or remote delete).
     pub(crate) fn forget_link(&mut self, id: NodeId) {
         self.link_nodes.remove(&id);
-        let key = id.to_string();
-        self.nodes.remove(&key);
-        self.links.remove(&key);
-        self.views.remove(&key);
+        self.forget_node(&id.to_string());
+    }
+
+    /// Drops every entry of node `id` (fields, edges, view, Default index): it left the graph without being deleted
+    /// (`App::hide_node`), or, for a link, was forgotten (`forget_link`).
+    pub(crate) fn forget_node(&mut self, id: &str) {
+        self.nodes.remove(id);
+        self.links.remove(id);
+        self.views.remove(id);
+        if let Ok(node) = id.parse::<NodeId>() {
+            self.defaults.remove(&node);
+        }
     }
 
     /// Every link this replica knows, by id.

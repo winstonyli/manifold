@@ -20,6 +20,23 @@ pub(crate) fn prune_unnamed(
     Some(content::prune(dir, cutoff, |file| !only(file) || content::kept(&keep, file)))
 }
 
+/// The backing-file names `doc`'s live nodes hold (closed and hidden ones included, spec decision 11): each id
+/// (a content copy is `<id>.<ext>`, a jar's cookies `<id>.json`) and each stored `path`'s file name. `except` leaves
+/// one node out.
+pub(crate) fn doc_backing_names(
+    doc: &crate::store::model::Doc,
+    except: Option<crate::store::model::NodeId>,
+) -> HashSet<String> {
+    let mut names = HashSet::new();
+    for (id, node) in doc.live().filter(|&(id, _)| Some(id) != except) {
+        names.insert(id.to_string());
+        if let crate::store::model::FieldValue::Str(path) = node.get(crate::store::model::field::PATH) {
+            names.extend(content::file_name(&path));
+        }
+    }
+    names
+}
+
 /// Whether a Refresh of node `id` that saved `new` may delete the file it
 /// replaced, `old`: only its own `<id>.<ext>` in `dir`, and only when
 /// nothing else names it (`others`: `App::backing_keep` without `id`).
@@ -163,16 +180,20 @@ impl App {
         self.place_node(Some(id), kind, runtime, Placement { group: None, pos });
     }
 
-    /// The backing-file names this session still uses, for `content::kept` (spec "Backing files"): live nodes' ids
-    /// (a replica's own content copy is `<id>.<ext>`, a jar's cookies `<id>.json`) and `path` file names, and the
-    /// same for every Recently Closed entry, which holds its nodes' files until it leaves the list. `except` leaves
-    /// out one live node.
+    /// The backing-file names this session still uses, for `content::kept` (spec "Backing files"): the shown
+    /// nodes' ids (a replica's own content copy is `<id>.<ext>`, a jar's cookies `<id>.json`) and resolved file
+    /// names, and every live node the document holds, closed and hidden ones included (`doc_backing_names`).
+    /// `except` leaves out one node.
     pub(crate) fn backing_keep(&self, except: Option<&str>) -> HashSet<String> {
         let mut keep: HashSet<String> = HashSet::new();
         for (id, node) in self.nodes.iter().filter(|(id, _)| Some(id.as_str()) != except) {
             keep.extend(node.runtime.file_path().and_then(content::file_name));
             keep.insert(id.clone());
         }
+        if let Some(j) = &self.journal {
+            keep.extend(doc_backing_names(j.doc(), except.and_then(|e| e.parse().ok())));
+        }
+        // Task 3 deletes the snapshot list this reads.
         for node in self.closed.iter().flat_map(|entry| &entry.doc.nodes) {
             keep.extend(node.fields.get("path").and_then(|v| v.as_str()).and_then(content::file_name));
             keep.insert(node.id.clone());

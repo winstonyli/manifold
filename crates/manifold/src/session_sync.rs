@@ -205,9 +205,27 @@ pub(crate) fn recovery_notice(r: &Recovery) -> String {
 
 // ---- The live graph and the store -----------------------------------------
 
-/// One node another replica changed: what the document shows for it (`Snapshot::of`), or `None` when it is no
+/// What another replica's change leaves a node as (spec decision 3): shown with this snapshot, hidden under or as a
+/// closed node (kept, out of the graph), or deleted.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum Remote<T> {
+    Shown(T),
+    Hidden,
+    Deleted,
+}
+
+impl<T> Remote<T> {
+    pub(crate) fn shown_mut(&mut self) -> Option<&mut T> {
+        match self {
+            Remote::Shown(t) => Some(t),
+            _ => None,
+        }
+    }
+}
+
+/// One node another replica changed: what the document shows for it (`Snapshot::of`), or that it is hidden or no
 /// longer live (deleted or pruned).
-pub(crate) type RemoteChange = (NodeId, Option<Snapshot>);
+pub(crate) type RemoteChange = (NodeId, Remote<Snapshot>);
 
 /// Where `App::materialize_imported` puts an imported file's root (its
 /// first node): the level it's brought into, and optionally a fresh
@@ -513,7 +531,7 @@ impl App {
             return;
         }
         if self.spawns.spawning.contains_key(&id) {
-            self.spawns.remote_in_flight.insert(id, Some((ty.to_owned(), fields.clone(), group)));
+            self.spawns.remote_in_flight.insert(id, Remote::Shown((ty.to_owned(), fields.clone(), group)));
             return;
         }
         let (held, changed) = self.mirror_remote(&id, fields, group.as_deref());
@@ -745,9 +763,10 @@ impl App {
     fn remote_changes(doc: &Doc, remote: &[NodeId]) -> Vec<RemoteChange> {
         remote
             .iter()
-            .map(|&id| {
-                let live = doc.nodes.get(&id).filter(|n| n.is_live());
-                (id, live.map(|n| Snapshot::of(doc, id, n)))
+            .map(|&id| match doc.nodes.get(&id).filter(|n| n.is_live()) {
+                None => (id, Remote::Deleted),
+                Some(n) if doc.is_shown(id) => (id, Remote::Shown(Snapshot::of(doc, id, n))),
+                Some(_) => (id, Remote::Hidden),
             })
             .collect()
     }
@@ -761,10 +780,11 @@ impl App {
     /// nodes inside them, so a new member never names a group that doesn't
     /// exist yet. A new tab arrives asleep (`materialize`, spec "Lazy
     /// tabs"): another replica opening a big session mustn't start an
-    /// engine here for every tab in it.
+    /// engine here for every tab in it. A hidden node (closed, or under a closed node) leaves the graph through
+    /// `hide_node`; a cleared one comes back through `materialize` with its kept personal state.
     pub(crate) fn apply_remote(&mut self, mut changes: Vec<RemoteChange>) {
         changes.sort_by_key(|(_, c)| match c {
-            Some(s) if s.kind() == Kind::Group => 0,
+            Remote::Shown(s) if s.kind() == Kind::Group => 0,
             _ => 1,
         });
         let toasts = self.toasts.save_toast_queue.len();
@@ -773,11 +793,22 @@ impl App {
         for (id, change) in changes {
             let key = id.to_string();
             match change {
-                Some(s) => self.materialize(key, &s.ty, &s.fields, s.group.map(|g| g.to_string()), None),
-                None if self.spawns.spawning.contains_key(&key) => {
-                    self.spawns.remote_in_flight.insert(key, None);
+                Remote::Shown(s) => {
+                    // A node coming back from hidden takes the personal state it left with (spec decision 8).
+                    let local = self.hidden_local.remove(&key);
+                    self.materialize(key.clone(), &s.ty, &s.fields, s.group.map(|g| g.to_string()), local.as_ref());
+                    if let (Some(local), Some(live)) = (&local, self.nodes.get_mut(&key)) {
+                        Self::apply_local_node(live, local);
+                    }
                 }
-                None => self.remove_remotely_deleted(&key),
+                Remote::Hidden => {
+                    self.leave_hidden(id);
+                    self.hide_node(&key);
+                }
+                Remote::Deleted if self.spawns.spawning.contains_key(&key) => {
+                    self.spawns.remote_in_flight.insert(key, Remote::Deleted);
+                }
+                Remote::Deleted => self.remove_remotely_deleted(&key),
             }
         }
         self.end_content_pass(pass);
@@ -810,7 +841,7 @@ impl App {
             self.mirror.forget_link(link);
             return;
         }
-        let Some(node) = self.nodes.get(id) else { return };
+        let Some(node) = self.nodes.get(id) else { return self.forget_deleted(id) };
         let up = self.mirror.group(id).map(str::to_owned);
         let is_group = self.is_container(id);
         let is_tab = node.runtime.saved_tab().is_some();
@@ -821,7 +852,7 @@ impl App {
         }
         if is_group {
             // A change waiting for a spawn may name this group too.
-            for (_, _, group) in self.spawns.remote_in_flight.values_mut().flatten() {
+            for (_, _, group) in self.spawns.remote_in_flight.values_mut().filter_map(Remote::shown_mut) {
                 if group.as_deref() == Some(id) {
                     *group = up.clone();
                 }
@@ -832,25 +863,61 @@ impl App {
         } else {
             self.drop_node(id);
         }
-        if self.viewed_image.as_deref() == Some(id) {
-            self.viewed_image = None;
-            if self.view_mode == ViewMode::Item {
-                self.view_mode = ViewMode::Graph;
-            }
-        }
-        if self.focused.as_deref() == Some(id) {
-            self.focused = None;
-        }
         self.spawns.wakes_in_flight.remove(id);
         self.release_backing(id);
     }
 
+    /// Hides `id` (spec decision 3): out of `nodes`, `node_order`, the layout and the mirror, its engine unloaded
+    /// (`unshow`), its personal state kept in `hidden_local` for a reopen. Nothing in the document changes: no
+    /// re-parent, no link delete, no backing-file release. A tab mid-respawn (in `spawning`, not in `nodes`) is
+    /// parked as `Remote::Hidden` and hidden when it lands (plan D3); a waking one is hidden here and its landing,
+    /// finding no node, only saves (`spawn_result.rs`).
+    pub(crate) fn hide_node(&mut self, id: &str) {
+        if self.spawns.spawning.contains_key(id) && !self.nodes.contains_key(id) {
+            self.spawns.remote_in_flight.insert(id.to_owned(), Remote::Hidden);
+            return;
+        }
+        let Some(node) = self.nodes.get(id) else { return };
+        // A note comes back idle: the box it was typed in is gone, and its text was committed.
+        let local = LocalNode { editing: false, ..self.local_node(id, node) };
+        self.unshow(id);
+        self.mirror.forget_node(id);
+        self.layout.remove(id);
+        self.hidden_local.insert(id.to_owned(), local);
+    }
+
+    /// The current level leaves a subtree that is being hidden: when it is `root` or inside it, the level falls to
+    /// the nearest shown node above `root` (`Doc::shown_level`), as `dissolve_members` leaves a dissolved group.
+    /// Reads the raw chain, so it holds before the close is committed (a local close) and after (a remote one).
+    pub(crate) fn leave_hidden(&mut self, root: NodeId) {
+        let Some(doc) = self.journal.as_ref().map(|j| j.doc()) else { return };
+        let Some(level) = self.current_group.as_deref().and_then(|g| g.parse::<NodeId>().ok()) else { return };
+        if level != root && !doc.is_ancestor(root, level) {
+            return;
+        }
+        let to = doc.nodes.get(&root).and_then(|n| n.group).and_then(|g| doc.shown_level(g));
+        self.switch_group_level(to.map(|g| g.to_string()));
+    }
+
+    /// A node the document deleted that this replica no longer shows (an evicted hidden subtree, local or remote):
+    /// its backing files go once nothing holds them, and so do its per-id tables and kept personal state.
+    pub(crate) fn forget_deleted(&mut self, id: &str) {
+        self.release_backing(id);
+        self.forget_id(id);
+    }
+
     /// Applies what other replicas changed while `id`'s spawn was in flight,
     /// now that its node exists (`handle_tab_spawn_result`).
-    pub(crate) fn land_remote_in_flight(&mut self, id: &str, remote: Option<Option<RemoteNode>>) {
+    pub(crate) fn land_remote_in_flight(&mut self, id: &str, remote: Option<Remote<RemoteNode>>) {
         match remote {
-            Some(Some((ty, fields, group))) => self.materialize(id.to_string(), &ty, &fields, group, None),
-            Some(None) => self.remove_remotely_deleted(id),
+            Some(Remote::Shown((ty, fields, group))) => self.materialize(id.to_string(), &ty, &fields, group, None),
+            Some(Remote::Hidden) => {
+                if let Ok(node) = id.parse() {
+                    self.leave_hidden(node);
+                }
+                self.hide_node(id);
+            }
+            Some(Remote::Deleted) => self.remove_remotely_deleted(id),
             None => {}
         }
     }
@@ -1381,7 +1448,7 @@ impl App {
                     // commit wrote; its landing must not replay it over the local edit.
                     for &(node, no) in self.pending.keys() {
                         let id = node.to_string();
-                        if let Some(Some((_, fields, _))) = self.spawns.remote_in_flight.get_mut(&id) {
+                        if let Some(Remote::Shown((_, fields, _))) = self.spawns.remote_in_flight.get_mut(&id) {
                             let value = match no {
                                 field::PARENT => FieldValue::Id(link_id(self.mirror.parent(&id))),
                                 _ => self.mirror.get(&id, no),
@@ -1391,7 +1458,7 @@ impl App {
                     }
                     for node in self.writes.pending_moves.keys() {
                         let id = node.to_string();
-                        if let Some(Some((_, _, group))) = self.spawns.remote_in_flight.get_mut(&id) {
+                        if let Some(Remote::Shown((_, _, group))) = self.spawns.remote_in_flight.get_mut(&id) {
                             *group = self.mirror.group(&id).map(str::to_owned);
                         }
                     }
@@ -1507,6 +1574,7 @@ impl App {
                 self.materialize(id.to_string(), &s.ty, &s.fields, s.group.map(|g| g.to_string()), None);
             }
             self.restore_closed(local.closed);
+            self.keep_hidden_local(local.nodes);
             self.arm_local(unread, true);
             return false;
         }
@@ -1598,6 +1666,7 @@ impl App {
         local.closed.extend(self.closed.iter().map(|e| e.doc.clone()));
         if unread.fresh {
             self.restore_closed(local.closed);
+            self.keep_hidden_local(local.nodes);
         } else {
             self.apply_local(local);
             if !force {
@@ -1606,41 +1675,49 @@ impl App {
         }
     }
 
+    /// `id`'s personal state as the live graph shows it: its settled position, a tab's title, muted, zoom and
+    /// unshared live url, a note's `editing`.
+    pub(crate) fn local_node(&self, id: &str, node: &crate::GraphNode) -> LocalNode {
+        let pos = self.layout_pos(id);
+        let mut local = LocalNode { pos: [pos.x, pos.y], ..LocalNode::default() };
+        if let Some(tab) = tab_common(&node.runtime) {
+            local.title = tab.title.to_string();
+            local.muted = tab.muted;
+            local.zoom = (tab.zoom_factor != self.settings.zoom_factor).then_some(tab.zoom_factor);
+            // Against the shared url the mirror holds (Ruling 9): a url this replica shares is edited (`edit_url`)
+            // into it, so only an unshared move (a redirect, a script) is recorded.
+            let from = self.mirror.url(id);
+            local.live_url = (from != tab.url).then(|| LiveUrl { url: tab.url.to_string(), from: from.to_owned() });
+        } else if let Runtime::Note(n) = &node.runtime {
+            local.editing = n.editing;
+        }
+        local
+    }
+
     /// This profile's personal state as the live graph currently shows it
     /// (spec "Personal state"): what to write to `session.mnf.local`. A
     /// node still spawning keeps its `pending_local` entry, so a quit
     /// before restored tabs land doesn't lose their placement and zoom.
     pub(crate) fn local_state(&self) -> LocalState {
         let item = self.view_mode == ViewMode::Item;
-        let zoom = |factor: f64| (factor != self.settings.zoom_factor).then_some(factor);
         let mut nodes: BTreeMap<String, LocalNode> = self
             .nodes
             .iter()
             .filter(|(id, _)| id.parse::<NodeId>().is_ok())
-            .map(|(id, node)| {
-                let pos = self.layout_pos(id);
-                let mut local = LocalNode { pos: [pos.x, pos.y], ..LocalNode::default() };
-                // Against the shared url the mirror holds (Ruling 9): a url this replica shares is edited
-                // (`edit_url`) into it, so only an unshared move (a redirect, a script) is recorded.
-                let live_url = |url: &str| {
-                    let from = self.mirror.url(id);
-                    (from != url).then(|| LiveUrl { url: url.to_string(), from: from.to_owned() })
-                };
-                if let Some(tab) = tab_common(&node.runtime) {
-                    local.title = tab.title.to_string();
-                    local.muted = tab.muted;
-                    local.zoom = zoom(tab.zoom_factor);
-                    local.live_url = live_url(tab.url);
-                } else if let Runtime::Note(n) = &node.runtime {
-                    local.editing = n.editing;
-                }
-                (id.clone(), local)
-            })
+            .map(|(id, node)| (id.clone(), self.local_node(id, node)))
             .collect();
         if let Some(pending) = &self.local_persist.pending_local {
             for (id, node) in &pending.nodes {
                 if self.spawns.spawning.contains_key(id) && !nodes.contains_key(id) {
                     nodes.insert(id.clone(), node.clone());
+                }
+            }
+        }
+        // Hidden nodes keep theirs while the document still holds them (a Delete not yet seen is dropped).
+        if let Some(doc) = self.journal.as_ref().map(|j| j.doc()) {
+            for (id, node) in &self.hidden_local {
+                if id.parse::<NodeId>().ok().and_then(|n| doc.nodes.get(&n)).is_some_and(Node::is_live) {
+                    nodes.entry(id.clone()).or_insert_with(|| node.clone());
                 }
             }
         }
@@ -1674,8 +1751,13 @@ impl App {
         if exists(&state.focused) {
             self.focused = state.focused;
         }
-        if exists(&state.current_group) {
-            self.current_group = state.current_group;
+        // A level that is hidden now falls back to its nearest shown ancestor (spec decision 3).
+        let level = match (self.journal.as_ref(), state.current_group.as_deref().and_then(|g| g.parse().ok())) {
+            (Some(j), Some(g)) => j.doc().shown_level(g).map(|g| g.to_string()),
+            _ => state.current_group.clone(),
+        };
+        if exists(&level) {
+            self.current_group = level;
         }
         if exists(&state.viewed_image) {
             self.viewed_image = state.viewed_image;
@@ -1708,14 +1790,18 @@ impl App {
         }
 
         let mut pending = BTreeMap::new();
+        let mut leftover = Vec::new();
         for (id, node) in state.nodes {
             if let Some(live) = self.nodes.get_mut(&id) {
                 Self::apply_local_node(live, &node);
                 self.snap_layout(&id, egui::vec2(node.pos[0], node.pos[1]));
             } else if self.spawns.spawning.contains_key(&id) {
                 pending.insert(id, node);
+            } else {
+                leftover.push((id, node));
             }
         }
+        self.keep_hidden_local(leftover);
         if !pending.is_empty() {
             self.local_persist.pending_local = Some(LocalState { nodes: pending, ..LocalState::default() });
         }
@@ -1739,6 +1825,16 @@ impl App {
             closed.drain(..closed.len() - MAX_CLOSED);
         }
         self.closed = closed;
+    }
+
+    /// Personal-state entries for nodes the document holds but the graph doesn't show (closed, or under a closed
+    /// node): kept in `hidden_local` for a reopen, not dropped as stale.
+    fn keep_hidden_local(&mut self, entries: impl IntoIterator<Item = (String, LocalNode)>) {
+        let Some(doc) = self.journal.as_ref().map(|j| j.doc()) else { return };
+        let held = |id: &str| id.parse::<NodeId>().ok().and_then(|n| doc.nodes.get(&n)).is_some_and(Node::is_live);
+        let here = |id: &str| self.nodes.contains_key(id) || self.spawns.spawning.contains_key(id);
+        let keep: Vec<(String, LocalNode)> = entries.into_iter().filter(|(id, _)| held(id) && !here(id)).collect();
+        self.hidden_local.extend(keep);
     }
 
     /// One node's share of `apply_local` beyond its settled position (the caller's `snap_layout`): whatever its
@@ -2119,6 +2215,7 @@ impl App {
         self.node_order.retain(|id| Some(id) == keep.as_ref());
         self.layout.retain(|id, _| Some(id) == keep.as_ref());
         self.writes.held_text.clear();
+        self.hidden_local.clear();
         self.focused = None;
         self.viewed_image = None;
         self.split_tab = None;

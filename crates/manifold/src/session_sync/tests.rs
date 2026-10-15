@@ -388,7 +388,7 @@ fn a_remote_removal_queues_no_delete() {
     let jar = add_jar(&mut app, "Work");
     assert!(app.save_session());
     for id in [note.parse().unwrap(), tab.parse().unwrap(), group.parse().unwrap(), jar] {
-        app.apply_remote(vec![(id, None)]);
+        app.apply_remote(vec![(id, Remote::Deleted)]);
         assert!(!app.nodes.contains_key(&id.to_string()) && !app.jar_defs().contains_key(&id), "{id} removed");
         assert!(app.writes.pending_deletes.is_empty(), "{id}: nothing queued");
     }
@@ -497,7 +497,7 @@ fn a_node_whose_runtime_does_not_match_its_type_trips_the_invariant() {
 /// show another replica's new nodes.
 fn app_with(nodes: &BTreeMap<NodeId, Snapshot>) -> App {
     let mut app = App::default();
-    let changes = nodes.iter().map(|(&id, s)| (id, Some(s.clone()))).collect();
+    let changes = nodes.iter().map(|(&id, s)| (id, Remote::Shown(s.clone()))).collect();
     app.apply_remote(changes);
     app
 }
@@ -538,8 +538,8 @@ fn a_remote_jar_edit_updates_a_sleeping_tab_and_a_group() {
     let mut group_fields = group.fields.clone();
     group_fields.insert(field::JAR, FieldValue::Id(Some(jar)));
     app.apply_remote(vec![
-        (id(1), Some(snap(Kind::Tab, tab_fields, None))),
-        (id(2), Some(snap(Kind::Group, group_fields, None))),
+        (id(1), Remote::Shown(snap(Kind::Tab, tab_fields, None))),
+        (id(2), Remote::Shown(snap(Kind::Group, group_fields, None))),
     ]);
     assert_eq!(app.mirror.jar(&id(1).to_string()), Some(jar));
     assert_eq!(app.mirror.jar(&id(2).to_string()), Some(jar));
@@ -724,7 +724,7 @@ fn a_remotely_removed_group_leaves_no_member_naming_it() {
     // What `remote_changes` reports when another replica deletes Inner:
     // the group gone, its stored member now shown in Outer.
     let member = nodes[&id(2)].fields.clone();
-    app.apply_remote(vec![(id(1), None), (id(2), Some(snap(Kind::Note, member, Some(id(0)))))]);
+    app.apply_remote(vec![(id(1), Remote::Deleted), (id(2), Remote::Shown(snap(Kind::Note, member, Some(id(0)))))]);
     let inner = id(1).to_string();
     assert!(!app.nodes.contains_key(&inner) && !app.node_order.contains(&inner));
     let outer = Some(id(0).to_string());
@@ -762,6 +762,126 @@ pub(crate) fn remote_set(other: &mut Journal, node: &str, no: u32, value: FieldV
 /// `node`'s field `no` as the document stores it.
 pub(crate) fn stored(app: &App, node: &str, no: u32) -> FieldValue {
     app.journal.as_ref().unwrap().doc().nodes[&node.parse().unwrap()].get(no)
+}
+
+/// Another replica sets `closed` on `node` (true closes, false reopens).
+fn remote_close(other: &mut Journal, node: &str, closed: bool) {
+    remote_set(other, node, field::CLOSED, FieldValue::Bool(closed));
+}
+
+#[test]
+fn a_remote_close_hides_without_deleting_reparenting_or_releasing() {
+    let path = temp_dir("sync-remote-close").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let g = add_group(&mut app, "G");
+    let inner = add(&mut app, Kind::Note, Runtime::Note(NotePayload { text: "in".into(), editing: false }));
+    app.edit_group(&inner, Some(g.clone()));
+    let outside = add(&mut app, Kind::Note, Runtime::Note(NotePayload { text: "out".into(), editing: false }));
+    let tab = add(&mut app, Kind::Tab, failed_tab("https://t/", 1.25));
+    app.edit_parent(&outside, Some(tab.clone()));
+    let _link = app.create_link(&inner, &outside);
+    assert!(app.save_session());
+    let links_before: Vec<NodeId> = app.mirror.link_ids().collect();
+    let mut other = Journal::open(&path, ActorId(2)).unwrap();
+    remote_close(&mut other, &g, true);
+    remote_close(&mut other, &tab, true);
+    assert!(app.save_session());
+    for id in [&g, &inner, &tab] {
+        assert!(!app.nodes.contains_key(id) && !app.mirror.has(id), "{id} is hidden");
+        assert!(live_in_doc(&app, id), "{id} is still live in the document");
+    }
+    assert_eq!(app.mirror.link_ids().collect::<Vec<_>>(), links_before, "the link to the outside node stays");
+    assert_eq!(app.mirror.parent(&outside), Some(tab.as_str()), "the child keeps its opened-from edge");
+    assert_eq!(app.hidden_local[&tab].zoom, Some(1.25), "the hidden tab's personal state is kept");
+    assert!(app.writes.pending_deletes.is_empty(), "a hide queues no delete");
+    // The clear brings them back, the group before its member, the tab with its zoom.
+    remote_close(&mut other, &g, false);
+    remote_close(&mut other, &tab, false);
+    assert!(app.save_session());
+    assert_eq!(app.mirror.group(&inner), Some(g.as_str()));
+    assert!(matches!(&app.nodes[&tab].runtime, Runtime::Unloaded(t) if t.zoom_factor == 1.25));
+    assert!(!app.hidden_local.contains_key(&tab));
+}
+
+#[test]
+fn a_remote_move_into_a_closed_group_hides_the_node() {
+    let path = temp_dir("sync-remote-move-closed").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let g = add_group(&mut app, "G");
+    let note = add(&mut app, Kind::Note, Runtime::Note(NotePayload { text: "n".into(), editing: false }));
+    assert!(app.save_session());
+    let mut other = Journal::open(&path, ActorId(2)).unwrap();
+    remote_close(&mut other, &g, true);
+    let (node, group) = (note.parse().unwrap(), Some(g.parse().unwrap()));
+    other.begin().unwrap().commit(vec![OpBody::Move { node, group }]).unwrap();
+    assert!(app.save_session());
+    assert!(!app.nodes.contains_key(&note));
+}
+
+#[test]
+fn a_remote_close_of_the_viewed_group_leaves_to_the_nearest_shown_level() {
+    let path = temp_dir("sync-remote-close-level").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let outer = add_group(&mut app, "Outer");
+    let inner = add_group(&mut app, "Inner");
+    app.edit_group(&inner, Some(outer.clone()));
+    assert!(app.save_session());
+    app.switch_group_level(Some(inner.clone()));
+    let mut other = Journal::open(&path, ActorId(2)).unwrap();
+    remote_close(&mut other, &inner, true);
+    assert!(app.save_session());
+    assert_eq!(app.current_group.as_deref(), Some(outer.as_str()));
+}
+
+#[test]
+fn hidden_personal_state_survives_a_launch_and_a_delete_drops_it() {
+    let path = temp_dir("sync-hidden-local").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let tab = add(&mut app, Kind::Tab, failed_tab("https://t/", 1.5));
+    assert!(app.save_session());
+    let mut other = Journal::open(&path, ActorId(2)).unwrap();
+    remote_close(&mut other, &tab, true);
+    assert!(app.save_session());
+    app.maybe_write_local(true);
+    drop(app);
+    let mut back = app_on(&path, 1);
+    back.restore_session();
+    assert_eq!(back.hidden_local.get(&tab).and_then(|l| l.zoom), Some(1.5), "read back for the hidden node");
+    let node = tab.parse().unwrap();
+    other.begin().unwrap().commit(vec![OpBody::Delete { node }]).unwrap();
+    assert!(back.save_session());
+    assert!(!back.hidden_local.contains_key(&tab), "the Delete drops it (forget_deleted)");
+}
+
+#[test]
+fn backing_keep_holds_hidden_nodes_files() {
+    let path = temp_dir("sync-backing-hidden").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let jar = add(&mut app, Kind::Jar, Runtime::Jar);
+    assert!(app.save_session());
+    let mut other = Journal::open(&path, ActorId(2)).unwrap();
+    remote_close(&mut other, &jar, true);
+    assert!(app.save_session());
+    assert!(!app.nodes.contains_key(&jar));
+    assert!(app.backing_keep(None).contains(&jar), "a closed jar keeps its cookie file");
+    assert!(!app.backing_keep(Some(&jar)).contains(&jar), "`except` leaves it out");
+}
+
+#[test]
+fn teardown_forgets_hidden_personal_state() {
+    let path = temp_dir("sync-teardown-hidden").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let tab = add(&mut app, Kind::Tab, failed_tab("https://t/", 1.5));
+    assert!(app.save_session());
+    let mut other = Journal::open(&path, ActorId(2)).unwrap();
+    remote_close(&mut other, &tab, true);
+    assert!(app.save_session());
+    app.teardown_running_session();
+    assert!(app.hidden_local.is_empty());
+    assert!(
+        app.writes.pending_deletes.contains(&tab.parse().unwrap()),
+        "the closed node is deleted with the session (D12)"
+    );
 }
 
 #[test]
@@ -2067,10 +2187,10 @@ fn remote_jar_create_rename_and_delete_reach_jar_defs() {
     let mut app = app_with(&BTreeMap::from([(jar, named("Home"))]));
     assert_eq!(app.jar_defs()[&jar].name, "Home");
     assert!(app.nodes.contains_key(&jar.to_string()), "a jar is a card");
-    app.apply_remote(vec![(jar, Some(snap(Kind::Jar, named("House").fields, None)))]);
+    app.apply_remote(vec![(jar, Remote::Shown(snap(Kind::Jar, named("House").fields, None)))]);
     assert_eq!(app.jar_defs()[&jar].name, "House");
     assert_eq!(snapshots(&app)[&jar], named("House"), "projects back unchanged");
-    app.apply_remote(vec![(jar, None)]);
+    app.apply_remote(vec![(jar, Remote::Deleted)]);
     assert!(!app.jar_defs().contains_key(&jar));
 }
 
@@ -2246,7 +2366,7 @@ fn a_remote_ephemeral_change_deletes_and_saves_the_jar_file() {
     let toggled = |app: &App, on: bool| {
         let mut fields = snapshots(app)[&jar].fields.clone();
         fields.insert(field::EPHEMERAL, FieldValue::Bool(on));
-        vec![(jar, Some(snap(Kind::Jar, fields, None)))]
+        vec![(jar, Remote::Shown(snap(Kind::Jar, fields, None)))]
     };
     app.apply_remote(toggled(&app, true));
     assert!(app.jar_defs()[&jar].ephemeral);
@@ -2302,7 +2422,7 @@ fn a_jar_first_seen_ephemeral_deletes_its_leftover_file_and_queues_nothing() {
         (field::NAME, FieldValue::Str("Theirs".into())),
         (field::EPHEMERAL, FieldValue::Bool(true)),
     ]);
-    app.apply_remote(vec![(remote, Some(snap(Kind::Jar, fields, None)))]);
+    app.apply_remote(vec![(remote, Remote::Shown(snap(Kind::Jar, fields, None)))]);
     assert!(app.jar_defs()[&remote].ephemeral);
     assert!(!file.exists(), "remote-created: the leftover file goes");
     assert!(app.pending.is_empty(), "remote-created: nothing queued");
@@ -2375,6 +2495,10 @@ fn a_remote_jar_delete_releases_its_file_unless_recently_closed_holds_it() {
     }
     // `held` was closed here earlier, so this instance's Recently Closed names it.
     app.record_closed(&held.to_string());
+    // The remote delete is real: the document no longer holds `gone` (a hold by the document is what keeps a file now).
+    let mut other = Journal::open(&dir.join("session.mnf"), ActorId(2)).unwrap();
+    other.begin().unwrap().commit(vec![OpBody::Delete { node: gone }]).unwrap();
+    assert!(app.save_session());
     for jar in [gone, held] {
         app.remove_remotely_deleted(&jar.to_string());
     }
@@ -5114,7 +5238,7 @@ fn a_remote_delete_of_an_endpoint_removes_its_links() {
     app.create_link(&a, &b);
     // What `remote_changes` reports when another replica deletes `a`
     // (as `remote_jar_create_rename_and_delete_reach_jar_defs`):
-    app.apply_remote(vec![(a.parse().unwrap(), None)]);
+    app.apply_remote(vec![(a.parse().unwrap(), Remote::Deleted)]);
     assert!(app.links_naming(&b).is_empty());
     assert!(app.mirror.link_ids().next().is_none());
 }
@@ -5984,10 +6108,10 @@ fn a_typeless_placeholder_gets_its_card_when_its_type_arrives() {
     let node = id(5);
     let mut doc = Doc::new(crate::store::model::DocId([0; 16]));
     doc.nodes.insert(node, Node::placeholder());
-    assert_eq!(App::remote_changes(&doc, &[node]), vec![(node, None)]);
+    assert_eq!(App::remote_changes(&doc, &[node]), vec![(node, Remote::Deleted)]);
     doc.nodes.insert(node, Node::with_type(FUTURE));
     let changes = App::remote_changes(&doc, &[node]);
-    assert_eq!(changes[0].1.as_ref().map(|s| s.ty.as_str()), Some(FUTURE));
+    assert!(matches!(&changes[0].1, Remote::Shown(s) if s.ty == FUTURE));
     let mut app = App::default();
     app.apply_remote(changes);
     assert!(matches!(app.nodes[&node.to_string()].runtime, Runtime::Unknown));

@@ -92,16 +92,45 @@ impl App {
         for child in children {
             self.edit_parent(&child, parent.clone());
         }
+        let group = self.mirror.group(id).map(str::to_owned);
+        let removed = self.unshow(id).is_some();
+        if self.current_group.as_deref() == Some(id) {
+            self.switch_group_level(group.filter(|_| removed));
+        }
+    }
+
+    /// Takes `id` out of the live graph without touching the document: its `nodes` entry (a tab's `ViewTab` drops,
+    /// shutting its engine host down), a PDF's queued render, its `node_order` slot, the view state naming it
+    /// (`focused`, `split_tab`, `viewed_image`, an open find bar), then `forget_id`. Shared by the delete paths
+    /// (`drop_tab`, `drop_node`) and the hide path (`hide_node`), which add what each needs. Returns the removed node.
+    pub(crate) fn unshow(&mut self, id: &str) -> Option<crate::GraphNode> {
         let removed = self.nodes.remove(id);
         if removed.as_ref().is_some_and(|n| n.as_pdf().is_some()) {
             self.pdf_renderer.cancel(id);
         }
-        if self.current_group.as_deref() == Some(id) {
-            self.switch_group_level(self.mirror.group(id).filter(|_| removed.is_some()).map(str::to_owned));
-        }
         self.node_order.retain(|d| d != id);
-        // The texture of an image or PDF (`GpuState::images`) goes here too.
+        // A split only makes sense paired with its focused tab (`focus_tab`): losing either half clears it.
+        if self.split_tab.as_deref() == Some(id) || self.focused.as_deref() == Some(id) {
+            self.split_tab = None;
+        }
+        if self.focused.as_deref() == Some(id) {
+            self.focused = None;
+            // Only a showing Tab view drops to Graph: while an Image is maximized `focused` is the hidden last tab.
+            if self.showing_tab_view() {
+                self.view_mode = ViewMode::Graph;
+            }
+            // The tab is gone: nothing to send `FindStop` to, so only the UI side of the close.
+            self.find.close();
+        }
+        if self.viewed_image.as_deref() == Some(id) {
+            self.viewed_image = None;
+            if self.view_mode == ViewMode::Item {
+                self.view_mode = ViewMode::Graph;
+            }
+        }
+        // The texture of an image or PDF (`GpuState::images`) goes with `forget_id`.
         self.forget_id(id);
+        removed
     }
 
     /// Everything a permanently removed node leaves behind that carries no order: per-id tables, the gestures and
@@ -118,6 +147,8 @@ impl App {
     /// `nav_history` and `saved_scroll`.
     pub(crate) fn forget_id(&mut self, id: &str) {
         self.spawns.forget(id);
+        // A hide re-inserts its entry after this (plan D5); every permanent removal drops it.
+        self.hidden_local.remove(id);
         self.pending_sleeps.remove(id);
         self.clear_cookie_state(id);
         self.saved_scroll.remove(id);

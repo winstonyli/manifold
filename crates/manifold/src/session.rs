@@ -53,8 +53,9 @@ pub(crate) fn backing_names(dir: &Path) -> Option<HashSet<String>> {
             Some(bytes) => LocalState::from_bytes(&bytes)?.closed,
             None => Vec::new(),
         };
-        let live = crate::store::json::doc_to_json(&doc).nodes;
-        let nodes = live.iter().chain(closed.iter().flat_map(|c| &c.nodes));
+        names.extend(crate::fetched::doc_backing_names(&doc, None));
+        // Task 3 deletes the snapshot list this reads.
+        let nodes = closed.iter().flat_map(|c| &c.nodes);
         names.extend(nodes.clone().map(|n| n.id.clone()));
         let paths = nodes.filter_map(|n| n.fields.get("path"));
         names.extend(paths.filter_map(|p| p.as_str()).filter_map(crate::content::file_name));
