@@ -6222,3 +6222,64 @@ fn a_link_and_a_group_take_an_unknown_card() {
     assert_eq!(doc.effective_group(node), Some(g.parse().unwrap()));
     assert_eq!(app.mirror.group(&key), Some(g.as_str()));
 }
+
+// ---- the trail across close, reopen, restart (trail spec decision 10) ---------------------------------------------
+
+#[test]
+fn a_closed_tab_keeps_its_trail_across_a_save_ctrl_shift_t_and_a_restart() {
+    let dir = temp_dir("sync-trail-closed");
+    let mut app = app_on(&dir.join("session.mnf"), 1);
+    let tab = add(&mut app, Kind::Tab, sleeping_tab("https://b/", "B"));
+    assert!(app.save_session());
+    app.nav_history.insert(tab.clone(), crate::nav_history::NavHistory::visited(&["https://a/", "https://b/"]));
+    app.close_node(&tab);
+    assert!(!app.nodes.contains_key(&tab));
+    assert!(app.nav_history.contains_key(&tab), "the hide and the close's save kept it");
+    let file = dir.join("tab-history.json");
+    let (nodes, journal) = (&app.nodes, app.journal.as_ref());
+    crate::nav_history::save_to(&mut app.nav_history, |id| keep_trail(nodes, journal, id), Some(&file));
+    assert!(crate::nav_history::load_from(&file).contains_key(&tab), "a restart keeps it");
+    app.reopen_closed_shortcut();
+    assert!(app.nodes.contains_key(&tab));
+    assert!(app.nav_history.get(&tab).is_some_and(|h| h.can_go_back()), "Ctrl+Shift+T keeps it");
+}
+
+#[test]
+fn deleting_a_shown_tab_drops_its_trail_at_once() {
+    let mut app = app_on(&temp_dir("sync-trail-delete").join("session.mnf"), 1);
+    let tab = add(&mut app, Kind::Tab, sleeping_tab("https://b/", "B"));
+    assert!(app.save_session());
+    app.nav_history.insert(tab.clone(), crate::nav_history::NavHistory::visited(&["https://a/", "https://b/"]));
+    app.destroy_node(&tab);
+    assert!(!app.nav_history.contains_key(&tab));
+}
+
+#[test]
+fn keep_trail_adds_document_liveness_to_the_shown_test() {
+    let mut app = app_on(&temp_dir("sync-trail-keep").join("session.mnf"), 1);
+    let shown = add(&mut app, Kind::Tab, sleeping_tab("https://s/", "S"));
+    let closed = add(&mut app, Kind::Tab, sleeping_tab("https://c/", "C"));
+    let gone = add(&mut app, Kind::Tab, sleeping_tab("https://g/", "G"));
+    assert!(app.save_session());
+    app.close_node(&closed);
+    app.destroy_node(&gone);
+    assert!(app.save_session());
+    let journal = app.journal.as_ref();
+    assert!(keep_trail(&app.nodes, journal, &shown));
+    assert!(keep_trail(&app.nodes, journal, &closed), "closed: hidden, but live in the document");
+    assert!(!keep_trail(&app.nodes, journal, &gone));
+    assert!(!keep_trail(&app.nodes, journal, "not-an-id"));
+    assert!(keep_trail(&app.nodes, None, "not-an-id"), "no document: keep everything");
+}
+
+#[test]
+fn a_session_replace_clears_stashed_trails() {
+    let mut app = app_on(&temp_dir("sync-trail-teardown").join("session.mnf"), 1);
+    let tab = add(&mut app, Kind::Tab, sleeping_tab("https://b/", "B"));
+    assert!(app.save_session());
+    app.nav_history.insert(tab.clone(), crate::nav_history::NavHistory::visited(&["https://a/", "https://b/"]));
+    app.close_node(&tab);
+    assert!(app.nav_history.contains_key(&tab));
+    app.teardown_running_session();
+    assert!(app.nav_history.is_empty());
+}

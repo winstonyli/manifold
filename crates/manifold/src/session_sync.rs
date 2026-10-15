@@ -412,6 +412,21 @@ pub(crate) struct PendingWrites {
     pub(crate) last_session_save: Option<std::time::Instant>,
 }
 
+/// Whether tab `id`'s trail is kept at a save (trail spec decision 10): shown (`nodes`), or live in the document (a
+/// closed tab, or one hidden in a closed group, which a reopen brings back). With no document (no session yet, a
+/// store error) everything is kept.
+pub(crate) fn keep_trail(
+    nodes: &crate::node::NodeMap,
+    journal: Option<&crate::store::journal::Journal>,
+    id: &str,
+) -> bool {
+    nodes.contains_key(id)
+        || journal.is_none_or(|j| {
+            id.parse::<crate::store::model::NodeId>()
+                .is_ok_and(|n| j.doc().nodes.get(&n).is_some_and(crate::store::model::Node::is_live))
+        })
+}
+
 impl App {
     /// What the store holds for `id`, or is about to, as a `Snapshot`: a graph node's fields of its kind as the mirror
     /// holds them (2b-5: every stored field of a graph node is mirror state), or the snapshot a
@@ -904,7 +919,7 @@ impl App {
     }
 
     /// Hides `id` (spec decision 3): out of `nodes`, `node_order`, the layout and the mirror, its engine unloaded
-    /// (`unshow`), its personal state kept in `hidden_local` for a reopen. Nothing in the document changes: no
+    /// (`unshow`), its personal state kept in `hidden_local` for a reopen, and its trail kept in `nav_history`. Nothing in the document changes: no
     /// re-parent, no link delete, no backing-file release. A tab whose spawn is in flight (in `spawning`: a respawn,
     /// or a wake, whose placeholder is dropped here) is parked as `Remote::Hidden` and hidden when it lands (plan D3).
     /// A wake stops being one (`wakes_in_flight`), so its landing is an ordinary spawn that applies the parked change:
@@ -917,10 +932,15 @@ impl App {
         let Some(node) = self.nodes.get(id) else { return };
         // A note comes back idle: the box it was typed in is gone, and its text was committed.
         let local = LocalNode { editing: false, ..self.local_node(id, node) };
+        // A closed tab keeps its trail (trail spec decision 10); `unshow` -> `forget_id` would drop it.
+        let trail = self.nav_history.remove(id);
         self.unshow(id);
         self.mirror.forget_node(id);
         self.layout.remove(id);
         self.hidden_local.insert(id.to_owned(), local);
+        if let Some(trail) = trail {
+            self.nav_history.insert(id.to_owned(), trail);
+        }
     }
 
     /// The current level leaves a subtree that is being hidden: when it is `root` or inside it, the level falls to
@@ -1314,8 +1334,8 @@ impl App {
             crate::history::save(&self.history);
             self.history_ui.history_dirty = false;
         }
-        let nodes = &self.nodes;
-        crate::nav_history::save(&mut self.nav_history, |id| nodes.contains_key(id));
+        let (nodes, journal) = (&self.nodes, self.journal.as_ref());
+        crate::nav_history::save(&mut self.nav_history, |id| keep_trail(nodes, journal, id));
     }
 
     /// Saves local edits (spec "Local edits become ops"): take the lock,
@@ -2248,6 +2268,8 @@ impl App {
         self.layout.retain(|id, _| Some(id) == keep.as_ref());
         self.writes.held_text.clear();
         self.hidden_local.clear();
+        // A closed tab's trail is stashed under an id not in `nodes`, so the loop above does not forget it.
+        self.nav_history.clear();
         self.focused = None;
         self.viewed_image = None;
         self.split_tab = None;
