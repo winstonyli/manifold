@@ -777,7 +777,10 @@ mod tests {
             "bad_at": {"entries": [e("a", None, None), e("b", Some(0), None)], "at": 2},
             "two_roots": {"entries": [e("a", None, None), e("b", None, None)], "at": 1},
             "parent_after": {"entries": [e("a", None, None), e("b", Some(2), None), e("c", Some(0), None)], "at": 2},
-            "fwd_not_a_child": {"entries": [e("a", None, None), e("b", Some(0), Some(2)), e("c", Some(0), None)], "at": 2},
+            "fwd_not_a_child": {
+                "entries": [e("a", None, None), e("b", Some(0), Some(2)), e("c", Some(0), None)],
+                "at": 2
+            },
             "empty": {"entries": [], "at": 0},
         });
         std::fs::write(&path, file.to_string()).unwrap();

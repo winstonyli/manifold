@@ -136,6 +136,7 @@ middle of the trail stay reachable as branches. Nothing creates a card unless th
      flags fit, else as a mismatched arrival (a spurious fork); it heals itself and the cap bounds it. Also a known limit: `location.replace` and `replaceState` replace the engine's slot but
      read as a fork, so `lin_at` runs one ahead; a native Back then lands on an older page, reads as a mismatched arrival and
      forks a spurious child. It heals itself and the cap bounds it.
+   - Another known limit: a script `history.forward()` is read as a Back when the cursor's parent and `fwd` have the same URL, because `inferred()` tries Back first; the `lin` shadow heals on a later mismatch fork.
    - A new engine navigation (the fork rule, or a plain move's commit) truncates `lin` after `lin_at`, pushes the
      arrival entry's index, and sets `lin_at` to it.
    - On `view_reset` (the engine was replaced, so its list is empty) the pending move is cleared, and: if the tab's URL matches the cursor entry, `lin =
