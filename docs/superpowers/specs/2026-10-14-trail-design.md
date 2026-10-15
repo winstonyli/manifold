@@ -66,7 +66,7 @@ middle of the trail stay reachable as branches. Nothing creates a card unless th
       `target` URL report is a known limit and forks).
       If `target`'s URL equals `from`'s URL no report can tell them apart, so `go()` commits at once. Native: the engine
       moves a real slot (`GoBack`/`GoForward`), `lin_at` +- 1, and the action is returned. Plain: the tab already shows
-      that page and a same-URL `Navigate` is a reload that replaces the slot (likely, not verified, on Chromium engines), so
+      that page and a same-URL `Navigate` is a reload that replaces the slot (measured 2026-10-15: WebView2 keeps the forward entry, CEF consistent; Servo and WebKit not run), so
       `go()` returns `NavAction::None`, sets `lin[lin_at] = Some(target)` with no truncate and no push, and the tab is not
       reloaded. Invariant: `lin` gains a slot only for a real engine navigation.
       **Commit** sets `at = target`, marks `target` *fresh*, sets `fwd` (Back: `fwd(target) = from`; any other move, a sibling pick and Forward included:
@@ -93,8 +93,10 @@ middle of the trail stay reachable as branches. Nothing creates a card unless th
       push; marked fresh; `loading` taken from the settled report). Otherwise the candidate is dropped and the report falls
       to steps 5-6 with the pre-hold `loading` value, so a link click forks and a redirect after the hold (loading A held,
       then loading B) forks B as a child of `at` (A never gets an entry), or rewrites it only if the pre-hold `loading` was true.
-      Known limit: a settled report that carries the new URL with still-stale `can_go_forward` (CEF and Servo deliver URL
-      and flags separately; not verified) drops a script Back into a fork, and the next same-URL report is ignored by step 4;
+      Known limit: a settled report that carries the new URL with still-stale `can_go_forward` (measured 2026-10-15: WebView2
+      reports a `loading` URL with the old flags and then a settled report with fresh flags, as assumed; CEF's settled
+      reports carry fresh flags and a `loading=true` report for the same URL follows them, which step 4 absorbs; Servo not
+      run, so unverified there) drops a script Back into a fork, and the next same-URL report is ignored by step 4;
       it heals through the cap.
       The candidate only suppresses the fork of the held loading report; a settled report for a candidate's URL decides
       the same way with or without a live candidate, so its deadline and clearing never change a settled outcome. It is
