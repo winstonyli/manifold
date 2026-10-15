@@ -123,6 +123,9 @@ pub(crate) struct ItemToolbarActions {
     pub(crate) tab_actions_button_rect: Option<egui::Rect>,
     pub(crate) split_view_button_rect: Option<egui::Rect>,
     pub(crate) address_bar_rect: Option<egui::Rect>,
+    /// The Back chip's branch marker, when drawn: the branch list anchors to it.
+    pub(crate) back_branches_rect: Option<egui::Rect>,
+    pub(crate) forward_branches_rect: Option<egui::Rect>,
 }
 
 /// What `render_item_toolbar` (the Item toolbar's shared frame) hands back:
@@ -210,6 +213,10 @@ impl App {
     ) -> ItemToolbarActions {
         let mut actions = ItemToolbarActions::default();
         let (can_go_back, can_go_forward) = self.trail_enabled(focused_id);
+        let (back_fork, forward_fork) =
+            self.nav_history.get(focused_id).map_or((false, false), |h| (h.back_fork(), h.forward_fork()));
+        let mut back_marker: Option<egui::Response> = None;
+        let mut forward_marker: Option<egui::Response> = None;
         toolbar_chip(ui, |ui| {
             let mut bounds: Option<egui::Rect> = None;
             let mut grow = |r: egui::Rect| {
@@ -238,6 +245,13 @@ impl App {
             if back.clicked() {
                 actions.go_back = true;
             }
+            if back_fork {
+                let marker =
+                    chip_icon_button(ui, egui::Id::new("icon_btn_back_branches"), egui_phosphor::light::CARET_DOWN)
+                        .named_tip("Other pages from the page before");
+                grow(marker.rect);
+                back_marker = Some(marker);
+            }
             let forward = chip_icon_button_enabled(
                 ui,
                 egui::Id::new("icon_btn_forward"),
@@ -248,6 +262,13 @@ impl App {
             grow(forward.rect);
             if forward.clicked() {
                 actions.go_forward = true;
+            }
+            if forward_fork {
+                let marker =
+                    chip_icon_button(ui, egui::Id::new("icon_btn_forward_branches"), egui_phosphor::light::CARET_DOWN)
+                        .named_tip("Pages opened from this page");
+                grow(marker.rect);
+                forward_marker = Some(marker);
             }
             // Was plain text ("Reload") to avoid a refresh-arrows
             // glyph gamble in this app's own font -- now a real
@@ -268,6 +289,14 @@ impl App {
             }
             bounds.unwrap_or(ui.cursor())
         });
+        if let Some(marker) = back_marker {
+            self.popup_opener_clicked(ui, AnchoredPopup::BackBranches, &marker);
+            actions.back_branches_rect = Some(marker.rect);
+        }
+        if let Some(marker) = forward_marker {
+            self.popup_opener_clicked(ui, AnchoredPopup::ForwardBranches, &marker);
+            actions.forward_branches_rect = Some(marker.rect);
+        }
 
         // Address bar moved up here (right after nav/identity,
         // before any per-tab action button) and given most of
@@ -493,6 +522,8 @@ impl App {
                     tab_actions_button_rect,
                     split_view_button_rect,
                     address_bar_rect,
+                    back_branches_rect,
+                    forward_branches_rect,
                 },
         } = self.render_item_toolbar(&focused_id, ui);
 
@@ -615,6 +646,18 @@ impl App {
         let ctx = ui.ctx().clone();
         if let Some((rect, fade)) = self.anchored_popup_fade(&ctx, AnchoredPopup::TabActions, tab_actions_button_rect) {
             self.build_tab_actions_popup(ui, rect, &focused_id, fade);
+        }
+        for (dir, which, anchor) in [
+            (Dir::Back, AnchoredPopup::BackBranches, back_branches_rect),
+            (Dir::Forward, AnchoredPopup::ForwardBranches, forward_branches_rect),
+        ] {
+            // The marker went (the trail changed under an open list): nothing to anchor to.
+            if anchor.is_none() {
+                close_popup(&mut self.menus.open_popup, which);
+            }
+            if let Some((rect, fade)) = self.anchored_popup_fade(&ctx, which, anchor) {
+                self.build_trail_branches_popup(ui, dir, rect, &focused_id, fade);
+            }
         }
         // Highlights the split's own current engine (if one is already
         // open) rather than nothing, so re-opening this shows what's

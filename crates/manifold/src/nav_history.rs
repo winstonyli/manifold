@@ -283,6 +283,48 @@ impl NavHistory {
         self.pending.is_some_and(|m| now <= m.deadline)
     }
 
+    /// A row of the branch list (decision 8): a plain move to `target`, never native (plan D3). Ignored for the
+    /// cursor entry, an index out of range, and while a move is pending.
+    pub(crate) fn go_to(&mut self, target: usize, now: Instant) -> NavAction {
+        if self.move_pending(now) || target == self.at || target >= self.entries.len() {
+            return NavAction::None;
+        }
+        self.start(target, false, now)
+    }
+
+    /// The branch list for `dir`: the cursor's siblings (Back; plan D7) or its children (Forward), oldest first,
+    /// each with its title, or its URL when the title is empty.
+    pub(crate) fn branches(&self, dir: Dir) -> Vec<(usize, String)> {
+        let Some(cur) = self.entries.get(self.at) else { return Vec::new() };
+        let parent = match dir {
+            Dir::Back => {
+                let Some(p) = cur.parent else { return Vec::new() };
+                p
+            }
+            Dir::Forward => self.at,
+        };
+        self.entries
+            .iter()
+            .enumerate()
+            .filter(|&(i, e)| e.parent == Some(parent) && i != self.at)
+            .map(|(i, e)| (i, if e.title.is_empty() { e.url.clone() } else { e.title.clone() }))
+            .collect()
+    }
+
+    /// The Back chip shows its branch marker: the cursor entry has siblings.
+    pub(crate) fn back_fork(&self) -> bool {
+        !self.branches(Dir::Back).is_empty()
+    }
+
+    /// The Forward chip shows its branch marker: the cursor entry has more than one child.
+    pub(crate) fn forward_fork(&self) -> bool {
+        self.branches(Dir::Forward).len() > 1
+    }
+
+    pub(crate) fn entry_url(&self, entry: usize) -> Option<&str> {
+        self.entries.get(entry).map(|e| e.url.as_str())
+    }
+
     /// Starts a move to `target` from the cursor.
     fn start(&mut self, target: usize, native: bool, now: Instant) -> NavAction {
         let from = self.at;
@@ -1011,5 +1053,41 @@ mod tests {
         h.observe("c", "C", false, false, now);
         let titles: Vec<&str> = h.entries.iter().map(|e| e.title.as_str()).collect();
         assert_eq!(titles, ["A", "B", "C"]);
+    }
+
+    #[test]
+    fn a_branch_pick_navigates_once_and_points_fwd_at_it() {
+        let now = Instant::now();
+        let mut h = NavHistory::visited(&["a", "b"]);
+        back(&mut h, now);
+        visit(&mut h, &["c"], now);
+        assert_eq!(h.branches(Dir::Back), [(1, "b".to_string())]);
+        assert!(h.back_fork() && !h.forward_fork());
+        assert_eq!(h.go_to(1, now), NavAction::Navigate("b".into()), "never native");
+        h.observe("b", "", true, false, now);
+        h.observe("b", "", false, false, now);
+        assert_eq!((h.entries.len(), h.at, h.entries[0].fwd), (3, 1, Some(1)), "no second entry for b");
+        assert_eq!((h.lin.clone(), h.lin_at), (vec![Some(0), Some(2), Some(1)], 2));
+        assert_eq!(
+            h.go(Dir::Back, true, false, now),
+            NavAction::Navigate("a".into()),
+            "the engine's slot before b is c"
+        );
+    }
+
+    #[test]
+    fn a_forward_pick_points_fwd_at_it() {
+        let now = Instant::now();
+        let mut h = NavHistory::visited(&["a", "b"]);
+        back(&mut h, now);
+        visit(&mut h, &["c"], now);
+        back(&mut h, now);
+        assert!(h.forward_fork());
+        assert_eq!(h.entries[0].fwd, Some(2), "Back from c");
+        assert_eq!(h.branches(Dir::Forward), [(1, "b".to_string()), (2, "c".to_string())]);
+        assert_eq!(h.go_to(1, now), NavAction::Navigate("b".into()));
+        h.observe("b", "", false, false, now);
+        assert_eq!((h.at, h.entries[0].fwd), (1, Some(1)));
+        assert_eq!(h.go_to(1, now), NavAction::None, "the cursor entry itself");
     }
 }

@@ -82,6 +82,20 @@ impl App {
         None
     }
 
+    /// A row of the branch list: a plain move to `entry` of tab `tab`'s trail.
+    pub(crate) fn trail_pick(&mut self, tab: &str, entry: usize) {
+        let Some(h) = self.nav_history.get_mut(tab) else { return };
+        let action = h.go_to(entry, Instant::now());
+        self.send_nav_action(tab, action);
+    }
+
+    /// "Open as card" on a branch row (decision 9): a new tab opened from `tab` at that entry's URL, with opened-from
+    /// and the group set as for any opened tab. The trail is unchanged.
+    pub(crate) fn open_branch_as_card(&mut self, tab: &str, entry: usize) {
+        let Some(url) = self.nav_history.get(tab).and_then(|h| h.entry_url(entry)).map(str::to_owned) else { return };
+        self.spawn_tab_from(tab, &url);
+    }
+
     /// `id` is shown (`nodes`), or live in the document (hidden by a close).
     fn is_live_id(&self, id: &str) -> bool {
         self.nodes.contains_key(id) || self.doc_node(id).is_some_and(|n| n.is_live())
@@ -367,5 +381,52 @@ mod tests {
         app.spawns.pending_trail_focus = Some("no-such-node".to_string());
         app.poll_trail_focus();
         assert_eq!(app.spawns.pending_trail_focus, None, "a node that is gone is not waited for");
+    }
+
+    /// A live tab whose trail is a -> {b, c}, at c: Back's branch list holds b (entry 1).
+    fn tab_with_a_sibling(name: &str) -> (App, String, Peer) {
+        let mut app = app_on(&session(name), 1);
+        let (tab, peer) = live_tab(&mut app, ViewKind::Webview2, "https://c/");
+        assert!(app.save_session());
+        let now = Instant::now();
+        let mut h = NavHistory::visited(&["https://a/", "https://b/"]);
+        assert_eq!(h.go(Dir::Back, true, false, now), NavAction::GoBack);
+        h.observe("https://a/", "", false, true, now);
+        h.observe("https://c/", "", false, false, now);
+        app.nav_history.insert(tab.clone(), h);
+        (app, tab, peer)
+    }
+
+    #[test]
+    fn a_branch_pick_navigates_the_tab() {
+        let (mut app, tab, mut peer) = tab_with_a_sibling("trail-pick");
+        app.trail_pick(&tab, 1);
+        assert!(peer.sent().iter().any(|m| matches!(m, HostToView::Navigate { url, .. } if url == "https://b/")));
+    }
+
+    #[test]
+    fn open_as_card_opens_a_child_tab_and_leaves_the_trail() {
+        let (mut app, tab, _peer) = tab_with_a_sibling("trail-promote");
+        let before = app.nav_history[&tab].branches(Dir::Back);
+        app.open_branch_as_card(&tab, 1);
+        let spawn = &app.test_spawns.last().unwrap().0;
+        assert_eq!((spawn.url.as_str(), spawn.parent.as_deref()), ("https://b/", Some(tab.as_str())));
+        assert_eq!(app.nav_history[&tab].branches(Dir::Back), before);
+    }
+
+    #[test]
+    fn the_branch_list_draws_a_foreground_popup() {
+        let (mut app, tab, _peer) = tab_with_a_sibling("trail-popup");
+        app.menus.open_popup = Some(AnchoredPopup::BackBranches);
+        let ctx = app.egui_ctx.clone();
+        let anchor = egui::Rect::from_min_size(egui::pos2(10.0, 10.0), egui::vec2(20.0, 20.0));
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            app.build_trail_branches_popup(ui, Dir::Back, anchor, &tab, 1.0);
+        });
+        output.textures_delta.clear();
+        let id = egui::Id::new(("trail_branches_popup", AnchoredPopup::BackBranches));
+        let rect = ctx.memory(|m| m.area_rect(id)).expect("the popup's area");
+        assert!(rect.width() >= 200.0, "{rect:?}");
+        assert_eq!(app.menus.open_popup, Some(AnchoredPopup::BackBranches), "no click: it stays open");
     }
 }

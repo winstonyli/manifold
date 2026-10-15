@@ -3,6 +3,7 @@
 //! switcher, shortcuts help and import confirm.
 
 use super::*;
+use crate::nav_history::Dir;
 use crate::store::model::Kind;
 
 /// A minimal right-click context menu: just "Open in new tab" for a link,
@@ -289,6 +290,19 @@ pub(crate) enum AnchoredPopup {
     DefaultViewKind,
     CurrentViewKind,
     SplitView,
+    /// The Back chip's branch list (trail spec decision 8).
+    BackBranches,
+    ForwardBranches,
+}
+
+/// A branch row's label: at most 60 characters, an ellipsis marking a cut.
+fn branch_label(label: &str) -> String {
+    const MAX: usize = 60;
+    if label.chars().count() <= MAX {
+        label.to_owned()
+    } else {
+        format!("{}…", label.chars().take(MAX - 1).collect::<String>())
+    }
 }
 
 /// Opens `which`, or closes it if it's the one open.
@@ -1248,6 +1262,61 @@ impl App {
         }
         if close {
             close_popup(&mut self.menus.open_popup, AnchoredPopup::TabActions);
+        }
+    }
+
+    /// The Back or Forward chip's branch list (trail spec decision 8): the entries `NavHistory::branches` gives,
+    /// labelled by title or URL. A click is a plain move there (`trail_pick`); the row's context menu opens it as a
+    /// new tab card (`open_branch_as_card`, decision 9). Closes on a pick or a click outside.
+    pub(crate) fn build_trail_branches_popup(
+        &mut self,
+        ui: &egui::Ui,
+        dir: Dir,
+        anchor_rect: egui::Rect,
+        tab: &str,
+        fade: f32,
+    ) {
+        let which = match dir {
+            Dir::Back => AnchoredPopup::BackBranches,
+            Dir::Forward => AnchoredPopup::ForwardBranches,
+        };
+        let rows = self.nav_history.get(tab).map_or_else(Vec::new, |h| h.branches(dir));
+        let mut picked: Option<usize> = None;
+        let mut as_card: Option<usize> = None;
+        let area = egui::Area::new(egui::Id::new(("trail_branches_popup", which)))
+            .fixed_pos(anchor_rect.left_bottom())
+            .order(egui::Order::Foreground)
+            .interactable(self.menus.open_popup == Some(which))
+            .show(ui.ctx(), |ui| {
+                ui.set_opacity(fade);
+                popup_frame(ui).show(ui, |ui| {
+                    menu_item_style(ui);
+                    ui.set_min_width(200.0);
+                    for (entry, label) in &rows {
+                        let row = ui.add(
+                            egui::Button::new(branch_label(label)).min_size(egui::vec2(ui.min_rect().width(), 0.0)),
+                        );
+                        if row.clicked() {
+                            picked = Some(*entry);
+                        }
+                        row.context_menu(|ui| {
+                            if ui.button("Open as card").clicked() {
+                                as_card = Some(*entry);
+                                ui.close();
+                            }
+                        });
+                    }
+                });
+            });
+        let clicked_outside = clicked_outside_popup(ui, area.response.rect, Some(anchor_rect));
+        if let Some(entry) = picked {
+            self.trail_pick(tab, entry);
+        }
+        if let Some(entry) = as_card {
+            self.open_branch_as_card(tab, entry);
+        }
+        if picked.is_some() || as_card.is_some() || clicked_outside {
+            close_popup(&mut self.menus.open_popup, which);
         }
     }
 
