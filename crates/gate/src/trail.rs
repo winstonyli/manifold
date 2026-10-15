@@ -105,7 +105,7 @@ fn drive(run: &Run, sec: &mut Option<Section>) -> io::Result<()> {
     next("pages");
     for p in ["/b2", "/b3"] {
         run.go(&mut inst, p)?;
-        inst.export_until(&format!("at{p}"), |s| at(s, p))?;
+        inst.export_until(&format!("at-{}", p.trim_start_matches('/')), |s| at(s, p))?;
     }
     let s = inst.export_until("b3", |s| {
         field(s, &b, "entries") == Some(&3.into()) && field(s, &b, "depth") == Some(&2.into())

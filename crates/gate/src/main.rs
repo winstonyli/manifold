@@ -3,7 +3,7 @@
 //! `PASS:`/`FAIL:`/`TIMING` lines the shell scripts print, so `gate all` can run it as a stage. The exit code is
 //! 0 when no check failed.
 //!
-//! Stages: `hello` (one instance: launch, WAITTABS, export, QUIT), `launch-forms` (was scripts/launch-forms-probe.sh), `layout` (popups inside the window and opaque, see layout.rs), `link` (was scripts/link-probe.sh), `unknown-type` (a node of a type this build doesn't know, end to end, see unknown_type.rs), `closed` (the closed field end to end, see closed.rs), `trail` (Back and Forward over a tab's pages and opened-from, see trail.rs),`smoke` (was
+//! Stages: `hello` (one instance: launch, WAITTABS, export, QUIT), `launch-forms` (was scripts/launch-forms-probe.sh), `layout` (popups inside the window and opaque, see layout.rs), `link` (was scripts/link-probe.sh), `unknown-type` (a node of a type this build doesn't know, end to end, see unknown_type.rs), `closed` (the closed field end to end, see closed.rs), `trail` (Back and Forward over a tab's pages and opened-from, see trail.rs), `smoke` (was
 //! scripts/headless-smoke-test.sh) and `two` (the two-instance test, was scripts/two-instance-test.sh). Run from the repo after
 //! `cargo build -p manifold -p manifold-view-webview2 -p manifold-view-pdfium -p gate`; the exe is `manifold.exe` beside `gate.exe`.
 
