@@ -370,11 +370,12 @@ impl App {
     }
 
     /// `Ctrl+Shift+T` / headless `REOPENTAB` — reopens the newest node this replica closed (spec decision 7: the
-    /// `closed` stamp's actor), where it was. Another replica's closes are left to the popup. A no-op with none.
+    /// replica id `closed` holds, which a restart keeps), where it was. Another replica's closes are left to the
+    /// popup. A no-op with none.
     pub(crate) fn reopen_closed_shortcut(&mut self) {
         let Some(journal) = &self.journal else { return };
-        let mine = journal.actor();
-        let newest = journal.doc().closed_roots().into_iter().find(|(_, stamp)| stamp.actor == mine);
+        let doc = journal.doc();
+        let newest = doc.closed_roots().into_iter().find(|(id, _)| doc.nodes[id].closer() == self.replica);
         if let Some((id, _)) = newest {
             self.reopen_node(id);
         }

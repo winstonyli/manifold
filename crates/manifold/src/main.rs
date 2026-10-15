@@ -310,6 +310,9 @@ struct App {
     /// The session store (spec "Journal"): `None` before `open_store`, when
     /// `%APPDATA%` is unset, or when the file couldn't be opened (toasted).
     journal: Option<store::journal::Journal>,
+    /// This installation's replica id (`profile::replica_id`): what a close writes to `closed`, and what `Ctrl+Shift+T`
+    /// matches. Persisted, unlike the journal's per-launch actor.
+    replica: u64,
     /// Ids for nodes made while there is no journal (unit tests, a failed
     /// open): this launch's own actor, so they parse as store ids.
     fallback_ids: node_store::NodeIdFallback,
@@ -576,6 +579,7 @@ impl Default for App {
             drop_batch: 0,
             view_mode: ViewMode::Item,
             journal: None,
+            replica: profile::replica_id(),
             fallback_ids: node_store::NodeIdFallback::default(),
             writes: session_sync::PendingWrites::default(),
             mirror: mirror::Mirror::default(),

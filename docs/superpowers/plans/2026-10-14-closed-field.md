@@ -1,20 +1,21 @@
 # Closed Field Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **Review fixes (2026-10-14).** The code blocks below are as first implemented. Where they differ, the spec's "Review fixes" section governs: `closed` holds the closing replica's persisted id (not a Bool; `Ctrl+Shift+T` matches it, not the stamp's actor), `apply_visibility` compares with `App.nodes` only, `evict_closed` waits for pending `closed_flags`, and `close_node` aborts when its flush leaves a kept node uncreated.
 
 **Goal:** Closing a node sets one document flag, `closed`, on the closed root. The node keeps its id, its group, its links and every field. Its subtree is hidden in place, and reopening clears the flag. Recently Closed becomes a query over the document. The per-replica snapshot list goes away: `LocalState.closed`, `ClosedEntry` history, `record_closed`, `restore_closed` and `touch_backing`. Duplicate keeps a pure snapshot path in a new `duplicate.rs`.
 
 **Architecture:**
-- **Store.** Add `field::CLOSED = 23`, a Bool on every kind, and `Node::closed()`.
+- **Store.** Add `field::CLOSED = 23`, a replica-id register (`FieldType::Replica`, 0 or absent = open) on every kind, and `Node::closed()`.
   - `Doc::placement` answers `Shown(group)` or `Hidden`. `Doc::is_shown`, `Doc::shown`, `Doc::shown_level` and `Doc::closed_roots` build on it.
   - `Node::is_live` stays the commit gate. Display and export use *shown*.
 - **Sync.** `RemoteChange` becomes three-state: `Remote::{Shown, Hidden, Deleted}`.
   - A hide path (`hide_node`) is separate from the delete path (`remove_remotely_deleted`). It takes the node out of `App.nodes`, `node_order`, the layout and the mirror. It parks the node's personal state (`LocalNode`) in a new `App.hidden_local`. It never re-parents, deletes links or releases files.
   - Both paths share one primitive, `unshow`, which `drop_tab` and `drop_node` also use.
   - A shared `leave_hidden(root)` moves the current level out of a hidden subtree.
-- **Verbs.** `close_node` flushes the drawn position and the typed text into the document. It deletes the members that cannot come back. It queues `closed = true` on the root and hides the subtree locally, then saves and evicts.
-  - `reopen_node` queues `closed = false`, plus a re-stamp of the closed roots nested directly under the node. After every successful commit, a *visibility pass* shows or hides what the commit's flags and moves changed. That is what materializes a reopen.
-  - `Ctrl+Shift+T` reopens the newest root this replica closed. The popup lists `closed_roots()`.
+- **Verbs.** `close_node` flushes the drawn position and the typed text into the document. It deletes the members that cannot come back. It queues `closed = <this replica's id>` on the root and hides the subtree locally, then saves and evicts.
+  - `reopen_node` queues `closed = 0`, plus a re-stamp of the closed roots nested directly under the node (each keeps its own value). After every successful commit, a *visibility pass* shows or hides what the commit's flags and moves changed. That is what materializes a reopen.
+  - `Ctrl+Shift+T` reopens the newest root whose `closed` value is this replica's persisted id (`profile::replica_id`). The popup lists `closed_roots()`.
 - **Eviction.** `evict_closed` deletes the whole subtree of every root past `MAX_CLOSED`. It runs after a local close, after remote ops are applied, and at load.
 - **Edges.** `App::opened_from(id)` is the one reader of the `opened-from` edge. Links stay in the mirror and are drawn only when both ends are live cards. A Default jar never sits in a group: `ensure_default_jar` repairs it, hidden ones included.
 
@@ -46,7 +47,7 @@
   - `store::model::Placement { Shown(Option<NodeId>), Hidden }`. Do not confuse it with `fetched::Placement`, a struct for where a new card goes; the two live in different modules.
   - `session_sync::Remote<T> { Shown(T), Hidden, Deleted }`.
   - `App.hidden_local: HashMap<String, LocalNode>`.
-  - `PendingWrites.closed_flags: Vec<(NodeId, bool)>`.
+  - `PendingWrites.closed_flags: Vec<(NodeId, u64)>` (node, replica id; 0 reopens).
   - New `App` methods: `unshow`, `hide_node`, `leave_hidden`, `forget_deleted`, `local_node`, `keep_hidden_local`, `reopen_node`, `evict_closed` and `opened_from`.
   - The new gate stage is `gate closed`, in `crates/gate/src/closed.rs`.
   - The new debug verb is `REOPENNODE id`.
@@ -56,8 +57,8 @@
 
 - **D1. `placement` counts any closed ancestor, group or not.** The spec says "a group that is closed". Only a group has members, and `with_descendants` (the remote change set) walks every raw `group` edge alike, so this is the same set. One walk serves both.
 - **D2. A Link node is always shown when live.** `Doc::is_shown` skips `placement` for `Kind::Link`. The mirror must keep every live link (decision 9: `links_naming` must still find it for eviction), and a link stored with a group under a closed node would otherwise leave the mirror. Drawing already requires both ends to be live cards at the level (`level.rs:170-177`).
-- **D3. The hide path does not clear `wakes_in_flight`.** Decision 3 lists it. A waking tab is in `nodes` and `spawning`. When the wake lands it finds no node, saves and returns (`spawn_result.rs:46-58`), and that landing consumes the entry. Clearing the entry earlier would make the landing treat the tab as a fresh spawn and re-insert it.
-  - A tab mid-respawn has no `nodes` entry. It is parked as `Remote::Hidden` in `remote_in_flight` (decision 3's "third state"), and `land_remote_in_flight` hides it once it lands.
+- **D3. The hide path of a waking tab parks `Remote::Hidden` and ends the wake (revised by review fix 2).** A waking tab is in `nodes` and `spawning`. `hide_node` drops the placeholder, parks `Remote::Hidden` and removes the id from `wakes_in_flight`, so the landing is an ordinary spawn that applies the parked change (hides it, or shows it when a reopen replaced the `Hidden` with a `Shown`). Originally the entry stayed and the landing, finding no node, only saved: a reopen before then left the tab invisible.
+  - A tab mid-respawn has no `nodes` entry. It is parked the same way (decision 3's "third state"), and `land_remote_in_flight` hides it once it lands.
 - **D4. `leave_hidden(root)` only moves the level.** Selection, hover, drag, a link in progress, `focused`, `viewed_image` and `split_tab` are per-id state. `unshow` clears them for each hidden id (it absorbs the `drop_tab` and `remove_remotely_deleted` resets), and `forget_id` clears the gestures. Putting them in `leave_hidden` as well would clear them twice.
   - The level falls to `Doc::shown_level`, the nearest shown ancestor by raw `group`. That one function also serves the restore fallback of `LocalState.current_group`.
 - **D5. `hidden_local` is cleared by `forget_id`, not by a `NOT_FORGOTTEN` excuse.** `hide_node` inserts its entry after `unshow` (which runs `forget_id`), so a hide keeps it. Every permanent removal still drops it, because every permanent removal runs `forget_id`. `forget_deleted` is then just `release_backing` plus `forget_id`.

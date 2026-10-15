@@ -387,10 +387,11 @@ pub(crate) struct PendingWrites {
     /// Local group moves the next save commits as `Move`s, by node: the target group, `None` for the top level.
     /// Cleared by a successful commit.
     pub(crate) pending_moves: BTreeMap<NodeId, Option<NodeId>>,
-    /// `closed` writes from Close and Reopen (spec decisions 1 and 7), in the order they were made: a reopen's
-    /// re-stamps of nested roots must commit in their old relative order, which `pending`'s key order would lose.
+    /// `closed` writes from Close and Reopen (spec decisions 1 and 7) as `(node, replica id)`, 0 to reopen, in the
+    /// order they were made: a reopen's re-stamps of nested roots (each keeps its closer) must commit in their old
+    /// relative order, which `pending`'s key order would lose.
     /// Each commits as one `Set` per entry, after the other sets; a node the document doesn't hold live is skipped.
-    pub(crate) closed_flags: Vec<(NodeId, bool)>,
+    pub(crate) closed_flags: Vec<(NodeId, u64)>,
     /// Another replica's text for a note being typed in, held back from its mirror and box until the blur
     /// (`end_note_edit`, 2b-4 Ruling 7), by node. Dropped when this replica commits its own text after it.
     pub(crate) held_text: HashMap<String, String>,
@@ -789,7 +790,9 @@ impl App {
             .filter_map(|id| {
                 let node = doc.nodes.get(&id).filter(|n| n.is_live() && n.kind() != Kind::Link)?;
                 let key = id.to_string();
-                let here = self.nodes.contains_key(&key) || self.spawns.spawning.contains_key(&key);
+                // `here` is the graph's: a tab still spawning or waking has no `nodes` entry (or a hidden one's was
+                // dropped), and its landing reads the parked change (`remote_in_flight`), which a show replaces.
+                let here = self.nodes.contains_key(&key);
                 match (doc.is_shown(id), here) {
                     (true, false) => Some((id, Remote::Shown(Snapshot::of(doc, id, node)))),
                     (false, true) => Some((id, Remote::Hidden)),
@@ -902,13 +905,14 @@ impl App {
 
     /// Hides `id` (spec decision 3): out of `nodes`, `node_order`, the layout and the mirror, its engine unloaded
     /// (`unshow`), its personal state kept in `hidden_local` for a reopen. Nothing in the document changes: no
-    /// re-parent, no link delete, no backing-file release. A tab mid-respawn (in `spawning`, not in `nodes`) is
-    /// parked as `Remote::Hidden` and hidden when it lands (plan D3); a waking one is hidden here and its landing,
-    /// finding no node, only saves (`spawn_result.rs`).
+    /// re-parent, no link delete, no backing-file release. A tab whose spawn is in flight (in `spawning`: a respawn,
+    /// or a wake, whose placeholder is dropped here) is parked as `Remote::Hidden` and hidden when it lands (plan D3).
+    /// A wake stops being one (`wakes_in_flight`), so its landing is an ordinary spawn that applies the parked change:
+    /// a reopen before then replaces the `Hidden` with a `Shown` (`materialize`), and the tab shows when it lands.
     pub(crate) fn hide_node(&mut self, id: &str) {
-        if self.spawns.spawning.contains_key(id) && !self.nodes.contains_key(id) {
+        if self.spawns.spawning.contains_key(id) {
             self.spawns.remote_in_flight.insert(id.to_owned(), Remote::Hidden);
-            return;
+            self.spawns.wakes_in_flight.remove(id);
         }
         let Some(node) = self.nodes.get(id) else { return };
         // A note comes back idle: the box it was typed in is gone, and its text was committed.
@@ -1417,9 +1421,9 @@ impl App {
                 };
                 ops.push(OpBody::Set { node, field: no, enc });
             }
-            for &(node, closed) in &self.writes.closed_flags {
+            for &(node, closer) in &self.writes.closed_flags {
                 if editable(&node) {
-                    let enc = encode_field(field::CLOSED, &FieldValue::Bool(closed));
+                    let enc = encode_field(field::CLOSED, &FieldValue::Replica(closer));
                     ops.push(OpBody::Set { node, field: field::CLOSED, enc });
                 }
             }

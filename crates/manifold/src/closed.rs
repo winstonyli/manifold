@@ -1,7 +1,7 @@
 //! Recently Closed: close, reopen and eviction over the document's `closed` field.
 
 use super::*;
-use crate::store::model::{Kind, Stamp};
+use crate::store::model::{Kind, Placement, Stamp};
 
 /// How many roots the history keeps before `evict_closed` deletes the oldest, like a browser's own bounded
 /// "Recently closed" list.
@@ -69,7 +69,8 @@ impl App {
         }
         self.commit_note_buffers();
         // A node created this tick has no snapshot yet and its `closed` flag would be dropped as not editable (the
-        // hide below would then lose it): flush the pending creates first.
+        // hide below would then lose it): flush the pending creates first. A save that fails leaves them pending
+        // (checked below, before anything is hidden).
         if !self.writes.pending_creates.is_empty() {
             self.save_session();
         }
@@ -91,19 +92,26 @@ impl App {
             |m| self.is_container(&m.to_string()),
         );
         let subtree: Vec<String> = std::iter::once(root).chain(members).map(|n| n.to_string()).collect();
+        let (kept, gone): (Vec<String>, Vec<String>) =
+            subtree.into_iter().partition(|key| key == id || self.restorable(key));
+        // A kept node the flush could not create has no document entry: its `closed` write would be dropped as not
+        // editable and the hide would lose the node for good. Leave everything shown instead.
+        let uncreated = |key: &String| key.parse().is_ok_and(|n| self.writes.pending_creates.contains(&n));
+        if kept.iter().any(uncreated) {
+            self.queue_toast("Couldn't save the session, so nothing was closed".to_string());
+            return;
+        }
         // Where each card was drawn becomes its document pos (2b-4 Ruling 10: a reopen lands where it was shown).
-        for key in &subtree {
+        for key in &kept {
             let carries_pos = Kind::from_type(self.mirror.ty(key)).fields().contains(&field::POS);
             if carries_pos && self.layout.contains_key(key) {
                 self.edit_pos(key, Some(self.layout_pos(key)));
             }
         }
-        let (kept, gone): (Vec<String>, Vec<String>) =
-            subtree.into_iter().partition(|key| key == id || self.restorable(key));
         for key in &gone {
             self.remove_node(key);
         }
-        self.writes.closed_flags.push((root, true));
+        self.writes.closed_flags.push((root, self.replica));
         let tabs: Vec<String> = kept
             .iter()
             .filter(|k| self.nodes.get(*k).is_some_and(|n| n.runtime.saved_tab().is_some()))
@@ -141,37 +149,43 @@ impl App {
             }
             false
         };
-        let mut nested: Vec<(Stamp, store::model::NodeId)> = doc
+        // Each keeps the replica that closed it: a re-stamp moves it in the history, not to the reopener.
+        let mut nested: Vec<(Stamp, store::model::NodeId, u64)> = doc
             .with_descendants(std::collections::BTreeSet::from([id]))
             .into_iter()
             .filter(|&d| d != id && directly_under(d))
             .filter_map(|d| {
                 let n = doc.nodes.get(&d).filter(|n| n.is_live() && n.closed())?;
-                Some((n.fields.get(&field::CLOSED)?.stamp, d))
+                Some((n.fields.get(&field::CLOSED)?.stamp, d, n.closer()))
             })
             .collect();
         nested.sort();
-        self.writes.closed_flags.push((id, false));
-        self.writes.closed_flags.extend(nested.into_iter().map(|(_, d)| (d, true)));
+        self.writes.closed_flags.push((id, 0));
+        self.writes.closed_flags.extend(nested.into_iter().map(|(_, d, closer)| (d, closer)));
         self.save_session();
-        let key = id.to_string();
-        let reopened =
-            self.journal.as_ref().is_some_and(|j| j.doc().nodes.get(&id).is_some_and(|n| n.is_live() && !n.closed()));
-        if !reopened {
+        self.evict_closed();
+        let Some(doc) = self.journal.as_ref().map(|j| j.doc()) else { return };
+        if !doc.nodes.get(&id).is_some_and(|n| n.is_live() && !n.closed()) {
             return;
         }
-        if !self.nodes.contains_key(&key) && !self.spawns.spawning.contains_key(&key) {
-            self.queue_toast("Reopened inside a closed group: it shows when that group is reopened".to_string());
-        } else if self.mirror.group(&key) != self.current_group.as_deref() {
-            let level = match self.mirror.group(&key) {
-                None => "the top level".to_string(),
-                Some(g) => {
-                    let shown = crate::names::display_name(self.mirror.name(g), crate::names::UNTITLED);
-                    let shown = crate::names::to_plain(&shown);
-                    format!("“{shown}”")
-                }
-            };
-            self.queue_toast(format!("Reopened in {level}"));
+        // Where the document shows it, not where the graph does: a tab still spawning or waking has no `nodes` entry.
+        match doc.placement(id) {
+            Placement::Hidden => {
+                self.queue_toast("Reopened inside a closed group: it shows when that group is reopened".to_string());
+            }
+            Placement::Shown(group) if group.map(|g| g.to_string()) != self.current_group => {
+                let level = match group {
+                    None => "the top level".to_string(),
+                    Some(g) => {
+                        let shown =
+                            crate::names::display_name(self.mirror.name(&g.to_string()), crate::names::UNTITLED);
+                        let shown = crate::names::to_plain(&shown);
+                        format!("“{shown}”")
+                    }
+                };
+                self.queue_toast(format!("Reopened in {level}"));
+            }
+            Placement::Shown(_) => {}
         }
     }
 
@@ -179,6 +193,12 @@ impl App {
     /// included, so nothing under it resurfaces. Idempotent across replicas; the only place `closed` becomes
     /// `deleted`. After a local close, after remote ops (`apply_remote`) and at load.
     pub(crate) fn evict_closed(&mut self) {
+        // The document lags this replica's own queued close and reopen writes (`closed_flags`): counting it now could
+        // evict the very node being reopened. The save that commits them evicts afterwards (`apply_visibility`'s
+        // `apply_remote`, or the caller's own call).
+        if !self.writes.closed_flags.is_empty() {
+            return;
+        }
         let Some(doc) = self.journal.as_ref().map(|j| j.doc()) else { return };
         let roots = doc.closed_roots();
         if roots.len() <= MAX_CLOSED {
@@ -228,8 +248,8 @@ mod tests {
         assert!(app.save_session());
         let link: Vec<NodeId> = app.mirror.link_ids().collect();
         app.close_node(&g);
-        assert_eq!(stored(&app, &g, field::CLOSED), FieldValue::Bool(true));
-        assert_eq!(stored(&app, &inner, field::CLOSED), FieldValue::Bool(false), "only the root is flagged");
+        assert_eq!(stored(&app, &g, field::CLOSED), FieldValue::Replica(app.replica));
+        assert_eq!(stored(&app, &inner, field::CLOSED), FieldValue::Replica(0), "only the root is flagged");
         assert!(!app.nodes.contains_key(&g) && !app.nodes.contains_key(&inner));
         assert_eq!(closed_ids(&app), std::slice::from_ref(&g));
         app.reopen_node(g.parse().unwrap());
@@ -448,7 +468,7 @@ mod tests {
         assert!(app.save_session());
         app.close_node(&mine);
         let mut other = store::journal::Journal::open(&path, store::model::ActorId(2)).unwrap();
-        crate::session_sync::tests::remote_set(&mut other, &theirs, field::CLOSED, FieldValue::Bool(true));
+        crate::session_sync::tests::remote_set(&mut other, &theirs, field::CLOSED, FieldValue::Replica(99));
         assert!(app.save_session());
         assert_eq!(closed_ids(&app)[0], theirs, "theirs is newest");
         app.reopen_closed_shortcut();
@@ -464,7 +484,7 @@ mod tests {
         // Another replica closes all MAX_CLOSED + 1 notes; A closes none, it only receives them.
         let mut other = store::journal::Journal::open(&path, store::model::ActorId(2)).unwrap();
         for n in &notes {
-            crate::session_sync::tests::remote_set(&mut other, n, field::CLOSED, FieldValue::Bool(true));
+            crate::session_sync::tests::remote_set(&mut other, n, field::CLOSED, FieldValue::Replica(99));
         }
         assert!(a.save_session());
         let doc = a.journal.as_ref().unwrap().doc();
@@ -488,7 +508,7 @@ mod tests {
         // B opens now, so it still sees notes[0] closed and has not seen A's 21st close.
         let mut b = store::journal::Journal::open(&path, store::model::ActorId(2)).unwrap();
         a.close_node(&notes[MAX_CLOSED]); // A's 21st close evicts notes[0] ...
-        crate::session_sync::tests::remote_set(&mut b, &notes[0], field::CLOSED, FieldValue::Bool(false)); // ... B's stale reopen.
+        crate::session_sync::tests::remote_set(&mut b, &notes[0], field::CLOSED, FieldValue::Replica(0)); // ... B's stale reopen.
         assert!(a.save_session());
         assert!(a.journal.as_ref().unwrap().doc().nodes[&notes[0].parse().unwrap()].deleted, "Delete wins");
         assert!(!a.nodes.contains_key(&notes[0]));
@@ -520,7 +540,7 @@ mod tests {
         assert!(app.save_session());
         let default = app.default_jar().unwrap();
         let mut other = store::journal::Journal::open(&path, store::model::ActorId(2)).unwrap();
-        crate::session_sync::tests::remote_set(&mut other, &g, field::CLOSED, FieldValue::Bool(true));
+        crate::session_sync::tests::remote_set(&mut other, &g, field::CLOSED, FieldValue::Replica(99));
         let op = store::ops::OpBody::Move { node: default, group: Some(g.parse().unwrap()) };
         other.begin().unwrap().commit(vec![op]).unwrap();
         assert!(app.save_session());
@@ -529,5 +549,112 @@ mod tests {
         assert_eq!(doc.nodes[&default].group, None);
         let defaults = doc.live().filter(|(_, n)| n.get(field::IS_DEFAULT) == FieldValue::Bool(true)).count();
         assert_eq!(defaults, 1, "no second Default was made");
+    }
+
+    /// Defect 1: the replica id outlives a launch (the actor does not), so `Ctrl+Shift+T` finds, after a restart,
+    /// what this installation closed -- and only that.
+    #[test]
+    fn a_close_survives_an_app_restart_with_the_same_replica_id_and_the_shortcut_finds_it() {
+        let path = store::testutil::temp_dir("closed-restart").join("session.mnf");
+        let mut first = app_on(&path, 1);
+        let (closed, kept) = (note(&mut first, "closed"), note(&mut first, "kept"));
+        assert!(first.save_session());
+        first.close_node(&closed);
+        assert_eq!(stored(&first, &closed, field::CLOSED), FieldValue::Replica(first.replica));
+        let replica = first.replica;
+        drop(first);
+
+        // Another installation (a fresh replica id) opens the file: the close is not its own.
+        let mut stranger = app_on(&path, 2);
+        assert!(stranger.restore_session());
+        stranger.reopen_closed_shortcut();
+        assert!(!stranger.nodes.contains_key(&closed), "not this replica's close");
+        drop(stranger);
+
+        // The same installation, a new launch (new actor, same replica id).
+        let mut second = app_on(&path, 3);
+        second.replica = replica;
+        assert!(second.restore_session());
+        assert!(second.nodes.contains_key(&kept) && !second.nodes.contains_key(&closed));
+        second.reopen_closed_shortcut();
+        assert!(second.nodes.contains_key(&closed), "found after the restart");
+        assert_eq!(stored(&second, &closed, field::CLOSED), FieldValue::Replica(0));
+    }
+
+    /// Defect 1: reopening a group re-stamps the roots nested under it as the replicas that closed them, not as the
+    /// reopener.
+    #[test]
+    fn a_reopen_keeps_each_nested_roots_original_closer() {
+        let path = store::testutil::temp_dir("closed-restamp-closer").join("session.mnf");
+        let mut app = app_on(&path, 1);
+        let g = add_group(&mut app, "G");
+        let (a, b) = (note(&mut app, "a"), note(&mut app, "b"));
+        app.edit_group(&a, Some(g.clone()));
+        app.edit_group(&b, Some(g.clone()));
+        assert!(app.save_session());
+        let mut other = store::journal::Journal::open(&path, store::model::ActorId(2)).unwrap();
+        crate::session_sync::tests::remote_set(&mut other, &a, field::CLOSED, FieldValue::Replica(99));
+        assert!(app.save_session());
+        app.close_node(&b);
+        app.close_node(&g);
+        app.reopen_node(g.parse().unwrap());
+        assert_eq!(stored(&app, &a, field::CLOSED), FieldValue::Replica(99), "the other replica's close stays its");
+        assert_eq!(stored(&app, &b, field::CLOSED), FieldValue::Replica(app.replica));
+        assert_eq!(stored(&app, &g, field::CLOSED), FieldValue::Replica(0));
+    }
+
+    /// Defect 3: the save that commits a reopen may first apply remote ops; the eviction they trigger must not count
+    /// the node being reopened as still closed.
+    #[test]
+    fn a_reopen_is_not_evicted_by_a_remote_close_arriving_in_the_same_save() {
+        let path = store::testutil::temp_dir("closed-reopen-remote-evict").join("session.mnf");
+        let mut app = app_on(&path, 1);
+        let notes: Vec<String> = (0..=MAX_CLOSED).map(|i| note(&mut app, &format!("n{i}"))).collect();
+        assert!(app.save_session());
+        for n in &notes[..MAX_CLOSED] {
+            app.close_node(n);
+        }
+        assert_eq!(closed_ids(&app).len(), MAX_CLOSED);
+        let mut other = store::journal::Journal::open(&path, store::model::ActorId(2)).unwrap();
+        crate::session_sync::tests::remote_set(&mut other, &notes[MAX_CLOSED], field::CLOSED, FieldValue::Replica(99));
+        // The oldest close is reopened; the save applies the remote close first (21 closed roots in the document).
+        app.reopen_node(notes[0].parse().unwrap());
+        let doc = app.journal.as_ref().unwrap().doc();
+        assert!(!doc.nodes[&notes[0].parse().unwrap()].deleted, "the reopened node was not evicted");
+        assert!(app.nodes.contains_key(&notes[0]));
+        assert_eq!(closed_ids(&app).len(), MAX_CLOSED, "19 of ours and the remote one");
+        assert!(closed_ids(&app).contains(&notes[MAX_CLOSED]));
+    }
+
+    /// Defect 4: a close whose flush of the pending creates fails leaves the node shown and unclosed, and a later
+    /// save creates it.
+    #[test]
+    fn a_close_aborts_when_the_flush_of_pending_creates_fails() {
+        let path = store::testutil::temp_dir("closed-flush-fails").join("session.mnf");
+        let mut app = app_on(&path, 1);
+        let keep = note(&mut app, "other");
+        assert!(app.save_session());
+        let fresh = note(&mut app, "fresh");
+        let fresh_id: NodeId = fresh.parse().unwrap();
+        assert!(app.writes.pending_creates.contains(&fresh_id), "created this tick, not saved");
+        let set_readonly = |readonly: bool| {
+            let mut perms = std::fs::metadata(&path).unwrap().permissions();
+            #[allow(
+                clippy::permissions_set_readonly_false,
+                reason = "the Windows read-only attribute makes the append fail; a temp file this test owns"
+            )]
+            perms.set_readonly(readonly);
+            std::fs::set_permissions(&path, perms).unwrap();
+        };
+        set_readonly(true);
+        app.close_node(&fresh);
+        set_readonly(false);
+        assert!(app.nodes.contains_key(&fresh), "still shown");
+        assert!(app.writes.closed_flags.is_empty(), "no close queued");
+        assert!(app.writes.pending_creates.contains(&fresh_id), "still to be created");
+        assert!(app.save_session());
+        let doc = app.journal.as_ref().unwrap().doc();
+        assert!(doc.nodes[&fresh_id].is_live() && !doc.nodes[&fresh_id].closed());
+        assert!(app.nodes.contains_key(&keep));
     }
 }

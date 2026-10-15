@@ -208,6 +208,8 @@ pub enum FieldType {
     Bool,
     /// An `VIEW_KINDS` code.
     ViewCode,
+    /// A replica id (`profile::replica_id`): a nonzero `u64` varint; absent or 0 is none.
+    Replica,
 }
 
 #[derive(Debug)]
@@ -247,9 +249,10 @@ pub mod field {
     pub const TO: u32 = 21;
     /// A jar that is the built-in Default: exactly one live jar has it once `App::ensure_default_jar` has run.
     pub const IS_DEFAULT: u32 = 22;
-    /// Set on the root of a close (spec 2026-10-14-closed-field-design.md): the node and everything under it are
-    /// hidden in place, and the node is a Recently Closed entry (`Doc::closed_roots`). Only the close and reopen
-    /// verbs write it.
+    /// Set on the root of a close (spec 2026-10-14-closed-field-design.md) to the id of the replica that closed it
+    /// (`profile::replica_id`, persisted: it outlives a launch, unlike the actor); absent or 0 is open. The node and
+    /// everything under it are hidden in place, and the node is a Recently Closed entry (`Doc::closed_roots`). Only
+    /// the close and reopen verbs write it.
     pub const CLOSED: u32 = 23;
 }
 
@@ -273,7 +276,7 @@ pub static FIELDS: [FieldDef; 18] = [
     FieldDef { no: field::FROM, name: "from", ty: FieldType::Id },
     FieldDef { no: field::TO, name: "to", ty: FieldType::Id },
     FieldDef { no: field::IS_DEFAULT, name: "is_default", ty: FieldType::Bool },
-    FieldDef { no: field::CLOSED, name: "closed", ty: FieldType::Bool },
+    FieldDef { no: field::CLOSED, name: "closed", ty: FieldType::Replica },
 ];
 
 /// Retired: a tab's `jar_set` and a group's `default_jar`, replaced by the `jar` edge (jars-as-cards spec). Never
@@ -297,6 +300,7 @@ pub enum FieldValue {
     Str(String),
     Bool(bool),
     ViewCode(u64),
+    Replica(u64),
 }
 
 impl FieldValue {
@@ -309,6 +313,7 @@ impl FieldValue {
             FieldType::Str => FieldValue::Str(String::new()),
             FieldType::Bool => FieldValue::Bool(false),
             FieldType::ViewCode => FieldValue::ViewCode(0),
+            FieldType::Replica => FieldValue::Replica(0),
         }
     }
 }
@@ -342,13 +347,14 @@ pub fn encode_field_into(out: &mut Vec<u8>, no: u32, value: &FieldValue) {
         FieldValue::Id(Some(id)) => w.message(no, &id_message(*id)),
         FieldValue::Str(s) if !s.is_empty() => w.str(no, s),
         FieldValue::Bool(true) => w.varint(no, 1),
-        FieldValue::ViewCode(code) if *code != 0 => w.varint(no, *code),
+        FieldValue::ViewCode(code) | FieldValue::Replica(code) if *code != 0 => w.varint(no, *code),
         // The empty or zero value of each type is "absent": nothing is written.
         FieldValue::Color(None)
         | FieldValue::Id(None)
         | FieldValue::Str(_)
         | FieldValue::Bool(false)
-        | FieldValue::ViewCode(_) => {}
+        | FieldValue::ViewCode(_)
+        | FieldValue::Replica(_) => {}
     }
     *out = w.into_bytes();
 }
@@ -406,6 +412,7 @@ pub fn decode_field(def: &FieldDef, encoded: &[u8]) -> Result<FieldValue, TlvErr
             FieldType::Str => FieldValue::Str(v.str()?.to_owned()),
             FieldType::Bool => FieldValue::Bool(v.bool()?),
             FieldType::ViewCode => FieldValue::ViewCode(v.u64()?),
+            FieldType::Replica => FieldValue::Replica(v.u64()?),
         };
     }
     Ok(value)
@@ -472,7 +479,15 @@ impl Node {
 
     /// The root of a close: `closed` is set (spec decision 1). Its descendants keep their own `closed` as it was.
     pub fn closed(&self) -> bool {
-        self.get(field::CLOSED) == FieldValue::Bool(true)
+        self.closer() != 0
+    }
+
+    /// The replica that closed this node (`field::CLOSED`); 0 when it is open.
+    pub fn closer(&self) -> u64 {
+        match self.get(field::CLOSED) {
+            FieldValue::Replica(replica) => replica,
+            _ => 0,
+        }
     }
 
     /// A live, groupless node of a known `kind`.
@@ -847,7 +862,7 @@ mod tests {
             node.group = group.map(id);
             if closed {
                 let stamp = Stamp { hlc: Hlc { ms: c, logical: 0 }, actor: ActorId(1) };
-                let enc = encode_field(field::CLOSED, &FieldValue::Bool(true));
+                let enc = encode_field(field::CLOSED, &FieldValue::Replica(7));
                 node.fields.insert(field::CLOSED, Reg { stamp, enc });
             }
             doc.nodes.insert(id(c), node);
@@ -908,7 +923,7 @@ mod tests {
         assert_eq!(ids(&doc), [id(4), id(2), id(1)]);
         doc.nodes.get_mut(&id(4)).unwrap().deleted = true;
         let reg = doc.nodes.get_mut(&id(2)).unwrap().fields.get_mut(&field::CLOSED).unwrap();
-        reg.enc = encode_field(field::CLOSED, &FieldValue::Bool(false));
+        reg.enc = encode_field(field::CLOSED, &FieldValue::Replica(0));
         assert_eq!(ids(&doc), [id(3), id(1)], "clearing the outer one makes the nested one an entry");
     }
 
@@ -916,6 +931,6 @@ mod tests {
     fn closed_is_one_more_generic_field() {
         assert!(GENERIC.contains(&field::CLOSED));
         assert!(TYPES.iter().all(|(_, _, fields)| fields.contains(&field::CLOSED)));
-        assert_eq!(field_def(field::CLOSED).map(|d| (d.name, d.ty)), Some(("closed", FieldType::Bool)));
+        assert_eq!(field_def(field::CLOSED).map(|d| (d.name, d.ty)), Some(("closed", FieldType::Replica)));
     }
 }

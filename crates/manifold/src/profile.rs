@@ -1,11 +1,11 @@
 //! `%APPDATA%\manifold`, the one folder the app keeps its files in:
-//! `settings.json`, `bookmarks.json`, `history.json`, `tab-history.json`, the session store,
+//! `settings.json`, `replica` (`replica_id`), `bookmarks.json`, `history.json`, `tab-history.json`, the session store,
 //! the named sessions, fetched content (`content_dir`) and CEF's throwaway
 //! cache dirs, under `cef-cache`. Every path into it starts from `dir()`
 //! or, for engines, `view_data_dir()`. The one user folder outside it,
 //! the screenshot folder, comes from `pictures_dir()`.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// `None` when there is no `%APPDATA%`, and always under `cargo test`: a
 /// test must never read or write the real profile, and loading a corrupt
@@ -57,6 +57,41 @@ pub fn cef_cache_dir() -> Option<PathBuf> {
     Some(dir()?.join("cef-cache"))
 }
 
+/// This profile's replica id: a random nonzero `u64`, generated once and kept in the `replica` file of `dir()`, so it
+/// names this installation across launches (the `closed` field's value, which `Ctrl+Shift+T` matches to find what
+/// this replica closed; the per-launch `ActorId` cannot). Two instances on one profile are one replica. Without a
+/// profile folder (and always under `cargo test`, like `dir()`) it is fresh per call: a test owner is its own
+/// replica.
+pub fn replica_id() -> u64 {
+    match dir() {
+        Some(dir) => replica_id_in(&dir),
+        None => random_replica(),
+    }
+}
+
+fn random_replica() -> u64 {
+    loop {
+        let id = getrandom::u64().expect("the OS random source failed");
+        if id != 0 {
+            return id;
+        }
+    }
+}
+
+/// `replica_id` for the profile folder `dir`: the id its `replica` file holds (16 hex digits), else a new one,
+/// written there (a write that fails leaves this launch's id unsaved, as a profile that cannot be written is).
+fn replica_id_in(dir: &Path) -> u64 {
+    let file = dir.join("replica");
+    if let Some(id) = std::fs::read_to_string(&file).ok().and_then(|s| u64::from_str_radix(s.trim(), 16).ok()) {
+        if id != 0 {
+            return id;
+        }
+    }
+    let id = random_replica();
+    let _ = std::fs::create_dir_all(dir).and_then(|()| std::fs::write(&file, format!("{id:016x}\n")));
+    id
+}
+
 /// Where `FaviconFetcher` keeps each origin's favicon between launches.
 /// `None` like `dir()`.
 pub fn favicon_cache_dir() -> Option<PathBuf> {
@@ -92,6 +127,17 @@ pub fn view_data_dir() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use std::path::Path;
+
+    #[test]
+    fn the_replica_id_is_made_once_and_kept_in_the_profile() {
+        let dir = crate::store::testutil::temp_dir("profile-replica");
+        let first = super::replica_id_in(&dir);
+        assert_ne!(first, 0);
+        assert_eq!(super::replica_id_in(&dir), first, "the next launch reads it back");
+        std::fs::write(dir.join("replica"), "garbage").unwrap();
+        assert_ne!(super::replica_id_in(&dir), 0, "an unreadable file is replaced");
+        assert_ne!(super::replica_id(), super::replica_id(), "no profile (a test): fresh each call");
+    }
 
     #[test]
     fn tests_have_no_profile_dir() {

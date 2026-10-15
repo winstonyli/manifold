@@ -18,9 +18,13 @@ the flag.
 
 ## Decisions
 
-1. **A `closed` field.** Field 23, a Bool register on every node (add it to the `FIELDS` table and to every kind's
-   field list in `model.rs`), default false. Only the root of a close is flagged; its descendants keep their own
-   fields and are hidden by their position (decision 2). Only the close and reopen verbs write it.
+1. **A `closed` field.** Field 23, a replica-id register (`FieldType::Replica`, a `u64` varint) on every node (add it
+   to the `FIELDS` table and to every kind's field list in `model.rs`); absent or 0 is open, nonzero is the id of the
+   replica that closed the node (review fix 1). Only the root of a close is flagged; its descendants keep their own
+   fields and are hidden by their position (decision 2). Only the close and reopen verbs write it. The replica id is
+   a random nonzero `u64` generated once and kept in the profile folder (`profile::replica_id`, the `replica` file),
+   so it names the installation across launches; it is separate from the per-launch `ActorId` that stamps node and
+   op ids. Without a profile folder (every test) it is fresh per `App`.
 2. **Two predicates, not one.** `Node::is_live` keeps its meaning (typed and not deleted): it is the commit gate
    (`session_sync.rs:1276` queued Deletes, `:1285` `editable`, `:143/:152` `resolve_id` and `create_ops`), and a closed
    node must pass it or the reopen `Set`, the eviction Delete and the edges that name a closed node would be dropped
@@ -59,7 +63,7 @@ the flag.
    document node and is cancelled and removed. A group closes with its contents hidden in place (Cascade), nothing
    moved. The Default jar is never closed (the `close_node` guard stays). Tabs unload their engine and come back
    asleep.
-5. **History is derived.** The history is the nodes with `closed == true` that are not `Hidden` (a closed node under
+5. **History is derived.** The history is the nodes with `closed` set (nonzero) that are not `Hidden` (a closed node under
    another closed node is part of that node's entry, not its own), newest first by the `closed` register's own stamp
    (`Reg.stamp`, `model.rs:412`: `Doc::closed_roots() -> Vec<(NodeId, Stamp)>`, excluding Deleted nodes); the order
    is total and identical on every replica. `LocalState.closed`, `ClosedEntry`, `record_closed`, `closed_changed_at`, `restore_closed` and the
@@ -72,14 +76,15 @@ the flag.
    reopen concurrent with its eviction loses (Delete wins). Eviction is the only place `closed` becomes `deleted`.
    It also re-parents nothing: children outside the subtree whose `opened-from` edge names a Deleted node read the
    edge as none (the grandparent link is lost, as when a closed parent was Deleted before).
-7. **Reopen is un-close.** The shortcut and the Recently Closed popup set `closed` to false on the chosen root: same
+7. **Reopen is un-close.** The shortcut and the Recently Closed popup clear `closed` (to 0) on the chosen root: same
    ids, group, position, links, fields. If its group was Deleted it shows at the nearest shown ancestor; if its group
    is still closed it is restored but stays hidden with it, and a toast says so. Reopening a node G also re-stamps
-   every closed root nested directly under it (`Set closed = true` again), so they enter the history newest, in
+   every closed root nested directly under it (`Set closed` again, to each one's existing value, so the original
+   closer is kept), so they enter the history newest, in
    their old relative order; otherwise their old stamps would sort them oldest and a reopen at 20 roots would evict
    them at once with their whole subtree. "Undo" in this document means Reopen. It lands where it was, so the app
    reveals it (`reveal.rs`) when it is not at the current level. `Ctrl+Shift+T` reopens the newest root this replica
-   closed (the stamp's `actor`); this is a behaviour change from `shortcuts.rs:375`, which pops any entry, and the
+   closed (its `closed` value equals this replica's id, which survives a restart; the stamp's actor does not); this is a behaviour change from `shortcuts.rs:375`, which pops any entry, and the
    popup lists every closed root, any replica's.
 8. **Per-node local state.** The zoom, title, muted flag and live url that live in `doc.local` of a snapshot today
    (`LocalNode`, `local_state.rs`) are kept in the replica's local state keyed by node id, for closed roots and their
@@ -192,6 +197,22 @@ the flag.
 - Duplicate of a group with an unknown member, a jar and an outside link; session replacement deletes the old
   closed nodes; export skips them.
 - Gate stage `closed`, then `gate all LOG full`.
+
+## Review fixes (2026-10-14, after an adversarial review of the implementation)
+
+1. **Replica id, not actor** (decisions 1, 5, 7). `closed` held a Bool and `Ctrl+Shift+T` matched the stamp's actor,
+   which `ActorId::random()` regenerates every launch, so after a restart nothing matched; a reopen's re-stamp also
+   re-attributed nested roots to the reopener. Now `closed` holds the closing replica's persisted id and a re-stamp
+   rewrites each root's existing value.
+2. **Close or reopen mid-spawn.** `apply_visibility` compares with `App.nodes` only (a tab still spawning or waking
+   is not "here"), and `hide_node` of a node in `spawning` parks `Remote::Hidden` and ends its wake
+   (`wakes_in_flight`), so the landing is an ordinary spawn that applies the parked change. A reopen's `Shown`
+   replaces the `Hidden` (`materialize`), and `reopen_node` decides its toast from `Doc::placement`.
+3. **Eviction and pending writes.** `evict_closed` does nothing while `closed_flags` holds uncommitted writes (the
+   document lags them; counting it could evict the node being reopened). The save that commits them evicts, and
+   `reopen_node` calls it too.
+4. **Close with a failed flush.** `close_node` leaves everything shown, with a toast, when a node it would keep is
+   still in `pending_creates` after the flush save (a node with no document entry would lose the close and be gone).
 
 ## Decided and open
 

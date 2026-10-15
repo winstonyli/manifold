@@ -766,7 +766,7 @@ pub(crate) fn stored(app: &App, node: &str, no: u32) -> FieldValue {
 
 /// Another replica sets `closed` on `node` (true closes, false reopens).
 fn remote_close(other: &mut Journal, node: &str, closed: bool) {
-    remote_set(other, node, field::CLOSED, FieldValue::Bool(closed));
+    remote_set(other, node, field::CLOSED, FieldValue::Replica(if closed { 99 } else { 0 }));
 }
 
 #[test]
@@ -882,6 +882,64 @@ fn teardown_forgets_hidden_personal_state() {
         app.writes.pending_deletes.contains(&tab.parse().unwrap()),
         "the closed node is deleted with the session (D12)"
     );
+}
+
+/// Defect 2: a tab closed while its wake is in flight lands hidden; reopened before it lands, it shows when it does
+/// (the landing used to find no node, and the document showed a tab the graph lacked).
+#[test]
+fn closing_and_reopening_a_tab_while_it_wakes_shows_it_when_the_wake_lands() {
+    let path = temp_dir("sync-close-reopen-waking").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let tab = add(&mut app, Kind::Tab, sleeping_tab("https://a/", "A"));
+    let other = add(&mut app, Kind::Tab, sleeping_tab("https://b/", "B"));
+    assert!(app.save_session());
+    app.focus_tab(&tab);
+    assert!(app.spawns.spawning.contains_key(&tab), "waking");
+    app.close_node(&tab);
+    assert!(!app.nodes.contains_key(&tab));
+    let id: NodeId = tab.parse().unwrap();
+    app.reopen_node(id);
+    assert!(app.journal.as_ref().unwrap().doc().is_shown(id), "open in the document");
+    fail_spawns(&mut app);
+    assert!(app.nodes.contains_key(&tab), "shown once the wake landed");
+    assert!(app.nodes.contains_key(&other));
+    assert!(app.spawns.remote_in_flight.is_empty() && app.spawns.wakes_in_flight.is_empty());
+
+    // Closed and left closed: the landing hides it again, and the history holds it.
+    app.focus_tab(&other);
+    app.close_node(&other);
+    fail_spawns(&mut app);
+    assert!(!app.nodes.contains_key(&other));
+    assert!(app.journal.as_ref().unwrap().doc().nodes[&other.parse::<NodeId>().unwrap()].closed());
+}
+
+/// Defect 2: the same for a tab mid-respawn (no `nodes` entry), where the close parks `Remote::Hidden`: a reopen
+/// supersedes it instead of the landing hiding the reopened tab again.
+#[test]
+fn closing_and_reopening_a_tab_mid_respawn_is_not_hidden_again_by_the_landing() {
+    let path = temp_dir("sync-close-reopen-respawn").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let tab = add(&mut app, Kind::Tab, sleeping_tab("https://a/", "A"));
+    assert!(app.save_session());
+    app.nodes.remove(&tab).unwrap();
+    let spawn = crate::tabs::TabSpawn::new(
+        tab.clone(),
+        "https://a/".into(),
+        ViewKind::Servo,
+        egui::Vec2::ZERO,
+        SpawnPurpose::Respawn,
+        1.0,
+    );
+    app.respawn_tab(spawn);
+    assert!(app.spawns.spawning.contains_key(&tab) && !app.nodes.contains_key(&tab));
+    app.close_node(&tab);
+    assert!(matches!(app.spawns.remote_in_flight.get(&tab), Some(Remote::Hidden)), "parked hidden");
+    let id: NodeId = tab.parse().unwrap();
+    app.reopen_node(id);
+    assert!(matches!(app.spawns.remote_in_flight.get(&tab), Some(Remote::Shown(_))), "the reopen supersedes it");
+    fail_spawns(&mut app);
+    assert!(app.nodes.contains_key(&tab), "shown, not hidden again by the landing");
+    assert!(!app.journal.as_ref().unwrap().doc().nodes[&id].closed());
 }
 
 #[test]

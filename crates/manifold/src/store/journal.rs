@@ -856,11 +856,6 @@ impl Journal {
         &self.doc
     }
 
-    /// The actor this journal writes as: what `Ctrl+Shift+T` compares a `closed` stamp's actor with.
-    pub fn actor(&self) -> ActorId {
-        self.actor
-    }
-
     /// The session file this journal reads and writes.
     pub fn path(&self) -> &Path {
         &self.path

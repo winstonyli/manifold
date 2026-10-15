@@ -2,7 +2,8 @@
 //! "Testing"). One fresh profile seeded with a group holding a note, an outside note linked to the inner
 //! note, and 21 more notes with text. Instance A closes the group, reopens it (same ids, the link back), then two
 //! instances on the one profile close notes in turn: both list the same history, newest first, and when the 21st
-//! root is closed both evict the same oldest one.
+//! root is closed both evict the same oldest one. Two instances on one profile share its replica id (`replica` file),
+//! so they count as one replica: the stage drives reopens with `REOPENNODE`, which ignores who closed a node.
 //!
 //! A failing check does not stop the run; a runner error (a timeout, a launch failure) prints an `ERROR:` line, counts
 //! as a failure and ends the run early. Instances are killed on every exit path (`Instance`'s Drop plus the job).

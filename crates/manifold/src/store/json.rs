@@ -55,7 +55,8 @@ fn value_to_json(value: &FieldValue) -> Option<Value> {
         | FieldValue::Id(None)
         | FieldValue::Str(_)
         | FieldValue::Bool(false)
-        | FieldValue::ViewCode(_) => return None,
+        | FieldValue::ViewCode(_)
+        | FieldValue::Replica(_) => return None,
     })
 }
 
@@ -544,7 +545,7 @@ mod tests {
         let mut doc = Doc::new(DocId([0; 16]));
         let mut group = Node::typed(Kind::Group);
         let stamp = Stamp { hlc: Hlc { ms: 1, logical: 0 }, actor: ActorId(1) };
-        group.fields.insert(field::CLOSED, Reg { stamp, enc: encode_field(field::CLOSED, &FieldValue::Bool(true)) });
+        group.fields.insert(field::CLOSED, Reg { stamp, enc: encode_field(field::CLOSED, &FieldValue::Replica(7)) });
         doc.nodes.insert(id(1), group);
         let mut inside = Node::typed(Kind::Note);
         inside.group = Some(id(1));

@@ -590,6 +590,7 @@ mod tests {
             FieldType::Str => FieldValue::Str("s".into()),
             FieldType::Bool => FieldValue::Bool(true),
             FieldType::ViewCode => FieldValue::ViewCode(3),
+            FieldType::Replica => FieldValue::Replica(3),
         };
         let fields: Vec<u32> =
             Kind::Tab.fields().iter().copied().filter(|&no| no != field::PARENT && no != field::CLOSED).collect();
