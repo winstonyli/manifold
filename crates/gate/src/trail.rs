@@ -3,7 +3,7 @@
 //! served by this process (every page titled by its path). From A, NEWTAB opens tab B (parented to the focused tab) at
 //! the home page /b1; B goes to /b2 and /b3. Back twice walks B's pages, a third Back focuses A (opened-from, and A
 //! records `left_to`), Forward on A returns to B, and a new page from /b1 makes a sibling of /b2 (EXPORTSTATE
-//! `trail`).
+//! `trail`). A page that calls history.back() itself must read as a Back. `ENGINE=servo` (etc.) tests another engine.
 //!
 //! A failing check does not stop the run; a runner error (a timeout, a launch failure) prints an `ERROR:` line, counts
 //! as a failure and ends the run early. The instance is killed on every exit path (`Instance`'s Drop plus the job).
@@ -32,14 +32,16 @@ struct Run {
     profile: PathBuf,
     /// `http://127.0.0.1:<port>` of the site.
     base: String,
+    /// The engine kind under test (`ENGINE`, default webview2).
+    engine: String,
 }
 
 impl Run {
     /// Settings (home page /b1, so NEWTAB opens B there) and a session holding tab A at /a.
     fn setup(&self) -> io::Result<()> {
-        seed_settings(&self.profile, "webview2", &format!(", \"home_page\": \"{}/b1\"", self.base))?;
+        seed_settings(&self.profile, &self.engine, &format!(", \"home_page\": \"{}/b1\"", self.base))?;
         let seed = self.profile.join("seed.json");
-        let tab = serde_json::json!({"id": "a", "type": TAB, "url": format!("{}/a", self.base), "view_kind": "webview2",
+        let tab = serde_json::json!({"id": "a", "type": TAB, "url": format!("{}/a", self.base), "view_kind": self.engine,
             "pos": [0.0, 0.0]});
         std::fs::write(&seed, serde_json::json!({ "nodes": [tab] }).to_string())?;
         let status = Command::new(&self.exe)
@@ -138,6 +140,15 @@ fn drive(run: &Run, sec: &mut Option<Section>) -> io::Result<()> {
     let s = inst.export_until("fork", |s| at(s, "/b4") && field(s, &b, "entries") == Some(&4.into()))?;
     check_is("/b4 is a child of /b1", Some(1), field(&s, &b, "depth").and_then(Value::as_u64));
     check_is("the Back chip shows the branch marker", Some(true), field(&s, &b, "back_fork").and_then(Value::as_bool));
+
+    next("script");
+    // A page that calls history.back() itself: the engine goes Back with no host move, and the trail must read it as a
+    // Back (the cursor returns to /b4 and no entry is added), not as a new page.
+    run.go(&mut inst, "/back")?;
+    inst.export_until("script-page", |s| at(s, "/back"))?;
+    let s = inst.export_until("script-back", |s| at(s, "/b4"))?;
+    check_is("the page's own Back adds no entry", Some(5), field(&s, &b, "entries").and_then(Value::as_u64));
+    check_is("Forward is offered after it", Some(true), field(&s, &b, "forward").and_then(Value::as_bool));
     inst.quit(QUIT_TIMEOUT).map(|_| ())
 }
 
@@ -159,7 +170,8 @@ pub fn trail(parent: Option<PathBuf>) -> ExitCode {
     };
     let server = match Server::start(Arc::new(|line: &str| {
         let path = line.split(' ').nth(1).unwrap_or("/");
-        let body = format!("<!doctype html><title>{path}</title><p>{path}</p>");
+        let script = if path == "/back" { "<script>setTimeout(() => history.back(), 500)</script>" } else { "" };
+        let body = format!("<!doctype html><title>{path}</title><p>{path}</p>{script}");
         response("200 OK", &[], "text/html", body.as_bytes())
     })) {
         Ok(s) => s,
@@ -168,7 +180,13 @@ pub fn trail(parent: Option<PathBuf>) -> ExitCode {
             return ExitCode::from(1);
         }
     };
-    let run = Run { exe, profile: work.join("profile"), work, base: format!("http://127.0.0.1:{}", server.port()) };
+    let run = Run {
+        exe,
+        profile: work.join("profile"),
+        work,
+        base: format!("http://127.0.0.1:{}", server.port()),
+        engine: std::env::var("ENGINE").unwrap_or_else(|_| "webview2".to_owned()),
+    };
     if let Err(e) = run.setup().and_then(|()| drive(&run, &mut sec)) {
         println!("ERROR: trail stopped early: {e}");
         note_failure();
