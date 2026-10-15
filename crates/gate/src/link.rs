@@ -199,6 +199,23 @@ fn steps(i: &mut Instance, from: (i64, i64), to: (i64, i64)) -> io::Result<()> {
     Ok(())
 }
 
+/// Puts cards `a`, `b` and `c` at fixed world points, a 240-point gap apart (a top left, b to its right, c below), and
+/// any other card (the Default jar's) off to the right. Each launch settles the cards afresh (a force layout whose
+/// result varies with the ids), and often packs them edge to edge: a card then lies across a link curve, within the
+/// 5-point hit radius of it, or over a handle, and takes the press the probe aims there, so the link is not grabbed or
+/// clicked. Every instance that drags or clicks a link starts with this.
+fn spread(i: &mut Instance, [a, b, c]: [&str; 3]) -> io::Result<()> {
+    let s = i.export_state("spread")?;
+    for (id, x, y) in [(a, -150, -100), (b, 250, -100), (c, -150, 200)] {
+        i.send(&format!("MOVENODE {id} {x} {y}"))?;
+    }
+    let others = s.all_cards().iter().filter_map(|card| card["id"].as_str()).filter(|id| ![a, b, c].contains(id));
+    for (n, id) in others.enumerate() {
+        i.send(&format!("MOVENODE {id} 600 {}", 250 + 200 * n))?;
+    }
+    i.send("WAITIDLE")
+}
+
 /// Replaces the verdict words, so a log line that happens to contain one is not counted by gate all.
 pub(crate) fn no_verdict_words(text: &str) -> String {
     text.replace("PASS", "P-ASS").replace("FAIL", "F-AIL")
@@ -303,6 +320,7 @@ fn drive(run: &Run, sec: &mut Option<Section>) -> io::Result<Exports> {
 
     next("run3-gestures");
     let mut i = run.start("log3")?;
+    spread(&mut i, [&a, &b, &c])?;
     let s4 = i.export_state("s4")?;
     i.send(&format!("LINK {a} {b}"))?;
     i.send("SLEEP 1")?;
@@ -348,6 +366,7 @@ fn drive(run: &Run, sec: &mut Option<Section>) -> io::Result<Exports> {
 
     next("run4-persists");
     let mut i = run.start("log4")?;
+    spread(&mut i, [&a, &b, &c])?;
     let s8 = i.export_state("s8")?;
     // Retarget (spec link-gestures, "Dragging a link's end"). The link is a -> b. Grabbed near b's end (t = 0.8) and
     // dropped on c, its b end moves to c: same Link node, now a -> c. Mid-drag a is the fixed end.
