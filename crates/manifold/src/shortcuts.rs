@@ -25,6 +25,8 @@ pub(crate) enum Shortcut {
     RenameGroup,
     DuplicateTab,
     ShortcutsHelp,
+    Back,
+    Forward,
 }
 
 /// One key chord: egui's modifiers and key (what `consume_key` matches),
@@ -73,15 +75,20 @@ pub(crate) const CHORDS: &[Chord] = {
         Chord { mods: M::NONE, key: K::F2, codes: &[W::F2], action: S::RenameGroup },
         Chord { mods: M::CTRL, key: K::D, codes: &[W::KeyD], action: S::DuplicateTab },
         Chord { mods: M::NONE, key: K::F1, codes: &[W::F1], action: S::ShortcutsHelp },
+        Chord { mods: M::ALT, key: K::ArrowLeft, codes: &[W::ArrowLeft], action: S::Back },
+        Chord { mods: M::ALT, key: K::ArrowRight, codes: &[W::ArrowRight], action: S::Forward },
     ]
 };
 
 /// Whether `code` pressed with `modifiers` (the `ipc_protocol::modifiers` bits) is one of `CHORDS`, so
-/// the page must not get it as well. Extra Shift is ignored, as egui's matching ignores it.
+/// the page must not get it as well. The held Ctrl, Alt and Super must be exactly the chord's; an extra Shift is
+/// ignored when the chord needs Ctrl or Alt (as egui's matching ignores it), and is a different chord otherwise.
 pub(crate) fn claims_chord(code: WinitKeyCode, modifiers: u8) -> bool {
-    let ctrl = modifiers & ipc_protocol::modifiers::CONTROL != 0;
+    use ipc_protocol::modifiers::{ALT, CONTROL, SHIFT, SUPER};
     CHORDS.iter().any(|c| {
-        c.codes.contains(&code) && if ctrl { c.mods.ctrl } else { modifiers == 0 && c.mods == egui::Modifiers::NONE }
+        let wanted = if c.mods.ctrl { CONTROL } else { 0 } | if c.mods.alt { ALT } else { 0 };
+        let mask = if wanted != 0 { CONTROL | ALT | SUPER } else { CONTROL | ALT | SUPER | SHIFT };
+        c.codes.contains(&code) && modifiers & mask == wanted
     })
 }
 
@@ -193,6 +200,13 @@ impl App {
         }
         if on(Shortcut::ShortcutsHelp) {
             self.menus.shortcuts_help_open = !self.menus.shortcuts_help_open;
+        }
+        for (shortcut, dir) in
+            [(Shortcut::Back, crate::nav_history::Dir::Back), (Shortcut::Forward, crate::nav_history::Dir::Forward)]
+        {
+            if let Some(id) = self.focused.clone().filter(|_| on(shortcut)) {
+                self.navigate_history(&id, dir);
+            }
         }
     }
 
@@ -467,6 +481,21 @@ mod chord_tests {
         assert!(!claims_chord(WinitKeyCode::KeyC, CONTROL), "copy is the page's");
         assert!(!claims_chord(WinitKeyCode::KeyW, 0), "a plain W is typing");
         assert!(!claims_chord(WinitKeyCode::F5, SHIFT));
+    }
+
+    #[test]
+    fn alt_left_and_right_are_back_and_forward_and_claimed_only_with_alt() {
+        use ipc_protocol::modifiers::ALT;
+        let action = |key| CHORDS.iter().find(|c| c.key == key && c.mods == egui::Modifiers::ALT).map(|c| c.action);
+        assert_eq!(action(egui::Key::ArrowLeft), Some(Shortcut::Back));
+        assert_eq!(action(egui::Key::ArrowRight), Some(Shortcut::Forward));
+        for code in [WinitKeyCode::ArrowLeft, WinitKeyCode::ArrowRight] {
+            assert!(claims_chord(code, ALT));
+            assert!(claims_chord(code, ALT | SHIFT), "an extra Shift is ignored, as egui's matching ignores it");
+            assert!(!claims_chord(code, 0), "a plain arrow is the page's (and the graph's)");
+            assert!(!claims_chord(code, CONTROL), "Ctrl+arrow is a word jump");
+            assert!(!claims_chord(code, CONTROL | ALT));
+        }
     }
 
     /// `claims_chord` as it was before the table, kept verbatim as the reference.

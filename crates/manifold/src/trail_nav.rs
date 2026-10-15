@@ -445,6 +445,40 @@ mod tests {
         assert!(peer.sent().iter().any(|m| matches!(m, HostToView::Navigate { url, .. } if url == "https://b/")));
     }
 
+    /// Runs one frame of the global shortcuts with `key` pressed under `modifiers`.
+    fn shortcut_frame(app: &mut App, key: egui::Key, modifiers: egui::Modifiers) {
+        let ctx = app.egui_ctx.clone();
+        let event = egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers };
+        let input = egui::RawInput { events: vec![event], ..Default::default() };
+        let mut output = ctx.run_ui(input, |ui| app.handle_global_shortcuts(ui));
+        output.textures_delta.clear();
+    }
+
+    #[test]
+    fn alt_left_goes_back_and_alt_right_goes_forward_on_the_focused_tab() {
+        let (mut app, tab, mut peer) = tab_with_a_sibling("trail-alt-keys");
+        app.focused = Some(tab.clone());
+        shortcut_frame(&mut app, egui::Key::ArrowLeft, egui::Modifiers::NONE);
+        assert!(peer.sent().is_empty(), "a plain arrow is not Back");
+        shortcut_frame(&mut app, egui::Key::ArrowLeft, egui::Modifiers::ALT);
+        let sent = peer.sent();
+        assert!(
+            sent.iter().any(|m| matches!(m, HostToView::GoBack))
+                || sent.iter().any(|m| matches!(m, HostToView::Navigate { url, .. } if url == "https://a/")),
+            "Alt+Left steps the tab back to a: {sent:?}"
+        );
+        // The engine reports the arrival; Forward is now offered and Alt+Right takes it.
+        let h = app.nav_history.get_mut(&tab).unwrap();
+        h.observe("https://a/", "", false, true, Instant::now() + std::time::Duration::from_secs(1));
+        shortcut_frame(&mut app, egui::Key::ArrowRight, egui::Modifiers::ALT);
+        let sent = peer.sent();
+        assert!(
+            sent.iter().any(|m| matches!(m, HostToView::GoForward))
+                || sent.iter().any(|m| matches!(m, HostToView::Navigate { url, .. } if url == "https://c/")),
+            "Alt+Right steps forward to c: {sent:?}"
+        );
+    }
+
     #[test]
     fn a_plain_move_records_what_navigate_tab_records() {
         let (mut app, tab, _peer) = tab_with_a_sibling("trail-pick-books");
