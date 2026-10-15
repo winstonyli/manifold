@@ -180,7 +180,7 @@ fn a_new_download_has_its_url_and_type_in_the_mirror() {
 /// 2b-5 Ruling 5: a reload that lands in a new file keeps the stored (create-time) path in the mirror, which the
 /// save writes, while the payload reads the new one.
 #[test]
-fn a_reload_keeps_the_stored_path() {
+fn a_reload_keeps_the_stored_path_and_duplicating_exports_the_resolved_one() {
     let dir = crate::store::testutil::temp_dir("reload_path");
     let mut app = App::default();
     let id = app.alloc_node_id();
@@ -203,6 +203,8 @@ fn a_reload_keeps_the_stored_path() {
     assert_eq!(app.mirror.path(&id), stored, "the mirror keeps the stored path");
     let snapshot = app.snapshot(id.parse().unwrap()).unwrap();
     assert_eq!(snapshot.fields[&field::PATH], FieldValue::Str(stored.clone()), "a save writes the stored path");
+    let doc = crate::duplicate::subtree_json(&app, &[id.as_str()], egui::Vec2::ZERO).unwrap();
+    assert_eq!(doc.nodes[0].fields.get("path").and_then(|v| v.as_str()), Some(moved.as_str()));
 }
 
 #[test]

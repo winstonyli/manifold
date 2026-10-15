@@ -57,7 +57,7 @@ fn local_from(read: Option<Result<Option<Vec<u8>>, JournalError>>) -> LocalState
 }
 
 /// A node as the store holds it, or is about to (`App::snapshot`): its type string as stored, its group and its
-/// fields of that type's kind (`Kind::fields`, every one present). A `Create` writes one, Recently Closed records
+/// fields of that type's kind (`Kind::fields`, every one present). A `Create` writes one, a Duplicate exports
 /// one, and a tab's spawn starts from one (`App::spawning`).
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Snapshot {
@@ -2128,6 +2128,25 @@ impl App {
             self.queue_toast(format!("Couldn't export the session to {}: {err}", path.display()));
         }
         written.is_ok()
+    }
+
+    /// After a session import with fresh ids: each jar whose old id is no longer a live node gets a copy of its cookie
+    /// file under its new id, so an imported jar comes back signed in. A copy, not a move: a named session may still
+    /// name the old id, and the startup prune removes the old file once nothing holds it. `imported[i]` is
+    /// `doc.nodes[i]` (`store::json::import`).
+    fn rebind_jar_files(&self, doc: &JsonDoc, imported: &[crate::store::json::Imported]) {
+        let Some(dir) = self.jars_dir() else { return };
+        for (old, new) in doc.nodes.iter().zip(imported) {
+            if new.kind() != Kind::Jar || self.nodes.contains_key(&old.id) {
+                continue;
+            }
+            let (from, to) = (dir.join(format!("{}.json", old.id)), crate::jar::Jar::path(&dir, new.id));
+            if from.exists() && !to.exists() {
+                if let Err(e) = std::fs::copy(&from, &to) {
+                    eprintln!("jar: could not carry jar {} over to {}: {e}", old.id, new.id);
+                }
+            }
+        }
     }
 
     /// Replaces the running session with `json`'s nodes under fresh ids

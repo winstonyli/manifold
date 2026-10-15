@@ -735,7 +735,7 @@ fn a_remotely_removed_group_leaves_no_member_naming_it() {
 }
 
 /// A windowless app saving to `path` as `actor`. `pub(crate)`: also
-/// used by `main.rs`'s own windowless tests (e.g. `closed_entry`'s).
+/// used by `main.rs`'s own windowless tests (e.g. `duplicate`'s).
 pub(crate) fn app_on(path: &std::path::Path, actor: u64) -> App {
     App { journal: Some(Journal::open(path, ActorId(actor)).unwrap()), ..App::default() }
 }
@@ -5998,11 +5998,11 @@ fn a_replaced_sessions_tabs_use_the_running_default() {
 }
 
 /// A newer build's type: the unknown-type card (spec 2026-10-14).
-const FUTURE: &str = "application/x-from-the-future";
+pub(crate) const FUTURE: &str = "application/x-from-the-future";
 
 /// A session another replica (actor 2) wrote holding one node of type `FUTURE`, named "Old" at (5, 5), with a newer
 /// build's raw field 40 and two known fields its kind doesn't carry (`url`, an `Id`-typed `jar`), restored by actor 1.
-fn restored_unknown() -> (App, NodeId, std::path::PathBuf) {
+pub(crate) fn restored_unknown() -> (App, NodeId, std::path::PathBuf) {
     let path = temp_dir("unknown-card").join("session.mnf");
     let node = {
         let mut other = Journal::open(&path, ActorId(2)).unwrap();
