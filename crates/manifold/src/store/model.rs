@@ -152,21 +152,21 @@ pub enum Kind {
 pub(crate) const TYPES: [(Kind, &str, &[u32]); 9] = {
     use field::*;
     [
-        (Kind::Tab, TYPE_TAB, &[POS, COLOR, PARENT, URL, VIEW_KIND, PINNED, JAR, NAME]),
-        (Kind::Group, TYPE_GROUP, &[POS, COLOR, NAME, JAR]),
-        (Kind::Note, TYPE_NOTE, &[POS, COLOR, PARENT, URL, TEXT, NAME]),
-        (Kind::Image, TYPE_IMAGE, &[POS, COLOR, PARENT, URL, PATH, NAME]),
-        (Kind::Pdf, TYPE_PDF, &[POS, COLOR, PARENT, URL, PATH, NAME]),
-        (Kind::Json, TYPE_JSON, &[POS, COLOR, PARENT, URL, PATH, VIEW, NAME]),
-        (Kind::Download, TYPE_DOWNLOAD, &[POS, COLOR, PARENT, URL, PATH, NAME]),
-        (Kind::Jar, TYPE_JAR, &[POS, COLOR, NAME, EPHEMERAL, IS_DEFAULT]),
-        (Kind::Link, TYPE_LINK, &[NAME, FROM, TO]),
+        (Kind::Tab, TYPE_TAB, &[POS, COLOR, PARENT, URL, VIEW_KIND, PINNED, JAR, NAME, CLOSED]),
+        (Kind::Group, TYPE_GROUP, &[POS, COLOR, NAME, JAR, CLOSED]),
+        (Kind::Note, TYPE_NOTE, &[POS, COLOR, PARENT, URL, TEXT, NAME, CLOSED]),
+        (Kind::Image, TYPE_IMAGE, &[POS, COLOR, PARENT, URL, PATH, NAME, CLOSED]),
+        (Kind::Pdf, TYPE_PDF, &[POS, COLOR, PARENT, URL, PATH, NAME, CLOSED]),
+        (Kind::Json, TYPE_JSON, &[POS, COLOR, PARENT, URL, PATH, VIEW, NAME, CLOSED]),
+        (Kind::Download, TYPE_DOWNLOAD, &[POS, COLOR, PARENT, URL, PATH, NAME, CLOSED]),
+        (Kind::Jar, TYPE_JAR, &[POS, COLOR, NAME, EPHEMERAL, IS_DEFAULT, CLOSED]),
+        (Kind::Link, TYPE_LINK, &[NAME, FROM, TO, CLOSED]),
     ]
 };
 
 /// The fields every card carries whatever its type: all the app reads, mirrors and copies of a node of a type this
 /// build doesn't know (`Kind::Unknown`, spec decision 3). Its other fields stay raw in the document.
-pub(crate) const GENERIC: &[u32] = &[field::POS, field::COLOR, field::PARENT, field::NAME];
+pub(crate) const GENERIC: &[u32] = &[field::POS, field::COLOR, field::PARENT, field::NAME, field::CLOSED];
 
 impl Kind {
     /// The type string a created node of this kind is stored under.
@@ -247,9 +247,13 @@ pub mod field {
     pub const TO: u32 = 21;
     /// A jar that is the built-in Default: exactly one live jar has it once `App::ensure_default_jar` has run.
     pub const IS_DEFAULT: u32 = 22;
+    /// Set on the root of a close (spec 2026-10-14-closed-field-design.md): the node and everything under it are
+    /// hidden in place, and the node is a Recently Closed entry (`Doc::closed_roots`). Only the close and reopen
+    /// verbs write it.
+    pub const CLOSED: u32 = 23;
 }
 
-pub static FIELDS: [FieldDef; 17] = [
+pub static FIELDS: [FieldDef; 18] = [
     FieldDef { no: field::POS, name: "pos", ty: FieldType::Pos },
     FieldDef { no: field::COLOR, name: "color", ty: FieldType::Color },
     FieldDef { no: field::GROUP, name: "group", ty: FieldType::Id },
@@ -269,6 +273,7 @@ pub static FIELDS: [FieldDef; 17] = [
     FieldDef { no: field::FROM, name: "from", ty: FieldType::Id },
     FieldDef { no: field::TO, name: "to", ty: FieldType::Id },
     FieldDef { no: field::IS_DEFAULT, name: "is_default", ty: FieldType::Bool },
+    FieldDef { no: field::CLOSED, name: "closed", ty: FieldType::Bool },
 ];
 
 /// Retired: a tab's `jar_set` and a group's `default_jar`, replaced by the `jar` edge (jars-as-cards spec). Never
@@ -465,6 +470,11 @@ impl Node {
         self.kind() == Kind::Group
     }
 
+    /// The root of a close: `closed` is set (spec decision 1). Its descendants keep their own `closed` as it was.
+    pub fn closed(&self) -> bool {
+        self.get(field::CLOSED) == FieldValue::Bool(true)
+    }
+
     /// A live, groupless node of a known `kind`.
     #[cfg(test)]
     pub fn typed(kind: Kind) -> Node {
@@ -521,12 +531,21 @@ pub struct Doc {
     pub(crate) moves: Vec<MoveRec>,
 }
 
+/// Where a node is shown (`Doc::placement`): in a group (`None` the top level), or not at all because a closed
+/// node sits above it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Placement {
+    Shown(Option<NodeId>),
+    Hidden,
+}
+
 impl Doc {
     pub fn new(id: DocId) -> Doc {
         Doc { id, nodes: BTreeMap::new(), version: BTreeMap::new(), clock: Hlc::default(), moves: Vec::new() }
     }
 
-    /// The live nodes, in id order.
+    /// The live nodes (typed, not deleted; closed ones included), in id order: the commit gate. What the graph shows
+    /// is `shown()`.
     pub fn live(&self) -> impl Iterator<Item = (NodeId, &Node)> {
         self.nodes.iter().filter(|(_, node)| node.is_live()).map(|(id, node)| (*id, node))
     }
@@ -545,6 +564,34 @@ impl Doc {
             group = node.group;
         }
         None
+    }
+
+    /// Where `id` would be shown: `Hidden` when any non-deleted closed node is above it on the raw `group` chain
+    /// (checked first; any node, group or not, plan D1), else `Shown(effective_group)`. `id`'s own `closed` is
+    /// not read: a closed root's place is its group's (`is_shown` reads it). A missing node or a cycle is
+    /// `Shown`, as `effective_group` answers.
+    pub fn placement(&self, id: NodeId) -> Placement {
+        let mut cur = self.nodes.get(&id).and_then(|n| n.group);
+        for _ in 0..=self.nodes.len() {
+            let Some(node) = cur.and_then(|c| self.nodes.get(&c)) else { break };
+            if !node.deleted && node.closed() {
+                return Placement::Hidden;
+            }
+            cur = node.group;
+        }
+        Placement::Shown(self.effective_group(id))
+    }
+
+    /// Shown in the graph: live, not itself closed, and not under a closed node. A live link is always shown
+    /// (plan D2): the mirror keeps every one, and drawing asks for both ends.
+    pub fn is_shown(&self, id: NodeId) -> bool {
+        let Some(node) = self.nodes.get(&id).filter(|n| n.is_live()) else { return false };
+        node.kind() == Kind::Link || (!node.closed() && self.placement(id) != Placement::Hidden)
+    }
+
+    /// The shown nodes, in id order: what the graph and an export show. `live()` stays the commit gate.
+    pub fn shown(&self) -> impl Iterator<Item = (NodeId, &Node)> {
+        self.live().filter(|&(id, _)| self.is_shown(id))
     }
 
     /// `nodes` and every node below one of them: where a node is shown
@@ -718,7 +765,7 @@ mod tests {
     #[test]
     fn an_unknown_kind_carries_the_generic_fields() {
         use field::*;
-        assert_eq!(Kind::Unknown.fields(), &[POS, COLOR, PARENT, NAME]);
+        assert_eq!(Kind::Unknown.fields(), &[POS, COLOR, PARENT, NAME, CLOSED]);
         assert_eq!(Node::with_type("application/x-from-the-future").ty(), "application/x-from-the-future");
         assert_eq!(Node::with_type("Text/Markdown").ty(), "Text/Markdown", "kept as written, case and all");
         assert_eq!(Node::placeholder().ty(), "");
@@ -763,5 +810,60 @@ mod tests {
         assert_eq!(doc.effective_group(id(10)), Some(id(1)), "a tab is no group");
         assert_eq!(doc.with_descendants(BTreeSet::from([id(2)])), BTreeSet::from([id(2), id(3), id(10)]));
         assert_eq!(doc.with_descendants(BTreeSet::from([id(1)])), BTreeSet::from([1, 2, 3, 5, 6, 10].map(id)));
+    }
+
+    /// A doc of `(id, kind, group, closed)` rows, all live; ids are `NodeId { actor: ActorId(1), counter }`.
+    fn doc_of(rows: &[(u64, Kind, Option<u64>, bool)]) -> (Doc, impl Fn(u64) -> NodeId) {
+        let id = |c: u64| NodeId { actor: ActorId(1), counter: c };
+        let mut doc = Doc::new(DocId([0; 16]));
+        for &(c, kind, group, closed) in rows {
+            let mut node = Node::typed(kind);
+            node.group = group.map(id);
+            if closed {
+                let stamp = Stamp { hlc: Hlc { ms: c, logical: 0 }, actor: ActorId(1) };
+                let enc = encode_field(field::CLOSED, &FieldValue::Bool(true));
+                node.fields.insert(field::CLOSED, Reg { stamp, enc });
+            }
+            doc.nodes.insert(id(c), node);
+        }
+        (doc, id)
+    }
+
+    #[test]
+    fn a_closed_group_hides_everything_under_it_and_a_deleted_one_passes_members_up() {
+        let (mut doc, id) = doc_of(&[
+            (1, Kind::Group, None, false),
+            (2, Kind::Group, Some(1), true),
+            (3, Kind::Tab, Some(2), false),
+            (4, Kind::Group, Some(3), false), // under a tab: still hidden by 2 (D1)
+            (5, Kind::Note, Some(1), false),
+        ]);
+        assert!(doc.nodes[&id(2)].closed());
+        assert_eq!(doc.placement(id(2)), Placement::Shown(Some(id(1))), "a closed node's own place is its group's");
+        assert!(!doc.is_shown(id(2)), "but it is not shown: it is closed");
+        assert_eq!(doc.placement(id(3)), Placement::Hidden);
+        assert_eq!(doc.placement(id(4)), Placement::Hidden);
+        assert_eq!(doc.placement(id(5)), Placement::Shown(Some(id(1))));
+        let shown: Vec<NodeId> = doc.shown().map(|(n, _)| n).collect();
+        assert_eq!(shown, [id(1), id(5)]);
+        // A deleted closed group hides nothing: its members pass up to the nearest shown group.
+        doc.nodes.get_mut(&id(2)).unwrap().deleted = true;
+        assert_eq!(doc.placement(id(3)), Placement::Shown(Some(id(1))));
+        assert!(doc.is_shown(id(3)));
+    }
+
+    #[test]
+    fn a_live_link_is_shown_whatever_its_group() {
+        let (mut doc, id) = doc_of(&[(1, Kind::Group, None, true), (2, Kind::Link, Some(1), false)]);
+        assert!(doc.is_shown(id(2)), "the mirror keeps every live link (D2)");
+        doc.nodes.get_mut(&id(2)).unwrap().deleted = true;
+        assert!(!doc.is_shown(id(2)));
+    }
+
+    #[test]
+    fn closed_is_one_more_generic_field() {
+        assert!(GENERIC.contains(&field::CLOSED));
+        assert!(TYPES.iter().all(|(_, _, fields)| fields.contains(&field::CLOSED)));
+        assert_eq!(field_def(field::CLOSED).map(|d| (d.name, d.ty)), Some(("closed", FieldType::Bool)));
     }
 }

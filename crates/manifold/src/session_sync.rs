@@ -1466,7 +1466,7 @@ impl App {
                 "tab {key} is spawning but the document has no entry: a create funnel was missed"
             );
         }
-        for (id, _) in doc.live() {
+        for (id, _) in doc.shown() {
             let key = id.to_string();
             let shown =
                 self.nodes.contains_key(&key) || self.spawns.spawning.contains_key(&key) || self.mirror.is_link(id);
@@ -1481,7 +1481,7 @@ impl App {
     pub(crate) fn restore_session(&mut self) -> bool {
         let Some(journal) = self.journal.as_ref() else { return false };
         let doc = journal.doc();
-        let mut nodes: Vec<(NodeId, Snapshot)> = doc.live().map(|(id, n)| (id, Snapshot::of(doc, id, n))).collect();
+        let mut nodes: Vec<(NodeId, Snapshot)> = doc.shown().map(|(id, n)| (id, Snapshot::of(doc, id, n))).collect();
         self.take_store_recovery();
         // Contract: `None` (no file, another document's, or a newer format
         // version) or a damaged file is a fresh start, same as a session
@@ -1868,8 +1868,8 @@ impl App {
             self.queue_toast("The export may miss recent edits: the session couldn't be saved first".into());
         }
         let doc = self.journal.as_ref()?.doc();
-        if !doc.nodes.get(&root).is_some_and(|n| n.is_live()) {
-            self.queue_toast("Couldn't export the group: it isn't saved in the session".into());
+        if !doc.is_shown(root) {
+            self.queue_toast("Couldn't export the group: it isn't shown in the session".into());
             return None;
         }
         Some(crate::store::json::subtree_to_json(doc, root))

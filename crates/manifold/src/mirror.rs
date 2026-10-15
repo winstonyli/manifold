@@ -583,7 +583,8 @@ mod tests {
             FieldType::Bool => FieldValue::Bool(true),
             FieldType::ViewCode => FieldValue::ViewCode(3),
         };
-        let fields: Vec<u32> = Kind::Tab.fields().iter().copied().filter(|&no| no != field::PARENT).collect();
+        let fields: Vec<u32> =
+            Kind::Tab.fields().iter().copied().filter(|&no| no != field::PARENT && no != field::CLOSED).collect();
         assert!(!fields.is_empty());
         let mut a = Mirror::default();
         for &no in &fields {

@@ -74,10 +74,10 @@ pub(crate) mod testutil {
             .count()
     }
 
-    /// What a document shows: its live nodes, with their fields and the
+    /// What a document shows: its shown nodes, with their fields and the
     /// group each is shown in.
     pub fn shown(doc: &Doc) -> Vec<(NodeId, BTreeMap<u32, Reg>, Option<NodeId>)> {
-        doc.live().map(|(id, node)| (id, node.fields.clone(), doc.effective_group(id))).collect()
+        doc.shown().map(|(id, node)| (id, node.fields.clone(), doc.effective_group(id))).collect()
     }
 
     /// Writes an empty journal at `path` whose header says format version 1

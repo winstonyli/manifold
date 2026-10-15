@@ -91,8 +91,8 @@ fn node_to_json(id: NodeId, node: &Node, group: Option<NodeId>) -> JsonNode {
     node_json(&id.to_string(), node.ty(), &fields, group)
 }
 
-/// Every live node, in id order, each under its effective group.
-/// A link whose end is not a live card is left out (an export drops links whose far end is not in the file).
+/// Every shown node, in id order, each under its effective group.
+/// A link whose end is not a shown card is left out (an export drops links whose far end is not in the file).
 pub fn doc_to_json(doc: &Doc) -> JsonDoc {
     doc_to_json_with(doc, false)
 }
@@ -105,7 +105,11 @@ pub fn doc_to_json_all(doc: &Doc) -> JsonDoc {
 fn doc_to_json_with(doc: &Doc, all_links: bool) -> JsonDoc {
     let nodes = doc
         .live()
-        .filter(|(_, node)| all_links || node.kind() != Kind::Link || link_ends_among(node, |id| is_live_card(doc, id)))
+        .filter(|&(id, node)| {
+            all_links
+                || (doc.is_shown(id)
+                    && (node.kind() != Kind::Link || link_ends_among(node, |id| is_shown_card(doc, id))))
+        })
         .map(|(id, node)| node_to_json(id, node, doc.effective_group(id)))
         .collect();
     JsonDoc { nodes, local: None }
@@ -116,26 +120,26 @@ fn link_ends_among(node: &Node, ok: impl Fn(NodeId) -> bool) -> bool {
     [field::FROM, field::TO].iter().all(|&no| matches!(node.get(no), FieldValue::Id(Some(end)) if ok(end)))
 }
 
-/// Whether `id` is a live node that a link can join (any card, a jar included; not a link).
-fn is_live_card(doc: &Doc, id: NodeId) -> bool {
-    doc.nodes.get(&id).is_some_and(|n| n.is_live() && n.kind() != Kind::Link)
+/// Whether `id` is a shown node that a link can join (any card, a jar included; not a link).
+fn is_shown_card(doc: &Doc, id: NodeId) -> bool {
+    doc.nodes.get(&id).is_some_and(|n| n.kind() != Kind::Link) && doc.is_shown(id)
 }
 
-/// `root` and its live subtree, root first (a group export). The root
+/// `root` and its shown subtree, root first (a group export). The root
 /// is written without a group, since its group isn't exported. A link is
 /// included when both its ends are in the export.
 pub fn subtree_to_json(doc: &Doc, root: NodeId) -> JsonDoc {
     let mut nodes = Vec::new();
-    if let Some(node) = doc.nodes.get(&root).filter(|n| n.is_live()) {
+    if let Some(node) = doc.nodes.get(&root).filter(|_| doc.is_shown(root)) {
         nodes.push(node_to_json(root, node, None));
     }
-    for (id, node) in doc.live() {
+    for (id, node) in doc.shown() {
         if id != root && doc.is_ancestor(root, id) {
             nodes.push(node_to_json(id, node, doc.effective_group(id)));
         }
     }
     let inside: std::collections::BTreeSet<String> = nodes.iter().map(|n| n.id.clone()).collect();
-    for (id, node) in doc.live() {
+    for (id, node) in doc.shown() {
         if node.kind() == Kind::Link && link_ends_among(node, |end| inside.contains(&end.to_string())) {
             nodes.push(node_to_json(id, node, None));
         }
@@ -205,8 +209,11 @@ pub fn import(json: &JsonDoc, mut next_id: impl FnMut() -> NodeId, trust: Trust)
         let kind = Kind::from_type(ty);
         let mut fields = BTreeMap::new();
         for (name, value) in &node.fields {
-            // The type is carried separately; `creates` writes it.
-            let Some(def) = field_by_name(name).filter(|def| def.no != field::TYPE) else { continue };
+            // The type is carried separately; `creates` writes it. `closed` is the document's history, never a
+            // file's: an import always arrives shown.
+            let Some(def) = field_by_name(name).filter(|def| def.no != field::TYPE && def.no != field::CLOSED) else {
+                continue;
+            };
             // Only what its kind carries, and its group: a newer build's field on an unknown type can't be remapped,
             // so it is never copied (spec decision 4).
             if def.no != field::GROUP && !kind.fields().contains(&def.no) {
@@ -528,5 +535,36 @@ mod tests {
         assert!(own[1].fields.contains_key(&field::PATH));
         assert!(own[3].fields.contains_key(&field::JAR));
         assert!(own[4].fields.contains_key(&field::JAR));
+    }
+
+    #[test]
+    fn export_writes_shown_nodes_only_and_import_never_carries_closed() {
+        use crate::store::model::{encode_field, Reg, Stamp};
+        let id = |c: u64| NodeId { actor: ActorId(1), counter: c };
+        let mut doc = Doc::new(DocId([0; 16]));
+        let mut group = Node::typed(Kind::Group);
+        let stamp = Stamp { hlc: Hlc { ms: 1, logical: 0 }, actor: ActorId(1) };
+        group.fields.insert(field::CLOSED, Reg { stamp, enc: encode_field(field::CLOSED, &FieldValue::Bool(true)) });
+        doc.nodes.insert(id(1), group);
+        let mut inside = Node::typed(Kind::Note);
+        inside.group = Some(id(1));
+        doc.nodes.insert(id(2), inside);
+        doc.nodes.insert(id(3), Node::typed(Kind::Note));
+        let ids = |j: &JsonDoc| j.nodes.iter().map(|n| n.id.clone()).collect::<Vec<_>>();
+        assert_eq!(ids(&doc_to_json(&doc)), [id(3).to_string()], "the closed group and its member stay out");
+        assert_eq!(ids(&doc_to_json_all(&doc)).len(), 3, "the forensic dump keeps them");
+        assert!(subtree_to_json(&doc, id(1)).nodes.is_empty(), "a closed group exports nothing");
+        // Re-importing the dump brings the closed group back shown: `closed` is never imported.
+        let mut n = 100;
+        let imported = import(
+            &doc_to_json_all(&doc),
+            || {
+                n += 1;
+                id(n)
+            },
+            Trust::Own,
+        )
+        .unwrap();
+        assert!(imported.iter().all(|i| !i.fields.contains_key(&field::CLOSED)));
     }
 }
