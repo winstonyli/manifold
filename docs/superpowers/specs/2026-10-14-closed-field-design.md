@@ -51,7 +51,7 @@ the flag.
    the document's ids, and `teardown_running_session`'s per-id loop (`:2107`) walks the document, not `App.nodes`.
 4. **Close writes a flush, a flag, and the Deletes of what cannot come back.** `close_node` first writes the state the
    snapshot used to capture (`live_fields`, `closed.rs:104-123`) into the document: a note's typed text, the position as
-   drawn, a file's resolved path. A node's live url stays personal (decision 8). Then it sets `closed` on the root. A
+   drawn. A file's resolved path is not flushed: `path` is machine-local (`model.rs:262-264`) and the node's own content copy `<id>.<ext>` resolves on reopen. A node's live url stays personal (decision 8). Then it sets `closed` on the root. A
    `restorable` kind (caps row plus `worth_reopening`'s value test) is closed; a root that is not restorable is
    Deleted for real with no entry, as today. Inside a closing group, members that are not restorable (a blank note,
    a completed download) are Deleted at the same time, as the snapshot dropped them; an in-progress download has no
@@ -195,7 +195,7 @@ the flag.
 ## Decided and open
 
 - Decided: the 14 decisions above.
-- Parked: undo of Dissolve and merge (needs a recorded transaction mechanism); a shared-history UI; a redo stack;
+- Parked: a portable file reference written on close (the content copy name or hash, for syncing file content between replicas; revisit then); undo of Dissolve and merge (needs a recorded transaction mechanism); a shared-history UI; a redo stack;
   keeping scroll and navigation history across close.
 - Open: whether the group card's X should become Close (children hidden) instead of Dissolve; whether a reopened
   node that lands at another level should navigate there (this spec reveals it without leaving the level).
