@@ -96,6 +96,11 @@ fn card_pt(s: &State, id: &str) -> io::Result<(i64, i64)> {
     rounded_pair(&s.card(id).ok_or_else(|| bad(format!("no card {id}")))?["screen"])
 }
 
+/// How many link edges the export draws.
+fn link_edges(s: &State) -> usize {
+    s.0["edges"].as_array().map_or(0, |a| a.iter().filter(|e| e["kind"] == "link").count())
+}
+
 /// link-probe.sh `edge_pt`: the first link edge's (with `to`: the first running to card `to`) `key` point, rounded.
 fn edge_pt(s: &State, key: &str, to: Option<&str>) -> io::Result<(i64, i64)> {
     let edges = s.0["edges"].as_array().map_or(&[][..], Vec::as_slice);
@@ -199,10 +204,22 @@ struct Run {
 }
 
 impl Run {
-    /// scripts/link-probe.sh `start`: one instance on the profile (BelowNormal, in the job), its tabs up.
-    fn start(&self, log: &str) -> io::Result<Instance> {
+    /// scripts/link-probe.sh `start`: one instance on the profile (BelowNormal, in the job), its tabs up and at least
+    /// `links` link edges drawn. WAITTABS only says no spawn is in flight; the cards and the link nodes reach the
+    /// mirror through the store afterwards, so the restore is waited on by what it produces. A restore that never
+    /// completes fails here, naming what arrived, instead of as a missing edge several steps on.
+    fn start(&self, log: &str, links: usize) -> io::Result<Instance> {
         let mut inst = Instance::launch(&self.exe, &self.profile, &self.work, log)?;
         inst.send("WAITTABS")?;
+        let s = inst.export_until("restored", |s| s.cards().len() >= 3 && link_edges(s) >= links)?;
+        if s.cards().len() < 3 || link_edges(&s) < links {
+            return Err(bad(format!(
+                "restore incomplete in {log}: {} cards, {} link edges (wanted 3 and {links}); edges {}",
+                s.cards().len(),
+                link_edges(&s),
+                s.0["edges"]
+            )));
+        }
         inst.send("SLEEP 1")?;
         Ok(inst)
     }
@@ -270,7 +287,7 @@ struct Exports {
 fn drive(run: &Run, sec: &mut Option<Section>) -> io::Result<Exports> {
     let mut next = |name: &str| *sec = sec.take().map(|s| s.next(name));
     next("run1-link");
-    let mut i = run.start("log1")?;
+    let mut i = run.start("log1", 0)?;
     let s0 = i.export_state("s0")?;
     let (ncards, ids) = abc(&s0)?;
     let [a, b, c]: [String; 3] =
@@ -281,7 +298,7 @@ fn drive(run: &Run, sec: &mut Option<Section>) -> io::Result<Exports> {
     Run::stop(i)?;
 
     next("run2-restart-unlink");
-    let mut i = run.start("log2")?;
+    let mut i = run.start("log2", 1)?;
     let s2 = i.export_state("s2")?;
     i.send(&format!("UNLINK {b} {a}"))?;
     i.send("SLEEP 1")?;
@@ -289,7 +306,7 @@ fn drive(run: &Run, sec: &mut Option<Section>) -> io::Result<Exports> {
     Run::stop(i)?;
 
     next("run3-gestures");
-    let mut i = run.start("log3")?;
+    let mut i = run.start("log3", 0)?;
     spread(&mut i, [&a, &b, &c])?;
     let s4 = i.export_state("s4")?;
     i.send(&format!("LINK {a} {b}"))?;
@@ -335,7 +352,7 @@ fn drive(run: &Run, sec: &mut Option<Section>) -> io::Result<Exports> {
     Run::stop(i)?;
 
     next("run4-persists");
-    let mut i = run.start("log4")?;
+    let mut i = run.start("log4", 1)?;
     spread(&mut i, [&a, &b, &c])?;
     let s8 = i.export_state("s8")?;
     // Retarget (spec link-gestures, "Dragging a link's end"). The link is a -> b. Grabbed near b's end (t = 0.8) and
@@ -382,7 +399,7 @@ fn drive(run: &Run, sec: &mut Option<Section>) -> io::Result<Exports> {
     i.send("WAITIDLE")?;
     let s11 = i.export_state("s11")?;
     Run::stop(i)?;
-    let mut i = run.start("log5")?;
+    let mut i = run.start("log5", 0)?;
     let s12 = i.export_state("s12")?;
     Run::stop(i)?;
 
