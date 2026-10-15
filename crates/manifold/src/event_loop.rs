@@ -1432,7 +1432,13 @@ impl App {
                     return false;
                 };
                 let url = self.reported_url(tab_id, url, loading, current);
-                self.nav_history.entry(tab_id.to_string()).or_default().observe(&url, loading);
+                self.nav_history.entry(tab_id.to_string()).or_default().observe(
+                    &url,
+                    &title,
+                    loading,
+                    can_go_forward,
+                    std::time::Instant::now(),
+                );
                 let Some(node) = self.nodes.get_mut(tab_id).and_then(|n| n.as_tab_mut()) else {
                     return false;
                 };

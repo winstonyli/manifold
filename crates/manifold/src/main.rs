@@ -297,8 +297,7 @@ struct App {
     cookies: jar::CookieState,
     /// Scroll positions of woken tabs, restored once their first load finishes.
     saved_scroll: HashMap<String, sleep_state::SavedScroll>,
-    /// Each tab's back/forward list as the host saw it, by tab id: kept
-    /// when the tab's engine is replaced (crash, wake, swap). See `nav_history`.
+    /// Each tab's trail (`nav_history`): its pages as a tree, kept across an engine replacement, a close and a restart.
     nav_history: HashMap<String, nav_history::NavHistory>,
     /// Files dropped on the window since the last frame -- each one's
     /// placement (`drop_file`) is offset by `egui::vec2(24.0, 24.0) *

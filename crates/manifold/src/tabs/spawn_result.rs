@@ -32,8 +32,8 @@ impl App {
         if generation != self.spawns.session_generation {
             return;
         }
-        // A replaced engine (crash, wake, swap) knows only `url`: from here
-        // Back and Forward come from the host's list.
+        // A replaced engine (crash, wake, swap) knows only `url`: the trail's engine-list shadow restarts there, and a
+        // trail whose cursor is elsewhere is dropped (`NavHistory::view_reset`).
         if let Some(history) = self.nav_history.get_mut(&id) {
             history.view_reset(&url);
         }
