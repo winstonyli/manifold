@@ -618,6 +618,15 @@ mod tests {
     }
 
     #[test]
+    fn eviction_picks_the_lower_of_two_unprotected_leaves() {
+        // a -> {x, y, b}: x and y are both unprotected leaves, x is older.
+        let mut h = tree(&[("a", None, Some(3)), ("x", Some(0), None), ("y", Some(0), None), ("b", Some(0), None)], 3);
+        h.evict_to(3);
+        assert_eq!(urls(&h), ["a", "y", "b"]);
+        assert_eq!(h.at, 2);
+    }
+
+    #[test]
     fn eviction_of_a_chain_drops_the_root_and_moves_a_root_cursor() {
         let mut h = tree(&[("a", None, Some(1)), ("b", Some(0), Some(2)), ("c", Some(1), None)], 0);
         h.evict_to(2);
@@ -834,6 +843,15 @@ mod tests {
         let mut h = equal_parent(now);
         assert_eq!(h.go(Dir::Back, true, false, now), NavAction::GoBack);
         assert_eq!((h.at, h.lin_at, h.pending.is_none()), (0, 0, true));
+    }
+
+    /// Step 4 (the cursor's own URL) runs before 4b: a repeated settled report with Forward set is no inferred Back.
+    #[test]
+    fn the_cursors_own_url_wins_over_an_inferred_back() {
+        let now = Instant::now();
+        let mut h = equal_parent(now);
+        h.observe("a", "", false, true, now);
+        assert_eq!((h.at, h.lin_at, urls(&h)), (1, 1, vec!["a", "a"]), "no spurious Back commit");
     }
 
     #[test]
