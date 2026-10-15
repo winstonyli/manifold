@@ -1,6 +1,6 @@
 # The trail: Back and Forward over a tab's pages and over opened-from
 
-Status: design, 2026-10-15 (draft 3: draft 1 plus the owner's calls J1-J7 and review rounds 1-8; round 8 found only clarifications, all applied). Decisions
+Status: design, 2026-10-15 (draft 3: draft 1 plus the owner's calls J1-J7 and review rounds 1-8; round 8 found only clarifications, all applied; step 4b (inferred move) added after and revised twice from its reviews). Decisions
 were made with the owner in one session.
 
 ## Goal
@@ -72,7 +72,35 @@ middle of the trail stay reachable as branches. Nothing creates a card unless th
       **Commit** sets `at = target`, marks `target` *fresh*, sets `fwd` (Back: `fwd(target) = from`; any other move, a sibling pick and Forward included:
       `fwd(parent(target)) = target`), clears `left_to` when the node is a parent (decision 7), and updates `lin`/`lin_at`
       per decision 4.
-   4. same URL as the cursor entry: nothing.
+   4. same URL as the cursor entry: nothing (this runs before the inferred-move step, so a settled repeat of the cursor URL
+      and a `reported_url`-masked report, which equals the cursor URL, never reach it).
+   4b. **inferred move** (runs after steps 3 and 4, so also after a stale-move or mismatch drop; page script called
+      `history.back()` or `forward()`). Engines report the URL before their `can_go_*` flags settle (WebView2's
+      NavigationStarting reports the new URL with the old position's flags, `nav_state.rs:122-146`; CEF and Servo get URL
+      and flags from separate callbacks), so the flags on a `loading` report cannot be trusted. Inference never decides on
+      a `loading` report. The candidate is `Option<(Dir, url, deadline)>`; its target is recomputed from `at`, `lin` and
+      `fwd` at resolution, never stored as an index. Candidates: Back: `parent(at)` is `Some(p)`, `lin_at > 0`,
+      `lin[lin_at - 1] == Some(p)` and `entries[p].url` equals the report's URL. Forward: `fwd(at)` is `Some(f)`,
+      `lin[lin_at + 1] == Some(f)` and `entries[f].url` equals the URL.
+      A `loading` report that fits a candidate is **held**: nothing is forked, the report is discarded as if never seen
+      (`loading` and `was_loading` are not updated, so the pre-hold values stay for steps 5 and 6), and the candidate is set
+      (deadline: the move window, 3 s). A settled report with no prior loading report (CEF, Servo) decides directly.
+      Resolution on a settled report whose URL equals the candidate's: Back commits only if that report's `can_go_forward`
+      is true (a push leaves no forward entries, so this tells a real Back from a link click to the parent's URL); Forward
+      commits if `can_go_forward` is true or `lin_at + 1` is the last slot (at the last slot a click and a Forward give the
+      same tree and `lin`; at other slots only the flag separates them, because `lin` is truncated only when the fork is
+      processed, so the slot is still present at the report). A commit is the commit of step 3 (`lin_at` +- 1, no `lin`
+      push; marked fresh; `loading` taken from the settled report). Otherwise the candidate is dropped and the report falls
+      to steps 5-6 with the pre-hold `loading` value, so a link click forks and a redirect after the hold (loading A held,
+      then loading B) forks B as a child of `at` (A never gets an entry), or rewrites it only if the pre-hold `loading` was true.
+      Known limit: a settled report that carries the new URL with still-stale `can_go_forward` (CEF and Servo deliver URL
+      and flags separately; not verified) drops a script Back into a fork, and the next same-URL report is ignored by step 4;
+      it heals through the cap.
+      The candidate only suppresses the fork of the held loading report; a settled report for a candidate's URL decides
+      the same way with or without a live candidate, so its deadline and clearing never change a settled outcome. It is
+      cleared by `go()`/`go_to`, `view_reset`, any commit, fork or push, any report with a different URL,
+      and its deadline. `go(n)` with |n| > 1 and `replaceState`/`location.replace` are not inferred (the latter replace a
+      slot and still fork, the known limit). `observe` takes the report's `can_go_back` and `can_go_forward`.
    5. `was_loading` redirect: if the cursor entry is fresh it is rewritten (the user chose that entry; pushing a child
       there would make Back onto a redirecting entry loop, and the usual report order is `T` loading, then the redirect
       `T2`); else (J5) if it already has children the redirect is pushed as a child (a rewrite would change the page its
@@ -102,8 +130,8 @@ middle of the trail stay reachable as branches. Nothing creates a card unless th
      slot in place and keeps its forward entries, so it sets `lin[lin_at]` to the resulting entry with no truncate and no
      push. (Native Back then correctly fails the guard and falls to a plain `Navigate`.)
    - `lin` is capped at `MAX_ENTRIES`: past it, drop from the front and decrement `lin_at`.
-   - A native move whose arrival lands after the deadline is dropped and reads as a mismatched arrival (a spurious fork);
-     it heals itself and the cap bounds it. Also a known limit: `location.replace` and `replaceState` replace the engine's slot but
+   - A native move whose arrival lands after the deadline is dropped and is then read by step 4b as an inferred Back or Forward when its URL and
+     flags fit, else as a mismatched arrival (a spurious fork); it heals itself and the cap bounds it. Also a known limit: `location.replace` and `replaceState` replace the engine's slot but
      read as a fork, so `lin_at` runs one ahead; a native Back then lands on an older page, reads as a mismatched arrival and
      forks a spurious child. It heals itself and the cap bounds it.
    - A new engine navigation (the fork rule, or a plain move's commit) truncates `lin` after `lin_at`, pushes the
@@ -257,7 +285,16 @@ session replace clears the stashed lists; a move whose target URL equals the ori
 navigation during a pending plain move leaves the target's URL untouched; the redirect report order (`T` loading, then
 `T2`) on a target with children rewrites it; `view_reset` while a move is pending clears it; `fresh` is cleared by a settled report, a mid-trail reload redirect (not
 fresh) pushes a child, Back onto an entry with children then a redirect rewrites it, and `view_reset` makes the entry fresh;
-a plain equal-URL move leaves `lin.len()` unchanged and returns no action; `fwd` after Back, after a
+a plain equal-URL move leaves `lin.len()` unchanged and returns no action; an inferred Back
+(script `history.back()`: URL equals the parent's, settled report with `can_go_forward` true) moves the cursor, while a
+link click to the parent's URL (settled, `can_go_forward` false) forks, including with a fresh cursor entry (a held
+loading report must not make step 5 rewrite it); loading A held then loading B forks B as a child of `at` with no entry for A; held loading A then a repeated or
+title-only settled A; a candidate that expires while held, then settled A; an inferred Forward at the last slot (marked
+fresh, unlike the fork path that reuses a child; harmless); `go()` while a candidate is held
+clears it; a settled report with no prior loading report decides directly; the real engine order (a `loading` report with
+stale flags, then a settled report with fresh flags) infers correctly in both directions, including a script back from the
+last slot and a link click to the parent's URL at a non-last slot after a native Back; an inferred Forward, also to the
+last slot, leaves `lin.len()` unchanged; `fwd` after Back, after a
 sibling pick and after a Forward-chip pick; a repeated old URL after a native move does not drop it; evicting the root leaves Back at the new root non-native; `go()` is
 ignored while a native move is pending and works again after the deadline; Back onto an entry whose URL redirects stays
 on that entry; `lin` is capped. App level: hiding a tab keeps its list (and a restart keeps it),
