@@ -98,6 +98,8 @@ pub(super) fn spawn_webkit_tab(tab_id: &str, initial_url: &str, wake: view_io::W
     let command = webkit_shell_command(initial_url, port, &token, &binary_path)?;
     let mut child = Command::new("wsl.exe")
         .args(["-d", "Ubuntu", "--", "bash", "-c", &command])
+        // Not manifold's stdin: `wsl.exe` forwards what it reads, and would take the debug commands piped to manifold.
+        .stdin(std::process::Stdio::null())
         .stdout(stdout_file)
         .stderr(stderr_file)
         .spawn()?;

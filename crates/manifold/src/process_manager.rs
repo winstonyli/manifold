@@ -4,7 +4,7 @@
 
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command};
+use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::sync::Arc;
@@ -836,6 +836,8 @@ pub fn spawn_tab(
         .env("VIEW_TAB_ID", tab_id)
         .env("VIEW_SOCKET_ID", &socket_id)
         .env("VIEW_INITIAL_URL", initial_url)
+        // A host never reads manifold's stdin (the debug-command pipe); `wsl.exe` would, and take commands from it.
+        .stdin(Stdio::null())
         .stdout(stdout_file)
         .stderr(stderr_file);
     // Jar engines wait for the jar (`SetCookies`) before their first navigation.
