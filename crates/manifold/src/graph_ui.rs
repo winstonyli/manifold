@@ -781,6 +781,7 @@ impl App {
         self.build_json_hint(ui);
         self.build_node_menu(ui);
         self.build_json_menu(ui);
+        self.build_trail_menu(ui);
     }
 
     /// While a graph card has keyboard focus, a strip of keycaps under it (above, near the bottom

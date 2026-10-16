@@ -5,7 +5,7 @@ use crate::card::{CardBody, DropEffect};
 use crate::level::{CardEntry, EdgeCurve, EdgeKind, LevelEdge, Origin};
 use crate::nav_history::TrailPage;
 use crate::store::model::TYPE_TRAIL_PAGE;
-use crate::theme::{ACCENT, SURFACE_HOVER, SURFACE_RAISED, TEXT_PRIMARY, TEXT_WEAK};
+use crate::theme::{menu_item_style, popup_frame, ACCENT, SURFACE_HOVER, SURFACE_RAISED, TEXT_PRIMARY, TEXT_WEAK};
 use crate::tree_layout::{tree_layout, TreeNode};
 use crate::virtual_source::VirtualSource;
 use crate::{App, CardKind, GraphAction};
@@ -74,8 +74,11 @@ pub(crate) fn page_rects(pages: &[TrailPage], sizes: &[egui::Vec2], column_gap: 
 /// already drew the frame and its border over this body, so no fill goes down and the cursor's ring is drawn outside
 /// the page, clear of that border; the popup (not a card) paints its own fill and an inside ring.
 pub(crate) fn paint_trail_page(painter: &egui::Painter, rect: egui::Rect, page: &TrailPage, hovered: bool, card: bool) {
-    if !card {
-        painter.rect_filled(rect, 6.0, if hovered { SURFACE_HOVER } else { SURFACE_RAISED });
+    // The card path's frame is the card's own, so only a hover fills it.
+    if hovered {
+        painter.rect_filled(rect, 6.0, SURFACE_HOVER);
+    } else if !card {
+        painter.rect_filled(rect, 6.0, SURFACE_RAISED);
     }
     if page.cursor {
         let kind = if card { egui::StrokeKind::Outside } else { egui::StrokeKind::Inside };
@@ -107,6 +110,43 @@ impl App {
         let tab = self.focused.clone()?;
         let on_level = self.card_rect(&tab).is_some() && self.in_level(&tab);
         (on_level && self.nav_history.get(&tab).is_some_and(|h| h.tree().len() > 1)).then_some(tab)
+    }
+}
+
+/// A page's menu items, shared by the popup's rows and the strip's menu: whether "Open as card" was chosen.
+pub(crate) fn page_menu_items(ui: &mut egui::Ui) -> bool {
+    ui.button("Open as card").clicked()
+}
+
+impl App {
+    /// The strip page menu (`menus.trail_menu`), at the pointer. Closes on a choice, a click elsewhere, Escape, or when
+    /// its page or the strip is gone.
+    pub(crate) fn build_trail_menu(&mut self, ui: &mut egui::Ui) {
+        let Some((id, pos)) = self.menus.trail_menu.clone() else { return };
+        let page = live_page(self, &id).map(|(tab, page)| (tab.to_owned(), page));
+        let Some((tab, page)) = page.filter(|_| self.trail_strip_tab().is_some()) else {
+            self.menus.trail_menu = None;
+            return;
+        };
+        let mut chosen = false;
+        let area = egui::Area::new(egui::Id::new("trail_page_menu"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(pos)
+            .show(ui.ctx(), |ui| {
+                popup_frame(ui).show(ui, |ui| {
+                    menu_item_style(ui);
+                    chosen = page_menu_items(ui);
+                });
+            });
+        if chosen {
+            self.open_branch_as_card(&tab, page, None);
+        }
+        // The right-click that opened the menu is, to a menu not yet laid out, a click elsewhere.
+        let opening_click = ui.input(|i| i.pointer.interact_pos()) == Some(pos);
+        let elsewhere = area.response.clicked_elsewhere() && !opening_click;
+        if chosen || elsewhere || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.menus.trail_menu = None;
+        }
     }
 }
 
@@ -166,7 +206,7 @@ impl VirtualSource for TrailSource {
     fn paint_body(&self, app: &App, ui: &mut egui::Ui, entry: &CardEntry) -> CardBody {
         let page = live_page(app, &entry.id).and_then(|(tab, i)| app.nav_history.get(tab)?.tree().into_iter().nth(i));
         if let Some(page) = &page {
-            paint_trail_page(ui.painter(), entry.rect, page, false, true);
+            paint_trail_page(ui.painter(), entry.rect, page, ui.rect_contains_pointer(entry.rect), true);
         }
         CardBody { interact_rect: entry.rect, tooltip: page.map(|p| p.url) }
     }
@@ -177,7 +217,9 @@ impl VirtualSource for TrailSource {
         None
     }
 
-    fn on_menu(&self, _app: &mut App, _entry: &CardEntry, _at: egui::Pos2) {} // never called: the kind has no `menu`
+    fn on_menu(&self, app: &mut App, entry: &CardEntry, at: egui::Pos2) {
+        app.menus.trail_menu = Some((entry.id.clone(), at));
+    }
 
     /// Every release (on a card, empty canvas, or the back button's `Eject`) opens the page as a card at `at`, from the
     /// tab whose trail it came from (spec decision 5), so the target is ignored.
@@ -401,6 +443,33 @@ mod tests {
         assert_eq!(tip.as_deref(), Some("https://example.com/b"));
         let strip = pages(&rig).iter().fold(egui::Rect::NOTHING, |b, c| b.union(c.rect));
         assert!(rig.app.fit_all_nodes_scene_rect().contains_rect(strip), "Reset View frames the strip too");
+    }
+
+    #[test]
+    fn right_clicking_a_page_opens_the_same_menu_as_the_popup_rows_and_open_as_card_opens_it() {
+        let mut rig = forked();
+        let tab = rig.tab();
+        let at = rig.screen(&format!("virtual:trail:{tab}:0:2")).center();
+        rig.right_click(at);
+        let (id, pos) = rig.app.menus.trail_menu.clone().expect("the page's menu is open");
+        assert_eq!(id, format!("virtual:trail:{tab}:0:2"));
+        assert_eq!(pos, at, "at the pointer");
+        rig.frame(vec![], egui::Modifiers::NONE);
+        let menu = rig.ctx.memory(|m| m.area_rect(egui::Id::new("trail_page_menu"))).expect("the menu's area");
+        rig.click(menu.center());
+        assert!(rig.app.menus.trail_menu.is_none(), "choosing closes it");
+        let (spawn, _) = rig.app.test_spawns.last().expect("Open as card spawned a tab");
+        assert_eq!(spawn.url, "/c");
+        assert_eq!(spawn.parent.as_deref(), Some(tab.as_str()));
+    }
+
+    #[test]
+    fn a_menu_for_a_page_that_is_gone_closes() {
+        let mut rig = forked();
+        let tab = rig.tab();
+        rig.app.menus.trail_menu = Some((format!("virtual:trail:{tab}:7:2"), egui::pos2(10.0, 10.0)));
+        rig.frame(vec![], egui::Modifiers::NONE);
+        assert!(rig.app.menus.trail_menu.is_none(), "a stale epoch names no page");
     }
 
     #[test]

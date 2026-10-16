@@ -74,6 +74,7 @@ const NOT_FORGOTTEN: &[(&str, &str)] = &[
     ("native_drag_tab", "taken at the button-up"),
     ("pacing.hidden_for_minimize", "drained at restore"),
     ("menus.node_menu_cache", "the closing menu's fade copy; `node_menu` is the live one"),
+    ("menus.trail_menu", "a virtual card id (never a node id), closed by `build_trail_menu` when its page is gone"),
     ("pending_session_delete", "a session name, not a node id"),
     ("favicon_resolved", "origins, not node ids"),
     ("favicon_origin_cache", "urls, not node ids"),

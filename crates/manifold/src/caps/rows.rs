@@ -194,7 +194,7 @@ pub(crate) fn builtin_rows() -> Vec<Row> {
             .menu(false)
             .stored_controls(false)
             .draw_layer(8),
-        Row::new(TYPE_TRAIL_PAGE).drag_source(true).framed(false), // dragged out to open as a card; a long trail must not tip the level of detail
+        Row::new(TYPE_TRAIL_PAGE).drag_source(true).menu(true).framed(false), // dragged out to open as a card; a long trail must not tip the level of detail
         // A JSON level's card (`draw_json_level` draws it and handles its input): the shared chrome leaves it alone.
         Row::new(TYPE_JSON_LEVEL)
             .selectable(false)
@@ -285,10 +285,10 @@ mod tests {
     }
 
     #[test]
-    fn a_trail_page_can_only_be_dragged() {
+    fn a_trail_page_can_be_dragged_and_has_a_menu_and_nothing_else() {
         let caps = registry(builtin_rows()).caps(crate::store::model::TYPE_TRAIL_PAGE, TagSet::EMPTY);
-        assert!(caps.drag_source);
-        assert!(!caps.selectable && !caps.drop_target && !caps.menu && !caps.stored_controls);
+        assert!(caps.drag_source && caps.menu);
+        assert!(!caps.selectable && !caps.drop_target && !caps.stored_controls);
         assert_eq!(caps.draw_layer, 8);
     }
 

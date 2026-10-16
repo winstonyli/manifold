@@ -437,6 +437,8 @@ pub(crate) struct MenuPopups {
     /// opens this instead of starting a marquee. Drawn by
     /// `App::build_node_menu`, which dispatches on the node's kind.
     pub(crate) node_menu: Option<(String, egui::Pos2)>,
+    /// The right-click menu of a trail strip page: its virtual card id and the screen point (`App::build_trail_menu`).
+    pub(crate) trail_menu: Option<(String, egui::Pos2)>,
     /// Last real value of `node_menu`, kept around so `build_node_menu`
     /// can keep drawing (fading out, not vanishing instantly) for a few
     /// frames after `node_menu` itself goes back to `None` -- see
@@ -1341,7 +1343,7 @@ impl App {
                                     picked = Some(page.entry);
                                 }
                                 row.context_menu(|ui| {
-                                    if ui.button("Open as card").clicked() {
+                                    if crate::trail_strip::page_menu_items(ui) {
                                         as_card = Some(page.entry);
                                         ui.close();
                                     }
