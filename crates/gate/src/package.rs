@@ -1,10 +1,10 @@
-//! `gate package [EXE]` (was scripts/package.sh): the check for the bare-exe release scripts/release.sh writes. EXE
+//! `gate package [EXE]` (was scripts/package.sh): the check for the bare-exe release `release.yml` builds. EXE
 //! defaults to the newest `dist/manifold-v*-windows-x64.exe`. It is copied ALONE into a work folder, so nothing but
 //! manifold.exe is beside it, and asserted on:
 //!
 //! - it imports no vcruntime/msvcp (`llvm-objdump -p`; the check fails without the tool);
 //! - it runs headless with APPDATA redirected into the work folder (never the real one);
-//! - `VIEWSTATE cef` reads "Not installed · N MB" when crates/manifold/src/host_pin.rs pins a CEF host (release.sh
+//! - `VIEWSTATE cef` reads "Not installed · N MB" when crates/manifold/src/host_pin.rs pins a CEF host (`gate host-pin --adopt`
 //!   writes it), else "Unavailable", and likewise for Servo;
 //! - a WebView2 tab loads a local page, so the host was extracted from the embed (no sibling host exists);
 //! - a PDF node renders the fixture (1000x500, 1 page) through the embedded PDF view, extracted beside the WebView2
@@ -86,7 +86,7 @@ pub(crate) fn package(args: &[String]) -> ExitCode {
     let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let Some(exe_src) = args.first().map(PathBuf::from).or_else(|| newest_release(&repo)).filter(|p| p.is_file())
     else {
-        eprintln!("no release exe: pass one, or run scripts/release.sh first");
+        eprintln!("no release exe: pass one, or download a draft release's exe");
         return ExitCode::from(1);
     };
     let work = match work_dir(None, "package") {

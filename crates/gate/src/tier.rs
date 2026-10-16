@@ -239,7 +239,7 @@ mod tests {
         assert_eq!(tier_of(&["src/store/journal.rs"], &[]), "TIER full");
         assert_eq!(tier_of(&["README.md", "src/main.rs", "crates/ipc-protocol/src/lib.rs"], &[]), "TIER full");
         assert_eq!(tier_of(&["src/main.rs"], &[]), "TIER light");
-        assert_eq!(tier_of(&["scripts/release.sh"], &[]), "TIER light");
+        assert_eq!(tier_of(&["scripts/foreground.ps1"], &[]), "TIER light");
     }
 
     #[test]

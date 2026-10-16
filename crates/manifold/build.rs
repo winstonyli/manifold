@@ -1,5 +1,5 @@
 //! Embeds the WebView2 host and the PDF view in `manifold.exe` when `MANIFOLD_WEBVIEW2_HOST` / `MANIFOLD_PDFIUM_HOST`
-//! name a file (`scripts/release.sh` sets them); every other build embeds an empty stub, so dev builds, the gate and
+//! name a file (`release.yml` sets them); every other build embeds an empty stub, so dev builds, the gate and
 //! Linux CI keep using the sibling exes. `embedded_host.rs` reads the outputs: `OUT_DIR/<name>-host.bin` and the
 //! `MANIFOLD_<NAME>_SHA256` env value (lowercase hex, empty for the stub).
 

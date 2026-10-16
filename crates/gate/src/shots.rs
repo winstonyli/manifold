@@ -28,7 +28,7 @@
 //! installed, Failed, Installing, Installed and Update needed with nothing mocked in the app (the runtime is files in
 //! the profile's data dir; the download goes through `HTTPS_PROXY` to `shots_net::Proxy`, which refuses or stalls), and
 //! two more name a bring-your-own folder that matches the pin or not (Custom). The block needs a build that pins a CEF
-//! host (crates/manifold/src/host_pin.rs, written by scripts/release.sh) and is skipped without one.
+//! host (crates/manifold/src/host_pin.rs, written by `gate host-pin --adopt`) and is skipped without one.
 //!
 //! `gate chrome-shots-sizes` runs it at each of `SIZES` (`"400 300,800 600,1920 1080"`) into `OUT/<W>x<H>/`, with
 //! `VIEWS` defaulting to the ones that need no click on a fixed coordinate. `gate layout` checks the popups' bounds
