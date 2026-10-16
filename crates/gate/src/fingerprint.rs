@@ -148,6 +148,22 @@ pub(crate) fn build_tables(cargo_toml: &str) -> String {
     out
 }
 
+/// `v` as JSON with object keys sorted. serde_json keeps insertion order when another crate in the build turns on
+/// `preserve_order`, so plain `to_string` would give a different fingerprint depending on which packages are built together.
+pub(crate) fn canonical(v: &Value) -> String {
+    match v {
+        Value::Object(m) => {
+            let mut keys: Vec<&String> = m.keys().collect();
+            keys.sort();
+            let items: Vec<String> =
+                keys.iter().map(|k| format!("{}:{}", Value::from(k.as_str()), canonical(&m[*k]))).collect();
+            format!("{{{}}}", items.join(","))
+        }
+        Value::Array(a) => format!("[{}]", a.iter().map(canonical).collect::<Vec<_>>().join(",")),
+        other => other.to_string(),
+    }
+}
+
 /// The recipe for `kind`/`platform` from `.github/hosts.json`.
 pub(crate) fn recipe(root: &Path, kind: &str, platform: &str) -> Result<Value, String> {
     let path = root.join(".github/hosts.json");
@@ -175,7 +191,7 @@ pub(crate) fn fingerprint(root: &Path, kind: &str, platform: &str, require_clean
     let cargo_config = std::fs::read_to_string(root.join(".cargo/config.toml")).unwrap_or_default();
     let root_toml = std::fs::read_to_string(root.join("Cargo.toml")).map_err(|e| e.to_string())?;
     let mut parts = vec![
-        format!("recipe {recipe}"),
+        format!("recipe {}", canonical(&recipe)),
         format!("toolchain {toolchain}"),
         format!("cargo-config {cargo_config}"),
         format!("build-tables {}", build_tables(&root_toml)),
@@ -234,6 +250,13 @@ mod tests {
                 node("a", vec![("b", ""), ("d", "dev")], vec!["x"]), node("b", vec![("c", "build")], vec![]),
                 node("c", vec![], vec!["std", "alloc"]), node("d", vec![], vec![]), node("e", vec![], vec![])]}
         })
+    }
+
+    #[test]
+    fn canonical_ignores_key_order() {
+        let (a, b) = (json!({"b": [1, {"y": 1, "x": 2}], "a": "s"}), json!({"a": "s", "b": [1, {"x": 2, "y": 1}]}));
+        assert_eq!(canonical(&a), canonical(&b));
+        assert_eq!(canonical(&a), r#"{"a":"s","b":[1,{"x":2,"y":1}]}"#);
     }
 
     #[test]
