@@ -2,15 +2,6 @@
 
 One entry per tagged release, newest first. The annotated tag `vX.Y.Z` carries the same text. Releases before v0.4.0 have no entry: see `git log --first-parent --decorate`.
 
-## v0.6.1 (2026-10-16)
-
-### Internal
-
-- **Releases are built by GitHub Actions.** Pushing a `vX.Y.Z` tag runs `release.yml`, which checks the tag (`gate release-check`), builds the embedded WebView2 host and PDF view and `manifold.exe`, runs `gate package` and `gate release-verify`, and leaves a draft release. `scripts/release.sh` is gone.
-- **Engine hosts are named by a source fingerprint.** `hosts.yml` builds a host when its sources change and publishes it as `hosts-KIND-FINGERPRINT`; the pin table points at that release and `gate host-pin --check` (run in CI) fails when a pin is stale. `PIN_VERSION` is removed: host and app agree through `PROTOCOL_VERSION`.
-- v0.6.0 was tagged but never released; v0.6.1 is the first release with its changes.
-- Only CEF is built by CI so far. Servo and WebKit read Unavailable in this release until their workflows land.
-
 ## v0.6.0 (2026-10-16)
 
 ### Features
