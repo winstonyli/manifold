@@ -1694,7 +1694,7 @@ impl App {
             ("Ctrl+L", "Focus the address bar"),
             ("Ctrl+F", "Find in page"),
             ("Ctrl+R / F5", "Reload focused tab"),
-            ("Alt+Left / Alt+Right", "Back / Forward along the focused tab's trail"),
+            ("Alt+Left / Alt+Right, mouse 4 / 5", "Back / Forward along the focused tab's trail"),
             ("Ctrl+= / Ctrl+-", "Zoom in / out"),
             ("Ctrl+0", "Reset zoom"),
             ("F12", "Open devtools"),

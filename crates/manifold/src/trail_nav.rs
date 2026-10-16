@@ -19,6 +19,18 @@ fn doc_parent(doc: &crate::store::model::Doc, id: &str) -> Option<String> {
 }
 
 impl App {
+    /// The mouse's Back and Forward buttons (4 and 5) step the focused tab like Alt+Left and Alt+Right.
+    pub(crate) fn side_button_nav(&mut self, button: WinitMouseButton) {
+        let dir = match button {
+            WinitMouseButton::Back => Dir::Back,
+            WinitMouseButton::Forward => Dir::Forward,
+            _ => return,
+        };
+        if let Some(id) = self.focused.clone() {
+            self.navigate_history(&id, dir);
+        }
+    }
+
     /// A Back or Forward press on tab `id` (the toolbar chips, `GOBACK`/`GOFORWARD`). Ignored while a move is pending.
     pub(crate) fn navigate_history(&mut self, id: &str, dir: Dir) {
         let now = Instant::now();
@@ -452,6 +464,21 @@ mod tests {
         let input = egui::RawInput { events: vec![event], ..Default::default() };
         let mut output = ctx.run_ui(input, |ui| app.handle_global_shortcuts(ui));
         output.textures_delta.clear();
+    }
+
+    #[test]
+    fn the_mouse_back_button_goes_back_on_the_focused_tab() {
+        let (mut app, tab, mut peer) = tab_with_a_sibling("trail-side-buttons");
+        app.focused = Some(tab);
+        app.side_button_nav(WinitMouseButton::Middle);
+        assert!(peer.sent().is_empty(), "only buttons 4 and 5 navigate");
+        app.side_button_nav(WinitMouseButton::Back);
+        let sent = peer.sent();
+        assert!(
+            sent.iter().any(|m| matches!(m, HostToView::GoBack))
+                || sent.iter().any(|m| matches!(m, HostToView::Navigate { url, .. } if url == "https://a/")),
+            "button 4 steps the tab back to a: {sent:?}"
+        );
     }
 
     #[test]

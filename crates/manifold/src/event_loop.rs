@@ -443,6 +443,9 @@ impl ApplicationHandler<UserEvent> for App {
                     consumed_by_egui && button != WinitMouseButton::Right && button != WinitMouseButton::Middle;
                 let in_primary_pane = self.split_divider_x_px().is_none_or(|divider| x < divider);
                 let in_content = in_tab_view && !egui_wants_it && y >= chrome_height && in_primary_pane;
+                if state == ElementState::Pressed && in_tab_view && !consumed_by_egui {
+                    self.side_button_nav(button);
+                }
                 if let Some(button) = translate_mouse_button(button) {
                     // A release always goes to whichever tab is mid-drag,
                     // even when it lands outside the content area -- see
