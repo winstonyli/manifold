@@ -274,7 +274,8 @@ pub(crate) mod fake {
 
         /// The stored tab's id.
         pub(crate) fn tab(&self) -> String {
-            self.app.nodes.keys().next().cloned().expect("the rig's tab")
+            // `node_order`, not `nodes.keys()`: a HashMap's order is random per map, and a test may add a group beside the tab.
+            self.app.node_order.first().cloned().expect("the rig's tab")
         }
 
         /// Entry `id`'s card on screen.
@@ -737,5 +738,21 @@ mod drag_tests {
         rig.drag(from, over);
         assert_eq!(rig.app.mirror.group(&tab), Some(group.as_str()), "the tab joined the group");
         assert!(drops(&rig).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod rig_tests {
+    use super::fake::{Rig, FAKE};
+
+    /// A HashMap-order `tab()` picked the group about half the time once one was added; 40 rigs make that certain.
+    #[test]
+    fn the_rigs_tab_is_the_tab_even_with_a_group_beside_it() {
+        for _ in 0..40 {
+            let mut rig = Rig::with_kind(FAKE);
+            let placement = crate::fetched::Placement { group: None, pos: egui::vec2(700.0, 300.0) };
+            rig.app.place_group(Some("g".into()), "G", placement);
+            assert_ne!(rig.tab(), "g");
+        }
     }
 }
