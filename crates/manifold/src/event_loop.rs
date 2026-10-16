@@ -1543,7 +1543,7 @@ impl App {
                 } else {
                     match self.popup_gate.admit(tab_id, user_gesture, std::time::Instant::now()) {
                         crate::popup_gate::Admit::Open => {
-                            self.spawn_tab_from(tab_id, &url);
+                            self.spawn_tab_from(tab_id, &url, None);
                         }
                         crate::popup_gate::Admit::Drop { toast } => {
                             if toast {

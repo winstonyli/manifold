@@ -739,7 +739,7 @@ impl App {
                     None => "Can't open this link in a new tab".to_string(),
                 });
             } else if let Some(opener) = self.focused.clone() {
-                self.spawn_tab_from(&opener, &menu.href);
+                self.spawn_tab_from(&opener, &menu.href, None);
             } else {
                 self.spawn_new_tab(None, None, &menu.href);
             }

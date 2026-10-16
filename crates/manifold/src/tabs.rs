@@ -454,7 +454,7 @@ impl App {
             return;
         };
         let jar = self.mirror.jar(id);
-        self.spawn_new_tab_with_kind(parent, group, &url, kind, SpawnPurpose::New, jar);
+        self.spawn_new_tab_with_kind(parent, group, &url, kind, SpawnPurpose::New, jar, None);
     }
 
     /// Graph view's "+ New Tab" action: a child of `parent` (or a new root
@@ -465,16 +465,16 @@ impl App {
     /// that request's URL instead of the configured home page.
     pub(crate) fn spawn_new_tab(&mut self, parent: Option<String>, group: Option<String>, url: &str) {
         let kind = self.settings.default_starting_view_kind;
-        self.spawn_new_tab_with_kind(parent, group, url, kind, SpawnPurpose::New, None);
+        self.spawn_new_tab_with_kind(parent, group, url, kind, SpawnPurpose::New, None, None);
     }
 
     /// A tab opened by tab `opener` (a page link or `window.open`): a child of it, in its group, with its jar
     /// (deviation 3).
-    pub(crate) fn spawn_tab_from(&mut self, opener: &str, url: &str) -> String {
+    pub(crate) fn spawn_tab_from(&mut self, opener: &str, url: &str, pos: Option<egui::Vec2>) -> String {
         let parent = Some(opener.to_string());
         let group = self.group_of(&parent);
         let (kind, jar) = (self.settings.default_starting_view_kind, self.mirror.jar(opener));
-        self.spawn_new_tab_with_kind(parent, group, url, kind, SpawnPurpose::New, jar)
+        self.spawn_new_tab_with_kind(parent, group, url, kind, SpawnPurpose::New, jar, pos)
     }
 
     /// Shared by `spawn_new_tab` (always `default_starting_view_kind`),
@@ -486,7 +486,11 @@ impl App {
     /// match). Returns the new tab's id, allocated synchronously even
     /// though the real view-host process spawn (and thus the node's own
     /// insertion into `self.nodes`) completes asynchronously -- see
-    /// `spawn_tab_async`'s own doc comment. `jar` is the opener's choice to copy; `None` inherits from `group`.
+    /// `spawn_tab_async`'s own doc comment. `jar` is the opener's choice to copy; `None` inherits from `group`.  `pos` (world) replaces the position next to `parent`.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "every caller names its own parent, group, engine, purpose, jar and position"
+    )]
     pub(crate) fn spawn_new_tab_with_kind(
         &mut self,
         parent: Option<String>,
@@ -495,6 +499,7 @@ impl App {
         kind: ViewKind,
         purpose: SpawnPurpose,
         jar: Option<NodeId>,
+        pos: Option<egui::Vec2>,
     ) -> String {
         let id = self.alloc_node_id();
         // `parent`'s own position only if it actually shares `group` --
@@ -511,7 +516,7 @@ impl App {
             .filter(|p| in_group(p) && self.nodes.contains_key(*p))
             .or_else(|| self.nodes.keys().map(String::as_str).find(|id| in_group(id)))
             .map_or(egui::Vec2::ZERO, |id| self.layout_pos(id));
-        let pos = parent_pos + graph_layout::spawn_jitter(&id);
+        let pos = pos.unwrap_or_else(|| parent_pos + graph_layout::spawn_jitter(&id));
         let spawn = TabSpawn::new(id.clone(), url.to_string(), kind, pos, purpose, self.settings.zoom_factor);
         self.spawn_tab_async(TabSpawn { parent, group, jar, ..spawn });
         id
@@ -610,7 +615,7 @@ impl App {
         };
         let group = self.group_of(&Some(focused_id.clone()));
         let jar = self.mirror.jar(&focused_id);
-        self.spawn_new_tab_with_kind(Some(focused_id), group, &url, kind, SpawnPurpose::Split, jar);
+        self.spawn_new_tab_with_kind(Some(focused_id), group, &url, kind, SpawnPurpose::Split, jar, None);
     }
 
     /// Closes split view -- unpairs the secondary pane and stops its

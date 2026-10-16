@@ -1313,7 +1313,7 @@ impl App {
             self.trail_pick(tab, entry);
         }
         if let Some(entry) = as_card {
-            self.open_branch_as_card(tab, entry);
+            self.open_branch_as_card(tab, entry, None);
         }
         if picked.is_some() || as_card.is_some() || clicked_outside {
             close_popup(&mut self.menus.open_popup, which);

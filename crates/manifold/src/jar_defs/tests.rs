@@ -168,7 +168,7 @@ fn a_new_tab_inherits_and_an_opened_tab_copies_its_openers_edge() {
     assert_eq!(spawn.jar, None, "a new tab has no edge of its own: it inherits");
     let opener = tab_in(&mut app, Some(&g));
     app.set_jar_edge(&opener, Some(home));
-    app.spawn_tab_from(&opener, "https://opened/");
+    app.spawn_tab_from(&opener, "https://opened/", None);
     let (spawn, _) = app.test_spawns.last().unwrap();
     assert_eq!(spawn.jar, Some(home), "deviation 3");
     assert_eq!(spawn.parent.as_deref(), Some(opener.as_str()));

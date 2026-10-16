@@ -343,7 +343,8 @@ fn a_failed_root_spawn_shows_its_card_in_graph_view() {
 #[test]
 fn a_failed_split_spawn_toasts_and_makes_no_card() {
     let mut app = app_on(&temp_dir("failed-split-spawn").join("session.mnf"), 1);
-    let id = app.spawn_new_tab_with_kind(None, None, "https://s/", crate::ViewKind::Servo, SpawnPurpose::Split, None);
+    let id =
+        app.spawn_new_tab_with_kind(None, None, "https://s/", crate::ViewKind::Servo, SpawnPurpose::Split, None, None);
     assert!(app.save_session());
     fail_spawns(&mut app);
     assert!(!app.nodes.contains_key(&id), "no card for a split pane");

@@ -122,20 +122,26 @@ impl VirtualSource for TrailSource {
         CardBody { interact_rect: entry.rect, tooltip: None }
     }
 
-    fn on_click(&self, _app: &mut App, _entry: &CardEntry) -> Option<GraphAction> {
-        None // Task 4
+    fn on_click(&self, app: &mut App, entry: &CardEntry) -> Option<GraphAction> {
+        let (tab, page) = page_ids(&entry.id)?;
+        app.trail_pick(tab, page);
+        None
     }
 
     fn on_menu(&self, _app: &mut App, _entry: &CardEntry, _at: egui::Pos2) {} // never called: the kind has no `menu`
 
+    /// Every release (on a card, empty canvas, or the back button's `Eject`) opens the page as a card at `at`, from the
+    /// tab whose trail it came from (spec decision 5), so the target is ignored.
     fn on_drop(
         &self,
-        _app: &mut App,
-        _entry: &CardEntry,
+        app: &mut App,
+        entry: &CardEntry,
         _target: Option<(DropEffect, Option<String>)>,
-        _at: egui::Pos2,
+        at: egui::Pos2,
     ) -> Option<GraphAction> {
-        None // Task 4
+        let (tab, page) = page_ids(&entry.id)?;
+        app.open_branch_as_card(tab, page, Some(at.to_vec2()));
+        None
     }
 }
 
@@ -223,5 +229,57 @@ mod tests {
             paint_trail_page(&painter, rect, &page, false);
         });
         output.textures_delta.clear();
+    }
+
+    #[test]
+    fn clicking_a_page_starts_a_plain_move_to_it_and_not_while_one_is_pending() {
+        let mut rig = forked();
+        let tab = rig.tab();
+        let b = rig.screen(&format!("virtual:trail:{tab}:1")).center();
+        rig.click(b);
+        let now = std::time::Instant::now();
+        assert!(rig.app.nav_history[&tab].move_pending(now), "the click started a move");
+        // A second click on another page while that move is pending is ignored.
+        let c = rig.screen(&format!("virtual:trail:{tab}:2")).center();
+        rig.click(c);
+        assert!(rig.app.nav_history[&tab].move_pending(now), "still the first move");
+    }
+
+    #[test]
+    fn clicking_the_cursor_page_or_an_evicted_one_does_nothing() {
+        let mut rig = forked();
+        let tab = rig.tab();
+        let d = rig.screen(&format!("virtual:trail:{tab}:3")).center();
+        rig.click(d);
+        assert!(!rig.app.nav_history[&tab].move_pending(std::time::Instant::now()), "the cursor page");
+        rig.app.trail_pick(&tab, 99);
+        assert!(!rig.app.nav_history[&tab].move_pending(std::time::Instant::now()), "an index past the end");
+    }
+
+    #[test]
+    fn dragging_a_page_onto_empty_canvas_opens_it_as_a_card_there() {
+        let mut rig = forked();
+        let tab = rig.tab();
+        let from = rig.screen(&format!("virtual:trail:{tab}:1")).center();
+        let to = from + egui::vec2(0.0, 300.0);
+        rig.drag(from, to);
+        let (spawn, _) = rig.app.test_spawns.last().expect("a tab was spawned");
+        assert_eq!(spawn.url, "/b");
+        assert_eq!(spawn.parent.as_deref(), Some(tab.as_str()), "opened from the tab whose trail it came from");
+        let world = rig.app.graph_screen_point_to_world(to);
+        assert!((spawn.pos - world).length() < 1.0, "placed at the release point");
+        assert_eq!(rig.app.nav_history[&tab].export()["entries"], 4, "the trail is unchanged");
+    }
+
+    #[test]
+    fn dropping_a_page_on_a_card_opens_it_the_same_way() {
+        let mut rig = forked();
+        let tab = rig.tab();
+        let from = rig.screen(&format!("virtual:trail:{tab}:2")).center();
+        let to = rig.app.graph_world_rect_to_screen(rig.app.card_rect(&tab).unwrap()).center();
+        rig.drag(from, to);
+        let (spawn, _) = rig.app.test_spawns.last().expect("a tab was spawned");
+        assert_eq!(spawn.url, "/c");
+        assert_eq!(spawn.parent.as_deref(), Some(tab.as_str()), "the card dropped on is not the opener");
     }
 }

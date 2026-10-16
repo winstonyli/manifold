@@ -103,10 +103,10 @@ impl App {
     }
 
     /// "Open as card" on a branch row (decision 9): a new tab opened from `tab` at that entry's URL, with opened-from
-    /// and the group set as for any opened tab. The trail is unchanged.
-    pub(crate) fn open_branch_as_card(&mut self, tab: &str, entry: usize) {
+    /// and the group set as for any opened tab, at `pos` (world) when given. The trail is unchanged.
+    pub(crate) fn open_branch_as_card(&mut self, tab: &str, entry: usize, pos: Option<egui::Vec2>) {
         let Some(url) = self.nav_history.get(tab).and_then(|h| h.entry_url(entry)).map(str::to_owned) else { return };
-        self.spawn_tab_from(tab, &url);
+        self.spawn_tab_from(tab, &url, pos);
     }
 
     /// `id` is shown (`nodes`), or live in the document (hidden by a close).
@@ -519,7 +519,7 @@ mod tests {
     fn open_as_card_opens_a_child_tab_and_leaves_the_trail() {
         let (mut app, tab, _peer) = tab_with_a_sibling("trail-promote");
         let before = app.nav_history[&tab].branches(Dir::Back);
-        app.open_branch_as_card(&tab, 1);
+        app.open_branch_as_card(&tab, 1, None);
         let spawn = &app.test_spawns.last().unwrap().0;
         assert_eq!((spawn.url.as_str(), spawn.parent.as_deref()), ("https://b/", Some(tab.as_str())));
         assert_eq!(app.nav_history[&tab].branches(Dir::Back), before);
