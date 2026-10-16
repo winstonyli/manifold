@@ -1921,8 +1921,6 @@ impl App {
         }
     }
 
-    /// Eases the camera so a card that just took keyboard focus is in view, centered on it when it
-    /// isn't already fully visible.
     /// World rect of Tab-order card `id`: a stored node's, or a virtual entry's.
     pub(crate) fn level_card_rect(&self, id: &str) -> Option<egui::Rect> {
         self.card_rect(id).or_else(|| {
@@ -1930,6 +1928,8 @@ impl App {
         })
     }
 
+    /// Eases the camera so a card that just took keyboard focus is in view, centered on it when it
+    /// isn't already fully visible.
     pub(crate) fn pan_to_card(&mut self, card: egui::Rect) {
         let view = self.camera.rect;
         if !view.contains_rect(card) {

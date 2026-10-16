@@ -626,11 +626,11 @@ impl App {
         }
     }
 
-    /// Drops from the rectangle selection every tab no longer drawn on this level: closed, mid-respawn, or moved by
-    /// another replica. It only ever holds this level's tabs (`eject`, `switch_group_level`); otherwise Close Selected
-    /// or Group Selected would act on a tab the user can't see.
-    /// What stays is a card of this level whose kind grants `selectable` (a stored card's row does; a virtual kind's
-    /// grants it only if its source's row says so). A JSON level's cards are never selected.
+    /// Drops from the selection every card no longer drawn on this level: a tab closed, mid-respawn, or moved by
+    /// another replica. What stays is a card of this level whose kind grants `selectable` (a stored card's row does;
+    /// a virtual kind's grants it only if its source's row says so). A JSON level's cards are never selected. It
+    /// only ever holds this level's cards (`eject`, `switch_group_level`); otherwise Close Selected or Group
+    /// Selected would act on a card the user can't see.
     pub(crate) fn end_stale_selection(&mut self) {
         let selectable: HashSet<String> = self.selectable_ids();
         self.interaction.selected.retain(|id| selectable.contains(id));

@@ -1,6 +1,6 @@
 # Virtual cards: cards without a document node
 
-Status: draft for review, 2026-10-16. Piece 1 of two; piece 2 is the trail strip (`2026-10-16-trail-strip-design.md`, not yet written), the first client.
+Status: implemented 2026-10-16 (piece 1 of 2). Piece 1 of two; piece 2 is the trail strip (`2026-10-16-trail-strip-design.md`, not yet written), the first client.
 
 ## Intent
 
@@ -48,6 +48,16 @@ Round 1 (self): found the drag ghost and empty-canvas-target assumptions unverif
 - The seam touches the interaction code in about 8 files (survey estimate 250-400 lines); the largest risk is a site the survey did not read still assuming `nodes`. Mitigation: grep every `self.nodes` use in the graph modules during planning and classify each.
 - A virtual card cannot be dragged to a new position (decision 4). If a later source needs that, `MOVE` with a provider-owned position is the extension.
 - Mixed selections skip virtual ids for node actions (decision 5) rather than refusing the action.
+
+## Implementation notes
+
+Rulings made while implementing:
+
+- Sources are held as `Rc<dyn VirtualSource>` (`App.virtual_sources`), single-threaded like the rest of the UI state.
+- A virtual drag calls the provider's `on_drop` directly on release; it never produces `GraphAction::Drop`, so `apply_drop` and the stored-node drop paths never see it.
+- A virtual dragged kind dropped on a card takes the `Join` effect in `drop_action`.
+- The drag ghost is the frame only (translucent rect with an accent stroke at the card rect plus the pointer offset), not the source's `paint_body`, which would register interacts twice.
+- The persistence guard is the `is_virtual_id` prefix check (`virtual:`), not `nodes.contains_key`, because link nodes live outside `nodes` and would pass a "not in nodes" test.
 
 ## Next
 
