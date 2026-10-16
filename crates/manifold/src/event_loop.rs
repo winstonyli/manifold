@@ -1434,7 +1434,7 @@ impl App {
                     return false;
                 };
                 let url = self.reported_url(tab_id, url, loading, current);
-                self.nav_history.entry(tab_id.to_string()).or_default().observe(
+                let stale = self.nav_history.entry(tab_id.to_string()).or_default().observe(
                     &url,
                     &title,
                     loading,
@@ -1444,6 +1444,7 @@ impl App {
                 let Some(node) = self.nodes.get_mut(tab_id).and_then(|n| n.as_tab_mut()) else {
                     return false;
                 };
+                let (url, title) = if stale { (node.url.clone(), node.title.clone()) } else { (url, title) };
                 let url_changed = node.url != url;
                 let skip = skip_convert_after(self.spawns.skip_convert.get(tab_id).copied(), url_changed, loading);
                 match skip {

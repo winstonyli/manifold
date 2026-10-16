@@ -64,9 +64,11 @@ middle of the trail stay reachable as branches. Nothing creates a card unless th
       ignored and the move kept (some engines repeat the old URL once; Servo reports only when a document commits, so the 3 s deadline restarts on each report at the origin's URL). A report equal to neither drops the move and falls
       to the rules below, no rewrite (an unrelated navigation during the window, an error page; a redirect that skips the
       `target` URL report is a known limit and forks).
-      A move that commits on a loading report stays as `committed` until `target` settles: it no longer blocks `go()`,
-      but a settled report at `from`'s URL meanwhile is held (the old document finishing after a wake, not a redirect:
-      step 5 would rewrite the cursor entry to it). Any other URL ends it. Measured 2026-10-15 by `gate sleep` history.
+      A committed move stays as `committed` until its deadline or the first report of a URL other than `from` and
+      `target`, whatever the loading flag: it no longer blocks `go()`, but a settled report at `from`'s URL meanwhile is
+      held (the old document finishing after a wake, in any order against the target's reports: not a redirect, which
+      step 5 would read it as). `observe` returns true for such a report and the tab keeps its url and title. Measured
+      2026-10-15 by `gate sleep` history on WebView2, WebKit and Servo.
       If `target`'s URL equals `from`'s URL no report can tell them apart, so `go()` commits at once. Native: the engine
       moves a real slot (`GoBack`/`GoForward`), `lin_at` +- 1, and the action is returned. Plain: the tab already shows
       that page and a same-URL `Navigate` is a reload that replaces the slot (measured 2026-10-15: WebView2 keeps the forward entry, CEF consistent; WebKit not run; Servo: see decision 12), so

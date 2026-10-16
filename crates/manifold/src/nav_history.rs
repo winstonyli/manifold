@@ -71,8 +71,8 @@ impl Saved {
     }
 }
 
-/// A Back, Forward or branch pick on its way: it commits when a report arrives at `target`'s URL, and ends when the
-/// target settles.
+/// A Back, Forward or branch pick on its way: it commits when a report arrives at `target`'s URL, and ends at its
+/// deadline or at the first report of another URL.
 #[derive(Clone, Copy, Debug)]
 struct Move {
     target: usize,
@@ -80,7 +80,8 @@ struct Move {
     /// Sent as the engine's `GoBack`/`GoForward`, not a `Navigate`.
     native: bool,
     deadline: Instant,
-    /// The cursor is at `target`, whose load has not settled.
+    /// The cursor is at `target`; the origin's old document may still report (in any order, some engines settling the
+    /// target before the origin's last report), so its settled report is held until the deadline.
     committed: bool,
 }
 
@@ -118,10 +119,19 @@ pub(crate) struct NavHistory {
 
 impl NavHistory {
     /// Folds in one `NavigationStateChanged` (many repeat the same URL). `title` goes to the cursor entry when it is
-    /// non-empty and the report is settled or repeats the cursor's URL (decision 11).
-    pub(crate) fn observe(&mut self, url: &str, title: &str, loading: bool, can_go_forward: bool, now: Instant) {
+    /// non-empty and the report is settled or repeats the cursor's URL (decision 11). Returns whether the report was
+    /// the old document of a committed move finishing (step 3): the tab keeps the cursor's URL and title.
+    pub(crate) fn observe(
+        &mut self,
+        url: &str,
+        title: &str,
+        loading: bool,
+        can_go_forward: bool,
+        now: Instant,
+    ) -> bool {
         let before = self.saved_form();
         let same_page = self.entries.get(self.at).is_some_and(|e| e.url == url);
+        let stale = self.is_stale_origin(url, loading, now);
         if self.fold(url, loading, can_go_forward, now)
             && !title.is_empty()
             && (same_page || !loading)
@@ -130,6 +140,18 @@ impl NavHistory {
             self.entries[self.at].title = title.to_owned();
         }
         self.dirty |= before != self.saved_form();
+        stale
+    }
+
+    /// Step 3's hold: a settled report of the origin while a committed move is still inside its window.
+    fn is_stale_origin(&self, url: &str, loading: bool, now: Instant) -> bool {
+        self.pending.is_some_and(|m| {
+            m.committed
+                && now <= m.deadline
+                && !loading
+                && self.entries[m.from].url == url
+                && self.entries[m.target].url != url
+        })
     }
 
     /// What a save writes; a change in it is a change worth saving.
@@ -153,18 +175,18 @@ impl NavHistory {
         if self.pending.is_some_and(|m| now > m.deadline) {
             self.pending = None;
         }
-        // 3: a pending move commits on its target's URL and waits through its origin's. A committed one, until the
-        // target settles, holds the origin's settled report: the old document finishing, not a redirect (step 5).
+        // 3: a pending move commits on its target's URL and waits through its origin's. A committed one holds the
+        // origin's settled report until its deadline: the old document finishing, not a redirect (step 5).
         if let Some(m) = self.pending {
             if m.committed {
-                if !loading && self.entries[m.from].url == url && self.entries[m.target].url != url {
+                if self.is_stale_origin(url, loading, now) {
                     return false;
                 }
-                if !(loading && self.entries[m.target].url == url) {
+                if self.entries[m.target].url != url {
                     self.pending = None;
                 }
             } else if self.entries[m.target].url == url {
-                self.pending = loading.then_some(Move { committed: true, deadline: now + MOVE_WINDOW, ..m });
+                self.pending = Some(Move { committed: true, deadline: now + MOVE_WINDOW, ..m });
                 self.commit(m.target, m.from, if m.native { LinStep::Native } else { LinStep::Push });
                 self.loading = loading;
                 return true;
@@ -888,7 +910,7 @@ mod tests {
         h.observe("b", "", false, false, now);
         assert!(h.pending.is_some());
         h.observe("a", "", false, true, now);
-        assert_eq!((h.at, h.lin_at, h.pending.is_none()), (0, 0, true));
+        assert_eq!((h.at, h.lin_at), (0, 0));
     }
 
     #[test]
@@ -903,7 +925,10 @@ mod tests {
         h.observe("c", "", false, false, now);
         assert_eq!(urls(&h), ["a", "b", "c"], "c's late settle did not rewrite b");
         h.observe("b", "", false, false, now);
-        assert_eq!((urls(&h), h.at, h.pending.is_none()), (vec!["a", "b", "c"], 1, true));
+        assert_eq!((urls(&h), h.at), (vec!["a", "b", "c"], 1));
+        assert!(h.observe("c", "", false, false, now), "reported stale: the tab keeps b");
+        assert_eq!(urls(&h), ["a", "b", "c"], "also after the target settled (Servo orders it so)");
+        assert!(!h.observe("b", "", false, false, now), "the target's own report is not stale");
         assert_eq!(h.go(Dir::Back, false, false, now), NavAction::Navigate("a".to_owned()), "Back goes on to a");
     }
 
@@ -941,7 +966,7 @@ mod tests {
         }
         h.observe("a", "", false, false, now + Duration::from_secs(8));
         assert_eq!(urls(&h), ["a", "b"], "no fork");
-        assert_eq!((h.at, h.pending.is_none()), (0, true));
+        assert_eq!(h.at, 0);
     }
 
     #[test]
@@ -1080,12 +1105,14 @@ mod tests {
         let mut h = NavHistory::visited(&["a", "b", "c"]);
         back(&mut h, now);
         back(&mut h, now);
-        h.observe("b", "", false, true, now);
+        // Within the move's window the origin's settled report is the old document finishing; after it, a script.
+        let later = now + MOVE_WINDOW + Duration::from_secs(1);
+        h.observe("b", "", false, true, later);
         assert_eq!((h.at, h.lin_at, h.lin.len()), (1, 1, 3), "history.forward()");
         let mut h = NavHistory::visited(&["a", "b", "c"]);
         back(&mut h, now);
         back(&mut h, now);
-        h.observe("b", "", false, false, now);
+        h.observe("b", "", false, false, now + MOVE_WINDOW + Duration::from_secs(1));
         assert_eq!((h.at, h.lin_at, h.lin.len()), (1, 1, 2), "a click on a link to b: the engine dropped c");
         assert_eq!(h.entries.len(), 3, "the equal child is reused");
     }
