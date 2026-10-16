@@ -2,11 +2,11 @@
 //! only thing that stretches it. A Git Bash fork costs seconds on this machine and the old script forked per stage for
 //! the clock, the log counts and the timing join; here only the stages and one PowerShell call for Defender are spawned.
 //!
-//! - `full` (default): `gate two` x3, `smoke`, `launch-forms`, `link`, `unknown-type`, `closed`, `trail`, `layout`. For any change to sync, the store, the
+//! - `full` (default): `gate two` x3, `smoke`, `launch-forms`, `link`, `unknown-type`, `closed`, `trail`, `sleep-history`, `layout`. For any change to sync, the store, the
 //!   mirror, session save/restore or the view hosts.
 //! - `light`: the same with `two` once. For UI code that writes the store or reaches a view, and scripts. The repeats in
 //!   `full` exist to catch flaky ordering in sync, which UI-only changes cannot reach.
-//! - `ui`: `cargo test` of the three CI crates, then `link`, `unknown-type`, `closed`, `trail` and `layout`. For drawing, input and view-state modules
+//! - `ui`: `cargo test` of the three CI crates, then `link`, `unknown-type`, `closed`, `trail`, `sleep-history` and `layout`. For drawing, input and view-state modules
 //!   that import no store, sync or network module (the list is in tier.rs), and docs.
 //!
 //! With `WEBKIT_SITE_HOST=<ip>` set (the WSL gateway as Windows sees it, `wsl.exe -d Ubuntu -- ip route`, the default
@@ -16,7 +16,7 @@
 //! Build first (`cargo build -j 8 -p manifold -p manifold-view-webview2 -p manifold-view-pdfium -p gate`) and run from
 //! the repo root, detached and low priority: `cmd //c start "" //b //belownormal target/debug/gate.exe all LOG [mode]`.
 //! Progress and verdicts go to LOG; each stage's own output to LOG.two-N.log, .smoke.log, .launch-forms.log, .link.log, .unknown-type.log, .closed.log, .trail.log,
-//! .layout.log and .unit.log. After each stage LOG gets its `TIMING` lines (see timing.rs) and at the end the slowest
+//! .sleep-history.log, .layout.log and .unit.log. After each stage LOG gets its `TIMING` lines (see timing.rs) and at the end the slowest
 //! ten; LOG.cpu holds the machine's CPU load sampled every few seconds. Running the stages in parallel was tried
 //! (2026-10-07) and was worse: 53 min, all four runs failed on timing waits under load.
 
@@ -225,6 +225,9 @@ pub(crate) fn all(log: Option<PathBuf>, mode: Option<String>) -> ExitCode {
     g.stage("unknown-type", &sibling(&log, "unknown-type.log"), gate("unknown-type"));
     g.stage("closed", &sibling(&log, "closed.log"), gate("closed"));
     g.stage("trail", &sibling(&log, "trail.log"), gate("trail"));
+    let mut history = gate("sleep");
+    history.env("VIEWS", "webview2").env("CASES", "history");
+    g.stage("sleep-history", &sibling(&log, "sleep-history.log"), history);
     if let Ok(ip) = std::env::var("WEBKIT_SITE_HOST") {
         let mut trail = gate("trail");
         trail.env("ENGINE", "webkit").env("SITE_HOST", &ip);
