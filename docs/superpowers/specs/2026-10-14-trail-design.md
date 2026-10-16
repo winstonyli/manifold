@@ -246,7 +246,7 @@ middle of the trail stay reachable as branches. Nothing creates a card unless th
     some engines send the previous page's title first; a transient wrong title is accepted otherwise.
 
 12. **No engine signal needed.** The trail uses only `url`, `title` and `loading` from the report, so Servo and WebKit
-    (`user_started` is `None`) behave like the other engines. The cap bounds the cost of scripted changes forking. Measured 2026-10-15: `ENGINE=servo gate trail` (a debug Servo host copied beside `manifold.exe`) passes every check, including a page whose own `history.back()` reads as a Back with no new entry. `ENGINE=cef gate trail` passes the same checks. WebKit has not passed: the host and its connection are unreliable under the gate (README, after the `gate trail` entry). WebKit builds only on Linux and was not run.
+    (`user_started` is `None`) behave like the other engines. The cap bounds the cost of scripted changes forking. Measured 2026-10-15: `ENGINE=servo gate trail` (a debug Servo host copied beside `manifold.exe`) passes every check, including a page whose own `history.back()` reads as a Back with no new entry. `ENGINE=cef gate trail` passes the same checks. `ENGINE=webkit gate trail` (host in WSL, README "WebKit under the gate") passes 6 of 6 runs since the host reports the history's current item as the url: WebKit's `uri()` is the pending page from load start while `can_go_forward` follows at commit, and the old pairing read a page-script Back as a fork in 4 of 6 runs.
 
 ## Touch points
 

@@ -8,7 +8,8 @@ use gtk::prelude::*;
 use ipc_protocol::{transport, HostToView, MessageChannel, TabState, ViewToHost};
 use javascriptcore::ValueExt;
 use webkit2gtk::{
-    DownloadExt, FindControllerExt, FindOptions, URIRequestExt, URIResponseExt, WebContextExt, WebView, WebViewExt,
+    BackForwardListExt, BackForwardListItemExt, DownloadExt, FindControllerExt, FindOptions, URIRequestExt,
+    URIResponseExt, WebContextExt, WebView, WebViewExt,
 };
 
 const DEFAULT_WIDTH: i32 = 1024;
@@ -420,8 +421,13 @@ fn main() {
             }
         }
 
+        // The history's current item, not `uri()`: `uri()` is the pending page from the moment a load starts, while
+        // `can_go_back`/`can_go_forward` follow the history at commit. The item moves with them, so a poll never
+        // pairs a new url with the old page's flags (a page-script Back read as a fork on that).
+        let url =
+            webview.back_forward_list().and_then(|l| l.current_item()).and_then(|i| i.uri()).or_else(|| webview.uri());
         let nav_now = (
-            webview.uri().map(|u| u.to_string()).unwrap_or_else(|| last_nav.0.clone()),
+            url.map(|u| u.to_string()).unwrap_or_else(|| last_nav.0.clone()),
             webview.title().map(|t| t.to_string()).unwrap_or_default(),
             webview.can_go_back(),
             webview.can_go_forward(),
