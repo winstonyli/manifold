@@ -1582,28 +1582,7 @@ impl App {
     /// keeping on-screen density roughly constant regardless of
     /// zoom level instead.
     pub(crate) fn draw_graph_dot_grid(&self, ui: &egui::Ui, zoom_scale: f32, inv_zoom: f32) {
-        let mut grid_spacing = 40.0_f32;
-        while grid_spacing * zoom_scale < 20.0 {
-            grid_spacing *= 2.0;
-        }
-        while grid_spacing * zoom_scale > 80.0 {
-            grid_spacing /= 2.0;
-        }
-        let dot_color = ui.visuals().weak_text_color().gamma_multiply(0.35);
-        let visible = self.camera.rect;
-        let start_x = (visible.min.x / grid_spacing).floor() as i32;
-        let end_x = (visible.max.x / grid_spacing).ceil() as i32;
-        let start_y = (visible.min.y / grid_spacing).floor() as i32;
-        let end_y = (visible.max.y / grid_spacing).ceil() as i32;
-        for gx in start_x..=end_x {
-            for gy in start_y..=end_y {
-                ui.painter().circle_filled(
-                    egui::pos2(gx as f32 * grid_spacing, gy as f32 * grid_spacing),
-                    1.5 * inv_zoom,
-                    dot_color,
-                );
-            }
-        }
+        paint_dot_grid(ui.painter(), self.camera.rect, zoom_scale, inv_zoom, ui.visuals().weak_text_color());
     }
 
     /// Edges first so node cards paint on top of the lines feeding them: every edge `level_edges` lists once, each
@@ -1639,10 +1618,9 @@ impl App {
                     egui::Stroke::new(width * inv_zoom, ACCENT)
                 }
                 EdgeKind::Jar => egui::Stroke::new(1.0 * inv_zoom, ui.visuals().weak_text_color().gamma_multiply(0.6)),
-                EdgeKind::Opened => egui::Stroke::new(
-                    2.0 * inv_zoom,
-                    if edge.highlight { ACCENT } else { ui.visuals().weak_text_color() },
-                ),
+                EdgeKind::Opened => {
+                    crate::level::opened_edge_stroke(edge.highlight, inv_zoom, ui.visuals().weak_text_color())
+                }
             };
             match edge.curve {
                 EdgeCurve::Bow => {
@@ -2030,6 +2008,38 @@ impl App {
                     }));
                 }
             }
+        }
+    }
+}
+
+/// The graph's dot grid over the world rect `visible` (see `App::draw_graph_dot_grid`), in `painter`'s own
+/// coordinates, which the trail popups share with a `visible` of their own.
+pub(crate) fn paint_dot_grid(
+    painter: &egui::Painter,
+    visible: egui::Rect,
+    zoom_scale: f32,
+    inv_zoom: f32,
+    weak: egui::Color32,
+) {
+    let mut grid_spacing = 40.0_f32;
+    while grid_spacing * zoom_scale < 20.0 {
+        grid_spacing *= 2.0;
+    }
+    while grid_spacing * zoom_scale > 80.0 {
+        grid_spacing /= 2.0;
+    }
+    let dot_color = weak.gamma_multiply(0.35);
+    let start_x = (visible.min.x / grid_spacing).floor() as i32;
+    let end_x = (visible.max.x / grid_spacing).ceil() as i32;
+    let start_y = (visible.min.y / grid_spacing).floor() as i32;
+    let end_y = (visible.max.y / grid_spacing).ceil() as i32;
+    for gx in start_x..=end_x {
+        for gy in start_y..=end_y {
+            painter.circle_filled(
+                egui::pos2(gx as f32 * grid_spacing, gy as f32 * grid_spacing),
+                1.5 * inv_zoom,
+                dot_color,
+            );
         }
     }
 }

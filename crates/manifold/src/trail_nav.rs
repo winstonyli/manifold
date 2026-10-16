@@ -533,13 +533,23 @@ mod tests {
         let anchor = egui::Rect::from_min_size(egui::pos2(10.0, 10.0), egui::vec2(20.0, 20.0));
         let id = egui::Id::new(("trail_branches_popup", AnchoredPopup::BackBranches));
         let layer = egui::LayerId::new(egui::Order::Foreground, id);
-        let mut curves = 0;
+        let (mut curves, mut accent, mut dots) = (0, 0, 0);
         // The first frame of an `Area` only measures it (nothing is drawn), so look at the second.
         for _ in 0..2 {
             let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
                 app.build_trail_branches_popup(ui, Dir::Back, anchor, &tab, 1.0);
-                curves = ui.ctx().graphics_mut(|g| {
-                    g.entry(layer).all_entries().filter(|c| matches!(c.shape, egui::Shape::CubicBezier(_))).count()
+                ui.ctx().graphics_mut(|g| {
+                    for c in g.entry(layer).all_entries() {
+                        match &c.shape {
+                            egui::Shape::CubicBezier(b) => {
+                                curves += 1;
+                                accent +=
+                                    usize::from(b.stroke.color == egui::epaint::ColorMode::Solid(crate::theme::ACCENT));
+                            }
+                            egui::Shape::Circle(_) => dots += 1,
+                            _ => {}
+                        }
+                    }
                 });
             });
             output.textures_delta.clear();
@@ -548,6 +558,8 @@ mod tests {
         assert!(rect.width() >= 60.0, "{rect:?}");
         assert_eq!(app.menus.open_popup, Some(AnchoredPopup::BackBranches), "no click: it stays open");
         assert!(curves > 0, "the tree's lines are the level's bezier edges");
+        assert!(accent > 0, "the path to the cursor is drawn in the accent, as in the strip");
+        assert!(dots > 0, "the graph's dot grid is behind the tree");
     }
 
     #[test]

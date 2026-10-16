@@ -55,6 +55,11 @@ pub(crate) fn paint_horizontal_edge(painter: &egui::Painter, from: egui::Pos2, t
     ));
 }
 
+/// A trail edge's stroke: the accent on the path to the cursor, else weak.
+pub(crate) fn opened_edge_stroke(on_path: bool, inv_zoom: f32, weak: egui::Color32) -> egui::Stroke {
+    egui::Stroke::new(2.0 * inv_zoom, if on_path { crate::theme::ACCENT } else { weak })
+}
+
 /// Which edge source a `LevelEdge` came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum EdgeKind {

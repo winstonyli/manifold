@@ -1303,6 +1303,11 @@ impl App {
                             let extent = rects.iter().fold(egui::Vec2::ZERO, |m, r| m.max(r.max.to_vec2()));
                             let (area, _) = ui.allocate_exact_size(extent, egui::Sense::hover());
                             let at = |r: &egui::Rect| r.translate(area.min.to_vec2());
+                            // The graph's own backdrop: its background and dot grid, anchored to the tree.
+                            ui.painter().rect_filled(area, 4.0, crate::theme::BG);
+                            let grid = ui.painter().with_clip_rect(area.intersect(ui.clip_rect()));
+                            let weak = ui.visuals().weak_text_color();
+                            crate::graph_ui::paint_dot_grid(&grid, area, 1.0, 1.0, weak);
                             // Lines first, so the pages draw over them.
                             for (page, rect) in pages.iter().zip(&rects) {
                                 if let Some(parent) = page.parent {
@@ -1310,7 +1315,11 @@ impl App {
                                         ui.painter(),
                                         at(&rects[parent]).right_center(),
                                         at(rect).left_center(),
-                                        ui.visuals().widgets.noninteractive.fg_stroke,
+                                        crate::level::opened_edge_stroke(
+                                            page.on_path && pages[parent].on_path,
+                                            1.0,
+                                            ui.visuals().weak_text_color(),
+                                        ),
                                     );
                                 }
                             }
