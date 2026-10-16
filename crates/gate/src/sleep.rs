@@ -181,6 +181,8 @@ fn run_case(exe: &Path, work: &Path, case: &str, view: &str) -> io::Result<()> {
         "history" | "crash" | "restart" => {
             // Two more pages in Tab view, then sleep (history) or kill the engine host (crash), then Back twice.
             inst.step(&["GRAPHDOWN", "GRAPHOPEN"], "the first page to load", || site.hits("/") > 0)?;
+            // Each page settles before the next is typed: a url typed over a load in progress reads as its redirect.
+            inst.send("WAITIDLE")?;
             for page in ["p2", "p3"] {
                 let path = format!("/{page}");
                 let typed = format!("ADDRESSBAR {}", site.url(&path));
@@ -188,6 +190,7 @@ fn run_case(exe: &Path, work: &Path, case: &str, view: &str) -> io::Result<()> {
                 inst.step(&[&typed, "WAITIDLE", "ENTER"], &format!("a request for {path}"), || {
                     site.hits(&path) > before
                 })?;
+                inst.send("WAITIDLE")?;
             }
             inst.export_state(&format!("{name}-pre"))?;
             let before = site.hits("/p3");
