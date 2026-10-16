@@ -253,7 +253,9 @@ fn adopt(
     if m.files.is_empty() {
         return Err("pin.json lists no files".into());
     }
-    let dir = std::env::temp_dir().join(format!("adopt-{}-{kind}", std::process::id()));
+    static CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let n = CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("adopt-{}-{n}-{kind}", std::process::id()));
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let result = (|| {
         let mut files = Files::new();
@@ -521,7 +523,11 @@ mod tests {
     }
 
     fn release_dir(name: &str, bytes: &[u8]) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("pin-{name}-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "pin-{name}-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("t").replace("::", "-")
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("a.exe-windows-x64"), bytes).unwrap();

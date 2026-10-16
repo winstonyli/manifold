@@ -89,7 +89,13 @@ pub(crate) fn closure_of(meta: &Value, package: &str) -> Result<Vec<Pkg>, String
         };
         let name = p["name"].as_str().unwrap_or("");
         let version = p["version"].as_str().unwrap_or("");
-        out.push(Pkg { id: format!("{name} {version} {}", source.unwrap_or("path")), dir, features });
+        // A workspace crate is covered by its files; its (workspace-wide) version would change every host each release.
+        let id = if source.is_none() {
+            format!("{name} path")
+        } else {
+            format!("{name} {version} {}", source.unwrap_or(""))
+        };
+        out.push(Pkg { id, dir, features });
     }
     out.sort();
     Ok(out)
@@ -127,6 +133,21 @@ pub(crate) fn digest(parts: &[String]) -> String {
     hex(&h.finalize())[..12].to_owned()
 }
 
+/// The root `Cargo.toml` tables that change how any crate is compiled (`[profile*]`, `[patch*]`, `[replace]`).
+pub(crate) fn build_tables(cargo_toml: &str) -> String {
+    let (mut keep, mut out) = (false, String::new());
+    for line in cargo_toml.lines() {
+        if line.starts_with('[') {
+            keep = ["[profile", "[patch", "[replace"].iter().any(|p| line.starts_with(p));
+        }
+        if keep {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    out
+}
+
 /// The recipe for `kind`/`platform` from `.github/hosts.json`.
 pub(crate) fn recipe(root: &Path, kind: &str, platform: &str) -> Result<Value, String> {
     let path = root.join(".github/hosts.json");
@@ -145,13 +166,20 @@ pub(crate) fn fingerprint(root: &Path, kind: &str, platform: &str, require_clean
     let pkgs = closure(root, package, triple)?;
     if require_clean {
         let mut paths: Vec<&str> = pkgs.iter().filter_map(|p| p.dir.as_deref()).collect();
-        paths.extend(["rust-toolchain.toml", ".github/hosts.json"]);
+        paths.extend(["rust-toolchain.toml", ".github/hosts.json", ".cargo", "Cargo.toml", "Cargo.lock"]);
         if dirty(root, &paths)? {
             return Err(format!("uncommitted changes under {paths:?}: commit them or pass --allow-dirty"));
         }
     }
     let toolchain = std::fs::read_to_string(root.join("rust-toolchain.toml")).map_err(|e| e.to_string())?;
-    let mut parts = vec![format!("recipe {recipe}"), format!("toolchain {toolchain}")];
+    let cargo_config = std::fs::read_to_string(root.join(".cargo/config.toml")).unwrap_or_default();
+    let root_toml = std::fs::read_to_string(root.join("Cargo.toml")).map_err(|e| e.to_string())?;
+    let mut parts = vec![
+        format!("recipe {recipe}"),
+        format!("toolchain {toolchain}"),
+        format!("cargo-config {cargo_config}"),
+        format!("build-tables {}", build_tables(&root_toml)),
+    ];
     for p in &pkgs {
         parts.push(format!("pkg {} {:?}", p.id, p.features));
         if let Some(dir) = &p.dir {
@@ -219,6 +247,25 @@ mod tests {
     }
 
     #[test]
+    fn a_workspace_crates_version_is_not_part_of_its_identity() {
+        let mut bumped = meta();
+        for p in bumped["packages"].as_array_mut().unwrap() {
+            if p["source"].is_null() {
+                p["version"] = json!("2.0.0");
+            }
+        }
+        assert_eq!(closure_of(&meta(), "a").unwrap()[..2], closure_of(&bumped, "a").unwrap()[..2]);
+    }
+
+    #[test]
+    fn only_the_compile_affecting_root_tables_are_hashed() {
+        let toml = "[workspace]\nmembers = []\n\n[workspace.package]\nversion = \"1\"\n\n[profile.release]\nlto = true\n\n[patch.crates-io]\nx = { path = \"x\" }\n\n[lints]\nrust = 1\n";
+        let t = build_tables(toml);
+        assert!(t.contains("lto = true") && t.contains("[patch.crates-io]"), "{t}");
+        assert!(!t.contains("version") && !t.contains("[lints]"), "{t}");
+    }
+
+    #[test]
     fn digest_is_twelve_hex_and_framed() {
         let d = digest(&["ab".into(), "c".into()]);
         assert_eq!(d.len(), 12);
@@ -232,8 +279,10 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("fp-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("crates/a")).unwrap();
-        let git =
-            |args: &[&str]| run(&dir, "git", &[&["-c", "user.name=t", "-c", "user.email=t@t"], args].concat()).unwrap();
+        let git = |args: &[&str]| {
+            let id = ["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"];
+            run(&dir, "git", &[&id[..], args].concat()).unwrap()
+        };
         git(&["init", "-q"]);
         std::fs::write(dir.join("crates/a/lib.rs"), "one").unwrap();
         git(&["add", "."]);

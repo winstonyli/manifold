@@ -63,7 +63,7 @@ pub fn release_check(args: &[String]) -> ExitCode {
     let body = changelog_body(&log, &tag);
     let message = git(&root, &["tag", "-l", "--format=%(contents)", &tag]).unwrap_or_default();
     check(
-        &format!("{tag}'s message is `manifold {tag}` and the CHANGELOG.md entry"),
+        &format!("{tag}'s message is `manifold {tag}` and the CHANGELOG.md entry (tag with `git tag -a --cleanup=verbatim -F FILE`, or git drops the # headings)"),
         body.as_deref().is_some_and(|b| tag_message_matches(&message, &tag, b)),
     );
     let toml = std::fs::read_to_string(root.join("Cargo.toml")).unwrap_or_default();
