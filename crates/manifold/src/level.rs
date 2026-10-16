@@ -173,11 +173,12 @@ impl App {
                 })
                 .collect();
         }
-        let rect_of = |id: &str| node_card_rect(self.layout_pos(id), &self.nodes[id].runtime);
+        let rects: HashMap<String, egui::Rect> = self.level_items().into_iter().map(|e| (e.id, e.rect)).collect();
+        let rect_of = |id: &str| rects.get(id).copied();
         let opened = self.nodes.iter().filter(|(id, _)| self.in_level(id)).filter_map(|(id, _)| {
             let parent_id = self.opened_from(id)?;
             self.nodes.get(parent_id).filter(|_| self.in_level(parent_id))?;
-            let (from, to) = crate::link_gestures::facing_ends(rect_of(parent_id), rect_of(id));
+            let (from, to) = crate::link_gestures::facing_ends(rect_of(parent_id)?, rect_of(id)?);
             Some(LevelEdge {
                 from,
                 to,
@@ -197,7 +198,7 @@ impl App {
             if !both_here {
                 return None;
             }
-            let (from_end, to_end) = crate::link_gestures::facing_ends(rect_of(&from), rect_of(&to));
+            let (from_end, to_end) = crate::link_gestures::facing_ends(rect_of(&from)?, rect_of(&to)?);
             Some(LevelEdge {
                 from: from_end,
                 to: to_end,
@@ -214,7 +215,7 @@ impl App {
         let jars = self.nodes.keys().filter(|id| self.in_level(id)).filter_map(|id| {
             let jar = self.mirror.jar(id)?.to_string();
             self.nodes.get(&jar).filter(|_| self.in_level(&jar))?;
-            let (from, to) = crate::link_gestures::facing_ends(rect_of(id), rect_of(&jar));
+            let (from, to) = crate::link_gestures::facing_ends(rect_of(id)?, rect_of(&jar)?);
             Some(LevelEdge {
                 from,
                 to,
@@ -226,7 +227,8 @@ impl App {
                 link: None,
             })
         });
-        opened.chain(links).chain(jars).collect()
+        let virtuals = self.virtual_sources.iter().flat_map(|source| source.edges(self, &rect_of));
+        opened.chain(links).chain(jars).chain(virtuals).collect()
     }
 
     /// Lays out the current level with its source's own strategy: the
@@ -350,6 +352,22 @@ mod tests {
             ("p", "c", None),
             "an opened-from line names its ends and no Link node"
         );
+    }
+
+    #[test]
+    fn a_virtual_source_adds_edges_between_its_entries_beside_the_stored_ones() {
+        use crate::virtual_source::fake::FakeSource;
+        let mut app = App::default();
+        app.insert_placeholder_node("p".into(), egui::vec2(0.0, 0.0), Kind::Download, download("p.bin"));
+        app.insert_placeholder_node("c".into(), egui::vec2(100.0, 50.0), Kind::Download, download("c.bin"));
+        app.edit_parent("c", Some("p".into()));
+        app.virtual_sources.push(Box::new(FakeSource::default()));
+        let edges = app.level_edges();
+        assert!(edges.iter().any(|e| e.kind == EdgeKind::Opened && e.from_id == "p" && e.to_id == "c"));
+        let virt: Vec<_> = edges.iter().filter(|e| e.from_id.starts_with("virtual:")).collect();
+        assert_eq!(virt.len(), 1);
+        assert_eq!((virt[0].from_id.as_str(), virt[0].to_id.as_str()), ("virtual:fake:a", "virtual:fake:b"));
+        assert_eq!((virt[0].from, virt[0].to), (egui::pos2(50.0, 30.0), egui::pos2(250.0, 30.0)));
     }
 
     #[test]

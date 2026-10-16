@@ -2,7 +2,7 @@
 //! supplies a level's extra `CardEntry`s, which draw after the stored ones, so on top. The trait grows with the plan:
 //! each handler is added by the task that first calls it (the pre-commit clippy rejects dead code).
 
-use crate::level::CardEntry;
+use crate::level::{CardEntry, LevelEdge};
 use crate::App;
 
 /// Something that puts virtual cards on the current level. Registered in `App::virtual_sources`.
@@ -12,13 +12,15 @@ pub(crate) trait VirtualSource {
     fn name(&self) -> &'static str;
     /// The cards this source shows on the level being viewed, in draw order.
     fn entries(&self, app: &App) -> Vec<CardEntry>;
+    /// The edges this source adds to the level; `rect_of` gives any entry's rect on the level (`None` off it).
+    fn edges(&self, app: &App, rect_of: &dyn Fn(&str) -> Option<egui::Rect>) -> Vec<LevelEdge>;
 }
 
 #[cfg(test)]
 pub(crate) mod fake {
     use super::*;
     use crate::caps::TagSet;
-    use crate::level::Origin;
+    use crate::level::{EdgeCurve, EdgeKind, Origin};
     use crate::session_sync::tests::sleeping_tab;
     use crate::store::model::Kind;
     use crate::CardKind;
@@ -61,6 +63,23 @@ pub(crate) mod fake {
                     rect: egui::Rect::from_min_size(egui::pos2(x, 0.0), egui::vec2(100.0, 60.0)),
                 })
                 .to_vec()
+        }
+
+        /// One edge, `a` to `b`, between the rects' midpoints.
+        fn edges(&self, _app: &App, rect_of: &dyn Fn(&str) -> Option<egui::Rect>) -> Vec<LevelEdge> {
+            let (Some(a), Some(b)) = (rect_of("virtual:fake:a"), rect_of("virtual:fake:b")) else {
+                return Vec::new();
+            };
+            vec![LevelEdge {
+                from: a.center(),
+                to: b.center(),
+                from_id: "virtual:fake:a".to_string(),
+                to_id: "virtual:fake:b".to_string(),
+                curve: EdgeCurve::Bow,
+                highlight: false,
+                kind: EdgeKind::Opened,
+                link: None,
+            }]
         }
     }
 
