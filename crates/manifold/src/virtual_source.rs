@@ -197,7 +197,8 @@ pub(crate) mod fake {
         pub(crate) fn with_kind(ty: &'static str) -> Self {
             let ctx = egui::Context::default();
             crate::theme::apply_fonts(&ctx);
-            let mut app = App::default();
+            // The context that runs the frames, so text measuring has fonts.
+            let mut app = App { egui_ctx: ctx.clone(), ..App::default() };
             let source = Rc::new(FakeSource::with_kind(ty));
             app.virtual_sources.push(source.clone());
             let id = app.alloc_node_id();

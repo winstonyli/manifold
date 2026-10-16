@@ -537,7 +537,7 @@ mod tests {
         output.textures_delta.clear();
         let id = egui::Id::new(("trail_branches_popup", AnchoredPopup::BackBranches));
         let rect = ctx.memory(|m| m.area_rect(id)).expect("the popup's area");
-        assert!(rect.width() >= 200.0, "{rect:?}");
+        assert!(rect.width() >= 150.0, "{rect:?}");
         assert_eq!(app.menus.open_popup, Some(AnchoredPopup::BackBranches), "no click: it stays open");
     }
 
@@ -556,9 +556,11 @@ mod tests {
         frame(&mut app, vec![]);
         let id = egui::Id::new(("trail_branches_popup", AnchoredPopup::BackBranches));
         let area = ctx.memory(|m| m.area_rect(id)).expect("the popup's area");
+        let pages = app.nav_history[&tab].tree();
+        let sizes = crate::trail_strip::page_sizes(&ctx, &pages, crate::trail_strip::POPUP_PAGE);
         let rects = crate::trail_strip::page_rects(
-            &app.nav_history[&tab].tree(),
-            crate::trail_strip::POPUP_PAGE,
+            &pages,
+            &sizes,
             crate::trail_strip::POPUP_COLUMN_GAP,
             crate::trail_strip::POPUP_ROW_GAP,
         );

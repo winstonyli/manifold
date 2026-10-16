@@ -10,7 +10,12 @@ use crate::tree_layout::{tree_layout, TreeNode};
 use crate::virtual_source::VirtualSource;
 use crate::{App, CardKind, GraphAction};
 
+/// The most a strip page can be (a long label is clipped to it); a shorter label gets a narrower page.
 pub(crate) const PAGE: egui::Vec2 = egui::vec2(160.0, 44.0);
+/// The least a page is wide, so a one-letter label still reads as a button.
+pub(crate) const MIN_PAGE_WIDTH: f32 = 56.0;
+/// Text inset on each side of a label.
+const LABEL_INSET: f32 = 8.0;
 pub(crate) const COLUMN_GAP: f32 = 24.0;
 pub(crate) const ROW_GAP: f32 = 12.0;
 /// The Back/Forward popups draw the same tree at a smaller cell.
@@ -36,12 +41,31 @@ fn live_page<'a>(app: &App, id: &'a str) -> Option<(&'a str, usize)> {
     (app.nav_history.get(tab)?.epoch() == epoch).then_some((tab, entry))
 }
 
-/// Every page's rect, rebased so the strip's bounding box starts at the origin (a parent centres on its children, so
-/// the tree's first lane can sit above the root).
-pub(crate) fn page_rects(pages: &[TrailPage], cell: egui::Vec2, column_gap: f32, row_gap: f32) -> Vec<egui::Rect> {
-    let nodes: Vec<TreeNode> = pages.iter().map(|p| TreeNode { parent: p.parent, size: cell }).collect();
-    let rects: Vec<egui::Rect> =
-        tree_layout(&nodes, column_gap, row_gap).into_iter().map(|min| egui::Rect::from_min_size(min, cell)).collect();
+fn label_font() -> egui::FontId {
+    egui::FontId::proportional(12.0)
+}
+
+/// Each page's size: its label's width plus the insets, within `MIN_PAGE_WIDTH` and `cell.x`, at `cell.y` high.
+pub(crate) fn page_sizes(ctx: &egui::Context, pages: &[TrailPage], cell: egui::Vec2) -> Vec<egui::Vec2> {
+    pages
+        .iter()
+        .map(|p| {
+            let text =
+                ctx.fonts_mut(|f| f.layout_no_wrap(p.label.clone(), label_font(), egui::Color32::WHITE)).size().x;
+            egui::vec2((text + 2.0 * LABEL_INSET).max(MIN_PAGE_WIDTH).min(cell.x), cell.y)
+        })
+        .collect()
+}
+
+/// Every page's rect (`sizes[i]` is page `i`'s size), rebased so the strip's bounding box starts at the origin (a parent
+/// centres on its children, so the tree's first lane can sit above the root).
+pub(crate) fn page_rects(pages: &[TrailPage], sizes: &[egui::Vec2], column_gap: f32, row_gap: f32) -> Vec<egui::Rect> {
+    let nodes: Vec<TreeNode> = pages.iter().zip(sizes).map(|(p, &size)| TreeNode { parent: p.parent, size }).collect();
+    let rects: Vec<egui::Rect> = tree_layout(&nodes, column_gap, row_gap)
+        .into_iter()
+        .zip(sizes)
+        .map(|(min, &size)| egui::Rect::from_min_size(min, size))
+        .collect();
     let top_left = rects.iter().fold(egui::Rect::NOTHING, |b, r| b.union(*r)).min;
     rects.into_iter().map(|r| r.translate(-top_left.to_vec2())).collect()
 }
@@ -60,10 +84,10 @@ pub(crate) fn paint_trail_page(painter: &egui::Painter, rect: egui::Rect, page: 
     let color = if page.cursor || page.on_path { TEXT_PRIMARY } else { TEXT_WEAK };
     let clip = painter.with_clip_rect(rect.shrink2(egui::vec2(6.0, 0.0)).intersect(painter.clip_rect()));
     clip.text(
-        rect.left_center() + egui::vec2(8.0, 0.0),
+        rect.left_center() + egui::vec2(LABEL_INSET, 0.0),
         egui::Align2::LEFT_CENTER,
         &page.label,
-        egui::FontId::proportional(12.0),
+        label_font(),
         color,
     );
 }
@@ -102,7 +126,7 @@ impl VirtualSource for TrailSource {
         let kind = CardKind { ty: TYPE_TRAIL_PAGE, tags: crate::caps::TagSet::EMPTY };
         pages
             .iter()
-            .zip(page_rects(&pages, PAGE, COLUMN_GAP, ROW_GAP))
+            .zip(page_rects(&pages, &page_sizes(&app.egui_ctx, &pages, PAGE), COLUMN_GAP, ROW_GAP))
             .map(|(page, rect)| CardEntry {
                 id: Self::page_id(&tab, epoch, page.entry),
                 kind,
@@ -205,9 +229,10 @@ mod tests {
         let below = rig.app.card_rect(&tab).unwrap().left_bottom() + egui::vec2(0.0, STRIP_GAP);
         let top_left = cards.iter().fold(egui::Rect::NOTHING, |b, c| b.union(c.rect)).min;
         assert_eq!(top_left, below, "the whole strip hangs under the tab card, none of it above");
-        assert_eq!(cards[0].rect.size(), PAGE);
+        assert_eq!(cards[0].rect.height(), PAGE.y);
+        assert!(cards[0].rect.width() < PAGE.x, "a short label gets a narrow page");
         assert_eq!(cards[0].rect.min.x, below.x, "the root is the leftmost column");
-        assert_eq!(cards[1].rect.min.x, below.x + PAGE.x + COLUMN_GAP, "children one column right");
+        assert_eq!(cards[1].rect.min.x, below.x + cards[0].rect.width() + COLUMN_GAP, "children one column right");
         assert!(cards[3].rect.min.y > cards[1].rect.min.y, "the later branch sits on a lower lane");
     }
 
@@ -311,11 +336,46 @@ mod tests {
     fn popup_geometry_is_the_same_tree_at_a_smaller_cell() {
         let pages =
             NavHistory::with_tree(&[("/a", None, None), ("/b", Some(0), None), ("/c", Some(0), None)], 0).tree();
-        let rects = page_rects(&pages, POPUP_PAGE, POPUP_COLUMN_GAP, POPUP_ROW_GAP);
+        let sizes = vec![POPUP_PAGE; 3];
+        let rects = page_rects(&pages, &sizes, POPUP_COLUMN_GAP, POPUP_ROW_GAP);
         assert_eq!(rects.len(), 3);
         assert_eq!(rects[1].min.x, POPUP_PAGE.x + POPUP_COLUMN_GAP, "second column");
         assert!(rects[2].min.y > rects[1].min.y, "second branch below the first");
         assert_eq!(rects[0].size(), POPUP_PAGE);
+    }
+
+    fn text_ctx() -> egui::Context {
+        let ctx = egui::Context::default();
+        crate::theme::apply_fonts(&ctx);
+        ctx.run_ui(egui::RawInput::default(), |_| {}).textures_delta.clear();
+        ctx
+    }
+
+    #[test]
+    fn a_page_is_as_wide_as_its_label_within_the_clamp() {
+        let ctx = text_ctx();
+        let page =
+            |label: &str| TrailPage { entry: 0, parent: None, label: label.into(), cursor: false, on_path: false };
+        let widths: Vec<f32> =
+            page_sizes(&ctx, &[page("a"), page("a medium length title"), page(&"w".repeat(400))], PAGE)
+                .iter()
+                .map(|s| s.x)
+                .collect();
+        assert_eq!(widths[0], MIN_PAGE_WIDTH, "a short label sits at the floor");
+        assert!(widths[0] < widths[1] && widths[1] < PAGE.x, "{widths:?}");
+        assert_eq!(widths[2], PAGE.x, "a long label is capped, and clipped when painted");
+        assert!(page_sizes(&ctx, &[page("a")], PAGE).iter().all(|s| s.y == PAGE.y), "height is the cell's");
+    }
+
+    #[test]
+    fn a_column_is_as_wide_as_its_widest_page() {
+        let pages =
+            NavHistory::with_tree(&[("/a", None, None), ("/b", Some(0), None), ("/c", Some(0), None)], 0).tree();
+        let sizes = [egui::vec2(60.0, 20.0), egui::vec2(100.0, 20.0), egui::vec2(70.0, 20.0)];
+        let rects = page_rects(&pages, &sizes, 10.0, 4.0);
+        assert_eq!(rects[1].min.x, 70.0, "children start after the root's column");
+        assert_eq!(rects[2].min.x, rects[1].min.x, "siblings share the column's left edge");
+        assert_eq!(rects[2].size(), sizes[2], "each page keeps its own width");
     }
 
     #[test]

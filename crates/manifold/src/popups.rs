@@ -1284,7 +1284,8 @@ impl App {
             Dir::Forward => AnchoredPopup::ForwardBranches,
         };
         let pages = self.nav_history.get(tab).map_or_else(Vec::new, |h| h.tree());
-        let rects = crate::trail_strip::page_rects(&pages, POPUP_PAGE, POPUP_COLUMN_GAP, POPUP_ROW_GAP);
+        let sizes = crate::trail_strip::page_sizes(ui.ctx(), &pages, POPUP_PAGE);
+        let rects = crate::trail_strip::page_rects(&pages, &sizes, POPUP_COLUMN_GAP, POPUP_ROW_GAP);
         let centre = popup_centres_cursor(ui.ctx(), which, self.menus.open_popup == Some(which));
         let mut picked: Option<usize> = None;
         let mut as_card: Option<usize> = None;
