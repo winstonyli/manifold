@@ -9,6 +9,10 @@
 //! - `ui`: `cargo test` of the three CI crates, then `link`, `unknown-type`, `closed`, `trail` and `layout`. For drawing, input and view-state modules
 //!   that import no store, sync or network module (the list is in tier.rs), and docs.
 //!
+//! With `WEBKIT_SITE_HOST=<ip>` set (the WSL gateway as Windows sees it, `wsl.exe -d Ubuntu -- ip route`, the default
+//! route's `via`; README "WebKit under the gate") and the WebKit host built in WSL, any mode adds `trail-webkit` and
+//! `sleep-webkit` (`ENGINE=webkit`, `VIEWS=webkit`, `SITE_HOST` for those two stages only) after `trail`.
+//!
 //! Build first (`cargo build -j 8 -p manifold -p manifold-view-webview2 -p manifold-view-pdfium -p gate`) and run from
 //! the repo root, detached and low priority: `cmd //c start "" //b //belownormal target/debug/gate.exe all LOG [mode]`.
 //! Progress and verdicts go to LOG; each stage's own output to LOG.two-N.log, .smoke.log, .launch-forms.log, .link.log, .unknown-type.log, .closed.log, .trail.log,
@@ -201,6 +205,8 @@ pub(crate) fn all(log: Option<PathBuf>, mode: Option<String>) -> ExitCode {
     let gate = |stage: &str| {
         let mut c = Command::new(&me);
         c.arg(stage);
+        // The page server's address is for the WebKit stages: the others reach it on loopback.
+        c.env_remove("SITE_HOST");
         c
     };
     if mode == "ui" {
@@ -219,6 +225,14 @@ pub(crate) fn all(log: Option<PathBuf>, mode: Option<String>) -> ExitCode {
     g.stage("unknown-type", &sibling(&log, "unknown-type.log"), gate("unknown-type"));
     g.stage("closed", &sibling(&log, "closed.log"), gate("closed"));
     g.stage("trail", &sibling(&log, "trail.log"), gate("trail"));
+    if let Ok(ip) = std::env::var("WEBKIT_SITE_HOST") {
+        let mut trail = gate("trail");
+        trail.env("ENGINE", "webkit").env("SITE_HOST", &ip);
+        g.stage("trail-webkit", &sibling(&log, "trail-webkit.log"), trail);
+        let mut sleep = gate("sleep");
+        sleep.env("VIEWS", "webkit").env("CASES", "manual idle scroll history dirty").env("SITE_HOST", &ip);
+        g.stage("sleep-webkit", &sibling(&log, "sleep-webkit.log"), sleep);
+    }
     g.stage("layout", &sibling(&log, "layout.log"), gate("layout"));
 
     append(&log, "GATE slowest steps (seconds, cpu at start, mean cpu):");
