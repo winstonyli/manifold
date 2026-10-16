@@ -13,6 +13,9 @@
 //! route's `via`; README "WebKit under the gate") and the WebKit host built in WSL, any mode adds `trail-webkit` and
 //! `sleep-webkit` (`ENGINE=webkit`, `VIEWS=webkit`, `SITE_HOST` for those two stages only) after `trail`.
 //!
+//! With `WITH_SERVO=1` set and the Servo host built and placed beside `manifold.exe` (README "Building Servo on its own"),
+//! any mode adds `trail-servo` (`ENGINE=servo`) and `sleep-servo` (`VIEWS=servo`, cases history, crash, restart).
+//!
 //! Build first (`cargo build -j 8 -p manifold -p manifold-view-webview2 -p manifold-view-pdfium -p gate`) and run from
 //! the repo root, detached and low priority: `cmd //c start "" //b //belownormal target/debug/gate.exe all LOG [mode]`.
 //! Progress and verdicts go to LOG; each stage's own output to LOG.two-N.log, .smoke.log, .launch-forms.log, .link.log, .unknown-type.log, .closed.log, .trail.log,
@@ -235,6 +238,14 @@ pub(crate) fn all(log: Option<PathBuf>, mode: Option<String>) -> ExitCode {
         let mut sleep = gate("sleep");
         sleep.env("VIEWS", "webkit").env("CASES", "manual idle scroll history dirty").env("SITE_HOST", &ip);
         g.stage("sleep-webkit", &sibling(&log, "sleep-webkit.log"), sleep);
+    }
+    if std::env::var_os("WITH_SERVO").is_some() {
+        let mut trail = gate("trail");
+        trail.env("ENGINE", "servo");
+        g.stage("trail-servo", &sibling(&log, "trail-servo.log"), trail);
+        let mut sleep = gate("sleep");
+        sleep.env("VIEWS", "servo").env("CASES", "history crash restart");
+        g.stage("sleep-servo", &sibling(&log, "sleep-servo.log"), sleep);
     }
     g.stage("layout", &sibling(&log, "layout.log"), gate("layout"));
 
