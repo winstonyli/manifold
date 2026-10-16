@@ -14,7 +14,10 @@ pub(crate) enum Origin {
     /// A JSON level's card (`json_level.rs`): no node behind it.
     Json,
     /// A card a `VirtualSource` of this name supplies (`virtual_source.rs`): no node behind it.
-    #[allow(dead_code, reason = "no real source is registered until a later virtual-card task; tests build it")]
+    #[allow(
+        dead_code,
+        reason = "matched everywhere, but only constructed by a source; no real one until a later task"
+    )]
     Virtual(&'static str),
 }
 
@@ -30,7 +33,6 @@ pub(crate) struct CardEntry {
 }
 
 impl CardEntry {
-    #[allow(dead_code, reason = "read by the ability checks of later virtual-card tasks; tests read it now")]
     pub(crate) fn caps(&self) -> crate::caps::Caps {
         self.kind.caps()
     }
@@ -361,7 +363,7 @@ mod tests {
         app.insert_placeholder_node("p".into(), egui::vec2(0.0, 0.0), Kind::Download, download("p.bin"));
         app.insert_placeholder_node("c".into(), egui::vec2(100.0, 50.0), Kind::Download, download("c.bin"));
         app.edit_parent("c", Some("p".into()));
-        app.virtual_sources.push(Box::new(FakeSource::default()));
+        app.virtual_sources.push(std::rc::Rc::new(FakeSource::default()));
         let edges = app.level_edges();
         assert!(edges.iter().any(|e| e.kind == EdgeKind::Opened && e.from_id == "p" && e.to_id == "c"));
         let virt: Vec<_> = edges.iter().filter(|e| e.from_id.starts_with("virtual:")).collect();

@@ -459,6 +459,7 @@ pub(crate) fn card_style(kind: CardKind, visuals: &egui::Visuals) -> CardStyle {
         TYPE_NOTE | TYPE_DOWNLOAD | TYPE_TAB => CardStyle { dim_rounding: 6.0, ..themed },
         // ACCENT at rest, as group cards have always been.
         TYPE_GROUP => CardStyle { border_idle: ACCENT, dim_rounding: 6.0, ..themed },
+        // Every other type, an unknown one and a virtual kind (`TYPE_VIRTUAL_PREFIX`) included, takes the themed default.
         _ => themed,
     }
 }
@@ -598,6 +599,10 @@ pub(crate) fn click_action(kind: CardKind) -> Option<NodeAction> {
 /// `CardControl`): the swatch and the pin on every card, and a live tab's audio indicator while playing or muted, eject on
 /// a grouped one, and a closable card's ✕ last, so it wins over anything under it.
 pub(crate) fn card_controls(view: &CardView) -> Vec<CardControl> {
+    // A virtual kind has no node to colour, pin, eject or close.
+    if !view.kind.caps().stored_controls {
+        return Vec::new();
+    }
     let mut controls = vec![CardControl::Swatch, CardControl::Pin];
     if view.kind.ty == TYPE_TAB {
         // Also while muted after audio stops, so a mute can always be
@@ -995,9 +1000,30 @@ impl App {
         members
     }
 
-    /// `id`'s `CardView`, or `None` when the node is gone. `members` is
+    /// `entry`'s `CardView`, or `None` when its node is gone (a JSON level's card is drawn elsewhere). A virtual
+    /// card has no node: no colour, group, pin, audio or ✕, and it can be selected but never focused. `members` is
     /// `group_members`, built once for the whole pass.
-    pub(crate) fn card_view(&self, id: &str, members: &HashMap<String, Vec<String>>) -> Option<CardView> {
+    pub(crate) fn card_view(&self, entry: &CardEntry, members: &HashMap<String, Vec<String>>) -> Option<CardView> {
+        let id = entry.id.as_str();
+        match entry.origin {
+            Origin::Stored => {}
+            Origin::Virtual(_) => {
+                return Some(CardView {
+                    kind: entry.kind,
+                    color: None,
+                    in_group: false,
+                    overloaded: false,
+                    members: Vec::new(),
+                    focused: false,
+                    pinned: false,
+                    muted: false,
+                    audio_playing: false,
+                    selected: self.interaction.selected.contains(id),
+                    closable: false,
+                });
+            }
+            Origin::Json => return None,
+        }
         let node = self.nodes.get(id)?;
         let kind = self.card_kind(id)?;
         let members = if is_container(kind.ty) { members.get(id).cloned().unwrap_or_default() } else { Vec::new() };
@@ -1023,10 +1049,19 @@ impl App {
     /// per-kind content painted by `paint_card_body`, plus the frame's own
     /// background, glow and eased hover. `None` when the node is gone or
     /// culled. The caller applies the kind's own click action from the
-    /// returned response.
-    pub(crate) fn draw_graph_card(&mut self, ui: &mut egui::Ui, pass: &mut CardPass, id: &str) -> Option<CardOutput> {
+    /// returned response. A virtual `entry` has no node: what only a node
+    /// has (drag, link handles, menu key, filter dim) is skipped for it.
+    pub(crate) fn draw_graph_card(
+        &mut self,
+        ui: &mut egui::Ui,
+        pass: &mut CardPass,
+        entry: &CardEntry,
+    ) -> Option<CardOutput> {
+        let id = entry.id.as_str();
+        let stored = entry.origin == Origin::Stored;
         let inv_zoom = pass.inv_zoom;
-        let rect = self.card_rect(id)?;
+        // A stored card's rect is read fresh: a drag earlier in this frame's loop may have moved it.
+        let rect = if stored { self.card_rect(id)? } else { entry.rect };
         // Viewport culling: skip every bit of interact/paint
         // work below for a node that isn't actually visible --
         // the single highest-leverage fix for a graph with many
@@ -1045,12 +1080,12 @@ impl App {
         if self.interaction.dragging.as_deref() != Some(id) && !keeps_keyboard && !rect.intersects(self.camera.rect) {
             return None;
         }
-        let view = self.card_view(id, pass.members)?;
+        let view = self.card_view(entry, pass.members)?;
         // Glow and fill go under the body, but hover is only known after
         // the interacts, which must follow the body (below). This slot is
         // filled in once it is.
         let background = ui.painter().add(egui::Shape::Noop);
-        let body = self.paint_card_body(ui, pass, id, &view, rect);
+        let body = self.paint_card_body(ui, pass, entry, &view, rect);
         let deferred_overlays = &mut *pass.deferred_overlays;
 
         // Both interacts are registered *after* the body, never before:
@@ -1067,10 +1102,13 @@ impl App {
         // own traversal can't walk the cards in draw order.
         let card_id = egui::Id::new(("graph_card", id));
         let slot = pass.order.iter().position(|o| o == id);
-        let sense = if slot == Some(0) || ui.memory(|m| m.has_focus(card_id)) {
-            egui::Sense::click_and_drag()
-        } else {
-            egui::Sense::CLICK | egui::Sense::DRAG
+        // A virtual card takes a drag (and so keeps the scene from panning under it) only if its kind can move or be
+        // dragged out; the drag itself is handled below for stored cards only.
+        let draggable = stored || entry.caps().movable || entry.caps().drag_source;
+        let sense = match (draggable, slot == Some(0) || ui.memory(|m| m.has_focus(card_id))) {
+            (false, _) => egui::Sense::click(),
+            (true, true) => egui::Sense::click_and_drag(),
+            (true, false) => egui::Sense::CLICK | egui::Sense::DRAG,
         };
         // Space on a focused card toggles it in the selection, as the marquee would select it. Taken
         // before the interact, which would otherwise read it as a click and open the tab.
@@ -1184,15 +1222,15 @@ impl App {
             );
         }
         // Registered after both interacts above, so they take the pointer.
-        let delete = response.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Delete));
+        let delete = stored && response.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Delete));
         // Shift+F10 on a focused card opens its menu, anchored at the card's bottom-left.
-        if response.has_focus() && ui.input_mut(|i| i.consume_key(egui::Modifiers::SHIFT, egui::Key::F10)) {
+        if stored && response.has_focus() && ui.input_mut(|i| i.consume_key(egui::Modifiers::SHIFT, egui::Key::F10)) {
             let corner = rect.left_bottom();
             let at = ui.ctx().layer_transform_to_global(ui.layer_id()).map_or(corner, |t| t * corner);
             self.menus.node_menu = Some((id.to_string(), at));
         }
-        let mut control =
-            (response.clicked_by(egui::PointerButton::Middle) || delete).then(|| CardControl::Close.action());
+        let mut control = ((stored && response.clicked_by(egui::PointerButton::Middle)) || delete)
+            .then(|| CardControl::Close.action());
         let mut control_hovered = false;
         for card_control in card_controls(&view) {
             if card_control.hover_only() && !is_hovered {
@@ -1226,7 +1264,7 @@ impl App {
         // Registered after the card and its controls: egui gives a press on a drag-only widget on top to that widget
         // alone (no click below), so the card neither moves nor opens.
         let mut handle_hovered = false;
-        if (is_hovered || self.link.connect_drag.is_some()) && self.shows_link_handles() {
+        if stored && (is_hovered || self.link.connect_drag.is_some()) && self.shows_link_handles() {
             let handles = crate::link_gestures::link_handle_rects(rect, pass.zoom_scale, self.graph_lod_simplified);
             for (side, handle) in handles {
                 let handle_response = ui
@@ -1246,7 +1284,8 @@ impl App {
         // pointer left it, until another card was hovered. Never during a
         // connect-drag, whose peek would cover the targets.
         let still_hovered = self.link.connect_drag.is_none() && (pointer_on_card || control_hovered || handle_hovered);
-        if response.dragged() {
+        // A virtual card's drag and drop arrive with its abilities (`movable`, `drag_source`).
+        if stored && response.dragged() {
             self.interaction.dragging = Some(id.to_string());
             // Dragging one selected tab moves the whole selection, as one
             // unit (see `take_drag_unit`). Recomputed (and overwritten)
@@ -1264,7 +1303,7 @@ impl App {
                 }
             }
             self.interaction.drag_moved = moved;
-        } else if self.interaction.dragging.as_deref() == Some(id) {
+        } else if stored && self.interaction.dragging.as_deref() == Some(id) {
             self.release_drag();
             // `drop_preview` was computed this frame for this card, and
             // nothing moved it since (no drag delta on a release frame).
@@ -1291,10 +1330,18 @@ impl App {
         &mut self,
         ui: &mut egui::Ui,
         pass: &mut CardPass,
-        id: &str,
+        entry: &CardEntry,
         view: &CardView,
         rect: egui::Rect,
     ) -> CardBody {
+        // A virtual card's source paints it (the entry's own rect: `rect` is the same for it).
+        if let Origin::Virtual(name) = entry.origin {
+            return match self.virtual_source(name) {
+                Some(source) => source.paint_body(self, ui, entry),
+                None => CardBody { interact_rect: rect, tooltip: None },
+            };
+        }
+        let id = entry.id.as_str();
         let (inv_zoom, zoom_scale) = (pass.inv_zoom, pass.zoom_scale);
         let deferred_overlays = &mut *pass.deferred_overlays;
         match view.kind.ty {

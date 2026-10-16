@@ -1326,9 +1326,15 @@ impl App {
                         self.menus.node_menu = Some((id, pos));
                         self.interaction.rect_select_start = None;
                     }
-                    // No menu for a virtual card yet.
-                    Some(CardEntry { origin: Origin::Virtual(_), .. }) => {
+                    // A virtual card has no node menu and no jar chip: its source opens whatever menu the kind's
+                    // `menu` ability grants.
+                    Some(entry @ CardEntry { origin: Origin::Virtual(name), .. }) => {
                         self.interaction.rect_select_start = None;
+                        if entry.caps().menu {
+                            if let Some(source) = self.virtual_source(name) {
+                                source.on_menu(self, &entry, pos);
+                            }
+                        }
                     }
                     Some(CardEntry { origin: Origin::Json, .. }) => {
                         self.interaction.rect_select_start = None;
@@ -1724,16 +1730,23 @@ impl App {
             any_focused: false,
             members: &members,
         };
-        for id in at_level.iter().flatten() {
-            let Some(kind) = self.card_kind(id) else {
+        for entry in self.level_items_from(at_level) {
+            // A JSON level's cards are drawn by `draw_json_level`, not here.
+            if entry.origin == Origin::Json {
                 continue;
-            };
+            }
+            let id = &entry.id;
+            let kind = entry.kind;
+            if let Origin::Virtual(name) = entry.origin {
+                self.virtual_card_click(ui, &mut pass, &entry, name, pick_targets.is_some());
+                continue;
+            }
             // Read before the frame: a Note's `TextEdit` can lose
             // focus to a click on its own header this very frame,
             // clearing `editing`, and that click must not
             // immediately re-enter editing.
             let note_was_editing = self.nodes.get(id).and_then(|n| n.as_note()).is_some_and(|n| n.editing);
-            let Some(card) = self.draw_graph_card(ui, &mut pass, id) else {
+            let Some(card) = self.draw_graph_card(ui, &mut pass, &entry) else {
                 continue;
             };
             if let Some(action) = card.control {
@@ -1806,9 +1819,32 @@ impl App {
         self.draw_connect_rubber_band(ui, inv_zoom, connect_target);
     }
 
-    /// The current level's cards in creation order: the Tab order.
-    fn card_tab_order(&self) -> Vec<String> {
-        self.node_order.iter().filter(|id| self.nodes.contains_key(*id) && self.in_level(id)).cloned().collect()
+    /// A virtual card's frame, then its click: a click in pick-target mode only ends it (as every click does,
+    /// `build_graph_ui`); a Ctrl-click toggles a `selectable` kind in the selection and opens nothing; any other
+    /// click goes to the source's `on_click`, whose action is applied like a stored card's.
+    fn virtual_card_click(
+        &mut self,
+        ui: &mut egui::Ui,
+        pass: &mut CardPass,
+        entry: &CardEntry,
+        name: &str,
+        picking: bool,
+    ) {
+        let Some(card) = self.draw_graph_card(ui, pass, entry) else { return };
+        if picking || !card.response.clicked() {
+            return;
+        }
+        if ui.input(|i| i.modifiers.ctrl) && entry.caps().selectable {
+            self.toggle_selected(&entry.id);
+        } else if let Some(source) = self.virtual_source(name) {
+            pass.actions.extend(source.on_click(self, entry));
+        }
+    }
+
+    /// The current level's cards in Tab order: the stored ones in creation order, then the virtual ones.
+    pub(crate) fn card_tab_order(&self) -> Vec<String> {
+        let stored = self.node_order.iter().filter(|id| self.nodes.contains_key(*id) && self.in_level(id)).cloned();
+        stored.chain(self.virtual_sources.iter().flat_map(|source| source.entries(self)).map(|e| e.id)).collect()
     }
 
     /// Tab / Shift+Tab from a focused card moves focus to the next / previous card in `order`

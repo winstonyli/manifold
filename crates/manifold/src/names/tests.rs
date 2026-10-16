@@ -419,7 +419,7 @@ fn the_placeholder_characters_are_in_the_monospace_font() {
 /// rule (the line calls one of `RULE_MARKS`) or marked raw with `// name rule: <why>`, on the same line or as a
 /// comment on the line just above (`ruled`). A new file that reads `.name` must be added here, after deciding
 /// which rule its site gets.
-const ALLOWED: [&str; 13] = [
+const ALLOWED: [&str; 14] = [
     "card.rs",
     "closed.rs",
     "debug_control.rs",
@@ -433,6 +433,7 @@ const ALLOWED: [&str; 13] = [
     "session_sync.rs",
     "settings_page.rs",
     "shortcuts.rs",
+    "virtual_source.rs",
 ];
 /// Files whose `.name` is some other name: a cookie's (`jar.rs`), a string literal (`json_level_ui.rs`), a thread's
 /// (`process_manager/view_io.rs`).

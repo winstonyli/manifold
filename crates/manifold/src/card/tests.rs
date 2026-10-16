@@ -765,7 +765,8 @@ fn group_members_follow_node_order() {
         made.push(id);
     }
     assert_eq!(app.group_members()[&g], made);
-    assert_eq!(app.card_view(&g, &app.group_members()).unwrap().members, made);
+    let entry = app.level_items().into_iter().find(|e| e.id == g).unwrap();
+    assert_eq!(app.card_view(&entry, &app.group_members()).unwrap().members, made);
 }
 
 fn with_fonts(f: impl FnOnce(&egui::Context)) {

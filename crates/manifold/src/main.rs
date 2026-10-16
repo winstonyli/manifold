@@ -236,7 +236,7 @@ struct App {
     /// sources"); `None` on every other level.
     json_level: Option<JsonLevel>,
     /// Sources of virtual cards (`virtual_source.rs`), whose entries `level_items` appends after the stored ones.
-    virtual_sources: Vec<Box<dyn virtual_source::VirtualSource>>,
+    virtual_sources: Vec<std::rc::Rc<dyn virtual_source::VirtualSource>>,
     /// `(group_id, draft_name)` once renaming has started -- either the
     /// toolbar's group-name button (only shown while `current_group` is
     /// `Some`) or the top-level right-click context menu's own "Rename"
