@@ -319,7 +319,7 @@ mod tests {
         let items = rig.app.level_items();
         assert!(matches!(items[0].origin, Origin::Stored), "the tab is first: {items:?}");
         assert_eq!(items.len(), 4);
-        assert!(items[1..].iter().all(|i| i.kind.ty == FAKE && rig.app.virtual_sources[0].name() == "fake"));
+        assert!(items[1..].iter().all(|i| i.kind.ty == FAKE && rig.app.virtual_source("fake").is_some()));
         let (a, b) = (rig.screen("virtual:fake:a"), rig.screen("virtual:fake:b"));
         assert!(a.width() > 0.0 && a.right() < b.left(), "{a:?} {b:?}");
     }

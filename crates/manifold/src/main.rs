@@ -75,6 +75,7 @@ mod tabs;
 mod text;
 mod theme;
 mod trail_nav;
+mod trail_strip;
 mod tree_layout;
 mod view_info;
 mod view_install;
@@ -563,7 +564,7 @@ impl Default for App {
             groups_collapsed: false,
             current_group: None,
             json_level: None,
-            virtual_sources: Vec::new(),
+            virtual_sources: vec![std::rc::Rc::new(trail_strip::TrailSource)],
             renaming_group: None,
             naming_jar: None,
             pending_jar_confirm: None,

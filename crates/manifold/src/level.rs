@@ -14,10 +14,6 @@ pub(crate) enum Origin {
     /// A JSON level's card (`json_level.rs`): no node behind it.
     Json,
     /// A card a `VirtualSource` of this name supplies (`virtual_source.rs`): no node behind it.
-    #[allow(
-        dead_code,
-        reason = "matched everywhere, but only constructed by a source; no real one until a later task"
-    )]
     Virtual(&'static str),
 }
 

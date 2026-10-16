@@ -161,7 +161,8 @@ impl Registry {
 /// type to a row first.
 pub(crate) fn builtin_rows() -> Vec<Row> {
     use crate::store::model::{
-        TYPE_DOWNLOAD, TYPE_GROUP, TYPE_JAR, TYPE_JSON_LEVEL, TYPE_NOTE, TYPE_TAB, TYPE_UNKNOWN, TYPE_VIRTUAL_PREFIX,
+        TYPE_DOWNLOAD, TYPE_GROUP, TYPE_JAR, TYPE_JSON_LEVEL, TYPE_NOTE, TYPE_TAB, TYPE_TRAIL_PAGE, TYPE_UNKNOWN,
+        TYPE_VIRTUAL_PREFIX,
     };
     vec![
         // Every stored kind can do everything; a virtual kind's own row, below, turns off what it cannot.
@@ -174,6 +175,7 @@ pub(crate) fn builtin_rows() -> Vec<Row> {
             .menu(false)
             .stored_controls(false)
             .draw_layer(8),
+        Row::new(TYPE_TRAIL_PAGE).drag_source(true), // a strip page can be dragged out to open as a card
         // A JSON level's card (`draw_json_level` draws it and handles its input): the shared chrome leaves it alone.
         Row::new(TYPE_JSON_LEVEL)
             .selectable(false)
@@ -261,6 +263,14 @@ mod tests {
         assert!(!bare.selectable && !bare.drag_source && !bare.drop_target);
         assert!(!bare.menu && !bare.stored_controls);
         assert_eq!(bare.draw_layer, 8, "a virtual card draws above every stored kind");
+    }
+
+    #[test]
+    fn a_trail_page_can_only_be_dragged() {
+        let caps = registry(builtin_rows()).caps(crate::store::model::TYPE_TRAIL_PAGE, TagSet::EMPTY);
+        assert!(caps.drag_source);
+        assert!(!caps.selectable && !caps.drop_target && !caps.menu && !caps.stored_controls);
+        assert_eq!(caps.draw_layer, 8);
     }
 
     #[test]

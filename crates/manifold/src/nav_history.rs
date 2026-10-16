@@ -52,7 +52,6 @@ struct Entry {
 }
 
 /// One page of the trail as the strip and the popup draw it.
-#[allow(dead_code, reason = "drawn by the trail strip (Task 3 of the plan), which does not exist yet")]
 pub(crate) struct TrailPage {
     /// The arena index: what `go_to` and `entry_url` take.
     pub(crate) entry: usize,
@@ -368,7 +367,6 @@ impl NavHistory {
     }
 
     /// Every page in entry order (a parent always before its children), for drawing.
-    #[allow(dead_code, reason = "drawn by the trail strip (Task 3 of the plan), which does not exist yet")]
     pub(crate) fn tree(&self) -> Vec<TrailPage> {
         if self.entries.is_empty() {
             return Vec::new();
