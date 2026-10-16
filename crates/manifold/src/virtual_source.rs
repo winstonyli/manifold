@@ -117,7 +117,7 @@ pub(crate) mod fake {
 
     /// Headless `build_graph_ui` frames over one sleeping tab and a `FakeSource`, fitted in view.
     pub(crate) struct Rig {
-        ctx: egui::Context,
+        pub(crate) ctx: egui::Context,
         pub(crate) app: App,
         /// The registered source, shared so a test can read its call log.
         pub(crate) source: Rc<FakeSource>,
@@ -268,6 +268,38 @@ mod tests {
         let order = rig.app.card_tab_order();
         assert_eq!(order.last().map(String::as_str), Some("virtual:fake:c"));
         assert_eq!(order.len(), 4);
+    }
+
+    #[test]
+    fn a_virtual_card_is_not_in_eguis_own_tab_traversal() {
+        let rig = Rig::new();
+        let sense = |id: &str| rig.ctx.read_response(egui::Id::new(("graph_card", id))).expect("drawn").sense;
+        assert!(!sense("virtual:fake:b").is_focusable(), "only the first card or the focused one is focusable");
+        let first = rig.app.card_tab_order()[0].clone();
+        assert!(sense(&first).is_focusable());
+    }
+
+    #[test]
+    fn tab_onto_a_virtual_card_pans_to_its_rect() {
+        let mut rig = Rig::new();
+        let order = rig.app.card_tab_order();
+        let from = rig.app.card_rect(&order[0]).unwrap();
+        rig.app.camera.jump_to(egui::Rect::from_center_size(from.center(), egui::vec2(120.0, 120.0)));
+        rig.frame(vec![], egui::Modifiers::NONE);
+        rig.ctx.memory_mut(|m| m.request_focus(egui::Id::new(("graph_card", order[0].as_str()))));
+        rig.frame(vec![], egui::Modifiers::NONE);
+        rig.app.camera.tween = None;
+        let tab = egui::Event::Key {
+            key: egui::Key::Tab,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        };
+        rig.frame(vec![tab], egui::Modifiers::NONE);
+        assert!(rig.app.camera.tween.is_some(), "Tab to a card out of view pans to it");
+        let want = rig.app.level_items().iter().find(|e| e.id == order[1]).unwrap().rect;
+        assert_eq!(rig.app.level_card_rect(&order[1]), Some(want));
     }
 
     #[test]

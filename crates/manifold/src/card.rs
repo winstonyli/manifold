@@ -1105,8 +1105,10 @@ impl App {
         // A virtual card takes a drag (and so keeps the scene from panning under it) only if its kind can move or be
         // dragged out; the drag itself is handled below for stored cards only.
         let draggable = stored || entry.caps().movable || entry.caps().drag_source;
-        let sense = match (draggable, slot == Some(0) || ui.memory(|m| m.has_focus(card_id))) {
-            (false, _) => egui::Sense::click(),
+        let focusable = slot == Some(0) || ui.memory(|m| m.has_focus(card_id));
+        let sense = match (draggable, focusable) {
+            (false, true) => egui::Sense::click(),
+            (false, false) => egui::Sense::CLICK,
             (true, true) => egui::Sense::click_and_drag(),
             (true, false) => egui::Sense::CLICK | egui::Sense::DRAG,
         };

@@ -1872,7 +1872,7 @@ impl App {
         });
         if let (true, Some(target)) = (tab, target) {
             ui.memory_mut(|m| m.request_focus(card_id(&order[target])));
-            if let Some(rect) = self.card_rect(&order[target]) {
+            if let Some(rect) = self.level_card_rect(&order[target]) {
                 self.pan_to_card(rect);
             }
         }
@@ -1912,7 +1912,7 @@ impl App {
         ui.data_mut(|d| d.remove_temp::<(String, f64)>(key));
         if let Some(id) = number.checked_sub(1).and_then(|n| order.get(n)) {
             ui.memory_mut(|m| m.request_focus(egui::Id::new(("graph_card", id.as_str()))));
-            if let Some(rect) = self.card_rect(id) {
+            if let Some(rect) = self.level_card_rect(id) {
                 self.pan_to_card(rect);
             }
         }
@@ -1920,6 +1920,13 @@ impl App {
 
     /// Eases the camera so a card that just took keyboard focus is in view, centered on it when it
     /// isn't already fully visible.
+    /// World rect of Tab-order card `id`: a stored node's, or a virtual entry's.
+    pub(crate) fn level_card_rect(&self, id: &str) -> Option<egui::Rect> {
+        self.card_rect(id).or_else(|| {
+            self.virtual_sources.iter().flat_map(|source| source.entries(self)).find(|e| e.id == id).map(|e| e.rect)
+        })
+    }
+
     pub(crate) fn pan_to_card(&mut self, card: egui::Rect) {
         let view = self.camera.rect;
         if !view.contains_rect(card) {
