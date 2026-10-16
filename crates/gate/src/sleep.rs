@@ -54,12 +54,15 @@ fn back_and_forward(inst: &mut Instance, mut url: String) -> io::Result<Vec<Stri
     let mut urls = Vec::new();
     for (command, name) in [("GOBACK", "back1"), ("GOBACK", "back2"), ("GOFORWARD", "fwd")] {
         inst.send(command)?;
-        inst.export_until(name, |s| s.focused_url() != url && s.trail_at_focus())?;
+        let arrived =
+            inst.export_until(name, |s| s.focused_url() != url && s.trail_at_focus())?.focused_url().to_owned();
         // The url changes as the navigation starts, and a plain move's before the engine has reported it: the next
         // command, sent before the trail arrives, would be ignored as a move still pending. WAITIDLE holds the export
         // behind it until the load ends.
         inst.send("WAITIDLE")?;
-        let state = inst.export_state(name)?;
+        // The old page's late settled report can flip the tab's url back for a moment (Servo): read it once it is again
+        // the arrival's.
+        let state = inst.export_until(name, |s| s.focused_url() == arrived && s.trail_at_focus())?;
         url = state.focused_url().to_owned();
         urls.push(last_segment(&state));
     }
@@ -181,7 +184,9 @@ fn run_case(exe: &Path, work: &Path, case: &str, view: &str) -> io::Result<()> {
         "history" | "crash" | "restart" => {
             // Two more pages in Tab view, then sleep (history) or kill the engine host (crash), then Back twice.
             inst.step(&["GRAPHDOWN", "GRAPHOPEN"], "the first page to load", || site.hits("/") > 0)?;
-            // Each page settles before the next is typed: a url typed over a load in progress reads as its redirect.
+            // Each page is in the trail and settled before the next is typed: a url typed over a load in progress, or
+            // before the first report, reads as its redirect and the tree loses the page.
+            inst.export_until(&format!("{name}-first"), |s| s.trail_at_focus())?;
             inst.send("WAITIDLE")?;
             for page in ["p2", "p3"] {
                 let path = format!("/{page}");
@@ -190,6 +195,7 @@ fn run_case(exe: &Path, work: &Path, case: &str, view: &str) -> io::Result<()> {
                 inst.step(&[&typed, "WAITIDLE", "ENTER"], &format!("a request for {path}"), || {
                     site.hits(&path) > before
                 })?;
+                inst.export_until(&format!("{name}-{page}"), |s| s.trail_at_focus())?;
                 inst.send("WAITIDLE")?;
             }
             inst.export_state(&format!("{name}-pre"))?;
