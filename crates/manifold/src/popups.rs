@@ -5,6 +5,7 @@
 use super::*;
 use crate::nav_history::Dir;
 use crate::store::model::Kind;
+use crate::trail_strip::{POPUP_COLUMN_GAP, POPUP_PAGE, POPUP_ROW_GAP};
 
 /// A minimal right-click context menu: just "Open in new tab" for a link,
 /// positioned where the click landed — see `ipc_protocol::ViewToHost::
@@ -293,16 +294,6 @@ pub(crate) enum AnchoredPopup {
     /// The Back chip's branch list (trail spec decision 8).
     BackBranches,
     ForwardBranches,
-}
-
-/// A branch row's label: at most 60 characters, an ellipsis marking a cut.
-fn branch_label(label: &str) -> String {
-    const MAX: usize = 60;
-    if label.chars().count() <= MAX {
-        label.to_owned()
-    } else {
-        format!("{}…", label.chars().take(MAX - 1).collect::<String>())
-    }
 }
 
 /// Opens `which`, or closes it if it's the one open.
@@ -1265,7 +1256,7 @@ impl App {
         }
     }
 
-    /// The Back or Forward chip's branch list (trail spec decision 8): the entries `NavHistory::branches` gives,
+    /// The Back or Forward chip's branch list (trail spec decision 8): the whole page tree (`NavHistory::tree`) in a scroll area,
     /// labelled by title or URL. A click is a plain move there (`trail_pick`); the row's context menu opens it as a
     /// new tab card (`open_branch_as_card`, decision 9). Closes on a pick or a click outside.
     pub(crate) fn build_trail_branches_popup(
@@ -1280,7 +1271,8 @@ impl App {
             Dir::Back => AnchoredPopup::BackBranches,
             Dir::Forward => AnchoredPopup::ForwardBranches,
         };
-        let rows = self.nav_history.get(tab).map_or_else(Vec::new, |h| h.branches(dir));
+        let pages = self.nav_history.get(tab).map_or_else(Vec::new, |h| h.tree());
+        let rects = crate::trail_strip::page_rects(&pages, POPUP_PAGE, POPUP_COLUMN_GAP, POPUP_ROW_GAP);
         let mut picked: Option<usize> = None;
         let mut as_card: Option<usize> = None;
         let area = egui::Area::new(egui::Id::new(("trail_branches_popup", which)))
@@ -1291,21 +1283,44 @@ impl App {
                 ui.set_opacity(fade);
                 popup_frame(ui).show(ui, |ui| {
                     menu_item_style(ui);
-                    ui.set_min_width(200.0);
-                    for (entry, label) in &rows {
-                        let row = ui.add(
-                            egui::Button::new(branch_label(label)).min_size(egui::vec2(ui.min_rect().width(), 0.0)),
-                        );
-                        if row.clicked() {
-                            picked = Some(*entry);
-                        }
-                        row.context_menu(|ui| {
-                            if ui.button("Open as card").clicked() {
-                                as_card = Some(*entry);
-                                ui.close();
+                    egui::ScrollArea::both().max_width(480.0).max_height(240.0).auto_shrink([true, true]).show(
+                        ui,
+                        |ui| {
+                            let extent = rects.iter().fold(egui::Vec2::ZERO, |m, r| m.max(r.max.to_vec2()));
+                            let (area, _) = ui.allocate_exact_size(extent, egui::Sense::hover());
+                            let at = |r: &egui::Rect| r.translate(area.min.to_vec2());
+                            // Lines first, so the pages draw over them.
+                            for (page, rect) in pages.iter().zip(&rects) {
+                                if let Some(parent) = page.parent {
+                                    let line = [at(&rects[parent]).right_center(), at(rect).left_center()];
+                                    ui.painter().line_segment(line, ui.visuals().widgets.noninteractive.fg_stroke);
+                                }
                             }
-                        });
-                    }
+                            for (page, rect) in pages.iter().zip(&rects) {
+                                let rect = at(rect);
+                                let id = egui::Id::new(("trail_popup_page", which, page.entry));
+                                let row = ui.interact(rect, id, egui::Sense::click());
+                                crate::trail_strip::paint_trail_page(
+                                    &ui.painter().with_clip_rect(rect),
+                                    rect,
+                                    page,
+                                    row.hovered(),
+                                );
+                                if page.cursor {
+                                    ui.scroll_to_rect(rect, Some(egui::Align::Center));
+                                }
+                                if row.clicked() {
+                                    picked = Some(page.entry);
+                                }
+                                row.context_menu(|ui| {
+                                    if ui.button("Open as card").clicked() {
+                                        as_card = Some(page.entry);
+                                        ui.close();
+                                    }
+                                });
+                            }
+                        },
+                    );
                 });
             });
         let clicked_outside = clicked_outside_popup(ui, area.response.rect, Some(anchor_rect));

@@ -13,6 +13,10 @@ use crate::{App, CardKind, GraphAction};
 pub(crate) const PAGE: egui::Vec2 = egui::vec2(160.0, 44.0);
 pub(crate) const COLUMN_GAP: f32 = 24.0;
 pub(crate) const ROW_GAP: f32 = 12.0;
+/// The Back/Forward popups draw the same tree at a smaller cell.
+pub(crate) const POPUP_PAGE: egui::Vec2 = egui::vec2(120.0, 28.0);
+pub(crate) const POPUP_COLUMN_GAP: f32 = 16.0;
+pub(crate) const POPUP_ROW_GAP: f32 = 6.0;
 /// Between the tab card's bottom edge and the root page.
 const STRIP_GAP: f32 = 24.0;
 
@@ -24,10 +28,14 @@ fn page_ids(id: &str) -> Option<(&str, usize)> {
     Some((tab, entry.parse().ok()?))
 }
 
-/// Every page's rect relative to the root page's top-left, from the shared tree layout.
+/// Every page's rect, rebased so the strip's bounding box starts at the origin (a parent centres on its children, so
+/// the tree's first lane can sit above the root).
 pub(crate) fn page_rects(pages: &[TrailPage], cell: egui::Vec2, column_gap: f32, row_gap: f32) -> Vec<egui::Rect> {
     let nodes: Vec<TreeNode> = pages.iter().map(|p| TreeNode { parent: p.parent, size: cell }).collect();
-    tree_layout(&nodes, column_gap, row_gap).into_iter().map(|min| egui::Rect::from_min_size(min, cell)).collect()
+    let rects: Vec<egui::Rect> =
+        tree_layout(&nodes, column_gap, row_gap).into_iter().map(|min| egui::Rect::from_min_size(min, cell)).collect();
+    let top_left = rects.iter().fold(egui::Rect::NOTHING, |b, r| b.union(*r)).min;
+    rects.into_iter().map(|r| r.translate(-top_left.to_vec2())).collect()
 }
 
 /// One page: the frame (accent outline for the cursor), the label clipped to the page, dimmed off the path.
@@ -181,8 +189,10 @@ mod tests {
         assert!(cards.iter().all(|c| c.kind.ty == TYPE_TRAIL_PAGE && c.origin == Origin::Virtual("trail")));
         assert_eq!(cards[0].id, format!("virtual:trail:{tab}:0"));
         let below = rig.app.card_rect(&tab).unwrap().left_bottom() + egui::vec2(0.0, STRIP_GAP);
-        assert_eq!(cards[0].rect.min, below, "the root page hangs under the tab card");
+        let top_left = cards.iter().fold(egui::Rect::NOTHING, |b, c| b.union(c.rect)).min;
+        assert_eq!(top_left, below, "the whole strip hangs under the tab card, none of it above");
         assert_eq!(cards[0].rect.size(), PAGE);
+        assert_eq!(cards[0].rect.min.x, below.x, "the root is the leftmost column");
         assert_eq!(cards[1].rect.min.x, below.x + PAGE.x + COLUMN_GAP, "children one column right");
         assert!(cards[3].rect.min.y > cards[1].rect.min.y, "the later branch sits on a lower lane");
     }
@@ -281,5 +291,16 @@ mod tests {
         let (spawn, _) = rig.app.test_spawns.last().expect("a tab was spawned");
         assert_eq!(spawn.url, "/c");
         assert_eq!(spawn.parent.as_deref(), Some(tab.as_str()), "the card dropped on is not the opener");
+    }
+
+    #[test]
+    fn popup_geometry_is_the_same_tree_at_a_smaller_cell() {
+        let pages =
+            NavHistory::with_tree(&[("/a", None, None), ("/b", Some(0), None), ("/c", Some(0), None)], 0).tree();
+        let rects = page_rects(&pages, POPUP_PAGE, POPUP_COLUMN_GAP, POPUP_ROW_GAP);
+        assert_eq!(rects.len(), 3);
+        assert_eq!(rects[1].min.x, POPUP_PAGE.x + POPUP_COLUMN_GAP, "second column");
+        assert!(rects[2].min.y > rects[1].min.y, "second branch below the first");
+        assert_eq!(rects[0].size(), POPUP_PAGE);
     }
 }

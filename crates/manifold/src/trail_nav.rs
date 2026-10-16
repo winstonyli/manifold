@@ -555,7 +555,14 @@ mod tests {
         };
         frame(&mut app, vec![]);
         let id = egui::Id::new(("trail_branches_popup", AnchoredPopup::BackBranches));
-        let at = ctx.memory(|m| m.area_rect(id)).expect("the popup's area").center();
+        let area = ctx.memory(|m| m.area_rect(id)).expect("the popup's area");
+        let rects = crate::trail_strip::page_rects(
+            &app.nav_history[&tab].tree(),
+            crate::trail_strip::POPUP_PAGE,
+            crate::trail_strip::POPUP_COLUMN_GAP,
+            crate::trail_strip::POPUP_ROW_GAP,
+        );
+        let at = area.min + egui::vec2(5.0, 5.0) + rects[1].center().to_vec2(); // page b, past the frame's margin
         let button = |pressed| egui::Event::PointerButton {
             pos: at,
             button: egui::PointerButton::Primary,
