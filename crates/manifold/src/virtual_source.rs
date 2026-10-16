@@ -505,34 +505,73 @@ mod reach_tests {
 
     const SELECTABLE: &str = "application/vnd.manifold.virtual.fake-selectable";
 
-    /// Everything a stored write could touch for `id`, plus the queued writes and the node count.
-    fn footprint(app: &App, id: &str) -> (bool, bool, usize, String, String) {
-        (
+    /// Everything a stored write could touch, for a virtual id `id` and the stored tab and group beside it: the
+    /// mirror, layout, node count, queued Sets, Moves and Deletes, and the serialized store document.
+    fn footprint(app: &mut App, id: &str, others: &[&str]) -> String {
+        let doc = app.export_session_json();
+        let others: Vec<_> = others
+            .iter()
+            .map(|o| {
+                (app.mirror.group(o).map(str::to_owned), app.mirror.parent(o).map(str::to_owned), app.mirror.pinned(o))
+            })
+            .collect();
+        format!(
+            "{} {} {} {:?} {:?} {:?} {:?} {:?} {:?}",
             app.mirror.has(id),
             app.layout.contains_key(id),
             app.nodes.len(),
-            format!("{:?}", app.pending),
-            format!("{:?}", app.mirror.get(id, field::POS)),
+            app.pending,
+            app.writes.pending_moves,
+            app.mirror.get(id, field::POS),
+            others,
+            app.layout.keys().collect::<std::collections::BTreeSet<_>>(),
+            doc,
         )
     }
 
     #[test]
     fn every_write_entry_point_leaves_a_virtual_id_out_of_the_store_and_the_layout() {
-        let mut rig = Rig::with_kind(SELECTABLE);
-        let virt = "virtual:fake:a";
-        let before = footprint(&rig.app, virt);
+        let mut rig = Rig::with_kind("application/vnd.manifold.virtual.fake-all");
+        let placement = crate::fetched::Placement { group: None, pos: egui::vec2(700.0, 300.0) };
+        rig.app.place_group(Some("g".into()), "G", placement);
+        let (virt, tab, group) = ("virtual:fake:a", rig.tab(), "g".to_string());
+        let ctx = rig.ctx.clone();
+        let others = [tab.as_str(), "g"];
+        let before = footprint(&mut rig.app, virt, &others);
+        let virtual_b = "virtual:fake:b".to_string();
+
+        // The virtual id edited directly.
         rig.app.edit_pos(virt, Some(egui::vec2(5.0, 7.0)));
         rig.app.edit_field(virt, field::PINNED, FieldValue::Bool(true));
+        rig.app.edit_group(virt, Some(group.clone()));
+        rig.app.edit_parent(virt, Some(tab.clone()));
+
+        // A release of a live virtual drag (it must really run).
         rig.app.interaction.dragging = Some(virt.to_string());
         rig.app.interaction.drag_moved = vec![virt.to_string()];
+        assert!(rig.app.is_being_dragged(virt), "the release below is not vacuous");
         rig.app.release_drag();
-        rig.app.apply_drop(virt, Some((DropEffect::Join, Some(virt.to_string()))));
-        rig.app.apply_drop(virt, Some((DropEffect::Eject, None)));
+
+        // Every drop effect: the virtual id dragged onto a stored or virtual target, and the stored tab and group
+        // dragged onto a virtual target.
+        for effect in
+            [DropEffect::Join, DropEffect::GroupWith, DropEffect::Reparent, DropEffect::Merge, DropEffect::Eject]
+        {
+            for target in [group.clone(), tab.clone(), virtual_b.clone()] {
+                rig.app.apply_drop(virt, Some((effect, Some(target))));
+            }
+            for dragged in [tab.as_str(), "g"] {
+                rig.app.apply_drop(dragged, Some((effect, Some(virt.to_string()))));
+            }
+        }
+        assert_eq!(footprint(&mut rig.app, virt, &others), before);
+
+        // Selection actions with the virtual id alone selected.
         rig.app.interaction.selected = std::collections::HashSet::from([virt.to_string()]);
-        let ctx = rig.ctx.clone();
         rig.app.apply_graph_action(&ctx, GraphAction::CloseSelected);
+        rig.app.apply_graph_action(&ctx, GraphAction::GroupSelected);
         rig.app.pin_shortcut();
-        assert_eq!(footprint(&rig.app, virt), before);
+        assert_eq!(footprint(&mut rig.app, virt, &others), before);
     }
 
     #[test]

@@ -136,9 +136,14 @@ impl App {
             &|k| k.ty == TYPE_TAB && !k.loaded(),
         ];
         let mut hits: [Option<(&str, CardKind)>; 4] = [None; 4];
-        for other in
-            items.iter().filter(|other| other.id != id && other.origin != Origin::Json && other.caps().drop_target)
-        {
+        // A stored card has only stored effects (`apply_drop`), so a virtual card is no target for it.
+        let stored_drag = dragged_entry.origin == Origin::Stored;
+        for other in items.iter().filter(|other| {
+            other.id != id
+                && other.origin != Origin::Json
+                && !(stored_drag && matches!(other.origin, Origin::Virtual(_)))
+                && other.caps().drop_target
+        }) {
             let Some(slot) = searches.iter().position(|pick| pick(other.kind)) else { continue };
             if hits[slot].is_none() && other.rect.contains(center) {
                 hits[slot] = Some((other.id.as_str(), other.kind));
@@ -196,6 +201,13 @@ impl App {
     /// landed, if anywhere. Saves the session on every release, since the
     /// drag itself moved the card.
     pub(crate) fn apply_drop(&mut self, id: &str, target: Option<(DropEffect, Option<String>)>) {
+        // Every effect below is a stored one: a virtual card at either end is its source's business (`on_drop`),
+        // never a group to create, a link to make or a move to write.
+        let virtual_end = crate::virtual_source::is_virtual_id(id)
+            || matches!(&target, Some((_, Some(other))) if crate::virtual_source::is_virtual_id(other));
+        if virtual_end {
+            return;
+        }
         match target {
             Some((DropEffect::Eject, _)) => self.eject(id),
             // A group closed or deleted since the drop began (a remote close after the menu opened) is not shown: a

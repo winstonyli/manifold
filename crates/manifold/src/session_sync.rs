@@ -1183,7 +1183,7 @@ impl App {
     /// The one writer of a node's parent link: the mirror shows it at once and the next save commits a `Set PARENT`.
     /// A non-store id or target only updates the mirror.
     pub(crate) fn edit_parent(&mut self, id: &str, parent: Option<String>) {
-        if self.mirror.parent(id) == parent.as_deref() {
+        if self.mirror.parent(id) == parent.as_deref() || crate::virtual_source::is_virtual_id(id) {
             return;
         }
         if let Ok(node) = id.parse::<NodeId>() {
@@ -1204,7 +1204,7 @@ impl App {
     /// The one writer of a node's group (Ruling 2): shown at once, committed as a `Move` by the next save.
     /// A non-store id or target only updates the mirror.
     pub(crate) fn edit_group(&mut self, id: &str, group: Option<String>) {
-        if self.mirror.group(id) == group.as_deref() {
+        if self.mirror.group(id) == group.as_deref() || crate::virtual_source::is_virtual_id(id) {
             return;
         }
         // The Default stays at the top level (spec "The Default jar").
