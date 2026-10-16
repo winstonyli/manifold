@@ -101,8 +101,8 @@ pub(crate) struct Caps {
     pub(crate) menu: bool,
     /// Swatch, Pin, Close and Eject act on a stored node.
     pub(crate) stored_controls: bool,
-    /// Counts toward Fit, Reset View, the minimap and the level-of-detail count; a derived card that may run far
-    /// from the rest (the trail strip) turns it off.
+    /// Counts toward the level-of-detail count (how many cards are on screen); the trail strip's pages, which are
+    /// not cards in the graph, turn it off.
     pub(crate) framed: bool,
 }
 
@@ -194,7 +194,7 @@ pub(crate) fn builtin_rows() -> Vec<Row> {
             .menu(false)
             .stored_controls(false)
             .draw_layer(8),
-        Row::new(TYPE_TRAIL_PAGE).drag_source(true).framed(false), // dragged out to open as a card; a long trail must not stretch Fit
+        Row::new(TYPE_TRAIL_PAGE).drag_source(true).framed(false), // dragged out to open as a card; a long trail must not tip the level of detail
         // A JSON level's card (`draw_json_level` draws it and handles its input): the shared chrome leaves it alone.
         Row::new(TYPE_JSON_LEVEL)
             .selectable(false)

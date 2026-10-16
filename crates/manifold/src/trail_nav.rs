@@ -537,7 +537,7 @@ mod tests {
         output.textures_delta.clear();
         let id = egui::Id::new(("trail_branches_popup", AnchoredPopup::BackBranches));
         let rect = ctx.memory(|m| m.area_rect(id)).expect("the popup's area");
-        assert!(rect.width() >= 150.0, "{rect:?}");
+        assert!(rect.width() >= 60.0, "{rect:?}");
         assert_eq!(app.menus.open_popup, Some(AnchoredPopup::BackBranches), "no click: it stays open");
     }
 

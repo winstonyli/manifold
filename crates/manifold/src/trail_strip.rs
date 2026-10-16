@@ -82,14 +82,17 @@ pub(crate) fn paint_trail_page(painter: &egui::Painter, rect: egui::Rect, page: 
         painter.rect_stroke(rect, 6.0, egui::Stroke::new(2.0, ACCENT), kind);
     }
     let color = if page.cursor || page.on_path { TEXT_PRIMARY } else { TEXT_WEAK };
-    let clip = painter.with_clip_rect(rect.shrink2(egui::vec2(6.0, 0.0)).intersect(painter.clip_rect()));
-    clip.text(
-        rect.left_center() + egui::vec2(LABEL_INSET, 0.0),
-        egui::Align2::LEFT_CENTER,
-        &page.label,
-        label_font(),
-        color,
-    );
+    // One line, cut with an ellipsis at the page's inner width.
+    let mut job = egui::text::LayoutJob::simple_singleline(page.label.clone(), label_font(), color);
+    job.wrap = egui::text::TextWrapping {
+        max_width: (rect.width() - 2.0 * LABEL_INSET).max(0.0),
+        max_rows: 1,
+        break_anywhere: true,
+        overflow_character: Some('…'),
+    };
+    let galley = painter.layout_job(job);
+    let at = rect.left_center() + egui::vec2(LABEL_INSET, -galley.size().y / 2.0);
+    painter.with_clip_rect(rect.intersect(painter.clip_rect())).galley(at, galley, color);
 }
 
 pub(crate) struct TrailSource;
@@ -162,10 +165,10 @@ impl VirtualSource for TrailSource {
 
     fn paint_body(&self, app: &App, ui: &mut egui::Ui, entry: &CardEntry) -> CardBody {
         let page = live_page(app, &entry.id).and_then(|(tab, i)| app.nav_history.get(tab)?.tree().into_iter().nth(i));
-        if let Some(page) = page {
-            paint_trail_page(ui.painter(), entry.rect, &page, false, true);
+        if let Some(page) = &page {
+            paint_trail_page(ui.painter(), entry.rect, page, false, true);
         }
-        CardBody { interact_rect: entry.rect, tooltip: None }
+        CardBody { interact_rect: entry.rect, tooltip: page.map(|p| p.url) }
     }
 
     fn on_click(&self, app: &mut App, entry: &CardEntry) -> Option<GraphAction> {
@@ -271,7 +274,14 @@ mod tests {
     fn a_long_url_label_paints_clipped_to_the_page() {
         let ctx = egui::Context::default();
         crate::theme::apply_fonts(&ctx);
-        let page = TrailPage { entry: 0, parent: None, label: "x".repeat(400), cursor: false, on_path: false };
+        let page = TrailPage {
+            entry: 0,
+            parent: None,
+            label: "x".repeat(400),
+            url: String::new(),
+            cursor: false,
+            on_path: false,
+        };
         let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, PAGE);
         let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
             let painter = ui.painter().with_clip_rect(rect);
@@ -354,8 +364,14 @@ mod tests {
     #[test]
     fn a_page_is_as_wide_as_its_label_within_the_clamp() {
         let ctx = text_ctx();
-        let page =
-            |label: &str| TrailPage { entry: 0, parent: None, label: label.into(), cursor: false, on_path: false };
+        let page = |label: &str| TrailPage {
+            entry: 0,
+            parent: None,
+            label: label.into(),
+            url: String::new(),
+            cursor: false,
+            on_path: false,
+        };
         let widths: Vec<f32> =
             page_sizes(&ctx, &[page("a"), page("a medium length title"), page(&"w".repeat(400))], PAGE)
                 .iter()
@@ -365,6 +381,26 @@ mod tests {
         assert!(widths[0] < widths[1] && widths[1] < PAGE.x, "{widths:?}");
         assert_eq!(widths[2], PAGE.x, "a long label is capped, and clipped when painted");
         assert!(page_sizes(&ctx, &[page("a")], PAGE).iter().all(|s| s.y == PAGE.y), "height is the cell's");
+    }
+
+    #[test]
+    fn the_strip_page_tooltip_is_the_full_url_and_fit_frames_the_strip() {
+        let mut rig = forked();
+        let tab = rig.tab();
+        let h = NavHistory::visited(&["https://example.com/a", "https://example.com/b"]);
+        rig.app.nav_history.insert(tab.clone(), h);
+        rig.frame(vec![], egui::Modifiers::NONE);
+        let entry = pages(&rig).remove(1);
+        let mut tip = None;
+        let ctx = rig.ctx.clone();
+        ctx.run_ui(egui::RawInput::default(), |ui| {
+            tip = TrailSource.paint_body(&rig.app, ui, &entry).tooltip;
+        })
+        .textures_delta
+        .clear();
+        assert_eq!(tip.as_deref(), Some("https://example.com/b"));
+        let strip = pages(&rig).iter().fold(egui::Rect::NOTHING, |b, c| b.union(c.rect));
+        assert!(rig.app.fit_all_nodes_scene_rect().contains_rect(strip), "Reset View frames the strip too");
     }
 
     #[test]
@@ -399,20 +435,13 @@ mod tests {
     }
 
     #[test]
-    fn the_strip_does_not_stretch_fit_or_the_level_of_detail_count() {
-        let mut rig = forked();
-        let with = rig.app.fit_all_nodes_scene_rect();
-        rig.app.focused = None;
-        assert_eq!(with, rig.app.fit_all_nodes_scene_rect(), "fit frames the cards, not the strip");
-    }
-
-    #[test]
     fn the_card_path_leaves_the_frame_to_the_card_and_the_popup_paints_its_own() {
         let ctx = egui::Context::default();
         crate::theme::apply_fonts(&ctx);
         ctx.run_ui(egui::RawInput::default(), |_| {}).textures_delta.clear();
         let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, PAGE);
-        let page = TrailPage { entry: 0, parent: None, label: "a".into(), cursor: true, on_path: true };
+        let page =
+            TrailPage { entry: 0, parent: None, label: "a".into(), url: String::new(), cursor: true, on_path: true };
         let rects = |card: bool| {
             let layer = egui::LayerId::new(egui::Order::Background, egui::Id::new(("paint_probe", card)));
             paint_trail_page(&ctx.layer_painter(layer), rect, &page, false, card);

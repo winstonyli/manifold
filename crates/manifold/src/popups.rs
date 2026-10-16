@@ -1313,7 +1313,7 @@ impl App {
                             for (page, rect) in pages.iter().zip(&rects) {
                                 let rect = at(rect);
                                 let id = egui::Id::new(("trail_popup_page", which, page.entry));
-                                let row = ui.interact(rect, id, egui::Sense::click());
+                                let row = ui.interact(rect, id, egui::Sense::click()).on_hover_text(&page.url);
                                 crate::trail_strip::paint_trail_page(
                                     &ui.painter().with_clip_rect(rect),
                                     rect,

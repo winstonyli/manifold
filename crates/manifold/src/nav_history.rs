@@ -56,8 +56,10 @@ pub(crate) struct TrailPage {
     /// The arena index: what `go_to` and `entry_url` take.
     pub(crate) entry: usize,
     pub(crate) parent: Option<usize>,
-    /// The title, or the URL when the title is empty.
+    /// The title, or the URL's path (its host when there is none) when the title is empty.
     pub(crate) label: String,
+    /// The full URL (the tooltip).
+    pub(crate) url: String,
     /// The page the tab shows.
     pub(crate) cursor: bool,
     /// On the chain from the root to the cursor.
@@ -385,7 +387,8 @@ impl NavHistory {
             .map(|(i, e)| TrailPage {
                 entry: i,
                 parent: e.parent,
-                label: if e.title.is_empty() { e.url.clone() } else { e.title.clone() },
+                label: if e.title.is_empty() { short_url(&e.url) } else { e.title.clone() },
+                url: e.url.clone(),
                 cursor: i == self.at,
                 on_path: path.contains(&i),
             })
@@ -603,6 +606,17 @@ impl NavHistory {
     }
 }
 
+/// `https://host/a/b?q#frag` -> `/a/b?q`; `https://host/` -> `host`. A string with no scheme is returned as is.
+fn short_url(url: &str) -> String {
+    let Some((_, rest)) = url.split_once("://") else { return url.to_owned() };
+    let rest = rest.split('#').next().unwrap_or(rest);
+    match rest.find('/') {
+        Some(i) if rest.len() > i + 1 => rest[i..].to_owned(),
+        Some(i) => rest[..i].to_owned(),
+        None => rest.to_owned(),
+    }
+}
+
 fn path() -> Option<PathBuf> {
     Some(crate::profile::dir()?.join("tab-history.json"))
 }
@@ -692,6 +706,22 @@ mod tests {
         assert_eq!(pages.iter().map(|p| p.cursor).collect::<Vec<_>>(), [false, false, false, true]);
         assert_eq!(pages.iter().map(|p| p.on_path).collect::<Vec<_>>(), [true, false, false, true]);
         assert!(NavHistory::default().tree().is_empty());
+    }
+
+    #[test]
+    fn an_untitled_page_is_labelled_by_its_path_or_else_its_host_and_keeps_the_full_url() {
+        let h = NavHistory::visited(&[
+            "https://example.com/docs/intro?x=1#top",
+            "https://example.com/",
+            "https://example.com",
+            "/plain",
+        ]);
+        let pages = h.tree();
+        assert_eq!(
+            pages.iter().map(|p| p.label.as_str()).collect::<Vec<_>>(),
+            ["/docs/intro?x=1", "example.com", "example.com", "/plain"]
+        );
+        assert_eq!(pages[0].url, "https://example.com/docs/intro?x=1#top");
     }
 
     #[test]

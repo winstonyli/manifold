@@ -347,7 +347,7 @@ impl App {
     /// fit (an empty group, or before any tab has spawned) — an empty
     /// bounding box has no sensible center/size to frame.
     pub(crate) fn fit_all_nodes_scene_rect(&self) -> egui::Rect {
-        self.bounds_for_rects(self.level_items().into_iter().filter(|item| item.caps().framed).map(|item| item.rect))
+        self.bounds_for_rects(self.level_items().into_iter().map(|item| item.rect))
     }
 
     /// Same computation `fit_all_nodes_scene_rect` needs, but taking
