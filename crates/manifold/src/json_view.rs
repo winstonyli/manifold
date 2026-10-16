@@ -585,36 +585,15 @@ pub(crate) fn reveal(root: &Value, view: &mut JsonView, expanded: &HashSet<Strin
 /// subtree a band as tall as the larger of its card and its children's
 /// bands plus `SIBLING_GAP`s; a parent centred on its children's span.
 /// The root is at the origin, and a saved `pos` replaces one card's only.
+/// The algorithm is `tree_layout::tree_layout` (children come after their
+/// parent: `visible_cards` is breadth-first).
 pub(crate) fn tree_layout(cards: &[Card], view: &JsonView) -> Vec<egui::Pos2> {
-    let mut children: Vec<Vec<usize>> = vec![Vec::new(); cards.len()];
-    for (i, card) in cards.iter().enumerate() {
-        if let Some((parent, _)) = card.parent {
-            children[parent].push(i);
-        }
-    }
-    let span = |band: &[f32], kids: &[usize]| {
-        kids.iter().map(|&k| band[k]).sum::<f32>() + SIBLING_GAP * kids.len().saturating_sub(1) as f32
-    };
-    // Children come after their parent (`visible_cards` is breadth-first),
-    // so walking backwards sizes every child before its parent.
-    let mut band = vec![0.0; cards.len()];
-    for i in (0..cards.len()).rev() {
-        band[i] = cards[i].height().max(span(&band, &children[i]));
-    }
-    let mut top = vec![0.0; cards.len()];
-    let mut pos = vec![egui::Pos2::ZERO; cards.len()];
-    for i in 0..cards.len() {
-        let mut y = top[i] + (band[i] - span(&band, &children[i])) / 2.0;
-        for &k in &children[i] {
-            top[k] = y;
-            y += band[k] + SIBLING_GAP;
-        }
-        let x = cards[i].depth as f32 * (CARD_WIDTH + COLUMN_GAP);
-        pos[i] = egui::pos2(x, top[i] + (band[i] - cards[i].height()) / 2.0);
-    }
-    let origin = pos.first().map_or(0.0, |p| p.y);
+    let nodes: Vec<crate::tree_layout::TreeNode> = cards
+        .iter()
+        .map(|card| crate::tree_layout::TreeNode { parent: card.parent.map(|(p, _)| p), size: card.size() })
+        .collect();
+    let mut pos = crate::tree_layout::tree_layout(&nodes, COLUMN_GAP, SIBLING_GAP);
     for (card, p) in cards.iter().zip(&mut pos) {
-        p.y -= origin;
         if let Some([x, y]) = view.get(&card.pointer).and_then(|o| o.pos) {
             *p = egui::pos2(x, y);
         }
