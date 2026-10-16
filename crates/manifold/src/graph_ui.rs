@@ -702,7 +702,8 @@ impl App {
         // why. Uses this frame's not-yet-updated `camera.rect`, the
         // same one-frame-stale viewport the render loops' own cull check
         // already accepts.
-        let lod_visible_count: usize = items.iter().filter(|item| item.rect.intersects(self.camera.rect)).count();
+        let lod_visible_count: usize =
+            items.iter().filter(|item| item.caps().framed && item.rect.intersects(self.camera.rect)).count();
         if self.graph_lod_simplified {
             if lod_visible_count < LOD_RESTORE_COUNT {
                 self.graph_lod_simplified = false;

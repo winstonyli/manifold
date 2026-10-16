@@ -122,6 +122,9 @@ pub(crate) struct NavHistory {
     /// The engine's cursor in `lin`.
     lin_at: usize,
     pending: Option<Move>,
+    /// Bumped by every eviction, which shifts the indices after it: the strip puts it in its page ids so an id never
+    /// outlives the page it named.
+    epoch: u32,
     /// The last folded report was still loading: a URL change next is a redirect.
     loading: bool,
     /// The cursor entry was chosen by a move or reloaded by a new engine, so a redirect rewrites it.
@@ -366,6 +369,10 @@ impl NavHistory {
             .collect()
     }
 
+    pub(crate) fn epoch(&self) -> u32 {
+        self.epoch
+    }
+
     /// Every page in entry order (a parent always before its children), for drawing.
     pub(crate) fn tree(&self) -> Vec<TrailPage> {
         if self.entries.is_empty() {
@@ -570,6 +577,7 @@ impl NavHistory {
             std::cmp::Ordering::Greater => Some(i - 1),
         };
         self.entries.remove(v);
+        self.epoch += 1;
         for e in &mut self.entries {
             e.parent = e.parent.and_then(shift);
             e.fwd = e.fwd.and_then(shift);

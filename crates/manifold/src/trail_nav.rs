@@ -578,4 +578,14 @@ mod tests {
         h.observe("https://b/", "", false, false, Instant::now() + std::time::Duration::from_secs(1));
         assert_eq!(h.branches(Dir::Back), [(2, "https://c/".to_string())]);
     }
+
+    #[test]
+    fn the_popup_centres_the_cursor_page_once_per_opening_not_every_frame() {
+        let ctx = egui::Context::default();
+        let which = AnchoredPopup::BackBranches;
+        assert!(popup_centres_cursor(&ctx, which, true), "the first frame open");
+        assert!(!popup_centres_cursor(&ctx, which, true), "later frames leave the user's scrolling alone");
+        assert!(!popup_centres_cursor(&ctx, which, false), "closed");
+        assert!(popup_centres_cursor(&ctx, which, true), "opened again");
+    }
 }

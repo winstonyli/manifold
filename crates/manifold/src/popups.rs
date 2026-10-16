@@ -296,6 +296,18 @@ pub(crate) enum AnchoredPopup {
     ForwardBranches,
 }
 
+/// Whether the branch popup should scroll its cursor page into view this frame: the first frame it is open, not every
+/// frame (that would pull the view back whenever the user scrolls away). Closing re-arms it.
+pub(crate) fn popup_centres_cursor(ctx: &egui::Context, which: AnchoredPopup, open: bool) -> bool {
+    let key = egui::Id::new(("trail_popup_centred", which));
+    let seen = ctx.data_mut(|d| {
+        let seen = open && d.get_temp::<bool>(key).unwrap_or(false);
+        d.insert_temp(key, open);
+        seen
+    });
+    open && !seen
+}
+
 /// Opens `which`, or closes it if it's the one open.
 pub(crate) fn toggle_popup(open: &mut Option<AnchoredPopup>, which: AnchoredPopup) {
     *open = if *open == Some(which) { None } else { Some(which) };
@@ -1273,6 +1285,7 @@ impl App {
         };
         let pages = self.nav_history.get(tab).map_or_else(Vec::new, |h| h.tree());
         let rects = crate::trail_strip::page_rects(&pages, POPUP_PAGE, POPUP_COLUMN_GAP, POPUP_ROW_GAP);
+        let centre = popup_centres_cursor(ui.ctx(), which, self.menus.open_popup == Some(which));
         let mut picked: Option<usize> = None;
         let mut as_card: Option<usize> = None;
         let area = egui::Area::new(egui::Id::new(("trail_branches_popup", which)))
@@ -1305,8 +1318,9 @@ impl App {
                                     rect,
                                     page,
                                     row.hovered(),
+                                    false,
                                 );
-                                if page.cursor {
+                                if page.cursor && centre {
                                     ui.scroll_to_rect(rect, Some(egui::Align::Center));
                                 }
                                 if row.clicked() {

@@ -14,6 +14,7 @@ pub(crate) struct Row {
     drop_target: Option<bool>,
     menu: Option<bool>,
     stored_controls: Option<bool>,
+    framed: Option<bool>,
 }
 
 impl Row {
@@ -28,6 +29,7 @@ impl Row {
             drop_target: None,
             menu: None,
             stored_controls: None,
+            framed: None,
         }
     }
 
@@ -53,6 +55,11 @@ impl Row {
 
     pub(crate) fn stored_controls(mut self, on: bool) -> Row {
         self.stored_controls = Some(on);
+        self
+    }
+
+    pub(crate) fn framed(mut self, on: bool) -> Row {
+        self.framed = Some(on);
         self
     }
 
@@ -94,6 +101,9 @@ pub(crate) struct Caps {
     pub(crate) menu: bool,
     /// Swatch, Pin, Close and Eject act on a stored node.
     pub(crate) stored_controls: bool,
+    /// Counts toward Fit, Reset View, the minimap and the level-of-detail count; a derived card that may run far
+    /// from the rest (the trail strip) turns it off.
+    pub(crate) framed: bool,
 }
 
 /// How many draw layers the builtin rows use: every `Caps::draw_layer` is below this, so a level scan has this many
@@ -147,6 +157,9 @@ impl Registry {
             if let Some(v) = row.menu {
                 caps.menu = v;
             }
+            if let Some(v) = row.framed {
+                caps.framed = v;
+            }
             if let Some(v) = row.stored_controls {
                 caps.stored_controls = v;
             }
@@ -166,7 +179,13 @@ pub(crate) fn builtin_rows() -> Vec<Row> {
     };
     vec![
         // Every stored kind can do everything; a virtual kind's own row, below, turns off what it cannot.
-        Row::new("*/*").selectable(true).drag_source(true).drop_target(true).menu(true).stored_controls(true),
+        Row::new("*/*")
+            .selectable(true)
+            .drag_source(true)
+            .drop_target(true)
+            .menu(true)
+            .stored_controls(true)
+            .framed(true),
         // A virtual kind starts with nothing and draws on top (layer 8); a source's exact row grants what it needs.
         Row::new(&format!("{TYPE_VIRTUAL_PREFIX}*"))
             .selectable(false)
@@ -175,7 +194,7 @@ pub(crate) fn builtin_rows() -> Vec<Row> {
             .menu(false)
             .stored_controls(false)
             .draw_layer(8),
-        Row::new(TYPE_TRAIL_PAGE).drag_source(true), // a strip page can be dragged out to open as a card
+        Row::new(TYPE_TRAIL_PAGE).drag_source(true).framed(false), // dragged out to open as a card; a long trail must not stretch Fit
         // A JSON level's card (`draw_json_level` draws it and handles its input): the shared chrome leaves it alone.
         Row::new(TYPE_JSON_LEVEL)
             .selectable(false)
