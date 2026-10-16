@@ -1,15 +1,13 @@
 //! `gate host-pin` and `gate cef-pin` (were scripts/host_pin.py and cef_pin.py): rewrite the pin tables in
 //! crates/manifold/src/host_pin.rs and cef_pin.rs.
 //!
-//! `gate host-pin --version V [--out FILE] [--keep-from OLD.rs] --asset KIND/PLATFORM=PATH ...` (run by
-//! scripts/release.sh) rewrites the text between `// BEGIN TABLE` and `// END TABLE` with the engine host binaries a
-//! release built and uploads. KIND is servo, cef, webkit or webview2; PLATFORM is windows-x64 or linux-x64. Each file
-//! is hashed (SHA-256) and measured, installs under its base name and is fetched from
-//! `https://github.com/winstonyli/manifold/releases/download/v<V>/<name>-<platform>`. A missing or empty file is
-//! refused. `--keep-from` copies an older table's entries unchanged (their URLs keep pointing at the older release);
-//! an asset for the same (kind, platform, name) is an error. The SHA-256 of the new table text is printed on stdout
-//! for the release notes. The file is left alone if anything is refused. `gate host-pin --list FILE` prints a file's
-//! table instead: a `version V` line, then `kind platform file size sha256 url` per component.
+//! `gate host-pin --check` fails if any entry's URL carries a fingerprint other than `gate host-fingerprint`'s for the
+//! current tree (also run in ci.yml and release.yml). `gate host-pin --adopt KIND PLATFORM [--from DIR]` takes
+//! `pin.json` and the files of the `hosts-KIND-FP` release (or of DIR, for tests and offline use), verifies each
+//! file's size and SHA-256, and rewrites that entry between `// BEGIN TABLE` and `// END TABLE`.
+//! `gate host-pin --manifest KIND PLATFORM FP DIR` writes `DIR/pin.json` for the files named `FILE-PLATFORM` in DIR
+//! (hosts.yml uses it). All take `--out FILE` (default crates/manifold/src/host_pin.rs). The rewrite is atomic and
+//! leaves the file alone on any refusal. KIND is servo, cef, webkit or webview2; PLATFORM windows-x64 or linux-x64.
 //!
 //! `gate cef-pin [--platform ID] PREFIX` (e.g. `152.0.6`) re-pins one CEF platform: it reads
 //! https://cef-builds.spotifycdn.com/index.json, picks that platform's `minimal` file whose cef_version starts with
@@ -30,9 +28,8 @@ use serde_json::Value;
 use sha1::Sha1;
 use sha2::{Digest, Sha256};
 
-const RELEASES: &str = "https://github.com/winstonyli/manifold/releases/download/";
+pub(crate) const RELEASES: &str = "https://github.com/winstonyli/manifold/releases/download/";
 const KINDS: [(&str, &str); 4] = [("servo", "Servo"), ("cef", "Cef"), ("webkit", "Webkit"), ("webview2", "Webview2")];
-const PLATFORMS: [&str; 2] = ["windows-x64", "linux-x64"];
 
 pub(crate) fn repo() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
@@ -64,9 +61,9 @@ pub(crate) fn hash_file(path: &Path) -> Result<(String, String, u64), String> {
 // ---- host_pin.rs ----
 
 /// url, size, sha256 per file name.
-type Files = BTreeMap<String, (String, u64, String)>;
+pub(crate) type Files = BTreeMap<String, (String, u64, String)>;
 /// Files per (kind name, platform).
-type Table = BTreeMap<(String, String), Files>;
+pub(crate) type Table = BTreeMap<(String, String), Files>;
 
 pub(crate) fn region(text: &str) -> Result<(usize, usize), String> {
     let begin = text.find("// BEGIN TABLE\n").ok_or("no `// BEGIN TABLE` line")? + "// BEGIN TABLE\n".len();
@@ -100,10 +97,8 @@ pub(crate) fn parse_table(body: &str) -> Result<Table, String> {
     Ok(table)
 }
 
-fn render_table(version: &str, table: &Table) -> String {
-    let mut s = format!(
-        "/// The app version this table was cut for.\n#[cfg_attr(not(test), allow(dead_code, reason = \"only the table check in the tests reads it\"))]\npub const PIN_VERSION: &str = \"{version}\";\n\n#[rustfmt::skip]\nconst TABLE: &[Entry] = &[\n"
-    );
+fn render_table(table: &Table) -> String {
+    let mut s = String::from("#[rustfmt::skip]\nconst TABLE: &[Entry] = &[\n");
     for ((kind, platform), files) in table {
         let variant = KINDS.iter().find(|k| k.0 == kind).map_or("", |k| k.1);
         let _ = writeln!(s, "    Entry {{ kind: ViewKind::{variant}, platform: \"{platform}\", components: &[");
@@ -119,77 +114,213 @@ fn render_table(version: &str, table: &Table) -> String {
     s
 }
 
-fn host_pin(args: &[String]) -> Result<(), String> {
-    let mut version = None;
-    let mut out = repo().join("crates/manifold/src/host_pin.rs");
-    let (mut keep, mut list, mut assets) = (None, None, Vec::new());
-    let mut it = args.iter();
-    while let Some(a) = it.next() {
-        let mut val = || it.next().cloned().ok_or(format!("{a} needs a value"));
-        match a.as_str() {
-            "--version" => version = Some(val()?),
-            "--out" => out = PathBuf::from(val()?),
-            "--keep-from" => keep = Some(PathBuf::from(val()?)),
-            "--list" => list = Some(PathBuf::from(val()?)),
-            "--asset" => assets.push(val()?),
-            _ => return Err(format!("unknown argument {a}")),
-        }
-    }
-    let read = |p: &Path| std::fs::read_to_string(p).map_err(|e| format!("{}: {e}", p.display()));
-    if let Some(path) = list {
-        let text = read(&path)?;
-        let (b, e) = region(&text).map_err(|m| format!("{}: {m}", path.display()))?;
-        let body = &text[b..e];
-        let v = body.split("PIN_VERSION: &str = \"").nth(1).and_then(|r| r.split('"').next()).unwrap_or("");
-        println!("version {v}");
-        for ((kind, platform), files) in parse_table(body)? {
-            for (file, (url, size, sha)) in files {
-                println!("{kind} {platform} {file} {size} {sha} {url}");
+fn release_tag(kind: &str, fp: &str) -> String {
+    format!("hosts-{kind}-{fp}")
+}
+
+/// The fingerprint a pin URL carries (`.../download/hosts-KIND-FP/FILE-PLATFORM`), if it has that shape.
+fn url_fingerprint<'a>(url: &'a str, kind: &str) -> Option<&'a str> {
+    url.strip_prefix(RELEASES)?.split('/').next()?.strip_prefix(&format!("hosts-{kind}-"))
+}
+
+/// One line per entry file whose URL does not carry the fingerprint `fp` computes for its kind and platform.
+pub(crate) fn stale_entries(table: &Table, fp: &dyn Fn(&str, &str) -> Result<String, String>) -> Vec<String> {
+    let mut out = Vec::new();
+    for ((kind, platform), files) in table {
+        let want = match fp(kind, platform) {
+            Ok(w) => w,
+            Err(e) => {
+                out.push(format!("{kind}/{platform}: {e}"));
+                continue;
+            }
+        };
+        for (file, (url, ..)) in files {
+            let got = url_fingerprint(url, kind);
+            if got != Some(want.as_str()) {
+                out.push(format!(
+                    "{kind}/{platform} {file}: pinned for {got:?}, sources are {want}: run the hosts workflow for {kind}, then `gate host-pin --adopt {kind} {platform}` and commit"
+                ));
             }
         }
-        return Ok(());
     }
-    let version = version.ok_or("--version is required")?;
-    let mut table = Table::new();
-    if let Some(k) = &keep {
-        let text = read(k)?;
-        let (b, e) = region(&text).map_err(|m| format!("{}: {m}", k.display()))?;
-        table = parse_table(&text[b..e])?;
+    out
+}
+
+fn host_pin_path() -> PathBuf {
+    repo().join("crates/manifold/src/host_pin.rs")
+}
+
+pub(crate) fn read_table(path: &Path) -> Result<Table, String> {
+    let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let (b, e) = region(&text).map_err(|m| format!("{}: {m}", path.display()))?;
+    parse_table(&text[b..e])
+}
+
+/// SHA-256 of the generated table text, for the release notes.
+pub(crate) fn table_sha256() -> Result<String, String> {
+    let path = host_pin_path();
+    let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let (b, e) = region(&text)?;
+    Ok(hex(&Sha256::digest(&text.as_bytes()[b..e])))
+}
+
+/// Every pinned entry carries the fingerprint of the current tree.
+pub(crate) fn pins_are_fresh() -> Result<(), Vec<String>> {
+    let table = read_table(&host_pin_path()).map_err(|e| vec![e])?;
+    let stale = stale_entries(&table, &|k, p| crate::fingerprint::fingerprint(&repo(), k, p, true));
+    if stale.is_empty() {
+        Ok(())
+    } else {
+        Err(stale)
     }
-    for spec in &assets {
-        let (left, path) = spec.split_once('=').ok_or(format!("bad --asset {spec:?}: want KIND/PLATFORM=PATH"))?;
-        let (kind, platform) = left.split_once('/').ok_or(format!("bad --asset {spec:?}: want KIND/PLATFORM=PATH"))?;
-        if !KINDS.iter().any(|k| k.0 == kind) || !PLATFORMS.contains(&platform) {
-            return Err(format!(
-                "bad --asset {spec:?}: KIND is servo, cef, webkit or webview2; PLATFORM windows-x64 or linux-x64"
-            ));
-        }
-        let path = Path::new(path);
-        if !path.is_file() {
-            return Err(format!("{}: no such file", path.display()));
-        }
-        let (sha, _, size) = hash_file(path)?;
-        if size == 0 {
-            return Err(format!("{}: empty file", path.display()));
-        }
-        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("").to_owned();
-        let files = table.entry((kind.to_owned(), platform.to_owned())).or_default();
-        if files.contains_key(&name) {
-            return Err(format!("{kind}/{platform}/{name} is both kept from the older table and given as an asset"));
-        }
-        eprintln!("{kind}/{platform} {name} {size} bytes sha256 {sha}");
-        files.insert(name.clone(), (format!("{RELEASES}v{version}/{name}-{platform}"), size, sha));
-    }
-    let body = render_table(&version, &table);
-    let text = read(&out)?;
+}
+
+fn write_table(out: &Path, table: &Table) -> Result<(), String> {
+    let text = std::fs::read_to_string(out).map_err(|e| format!("{}: {e}", out.display()))?;
     let (b, e) = region(&text).map_err(|m| format!("{}: {m}", out.display()))?;
-    let new = format!("{}{body}{}", &text[..b], &text[e..]);
+    let new = format!("{}{}{}", &text[..b], render_table(table), &text[e..]);
     let tmp = out.with_extension("rs.new");
     std::fs::write(&tmp, new).map_err(|e| e.to_string())?;
-    std::fs::rename(&tmp, &out).map_err(|e| e.to_string())?;
-    eprintln!("wrote {} ({} components)", out.display(), table.values().map(BTreeMap::len).sum::<usize>());
-    println!("{}", hex(&Sha256::digest(body.as_bytes())));
+    std::fs::rename(&tmp, out).map_err(|e| e.to_string())
+}
+
+pub(crate) fn download(url: &str, dest: &Path) -> Result<(), String> {
+    curl(&["-o", &dest.to_string_lossy(), url]).map(|_| ())
+}
+
+/// What a `hosts-KIND-FP` release says it holds.
+#[derive(Debug, PartialEq)]
+struct Manifest {
+    kind: String,
+    platform: String,
+    fingerprint: String,
+    /// name (without the platform suffix), size, sha256
+    files: Vec<(String, u64, String)>,
+}
+
+fn parse_manifest(text: &str) -> Result<Manifest, String> {
+    let v: Value = serde_json::from_str(text).map_err(|e| format!("pin.json: {e}"))?;
+    let s = |k: &str| v[k].as_str().map(str::to_owned).ok_or(format!("pin.json has no `{k}`"));
+    let mut files = Vec::new();
+    for f in v["files"].as_array().ok_or("pin.json has no `files`")? {
+        let field = |k: &str| f[k].as_str().map(str::to_owned).ok_or(format!("pin.json file without `{k}`"));
+        files.push((field("name")?, f["size"].as_u64().ok_or("pin.json file without `size`")?, field("sha256")?));
+    }
+    Ok(Manifest { kind: s("kind")?, platform: s("platform")?, fingerprint: s("fingerprint")?, files })
+}
+
+/// Writes `dir/pin.json` for the files named `NAME-PLATFORM` in `dir`.
+fn write_manifest(dir: &Path, kind: &str, platform: &str, fp: &str) -> Result<(), String> {
+    let suffix = format!("-{platform}");
+    let mut names: Vec<String> = std::fs::read_dir(dir)
+        .map_err(|e| format!("{}: {e}", dir.display()))?
+        .filter_map(|e| e.ok()?.file_name().into_string().ok())
+        .filter(|n| n.ends_with(&suffix))
+        .collect();
+    names.sort();
+    let mut files = Vec::new();
+    for asset in &names {
+        let (sha, _, size) = hash_file(&dir.join(asset))?;
+        if size == 0 {
+            return Err(format!("{asset}: empty file"));
+        }
+        files.push(serde_json::json!({"name": &asset[..asset.len() - suffix.len()], "size": size, "sha256": sha}));
+    }
+    if files.is_empty() {
+        return Err(format!("no *{suffix} files in {}", dir.display()));
+    }
+    let json = serde_json::json!({"kind": kind, "platform": platform, "fingerprint": fp, "files": files});
+    std::fs::write(dir.join("pin.json"), serde_json::to_string_pretty(&json).map_err(|e| e.to_string())?)
+        .map_err(|e| e.to_string())
+}
+
+/// Replaces `kind`/`platform` in `table` with the files `m` lists, after fetching each through `fetch(asset, dest)`
+/// and checking its size and SHA-256. `table` is untouched on any error.
+fn adopt(
+    table: &mut Table,
+    kind: &str,
+    platform: &str,
+    fp: &str,
+    m: &Manifest,
+    fetch: &dyn Fn(&str, &Path) -> Result<(), String>,
+) -> Result<(), String> {
+    if (m.kind.as_str(), m.platform.as_str(), m.fingerprint.as_str()) != (kind, platform, fp) {
+        return Err(format!(
+            "pin.json is for {}/{} {}, wanted {kind}/{platform} {fp}",
+            m.kind, m.platform, m.fingerprint
+        ));
+    }
+    if m.files.is_empty() {
+        return Err("pin.json lists no files".into());
+    }
+    let dir = std::env::temp_dir().join(format!("adopt-{}-{kind}", std::process::id()));
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let result = (|| {
+        let mut files = Files::new();
+        for (name, size, sha) in &m.files {
+            let asset = format!("{name}-{platform}");
+            let dest = dir.join(&asset);
+            fetch(&asset, &dest)?;
+            let (got, _, n) = hash_file(&dest)?;
+            if &got != sha || n != *size {
+                return Err(format!("{asset}: {n} bytes sha256 {got}, pin.json says {size} bytes sha256 {sha}"));
+            }
+            files.insert(name.clone(), (format!("{RELEASES}{}/{asset}", release_tag(kind, fp)), *size, sha.clone()));
+        }
+        Ok(files)
+    })();
+    let _ = std::fs::remove_dir_all(&dir);
+    table.insert((kind.to_owned(), platform.to_owned()), result?);
     Ok(())
+}
+
+fn host_pin(args: &[String]) -> Result<(), String> {
+    let mut out = host_pin_path();
+    let mut rest = Vec::new();
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        if a == "--out" {
+            out = PathBuf::from(it.next().ok_or("--out needs a value")?);
+        } else {
+            rest.push(a.as_str());
+        }
+    }
+    match rest.as_slice() {
+        ["--check"] => {
+            let table = read_table(&out)?;
+            let stale = stale_entries(&table, &|k, p| crate::fingerprint::fingerprint(&repo(), k, p, true));
+            if stale.is_empty() {
+                eprintln!("host pins match the sources");
+                Ok(())
+            } else {
+                Err(stale.join("\n"))
+            }
+        }
+        ["--manifest", kind, platform, fp, dir] => write_manifest(Path::new(dir), kind, platform, fp),
+        ["--adopt", kind, platform, tail @ ..] => {
+            let from = match tail {
+                [] => None,
+                ["--from", dir] => Some(PathBuf::from(dir)),
+                _ => return Err("usage: gate host-pin --adopt KIND PLATFORM [--from DIR]".into()),
+            };
+            let fp = crate::fingerprint::fingerprint(&repo(), kind, platform, true)?;
+            let base = format!("{RELEASES}{}/", release_tag(kind, &fp));
+            let manifest = match &from {
+                Some(dir) => std::fs::read_to_string(dir.join("pin.json")).map_err(|e| e.to_string())?,
+                None => String::from_utf8(curl(&[&format!("{base}pin.json")])?).map_err(|e| e.to_string())?,
+            };
+            let fetch = |asset: &str, dest: &Path| match &from {
+                Some(dir) => std::fs::copy(dir.join(asset), dest).map(|_| ()).map_err(|e| e.to_string()),
+                None => download(&format!("{base}{asset}"), dest),
+            };
+            let mut table = read_table(&out)?;
+            adopt(&mut table, kind, platform, &fp, &parse_manifest(&manifest)?, &fetch)?;
+            write_table(&out, &table)?;
+            eprintln!("adopted {kind}/{platform} {fp} into {}", out.display());
+            Ok(())
+        }
+        _ => Err("usage: gate host-pin --check | --adopt KIND PLATFORM [--from DIR] | --manifest KIND PLATFORM FP DIR [--out FILE]".into()),
+    }
 }
 
 // ---- cef_pin.rs ----
@@ -357,10 +488,90 @@ mod tests {
         let host = std::fs::read_to_string(repo().join("crates/manifold/src/host_pin.rs")).unwrap();
         let (b, e) = region(&host).unwrap();
         let body = &host[b..e];
-        let version = body.split("PIN_VERSION: &str = \"").nth(1).unwrap().split('"').next().unwrap();
-        assert_eq!(render_table(version, &parse_table(body).unwrap()), body);
+        assert_eq!(render_table(&parse_table(body).unwrap()), body);
         let cef = std::fs::read_to_string(repo().join("crates/manifold/src/cef_pin.rs")).unwrap();
         assert_eq!(render_cef(&blocks_of(&cef)), cef);
+    }
+
+    fn table_of(kind: &str, platform: &str, url: &str) -> Table {
+        let mut t = Table::new();
+        t.entry((kind.into(), platform.into())).or_default().insert("a.exe".into(), (url.into(), 3, "0".repeat(64)));
+        t
+    }
+
+    #[test]
+    fn a_pin_url_carries_its_fingerprint() {
+        let ok = format!("{RELEASES}hosts-cef-0123456789ab/a.exe-windows-x64");
+        assert_eq!(url_fingerprint(&ok, "cef"), Some("0123456789ab"));
+        assert_eq!(url_fingerprint(&ok, "servo"), None);
+        assert_eq!(url_fingerprint(&format!("{RELEASES}v0.5.0/a.exe-windows-x64"), "cef"), None);
+        assert_eq!(url_fingerprint("https://example.com/hosts-cef-0123456789ab/a", "cef"), None);
+    }
+
+    #[test]
+    fn stale_entries_name_the_entry_and_the_fix() {
+        let t = table_of("cef", "windows-x64", &format!("{RELEASES}hosts-cef-0123456789ab/a.exe-windows-x64"));
+        assert!(stale_entries(&t, &|_, _| Ok("0123456789ab".into())).is_empty());
+        let stale = stale_entries(&t, &|_, _| Ok("ffffffffffff".into()));
+        assert_eq!(stale.len(), 1);
+        assert!(stale[0].contains("cef/windows-x64") && stale[0].contains("--adopt cef windows-x64"), "{stale:?}");
+        let old = table_of("cef", "windows-x64", &format!("{RELEASES}v0.5.0/a.exe-windows-x64"));
+        assert_eq!(stale_entries(&old, &|_, _| Ok("0123456789ab".into())).len(), 1);
+        assert_eq!(stale_entries(&t, &|_, _| Err("no recipe".into())).len(), 1);
+    }
+
+    fn release_dir(name: &str, bytes: &[u8]) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("pin-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.exe-windows-x64"), bytes).unwrap();
+        write_manifest(&dir, "cef", "windows-x64", "0123456789ab").unwrap();
+        dir
+    }
+
+    fn copy_from(dir: PathBuf) -> impl Fn(&str, &Path) -> Result<(), String> {
+        move |asset, dest| std::fs::copy(dir.join(asset), dest).map(|_| ()).map_err(|e| e.to_string())
+    }
+
+    #[test]
+    fn adopt_replaces_one_entry_and_keeps_the_rest() {
+        let dir = release_dir("ok", b"abc");
+        let m = parse_manifest(&std::fs::read_to_string(dir.join("pin.json")).unwrap()).unwrap();
+        let mut t = table_of("servo", "windows-x64", "https://example.com/hosts-servo-111111111111/a.exe-windows-x64");
+        t.extend(table_of("cef", "windows-x64", "https://example.com/old/a.exe-windows-x64"));
+        adopt(&mut t, "cef", "windows-x64", "0123456789ab", &m, &copy_from(dir.clone())).unwrap();
+        let (url, size, sha) = &t[&("cef".into(), "windows-x64".into())]["a.exe"];
+        assert_eq!(url, &format!("{RELEASES}hosts-cef-0123456789ab/a.exe-windows-x64"));
+        assert_eq!((*size, sha.len()), (3, 64));
+        assert!(t.contains_key(&("servo".into(), "windows-x64".into())));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn adopt_refuses_a_foreign_manifest_or_a_changed_file_and_leaves_the_table_alone() {
+        let dir = release_dir("bad", b"abc");
+        let m = parse_manifest(&std::fs::read_to_string(dir.join("pin.json")).unwrap()).unwrap();
+        let before = table_of("cef", "windows-x64", "https://example.com/old/a.exe-windows-x64");
+        let mut t = before.clone();
+        assert!(adopt(&mut t, "cef", "windows-x64", "ffffffffffff", &m, &copy_from(dir.clone())).is_err());
+        assert!(adopt(&mut t, "servo", "windows-x64", "0123456789ab", &m, &copy_from(dir.clone())).is_err());
+        std::fs::write(dir.join("a.exe-windows-x64"), b"abd").unwrap();
+        assert!(adopt(&mut t, "cef", "windows-x64", "0123456789ab", &m, &copy_from(dir.clone())).is_err());
+        assert_eq!(t, before);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn the_manifest_lists_every_platform_file_with_size_and_hash() {
+        let dir = release_dir("mf", b"abc");
+        std::fs::write(dir.join("other.dll-windows-x64"), b"xy").unwrap();
+        std::fs::write(dir.join("ignored.txt"), b"zz").unwrap();
+        write_manifest(&dir, "cef", "windows-x64", "0123456789ab").unwrap();
+        let m = parse_manifest(&std::fs::read_to_string(dir.join("pin.json")).unwrap()).unwrap();
+        let names: Vec<&str> = m.files.iter().map(|f| f.0.as_str()).collect();
+        assert_eq!(names, ["a.exe", "other.dll"]);
+        assert_eq!(m.files[1].1, 2);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

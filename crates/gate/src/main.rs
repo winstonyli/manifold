@@ -40,6 +40,8 @@ mod pin;
 #[cfg(windows)]
 mod probes;
 #[cfg(windows)]
+mod release_check;
+#[cfg(windows)]
 mod release_verify;
 mod session;
 #[cfg(windows)]
@@ -100,6 +102,8 @@ mod windows_main {
             "chrome-shots" => crate::shots::chrome_shots(parent),
             "chrome-shots-sizes" => crate::shots::chrome_shots_sizes(parent),
             "jar" => crate::jar::jar(parent),
+            "release-check" => crate::release_check::release_check(&std::env::args().skip(2).collect::<Vec<_>>()),
+            "release-notes" => crate::release_check::release_notes(&std::env::args().skip(2).collect::<Vec<_>>()),
             "release-verify" => crate::release_verify::release_verify(&std::env::args().skip(2).collect::<Vec<_>>()),
             "sync-runtime-deps" => crate::sync_deps::sync_runtime_deps(),
             "host-fingerprint" => {
@@ -138,7 +142,7 @@ mod windows_main {
             // Test aid for the "killed gate leaves no manifold.exe" proof; not a gate stage.
             "hold" => hold(parent),
             _ => {
-                eprintln!("usage: gate all LOG [full|light|ui] | gate hello|launch-forms|unresponsive|layout|link|smoke|two|unknown-type|closed|trail [WORKDIR_PARENT] | gate chrome-shots|chrome-shots-sizes [WORKDIR_PARENT] | gate sleep | gate jar | gate release-verify vX.Y.Z | gate sync-runtime-deps | gate host-fingerprint KIND PLATFORM [--allow-dirty] | gate host-pin ARGS | gate cef-pin [--platform ID] PREFIX | gate json-pan [MODE] [SECONDS] [--samply] | gate package [EXE] | gate focus-loss | gate scale TABS... | gate tier [BASE|--stdin] | gate fresh EXE");
+                eprintln!("usage: gate all LOG [full|light|ui] | gate hello|launch-forms|unresponsive|layout|link|smoke|two|unknown-type|closed|trail [WORKDIR_PARENT] | gate chrome-shots|chrome-shots-sizes [WORKDIR_PARENT] | gate sleep | gate jar | gate release-verify vX.Y.Z [DIST] | gate release-check vX.Y.Z | gate release-notes vX.Y.Z | gate sync-runtime-deps | gate host-fingerprint KIND PLATFORM [--allow-dirty] | gate host-pin ARGS | gate cef-pin [--platform ID] PREFIX | gate json-pan [MODE] [SECONDS] [--samply] | gate package [EXE] | gate focus-loss | gate scale TABS... | gate tier [BASE|--stdin] | gate fresh EXE");
                 ExitCode::from(2)
             }
         }
