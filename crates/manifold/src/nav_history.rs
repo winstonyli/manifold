@@ -19,6 +19,9 @@ use std::time::{Duration, Instant};
 const MAX_ENTRIES: usize = 50;
 /// How long a move waits for the engine to report its arrival.
 const MOVE_WINDOW: Duration = Duration::from_secs(3);
+/// The same, once the engine has said it is loading: a busy machine can take longer than `MOVE_WINDOW` between two
+/// reports of one navigation (measured 2026-10-15, `gate sleep` history on WebView2 under load).
+const LOADING_WINDOW: Duration = Duration::from_secs(30);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Dir {
@@ -194,7 +197,7 @@ impl NavHistory {
             if !m.committed && self.entries[m.from].url == url {
                 // Servo reports only when a document commits: a slow target is quiet time, not total time.
                 if let Some(p) = self.pending.as_mut() {
-                    p.deadline = now + MOVE_WINDOW;
+                    p.deadline = now + if loading { LOADING_WINDOW } else { MOVE_WINDOW };
                 }
                 self.settle(loading);
                 return true;
@@ -954,6 +957,17 @@ mod tests {
         assert_eq!((h.entries.clone(), h.at, h.lin.clone(), h.lin_at), before);
         assert!(h.pending.is_none());
         assert_eq!(h.go(Dir::Back, true, false, later), NavAction::GoBack);
+    }
+
+    #[test]
+    fn a_loading_origin_report_gives_the_move_a_long_window() {
+        let now = Instant::now();
+        let mut h = NavHistory::visited(&["a", "b"]);
+        assert_eq!(h.go(Dir::Back, false, false, now), NavAction::Navigate("a".into()));
+        h.observe("b", "", true, false, now);
+        h.observe("a", "", true, false, now + Duration::from_secs(20));
+        h.observe("a", "", false, false, now + Duration::from_secs(21));
+        assert_eq!((urls(&h), h.at), (vec!["a", "b"], 0), "arrived late, no fork");
     }
 
     #[test]
