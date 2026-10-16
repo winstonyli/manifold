@@ -1,6 +1,6 @@
 # Releases on GitHub Actions (design)
 
-Status: draft for review, 2026-10-16. Supersedes the local `scripts/release.sh` flow
+Status: approved 2026-10-16; P1 (CEF) implemented per `docs/superpowers/plans/2026-10-16-ci-release.md`, whose "Rulings against the spec" are folded in below. Supersedes the local `scripts/release.sh` flow
 (`docs/superpowers/plans/2026-10-11-bare-exe-host-downloads.md`, decisions 7 and 11).
 
 ## Why
@@ -25,16 +25,25 @@ that pins it, and that commit must precede the tag. A workflow triggered by a ta
    truncated) over everything that determines the host binary:
    - the host package's resolved dependency closure from `cargo metadata --locked` for that target: for each path
      package, the git blob ids and modes of its tracked files (`git ls-tree -r HEAD <dir>`); for each registry or git
-     package, name, version and the lockfile checksum or revision;
-   - the toolchain (`rust-toolchain.toml` content);
+     package, name, version and source (a registry version is immutable; `cargo metadata` has no checksum); every
+     package also contributes its resolved features, and a workspace crate does not contribute its version (the
+     workspace version would change every host each release);
+   - the toolchain (`rust-toolchain.toml` content), `.cargo/config.toml` and the root `Cargo.toml`'s `[profile*]`,
+     `[patch*]` and `[replace]` tables;
    - the build recipe: the flags and environment the workflow builds that host with, taken from one file the
-     workflow and the fingerprint both read (`.github/hosts.toml`, decision 6).
+     workflow and the fingerprint both read (`.github/hosts.json`, decision 6).
+   The digest reads committed state: uncommitted changes in those inputs are an error unless `--allow-dirty`. Cargo
+   unifies features across the workspace, so the fingerprint can change for an edit that does not reach the host
+   (an extra rebuild, never a stale host).
    Because the closure comes from cargo, the workspace version string, `Cargo.lock` entries of unrelated crates and
    edits to other hosts do not change a host's fingerprint, and a `cef` or `ipc-protocol` change does. No per-crate
    list is kept. `PROTOCOL_VERSION` is inside `ipc-protocol`'s files, so it is covered.
 3. **Hosts live in per-kind releases named `hosts-KIND-FP`** (for example `hosts-cef-3fa9c01d27ab`), one per
    fingerprint, public, holding `FILE-PLATFORM` assets and a `pin.json` (kind, platform, fingerprint, per-file name,
-   size, SHA-256). The hosts workflow skips the build when that release exists.
+   size, SHA-256). The hosts workflow skips the build when that release exists with its `pin.json`. Host releases are not drafts (`gh`
+   cannot look a draft up by tag): the workflow creates the release with the host files, downloads them back and
+   verifies, uploads `pin.json` last, and deletes the release on any failure; a release without `pin.json` counts as
+   absent and is replaced.
 4. **Pins carry the fingerprint.** A `Component` URL is `.../releases/download/hosts-KIND-FP/FILE-PLATFORM`. The pin
    table's validity is checkable without the network: for each entry, the fingerprint in its URL must equal
    `gate host-fingerprint` of the current tree. `gate host-pin --check` does this and runs in `ci.yml` on every push, so
@@ -44,14 +53,15 @@ that pins it, and that commit must precede the tag. A workflow triggered by a ta
    developer commits the result. Reuse is therefore the only path: there is no `--reuse-hosts-from`.
 6. **Two workflows, and a build recipe file.**
    - `hosts.yml` (`workflow_dispatch` with `kind`, plus `push` to `main` when host paths change): per kind and platform
-     it computes the fingerprint, exits if the release exists, builds from `.github/hosts.toml`, creates the release
-     as a draft, uploads assets and `pin.json`, downloads them back and checks the hashes, then publishes it.
+     it computes the fingerprint, exits if the release exists, builds from `.github/hosts.json`, creates the release,
+     downloads the assets back and checks the hashes, then uploads `pin.json` (decision 3).
    - `release.yml` (`push` of tag `v*`): described next.
-   - `.github/hosts.toml` lists, per kind and platform: runner, package, extra RUSTFLAGS/features/env, and the files
-     to publish. The workflow reads it with a small `gate` subcommand; the fingerprint hashes the same text.
+   - `.github/hosts.json` (JSON, not TOML: `serde_json` is already a `gate` dependency and PowerShell reads it) lists, per kind and platform: runner, package, extra RUSTFLAGS/features/env, and the files
+     to publish. The workflow reads it directly; the fingerprint hashes the same recipe.
 7. **`release.yml` on a `vX.Y.Z` tag** (windows-latest), in order, failing closed:
-   1. check the tag is annotated, its message equals the `CHANGELOG.md` entry for that version, and `Cargo.toml`
-      matches the tag;
+   1. `gate release-check`: the tag is annotated, its message is `manifold vX.Y.Z`, a blank line and the
+      `CHANGELOG.md` entry's body (made with `git tag -a --cleanup=verbatim`, or git drops the `###` headings), and
+      `Cargo.toml` matches the tag;
    2. `gate host-pin --check` (decision 4) and that each pinned asset is downloadable with the pinned size and hash;
    3. build the embedded WebView2 host and PDF view with the static CRT, then `manifold.exe` with
       `MANIFOLD_WEBVIEW2_HOST` and `MANIFOLD_PDFIUM_HOST` (as `release.sh` step 4);
@@ -94,7 +104,9 @@ Each phase is separately useful and leaves no half-state.
 - **P2:** Servo (windows-x64, not static CRT, ANGLE DLLs as additional files). Expected 1 to 2 hours on a hosted
   runner, inside GitHub's 6-hour job limit; Servo's 30 GB disk need must be checked against the runner's free space.
 - **P3:** WebKit (linux-x64, `ubuntu-latest` with the WebKitGTK development packages; replaces the WSL build).
-- After P3 (or when Servo and WebKit are dropped from releases) `scripts/release.sh` is deleted.
+- `scripts/release.sh`, `--asset`/`--keep-from` and `dist/hosts` were deleted in P1: the new URL form breaks them, so
+  Servo and WebKit read Unavailable until P2 and P3. P3 also needs `fingerprint.rs` and `pin.rs` to build on Linux
+  (they are `cfg(windows)` today).
 
 ## Open points
 
