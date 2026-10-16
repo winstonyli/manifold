@@ -1649,15 +1649,7 @@ impl App {
                     let dash = matches!(edge.kind, EdgeKind::Link | EdgeKind::Jar).then_some(inv_zoom);
                     crate::link_gestures::paint_bow(ui.painter(), edge.from, edge.to, stroke, dash);
                 }
-                EdgeCurve::Horizontal => {
-                    let bend = ((edge.to.x - edge.from.x) / 2.0).max(20.0);
-                    ui.painter().add(egui::epaint::CubicBezierShape::from_points_stroke(
-                        [edge.from, edge.from + egui::vec2(bend, 0.0), edge.to - egui::vec2(bend, 0.0), edge.to],
-                        false,
-                        egui::Color32::TRANSPARENT,
-                        stroke,
-                    ));
-                }
+                EdgeCurve::Horizontal => crate::level::paint_horizontal_edge(ui.painter(), edge.from, edge.to, stroke),
             }
         }
     }

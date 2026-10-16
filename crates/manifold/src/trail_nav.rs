@@ -531,14 +531,23 @@ mod tests {
         app.menus.open_popup = Some(AnchoredPopup::BackBranches);
         let ctx = app.egui_ctx.clone();
         let anchor = egui::Rect::from_min_size(egui::pos2(10.0, 10.0), egui::vec2(20.0, 20.0));
-        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
-            app.build_trail_branches_popup(ui, Dir::Back, anchor, &tab, 1.0);
-        });
-        output.textures_delta.clear();
         let id = egui::Id::new(("trail_branches_popup", AnchoredPopup::BackBranches));
+        let layer = egui::LayerId::new(egui::Order::Foreground, id);
+        let mut curves = 0;
+        // The first frame of an `Area` only measures it (nothing is drawn), so look at the second.
+        for _ in 0..2 {
+            let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+                app.build_trail_branches_popup(ui, Dir::Back, anchor, &tab, 1.0);
+                curves = ui.ctx().graphics_mut(|g| {
+                    g.entry(layer).all_entries().filter(|c| matches!(c.shape, egui::Shape::CubicBezier(_))).count()
+                });
+            });
+            output.textures_delta.clear();
+        }
         let rect = ctx.memory(|m| m.area_rect(id)).expect("the popup's area");
         assert!(rect.width() >= 60.0, "{rect:?}");
         assert_eq!(app.menus.open_popup, Some(AnchoredPopup::BackBranches), "no click: it stays open");
+        assert!(curves > 0, "the tree's lines are the level's bezier edges");
     }
 
     #[test]

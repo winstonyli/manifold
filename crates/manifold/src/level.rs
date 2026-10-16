@@ -44,6 +44,17 @@ pub(crate) enum EdgeCurve {
     Horizontal,
 }
 
+/// `EdgeCurve::Horizontal`'s curve, for the level's edges and for the trail popups' tree lines.
+pub(crate) fn paint_horizontal_edge(painter: &egui::Painter, from: egui::Pos2, to: egui::Pos2, stroke: egui::Stroke) {
+    let bend = ((to.x - from.x) / 2.0).max(20.0);
+    painter.add(egui::epaint::CubicBezierShape::from_points_stroke(
+        [from, from + egui::vec2(bend, 0.0), to - egui::vec2(bend, 0.0), to],
+        false,
+        egui::Color32::TRANSPARENT,
+        stroke,
+    ));
+}
+
 /// Which edge source a `LevelEdge` came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum EdgeKind {

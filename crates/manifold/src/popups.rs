@@ -1306,8 +1306,12 @@ impl App {
                             // Lines first, so the pages draw over them.
                             for (page, rect) in pages.iter().zip(&rects) {
                                 if let Some(parent) = page.parent {
-                                    let line = [at(&rects[parent]).right_center(), at(rect).left_center()];
-                                    ui.painter().line_segment(line, ui.visuals().widgets.noninteractive.fg_stroke);
+                                    crate::level::paint_horizontal_edge(
+                                        ui.painter(),
+                                        at(&rects[parent]).right_center(),
+                                        at(rect).left_center(),
+                                        ui.visuals().widgets.noninteractive.fg_stroke,
+                                    );
                                 }
                             }
                             for (page, rect) in pages.iter().zip(&rects) {
