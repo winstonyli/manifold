@@ -185,7 +185,26 @@ fn write_table(out: &Path, table: &Table) -> Result<(), String> {
 }
 
 pub(crate) fn download(url: &str, dest: &Path) -> Result<(), String> {
-    curl(&["-o", &dest.to_string_lossy(), url]).map(|_| ())
+    std::fs::write(dest, release_get(url)?).map_err(|e| e.to_string())
+}
+
+/// A release asset's bytes: anonymously, then (a private repo answers 404 to that) through the authenticated `gh`.
+fn release_get(url: &str) -> Result<Vec<u8>, String> {
+    let anon = curl(&[url]);
+    let Some((tag, file)) = url.strip_prefix(RELEASES).and_then(|r| r.split_once('/')) else { return anon };
+    if anon.is_ok() {
+        return anon;
+    }
+    let out = Command::new("gh")
+        .args(["release", "download", tag, "-p", file, "-O", "-"])
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|e| format!("gh: {e}"))?;
+    if out.status.success() {
+        Ok(out.stdout)
+    } else {
+        Err(format!("{url}: not reachable anonymously, and gh failed: {}", String::from_utf8_lossy(&out.stderr).trim()))
+    }
 }
 
 /// What a `hosts-KIND-FP` release says it holds.
@@ -309,7 +328,7 @@ fn host_pin(args: &[String]) -> Result<(), String> {
             let base = format!("{RELEASES}{}/", release_tag(kind, &fp));
             let manifest = match &from {
                 Some(dir) => std::fs::read_to_string(dir.join("pin.json")).map_err(|e| e.to_string())?,
-                None => String::from_utf8(curl(&[&format!("{base}pin.json")])?).map_err(|e| e.to_string())?,
+                None => String::from_utf8(release_get(&format!("{base}pin.json"))?).map_err(|e| e.to_string())?,
             };
             let fetch = |asset: &str, dest: &Path| match &from {
                 Some(dir) => std::fs::copy(dir.join(asset), dest).map(|_| ()).map_err(|e| e.to_string()),

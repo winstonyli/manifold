@@ -32,7 +32,7 @@ pub struct Entry {
 #[rustfmt::skip]
 const TABLE: &[Entry] = &[
     Entry { kind: ViewKind::Cef, platform: "windows-x64", components: &[
-        Component { file: "manifold-engine-cef.exe", url: "https://github.com/winstonyli/manifold/releases/download/v0.5.0/manifold-engine-cef.exe-windows-x64", size: 763392, sha256: "c680f15228430f455e53ddd7aa5a54d08aad5272fd1a886c56d4f6df7915cd1d" },
+        Component { file: "manifold-engine-cef.exe", url: "https://github.com/winstonyli/manifold/releases/download/hosts-cef-a3623229bc84/manifold-engine-cef.exe-windows-x64", size: 763392, sha256: "283fb18a33d3cf579af319c4543814bea6bcebf1593f15bba8ffce342309f917" },
     ] },
 ];
 // END TABLE

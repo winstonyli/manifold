@@ -15,6 +15,7 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --locked -p manifold -p ipc-protocol -p manifold-view-webview2 -p manifold-view-pdfium -p gate --all-targets -- -D warnings
       - run: cargo test --locked -p manifold -p ipc-protocol -p manifold-view-webview2 -p gate
+      - run: cargo run --locked -p gate -- host-pin --check
   linux:
     runs-on: ubuntu-latest
     steps:
