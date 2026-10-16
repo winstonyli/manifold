@@ -1,6 +1,6 @@
 # The trail strip: a tab's page tree as cards under it
 
-Status: draft 1, 2026-10-16 (piece 2 of 2; piece 1 is `2026-10-16-virtual-cards-design.md`, implemented). Decisions were made with the owner in one session.
+Status: implemented 2026-10-16 (plan `docs/superpowers/plans/2026-10-16-trail-strip.md`) (piece 2 of 2; piece 1 is `2026-10-16-virtual-cards-design.md`, implemented). Decisions were made with the owner in one session.
 
 ## Goal
 
@@ -30,7 +30,7 @@ The trail (`2026-10-14-trail-design.md`) keeps a tree of pages per tab but shows
 7. **Painting.** `paint_body`: title (URL when empty) in one clipped line, the cursor page with the accent frame, path pages normal, the rest dimmed. `searchable_text`: title and URL.
 8. **The popups use the same tree.** The Back and Forward carets still open their anchored popups, but the popup body is the shared layout painted at a smaller cell size (all pages, the cursor and path marked, the same click and the same context menu) instead of the flat `branches(dir)` list. The popup code that builds a flat list is deleted. The carets keep their markers (`back_fork`, `forward_fork`) as the entry point.
 9. **Identity.** A page id holds an entry index, and eviction renumbers entries (`nav_history.rs` `remove`), so ids are stable only within a frame sequence without eviction. A drag in progress when its entry is evicted is cancelled by `end_stale_drag`, as for any vanished card. No state keyed by page id is kept.
-10. **Observability.** `EXPORTSTATE` lists the strip's cards through the seam (`"virtual": "trail"`, abilities). Gate: the `trail` stage gains a check that after a fork the focused tab has the right number of strip cards and clicking a sibling page moves the tab to it.
+10. **Observability.** `EXPORTSTATE` lists the strip's cards through the seam (`"virtual": "trail"`, abilities). Gate: the `trail` stage checks that after a fork the Graph view lists one strip card per page (the click is tested in `trail_strip.rs`, as the gate has no world-to-screen click).
 11. **Persistence.** None. The strip and the popup are derived; `NavHistory` persistence is unchanged.
 
 ## Out of scope / parked

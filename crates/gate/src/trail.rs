@@ -3,7 +3,7 @@
 //! served by this process (every page titled by its path). From A, NEWTAB opens tab B (parented to the focused tab) at
 //! the home page /b1; B goes to /b2 and /b3. Back twice walks B's pages, a third Back focuses A (opened-from, and A
 //! records `left_to`), Forward on A returns to B, and a new page from /b1 makes a sibling of /b2 (EXPORTSTATE
-//! `trail`). A page that calls history.back() itself must read as a Back. `ENGINE=servo` (etc.) tests another engine; for WebKit add `SITE_HOST` (http.rs).
+//! `trail`). In Graph view the focused tab's trail is drawn as one strip card per page. A page that calls history.back() itself must read as a Back. `ENGINE=servo` (etc.) tests another engine; for WebKit add `SITE_HOST` (http.rs).
 //!
 //! A failing check does not stop the run; a runner error (a timeout, a launch failure) prints an `ERROR:` line, counts
 //! as a failure and ends the run early. The instance is killed on every exit path (`Instance`'s Drop plus the job).
@@ -140,6 +140,15 @@ fn drive(run: &Run, sec: &mut Option<Section>) -> io::Result<()> {
     let s = inst.export_until("fork", |s| at(s, "/b4") && field(s, &b, "entries") == Some(&4.into()))?;
     check_is("/b4 is a child of /b1", Some(1), field(&s, &b, "depth").and_then(Value::as_u64));
     check_is("the Back chip shows the branch marker", Some(true), field(&s, &b, "back_fork").and_then(Value::as_bool));
+
+    next("strip");
+    // The Graph view draws the focused tab's trail: one virtual card per page (spec trail-strip decision 10).
+    inst.send("TOGGLEVIEW")?;
+    let strip = |s: &State| s.all_cards().iter().filter(|c| c["virtual"].as_str() == Some("trail")).count();
+    let s = inst.export_until("strip", |s| !s.tab_view() && strip(s) == 4)?;
+    check_is("the strip has a card per page", 4, strip(&s));
+    inst.send("TOGGLEVIEW")?;
+    inst.export_until("strip-off", |s| s.tab_view() && at(s, "/b4"))?;
 
     next("script");
     // A page that calls history.back() itself: the engine goes Back with no host move, and the trail must read it as a

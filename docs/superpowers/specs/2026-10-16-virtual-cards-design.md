@@ -66,4 +66,4 @@ Rulings made while implementing:
 
 ## Next
 
-Piece 2 (trail strip): lane layout over `NavHistory`, a `VirtualSource` anchored under the focused tab card (drag a page out to open it as a card; click to navigate), and a toolbar painter for tab view that shares the layout.
+Piece 2, the trail strip, is implemented (`2026-10-16-trail-strip-design.md`).
