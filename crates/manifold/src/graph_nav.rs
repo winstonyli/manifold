@@ -343,7 +343,7 @@ impl App {
     /// per-frame `*_at_level` locals are already in hand) reuse this
     /// without redoing the level scans a second time per frame.
     pub(crate) fn bounds_for_level<'a>(&self, ids: impl IntoIterator<Item = &'a String>) -> egui::Rect {
-        self.bounds_for_rects(ids.into_iter().filter_map(|id| self.card_rect(id)))
+        self.bounds_for_rects(ids.into_iter().filter_map(|id| self.level_card_rect(id)))
     }
 
     /// `root_id` plus every descendant reachable through `parent` links,

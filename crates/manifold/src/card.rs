@@ -420,14 +420,19 @@ pub(crate) fn dim_if_filtered_out(
     rounding: f32,
 ) {
     if graph_filter_dims(filter, haystacks) {
-        deferred_overlays.push(Box::new(move |overlay_painter, project| {
-            overlay_painter.rect_filled(
-                egui::Rect::from_min_max(project(rect.min), project(rect.max)),
-                rounding,
-                FILTER_DIM_SCRIM,
-            );
-        }));
+        push_dim_scrim(deferred_overlays, rect, rounding);
     }
+}
+
+/// The scrim `dim_if_filtered_out` pushes, for a caller that has already decided the card dims.
+fn push_dim_scrim(deferred_overlays: &mut DeferredOverlays, rect: egui::Rect, rounding: f32) {
+    deferred_overlays.push(Box::new(move |overlay_painter, project| {
+        overlay_painter.rect_filled(
+            egui::Rect::from_min_max(project(rect.min), project(rect.max)),
+            rounding,
+            FILTER_DIM_SCRIM,
+        );
+    }));
 }
 
 /// The per-kind background, colors and filter-dim rounding a graph
@@ -1354,6 +1359,8 @@ impl App {
             let mut needles = card_filter_text(&node.runtime, self.own_text(id));
             needles.push(self.mirror.name(id)); // name rule: the filter matches the stored text (a rename; a group is matched twice)
             dim_if_filtered_out(deferred_overlays, &self.graph_filter, &needles, rect, style.dim_rounding);
+        } else if self.virtual_card_dimmed(entry) {
+            push_dim_scrim(deferred_overlays, rect, style.dim_rounding);
         }
         Some(CardOutput { response, control })
     }
@@ -2455,7 +2462,7 @@ fn paint_card_title(
 /// dimmed -- exactly the negation of `filter_matches`, kept as its own
 /// named function since "dims" (not "doesn't match") is the meaning every
 /// call site actually cares about.
-fn graph_filter_dims(filter: &str, haystacks: &[&str]) -> bool {
+pub(crate) fn graph_filter_dims(filter: &str, haystacks: &[&str]) -> bool {
     !filter_matches(filter, haystacks)
 }
 

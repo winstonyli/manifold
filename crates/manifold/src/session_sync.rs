@@ -1045,7 +1045,8 @@ impl App {
     /// mirror. A value the mirror already shows queues nothing.
     pub(crate) fn edit_field(&mut self, id: &str, no: u32, value: FieldValue) {
         debug_assert!(!matches!(no, field::GROUP | field::PARENT), "a link: `edit_group` / `edit_parent`");
-        if self.mirror.get(id, no) == value {
+        // A virtual card (`virtual_source`) is no node, so nothing of it is stored or mirrored.
+        if self.mirror.get(id, no) == value || crate::virtual_source::is_virtual_id(id) {
             return;
         }
         if let Ok(node) = id.parse::<NodeId>() {

@@ -1584,6 +1584,31 @@ impl App {
                         "rect": [screen.min.x, screen.min.y, screen.max.x, screen.max.y],
                     }));
                 }
+                if let Origin::Virtual(source) = item.origin {
+                    // A source's card: no node, so none of a stored card's fields; the abilities its kind grants.
+                    let caps = item.caps();
+                    return Some(serde_json::json!({
+                        "id": item.id,
+                        "type": item.kind.ty,
+                        "loaded": false,
+                        "json_card": false,
+                        "virtual": source,
+                        "abilities": {
+                            "restorable": caps.restorable,
+                            "draw_layer": caps.draw_layer,
+                            "selectable": caps.selectable,
+                            "drag_source": caps.drag_source,
+                            "movable": caps.movable,
+                            "drop_target": caps.drop_target,
+                            "menu": caps.menu,
+                            "linkable": caps.linkable,
+                            "stored_controls": caps.stored_controls,
+                        },
+                        "unresponsive": false,
+                        "screen": [screen.center().x, screen.center().y],
+                        "rect": [screen.min.x, screen.min.y, screen.max.x, screen.max.y],
+                    }));
+                }
                 if item.origin != Origin::Stored {
                     return None;
                 }

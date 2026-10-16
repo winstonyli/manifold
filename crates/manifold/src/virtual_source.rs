@@ -3,7 +3,7 @@
 //! each handler is added by the task that first calls it (the pre-commit clippy rejects dead code).
 
 use crate::card::{CardBody, DropEffect};
-use crate::level::{CardEntry, LevelEdge};
+use crate::level::{CardEntry, LevelEdge, Origin};
 use crate::{App, GraphAction};
 use std::rc::Rc;
 
@@ -30,9 +30,25 @@ pub(crate) trait VirtualSource {
         entry: &CardEntry,
         target: Option<(DropEffect, Option<String>)>,
     ) -> Option<GraphAction>;
+    /// The text the Graph toolbar filter matches `entry` against; `None` (the default) means the filter never dims it.
+    fn searchable_text(&self, _entry: &CardEntry) -> Option<String> {
+        None
+    }
+}
+
+/// Whether `id` names a virtual card (`virtual:<source>:<key>`, spec decision 3), which never collides with a node id.
+pub(crate) fn is_virtual_id(id: &str) -> bool {
+    id.starts_with("virtual:")
 }
 
 impl App {
+    /// Whether the toolbar filter dims virtual card `entry`: its source gives searchable text and the filter misses it.
+    pub(crate) fn virtual_card_dimmed(&self, entry: &CardEntry) -> bool {
+        let Origin::Virtual(name) = entry.origin else { return false };
+        let text = self.virtual_source(name).and_then(|source| source.searchable_text(entry));
+        text.is_some_and(|text| crate::card::graph_filter_dims(&self.graph_filter, &[&text]))
+    }
+
     /// The registered source named `name` (the `Origin::Virtual` of the entries it yields). Shared, so a handler can
     /// take `&mut App` while the caller still holds the source.
     pub(crate) fn virtual_source(&self, name: &str) -> Option<Rc<dyn VirtualSource>> {
@@ -63,6 +79,8 @@ pub(crate) mod fake {
         pub(crate) menu_at: std::cell::Cell<Option<egui::Pos2>>,
         /// Every `on_drop`: the entry's id and the target it received.
         pub(crate) drops: RefCell<Vec<Dropped>>,
+        /// What `searchable_text` answers for every entry.
+        pub(crate) searchable: std::cell::Cell<Option<&'static str>>,
         ty: &'static str,
     }
 
@@ -75,7 +93,13 @@ pub(crate) mod fake {
     impl FakeSource {
         /// Entries of kind `ty` (a test-only exact row in `caps::rows::builtin_rows` grants its abilities).
         pub(crate) fn with_kind(ty: &'static str) -> Self {
-            Self { calls: RefCell::new(Vec::new()), menu_at: std::cell::Cell::new(None), drops: RefCell::default(), ty }
+            Self {
+                calls: RefCell::new(Vec::new()),
+                menu_at: std::cell::Cell::new(None),
+                drops: RefCell::default(),
+                searchable: std::cell::Cell::new(None),
+                ty,
+            }
         }
     }
 
@@ -137,6 +161,10 @@ pub(crate) mod fake {
             self.calls.borrow_mut().push("on_drop".to_string());
             self.drops.borrow_mut().push((entry.id.clone(), target));
             None
+        }
+
+        fn searchable_text(&self, _entry: &CardEntry) -> Option<String> {
+            self.searchable.get().map(str::to_owned)
         }
     }
 
@@ -464,6 +492,121 @@ mod tests {
         assert!(caps.selectable && caps.drag_source && caps.movable && caps.drop_target && caps.menu && caps.linkable);
         let none = FakeSource::default().entries(&app)[0].caps();
         assert!(!none.selectable && !none.menu && none.draw_layer == 8);
+    }
+}
+
+#[cfg(test)]
+mod reach_tests {
+    use super::fake::{Rig, FAKE};
+    use super::*;
+    use crate::level::Origin;
+    use crate::store::model::{field, FieldValue};
+
+    const SELECTABLE: &str = "application/vnd.manifold.virtual.fake-selectable";
+
+    /// Everything a stored write could touch for `id`, plus the queued writes and the node count.
+    fn footprint(app: &App, id: &str) -> (bool, bool, usize, String, String) {
+        (
+            app.mirror.has(id),
+            app.layout.contains_key(id),
+            app.nodes.len(),
+            format!("{:?}", app.pending),
+            format!("{:?}", app.mirror.get(id, field::POS)),
+        )
+    }
+
+    #[test]
+    fn every_write_entry_point_leaves_a_virtual_id_out_of_the_store_and_the_layout() {
+        let mut rig = Rig::with_kind(SELECTABLE);
+        let virt = "virtual:fake:a";
+        let before = footprint(&rig.app, virt);
+        rig.app.edit_pos(virt, Some(egui::vec2(5.0, 7.0)));
+        rig.app.edit_field(virt, field::PINNED, FieldValue::Bool(true));
+        rig.app.interaction.dragging = Some(virt.to_string());
+        rig.app.interaction.drag_moved = vec![virt.to_string()];
+        rig.app.release_drag();
+        rig.app.apply_drop(virt, Some((DropEffect::Join, Some(virt.to_string()))));
+        rig.app.apply_drop(virt, Some((DropEffect::Eject, None)));
+        rig.app.interaction.selected = std::collections::HashSet::from([virt.to_string()]);
+        let ctx = rig.ctx.clone();
+        rig.app.apply_graph_action(&ctx, GraphAction::CloseSelected);
+        rig.app.pin_shortcut();
+        assert_eq!(footprint(&rig.app, virt), before);
+    }
+
+    #[test]
+    fn a_virtual_card_far_from_the_stored_ones_enlarges_the_bounds_and_the_fit() {
+        struct Far;
+        impl VirtualSource for Far {
+            fn name(&self) -> &'static str {
+                "far"
+            }
+            fn entries(&self, _: &App) -> Vec<CardEntry> {
+                vec![CardEntry {
+                    id: "virtual:far:x".to_string(),
+                    kind: crate::CardKind { ty: FAKE, tags: crate::caps::TagSet::EMPTY },
+                    origin: Origin::Virtual("far"),
+                    rect: egui::Rect::from_min_size(egui::pos2(9000.0, 9000.0), egui::vec2(100.0, 60.0)),
+                }]
+            }
+            fn edges(&self, _: &App, _: &dyn Fn(&str) -> Option<egui::Rect>) -> Vec<LevelEdge> {
+                Vec::new()
+            }
+            fn paint_body(&self, _: &App, _: &mut egui::Ui, entry: &CardEntry) -> CardBody {
+                CardBody { interact_rect: entry.rect, tooltip: None }
+            }
+            fn on_click(&self, _: &mut App, _: &CardEntry) -> Option<GraphAction> {
+                None
+            }
+            fn on_menu(&self, _: &mut App, _: &CardEntry, _: egui::Pos2) {}
+            fn on_drop(
+                &self,
+                _: &mut App,
+                _: &CardEntry,
+                _: Option<(DropEffect, Option<String>)>,
+            ) -> Option<GraphAction> {
+                None
+            }
+        }
+        let mut rig = Rig::new();
+        let tab = rig.tab();
+        let stored_only = rig.app.bounds_for_level([&tab]);
+        let fit = rig.app.fit_all_nodes_scene_rect();
+        let with_far = |app: &App| app.bounds_for_level([&tab, &"virtual:far:x".to_string()]);
+        assert!(with_far(&rig.app).max.x < 1000.0, "unknown id is ignored before the source exists");
+        rig.app.virtual_sources.push(Rc::new(Far));
+        assert!(with_far(&rig.app).max.x > 9000.0, "{:?} vs {stored_only:?}", with_far(&rig.app));
+        assert!(rig.app.fit_all_nodes_scene_rect().max.x > 9000.0 && fit.max.x < 1000.0);
+    }
+
+    #[test]
+    fn export_state_lists_a_virtual_card_with_its_source_and_abilities() {
+        let rig = Rig::with_kind(SELECTABLE);
+        let state = rig.app.export_state();
+        let card = state["cards"].as_array().unwrap().iter().find(|c| c["id"] == "virtual:fake:a").expect("listed");
+        assert_eq!(card["virtual"], "fake");
+        assert_eq!(card["type"], SELECTABLE);
+        assert_eq!(card["json_card"], false);
+        assert_eq!(card["abilities"]["selectable"], true);
+        assert_eq!(card["abilities"]["menu"], false);
+        assert!(card["rect"].is_array() && card["screen"].is_array());
+        let stored = state["cards"].as_array().unwrap().iter().find(|c| c["id"] == rig.tab()).unwrap();
+        assert!(stored.get("virtual").is_none());
+    }
+
+    #[test]
+    fn a_filter_dims_a_virtual_card_only_when_its_source_gives_searchable_text() {
+        let mut rig = Rig::new();
+        let entry = rig.app.level_items().pop().unwrap();
+        rig.app.graph_filter = "zzz".to_string();
+        assert!(!rig.app.virtual_card_dimmed(&entry), "no searchable text: never dimmed");
+        rig.app.virtual_sources.clear();
+        let source = Rc::new(fake::FakeSource::default());
+        source.searchable.set(Some("alpha"));
+        rig.app.virtual_sources.push(source);
+        assert!(rig.app.virtual_card_dimmed(&entry), "text that does not match dims");
+        rig.app.graph_filter = "ALP".to_string();
+        assert!(!rig.app.virtual_card_dimmed(&entry), "text that matches does not");
     }
 }
 
