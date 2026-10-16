@@ -54,9 +54,10 @@ fn back_and_forward(inst: &mut Instance, mut url: String) -> io::Result<Vec<Stri
     let mut urls = Vec::new();
     for (command, name) in [("GOBACK", "back1"), ("GOBACK", "back2"), ("GOFORWARD", "fwd")] {
         inst.send(command)?;
-        inst.export_until(name, |s| s.focused_url() != url)?;
-        // The url changes as the navigation starts: the next command, sent mid-load, would be lost. WAITIDLE holds the
-        // export behind it until the load ends.
+        inst.export_until(name, |s| s.focused_url() != url && s.trail_at_focus())?;
+        // The url changes as the navigation starts, and a plain move's before the engine has reported it: the next
+        // command, sent before the trail arrives, would be ignored as a move still pending. WAITIDLE holds the export
+        // behind it until the load ends.
         inst.send("WAITIDLE")?;
         let state = inst.export_state(name)?;
         url = state.focused_url().to_owned();

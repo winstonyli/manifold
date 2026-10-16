@@ -71,7 +71,8 @@ impl Saved {
     }
 }
 
-/// A Back, Forward or branch pick on its way: it commits when a report arrives at `target`'s URL.
+/// A Back, Forward or branch pick on its way: it commits when a report arrives at `target`'s URL, and ends when the
+/// target settles.
 #[derive(Clone, Copy, Debug)]
 struct Move {
     target: usize,
@@ -79,6 +80,8 @@ struct Move {
     /// Sent as the engine's `GoBack`/`GoForward`, not a `Navigate`.
     native: bool,
     deadline: Instant,
+    /// The cursor is at `target`, whose load has not settled.
+    committed: bool,
 }
 
 /// What a commit does to the engine-list shadow.
@@ -150,15 +153,23 @@ impl NavHistory {
         if self.pending.is_some_and(|m| now > m.deadline) {
             self.pending = None;
         }
-        // 3: a pending move commits on its target's URL and waits through its origin's.
+        // 3: a pending move commits on its target's URL and waits through its origin's. A committed one, until the
+        // target settles, holds the origin's settled report: the old document finishing, not a redirect (step 5).
         if let Some(m) = self.pending {
-            if self.entries[m.target].url == url {
-                self.pending = None;
+            if m.committed {
+                if !loading && self.entries[m.from].url == url && self.entries[m.target].url != url {
+                    return false;
+                }
+                if !(loading && self.entries[m.target].url == url) {
+                    self.pending = None;
+                }
+            } else if self.entries[m.target].url == url {
+                self.pending = loading.then_some(Move { committed: true, deadline: now + MOVE_WINDOW, ..m });
                 self.commit(m.target, m.from, if m.native { LinStep::Native } else { LinStep::Push });
                 self.loading = loading;
                 return true;
             }
-            if self.entries[m.from].url == url {
+            if !m.committed && self.entries[m.from].url == url {
                 // Servo reports only when a document commits: a slow target is quiet time, not total time.
                 if let Some(p) = self.pending.as_mut() {
                     p.deadline = now + MOVE_WINDOW;
@@ -166,8 +177,10 @@ impl NavHistory {
                 self.settle(loading);
                 return true;
             }
-            self.pending = None;
-            self.fresh = false;
+            if !m.committed {
+                self.pending = None;
+                self.fresh = false;
+            }
         }
         // 4: the cursor's own URL.
         if self.entries[self.at].url == url {
@@ -284,7 +297,7 @@ impl NavHistory {
     }
 
     pub(crate) fn move_pending(&self, now: Instant) -> bool {
-        self.pending.is_some_and(|m| now <= m.deadline)
+        self.pending.is_some_and(|m| !m.committed && now <= m.deadline)
     }
 
     /// A row of the branch list (decision 8): a plain move to `target`, never native (plan D3). Ignored for the
@@ -364,7 +377,7 @@ impl NavHistory {
             self.dirty |= before != self.saved_form();
             return if native { action } else { NavAction::None };
         }
-        self.pending = Some(Move { target, from, native, deadline: now + MOVE_WINDOW });
+        self.pending = Some(Move { target, from, native, deadline: now + MOVE_WINDOW, committed: false });
         action
     }
 
@@ -876,6 +889,22 @@ mod tests {
         assert!(h.pending.is_some());
         h.observe("a", "", false, true, now);
         assert_eq!((h.at, h.lin_at, h.pending.is_none()), (0, 0, true));
+    }
+
+    #[test]
+    fn the_origin_settling_after_a_plain_move_starts_is_not_a_redirect() {
+        // After a wake the engine knows only c, whose load is still finishing when Back (a plain move to b) arrives.
+        let now = Instant::now();
+        let mut h = NavHistory::visited(&["a", "b", "c"]);
+        h.view_reset("c");
+        assert_eq!(h.go(Dir::Back, false, false, now), NavAction::Navigate("b".to_owned()));
+        h.observe("b", "", true, false, now);
+        assert_eq!((h.at, h.lin.clone()), (1, vec![Some(2), Some(1)]));
+        h.observe("c", "", false, false, now);
+        assert_eq!(urls(&h), ["a", "b", "c"], "c's late settle did not rewrite b");
+        h.observe("b", "", false, false, now);
+        assert_eq!((urls(&h), h.at, h.pending.is_none()), (vec!["a", "b", "c"], 1, true));
+        assert_eq!(h.go(Dir::Back, false, false, now), NavAction::Navigate("a".to_owned()), "Back goes on to a");
     }
 
     #[test]

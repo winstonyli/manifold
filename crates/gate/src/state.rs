@@ -162,6 +162,13 @@ impl State {
         self.0["focused_url"].as_str().unwrap_or("")
     }
 
+    /// Whether a tab's trail has its cursor on the focused url: a Back or Forward has arrived, not only been sent (the
+    /// tab's url changes when a plain move is sent).
+    pub fn trail_at_focus(&self) -> bool {
+        let url = self.focused_url();
+        self.0["trail"].as_object().is_some_and(|t| t.values().any(|e| e["url"].as_str() == Some(url)))
+    }
+
     /// The bottom-left toast's text, if one is showing.
     pub fn toast(&self) -> Option<&str> {
         self.0["toast"].as_str()
