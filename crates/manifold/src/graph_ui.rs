@@ -696,7 +696,7 @@ impl App {
     }
 
     /// Flips `graph_lod_simplified` with hysteresis from how many of `items` are in view.
-    fn update_graph_lod(&mut self, items: &[LevelItem]) {
+    fn update_graph_lod(&mut self, items: &[CardEntry]) {
         // Level-of-detail: count how many nodes at this level actually
         // intersect the viewport, then flip `graph_lod_simplified` with a
         // hysteresis gap -- see `LOD_SIMPLIFY_COUNT`'s own doc comment for
@@ -1318,7 +1318,7 @@ impl App {
                 // would reach.
                 let hit = self.level_items().into_iter().rev().find(|item| item.rect.contains(world_pos));
                 match hit {
-                    Some(LevelItem { id, kind: LevelItemKind::Node(_), .. }) => {
+                    Some(CardEntry { id, origin: Origin::Stored, .. }) => {
                         // A right-click on the jar chip opens the menu on its Jar page.
                         if crate::card::on_jar_chip(ui.ctx(), &id, pos) {
                             self.menus.node_menu_page = Some((id.clone(), pos, crate::node_menu::MenuPage::Jar));
@@ -1326,7 +1326,11 @@ impl App {
                         self.menus.node_menu = Some((id, pos));
                         self.interaction.rect_select_start = None;
                     }
-                    Some(LevelItem { kind: LevelItemKind::JsonCard, .. }) => {
+                    // No menu for a virtual card yet.
+                    Some(CardEntry { origin: Origin::Virtual(_), .. }) => {
+                        self.interaction.rect_select_start = None;
+                    }
+                    Some(CardEntry { origin: Origin::Json, .. }) => {
                         self.interaction.rect_select_start = None;
                         if let Some(level) = self.json_level.as_mut() {
                             if let Some(i) = level.card_at(world_pos) {
@@ -1378,7 +1382,7 @@ impl App {
                     self.interaction.selected = self
                         .level_items()
                         .into_iter()
-                        .filter(|item| matches!(item.kind, LevelItemKind::Node(_)) && world_rect.intersects(item.rect))
+                        .filter(|item| item.origin == Origin::Stored && world_rect.intersects(item.rect))
                         .map(|item| item.id)
                         .collect();
                 }
@@ -1405,7 +1409,7 @@ impl App {
         ui: &egui::Ui,
         overlay_painter: &egui::Painter,
         scene_outer_rect: egui::Rect,
-        items: &[LevelItem],
+        items: &[CardEntry],
     ) -> Option<(egui::Rect, egui::Rect, f32)> {
         if items.is_empty() {
             return None;
@@ -1425,16 +1429,14 @@ impl App {
             |p: egui::Pos2| -> egui::Pos2 { minimap_rect.center() + (p - world_bounds.center()) * minimap_scale };
         overlay_painter.rect_filled(minimap_rect, 4.0, egui::Color32::from_black_alpha(160));
         for item in items {
-            let (radius, color) = match item.kind {
-                LevelItemKind::JsonCard => (2.0, ACCENT),
-                LevelItemKind::Node(kind) => match kind.ty {
-                    ty if is_container(ty) => (3.0, ACCENT),
-                    TYPE_TAB => (2.0, ui.visuals().text_color()),
-                    TYPE_DOWNLOAD => (2.0, ui.visuals().weak_text_color()),
-                    TYPE_NOTE => (2.0, NOTE_CARD_COLOR),
-                    // Image, PDF and JSON cards; a type this build doesn't know draws as one of them.
-                    _ => (2.0, ACCENT),
-                },
+            let (radius, color) = match item.kind.ty {
+                ty if is_container(ty) => (3.0, ACCENT),
+                TYPE_TAB => (2.0, ui.visuals().text_color()),
+                TYPE_DOWNLOAD => (2.0, ui.visuals().weak_text_color()),
+                TYPE_NOTE => (2.0, NOTE_CARD_COLOR),
+                // Image, PDF and JSON cards, a JSON level's cards and the virtual ones; a type this build doesn't
+                // know draws as one of them.
+                _ => (2.0, ACCENT),
             };
             let failed = self
                 .nodes

@@ -3,7 +3,7 @@
 use std::path::Path;
 
 /// A card's identity is `CardKind` (its type and tags) and its live data is `Runtime`; the enums that stood in for
-/// both are gone. `LevelItemKind` is not on this list: it is live, and names a level's two item sources.
+/// both are gone. `level::Origin` (a level card's source) is live and is not on this list.
 #[test]
 fn no_source_names_a_deleted_enum() {
     let mut offenders = Vec::new();

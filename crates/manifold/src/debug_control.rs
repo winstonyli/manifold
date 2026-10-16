@@ -1572,7 +1572,7 @@ impl App {
             .into_iter()
             .filter_map(|item| {
                 let screen = self.graph_world_rect_to_screen(item.rect);
-                if item.kind == LevelItemKind::JsonCard {
+                if item.origin == Origin::Json {
                     // A JSON level's card shows a piece of the Json node's value; it is no stored node.
                     return Some(serde_json::json!({
                         "id": item.id,
@@ -1584,7 +1584,10 @@ impl App {
                         "rect": [screen.min.x, screen.min.y, screen.max.x, screen.max.y],
                     }));
                 }
-                let LevelItemKind::Node(kind) = item.kind else { return None };
+                if item.origin != Origin::Stored {
+                    return None;
+                }
+                let kind = item.kind;
                 let node = self.nodes.get(&item.id)?;
                 Some(serde_json::json!({
                     "id": item.id,
@@ -1682,7 +1685,7 @@ impl App {
         let link_handles: serde_json::Map<String, serde_json::Value> = self
             .level_items()
             .into_iter()
-            .filter(|item| matches!(item.kind, LevelItemKind::Node(_)) && self.shows_link_handles())
+            .filter(|item| item.origin == Origin::Stored && self.shows_link_handles())
             .map(|item| {
                 let sides: serde_json::Map<String, serde_json::Value> =
                     crate::link_gestures::link_handle_rects(item.rect, zoom_scale, self.graph_lod_simplified)

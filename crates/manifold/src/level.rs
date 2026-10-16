@@ -8,20 +8,32 @@
 use super::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum LevelItemKind {
+pub(crate) enum Origin {
     /// A stored node's card.
-    Node(CardKind),
-    /// A JSON level's card (`json_level.rs`).
-    JsonCard,
+    Stored,
+    /// A JSON level's card (`json_level.rs`): no node behind it.
+    Json,
+    /// A card a `VirtualSource` of this name supplies (`virtual_source.rs`): no node behind it.
+    #[allow(dead_code, reason = "no real source is registered until a later virtual-card task; tests build it")]
+    Virtual(&'static str),
 }
 
 /// One card on the current level, as the shared chrome sees it.
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct LevelItem {
+pub(crate) struct CardEntry {
     pub(crate) id: String,
-    pub(crate) kind: LevelItemKind,
+    /// What the card is: the key into the capability rows. A JSON level's card is `TYPE_JSON`.
+    pub(crate) kind: CardKind,
+    pub(crate) origin: Origin,
     /// World space.
     pub(crate) rect: egui::Rect,
+}
+
+impl CardEntry {
+    #[allow(dead_code, reason = "read by the ability checks of later virtual-card tasks; tests read it now")]
+    pub(crate) fn caps(&self) -> crate::caps::Caps {
+        self.kind.caps()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -95,30 +107,40 @@ impl App {
     /// The current level's items, bottom-first in draw order: stored
     /// nodes layer by layer (`level_scan`), and each layer in
     /// `node_order`.
-    pub(crate) fn level_items(&self) -> Vec<LevelItem> {
+    pub(crate) fn level_items(&self) -> Vec<CardEntry> {
         self.level_items_from(&self.level_scan().layers)
     }
 
     /// `level_items` from an `at_level` scan already made this frame
-    /// (`build_graph_ui`), so the level isn't walked twice.
-    pub(crate) fn level_items_from(&self, at_level: &[Vec<String>]) -> Vec<LevelItem> {
-        if let Some(level) = &self.json_level {
-            return (0..level.cards.len())
-                .map(|i| LevelItem { id: level.card_id(i), kind: LevelItemKind::JsonCard, rect: level.rects[i] })
-                .collect();
-        }
-        at_level
-            .iter()
-            .flatten()
-            .filter_map(|id| {
-                let node = self.nodes.get(id)?;
-                Some(LevelItem {
-                    kind: LevelItemKind::Node(self.card_kind(id)?),
-                    rect: node_card_rect(self.layout_pos(id), &node.runtime),
-                    id: id.clone(),
+    /// (`build_graph_ui`), so the level isn't walked twice. The stored (or JSON) cards come first, then each
+    /// registered `VirtualSource`'s, so a virtual card draws on top.
+    pub(crate) fn level_items_from(&self, at_level: &[Vec<String>]) -> Vec<CardEntry> {
+        let mut entries: Vec<CardEntry> = if let Some(level) = &self.json_level {
+            (0..level.cards.len())
+                .map(|i| CardEntry {
+                    id: level.card_id(i),
+                    kind: CardKind { ty: crate::store::model::TYPE_JSON, tags: crate::caps::TagSet::EMPTY },
+                    origin: Origin::Json,
+                    rect: level.rects[i],
                 })
-            })
-            .collect()
+                .collect()
+        } else {
+            at_level
+                .iter()
+                .flatten()
+                .filter_map(|id| {
+                    let node = self.nodes.get(id)?;
+                    Some(CardEntry {
+                        kind: self.card_kind(id)?,
+                        origin: Origin::Stored,
+                        rect: node_card_rect(self.layout_pos(id), &node.runtime),
+                        id: id.clone(),
+                    })
+                })
+                .collect()
+        };
+        entries.extend(self.virtual_sources.iter().flat_map(|source| source.entries(self)));
+        entries
     }
 
     /// The current level's edges: each stored node's `parent` link, then each Link node, whose two ends are both on
@@ -255,17 +277,11 @@ mod tests {
         app.insert_placeholder_node("inner".into(), egui::vec2(0.0, 0.0), Kind::Download, download("b.bin"));
         app.edit_group("inner", Some("g".into()));
 
-        let top: Vec<(String, LevelItemKind)> = app.level_items().into_iter().map(|i| (i.id, i.kind)).collect();
+        let top: Vec<(String, CardKind)> = app.level_items().into_iter().map(|i| (i.id, i.kind)).collect();
         // Downloads draw before groups (`Caps::draw_layer`), whatever the insertion order.
         use crate::card_kind::fixtures::plain;
         use crate::store::model::{TYPE_DOWNLOAD, TYPE_GROUP};
-        assert_eq!(
-            top,
-            [
-                ("d".to_string(), LevelItemKind::Node(plain(TYPE_DOWNLOAD))),
-                ("g".to_string(), LevelItemKind::Node(plain(TYPE_GROUP))),
-            ]
-        );
+        assert_eq!(top, [("d".to_string(), plain(TYPE_DOWNLOAD)), ("g".to_string(), plain(TYPE_GROUP)),]);
         assert_eq!(app.level_items()[0].rect, node_card_rect(app.layout_pos("d"), &app.nodes["d"].runtime));
         assert_eq!(app.level_scan().groups, ["g"]);
 

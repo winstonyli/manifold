@@ -79,6 +79,7 @@ mod view_info;
 mod view_install;
 mod view_modes;
 mod viewport;
+mod virtual_source;
 mod zoom_chip;
 
 use event_loop::UserEvent;
@@ -110,7 +111,7 @@ use image_view::*;
 use input::*;
 use ipc_protocol::{modifiers, HostToView, InputEvent, KeyCode, MouseButton, ViewToHost};
 use json_level::{JsonEdit, JsonLevel};
-use level::{EdgeCurve, EdgeKind, LevelEdge, LevelItem, LevelItemKind, LevelScan};
+use level::{CardEntry, EdgeCurve, EdgeKind, LevelEdge, LevelScan, Origin};
 use links::LinkGesture;
 use mirror::Carried;
 use node::*;
@@ -234,6 +235,8 @@ struct App {
     /// The level of the Json node `current_group` names (spec "Level
     /// sources"); `None` on every other level.
     json_level: Option<JsonLevel>,
+    /// Sources of virtual cards (`virtual_source.rs`), whose entries `level_items` appends after the stored ones.
+    virtual_sources: Vec<Box<dyn virtual_source::VirtualSource>>,
     /// `(group_id, draft_name)` once renaming has started -- either the
     /// toolbar's group-name button (only shown while `current_group` is
     /// `Some`) or the top-level right-click context menu's own "Rename"
@@ -559,6 +562,7 @@ impl Default for App {
             groups_collapsed: false,
             current_group: None,
             json_level: None,
+            virtual_sources: Vec::new(),
             renaming_group: None,
             naming_jar: None,
             pending_jar_confirm: None,

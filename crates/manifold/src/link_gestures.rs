@@ -417,15 +417,15 @@ impl App {
     /// all, and a refused card toasts on release.
     pub(crate) fn card_within(&self, at: egui::Pos2, tolerance: f32, source: &str) -> Option<String> {
         let items = self.level_items();
-        let cards = || items.iter().rev().filter(|item| matches!(item.kind, crate::level::LevelItemKind::Node(_)));
+        let cards = || items.iter().rev().filter(|item| item.origin == crate::level::Origin::Stored);
         if let Some(under) = cards().find(|item| item.rect.contains(at)) {
             return (under.id != source).then(|| under.id.clone());
         }
         // Only cards the ring marks (`valid_targets`) count here, so a refused neighbour never shadows a valid one.
         let edge = self.link.connecting.as_ref().map_or(crate::caps::LINK, |(_, edge)| edge);
         let valid = self.valid_targets(edge, source);
-        let nearest = |take: &dyn Fn(&crate::level::LevelItem) -> bool| {
-            let mut best: Option<(f32, &crate::level::LevelItem)> = None;
+        let nearest = |take: &dyn Fn(&crate::level::CardEntry) -> bool| {
+            let mut best: Option<(f32, &crate::level::CardEntry)> = None;
             for item in cards().filter(|item| take(item)) {
                 let d = distance_to_rect(at, item.rect);
                 if d <= tolerance && best.is_none_or(|(b, _)| d < b) {

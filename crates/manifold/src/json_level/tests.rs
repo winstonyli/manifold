@@ -97,7 +97,7 @@ fn entering_builds_the_level_and_leaving_drops_it() {
     assert_eq!(level.node_id, j);
     let ids: Vec<String> = app.level_items().into_iter().map(|i| i.id).collect();
     assert_eq!(ids, [format!("{J}#"), format!("{J}#/a"), format!("{J}#/c")]);
-    assert!(app.level_items().iter().all(|i| i.kind == LevelItemKind::JsonCard));
+    assert!(app.level_items().iter().all(|i| i.origin == Origin::Json));
     assert_eq!(app.level_edges().len(), 2);
     assert!(app.level_edges().iter().all(|e| e.link.is_none()), "no JSON-level line is a link");
     app.switch_group_level(Some(OUTER.into()));
