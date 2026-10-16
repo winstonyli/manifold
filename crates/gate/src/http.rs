@@ -1,7 +1,9 @@
-//! A minimal HTTP/1.0 server on 127.0.0.1 with an ephemeral port, for the gate's local sites: the smoke test's
+//! A minimal HTTP/1.0 server on 127.0.0.1 (or `SITE_HOST`) with an ephemeral port, for the gate's local sites: the smoke test's
 //! suggestions endpoint (suggest.rs) and the two-instance test's nonce site (nonce.rs). Each connection gets a thread;
 //! the handler turns the request line into the whole response, which is written before the connection closes.
-//! Dropping the server stops its accept loop.
+//! Dropping the server stops its accept loop. `SITE_HOST=<ip>` binds and addresses the site at that local address instead,
+//! for an engine host that cannot reach loopback: WebKit runs in WSL, and the Windows address it sees is the gateway
+//! from `ip route` in WSL (`ip route | awk '/default/ {print $3}'`).
 
 use std::io::{self, Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
@@ -55,6 +57,11 @@ pub struct Server {
     thread: Option<JoinHandle<()>>,
 }
 
+/// `SITE_HOST`, default `127.0.0.1`: the local address the gate's site listens on.
+fn site_host() -> String {
+    std::env::var("SITE_HOST").unwrap_or_else(|_| "127.0.0.1".to_owned())
+}
+
 impl Server {
     pub fn start(handler: Arc<Handler>) -> io::Result<Server> {
         Self::start_head(Arc::new(move |line, _head| handler(line)))
@@ -62,7 +69,7 @@ impl Server {
 
     /// `start` for a handler that reads the request headers too (cookies, user agent).
     pub fn start_head(handler: Arc<HeadHandler>) -> io::Result<Server> {
-        let listener = TcpListener::bind(("127.0.0.1", 0))?;
+        let listener = TcpListener::bind((site_host().as_str(), 0))?;
         let addr = listener.local_addr()?;
         let stop = Arc::new(AtomicBool::new(false));
         let stop2 = stop.clone();
@@ -84,6 +91,11 @@ impl Server {
 
     pub fn port(&self) -> u16 {
         self.addr.port()
+    }
+
+    /// `http://HOST:PORT`, the site's origin.
+    pub fn base(&self) -> String {
+        format!("http://{}:{}", self.addr.ip(), self.addr.port())
     }
 }
 

@@ -181,7 +181,7 @@ pub(crate) fn scale(counts: &[String]) -> ExitCode {
         guarded(&format!("{n} tabs"), || {
             let nodes: Vec<Value> = (1..=n)
                 .map(|i| {
-                    json!({"id": format!("t{i}"), "type": TAB, "url": format!("http://127.0.0.1:{}/p?i={i}", server.port()),
+                    json!({"id": format!("t{i}"), "type": TAB, "url": format!("{}/p?i={i}", server.base()),
                            "view_kind": engine, "pos": [(i % 10 * 300) as f64, (i / 10 * 200) as f64]})
                 })
                 .collect();

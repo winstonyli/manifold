@@ -3,7 +3,7 @@
 //! served by this process (every page titled by its path). From A, NEWTAB opens tab B (parented to the focused tab) at
 //! the home page /b1; B goes to /b2 and /b3. Back twice walks B's pages, a third Back focuses A (opened-from, and A
 //! records `left_to`), Forward on A returns to B, and a new page from /b1 makes a sibling of /b2 (EXPORTSTATE
-//! `trail`). A page that calls history.back() itself must read as a Back. `ENGINE=servo` (etc.) tests another engine.
+//! `trail`). A page that calls history.back() itself must read as a Back. `ENGINE=servo` (etc.) tests another engine; for WebKit add `SITE_HOST` (http.rs).
 //!
 //! A failing check does not stop the run; a runner error (a timeout, a launch failure) prints an `ERROR:` line, counts
 //! as a failure and ends the run early. The instance is killed on every exit path (`Instance`'s Drop plus the job).
@@ -30,7 +30,7 @@ struct Run {
     exe: PathBuf,
     work: PathBuf,
     profile: PathBuf,
-    /// `http://127.0.0.1:<port>` of the site.
+    /// The site's origin (`Server::base`).
     base: String,
     /// The engine kind under test (`ENGINE`, default webview2).
     engine: String,
@@ -184,7 +184,7 @@ pub fn trail(parent: Option<PathBuf>) -> ExitCode {
         exe,
         profile: work.join("profile"),
         work,
-        base: format!("http://127.0.0.1:{}", server.port()),
+        base: server.base(),
         engine: std::env::var("ENGINE").unwrap_or_else(|_| "webview2".to_owned()),
     };
     if let Err(e) = run.setup().and_then(|()| drive(&run, &mut sec)) {

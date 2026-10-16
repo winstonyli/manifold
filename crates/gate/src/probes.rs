@@ -97,7 +97,7 @@ impl Site {
     }
 
     pub(crate) fn url(&self, path: &str) -> String {
-        format!("http://127.0.0.1:{}{path}", self.server.port())
+        format!("{}{path}", self.server.base())
     }
 
     pub(crate) fn lines(&self) -> Vec<String> {
