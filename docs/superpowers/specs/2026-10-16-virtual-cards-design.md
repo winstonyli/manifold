@@ -1,0 +1,54 @@
+# Virtual cards: cards without a document node
+
+Status: draft for review, 2026-10-16. Piece 1 of two; piece 2 is the trail strip (`2026-10-16-trail-strip-design.md`, not yet written), the first client.
+
+## Intent
+
+The Graph view draws one card per stored node. Some cards have no node: the JSON level's record cards today (drawn by a parallel renderer), a tab's trail pages tomorrow. They are derived from other state, positioned by their provider, and must never reach the store, sync, sessions or undo. This piece adds a seam so the graph draws, hits, selects, drags and drops such cards through the same code as real ones, with a per-card `Abilities` set saying what each may do. Success: a fake provider in tests gets every ability; no site in the graph path asks "is this id in `nodes`" to decide behaviour; the three silent failures the survey found (see Sites) are gone.
+
+Not in scope: folding the JSON level's renderer into the seam (later; it needs a per-entry body painter and event sink, both of which this design provides, but its Tab walk, `JsonEdit` events and `level.rects` drag stay as they are); the trail provider itself (piece 2); any change to stored nodes' behaviour.
+
+## Current state (from a read-only survey, 2026-10-16; line numbers are to be re-read at plan time)
+
+- `level.rs` has `LevelItem { id, kind: LevelItemKind::{Node(CardKind), JsonCard}, rect }` and `level_items_from`, a per-frame list. Fit/Reset View, the settle key, LOD count, minimap, right-click hit test, rectangle select, `EXPORTSTATE` `cards` and `card_within` already read it.
+- The card renderer does not: `draw_graph_cards` iterates ids from `level_scan`; `draw_graph_card(id)` begins with `self.card_rect(id)?` and `self.card_view(id, members)?`, both reading `nodes`/the mirror.
+- Silent or loud failures for an id with no node: `level_edges`' `rect_of` indexes `self.nodes[id]` (panic); `live_drag`/`end_stale_drag` cancel the drag; `end_stale_selection` drops the id; right-click opens the node menu and calls `on_jar_chip` for any `Node(_)` item; `bounds_for_level` ignores it; layout/settle never place it; search never dims it.
+- Not read by the survey and to be read in the plan: `edit_field`, `begin_tabs_shutdown`, `valid_targets`, the Tab-view transition code.
+
+## Design
+
+1. **`CardEntry`.** `LevelItem` becomes the card loop's input too: `CardEntry { id, kind, rect, abilities }`, built once per frame by `level_items_from`. `LevelItemKind` gains `Virtual(SourceId)`. `draw_graph_cards` iterates entries; `draw_graph_card` takes the entry instead of calling `card_rect`/`card_view`, and gets a node (or not) only through `kind`. `card_tab_order`, digit badges and `pass.order` are built from entries.
+
+2. **`Abilities`.** A bit set: `SELECT`, `DRAG_SOURCE` (may be picked up), `MOVE` (the drag repositions it and stores the position; real nodes only), `DROP_TARGET`, `MENU`, `LINK`, `FOCUS`. A stored node has all; a JSON card keeps what it has today; a virtual card has what its provider grants. Every site the survey lists asks `abilities` through one helper (`entry.can(Ability)`), not `nodes.contains_key`. A site that needs the node (store write, node menu rows) asks `kind` and gets `None` for a virtual card.
+
+3. **Providers.** `trait VirtualSource` (one impl per source, registered in `App`): `entries(&self, app_state, level) -> Vec<CardEntry>` (ids `virtual:<source>:<key>`, never colliding with a node id; rects in world space computed by the provider), `edges(...) -> Vec<LevelEdge>`, `paint_body(ui, entry, ...)`, `on_click`, `on_menu`, and `on_drop(entry, target) -> Option<GraphAction>`. The graph core never inspects a source's data; it only calls these.
+
+4. **Position and drag.** A virtual card's rect is the provider's; it is never written to `edit_pos` or the layout (`MOVE` unset). With `DRAG_SOURCE`, dragging shows a ghost at the pointer and leaves the card in place; on release, `drop_target` runs over the entries that have `DROP_TARGET` (real nodes' existing rules plus virtual ones), and the result goes to the provider's `on_drop`, which returns a `GraphAction` (or nothing). `end_stale_drag` and `live_drag` test the entry, not `nodes`. Two things to confirm in the plan: whether the graph already draws a drag ghost (if not, a ghost is new, small, and shared by real cards' non-moving drags if any), and that `drop_target` can report "empty canvas" as a target (the trail's open-as-card gesture needs it; today a release on empty canvas may simply return no target, in which case `on_drop` gets `None` and the provider decides).
+
+5. **Selection.** Virtual ids may be in `interaction.selected` when `SELECT` is granted; `end_stale_selection` tests the entry list. Actions that act on the selection (Close Selected, Pin, group, delete) filter to ids that are nodes, so a virtual card in a mixed selection is skipped, not an error.
+
+6. **Edges.** `level_edges` takes rects from entries, not `self.nodes[id]` (removes the panic); providers append their own edges (`LevelEdge`), drawn by the existing `draw_graph_edges`.
+
+7. **Excluded from persistence.** No virtual id reaches `edit_pos`, `edit_field`, store writes, sync, `EXPORTSESSION`, undo, Recently Closed or `tab-history.json`. A test enumerates the write entry points and passes a virtual id to each.
+
+8. **Observability.** `EXPORTSTATE` `cards` lists virtual entries with `"virtual": "<source>"` and their abilities; `gate layout`'s checks skip them unless a stage opts in.
+
+9. **Search/filter, culling, camera.** Culling uses `entry.rect`. `bounds_for_level` reads entries. Search dims by an optional `searchable_text()` on the provider (default none, not dimmed).
+
+## Tests
+
+A fake provider in `#[cfg(test)]` that yields three virtual cards with different ability sets and one edge. Unit tests, each failing before the change: it draws and is culled outside the camera; hover and click reach `on_click`; right-click opens the provider's menu, not the node menu; rectangle select and click select it and `end_stale_selection` keeps it; dragging it leaves its rect unchanged, shows a ghost, and `on_drop` receives the release target; a virtual id given to each persistence entry point writes nothing; `level_edges` draws the provider's edge and does not panic; `EXPORTSTATE` lists it; fit/Reset View include it. Existing graph tests stay green unchanged (they are the check that real nodes did not regress). Gate: `gate layout` and `gate smoke` (cards, selection, drag) through `gate all LOG light`, then `ui`.
+
+## Review rounds
+
+Round 1 (self): found the drag ghost and empty-canvas-target assumptions unverified (added to decision 4); abilities `MOVE` vs `DRAG_SOURCE` consistent with decisions 2 and 4; no TBDs. Round 2 pending the user's read.
+
+## Risks and rulings to confirm
+
+- The seam touches the interaction code in about 8 files (survey estimate 250-400 lines); the largest risk is a site the survey did not read still assuming `nodes`. Mitigation: grep every `self.nodes` use in the graph modules during planning and classify each.
+- A virtual card cannot be dragged to a new position (decision 4). If a later source needs that, `MOVE` with a provider-owned position is the extension.
+- Mixed selections skip virtual ids for node actions (decision 5) rather than refusing the action.
+
+## Next
+
+Piece 2 (trail strip): lane layout over `NavHistory`, a `VirtualSource` anchored under the focused tab card (drag a page out to open it as a card; click to navigate), and a toolbar painter for tab view that shares the layout.
