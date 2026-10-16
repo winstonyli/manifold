@@ -1113,9 +1113,11 @@ impl App {
             (true, false) => egui::Sense::CLICK | egui::Sense::DRAG,
         };
         // Space on a focused card toggles it in the selection, as the marquee would select it. Taken
-        // before the interact, which would otherwise read it as a click and open the tab.
+        // before the interact, which would otherwise read it as a click and open the tab. The key is consumed for
+        // every card; only a `selectable` kind toggles.
         if ui.memory(|m| m.has_focus(card_id))
             && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Space))
+            && entry.caps().selectable
         {
             self.toggle_selected(id);
         }

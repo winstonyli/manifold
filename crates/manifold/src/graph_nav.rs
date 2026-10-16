@@ -153,7 +153,7 @@ impl App {
     /// be moved into itself.
     pub(crate) fn take_drag_unit(&mut self, id: &str, target: &str) -> Vec<String> {
         if self.interaction.selected.contains(id) {
-            self.interaction.selected.drain().filter(|member| member != target).collect()
+            self.take_selected_stored().into_iter().filter(|member| member != target).collect()
         } else {
             vec![id.to_string()]
         }
@@ -599,10 +599,41 @@ impl App {
     /// Drops from the rectangle selection every tab no longer drawn on this level: closed, mid-respawn, or moved by
     /// another replica. It only ever holds this level's tabs (`eject`, `switch_group_level`); otherwise Close Selected
     /// or Group Selected would act on a tab the user can't see.
+    /// What stays is a card of this level whose kind grants `selectable` (a stored card's row does; a virtual kind's
+    /// grants it only if its source's row says so). A JSON level's cards are never selected.
     pub(crate) fn end_stale_selection(&mut self) {
-        let mut selected = std::mem::take(&mut self.interaction.selected);
-        selected.retain(|id| self.nodes.contains_key(id) && self.in_level(id));
-        self.interaction.selected = selected;
+        let selectable: HashSet<String> = self.selectable_ids();
+        self.interaction.selected.retain(|id| selectable.contains(id));
+    }
+
+    /// The ids of this level's cards that can be selected (`Caps::selectable`), whatever supplies them.
+    pub(crate) fn selectable_ids(&self) -> HashSet<String> {
+        let stored_or_virtual = |item: &crate::level::CardEntry| item.origin != crate::level::Origin::Json;
+        self.level_items()
+            .into_iter()
+            .filter(|item| stored_or_virtual(item) && item.caps().selectable)
+            .map(|item| item.id)
+            .collect()
+    }
+
+    /// Takes the stored cards out of the selection for a selection action and leaves the virtual ones in it: a
+    /// virtual card has no node for the action to change.
+    pub(crate) fn take_selected_stored(&mut self) -> HashSet<String> {
+        let virtual_ids: HashSet<String> = self
+            .level_items()
+            .into_iter()
+            .filter(|item| matches!(item.origin, crate::level::Origin::Virtual(_)))
+            .map(|item| item.id)
+            .collect();
+        let (kept, taken) =
+            std::mem::take(&mut self.interaction.selected).into_iter().partition(|id| virtual_ids.contains(id));
+        self.interaction.selected = kept;
+        taken
+    }
+
+    /// How many selected cards a selection action would act on: the stored ones.
+    pub(crate) fn selected_stored_count(&self) -> usize {
+        self.interaction.selected.iter().filter(|id| self.nodes.contains_key(*id)).count()
     }
 }
 

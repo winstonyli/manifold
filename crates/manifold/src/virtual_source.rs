@@ -179,6 +179,29 @@ pub(crate) mod fake {
             self.frame(vec![], egui::Modifiers::NONE);
         }
 
+        /// A right-drag (a marquee) over `rect` on screen: press at its top-left, move to its bottom-right, release.
+        pub(crate) fn marquee(&mut self, rect: egui::Rect) {
+            let secondary = egui::PointerButton::Secondary;
+            let (from, to) = (rect.min, rect.max);
+            self.frame(
+                vec![egui::Event::PointerMoved(from), Self::press(from, secondary, true)],
+                egui::Modifiers::NONE,
+            );
+            self.frame(vec![egui::Event::PointerMoved(to)], egui::Modifiers::NONE);
+            self.frame(vec![Self::press(to, secondary, false)], egui::Modifiers::NONE);
+            self.frame(vec![], egui::Modifiers::NONE);
+        }
+
+        /// The screen rect around all three fake cards, with a margin.
+        pub(crate) fn around_virtuals(&self) -> egui::Rect {
+            self.screen("virtual:fake:a").union(self.screen("virtual:fake:c")).expand(10.0)
+        }
+
+        /// The stored tab's id.
+        pub(crate) fn tab(&self) -> String {
+            self.app.nodes.keys().next().cloned().expect("the rig's tab")
+        }
+
         /// Entry `id`'s card on screen.
         pub(crate) fn screen(&self, id: &str) -> egui::Rect {
             let entry = self.app.level_items().into_iter().find(|i| i.id == id).expect("an entry with that id");
@@ -300,6 +323,88 @@ mod tests {
         assert!(rig.app.camera.tween.is_some(), "Tab to a card out of view pans to it");
         let want = rig.app.level_items().iter().find(|e| e.id == order[1]).unwrap().rect;
         assert_eq!(rig.app.level_card_rect(&order[1]), Some(want));
+    }
+
+    const SELECTABLE: &str = "application/vnd.manifold.virtual.fake-selectable";
+
+    fn virtual_ids() -> std::collections::HashSet<String> {
+        ["a", "b", "c"].map(|l| format!("virtual:fake:{l}")).into_iter().collect()
+    }
+
+    #[test]
+    fn a_marquee_selects_virtual_cards_only_when_the_kind_is_selectable() {
+        let mut rig = Rig::with_kind(SELECTABLE);
+        rig.marquee(rig.around_virtuals());
+        assert_eq!(rig.app.interaction.selected, virtual_ids());
+        rig.app.end_stale_selection();
+        assert_eq!(rig.app.interaction.selected, virtual_ids(), "a selectable virtual id is not stale");
+
+        for ty in [FAKE, MENU] {
+            let mut rig = Rig::with_kind(ty);
+            rig.marquee(rig.around_virtuals());
+            assert!(rig.app.interaction.selected.is_empty(), "{ty}: {:?}", rig.app.interaction.selected);
+            rig.app.interaction.selected.insert("virtual:fake:a".to_string());
+            rig.app.end_stale_selection();
+            assert!(rig.app.interaction.selected.is_empty(), "{ty}: a kind that cannot be selected is dropped");
+        }
+    }
+
+    #[test]
+    fn space_on_a_focused_virtual_card_toggles_it_only_if_selectable() {
+        let space = || egui::Event::Key {
+            key: egui::Key::Space,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        };
+        for (ty, expect) in [(SELECTABLE, true), (FAKE, false)] {
+            let mut rig = Rig::with_kind(ty);
+            let first = rig.app.card_tab_order()[0].clone();
+            rig.ctx.memory_mut(|m| m.request_focus(egui::Id::new(("graph_card", first.as_str()))));
+            rig.frame(vec![], egui::Modifiers::NONE);
+            let tab = egui::Event::Key {
+                key: egui::Key::Tab,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            };
+            rig.frame(vec![tab], egui::Modifiers::NONE);
+            rig.frame(vec![], egui::Modifiers::NONE);
+            let focused = rig.app.card_tab_order()[1].clone();
+            assert!(rig.ctx.memory(|m| m.has_focus(egui::Id::new(("graph_card", focused.as_str())))), "{focused}");
+            rig.frame(vec![space()], egui::Modifiers::NONE);
+            assert_eq!(rig.app.interaction.selected.contains(&focused), expect, "{ty}");
+        }
+    }
+
+    #[test]
+    fn selection_actions_act_on_stored_cards_and_leave_a_virtual_id_alone() {
+        let mut rig = Rig::with_kind(SELECTABLE);
+        let (tab, virt) = (rig.tab(), "virtual:fake:a".to_string());
+        let nodes = rig.app.nodes.len();
+        rig.app.interaction.selected.extend([tab.clone(), virt.clone()]);
+        rig.app.pin_shortcut();
+        assert!(rig.app.mirror.pinned(&tab), "the stored tab is pinned");
+        assert!(!rig.app.mirror.has(&virt), "no store write for the virtual id");
+        assert_eq!(rig.app.interaction.selected.len(), 2);
+
+        let ctx = rig.ctx.clone();
+        rig.app.apply_graph_action(&ctx, GraphAction::CloseSelected);
+        assert!(!rig.app.nodes.contains_key(&tab), "the stored tab is closed");
+        assert_eq!(rig.app.nodes.len(), nodes - 1);
+        assert_eq!(rig.app.interaction.selected, std::collections::HashSet::from([virt.clone()]));
+        assert!(!rig.app.mirror.has(&virt));
+
+        let (mut rig, virt) = (Rig::with_kind(SELECTABLE), "virtual:fake:a".to_string());
+        let tab = rig.tab();
+        rig.app.interaction.selected.extend([tab.clone(), virt.clone()]);
+        let ctx = rig.ctx.clone();
+        rig.app.apply_graph_action(&ctx, GraphAction::GroupSelected);
+        assert!(rig.app.mirror.group(&tab).is_some(), "the stored tab is grouped");
+        assert_eq!(rig.app.interaction.selected, std::collections::HashSet::from([virt.clone()]));
+        assert!(!rig.app.mirror.has(&virt));
     }
 
     #[test]

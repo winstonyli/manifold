@@ -295,8 +295,7 @@ impl App {
                 // Only the selected cards still shown: a tab mid-crash-respawn or mid-engine-swap has no card, so it
                 // is neither counted in the centroid nor moved (its selection is consumed with the rest).
                 let live: Vec<String> =
-                    self.interaction.selected.iter().filter(|id| self.nodes.contains_key(*id)).cloned().collect();
-                self.interaction.selected.clear();
+                    self.take_selected_stored().into_iter().filter(|id| self.nodes.contains_key(id)).collect();
                 if live.is_empty() {
                     return;
                 }
@@ -315,7 +314,7 @@ impl App {
                 }
             }
             GraphAction::CloseSelected => {
-                let ids = std::mem::take(&mut self.interaction.selected);
+                let ids = self.take_selected_stored();
                 self.begin_tabs_shutdown(&ids);
                 // Outermost first (then by id, so the order is the same on every run, not the set's): a closed group
                 // hides its whole subtree, so a selected member inside it is already gone at its turn and is
@@ -1177,17 +1176,19 @@ impl App {
         // Rectangle-select's own action bar: only shown once a
         // right-drag has actually selected something (see
         // `handle_rect_select`).
-        if !self.interaction.selected.is_empty() {
+        // Counts the stored cards: both actions leave a virtual card alone.
+        let stored = self.selected_stored_count();
+        if stored > 0 {
             // Matches "+ New Group" above: groups the selection
             // into a new subgroup of whichever level is
             // currently being viewed, not just the top.
-            if ui.button(format!("Group Selected ({})", self.interaction.selected.len())).clicked() {
+            if ui.button(format!("Group Selected ({stored})")).clicked() {
                 actions.push(GraphAction::GroupSelected);
             }
             let inside = self.unselected_members_of_selection();
             let label = match inside {
-                0 => format!("Close Selected ({})", self.interaction.selected.len()),
-                n => format!("Close Selected ({} + {n} inside)", self.interaction.selected.len()),
+                0 => format!("Close Selected ({stored})"),
+                n => format!("Close Selected ({stored} + {n} inside)"),
             };
             if ui.button(label).on_hover_text("A group closes with everything in it").clicked() {
                 actions.push(GraphAction::CloseSelected);
@@ -1388,7 +1389,9 @@ impl App {
                     self.interaction.selected = self
                         .level_items()
                         .into_iter()
-                        .filter(|item| item.origin == Origin::Stored && world_rect.intersects(item.rect))
+                        .filter(|item| {
+                            item.origin != Origin::Json && item.caps().selectable && world_rect.intersects(item.rect)
+                        })
                         .map(|item| item.id)
                         .collect();
                 }
