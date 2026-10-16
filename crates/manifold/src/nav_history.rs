@@ -51,6 +51,20 @@ struct Entry {
     fwd: Option<usize>,
 }
 
+/// One page of the trail as the strip and the popup draw it.
+#[allow(dead_code, reason = "drawn by the trail strip (Task 3 of the plan), which does not exist yet")]
+pub(crate) struct TrailPage {
+    /// The arena index: what `go_to` and `entry_url` take.
+    pub(crate) entry: usize,
+    pub(crate) parent: Option<usize>,
+    /// The title, or the URL when the title is empty.
+    pub(crate) label: String,
+    /// The page the tab shows.
+    pub(crate) cursor: bool,
+    /// On the chain from the root to the cursor.
+    pub(crate) on_path: bool,
+}
+
 /// What `tab-history.json` holds for one tab.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 struct Saved {
@@ -353,6 +367,36 @@ impl NavHistory {
             .collect()
     }
 
+    /// Every page in entry order (a parent always before its children), for drawing.
+    #[allow(dead_code, reason = "drawn by the trail strip (Task 3 of the plan), which does not exist yet")]
+    pub(crate) fn tree(&self) -> Vec<TrailPage> {
+        if self.entries.is_empty() {
+            return Vec::new();
+        }
+        let path: HashSet<usize> = std::iter::successors(Some(self.at), |&i| self.entries[i].parent).collect();
+        self.entries
+            .iter()
+            .enumerate()
+            .map(|(i, e)| TrailPage {
+                entry: i,
+                parent: e.parent,
+                label: if e.title.is_empty() { e.url.clone() } else { e.title.clone() },
+                cursor: i == self.at,
+                on_path: path.contains(&i),
+            })
+            .collect()
+    }
+
+    /// A tree built by hand: `(url, parent, fwd)` per entry, cursor `at`, no `lin`.
+    #[cfg(test)]
+    pub(crate) fn with_tree(spec: &[(&str, Option<usize>, Option<usize>)], at: usize) -> NavHistory {
+        let entries = spec
+            .iter()
+            .map(|&(url, parent, fwd)| Entry { url: url.into(), title: String::new(), parent, fwd })
+            .collect();
+        NavHistory { entries, at, ..NavHistory::default() }
+    }
+
     /// The Back chip shows its branch marker: the cursor entry has siblings.
     pub(crate) fn back_fork(&self) -> bool {
         !self.branches(Dir::Back).is_empty()
@@ -627,13 +671,21 @@ mod tests {
         h.observe(&url, "", false, true, now);
     }
 
-    /// A tree built by hand: `(url, parent, fwd)` per entry, cursor `at`, no `lin`.
-    fn tree(spec: &[(&str, Option<usize>, Option<usize>)], at: usize) -> NavHistory {
-        let entries = spec
-            .iter()
-            .map(|&(url, parent, fwd)| Entry { url: url.into(), title: String::new(), parent, fwd })
-            .collect();
-        NavHistory { entries, at, ..NavHistory::default() }
+    #[test]
+    fn tree_lists_every_page_with_the_cursor_and_the_path_from_the_root() {
+        // /a -> /b -> /c and /a -> /d, cursor on /d; /b has a title.
+        let mut h = NavHistory::with_tree(
+            &[("/a", None, Some(3)), ("/b", Some(0), Some(2)), ("/c", Some(1), None), ("/d", Some(0), None)],
+            3,
+        );
+        h.entries[1].title = "Bee".into();
+        let pages = h.tree();
+        assert_eq!(pages.iter().map(|p| p.entry).collect::<Vec<_>>(), [0, 1, 2, 3]);
+        assert_eq!(pages.iter().map(|p| p.parent).collect::<Vec<_>>(), [None, Some(0), Some(1), Some(0)]);
+        assert_eq!(pages.iter().map(|p| p.label.as_str()).collect::<Vec<_>>(), ["/a", "Bee", "/c", "/d"]);
+        assert_eq!(pages.iter().map(|p| p.cursor).collect::<Vec<_>>(), [false, false, false, true]);
+        assert_eq!(pages.iter().map(|p| p.on_path).collect::<Vec<_>>(), [true, false, false, true]);
+        assert!(NavHistory::default().tree().is_empty());
     }
 
     #[test]
@@ -722,8 +774,10 @@ mod tests {
     #[test]
     fn eviction_drops_the_oldest_unprotected_leaf_and_remaps() {
         // a -> {old, b}; b -> c. The cursor is b and Forward from it is c: the path and the fwd chain are a, b, c.
-        let mut h =
-            tree(&[("a", None, Some(2)), ("old", Some(0), None), ("b", Some(0), Some(3)), ("c", Some(2), None)], 2);
+        let mut h = NavHistory::with_tree(
+            &[("a", None, Some(2)), ("old", Some(0), None), ("b", Some(0), Some(3)), ("c", Some(2), None)],
+            2,
+        );
         h.lin = vec![Some(0), Some(2), Some(1)];
         h.evict_to(3);
         assert_eq!(urls(&h), ["a", "b", "c"]);
@@ -735,7 +789,10 @@ mod tests {
     #[test]
     fn eviction_picks_the_lower_of_two_unprotected_leaves() {
         // a -> {x, y, b}: x and y are both unprotected leaves, x is older.
-        let mut h = tree(&[("a", None, Some(3)), ("x", Some(0), None), ("y", Some(0), None), ("b", Some(0), None)], 3);
+        let mut h = NavHistory::with_tree(
+            &[("a", None, Some(3)), ("x", Some(0), None), ("y", Some(0), None), ("b", Some(0), None)],
+            3,
+        );
         h.evict_to(3);
         assert_eq!(urls(&h), ["a", "y", "b"]);
         assert_eq!(h.at, 2);
@@ -743,7 +800,7 @@ mod tests {
 
     #[test]
     fn eviction_of_a_chain_drops_the_root_and_moves_a_root_cursor() {
-        let mut h = tree(&[("a", None, Some(1)), ("b", Some(0), Some(2)), ("c", Some(1), None)], 0);
+        let mut h = NavHistory::with_tree(&[("a", None, Some(1)), ("b", Some(0), Some(2)), ("c", Some(1), None)], 0);
         h.evict_to(2);
         assert_eq!(urls(&h), ["b", "c"]);
         assert_eq!(parents(&h), [None, Some(0)]);
@@ -769,8 +826,10 @@ mod tests {
     #[test]
     fn an_evicted_fwd_becomes_none() {
         // a -> {b, c}; b -> x, left for c. The cursor is c: x is the one unprotected leaf.
-        let mut h =
-            tree(&[("a", None, Some(3)), ("b", Some(0), Some(2)), ("x", Some(1), None), ("c", Some(0), None)], 3);
+        let mut h = NavHistory::with_tree(
+            &[("a", None, Some(3)), ("b", Some(0), Some(2)), ("x", Some(1), None), ("c", Some(0), None)],
+            3,
+        );
         h.evict_to(3);
         assert_eq!(urls(&h), ["a", "b", "c"]);
         assert_eq!((h.entries[1].fwd, h.entries[0].fwd, h.at), (None, Some(2), 2));
@@ -875,8 +934,8 @@ mod tests {
         assert!(!h.dirty, "a repeated report");
         h.observe("a", "A", false, false, now);
         assert!(h.dirty, "a title");
-        let left = tree(&[("a", None, Some(1)), ("b", Some(0), None), ("c", Some(0), None)], 0);
-        let right = tree(&[("a", None, Some(2)), ("b", Some(0), None), ("c", Some(0), None)], 0);
+        let left = NavHistory::with_tree(&[("a", None, Some(1)), ("b", Some(0), None), ("c", Some(0), None)], 0);
+        let right = NavHistory::with_tree(&[("a", None, Some(2)), ("b", Some(0), None), ("c", Some(0), None)], 0);
         assert_ne!(left.saved_form(), right.saved_form(), "a fwd");
     }
 
