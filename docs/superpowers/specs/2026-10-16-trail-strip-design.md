@@ -1,0 +1,50 @@
+# The trail strip: a tab's page tree as cards under it
+
+Status: draft 1, 2026-10-16 (piece 2 of 2; piece 1 is `2026-10-16-virtual-cards-design.md`, implemented). Decisions were made with the owner in one session.
+
+## Goal
+
+The trail (`2026-10-14-trail-design.md`) keeps a tree of pages per tab but shows it only as two caret popups with flat lists. This piece draws the focused tab's tree in the Graph view as a strip of small page cards under the tab's card, with branches on lanes, and uses the same layout in the carets' popups. A click on a page navigates the tab there; dragging a page out opens it as a card where it was dropped. Nothing is stored: the strip is derived from `NavHistory` every frame.
+
+## What exists (checked 2026-10-16)
+
+- `NavHistory` (`nav_history.rs`): arena `entries: Vec<Entry { url, title, parent, fwd }>`, parent index < child index, entry 0 the root, cursor `at`, at most `MAX_ENTRIES` (50). Entries are private; `branches(dir)`, `entry_url(i)`, `export()` and `go_to(i, now)` are the public surface.
+- `App::trail_pick(tab, entry)` (plain move, same path as a popup row) and `App::open_branch_as_card(tab, entry)` (`spawn_tab_from(tab, url)`) in `trail_nav.rs`.
+- The caret popups: `build_trail_branches_popup` (`popups.rs:1271`) lists `branches(dir)` rows (title, click picks, context menu "Open as card").
+- The seam (piece 1): `VirtualSource` with `entries`, `edges`, `paint_body`, `on_click`, `on_menu`, `on_drop(app, entry, target, at)`, `searchable_text`; `App.virtual_sources`; caps rows for the `application/vnd.manifold.virtual.*` prefix (all abilities off, draw layer 8). `Origin::Virtual` still carries a `dead_code` allow that this piece removes.
+- Layouts: a force settle for stored nodes (`graph_layout::step`) and `json_view::tree_layout`, a column-per-depth tree with each parent centred on its children's band, hard-wired to the JSON `Card` type. There is no shared layout mechanism, and `layout_current_level` is an `if json_level … else settle`.
+- `App.focused: Option<String>` is the tab shown in Tab view and, in Graph view, the last tab the user selected.
+
+## Decisions
+
+1. **One tree layout, shared.** New `tree_layout.rs`: `TreeNode { parent: Option<usize>, size: Vec2 }` and `tree_layout(nodes: &[TreeNode], column_gap: f32, sibling_gap: f32) -> Vec<Pos2>`, top-left per node, root's top at y = 0. Requires `parent < index` (JSON's breadth-first cards and `NavHistory` both satisfy it). One column per depth, as wide as its widest node; a subtree's band is the larger of its node and its children's bands plus gaps; a parent is centred on its children's span. This is `json_view::tree_layout`'s algorithm, moved. `json_view::tree_layout` becomes a thin wrapper (builds `TreeNode`s from `Card`s, applies the saved `pos` overrides) and its algorithm is deleted. Its existing layout tests stay and must pass unchanged. Not unified: the force settle and the `layout_current_level` branch (parked: a per-level layout strategy trait; the trail needs none because a virtual source owns its rects).
+2. **`NavHistory::tree() -> Vec<TrailPage>`** (`TrailPage { entry: usize, parent: Option<usize>, title: String, url: String, cursor: bool, on_path: bool }`), the one read-only view of the tree for both painters. `on_path` is the root-to-cursor chain. `branches()`, `back_fork` and `forward_fork` stay (the chips' markers use them); the popup stops using `branches()`.
+3. **`TrailSource` (`trail_strip.rs`) is a `VirtualSource` named `"trail"`.** It lists entries only when all hold: the view is Graph; `App.focused` is a tab in `nodes` whose card is on the current level; the level is not a JSON level (the seam already enforces this); its `NavHistory` has at least 2 entries. Ids are `virtual:trail:<tab>:<entry>`, kind `application/x-manifold-trail-page`, origin `Virtual("trail")`. Pages are 160 × 44 world units; column gap 24, sibling gap 12. The root page's top-left is the tab card rect's `left_bottom() + (0, 24)`, so the strip follows the card and moves with it. The strip may overlap other cards (it draws at layer 8, above them).
+4. **Abilities** (a `Caps` row for the kind, exact, replacing the prefix row for it): `drag_source` and `menu` true; `selectable`, `drop_target`, `stored_controls` false. A page is never selected, never a drop target, and has no node controls.
+5. **Gestures.**
+   - `on_click`: `trail_pick(tab, entry)`; clicking the cursor page does nothing (`go_to` ignores it). Returns no `GraphAction`.
+   - `on_menu`: "Open as card" (`open_branch_as_card`) and "Copy URL".
+   - `on_drop(entry, target, at)`: the page opens as a card at `at` (`open_branch_as_card`, then the new tab's position is set to `at`). The target is ignored: dropped on empty canvas or on a card alike. (An earlier idea, opening with the target as opener, was rejected: opened-from must stay the tab whose trail the page came from, or Back at the new tab's root would lead somewhere unrelated.) A drop on the back button arrives as `Eject` (seam note) and is also treated as a plain open.
+   - Placement needs new plumbing: `spawn_new_tab_with_kind` (`tabs.rs:490`) computes the position itself (the opener's position plus `spawn_jitter`) and takes none. It gains `pos: Option<Vec2>` (an override of that computed position), `spawn_tab_from` and `open_branch_as_card` pass it through, and every other caller passes `None`. The popup's "Open as card" passes `None`, so it behaves as today.
+6. **Edges.** Parent to child per page, drawn by `draw_graph_edges`; edges on the current path are `highlight`.
+7. **Painting.** `paint_body`: title (URL when empty) in one clipped line, the cursor page with the accent frame, path pages normal, the rest dimmed. `searchable_text`: title and URL.
+8. **The popups use the same tree.** The Back and Forward carets still open their anchored popups, but the popup body is the shared layout painted at a smaller cell size (all pages, the cursor and path marked, the same click and the same context menu) instead of the flat `branches(dir)` list. The popup code that builds a flat list is deleted. The carets keep their markers (`back_fork`, `forward_fork`) as the entry point.
+9. **Identity.** A page id holds an entry index, and eviction renumbers entries (`nav_history.rs` `remove`), so ids are stable only within a frame sequence without eviction. A drag in progress when its entry is evicted is cancelled by `end_stale_drag`, as for any vanished card. No state keyed by page id is kept.
+10. **Observability.** `EXPORTSTATE` lists the strip's cards through the seam (`"virtual": "trail"`, abilities). Gate: the `trail` stage gains a check that after a fork the focused tab has the right number of strip cards and clicking a sibling page moves the tab to it.
+11. **Persistence.** None. The strip and the popup are derived; `NavHistory` persistence is unchanged.
+
+## Out of scope / parked
+
+Trails for non-tab kinds (a location field per kind first); a strip for several tabs at once; collapsing or reordering lanes; scrolling the strip; a per-level layout strategy trait that would also absorb the force settle and the JSON branch (the trail does not need it; revisit when a third level kind wants a layout); keeping a hovered page's preview.
+
+## Tests
+
+- `tree_layout.rs`: a chain is one row with growing x; a fork puts the second child below the first and centres the parent on both; a nested fork does not overlap; wider nodes widen only their column; a single node sits at the origin. The JSON layout tests pass unchanged through the wrapper.
+- `NavHistory::tree()`: `on_path` and `cursor` after Back, after a fork and after a sibling pick; `parent` indices match the arena.
+- `TrailSource` through the seam's `Rig`: no entries with one page, with no focus, or on a JSON level; entries and edges after a fork; the root sits under the tab card and moves with it; click moves the cursor (`go_to`); the menu offers "Open as card"; dropping on empty canvas and on a card both open a tab from the same opener, positioned at the release point; a page cannot be selected or targeted; a drag cancelled by eviction ends cleanly.
+- Popup: the same rows as the tree, click picks, context menu opens as card.
+- Gate `trail` extension as in decision 10, then `light`.
+
+## Review rounds
+
+Round 1 (self, while writing): `branches()` kept because the chip markers use it, not for the popup; the target-as-opener idea rejected (decision 5); the `dead_code` allow on `Origin::Virtual` removed by this piece; `parent < index` stated as a precondition of `tree_layout` and checked for both callers. Round 2 (self, against the code): found that no spawn path takes a position (`spawn_new_tab_with_kind` derives it), so "open at the release point" needed the `pos` plumbing in decision 5; checked that eviction renumbers entries (`remove`, decision 9 stands), that `focused` persists in Graph view (decision 3's anchor), and that the strip's tab and the dropped card share a level and therefore a group. Round 3 pending the owner's read.
