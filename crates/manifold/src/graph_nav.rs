@@ -110,27 +110,41 @@ impl App {
         pointer: Option<egui::Pos2>,
         leave_button: Option<egui::Rect>,
     ) -> Option<(DropEffect, Option<String>)> {
-        use crate::store::model::TYPE_TAB;
-        let dragged = self.card_kind(id)?;
+        use crate::store::model::{TYPE_TAB, TYPE_VIRTUAL_PREFIX};
+        let items = self.level_items();
+        let dragged_entry = items.iter().find(|item| item.id == id)?;
+        let dragged = dragged_entry.kind;
         let inside_group = self.current_group.is_some();
         if leave_button.zip(pointer).is_some_and(|(button, pointer)| button.contains(pointer)) {
             return drop_action(dragged, DropTarget::BackButton, inside_group).map(|effect| (effect, None));
         }
-        let center = self.layout_pos(id).to_pos2();
-        // A group card before a tab card, and a live tab before a sleeping one: the per-kind search order the drop
-        // has always had, each search's hit the first card of its kind in `node_order` under the center. One pass
-        // over the level finds all three; a target the drop table refuses (`drop_action` None) moves the search on.
-        let searches: [&dyn Fn(CardKind) -> bool; 3] =
-            [&|k| is_container(k.ty), &|k| k.ty == TYPE_TAB && k.loaded(), &|k| k.ty == TYPE_TAB && !k.loaded()];
-        let mut hits: [Option<(&str, CardKind)>; 3] = [None; 3];
-        for other in self.node_order.iter().filter(|other| *other != id && self.in_level(other)) {
-            let Some(kind) = self.card_kind(other) else { continue };
-            let Some(slot) = searches.iter().position(|pick| pick(kind)) else { continue };
-            if hits[slot].is_none() && self.card_rect(other).is_some_and(|rect| rect.contains(center)) {
-                hits[slot] = Some((other, kind));
+        // A stored card is carried by its own position; a virtual one (it stays where its source put
+        // it) is probed at the pointer, which the drag moves instead.
+        let center = if dragged_entry.origin == Origin::Stored {
+            self.layout_pos(id).to_pos2()
+        } else {
+            self.graph_screen_point_to_world(pointer?).to_pos2()
+        };
+        // A virtual card (it draws on top) before a group card before a tab card, and a live tab before a sleeping
+        // one: the per-kind search order the drop has always had, each search's hit the first card of its kind in
+        // draw order under the probe. One pass over the level finds all four; a target the drop table refuses
+        // (`drop_action` None) moves the search on. Only a kind granting `drop_target` is a candidate.
+        let searches: [&dyn Fn(CardKind) -> bool; 4] = [
+            &|k| k.ty.starts_with(TYPE_VIRTUAL_PREFIX),
+            &|k| is_container(k.ty),
+            &|k| k.ty == TYPE_TAB && k.loaded(),
+            &|k| k.ty == TYPE_TAB && !k.loaded(),
+        ];
+        let mut hits: [Option<(&str, CardKind)>; 4] = [None; 4];
+        for other in
+            items.iter().filter(|other| other.id != id && other.origin != Origin::Json && other.caps().drop_target)
+        {
+            let Some(slot) = searches.iter().position(|pick| pick(other.kind)) else { continue };
+            if hits[slot].is_none() && other.rect.contains(center) {
+                hits[slot] = Some((other.id.as_str(), other.kind));
             }
         }
-        hits.into_iter().flatten().find_map(|(target, kind)| {
+        hits.iter().flatten().find_map(|&(target, kind)| {
             let effect = drop_action(dragged, DropTarget::Card(kind), inside_group)?;
             Some((effect, Some(target.to_owned())))
         })
@@ -578,11 +592,15 @@ impl App {
     /// The grabbed card (`dragging`) while its drag is live: the card is still on the level shown. A grabbed card
     /// that left it (a level switch with the button held, another replica moving it into another group, a removal)
     /// is no longer drawn, so its card never sees the release; its drag is over, with no drop.
+    /// A virtual card (no node) is live while a source still shows it and its kind is a `drag_source`.
     fn live_drag(&self) -> Option<&str> {
-        self.interaction
-            .dragging
-            .as_deref()
-            .filter(|dragged| self.nodes.contains_key(*dragged) && self.in_level(dragged))
+        self.interaction.dragging.as_deref().filter(|dragged| {
+            if self.nodes.contains_key(*dragged) {
+                self.in_level(dragged)
+            } else {
+                self.level_items().iter().any(|item| item.id == *dragged && item.caps().drag_source)
+            }
+        })
     }
 
     /// Ends a drag that is no longer live (`live_drag`), or any drag when Graph view isn't shown (`graph_shown`

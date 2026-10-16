@@ -2,7 +2,7 @@
 //! supplies a level's extra `CardEntry`s, which draw after the stored ones, so on top. The trait grows with the plan:
 //! each handler is added by the task that first calls it (the pre-commit clippy rejects dead code).
 
-use crate::card::CardBody;
+use crate::card::{CardBody, DropEffect};
 use crate::level::{CardEntry, LevelEdge};
 use crate::{App, GraphAction};
 use std::rc::Rc;
@@ -21,6 +21,15 @@ pub(crate) trait VirtualSource {
     fn on_click(&self, app: &mut App, entry: &CardEntry) -> Option<GraphAction>;
     /// A right-click on `entry` at screen point `at`, only when its kind grants `menu`.
     fn on_menu(&self, app: &mut App, entry: &CardEntry, at: egui::Pos2);
+    /// `entry`, a `drag_source` kind, was released: `target` is what `App::drop_target` found under the pointer (the
+    /// effect and the card dropped on, or `None` for the back button), and `None` for a release over empty canvas.
+    /// The source decides what either means; a returned action is applied like a click's.
+    fn on_drop(
+        &self,
+        app: &mut App,
+        entry: &CardEntry,
+        target: Option<(DropEffect, Option<String>)>,
+    ) -> Option<GraphAction>;
 }
 
 impl App {
@@ -44,11 +53,16 @@ pub(crate) mod fake {
     /// The kind `FakeSource` entries carry unless `with_kind` says otherwise: the prefix row, no abilities.
     pub(crate) const FAKE: &str = "application/vnd.manifold.virtual.fake";
 
+    /// One `on_drop`: the entry's id and the target it received.
+    pub(crate) type Dropped = (String, Option<(DropEffect, Option<String>)>);
+
     /// Three cards `virtual:fake:a|b|c`, side by side, that records every handler call in `calls`.
     pub(crate) struct FakeSource {
         pub(crate) calls: RefCell<Vec<String>>,
         /// Where `on_menu` was last asked to open.
         pub(crate) menu_at: std::cell::Cell<Option<egui::Pos2>>,
+        /// Every `on_drop`: the entry's id and the target it received.
+        pub(crate) drops: RefCell<Vec<Dropped>>,
         ty: &'static str,
     }
 
@@ -61,7 +75,7 @@ pub(crate) mod fake {
     impl FakeSource {
         /// Entries of kind `ty` (a test-only exact row in `caps::rows::builtin_rows` grants its abilities).
         pub(crate) fn with_kind(ty: &'static str) -> Self {
-            Self { calls: RefCell::new(Vec::new()), menu_at: std::cell::Cell::new(None), ty }
+            Self { calls: RefCell::new(Vec::new()), menu_at: std::cell::Cell::new(None), drops: RefCell::default(), ty }
         }
     }
 
@@ -112,6 +126,17 @@ pub(crate) mod fake {
         fn on_menu(&self, _app: &mut App, _entry: &CardEntry, at: egui::Pos2) {
             self.calls.borrow_mut().push("on_menu".to_string());
             self.menu_at.set(Some(at));
+        }
+
+        fn on_drop(
+            &self,
+            _app: &mut App,
+            entry: &CardEntry,
+            target: Option<(DropEffect, Option<String>)>,
+        ) -> Option<GraphAction> {
+            self.calls.borrow_mut().push("on_drop".to_string());
+            self.drops.borrow_mut().push((entry.id.clone(), target));
+            None
         }
     }
 
@@ -169,6 +194,28 @@ pub(crate) mod fake {
             self.frame(vec![egui::Event::PointerMoved(at), Self::press(at, primary, true)], egui::Modifiers::NONE);
             self.frame(vec![Self::press(at, primary, false)], egui::Modifiers::NONE);
             self.frame(vec![], egui::Modifiers::NONE);
+        }
+
+        /// Press at `from` and drag to `to`, button still held.
+        pub(crate) fn hold_drag(&mut self, from: egui::Pos2, to: egui::Pos2) {
+            let primary = egui::PointerButton::Primary;
+            self.frame(vec![egui::Event::PointerMoved(from), Self::press(from, primary, true)], egui::Modifiers::NONE);
+            for step in 1..=8 {
+                let at = from + (to - from) * (step as f32 / 8.0);
+                self.frame(vec![egui::Event::PointerMoved(at)], egui::Modifiers::NONE);
+            }
+        }
+
+        /// Release the button at `at`, then settle.
+        pub(crate) fn release(&mut self, at: egui::Pos2) {
+            self.frame(vec![Self::press(at, egui::PointerButton::Primary, false)], egui::Modifiers::NONE);
+            self.frame(vec![], egui::Modifiers::NONE);
+        }
+
+        /// A primary-button drag from `from` to `to`.
+        pub(crate) fn drag(&mut self, from: egui::Pos2, to: egui::Pos2) {
+            self.hold_drag(from, to);
+            self.release(to);
         }
 
         /// A secondary click at `at`.
@@ -417,5 +464,135 @@ mod tests {
         assert!(caps.selectable && caps.drag_source && caps.movable && caps.drop_target && caps.menu && caps.linkable);
         let none = FakeSource::default().entries(&app)[0].caps();
         assert!(!none.selectable && !none.menu && none.draw_layer == 8);
+    }
+}
+
+#[cfg(test)]
+mod drag_tests {
+    use super::fake::{Dropped, Rig, FAKE};
+    use crate::card::DropEffect;
+
+    const DRAG: &str = "application/vnd.manifold.virtual.fake-drag";
+    const ALL: &str = "application/vnd.manifold.virtual.fake-all";
+
+    /// A rig with a stored group `g` right of the cards, the camera framing everything.
+    fn rig_with_group(ty: &'static str) -> (Rig, String) {
+        let mut rig = Rig::with_kind(ty);
+        let placement = crate::fetched::Placement { group: None, pos: egui::vec2(700.0, 300.0) };
+        rig.app.place_group(Some("g".into()), "G", placement);
+        rig.app.camera.jump_to(egui::Rect::from_min_max(egui::pos2(-100.0, -100.0), egui::pos2(1100.0, 600.0)));
+        for _ in 0..3 {
+            rig.frame(vec![], egui::Modifiers::NONE);
+        }
+        (rig, "g".to_string())
+    }
+
+    fn world_to_screen(rig: &Rig, world: egui::Pos2) -> egui::Pos2 {
+        rig.app.graph_world_rect_to_screen(egui::Rect::from_min_size(world, egui::Vec2::ZERO)).min
+    }
+
+    fn rects(rig: &Rig) -> Vec<(String, egui::Rect)> {
+        rig.app.level_items().into_iter().map(|e| (e.id, e.rect)).collect()
+    }
+
+    fn drops(rig: &Rig) -> Vec<Dropped> {
+        rig.source.drops.borrow().clone()
+    }
+
+    #[test]
+    fn dragging_a_virtual_card_moves_nothing_and_the_drag_stays_live_while_held() {
+        let (mut rig, _) = rig_with_group(DRAG);
+        let before = rects(&rig);
+        let from = rig.screen("virtual:fake:a").center();
+        rig.hold_drag(from, from + egui::vec2(40.0, 70.0));
+        assert_eq!(rig.app.interaction.dragging.as_deref(), Some("virtual:fake:a"));
+        assert!(rig.app.interaction.drag_moved.is_empty());
+        assert_eq!(rects(&rig), before, "no rect moved");
+        assert!(!rig.app.layout.contains_key("virtual:fake:a"), "no layout entry");
+        rig.frame(vec![], egui::Modifiers::NONE);
+        assert_eq!(rig.app.interaction.dragging.as_deref(), Some("virtual:fake:a"), "end_stale_drag keeps it");
+        rig.release(from);
+        assert!(rig.app.interaction.dragging.is_none());
+        assert_eq!(rects(&rig), before);
+        assert!(!rig.app.layout.contains_key("virtual:fake:a") && !rig.app.mirror.has("virtual:fake:a"));
+    }
+
+    #[test]
+    fn a_kind_without_drag_source_is_not_dragged() {
+        let (mut rig, _) = rig_with_group(FAKE);
+        let from = rig.screen("virtual:fake:a").center();
+        rig.hold_drag(from, from + egui::vec2(40.0, 70.0));
+        assert!(rig.app.interaction.dragging.is_none());
+    }
+
+    #[test]
+    fn a_release_over_empty_canvas_calls_on_drop_once_with_no_target() {
+        let (mut rig, _) = rig_with_group(DRAG);
+        let empty = world_to_screen(&rig, egui::pos2(500.0, 150.0));
+        assert!(rig
+            .app
+            .level_items()
+            .iter()
+            .all(|e| !e.rect.contains(rig.app.graph_screen_point_to_world(empty).to_pos2())));
+        let from = rig.screen("virtual:fake:a").center();
+        rig.drag(from, empty);
+        assert_eq!(drops(&rig), [("virtual:fake:a".to_string(), None)]);
+        assert_eq!(rig.source.calls.borrow().iter().filter(|c| *c == "on_drop").count(), 1);
+        assert!(rig.app.interaction.dragging.is_none());
+    }
+
+    #[test]
+    fn a_release_over_a_stored_group_calls_on_drop_with_the_effect_and_the_group() {
+        let (mut rig, group) = rig_with_group(DRAG);
+        let over = rig.app.graph_world_rect_to_screen(rig.app.card_rect(&group).unwrap()).center();
+        let from = rig.screen("virtual:fake:a").center();
+        rig.drag(from, over);
+        assert_eq!(drops(&rig), [("virtual:fake:a".to_string(), Some((DropEffect::Join, Some(group.clone()))))]);
+        assert_eq!(rig.app.members_of(&group).count(), 0, "nothing joined the group");
+    }
+
+    #[test]
+    fn a_virtual_card_is_a_drop_target_only_with_the_ability() {
+        for (ty, expect) in [(ALL, true), (DRAG, false)] {
+            let mut rig = Rig::with_kind(ty);
+            let (a, b) = (rig.screen("virtual:fake:a").center(), rig.screen("virtual:fake:b").center());
+            rig.drag(a, b);
+            let want = expect.then(|| (DropEffect::Join, Some("virtual:fake:b".to_string())));
+            assert_eq!(drops(&rig), [("virtual:fake:a".to_string(), want)], "{ty}");
+        }
+    }
+
+    #[test]
+    fn a_virtual_drop_never_takes_the_stored_selection_with_it() {
+        let (mut rig, group) = rig_with_group(ALL);
+        let tab = rig.tab();
+        rig.app.interaction.selected.extend([tab.clone(), "virtual:fake:a".to_string()]);
+        let over = rig.app.graph_world_rect_to_screen(rig.app.card_rect(&group).unwrap()).center();
+        let from = rig.screen("virtual:fake:a").center();
+        rig.drag(from, over);
+        assert_eq!(drops(&rig).len(), 1, "{:?}", drops(&rig));
+        assert!(rig.app.mirror.group(&tab).is_none(), "the selected stored tab did not join the group");
+        assert!(rig.app.interaction.selected.contains(&tab), "the selection is untouched");
+    }
+
+    #[test]
+    fn release_drag_for_a_virtual_id_writes_nothing() {
+        let (mut rig, _) = rig_with_group(DRAG);
+        rig.app.interaction.dragging = Some("virtual:fake:a".to_string());
+        rig.app.interaction.drag_moved = vec![];
+        rig.app.release_drag();
+        assert!(rig.app.interaction.dragging.is_none());
+        assert!(!rig.app.mirror.has("virtual:fake:a") && !rig.app.layout.contains_key("virtual:fake:a"));
+    }
+
+    #[test]
+    fn a_stored_tab_drag_is_unchanged_and_never_reaches_a_source() {
+        let (mut rig, group) = rig_with_group(DRAG);
+        let tab = rig.tab();
+        let over = rig.app.graph_world_rect_to_screen(rig.app.card_rect(&group).unwrap()).center();
+        let from = rig.app.graph_world_rect_to_screen(rig.app.card_rect(&tab).unwrap()).center();
+        rig.drag(from, over);
+        assert_eq!(rig.app.mirror.group(&tab), Some(group.as_str()), "the tab joined the group");
+        assert!(drops(&rig).is_empty());
     }
 }

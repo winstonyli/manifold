@@ -656,6 +656,11 @@ pub(crate) fn drop_action(dragged: CardKind, target: DropTarget, inside_group: b
         (DropTarget::Card(onto), _) if can_contain(dragged, onto) => Some(DropEffect::Join),
         (DropTarget::Card(onto), false) if tabs(onto) => Some(DropEffect::GroupWith),
         (DropTarget::Card(onto), true) if tabs(onto) => Some(DropEffect::Reparent),
+        // A virtual card is carried, never moved or contained: dropped on any card that takes drops it is a Join, and
+        // its source decides what that means (`VirtualSource::on_drop`).
+        (DropTarget::Card(_), _) if dragged.ty.starts_with(crate::store::model::TYPE_VIRTUAL_PREFIX) => {
+            Some(DropEffect::Join)
+        }
         _ => None,
     }
 }
@@ -1288,7 +1293,33 @@ impl App {
         // pointer left it, until another card was hovered. Never during a
         // connect-drag, whose peek would cover the targets.
         let still_hovered = self.link.connect_drag.is_none() && (pointer_on_card || control_hovered || handle_hovered);
-        // A virtual card's drag and drop arrive with its abilities (`movable`, `drag_source`).
+        // A virtual card that is a `drag_source` is carried, never moved: its rect and the layout stay, a ghost
+        // follows the pointer, and the release goes to its source (`VirtualSource::on_drop`).
+        let carried = !stored && entry.caps().drag_source;
+        if carried && response.dragged() {
+            self.interaction.dragging = Some(id.to_string());
+            self.interaction.drag_moved = Vec::new();
+            let to_local = ui.ctx().layer_transform_from_global(ui.layer_id());
+            let (press, now) = (ui.input(|i| i.pointer.press_origin()), response.interact_pointer_pos());
+            let shift = match (press, now) {
+                (Some(press), Some(now)) => now - to_local.map_or(press, |t| t * press),
+                _ => egui::Vec2::ZERO,
+            };
+            let (ghost, fill) = (rect.translate(shift), style.fill);
+            deferred_overlays.push(Box::new(move |painter, project| {
+                let screen = egui::Rect::from_min_max(project(ghost.min), project(ghost.max));
+                painter.rect_filled(screen, 2.0, fill.gamma_multiply(0.8));
+                painter.rect_stroke(screen, 2.0, egui::Stroke::new(2.0, ACCENT), egui::StrokeKind::Inside);
+            }));
+        } else if carried && self.interaction.dragging.as_deref() == Some(id) {
+            self.release_drag();
+            let target = pass.drop_preview.clone();
+            if let Origin::Virtual(name) = entry.origin {
+                if let Some(source) = self.virtual_source(name) {
+                    pass.actions.extend(source.on_drop(self, entry, target));
+                }
+            }
+        }
         if stored && response.dragged() {
             self.interaction.dragging = Some(id.to_string());
             // Dragging one selected tab moves the whole selection, as one
