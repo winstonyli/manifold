@@ -1389,9 +1389,7 @@ impl App {
                     self.interaction.selected = self
                         .level_items()
                         .into_iter()
-                        .filter(|item| {
-                            item.origin != Origin::Json && item.caps().selectable && world_rect.intersects(item.rect)
-                        })
+                        .filter(|item| item.caps().selectable && world_rect.intersects(item.rect))
                         .map(|item| item.id)
                         .collect();
                 }
@@ -1734,10 +1732,6 @@ impl App {
             members: &members,
         };
         for entry in self.level_items_from(at_level) {
-            // A JSON level's cards are drawn by `draw_json_level`, not here.
-            if entry.origin == Origin::Json {
-                continue;
-            }
             let id = &entry.id;
             let kind = entry.kind;
             if let Origin::Virtual(name) = entry.origin {

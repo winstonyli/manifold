@@ -300,7 +300,7 @@ pub(crate) mod fake {
 
 #[cfg(test)]
 mod tests {
-    use super::fake::{FakeSource, Rig, FAKE};
+    use super::fake::{Rig, FAKE};
     use super::*;
     use crate::level::Origin;
 
@@ -494,18 +494,6 @@ mod tests {
         assert_eq!(rig.app.interaction.selected, std::collections::HashSet::from([virt.clone()]));
         assert!(!rig.app.mirror.has(&virt));
     }
-
-    #[test]
-    fn with_kind_picks_the_row_and_the_source_logs_its_calls() {
-        let app = App::default();
-        let source = FakeSource::with_kind("application/vnd.manifold.virtual.fake-all");
-        let entries = source.entries(&app);
-        assert_eq!(*source.calls.borrow(), ["entries"]);
-        let caps = entries[0].caps();
-        assert!(caps.selectable && caps.drag_source && caps.movable && caps.drop_target && caps.menu && caps.linkable);
-        let none = FakeSource::default().entries(&app)[0].caps();
-        assert!(!none.selectable && !none.menu && none.draw_layer == 8);
-    }
 }
 
 #[cfg(test)]
@@ -587,7 +575,7 @@ mod reach_tests {
     }
 
     #[test]
-    fn a_virtual_card_far_from_the_stored_ones_enlarges_the_bounds_and_the_fit() {
+    fn a_virtual_card_far_from_the_stored_ones_enlarges_the_fit() {
         struct Far;
         impl VirtualSource for Far {
             fn name(&self) -> &'static str {
@@ -622,13 +610,8 @@ mod reach_tests {
             }
         }
         let mut rig = Rig::new();
-        let tab = rig.tab();
-        let stored_only = rig.app.bounds_for_level([&tab]);
         let fit = rig.app.fit_all_nodes_scene_rect();
-        let with_far = |app: &App| app.bounds_for_level([&tab, &"virtual:far:x".to_string()]);
-        assert!(with_far(&rig.app).max.x < 1000.0, "unknown id is ignored before the source exists");
         rig.app.virtual_sources.push(Rc::new(Far));
-        assert!(with_far(&rig.app).max.x > 9000.0, "{:?} vs {stored_only:?}", with_far(&rig.app));
         assert!(rig.app.fit_all_nodes_scene_rect().max.x > 9000.0 && fit.max.x < 1000.0);
     }
 
@@ -838,5 +821,56 @@ mod settle_tests {
         let key = rig.app.current_level_settle_key();
         assert_eq!(key.1, 1, "the stored tab only");
         assert_eq!(rig.app.graph_settled_key, Some(key), "the per-frame check keyed the same way");
+    }
+}
+
+#[cfg(test)]
+mod keyboard_menu_tests {
+    use super::fake::Rig;
+
+    /// Shift+F10 on a focused card opens its menu: a stored card's node menu, and for a virtual card whose kind
+    /// grants `menu` the source's `on_menu`, at the card's bottom-left corner. A kind without `menu` has none.
+    #[test]
+    fn shift_f10_on_a_focused_virtual_card_calls_on_menu_only_with_the_ability() {
+        const MENU: &str = "application/vnd.manifold.virtual.fake-menu";
+        for (ty, calls) in [(MENU, 1), (super::fake::FAKE, 0)] {
+            let mut rig = Rig::with_kind(ty);
+            let first = rig.app.card_tab_order()[0].clone();
+            rig.ctx.memory_mut(|m| m.request_focus(egui::Id::new(("graph_card", first.as_str()))));
+            rig.frame(vec![], egui::Modifiers::NONE);
+            let key =
+                |key, modifiers| egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers };
+            rig.frame(vec![key(egui::Key::Tab, egui::Modifiers::NONE)], egui::Modifiers::NONE);
+            rig.frame(vec![], egui::Modifiers::NONE);
+            let focused = rig.app.card_tab_order()[1].clone();
+            assert!(rig.ctx.memory(|m| m.has_focus(egui::Id::new(("graph_card", focused.as_str())))), "{focused}");
+            rig.frame(vec![key(egui::Key::F10, egui::Modifiers::SHIFT)], egui::Modifiers::SHIFT);
+            let seen = rig.source.calls.borrow().iter().filter(|c| *c == "on_menu").count();
+            assert_eq!(seen, calls, "{ty}");
+            if calls == 1 {
+                let corner = rig.screen(&focused).left_bottom();
+                let at = rig.source.menu_at.get().expect("asked to open");
+                assert!((at - corner).length() < 1.0, "{at:?} vs {corner:?}");
+            }
+            assert!(rig.app.menus.node_menu.is_none(), "a virtual card opens no node menu");
+        }
+    }
+}
+
+#[cfg(test)]
+mod selection_rule_tests {
+    use crate::App;
+
+    /// "Virtual" in a selection action is the id rule (`is_virtual_id`), the persistence guard's too: a virtual id
+    /// whose source no longer lists it stays out of the stored count and the stored take.
+    #[test]
+    fn the_selection_actions_split_on_the_virtual_id_rule_not_on_what_sources_list() {
+        let mut app = App::default();
+        app.test_node("n", crate::store::model::Kind::Jar, crate::node::Runtime::Jar);
+        app.interaction.selected.extend(["n".to_string(), "virtual:gone:x".to_string()]);
+        assert_eq!(app.selected_stored_count(), 1);
+        let taken = app.take_selected_stored();
+        assert_eq!(taken, std::collections::HashSet::from(["n".to_string()]));
+        assert_eq!(app.interaction.selected, std::collections::HashSet::from(["virtual:gone:x".to_string()]));
     }
 }

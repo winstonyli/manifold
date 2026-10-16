@@ -101,9 +101,13 @@ impl App {
     /// Where the dragged card `id` would drop right now, and what that
     /// would do (`drop_action`). The back button is tested first, by
     /// pointer, since it's a screen-space toolbar widget. Then the card at
-    /// this level containing the dragged card's center, a group card before
-    /// a tab card. Feeds both the live ring and the release, so the two
-    /// can't disagree.
+    /// this level containing the probe point, searched virtual card first,
+    /// then group, live tab, sleeping tab, among kinds granting
+    /// `drop_target`. The probe is a stored card's own position, or the
+    /// pointer for a virtual card (it never moves, so it has no position to
+    /// carry). A stored dragged card never targets a virtual one: its
+    /// effects are all stored. Feeds both the live ring and the release, so
+    /// the two can't disagree.
     pub(crate) fn drop_target(
         &self,
         id: &str,
@@ -139,10 +143,7 @@ impl App {
         // A stored card has only stored effects (`apply_drop`), so a virtual card is no target for it.
         let stored_drag = dragged_entry.origin == Origin::Stored;
         for other in items.iter().filter(|other| {
-            other.id != id
-                && other.origin != Origin::Json
-                && !(stored_drag && matches!(other.origin, Origin::Virtual(_)))
-                && other.caps().drop_target
+            other.id != id && !(stored_drag && matches!(other.origin, Origin::Virtual(_))) && other.caps().drop_target
         }) {
             let Some(slot) = searches.iter().position(|pick| pick(other.kind)) else { continue };
             if hits[slot].is_none() && other.rect.contains(center) {
@@ -355,7 +356,7 @@ impl App {
     /// per-frame `*_at_level` locals are already in hand) reuse this
     /// without redoing the level scans a second time per frame.
     pub(crate) fn bounds_for_level<'a>(&self, ids: impl IntoIterator<Item = &'a String>) -> egui::Rect {
-        self.bounds_for_rects(ids.into_iter().filter_map(|id| self.level_card_rect(id)))
+        self.bounds_for_rects(ids.into_iter().filter_map(|id| self.card_rect(id)))
     }
 
     /// `root_id` plus every descendant reachable through `parent` links,
@@ -632,38 +633,33 @@ impl App {
     /// only ever holds this level's cards (`eject`, `switch_group_level`); otherwise Close Selected or Group
     /// Selected would act on a card the user can't see.
     pub(crate) fn end_stale_selection(&mut self) {
+        // Every frame: with nothing selected there is nothing to prune, and the level (every source's entries) is
+        // not built for it.
+        if self.interaction.selected.is_empty() {
+            return;
+        }
         let selectable: HashSet<String> = self.selectable_ids();
         self.interaction.selected.retain(|id| selectable.contains(id));
     }
 
     /// The ids of this level's cards that can be selected (`Caps::selectable`), whatever supplies them.
     pub(crate) fn selectable_ids(&self) -> HashSet<String> {
-        let stored_or_virtual = |item: &crate::level::CardEntry| item.origin != crate::level::Origin::Json;
-        self.level_items()
-            .into_iter()
-            .filter(|item| stored_or_virtual(item) && item.caps().selectable)
-            .map(|item| item.id)
-            .collect()
+        self.level_items().into_iter().filter(|item| item.caps().selectable).map(|item| item.id).collect()
     }
 
     /// Takes the stored cards out of the selection for a selection action and leaves the virtual ones in it: a
-    /// virtual card has no node for the action to change.
+    /// virtual card has no node for the action to change. "Virtual" is `is_virtual_id`, the persistence guard's rule.
     pub(crate) fn take_selected_stored(&mut self) -> HashSet<String> {
-        let virtual_ids: HashSet<String> = self
-            .level_items()
+        let (kept, taken) = std::mem::take(&mut self.interaction.selected)
             .into_iter()
-            .filter(|item| matches!(item.origin, crate::level::Origin::Virtual(_)))
-            .map(|item| item.id)
-            .collect();
-        let (kept, taken) =
-            std::mem::take(&mut self.interaction.selected).into_iter().partition(|id| virtual_ids.contains(id));
+            .partition(|id| crate::virtual_source::is_virtual_id(id));
         self.interaction.selected = kept;
         taken
     }
 
-    /// How many selected cards a selection action would act on: the stored ones.
+    /// How many selected cards a selection action would act on: those that are not virtual (`take_selected_stored`).
     pub(crate) fn selected_stored_count(&self) -> usize {
-        self.interaction.selected.iter().filter(|id| self.nodes.contains_key(*id)).count()
+        self.interaction.selected.iter().filter(|id| !crate::virtual_source::is_virtual_id(id)).count()
     }
 }
 

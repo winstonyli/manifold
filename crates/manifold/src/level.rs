@@ -25,7 +25,8 @@ pub(crate) enum Origin {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct CardEntry {
     pub(crate) id: String,
-    /// What the card is: the key into the capability rows. A JSON level's card is `TYPE_JSON`.
+    /// What the card is: the key into the capability rows. A JSON level's card is `TYPE_JSON_LEVEL`, whose row
+    /// grants no ability.
     pub(crate) kind: CardKind,
     pub(crate) origin: Origin,
     /// World space.
@@ -129,7 +130,7 @@ impl App {
             return (0..level.cards.len())
                 .map(|i| CardEntry {
                     id: level.card_id(i),
-                    kind: CardKind { ty: crate::store::model::TYPE_JSON, tags: crate::caps::TagSet::EMPTY },
+                    kind: CardKind { ty: crate::store::model::TYPE_JSON_LEVEL, tags: crate::caps::TagSet::EMPTY },
                     origin: Origin::Json,
                     rect: level.rects[i],
                 })

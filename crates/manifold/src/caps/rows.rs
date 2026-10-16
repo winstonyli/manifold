@@ -11,10 +11,8 @@ pub(crate) struct Row {
     draw_layer: Option<u8>,
     selectable: Option<bool>,
     drag_source: Option<bool>,
-    movable: Option<bool>,
     drop_target: Option<bool>,
     menu: Option<bool>,
-    linkable: Option<bool>,
     stored_controls: Option<bool>,
 }
 
@@ -27,10 +25,8 @@ impl Row {
             draw_layer: None,
             selectable: None,
             drag_source: None,
-            movable: None,
             drop_target: None,
             menu: None,
-            linkable: None,
             stored_controls: None,
         }
     }
@@ -45,11 +41,6 @@ impl Row {
         self
     }
 
-    pub(crate) fn movable(mut self, on: bool) -> Row {
-        self.movable = Some(on);
-        self
-    }
-
     pub(crate) fn drop_target(mut self, on: bool) -> Row {
         self.drop_target = Some(on);
         self
@@ -57,11 +48,6 @@ impl Row {
 
     pub(crate) fn menu(mut self, on: bool) -> Row {
         self.menu = Some(on);
-        self
-    }
-
-    pub(crate) fn linkable(mut self, on: bool) -> Row {
-        self.linkable = Some(on);
         self
     }
 
@@ -102,14 +88,10 @@ pub(crate) struct Caps {
     pub(crate) selectable: bool,
     /// May be picked up.
     pub(crate) drag_source: bool,
-    /// A drag repositions it and stores the position.
-    pub(crate) movable: bool,
     /// A dragged card may land on it.
     pub(crate) drop_target: bool,
     /// Has a node menu.
     pub(crate) menu: bool,
-    /// Shows link handles.
-    pub(crate) linkable: bool,
     /// Swatch, Pin, Close and Eject act on a stored node.
     pub(crate) stored_controls: bool,
 }
@@ -159,17 +141,11 @@ impl Registry {
             if let Some(v) = row.drag_source {
                 caps.drag_source = v;
             }
-            if let Some(v) = row.movable {
-                caps.movable = v;
-            }
             if let Some(v) = row.drop_target {
                 caps.drop_target = v;
             }
             if let Some(v) = row.menu {
                 caps.menu = v;
-            }
-            if let Some(v) = row.linkable {
-                caps.linkable = v;
             }
             if let Some(v) = row.stored_controls {
                 caps.stored_controls = v;
@@ -185,28 +161,26 @@ impl Registry {
 /// type to a row first.
 pub(crate) fn builtin_rows() -> Vec<Row> {
     use crate::store::model::{
-        TYPE_DOWNLOAD, TYPE_GROUP, TYPE_JAR, TYPE_NOTE, TYPE_TAB, TYPE_UNKNOWN, TYPE_VIRTUAL_PREFIX,
+        TYPE_DOWNLOAD, TYPE_GROUP, TYPE_JAR, TYPE_JSON_LEVEL, TYPE_NOTE, TYPE_TAB, TYPE_UNKNOWN, TYPE_VIRTUAL_PREFIX,
     };
     vec![
         // Every stored kind can do everything; a virtual kind's own row, below, turns off what it cannot.
-        Row::new("*/*")
-            .selectable(true)
-            .drag_source(true)
-            .movable(true)
-            .drop_target(true)
-            .menu(true)
-            .linkable(true)
-            .stored_controls(true),
+        Row::new("*/*").selectable(true).drag_source(true).drop_target(true).menu(true).stored_controls(true),
         // A virtual kind starts with nothing and draws on top (layer 8); a source's exact row grants what it needs.
         Row::new(&format!("{TYPE_VIRTUAL_PREFIX}*"))
             .selectable(false)
             .drag_source(false)
-            .movable(false)
             .drop_target(false)
             .menu(false)
-            .linkable(false)
             .stored_controls(false)
             .draw_layer(8),
+        // A JSON level's card (`draw_json_level` draws it and handles its input): the shared chrome leaves it alone.
+        Row::new(TYPE_JSON_LEVEL)
+            .selectable(false)
+            .drag_source(false)
+            .drop_target(false)
+            .menu(false)
+            .stored_controls(false),
         Row::new(TYPE_TAB).restorable(true).draw_layer(1), // a sleeping tab; a loaded one draws under it
         // Outranks the row above for a loaded tab: same pattern, more `requires` tags (`Row::rank`).
         Row::new(TYPE_TAB).requires(&[Tag::Loaded]).draw_layer(0),
@@ -231,14 +205,7 @@ pub(crate) fn builtin_rows() -> Vec<Row> {
 fn test_rows() -> [Row; 5] {
     let fake = |name: &str| Row::new(&format!("{}{name}", crate::store::model::TYPE_VIRTUAL_PREFIX));
     [
-        fake("fake-all")
-            .selectable(true)
-            .drag_source(true)
-            .movable(true)
-            .drop_target(true)
-            .menu(true)
-            .linkable(true)
-            .stored_controls(true),
+        fake("fake-all").selectable(true).drag_source(true).drop_target(true).menu(true).stored_controls(true),
         fake("fake-selectable").selectable(true),
         fake("fake-drag").drag_source(true),
         fake("fake-drop").drop_target(true),
@@ -281,13 +248,7 @@ mod tests {
         {
             let caps = registry.caps(ty, TagSet::EMPTY);
             assert!(
-                caps.selectable
-                    && caps.drag_source
-                    && caps.movable
-                    && caps.drop_target
-                    && caps.menu
-                    && caps.linkable
-                    && caps.stored_controls,
+                caps.selectable && caps.drag_source && caps.drop_target && caps.menu && caps.stored_controls,
                 "{ty}: {caps:?}"
             );
         }
@@ -297,8 +258,8 @@ mod tests {
     fn a_virtual_kind_has_no_ability_until_its_own_row_grants_one() {
         let registry = registry(builtin_rows());
         let bare = registry.caps("application/vnd.manifold.virtual.test", TagSet::EMPTY);
-        assert!(!bare.selectable && !bare.drag_source && !bare.movable && !bare.drop_target);
-        assert!(!bare.menu && !bare.linkable && !bare.stored_controls);
+        assert!(!bare.selectable && !bare.drag_source && !bare.drop_target);
+        assert!(!bare.menu && !bare.stored_controls);
         assert_eq!(bare.draw_layer, 8, "a virtual card draws above every stored kind");
     }
 

@@ -10,7 +10,8 @@ use crate::store::model::{TYPE_DOWNLOAD, TYPE_GROUP, TYPE_IMAGE, TYPE_JAR, TYPE_
 
 /// The row string a stored type reads as, for `caps::registry` and `caps::edges` (spec decision 7): a known kind's
 /// own type string (case ignored; any `image/*` is the image row), `TYPE_UNKNOWN` for a type this build doesn't
-/// know, and "" for no type (an id the mirror holds no `type` for), which no row matches.
+/// know, and "" for no type (an id the mirror holds no `type` for). Only a `*/*` row matches "" (a string without a
+/// slash reads as `Pattern::Any`'s), so an id with no type gets exactly the abilities `*/*` grants every card.
 pub(crate) fn canonical_type(raw: &str) -> &'static str {
     if raw.is_empty() {
         return "";

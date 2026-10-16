@@ -53,10 +53,16 @@ impl State {
         self.0.get("cards").and_then(Value::as_array).map_or(&[], Vec::as_slice)
     }
 
+    /// Whether `card` is a virtual card (a source's, no node behind it): EXPORTSTATE gives it a `"virtual"` key.
+    pub fn is_virtual(card: &Value) -> bool {
+        card.get("virtual").is_some()
+    }
+
     /// The cards a stage means by "the cards": `all_cards` without the jar cards (the Default jar card exists in every
-    /// session and is no part of what the tab, sleep and spawn stages count).
+    /// session and is no part of what the tab, sleep and spawn stages count) and without virtual cards (a stage that
+    /// means them reads `all_cards`).
     pub fn cards(&self) -> Vec<&Value> {
-        self.all_cards().iter().filter(|c| c["type"] != JAR).collect()
+        self.all_cards().iter().filter(|c| c["type"] != JAR && !Self::is_virtual(c)).collect()
     }
 
     /// Any card by id, jar cards included.
@@ -64,10 +70,10 @@ impl State {
         self.all_cards().iter().find(|c| c["id"] == id)
     }
 
-    /// `card_is`: a stored node of type `ty` (a JSON level's card is never one); `loaded` also
+    /// `card_is`: a stored node of type `ty` (a JSON level's card and a virtual card are never one); `loaded` also
     /// requires that engine state (`Some(true)` a live tab, `Some(false)` a sleeping/waking/failed one).
     pub fn card_is(card: &Value, ty: &str, loaded: Option<bool>) -> bool {
-        if card["json_card"].as_bool().unwrap_or(false) || card["type"] != ty {
+        if card["json_card"].as_bool().unwrap_or(false) || Self::is_virtual(card) || card["type"] != ty {
             return false;
         }
         loaded.is_none_or(|want| card["loaded"].as_bool() == Some(want))
@@ -232,6 +238,20 @@ mod tests {
         assert!(!State::card_is(s.card("n").unwrap(), TAB, None));
         // A JSON level's card has the JSON type but is no stored node.
         assert!(!State::card_is(s.card("j").unwrap(), JSON, None));
+    }
+
+    /// A virtual card is on screen (`all_cards`, so layout and hit tests see it) but is no stored card to a stage.
+    #[test]
+    fn a_virtual_card_is_in_all_cards_only() {
+        let s = State::parse(
+            r#"{"cards":[
+              {"id":"t1","type":"application/vnd.manifold.tab","json_card":false,"loaded":false},
+              {"id":"virtual:x:a","type":"application/vnd.manifold.tab","json_card":false,"loaded":false,"virtual":"x"}]}"#,
+        )
+        .unwrap();
+        assert_eq!((s.cards().len(), s.all_cards().len()), (1, 2));
+        assert_eq!(s.tabs(), ["t1"]);
+        assert!(!State::card_is(s.card("virtual:x:a").unwrap(), TAB, None));
     }
 
     #[test]

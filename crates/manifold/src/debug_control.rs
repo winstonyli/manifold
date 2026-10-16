@@ -1598,19 +1598,14 @@ impl App {
                             "draw_layer": caps.draw_layer,
                             "selectable": caps.selectable,
                             "drag_source": caps.drag_source,
-                            "movable": caps.movable,
                             "drop_target": caps.drop_target,
                             "menu": caps.menu,
-                            "linkable": caps.linkable,
                             "stored_controls": caps.stored_controls,
                         },
                         "unresponsive": false,
                         "screen": [screen.center().x, screen.center().y],
                         "rect": [screen.min.x, screen.min.y, screen.max.x, screen.max.y],
                     }));
-                }
-                if item.origin != Origin::Stored {
-                    return None;
                 }
                 let kind = item.kind;
                 let node = self.nodes.get(&item.id)?;

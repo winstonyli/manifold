@@ -1112,9 +1112,9 @@ impl App {
         // own traversal can't walk the cards in draw order.
         let card_id = egui::Id::new(("graph_card", id));
         let slot = pass.order.iter().position(|o| o == id);
-        // A virtual card takes a drag (and so keeps the scene from panning under it) only if its kind can move or be
-        // dragged out; the drag itself is handled below for stored cards only.
-        let draggable = stored || entry.caps().movable || entry.caps().drag_source;
+        // A card takes a drag (and so keeps the scene from panning under it) only if its kind may be picked up: a
+        // stored card is moved by it, a virtual one carried (handled below).
+        let draggable = entry.caps().drag_source;
         let focusable = slot == Some(0) || ui.memory(|m| m.has_focus(card_id));
         let sense = match (draggable, focusable) {
             (false, true) => egui::Sense::click(),
@@ -1236,14 +1236,24 @@ impl App {
             );
         }
         // Registered after both interacts above, so they take the pointer.
-        let delete = stored && response.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Delete));
-        // Shift+F10 on a focused card opens its menu, anchored at the card's bottom-left.
-        if stored && response.has_focus() && ui.input_mut(|i| i.consume_key(egui::Modifiers::SHIFT, egui::Key::F10)) {
+        let caps = entry.caps();
+        let delete = caps.stored_controls && response.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Delete));
+        // Shift+F10 on a focused card opens its menu, anchored at the card's bottom-left: a stored card's node menu,
+        // or whatever menu a virtual card's source opens.
+        if caps.menu && response.has_focus() && ui.input_mut(|i| i.consume_key(egui::Modifiers::SHIFT, egui::Key::F10))
+        {
             let corner = rect.left_bottom();
             let at = ui.ctx().layer_transform_to_global(ui.layer_id()).map_or(corner, |t| t * corner);
-            self.menus.node_menu = Some((id.to_string(), at));
+            match entry.origin {
+                Origin::Virtual(name) => {
+                    if let Some(source) = self.virtual_source(name) {
+                        source.on_menu(self, entry, at);
+                    }
+                }
+                _ => self.menus.node_menu = Some((id.to_string(), at)),
+            }
         }
-        let mut control = ((stored && response.clicked_by(egui::PointerButton::Middle)) || delete)
+        let mut control = ((caps.stored_controls && response.clicked_by(egui::PointerButton::Middle)) || delete)
             .then(|| CardControl::Close.action());
         let mut control_hovered = false;
         for card_control in card_controls(&view) {
@@ -1276,7 +1286,8 @@ impl App {
 
         // Connect-drag handles (link-gestures spec A), on a hovered card, and on every card while a drag runs.
         // Registered after the card and its controls: egui gives a press on a drag-only widget on top to that widget
-        // alone (no click below), so the card neither moves nor opens.
+        // alone (no click below), so the card neither moves nor opens. Stored cards only, not an ability: a handle
+        // starts a Link node between two nodes.
         let mut handle_hovered = false;
         if stored && (is_hovered || self.link.connect_drag.is_some()) && self.shows_link_handles() {
             let handles = crate::link_gestures::link_handle_rects(rect, pass.zoom_scale, self.graph_lod_simplified);

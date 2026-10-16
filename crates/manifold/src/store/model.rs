@@ -126,6 +126,9 @@ pub const TYPE_DOWNLOAD: &str = "application/octet-stream";
 /// Every virtual card's type starts with this: a card drawn from other state, with no node (spec
 /// 2026-10-16-virtual-cards-design.md).
 pub const TYPE_VIRTUAL_PREFIX: &str = "application/vnd.manifold.virtual.";
+/// Never stored: the kind of a JSON level's cards (`level::level_items_from`), drawn by `draw_json_level`. Its row
+/// grants no ability, so the shared chrome (selection, drop targets, the marquee) leaves them alone.
+pub const TYPE_JSON_LEVEL: &str = "application/vnd.manifold.json-level";
 /// Never stored: the row and edge string a type this build doesn't know reads as (`card_kind::canonical_type`).
 pub const TYPE_UNKNOWN: &str = "application/vnd.manifold.unknown";
 

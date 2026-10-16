@@ -679,3 +679,20 @@ fn a_json_level_lists_no_virtual_entries() {
     assert!(app.json_level.is_some());
     assert!(app.level_items().iter().all(|i| i.origin == Origin::Json), "{:?}", app.level_items());
 }
+
+/// A JSON level's cards carry their own kind row, which grants no ability: the shared chrome (selection, drop
+/// targets, the marquee) then needs no `Origin::Json` special case.
+#[test]
+fn a_json_level_card_has_no_ability_through_its_own_row() {
+    let (mut app, j) = app_with_json("no-abilities", r#"{"a": {"b": 1}}"#);
+    app.switch_group_level(Some(j));
+    let items = app.level_items();
+    assert!(!items.is_empty());
+    for item in &items {
+        let caps = item.caps();
+        assert!(
+            !(caps.selectable || caps.drag_source || caps.drop_target || caps.menu || caps.stored_controls),
+            "{item:?}: {caps:?}"
+        );
+    }
+}
