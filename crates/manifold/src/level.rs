@@ -74,6 +74,13 @@ pub(crate) struct LevelEdge {
     pub(crate) link: Option<String>,
 }
 
+/// How many of `items` count toward the level's settle key: every card but a virtual one. A source's entry count
+/// can change with each navigation, and that must not re-settle (move) the stored cards. The one count both the
+/// per-frame check and `App::current_level_settle_key` use.
+pub(crate) fn settle_count(items: &[CardEntry]) -> usize {
+    items.iter().filter(|item| !matches!(item.origin, Origin::Virtual(_))).count()
+}
+
 /// One walk of `node_order` at the level being viewed (`App::level_scan`).
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub(crate) struct LevelScan {
@@ -115,32 +122,32 @@ impl App {
 
     /// `level_items` from an `at_level` scan already made this frame
     /// (`build_graph_ui`), so the level isn't walked twice. The stored (or JSON) cards come first, then each
-    /// registered `VirtualSource`'s, so a virtual card draws on top.
+    /// registered `VirtualSource`'s, so a virtual card draws on top. A JSON level lists its own cards only: its
+    /// frame is `draw_json_level`, which draws no virtual card, so none may be hit-tested, selected or counted there.
     pub(crate) fn level_items_from(&self, at_level: &[Vec<String>]) -> Vec<CardEntry> {
-        let mut entries: Vec<CardEntry> = if let Some(level) = &self.json_level {
-            (0..level.cards.len())
+        if let Some(level) = &self.json_level {
+            return (0..level.cards.len())
                 .map(|i| CardEntry {
                     id: level.card_id(i),
                     kind: CardKind { ty: crate::store::model::TYPE_JSON, tags: crate::caps::TagSet::EMPTY },
                     origin: Origin::Json,
                     rect: level.rects[i],
                 })
-                .collect()
-        } else {
-            at_level
-                .iter()
-                .flatten()
-                .filter_map(|id| {
-                    let node = self.nodes.get(id)?;
-                    Some(CardEntry {
-                        kind: self.card_kind(id)?,
-                        origin: Origin::Stored,
-                        rect: node_card_rect(self.layout_pos(id), &node.runtime),
-                        id: id.clone(),
-                    })
+                .collect();
+        }
+        let mut entries: Vec<CardEntry> = at_level
+            .iter()
+            .flatten()
+            .filter_map(|id| {
+                let node = self.nodes.get(id)?;
+                Some(CardEntry {
+                    kind: self.card_kind(id)?,
+                    origin: Origin::Stored,
+                    rect: node_card_rect(self.layout_pos(id), &node.runtime),
+                    id: id.clone(),
                 })
-                .collect()
-        };
+            })
+            .collect();
         entries.extend(self.virtual_sources.iter().flat_map(|source| source.entries(self)));
         entries
     }

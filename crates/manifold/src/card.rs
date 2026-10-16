@@ -1319,9 +1319,12 @@ impl App {
         } else if carried && self.interaction.dragging.as_deref() == Some(id) {
             self.release_drag();
             let target = pass.drop_preview.clone();
+            // Where the pointer let go, in world space: the ghost's transform, applied to the latest pointer position.
+            let to_local = ui.ctx().layer_transform_from_global(ui.layer_id());
+            let at = ui.input(|i| i.pointer.interact_pos()).map_or(rect.center(), |p| to_local.map_or(p, |t| t * p));
             if let Origin::Virtual(name) = entry.origin {
                 if let Some(source) = self.virtual_source(name) {
-                    pass.actions.extend(source.on_drop(self, entry, target));
+                    pass.actions.extend(source.on_drop(self, entry, target, at));
                 }
             }
         }

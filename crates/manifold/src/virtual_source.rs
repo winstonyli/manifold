@@ -8,6 +8,10 @@ use crate::{App, GraphAction};
 use std::rc::Rc;
 
 /// Something that puts virtual cards on the current level. Registered in `App::virtual_sources`.
+///
+/// `on_click` and `on_drop` run with `&mut App` inside the card loop, whereas a stored card's drop goes through
+/// `GraphAction::Drop` and is applied after it. A handler should therefore return a `GraphAction` for anything that
+/// changes nodes, and touch only its own state directly.
 pub(crate) trait VirtualSource {
     /// The source's name: the `Origin::Virtual` of every entry it yields.
     fn name(&self) -> &'static str;
@@ -21,14 +25,17 @@ pub(crate) trait VirtualSource {
     fn on_click(&self, app: &mut App, entry: &CardEntry) -> Option<GraphAction>;
     /// A right-click on `entry` at screen point `at`, only when its kind grants `menu`.
     fn on_menu(&self, app: &mut App, entry: &CardEntry, at: egui::Pos2);
-    /// `entry`, a `drag_source` kind, was released: `target` is what `App::drop_target` found under the pointer (the
-    /// effect and the card dropped on, or `None` for the back button), and `None` for a release over empty canvas.
-    /// The source decides what either means; a returned action is applied like a click's.
+    /// `entry`, a `drag_source` kind, was released at world point `at` (where the pointer was, so a source can put
+    /// what it carried where it was dropped). `target` is what `App::drop_target` found under the pointer (the
+    /// effect and the card dropped on), or `None` for a release over empty canvas. A release on the back button is
+    /// `Some((DropEffect::Eject, None))`: `drop_action` ignores the dragged kind for it, so it reaches the source as
+    /// an `Eject` too. The source decides what any of these means; a returned action is applied like a click's.
     fn on_drop(
         &self,
         app: &mut App,
         entry: &CardEntry,
         target: Option<(DropEffect, Option<String>)>,
+        at: egui::Pos2,
     ) -> Option<GraphAction>;
     /// The text the Graph toolbar filter matches `entry` against; `None` (the default) means the filter never dims it.
     fn searchable_text(&self, _entry: &CardEntry) -> Option<String> {
@@ -79,6 +86,8 @@ pub(crate) mod fake {
         pub(crate) menu_at: std::cell::Cell<Option<egui::Pos2>>,
         /// Every `on_drop`: the entry's id and the target it received.
         pub(crate) drops: RefCell<Vec<Dropped>>,
+        /// The world point each `on_drop` was given, in the same order as `drops`.
+        pub(crate) drop_at: RefCell<Vec<egui::Pos2>>,
         /// What `searchable_text` answers for every entry.
         pub(crate) searchable: std::cell::Cell<Option<&'static str>>,
         ty: &'static str,
@@ -97,6 +106,7 @@ pub(crate) mod fake {
                 calls: RefCell::new(Vec::new()),
                 menu_at: std::cell::Cell::new(None),
                 drops: RefCell::default(),
+                drop_at: RefCell::default(),
                 searchable: std::cell::Cell::new(None),
                 ty,
             }
@@ -157,9 +167,11 @@ pub(crate) mod fake {
             _app: &mut App,
             entry: &CardEntry,
             target: Option<(DropEffect, Option<String>)>,
+            at: egui::Pos2,
         ) -> Option<GraphAction> {
             self.calls.borrow_mut().push("on_drop".to_string());
             self.drops.borrow_mut().push((entry.id.clone(), target));
+            self.drop_at.borrow_mut().push(at);
             None
         }
 
@@ -604,6 +616,7 @@ mod reach_tests {
                 _: &mut App,
                 _: &CardEntry,
                 _: Option<(DropEffect, Option<String>)>,
+                _: egui::Pos2,
             ) -> Option<GraphAction> {
                 None
             }
@@ -724,6 +737,21 @@ mod drag_tests {
         assert!(rig.app.interaction.dragging.is_none());
     }
 
+    /// The point a source is handed is the pointer's world position at the release, so a card dragged out can be
+    /// placed where it was dropped.
+    #[test]
+    fn on_drop_gets_the_release_point_in_world_space() {
+        let (mut rig, _) = rig_with_group(DRAG);
+        let empty = world_to_screen(&rig, egui::pos2(500.0, 150.0));
+        let from = rig.screen("virtual:fake:a").center();
+        rig.drag(from, empty);
+        let want = rig.app.graph_screen_point_to_world(empty).to_pos2();
+        let at = rig.source.drop_at.borrow().clone();
+        assert_eq!(at.len(), 1);
+        assert!((at[0] - want).length() < 0.5, "{:?} vs {want:?}", at[0]);
+        assert!((want - egui::pos2(500.0, 150.0)).length() < 0.5, "the test's own world point round-trips");
+    }
+
     #[test]
     fn a_release_over_a_stored_group_calls_on_drop_with_the_effect_and_the_group() {
         let (mut rig, group) = rig_with_group(DRAG);
@@ -793,5 +821,22 @@ mod rig_tests {
             rig.app.place_group(Some("g".into()), "G", placement);
             assert_ne!(rig.tab(), "g");
         }
+    }
+}
+
+#[cfg(test)]
+mod settle_tests {
+    use super::fake::Rig;
+
+    /// A source whose entry count changes (the trail grows with each navigation) must not look like a changed level:
+    /// that would re-settle, and so move, the stored cards. Both settle-key sites (the per-frame check and
+    /// `current_level_settle_key`) count stored entries only.
+    #[test]
+    fn a_virtual_entry_does_not_change_the_settle_key() {
+        let rig = Rig::new();
+        assert_eq!(rig.app.level_items().len(), 4, "the tab and three virtual cards");
+        let key = rig.app.current_level_settle_key();
+        assert_eq!(key.1, 1, "the stored tab only");
+        assert_eq!(rig.app.graph_settled_key, Some(key), "the per-frame check keyed the same way");
     }
 }

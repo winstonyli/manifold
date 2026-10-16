@@ -404,7 +404,7 @@ impl App {
     /// entering/leaving a group) computes it the same way rather than
     /// duplicating the formula.
     pub(crate) fn current_level_settle_key(&self) -> (Option<String>, usize) {
-        (self.current_group.clone(), self.level_items().len())
+        (self.current_group.clone(), crate::level::settle_count(&self.level_items()))
     }
 
     /// Directional spatial navigation for arrow-key graph focus: among tab

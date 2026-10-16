@@ -667,3 +667,15 @@ fn an_unreadable_view_is_never_overwritten() {
     assert!(app.mirror.view(&j).is_some_and(|view| view.is_opaque()));
     assert_eq!(app.json_level.as_ref().unwrap().rects[a], laid, "the refused drag snaps back to the layout");
 }
+
+/// A virtual source's cards are drawn only by `draw_graph_cards`, which a JSON level does not run, so they must not
+/// be listed there: they would be hit-tested, selected and counted while invisible.
+#[test]
+fn a_json_level_lists_no_virtual_entries() {
+    let (mut app, j) = app_with_json("no-virtual", r#"{"a": 1}"#);
+    app.virtual_sources.push(std::rc::Rc::new(crate::virtual_source::fake::FakeSource::default()));
+    assert!(app.level_items().iter().any(|i| matches!(i.origin, Origin::Virtual(_))), "listed on a stored level");
+    app.switch_group_level(Some(j));
+    assert!(app.json_level.is_some());
+    assert!(app.level_items().iter().all(|i| i.origin == Origin::Json), "{:?}", app.level_items());
+}
