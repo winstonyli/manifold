@@ -17,9 +17,9 @@ Not in scope: folding the JSON level's renderer into the seam (later; it needs a
 
 ## Design
 
-1. **`CardEntry`.** `LevelItem` becomes the card loop's input too: `CardEntry { id, kind, rect, abilities }`, built once per frame by `level_items_from`. `LevelItemKind` gains `Virtual(SourceId)`. `draw_graph_cards` iterates entries; `draw_graph_card` takes the entry instead of calling `card_rect`/`card_view`, and gets a node (or not) only through `kind`. `card_tab_order`, digit badges and `pass.order` are built from entries.
+1. **A virtual card is a card of a type, in the existing capability table.** Cards already have an identity, `CardKind { ty, tags }`, and a MIME-keyed capability registry (`caps::registry`, rows in `caps/rows.rs`; today `Caps { restorable, draw_layer }`). A virtual source registers its own type strings (the trail: `application/x-manifold-trail-page`) with rows in the same table, and its cards carry that `CardKind`. `card_style`, `card_controls`, the draw layer and the drop table (`drop_action`) then treat them like any other kind, by data, not by special cases. `CardEntry { id, kind: CardKind, origin: Origin, rect }` replaces `LevelItem`, where `Origin` is `Stored`, `Json` or `Virtual(SourceId)`. `draw_graph_cards` iterates entries; `draw_graph_card` takes the entry and reaches the node only when `origin` is `Stored`. `card_tab_order`, digit badges and `pass.order` come from entries.
 
-2. **`Abilities`.** A bit set: `SELECT`, `DRAG_SOURCE` (may be picked up), `MOVE` (the drag repositions it and stores the position; real nodes only), `DROP_TARGET`, `MENU`, `LINK`, `FOCUS`. A stored node has all; a JSON card keeps what it has today; a virtual card has what its provider grants. Every site the survey lists asks `abilities` through one helper (`entry.can(Ability)`), not `nodes.contains_key`. A site that needs the node (store write, node menu rows) asks `kind` and gets `None` for a virtual card.
+2. **Abilities are `Caps` fields.** `Caps` gains `selectable`, `drag_source`, `movable` (the drag repositions it and stores the position), `drop_target`, `menu`, `linkable` and `stored_controls` (Swatch, Pin, Close and Eject act on a stored node, so a virtual kind turns them off). Defaults are false; the builtin rows set them true for the stored kinds, so existing behaviour is the registry's output, tested row by row (`caps::rows` tests). A site asks `entry.kind.caps().selectable` instead of `nodes.contains_key`. The JSON card keeps its current behaviour through its own row. A virtual card's abilities are its row: per-kind, not per-instance, which is all the trail needs; a per-entry override is added only when a source needs it.
 
 3. **Providers.** `trait VirtualSource` (one impl per source, registered in `App`): `entries(&self, app_state, level) -> Vec<CardEntry>` (ids `virtual:<source>:<key>`, never colliding with a node id; rects in world space computed by the provider), `edges(...) -> Vec<LevelEdge>`, `paint_body(ui, entry, ...)`, `on_click`, `on_menu`, and `on_drop(entry, target) -> Option<GraphAction>`. The graph core never inspects a source's data; it only calls these.
 
@@ -41,7 +41,7 @@ A fake provider in `#[cfg(test)]` that yields three virtual cards with different
 
 ## Review rounds
 
-Round 1 (self): found the drag ghost and empty-canvas-target assumptions unverified (added to decision 4); abilities `MOVE` vs `DRAG_SOURCE` consistent with decisions 2 and 4; no TBDs. Round 2 pending the user's read.
+Round 1 (self): found the drag ghost and empty-canvas-target assumptions unverified (added to decision 4); abilities `MOVE` vs `DRAG_SOURCE` consistent with decisions 2 and 4; no TBDs. Round 2 (self, while planning): abilities per card moved from a new per-entry flag set into the existing `Caps` registry (decisions 1 and 2), because the registry already keys capabilities by card type and `CardKind` is what `card_style`, `card_controls` and `drop_action` take; two parallel capability mechanisms would be the thing this piece exists to avoid. Round 3 pending the user's read.
 
 ## Risks and rulings to confirm
 
