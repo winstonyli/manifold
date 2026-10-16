@@ -1,0 +1,66 @@
+name: release
+# A pushed vX.Y.Z tag builds manifold.exe against the pinned hosts and leaves a draft release to read and publish.
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: write
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  release:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Keep the tag object (checkout may flatten an annotated tag)
+        run: git fetch --force origin "refs/tags/${env:TAG}:refs/tags/${env:TAG}"
+      - run: rustup toolchain install
+      - run: cargo build --locked -p gate
+      - name: The tag is one we can build
+        run: |
+          & target/debug/gate.exe release-check $env:TAG
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+      - name: Embedded hosts and manifold.exe
+        run: |
+          $env:RUSTFLAGS = '-C target-feature=+crt-static'
+          cargo build --release --locked -p manifold-view-webview2 -p manifold-view-pdfium
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          New-Item -ItemType Directory -Force dist/embedded | Out-Null
+          Copy-Item target/release/manifold-engine-webview2.exe dist/embedded/
+          Copy-Item target/release/manifold-view-pdfium.exe dist/embedded/
+          $env:MANIFOLD_WEBVIEW2_HOST = (Resolve-Path dist/embedded/manifold-engine-webview2.exe).Path
+          $env:MANIFOLD_PDFIUM_HOST = (Resolve-Path dist/embedded/manifold-view-pdfium.exe).Path
+          cargo build --release --locked -p manifold
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          $stem = "manifold-$env:TAG-windows-x64"
+          Copy-Item target/release/manifold.exe "dist/$stem.exe"
+          function Record($path, $out) {
+            $h = (Get-FileHash $path -Algorithm SHA256).Hash.ToLower()
+            "$h  $(Split-Path $path -Leaf)" | Set-Content -Encoding ascii $out
+          }
+          Record "dist/$stem.exe" "dist/$stem.exe.sha256"
+          Record "dist/embedded/manifold-engine-webview2.exe" "dist/$stem.embedded-host.sha256"
+          Record "dist/embedded/manifold-view-pdfium.exe" "dist/$stem.embedded-pdf-view.sha256"
+      - name: Package check and release-verify
+        run: |
+          $stem = "manifold-$env:TAG-windows-x64"
+          & target/debug/gate.exe package "dist/$stem.exe"
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          & target/debug/gate.exe release-verify $env:TAG dist
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+      - name: Draft release
+        run: |
+          $stem = "manifold-$env:TAG-windows-x64"
+          & target/debug/gate.exe release-notes $env:TAG | Set-Content -Encoding utf8 notes.md
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          gh release create $env:TAG --draft --verify-tag --title $env:TAG --notes-file notes.md "dist/$stem.exe" "dist/$stem.exe.sha256" "dist/$stem.embedded-host.sha256" "dist/$stem.embedded-pdf-view.sha256"
+          if ($LASTEXITCODE -ne 0) { exit 1 }
