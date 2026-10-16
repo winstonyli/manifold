@@ -2,6 +2,26 @@
 
 One entry per tagged release, newest first. The annotated tag `vX.Y.Z` carries the same text. Releases before v0.4.0 have no entry: see `git log --first-parent --decorate`.
 
+## v0.6.0 (2026-10-16)
+
+### Features
+
+- **Back and Forward are one traversal over a tab's pages.** The trail is a tree of the pages a tab visited, kept by the app and saved in `tab-history.json`, so it survives sleep, a crash restart, an engine swap and an app restart. Back at a tab's first page goes to the card it was opened from, and Forward there returns. The Back and Forward chips show a branch marker, and a branch list opens a sibling page or opens it as a card. Alt+Left and Alt+Right are Back and Forward. A page's own `history.back()` reads as a Back. A closed tab keeps its trail across reopen and restart. Checked on WebView2, CEF, Servo and WebKit by `gate trail`.
+- **Jars are cards.** The Default jar is a card; tabs and groups name their jar through one edge, resolved by walking up. A jar card's menu has Clear Cookies and Ephemeral; Settings no longer lists named jars. Right-click on a jar chip opens the card menu on its Jar page. Jar cookies and fetched content share one backing-file keep set and prune.
+- **Closed is a field.** Closing a card sets `closed` and reopening clears it; eviction starts past 20. History is derived from the document, and sync has a three-state remote change with a hide path.
+- **A node of a type this build doesn't know is a live card:** generic fields, copies and links, and it sits in groups. Every stored node carries its type string.
+- **Rename and Duplicate work on any node,** as do Pin and selection. Ctrl+P pins the whole selection, or the focused card when none is selected. Close Selected names the cards inside selected groups that close with them, and a group's close control closes it. The card context menu is shorter: Jar and Color open pages in the same popup.
+- **PDFs render in their own process,** `manifold-view-pdfium`, embedded in the release exe like the WebView2 host.
+- Image nodes decode on two worker threads instead of the UI thread, and a panic in one decode becomes that image's error.
+
+### Internal
+
+- The `manifold-engine-*` crates are `manifold-view-*` (exe names unchanged); code, stored keys, environment variables and debug commands say view instead of engine.
+- Engine hosts no longer inherit manifold's stdin. The WebKit host reports the history's current item as the url.
+- The gate is one Rust program: the remaining shell and python probes (jar, sleep, focus-loss, unresponsive, scale, package, chrome-shots, json-pan, tier, pins, release-verify and others) are native `gate` stages, and `gate all` and `gate fresh` orchestrate them. Waits are on state and requests, not fixed sleeps. New stages: `closed`, `unknown-type`, `trail`, `sleep-history`. `SITE_HOST` addresses the page server for an engine in WSL; `WEBKIT_SITE_HOST` and `WITH_SERVO=1` add opt-in WebKit and Servo stages to `gate all`.
+- `gate layout` takes one launch per window size and page kind (422 s to 308 s).
+- Two racy writer tests and the `gate link` placement flake are fixed.
+
 ## v0.5.1 (2026-10-12)
 
 ### Internal
