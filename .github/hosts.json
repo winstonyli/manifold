@@ -1,0 +1,10 @@
+{
+  "cef": {
+    "windows-x64": {
+      "runner": "windows-latest",
+      "package": "manifold-view-cef",
+      "rustflags": "-C target-feature=+crt-static",
+      "files": ["manifold-engine-cef.exe"]
+    }
+  }
+}
