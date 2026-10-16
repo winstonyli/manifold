@@ -123,6 +123,8 @@ pub const TYPE_JSON: &str = "application/json";
 /// What a created image is stored as until sniffed types arrive (plan 2c); any `image/*` reads back as an image.
 pub const TYPE_IMAGE: &str = "image/png";
 pub const TYPE_DOWNLOAD: &str = "application/octet-stream";
+/// Every virtual card's type starts with this: a card drawn from other state, with no node (spec 2026-10-16-virtual-cards-design.md).
+pub const TYPE_VIRTUAL_PREFIX: &str = "application/vnd.manifold.virtual.";
 /// Never stored: the row and edge string a type this build doesn't know reads as (`card_kind::canonical_type`).
 pub const TYPE_UNKNOWN: &str = "application/vnd.manifold.unknown";
 

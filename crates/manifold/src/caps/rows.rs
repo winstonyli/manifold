@@ -9,11 +9,65 @@ pub(crate) struct Row {
     requires: TagSet,
     restorable: Option<bool>,
     draw_layer: Option<u8>,
+    selectable: Option<bool>,
+    drag_source: Option<bool>,
+    movable: Option<bool>,
+    drop_target: Option<bool>,
+    menu: Option<bool>,
+    linkable: Option<bool>,
+    stored_controls: Option<bool>,
 }
 
 impl Row {
     pub(crate) fn new(pattern: &str) -> Row {
-        Row { pattern: Pattern::parse(pattern), requires: TagSet::EMPTY, restorable: None, draw_layer: None }
+        Row {
+            pattern: Pattern::parse(pattern),
+            requires: TagSet::EMPTY,
+            restorable: None,
+            draw_layer: None,
+            selectable: None,
+            drag_source: None,
+            movable: None,
+            drop_target: None,
+            menu: None,
+            linkable: None,
+            stored_controls: None,
+        }
+    }
+
+    pub(crate) fn selectable(mut self, on: bool) -> Row {
+        self.selectable = Some(on);
+        self
+    }
+
+    pub(crate) fn drag_source(mut self, on: bool) -> Row {
+        self.drag_source = Some(on);
+        self
+    }
+
+    pub(crate) fn movable(mut self, on: bool) -> Row {
+        self.movable = Some(on);
+        self
+    }
+
+    pub(crate) fn drop_target(mut self, on: bool) -> Row {
+        self.drop_target = Some(on);
+        self
+    }
+
+    pub(crate) fn menu(mut self, on: bool) -> Row {
+        self.menu = Some(on);
+        self
+    }
+
+    pub(crate) fn linkable(mut self, on: bool) -> Row {
+        self.linkable = Some(on);
+        self
+    }
+
+    pub(crate) fn stored_controls(mut self, on: bool) -> Row {
+        self.stored_controls = Some(on);
+        self
     }
 
     pub(crate) fn requires(mut self, tags: &[Tag]) -> Row {
@@ -44,11 +98,25 @@ pub(crate) struct Caps {
     /// Where its card draws in Graph view: 0 first, so a higher layer draws, and takes the pointer, on top. Below
     /// `DRAW_LAYERS`.
     pub(crate) draw_layer: u8,
+    /// May be in the rectangle selection.
+    pub(crate) selectable: bool,
+    /// May be picked up.
+    pub(crate) drag_source: bool,
+    /// A drag repositions it and stores the position.
+    pub(crate) movable: bool,
+    /// A dragged card may land on it.
+    pub(crate) drop_target: bool,
+    /// Has a node menu.
+    pub(crate) menu: bool,
+    /// Shows link handles.
+    pub(crate) linkable: bool,
+    /// Swatch, Pin, Close and Eject act on a stored node.
+    pub(crate) stored_controls: bool,
 }
 
 /// How many draw layers the builtin rows use: every `Caps::draw_layer` is below this, so a level scan has this many
 /// buckets.
-pub(crate) const DRAW_LAYERS: usize = 8;
+pub(crate) const DRAW_LAYERS: usize = 9;
 
 #[derive(Debug, Default)]
 pub(crate) struct Registry {
@@ -85,6 +153,27 @@ impl Registry {
             if let Some(layer) = row.draw_layer {
                 caps.draw_layer = layer;
             }
+            if let Some(v) = row.selectable {
+                caps.selectable = v;
+            }
+            if let Some(v) = row.drag_source {
+                caps.drag_source = v;
+            }
+            if let Some(v) = row.movable {
+                caps.movable = v;
+            }
+            if let Some(v) = row.drop_target {
+                caps.drop_target = v;
+            }
+            if let Some(v) = row.menu {
+                caps.menu = v;
+            }
+            if let Some(v) = row.linkable {
+                caps.linkable = v;
+            }
+            if let Some(v) = row.stored_controls {
+                caps.stored_controls = v;
+            }
         }
         caps
     }
@@ -95,8 +184,29 @@ impl Registry {
 /// (`draw_layer`). A string no row matches gets the `Caps` default; `card_kind::canonical_type` maps every stored
 /// type to a row first.
 pub(crate) fn builtin_rows() -> Vec<Row> {
-    use crate::store::model::{TYPE_DOWNLOAD, TYPE_GROUP, TYPE_JAR, TYPE_NOTE, TYPE_TAB, TYPE_UNKNOWN};
+    use crate::store::model::{
+        TYPE_DOWNLOAD, TYPE_GROUP, TYPE_JAR, TYPE_NOTE, TYPE_TAB, TYPE_UNKNOWN, TYPE_VIRTUAL_PREFIX,
+    };
     vec![
+        // Every stored kind can do everything; a virtual kind's own row, below, turns off what it cannot.
+        Row::new("*/*")
+            .selectable(true)
+            .drag_source(true)
+            .movable(true)
+            .drop_target(true)
+            .menu(true)
+            .linkable(true)
+            .stored_controls(true),
+        // A virtual kind starts with nothing and draws on top (layer 8); a source's exact row grants what it needs.
+        Row::new(&format!("{TYPE_VIRTUAL_PREFIX}*"))
+            .selectable(false)
+            .drag_source(false)
+            .movable(false)
+            .drop_target(false)
+            .menu(false)
+            .linkable(false)
+            .stored_controls(false)
+            .draw_layer(8),
         Row::new(TYPE_TAB).restorable(true).draw_layer(1), // a sleeping tab; a loaded one draws under it
         // Outranks the row above for a loaded tab: same pattern, more `requires` tags (`Row::rank`).
         Row::new(TYPE_TAB).requires(&[Tag::Loaded]).draw_layer(0),
@@ -129,6 +239,38 @@ mod tests {
         for row in builtin_rows() {
             assert!(row.draw_layer.is_none_or(|layer| usize::from(layer) < DRAW_LAYERS), "{row:?}");
         }
+    }
+
+    #[test]
+    fn every_builtin_stored_kind_has_every_ability() {
+        use crate::store::model::{
+            TYPE_DOWNLOAD, TYPE_GROUP, TYPE_JAR, TYPE_JSON, TYPE_NOTE, TYPE_PDF, TYPE_TAB, TYPE_UNKNOWN,
+        };
+        let registry = registry(builtin_rows());
+        for ty in
+            [TYPE_TAB, TYPE_GROUP, TYPE_JAR, TYPE_JSON, TYPE_NOTE, TYPE_PDF, TYPE_DOWNLOAD, TYPE_UNKNOWN, "image/png"]
+        {
+            let caps = registry.caps(ty, TagSet::EMPTY);
+            assert!(
+                caps.selectable
+                    && caps.drag_source
+                    && caps.movable
+                    && caps.drop_target
+                    && caps.menu
+                    && caps.linkable
+                    && caps.stored_controls,
+                "{ty}: {caps:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_virtual_kind_has_no_ability_until_its_own_row_grants_one() {
+        let registry = registry(builtin_rows());
+        let bare = registry.caps("application/vnd.manifold.virtual.test", TagSet::EMPTY);
+        assert!(!bare.selectable && !bare.drag_source && !bare.movable && !bare.drop_target);
+        assert!(!bare.menu && !bare.linkable && !bare.stored_controls);
+        assert_eq!(bare.draw_layer, 8, "a virtual card draws above every stored kind");
     }
 
     #[test]
@@ -195,7 +337,8 @@ mod tests {
             assert_eq!(backwards.caps(mime, tags), want, "{mime} {tags:?}: rank, not registration order");
             assert_eq!(forwards.caps(&mime.to_ascii_uppercase(), tags), want, "{mime}: case");
         }
-        assert_eq!(forwards.caps("IMAGE/PNG", TagSet::EMPTY), Caps { restorable: true, draw_layer: 4 });
+        let png = forwards.caps("IMAGE/PNG", TagSet::EMPTY);
+        assert_eq!((png.restorable, png.draw_layer), (true, 4));
         // Rows are in rank order after registration.
         let ranks: Vec<(u8, u32)> = forwards.rows.iter().map(Row::rank).collect();
         assert!(ranks.windows(2).all(|pair| pair[0] <= pair[1]), "{ranks:?}");
