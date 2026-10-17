@@ -17,7 +17,7 @@ use std::time::Duration;
 use serde_json::Value;
 
 use crate::check::{check_is, exit_code, failures, note_failure, Section};
-use crate::http::{response, Server};
+use crate::http::{response, Handler, Server};
 use crate::instance::{log_tail, seed_settings, Instance};
 use crate::link::{bad, no_verdict_words};
 use crate::state::{State, TAB};
@@ -32,6 +32,8 @@ struct Run {
     profile: PathBuf,
     /// The site's origin (`Server::base`).
     base: String,
+    /// A second site (another port, so another origin) that serves a favicon.
+    alias: String,
     /// The engine kind under test (`ENGINE`, default webview2).
     engine: String,
 }
@@ -227,6 +229,29 @@ fn drive(run: &Run, sec: &mut Option<Section>) -> io::Result<()> {
     let s = inst.export_until("script-back", |s| at(s, "/b4"))?;
     check_is("the page's own Back adds no entry", Some(5), field(&s, &b, "entries").and_then(Value::as_u64));
     check_is("Forward is offered after it", Some(true), field(&s, &b, "forward").and_then(Value::as_bool));
+    next("favicon");
+    // A page whose origin serves a favicon shows it, not a tile: send B to the second origin and open the
+    // dropdown; its rows ask for that origin's favicon and then lead with an image. Then B goes back to the first
+    // origin, so the next stage's tile is a tile.
+    inst.send(&format!("ADDRESSBAR {}/fav", run.alias))?;
+    inst.send("WAITIDLE")?;
+    inst.send("ENTER")?;
+    inst.export_until("fav-page", |s| s.0["focused_url"].as_str().is_some_and(|u| u.ends_with("/fav")))?;
+    // The focused tab is not offered to itself: look at it from tab A.
+    inst.send("NEXTTAB")?;
+    inst.send("WAITIDLE")?;
+    inst.send("ADDRESSBAR 127")?;
+    inst.send("EGUITEXT .")?;
+    let images =
+        |s: &State| s.0["identities"].as_array().map_or(0, |ids| ids.iter().filter(|i| i["kind"] == "image").count());
+    let s = inst.export_until("fav-dropdown", |s| images(s) >= 1)?;
+    check_is("a page whose origin serves a favicon shows it as an image", true, images(&s) >= 1);
+    inst.send("ESCAPE")?;
+    inst.send("NEXTTAB")?;
+    inst.send("WAITIDLE")?;
+    run.go(&mut inst, "/b4")?;
+    inst.export_until("fav-back", |s| at(s, "/b4"))?;
+
     next("closed-popup");
     // A closed tab's row in Recently Closed leads with the same tile (no favicon on these local pages).
     inst.send(&format!("CLOSENODE {b}"))?;
@@ -271,23 +296,40 @@ pub fn trail(parent: Option<PathBuf>) -> ExitCode {
             return ExitCode::from(1);
         }
     };
-    let server = match Server::start(Arc::new(|line: &str| {
-        let path = line.split(' ').nth(1).unwrap_or("/");
+    fn page(line: &str) -> String {
+        let path = line.split(' ').nth(1).unwrap_or("/").to_owned();
         let script = if path == "/back" { "<script>setTimeout(() => history.back(), 500)</script>" } else { "" };
-        let body = format!("<!doctype html><title>{path}</title><p>{path}</p>{script}");
-        response("200 OK", &[], "text/html", body.as_bytes())
-    })) {
-        Ok(s) => s,
+        format!("<!doctype html><title>{path}</title><p>{path}</p>{script}")
+    }
+    let start = |h: Arc<Handler>| match Server::start(h) {
+        Ok(s) => Some(s),
         Err(e) => {
             eprintln!("site: {e}");
-            return ExitCode::from(1);
+            None
         }
+    };
+    let Some(server) = start(Arc::new(move |line: &str| response("200 OK", &[], "text/html", page(line).as_bytes())))
+    else {
+        return ExitCode::from(1);
+    };
+    // A second origin (another port) whose `/favicon.ico` is a red 16x16 PNG; the first origin's pages keep their tiles.
+    let mut png = Vec::new();
+    let red = image::RgbaImage::from_pixel(16, 16, image::Rgba([220, 40, 40, 255]));
+    red.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).expect("encode the favicon");
+    let Some(fav_server) = start(Arc::new(move |line: &str| {
+        if line.split(' ').nth(1) == Some("/favicon.ico") {
+            return response("200 OK", &[], "image/png", &png);
+        }
+        response("200 OK", &[], "text/html", page(line).as_bytes())
+    })) else {
+        return ExitCode::from(1);
     };
     let run = Run {
         exe,
         profile: work.join("profile"),
         work,
         base: server.base(),
+        alias: fav_server.base(),
         engine: std::env::var("ENGINE").unwrap_or_else(|_| "webview2".to_owned()),
     };
     if let Err(e) = run.setup().and_then(|()| drive(&run, &mut sec)) {

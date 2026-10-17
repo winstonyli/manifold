@@ -231,6 +231,8 @@ impl App {
             // Saved now so other replicas follow at once. Only a save that
             // doesn't commit leaves the edit for a later one.
             self.save_session();
+            // The new origin's favicon: `NavigationStateChanged` asks on a url change, but sees none here.
+            self.request_favicons([url.as_str()]);
         }
     }
 
