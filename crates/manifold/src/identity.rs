@@ -216,6 +216,17 @@ mod tests {
     }
 
     #[test]
+    fn a_spinner_paints_shapes_and_no_text() {
+        let ctx = egui::Context::default();
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let text = Identity::Spinner.paint(ui, egui::pos2(20.0, 20.0), 16.0, 1.0, TEXT_WEAK);
+            assert!(text.is_none());
+        });
+        output.textures_delta.clear();
+        assert!(!output.shapes.is_empty(), "the spinner drew nothing");
+    }
+
+    #[test]
     fn a_tile_paints_a_filled_square_and_hands_back_its_letter() {
         let ctx = egui::Context::default();
         let fill = view_color(ViewKind::Cef);
