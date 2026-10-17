@@ -617,7 +617,10 @@ impl App {
             current_kind,
         ) {
             if let Some(id) = &req.current_tab_id {
-                if Some(kind) != current_kind {
+                if self.swap_in_flight(id).is_some() {
+                    // A swap, or a cookie hold ahead of one (up to 2 s), is on its way: this pick would be dropped.
+                    self.queue_toast("An engine change is already in progress for this tab".to_owned());
+                } else if Some(kind) != current_kind {
                     self.start_swap_to(id, kind);
                 }
             }

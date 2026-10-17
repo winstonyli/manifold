@@ -130,7 +130,7 @@ impl App {
             self.graph_screen_point_to_world(pointer?).to_pos2()
         };
         // A virtual card (it draws on top) before a group card before a tab card, and a live tab before a sleeping
-        // one: the per-kind search order the drop has always had, each search's hit the first card of its kind in
+        // one: the per-kind search order the drop has always had, each search's hit the topmost card of its kind in
         // draw order under the probe. One pass over the level finds all four; a target the drop table refuses
         // (`drop_action` None) moves the search on. Only a kind granting `drop_target` is a candidate.
         let searches: [&dyn Fn(CardKind) -> bool; 4] = [
@@ -142,7 +142,8 @@ impl App {
         let mut hits: [Option<(&str, CardKind)>; 4] = [None; 4];
         // A stored card has only stored effects (`apply_drop`), so a virtual card is no target for it.
         let stored_drag = dragged_entry.origin == Origin::Stored;
-        for other in items.iter().filter(|other| {
+        // Topmost first: the last in draw order is drawn over the rest.
+        for other in items.iter().rev().filter(|other| {
             other.id != id && !(stored_drag && matches!(other.origin, Origin::Virtual(_))) && other.caps().drop_target
         }) {
             let Some(slot) = searches.iter().position(|pick| pick(other.kind)) else { continue };

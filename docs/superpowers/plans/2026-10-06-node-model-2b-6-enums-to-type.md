@@ -254,14 +254,12 @@ under the same code (the old scan read 426 and 532 µs), so read them as ratios.
 
 ### Parked (not fixed)
 
-- Task 3: `drop_target` hits the first card in `node_order`, the bottom-most of overlapping same-kind cards, not the topmost
-  (pre-existing, user-visible); a fix could search `node_order` in reverse.
+- ~~Task 3: `drop_target` hits the bottom-most of overlapping same-kind cards~~ (fixed: it searches the level topmost first, `a_drop_onto_overlapping_groups_targets_the_topmost`)
 - Task 4: `every_creation_path_seeds_the_node_type` is circular for Note/Json/Pdf/Image/Download (tests.rs near 4441-4455).
 - Task 4: stale `payload` names: renamed to `runtime` after the final review (2026-10-06).
 - Task 4: reloading with a differing content kind leaves the mirror type unchanged (`fetched.rs` near 325-344, pre-existing).
 - Task 4: add one `// Ruling 8` marker on the `Runtime::None`-as-group arms.
-- Task 5: smoke check messages still say "Pdf card" and so on; the `ExportState` doc comment (`debug_control.rs` near 157-170)
-  says `json_card` has only screen/rect besides (it also has `type` and `loaded`).
+- Task 5: smoke check messages still say "Pdf card" and so on; ~~the `ExportState` doc comment on `json_card`~~ (fixed)
 - Task 5: `scripts/json-level-probe.txt` does not enter the JSON level on this machine (pre-existing); a follow-up could seed
   `has_shown_first_launch_demo` or poll two exports before computing the double-click.
 - Done after the final review (2026-10-06): `check_graph_matches_document` now also asserts each node's stored type is one its `Runtime` runs (`runtime_has_type`, test `a_node_whose_runtime_does_not_match_its_type_trips_the_invariant`); the full suite passed with it (881).

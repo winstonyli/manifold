@@ -240,7 +240,7 @@ pub enum DebugCommand {
     /// `TYPE_*`), `stored_type` (the type string as stored: the same but for an `image/*` other than `image/png`, a
     /// different case, or a type this build doesn't know, whose `type` is `TYPE_UNKNOWN`), `loaded` (true for a tab with a running engine only),
     /// `json_card` (true for a JSON level's card, which is no stored node:
-    /// its keys are only `id`, `type` (`application/json`), `loaded` (false),
+    /// its keys are only `id`, `type` (`application/json`), `loaded` (false), `unresponsive` (false),
     /// `json_card`, `screen` and `rect`), `group`, `parent`, `color` (whether it has a tag color),
     /// `pinned`, `editing` (a note being edited), `screen` (its center) and
     /// `rect` (`[left, top, right, bottom]`), in points, which are pixels

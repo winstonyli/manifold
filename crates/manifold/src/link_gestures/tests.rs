@@ -1570,3 +1570,18 @@ fn a_release_over_a_popup_links_nothing_under_it() {
     assert!(app.links_naming(&a).is_empty());
     assert!(app.link.connect_drag.is_none() && app.link.connecting.is_none());
 }
+
+/// Of two groups drawn one over the other, a card dropped there joins the one on top (the later in draw order),
+/// not the one beneath it.
+#[test]
+fn a_drop_onto_overlapping_groups_targets_the_topmost() {
+    let mut app = App::default();
+    let (note, under, over) = (app.alloc_node_id(), app.alloc_node_id(), app.alloc_node_id());
+    let text = Runtime::Note(NotePayload { text: "n".into(), editing: false });
+    let at = egui::vec2(600.0, 0.0);
+    app.insert_placeholder_node(under.clone(), at, Kind::Group, Runtime::None);
+    app.insert_placeholder_node(over.clone(), at, Kind::Group, Runtime::None);
+    app.insert_placeholder_node(note.clone(), at, Kind::Note, text);
+    let target = app.drop_target(&note, None, None).and_then(|(_, target)| target);
+    assert_eq!(target.as_deref(), Some(over.as_str()));
+}

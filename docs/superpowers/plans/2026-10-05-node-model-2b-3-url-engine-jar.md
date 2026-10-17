@@ -220,7 +220,7 @@ Done on `dev`: aa95040, b51f345 (url); 02810e6 (jar, jar_set); f1626b8, 637d7c0 
 
 - `seed_landing` clears any *new* spawn whose jar is missing from `jar_defs`, not only one deleted mid-flight: a duplicate of a tab holding a dangling jar, or a new tab in a group whose `DEFAULT_JAR` dangles, lands on the default jar. The doc comment and sync map describe only the mid-flight case.
 - Per-field last-writer-wins can mix a jar choice (jar and jar_set are separate fields); a pending Set equal to the stored value is still written; the post-commit mirror correction covers a created tab's JAR only.
-- An engine pick during the cookie hold (up to 2 s) is dropped silently; the picker isn't greyed out. A crash card after a crash mid-swap names the target engine with the old engine's crash reason. Duplicating mid-swap has no fallback if the target fails to start.
+- ~~An engine pick during the cookie hold (up to 2 s) is dropped silently~~ (fixed: the Settings page toasts "An engine change is already in progress"). ~~A crash card after a crash mid-swap names the target engine with the old engine's crash reason~~ (stale: the restart spawns the target with the old engine as its fallback, `a_crash_mid_swap_restarts_on_the_target_with_the_old_view_as_fallback`). Duplicating mid-swap has no fallback if the target fails to start.
 - `NodePayload::saved_tab()` now returns only the live url, so its name is a slight misnomer.
 - 2b-2's parked items still stand (cycle-refused Move leaves the mirror wrong, `merge_groups` loop guard, `children_of` cost, local cascade vs parked remote entry, `destroy_group` with a respawning member).
 - Commit trailers for Tasks 2-3 and the fixes name "Claude Opus 5.5", not Sonnet 5.5 (the implementers were Opus).
