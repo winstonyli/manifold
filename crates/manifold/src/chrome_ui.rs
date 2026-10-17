@@ -110,8 +110,16 @@ impl App {
     pub(crate) fn build_ui(&mut self, ui: &mut egui::Ui) {
         self.view_ui.view_status_cache.borrow_mut().clear();
         let open_at_start = self.menus.open_popup;
-        let escape = open_at_start.is_some() && ui.input(|i| i.key_pressed(egui::Key::Escape));
+        // An open page menu takes the Escape first (`build_trail_menu`); the popup under it stays.
+        let escape = open_at_start.is_some()
+            && self.menus.trail_menu.is_none()
+            && ui.input(|i| i.key_pressed(egui::Key::Escape));
         self.build_ui_inner(ui);
+        // A page menu no host drew this frame (the view changed under it) must not wait for the next host to appear.
+        let drawn = ui.ctx().data(|d| d.get_temp::<u64>(egui::Id::new("trail_menu_frame")));
+        if drawn != Some(ui.ctx().cumulative_frame_nr()) {
+            self.menus.trail_menu = None;
+        }
         if escape && self.menus.open_popup == open_at_start {
             self.menus.open_popup = None;
         }

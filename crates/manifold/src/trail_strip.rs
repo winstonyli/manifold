@@ -115,6 +115,8 @@ impl App {
     /// its page is gone or nothing hosts it: the strip, or an open Back/Forward branch popup (Tab view has no strip).
     pub(crate) fn build_trail_menu(&mut self, ui: &mut egui::Ui) {
         let Some((id, pos)) = self.menus.trail_menu.clone() else { return };
+        let frame = ui.ctx().cumulative_frame_nr();
+        ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("trail_menu_frame"), frame));
         let hosted = self.trail_strip_tab().is_some()
             || matches!(
                 self.menus.open_popup,

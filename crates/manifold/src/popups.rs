@@ -1317,7 +1317,17 @@ impl App {
             Some((w, camera)) if w == which => camera,
             _ => crate::graph_ui::GraphCamera::new(),
         };
-        if popup_centres_cursor(ui.ctx(), which, self.menus.open_popup == Some(which)) {
+        // An eviction renumbers the pages under an open popup: the old framing means nothing, so recentre.
+        let epoch = self.nav_history.get(tab).map_or(0, |h| h.epoch());
+        let epoch_key = egui::Id::new(("trail_popup_epoch", which));
+        let seen_epoch = ui.ctx().data_mut(|d| {
+            let seen = d.get_temp::<u32>(epoch_key);
+            d.insert_temp(epoch_key, epoch);
+            seen
+        });
+        let renumbered = seen_epoch.is_some_and(|seen| seen != epoch);
+        let opened = popup_centres_cursor(ui.ctx(), which, self.menus.open_popup == Some(which));
+        if opened || renumbered {
             camera.jump_to(popup_start_rect(bounds, cursor, view));
         }
         let order: Vec<String> = cards.iter().map(|e| e.id.clone()).collect();

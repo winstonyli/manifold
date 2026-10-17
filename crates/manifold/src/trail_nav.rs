@@ -838,6 +838,57 @@ mod tests {
         assert_eq!(app.interaction.hovered, None, "the closed popup's page is no longer hovered");
     }
 
+    /// One frame of the whole UI with `events`.
+    fn ui_frame(app: &mut App, events: Vec<egui::Event>) {
+        let ctx = app.egui_ctx.clone();
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0))),
+            events,
+            ..Default::default()
+        };
+        let mut output = ctx.run_ui(input, |ui| app.build_ui(ui));
+        output.textures_delta.clear();
+    }
+
+    #[test]
+    fn escape_closes_an_open_page_menu_and_leaves_the_popup() {
+        let (mut app, tab, _peer) = open_back_popup("trail-popup-escape");
+        app.view_mode = crate::ViewMode::Item;
+        let at = page_centre(&app, &tab, 1);
+        popup_run(&mut app, &tab, vec![egui::Event::PointerMoved(at)]);
+        popup_run(&mut app, &tab, right_click(at));
+        ui_frame(&mut app, vec![key(egui::Key::Escape)]); // the full UI hosts no popup here: this tests only build_ui's guard
+        assert!(app.menus.trail_menu.is_none(), "Escape closed the menu");
+        assert_eq!(app.menus.open_popup, Some(AnchoredPopup::BackBranches), "and only the menu");
+        ui_frame(&mut app, vec![key(egui::Key::Escape)]);
+        assert_eq!(app.menus.open_popup, None, "the next Escape closes the popup");
+    }
+
+    #[test]
+    fn a_page_menu_nothing_draws_is_dropped() {
+        let (mut app, tab, _peer) = open_back_popup("trail-popup-stale-menu");
+        app.view_mode = crate::ViewMode::Item;
+        let id = crate::trail_strip::trail_cards(&app, &tab, egui::Pos2::ZERO)[1].id.clone();
+        app.menus.open_popup = None;
+        app.menus.trail_menu = Some((id, egui::pos2(50.0, 50.0)));
+        ui_frame(&mut app, vec![]);
+        assert!(app.menus.trail_menu.is_none(), "no strip and no popup drew it, so it must not wait for the next one");
+    }
+
+    #[test]
+    fn the_popup_recentres_when_the_trail_is_renumbered_under_it() {
+        let (mut app, tab) = long_trail_popup("trail-popup-recentre-epoch");
+        let urls: Vec<String> = (0..52).map(|i| format!("https://example.test/p{i}")).collect();
+        let refs: Vec<&str> = urls.iter().map(String::as_str).collect();
+        app.nav_history.insert(tab.clone(), NavHistory::visited(&refs));
+        for _ in 0..3 {
+            popup_run(&mut app, &tab, vec![]);
+        }
+        let cards = crate::trail_strip::trail_cards(&app, &tab, egui::Pos2::ZERO);
+        let camera = app.menus.trail_canvas.as_ref().unwrap().1.rect;
+        assert!(camera.contains(cards.last().unwrap().rect.center()), "the cursor page is in view again");
+    }
+
     fn key(key: egui::Key) -> egui::Event {
         egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE }
     }
