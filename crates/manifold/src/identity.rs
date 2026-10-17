@@ -120,13 +120,21 @@ pub(crate) struct DrawnIcon {
     pub(crate) rect: egui::Rect,
 }
 
+/// A labelled list row: its text, screen rect, and whether it is the selected (highlighted or focused) one.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct DrawnRow {
+    pub(crate) text: String,
+    pub(crate) rect: egui::Rect,
+    pub(crate) selected: bool,
+}
+
 /// The icons drawn so far this frame and in the last finished one.
 #[derive(Clone, Default)]
 struct IconLog {
     building: Vec<DrawnIcon>,
     done: Vec<DrawnIcon>,
-    rows_building: Vec<(String, egui::Rect)>,
-    rows_done: Vec<(String, egui::Rect)>,
+    rows_building: Vec<DrawnRow>,
+    rows_done: Vec<DrawnRow>,
 }
 
 fn icon_log_id() -> egui::Id {
@@ -148,18 +156,23 @@ pub(crate) fn drawn_icons(ctx: &egui::Context) -> Vec<DrawnIcon> {
 }
 
 /// The labelled list rows (an icon row with a label) the last finished frame drew: text and screen rect.
-pub(crate) fn drawn_rows(ctx: &egui::Context) -> Vec<(String, egui::Rect)> {
+pub(crate) fn drawn_rows(ctx: &egui::Context) -> Vec<DrawnRow> {
     ctx.data(|d| d.get_temp::<IconLog>(icon_log_id()).map(|log| log.rows_done).unwrap_or_default())
 }
 
 /// Notes the labelled row `label` at `rect`; an empty label is no row.
-fn note_row(ui: &egui::Ui, label: &str, rect: egui::Rect) {
+fn note_row(ui: &egui::Ui, label: &str, selected: bool, rect: egui::Rect) {
     if label.is_empty() {
         return;
     }
     let rect = ui.ctx().layer_transform_to_global(ui.layer_id()).map_or(rect, |t| t * rect);
-    ui.ctx()
-        .data_mut(|d| d.get_temp_mut_or_default::<IconLog>(icon_log_id()).rows_building.push((label.to_owned(), rect)));
+    ui.ctx().data_mut(|d| {
+        d.get_temp_mut_or_default::<IconLog>(icon_log_id()).rows_building.push(DrawnRow {
+            text: label.to_owned(),
+            rect,
+            selected,
+        })
+    });
 }
 
 /// Notes that `identity` is drawn in `square` (in `ui`'s layer space).
@@ -216,8 +229,15 @@ pub(crate) fn row_label(ui: &egui::Ui, label: &str, inset: f32) -> egui::WidgetT
 }
 
 /// Paints `identity` in the room `row_label` left at the left of a row's `rect`, `pad` points in (a button's padding, or `LIST_ROW_INSET`).
-pub(crate) fn paint_row_icon(ui: &egui::Ui, rect: egui::Rect, pad: f32, label: &str, identity: Identity) {
-    note_row(ui, label, rect);
+pub(crate) fn paint_row_icon(
+    ui: &egui::Ui,
+    rect: egui::Rect,
+    pad: f32,
+    label: &str,
+    selected: bool,
+    identity: Identity,
+) {
+    note_row(ui, label, selected, rect);
     let center = egui::pos2(rect.left() + pad + ROW_ICON_SIZE / 2.0, rect.center().y);
     if let Some(text) = identity.paint(ui, center, ROW_ICON_SIZE, 1.0, ui.visuals().weak_text_color()) {
         text.draw(ui.painter(), text.center);
@@ -400,9 +420,10 @@ mod tests {
                     egui::Rect::from_min_size(egui::pos2(0.0, 30.0), egui::vec2(100.0, 14.0)),
                     4.0,
                     "page",
+                    true,
                     Identity::Spinner,
                 );
-                paint_row_icon(ui, egui::Rect::ZERO, 0.0, "", Identity::Spinner);
+                paint_row_icon(ui, egui::Rect::ZERO, 0.0, "", false, Identity::Spinner);
             });
             output.textures_delta.clear();
         };
@@ -415,6 +436,6 @@ mod tests {
         assert_eq!(seen.len(), 4);
         assert_eq!(seen[..2], [("tile", "E", egui::pos2(10.0, 10.0)), ("spinner", "", egui::pos2(50.0, 10.0))]);
         let rows = drawn_rows(&ctx);
-        assert_eq!(rows.iter().map(|(t, _)| t.as_str()).collect::<Vec<_>>(), ["page"], "an empty label is no row");
+        assert_eq!(rows.iter().map(|r| (r.text.as_str(), r.selected)).collect::<Vec<_>>(), [("page", true)]);
     }
 }

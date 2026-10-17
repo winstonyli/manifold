@@ -165,6 +165,7 @@ fn drive(run: &Run, sec: &mut Option<Section>) -> io::Result<()> {
     // At 60% the cards are short: each tab and each page leads with the tile in the engine's color.
     inst.send("GRAPHZOOM 60")?;
     let s = inst.export_until("strip-zoom", |s| tiles(s, None) >= 6)?;
+    println!("strip-zoom: {} tile icons", tiles(&s, None));
     check_is("two tab tiles and four page tiles are drawn", true, tiles(&s, None) >= 6);
     inst.send("TOGGLEVIEW")?;
     inst.export_until("strip-off", |s| s.tab_view() && at(s, "/b4"))?;
@@ -190,6 +191,11 @@ fn drive(run: &Run, sec: &mut Option<Section>) -> io::Result<()> {
             .count()
     };
     check_is("every dropdown row has an icon inside it", rows(&s).len(), led(&s));
+    let selected = |s: &State| s.0["rows"].as_array().map_or(0, |r| r.iter().filter(|r| r["selected"] == true).count());
+    check_is("no dropdown row is selected yet", 0, selected(&s));
+    inst.send("ARROWDOWN")?;
+    let s = inst.export_until("dropdown-selected", |s| selected(s) == 1)?;
+    check_is("ArrowDown selects one dropdown row", 1, selected(&s));
     inst.send("ESCAPE")?;
 
     next("script");
@@ -200,6 +206,31 @@ fn drive(run: &Run, sec: &mut Option<Section>) -> io::Result<()> {
     let s = inst.export_until("script-back", |s| at(s, "/b4"))?;
     check_is("the page's own Back adds no entry", Some(5), field(&s, &b, "entries").and_then(Value::as_u64));
     check_is("Forward is offered after it", Some(true), field(&s, &b, "forward").and_then(Value::as_bool));
+    next("closed-popup");
+    // A closed tab's row in Recently Closed leads with the same tile (no favicon on these local pages).
+    inst.send(&format!("CLOSENODE {b}"))?;
+    inst.send("TOGGLEVIEW")?;
+    inst.send("TOGGLEPOPUP recentlyclosed")?;
+    let in_popup = |s: &State| {
+        let popup = s.0["popups"]
+            .as_array()
+            .and_then(|p| p.iter().find(|p| p["id"].as_str().is_some_and(|id| id.contains("recently_closed_popup"))))?;
+        let at = |v: &Value, i: usize| v["rect"][i].as_f64();
+        let ids = s.0["identities"].as_array()?;
+        Some(
+            ids.iter()
+                .filter(|i| {
+                    i["kind"] == "tile"
+                        && at(i, 0) >= at(popup, 0)
+                        && at(i, 2) <= at(popup, 2)
+                        && at(i, 1) >= at(popup, 1)
+                        && at(i, 3) <= at(popup, 3)
+                })
+                .count(),
+        )
+    };
+    let s = inst.export_until("closed-popup", |s| in_popup(s).is_some_and(|n| n >= 1))?;
+    check_is("Recently Closed lists the closed tab behind a tile", true, in_popup(&s).is_some_and(|n| n >= 1));
     inst.quit(QUIT_TIMEOUT).map(|_| ())
 }
 
