@@ -1142,7 +1142,9 @@ impl App {
         // Not while a card's menu is open: the pointer is usually still on
         // the card it right-clicked, and the tooltip would cover the menu.
         let response = match body.tooltip {
-            Some(tooltip) if self.menus.node_menu.is_none() => response.on_hover_text(tooltip),
+            Some(tooltip) if self.menus.node_menu.is_none() && self.menus.trail_menu.is_none() => {
+                response.on_hover_text(tooltip)
+            }
             _ => response,
         };
         // Screen readers: the card is a button named by its kind and title (egui announces it on focus).
