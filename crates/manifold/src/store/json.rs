@@ -169,8 +169,9 @@ pub enum Trust {
     /// A file this app wrote for this profile (Recently Closed, a named
     /// session): every field its kind carries is kept.
     Own,
-    /// Anything else (Import Session/Group, `--import`): a Download's `path`
-    /// is dropped (it would point "Show in folder" anywhere), and a `jar` is kept only when it names a node in the same file
+    /// Anything else (Import Session/Group, `--import`): a `path` of any kind
+    /// is dropped (a Download's would point "Show in folder" anywhere; a file
+    /// card's would make restore open a UNC share the file's author chose), and a `jar` is kept only when it names a node in the same file
     /// (an export re-imported on its source machine must not re-link tabs to
     /// that machine's logins); so are a link's `from` and `to` (it must not
     /// join the file's cards to this session's).
@@ -185,7 +186,7 @@ pub enum Trust {
 /// plus its group; unknown field names are ignored (a newer build's export).
 /// A missing or empty `type`, or a bad value, is an error.
 /// Under `Trust::Foreign` the machine-local fields are filtered first (see
-/// `Trust`): a Download's `path` is dropped, and a `jar`/
+/// `Trust`): every `path` is dropped, and a `jar`/
 /// link `from`/`to` naming no node in the file is dropped rather than kept
 /// as a real id. Under either trust a link end naming a jar, a link or
 /// the link itself is dropped.
@@ -221,7 +222,7 @@ pub fn import(json: &JsonDoc, mut next_id: impl FnMut() -> NodeId, trust: Trust)
                 continue;
             }
             if trust == Trust::Foreign {
-                if def.no == field::PATH && kind == Kind::Download {
+                if def.no == field::PATH {
                     continue;
                 }
                 let names_in_file = value.as_str().is_some_and(|s| fresh.contains_key(s));
@@ -536,6 +537,23 @@ mod tests {
         assert!(own[1].fields.contains_key(&field::PATH));
         assert!(own[3].fields.contains_key(&field::JAR));
         assert!(own[4].fields.contains_key(&field::JAR));
+    }
+
+    #[test]
+    fn a_foreign_import_drops_every_kinds_machine_path() {
+        // A UNC path would make restore open an SMB connection to a host the file's author chose.
+        let unc = r"\\evil\share\x";
+        let json = doc(serde_json::json!([
+            { "id": "i", "type": "image/png", "path": unc },
+            { "id": "p", "type": "application/pdf", "path": unc },
+            { "id": "j", "type": "application/json", "path": unc },
+        ]));
+        for node in import(&json, ids(1), Trust::Foreign).unwrap() {
+            assert!(!node.fields.contains_key(&field::PATH));
+        }
+        for node in import(&json, ids(2), Trust::Own).unwrap() {
+            assert!(node.fields.contains_key(&field::PATH), "a session's own file card keeps its path");
+        }
     }
 
     #[test]
