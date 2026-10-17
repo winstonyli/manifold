@@ -1461,26 +1461,17 @@ impl App {
                     }
                     self.history_ui.history_dirty = true;
                     self.history_ui.history_matches_cache = None;
-                    // The origin is known as soon as the url is --
-                    // no need to wait for the page to actually
-                    // finish loading, unlike a page's own favicon
-                    // link tag this project doesn't parse anyway
-                    // (see `favicon_fetch`'s own doc comment).
-                    // `favicon_resolved`/`FaviconFetcher`'s own
-                    // `in_flight` set both dedupe repeat requests,
-                    // so this can fire on every url change with no
-                    // extra bookkeeping needed here.
-                    if let Some(origin) = UrlParts::parse(&url).origin() {
-                        if !self.favicon_resolved.contains(&origin) {
-                            self.favicon_fetcher.request(origin);
-                        }
-                    }
                 }
-                node.url = url;
+                node.url = url.clone();
                 node.title = title;
                 node.can_go_back = can_go_back;
                 node.can_go_forward = can_go_forward;
                 node.loading = loading;
+                // The origin is known as soon as the url is, without waiting for the page to finish loading
+                // (`favicon_fetch` guesses `/favicon.ico`); a typed navigation asks in `navigate_tab`.
+                if url_changed {
+                    self.request_favicons([url.as_str()]);
+                }
                 let restore = self.saved_scroll.get_mut(tab_id).is_some_and(|s| s.on_loading(loading));
                 if restore {
                     if let Some(s) = self.saved_scroll.remove(tab_id) {

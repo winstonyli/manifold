@@ -7,15 +7,15 @@ use serde_json::Value;
 
 use super::*;
 use crate::card::card_focus_ring;
-use crate::identity::Identity;
+use crate::identity::{Identity, ICON_SIZE};
 use crate::json_level::{CopyWhat, JsonEdit};
 use crate::json_view::{self, Card};
 
 /// Text height in world units (plan ruling 11).
 const TEXT_SIZE: f32 = 12.0;
 use crate::card::{
-    FAVICON_SIZE, HEADER_CENTER_Y, HEADER_ICON_X, HEADER_SOURCE_SIZE, HEADER_SOURCE_Y, HEADER_TEXT_X,
-    HEADER_TITLE_SIZE, HEADER_TITLE_Y, TAB_HEADER_POINTS,
+    HEADER_CENTER_Y, HEADER_ICON_X, HEADER_SOURCE_SIZE, HEADER_SOURCE_Y, HEADER_TEXT_X, HEADER_TITLE_SIZE,
+    HEADER_TITLE_Y, TAB_HEADER_POINTS,
 };
 /// Inset of a card's text from its edges.
 pub(crate) const PAD: f32 = 8.0;
@@ -341,7 +341,7 @@ pub(crate) fn paint_json_content(
             let text_width = rect.right() - text_left - COUNT_WIDTH - PAD;
             let glyph = Identity::Glyph { glyph: header.icon, color: Some(pal.container) };
             let center = egui::pos2(rect.left() + HEADER_ICON_X * z, top + HEADER_CENTER_Y * z);
-            if let Some(icon) = glyph.text(center, FAVICON_SIZE.x, pal.container) {
+            if let Some(icon) = glyph.text(center, ICON_SIZE, pal.container) {
                 deferred_overlays.push(Box::new(move |painter, project| icon.draw(painter, project(icon.center))));
             }
             text.push(TextItem {

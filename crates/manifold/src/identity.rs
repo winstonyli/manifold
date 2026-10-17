@@ -206,8 +206,10 @@ impl App {
     }
 }
 
-/// The icon's size in a list row, in points; rows are text-high, so it is smaller than a header's.
-const ROW_ICON_SIZE: f32 = 12.0;
+/// The icon size in points: a header or the address bar (`ICON_SIZE`), and the smaller one for a title strip, a list row
+/// or the trail strip (`ICON_SIZE_SMALL`).
+pub(crate) const ICON_SIZE: f32 = 16.0;
+pub(crate) const ICON_SIZE_SMALL: f32 = 12.0;
 /// The gap between a row's icon and its text.
 const ROW_ICON_GAP: f32 = 6.0;
 /// How far a bare list row (`popups::list_row`, a label with no button padding) insets its icon from its left edge.
@@ -224,7 +226,7 @@ pub(crate) fn row_label(ui: &egui::Ui, label: &str, inset: f32) -> egui::WidgetT
         color: egui::Color32::PLACEHOLDER,
         ..Default::default()
     };
-    job.append(label, inset + ROW_ICON_SIZE + ROW_ICON_GAP, format);
+    job.append(label, inset + ICON_SIZE_SMALL + ROW_ICON_GAP, format);
     job.into()
 }
 
@@ -238,8 +240,8 @@ pub(crate) fn paint_row_icon(
     identity: Identity,
 ) {
     note_row(ui, label, selected, rect);
-    let center = egui::pos2(rect.left() + pad + ROW_ICON_SIZE / 2.0, rect.center().y);
-    if let Some(text) = identity.paint(ui, center, ROW_ICON_SIZE, 1.0, ui.visuals().weak_text_color()) {
+    let center = egui::pos2(rect.left() + pad + ICON_SIZE_SMALL / 2.0, rect.center().y);
+    if let Some(text) = identity.paint(ui, center, ICON_SIZE_SMALL, 1.0, ui.visuals().weak_text_color()) {
         text.draw(ui.painter(), text.center);
     }
 }
@@ -381,7 +383,7 @@ mod tests {
             let egui::WidgetText::LayoutJob(job) = row_label(ui, "page", LIST_ROW_INSET) else {
                 panic!("not a layout job")
             };
-            assert_eq!(job.sections[0].leading_space, LIST_ROW_INSET + ROW_ICON_SIZE + ROW_ICON_GAP);
+            assert_eq!(job.sections[0].leading_space, LIST_ROW_INSET + ICON_SIZE_SMALL + ROW_ICON_GAP);
         });
         output.textures_delta.clear();
     }

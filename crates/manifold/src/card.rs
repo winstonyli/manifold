@@ -13,10 +13,6 @@ pub(crate) const MIN_LABEL_CARD_SCREEN_WIDTH: f32 = 40.0;
 
 pub(crate) const GRAPH_THUMB_MARGIN: f32 = 6.0;
 
-pub(crate) const FAVICON_SIZE: egui::Vec2 = egui::vec2(16.0, 16.0);
-/// The icon's size in a short card's title strip (`TAB_STRIP_POINTS` tall).
-const STRIP_ICON_SIZE: f32 = 12.0;
-
 /// A group card's border tints `DANGER_COLOR` once its member count exceeds
 /// this threshold -- a cheap glanceable "this one's gotten big" cue. Only
 /// applies while the group has no explicit tag color of its own (see its use
@@ -2256,7 +2252,7 @@ impl App {
         };
         let icon_text = if tall {
             let center = band.left_top() + egui::vec2(HEADER_ICON_X, HEADER_CENTER_Y) * inv_zoom;
-            identity.paint(ui, center, FAVICON_SIZE.x, inv_zoom, source_color)
+            identity.paint(ui, center, ICON_SIZE, inv_zoom, source_color)
         } else {
             None
         };
@@ -2366,7 +2362,7 @@ impl App {
                 let icon_text = identity.paint(
                     ui,
                     egui::Pos2::new(title_strip.left() + 8.0 * inv_zoom, title_strip.center().y),
-                    STRIP_ICON_SIZE,
+                    ICON_SIZE_SMALL,
                     inv_zoom,
                     egui::Color32::WHITE,
                 );

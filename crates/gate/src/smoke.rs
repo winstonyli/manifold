@@ -259,8 +259,7 @@ fn converted(session: &Value, name: &str, kind: &str) -> bool {
 /// KeyError / IndexError exit does.
 fn border_near(s: &State, png: &Path, id: &str, want: [u8; 3]) -> bool {
     let Some(r) = rect_of(s, id) else { return false };
-    let Ok(img) = image::open(png) else { return false };
-    let img = img.to_rgb8();
+    let Ok(img) = crate::shots_img::load(png) else { return false };
     let y = round_half_even((r[1] + r[3]) / 2.0) as i64;
     let left = round_half_even(r[0]) as i64;
     let mut near = f64::INFINITY;

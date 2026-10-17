@@ -9,8 +9,9 @@ use std::path::Path;
 use image::imageops::{self, FilterType};
 use image::RgbImage;
 
-fn load(path: &Path) -> io::Result<RgbImage> {
-    Ok(image::open(path).map_err(io::Error::other)?.to_rgb8())
+/// The screenshot or image at `path` as RGB, an error naming the path if it cannot be read.
+pub(crate) fn load(path: &Path) -> io::Result<RgbImage> {
+    Ok(image::open(path).map_err(|e| io::Error::other(format!("{}: {e}", path.display())))?.to_rgb8())
 }
 
 /// Crops each view's PNG in `out` to its top `crop_px` rows into `out/crop/`, and tiles all of them, three to a row

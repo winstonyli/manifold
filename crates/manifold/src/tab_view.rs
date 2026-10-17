@@ -432,8 +432,8 @@ impl App {
         let node = self.nodes[focused_id].as_tab().unwrap();
         let (url, loading, kind) = (node.url.clone(), node.loading, node.tab.kind);
         let identity = self.tab_identity(&url, loading, kind);
-        let icon_center = egui::pos2(response.rect.min.x + 8.0 + FAVICON_SIZE.x / 2.0, response.rect.center().y);
-        if let Some(text) = identity.paint(ui, icon_center, FAVICON_SIZE.x, 1.0, ui.visuals().weak_text_color()) {
+        let icon_center = egui::pos2(response.rect.min.x + 8.0 + ICON_SIZE / 2.0, response.rect.center().y);
+        if let Some(text) = identity.paint(ui, icon_center, ICON_SIZE, 1.0, ui.visuals().weak_text_color()) {
             text.draw(ui.painter(), text.center);
         }
         if !response.has_focus() {

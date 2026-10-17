@@ -2,7 +2,7 @@
 //! tab's card, and the painter and geometry the Back/Forward popups share.
 
 use crate::card::{CardBody, DropEffect};
-use crate::identity::Identity;
+use crate::identity::{Identity, ICON_SIZE_SMALL};
 use crate::level::{CardEntry, EdgeCurve, EdgeKind, LevelEdge, Origin};
 use crate::nav_history::TrailPage;
 use crate::store::model::TYPE_TRAIL_PAGE;
@@ -17,9 +17,8 @@ pub(crate) const PAGE: egui::Vec2 = egui::vec2(160.0, 44.0);
 pub(crate) const MIN_PAGE_WIDTH: f32 = 56.0;
 /// Text inset on each side of a label.
 const LABEL_INSET: f32 = 8.0;
-/// The page icon's size (`Identity::paint`), and the label's left edge: inset, icon, gap.
-const ICON_SIZE: f32 = 12.0;
-const LABEL_LEFT: f32 = LABEL_INSET + ICON_SIZE + 6.0;
+/// The label's left edge: inset, icon, gap.
+const LABEL_LEFT: f32 = LABEL_INSET + ICON_SIZE_SMALL + 6.0;
 pub(crate) const COLUMN_GAP: f32 = 24.0;
 pub(crate) const ROW_GAP: f32 = 12.0;
 /// Between the tab card's bottom edge and the root page.
@@ -97,8 +96,8 @@ pub(crate) fn paint_trail_page(painter: &egui::Painter, rect: egui::Rect, page: 
 /// A page's icon at its left: the page's favicon once fetched, else its host's tile in the tab's engine color.
 fn paint_page_icon(app: &App, ui: &egui::Ui, rect: egui::Rect, tab: &str, url: &str) {
     let Some(identity) = app.page_identity(tab, url) else { return };
-    let center = rect.left_center() + egui::vec2(LABEL_INSET + ICON_SIZE / 2.0, 0.0);
-    if let Some(text) = identity.paint(ui, center, ICON_SIZE, 1.0, TEXT_WEAK) {
+    let center = rect.left_center() + egui::vec2(LABEL_INSET + ICON_SIZE_SMALL / 2.0, 0.0);
+    if let Some(text) = identity.paint(ui, center, ICON_SIZE_SMALL, 1.0, TEXT_WEAK) {
         text.draw(ui.painter(), text.center);
     }
 }

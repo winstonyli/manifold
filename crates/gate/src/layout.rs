@@ -214,9 +214,8 @@ fn open(
 }
 
 /// How many pixels of `region` (points) differ between two screenshots, and the pixel box around them.
-fn differing_pixels(a: &PathBuf, b: &PathBuf, region: Rect, window_w: f64) -> io::Result<(usize, [u32; 4])> {
-    let load = |p: &PathBuf| image::open(p).map(|i| i.to_rgba8()).map_err(|e| bad(format!("{}: {e}", p.display())));
-    let (ia, ib) = (load(a)?, load(b)?);
+fn differing_pixels(a: &Path, b: &Path, region: Rect, window_w: f64) -> io::Result<(usize, [u32; 4])> {
+    let (ia, ib) = (crate::shots_img::load(a)?, crate::shots_img::load(b)?);
     if ia.dimensions() != ib.dimensions() {
         return Err(bad(format!("screenshots differ in size: {:?} vs {:?}", ia.dimensions(), ib.dimensions())));
     }
