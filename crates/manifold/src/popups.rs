@@ -764,7 +764,7 @@ impl App {
                 let kind = ViewKind::from_name(&str_field("view_kind")).unwrap_or(ViewKind::Servo);
                 let (slot, _) = ui.allocate_exact_size(egui::vec2(14.0, 14.0), egui::Sense::hover());
                 let identity = Identity::of_tab(false, App::favicon_in(gpu, &url), kind, &url);
-                paint_row_icon(ui, slot, 0.0, identity);
+                paint_row_icon(ui, slot, 0.0, "", identity);
                 title.map_or(url, str::to_string)
             }
             Some(Kind::Image) => {
@@ -910,7 +910,7 @@ impl App {
                                 let identity = App::page_row_identity(self.gpu.as_ref(), &bookmark.url);
                                 wanted.push(bookmark.url.clone());
                                 let row = list_row(ui, row_label(ui, &bookmark.title, LIST_ROW_INSET));
-                                paint_row_icon(ui, row.rect, LIST_ROW_INSET, identity);
+                                paint_row_icon(ui, row.rect, LIST_ROW_INSET, &bookmark.title, identity);
                                 if row.clicked() {
                                     navigate_url = Some(bookmark.url.clone());
                                 }
@@ -1044,9 +1044,10 @@ impl App {
                     // enough to leave.)
                     let id = egui::Id::new(("history_row", i));
                     wanted.borrow_mut().push(entry.url.clone());
-                    let label = row_label(ui, label, LIST_ROW_INSET);
-                    let row = ui.scope_builder(egui::UiBuilder::new().id(id), |ui| list_row(ui, label)).inner;
-                    paint_row_icon(ui, row.rect, LIST_ROW_INSET, App::page_row_identity(self.gpu.as_ref(), &entry.url));
+                    let widget_label = row_label(ui, label, LIST_ROW_INSET);
+                    let row = ui.scope_builder(egui::UiBuilder::new().id(id), |ui| list_row(ui, widget_label)).inner;
+                    let identity = App::page_row_identity(self.gpu.as_ref(), &entry.url);
+                    paint_row_icon(ui, row.rect, LIST_ROW_INSET, label, identity);
                     if row.clicked() {
                         *navigate_url = Some(entry.url.clone());
                     }
@@ -1756,9 +1757,9 @@ impl App {
                             let Some(label) = self.quick_switcher_row_label(id) else { continue };
                             let identity =
                                 self.row_identity(id, self.quick_switcher_row_url(id).as_deref().unwrap_or(""));
-                            let label = row_label(ui, &label, 0.0);
+                            let widget_label = row_label(ui, &label, 0.0);
                             // Full width, so the highlight spans the row, not just its text.
-                            let button = egui::Button::selectable(i == selected_index, label)
+                            let button = egui::Button::selectable(i == selected_index, widget_label)
                                 .min_size(egui::vec2(ui.available_width(), 0.0));
                             let row = if is_live {
                                 let row = rest_borderless(ui, |ui| ui.add(button));
@@ -1773,7 +1774,7 @@ impl App {
                                 // do anything" moment.
                                 ui.add_enabled(false, button)
                             };
-                            paint_row_icon(ui, row.rect, ui.spacing().button_padding.x, identity);
+                            paint_row_icon(ui, row.rect, ui.spacing().button_padding.x, &label, identity);
                         }
                     });
                 });

@@ -1767,6 +1767,9 @@ impl App {
             "view_kinds": self.view_kinds_state(),
             "window": [window.width(), window.height()],
             "popups": self.popups_state(),
+            "rows": crate::identity::drawn_rows(&self.egui_ctx).iter().map(|(text, r)| serde_json::json!({"text": text, "rect": [r.min.x, r.min.y, r.max.x, r.max.y]})).collect::<Vec<_>>(),
+            "open_popup": self.menus.open_popup.map(|p| format!("{p:?}")),
+            "identities": crate::identity::drawn_icons(&self.egui_ctx).iter().map(|i| serde_json::json!({"kind": i.kind, "text": i.text, "rect": [i.rect.min.x, i.rect.min.y, i.rect.max.x, i.rect.max.y]})).collect::<Vec<_>>(),
             "trail": self.trail_state(),
         })
     }

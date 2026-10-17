@@ -770,7 +770,7 @@ impl App {
                                 button = button.fill(ACCENT);
                             }
                             let row = ui.add(button);
-                            paint_row_icon(ui, row.rect, ui.spacing().button_padding.x, identity);
+                            paint_row_icon(ui, row.rect, ui.spacing().button_padding.x, &suggestion.label(), identity);
                             if row.clicked() {
                                 accepted = Some(suggestion.clone());
                             }

@@ -12,7 +12,7 @@ use std::io;
 use std::path::PathBuf;
 use std::process::{Command, ExitCode, Stdio};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use serde_json::Value;
 
@@ -25,8 +25,6 @@ use crate::windows_main::{manifold_exe, work_dir};
 
 /// How long the instance may take to exit after QUIT.
 const QUIT_TIMEOUT: Duration = Duration::from_secs(60);
-/// How long a screenshot check may keep retaking its shot.
-const SETTLE: Duration = Duration::from_secs(15);
 
 struct Run {
     exe: PathBuf,
@@ -68,38 +66,19 @@ impl Run {
     }
 }
 
-/// How many pixels of the PNG at `path` (all of it, or the top `rows` rows) are exactly the engine's color
-/// (`view_color`): the fill of a tab's icon tile.
-fn engine_pixels(path: &std::path::Path, rows: Option<u32>, engine: &str) -> io::Result<usize> {
-    let want = match engine {
-        "servo" => [255, 138, 80],
-        "cef" => [66, 133, 244],
-        "webkit" => [26, 188, 156],
-        _ => [0, 120, 212],
-    };
-    let img = image::open(path).map_err(|e| bad(format!("{}: {e}", path.display())))?.to_rgb8();
-    let rows = rows.unwrap_or(img.height());
-    Ok(img.enumerate_pixels().filter(|(_, y, p)| *y < rows && p.0 == want).count())
+/// The screen rects of EXPORTSTATE's labelled `rows`, as `[left, top, right, bottom]`.
+fn rows(s: &State) -> Vec<Vec<Value>> {
+    s.0["rows"]
+        .as_array()
+        .map_or_else(Vec::new, |rows| rows.iter().filter_map(|r| r["rect"].as_array().cloned()).collect())
 }
 
-/// `engine_pixels` of a fresh screenshot, retaken until it reaches `want` or `SETTLE` passes: a frame can be shot
-/// before a tile replaces a loading spinner, and the count of the last one is returned and printed.
-fn engine_pixels_settled(
-    inst: &mut Instance,
-    name: &str,
-    rows: Option<u32>,
-    engine: &str,
-    want: usize,
-) -> io::Result<usize> {
-    let deadline = Instant::now() + SETTLE;
-    loop {
-        inst.send("WAITIDLE")?;
-        let count = engine_pixels(&inst.screenshot(name)?, rows, engine)?;
-        if count >= want || Instant::now() >= deadline {
-            println!("{name}: {count} engine-colour pixels");
-            return Ok(count);
-        }
-    }
+/// The tile icons EXPORTSTATE's `identities` lists whose top edge is above `below` (all of them if `None`).
+fn tiles(s: &State, below: Option<f64>) -> usize {
+    let ids = s.0["identities"].as_array().map_or(&[][..], Vec::as_slice);
+    ids.iter()
+        .filter(|i| i["kind"] == "tile" && below.is_none_or(|y| i["rect"][1].as_f64().is_some_and(|top| top < y)))
+        .count()
 }
 
 /// Tab `id`'s entry in EXPORTSTATE's `trail`.
@@ -185,14 +164,33 @@ fn drive(run: &Run, sec: &mut Option<Section>) -> io::Result<()> {
     check_is("the strip has a card per page", 4, strip(&s));
     // At 60% the cards are short: each tab and each page leads with the tile in the engine's color.
     inst.send("GRAPHZOOM 60")?;
-    inst.send("WAITIDLE")?;
-    let tiles = engine_pixels_settled(&mut inst, "strip-zoom", None, &run.engine, 60)?;
-    check_is("two tab tiles and four page tiles are drawn (>= 60 px)", true, tiles >= 60);
+    let s = inst.export_until("strip-zoom", |s| tiles(s, None) >= 6)?;
+    check_is("two tab tiles and four page tiles are drawn", true, tiles(&s, None) >= 6);
     inst.send("TOGGLEVIEW")?;
     inst.export_until("strip-off", |s| s.tab_view() && at(s, "/b4"))?;
     // The address bar's icon: the same tile (these local pages have no favicon), in the toolbar band.
-    let icon = engine_pixels_settled(&mut inst, "address-icon", Some(40), &run.engine, 100)?;
-    check_is("the address bar has an icon tile (>= 100 px)", true, icon >= 100);
+    let s = inst.export_until("address-icon", |s| tiles(s, Some(40.0)) >= 1)?;
+    check_is("the address bar has an icon tile", true, tiles(&s, Some(40.0)) >= 1);
+    // The dropdown: each open-tab suggestion is a labelled row led by an icon tile. Suggestions only recompute when
+    // the text changes, so type, then change it.
+    inst.send("ADDRESSBAR 127")?;
+    inst.send("EGUITEXT .")?;
+    let s = inst.export_until("dropdown", |s| !rows(s).is_empty())?;
+    let led = |s: &State| {
+        let ids = s.0["identities"].as_array().map_or(&[][..], Vec::as_slice);
+        rows(s)
+            .iter()
+            .filter(|r| {
+                ids.iter().any(|i| {
+                    i["rect"][0].as_f64() > r[0].as_f64()
+                        && i["rect"][1].as_f64() >= r[1].as_f64()
+                        && i["rect"][3].as_f64() <= r[3].as_f64()
+                })
+            })
+            .count()
+    };
+    check_is("every dropdown row has an icon inside it", rows(&s).len(), led(&s));
+    inst.send("ESCAPE")?;
 
     next("script");
     // A page that calls history.back() itself: the engine goes Back with no host move, and the trail must read it as a

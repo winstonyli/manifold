@@ -108,6 +108,7 @@ impl App {
     /// One frame of UI. An open anchored popup takes Escape (the views skip theirs while one is
     /// open, `popup_open`), and when it closes from the keyboard focus goes back to its opening button.
     pub(crate) fn build_ui(&mut self, ui: &mut egui::Ui) {
+        crate::identity::begin_icon_frame(ui.ctx());
         self.view_ui.view_status_cache.borrow_mut().clear();
         let open_at_start = self.menus.open_popup;
         // An open page menu takes the Escape first (`build_trail_menu`); the popup under it stays.

@@ -94,6 +94,7 @@ impl Identity {
     ) -> Option<IdentityText> {
         let side = size * inv_zoom;
         let square = egui::Rect::from_center_size(center, egui::Vec2::splat(side));
+        record_icon(ui, self, square);
         match self {
             Self::Spinner => egui::Spinner::new().size(side).paint_at(ui, square),
             Self::Image(tex) => {
@@ -106,6 +107,73 @@ impl Identity {
         }
         self.text(center, size, default_ink)
     }
+}
+
+/// An icon `Identity::paint` drew in the last finished frame: what `export_state`'s `identities` lists.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct DrawnIcon {
+    /// `spinner`, `image`, `glyph` or `tile`.
+    pub(crate) kind: &'static str,
+    /// The glyph, or a tile's letter; empty for a spinner, an image and a letterless tile.
+    pub(crate) text: String,
+    /// Where it is on screen.
+    pub(crate) rect: egui::Rect,
+}
+
+/// The icons drawn so far this frame and in the last finished one.
+#[derive(Clone, Default)]
+struct IconLog {
+    building: Vec<DrawnIcon>,
+    done: Vec<DrawnIcon>,
+    rows_building: Vec<(String, egui::Rect)>,
+    rows_done: Vec<(String, egui::Rect)>,
+}
+
+fn icon_log_id() -> egui::Id {
+    egui::Id::new("identity_icon_log")
+}
+
+/// Starts a frame's icon log: what was drawn becomes the finished frame's list.
+pub(crate) fn begin_icon_frame(ctx: &egui::Context) {
+    ctx.data_mut(|d| {
+        let log = d.get_temp_mut_or_default::<IconLog>(icon_log_id());
+        log.done = std::mem::take(&mut log.building);
+        log.rows_done = std::mem::take(&mut log.rows_building);
+    });
+}
+
+/// The icons the last finished frame drew, in paint order.
+pub(crate) fn drawn_icons(ctx: &egui::Context) -> Vec<DrawnIcon> {
+    ctx.data(|d| d.get_temp::<IconLog>(icon_log_id()).map(|log| log.done).unwrap_or_default())
+}
+
+/// The labelled list rows (an icon row with a label) the last finished frame drew: text and screen rect.
+pub(crate) fn drawn_rows(ctx: &egui::Context) -> Vec<(String, egui::Rect)> {
+    ctx.data(|d| d.get_temp::<IconLog>(icon_log_id()).map(|log| log.rows_done).unwrap_or_default())
+}
+
+/// Notes the labelled row `label` at `rect`; an empty label is no row.
+fn note_row(ui: &egui::Ui, label: &str, rect: egui::Rect) {
+    if label.is_empty() {
+        return;
+    }
+    let rect = ui.ctx().layer_transform_to_global(ui.layer_id()).map_or(rect, |t| t * rect);
+    ui.ctx()
+        .data_mut(|d| d.get_temp_mut_or_default::<IconLog>(icon_log_id()).rows_building.push((label.to_owned(), rect)));
+}
+
+/// Notes that `identity` is drawn in `square` (in `ui`'s layer space).
+fn record_icon(ui: &egui::Ui, identity: Identity, square: egui::Rect) {
+    let (kind, text) = match identity {
+        Identity::Spinner => ("spinner", String::new()),
+        Identity::Image(_) => ("image", String::new()),
+        Identity::Glyph { glyph, .. } => ("glyph", glyph.to_owned()),
+        Identity::Tile { letter, .. } => ("tile", letter.map(String::from).unwrap_or_default()),
+    };
+    let rect = ui.ctx().layer_transform_to_global(ui.layer_id()).map_or(square, |t| t * square);
+    ui.ctx().data_mut(|d| {
+        d.get_temp_mut_or_default::<IconLog>(icon_log_id()).building.push(DrawnIcon { kind, text, rect })
+    });
 }
 
 impl App {
@@ -148,7 +216,8 @@ pub(crate) fn row_label(ui: &egui::Ui, label: &str, inset: f32) -> egui::WidgetT
 }
 
 /// Paints `identity` in the room `row_label` left at the left of a row's `rect`, `pad` points in (a button's padding, or `LIST_ROW_INSET`).
-pub(crate) fn paint_row_icon(ui: &egui::Ui, rect: egui::Rect, pad: f32, identity: Identity) {
+pub(crate) fn paint_row_icon(ui: &egui::Ui, rect: egui::Rect, pad: f32, label: &str, identity: Identity) {
+    note_row(ui, label, rect);
     let center = egui::pos2(rect.left() + pad + ROW_ICON_SIZE / 2.0, rect.center().y);
     if let Some(text) = identity.paint(ui, center, ROW_ICON_SIZE, 1.0, ui.visuals().weak_text_color()) {
         text.draw(ui.painter(), text.center);
@@ -310,5 +379,42 @@ mod tests {
             assert_eq!(globe.unwrap().text, egui_phosphor::light::GLOBE);
         });
         output.textures_delta.clear();
+    }
+
+    #[test]
+    fn painted_icons_are_logged_for_the_finished_frame_only() {
+        let ctx = egui::Context::default();
+        let paint = |ctx: &egui::Context| {
+            let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+                begin_icon_frame(ui.ctx());
+                Identity::Tile { fill: view_color(ViewKind::Cef), letter: Some('E') }.paint(
+                    ui,
+                    egui::pos2(10.0, 10.0),
+                    16.0,
+                    1.0,
+                    TEXT_WEAK,
+                );
+                Identity::Spinner.paint(ui, egui::pos2(50.0, 10.0), 16.0, 1.0, TEXT_WEAK);
+                paint_row_icon(
+                    ui,
+                    egui::Rect::from_min_size(egui::pos2(0.0, 30.0), egui::vec2(100.0, 14.0)),
+                    4.0,
+                    "page",
+                    Identity::Spinner,
+                );
+                paint_row_icon(ui, egui::Rect::ZERO, 0.0, "", Identity::Spinner);
+            });
+            output.textures_delta.clear();
+        };
+        assert!(drawn_icons(&ctx).is_empty());
+        paint(&ctx);
+        assert!(drawn_icons(&ctx).is_empty(), "the frame is unfinished until the next begins");
+        paint(&ctx);
+        let icons = drawn_icons(&ctx);
+        let seen: Vec<_> = icons.iter().map(|i| (i.kind, i.text.as_str(), i.rect.center())).collect();
+        assert_eq!(seen.len(), 4);
+        assert_eq!(seen[..2], [("tile", "E", egui::pos2(10.0, 10.0)), ("spinner", "", egui::pos2(50.0, 10.0))]);
+        let rows = drawn_rows(&ctx);
+        assert_eq!(rows.iter().map(|(t, _)| t.as_str()).collect::<Vec<_>>(), ["page"], "an empty label is no row");
     }
 }
