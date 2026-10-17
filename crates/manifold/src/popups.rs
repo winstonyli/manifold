@@ -860,6 +860,7 @@ impl App {
         let mut folder_rename_start: Option<(String, String)> = None;
         let mut folder_rename_commit: Option<String> = None;
         let mut folder_rename_cancel = false;
+        let mut wanted: Vec<String> = Vec::new();
         let open = self.menus.open_popup == Some(AnchoredPopup::Bookmarks);
         let area_rect =
             build_list_popup_frame(ui.ctx(), "bookmarks_popup", anchor_rect, 220.0, 320.0, fade, open, |ui| {
@@ -901,7 +902,11 @@ impl App {
                         for (index, bookmark) in rows {
                             let (index, bookmark) = (*index, *bookmark);
                             ui.horizontal(|ui| {
-                                if list_row(ui, &bookmark.title).clicked() {
+                                let identity = App::page_row_identity(self.gpu.as_ref(), &bookmark.url);
+                                wanted.push(bookmark.url.clone());
+                                let row = list_row(ui, row_label(ui, &bookmark.title));
+                                paint_row_icon(ui, row.rect, 0.0, identity);
+                                if row.clicked() {
                                     navigate_url = Some(bookmark.url.clone());
                                 }
                                 if ui.small_button(egui_phosphor::light::X).clicked() {
@@ -954,6 +959,7 @@ impl App {
                 });
             });
 
+        self.request_favicons(wanted.iter().map(String::as_str));
         let clicked_outside = clicked_outside_popup(ui, area_rect, Some(anchor_rect));
 
         if let Some((url, draft)) = folder_rename_start {
@@ -1002,6 +1008,7 @@ impl App {
         let mut close = false;
         let mut navigate_url: Option<String> = None;
         let mut clear_requested = false;
+        let wanted = std::cell::RefCell::new(Vec::<String>::new());
         let open = self.menus.open_popup == Some(AnchoredPopup::History);
         let area_rect =
             build_list_popup_frame(ui.ctx(), "history_popup", anchor_rect, 220.0, 320.0, fade, open, |ui| {
@@ -1031,7 +1038,11 @@ impl App {
                     // every index by one, so focus slips to the neighbouring entry for that frame; rare
                     // enough to leave.)
                     let id = egui::Id::new(("history_row", i));
-                    if ui.scope_builder(egui::UiBuilder::new().id(id), |ui| list_row(ui, label)).inner.clicked() {
+                    wanted.borrow_mut().push(entry.url.clone());
+                    let label = row_label(ui, label);
+                    let row = ui.scope_builder(egui::UiBuilder::new().id(id), |ui| list_row(ui, label)).inner;
+                    paint_row_icon(ui, row.rect, 0.0, App::page_row_identity(self.gpu.as_ref(), &entry.url));
+                    if row.clicked() {
                         *navigate_url = Some(entry.url.clone());
                     }
                 };
@@ -1069,6 +1080,7 @@ impl App {
                 }
             });
 
+        self.request_favicons(wanted.borrow().iter().map(String::as_str));
         let clicked_outside = clicked_outside_popup(ui, area_rect, Some(anchor_rect));
 
         if let Some(url) = navigate_url {
@@ -1753,7 +1765,7 @@ impl App {
                                 // do anything" moment.
                                 ui.add_enabled(false, egui::Button::selectable(i == selected_index, label))
                             };
-                            paint_row_icon(ui, row.rect, identity);
+                            paint_row_icon(ui, row.rect, ui.spacing().button_padding.x, identity);
                         }
                     });
                 });

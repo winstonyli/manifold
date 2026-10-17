@@ -121,8 +121,12 @@ impl App {
     }
 }
 
-/// Room a list row keeps before its text for its icon, in points: the icon and a gap.
-const ROW_ICON_ROOM: f32 = 22.0;
+/// The icon's size in a list row, in points; rows are text-high, so it is smaller than a header's.
+const ROW_ICON_SIZE: f32 = 12.0;
+/// Room a list row keeps before its text for its icon: the icon and a gap.
+const ROW_ICON_ROOM: f32 = 18.0;
+/// The tile fill of a page that no engine is known for (a history or bookmark row).
+const NEUTRAL_TILE: egui::Color32 = egui::Color32::from_rgb(96, 98, 108);
 
 /// `label` for a list row with room before it for `paint_row_icon`.
 pub(crate) fn row_label(ui: &egui::Ui, label: &str) -> egui::WidgetText {
@@ -136,10 +140,10 @@ pub(crate) fn row_label(ui: &egui::Ui, label: &str) -> egui::WidgetText {
     job.into()
 }
 
-/// Paints `identity` in the room `row_label` left at the left of a row's `rect`.
-pub(crate) fn paint_row_icon(ui: &egui::Ui, rect: egui::Rect, identity: Identity) {
-    let center = egui::pos2(rect.left() + ui.spacing().button_padding.x + FAVICON_SIZE.x / 2.0, rect.center().y);
-    if let Some(text) = identity.paint(ui, center, FAVICON_SIZE.x, 1.0, ui.visuals().weak_text_color()) {
+/// Paints `identity` in the room `row_label` left at the left of a row's `rect`, `pad` points in (a button's padding).
+pub(crate) fn paint_row_icon(ui: &egui::Ui, rect: egui::Rect, pad: f32, identity: Identity) {
+    let center = egui::pos2(rect.left() + pad + ROW_ICON_SIZE / 2.0, rect.center().y);
+    if let Some(text) = identity.paint(ui, center, ROW_ICON_SIZE, 1.0, ui.visuals().weak_text_color()) {
         text.draw(ui.painter(), text.center);
     }
 }
@@ -148,6 +152,24 @@ impl App {
     /// The icon of a list row for the tab `id` showing `url`: its favicon, else the tile in its engine's color.
     pub(crate) fn row_identity(&self, id: &str, url: &str) -> Identity {
         self.tab_identity(url, false, self.mirror.view_kind(id))
+    }
+
+    /// The icon of a list row for a page no tab shows (history, a bookmark): its favicon, else a neutral tile. Takes
+    /// the GPU state, not `self`, so a popup can call it while it holds another field of `App`.
+    pub(crate) fn page_row_identity(gpu: Option<&GpuState>, url: &str) -> Identity {
+        match UrlParts::parse(url).origin().and_then(|origin| gpu?.favicon_id(&origin)) {
+            Some(tex) => Identity::Image(tex),
+            None => Identity::Tile { fill: NEUTRAL_TILE, letter: UrlParts::parse(url).initial() },
+        }
+    }
+
+    /// Asks for the favicon of each of `urls`' origins not yet fetched (a list row only has one once it is).
+    pub(crate) fn request_favicons<'a>(&mut self, urls: impl IntoIterator<Item = &'a str>) {
+        for origin in urls.into_iter().filter_map(|url| UrlParts::parse(url).origin()) {
+            if !self.favicon_resolved.contains(&origin) {
+                self.favicon_fetcher.request(origin);
+            }
+        }
     }
 }
 
@@ -262,7 +284,7 @@ mod tests {
         let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
             let egui::WidgetText::LayoutJob(job) = row_label(ui, "page") else { panic!("not a layout job") };
             assert_eq!(job.sections[0].leading_space, ROW_ICON_ROOM);
-            const { assert!(ROW_ICON_ROOM > FAVICON_SIZE.x, "the icon must fit in the room") };
+            const { assert!(ROW_ICON_ROOM > ROW_ICON_SIZE, "the icon must fit in the room") };
         });
         output.textures_delta.clear();
     }
