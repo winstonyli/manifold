@@ -581,7 +581,7 @@ const COMMAND_HELP: &[(&str, &str)] = &[
     ("SLEEP secs", "Hold later commands for `secs` (in order, unlike a driver script's own sleep)"),
     ("TOGGLESHORTCUTSHELP", "F1 -- toggle the keyboard-shortcut reference popup"),
     ("MENUPAGE name", "Show the open card menu's color|jar page, or its items for none"),
-    ("TOGGLEPOPUP name", "Toggle the Settings page's bookmarks|history|downloads popup (opens the page), or the Back|Forward chip's branch list (needs its marker)"),
+    ("TOGGLEPOPUP name", "Toggle the Settings page's bookmarks|history|downloads popup (opens the page), the graph toolbar's recentlyclosed list, or the Back|Forward chip's branch list (needs its marker)"),
     ("SPLIT kind", "Open a Split pane running `kind` (servo|cef|webkit|webview2)"),
     ("CLOSESPLIT", "Close the Split pane"),
     ("JSONSELECT [pointer]", "Select an entry on the current JSON level (no pointer: the root)"),
@@ -862,6 +862,7 @@ pub fn parse_line(line: &str) -> Option<DebugCommand> {
             "downloads" => Some(DebugCommand::TogglePopup(AnchoredPopup::Downloads)),
             "back" => Some(DebugCommand::TogglePopup(AnchoredPopup::BackBranches)),
             "forward" => Some(DebugCommand::TogglePopup(AnchoredPopup::ForwardBranches)),
+            "recentlyclosed" => Some(DebugCommand::TogglePopup(AnchoredPopup::RecentlyClosed)),
             _ => None,
         },
         "MENUPAGE" => match rest.trim() {
@@ -1527,7 +1528,10 @@ impl App {
                 self.menus.shortcuts_help_open = !self.menus.shortcuts_help_open;
             }
             DebugCommand::TogglePopup(which) => {
-                if !matches!(which, AnchoredPopup::BackBranches | AnchoredPopup::ForwardBranches) {
+                if !matches!(
+                    which,
+                    AnchoredPopup::BackBranches | AnchoredPopup::ForwardBranches | AnchoredPopup::RecentlyClosed
+                ) {
                     self.open_settings_page();
                 }
                 popups::toggle_popup(&mut self.menus.open_popup, which);
