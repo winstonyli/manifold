@@ -2,6 +2,8 @@
 
 ## Branches
 
+`kind: app` (see VERSIONING.md). Version field: workspace `Cargo.toml`; changelog: `CHANGELOG.md`; format versions: `PROTOCOL_VERSION`, `RENDER_PROTOCOL_VERSION`, the store `FORMAT_VERSION`s.
+
 Work on `main`. A release is a version bump commit plus an annotated `vX.Y.Z` tag on `main`, and only when the user asks for one. New branches and worktrees start from `main` and merge back into it. A hotfix for an old release branches from its tag as `release/x.y` and is deleted after. See README "Branches".
 
 ## Formatting and lints
