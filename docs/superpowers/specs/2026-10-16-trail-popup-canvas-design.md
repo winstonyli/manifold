@@ -1,6 +1,6 @@
 # The trail popup as a miniature graph view
 
-Status: draft 2026-10-16 (owner answers: pannable and zoomable, recentred on every open, keyboard if it falls out of the refactor). Follows `2026-10-16-trail-strip-design.md`, which made the strip and the popup share a layout, an edge style, a background, a menu and the two actions (`trail_pick`, `open_branch_as_card`). What still differs is the machinery around them: the strip's pages are real graph cards (hover, focus, menu key, pan and zoom) and the popup's rows are hand-drawn in a `ScrollArea`.
+Status: implemented 2026-10-16 in six tasks (shared camera pieces, `trail_cards`/`trail_edges`, the popup scene, right-click menu, keyboard, docs). Refinements while building: the focus-follows pan is `CardPass.pan_target` (set by `draw_graph_card`, applied by the caller with `GraphCamera::pan_to`; `pan_to_card` and `handle_card_tab` are gone, replaced by `GraphCamera::pan_to` and the free `card_tab_step`); `CardPass.carry` is false in the popup so a page is click-only and a drag pans. Choosing "Open as card" from the popup's menu leaves the popup open (accepted; the menu closes itself). Risk results are at the end of "Risks". Originally: draft (owner answers: pannable and zoomable, recentred on every open, keyboard if it falls out of the refactor). Follows `2026-10-16-trail-strip-design.md`, which made the strip and the popup share a layout, an edge style, a background, a menu and the two actions (`trail_pick`, `open_branch_as_card`). What still differs is the machinery around them: the strip's pages are real graph cards (hover, focus, menu key, pan and zoom) and the popup's rows are hand-drawn in a `ScrollArea`.
 
 ## Goal
 
@@ -46,6 +46,8 @@ Draw the Back/Forward branch popup with the Graph view's own card drawing, camer
 - The popup is a small viewport, so a plain scroll over it zooms (as in the graph) rather than scrolling the page behind. A scroll over the popup must not reach the page behind it; `Area` is above, so it should not, and the first task checks.
 - `interaction.hovered` may keep a virtual id when the popup closes mid-hover. The graph clears it on the next frame's non-hover (`still_hovered`); the popup's close frame clears it explicitly if the test finds it stale.
 - A drag that starts on a page pans only if the page does not sense drag; with `carry` false the page is click-only, so egui hands the drag to the scene behind it. The first task checks that dragging across a page pans the canvas.
+
+**Results (2026-10-16).** Settled by tests in `trail_nav.rs`: the `Scene`-in-`Area` shell (draw, click; the opacity fade is not asserted), a drag across a page pans and does not carry it, recentring on every opening, the long-trail clamp, the trail changing under an open popup. Settled by the menu tests: the menu opens from a right-click and survives in Tab view, and an outside click closes only the menu. Not settled by a test, left to the owner's eye: the menu's layer order over a page, a scroll over the popup not reaching the page behind, and a stale hover after close; no screenshots were taken (the plan's temporary gate extension was skipped), so these stay open.
 
 ## Tests
 
