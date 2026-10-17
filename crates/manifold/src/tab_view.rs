@@ -433,10 +433,8 @@ impl App {
         let (url, loading, kind) = (node.url.clone(), node.loading, node.tab.kind);
         let identity = self.tab_identity(&url, loading, kind);
         let icon_center = egui::pos2(response.rect.min.x + 8.0 + FAVICON_SIZE.x / 2.0, response.rect.center().y);
-        if let Some(IdentityText { center, text, size, color }) =
-            identity.paint(ui, icon_center, FAVICON_SIZE.x, 1.0, ui.visuals().weak_text_color())
-        {
-            ui.painter().text(center, egui::Align2::CENTER_CENTER, text, egui::FontId::proportional(size), color);
+        if let Some(text) = identity.paint(ui, icon_center, FAVICON_SIZE.x, 1.0, ui.visuals().weak_text_color()) {
+            text.draw(ui.painter(), text.center);
         }
         if !response.has_focus() {
             paint_keycaps(ui, response.rect.right_center() - egui::vec2(8.0, 0.0), &["Ctrl", "L"]);

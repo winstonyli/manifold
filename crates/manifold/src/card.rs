@@ -2263,14 +2263,8 @@ impl App {
         deferred_overlays.push(Box::new(move |overlay_painter, project| {
             let base = project(origin);
             if tall {
-                if let Some(IdentityText { center, text, size, color }) = icon_text {
-                    overlay_painter.text(
-                        project(center),
-                        egui::Align2::CENTER_CENTER,
-                        text,
-                        egui::FontId::proportional(size),
-                        color,
-                    );
+                if let Some(text) = icon_text {
+                    text.draw(overlay_painter, project(text.center));
                 }
                 paint_card_title(
                     overlay_painter,
@@ -2378,15 +2372,9 @@ impl App {
                     inv_zoom,
                     egui::Color32::WHITE,
                 );
-                if let Some(IdentityText { center, text, size, color }) = icon_text {
+                if let Some(text) = icon_text {
                     deferred_overlays.push(Box::new(move |overlay_painter, project| {
-                        overlay_painter.text(
-                            project(center),
-                            egui::Align2::CENTER_CENTER,
-                            text,
-                            egui::FontId::proportional(size),
-                            color,
-                        );
+                        text.draw(overlay_painter, project(text.center));
                     }));
                 }
                 // Below `MIN_LABEL_CARD_SCREEN_WIDTH` the label would be a sliver; the icon alone remains.

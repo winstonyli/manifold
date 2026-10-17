@@ -29,6 +29,20 @@ pub(crate) struct IdentityText {
     pub(crate) color: egui::Color32,
 }
 
+impl IdentityText {
+    /// Draws the text with the middle of its ink at `at` (egui's `CENTER_CENTER` centres the line box, which sits a
+    /// descender's height too low for a capital or a digit).
+    pub(crate) fn draw(&self, painter: &egui::Painter, at: egui::Pos2) {
+        let galley = painter.layout_no_wrap(self.text.clone(), egui::FontId::proportional(self.size), self.color);
+        let ink = galley.rows.first().and_then(|row| {
+            let glyph = row.glyphs.first()?;
+            Some(egui::Rect::from_min_size(row.pos + glyph.pos.to_vec2() + glyph.uv_rect.offset, glyph.uv_rect.size))
+        });
+        let origin = at - ink.map_or(galley.size() / 2.0, |r| r.center().to_vec2());
+        painter.galley(origin, galley, self.color);
+    }
+}
+
 impl Identity {
     /// A live tab: the spinner while it loads, else its favicon, else the engine-colored tile.
     pub(crate) fn of_tab(loading: bool, favicon: Option<egui::TextureId>, kind: ViewKind, url: &str) -> Self {
@@ -144,6 +158,32 @@ mod tests {
         assert_eq!(ink_on(view_color(ViewKind::Servo)), BG);
         assert_eq!(ink_on(view_color(ViewKind::Webkit)), BG);
         assert_eq!(ink_on(view_color(ViewKind::Webview2)), TEXT_PRIMARY);
+    }
+
+    #[test]
+    fn a_letter_is_centred_on_its_ink_not_its_line_box() {
+        let ctx = egui::Context::default();
+        crate::theme::apply_fonts(&ctx);
+        let at = egui::pos2(50.0, 50.0);
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let text = IdentityText { center: at, text: "E".into(), size: 11.0, color: BG };
+            text.draw(ui.painter(), at);
+        });
+        output.textures_delta.clear();
+        let ink_center = output.shapes.iter().find_map(|s| match &s.shape {
+            egui::Shape::Text(t) => {
+                let row = t.galley.rows.first()?;
+                let glyph = row.glyphs.first()?;
+                let ink = egui::Rect::from_min_size(
+                    t.pos + row.pos.to_vec2() + glyph.pos.to_vec2() + glyph.uv_rect.offset,
+                    glyph.uv_rect.size,
+                );
+                Some(ink.center())
+            }
+            _ => None,
+        });
+        let ink_center = ink_center.expect("the letter was drawn");
+        assert!((ink_center - at).length() < 0.5, "{ink_center:?} vs {at:?}");
     }
 
     #[test]

@@ -99,8 +99,7 @@ fn paint_page_icon(app: &App, ui: &egui::Ui, rect: egui::Rect, tab: &str, url: &
     let Some(identity) = app.page_identity(tab, url) else { return };
     let center = rect.left_center() + egui::vec2(LABEL_INSET + ICON_SIZE / 2.0, 0.0);
     if let Some(text) = identity.paint(ui, center, ICON_SIZE, 1.0, TEXT_WEAK) {
-        let font = egui::FontId::proportional(text.size);
-        ui.painter().text(text.center, egui::Align2::CENTER_CENTER, text.text, font, text.color);
+        text.draw(ui.painter(), text.center);
     }
 }
 
