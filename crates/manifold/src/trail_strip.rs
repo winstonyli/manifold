@@ -132,6 +132,25 @@ pub(crate) fn page_menu_items(ui: &mut egui::Ui) -> bool {
 }
 
 impl App {
+    /// Eases the camera to a trail strip that has just appeared (Graph view entered, another tab focused, a first
+    /// branch): the strip hangs under its tab's card wherever the layout put that, and nothing else moves the camera,
+    /// so it could sit off screen. Frames the card and the strip's root, unless they are in view already. Not on
+    /// every frame, so it never fights a pan, and a strip that grows while you browse does not move the view.
+    pub(crate) fn frame_new_strip(&mut self) {
+        let tab = self.trail_strip_tab();
+        if tab == self.camera.strip_tab {
+            return;
+        }
+        self.camera.strip_tab = tab.clone();
+        let Some(card) = tab.and_then(|tab| self.card_rect(&tab)) else { return };
+        let root = self.level_items().into_iter().find(|e| e.origin == Origin::Virtual("trail"));
+        if let Some(root) = root {
+            self.camera.pan_to(card.union(root.rect));
+        }
+    }
+}
+
+impl App {
     /// The strip page menu (`menus.trail_menu`), at the pointer. Closes on a choice, a click elsewhere, Escape, or when
     /// its page is gone or nothing hosts it: the strip, or an open Back/Forward branch popup (Tab view has no strip).
     pub(crate) fn build_trail_menu(&mut self, ui: &mut egui::Ui) {
@@ -295,6 +314,24 @@ mod tests {
 
     fn pages(rig: &Rig) -> Vec<crate::level::CardEntry> {
         rig.app.level_items().into_iter().filter(|e| e.id.starts_with("virtual:trail:")).collect()
+    }
+
+    #[test]
+    fn a_strip_that_appears_off_screen_is_framed_once() {
+        let mut rig = Rig::new();
+        let tab = rig.tab();
+        rig.app.focused = Some(tab.clone());
+        rig.app.view_mode = crate::ViewMode::Graph;
+        rig.frame(vec![], egui::Modifiers::NONE);
+        let far = egui::Rect::from_min_size(egui::pos2(9000.0, 9000.0), rig.app.camera.rect.size());
+        rig.app.camera.jump_to(far);
+        rig.app.nav_history.insert(tab.clone(), NavHistory::visited(&["/a", "/b"]));
+        rig.frame(vec![], egui::Modifiers::NONE);
+        assert!(rig.app.camera.tween.is_some(), "the strip appeared off screen: the camera eases to it");
+        assert_eq!(rig.app.camera.strip_tab.as_deref(), Some(tab.as_str()));
+        rig.app.camera.jump_to(far);
+        rig.frame(vec![], egui::Modifiers::NONE);
+        assert!(rig.app.camera.tween.is_none(), "a strip already framed does not fight a later pan");
     }
 
     #[test]

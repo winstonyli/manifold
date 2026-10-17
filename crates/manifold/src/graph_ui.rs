@@ -127,6 +127,8 @@ pub(crate) struct GraphCamera {
     /// have spawned `build_graph_ui` settles and fits the level rather
     /// than showing whatever part of it sits around the world origin.
     pub(crate) frame_restored: bool,
+    /// The tab whose trail strip the camera last framed (`App::frame_new_strip`), `None` while no strip shows.
+    pub(crate) strip_tab: Option<String>,
 }
 
 impl GraphCamera {
@@ -138,6 +140,7 @@ impl GraphCamera {
             momentum: None,
             drag_history: std::collections::VecDeque::new(),
             frame_restored: false,
+            strip_tab: None,
         }
     }
 
@@ -746,6 +749,7 @@ impl App {
             self.camera.jump_to(self.fit_all_nodes_scene_rect());
             self.interaction.pending_new_node = None;
         }
+        self.frame_new_strip();
     }
 
     /// Re-lays-out the level when its node set changed size, unless a drag is in progress.

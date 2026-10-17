@@ -167,8 +167,20 @@ fn drive(run: &Run, sec: &mut Option<Section>) -> io::Result<()> {
     let strip = |s: &State| s.all_cards().iter().filter(|c| c["virtual"].as_str() == Some("trail")).count();
     let s = inst.export_until("strip", |s| !s.tab_view() && strip(s) == 4)?;
     check_is("the strip has a card per page", 4, strip(&s));
-    // The camera moves only on a request, and the layout can land the strip off screen: frame it first.
-    inst.send("FITVIEW")?;
+    // Entering Graph view frames a strip that appeared off screen (`frame_new_strip`); the zoom below keeps the
+    // camera's centre, so let it arrive first.
+    let on_screen = |s: &State| {
+        let (w, h) = (s.0["window"][0].as_f64().unwrap_or(0.0), s.0["window"][1].as_f64().unwrap_or(0.0));
+        let cards = s.all_cards();
+        let strip = cards.iter().filter(|c| c["virtual"].as_str() == Some("trail"));
+        strip.clone().count() == 4
+            && strip.into_iter().all(|c| {
+                let at = |i: usize| c["screen"][i].as_f64().unwrap_or(-1.0);
+                (0.0..w).contains(&at(0)) && (0.0..h).contains(&at(1))
+            })
+    };
+    let s = inst.export_until("strip-framed", on_screen)?;
+    check_is("the strip is on screen after the toggle", true, on_screen(&s));
     // At 60% the cards are short: each tab and each page leads with the tile in the engine's color.
     inst.send("GRAPHZOOM 60")?;
     inst.send("WAITIDLE")?;
