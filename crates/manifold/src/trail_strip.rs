@@ -309,6 +309,9 @@ mod tests {
         rig.app.focused = Some(tab);
         rig.app.view_mode = crate::ViewMode::Graph;
         rig.frame(vec![], egui::Modifiers::NONE);
+        // The strip's arrival eases the camera (`frame_new_strip`); these tests aim at a still one.
+        rig.app.camera.tween = None;
+        rig.frame(vec![], egui::Modifiers::NONE);
         rig
     }
 
