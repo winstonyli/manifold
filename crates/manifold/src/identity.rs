@@ -111,8 +111,12 @@ impl Identity {
 impl App {
     /// `url`'s favicon texture, once its origin's favicon has been fetched.
     pub(crate) fn favicon_texture(&self, url: &str) -> Option<egui::TextureId> {
-        let origin = UrlParts::parse(url).origin()?;
-        self.gpu.as_ref().and_then(|g| g.favicon_id(&origin))
+        Self::favicon_in(self.gpu.as_ref(), url)
+    }
+
+    /// `favicon_texture` from the GPU state alone, for a popup that holds another field of `App`.
+    pub(crate) fn favicon_in(gpu: Option<&GpuState>, url: &str) -> Option<egui::TextureId> {
+        gpu?.favicon_id(&UrlParts::parse(url).origin()?)
     }
 
     /// What `url` shows in its icon slot (`Identity::of_tab`), in a tab's card, the address bar and the trail strip alike.
@@ -160,7 +164,7 @@ impl App {
     /// The icon of a list row for a page no tab shows (history, a bookmark): its favicon, else a neutral tile. Takes
     /// the GPU state, not `self`, so a popup can call it while it holds another field of `App`.
     pub(crate) fn page_row_identity(gpu: Option<&GpuState>, url: &str) -> Identity {
-        match UrlParts::parse(url).origin().and_then(|origin| gpu?.favicon_id(&origin)) {
+        match Self::favicon_in(gpu, url) {
             Some(tex) => Identity::Image(tex),
             None => Identity::Tile { fill: NEUTRAL_TILE, letter: UrlParts::parse(url).initial() },
         }

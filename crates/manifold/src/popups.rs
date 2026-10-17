@@ -728,6 +728,7 @@ impl App {
     /// the hover; other rows have none.
     fn closed_entry_label(
         ui: &mut egui::Ui,
+        gpu: Option<&GpuState>,
         node: &store::json::JsonNode,
         title: Option<&str>,
     ) -> (egui::WidgetText, Option<String>) {
@@ -759,8 +760,12 @@ impl App {
         }
         let text: String = match node.kind() {
             Some(Kind::Tab) => {
-                view_dot(ui, ViewKind::from_name(&str_field("view_kind")).unwrap_or(ViewKind::Servo), 8.0);
-                title.map_or_else(|| str_field("url"), str::to_string)
+                let url = str_field("url");
+                let kind = ViewKind::from_name(&str_field("view_kind")).unwrap_or(ViewKind::Servo);
+                let (slot, _) = ui.allocate_exact_size(egui::vec2(14.0, 14.0), egui::Sense::hover());
+                let identity = Identity::of_tab(false, App::favicon_in(gpu, &url), kind, &url);
+                paint_row_icon(ui, slot, 0.0, identity);
+                title.map_or(url, str::to_string)
             }
             Some(Kind::Image) => {
                 ui.label(egui_phosphor::light::IMAGE);
@@ -813,7 +818,7 @@ impl App {
                 for (id, root, title, members) in &rows {
                     ui.horizontal(|ui| {
                         let mut row_ui = |ui: &mut egui::Ui| {
-                            let (label, hint) = Self::closed_entry_label(ui, root, title.as_deref());
+                            let (label, hint) = Self::closed_entry_label(ui, self.gpu.as_ref(), root, title.as_deref());
                             let mut row = list_row(ui, label);
                             if let Some(hint) = hint {
                                 row = row.on_hover_text(hint);
@@ -2007,7 +2012,7 @@ mod tests {
         fields.insert("type".into(), store::model::TYPE_GROUP.into());
         let node = store::json::JsonNode { id: "g".into(), fields };
         let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
-            let (label, hint) = App::closed_entry_label(ui, &node, None);
+            let (label, hint) = App::closed_entry_label(ui, None, &node, None);
             assert_eq!(label.text(), "Re⟦200B⟧ading");
             assert_eq!(hint.as_deref(), Some("Hidden characters: U+200B zero width space"));
         });
@@ -2024,7 +2029,7 @@ mod tests {
         fields.insert("type".into(), store::model::TYPE_TAB.into());
         let node = store::json::JsonNode { id: "t".into(), fields };
         let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
-            let (label, hint) = App::closed_entry_label(ui, &node, None);
+            let (label, hint) = App::closed_entry_label(ui, None, &node, None);
             assert_eq!((label.text(), hint), ("https://example.org/", None));
         });
         output.textures_delta.clear();
@@ -2039,7 +2044,7 @@ mod tests {
         fields.insert("type".into(), store::model::TYPE_NOTE.into());
         let node = store::json::JsonNode { id: "n".into(), fields };
         let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
-            let (label, hint) = App::closed_entry_label(ui, &node, None);
+            let (label, hint) = App::closed_entry_label(ui, None, &node, None);
             assert_eq!(label.text(), "Re⟦200B⟧ading list");
             assert_eq!(hint.as_deref(), Some("Hidden characters: U+200B zero width space"));
         });
