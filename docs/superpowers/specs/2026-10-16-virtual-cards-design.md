@@ -27,7 +27,7 @@ Not in scope: folding the JSON level's renderer into the seam (later; it needs a
 
 5. **Selection.** Virtual ids may be in `interaction.selected` when `SELECT` is granted; `end_stale_selection` tests the entry list. Actions that act on the selection (Close Selected, Pin, group, delete) filter to ids that are nodes, so a virtual card in a mixed selection is skipped, not an error.
 
-6. **Edges.** `level_edges` takes rects from entries, not `self.nodes[id]` (removes the panic); providers append their own edges (`LevelEdge`), drawn by the existing `draw_graph_edges`.
+6. **Edges.** `level_edges` takes rects from entries, not `self.nodes[id]` (removes the panic); providers append their own edges (`LevelEdge`), drawn by the existing `paint_edges`.
 
 7. **Excluded from persistence.** No virtual id reaches `edit_pos`, `edit_field`, store writes, sync, `EXPORTSESSION`, undo, Recently Closed or `tab-history.json`. A test enumerates the write entry points and passes a virtual id to each.
 

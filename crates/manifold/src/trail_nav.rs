@@ -610,6 +610,10 @@ mod tests {
         popup_run(&mut app, &tab, vec![primary(at, true), primary(at, false)]);
         assert_eq!(app.menus.open_popup, None, "a pick closes the popup");
         assert!(peer.sent().iter().any(|m| matches!(m, HostToView::Navigate { url, .. } if url == "https://b/")));
+        // The engine reports the arrival: the cursor is at b, so c is now its sibling.
+        let h = app.nav_history.get_mut(&tab).unwrap();
+        h.observe("https://b/", "", false, false, Instant::now() + std::time::Duration::from_secs(1));
+        assert_eq!(h.branches(Dir::Back), [(2, "https://c/".to_string())]);
     }
 
     #[test]
