@@ -1,4 +1,4 @@
-//! Reveal-in-Explorer and favicon-origin methods of `App`.
+//! Reveal-in-Explorer methods of `App`.
 
 use super::*;
 
@@ -74,34 +74,5 @@ impl App {
             None if has_file => self.queue_toast("This file's path isn't known on this machine".to_string()),
             None => {}
         }
-    }
-
-    /// Memoized `favicon_fetch::url_origin(url)` -- that function is a
-    /// couple of string scans plus a `format!` allocation, and both of
-    /// this app's per-frame callers (the Graph-view tab card, the Tab-
-    /// view toolbar's own identity chip) called it fresh every single
-    /// frame for a URL that's stable between navigations. **Found on a
-    /// general (not just large-graph) performance audit**, the same
-    /// category as `truncate_cache`: capped and cleared outright past
-    /// `TRUNCATE_CACHE_CAP` rather than evicted incrementally, for the
-    /// same "should stay small in steady state, insurance against
-    /// unbounded growth" reasoning.
-    pub(crate) fn cached_favicon_origin(&mut self, url: &str) -> Option<String> {
-        if let Some(cached) = self.favicon_origin_cache.get(url) {
-            return cached.clone();
-        }
-        let origin = UrlParts::parse(url).origin();
-        if self.favicon_origin_cache.len() >= TRUNCATE_CACHE_CAP {
-            self.favicon_origin_cache.clear();
-        }
-        self.favicon_origin_cache.insert(url.to_owned(), origin.clone());
-        origin
-    }
-
-    /// The tab's icon (`Identity::of_tab`): its favicon texture once fetched, else the placeholder.
-    pub(crate) fn tab_identity(&mut self, url: &str, loading: bool, kind: ViewKind) -> Identity {
-        let favicon =
-            self.cached_favicon_origin(url).and_then(|origin| self.gpu.as_ref().and_then(|g| g.favicon_id(&origin)));
-        Identity::of_tab(loading, favicon, kind, url)
     }
 }

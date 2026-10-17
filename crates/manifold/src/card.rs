@@ -1475,13 +1475,12 @@ impl App {
         // card asks for its own. Only on-screen cards drawn in full detail get here (culled and
         // LOD-simplified ones don't), so a big restored session fetches for what's in view, once
         // per origin.
-        let mut favicon = None;
-        if let Some(origin) = self.cached_favicon_origin(&url) {
+        if let Some(origin) = UrlParts::parse(&url).origin() {
             if !self.favicon_resolved.contains(&origin) {
-                self.favicon_fetcher.request(origin.clone());
+                self.favicon_fetcher.request(origin);
             }
-            favicon = self.gpu.as_ref().and_then(|g| g.favicon_id(&origin));
         }
+        let favicon = self.favicon_texture(&url);
         let failed = matches!(state, UnloadedState::Failed(_));
         let header = CardHeader {
             identity: match (failed, favicon) {

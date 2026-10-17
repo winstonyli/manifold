@@ -88,6 +88,19 @@ impl Identity {
     }
 }
 
+impl App {
+    /// `url`'s favicon texture, once its origin's favicon has been fetched.
+    pub(crate) fn favicon_texture(&self, url: &str) -> Option<egui::TextureId> {
+        let origin = UrlParts::parse(url).origin()?;
+        self.gpu.as_ref().and_then(|g| g.favicon_id(&origin))
+    }
+
+    /// What `url` shows in its icon slot (`Identity::of_tab`), in a tab's card, the address bar and the trail strip alike.
+    pub(crate) fn tab_identity(&self, url: &str, loading: bool, kind: ViewKind) -> Identity {
+        Identity::of_tab(loading, self.favicon_texture(url), kind, url)
+    }
+}
+
 /// The dark or the light ink, whichever reads better on `fill` (relative luminance, sRGB).
 pub(crate) fn ink_on(fill: egui::Color32) -> egui::Color32 {
     let lin = |c: u8| {

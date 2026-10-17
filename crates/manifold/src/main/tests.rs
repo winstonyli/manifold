@@ -77,7 +77,6 @@ const NOT_FORGOTTEN: &[(&str, &str)] = &[
     ("menus.trail_menu", "a virtual card id (never a node id), closed by `build_trail_menu` when its page is gone"),
     ("pending_session_delete", "a session name, not a node id"),
     ("favicon_resolved", "origins, not node ids"),
-    ("favicon_origin_cache", "urls, not node ids"),
     ("graph_settled_key", "a level fingerprint, rebuilt when it differs"),
     ("debug.debug_address_bar_typing", "typed text, not a node id"),
     ("debug.pending_screenshot", "a file path, not a node id"),
