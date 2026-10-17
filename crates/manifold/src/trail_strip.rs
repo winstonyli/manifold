@@ -156,6 +156,49 @@ impl TrailSource {
     }
 }
 
+/// Tab `tab`'s page cards, their bounding box's top-left at `origin`: the strip hangs it under the tab's card, the Back
+/// and Forward popups use their own origin. Empty when the tab has no trail.
+pub(crate) fn trail_cards(app: &App, tab: &str, origin: egui::Pos2) -> Vec<CardEntry> {
+    let Some(history) = app.nav_history.get(tab) else { return Vec::new() };
+    let (pages, epoch) = (history.tree(), history.epoch());
+    let kind = CardKind { ty: TYPE_TRAIL_PAGE, tags: crate::caps::TagSet::EMPTY };
+    pages
+        .iter()
+        .zip(page_rects(&pages, &page_sizes(&app.egui_ctx, &pages, PAGE), COLUMN_GAP, ROW_GAP))
+        .map(|(page, rect)| CardEntry {
+            id: TrailSource::page_id(tab, epoch, page.entry),
+            kind,
+            origin: Origin::Virtual("trail"),
+            rect: rect.translate(origin.to_vec2()),
+        })
+        .collect()
+}
+
+/// The edges between `tab`'s pages (`rect_of` finds a card's rect by id); those on the path to the cursor are
+/// highlighted.
+pub(crate) fn trail_edges(app: &App, tab: &str, rect_of: &dyn Fn(&str) -> Option<egui::Rect>) -> Vec<LevelEdge> {
+    let Some(history) = app.nav_history.get(tab) else { return Vec::new() };
+    let (pages, epoch) = (history.tree(), history.epoch());
+    pages
+        .iter()
+        .filter_map(|page| {
+            let parent = &pages[page.parent?];
+            let (from_id, to_id) =
+                (TrailSource::page_id(tab, epoch, parent.entry), TrailSource::page_id(tab, epoch, page.entry));
+            Some(LevelEdge {
+                from: rect_of(&from_id)?.right_center(),
+                to: rect_of(&to_id)?.left_center(),
+                highlight: parent.on_path && page.on_path,
+                from_id,
+                to_id,
+                curve: EdgeCurve::Horizontal,
+                kind: EdgeKind::Opened,
+                link: None,
+            })
+        })
+        .collect()
+}
+
 impl VirtualSource for TrailSource {
     fn name(&self) -> &'static str {
         "trail"
@@ -163,44 +206,12 @@ impl VirtualSource for TrailSource {
 
     fn entries(&self, app: &App) -> Vec<CardEntry> {
         let Some(tab) = app.trail_strip_tab() else { return Vec::new() };
-        let (Some(history), Some(card)) = (app.nav_history.get(&tab), app.card_rect(&tab)) else { return Vec::new() };
-        let (pages, epoch) = (history.tree(), history.epoch());
-        let origin = card.left_bottom() + egui::vec2(0.0, STRIP_GAP);
-        let kind = CardKind { ty: TYPE_TRAIL_PAGE, tags: crate::caps::TagSet::EMPTY };
-        pages
-            .iter()
-            .zip(page_rects(&pages, &page_sizes(&app.egui_ctx, &pages, PAGE), COLUMN_GAP, ROW_GAP))
-            .map(|(page, rect)| CardEntry {
-                id: Self::page_id(&tab, epoch, page.entry),
-                kind,
-                origin: Origin::Virtual("trail"),
-                rect: rect.translate(origin.to_vec2()),
-            })
-            .collect()
+        let Some(card) = app.card_rect(&tab) else { return Vec::new() };
+        trail_cards(app, &tab, card.left_bottom() + egui::vec2(0.0, STRIP_GAP))
     }
 
     fn edges(&self, app: &App, rect_of: &dyn Fn(&str) -> Option<egui::Rect>) -> Vec<LevelEdge> {
-        let Some(tab) = app.trail_strip_tab() else { return Vec::new() };
-        let Some(history) = app.nav_history.get(&tab) else { return Vec::new() };
-        let (pages, epoch) = (history.tree(), history.epoch());
-        pages
-            .iter()
-            .filter_map(|page| {
-                let parent = &pages[page.parent?];
-                let (from_id, to_id) =
-                    (Self::page_id(&tab, epoch, parent.entry), Self::page_id(&tab, epoch, page.entry));
-                Some(LevelEdge {
-                    from: rect_of(&from_id)?.right_center(),
-                    to: rect_of(&to_id)?.left_center(),
-                    highlight: parent.on_path && page.on_path,
-                    from_id,
-                    to_id,
-                    curve: EdgeCurve::Horizontal,
-                    kind: EdgeKind::Opened,
-                    link: None,
-                })
-            })
-            .collect()
+        app.trail_strip_tab().map_or_else(Vec::new, |tab| trail_edges(app, &tab, rect_of))
     }
 
     fn paint_body(&self, app: &App, ui: &mut egui::Ui, entry: &CardEntry) -> CardBody {
@@ -279,6 +290,22 @@ mod tests {
         assert_eq!(cards[0].rect.min.x, below.x, "the root is the leftmost column");
         assert_eq!(cards[1].rect.min.x, below.x + cards[0].rect.width() + COLUMN_GAP, "children one column right");
         assert!(cards[3].rect.min.y > cards[1].rect.min.y, "the later branch sits on a lower lane");
+    }
+
+    #[test]
+    fn trail_cards_lay_out_any_tabs_trail_from_the_origin_in_any_view() {
+        let mut rig = forked();
+        let tab = rig.tab();
+        rig.app.view_mode = crate::ViewMode::Item;
+        rig.app.focused = None;
+        assert!(pages(&rig).is_empty(), "no strip here");
+        let origin = egui::pos2(5.0, 7.0);
+        let cards = trail_cards(&rig.app, &tab, origin);
+        assert_eq!(cards.len(), 4);
+        assert_eq!(cards.iter().fold(egui::Rect::NOTHING, |b, e| b.union(e.rect)).min, origin);
+        let rect_of = |id: &str| cards.iter().find(|e| e.id == id).map(|e| e.rect);
+        assert_eq!(trail_edges(&rig.app, &tab, &rect_of).len(), 3);
+        assert!(trail_cards(&rig.app, "no-such-tab", origin).is_empty());
     }
 
     #[test]
