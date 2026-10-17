@@ -1290,7 +1290,7 @@ impl App {
     /// on a page is a plain move there (`trail_pick`) and closes the popup, as does a click outside.
     pub(crate) fn build_trail_branches_popup(
         &mut self,
-        ui: &egui::Ui,
+        ui: &mut egui::Ui,
         dir: Dir,
         anchor_rect: egui::Rect,
         tab: &str,
@@ -1322,6 +1322,7 @@ impl App {
         }
         let order: Vec<String> = cards.iter().map(|e| e.id.clone()).collect();
         let mut clicked = false;
+        let menu_was_open = self.menus.trail_menu.is_some();
         let area = egui::Area::new(egui::Id::new(("trail_branches_popup", which)))
             .fixed_pos(anchor_rect.left_bottom())
             .order(egui::Order::Foreground)
@@ -1363,6 +1364,13 @@ impl App {
                             for entry in &cards {
                                 if let Some(response) = self.virtual_card_click(ui, &mut pass, entry, "trail", false) {
                                     clicked |= response.clicked();
+                                    if response.secondary_clicked() {
+                                        let at =
+                                            ui.input(|i| i.pointer.interact_pos()).unwrap_or(response.rect.center());
+                                        if let Some(source) = self.virtual_source("trail") {
+                                            source.on_menu(self, entry, at);
+                                        }
+                                    }
                                 }
                             }
                         });
@@ -1379,10 +1387,12 @@ impl App {
                 });
             });
         self.menus.trail_canvas = Some((which, camera));
-        let clicked_outside = clicked_outside_popup(ui, area.response.rect, Some(anchor_rect));
+        // A click that dismisses the page menu from outside is the menu's, not the popup's.
+        let clicked_outside = clicked_outside_popup(ui, area.response.rect, Some(anchor_rect)) && !menu_was_open;
         if clicked || clicked_outside {
             close_popup(&mut self.menus.open_popup, which);
         }
+        self.build_trail_menu(ui);
     }
 
     /// Sends `FindStart` for `self.find.text` to the focused tab, or

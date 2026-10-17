@@ -112,11 +112,16 @@ pub(crate) fn page_menu_items(ui: &mut egui::Ui) -> bool {
 
 impl App {
     /// The strip page menu (`menus.trail_menu`), at the pointer. Closes on a choice, a click elsewhere, Escape, or when
-    /// its page or the strip is gone.
+    /// its page is gone or nothing hosts it: the strip, or an open Back/Forward branch popup (Tab view has no strip).
     pub(crate) fn build_trail_menu(&mut self, ui: &mut egui::Ui) {
         let Some((id, pos)) = self.menus.trail_menu.clone() else { return };
+        let hosted = self.trail_strip_tab().is_some()
+            || matches!(
+                self.menus.open_popup,
+                Some(crate::popups::AnchoredPopup::BackBranches | crate::popups::AnchoredPopup::ForwardBranches)
+            );
         let page = live_page(self, &id).map(|(tab, page)| (tab.to_owned(), page));
-        let Some((tab, page)) = page.filter(|_| self.trail_strip_tab().is_some()) else {
+        let Some((tab, page)) = page.filter(|_| hosted) else {
             self.menus.trail_menu = None;
             return;
         };
@@ -298,6 +303,26 @@ mod tests {
         let rect_of = |id: &str| cards.iter().find(|e| e.id == id).map(|e| e.rect);
         assert_eq!(trail_edges(&rig.app, &tab, &rect_of).len(), 3);
         assert!(trail_cards(&rig.app, "no-such-tab", origin).is_empty());
+    }
+
+    #[test]
+    fn the_page_menu_stays_while_a_branch_popup_is_open_and_closes_when_neither_shows() {
+        let mut rig = forked();
+        let tab = rig.tab();
+        let id = TrailSource::page_id(&tab, rig.app.nav_history[&tab].epoch(), 1);
+        rig.app.view_mode = crate::ViewMode::Item;
+        rig.app.menus.trail_menu = Some((id.clone(), egui::pos2(5.0, 5.0)));
+        let ctx = rig.app.egui_ctx.clone();
+        let run = |app: &mut App| {
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| app.build_trail_menu(ui));
+            out.textures_delta.clear();
+        };
+        run(&mut rig.app);
+        assert!(rig.app.menus.trail_menu.is_none(), "no strip and no popup: closed");
+        rig.app.menus.trail_menu = Some((id, egui::pos2(5.0, 5.0)));
+        rig.app.menus.open_popup = Some(crate::popups::AnchoredPopup::BackBranches);
+        run(&mut rig.app);
+        assert!(rig.app.menus.trail_menu.is_some(), "a branch popup is open: kept");
     }
 
     #[test]

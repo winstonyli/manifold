@@ -705,6 +705,57 @@ mod tests {
         assert_eq!(popup_start_rect(long, Some(cursor), view).size(), view);
     }
 
+    /// A secondary press and release at `at`.
+    fn right_click(at: egui::Pos2) -> Vec<egui::Event> {
+        let secondary = |pressed| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Secondary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        vec![egui::Event::PointerMoved(at), secondary(true), secondary(false)]
+    }
+
+    fn page_centre(app: &App, tab: &str, entry: usize) -> egui::Pos2 {
+        let cards = crate::trail_strip::trail_cards(app, tab, egui::Pos2::ZERO);
+        let camera = app.menus.trail_canvas.as_ref().expect("the popup's camera").1.rect;
+        scene_min(app) + (cards[entry].rect.center() - camera.min)
+    }
+
+    #[test]
+    fn a_right_click_on_a_page_opens_its_menu_in_tab_view_and_keeps_the_popup_open() {
+        let (mut app, tab, _peer) = open_back_popup("trail-popup-menu");
+        app.view_mode = crate::ViewMode::Item; // the popup lives in Tab view, where no strip hosts the menu
+        let at = page_centre(&app, &tab, 1);
+        popup_run(&mut app, &tab, vec![egui::Event::PointerMoved(at)]);
+        popup_run(&mut app, &tab, right_click(at));
+        let (id, _) = app.menus.trail_menu.clone().expect("the page's menu is open");
+        assert!(id.starts_with("virtual:trail:"), "{id}");
+        for _ in 0..3 {
+            popup_run(&mut app, &tab, vec![]);
+        }
+        assert!(app.menus.trail_menu.is_some(), "the popup keeps the menu alive in Tab view");
+        assert_eq!(app.menus.open_popup, Some(AnchoredPopup::BackBranches));
+    }
+
+    #[test]
+    fn a_click_that_closes_the_menu_from_outside_does_not_also_close_the_popup() {
+        let (mut app, tab, _peer) = open_back_popup("trail-popup-menu-outside");
+        app.view_mode = crate::ViewMode::Item;
+        let at = page_centre(&app, &tab, 1);
+        popup_run(&mut app, &tab, vec![egui::Event::PointerMoved(at)]);
+        popup_run(&mut app, &tab, right_click(at));
+        for _ in 0..2 {
+            popup_run(&mut app, &tab, vec![]);
+        }
+        let away = egui::pos2(700.0, 500.0);
+        popup_run(&mut app, &tab, vec![egui::Event::PointerMoved(away), primary(away, true), primary(away, false)]);
+        assert!(app.menus.trail_menu.is_none(), "the click closed the menu");
+        assert_eq!(app.menus.open_popup, Some(AnchoredPopup::BackBranches), "and only the menu");
+        popup_run(&mut app, &tab, vec![egui::Event::PointerMoved(away), primary(away, true), primary(away, false)]);
+        assert_eq!(app.menus.open_popup, None, "the next click outside closes the popup");
+    }
+
     #[test]
     fn the_popup_centres_the_cursor_page_once_per_opening_not_every_frame() {
         let ctx = egui::Context::default();
