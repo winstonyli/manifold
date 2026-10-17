@@ -181,7 +181,7 @@ pub struct GpuState {
     /// freed; `free_tab_thumbnail` drops it.
     thumbs_dirty: HashSet<String>,
     /// Keyed by *origin* (`scheme://host[:port]`, see `favicon_fetch::
-    /// url_origin`), not tab id -- favicons are fetched independently of
+    /// UrlParts::origin`), not tab id -- favicons are fetched independently of
     /// any specific tab (see `favicon_fetch`'s own module doc comment), so
     /// two tabs on the same site share one texture instead of each
     /// re-fetching/re-uploading their own. `favicon_order` tracks insertion

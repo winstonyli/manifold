@@ -11,6 +11,7 @@
 //! The trees are saved to `tab-history.json`, keyed by node id: machine-local, not part of the shared session store
 //! (a trail changes on every navigation; the store shares only user-started URL changes).
 
+use crate::url_parts::UrlParts;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -609,41 +610,32 @@ impl NavHistory {
     }
 }
 
-/// `https://host/a/b?q#frag` -> `/a/b?q`; `https://host/` -> `host`. A string with no scheme is returned as is.
-fn short_url(url: &str) -> String {
-    let Some((_, rest)) = url.split_once("://") else { return url.to_owned() };
-    let rest = rest.split('#').next().unwrap_or(rest);
-    match rest.find('/') {
-        Some(i) if rest.len() > i + 1 => rest[i..].to_owned(),
-        Some(i) => rest[..i].to_owned(),
-        None => rest.to_owned(),
-    }
-}
-
-/// `https://h/p?a=1&b=2#f` -> (`https://h/p`, [`a=1`, `b=2`, `#f`]): the page's address and what can differ between visits.
-fn split_url(url: &str) -> (String, Vec<String>) {
-    let (rest, fragment) = url.split_once('#').map_or((url, None), |(r, f)| (r, Some(f)));
-    let (key, query) = rest.split_once('?').map_or((rest, ""), |(k, q)| (k, q));
-    let items = query.split('&').filter(|s| !s.is_empty()).map(str::to_owned);
-    (key.to_owned(), items.chain(fragment.map(|f| format!("#{f}"))).collect())
-}
-
 /// Each entry's label: its title, or its URL's path. Where other entries share its address (the URL without query or
 /// fragment), what differs from those, first so a clipped label keeps it: `q=cats page=2 · Results`.
 fn page_labels(entries: &[Entry]) -> Vec<String> {
-    let parsed: Vec<(String, Vec<String>)> = entries.iter().map(|e| split_url(&e.url)).collect();
+    let parts: Vec<UrlParts> = entries.iter().map(|e| UrlParts::parse(&e.url)).collect();
+    // What can differ between visits of one address: each `&` item of the query, then the fragment.
+    let items: Vec<Vec<String>> = parts
+        .iter()
+        .map(|p| {
+            let query = p.query.split('&').filter(|s| !s.is_empty()).map(str::to_owned);
+            query.chain(p.fragment.map(|f| format!("#{f}"))).collect()
+        })
+        .collect();
     entries
         .iter()
-        .zip(&parsed)
-        .map(|(e, (key, items))| {
-            let plain = if e.title.is_empty() { short_url(&e.url) } else { e.title.clone() };
-            let group: Vec<&Vec<String>> = parsed.iter().filter(|(k, _)| k == key).map(|(_, i)| i).collect();
+        .enumerate()
+        .map(|(n, e)| {
+            let plain = if e.title.is_empty() { parts[n].short().to_owned() } else { e.title.clone() };
+            let group: Vec<&Vec<String>> =
+                (0..parts.len()).filter(|&m| parts[m].address == parts[n].address).map(|m| &items[m]).collect();
             let differs: Vec<&str> =
-                items.iter().filter(|i| !group.iter().all(|g| g.contains(i))).map(String::as_str).collect();
+                items[n].iter().filter(|i| !group.iter().all(|g| g.contains(i))).map(String::as_str).collect();
             if group.len() < 2 || differs.is_empty() {
                 return plain;
             }
-            let base = if e.title.is_empty() { short_url(key) } else { e.title.clone() };
+            let base =
+                if e.title.is_empty() { UrlParts::parse(parts[n].address).short().to_owned() } else { e.title.clone() };
             format!("{} · {base}", differs.join(" "))
         })
         .collect()

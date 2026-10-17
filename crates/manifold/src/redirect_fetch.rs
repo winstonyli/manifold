@@ -135,7 +135,7 @@ pub fn fetch(dir: &Path, node_id: &str, url: &str, kind: ContentKind) -> Option<
             match crate::net::get_limited(url, limit, budget) {
                 Ok(bytes) => bytes,
                 Err(e) => {
-                    let origin = crate::favicon_fetch::url_origin(url).unwrap_or_default();
+                    let origin = crate::url_parts::UrlParts::parse(url).origin().unwrap_or_default();
                     eprintln!("fetch: {origin} (node {node_id}): {e}");
                     return None;
                 }

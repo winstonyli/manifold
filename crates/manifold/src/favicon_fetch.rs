@@ -128,24 +128,6 @@ impl FaviconFetcher {
     }
 }
 
-/// The `scheme://host[:port]` prefix of `url`, lowercased and without any
-/// userinfo, or `None` if `url` has no `://` at all (a `data:`/`about:`
-/// URL, or already-malformed input) or no host --
-/// deliberately simple hand-rolled parsing, same "no full URL-syntax
-/// validation" posture `suggestions::looks_like_url` already documents,
-/// rather than pulling in a real URL-parsing crate for just this.
-pub fn url_origin(url: &str) -> Option<String> {
-    let scheme_end = url.find("://")?;
-    let rest = &url[scheme_end + 3..];
-    let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
-    // Userinfo (`user:pass@`) is a credential: never part of a cache name or key.
-    let host = rest[..authority_end].rsplit_once('@').map_or(&rest[..authority_end], |(_, host)| host);
-    if host.is_empty() {
-        return None;
-    }
-    Some(format!("{}://{}", url[..scheme_end].to_ascii_lowercase(), host.to_ascii_lowercase()))
-}
-
 /// `GET {origin}/favicon.ico`, decoded to RGBA8 -- the same well-established
 /// browser convention every engine's own native favicon API ultimately
 /// falls back to when a page doesn't advertise one explicitly via a
@@ -222,7 +204,7 @@ fn cache_file_name(origin: &str) -> String {
 
 /// Deletes the files in `dir` not written for `max_age`, and at once any
 /// named for an origin with userinfo (`@` is `_40` in `cache_file_name`):
-/// builds before `url_origin` dropped it cached under the user name and
+/// builds before `UrlParts::origin` dropped it cached under the user name and
 /// password, and no origin today has one.
 fn prune_cache(dir: &Path, max_age: Duration) {
     let Ok(entries) = std::fs::read_dir(dir) else { return };
@@ -295,13 +277,6 @@ mod tests {
     fn a_cache_file_name_is_the_origin_made_safe() {
         assert_eq!(cache_file_name("https://example.org:8080"), "https_3a_2f_2fexample.org_3a8080.png");
         assert_ne!(cache_file_name("https://a:1"), cache_file_name("https://a_1"));
-    }
-
-    #[test]
-    fn an_origin_drops_userinfo_and_case() {
-        assert_eq!(url_origin("https://user:pass@Example.COM/x?y"), Some("https://example.com".into()));
-        assert_eq!(url_origin("HTTP://a@b@Host:8080#f"), Some("http://host:8080".into()));
-        assert_eq!(url_origin("https://user@/x"), None, "no host left");
     }
 
     #[test]

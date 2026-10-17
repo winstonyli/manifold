@@ -49,7 +49,7 @@ impl Identity {
         match (loading, favicon) {
             (true, _) => Self::Spinner,
             (false, Some(tex)) => Self::Image(tex),
-            (false, None) => Self::Tile { fill: view_color(kind), letter: host_initial(url) },
+            (false, None) => Self::Tile { fill: view_color(kind), letter: UrlParts::parse(url).initial() },
         }
     }
 
@@ -106,35 +106,9 @@ pub(crate) fn ink_on(fill: egui::Color32) -> egui::Color32 {
     }
 }
 
-/// The first letter of a web address's host without a leading `www.`, upper-cased. `None` for an address with no
-/// host (`about:blank`, an empty string, a bare path).
-pub(crate) fn host_initial(url: &str) -> Option<char> {
-    let rest = url.split_once("://")?.1;
-    let authority = rest.split(['/', '?', '#']).next()?;
-    let host = authority.rsplit('@').next()?;
-    let host = host.strip_prefix("www.").unwrap_or(host);
-    host.chars().find(|c| c.is_alphanumeric()).map(|c| c.to_uppercase().next().unwrap_or(c))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn initial_is_the_host_without_www() {
-        assert_eq!(host_initial("https://www.example.com/a?b#c"), Some('E'));
-        assert_eq!(host_initial("http://github.com"), Some('G'));
-        assert_eq!(host_initial("https://user:pw@docs.rs:8080/x"), Some('D'));
-        assert_eq!(host_initial("https://élan.fr/"), Some('É'));
-        assert_eq!(host_initial("https://127.0.0.1:3000/"), Some('1'));
-    }
-
-    #[test]
-    fn no_host_no_initial() {
-        for url in ["", "about:blank", "/just/a/path", "https:///x", "file:no-slashes"] {
-            assert_eq!(host_initial(url), None, "{url:?}");
-        }
-    }
 
     #[test]
     fn loading_beats_a_favicon_which_beats_the_tile() {

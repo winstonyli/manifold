@@ -109,7 +109,8 @@ impl App {
     /// What `url` looks like as a page of `tab`'s trail (`Identity::of_tab`, never loading); `None` if `tab` is gone.
     fn page_identity(&self, tab: &str, url: &str) -> Option<Identity> {
         let kind = self.nodes.get(tab)?.as_tab()?.tab.kind;
-        let favicon = crate::favicon_fetch::url_origin(url)
+        let favicon = crate::url_parts::UrlParts::parse(url)
+            .origin()
             .and_then(|origin| self.gpu.as_ref().and_then(|g| g.favicon_id(&origin)));
         Some(Identity::of_tab(false, favicon, kind, url))
     }

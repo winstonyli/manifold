@@ -49,7 +49,7 @@ pub fn record_state(state: impl std::fmt::Display) {
 /// "scheme" is a user name (a `mailto:` loses its scheme too, which a
 /// report can spare).
 pub fn redacted_url(url: &str) -> String {
-    if let Some(origin) = crate::favicon_fetch::url_origin(url) {
+    if let Some(origin) = crate::url_parts::UrlParts::parse(url).origin() {
         return origin;
     }
     match url.split_once(':') {

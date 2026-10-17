@@ -90,7 +90,7 @@ impl App {
         if let Some(cached) = self.favicon_origin_cache.get(url) {
             return cached.clone();
         }
-        let origin = favicon_fetch::url_origin(url);
+        let origin = UrlParts::parse(url).origin();
         if self.favicon_origin_cache.len() >= TRUNCATE_CACHE_CAP {
             self.favicon_origin_cache.clear();
         }

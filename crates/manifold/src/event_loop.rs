@@ -1470,7 +1470,7 @@ impl App {
                     // `in_flight` set both dedupe repeat requests,
                     // so this can fire on every url change with no
                     // extra bookkeeping needed here.
-                    if let Some(origin) = favicon_fetch::url_origin(&url) {
+                    if let Some(origin) = UrlParts::parse(&url).origin() {
                         if !self.favicon_resolved.contains(&origin) {
                             self.favicon_fetcher.request(origin);
                         }
