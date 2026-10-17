@@ -1,3 +1,7 @@
+---
+status: done
+---
+
 # Shared Graph Card Frame Design
 
 ## Goal

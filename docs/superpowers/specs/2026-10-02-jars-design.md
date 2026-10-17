@@ -1,3 +1,7 @@
+---
+status: done
+---
+
 # Cookie jars: design, 2026-10-02
 
 Status: built (v1), 2026-10-03: one default jar, WebView2 and CEF only (plan `docs/superpowers/plans/2026-10-02-cookie-jar-v1.md`,

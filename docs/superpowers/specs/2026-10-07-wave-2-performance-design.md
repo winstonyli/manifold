@@ -1,3 +1,7 @@
+---
+status: done
+---
+
 # Wave 2: performance (design)
 
 Status: Implemented 2026-10-08 on `wave-2-performance` (commits `2ae8f76`, `b6542bf`, `36338f7`, `9f7018c`, `6ff1740`,

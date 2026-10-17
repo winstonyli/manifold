@@ -1,3 +1,7 @@
+---
+status: done
+---
+
 # Rename `engine` to `view` in code (step 0b) Implementation Plan
 
 **Goal:** the code says what the crates say: `manifold-view-*` run "views", so the identifiers, stored keys, env vars and debug commands that say `engine` say `view` or `view_kind`.

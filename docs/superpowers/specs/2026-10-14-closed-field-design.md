@@ -1,3 +1,7 @@
+---
+status: done
+---
+
 # The `closed` field and a history derived from the document: design, 2026-10-14
 
 Status: design, decisions confirmed by the user on 2026-10-14 (live model B, history derived from the document, the

@@ -1,3 +1,7 @@
+---
+status: done
+---
+
 # The trail popup as a miniature graph view Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans (the tasks depend on each other in order, so one context runs them). Steps use checkbox (`- [ ]`) syntax for tracking.

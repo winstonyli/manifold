@@ -1,3 +1,7 @@
+---
+status: done
+---
+
 # The trail strip: a tab's page tree as cards under it
 
 Status: implemented 2026-10-16 (plan `docs/superpowers/plans/2026-10-16-trail-strip.md`) (piece 2 of 2; piece 1 is `2026-10-16-virtual-cards-design.md`, implemented). Decisions were made with the owner in one session.

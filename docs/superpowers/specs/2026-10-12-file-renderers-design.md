@@ -1,3 +1,7 @@
+---
+status: done
+---
+
 # File views as separate processes, and the `manifold-view-*` crate family (design)
 
 Status: shipped 2026-10-12 by plan `docs/superpowers/plans/2026-10-12-file-views.md`, steps 0, 0b and 1. Originally a draft for approval, 2026-10-12 (rename added the same day: crates are `manifold-view-*`, named for what they run, so the PDF one is `manifold-view-pdfium`). Supersedes the review item D-R9 ("PDF rendering in a child process"), which this design folds in.

@@ -1,3 +1,7 @@
+---
+status: done
+---
+
 # The trail popup as a miniature graph view
 
 Status: implemented 2026-10-16 in six tasks (shared camera pieces, `trail_cards`/`trail_edges`, the popup scene, right-click menu, keyboard, docs). Refinements while building: the focus-follows pan is `CardPass.pan_target` (set by `draw_graph_card`, applied by the caller with `GraphCamera::pan_to`; `pan_to_card` and `handle_card_tab` are gone, replaced by `GraphCamera::pan_to` and the free `card_tab_step`); `CardPass.carry` is false in the popup so a page is click-only and a drag pans. Choosing "Open as card" from the popup's menu leaves the popup open (accepted; the menu closes itself). Risk results are at the end of "Risks". Originally: draft (owner answers: pannable and zoomable, recentred on every open, keyboard if it falls out of the refactor). Follows `2026-10-16-trail-strip-design.md`, which made the strip and the popup share a layout, an edge style, a background, a menu and the two actions (`trail_pick`, `open_branch_as_card`). What still differs is the machinery around them: the strip's pages are real graph cards (hover, focus, menu key, pan and zoom) and the popup's rows are hand-drawn in a `ScrollArea`.

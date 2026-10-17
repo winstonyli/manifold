@@ -1,3 +1,7 @@
+---
+status: done
+---
+
 # Unified Node Context Menu and Close Path Design
 
 ## Goal

@@ -1,3 +1,7 @@
+---
+status: done
+---
+
 # Link gestures: click a line to disconnect, drag a handle to connect (design)
 
 Status: Implemented 2026-10-07 (commits f0fa529, 9dbeece, dfc01f8, add755e and "Link gestures: probe, screenshots,

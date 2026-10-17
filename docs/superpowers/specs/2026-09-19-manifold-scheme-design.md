@@ -1,3 +1,7 @@
+---
+status: done
+---
+
 # `manifold://` Custom URL Scheme — Design
 
 ## Motivation

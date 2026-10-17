@@ -1,3 +1,7 @@
+---
+status: done
+---
+
 # Wave 0: tooling, build and script hygiene (design)
 
 Status: Done 2026-10-08 except Task 3 (skipped, low value); first CI run green; outcome in the plan. Plan: `docs/superpowers/plans/2026-10-07-wave-0-tooling.md`. First wave of the

@@ -1,3 +1,7 @@
+---
+status: done
+---
+
 # Per-tab jars: design, 2026-10-03
 
 Status: built (plan `docs/superpowers/plans/2026-10-03-per-tab-jars.md`). Builds on the shipped cookie jar v1 (`2026-10-02-jars-design.md`, `jar.rs`, the per-tab merge

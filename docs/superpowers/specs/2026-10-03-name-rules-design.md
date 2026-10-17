@@ -1,3 +1,7 @@
+---
+status: done
+---
+
 # Name rules: design, 2026-10-03
 
 Status: built 2026-10-03 (plan `docs/superpowers/plans/2026-10-03-name-rules.md`; deviations in its Outcome). Closes the Open question in `2026-10-03-per-tab-jars-design.md` ("Name rules ... should be designed once for every user-editable name"). Decisions from the user on 2026-10-03: protect against **display breakage and spoofing** (not uniqueness or reserved words); the rule is **applied on input and at display**, never by rewriting stored names; hidden characters are **revealed as placeholders**, not dropped; **64 characters** and an **"Untitled"** fallback (assumptions the user accepted by proceeding). Revised the same day, by the user's decision: emoji sequences keep their joiners, selectors and tags; bookmark folder names and a note's first line are covered; `display_name`'s allocation is stated exactly.

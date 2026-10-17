@@ -1,3 +1,7 @@
+---
+status: done
+---
+
 # JSON "Expand as Graph" — Design
 
 ## Motivation

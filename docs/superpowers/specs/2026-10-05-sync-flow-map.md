@@ -1,3 +1,7 @@
+---
+status: done
+---
+
 # Live-state to document sync: map of today's flow (2026-10-05)
 
 Facts gathered before planning 2b/2c of the node model (`2026-10-04-node-model-design.md`, section 6 items 6 and 10). Paths are under `crates/manifold/src/`; line numbers are as of commit 9a0e48a and will drift.

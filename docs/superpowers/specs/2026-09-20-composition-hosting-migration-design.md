@@ -1,3 +1,7 @@
+---
+status: done
+---
+
 # WebView2 Composition Hosting Migration — Design
 
 ## Motivation

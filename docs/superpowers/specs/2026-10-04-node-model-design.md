@@ -1,3 +1,7 @@
+---
+status: done
+---
+
 # Node model (sub-project A): MIME identity, capability table, edge-type table
 
 Status: design, awaiting owner review (2026-10-04). Sub-project A of the homogeneity vision in

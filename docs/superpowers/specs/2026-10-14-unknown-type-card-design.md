@@ -1,3 +1,7 @@
+---
+status: done
+---
+
 # The unknown-type card: design, 2026-10-14
 
 Status: built 2026-10-14 (plan `../plans/2026-10-14-unknown-type-card.md`; deviations D1-D8 there). Design approved in

@@ -1,3 +1,7 @@
+---
+status: done
+---
+
 # One entry point for placing a node
 
 Status: implemented 2026-09-30 (policy B). `add_file_at` uses `placement`; `drop_file` keeps its own `leave_json_level()` because its drop point is mapped to world coordinates after the level changes.

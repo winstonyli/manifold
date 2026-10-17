@@ -1,3 +1,7 @@
+---
+status: done
+---
+
 # Splitting main.rs and one engine table
 
 Status: approved and implemented, 2026-09-30. Part A is b75860e. Part B is

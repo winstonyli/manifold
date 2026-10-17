@@ -1,3 +1,7 @@
+---
+status: done
+---
+
 # Rust gate runner, part two: `gate two` replaces two-instance-test.sh
 
 > **For agentic workers:** execute task by task; each task ends with its proof. Steps use checkbox syntax. Do not start without the user's go-ahead (WORKING_STYLE). Task 1 can end the plan (its stop condition); report to the user before Task 2 either way.

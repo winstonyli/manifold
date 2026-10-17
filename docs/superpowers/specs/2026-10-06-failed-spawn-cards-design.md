@@ -1,3 +1,7 @@
+---
+status: done
+---
+
 # Failed spawns become cards; the "No tabs." screen goes (design)
 
 Status: Implemented 2026-10-06, plan `2026-10-06-failed-spawn-cards.md`, commits 86913df, 8e4f9a6, 2729ba1, 8970810 and d3f9d30 (Task 4). Was: design for review. Architectural: a failed Root or New tab becomes a persisted, synced document

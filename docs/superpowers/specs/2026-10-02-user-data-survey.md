@@ -1,3 +1,7 @@
+---
+status: done
+---
+
 # User data (cookies, local/session storage): survey, 2026-10-02
 
 A survey, not a design. Nothing here is decided. Source reads are of this repo and the vendored crates; the WebView2 row is

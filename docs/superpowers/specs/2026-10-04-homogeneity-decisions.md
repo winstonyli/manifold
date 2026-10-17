@@ -1,3 +1,7 @@
+---
+status: done
+---
+
 # Homogeneous nodes and edges: owner decisions
 
 Vision: anything (tabs, groups, cookie jars, files, JSON values, notes) can be manipulated and connected homogeneously.

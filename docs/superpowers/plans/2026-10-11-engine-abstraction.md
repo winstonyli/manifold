@@ -1,3 +1,7 @@
+---
+status: done
+---
+
 # Engine abstraction (survey E4, E8) Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans (inline) for this plan: it has one required task and two optional ones, each small, so superpowers:subagent-driven-development is not warranted (WORKING_STYLE "Delegation"). Steps use checkbox (`- [ ]`) syntax for tracking. Nothing here starts without the user's go-ahead on the decisions at the end.

@@ -1,3 +1,7 @@
+---
+status: done
+---
+
 # Lazy Tabs
 
 ## Goal

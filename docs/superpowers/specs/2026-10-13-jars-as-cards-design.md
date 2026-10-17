@@ -1,3 +1,7 @@
+---
+status: done
+---
+
 # Jars as cards
 
 Status: draft for review. Implements open item 3 of `2026-10-04-homogeneity-decisions.md`. Supersedes the jar

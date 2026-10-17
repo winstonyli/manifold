@@ -1,3 +1,7 @@
+---
+status: done
+---
+
 # Releases on GitHub Actions (design)
 
 Status: approved 2026-10-16; P1 (CEF) implemented per `docs/superpowers/plans/2026-10-16-ci-release.md`, whose "Rulings against the spec" are folded in below. Supersedes the local `scripts/release.sh` flow

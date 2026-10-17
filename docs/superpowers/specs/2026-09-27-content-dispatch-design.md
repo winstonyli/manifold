@@ -1,3 +1,7 @@
+---
+status: done
+---
+
 # Content dispatch: one MIME table for every way content arrives
 
 Status: implemented, 2026-09-27 (plan docs/superpowers/plans/2026-09-27-content-dispatch.md).

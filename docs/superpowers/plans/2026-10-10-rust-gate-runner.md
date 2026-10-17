@@ -1,3 +1,7 @@
+---
+status: done
+---
+
 # Rust gate runner: the headless flows as a Rust program with closures
 
 > **For agentic workers:** execute task by task; each task ends with its proof. Steps use checkbox syntax. Do not start without the user's go-ahead (WORKING_STYLE).

@@ -1,3 +1,7 @@
+---
+status: done
+---
+
 # Sessions as a Replicated Operation Log
 
 ## Goal

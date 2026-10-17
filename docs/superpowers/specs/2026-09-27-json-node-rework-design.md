@@ -1,3 +1,7 @@
+---
+status: done
+---
+
 # JSON node rework: record cards and an outline
 
 Status: implemented, 2026-09-27. Mockups:

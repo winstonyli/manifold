@@ -1,3 +1,7 @@
+---
+status: done
+---
+
 # Links and menu-driven edges (sub-project B, design)
 
 Status: Implemented, 2026-10-07 (plan `docs/superpowers/plans/2026-10-06-links.md`, whose Outcome lists the deviations

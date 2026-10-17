@@ -1,3 +1,7 @@
+---
+status: done
+---
+
 # Virtual cards: cards without a document node
 
 Status: implemented 2026-10-16 (piece 1 of 2). Piece 1 of two; piece 2 is the trail strip (`2026-10-16-trail-strip-design.md`, not yet written), the first client.

@@ -1,3 +1,7 @@
+---
+status: done
+---
+
 # Parked minors (failed-spawn cards follow-ups) Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development. Steps use checkbox (`- [ ]`) syntax.

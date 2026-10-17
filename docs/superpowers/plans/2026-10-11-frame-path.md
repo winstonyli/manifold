@@ -1,3 +1,7 @@
+---
+status: done
+---
+
 # Frame path (survey E2) Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans (Tasks 2-6 are sequential and share one mechanism, so subagent-driven development buys little; if it is used, implementers and reviewers are Sonnet). Steps use checkbox (`- [ ]`) syntax for tracking. Task 1 is done (Results below): Tasks 2-5 and 7 are done.

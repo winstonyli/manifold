@@ -1,3 +1,7 @@
+---
+status: done
+---
+
 # Unified Toolbar Architecture Design
 
 ## Goal

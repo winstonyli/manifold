@@ -1,3 +1,7 @@
+---
+status: done
+---
+
 # Sleep with page state: dirty-form skip and scroll restore
 
 Status: implemented 2026-09-30 (plan

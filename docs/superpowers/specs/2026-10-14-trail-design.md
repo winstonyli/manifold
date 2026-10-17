@@ -1,3 +1,7 @@
+---
+status: done
+---
+
 # The trail: Back and Forward over a tab's pages and over opened-from
 
 Status: implemented 2026-10-15 (plan docs/superpowers/plans/2026-10-15-trail.md); design draft 3 as before. (draft 3: draft 1 plus the owner's calls J1-J7 and review rounds 1-8; round 8 found only clarifications, all applied; step 4b (inferred move) added after and revised twice from its reviews). Decisions
