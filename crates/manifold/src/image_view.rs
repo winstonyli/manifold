@@ -276,11 +276,11 @@ impl App {
             }
             // Same placeholder the graph card uses for a missing texture.
             None => {
-                painter.text(
+                paint_centered(
+                    &painter,
                     body.center(),
-                    egui::Align2::CENTER_CENTER,
                     egui_phosphor::light::IMAGE_BROKEN,
-                    egui::FontId::proportional(48.0),
+                    48.0,
                     ui.visuals().weak_text_color(),
                 );
             }

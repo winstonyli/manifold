@@ -135,7 +135,7 @@ fn push_centered_text(
 ) {
     let text = text.into();
     deferred_overlays.push(Box::new(move |overlay_painter, project| {
-        overlay_painter.text(project(pos), egui::Align2::CENTER_CENTER, text, egui::FontId::proportional(size), color);
+        paint_centered(overlay_painter, project(pos), &text, size, color);
     }));
 }
 

@@ -30,17 +30,25 @@ pub(crate) struct IdentityText {
 }
 
 impl IdentityText {
-    /// Draws the text with the middle of its ink at `at` (egui's `CENTER_CENTER` centres the line box, which sits a
-    /// descender's height too low for a capital or a digit).
+    /// Draws the text centred on `at` (`paint_centered`).
     pub(crate) fn draw(&self, painter: &egui::Painter, at: egui::Pos2) {
-        let galley = painter.layout_no_wrap(self.text.clone(), egui::FontId::proportional(self.size), self.color);
-        let ink = galley.rows.first().and_then(|row| {
-            let glyph = row.glyphs.first()?;
-            Some(egui::Rect::from_min_size(row.pos + glyph.pos.to_vec2() + glyph.uv_rect.offset, glyph.uv_rect.size))
-        });
-        let origin = at - ink.map_or(galley.size() / 2.0, |r| r.center().to_vec2());
-        painter.galley(origin, galley, self.color);
+        paint_centered(painter, at, &self.text, self.size, self.color);
     }
+}
+
+/// Draws `text` at `size` points centred on `at`. A single character (an icon glyph, a letter, a digit) is centred on its
+/// ink: egui's `CENTER_CENTER` centres the line box, which sits a descender's height too low for it. Longer text is a
+/// line and is centred on its line box, so it does not shift with the letters it happens to hold.
+pub(crate) fn paint_centered(painter: &egui::Painter, at: egui::Pos2, text: &str, size: f32, color: egui::Color32) {
+    let galley = painter.layout_no_wrap(text.to_owned(), egui::FontId::proportional(size), color);
+    let mut chars = text.chars();
+    let single = chars.next().is_some() && chars.next().is_none();
+    let ink = galley.rows.first().filter(|_| single).and_then(|row| {
+        let glyph = row.glyphs.first()?;
+        Some(egui::Rect::from_min_size(row.pos + glyph.pos.to_vec2() + glyph.uv_rect.offset, glyph.uv_rect.size))
+    });
+    let origin = at - ink.map_or(galley.size() / 2.0, |r| r.center().to_vec2());
+    painter.galley(origin, galley, color);
 }
 
 impl Identity {
@@ -174,6 +182,21 @@ mod tests {
         });
         let ink_center = ink_center.expect("the letter was drawn");
         assert!((ink_center - at).length() < 0.5, "{ink_center:?} vs {at:?}");
+    }
+
+    #[test]
+    fn a_line_of_text_is_centred_on_its_line_box() {
+        let ctx = egui::Context::default();
+        crate::theme::apply_fonts(&ctx);
+        let at = egui::pos2(50.0, 50.0);
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| paint_centered(ui.painter(), at, "Egg", 11.0, BG));
+        output.textures_delta.clear();
+        let middle = output.shapes.iter().find_map(|s| match &s.shape {
+            egui::Shape::Text(t) => Some(t.pos + t.galley.size() / 2.0),
+            _ => None,
+        });
+        let middle = middle.expect("the line was drawn");
+        assert!((middle - at).length() < 0.5, "{middle:?} vs {at:?}");
     }
 
     #[test]
