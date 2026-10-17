@@ -381,6 +381,8 @@ fn a_group_card_tooltip_names_a_hidden_character() {
                 order: &[],
                 any_focused: false,
                 members: &members,
+                viewport: egui::Rect::EVERYTHING,
+                pan_target: None,
             };
             let body = app.paint_group_body(ui, &mut pass, &g, &view, rect);
             assert_eq!(body.tooltip.as_deref(), want, "{name:?}");

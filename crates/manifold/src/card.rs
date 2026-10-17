@@ -693,12 +693,16 @@ pub(crate) struct CardPass<'a> {
     /// Tab-order number.
     pub(crate) show_order: bool,
     /// The level's card ids in Tab order (creation order, `App::card_tab_order`). Only the first is
-    /// a Tab stop from outside the graph; `App::handle_card_tab` moves between the rest.
+    /// a Tab stop from outside the graph; `card_tab_step` moves between the rest.
     pub(crate) order: &'a [String],
     /// A card or one of its controls has keyboard focus this frame.
     pub(crate) any_focused: bool,
     /// Every group's members (`App::group_members`), built once before the pass.
     pub(crate) members: &'a HashMap<String, Vec<String>>,
+    /// The world rect a card must meet to be drawn (the camera's, in Graph view).
+    pub(crate) viewport: egui::Rect,
+    /// Set to the rect of a card that gained keyboard focus this frame; the caller pans its camera to it.
+    pub(crate) pan_target: Option<egui::Rect>,
 }
 
 /// An outline on a keyboard-focused card or control, white so it reads differently from the gold
@@ -1087,7 +1091,7 @@ impl App {
         let keeps_keyboard = pass.order.first().is_some_and(|first| first == id)
             || ui.memory(|m| m.has_focus(egui::Id::new(("graph_card", id))))
             || ui.memory(|m| m.has_focus(egui::Id::new(("note_edit", id))));
-        if self.interaction.dragging.as_deref() != Some(id) && !keeps_keyboard && !rect.intersects(self.camera.rect) {
+        if self.interaction.dragging.as_deref() != Some(id) && !keeps_keyboard && !rect.intersects(pass.viewport) {
             return None;
         }
         let view = self.card_view(entry, pass.members)?;
@@ -1153,7 +1157,7 @@ impl App {
             self.card_hint = Some((view.kind, to_screen.map_or(rect, |t| t * rect)));
         }
         if response.gained_focus() {
-            self.pan_to_card(rect);
+            pass.pan_target = Some(rect);
         }
         if pass.show_order {
             let (number, corner) = (slot.map_or(0, |s| s + 1), rect.left_top());

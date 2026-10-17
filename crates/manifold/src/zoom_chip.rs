@@ -21,7 +21,7 @@ pub(crate) enum ZoomChipAction {
 pub(crate) const ZOOM_STEP: f32 = 1.25;
 
 /// `rect` (a Graph camera's world-space `camera.rect`) resized about
-/// its own center so the zoom scale `graph_world_to_screen_transform`
+/// its own center so the zoom scale `GraphCamera::transform`
 /// derives from it (`screen / rect.size()`, min axis) is multiplied by
 /// `factor`, clamped to `min..=max`. The ratio is computed from the raw,
 /// unclamped scale so the result lands exactly on the clamped target.

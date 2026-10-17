@@ -396,7 +396,7 @@ impl App {
         }
         let drawn = self.camera.rect;
         self.camera.rect = press_rect;
-        let (zoom, translation) = self.graph_world_to_screen_transform(scene_outer_rect);
+        let (zoom, translation) = self.camera.transform(scene_outer_rect);
         let at = ((origin.to_vec2() - translation) / zoom).to_pos2();
         let edges = self.level_edges();
         let Some(edge) = edges.iter().find(|e| e.link.as_ref() == Some(&link)) else {
@@ -451,7 +451,7 @@ impl App {
     /// only inside `scene_outer_rect`, off the `minimap` (painted over the Scene, not a widget) and
     /// under no interactable egui Area above the graph (a popup or menu, by `Context::layer_id_at`, the layer test
     /// egui's own hit-test uses, so a click there would reach no card either; a non-interactable toast lets both
-    /// through). `(zoom_scale, translation)` maps world to screen (`graph_world_to_screen_transform`). Both the bright
+    /// through). `(zoom_scale, translation)` maps world to screen (`GraphCamera::transform`). Both the bright
     /// target ring and the release read this, so the ring shows exactly where a release links. egui hovers only the
     /// dragged handle meanwhile, so the card's own hover cannot say so.
     pub(crate) fn connect_drag_end(

@@ -91,7 +91,7 @@ pub(crate) struct GraphCamera {
     /// mutated by the user dragging (pan) or scrolling (zoom).
     pub(crate) rect: egui::Rect,
     /// Graph view's own camera zoom, as a percentage for the toolbar's
-    /// readout -- `100.0` means `graph_world_to_screen_transform`'s scale
+    /// readout -- `100.0` means `GraphCamera::transform`'s scale
     /// is `1.0` (one world unit per screen point), same "100% = no
     /// scaling" meaning Tab view's own zoom already uses. Updated once
     /// `build_graph_ui` recomputes the real transform later in the same
@@ -204,9 +204,7 @@ impl GraphCamera {
         let scale = (outer.size() / self.rect.size()).min_elem().clamp(GRAPH_ZOOM_MIN, GRAPH_ZOOM_MAX);
         self.rect = egui::Rect::from_center_size(self.rect.center(), outer.size() / scale);
     }
-}
 
-impl App {
     /// Replicates `egui::Scene`'s own internal `fit_to_rect_in_scene`
     /// (private to egui, not part of its public API) — needed to compute
     /// where a graph node actually lands on screen *outside* the `Scene`
@@ -215,22 +213,55 @@ impl App {
     /// `screen = translation + scale * world`, matching `Scene`'s own
     /// "fit the visible scene rect into the available screen area,
     /// preserving aspect ratio, clamped to the configured zoom range"
-    /// behavior exactly (using the *same* `self.camera.rect` `Scene`
-    /// itself reads/writes) — verified live by screenshotting a
+    /// behavior exactly (using the *same* `rect` `Scene` itself
+    /// reads/writes) — verified live by screenshotting a
     /// mid-animation frame and confirming the content quad visually lines
     /// up with the target node's real on-screen position.
-    pub(crate) fn graph_world_to_screen_transform(&self, scene_outer_rect: egui::Rect) -> (f32, egui::Vec2) {
-        let scale =
-            (scene_outer_rect.size() / self.camera.rect.size()).min_elem().clamp(GRAPH_ZOOM_MIN, GRAPH_ZOOM_MAX);
-        let translation = scene_outer_rect.center().to_vec2() - scale * self.camera.rect.center().to_vec2();
-        (scale, translation)
+    pub(crate) fn transform(&self, outer: egui::Rect) -> (f32, egui::Vec2) {
+        let scale = (outer.size() / self.rect.size()).min_elem().clamp(GRAPH_ZOOM_MIN, GRAPH_ZOOM_MAX);
+        (scale, outer.center().to_vec2() - scale * self.rect.center().to_vec2())
     }
 
+    /// A frame's camera work before its `Scene`: advance any tween or glide, keep repainting while one runs, fill
+    /// `rect` to `outer`'s shape (`fill`) and set the zoom readout. Returns `transform(outer)`.
+    pub(crate) fn begin_frame(&mut self, ctx: &egui::Context, outer: egui::Rect) -> (f32, egui::Vec2) {
+        self.advance();
+        if self.tween.is_some() || self.momentum.is_some() {
+            ctx.request_repaint();
+        }
+        self.fill(outer);
+        let transform = self.transform(outer);
+        self.zoom_pct = transform.0 * 100.0;
+        transform
+    }
+
+    /// Eases the camera so `card` is in view, centred on it when it isn't already fully visible.
+    pub(crate) fn pan_to(&mut self, card: egui::Rect) {
+        if !self.rect.contains_rect(card) {
+            self.ease_to(egui::Rect::from_center_size(card.center(), self.rect.size()));
+        }
+    }
+}
+
+/// The graph's `Scene`: its zoom range, and the primary button pans unless `drag_pan` is off (while a link retargets).
+pub(crate) fn show_scene<R>(
+    ui: &mut egui::Ui,
+    rect: &mut egui::Rect,
+    drag_pan: bool,
+    body: impl FnOnce(&mut egui::Ui) -> R,
+) -> egui::InnerResponse<R> {
+    egui::Scene::new()
+        .zoom_range(GRAPH_ZOOM_MIN..=GRAPH_ZOOM_MAX)
+        .drag_pan_buttons(if drag_pan { egui::DragPanButtons::PRIMARY } else { egui::DragPanButtons::empty() })
+        .show(ui, rect, body)
+}
+
+impl App {
     /// Where a world-space rect lands on screen in Graph view right now --
     /// the same projection `Scene` applies, computed outside it (see
-    /// `graph_world_to_screen_transform`).
+    /// `GraphCamera::transform`).
     pub(crate) fn graph_world_rect_to_screen(&self, world: egui::Rect) -> egui::Rect {
-        let (scale, translation) = self.graph_world_to_screen_transform(self.graph_scene_outer_rect());
+        let (scale, translation) = self.camera.transform(self.graph_scene_outer_rect());
         egui::Rect::from_min_max(
             (translation + scale * world.min.to_vec2()).to_pos2(),
             (translation + scale * world.max.to_vec2()).to_pos2(),
@@ -243,7 +274,7 @@ impl App {
     /// `handle_rect_select`'s own `world_pos`). Used to place a file
     /// dropped on the window (`drop_file`).
     pub(crate) fn graph_screen_point_to_world(&self, point: egui::Pos2) -> egui::Vec2 {
-        let (scale, translation) = self.graph_world_to_screen_transform(self.graph_scene_outer_rect());
+        let (scale, translation) = self.camera.transform(self.graph_scene_outer_rect());
         (point.to_vec2() - translation) / scale
     }
 
@@ -491,7 +522,7 @@ impl App {
         // at real fixed screen coordinates and a real fixed font size —
         // this is the actual "achieve constant size directly" fix, not
         // just another scale factor. `zoom_scale`/`translation` are the
-        // same pair `graph_world_to_screen_transform` already derives for
+        // same pair `GraphCamera::transform` already derives for
         // the Tab<->Graph transition animation (`screen = translation +
         // zoom_scale * world`). The node card itself (`GRAPH_NODE_SIZE`)
         // and the hover peek preview (`GRAPH_PEEK_SIZE`) are deliberately
@@ -503,13 +534,7 @@ impl App {
         self.apply_zoom_requests(scene_outer_rect, reset_zoom, graph_zoom_step);
         // Advance first: everything below (strokes, `zoom_pct`, the new-node
         // menu) must use the rect the Scene draws this frame.
-        self.camera.advance();
-        if self.camera.tween.is_some() || self.camera.momentum.is_some() {
-            ui.ctx().request_repaint();
-        }
-        self.camera.fill(scene_outer_rect);
-        let (zoom_scale, translation) = self.graph_world_to_screen_transform(scene_outer_rect);
-        self.camera.zoom_pct = zoom_scale * 100.0;
+        let (zoom_scale, translation) = self.camera.begin_frame(ui.ctx(), scene_outer_rect);
         let inv_zoom = 1.0 / zoom_scale;
         let project = move |world: egui::Pos2| -> egui::Pos2 { (translation + zoom_scale * world.to_vec2()).to_pos2() };
         // Clipped to the graph panel's own rect (not `layer_painter`'s
@@ -536,67 +561,60 @@ impl App {
         let scene_rect_before_pan_zoom = self.camera.rect;
         let mut scene_rect = self.camera.rect;
         let mut json_edits = Vec::new();
-        let scene_response = egui::Scene::new()
-            .zoom_range(GRAPH_ZOOM_MIN..=GRAPH_ZOOM_MAX)
-            // The background's primary drag pans, except while it retargets a link (the drag began on a curve).
-            .drag_pan_buttons(if self.link.retarget.is_some() {
-                egui::DragPanButtons::empty()
+        // The background's primary drag pans, except while it retargets a link (the drag began on a curve).
+        let scene_response = show_scene(ui, &mut scene_rect, self.link.retarget.is_none(), |ui| {
+            // Every `overlay_painter` decoration painted inside this
+            // closure is deferred rather than painted immediately -- see
+            // `DeferredOverlays`'s own doc comment for why (this frame's
+            // real pan/zoom isn't reflected in `project`, captured
+            // above, until after this whole closure returns).
+            let mut deferred_overlays: DeferredOverlays = Vec::new();
+            paint_dot_grid(ui.painter(), self.camera.rect, zoom_scale, inv_zoom, ui.visuals().weak_text_color());
+
+            // The link line under the pointer (link-gestures spec B) is drawn highlighted; a click on it is
+            // applied after the Scene, from the Scene's own response.
+            let mut edges = self.level_edges();
+            let minimap_rect = minimap.map(|(rect, _, _)| rect);
+            let line_hover = self.hovered_link_line(ui, &edges, inv_zoom, minimap_rect, typing);
+            for edge in &mut edges {
+                edge.highlight |= edge.link.is_some() && edge.link == line_hover;
+            }
+            // The link being retargeted is not drawn: its rubber band stands for it.
+            crate::link_gestures::without_retargeted(&mut edges, self.link.retarget.as_ref());
+            paint_edges(ui, self.camera.rect, &edges, inv_zoom);
+
+            if self.json_level.is_some() {
+                self.draw_json_level(ui, &mut deferred_overlays, &mut json_edits, inv_zoom, zoom_scale);
             } else {
-                egui::DragPanButtons::PRIMARY
-            })
-            .show(ui, &mut scene_rect, |ui| {
-                // Every `overlay_painter` decoration painted inside this
-                // closure is deferred rather than painted immediately -- see
-                // `DeferredOverlays`'s own doc comment for why (this frame's
-                // real pan/zoom isn't reflected in `project`, captured
-                // above, until after this whole closure returns).
-                let mut deferred_overlays: DeferredOverlays = Vec::new();
-                self.draw_graph_dot_grid(ui, zoom_scale, inv_zoom);
-
-                // The link line under the pointer (link-gestures spec B) is drawn highlighted; a click on it is
-                // applied after the Scene, from the Scene's own response.
-                let mut edges = self.level_edges();
-                let minimap_rect = minimap.map(|(rect, _, _)| rect);
-                let line_hover = self.hovered_link_line(ui, &edges, inv_zoom, minimap_rect, typing);
-                for edge in &mut edges {
-                    edge.highlight |= edge.link.is_some() && edge.link == line_hover;
-                }
-                // The link being retargeted is not drawn: its rubber band stands for it.
-                crate::link_gestures::without_retargeted(&mut edges, self.link.retarget.as_ref());
-                self.draw_graph_edges(ui, &edges, inv_zoom);
-
-                if self.json_level.is_some() {
-                    self.draw_json_level(ui, &mut deferred_overlays, &mut json_edits, inv_zoom, zoom_scale);
-                } else {
-                    // The card a release now would link to, ringed bright: the release below reads the same function.
-                    let connect_end = self.connect_drag_end(
-                        ui.ctx(),
-                        ui.input(|i| i.pointer.interact_pos()),
-                        scene_outer_rect,
-                        minimap.map(|(rect, _, _)| rect),
-                        (zoom_scale, translation),
-                    );
-                    // For a dragged link end, what the release there would do: the band and ring show it.
-                    self.link.retarget_preview = self.retarget_preview(&connect_end);
-                    let connect_target = match connect_end {
-                        crate::link_gestures::DragEnd::Card(target) => Some(target),
-                        _ => None,
-                    };
-                    self.draw_graph_cards(
-                        ui,
-                        &mut deferred_overlays,
-                        &mut actions,
-                        &at_level,
-                        inv_zoom,
-                        zoom_scale,
-                        leave_group_button_rect,
-                        connect_target.as_deref(),
-                    );
-                    self.draw_pending_new_node_menu(ui, &mut actions, &project);
-                    self.draw_peek_preview(ui, &mut deferred_overlays);
-                }
-                (deferred_overlays, line_hover)
-            });
+                // The card a release now would link to, ringed bright: the release below reads the same function.
+                let connect_end = self.connect_drag_end(
+                    ui.ctx(),
+                    ui.input(|i| i.pointer.interact_pos()),
+                    scene_outer_rect,
+                    minimap.map(|(rect, _, _)| rect),
+                    (zoom_scale, translation),
+                );
+                // For a dragged link end, what the release there would do: the band and ring show it.
+                self.link.retarget_preview = self.retarget_preview(&connect_end);
+                let connect_target = match connect_end {
+                    crate::link_gestures::DragEnd::Card(target) => Some(target),
+                    _ => None,
+                };
+                self.draw_graph_cards(
+                    ui,
+                    &mut deferred_overlays,
+                    &mut actions,
+                    &at_level,
+                    inv_zoom,
+                    zoom_scale,
+                    leave_group_button_rect,
+                    connect_target.as_deref(),
+                );
+                self.draw_pending_new_node_menu(ui, &mut actions, &project);
+                self.draw_peek_preview(ui, &mut deferred_overlays);
+            }
+            (deferred_overlays, line_hover)
+        });
         let egui::InnerResponse { inner: (deferred_overlays, line_hover), response: scene_background } = scene_response;
         self.camera.rect = scene_rect;
         // A press on a link curve that has become a drag retargets the link instead of panning (undoing the pan
@@ -612,7 +630,7 @@ impl App {
         // it, closing the one-frame gap between a card and its own
         // overlay-painted label/icons that was otherwise most visible
         // during a fast pan or zoom.
-        let (zoom_scale, translation) = self.graph_world_to_screen_transform(scene_outer_rect);
+        let (zoom_scale, translation) = self.camera.transform(scene_outer_rect);
         let project = move |world: egui::Pos2| -> egui::Pos2 { (translation + zoom_scale * world.to_vec2()).to_pos2() };
         for overlay in deferred_overlays {
             overlay(&overlay_painter, &project);
@@ -748,7 +766,7 @@ impl App {
     fn apply_zoom_requests(&mut self, scene_outer_rect: egui::Rect, reset_zoom: bool, graph_zoom_step: Option<f32>) {
         if reset_zoom {
             // Keeps the current pan (unlike "Reset View", which re-fits
-            // everything) -- `graph_world_to_screen_transform` derives
+            // everything) -- `GraphCamera::transform` derives
             // `zoom_scale` as `screen_size / camera.rect.size()`
             // (`.min_elem()` of the two axis ratios), so matching the world
             // rect's size to the screen's own size on both axes makes that
@@ -1556,83 +1574,83 @@ impl App {
             }
         }
     }
+}
 
-    /// Dot grid first, under everything -- a fixed-world-spacing
-    /// reference so panning/zooming reads as moving through a
-    /// real space rather than an empty void, the same idea every
-    /// node-graph editor (Blender, Figma, ComfyUI) uses. Spacing
-    /// is in *world* units (dots get farther apart on screen
-    /// when zoomed in, closer together zoomed out -- the
-    /// intended feel), while the dot's own radius is scaled by
-    /// `inv_zoom` so it stays a constant ~1.5 screen px
-    /// regardless of zoom. Reads `self.camera.rect` (the
-    /// previous frame's visible world rect) rather than the
-    /// `build_graph_ui`'s local `scene_rect` -- that one is already mutably
-    /// borrowed for the whole `show` call, including this
-    /// closure, so it can't also be read from in here. One frame
-    /// of lag, same as `camera.zoom_pct`'s own toolbar readout --
-    /// imperceptible at any real frame rate.
-    ///
-    /// Spacing is adaptive (doubled/halved in world units, never
-    /// below a 20 screen-px floor) rather than a fixed 40 world
-    /// units -- a fixed spacing looks right near 100% zoom but
-    /// turns into tens of thousands of `circle_filled` calls a
-    /// frame at `GRAPH_ZOOM_MIN` (0.15x: a full-HD window's
-    /// visible world rect alone would need ~57,000 dots at 40
-    /// world units apart), a real per-frame cost this avoids by
-    /// keeping on-screen density roughly constant regardless of
-    /// zoom level instead.
-    pub(crate) fn draw_graph_dot_grid(&self, ui: &egui::Ui, zoom_scale: f32, inv_zoom: f32) {
-        paint_dot_grid(ui.painter(), self.camera.rect, zoom_scale, inv_zoom, ui.visuals().weak_text_color());
-    }
-
-    /// Edges first so node cards paint on top of the lines feeding them: every edge `level_edges` lists once, each
-    /// parent->child edge solid and each Link node dashed in the accent colour, both as the same bowed curve between
-    /// facing card sides (`paint_bow`). Both endpoints must share the currently-viewed level. A hovered link line
-    /// (`highlight`) is drawn twice as thick.
-    pub(crate) fn draw_graph_edges(&self, ui: &egui::Ui, edges: &[LevelEdge], inv_zoom: f32) {
-        for edge in edges {
-            // Viewport culling: unlike a node's own rect, an edge
-            // can have one endpoint off-screen and the other on --
-            // or pass through the viewport with both endpoints
-            // outside it -- so this checks the bounding box of the
-            // whole curve (its control point included) against the
-            // viewport, not either endpoint alone. Not pixel-exact
-            // for a steep diagonal that grazes past a corner of its
-            // own bounding box without actually crossing the
-            // viewport, but that's a rare, cheap-to-tolerate false
-            // negative, not a visible edge going missing.
-            let bounds = match edge.curve {
-                EdgeCurve::Bow => crate::link_gestures::bow_bounds(edge.from, edge.to),
-                EdgeCurve::Horizontal => egui::Rect::from_two_pos(edge.from, edge.to),
-            };
-            if !bounds.intersects(self.camera.rect) {
-                continue;
+/// Edges first so node cards paint on top of the lines feeding them: every edge `level_edges` lists once, each
+/// parent->child edge solid and each Link node dashed in the accent colour, both as the same bowed curve between
+/// facing card sides (`paint_bow`). Both endpoints must share the currently-viewed level. A hovered link line
+/// (`highlight`) is drawn twice as thick. Edges outside the world rect `viewport` are skipped; the trail popup passes
+/// its own camera's.
+pub(crate) fn paint_edges(ui: &egui::Ui, viewport: egui::Rect, edges: &[LevelEdge], inv_zoom: f32) {
+    for edge in edges {
+        // Viewport culling: unlike a node's own rect, an edge
+        // can have one endpoint off-screen and the other on --
+        // or pass through the viewport with both endpoints
+        // outside it -- so this checks the bounding box of the
+        // whole curve (its control point included) against the
+        // viewport, not either endpoint alone. Not pixel-exact
+        // for a steep diagonal that grazes past a corner of its
+        // own bounding box without actually crossing the
+        // viewport, but that's a rare, cheap-to-tolerate false
+        // negative, not a visible edge going missing.
+        let bounds = match edge.curve {
+            EdgeCurve::Bow => crate::link_gestures::bow_bounds(edge.from, edge.to),
+            EdgeCurve::Horizontal => egui::Rect::from_two_pos(edge.from, edge.to),
+        };
+        if !bounds.intersects(viewport) {
+            continue;
+        }
+        let stroke = match edge.kind {
+            EdgeKind::Link => {
+                let width = if edge.highlight {
+                    crate::link_gestures::LINK_HOVER_STROKE_PX
+                } else {
+                    crate::link_gestures::LINK_STROKE_PX
+                };
+                egui::Stroke::new(width * inv_zoom, ACCENT)
             }
-            let stroke = match edge.kind {
-                EdgeKind::Link => {
-                    let width = if edge.highlight {
-                        crate::link_gestures::LINK_HOVER_STROKE_PX
-                    } else {
-                        crate::link_gestures::LINK_STROKE_PX
-                    };
-                    egui::Stroke::new(width * inv_zoom, ACCENT)
-                }
-                EdgeKind::Jar => egui::Stroke::new(1.0 * inv_zoom, ui.visuals().weak_text_color().gamma_multiply(0.6)),
-                EdgeKind::Opened => {
-                    crate::level::opened_edge_stroke(edge.highlight, inv_zoom, ui.visuals().weak_text_color())
-                }
-            };
-            match edge.curve {
-                EdgeCurve::Bow => {
-                    let dash = matches!(edge.kind, EdgeKind::Link | EdgeKind::Jar).then_some(inv_zoom);
-                    crate::link_gestures::paint_bow(ui.painter(), edge.from, edge.to, stroke, dash);
-                }
-                EdgeCurve::Horizontal => crate::level::paint_horizontal_edge(ui.painter(), edge.from, edge.to, stroke),
+            EdgeKind::Jar => egui::Stroke::new(1.0 * inv_zoom, ui.visuals().weak_text_color().gamma_multiply(0.6)),
+            EdgeKind::Opened => {
+                crate::level::opened_edge_stroke(edge.highlight, inv_zoom, ui.visuals().weak_text_color())
             }
+        };
+        match edge.curve {
+            EdgeCurve::Bow => {
+                let dash = matches!(edge.kind, EdgeKind::Link | EdgeKind::Jar).then_some(inv_zoom);
+                crate::link_gestures::paint_bow(ui.painter(), edge.from, edge.to, stroke, dash);
+            }
+            EdgeCurve::Horizontal => crate::level::paint_horizontal_edge(ui.painter(), edge.from, edge.to, stroke),
         }
     }
+}
 
+/// Tab / Shift+Tab from a focused card moves focus to the next / previous card in `order` and returns that card's
+/// rect (`rect_of`) for the caller to pan to, since it may be culled. Past either end Tab is left to egui, which moves
+/// on to the next widget outside the cards.
+pub(crate) fn card_tab_step(
+    ui: &egui::Ui,
+    order: &[String],
+    rect_of: impl Fn(&str) -> Option<egui::Rect>,
+) -> Option<egui::Rect> {
+    let card_id = |id: &String| egui::Id::new(("graph_card", id.as_str()));
+    let at = order.iter().position(|id| ui.memory(|m| m.has_focus(card_id(id))))?;
+    // The shift state comes from the key event itself, which is also how the debug `TABKEY shift` sends it.
+    let (tab, shift) = ui.input(|i| {
+        let shifted = i.events.iter().any(
+            |e| matches!(e, egui::Event::Key { key: egui::Key::Tab, pressed: true, modifiers, .. } if modifiers.shift),
+        );
+        (i.key_pressed(egui::Key::Tab), shifted)
+    });
+    let target = if shift { at.checked_sub(1) } else { Some(at + 1).filter(|&n| n < order.len()) };
+    ui.memory_mut(|m| {
+        m.set_focus_lock_filter(card_id(&order[at]), egui::EventFilter { tab: target.is_some(), ..Default::default() })
+    });
+    let target = target.filter(|_| tab)?;
+    ui.memory_mut(|m| m.request_focus(card_id(&order[target])));
+    rect_of(&order[target])
+}
+
+impl App {
     /// Every card at this level, through the shared frame
     /// (`draw_graph_card`), plus each kind's own click action. Runs inside
     /// `build_graph_ui`'s `Scene`, after the grid and edges, so cards paint
@@ -1668,7 +1686,9 @@ impl App {
         // click action is applied here.
         let tab_order = self.card_tab_order();
         self.card_hint = None;
-        self.handle_card_tab(ui, &tab_order);
+        if let Some(rect) = card_tab_step(ui, &tab_order, |id| self.level_card_rect(id)) {
+            self.camera.pan_to(rect);
+        }
         self.handle_card_digits(ui, &tab_order);
         self.hints_revealed = {
             let (held, other_key) = ui.input(|i| {
@@ -1702,6 +1722,8 @@ impl App {
             order: &tab_order,
             any_focused: false,
             members: &members,
+            viewport: self.camera.rect,
+            pan_target: None,
         };
         for entry in self.level_items_from(at_level) {
             let id = &entry.id;
@@ -1784,6 +1806,9 @@ impl App {
                 _ => {}
             }
         }
+        if let Some(rect) = pass.pan_target {
+            self.camera.pan_to(rect);
+        }
         self.card_nav_active = pass.any_focused;
         self.draw_connect_rubber_band(ui, inv_zoom, connect_target);
     }
@@ -1814,37 +1839,6 @@ impl App {
     pub(crate) fn card_tab_order(&self) -> Vec<String> {
         let stored = self.node_order.iter().filter(|id| self.nodes.contains_key(*id) && self.in_level(id)).cloned();
         stored.chain(self.virtual_sources.iter().flat_map(|source| source.entries(self)).map(|e| e.id)).collect()
-    }
-
-    /// Tab / Shift+Tab from a focused card moves focus to the next / previous card in `order`
-    /// (and pans to it, since it may be culled). Past either end Tab is left to egui, which moves
-    /// on to the next widget outside the cards.
-    fn handle_card_tab(&mut self, ui: &egui::Ui, order: &[String]) {
-        let card_id = |id: &String| egui::Id::new(("graph_card", id.as_str()));
-        let Some(at) = order.iter().position(|id| ui.memory(|m| m.has_focus(card_id(id)))) else { return };
-        // The shift state comes from the key event itself, which is also how the debug `TABKEY shift` sends it.
-        let (tab, shift) = ui.input(|i| {
-            let shifted = i.events.iter().any(|e| {
-                matches!(
-                    e,
-                    egui::Event::Key { key: egui::Key::Tab, pressed: true, modifiers, .. } if modifiers.shift
-                )
-            });
-            (i.key_pressed(egui::Key::Tab), shifted)
-        });
-        let target = if shift { at.checked_sub(1) } else { Some(at + 1).filter(|&n| n < order.len()) };
-        ui.memory_mut(|m| {
-            m.set_focus_lock_filter(
-                card_id(&order[at]),
-                egui::EventFilter { tab: target.is_some(), ..Default::default() },
-            )
-        });
-        if let (true, Some(target)) = (tab, target) {
-            ui.memory_mut(|m| m.request_focus(card_id(&order[target])));
-            if let Some(rect) = self.level_card_rect(&order[target]) {
-                self.pan_to_card(rect);
-            }
-        }
     }
 
     /// Plain digit keys jump to the card with that Tab-order number (the badge's number): focus and
@@ -1882,7 +1876,7 @@ impl App {
         if let Some(id) = number.checked_sub(1).and_then(|n| order.get(n)) {
             ui.memory_mut(|m| m.request_focus(egui::Id::new(("graph_card", id.as_str()))));
             if let Some(rect) = self.level_card_rect(id) {
-                self.pan_to_card(rect);
+                self.camera.pan_to(rect);
             }
         }
     }
@@ -1892,15 +1886,6 @@ impl App {
         self.card_rect(id).or_else(|| {
             self.virtual_sources.iter().flat_map(|source| source.entries(self)).find(|e| e.id == id).map(|e| e.rect)
         })
-    }
-
-    /// Eases the camera so a card that just took keyboard focus is in view, centered on it when it
-    /// isn't already fully visible.
-    pub(crate) fn pan_to_card(&mut self, card: egui::Rect) {
-        let view = self.camera.rect;
-        if !view.contains_rect(card) {
-            self.camera.ease_to(egui::Rect::from_center_size(card.center(), view.size()));
-        }
     }
 
     /// The empty-canvas "New Tab/Note/Group/File" menu -- see `pending_new_node`'s own doc comment for what
@@ -2013,8 +1998,12 @@ impl App {
     }
 }
 
-/// The graph's dot grid over the world rect `visible` (see `App::draw_graph_dot_grid`), in `painter`'s own
-/// coordinates, which the trail popups share with a `visible` of their own.
+/// The graph's dot grid over the world rect `visible` (the camera's, or the trail popup's own), in `painter`'s own
+/// coordinates. Drawn first, under everything: a fixed-world-spacing reference so panning and zooming read as moving
+/// through a space, as in every node-graph editor. Spacing is in world units (farther apart on screen when zoomed in)
+/// while the dot's radius is scaled by `inv_zoom` to stay a constant ~1.5 screen px. It is adaptive (doubled or halved,
+/// never below a 20 screen-px floor) rather than fixed at 40 world units, which at `GRAPH_ZOOM_MIN` would be tens of
+/// thousands of `circle_filled` calls a frame.
 pub(crate) fn paint_dot_grid(
     painter: &egui::Painter,
     visible: egui::Rect,
@@ -2520,6 +2509,43 @@ mod tests {
         assert_eq!(camera.rect, filled, "already filling: unchanged");
     }
 
+    #[test]
+    fn the_camera_transform_maps_its_rect_onto_the_outer_rect() {
+        let mut camera = GraphCamera::new();
+        camera.rect = egui::Rect::from_min_size(egui::pos2(100.0, 50.0), egui::vec2(400.0, 200.0));
+        let outer = egui::Rect::from_min_size(egui::pos2(10.0, 20.0), egui::vec2(800.0, 400.0));
+        let (scale, translation) = camera.transform(outer);
+        assert_eq!(scale, 2.0);
+        let screen = translation + scale * camera.rect.center().to_vec2();
+        assert_eq!(screen, outer.center().to_vec2());
+        camera.rect = egui::Rect::from_center_size(egui::Pos2::ZERO, egui::vec2(8.0, 4.0));
+        assert_eq!(camera.transform(outer).0, GRAPH_ZOOM_MAX, "the zoom range clamps");
+    }
+
+    #[test]
+    fn begin_frame_fills_the_rect_to_the_outer_shape_and_sets_the_readout() {
+        let ctx = egui::Context::default();
+        let mut camera = GraphCamera::new();
+        camera.rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(100.0, 100.0));
+        let outer = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(400.0, 200.0));
+        let (scale, _) = camera.begin_frame(&ctx, outer);
+        assert_eq!(scale, 2.0);
+        assert_eq!(camera.rect.size(), egui::vec2(200.0, 100.0));
+        assert_eq!(camera.zoom_pct, 200.0);
+    }
+
+    #[test]
+    fn pan_to_eases_only_when_the_card_is_not_fully_in_view() {
+        let mut camera = GraphCamera::new();
+        camera.rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(100.0, 100.0));
+        camera.pan_to(egui::Rect::from_min_size(egui::pos2(10.0, 10.0), egui::vec2(20.0, 20.0)));
+        assert!(camera.tween.is_none(), "already visible");
+        let far = egui::Rect::from_min_size(egui::pos2(500.0, 0.0), egui::vec2(20.0, 20.0));
+        camera.pan_to(far);
+        let tween = camera.tween.expect("off screen: eases");
+        assert_eq!(tween.to, egui::Rect::from_center_size(far.center(), camera.rect.size()));
+    }
+
     /// Tab and Shift+Tab on a focused card step through the level in creation order and stop
     /// handling at either end (egui then moves on to widgets outside the cards).
     #[test]
@@ -2532,7 +2558,7 @@ mod tests {
         assert_eq!(order.len(), 3);
         let card = |i: usize| egui::Id::new(("graph_card", order[i].as_str()));
         let ctx = egui::Context::default();
-        let frame = |app: &mut App, events: Vec<egui::Event>| {
+        let frame = |events: Vec<egui::Event>| {
             let input = egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(600.0, 600.0))),
                 events,
@@ -2545,7 +2571,7 @@ mod tests {
                         egui::Rect::from_min_size(egui::pos2(10.0 + 60.0 * i as f32, 10.0), egui::vec2(50.0, 50.0));
                     ui.interact(rect, egui::Id::new(("graph_card", id.as_str())), egui::Sense::click());
                 }
-                app.handle_card_tab(ui, &order)
+                card_tab_step(ui, &order, |_| None);
             });
             output.textures_delta.clear();
         };
@@ -2557,20 +2583,20 @@ mod tests {
             modifiers,
         };
         ctx.memory_mut(|m| m.request_focus(card(0)));
-        frame(&mut app, vec![]);
-        frame(&mut app, vec![tab(egui::Modifiers::NONE)]);
+        frame(vec![]);
+        frame(vec![tab(egui::Modifiers::NONE)]);
         assert!(ctx.memory(|m| m.has_focus(card(1))), "Tab: first -> second");
-        frame(&mut app, vec![]);
-        frame(&mut app, vec![tab(egui::Modifiers::NONE)]);
+        frame(vec![]);
+        frame(vec![tab(egui::Modifiers::NONE)]);
         assert!(ctx.memory(|m| m.has_focus(card(2))), "Tab: second -> third");
-        frame(&mut app, vec![]);
-        frame(&mut app, vec![tab(egui::Modifiers::SHIFT)]);
+        frame(vec![]);
+        frame(vec![tab(egui::Modifiers::SHIFT)]);
         assert!(ctx.memory(|m| m.has_focus(card(1))), "Shift+Tab: third -> second");
-        frame(&mut app, vec![]);
-        frame(&mut app, vec![tab(egui::Modifiers::NONE)]);
-        frame(&mut app, vec![]);
+        frame(vec![]);
+        frame(vec![tab(egui::Modifiers::NONE)]);
+        frame(vec![]);
         // At the last card the handler does nothing (target is `None`), so focus is not moved back.
-        frame(&mut app, vec![tab(egui::Modifiers::NONE)]);
+        frame(vec![tab(egui::Modifiers::NONE)]);
         assert!(!ctx.memory(|m| m.has_focus(card(0)) || m.has_focus(card(1))), "no wrap past the end");
     }
 
