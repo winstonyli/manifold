@@ -1,0 +1,20 @@
+# Parked work
+
+The one list of deferred work (format: `~/.claude/VERSIONING.md`). Delete an item when it is fixed. "Verified" is the date the evidence was last checked against the code; "not re-verified" means copied from the README or a plan.
+
+## Verified 2026-10-17
+
+- **Restore touches own file paths on the UI thread.** `exists` (`session_sync.rs:702`, only when the node has a URL), `fs::metadata` for a Download's size (`session_sync.rs:754`, `fetched.rs:487`) and the json insert's inline read. *Why parked:* by decision; the answer picks placeholder vs real card, so the fix needs a "checking" card state and a worker result message. *Trigger:* a restore that freezes on a slow own-network share. *Start with:* the Download byte count (show 0, a worker fills it in). *Status:* parked. (The hostile case, a crafted import naming a UNC path, is closed: foreign imports drop every `path`.)
+- **Jar and redirect-fetch writes fsync on the UI thread.** `Jar::save` (`jar.rs:350`) via `App::save_jar` (`jar_defs.rs:632`); the `ViewToHost::JsonBody` handler calls `redirect_fetch::save` (`event_loop.rs:1573`). *Why parked:* small stalls, no report. *Trigger:* a measured frame hitch on a slow disk. *Fix:* hand the body to the fetcher worker; write jars on a writer thread or debounce. *Status:* parked.
+- **A2 `reported_url` flash.** The guard (`event_loop.rs:1393`) suppresses the old URL only for 2 s after `navigate_tab`; `finish_swap` (`event_loop.rs:1425`) skips it and was not traced. *Trigger:* a seen stale URL after a slow navigation or an engine swap. *Fix:* key suppression on a navigation id or engine generation, not a timer. *Status:* parked.
+- **Dot grid draws one circle per dot every frame.** `paint_dot_grid` (`graph_ui.rs:2018`), about 6k dots at low zoom on a large view. *Trigger:* a profile showing it. *Fix:* one batched mesh. *Status:* parked.
+- **`conflict_path_in` has a check-then-create window.** `settings.rs:234`. *Why parked:* needs two processes conflicting in the same second. *Fix:* `create_new` with retry. *Status:* parked.
+- **README: the `MANIFOLD_CEF_VERBOSE` sentence is in the wrong place.** Ends the "Blink (CEF) tabs run unsandboxed" bullet (`README.md:518`); belongs under "Running". *Status:* parked (a move).
+
+## Not re-verified (from the README and plans)
+
+- **Live-only behaviour never checked:** WebKit double and triple click, cross-origin iframe typing, Lost/Outdated recovery. *Trigger:* a WebKit or CEF session on the target machine. *Status:* held for a manual check.
+- **Engine wave 3a/3b holds** (README, "Known limitations"): E7 owner-only pipes plus peer PID check (held for a cross-user check); random pipe-name suffix with E10 frame-file naming; free-space check before the engine install download; streaming redirect fetches to disk (`content::passes` needs the whole body); WebKit through `wsl.exe --exec`; E9 engine-side blocking waits; a separate host-to-engine connection for WebKit; a Restart affordance in Tab view. E2 (frame path) and host-side sends are `decided against`. The WebKit, CEF and Servo hosts were not built or run with the bounded inbox.
+- **Layer directories for source files** (`view/`, `app/`, `model/`, …): spiked 2026-10-10, works; parked because it adds a `#[path]` per module. *Trigger:* the flat module list getting in the way (README, "Module layout").
+- **Undo of Dissolve Group.** *Status:* parked.
+- **Gate-speed holds and the deferred 2b-6 directions:** see `docs/superpowers/plans/2026-10-06-node-model-2b-6-enums-to-type.md` and the gate-speed plans; not re-read.

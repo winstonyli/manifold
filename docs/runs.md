@@ -1,0 +1,3 @@
+| run id | kind | command | commit | start | end | exit | conditions | headline | raw path | size mb | notes |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 2026-10-17-full | gate | cargo build -j 8 -p manifold -p manifold-view-webview2 -p manifold-view-pdfium -p gate && target\debug\gate.exe all "%RUN_DIR%\gate-log.txt" full | be4c974 | 2026-10-17T15:01:38 | 2026-10-17T15:11:30 | 0 | cpu 25%, defender realtime False, gpus [AMD Radeon RX 9060 XT + AMD Radeon(TM) 780M], live gpu leases 1, priority BelowNormal |     gate full passed: 11 stages exit 0 (two x3, smoke, layout, link and others), 9m48s | %LOCALAPPDATA%\claude-runs\manifold\2026-10-17-full | 0.1 | wrapper pid 38224, child pid 22952 |
