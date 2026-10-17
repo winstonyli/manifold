@@ -61,6 +61,15 @@ impl Identity {
         }
     }
 
+    /// A spinner while `busy` (an image decoding, a PDF rendering, a tab waking), else `self`.
+    pub(crate) fn busy(self, busy: bool) -> Self {
+        if busy {
+            Self::Spinner
+        } else {
+            self
+        }
+    }
+
     /// The text part alone: a glyph, or a tile's letter or globe, `size` screen points across at `center`.
     /// `default_ink` colors a glyph that names none. For a caller that has a `Painter` but no `Ui`.
     pub(crate) fn text(self, center: egui::Pos2, size: f32, default_ink: egui::Color32) -> Option<IdentityText> {
@@ -197,6 +206,13 @@ mod tests {
         });
         let middle = middle.expect("the line was drawn");
         assert!((middle - at).length() < 0.5, "{middle:?} vs {at:?}");
+    }
+
+    #[test]
+    fn busy_replaces_any_identity_with_the_spinner() {
+        let glyph = Identity::Glyph { glyph: "x", color: None };
+        assert_eq!(glyph.busy(true), Identity::Spinner);
+        assert_eq!(glyph.busy(false), glyph);
     }
 
     #[test]

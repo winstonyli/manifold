@@ -1486,7 +1486,8 @@ impl App {
                 (false, Some(tex)) => Identity::Image(tex),
                 (true, _) => Identity::Glyph { glyph: egui_phosphor::light::WARNING, color: Some(DANGER_COLOR) },
                 (false, None) => Identity::Glyph { glyph: egui_phosphor::light::MOON, color: None },
-            },
+            }
+            .busy(matches!(state, UnloadedState::Waking)),
             name: if title.is_empty() { url.clone() } else { title },
             user_name: None,
             source: url,
@@ -1515,12 +1516,7 @@ impl App {
             UnloadedState::Failed(_) => {
                 push_centered_text(deferred_overlays, middle, egui_phosphor::light::WARNING_CIRCLE, 24.0, DANGER_COLOR);
             }
-            UnloadedState::Waking => {
-                ui.put(
-                    egui::Rect::from_center_size(middle, egui::vec2(24.0, 24.0) * inv_zoom),
-                    egui::Spinner::new().size(24.0 * inv_zoom),
-                );
-            }
+            UnloadedState::Waking => {}
             UnloadedState::Sleeping => {
                 push_centered_text(
                     deferred_overlays,
@@ -1858,30 +1854,14 @@ impl App {
         // frame's plain fill, matching every other kind's
         // "background + border" simplified look.
         if !self.graph_lod_simplified {
+            // Still decoding (`ImageDecoder`): the header's icon spins, over the plain fill.
+            let decoding =
+                tex_id.is_none() && self.nodes.get(id).and_then(|n| n.as_image()).is_some_and(|i| i.decoding());
             match tex_id {
                 Some(tex_id) => {
                     ui.painter().image(tex_id, rect, FULL_UV, egui::Color32::WHITE);
-                    if let Some(image) = self.nodes.get(id).and_then(|n| n.as_image()) {
-                        let (name, source, source_is_path) = file_header_text(&image.path, self.source_url(id));
-                        let header = CardHeader {
-                            identity: Identity::Glyph { glyph: egui_phosphor::light::IMAGE, color: None },
-                            name,
-                            user_name: None,
-                            source,
-                            source_is_path,
-                            scrim: true,
-                            right_margin: 0.0,
-                        };
-                        self.paint_card_header(ui, deferred_overlays, id, rect, inv_zoom, zoom_scale, header);
-                    }
                 }
-                // Still decoding (`ImageDecoder`): the loading spinner a waking tab shows.
-                None if self.nodes.get(id).and_then(|n| n.as_image()).is_some_and(|i| i.decoding()) => {
-                    ui.put(
-                        egui::Rect::from_center_size(rect.center(), egui::vec2(24.0, 24.0) * inv_zoom),
-                        egui::Spinner::new().size(24.0 * inv_zoom),
-                    );
-                }
+                None if decoding => {}
                 // Only reachable if the node somehow outlived its own texture (freed but not removed): a
                 // broken-image glyph, since this picture isn't about to arrive.
                 None => {
@@ -1892,6 +1872,21 @@ impl App {
                         24.0,
                         ui.visuals().weak_text_color(),
                     );
+                }
+            }
+            if tex_id.is_some() || decoding {
+                if let Some(image) = self.nodes.get(id).and_then(|n| n.as_image()) {
+                    let (name, source, source_is_path) = file_header_text(&image.path, self.source_url(id));
+                    let header = CardHeader {
+                        identity: Identity::Glyph { glyph: egui_phosphor::light::IMAGE, color: None }.busy(decoding),
+                        name,
+                        user_name: None,
+                        source,
+                        source_is_path,
+                        scrim: !decoding,
+                        right_margin: 0.0,
+                    };
+                    self.paint_card_header(ui, deferred_overlays, id, rect, inv_zoom, zoom_scale, header);
                 }
             }
         }
@@ -1942,20 +1937,7 @@ impl App {
             match state {
                 Some(Ok((Some(tex_id), page_count))) => {
                     ui.painter().image(tex_id, rect, FULL_UV, egui::Color32::WHITE);
-                    if let Some(pdf) = self.nodes.get(id).and_then(|n| n.as_pdf()) {
-                        let (name, source, source_is_path) = file_header_text(&pdf.path, self.source_url(id));
-                        // The page count sits at the bottom right, so the fallback strip stops short of it.
-                        let header = CardHeader {
-                            identity: Identity::Glyph { glyph: egui_phosphor::light::FILE_PDF, color: None },
-                            name,
-                            user_name: None,
-                            source,
-                            source_is_path,
-                            scrim: true,
-                            right_margin: 60.0,
-                        };
-                        self.paint_card_header(ui, deferred_overlays, id, rect, inv_zoom, zoom_scale, header);
-                    }
+                    self.paint_pdf_header(ui, deferred_overlays, id, rect, inv_zoom, zoom_scale, false);
                     // Shown even for a one-page PDF -- a glanceable
                     // "this is a PDF, not a plain image" cue on top
                     // of the file-type distinction the icon in the
@@ -1994,12 +1976,38 @@ impl App {
                         DANGER_COLOR,
                     );
                 }
-                None => {
-                    ui.put(rect, egui::Spinner::new().size(24.0 * inv_zoom));
-                }
+                // Still rendering: the header's icon spins, over the plain fill.
+                None => self.paint_pdf_header(ui, deferred_overlays, id, rect, inv_zoom, zoom_scale, true),
             }
         }
         body
+    }
+
+    /// A PDF card's header; `busy` while the first render is pending.
+    #[allow(clippy::too_many_arguments, reason = "the card header's context, as `paint_card_header` takes it")]
+    fn paint_pdf_header(
+        &mut self,
+        ui: &mut egui::Ui,
+        deferred_overlays: &mut DeferredOverlays,
+        id: &str,
+        rect: egui::Rect,
+        inv_zoom: f32,
+        zoom_scale: f32,
+        busy: bool,
+    ) {
+        let Some(pdf) = self.nodes.get(id).and_then(|n| n.as_pdf()) else { return };
+        let (name, source, source_is_path) = file_header_text(&pdf.path, self.source_url(id));
+        // The page count sits at the bottom right, so the fallback strip stops short of it.
+        let header = CardHeader {
+            identity: Identity::Glyph { glyph: egui_phosphor::light::FILE_PDF, color: None }.busy(busy),
+            name,
+            user_name: None,
+            source,
+            source_is_path,
+            scrim: !busy,
+            right_margin: 60.0,
+        };
+        self.paint_card_header(ui, deferred_overlays, id, rect, inv_zoom, zoom_scale, header);
     }
 
     /// Json: an error card keeps the missing-file box (fixed at
@@ -2334,15 +2342,11 @@ impl App {
                     .and_then(|g| g.thumbnail_size(id))
                     .map_or(FULL_UV, |size| cover_uv(size, thumb_rect.size()));
                 ui.painter().image(tex_id, thumb_rect, uv, egui::Color32::WHITE);
-            } else {
-                ui.put(
-                    egui::Rect::from_center_size(thumb_rect.center(), egui::vec2(24.0, 24.0) * inv_zoom),
-                    egui::Spinner::new().size(24.0 * inv_zoom),
-                );
             }
 
             let label = if title.is_empty() { url.as_str() } else { title.as_str() };
-            let identity = self.tab_identity(&url, loading, tab_view_kind);
+            // Busy until the first frame is in, as well as while the page loads.
+            let identity = self.tab_identity(&url, loading || thumb_id.is_none(), tab_view_kind);
             let show_text = rect.width() * zoom_scale >= MIN_LABEL_CARD_SCREEN_WIDTH;
             if header {
                 let card_header = CardHeader {
