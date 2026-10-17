@@ -774,6 +774,10 @@ impl App {
             let center = self.camera.rect.center();
             self.camera.rect = egui::Rect::from_center_size(center, scene_outer_rect.size());
         }
+        if let Some(scale) = self.pending_graph_zoom.take() {
+            let scale = scale.clamp(GRAPH_ZOOM_MIN, GRAPH_ZOOM_MAX);
+            self.camera.rect = egui::Rect::from_center_size(self.camera.rect.center(), scene_outer_rect.size() / scale);
+        }
         if let Some(factor) = graph_zoom_step {
             self.camera.rect =
                 step_scene_rect(self.camera.rect, factor, scene_outer_rect.size(), GRAPH_ZOOM_MIN, GRAPH_ZOOM_MAX);

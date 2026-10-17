@@ -408,6 +408,8 @@ struct App {
     truncate_cache: HashMap<TruncateCacheKey, (String, String)>,
     /// See `App::cached_favicon_origin`'s own doc comment.
     favicon_origin_cache: HashMap<String, Option<String>>,
+    /// A zoom scale (1.0 = 100%) the next Graph frame sets the camera to (`GRAPHZOOM`).
+    pending_graph_zoom: Option<f32>,
     /// `(level, node_count)` for the graph level `graph_settle_current_level`
     /// last ran a settle burst for -- `build_graph_ui` compares this
     /// against the current level/count every frame and only re-settles
@@ -614,6 +616,7 @@ impl Default for App {
             graph_lod_simplified: false,
             truncate_cache: HashMap::new(),
             favicon_origin_cache: HashMap::new(),
+            pending_graph_zoom: None,
             graph_settled_key: None,
             headless: false,
             json_ui: json_level_ui::JsonLevelUi::default(),

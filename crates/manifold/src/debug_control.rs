@@ -133,6 +133,8 @@ pub enum DebugCommand {
     ZoomOut,
     /// `Ctrl+0` equivalent — see `App::zoom_reset_shortcut`.
     ZoomReset,
+    /// Sets the Graph view camera's zoom to this many percent (`ZOOMIN`/`ZOOMOUT` zoom the focused page there).
+    GraphZoom(f32),
     /// `F12` equivalent — see `App::open_devtools_shortcut`.
     OpenDevTools,
     /// `Ctrl+T` equivalent — see `App::new_tab_shortcut`. A real
@@ -509,6 +511,7 @@ const COMMAND_HELP: &[(&str, &str)] = &[
     ("ZOOMIN", "Ctrl+=/Ctrl++ -- zoom in"),
     ("ZOOMOUT", "Ctrl+- -- zoom out"),
     ("ZOOMRESET", "Ctrl+0 -- reset zoom"),
+    ("GRAPHZOOM pct", "Graph view: set the camera zoom to pct percent"),
     ("OPENDEVTOOLS", "F12 -- open devtools"),
     ("NEWTAB", "Ctrl+T -- new tab"),
     ("CLOSETAB", "Ctrl+W -- close the focused tab"),
@@ -764,6 +767,7 @@ pub fn parse_line(line: &str) -> Option<DebugCommand> {
         "ZOOMIN" => Some(DebugCommand::ZoomIn),
         "ZOOMOUT" => Some(DebugCommand::ZoomOut),
         "ZOOMRESET" => Some(DebugCommand::ZoomReset),
+        "GRAPHZOOM" => rest.parse::<f32>().ok().filter(|v| v.is_finite() && *v > 0.0).map(DebugCommand::GraphZoom),
         "OPENDEVTOOLS" => Some(DebugCommand::OpenDevTools),
         "NEWTAB" => Some(DebugCommand::NewTab),
         "CLOSETAB" => Some(DebugCommand::CloseTab),
@@ -1246,6 +1250,7 @@ impl App {
             DebugCommand::ZoomIn => self.zoom_in_shortcut(),
             DebugCommand::ZoomOut => self.zoom_out_shortcut(),
             DebugCommand::ZoomReset => self.zoom_reset_shortcut(),
+            DebugCommand::GraphZoom(pct) => self.pending_graph_zoom = Some(pct / 100.0),
             DebugCommand::OpenDevTools => self.open_devtools_shortcut(),
             DebugCommand::NewTab => self.new_tab_shortcut(),
             DebugCommand::CloseTab => self.close_focused_tab_shortcut(),
@@ -1911,6 +1916,7 @@ mod tests {
             "ZOOMIN",
             "ZOOMOUT",
             "ZOOMRESET",
+            "GRAPHZOOM 60",
             "OPENDEVTOOLS",
             "NEWTAB",
             "CLOSETAB",
@@ -2323,6 +2329,10 @@ mod tests {
             Some(DebugCommand::MoveNode { id, x, y }) if id == "n1" && x == 12.0 && y == -34.5
         ));
         for bad in ["MOVENODE n1 12", "MOVENODE n1 inf 0", "MOVENODE n1 NaN 0", "MOVENODE n1 1 2 3", "MOVENODE"] {
+            assert!(parse_line(bad).is_none(), "{bad}");
+        }
+        assert!(matches!(parse_line("GRAPHZOOM 62.5"), Some(DebugCommand::GraphZoom(p)) if p == 62.5));
+        for bad in ["GRAPHZOOM", "GRAPHZOOM 0", "GRAPHZOOM -5", "GRAPHZOOM inf", "GRAPHZOOM x"] {
             assert!(parse_line(bad).is_none(), "{bad}");
         }
     }
