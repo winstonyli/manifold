@@ -1927,6 +1927,7 @@ mod tests {
             "ZOOMIN",
             "ZOOMOUT",
             "ZOOMRESET",
+            "FITVIEW",
             "GRAPHZOOM 60",
             "OPENDEVTOOLS",
             "NEWTAB",
