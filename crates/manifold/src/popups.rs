@@ -1361,6 +1361,9 @@ impl App {
                         crate::graph_ui::show_scene(ui, &mut rect, true, |ui| {
                             crate::graph_ui::paint_dot_grid(ui.painter(), viewport, zoom_scale, inv_zoom, weak);
                             crate::graph_ui::paint_edges(ui, viewport, &edges, inv_zoom);
+                            pass.pan_target = crate::graph_ui::card_tab_step(ui, &order, |id| {
+                                cards.iter().find(|e| e.id == id).map(|e| e.rect)
+                            });
                             for entry in &cards {
                                 if let Some(response) = self.virtual_card_click(ui, &mut pass, entry, "trail", false) {
                                     clicked |= response.clicked();

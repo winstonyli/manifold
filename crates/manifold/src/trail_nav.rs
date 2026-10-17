@@ -765,4 +765,65 @@ mod tests {
         assert!(!popup_centres_cursor(&ctx, which, false), "closed");
         assert!(popup_centres_cursor(&ctx, which, true), "opened again");
     }
+
+    fn key(key: egui::Key) -> egui::Event {
+        egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE }
+    }
+
+    fn long_trail_popup(name: &str) -> (App, String) {
+        let mut app = app_on(&session(name), 1);
+        let (tab, _peer) = live_tab(&mut app, ViewKind::Webview2, "https://0/");
+        let urls: Vec<String> = (0..12).map(|i| format!("https://example.test/page-{i}")).collect();
+        let refs: Vec<&str> = urls.iter().map(String::as_str).collect();
+        app.nav_history.insert(tab.clone(), NavHistory::visited(&refs));
+        app.menus.open_popup = Some(AnchoredPopup::BackBranches);
+        for _ in 0..3 {
+            popup_run(&mut app, &tab, vec![]);
+        }
+        (app, tab)
+    }
+
+    fn card_id(app: &App, tab: &str, entry: usize) -> egui::Id {
+        let cards = crate::trail_strip::trail_cards(app, tab, egui::Pos2::ZERO);
+        egui::Id::new(("graph_card", cards[entry].id.as_str()))
+    }
+
+    #[test]
+    fn tab_steps_through_the_popups_pages_and_pans_an_off_screen_one_into_view() {
+        let (mut app, tab) = long_trail_popup("trail-popup-tab");
+        let (first, second) = (card_id(&app, &tab, 0), card_id(&app, &tab, 1));
+        app.egui_ctx.memory_mut(|m| m.request_focus(first));
+        popup_run(&mut app, &tab, vec![]);
+        assert!(app.egui_ctx.memory(|m| m.has_focus(first)), "the first page holds focus");
+        popup_run(&mut app, &tab, vec![key(egui::Key::Tab)]);
+        assert!(app.egui_ctx.memory(|m| m.has_focus(second)), "Tab moved to the next page");
+        popup_run(&mut app, &tab, vec![]);
+        let camera = &app.menus.trail_canvas.as_ref().unwrap().1;
+        assert!(
+            camera.tween.is_some()
+                || camera.rect.contains(crate::trail_strip::trail_cards(&app, &tab, egui::Pos2::ZERO)[1].rect.center()),
+            "the off-screen page is panned into view"
+        );
+    }
+
+    #[test]
+    fn enter_on_a_focused_page_picks_it_and_shift_f10_opens_its_menu() {
+        let (mut app, tab) = long_trail_popup("trail-popup-enter");
+        app.view_mode = crate::ViewMode::Item;
+        let second = card_id(&app, &tab, 1);
+        app.egui_ctx.memory_mut(|m| m.request_focus(second));
+        popup_run(&mut app, &tab, vec![]);
+        let shift_f10 = egui::Event::Key {
+            key: egui::Key::F10,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::SHIFT,
+        };
+        popup_run(&mut app, &tab, vec![shift_f10]);
+        assert!(app.menus.trail_menu.is_some(), "Shift+F10 opens the page menu");
+        app.menus.trail_menu = None;
+        popup_run(&mut app, &tab, vec![key(egui::Key::Enter)]);
+        assert_eq!(app.menus.open_popup, None, "Enter picked the page and closed the popup");
+    }
 }
