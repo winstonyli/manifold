@@ -97,4 +97,11 @@ impl App {
         self.favicon_origin_cache.insert(url.to_owned(), origin.clone());
         origin
     }
+
+    /// The tab's icon (`Identity::of_tab`): its favicon texture once fetched, else the placeholder.
+    pub(crate) fn tab_identity(&mut self, url: &str, loading: bool, kind: ViewKind) -> Identity {
+        let favicon =
+            self.cached_favicon_origin(url).and_then(|origin| self.gpu.as_ref().and_then(|g| g.favicon_id(&origin)));
+        Identity::of_tab(loading, favicon, kind, url)
+    }
 }

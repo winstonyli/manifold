@@ -14,6 +14,8 @@ pub(crate) const MIN_LABEL_CARD_SCREEN_WIDTH: f32 = 40.0;
 pub(crate) const GRAPH_THUMB_MARGIN: f32 = 6.0;
 
 pub(crate) const FAVICON_SIZE: egui::Vec2 = egui::vec2(16.0, 16.0);
+/// The icon's size in a short card's title strip (`TAB_STRIP_POINTS` tall).
+const STRIP_ICON_SIZE: f32 = 12.0;
 
 /// A group card's border tints `DANGER_COLOR` once its member count exceeds
 /// this threshold -- a cheap glanceable "this one's gotten big" cue. Only
@@ -34,12 +36,8 @@ pub(crate) const UNKNOWN_NODE_SIZE: egui::Vec2 = JAR_NODE_SIZE;
 
 /// What a card's header says (`App::paint_card_header`).
 pub(crate) struct CardHeader<'a> {
-    /// `None`: the caller draws its own icon in the glyph's place (a live tab's favicon or engine dot).
-    pub(crate) glyph: Option<&'static str>,
-    /// The glyph's color; the dim text color if `None`.
-    pub(crate) glyph_color: Option<egui::Color32>,
-    /// Drawn in the glyph's place, if the card has one (a favicon).
-    pub(crate) icon_image: Option<egui::TextureId>,
+    /// The icon at the header's left.
+    pub(crate) identity: Identity,
     /// A title from a page or a file, drawn as it is. Unused when `user_name` is set.
     pub(crate) name: String,
     /// A stored group name, already through the display rule (`names::display_name`), so a hidden character shows
@@ -80,6 +78,8 @@ pub(crate) const TAB_STRIP_POINTS: f32 = 18.0;
 /// Header F's layout, in screen points from the card's top-left. `paint_card_header` and the JSON
 /// preview's own header (`json_level_ui::paint_json_content`) both place their text from these.
 pub(crate) const HEADER_GLYPH_X: f32 = 10.0;
+/// The icon's center (`Identity::paint`); a glyph there spans about `HEADER_GLYPH_X` to `HEADER_TEXT_X`.
+pub(crate) const HEADER_ICON_X: f32 = 18.0;
 /// The line the glyph sits on, and the title's when there is no source line.
 pub(crate) const HEADER_CENTER_Y: f32 = 20.0;
 pub(crate) const HEADER_TEXT_X: f32 = 28.0;
@@ -1484,9 +1484,11 @@ impl App {
         }
         let failed = matches!(state, UnloadedState::Failed(_));
         let header = CardHeader {
-            glyph: Some(if failed { egui_phosphor::light::WARNING } else { egui_phosphor::light::MOON }),
-            glyph_color: failed.then_some(DANGER_COLOR),
-            icon_image: if failed { None } else { favicon },
+            identity: match (failed, favicon) {
+                (false, Some(tex)) => Identity::Image(tex),
+                (true, _) => Identity::Glyph { glyph: egui_phosphor::light::WARNING, color: Some(DANGER_COLOR) },
+                (false, None) => Identity::Glyph { glyph: egui_phosphor::light::MOON, color: None },
+            },
             name: if title.is_empty() { url.clone() } else { title },
             user_name: None,
             source: url,
@@ -1568,9 +1570,7 @@ impl App {
         // LOD: the header text is skipped once simplified -- see `paint_tab_body`'s own LOD comment.
         if !self.graph_lod_simplified {
             let header = CardHeader {
-                glyph: Some(egui_phosphor::light::DOWNLOAD_SIMPLE),
-                glyph_color: None,
-                icon_image: None,
+                identity: Identity::Glyph { glyph: egui_phosphor::light::DOWNLOAD_SIMPLE, color: None },
                 name: filename.to_owned(),
                 user_name: None,
                 source_is_path: download_url.is_none(),
@@ -1645,9 +1645,10 @@ impl App {
         let def = self.mirror.jar_def(id);
         let segs = crate::names::display_name(&def.name, crate::names::UNTITLED);
         let header = CardHeader {
-            glyph: Some(egui_phosphor::light::COOKIE),
-            glyph_color: Some(def.color.unwrap_or(crate::theme::TAG_COLOR_PALETTE[0])),
-            icon_image: None,
+            identity: Identity::Glyph {
+                glyph: egui_phosphor::light::COOKIE,
+                color: Some(def.color.unwrap_or(crate::theme::TAG_COLOR_PALETTE[0])),
+            },
             name: "Jar".to_owned(),
             user_name: Some(&segs),
             source: if def.ephemeral { "Ephemeral".to_owned() } else { String::new() },
@@ -1678,9 +1679,7 @@ impl App {
         let ty = self.mirror.ty(id).to_owned();
         let named = !self.mirror.name(id).is_empty(); // name rule: only whether one is stored
         let header = CardHeader {
-            glyph: Some(egui_phosphor::light::QUESTION),
-            glyph_color: None,
-            icon_image: None,
+            identity: Identity::Glyph { glyph: egui_phosphor::light::QUESTION, color: None },
             source: if named { ty.clone() } else { String::new() },
             name: ty,
             user_name: None,
@@ -1728,9 +1727,7 @@ impl App {
         if !self.graph_lod_simplified {
             let words = self.note_text(id).split_whitespace().count();
             let header = CardHeader {
-                glyph: Some(egui_phosphor::light::NOTE_PENCIL),
-                glyph_color: None,
-                icon_image: None,
+                identity: Identity::Glyph { glyph: egui_phosphor::light::NOTE_PENCIL, color: None },
                 name: "Note".to_owned(),
                 user_name: None,
                 source: format!("{words} word{}", if words == 1 { "" } else { "s" }),
@@ -1813,9 +1810,7 @@ impl App {
             return;
         }
         let header = CardHeader {
-            glyph: Some(egui_phosphor::light::FILE_X),
-            glyph_color: Some(DANGER_COLOR),
-            icon_image: None,
+            identity: Identity::Glyph { glyph: egui_phosphor::light::FILE_X, color: Some(DANGER_COLOR) },
             name,
             user_name: None,
             source,
@@ -1871,9 +1866,7 @@ impl App {
                     if let Some(image) = self.nodes.get(id).and_then(|n| n.as_image()) {
                         let (name, source, source_is_path) = file_header_text(&image.path, self.source_url(id));
                         let header = CardHeader {
-                            glyph: Some(egui_phosphor::light::IMAGE),
-                            glyph_color: None,
-                            icon_image: None,
+                            identity: Identity::Glyph { glyph: egui_phosphor::light::IMAGE, color: None },
                             name,
                             user_name: None,
                             source,
@@ -1955,9 +1948,7 @@ impl App {
                         let (name, source, source_is_path) = file_header_text(&pdf.path, self.source_url(id));
                         // The page count sits at the bottom right, so the fallback strip stops short of it.
                         let header = CardHeader {
-                            glyph: Some(egui_phosphor::light::FILE_PDF),
-                            glyph_color: None,
-                            icon_image: None,
+                            identity: Identity::Glyph { glyph: egui_phosphor::light::FILE_PDF, color: None },
                             name,
                             user_name: None,
                             source,
@@ -2125,9 +2116,7 @@ impl App {
                 let segs = crate::names::display_name(&stored, crate::names::UNTITLED);
                 body.tooltip = crate::names::hidden_hint(&segs);
                 let header = CardHeader {
-                    glyph: Some(egui_phosphor::light::FOLDER),
-                    glyph_color: None,
-                    icon_image: None,
+                    identity: Identity::Glyph { glyph: egui_phosphor::light::FOLDER, color: None },
                     name: String::new(),
                     user_name: Some(&segs),
                     source: format!("{member_count} item{}", if member_count == 1 { "" } else { "s" }),
@@ -2206,8 +2195,7 @@ impl App {
         if rect.width() * zoom_scale < MIN_LABEL_CARD_SCREEN_WIDTH {
             return tall;
         }
-        let CardHeader { glyph, glyph_color, icon_image, name, user_name, source, source_is_path, scrim, right_margin } =
-            header;
+        let CardHeader { identity, name, user_name, source, source_is_path, scrim, right_margin } = header;
         // A stored `name` (any kind's rename) takes the title's place, drawn by the display rule like a group's.
         let stored = self.mirror.name(id).to_owned(); // name rule: drawn through display_name
         let own_segs = crate::names::display_name(&stored, crate::names::UNTITLED);
@@ -2230,7 +2218,6 @@ impl App {
         let light = scrim || !tall;
         let title_color = if light { egui::Color32::from_gray(240) } else { ui.visuals().text_color() };
         let source_color = if light { egui::Color32::from_gray(190) } else { ui.visuals().weak_text_color() };
-        let glyph_color = glyph_color.unwrap_or(source_color);
         // One size for measuring and drawing the title, so a strip's plain and rich (hidden-character) titles match.
         let title_size = if tall { HEADER_TITLE_SIZE } else { 12.0 };
         let title_font = egui::FontId::proportional(title_size);
@@ -2265,29 +2252,24 @@ impl App {
             }
             (true, false) => truncate_to_width(&mut self.truncate_cache, ui.ctx(), &source, &source_font, max_width),
         };
-        if let (true, Some(tex_id)) = (tall, icon_image) {
-            let center = band.left_top() + egui::vec2(18.0, HEADER_CENTER_Y) * inv_zoom;
-            let uv = FULL_UV;
-            ui.painter().image(
-                tex_id,
-                egui::Rect::from_center_size(center, FAVICON_SIZE * inv_zoom),
-                uv,
-                egui::Color32::WHITE.gamma_multiply(0.6),
-            );
-        }
+        let icon_text = if tall {
+            let center = band.left_top() + egui::vec2(HEADER_ICON_X, HEADER_CENTER_Y) * inv_zoom;
+            identity.paint(ui, center, FAVICON_SIZE.x, inv_zoom, source_color)
+        } else {
+            None
+        };
         let origin = band.left_top();
         let band_screen_height = band_height * zoom_scale;
-        let glyph = glyph.filter(|_| tall && icon_image.is_none());
         deferred_overlays.push(Box::new(move |overlay_painter, project| {
             let base = project(origin);
             if tall {
-                if let Some(glyph) = glyph {
+                if let Some(IdentityText { center, text, size, color }) = icon_text {
                     overlay_painter.text(
-                        base + egui::vec2(HEADER_GLYPH_X, HEADER_CENTER_Y),
-                        egui::Align2::LEFT_CENTER,
-                        glyph,
-                        egui::FontId::proportional(14.0),
-                        glyph_color,
+                        project(center),
+                        egui::Align2::CENTER_CENTER,
+                        text,
+                        egui::FontId::proportional(size),
+                        color,
                     );
                 }
                 paint_card_title(
@@ -2326,9 +2308,15 @@ impl App {
         zoom_scale: f32,
     ) -> CardBody {
         let mut body = CardBody { interact_rect: rect, tooltip: None };
-        let Some((title, url, tab_view_kind, unresponsive)) =
+        let Some((title, url, tab_view_kind, unresponsive, loading)) =
             self.nodes.get(id).and_then(|n| n.as_tab()).map(|t| {
-                (t.title.clone(), t.url.clone(), t.tab.kind, t.tab.is_unresponsive(std::time::Instant::now()))
+                (
+                    t.title.clone(),
+                    t.url.clone(),
+                    t.tab.kind,
+                    t.tab.is_unresponsive(std::time::Instant::now()),
+                    t.loading,
+                )
             })
         else {
             return body;
@@ -2362,34 +2350,11 @@ impl App {
             }
 
             let label = if title.is_empty() { url.as_str() } else { title.as_str() };
-            let favicon = self
-                .cached_favicon_origin(&url)
-                .and_then(|origin| self.gpu.as_ref().and_then(|g| g.favicon_id(&origin)));
+            let identity = self.tab_identity(&url, loading, tab_view_kind);
             let show_text = rect.width() * zoom_scale >= MIN_LABEL_CARD_SCREEN_WIDTH;
             if header {
-                // Favicon (or the engine dot), title and source line over the card's own fill.
-                let icon_center = egui::pos2(
-                    rect.left() + (GRAPH_THUMB_MARGIN + 8.0) * inv_zoom,
-                    rect.top() + HEADER_CENTER_Y * inv_zoom,
-                );
-                match favicon {
-                    Some(tex_id) => {
-                        ui.painter().image(
-                            tex_id,
-                            egui::Rect::from_center_size(icon_center, FAVICON_SIZE * inv_zoom),
-                            FULL_UV,
-                            egui::Color32::WHITE,
-                        );
-                    }
-                    None => {
-                        ui.painter().circle_filled(icon_center, 4.0 * inv_zoom, view_color(tab_view_kind));
-                    }
-                }
-                // Title and source line: the shared header, which leaves the icon above to this card.
                 let card_header = CardHeader {
-                    glyph: None,
-                    glyph_color: None,
-                    icon_image: None,
+                    identity,
                     name: label.to_owned(),
                     user_name: None,
                     source: url.clone(),
@@ -2405,13 +2370,26 @@ impl App {
                     thumb_rect.right_bottom(),
                 );
                 ui.painter().rect_filled(title_strip, 0.0, TITLE_STRIP_SCRIM);
-                // Engine identity as a small colored dot; the strip is too small for more.
-                ui.painter().circle_filled(
+                // The same icon as the header's, small enough for the strip.
+                let icon_text = identity.paint(
+                    ui,
                     egui::Pos2::new(title_strip.left() + 8.0 * inv_zoom, title_strip.center().y),
-                    4.0 * inv_zoom,
-                    view_color(tab_view_kind),
+                    STRIP_ICON_SIZE,
+                    inv_zoom,
+                    egui::Color32::WHITE,
                 );
-                // Below `MIN_LABEL_CARD_SCREEN_WIDTH` the label would be a sliver; the dot alone remains.
+                if let Some(IdentityText { center, text, size, color }) = icon_text {
+                    deferred_overlays.push(Box::new(move |overlay_painter, project| {
+                        overlay_painter.text(
+                            project(center),
+                            egui::Align2::CENTER_CENTER,
+                            text,
+                            egui::FontId::proportional(size),
+                            color,
+                        );
+                    }));
+                }
+                // Below `MIN_LABEL_CARD_SCREEN_WIDTH` the label would be a sliver; the icon alone remains.
                 if show_text {
                     let label_font = egui::FontId::proportional(14.0);
                     // Screen width left for the label: the strip's, less the 16px left offset and some room on
@@ -2429,13 +2407,6 @@ impl App {
                             egui::Color32::WHITE,
                         );
                     }));
-                }
-                if let Some(tex_id) = favicon {
-                    let favicon_rect = egui::Rect::from_min_size(
-                        rect.left_top() + egui::vec2(4.0, 4.0) * inv_zoom,
-                        FAVICON_SIZE * inv_zoom,
-                    );
-                    ui.painter().image(tex_id, favicon_rect, FULL_UV, egui::Color32::WHITE);
                 }
             }
             // The jar chip at the thumbnail's bottom-left, above a short card's title strip.

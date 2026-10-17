@@ -429,19 +429,14 @@ impl App {
         // away. A click into the page goes through egui and does move focus.
         self.address_bar.note_focus(ui.memory(|m| m.has_focus(response.id)));
         actions.address_bar_rect = Some(response.rect);
-        let identity = egui::Rect::from_center_size(
-            egui::pos2(response.rect.min.x + 8.0 + FAVICON_SIZE.x / 2.0, response.rect.center().y),
-            FAVICON_SIZE,
-        );
         let node = self.nodes[focused_id].as_tab().unwrap();
-        if node.loading {
-            egui::Spinner::new().size(12.0).paint_at(ui, identity);
-        } else if let Some(tex_id) = self
-            .cached_favicon_origin(&node.url.clone())
-            .and_then(|origin| self.gpu.as_ref().and_then(|g| g.favicon_id(&origin)))
+        let (url, loading, kind) = (node.url.clone(), node.loading, node.tab.kind);
+        let identity = self.tab_identity(&url, loading, kind);
+        let icon_center = egui::pos2(response.rect.min.x + 8.0 + FAVICON_SIZE.x / 2.0, response.rect.center().y);
+        if let Some(IdentityText { center, text, size, color }) =
+            identity.paint(ui, icon_center, FAVICON_SIZE.x, 1.0, ui.visuals().weak_text_color())
         {
-            let uv = crate::card::FULL_UV;
-            ui.painter().image(tex_id, identity, uv, egui::Color32::WHITE);
+            ui.painter().text(center, egui::Align2::CENTER_CENTER, text, egui::FontId::proportional(size), color);
         }
         if !response.has_focus() {
             paint_keycaps(ui, response.rect.right_center() - egui::vec2(8.0, 0.0), &["Ctrl", "L"]);

@@ -270,9 +270,7 @@ fn a_group_header_draws_its_name_by_the_display_rule() {
         let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
             let mut overlays: DeferredOverlays = Vec::new();
             let header = CardHeader {
-                glyph: Some(egui_phosphor::light::FOLDER),
-                glyph_color: None,
-                icon_image: None,
+                identity: Identity::Glyph { glyph: egui_phosphor::light::FOLDER, color: None },
                 name: if user_name { String::new() } else { name.into() },
                 user_name: user_name.then_some(&segs[..]),
                 source: "3 items".into(),
@@ -303,20 +301,17 @@ fn a_group_header_draws_its_name_by_the_display_rule() {
     }
 }
 
-/// A header with no glyph (a live tab's: the card draws its own favicon or engine dot) draws only its title and
-/// source line, left-aligned at `HEADER_TEXT_X` and centred on `HEADER_TITLE_Y` and `HEADER_SOURCE_Y`, where the
-/// tab card drew them by hand before it went through `CardHeader`.
+/// A header whose icon is an empty glyph draws only its title and source line, left-aligned at `HEADER_TEXT_X` and
+/// centred on `HEADER_TITLE_Y` and `HEADER_SOURCE_Y`, where the tab card drew them by hand before `CardHeader`.
 #[test]
-fn a_header_without_a_glyph_draws_title_and_source_at_the_header_lines() {
+fn a_header_with_an_empty_glyph_draws_title_and_source_at_the_header_lines() {
     let ctx = egui::Context::default();
     crate::theme::apply_fonts(&ctx);
     let mut app = App::default();
     let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
         let mut overlays: DeferredOverlays = Vec::new();
         let header = CardHeader {
-            glyph: None,
-            glyph_color: None,
-            icon_image: None,
+            identity: Identity::Glyph { glyph: "", color: None },
             name: "Title".into(),
             user_name: None,
             source: "example.com".into(),
@@ -338,6 +333,7 @@ fn a_header_without_a_glyph_draws_title_and_source_at_the_header_lines() {
             egui::Shape::Text(t) => Some((t.galley.text().to_string(), t.galley.rect.translate(t.pos.to_vec2()))),
             _ => None,
         })
+        .filter(|(text, _)| !text.is_empty()) // the empty glyph
         .collect();
     let names: Vec<_> = texts.iter().map(|(t, _)| t.as_str()).collect();
     assert_eq!(names, ["Title", "example.com"]);
