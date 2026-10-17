@@ -698,8 +698,9 @@ impl App {
         // in the first place -- a placeholder goes in directly instead,
         // and `refresh_node` (after this match) replaces it once the fetch
         // lands.
+        // The URL test goes first: it is free, and `exists` can wait on a network share.
         let missing_with_url =
-            content_path.as_deref().is_some_and(|p| !std::path::Path::new(p).exists()) && url_of(fields).is_some();
+            url_of(fields).is_some() && content_path.as_deref().is_some_and(|p| !std::path::Path::new(p).exists());
         match kind {
             Kind::Tab => {
                 let shared = str_of(fields, field::URL);
