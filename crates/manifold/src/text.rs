@@ -62,5 +62,6 @@ mod tests {
     #[test]
     fn explorer_select_quotes_the_path() {
         assert_eq!(explorer_select_arg(r"C:\d\a,b.pdf"), r#"/select,"C:\d\a,b.pdf""#);
+        assert_eq!(explorer_select_arg(r"C:\d e\a & b.pdf"), r#"/select,"C:\d e\a & b.pdf""#);
     }
 }

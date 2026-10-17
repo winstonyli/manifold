@@ -95,6 +95,11 @@ impl App {
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
         let temp_png = std::env::temp_dir().join(format!("manifold-print-{timestamp}.png"));
         let png = temp_png.to_string_lossy().into_owned();
+        if let Some((old, _)) = self.debug.pending_print_to_pdf.take() {
+            // A second request supersedes the first: its capture would never be matched, so its temp file goes.
+            let _ = std::fs::remove_file(old);
+            self.queue_toast("The earlier print was replaced by this one".to_owned());
+        }
         self.debug.pending_screenshot = Some(png.clone());
         self.debug.pending_print_to_pdf = Some((png, pdf_path));
         if let Some(window) = &self.window {

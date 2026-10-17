@@ -209,6 +209,26 @@ pub fn listen_remote(port: u16) -> io::Result<TcpListener> {
     TcpListener::bind(("0.0.0.0", port))
 }
 
+/// The `TOKEN_LEN` bytes a connecting peer sends, read within one second of now or `deadline`, whichever is first:
+/// the limit covers the whole token, so a peer dripping a byte at a time cannot hold the wait past it.
+fn read_token(stream: &mut TcpStream, deadline: Instant) -> Option<Token> {
+    let end = (Instant::now() + Duration::from_secs(1)).min(deadline);
+    let mut token = [0u8; TOKEN_LEN];
+    let mut got = 0;
+    while got < TOKEN_LEN {
+        let left = end.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return None;
+        }
+        stream.set_read_timeout(Some(left)).ok()?;
+        match stream.read(&mut token[got..]) {
+            Ok(0) | Err(_) => return None,
+            Ok(n) => got += n,
+        }
+    }
+    Some(token)
+}
+
 /// Bounded wait for the WSL2-hosted view-host to dial back, rather than
 /// `TcpListener::accept`'s unbounded block — a cold/idle WSL2 instance can
 /// take an extremely long, unpredictable time to boot its lightweight VM,
@@ -240,9 +260,7 @@ pub fn accept_remote(listener: &TcpListener, timeout: Duration, token: &Token) -
                     return Err(timed_out());
                 }
                 stream.set_nonblocking(false)?;
-                stream.set_read_timeout(Some(left.min(Duration::from_secs(1))))?;
-                let mut sent = [0u8; TOKEN_LEN];
-                if stream.read_exact(&mut sent).is_ok() && &sent == token {
+                if read_token(&mut stream, deadline).as_ref() == Some(token) {
                     stream.set_read_timeout(None)?;
                     let mut channel = MessageChannel::new(stream);
                     channel.send_version()?;
@@ -329,6 +347,27 @@ mod tests {
     /// connects at all, `accept_remote` must return within (not much
     /// more than) its `timeout` argument, as a clean `TimedOut` error, not
     /// hang — the exact shape of the bug that let the freeze happen.
+    #[test]
+    fn a_peer_dripping_its_token_is_cut_off_at_the_limit() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind ephemeral port");
+        let port = listener.local_addr().expect("addr").port();
+        let peer = std::thread::spawn(move || {
+            let mut s = TcpStream::connect(("127.0.0.1", port)).expect("connect");
+            for _ in 0..TOKEN_LEN {
+                if s.write_all(&[7]).is_err() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(400));
+            }
+        });
+        let (mut stream, _) = listener.accept().expect("accept");
+        let start = Instant::now();
+        assert_eq!(read_token(&mut stream, Instant::now() + Duration::from_secs(30)), None);
+        assert!(start.elapsed() < Duration::from_millis(1500), "bounded by the one second, not by each byte");
+        drop(stream);
+        peer.join().expect("peer");
+    }
+
     #[test]
     fn accept_remote_times_out_when_nobody_connects() {
         let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind ephemeral port");

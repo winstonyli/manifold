@@ -93,6 +93,7 @@ pub fn list_named() -> Vec<String> {
         .map(|e| e.path())
         .filter(|path| path.extension().is_some_and(|ext| ext == "mnf"))
         .filter_map(|path| path.file_stem().map(|s| s.to_string_lossy().into_owned()))
+        .filter(|name| session_name_is_safe(name))
         .collect();
     names.sort();
     names

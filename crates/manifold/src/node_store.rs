@@ -57,7 +57,7 @@ impl App {
                     self.store_recovered = true;
                     self.queue_toast(format!(
                         "The session file wasn't readable (damaged, or from an older version of manifold); it was kept \
-                         (with its .prev/.local) as {} and a new one started",
+                         (with its .prev/.local, if any) as {} and a new one started",
                         aside.display()
                     ));
                 }

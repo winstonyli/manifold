@@ -40,7 +40,7 @@ pub(crate) fn replace_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
 
 /// Writes `bytes` to a fresh temp beside `path` and fsyncs it, runs
 /// `before_rename` (the journal keeps `.prev` there), then renames over
-/// `path`. On any error `path` is as it was and the temp is gone.
+/// `path`, and on Unix fsyncs the directory. On any error `path` is as it was and the temp is gone.
 pub(crate) fn replace_with(path: &Path, bytes: &[u8], private: bool, before_rename: impl FnOnce()) -> io::Result<()> {
     #[cfg(test)]
     if blocked(path) {
@@ -53,6 +53,13 @@ pub(crate) fn replace_with(path: &Path, bytes: &[u8], private: bool, before_rena
     });
     if result.is_err() {
         let _ = std::fs::remove_file(&tmp);
+    }
+    // The rename itself is durable only once its directory is (Unix; Windows has no directory handle to sync).
+    #[cfg(unix)]
+    if result.is_ok() {
+        if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
+            let _ = std::fs::File::open(dir).and_then(|d| d.sync_all());
+        }
     }
     result
 }

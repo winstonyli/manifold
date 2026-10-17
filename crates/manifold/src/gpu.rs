@@ -1060,12 +1060,19 @@ impl GpuState {
             }
             // The surface itself is gone: make a new one for the same window.
             wgpu::CurrentSurfaceTexture::Lost => {
+                // Logged once per run of failures: a window that cannot get a surface retries every frame.
+                static LOST_LOGGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
                 match self.instance.create_surface(self.window.clone()) {
                     Ok(surface) => {
                         self.surface = surface;
+                        LOST_LOGGED.store(false, std::sync::atomic::Ordering::Relaxed);
                         self.reconfigure_surface();
                     }
-                    Err(err) => eprintln!("wgpu: couldn't recreate the lost surface: {err}"),
+                    Err(err) => {
+                        if !LOST_LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                            eprintln!("wgpu: couldn't recreate the lost surface: {err}");
+                        }
+                    }
                 }
                 return RenderOutcome { surface_ok: false, screenshot_result: None };
             }

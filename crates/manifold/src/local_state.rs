@@ -91,6 +91,10 @@ pub(crate) fn differs(a: &LocalState, b: &LocalState) -> bool {
     let strip = |s: &LocalState| {
         let mut s = s.clone();
         s.nodes.values_mut().for_each(|n| n.pos = [0.0, 0.0]);
+        // A non-finite camera is never written (`to_bytes`), so it must not read as a change either.
+        if s.camera.as_ref().is_some_and(|(r, _)| r.iter().any(|v| !v.is_finite())) {
+            s.camera = None;
+        }
         s
     };
     if strip(a) != strip(b) {
@@ -163,13 +167,13 @@ impl LocalState {
 
     /// serde_json writes NaN and infinity as `null`, which a plain `f32`
     /// can't read back: one bad value used to make the whole file unreadable,
-    /// Recently Closed included. Each non-finite value is dropped alone.
+    /// Recently Closed included. A non-finite position is zeroed, any other non-finite value dropped.
     pub(crate) fn to_bytes(&self) -> Vec<u8> {
         if self.all_finite() {
             return serde_json::to_vec(self).expect("personal state serializes");
         }
         let mut clean = self.clone();
-        clean.nodes.retain(|_, n| n.pos.iter().all(|v| v.is_finite()));
+        clean.nodes.values_mut().flat_map(|n| n.pos.iter_mut()).filter(|v| !v.is_finite()).for_each(|v| *v = 0.0);
         if clean.camera.as_ref().is_some_and(|(r, _)| r.iter().any(|v| !v.is_finite())) {
             clean.camera = None;
         }
@@ -225,9 +229,16 @@ mod tests {
         state.camera = Some(([0.0, f32::INFINITY, 1.0, 1.0], None));
         state.json_outline_width = Some(f32::NAN);
         let back = LocalState::from_bytes(&state.to_bytes()).expect("still readable");
-        assert!(!back.nodes.contains_key("a"), "the bad position is dropped");
+        assert_eq!(back.nodes["a"].pos, [0.0, 0.0], "the bad position is zeroed, the node kept");
         assert_eq!(back.nodes["b"].title, "kept");
         assert_eq!((back.camera, back.json_outline_width), (None, None));
+    }
+
+    #[test]
+    fn a_non_finite_camera_is_no_change() {
+        let mut state = with_pos(1.0);
+        state.camera = Some(([0.0, f32::NAN, 1.0, 1.0], None));
+        assert!(!differs(&state, &state.clone()), "it is never written, so it never differs");
     }
 
     /// Files written before the fix hold `null` where the value was NaN.
