@@ -629,6 +629,22 @@ mod tests {
     }
 
     #[test]
+    fn dragging_from_a_page_pans_the_popup_and_does_not_carry_it() {
+        let (mut app, tab, _peer) = open_back_popup("trail-popup-pan-page");
+        let before = app.menus.trail_canvas.as_ref().unwrap().1.rect.center();
+        let start = page_centre(&app, &tab, 1);
+        popup_run(&mut app, &tab, vec![egui::Event::PointerMoved(start), primary(start, true)]);
+        for step in 1..=4 {
+            let at = start + egui::vec2(8.0 * step as f32, 0.0);
+            popup_run(&mut app, &tab, vec![egui::Event::PointerMoved(at)]);
+            assert!(app.interaction.dragging.is_none(), "no page is carried while dragging");
+        }
+        popup_run(&mut app, &tab, vec![primary(start + egui::vec2(32.0, 0.0), false)]);
+        let after = app.menus.trail_canvas.as_ref().unwrap().1.rect.center();
+        assert!(after.x < before.x - 10.0, "a drag that starts on a page pans: {before:?} -> {after:?}");
+    }
+
+    #[test]
     fn the_popup_recentres_on_every_opening_and_not_in_between() {
         let (mut app, tab, _peer) = open_back_popup("trail-popup-recentre");
         let first = app.menus.trail_canvas.as_ref().unwrap().1.rect;
@@ -683,14 +699,25 @@ mod tests {
     #[test]
     fn the_trail_changing_under_an_open_popup_redraws_its_cards() {
         let (mut app, tab, _peer) = open_back_popup("trail-popup-changes");
-        app.nav_history.insert(tab.clone(), NavHistory::visited(&["https://x/", "https://y/", "https://z/"]));
-        let output = popup_run(&mut app, &tab, vec![]);
-        assert!(!leaves(&output).is_empty());
+        let old = crate::trail_strip::trail_cards(&app, &tab, egui::Pos2::ZERO);
+        let old_page = egui::Id::new(("graph_card", old[1].id.as_str()));
+        assert!(app.egui_ctx.read_response(old_page).is_some(), "the old trail's page is registered");
+        app.menus.trail_menu = Some((old[1].id.clone(), egui::pos2(50.0, 50.0)));
+        // 52 pages overflow the 50-entry cap: eviction renumbers the entries and bumps the epoch, retiring every id.
+        let urls: Vec<String> = (0..52).map(|i| format!("https://example.test/p{i}")).collect();
+        let refs: Vec<&str> = urls.iter().map(String::as_str).collect();
+        app.nav_history.insert(tab.clone(), NavHistory::visited(&refs));
         let cards = crate::trail_strip::trail_cards(&app, &tab, egui::Pos2::ZERO);
-        assert_eq!(cards.len(), 3);
-        popup_run(&mut app, &tab, vec![]);
-        let id = egui::Id::new(("graph_card", cards[1].id.as_str()));
-        assert!(app.egui_ctx.read_response(id).is_some(), "the new trail's pages are registered");
+        assert_eq!(cards.len(), 50);
+        assert_ne!(cards[1].id, old[1].id, "the epoch retired the old ids");
+        for _ in 0..2 {
+            popup_run(&mut app, &tab, vec![]);
+        }
+        let drawn = |c: &&crate::level::CardEntry| {
+            app.egui_ctx.read_response(egui::Id::new(("graph_card", c.id.as_str()))).is_some()
+        };
+        assert!(cards.iter().any(|c| drawn(&c)), "the new trail's pages are registered");
+        assert!(app.menus.trail_menu.is_none(), "a menu on a retired page closes");
     }
 
     #[test]
