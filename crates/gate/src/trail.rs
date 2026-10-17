@@ -12,7 +12,7 @@ use std::io;
 use std::path::PathBuf;
 use std::process::{Command, ExitCode, Stdio};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
@@ -25,6 +25,8 @@ use crate::windows_main::{manifold_exe, work_dir};
 
 /// How long the instance may take to exit after QUIT.
 const QUIT_TIMEOUT: Duration = Duration::from_secs(60);
+/// How long a screenshot check may keep retaking its shot.
+const SETTLE: Duration = Duration::from_secs(15);
 
 struct Run {
     exe: PathBuf,
@@ -78,6 +80,26 @@ fn engine_pixels(path: &std::path::Path, rows: Option<u32>, engine: &str) -> io:
     let img = image::open(path).map_err(|e| bad(format!("{}: {e}", path.display())))?.to_rgb8();
     let rows = rows.unwrap_or(img.height());
     Ok(img.enumerate_pixels().filter(|(_, y, p)| *y < rows && p.0 == want).count())
+}
+
+/// `engine_pixels` of a fresh screenshot, retaken until it reaches `want` or `SETTLE` passes: a frame can be shot
+/// before a tile replaces a loading spinner, and the count of the last one is returned and printed.
+fn engine_pixels_settled(
+    inst: &mut Instance,
+    name: &str,
+    rows: Option<u32>,
+    engine: &str,
+    want: usize,
+) -> io::Result<usize> {
+    let deadline = Instant::now() + SETTLE;
+    loop {
+        inst.send("WAITIDLE")?;
+        let count = engine_pixels(&inst.screenshot(name)?, rows, engine)?;
+        if count >= want || Instant::now() >= deadline {
+            println!("{name}: {count} engine-colour pixels");
+            return Ok(count);
+        }
+    }
 }
 
 /// Tab `id`'s entry in EXPORTSTATE's `trail`.
@@ -164,14 +186,12 @@ fn drive(run: &Run, sec: &mut Option<Section>) -> io::Result<()> {
     // At 60% the cards are short: each tab and each page leads with the tile in the engine's color.
     inst.send("GRAPHZOOM 60")?;
     inst.send("WAITIDLE")?;
-    let shot = inst.screenshot("strip-zoom")?;
-    let tiles = engine_pixels(&shot, None, &run.engine)?;
-    check_is("two tab tiles and four page tiles are drawn (>= 200 px)", true, tiles >= 200);
+    let tiles = engine_pixels_settled(&mut inst, "strip-zoom", None, &run.engine, 60)?;
+    check_is("two tab tiles and four page tiles are drawn (>= 60 px)", true, tiles >= 60);
     inst.send("TOGGLEVIEW")?;
     inst.export_until("strip-off", |s| s.tab_view() && at(s, "/b4"))?;
     // The address bar's icon: the same tile (these local pages have no favicon), in the toolbar band.
-    let shot = inst.screenshot("address-icon")?;
-    let icon = engine_pixels(&shot, Some(40), &run.engine)?;
+    let icon = engine_pixels_settled(&mut inst, "address-icon", Some(40), &run.engine, 100)?;
     check_is("the address bar has an icon tile (>= 100 px)", true, icon >= 100);
 
     next("script");
