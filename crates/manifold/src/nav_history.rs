@@ -56,7 +56,8 @@ pub(crate) struct TrailPage {
     /// The arena index: what `go_to` and `entry_url` take.
     pub(crate) entry: usize,
     pub(crate) parent: Option<usize>,
-    /// The title, or the URL's path (its host when there is none) when the title is empty.
+    /// The title, or the URL's path (its host when there is none) when the title is empty; pages that share an address
+    /// and differ in query or fragment lead with what differs (`page_labels`).
     pub(crate) label: String,
     /// The full URL (the tooltip).
     pub(crate) url: String,
@@ -381,13 +382,15 @@ impl NavHistory {
             return Vec::new();
         }
         let path: HashSet<usize> = std::iter::successors(Some(self.at), |&i| self.entries[i].parent).collect();
+        let labels = page_labels(&self.entries);
         self.entries
             .iter()
+            .zip(labels)
             .enumerate()
-            .map(|(i, e)| TrailPage {
+            .map(|(i, (e, label))| TrailPage {
                 entry: i,
                 parent: e.parent,
-                label: if e.title.is_empty() { short_url(&e.url) } else { e.title.clone() },
+                label,
                 url: e.url.clone(),
                 cursor: i == self.at,
                 on_path: path.contains(&i),
@@ -617,6 +620,35 @@ fn short_url(url: &str) -> String {
     }
 }
 
+/// `https://h/p?a=1&b=2#f` -> (`https://h/p`, [`a=1`, `b=2`, `#f`]): the page's address and what can differ between visits.
+fn split_url(url: &str) -> (String, Vec<String>) {
+    let (rest, fragment) = url.split_once('#').map_or((url, None), |(r, f)| (r, Some(f)));
+    let (key, query) = rest.split_once('?').map_or((rest, ""), |(k, q)| (k, q));
+    let items = query.split('&').filter(|s| !s.is_empty()).map(str::to_owned);
+    (key.to_owned(), items.chain(fragment.map(|f| format!("#{f}"))).collect())
+}
+
+/// Each entry's label: its title, or its URL's path. Where other entries share its address (the URL without query or
+/// fragment), what differs from those, first so a clipped label keeps it: `q=cats page=2 · Results`.
+fn page_labels(entries: &[Entry]) -> Vec<String> {
+    let parsed: Vec<(String, Vec<String>)> = entries.iter().map(|e| split_url(&e.url)).collect();
+    entries
+        .iter()
+        .zip(&parsed)
+        .map(|(e, (key, items))| {
+            let plain = if e.title.is_empty() { short_url(&e.url) } else { e.title.clone() };
+            let group: Vec<&Vec<String>> = parsed.iter().filter(|(k, _)| k == key).map(|(_, i)| i).collect();
+            let differs: Vec<&str> =
+                items.iter().filter(|i| !group.iter().all(|g| g.contains(i))).map(String::as_str).collect();
+            if group.len() < 2 || differs.is_empty() {
+                return plain;
+            }
+            let base = if e.title.is_empty() { short_url(key) } else { e.title.clone() };
+            format!("{} · {base}", differs.join(" "))
+        })
+        .collect()
+}
+
 fn path() -> Option<PathBuf> {
     Some(crate::profile::dir()?.join("tab-history.json"))
 }
@@ -706,6 +738,42 @@ mod tests {
         assert_eq!(pages.iter().map(|p| p.cursor).collect::<Vec<_>>(), [false, false, false, true]);
         assert_eq!(pages.iter().map(|p| p.on_path).collect::<Vec<_>>(), [true, false, false, true]);
         assert!(NavHistory::default().tree().is_empty());
+    }
+
+    fn labels(urls: &[&str], titles: &[&str]) -> Vec<String> {
+        let mut h = NavHistory::visited(urls);
+        for (e, t) in h.entries.iter_mut().zip(titles) {
+            e.title = (*t).into();
+        }
+        h.tree().into_iter().map(|p| p.label).collect()
+    }
+
+    #[test]
+    fn pages_that_differ_only_in_their_query_are_labelled_by_what_differs() {
+        let urls = [
+            "https://s.test/find?q=cats&page=1",
+            "https://s.test/find?q=cats&page=2",
+            "https://s.test/find?q=dogs&page=2",
+        ];
+        // Untitled: the path plus what differs, in front so a clipped label keeps it.
+        assert_eq!(labels(&urls, &[]), ["q=cats page=1 · /find", "q=cats page=2 · /find", "q=dogs page=2 · /find"]);
+        // Titled alike: the title stays after the differing part.
+        assert_eq!(labels(&urls, &["Results"; 3])[1], "q=cats page=2 · Results");
+        // What every page shares is not repeated.
+        let same_q = ["https://s.test/find?q=cats&page=1", "https://s.test/find?q=cats&page=2"];
+        assert_eq!(labels(&same_q, &[]), ["page=1 · /find", "page=2 · /find"]);
+    }
+
+    #[test]
+    fn a_page_with_no_look_alike_keeps_its_plain_label() {
+        let urls = ["https://s.test/a?x=1", "https://s.test/b?x=2"];
+        assert_eq!(labels(&urls, &["", "Bee"]), ["/a?x=1", "Bee"]);
+        // The same URL on two entries (a loop in the tree) differs in nothing: no suffix to show.
+        let twice = NavHistory::with_tree(
+            &[("https://s.test/a?x=1", None, Some(1)), ("https://s.test/a?x=1", Some(0), None)],
+            1,
+        );
+        assert_eq!(twice.tree().iter().map(|p| p.label.as_str()).collect::<Vec<_>>(), ["/a?x=1", "/a?x=1"]);
     }
 
     #[test]
