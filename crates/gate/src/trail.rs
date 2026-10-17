@@ -73,6 +73,11 @@ fn rows(s: &State) -> Vec<Vec<Value>> {
         .map_or_else(Vec::new, |rows| rows.iter().filter_map(|r| r["rect"].as_array().cloned()).collect())
 }
 
+/// How many icons of any kind EXPORTSTATE's `identities` lists.
+fn icons(s: &State) -> usize {
+    s.0["identities"].as_array().map_or(0, Vec::len)
+}
+
 /// The tile icons EXPORTSTATE's `identities` lists whose top edge is above `below` (all of them if `None`).
 fn tiles(s: &State, below: Option<f64>) -> usize {
     let ids = s.0["identities"].as_array().map_or(&[][..], Vec::as_slice);
@@ -162,13 +167,17 @@ fn drive(run: &Run, sec: &mut Option<Section>) -> io::Result<()> {
     let strip = |s: &State| s.all_cards().iter().filter(|c| c["virtual"].as_str() == Some("trail")).count();
     let s = inst.export_until("strip", |s| !s.tab_view() && strip(s) == 4)?;
     check_is("the strip has a card per page", 4, strip(&s));
+    // The camera moves only on a request, and the layout can land the strip off screen: frame it first.
+    inst.send("FITVIEW")?;
     // At 60% the cards are short: each tab and each page leads with the tile in the engine's color.
     inst.send("GRAPHZOOM 60")?;
-    let s = inst.export_until("strip-zoom", |s| tiles(s, None) >= 6)?;
-    println!("strip-zoom: {} tile icons", tiles(&s, None));
-    check_is("two tab tiles and four page tiles are drawn", true, tiles(&s, None) >= 6);
+    inst.send("WAITIDLE")?;
+    // A tab card shows a spinner until its thumbnail exists, so only the four page tiles are certain.
+    let s = inst.export_until("strip-zoom", |s| tiles(s, None) >= 4 && icons(s) >= 6)?;
+    check_is("four page tiles and two tab icons are drawn", true, tiles(&s, None) >= 4 && icons(&s) >= 6);
     inst.send("TOGGLEVIEW")?;
     inst.export_until("strip-off", |s| s.tab_view() && at(s, "/b4"))?;
+    inst.send("WAITIDLE")?;
     // The address bar's icon: the same tile (these local pages have no favicon), in the toolbar band.
     let s = inst.export_until("address-icon", |s| tiles(s, Some(40.0)) >= 1)?;
     check_is("the address bar has an icon tile", true, tiles(&s, Some(40.0)) >= 1);
