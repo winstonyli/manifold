@@ -1752,8 +1752,11 @@ impl App {
                             let identity =
                                 self.row_identity(id, self.quick_switcher_row_url(id).as_deref().unwrap_or(""));
                             let label = row_label(ui, &label, 0.0);
+                            // Full width, so the highlight spans the row, not just its text.
+                            let button = egui::Button::selectable(i == selected_index, label)
+                                .min_size(egui::vec2(ui.available_width(), 0.0));
                             let row = if is_live {
-                                let row = selectable_label(ui, i == selected_index, label);
+                                let row = rest_borderless(ui, |ui| ui.add(button));
                                 if row.clicked() {
                                     jump_to = Some(id.clone());
                                 }
@@ -1763,7 +1766,7 @@ impl App {
                                 // clicking a row already fading out
                                 // would be a confusing "did that even
                                 // do anything" moment.
-                                ui.add_enabled(false, egui::Button::selectable(i == selected_index, label))
+                                ui.add_enabled(false, button)
                             };
                             paint_row_icon(ui, row.rect, ui.spacing().button_padding.x, identity);
                         }
