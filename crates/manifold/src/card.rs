@@ -77,8 +77,7 @@ pub(crate) const TAB_HEADER_POINTS: f32 = 40.0;
 pub(crate) const TAB_STRIP_POINTS: f32 = 18.0;
 /// Header F's layout, in screen points from the card's top-left. `paint_card_header` and the JSON
 /// preview's own header (`json_level_ui::paint_json_content`) both place their text from these.
-pub(crate) const HEADER_GLYPH_X: f32 = 10.0;
-/// The icon's center (`Identity::paint`); a glyph there spans about `HEADER_GLYPH_X` to `HEADER_TEXT_X`.
+/// The icon's center (`Identity::paint`); the JSON preview's header uses it too.
 pub(crate) const HEADER_ICON_X: f32 = 18.0;
 /// The line the glyph sits on, and the title's when there is no source line.
 pub(crate) const HEADER_CENTER_Y: f32 = 20.0;

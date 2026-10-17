@@ -53,8 +53,20 @@ impl Identity {
         }
     }
 
+    /// The text part alone: a glyph, or a tile's letter or globe, `size` screen points across at `center`.
+    /// `default_ink` colors a glyph that names none. For a caller that has a `Painter` but no `Ui`.
+    pub(crate) fn text(self, center: egui::Pos2, size: f32, default_ink: egui::Color32) -> Option<IdentityText> {
+        let text = |text: &str, size: f32, color| Some(IdentityText { center, text: text.to_owned(), size, color });
+        match self {
+            Self::Spinner | Self::Image(_) => None,
+            Self::Glyph { glyph, color } => text(glyph, size * 0.875, color.unwrap_or(default_ink)),
+            Self::Tile { fill, letter: Some(c) } => text(&c.to_string(), size * 0.7, ink_on(fill)),
+            Self::Tile { fill, letter: None } => text(egui_phosphor::light::GLOBE, size * 0.75, ink_on(fill)),
+        }
+    }
+
     /// Paints the shapes at `center`, `size` screen points across (`inv_zoom` maps points to world units), and
-    /// returns the text to draw on top. `default_ink` colors a glyph that names none.
+    /// returns the text (`Identity::text`) to draw on top.
     pub(crate) fn paint(
         self,
         ui: &egui::Ui,
@@ -65,26 +77,17 @@ impl Identity {
     ) -> Option<IdentityText> {
         let side = size * inv_zoom;
         let square = egui::Rect::from_center_size(center, egui::Vec2::splat(side));
-        let text = |text: &str, size: f32, color| Some(IdentityText { center, text: text.to_owned(), size, color });
         match self {
-            Self::Spinner => {
-                egui::Spinner::new().size(side).paint_at(ui, square);
-                None
-            }
+            Self::Spinner => egui::Spinner::new().size(side).paint_at(ui, square),
             Self::Image(tex) => {
                 ui.painter().image(tex, square, FULL_UV, egui::Color32::WHITE);
-                None
             }
-            Self::Glyph { glyph, color } => text(glyph, size * 0.875, color.unwrap_or(default_ink)),
-            Self::Tile { fill, letter } => {
+            Self::Tile { fill, .. } => {
                 ui.painter().rect_filled(square, (size * 0.25 * inv_zoom).min(255.0), fill);
-                let ink = ink_on(fill);
-                match letter {
-                    Some(c) => text(&c.to_string(), size * 0.7, ink),
-                    None => text(egui_phosphor::light::GLOBE, size * 0.75, ink),
-                }
             }
+            Self::Glyph { .. } => {}
         }
+        self.text(center, size, default_ink)
     }
 }
 
