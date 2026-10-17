@@ -231,14 +231,22 @@ pub fn conflict_path() -> Option<PathBuf> {
 
 /// `settings.conflict-<secs>.json`, or `-<n>` after the seconds when that
 /// name is taken, so a second conflict in the same second keeps the first.
+/// The name is claimed by creating the file (`create_new`), so two processes
+/// can't be handed one name; the save that follows replaces the empty file. If
+/// the directory can't be written, the first name comes back and the save fails
+/// visibly as it would have.
 fn conflict_path_in(dir: &std::path::Path, secs: u64) -> PathBuf {
-    (0u32..)
-        .map(|n| match n {
+    for n in 0u32.. {
+        let path = match n {
             0 => dir.join(format!("settings.conflict-{secs}.json")),
             n => dir.join(format!("settings.conflict-{secs}-{n}.json")),
-        })
-        .find(|p| !p.exists())
-        .expect("an unbounded range finds a free name")
+        };
+        match std::fs::OpenOptions::new().write(true).create_new(true).open(&path) {
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            _ => return path,
+        }
+    }
+    unreachable!("an unbounded range finds a free name")
 }
 
 impl Settings {
@@ -280,10 +288,10 @@ mod tests {
         let dir = crate::store::testutil::temp_dir("settings_conflict");
         let first = conflict_path_in(&dir, 7);
         assert_eq!(first, dir.join("settings.conflict-7.json"));
-        std::fs::write(&first, "{}").unwrap();
+        // The name is claimed on return: no write between the calls, and the next caller still gets another.
+        assert!(first.exists());
         let second = conflict_path_in(&dir, 7);
         assert_eq!(second, dir.join("settings.conflict-7-1.json"));
-        std::fs::write(&second, "{}").unwrap();
         assert_eq!(conflict_path_in(&dir, 7), dir.join("settings.conflict-7-2.json"));
     }
 
