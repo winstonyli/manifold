@@ -793,6 +793,51 @@ mod tests {
         assert!(popup_centres_cursor(&ctx, which, true), "opened again");
     }
 
+    #[test]
+    fn the_page_menu_draws_over_the_popups_pages() {
+        let (mut app, tab, _peer) = open_back_popup("trail-popup-layers");
+        app.view_mode = crate::ViewMode::Item;
+        let at = page_centre(&app, &tab, 1);
+        popup_run(&mut app, &tab, vec![egui::Event::PointerMoved(at)]);
+        popup_run(&mut app, &tab, right_click(at));
+        for _ in 0..2 {
+            popup_run(&mut app, &tab, vec![]);
+        }
+        let top = app.egui_ctx.layer_id_at(at + egui::vec2(6.0, 6.0)).expect("a layer under the menu");
+        assert_eq!(top.id, egui::Id::new("trail_page_menu"), "the menu is the topmost layer, not the scene: {top:?}");
+    }
+
+    #[test]
+    fn a_scroll_over_the_popup_moves_its_camera() {
+        let (mut app, tab, _peer) = open_back_popup("trail-popup-scroll");
+        let before = app.menus.trail_canvas.as_ref().unwrap().1.rect;
+        let at = page_centre(&app, &tab, 1);
+        popup_run(&mut app, &tab, vec![egui::Event::PointerMoved(at)]);
+        let wheel = egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            phase: egui::TouchPhase::Move,
+            delta: egui::vec2(0.0, -30.0),
+            modifiers: egui::Modifiers::NONE,
+        };
+        popup_run(&mut app, &tab, vec![wheel]);
+        let after = app.menus.trail_canvas.as_ref().unwrap().1.rect;
+        assert_ne!(after, before, "the popup took the scroll");
+    }
+
+    #[test]
+    fn closing_the_popup_over_a_hovered_page_leaves_no_stale_hover() {
+        let (mut app, tab, _peer) = open_back_popup("trail-popup-hover");
+        let at = page_centre(&app, &tab, 1);
+        popup_run(&mut app, &tab, vec![egui::Event::PointerMoved(at)]);
+        popup_run(&mut app, &tab, vec![]);
+        assert!(app.interaction.hovered.as_deref().is_some_and(|id| id.starts_with("virtual:trail:")), "hovering");
+        app.menus.open_popup = None;
+        for _ in 0..3 {
+            popup_run(&mut app, &tab, vec![]);
+        }
+        assert_eq!(app.interaction.hovered, None, "the closed popup's page is no longer hovered");
+    }
+
     fn key(key: egui::Key) -> egui::Event {
         egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE }
     }

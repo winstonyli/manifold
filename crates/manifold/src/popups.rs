@@ -1390,6 +1390,12 @@ impl App {
                 });
             });
         self.menus.trail_canvas = Some((which, camera));
+        // A fading or closed popup leaves no hover behind: its page ids are the strip's too.
+        if self.menus.open_popup != Some(which)
+            && self.interaction.hovered.as_deref().is_some_and(|id| id.starts_with("virtual:trail:"))
+        {
+            self.interaction.hovered = None;
+        }
         // A click that dismisses the page menu from outside is the menu's, not the popup's.
         let clicked_outside = clicked_outside_popup(ui, area.response.rect, Some(anchor_rect)) && !menu_was_open;
         if clicked || clicked_outside {
