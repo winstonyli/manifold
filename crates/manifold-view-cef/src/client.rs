@@ -37,7 +37,7 @@ pub fn new_shared_json_body() -> SharedJsonBody {
 }
 
 /// Same shape as `SharedJsonBody`, for the `redirect-content-result` reply
-/// -- see `ipc_protocol::ViewToHost::RedirectableContent`'s own doc
+/// -- see `manifold_view_protocol::ViewToHost::RedirectableContent`'s own doc
 /// comment.
 pub type SharedRedirectContentType = Rc<RefCell<Option<String>>>;
 
@@ -58,7 +58,7 @@ pub fn new_shared_audio_playing() -> SharedAudioPlaying {
 }
 
 /// The renderer's `page-state-result` reply: the raw script text, which
-/// `main.rs` takes and parses with `ipc_protocol::PageState::parse`.
+/// `main.rs` takes and parses with `manifold_view_protocol::PageState::parse`.
 pub type SharedPageState = Rc<RefCell<Option<String>>>;
 
 pub fn new_shared_page_state() -> SharedPageState {

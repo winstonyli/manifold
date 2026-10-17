@@ -9,7 +9,7 @@ workspace = true
 
 [dependencies]
 gtk.workspace = true
-ipc-protocol.workspace = true
+manifold-view-protocol.workspace = true
 javascriptcore.workspace = true
 url.workspace = true
 webkit2gtk = { workspace = true, features = ["v2_30"] }

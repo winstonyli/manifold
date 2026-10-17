@@ -130,8 +130,8 @@ pub(super) fn spawn_webkit_tab(tab_id: &str, initial_url: &str, wake: view_io::W
     };
     let stream = control.into_inner();
     let read_stream = stream.try_clone()?;
-    let to_view = ipc_protocol::MessageChannel::new(stream);
-    let from_view = ipc_protocol::MessageChannel::new(read_stream);
+    let to_view = manifold_view_protocol::MessageChannel::new(stream);
+    let from_view = manifold_view_protocol::MessageChannel::new(read_stream);
 
     let frame = view_io::FrameSlot::default();
     let events_rx = spawn_reader_thread(from_view, Arc::clone(&frame), wake);

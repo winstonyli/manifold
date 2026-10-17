@@ -44,7 +44,7 @@
 //! `Char`'s own `execCommand('insertText', ...)` path (since replaced by
 //! `Input.insertText`, below) is untouched --
 //! `KeyDown`/`KeyUp` only need to cover the physical-key side now, the same
-//! division of labor `ipc_protocol::InputEvent`'s own doc comment already
+//! division of labor `manifold_view_protocol::InputEvent`'s own doc comment already
 //! describes.
 //!
 //! **Mouse, later still (composition-hosting-migration Task 4): native
@@ -89,14 +89,14 @@ use webview2_com::{CallDevToolsProtocolMethodCompletedHandler, ExecuteScriptComp
 use windows::core::HSTRING;
 use windows::Win32::Foundation::POINT;
 
-use ipc_protocol::{modifiers, InputEvent, KeyCode, MouseButton};
+use manifold_view_protocol::{modifiers, InputEvent, KeyCode, MouseButton};
 
 /// `(x, y, href)` for a right-click that landed on a link — see
-/// `ipc_protocol::ViewToHost::ContextMenuLink`'s doc comment.
+/// `manifold_view_protocol::ViewToHost::ContextMenuLink`'s doc comment.
 pub type PendingContextMenu = Rc<RefCell<Option<(f64, f64, String)>>>;
 
 /// Is the left button currently down? Tracked across `MouseDown`/
-/// `MouseMove`/`MouseUp` because `ipc_protocol::InputEvent::MouseMove`
+/// `MouseMove`/`MouseUp` because `manifold_view_protocol::InputEvent::MouseMove`
 /// carries no button state of its own (only the held modifier keys), so
 /// this project's own view-host has to remember it, to know whether to
 /// include the left-button virtual key on a `SendMouseInput` move (so
@@ -156,7 +156,7 @@ fn parse_json_string_or_null(json: &str) -> Option<String> {
     trimmed.strip_prefix('"').and_then(|s| s.strip_suffix('"')).map(str::to_string)
 }
 
-/// Translates and dispatches one `ipc_protocol::InputEvent` -- mouse events
+/// Translates and dispatches one `manifold_view_protocol::InputEvent` -- mouse events
 /// via `ICoreWebView2CompositionController::SendMouseInput`, keyboard/text
 /// events via CDP on `webview` (see this module's doc
 /// comment for why each picked its own mechanism).
@@ -268,7 +268,7 @@ pub fn send_input(
     }
 }
 
-/// `ipc_protocol::modifiers`' bit positions (`SHIFT`/`CONTROL`/`ALT`/`SUPER`)
+/// `manifold_view_protocol::modifiers`' bit positions (`SHIFT`/`CONTROL`/`ALT`/`SUPER`)
 /// don't match CDP's own `Input.dispatchKeyEvent`/`dispatchMouseEvent`
 /// `modifiers` bitmask (`Alt=1, Ctrl=2, Meta=4, Shift=8`) -- translated
 /// explicitly rather than assumed to line up.

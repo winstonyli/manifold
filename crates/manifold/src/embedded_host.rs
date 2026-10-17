@@ -158,7 +158,7 @@ mod tests {
     use sha2::{Digest, Sha256};
 
     fn hash(bytes: &[u8]) -> String {
-        ipc_protocol::transport::to_hex(&Sha256::digest(bytes))
+        manifold_view_protocol::transport::to_hex(&Sha256::digest(bytes))
     }
 
     fn names(dir: &Path) -> Vec<String> {

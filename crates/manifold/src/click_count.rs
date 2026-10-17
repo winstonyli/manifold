@@ -4,7 +4,7 @@
 
 use std::time::{Duration, Instant};
 
-use ipc_protocol::MouseButton;
+use manifold_view_protocol::MouseButton;
 
 /// Windows' default double-click time.
 pub(crate) const MULTI_CLICK_TIME: Duration = Duration::from_millis(500);

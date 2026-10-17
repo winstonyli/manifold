@@ -2,7 +2,7 @@
 //! of scroll restore after a wake (`App::saved_scroll`).
 
 use crate::store::model::NodeId;
-use ipc_protocol::PageState;
+use manifold_view_protocol::PageState;
 use std::time::{Duration, Instant};
 
 /// Why a tab is being put to sleep: the user asked, the idle sweep did, or its jar changed.
@@ -99,7 +99,7 @@ impl SavedScroll {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ipc_protocol::PageState;
+    use manifold_view_protocol::PageState;
 
     fn state(dirty: bool) -> PageState {
         PageState { scroll_x: 0.0, scroll_y: 10.0, dirty_form: dirty }

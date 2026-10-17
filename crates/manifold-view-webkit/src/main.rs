@@ -5,8 +5,8 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use gtk::prelude::*;
-use ipc_protocol::{transport, HostToView, MessageChannel, TabState, ViewToHost};
 use javascriptcore::ValueExt;
+use manifold_view_protocol::{transport, HostToView, MessageChannel, TabState, ViewToHost};
 use webkit2gtk::{
     BackForwardListExt, BackForwardListItemExt, DownloadExt, FindControllerExt, FindOptions, URIRequestExt,
     URIResponseExt, WebContextExt, WebView, WebViewExt,
@@ -34,7 +34,7 @@ fn main() {
     // spawn command (`ip route`'s default gateway) — not 127.0.0.1. WSL2's
     // NAT networking refuses a guest-to-127.0.0.1-on-host connection
     // outright (ECONNREFUSED), so the host is only reachable this way. See
-    // ipc_protocol::transport::listen_remote's doc comment.
+    // manifold_view_protocol::transport::listen_remote's doc comment.
     let host_ip = std::env::var("VIEW_HOST_IP").expect("VIEW_HOST_IP env var required");
 
     // Single TCP connection back to manifold, used for both directions
@@ -53,7 +53,7 @@ fn main() {
     let mut to_host = MessageChannel::new(stream);
     let from_host = MessageChannel::new(read_stream);
 
-    let rx = ipc_protocol::transport::spawn_host_reader(from_host);
+    let rx = manifold_view_protocol::transport::spawn_host_reader(from_host);
 
     gtk::init().expect("gtk::init (is Xvfb running? DISPLAY set?)");
 
@@ -74,7 +74,7 @@ fn main() {
     // filename and MUST call `set_destination` or the download silently
     // never starts, same requirement as CEF's `on_before_download`/
     // `BeforeDownloadCallback::cont`. The folder and name come from
-    // `ipc_protocol::downloads`, the rule CEF uses too: `~/Downloads`, the
+    // `manifold_view_protocol::downloads`, the rule CEF uses too: `~/Downloads`, the
     // suggested name's last component, numbered if taken (WebKit doesn't
     // overwrite, so a second download of one name would otherwise fail).
     // `reserved` holds names handed out and not yet finished, so concurrent
@@ -105,11 +105,11 @@ fn main() {
             let dest_for_destination = dest_for_events.clone();
             let reserved_for_destination = reserved.clone();
             download.connect_decide_destination(move |download, suggested_filename| {
-                let dir = ipc_protocol::downloads::downloads_dir();
+                let dir = manifold_view_protocol::downloads::downloads_dir();
                 let _ = std::fs::create_dir_all(&dir);
-                let dest = ipc_protocol::downloads::unique_path(
+                let dest = manifold_view_protocol::downloads::unique_path(
                     &dir,
-                    &ipc_protocol::downloads::safe_name(suggested_filename),
+                    &manifold_view_protocol::downloads::safe_name(suggested_filename),
                     |p| p.exists() || reserved_for_destination.borrow().contains(p),
                 );
                 let Ok(uri) = gtk::glib::filename_to_uri(&dest, None) else { return false };
@@ -207,7 +207,7 @@ fn main() {
     // Audio-playing indicator: `is-playing-audio` is a real GObject notify
     // property, unlike CEF's only
     // equivalent (a full `AudioHandler` that takes over raw audio output
-    // entirely) -- see `ipc_protocol::ViewToHost::AudioPlayingChanged`'s
+    // entirely) -- see `manifold_view_protocol::ViewToHost::AudioPlayingChanged`'s
     // doc comment.
     let pending_audio_playing: Rc<RefCell<Option<bool>>> = Rc::new(RefCell::new(None));
     {
@@ -217,14 +217,14 @@ fn main() {
         });
     }
 
-    // See `ipc_protocol::ViewToHost::JsonBody`/`RedirectableContent`'s own
+    // See `manifold_view_protocol::ViewToHost::JsonBody`/`RedirectableContent`'s own
     // doc comments -- filled in once per navigation, right after `loading`
     // transitions true -> false below, by the same `document.contentType`
     // script-eval check every engine that sends either message uses.
     let pending_json_body: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
     let pending_redirect_content_type: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
     // Filled by the `QueryPageState` script callback, drained and sent each tick.
-    let pending_page_state: Rc<RefCell<Option<ipc_protocol::PageState>>> = Rc::new(RefCell::new(None));
+    let pending_page_state: Rc<RefCell<Option<manifold_view_protocol::PageState>>> = Rc::new(RefCell::new(None));
 
     // Minimal context menu: a right-click already dispatches a genuine
     // native `ButtonRelease` (input.rs, unchanged), which makes WebKitGTK
@@ -250,7 +250,7 @@ fn main() {
     // API has no notion of "which match is currently active" the way CEF's
     // `active_match_ordinal`/WebView2's `ActiveMatchIndex` do, so
     // `active_index` is always reported as 0 here; see
-    // `ipc_protocol::ViewToHost::FindResult`'s own doc comment.
+    // `manifold_view_protocol::ViewToHost::FindResult`'s own doc comment.
     let find_controller = webview.find_controller();
     let pending_find_result: Rc<RefCell<Option<(u32, u32)>>> = Rc::new(RefCell::new(None));
     if let Some(controller) = &find_controller {
@@ -264,7 +264,7 @@ fn main() {
         });
     }
 
-    let mut sink = ipc_protocol::FrameSink::inline();
+    let mut sink = manifold_view_protocol::FrameSink::inline();
     // M5: background tabs stay alive but stop sending frames; see
     // HostToView::SetVisible's doc comment.
     let mut visible = true;
@@ -350,13 +350,13 @@ fn main() {
                 HostToView::QueryPageState => {
                     let pending = pending_page_state.clone();
                     webview.run_javascript(
-                        ipc_protocol::PAGE_STATE_SCRIPT,
+                        manifold_view_protocol::PAGE_STATE_SCRIPT,
                         gtk::gio::Cancellable::NONE,
                         move |result| {
                             if let Ok(js_result) = result {
                                 if let Some(value) = js_result.js_value() {
                                     if value.is_string() {
-                                        if let Some(state) = ipc_protocol::PageState::parse(&value.to_str()) {
+                                        if let Some(state) = manifold_view_protocol::PageState::parse(&value.to_str()) {
                                             *pending.borrow_mut() = Some(state);
                                         }
                                     }
@@ -367,7 +367,7 @@ fn main() {
                 }
                 HostToView::RestoreScroll { x, y } => {
                     webview.run_javascript(
-                        &ipc_protocol::restore_scroll_script(x, y),
+                        &manifold_view_protocol::restore_scroll_script(x, y),
                         gtk::gio::Cancellable::NONE,
                         |_| {},
                     );
@@ -459,23 +459,27 @@ fn main() {
             if was_loading && !nav_now.4 {
                 let pending_json = pending_json_body.clone();
                 let pending_redirect = pending_redirect_content_type.clone();
-                webview.run_javascript(ipc_protocol::PAGE_KIND_SCRIPT, gtk::gio::Cancellable::NONE, move |result| {
-                    if let Ok(js_result) = result {
-                        if let Some(value) = js_result.js_value() {
-                            if value.is_string() {
-                                match ipc_protocol::PageKindReply::parse(&value.to_str()) {
-                                    Some(ipc_protocol::PageKindReply::Json(body)) => {
-                                        *pending_json.borrow_mut() = Some(body)
+                webview.run_javascript(
+                    manifold_view_protocol::PAGE_KIND_SCRIPT,
+                    gtk::gio::Cancellable::NONE,
+                    move |result| {
+                        if let Ok(js_result) = result {
+                            if let Some(value) = js_result.js_value() {
+                                if value.is_string() {
+                                    match manifold_view_protocol::PageKindReply::parse(&value.to_str()) {
+                                        Some(manifold_view_protocol::PageKindReply::Json(body)) => {
+                                            *pending_json.borrow_mut() = Some(body)
+                                        }
+                                        Some(manifold_view_protocol::PageKindReply::Other(t)) => {
+                                            *pending_redirect.borrow_mut() = Some(t)
+                                        }
+                                        None => {}
                                     }
-                                    Some(ipc_protocol::PageKindReply::Other(t)) => {
-                                        *pending_redirect.borrow_mut() = Some(t)
-                                    }
-                                    None => {}
                                 }
                             }
                         }
-                    }
-                });
+                    },
+                );
             }
         }
 
@@ -508,7 +512,7 @@ fn main() {
         }
 
         let download_msgs = std::mem::take(&mut *pending_download.borrow_mut());
-        for msg in ipc_protocol::downloads::coalesce_progress(download_msgs) {
+        for msg in manifold_view_protocol::downloads::coalesce_progress(download_msgs) {
             let _ = to_host.send(&msg);
         }
 
@@ -557,7 +561,7 @@ fn main() {
 
 /// `GdkPixbuf` rows can be padded to a stride wider than `width * 4` for
 /// alignment; our IPC contract assumes tightly-packed rows
-/// (`width * height * 4` bytes, no padding — see `ipc_protocol::frame_buffer`'s doc comment
+/// (`width * height * 4` bytes, no padding — see `manifold_view_protocol::frame_buffer`'s doc comment
 /// and `manifold`'s texture upload), so copy row-by-row rather than
 /// sending the raw buffer as-is.
 fn tightly_packed_rgba(pixbuf: &gtk::gdk_pixbuf::Pixbuf) -> Vec<u8> {

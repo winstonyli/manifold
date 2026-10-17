@@ -304,12 +304,12 @@ pub(crate) struct TabPayload {
     pub(crate) can_go_forward: bool,
     pub(crate) loading: bool,
     /// Shown as a speaker icon on this tab's graph node — see
-    /// `ipc_protocol::ViewToHost::AudioPlayingChanged`'s doc comment for
+    /// `manifold_view_protocol::ViewToHost::AudioPlayingChanged`'s doc comment for
     /// which engines actually send this (WebView2, WebKit; never CEF or
     /// Servo, so this just stays `false` for those tabs).
     pub(crate) audio_playing: bool,
     /// User-toggled via the toolbar's "Muted" button — host-tracked (not
-    /// read back from the engine), see `ipc_protocol::HostToView::
+    /// read back from the engine), see `manifold_view_protocol::HostToView::
     /// SetMuted`'s doc comment. Resets to `false` on a fresh spawn/respawn/
     /// engine swap, same as every other per-tab UI-only flag here (nothing
     /// about mute state survives a swap to a different engine process).

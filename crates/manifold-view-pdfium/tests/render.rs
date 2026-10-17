@@ -9,7 +9,7 @@ fn the_fixture_renders_to_a_frame() {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixture.pdf");
     let out = run(&path);
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
-    let frame = ipc_protocol::render::read_frame(&mut out.stdout.as_slice()).unwrap();
+    let frame = manifold_view_protocol::render::read_frame(&mut out.stdout.as_slice()).unwrap();
     assert_eq!((frame.width, frame.height, frame.page_count), (1000, 500, 1));
     assert!(frame.rgba.chunks(4).any(|px| px[2] > 200 && px[0] < 60), "the blue rectangle is there");
 }

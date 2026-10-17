@@ -11,7 +11,7 @@ use std::ops::Range;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
-use ipc_protocol::{frame_path, HostToView, InputEvent, MessageChannel, SharedFrameBuffer};
+use manifold_view_protocol::{frame_path, HostToView, InputEvent, MessageChannel, SharedFrameBuffer};
 
 /// Messages a tab's send queue holds before it refuses more (the tab is then unresponsive).
 pub(crate) const SEND_QUEUE_CAP: usize = 256;
@@ -657,7 +657,7 @@ mod tests {
         first.as_mut_slice().fill(7);
         assert_eq!(map.pixels(&id, 1, 2, 2).unwrap(), &[7; 16][..]);
         // Reused: the file is gone, the mapping answers.
-        ipc_protocol::remove_frame_file(&id);
+        manifold_view_protocol::remove_frame_file(&id);
         assert_eq!(map.pixels(&id, 1, 2, 2).unwrap(), &[7; 16][..]);
         // A new generation reopens.
         let mut second = SharedFrameBuffer::create(&id, 2, 2, 2).unwrap();
@@ -665,13 +665,13 @@ mod tests {
         assert_eq!(map.pixels(&id, 2, 2, 2).unwrap(), &[9; 16][..]);
         // A failed open leaves the cache empty (generation 2 is not served again), and the next call retries.
         assert!(map.pixels(&id, 3, 2, 2).is_err());
-        ipc_protocol::remove_frame_file(&id);
+        manifold_view_protocol::remove_frame_file(&id);
         assert!(map.pixels(&id, 2, 2, 2).is_err(), "the failed open dropped the old mapping");
         let mut third = SharedFrameBuffer::create(&id, 3, 2, 2).unwrap();
         third.as_mut_slice().fill(5);
         assert_eq!(map.pixels(&id, 3, 2, 2).unwrap(), &[5; 16][..]);
         map.clear();
         drop((first, second, third));
-        ipc_protocol::remove_frame_file(&id);
+        manifold_view_protocol::remove_frame_file(&id);
     }
 }

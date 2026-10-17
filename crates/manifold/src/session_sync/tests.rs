@@ -2183,7 +2183,7 @@ fn a_respawn_landing_leaves_a_same_url_failed_card() {
     app.spawn_tab_at("https://a/", egui::Vec2::ZERO, None, None);
     fail_spawns(&mut app);
     assert_eq!(failed_cards(&app).len(), 1);
-    app.handle_view_message(&tab, ipc_protocol::ViewToHost::Crashed { reason: "boom".into() });
+    app.handle_view_message(&tab, manifold_view_protocol::ViewToHost::Crashed { reason: "boom".into() });
     assert!(app.test_spawns.iter().any(|(s, _)| matches!(s.purpose, SpawnPurpose::Respawn)), "restarting");
     let _peers = land_spawns(&mut app);
     assert_eq!(failed_cards(&app).len(), 1, "the failed card stays");
@@ -4693,7 +4693,7 @@ fn a_tab_put_to_sleep_mid_swap_keeps_the_target() {
     assert!(app.save_session());
     app.start_swap_to(&tab, ViewKind::Cef);
     assert!(app.request_sleep(&tab, crate::sleep_state::SleepWhy::Manual), "a sleep is not refused mid-swap");
-    app.finish_sleep(&tab, ipc_protocol::PageState { scroll_x: 0.0, scroll_y: 0.0, dirty_form: false });
+    app.finish_sleep(&tab, manifold_view_protocol::PageState { scroll_x: 0.0, scroll_y: 0.0, dirty_form: false });
     assert_eq!(app.nodes[&tab].as_unloaded().unwrap().state, UnloadedState::Sleeping, "asleep");
     assert_eq!(app.mirror.view_kind(&tab), ViewKind::Cef);
     assert!(app.save_session());
@@ -4711,7 +4711,7 @@ fn a_crash_mid_swap_restarts_on_the_target_with_the_old_view_as_fallback() {
     let (tab, _peer) = live_tab(&mut app, ViewKind::Servo, "https://s/");
     assert!(app.save_session());
     app.start_swap_to(&tab, ViewKind::Cef);
-    app.handle_view_message(&tab, ipc_protocol::ViewToHost::Crashed { reason: "boom".into() });
+    app.handle_view_message(&tab, manifold_view_protocol::ViewToHost::Crashed { reason: "boom".into() });
     let spawn = &app.test_spawns.first().expect("restarting").0;
     assert_eq!((spawn.kind, spawn.fallback_kind), (ViewKind::Cef, Some(ViewKind::Servo)));
     fail_spawns(&mut app);
@@ -4751,8 +4751,8 @@ fn a_swap_waiting_for_its_cookies_is_still_the_one_swap() {
     let mut other = Journal::open(&path, ActorId(2)).unwrap();
     app.start_swap_to(&tab, ViewKind::Webview2);
     assert!(app.save_session());
-    let snapshot = ipc_protocol::TabState { url: "https://s/".into() };
-    app.handle_view_message(&tab, ipc_protocol::ViewToHost::StateSnapshot(snapshot));
+    let snapshot = manifold_view_protocol::TabState { url: "https://s/".into() };
+    app.handle_view_message(&tab, manifold_view_protocol::ViewToHost::StateSnapshot(snapshot));
     assert!(app.cookies.cookie_holds.contains_key(&tab), "parked for the cookies");
     assert_eq!(swap_target(&app, &tab), None);
     app.start_swap_to(&tab, ViewKind::Servo);
@@ -4763,7 +4763,7 @@ fn a_swap_waiting_for_its_cookies_is_still_the_one_swap() {
     let asked = sent(&mut peer).iter().filter(|m| matches!(m, HostToView::GetState)).count();
     assert_eq!(asked, 1, "the old host was asked once");
     assert_eq!(app.mirror.view_kind(&tab), ViewKind::Webview2, "the remote engine is written over");
-    app.handle_view_message(&tab, ipc_protocol::ViewToHost::Cookies("[]".into()));
+    app.handle_view_message(&tab, manifold_view_protocol::ViewToHost::Cookies("[]".into()));
     let spawn = &app.test_spawns.first().expect("the swap goes on").0;
     assert_eq!((spawn.kind, spawn.fallback_kind), (ViewKind::Webview2, Some(ViewKind::Cef)));
     let _peers = land_spawns(&mut app);
@@ -4876,8 +4876,8 @@ fn a_remote_view_parked_during_a_swap_respawn_is_swapped_to_when_it_lands() {
     assert!(app.save_session());
     app.start_swap_to(&tab, ViewKind::Cef);
     assert!(app.save_session());
-    let snapshot = ipc_protocol::TabState { url: "https://s/".into() };
-    app.handle_view_message(&tab, ipc_protocol::ViewToHost::StateSnapshot(snapshot));
+    let snapshot = manifold_view_protocol::TabState { url: "https://s/".into() };
+    app.handle_view_message(&tab, manifold_view_protocol::ViewToHost::StateSnapshot(snapshot));
     assert_eq!(app.test_spawns.len(), 1, "the swap's respawn is in flight");
     let mut other = Journal::open(&path, ActorId(2)).unwrap();
     remote_set(&mut other, &tab, field::VIEW_KIND, view_kind(ViewKind::Webview2));
@@ -4953,7 +4953,7 @@ fn closing_a_jar_leaves_saved_and_respawning_tabs_resolving_to_the_default_jar()
     app.set_jar_edge(&asleep, Some(work));
     app.set_jar_edge(&live, Some(work));
     assert!(app.save_session());
-    app.handle_view_message(&live, ipc_protocol::ViewToHost::Crashed { reason: "boom".into() });
+    app.handle_view_message(&live, manifold_view_protocol::ViewToHost::Crashed { reason: "boom".into() });
     assert!(app.spawns.spawning.contains_key(&live) && !app.nodes.contains_key(&live), "mid-respawn");
     app.close_node(&work.to_string());
     assert!(app.save_session());

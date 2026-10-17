@@ -19,7 +19,7 @@ use webview2_com::{
 };
 use windows::core::HSTRING;
 
-/// `(count, active_index)` — mirrors `ipc_protocol::ViewToHost::FindResult`
+/// `(count, active_index)` — mirrors `manifold_view_protocol::ViewToHost::FindResult`
 /// exactly, so `main.rs`'s tick loop can forward it unchanged.
 pub type PendingFindResult = Rc<RefCell<Option<(u32, u32)>>>;
 

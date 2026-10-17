@@ -7,7 +7,7 @@ use crate::nav_history::Dir;
 use crate::store::model::Kind;
 
 /// A minimal right-click context menu: just "Open in new tab" for a link,
-/// positioned where the click landed — see `ipc_protocol::ViewToHost::
+/// positioned where the click landed — see `manifold_view_protocol::ViewToHost::
 /// ContextMenuLink`'s doc comment for why this is the one action
 /// implemented rather than a full copy/paste/inspect menu. `x`/`y` are
 /// already in window (not content-area) point space — see where this is

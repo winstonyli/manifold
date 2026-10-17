@@ -93,7 +93,7 @@ pub(crate) fn urlencoding_light(s: &str) -> String {
 /// Debounced, generation-tagged fetcher for DuckDuckGo's autocomplete
 /// endpoint. Runs each HTTP request on its own throwaway thread (`manifold`
 /// has no async runtime — this is the same "just spawn a thread" pattern
-/// `ipc_protocol`'s transport reader threads already use) and drops any
+/// `manifold_view_protocol`'s transport reader threads already use) and drops any
 /// response whose generation doesn't match the most recent query, so a
 /// slow/late response for text the user has since changed or cleared can
 /// never clobber a newer (or absent) result.

@@ -3,7 +3,7 @@ use cef::{rc::Rc, *};
 /// Runs inside the renderer subprocess -- this same exe, re-launched by CEF
 /// itself with `--type=renderer` (see `main.rs`'s `execute_process` call,
 /// which now hands over a real `App` for exactly this reason). Answers
-/// `manifold`'s "is this page JSON?" question the way `ipc_protocol::
+/// `manifold`'s "is this page JSON?" question the way `manifold_view_protocol::
 /// ViewToHost::JsonBody`'s own doc comment describes for the other three
 /// engines, but through `V8Context::eval` + a `ProcessMessage` reply rather
 /// than a script-eval-with-a-result-callback API -- `Frame::execute_java_script`
@@ -15,13 +15,13 @@ use cef::{rc::Rc, *};
 /// gets picked up.
 pub const CHECK_JSON_BODY: &str = "check-json-body";
 pub const JSON_BODY_RESULT: &str = "json-body-result";
-/// See `ipc_protocol::ViewToHost::RedirectableContent`'s own doc comment
+/// See `manifold_view_protocol::ViewToHost::RedirectableContent`'s own doc comment
 /// -- same request/`document.contentType` check as `JSON_BODY_RESULT`, just
 /// the other branch; carries the raw content-type string as its one
 /// argument, same as every other engine forwards it, so `manifold`'s own
 /// `content::kind_of` (not this handler) decides what it means.
 pub const REDIRECT_RESULT: &str = "redirect-content-result";
-/// See `ipc_protocol::ViewToHost::AudioPlayingChanged`'s own doc comment
+/// See `manifold_view_protocol::ViewToHost::AudioPlayingChanged`'s own doc comment
 /// for why CEF never sent this before -- a real native read would need the
 /// same all-or-nothing `AudioHandler` `HostToView::SetMuted`'s own doc
 /// comment already rules out. This is a *different*, lighter mechanism:
@@ -31,9 +31,9 @@ pub const REDIRECT_RESULT: &str = "redirect-content-result";
 /// the reply is a real boolean argument, not a string.
 pub const CHECK_AUDIO_PLAYING: &str = "check-audio-playing";
 pub const AUDIO_PLAYING_RESULT: &str = "audio-playing-result";
-/// See `ipc_protocol::ViewToHost::PageState`: the renderer evals
-/// `ipc_protocol::PAGE_STATE_SCRIPT` and replies with its raw text, which
-/// `main.rs` parses with `ipc_protocol::PageState::parse`.
+/// See `manifold_view_protocol::ViewToHost::PageState`: the renderer evals
+/// `manifold_view_protocol::PAGE_STATE_SCRIPT` and replies with its raw text, which
+/// `main.rs` parses with `manifold_view_protocol::PageState::parse`.
 pub const CHECK_PAGE_STATE: &str = "check-page-state";
 pub const PAGE_STATE_RESULT: &str = "page-state-result";
 
@@ -77,7 +77,7 @@ wrap_render_process_handler! {
                 // Only reply when the eval produced text: silence means "could not tell".
                 let text = frame.v8_context().and_then(|context| {
                     context.enter();
-                    let text = eval_string(&context, ipc_protocol::PAGE_STATE_SCRIPT);
+                    let text = eval_string(&context, manifold_view_protocol::PAGE_STATE_SCRIPT);
                     context.exit();
                     text
                 });
@@ -165,7 +165,7 @@ fn eval_page_kind(context: &V8Context) -> Option<PageKind> {
 /// through the Web Audio API alone, with no media element behind it (some
 /// games/synths) -- a real native read (WebView2/WebKit's own passive
 /// property) has no such gap, but doesn't exist for CEF at all without the
-/// full `AudioHandler` `ipc_protocol::ViewToHost::AudioPlayingChanged`'s
+/// full `AudioHandler` `manifold_view_protocol::ViewToHost::AudioPlayingChanged`'s
 /// own doc comment already rules out as disproportionate. This covers the
 /// common case (YouTube, most players) without that cost.
 fn eval_audio_playing(context: &V8Context) -> bool {

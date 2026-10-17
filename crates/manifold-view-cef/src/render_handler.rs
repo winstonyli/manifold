@@ -1,5 +1,5 @@
 use cef::{rc::Rc, *};
-use ipc_protocol::FrameSink;
+use manifold_view_protocol::FrameSink;
 use std::cell::RefCell;
 
 /// The view size in pixels, shared between the handler and the main loop.

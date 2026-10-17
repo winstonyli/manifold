@@ -8,7 +8,7 @@ description.workspace = true
 workspace = true
 
 [dependencies]
-ipc-protocol.workspace = true
+manifold-view-protocol.workspace = true
 # Real JSON-string unescaping for `ExecuteScript`'s own JSON-encoded return
 # values -- see `nav_state.rs`'s JSON-body detection for why the plain
 # strip-outer-quotes trick `input.rs`'s href parsing gets away with isn't

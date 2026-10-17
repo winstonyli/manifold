@@ -1,5 +1,5 @@
 use cef::*;
-use ipc_protocol::{modifiers, InputEvent, KeyCode, MouseButton};
+use manifold_view_protocol::{modifiers, InputEvent, KeyCode, MouseButton};
 
 /// CEF's `EventFlags`/`modifiers` fields are plain `u32`s combining
 /// `EVENTFLAG_SHIFT_DOWN` (2) / `EVENTFLAG_CONTROL_DOWN` (4) /
@@ -52,7 +52,7 @@ fn utf16_units(codepoint: u32) -> Vec<u16> {
     char::from_u32(codepoint).map(|c| c.encode_utf16(&mut [0; 2]).to_vec()).unwrap_or_default()
 }
 
-/// Translates and dispatches one `ipc_protocol::InputEvent` onto a live CEF
+/// Translates and dispatches one `manifold_view_protocol::InputEvent` onto a live CEF
 /// `Browser` — mirrors `manifold-engine-servo`'s `translate_input_event`, just
 /// dispatching directly instead of returning a value, since CEF's
 /// `BrowserHost` methods are fire-and-forget (`send_*_event`) rather than a

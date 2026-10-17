@@ -361,7 +361,7 @@ mod tests {
         remove_frame_file(&name);
     }
 
-    /// The best and the median of `runs` (ipc-protocol cannot see `manifold::bench`).
+    /// The best and the median of `runs` (manifold-view-protocol cannot see `manifold::bench`).
     fn best_median(mut runs: Vec<Duration>) -> (Duration, Duration) {
         runs.sort();
         (runs[0], runs[runs.len() / 2])
@@ -381,7 +381,7 @@ mod tests {
     }
 
     /// Frame-path Task 1, M2a: what the engines' frame copies and the app's per-frame map cost at 1920x1080
-    /// (survey E2). Run: `cargo test --release -p ipc-protocol handoff_timing -- --ignored --nocapture`.
+    /// (survey E2). Run: `cargo test --release -p manifold-view-protocol handoff_timing -- --ignored --nocapture`.
     #[test]
     #[ignore = "timing bench; run by hand"]
     fn handoff_timing() {

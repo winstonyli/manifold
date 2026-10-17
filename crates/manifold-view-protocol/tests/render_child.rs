@@ -1,4 +1,4 @@
-use ipc_protocol::render::{channel, run_child};
+use manifold_view_protocol::render::{channel, run_child};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
@@ -8,7 +8,7 @@ fn stub(mode: &str) -> Command {
     command
 }
 
-fn run(mode: &str, timeout: Duration) -> Result<ipc_protocol::render::Frame, String> {
+fn run(mode: &str, timeout: Duration) -> Result<manifold_view_protocol::render::Frame, String> {
     let (_cancel, inbox) = channel();
     run_child(stub(mode), "PDF renderer", timeout, inbox, |c| c.spawn())
 }

@@ -544,7 +544,7 @@ fn a_pending_pull_blocks_another_until_it_times_out() {
 }
 
 fn sleep_answer() -> tabs::Held {
-    tabs::Held::PageState(ipc_protocol::PageState { scroll_x: 0.0, scroll_y: 0.0, dirty_form: false })
+    tabs::Held::PageState(manifold_view_protocol::PageState { scroll_x: 0.0, scroll_y: 0.0, dirty_form: false })
 }
 
 fn swap_answer() -> tabs::Held {
@@ -627,7 +627,7 @@ fn a_host_that_never_answers_is_given_up_on_after_three_pulls() {
 #[test]
 fn a_sleep_answer_is_held_for_a_pending_pull_and_released_by_it() {
     let mut app = App::default();
-    let state = || ipc_protocol::PageState { scroll_x: 0.0, scroll_y: 0.0, dirty_form: false };
+    let state = || manifold_view_protocol::PageState { scroll_x: 0.0, scroll_y: 0.0, dirty_form: false };
     assert!(app.hold_for_cookies("t", tabs::Held::PageState(state())).is_some(), "no pull pending: act now");
     app.cookies.jar_pulls.insert("t".into(), std::time::Instant::now());
     assert!(app.hold_for_cookies("t", tabs::Held::PageState(state())).is_none());

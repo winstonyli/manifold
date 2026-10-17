@@ -105,7 +105,7 @@ pub fn classify(path: &str, src: &str, read: &dyn Fn(&str) -> Option<String>) ->
         || p.starts_with(".cargo/")
         || p.starts_with("rust-toolchain")
         || (p.starts_with("crates/") && p.ends_with("/Cargo.toml"))
-        || under("crates/ipc-protocol")
+        || under("crates/manifold-view-protocol")
         || (p.starts_with("crates/manifold-view-") && p["crates/".len()..].contains('/'))
     {
         return full("dependency, protocol or engine crate");
@@ -237,7 +237,10 @@ mod tests {
     fn the_strictest_path_wins() {
         assert_eq!(tier_of(&["README.md", "docs/x.md"], &[]), "TIER ui");
         assert_eq!(tier_of(&["src/store/journal.rs"], &[]), "TIER full");
-        assert_eq!(tier_of(&["README.md", "src/main.rs", "crates/ipc-protocol/src/lib.rs"], &[]), "TIER full");
+        assert_eq!(
+            tier_of(&["README.md", "src/main.rs", "crates/manifold-view-protocol/src/lib.rs"], &[]),
+            "TIER full"
+        );
         assert_eq!(tier_of(&["src/main.rs"], &[]), "TIER light");
         assert_eq!(tier_of(&["scripts/foreground.ps1"], &[]), "TIER light");
     }

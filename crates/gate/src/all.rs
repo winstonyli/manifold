@@ -214,7 +214,7 @@ pub(crate) fn all(log: Option<PathBuf>, mode: Option<String>) -> ExitCode {
     };
     if mode == "ui" {
         let mut c = Command::new("cargo");
-        c.args(["test", "-j", "8", "-p", "manifold", "-p", "ipc-protocol", "-p", "manifold-view-webview2"]);
+        c.args(["test", "-j", "8", "-p", "manifold", "-p", "manifold-view-protocol", "-p", "manifold-view-webview2"]);
         g.stage("unit", &sibling(&log, "unit.log"), c);
     }
     for i in 1..=runs {

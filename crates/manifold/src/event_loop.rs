@@ -1580,7 +1580,7 @@ impl App {
                     }
                 }
             }
-            // See `ipc_protocol::ViewToHost::RedirectableContent`'s own doc
+            // See `manifold_view_protocol::ViewToHost::RedirectableContent`'s own doc
             // comment -- kicks off `manifold`'s own independent fetch of this
             // tab's current url; the actual tab-to-node conversion happens
             // once that completes, in `redirect_fetcher`'s own `tick()` drain
@@ -1603,7 +1603,7 @@ impl App {
                 // Content-area coordinates -> window point space.
                 // The engine echoes back the same physical-pixel
                 // surface coordinates the right-click was sent in
-                // (see `ipc_protocol::InputEvent`'s doc comment), so
+                // (see `manifold_view_protocol::InputEvent`'s doc comment), so
                 // this is the one place that has to divide out the
                 // DPI scale: egui lays out in logical points. Then
                 // shifted down past the toolbar, since Tab view's

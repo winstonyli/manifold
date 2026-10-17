@@ -899,7 +899,7 @@ mod wire_shape_tests {
         assert!(
             actual == RECORDED_FINGERPRINT,
             "the HostToView/ViewToHost wire shape changed (fingerprint {actual:#018x}, recorded \
-             {RECORDED_FINGERPRINT:#018x}). Bump PROTOCOL_VERSION in ipc-protocol/src/lib.rs, then in this test set \
+             {RECORDED_FINGERPRINT:#018x}). Bump PROTOCOL_VERSION in manifold-view-protocol/src/lib.rs, then in this test set \
              RECORDED_FOR_VERSION to the new PROTOCOL_VERSION and RECORDED_FINGERPRINT to {actual:#018x}."
         );
         assert_eq!(

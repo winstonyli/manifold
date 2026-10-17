@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use cef::{rc::Rc as CefRc, *};
-use ipc_protocol::ViewToHost;
+use manifold_view_protocol::ViewToHost;
 
 /// Download messages for the host, queued rather than a single slot -- two downloads
 /// progressing within the same tick would otherwise silently clobber each
@@ -77,13 +77,13 @@ wrap_download_handler! {
                 // server-controlled; `safe_name` keeps only its last
                 // component (it can't leave the downloads folder) and makes
                 // it a name Windows will create as given.
-                let dir = ipc_protocol::downloads::downloads_dir();
+                let dir = manifold_view_protocol::downloads::downloads_dir();
                 let suggested = suggested_name.map(|s| s.to_string()).unwrap_or_default();
-                let name = ipc_protocol::downloads::safe_name(&suggested);
+                let name = manifold_view_protocol::downloads::safe_name(&suggested);
                 let mut results = self.handler.result.borrow_mut();
-                let path = ipc_protocol::downloads::unique_path(&dir, &name, |p| {
+                let path = manifold_view_protocol::downloads::unique_path(&dir, &name, |p| {
                     p.exists()
-                        || results.assigned.values().any(|taken| ipc_protocol::downloads::same_download_path(taken, p))
+                        || results.assigned.values().any(|taken| manifold_view_protocol::downloads::same_download_path(taken, p))
                 });
                 results.assigned.insert(item.id(), path.clone());
                 drop(results);

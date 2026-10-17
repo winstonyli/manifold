@@ -10,7 +10,7 @@ workspace = true
 [dependencies]
 serde_json.workspace = true
 cef = { workspace = true, features = ["build-util", "resources"] }
-ipc-protocol.workspace = true
+manifold-view-protocol.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 # Only for the browser-process Job Object setup in main.rs (kills orphaned

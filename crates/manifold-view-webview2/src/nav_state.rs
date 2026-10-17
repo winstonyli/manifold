@@ -10,7 +10,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Instant;
 
-use ipc_protocol::nav_label::{NavLabel, GESTURE_WINDOW};
+use manifold_view_protocol::nav_label::{NavLabel, GESTURE_WINDOW};
 use webview2_com::Microsoft::Web::WebView2::Win32::{
     ICoreWebView2, ICoreWebView2NavigationStartingEventArgs, ICoreWebView2SourceChangedEventArgs,
 };
@@ -58,7 +58,7 @@ pub fn new_shared_nav_state(initial_url: String) -> SharedNavState {
     }))
 }
 
-/// See `ipc_protocol::ViewToHost::JsonBody`'s own doc comment -- filled
+/// See `manifold_view_protocol::ViewToHost::JsonBody`'s own doc comment -- filled
 /// in once per navigation, from the same `NavigationCompleted` handler
 /// below that also updates `NavState`.
 pub type SharedJsonBody = Rc<RefCell<Option<String>>>;
@@ -67,7 +67,7 @@ pub fn new_shared_json_body() -> SharedJsonBody {
     Rc::new(RefCell::new(None))
 }
 
-/// See `ipc_protocol::ViewToHost::RedirectableContent`'s own doc comment
+/// See `manifold_view_protocol::ViewToHost::RedirectableContent`'s own doc comment
 /// -- same `NavigationCompleted` handler as `SharedJsonBody`, just the
 /// other branch of the same `document.contentType` check.
 pub type SharedRedirectContentType = Rc<RefCell<Option<String>>>;
@@ -170,7 +170,7 @@ pub fn register_handlers(
             s.dirty = true;
             drop(s);
 
-            // See `ipc_protocol::ViewToHost::JsonBody`/`RedirectableContent`'s
+            // See `manifold_view_protocol::ViewToHost::JsonBody`/`RedirectableContent`'s
             // own doc comments. `ExecuteScript`'s own return value comes
             // back JSON-encoded (an already-quoted-and-escaped string, or
             // the literal text `null`) -- `serde_json::from_str::<Option<String>>`
@@ -187,16 +187,19 @@ pub fn register_handlers(
             let redirect_content_type = redirect_content_type.clone();
             let exec_handler = ExecuteScriptCompletedHandler::create(Box::new(move |_error, result| {
                 if let Ok(Some(text)) = serde_json::from_str::<Option<String>>(&result.to_string()) {
-                    match ipc_protocol::PageKindReply::parse(&text) {
-                        Some(ipc_protocol::PageKindReply::Json(body)) => *json_body.borrow_mut() = Some(body),
-                        Some(ipc_protocol::PageKindReply::Other(t)) => *redirect_content_type.borrow_mut() = Some(t),
+                    match manifold_view_protocol::PageKindReply::parse(&text) {
+                        Some(manifold_view_protocol::PageKindReply::Json(body)) => *json_body.borrow_mut() = Some(body),
+                        Some(manifold_view_protocol::PageKindReply::Other(t)) => {
+                            *redirect_content_type.borrow_mut() = Some(t)
+                        }
                         None => {}
                     }
                 }
                 Ok(())
             }));
             unsafe {
-                let _ = webview_for_json.ExecuteScript(&HSTRING::from(ipc_protocol::PAGE_KIND_SCRIPT), &exec_handler);
+                let _ = webview_for_json
+                    .ExecuteScript(&HSTRING::from(manifold_view_protocol::PAGE_KIND_SCRIPT), &exec_handler);
             }
             Ok(())
         }));

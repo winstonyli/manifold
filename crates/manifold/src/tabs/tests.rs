@@ -16,10 +16,10 @@ fn a_host_that_cannot_start_is_not_restarted_and_says_why() {
     let t0 = Instant::now();
     let mut times = Vec::new();
     let why = "WebView2 couldn't create its environment (0x80070005: Access is denied.)";
-    let fatal = format!("{}{why}", ipc_protocol::HOST_FATAL);
+    let fatal = format!("{}{why}", manifold_view_protocol::HOST_FATAL);
     assert_eq!(after_crash(&fatal, &mut times, t0), AfterCrash::CannotStart(why));
     assert!(times.is_empty(), "not counted as a crash");
-    let mismatch = format!("{}: host 2, engine 3", ipc_protocol::PROTOCOL_MISMATCH);
+    let mismatch = format!("{}: host 2, engine 3", manifold_view_protocol::PROTOCOL_MISMATCH);
     assert_eq!(after_crash(&mismatch, &mut times, t0), AfterCrash::GiveUp);
     // A plain crash still restarts, up to the cap.
     let lost = "view-host connection lost";

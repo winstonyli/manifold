@@ -1,5 +1,5 @@
 [package]
-name = "ipc-protocol"
+name = "manifold-view-protocol"
 version.workspace = true
 edition.workspace = true
 description.workspace = true

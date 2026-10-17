@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/ipc-protocol",
+    "crates/manifold-view-protocol",
     "crates/manifold",
     "crates/gate",
     "crates/manifold-view-servo",
@@ -19,7 +19,7 @@ edition = "2021"
 description = "A browser where each tab can run on a different rendering engine (Servo, CEF, WebKit, or WebView2), swappable live without closing it."
 
 [workspace.dependencies]
-ipc-protocol = { path = "crates/ipc-protocol" } # path only: nothing is published, so no version to bump
+manifold-view-protocol = { path = "crates/manifold-view-protocol" } # path only: nothing is published, so no version to bump
 
 bzip2 = "0.6.1"
 # `build-util` and `resources` are enabled by crates/manifold-view-cef.

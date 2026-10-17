@@ -1,6 +1,6 @@
 use std::io::BufRead;
 
-use ipc_protocol::KeyCode;
+use manifold_view_protocol::KeyCode;
 use winit::event::MouseButton;
 use winit::event_loop::EventLoopProxy;
 
@@ -652,7 +652,7 @@ fn parse_mouse_button(name: &str) -> MouseButton {
 }
 
 /// Maps a debug command's key name (`Enter`, `ShiftLeft`, `KeyA`, ...: the DOM
-/// code, `KeyCode::dom_code`) to `ipc_protocol::KeyCode`. A bare letter or
+/// code, `KeyCode::dom_code`) to `manifold_view_protocol::KeyCode`. A bare letter or
 /// digit (`"a"`, `"5"`) is accepted too, for convenience.
 fn parse_key_code(name: &str) -> Option<KeyCode> {
     if let Some(key) = KeyCode::ALL.iter().copied().find(|k| k.dom_code() == name) {

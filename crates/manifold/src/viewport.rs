@@ -8,7 +8,7 @@ impl App {
     /// **Not applied to outgoing `InputEvent::Mouse*`/`Scroll` coordinates.**
     /// Those are sent in the engine's own *physical-pixel surface* space,
     /// the exact same space as `HostToView::Resize`'s `width`/`height`
-    /// (see `ipc_protocol::InputEvent`'s doc comment) — every view-host
+    /// (see `manifold_view_protocol::InputEvent`'s doc comment) — every view-host
     /// renders a surface of precisely that pixel size, so a physical offset
     /// into the on-screen content quad is already the right value to send,
     /// with no conversion at all. Used instead for the two places that

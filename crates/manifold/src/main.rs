@@ -114,10 +114,10 @@ use graph_ui::*;
 use identity::*;
 use image_view::*;
 use input::*;
-use ipc_protocol::{modifiers, HostToView, InputEvent, KeyCode, MouseButton, ViewToHost};
 use json_level::{JsonEdit, JsonLevel};
 use level::{CardEntry, EdgeCurve, EdgeKind, LevelEdge, LevelScan, Origin};
 use links::LinkGesture;
+use manifold_view_protocol::{modifiers, HostToView, InputEvent, KeyCode, MouseButton, ViewToHost};
 use mirror::Carried;
 use node::*;
 use popups::*;
@@ -355,7 +355,7 @@ struct App {
     /// tab unconditionally, wherever it lands — the `manifold`-side mirror
     /// of the engine-side `DragState` each native-input view-host keeps.
     native_drag_tab: Option<String>,
-    /// Bitflags (see `ipc_protocol::modifiers`), tracked from winit's
+    /// Bitflags (see `manifold_view_protocol::modifiers`), tracked from winit's
     /// `WindowEvent::ModifiersChanged` so every forwarded `KeyDown`/`KeyUp`
     /// carries the modifier state at the time of that key, not just the
     /// currently-pressed key itself.

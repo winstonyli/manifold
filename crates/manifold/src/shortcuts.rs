@@ -80,11 +80,11 @@ pub(crate) const CHORDS: &[Chord] = {
     ]
 };
 
-/// Whether `code` pressed with `modifiers` (the `ipc_protocol::modifiers` bits) is one of `CHORDS`, so
+/// Whether `code` pressed with `modifiers` (the `manifold_view_protocol::modifiers` bits) is one of `CHORDS`, so
 /// the page must not get it as well. The held Ctrl, Alt and Super must be exactly the chord's; an extra Shift is
 /// ignored when the chord needs Ctrl or Alt (as egui's matching ignores it), and is a different chord otherwise.
 pub(crate) fn claims_chord(code: WinitKeyCode, modifiers: u8) -> bool {
-    use ipc_protocol::modifiers::{ALT, CONTROL, SHIFT, SUPER};
+    use manifold_view_protocol::modifiers::{ALT, CONTROL, SHIFT, SUPER};
     CHORDS.iter().any(|c| {
         let wanted = if c.mods.ctrl { CONTROL } else { 0 } | if c.mods.alt { ALT } else { 0 };
         let mask = if wanted != 0 { CONTROL | ALT | SUPER } else { CONTROL | ALT | SUPER | SHIFT };
@@ -469,7 +469,7 @@ impl App {
 
 #[cfg(test)]
 mod chord_tests {
-    use ipc_protocol::modifiers::{CONTROL, SHIFT};
+    use manifold_view_protocol::modifiers::{CONTROL, SHIFT};
 
     use super::*;
 
@@ -485,7 +485,7 @@ mod chord_tests {
 
     #[test]
     fn alt_left_and_right_are_back_and_forward_and_claimed_only_with_alt() {
-        use ipc_protocol::modifiers::ALT;
+        use manifold_view_protocol::modifiers::ALT;
         let action = |key| CHORDS.iter().find(|c| c.key == key && c.mods == egui::Modifiers::ALT).map(|c| c.action);
         assert_eq!(action(egui::Key::ArrowLeft), Some(Shortcut::Back));
         assert_eq!(action(egui::Key::ArrowRight), Some(Shortcut::Forward));
@@ -501,7 +501,7 @@ mod chord_tests {
     /// `claims_chord` as it was before the table, kept verbatim as the reference.
     fn claims_chord_before(code: WinitKeyCode, modifiers: u8) -> bool {
         use WinitKeyCode::*;
-        if modifiers & ipc_protocol::modifiers::CONTROL != 0 {
+        if modifiers & manifold_view_protocol::modifiers::CONTROL != 0 {
             matches!(
                 code,
                 KeyT | KeyW

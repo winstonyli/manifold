@@ -8,6 +8,6 @@ description = "Renders the first page of a PDF for manifold, in its own process 
 workspace = true
 
 [dependencies]
-ipc-protocol.workspace = true
+manifold-view-protocol.workspace = true
 pdfium-render.workspace = true
 pdfium-auto.workspace = true

@@ -1,8 +1,8 @@
 //! One-shot PDF view: `manifold-view-pdfium <path>` renders the first page and writes one frame to stdout
-//! (`ipc_protocol::render`). A failure prints one line on stderr and exits 1; a PDFium crash is the process dying,
+//! (`manifold_view_protocol::render`). A failure prints one line on stderr and exits 1; a PDFium crash is the process dying,
 //! which the app reports as a crashed renderer instead of dying itself.
 
-use ipc_protocol::render::{write_frame, Frame};
+use manifold_view_protocol::render::{write_frame, Frame};
 use pdfium_render::prelude::{PdfRenderConfig, Pdfium, PdfiumError};
 
 /// Capped well above the card's size so the page still looks sharp in the enlarged peek preview, without paying for a

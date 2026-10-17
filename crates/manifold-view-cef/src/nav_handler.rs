@@ -2,7 +2,7 @@ use std::cell::RefCell;
 use std::time::Instant;
 
 use cef::{rc::Rc, *};
-use ipc_protocol::nav_label::NavLabel;
+use manifold_view_protocol::nav_label::NavLabel;
 
 /// Latest known navigation state, updated incrementally as CEF's
 /// `DisplayHandler`/`LoadHandler` callbacks fire independently of each
@@ -169,7 +169,7 @@ wrap_load_handler! {
             // edge WebKit's own poll loop has to detect manually. Ask the
             // renderer whether the page that just finished loading is raw
             // JSON; see `render_process_handler.rs` for the reply side and
-            // `ipc_protocol::ViewToHost::JsonBody`'s own doc comment.
+            // `manifold_view_protocol::ViewToHost::JsonBody`'s own doc comment.
             if is_loading == 0 {
                 if let Some(frame) = browser.and_then(|b| b.main_frame()) {
                     if let Some(mut message) =

@@ -3,7 +3,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use dpi::PhysicalSize;
-use ipc_protocol::{
+use manifold_view_protocol::{
     modifiers as host_modifiers, HostToView, InputEvent as HostInputEvent, KeyCode as HostKeyCode, ViewToHost,
 };
 use servo::{
@@ -45,13 +45,13 @@ struct Delegate {
     frame_ready: RefCell<bool>,
     nav: RefCell<NavState>,
     /// `(x, y, href)` for a right-click that landed on a link -- see
-    /// `ipc_protocol::ViewToHost::ContextMenuLink`'s doc comment. Servo
+    /// `manifold_view_protocol::ViewToHost::ContextMenuLink`'s doc comment. Servo
     /// hands this over directly via `ContextMenuElementInformation::link_url`
     /// on the `EmbedderControl::ContextMenu` it requests for every right-
     /// click, unlike WebKit/WebView2's own `document.elementFromPoint`
     /// JS-query workaround -- no script round-trip needed here.
     context_menu_link: RefCell<Option<(f64, f64, String)>>,
-    /// See `ipc_protocol::ViewToHost::JsonBody`'s own doc comment --
+    /// See `manifold_view_protocol::ViewToHost::JsonBody`'s own doc comment --
     /// filled in once per navigation by `notify_load_status_changed`'s own
     /// `WebView::evaluate_javascript` call. `Rc`-wrapped (unlike every
     /// other field here) specifically so its own callback -- a `'static`
@@ -59,7 +59,7 @@ struct Delegate {
     /// this method's `&self` borrow has ended -- can hold an owned clone of
     /// just this one cell, not the whole `Delegate`.
     json_body: Rc<RefCell<Option<String>>>,
-    /// See `ipc_protocol::ViewToHost::RedirectableContent`'s own doc
+    /// See `manifold_view_protocol::ViewToHost::RedirectableContent`'s own doc
     /// comment -- same `evaluate_javascript` call as `json_body`, just the
     /// other branch of the same `document.contentType` check, `Rc`-wrapped
     /// for the same reason.
@@ -110,7 +110,7 @@ impl WebViewDelegate for Delegate {
         nav.dirty = true;
         drop(nav);
 
-        // See `ipc_protocol::ViewToHost::JsonBody`/`RedirectableContent`'s
+        // See `manifold_view_protocol::ViewToHost::JsonBody`/`RedirectableContent`'s
         // own doc comments. Unlike WebKit/WebView2's `ExecuteScript`,
         // Servo's own `evaluate_javascript` hands back a real structured
         // `JSValue`, not a JSON-encoded string -- no unescaping step needed
@@ -120,11 +120,13 @@ impl WebViewDelegate for Delegate {
         if complete {
             let json_body = self.json_body.clone();
             let redirect_content_type = self.redirect_content_type.clone();
-            webview.evaluate_javascript(ipc_protocol::PAGE_KIND_SCRIPT, move |result| {
+            webview.evaluate_javascript(manifold_view_protocol::PAGE_KIND_SCRIPT, move |result| {
                 if let Ok(JSValue::String(text)) = result {
-                    match ipc_protocol::PageKindReply::parse(&text) {
-                        Some(ipc_protocol::PageKindReply::Json(body)) => *json_body.borrow_mut() = Some(body),
-                        Some(ipc_protocol::PageKindReply::Other(t)) => *redirect_content_type.borrow_mut() = Some(t),
+                    match manifold_view_protocol::PageKindReply::parse(&text) {
+                        Some(manifold_view_protocol::PageKindReply::Json(body)) => *json_body.borrow_mut() = Some(body),
+                        Some(manifold_view_protocol::PageKindReply::Other(t)) => {
+                            *redirect_content_type.borrow_mut() = Some(t)
+                        }
                         None => {}
                     }
                 }
@@ -160,17 +162,17 @@ fn main() {
 
     // Two one-directional control sockets back to manifold (it already
     // created both listeners before spawning this process — see
-    // ipc_protocol::transport::listen_local_pair). Using two sockets
+    // manifold_view_protocol::transport::listen_local_pair). Using two sockets
     // instead of one bidirectional stream means the reader thread below
     // never needs to duplicate a stream handle to read concurrently with
     // the main thread's sends.
     let (host_to_view, mut control) =
-        ipc_protocol::transport::connect_local_pair(&socket_id).expect("connect to manifold control sockets");
+        manifold_view_protocol::transport::connect_local_pair(&socket_id).expect("connect to manifold control sockets");
 
     // A dedicated IO thread owns receiving HostToView messages so the
     // main thread stays free to drive Servo's event loop (Servo is not
     // Send, so it must live entirely on this thread).
-    let rx = ipc_protocol::transport::spawn_host_reader(host_to_view);
+    let rx = manifold_view_protocol::transport::spawn_host_reader(host_to_view);
 
     let rendering_context = Rc::new(
         SoftwareRenderingContext::new(PhysicalSize::new(DEFAULT_WIDTH, DEFAULT_HEIGHT))
@@ -194,7 +196,7 @@ fn main() {
     });
 
     // Filled by the `QueryPageState` script callback, drained and sent each tick.
-    let pending_page_state: Rc<RefCell<Option<ipc_protocol::PageState>>> = Rc::new(RefCell::new(None));
+    let pending_page_state: Rc<RefCell<Option<manifold_view_protocol::PageState>>> = Rc::new(RefCell::new(None));
 
     // As the WebView2 host: an initial URL that doesn't parse opens about:blank instead of panicking.
     let start = Url::parse(&initial_url).unwrap_or_else(|err| {
@@ -206,7 +208,7 @@ fn main() {
         .delegate(delegate.clone())
         .build();
 
-    let mut sink = ipc_protocol::FrameSink::shared(&socket_id);
+    let mut sink = manifold_view_protocol::FrameSink::shared(&socket_id);
     let mut width = DEFAULT_WIDTH;
     let mut height = DEFAULT_HEIGHT;
     // M5: background tabs stay alive but stop sending frames; manifold
@@ -282,7 +284,7 @@ fn main() {
                 }
                 HostToView::GetState => {
                     // The url is the only piece the swap sequence replays.
-                    let _ = control.send(&ViewToHost::StateSnapshot(ipc_protocol::TabState {
+                    let _ = control.send(&ViewToHost::StateSnapshot(manifold_view_protocol::TabState {
                         url: delegate.nav.borrow().url.clone(),
                     }));
                 }
@@ -290,21 +292,21 @@ fn main() {
                 HostToView::SetCookies(_) | HostToView::GetCookies => {}
                 HostToView::QueryPageState => {
                     let pending = pending_page_state.clone();
-                    webview.evaluate_javascript(ipc_protocol::PAGE_STATE_SCRIPT, move |result| {
+                    webview.evaluate_javascript(manifold_view_protocol::PAGE_STATE_SCRIPT, move |result| {
                         if let Ok(JSValue::String(text)) = result {
-                            if let Some(state) = ipc_protocol::PageState::parse(&text) {
+                            if let Some(state) = manifold_view_protocol::PageState::parse(&text) {
                                 *pending.borrow_mut() = Some(state);
                             }
                         }
                     });
                 }
                 HostToView::RestoreScroll { x, y } => {
-                    webview.evaluate_javascript(ipc_protocol::restore_scroll_script(x, y), |_| {});
+                    webview.evaluate_javascript(manifold_view_protocol::restore_scroll_script(x, y), |_| {});
                 }
                 // Servo's embedding API (the pinned 0.5.0 `WebView`) has no
                 // find-in-page method at all — silent no-op, same per-engine
                 // support gap as popup interception (see
-                // `ipc_protocol::ViewToHost::OpenTabRequested`'s doc
+                // `manifold_view_protocol::ViewToHost::OpenTabRequested`'s doc
                 // comment). `manifold`'s find bar still opens on a Servo
                 // tab; it just never receives a `FindResult`.
                 // Same gap for DevTools: no inspector/DevTools method
@@ -491,15 +493,15 @@ fn webview_point(x: f64, y: f64) -> WebViewPoint {
     WebViewPoint::Device(DevicePoint::new(x as f32, y as f32))
 }
 
-fn translate_mouse_button(button: ipc_protocol::MouseButton) -> ServoMouseButton {
+fn translate_mouse_button(button: manifold_view_protocol::MouseButton) -> ServoMouseButton {
     // Our pinned `servo = "0.5.0"` still uses Left/Middle/Right; the
     // W3C-aligned Primary/Auxiliary/Secondary rename (visible on
     // doc.servo.org, which tracks the `main` branch) hasn't been published
     // to crates.io yet.
     match button {
-        ipc_protocol::MouseButton::Left => ServoMouseButton::Left,
-        ipc_protocol::MouseButton::Middle => ServoMouseButton::Middle,
-        ipc_protocol::MouseButton::Right => ServoMouseButton::Right,
+        manifold_view_protocol::MouseButton::Left => ServoMouseButton::Left,
+        manifold_view_protocol::MouseButton::Middle => ServoMouseButton::Middle,
+        manifold_view_protocol::MouseButton::Right => ServoMouseButton::Right,
     }
 }
 

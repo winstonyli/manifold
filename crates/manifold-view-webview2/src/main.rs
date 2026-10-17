@@ -29,7 +29,7 @@ use std::rc::Rc;
 use std::sync::mpsc;
 use std::time::Duration;
 
-use ipc_protocol::{transport, FrameSink, HostToView, InputEvent, ViewToHost};
+use manifold_view_protocol::{transport, FrameSink, HostToView, InputEvent, ViewToHost};
 use webview2_com::Microsoft::Web::WebView2::Win32::{
     ICoreWebView2, ICoreWebView2CompositionController, ICoreWebView2Controller, ICoreWebView2Environment,
     ICoreWebView2Environment10, ICoreWebView2Environment3, ICoreWebView2_8,
@@ -144,7 +144,7 @@ fn main() {
     // A machine without the WebView2 runtime fails here, before connecting, with one `HOST_FATAL` line that
     // manifold shows as the reason, instead of a panic creating the environment that reads as a crash.
     if let Some(reason) = missing_runtime_reason(installed_runtime_version()) {
-        eprintln!("{}{reason}", ipc_protocol::HOST_FATAL);
+        eprintln!("{}{reason}", manifold_view_protocol::HOST_FATAL);
         std::process::exit(1);
     }
 
@@ -153,7 +153,7 @@ fn main() {
     // connect. `host_to_view`/`control` are one-directional (HostToView
     // in, ViewToHost out) -- see transport.rs's own doc comment.
     let (host_to_view, mut control) = transport::connect_local_pair(&socket_id).expect("connect to manifold");
-    let rx = ipc_protocol::transport::spawn_host_reader(host_to_view);
+    let rx = manifold_view_protocol::transport::spawn_host_reader(host_to_view);
 
     // Composition hosting against a real, off-screen host window -- see
     // docs/superpowers/specs/2026-09-20-composition-hosting-migration-design.md
@@ -190,7 +190,7 @@ fn main() {
     // visual tree). `manifold` already has its own complete
     // link-context-menu UI built on this tab's JS-based `elementFromPoint`
     // href-detection (`input.rs`'s `MouseUp` right-click arm; see
-    // `ipc_protocol::ViewToHost::ContextMenuLink`) -- live-verified after
+    // `manifold_view_protocol::ViewToHost::ContextMenuLink`) -- live-verified after
     // this fix to still work correctly (the custom "Open in new tab" pill
     // still appears right where expected) -- so Chromium's native menu is
     // pure downside: a second, wrongly-positioned menu with no corresponding
@@ -229,7 +229,7 @@ fn main() {
     let nav_state = new_shared_nav_state(initial_url.clone());
     let pending_json_body = nav_state::new_shared_json_body();
     let pending_redirect_content_type = nav_state::new_shared_redirect_content_type();
-    let pending_page_state: Rc<RefCell<Option<ipc_protocol::PageState>>> = Rc::new(RefCell::new(None));
+    let pending_page_state: Rc<RefCell<Option<manifold_view_protocol::PageState>>> = Rc::new(RefCell::new(None));
     let pending_cookies: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
     nav_state::register_handlers(
         &webview,
@@ -341,7 +341,7 @@ fn main() {
                 }
                 HostToView::GetState => {
                     let url = nav_state.borrow().url.clone();
-                    let _ = control.send(&ViewToHost::StateSnapshot(ipc_protocol::TabState { url }));
+                    let _ = control.send(&ViewToHost::StateSnapshot(manifold_view_protocol::TabState { url }));
                 }
                 // A seed that arrives after the first navigation (not the expected path) still goes in.
                 HostToView::SetCookies(json) => seed_cookies(&webview, in_private, &json),
@@ -383,17 +383,19 @@ fn main() {
                     let handler = ExecuteScriptCompletedHandler::create(Box::new(move |_error, result| {
                         // `ExecuteScript` returns the string JSON-encoded (quoted).
                         if let Ok(Some(text)) = serde_json::from_str::<Option<String>>(&result.to_string()) {
-                            if let Some(state) = ipc_protocol::PageState::parse(&text) {
+                            if let Some(state) = manifold_view_protocol::PageState::parse(&text) {
                                 *pending.borrow_mut() = Some(state);
                             }
                         }
                         Ok(())
                     }));
-                    let _ = unsafe { webview.ExecuteScript(&HSTRING::from(ipc_protocol::PAGE_STATE_SCRIPT), &handler) };
+                    let _ = unsafe {
+                        webview.ExecuteScript(&HSTRING::from(manifold_view_protocol::PAGE_STATE_SCRIPT), &handler)
+                    };
                 }
                 HostToView::RestoreScroll { x, y } => {
                     let handler = ExecuteScriptCompletedHandler::create(Box::new(|_error, _result| Ok(())));
-                    let script = ipc_protocol::restore_scroll_script(x, y);
+                    let script = manifold_view_protocol::restore_scroll_script(x, y);
                     let _ = unsafe { webview.ExecuteScript(&HSTRING::from(script), &handler) };
                 }
                 HostToView::FindStart { text, match_case } => {
@@ -490,7 +492,7 @@ fn main() {
 
         if let Some(pending) = &pending_download {
             let msgs = std::mem::take(&mut *pending.borrow_mut());
-            for msg in ipc_protocol::downloads::coalesce_progress(msgs) {
+            for msg in manifold_view_protocol::downloads::coalesce_progress(msgs) {
                 let _ = control.send(&msg);
             }
         }
@@ -589,9 +591,9 @@ fn startup_failure(what: &str, err: &webview2_com::Error) -> String {
 }
 
 /// Ends a host that connected but cannot start, so manifold leaves a failed card naming `reason` instead of
-/// respawning (`tabs::after_crash`): `Crashed` with `ipc_protocol::HOST_FATAL` before it, and the same line in the log.
+/// respawning (`tabs::after_crash`): `Crashed` with `manifold_view_protocol::HOST_FATAL` before it, and the same line in the log.
 fn exit_fatal(control: &mut transport::LocalTransport, reason: &str) -> ! {
-    let reason = format!("{}{}", ipc_protocol::HOST_FATAL, reason.replace(['\r', '\n'], " "));
+    let reason = format!("{}{}", manifold_view_protocol::HOST_FATAL, reason.replace(['\r', '\n'], " "));
     eprintln!("{reason}");
     let _ = control.send(&ViewToHost::Crashed { reason });
     std::process::exit(1)

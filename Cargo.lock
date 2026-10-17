@@ -4550,16 +4550,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ipc-protocol"
-version = "0.6.0"
-dependencies = [
- "interprocess",
- "memmap2",
- "postcard",
- "serde",
-]
-
-[[package]]
 name = "ipnet"
 version = "2.12.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5018,7 +5008,7 @@ dependencies = [
  "getrandom 0.3.4",
  "icu_properties 2.3.0",
  "image",
- "ipc-protocol",
+ "manifold-view-protocol",
  "pollster 1.0.1",
  "raw-window-handle",
  "rfd",
@@ -5041,7 +5031,7 @@ name = "manifold-view-cef"
 version = "0.6.0"
 dependencies = [
  "cef",
- "ipc-protocol",
+ "manifold-view-protocol",
  "serde_json",
  "windows 0.62.2",
 ]
@@ -5050,9 +5040,19 @@ dependencies = [
 name = "manifold-view-pdfium"
 version = "0.6.0"
 dependencies = [
- "ipc-protocol",
+ "manifold-view-protocol",
  "pdfium-auto",
  "pdfium-render",
+]
+
+[[package]]
+name = "manifold-view-protocol"
+version = "0.6.0"
+dependencies = [
+ "interprocess",
+ "memmap2",
+ "postcard",
+ "serde",
 ]
 
 [[package]]
@@ -5061,7 +5061,7 @@ version = "0.6.0"
 dependencies = [
  "dpi",
  "euclid",
- "ipc-protocol",
+ "manifold-view-protocol",
  "rustls",
  "servo",
  "url",
@@ -5073,8 +5073,8 @@ name = "manifold-view-webkit"
 version = "0.6.0"
 dependencies = [
  "gtk",
- "ipc-protocol",
  "javascriptcore-rs",
+ "manifold-view-protocol",
  "url",
  "webkit2gtk",
 ]
@@ -5084,7 +5084,7 @@ name = "manifold-view-webview2"
 version = "0.6.0"
 dependencies = [
  "image",
- "ipc-protocol",
+ "manifold-view-protocol",
  "serde_json",
  "webview2-com",
  "windows 0.62.2",

@@ -30,7 +30,7 @@ pub(crate) fn winit_modifiers_to_bits(state: ModifiersState) -> u8 {
 }
 
 /// Translates winit's cross-platform physical key into our own
-/// engine-agnostic `ipc_protocol::KeyCode` — deliberately not forwarding
+/// engine-agnostic `manifold_view_protocol::KeyCode` — deliberately not forwarding
 /// winit's `KeyCode` directly over IPC (not meant to be a stable wire
 /// format across winit versions); see that type's own doc comment. Common
 /// keys only, matching `KeyCode`'s own scope.

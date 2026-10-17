@@ -558,7 +558,7 @@ impl App {
     }
 
     /// Converts a tab whose page is content the table maps to a node (see
-    /// `ipc_protocol::ViewToHost::RedirectableContent`): `body` is what
+    /// `manifold_view_protocol::ViewToHost::RedirectableContent`): `body` is what
     /// `redirect_fetch` saved, inserted through `insert_content` at the
     /// tab's place, opened from where the tab was (its `parent`). Only once
     /// that succeeds does the tab go, through `remove_tab` (a close that

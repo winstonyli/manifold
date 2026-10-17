@@ -6,7 +6,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use ipc_protocol::HostToView;
+use manifold_view_protocol::HostToView;
 
 use crate::local_state::{LiveUrl, LocalNode, LocalState};
 use crate::node::{

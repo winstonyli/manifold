@@ -324,7 +324,10 @@ mod tests {
     fn the_cef_host_closure_has_the_protocol_crate_and_no_other_host() {
         let pkgs = closure(&repo(), "manifold-view-cef", "x86_64-pc-windows-msvc").unwrap();
         let dirs: Vec<&str> = pkgs.iter().filter_map(|p| p.dir.as_deref()).collect();
-        assert!(dirs.contains(&"crates/ipc-protocol") && dirs.contains(&"crates/manifold-view-cef"), "{dirs:?}");
+        assert!(
+            dirs.contains(&"crates/manifold-view-protocol") && dirs.contains(&"crates/manifold-view-cef"),
+            "{dirs:?}"
+        );
         assert!(!dirs.contains(&"crates/manifold") && !dirs.contains(&"crates/manifold-view-servo"), "{dirs:?}");
     }
 

@@ -4,7 +4,7 @@ use std::rc::Rc;
 use cef::{rc::Rc as CefRc, *};
 
 /// `(x, y, href)` for a right-click that landed on a link -- see
-/// `ipc_protocol::ViewToHost::ContextMenuLink`'s doc comment. CEF hands
+/// `manifold_view_protocol::ViewToHost::ContextMenuLink`'s doc comment. CEF hands
 /// this over directly via `ContextMenuParams` (`link_url`/`xcoord`/
 /// `ycoord`), unlike WebKit/WebView2's own `document.elementFromPoint`
 /// JS-query workaround -- no script round-trip needed here.

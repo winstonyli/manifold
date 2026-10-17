@@ -13,7 +13,7 @@ use std::time::Duration;
 use crate::host_pin::Component as HostFile;
 use crate::process_manager::{HostSource, ViewKind};
 
-use ipc_protocol::transport::to_hex;
+use manifold_view_protocol::transport::to_hex;
 use sha1::Sha1;
 use sha2::{Digest, Sha256};
 

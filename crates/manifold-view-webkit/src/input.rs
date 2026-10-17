@@ -3,12 +3,12 @@ use std::rc::Rc;
 
 use gtk::gdk;
 use gtk::prelude::*;
-use ipc_protocol::{modifiers, InputEvent, KeyCode, MouseButton};
 use javascriptcore::ValueExt;
+use manifold_view_protocol::{modifiers, InputEvent, KeyCode, MouseButton};
 use webkit2gtk::{WebView, WebViewExt};
 
 /// `(x, y, href)` for a right-click that landed on a link — see
-/// `ipc_protocol::ViewToHost::ContextMenuLink`'s doc comment.
+/// `manifold_view_protocol::ViewToHost::ContextMenuLink`'s doc comment.
 pub type PendingContextMenu = Rc<RefCell<Option<(f64, f64, String)>>>;
 
 /// Round 2 on WebKit input (see project memory for round 1's revert): the

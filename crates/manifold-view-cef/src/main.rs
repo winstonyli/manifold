@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use cef::args::Args;
 use cef::*;
-use ipc_protocol::{HostToView, InputEvent, TabState, ViewToHost};
+use manifold_view_protocol::{HostToView, InputEvent, TabState, ViewToHost};
 
 use app::{AppBuilder, ViewApp};
 use client::{
@@ -33,7 +33,7 @@ use render_process_handler::{CHECK_AUDIO_PLAYING, CHECK_PAGE_STATE};
 const COOKIE_SEED_WAIT: Duration = Duration::from_secs(5);
 const DEFAULT_WIDTH: u32 = 1024;
 const DEFAULT_HEIGHT: u32 = 768;
-/// How often to poll for audio-playing state -- see `ipc_protocol::
+/// How often to poll for audio-playing state -- see `manifold_view_protocol::
 /// ViewToHost::AudioPlayingChanged`'s own doc comment for why CEF needs a
 /// poll at all instead of a real native event. A full second is generous
 /// (nothing here needs sub-second precision) against the real cost of an
@@ -88,7 +88,7 @@ fn main() {
     // fails cleanly here, with one `HOST_FATAL` line that manifold shows
     // as the reason, instead of on the next CEF call's assertion.
     if !api_hash_found(api_hash(sys::CEF_API_VERSION_LAST, 0)) {
-        eprintln!("{}{}", ipc_protocol::HOST_FATAL, unsupported_api_message(sys::CEF_API_VERSION_LAST));
+        eprintln!("{}{}", manifold_view_protocol::HOST_FATAL, unsupported_api_message(sys::CEF_API_VERSION_LAST));
         std::process::exit(1);
     }
 
@@ -172,13 +172,13 @@ fn main() {
     );
 
     // Two one-directional control sockets back to manifold — same
-    // convention as manifold-engine-servo (see ipc_protocol::transport).
+    // convention as manifold-engine-servo (see manifold_view_protocol::transport).
     let (host_to_view, mut control) =
-        ipc_protocol::transport::connect_local_pair(&socket_id).expect("connect to manifold control sockets");
-    let rx = ipc_protocol::transport::spawn_host_reader(host_to_view);
+        manifold_view_protocol::transport::connect_local_pair(&socket_id).expect("connect to manifold control sockets");
+    let rx = manifold_view_protocol::transport::spawn_host_reader(host_to_view);
 
     let sink: render_handler::SharedFrameSink =
-        std::rc::Rc::new(std::cell::RefCell::new(ipc_protocol::FrameSink::shared(&socket_id)));
+        std::rc::Rc::new(std::cell::RefCell::new(manifold_view_protocol::FrameSink::shared(&socket_id)));
     let (render_handler, size) = ViewRenderHandler::new(DEFAULT_WIDTH, DEFAULT_HEIGHT, sink.clone());
     let nav_state = new_shared_nav_state(initial_url.clone());
     let muted_state = new_shared_muted();
@@ -211,7 +211,7 @@ fn main() {
     // Whether this host was seeded with cookies or has reported some (`jar_cookies::JarPull::poll`).
     let mut may_hold_cookies = false;
     if std::env::var_os("VIEW_AWAIT_COOKIES").is_some() {
-        match ipc_protocol::transport::wait_for_first_message(&rx, COOKIE_SEED_WAIT, do_message_loop_work) {
+        match manifold_view_protocol::transport::wait_for_first_message(&rx, COOKIE_SEED_WAIT, do_message_loop_work) {
             Some(HostToView::SetCookies(json)) => may_hold_cookies |= jar_cookies::seed(&json) > 0,
             Some(other) => first_message = Some(other),
             None => eprintln!("jar: no seed received"),
@@ -327,7 +327,7 @@ fn main() {
                 HostToView::RestoreScroll { x, y } => {
                     if let Some(frame) = browser.main_frame() {
                         frame.execute_java_script(
-                            Some(&ipc_protocol::restore_scroll_script(x, y).as_str().into()),
+                            Some(&manifold_view_protocol::restore_scroll_script(x, y).as_str().into()),
                             None,
                             0,
                         );
@@ -367,7 +367,7 @@ fn main() {
                     }
                 }
                 // A real native mute would still mean the full `AudioHandler`
-                // `ipc_protocol::HostToView::SetMuted`'s own doc comment
+                // `manifold_view_protocol::HostToView::SetMuted`'s own doc comment
                 // rules out -- but muting is a *write*, unlike the audio-
                 // playing indicator's read, so it doesn't need a value back
                 // at all: `Frame::execute_java_script` (fire-and-forget,
@@ -464,7 +464,7 @@ fn main() {
         }
 
         if let Some(text) = page_state.borrow_mut().take() {
-            if let Some(state) = ipc_protocol::PageState::parse(&text) {
+            if let Some(state) = manifold_view_protocol::PageState::parse(&text) {
                 let _ = control.send(&ViewToHost::PageState(state));
             }
         }
@@ -494,7 +494,7 @@ fn main() {
         }
 
         let download_msgs = std::mem::take(&mut download_path.borrow_mut().queue);
-        for msg in ipc_protocol::downloads::coalesce_progress(download_msgs) {
+        for msg in manifold_view_protocol::downloads::coalesce_progress(download_msgs) {
             let _ = control.send(&msg);
         }
 

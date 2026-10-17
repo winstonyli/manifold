@@ -3,7 +3,7 @@
 
 use super::*;
 use crate::store::model::NodeId;
-use ipc_protocol::PageState;
+use manifold_view_protocol::PageState;
 use sleep_state::{PendingSleep, SavedScroll, SleepWhy, Verdict};
 
 mod jar_pull;
@@ -296,7 +296,7 @@ pub(crate) enum AfterCrash<'a> {
     /// Leave a failed card: the host speaks another protocol version, or keeps crashing (`crashes_too_often`).
     GiveUp,
     /// Leave a failed card naming why: the host could not start at all (its reason began with
-    /// `ipc_protocol::HOST_FATAL`), so a respawn would fail the same way.
+    /// `manifold_view_protocol::HOST_FATAL`), so a respawn would fail the same way.
     CannotStart(&'a str),
 }
 
@@ -306,10 +306,10 @@ pub(crate) fn after_crash<'a>(
     times: &mut Vec<std::time::Instant>,
     now: std::time::Instant,
 ) -> AfterCrash<'a> {
-    if let Some(why) = reason.strip_prefix(ipc_protocol::HOST_FATAL) {
+    if let Some(why) = reason.strip_prefix(manifold_view_protocol::HOST_FATAL) {
         return AfterCrash::CannotStart(why.trim());
     }
-    if reason.starts_with(ipc_protocol::PROTOCOL_MISMATCH) || crashes_too_often(times, now) {
+    if reason.starts_with(manifold_view_protocol::PROTOCOL_MISMATCH) || crashes_too_often(times, now) {
         return AfterCrash::GiveUp;
     }
     AfterCrash::Restart

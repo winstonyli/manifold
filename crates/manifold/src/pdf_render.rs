@@ -2,7 +2,7 @@
 //! mirrors `favicon_fetch`'s own "spawn a thread, `mpsc` channel, main loop
 //! `tick()`s it" pattern, but for a one-time render triggered by the user
 //! adding a PDF node, not a per-navigation fetch. The render itself runs in
-//! the `manifold-view-pdfium` process (`ipc_protocol::render`), so a PDFium
+//! the `manifold-view-pdfium` process (`manifold_view_protocol::render`), so a PDFium
 //! crash costs one card its preview instead of the app; the first run also
 //! downloads the real `pdfium.dll` (a network fetch, once per machine), so
 //! none of it belongs on the UI thread.
@@ -12,7 +12,7 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-use ipc_protocol::render::Cancel;
+use manifold_view_protocol::render::Cancel;
 
 const WORKERS: usize = 2;
 /// Covers the one-time PDFium download as well as a render; a hung PDF costs a worker this long at most.
@@ -94,7 +94,7 @@ impl PdfRenderer {
             thread::spawn(move || loop {
                 // The lock is held only while waiting for the next request, never while rendering.
                 let Ok((id, path)) = queue.lock().map(|q| q.recv()).unwrap_or(Err(mpsc::RecvError)) else { return };
-                let (cancel, inbox) = ipc_protocol::render::channel();
+                let (cancel, inbox) = manifold_view_protocol::render::channel();
                 if !state.begin(&id, cancel) {
                     continue;
                 }
@@ -132,13 +132,13 @@ impl PdfRenderer {
 }
 
 /// Runs the PDF view on `path` in its own process.
-fn render(path: &str, inbox: ipc_protocol::render::Inbox) -> Result<PdfRenderResult, String> {
+fn render(path: &str, inbox: manifold_view_protocol::render::Inbox) -> Result<PdfRenderResult, String> {
     let exe = crate::process_manager::pdf_view_exe()
         .map_err(|e| format!("{LABEL} could not be extracted: {e}"))?
         .ok_or_else(|| format!("{LABEL} is not installed: build manifold-view-pdfium"))?;
     let mut command = std::process::Command::new(exe);
     command.arg(path);
-    let frame = ipc_protocol::render::run_child(command, LABEL, RENDER_TIMEOUT, inbox, |command| {
+    let frame = manifold_view_protocol::render::run_child(command, LABEL, RENDER_TIMEOUT, inbox, |command| {
         // A just-extracted exe can be held for a moment by a scanner: the same retry the WebView2 spawn has.
         let child = crate::embedded_host::spawn_fresh(command)?;
         crate::process_manager::contain_view_process(&child);
@@ -160,19 +160,22 @@ mod tests {
     fn a_cancel_before_the_render_starts_skips_it() {
         let state = State::default();
         state.cancel("gone");
-        assert!(!state.begin("gone", ipc_protocol::render::channel().0), "skipped");
-        assert!(state.begin("gone", ipc_protocol::render::channel().0), "the mark was taken once");
+        assert!(!state.begin("gone", manifold_view_protocol::render::channel().0), "skipped");
+        assert!(state.begin("gone", manifold_view_protocol::render::channel().0), "the mark was taken once");
     }
 
     #[test]
     fn a_cancel_while_running_kills_instead_of_marking_and_a_finish_clears_it() {
         let state = State::default();
-        assert!(state.begin("a", ipc_protocol::render::channel().0));
+        assert!(state.begin("a", manifold_view_protocol::render::channel().0));
         state.cancel("a");
         assert!(!state.is_cancelled("a"), "a running render is killed, not marked for skipping");
         state.finish("a");
         assert!(state.running_ids().is_empty());
-        assert!(state.begin("a", ipc_protocol::render::channel().0), "a later request for the same id still renders");
+        assert!(
+            state.begin("a", manifold_view_protocol::render::channel().0),
+            "a later request for the same id still renders"
+        );
     }
 
     #[test]
@@ -180,6 +183,6 @@ mod tests {
         let state = State::default();
         state.cancel("a");
         state.request("a");
-        assert!(state.begin("a", ipc_protocol::render::channel().0));
+        assert!(state.begin("a", manifold_view_protocol::render::channel().0));
     }
 }

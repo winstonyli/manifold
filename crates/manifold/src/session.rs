@@ -61,7 +61,7 @@ const MAX_SESSION_NAME: usize = 200;
 /// empty, `.`/`..` or over `MAX_SESSION_NAME` chars; no separator, drive
 /// or stream colon, control character or other character Windows refuses
 /// (`<>"|?*`); not a Windows device name (`is_windows_device_name`, shared
-/// with download names in `ipc_protocol::downloads`).
+/// with download names in `manifold_view_protocol::downloads`).
 /// "Save As" names are already filtered by `sanitize_session_name`, which
 /// lets a device name through; this guards every way in (`OPENSESSION`).
 pub(crate) fn session_name_is_safe(name: &str) -> bool {
@@ -70,7 +70,7 @@ pub(crate) fn session_name_is_safe(name: &str) -> bool {
         && name != ".."
         && name.chars().count() <= MAX_SESSION_NAME
         && !name.chars().any(|c| c.is_control() || "/\\:<>\"|?*".contains(c))
-        && !ipc_protocol::downloads::is_windows_device_name(name)
+        && !manifold_view_protocol::downloads::is_windows_device_name(name)
 }
 
 /// `None` without a profile, or for a name that isn't `session_name_is_safe`.

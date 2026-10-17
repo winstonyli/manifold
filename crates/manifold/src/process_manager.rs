@@ -15,8 +15,8 @@ use crate::view_install::{
     downloads, has_runtime, host_components, host_state, plan_for, runtime_state, verify_installed_host, OnDisk, Plan,
     RuntimeOnDisk, ViewStatus,
 };
-use ipc_protocol::transport::{self, LocalTransport};
-use ipc_protocol::{HostToView, ViewToHost};
+use manifold_view_protocol::transport::{self, LocalTransport};
+use manifold_view_protocol::{HostToView, ViewToHost};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ViewKind {
@@ -243,7 +243,7 @@ impl ViewTab {
             profile_slot: None,
         };
         let writer = tab.writer.clone();
-        (tab, FakePeer { channel: ipc_protocol::MessageChannel::new(peer), writer }, feed)
+        (tab, FakePeer { channel: manifold_view_protocol::MessageChannel::new(peer), writer }, feed)
     }
 
     /// `fake_fed` without the feed: its events channel is closed and empty.
@@ -257,7 +257,7 @@ impl ViewTab {
 /// The engine end of a `fake_fed` tab: its channel, plus the tab's writer to know when everything sent has arrived.
 #[cfg(test)]
 pub(crate) struct FakePeer {
-    channel: ipc_protocol::MessageChannel<std::net::TcpStream>,
+    channel: manifold_view_protocol::MessageChannel<std::net::TcpStream>,
     writer: view_io::Writer,
 }
 
@@ -265,7 +265,7 @@ pub(crate) struct FakePeer {
 impl FakePeer {
     /// Everything the app has sent so far: waits for the writer thread to get it all out (under load it can lag
     /// further behind than the channel's 200 ms read timeout), then reads until nothing more comes.
-    pub(crate) fn sent(&mut self) -> Vec<ipc_protocol::HostToView> {
+    pub(crate) fn sent(&mut self) -> Vec<manifold_view_protocol::HostToView> {
         assert!(self.writer.wait_idle(Duration::from_secs(10)), "the writer never went idle");
         std::iter::from_fn(|| self.channel.recv().ok()).collect()
     }
@@ -273,7 +273,7 @@ impl FakePeer {
 
 #[cfg(test)]
 impl std::ops::Deref for FakePeer {
-    type Target = ipc_protocol::MessageChannel<std::net::TcpStream>;
+    type Target = manifold_view_protocol::MessageChannel<std::net::TcpStream>;
     fn deref(&self) -> &Self::Target {
         &self.channel
     }
@@ -319,7 +319,7 @@ impl Drop for ViewTab {
         reap_host(self.kind, child);
         // The host has exited, so its frame file is no longer mapped by it; ours is dropped first.
         self.frame_map.clear();
-        ipc_protocol::remove_frame_file(&self.socket_id);
+        manifold_view_protocol::remove_frame_file(&self.socket_id);
         // The profile slot is freed after the folder's deletion is tried.
         if let Some(dir) = cache_dir {
             remove_cache_dir(dir, slot);
@@ -581,7 +581,7 @@ fn per_tab_log_path(tab_id: &str) -> PathBuf {
 /// it exits. On failure the child is killed and reaped, and the error says
 /// which way it failed: "exited with code N before connecting: <the last
 /// lines of its log since this spawn's header>", or "still running but did not connect within ...".
-/// A host that exited after writing an `ipc_protocol::HOST_FATAL` line (among
+/// A host that exited after writing an `manifold_view_protocol::HOST_FATAL` line (among
 /// those last lines) gets that line's reason alone, e.g. "CEF runtime doesn't support CEF API version ...".
 /// The log is the per-tab file the child writes its stdout and stderr to.
 fn connect_host(
@@ -651,7 +651,7 @@ fn log_tail_lines(path: &Path, lines: usize) -> Vec<String> {
     tail
 }
 
-/// The reason in the last `ipc_protocol::HOST_FATAL` line among `lines`, without the prefix. Only lines
+/// The reason in the last `manifold_view_protocol::HOST_FATAL` line among `lines`, without the prefix. Only lines
 /// after the last spawn header (`spawn_header`) count: the log is appended to, so a line above it is an
 /// earlier host's.
 fn host_fatal(lines: &[String]) -> Option<String> {
@@ -659,7 +659,7 @@ fn host_fatal(lines: &[String]) -> Option<String> {
         .iter()
         .rev()
         .take_while(|l| !is_spawn_header(l))
-        .find_map(|l| l.strip_prefix(ipc_protocol::HOST_FATAL))
+        .find_map(|l| l.strip_prefix(manifold_view_protocol::HOST_FATAL))
         .map(|r| r.trim().to_string())
 }
 
@@ -691,14 +691,14 @@ fn is_spawn_header(line: &str) -> bool {
 /// Frames go to `frame` (newest wins); everything else goes through a channel of `view_io::EVENTS_CAP`, whose
 /// `send` waits while the app is that far behind (survey E3).
 fn spawn_reader_thread<S: std::io::Read + std::io::Write + Send + 'static>(
-    mut from_view: ipc_protocol::MessageChannel<S>,
+    mut from_view: manifold_view_protocol::MessageChannel<S>,
     frame: view_io::FrameSlot,
     wake: view_io::Wake,
 ) -> mpsc::Receiver<ViewToHost> {
     let (tx, rx) = mpsc::sync_channel(view_io::EVENTS_CAP);
     std::thread::spawn(move || {
         let lost = || ViewToHost::Crashed { reason: "view-host connection lost".to_string() };
-        match from_view.recv_version().map(ipc_protocol::check_version) {
+        match from_view.recv_version().map(manifold_view_protocol::check_version) {
             Ok(Ok(())) => {}
             Ok(Err(mismatch)) => {
                 eprintln!("{mismatch}");

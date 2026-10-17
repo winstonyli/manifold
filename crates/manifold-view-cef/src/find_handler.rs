@@ -3,7 +3,7 @@ use std::rc::Rc;
 
 use cef::{rc::Rc as CefRc, *};
 
-/// `(count, active_match_ordinal)` — mirrors `ipc_protocol::ViewToHost::
+/// `(count, active_match_ordinal)` — mirrors `manifold_view_protocol::ViewToHost::
 /// FindResult` exactly. CEF's own `on_find_result` fires multiple times per
 /// search as matches are found incrementally (`final_update == 0` for all
 /// but the last) — only the final one is worth a message, so intermediate

@@ -44,7 +44,7 @@ fn reader_fed(
     let wake: view_io::Wake = Arc::new(move || {
         count.fetch_add(1, Ordering::SeqCst);
     });
-    (spawn_reader_thread(ipc_protocol::MessageChannel::new(stream), Arc::clone(&frame), wake), frame, wakes)
+    (spawn_reader_thread(manifold_view_protocol::MessageChannel::new(stream), Arc::clone(&frame), wake), frame, wakes)
 }
 
 /// The host's reader of one engine connection, fed `version` and then a
@@ -54,7 +54,7 @@ fn first_event_after_version(version: u32) -> ViewToHost {
     let (rx, ..) = reader_fed(move |mut stream| {
         stream.write_all(&version.to_le_bytes()).unwrap();
         // Best effort: on a mismatch the reader may already have hung up.
-        let _ = ipc_protocol::MessageChannel::new(stream).send(&ViewToHost::Cookies("[]".into()));
+        let _ = manifold_view_protocol::MessageChannel::new(stream).send(&ViewToHost::Cookies("[]".into()));
     });
     rx.recv_timeout(Duration::from_secs(5)).unwrap()
 }
@@ -67,7 +67,7 @@ fn frame(n: u32) -> ViewToHost {
 #[test]
 fn frames_never_queue_on_the_events_channel() {
     let (rx, frame, wakes) = reader_fed(|stream| {
-        let mut view_kind = ipc_protocol::MessageChannel::new(stream);
+        let mut view_kind = manifold_view_protocol::MessageChannel::new(stream);
         view_kind.send_version().unwrap();
         for n in 0..100 {
             view_kind.send(&frame(n)).unwrap();
@@ -124,7 +124,7 @@ fn piled_up_frames_union_their_rows() {
         ),
     ] {
         let (rx, frame_slot, _) = reader_fed(move |stream| {
-            let mut view_kind = ipc_protocol::MessageChannel::new(stream);
+            let mut view_kind = manifold_view_protocol::MessageChannel::new(stream);
             view_kind.send_version().unwrap();
             for f in &frames {
                 view_kind.send(f).unwrap();
@@ -161,7 +161,7 @@ fn an_app_that_stops_draining_stops_the_reader_and_loses_nothing() {
     let written = Arc::new(AtomicUsize::new(0));
     let progress = Arc::clone(&written);
     let (rx, ..) = reader_fed(move |stream| {
-        let mut view_kind = ipc_protocol::MessageChannel::new(stream);
+        let mut view_kind = manifold_view_protocol::MessageChannel::new(stream);
         view_kind.send_version().unwrap();
         for i in 0..N {
             if view_kind.send(&ViewToHost::Cookies(format!("{}{i}", "0".repeat(65_530)))).is_err() {
@@ -182,10 +182,10 @@ fn an_app_that_stops_draining_stops_the_reader_and_loses_nothing() {
 
 #[test]
 fn a_stale_view_host_is_a_protocol_mismatch_crash() {
-    assert!(matches!(first_event_after_version(ipc_protocol::PROTOCOL_VERSION), ViewToHost::Cookies(_)));
-    match first_event_after_version(ipc_protocol::PROTOCOL_VERSION + 1) {
+    assert!(matches!(first_event_after_version(manifold_view_protocol::PROTOCOL_VERSION), ViewToHost::Cookies(_)));
+    match first_event_after_version(manifold_view_protocol::PROTOCOL_VERSION + 1) {
         ViewToHost::Crashed { reason } => {
-            assert!(reason.starts_with(ipc_protocol::PROTOCOL_MISMATCH), "{reason}")
+            assert!(reason.starts_with(manifold_view_protocol::PROTOCOL_MISMATCH), "{reason}")
         }
         other => panic!("expected a protocol-mismatch Crashed, got {other:?}"),
     }
@@ -314,7 +314,7 @@ fn log_tail_keeps_the_last_non_empty_lines() {
 fn a_host_fatal_line_is_the_whole_reason() {
     let lines = |l: &[&str]| l.iter().map(|s| s.to_string()).collect::<Vec<_>>();
     let reason = "CEF runtime doesn't support CEF API version 15200 (the host was built for CEF 152)";
-    let fatal = format!("{}{reason}", ipc_protocol::HOST_FATAL);
+    let fatal = format!("{}{reason}", manifold_view_protocol::HOST_FATAL);
     let log = lines(&[
         &spawn_header("t"),
         "[...:ERROR:cef\\libcef_dll\\libcef_dll2.cc:105] Request for unsupported CEF API version 15200",
@@ -333,8 +333,12 @@ fn a_host_fatal_line_is_the_whole_reason() {
 fn an_earlier_spawns_fatal_line_is_not_the_reason_for_the_next() {
     let dir = crate::store::testutil::temp_dir("host_fatal_stale");
     let log = dir.join("host.log");
-    let old =
-        format!("{}\n{}CEF runtime too old\n{}\n", spawn_header("t"), ipc_protocol::HOST_FATAL, spawn_header("t"));
+    let old = format!(
+        "{}\n{}CEF runtime too old\n{}\n",
+        spawn_header("t"),
+        manifold_view_protocol::HOST_FATAL,
+        spawn_header("t")
+    );
     std::fs::write(&log, old).unwrap();
     let listeners = transport::listen_local_pair(&format!("test-stale-{}", std::process::id())).unwrap();
     let out = std::fs::OpenOptions::new().append(true).open(&log).unwrap();
