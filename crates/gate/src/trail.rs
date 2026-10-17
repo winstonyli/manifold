@@ -3,7 +3,7 @@
 //! served by this process (every page titled by its path). From A, NEWTAB opens tab B (parented to the focused tab) at
 //! the home page /b1; B goes to /b2 and /b3. Back twice walks B's pages, a third Back focuses A (opened-from, and A
 //! records `left_to`), Forward on A returns to B, and a new page from /b1 makes a sibling of /b2 (EXPORTSTATE
-//! `trail`). In Graph view the focused tab's trail is drawn as one strip card per page. A page that calls history.back() itself must read as a Back. `ENGINE=servo` (etc.) tests another engine; for WebKit add `SITE_HOST` (http.rs).
+//! `trail`). In Graph view the focused tab's trail is drawn as one strip card per page, and a screenshot there (at 60%) and one in Tab view each hold the engine-colored icon tiles (`engine_pixels`). A page that calls history.back() itself must read as a Back. `ENGINE=servo` (etc.) tests another engine; for WebKit add `SITE_HOST` (http.rs).
 //!
 //! A failing check does not stop the run; a runner error (a timeout, a launch failure) prints an `ERROR:` line, counts
 //! as a failure and ends the run early. The instance is killed on every exit path (`Instance`'s Drop plus the job).
@@ -64,6 +64,20 @@ impl Run {
         inst.send("WAITIDLE")?;
         inst.send("ENTER")
     }
+}
+
+/// How many pixels of the PNG at `path` (all of it, or the top `rows` rows) are exactly the engine's color
+/// (`view_color`): the fill of a tab's icon tile.
+fn engine_pixels(path: &std::path::Path, rows: Option<u32>, engine: &str) -> io::Result<usize> {
+    let want = match engine {
+        "servo" => [255, 138, 80],
+        "cef" => [66, 133, 244],
+        "webkit" => [26, 188, 156],
+        _ => [0, 120, 212],
+    };
+    let img = image::open(path).map_err(|e| bad(format!("{}: {e}", path.display())))?.to_rgb8();
+    let rows = rows.unwrap_or(img.height());
+    Ok(img.enumerate_pixels().filter(|(_, y, p)| *y < rows && p.0 == want).count())
 }
 
 /// Tab `id`'s entry in EXPORTSTATE's `trail`.
@@ -147,8 +161,18 @@ fn drive(run: &Run, sec: &mut Option<Section>) -> io::Result<()> {
     let strip = |s: &State| s.all_cards().iter().filter(|c| c["virtual"].as_str() == Some("trail")).count();
     let s = inst.export_until("strip", |s| !s.tab_view() && strip(s) == 4)?;
     check_is("the strip has a card per page", 4, strip(&s));
+    // At 60% the cards are short: each tab and each page leads with the tile in the engine's color.
+    inst.send("GRAPHZOOM 60")?;
+    inst.send("WAITIDLE")?;
+    let shot = inst.screenshot("strip-zoom")?;
+    let tiles = engine_pixels(&shot, None, &run.engine)?;
+    check_is("two tab tiles and four page tiles are drawn (>= 200 px)", true, tiles >= 200);
     inst.send("TOGGLEVIEW")?;
     inst.export_until("strip-off", |s| s.tab_view() && at(s, "/b4"))?;
+    // The address bar's icon: the same tile (these local pages have no favicon), in the toolbar band.
+    let shot = inst.screenshot("address-icon")?;
+    let icon = engine_pixels(&shot, Some(40), &run.engine)?;
+    check_is("the address bar has an icon tile (>= 100 px)", true, icon >= 100);
 
     next("script");
     // A page that calls history.back() itself: the engine goes Back with no host move, and the trail must read it as a
