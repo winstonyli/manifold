@@ -2,6 +2,7 @@
 //! tab's card, and the painter and geometry the Back/Forward popups share.
 
 use crate::card::{CardBody, DropEffect};
+use crate::identity::Identity;
 use crate::level::{CardEntry, EdgeCurve, EdgeKind, LevelEdge, Origin};
 use crate::nav_history::TrailPage;
 use crate::store::model::TYPE_TRAIL_PAGE;
@@ -16,6 +17,9 @@ pub(crate) const PAGE: egui::Vec2 = egui::vec2(160.0, 44.0);
 pub(crate) const MIN_PAGE_WIDTH: f32 = 56.0;
 /// Text inset on each side of a label.
 const LABEL_INSET: f32 = 8.0;
+/// The page icon's size (`Identity::paint`), and the label's left edge: inset, icon, gap.
+const ICON_SIZE: f32 = 12.0;
+const LABEL_LEFT: f32 = LABEL_INSET + ICON_SIZE + 6.0;
 pub(crate) const COLUMN_GAP: f32 = 24.0;
 pub(crate) const ROW_GAP: f32 = 12.0;
 /// Between the tab card's bottom edge and the root page.
@@ -41,14 +45,14 @@ fn label_font() -> egui::FontId {
     egui::FontId::proportional(12.0)
 }
 
-/// Each page's size: its label's width plus the insets, within `MIN_PAGE_WIDTH` and `cell.x`, at `cell.y` high.
+/// Each page's size: its label's width plus the icon slot and insets, within `MIN_PAGE_WIDTH` and `cell.x`, at `cell.y` high.
 pub(crate) fn page_sizes(ctx: &egui::Context, pages: &[TrailPage], cell: egui::Vec2) -> Vec<egui::Vec2> {
     pages
         .iter()
         .map(|p| {
             let text =
                 ctx.fonts_mut(|f| f.layout_no_wrap(p.label.clone(), label_font(), egui::Color32::WHITE)).size().x;
-            egui::vec2((text + 2.0 * LABEL_INSET).max(MIN_PAGE_WIDTH).min(cell.x), cell.y)
+            egui::vec2((text + LABEL_LEFT + LABEL_INSET).max(MIN_PAGE_WIDTH).min(cell.x), cell.y)
         })
         .collect()
 }
@@ -80,17 +84,37 @@ pub(crate) fn paint_trail_page(painter: &egui::Painter, rect: egui::Rect, page: 
     // One line, cut with an ellipsis at the page's inner width.
     let mut job = egui::text::LayoutJob::simple_singleline(page.label.clone(), label_font(), color);
     job.wrap = egui::text::TextWrapping {
-        max_width: (rect.width() - 2.0 * LABEL_INSET).max(0.0),
+        max_width: (rect.width() - LABEL_LEFT - LABEL_INSET).max(0.0),
         max_rows: 1,
         break_anywhere: true,
         overflow_character: Some('…'),
     };
     let galley = painter.layout_job(job);
-    let at = rect.left_center() + egui::vec2(LABEL_INSET, -galley.size().y / 2.0);
+    let at = rect.left_center() + egui::vec2(LABEL_LEFT, -galley.size().y / 2.0);
     painter.with_clip_rect(rect.intersect(painter.clip_rect())).galley(at, galley, color);
 }
 
+/// A page's icon at its left: the page's favicon once fetched, else its host's tile in the tab's engine color.
+fn paint_page_icon(app: &App, ui: &egui::Ui, rect: egui::Rect, tab: &str, url: &str) {
+    let Some(identity) = app.page_identity(tab, url) else { return };
+    let center = rect.left_center() + egui::vec2(LABEL_INSET + ICON_SIZE / 2.0, 0.0);
+    if let Some(text) = identity.paint(ui, center, ICON_SIZE, 1.0, TEXT_WEAK) {
+        let font = egui::FontId::proportional(text.size);
+        ui.painter().text(text.center, egui::Align2::CENTER_CENTER, text.text, font, text.color);
+    }
+}
+
 pub(crate) struct TrailSource;
+
+impl App {
+    /// What `url` looks like as a page of `tab`'s trail (`Identity::of_tab`, never loading); `None` if `tab` is gone.
+    fn page_identity(&self, tab: &str, url: &str) -> Option<Identity> {
+        let kind = self.nodes.get(tab)?.as_tab()?.tab.kind;
+        let favicon = crate::favicon_fetch::url_origin(url)
+            .and_then(|origin| self.gpu.as_ref().and_then(|g| g.favicon_id(&origin)));
+        Some(Identity::of_tab(false, favicon, kind, url))
+    }
+}
 
 impl App {
     /// The tab the strip hangs under: focused, in Graph view, its card on the level shown, and a trail of two or more
@@ -217,6 +241,9 @@ impl VirtualSource for TrailSource {
         let page = live_page(app, &entry.id).and_then(|(tab, i)| app.nav_history.get(tab)?.tree().into_iter().nth(i));
         if let Some(page) = &page {
             paint_trail_page(ui.painter(), entry.rect, page, ui.rect_contains_pointer(entry.rect));
+            if let Some((tab, _)) = live_page(app, &entry.id) {
+                paint_page_icon(app, ui, entry.rect, tab, &page.url);
+            }
         }
         CardBody { interact_rect: entry.rect, tooltip: page.map(|p| p.url) }
     }
@@ -448,11 +475,10 @@ mod tests {
             cursor: false,
             on_path: false,
         };
-        let widths: Vec<f32> =
-            page_sizes(&ctx, &[page("a"), page("a medium length title"), page(&"w".repeat(400))], PAGE)
-                .iter()
-                .map(|s| s.x)
-                .collect();
+        let widths: Vec<f32> = page_sizes(&ctx, &[page("a"), page("a medium title"), page(&"w".repeat(400))], PAGE)
+            .iter()
+            .map(|s| s.x)
+            .collect();
         assert_eq!(widths[0], MIN_PAGE_WIDTH, "a short label sits at the floor");
         assert!(widths[0] < widths[1] && widths[1] < PAGE.x, "{widths:?}");
         assert_eq!(widths[2], PAGE.x, "a long label is capped, and clipped when painted");
