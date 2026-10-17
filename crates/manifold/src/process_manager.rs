@@ -718,7 +718,9 @@ fn spawn_reader_thread<S: std::io::Read + std::io::Write + Send + 'static>(
                     let mut slot = frame.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                     // A frame the app never took folds its rows into this one's; a new size or file makes it whole.
                     let rows = view_io::frame_rows(damage, height);
-                    let rows = match slot.take() {
+                    let taken = slot.take();
+                    let was_empty = taken.is_none();
+                    let rows = match taken {
                         Some(prev) if (prev.generation, prev.width, prev.height) == (generation, width, height) => {
                             view_io::merge_rows(prev.rows, rows)
                         }
@@ -726,6 +728,12 @@ fn spawn_reader_thread<S: std::io::Read + std::io::Write + Send + 'static>(
                         None => rows,
                     };
                     *slot = Some(view_io::Frame { generation, width, height, rows, pixels });
+                    drop(slot);
+                    // Only a frame the app has not yet been told of: a loop that slowed down while idle must take
+                    // a page's own change now, and frames piling up behind it cost no more wakes.
+                    if was_empty {
+                        wake();
+                    }
                 }
                 // Fails once the tab is gone (its receiver dropped).
                 msg => {

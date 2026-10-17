@@ -90,8 +90,9 @@ impl FrameMap {
 /// One tab's newest frame, written by its reader thread and taken by the drain.
 pub(crate) type FrameSlot = Arc<Mutex<Option<Frame>>>;
 
-/// Called by a reader after each message it hands over (frames aside): wakes the event loop to apply it now rather
-/// than at its next tick (`event_loop::view_wake`).
+/// Called by a reader after each message it hands over, and after a frame stored into an empty slot (not for the
+/// frames that pile up behind it): wakes the event loop to apply it now rather than at its next tick
+/// (`event_loop::view_wake`).
 pub(crate) type Wake = Arc<dyn Fn() + Send + Sync>;
 /// The writer only serializes and writes.
 const WRITER_STACK: usize = 256 * 1024;

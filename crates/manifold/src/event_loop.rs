@@ -653,6 +653,10 @@ impl App {
     /// Counts engine frames; a burst of them is activity.
     fn note_view_frames(&mut self, n: u32) {
         let now = std::time::Instant::now();
+        if n > 0 {
+            // An idle loop draws at its next tick; a frame just uploaded should not wait for it.
+            self.pacing.next_idle_frame = now;
+        }
         if now.duration_since(self.pacing.frame_burst.0) >= std::time::Duration::from_secs(1) {
             self.pacing.frame_burst = (now, 0);
         }
@@ -1806,6 +1810,16 @@ mod idle_tests {
         assert!(app.is_idle(), "an idle page's few frames don't count");
         app.note_view_frames(1);
         assert!(!app.is_idle());
+    }
+
+    #[test]
+    fn a_view_frame_in_an_idle_loop_asks_for_a_redraw_now() {
+        let later = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        let mut app = App { pacing: FramePacing { next_idle_frame: later, ..Default::default() }, ..App::default() };
+        app.note_view_frames(0);
+        assert_eq!(app.pacing.next_idle_frame, later, "no frame, no change");
+        app.note_view_frames(1);
+        assert!(app.pacing.next_idle_frame <= std::time::Instant::now(), "the next idle tick is due now");
     }
 
     #[test]

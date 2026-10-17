@@ -81,10 +81,45 @@ fn frames_never_queue_on_the_events_channel() {
     // The engine end closed after the Cookies: the reader reports it, waking once more.
     assert!(matches!(rx.recv_timeout(Duration::from_secs(5)).unwrap(), ViewToHost::Crashed { .. }));
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    while wakes.load(Ordering::SeqCst) < 2 && std::time::Instant::now() < deadline {
+    while wakes.load(Ordering::SeqCst) < 3 && std::time::Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(1));
     }
-    assert_eq!(wakes.load(Ordering::SeqCst), 2, "one wake per message (Cookies, Crashed), none for the 100 frames");
+    assert_eq!(
+        wakes.load(Ordering::SeqCst),
+        3,
+        "one wake per message (Cookies, Crashed) and one for the burst's first frame, none for the other 99"
+    );
+}
+
+/// An idle loop only wakes for what it is told of: a frame into an empty slot wakes it (the page changed by itself),
+/// frames piling up behind it do not, and the next frame after the app took the slot wakes it again.
+#[test]
+fn a_frame_wakes_the_loop_only_when_the_slot_was_empty() {
+    let (go, gate) = mpsc::channel::<()>();
+    let (_rx, slot, wakes) = reader_fed(move |stream| {
+        let mut view_kind = manifold_view_protocol::MessageChannel::new(stream);
+        view_kind.send_version().unwrap();
+        view_kind.send(&frame(1)).unwrap();
+        view_kind.send(&frame(2)).unwrap();
+        gate.recv().unwrap();
+        view_kind.send(&frame(3)).unwrap();
+        let _ = gate.recv();
+    });
+    let until = |done: &dyn Fn() -> bool| {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while !done() && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(done(), "timed out");
+    };
+    let width = || slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref().map(|f| f.width);
+    until(&|| width() == Some(2));
+    assert_eq!(wakes.load(Ordering::SeqCst), 1, "the second frame found the first still in the slot");
+    slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
+    go.send(()).unwrap();
+    until(&|| width() == Some(3));
+    assert_eq!(wakes.load(Ordering::SeqCst), 2, "a frame into the emptied slot wakes the loop again");
+    let _ = go.send(());
 }
 
 fn damaged(width: u32, height: u32, first_row: u32, rows: u32) -> ViewToHost {
