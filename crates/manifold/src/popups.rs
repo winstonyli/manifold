@@ -904,8 +904,8 @@ impl App {
                             ui.horizontal(|ui| {
                                 let identity = App::page_row_identity(self.gpu.as_ref(), &bookmark.url);
                                 wanted.push(bookmark.url.clone());
-                                let row = list_row(ui, row_label(ui, &bookmark.title));
-                                paint_row_icon(ui, row.rect, 0.0, identity);
+                                let row = list_row(ui, row_label(ui, &bookmark.title, LIST_ROW_INSET));
+                                paint_row_icon(ui, row.rect, LIST_ROW_INSET, identity);
                                 if row.clicked() {
                                     navigate_url = Some(bookmark.url.clone());
                                 }
@@ -1039,9 +1039,9 @@ impl App {
                     // enough to leave.)
                     let id = egui::Id::new(("history_row", i));
                     wanted.borrow_mut().push(entry.url.clone());
-                    let label = row_label(ui, label);
+                    let label = row_label(ui, label, LIST_ROW_INSET);
                     let row = ui.scope_builder(egui::UiBuilder::new().id(id), |ui| list_row(ui, label)).inner;
-                    paint_row_icon(ui, row.rect, 0.0, App::page_row_identity(self.gpu.as_ref(), &entry.url));
+                    paint_row_icon(ui, row.rect, LIST_ROW_INSET, App::page_row_identity(self.gpu.as_ref(), &entry.url));
                     if row.clicked() {
                         *navigate_url = Some(entry.url.clone());
                     }
@@ -1751,7 +1751,7 @@ impl App {
                             let Some(label) = self.quick_switcher_row_label(id) else { continue };
                             let identity =
                                 self.row_identity(id, self.quick_switcher_row_url(id).as_deref().unwrap_or(""));
-                            let label = row_label(ui, &label);
+                            let label = row_label(ui, &label, 0.0);
                             let row = if is_live {
                                 let row = selectable_label(ui, i == selected_index, label);
                                 if row.clicked() {

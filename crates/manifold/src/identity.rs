@@ -123,24 +123,27 @@ impl App {
 
 /// The icon's size in a list row, in points; rows are text-high, so it is smaller than a header's.
 const ROW_ICON_SIZE: f32 = 12.0;
-/// Room a list row keeps before its text for its icon: the icon and a gap.
-const ROW_ICON_ROOM: f32 = 18.0;
+/// The gap between a row's icon and its text.
+const ROW_ICON_GAP: f32 = 6.0;
+/// How far a bare list row (`popups::list_row`, a label with no button padding) insets its icon from its left edge.
+pub(crate) const LIST_ROW_INSET: f32 = 4.0;
 /// The tile fill of a page that no engine is known for (a history or bookmark row).
 const NEUTRAL_TILE: egui::Color32 = egui::Color32::from_rgb(96, 98, 108);
 
-/// `label` for a list row with room before it for `paint_row_icon`.
-pub(crate) fn row_label(ui: &egui::Ui, label: &str) -> egui::WidgetText {
+/// `label` for a list row with room before it for `paint_row_icon`; `inset` is the same as that call's `pad`, less
+/// the padding the row itself puts before its text (a button's), so 0 for a button.
+pub(crate) fn row_label(ui: &egui::Ui, label: &str, inset: f32) -> egui::WidgetText {
     let mut job = egui::text::LayoutJob::default();
     let format = egui::TextFormat {
         font_id: egui::TextStyle::Button.resolve(ui.style()),
         color: egui::Color32::PLACEHOLDER,
         ..Default::default()
     };
-    job.append(label, ROW_ICON_ROOM, format);
+    job.append(label, inset + ROW_ICON_SIZE + ROW_ICON_GAP, format);
     job.into()
 }
 
-/// Paints `identity` in the room `row_label` left at the left of a row's `rect`, `pad` points in (a button's padding).
+/// Paints `identity` in the room `row_label` left at the left of a row's `rect`, `pad` points in (a button's padding, or `LIST_ROW_INSET`).
 pub(crate) fn paint_row_icon(ui: &egui::Ui, rect: egui::Rect, pad: f32, identity: Identity) {
     let center = egui::pos2(rect.left() + pad + ROW_ICON_SIZE / 2.0, rect.center().y);
     if let Some(text) = identity.paint(ui, center, ROW_ICON_SIZE, 1.0, ui.visuals().weak_text_color()) {
@@ -282,9 +285,10 @@ mod tests {
     fn a_row_label_leaves_room_for_the_icon_before_its_text() {
         let ctx = egui::Context::default();
         let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
-            let egui::WidgetText::LayoutJob(job) = row_label(ui, "page") else { panic!("not a layout job") };
-            assert_eq!(job.sections[0].leading_space, ROW_ICON_ROOM);
-            const { assert!(ROW_ICON_ROOM > ROW_ICON_SIZE, "the icon must fit in the room") };
+            let egui::WidgetText::LayoutJob(job) = row_label(ui, "page", LIST_ROW_INSET) else {
+                panic!("not a layout job")
+            };
+            assert_eq!(job.sections[0].leading_space, LIST_ROW_INSET + ROW_ICON_SIZE + ROW_ICON_GAP);
         });
         output.textures_delta.clear();
     }

@@ -763,7 +763,7 @@ impl App {
                                     Identity::Glyph { glyph: egui_phosphor::light::MAGNIFYING_GLASS, color: None }
                                 }
                             };
-                            let mut button = egui::Button::new(row_label(ui, &suggestion.label()))
+                            let mut button = egui::Button::new(row_label(ui, &suggestion.label(), 0.0))
                                 .truncate()
                                 .min_size(egui::vec2(full_width, 0.0));
                             if highlighted {
