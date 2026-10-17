@@ -5,7 +5,7 @@ use crate::card::{CardBody, DropEffect};
 use crate::level::{CardEntry, EdgeCurve, EdgeKind, LevelEdge, Origin};
 use crate::nav_history::TrailPage;
 use crate::store::model::TYPE_TRAIL_PAGE;
-use crate::theme::{menu_item_style, popup_frame, ACCENT, SURFACE_HOVER, SURFACE_RAISED, TEXT_PRIMARY, TEXT_WEAK};
+use crate::theme::{menu_item_style, popup_frame, ACCENT, SURFACE_HOVER, TEXT_PRIMARY, TEXT_WEAK};
 use crate::tree_layout::{tree_layout, TreeNode};
 use crate::virtual_source::VirtualSource;
 use crate::{App, CardKind, GraphAction};
@@ -18,10 +18,6 @@ pub(crate) const MIN_PAGE_WIDTH: f32 = 56.0;
 const LABEL_INSET: f32 = 8.0;
 pub(crate) const COLUMN_GAP: f32 = 24.0;
 pub(crate) const ROW_GAP: f32 = 12.0;
-/// The Back/Forward popups draw the same tree at a smaller cell.
-pub(crate) const POPUP_PAGE: egui::Vec2 = egui::vec2(120.0, 28.0);
-pub(crate) const POPUP_COLUMN_GAP: f32 = 16.0;
-pub(crate) const POPUP_ROW_GAP: f32 = 6.0;
 /// Between the tab card's bottom edge and the root page.
 const STRIP_GAP: f32 = 24.0;
 
@@ -70,19 +66,15 @@ pub(crate) fn page_rects(pages: &[TrailPage], sizes: &[egui::Vec2], column_gap: 
     rects.into_iter().map(|r| r.translate(-top_left.to_vec2())).collect()
 }
 
-/// One page: the frame, the label clipped to the page, dimmed off the path. On the card path (`card`) the card loop
-/// already drew the frame and its border over this body, so no fill goes down and the cursor's ring is drawn outside
-/// the page, clear of that border; the popup (not a card) paints its own fill and an inside ring.
-pub(crate) fn paint_trail_page(painter: &egui::Painter, rect: egui::Rect, page: &TrailPage, hovered: bool, card: bool) {
-    // The card path's frame is the card's own, so only a hover fills it.
+/// One page's body: the card loop already drew the frame and its border over it, so only a hover fills it and the
+/// cursor's ring is drawn outside the page, clear of that border; the label is clipped to the page, dimmed off the
+/// path.
+pub(crate) fn paint_trail_page(painter: &egui::Painter, rect: egui::Rect, page: &TrailPage, hovered: bool) {
     if hovered {
         painter.rect_filled(rect, 6.0, SURFACE_HOVER);
-    } else if !card {
-        painter.rect_filled(rect, 6.0, SURFACE_RAISED);
     }
     if page.cursor {
-        let kind = if card { egui::StrokeKind::Outside } else { egui::StrokeKind::Inside };
-        painter.rect_stroke(rect, 6.0, egui::Stroke::new(2.0, ACCENT), kind);
+        painter.rect_stroke(rect, 6.0, egui::Stroke::new(2.0, ACCENT), egui::StrokeKind::Outside);
     }
     let color = if page.cursor || page.on_path { TEXT_PRIMARY } else { TEXT_WEAK };
     // One line, cut with an ellipsis at the page's inner width.
@@ -217,7 +209,7 @@ impl VirtualSource for TrailSource {
     fn paint_body(&self, app: &App, ui: &mut egui::Ui, entry: &CardEntry) -> CardBody {
         let page = live_page(app, &entry.id).and_then(|(tab, i)| app.nav_history.get(tab)?.tree().into_iter().nth(i));
         if let Some(page) = &page {
-            paint_trail_page(ui.painter(), entry.rect, page, ui.rect_contains_pointer(entry.rect), true);
+            paint_trail_page(ui.painter(), entry.rect, page, ui.rect_contains_pointer(entry.rect));
         }
         CardBody { interact_rect: entry.rect, tooltip: page.map(|p| p.url) }
     }
@@ -354,7 +346,7 @@ mod tests {
         let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, PAGE);
         let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
             let painter = ui.painter().with_clip_rect(rect);
-            paint_trail_page(&painter, rect, &page, false, true);
+            paint_trail_page(&painter, rect, &page, false);
         });
         output.textures_delta.clear();
     }
@@ -409,18 +401,6 @@ mod tests {
         let (spawn, _) = rig.app.test_spawns.last().expect("a tab was spawned");
         assert_eq!(spawn.url, "/c");
         assert_eq!(spawn.parent.as_deref(), Some(tab.as_str()), "the card dropped on is not the opener");
-    }
-
-    #[test]
-    fn popup_geometry_is_the_same_tree_at_a_smaller_cell() {
-        let pages =
-            NavHistory::with_tree(&[("/a", None, None), ("/b", Some(0), None), ("/c", Some(0), None)], 0).tree();
-        let sizes = vec![POPUP_PAGE; 3];
-        let rects = page_rects(&pages, &sizes, POPUP_COLUMN_GAP, POPUP_ROW_GAP);
-        assert_eq!(rects.len(), 3);
-        assert_eq!(rects[1].min.x, POPUP_PAGE.x + POPUP_COLUMN_GAP, "second column");
-        assert!(rects[2].min.y > rects[1].min.y, "second branch below the first");
-        assert_eq!(rects[0].size(), POPUP_PAGE);
     }
 
     fn text_ctx() -> egui::Context {
@@ -531,29 +511,25 @@ mod tests {
     }
 
     #[test]
-    fn the_card_path_leaves_the_frame_to_the_card_and_the_popup_paints_its_own() {
+    fn a_page_leaves_the_frame_to_the_card_and_rings_the_cursor_outside_it() {
         let ctx = egui::Context::default();
         crate::theme::apply_fonts(&ctx);
         ctx.run_ui(egui::RawInput::default(), |_| {}).textures_delta.clear();
         let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, PAGE);
         let page =
             TrailPage { entry: 0, parent: None, label: "a".into(), url: String::new(), cursor: true, on_path: true };
-        let rects = |card: bool| {
-            let layer = egui::LayerId::new(egui::Order::Background, egui::Id::new(("paint_probe", card)));
-            paint_trail_page(&ctx.layer_painter(layer), rect, &page, false, card);
-            ctx.graphics_mut(|g| {
-                g.entry(layer)
-                    .all_entries()
-                    .filter_map(|c| match &c.shape {
-                        egui::Shape::Rect(r) => Some((r.fill, r.stroke_kind)),
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>()
-            })
-        };
-        let card = rects(true);
-        assert!(card.iter().all(|(fill, _)| *fill == egui::Color32::TRANSPARENT), "no fill over the card's frame");
-        assert!(card.iter().any(|(_, kind)| *kind == egui::StrokeKind::Outside), "the cursor ring clears its border");
-        assert!(rects(false).iter().any(|(fill, _)| *fill != egui::Color32::TRANSPARENT), "the popup has a fill");
+        let layer = egui::LayerId::new(egui::Order::Background, egui::Id::new("paint_probe"));
+        paint_trail_page(&ctx.layer_painter(layer), rect, &page, false);
+        let rects = ctx.graphics_mut(|g| {
+            g.entry(layer)
+                .all_entries()
+                .filter_map(|c| match &c.shape {
+                    egui::Shape::Rect(r) => Some((r.fill, r.stroke_kind)),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        });
+        assert!(rects.iter().all(|(fill, _)| *fill == egui::Color32::TRANSPARENT), "no fill over the card frame");
+        assert!(rects.iter().any(|(_, kind)| *kind == egui::StrokeKind::Outside), "the cursor ring clears its border");
     }
 }

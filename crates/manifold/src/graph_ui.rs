@@ -1724,6 +1724,7 @@ impl App {
             members: &members,
             viewport: self.camera.rect,
             pan_target: None,
+            carry: true,
         };
         for entry in self.level_items_from(at_level) {
             let id = &entry.id;
@@ -1816,23 +1817,25 @@ impl App {
     /// A virtual card's frame, then its click: a click in pick-target mode only ends it (as every click does,
     /// `build_graph_ui`); a Ctrl-click toggles a `selectable` kind in the selection and opens nothing; any other
     /// click goes to the source's `on_click`, whose action is applied like a stored card's.
-    fn virtual_card_click(
+    /// Returns the card's response, `None` when it was culled.
+    pub(crate) fn virtual_card_click(
         &mut self,
         ui: &mut egui::Ui,
         pass: &mut CardPass,
         entry: &CardEntry,
         name: &str,
         picking: bool,
-    ) {
-        let Some(card) = self.draw_graph_card(ui, pass, entry) else { return };
+    ) -> Option<egui::Response> {
+        let card = self.draw_graph_card(ui, pass, entry)?;
         if picking || !card.response.clicked() {
-            return;
+            return Some(card.response);
         }
         if ui.input(|i| i.modifiers.ctrl) && entry.caps().selectable {
             self.toggle_selected(&entry.id);
         } else if let Some(source) = self.virtual_source(name) {
             pass.actions.extend(source.on_click(self, entry));
         }
+        Some(card.response)
     }
 
     /// The current level's cards in Tab order: the stored ones in creation order, then the virtual ones.

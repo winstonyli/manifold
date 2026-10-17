@@ -5,7 +5,6 @@
 use super::*;
 use crate::nav_history::Dir;
 use crate::store::model::Kind;
-use crate::trail_strip::{POPUP_COLUMN_GAP, POPUP_PAGE, POPUP_ROW_GAP};
 
 /// A minimal right-click context menu: just "Open in new tab" for a link,
 /// positioned where the click landed — see `ipc_protocol::ViewToHost::
@@ -308,6 +307,19 @@ pub(crate) fn popup_centres_cursor(ctx: &egui::Context, which: AnchoredPopup, op
     open && !seen
 }
 
+/// Canvas room around the trail's cards, and the popup viewport's least and most size.
+const POPUP_PAD: f32 = 8.0;
+const POPUP_MIN: egui::Vec2 = egui::vec2(160.0, 60.0);
+const POPUP_MAX: egui::Vec2 = egui::vec2(480.0, 240.0);
+
+/// The popup camera's rect on opening: `viewport` big, centred on the whole tree when it fits, else on the cursor page
+/// (the tree's middle if there is none).
+pub(crate) fn popup_start_rect(bounds: egui::Rect, cursor: Option<egui::Rect>, viewport: egui::Vec2) -> egui::Rect {
+    let fits = bounds.width() <= viewport.x && bounds.height() <= viewport.y;
+    let centre = if fits { bounds.center() } else { cursor.map_or(bounds.center(), |c| c.center()) };
+    egui::Rect::from_center_size(centre, viewport)
+}
+
 /// Opens `which`, or closes it if it's the one open.
 pub(crate) fn toggle_popup(open: &mut Option<AnchoredPopup>, which: AnchoredPopup) {
     *open = if *open == Some(which) { None } else { Some(which) };
@@ -439,6 +451,9 @@ pub(crate) struct MenuPopups {
     pub(crate) node_menu: Option<(String, egui::Pos2)>,
     /// The right-click menu of a trail strip page: its virtual card id and the screen point (`App::build_trail_menu`).
     pub(crate) trail_menu: Option<(String, egui::Pos2)>,
+    /// The Back/Forward branch popup's camera and which popup it belongs to: recentred every time the popup opens
+    /// (`popup_centres_cursor`), kept while it stays open.
+    pub(crate) trail_canvas: Option<(AnchoredPopup, crate::graph_ui::GraphCamera)>,
     /// Last real value of `node_menu`, kept around so `build_node_menu`
     /// can keep drawing (fading out, not vanishing instantly) for a few
     /// frames after `node_menu` itself goes back to `None` -- see
@@ -1270,9 +1285,9 @@ impl App {
         }
     }
 
-    /// The Back or Forward chip's branch list (trail spec decision 8): the whole page tree (`NavHistory::tree`) in a scroll area,
-    /// labelled by title or URL. A click is a plain move there (`trail_pick`); the row's context menu opens it as a
-    /// new tab card (`open_branch_as_card`, decision 9). Closes on a pick or a click outside.
+    /// The Back or Forward chip's branch list (trail spec decision 8): the strip's own page cards, edges and dot grid
+    /// in a pannable, zoomable `Scene` (`2026-10-16-trail-popup-canvas-design.md`), recentred on every opening. A click
+    /// on a page is a plain move there (`trail_pick`) and closes the popup, as does a click outside.
     pub(crate) fn build_trail_branches_popup(
         &mut self,
         ui: &egui::Ui,
@@ -1285,12 +1300,28 @@ impl App {
             Dir::Back => AnchoredPopup::BackBranches,
             Dir::Forward => AnchoredPopup::ForwardBranches,
         };
-        let pages = self.nav_history.get(tab).map_or_else(Vec::new, |h| h.tree());
-        let sizes = crate::trail_strip::page_sizes(ui.ctx(), &pages, POPUP_PAGE);
-        let rects = crate::trail_strip::page_rects(&pages, &sizes, POPUP_COLUMN_GAP, POPUP_ROW_GAP);
-        let centre = popup_centres_cursor(ui.ctx(), which, self.menus.open_popup == Some(which));
-        let mut picked: Option<usize> = None;
-        let mut as_card: Option<usize> = None;
+        let cards = crate::trail_strip::trail_cards(self, tab, egui::Pos2::ZERO);
+        if cards.is_empty() {
+            return;
+        }
+        let edges = crate::trail_strip::trail_edges(self, tab, &|id| cards.iter().find(|e| e.id == id).map(|e| e.rect));
+        let bounds = cards.iter().fold(egui::Rect::NOTHING, |b, e| b.union(e.rect));
+        let view = (bounds.size() + egui::Vec2::splat(2.0 * POPUP_PAD)).clamp(POPUP_MIN, POPUP_MAX);
+        let cursor = self
+            .nav_history
+            .get(tab)
+            .and_then(|h| h.tree().iter().position(|p| p.cursor))
+            .and_then(|i| cards.get(i))
+            .map(|e| e.rect);
+        let mut camera = match self.menus.trail_canvas.take() {
+            Some((w, camera)) if w == which => camera,
+            _ => crate::graph_ui::GraphCamera::new(),
+        };
+        if popup_centres_cursor(ui.ctx(), which, self.menus.open_popup == Some(which)) {
+            camera.jump_to(popup_start_rect(bounds, cursor, view));
+        }
+        let order: Vec<String> = cards.iter().map(|e| e.id.clone()).collect();
+        let mut clicked = false;
         let area = egui::Area::new(egui::Id::new(("trail_branches_popup", which)))
             .fixed_pos(anchor_rect.left_bottom())
             .order(egui::Order::Foreground)
@@ -1298,69 +1329,58 @@ impl App {
             .show(ui.ctx(), |ui| {
                 ui.set_opacity(fade);
                 popup_frame(ui).show(ui, |ui| {
-                    menu_item_style(ui);
-                    egui::ScrollArea::both().max_width(480.0).max_height(240.0).auto_shrink([true, true]).show(
-                        ui,
-                        |ui| {
-                            let extent = rects.iter().fold(egui::Vec2::ZERO, |m, r| m.max(r.max.to_vec2()));
-                            let (area, _) = ui.allocate_exact_size(extent, egui::Sense::hover());
-                            let at = |r: &egui::Rect| r.translate(area.min.to_vec2());
-                            // The graph's own backdrop: its background and dot grid, anchored to the tree.
-                            ui.painter().rect_filled(area, 4.0, crate::theme::BG);
-                            let grid = ui.painter().with_clip_rect(area.intersect(ui.clip_rect()));
-                            let weak = ui.visuals().weak_text_color();
-                            crate::graph_ui::paint_dot_grid(&grid, area, 1.0, 1.0, weak);
-                            // Lines first, so the pages draw over them.
-                            for (page, rect) in pages.iter().zip(&rects) {
-                                if let Some(parent) = page.parent {
-                                    crate::level::paint_horizontal_edge(
-                                        ui.painter(),
-                                        at(&rects[parent]).right_center(),
-                                        at(rect).left_center(),
-                                        crate::level::opened_edge_stroke(
-                                            page.on_path && pages[parent].on_path,
-                                            1.0,
-                                            ui.visuals().weak_text_color(),
-                                        ),
-                                    );
+                    let (outer, _) = ui.allocate_exact_size(view, egui::Sense::hover());
+                    ui.painter().rect_filled(outer, 4.0, crate::theme::BG);
+                    let (zoom_scale, _) = camera.begin_frame(ui.ctx(), outer);
+                    let inv_zoom = 1.0 / zoom_scale;
+                    let viewport = camera.rect;
+                    let weak = ui.visuals().weak_text_color();
+                    let mut rect = camera.rect;
+                    let mut overlays: crate::graph_ui::DeferredOverlays = Vec::new();
+                    let mut actions = Vec::new();
+                    let members = std::collections::HashMap::new();
+                    let mut pass = crate::card::CardPass {
+                        deferred_overlays: &mut overlays,
+                        actions: &mut actions,
+                        inv_zoom,
+                        zoom_scale,
+                        drop_preview: &None,
+                        pick_targets: &[],
+                        connect_target: None,
+                        connect_ring: None,
+                        show_order: false,
+                        order: &order,
+                        any_focused: false,
+                        members: &members,
+                        viewport,
+                        pan_target: None,
+                        carry: false,
+                    };
+                    ui.scope_builder(egui::UiBuilder::new().max_rect(outer), |ui| {
+                        crate::graph_ui::show_scene(ui, &mut rect, true, |ui| {
+                            crate::graph_ui::paint_dot_grid(ui.painter(), viewport, zoom_scale, inv_zoom, weak);
+                            crate::graph_ui::paint_edges(ui, viewport, &edges, inv_zoom);
+                            for entry in &cards {
+                                if let Some(response) = self.virtual_card_click(ui, &mut pass, entry, "trail", false) {
+                                    clicked |= response.clicked();
                                 }
                             }
-                            for (page, rect) in pages.iter().zip(&rects) {
-                                let rect = at(rect);
-                                let id = egui::Id::new(("trail_popup_page", which, page.entry));
-                                let row = ui.interact(rect, id, egui::Sense::click()).on_hover_text(&page.url);
-                                crate::trail_strip::paint_trail_page(
-                                    &ui.painter().with_clip_rect(rect),
-                                    rect,
-                                    page,
-                                    row.hovered(),
-                                    false,
-                                );
-                                if page.cursor && centre {
-                                    ui.scroll_to_rect(rect, Some(egui::Align::Center));
-                                }
-                                if row.clicked() {
-                                    picked = Some(page.entry);
-                                }
-                                row.context_menu(|ui| {
-                                    if crate::trail_strip::page_menu_items(ui) {
-                                        as_card = Some(page.entry);
-                                        ui.close();
-                                    }
-                                });
-                            }
-                        },
+                        });
+                    });
+                    camera.rect = rect;
+                    if let Some(target) = pass.pan_target {
+                        camera.pan_to(target);
+                    }
+                    debug_assert!(
+                        overlays.is_empty(),
+                        "a trail page queues no overlay text: the popup has no layer for it"
                     );
+                    debug_assert!(actions.is_empty(), "a trail page's click returns no GraphAction");
                 });
             });
+        self.menus.trail_canvas = Some((which, camera));
         let clicked_outside = clicked_outside_popup(ui, area.response.rect, Some(anchor_rect));
-        if let Some(entry) = picked {
-            self.trail_pick(tab, entry);
-        }
-        if let Some(entry) = as_card {
-            self.open_branch_as_card(tab, entry, None);
-        }
-        if picked.is_some() || as_card.is_some() || clicked_outside {
+        if clicked || clicked_outside {
             close_popup(&mut self.menus.open_popup, which);
         }
     }

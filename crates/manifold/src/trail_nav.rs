@@ -225,6 +225,7 @@ mod tests {
 
     use super::*;
     use crate::nav_history::NavHistory;
+    use crate::popups::popup_start_rect;
     use crate::session_sync::tests::{add, add_group, app_on, live_tab, sleeping_tab, Peer};
     use crate::store::journal::Journal;
     use crate::store::model::ActorId;
@@ -525,81 +526,183 @@ mod tests {
         assert_eq!(app.nav_history[&tab].branches(Dir::Back), before);
     }
 
-    #[test]
-    fn the_branch_list_draws_a_foreground_popup() {
-        let (mut app, tab, _peer) = tab_with_a_sibling("trail-popup");
-        app.menus.open_popup = Some(AnchoredPopup::BackBranches);
-        let ctx = app.egui_ctx.clone();
-        let anchor = egui::Rect::from_min_size(egui::pos2(10.0, 10.0), egui::vec2(20.0, 20.0));
-        let id = egui::Id::new(("trail_branches_popup", AnchoredPopup::BackBranches));
-        let layer = egui::LayerId::new(egui::Order::Foreground, id);
-        let (mut curves, mut accent, mut dots) = (0, 0, 0);
-        // The first frame of an `Area` only measures it (nothing is drawn), so look at the second.
-        for _ in 0..2 {
-            let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
-                app.build_trail_branches_popup(ui, Dir::Back, anchor, &tab, 1.0);
-                ui.ctx().graphics_mut(|g| {
-                    for c in g.entry(layer).all_entries() {
-                        match &c.shape {
-                            egui::Shape::CubicBezier(b) => {
-                                curves += 1;
-                                accent +=
-                                    usize::from(b.stroke.color == egui::epaint::ColorMode::Solid(crate::theme::ACCENT));
-                            }
-                            egui::Shape::Circle(_) => dots += 1,
-                            _ => {}
-                        }
-                    }
-                });
-            });
-            output.textures_delta.clear();
+    /// Every leaf shape in `output`, flattened.
+    fn leaves(output: &egui::FullOutput) -> Vec<egui::Shape> {
+        fn walk(s: &egui::Shape, out: &mut Vec<egui::Shape>) {
+            match s {
+                egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, out)),
+                other => out.push(other.clone()),
+            }
         }
-        let rect = ctx.memory(|m| m.area_rect(id)).expect("the popup's area");
-        assert!(rect.width() >= 60.0, "{rect:?}");
-        assert_eq!(app.menus.open_popup, Some(AnchoredPopup::BackBranches), "no click: it stays open");
-        assert!(curves > 0, "the tree's lines are the level's bezier edges");
-        assert!(accent > 0, "the path to the cursor is drawn in the accent, as in the strip");
-        assert!(dots > 0, "the graph's dot grid is behind the tree");
+        let mut out = Vec::new();
+        output.shapes.iter().for_each(|s| walk(&s.shape, &mut out));
+        out
     }
 
-    #[test]
-    fn clicking_a_branch_row_moves_the_tab_and_closes_the_popup() {
-        let (mut app, tab, mut peer) = tab_with_a_sibling("trail-popup-click");
-        assert_eq!(app.nav_history[&tab].branches(Dir::Back), [(1, "https://b/".to_string())]);
-        app.menus.open_popup = Some(AnchoredPopup::BackBranches);
+    fn anchor() -> egui::Rect {
+        egui::Rect::from_min_size(egui::pos2(10.0, 10.0), egui::vec2(20.0, 20.0))
+    }
+
+    /// One frame of the Back popup over `tab`; returns what it drew.
+    fn popup_run(app: &mut App, tab: &str, events: Vec<egui::Event>) -> egui::FullOutput {
         let ctx = app.egui_ctx.clone();
-        let anchor = egui::Rect::from_min_size(egui::pos2(10.0, 10.0), egui::vec2(20.0, 20.0));
-        let frame = |app: &mut App, events: Vec<egui::Event>| {
-            let input = egui::RawInput { events, ..Default::default() };
-            let mut output = ctx.run_ui(input, |ui| app.build_trail_branches_popup(ui, Dir::Back, anchor, &tab, 1.0));
-            output.textures_delta.clear();
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0))),
+            events,
+            ..Default::default()
         };
-        frame(&mut app, vec![]);
+        let mut output = ctx.run_ui(input, |ui| app.build_trail_branches_popup(ui, Dir::Back, anchor(), tab, 1.0));
+        output.textures_delta.clear();
+        output
+    }
+
+    /// The popup's scene area in screen points: the area's rect inside the frame's 5-point margin.
+    fn scene_min(app: &App) -> egui::Pos2 {
         let id = egui::Id::new(("trail_branches_popup", AnchoredPopup::BackBranches));
-        let area = ctx.memory(|m| m.area_rect(id)).expect("the popup's area");
-        let pages = app.nav_history[&tab].tree();
-        let sizes = crate::trail_strip::page_sizes(&ctx, &pages, crate::trail_strip::POPUP_PAGE);
-        let rects = crate::trail_strip::page_rects(
-            &pages,
-            &sizes,
-            crate::trail_strip::POPUP_COLUMN_GAP,
-            crate::trail_strip::POPUP_ROW_GAP,
-        );
-        let at = area.min + egui::vec2(5.0, 5.0) + rects[1].center().to_vec2(); // page b, past the frame's margin
-        let button = |pressed| egui::Event::PointerButton {
+        app.egui_ctx.memory(|m| m.area_rect(id)).expect("the popup's area").min + egui::vec2(5.0, 5.0)
+    }
+
+    fn open_back_popup(name: &str) -> (App, String, Peer) {
+        let (mut app, tab, peer) = tab_with_a_sibling(name);
+        app.menus.open_popup = Some(AnchoredPopup::BackBranches);
+        for _ in 0..3 {
+            popup_run(&mut app, &tab, vec![]); // measure, draw, settle the recentred camera
+        }
+        (app, tab, peer)
+    }
+
+    fn primary(at: egui::Pos2, pressed: bool) -> egui::Event {
+        egui::Event::PointerButton {
             pos: at,
             button: egui::PointerButton::Primary,
             pressed,
             modifiers: egui::Modifiers::NONE,
-        };
-        frame(&mut app, vec![egui::Event::PointerMoved(at)]);
-        frame(&mut app, vec![button(true), button(false)]);
+        }
+    }
+
+    #[test]
+    fn the_branch_popup_draws_the_strips_cards_edges_and_grid() {
+        let (mut app, tab, _peer) = open_back_popup("trail-popup-draw");
+        let output = popup_run(&mut app, &tab, vec![]);
+        let shapes = leaves(&output);
+        let accent = egui::epaint::ColorMode::Solid(crate::theme::ACCENT);
+        let curves = shapes.iter().filter(|s| matches!(s, egui::Shape::CubicBezier(_))).count();
+        let on_path =
+            shapes.iter().filter(|s| matches!(s, egui::Shape::CubicBezier(b) if b.stroke.color == accent)).count();
+        let dots = shapes.iter().filter(|s| matches!(s, egui::Shape::Circle(_))).count();
+        assert!(curves > 0, "the tree's lines are the level's bezier edges");
+        assert!(on_path > 0, "the path to the cursor is drawn in the accent, as in the strip");
+        assert!(dots > 0, "the graph's dot grid is behind the tree");
+        let cards = crate::trail_strip::trail_cards(&app, &tab, egui::Pos2::ZERO);
+        let id = egui::Id::new(("graph_card", cards[1].id.as_str()));
+        assert!(app.egui_ctx.read_response(id).is_some(), "a page is a real graph card");
+        assert_eq!(app.menus.open_popup, Some(AnchoredPopup::BackBranches), "no click: it stays open");
+    }
+
+    #[test]
+    fn clicking_a_page_moves_the_tab_and_closes_the_popup() {
+        let (mut app, tab, mut peer) = open_back_popup("trail-popup-click");
+        let cards = crate::trail_strip::trail_cards(&app, &tab, egui::Pos2::ZERO);
+        let camera = app.menus.trail_canvas.as_ref().expect("the popup's camera").1.rect;
+        // Scale 1 (the viewport is the camera's size): screen = scene origin + (world - camera origin).
+        let at = scene_min(&app) + (cards[1].rect.center() - camera.min);
+        popup_run(&mut app, &tab, vec![egui::Event::PointerMoved(at)]);
+        popup_run(&mut app, &tab, vec![primary(at, true), primary(at, false)]);
         assert_eq!(app.menus.open_popup, None, "a pick closes the popup");
         assert!(peer.sent().iter().any(|m| matches!(m, HostToView::Navigate { url, .. } if url == "https://b/")));
-        // The engine reports the arrival: the cursor is at b, so c is now its sibling.
-        let h = app.nav_history.get_mut(&tab).unwrap();
-        h.observe("https://b/", "", false, false, Instant::now() + std::time::Duration::from_secs(1));
-        assert_eq!(h.branches(Dir::Back), [(2, "https://c/".to_string())]);
+    }
+
+    #[test]
+    fn dragging_empty_canvas_pans_the_popup_and_does_not_carry_a_page() {
+        let (mut app, tab, _peer) = open_back_popup("trail-popup-pan");
+        let before = app.menus.trail_canvas.as_ref().unwrap().1.rect.center();
+        let start = scene_min(&app) + egui::vec2(3.0, 3.0); // inside the 8-point padding: empty canvas
+        popup_run(&mut app, &tab, vec![egui::Event::PointerMoved(start), primary(start, true)]);
+        for step in 1..=4 {
+            let at = start + egui::vec2(8.0 * step as f32, 0.0);
+            popup_run(&mut app, &tab, vec![egui::Event::PointerMoved(at)]);
+        }
+        popup_run(&mut app, &tab, vec![primary(start + egui::vec2(32.0, 0.0), false)]);
+        let after = app.menus.trail_canvas.as_ref().unwrap().1.rect.center();
+        assert!(after.x < before.x - 10.0, "dragging right pans the view left: {before:?} -> {after:?}");
+        assert!(app.interaction.dragging.is_none(), "nothing was carried");
+    }
+
+    #[test]
+    fn the_popup_recentres_on_every_opening_and_not_in_between() {
+        let (mut app, tab, _peer) = open_back_popup("trail-popup-recentre");
+        let first = app.menus.trail_canvas.as_ref().unwrap().1.rect;
+        app.menus.trail_canvas.as_mut().unwrap().1.rect = first.translate(egui::vec2(40.0, 0.0)); // the user panned
+        popup_run(&mut app, &tab, vec![]);
+        assert_ne!(
+            app.menus.trail_canvas.as_ref().unwrap().1.rect.center(),
+            first.center(),
+            "later frames keep the pan"
+        );
+        app.menus.open_popup = None;
+        popup_run(&mut app, &tab, vec![]);
+        app.menus.open_popup = Some(AnchoredPopup::BackBranches);
+        popup_run(&mut app, &tab, vec![]);
+        assert_eq!(app.menus.trail_canvas.as_ref().unwrap().1.rect, first, "reopened: back to the start");
+    }
+
+    #[test]
+    fn a_one_page_trail_opens_a_small_valid_popup() {
+        let mut app = app_on(&session("trail-popup-one"), 1);
+        let (tab, _peer) = live_tab(&mut app, ViewKind::Webview2, "https://a/");
+        app.nav_history.insert(tab.clone(), NavHistory::visited(&["https://a/"]));
+        app.menus.open_popup = Some(AnchoredPopup::BackBranches);
+        for _ in 0..3 {
+            popup_run(&mut app, &tab, vec![]);
+        }
+        let id = egui::Id::new(("trail_branches_popup", AnchoredPopup::BackBranches));
+        let rect = app.egui_ctx.memory(|m| m.area_rect(id)).expect("the popup's area");
+        assert!(rect.width() >= 160.0 && rect.height() >= 60.0, "{rect:?}");
+    }
+
+    #[test]
+    fn a_long_trail_clamps_the_popup_and_starts_on_the_cursor_page() {
+        let mut app = app_on(&session("trail-popup-long"), 1);
+        let (tab, _peer) = live_tab(&mut app, ViewKind::Webview2, "https://0/");
+        let urls: Vec<String> = (0..12).map(|i| format!("https://example.test/page-{i}")).collect();
+        let refs: Vec<&str> = urls.iter().map(String::as_str).collect();
+        app.nav_history.insert(tab.clone(), NavHistory::visited(&refs));
+        app.menus.open_popup = Some(AnchoredPopup::BackBranches);
+        for _ in 0..3 {
+            popup_run(&mut app, &tab, vec![]);
+        }
+        let id = egui::Id::new(("trail_branches_popup", AnchoredPopup::BackBranches));
+        let rect = app.egui_ctx.memory(|m| m.area_rect(id)).expect("the popup's area");
+        assert!(rect.width() <= 480.0 + 20.0 && rect.height() <= 240.0 + 20.0, "{rect:?}");
+        let cards = crate::trail_strip::trail_cards(&app, &tab, egui::Pos2::ZERO);
+        let camera = app.menus.trail_canvas.as_ref().unwrap().1.rect;
+        assert!(camera.contains(cards.last().unwrap().rect.center()), "the cursor page (the last) is in view");
+        assert!(!camera.contains(cards[0].rect.center()), "the first page is off screen");
+    }
+
+    #[test]
+    fn the_trail_changing_under_an_open_popup_redraws_its_cards() {
+        let (mut app, tab, _peer) = open_back_popup("trail-popup-changes");
+        app.nav_history.insert(tab.clone(), NavHistory::visited(&["https://x/", "https://y/", "https://z/"]));
+        let output = popup_run(&mut app, &tab, vec![]);
+        assert!(!leaves(&output).is_empty());
+        let cards = crate::trail_strip::trail_cards(&app, &tab, egui::Pos2::ZERO);
+        assert_eq!(cards.len(), 3);
+        popup_run(&mut app, &tab, vec![]);
+        let id = egui::Id::new(("graph_card", cards[1].id.as_str()));
+        assert!(app.egui_ctx.read_response(id).is_some(), "the new trail's pages are registered");
+    }
+
+    #[test]
+    fn the_popup_start_rect_centres_a_fitting_tree_and_the_cursor_of_a_long_one() {
+        let bounds = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(100.0, 80.0));
+        let view = egui::vec2(200.0, 100.0);
+        let cursor = egui::Rect::from_min_size(egui::pos2(900.0, 0.0), egui::vec2(10.0, 10.0));
+        assert_eq!(popup_start_rect(bounds, Some(cursor), view).center(), bounds.center(), "fits: the whole tree");
+        let long = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000.0, 80.0));
+        assert_eq!(popup_start_rect(long, Some(cursor), view).center(), cursor.center(), "does not fit: the cursor");
+        assert_eq!(popup_start_rect(long, None, view).center(), long.center(), "no cursor: the middle");
+        assert_eq!(popup_start_rect(long, Some(cursor), view).size(), view);
     }
 
     #[test]

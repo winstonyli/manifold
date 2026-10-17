@@ -703,6 +703,9 @@ pub(crate) struct CardPass<'a> {
     pub(crate) viewport: egui::Rect,
     /// Set to the rect of a card that gained keyboard focus this frame; the caller pans its camera to it.
     pub(crate) pan_target: Option<egui::Rect>,
+    /// Whether a virtual card that may be a drag source is carried by a press-drag on it (the graph); off in the trail
+    /// popup, where a drag pans.
+    pub(crate) carry: bool,
 }
 
 /// An outline on a keyboard-focused card or control, white so it reads differently from the gold
@@ -1118,7 +1121,7 @@ impl App {
         let slot = pass.order.iter().position(|o| o == id);
         // A card takes a drag (and so keeps the scene from panning under it) only if its kind may be picked up: a
         // stored card is moved by it, a virtual one carried (handled below).
-        let draggable = entry.caps().drag_source;
+        let draggable = entry.caps().drag_source && (stored || pass.carry);
         let focusable = slot == Some(0) || ui.memory(|m| m.has_focus(card_id));
         let sense = match (draggable, focusable) {
             (false, true) => egui::Sense::click(),
@@ -1315,7 +1318,7 @@ impl App {
         let still_hovered = self.link.connect_drag.is_none() && (pointer_on_card || control_hovered || handle_hovered);
         // A virtual card that is a `drag_source` is carried, never moved: its rect and the layout stay, a ghost
         // follows the pointer, and the release goes to its source (`VirtualSource::on_drop`).
-        let carried = !stored && entry.caps().drag_source;
+        let carried = !stored && entry.caps().drag_source && pass.carry;
         if carried && response.dragged() {
             self.interaction.dragging = Some(id.to_string());
             self.interaction.drag_moved = Vec::new();
