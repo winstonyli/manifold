@@ -1574,6 +1574,10 @@ impl App {
     /// title is empty (live or unloaded alike, via `listed_tab`) -- factored
     /// out so `build_quick_switcher`'s row loop and its own test agree on
     /// exactly what a sleeping tab's row shows.
+    pub(crate) fn quick_switcher_row_url(&self, id: &str) -> Option<String> {
+        self.nodes.get(id)?.runtime.listed_tab().map(|(_, url)| url.to_owned())
+    }
+
     pub(crate) fn quick_switcher_row_label(&self, id: &str) -> Option<String> {
         let (title, url) = self.nodes.get(id)?.runtime.listed_tab()?;
         Some(if title.is_empty() { url.to_string() } else { title.to_string() })
@@ -1733,17 +1737,23 @@ impl App {
                     egui::ScrollArea::vertical().max_height(240.0).show(ui, |ui| {
                         for (i, id) in matches.iter().enumerate() {
                             let Some(label) = self.quick_switcher_row_label(id) else { continue };
-                            if is_live {
-                                if selectable_label(ui, i == selected_index, label).clicked() {
+                            let identity =
+                                self.row_identity(id, self.quick_switcher_row_url(id).as_deref().unwrap_or(""));
+                            let label = row_label(ui, &label);
+                            let row = if is_live {
+                                let row = selectable_label(ui, i == selected_index, label);
+                                if row.clicked() {
                                     jump_to = Some(id.clone());
                                 }
+                                row
                             } else {
                                 // Non-interactive while closing --
                                 // clicking a row already fading out
                                 // would be a confusing "did that even
                                 // do anything" moment.
-                                ui.add_enabled(false, egui::Button::selectable(i == selected_index, label));
-                            }
+                                ui.add_enabled(false, egui::Button::selectable(i == selected_index, label))
+                            };
+                            paint_row_icon(ui, row.rect, identity);
                         }
                     });
                 });

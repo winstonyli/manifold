@@ -121,6 +121,36 @@ impl App {
     }
 }
 
+/// Room a list row keeps before its text for its icon, in points: the icon and a gap.
+const ROW_ICON_ROOM: f32 = 22.0;
+
+/// `label` for a list row with room before it for `paint_row_icon`.
+pub(crate) fn row_label(ui: &egui::Ui, label: &str) -> egui::WidgetText {
+    let mut job = egui::text::LayoutJob::default();
+    let format = egui::TextFormat {
+        font_id: egui::TextStyle::Button.resolve(ui.style()),
+        color: egui::Color32::PLACEHOLDER,
+        ..Default::default()
+    };
+    job.append(label, ROW_ICON_ROOM, format);
+    job.into()
+}
+
+/// Paints `identity` in the room `row_label` left at the left of a row's `rect`.
+pub(crate) fn paint_row_icon(ui: &egui::Ui, rect: egui::Rect, identity: Identity) {
+    let center = egui::pos2(rect.left() + ui.spacing().button_padding.x + FAVICON_SIZE.x / 2.0, rect.center().y);
+    if let Some(text) = identity.paint(ui, center, FAVICON_SIZE.x, 1.0, ui.visuals().weak_text_color()) {
+        text.draw(ui.painter(), text.center);
+    }
+}
+
+impl App {
+    /// The icon of a list row for the tab `id` showing `url`: its favicon, else the tile in its engine's color.
+    pub(crate) fn row_identity(&self, id: &str, url: &str) -> Identity {
+        self.tab_identity(url, false, self.mirror.view_kind(id))
+    }
+}
+
 /// The dark or the light ink, whichever reads better on `fill` (relative luminance, sRGB).
 pub(crate) fn ink_on(fill: egui::Color32) -> egui::Color32 {
     let lin = |c: u8| {
@@ -224,6 +254,17 @@ mod tests {
         });
         output.textures_delta.clear();
         assert!(!output.shapes.is_empty(), "the spinner drew nothing");
+    }
+
+    #[test]
+    fn a_row_label_leaves_room_for_the_icon_before_its_text() {
+        let ctx = egui::Context::default();
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let egui::WidgetText::LayoutJob(job) = row_label(ui, "page") else { panic!("not a layout job") };
+            assert_eq!(job.sections[0].leading_space, ROW_ICON_ROOM);
+            const { assert!(ROW_ICON_ROOM > FAVICON_SIZE.x, "the icon must fit in the room") };
+        });
+        output.textures_delta.clear();
     }
 
     #[test]

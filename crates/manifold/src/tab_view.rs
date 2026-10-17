@@ -757,12 +757,21 @@ impl App {
                         let full_width = ui.available_width();
                         for (idx, suggestion) in combined.iter().enumerate() {
                             let highlighted = self.address_bar.highlighted == Some(idx);
-                            let mut button =
-                                egui::Button::new(suggestion.label()).truncate().min_size(egui::vec2(full_width, 0.0));
+                            let identity = match suggestion {
+                                Suggestion::OpenTab { tab_id, url, .. } => self.row_identity(tab_id, url),
+                                Suggestion::Search { .. } => {
+                                    Identity::Glyph { glyph: egui_phosphor::light::MAGNIFYING_GLASS, color: None }
+                                }
+                            };
+                            let mut button = egui::Button::new(row_label(ui, &suggestion.label()))
+                                .truncate()
+                                .min_size(egui::vec2(full_width, 0.0));
                             if highlighted {
                                 button = button.fill(ACCENT);
                             }
-                            if ui.add(button).clicked() {
+                            let row = ui.add(button);
+                            paint_row_icon(ui, row.rect, identity);
+                            if row.clicked() {
                                 accepted = Some(suggestion.clone());
                             }
                         }
