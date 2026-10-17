@@ -299,10 +299,7 @@ impl Drop for ViewTab {
             // It has no frame file (frames arrive over TCP) and no cache dir.
             // A writer stuck on its socket stays blocked until the Linux side dies: closing the
             // socket on this side does not unblock a send on Windows (measured, wave 3b).
-            match std::thread::Builder::new()
-                .name("reap-webkit".into())
-                .spawn(move || reap_host(ViewKind::Webkit, child))
-            {
+            match std::thread::Builder::new().spawn(move || reap_host(ViewKind::Webkit, child)) {
                 Ok(reaper) => CACHE_REMOVALS.lock().unwrap_or_else(|e| e.into_inner()).push(reaper),
                 // Out of threads: the host got `Shutdown` and exits on its own; this is a drop, it cannot panic.
                 Err(e) => eprintln!("couldn't start the WebKit host reaper: {e}"),
