@@ -205,15 +205,26 @@ pub(crate) fn nav_row(ui: &egui::Ui, response: &egui::Response) {
     if response.has_focus() {
         focus_ring(ui, response);
         response.scroll_to_me(None);
-        ui.memory_mut(|m| {
-            m.set_focus_lock_filter(
-                response.id,
-                egui::EventFilter { tab: true, vertical_arrows: true, ..Default::default() },
-            )
-        });
     }
+    nav_stop(ui, std::slice::from_ref(&response.id));
+}
+
+/// One stop of the popup's Up/Down navigation made of several widgets (a row of swatches): any of `ids` focused is at
+/// the stop, Up/Down leave it, and entering it from a neighbour lands on its first widget. Left/Right inside it are
+/// egui's own. The caller draws the focus rings.
+pub(crate) fn nav_stop(ui: &egui::Ui, ids: &[egui::Id]) {
+    ui.memory_mut(|m| {
+        for id in ids {
+            if m.has_focus(*id) {
+                m.set_focus_lock_filter(
+                    *id,
+                    egui::EventFilter { tab: true, vertical_arrows: true, ..Default::default() },
+                );
+            }
+        }
+    });
     let key = list_rows_key(ui);
-    ui.data_mut(|d| d.get_temp_mut_or_default::<Vec<egui::Id>>(key).push(response.id));
+    ui.data_mut(|d| d.get_temp_mut_or_default::<Vec<Vec<egui::Id>>>(key).push(ids.to_vec()));
 }
 
 /// Makes `response` the row `list_row_nav` focuses when the popup opens, instead of the first.
@@ -247,7 +258,7 @@ pub(crate) fn popup_just_opened(ctx: &egui::Context, key: egui::Id, interactable
 /// focus between rows on Up/Down (wrapping, unless the rows are a window: `mark_list_partial`).
 pub(crate) fn list_row_nav(ui: &mut egui::Ui, interactable: bool) {
     let key = list_rows_key(ui);
-    let rows: Vec<egui::Id> = ui.data_mut(|d| d.remove_temp(key)).unwrap_or_default();
+    let rows: Vec<Vec<egui::Id>> = ui.data_mut(|d| d.remove_temp(key)).unwrap_or_default();
     let opens_on: Option<egui::Id> = ui.data_mut(|d| d.remove_temp::<Option<egui::Id>>(key.with("opens_on"))).flatten();
     let partial = ui.data_mut(|d| d.remove_temp::<bool>(key.with("partial"))).unwrap_or(false);
     let just_opened = popup_just_opened(ui.ctx(), key.with("was_open"), interactable);
@@ -255,10 +266,10 @@ pub(crate) fn list_row_nav(ui: &mut egui::Ui, interactable: bool) {
         return;
     }
     if just_opened {
-        ui.memory_mut(|m| m.request_focus(opens_on.unwrap_or(rows[0])));
+        ui.memory_mut(|m| m.request_focus(opens_on.unwrap_or(rows[0][0])));
         return;
     }
-    let Some(at) = rows.iter().position(|id| ui.memory(|m| m.has_focus(*id))) else { return };
+    let Some(at) = rows.iter().position(|stop| stop.iter().any(|id| ui.memory(|m| m.has_focus(*id)))) else { return };
     let (down, up) = ui.input_mut(|i| {
         (
             i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown),
@@ -286,7 +297,7 @@ pub(crate) fn list_row_nav(ui: &mut egui::Ui, interactable: bool) {
         None
     };
     if let Some(next) = next {
-        ui.memory_mut(|m| m.request_focus(rows[next]));
+        ui.memory_mut(|m| m.request_focus(rows[next][0]));
     }
 }
 
@@ -2324,6 +2335,54 @@ mod view_picker_tests {
         });
         output.textures_delta.clear(); // nothing uploads the font atlas here
         clicked
+    }
+
+    /// A popup of a row, a stop of three widgets (as the node menu's swatches) and a row: Up/Down walk the three stops,
+    /// wrapping, and entering the stop lands on its first widget.
+    #[test]
+    fn a_stop_of_several_widgets_is_one_step_of_up_and_down() {
+        let ctx = egui::Context::default();
+        theme::apply_fonts(&ctx);
+        theme::apply_style(&ctx);
+        let mut stops: Vec<Vec<egui::Id>> = Vec::new();
+        let mut frame = |events: Vec<egui::Event>| -> Option<usize> {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(600.0, 600.0))),
+                events,
+                ..Default::default()
+            };
+            let mut output = ctx.run_ui(input, |ui| {
+                let anchor = egui::Rect::from_min_size(egui::pos2(10.0, 10.0), egui::vec2(60.0, 20.0));
+                build_list_popup_frame(ui.ctx(), "test_stop", anchor, 100.0, 300.0, 1.0, true, |ui| {
+                    stops.clear();
+                    stops.push(vec![list_row(ui, "first").id]);
+                    let ids: Vec<egui::Id> = ui
+                        .horizontal(|ui| {
+                            (0..3)
+                                .map(|_| ui.allocate_exact_size(egui::Vec2::splat(14.0), egui::Sense::click()).1.id)
+                                .collect()
+                        })
+                        .inner;
+                    nav_stop(ui, &ids);
+                    stops.push(ids);
+                    stops.push(vec![list_row(ui, "last").id]);
+                });
+            });
+            output.textures_delta.clear();
+            let focused = |id: &egui::Id| ctx.memory(|m| m.has_focus(*id));
+            let at = stops.iter().position(|stop| stop.iter().any(focused))?;
+            // Entering the stop focuses its first widget.
+            assert!(at != 1 || focused(&stops[1][0]));
+            Some(at)
+        };
+        frame(vec![]);
+        assert_eq!(frame(vec![]), Some(0), "the popup opens on its first row");
+        for want in [1, 2, 0] {
+            frame(vec![key(egui::Key::ArrowDown)]);
+            assert_eq!(frame(vec![]), Some(want), "Down");
+        }
+        frame(vec![key(egui::Key::ArrowUp)]);
+        assert_eq!(frame(vec![]), Some(2), "Up wraps to the last stop");
     }
 
     /// A long History popup lays out only the rows in view. Down walks one entry at a time past the first view

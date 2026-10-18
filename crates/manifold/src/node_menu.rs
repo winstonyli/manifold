@@ -203,9 +203,6 @@ pub(crate) fn build_node_context_menu(
     rename: Option<(&mut String, bool, Option<&str>)>,
 ) -> (Option<NodeAction>, bool) {
     let mut action = None;
-    // The first item takes focus when the menu opens, so it can be driven from the keyboard.
-    let open_key = egui::Id::new((config.area_id, "was_open"));
-    let mut first_item = popup_just_opened(ui.ctx(), open_key, interactable);
     let anchor = egui::Rect::from_min_size(pos, egui::Vec2::ZERO);
     let area_rect = build_list_popup_frame(
         ui.ctx(),
@@ -236,22 +233,22 @@ pub(crate) fn build_node_context_menu(
             }
             if let Some(page) = config.page {
                 // A page: a Back row, then the one section it holds.
-                if menu_button(ui, "\u{2039} Back", None, &mut first_item).clicked() {
+                if menu_button(ui, "\u{2039} Back", None).clicked() {
                     action = Some(NodeAction::MenuBack);
                 }
                 menu_separator(ui);
                 match page {
-                    MenuPage::Color => draw_menu_item(ui, &NodeMenuItem::Colors, color, &mut first_item, &mut action),
+                    MenuPage::Color => draw_menu_item(ui, &NodeMenuItem::Colors, color, &mut action),
                     MenuPage::Jar => {
                         for item in &config.jar_page {
-                            draw_menu_item(ui, item, color, &mut first_item, &mut action);
+                            draw_menu_item(ui, item, color, &mut action);
                         }
                     }
                 }
                 return;
             }
             for item in &config.items {
-                draw_menu_item(ui, item, color, &mut first_item, &mut action);
+                draw_menu_item(ui, item, color, &mut action);
             }
         },
     );
@@ -264,12 +261,11 @@ fn draw_menu_item(
     ui: &mut egui::Ui,
     item: &NodeMenuItem,
     color: Option<egui::Color32>,
-    first_item: &mut bool,
     action: &mut Option<NodeAction>,
 ) {
     match item {
         NodeMenuItem::Button(label, item_action) => {
-            let mut response = menu_button(ui, *label, item_action.key_hint(), first_item);
+            let mut response = menu_button(ui, *label, item_action.key_hint());
             if let Some(text) = item_action.hover_text() {
                 response = response.on_hover_text(text);
             }
@@ -283,7 +279,7 @@ fn draw_menu_item(
                 let segs = crate::names::display_name(name, crate::names::UNTITLED);
                 let shown = crate::names::shorten(&segs, crate::names::ROW_UNITS);
                 let text = crate::names::name_job(ui, "Move into ", shown.as_deref().unwrap_or(&segs), "");
-                let mut response = menu_button(ui, text, None, first_item);
+                let mut response = menu_button(ui, text, None);
                 let hover = crate::names::name_hover(name, crate::names::ROW_UNITS, "", str::to_string);
                 if !hover.is_empty() {
                     response = response.on_hover_text(hover);
@@ -304,7 +300,7 @@ fn draw_menu_item(
                     text.append("", MenuGrid::MARKER_SLOT, plain.clone());
                     row.name.append_to(&mut text, font, ui.visuals().weak_text_color());
                     // The current jar is the selected row: no tick to widen it.
-                    let response = menu_row(ui, text, None, first_item, row.ticked);
+                    let response = menu_row(ui, text, None, row.ticked);
                     let dot = grid.marker_center(response.rect);
                     // The default jar has no colour: an outlined dot.
                     match row.color {
@@ -325,7 +321,7 @@ fn draw_menu_item(
         NodeMenuItem::Edges(rows) => {
             menu_section(ui, "Links", |ui, _| {
                 for row in rows {
-                    let mut response = menu_button(ui, row.label.as_str(), None, first_item);
+                    let mut response = menu_button(ui, row.label.as_str(), None);
                     if let Some(hover) = &row.hover {
                         response = response.on_hover_text(hover);
                     }
@@ -336,7 +332,7 @@ fn draw_menu_item(
             });
         }
         NodeMenuItem::Page(label, page) => {
-            if menu_button(ui, *label, None, first_item).clicked() {
+            if menu_button(ui, *label, None).clicked() {
                 *action = Some(NodeAction::OpenPage(*page));
             }
         }
@@ -400,14 +396,9 @@ fn menu_section<R>(ui: &mut egui::Ui, heading: &str, body: impl FnOnce(&mut egui
     out
 }
 
-/// A menu row; takes focus when `first_item` is set (clearing it), and shows the focus ring.
-fn menu_button(
-    ui: &mut egui::Ui,
-    label: impl Into<egui::WidgetText>,
-    key: Option<&str>,
-    first_item: &mut bool,
-) -> egui::Response {
-    menu_row(ui, label, key, first_item, false)
+/// A menu row, a stop of the menu's keyboard navigation (`nav_row`).
+fn menu_button(ui: &mut egui::Ui, label: impl Into<egui::WidgetText>, key: Option<&str>) -> egui::Response {
+    menu_row(ui, label, key, false)
 }
 
 /// `menu_button`, drawn selected when `selected` (the current choice in a list of rows).
@@ -415,7 +406,6 @@ fn menu_row(
     ui: &mut egui::Ui,
     label: impl Into<egui::WidgetText>,
     key: Option<&str>,
-    first_item: &mut bool,
     selected: bool,
 ) -> egui::Response {
     // As wide as the menu so far, so a key hint lands at the row's right edge.
@@ -434,12 +424,7 @@ fn menu_row(
             ui.add(button)
         })
         .inner;
-    if std::mem::take(first_item) {
-        response.request_focus();
-    }
-    if response.has_focus() {
-        focus_ring(ui, &response);
-    }
+    nav_row(ui, &response);
     response
 }
 
@@ -452,6 +437,7 @@ pub(crate) fn color_swatch_row(ui: &mut egui::Ui, current: Option<egui::Color32>
         ui.horizontal(|ui| {
             ui.add_space(grid.margin);
             ui.spacing_mut().item_spacing.x = MenuGrid::MARKER_GAP;
+            let mut swatches = Vec::new();
             for choice in TAG_COLOR_PALETTE.iter().copied().map(Some).chain([None]) {
                 let (rect, response) =
                     ui.allocate_exact_size(egui::Vec2::splat(MenuGrid::MARKER_SLOT), egui::Sense::click());
@@ -459,6 +445,7 @@ pub(crate) fn color_swatch_row(ui: &mut egui::Ui, current: Option<egui::Color32>
                 if response.has_focus() {
                     focus_ring(ui, &response);
                 }
+                swatches.push(response.id);
                 match choice {
                     Some(swatch) => {
                         ui.painter().circle_filled(rect.center(), 7.0, swatch);
@@ -483,6 +470,7 @@ pub(crate) fn color_swatch_row(ui: &mut egui::Ui, current: Option<egui::Color32>
                 }
             }
             ui.add_space(grid.margin - MenuGrid::MARKER_GAP);
+            nav_stop(ui, &swatches);
         })
     });
     picked

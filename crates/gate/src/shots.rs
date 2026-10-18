@@ -1131,17 +1131,21 @@ impl Shots {
                     send!(s, AWAY, "SLEEP 1")?;
                 }
             }
-            // The Lists buttons on the settings page (fixed layout at the default size).
-            for (view, x) in [("popup-bookmarks", 75), ("popup-history", 190), ("popup-downloads", 310)] {
+            // The Lists popups, opened by name (the buttons' place on the page moves with the sections above them).
+            for (view, name) in
+                [("popup-bookmarks", "bookmarks"), ("popup-history", "history"), ("popup-downloads", "downloads")]
+            {
                 if s.has(view) {
-                    send!(s, format!("CLICK {x} 677"), "SLEEP 1")?;
+                    send!(s, format!("TOGGLEPOPUP {name}"), "SLEEP 1")?;
                     s.shot(view)?;
                     send!(s, AWAY, "SLEEP 1")?;
                 }
             }
-            for (view, x) in [("tab-popup", 75), ("tab-popup-history", 190), ("tab-popup-downloads", 310)] {
+            for (view, name) in
+                [("tab-popup", "bookmarks"), ("tab-popup-history", "history"), ("tab-popup-downloads", "downloads")]
+            {
                 if s.has(view) {
-                    send!(s, format!("CLICK {x} 677"), "SLEEP 1")?;
+                    send!(s, format!("TOGGLEPOPUP {name}"), "SLEEP 1")?;
                     s.tab_scan(view.trim_start_matches("tab-"), 6, 1000)?;
                     send!(s, AWAY, "SLEEP 1")?;
                 }
