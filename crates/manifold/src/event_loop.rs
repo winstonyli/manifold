@@ -252,11 +252,7 @@ impl ApplicationHandler<UserEvent> for App {
             }
             event_loop.set_control_flow(ControlFlow::WaitUntil(self.pacing.next_idle_frame));
         } else if !self.headless {
-            let due = if crate::gpu::PRESENT_MODE == wgpu::PresentMode::Fifo {
-                None
-            } else {
-                Some(self.pacing.last_present + self.frame_interval())
-            };
+            let due = if self.present_blocks() { None } else { Some(self.pacing.last_present + self.frame_interval()) };
             match due.filter(|d| std::time::Instant::now() < *d) {
                 Some(due) => event_loop.set_control_flow(ControlFlow::WaitUntil(due)),
                 None => {
@@ -612,7 +608,7 @@ impl ApplicationHandler<UserEvent> for App {
 
                 self.render_frame(egui_output);
                 self.pacing.last_present = std::time::Instant::now();
-                if !self.is_idle() && crate::gpu::PRESENT_MODE == wgpu::PresentMode::Fifo {
+                if !self.is_idle() && self.present_blocks() {
                     if let Some(window) = &self.window {
                         window.request_redraw();
                     }
@@ -675,7 +671,7 @@ impl App {
         self.drain_tab_events();
         // A non-blocking present mode leaves the active loop waiting out its frame interval; a page's own frame
         // draws at once instead (the page's frame rate bounds how often).
-        if crate::gpu::PRESENT_MODE != wgpu::PresentMode::Fifo {
+        if !self.present_blocks() {
             if let Some(window) = &self.window {
                 window.request_redraw();
             }
@@ -702,6 +698,11 @@ impl App {
     /// happened for `IDLE_AFTER`, and no view transition is under way.
     fn is_idle(&self) -> bool {
         !self.headless && self.transition.is_none() && self.pacing.last_activity.elapsed() >= IDLE_AFTER
+    }
+
+    /// Whether a present blocks (`Fifo`), so the loop needs no cap of its own; true before the GPU exists.
+    fn present_blocks(&self) -> bool {
+        self.gpu.as_ref().is_none_or(GpuState::present_blocks)
     }
 
     /// The monitor's refresh interval (60 Hz when unknown), re-read at most once a second.

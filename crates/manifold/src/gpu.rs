@@ -1,7 +1,8 @@
 use std::collections::{HashMap, HashSet};
-/// The surface's present mode. `Fifo` throttles the redraw loop by blocking in present; any other mode leaves the loop
-/// to cap itself (`FramePacing::frame_interval`).
-pub(crate) const PRESENT_MODE: wgpu::PresentMode = wgpu::PresentMode::Fifo;
+/// The present mode asked for: `Fifo`, or `Immediate`, which shows a frame without queueing it behind a vsync (key to
+/// screen 33 ms against 100, README "View latency, measured") but fails the gate's layout stage (PARKED.md). The surface
+/// falls back to `Fifo`, which every backend supports, when it lacks the mode.
+const PREFERRED_PRESENT_MODE: wgpu::PresentMode = wgpu::PresentMode::Fifo;
 
 use std::sync::Arc;
 
@@ -278,6 +279,11 @@ fn downsample_pipeline(
 }
 
 impl GpuState {
+    /// Whether presenting blocks until the display takes the frame (`Fifo`); if not, the redraw loop paces itself.
+    pub fn present_blocks(&self) -> bool {
+        self.config.present_mode == wgpu::PresentMode::Fifo
+    }
+
     pub fn new(window: Arc<Window>) -> Self {
         let size = window.inner_size();
         // `backends` explicitly restricted to `PRIMARY` (Vulkan/Metal/DX12/
@@ -336,6 +342,11 @@ impl GpuState {
         let surface_format =
             surface_caps.formats.iter().copied().find(|f| f.is_srgb()).unwrap_or(surface_caps.formats[0]);
 
+        let present_mode = if surface_caps.present_modes.contains(&PREFERRED_PRESENT_MODE) {
+            PREFERRED_PRESENT_MODE
+        } else {
+            wgpu::PresentMode::Fifo
+        };
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             // Deliberately *not* also `COPY_SRC` here: some backends'
@@ -348,17 +359,13 @@ impl GpuState {
             format: surface_format,
             width: size.width.max(1),
             height: size.height.max(1),
-            // `Fifo` (vsync-locked) explicitly, not `surface_caps.
-            // present_modes[0]` -- that was an unexamined "whatever the
-            // backend happens to list first" default, and wgpu doesn't
-            // guarantee that ordering puts a throttled mode first. This
-            // app's winit loop runs `ControlFlow::Poll` (continuous
-            // redraw -- see `App`'s own doc comment on why), so an
-            // untethered `Immediate`/`Mailbox` surface would let that
-            // loop present fully uncapped, burning far more GPU/CPU than
-            // intended. `Fifo` is the one mode every backend is required
-            // to support, so this needs no fallback.
-            present_mode: PRESENT_MODE,
+            // Named explicitly, not `surface_caps.present_modes[0]`: wgpu doesn't
+            // guarantee that ordering puts the mode we want first. Only `Fifo`
+            // blocks in present, so the winit loop (`ControlFlow::Poll`, a
+            // continuous redraw -- see `App`'s own doc comment) throttles itself
+            // for any other mode (`FramePacing::frame_interval`); without that
+            // it would present uncapped.
+            present_mode,
             alpha_mode: surface_caps.alpha_modes[0],
             view_formats: vec![],
             // One frame queued, not two: key-to-screen measured 99-100 ms against 100 or 116 ms (scripts/keylat.ps1, README).
