@@ -2220,6 +2220,36 @@ mod tests {
         assert!(app.interaction.selected.is_empty(), "with no field focused, Escape is the graph's");
     }
 
+    /// Arrow presses that land in one frame (a slow frame, a key repeat) each move the graph focus one node.
+    #[test]
+    fn two_arrow_presses_in_one_frame_move_the_graph_focus_two_nodes() {
+        use crate::session_sync::tests::sleeping_tab;
+        use crate::store::model::Kind;
+        let mut app = App::default();
+        let ids: Vec<String> = (0..3).map(|_| app.alloc_node_id()).collect();
+        for (i, id) in ids.iter().enumerate() {
+            let tab = sleeping_tab(&format!("https://{i}.test/"), &format!("t{i}"));
+            app.insert_placeholder_node(id.clone(), egui::vec2(100.0 + 200.0 * i as f32, 0.0), Kind::Tab, tab);
+        }
+        app.focused = Some(ids[0].clone());
+        let ctx = egui::Context::default();
+        let key = egui::Event::Key {
+            key: egui::Key::ArrowRight,
+            physical_key: Some(egui::Key::ArrowRight),
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        };
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(400.0, 400.0))),
+            events: vec![key.clone(), key],
+            ..Default::default()
+        };
+        let mut output = ctx.run_ui(input, |ui| app.handle_graph_keys(ui, false));
+        output.textures_delta.clear();
+        assert_eq!(app.focused.as_deref(), Some(ids[2].as_str()));
+    }
+
     /// L1: a selected id with no card (its tab mid-crash-respawn or mid-engine-swap) is left out of the centroid,
     /// not counted in it.
     #[test]
