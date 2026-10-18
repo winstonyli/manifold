@@ -357,7 +357,8 @@ impl GpuState {
             present_mode: wgpu::PresentMode::Fifo,
             alpha_mode: surface_caps.alpha_modes[0],
             view_formats: vec![],
-            desired_maximum_frame_latency: 2,
+            // One frame queued, not two: key-to-screen measured 99-100 ms against 100 or 116 ms (scripts/keylat.ps1, README).
+            desired_maximum_frame_latency: 1,
             color_space: wgpu::SurfaceColorSpace::Auto,
         };
         surface.configure(&device, &config);
