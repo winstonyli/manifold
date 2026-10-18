@@ -361,13 +361,21 @@ impl Shots {
         Ok(())
     }
 
-    /// Whether a menu or popup is open (the key hint beside a keyboard-focused card does not count).
-    fn menu_open(&mut self) -> io::Result<bool> {
+    /// The rect `[x0, y0, x1, y1]` of the open menu or popup, if any (the key hint beside a keyboard-focused card does
+    /// not count).
+    fn popup_rect(&mut self) -> io::Result<Option<[f64; 4]>> {
         let st = self.state()?;
-        let open = st.0["popups"]
+        let popup = st.0["popups"]
             .as_array()
-            .is_some_and(|list| list.iter().any(|p| p["id"].as_str().is_some_and(|id| !id.contains("card_key_hint"))));
-        Ok(open)
+            .and_then(|list| list.iter().find(|p| p["id"].as_str().is_some_and(|id| !id.contains("card_key_hint"))));
+        Ok(popup.and_then(|p| {
+            let r = p["rect"].as_array()?;
+            Some([r[0].as_f64()?, r[1].as_f64()?, r[2].as_f64()?, r[3].as_f64()?])
+        }))
+    }
+
+    fn menu_open(&mut self) -> io::Result<bool> {
+        Ok(self.popup_rect()?.is_some())
     }
 
     fn editing(&mut self) -> io::Result<bool> {
@@ -1172,7 +1180,12 @@ impl Shots {
                     s.shot(view)?;
                     if view == "popup-history" {
                         // The filter narrows the list, and Down from the field focuses the first match.
-                        send!(s, "CLICK 300 889", "SLEEP 1", "EGUITEXT wiki", "SLEEP 1")?;
+                        // The filter field is the popup's first row.
+                        let Some([x0, y0, ..]) = s.popup_rect()? else {
+                            check("The History popup is open", false);
+                            return s.reset();
+                        };
+                        send!(s, format!("CLICK {} {}", x0 + 40.0, y0 + 13.0), "SLEEP 1", "EGUITEXT wiki", "SLEEP 1")?;
                         // A shot forces the frame that `rows` is read from (see PARKED.md, headless debug keys).
                         s.shot("popup-history-typed")?;
                         let rows = s.state()?.0["rows"].clone();
