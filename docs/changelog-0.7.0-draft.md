@@ -1,8 +1,10 @@
 status: draft
 
-Draft of the v0.7.0 entry, for the bump commit to move into `CHANGELOG.md` (delete this file then). Written 2026-10-18 from `git log v0.6.0..HEAD` (137 commits at a396333). Format versions are unchanged since v0.6.0 (`PROTOCOL_VERSION` 4, `RENDER_PROTOCOL_VERSION` 1, journal `FORMAT_VERSION` 2, local `FORMAT_VERSION` 1), so no format line. Commit links are added at the bump.
+Draft of the v0.7.0 entry, for the bump commit to move into `CHANGELOG.md` (delete this file then). Written 2026-10-18 from `git log v0.6.0..HEAD` (137 commits at a396333) and the v0.6.1 text unreserved in 7126a5e (still in d94a780), folded in here. Format versions are unchanged since v0.6.0 (`PROTOCOL_VERSION` 4, `RENDER_PROTOCOL_VERSION` 1, journal `FORMAT_VERSION` 2, local `FORMAT_VERSION` 1), so no format line. Commit links are added at the bump.
 
 ## 0.7.0 - YYYY-MM-DD
+
+*v0.6.0 was tagged but never released; v0.7.0 is the first release with its changes.*
 
 ### Changed
 
@@ -31,7 +33,9 @@ Draft of the v0.7.0 entry, for the bump commit to move into `CHANGELOG.md` (dele
 
 ### Internal
 
-- Release from GitHub Actions: host pins carry a source fingerprint, `hosts.yml` builds engine hosts by it, `release.yml` leaves a draft release on a tag, and `scripts/release.sh` is gone.
+- Release from GitHub Actions: pushing a `vX.Y.Z` tag runs `release.yml`, which checks the tag (`gate release-check`), builds the embedded WebView2 host and PDF view and `manifold.exe`, runs `gate package` and `gate release-verify`, and leaves a draft release; `scripts/release.sh` is gone.
+- Name engine hosts by a source fingerprint: `hosts.yml` builds a host when its sources change and publishes it as `hosts-KIND-FINGERPRINT`, the pin table points at that release, and `gate host-pin --check` (run in CI) fails on a stale pin. `PIN_VERSION` is removed: host and app agree through `PROTOCOL_VERSION`.
+- Build only CEF in CI so far; Servo and WebKit read Unavailable in this release until their workflows land.
 - Rename the `ipc-protocol` crate to `manifold-view-protocol`.
 - Add virtual cards (a `VirtualSource` and per-kind `Caps`) under the trail strip, one `Identity` painter and favicon lookup, one URL splitter, one tree layout shared by the JSON level and the trail, and shared graph camera pieces.
 - Add gate checks for the trail's favicon and dropdown, filter typing in the History popup (`popup-history`) and the node menu walked by keyboard (`graph-menu-key`); the debug command `GRAPHZOOM`, and `recentlyclosed` and `back|forward` for `TOGGLEPOPUP`; and `EXPORTSTATE` rows that carry `selected`.
