@@ -710,20 +710,15 @@ impl App {
 
         let area = egui::Area::new(egui::Id::new("context_menu"))
             .fixed_pos(egui::pos2(menu.x, menu.y))
-            .order(egui::Order::Foreground)
-            .interactable(current.is_some())
-            .show(ui.ctx(), |ui| {
-                ui.set_opacity(fade);
-                popup_frame(ui).show(ui, |ui| {
-                    menu_item_style(ui);
-                    if ui.button("Open in new tab").clicked() {
-                        open_tab = true;
-                        close = true;
-                    }
-                });
-            });
+            .interactable(current.is_some());
+        let area = menu_popup(ui.ctx(), area, fade, |ui| {
+            if ui.button("Open in new tab").clicked() {
+                open_tab = true;
+                close = true;
+            }
+        });
 
-        let clicked_outside = clicked_outside_popup(ui, area.response.rect, None);
+        let clicked_outside = clicked_outside_popup(ui, area.rect, None);
         if clicked_outside {
             close = true;
         }

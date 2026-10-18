@@ -747,41 +747,36 @@ impl App {
         let color = view.and_then(|v| v.get(&pointer)).and_then(|o| o.color).map(rgb);
         let mut close = false;
         let mut edit = None;
-        let area = egui::Area::new(egui::Id::new("json_context_menu"))
-            .order(egui::Order::Foreground)
-            .fixed_pos(pos)
-            .show(ui.ctx(), |ui| {
-                popup_frame(ui).show(ui, |ui| {
-                    menu_item_style(ui);
-                    ui.set_min_width(150.0);
-                    for (label, what) in
-                        [("Copy value", CopyWhat::Value), ("Copy key", CopyWhat::Key), ("Copy path", CopyWhat::Path)]
-                    {
-                        // The root has no key.
-                        if what == CopyWhat::Key && pointer.is_empty() {
-                            continue;
-                        }
-                        if ui.button(label).clicked() {
-                            self.copy_json(ui.ctx(), Some(&pointer), what);
-                            close = true;
-                        }
-                    }
-                    if let Some(collapsed) = collapsed {
-                        menu_separator(ui);
-                        if ui.button(if collapsed { "Expand" } else { "Collapse" }).clicked() {
-                            edit = Some(JsonEdit::Toggle(pointer.clone()));
-                            close = true;
-                        }
-                    }
-                    if is_card {
-                        if let Some(picked) = color_swatch_row(ui, color) {
-                            edit = Some(JsonEdit::Color(pointer.clone(), picked.map(rgb_u32)));
-                            close = true;
-                        }
-                    }
-                });
-            });
-        if area.response.clicked_elsewhere() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+        let area = egui::Area::new(egui::Id::new("json_context_menu")).fixed_pos(pos);
+        let area = menu_popup(ui.ctx(), area, 1.0, |ui| {
+            ui.set_min_width(150.0);
+            for (label, what) in
+                [("Copy value", CopyWhat::Value), ("Copy key", CopyWhat::Key), ("Copy path", CopyWhat::Path)]
+            {
+                // The root has no key.
+                if what == CopyWhat::Key && pointer.is_empty() {
+                    continue;
+                }
+                if ui.button(label).clicked() {
+                    self.copy_json(ui.ctx(), Some(&pointer), what);
+                    close = true;
+                }
+            }
+            if let Some(collapsed) = collapsed {
+                menu_separator(ui);
+                if ui.button(if collapsed { "Expand" } else { "Collapse" }).clicked() {
+                    edit = Some(JsonEdit::Toggle(pointer.clone()));
+                    close = true;
+                }
+            }
+            if is_card {
+                if let Some(picked) = color_swatch_row(ui, color) {
+                    edit = Some(JsonEdit::Color(pointer.clone(), picked.map(rgb_u32)));
+                    close = true;
+                }
+            }
+        });
+        if area.clicked_elsewhere() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
             close = true;
         }
         if let Some(edit) = edit {

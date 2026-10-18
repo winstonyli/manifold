@@ -1914,18 +1914,15 @@ impl App {
         let id = egui::Id::new("pending_new_node_menu");
         // The right-click that opens the menu is still this frame's click: it must not dismiss it.
         let opened_now = ui.ctx().memory(|m| m.area_rect(id)).is_none();
-        let area = egui::Area::new(id).fixed_pos(screen_pos).order(egui::Order::Foreground).show(ui.ctx(), |ui| {
-            popup_frame(ui).show(ui, |ui| {
-                menu_item_style(ui);
-                ui.set_min_width(150.0);
-                tab = ui.button(format!("{} New Tab", egui_phosphor::light::PLUS)).clicked();
-                note = ui.button(format!("{} New Note", egui_phosphor::light::NOTE_PENCIL)).clicked();
-                group = ui.button(format!("{} New Group", egui_phosphor::light::FOLDER_PLUS)).clicked();
-                // A real picker blocks on OS/human input, which headless mode has neither of.
-                if !self.headless {
-                    file = ui.button(format!("{} Add File...", egui_phosphor::light::FILE_PLUS)).clicked();
-                }
-            });
+        let area = menu_popup(ui.ctx(), egui::Area::new(id).fixed_pos(screen_pos), 1.0, |ui| {
+            ui.set_min_width(150.0);
+            tab = ui.button(format!("{} New Tab", egui_phosphor::light::PLUS)).clicked();
+            note = ui.button(format!("{} New Note", egui_phosphor::light::NOTE_PENCIL)).clicked();
+            group = ui.button(format!("{} New Group", egui_phosphor::light::FOLDER_PLUS)).clicked();
+            // A real picker blocks on OS/human input, which headless mode has neither of.
+            if !self.headless {
+                file = ui.button(format!("{} Add File...", egui_phosphor::light::FILE_PLUS)).clicked();
+            }
         });
         if tab {
             actions.push(GraphAction::NewTab(self.focused.clone()));
@@ -1936,7 +1933,7 @@ impl App {
         } else if file {
             actions.push(GraphAction::NewFile(pos));
         }
-        if tab || note || group || file || !opened_now && clicked_outside_popup(ui, area.response.rect, None) {
+        if tab || note || group || file || !opened_now && clicked_outside_popup(ui, area.rect, None) {
             self.interaction.pending_new_node = None;
         }
     }

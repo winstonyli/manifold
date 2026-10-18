@@ -105,33 +105,44 @@ pub(crate) fn build_list_popup_frame(
     interactable: bool,
     add_contents: impl FnOnce(&mut egui::Ui),
 ) -> egui::Rect {
-    egui::Area::new(egui::Id::new(id))
-        .fixed_pos(anchor_rect.left_bottom())
-        .order(egui::Order::Foreground)
-        .interactable(interactable)
+    let area = egui::Area::new(egui::Id::new(id)).fixed_pos(anchor_rect.left_bottom()).interactable(interactable);
+    menu_popup(ctx, area, fade, |ui| {
+        ui.set_min_width(min_width);
+        // An infinite cap makes egui lay out NaN rects; no cap
+        // lets the area size to its contents.
+        if max_width.is_finite() {
+            ui.set_max_width(max_width);
+        }
+        // A list taller than the window scrolls instead of running off it.
+        let fit = ctx.content_rect().height() - 2.0 * POPUP_WINDOW_MARGIN;
+        // The area lays its contents out inside its last size: without this a list that grew since (another page
+        // of the same menu) stays clipped to the old height.
+        ui.set_max_height(fit.max(120.0));
+        // A solid scrollbar, not the floating one that hides until hovered: it says there is more below.
+        ui.spacing_mut().scroll = egui::style::ScrollStyle::solid();
+        egui::ScrollArea::vertical().max_height(fit.max(120.0)).show(ui, add_contents);
+        list_row_nav(ui, interactable);
+    })
+    .rect
+}
+
+/// The shell of every menu-like popup: `area` (the caller sets its id, position and `interactable`) on the foreground
+/// layer at opacity `fade`, in the popup frame with menu item styling. Returns the area's response, for its rect.
+pub(crate) fn menu_popup(
+    ctx: &egui::Context,
+    area: egui::Area,
+    fade: f32,
+    add_contents: impl FnOnce(&mut egui::Ui),
+) -> egui::Response {
+    area.order(egui::Order::Foreground)
         .show(ctx, |ui| {
             ui.set_opacity(fade);
             popup_frame(ui).show(ui, |ui| {
                 menu_item_style(ui);
-                ui.set_min_width(min_width);
-                // An infinite cap makes egui lay out NaN rects; no cap
-                // lets the area size to its contents.
-                if max_width.is_finite() {
-                    ui.set_max_width(max_width);
-                }
-                // A list taller than the window scrolls instead of running off it.
-                let fit = ctx.content_rect().height() - 2.0 * POPUP_WINDOW_MARGIN;
-                // The area lays its contents out inside its last size: without this a list that grew since (another page
-                // of the same menu) stays clipped to the old height.
-                ui.set_max_height(fit.max(120.0));
-                // A solid scrollbar, not the floating one that hides until hovered: it says there is more below.
-                ui.spacing_mut().scroll = egui::style::ScrollStyle::solid();
-                egui::ScrollArea::vertical().max_height(fit.max(120.0)).show(ui, add_contents);
-                list_row_nav(ui, interactable);
+                add_contents(ui)
             });
         })
         .response
-        .rect
 }
 
 fn list_rows_key(ui: &egui::Ui) -> egui::Id {
@@ -1263,52 +1274,43 @@ impl App {
         let all_pinned = !tab_pin_states.is_empty() && tab_pin_states.iter().all(|&p| p);
         let area = egui::Area::new(egui::Id::new("tab_actions_popup"))
             .fixed_pos(anchor_rect.left_bottom())
-            .order(egui::Order::Foreground)
-            .interactable(self.menus.open_popup == Some(AnchoredPopup::TabActions))
-            .show(ui.ctx(), |ui| {
-                ui.set_opacity(fade);
-                popup_frame(ui).show(ui, |ui| {
-                    menu_item_style(ui);
-                    ui.set_min_width(200.0);
-                    let rows: [TabActionRow; 5] = [
-                        (if focused_pinned { "Unpin" } else { "Pin" }, "Ctrl+P", App::pin_focused_tab_shortcut),
-                        ("Duplicate", "Ctrl+D", App::duplicate_focused_tab_shortcut),
-                        ("Find in Page", "Ctrl+F", App::open_find_bar_shortcut),
-                        ("Developer Tools", "F12", App::open_devtools_shortcut),
-                        ("Close Tab", "Ctrl+W", App::close_focused_tab_shortcut),
-                    ];
-                    for (label, keys, action) in rows {
-                        if ui
-                            .add(
-                                egui::Button::new(label)
-                                    .shortcut_text(keys)
-                                    .min_size(egui::vec2(ui.min_rect().width(), 0.0)),
-                            )
-                            .clicked()
-                        {
-                            tab_action = Some(action);
-                            close = true;
-                        }
-                    }
-                    menu_separator(ui);
-                    if ui.button("Mute Others").on_hover_text("Mute every other open tab").clicked() {
-                        mute_others = true;
-                        close = true;
-                    }
-                    if ui.button("Close Others").on_hover_text("Close every other open tab").clicked() {
-                        close_others = true;
-                        close = true;
-                    }
-                    let label = if all_pinned { "Unpin All" } else { "Pin All" };
-                    let hover = if all_pinned { "Unpin every open tab" } else { "Pin every open tab" };
-                    if ui.button(label).on_hover_text(hover).clicked() {
-                        toggle_pin_all = true;
-                        close = true;
-                    }
-                });
-            });
+            .interactable(self.menus.open_popup == Some(AnchoredPopup::TabActions));
+        let area = menu_popup(ui.ctx(), area, fade, |ui| {
+            ui.set_min_width(200.0);
+            let rows: [TabActionRow; 5] = [
+                (if focused_pinned { "Unpin" } else { "Pin" }, "Ctrl+P", App::pin_focused_tab_shortcut),
+                ("Duplicate", "Ctrl+D", App::duplicate_focused_tab_shortcut),
+                ("Find in Page", "Ctrl+F", App::open_find_bar_shortcut),
+                ("Developer Tools", "F12", App::open_devtools_shortcut),
+                ("Close Tab", "Ctrl+W", App::close_focused_tab_shortcut),
+            ];
+            for (label, keys, action) in rows {
+                if ui
+                    .add(egui::Button::new(label).shortcut_text(keys).min_size(egui::vec2(ui.min_rect().width(), 0.0)))
+                    .clicked()
+                {
+                    tab_action = Some(action);
+                    close = true;
+                }
+            }
+            menu_separator(ui);
+            if ui.button("Mute Others").on_hover_text("Mute every other open tab").clicked() {
+                mute_others = true;
+                close = true;
+            }
+            if ui.button("Close Others").on_hover_text("Close every other open tab").clicked() {
+                close_others = true;
+                close = true;
+            }
+            let label = if all_pinned { "Unpin All" } else { "Pin All" };
+            let hover = if all_pinned { "Unpin every open tab" } else { "Pin every open tab" };
+            if ui.button(label).on_hover_text(hover).clicked() {
+                toggle_pin_all = true;
+                close = true;
+            }
+        });
 
-        let clicked_outside = clicked_outside_popup(ui, area.response.rect, Some(anchor_rect));
+        let clicked_outside = clicked_outside_popup(ui, area.rect, Some(anchor_rect));
 
         if let Some(action) = tab_action {
             action(self);

@@ -5,8 +5,9 @@ use crate::card::{CardBody, DropEffect};
 use crate::identity::{Identity, ICON_SIZE_SMALL};
 use crate::level::{CardEntry, EdgeCurve, EdgeKind, LevelEdge, Origin};
 use crate::nav_history::TrailPage;
+use crate::popups::menu_popup;
 use crate::store::model::TYPE_TRAIL_PAGE;
-use crate::theme::{menu_item_style, popup_frame, ACCENT, SURFACE_HOVER, TEXT_PRIMARY, TEXT_WEAK};
+use crate::theme::{ACCENT, SURFACE_HOVER, TEXT_PRIMARY, TEXT_WEAK};
 use crate::tree_layout::{tree_layout, TreeNode};
 use crate::virtual_source::VirtualSource;
 use crate::{App, CardKind, GraphAction};
@@ -167,21 +168,14 @@ impl App {
             return;
         };
         let mut chosen = false;
-        let area = egui::Area::new(egui::Id::new("trail_page_menu"))
-            .order(egui::Order::Foreground)
-            .fixed_pos(pos)
-            .show(ui.ctx(), |ui| {
-                popup_frame(ui).show(ui, |ui| {
-                    menu_item_style(ui);
-                    chosen = page_menu_items(ui);
-                });
-            });
+        let area = egui::Area::new(egui::Id::new("trail_page_menu")).fixed_pos(pos);
+        let area = menu_popup(ui.ctx(), area, 1.0, |ui| chosen = page_menu_items(ui));
         if chosen {
             self.open_branch_as_card(&tab, page, None);
         }
         // The right-click that opened the menu is, to a menu not yet laid out, a click elsewhere.
         let opening_click = ui.input(|i| i.pointer.interact_pos()) == Some(pos);
-        let elsewhere = area.response.clicked_elsewhere() && !opening_click;
+        let elsewhere = area.clicked_elsewhere() && !opening_click;
         if chosen || elsewhere || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
             self.menus.trail_menu = None;
         }
