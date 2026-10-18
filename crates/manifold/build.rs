@@ -1,7 +1,9 @@
 //! Embeds the WebView2 host and the PDF view in `manifold.exe` when `MANIFOLD_WEBVIEW2_HOST` / `MANIFOLD_PDFIUM_HOST`
 //! name a file (`release.yml` sets them); every other build embeds an empty stub, so dev builds, the gate and
 //! Linux CI keep using the sibling exes. `embedded_host.rs` reads the outputs: `OUT_DIR/<name>-host.bin` and the
-//! `MANIFOLD_<NAME>_SHA256` env value (lowercase hex, empty for the stub).
+//! `MANIFOLD_<NAME>_SHA256` env value (lowercase hex, empty for the stub). `MANIFOLD_HOST_PINS` names the manifest of
+//! the downloadable hosts a release carries; it is copied to `OUT_DIR/host-pins.json` for `host_pin.rs` (empty
+//! without it).
 
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
@@ -34,4 +36,14 @@ fn main() {
         std::fs::write(&out, bytes).unwrap_or_else(|e| panic!("{}: {e}", out.display()));
         println!("cargo:rustc-env={sha_var}={sha256}");
     }
+    println!("cargo:rerun-if-env-changed=MANIFOLD_HOST_PINS");
+    let pins = match std::env::var_os("MANIFOLD_HOST_PINS").filter(|path| !path.is_empty()) {
+        Some(path) => {
+            println!("cargo:rerun-if-changed={}", PathBuf::from(&path).display());
+            std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("MANIFOLD_HOST_PINS {path:?}: {e}"))
+        }
+        None => String::new(),
+    };
+    let out = PathBuf::from(std::env::var_os("OUT_DIR").expect("cargo sets OUT_DIR")).join("host-pins.json");
+    std::fs::write(&out, pins).unwrap_or_else(|e| panic!("{}: {e}", out.display()));
 }

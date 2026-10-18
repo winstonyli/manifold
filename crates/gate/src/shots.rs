@@ -27,8 +27,9 @@
 //! to shoot the CEF install states: a copy of the exe with no CEF host beside it, on its own profile, walks Not
 //! installed, Failed, Installing, Installed and Update needed with nothing mocked in the app (the runtime is files in
 //! the profile's data dir; the download goes through `HTTPS_PROXY` to `shots_net::Proxy`, which refuses or stalls), and
-//! two more name a bring-your-own folder that matches the pin or not (Custom). The block needs a build that pins a CEF
-//! host (crates/manifold/src/host_pin.rs, written by `gate host-pin --adopt`) and is skipped without one.
+//! two more name a bring-your-own folder that matches the pin or not (Custom). A release pins its hosts through a
+//! manifest compiled into the exe; a debug build reads one from `MANIFOLD_HOST_PINS_FILE`, so the block writes a fixture
+//! manifest with a made-up CEF host (`FAKE_CEF_HOST`) and needs no real download.
 //!
 //! `gate chrome-shots-sizes` runs it at each of `SIZES` (`"400 300,800 600,1920 1080"`) into `OUT/<W>x<H>/`, with
 //! `VIEWS` defaulting to the ones that need no click on a fixed coordinate. `gate layout` checks the popups' bounds
@@ -51,7 +52,9 @@ use crate::state::{round_half_even, State, GROUP, IMAGE, JSON, NOTE, TAB};
 
 const DEFAULT_VIEWS: &str = "graph graph-hover graph-menu-tab graph-menu-group graph-menu-note graph-link graph-menu-links graph-link-hover graph-link-handles graph-link-drag graph-filter graph-group json-level json-menu tabview tabview-dropdown tabview-find tabview-actions tabview-split settings popup-bookmarks popup-history popup-downloads shortcuts quickswitch graph-closed graph-newnode-menu newnode-zoom graph-tooltip image-view cards-f note-edit missing-file download-real download-progress download-failed json-zoom settings-engine settings-engine-tab settings-combo toast tabview-engine json-tooltip engine-states-picker engine-states-settings engine-install-confirm";
 const SIZES_VIEWS: &str = "graph graph-menu-tab graph-newnode-menu shortcuts quickswitch settings tabview";
-const HOST_PIN: &str = include_str!("../../manifold/src/host_pin.rs");
+/// The CEF host the fixture manifest pins: (file, size, SHA-256). Nothing downloads it; the files on disk are sparse.
+const FAKE_CEF_HOST: (&str, u64, &str) =
+    ("manifold-engine-cef.exe", 740_000, "db3e0751979c3cb3068f732ed4f0ef12ade69d183d98ceee120ad08c8d00f74c");
 const CEF_PIN: &str = include_str!("../../manifold/src/cef_pin.rs");
 /// Where a click outside every popup lands and closes it.
 const AWAY: &str = "CLICK 1100 300";
@@ -1300,12 +1303,13 @@ impl Shots {
             ],
         )?;
         let (appdata, proxy_url) = (root.display().to_string(), proxy.url());
+        let pins_file = self.work.join("host-pins.json").display().to_string();
         self.inst = Instance::launch_env(
             eng_exe,
             &profile,
             &self.work,
             &format!("log-eng-{name}"),
-            &[("APPDATA", &appdata), ("HTTPS_PROXY", &proxy_url)],
+            &[("APPDATA", &appdata), ("HTTPS_PROXY", &proxy_url), ("MANIFOLD_HOST_PINS_FILE", &pins_file)],
         )?;
         send!(self, format!("RESIZE {} 1000", self.size.0), "WAITTABS", "SLEEP 3")
     }
@@ -1334,11 +1338,12 @@ impl Shots {
     }
 
     fn engine_states(&mut self, exe: &Path) -> io::Result<()> {
-        let pins = cef_components(HOST_PIN);
-        if pins.is_empty() {
-            println!("SKIP engine-states-*: host_pin.rs pins no CEF host for windows-x64 (cut a release table first)");
-            return Ok(());
-        }
+        let (file, size, sha256) = FAKE_CEF_HOST;
+        let pins = vec![(file.to_string(), size, sha256.to_string())];
+        fs::write(
+            self.work.join("host-pins.json"),
+            json!({"cef": {"windows-x64": [{"file": file, "size": size, "sha256": sha256}]}}).to_string(),
+        )?;
         let pin_version = pin_version(CEF_PIN).ok_or_else(|| io::Error::other("cef_pin.rs has no version"))?;
         let eng = self.work.join("eng");
         fs::create_dir_all(&eng)?;
@@ -1433,28 +1438,6 @@ fn between<'a>(text: &'a str, after: &str, until: &str) -> Option<&'a str> {
     Some(&rest[..rest.find(until)?])
 }
 
-/// `(file, size, sha256)` of the CEF `windows-x64` components in host_pin.rs's table.
-fn cef_components(table: &str) -> Vec<(String, u64, String)> {
-    let mut in_cef = false;
-    let mut out = Vec::new();
-    for line in table.lines().map(str::trim) {
-        if line.starts_with("Entry {") {
-            in_cef = line.contains("ViewKind::Cef") && line.contains("\"windows-x64\"");
-        } else if in_cef && line.starts_with("Component {") {
-            let parsed = (|| {
-                let size = between(line, "size: ", ",")?.parse().ok()?;
-                Some((
-                    between(line, "file: \"", "\"")?.to_string(),
-                    size,
-                    between(line, "sha256: \"", "\"")?.to_string(),
-                ))
-            })();
-            out.extend(parsed);
-        }
-    }
-    out
-}
-
 /// The CEF version cef_pin.rs pins (its first `version: "..."`).
 fn pin_version(src: &str) -> Option<String> {
     between(src, "version: \"", "\"").map(str::to_string)
@@ -1465,25 +1448,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_repos_pins_parse() {
-        let pins = cef_components(HOST_PIN);
-        assert!(!pins.is_empty(), "host_pin.rs pins a CEF windows-x64 host");
-        assert!(
-            pins.iter().all(|(file, size, sha)| file.ends_with(".exe") && *size > 0 && sha.len() == 64),
-            "{pins:?}"
-        );
+    fn the_fixture_host_and_the_repos_cef_pin_parse() {
+        let (file, size, sha) = FAKE_CEF_HOST;
+        assert!(file.ends_with(".exe") && size > 0 && sha.len() == 64);
         assert!(pin_version(CEF_PIN).is_some_and(|v| v.contains("chromium")));
-    }
-
-    #[test]
-    fn components_of_other_engines_and_platforms_are_skipped() {
-        let table = "Entry { kind: ViewKind::Servo, platform: \"windows-x64\", components: &[\n\
-            Component { file: \"s.exe\", url: \"u\", size: 5, sha256: \"aa\" },\n] },\n\
-            Entry { kind: ViewKind::Cef, platform: \"linux-x64\", components: &[\n\
-            Component { file: \"l\", url: \"u\", size: 6, sha256: \"bb\" },\n] },\n\
-            Entry { kind: ViewKind::Cef, platform: \"windows-x64\", components: &[\n\
-            Component { file: \"c.exe\", url: \"u\", size: 7, sha256: \"cc\" },\n] },";
-        assert_eq!(cef_components(table), [("c.exe".to_string(), 7, "cc".to_string())]);
     }
 
     #[test]

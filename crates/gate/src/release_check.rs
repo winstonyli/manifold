@@ -1,13 +1,14 @@
 //! `gate release-check vX.Y.Z`: the tag a release workflow was triggered by is one it can build. HEAD is the tag's
 //! commit, the tag is annotated, its message is `manifold vX.Y.Z`, a blank line and the `CHANGELOG.md` entry's body,
-//! the workspace version is X.Y.Z, and every host pin carries the fingerprint of this tree (`host-pin --check`).
-//! `gate release-notes vX.Y.Z` prints the draft release's notes: that body and the host table's SHA-256.
+//! and the workspace version is X.Y.Z.
+//! `gate release-notes vX.Y.Z [HOST_PINS]` prints the draft release's notes: that body and, when the release carries
+//! downloadable hosts, the SHA-256 of their pin manifest (the file the exe was built with).
 
 use std::path::Path;
 use std::process::{Command, ExitCode, Stdio};
 
+use crate::cef_pin::{hash_file, repo};
 use crate::check::{check, exit_code, note_failure};
-use crate::pin::{pins_are_fresh, repo, table_sha256};
 
 fn git(root: &Path, args: &[&str]) -> Option<String> {
     let out = Command::new("git").args(args).current_dir(root).stdin(Stdio::null()).output().ok()?;
@@ -75,28 +76,35 @@ pub fn release_check(args: &[String]) -> ExitCode {
         &format!("the workspace version is {}", tag.trim_start_matches('v')),
         workspace_version(&toml).as_deref() == Some(tag.trim_start_matches('v')),
     );
-    match pins_are_fresh() {
-        Ok(()) => {
-            check("every host pin matches the sources", true);
-        }
-        Err(stale) => {
-            for s in stale {
-                check(&s, false);
-            }
-        }
-    }
     exit_code()
 }
 
 pub fn release_notes(args: &[String]) -> ExitCode {
-    let Some(tag) = only_tag(args, "release-notes") else { return ExitCode::from(2) };
+    let (tag_args, pins) = match args {
+        [tag, pins] => (std::slice::from_ref(tag), Some(Path::new(pins))),
+        _ => (args, None),
+    };
+    let Some(tag) = only_tag(tag_args, "release-notes") else { return ExitCode::from(2) };
     let log = std::fs::read_to_string(repo().join("CHANGELOG.md")).unwrap_or_default();
-    let (Some(body), Ok(sha)) = (changelog_body(&log, &tag), table_sha256()) else {
-        eprintln!("no CHANGELOG.md entry for {tag}, or no host table");
+    let Some(body) = changelog_body(&log, &tag) else {
+        eprintln!("no CHANGELOG.md entry for {tag}");
         note_failure();
         return exit_code();
     };
-    println!("{body}\n\nHost pin table sha256: `{sha}`");
+    let pins_line = match pins.map(hash_file) {
+        None => String::new(),
+        Some(Ok((sha, ..))) => format!(
+            "
+
+Host pins sha256: `{sha}`"
+        ),
+        Some(Err(e)) => {
+            eprintln!("{e}");
+            note_failure();
+            return exit_code();
+        }
+    };
+    println!("{body}{pins_line}");
     ExitCode::SUCCESS
 }
 

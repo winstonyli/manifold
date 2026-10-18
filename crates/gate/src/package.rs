@@ -4,8 +4,8 @@
 //!
 //! - it imports no vcruntime/msvcp (`llvm-objdump -p`; the check fails without the tool);
 //! - it runs headless with APPDATA redirected into the work folder (never the real one);
-//! - `VIEWSTATE cef` reads "Not installed · N MB" when crates/manifold/src/host_pin.rs pins a CEF host (`gate host-pin --adopt`
-//!   writes it), else "Unavailable", and likewise for Servo;
+//! - `VIEWSTATE cef` reads "Not installed · N MB" when the release's pin manifest (`<exe stem>.host-pins.json`, beside
+//!   the exe) pins a CEF windows-x64 host, else "Unavailable", and likewise for Servo;
 //! - a WebView2 tab loads a local page, so the host was extracted from the embed (no sibling host exists);
 //! - a PDF node renders the fixture (1000x500, 1 page) through the embedded PDF view, extracted beside the WebView2
 //!   host (the first run downloads PDFium, so it needs the network once and waits up to 180 s);
@@ -23,7 +23,6 @@ use crate::instance::{log_tail, Instance};
 use crate::probes::{finish, guarded, quit, seed, tab_node, Site};
 use crate::windows_main::work_dir;
 
-const HOST_PIN: &str = "crates/manifold/src/host_pin.rs";
 const FIXTURE: &str = "crates/manifold-view-pdfium/tests/fixture.pdf";
 const PDF_WAIT: Duration = Duration::from_secs(180);
 
@@ -42,9 +41,10 @@ fn newest_release(repo: &Path) -> Option<PathBuf> {
     found.pop().map(|(_, p)| p)
 }
 
-/// Whether host_pin.rs's table has a `windows-x64` entry for `kind` (a `ViewKind` variant such as `Cef`).
-fn pins(table: &str, kind: &str) -> bool {
-    table.lines().any(|l| l.contains(&format!("ViewKind::{kind},")) && l.contains("\"windows-x64\""))
+/// Whether the pin manifest has a `windows-x64` entry with files for `kind` (an engine's store name such as `cef`).
+fn pins(manifest: &str, kind: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(manifest)
+        .is_ok_and(|m| m[kind]["windows-x64"].as_array().is_some_and(|files| !files.is_empty()))
 }
 
 /// Whether `log`'s `view-state ENGINE:` line says what a build with (`pinned`) or without a download reports.
@@ -144,9 +144,9 @@ fn run(repo: &Path, exe_src: &Path, work: &Path) -> io::Result<()> {
     quit(&mut inst, "headless manifold exits after QUIT");
 
     let log = fs::read_to_string(&inst.log).unwrap_or_default();
-    let table = fs::read_to_string(repo.join(HOST_PIN)).unwrap_or_default();
-    for (engine, kind) in [("cef", "Cef"), ("servo", "Servo")] {
-        let (ok, line) = engine_state_ok(&log, engine, pins(&table, kind));
+    let manifest = fs::read_to_string(exe_src.with_extension("host-pins.json")).unwrap_or_default();
+    for engine in ["cef", "servo"] {
+        let (ok, line) = engine_state_ok(&log, engine, pins(&manifest, engine));
         if !check(&format!("{engine} state line is right (got {line:?})"), ok) {
             println!("    log tail:\n{}", log_tail(&inst.log, 5));
         }
@@ -188,9 +188,11 @@ mod tests {
     }
 
     #[test]
-    fn the_repos_table_pins_by_kind() {
-        let table = fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").join(HOST_PIN)).unwrap();
-        assert!(pins(&table, "Cef"), "the repo pins a CEF host");
-        assert!(!pins("", "Cef"));
+    fn the_manifest_pins_by_engine_and_platform() {
+        let manifest = r#"{"cef": {"windows-x64": [{"file": "a.exe", "size": 1, "sha256": "00"}], "linux-x64": []}}"#;
+        assert!(pins(manifest, "cef"));
+        assert!(!pins(manifest, "servo"));
+        assert!(!pins(r#"{"cef": {"linux-x64": [{}]}}"#, "cef"));
+        assert!(!pins("", "cef"));
     }
 }
