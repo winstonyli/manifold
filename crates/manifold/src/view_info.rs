@@ -322,8 +322,7 @@ pub(crate) fn build_view_picker_popup(
     // Keyboard: the selected card is focused when the popup opens, Up/Down move between
     // cards, Enter picks (a focused click widget clicks on Enter), and Tab stays inside.
     let was_open_id = egui::Id::new((id, "was_open"));
-    let just_opened = interactable && !ctx.data(|d| d.get_temp::<bool>(was_open_id).unwrap_or(false));
-    ctx.data_mut(|d| d.insert_temp(was_open_id, interactable));
+    let just_opened = popup_just_opened(ctx, was_open_id, interactable);
     let area_rect = egui::Area::new(egui::Id::new(id))
         .fixed_pos(anchor_rect.left_bottom())
         .order(egui::Order::Foreground)

@@ -206,22 +206,28 @@ fn reopened(last_open_pass: Option<u64>, pass: u64) -> bool {
     last_open_pass.is_none_or(|p| p + 1 < pass)
 }
 
+/// Whether the popup keyed `key` was just opened this pass (call once per pass, drawn or not): remembers the pass of its
+/// last interactable draw in `ctx`'s temp data.
+pub(crate) fn popup_just_opened(ctx: &egui::Context, key: egui::Id, interactable: bool) -> bool {
+    let pass = ctx.cumulative_pass_nr();
+    let just_opened = interactable && reopened(ctx.data(|d| d.get_temp::<u64>(key)), pass);
+    ctx.data_mut(|d| {
+        if interactable {
+            d.insert_temp(key, pass);
+        } else {
+            d.remove_temp::<u64>(key);
+        }
+    });
+    just_opened
+}
+
 /// After a list popup's rows are laid out: focuses the first row when the popup opens, and moves
 /// focus between rows on Up/Down (wrapping, unless the rows are a window: `mark_list_partial`).
 fn list_row_nav(ui: &mut egui::Ui, interactable: bool) {
     let key = list_rows_key(ui);
     let rows: Vec<egui::Id> = ui.data_mut(|d| d.remove_temp(key)).unwrap_or_default();
     let partial = ui.data_mut(|d| d.remove_temp::<bool>(key.with("partial"))).unwrap_or(false);
-    let open_key = key.with("was_open");
-    let pass = ui.ctx().cumulative_pass_nr();
-    let just_opened = interactable && reopened(ui.data(|d| d.get_temp::<u64>(open_key)), pass);
-    ui.data_mut(|d| {
-        if interactable {
-            d.insert_temp(open_key, pass);
-        } else {
-            d.remove_temp::<u64>(open_key);
-        }
-    });
+    let just_opened = popup_just_opened(ui.ctx(), key.with("was_open"), interactable);
     if !interactable || rows.is_empty() {
         return;
     }

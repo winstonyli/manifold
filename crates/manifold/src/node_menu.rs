@@ -205,9 +205,7 @@ pub(crate) fn build_node_context_menu(
     let mut action = None;
     // The first item takes focus when the menu opens, so it can be driven from the keyboard.
     let open_key = egui::Id::new((config.area_id, "was_open"));
-    let just_opened = interactable && !ui.data(|d| d.get_temp::<bool>(open_key).unwrap_or(false));
-    ui.data_mut(|d| d.insert_temp(open_key, interactable));
-    let mut first_item = just_opened;
+    let mut first_item = popup_just_opened(ui.ctx(), open_key, interactable);
     let anchor = egui::Rect::from_min_size(pos, egui::Vec2::ZERO);
     let area_rect = build_list_popup_frame(
         ui.ctx(),
