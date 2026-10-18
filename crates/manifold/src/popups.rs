@@ -309,27 +309,25 @@ pub(crate) fn list_row_nav(ui: &mut egui::Ui, interactable: bool) {
         )
     });
     // Wraps at the ends, unless the rows are only a window of the list (`mark_list_partial`).
-    let mut next = at;
-    for _ in 0..downs {
-        next = if next + 1 < rows.len() {
-            next + 1
-        } else if partial {
-            next
-        } else {
-            0
-        };
-    }
-    for _ in 0..ups {
-        next = if next > 0 {
-            next - 1
-        } else if partial {
-            next
-        } else {
-            rows.len() - 1
-        };
-    }
+    let next = step_index(at, downs as isize - ups as isize, rows.len(), !partial);
     if next != at {
         ui.memory_mut(|m| m.request_focus(rows[next][0]));
+    }
+}
+
+/// Net Down presses minus Up presses this frame, counting every press: two that land in one frame (a slow frame, a
+/// key repeat) are two steps. Doesn't consume the keys; the one-index lists (quick switcher, address bar) read this.
+pub(crate) fn arrow_delta(input: &egui::InputState) -> isize {
+    input.num_presses(egui::Key::ArrowDown) as isize - input.num_presses(egui::Key::ArrowUp) as isize
+}
+
+/// `at` moved by `delta` in a list of `len` (> 0): wrapping at the ends, or stopping there.
+pub(crate) fn step_index(at: usize, delta: isize, len: usize, wrap: bool) -> usize {
+    let to = at as isize + delta;
+    if wrap {
+        to.rem_euclid(len as isize) as usize
+    } else {
+        to.clamp(0, len as isize - 1) as usize
     }
 }
 
@@ -1720,10 +1718,8 @@ impl App {
         let Some(switcher) = &mut self.menus.quick_switcher else { return };
         if len == 0 {
             switcher.selected = 0;
-        } else if delta > 0 {
-            switcher.selected = (switcher.selected + 1).min(len - 1);
         } else {
-            switcher.selected = switcher.selected.saturating_sub(1);
+            switcher.selected = step_index(switcher.selected.min(len - 1), delta as isize, len, false);
         }
     }
 
@@ -1768,19 +1764,10 @@ impl App {
             // once actually closing (rendering the frozen `cache` snapshot
             // below instead), there's no live switcher left to move a
             // selection in or confirm.
-            let (arrow_down, arrow_up, enter, escape) = ui.input(|i| {
-                (
-                    i.key_pressed(egui::Key::ArrowDown),
-                    i.key_pressed(egui::Key::ArrowUp),
-                    i.key_pressed(egui::Key::Enter),
-                    i.key_pressed(egui::Key::Escape),
-                )
-            });
-            if arrow_down {
-                self.quick_switcher_move(1);
-            }
-            if arrow_up {
-                self.quick_switcher_move(-1);
+            let (delta, enter, escape) =
+                ui.input(|i| (arrow_delta(i), i.key_pressed(egui::Key::Enter), i.key_pressed(egui::Key::Escape)));
+            if delta != 0 {
+                self.quick_switcher_move(delta as i32);
             }
             if escape {
                 self.menus.quick_switcher = None;
@@ -2464,6 +2451,29 @@ mod view_picker_tests {
         frame(1, vec![]);
         let first = frame(1, vec![]);
         assert!(ctx.memory(|m| m.has_focus(first[0])), "the new page opens on its first row");
+    }
+
+    /// The shared stepping rule: wrap or clamp by the net count, and every press in a frame counts.
+    #[test]
+    fn arrow_presses_step_a_list_by_their_net_count() {
+        assert_eq!(step_index(1, 1, 4, true), 2);
+        assert_eq!(step_index(3, 1, 4, true), 0, "wraps past the end");
+        assert_eq!(step_index(0, -1, 4, true), 3, "wraps before the start");
+        assert_eq!(step_index(1, 6, 4, true), 3, "several steps wrap together");
+        assert_eq!(step_index(3, 1, 4, false), 3, "stops at the end");
+        assert_eq!(step_index(1, -5, 4, false), 0, "stops at the start");
+        let ctx = egui::Context::default();
+        let mut seen = Vec::new();
+        for events in [
+            vec![key(egui::Key::ArrowDown), key(egui::Key::ArrowDown), key(egui::Key::ArrowUp)],
+            vec![key(egui::Key::ArrowUp), key(egui::Key::ArrowUp)],
+            vec![],
+        ] {
+            let input = egui::RawInput { events, ..Default::default() };
+            let mut output = ctx.run_ui(input, |ui| seen.push(ui.input(arrow_delta)));
+            output.textures_delta.clear();
+        }
+        assert_eq!(seen, [1, -2, 0]);
     }
 
     /// Two Down presses that land in one frame (a slow frame, a key repeat) are two steps, not one.

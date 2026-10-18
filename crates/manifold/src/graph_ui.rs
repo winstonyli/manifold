@@ -1253,23 +1253,24 @@ impl App {
             return;
         }
         if !typing && self.renaming_group.is_none() && self.menus.quick_switcher.is_none() {
-            let dir = ui.input(|i| {
-                if i.key_pressed(egui::Key::ArrowRight) {
-                    Some(egui::vec2(1.0, 0.0))
-                } else if i.key_pressed(egui::Key::ArrowLeft) {
-                    Some(egui::vec2(-1.0, 0.0))
-                } else if i.key_pressed(egui::Key::ArrowDown) {
-                    Some(egui::vec2(0.0, 1.0))
-                } else if i.key_pressed(egui::Key::ArrowUp) {
-                    Some(egui::vec2(0.0, -1.0))
-                } else {
-                    None
-                }
+            // Each press moves focus one node, so presses that land in one frame are each a move.
+            let presses = ui.input(|i| {
+                [
+                    (egui::Key::ArrowRight, egui::vec2(1.0, 0.0)),
+                    (egui::Key::ArrowLeft, egui::vec2(-1.0, 0.0)),
+                    (egui::Key::ArrowDown, egui::vec2(0.0, 1.0)),
+                    (egui::Key::ArrowUp, egui::vec2(0.0, -1.0)),
+                ]
+                .map(|(key, dir)| (dir, i.num_presses(key)))
             });
             // An open node menu keeps the arrows and Enter for itself.
             let menu_open = self.menus.node_menu.is_some();
-            if let Some(dir) = dir.filter(|_| !menu_open) {
-                self.move_graph_focus(dir);
+            if !menu_open {
+                for (dir, n) in presses {
+                    for _ in 0..n {
+                        self.move_graph_focus(dir);
+                    }
+                }
             }
             // Enter opens whatever arrow-key navigation landed on, the same
             // way clicking the node's card does. A Tab-focused card handles its own

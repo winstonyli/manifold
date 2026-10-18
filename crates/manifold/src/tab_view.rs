@@ -717,19 +717,11 @@ impl App {
     ) {
         // The arrows are the field's only while it has focus (or is in its one-frame blip).
         let live = self.address_bar.unfocused_frames <= 1;
-        let arrow_down = live && ui.input(|i| i.key_pressed(egui::Key::ArrowDown));
-        let arrow_up = live && ui.input(|i| i.key_pressed(egui::Key::ArrowUp));
-        if arrow_down {
-            self.address_bar.highlighted = Some(match self.address_bar.highlighted {
-                Some(i) if i + 1 < combined.len() => i + 1,
-                _ => 0,
-            });
-        }
-        if arrow_up {
-            self.address_bar.highlighted = Some(match self.address_bar.highlighted {
-                Some(i) if i > 0 => i - 1,
-                _ => combined.len() - 1,
-            });
+        let delta = if live { ui.input(popups::arrow_delta) } else { 0 };
+        if delta != 0 && !combined.is_empty() {
+            // With nothing highlighted, Down lands on the first row and Up on the last: step from just before / after.
+            let from = self.address_bar.highlighted.unwrap_or(if delta > 0 { combined.len() - 1 } else { 0 });
+            self.address_bar.highlighted = Some(popups::step_index(from, delta, combined.len(), true));
         }
 
         if let Some(rect) = address_bar_rect {
