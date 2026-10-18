@@ -37,6 +37,11 @@ pub(crate) struct FramePacing {
     pub(crate) last_activity: std::time::Instant,
     /// Engine frames seen in the current second (a burst is activity).
     pub(crate) frame_burst: (std::time::Instant, u32),
+    /// When the last frame finished; with a present mode that does not block, the active loop draws at most once per
+    /// `frame_interval` after it.
+    pub(crate) last_present: std::time::Instant,
+    /// The window's monitor refresh interval, read at most once a second.
+    pub(crate) frame_interval: (std::time::Instant, std::time::Duration),
     /// When an idle loop next draws.
     pub(crate) next_idle_frame: std::time::Instant,
     /// The wait between idle frames: `IDLE_FRAME`, or less when egui asked
@@ -56,6 +61,8 @@ impl Default for FramePacing {
             was_minimized: false,
             last_activity: std::time::Instant::now(),
             frame_burst: (std::time::Instant::now(), 0),
+            last_present: std::time::Instant::now(),
+            frame_interval: (std::time::Instant::now(), std::time::Duration::from_micros(16_667)),
             next_idle_frame: std::time::Instant::now(),
             idle_interval: IDLE_FRAME,
             hidden_for_minimize: Vec::new(),
@@ -245,9 +252,19 @@ impl ApplicationHandler<UserEvent> for App {
             }
             event_loop.set_control_flow(ControlFlow::WaitUntil(self.pacing.next_idle_frame));
         } else if !self.headless {
-            event_loop.set_control_flow(ControlFlow::Poll);
-            if let Some(window) = &self.window {
-                window.request_redraw();
+            let due = if crate::gpu::PRESENT_MODE == wgpu::PresentMode::Fifo {
+                None
+            } else {
+                Some(self.pacing.last_present + self.frame_interval())
+            };
+            match due.filter(|d| std::time::Instant::now() < *d) {
+                Some(due) => event_loop.set_control_flow(ControlFlow::WaitUntil(due)),
+                None => {
+                    event_loop.set_control_flow(ControlFlow::Poll);
+                    if let Some(window) = &self.window {
+                        window.request_redraw();
+                    }
+                }
             }
         }
         self.pacing.was_minimized = minimized;
@@ -594,7 +611,8 @@ impl ApplicationHandler<UserEvent> for App {
                 self.pacing.idle_interval = repaint_in.map_or(IDLE_FRAME, |d| d.min(IDLE_FRAME));
 
                 self.render_frame(egui_output);
-                if !self.is_idle() {
+                self.pacing.last_present = std::time::Instant::now();
+                if !self.is_idle() && crate::gpu::PRESENT_MODE == wgpu::PresentMode::Fifo {
                     if let Some(window) = &self.window {
                         window.request_redraw();
                     }
@@ -605,6 +623,13 @@ impl ApplicationHandler<UserEvent> for App {
             _ => {}
         }
     }
+}
+
+/// A monitor refresh rate in millihertz as a frame interval; 60 Hz when the rate is unknown or zero.
+fn interval_from_millihertz(mhz: Option<u32>) -> std::time::Duration {
+    mhz.filter(|m| *m > 0).map_or(std::time::Duration::from_micros(16_667), |m| {
+        std::time::Duration::from_micros(1_000_000_000 / u64::from(m))
+    })
 }
 
 /// Without activity for this long the loop slows down (see `about_to_wait`).
@@ -648,6 +673,13 @@ impl App {
         // SeqCst on both sides: a reader whose `swap` still saw `true` must have its message seen by this drain.
         self.pacing.view_wake.store(false, std::sync::atomic::Ordering::SeqCst);
         self.drain_tab_events();
+        // A non-blocking present mode leaves the active loop waiting out its frame interval; a page's own frame
+        // draws at once instead (the page's frame rate bounds how often).
+        if crate::gpu::PRESENT_MODE != wgpu::PresentMode::Fifo {
+            if let Some(window) = &self.window {
+                window.request_redraw();
+            }
+        }
     }
 
     /// Counts engine frames; a burst of them is activity.
@@ -670,6 +702,15 @@ impl App {
     /// happened for `IDLE_AFTER`, and no view transition is under way.
     fn is_idle(&self) -> bool {
         !self.headless && self.transition.is_none() && self.pacing.last_activity.elapsed() >= IDLE_AFTER
+    }
+
+    /// The monitor's refresh interval (60 Hz when unknown), re-read at most once a second.
+    fn frame_interval(&mut self) -> std::time::Duration {
+        if self.pacing.frame_interval.0.elapsed() >= std::time::Duration::from_secs(1) {
+            let mhz = self.window.as_ref().and_then(|w| w.current_monitor()).and_then(|m| m.refresh_rate_millihertz());
+            self.pacing.frame_interval = (std::time::Instant::now(), interval_from_millihertz(mhz));
+        }
+        self.pacing.frame_interval.1
     }
 
     /// Whether the real (non-headless) window is minimized.
@@ -1668,6 +1709,15 @@ fn load_app_icon() -> Option<Icon> {
 #[cfg(test)]
 mod idle_tests {
     use super::*;
+
+    #[test]
+    fn a_refresh_rate_becomes_a_frame_interval_with_a_60_hz_fallback() {
+        let ms = |d: std::time::Duration| d.as_secs_f64() * 1000.0;
+        assert!((ms(interval_from_millihertz(Some(60_000))) - 16.667).abs() < 0.01);
+        assert!((ms(interval_from_millihertz(Some(144_000))) - 6.944).abs() < 0.01);
+        assert!((ms(interval_from_millihertz(None)) - 16.667).abs() < 0.01);
+        assert!((ms(interval_from_millihertz(Some(0))) - 16.667).abs() < 0.01);
+    }
 
     #[test]
     fn a_burst_of_view_messages_posts_one_wake_until_it_is_handled() {

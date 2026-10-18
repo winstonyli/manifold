@@ -1,4 +1,8 @@
 use std::collections::{HashMap, HashSet};
+/// The surface's present mode. `Fifo` throttles the redraw loop by blocking in present; any other mode leaves the loop
+/// to cap itself (`FramePacing::frame_interval`).
+pub(crate) const PRESENT_MODE: wgpu::PresentMode = wgpu::PresentMode::Fifo;
+
 use std::sync::Arc;
 
 use wgpu::util::DeviceExt;
@@ -354,7 +358,7 @@ impl GpuState {
             // loop present fully uncapped, burning far more GPU/CPU than
             // intended. `Fifo` is the one mode every backend is required
             // to support, so this needs no fallback.
-            present_mode: wgpu::PresentMode::Fifo,
+            present_mode: PRESENT_MODE,
             alpha_mode: surface_caps.alpha_modes[0],
             view_formats: vec![],
             // One frame queued, not two: key-to-screen measured 99-100 ms against 100 or 116 ms (scripts/keylat.ps1, README).
