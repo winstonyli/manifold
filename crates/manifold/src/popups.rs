@@ -199,6 +199,13 @@ pub(crate) fn list_row(ui: &mut egui::Ui, text: impl Into<egui::WidgetText>) -> 
     response
 }
 
+/// Whether a list popup drawn in pass `pass` was just opened, given the pass of its last interactable draw: unless that
+/// was the pass just before, it was closed in between. A popup closed and reopened without a drawn non-interactable
+/// pass between (no fade-out frame, as at a fast frame cadence) still counts.
+fn reopened(last_open_pass: Option<u64>, pass: u64) -> bool {
+    last_open_pass.is_none_or(|p| p + 1 < pass)
+}
+
 /// After a list popup's rows are laid out: focuses the first row when the popup opens, and moves
 /// focus between rows on Up/Down (wrapping, unless the rows are a window: `mark_list_partial`).
 fn list_row_nav(ui: &mut egui::Ui, interactable: bool) {
@@ -206,11 +213,8 @@ fn list_row_nav(ui: &mut egui::Ui, interactable: bool) {
     let rows: Vec<egui::Id> = ui.data_mut(|d| d.remove_temp(key)).unwrap_or_default();
     let partial = ui.data_mut(|d| d.remove_temp::<bool>(key.with("partial"))).unwrap_or(false);
     let open_key = key.with("was_open");
-    // Opened now unless the last interactable pass drew this popup in the pass just before: a popup closed and
-    // reopened without a drawn non-interactable pass between (no fade-out frame) still counts as just opened.
     let pass = ui.ctx().cumulative_pass_nr();
-    let last_open_pass = ui.data(|d| d.get_temp::<u64>(open_key));
-    let just_opened = interactable && last_open_pass.is_none_or(|p| p + 1 < pass);
+    let just_opened = interactable && reopened(ui.data(|d| d.get_temp::<u64>(open_key)), pass);
     ui.data_mut(|d| {
         if interactable {
             d.insert_temp(open_key, pass);
@@ -1985,6 +1989,13 @@ fn download_confirm_title(verb: &str, kind: ViewKind, size: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_list_popup_counts_as_reopened_after_any_gap_in_its_passes() {
+        assert!(super::reopened(None, 5), "never drawn");
+        assert!(!super::reopened(Some(4), 5), "drawn in the pass just before");
+        assert!(super::reopened(Some(3), 5), "skipped a pass: closed and reopened with no fade-out pass between");
+    }
+
     #[test]
     fn the_download_confirm_names_the_view_and_its_size() {
         use crate::process_manager::ViewKind;
