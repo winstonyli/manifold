@@ -269,7 +269,26 @@ pub(crate) fn list_row_nav(ui: &mut egui::Ui, interactable: bool) {
         ui.memory_mut(|m| m.request_focus(opens_on.unwrap_or(rows[0][0])));
         return;
     }
-    let Some(at) = rows.iter().position(|stop| stop.iter().any(|id| ui.memory(|m| m.has_focus(*id)))) else { return };
+    let at = rows.iter().position(|stop| stop.iter().any(|id| ui.memory(|m| m.has_focus(*id))));
+    // Nothing focused (the focused row went away with a page swap, as in the node menu's Color page, or the popup
+    // opened without focus): Down enters at the first row, Up at the last.
+    let Some(at) = at else {
+        let (down, up) = ui.input_mut(|i| {
+            (
+                i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown),
+                i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp),
+            )
+        });
+        if down || up {
+            let entry = if down { &rows[0] } else { &rows[rows.len() - 1] };
+            // egui's own arrow-key focus search would otherwise pick a widget at the end of the pass.
+            ui.memory_mut(|m| {
+                m.move_focus(egui::FocusDirection::None);
+                m.request_focus(entry[0]);
+            });
+        }
+        return;
+    };
     let (down, up) = ui.input_mut(|i| {
         (
             i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown),
@@ -2383,6 +2402,17 @@ mod view_picker_tests {
         }
         frame(vec![key(egui::Key::ArrowUp)]);
         assert_eq!(frame(vec![]), Some(2), "Up wraps to the last stop");
+        // The focused row going away (a page swap) leaves nothing focused: Down enters at the first row, Up at the last.
+        for (press, want) in [(egui::Key::ArrowDown, 0), (egui::Key::ArrowUp, 2)] {
+            ctx.memory_mut(|m| {
+                if let Some(id) = m.focused() {
+                    m.surrender_focus(id);
+                }
+            });
+            assert_eq!(frame(vec![]), None, "focus dropped");
+            frame(vec![key(press)]);
+            assert_eq!(frame(vec![]), Some(want), "{press:?} with nothing focused");
+        }
     }
 
     /// A long History popup lays out only the rows in view. Down walks one entry at a time past the first view

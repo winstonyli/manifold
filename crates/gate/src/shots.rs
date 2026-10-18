@@ -791,6 +791,18 @@ impl Shots {
             s.shot("graph-menu-key-open")?;
             send!(s, "TABKEY", "SLEEP 0.5")?;
             s.shot("graph-menu-key-tab")?;
+            // Still open: Down to "Color...", Enter. The page swap drops the focused row, so Down enters at Back, then the
+            // swatch row (one stop), then wraps to Back.
+            // A shot after each Down: the frame it forces is what lets the next key see the new focus.
+            for i in 1..=5 {
+                send!(s, "ARROWDOWN", "SLEEP 0.3")?;
+                s.shot(&format!("graph-menu-key-down{i}"))?;
+            }
+            send!(s, "ENTER", "SLEEP 1")?;
+            for name in ["back", "swatch", "wrapped"] {
+                send!(s, "ARROWDOWN", "SLEEP 0.5")?;
+                s.shot(&format!("graph-menu-key-color-{name}"))?;
+            }
             send!(s, "ESCAPE", "SLEEP 1")?;
             s.shot("graph-menu-key-closed")?;
             s.reset()
