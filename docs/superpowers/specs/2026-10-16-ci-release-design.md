@@ -1,5 +1,5 @@
 ---
-status: done
+status: superseded-by: docs/decisions/2026-10-18-hosts-in-the-release.md
 ---
 
 # Releases on GitHub Actions (design)

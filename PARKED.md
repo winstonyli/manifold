@@ -11,6 +11,12 @@ The one list of deferred work (format: `~/.claude/VERSIONING.md`). Delete an ite
 
 - **`Immediate` present mode: unchecked cases.** It is on (`gpu::PREFERRED_PRESENT_MODE`, README "View latency, measured"). Not checked: a second monitor (the 144 Hz case; no such display, by decision 2026-10-17) and a fullscreen window, where `Composed: Flip` and `AllowsTearing=0` may not hold. *Trigger:* a second display, or a fullscreen mode in the app. *Check:* `presentmon --process_name manifold.exe --timed 8 --terminate_after_timed --output_file f.csv`, read `PresentMode` and `AllowsTearing`. *Evidence:* PresentMon on this monitor in a window, 2026-10-17 (`docs/runs.md`). *Status:* parked.
 
+## Verified 2026-10-18
+
+- **Servo and WebKit hosts in `release.yml`.** Only CEF is built and pinned; the other two read Unavailable in a release. *Why parked:* by decision, one engine first (spec phases P2, P3); Servo needs about 33 minutes and 30 GB, WebKit a Linux job whose artifact the Windows job pins under `linux-x64`. *Trigger:* wanting either downloadable. *Evidence:* `.github/workflows/release.yml` builds `manifold-view-cef` only (2026-10-18). *Status:* parked.
+- **Nothing downloads a host from the published release.** `gate release-verify` checks the host files in `dist/` against the manifest before the draft exists; the URL the exe will fetch (`releases/download/v<version>/<file>-<platform>`) is first used by a user. *Why parked:* a draft's assets are not public, so a CI download cannot run before publishing. *Trigger:* a published release whose host 404s or mismatches. *Check:* after publishing, `gh release download vX.Y.Z -p "*-windows-x64"` and compare each hash with the manifest. *Status:* parked.
+- **Reusing a previous release's host when its dependency closure is unchanged.** Every release rebuilds every host (decision `docs/decisions/2026-10-18-hosts-in-the-release.md`). *Why parked:* cost is acceptable for one host. *Trigger:* release build time (Servo) or unwanted re-downloads on upgrade. *Fix:* additive: copy the old asset and keep its hash in the manifest. *Status:* parked.
+
 ## Not re-verified (from the README and plans)
 
 - **Live-only behaviour never checked:** WebKit double and triple click, cross-origin iframe typing, Lost/Outdated recovery. *Trigger:* a WebKit or CEF session on the target machine. *Status:* held for a manual check.

@@ -123,7 +123,8 @@ mod tests {
 
     #[test]
     fn the_embedded_manifest_is_well_formed() {
-        parse(EMBEDDED, "0.0.0").unwrap();
+        let entries = parse(EMBEDDED, "0.0.0").unwrap();
+        assert_eq!(entries.is_empty(), EMBEDDED.trim().is_empty());
     }
 
     #[test]

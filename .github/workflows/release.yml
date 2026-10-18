@@ -1,5 +1,6 @@
 name: release
-# A pushed vX.Y.Z tag builds manifold.exe against the pinned hosts and leaves a draft release to read and publish.
+# A pushed vX.Y.Z tag builds the downloadable hosts and manifold.exe (which pins them by hash) and leaves a draft release
+# to read and publish.
 on:
   push:
     tags: ['v*']
@@ -29,11 +30,33 @@ jobs:
         run: |
           & target/debug/gate.exe release-check $env:TAG
           if ($LASTEXITCODE -ne 0) { exit 1 }
+      - name: Downloadable hosts and their pin manifest
+        run: |
+          # Each host is attached to this release; manifold.exe is built with the manifest of their sizes and hashes.
+          $env:RUSTFLAGS = '-C target-feature=+crt-static'
+          cargo build --release --locked -p manifold-view-cef
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          New-Item -ItemType Directory -Force dist | Out-Null
+          $hosts = [ordered]@{ cef = [ordered]@{ 'windows-x64' = @('manifold-engine-cef.exe') } }
+          $manifest = [ordered]@{}
+          foreach ($kind in $hosts.Keys) {
+            $manifest[$kind] = [ordered]@{}
+            foreach ($platform in $hosts[$kind].Keys) {
+              $files = foreach ($name in $hosts[$kind][$platform]) {
+                Copy-Item "target/release/$name" "dist/$name-$platform"
+                [ordered]@{ file = $name; size = (Get-Item "dist/$name-$platform").Length; sha256 = (Get-FileHash "dist/$name-$platform" -Algorithm SHA256).Hash.ToLower() }
+              }
+              $manifest[$kind][$platform] = @($files)
+            }
+          }
+          $manifest | ConvertTo-Json -Depth 6 | Set-Content -Encoding ascii "dist/manifold-$env:TAG-windows-x64.host-pins.json"
+          Get-Content "dist/manifold-$env:TAG-windows-x64.host-pins.json"
       - name: Embedded hosts and manifold.exe
         run: |
           $env:RUSTFLAGS = '-C target-feature=+crt-static'
           cargo build --release --locked -p manifold-view-webview2 -p manifold-view-pdfium
           if ($LASTEXITCODE -ne 0) { exit 1 }
+          $env:MANIFOLD_HOST_PINS = (Resolve-Path "dist/manifold-$env:TAG-windows-x64.host-pins.json").Path
           New-Item -ItemType Directory -Force dist/embedded | Out-Null
           Copy-Item target/release/manifold-engine-webview2.exe dist/embedded/
           Copy-Item target/release/manifold-view-pdfium.exe dist/embedded/
@@ -60,7 +83,7 @@ jobs:
       - name: Draft release
         run: |
           $stem = "manifold-$env:TAG-windows-x64"
-          & target/debug/gate.exe release-notes $env:TAG | Set-Content -Encoding utf8 notes.md
+          & target/debug/gate.exe release-notes $env:TAG "dist/$stem.host-pins.json" | Set-Content -Encoding utf8 notes.md
           if ($LASTEXITCODE -ne 0) { exit 1 }
-          gh release create $env:TAG --draft --verify-tag --title $env:TAG --notes-file notes.md "dist/$stem.exe" "dist/$stem.exe.sha256" "dist/$stem.embedded-host.sha256" "dist/$stem.embedded-pdf-view.sha256"
+          gh release create $env:TAG --draft --verify-tag --title $env:TAG --notes-file notes.md "dist/$stem.exe" "dist/$stem.exe.sha256" "dist/$stem.embedded-host.sha256" "dist/$stem.embedded-pdf-view.sha256" "dist/$stem.host-pins.json" (Get-ChildItem dist -File | Where-Object Name -Like "*-windows-x64" | ForEach-Object FullName)
           if ($LASTEXITCODE -ne 0) { exit 1 }

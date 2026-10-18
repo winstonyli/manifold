@@ -16,7 +16,7 @@ servo = { workspace = true, features = ["no-wgl"] }
 url.workspace = true
 webrender_api.workspace = true
 
-# The exe keeps the name released builds, host_pin.rs and the scripts know; it changes with a release that
+# The exe keeps the name released builds, release.yml and the scripts know; it changes with a release that
 # publishes assets under the new names (spec 2026-10-12, Step 0).
 [[bin]]
 name = "manifold-engine-servo"
