@@ -231,6 +231,7 @@ pub(crate) fn build_node_context_menu(
                 }
                 return;
             }
+            nav_page(ui, egui::Id::new(config.page.map(|p| p as u8)));
             if let Some(page) = config.page {
                 // A page: a Back row, then the one section it holds.
                 if menu_button(ui, "\u{2039} Back", None).clicked() {

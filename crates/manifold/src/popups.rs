@@ -227,6 +227,12 @@ pub(crate) fn nav_stop(ui: &egui::Ui, ids: &[egui::Id]) {
     ui.data_mut(|d| d.get_temp_mut_or_default::<Vec<Vec<egui::Id>>>(key).push(ids.to_vec()));
 }
 
+/// Names the page the popup shows now (call it before the rows): when it changes, the popup counts as just opened, so
+/// `list_row_nav` focuses its first (or `nav_row_opens_on`) row. The row that had focus went away with the old page.
+pub(crate) fn nav_page(ui: &egui::Ui, page: egui::Id) {
+    ui.data_mut(|d| d.insert_temp(list_rows_key(ui).with("page"), Some(page)));
+}
+
 /// Makes `response` the row `list_row_nav` focuses when the popup opens, instead of the first.
 pub(crate) fn nav_row_opens_on(ui: &egui::Ui, response: &egui::Response) {
     ui.data_mut(|d| d.insert_temp(list_rows_key(ui).with("opens_on"), Some(response.id)));
@@ -261,7 +267,13 @@ pub(crate) fn list_row_nav(ui: &mut egui::Ui, interactable: bool) {
     let rows: Vec<Vec<egui::Id>> = ui.data_mut(|d| d.remove_temp(key)).unwrap_or_default();
     let opens_on: Option<egui::Id> = ui.data_mut(|d| d.remove_temp::<Option<egui::Id>>(key.with("opens_on"))).flatten();
     let partial = ui.data_mut(|d| d.remove_temp::<bool>(key.with("partial"))).unwrap_or(false);
-    let just_opened = popup_just_opened(ui.ctx(), key.with("was_open"), interactable);
+    let page: Option<egui::Id> = ui.data_mut(|d| d.remove_temp::<Option<egui::Id>>(key.with("page"))).flatten();
+    let page_changed = ui.data_mut(|d| {
+        let last = d.get_temp::<Option<egui::Id>>(key.with("last_page"));
+        d.insert_temp(key.with("last_page"), page);
+        interactable && last.is_some_and(|last| last != page)
+    });
+    let just_opened = popup_just_opened(ui.ctx(), key.with("was_open"), interactable) || page_changed;
     if !interactable || rows.is_empty() {
         return;
     }
@@ -2413,6 +2425,44 @@ mod view_picker_tests {
             frame(vec![key(press)]);
             assert_eq!(frame(vec![]), Some(want), "{press:?} with nothing focused");
         }
+    }
+
+    /// A page swap replaces the rows, so the focused one goes away: the popup focuses the new page's first row, as when it
+    /// opens.
+    #[test]
+    fn a_page_swap_focuses_the_new_pages_first_row() {
+        let ctx = egui::Context::default();
+        theme::apply_fonts(&ctx);
+        theme::apply_style(&ctx);
+        let frame = |page: u8, events: Vec<egui::Event>| -> Vec<egui::Id> {
+            let mut first: Vec<egui::Id> = Vec::new();
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(600.0, 600.0))),
+                events,
+                ..Default::default()
+            };
+            let mut output = ctx.run_ui(input, |ui| {
+                let anchor = egui::Rect::from_min_size(egui::pos2(10.0, 10.0), egui::vec2(60.0, 20.0));
+                build_list_popup_frame(ui.ctx(), "test_page", anchor, 100.0, 300.0, 1.0, true, |ui| {
+                    nav_page(ui, egui::Id::new(page));
+                    first.clear();
+                    for label in ["a", "b", "c"] {
+                        // Each page's rows have their own ids.
+                        first.push(ui.push_id(page, |ui| list_row(ui, label).id).inner);
+                    }
+                });
+            });
+            output.textures_delta.clear();
+            first
+        };
+        frame(0, vec![]);
+        frame(0, vec![]);
+        frame(0, vec![key(egui::Key::ArrowDown)]);
+        let first = frame(0, vec![]);
+        assert!(ctx.memory(|m| m.has_focus(first[1])), "Down moved to the second row");
+        frame(1, vec![]);
+        let first = frame(1, vec![]);
+        assert!(ctx.memory(|m| m.has_focus(first[0])), "the new page opens on its first row");
     }
 
     /// A long History popup lays out only the rows in view. Down walks one entry at a time past the first view
