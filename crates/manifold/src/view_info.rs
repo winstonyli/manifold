@@ -319,10 +319,8 @@ pub(crate) fn build_view_picker_popup(
     interactable: bool,
 ) -> (egui::Rect, Option<ViewKind>) {
     let mut picked = None;
-    // Keyboard: the selected card is focused when the popup opens, Up/Down move between
+    // Keyboard (`list_row_nav`): the selected card is focused when the popup opens, Up/Down move between
     // cards, Enter picks (a focused click widget clicks on Enter), and Tab stays inside.
-    let was_open_id = egui::Id::new((id, "was_open"));
-    let just_opened = popup_just_opened(ctx, was_open_id, interactable);
     let area_rect = egui::Area::new(egui::Id::new(id))
         .fixed_pos(anchor_rect.left_bottom())
         .order(egui::Order::Foreground)
@@ -339,7 +337,6 @@ pub(crate) fn build_view_picker_popup(
                 // one (WebKit, usually) silently unreachable past the
                 // window's bottom edge (confirmed live).
                 egui::ScrollArea::vertical().max_height(420.0).show(ui, |ui| {
-                    let mut cards = Vec::new();
                     // Unavailable cards are not focusable, so the keyboard skips them: the popup opens on
                     // the selected card, or the first available one when the selection is not usable.
                     let usable = |kind: ViewKind| !matches!(state_of(kind), ViewStatus::Unavailable(_));
@@ -352,43 +349,21 @@ pub(crate) fn build_view_picker_popup(
                             ui.add_space(6.0);
                         }
                         let card = draw_view_card(ui, kind, selected == Some(kind), &state_of(kind));
-                        if just_opened && focus_on == kind {
-                            card.request_focus();
-                        }
-                        if card.has_focus() {
-                            focus_ring(ui, &card);
-                            card.scroll_to_me(None);
-                            ui.memory_mut(|m| {
-                                m.set_focus_lock_filter(
-                                    card.id,
-                                    egui::EventFilter { tab: true, vertical_arrows: true, ..Default::default() },
-                                )
-                            });
+                        if usable(kind) {
+                            nav_row(ui, &card);
+                            if focus_on == kind {
+                                nav_row_opens_on(ui, &card);
+                            }
                         }
                         if card.clicked() {
                             picked = Some(kind);
-                        }
-                        if usable(kind) {
-                            cards.push(card.id);
                         }
                         if i > 0 {
                             ui.add_space(2.0);
                         }
                     }
-                    if let Some(at) = cards.iter().position(|id| ui.memory(|m| m.has_focus(*id))) {
-                        let (down, up) = ui.input_mut(|i| {
-                            (
-                                i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown),
-                                i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp),
-                            )
-                        });
-                        // Down is +1, Up is -1 (as len - 1, mod len).
-                        let step = usize::from(down) + (cards.len() - 1) * usize::from(up);
-                        if step != 0 {
-                            ui.memory_mut(|m| m.request_focus(cards[(at + step) % cards.len()]));
-                        }
-                    }
                 });
+                list_row_nav(ui, interactable);
             });
         })
         .response

@@ -195,8 +195,15 @@ pub(crate) fn list_row(ui: &mut egui::Ui, text: impl Into<egui::WidgetText>) -> 
         .add(egui::Label::new(text).truncate().sense(egui::Sense::click()))
         .on_hover_cursor(egui::CursorIcon::PointingHand);
     ui.visuals_mut().widgets.active.fg_stroke = active_fg;
+    nav_row(ui, &response);
+    response
+}
+
+/// Makes `response` a row of its popup's keyboard navigation (`list_row_nav`): a focused row shows `focus_ring`, is
+/// scrolled into view and keeps Tab and Up/Down inside the popup. Call it for every row, in order.
+pub(crate) fn nav_row(ui: &egui::Ui, response: &egui::Response) {
     if response.has_focus() {
-        focus_ring(ui, &response);
+        focus_ring(ui, response);
         response.scroll_to_me(None);
         ui.memory_mut(|m| {
             m.set_focus_lock_filter(
@@ -207,7 +214,11 @@ pub(crate) fn list_row(ui: &mut egui::Ui, text: impl Into<egui::WidgetText>) -> 
     }
     let key = list_rows_key(ui);
     ui.data_mut(|d| d.get_temp_mut_or_default::<Vec<egui::Id>>(key).push(response.id));
-    response
+}
+
+/// Makes `response` the row `list_row_nav` focuses when the popup opens, instead of the first.
+pub(crate) fn nav_row_opens_on(ui: &egui::Ui, response: &egui::Response) {
+    ui.data_mut(|d| d.insert_temp(list_rows_key(ui).with("opens_on"), Some(response.id)));
 }
 
 /// Whether a list popup drawn in pass `pass` was just opened, given the pass of its last interactable draw: unless that
@@ -232,18 +243,19 @@ pub(crate) fn popup_just_opened(ctx: &egui::Context, key: egui::Id, interactable
     just_opened
 }
 
-/// After a list popup's rows are laid out: focuses the first row when the popup opens, and moves
+/// After a list popup's rows are laid out: focuses the first row (or the `nav_row_opens_on` one) when the popup opens, and moves
 /// focus between rows on Up/Down (wrapping, unless the rows are a window: `mark_list_partial`).
-fn list_row_nav(ui: &mut egui::Ui, interactable: bool) {
+pub(crate) fn list_row_nav(ui: &mut egui::Ui, interactable: bool) {
     let key = list_rows_key(ui);
     let rows: Vec<egui::Id> = ui.data_mut(|d| d.remove_temp(key)).unwrap_or_default();
+    let opens_on: Option<egui::Id> = ui.data_mut(|d| d.remove_temp::<Option<egui::Id>>(key.with("opens_on"))).flatten();
     let partial = ui.data_mut(|d| d.remove_temp::<bool>(key.with("partial"))).unwrap_or(false);
     let just_opened = popup_just_opened(ui.ctx(), key.with("was_open"), interactable);
     if !interactable || rows.is_empty() {
         return;
     }
     if just_opened {
-        ui.memory_mut(|m| m.request_focus(rows[0]));
+        ui.memory_mut(|m| m.request_focus(opens_on.unwrap_or(rows[0])));
         return;
     }
     let Some(at) = rows.iter().position(|id| ui.memory(|m| m.has_focus(*id))) else { return };
