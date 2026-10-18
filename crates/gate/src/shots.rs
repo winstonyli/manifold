@@ -361,6 +361,15 @@ impl Shots {
         Ok(())
     }
 
+    /// Whether a menu or popup is open (the key hint beside a keyboard-focused card does not count).
+    fn menu_open(&mut self) -> io::Result<bool> {
+        let st = self.state()?;
+        let open = st.0["popups"]
+            .as_array()
+            .is_some_and(|list| list.iter().any(|p| p["id"].as_str().is_some_and(|id| !id.contains("card_key_hint"))));
+        Ok(open)
+    }
+
     fn editing(&mut self) -> io::Result<bool> {
         Ok(self.state()?.cards().iter().any(|c| c["editing"].as_bool() == Some(true)))
     }
@@ -766,9 +775,19 @@ impl Shots {
             s.shot("graph-enter-json")?;
             s.reset()
         })?;
+        // The menu opens on the focused card, so the card's Tab stop is found by trying each stop (as `note-key` does).
         self.view("graph-menu-key", |s| {
-            s.tab_presses(knob("MENU_STOP", 13), "0.2")?;
-            send!(s, "SHIFTF10", "SLEEP 1")?;
+            let mut found = 0;
+            for stop in 1..=20 {
+                s.reset()?;
+                s.tab_presses(stop, "0.2")?;
+                send!(s, "SHIFTF10", "SLEEP 1")?;
+                if s.menu_open()? {
+                    found = stop;
+                    break;
+                }
+            }
+            check(&format!("Shift+F10 on a Tab-focused card opens its menu (Tab stop {found})"), found != 0);
             s.shot("graph-menu-key-open")?;
             send!(s, "TABKEY", "SLEEP 0.5")?;
             s.shot("graph-menu-key-tab")?;
