@@ -301,33 +301,34 @@ pub(crate) fn list_row_nav(ui: &mut egui::Ui, interactable: bool) {
         }
         return;
     };
-    let (down, up) = ui.input_mut(|i| {
+    // Presses that land in one frame (a slow frame, a key repeat) are each a step.
+    let (downs, ups) = ui.input_mut(|i| {
         (
-            i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown),
-            i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp),
+            i.count_and_consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown),
+            i.count_and_consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp),
         )
     });
     // Wraps at the ends, unless the rows are only a window of the list (`mark_list_partial`).
-    let next = if down {
-        if at + 1 < rows.len() {
-            Some(at + 1)
+    let mut next = at;
+    for _ in 0..downs {
+        next = if next + 1 < rows.len() {
+            next + 1
         } else if partial {
-            None
+            next
         } else {
-            Some(0)
-        }
-    } else if up {
-        if at > 0 {
-            Some(at - 1)
+            0
+        };
+    }
+    for _ in 0..ups {
+        next = if next > 0 {
+            next - 1
         } else if partial {
-            None
+            next
         } else {
-            Some(rows.len() - 1)
-        }
-    } else {
-        None
-    };
-    if let Some(next) = next {
+            rows.len() - 1
+        };
+    }
+    if next != at {
         ui.memory_mut(|m| m.request_focus(rows[next][0]));
     }
 }
@@ -2463,6 +2464,38 @@ mod view_picker_tests {
         frame(1, vec![]);
         let first = frame(1, vec![]);
         assert!(ctx.memory(|m| m.has_focus(first[0])), "the new page opens on its first row");
+    }
+
+    /// Two Down presses that land in one frame (a slow frame, a key repeat) are two steps, not one.
+    #[test]
+    fn two_presses_in_one_frame_are_two_steps() {
+        let ctx = egui::Context::default();
+        theme::apply_fonts(&ctx);
+        theme::apply_style(&ctx);
+        let frame = |events: Vec<egui::Event>| -> Vec<egui::Id> {
+            let mut rows: Vec<egui::Id> = Vec::new();
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(600.0, 600.0))),
+                events,
+                ..Default::default()
+            };
+            let mut output = ctx.run_ui(input, |ui| {
+                let anchor = egui::Rect::from_min_size(egui::pos2(10.0, 10.0), egui::vec2(60.0, 20.0));
+                build_list_popup_frame(ui.ctx(), "test_two", anchor, 100.0, 300.0, 1.0, true, |ui| {
+                    rows.clear();
+                    for label in ["a", "b", "c", "d"] {
+                        rows.push(list_row(ui, label).id);
+                    }
+                });
+            });
+            output.textures_delta.clear();
+            rows
+        };
+        frame(vec![]);
+        frame(vec![]);
+        frame(vec![key(egui::Key::ArrowDown), key(egui::Key::ArrowDown)]);
+        let rows = frame(vec![]);
+        assert!(ctx.memory(|m| m.has_focus(rows[2])), "two Downs in one frame reach the third row");
     }
 
     /// A long History popup lays out only the rows in view. Down walks one entry at a time past the first view
