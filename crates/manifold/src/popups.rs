@@ -206,8 +206,18 @@ fn list_row_nav(ui: &mut egui::Ui, interactable: bool) {
     let rows: Vec<egui::Id> = ui.data_mut(|d| d.remove_temp(key)).unwrap_or_default();
     let partial = ui.data_mut(|d| d.remove_temp::<bool>(key.with("partial"))).unwrap_or(false);
     let open_key = key.with("was_open");
-    let just_opened = interactable && !ui.data(|d| d.get_temp::<bool>(open_key).unwrap_or(false));
-    ui.data_mut(|d| d.insert_temp(open_key, interactable));
+    // Opened now unless the last interactable pass drew this popup in the pass just before: a popup closed and
+    // reopened without a drawn non-interactable pass between (no fade-out frame) still counts as just opened.
+    let pass = ui.ctx().cumulative_pass_nr();
+    let last_open_pass = ui.data(|d| d.get_temp::<u64>(open_key));
+    let just_opened = interactable && last_open_pass.is_none_or(|p| p + 1 < pass);
+    ui.data_mut(|d| {
+        if interactable {
+            d.insert_temp(open_key, pass);
+        } else {
+            d.remove_temp::<u64>(open_key);
+        }
+    });
     if !interactable || rows.is_empty() {
         return;
     }

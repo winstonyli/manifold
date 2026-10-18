@@ -1,8 +1,8 @@
 use std::collections::{HashMap, HashSet};
-/// The present mode asked for: `Fifo`, or `Immediate`, which shows a frame without queueing it behind a vsync (key to
-/// screen 33 ms against 100, README "View latency, measured") but fails the gate's layout stage (PARKED.md). The surface
-/// falls back to `Fifo`, which every backend supports, when it lacks the mode.
-const PREFERRED_PRESENT_MODE: wgpu::PresentMode = wgpu::PresentMode::Fifo;
+/// The present mode asked for: `Immediate` shows a frame without queueing it behind a vsync (key to screen 33 ms against
+/// 100 for `Fifo`, README "View latency, measured"); the event loop then caps its own frame rate (`GpuState::present_blocks`).
+/// The surface falls back to `Fifo`, which every backend supports, when it lacks the mode.
+const PREFERRED_PRESENT_MODE: wgpu::PresentMode = wgpu::PresentMode::Immediate;
 
 use std::sync::Arc;
 
