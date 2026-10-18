@@ -1170,6 +1170,26 @@ impl Shots {
                 if s.has(view) {
                     send!(s, format!("TOGGLEPOPUP {name}"), "SLEEP 1")?;
                     s.shot(view)?;
+                    if view == "popup-history" {
+                        // The filter narrows the list, and Down from the field focuses the first match.
+                        send!(s, "CLICK 300 889", "SLEEP 1", "EGUITEXT wiki", "SLEEP 1")?;
+                        // A shot forces the frame that `rows` is read from (see PARKED.md, headless debug keys).
+                        s.shot("popup-history-typed")?;
+                        let rows = s.state()?.0["rows"].clone();
+                        let row =
+                            |text: &str| rows.as_array().and_then(|r| r.iter().find(|r| r["text"] == text)).cloned();
+                        check(
+                            "History filter 'wiki' keeps Wikipedia and drops Hacker News",
+                            row("Wikipedia").is_some() && row("Hacker News").is_none(),
+                        );
+                        send!(s, "ARROWDOWN", "SLEEP 1")?;
+                        s.shot("popup-history-filtered")?;
+                        let rows = s.state()?.0["rows"].clone();
+                        let selected = rows
+                            .as_array()
+                            .is_some_and(|r| r.iter().any(|r| r["text"] == "Wikipedia" && r["selected"] == true));
+                        check("Down from the History filter focuses the first match", selected);
+                    }
                     send!(s, AWAY, "SLEEP 1")?;
                 }
             }
