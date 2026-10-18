@@ -2,9 +2,29 @@
 
 One entry per tagged release, newest first. The annotated tag `vX.Y.Z` carries the same text. Releases before v0.4.0 have no entry: see `git log --first-parent --decorate`.
 
+## 0.7.1 - 2026-10-18
+
+*v0.7.0 was tagged but never released (its release workflow failed, see Fixed); v0.7.1 is the first release with its changes.*
+
+### Changed
+
+- Ship the downloadable engine hosts in the release itself: `release.yml` builds them, writes a manifest of their sizes and SHA-256 hashes, builds `manifold.exe` with that manifest compiled in, and attaches each host as `<file>-<platform>` to the same release; the exe fetches `releases/download/v<its version>/<file>-<platform>` on demand and still checks the hash ([75811fb](https://github.com/winstonyli/manifold/commit/75811fb), [4e90905](https://github.com/winstonyli/manifold/commit/4e90905)). The CEF host is the only one built so far.
+
+### Removed
+
+- Remove the `hosts-KIND-FP` host releases, `hosts.yml`, the committed host pin table and `gate host-pin` / `gate host-fingerprint`; a stale host pin can no longer block a tag ([75811fb](https://github.com/winstonyli/manifold/commit/75811fb)).
+
+### Fixed
+
+- Make `gate release-check` and `gate release-notes` find a CHANGELOG entry headed `## X.Y.Z - DATE`; they only read `## vX.Y.Z (DATE)`, so v0.7.0's release workflow failed ([3602ca3](https://github.com/winstonyli/manifold/commit/3602ca3)).
+
+### Internal
+
+- Read the host pins from a manifest (`MANIFOLD_HOST_PINS`, embedded by `build.rs`; a debug build also reads `MANIFOLD_HOST_PINS_FILE`), so the gate's download-state shots pin a made-up host instead of a real one ([75811fb](https://github.com/winstonyli/manifold/commit/75811fb)).
+
 ## 0.7.0 - 2026-10-18
 
-*v0.6.0 was tagged but never released; v0.7.0 is the first release with its changes.*
+*v0.6.0 and v0.7.0 were tagged but never released (v0.7.0's release workflow failed); 0.7.1 is the first release with their changes.*
 
 ### Changed
 
