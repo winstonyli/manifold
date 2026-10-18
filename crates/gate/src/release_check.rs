@@ -14,10 +14,14 @@ fn git(root: &Path, args: &[&str]) -> Option<String> {
     out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
-/// The text under `## TAG ...` up to the next `## ` heading, trimmed.
+/// The text under `## X.Y.Z - DATE` (the current format) or `## vX.Y.Z (DATE)` (older entries) up to the next `## `
+/// heading, trimmed.
 pub(crate) fn changelog_body(changelog: &str, tag: &str) -> Option<String> {
     let lines: Vec<&str> = changelog.lines().collect();
-    let start = lines.iter().position(|l| *l == format!("## {tag}") || l.starts_with(&format!("## {tag} ")))?;
+    let version = tag.trim_start_matches('v');
+    let is_heading =
+        |l: &str| [tag, version].iter().any(|name| l == format!("## {name}") || l.starts_with(&format!("## {name} ")));
+    let start = lines.iter().position(|l| is_heading(l))?;
     let end = lines[start + 1..].iter().position(|l| l.starts_with("## ")).map_or(lines.len(), |i| start + 1 + i);
     Some(lines[start + 1..end].join("\n").trim().to_owned())
 }
@@ -109,6 +113,14 @@ mod tests {
         assert_eq!(changelog_body(LOG, "v0.5.1").unwrap(), "- old");
         assert_eq!(changelog_body(LOG, "v0.6.1"), None);
         assert_eq!(changelog_body(LOG, "v0.6"), None);
+    }
+
+    #[test]
+    fn a_heading_without_the_v_and_with_a_dash_date_is_found() {
+        let log = "# Changelog\n\n## 0.7.0 - 2026-10-18\n\n### Fixed\n\n- two\n\n## v0.6.0 (2026-10-16)\n\n- one\n";
+        assert_eq!(changelog_body(log, "v0.7.0").unwrap(), "### Fixed\n\n- two");
+        assert_eq!(changelog_body(log, "v0.6.0").unwrap(), "- one");
+        assert_eq!(changelog_body(log, "v0.7"), None);
     }
 
     #[test]
