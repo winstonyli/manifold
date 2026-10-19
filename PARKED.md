@@ -14,7 +14,6 @@ The one list of deferred work (format: `~/.claude/VERSIONING.md`). Delete an ite
 ## Verified 2026-10-18
 
 - **Servo and WebKit hosts in `release.yml`.** Only CEF is built and pinned; the other two read Unavailable in a release. *Why parked:* by decision, one engine first (spec phases P2, P3); Servo needs about 33 minutes and 30 GB, WebKit a Linux job whose artifact the Windows job pins under `linux-x64`. *Trigger:* wanting either downloadable. *Evidence:* `.github/workflows/release.yml` builds `manifold-view-cef` only (2026-10-18). *Status:* parked.
-- **Nothing downloads a host from the published release.** `gate release-verify` checks the host files in `dist/` against the manifest before the draft exists; the URL the exe will fetch (`releases/download/v<version>/<file>-<platform>`) is first used by a user. *Why parked:* a draft's assets are not public, so a CI download cannot run before publishing. *Trigger:* a published release whose host 404s or mismatches. *Check:* after publishing, `gh release download vX.Y.Z -p "*-windows-x64"` and compare each hash with the manifest. *Status:* parked.
 - **Reusing a previous release's host when its dependency closure is unchanged.** Every release rebuilds every host (decision `docs/decisions/2026-10-18-hosts-in-the-release.md`). *Why parked:* cost is acceptable for one host. *Trigger:* release build time (Servo) or unwanted re-downloads on upgrade. *Fix:* additive: copy the old asset and keep its hash in the manifest. *Status:* parked.
 
 ## Not re-verified (from the README and plans)
