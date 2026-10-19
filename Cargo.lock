@@ -5083,7 +5083,6 @@ dependencies = [
  "javascriptcore-rs",
  "manifold-pages",
  "manifold-view-protocol",
- "url",
  "webkit2gtk",
 ]
 

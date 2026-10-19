@@ -12,7 +12,6 @@ gtk.workspace = true
 manifold-pages.workspace = true
 manifold-view-protocol.workspace = true
 javascriptcore.workspace = true
-url.workspace = true
 webkit2gtk = { workspace = true, features = ["v2_30"] }
 
 # The exe keeps the name released builds, release.yml and the scripts know; it changes with a release that
