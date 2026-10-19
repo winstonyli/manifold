@@ -25,6 +25,7 @@ use crate::windows_main::work_dir;
 
 const FIXTURE: &str = "crates/manifold-view-pdfium/tests/fixture.pdf";
 const PDF_WAIT: Duration = Duration::from_secs(180);
+const INSTALL_WAIT: Duration = Duration::from_secs(600);
 
 /// The newest `dist/manifold-v*-windows-x64.exe` under `repo`.
 fn newest_release(repo: &Path) -> Option<PathBuf> {
@@ -99,6 +100,60 @@ pub(crate) fn package(args: &[String]) -> ExitCode {
     let _t = Section::start("package");
     guarded("package", || run(&repo, &exe_src, &work));
     finish(&work)
+}
+
+/// `gate install-check EXE`: the exe alone in a temp folder with APPDATA redirected, asked to install CEF from the
+/// network, as a user's Download click does. For a published release only: a draft's asset URLs are not public. Waits up
+/// to 10 minutes for `VIEWSTATE cef` to read Installed or Failed.
+pub(crate) fn install_check(args: &[String]) -> ExitCode {
+    let [exe_src] = args else {
+        eprintln!("usage: gate install-check EXE");
+        return ExitCode::from(2);
+    };
+    let work = match work_dir(None, "install-check") {
+        Ok(w) => w,
+        Err(e) => {
+            eprintln!("work dir: {e}");
+            return ExitCode::from(1);
+        }
+    };
+    let _t = Section::start("install-check");
+    guarded("install-check", || install(Path::new(exe_src), &work));
+    finish(&work)
+}
+
+fn install(exe_src: &Path, work: &Path) -> io::Result<()> {
+    let bin = work.join("bin");
+    fs::create_dir_all(&bin)?;
+    let exe = bin.join("manifold.exe");
+    fs::copy(exe_src, &exe)?;
+    let appdata = work.join("appdata");
+    let profile = appdata.join("manifold");
+    seed(&exe, &profile, "webview2", &[tab_node(None, "webview2")])?;
+    let appdata_env = appdata.display().to_string();
+    let mut inst = Instance::launch_env(&exe, &profile, work, "log", &[("APPDATA", &appdata_env)])?;
+    inst.send("WAITTABS")?;
+    inst.send("INSTALLVIEW cef")?;
+    let deadline = Instant::now() + INSTALL_WAIT;
+    let mut last = String::new();
+    while Instant::now() < deadline && inst.is_running() {
+        inst.send("VIEWSTATE cef")?;
+        sleep(Duration::from_secs(2));
+        let log = fs::read_to_string(&inst.log).unwrap_or_default();
+        last = log.lines().rev().find(|l| l.starts_with("view-state cef: ")).unwrap_or_default().to_owned();
+        if last.starts_with("view-state cef: Installed") || last.starts_with("view-state cef: Failed") {
+            break;
+        }
+    }
+    quit(&mut inst, "headless manifold exits after QUIT");
+    check(
+        &format!("CEF installed from the network (last state {last:?})"),
+        last.starts_with("view-state cef: Installed"),
+    );
+    let hosts = profile.join("manifold").join("data").join("engine-hosts");
+    check("the CEF host is on disk", hosts.join("manifold-engine-cef.exe").is_file());
+    check("the CEF runtime is on disk", hosts.join("cef-runtime").join("libcef.dll").is_file());
+    Ok(())
 }
 
 fn run(repo: &Path, exe_src: &Path, work: &Path) -> io::Result<()> {
