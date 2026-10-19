@@ -1,7 +1,7 @@
 //! Recently Closed: close, reopen and eviction over the document's `closed` field.
 
 use super::*;
-use crate::store::model::{Kind, Placement, Stamp};
+use crate::store::model::{FieldValue, Kind, NodeId, Placement, Stamp};
 
 /// How many roots the history keeps before `evict_closed` deletes the oldest, like a browser's own bounded
 /// "Recently closed" list.
@@ -169,7 +169,11 @@ impl App {
             return;
         }
         // Where the document shows it, not where the graph does: a tab still spawning or waking has no `nodes` entry.
-        match doc.placement(id) {
+        let placement = doc.placement(id);
+        if matches!(placement, Placement::Shown(_)) {
+            self.regroup_held(&id.to_string());
+        }
+        match placement {
             Placement::Hidden => {
                 self.queue_toast("Reopened inside a closed group: it shows when that group is reopened".to_string());
             }
@@ -204,8 +208,17 @@ impl App {
         if roots.len() <= MAX_CLOSED {
             return;
         }
+        // Past the cap the oldest go, but an emptied group (`App::ungroup`) before any real close: one Ungroup All of
+        // many groups must not push out the tabs a user closed.
+        let emptied = |id: &NodeId| {
+            doc.nodes.get(id).is_some_and(|n| matches!(n.get(field::HELD), FieldValue::Str(held) if !held.is_empty()))
+        };
+        let excess = roots.len() - MAX_CLOSED;
+        let oldest_first = || roots.iter().rev().map(|&(id, _)| id);
+        let mut victims: Vec<NodeId> = oldest_first().filter(emptied).take(excess).collect();
+        victims.extend(oldest_first().filter(|id| !emptied(id)).take(excess - victims.len()));
         let evicted: Vec<String> = doc
-            .with_descendants(roots[MAX_CLOSED..].iter().map(|&(id, _)| id).collect())
+            .with_descendants(victims.into_iter().collect())
             .into_iter()
             .filter(|id| doc.nodes.get(id).is_some_and(|n| !n.deleted))
             .map(|id| id.to_string())
@@ -687,47 +700,77 @@ mod tests {
         app.apply_node_action(&ctx, &g, NodeAction::Dissolve);
         assert!(!app.nodes.contains_key(&g) && app.nodes.contains_key(&inner), "dissolved: the member stays");
         assert_eq!(app.mirror.group(&inner), None);
-        assert!(closed_ids(&app).is_empty(), "a dissolve is not a close");
-    }
-
-    /// "Dissolve Group" offers an Undo on its toast: the group comes back (new id, same name and color) around the
-    /// member that stayed where the dissolve left it.
-    #[test]
-    fn dissolve_group_can_be_undone_from_its_toast() {
-        use crate::node_menu::NodeAction;
-        let ctx = egui::Context::default();
-        let path = store::testutil::temp_dir("dissolve-undo").join("session.mnf");
-        let mut app = app_on(&path, 1);
-        let (g, inner) = group_with_note(&mut app);
-        app.edit_name(&g, "Research");
-        app.edit_field(&g, field::COLOR, session_sync::color_value(Some(egui::Color32::from_rgb(1, 2, 3))));
-        app.apply_node_action(&ctx, &g, NodeAction::Dissolve);
-        let (message, undo) = app.toasts.undo.take().expect("the dissolve offers an undo");
-        assert!(message.starts_with("Dissolved"), "{message}");
-        app.undo_dissolve(undo);
-        let back = app.mirror.group(&inner).expect("the member is in a group again").to_owned();
-        assert_ne!(back, g, "a new group, the old id is gone");
-        assert_eq!(app.mirror.name(&back), "Research");
         assert_eq!(
-            app.mirror.get(&back, field::COLOR),
-            session_sync::color_value(Some(egui::Color32::from_rgb(1, 2, 3)))
+            closed_ids(&app),
+            std::slice::from_ref(&g),
+            "the emptied group waits in Recently Closed for an undo"
         );
     }
 
-    /// Ungroup All offers one Undo for every group it dissolved: both come back around their members.
+    /// "Dissolve Group" closes the emptied group holding its members' ids: Undo (or the Recently Closed row) reopens
+    /// the same group, with its name and color, around the members still at its level.
+    #[test]
+    fn dissolve_group_is_undone_by_reopening_the_same_group() {
+        use crate::node_menu::NodeAction;
+        let ctx = egui::Context::default();
+        let color = session_sync::color_value(Some(egui::Color32::from_rgb(1, 2, 3)));
+        for from_toast in [true, false] {
+            let path = store::testutil::temp_dir("dissolve-undo").join("session.mnf");
+            let mut app = app_on(&path, 1);
+            let (g, inner) = group_with_note(&mut app);
+            let moved_on = note(&mut app, "moved on");
+            app.edit_group(&moved_on, Some(g.clone()));
+            app.edit_name(&g, "Research");
+            app.edit_field(&g, field::COLOR, color.clone());
+            assert!(app.save_session());
+            app.apply_node_action(&ctx, &g, NodeAction::Dissolve);
+            let (message, ids) = app.toasts.undo.take().expect("the dissolve offers an undo");
+            assert!(message.starts_with("Dissolved"), "{message}");
+            // A member the user put elsewhere meanwhile stays there.
+            let elsewhere = add_group(&mut app, "Elsewhere");
+            app.edit_group(&moved_on, Some(elsewhere.clone()));
+            if from_toast {
+                app.undo_ungroup(ids);
+            } else {
+                app.reopen_node(g.parse().unwrap());
+            }
+            assert_eq!(app.mirror.group(&inner), Some(g.as_str()), "back in the same group (toast: {from_toast})");
+            assert_eq!(app.mirror.group(&moved_on), Some(elsewhere.as_str()));
+            assert_eq!(app.mirror.name(&g), "Research");
+            assert_eq!(app.mirror.get(&g, field::COLOR), color);
+            assert!(closed_ids(&app).is_empty());
+            assert_eq!(stored(&app, &g, field::HELD), FieldValue::Str(String::new()), "forgotten once restored");
+        }
+    }
+
+    /// Ungroup All offers one Undo for every group it dissolved.
     #[test]
     fn ungroup_all_is_undone_in_one_step() {
         let path = store::testutil::temp_dir("ungroup-undo").join("session.mnf");
         let mut app = app_on(&path, 1);
         let (g1, n1) = group_with_note(&mut app);
         let (g2, n2) = group_with_note(&mut app);
-        app.dissolve_groups_undoable(&[g1.clone(), g2.clone()]);
+        app.ungroup(&[g1.clone(), g2.clone()]);
         assert!(app.mirror.group(&n1).is_none() && app.mirror.group(&n2).is_none());
-        let (message, undo) = app.toasts.undo.take().expect("an undo");
+        let (message, ids) = app.toasts.undo.take().expect("an undo");
         assert_eq!(message, "Ungrouped 2 groups");
-        app.undo_dissolve(undo);
-        let (b1, b2) = (app.mirror.group(&n1).map(str::to_owned), app.mirror.group(&n2).map(str::to_owned));
-        assert!(b1.is_some() && b2.is_some() && b1 != b2, "{b1:?} {b2:?}");
+        app.undo_ungroup(ids);
+        assert_eq!(app.mirror.group(&n1), Some(g1.as_str()));
+        assert_eq!(app.mirror.group(&n2), Some(g2.as_str()));
+    }
+
+    /// Past the cap the emptied groups go before any real close, so one Ungroup All never pushes out closed tabs.
+    #[test]
+    fn eviction_takes_emptied_groups_before_real_closes() {
+        let path = store::testutil::temp_dir("evict-emptied").join("session.mnf");
+        let mut app = app_on(&path, 1);
+        let first = note(&mut app, "first closed");
+        app.close_node(&first);
+        let groups: Vec<String> = (0..MAX_CLOSED).map(|_| group_with_note(&mut app).0).collect();
+        app.ungroup(&groups);
+        let closed = closed_ids(&app);
+        assert_eq!(closed.len(), MAX_CLOSED, "capped");
+        assert!(closed.contains(&first), "the real close, the oldest entry, survived the emptied groups");
     }
 
     /// Close Selected with a group and a member inside it both selected: the group closes first (outermost first), the

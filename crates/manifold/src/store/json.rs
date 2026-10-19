@@ -212,8 +212,10 @@ pub fn import(json: &JsonDoc, mut next_id: impl FnMut() -> NodeId, trust: Trust)
         let mut fields = BTreeMap::new();
         for (name, value) in &node.fields {
             // The type is carried separately; `creates` writes it. `closed` is the document's history, never a
-            // file's: an import always arrives shown.
-            let Some(def) = field_by_name(name).filter(|def| def.no != field::TYPE && def.no != field::CLOSED) else {
+            // file's: an import always arrives shown. `held` names this document's nodes.
+            let Some(def) =
+                field_by_name(name).filter(|def| !matches!(def.no, field::TYPE | field::CLOSED | field::HELD))
+            else {
                 continue;
             };
             // Only what its kind carries, and its group: a newer build's field on an unknown type can't be remapped,

@@ -162,7 +162,7 @@ pub(crate) const TYPES: [(Kind, &str, &[u32]); 9] = {
     use field::*;
     [
         (Kind::Tab, TYPE_TAB, &[POS, COLOR, PARENT, URL, VIEW_KIND, PINNED, JAR, NAME, CLOSED]),
-        (Kind::Group, TYPE_GROUP, &[POS, COLOR, NAME, JAR, CLOSED]),
+        (Kind::Group, TYPE_GROUP, &[POS, COLOR, NAME, JAR, CLOSED, HELD]),
         (Kind::Note, TYPE_NOTE, &[POS, COLOR, PARENT, URL, TEXT, NAME, CLOSED]),
         (Kind::Image, TYPE_IMAGE, &[POS, COLOR, PARENT, URL, PATH, NAME, CLOSED]),
         (Kind::Pdf, TYPE_PDF, &[POS, COLOR, PARENT, URL, PATH, NAME, CLOSED]),
@@ -263,9 +263,12 @@ pub mod field {
     /// everything under it are hidden in place, and the node is a Recently Closed entry (`Doc::closed_roots`). Only
     /// the close and reopen verbs write it.
     pub const CLOSED: u32 = 23;
+    /// On a group closed by Ungroup or Dissolve Group: the ids of the members it had, space separated, so reopening
+    /// it puts them back (`App::regroup_held`); "" otherwise.
+    pub const HELD: u32 = 24;
 }
 
-pub static FIELDS: [FieldDef; 18] = [
+pub static FIELDS: [FieldDef; 19] = [
     FieldDef { no: field::POS, name: "pos", ty: FieldType::Pos },
     FieldDef { no: field::COLOR, name: "color", ty: FieldType::Color },
     FieldDef { no: field::GROUP, name: "group", ty: FieldType::Id },
@@ -286,6 +289,7 @@ pub static FIELDS: [FieldDef; 18] = [
     FieldDef { no: field::TO, name: "to", ty: FieldType::Id },
     FieldDef { no: field::IS_DEFAULT, name: "is_default", ty: FieldType::Bool },
     FieldDef { no: field::CLOSED, name: "closed", ty: FieldType::Replica },
+    FieldDef { no: field::HELD, name: "held", ty: FieldType::Str },
 ];
 
 /// Retired: a tab's `jar_set` and a group's `default_jar`, replaced by the `jar` edge (jars-as-cards spec). Never

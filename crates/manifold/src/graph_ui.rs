@@ -363,7 +363,7 @@ impl App {
             }
             GraphAction::UngroupAll => {
                 let groups = self.level_scan().groups;
-                self.dissolve_groups_undoable(&groups);
+                self.ungroup(&groups);
             }
             GraphAction::ImportGroup => {
                 if let Some(path) = rfd::FileDialog::new().add_filter("Group", &["json"]).pick_file() {

@@ -12,7 +12,7 @@ const A: ActorId = ActorId(0xA);
 fn jar_fields_belong_to_tabs_groups_and_jars() {
     use field::*;
     assert_eq!(Kind::Tab.fields(), &[POS, COLOR, PARENT, URL, VIEW_KIND, PINNED, JAR, NAME, CLOSED]);
-    assert_eq!(Kind::Group.fields(), &[POS, COLOR, NAME, JAR, CLOSED]);
+    assert_eq!(Kind::Group.fields(), &[POS, COLOR, NAME, JAR, CLOSED, HELD]);
     assert_eq!(Kind::Jar.fields(), &[POS, COLOR, NAME, EPHEMERAL, IS_DEFAULT, CLOSED]);
     assert_eq!(Kind::Link.fields(), &[NAME, FROM, TO, CLOSED]);
     assert_eq!(Kind::Unknown.fields(), &[POS, COLOR, PARENT, NAME, CLOSED]);

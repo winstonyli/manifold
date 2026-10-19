@@ -2,16 +2,6 @@
 
 use super::*;
 
-/// What `App::undo_dissolve` needs to bring a dissolved group back.
-pub(crate) struct Dissolved {
-    name: String,
-    color: FieldValue,
-    jar: FieldValue,
-    pos: egui::Vec2,
-    group: Option<String>,
-    members: Vec<String>,
-}
-
 impl App {
     /// A fresh group's default display name: "Group N" for the smallest N
     /// no group is named yet. Not the group count plus one, which repeats a
@@ -50,10 +40,8 @@ impl App {
     /// exactly as before nesting existed -- reads the group's own parent
     /// before removing it, rather than assuming `None`. `current_group`
     /// moves to that same parent if it happened to be the group just
-    /// dissolved (should only actually matter defensively — the "Dissolve
-    /// Group" row and Ungroup All only reach groups one level up from the
-    /// level currently being viewed). Not the card's close: that is
-    /// `close_node`.
+    /// dissolved. Deletes the group: the user-facing Dissolve Group and Ungroup All close it instead (`ungroup`), so
+    /// they can be undone. Not the card's close: that is `close_node`.
     ///
     /// A local dissolve: a member whose `jar` edge now reaches nothing it did before loses it (`recheck_edge_scope`).
     pub(crate) fn dissolve_group(&mut self, id: &str) {
@@ -62,54 +50,52 @@ impl App {
         }
     }
 
-    /// The menu's "Dissolve Group" and the toolbar's Ungroup All: `dissolve_group` on each, then a toast with an Undo
-    /// button (`undo_dissolve`) while it shows.
-    pub(crate) fn dissolve_groups_undoable(&mut self, ids: &[String]) {
+    /// The menu's "Dissolve Group" and the toolbar's Ungroup All: each group's members move up to its own level and
+    /// the empty group is closed (a Recently Closed entry) holding their ids (`field::HELD`), so reopening it, from
+    /// that list or the toast's Undo (`undo_ungroup`), puts them back (`regroup_held`).
+    pub(crate) fn ungroup(&mut self, ids: &[String]) {
         let message = match ids {
             [id] => format!("Dissolved {}", self.drop_target_name(id)),
             _ => format!("Ungrouped {} groups", ids.len()),
         };
-        let undo: Vec<Dissolved> = ids
-            .iter()
-            .map(|id| Dissolved {
-                name: self.mirror.name(id).to_owned(), // name rule: copied back verbatim to the restored group
-                color: self.mirror.get(id, field::COLOR),
-                jar: self.mirror.get(id, field::JAR),
-                pos: self.layout_pos(id),
-                group: self.mirror.group(id).map(str::to_owned),
-                members: self.members_of(id).map(str::to_owned).collect(),
-            })
-            .collect();
         for id in ids {
-            self.dissolve_group(id);
+            let parent = self.mirror.group(id).map(str::to_owned);
+            let members: Vec<String> = self.members_of(id).map(str::to_owned).collect();
+            for member in &members {
+                self.edit_group(member, parent.clone());
+            }
+            self.edit_field(id, field::HELD, FieldValue::Str(members.join(" ")));
+            self.close_node(id);
+            for member in &members {
+                self.recheck_edge_scope(member);
+            }
         }
-        self.toasts.undo = Some((message.clone(), undo));
+        self.toasts.undo = Some((message.clone(), ids.to_vec()));
         self.queue_toast(message);
     }
 
-    /// Brings the dissolved groups back, each as a new group with its name, color, jar and place, around the members
-    /// that are still where the dissolve left them. Edges the dissolve cleared as out of reach
-    /// (`recheck_edge_scope`) stay cleared.
-    pub(crate) fn undo_dissolve(&mut self, undo: Vec<Dissolved>) {
-        for group in undo {
-            self.restore_group(group);
+    /// The toast's Undo: reopens each group `ungroup` closed.
+    pub(crate) fn undo_ungroup(&mut self, ids: Vec<String>) {
+        for id in ids.iter().filter_map(|id| id.parse().ok()) {
+            self.reopen_node(id);
         }
-        self.save_session();
     }
 
-    fn restore_group(&mut self, undo: Dissolved) {
-        let id = self.alloc_node_id();
-        let at = self.placement(&id, Some(undo.pos));
-        let at = Placement { group: undo.group.clone(), ..at };
-        // name rule: the restored group seeds with the stored name it had, drawn later by display_name
-        self.place_group(Some(id.clone()), &undo.name, at);
-        self.edit_field(&id, field::COLOR, undo.color);
-        self.edit_field(&id, field::JAR, undo.jar);
-        for member in undo.members {
-            if self.nodes.contains_key(&member) && self.mirror.group(&member) == undo.group.as_deref() {
-                self.edit_group(&member, Some(id.clone()));
+    /// A reopened group puts back the members `ungroup` took out of it that are still at its level (one moved
+    /// elsewhere meanwhile stays), then forgets them. Nothing if the group is not shown (its own group is closed).
+    pub(crate) fn regroup_held(&mut self, id: &str) {
+        let FieldValue::Str(held) = self.mirror.get(id, field::HELD) else { return };
+        if held.is_empty() {
+            return;
+        }
+        let level = self.mirror.group(id).map(str::to_owned);
+        for member in held.split(' ') {
+            if self.nodes.contains_key(member) && self.mirror.group(member) == level.as_deref() {
+                self.edit_group(member, Some(id.to_owned()));
             }
         }
+        self.edit_field(id, field::HELD, FieldValue::Str(String::new()));
+        self.save_session();
     }
 
     /// `dissolve_group` without the edge recheck, for a remote delete: the remote device's own recheck arrives as

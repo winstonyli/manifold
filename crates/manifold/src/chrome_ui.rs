@@ -116,7 +116,7 @@ impl App {
             });
         if undo_clicked {
             if let Some((_, undo)) = self.toasts.undo.take() {
-                self.undo_dissolve(undo);
+                self.undo_ungroup(undo);
             }
             self.toasts.save_toast = None;
         }

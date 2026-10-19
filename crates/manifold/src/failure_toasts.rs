@@ -30,8 +30,8 @@ pub(crate) struct Toasts {
     pub(crate) save_toast_queue: std::collections::VecDeque<String>,
     /// Spawn-failure toasts held to merge by cause (`failure_toasts`).
     pub(crate) failure_notices: FailureNotices,
-    /// A toast with an Undo button: the message it shows on, and what the button restores (`dissolve_group_undoable`).
-    pub(crate) undo: Option<(String, Vec<crate::groups::Dissolved>)>,
+    /// A toast with an Undo button: the message it shows on, and the groups it reopens (`App::ungroup`).
+    pub(crate) undo: Option<(String, Vec<String>)>,
 }
 
 /// One cause's burst: its intents (distinct, first-seen order) and the first message, shown when there is one intent.
