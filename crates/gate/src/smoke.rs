@@ -275,6 +275,24 @@ fn border_near(s: &State, png: &Path, id: &str, want: [u8; 3]) -> bool {
     near < 40.0
 }
 
+/// How many pixels inside the popups showing in `s` are within 12 (RGB distance) of `want`.
+fn fill_pixels(s: &State, png: &Path, want: [u8; 3]) -> usize {
+    let Ok(img) = crate::shots_img::load(png) else { return 0 };
+    let rects: Vec<Vec<f64>> =
+        s.0["popups"].as_array().map(|l| l.iter().filter_map(|p| floats(&p["rect"], 4)).collect()).unwrap_or_default();
+    let mut n = 0;
+    for r in rects {
+        for y in r[1].max(0.0) as u32..(r[3].max(0.0) as u32).min(img.height()) {
+            for x in r[0].max(0.0) as u32..(r[2].max(0.0) as u32).min(img.width()) {
+                let p = img.get_pixel(x, y).0;
+                let d2: i64 = p.iter().zip(want).map(|(a, b)| (i64::from(*a) - i64::from(b)).pow(2)).sum();
+                n += usize::from(d2 < 144);
+            }
+        }
+    }
+    n
+}
+
 /// `"x y"` -> ints.
 fn ints(text: &str) -> io::Result<Vec<i64>> {
     text.split_whitespace()
@@ -652,8 +670,8 @@ fn drive(sm: &mut Smoke, m: &mut Marks) -> io::Result<()> {
     );
 
     m.mark("borders");
-    // Border colors, read off a screenshot: a group of more than 8 members rests on DANGER_COLOR (224, 112, 84), and
-    // the empty group from above on ACCENT (215, 162, 74). The mouse waits in an empty corner.
+    // Border colors, read off a screenshot: a group of more than 8 members rests on DANGER_COLOR, and the empty
+    // group from above on ACCENT (both read from EXPORTSTATE's `theme`). The mouse waits in an empty corner.
     sm.send("CLICK 22 17")?;
     sm.write("nine.group.json", nine_group().to_string().as_bytes())?;
     let top = sm.settle("top")?;
@@ -667,7 +685,13 @@ fn drive(sm: &mut Smoke, m: &mut Marks) -> io::Result<()> {
     let empty = before.first().cloned().unwrap_or_default();
     sm.shot("borders.png", "group borders")?;
     let png = sm.path("borders.png");
-    let (danger, accent) = ([224, 112, 84], [215, 162, 74]);
+    let color = |name: &str| {
+        nine_s.theme_color(name).unwrap_or_else(|| {
+            failed(&format!("EXPORTSTATE has no theme color {name}"));
+            [0, 0, 0]
+        })
+    };
+    let (danger, accent) = (color("danger"), color("accent"));
     if border_near(&nine_s, &png, &nine, danger) {
         pass("a group of 9 has a DANGER_COLOR border");
     } else {
@@ -677,6 +701,20 @@ fn drive(sm: &mut Smoke, m: &mut Marks) -> io::Result<()> {
         pass("an empty group has an ACCENT border");
     } else {
         failed(&format!("the empty group {empty}'s border isn't ACCENT (see borders.png)"));
+    }
+
+    // A confirm dialog's main button is filled by what it does: DANGER_COLOR when destructive, ACCENT when not.
+    for (kind, name, want) in [("destructive", "danger", danger), ("safe", "accent", accent)] {
+        sm.send(&format!("CONFIRM {kind}"))?;
+        let open = sm.settle(&format!("confirm_{kind}"))?;
+        let file = format!("confirm_{kind}.png");
+        sm.shot(&file, &format!("{kind} confirm"))?;
+        if fill_pixels(&open, &sm.path(&file), want) >= 200 {
+            pass(&format!("a {kind} confirm fills its button with {name}"));
+        } else {
+            failed(&format!("a {kind} confirm has no {name} button fill (see {file})"));
+        }
+        sm.send("ESCAPE")?;
     }
 
     m.mark("reopen-nested");

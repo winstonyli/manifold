@@ -306,6 +306,9 @@ pub enum DebugCommand {
     ToggleShortcutsHelp,
     /// Opens (or closes) one of the Settings page's list popups, opening the page for its anchor.
     TogglePopup(AnchoredPopup),
+    /// Opens a confirm dialog: `true` the destructive kind (delete session "probe"), `false` the safe kind (download
+    /// Servo). Nothing runs unless the dialog's button is clicked, and nothing opens while another confirm is up.
+    Confirm(bool),
     /// Shows a page of the open card menu (`MenuPage`), or the menu's items again for `None`. Nothing without a menu.
     MenuPage(Option<crate::node_menu::MenuPage>),
     /// Sets the History popup's own filter box directly, same "direct call,
@@ -580,6 +583,7 @@ const COMMAND_HELP: &[(&str, &str)] = &[
     ),
     ("SLEEP secs", "Hold later commands for `secs` (in order, unlike a driver script's own sleep)"),
     ("TOGGLESHORTCUTSHELP", "F1 -- toggle the keyboard-shortcut reference popup"),
+    ("CONFIRM kind", "Open a confirm dialog: destructive (delete session) or safe (download Servo)"),
     ("MENUPAGE name", "Show the open card menu's color|jar page, or its items for none"),
     ("TOGGLEPOPUP name", "Toggle the Settings page's bookmarks|history|downloads popup (opens the page), the graph toolbar's recentlyclosed list, or the Back|Forward chip's branch list (needs its marker)"),
     ("SPLIT kind", "Open a Split pane running `kind` (servo|cef|webkit|webview2)"),
@@ -863,6 +867,11 @@ pub fn parse_line(line: &str) -> Option<DebugCommand> {
             "back" => Some(DebugCommand::TogglePopup(AnchoredPopup::BackBranches)),
             "forward" => Some(DebugCommand::TogglePopup(AnchoredPopup::ForwardBranches)),
             "recentlyclosed" => Some(DebugCommand::TogglePopup(AnchoredPopup::RecentlyClosed)),
+            _ => None,
+        },
+        "CONFIRM" => match rest.trim() {
+            "destructive" => Some(DebugCommand::Confirm(true)),
+            "safe" => Some(DebugCommand::Confirm(false)),
             _ => None,
         },
         "MENUPAGE" => match rest.trim() {
@@ -1536,6 +1545,13 @@ impl App {
                 }
                 popups::toggle_popup(&mut self.menus.open_popup, which);
             }
+            DebugCommand::Confirm(destructive) => {
+                if destructive {
+                    self.offer_session_delete("probe".to_string());
+                } else {
+                    self.offer_view_confirm(crate::view_info::ViewConfirm::Download(ViewKind::Servo));
+                }
+            }
             DebugCommand::MenuPage(page) => {
                 self.menus.node_menu_page =
                     self.menus.node_menu.clone().and_then(|(id, pos)| page.map(|page| (id, pos, page)));
@@ -1767,6 +1783,8 @@ impl App {
             "view_kinds": self.view_kinds_state(),
             "window": [window.width(), window.height()],
             "popups": self.popups_state(),
+            // The theme colors the gate checks on screen, as [r, g, b]: the gate reads them here, not from its own copy.
+            "theme": {"danger": crate::theme::rgb(crate::theme::DANGER_COLOR), "accent": crate::theme::rgb(crate::theme::ACCENT)},
             "rows": crate::identity::drawn_rows(&self.egui_ctx).iter().map(|r| serde_json::json!({"text": r.text, "selected": r.selected, "rect": [r.rect.min.x, r.rect.min.y, r.rect.max.x, r.rect.max.y]})).collect::<Vec<_>>(),
             "open_popup": self.menus.open_popup.map(|p| format!("{p:?}")),
             "identities": crate::identity::drawn_icons(&self.egui_ctx).iter().map(|i| serde_json::json!({"kind": i.kind, "text": i.text, "rect": [i.rect.min.x, i.rect.min.y, i.rect.max.x, i.rect.max.y]})).collect::<Vec<_>>(),
@@ -1899,6 +1917,7 @@ mod tests {
             "ADDRESSBAR example.com",
             "ENTER",
             "ESCAPE",
+            "CONFIRM destructive",
             "BACKSPACE",
             "EGUITEXT Work",
             "ARROWRIGHT",
@@ -2113,6 +2132,13 @@ mod tests {
     }
 
     /// `window` is the window's size and `popups` the visible Foreground layers' rects (`gate layout` reads both).
+    #[test]
+    fn export_state_gives_the_theme_colors() {
+        let state = App::default().export_state();
+        assert_eq!(state["theme"]["danger"], serde_json::json!([224, 112, 84]));
+        assert_eq!(state["theme"]["accent"], serde_json::json!([215, 162, 74]));
+    }
+
     #[test]
     fn export_state_gives_the_window_and_each_foreground_popup() {
         let app = App::default();

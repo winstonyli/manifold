@@ -47,6 +47,13 @@ impl State {
         serde_json::from_str(text).map(State)
     }
 
+    /// The theme color `name` ("danger", "accent") as `[r, g, b]`, from EXPORTSTATE's `theme`.
+    pub fn theme_color(&self, name: &str) -> Option<[u8; 3]> {
+        let c = self.0.get("theme")?.get(name)?.as_array()?;
+        let channel = |i: usize| c.get(i)?.as_u64().and_then(|v| u8::try_from(v).ok());
+        Some([channel(0)?, channel(1)?, channel(2)?])
+    }
+
     /// Every card of the current level in draw order, jar cards included (empty if the key is missing): what is on
     /// screen, for hit tests and layout.
     pub fn all_cards(&self) -> &[Value] {

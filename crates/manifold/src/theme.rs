@@ -170,6 +170,11 @@ pub(crate) fn key_hint_strip<'a>(
     });
 }
 
+/// `color` as `[r, g, b]`.
+pub(crate) fn rgb(color: egui::Color32) -> [u8; 3] {
+    [color.r(), color.g(), color.b()]
+}
+
 /// An outline on a keyboard-focused widget. egui shows focus only as the widget's
 /// "active" look, which is invisible on a button whose fill is overridden or that
 /// has no frame; this paints inside the widget's rect, so it moves nothing.
