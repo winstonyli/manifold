@@ -2354,6 +2354,52 @@ mod tests {
         assert!(!take_focus(&mut pending, FocusTarget::FindBar));
     }
 
+    /// The texts one frame of the quick switcher paints, in order.
+    fn quick_switcher_texts(app: &mut App) -> Vec<String> {
+        let ctx = egui::Context::default();
+        crate::theme::apply_fonts(&ctx);
+        // An `Area` is hidden for its sizing frame, and the popup fades in over a second: run both out.
+        let mut output = Default::default();
+        for frame in 0..4 {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0))),
+                time: Some(f64::from(frame)),
+                ..Default::default()
+            };
+            output = ctx.run_ui(input, |ui| app.build_quick_switcher(ui));
+            output.textures_delta.clear();
+        }
+        let mut texts = Vec::new();
+        for clipped in &output.shapes {
+            fn walk(shape: &egui::Shape, texts: &mut Vec<String>) {
+                match shape {
+                    egui::Shape::Text(t) => texts.push(t.galley.text().to_string()),
+                    egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, texts)),
+                    _ => {}
+                }
+            }
+            walk(&clipped.shape, &mut texts);
+        }
+        texts
+    }
+
+    /// The selected row's full address shows under the list when the label is not already the address.
+    #[test]
+    fn the_quick_switcher_shows_the_selected_rows_address_unless_it_is_the_label() {
+        use crate::session_sync::tests::{add, app_on, sleeping_tab};
+        let mut app = app_on(&crate::store::testutil::temp_dir("qs-address").join("session.mnf"), 1);
+        add(&mut app, Kind::Tab, sleeping_tab("https://a.test/page", "Alpha"));
+        app.open_quick_switcher();
+        let texts = quick_switcher_texts(&mut app);
+        assert!(texts.iter().any(|t| t == "https://a.test/page"), "{texts:?}");
+        // An untitled tab's label is its address: said once, in the row.
+        let mut app = app_on(&crate::store::testutil::temp_dir("qs-address2").join("session.mnf"), 1);
+        add(&mut app, Kind::Tab, sleeping_tab("https://b.test/", ""));
+        app.open_quick_switcher();
+        let texts = quick_switcher_texts(&mut app);
+        assert_eq!(texts.iter().filter(|t| t.contains("https://b.test/")).count(), 1, "{texts:?}");
+    }
+
     /// Tabs that read the same are told apart by what differs; a tab of its own label gets nothing.
     #[test]
     fn tabs_that_read_the_same_get_a_qualifier_and_others_none() {
