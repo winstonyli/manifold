@@ -448,7 +448,7 @@ impl FindState {
 }
 
 /// A centred confirm dialog: `title`, then `detail` (the first line is the explanation, any later line a warning, as
-/// `download_detail` writes), then `button` (filled: rust when `destructive`, else gold) and Cancel. `Some(true)` on
+/// `download_detail` writes), then `button` (filled: rust when `destructive`, else gold and focused, so Enter confirms) and Cancel. `Some(true)` on
 /// the button, `Some(false)` on Cancel or Escape, `None` while it waits.
 fn confirm_dialog(
     ui: &mut egui::Ui,
@@ -475,7 +475,13 @@ fn confirm_dialog(
                 }
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    yes = if destructive { danger_button(ui, button) } else { primary_button(ui, button) }.clicked();
+                    let main = if destructive { danger_button(ui, button) } else { primary_button(ui, button) };
+                    // A safe action opens with its button focused, so Enter confirms it. A destructive one opens
+                    // with nothing focused: Enter does nothing, Tab reaches the buttons.
+                    if popup_just_opened(ui.ctx(), egui::Id::new((area_id, "just_opened")), true) && !destructive {
+                        main.request_focus();
+                    }
+                    yes = main.clicked();
                     no = ui.button("Cancel").clicked();
                 });
             });
@@ -2072,7 +2078,8 @@ mod tests {
         assert_eq!(super::download_confirm_title("Download", ViewKind::Servo, &size), "Download Servo, 93 MB?");
     }
 
-    /// The confirm's main button is filled rust when it destroys something and gold when it doesn't.
+    /// The confirm's main button is filled rust when it destroys something and gold when it doesn't, and only the
+    /// gold one opens focused (so Enter confirms it).
     #[test]
     fn a_confirm_fills_its_main_button_by_what_it_does() {
         let fills = |destructive: bool| {
@@ -2098,9 +2105,10 @@ mod tests {
                     colors.push(rect.fill);
                 }
             }
-            colors
+            (colors, ctx.memory(|m| m.focused().is_some()))
         };
-        let (rust, gold) = (fills(true), fills(false));
+        let ((rust, rust_focused), (gold, gold_focused)) = (fills(true), fills(false));
+        assert!(gold_focused && !rust_focused, "focus: gold {gold_focused}, rust {rust_focused}");
         assert!(rust.contains(&crate::theme::DANGER_COLOR) && !rust.contains(&crate::theme::ACCENT), "{rust:?}");
         assert!(gold.contains(&crate::theme::ACCENT) && !gold.contains(&crate::theme::DANGER_COLOR), "{gold:?}");
     }
