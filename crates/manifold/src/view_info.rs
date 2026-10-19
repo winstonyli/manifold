@@ -175,7 +175,7 @@ impl ViewTier {
     /// (that axis is "which engine," this one is "how ready is it").
     pub(crate) fn color(self) -> egui::Color32 {
         match self {
-            ViewTier::Recommended => egui::Color32::from_rgb(150, 190, 90),
+            ViewTier::Recommended => crate::theme::SUCCESS_COLOR,
             ViewTier::Experimental => crate::theme::ACCENT,
             ViewTier::Limited => crate::theme::DANGER_COLOR,
         }

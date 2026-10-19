@@ -305,6 +305,12 @@ pub(crate) fn next_tag_color(current: Option<egui::Color32>) -> Option<egui::Col
     }
 }
 
+/// A `manifold_pages::palette` entry as an egui color: the palette is defined once, there, and shared with the
+/// `manifold://` pages.
+const fn color([r, g, b]: [u8; 3]) -> egui::Color32 {
+    egui::Color32::from_rgb(r, g, b)
+}
+
 /// Fill for the toolbar/chrome bars (Tab view's merged single bar, Graph
 /// view's "+ New Tab" bar, the settings popup) — distinct from the
 /// graph/content area below.
@@ -316,7 +322,7 @@ pub(crate) const TOOLBAR_FILL: egui::Color32 = egui::Color32::from_rgb(29, 26, 2
 /// dark gray-on-gray. A muted gold rather than the cooler blue this used to
 /// be, to sit with the rest of the warm/editorial palette below instead of
 /// against it.
-pub(crate) const ACCENT: egui::Color32 = egui::Color32::from_rgb(215, 162, 74);
+pub(crate) const ACCENT: egui::Color32 = color(manifold_pages::palette::ACCENT);
 
 /// The one severity-red used everywhere this app needs to say "warning" or
 /// "destructive": a group card's overloaded border, every close/eject
@@ -326,7 +332,14 @@ pub(crate) const ACCENT: egui::Color32 = egui::Color32::from_rgb(215, 162, 74);
 /// future shade change only has one place to edit. A warm rust rather than a
 /// pure red, so it still reads unambiguously as "danger" without clashing
 /// with the rest of this palette the way a stop-sign red would.
-pub(crate) const DANGER_COLOR: egui::Color32 = egui::Color32::from_rgb(224, 112, 84);
+pub(crate) const DANGER_COLOR: egui::Color32 = color(manifold_pages::palette::DANGER);
+
+/// A darker rust than `DANGER_COLOR`, for a solid fill that carries `TEXT_PRIMARY` (the graph close button's hover):
+/// `DANGER_COLOR` is for text and icons on dark surfaces, and light text on it reads at only 2.5:1.
+pub(crate) const DANGER_FILL: egui::Color32 = egui::Color32::from_rgb(142, 58, 40);
+
+/// Healthy / recommended / good: a muted green, the one `success` hue (the audio waveform, the recommended engine tier).
+pub(crate) const SUCCESS_COLOR: egui::Color32 = egui::Color32::from_rgb(150, 190, 90);
 
 /// The sky-blue entry of `TAG_COLOR_PALETTE`: the one cool hue in this otherwise warm theme.
 pub(crate) const TAG_SKY_BLUE: egui::Color32 = TAG_COLOR_PALETTE[4];
@@ -353,23 +366,23 @@ pub(crate) const NOTE_CARD_COLOR: egui::Color32 = egui::Color32::from_rgb(255, 2
 /// This + `TOOLBAR_FILL` + `SURFACE_RAISED` form a three-step depth ladder
 /// (background < panel < raised widget) that egui's stock palette doesn't
 /// have at all.
-pub(crate) const BG: egui::Color32 = egui::Color32::from_rgb(23, 20, 15);
+pub(crate) const BG: egui::Color32 = color(manifold_pages::palette::BG);
 
 /// A button/field's own resting fill, one step up from `TOOLBAR_FILL` — the
 /// panel it sits on. Also used for the graph card's engine-picker `Frame`.
 /// Deliberately a wide jump from `TOOLBAR_FILL`, not a subtle one — the
 /// point is a button reads as its own raised chip at a glance, not just
 /// under close pixel inspection.
-pub(crate) const SURFACE_RAISED: egui::Color32 = egui::Color32::from_rgb(41, 36, 27);
+pub(crate) const SURFACE_RAISED: egui::Color32 = color(manifold_pages::palette::SURFACE_RAISED);
 
 /// Hover state, one step up again — every interactive widget in this app's
 /// toolbar/popups visibly lightens on hover, which stock egui's near-
 /// identical inactive/hovered grays don't make obvious at a glance.
 pub(crate) const SURFACE_HOVER: egui::Color32 = egui::Color32::from_rgb(58, 50, 37);
 
-pub(crate) const TEXT_PRIMARY: egui::Color32 = egui::Color32::from_rgb(233, 226, 211);
+pub(crate) const TEXT_PRIMARY: egui::Color32 = color(manifold_pages::palette::TEXT_PRIMARY);
 
-pub(crate) const TEXT_WEAK: egui::Color32 = egui::Color32::from_rgb(178, 164, 130);
+pub(crate) const TEXT_WEAK: egui::Color32 = color(manifold_pages::palette::TEXT_WEAK);
 
 /// Applied once at startup (see `Default for App`). Bumps corner rounding
 /// and spacing up from egui's fairly tight defaults (which read as "plain
@@ -848,8 +861,19 @@ mod tests {
         for surface in [BG, SURFACE_RAISED] {
             assert!(contrast(DANGER_COLOR, surface) >= 4.5, "DANGER_COLOR on {surface:?}");
             assert!(contrast(ACCENT, surface) >= 4.5, "ACCENT on {surface:?}");
+            assert!(contrast(SUCCESS_COLOR, surface) >= 4.5, "SUCCESS_COLOR on {surface:?}");
+        }
+        // `filled_button` sets BG-colored text on its fill.
+        for fill in [ACCENT, DANGER_COLOR] {
+            assert!(contrast(BG, fill) >= 4.5, "BG text on {fill:?}");
         }
     }
+    /// Light text keeps AA contrast on the solid danger fill the graph close button shows on hover.
+    #[test]
+    fn danger_fill_carries_primary_text() {
+        assert!(contrast(TEXT_PRIMARY, DANGER_FILL) >= 4.5, "{}", contrast(TEXT_PRIMARY, DANGER_FILL));
+    }
+
     /// Easing in from transparent keeps the target's color and only raises its opacity: a lerp of the unmultiplied
     /// channels from transparent black dipped through a darker tint than either end (the chip buttons' hover flash).
     #[test]

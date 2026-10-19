@@ -254,23 +254,29 @@ fn converted(session: &Value, name: &str, kind: &str) -> bool {
     nodes.iter().any(|n| n["type"] == want && at(n)) && !nodes.iter().any(|n| n["type"] == TAB && at(n))
 }
 
-/// `border`: whether a pixel on the card's left edge (x from round(left) - 1 to round(left) + 2), at
-/// mid-height, is within 40 (RGB distance) of `want`. A card or pixel that is not there fails, as python's
-/// KeyError / IndexError exit does.
+/// Whether the card `id`'s border, sampled at the middle of each of its four edges, is within 40 (RGB distance) of
+/// `want` at any of them (another card can cover one edge: the group's left edge was once hidden by a tab card).
+/// Pixels off the image are skipped; a card or border with no pixel on the image fails.
 fn border_near(s: &State, png: &Path, id: &str, want: [u8; 3]) -> bool {
     let Some(r) = rect_of(s, id) else { return false };
     let Ok(img) = crate::shots_img::load(png) else { return false };
-    let y = round_half_even((r[1] + r[3]) / 2.0) as i64;
-    let left = round_half_even(r[0]) as i64;
+    let (mid_x, mid_y) = (round_half_even((r[0] + r[2]) / 2.0) as i64, round_half_even((r[1] + r[3]) / 2.0) as i64);
+    let (left, top) = (round_half_even(r[0]) as i64, round_half_even(r[1]) as i64);
+    let (right, bottom) = (round_half_even(r[2]) as i64, round_half_even(r[3]) as i64);
     let mut near = f64::INFINITY;
-    for x in left - 1..left + 3 {
-        let (Ok(px), Ok(py)) = (u32::try_from(x), u32::try_from(y)) else { return false };
-        if px >= img.width() || py >= img.height() {
-            return false;
+    for (cx, cy, step) in
+        [(left, mid_y, (1, 0)), (right - 3, mid_y, (1, 0)), (mid_x, top, (0, 1)), (mid_x, bottom - 3, (0, 1))]
+    {
+        for k in -1..3 {
+            let (x, y) = (cx + k * step.0, cy + k * step.1);
+            let (Ok(px), Ok(py)) = (u32::try_from(x), u32::try_from(y)) else { continue };
+            if px >= img.width() || py >= img.height() {
+                continue;
+            }
+            let p = img.get_pixel(px, py).0;
+            let d2: i64 = p.iter().zip(want).map(|(a, b)| (i64::from(*a) - i64::from(b)).pow(2)).sum();
+            near = near.min((d2 as f64).sqrt());
         }
-        let p = img.get_pixel(px, py).0;
-        let d2: i64 = p.iter().zip(want).map(|(a, b)| (i64::from(*a) - i64::from(b)).pow(2)).sum();
-        near = near.min((d2 as f64).sqrt());
     }
     near < 40.0
 }
@@ -1333,7 +1339,8 @@ mod tests {
         assert!(border_near(&s, &png, "a", [196, 87, 58]));
         assert!(!border_near(&s, &png, "a", [215, 162, 74]));
         assert!(!border_near(&s, &png, "nope", [196, 87, 58]));
-        // x 44..=47 runs off the 50 px image at none of them, but x 59..=62 would; a card past the edge fails.
+        // A card wholly past the image has no pixel to sample and fails; one partly past it is judged by the pixels
+        // that are there.
         assert!(!border_near(
             &state(r#"{"cards":[{"id":"o","rect":[60.0,10.0,70.0,40.0]}]}"#),
             &png,

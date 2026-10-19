@@ -5,11 +5,12 @@
 <title>New Tab</title>
 <style>
   :root {
+    /*PALETTE*/
     color-scheme: dark;
   }
   body {
-    background: #1E1F24;
-    color: #E6E7EB;
+    background: var(--bg);
+    color: var(--text);
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     padding: 18vh 2em 3em;
     max-width: 560px;
@@ -17,18 +18,18 @@
     text-align: center;
   }
   h1 {
-    color: #58A6FF;
+    color: var(--accent);
     font-size: 2.2em;
     margin-bottom: 0.2em;
   }
   p {
-    color: #9497A1;
+    color: var(--weak);
     font-size: 1.1em;
     line-height: 1.6;
     margin: 0.3em 0;
   }
   kbd {
-    color: #58A6FF;
+    color: var(--accent);
     font-family: ui-monospace, "Cascadia Code", monospace;
     background: rgba(255, 255, 255, 0.06);
     border: 1px solid rgba(255, 255, 255, 0.12);

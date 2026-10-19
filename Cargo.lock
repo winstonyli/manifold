@@ -5008,6 +5008,7 @@ dependencies = [
  "getrandom 0.3.4",
  "icu_properties 2.3.0",
  "image",
+ "manifold-pages",
  "manifold-view-protocol",
  "pollster 1.0.1",
  "raw-window-handle",

@@ -103,7 +103,7 @@ const FILTER_DIM_SCRIM: egui::Color32 = egui::Color32::from_black_alpha(190);
 /// An audio card control's waveform while the tab plays. A warm sage rather than a minty green:
 /// still unambiguously "active/live" (the universal recording-light color family), just shifted to
 /// sit with the rest of this app's warm palette instead of against it.
-const WAVEFORM_COLOR: egui::Color32 = egui::Color32::from_rgb(150, 190, 90);
+const WAVEFORM_COLOR: egui::Color32 = crate::theme::SUCCESS_COLOR;
 
 /// A note's text on its pale paper.
 const NOTE_TEXT: egui::Color32 = egui::Color32::from_black_alpha(220);
@@ -854,7 +854,7 @@ pub(crate) fn paint_card_control(
                 deferred_overlays,
                 rect,
                 response.hovered(),
-                DANGER_COLOR,
+                crate::theme::DANGER_FILL,
                 egui_phosphor::light::X,
                 style,
                 inv_zoom,

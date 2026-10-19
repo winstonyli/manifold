@@ -15,6 +15,7 @@ egui-winit = { workspace = true, features = ["accesskit"] }
 egui_commonmark = { workspace = true, features = ["pulldown_cmark"] }
 etcetera.workspace = true
 image = { workspace = true, features = ["jpeg", "ico", "webp", "bmp", "gif"] }
+manifold-pages.workspace = true
 manifold-view-protocol.workspace = true
 pollster.workspace = true
 raw-window-handle.workspace = true
