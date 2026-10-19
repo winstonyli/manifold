@@ -1379,6 +1379,9 @@ impl App {
                 }
             }
         }
+        if (stored || carried) && response.dragged() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+        }
         if stored && response.dragged() {
             self.interaction.dragging = Some(id.to_string());
             // Dragging one selected tab moves the whole selection, as one

@@ -82,6 +82,7 @@ const NOT_FORGOTTEN: &[(&str, &str)] = &[
     ("debug.pending_screenshot", "a file path, not a node id"),
     ("debug.pending_print_to_pdf", "a file path, not a node id"),
     ("toasts.save_toast", "a message, not a node id"),
+    ("toasts.undo", "lives one toast; its ids are checked on use (a member must still be where the dissolve left it)"),
     ("view_ui.cef_dir_draft", "a path draft, not a node id"),
     ("home_page_draft", "a url draft, not a node id"),
     ("history_ui.renaming_bookmark_folder", "a bookmark folder, not a node id"),

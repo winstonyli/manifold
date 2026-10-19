@@ -2,6 +2,16 @@
 
 use super::*;
 
+/// What `App::undo_dissolve` needs to bring a dissolved group back.
+pub(crate) struct Dissolved {
+    name: String,
+    color: FieldValue,
+    jar: FieldValue,
+    pos: egui::Vec2,
+    group: Option<String>,
+    members: Vec<String>,
+}
+
 impl App {
     /// A fresh group's default display name: "Group N" for the smallest N
     /// no group is named yet. Not the group count plus one, which repeats a
@@ -50,6 +60,41 @@ impl App {
         for member in self.dissolve_members(id, false) {
             self.recheck_edge_scope(&member);
         }
+    }
+
+    /// The menu's "Dissolve Group": `dissolve_group`, then a toast with an Undo button (`undo_dissolve`) while it shows.
+    pub(crate) fn dissolve_group_undoable(&mut self, id: &str) {
+        let message = format!("Dissolved {}", self.drop_target_name(id));
+        let undo = Dissolved {
+            name: self.mirror.name(id).to_owned(), // name rule: copied back verbatim to the restored group
+            color: self.mirror.get(id, field::COLOR),
+            jar: self.mirror.get(id, field::JAR),
+            pos: self.layout_pos(id),
+            group: self.mirror.group(id).map(str::to_owned),
+            members: self.members_of(id).map(str::to_owned).collect(),
+        };
+        self.dissolve_group(id);
+        self.toasts.undo = Some((message.clone(), undo));
+        self.queue_toast(message);
+    }
+
+    /// Brings a dissolved group back as a new group with its name, color, jar and place, around the members that are
+    /// still where the dissolve left them. Edges the dissolve cleared as out of reach (`recheck_edge_scope`) stay
+    /// cleared.
+    pub(crate) fn undo_dissolve(&mut self, undo: Dissolved) {
+        let id = self.alloc_node_id();
+        let at = self.placement(&id, Some(undo.pos));
+        let at = Placement { group: undo.group.clone(), ..at };
+        // name rule: the restored group seeds with the stored name it had, drawn later by display_name
+        self.place_group(Some(id.clone()), &undo.name, at);
+        self.edit_field(&id, field::COLOR, undo.color);
+        self.edit_field(&id, field::JAR, undo.jar);
+        for member in undo.members {
+            if self.nodes.contains_key(&member) && self.mirror.group(&member) == undo.group.as_deref() {
+                self.edit_group(&member, Some(id.clone()));
+            }
+        }
+        self.save_session();
     }
 
     /// `dissolve_group` without the edge recheck, for a remote delete: the remote device's own recheck arrives as

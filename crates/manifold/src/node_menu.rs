@@ -1023,7 +1023,7 @@ impl App {
             NodeAction::OpenInDefaultViewKind => self.wake_tab(id, self.settings.default_starting_view_kind),
             NodeAction::RemoveFromGroup => self.eject(id),
             NodeAction::MoveToGroup(group) => self.apply_drop(id, Some((DropEffect::Join, Some(group)))),
-            NodeAction::Dissolve => self.dissolve_group(id),
+            NodeAction::Dissolve => self.dissolve_group_undoable(id),
             NodeAction::ExportGroup => {
                 let name = export_file_name(self.mirror.name(id)); // name rule: export_file_name cleans it
                 if let Some(json) = self.export_group_json(id) {

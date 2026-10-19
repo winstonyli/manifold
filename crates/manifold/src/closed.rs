@@ -690,6 +690,30 @@ mod tests {
         assert!(closed_ids(&app).is_empty(), "a dissolve is not a close");
     }
 
+    /// "Dissolve Group" offers an Undo on its toast: the group comes back (new id, same name and color) around the
+    /// member that stayed where the dissolve left it.
+    #[test]
+    fn dissolve_group_can_be_undone_from_its_toast() {
+        use crate::node_menu::NodeAction;
+        let ctx = egui::Context::default();
+        let path = store::testutil::temp_dir("dissolve-undo").join("session.mnf");
+        let mut app = app_on(&path, 1);
+        let (g, inner) = group_with_note(&mut app);
+        app.edit_name(&g, "Research");
+        app.edit_field(&g, field::COLOR, session_sync::color_value(Some(egui::Color32::from_rgb(1, 2, 3))));
+        app.apply_node_action(&ctx, &g, NodeAction::Dissolve);
+        let (message, undo) = app.toasts.undo.take().expect("the dissolve offers an undo");
+        assert!(message.starts_with("Dissolved"), "{message}");
+        app.undo_dissolve(undo);
+        let back = app.mirror.group(&inner).expect("the member is in a group again").to_owned();
+        assert_ne!(back, g, "a new group, the old id is gone");
+        assert_eq!(app.mirror.name(&back), "Research");
+        assert_eq!(
+            app.mirror.get(&back, field::COLOR),
+            session_sync::color_value(Some(egui::Color32::from_rgb(1, 2, 3)))
+        );
+    }
+
     /// Close Selected with a group and a member inside it both selected: the group closes first (outermost first), the
     /// member is already hidden at its turn and is skipped, so only the group is a closed root and a reopen of it
     /// brings the member back.

@@ -68,6 +68,9 @@ impl App {
         let Some((message, shown_at)) = &self.toasts.save_toast else { return };
         let elapsed = shown_at.elapsed();
         if elapsed >= SAVE_TOAST_DURATION {
+            if self.toasts.undo.as_ref().is_some_and(|(shown, _)| shown == message) {
+                self.toasts.undo = None;
+            }
             self.toasts.save_toast = None;
             return;
         }
@@ -77,10 +80,13 @@ impl App {
         let fade_out = (remaining.as_secs_f32() / TOAST_FADE_OUT.as_secs_f32()).min(1.0);
         let opacity = fade_in.min(fade_out);
         let message = message.clone();
+        // A toast that can be undone takes clicks on its Undo button; any other lets them through to what is under it.
+        let undoable = self.toasts.undo.as_ref().is_some_and(|(shown, _)| *shown == message);
+        let mut undo_clicked = false;
         egui::Area::new(egui::Id::new("save_toast"))
             .anchor(egui::Align2::LEFT_BOTTOM, egui::vec2(12.0, -12.0))
             .order(egui::Order::Foreground)
-            .interactable(false)
+            .interactable(undoable)
             .show(ui.ctx(), |ui| {
                 ui.set_opacity(opacity);
                 // Same ACCENT-tinted glow the graph cards use, tying the
@@ -96,13 +102,24 @@ impl App {
                 let glow_slots = [ui.painter().add(egui::Shape::Noop), ui.painter().add(egui::Shape::Noop)];
                 let response = popup_frame(ui).inner_margin(egui::Margin::symmetric(10, 6)).show(ui, |ui| {
                     control_font(ui);
-                    ui.label(message);
+                    ui.horizontal(|ui| {
+                        ui.label(message);
+                        if undoable {
+                            undo_clicked = ui.button("Undo").clicked();
+                        }
+                    });
                 });
                 let shapes = card_glow_shapes(response.response.rect, 3.0, ACCENT, 1.0, 1.0);
                 for (slot, shape) in glow_slots.into_iter().zip(shapes) {
                     ui.painter().set(slot, shape);
                 }
             });
+        if undo_clicked {
+            if let Some((_, undo)) = self.toasts.undo.take() {
+                self.undo_dissolve(undo);
+            }
+            self.toasts.save_toast = None;
+        }
     }
 
     /// One frame of UI. An open anchored popup takes Escape (the views skip theirs while one is
