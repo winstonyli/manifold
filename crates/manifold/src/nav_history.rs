@@ -610,33 +610,25 @@ impl NavHistory {
     }
 }
 
-/// Each entry's label: its title, or its URL's path. Where other entries share its address (the URL without query or
-/// fragment), what differs from those, first so a clipped label keeps it: `q=cats page=2 · Results`.
+/// Each entry's label: its title, or its URL's path. Where other entries read the same, what differs from them
+/// (`disambiguate::qualifiers`), first so a clipped label keeps it: `q=cats page=2 · Results`.
 fn page_labels(entries: &[Entry]) -> Vec<String> {
     let parts: Vec<UrlParts> = entries.iter().map(|e| UrlParts::parse(&e.url)).collect();
-    // What can differ between visits of one address: each `&` item of the query, then the fragment.
-    let items: Vec<Vec<String>> = parts
+    // An untitled page is read by its address alone: pages that differ in query then lead with the difference.
+    let bases: Vec<&str> = entries
         .iter()
-        .map(|p| {
-            let query = p.query.split('&').filter(|s| !s.is_empty()).map(str::to_owned);
-            query.chain(p.fragment.map(|f| format!("#{f}"))).collect()
-        })
+        .zip(&parts)
+        .map(|(e, p)| if e.title.is_empty() { UrlParts::parse(p.address).short() } else { e.title.as_str() })
         .collect();
-    entries
-        .iter()
-        .enumerate()
-        .map(|(n, e)| {
-            let plain = if e.title.is_empty() { parts[n].short().to_owned() } else { e.title.clone() };
-            let group: Vec<&Vec<String>> =
-                (0..parts.len()).filter(|&m| parts[m].address == parts[n].address).map(|m| &items[m]).collect();
-            let differs: Vec<&str> =
-                items[n].iter().filter(|i| !group.iter().all(|g| g.contains(i))).map(String::as_str).collect();
-            if group.len() < 2 || differs.is_empty() {
-                return plain;
-            }
-            let base =
-                if e.title.is_empty() { UrlParts::parse(parts[n].address).short().to_owned() } else { e.title.clone() };
-            format!("{} · {base}", differs.join(" "))
+    let rows: Vec<(&str, &str)> = bases.iter().copied().zip(entries.iter().map(|e| e.url.as_str())).collect();
+    // The same page twice (a loop in the tree) differs in nothing: no number to show.
+    crate::disambiguate::qualifiers(&rows, false)
+        .into_iter()
+        .zip(entries.iter().zip(&parts).zip(bases))
+        .map(|(q, ((e, p), base))| match q {
+            Some(q) => format!("{q} · {base}"),
+            None if e.title.is_empty() => p.short().to_owned(),
+            None => e.title.clone(),
         })
         .collect()
 }

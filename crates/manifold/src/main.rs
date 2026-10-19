@@ -16,6 +16,7 @@ mod debug_control;
 #[cfg(test)]
 mod deleted_names;
 mod deselect;
+mod disambiguate;
 mod duplicate;
 mod embedded_host;
 mod event_loop;

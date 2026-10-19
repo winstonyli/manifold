@@ -747,6 +747,7 @@ impl App {
                         // `0.0` (no minimum) so natural row height/padding
                         // is untouched.
                         let full_width = ui.available_width();
+                        let qualifiers = self.listed_tab_qualifiers();
                         for (idx, suggestion) in combined.iter().enumerate() {
                             let highlighted = self.address_bar.highlighted == Some(idx);
                             let identity = match suggestion {
@@ -755,9 +756,17 @@ impl App {
                                     Identity::Glyph { glyph: egui_phosphor::light::MAGNIFYING_GLASS, color: None }
                                 }
                             };
-                            let mut button = egui::Button::new(row_label(ui, &suggestion.label(), 0.0))
-                                .truncate()
-                                .min_size(egui::vec2(full_width, 0.0));
+                            let mut button = egui::Button::new(row_label(
+                                ui,
+                                &suggestion.label(),
+                                match suggestion {
+                                    Suggestion::OpenTab { tab_id, .. } => qualifiers.get(tab_id).map(String::as_str),
+                                    Suggestion::Search { .. } => None,
+                                },
+                                0.0,
+                            ))
+                            .truncate()
+                            .min_size(egui::vec2(full_width, 0.0));
                             if highlighted {
                                 button = button.fill(ACCENT);
                             }

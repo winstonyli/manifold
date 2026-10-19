@@ -1019,7 +1019,7 @@ impl App {
                             ui.horizontal(|ui| {
                                 let identity = App::page_row_identity(self.gpu.as_ref(), &bookmark.url);
                                 wanted.push(bookmark.url.clone());
-                                let row = list_row(ui, row_label(ui, &bookmark.title, LIST_ROW_INSET));
+                                let row = list_row(ui, row_label(ui, &bookmark.title, None, LIST_ROW_INSET));
                                 paint_row_icon(
                                     ui,
                                     row.rect,
@@ -1161,7 +1161,7 @@ impl App {
                     // enough to leave.)
                     let id = egui::Id::new(("history_row", i));
                     wanted.borrow_mut().push(entry.url.clone());
-                    let widget_label = row_label(ui, label, LIST_ROW_INSET);
+                    let widget_label = row_label(ui, label, None, LIST_ROW_INSET);
                     let row = ui.scope_builder(egui::UiBuilder::new().id(id), |ui| list_row(ui, widget_label)).inner;
                     let identity = App::page_row_identity(self.gpu.as_ref(), &entry.url);
                     paint_row_icon(ui, row.rect, LIST_ROW_INSET, label, row.has_focus(), identity);
@@ -1704,6 +1704,25 @@ impl App {
         self.nodes.get(id)?.runtime.listed_tab().map(|(_, url)| url.to_owned())
     }
 
+    /// The qualifier each listed tab needs beside its label to be told from a tab that reads the same
+    /// (`disambiguate::qualifiers`), over all listed tabs so a row's qualifier does not change as the query narrows.
+    pub(crate) fn listed_tab_qualifiers(&self) -> std::collections::HashMap<String, String> {
+        let ids: Vec<&String> =
+            self.node_order.iter().filter(|id| self.quick_switcher_row_label(id).is_some()).collect();
+        let labels: Vec<(String, String)> = ids
+            .iter()
+            .map(|id| {
+                (
+                    self.quick_switcher_row_label(id).unwrap_or_default(),
+                    self.quick_switcher_row_url(id).unwrap_or_default(),
+                )
+            })
+            .collect();
+        let rows: Vec<(&str, &str)> = labels.iter().map(|(l, u)| (l.as_str(), u.as_str())).collect();
+        let qualifiers = crate::disambiguate::qualifiers(&rows, true);
+        ids.into_iter().zip(qualifiers).filter_map(|(id, q)| Some((id.clone(), q?))).collect()
+    }
+
     pub(crate) fn quick_switcher_row_label(&self, id: &str) -> Option<String> {
         let (title, url) = self.nodes.get(id)?.runtime.listed_tab()?;
         Some(if title.is_empty() { url.to_string() } else { title.to_string() })
@@ -1849,12 +1868,14 @@ impl App {
                         ui.label("No matching tabs");
                     }
                     key_hint_row(ui, [("Up / Down", "move"), ("Enter", "jump"), ("Esc", "close")].into_iter());
+                    let qualifiers = self.listed_tab_qualifiers();
                     egui::ScrollArea::vertical().max_height(240.0).show(ui, |ui| {
                         for (i, id) in matches.iter().enumerate() {
                             let Some(label) = self.quick_switcher_row_label(id) else { continue };
                             let identity =
                                 self.row_identity(id, self.quick_switcher_row_url(id).as_deref().unwrap_or(""));
-                            let widget_label = row_label(ui, &label, 0.0);
+                            let widget_label =
+                                row_label(ui, &label, qualifiers.get(id.as_str()).map(String::as_str), 0.0);
                             // Full width, so the highlight spans the row, not just its text.
                             let button = egui::Button::selectable(i == selected_index, widget_label)
                                 .min_size(egui::vec2(ui.available_width(), 0.0));
@@ -2323,6 +2344,20 @@ mod tests {
         assert!(!take_focus(&mut pending, FocusTarget::AddressBar));
         assert!(take_focus(&mut pending, FocusTarget::FindBar));
         assert!(!take_focus(&mut pending, FocusTarget::FindBar));
+    }
+
+    /// Tabs that read the same are told apart by what differs; a tab of its own label gets nothing.
+    #[test]
+    fn tabs_that_read_the_same_get_a_qualifier_and_others_none() {
+        use crate::session_sync::tests::{add, app_on, sleeping_tab};
+        let mut app = app_on(&crate::store::testutil::temp_dir("qs-qualifiers").join("session.mnf"), 1);
+        let one = add(&mut app, Kind::Tab, sleeping_tab("https://one.test/", "Home"));
+        let two = add(&mut app, Kind::Tab, sleeping_tab("https://two.test/", "Home"));
+        let other = add(&mut app, Kind::Tab, sleeping_tab("https://one.test/x", "Docs"));
+        let q = app.listed_tab_qualifiers();
+        assert_eq!(q.get(&one).map(String::as_str), Some("one.test"));
+        assert_eq!(q.get(&two).map(String::as_str), Some("two.test"));
+        assert_eq!(q.get(&other), None);
     }
 
     /// A sleeping tab's Quick Switcher row shows its title, or its url when

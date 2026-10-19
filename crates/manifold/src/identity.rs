@@ -219,14 +219,19 @@ const NEUTRAL_TILE: egui::Color32 = egui::Color32::from_rgb(96, 98, 108);
 
 /// `label` for a list row with room before it for `paint_row_icon`; `inset` is the same as that call's `pad`, less
 /// the padding the row itself puts before its text (a button's), so 0 for a button.
-pub(crate) fn row_label(ui: &egui::Ui, label: &str, inset: f32) -> egui::WidgetText {
+/// A `qualifier` (`disambiguate::qualifiers`) follows in italics: the row's own text colour, so it stays readable on
+/// a selected row's fill.
+pub(crate) fn row_label(ui: &egui::Ui, label: &str, qualifier: Option<&str>, inset: f32) -> egui::WidgetText {
     let mut job = egui::text::LayoutJob::default();
     let format = egui::TextFormat {
         font_id: egui::TextStyle::Button.resolve(ui.style()),
         color: egui::Color32::PLACEHOLDER,
         ..Default::default()
     };
-    job.append(label, inset + ICON_SIZE_SMALL + ROW_ICON_GAP, format);
+    job.append(label, inset + ICON_SIZE_SMALL + ROW_ICON_GAP, format.clone());
+    if let Some(qualifier) = qualifier {
+        job.append(&format!("  {qualifier}"), 0.0, egui::TextFormat { italics: true, ..format });
+    }
     job.into()
 }
 
@@ -380,7 +385,7 @@ mod tests {
     fn a_row_label_leaves_room_for_the_icon_before_its_text() {
         let ctx = egui::Context::default();
         let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
-            let egui::WidgetText::LayoutJob(job) = row_label(ui, "page", LIST_ROW_INSET) else {
+            let egui::WidgetText::LayoutJob(job) = row_label(ui, "page", None, LIST_ROW_INSET) else {
                 panic!("not a layout job")
             };
             assert_eq!(job.sections[0].leading_space, LIST_ROW_INSET + ICON_SIZE_SMALL + ROW_ICON_GAP);

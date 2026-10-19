@@ -51,6 +51,17 @@ impl<'a> UrlParts<'a> {
         host.chars().find(|c| c.is_alphanumeric()).map(|c| c.to_uppercase().next().unwrap_or(c))
     }
 
+    /// The host without port, `www.` or case: what two addresses on one site share.
+    pub(crate) fn host(&self) -> String {
+        let host = self.host.strip_prefix("www.").unwrap_or(self.host);
+        host.split(':').next().unwrap_or(host).to_ascii_lowercase()
+    }
+
+    /// The path, without query, fragment or trailing slash; empty for the root.
+    pub(crate) fn path(&self) -> &'a str {
+        self.tail.split('?').next().unwrap_or("").trim_end_matches('/')
+    }
+
     /// A short name for the page: its path and query, or its host when that is all there is. An address with no
     /// scheme is its own name.
     pub(crate) fn short(&self) -> &'a str {
