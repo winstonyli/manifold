@@ -714,6 +714,22 @@ mod tests {
         );
     }
 
+    /// Ungroup All offers one Undo for every group it dissolved: both come back around their members.
+    #[test]
+    fn ungroup_all_is_undone_in_one_step() {
+        let path = store::testutil::temp_dir("ungroup-undo").join("session.mnf");
+        let mut app = app_on(&path, 1);
+        let (g1, n1) = group_with_note(&mut app);
+        let (g2, n2) = group_with_note(&mut app);
+        app.dissolve_groups_undoable(&[g1.clone(), g2.clone()]);
+        assert!(app.mirror.group(&n1).is_none() && app.mirror.group(&n2).is_none());
+        let (message, undo) = app.toasts.undo.take().expect("an undo");
+        assert_eq!(message, "Ungrouped 2 groups");
+        app.undo_dissolve(undo);
+        let (b1, b2) = (app.mirror.group(&n1).map(str::to_owned), app.mirror.group(&n2).map(str::to_owned));
+        assert!(b1.is_some() && b2.is_some() && b1 != b2, "{b1:?} {b2:?}");
+    }
+
     /// Close Selected with a group and a member inside it both selected: the group closes first (outermost first), the
     /// member is already hidden at its turn and is skipped, so only the group is a closed root and a reopen of it
     /// brings the member back.

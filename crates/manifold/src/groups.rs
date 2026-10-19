@@ -62,26 +62,42 @@ impl App {
         }
     }
 
-    /// The menu's "Dissolve Group": `dissolve_group`, then a toast with an Undo button (`undo_dissolve`) while it shows.
-    pub(crate) fn dissolve_group_undoable(&mut self, id: &str) {
-        let message = format!("Dissolved {}", self.drop_target_name(id));
-        let undo = Dissolved {
-            name: self.mirror.name(id).to_owned(), // name rule: copied back verbatim to the restored group
-            color: self.mirror.get(id, field::COLOR),
-            jar: self.mirror.get(id, field::JAR),
-            pos: self.layout_pos(id),
-            group: self.mirror.group(id).map(str::to_owned),
-            members: self.members_of(id).map(str::to_owned).collect(),
+    /// The menu's "Dissolve Group" and the toolbar's Ungroup All: `dissolve_group` on each, then a toast with an Undo
+    /// button (`undo_dissolve`) while it shows.
+    pub(crate) fn dissolve_groups_undoable(&mut self, ids: &[String]) {
+        let message = match ids {
+            [id] => format!("Dissolved {}", self.drop_target_name(id)),
+            _ => format!("Ungrouped {} groups", ids.len()),
         };
-        self.dissolve_group(id);
+        let undo: Vec<Dissolved> = ids
+            .iter()
+            .map(|id| Dissolved {
+                name: self.mirror.name(id).to_owned(), // name rule: copied back verbatim to the restored group
+                color: self.mirror.get(id, field::COLOR),
+                jar: self.mirror.get(id, field::JAR),
+                pos: self.layout_pos(id),
+                group: self.mirror.group(id).map(str::to_owned),
+                members: self.members_of(id).map(str::to_owned).collect(),
+            })
+            .collect();
+        for id in ids {
+            self.dissolve_group(id);
+        }
         self.toasts.undo = Some((message.clone(), undo));
         self.queue_toast(message);
     }
 
-    /// Brings a dissolved group back as a new group with its name, color, jar and place, around the members that are
-    /// still where the dissolve left them. Edges the dissolve cleared as out of reach (`recheck_edge_scope`) stay
-    /// cleared.
-    pub(crate) fn undo_dissolve(&mut self, undo: Dissolved) {
+    /// Brings the dissolved groups back, each as a new group with its name, color, jar and place, around the members
+    /// that are still where the dissolve left them. Edges the dissolve cleared as out of reach
+    /// (`recheck_edge_scope`) stay cleared.
+    pub(crate) fn undo_dissolve(&mut self, undo: Vec<Dissolved>) {
+        for group in undo {
+            self.restore_group(group);
+        }
+        self.save_session();
+    }
+
+    fn restore_group(&mut self, undo: Dissolved) {
         let id = self.alloc_node_id();
         let at = self.placement(&id, Some(undo.pos));
         let at = Placement { group: undo.group.clone(), ..at };
@@ -94,7 +110,6 @@ impl App {
                 self.edit_group(&member, Some(id.clone()));
             }
         }
-        self.save_session();
     }
 
     /// `dissolve_group` without the edge recheck, for a remote delete: the remote device's own recheck arrives as

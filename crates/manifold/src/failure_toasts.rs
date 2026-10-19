@@ -31,7 +31,7 @@ pub(crate) struct Toasts {
     /// Spawn-failure toasts held to merge by cause (`failure_toasts`).
     pub(crate) failure_notices: FailureNotices,
     /// A toast with an Undo button: the message it shows on, and what the button restores (`dissolve_group_undoable`).
-    pub(crate) undo: Option<(String, crate::groups::Dissolved)>,
+    pub(crate) undo: Option<(String, Vec<crate::groups::Dissolved>)>,
 }
 
 /// One cause's burst: its intents (distinct, first-seen order) and the first message, shown when there is one intent.
