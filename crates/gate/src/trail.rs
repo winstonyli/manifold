@@ -182,7 +182,25 @@ fn drive(run: &Run, sec: &mut Option<Section>) -> io::Result<()> {
             })
     };
     let s = inst.export_until("strip-framed", on_screen)?;
-    check_is("the strip is on screen after the toggle", true, on_screen(&s));
+    if !check_is("the strip is on screen after the toggle", true, on_screen(&s)) {
+        // This failed once in 30 solo reruns (PARKED.md): keep what the wait saw, since the work dir is deleted.
+        let rects: Vec<_> = s
+            .all_cards()
+            .iter()
+            .filter(|c| c["virtual"].as_str() == Some("trail"))
+            .map(|c| c["screen"].clone())
+            .collect();
+        println!(
+            "  strip-framed timed out: window {}, tab_view {}, strip screen rects {rects:?}",
+            s.0["window"],
+            s.tab_view()
+        );
+        if let Some(dir) = std::env::var_os("RUN_DIR") {
+            if let Ok(png) = inst.screenshot("strip-framed-failed") {
+                let _ = std::fs::copy(png, std::path::Path::new(&dir).join("strip-framed-failed.png"));
+            }
+        }
+    }
     // At 60% the cards are short: each tab and each page leads with the tile in the engine's color.
     inst.send("GRAPHZOOM 60")?;
     inst.send("WAITIDLE")?;

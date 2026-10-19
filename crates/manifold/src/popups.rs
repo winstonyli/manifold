@@ -793,7 +793,9 @@ impl App {
         } else {
             view_color(kind)
         };
-        let response = ui.button(egui::RichText::new(view_label(kind)).color(color));
+        // The caret says it opens a list (the `▼` glyph is missing from the font; Phosphor's draws).
+        let label = format!("{} {}", view_label(kind), egui_phosphor::light::CARET_DOWN);
+        let response = ui.button(egui::RichText::new(label).color(color));
         self.popup_opener_clicked(ui, which, &response);
         response
     }
@@ -992,7 +994,10 @@ impl App {
                 // alphabetically -- `folders` is already sorted.
                 let groups: Vec<Option<&str>> = std::iter::once(None).chain(folders.into_iter().map(Some)).collect();
                 if matches.is_empty() {
-                    ui.label(egui::RichText::new("No bookmarks yet.").weak());
+                    ui.label(
+                        egui::RichText::new("No bookmarks yet. Press the star in the toolbar on a page to add one.")
+                            .weak(),
+                    );
                 }
                 egui::ScrollArea::vertical().max_height(280.0).show(ui, |ui| {
                     for folder in groups {
@@ -1135,7 +1140,7 @@ impl App {
                         .hint_text("Filter..."),
                 );
                 if self.history.is_empty() {
-                    ui.label(egui::RichText::new("No history yet.").weak());
+                    ui.label(egui::RichText::new("No history yet. Pages you visit appear here.").weak());
                 }
                 let key_ok = matches!(&self.history_ui.history_matches_cache,
                     Some((f, n, _)) if *f == self.history_ui.history_filter && *n == self.history.len());
@@ -1238,7 +1243,7 @@ impl App {
         let area_rect =
             build_list_popup_frame(ui.ctx(), "downloads_popup", anchor_rect, 220.0, 320.0, fade, open, |ui| {
                 if !self.node_order.iter().any(|id| self.nodes.get(id).is_some_and(|n| n.as_download().is_some())) {
-                    ui.label(egui::RichText::new("No downloads yet.").weak());
+                    ui.label(egui::RichText::new("No downloads yet. Files you download appear here.").weak());
                 }
                 egui::ScrollArea::vertical().max_height(280.0).show(ui, |ui| {
                     for id in self.node_order.iter().rev() {

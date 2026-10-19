@@ -182,7 +182,7 @@ pub(crate) fn builtin_edges() -> EdgeTable {
         EdgeRow::new(JAR_EDGE, &[TYPE_TAB, TYPE_GROUP], &[TYPE_JAR])
             .stored_in(Storage::Field(field::JAR))
             .reach(Scope::SameLevelOrAncestor)
-            .user_creatable("Use jar\u{2026}"),
+            .user_creatable("Use jar card\u{2026}"),
     ])
 }
 
@@ -322,7 +322,7 @@ mod tests {
         let row = t.row(JAR_EDGE).unwrap();
         assert_eq!(row.storage(), Storage::Field(field::JAR));
         assert_eq!(row.scope(), Scope::SameLevelOrAncestor);
-        assert_eq!(row.verb(), Some("Use jar\u{2026}"));
+        assert_eq!(row.verb(), Some("Use jar card\u{2026}"));
         assert!(t.rows.iter().filter(|r| r.id() != JAR_EDGE).all(|r| r.scope() == Scope::SameLevel));
     }
 

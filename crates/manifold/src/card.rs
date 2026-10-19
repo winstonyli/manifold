@@ -554,6 +554,23 @@ impl CardControl {
         }
     }
 
+    /// Its hover text, so an icon-only control says what a click does.
+    pub(crate) fn tip(self, view: &CardView) -> &'static str {
+        match self {
+            CardControl::Swatch => "Next color (right-click to pick)",
+            CardControl::Pin if view.pinned => "Unpin: let the layout move this card",
+            CardControl::Pin => "Pin: keep this card where it is",
+            CardControl::Audio if view.muted => "Unmute",
+            CardControl::Audio => "Mute",
+            CardControl::Eject => "Remove from group",
+            CardControl::Close => match del_verb(view.kind) {
+                "close" => "Close",
+                "remove" => "Remove",
+                _ => "Delete",
+            },
+        }
+    }
+
     /// Its hit and paint rect, centered on one of the card's corners.
     pub(crate) fn rect(self, card: egui::Rect, inv_zoom: f32) -> egui::Rect {
         let (anchor, size) = match self {
@@ -1279,6 +1296,7 @@ impl App {
                 inv_zoom,
                 self.graph_lod_simplified,
             );
+            let control_response = control_response.on_hover_text(card_control.tip(&view));
             control_hovered |= control_response.hovered();
             // A right-click on the swatch opens the menu (the right-press already did) on its Color page.
             if card_control == CardControl::Swatch && control_response.secondary_clicked() {
@@ -1302,7 +1320,8 @@ impl App {
             for (side, handle) in handles {
                 let handle_response = ui
                     .interact(handle, egui::Id::new(("link_handle", side, id)), egui::Sense::DRAG)
-                    .on_hover_cursor(egui::CursorIcon::Crosshair);
+                    .on_hover_cursor(egui::CursorIcon::Crosshair)
+                    .on_hover_text("Drag to another card to link them");
                 handle_hovered |= handle_response.hovered();
                 let active = handle_response.hovered() || handle_response.dragged();
                 crate::link_gestures::paint_link_handle(ui, handle, active, inv_zoom);
