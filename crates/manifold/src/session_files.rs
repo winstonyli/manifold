@@ -173,7 +173,7 @@ impl App {
         self.spawn_tab_async(TabSpawn::new(welcome_id, welcome, kind, egui::Vec2::ZERO, SpawnPurpose::Restore, zoom));
 
         let note = Runtime::Note(NotePayload {
-            text: "This is a Note -- drag it anywhere, or right-click to delete it \
+            text: "This is a Note -- double-click to edit it, drag it anywhere, or right-click to delete it \
                            (undo via \"Recently Closed\" if you change your mind)."
                 .to_string(),
             editing: false,
