@@ -5,6 +5,8 @@ use super::*;
 
 /// Space above the first and below the last section of the settings page.
 const PAGE_PAD: f32 = 12.0;
+/// The widest the page's column grows: wide enough for a jar row's name and counts, narrow enough to read.
+const PAGE_MAX_WIDTH: f32 = 720.0;
 /// Space between a section's stacked fields.
 const FIELD_GAP: f32 = 8.0;
 
@@ -94,17 +96,17 @@ impl App {
 
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             egui::Frame::default().inner_margin(egui::Margin::symmetric(16, 0)).show(ui, |ui| {
-                ui.set_max_width(ui.available_width().min(480.0)); // never wider than the window
+                ui.set_max_width(ui.available_width().min(PAGE_MAX_WIDTH)); // never wider than the window
                 control_font(ui);
                 ui.add_space(PAGE_PAD);
 
+                self.settings_help_section(ui, &mut req);
                 self.settings_general_section(ui, &mut req);
                 self.settings_current_tab_section(ui, &mut req);
                 self.settings_view_kinds_section(ui);
                 self.settings_lists_section(ui, &mut req);
                 self.settings_sessions_section(ui, &mut req);
                 self.settings_bookmarks_section(ui, &mut req);
-                self.settings_help_section(ui, &mut req);
 
                 ui.add_space(PAGE_PAD);
             });
@@ -115,6 +117,7 @@ impl App {
 
     /// Settings: search engine, starting engine, zoom and home page.
     pub(crate) fn settings_general_section(&mut self, ui: &mut egui::Ui, req: &mut SettingsRequests) {
+        section_start(ui, "General");
         ui.label("Default search engine");
         egui::ComboBox::from_id_salt("settings_search_engine")
             .selected_text(self.settings.default_search_engine.label())
@@ -509,9 +512,9 @@ impl App {
         }
     }
 
-    /// Settings, "Help": the welcome tour again, for anyone who missed it on first launch.
+    /// Settings, "Help", first on the page: the welcome tour again, for anyone who missed it on first launch.
     pub(crate) fn settings_help_section(&mut self, ui: &mut egui::Ui, req: &mut SettingsRequests) {
-        section_start(ui, "Help");
+        ui.label(heading_text("Help")); // first on the page: no rule above it
         if ui.button("Welcome tour").on_hover_text("Open the first-launch tour in a new tab").clicked() {
             req.welcome_tour_requested = true;
         }

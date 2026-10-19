@@ -176,8 +176,8 @@ impl ViewTier {
     pub(crate) fn color(self) -> egui::Color32 {
         match self {
             ViewTier::Recommended => egui::Color32::from_rgb(150, 190, 90),
-            ViewTier::Experimental => egui::Color32::from_rgb(215, 162, 74),
-            ViewTier::Limited => egui::Color32::from_rgb(196, 87, 58),
+            ViewTier::Experimental => crate::theme::ACCENT,
+            ViewTier::Limited => crate::theme::DANGER_COLOR,
         }
     }
 }

@@ -97,19 +97,25 @@ fn node_menu_config_matches_each_kinds_menu() {
             (
                 "download_context_menu",
                 170.0,
-                format!("Open Containing Folder | Copy Path | Rename | Duplicate | Pin | Color...{g} | --- | Remove from List")
+                format!("Open Containing Folder | Copy Path | --- | Rename | Duplicate | Pin | Color...{g} | --- | Remove from List")
             )
         );
         assert_eq!(
             menu(plain(TYPE_NOTE), false),
-            ("note_context_menu", 150.0, format!("Copy Text | Rename | Duplicate | Pin | Color...{g} | --- | Delete"))
+            (
+                "note_context_menu",
+                150.0,
+                format!("Copy Text | --- | Rename | Duplicate | Pin | Color...{g} | --- | Delete")
+            )
         );
         assert_eq!(
             menu(plain(TYPE_IMAGE), false),
             (
                 "image_context_menu",
                 170.0,
-                format!("Open Containing Folder | Copy Path | Rename | Duplicate | Pin | Color...{g} | --- | Delete")
+                format!(
+                    "Open Containing Folder | Copy Path | --- | Rename | Duplicate | Pin | Color...{g} | --- | Delete"
+                )
             )
         );
         assert_eq!(
@@ -117,7 +123,9 @@ fn node_menu_config_matches_each_kinds_menu() {
             (
                 "pdf_context_menu",
                 170.0,
-                format!("Open Containing Folder | Copy Path | Rename | Duplicate | Pin | Color...{g} | --- | Delete")
+                format!(
+                    "Open Containing Folder | Copy Path | --- | Rename | Duplicate | Pin | Color...{g} | --- | Delete"
+                )
             )
         );
         assert_eq!(
@@ -125,7 +133,9 @@ fn node_menu_config_matches_each_kinds_menu() {
             (
                 "json_context_menu",
                 170.0,
-                format!("Open Containing Folder | Copy Path | Rename | Duplicate | Pin | Color...{g} | --- | Delete")
+                format!(
+                    "Open Containing Folder | Copy Path | --- | Rename | Duplicate | Pin | Color...{g} | --- | Delete"
+                )
             )
         );
         assert_eq!(
@@ -133,12 +143,12 @@ fn node_menu_config_matches_each_kinds_menu() {
             (
                 "tab_context_menu",
                 150.0,
-                format!("Duplicate | Sleep | Copy URL | Fit Subtree | Rename | Pin | Color...{g} | --- | Close")
+                format!("Fit Subtree | Sleep | Copy URL | --- | Rename | Duplicate | Pin | Color...{g} | --- | Close")
             )
         );
         assert_eq!(
             menu(loaded_tab(), true).2,
-            format!("Duplicate | Sleep | Copy URL | Fit Subtree | Rename | Unpin | Color...{g} | --- | Close")
+            format!("Fit Subtree | Sleep | Copy URL | --- | Rename | Duplicate | Unpin | Color...{g} | --- | Close")
         );
         assert_eq!(
             menu(plain(TYPE_GROUP), false),
@@ -146,8 +156,8 @@ fn node_menu_config_matches_each_kinds_menu() {
                 "group_context_menu",
                 150.0,
                 format!(
-                    "Sleep Tabs | Rename | Duplicate | Pin | Color...{g} | --- | Dissolve Group | Close Group and Contents | \
-                         Export Group..."
+                    "Sleep Tabs | Export Group... | --- | Rename | Duplicate | Pin | Color...{g} | --- | Dissolve Group | \
+                         Close Group and Contents"
                 )
             )
         );
@@ -156,7 +166,7 @@ fn node_menu_config_matches_each_kinds_menu() {
             (
                 "unloaded_tab_context_menu",
                 170.0,
-                format!("Open | Duplicate | Copy URL | Rename | Pin | Color...{g} | --- | Close")
+                format!("Open | Copy URL | --- | Rename | Duplicate | Pin | Color...{g} | --- | Close")
             )
         );
     }
@@ -166,35 +176,35 @@ fn node_menu_config_matches_each_kinds_menu() {
     let failed = NodeMenuView { other_default_view_kind: true, failed: true, ..view_of(sleeping_tab()) };
     assert_eq!(
         menu_of(&failed, false).2,
-        "Retry | Open in Default Engine | Copy URL | Rename | Pin | Color... | --- | Close"
+        "Retry | Open in Default Engine | Copy URL | --- | Rename | Pin | Color... | --- | Close"
     );
     let missing = NodeMenuView { failed: true, view_missing: true, ..view_of(sleeping_tab()) };
-    assert_eq!(menu_of(&missing, false).2, "Download Engine | Copy URL | Rename | Pin | Color... | --- | Close");
+    assert_eq!(menu_of(&missing, false).2, "Download Engine | Copy URL | --- | Rename | Pin | Color... | --- | Close");
     // Export Group's file dialog can't run headless.
     assert_eq!(
         menu(plain(TYPE_GROUP), false, false, true).2,
-        "Sleep Tabs | Rename | Duplicate | Pin | Color... | --- | Dissolve Group | Close Group and Contents"
+        "Sleep Tabs | --- | Rename | Duplicate | Pin | Color... | --- | Dissolve Group | Close Group and Contents"
     );
     // A url on Image/Pdf/Json/Note offers Refresh (not Note) and Open as
     // Tab, ahead of the kind's own items.
     let with_url = |kind: CardKind| NodeMenuView { has_url: true, has_copy_url: true, ..view_of(kind) };
     assert_eq!(
         menu_of(&with_url(plain(TYPE_IMAGE)), false).2,
-        "Refresh | Open as Tab | Copy URL | Open Containing Folder | Copy Path | Rename | Duplicate | Pin | Color... | --- | Delete"
+        "Refresh | Open as Tab | Copy URL | Open Containing Folder | Copy Path | --- | Rename | Duplicate | Pin | Color... | --- | Delete"
     );
     assert_eq!(
         menu_of(&with_url(plain(TYPE_JSON)), false).2,
-        "Refresh | Open as Tab | Copy URL | Open Containing Folder | Copy Path | Rename | Duplicate | Pin | Color... | --- | Delete"
+        "Refresh | Open as Tab | Copy URL | Open Containing Folder | Copy Path | --- | Rename | Duplicate | Pin | Color... | --- | Delete"
     );
     // A download has no Open as Tab (it would download again), but can copy where it came from.
     let download = NodeMenuView { has_copy_url: true, ..view_of(plain(TYPE_DOWNLOAD)) };
     assert_eq!(
         menu_of(&download, false).2,
-        "Copy URL | Open Containing Folder | Copy Path | Rename | Duplicate | Pin | Color... | --- | Remove from List"
+        "Copy URL | Open Containing Folder | Copy Path | --- | Rename | Duplicate | Pin | Color... | --- | Remove from List"
     );
     assert_eq!(
         menu_of(&with_url(plain(TYPE_NOTE)), false).2,
-        "Open as Tab | Copy URL | Copy Text | Rename | Duplicate | Pin | Color... | --- | Delete"
+        "Open as Tab | Copy URL | Copy Text | --- | Rename | Duplicate | Pin | Color... | --- | Delete"
     );
     // Jars: tabs and groups have a Jar row ahead of the colours; the jar list and its actions are the Jar page.
     let rows = vec![JarRow { id: None, name: built_in(), color: None, ticked: true }];
@@ -202,22 +212,22 @@ fn node_menu_config_matches_each_kinds_menu() {
     let tab = |j| NodeMenuView { jars: j, ..view_of(loaded_tab()) };
     assert_eq!(
         menu_of(&tab(jars(false)), false).2,
-        "Duplicate | Sleep | Copy URL | Fit Subtree | Jar... | Rename | Pin | Color... | --- | Close"
+        "Fit Subtree | Sleep | Copy URL | Jar... | --- | Rename | Duplicate | Pin | Color... | --- | Close"
     );
     assert_eq!(
         menu_of(&tab(jars(true)), false).2,
-        "Duplicate | Sleep | Copy URL | Fit Subtree | Jar... | Rename | Pin | Color... | --- | Close"
+        "Fit Subtree | Sleep | Copy URL | Jar... | --- | Rename | Duplicate | Pin | Color... | --- | Close"
     );
     let unloaded = NodeMenuView { jars: jars(true), ..view_of(sleeping_tab()) };
     assert_eq!(
         menu_of(&unloaded, false).2,
-        "Open | Duplicate | Copy URL | Jar... | Rename | Pin | Color... | --- | Close"
+        "Open | Copy URL | Jar... | --- | Rename | Duplicate | Pin | Color... | --- | Close"
     );
     let group = NodeMenuView { jars: jars(false), ..view_of(plain(TYPE_GROUP)) };
     assert_eq!(
         menu_of(&group, false).2,
-        "Sleep Tabs | Jar... | Rename | Duplicate | Pin | Color... | --- | Dissolve Group | Close Group and Contents | \
-             Export Group..."
+        "Sleep Tabs | Export Group... | Jar... | --- | Rename | Duplicate | Pin | Color... | --- | Dissolve Group | \
+             Close Group and Contents"
     );
     let page = |view: &NodeMenuView| -> Vec<&'static str> {
         node_menu_config(view, false)
@@ -239,11 +249,11 @@ fn node_menu_config_matches_each_kinds_menu() {
     let linked = |kind| NodeMenuView { edges: vec![row.clone()], has_group: true, ..view_of(kind) };
     assert_eq!(
         menu_of(&linked(plain(TYPE_NOTE)), false).2,
-        "Copy Text | Rename | Duplicate | Pin | Color... | <links> | --- | Remove from Group | --- | Delete"
+        "Copy Text | --- | Rename | Duplicate | Pin | Color... | <links> | --- | Remove from Group | --- | Delete"
     );
     assert_eq!(
         menu_of(&linked(loaded_tab()), false).2,
-        "Duplicate | Sleep | Copy URL | Fit Subtree | Rename | Pin | Color... | <links> | --- | Remove from Group | --- | \
+        "Fit Subtree | Sleep | Copy URL | --- | Rename | Duplicate | Pin | Color... | <links> | --- | Remove from Group | --- | \
              Close"
     );
 }

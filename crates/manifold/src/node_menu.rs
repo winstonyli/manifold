@@ -500,12 +500,16 @@ pub(crate) fn node_menu_config(view: &NodeMenuView, headless: bool) -> NodeMenuC
         }
         items
     };
-    // Every menu ends in the Colors row, the Links section (when it has rows), Remove from Group (when the node
-    // is grouped), then the kind's delete items.
+    // Every menu has the same order: the kind's own actions (open, copy, sleep, files), a rule, the shared
+    // organising rows (Rename, Duplicate, Pin, Color, Links), then Move into and Remove from Group, then the
+    // kind's delete items last.
     let finish = |area_id, min_width, mut items: Vec<NodeMenuItem>, delete_items: Vec<NodeMenuItem>, jar_page| {
+        if !items.is_empty() {
+            items.push(Separator);
+        }
         items.push(Button("Rename", A::Rename));
-        // A tab's own menu offers Duplicate where it can work (not on a failed tab).
-        if view.kind.ty != TYPE_TAB {
+        // Not on a failed tab: the copy would start on the same engine and fail the same way.
+        if !view.failed {
             items.push(Button("Duplicate", A::Duplicate));
         }
         items.push(Button(if view.pinned { "Unpin" } else { "Pin" }, A::TogglePin));
@@ -574,11 +578,10 @@ pub(crate) fn node_menu_config(view: &NodeMenuView, headless: bool) -> NodeMenuC
                 items.extend([Button("Restart View", A::RestartView), Button("End View", A::EndView), Separator]);
             }
             items.extend([
-                Button("Duplicate", A::Duplicate),
+                Button("Fit Subtree", A::FitSubtree),
                 Button("Sleep", A::Sleep),
                 Button("Copy URL", A::CopyUrl),
             ]);
-            items.push(Button("Fit Subtree", A::FitSubtree));
             let jar_page = jar_row(&mut items, true);
             finish("tab_context_menu", 150.0, items, delete("Close"), jar_page)
         }
@@ -593,11 +596,6 @@ pub(crate) fn node_menu_config(view: &NodeMenuView, headless: bool) -> NodeMenuC
             if view.failed && view.other_default_view_kind {
                 items.push(Button("Open in Default Engine", A::OpenInDefaultViewKind));
             }
-            // The same as a live tab's, and Ctrl+D's (`duplicate_tab` takes either). Not for a failed tab: the copy
-            // would start on the same engine and fail the same way.
-            if !view.failed {
-                items.push(Button("Duplicate", A::Duplicate));
-            }
             items.push(Button("Copy URL", A::CopyUrl));
             let jar_page = jar_row(&mut items, false);
             finish("unloaded_tab_context_menu", 170.0, items, delete("Close"), jar_page)
@@ -605,12 +603,12 @@ pub(crate) fn node_menu_config(view: &NodeMenuView, headless: bool) -> NodeMenuC
         // Presentation matches the type, not `is_container` (see `card_style`).
         TYPE_GROUP => {
             // Dissolve keeps the members; the second closes them all, as the card's Del, ✕ and middle-click do.
-            let mut delete_items =
+            let delete_items =
                 vec![Button("Dissolve Group", A::Dissolve), Button("Close Group and Contents", A::Delete)];
-            if !headless {
-                delete_items.push(Button("Export Group...", A::ExportGroup));
-            }
             let mut items = vec![Button("Sleep Tabs", A::SleepGroup)];
+            if !headless {
+                items.push(Button("Export Group...", A::ExportGroup));
+            }
             let jar_page = jar_row(&mut items, false);
             finish("group_context_menu", 150.0, items, delete_items, jar_page)
         }

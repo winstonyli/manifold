@@ -311,7 +311,7 @@ pub(crate) const ACCENT: egui::Color32 = egui::Color32::from_rgb(215, 162, 74);
 /// future shade change only has one place to edit. A warm rust rather than a
 /// pure red, so it still reads unambiguously as "danger" without clashing
 /// with the rest of this palette the way a stop-sign red would.
-pub(crate) const DANGER_COLOR: egui::Color32 = egui::Color32::from_rgb(196, 87, 58);
+pub(crate) const DANGER_COLOR: egui::Color32 = egui::Color32::from_rgb(224, 112, 84);
 
 /// The sky-blue entry of `TAG_COLOR_PALETTE`: the one cool hue in this otherwise warm theme.
 pub(crate) const TAG_SKY_BLUE: egui::Color32 = TAG_COLOR_PALETTE[4];
@@ -354,7 +354,7 @@ pub(crate) const SURFACE_HOVER: egui::Color32 = egui::Color32::from_rgb(58, 50, 
 
 pub(crate) const TEXT_PRIMARY: egui::Color32 = egui::Color32::from_rgb(233, 226, 211);
 
-pub(crate) const TEXT_WEAK: egui::Color32 = egui::Color32::from_rgb(168, 154, 120);
+pub(crate) const TEXT_WEAK: egui::Color32 = egui::Color32::from_rgb(178, 164, 130);
 
 /// Applied once at startup (see `Default for App`). Bumps corner rounding
 /// and spacing up from egui's fairly tight defaults (which read as "plain
@@ -804,6 +804,37 @@ pub(crate) fn toolbar_chip(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// WCAG contrast ratio of two opaque colors.
+    fn contrast(a: egui::Color32, b: egui::Color32) -> f32 {
+        let lum = |c: egui::Color32| {
+            let lin = |v: u8| {
+                let v = v as f32 / 255.0;
+                if v <= 0.03928 {
+                    v / 12.92
+                } else {
+                    ((v + 0.055) / 1.055).powf(2.4)
+                }
+            };
+            0.2126 * lin(c.r()) + 0.7152 * lin(c.g()) + 0.0722 * lin(c.b())
+        };
+        let (hi, lo) = (lum(a).max(lum(b)), lum(a).min(lum(b)));
+        (hi + 0.05) / (lo + 0.05)
+    }
+
+    /// Text colors keep WCAG AA (4.5:1) on the surfaces they sit on: weak text on every surface including a hovered
+    /// row, severity red on the page and on raised surfaces (its hover-fill use carries an icon, not text).
+    #[test]
+    fn text_colors_keep_aa_contrast_on_their_surfaces() {
+        for surface in [BG, SURFACE_RAISED, SURFACE_HOVER] {
+            assert!(contrast(TEXT_WEAK, surface) >= 4.5, "TEXT_WEAK on {surface:?}");
+            assert!(contrast(TEXT_PRIMARY, surface) >= 4.5, "TEXT_PRIMARY on {surface:?}");
+        }
+        for surface in [BG, SURFACE_RAISED] {
+            assert!(contrast(DANGER_COLOR, surface) >= 4.5, "DANGER_COLOR on {surface:?}");
+            assert!(contrast(ACCENT, surface) >= 4.5, "ACCENT on {surface:?}");
+        }
+    }
     /// Easing in from transparent keeps the target's color and only raises its opacity: a lerp of the unmultiplied
     /// channels from transparent black dipped through a darker tint than either end (the chip buttons' hover flash).
     #[test]
