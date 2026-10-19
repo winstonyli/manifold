@@ -652,7 +652,7 @@ fn drive(sm: &mut Smoke, m: &mut Marks) -> io::Result<()> {
     );
 
     m.mark("borders");
-    // Border colors, read off a screenshot: a group of more than 8 members rests on DANGER_COLOR (196, 87, 58), and
+    // Border colors, read off a screenshot: a group of more than 8 members rests on DANGER_COLOR (224, 112, 84), and
     // the empty group from above on ACCENT (215, 162, 74). The mouse waits in an empty corner.
     sm.send("CLICK 22 17")?;
     sm.write("nine.group.json", nine_group().to_string().as_bytes())?;
@@ -667,7 +667,7 @@ fn drive(sm: &mut Smoke, m: &mut Marks) -> io::Result<()> {
     let empty = before.first().cloned().unwrap_or_default();
     sm.shot("borders.png", "group borders")?;
     let png = sm.path("borders.png");
-    let (danger, accent) = ([196, 87, 58], [215, 162, 74]);
+    let (danger, accent) = ([224, 112, 84], [215, 162, 74]);
     if border_near(&nine_s, &png, &nine, danger) {
         pass("a group of 9 has a DANGER_COLOR border");
     } else {
