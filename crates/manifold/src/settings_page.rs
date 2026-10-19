@@ -29,6 +29,7 @@ pub(crate) struct SettingsRequests {
     pub(crate) export_bookmarks_requested: bool,
     pub(crate) import_bookmarks_requested: bool,
     pub(crate) save_now_requested: bool,
+    pub(crate) welcome_tour_requested: bool,
     /// `settings_current_tab_section`: `self.focused` persists across a
     /// view switch (entering Settings doesn't clear it), so these act on
     /// whichever tab was focused right before Settings was opened, same
@@ -103,6 +104,7 @@ impl App {
                 self.settings_lists_section(ui, &mut req);
                 self.settings_sessions_section(ui, &mut req);
                 self.settings_bookmarks_section(ui, &mut req);
+                self.settings_help_section(ui, &mut req);
 
                 ui.add_space(PAGE_PAD);
             });
@@ -507,9 +509,27 @@ impl App {
         }
     }
 
+    /// Settings, "Help": the welcome tour again, for anyone who missed it on first launch. Its page is served by
+    /// WebView2 only (`demo_available`), so the button is absent where that engine is.
+    pub(crate) fn settings_help_section(&mut self, ui: &mut egui::Ui, req: &mut SettingsRequests) {
+        if !self.demo_available() {
+            return;
+        }
+        section_start(ui, "Help");
+        if ui.button("Welcome tour").on_hover_text("Open the first-launch tour in a new tab").clicked() {
+            req.welcome_tour_requested = true;
+        }
+    }
+
     /// What the Settings sections asked for, acted on once the page's
     /// scroll area is done (`build_settings_page`).
     pub(crate) fn apply_settings_requests(&mut self, req: &SettingsRequests) {
+        if req.welcome_tour_requested {
+            self.close_settings_page();
+            let group = self.current_group.clone();
+            let tour = "manifold://welcome";
+            self.spawn_new_tab_with_kind(None, group, tour, ViewKind::Webview2, SpawnPurpose::New, None, None);
+        }
         if req.save_now_requested {
             self.save_session();
         }
