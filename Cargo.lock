@@ -5027,10 +5027,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "manifold-pages"
+version = "0.7.1"
+
+[[package]]
 name = "manifold-view-cef"
 version = "0.7.1"
 dependencies = [
  "cef",
+ "manifold-pages",
  "manifold-view-protocol",
  "serde_json",
  "windows 0.62.2",
@@ -5061,6 +5066,8 @@ version = "0.7.1"
 dependencies = [
  "dpi",
  "euclid",
+ "http 1.5.0",
+ "manifold-pages",
  "manifold-view-protocol",
  "rustls",
  "servo",
@@ -5074,6 +5081,7 @@ version = "0.7.1"
 dependencies = [
  "gtk",
  "javascriptcore-rs",
+ "manifold-pages",
  "manifold-view-protocol",
  "url",
  "webkit2gtk",
@@ -5084,6 +5092,7 @@ name = "manifold-view-webview2"
 version = "0.7.1"
 dependencies = [
  "image",
+ "manifold-pages",
  "manifold-view-protocol",
  "serde_json",
  "webview2-com",

@@ -9,7 +9,9 @@ workspace = true
 
 [dependencies]
 dpi.workspace = true
+http = "1"
 euclid.workspace = true
+manifold-pages.workspace = true
 manifold-view-protocol.workspace = true
 rustls = { workspace = true, features = ["aws-lc-rs"] }
 servo = { workspace = true, features = ["no-wgl"] }

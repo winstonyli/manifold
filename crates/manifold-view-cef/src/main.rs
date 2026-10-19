@@ -7,6 +7,7 @@ mod input;
 mod jar_cookies;
 mod life_span_handler;
 mod nav_handler;
+mod pages;
 mod render_handler;
 mod render_process_handler;
 
@@ -170,6 +171,7 @@ fn main() {
         1,
         "cef initialize failed"
     );
+    pages::register_factory();
 
     // Two one-directional control sockets back to manifold — same
     // convention as manifold-engine-servo (see manifold_view_protocol::transport).

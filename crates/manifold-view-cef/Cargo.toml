@@ -10,6 +10,7 @@ workspace = true
 [dependencies]
 serde_json.workspace = true
 cef = { workspace = true, features = ["build-util", "resources"] }
+manifold-pages.workspace = true
 manifold-view-protocol.workspace = true
 
 [target.'cfg(windows)'.dependencies]

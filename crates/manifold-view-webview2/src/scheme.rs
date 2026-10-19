@@ -20,24 +20,9 @@ use webview2_com::{
 use windows::core::HSTRING;
 use windows::Win32::UI::Shell::SHCreateMemStream;
 
-/// This scheme's name, without the `://` -- matches the design spec's own
-/// `manifold://` naming. `HasAuthorityComponent` (set below) means a URL
-/// like `manifold://welcome` parses with `host = "welcome"`, the same
-/// shape `http`/`https` URLs already have.
-const SCHEME_NAME: &str = "manifold";
-
-/// The real `manifold://welcome` page -- a feature tour, embedded at
-/// compile time (same `include_str!`/`include_bytes!` convention the
-/// `manifold` crate's own icon/font assets already use).
-const WELCOME_HTML: &str = include_str!("../assets/welcome.html");
-
-/// `manifold://tips` -- a short keyboard-shortcut reference, used as one
-/// of the first-launch demo group's two member tabs (see `App::
-/// spawn_first_launch_demo` in the `manifold` crate).
-const TIPS_HTML: &str = include_str!("../assets/tips.html");
-
-/// `manifold://start` -- the new tab page: where to type, and the key to the graph.
-const START_HTML: &str = include_str!("../assets/start.html");
+/// `HasAuthorityComponent` (set below) means a URL like `manifold://welcome`
+/// parses with `host = "welcome"`, the same shape `http`/`https` URLs have.
+use manifold_pages::{CONTENT_TYPE, SCHEME as SCHEME_NAME};
 
 /// Builds the `ICoreWebView2EnvironmentOptions` that `create_environment`
 /// passes to `CreateCoreWebView2EnvironmentWithOptions`, with the
@@ -88,24 +73,17 @@ pub fn register(environment: &ICoreWebView2Environment, webview: &ICoreWebView2)
         }
         let uri = take_pwstr(uri);
 
-        let page = page_name(&uri).and_then(page_content);
-        let (status, reason, body) = match page {
-            Some(html) => (200, "OK", html),
-            None => (
-                404,
-                "Not Found",
-                "<!doctype html><html><head><meta charset=\"utf-8\"><style>body{background:#1E1F24;color:#E6E7EB;font-family:sans-serif;padding:2em}</style></head><body><h1>Not found</h1></body></html>",
-            ),
-        };
+        let (status, body) = manifold_pages::serve(&uri);
+        let reason = if status == 200 { "OK" } else { "Not Found" };
         let Some(stream) = (unsafe { SHCreateMemStream(Some(body.as_bytes())) }) else {
             return Ok(());
         };
         if let Ok(response) = unsafe {
             environment.CreateWebResourceResponse(
                 &stream,
-                status,
+                i32::from(status),
                 &HSTRING::from(reason),
-                &HSTRING::from("Content-Type: text/html; charset=utf-8"),
+                &HSTRING::from(format!("Content-Type: {CONTENT_TYPE}")),
             )
         } {
             let _ = unsafe { args.SetResponse(&response) };
@@ -117,39 +95,4 @@ pub fn register(environment: &ICoreWebView2Environment, webview: &ICoreWebView2)
         webview.add_WebResourceRequested(&handler, &mut token)?;
     }
     Ok(())
-}
-
-/// Extracts the host component from a `manifold://<host>...` URI (`None`
-/// if it doesn't even match the scheme) -- same
-/// `split(['/', '?', '#']).next()` shape `crates/manifold/src/suggestions.rs`'s
-/// own `looks_like_url` already uses to isolate a URL's host part.
-fn page_name(uri: &str) -> Option<&str> {
-    let rest = uri.strip_prefix(&format!("{SCHEME_NAME}://"))?;
-    Some(rest.split(['/', '?', '#']).next().unwrap_or(rest))
-}
-
-/// The static page router. One `match` arm per known page -- no registry
-/// abstraction for what is, for now, a single page (see the design spec's
-/// own reasoning for why this is deliberately not over-built).
-fn page_content(page: &str) -> Option<&'static str> {
-    match page.to_ascii_lowercase().as_str() {
-        "welcome" => Some(WELCOME_HTML),
-        "tips" => Some(TIPS_HTML),
-        "start" => Some(START_HTML),
-        _ => None,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn every_page_name_serves_its_page() {
-        for name in ["welcome", "tips", "start"] {
-            assert!(page_content(name).is_some_and(|html| html.contains("<title>")), "{name}");
-        }
-        assert!(page_content("nosuch").is_none());
-        assert_eq!(page_name("manifold://start/?x#y"), Some("start"));
-    }
 }

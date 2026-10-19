@@ -13,6 +13,8 @@ use servo::{
     WebViewPoint, WheelDelta, WheelEvent, WheelMode,
 };
 use url::Url;
+
+mod pages;
 use webrender_api::units::DevicePoint;
 
 const DEFAULT_WIDTH: u32 = 1024;
@@ -185,7 +187,8 @@ fn main() {
     // worse, not better; the reference code doesn't call it at all here.
     rendering_context.make_current().expect("make rendering context current");
 
-    let servo = ServoBuilder::default().event_loop_waker(Box::new(NoopWaker)).build();
+    let servo =
+        ServoBuilder::default().event_loop_waker(Box::new(NoopWaker)).protocol_registry(pages::registry()).build();
 
     let delegate = Rc::new(Delegate {
         frame_ready: RefCell::new(false),

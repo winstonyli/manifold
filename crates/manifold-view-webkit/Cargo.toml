@@ -9,6 +9,7 @@ workspace = true
 
 [dependencies]
 gtk.workspace = true
+manifold-pages.workspace = true
 manifold-view-protocol.workspace = true
 javascriptcore.workspace = true
 url.workspace = true

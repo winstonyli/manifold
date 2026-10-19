@@ -1,4 +1,5 @@
 mod input;
+mod pages;
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -98,6 +99,7 @@ fn main() {
     let pending_download: Rc<RefCell<Vec<ViewToHost>>> = Rc::new(RefCell::new(Vec::new()));
     let reserved: Rc<RefCell<std::collections::HashSet<std::path::PathBuf>>> = Rc::default();
     if let Some(context) = &web_context {
+        pages::register(context);
         let pending_for_started = pending_download.clone();
         context.connect_download_started(move |_context, download| {
             let dest_for_events: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));

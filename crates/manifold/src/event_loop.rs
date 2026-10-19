@@ -184,7 +184,7 @@ impl ApplicationHandler<UserEvent> for App {
             self.save_session();
         }
         if !restored {
-            if self.settings.has_shown_first_launch_demo || !self.demo_available() {
+            if self.settings.has_shown_first_launch_demo {
                 self.spawn_root_tab();
             } else {
                 self.spawn_first_launch_demo();

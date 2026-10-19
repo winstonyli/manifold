@@ -47,6 +47,14 @@ wrap_app! {
             }
         }
 
+        // Runs in every CEF process (this `App` goes to `execute_process` and `initialize` alike); the scheme list
+        // must match in all of them.
+        fn on_register_custom_schemes(&self, registrar: Option<&mut cef::SchemeRegistrar>) {
+            if let Some(registrar) = registrar {
+                crate::pages::register_scheme(registrar);
+            }
+        }
+
         fn browser_process_handler(&self) -> Option<cef::BrowserProcessHandler> {
             Some(BrowserProcessHandlerBuilder::build(
                 ViewBrowserProcessHandler::new(),

@@ -8,6 +8,7 @@ description.workspace = true
 workspace = true
 
 [dependencies]
+manifold-pages.workspace = true
 manifold-view-protocol.workspace = true
 # Real JSON-string unescaping for `ExecuteScript`'s own JSON-encoded return
 # values -- see `nav_state.rs`'s JSON-body detection for why the plain

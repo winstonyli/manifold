@@ -509,12 +509,8 @@ impl App {
         }
     }
 
-    /// Settings, "Help": the welcome tour again, for anyone who missed it on first launch. Its page is served by
-    /// WebView2 only (`demo_available`), so the button is absent where that engine is.
+    /// Settings, "Help": the welcome tour again, for anyone who missed it on first launch.
     pub(crate) fn settings_help_section(&mut self, ui: &mut egui::Ui, req: &mut SettingsRequests) {
-        if !self.demo_available() {
-            return;
-        }
         section_start(ui, "Help");
         if ui.button("Welcome tour").on_hover_text("Open the first-launch tour in a new tab").clicked() {
             req.welcome_tour_requested = true;
@@ -527,8 +523,7 @@ impl App {
         if req.welcome_tour_requested {
             self.close_settings_page();
             let group = self.current_group.clone();
-            let tour = "manifold://welcome";
-            self.spawn_new_tab_with_kind(None, group, tour, ViewKind::Webview2, SpawnPurpose::New, None, None);
+            self.spawn_new_tab(None, group, "manifold://welcome");
         }
         if req.save_now_requested {
             self.save_session();

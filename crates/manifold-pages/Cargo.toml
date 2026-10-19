@@ -1,0 +1,8 @@
+[package]
+name = "manifold-pages"
+version.workspace = true
+edition.workspace = true
+description.workspace = true
+
+[lints]
+workspace = true

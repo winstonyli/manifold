@@ -106,9 +106,10 @@ pub fn classify(path: &str, src: &str, read: &dyn Fn(&str) -> Option<String>) ->
         || p.starts_with("rust-toolchain")
         || (p.starts_with("crates/") && p.ends_with("/Cargo.toml"))
         || under("crates/manifold-view-protocol")
+        || under("crates/manifold-pages")
         || (p.starts_with("crates/manifold-view-") && p["crates/".len()..].contains('/'))
     {
-        return full("dependency, protocol or engine crate");
+        return full("dependency, protocol, pages or engine crate");
     }
     if let Some(rel) = in_src {
         let first = rel.split('/').next().unwrap_or("");
@@ -278,6 +279,7 @@ mod tests {
         assert_eq!(tier_of(&["crates/gate/src/tier.rs"], &[]), "TIER full");
         assert_eq!(tier_of(&["Cargo.lock"], &[]), "TIER full");
         assert_eq!(tier_of(&["crates/manifold-view-cef/src/lib.rs"], &[]), "TIER full");
+        assert_eq!(tier_of(&["crates/manifold-pages/assets/start.html"], &[]), "TIER full");
     }
 
     #[test]
