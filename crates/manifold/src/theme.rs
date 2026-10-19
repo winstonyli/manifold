@@ -226,6 +226,16 @@ pub(crate) fn selectable_label(ui: &mut egui::Ui, selected: bool, text: impl Int
 
 /// The one solid-gold button a toolbar has: its main action.
 pub(crate) fn primary_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
+    filled_button(ui, label, ACCENT)
+}
+
+/// A dialog's main button when it destroys something: the same solid fill in `DANGER_COLOR`, so the colour says
+/// which kind of action it is (a gold "Delete" would read as the safe default).
+pub(crate) fn danger_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
+    filled_button(ui, label, DANGER_COLOR)
+}
+
+fn filled_button(ui: &mut egui::Ui, label: &str, fill: egui::Color32) -> egui::Response {
     ui.scope(|ui| {
         ui.spacing_mut().button_padding.x = 11.0;
         add_borderless(
@@ -236,7 +246,7 @@ pub(crate) fn primary_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
                     .font(egui::FontId::new(14.0, bound_family(ui.ctx(), control_bold_family())))
                     .color(BG),
             )
-            .fill(ACCENT),
+            .fill(fill),
         )
     })
     .inner

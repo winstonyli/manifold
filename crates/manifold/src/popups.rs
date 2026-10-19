@@ -448,9 +448,16 @@ impl FindState {
 }
 
 /// A centred confirm dialog: `title`, then `detail` (the first line is the explanation, any later line a warning, as
-/// `download_detail` writes), then `button` and Cancel. `Some(true)` on the button, `Some(false)` on Cancel or
-/// Escape, `None` while it waits.
-fn confirm_dialog(ui: &mut egui::Ui, area_id: &str, title: String, detail: &str, button: &str) -> Option<bool> {
+/// `download_detail` writes), then `button` (filled: rust when `destructive`, else gold) and Cancel. `Some(true)` on
+/// the button, `Some(false)` on Cancel or Escape, `None` while it waits.
+fn confirm_dialog(
+    ui: &mut egui::Ui,
+    area_id: &str,
+    title: String,
+    detail: &str,
+    button: &str,
+    destructive: bool,
+) -> Option<bool> {
     let (mut yes, mut no) = (false, false);
     egui::Area::new(egui::Id::new(area_id))
         .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
@@ -468,7 +475,7 @@ fn confirm_dialog(ui: &mut egui::Ui, area_id: &str, title: String, detail: &str,
                 }
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    yes = ui.button(button).clicked();
+                    yes = if destructive { danger_button(ui, button) } else { primary_button(ui, button) }.clicked();
                     no = ui.button("Cancel").clicked();
                 });
             });
@@ -671,6 +678,7 @@ impl App {
             title,
             "Deletes the saved session and its copies from disk.",
             "Delete",
+            true,
         ) {
             Some(true) => {
                 self.pending_session_delete = None;
@@ -708,7 +716,14 @@ impl App {
                 "Remove",
             ),
         };
-        match confirm_dialog(ui, "view_confirm_popup", title, &detail, button) {
+        match confirm_dialog(
+            ui,
+            "view_confirm_popup",
+            title,
+            &detail,
+            button,
+            matches!(confirm, ViewConfirm::Remove(_)),
+        ) {
             Some(true) => {
                 self.view_ui.pending_view_confirm = None;
                 match confirm {
@@ -732,7 +747,7 @@ impl App {
             self.pending_jar_confirm = None;
             return;
         };
-        match confirm_dialog(ui, "jar_confirm_popup", title, &detail, button) {
+        match confirm_dialog(ui, "jar_confirm_popup", title, &detail, button, true) {
             Some(true) => {
                 self.pending_jar_confirm = None;
                 match confirm {
@@ -2016,7 +2031,7 @@ impl App {
                     );
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
-                        if ui.button("Import").clicked() {
+                        if danger_button(ui, "Import").clicked() {
                             confirm = true;
                         }
                         if ui.button("Cancel").clicked() {
@@ -2055,6 +2070,39 @@ mod tests {
         use crate::process_manager::ViewKind;
         let size = crate::view_info::megabytes(93_000_000);
         assert_eq!(super::download_confirm_title("Download", ViewKind::Servo, &size), "Download Servo, 93 MB?");
+    }
+
+    /// The confirm's main button is filled rust when it destroys something and gold when it doesn't.
+    #[test]
+    fn a_confirm_fills_its_main_button_by_what_it_does() {
+        let fills = |destructive: bool| {
+            let ctx = egui::Context::default();
+            crate::theme::apply_fonts(&ctx);
+            crate::theme::apply_style(&ctx);
+            let input = |frame: usize| egui::RawInput {
+                time: Some(frame as f64),
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(600.0, 400.0))),
+                ..Default::default()
+            };
+            let mut shapes = Vec::new();
+            for frame in 0..4 {
+                let mut out = ctx.run_ui(input(frame), |ui| {
+                    super::confirm_dialog(ui, "t", "Title".into(), "Detail", "Go", destructive);
+                });
+                out.textures_delta.clear();
+                shapes = out.shapes;
+            }
+            let mut colors = Vec::new();
+            for clipped in &shapes {
+                if let egui::Shape::Rect(rect) = &clipped.shape {
+                    colors.push(rect.fill);
+                }
+            }
+            colors
+        };
+        let (rust, gold) = (fills(true), fills(false));
+        assert!(rust.contains(&crate::theme::DANGER_COLOR) && !rust.contains(&crate::theme::ACCENT), "{rust:?}");
+        assert!(gold.contains(&crate::theme::ACCENT) && !gold.contains(&crate::theme::DANGER_COLOR), "{gold:?}");
     }
 
     #[test]
