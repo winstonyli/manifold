@@ -1098,7 +1098,7 @@ impl App {
             if !groups_at_level.is_empty() {
                 let response =
                     chip_icon_button(ui, egui::Id::new("icon_btn_ungroup_all"), egui_phosphor::light::FOLDER_MINUS)
-                        .named_tip("Ungroup All");
+                        .named_tip(ungroup_all_tip(groups_at_level.len()));
                 grow(response.rect);
                 if response.clicked() {
                     actions.push(GraphAction::UngroupAll);
@@ -1679,6 +1679,11 @@ impl App {
             .dragging
             .clone()
             .and_then(|dragged| self.drop_target(&dragged, pointer, leave_group_button_rect));
+        // The ring says where a drop would land; this says what it would do, beside the pointer.
+        if let (Some((effect, target)), Some(at)) = (&drop_preview, pointer) {
+            let name = target.as_deref().map(|id| self.drop_target_name(id)).unwrap_or_default();
+            paint_drop_hint(ui.ctx(), at, &effect.hint(&name));
+        }
 
         // Every card: one shared frame each (`draw_graph_card`),
         // layer by layer (`level_scan`, groups last), which is
@@ -2036,6 +2041,26 @@ pub(crate) fn paint_dot_grid(
             );
         }
     }
+}
+
+/// The Ungroup All chip's hover, saying how much one click does: it dissolves every group here, keeping the members.
+fn ungroup_all_tip(groups: usize) -> String {
+    format!("Ungroup All ({groups} group{}): keeps the members", if groups == 1 { "" } else { "s" })
+}
+
+/// A small label beside the pointer on the topmost layer, over the cards and the toolbar alike.
+fn paint_drop_hint(ctx: &egui::Context, at: egui::Pos2, text: &str) {
+    let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("drop_hint")));
+    let galley = painter.layout_no_wrap(text.to_owned(), egui::FontId::proportional(13.0), crate::theme::TEXT_PRIMARY);
+    let rect = egui::Rect::from_min_size(at + egui::vec2(16.0, 18.0), galley.size()).expand2(egui::vec2(8.0, 4.0));
+    painter.rect(
+        rect,
+        crate::theme::RADIUS,
+        crate::theme::SURFACE_RAISED,
+        egui::Stroke::new(1.0, crate::theme::OUTLINE),
+        egui::StrokeKind::Inside,
+    );
+    painter.galley(rect.min + egui::vec2(8.0, 4.0), galley, crate::theme::TEXT_PRIMARY);
 }
 
 /// Painted on the canvas when the level has no nodes (the bindings are in `shortcuts.rs`).
@@ -2789,6 +2814,17 @@ mod tests {
     }
 
     /// The hint is per level: an empty group shows it; a level with a node (a group card counts) does not.
+    #[test]
+    fn drops_and_ungroup_all_say_what_they_will_do() {
+        assert_eq!(DropEffect::Merge.hint("Research"), "Merge into Research");
+        assert_eq!(DropEffect::Join.hint("A"), "Move into A");
+        assert_eq!(DropEffect::GroupWith.hint("B"), "Group with B");
+        assert_eq!(DropEffect::Reparent.hint("C"), "Make child of C");
+        assert_eq!(DropEffect::Eject.hint(""), "Move out of group");
+        assert_eq!(ungroup_all_tip(1), "Ungroup All (1 group): keeps the members");
+        assert_eq!(ungroup_all_tip(3), "Ungroup All (3 groups): keeps the members");
+    }
+
     #[test]
     fn the_hint_shows_on_every_empty_level_not_only_an_empty_graph() {
         use crate::fetched::Placement;

@@ -50,7 +50,7 @@ use crate::shots_img::{hover_report, write_sheet};
 use crate::shots_net::{Downloads, Proxy};
 use crate::state::{round_half_even, State, GROUP, IMAGE, JSON, NOTE, TAB};
 
-const DEFAULT_VIEWS: &str = "graph graph-hover graph-menu-tab graph-menu-group graph-menu-note graph-link graph-menu-links graph-link-hover graph-link-handles graph-link-drag graph-filter graph-group json-level json-menu tabview tabview-dropdown tabview-find tabview-actions tabview-split settings popup-bookmarks popup-history popup-downloads shortcuts quickswitch graph-closed graph-newnode-menu newnode-zoom graph-tooltip image-view cards-f note-edit missing-file download-real download-progress download-failed json-zoom settings-engine settings-engine-tab settings-combo toast tabview-engine json-tooltip engine-states-picker engine-states-settings engine-install-confirm";
+const DEFAULT_VIEWS: &str = "graph graph-hover graph-menu-tab graph-menu-group graph-menu-note graph-link graph-menu-links graph-link-hover graph-link-handles graph-link-drag graph-drop-hint graph-filter graph-group json-level json-menu tabview tabview-dropdown tabview-find tabview-actions tabview-split settings popup-bookmarks popup-history popup-downloads shortcuts quickswitch graph-closed graph-newnode-menu newnode-zoom graph-tooltip image-view cards-f note-edit missing-file download-real download-progress download-failed json-zoom settings-engine settings-engine-tab settings-combo toast tabview-engine json-tooltip engine-states-picker engine-states-settings engine-install-confirm";
 const SIZES_VIEWS: &str = "graph graph-menu-tab graph-newnode-menu shortcuts quickswitch settings tabview";
 /// The CEF host the fixture manifest pins: (file, size, SHA-256). Nothing downloads it; the files on disk are sparse.
 const FAKE_CEF_HOST: (&str, u64, &str) =
@@ -764,6 +764,24 @@ impl Shots {
                 s.reset()
             })?;
         }
+        // A card dragged over the group says what the drop would do ("Move into ...") beside the pointer.
+        self.view("graph-drop-hint", |s| {
+            let (nx, ny) = s.center(NOTE, "top", None)?;
+            let (gx, gy) = s.center(GROUP, "top", None)?;
+            send!(s, format!("MOUSEMOVE {nx} {ny}"), format!("MOUSEMOVE {nx} {ny}"), format!("MOUSEDOWN {nx} {ny}"))?;
+            let toward = |i: i64| format!("MOUSEMOVE {} {}", nx + (gx - nx) * i / 10, ny + (gy - ny) * i / 10);
+            for i in 1..=10 {
+                send!(s, toward(i))?;
+            }
+            send!(s, "SLEEP 1")?;
+            s.shot("graph-drop-hint")?;
+            // Back to where it started, so the release moves nothing.
+            for i in (0..10).rev() {
+                send!(s, toward(i))?;
+            }
+            send!(s, format!("MOUSEUP {nx} {ny}"), "SLEEP 1")?;
+            s.reset()
+        })?;
         Ok(())
     }
 

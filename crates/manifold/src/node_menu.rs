@@ -113,6 +113,7 @@ impl NodeAction {
 
     pub(crate) fn hover_text(&self) -> Option<&'static str> {
         match self {
+            NodeAction::Dissolve => Some("Keeps the members and removes the group card"),
             NodeAction::FitSubtree => Some("Zoom the graph to frame just this tab and its children"),
             NodeAction::SwitchJarNow => Some("Reload this tab in its new jar now"),
             NodeAction::RestartView => Some("Start a new engine for this tab at its current page"),

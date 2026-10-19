@@ -664,6 +664,20 @@ impl App {
     }
 }
 
+impl App {
+    /// A drop target's name for the hint, through the display rule and cut to a row's width.
+    pub(crate) fn drop_target_name(&self, id: &str) -> String {
+        let name = if self.is_container(id) {
+            // name rule: drawn by display_name just below
+            self.mirror.name(id).to_owned()
+        } else {
+            self.quick_switcher_row_label(id).unwrap_or_default()
+        };
+        let segs = crate::names::display_name(&name, crate::names::UNTITLED);
+        crate::names::to_plain(&crate::names::shorten(&segs, crate::names::ROW_UNITS).unwrap_or(segs))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     /// `GraphInteraction::forget` clears what `forget_id` cleared by hand: the dragged, hovered and peek-suppressed

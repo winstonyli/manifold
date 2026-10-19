@@ -663,6 +663,19 @@ pub(crate) enum DropEffect {
     Reparent,
 }
 
+impl DropEffect {
+    /// What a drop says it will do, naming the target after it: "Merge into Research". Eject has no target card.
+    pub(crate) fn hint(self, target: &str) -> String {
+        match self {
+            DropEffect::Eject => "Move out of group".to_owned(),
+            DropEffect::Merge => format!("Merge into {target}"),
+            DropEffect::Join => format!("Move into {target}"),
+            DropEffect::GroupWith => format!("Group with {target}"),
+            DropEffect::Reparent => format!("Make child of {target}"),
+        }
+    }
+}
+
 /// Every drag-and-drop rule in Graph view, for every kind. A group dropped on a group merges into it; the
 /// node menu's "Move into <group>" (`NodeAction::MoveToGroup`) is always a Join, so it nests one instead.
 pub(crate) fn drop_action(dragged: CardKind, target: DropTarget, inside_group: bool) -> Option<DropEffect> {
