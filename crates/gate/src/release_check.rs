@@ -38,7 +38,7 @@ pub(crate) fn workspace_version(cargo_toml: &str) -> Option<String> {
 }
 
 /// HEAD is the commit `tag` points at.
-pub(crate) fn at_tag(tag: &str) -> bool {
+fn at_tag(tag: &str) -> bool {
     let root = repo();
     matches!(
         (git(&root, &["rev-parse", "HEAD"]), git(&root, &["rev-parse", &format!("{tag}^{{commit}}")])),

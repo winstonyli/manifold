@@ -1,4 +1,4 @@
-//! `gate release-verify vX.Y.Z [DIST]`: re-checks a built release with the tag checked out. Every host the tag's
+//! `gate release-verify vX.Y.Z [DIST]`: re-checks a built release (which commit it was built from is `release-check`'s job). Every host the tag's
 //! pin manifest (`DIST/manifold-vX.Y.Z-windows-x64.host-pins.json`, the file the exe was built with) lists must sit in
 //! DIST as `FILE-PLATFORM` with the listed size and SHA-256; the exe in DIST (default dist/) must match its .sha256;
 //! and the embedded WebView2 host and PDF view copies in DIST/embedded must match the recorded hashes. That the exe
@@ -10,7 +10,6 @@ use std::process::ExitCode;
 
 use crate::cef_pin::{hash_file, repo};
 use crate::check::{check, exit_code, note_failure};
-use crate::release_check::at_tag;
 
 /// The first whitespace-separated word of a hash record file.
 fn recorded(path: &Path) -> Option<String> {
@@ -55,7 +54,6 @@ fn manifest_files(manifest: &str) -> Result<Vec<Pinned>, String> {
 }
 
 fn verify(tag: &str, dist: &Path) -> Result<(), String> {
-    check(&format!("HEAD is the commit {tag} points at"), at_tag(tag));
     let stem = format!("manifold-{tag}-windows-x64");
     let manifest = std::fs::read_to_string(dist.join(format!("{stem}.host-pins.json")))
         .map_err(|e| format!("{stem}.host-pins.json: {e}"))?;
