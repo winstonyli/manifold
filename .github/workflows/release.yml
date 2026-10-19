@@ -40,6 +40,11 @@ jobs:
         run: |
           & target/debug/gate.exe release-check $env:TAG
           if ($LASTEXITCODE -ne 0) { exit 1 }
+      - name: Servo host (dynamic CRT, so no static-crt flag; its ANGLE DLLs ship beside it)
+        run: |
+          Get-PSDrive C | Format-Table Used, Free
+          cargo build --release --locked -p manifold-view-servo
+          if ($LASTEXITCODE -ne 0) { exit 1 }
       - name: Downloadable hosts and their pin manifest
         run: |
           # Each host is attached to this release; manifold.exe is built with the manifest of their sizes and hashes.
@@ -47,13 +52,23 @@ jobs:
           cargo build --release --locked -p manifold-view-cef
           if ($LASTEXITCODE -ne 0) { exit 1 }
           New-Item -ItemType Directory -Force dist | Out-Null
-          $hosts = [ordered]@{ cef = [ordered]@{ 'windows-x64' = @('manifold-engine-cef.exe') } }
+          # ANGLE's DLLs come from mozangle's build output; the newest copy is the one this build made.
+          $angle = @{}
+          foreach ($dll in 'libEGL.dll', 'libGLESv2.dll') {
+            $angle[$dll] = Get-ChildItem target/release/build -Recurse -Filter $dll | Where-Object FullName -Match 'mozangle' | Sort-Object LastWriteTime -Descending | Select-Object -First 1 -ExpandProperty FullName
+            if (-not $angle[$dll]) { throw "no $dll under target/release/build" }
+          }
+          function Source($name) { if ($angle.ContainsKey($name)) { $angle[$name] } else { "target/release/$name" } }
+          $hosts = [ordered]@{
+            cef = [ordered]@{ 'windows-x64' = @('manifold-engine-cef.exe') }
+            servo = [ordered]@{ 'windows-x64' = @('manifold-engine-servo.exe', 'libEGL.dll', 'libGLESv2.dll') }
+          }
           $manifest = [ordered]@{}
           foreach ($kind in $hosts.Keys) {
             $manifest[$kind] = [ordered]@{}
             foreach ($platform in $hosts[$kind].Keys) {
               $files = foreach ($name in $hosts[$kind][$platform]) {
-                Copy-Item "target/release/$name" "dist/$name-$platform"
+                Copy-Item (Source $name) "dist/$name-$platform"
                 [ordered]@{ file = $name; size = (Get-Item "dist/$name-$platform").Length; sha256 = (Get-FileHash "dist/$name-$platform" -Algorithm SHA256).Hash.ToLower() }
               }
               $manifest[$kind][$platform] = @($files)
