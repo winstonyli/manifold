@@ -1005,7 +1005,7 @@ impl App {
                                 if row.clicked() {
                                     navigate_url = Some(bookmark.url.clone());
                                 }
-                                if ui.small_button(egui_phosphor::light::X).clicked() {
+                                if ui.small_button(egui_phosphor::light::X).named_tip("Remove bookmark").clicked() {
                                     remove_index = Some(index);
                                 }
                             });
@@ -1227,7 +1227,7 @@ impl App {
                             if list_row(ui, filename).clicked() {
                                 reveal_id = Some(id.clone());
                             }
-                            if ui.small_button(egui_phosphor::light::X).clicked() {
+                            if ui.small_button(egui_phosphor::light::X).named_tip("Remove from list").clicked() {
                                 remove_id = Some(id.clone());
                             }
                         });
@@ -1649,7 +1649,7 @@ impl App {
                         // glyph. Now the real `X` icon instead, once the
                         // icon font was already in place for the other
                         // close buttons in this app's chrome.
-                        if ui.button(egui_phosphor::light::X).clicked() {
+                        if ui.button(egui_phosphor::light::X).named_tip("Close (Esc)").clicked() {
                             close = true;
                         }
                     });
@@ -1853,6 +1853,10 @@ impl App {
                                 i == selected_index,
                                 identity,
                             );
+                            // A title alone doesn't tell two tabs of one site apart; the address does.
+                            if let Some(url) = self.quick_switcher_row_url(id).filter(|url| *url != label) {
+                                row.on_hover_text(url);
+                            }
                         }
                     });
                 });

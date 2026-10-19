@@ -154,11 +154,11 @@ impl App {
             // Reads/writes the *focused tab's own* zoom, not the raw
             // `Settings::zoom_factor` -- see `set_focused_zoom`'s own
             // doc comment for the display-vs-reality bug this fixed.
-            if ui.button(egui_phosphor::light::MINUS).clicked() {
+            if ui.button(egui_phosphor::light::MINUS).named_tip("Zoom out").clicked() {
                 self.set_focused_zoom((self.focused_zoom_factor() - 0.1).max(*crate::settings::ZOOM_RANGE.start()));
             }
             ui.label(format!("{:.0}%", self.focused_zoom_factor() * 100.0));
-            if ui.button(egui_phosphor::light::PLUS).clicked() {
+            if ui.button(egui_phosphor::light::PLUS).named_tip("Zoom in").clicked() {
                 self.set_focused_zoom((self.focused_zoom_factor() + 0.1).min(*crate::settings::ZOOM_RANGE.end()));
             }
             if ui.button("Reset").clicked() {
