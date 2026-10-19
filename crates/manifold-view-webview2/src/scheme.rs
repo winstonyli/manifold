@@ -36,6 +36,9 @@ const WELCOME_HTML: &str = include_str!("../assets/welcome.html");
 /// spawn_first_launch_demo` in the `manifold` crate).
 const TIPS_HTML: &str = include_str!("../assets/tips.html");
 
+/// `manifold://start` -- the new tab page: where to type, and the key to the graph.
+const START_HTML: &str = include_str!("../assets/start.html");
+
 /// Builds the `ICoreWebView2EnvironmentOptions` that `create_environment`
 /// passes to `CreateCoreWebView2EnvironmentWithOptions`, with the
 /// `"manifold"` custom scheme registered on it. Called once, before the
@@ -132,6 +135,21 @@ fn page_content(page: &str) -> Option<&'static str> {
     match page.to_ascii_lowercase().as_str() {
         "welcome" => Some(WELCOME_HTML),
         "tips" => Some(TIPS_HTML),
+        "start" => Some(START_HTML),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_page_name_serves_its_page() {
+        for name in ["welcome", "tips", "start"] {
+            assert!(page_content(name).is_some_and(|html| html.contains("<title>")), "{name}");
+        }
+        assert!(page_content("nosuch").is_none());
+        assert_eq!(page_name("manifold://start/?x#y"), Some("start"));
     }
 }

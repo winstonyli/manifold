@@ -142,7 +142,7 @@ impl Default for Settings {
             default_search_engine: SearchEngine::DuckDuckGo,
             default_starting_view_kind: crate::process_manager::platform_default_view_kind(std::env::consts::OS),
             zoom_factor: 1.0,
-            home_page: "https://example.com".to_string(),
+            home_page: "manifold://start".to_string(),
             window_width: None,
             window_height: None,
             window_x: None,
