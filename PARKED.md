@@ -17,10 +17,6 @@ The one list of deferred work (format: `~/.claude/VERSIONING.md`). Delete an ite
 - **Servo install is untested from a published release.** the first release carrying a Servo host is the first time a published exe downloads it. The dry run proved the build, the manifest and the `gate package` state line, not the download or that the host starts with the ANGLE DLLs beside it. *Trigger:* the first release with Servo. *Check:* `gate install-check servo EXE` on that release (its expected file list is unconfirmed). *Status:* parked.
 - **Reusing a previous release's host when its dependency closure is unchanged.** Every release rebuilds every host (decision `docs/decisions/2026-10-18-hosts-in-the-release.md`). *Why parked:* cost is acceptable for one host. *Trigger:* release build time (Servo) or unwanted re-downloads on upgrade. *Fix:* additive: copy the old asset and keep its hash in the manifest. *Status:* parked.
 
-## Verified 2026-10-19
-
-- **Servo renders at most 1024 px wide.** In a 1280x800 window a Servo tab (any page: `data:` and `manifold://` alike) shows the page in the left 1024 px and white on the right; at 800x600 it fills the window. *Why parked:* found while checking `manifold://` on Servo, and not from that change. `HostToView::Resize` reaches the host (`manifold-view-servo/src/main.rs:246`, `rendering_context.resize` then `webview.resize`), yet layout stays at the initial `DEFAULT_WIDTH`. Growing past the initial surface does not take; shrinking does. *Trigger:* a Servo session on a window wider than 1024 px. *Fix to try:* create the `SoftwareRenderingContext` larger, or rebuild the context and webview on growth. *Evidence:* headless screenshots, 2026-10-19. *Status:* parked.
-
 ## Not re-verified (from the README and plans)
 
 - **Live-only behaviour never checked:** WebKit double and triple click, cross-origin iframe typing, Lost/Outdated recovery. *Trigger:* a WebKit or CEF session on the target machine. *Status:* held for a manual check.

@@ -254,7 +254,9 @@ fn main() {
                     }
                     width = w;
                     height = h;
-                    rendering_context.resize(PhysicalSize::new(w, h));
+                    // Only the webview: it resizes the rendering context itself, and Servo's painter skips its
+                    // viewport update when the context already has the new size (resizing it here left the page
+                    // laid out at the old width).
                     webview.resize(PhysicalSize::new(w, h));
                     // A static page paints nothing by itself after a resize, so the old frame would stay on screen
                     // stretched: force one paint at the new size (as `SetVisible` does).
