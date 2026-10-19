@@ -522,10 +522,10 @@ impl Shots {
             )?;
             s.shot("cards-f")
         })?;
-        // A note being edited: a click on the rendered note enters the editor in place.
+        // A note being edited: a double-click on the rendered note enters the editor in place.
         self.view("note-edit", |s| {
             let (x, y) = s.center(NOTE, "top", None)?;
-            send!(s, format!("CLICK {x} {y}"), "SLEEP 1", "MOUSEMOVE 5 790", "SLEEP 1")?;
+            send!(s, format!("DOUBLECLICK {x} {y}"), "SLEEP 1", "MOUSEMOVE 5 790", "SLEEP 1")?;
             s.shot("note-edit")?;
             send!(s, "ESCAPE", "SLEEP 1")
         })?;

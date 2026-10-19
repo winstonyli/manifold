@@ -455,8 +455,8 @@ fn drive(sm: &mut Smoke, m: &mut Marks) -> io::Result<()> {
     sm.send("WAITTABS")?;
 
     m.mark("address-bar");
-    // This CLICK is the first command after the tab spawns; keep it first (see the script's comment).
-    sm.send("CLICK 407 332")?;
+    // This DOUBLECLICK is the first command after the tab spawns; keep it first (see the script's comment).
+    sm.send("DOUBLECLICK 407 332")?;
     sm.send("WAITIDLE")?;
     sm.check_state("tab_view", "clicking the just-spawned root node enters Tab view", r#"s["tab_view"]"#, |v| {
         truthy_key(v.s, "tab_view")

@@ -1778,12 +1778,15 @@ impl App {
                     || n.as_json().is_some_and(|j| j.error.is_some())
                     || n.as_pdf().is_some_and(|p| matches!(p.outcome, Some(Err(_))))
             });
-            // A double-click, or Enter on the keyboard-focused card (a single Enter already
-            // counts as `clicked()`, which is what the other kinds act on).
+            // A double-click, or Enter on the keyboard-focused card: what opens a card. A plain click only selects it
+            // (below); a double-click's first click selects it too, so nothing waits on the second.
             let activated = card.response.double_clicked()
                 || (card.response.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
             // Click (not drag -- egui doesn't report `clicked()` for a drag).
-            let click = card.response.clicked().then(|| click_action(kind)).flatten();
+            if card.response.clicked() {
+                self.select_only(id);
+            }
+            let click = activated.then(|| click_action(kind)).flatten();
             match (kind.ty, click) {
                 _ if missing_file => {
                     if card.response.clicked() {
@@ -1792,7 +1795,7 @@ impl App {
                 }
                 (_, Some(action)) => pass.actions.push(GraphAction::Node(id.clone(), action)),
                 // Click on the rendered note enters editing in place.
-                (TYPE_NOTE, _) if card.response.clicked() && !note_was_editing => {
+                (TYPE_NOTE, _) if activated && !note_was_editing => {
                     if let Some(note) = self.nodes.get_mut(id).and_then(|n| n.as_note_mut()) {
                         note.editing = true;
                     }

@@ -182,6 +182,12 @@ impl Harness {
         self.frame(app, vec![]);
     }
 
+    /// Two clicks inside egui's double-click window (a Note starts editing on this, a single click only selects).
+    fn double_click(&self, app: &mut App, at: egui::Pos2) {
+        self.click(app, at);
+        self.click(app, at);
+    }
+
     /// Hovers `from` for two frames (so a hover-only widget there is registered and hit-testable), presses,
     /// moves to `to` in eight steps (sending `midway` with the fourth), and releases there.
     fn drag_with(&self, app: &mut App, from: egui::Pos2, to: egui::Pos2, midway: Vec<egui::Event>) {
@@ -1288,7 +1294,7 @@ fn a_drag_on_the_card_body_still_moves_the_card() {
 fn escape_cancels_a_handle_drag_while_a_note_is_being_edited() {
     let (h, mut app, [a, b, c]) = three_notes();
     let on_a = screen_rect(&app, &a).center();
-    h.click(&mut app, on_a);
+    h.double_click(&mut app, on_a);
     assert!(app.nodes[&a].as_note().unwrap().editing);
     assert!(h.ctx.memory(|m| m.has_focus(egui::Id::new(("note_edit", a.as_str())))), "a's editor has focus");
     let escape = egui::Event::Key {
@@ -1418,7 +1424,7 @@ fn a_click_that_ends_a_note_edit_deletes_no_line() {
     let ab = app.create_link(&a, &b);
     h.frame(&mut app, vec![]);
     let on_a = screen_rect(&app, &a).center();
-    h.click(&mut app, on_a);
+    h.double_click(&mut app, on_a);
     assert!(h.ctx.memory(|m| m.has_focus(egui::Id::new(("note_edit", a.as_str())))), "a's editor has focus");
     let on = line_middle(&app, &ab);
     h.click(&mut app, on);

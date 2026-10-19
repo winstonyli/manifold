@@ -580,13 +580,14 @@ pub(crate) fn del_verb(kind: CardKind) -> &'static str {
     }
 }
 
-/// What a single click (or Enter) on a `kind` of card does, for the kinds whose click is a `NodeAction`
+/// What a double-click (or Enter) on a `kind` of card does, for the kinds whose click is a `NodeAction`
 /// (`App::draw_graph_cards`; a card whose file is missing retries it instead):
 /// - Tab, Unloaded: opens it into Tab view (an unloaded one wakes, `App::wake_tab`).
 /// - Image: maximizes it into Item view, the gesture a tab uses.
 /// - Download, Pdf: reveals the file. A PDF has no Item view, so it gets the other file card's click.
 ///
-/// A Note's click edits it in place and a Group or Json opens on double-click, in the caller.
+/// A Note's double-click edits it in place and a Group or Json opens on it too, in the caller. A single click only
+/// selects (`App::select_only`).
 pub(crate) fn click_action(kind: CardKind) -> Option<NodeAction> {
     match kind.ty {
         TYPE_TAB | TYPE_IMAGE => Some(NodeAction::Open),

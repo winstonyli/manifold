@@ -1,5 +1,5 @@
-//! Deselecting tab cards by clicking in the graph: a plain click on empty canvas clears the selection, and a
-//! Ctrl-click on a tab card toggles it in or out without opening it.
+//! Selecting cards by clicking in the graph: a plain click on a card selects it alone (a double-click opens it), a
+//! Ctrl-click toggles it in or out, and a plain click on empty canvas clears the selection.
 
 use crate::App;
 
@@ -9,6 +9,12 @@ impl App {
         if !self.interaction.selected.remove(id) {
             self.interaction.selected.insert(id.to_string());
         }
+    }
+
+    /// Makes card `id` the whole selection (a plain click on a card).
+    pub(crate) fn select_only(&mut self, id: &str) {
+        self.interaction.selected.clear();
+        self.interaction.selected.insert(id.to_string());
     }
 
     /// Whether a click on the graph's Scene background empties the selection. `clicked` is the Scene's own primary
@@ -196,13 +202,24 @@ mod tests {
         assert!(rig.app.transition.is_none(), "neither opened the tab");
     }
 
-    /// A plain click on a card is unchanged: it opens the tab (which, as before, ends the selection).
+    /// A plain click on a card selects that card alone and opens nothing.
     #[test]
-    fn a_plain_click_on_a_selected_tab_still_opens_it() {
+    fn a_plain_click_selects_the_card_alone() {
         let mut rig = Rig::new();
         let centre = rig.card(0).center();
         rig.click(centre);
+        assert_eq!(rig.app.interaction.selected, HashSet::from([rig.ids[0].clone()]));
+        assert!(rig.app.transition.is_none(), "a single click does not open the tab");
+    }
+
+    /// A double-click opens the tab (which ends the selection, as Open always has).
+    #[test]
+    fn a_double_click_opens_the_tab() {
+        let mut rig = Rig::new();
+        let centre = rig.card(0).center();
+        rig.click(centre);
+        rig.click(centre);
         assert!(rig.app.transition.is_some(), "opened");
-        assert!(rig.app.interaction.selected.is_empty(), "Open ends the selection, as it did before");
+        assert!(rig.app.interaction.selected.is_empty(), "Open ends the selection");
     }
 }
