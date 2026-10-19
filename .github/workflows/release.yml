@@ -1,9 +1,12 @@
 name: release
 # A pushed vX.Y.Z tag builds the downloadable hosts and manifold.exe (which pins them by hash) and leaves a draft release
-# to read and publish.
+# to read and publish. Run by hand (workflow_dispatch) on any branch it does the same build and checks but makes no
+# release and no tag: dist/ is uploaded as a workflow artifact instead, so a workflow change can be tried without
+# burning a version.
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
 permissions:
   contents: write
 concurrency:
@@ -17,16 +20,23 @@ jobs:
         shell: pwsh
     env:
       GH_TOKEN: ${{ github.token }}
-      TAG: ${{ github.ref_name }}
+      TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - name: Dry run, so name the workspace version
+        if: github.ref_type != 'tag'
+        run: |
+          $v = Select-String -Path Cargo.toml -Pattern '^version = "(.+)"' | Select-Object -First 1 | ForEach-Object { $_.Matches[0].Groups[1].Value }
+          "TAG=v$v" | Add-Content $env:GITHUB_ENV
       - name: Keep the tag object (checkout may flatten an annotated tag)
+        if: github.ref_type == 'tag'
         run: git fetch --force origin "refs/tags/${env:TAG}:refs/tags/${env:TAG}"
       - run: rustup toolchain install
       - run: cargo build --locked -p gate
       - name: The tag is one we can build
+        if: github.ref_type == 'tag'
         run: |
           & target/debug/gate.exe release-check $env:TAG
           if ($LASTEXITCODE -ne 0) { exit 1 }
@@ -80,7 +90,15 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit 1 }
           & target/debug/gate.exe release-verify $env:TAG dist
           if ($LASTEXITCODE -ne 0) { exit 1 }
+      - name: Dry run keeps dist/ as a workflow artifact
+        if: github.ref_type != 'tag'
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist
+          retention-days: 3
       - name: Draft release
+        if: github.ref_type == 'tag'
         run: |
           $stem = "manifold-$env:TAG-windows-x64"
           & target/debug/gate.exe release-notes $env:TAG "dist/$stem.host-pins.json" | Set-Content -Encoding utf8 notes.md
