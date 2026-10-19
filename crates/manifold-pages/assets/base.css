@@ -1,0 +1,35 @@
+:root {
+  /*PALETTE*/
+  color-scheme: dark;
+  --serif: "Newsreader", "Iowan Old Style", Georgia, serif;
+  --mono: ui-monospace, "Cascadia Code", monospace;
+}
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--serif);
+  padding: 3em 2em;
+  max-width: 720px;
+  margin: 0 auto;
+}
+h1 {
+  color: var(--accent);
+  font-size: 2em;
+  margin-bottom: 0.1em;
+}
+.tagline {
+  color: var(--weak);
+  font-size: 1.1em;
+  margin-top: 0;
+  margin-bottom: 2em;
+}
+kbd, td.key {
+  color: var(--accent);
+  font-family: var(--mono);
+}
+kbd {
+  background: var(--raised);
+  border: 1px solid var(--hover);
+  border-radius: 4px;
+  padding: 0.05em 0.4em;
+}

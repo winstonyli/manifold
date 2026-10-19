@@ -4,11 +4,15 @@
 //! See `docs/superpowers/specs/2026-09-19-manifold-scheme-design.md`.
 
 /// The app's colors, as `[r, g, b]`: the one place they are defined. `manifold`'s `theme` builds its egui colors from
-/// these, and every page below gets them as CSS variables (`--bg`, `--raised`, `--text`, `--weak`, `--accent`,
-/// `--danger`), so the chrome and the pages cannot drift apart.
+/// these, and every page below gets them as CSS variables (`--bg`, `--panel`, `--raised`, `--hover`, `--outline`, `--text`,
+/// `--weak`, `--accent`, `--danger`), so the chrome and the pages cannot drift apart.
 pub mod palette {
     pub const BG: [u8; 3] = [23, 20, 15];
+    pub const TOOLBAR_FILL: [u8; 3] = [29, 26, 20];
     pub const SURFACE_RAISED: [u8; 3] = [41, 36, 27];
+    pub const SURFACE_HOVER: [u8; 3] = [58, 50, 37];
+    /// A resting-but-visible border: a hovered control's outline (gold is kept for selected and focused).
+    pub const OUTLINE: [u8; 3] = [140, 127, 100];
     pub const TEXT_PRIMARY: [u8; 3] = [233, 226, 211];
     pub const TEXT_WEAK: [u8; 3] = [178, 164, 130];
     pub const ACCENT: [u8; 3] = [215, 162, 74];
@@ -29,7 +33,9 @@ pub const CONTENT_TYPE: &str = "text/html; charset=utf-8";
 const WELCOME_HTML: &str = include_str!("../assets/welcome.html");
 const TIPS_HTML: &str = include_str!("../assets/tips.html");
 const START_HTML: &str = include_str!("../assets/start.html");
-const NOT_FOUND_HTML: &str = "<!doctype html><html><head><meta charset=\"utf-8\"><style>:root{/*PALETTE*/}body{background:var(--bg);color:var(--text);font-family:sans-serif;padding:2em}</style></head><body><h1>Not found</h1></body></html>";
+const NOT_FOUND_HTML: &str = "<!doctype html><html><head><meta charset=\"utf-8\"><style>/*BASE*/</style></head><body><h1>Not found</h1></body></html>";
+/// The stylesheet every page starts from (the palette variables, the body, headings and key caps).
+const BASE_CSS: &str = include_str!("../assets/base.css");
 
 /// `:root` declarations for `palette`, substituted for each page's `/*PALETTE*/`.
 fn palette_vars() -> String {
@@ -37,7 +43,10 @@ fn palette_vars() -> String {
     let hex = |[r, g, b]: [u8; 3]| format!("#{r:02X}{g:02X}{b:02X}");
     [
         ("bg", BG),
+        ("panel", TOOLBAR_FILL),
         ("raised", SURFACE_RAISED),
+        ("hover", SURFACE_HOVER),
+        ("outline", OUTLINE),
         ("text", TEXT_PRIMARY),
         ("weak", TEXT_WEAK),
         ("accent", ACCENT),
@@ -47,11 +56,12 @@ fn palette_vars() -> String {
     .concat()
 }
 
-/// Every page with its palette filled in, built once.
+/// Every page with the base stylesheet and its palette filled in, built once.
 fn themed(index: usize) -> &'static str {
     static PAGES: std::sync::OnceLock<[String; 4]> = std::sync::OnceLock::new();
     &PAGES.get_or_init(|| {
-        [WELCOME_HTML, TIPS_HTML, START_HTML, NOT_FOUND_HTML].map(|html| html.replace("/*PALETTE*/", &palette_vars()))
+        [WELCOME_HTML, TIPS_HTML, START_HTML, NOT_FOUND_HTML]
+            .map(|html| html.replace("/*BASE*/", BASE_CSS).replace("/*PALETTE*/", &palette_vars()))
     })[index]
 }
 
@@ -96,7 +106,7 @@ mod tests {
         for name in ["welcome", "tips", "start", "nosuch"] {
             let html = serve(&format!("manifold://{name}")).1;
             assert!(html.contains("--bg:#17140F;") && html.contains("--accent:#D7A24A;"), "{name}");
-            assert!(!html.contains("/*PALETTE*/"), "{name}");
+            assert!(!html.contains("/*PALETTE*/") && !html.contains("/*BASE*/"), "{name}");
         }
         for html in [WELCOME_HTML, TIPS_HTML, START_HTML] {
             let style = html.split("</style>").next().unwrap();

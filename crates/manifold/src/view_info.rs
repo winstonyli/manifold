@@ -257,7 +257,7 @@ pub(crate) fn draw_view_card(
     let dim = matches!(state, ViewStatus::Unavailable(_));
     let frame_response = egui::Frame::default()
         .fill(if is_selected { SURFACE_HOVER } else { SURFACE_RAISED })
-        .corner_radius(2u8)
+        .corner_radius(crate::theme::RADIUS)
         .inner_margin(egui::Margin::same(8))
         .show(ui, |ui| {
             // The popup's full width, not just as wide as the card's text.

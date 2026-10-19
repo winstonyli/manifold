@@ -272,7 +272,7 @@ pub(crate) fn menu_item_style(ui: &mut egui::Ui) {
     for w in
         [&mut style.visuals.widgets.hovered, &mut style.visuals.widgets.active, &mut style.visuals.widgets.inactive]
     {
-        w.corner_radius = egui::CornerRadius::same(5);
+        w.corner_radius = egui::CornerRadius::same(RADIUS_ITEM);
     }
     style.visuals.widgets.inactive.weak_bg_fill = egui::Color32::TRANSPARENT;
     style.visuals.widgets.inactive.bg_stroke = egui::Stroke::NONE;
@@ -311,10 +311,15 @@ const fn color([r, g, b]: [u8; 3]) -> egui::Color32 {
     egui::Color32::from_rgb(r, g, b)
 }
 
+/// Corner radii: the base (widgets, windows, menus), a menu or dropdown row, and a toolbar chip.
+pub(crate) const RADIUS: u8 = 2;
+pub(crate) const RADIUS_ITEM: u8 = 5;
+pub(crate) const RADIUS_CHIP: u8 = 6;
+
 /// Fill for the toolbar/chrome bars (Tab view's merged single bar, Graph
 /// view's "+ New Tab" bar, the settings popup) — distinct from the
 /// graph/content area below.
-pub(crate) const TOOLBAR_FILL: egui::Color32 = egui::Color32::from_rgb(29, 26, 20);
+pub(crate) const TOOLBAR_FILL: egui::Color32 = color(manifold_pages::palette::TOOLBAR_FILL);
 
 /// A single accent color used throughout — selection highlights, hyperlinks,
 /// the focused-tab-strip fill, the focused graph node's border — so the
@@ -378,7 +383,11 @@ pub(crate) const SURFACE_RAISED: egui::Color32 = color(manifold_pages::palette::
 /// Hover state, one step up again — every interactive widget in this app's
 /// toolbar/popups visibly lightens on hover, which stock egui's near-
 /// identical inactive/hovered grays don't make obvious at a glance.
-pub(crate) const SURFACE_HOVER: egui::Color32 = egui::Color32::from_rgb(58, 50, 37);
+pub(crate) const SURFACE_HOVER: egui::Color32 = color(manifold_pages::palette::SURFACE_HOVER);
+
+/// A hovered control's outline. Hover is a surface step plus this neutral stroke; `ACCENT` marks what is selected,
+/// focused, open or primary, so the two read differently.
+pub(crate) const OUTLINE: egui::Color32 = color(manifold_pages::palette::OUTLINE);
 
 pub(crate) const TEXT_PRIMARY: egui::Color32 = color(manifold_pages::palette::TEXT_PRIMARY);
 
@@ -419,7 +428,7 @@ pub(crate) fn apply_style(ctx: &egui::Context) {
         style.spacing.item_spacing = egui::vec2(10.0, 7.0);
         style.spacing.button_padding = egui::vec2(13.0, 7.0);
 
-        let corner_radius: egui::CornerRadius = 2u8.into();
+        let corner_radius: egui::CornerRadius = RADIUS.into();
         style.visuals.widgets.noninteractive.corner_radius = corner_radius;
         style.visuals.widgets.noninteractive.bg_fill = TOOLBAR_FILL;
         style.visuals.widgets.noninteractive.weak_bg_fill = TOOLBAR_FILL;
@@ -435,12 +444,12 @@ pub(crate) fn apply_style(ctx: &egui::Context) {
         style.visuals.widgets.hovered.bg_fill = SURFACE_HOVER;
         style.visuals.widgets.hovered.weak_bg_fill = SURFACE_HOVER;
         style.visuals.widgets.hovered.fg_stroke.color = TEXT_PRIMARY;
-        style.visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.0, ACCENT);
+        style.visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.0, OUTLINE);
 
         style.visuals.widgets.active.corner_radius = corner_radius;
         style.visuals.widgets.active.bg_fill = ACCENT;
         style.visuals.widgets.active.weak_bg_fill = ACCENT;
-        style.visuals.widgets.active.fg_stroke.color = egui::Color32::BLACK;
+        style.visuals.widgets.active.fg_stroke.color = BG;
         style.visuals.widgets.active.bg_stroke = egui::Stroke::new(1.0, ACCENT);
 
         style.visuals.widgets.open.corner_radius = corner_radius;
@@ -449,8 +458,8 @@ pub(crate) fn apply_style(ctx: &egui::Context) {
         style.visuals.widgets.open.fg_stroke.color = TEXT_PRIMARY;
         style.visuals.widgets.open.bg_stroke = egui::Stroke::new(1.0, ACCENT);
 
-        style.visuals.window_corner_radius = 2u8.into();
-        style.visuals.menu_corner_radius = 2u8.into();
+        style.visuals.window_corner_radius = RADIUS.into();
+        style.visuals.menu_corner_radius = RADIUS.into();
         style.visuals.window_fill = TOOLBAR_FILL;
         style.visuals.panel_fill = BG;
         style.visuals.extreme_bg_color = BG;
@@ -695,7 +704,7 @@ pub(crate) fn toolbar_field<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui
         let border = egui::Stroke::new(1.0, egui::Color32::from_rgb(62, 59, 52));
         for w in [&mut visuals.widgets.inactive, &mut visuals.widgets.hovered] {
             w.bg_stroke = border;
-            w.corner_radius = egui::CornerRadius::same(6);
+            w.corner_radius = egui::CornerRadius::same(RADIUS_CHIP);
         }
         add(ui)
     })
@@ -850,24 +859,32 @@ mod tests {
         (hi + 0.05) / (lo + 0.05)
     }
 
-    /// Text colors keep WCAG AA (4.5:1) on the surfaces they sit on: weak text on every surface including a hovered
-    /// row, severity red on the page and on raised surfaces (its hover-fill use carries an icon, not text).
+    /// Every foreground role on every surface it is drawn on keeps its contrast: 4.5:1 (WCAG AA) for text, 3:1 for
+    /// the hover outline (a UI boundary). A new role goes in this table with the surfaces it sits on.
     #[test]
-    fn text_colors_keep_aa_contrast_on_their_surfaces() {
-        for surface in [BG, SURFACE_RAISED, SURFACE_HOVER] {
-            assert!(contrast(TEXT_WEAK, surface) >= 4.5, "TEXT_WEAK on {surface:?}");
-            assert!(contrast(TEXT_PRIMARY, surface) >= 4.5, "TEXT_PRIMARY on {surface:?}");
+    fn colour_roles_keep_their_contrast_on_their_surfaces() {
+        const SURFACES: [egui::Color32; 4] = [BG, TOOLBAR_FILL, SURFACE_RAISED, SURFACE_HOVER];
+        // (role, color, the surfaces it is drawn on, the ratio it needs). Accent and danger text is drawn on the page
+        // and raised surfaces only (a hovered row shows weak or primary text).
+        let roles: [(&str, egui::Color32, &[egui::Color32], f32); 7] = [
+            ("TEXT_PRIMARY", TEXT_PRIMARY, &SURFACES, 4.5),
+            ("TEXT_WEAK", TEXT_WEAK, &SURFACES, 4.5),
+            ("ACCENT", ACCENT, &[BG, TOOLBAR_FILL, SURFACE_RAISED], 4.5),
+            ("DANGER_COLOR", DANGER_COLOR, &[BG, TOOLBAR_FILL, SURFACE_RAISED], 4.5),
+            ("SUCCESS_COLOR", SUCCESS_COLOR, &[BG, TOOLBAR_FILL, SURFACE_RAISED], 4.5),
+            ("OUTLINE", OUTLINE, &[SURFACE_HOVER], 3.0),
+            // Text on a solid fill: `filled_button` and the active widget set `BG` text; the close hover sets primary.
+            ("BG on ACCENT", BG, &[ACCENT], 4.5),
+        ];
+        for (name, color, surfaces, needed) in roles {
+            for &surface in surfaces {
+                let got = contrast(color, surface);
+                assert!(got >= needed, "{name} on {surface:?} is {got:.2}, needs {needed}");
+            }
         }
-        for surface in [BG, SURFACE_RAISED] {
-            assert!(contrast(DANGER_COLOR, surface) >= 4.5, "DANGER_COLOR on {surface:?}");
-            assert!(contrast(ACCENT, surface) >= 4.5, "ACCENT on {surface:?}");
-            assert!(contrast(SUCCESS_COLOR, surface) >= 4.5, "SUCCESS_COLOR on {surface:?}");
-        }
-        // `filled_button` sets BG-colored text on its fill.
-        for fill in [ACCENT, DANGER_COLOR] {
-            assert!(contrast(BG, fill) >= 4.5, "BG text on {fill:?}");
-        }
+        assert!(contrast(BG, DANGER_COLOR) >= 4.5, "BG text on DANGER_COLOR");
     }
+
     /// Light text keeps AA contrast on the solid danger fill the graph close button shows on hover.
     #[test]
     fn danger_fill_carries_primary_text() {
