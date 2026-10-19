@@ -50,7 +50,7 @@ use crate::shots_img::{hover_report, write_sheet};
 use crate::shots_net::{Downloads, Proxy};
 use crate::state::{round_half_even, State, GROUP, IMAGE, JSON, NOTE, TAB};
 
-const DEFAULT_VIEWS: &str = "graph graph-hover graph-menu-tab graph-menu-group graph-menu-note graph-link graph-menu-links graph-link-hover graph-link-handles graph-link-drag graph-drop-hint graph-filter graph-group json-level json-menu tabview tabview-dropdown tabview-find tabview-actions tabview-split settings popup-bookmarks popup-history popup-downloads shortcuts quickswitch graph-closed graph-newnode-menu newnode-zoom graph-tooltip image-view cards-f note-edit missing-file download-real download-progress download-failed json-zoom settings-engine settings-engine-tab settings-combo toast tabview-engine json-tooltip engine-states-picker engine-states-settings engine-install-confirm";
+const DEFAULT_VIEWS: &str = "graph graph-hover graph-menu-tab graph-menu-group graph-menu-note graph-link graph-menu-links graph-link-hover graph-link-handles graph-link-drag graph-drop-hint graph-dissolve-undo graph-filter graph-group json-level json-menu tabview tabview-dropdown tabview-find tabview-actions tabview-split settings popup-bookmarks popup-history popup-downloads shortcuts quickswitch graph-closed graph-newnode-menu newnode-zoom graph-tooltip image-view cards-f note-edit missing-file download-real download-progress download-failed json-zoom settings-engine settings-engine-tab settings-combo toast tabview-engine json-tooltip engine-states-picker engine-states-settings engine-install-confirm";
 const SIZES_VIEWS: &str = "graph graph-menu-tab graph-newnode-menu shortcuts quickswitch settings tabview";
 /// The CEF host the fixture manifest pins: (file, size, SHA-256). Nothing downloads it; the files on disk are sparse.
 const FAKE_CEF_HOST: (&str, u64, &str) =
@@ -764,6 +764,50 @@ impl Shots {
                 s.reset()
             })?;
         }
+        // Dissolve Group from the menu, then the toast's Undo button: the members are back in the same group.
+        self.view("graph-dissolve-undo", |s| {
+            let (x, y) = s.center(GROUP, "top", None)?;
+            let gid = s.card_id(GROUP)?;
+            // The mirror's own groups (a collapsed group's members are not drawn at this level).
+            let members = |s: &mut Self| -> io::Result<usize> {
+                Ok(s.state()?.0["mirror_groups"]
+                    .as_object()
+                    .map_or(0, |m| m.values().filter(|g| g.as_str() == Some(gid.as_str())).count()))
+            };
+            let closed = |s: &mut Self| -> io::Result<bool> {
+                Ok(s.state()?.0["closed"]
+                    .as_array()
+                    .is_some_and(|c| c.iter().any(|id| id.as_str() == Some(gid.as_str()))))
+            };
+            let before = members(s)?;
+            // The menu's second-last row is "Dissolve Group" (the last is "Close Group and Contents").
+            s.menu_at(x, y)?;
+            let menu = s.popup_rect()?.ok_or_else(|| io::Error::other("no group menu"))?;
+            s.click((menu[0] + 60.0) as i64, (menu[3] - 44.0) as i64)?;
+            s.shot("graph-dissolve-undo-toast")?;
+            check(
+                "Dissolve Group takes the members out and hides the group",
+                before > 0 && members(s)? == 0 && closed(s)?,
+            );
+            // The toast carries the Undo button at its right end.
+            let toast = s.state()?.0["popups"]
+                .as_array()
+                .and_then(|list| list.iter().find(|p| p["id"].as_str().is_some_and(|id| id.contains("save_toast"))))
+                .and_then(|p| {
+                    Some([
+                        p["rect"][0].as_f64()?,
+                        p["rect"][1].as_f64()?,
+                        p["rect"][2].as_f64()?,
+                        p["rect"][3].as_f64()?,
+                    ])
+                })
+                .ok_or_else(|| io::Error::other("no toast"))?;
+            s.click((toast[2] - 28.0) as i64, ((toast[1] + toast[3]) / 2.0) as i64)?;
+            s.settle()?;
+            s.shot("graph-dissolve-undo-back")?;
+            check("Undo brings the same group back around its members", !closed(s)? && members(s)? == before);
+            s.reset()
+        })?;
         // A card dragged over the group says what the drop would do ("Move into ...") beside the pointer.
         self.view("graph-drop-hint", |s| {
             let (nx, ny) = s.center(NOTE, "top", None)?;

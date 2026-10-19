@@ -668,3 +668,44 @@ fn duplicating_the_default_makes_an_ordinary_jar() {
     assert_eq!(defs.values().filter(|d| d.is_default).count(), 1);
     assert_eq!(app.default_jar(), Some(default));
 }
+
+/// Ungrouping moves every member up one level together, so no jar edge that was in reach can fall out of it: checked
+/// for each placement of an edge's source (a tab or a group) and target jar over a three-deep tree, ungrouping each
+/// group in turn. (Why `App::ungroup` records no cleared edges for its undo.)
+#[test]
+fn ungrouping_never_clears_an_edge() {
+    let edge = crate::caps::JAR_EDGE;
+    // The placements: the top level and groups a > g > h.
+    let mut checked = 0;
+    for ungroup in 0..3 {
+        for source_level in 0..4 {
+            for target_level in 0..4 {
+                for group_source in [false, true] {
+                    let (mut app, _) = with_default();
+                    let a = group_in(&mut app, None);
+                    let g = group_in(&mut app, Some(&a));
+                    let h = group_in(&mut app, Some(&g));
+                    let at = [None, Some(a.as_str()), Some(g.as_str()), Some(h.as_str())];
+                    let source = if group_source {
+                        // A group's own edge reaches its contents; the group sits at the level asked for.
+                        group_in(&mut app, at[source_level])
+                    } else {
+                        tab_in(&mut app, at[source_level])
+                    };
+                    let target = jar_at(&mut app, "J", at[target_level]);
+                    if app.connect(edge, &source, &target.to_string()).is_err() {
+                        continue; // out of reach to begin with
+                    }
+                    checked += 1;
+                    app.ungroup(&[[a.clone(), g.clone(), h.clone()][ungroup].clone()]);
+                    assert_eq!(
+                        app.mirror.jar(&source),
+                        Some(target),
+                        "ungroup {ungroup}, source level {source_level} (group: {group_source}), target level {target_level}"
+                    );
+                }
+            }
+        }
+    }
+    assert!(checked > 20, "the placements that connect were exercised ({checked})");
+}
