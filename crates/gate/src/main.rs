@@ -137,7 +137,7 @@ mod windows_main {
             // Test aid for the "killed gate leaves no manifold.exe" proof; not a gate stage.
             "hold" => hold(parent),
             _ => {
-                eprintln!("usage: gate all LOG [full|light|ui] | gate hello|launch-forms|unresponsive|layout|link|smoke|two|unknown-type|closed|trail [WORKDIR_PARENT] | gate chrome-shots|chrome-shots-sizes [WORKDIR_PARENT] | gate sleep | gate jar | gate release-verify vX.Y.Z [DIST] | gate release-check vX.Y.Z | gate release-notes vX.Y.Z | gate sync-runtime-deps | gate cef-pin [--platform ID] PREFIX | gate json-pan [MODE] [SECONDS] [--samply] | gate package [EXE] | gate install-check EXE | gate focus-loss | gate scale TABS... | gate tier [BASE|--stdin] | gate fresh EXE");
+                eprintln!("usage: gate all LOG [full|light|ui] | gate hello|launch-forms|unresponsive|layout|link|smoke|two|unknown-type|closed|trail [WORKDIR_PARENT] | gate chrome-shots|chrome-shots-sizes [WORKDIR_PARENT] | gate sleep | gate jar | gate release-verify vX.Y.Z [DIST] | gate release-check vX.Y.Z | gate release-notes vX.Y.Z | gate sync-runtime-deps | gate cef-pin [--platform ID] PREFIX | gate json-pan [MODE] [SECONDS] [--samply] | gate package [EXE] | gate install-check cef|servo EXE | gate focus-loss | gate scale TABS... | gate tier [BASE|--stdin] | gate fresh EXE");
                 ExitCode::from(2)
             }
         }

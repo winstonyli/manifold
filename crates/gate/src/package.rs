@@ -102,12 +102,16 @@ pub(crate) fn package(args: &[String]) -> ExitCode {
     finish(&work)
 }
 
-/// `gate install-check EXE`: the exe alone in a temp folder with APPDATA redirected, asked to install CEF from the
-/// network, as a user's Download click does. For a published release only: a draft's asset URLs are not public. Waits up
-/// to 10 minutes for `VIEWSTATE cef` to read Installed or Failed.
+/// `gate install-check ENGINE EXE`: the exe alone in a temp folder with APPDATA redirected, asked to install the
+/// engine (`cef` or `servo`) from the network, as a user's Download click does. For a published release only: a draft's asset URLs are not public. Waits up
+/// to 10 minutes for `VIEWSTATE ENGINE` to read Installed or Failed.
 pub(crate) fn install_check(args: &[String]) -> ExitCode {
-    let [exe_src] = args else {
-        eprintln!("usage: gate install-check EXE");
+    let [engine, exe_src] = args else {
+        eprintln!("usage: gate install-check cef|servo EXE");
+        return ExitCode::from(2);
+    };
+    let Some(files) = installed_files(engine) else {
+        eprintln!("install-check knows cef and servo, not {engine:?}");
         return ExitCode::from(2);
     };
     let work = match work_dir(None, "install-check") {
@@ -118,11 +122,21 @@ pub(crate) fn install_check(args: &[String]) -> ExitCode {
         }
     };
     let _t = Section::start("install-check");
-    guarded("install-check", || install(Path::new(exe_src), &work));
+    guarded("install-check", || install(engine, &files, Path::new(exe_src), &work));
     finish(&work)
 }
 
-fn install(exe_src: &Path, work: &Path) -> io::Result<()> {
+/// The files, relative to `engine-hosts/`, an installed `engine` leaves on disk; None for an engine that is not
+/// downloaded. The Servo list is the manifest's three files and is unconfirmed until a published release carries them.
+fn installed_files(engine: &str) -> Option<Vec<&'static str>> {
+    match engine {
+        "cef" => Some(vec!["manifold-engine-cef.exe", "cef-runtime/libcef.dll"]),
+        "servo" => Some(vec!["manifold-engine-servo.exe", "libEGL.dll", "libGLESv2.dll"]),
+        _ => None,
+    }
+}
+
+fn install(engine: &str, files: &[&str], exe_src: &Path, work: &Path) -> io::Result<()> {
     let bin = work.join("bin");
     fs::create_dir_all(&bin)?;
     let exe = bin.join("manifold.exe");
@@ -133,26 +147,28 @@ fn install(exe_src: &Path, work: &Path) -> io::Result<()> {
     let appdata_env = appdata.display().to_string();
     let mut inst = Instance::launch_env(&exe, &profile, work, "log", &[("APPDATA", &appdata_env)])?;
     inst.send("WAITTABS")?;
-    inst.send("INSTALLVIEW cef")?;
+    inst.send(&format!("INSTALLVIEW {engine}"))?;
     let deadline = Instant::now() + INSTALL_WAIT;
+    let prefix = format!("view-state {engine}: ");
     let mut last = String::new();
     while Instant::now() < deadline && inst.is_running() {
-        inst.send("VIEWSTATE cef")?;
+        inst.send(&format!("VIEWSTATE {engine}"))?;
         sleep(Duration::from_secs(2));
         let log = fs::read_to_string(&inst.log).unwrap_or_default();
-        last = log.lines().rev().find(|l| l.starts_with("view-state cef: ")).unwrap_or_default().to_owned();
-        if last.starts_with("view-state cef: Installed") || last.starts_with("view-state cef: Failed") {
+        last = log.lines().rev().find(|l| l.starts_with(&prefix)).unwrap_or_default().to_owned();
+        if last.starts_with(&format!("{prefix}Installed")) || last.starts_with(&format!("{prefix}Failed")) {
             break;
         }
     }
     quit(&mut inst, "headless manifold exits after QUIT");
     check(
-        &format!("CEF installed from the network (last state {last:?})"),
-        last.starts_with("view-state cef: Installed"),
+        &format!("{engine} installed from the network (last state {last:?})"),
+        last.starts_with(&format!("{prefix}Installed")),
     );
     let hosts = profile.join("manifold").join("data").join("engine-hosts");
-    check("the CEF host is on disk", hosts.join("manifold-engine-cef.exe").is_file());
-    check("the CEF runtime is on disk", hosts.join("cef-runtime").join("libcef.dll").is_file());
+    for file in files {
+        check(&format!("{file} is on disk"), hosts.join(file).is_file());
+    }
     Ok(())
 }
 
