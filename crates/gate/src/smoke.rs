@@ -1041,7 +1041,7 @@ fn drive(sm: &mut Smoke, m: &mut Marks) -> io::Result<()> {
 
     m.mark("content-kinds");
     // The remaining `ADDFILE` kinds: a PDF, a `.bin` (a Download card) and a `.md` (a Note by its bytes, not its
-    // extension). `.html` becomes a live Tab, which is clicked into Tab view to check its `file://` url.
+    // extension). `.html` becomes a live Tab, which is double-clicked into Tab view to check its `file://` url.
     sm.write("doc.pdf", b"%PDF-1.4\n")?;
     sm.write("note.md", b"# a markdown note\n")?;
     sm.write("data.bin", b"\xffbinary\xfedata")?;
@@ -1061,7 +1061,7 @@ fn drive(sm: &mut Smoke, m: &mut Marks) -> io::Result<()> {
     check_found(&after_kinds, "after_kinds", "a dropped .bin becomes a Download card", &bin_id);
     check_found(&after_kinds, "after_kinds", "a dropped .html becomes a Tab card", &html_id);
     if html_id != "none" {
-        sm.send(&format!("CLICK {}", xy(&after_kinds, &html_id)?))?;
+        sm.send(&format!("DOUBLECLICK {}", xy(&after_kinds, &html_id)?))?;
         sm.wait_state(
             "html_tab",
             "the dropped .html tab's url is a file:// URL",
