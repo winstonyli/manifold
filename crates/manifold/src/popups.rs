@@ -1906,6 +1906,14 @@ impl App {
                             }
                         }
                     });
+                    // The selected row's full address, for a keyboard user who never hovers.
+                    let selected_url = matches.get(selected_index).and_then(|id| {
+                        let label = self.quick_switcher_row_label(id)?;
+                        self.quick_switcher_row_url(id).filter(|url| *url != label)
+                    });
+                    if let Some(url) = selected_url {
+                        ui.add(egui::Label::new(egui::RichText::new(url).small().weak()).truncate());
+                    }
                 });
             });
 
