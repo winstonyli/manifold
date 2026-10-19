@@ -3,7 +3,7 @@
 //! menu and the hover peek.
 
 use super::*;
-use crate::store::model::{TYPE_DOWNLOAD, TYPE_JSON, TYPE_NOTE, TYPE_TAB};
+use crate::store::model::{TYPE_DOWNLOAD, TYPE_IMAGE, TYPE_JSON, TYPE_NOTE, TYPE_PDF, TYPE_TAB};
 
 /// Graph view's chrome is just the "+ New Tab" toolbar — no address bar,
 /// no per-tab back/forward, since there's no single focused tab there.
@@ -810,23 +810,15 @@ impl App {
         self.build_trail_menu(ui);
     }
 
-    /// While a graph card has keyboard focus, a strip of keycaps under it (above, near the bottom
-    /// edge) lists the keys that act on it. Not while its menu is open.
+    /// While a graph card has keyboard focus or the pointer, a strip of keycaps under it (above, near the bottom
+    /// edge) lists the mouse and keys that act on it. Not while its menu is open.
     fn build_card_hint(&self, ui: &egui::Ui) {
         let Some((kind, rect)) = self.card_hint.filter(|_| self.menus.node_menu.is_none() && self.json_level.is_none())
         else {
             return;
         };
         let screen = ui.ctx().content_rect();
-        let extra: &[(&str, &str)] = match kind.ty {
-            TYPE_TAB => &[("Enter", "open"), ("Space", "select")],
-            TYPE_JSON => &[("Enter", "enter")],
-            ty if is_container(ty) => &[("Enter", "enter")],
-            TYPE_NOTE => &[("Enter", "edit")],
-            _ => &[],
-        };
-        let tail = [("Del", del_verb(kind)), ("Shift+F10", "menu")];
-        let hints = [("Tab", "next")].iter().chain(extra).chain(&tail);
+        let hints = card_hint_pairs(kind);
         let below = rect.bottom() + 40.0 < screen.bottom();
         let (anchor_y, pivot) = if below {
             (rect.bottom() + 8.0, egui::Align2::CENTER_TOP)
@@ -835,7 +827,7 @@ impl App {
         };
         let x = rect.center().x.clamp(screen.left() + 190.0, (screen.right() - 190.0).max(screen.left() + 190.0));
         let area = egui::Area::new(egui::Id::new("card_key_hint")).pivot(pivot).fixed_pos(egui::pos2(x, anchor_y));
-        key_hint_strip(ui.ctx(), area, hints.copied());
+        key_hint_strip(ui.ctx(), area, hints.iter().copied());
     }
 
     /// While Ctrl is held on its own (`ctrl_reveal_step`), a strip of the Ctrl chords at the bottom of
@@ -2155,6 +2147,23 @@ pub(crate) fn default_graph_scene_rect() -> egui::Rect {
     egui::Rect::from_center_size(egui::Pos2::new(0.0, 0.0), GRAPH_SCENE_DEFAULT_SIZE)
 }
 
+/// The mouse and key pairs the hint strip shows for a `kind` of card: each gesture beside its keyboard twin.
+fn card_hint_pairs(kind: CardKind) -> Vec<(&'static str, &'static str)> {
+    let select = if kind.ty == TYPE_TAB { ("Click / Space", "select") } else { ("Click", "select") };
+    let open = match kind.ty {
+        TYPE_TAB | TYPE_IMAGE => Some("open"),
+        TYPE_DOWNLOAD | TYPE_PDF => Some("reveal"),
+        TYPE_NOTE => Some("edit"),
+        TYPE_JSON => Some("enter"),
+        ty if is_container(ty) => Some("enter"),
+        _ => None,
+    };
+    let mut pairs = vec![select];
+    pairs.extend(open.map(|verb| ("Dbl-click / Enter", verb)));
+    pairs.extend([("Right-click / Shift+F10", "menu"), ("Tab", "next"), ("Del", del_verb(kind))]);
+    pairs
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -2170,6 +2179,29 @@ mod tests {
         assert!(!shown, "stays cancelled while Ctrl is held");
         let (s, _) = step(s, false, false, 12.1);
         assert_eq!(s, CtrlReveal::default(), "release resets");
+    }
+
+    #[test]
+    fn the_card_hint_pairs_each_gesture_with_its_key_and_matches_the_click_action() {
+        use super::card_hint_pairs;
+        use crate::card::click_action;
+        use crate::card_kind::fixtures::plain;
+        use crate::store::model::TYPE_GROUP;
+        let verb = |ty| card_hint_pairs(plain(ty)).iter().find(|(keys, _)| keys.starts_with("Dbl-click")).map(|p| p.1);
+        assert_eq!(verb(TYPE_TAB), Some("open"));
+        assert_eq!(verb(TYPE_IMAGE), Some("open"));
+        assert_eq!(verb(TYPE_DOWNLOAD), Some("reveal"));
+        assert_eq!(verb(TYPE_PDF), Some("reveal"));
+        assert_eq!(verb(TYPE_NOTE), Some("edit"));
+        assert_eq!(verb(TYPE_JSON), Some("enter"));
+        assert_eq!(verb(TYPE_GROUP), Some("enter"));
+        // A kind whose double-click is a `NodeAction` is never labelled otherwise.
+        for ty in [TYPE_TAB, TYPE_IMAGE, TYPE_DOWNLOAD, TYPE_PDF] {
+            assert!(click_action(plain(ty)).is_some() && verb(ty).is_some());
+        }
+        let tab = card_hint_pairs(plain(TYPE_TAB));
+        assert_eq!(tab[0], ("Click / Space", "select"));
+        assert_eq!(tab.last(), Some(&("Del", "close")));
     }
 
     #[test]
