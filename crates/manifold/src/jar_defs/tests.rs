@@ -709,3 +709,21 @@ fn ungrouping_never_clears_an_edge() {
     }
     assert!(checked > 20, "the placements that connect were exercised ({checked})");
 }
+
+/// Undoing a drop writes a group and a position, never an edge: a tab joined into a group keeps its jar edge through
+/// Undo and Redo.
+#[test]
+fn reverting_a_drop_never_clears_an_edge() {
+    let (mut app, _) = with_default();
+    let g = group_in(&mut app, None);
+    let tab = tab_in(&mut app, None);
+    let target = jar_at(&mut app, "J", None);
+    app.connect(crate::caps::JAR_EDGE, &tab, &target.to_string()).expect("in reach");
+    app.apply_drop(&tab, Some((crate::card::DropEffect::Join, Some(g))));
+    assert_eq!(app.mirror.jar(&tab), Some(target), "kept by the drop");
+    app.step_history(None, false);
+    assert_eq!(app.mirror.group(&tab), None, "undone");
+    assert_eq!(app.mirror.jar(&tab), Some(target), "kept by Undo");
+    app.step_history(None, true);
+    assert_eq!(app.mirror.jar(&tab), Some(target), "kept by Redo");
+}

@@ -804,6 +804,106 @@ mod tests {
         );
     }
 
+    /// Join: a tab dropped into a group is back at the top level, at its old position, by Undo; Redo puts it in again.
+    #[test]
+    fn a_join_is_undone_and_redone() {
+        let path = store::testutil::temp_dir("join-undo").join("session.mnf");
+        let mut app = app_on(&path, 1);
+        let (g, _) = group_with_note(&mut app);
+        let n = note(&mut app, "loose");
+        app.edit_pos(&n, Some(egui::vec2(40.0, 50.0)));
+        app.interaction.drag_origin = vec![(n.clone(), app.mirror.pos(&n))];
+        app.edit_pos(&n, Some(egui::vec2(300.0, 300.0)));
+        app.apply_drop(&n, Some((DropEffect::Join, Some(g.clone()))));
+        assert_eq!(app.mirror.group(&n), Some(g.as_str()));
+        app.step_history(None, false);
+        assert_eq!(app.mirror.group(&n), None);
+        assert_eq!(app.mirror.pos(&n), Some(egui::vec2(40.0, 50.0)), "back where the drag began");
+        app.step_history(None, true);
+        assert_eq!(app.mirror.group(&n), Some(g.as_str()));
+        assert_eq!(app.mirror.pos(&n), Some(egui::vec2(300.0, 300.0)));
+    }
+
+    /// A selection dropped together comes back together, and a card moved on since is left alone.
+    #[test]
+    fn a_selection_join_reverts_each_card_and_skips_one_that_moved_on() {
+        let path = store::testutil::temp_dir("join-selection-undo").join("session.mnf");
+        let mut app = app_on(&path, 1);
+        let (g, _) = group_with_note(&mut app);
+        let (a, b) = (note(&mut app, "a"), note(&mut app, "b"));
+        app.interaction.selected = [a.clone(), b.clone()].into_iter().collect();
+        app.interaction.drag_origin = vec![(a.clone(), None), (b.clone(), None)];
+        app.apply_drop(&a, Some((DropEffect::Join, Some(g.clone()))));
+        assert_eq!(app.mirror.group(&b), Some(g.as_str()));
+        let elsewhere = add_group(&mut app, "Elsewhere");
+        app.edit_group(&b, Some(elsewhere.clone()));
+        app.step_history(None, false);
+        assert_eq!(app.mirror.group(&a), None, "restored");
+        assert_eq!(app.mirror.group(&b), Some(elsewhere.as_str()), "moved on, so left alone");
+    }
+
+    /// GroupWith: Undo ungroups both and closes the group it made; Redo brings back the same group id.
+    #[test]
+    fn a_group_with_is_undone_and_redone_with_the_same_group() {
+        let path = store::testutil::temp_dir("groupwith-undo").join("session.mnf");
+        let mut app = app_on(&path, 1);
+        let (a, b) = (note(&mut app, "a"), note(&mut app, "b"));
+        app.apply_drop(&a, Some((DropEffect::GroupWith, Some(b.clone()))));
+        let made = app.mirror.group(&a).map(str::to_owned).expect("grouped");
+        assert_eq!(app.mirror.group(&b), Some(made.as_str()));
+        app.step_history(None, false);
+        assert!(app.mirror.group(&a).is_none() && app.mirror.group(&b).is_none());
+        assert!(!app.nodes.contains_key(&made), "the made group is closed");
+        app.step_history(None, true);
+        assert_eq!(app.mirror.group(&a), Some(made.as_str()), "the same group id");
+        assert_eq!(app.mirror.group(&b), Some(made.as_str()));
+    }
+
+    /// Eject from a nested group goes up one level; Undo puts it back, Redo ejects again.
+    #[test]
+    fn an_eject_is_undone_and_redone() {
+        let path = store::testutil::temp_dir("eject-undo").join("session.mnf");
+        let mut app = app_on(&path, 1);
+        let (g, inner) = group_with_note(&mut app);
+        app.apply_drop(&inner, Some((DropEffect::Eject, None)));
+        assert_eq!(app.mirror.group(&inner), None);
+        app.step_history(None, false);
+        assert_eq!(app.mirror.group(&inner), Some(g.as_str()));
+        app.step_history(None, true);
+        assert_eq!(app.mirror.group(&inner), None);
+    }
+
+    /// Reparent is an edge: Undo restores the old parent.
+    #[test]
+    fn a_reparent_is_undone() {
+        let path = store::testutil::temp_dir("reparent-undo").join("session.mnf");
+        let mut app = app_on(&path, 1);
+        let (g, a) = group_with_note(&mut app);
+        let b = note(&mut app, "b");
+        app.edit_group(&b, Some(g.clone()));
+        let before = app.mirror.parent(&a).map(str::to_owned);
+        app.apply_drop(&a, Some((DropEffect::Reparent, Some(b.clone()))));
+        assert_eq!(app.mirror.parent(&a), Some(b.as_str()));
+        app.step_history(None, false);
+        assert_eq!(app.mirror.parent(&a).map(str::to_owned), before);
+    }
+
+    /// A plain move (no effect) adds no entry; a fresh drop empties redo.
+    #[test]
+    fn only_effect_drops_are_recorded_and_a_drop_clears_redo() {
+        let path = store::testutil::temp_dir("drop-record").join("session.mnf");
+        let mut app = app_on(&path, 1);
+        let (g, _) = group_with_note(&mut app);
+        let (a, b) = (note(&mut app, "a"), note(&mut app, "b"));
+        app.apply_drop(&a, None);
+        assert!(app.toasts.undo.is_none(), "a plain move is not recorded");
+        app.apply_drop(&a, Some((DropEffect::Join, Some(g.clone()))));
+        app.step_history(None, false);
+        app.apply_drop(&b, Some((DropEffect::Join, Some(g.clone()))));
+        app.step_history(None, true);
+        assert_eq!(app.mirror.group(&a), None, "the redo list was emptied by the second drop");
+    }
+
     /// Past the cap the emptied groups go before any real close, so one Ungroup All never pushes out closed tabs.
     #[test]
     fn eviction_takes_emptied_groups_before_real_closes() {

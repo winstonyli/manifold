@@ -7,7 +7,18 @@ use super::*;
 /// How many steps the history keeps, each way.
 pub(crate) const UNDO_DEPTH: usize = 10;
 
+/// One card a drop changed: each field's (before, after).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Moved {
+    pub(crate) id: String,
+    pub(crate) group: (Option<String>, Option<String>),
+    pub(crate) parent: (Option<String>, Option<String>),
+    pub(crate) pos: (Option<egui::Vec2>, Option<egui::Vec2>),
+}
+
 pub(crate) enum UndoKind {
+    /// A drop with an effect (Join, GroupWith, Eject, Reparent). `created` is the group a GroupWith made.
+    Revert { moved: Vec<Moved>, created: Option<String> },
     /// Dissolve, Ungroup All, Merge: each group and where `fold_group` sent its members. Undo reopens the groups,
     /// redo folds them again.
     Fold(Vec<(String, Option<String>)>),
@@ -88,8 +99,64 @@ impl App {
 
     /// Applies `kind` one way; returns how many of its parts took effect and how many there were.
     fn replay(&mut self, kind: &UndoKind, redo: bool) -> (usize, usize) {
-        let UndoKind::Fold(groups) = kind;
-        self.replay_fold(groups, redo)
+        match kind {
+            UndoKind::Fold(groups) => self.replay_fold(groups, redo),
+            UndoKind::Revert { moved, created } => self.replay_revert(moved, created.as_deref(), redo),
+        }
+    }
+
+    /// Undo puts each card back to its before values, redo to its after values, but only a card that still holds
+    /// the values being left (the rule of `regroup_held`): a card moved again, closed or changed remotely is skipped.
+    fn replay_revert(&mut self, moved: &[Moved], created: Option<&str>, redo: bool) -> (usize, usize) {
+        // A redo of a GroupWith brings the made group back first.
+        if let (true, Some(group)) = (redo, created) {
+            if !self.nodes.contains_key(group) {
+                if let Ok(node) = group.parse() {
+                    self.reopen_node(node);
+                }
+            }
+        }
+        // An undo leaves the drop's after values and arrives at its before values; a redo the reverse.
+        let (leaving_after, arriving_after) = (!redo, redo);
+        let side = |pair: &(Option<String>, Option<String>), after: bool| {
+            if after {
+                pair.1.clone()
+            } else {
+                pair.0.clone()
+            }
+        };
+        let mut done = 0;
+        for m in moved {
+            let holds = self.nodes.contains_key(&m.id)
+                && self.mirror.group(&m.id).map(str::to_owned) == side(&m.group, leaving_after)
+                && self.mirror.parent(&m.id).map(str::to_owned) == side(&m.parent, leaving_after)
+                && self.mirror.pos(&m.id) == if leaving_after { m.pos.1 } else { m.pos.0 };
+            if !holds {
+                continue;
+            }
+            let (group, parent) = (side(&m.group, arriving_after), side(&m.parent, arriving_after));
+            if parent.as_ref().is_some_and(|p| self.would_create_cycle(&m.id, p)) {
+                continue;
+            }
+            if m.group.0 != m.group.1 {
+                self.edit_group(&m.id, group);
+                self.recheck_edge_scope(&m.id);
+            }
+            if m.parent.0 != m.parent.1 {
+                self.edit_parent(&m.id, parent);
+            }
+            if m.pos.0 != m.pos.1 {
+                self.edit_pos(&m.id, if arriving_after { m.pos.1 } else { m.pos.0 });
+            }
+            done += 1;
+        }
+        // An undone GroupWith closes the group it made once nothing is left in it.
+        if let (false, Some(group)) = (redo, created) {
+            if self.nodes.contains_key(group) && self.members_of(group).next().is_none() {
+                self.close_node(group);
+            }
+        }
+        (done, moved.len())
     }
 
     /// Undo reopens each group (`reopen_node`, which puts back the members still where the fold sent them); redo

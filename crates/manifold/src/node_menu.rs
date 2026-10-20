@@ -1021,7 +1021,7 @@ impl App {
             NodeAction::ToggleMute => self.toggle_muted(id),
             NodeAction::RetryMissingFile => self.retry_missing_file(id),
             NodeAction::OpenInDefaultViewKind => self.wake_tab(id, self.settings.default_starting_view_kind),
-            NodeAction::RemoveFromGroup => self.eject(id),
+            NodeAction::RemoveFromGroup => self.apply_drop(id, Some((DropEffect::Eject, None))),
             NodeAction::MoveToGroup(group) => self.apply_drop(id, Some((DropEffect::Join, Some(group)))),
             NodeAction::Dissolve => self.ungroup(&[id.to_owned()]),
             NodeAction::ExportGroup => {

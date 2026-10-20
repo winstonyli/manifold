@@ -21,6 +21,9 @@ pub(crate) struct GraphInteraction {
     /// layout (`is_being_dragged`). Cleared without a write when the drag
     /// stops being live (`end_stale_drag`).
     pub(crate) drag_moved: Vec<String>,
+    /// Where each card of the drag released last stood in the document before `release_drag` wrote its new pos, for
+    /// the drop's undo (`apply_drop` takes it; a drop with no effect discards it).
+    pub(crate) drag_origin: Vec<(String, Option<egui::Vec2>)>,
     pub(crate) hovered: Option<String>,
     /// Set to `hovered` by an Escape press while a hover-peek preview
     /// is showing, so that preview can be dismissed early without needing
@@ -194,6 +197,7 @@ impl App {
         }
         for moved_id in moved {
             if self.nodes.contains_key(&moved_id) {
+                self.interaction.drag_origin.push((moved_id.clone(), self.mirror.pos(&moved_id)));
                 self.edit_pos(&moved_id, Some(self.layout_pos(&moved_id)));
             }
         }
@@ -203,6 +207,7 @@ impl App {
     /// landed, if anywhere. Saves the session on every release, since the
     /// drag itself moved the card.
     pub(crate) fn apply_drop(&mut self, id: &str, target: Option<(DropEffect, Option<String>)>) {
+        let origin = std::mem::take(&mut self.interaction.drag_origin);
         // Every effect below is a stored one: a virtual card at either end is its source's business (`on_drop`),
         // never a group to create, a link to make or a move to write.
         let virtual_end = crate::virtual_source::is_virtual_id(id)
@@ -210,6 +215,19 @@ impl App {
         if virtual_end {
             return;
         }
+        // The cards a drop can change: the dragged one, its drag unit, and the card dropped on.
+        let watched: Vec<String> = std::iter::once(id.to_owned())
+            .chain(origin.iter().map(|(o, _)| o.clone()))
+            .chain(target.as_ref().and_then(|(_, t)| t.clone()))
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .filter(|w| self.nodes.contains_key(w))
+            .collect();
+        let before: Vec<_> = watched
+            .iter()
+            .map(|w| (self.mirror.group(w).map(str::to_owned), self.mirror.parent(w).map(str::to_owned)))
+            .collect();
+        let effect = target.as_ref().map(|(effect, other)| (*effect, other.clone()));
         match target {
             Some((DropEffect::Eject, _)) => self.eject(id),
             // A group closed or deleted since the drop began (a remote close after the menu opened) is not shown: a
@@ -240,7 +258,49 @@ impl App {
             Some((DropEffect::Merge, Some(target))) => self.merge_groups(id, &target),
             _ => {}
         }
+        // A Merge records its own fold; a drop with no effect or no change records nothing.
+        if let Some((effect, other)) = effect.filter(|(effect, _)| *effect != DropEffect::Merge) {
+            let moved: Vec<Moved> = watched
+                .iter()
+                .zip(before)
+                .filter_map(|(w, (group, parent))| {
+                    let now_group = self.mirror.group(w).map(str::to_owned);
+                    let now_parent = self.mirror.parent(w).map(str::to_owned);
+                    (group != now_group || parent != now_parent).then(|| {
+                        let pos_now = self.mirror.pos(w);
+                        let pos_before = origin.iter().find(|(o, _)| o == w).map_or(pos_now, |(_, p)| *p);
+                        Moved {
+                            id: w.clone(),
+                            group: (group, now_group),
+                            parent: (parent, now_parent),
+                            pos: (pos_before, pos_now),
+                        }
+                    })
+                })
+                .collect();
+            if !moved.is_empty() {
+                let created = (effect == DropEffect::GroupWith)
+                    .then(|| other.as_deref().and_then(|o| self.mirror.group(o).map(str::to_owned)))
+                    .flatten();
+                let message = self.drop_message(effect, &moved, other.as_deref());
+                self.record_undo(message, UndoKind::Revert { moved, created });
+            }
+        }
         self.save_session();
+    }
+
+    /// What the toast says of a drop: "Moved 2 into Research".
+    fn drop_message(&self, effect: DropEffect, moved: &[Moved], other: Option<&str>) -> String {
+        let name = |id: Option<&str>| id.map(|id| self.drop_target_name(id)).unwrap_or_default();
+        match effect {
+            DropEffect::Join => format!("Moved {} into {}", moved.len(), name(other)),
+            DropEffect::GroupWith => format!("Grouped {} cards", moved.len()),
+            DropEffect::Eject => "Moved out of group".to_owned(),
+            DropEffect::Reparent => {
+                format!("Moved {} under {}", name(moved.first().map(|m| m.id.as_str())), name(other))
+            }
+            DropEffect::Merge => String::new(),
+        }
     }
 
     /// `source`'s members move into `target`, and `source` closes holding them (`fold_group`; the toast's Undo
