@@ -58,18 +58,22 @@ impl App {
             [id] => format!("Dissolved {}", self.drop_target_name(id)),
             _ => format!("Ungrouped {} groups", ids.len()),
         };
-        let mut folded = Vec::new();
-        for id in ids {
-            let parent = self.mirror.group(id).map(str::to_owned);
-            self.fold_group(id, parent.clone());
-            folded.push((id.clone(), parent));
+        let folds = ids.iter().map(|id| (id.clone(), self.mirror.group(id).map(str::to_owned))).collect();
+        self.fold_groups(folds, message);
+    }
+
+    /// Folds each (group, destination) with `fold_group` and records them as one undo step. The one way a user-facing
+    /// fold happens: `ungroup` and `merge_groups` both come here.
+    pub(crate) fn fold_groups(&mut self, folds: Vec<(String, Option<String>)>, message: String) {
+        for (id, dest) in &folds {
+            self.fold_group(id, dest.clone());
         }
-        self.record_undo(message, UndoKind::Fold(folded));
+        self.record_undo(message, UndoKind::Fold(folds));
     }
 
     /// Moves group `id`'s members into `dest` (`None`: the top level) and closes the emptied group, recording where
     /// they went and who they were in `field::HELD` ("<dest> <member>...", `-` for the top level) so `regroup_held`
-    /// can put them back. Shared by `ungroup` (dest: the group's own level) and `merge_groups` (dest: the target).
+    /// can put them back. Records no undo step itself (redo of a fold calls it too): go through `fold_groups`.
     pub(crate) fn fold_group(&mut self, id: &str, dest: Option<String>) {
         let members: Vec<String> = self.members_of(id).map(str::to_owned).collect();
         for member in &members {
@@ -92,12 +96,18 @@ impl App {
         let Some(dest) = words.next() else { return };
         let dest = (dest != "-").then_some(dest);
         for member in words {
-            if self.nodes.contains_key(member) && self.mirror.group(member) == dest {
+            if self.card_in_group(member, dest) {
                 self.edit_group(member, Some(id.to_owned()));
             }
         }
         self.edit_field(id, field::HELD, FieldValue::Str(String::new()));
         self.save_session();
+    }
+
+    /// Whether card `id` is shown and in group `group` (`None`: the top level): the check before putting it back
+    /// anywhere (`regroup_held`, `replay_revert`), so a card moved on or closed meanwhile stays.
+    pub(crate) fn card_in_group(&self, id: &str, group: Option<&str>) -> bool {
+        self.nodes.contains_key(id) && self.mirror.group(id) == group
     }
 
     /// `dissolve_group` without the edge recheck, for a remote delete: the remote device's own recheck arrives as

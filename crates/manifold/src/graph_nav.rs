@@ -328,8 +328,7 @@ impl App {
             self.delete_link(&link);
         }
         // The source closes holding its members, so the toast's Undo reopens it around them.
-        self.fold_group(source, Some(target.to_string()));
-        self.record_undo(message, UndoKind::Fold(vec![(source.to_string(), Some(target.to_string()))]));
+        self.fold_groups(vec![(source.to_string(), Some(target.to_string()))], message);
     }
 
     /// Would setting `node_id`'s parent to `new_parent_id` create a cycle?
