@@ -1054,8 +1054,6 @@ pub(crate) struct HeadlessDebug {
     pub(crate) pending_print_to_pdf: Option<(String, String)>,
     /// Senders of the headless `WAITIDLE` commands waiting for `debug_idle`.
     pub(crate) idle_waiters: Vec<std::sync::mpsc::Sender<()>>,
-    /// When the last debug click was sent; `debug_click` keeps the next one out of egui's double-click delay.
-    pub(crate) last_click: Option<std::time::Instant>,
 }
 
 impl App {

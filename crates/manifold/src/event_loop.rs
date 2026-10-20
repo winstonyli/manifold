@@ -1083,10 +1083,9 @@ impl App {
     /// (0.3 s between frame times). Two `CLICK`s are a frame or more apart,
     /// and a slow headless frame pushes them past that. A double click waits
     /// out the triple-click window of the click before it, or egui would
-    /// count it as a triple. Egui measures that window in frame times, so each
-    /// click's frame runs here, at once: left to the event loop, a slow frame
-    /// would stamp the click later than the clock this wait runs on, and the
-    /// next double click would land inside the window anyway.
+    /// count it as a triple. Egui measures that window in its own frame times,
+    /// so the wait reads egui's `time_since_last_click` (after a frame, so it
+    /// is current), which counts every click, not only the debug ones.
     pub(crate) fn debug_click(
         &mut self,
         event_loop: &ActiveEventLoop,
@@ -1097,12 +1096,16 @@ impl App {
         ctrl: bool,
     ) {
         // Egui calls a release a triple click when the click before the last was under twice its double-click delay
-        // ago, wherever that click was, so a double click needs that long since any earlier click.
-        const TRIPLE_CLICK_WINDOW: std::time::Duration = std::time::Duration::from_millis(650);
-        if let Some(wait) =
-            self.debug.last_click.filter(|_| count >= 2).and_then(|at| TRIPLE_CLICK_WINDOW.checked_sub(at.elapsed()))
-        {
-            std::thread::sleep(wait);
+        // ago, wherever that click was, so a double click needs that long since any earlier click. The margin covers
+        // the frame after the wait starting later than the frame read here.
+        const TRIPLE_CLICK_WINDOW: f32 = 0.6;
+        const MARGIN: f32 = 0.05;
+        if count >= 2 {
+            self.dispatch_window_event(event_loop, WindowEvent::RedrawRequested);
+            let since = self.egui_ctx.input(|i| i.pointer.time_since_last_click());
+            if since < TRIPLE_CLICK_WINDOW {
+                std::thread::sleep(std::time::Duration::from_secs_f32(TRIPLE_CLICK_WINDOW + MARGIN - since));
+            }
         }
         self.dispatch_window_event(
             event_loop,
@@ -1122,10 +1125,9 @@ impl App {
                 );
             }
         }
-        // The click's frame, with Ctrl still down, before it is let go.
-        self.dispatch_window_event(event_loop, WindowEvent::RedrawRequested);
-        self.debug.last_click = Some(std::time::Instant::now());
         if ctrl {
+            // The click's frame, with Ctrl still down, before it is let go.
+            self.dispatch_window_event(event_loop, WindowEvent::RedrawRequested);
             self.dispatch_window_event(event_loop, WindowEvent::ModifiersChanged(Default::default()));
         }
     }
