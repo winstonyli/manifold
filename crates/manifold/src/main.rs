@@ -320,13 +320,10 @@ struct App {
     /// Ids for nodes made while there is no journal (unit tests, a failed
     /// open): this launch's own actor, so they parse as store ids.
     fallback_ids: node_store::NodeIdFallback,
-    /// What the next save commits besides `pending`, and when saves happened or are owed (see `session_sync::PendingWrites`).
+    /// What the next save commits, and when saves happened or are owed (see `session_sync::PendingWrites`).
     writes: session_sync::PendingWrites,
     /// The decoded copy of the document's mirrored fields (`mirror::Mirror`).
     mirror: mirror::Mirror,
-    /// Local edits to mirrored fields that the next save commits as `Set`s, by node and field. Cleared by a
-    /// successful commit.
-    pending: std::collections::BTreeMap<(store::model::NodeId, u32), Vec<u8>>,
     /// The personal-state file's write bookkeeping (see `local_state::LocalPersist`).
     local_persist: local_state::LocalPersist,
     /// Shared across every note's own rendered (non-`editing`) view --
@@ -588,7 +585,6 @@ impl Default for App {
             fallback_ids: node_store::NodeIdFallback::default(),
             writes: session_sync::PendingWrites::default(),
             mirror: mirror::Mirror::default(),
-            pending: std::collections::BTreeMap::new(),
             local_persist: local_state::LocalPersist::default(),
             commonmark_cache: egui_commonmark::CommonMarkCache::default(),
             cursor_pos: (0.0, 0.0),

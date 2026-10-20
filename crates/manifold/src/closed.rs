@@ -71,7 +71,7 @@ impl App {
         // A node created this tick has no snapshot yet and its `closed` flag would be dropped as not editable (the
         // hide below would then lose it): flush the pending creates first. A save that fails leaves them pending
         // (checked below, before anything is hidden).
-        if !self.writes.pending_creates.is_empty() {
+        if self.writes.has_creates() {
             self.save_session();
         }
         if !self.restorable(id) {
@@ -96,7 +96,8 @@ impl App {
             subtree.into_iter().partition(|key| key == id || self.restorable(key));
         // A kept node the flush could not create has no document entry: its `closed` write would be dropped as not
         // editable and the hide would lose the node for good. Leave everything shown instead.
-        let uncreated = |key: &String| key.parse().is_ok_and(|n| self.writes.pending_creates.contains(&n));
+        let uncreated =
+            |key: &String| key.parse().is_ok_and(|n| self.writes.life(n) == Some(crate::session_sync::Life::Create));
         if kept.iter().any(uncreated) {
             self.queue_toast("Couldn't save the session, so nothing was closed".to_string());
             return;
@@ -111,7 +112,7 @@ impl App {
         for key in &gone {
             self.remove_node(key);
         }
-        self.writes.closed_flags.push((root, self.replica));
+        self.writes.queue_closed(root, self.replica);
         let tabs: Vec<String> = kept
             .iter()
             .filter(|k| self.nodes.get(*k).is_some_and(|n| n.runtime.saved_tab().is_some()))
@@ -160,8 +161,10 @@ impl App {
             })
             .collect();
         nested.sort();
-        self.writes.closed_flags.push((id, 0));
-        self.writes.closed_flags.extend(nested.into_iter().map(|(_, d, closer)| (d, closer)));
+        self.writes.queue_closed(id, 0);
+        for (_, d, closer) in nested {
+            self.writes.queue_closed(d, closer);
+        }
         self.save_session();
         self.evict_closed();
         let Some(doc) = self.journal.as_ref().map(|j| j.doc()) else { return };
@@ -197,10 +200,10 @@ impl App {
     /// included, so nothing under it resurfaces. Idempotent across replicas; the only place `closed` becomes
     /// `deleted`. After a local close, after remote ops (`apply_remote`) and at load.
     pub(crate) fn evict_closed(&mut self) {
-        // The document lags this replica's own queued close and reopen writes (`closed_flags`): counting it now could
+        // The document lags this replica's own queued close and reopen writes (`PendingWrites::closed`): counting it now could
         // evict the very node being reopened. The save that commits them evicts afterwards (`apply_visibility`'s
         // `apply_remote`, or the caller's own call).
-        if !self.writes.closed_flags.is_empty() {
+        if self.writes.has_closed() {
             return;
         }
         let Some(doc) = self.journal.as_ref().map(|j| j.doc()) else { return };
@@ -649,7 +652,7 @@ mod tests {
         assert!(app.save_session());
         let fresh = note(&mut app, "fresh");
         let fresh_id: NodeId = fresh.parse().unwrap();
-        assert!(app.writes.pending_creates.contains(&fresh_id), "created this tick, not saved");
+        assert_eq!(app.writes.life(fresh_id), Some(crate::session_sync::Life::Create), "created this tick, not saved");
         let set_readonly = |readonly: bool| {
             let mut perms = std::fs::metadata(&path).unwrap().permissions();
             #[allow(
@@ -663,8 +666,8 @@ mod tests {
         app.close_node(&fresh);
         set_readonly(false);
         assert!(app.nodes.contains_key(&fresh), "still shown");
-        assert!(app.writes.closed_flags.is_empty(), "no close queued");
-        assert!(app.writes.pending_creates.contains(&fresh_id), "still to be created");
+        assert!(!app.writes.has_closed(), "no close queued");
+        assert_eq!(app.writes.life(fresh_id), Some(crate::session_sync::Life::Create), "still to be created");
         assert!(app.save_session());
         let doc = app.journal.as_ref().unwrap().doc();
         assert!(doc.nodes[&fresh_id].is_live() && !doc.nodes[&fresh_id].closed());

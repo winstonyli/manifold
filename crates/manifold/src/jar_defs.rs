@@ -356,7 +356,7 @@ impl App {
                 self.edit_group(&id.to_string(), None);
                 moved_here = true;
             } else {
-                self.writes.pending_moves.insert(id, None);
+                self.writes.queue_move(id, None);
                 queued_hidden = true;
             }
         }

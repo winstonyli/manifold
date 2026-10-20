@@ -119,7 +119,7 @@ fn new_nodes_are_created_groups_first() {
     assert!(note < group, "the member's id sorts first");
     app.edit_group(&note, Some(group.clone()));
     assert!(app.save_session());
-    assert!(app.writes.pending_creates.is_empty(), "created");
+    assert!(!app.writes.has_creates(), "created");
     let doc = app.journal.as_ref().unwrap().doc();
     assert_eq!(doc.effective_group(note.parse().unwrap()), Some(group.parse().unwrap()));
     assert_eq!(doc.nodes[&group.parse().unwrap()].get(field::NAME), FieldValue::Str("G".into()));
@@ -149,7 +149,7 @@ fn a_removed_node_is_deleted_and_a_respawning_one_kept() {
     assert!(app.save_session());
     assert!(!live_in_doc(&app, &note), "deleted");
     assert!(live_in_doc(&app, &tab), "kept while respawning");
-    assert!(app.writes.pending_deletes.is_empty());
+    assert!(!app.writes.has_deletes());
 }
 
 /// A queued create for an id the document holds as a tombstone is dropped (ids are never reused): here a tab
@@ -164,7 +164,7 @@ fn a_tombstone_is_never_recreated() {
     assert!(app.spawns.spawning.contains_key(&tab) && app.nodes.contains_key(&tab), "waking: shown and in flight");
     let mut other = Journal::open(&path, ActorId(2)).unwrap();
     other.begin().unwrap().commit(vec![OpBody::Delete { node: tab.parse().unwrap() }]).unwrap();
-    app.writes.pending_creates.insert(tab.parse().unwrap());
+    app.writes.queue_create(tab.parse().unwrap(), false);
     let ops = ops_of(&app);
     assert!(app.save_session());
     assert_eq!(ops_of(&app), ops, "no Create");
@@ -324,7 +324,7 @@ fn a_failed_new_spawn_leaves_a_failed_card() {
         assert_eq!(tab.url, "https://a/");
         assert_eq!(app.card_kind(&id).map(|kind| kind.ty), Some(crate::store::model::TYPE_TAB));
         assert!(live_in_doc(&app, &id), "persisted, saved_first={saved_first}");
-        assert!(app.writes.pending_creates.is_empty() && app.writes.pending_deletes.is_empty());
+        assert!(!app.writes.has_creates() && !app.writes.has_deletes());
     }
 }
 
@@ -375,7 +375,7 @@ fn teardown_deletes_every_old_document_node_jars_included() {
     let urls: Vec<FieldValue> =
         doc.live().filter(|(_, n)| n.kind() == Kind::Tab).map(|(_, n)| n.get(field::URL)).collect();
     assert_eq!(urls, [FieldValue::Str("https://new/".into())]);
-    assert!(app.writes.pending_deletes.is_empty());
+    assert!(!app.writes.has_deletes());
 }
 
 /// Another replica's delete removes the node here and queues nothing: the document already lacks it.
@@ -391,7 +391,7 @@ fn a_remote_removal_queues_no_delete() {
     for id in [note.parse().unwrap(), tab.parse().unwrap(), group.parse().unwrap(), jar] {
         app.apply_remote(vec![(id, Remote::Deleted)]);
         assert!(!app.nodes.contains_key(&id.to_string()) && !app.jar_defs().contains_key(&id), "{id} removed");
-        assert!(app.writes.pending_deletes.is_empty(), "{id}: nothing queued");
+        assert!(!app.writes.has_deletes(), "{id}: nothing queued");
     }
 }
 
@@ -415,7 +415,7 @@ fn a_crash_respawn_a_swap_and_a_reload_delete_nothing() {
     std::fs::write(&moved, b"[2]").unwrap();
     let path = moved.to_string_lossy().into_owned();
     app.reload_fetched_node(&json, crate::WebBody::File { kind: crate::content::ContentKind::Json, path });
-    assert!(app.writes.pending_deletes.is_empty(), "nothing queued");
+    assert!(!app.writes.has_deletes(), "nothing queued");
     assert!(app.save_session());
     for id in [&crashed, &swapped, &json] {
         assert!(live_in_doc(&app, id), "{id} kept");
@@ -437,7 +437,7 @@ fn a_download_is_created_once_it_completes() {
     let dl = add(&mut app, Kind::Download, Runtime::Download(payload));
     assert!(app.save_session());
     assert!(!app.journal.as_ref().unwrap().doc().nodes.contains_key(&dl.parse().unwrap()), "not yet");
-    assert!(app.writes.pending_creates.contains(&dl.parse().unwrap()), "still queued");
+    assert_eq!(app.writes.life(dl.parse().unwrap()), Some(Life::Create), "still queued");
     app.nodes.get_mut(&dl).unwrap().runtime = Runtime::Download(DownloadPayload {
         path: "f.bin".into(),
         bytes_received: 2,
@@ -794,7 +794,7 @@ fn a_remote_close_hides_without_deleting_reparenting_or_releasing() {
     assert_eq!(app.mirror.link_ids().collect::<Vec<_>>(), links_before, "the link to the outside node stays");
     assert_eq!(app.mirror.parent(&outside), Some(tab.as_str()), "the child keeps its opened-from edge");
     assert_eq!(app.hidden_local[&tab].zoom, Some(1.25), "the hidden tab's personal state is kept");
-    assert!(app.writes.pending_deletes.is_empty(), "a hide queues no delete");
+    assert!(!app.writes.has_deletes(), "a hide queues no delete");
     // The clear brings them back, the group before its member, the tab with its zoom.
     remote_close(&mut other, &g, false);
     remote_close(&mut other, &tab, false);
@@ -880,7 +880,7 @@ fn teardown_forgets_hidden_personal_state() {
     app.teardown_running_session();
     assert!(app.hidden_local.is_empty());
     assert!(
-        app.writes.pending_deletes.contains(&tab.parse().unwrap()),
+        app.writes.life(tab.parse().unwrap()) == Some(Life::Delete),
         "the closed node is deleted with the session (D12)"
     );
 }
@@ -1275,7 +1275,7 @@ fn a_drag_release_saves_the_dropped_position() {
     assert_ne!(app.layout_pos(&note), egui::vec2(50.0, 10.0), "the overlapping cards were pushed apart");
     assert_ne!(app.layout_pos(&other), egui::vec2(52.0, 10.0));
     assert!(app.save_session());
-    assert!(app.pending.is_empty());
+    assert!(!app.writes.has_fields());
     assert_eq!(stored(&app, &note, field::POS), FieldValue::Pos(50.0, 10.0), "physics never writes the document");
     assert_eq!(stored(&app, &other, field::POS), FieldValue::Pos(52.0, 10.0));
     assert_eq!(app.mirror.pos(&note), Some(egui::vec2(50.0, 10.0)));
@@ -1462,7 +1462,7 @@ fn a_restart_places_a_node_at_its_personal_position_while_the_mirror_holds_the_d
     assert_eq!(app.layout_pos(&note), egui::vec2(70.0, 80.0));
     assert_eq!(app.mirror.pos(&note), Some(egui::vec2(10.0, 20.0)));
     assert!(app.save_session());
-    assert!(app.pending.is_empty());
+    assert!(!app.writes.has_fields());
     assert_eq!(stored(&app, &note, field::POS), FieldValue::Pos(10.0, 20.0));
 }
 
@@ -2301,7 +2301,7 @@ fn a_remote_edit_does_not_bring_back_a_node_closed_here() {
         assert!(!live_in_doc(&app, id), "{id}: the delete was saved");
         assert!(!app.mirror.has(id), "{id}: nothing of it kept");
     }
-    assert!(app.writes.pending_deletes.is_empty());
+    assert!(!app.writes.has_deletes());
 }
 
 /// `queue_create` checks the document eagerly: an id it already has an entry for (live, or a tombstone) is not
@@ -2313,19 +2313,19 @@ fn queue_create_skips_an_id_the_document_already_has() {
     let mut app = app_on(&temp_dir("queue-create-eager").join("session.mnf"), 1);
     let note = add(&mut app, Kind::Note, Runtime::Note(NotePayload { text: "n".into(), editing: false }));
     let id: NodeId = note.parse().unwrap();
-    assert_eq!(app.writes.pending_creates, BTreeSet::from([id]), "a new node is queued");
+    assert_eq!(app.writes.creates().collect::<BTreeSet<_>>(), BTreeSet::from([id]), "a new node is queued");
     assert!(app.save_session());
     app.queue_create(&note);
-    assert!(app.writes.pending_creates.is_empty(), "live in the document: not queued again");
+    assert!(!app.writes.has_creates(), "live in the document: not queued again");
     app.queue_delete(&note);
     app.queue_create(&note);
-    assert!(app.writes.pending_deletes.is_empty(), "shown again: the delete is withdrawn");
+    assert!(!app.writes.has_deletes(), "shown again: the delete is withdrawn");
     app.remove_node(&note);
     assert!(app.save_session());
     app.queue_create(&note);
-    assert!(app.writes.pending_creates.is_empty(), "a tombstone: never recreated");
+    assert!(!app.writes.has_creates(), "a tombstone: never recreated");
     app.queue_create("demo");
-    assert!(app.writes.pending_creates.is_empty(), "not a store id");
+    assert!(!app.writes.has_creates(), "not a store id");
 }
 
 /// `mirror_remote` (Ruling 9) returns the fields another replica changed (old mirror value != new), so
@@ -2364,9 +2364,9 @@ fn a_jar_create_rename_and_ephemeral_save_and_a_remote_change_reaches_jar_defs()
     assert_eq!(stored(&app, &key, field::COLOR), color_value(app.jar_defs()[&jar].color));
     assert_eq!(app.mirror.get(&key, field::NAME), work, "kept by the save's retain");
     app.commit_rename(&jar.to_string(), "Job");
-    assert!(app.pending.contains_key(&(jar, field::NAME)), "a rename queues its field");
+    assert!(app.writes.field_queued(jar, field::NAME), "a rename queues its field");
     app.set_jar_ephemeral(jar, true);
-    assert!(app.pending.contains_key(&(jar, field::EPHEMERAL)), "so does a toggle");
+    assert!(app.writes.field_queued(jar, field::EPHEMERAL), "so does a toggle");
     assert!(app.save_session());
     assert_eq!(stored(&app, &key, field::NAME), FieldValue::Str("Job".into()));
     assert_eq!(stored(&app, &key, field::EPHEMERAL), FieldValue::Bool(true));
@@ -2416,11 +2416,11 @@ fn a_remote_ephemeral_change_deletes_and_saves_the_jar_file() {
     app.apply_remote(toggled(&app, true));
     assert!(app.jar_defs()[&jar].ephemeral);
     assert!(!file.exists(), "on: the file goes");
-    assert!(app.pending.is_empty(), "a remote value is not a local edit");
+    assert!(!app.writes.has_fields(), "a remote value is not a local edit");
     app.apply_remote(toggled(&app, false));
     assert!(!app.jar_defs()[&jar].ephemeral);
     assert!(file.exists(), "off: saved back");
-    assert!(app.pending.is_empty());
+    assert!(!app.writes.has_fields());
 }
 
 /// A local ephemeral toggle not saved yet wins over another device's, and the remote value runs no file side effect:
@@ -2470,7 +2470,7 @@ fn a_jar_first_seen_ephemeral_deletes_its_leftover_file_and_queues_nothing() {
     app.apply_remote(vec![(remote, Remote::Shown(snap(Kind::Jar, fields, None)))]);
     assert!(app.jar_defs()[&remote].ephemeral);
     assert!(!file.exists(), "remote-created: the leftover file goes");
-    assert!(app.pending.is_empty(), "remote-created: nothing queued");
+    assert!(!app.writes.has_fields(), "remote-created: nothing queued");
     // Restored at startup.
     add(&mut app, Kind::Tab, sleeping_tab("https://a.com/", "A"));
     let jar = add_jar(&mut app, "Work");
@@ -2482,7 +2482,7 @@ fn a_jar_first_seen_ephemeral_deletes_its_leftover_file_and_queues_nothing() {
     assert!(back.restore_session());
     assert!(back.jar_defs()[&jar].ephemeral);
     assert!(!file.exists(), "restored: the leftover file goes");
-    assert!(!back.pending.keys().any(|(node, _)| *node == jar), "restored: nothing queued for it");
+    assert!(!back.writes.fields().any(|(node, ..)| node == jar), "restored: nothing queued for it");
 }
 
 /// A jar deleted on another device while this one was not running never reaches `remove_remotely_deleted` here, so
@@ -3176,8 +3176,8 @@ fn teardown_queues_every_node_and_link_delete() {
     want.extend(app.mirror.link_ids());
     assert!(want.len() >= 9, "six notes and three links: {want:?}");
     app.teardown_running_session();
-    assert_eq!(app.writes.pending_deletes, want);
-    assert!(app.writes.pending_creates.is_empty());
+    assert_eq!(app.writes.deletes().collect::<BTreeSet<_>>(), want);
+    assert!(!app.writes.has_creates());
     assert_eq!(app.mirror.link_ids().count(), 0);
 }
 
@@ -3225,7 +3225,7 @@ fn a_local_color_edit_is_committed_by_the_next_save() {
     assert_eq!(stored(&app, &note, field::COLOR), FieldValue::Color(None), "nothing is written before a save");
     assert!(app.save_session());
     assert_eq!(stored(&app, &note, field::COLOR), red());
-    assert!(app.pending.is_empty(), "a commit clears what it wrote");
+    assert!(!app.writes.has_fields(), "a commit clears what it wrote");
 }
 
 #[test]
@@ -3236,7 +3236,7 @@ fn a_color_set_before_the_first_save_rides_the_create() {
     app.edit_field(&note, field::COLOR, red());
     assert!(app.save_session());
     assert_eq!(stored(&app, &note, field::COLOR), red());
-    assert!(app.pending.is_empty());
+    assert!(!app.writes.has_fields());
 }
 
 #[test]
@@ -3312,7 +3312,7 @@ fn a_color_action_on_an_unknown_node_changes_nothing() {
     app.apply_node_action(&ctx, "ghost", NodeAction::SetColor(Some(egui::Color32::RED)));
     app.apply_node_action(&ctx, "ghost", NodeAction::CycleColor);
     assert_eq!(app.mirror.color("ghost"), None);
-    assert!(app.pending.is_empty());
+    assert!(!app.writes.has_fields());
 }
 
 /// A saved node edited, then deleted, before the same save: the delete stands.
@@ -3378,7 +3378,7 @@ fn a_non_store_id_edits_the_mirror_and_queues_nothing() {
     let mut app = App::default();
     app.edit_field("r", field::COLOR, red());
     assert_eq!(app.mirror.color("r"), Some(egui::Color32::RED));
-    assert!(app.pending.is_empty());
+    assert!(!app.writes.has_fields());
 }
 
 #[test]
@@ -3387,7 +3387,7 @@ fn an_unchanged_edit_queues_nothing() {
     let mut app = app_on(&path, 1);
     let note = a_note(&mut app);
     app.edit_field(&note, field::COLOR, FieldValue::Color(None));
-    assert!(app.pending.is_empty());
+    assert!(!app.writes.has_fields());
 }
 
 /// The same for a graph node: an existing node's mirrored fields reach the document only as `pending` `Set`s.
@@ -3532,12 +3532,12 @@ fn a_failed_commit_keeps_a_pending_edit_for_the_retry() {
     let saved = app.save_session();
     set_readonly(false);
     assert!(!saved);
-    assert!(!app.pending.is_empty(), "kept for the next save");
+    assert!(app.writes.has_fields(), "kept for the next save");
     assert_eq!(stored(&app, &note, field::COLOR), FieldValue::Color(None));
     app.writes.save_retry_at = Some(std::time::Instant::now());
     app.poll_store();
     assert!(app.writes.save_retry_at.is_none());
-    assert!(app.pending.is_empty());
+    assert!(!app.writes.has_fields());
     assert_eq!(stored(&app, &note, field::COLOR), red());
 }
 
@@ -3599,7 +3599,7 @@ fn a_parent_edit_on_a_non_store_id_queues_nothing() {
     let mut app = App::default();
     app.edit_parent("c", Some("p".into()));
     assert_eq!(app.mirror.parent("c"), Some("p"));
-    assert!(app.pending.is_empty());
+    assert!(!app.writes.has_fields());
 }
 
 /// A remote parent change reaches the mirror; a node removal re-parents children through the writer.
@@ -3658,7 +3658,7 @@ fn a_parent_edit_to_a_non_store_target_drops_an_earlier_queued_one() {
     app.edit_parent(&b, Some(a.clone()));
     app.edit_parent(&b, Some("p".into()));
     assert_eq!(app.mirror.parent(&b), Some("p"));
-    assert!(app.pending.is_empty());
+    assert!(!app.writes.has_fields());
     assert!(app.save_session());
     assert_eq!(stored(&app, &b, field::PARENT), FieldValue::Id(None));
 }
@@ -3699,7 +3699,7 @@ fn a_pending_link_edit_for_a_node_deleted_elsewhere_is_dropped() {
     let doc = app.journal.as_ref().unwrap().doc();
     assert_eq!(doc.version[&ActorId(1)], ops_before, "nothing written");
     assert!(!doc.nodes[&b.parse().unwrap()].is_live() && !doc.nodes[&c.parse().unwrap()].is_live());
-    assert!(app.pending.is_empty() && app.writes.pending_moves.is_empty());
+    assert!(!app.writes.has_fields() && !app.writes.has_moves());
 }
 
 /// A parked remote value for a waking tab is patched with what the commit wrote: a parent or group the commit
@@ -3779,7 +3779,7 @@ fn a_group_edit_on_a_non_store_id_queues_nothing() {
     let mut app = App::default();
     app.edit_group("t", Some("g".into()));
     assert_eq!(app.mirror.group("t"), Some("g"));
-    assert!(app.writes.pending_moves.is_empty());
+    assert!(!app.writes.has_moves());
 }
 
 /// A later move to a target that isn't a store id drops the earlier queued one.
@@ -3792,7 +3792,7 @@ fn a_group_edit_to_a_non_store_target_drops_an_earlier_queued_one() {
     assert!(app.save_session());
     app.edit_group(&t, Some(g.clone()));
     app.edit_group(&t, Some("x".into()));
-    assert!(app.writes.pending_moves.is_empty());
+    assert!(!app.writes.has_moves());
     assert!(app.save_session());
     assert_eq!(app.journal.as_ref().unwrap().doc().effective_group(t.parse().unwrap()), None);
 }
@@ -4012,7 +4012,7 @@ fn a_remote_group_delete_during_a_respawn_lands_the_tab_in_its_group_without_a_m
     other.begin().unwrap().commit(vec![OpBody::Delete { node: g.parse().unwrap() }]).unwrap();
     assert!(app.save_session());
     assert_eq!(app.mirror.group(&t), Some(outer.as_str()), "the cascade reached the respawning tab");
-    assert!(app.writes.pending_moves.is_empty(), "a remote cascade queues nothing");
+    assert!(!app.writes.has_moves(), "a remote cascade queues nothing");
     fail_spawns(&mut app);
     assert_eq!(app.mirror.group(&t), Some(outer.as_str()));
     let doc = app.journal.as_ref().unwrap().doc();
@@ -4093,7 +4093,7 @@ fn a_remote_removal_during_a_respawn_reparents_the_tab_in_the_mirror_only() {
     other.begin().unwrap().commit(vec![OpBody::Delete { node: p.parse().unwrap() }]).unwrap();
     assert!(app.save_session());
     assert_eq!(app.mirror.parent(&c), Some(a.as_str()), "the cascade reached the respawning tab");
-    assert!(app.pending.is_empty(), "a remote cascade queues nothing");
+    assert!(!app.writes.has_fields(), "a remote cascade queues nothing");
     fail_spawns(&mut app);
     assert_eq!(app.mirror.parent(&c), Some(a.as_str()));
 }
@@ -4124,7 +4124,7 @@ fn a_new_spawn_into_a_group_dissolved_in_flight_lands_where_the_document_shows_i
     app.dissolve_group(&g); // not saved before the landing
     fail_spawns(&mut app);
     assert_eq!(app.mirror.group(&t), Some(outer.as_str()));
-    assert!(app.writes.pending_moves.is_empty());
+    assert!(!app.writes.has_moves());
     let doc = app.journal.as_ref().unwrap().doc();
     assert_eq!(doc.effective_group(t.parse().unwrap()), Some(outer.parse().unwrap()));
     assert_eq!(doc.nodes[&t.parse().unwrap()].group, Some(g.parse().unwrap()), "no move was committed");
@@ -4262,13 +4262,13 @@ fn a_jar_pick_saves_the_field_and_only_when_it_changed() {
     let key = |no| (tab.parse::<NodeId>().unwrap(), no);
     app.set_jar_edge(&tab, Some(work));
     assert_eq!(app.mirror.jar(&tab), Some(work), "shown at once");
-    assert_eq!(app.pending.keys().copied().collect::<Vec<_>>(), [key(field::JAR)]);
+    assert_eq!(app.writes.fields().map(|(n, no, _)| (n, no)).collect::<Vec<_>>(), [key(field::JAR)]);
     assert!(app.save_session());
     assert_eq!(stored(&app, &tab, field::JAR), FieldValue::Id(Some(work)));
     app.set_jar_edge(&tab, Some(work));
-    assert!(app.pending.is_empty(), "re-picking the same jar queues nothing");
+    assert!(!app.writes.has_fields(), "re-picking the same jar queues nothing");
     app.set_jar_edge(&tab, None);
-    assert_eq!(app.pending.keys().copied().collect::<Vec<_>>(), [key(field::JAR)]);
+    assert_eq!(app.writes.fields().map(|(n, no, _)| (n, no)).collect::<Vec<_>>(), [key(field::JAR)]);
     assert!(app.save_session());
     assert_eq!(stored(&app, &tab, field::JAR), FieldValue::Id(None));
 }
@@ -4560,7 +4560,7 @@ fn a_swap_saves_its_target_before_the_state_snapshot() {
     assert_eq!(stored(&app, &tab, field::VIEW_KIND), view_kind(ViewKind::Servo));
     app.start_swap_to(&tab, ViewKind::Cef);
     assert_eq!(app.mirror.view_kind(&tab), ViewKind::Cef, "shown at once");
-    assert!(app.pending.contains_key(&(tab.parse().unwrap(), field::VIEW_KIND)), "queued when the swap starts");
+    assert!(app.writes.field_queued(tab.parse().unwrap(), field::VIEW_KIND), "queued when the swap starts");
     assert!(sent(&mut peer).iter().any(|m| matches!(m, HostToView::GetState)), "the swap asked for the state");
     assert!(app.save_session());
     assert_eq!(stored(&app, &tab, field::VIEW_KIND), view_kind(ViewKind::Cef));
@@ -4607,7 +4607,7 @@ fn a_remote_view_change_on_a_live_tab_starts_a_swap() {
     assert_eq!(app.mirror.view_kind(&tab), ViewKind::Cef);
     assert_eq!(swap_target(&app, &tab), Some(ViewKind::Cef), "the swap started");
     assert!(sent(&mut peer).iter().any(|m| matches!(m, HostToView::GetState)));
-    assert!(app.pending.is_empty(), "nothing queued");
+    assert!(!app.writes.has_fields(), "nothing queued");
     assert_eq!(stored(&app, &tab, field::VIEW_KIND), view_kind(ViewKind::Cef));
 }
 
@@ -4785,7 +4785,7 @@ fn a_remote_view_change_on_a_sleeping_card_is_the_one_it_wakes_into() {
     remote_set(&mut other, &tab, field::VIEW_KIND, view_kind(ViewKind::Cef));
     assert!(app.save_session());
     assert_eq!(app.mirror.view_kind(&tab), ViewKind::Cef);
-    assert!(app.pending.is_empty() && app.test_spawns.is_empty(), "nothing queued or started");
+    assert!(!app.writes.has_fields() && app.test_spawns.is_empty(), "nothing queued or started");
     assert_eq!(app.nodes[&tab].as_unloaded().unwrap().state, UnloadedState::Sleeping);
     app.focus_tab(&tab);
     assert_eq!(app.test_spawns[0].0.kind, ViewKind::Cef, "wakes into it");
@@ -6283,4 +6283,29 @@ fn a_session_replace_clears_stashed_trails() {
     assert!(app.nav_history.contains_key(&tab));
     app.teardown_running_session();
     assert!(app.nav_history.is_empty());
+}
+
+/// The per-node records keep the rules between a node's queued writes in one place.
+#[test]
+fn queued_writes_follow_one_record_per_node() {
+    let (a, b) = (NodeId { actor: ActorId(1), counter: 1 }, NodeId { actor: ActorId(1), counter: 2 });
+    let mut w = PendingWrites::default();
+    w.queue_create(a, false);
+    w.queue_delete(a);
+    assert_eq!((w.life(a), w.has_creates()), (Some(Life::Delete), false), "a delete replaces a create");
+    w.queue_create(a, false);
+    assert_eq!(w.life(a), Some(Life::Create), "a create withdraws a delete");
+    w.queue_create(a, true);
+    assert!(w.life(a).is_none(), "one the document holds needs no create");
+    w.queue_field(a, field::NAME, vec![1]);
+    w.queue_move(a, None);
+    assert!(w.field_queued(a, field::NAME) && w.move_queued(a));
+    w.unqueue_field(a, field::NAME);
+    w.unqueue_move(a);
+    assert!(!w.has_fields() && !w.has_moves() && w.nodes.is_empty(), "an emptied record is dropped");
+    w.queue_closed(b, 7);
+    w.queue_closed(a, 0);
+    assert_eq!(w.closed(), [(b, 7), (a, 0)], "closed flags commit in the order queued");
+    assert_eq!(w.take_closed(), BTreeSet::from([a, b]));
+    assert!(!w.has_closed() && w.nodes.is_empty());
 }
