@@ -1695,6 +1695,7 @@ impl App {
             self.camera.pan_to(rect);
         }
         self.handle_card_digits(ui, &tab_order);
+        self.handle_undo_keys(ui);
         self.hints_revealed = {
             let (held, other_key) = ui.input(|i| {
                 (
@@ -1850,6 +1851,19 @@ impl App {
     pub(crate) fn card_tab_order(&self) -> Vec<String> {
         let stored = self.node_order.iter().filter(|id| self.nodes.contains_key(*id) && self.in_level(id)).cloned();
         stored.chain(self.virtual_sources.iter().flat_map(|source| source.entries(self)).map(|e| e.id)).collect()
+    }
+
+    /// Ctrl+Z undoes and Ctrl+Shift+Z or Ctrl+Y redoes the newest step (`step_history`). Ignored where the digit keys
+    /// are: a text field, popup, menu, JSON level or Tab view has the keyboard.
+    fn handle_undo_keys(&mut self, ui: &egui::Ui) {
+        let free = self.json_level.is_none()
+            && self.menus.node_menu.is_none()
+            && !self.popup_open()
+            && !self.showing_tab_view()
+            && !ui.ctx().egui_wants_keyboard_input();
+        if let Some(redo) = free.then(|| ui.input_mut(undo_chord)).flatten() {
+            self.step_history(None, redo);
+        }
     }
 
     /// Plain digit keys jump to the card with that Tab-order number (the badge's number): focus and
@@ -2090,6 +2104,17 @@ fn ctrl_reveal_step(mut state: CtrlReveal, held: bool, other_key: bool, now: f64
     (state, !state.cancelled && now - since >= CTRL_REVEAL_AFTER)
 }
 
+/// The undo chord pressed this frame, consumed: `Some(false)` for Ctrl+Z, `Some(true)` for Ctrl+Shift+Z or Ctrl+Y.
+/// Shift is tried first, as the plain chord would match it too.
+fn undo_chord(i: &mut egui::InputState) -> Option<bool> {
+    use egui::{Key, Modifiers};
+    if i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::Z) || i.consume_key(Modifiers::COMMAND, Key::Y) {
+        Some(true)
+    } else {
+        i.consume_key(Modifiers::COMMAND, Key::Z).then_some(false)
+    }
+}
+
 /// How long a digit waits for a second one before the number is taken as typed.
 const DIGIT_WINDOW: f64 = 0.6;
 
@@ -2226,6 +2251,28 @@ mod tests {
         let tab = card_hint_pairs(plain(TYPE_TAB));
         assert_eq!(tab[0], ("Click / Space", "select"));
         assert_eq!(tab.last(), Some(&("Del", "close")));
+    }
+
+    /// Ctrl+Z reads as undo, Ctrl+Shift+Z and Ctrl+Y as redo, and one press is consumed once.
+    #[test]
+    fn undo_chords_read_as_undo_or_redo() {
+        let press = |key, modifiers| {
+            let ctx = egui::Context::default();
+            let mut raw = egui::RawInput::default();
+            raw.events.push(crate::debug_control::debug_key_event(key, modifiers));
+            let mut out = Vec::new();
+            let mut full = ctx.run_ui(raw, |ui| {
+                out.push(ui.input_mut(super::undo_chord));
+                out.push(ui.input_mut(super::undo_chord));
+            });
+            full.textures_delta.clear();
+            out
+        };
+        let cmd = egui::Modifiers::COMMAND;
+        assert_eq!(press(egui::Key::Z, cmd), [Some(false), None]);
+        assert_eq!(press(egui::Key::Z, cmd | egui::Modifiers::SHIFT), [Some(true), None]);
+        assert_eq!(press(egui::Key::Y, cmd), [Some(true), None]);
+        assert_eq!(press(egui::Key::Z, egui::Modifiers::NONE), [None, None]);
     }
 
     #[test]

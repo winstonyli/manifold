@@ -101,6 +101,8 @@ pub enum DebugCommand {
     /// An egui Tab key press (Shift+Tab with `true`): moves egui's keyboard focus
     /// between widgets, for checking how focus looks and that it moves nothing.
     TabKey(bool),
+    /// Ctrl+Z (Ctrl+Shift+Z with `true`): undoes (redoes) the last drop or fold in the Graph view.
+    UndoKey(bool),
     /// Shift+F10: opens the context menu of the keyboard-focused graph card.
     ShiftF10,
     /// Graph-view keyboard navigation equivalents -- see
@@ -499,6 +501,7 @@ const COMMAND_HELP: &[(&str, &str)] = &[
     ("ARROWDOWN", "Move the address-bar suggestion highlight down"),
     ("ARROWUP", "Move the address-bar suggestion highlight up"),
     ("SHIFTF10", "Shift+F10 -- open the focused graph card's menu"),
+    ("UNDOKEY [shift]", "Ctrl+Z (or Ctrl+Shift+Z) -- undo (redo) the last drop or fold in the Graph view"),
     ("TABKEY [shift]", "Tab (or Shift+Tab) -- move egui keyboard focus to the next (previous) widget"),
     ("GRAPHLEFT", "Graph view: move focus left"),
     ("GRAPHRIGHT", "Graph view: move focus right"),
@@ -757,6 +760,7 @@ pub fn parse_line(line: &str) -> Option<DebugCommand> {
         "ARROWUP" => Some(DebugCommand::ArrowUp),
         "SHIFTF10" => Some(DebugCommand::ShiftF10),
         "TABKEY" => Some(DebugCommand::TabKey(rest.trim() == "shift")),
+        "UNDOKEY" => Some(DebugCommand::UndoKey(rest.trim() == "shift")),
         "GRAPHLEFT" => Some(DebugCommand::GraphFocusLeft),
         "GRAPHRIGHT" => Some(DebugCommand::GraphFocusRight),
         "GRAPHUP" => Some(DebugCommand::GraphFocusUp),
@@ -1216,6 +1220,10 @@ impl App {
             DebugCommand::TabKey(shift) => {
                 let modifiers = if shift { egui::Modifiers::SHIFT } else { egui::Modifiers::NONE };
                 self.debug.debug_input_events.push(debug_key_event(egui::Key::Tab, modifiers))
+            }
+            DebugCommand::UndoKey(shift) => {
+                let modifiers = egui::Modifiers { command: true, ctrl: true, shift, ..Default::default() };
+                self.debug.debug_input_events.push(debug_key_event(egui::Key::Z, modifiers))
             }
             DebugCommand::ShiftF10 => {
                 self.debug.debug_input_events.push(debug_key_event(egui::Key::F10, egui::Modifiers::SHIFT))
@@ -1930,6 +1938,7 @@ mod tests {
             "ARROWUP",
             "SHIFTF10",
             "TABKEY shift",
+            "UNDOKEY shift",
             "GRAPHLEFT",
             "GRAPHRIGHT",
             "GRAPHUP",

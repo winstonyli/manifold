@@ -161,6 +161,20 @@ fn drive(run: &Run, sec: &mut Option<Section>) -> io::Result<()> {
         "the evicted node is not in the export",
         session["nodes"].as_array().is_some_and(|n| n.iter().all(|n| n["name"] != "n0")),
     );
+    next("undo-redo");
+    let group_of = |s: &State| s.0["mirror_groups"].get(out.as_str()).map(py);
+    a.send(&format!("MOVETOGROUP {out} {g}"))?;
+    a.send("WAITIDLE")?;
+    let m1 = a.export_until("a5", |s| group_of(s).as_deref() == Some(g.as_str()))?;
+    check_is("a drop into the group", Some(g.clone()), group_of(&m1));
+    a.send("UNDOKEY")?;
+    a.send("WAITIDLE")?;
+    let m2 = a.export_until("a6", |s| group_of(s).as_deref() != Some(g.as_str()))?;
+    check("Ctrl+Z puts the card back outside the group", group_of(&m2).as_deref() != Some(g.as_str()));
+    a.send("UNDOKEY shift")?;
+    a.send("WAITIDLE")?;
+    let m3 = a.export_until("a7", |s| group_of(s).as_deref() == Some(g.as_str()))?;
+    check_is("Ctrl+Shift+Z drops it into the group again", Some(g.clone()), group_of(&m3));
     Run::stop(b)?;
     Run::stop(a)
 }
