@@ -25,23 +25,6 @@ impl App {
         crate::walk::ancestors(id.to_owned(), |k| self.mirror.group(k).map(str::to_owned)).count()
     }
 
-    /// Dissolves a group: members rejoin *its own parent's* level again
-    /// (never closed — grouping is purely a display grouping, not an
-    /// ownership one), and the group card itself is removed. A top-level
-    /// group's parent is `None`, so this still means "become top-level"
-    /// exactly as before nesting existed -- reads the group's own parent
-    /// before removing it, rather than assuming `None`. `current_group`
-    /// moves to that same parent if it happened to be the group just
-    /// dissolved. Deletes the group: the user-facing Dissolve Group and Ungroup All close it instead (`ungroup`), so
-    /// they can be undone. Not the card's close: that is `close_node`.
-    ///
-    /// A local dissolve: a member whose `jar` edge now reaches nothing it did before loses it (`recheck_edge_scope`).
-    pub(crate) fn dissolve_group(&mut self, id: &str) {
-        for member in self.dissolve_members(id, false) {
-            self.recheck_edge_scope(&member);
-        }
-    }
-
     /// The menu's "Dissolve Group" and the toolbar's Ungroup All: each group's members move up to its own level and
     /// the empty group is closed (a Recently Closed entry) holding their ids (`fold_group`), so reopening it, from
     /// that list or the toast's Undo (`step_history`), puts them back (`regroup_held`).
@@ -102,36 +85,6 @@ impl App {
         self.nodes.contains_key(id) && self.mirror.group(id) == group
     }
 
-    /// `dissolve_group` without the edge recheck, for a remote delete: the remote device's own recheck arrives as
-    /// ordinary tab edits (spec "Inheritance"). The members move up in the mirror only (`follow_remote_group`).
-    pub(crate) fn dissolve_group_quietly(&mut self, id: &str) {
-        self.dissolve_members(id, true);
-    }
-
-    /// Moves group `id`'s members to its own group and removes it; `remote` for another replica's delete, which
-    /// queues no delete of its own (the document already lacks the group). Returns the members moved.
-    fn dissolve_members(&mut self, id: &str, remote: bool) -> Vec<String> {
-        let parent = self.mirror.group(id).filter(|_| self.nodes.contains_key(id)).map(str::to_owned);
-        let members: Vec<String> = self.members_of(id).map(str::to_owned).collect();
-        for member in &members {
-            if remote {
-                self.follow_remote_group(member, parent.clone());
-            } else {
-                self.edit_group(member, parent.clone());
-            }
-        }
-        self.nodes.remove(id);
-        if !remote {
-            self.queue_delete(id);
-        }
-        self.node_order.retain(|g| g != id);
-        if self.current_group.as_deref() == Some(id) {
-            self.switch_group_level(parent);
-        }
-        self.forget_id(id);
-        members
-    }
-
     /// Shared by `new_group_shortcut` (`pos` `None`: a jittered spawn) and
     /// the empty-canvas "New Tab/Note/Group/File" card (`pending_new_node`),
     /// which passes the exact position that was right-clicked instead.
@@ -164,7 +117,7 @@ impl App {
 
     /// `destroy_group`'s removal, with no save: `below` is everything under group `id` (`members_under`, each once, so
     /// a group cycle in the mirror can't loop it). A tab is `remove_tab`d (not `destroy_tab`, which saves), every
-    /// other member `destroy_node`d, then the groups are dissolved, the innermost first.
+    /// other member `destroy_node`d, then the groups removed, the innermost first (a group's members move up, `take_out`).
     fn destroy_group_members(&mut self, id: &str, below: Vec<String>) {
         let (groups, members): (Vec<String>, Vec<String>) = below.into_iter().partition(|m| self.is_container(m));
         for tid in members {
@@ -176,8 +129,8 @@ impl App {
             }
         }
         for group in groups.iter().rev() {
-            self.dissolve_group(group);
+            self.remove_node(group);
         }
-        self.dissolve_group(id);
+        self.remove_node(id);
     }
 }

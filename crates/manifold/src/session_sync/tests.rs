@@ -214,7 +214,7 @@ fn a_create_naming_a_node_deleted_by_the_same_save_writes_none() {
     let tab = app.spawn_tab_at("https://n/", egui::Vec2::ZERO, Some(group.clone()), Some(opener.clone()));
     assert!(app.spawns.spawning.contains_key(&tab));
     app.remove_tab(&opener);
-    app.dissolve_group(&group);
+    app.remove_node(&group);
     assert!(app.save_session());
     assert!(!live_in_doc(&app, &opener) && !live_in_doc(&app, &group));
     assert!(live_in_doc(&app, &tab), "created from its spawn snapshot");
@@ -3032,7 +3032,7 @@ fn the_mirror_matches_the_store_after_every_save() {
     assert!(app.save_session());
     check(&app, "remote set and delete");
 
-    app.dissolve_group(&outer);
+    app.remove_node(&outer);
     assert!(app.save_session());
     check(&app, "a local delete and moves");
 
@@ -3722,7 +3722,7 @@ fn a_parked_link_is_patched_with_the_resolved_value() {
     app.edit_parent(&tab, Some(a.clone()));
     app.edit_group(&tab, Some(g.clone()));
     app.remove_tab(&a);
-    app.dissolve_group(&g);
+    app.remove_node(&g);
     assert!(app.save_session());
     assert!(app.spawns.remote_in_flight.contains_key(&tab), "the remote value is parked");
     assert_eq!(stored(&app, &tab, field::PARENT), FieldValue::Id(None));
@@ -3768,7 +3768,7 @@ fn a_move_into_a_group_deleted_by_the_same_save_is_written_as_none() {
     let t = add(&mut app, Kind::Tab, sleeping_tab("https://t/", ""));
     assert!(app.save_session());
     app.edit_group(&t, Some(g.clone()));
-    app.dissolve_group(&g);
+    app.remove_node(&g);
     assert!(app.save_session());
     assert_eq!(app.journal.as_ref().unwrap().doc().effective_group(t.parse().unwrap()), None);
     assert_eq!(app.mirror.group(&t), None, "the mirror shows what the commit wrote");
@@ -3866,7 +3866,7 @@ fn dissolving_a_group_moves_members_up_and_saves() {
     app.edit_group(&inner, Some(outer.clone()));
     app.edit_group(&t, Some(inner.clone()));
     assert!(app.save_session());
-    app.dissolve_group(&inner);
+    app.remove_node(&inner);
     assert_eq!(app.mirror.group(&t), Some(outer.as_str()));
     assert!(app.save_session());
     assert_eq!(app.journal.as_ref().unwrap().doc().effective_group(t.parse().unwrap()), Some(outer.parse().unwrap()));
@@ -4027,7 +4027,7 @@ fn a_local_dissolve_during_a_respawn_moves_the_tab_up_a_level() {
     let mut app = app_on(&path, 1);
     let (outer, g, t) = nested_tab(&mut app);
     start_respawn(&mut app, &t);
-    app.dissolve_group(&g);
+    app.remove_node(&g);
     assert_eq!(app.mirror.group(&t), Some(outer.as_str()));
     assert!(app.save_session());
     fail_spawns(&mut app);
@@ -4121,7 +4121,7 @@ fn a_new_spawn_into_a_group_dissolved_in_flight_lands_where_the_document_shows_i
     spawn.group = Some(g.clone());
     app.spawn_tab_async(spawn);
     assert!(app.save_session(), "creates the spawning tab in G");
-    app.dissolve_group(&g); // not saved before the landing
+    app.remove_node(&g); // not saved before the landing
     fail_spawns(&mut app);
     assert_eq!(app.mirror.group(&t), Some(outer.as_str()));
     assert!(!app.writes.has_moves());

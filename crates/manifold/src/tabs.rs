@@ -826,27 +826,12 @@ impl App {
             || self.nodes.get(id).and_then(|n| n.as_tab()).is_some_and(|t| t.swap_target.is_some())
     }
 
-    /// The local close without the save (`destroy_tab`, `destroy_group_members`, `redirect_tab_to_content`); queues
-    /// the delete.
+    /// The local close of a tab without the save (`destroy_tab`, `destroy_group_members`, `redirect_tab_to_content`),
+    /// queueing the delete (`take_out`). Nothing when `id` is not a tab shown here.
     pub(crate) fn remove_tab(&mut self, id: &str) {
-        if self.drop_tab(id) {
-            self.queue_delete(id);
+        if self.nodes.get(id).is_some_and(|n| n.runtime.saved_tab().is_some()) {
+            self.take_out(id, crate::node_store::Removal::Local);
         }
-    }
-
-    /// `remove_tab` without the queued delete, for a tab another replica deleted (`remove_remotely_deleted`).
-    /// False when `id` is not a tab.
-    pub(crate) fn drop_tab(&mut self, id: &str) -> bool {
-        if !self.nodes.get(id).is_some_and(|n| n.runtime.saved_tab().is_some()) {
-            return false;
-        }
-        let parent = self.mirror.parent(id).map(str::to_owned);
-        let children: Vec<String> = self.children_of(id).map(str::to_owned).collect();
-        for child in children {
-            self.edit_parent(&child, parent.clone());
-        }
-        self.unshow(id);
-        true
     }
 
     /// Shared by swap-finish and crash recovery: starts `spawn` (from

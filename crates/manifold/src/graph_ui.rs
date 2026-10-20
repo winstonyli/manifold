@@ -392,7 +392,7 @@ impl App {
             // from the Tab<->Graph `Transition`.
             GraphAction::EnterGroup(id) => self.switch_group_level(Some(id)),
             // One level up, not straight to the top -- same "go to this
-            // group's own parent" rule `dissolve_group`/the drag-to-eject
+            // group's own parent" rule `take_out`/the drag-to-eject
             // handler both use, now that groups nest. Also ends any rename
             // of the group being left.
             GraphAction::LeaveGroup => {

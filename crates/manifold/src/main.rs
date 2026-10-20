@@ -227,7 +227,7 @@ struct App {
     /// group's own parent, not straight to the top, so leaving a deeply-nested
     /// group takes as many "◀" clicks as it took to get there (or one
     /// breadcrumb click to jump straight to any ancestor). Dissolving a nested
-    /// group reparents its members to *its own* parent (`App::dissolve_group`),
+    /// group reparents its members to *its own* parent (`App::take_out`),
     /// not unconditionally to the top level.
     ///
     /// Dragging one group's card onto another's is deliberately left as

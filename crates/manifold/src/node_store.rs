@@ -23,6 +23,15 @@ impl NodeIdFallback {
     }
 }
 
+/// Whose removal `App::take_out` carries out.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Removal {
+    /// This replica's own: it edits the document.
+    Local,
+    /// Following another replica's delete, which the document already holds.
+    Remote,
+}
+
 impl App {
     /// A fresh node id: the journal's counter (contract "Actors and ids"),
     /// or this launch's fallback actor without one.
@@ -66,43 +75,71 @@ impl App {
         }
     }
 
-    /// The local removal of a download, note, image, PDF or Json node: `drop_node` + `queue_delete`.
+    /// The local removal of any node (`take_out`, `Removal::Local`): a group, a tab, a download, note, image, PDF or
+    /// Json node. Saves nothing; the caller does.
     pub(crate) fn remove_node(&mut self, id: &str) {
-        self.drop_node(id);
-        self.queue_delete(id);
+        self.take_out(id, Removal::Local);
     }
 
-    /// Removes a download, note, image, PDF or Json node from the graph without queueing a delete (`remove_node`
-    /// adds that; a node another replica deleted, `remove_remotely_deleted`, needs none). A download's file on disk
-    /// is left untouched (this only forgets the node); an image's or PDF's texture is freed, and a PDF's render not
-    /// yet started is cancelled. Neither kind has an engine process or a membership to tear down, so one plain
-    /// `self.nodes`/`node_order` removal (plus the same stale-`dragging`/`hovered` guard `destroy_tab`/`finish_swap`
-    /// also apply), then `forget_id`, covers them all.
-    ///
-    /// Removing the Json node whose level is being viewed (another replica
-    /// deleted it, or its group was closed) leaves to that node's group,
-    /// as `dissolve_group` does for a group: `current_group` must never
-    /// name a node that's gone, or `insertion_group` would orphan new nodes.
-    ///
-    /// What it opened (a tab from Open as Tab) is then opened from its own
-    /// `parent`, as `drop_tab` does for a tab's children.
-    pub(crate) fn drop_node(&mut self, id: &str) {
-        let parent = self.mirror.parent(id).map(str::to_owned);
+    /// The one removal of a node from the graph. `Removal::Local` edits the document (the re-parents, a group's
+    /// members moving up, the queued delete); `Removal::Remote` follows another replica's delete, which the document
+    /// already holds, so it only moves the mirror. In order:
+    /// - what the node opened (a tab from Open as Tab) is opened from its own `parent`, so the forest stays
+    ///   connected;
+    /// - a group's members move to the group's own group, and the level leaves it if it was showing: no live node
+    ///   names a removed group (`current_group` must never name a node that is gone, or `insertion_group` would
+    ///   orphan new nodes). A remote delete also fixes a member change still waiting for a spawn;
+    /// - `unshow` takes it out of the live graph (a tab's engine shuts down, an image's or PDF's texture is freed, a
+    ///   PDF's render not yet started is cancelled; a download's file on disk is left alone);
+    /// - local: the delete is queued, and a member whose `jar` edge now reaches nothing it did before loses it
+    ///   (`recheck_edge_scope`; a remote device's own recheck arrives as ordinary tab edits, spec "Inheritance").
+    pub(crate) fn take_out(&mut self, id: &str, how: Removal) {
+        let local = how == Removal::Local;
+        let present = self.nodes.contains_key(id);
+        let (parent, group) = (self.mirror.parent(id).map(str::to_owned), self.mirror.group(id).map(str::to_owned));
+        let up = group.filter(|_| present);
         let children: Vec<String> = self.children_of(id).map(str::to_owned).collect();
         for child in children {
-            self.edit_parent(&child, parent.clone());
+            if local {
+                self.edit_parent(&child, parent.clone());
+            } else {
+                self.follow_remote_parent(&child, parent.clone());
+            }
         }
-        let group = self.mirror.group(id).map(str::to_owned);
+        let members: Vec<String> =
+            if self.is_container(id) { self.members_of(id).map(str::to_owned).collect() } else { Vec::new() };
+        for member in &members {
+            if local {
+                self.edit_group(member, up.clone());
+            } else {
+                self.follow_remote_group(member, up.clone());
+            }
+        }
+        if !local && self.is_container(id) {
+            for (_, _, group) in
+                self.spawns.remote_in_flight.values_mut().filter_map(crate::session_sync::Remote::shown_mut)
+            {
+                if group.as_deref() == Some(id) {
+                    *group = up.clone();
+                }
+            }
+        }
         let removed = self.unshow(id).is_some();
         if self.current_group.as_deref() == Some(id) {
-            self.switch_group_level(group.filter(|_| removed));
+            self.switch_group_level(up.filter(|_| removed));
+        }
+        if local {
+            self.queue_delete(id);
+            for member in &members {
+                self.recheck_edge_scope(member);
+            }
         }
     }
 
     /// Takes `id` out of the live graph without touching the document: its `nodes` entry (a tab's `ViewTab` drops,
     /// shutting its engine host down), a PDF's queued render, its `node_order` slot, the view state naming it
     /// (`focused`, `split_tab`, `viewed_image`, an open find bar), then `forget_id`. Shared by the delete paths
-    /// (`drop_tab`, `drop_node`) and the hide path (`hide_node`), which add what each needs. Returns the removed node.
+    /// (`take_out`) and the hide path (`hide_node`), which add what each needs. Returns the removed node.
     pub(crate) fn unshow(&mut self, id: &str) -> Option<crate::GraphNode> {
         let removed = self.nodes.remove(id);
         if removed.as_ref().is_some_and(|n| n.as_pdf().is_some()) {
@@ -134,8 +171,8 @@ impl App {
     }
 
     /// Everything a permanently removed node leaves behind that carries no order: per-id tables, the gestures and
-    /// latches naming it, its GPU textures. Called by every permanent removal (`drop_tab`, `drop_node`,
-    /// `dissolve_members`, `merge_groups`, `teardown_running_session`); `main.rs`'s
+    /// latches naming it, its GPU textures. Called by every permanent removal (`take_out`,
+    /// `merge_groups`, `teardown_running_session`); `main.rs`'s
     /// `every_id_keyed_field_is_forgotten_or_excused` fails if an id-holding App field is in neither this nor its
     /// `NOT_FORGOTTEN` list. Deliberately not here:
     /// - `wakes_in_flight`: a tab closed while waking needs it, so the landing commits its delete;

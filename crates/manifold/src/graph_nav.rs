@@ -347,7 +347,7 @@ impl App {
     /// `(id, name)` pairs -- the toolbar's own breadcrumb trail now that
     /// groups nest. Empty at the true top level. Walks `Mirror::group`
     /// upward from the current group exactly the way `subtree_ids`/
-    /// `dissolve_group` already do to find a single ancestor; this just
+    /// `take_out` already does to find a single ancestor; this just
     /// collects the whole chain instead of stopping at the first one.
     pub(crate) fn group_breadcrumb(&self) -> Vec<(String, String)> {
         let Some(current) = self.current_group.clone() else { return Vec::new() };
@@ -545,7 +545,7 @@ impl App {
         // artifact from the tabs/downloads/groups -> one `self.nodes` map
         // migration (the same recurring bug this project has already found
         // and fixed four separate times elsewhere -- `App::merge_groups`,
-        // `dissolve_group` twice, `replace_running_session`). Harmless for
+        // `remove_node` on a group twice, `replace_running_session`). Harmless for
         // `positions`/`velocities` (a `HashMap` insert of the same key
         // twice just overwrites itself), but a real correctness bug for
         // `edges`: a plain `Vec`, so every spring edge was fed into

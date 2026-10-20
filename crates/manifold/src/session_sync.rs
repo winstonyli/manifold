@@ -1124,8 +1124,8 @@ impl App {
     }
 
     /// Removes a node another replica deleted, recording nothing and saving
-    /// nothing (but see the links below). Its tab children move to its parent. A group's members move
-    /// to the group's own group (`dissolve_group`, which also leaves the
+    /// nothing (but see the links below). Its children move to its parent. A group's members move
+    /// to the group's own group (`take_out`, which also leaves the
     /// level if it was showing): a member the store still has is in
     /// `remote` too (it lists descendants) and gets its effective group
     /// from there, and one only this replica has lands where the store
@@ -1141,28 +1141,10 @@ impl App {
             self.mirror.forget_link(link);
             return;
         }
-        let Some(node) = self.nodes.get(id) else { return self.forget_deleted(id) };
-        let up = self.mirror.group(id).map(str::to_owned);
-        let is_group = self.is_container(id);
-        let is_tab = node.runtime.saved_tab().is_some();
-        let parent = self.mirror.parent(id).map(str::to_owned);
-        let children: Vec<String> = self.children_of(id).map(str::to_owned).collect();
-        for child in children {
-            self.follow_remote_parent(&child, parent.clone());
+        if !self.nodes.contains_key(id) {
+            return self.forget_deleted(id);
         }
-        if is_group {
-            // A change waiting for a spawn may name this group too.
-            for (_, _, group) in self.spawns.remote_in_flight.values_mut().filter_map(Remote::shown_mut) {
-                if group.as_deref() == Some(id) {
-                    *group = up.clone();
-                }
-            }
-            self.dissolve_group_quietly(id);
-        } else if is_tab {
-            self.drop_tab(id);
-        } else {
-            self.drop_node(id);
-        }
+        self.take_out(id, crate::node_store::Removal::Remote);
         self.spawns.wakes_in_flight.remove(id);
         self.release_backing(id);
     }
@@ -1195,7 +1177,7 @@ impl App {
     }
 
     /// The current level leaves a subtree that is being hidden: when it is `root` or inside it, the level falls to
-    /// the nearest shown node above `root` (`Doc::shown_level`), as `dissolve_members` leaves a dissolved group.
+    /// the nearest shown node above `root` (`Doc::shown_level`), as `take_out` leaves a removed group.
     /// Reads the raw chain, so it holds before the close is committed (a local close) and after (a remote one).
     pub(crate) fn leave_hidden(&mut self, root: NodeId) {
         let Some(doc) = self.journal.as_ref().map(|j| j.doc()) else { return };
