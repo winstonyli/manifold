@@ -121,22 +121,10 @@ pub(crate) fn install_progress_bar(ui: &mut egui::Ui, received: u64, total: u64)
     );
 }
 
-/// A distinct color per engine (loosely nodding to each project's own
-/// branding — Servo orange, Chromium/Blink blue, Safari/WebKit teal) used
-/// as a small identifying dot/badge wherever a tab's engine matters at a
-/// glance: the tab strip, the graph node's engine badge. Deliberately
-/// separate from `ACCENT` (which means "focused"/"selected", a different
-/// axis of meaning) so the two never get confused for one another.
+/// The engine's identifying color (`ViewDesc::color`): the small dot/badge wherever a tab's engine matters at a
+/// glance, the tab strip and the graph node's engine badge.
 pub(crate) fn view_color(kind: ViewKind) -> egui::Color32 {
-    match kind {
-        ViewKind::Servo => egui::Color32::from_rgb(255, 138, 80),
-        ViewKind::Cef => egui::Color32::from_rgb(66, 133, 244),
-        ViewKind::Webkit => egui::Color32::from_rgb(26, 188, 156),
-        // Windows/Edge blue — distinct enough from CEF's Chromium blue to
-        // tell the two apart at a glance despite both being Blink under
-        // the hood.
-        ViewKind::Webview2 => egui::Color32::from_rgb(0, 120, 212),
-    }
+    kind.desc().color
 }
 
 /// A small filled circle identifying a tab's engine at a glance — used
@@ -152,7 +140,7 @@ pub(crate) fn view_dot(ui: &mut egui::Ui, kind: ViewKind, diameter: f32) {
 /// verdict on the upstream project -- "Experimental" for Servo is about
 /// *this app's own* software-rendering-only integration and Servo's
 /// still-incomplete standards coverage, not a claim about Servo itself.
-/// Ordered `Tier::One` first for `view_picker_order` below.
+/// Ordered `Recommended` first.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum ViewTier {
     Recommended,
@@ -182,66 +170,6 @@ impl ViewTier {
     }
 }
 
-pub(crate) fn view_tier(kind: ViewKind) -> ViewTier {
-    match kind {
-        ViewKind::Cef | ViewKind::Webview2 => ViewTier::Recommended,
-        ViewKind::Servo => ViewTier::Experimental,
-        ViewKind::Webkit => ViewTier::Limited,
-    }
-}
-
-/// Short, specific claims only -- see `view_cons` for the matching
-/// tradeoff each one of these doesn't mention.
-pub(crate) fn view_pros(kind: ViewKind) -> &'static [&'static str] {
-    match kind {
-        ViewKind::Cef => &[
-            "Full Chromium/Blink compatibility -- broadest real-world site support of the four",
-            "Mature, widely embedded elsewhere -- not this app's own experiment",
-        ],
-        ViewKind::Webview2 => &[
-            "Also Blink-based -- same site compatibility as CEF",
-            "Uses the OS's own Edge runtime -- no separate browser binary for this app to ship or update",
-        ],
-        ViewKind::Servo => &[
-            "Modern, from-scratch Rust engine -- same language as this app itself",
-            "No legacy multi-decade codebase to work around, unlike the other three",
-        ],
-        ViewKind::Webkit => &[
-            "The only non-Blink, non-Servo engine here -- real engine diversity for cross-engine testing",
-            "Catches Safari/WebKit-specific site behavior the other three can't show you",
-        ],
-    }
-}
-
-/// Matching tradeoff for each `view_pros` claim -- specific to how this
-/// app integrates each engine today, not a permanent verdict (Servo's own
-/// software-rendering limitation here, for instance, is this app's current
-/// `SoftwareRenderingContext` choice, not something inherent to Servo).
-pub(crate) fn view_cons(kind: ViewKind) -> &'static [&'static str] {
-    match kind {
-        ViewKind::Cef => &["Heaviest process footprint of the four"],
-        ViewKind::Webview2 => &[
-            "Requires the WebView2 Runtime to be installed (usually already is, on Windows 10 1803+/11)",
-            "Tied to whatever Edge version is installed system-wide, not pinned by this app",
-        ],
-        ViewKind::Servo => &[
-            "Runs via software (CPU) rendering only in this app today -- slower than the other three",
-            "Younger engine -- some sites may render incorrectly or not at all yet",
-        ],
-        ViewKind::Webkit => &[
-            "No native Windows WebKit exists -- runs inside a WSL2 Ubuntu VM, relayed over TCP \
-             (no shared memory, higher latency)",
-            "Slowest to start (a cold WSL2 boot can take up to 45s); needs WSL2 + Ubuntu + several Linux \
-             packages preinstalled",
-        ],
-    }
-}
-
-/// Display order for the engine picker: best-supported first, so a first-
-/// time chooser sees the safe defaults before the tradeoffs.
-pub(crate) const VIEW_PICKER_ORDER: [ViewKind; 4] =
-    [ViewKind::Cef, ViewKind::Webview2, ViewKind::Servo, ViewKind::Webkit];
-
 /// One engine's own card inside `build_view_picker_popup` -- name, color
 /// dot, tier badge, then its pros/cons side by side. Returns whether this
 /// card's response (the whole card is the hit target, not just a button
@@ -268,18 +196,18 @@ pub(crate) fn draw_view_card(
                 if is_selected {
                     ui.label(egui_phosphor::light::CHECK_CIRCLE);
                 }
-                let tier = view_tier(kind);
+                let tier = kind.desc().tier;
                 ui.label(egui::RichText::new(tier.label()).small().color(if dim { TEXT_WEAK } else { tier.color() }));
             });
             if *state != ViewStatus::Installed {
                 view_status_line(ui, state);
             }
             ui.add_space(4.0);
-            for pro in view_pros(kind) {
+            for pro in kind.desc().pros {
                 let text = egui::RichText::new(format!("+ {pro}")).small();
                 ui.label(if dim { text.color(TEXT_WEAK) } else { text });
             }
-            for con in view_cons(kind) {
+            for con in kind.desc().cons {
                 ui.label(egui::RichText::new(format!("\u{2212} {con}")).small().color(TEXT_WEAK));
             }
         });
@@ -342,9 +270,9 @@ pub(crate) fn build_view_picker_popup(
                     let usable = |kind: ViewKind| !matches!(state_of(kind), ViewStatus::Unavailable(_));
                     let focus_on = selected
                         .filter(|kind| usable(*kind))
-                        .or_else(|| VIEW_PICKER_ORDER.into_iter().find(|kind| usable(*kind)))
-                        .unwrap_or(VIEW_PICKER_ORDER[0]);
-                    for (i, kind) in VIEW_PICKER_ORDER.into_iter().enumerate() {
+                        .or_else(|| ViewKind::picker_order().into_iter().find(|kind| usable(*kind)))
+                        .unwrap_or(ViewKind::picker_order()[0]);
+                    for (i, kind) in ViewKind::picker_order().into_iter().enumerate() {
                         if i > 0 {
                             ui.add_space(6.0);
                         }
@@ -467,8 +395,8 @@ mod tests {
     fn arrows_and_enter_pick_a_view_from_the_keyboard() {
         let ctx = egui::Context::default();
         apply_style(&ctx);
-        let selected = VIEW_PICKER_ORDER[1];
-        let next = VIEW_PICKER_ORDER[2];
+        let selected = ViewKind::picker_order()[1];
+        let next = ViewKind::picker_order()[2];
         for _ in 0..3 {
             assert_eq!(frame(&ctx, selected, vec![]), None);
         }
@@ -482,7 +410,7 @@ mod tests {
     fn the_keyboard_skips_unavailable_cards() {
         let ctx = egui::Context::default();
         apply_style(&ctx);
-        let skipped = VIEW_PICKER_ORDER[2];
+        let skipped = ViewKind::picker_order()[2];
         let state_of = |kind: ViewKind| {
             if kind == skipped {
                 ViewStatus::Unavailable("needs Windows".into())
@@ -490,7 +418,7 @@ mod tests {
                 ViewStatus::Installed
             }
         };
-        let (selected, after) = (VIEW_PICKER_ORDER[1], VIEW_PICKER_ORDER[3]);
+        let (selected, after) = (ViewKind::picker_order()[1], ViewKind::picker_order()[3]);
         for _ in 0..3 {
             assert_eq!(frame_with(&ctx, selected, vec![], &state_of), None);
         }
@@ -503,7 +431,10 @@ mod tests {
         for _ in 0..3 {
             frame_with(&ctx, skipped, vec![], &state_of);
         }
-        assert_eq!(frame_with(&ctx, skipped, vec![key(egui::Key::Enter)], &state_of), Some(VIEW_PICKER_ORDER[0]));
+        assert_eq!(
+            frame_with(&ctx, skipped, vec![key(egui::Key::Enter)], &state_of),
+            Some(ViewKind::picker_order()[0])
+        );
     }
 
     #[test]
@@ -522,7 +453,7 @@ mod tests {
     fn tab_keeps_focus_on_the_card() {
         let ctx = egui::Context::default();
         apply_style(&ctx);
-        let selected = VIEW_PICKER_ORDER[1];
+        let selected = ViewKind::picker_order()[1];
         for _ in 0..3 {
             frame(&ctx, selected, vec![]);
         }

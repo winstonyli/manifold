@@ -1003,3 +1003,13 @@ fn a_writer_stuck_on_a_local_pipe_ends_when_the_view_end_closes() {
     drop(view_end);
     assert!(writer.wait_finished(Duration::from_secs(5)), "the blocked write failed once the engine end closed");
 }
+
+#[test]
+fn picker_order_is_every_engine_once_by_rank() {
+    let order = ViewKind::picker_order();
+    let mut sorted = order;
+    sorted.sort_by_key(|kind| kind.desc().code);
+    assert_eq!(sorted, ViewKind::ALL, "a permutation of ALL");
+    assert!(order.windows(2).all(|pair| pair[0].desc().picker_rank < pair[1].desc().picker_rank), "ranks are distinct");
+    assert_eq!(order[0], ViewKind::Cef, "best-supported first");
+}

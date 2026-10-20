@@ -1842,7 +1842,7 @@ impl App {
     /// `export_state`'s `view_kinds`: each engine's name mapped to `{state, disk}`, the label the lists show
     /// (`view_status_label`) and what the disk holds of its downloadable parts (`on_disk_text`).
     fn view_kinds_state(&self) -> serde_json::Value {
-        let view_kinds = crate::view_info::VIEW_PICKER_ORDER.iter().map(|&kind| {
+        let view_kinds = ViewKind::picker_order().into_iter().map(|kind| {
             let state = crate::view_info::view_status_label(&self.view_status(kind)).0;
             let disk = crate::view_info::on_disk_text(kind, crate::process_manager::view_on_disk(kind));
             (kind.desc().name.to_string(), serde_json::json!({"state": state, "disk": disk}))

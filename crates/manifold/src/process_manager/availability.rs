@@ -34,24 +34,20 @@ pub(super) fn sibling_binary(name: &str) -> PathBuf {
 /// than bundled next to `manifold.exe`. (A downloaded CEF host is never run
 /// from there: `spawn_tab` copies it beside the runtime's `libcef.dll`.)
 pub(super) fn view_binary_path(kind: ViewKind) -> PathBuf {
-    let file_name = crate::cef_platform::PLATFORM.host_exe(kind.desc().binary);
-    let sibling = match kind {
-        ViewKind::Servo => sibling_binary(kind.desc().binary),
-        ViewKind::Cef => cef_sibling_exe(),
-        // WebView2Loader is a single small loader (statically linked by
-        // the `webview2-com` crate, or a lone DLL at worst) — no ANGLE-style
-        // filename collision with Servo/CEF's runtime files, so no isolation
-        // directory needed like CEF's `cef-runtime/` above.
-        ViewKind::Webview2 => sibling_binary(kind.desc().binary),
-        ViewKind::Webkit => unreachable!("Webkit is spawned via wsl.exe, not a local path"),
-    };
+    let desc = kind.desc();
+    assert!(desc.spawn_mode == SpawnMode::Local, "{} is spawned via wsl.exe, not a local path", desc.label);
+    let file_name = crate::cef_platform::PLATFORM.host_exe(desc.binary);
+    // An engine with a runtime keeps its host in that runtime's `cef-runtime/`. The others are a lone exe (WebView2's
+    // loader is statically linked by the `webview2-com` crate, or a lone DLL at worst): no ANGLE-style filename
+    // collision with a runtime's files, so no isolation directory.
+    let sibling = if desc.runtime { cef_sibling_exe() } else { sibling_binary(desc.binary) };
     if sibling.exists() {
         return sibling;
     }
     let Some(mut fallback) = view_hosts_dir() else { return sibling };
-    if kind == ViewKind::Webview2 {
+    if let HostSource::Embedded(host) = desc.source {
         // Where `spawn_tab` extracts the embedded host (`Embedded::ensure`), in a folder of its own.
-        return crate::embedded_host::Embedded::Webview2.host_path(&fallback);
+        return host.host_path(&fallback);
     }
     fallback.push(file_name);
     fallback
@@ -78,11 +74,15 @@ pub(super) fn cef_sibling_exe() -> PathBuf {
 /// CEF also has the `cef-runtime/` copy a dev build keeps. A sibling host makes the host part Ready whatever the
 /// pin table says.
 pub(super) fn sibling_host(kind: ViewKind) -> Option<PathBuf> {
-    let flat = Some(sibling_binary(kind.desc().binary)).filter(|path| path.exists());
-    match kind {
-        ViewKind::Cef => flat.or_else(|| Some(cef_sibling_exe()).filter(|path| path.exists())),
-        ViewKind::Servo | ViewKind::Webview2 => flat,
-        ViewKind::Webkit => built_webkit_host(&current_exe_dir()),
+    let desc = kind.desc();
+    if desc.spawn_mode == SpawnMode::Wsl {
+        return built_webkit_host(&current_exe_dir());
+    }
+    let flat = Some(sibling_binary(desc.binary)).filter(|path| path.exists());
+    if desc.runtime {
+        flat.or_else(|| Some(cef_sibling_exe()).filter(|path| path.exists()))
+    } else {
+        flat
     }
 }
 
@@ -225,20 +225,18 @@ pub(crate) fn view_availability(
 /// WebView2 is Windows-only. WebKit runs through WSL on Windows and is hosted natively on Linux; macOS has
 /// no WebKit host wired yet. (WSL is not probed: on Windows it is only found missing when a tab spawns.)
 pub(super) fn platform_unavailable_reason(os: &str, kind: ViewKind) -> Option<&'static str> {
-    match kind {
-        ViewKind::Webview2 => (os != "windows").then_some("needs Windows"),
-        ViewKind::Webkit => (!matches!(os, "windows" | "linux")).then_some("needs Windows or Linux"),
-        // Servo's host builds wherever manifold does; CEF's platforms are its pin's (`plan_for`).
-        ViewKind::Servo | ViewKind::Cef => None,
-    }
+    // An engine with no `only_on` runs wherever manifold does (Servo's host builds there; CEF's platforms are its
+    // pin's, `plan_for`).
+    let desc = kind.desc();
+    (!desc.only_on.is_empty() && !desc.only_on.contains(&os)).then_some(desc.only_on_reason)
 }
 
-/// The engine a fresh profile starts new tabs in on `os`: the first of WebView2, Servo that the platform
-/// can run. CEF is never the default (an opt-in download) and WebKit needs setup.
+/// The engine a fresh profile starts new tabs in on `os`: the first in picker order that may start one
+/// (`ViewDesc::starting_default`) and that the platform can run.
 pub(crate) fn platform_default_view_kind(os: &str) -> ViewKind {
-    [ViewKind::Webview2, ViewKind::Servo]
+    ViewKind::picker_order()
         .into_iter()
-        .find(|kind| platform_unavailable_reason(os, *kind).is_none())
+        .find(|kind| kind.desc().starting_default && platform_unavailable_reason(os, *kind).is_none())
         .unwrap_or(ViewKind::Servo)
 }
 

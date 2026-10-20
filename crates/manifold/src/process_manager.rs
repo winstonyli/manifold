@@ -35,15 +35,25 @@ pub enum ViewKind {
 pub(crate) enum HostSource {
     /// Carried inside `manifold.exe` when the build embeds it (`MANIFOLD_WEBVIEW2_HOST`, see `embedded_host`) and
     /// extracted at spawn when no sibling host is there. A build that embeds nothing finds it like a sibling.
-    Embedded,
+    Embedded(embedded_host::Embedded),
     /// Pinned in `host_pin` and installed on demand into `engine-hosts/` (`view_install`), unless a sibling
     /// host (a dev tree's, or a Linux package's) is already there.
     Download,
 }
 
-/// What each engine is: the one place its name, store code, binary, label,
-/// pixel order and jar use live. `desc` is an exhaustive `match`, so a new
-/// `ViewKind` fails to compile until it has a row here.
+/// How a host process is started.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SpawnMode {
+    /// A program on this machine, with a pipe pair and shared-memory frames (`spawn_tab`).
+    Local,
+    /// A Linux program run through `wsl.exe` and reached over TCP (`spawn_webkit_tab`): no frame file, no cache dir,
+    /// and a force-killed relay would orphan its Linux process tree, so it exits on its own (`reap_host`).
+    Wsl,
+}
+
+/// What each engine is: the one place everything that differs between engines lives -- name, store code, binary,
+/// label, pixel order, jar use, how it spawns and where it runs, how it is installed, and how the picker shows it.
+/// `desc` is an exhaustive `match`, so a new `ViewKind` fails to compile until it has a row here.
 pub(crate) struct ViewDesc {
     /// The string `settings.json`, session exports and the `view_kind` store field hold.
     pub(crate) name: &'static str,
@@ -64,10 +74,47 @@ pub(crate) struct ViewDesc {
     /// toasts instead of opening a find bar that never gets a result.
     pub(crate) find: bool,
     pub(crate) source: HostSource,
+    pub(crate) spawn_mode: SpawnMode,
+    /// Also needs a runtime archive besides its host exe (`cef-runtime/`), and takes a bring-your-own runtime
+    /// directory: only CEF's, the one component that is an archive (`Pin`, `unpack`) rather than single pinned files.
+    pub(crate) runtime: bool,
+    /// Runs only on these `std::env::consts::OS` values (empty: anywhere); `only_on_reason` is the refusal's text.
+    pub(crate) only_on: &'static [&'static str],
+    pub(crate) only_on_reason: &'static str,
+    /// May be a fresh profile's starting engine (`platform_default_view_kind`): not an opt-in download, nor one
+    /// that needs setup first.
+    pub(crate) starting_default: bool,
+    /// System libraries the host needs that this machine lacks, so the download dialog can warn before a host that
+    /// cannot start. Empty when none are needed, all are present, or that cannot be read.
+    pub(crate) missing_system_libs: fn() -> Vec<&'static str>,
+    /// What the engine's download does not include, appended to the download dialog's detail (empty: nothing).
+    pub(crate) download_note: &'static str,
+    /// Chooses the exe to run and takes what the spawn needs (cache folder, profile slot, env), before `spawn_tab`
+    /// starts a `Local` host.
+    pub(crate) prepare: fn(ViewKind, Option<&Path>) -> Result<Prepared, SpawnError>,
+    /// A color per engine (loosely nodding to each project's own branding), the small identifying dot wherever a
+    /// tab's engine matters at a glance. Separate from `ACCENT` ("focused"), a different axis of meaning.
+    pub(crate) color: egui::Color32,
+    /// Where the engine stands *in this app* (not a verdict on the upstream project).
+    pub(crate) tier: crate::view_info::ViewTier,
+    /// Short, specific claims only; each `cons` entry is the tradeoff the pros don't mention. Specific to how this
+    /// app integrates the engine today, not a permanent verdict.
+    pub(crate) pros: &'static [&'static str],
+    pub(crate) cons: &'static [&'static str],
+    /// Position in the engine picker, lowest first: best-supported first, so a first-time chooser sees the safe
+    /// defaults before the tradeoffs.
+    pub(crate) picker_rank: u8,
 }
 
 impl ViewKind {
     pub(crate) const ALL: [ViewKind; 4] = [ViewKind::Servo, ViewKind::Cef, ViewKind::Webkit, ViewKind::Webview2];
+
+    /// `ALL` in picker order (`ViewDesc::picker_rank`).
+    pub(crate) fn picker_order() -> [ViewKind; 4] {
+        let mut kinds = Self::ALL;
+        kinds.sort_by_key(|kind| kind.desc().picker_rank);
+        kinds
+    }
 
     pub(crate) fn desc(self) -> ViewDesc {
         match self {
@@ -81,6 +128,25 @@ impl ViewKind {
                 devtools: false,
                 find: false,
                 source: HostSource::Download,
+                spawn_mode: SpawnMode::Local,
+                runtime: false,
+                only_on: &[],
+                only_on_reason: "",
+                starting_default: true,
+                missing_system_libs: crate::view_install::missing_vc_runtime,
+                download_note: "",
+                prepare: prepare_plain,
+                color: egui::Color32::from_rgb(255, 138, 80),
+                tier: crate::view_info::ViewTier::Experimental,
+                pros: &[
+                    "Modern, from-scratch Rust engine -- same language as this app itself",
+                    "No legacy multi-decade codebase to work around, unlike the other three",
+                ],
+                cons: &[
+                    "Runs via software (CPU) rendering only in this app today -- slower than the other three",
+                    "Younger engine -- some sites may render incorrectly or not at all yet",
+                ],
+                picker_rank: 2,
             },
             ViewKind::Cef => ViewDesc {
                 name: "cef",
@@ -92,6 +158,22 @@ impl ViewKind {
                 devtools: true,
                 find: true,
                 source: HostSource::Download,
+                spawn_mode: SpawnMode::Local,
+                runtime: true,
+                only_on: &[],
+                only_on_reason: "",
+                starting_default: false,
+                missing_system_libs: || crate::cef_platform::PLATFORM.missing_system_libs(),
+                download_note: "",
+                prepare: prepare_cef,
+                color: egui::Color32::from_rgb(66, 133, 244),
+                tier: crate::view_info::ViewTier::Recommended,
+                pros: &[
+                    "Full Chromium/Blink compatibility -- broadest real-world site support of the four",
+                    "Mature, widely embedded elsewhere -- not this app's own experiment",
+                ],
+                cons: &["Heaviest process footprint of the four"],
+                picker_rank: 0,
             },
             ViewKind::Webkit => ViewDesc {
                 name: "webkit",
@@ -103,6 +185,28 @@ impl ViewKind {
                 devtools: false,
                 find: true,
                 source: HostSource::Download,
+                spawn_mode: SpawnMode::Wsl,
+                runtime: false,
+                only_on: &["windows", "linux"],
+                only_on_reason: "needs Windows or Linux",
+                starting_default: false,
+                missing_system_libs: Vec::new,
+                download_note: "
+Not included: WebKit runs inside WSL, which needs a distro named Ubuntu with xvfb-run and the WebKitGTK libraries installed.",
+                prepare: prepare_plain,
+                color: egui::Color32::from_rgb(26, 188, 156),
+                tier: crate::view_info::ViewTier::Limited,
+                pros: &[
+                    "The only non-Blink, non-Servo engine here -- real engine diversity for cross-engine testing",
+                    "Catches Safari/WebKit-specific site behavior the other three can't show you",
+                ],
+                cons: &[
+                    "No native Windows WebKit exists -- runs inside a WSL2 Ubuntu VM, relayed over TCP \
+                     (no shared memory, higher latency)",
+                    "Slowest to start (a cold WSL2 boot can take up to 45s); needs WSL2 + Ubuntu + several Linux \
+                     packages preinstalled",
+                ],
+                picker_rank: 3,
             },
             ViewKind::Webview2 => ViewDesc {
                 name: "webview2",
@@ -113,7 +217,28 @@ impl ViewKind {
                 jar: true,
                 devtools: true,
                 find: true,
-                source: HostSource::Embedded,
+                source: HostSource::Embedded(embedded_host::Embedded::Webview2),
+                spawn_mode: SpawnMode::Local,
+                runtime: false,
+                only_on: &["windows"],
+                only_on_reason: "needs Windows",
+                starting_default: true,
+                missing_system_libs: Vec::new,
+                download_note: "",
+                prepare: prepare_webview2,
+                // Windows/Edge blue -- distinct enough from CEF's Chromium blue to tell the two apart at a glance
+                // despite both being Blink under the hood.
+                color: egui::Color32::from_rgb(0, 120, 212),
+                tier: crate::view_info::ViewTier::Recommended,
+                pros: &[
+                    "Also Blink-based -- same site compatibility as CEF",
+                    "Uses the OS's own Edge runtime -- no separate browser binary for this app to ship or update",
+                ],
+                cons: &[
+                    "Requires the WebView2 Runtime to be installed (usually already is, on Windows 10 1803+/11)",
+                    "Tied to whatever Edge version is installed system-wide, not pinned by this app",
+                ],
+                picker_rank: 1,
             },
         }
     }
@@ -293,16 +418,17 @@ impl Drop for ViewTab {
         self.writer.shutdown();
         let Some(child) = self.child.take() else { return };
         let (cache_dir, slot) = (self.cache_dir.take(), self.profile_slot.take());
-        if self.kind == ViewKind::Webkit {
-            // Off the UI thread: a WebKit host gets up to 3 s to exit on its own,
+        if self.kind.desc().spawn_mode == SpawnMode::Wsl {
+            // Off the UI thread: a WSL host gets up to 3 s to exit on its own,
             // and dropping a session of N of them used to freeze the window for 3N s.
             // It has no frame file (frames arrive over TCP) and no cache dir.
             // A writer stuck on its socket stays blocked until the Linux side dies: closing the
             // socket on this side does not unblock a send on Windows (measured, wave 3b).
-            match std::thread::Builder::new().spawn(move || reap_host(ViewKind::Webkit, child)) {
+            let kind = self.kind;
+            match std::thread::Builder::new().spawn(move || reap_host(kind, child)) {
                 Ok(reaper) => CACHE_REMOVALS.lock().unwrap_or_else(|e| e.into_inner()).push(reaper),
                 // Out of threads: the host got `Shutdown` and exits on its own; this is a drop, it cannot panic.
-                Err(e) => eprintln!("couldn't start the WebKit host reaper: {e}"),
+                Err(e) => eprintln!("couldn't start the {} host reaper: {e}", kind.desc().label),
             }
             return;
         }
@@ -329,7 +455,7 @@ impl Drop for ViewTab {
 
 /// Waits for an engine host to exit after `Shutdown`, killing it if needed.
 fn reap_host(kind: ViewKind, mut child: Child) {
-    if kind == ViewKind::Webkit {
+    if kind.desc().spawn_mode == SpawnMode::Wsl {
         // For the WSL2-hosted case, `child` is only the Windows-side
         // `wsl.exe` relay — force-killing it immediately (the
         // local-engine path below) does NOT terminate the actual
@@ -758,6 +884,55 @@ fn spawn_reader_thread<S: std::io::Read + std::io::Write + Send + 'static>(
 /// merely slow to start.
 const LOCAL_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// What `ViewDesc::prepare` took for one `Local` host: the exe to run, the environment its engine reads, the folder
+/// the tab deletes when it goes (`ViewTab::cache_dir`) and the WebView2 profile slot freed after that.
+pub(crate) struct Prepared {
+    exe: PathBuf,
+    env: Vec<(&'static str, std::ffi::OsString)>,
+    cache_dir: Option<PathBuf>,
+    profile_slot: Option<usize>,
+    /// The exe was just extracted from the copy embedded in `manifold.exe` (`embedded_host::spawn_fresh`).
+    fresh: bool,
+}
+
+/// An engine that runs as found: Servo's host.
+fn prepare_plain(kind: ViewKind, _custom: Option<&Path>) -> Result<Prepared, SpawnError> {
+    Ok(Prepared { exe: view_binary_path(kind), env: Vec::new(), cache_dir: None, profile_slot: None, fresh: false })
+}
+
+/// CEF: the host runs from a copy beside the runtime it loads (`host_home`), and each host gets its own throwaway
+/// cache dir, so CEF tabs don't share cookies or logins and keep none across a restart (see manifold-engine-cef's
+/// main.rs for why they can't share one).
+fn prepare_cef(kind: ViewKind, custom: Option<&Path>) -> Result<Prepared, SpawnError> {
+    let exe = match host_home(custom, cef_sibling_exe().exists(), view_runtime_dir(kind)) {
+        Some(dir) => ensure_host_copy(&dir, &shipped_cef_host())?,
+        None => view_binary_path(kind),
+    };
+    let n = CEF_CACHE_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let cache_dir = cef_cache_root().join(format!("{}-{n}", std::process::id()));
+    let env = vec![("VIEW_CACHE_DIR", cache_dir.clone().into_os_string())];
+    Ok(Prepared { exe, env, cache_dir: Some(cache_dir), profile_slot: None, fresh: false })
+}
+
+/// WebView2: an embedded host is put in place before its path is used (the profile slot is keyed on it). A sibling
+/// host wins as it does everywhere else; a build that embeds nothing extracts nothing. Each host gets a profile name
+/// of its own among the live hosts, reused once a host is gone.
+fn prepare_webview2(kind: ViewKind, _custom: Option<&Path>) -> Result<Prepared, SpawnError> {
+    let extracted = match (view_hosts_dir(), kind.desc().source) {
+        (Some(dir), HostSource::Embedded(host)) if sibling_host(kind).is_none() => host.ensure(&dir)?,
+        _ => None,
+    };
+    let exe = view_binary_path(kind);
+    let slot = claim_webview2_slot(&exe);
+    Ok(Prepared {
+        env: vec![("VIEW_WEBVIEW2_PROFILE", webview2_profile_name(slot).into())],
+        cache_dir: Some(webview2_profile_dir(&exe, slot)),
+        profile_slot: Some(slot),
+        fresh: extracted.is_some(),
+        exe,
+    })
+}
+
 /// Spawns an view-host for `kind`, wires up its control channel(s), and
 /// returns a handle the process manager (and the tab-swap logic) can drive.
 ///
@@ -778,15 +953,16 @@ pub fn spawn_tab(
     jar_json: &dyn Fn() -> String,
     wake: view_io::Wake,
 ) -> Result<ViewTab, SpawnError> {
+    let desc = kind.desc();
     if let Some(reason) = unsupported_on(std::env::consts::OS, kind) {
         return Err(SpawnError::Io(std::io::Error::new(std::io::ErrorKind::Unsupported, reason)));
     }
-    if kind == ViewKind::Webkit {
+    if desc.spawn_mode == SpawnMode::Wsl {
         if let Some(reason) = webkit_host_missing(std::env::consts::OS) {
             return Err(SpawnError::Io(std::io::Error::new(std::io::ErrorKind::Unsupported, reason)));
         }
     }
-    let custom_cef = custom_cef.filter(|_| kind == ViewKind::Cef);
+    let custom_cef = custom_cef.filter(|_| desc.runtime);
     let on_disk = view_on_disk_fresh(kind);
     check_spawnable(kind, &plan_for(kind), on_disk, custom_cef)?;
     // A host that came from a download, not from beside manifold.exe, is hashed again here: the folder it sits in is
@@ -799,17 +975,9 @@ pub fn spawn_tab(
             })?;
         }
     }
-    if kind == ViewKind::Webkit {
+    if desc.spawn_mode == SpawnMode::Wsl {
         return Ok(spawn_webkit_tab(tab_id, initial_url, wake)?);
     }
-    // An embedded WebView2 host is put in place before its path is used (the profile slot is keyed on it). A sibling
-    // host wins as it does everywhere else; a build that embeds nothing returns `None` and touches no file.
-    let extracted_host = match view_hosts_dir() {
-        Some(dir) if kind == ViewKind::Webview2 && sibling_host(kind).is_none() => {
-            embedded_host::Embedded::Webview2.ensure(&dir)?
-        }
-        _ => None,
-    };
 
     // Normally the socket/shared-memory id is just tab_id. But a prior run
     // that crashed (rather than exiting cleanly) can leave a stale
@@ -829,20 +997,9 @@ pub fn spawn_tab(
         }
     };
     let (stdout_file, stderr_file) = per_tab_log_files(tab_id)?;
-    let host_exe = match (kind, host_home(custom_cef, cef_sibling_exe().exists(), view_runtime_dir(kind))) {
-        (ViewKind::Cef, Some(dir)) => ensure_host_copy(&dir, &shipped_cef_host())?,
-        _ => view_binary_path(kind),
-    };
+    let prepared = (desc.prepare)(kind, custom_cef)?;
 
-    // Each CEF view-host gets its own throwaway cache dir, so CEF tabs
-    // don't share cookies or logins and keep none across a restart (see
-    // manifold-engine-cef's main.rs for why they can't share one).
-    let cache_dir = (kind == ViewKind::Cef).then(|| {
-        let n = CEF_CACHE_COUNTER.fetch_add(1, Ordering::Relaxed);
-        cef_cache_root().join(format!("{}-{n}", std::process::id()))
-    });
-
-    let mut command = Command::new(&host_exe);
+    let mut command = Command::new(&prepared.exe);
     command
         .env("VIEW_TAB_ID", tab_id)
         .env("VIEW_SOCKET_ID", &socket_id)
@@ -852,29 +1009,24 @@ pub fn spawn_tab(
         .stdout(stdout_file)
         .stderr(stderr_file);
     // Jar engines wait for the jar (`SetCookies`) before their first navigation.
-    if kind.desc().jar {
+    if desc.jar {
         command.env("VIEW_AWAIT_COOKIES", "1");
     }
-    if let Some(dir) = &cache_dir {
-        command.env("VIEW_CACHE_DIR", dir);
+    for (key, value) in &prepared.env {
+        command.env(key, value);
     }
-    // Each WebView2 host gets a profile name of its own among the live hosts, reused once a host is gone.
-    let profile_slot = (kind == ViewKind::Webview2).then(|| claim_webview2_slot(&host_exe));
-    if let Some(n) = profile_slot {
-        command.env("VIEW_WEBVIEW2_PROFILE", webview2_profile_name(n));
-    }
-    let spawned = if extracted_host.is_some() { embedded_host::spawn_fresh(&mut command) } else { command.spawn() };
+    let spawned = if prepared.fresh { embedded_host::spawn_fresh(&mut command) } else { command.spawn() };
     let mut child = match spawned {
         Ok(child) => child,
         Err(e) => {
-            if let Some(n) = profile_slot {
+            if let Some(n) = prepared.profile_slot {
                 free_webview2_slot(n);
             }
             return Err(e.into());
         }
     };
     assign_to_view_job(&child);
-    let cache_dir = cache_dir.or_else(|| profile_slot.map(|n| webview2_profile_dir(&host_exe, n)));
+    let Prepared { cache_dir, profile_slot, .. } = prepared;
 
     // The child connects to both sockets right after spawning — bounded by
     // LOCAL_CONNECT_TIMEOUT rather than an unbounded accept() (see its own
@@ -905,7 +1057,7 @@ pub fn spawn_tab(
     let frame_map = view_io::FrameMap::default();
     let tab =
         ViewTab { kind, socket_id, writer, events_rx, frame, frame_map, child: Some(child), cache_dir, profile_slot };
-    if kind.desc().jar {
+    if desc.jar {
         // Serialised now that the host is connected, so cookies merged while it started are in the seed.
         tab.send(&HostToView::SetCookies(jar_json()));
     }

@@ -11,7 +11,7 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use crate::host_pin::Component as HostFile;
-use crate::process_manager::{HostSource, ViewKind};
+use crate::process_manager::{HostSource, SpawnMode, ViewKind};
 
 use manifold_view_protocol::transport::to_hex;
 use sha1::Sha1;
@@ -128,10 +128,9 @@ pub(crate) fn downloads(kind: ViewKind) -> bool {
     kind.desc().source == HostSource::Download
 }
 
-/// Whether `kind` also needs a runtime archive besides its host exe: only CEF's, the one component that is an
-/// archive (`Pin`, `unpack`, `cef-runtime/`) rather than single pinned files.
+/// Whether `kind` also needs a runtime archive besides its host exe (`ViewDesc::runtime`).
 pub(crate) fn has_runtime(kind: ViewKind) -> bool {
-    kind == ViewKind::Cef
+    kind.desc().runtime
 }
 
 /// The Visual C++ runtime DLLs Servo's Windows host imports (its mozjs and ANGLE are built against the dynamic CRT, so
@@ -143,13 +142,15 @@ fn missing_files(dir: &Path, names: &[&'static str]) -> Vec<&'static str> {
     names.iter().copied().filter(|name| !dir.join(name).is_file()).collect()
 }
 
-/// System libraries `kind`'s host needs that the system lacks, so the download dialog can warn before a host that
-/// cannot start: CEF's NSS/NSPR on Linux, the Visual C++ runtime for Servo on Windows. Empty when none are needed,
-/// when all are present, or when that cannot be read.
+/// System libraries `kind`'s host needs that the system lacks (`ViewDesc::missing_system_libs`): CEF's NSS/NSPR on
+/// Linux, the Visual C++ runtime for Servo on Windows.
 pub(crate) fn missing_system_libs(kind: ViewKind) -> Vec<&'static str> {
-    if has_runtime(kind) {
-        crate::cef_platform::PLATFORM.missing_system_libs()
-    } else if cfg!(windows) && kind == ViewKind::Servo {
+    (kind.desc().missing_system_libs)()
+}
+
+/// Servo's: the Visual C++ runtime DLLs its Windows host imports that System32 lacks. Nothing elsewhere.
+pub(crate) fn missing_vc_runtime() -> Vec<&'static str> {
+    if cfg!(windows) {
         std::env::var_os("SystemRoot")
             .map_or_else(Vec::new, |root| missing_files(&Path::new(&root).join("System32"), SERVO_VC_RUNTIME))
     } else {
@@ -157,10 +158,10 @@ pub(crate) fn missing_system_libs(kind: ViewKind) -> Vec<&'static str> {
     }
 }
 
-/// `host_pin`'s name for the platform `kind`'s host runs on: this build's own, except WebKit, whose host is a Linux
-/// ELF even when manifold runs on Windows (WSL runs it).
+/// `host_pin`'s name for the platform `kind`'s host runs on: this build's own, except a WSL-hosted engine's, a Linux
+/// ELF even when manifold runs on Windows.
 pub(crate) fn host_platform(kind: ViewKind) -> &'static str {
-    if kind == ViewKind::Webkit || !cfg!(windows) {
+    if kind.desc().spawn_mode == SpawnMode::Wsl || !cfg!(windows) {
         "linux-x64"
     } else {
         "windows-x64"
@@ -1033,7 +1034,7 @@ impl crate::App {
             .filter(|job| !job.cancelled)
             .map(|job| (job.progress.load(Ordering::Relaxed), job.total));
         let failed = self.view_ui.view_failures.get(&kind).map(String::as_str);
-        let custom = (kind == ViewKind::Cef).then(|| self.custom_cef_dir()).flatten();
+        let custom = has_runtime(kind).then(|| self.custom_cef_dir()).flatten();
         crate::process_manager::view_availability(kind, plan, on_disk, installing, failed, custom.as_deref())
     }
 

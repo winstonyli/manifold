@@ -274,7 +274,7 @@ impl App {
     pub(crate) fn settings_view_kinds_section(&mut self, ui: &mut egui::Ui) {
         use crate::view_install::ViewStatus;
         section_start(ui, "Engines");
-        for kind in VIEW_PICKER_ORDER {
+        for kind in ViewKind::picker_order() {
             let state = self.view_status(kind);
             ui.add_space(4.0);
             ui.horizontal(|ui| {

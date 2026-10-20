@@ -523,16 +523,10 @@ pub(crate) enum Confirm {
     Import(Box<crate::store::json::JsonDoc>),
 }
 
-/// What WebKit's download does not include: its host is a Linux program that runs inside WSL.
-const WEBKIT_PREREQUISITES: &str = "
-Not included: WebKit runs inside WSL, which needs a distro named Ubuntu with xvfb-run and the WebKitGTK libraries installed.";
-
 /// The download dialog's detail text, with a warning line when system libraries the host needs are missing.
 fn download_detail(kind: ViewKind, missing: &[&str]) -> String {
     let mut detail = "Downloaded once, checked against a pinned hash, then kept in your profile.".to_string();
-    if kind == ViewKind::Webkit {
-        detail.push_str(WEBKIT_PREREQUISITES);
-    }
+    detail.push_str(kind.desc().download_note);
     if !missing.is_empty() {
         let fix = if cfg!(windows) {
             "Install the Microsoft Visual C++ Redistributable (x64)"
@@ -633,7 +627,7 @@ impl App {
         let (rect, fade) = self.anchored_popup_fade(ui.ctx(), which, anchor)?;
         let open = self.menus.open_popup == Some(which);
         let states: Vec<(ViewKind, crate::view_install::ViewStatus)> =
-            VIEW_PICKER_ORDER.into_iter().map(|kind| (kind, self.view_status(kind))).collect();
+            ViewKind::picker_order().into_iter().map(|kind| (kind, self.view_status(kind))).collect();
         let state_of = |kind: ViewKind| {
             states
                 .iter()
@@ -2787,7 +2781,7 @@ mod view_picker_tests {
         theme::apply_fonts(&ctx);
         theme::apply_style(&ctx);
         let mut app = App { view_mode: ViewMode::Settings, ..App::default() };
-        let (first, reason) = (VIEW_PICKER_ORDER[0], "needs Windows");
+        let (first, reason) = (ViewKind::picker_order()[0], "needs Windows");
         // `build_ui` clears the per-frame state cache, so seed it inside each frame, past that clear.
         let frame = |app: &mut App, events: Vec<egui::Event>| {
             let input = egui::RawInput {
