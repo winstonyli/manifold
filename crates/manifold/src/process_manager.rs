@@ -15,6 +15,7 @@ use crate::view_install::{
     downloads, has_runtime, host_components, host_state, plan_for, runtime_state, verify_installed_host, OnDisk, Plan,
     RuntimeOnDisk, ViewStatus,
 };
+use manifold_view_protocol::host_env;
 use manifold_view_protocol::transport::{self, LocalTransport};
 use manifold_view_protocol::{HostToView, ViewToHost};
 
@@ -1002,15 +1003,15 @@ pub fn spawn_tab(
     let mut command = Command::new(&prepared.exe);
     command
         .env("VIEW_TAB_ID", tab_id)
-        .env("VIEW_SOCKET_ID", &socket_id)
-        .env("VIEW_INITIAL_URL", initial_url)
+        .env(host_env::ENV_SOCKET_ID, &socket_id)
+        .env(host_env::ENV_INITIAL_URL, initial_url)
         // A host never reads manifold's stdin (the debug-command pipe); `wsl.exe` would, and take commands from it.
         .stdin(Stdio::null())
         .stdout(stdout_file)
         .stderr(stderr_file);
     // Jar engines wait for the jar (`SetCookies`) before their first navigation.
     if desc.jar {
-        command.env("VIEW_AWAIT_COOKIES", "1");
+        command.env(host_env::ENV_AWAIT_COOKIES, "1");
     }
     for (key, value) in &prepared.env {
         command.env(key, value);

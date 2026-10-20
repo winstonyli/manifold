@@ -150,17 +150,8 @@ fn main() {
     // winit_minimal.rs, which does this before constructing anything else).
     rustls::crypto::aws_lc_rs::default_provider().install_default().expect("install rustls crypto provider");
 
-    // Env vars, not argv — matches manifold-engine-cef, whose argv must stay
-    // reserved for CEF's own command-line parsing. Kept consistent here too
-    // so manifold's process manager has one spawn convention for every
-    // view-host.
-    // VIEW_SOCKET_ID names our control pipes/shared memory — normally
-    // equal to VIEW_TAB_ID, but manifold may pass a different id if a
-    // stale view-host from a prior crashed run still held VIEW_TAB_ID's
-    // pipes (see process_manager::spawn_tab's fallback). Only this id
-    // matters here; we never need VIEW_TAB_ID itself.
-    let socket_id = std::env::var("VIEW_SOCKET_ID").expect("VIEW_SOCKET_ID env var required");
-    let initial_url = std::env::var("VIEW_INITIAL_URL").unwrap_or_else(|_| "https://example.com".to_string());
+    // Env vars, not argv, as for every view-host (`manifold_view_protocol::host_env`).
+    let manifold_view_protocol::HostEnv { socket_id, initial_url, .. } = manifold_view_protocol::HostEnv::from_env();
 
     // Two one-directional control sockets back to manifold (it already
     // created both listeners before spawning this process — see

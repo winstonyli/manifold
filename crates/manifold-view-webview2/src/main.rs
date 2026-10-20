@@ -56,8 +56,6 @@ const DEFAULT_HEIGHT: u32 = 768;
 const FRAME_INTERVAL: Duration = Duration::from_millis(33);
 /// How often the capture's D3D device is checked for removal (`Capture::device_lost`).
 const DEVICE_CHECK_INTERVAL: Duration = Duration::from_secs(1);
-/// How long a host started with `VIEW_AWAIT_COOKIES` waits for manifold's `SetCookies` before navigating.
-const COOKIE_SEED_WAIT: Duration = Duration::from_secs(5);
 
 fn main() {
     // Must happen before any window exists (`create_hidden_window` below is
@@ -138,8 +136,8 @@ fn main() {
     // after this.
     let _job = setup_kill_on_exit_job();
 
-    let socket_id = std::env::var("VIEW_SOCKET_ID").expect("VIEW_SOCKET_ID env var required");
-    let initial_url = std::env::var("VIEW_INITIAL_URL").unwrap_or_else(|_| "https://example.com".to_string());
+    let host_env = manifold_view_protocol::HostEnv::from_env();
+    let (socket_id, initial_url) = (host_env.socket_id.clone(), host_env.initial_url.clone());
 
     // A machine without the WebView2 runtime fails here, before connecting, with one `HOST_FATAL` line that
     // manifold shows as the reason, instead of a panic creating the environment that reads as a crash.
@@ -247,17 +245,13 @@ fn main() {
     let pending_download = download::register(&webview).ok();
     let _ = scheme::register(&environment, &webview);
 
-    // Cookie-jar seeding: manifold sends `SetCookies` as its very first message to hosts started with
-    // `VIEW_AWAIT_COOKIES`. Wait for it (bounded) so the cookies are in place before the first navigation.
+    // Cookie-jar seeding: wait (bounded) for `SetCookies` so the cookies are in place before the first navigation.
     // Any other first message is kept for the loop below rather than dropped.
-    let mut first_message: Option<HostToView> = None;
-    if std::env::var_os("VIEW_AWAIT_COOKIES").is_some() {
-        match transport::wait_for_first_message(&rx, COOKIE_SEED_WAIT, window::pump_messages) {
-            Some(HostToView::SetCookies(json)) => seed_cookies(&webview, in_private, &json),
-            Some(other) => first_message = Some(other),
-            None => eprintln!("jar: no seed received"),
-        }
+    let mut startup = host_env.await_cookies(&rx, window::pump_messages);
+    if let Some(json) = &startup.cookies {
+        seed_cookies(&webview, in_private, json);
     }
+    let mut first_message = startup.first_message.take();
 
     // A tab's stored URL can be anything (an old build's, an import's): one WebView2 rejects opens about:blank,
     // where the user can type another, instead of panicking the host into the crash-respawn loop.

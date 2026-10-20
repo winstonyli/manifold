@@ -30,8 +30,6 @@ use nav_handler::{new_shared_muted, new_shared_nav_state};
 use render_handler::ViewRenderHandler;
 use render_process_handler::{CHECK_AUDIO_PLAYING, CHECK_PAGE_STATE};
 
-/// How long a host started with `VIEW_AWAIT_COOKIES` waits for manifold's `SetCookies` before navigating.
-const COOKIE_SEED_WAIT: Duration = Duration::from_secs(5);
 const DEFAULT_WIDTH: u32 = 1024;
 const DEFAULT_HEIGHT: u32 = 768;
 /// How often to poll for audio-playing state -- see `manifold_view_protocol::
@@ -140,13 +138,8 @@ fn main() {
     // line (parsed above via Args::new()/as_cmd_line()) — mixing in our own
     // positional args risks CEF's Chromium-style parser misinterpreting
     // them as its own flags/URLs-to-open.
-    // VIEW_SOCKET_ID names our control pipes/shared memory — normally
-    // equal to VIEW_TAB_ID, but manifold may pass a different id if a
-    // stale view-host from a prior crashed run still held VIEW_TAB_ID's
-    // pipes (see process_manager::spawn_tab's fallback). Only this id
-    // matters here; we never need VIEW_TAB_ID itself.
-    let socket_id = std::env::var("VIEW_SOCKET_ID").expect("VIEW_SOCKET_ID env var required");
-    let initial_url = std::env::var("VIEW_INITIAL_URL").unwrap_or_else(|_| "https://example.com".to_string());
+    let host_env = manifold_view_protocol::HostEnv::from_env();
+    let (socket_id, initial_url) = (host_env.socket_id.clone(), host_env.initial_url.clone());
     // VIEW_CACHE_DIR is this process's own `root_cache_path`, fresh per
     // spawn and deleted afterwards (see process_manager::spawn_tab).
     // Chromium's process singleton lets one browser process at a time use a
@@ -206,19 +199,12 @@ fn main() {
         ..Default::default()
     };
     let browser_settings = BrowserSettings { windowless_frame_rate: 60, ..Default::default() };
-    // Cookie-jar seeding: manifold sends `SetCookies` as its very first message to hosts started with
-    // `VIEW_AWAIT_COOKIES`. Wait for it (bounded) so the cookies are in place before the first navigation.
+    // Cookie-jar seeding: wait (bounded) for `SetCookies` so the cookies are in place before the first navigation.
     // Any other first message is kept for the loop below rather than dropped.
-    let mut first_message: Option<HostToView> = None;
+    let mut startup = host_env.await_cookies(&rx, do_message_loop_work);
+    let mut first_message = startup.first_message.take();
     // Whether this host was seeded with cookies or has reported some (`jar_cookies::JarPull::poll`).
-    let mut may_hold_cookies = false;
-    if std::env::var_os("VIEW_AWAIT_COOKIES").is_some() {
-        match manifold_view_protocol::transport::wait_for_first_message(&rx, COOKIE_SEED_WAIT, do_message_loop_work) {
-            Some(HostToView::SetCookies(json)) => may_hold_cookies |= jar_cookies::seed(&json) > 0,
-            Some(other) => first_message = Some(other),
-            None => eprintln!("jar: no seed received"),
-        }
-    }
+    let mut may_hold_cookies = startup.cookies.is_some_and(|json| jar_cookies::seed(&json) > 0);
     let mut pull: Option<jar_cookies::JarPull> = None;
 
     let browser = browser_host_create_browser_sync(
