@@ -500,7 +500,7 @@ const VERBS: &[Verb] = &[
     row("QUIT", "Exit the app", |_| job(quit)),
     row("QUICKSWITCHOPEN", "Ctrl+K -- open the quick switcher", |_| job(|app, _| app.open_quick_switcher())),
     row("QUICKSWITCHTEXT text", "Set the quick switcher's search text", |rest| with_str(rest, |app, text| {
-        if let Some(switcher) = &mut app.menus.quick_switcher {
+        if let Some(switcher) = &mut app.menus.quick_switcher.open {
             switcher.query = text;
             switcher.selected = 0;
         }
@@ -508,7 +508,7 @@ const VERBS: &[Verb] = &[
     row("QUICKSWITCHDOWN", "Quick switcher: move highlight down", |_| job(|app, _| app.quick_switcher_move(1))),
     row("QUICKSWITCHUP", "Quick switcher: move highlight up", |_| job(|app, _| app.quick_switcher_move(-1))),
     row("QUICKSWITCHENTER", "Quick switcher: confirm the highlighted row", |_| job(|app, _| app.quick_switcher_confirm())),
-    row("QUICKSWITCHESCAPE", "Close the quick switcher", |_| job(|app, _| app.menus.quick_switcher = None)),
+    row("QUICKSWITCHESCAPE", "Close the quick switcher", |_| job(|app, _| app.menus.quick_switcher.open = None)),
     row("SESSIONNAMETEXT text", "Set the \"Save Session As...\" name field", |rest| with_str(rest, |app, text| app.session_name_draft = text)),
     row("SAVESESSIONAS name", "Save the running session as `name` (sessions/<name>.mnf)", |rest| with_text(rest, |app, name| app.save_named_session(&name))),
     row("OPENSESSION name", "Open the named save `name`, replacing the running session", |rest| {

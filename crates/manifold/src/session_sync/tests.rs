@@ -1882,7 +1882,7 @@ fn tab_lists_include_sleeping_tabs() {
     let a = add(&mut app, Kind::Tab, sleeping_tab("https://a/", "Alpha"));
     let b = add(&mut app, Kind::Tab, sleeping_tab("https://b/", "Beta"));
     assert_eq!(app.quick_switcher_matches("beta"), std::slice::from_ref(&b));
-    app.menus.quick_switcher = Some(crate::QuickSwitcher { query: "beta".into(), selected: 0 });
+    app.menus.quick_switcher.open = Some(crate::QuickSwitcher { query: "beta".into(), selected: 0 });
     app.quick_switcher_confirm();
     assert_eq!(app.focused.as_deref(), Some(b.as_str()));
     assert_eq!(app.test_spawns.len(), 1);

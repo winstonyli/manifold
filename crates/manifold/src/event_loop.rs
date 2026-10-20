@@ -1662,7 +1662,7 @@ impl App {
                 // `CHROME_HEIGHT_POINTS`'s other call sites). Only
                 // meaningful for the tab currently on screen.
                 if self.focused.as_deref() == Some(tab_id) {
-                    self.menus.context_menu =
+                    self.menus.context_menu.open =
                         Some(ContextMenuState { x: x as f32 / ppp, y: y as f32 / ppp + CHROME_HEIGHT_POINTS, href });
                 }
             }

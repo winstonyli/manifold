@@ -1243,7 +1243,7 @@ impl App {
             self.handle_json_keys(ui, typing);
             return;
         }
-        if !typing && self.renaming_group.is_none() && self.menus.quick_switcher.is_none() {
+        if !typing && self.renaming_group.is_none() && self.menus.quick_switcher.open.is_none() {
             // Each press moves focus one node, so presses that land in one frame are each a move.
             let presses = ui.input(|i| {
                 [

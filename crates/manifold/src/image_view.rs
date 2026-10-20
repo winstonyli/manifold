@@ -286,7 +286,7 @@ impl App {
             }
         }
 
-        let escape_pressed = ui.input(|i| i.key_pressed(egui::Key::Escape)) && self.menus.quick_switcher.is_none();
+        let escape_pressed = ui.input(|i| i.key_pressed(egui::Key::Escape)) && self.menus.quick_switcher.open.is_none();
         if frame.back_to_graph || escape_pressed {
             self.leave_to_graph();
         }

@@ -358,34 +358,37 @@ pub(crate) fn step_index(at: usize, delta: isize, len: usize, wrap: bool) -> usi
     }
 }
 
-/// Lets a popup driven by `Option<T>` app state (the right-click context
-/// menus) fade out instead of vanishing the instant that state goes back
-/// to `None` -- the position/content those need to keep drawing during a
-/// fade-out would otherwise disappear the same frame the menu "closes."
-/// `cache` is a sibling field remembering the last real value; `id` keys
-/// the fade animation (must be unique per popup). Polled every frame
-/// regardless of `current`'s state, same "continuous polling" reasoning
-/// the toolbar dropdowns' own fade needs (see their own call sites) --
-/// calling `ctx.animate_bool` only while `current` is `Some` would leave
-/// real elapsed time untracked while it's `None`, making the next open
-/// jump straight to visible instead of easing in. Returns `None` once the
-/// fade has actually finished (nothing left to draw), or `Some((value,
-/// fade))` otherwise -- `value` is `current`'s own content while it's
-/// `Some`, else the frozen `cache`.
-pub(crate) fn fade_popup_state<T: Clone>(
-    ctx: &egui::Context,
-    id: egui::Id,
-    current: &Option<T>,
-    cache: &mut Option<T>,
-) -> Option<(T, f32)> {
-    let fade = ctx.animate_bool(id, current.is_some());
-    if let Some(value) = current {
-        *cache = Some(value.clone());
+/// A popup driven by `open` (`Some` while showing) that fades out instead of vanishing the instant `open` goes back
+/// to `None`: the position and content it needs during the fade-out would otherwise disappear the same frame it
+/// "closes". `cache` remembers the last real value.
+#[derive(Debug)]
+pub(crate) struct Fading<T> {
+    pub(crate) open: Option<T>,
+    cache: Option<T>,
+}
+
+impl<T> Default for Fading<T> {
+    fn default() -> Self {
+        Fading { open: None, cache: None }
     }
-    if fade <= 0.0 {
-        return None;
+}
+
+impl<T: Clone> Fading<T> {
+    /// `id` keys the fade animation (unique per popup). Polled every frame regardless of `open`, the same
+    /// "continuous polling" the toolbar dropdowns' own fade needs: calling `ctx.animate_bool` only while `open` is
+    /// `Some` would leave real elapsed time untracked while it is `None`, and the next open would jump straight to
+    /// visible instead of easing in. Returns `None` once the fade has finished (nothing left to draw), else the
+    /// value (`open`'s own while it is `Some`, otherwise the frozen cache) and the fade (0.0-1.0).
+    pub(crate) fn state(&mut self, ctx: &egui::Context, id: egui::Id) -> Option<(T, f32)> {
+        let fade = ctx.animate_bool(id, self.open.is_some());
+        if let Some(value) = &self.open {
+            self.cache = Some(value.clone());
+        }
+        if fade <= 0.0 {
+            return None;
+        }
+        self.cache.clone().map(|value| (value, fade))
     }
-    cache.clone().map(|value| (value, fade))
 }
 
 /// The popups anchored below a toolbar or Settings button. At most one is
@@ -576,29 +579,19 @@ pub(crate) struct MenuPopups {
     /// The Back/Forward branch popup's camera and which popup it belongs to: recentred every time the popup opens
     /// (`popup_centres_cursor`), kept while it stays open.
     pub(crate) trail_canvas: Option<(AnchoredPopup, crate::graph_ui::GraphCamera)>,
-    /// Last real value of `node_menu`, kept around so `build_node_menu`
-    /// can keep drawing (fading out, not vanishing instantly) for a few
-    /// frames after `node_menu` itself goes back to `None` -- see
-    /// `fade_popup_state`.
-    pub(crate) node_menu_cache: Option<(String, egui::Pos2, NodeMenuView)>,
+    /// `node_menu` with the card's frozen `NodeMenuView`, set each frame the menu is open, so `build_node_menu` keeps
+    /// drawing it (fading out, not vanishing) for a few frames after `node_menu` itself goes back to `None`.
+    pub(crate) node_menu_fade: Fading<(String, egui::Pos2, NodeMenuView)>,
     /// The page of `node_menu` showing instead of its items (`MenuPage`), with the `(node, pos)` it belongs to. Left
     /// as it is when the menu closes, so the fade-out keeps the page the click was on; a different menu drops it
     /// (`App::build_node_menu`).
     pub(crate) node_menu_page: Option<(String, egui::Pos2, crate::node_menu::MenuPage)>,
     /// The minimal right-click context menu, if currently showing — see
     /// `ContextMenuState`'s own doc comment.
-    pub(crate) context_menu: Option<ContextMenuState>,
-    /// Same fade-out role as `node_menu_cache`, for `context_menu`.
-    pub(crate) context_menu_cache: Option<ContextMenuState>,
+    pub(crate) context_menu: Fading<ContextMenuState>,
     /// `Ctrl+K` quick-switcher, if currently open — see `QuickSwitcher`'s
     /// own doc comment and `App::build_quick_switcher`.
-    pub(crate) quick_switcher: Option<QuickSwitcher>,
-    /// Same fade-out role as `node_menu_cache`, for `quick_switcher`
-    /// -- but rendered read-only (no live `TextEdit`, no clickable rows)
-    /// once actually closing, since editing/clicking needs `&mut self.
-    /// quick_switcher`, which no longer exists by then. See `build_quick_
-    /// switcher`'s own `is_live` branch.
-    pub(crate) quick_switcher_cache: Option<QuickSwitcher>,
+    pub(crate) quick_switcher: Fading<QuickSwitcher>,
     /// Which popup anchored below a toolbar or Settings button is open, if
     /// any; one at a time. See `AnchoredPopup`, `toggle_popup` and
     /// `close_popup`.
@@ -1797,7 +1790,7 @@ Importing replaces every currently open tab.",
 
     /// Opens the quick switcher, empty, with its field focused (Ctrl+K and `QUICKSWITCHOPEN`).
     pub(crate) fn open_quick_switcher(&mut self) {
-        self.menus.quick_switcher = Some(QuickSwitcher { query: String::new(), selected: 0 });
+        self.menus.quick_switcher.open = Some(QuickSwitcher { query: String::new(), selected: 0 });
         self.pending_focus = Some(FocusTarget::QuickSwitcher);
     }
 
@@ -1807,9 +1800,9 @@ Importing replaces every currently open tab.",
     /// `QUICKSWITCHDOWN` debug commands (see `debug_control`'s own doc
     /// comment on why a real `KeyEvent` can't be synthesized).
     pub(crate) fn quick_switcher_move(&mut self, delta: i32) {
-        let Some(query) = self.menus.quick_switcher.as_ref().map(|s| s.query.clone()) else { return };
+        let Some(query) = self.menus.quick_switcher.open.as_ref().map(|s| s.query.clone()) else { return };
         let len = self.quick_switcher_matches(&query).len();
-        let Some(switcher) = &mut self.menus.quick_switcher else { return };
+        let Some(switcher) = &mut self.menus.quick_switcher.open else { return };
         if len == 0 {
             switcher.selected = 0;
         } else {
@@ -1823,14 +1816,14 @@ Importing replaces every currently open tab.",
     /// `build_quick_switcher`'s own doc comment for why this calls
     /// `focus_tab` directly rather than the graph-node expand animation.
     pub(crate) fn quick_switcher_confirm(&mut self) {
-        let Some(switcher) = &self.menus.quick_switcher else { return };
+        let Some(switcher) = &self.menus.quick_switcher.open else { return };
         let matches = self.quick_switcher_matches(&switcher.query);
         // Clamped: a query narrowed after moving down can leave `selected` past the end.
         if let Some(id) = matches.get(switcher.selected.min(matches.len().saturating_sub(1))).cloned() {
             self.show_level_of(&id);
             self.focus_tab(&id);
         }
-        self.menus.quick_switcher = None;
+        self.menus.quick_switcher.open = None;
     }
 
     /// `Ctrl+K`'s tab quick-switcher: a centered search box plus a
@@ -1839,14 +1832,10 @@ Importing replaces every currently open tab.",
     /// from `build_ui` itself rather than `build_item_ui`/`build_graph_ui`
     /// so it works the same from either view.
     pub(crate) fn build_quick_switcher(&mut self, ui: &mut egui::Ui) {
-        let current = self.menus.quick_switcher.clone();
+        let current = self.menus.quick_switcher.open.clone();
         let is_live = current.is_some();
-        let Some((switcher, fade)) = fade_popup_state(
-            ui.ctx(),
-            egui::Id::new("quick_switcher_fade"),
-            &current,
-            &mut self.menus.quick_switcher_cache,
-        ) else {
+        let Some((switcher, fade)) = self.menus.quick_switcher.state(ui.ctx(), egui::Id::new("quick_switcher_fade"))
+        else {
             return;
         };
 
@@ -1864,7 +1853,7 @@ Importing replaces every currently open tab.",
                 self.quick_switcher_move(delta as i32);
             }
             if escape {
-                self.menus.quick_switcher = None;
+                self.menus.quick_switcher.open = None;
             }
             if enter {
                 self.quick_switcher_confirm();
@@ -1887,7 +1876,7 @@ Importing replaces every currently open tab.",
                     control_font(ui);
                     ui.set_width(360.0);
                     if is_live {
-                        if let Some(switcher) = &mut self.menus.quick_switcher {
+                        if let Some(switcher) = &mut self.menus.quick_switcher.open {
                             let response = ui.add(
                                 egui::TextEdit::singleline(&mut switcher.query)
                                     .desired_width(f32::INFINITY)
@@ -1969,7 +1958,7 @@ Importing replaces every currently open tab.",
         if let Some(id) = jump_to {
             self.show_level_of(&id);
             self.focus_tab(&id);
-            self.menus.quick_switcher = None;
+            self.menus.quick_switcher.open = None;
         }
     }
 
@@ -2454,16 +2443,16 @@ mod tests {
         for _ in 0..5 {
             app.quick_switcher_move(1);
         }
-        assert_eq!(app.menus.quick_switcher.as_ref().unwrap().selected, 5);
-        app.menus.quick_switcher.as_mut().unwrap().query = "tab 2".into();
+        assert_eq!(app.menus.quick_switcher.open.as_ref().unwrap().selected, 5);
+        app.menus.quick_switcher.open.as_mut().unwrap().query = "tab 2".into();
         app.quick_switcher_confirm();
-        assert!(app.menus.quick_switcher.is_none());
+        assert!(app.menus.quick_switcher.open.is_none());
         assert_eq!(app.focused.as_deref(), Some(ids[2].as_str()), "jumped to the one match");
 
         app.open_quick_switcher();
-        app.menus.quick_switcher.as_mut().unwrap().query = "no such tab".into();
+        app.menus.quick_switcher.open.as_mut().unwrap().query = "no such tab".into();
         app.quick_switcher_confirm(); // nothing matches: closes, no panic
-        assert!(app.menus.quick_switcher.is_none());
+        assert!(app.menus.quick_switcher.open.is_none());
         assert_eq!(app.focused.as_deref(), Some(ids[2].as_str()), "focus unchanged");
     }
 }

@@ -528,7 +528,7 @@ impl App {
     /// (`focus_item`). `focused` itself is left alone.
     pub(crate) fn hide_focused_tab(&mut self) {
         self.close_find_bar();
-        self.menus.context_menu = None;
+        self.menus.context_menu.open = None;
         self.close_split();
         if let Some(old_id) = self.focused.clone() {
             if let Some(old) = self.nodes.get_mut(&old_id).and_then(|n| n.as_tab_mut()) {
@@ -648,7 +648,7 @@ impl App {
     /// finishes (`finish_transition_if_done`). For an Image, the texture is
     /// already there either way, so there's nothing equivalent to suspend.
     pub(crate) fn leave_to_graph(&mut self) {
-        self.menus.context_menu = None;
+        self.menus.context_menu.open = None;
         match self.viewed_image.clone().or_else(|| self.focused.clone()) {
             Some(id) => {
                 self.transition =

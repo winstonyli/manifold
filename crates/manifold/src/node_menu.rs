@@ -625,7 +625,7 @@ pub(crate) fn node_menu_config(view: &NodeMenuView, headless: bool) -> NodeMenuC
 
 /// Everything a node's right-click menu shows that its own actions can
 /// change, read each frame while the menu is open and frozen in
-/// `node_menu_cache` for the fade-out. The fading menu keeps the look it
+/// `node_menu_fade` for the fade-out. The fading menu keeps the look it
 /// had when an item was clicked, instead of redrawing the new state (a
 /// "Remove from Group" row vanishing, "Pin" turning into "Unpin", ...), and
 /// still fades when the action removed the node itself.
@@ -668,18 +668,13 @@ pub(crate) struct NodeMenuView {
 
 impl App {
     /// The minimal right-click context menu: one "Open in new tab" item at
-    /// `self.menus.context_menu`'s position, if a menu is currently showing.
+    /// `self.menus.context_menu.open`'s position, if a menu is currently showing.
     /// Dismissed by clicking the item (and acting on it), a click anywhere
     /// outside the menu's own rect, or Escape (see the Escape-priority
     /// chain in `build_tab_view_ui`).
     pub(crate) fn build_context_menu(&mut self, ui: &mut egui::Ui) {
-        let current = self.menus.context_menu.clone();
-        let Some((menu, fade)) = fade_popup_state(
-            ui.ctx(),
-            egui::Id::new("context_menu_fade"),
-            &current,
-            &mut self.menus.context_menu_cache,
-        ) else {
+        let current = self.menus.context_menu.open.clone();
+        let Some((menu, fade)) = self.menus.context_menu.state(ui.ctx(), egui::Id::new("context_menu_fade")) else {
             return;
         };
         let mut open_tab = false;
@@ -715,14 +710,14 @@ impl App {
             }
         }
         if close {
-            self.menus.context_menu = None;
+            self.menus.context_menu.open = None;
         }
     }
 
     /// The one right-click context menu for every node card. Fades via the
-    /// shared `node_menu`/`node_menu_cache` (one fade Id for all kinds --
+    /// shared `node_menu`/`node_menu_fade` (one fade Id for all kinds --
     /// per-kind Ids would go unpolled while another kind's menu is open,
-    /// breaking `fade_popup_state`'s continuous-polling rule), draws the
+    /// breaking `Fading::state`'s continuous-polling rule), draws the
     /// items `node_menu_config` lists for the node's kind, and applies the
     /// clicked one. A node that's gone (closed from its own menu, or
     /// elsewhere) closes the menu. While fading out, the menu draws its
@@ -743,14 +738,14 @@ impl App {
         }
         let current =
             self.menus.node_menu.clone().and_then(|(id, pos)| self.node_menu_view(&id).map(|view| (id, pos, view)));
-        let Some(((id, pos, view), fade)) =
-            fade_popup_state(ui.ctx(), egui::Id::new("node_menu_fade"), &current, &mut self.menus.node_menu_cache)
+        let live = current.is_some();
+        self.menus.node_menu_fade.open = current;
+        let Some(((id, pos, view), fade)) = self.menus.node_menu_fade.state(ui.ctx(), egui::Id::new("node_menu_fade"))
         else {
             // Closed and faded out: the next menu opens on its items, even at the same card and point.
             self.menus.node_menu_page = None;
             return;
         };
-        let live = current.is_some();
         let mut config = node_menu_config(&view, self.headless);
         let naming = self.naming_jar.as_ref().is_some_and(|(tid, _)| *tid == id);
         let mut frozen_draft = view.renaming.clone();

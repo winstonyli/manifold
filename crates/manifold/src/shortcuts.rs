@@ -209,7 +209,7 @@ impl App {
             // Neutralized while the quick-switcher is open, same reasoning as its own Escape/arrow handling in
             // `build_quick_switcher` -- a `Ctrl+G` typed while it's open shouldn't also flip the view underneath it.
             Shortcut::ViewToggle => {
-                if self.menus.quick_switcher.is_none() {
+                if self.menus.quick_switcher.open.is_none() {
                     self.toggle_view_mode_shortcut();
                 }
             }
