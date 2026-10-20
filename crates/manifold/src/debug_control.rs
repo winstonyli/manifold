@@ -1,4 +1,38 @@
+//! The headless-mode automation protocol, one command per stdin line (or `--script` file line). It exists so live GUI
+//! testing needn't fight Windows' foreground lock (`SetForegroundWindow` can be silently refused while the user is
+//! active, making `SendKeys`/`mouse_event` automation unreliable): each command drives the same code path real OS
+//! input would, through a channel, so a hidden window never needs real focus.
+//!
+//! `VERBS` is the one table: each row is a verb's usage, its help line, whether it is pointer input, and a parser
+//! from the rest of the line to a `Parsed`. `HELP`, the line parser and the sync test all read it, so adding a
+//! command is adding a row. A row's parser yields either a `Job` (a closure run on the UI thread, with the already
+//! parsed arguments captured) or a `ReaderOp` (`WAITTABS`, `WAITIDLE`, `SLEEP`, `SCREENSHOT`: the stdin reader
+//! blocks on those itself, so later lines stay in order behind them).
+//!
+//! Mouse commands are genuine synthetic `winit::event::WindowEvent`s (`App::dispatch_window_event`), deliberately
+//! not a logic-bypassing shortcut, since that is the only way to exercise egui's real hit-testing and render timing.
+//! Keyboard commands can't go through winit (`winit::event::KeyEvent` has no public constructor): the address-bar
+//! keys (`ADDRESSBAR`, `ENTER`, `ESCAPE`, `ARROWDOWN`, `ARROWUP`) and `EGUITEXT`/`BACKSPACE` for any focused egui
+//! field are injected one level down, as `egui::Event::Key`/`Text` in the next frame's `RawInput`, so the UI's own
+//! `key_pressed` checks and the real `TextEdit` see them. Headless mode also marks the window as focused for egui,
+//! since egui reports no widget focus in an unfocused window. The remaining keyboard commands (shortcuts, page
+//! input) call the equivalent effect directly.
+//!
+//! Driving egui through these, learned the hard way: use `CLICK`, not a `MOUSEDOWN`/`MOUSEUP` pair spaced by a
+//! `sleep` -- egui drops a press held past its max click duration (~0.8 s) as a long press, not a click. A drag
+//! needs several `MOUSEMOVE`s between the down and the up, not one. One `MOUSEMOVE` is enough for a `SCREENSHOT` to
+//! show hover (checked headless on a tab card: ✕ and peek preview both up), and a right-click needs none, since the
+//! graph finds the card under the press itself rather than going by hover. Each command renders its own frame in
+//! headless mode, and a pointer command also one before it, so it's hit-tested against the current state (see
+//! `UserEvent::Debug`'s handler); mouse commands need no `sleep` between them. Animations (menu fades, group
+//! drill-in) still take real time. Open a right-click menu with `MOUSEDOWN`/`MOUSEUP ... right`, not
+//! `CLICK ... right`: a menu's first frame is egui's sizing pass, which may place it away from the pointer, and a
+//! release in that same frame counts as a click outside it, which closes it. First-launch demo tabs spawn
+//! asynchronously and can take 30 s or more headless; `WAITTABS` waits for them, since until the focused tab has
+//! spawned, commands that need it (e.g. `ADDDOWNLOAD`) do nothing.
+
 use std::io::BufRead;
+use std::str::SplitWhitespace;
 
 use manifold_view_protocol::KeyCode;
 use winit::event::MouseButton;
@@ -10,627 +44,234 @@ use crate::nav_history::Dir;
 use crate::process_manager::ViewKind;
 use crate::sleep_state::SleepWhy;
 
-/// A headless-mode automation command, one per stdin line (see `parse_line`
-/// for the text grammar). Exists so live GUI testing on this project can
-/// stop fighting Windows' foreground-lock/focus contention (see the M3/M5
-/// gotchas in project memory: `SetForegroundWindow` can be silently refused
-/// while the user is active on their own machine, making `SendKeys`/
-/// `mouse_event`-based automation unreliable) — these commands drive the
-/// exact same code paths real OS input would (see `main.rs`'s
-/// `handle_debug_command`), just via a channel instead of the OS, so a
-/// hidden/headless window never needs real focus at all.
-///
-/// Mouse commands are dispatched as genuine synthetic `winit::event::
-/// WindowEvent`s (see `App::dispatch_window_event`) — deliberately not a
-/// logic-bypassing shortcut — since that's the only way to actually exercise
-/// egui's real hit-testing/rendering-timing, which is exactly the code path
-/// that had the click-swallowing dropdown bug fixed in the autocomplete
-/// feature. Keyboard commands can't go through winit the same way:
-/// `winit::event::KeyEvent` has no public constructor outside the winit
-/// crate (its `platform_specific` field is `pub(crate)`). The address-bar
-/// keys (`ADDRESSBAR`, `ENTER`, `ESCAPE`, `ARROWDOWN`, `ARROWUP`), and
-/// `EGUITEXT`/`BACKSPACE` for any focused egui field, are
-/// instead injected one level down, as `egui::Event::Key`/`Text` in the
-/// next frame's `RawInput`, so the UI's own `key_pressed` checks and the
-/// real `TextEdit` see them. Headless mode also marks the window as focused
-/// for egui, since egui reports no widget focus in an unfocused window. The
-/// remaining keyboard commands (shortcuts, page input) call the exact
-/// equivalent effect directly (send the same `InputEvent`s to a tab, or run
-/// the same shortcut method).
-///
-/// Driving egui through these, learned the hard way: use `CLICK`, not a
-/// `MOUSEDOWN`/`MOUSEUP` pair spaced by a `sleep` -- egui drops a press
-/// held past its max click duration (~0.8 s) as a long press, not a click.
-/// A drag needs several `MOUSEMOVE`s between the down and the up, not one.
-/// One `MOUSEMOVE` is enough for a `SCREENSHOT` to show hover (checked
-/// headless on a tab card: ✕ and peek preview both up), and a right-click
-/// needs none, since the graph finds the card under the press itself
-/// rather than going by hover. Each command renders its own frame in headless mode, and a
-/// pointer command also one before it, so it's hit-tested against the
-/// current state (see `UserEvent::Debug`'s handler); mouse commands need
-/// no `sleep` between them. Animations (menu fades, group drill-in) still take real
-/// time. Open a right-click menu with `MOUSEDOWN`/`MOUSEUP ... right`, not
-/// `CLICK ... right`: a menu's first frame is egui's sizing pass, which may
-/// place it away from the pointer, and a release in that same frame counts
-/// as a click outside it, which closes it. First-launch demo tabs spawn
-/// asynchronously and can take 30 s or more headless; `WAITTABS` waits for
-/// them, since until the focused tab has spawned, commands that need it
-/// (e.g. `ADDDOWNLOAD`) do nothing.
-#[derive(Debug, Clone)]
-#[rustfmt::skip]
-pub enum DebugCommand {
-    MouseMove { x: f64, y: f64 },
-    MouseDown { x: f64, y: f64, button: MouseButton },
-    MouseUp { x: f64, y: f64, button: MouseButton },
-    /// A full click (move + press + release) in one command — the common
-    /// case, and avoids needing three round-trips through stdin for it.
-    /// `ctrl` holds Ctrl down across the click.
-    Click { x: f64, y: f64, button: MouseButton, ctrl: bool },
-    /// A left double-click, both clicks in one frame. Two `CLICK`s only
-    /// count as one when their frames fall within egui's 0.3 s
-    /// double-click delay, which a slow headless frame can break.
-    DoubleClick { x: f64, y: f64 },
-    Scroll { x: f64, y: f64, delta_x: f64, delta_y: f64 },
-    /// Focuses the address bar (Tab view only), then, once it has focus,
-    /// types the text over its contents as egui `Ctrl+A` + `Text` events,
-    /// so suggestions update through the real `response.changed()` path.
-    AddressBar(String),
-    /// An egui Enter key press: in the focused address bar, navigates using
-    /// its text or the highlighted suggestion.
-    Enter,
-    /// An egui Escape key press: dismisses the suggestion dropdown if one
-    /// is showing, otherwise leaves Tab view for Graph view.
-    Escape,
-    /// An egui Backspace key press: erases in the focused egui text field.
-    Backspace,
-    /// `EGUITEXT <text>` -- an egui `Text` event: types into whichever egui
-    /// text field has focus (a jar's name in Settings, "New Jar..."'s field, a
-    /// group rename), not the page (`TYPE`). Nothing focused: nothing typed.
-    EguiText(String),
-    /// egui Down/Up key presses: in the address bar, move the highlighted
-    /// suggestion row (wrapping at both ends); `Enter` afterward accepts
-    /// whichever row ends up highlighted.
-    ArrowDown,
-    ArrowUp,
-    /// Real Right/Left key presses (a JSON level's outline open/close).
-    ArrowRight,
-    ArrowLeft,
-    /// A real Space key press (a focused tab card toggles its selection).
-    SpaceKey,
-    DigitKey(u8),
-    /// An egui Tab key press (Shift+Tab with `true`): moves egui's keyboard focus
-    /// between widgets, for checking how focus looks and that it moves nothing.
-    TabKey(bool),
-    /// Ctrl+Z (Ctrl+Shift+Z with `true`): undoes (redoes) the last drop or fold in the Graph view.
-    UndoKey(bool),
-    /// Shift+F10: opens the context menu of the keyboard-focused graph card.
-    ShiftF10,
-    /// Graph-view keyboard navigation equivalents -- see
-    /// `App::move_graph_focus`/`open_focused_graph_node`. Separate from
-    /// `ArrowDown`/`ArrowUp` above (those are address-bar-dropdown-specific)
-    /// since Graph view's arrow keys move in all four directions and do a
-    /// different thing entirely.
-    GraphFocusLeft,
-    GraphFocusRight,
-    GraphFocusUp,
-    GraphFocusDown,
-    GraphOpenFocused,
-    /// Sends each character as an `InputEvent::Char` to the focused tab's
-    /// page — for typing into a page's own text field, not the address bar.
-    TypeIntoPage(String),
-    /// Sends a KeyDown+KeyUp pair of the named key to the focused tab's page.
-    KeyPage(KeyCode),
-    /// `Ctrl+Shift+T` equivalent — see `App::reopen_closed_shortcut`.
-    ReopenTab,
-    /// `REOPENNODE id` -- reopens closed node `id` as the Recently Closed popup does (`reopen_node`), whichever
-    /// replica closed it. An unparseable id is ignored with a note on stderr.
-    ReopenNode(String),
-    /// Starts `App::start_view_install` for the engine, as the picker's Download does.
-    InstallView(ViewKind),
-    /// Prints the engine's `ViewStatus` to stderr as `engine-state <name>: <label>`.
-    ViewStatus(ViewKind),
-    /// `Ctrl+=`/`Ctrl++` equivalent — see `App::zoom_in_shortcut`.
-    ZoomIn,
-    /// `Ctrl+-` equivalent — see `App::zoom_out_shortcut`.
-    ZoomOut,
-    /// `Ctrl+0` equivalent — see `App::zoom_reset_shortcut`.
-    ZoomReset,
-    /// Sets the Graph view camera's zoom to this many percent (`ZOOMIN`/`ZOOMOUT` zoom the focused page there).
-    GraphZoom(f32),
-    /// `F12` equivalent — see `App::open_devtools_shortcut`.
-    OpenDevTools,
-    /// `Ctrl+T` equivalent — see `App::new_tab_shortcut`. A real
-    /// `WindowEvent::KeyboardInput` can't be synthesized from application
-    /// code (see this module's own doc comment), so this and the four
-    /// shortcut commands below call the exact same effect directly instead,
-    /// same as `TypeIntoPage`/`KeyPage` already do for page-level input.
-    NewTab,
-    /// `Ctrl+W` equivalent — see `App::close_focused_tab_shortcut`.
-    CloseTab,
-    /// `Ctrl+L` equivalent — see `App::focus_address_bar_shortcut`.
-    FocusAddressBar,
-    /// `Ctrl+Tab` equivalent — see `App::cycle_focused_tab`.
-    NextTab,
-    /// `Ctrl+Shift+Tab` equivalent — see `App::cycle_focused_tab`.
-    PrevTab,
-    /// `Ctrl+F` equivalent — see `App::open_find_bar_shortcut`.
-    OpenFindBar,
-    /// Sets the find bar's search text directly and sends `FindStart` to
-    /// the focused tab — a direct call, not a synthetic key event (see this
-    /// module's doc comment).
-    FindText(String),
-    /// Sets the find bar's case-sensitivity toggle directly, re-sending
-    /// `FindStart` if a search is already in progress — headless equivalent
-    /// of clicking the bar's "Aa" toggle.
-    FindMatchCase(bool),
-    /// `Enter`/`Shift+Enter` in the find bar.
-    FindNext,
-    FindPrevious,
-    /// `Escape` (or the find bar's own close button) — sends `FindStop` and
-    /// closes the bar.
-    CloseFindBar,
-    /// Sends `HostToView::SetVisible` to the focused tab directly —
-    /// bypassing `focus_tab`/`leave_to_graph`'s own visibility changes,
-    /// which always come bundled with a `Resize` (Tab vs. Graph view's
-    /// chrome heights differ). Exists for testing the `SetVisible(false)`→
-    /// `true` repaint path in isolation, without a same-transaction resize
-    /// able to mask a bug in it (see the M5 `SetVisible`-resume fix's own
-    /// verification-gap note in project memory/README: a real user's
-    /// Escape-then-refocus always resizes too, so a clean repro needs a
-    /// way to toggle visibility *without* one).
-    SetVisible(bool),
-    /// Renders the next frame and saves it as a PNG at this path — includes
-    /// chrome and any open dropdown, not just tab content, since it reads
-    /// back the same composited frame a real screenshot would show.
-    /// Blocks the stdin reader until it's saved (or 30 s pass): frames can
-    /// stall for seconds, and the app holds one pending screenshot, so an
-    /// unblocked second `SCREENSHOT` (or a `QUIT`) used to drop the first.
-    /// Handled by `spawn_stdin_reader`, which sends
-    /// `NotifyWhenScreenshotTaken`; never reaches the app.
-    Screenshot(String),
-    /// Internal, sent only by `spawn_stdin_reader` for `SCREENSHOT`: the
-    /// app saves the next frame to the path, then sends `()` on this.
-    NotifyWhenScreenshotTaken(String, std::sync::mpsc::Sender<()>),
-    Resize(u32, u32),
-    Quit,
-    /// `Ctrl+K` equivalent — see `App::handle_global_shortcuts`.
-    QuickSwitchOpen,
-    /// Sets the quick-switcher's search text directly, a direct call like
-    /// `FindText`.
-    QuickSwitchText(String),
-    /// Up/Down/Enter in the quick-switcher — see `App::quick_switcher_
-    /// move`/`quick_switcher_confirm`.
-    QuickSwitchDown,
-    QuickSwitchUp,
-    QuickSwitchEnter,
-    QuickSwitchEscape,
-    /// Sets the settings popup's "Save Session As..." name field directly,
-    /// same "direct call, not a synthetic key event" reason as
-    /// `FindText`.
-    SessionNameText(String),
-    /// "Save Session As..." with an explicit name instead of reading the
-    /// name field a real click would use, same "bypass the dialog/UI
-    /// entirely" reason as `ExportSession`. See `App::save_named_session`.
-    SaveSessionAs(String),
-    /// A saved name's "Open" button with an explicit name, same reason as
-    /// `SaveSessionAs`. See `App::load_named_session`.
-    OpenSession(String),
-    /// Sets the Graph view toolbar's filter box directly, same "direct
-    /// call, not a synthetic key event" reason as `FindText`.
-    GraphFilterText(String),
-    /// `Ctrl+G` equivalent — see `App::toggle_view_mode_shortcut`.
-    ToggleView,
-    /// Settings gear (Tab or Graph toolbar) — see `App::toggle_settings_page`.
-    /// Documented as a headless command (`App::open_settings_page`'s own
-    /// doc comment already claimed this) since before it actually existed
-    /// here -- added for real once that gap got in the way of testing the
-    /// Settings toolbar directly.
-    ToggleSettingsPage,
-    /// "Export..." with an explicit path instead of a real file dialog —
-    /// headless mode has no OS/human to answer one, so this bypasses it
-    /// entirely and calls the same underlying save directly.
-    ExportSession(String),
-    /// `EXPORTSTATE path` -- writes UI state that the session store doesn't
-    /// hold (and shouldn't: it's the user's saved session) as JSON, for a
-    /// test to check: `tab_view`, `transition`, `focused_url`,
-    /// `address_bar_text`, `suggestions` (the dropdown's rows: a search's
-    /// query, or `tab:<id>` for an open tab), `highlighted` (a row
-    /// index, or null) and `current_group` (the Graph view level's group
-    /// id, or null at the top). `cards` lists the current level's cards in
-    /// draw order, each as `id`, `type` (the card's mime type, e.g.
-    /// `application/vnd.manifold.tab` or `text/markdown`; `store::model`'s
-    /// `TYPE_*`), `stored_type` (the type string as stored: the same but for an `image/*` other than `image/png`, a
-    /// different case, or a type this build doesn't know, whose `type` is `TYPE_UNKNOWN`), `loaded` (true for a tab with a running engine only),
-    /// `json_card` (true for a JSON level's card, which is no stored node:
-    /// its keys are only `id`, `type` (`application/json`), `loaded` (false), `unresponsive` (false),
-    /// `json_card`, `screen` and `rect`), `group`, `parent`, `color` (whether it has a tag color),
-    /// `pinned`, `editing` (a note being edited), `screen` (its center) and
-    /// `rect` (`[left, top, right, bottom]`), in points, which are pixels
-    /// headless. `gate` reads these for the probe
-    /// scripts. `selected` is the rectangle
-    /// selection's ids, sorted. `mirror_groups` maps every node id (any
-    /// level) to its group as this replica shows it (the mirror), or null.
-    /// `mirror_names` (groups), `mirror_texts` (notes) and `mirror_pos` (every node, `[x, y]`) map ids to the
-    /// mirror's name, text and document pos the same way, null where EXPORTSESSION leaves the field out (empty, or
-    /// pos (0, 0)).
-    /// `links` lists every Link node as `{id, from, to}`. `edges` lists the lines drawn at the current level as
-    /// `{kind: link|opened, link (the Link node id, or null), from, to, screen: [x, y], near_from, near_to}`, where
-    /// `screen` is the point halfway along the curve (t = 0.5) between the two cards' facing sides and `near_from`
-    /// and `near_to` are the points at t = 0.2 and 0.8, where a probe grabs a link's `from` or `to` end.
-    /// `retarget` is the Link node whose end a connect-drag from its curve is moving, or null. `connecting` is pick-target mode as
-    /// `{from, edge, targets}` (`targets` sorted), or null. `link_handles` maps each card that would show connect-drag
-    /// handles (every card when nothing else owns the pointer; every card during a connect-drag) to
-    /// `{top, right, bottom, left}` (those shown at this zoom), each `[left, top, right, bottom]` on screen.
-    /// `connect_drag` is the source card of a running connect-drag, or null.
-    /// `view_kinds` maps each engine name to `{state, disk}`: the state label the engine lists show and what the disk
-    /// holds of its downloadable parts ("host ready", for CEF "host ready, runtime missing").
-    /// `toast` is the bottom-left toast's text
-    /// (the one showing, else the next queued), or null. Suggestions arriving from the network show up
-    /// only once a frame has drained them, and every command draws one, so
-    /// a test can poll this until `suggestions` fills.
-    /// `window` is the window's `[width, height]` in points; `popups` lists the visible menus, dialogs, dropdowns and
-    /// toasts as `{id, order, rect}` (see `App::popups_state`).
-    /// `trail` maps each tab with a trail to `{entries, depth, url, back_fork, forward_fork, lin_at, lin_len,
-    /// left_to, back, forward}` (`App::trail_state`): `depth` is 0 at the trail's first page, `back`/`forward` the
-    /// chips' enablement.
-    /// The file is replaced atomically (`store::atomic::replace`), so a test may read it as soon as it exists.
-    ExportState(String),
-    /// "Import..." with an explicit path, same "bypass the real file
-    /// dialog" reason as `ExportSession`.
-    ImportSession(String),
-    /// "Print to PDF" with an explicit path instead of a real file dialog —
-    /// same "bypass the dialog entirely" reason as `ExportSession`.
-    PrintToPdf(String),
-    /// `Ctrl+P` equivalent — see `App::pin_shortcut`.
-    TogglePin,
-    /// `Ctrl+R`/`F5` equivalent — see `App::reload_focused_tab_shortcut`.
-    Reload,
-    /// The toolbar's Back / Forward buttons, on the focused tab.
-    GoBack,
-    GoForward,
-    /// `Ctrl+Shift+G` equivalent — see `App::new_group_shortcut`.
-    NewGroup,
-    /// The Graph toolbar's "+ Note" button — see `App::new_note_shortcut`.
-    NewNote,
-    /// The Graph toolbar's "+ File" button with an explicit path instead of
-    /// a real file dialog — same "bypass the dialog entirely" reason as
-    /// `ExportSession`/`PrintToPdf`. The point, if given, is a window point
-    /// like a drop there; with none, the file is jittered around
-    /// world center at the current level, the same as the picker. See
-    /// `App::add_file_at`.
-    AddFile(String, Option<(f32, f32)>),
-    /// A download node for `path`, as if the focused tab had just started
-    /// downloading it (no bytes, unknown total) -- downloads otherwise only
-    /// come from a real engine download. Nothing is fetched or written.
-    /// A no-op with no focused tab. See `App::insert_download_node`.
-    AddDownload(String),
-    /// `F1` equivalent — toggles the keyboard-shortcut reference popup.
-    ToggleShortcutsHelp,
-    /// Opens (or closes) one of the Settings page's list popups, opening the page for its anchor.
-    TogglePopup(AnchoredPopup),
-    /// Opens a confirm dialog: `true` the destructive kind (delete session "probe"), `false` the safe kind (download
-    /// Servo). Nothing runs unless the dialog's button is clicked, and nothing opens while another confirm is up.
-    Confirm(bool),
-    /// Shows a page of the open card menu (`MenuPage`), or the menu's items again for `None`. Nothing without a menu.
-    MenuPage(Option<crate::node_menu::MenuPage>),
-    /// Sets the History popup's own filter box directly, same "direct call,
-    /// not a synthetic key event" reason as `GraphFilterText`.
-    HistoryFilterText(String),
-    /// Sets the Bookmarks popup's own filter box directly, same reason as
-    /// `HistoryFilterText`.
-    BookmarksFilterText(String),
-    /// "Export Bookmarks..." with an explicit path instead of a real file
-    /// dialog, same "bypass the dialog entirely" reason as `ExportSession`.
-    ExportBookmarks(String),
-    /// "Import Bookmarks..." with an explicit path, same reason as
-    /// `ExportBookmarks`.
-    ImportBookmarks(String),
-    /// `Ctrl+Shift+W` equivalent — see `App::close_all_at_current_level`.
-    CloseAllLevel,
-    /// Clicks the "Import Session..." confirm popup's own Import button —
-    /// see `Confirm::Import`.
-    ConfirmImport,
-    /// Clicks the confirm popup's Cancel button, same reason as
-    /// `ConfirmImport`.
-    CancelImport,
-    /// `F2` equivalent — see `App::rename_current_group_shortcut`.
-    RenameGroup,
-    /// Sets the bookmarks popup's own folder-rename draft directly, same
-    /// "direct call, not a synthetic key event" reason as
-    /// `GraphFilterText` — a no-op if nothing is currently being renamed.
-    BookmarkFolderText(String),
-    /// Graph view's `Escape`-dismisses-peek equivalent — see
-    /// `App::dismiss_hover_peek`. Separate from plain `Escape` since that
-    /// command is Tab-view-only (see its own doc comment).
-    DismissPeek,
-    /// "Export Group..." with an explicit path instead of a real file
-    /// dialog, same "bypass the dialog entirely" reason as
-    /// `ExportSession` — exports only when the open node menu belongs to a
-    /// Group (see `App::node_menu`).
-    ExportGroup(String),
-    /// "Import Group..." with an explicit path, same reason as
-    /// `ExportGroup`.
-    ImportGroup(String),
-    /// `Ctrl+D` equivalent — see `App::duplicate_focused_tab_shortcut`.
-    DuplicateTab,
-    /// `DUPLICATENODE id` -- the node menu's Duplicate on `id` (`App::duplicate_selection`), any kind. Saves.
-    DuplicateNode(String),
-    /// The Tab-view toolbar's "Split" picker with an explicit engine
-    /// instead of a real click-through dropdown — see `App::start_split`.
-    Split(ViewKind),
-    /// The Tab-view toolbar's "Close Split" button — see `App::close_split`.
-    CloseSplit,
-    /// Select the entry at this JSON Pointer on the current JSON level
-    /// (empty: the root).
-    JsonSelect(String),
-    /// Collapse or expand the card at this pointer.
-    JsonToggle(String),
-    /// Reveal the next page of the card at this pointer.
-    JsonMore(String),
-    /// Clear every saved card position (the bar's Relayout).
-    JsonRelayout,
-    /// Search the current JSON level.
-    JsonSearch(String),
-    /// `CLOSENODE id` -- closes node `id` (any kind) as its card's Close or Delete does (`close_node`), by
-    /// id since a headless test can't rely on focus. An unknown id is ignored with a note on stderr.
-    CloseNode(String),
-    /// `MOVETOGROUP id group` -- the node menu's "Move into <group>" with explicit ids, for the same reason as
-    /// `CloseNode`: only when the menu would offer `group` (a sibling group, `NodeMenuView::move_targets`), else
-    /// ignored with a note on stderr. See `NodeAction::MoveToGroup`.
-    MoveToGroup { id: String, group: String },
-    /// `LINK a b` -- links card `a` to card `b` (`App::connect`, the node menu's "Link to…" and a click on `b`), and
-    /// saves. A refused link is ignored with the reason on stderr.
-    Link { from: String, to: String },
-    /// `UNLINK a b` -- removes the link between cards `a` and `b`, in either order (`App::disconnect`), and saves.
-    Unlink { a: String, b: String },
-    /// `OPENEDFROM child parent` -- sets the card `child` was opened from (`App::connect`, the node menu's "Opened
-    /// from…"), and saves. A refused edge is ignored with the reason on stderr.
-    OpenedFrom { child: String, parent: String },
-    /// `RENAMEGROUP id name` -- node `id`'s rename field committed with `name` (`NodeAction::CommitRename`: the clean
-    /// name; a group ignores an empty one, any other node clears its name with it), by id for the same reason as `CloseNode`. Saves, as the
-    /// menu does. `RENAMEGROUP` alone is `RenameGroup` (F2).
-    RenameGroupTo { id: String, name: String },
-    /// `SETNOTETEXT id text` -- note `id`'s box typed to hold `text` and then blurred (`App::blur_note`, which
-    /// resolves a held remote text and saves). `text` is the rest of the line, possibly empty.
-    SetNoteText { id: String, text: String },
-    /// `MOVENODE id x y` -- card `id` dragged to world point (x, y) and released: its layout moves there and
-    /// `edit_pos` writes it, as `release_drag` does, then the save a drop makes.
-    MoveNode { id: String, x: f32, y: f32 },
-    /// `SLEEPNODE id` -- a tab's (or a group's tabs') "Sleep" context-menu
-    /// action, targeting an explicit id for the same reason as `CloseNode`.
-    /// See `App::request_sleep`.
-    SleepNode(String),
-    /// `RESTARTVIEW id` -- the "Restart View" row of live tab `id`'s menu (`App::restart_view`).
-    RestartView(String),
-    /// `ENDVIEW id` -- the "End View" row of live tab `id`'s menu (`App::end_view`).
-    EndView(String),
-    /// `IDLESWEEP secs` -- one idle auto-sleep sweep with a limit of `secs`
-    /// seconds instead of the setting's minutes. See `App::sweep_idle_tabs`.
-    IdleSweep(u64),
-    /// `SETJAR <name|default>` -- the focused tab draws its `jar` edge to that jar (a new
-    /// named jar if none has the name), as from its menu. `name` is a
-    /// label ("Work · #1a2b") or a stored name; a stored name several jars
-    /// share picks the lowest node id (`App::jar_named`). See
-    /// `App::set_jar_edge`.
-    SetJar(String),
-    /// `SWITCHJARNOW` -- the focused tab's "Switch Jar Now". See
-    /// `App::switch_jar_now`.
-    SwitchJarNow,
-    /// `CLEARJAR <name|default>` -- that jar's "Clear cookies", confirmed
-    /// (`App::clear_jar_cookies`). `name` as for `SETJAR`; an unknown name
-    /// does nothing.
-    ClearJar(String),
-    /// `NEWJAR <name>` -- a new jar card at the current level, as the Jar page's "New Jar..." makes, without an
-    /// edge. See `App::create_jar`.
-    NewJar(String),
-    /// `USEJAR <id> <jar-id|none>` -- tab or group `id` uses that jar card (or inherits), as a Jar page row does.
-    /// See `App::set_jar_edge`.
-    UseJar { from: String, jar: Option<String> },
-    /// `JAREPHEMERAL <id> on|off` -- jar card `id`'s Make/Stop Ephemeral, confirmed. See `App::set_jar_ephemeral`.
-    JarEphemeral { id: String, on: bool },
-    /// Dev-only: re-runs the one-time first-launch demo graph on demand
-    /// (see `Settings::has_shown_first_launch_demo`'s own doc comment for
-    /// why it otherwise only ever fires once) -- adds a fresh copy of the
-    /// demo layout to whatever's currently open rather than clearing
-    /// anything first, same "acts on current state, never auto-resets"
-    /// posture every other debug command already has. Never touches the
-    /// `has_shown_first_launch_demo` flag itself -- purely a look-at-it
-    /// aid, not a way to simulate real first-launch persistence. See
-    /// `App::spawn_first_launch_demo`.
-    TriggerFirstLaunchDemo,
-    /// `WAITTABS [secs]` -- blocks the stdin reader (so later lines wait
-    /// too) until no tab spawn is in flight, or `secs` (default 60) pass.
-    /// Headless tab spawns are async and can take 30 s or more (the
-    /// first-launch demo's included), so this replaces guessing a `sleep`.
-    /// Handled by `spawn_stdin_reader` itself, which sends
-    /// `NotifyWhenTabsSpawned`; never reaches the app.
-    WaitTabs(std::time::Duration),
-    /// `WAITIDLE [secs]` -- blocks the stdin reader until no debug input is
-    /// waiting for a frame (`ADDRESSBAR` text typed, queued keys sent), no
-    /// view transition is running and the focused tab isn't loading, or `secs` (default 60) pass. Replaces
-    /// the `SLEEP 1` between `ADDRESSBAR` and `ENTER` (they land in one frame
-    /// otherwise, Enter first) and the `SLEEP 3` for a new tab's first load.
-    /// A tab that hasn't reported its first load yet counts as not loading.
-    /// Handled by `spawn_stdin_reader` itself, which sends `NotifyWhenIdle`;
-    /// never reaches the app.
-    WaitIdle(std::time::Duration),
-    /// Internal, sent only by `spawn_stdin_reader` for `WAITIDLE`: the app
-    /// sends `()` on this once `App::debug_idle` holds, checked when it
-    /// arrives and at the end of every frame.
-    NotifyWhenIdle(std::sync::mpsc::Sender<()>),
-    /// `SLEEP secs` -- pauses the stdin reader, so the pause stays in order
-    /// with the commands around it. A driver script's own `sleep` doesn't:
-    /// while the reader is blocked (`WAITTABS`, `SCREENSHOT`) the script
-    /// keeps writing, and the lines it buffered arrive back to back.
-    /// Handled by `spawn_stdin_reader`; never reaches the app.
-    Sleep(std::time::Duration),
-    /// Internal, sent only by `spawn_stdin_reader` for `WAITTABS`: the app
-    /// sends `()` on this once `App::tab_spawns_in_flight` is zero.
-    NotifyWhenTabsSpawned(std::sync::mpsc::Sender<()>),
-    /// `HELP` (or `?`) -- prints `COMMAND_HELP` to stderr. See that table's
-    /// own doc comment for why this exists and its one maintenance cost.
-    Help,
+/// What one parsed line does on the UI thread.
+pub(crate) type Job = Box<dyn FnOnce(&mut App, &ActiveEventLoop) + Send>;
+
+/// A `Job` as it crosses the channel (`UserEvent::Debug`), with its row's pointer tag.
+pub(crate) struct DebugJob {
+    /// Pointer input: egui hit-tests it against the last frame's widgets, which may predate whatever changed since
+    /// the previous command (a tab that just spawned, suggestions that just arrived; a CLICK on a node right after
+    /// WAITTABS missed 3 runs out of 3), so a headless run draws the current state first.
+    pub(crate) pointer: bool,
+    run: Job,
 }
 
-/// The full command reference `HELP`/`?` prints, and the single source of
-/// truth for it -- `(usage, one-line description)` pairs, one per
-/// `parse_line` match arm below, in the same order. There is no way to
-/// generate this from the match arms themselves (Rust has no runtime
-/// reflection over a `match`'s own string patterns), so this is a second,
-/// hand-maintained list that can drift from `parse_line` if one is updated
-/// without the other -- accepted as the cheapest way to give this protocol
-/// any discoverability at all, given ~70 commands and no existing registry
-/// to hang help text off of. **Adding, renaming, or removing a command?
-/// Update this table in the same commit.**
-const COMMAND_HELP: &[(&str, &str)] = &[
-    ("MOUSEMOVE x y", "Move the mouse to (x, y)"),
-    ("MOUSEDOWN x y [button]", "Press a mouse button at (x, y) -- button defaults to left"),
-    ("MOUSEUP x y [button]", "Release a mouse button at (x, y)"),
-    ("CLICK x y [button] [ctrl]", "Full click (move+press+release) at (x, y); ctrl holds Ctrl down"),
-    ("DOUBLECLICK x y", "Left double-click at (x, y), both clicks in one frame"),
-    ("SCROLL x y dx dy", "Scroll at (x, y) by (dx, dy)"),
-    ("ADDRESSBAR text", "Set the address bar's text and focus"),
-    ("ENTER", "Accept the address bar / confirm a dropdown row"),
-    ("ESCAPE", "Dismiss a suggestion dropdown, or leave Tab view for Graph view"),
-    ("BACKSPACE", "A Backspace key press in the focused egui text field"),
-    ("EGUITEXT text", "Type into the focused egui text field (a jar or group name; TYPE goes to the page)"),
-    ("ARROWRIGHT", "A Right arrow key press (JSON level: open the selected outline row)"),
-    ("ARROWLEFT", "A Left arrow key press (JSON level: close it, or select its parent)"),
-    ("DIGITKEY n", "A plain digit key press (0-9): in the Graph view, jumps to the card with that number"),
-    ("SPACEKEY", "A Space key press (a focused tab card toggles in the selection)"),
-    ("ARROWDOWN", "Move the address-bar suggestion highlight down"),
-    ("ARROWUP", "Move the address-bar suggestion highlight up"),
-    ("SHIFTF10", "Shift+F10 -- open the focused graph card's menu"),
-    ("UNDOKEY [shift]", "Ctrl+Z (or Ctrl+Shift+Z) -- undo (redo) the last drop or fold in the Graph view"),
-    ("TABKEY [shift]", "Tab (or Shift+Tab) -- move egui keyboard focus to the next (previous) widget"),
-    ("GRAPHLEFT", "Graph view: move focus left"),
-    ("GRAPHRIGHT", "Graph view: move focus right"),
-    ("GRAPHUP", "Graph view: move focus up"),
-    ("GRAPHDOWN", "Graph view: move focus down"),
-    ("GRAPHOPEN", "Open whichever Graph-view node is currently focused"),
-    ("TYPE text", "Send each character to the focused tab's own page (not the address bar)"),
-    ("KEYPAGE key", "Send a KeyDown+KeyUp of `key` to the focused tab's own page"),
-    ("INSTALLVIEW kind", "Start downloading and installing the view's host files (and CEF's runtime)"),
-    ("VIEWSTATE kind", "Print the view's state (Installed, Installing n%, Failed: ..) to stderr"),
-    ("REOPENTAB", "Ctrl+Shift+T -- reopen the newest Recently Closed entry"),
-    ("REOPENNODE id", "Reopen closed node `id`, as the Recently Closed popup does, whichever replica closed it"),
-    ("ZOOMIN", "Ctrl+=/Ctrl++ -- zoom in"),
-    ("ZOOMOUT", "Ctrl+- -- zoom out"),
-    ("ZOOMRESET", "Ctrl+0 -- reset zoom"),
-    ("GRAPHZOOM pct", "Graph view: set the camera zoom to pct percent"),
-    ("OPENDEVTOOLS", "F12 -- open devtools"),
-    ("NEWTAB", "Ctrl+T -- new tab"),
-    ("CLOSETAB", "Ctrl+W -- close the focused tab"),
-    ("FOCUSADDRESS", "Ctrl+L -- focus the address bar"),
-    ("NEXTTAB", "Ctrl+Tab -- cycle to the next tab"),
-    ("PREVTAB", "Ctrl+Shift+Tab -- cycle to the previous tab"),
-    ("OPENFINDBAR", "Ctrl+F -- open find-in-page"),
-    ("FINDTEXT text", "Set the find bar's search text and search"),
-    ("FINDMATCHCASE true|false", "Toggle the find bar's case-sensitivity"),
-    ("FINDNEXT", "Find bar: next match"),
-    ("FINDPREVIOUS", "Find bar: previous match"),
-    ("CLOSEFINDBAR", "Close the find bar"),
-    (
-        "SETVISIBLE true|false",
-        "Send SetVisible directly to the focused tab (bypasses the usual resize-bundled visibility change)",
-    ),
-    ("SCREENSHOT path", "Save the next frame as a PNG at `path`; later commands wait for it (30 s max)"),
-    ("RESIZE w h", "Resize the window to (w, h)"),
-    ("QUIT", "Exit the app"),
-    ("QUICKSWITCHOPEN", "Ctrl+K -- open the quick switcher"),
-    ("QUICKSWITCHTEXT text", "Set the quick switcher's search text"),
-    ("QUICKSWITCHDOWN", "Quick switcher: move highlight down"),
-    ("QUICKSWITCHUP", "Quick switcher: move highlight up"),
-    ("QUICKSWITCHENTER", "Quick switcher: confirm the highlighted row"),
-    ("QUICKSWITCHESCAPE", "Close the quick switcher"),
-    ("SESSIONNAMETEXT text", "Set the \"Save Session As...\" name field"),
-    ("SAVESESSIONAS name", "Save the running session as `name` (sessions/<name>.mnf)"),
-    ("OPENSESSION name", "Open the named save `name`, replacing the running session"),
-    ("GRAPHFILTERTEXT text", "Set the Graph toolbar's own filter box"),
-    ("HISTORYFILTERTEXT text", "Set the History popup's own filter box"),
-    ("BOOKMARKSFILTERTEXT text", "Set the Bookmarks popup's own filter box"),
-    ("TOGGLEVIEW", "Ctrl+G -- toggle Tab / Graph view"),
-    ("TOGGLESETTINGSPAGE", "Settings gear -- enter/leave the Settings page"),
-    ("EXPORTSESSION path", "Save the current session to `path`"),
-    ("EXPORTSTATE path", "Write view, address bar and dropdown state to `path` as JSON"),
-    ("IMPORTSESSION path", "Load a session from `path`"),
-    ("EXPORTBOOKMARKS path", "Save bookmarks to `path`"),
-    ("IMPORTBOOKMARKS path", "Load bookmarks from `path`"),
-    ("CLOSEALLLEVEL", "Ctrl+Shift+W -- close every tab at the current level"),
-    ("CONFIRMIMPORT", "Click the \"Import Session...\" confirm popup's Import button"),
-    ("CANCELIMPORT", "Click the confirm popup's Cancel button"),
-    ("RENAMEGROUP [id name]", "F2 -- rename the current group; with `id name`, commit `name` as node `id`'s new name"),
-    ("BOOKMARKFOLDERTEXT text", "Set the bookmarks popup's own folder-rename draft"),
-    ("DISMISSPEEK", "Escape-dismisses-peek equivalent in Graph view"),
-    ("EXPORTGROUP path", "Export whichever group's context menu is currently open"),
-    ("IMPORTGROUP path", "Import a group from `path`"),
-    ("DUPLICATETAB", "Ctrl+D -- duplicate the focused tab"),
-    ("DUPLICATENODE id", "Duplicate on card `id`: the whole selection when `id` is in it (any kind)"),
-    ("PRINTTOPDF path", "Print the focused tab to a PDF at `path`"),
-    ("TOGGLEPIN", "Ctrl+P -- pin/unpin the selected cards, or the focused one"),
-    ("RELOAD", "Ctrl+R/F5 -- reload the focused tab"),
-    ("GOBACK", "Back button on the focused tab"),
-    ("GOFORWARD", "Forward button on the focused tab"),
-    ("NEWGROUP", "Ctrl+Shift+G -- new group"),
-    ("NEWNOTE", "Graph toolbar's \"+ Note\" button"),
-    (
-        "ADDFILE path [x y]",
-        "Adds a file as the node its content makes (image, PDF, JSON, note, tab, or a download card); \
-         x y is a window point, like a drop there",
-    ),
-    ("ADDDOWNLOAD path", "Add a download node for `path`, as if the focused tab started it"),
-    ("WAITTABS [secs]", "Hold later commands until no tab spawn is in flight (default 60 s max)"),
-    (
-        "WAITIDLE [secs]",
-        "Hold later commands until typed input has landed, no view transition runs and the focused tab isn't loading (default 60 s max)",
-    ),
-    ("SLEEP secs", "Hold later commands for `secs` (in order, unlike a driver script's own sleep)"),
-    ("TOGGLESHORTCUTSHELP", "F1 -- toggle the keyboard-shortcut reference popup"),
-    ("CONFIRM kind", "Open a confirm dialog: destructive (delete session) or safe (download Servo)"),
-    ("MENUPAGE name", "Show the open card menu's color|jar page, or its items for none"),
-    ("TOGGLEPOPUP name", "Toggle the Settings page's bookmarks|history|downloads popup (opens the page), the graph toolbar's recentlyclosed list, or the Back|Forward chip's branch list (needs its marker)"),
-    ("SPLIT kind", "Open a Split pane running `kind` (servo|cef|webkit|webview2)"),
-    ("CLOSESPLIT", "Close the Split pane"),
-    ("JSONSELECT [pointer]", "Select an entry on the current JSON level (no pointer: the root)"),
-    ("JSONTOGGLE [pointer]", "Collapse or expand a card on the current JSON level"),
-    ("JSONMORE [pointer]", "Reveal the next page of a card on the current JSON level"),
-    ("JSONRELAYOUT", "Relayout the current JSON level (clears saved card positions)"),
-    ("JSONSEARCH text", "Search the current JSON level's keys and values"),
-    ("CLOSENODE id", "Close node `id` (any kind), as its card's Close does, and save"),
-    ("MOVETOGROUP id group", "Move node `id` into the sibling group `group`, same as its \"Move into\" menu row"),
-    ("LINK a b", "Link card `a` to card `b`, same as `a`'s \"Link to...\" row and a click on `b`"),
-    ("UNLINK a b", "Remove the link between cards `a` and `b`, in either order"),
-    ("OPENEDFROM child parent", "Set the card `child` was opened from, same as its \"Opened from...\" row"),
-    ("SETNOTETEXT id text", "Type `text` into note `id`'s box (replacing it) and blur it, which commits and saves"),
-    ("MOVENODE id x y", "Drag card `id` to world point (x, y) and release it there, which saves"),
-    (
-        "SLEEPNODE id",
-        "Ask the tab `id` (or every tab of the group `id`) to sleep, same as its \"Sleep\" \
-         context-menu action; it sleeps when the engine answers the page-state query (wait a second)",
-    ),
-    (
-        "RESTARTVIEW id",
-        "Start a new view host for live tab `id` at its URL, same as its \"Restart View\" row \
-         (offered while it is not responding)",
-    ),
-    ("ENDVIEW id", "End live tab `id`'s view host and leave a failed card, same as its \"End View\" row"),
-    (
-        "IDLESWEEP secs",
-        "Run one idle auto-sleep sweep: tabs out of sight for `secs` seconds are asked to sleep, \
-         and those with a changed form stay awake (the clock updates on every sweep)",
-    ),
-    (
-        "SETJAR <name|default>",
-        "The focused tab's jar edge to that jar, by label or name (a new jar card at its level if none has it)",
-    ),
-    ("SWITCHJARNOW", "The focused tab moves to its new jar now, if it is waiting to switch"),
-    ("CLEARJAR <name|default>", "Clear that jar's cookies, as its confirmed \"Clear cookies\" does"),
-    ("NEWJAR <name>", "A new jar card at the current level, as \"New Jar...\" makes (no edge)"),
-    ("USEJAR <id> <jar|none>", "Tab or group `id` uses jar card `jar`, or inherits with `none`, as a Jar page row"),
-    ("JAREPHEMERAL <id> on|off", "Jar card `id`'s Make/Stop Ephemeral, confirmed"),
-    ("TRIGGERFIRSTLAUNCHDEMO", "Dev-only: re-spawn the first-launch demo graph on demand"),
-    ("HELP", "Print this command list"),
-];
+impl DebugJob {
+    fn new(pointer: bool, run: Job) -> Self {
+        Self { pointer, run }
+    }
+
+    /// The exit the reader sends at end of input.
+    pub(crate) fn quit() -> Self {
+        Self::new(false, Box::new(quit))
+    }
+}
+
+/// What the stdin reader does itself, blocking, so the lines after it wait.
+pub(crate) enum ReaderOp {
+    WaitTabs(std::time::Duration),
+    WaitIdle(std::time::Duration),
+    Sleep(std::time::Duration),
+    Screenshot(String),
+}
+
+/// One row's parse result.
+enum Parsed {
+    Job(Job),
+    Reader(ReaderOp),
+}
+
+/// `parse_line`'s result.
+pub(crate) enum Line {
+    Run(DebugJob),
+    Reader(ReaderOp),
+}
+
+struct Verb {
+    /// `VERB args`, as `HELP` shows it; the first word is the verb.
+    usage: &'static str,
+    doc: &'static str,
+    pointer: bool,
+    /// From the line's text after the verb (trimmed), or `None` for malformed arguments.
+    parse: fn(&str) -> Option<Parsed>,
+}
+
+impl Verb {
+    fn word(&self) -> &'static str {
+        self.usage.split_whitespace().next().unwrap_or(self.usage)
+    }
+}
+
+const fn row(usage: &'static str, doc: &'static str, parse: fn(&str) -> Option<Parsed>) -> Verb {
+    Verb { usage, doc, pointer: false, parse }
+}
+
+const fn pointer_row(usage: &'static str, doc: &'static str, parse: fn(&str) -> Option<Parsed>) -> Verb {
+    Verb { usage, doc, pointer: true, parse }
+}
+
+fn job<R>(run: impl FnOnce(&mut App, &ActiveEventLoop) -> R + Send + 'static) -> Option<Parsed> {
+    Some(Parsed::Job(Box::new(move |app, event_loop| {
+        run(app, event_loop);
+    })))
+}
+
+/// A job for a non-empty argument.
+fn with_text<R>(rest: &str, run: impl FnOnce(&mut App, String) -> R + Send + 'static) -> Option<Parsed> {
+    (!rest.is_empty()).then(|| rest.to_string()).and_then(|text| job(move |app, _| run(app, text)))
+}
+
+/// A job for the rest of the line, possibly empty.
+fn with_str<R>(rest: &str, run: impl FnOnce(&mut App, String) -> R + Send + 'static) -> Option<Parsed> {
+    let text = rest.to_string();
+    job(move |app, _| run(app, text))
+}
+
+/// An egui key press for the next frame's input.
+fn key_job(key: egui::Key, modifiers: egui::Modifiers) -> Option<Parsed> {
+    job(move |app, _| app.debug.debug_input_events.push(debug_key_event(key, modifiers)))
+}
+
+/// A direct-call job on a node id given as the whole argument.
+fn with_id<R>(rest: &str, run: impl FnOnce(&mut App, &str) -> R + Send + 'static) -> Option<Parsed> {
+    with_text(rest, move |app, id| run(app, &id))
+}
+
+fn on_off(word: &str) -> Option<bool> {
+    match word {
+        "on" => Some(true),
+        "off" => Some(false),
+        _ => None,
+    }
+}
+
+fn true_false(word: &str) -> Option<bool> {
+    match word {
+        "true" => Some(true),
+        "false" => Some(false),
+        _ => None,
+    }
+}
+
+fn coords(parts: &mut SplitWhitespace) -> Option<(f64, f64)> {
+    Some((parts.next()?.parse().ok()?, parts.next()?.parse().ok()?))
+}
+
+/// The cursor at a window point, as a real pointer move.
+fn cursor_to(app: &mut App, event_loop: &ActiveEventLoop, x: f64, y: f64) {
+    app.dispatch_window_event(
+        event_loop,
+        WindowEvent::CursorMoved { device_id: DeviceId::dummy(), position: PhysicalPosition::new(x, y) },
+    );
+}
+
+fn button_at(
+    app: &mut App,
+    event_loop: &ActiveEventLoop,
+    (x, y): (f64, f64),
+    button: MouseButton,
+    state: ElementState,
+) {
+    cursor_to(app, event_loop, x, y);
+    app.dispatch_window_event(event_loop, WindowEvent::MouseInput { device_id: DeviceId::dummy(), state, button });
+}
+
+/// `MOUSEDOWN`/`MOUSEUP`: `x y [button]`.
+fn mouse_button(rest: &str, state: ElementState) -> Option<Parsed> {
+    let mut parts = rest.split_whitespace();
+    let at = coords(&mut parts)?;
+    let button = parts.next().map(parse_mouse_button).unwrap_or(MouseButton::Left);
+    job(move |app, el| button_at(app, el, at, button, state))
+}
+
+/// `CLICK x y [button] [ctrl]`.
+fn parse_click(rest: &str) -> Option<((f64, f64), MouseButton, bool)> {
+    let mut parts = rest.split_whitespace();
+    let at = coords(&mut parts)?;
+    let (mut button, mut ctrl) = (MouseButton::Left, false);
+    for word in parts {
+        if word.eq_ignore_ascii_case("ctrl") {
+            ctrl = true;
+        } else {
+            button = parse_mouse_button(word);
+        }
+    }
+    Some((at, button, ctrl))
+}
+
+/// `MOVENODE id x y`: finite coordinates and nothing after them.
+fn parse_move_node(rest: &str) -> Option<(String, f32, f32)> {
+    let mut parts = rest.split_whitespace();
+    let id = parts.next()?.to_string();
+    let mut coord = || parts.next()?.parse::<f32>().ok().filter(|v| v.is_finite());
+    let (x, y) = (coord()?, coord()?);
+    parts.next().is_none().then_some((id, x, y))
+}
+
+/// `GRAPHZOOM pct`.
+fn parse_zoom_pct(rest: &str) -> Option<f32> {
+    rest.parse::<f32>().ok().filter(|v| v.is_finite() && *v > 0.0)
+}
+
+/// `RENAMEGROUP [id name]`: `Some(None)` alone (F2), `Some(Some((id, name)))` with both, `None` for an id with no name.
+fn parse_rename(rest: &str) -> Option<Option<(String, String)>> {
+    if rest.is_empty() {
+        return Some(None);
+    }
+    let (id, name) = split_id(rest);
+    (!name.is_empty()).then(|| Some((id, name.to_string())))
+}
+
+/// `USEJAR <id> <jar|none>`.
+fn parse_use_jar(rest: &str) -> Option<(String, Option<String>)> {
+    let mut parts = rest.split_whitespace();
+    let from = parts.next()?.to_string();
+    let jar = parts.next()?;
+    Some((from, (!jar.eq_ignore_ascii_case("none")).then(|| jar.to_string())))
+}
+
+/// `WAITTABS`/`WAITIDLE`'s optional timeout: a minute by default.
+fn wait_timeout(rest: &str) -> Option<std::time::Duration> {
+    if rest.is_empty() {
+        Some(std::time::Duration::from_secs(60))
+    } else {
+        parse_secs(rest)
+    }
+}
+
+/// `GOBACK`/`GOFORWARD`: the focused tab's trail, one step.
+fn go(dir: Dir) -> Option<Parsed> {
+    job(move |app, _| {
+        if let Some(id) = app.focused.clone() {
+            app.navigate_history(&id, dir);
+        }
+    })
+}
+
+/// An action on the focused tab's own view, if it is a tab with one.
+fn on_focused_tab(app: &mut App, run: impl FnOnce(&mut crate::node::TabPayload)) {
+    if let Some(id) = app.focused.clone() {
+        if let Some(node) = app.nodes.get_mut(&id).and_then(|n| n.as_tab_mut()) {
+            run(node);
+        }
+    }
+}
+
+/// `QUIT`, and the exit the reader sends at end of input.
+fn quit(app: &mut App, event_loop: &ActiveEventLoop) {
+    // Exiting right now could drop a pending Enter/Escape/arrow command, or a just-requested Screenshot that hasn't
+    // been captured yet (`pending_screenshot` is only consumed inside a `RedrawRequested`: a `Screenshot`
+    // immediately followed by `Quit`, with no frame in between, would otherwise silently lose the screenshot the
+    // same way an unconsumed Enter could). `quit_after_redraws` holds how many frames to wait.
+    if app.debug_input_pending() {
+        app.debug.quit_after_redraws = Some(3);
+        if let Some(window) = &app.window {
+            window.request_redraw();
+        }
+    } else {
+        event_loop.exit();
+    }
+}
 
 /// The longest SLEEP/WAITTABS a script may ask for: a day.
 pub(crate) const MAX_WAIT_SECS: f64 = 86_400.0;
@@ -641,13 +282,6 @@ pub(crate) const MAX_WAIT_SECS: f64 = 86_400.0;
 pub(crate) fn parse_secs(s: &str) -> Option<std::time::Duration> {
     let secs: f64 = s.parse().ok()?;
     (secs.is_finite() && (0.0..=MAX_WAIT_SECS).contains(&secs)).then(|| std::time::Duration::from_secs_f64(secs))
-}
-
-/// Case-insensitive, matching `view_kind_serde`'s own lowercase
-/// convention (`settings.json` and session exports use the same strings) --
-/// `SPLIT`'s one argument.
-fn parse_view_kind(name: &str) -> Option<ViewKind> {
-    ViewKind::from_name(name)
 }
 
 fn parse_mouse_button(name: &str) -> MouseButton {
@@ -678,14 +312,14 @@ fn parse_key_code(name: &str) -> Option<KeyCode> {
 /// path may itself contain spaces, so the trailing `x y` is only peeled off
 /// when the last two whitespace-separated words both parse as `f32`;
 /// otherwise the whole of `rest` is the path.
-fn parse_add_file(rest: &str) -> Option<DebugCommand> {
+fn parse_add_file(rest: &str) -> (String, Option<(f32, f32)>) {
     let words: Vec<&str> = rest.split_whitespace().collect();
     if words.len() >= 3 {
         if let (Ok(x), Ok(y)) = (words[words.len() - 2].parse::<f32>(), words[words.len() - 1].parse::<f32>()) {
-            return Some(DebugCommand::AddFile(words[..words.len() - 2].join(" "), Some((x, y))));
+            return (words[..words.len() - 2].join(" "), Some((x, y)));
         }
     }
-    Some(DebugCommand::AddFile(rest.to_string(), None))
+    (rest.to_string(), None)
 }
 
 /// `<id> <text...>` -- `rest` is trimmed and non-empty: the first word, and the rest of the line after it, trimmed
@@ -695,11 +329,540 @@ fn split_id(rest: &str) -> (String, &str) {
     (id.to_string(), text.trim())
 }
 
-/// Parses one line of the headless debug-command text protocol. Unknown
-/// commands or malformed arguments are silently ignored (returns `None`) —
-/// good enough for a testing tool where a bad line should be a no-op, not a
-/// crash.
-pub fn parse_line(line: &str) -> Option<DebugCommand> {
+/// The command table: one row per verb, in `HELP`'s order.
+#[rustfmt::skip]
+const VERBS: &[Verb] = &[
+    pointer_row("MOUSEMOVE x y", "Move the mouse to (x, y)", |rest| {
+        let (x, y) = coords(&mut rest.split_whitespace())?;
+        job(move |app, el| cursor_to(app, el, x, y))
+    }),
+    pointer_row("MOUSEDOWN x y [button]", "Press a mouse button at (x, y) -- button defaults to left", |rest| mouse_button(rest, ElementState::Pressed)),
+    pointer_row("MOUSEUP x y [button]", "Release a mouse button at (x, y)", |rest| mouse_button(rest, ElementState::Released)),
+    pointer_row("CLICK x y [button] [ctrl]", "Full click (move+press+release) at (x, y); ctrl holds Ctrl down", |rest| {
+        let (at, button, ctrl) = parse_click(rest)?;
+        job(move |app, el| app.debug_click(el, at.0, at.1, button, 1, ctrl))
+    }),
+    pointer_row("DOUBLECLICK x y", "Left double-click at (x, y), both clicks in one frame", |rest| {
+        // Two `CLICK`s only count as one when their frames fall within egui's 0.3 s double-click delay, which a slow
+        // headless frame can break.
+        let (x, y) = coords(&mut rest.split_whitespace())?;
+        job(move |app, el| app.debug_click(el, x, y, MouseButton::Left, 2, false))
+    }),
+    pointer_row("SCROLL x y dx dy", "Scroll at (x, y) by (dx, dy)", |rest| {
+        let mut parts = rest.split_whitespace();
+        let (x, y) = coords(&mut parts)?;
+        let (delta_x, delta_y) = coords(&mut parts)?;
+        job(move |app, el| {
+            cursor_to(app, el, x, y);
+            app.dispatch_window_event(
+                el,
+                WindowEvent::MouseWheel {
+                    device_id: DeviceId::dummy(),
+                    delta: MouseScrollDelta::PixelDelta(PhysicalPosition::new(delta_x, delta_y)),
+                    phase: TouchPhase::Moved,
+                },
+            );
+        })
+    }),
+    // A click on the address bar, then select-all and typing: focus is requested now, and the text is typed as egui
+    // `Text` input in the first frame the bar has it (see `debug_address_bar_typing`).
+    row("ADDRESSBAR text", "Set the address bar's text and focus (Tab view only)", |rest| with_str(rest, |app, text| {
+        if app.showing_tab_view() {
+            app.pending_focus = Some(FocusTarget::AddressBar);
+            app.debug.debug_address_bar_typing = Some(text);
+            if let Some(window) = &app.window {
+                window.request_redraw();
+            }
+        } else {
+            eprintln!("debug: ADDRESSBAR ignored: not in Tab view");
+        }
+    })),
+    // Real key presses for the next frame's egui input, so they go through the same checks a keyboard does, in any
+    // view.
+    row("ENTER", "Accept the address bar / confirm a dropdown row", |_| key_job(egui::Key::Enter, egui::Modifiers::NONE)),
+    row("ESCAPE", "Dismiss a suggestion dropdown, or leave Tab view for Graph view", |_| key_job(egui::Key::Escape, egui::Modifiers::NONE)),
+    row("BACKSPACE", "A Backspace key press in the focused egui text field", |_| key_job(egui::Key::Backspace, egui::Modifiers::NONE)),
+    // The focused egui field takes it, as from a keyboard (`TYPE` goes to the page instead). Nothing focused: nothing typed.
+    row("EGUITEXT text", "Type into the focused egui text field (a jar or group name; TYPE goes to the page)", |rest| {
+        with_text(rest, |app, text| app.debug.debug_input_events.push(egui::Event::Text(text)))
+    }),
+    row("ARROWRIGHT", "A Right arrow key press (JSON level: open the selected outline row)", |_| key_job(egui::Key::ArrowRight, egui::Modifiers::NONE)),
+    row("ARROWLEFT", "A Left arrow key press (JSON level: close it, or select its parent)", |_| key_job(egui::Key::ArrowLeft, egui::Modifiers::NONE)),
+    row("DIGITKEY n", "A plain digit key press (0-9): in the Graph view, jumps to the card with that number", |rest| {
+        let digit: usize = rest.parse().ok().filter(|d| *d <= 9)?;
+        let key = [
+            egui::Key::Num0, egui::Key::Num1, egui::Key::Num2, egui::Key::Num3, egui::Key::Num4,
+            egui::Key::Num5, egui::Key::Num6, egui::Key::Num7, egui::Key::Num8, egui::Key::Num9,
+        ][digit];
+        key_job(key, egui::Modifiers::NONE)
+    }),
+    row("SPACEKEY", "A Space key press (a focused tab card toggles in the selection)", |_| key_job(egui::Key::Space, egui::Modifiers::NONE)),
+    row("ARROWDOWN", "Move the address-bar suggestion highlight down", |_| key_job(egui::Key::ArrowDown, egui::Modifiers::NONE)),
+    row("ARROWUP", "Move the address-bar suggestion highlight up", |_| key_job(egui::Key::ArrowUp, egui::Modifiers::NONE)),
+    row("SHIFTF10", "Shift+F10 -- open the focused graph card's menu", |_| key_job(egui::Key::F10, egui::Modifiers::SHIFT)),
+    row("UNDOKEY [shift]", "Ctrl+Z (or Ctrl+Shift+Z) -- undo (redo) the last drop or fold in the Graph view", |rest| {
+        key_job(egui::Key::Z, egui::Modifiers { command: true, ctrl: true, shift: rest == "shift", ..Default::default() })
+    }),
+    row("TABKEY [shift]", "Tab (or Shift+Tab) -- move egui keyboard focus to the next (previous) widget", |rest| {
+        key_job(egui::Key::Tab, if rest == "shift" { egui::Modifiers::SHIFT } else { egui::Modifiers::NONE })
+    }),
+    row("GRAPHLEFT", "Graph view: move focus left", |_| job(|app, _| app.move_graph_focus(egui::vec2(-1.0, 0.0)))),
+    row("GRAPHRIGHT", "Graph view: move focus right", |_| job(|app, _| app.move_graph_focus(egui::vec2(1.0, 0.0)))),
+    row("GRAPHUP", "Graph view: move focus up", |_| job(|app, _| app.move_graph_focus(egui::vec2(0.0, -1.0)))),
+    row("GRAPHDOWN", "Graph view: move focus down", |_| job(|app, _| app.move_graph_focus(egui::vec2(0.0, 1.0)))),
+    row("GRAPHOPEN", "Open whichever Graph-view node is currently focused", |_| job(|app, _| app.open_focused_graph_node())),
+    row("TYPE text", "Send each character to the focused tab's own page (not the address bar)", |rest| with_str(rest, |app, text| {
+        on_focused_tab(app, |node| {
+            for ch in text.chars() {
+                node.tab.send(&HostToView::Input(InputEvent::Char { codepoint: ch as u32 }));
+            }
+        });
+    })),
+    row("KEYPAGE key", "Send a KeyDown+KeyUp of `key` to the focused tab's own page", |rest| {
+        let key = parse_key_code(rest.split_whitespace().next()?)?;
+        job(move |app, _| {
+            let modifiers = app.key_modifiers;
+            on_focused_tab(app, |node| {
+                node.tab.send(&HostToView::Input(InputEvent::KeyDown { key, modifiers }));
+                node.tab.send(&HostToView::Input(InputEvent::KeyUp { key, modifiers }));
+            });
+        })
+    }),
+    row("INSTALLVIEW kind", "Start downloading and installing the view's host files (and CEF's runtime)", |rest| {
+        let kind = ViewKind::from_name(rest)?;
+        job(move |app, _| app.start_view_install(kind))
+    }),
+    row("VIEWSTATE kind", "Print the view's state (Installed, Installing n%, Failed: ..) to stderr", |rest| {
+        let kind = ViewKind::from_name(rest)?;
+        job(move |app, _| {
+            eprintln!(
+                "view-state {}: {} [{}]",
+                kind.desc().name,
+                crate::view_info::view_status_label(&app.view_status(kind)).0,
+                crate::view_info::on_disk_text(kind, crate::process_manager::view_on_disk(kind))
+            )
+        })
+    }),
+    row("REOPENTAB", "Ctrl+Shift+T -- reopen the newest Recently Closed entry", |_| job(|app, _| app.reopen_closed_shortcut())),
+    row("REOPENNODE id", "Reopen closed node `id`, as the Recently Closed popup does, whichever replica closed it", |rest| {
+        with_id(rest, |app, id| {
+            if !app.debug_reopen_node(id) {
+                eprintln!("REOPENNODE: {id} is not a node id; ignored");
+            }
+        })
+    }),
+    row("ZOOMIN", "Ctrl+=/Ctrl++ -- zoom in", |_| job(|app, _| app.zoom_in_shortcut())),
+    row("ZOOMOUT", "Ctrl+- -- zoom out", |_| job(|app, _| app.zoom_out_shortcut())),
+    row("ZOOMRESET", "Ctrl+0 -- reset zoom", |_| job(|app, _| app.zoom_reset_shortcut())),
+    row("GRAPHZOOM pct", "Graph view: set the camera zoom to pct percent (ZOOMIN/ZOOMOUT zoom the focused page there)", |rest| {
+        let pct = parse_zoom_pct(rest)?;
+        job(move |app, _| app.pending_graph_zoom = Some(pct / 100.0))
+    }),
+    row("OPENDEVTOOLS", "F12 -- open devtools", |_| job(|app, _| app.open_devtools_shortcut())),
+    row("NEWTAB", "Ctrl+T -- new tab", |_| job(|app, _| app.new_tab_shortcut())),
+    row("CLOSETAB", "Ctrl+W -- close the focused tab", |_| job(|app, _| app.close_focused_tab_shortcut())),
+    row("FOCUSADDRESS", "Ctrl+L -- focus the address bar", |_| job(|app, _| app.focus_address_bar_shortcut())),
+    row("NEXTTAB", "Ctrl+Tab -- cycle to the next tab", |_| job(|app, _| app.cycle_focused_tab(true))),
+    row("PREVTAB", "Ctrl+Shift+Tab -- cycle to the previous tab", |_| job(|app, _| app.cycle_focused_tab(false))),
+    row("OPENFINDBAR", "Ctrl+F -- open find-in-page", |_| job(|app, _| app.open_find_bar_shortcut())),
+    row("FINDTEXT text", "Set the find bar's search text and search", |rest| with_str(rest, |app, text| {
+        app.find.text = text;
+        app.send_find_start();
+    })),
+    row("FINDMATCHCASE true|false", "Toggle the find bar's case-sensitivity", |rest| {
+        let match_case = true_false(rest.split_whitespace().next()?)?;
+        job(move |app, _| {
+            app.find.match_case = match_case;
+            app.send_find_start();
+        })
+    }),
+    row("FINDNEXT", "Find bar: next match", |_| job(|app, _| app.send_find_navigate(true))),
+    row("FINDPREVIOUS", "Find bar: previous match", |_| job(|app, _| app.send_find_navigate(false))),
+    row("CLOSEFINDBAR", "Close the find bar", |_| job(|app, _| app.close_find_bar())),
+    // Bypasses `focus_tab`/`leave_to_graph`'s own visibility changes, which always come bundled with a `Resize`: for
+    // testing the `SetVisible(false)` -> `true` repaint path in isolation.
+    row("SETVISIBLE true|false", "Send SetVisible directly to the focused tab (bypasses the usual resize-bundled visibility change)", |rest| {
+        let visible = true_false(rest.split_whitespace().next()?)?;
+        job(move |app, _| on_focused_tab(app, |node| node.tab.set_visible(visible)))
+    }),
+    row("SCREENSHOT path", "Save the next frame as a PNG at `path`; later commands wait for it (30 s max)", |rest| {
+        (!rest.is_empty()).then(|| Parsed::Reader(ReaderOp::Screenshot(rest.to_string())))
+    }),
+    row("RESIZE w h", "Resize the window to (w, h)", |rest| {
+        let mut parts = rest.split_whitespace();
+        let (width, height): (u32, u32) = (parts.next()?.parse().ok()?, parts.next()?.parse().ok()?);
+        job(move |app, _| {
+            if let Some(window) = &app.window {
+                let _ = window.request_inner_size(PhysicalSize::new(width, height));
+            }
+        })
+    }),
+    row("QUIT", "Exit the app", |_| job(quit)),
+    row("QUICKSWITCHOPEN", "Ctrl+K -- open the quick switcher", |_| job(|app, _| app.open_quick_switcher())),
+    row("QUICKSWITCHTEXT text", "Set the quick switcher's search text", |rest| with_str(rest, |app, text| {
+        if let Some(switcher) = &mut app.menus.quick_switcher {
+            switcher.query = text;
+            switcher.selected = 0;
+        }
+    })),
+    row("QUICKSWITCHDOWN", "Quick switcher: move highlight down", |_| job(|app, _| app.quick_switcher_move(1))),
+    row("QUICKSWITCHUP", "Quick switcher: move highlight up", |_| job(|app, _| app.quick_switcher_move(-1))),
+    row("QUICKSWITCHENTER", "Quick switcher: confirm the highlighted row", |_| job(|app, _| app.quick_switcher_confirm())),
+    row("QUICKSWITCHESCAPE", "Close the quick switcher", |_| job(|app, _| app.menus.quick_switcher = None)),
+    row("SESSIONNAMETEXT text", "Set the \"Save Session As...\" name field", |rest| with_str(rest, |app, text| app.session_name_draft = text)),
+    row("SAVESESSIONAS name", "Save the running session as `name` (sessions/<name>.mnf)", |rest| with_text(rest, |app, name| app.save_named_session(&name))),
+    row("OPENSESSION name", "Open the named save `name`, replacing the running session", |rest| {
+        with_text(rest, |app, name| {
+            app.load_named_session(&name);
+            app.close_settings_page();
+        })
+    }),
+    row("GRAPHFILTERTEXT text", "Set the Graph toolbar's own filter box", |rest| with_str(rest, |app, text| app.graph_filter = text)),
+    row("HISTORYFILTERTEXT text", "Set the History popup's own filter box", |rest| with_str(rest, |app, text| app.history_ui.history_filter = text)),
+    row("BOOKMARKSFILTERTEXT text", "Set the Bookmarks popup's own filter box", |rest| with_str(rest, |app, text| app.history_ui.bookmarks_filter = text)),
+    row("TOGGLEVIEW", "Ctrl+G -- toggle Tab / Graph view", |_| job(|app, _| app.toggle_view_mode_shortcut())),
+    row("TOGGLESETTINGSPAGE", "Settings gear -- enter/leave the Settings page", |_| job(|app, _| app.toggle_settings_page())),
+    // The file commands take an explicit path instead of a real file dialog: headless mode has no human to answer
+    // one, so they call the same underlying save/load directly.
+    row("EXPORTSESSION path", "Save the current session to `path`", |rest| {
+        with_text(rest, |app, path| app.export_session_to(std::path::Path::new(&path)))
+    }),
+    row("EXPORTSTATE path", "Write view, address bar and dropdown state to `path` as JSON (see debug_export.rs)", |rest| {
+        with_text(rest, |app, path| app.write_export_state(std::path::Path::new(&path)))
+    }),
+    row("IMPORTSESSION path", "Load a session from `path`", |rest| {
+        with_text(rest, |app, path| match crate::json_file::load(std::path::Path::new(&path), "session") {
+            Ok(json) => app.confirm = Some(Confirm::Import(Box::new(json))),
+            Err(err) => app.queue_toast(err),
+        })
+    }),
+    row("EXPORTBOOKMARKS path", "Save bookmarks to `path`", |rest| {
+        with_text(rest, |app, path| bookmarks::save_to(&app.bookmarks, std::path::Path::new(&path)))
+    }),
+    row("IMPORTBOOKMARKS path", "Load bookmarks from `path`", |rest| {
+        with_text(rest, |app, path| match bookmarks::load_from(std::path::Path::new(&path)) {
+            Ok(imported) => {
+                app.bookmarks = imported;
+                bookmarks::save(&app.bookmarks);
+            }
+            Err(err) => app.queue_toast(err),
+        })
+    }),
+    row("CLOSEALLLEVEL", "Ctrl+Shift+W -- close every tab at the current level", |_| job(|app, _| app.close_all_at_current_level())),
+    row("CONFIRMIMPORT", "Click the \"Import Session...\" confirm popup's Import button", |_| {
+        job(|app, _| {
+            if let Some(Confirm::Import(json)) = app.confirm.take_if(|c| matches!(c, Confirm::Import(_))) {
+                app.replace_running_session(&json, crate::store::json::Trust::Foreign);
+            }
+        })
+    }),
+    row("CANCELIMPORT", "Click the confirm popup's Cancel button", |_| {
+        job(|app, _| {
+            app.confirm.take_if(|c| matches!(c, Confirm::Import(_)));
+        })
+    }),
+    // `id name`: node `id`'s rename field committed with `name` (`NodeAction::CommitRename`: the clean name; a group
+    // ignores an empty one, any other node clears its name with it), by id since a headless test can't rely on focus.
+    row("RENAMEGROUP [id name]", "F2 -- rename the current group; with `id name`, commit `name` as node `id`'s new name", |rest| {
+        match parse_rename(rest)? {
+            None => job(|app, _| app.rename_current_group_shortcut()),
+            Some((id, name)) => job(move |app, _| {
+                if app.nodes.contains_key(&id) {
+                    app.commit_rename(&id, &name);
+                    app.save_session();
+                } else {
+                    eprintln!("RENAMEGROUP: {id} isn't a node; ignored");
+                }
+            }),
+        }
+    }),
+    row("BOOKMARKFOLDERTEXT text", "Set the bookmarks popup's own folder-rename draft", |rest| {
+        with_str(rest, |app, text| {
+            if let Some((_, draft)) = &mut app.history_ui.renaming_bookmark_folder {
+                *draft = text;
+            }
+        })
+    }),
+    row("DISMISSPEEK", "Escape-dismisses-peek equivalent in Graph view", |_| job(|app, _| app.dismiss_hover_peek())),
+    row("EXPORTGROUP path", "Export whichever group's context menu is currently open", |rest| {
+        with_text(rest, |app, path| {
+            if let Some((group_id, _)) = app.menus.node_menu.clone().filter(|(id, _)| app.is_container(id)) {
+                if let Some(json) = app.export_group_json(&group_id) {
+                    write_json_export(&json, std::path::Path::new(&path), "group");
+                }
+            }
+        })
+    }),
+    row("IMPORTGROUP path", "Import a group from `path`", |rest| {
+        with_text(rest, |app, path| match crate::json_file::load::<store::json::JsonDoc>(std::path::Path::new(&path), "group") {
+            Ok(json) => app.import_group_json(&json),
+            Err(err) => app.queue_toast(err),
+        })
+    }),
+    row("DUPLICATETAB", "Ctrl+D -- duplicate the focused tab", |_| job(|app, _| app.duplicate_focused_tab_shortcut())),
+    row("DUPLICATENODE id", "Duplicate on card `id`: the whole selection when `id` is in it (any kind)", |rest| {
+        with_id(rest, |app, id| {
+            app.duplicate_selection(id);
+            app.save_session();
+        })
+    }),
+    row("PRINTTOPDF path", "Print the focused tab to a PDF at `path`", |rest| with_text(rest, |app, path| app.start_print_to_pdf(path))),
+    row("TOGGLEPIN", "Ctrl+P -- pin/unpin the selected cards, or the focused one", |_| job(|app, _| app.pin_shortcut())),
+    row("RELOAD", "Ctrl+R/F5 -- reload the focused tab", |_| job(|app, _| app.reload_focused_tab_shortcut())),
+    row("GOBACK", "Back button on the focused tab", |_| go(Dir::Back)),
+    row("GOFORWARD", "Forward button on the focused tab", |_| go(Dir::Forward)),
+    row("NEWGROUP", "Ctrl+Shift+G -- new group", |_| job(|app, _| app.new_group_shortcut())),
+    row("NEWNOTE", "Graph toolbar's \"+ Note\" button", |_| job(|app, _| app.new_note_shortcut())),
+    // With a point, placed like a real drop at that window point; no `save_session` there either -- same reasoning as
+    // `WindowEvent::DroppedFile`, so a script sending several `ADDFILE`s with a point still gets one save per batch,
+    // not one per file. With none, the file is jittered around world center at the current level, as the picker does.
+    row("ADDFILE path [x y]", "Adds a file as the node its content makes (image, PDF, JSON, note, tab, or a download card); x y is a window point, like a drop there", |rest| {
+        if rest.is_empty() {
+            return None;
+        }
+        match parse_add_file(rest) {
+            (path, None) => job(move |app, _| {
+                if app.add_file_at(path.into(), None).is_ok() {
+                    app.save_session();
+                }
+            }),
+            (path, Some((x, y))) => job(move |app, _| app.drop_file(path.into(), egui::pos2(x, y))),
+        }
+    }),
+    // No bytes, unknown total, nothing fetched or written; a no-op with no focused tab.
+    row("ADDDOWNLOAD path", "Add a download node for `path`, as if the focused tab started it", |rest| {
+        with_text(rest, |app, path| {
+            if let Some(tab_id) = app.focused.clone() {
+                app.insert_download_node(tab_id, path, None, None);
+            }
+        })
+    }),
+    // Headless tab spawns are async and can take 30 s or more (the first-launch demo's included), so WAITTABS
+    // replaces guessing a `sleep`.
+    row("WAITTABS [secs]", "Hold later commands until no tab spawn is in flight (default 60 s max)", |rest| {
+        wait_timeout(rest).map(|timeout| Parsed::Reader(ReaderOp::WaitTabs(timeout)))
+    }),
+    // Replaces the `SLEEP 1` between `ADDRESSBAR` and `ENTER` (they land in one frame otherwise, Enter first) and the
+    // `SLEEP 3` for a new tab's first load. A tab that hasn't reported its first load yet counts as not loading.
+    row("WAITIDLE [secs]", "Hold later commands until typed input has landed, no view transition runs and the focused tab isn't loading (default 60 s max)", |rest| {
+        wait_timeout(rest).map(|timeout| Parsed::Reader(ReaderOp::WaitIdle(timeout)))
+    }),
+    // A driver script's own `sleep` doesn't stay in order: while the reader is blocked (`WAITTABS`, `SCREENSHOT`) the
+    // script keeps writing, and the lines it buffered arrive back to back.
+    row("SLEEP secs", "Hold later commands for `secs` (in order, unlike a driver script's own sleep)", |rest| {
+        parse_secs(rest).map(|duration| Parsed::Reader(ReaderOp::Sleep(duration)))
+    }),
+    row("TOGGLESHORTCUTSHELP", "F1 -- toggle the keyboard-shortcut reference popup", |_| {
+        job(|app, _| app.menus.shortcuts_help_open = !app.menus.shortcuts_help_open)
+    }),
+    row("CONFIRM kind", "Open a confirm dialog: destructive (delete session) or safe (download Servo)", |rest| {
+        // Nothing runs unless the dialog's button is clicked, and nothing opens while another confirm is up.
+        match rest {
+            "destructive" => job(|app, _| app.offer_confirm(Confirm::SessionDelete("probe".to_string()))),
+            "safe" => job(|app, _| app.offer_confirm(Confirm::View(crate::view_info::ViewConfirm::Download(ViewKind::Servo)))),
+            _ => None,
+        }
+    }),
+    row("MENUPAGE name", "Show the open card menu's color|jar page, or its items for none", |rest| {
+        let page = match rest {
+            "color" => Some(crate::node_menu::MenuPage::Color),
+            "jar" => Some(crate::node_menu::MenuPage::Jar),
+            "none" => None,
+            _ => return None,
+        };
+        job(move |app, _| {
+            app.menus.node_menu_page = app.menus.node_menu.clone().and_then(|(id, pos)| page.map(|page| (id, pos, page)));
+        })
+    }),
+    row("TOGGLEPOPUP name", "Toggle the Settings page's bookmarks|history|downloads popup (opens the page), the graph toolbar's recentlyclosed list, or the Back|Forward chip's branch list (needs its marker)", |rest| {
+        let which = match rest {
+            "bookmarks" => AnchoredPopup::Bookmarks,
+            "history" => AnchoredPopup::History,
+            "downloads" => AnchoredPopup::Downloads,
+            "back" => AnchoredPopup::BackBranches,
+            "forward" => AnchoredPopup::ForwardBranches,
+            "recentlyclosed" => AnchoredPopup::RecentlyClosed,
+            _ => return None,
+        };
+        job(move |app, _| {
+            if !matches!(which, AnchoredPopup::BackBranches | AnchoredPopup::ForwardBranches | AnchoredPopup::RecentlyClosed) {
+                app.open_settings_page();
+            }
+            popups::toggle_popup(&mut app.menus.open_popup, which);
+        })
+    }),
+    row("SPLIT kind", "Open a Split pane running `kind` (servo|cef|webkit|webview2)", |rest| {
+        let kind = ViewKind::from_name(rest)?;
+        job(move |app, _| app.start_split(kind))
+    }),
+    row("CLOSESPLIT", "Close the Split pane", |_| job(|app, _| app.close_split())),
+    row("JSONSELECT [pointer]", "Select an entry on the current JSON level (no pointer: the root)", |rest| {
+        with_str(rest, |app, pointer| app.apply_json_edit(JsonEdit::Select(pointer)))
+    }),
+    row("JSONTOGGLE [pointer]", "Collapse or expand a card on the current JSON level", |rest| {
+        with_str(rest, |app, pointer| app.apply_json_edit(JsonEdit::Toggle(pointer)))
+    }),
+    row("JSONMORE [pointer]", "Reveal the next page of a card on the current JSON level", |rest| {
+        with_str(rest, |app, pointer| app.apply_json_edit(JsonEdit::More(pointer)))
+    }),
+    row("JSONRELAYOUT", "Relayout the current JSON level (clears saved card positions)", |_| job(|app, _| app.apply_json_edit(JsonEdit::Relayout))),
+    row("JSONSEARCH text", "Search the current JSON level's keys and values", |rest| with_str(rest, |app, text| app.set_json_search(text))),
+    // Node commands take explicit ids, since a headless test can't rely on focus.
+    row("CLOSENODE id", "Close node `id` (any kind), as its card's Close does, and save", |rest| {
+        with_id(rest, |app, id| {
+            if !app.debug_close_node(id) {
+                eprintln!("CLOSENODE: no node {id}; ignored");
+            }
+        })
+    }),
+    row("MOVETOGROUP id group", "Move node `id` into the sibling group `group`, same as its \"Move into\" menu row", |rest| {
+        let mut parts = rest.split_whitespace();
+        let (id, group) = (parts.next()?.to_string(), parts.next()?.to_string());
+        job(move |app, _| {
+            if !app.debug_move_to_group(&id, &group) {
+                eprintln!("MOVETOGROUP: {group} isn't a sibling group of {id}; ignored");
+            }
+        })
+    }),
+    row("LINK a b", "Link card `a` to card `b`, same as `a`'s \"Link to...\" row and a click on `b`", |rest| {
+        let mut parts = rest.split_whitespace();
+        let (from, to) = (parts.next()?.to_string(), parts.next()?.to_string());
+        job(move |app, _| match app.connect(crate::caps::LINK, &from, &to) {
+            Ok(()) => {
+                app.save_session();
+            }
+            Err(err) => eprintln!("LINK: {from} -> {to} refused: {err:?}"),
+        })
+    }),
+    row("UNLINK a b", "Remove the link between cards `a` and `b`, in either order", |rest| {
+        let mut parts = rest.split_whitespace();
+        let (a, b) = (parts.next()?.to_string(), parts.next()?.to_string());
+        job(move |app, _| {
+            app.disconnect(crate::caps::LINK, &a, &b);
+            app.save_session();
+        })
+    }),
+    row("OPENEDFROM child parent", "Set the card `child` was opened from, same as its \"Opened from...\" row", |rest| {
+        let mut parts = rest.split_whitespace();
+        let (child, parent) = (parts.next()?.to_string(), parts.next()?.to_string());
+        job(move |app, _| match app.connect(crate::caps::OPENED_FROM, &child, &parent) {
+            Ok(()) => {
+                app.save_session();
+            }
+            Err(err) => eprintln!("OPENEDFROM: {child} -> {parent} refused: {err:?}"),
+        })
+    }),
+    // `text` is the rest of the line, possibly empty.
+    row("SETNOTETEXT id text", "Type `text` into note `id`'s box (replacing it) and blur it, which commits and saves", |rest| {
+        if rest.is_empty() {
+            return None;
+        }
+        let (id, text) = split_id(rest);
+        let text = text.to_string();
+        job(move |app, _| {
+            if !app.debug_set_note_text(&id, text) {
+                eprintln!("SETNOTETEXT: {id} isn't a note; ignored");
+            }
+        })
+    }),
+    row("MOVENODE id x y", "Drag card `id` to world point (x, y) and release it there, which saves", |rest| {
+        let (id, x, y) = parse_move_node(rest)?;
+        job(move |app, _| {
+            if !app.debug_move_node(&id, egui::vec2(x, y)) {
+                eprintln!("MOVENODE: no node {id}; ignored");
+            }
+        })
+    }),
+    row("SLEEPNODE id", "Ask the tab `id` (or every tab of the group `id`) to sleep, same as its \"Sleep\" context-menu action; it sleeps when the engine answers the page-state query (wait a second)", |rest| {
+        with_id(rest, |app, id| {
+            if app.is_container(id) {
+                app.sleep_group(id);
+            } else {
+                app.request_sleep(id, SleepWhy::Manual);
+            }
+        })
+    }),
+    row("RESTARTVIEW id", "Start a new view host for live tab `id` at its URL, same as its \"Restart View\" row (offered while it is not responding)", |rest| {
+        with_id(rest, |app, id| {
+            if !app.restart_view(id) {
+                eprintln!("RESTARTVIEW: no live tab {id}; ignored");
+            }
+        })
+    }),
+    row("ENDVIEW id", "End live tab `id`'s view host and leave a failed card, same as its \"End View\" row", |rest| {
+        with_id(rest, |app, id| {
+            if !app.end_view(id) {
+                eprintln!("ENDVIEW: no live tab {id}; ignored");
+            }
+        })
+    }),
+    row("IDLESWEEP secs", "Run one idle auto-sleep sweep: tabs out of sight for `secs` seconds are asked to sleep, and those with a changed form stay awake (the clock updates on every sweep)", |rest| {
+        let secs: u64 = rest.parse().ok()?;
+        job(move |app, _| app.sweep_idle_tabs(Some(std::time::Duration::from_secs(secs))))
+    }),
+    // `name` is a label ("Work · #1a2b") or a stored name; a stored name several jars share picks the lowest node id
+    // (`App::jar_named`).
+    row("SETJAR <name|default>", "The focused tab's jar edge to that jar, by label or name (a new jar card at its level if none has it)", |rest| {
+        with_text(rest, |app, name| {
+            if app.set_focused_tab_jar_named(&name) {
+                app.save_session();
+            }
+        })
+    }),
+    row("SWITCHJARNOW", "The focused tab moves to its new jar now, if it is waiting to switch", |_| {
+        job(|app, _| {
+            if let Some(tab) = app.focused.clone() {
+                app.switch_jar_now(&tab);
+            }
+        })
+    }),
+    row("CLEARJAR <name|default>", "Clear that jar's cookies, as its confirmed \"Clear cookies\" does", |rest| {
+        with_text(rest, |app, name| {
+            let jar = if name.trim().eq_ignore_ascii_case("default") { app.default_jar() } else { app.jar_named(&name) };
+            match jar {
+                Some(jar) => app.clear_jar_cookies(jar),
+                None => eprintln!("CLEARJAR: no jar named {name:?}"),
+            }
+        })
+    }),
+    row("NEWJAR <name>", "A new jar card at the current level, as \"New Jar...\" makes (no edge)", |rest| {
+        with_text(rest, |app, name| {
+            // `placement` jitters by the string it is given and leaves a JSON level first, as a new card does.
+            let at = app.placement(&name, None);
+            let id = app.create_jar(&name, at);
+            eprintln!("NEWJAR: {id}");
+            app.save_session();
+        })
+    }),
+    row("USEJAR <id> <jar|none>", "Tab or group `id` uses jar card `jar`, or inherits with `none`, as a Jar page row", |rest| {
+        let (from, jar) = parse_use_jar(rest)?;
+        job(move |app, _| {
+            let jar = jar.and_then(|j| j.parse().ok());
+            app.set_jar_edge(&from, jar);
+            app.save_session();
+        })
+    }),
+    row("JAREPHEMERAL <id> on|off", "Jar card `id`'s Make/Stop Ephemeral, confirmed", |rest| {
+        let mut parts = rest.split_whitespace();
+        let id = parts.next()?.to_string();
+        let on = on_off(parts.next()?)?;
+        job(move |app, _| match id.parse() {
+            Ok(jar) if app.jar_exists(jar) => {
+                app.set_jar_ephemeral(jar, on);
+                app.save_session();
+            }
+            _ => eprintln!("JAREPHEMERAL: {id} isn't a jar card; ignored"),
+        })
+    }),
+    // Adds a fresh copy of the demo layout to whatever's open, never touching `has_shown_first_launch_demo`: purely
+    // a look-at-it aid, not a way to simulate real first-launch persistence.
+    row("TRIGGERFIRSTLAUNCHDEMO", "Dev-only: re-spawn the first-launch demo graph on demand", |_| job(|app, _| app.spawn_first_launch_demo())),
+    row("HELP", "Print this command list (`?` too)", |_| job(|_, _| print_help())),
+];
+
+/// Parses one line of the headless debug-command text protocol. Unknown commands or malformed arguments are `None`
+/// (the reader reports them).
+pub(crate) fn parse_line(line: &str) -> Option<Line> {
     // Strip a leading BOM — several Windows-side tools that can drive this
     // protocol (PowerShell's default `StandardInput` stream encoding among
     // them, confirmed live: a `Process.StandardInput.WriteLine` from
@@ -709,234 +872,80 @@ pub fn parse_line(line: &str) -> Option<DebugCommand> {
     let line = line.strip_prefix('\u{feff}').unwrap_or(line);
     let line = line.trim();
     let (cmd, rest) = line.split_once(char::is_whitespace).unwrap_or((line, ""));
-    let rest = rest.trim();
-    let mut parts = rest.split_whitespace();
-    // Commands whose whole argument is a path or text, which must not be empty.
-    let non_empty = |command: fn(String) -> DebugCommand| (!rest.is_empty()).then(|| command(rest.to_string()));
-    match cmd.to_ascii_uppercase().as_str() {
-        "MOUSEMOVE" => Some(DebugCommand::MouseMove { x: parts.next()?.parse().ok()?, y: parts.next()?.parse().ok()? }),
-        "MOUSEDOWN" => Some(DebugCommand::MouseDown {
-            x: parts.next()?.parse().ok()?,
-            y: parts.next()?.parse().ok()?,
-            button: parts.next().map(parse_mouse_button).unwrap_or(MouseButton::Left),
-        }),
-        "MOUSEUP" => Some(DebugCommand::MouseUp {
-            x: parts.next()?.parse().ok()?,
-            y: parts.next()?.parse().ok()?,
-            button: parts.next().map(parse_mouse_button).unwrap_or(MouseButton::Left),
-        }),
-        "CLICK" => {
-            let (x, y) = (parts.next()?.parse().ok()?, parts.next()?.parse().ok()?);
-            // Then `[button] [ctrl]`.
-            let (mut button, mut ctrl) = (MouseButton::Left, false);
-            for word in parts {
-                if word.eq_ignore_ascii_case("ctrl") {
-                    ctrl = true;
-                } else {
-                    button = parse_mouse_button(word);
-                }
-            }
-            Some(DebugCommand::Click { x, y, button, ctrl })
-        }
-        "DOUBLECLICK" => {
-            Some(DebugCommand::DoubleClick { x: parts.next()?.parse().ok()?, y: parts.next()?.parse().ok()? })
-        }
-        "SCROLL" => Some(DebugCommand::Scroll {
-            x: parts.next()?.parse().ok()?,
-            y: parts.next()?.parse().ok()?,
-            delta_x: parts.next()?.parse().ok()?,
-            delta_y: parts.next()?.parse().ok()?,
-        }),
-        "ADDRESSBAR" => Some(DebugCommand::AddressBar(rest.to_string())),
-        "ENTER" => Some(DebugCommand::Enter),
-        "ESCAPE" => Some(DebugCommand::Escape),
-        "BACKSPACE" => Some(DebugCommand::Backspace),
-        "EGUITEXT" => non_empty(DebugCommand::EguiText),
-        "ARROWRIGHT" => Some(DebugCommand::ArrowRight),
-        "ARROWLEFT" => Some(DebugCommand::ArrowLeft),
-        "SPACEKEY" => Some(DebugCommand::SpaceKey),
-        "DIGITKEY" => rest.trim().parse().ok().filter(|d| *d <= 9).map(DebugCommand::DigitKey),
-        "ARROWDOWN" => Some(DebugCommand::ArrowDown),
-        "ARROWUP" => Some(DebugCommand::ArrowUp),
-        "SHIFTF10" => Some(DebugCommand::ShiftF10),
-        "TABKEY" => Some(DebugCommand::TabKey(rest.trim() == "shift")),
-        "UNDOKEY" => Some(DebugCommand::UndoKey(rest.trim() == "shift")),
-        "GRAPHLEFT" => Some(DebugCommand::GraphFocusLeft),
-        "GRAPHRIGHT" => Some(DebugCommand::GraphFocusRight),
-        "GRAPHUP" => Some(DebugCommand::GraphFocusUp),
-        "GRAPHDOWN" => Some(DebugCommand::GraphFocusDown),
-        "GRAPHOPEN" => Some(DebugCommand::GraphOpenFocused),
-        "TYPE" => Some(DebugCommand::TypeIntoPage(rest.to_string())),
-        "KEYPAGE" => Some(DebugCommand::KeyPage(parse_key_code(parts.next()?)?)),
-        "REOPENTAB" => Some(DebugCommand::ReopenTab),
-        "REOPENNODE" => non_empty(DebugCommand::ReopenNode),
-        "INSTALLVIEW" => parse_view_kind(rest).map(DebugCommand::InstallView),
-        "VIEWSTATE" => parse_view_kind(rest).map(DebugCommand::ViewStatus),
-        "ZOOMIN" => Some(DebugCommand::ZoomIn),
-        "ZOOMOUT" => Some(DebugCommand::ZoomOut),
-        "ZOOMRESET" => Some(DebugCommand::ZoomReset),
-        "GRAPHZOOM" => rest.parse::<f32>().ok().filter(|v| v.is_finite() && *v > 0.0).map(DebugCommand::GraphZoom),
-        "OPENDEVTOOLS" => Some(DebugCommand::OpenDevTools),
-        "NEWTAB" => Some(DebugCommand::NewTab),
-        "CLOSETAB" => Some(DebugCommand::CloseTab),
-        "FOCUSADDRESS" => Some(DebugCommand::FocusAddressBar),
-        "NEXTTAB" => Some(DebugCommand::NextTab),
-        "PREVTAB" => Some(DebugCommand::PrevTab),
-        "OPENFINDBAR" => Some(DebugCommand::OpenFindBar),
-        "FINDTEXT" => Some(DebugCommand::FindText(rest.to_string())),
-        "FINDMATCHCASE" => Some(DebugCommand::FindMatchCase(match parts.next()? {
-            "true" => true,
-            "false" => false,
-            _ => return None,
-        })),
-        "FINDNEXT" => Some(DebugCommand::FindNext),
-        "FINDPREVIOUS" => Some(DebugCommand::FindPrevious),
-        "CLOSEFINDBAR" => Some(DebugCommand::CloseFindBar),
-        "SETVISIBLE" => Some(DebugCommand::SetVisible(match parts.next()? {
-            "true" => true,
-            "false" => false,
-            _ => return None,
-        })),
-        "SCREENSHOT" => non_empty(DebugCommand::Screenshot),
-        "RESIZE" => Some(DebugCommand::Resize(parts.next()?.parse().ok()?, parts.next()?.parse().ok()?)),
-        "QUIT" => Some(DebugCommand::Quit),
-        "QUICKSWITCHOPEN" => Some(DebugCommand::QuickSwitchOpen),
-        "QUICKSWITCHTEXT" => Some(DebugCommand::QuickSwitchText(rest.to_string())),
-        "QUICKSWITCHDOWN" => Some(DebugCommand::QuickSwitchDown),
-        "QUICKSWITCHUP" => Some(DebugCommand::QuickSwitchUp),
-        "QUICKSWITCHENTER" => Some(DebugCommand::QuickSwitchEnter),
-        "QUICKSWITCHESCAPE" => Some(DebugCommand::QuickSwitchEscape),
-        "SESSIONNAMETEXT" => Some(DebugCommand::SessionNameText(rest.to_string())),
-        "SAVESESSIONAS" => non_empty(DebugCommand::SaveSessionAs),
-        "OPENSESSION" => non_empty(DebugCommand::OpenSession),
-        "GRAPHFILTERTEXT" => Some(DebugCommand::GraphFilterText(rest.to_string())),
-        "HISTORYFILTERTEXT" => Some(DebugCommand::HistoryFilterText(rest.to_string())),
-        "BOOKMARKSFILTERTEXT" => Some(DebugCommand::BookmarksFilterText(rest.to_string())),
-        "TOGGLEVIEW" => Some(DebugCommand::ToggleView),
-        "TOGGLESETTINGSPAGE" => Some(DebugCommand::ToggleSettingsPage),
-        "EXPORTSESSION" => non_empty(DebugCommand::ExportSession),
-        "EXPORTSTATE" => non_empty(DebugCommand::ExportState),
-        "IMPORTSESSION" => non_empty(DebugCommand::ImportSession),
-        "EXPORTBOOKMARKS" => non_empty(DebugCommand::ExportBookmarks),
-        "IMPORTBOOKMARKS" => non_empty(DebugCommand::ImportBookmarks),
-        "CLOSEALLLEVEL" => Some(DebugCommand::CloseAllLevel),
-        "CONFIRMIMPORT" => Some(DebugCommand::ConfirmImport),
-        "CANCELIMPORT" => Some(DebugCommand::CancelImport),
-        "RENAMEGROUP" if rest.is_empty() => Some(DebugCommand::RenameGroup),
-        "RENAMEGROUP" => {
-            let (id, name) = split_id(rest);
-            (!name.is_empty()).then(|| DebugCommand::RenameGroupTo { id, name: name.to_string() })
-        }
-        "SETNOTETEXT" if !rest.is_empty() => {
-            let (id, text) = split_id(rest);
-            Some(DebugCommand::SetNoteText { id, text: text.to_string() })
-        }
-        "MOVENODE" => {
-            let id = parts.next()?.to_string();
-            let mut coord = || parts.next()?.parse::<f32>().ok().filter(|v| v.is_finite());
-            let (x, y) = (coord()?, coord()?);
-            parts.next().is_none().then_some(DebugCommand::MoveNode { id, x, y })
-        }
-        "BOOKMARKFOLDERTEXT" => Some(DebugCommand::BookmarkFolderText(rest.to_string())),
-        "DISMISSPEEK" => Some(DebugCommand::DismissPeek),
-        "EXPORTGROUP" => non_empty(DebugCommand::ExportGroup),
-        "IMPORTGROUP" => non_empty(DebugCommand::ImportGroup),
-        "DUPLICATETAB" => Some(DebugCommand::DuplicateTab),
-        "DUPLICATENODE" if !rest.is_empty() => Some(DebugCommand::DuplicateNode(rest.to_string())),
-        "PRINTTOPDF" => non_empty(DebugCommand::PrintToPdf),
-        "TOGGLEPIN" => Some(DebugCommand::TogglePin),
-        "RELOAD" => Some(DebugCommand::Reload),
-        "GOBACK" => Some(DebugCommand::GoBack),
-        "GOFORWARD" => Some(DebugCommand::GoForward),
-        "NEWGROUP" => Some(DebugCommand::NewGroup),
-        "NEWNOTE" => Some(DebugCommand::NewNote),
-        "ADDFILE" => (!rest.is_empty()).then(|| parse_add_file(rest)).flatten(),
-        "ADDDOWNLOAD" => non_empty(DebugCommand::AddDownload),
-        "WAITTABS" => Some(DebugCommand::WaitTabs(if rest.is_empty() {
-            std::time::Duration::from_secs(60)
-        } else {
-            parse_secs(rest)?
-        })),
-        "WAITIDLE" => Some(DebugCommand::WaitIdle(if rest.is_empty() {
-            std::time::Duration::from_secs(60)
-        } else {
-            parse_secs(rest)?
-        })),
-        "SLEEP" => Some(DebugCommand::Sleep(parse_secs(rest)?)),
-        "TOGGLESHORTCUTSHELP" => Some(DebugCommand::ToggleShortcutsHelp),
-        "TOGGLEPOPUP" => match rest.trim() {
-            "bookmarks" => Some(DebugCommand::TogglePopup(AnchoredPopup::Bookmarks)),
-            "history" => Some(DebugCommand::TogglePopup(AnchoredPopup::History)),
-            "downloads" => Some(DebugCommand::TogglePopup(AnchoredPopup::Downloads)),
-            "back" => Some(DebugCommand::TogglePopup(AnchoredPopup::BackBranches)),
-            "forward" => Some(DebugCommand::TogglePopup(AnchoredPopup::ForwardBranches)),
-            "recentlyclosed" => Some(DebugCommand::TogglePopup(AnchoredPopup::RecentlyClosed)),
-            _ => None,
-        },
-        "CONFIRM" => match rest.trim() {
-            "destructive" => Some(DebugCommand::Confirm(true)),
-            "safe" => Some(DebugCommand::Confirm(false)),
-            _ => None,
-        },
-        "MENUPAGE" => match rest.trim() {
-            "color" => Some(DebugCommand::MenuPage(Some(crate::node_menu::MenuPage::Color))),
-            "jar" => Some(DebugCommand::MenuPage(Some(crate::node_menu::MenuPage::Jar))),
-            "none" => Some(DebugCommand::MenuPage(None)),
-            _ => None,
-        },
-        "SPLIT" => parse_view_kind(rest).map(DebugCommand::Split),
-        "CLOSESPLIT" => Some(DebugCommand::CloseSplit),
-        "CLOSENODE" => non_empty(DebugCommand::CloseNode),
-        "MOVETOGROUP" => {
-            Some(DebugCommand::MoveToGroup { id: parts.next()?.to_string(), group: parts.next()?.to_string() })
-        }
-        "LINK" => Some(DebugCommand::Link { from: parts.next()?.to_string(), to: parts.next()?.to_string() }),
-        "UNLINK" => Some(DebugCommand::Unlink { a: parts.next()?.to_string(), b: parts.next()?.to_string() }),
-        "OPENEDFROM" => {
-            Some(DebugCommand::OpenedFrom { child: parts.next()?.to_string(), parent: parts.next()?.to_string() })
-        }
-        "SLEEPNODE" => non_empty(DebugCommand::SleepNode),
-        "RESTARTVIEW" => non_empty(DebugCommand::RestartView),
-        "ENDVIEW" => non_empty(DebugCommand::EndView),
-        "IDLESWEEP" => rest.parse().ok().map(DebugCommand::IdleSweep),
-        "SETJAR" => non_empty(DebugCommand::SetJar),
-        "SWITCHJARNOW" => Some(DebugCommand::SwitchJarNow),
-        "CLEARJAR" => non_empty(DebugCommand::ClearJar),
-        "NEWJAR" => non_empty(DebugCommand::NewJar),
-        "USEJAR" => {
-            let from = parts.next()?.to_string();
-            let jar = parts.next()?;
-            Some(DebugCommand::UseJar { from, jar: (!jar.eq_ignore_ascii_case("none")).then(|| jar.to_string()) })
-        }
-        "JAREPHEMERAL" => {
-            let id = parts.next()?.to_string();
-            let on = match parts.next()? {
-                "on" => true,
-                "off" => false,
-                _ => return None,
-            };
-            Some(DebugCommand::JarEphemeral { id, on })
-        }
-        "JSONSELECT" => Some(DebugCommand::JsonSelect(rest.to_string())),
-        "JSONTOGGLE" => Some(DebugCommand::JsonToggle(rest.to_string())),
-        "JSONMORE" => Some(DebugCommand::JsonMore(rest.to_string())),
-        "JSONRELAYOUT" => Some(DebugCommand::JsonRelayout),
-        "JSONSEARCH" => Some(DebugCommand::JsonSearch(rest.to_string())),
-        "TRIGGERFIRSTLAUNCHDEMO" => Some(DebugCommand::TriggerFirstLaunchDemo),
-        "HELP" | "?" => Some(DebugCommand::Help),
-        _ => None,
+    let cmd = if cmd == "?" { "HELP" } else { cmd };
+    let verb = VERBS.iter().find(|v| v.word().eq_ignore_ascii_case(cmd))?;
+    match (verb.parse)(rest.trim())? {
+        Parsed::Job(run) => Some(Line::Run(DebugJob::new(verb.pointer, run))),
+        Parsed::Reader(op) => Some(Line::Reader(op)),
     }
 }
 
-/// Prints `COMMAND_HELP` to stderr -- `eprintln!`, not `println!`, matching
+/// Prints `VERBS` to stderr -- `eprintln!`, not `println!`, matching
 /// this protocol's own established convention of surfacing diagnostics on
 /// stderr (see e.g. the crash reporter) while stdout stays free for
 /// anything a driving script might want to parse on its own.
 pub fn print_help() {
     eprintln!("Manifold debug commands:");
-    for (usage, description) in COMMAND_HELP {
-        eprintln!("  {usage:<32} {description}");
+    for verb in VERBS {
+        eprintln!("  {:<32} {}", verb.usage, verb.doc);
     }
+}
+
+/// Runs one reader-thread op. `false` when the event loop is gone.
+fn run_reader_op(proxy: &EventLoopProxy<UserEvent>, op: ReaderOp) -> bool {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let (timeout, waiting_for, job): (_, String, Job) = match op {
+        ReaderOp::Sleep(duration) => {
+            std::thread::sleep(duration);
+            return true;
+        }
+        // The app sends `()` on `tx` once `tab_spawns_in_flight` is zero.
+        ReaderOp::WaitTabs(timeout) => (
+            timeout,
+            format!("WAITTABS: tab spawns still in flight after {timeout:?}; continuing"),
+            Box::new(move |app, _| {
+                if app.spawns.tab_spawns_in_flight == 0 {
+                    let _ = tx.send(());
+                } else {
+                    app.spawns.tabs_spawned_waiters.push(tx);
+                }
+            }),
+        ),
+        // The app sends `()` on `tx` once `App::debug_idle` holds, checked when it arrives and at the end of every
+        // frame.
+        ReaderOp::WaitIdle(timeout) => (
+            timeout,
+            format!("WAITIDLE: input or a load still pending after {timeout:?}; continuing"),
+            Box::new(move |app, _| {
+                app.debug.idle_waiters.push(tx);
+                app.release_idle_waiters();
+                // Pending input needs frames to land, and the check runs at the end of each.
+                if let Some(window) = &app.window {
+                    window.request_redraw();
+                }
+            }),
+        ),
+        // Frames can stall for seconds and the app holds one pending screenshot, so an unblocked second
+        // `SCREENSHOT` (or a `QUIT`) would drop the first.
+        ReaderOp::Screenshot(path) => (
+            std::time::Duration::from_secs(30),
+            format!("SCREENSHOT: {path} not taken after 30 s; continuing"),
+            Box::new(move |app, _| {
+                app.debug.pending_screenshot = Some(path);
+                app.debug.screenshot_waiter = Some(tx);
+                if let Some(window) = &app.window {
+                    window.request_redraw();
+                }
+            }),
+        ),
+    };
+    if proxy.send_event(UserEvent::Debug(DebugJob::new(false, job))).is_err() {
+        return false;
+    }
+    if rx.recv_timeout(timeout).is_err() {
+        eprintln!("{waiting_for}");
+    }
+    true
 }
 
 /// Spawns the stdin-reading thread for headless mode — one command per
@@ -956,7 +965,7 @@ pub fn spawn_stdin_reader(proxy: EventLoopProxy<UserEvent>) {
                 Ok(file) => Box::new(std::io::BufReader::new(file)),
                 Err(e) => {
                     eprintln!("--script {path}: {e}");
-                    let _ = proxy.send_event(UserEvent::Debug(DebugCommand::Quit));
+                    let _ = proxy.send_event(UserEvent::Debug(DebugJob::quit()));
                     return;
                 }
             },
@@ -965,37 +974,13 @@ pub fn spawn_stdin_reader(proxy: EventLoopProxy<UserEvent>) {
         for line in input.lines() {
             let Ok(line) = line else { break };
             match parse_line(&line) {
-                Some(DebugCommand::WaitTabs(timeout)) => {
-                    let (tx, rx) = std::sync::mpsc::channel();
-                    if proxy.send_event(UserEvent::Debug(DebugCommand::NotifyWhenTabsSpawned(tx))).is_err() {
+                Some(Line::Reader(op)) => {
+                    if !run_reader_op(&proxy, op) {
                         break;
                     }
-                    if rx.recv_timeout(timeout).is_err() {
-                        eprintln!("WAITTABS: tab spawns still in flight after {timeout:?}; continuing");
-                    }
                 }
-                Some(DebugCommand::WaitIdle(timeout)) => {
-                    let (tx, rx) = std::sync::mpsc::channel();
-                    if proxy.send_event(UserEvent::Debug(DebugCommand::NotifyWhenIdle(tx))).is_err() {
-                        break;
-                    }
-                    if rx.recv_timeout(timeout).is_err() {
-                        eprintln!("WAITIDLE: input or a load still pending after {timeout:?}; continuing");
-                    }
-                }
-                Some(DebugCommand::Sleep(duration)) => std::thread::sleep(duration),
-                Some(DebugCommand::Screenshot(path)) => {
-                    let (tx, rx) = std::sync::mpsc::channel();
-                    let cmd = DebugCommand::NotifyWhenScreenshotTaken(path.clone(), tx);
-                    if proxy.send_event(UserEvent::Debug(cmd)).is_err() {
-                        break;
-                    }
-                    if rx.recv_timeout(std::time::Duration::from_secs(30)).is_err() {
-                        eprintln!("SCREENSHOT: {path} not taken after 30 s; continuing");
-                    }
-                }
-                Some(cmd) => {
-                    if proxy.send_event(UserEvent::Debug(cmd)).is_err() {
+                Some(Line::Run(job)) => {
+                    if proxy.send_event(UserEvent::Debug(job)).is_err() {
                         break;
                     }
                 }
@@ -1010,7 +995,7 @@ pub fn spawn_stdin_reader(proxy: EventLoopProxy<UserEvent>) {
                 None => {}
             }
         }
-        let _ = proxy.send_event(UserEvent::Debug(DebugCommand::Quit));
+        let _ = proxy.send_event(UserEvent::Debug(DebugJob::quit()));
     });
 }
 
@@ -1042,7 +1027,7 @@ pub(crate) struct HeadlessDebug {
     /// `RedrawRequested` and passed into `gpu::GpuState::render` (`render_frame`).
     pub(crate) pending_screenshot: Option<String>,
     /// The stdin reader waiting on `pending_screenshot` (see
-    /// `DebugCommand::Screenshot`); sent `()` once it's been attempted.
+    /// `ReaderOp::Screenshot`); sent `()` once it's been attempted.
     pub(crate) screenshot_waiter: Option<std::sync::mpsc::Sender<()>>,
     /// "Print to PDF": (temp PNG, PDF): the capture `start_print_to_pdf`
     /// asked for, and where its PDF goes. Paired so an unrelated screenshot
@@ -1108,754 +1093,12 @@ impl App {
         true
     }
 
-    /// Applies one headless `DebugCommand` (see `debug_control`'s doc
-    /// comment for the overall design: mouse commands are real synthetic
-    /// `WindowEvent`s, keyboard/text commands call the equivalent effect
-    /// directly since `winit::event::KeyEvent` has no public constructor).
-    pub(crate) fn handle_debug_command(&mut self, event_loop: &ActiveEventLoop, cmd: DebugCommand) {
-        // A transition only ends in a frame, and frames can stall for
-        // seconds on a busy GPU, so one that ran out long ago could still
-        // be `Some` here and make the ENTER/ESCAPE/arrow guards below drop
-        // their command. It's timed by the clock, so end it by the clock.
+    /// Runs one parsed debug line (`DebugJob`), after letting a finished view transition end: a transition only ends
+    /// in a frame, and frames can stall for seconds on a busy GPU, so one that ran out long ago could still be `Some`
+    /// here and make the ENTER/ESCAPE/arrow guards drop their key.
+    pub(crate) fn run_debug_job(&mut self, event_loop: &ActiveEventLoop, job: DebugJob) {
         self.finish_transition_if_done();
-        match cmd {
-            DebugCommand::MouseMove { x, y } => {
-                self.dispatch_window_event(
-                    event_loop,
-                    WindowEvent::CursorMoved { device_id: DeviceId::dummy(), position: PhysicalPosition::new(x, y) },
-                );
-            }
-            DebugCommand::MouseDown { x, y, button } => {
-                self.dispatch_window_event(
-                    event_loop,
-                    WindowEvent::CursorMoved { device_id: DeviceId::dummy(), position: PhysicalPosition::new(x, y) },
-                );
-                self.dispatch_window_event(
-                    event_loop,
-                    WindowEvent::MouseInput { device_id: DeviceId::dummy(), state: ElementState::Pressed, button },
-                );
-            }
-            DebugCommand::MouseUp { x, y, button } => {
-                self.dispatch_window_event(
-                    event_loop,
-                    WindowEvent::CursorMoved { device_id: DeviceId::dummy(), position: PhysicalPosition::new(x, y) },
-                );
-                self.dispatch_window_event(
-                    event_loop,
-                    WindowEvent::MouseInput { device_id: DeviceId::dummy(), state: ElementState::Released, button },
-                );
-            }
-            DebugCommand::Click { x, y, button, ctrl } => self.debug_click(event_loop, x, y, button, 1, ctrl),
-            DebugCommand::DoubleClick { x, y } => self.debug_click(event_loop, x, y, WinitMouseButton::Left, 2, false),
-            DebugCommand::Scroll { x, y, delta_x, delta_y } => {
-                self.dispatch_window_event(
-                    event_loop,
-                    WindowEvent::CursorMoved { device_id: DeviceId::dummy(), position: PhysicalPosition::new(x, y) },
-                );
-                self.dispatch_window_event(
-                    event_loop,
-                    WindowEvent::MouseWheel {
-                        device_id: DeviceId::dummy(),
-                        delta: MouseScrollDelta::PixelDelta(PhysicalPosition::new(delta_x, delta_y)),
-                        phase: TouchPhase::Moved,
-                    },
-                );
-            }
-            // A click on the address bar, then select-all and typing: focus
-            // is requested now, and the text is typed as egui `Text` input in
-            // the first frame the bar has it (see `debug_address_bar_typing`).
-            DebugCommand::AddressBar(text) if self.showing_tab_view() => {
-                self.pending_focus = Some(FocusTarget::AddressBar);
-                self.debug.debug_address_bar_typing = Some(text);
-                if let Some(window) = &self.window {
-                    window.request_redraw();
-                }
-            }
-            DebugCommand::AddressBar(_) => eprintln!("debug: ADDRESSBAR ignored: not in Tab view"),
-            // Real key presses for the next frame's egui input, so they go
-            // through the same checks a keyboard does, in any view.
-            DebugCommand::Enter => {
-                self.debug.debug_input_events.push(debug_key_event(egui::Key::Enter, egui::Modifiers::NONE))
-            }
-            DebugCommand::Escape => {
-                self.debug.debug_input_events.push(debug_key_event(egui::Key::Escape, egui::Modifiers::NONE))
-            }
-            DebugCommand::Backspace => {
-                self.debug.debug_input_events.push(debug_key_event(egui::Key::Backspace, egui::Modifiers::NONE))
-            }
-            // The focused egui field takes it, as from a keyboard (`TYPE` goes to the page instead).
-            DebugCommand::EguiText(text) => self.debug.debug_input_events.push(egui::Event::Text(text)),
-            DebugCommand::ArrowDown => {
-                self.debug.debug_input_events.push(debug_key_event(egui::Key::ArrowDown, egui::Modifiers::NONE))
-            }
-            DebugCommand::ArrowRight => {
-                self.debug.debug_input_events.push(debug_key_event(egui::Key::ArrowRight, egui::Modifiers::NONE))
-            }
-            DebugCommand::DigitKey(d) => {
-                let key = [
-                    egui::Key::Num0,
-                    egui::Key::Num1,
-                    egui::Key::Num2,
-                    egui::Key::Num3,
-                    egui::Key::Num4,
-                    egui::Key::Num5,
-                    egui::Key::Num6,
-                    egui::Key::Num7,
-                    egui::Key::Num8,
-                    egui::Key::Num9,
-                ][d as usize];
-                self.debug.debug_input_events.push(debug_key_event(key, egui::Modifiers::NONE))
-            }
-            DebugCommand::SpaceKey => {
-                self.debug.debug_input_events.push(debug_key_event(egui::Key::Space, egui::Modifiers::NONE))
-            }
-            DebugCommand::ArrowLeft => {
-                self.debug.debug_input_events.push(debug_key_event(egui::Key::ArrowLeft, egui::Modifiers::NONE))
-            }
-            DebugCommand::ArrowUp => {
-                self.debug.debug_input_events.push(debug_key_event(egui::Key::ArrowUp, egui::Modifiers::NONE))
-            }
-            DebugCommand::TabKey(shift) => {
-                let modifiers = if shift { egui::Modifiers::SHIFT } else { egui::Modifiers::NONE };
-                self.debug.debug_input_events.push(debug_key_event(egui::Key::Tab, modifiers))
-            }
-            DebugCommand::UndoKey(shift) => {
-                let modifiers = egui::Modifiers { command: true, ctrl: true, shift, ..Default::default() };
-                self.debug.debug_input_events.push(debug_key_event(egui::Key::Z, modifiers))
-            }
-            DebugCommand::ShiftF10 => {
-                self.debug.debug_input_events.push(debug_key_event(egui::Key::F10, egui::Modifiers::SHIFT))
-            }
-            DebugCommand::GraphFocusLeft => self.move_graph_focus(egui::vec2(-1.0, 0.0)),
-            DebugCommand::GraphFocusRight => self.move_graph_focus(egui::vec2(1.0, 0.0)),
-            DebugCommand::GraphFocusUp => self.move_graph_focus(egui::vec2(0.0, -1.0)),
-            DebugCommand::GraphFocusDown => self.move_graph_focus(egui::vec2(0.0, 1.0)),
-            DebugCommand::GraphOpenFocused => self.open_focused_graph_node(),
-            DebugCommand::TypeIntoPage(text) => {
-                if let Some(id) = self.focused.clone() {
-                    if let Some(node) = self.nodes.get_mut(&id).and_then(|n| n.as_tab_mut()) {
-                        for ch in text.chars() {
-                            node.tab.send(&HostToView::Input(InputEvent::Char { codepoint: ch as u32 }));
-                        }
-                    }
-                }
-            }
-            DebugCommand::KeyPage(key) => {
-                if let Some(id) = self.focused.clone() {
-                    if let Some(node) = self.nodes.get_mut(&id).and_then(|n| n.as_tab_mut()) {
-                        node.tab.send(&HostToView::Input(InputEvent::KeyDown { key, modifiers: self.key_modifiers }));
-                        node.tab.send(&HostToView::Input(InputEvent::KeyUp { key, modifiers: self.key_modifiers }));
-                    }
-                }
-            }
-            DebugCommand::ReopenTab => self.reopen_closed_shortcut(),
-            DebugCommand::ReopenNode(id) => {
-                if !self.debug_reopen_node(&id) {
-                    eprintln!("REOPENNODE: {id} is not a node id; ignored");
-                }
-            }
-            DebugCommand::InstallView(kind) => {
-                self.start_view_install(kind);
-            }
-            DebugCommand::ViewStatus(kind) => {
-                eprintln!(
-                    "view-state {}: {} [{}]",
-                    kind.desc().name,
-                    crate::view_info::view_status_label(&self.view_status(kind)).0,
-                    crate::view_info::on_disk_text(kind, crate::process_manager::view_on_disk(kind))
-                )
-            }
-            DebugCommand::ZoomIn => self.zoom_in_shortcut(),
-            DebugCommand::ZoomOut => self.zoom_out_shortcut(),
-            DebugCommand::ZoomReset => self.zoom_reset_shortcut(),
-            DebugCommand::GraphZoom(pct) => self.pending_graph_zoom = Some(pct / 100.0),
-            DebugCommand::OpenDevTools => self.open_devtools_shortcut(),
-            DebugCommand::NewTab => self.new_tab_shortcut(),
-            DebugCommand::CloseTab => self.close_focused_tab_shortcut(),
-            DebugCommand::FocusAddressBar => self.focus_address_bar_shortcut(),
-            DebugCommand::NextTab => self.cycle_focused_tab(true),
-            DebugCommand::PrevTab => self.cycle_focused_tab(false),
-            DebugCommand::OpenFindBar => self.open_find_bar_shortcut(),
-            DebugCommand::FindText(text) => {
-                self.find.text = text;
-                self.send_find_start();
-            }
-            DebugCommand::FindMatchCase(match_case) => {
-                self.find.match_case = match_case;
-                self.send_find_start();
-            }
-            DebugCommand::FindNext => self.send_find_navigate(true),
-            DebugCommand::FindPrevious => self.send_find_navigate(false),
-            DebugCommand::CloseFindBar => self.close_find_bar(),
-            DebugCommand::SetVisible(visible) => {
-                if let Some(id) = self.focused.clone() {
-                    if let Some(node) = self.nodes.get_mut(&id).and_then(|n| n.as_tab_mut()) {
-                        node.tab.set_visible(visible);
-                    }
-                }
-            }
-            // Only ever intercepted by the stdin reader itself.
-            DebugCommand::Screenshot(_) | DebugCommand::Sleep(_) => {}
-            DebugCommand::NotifyWhenScreenshotTaken(path, waiter) => {
-                self.debug.pending_screenshot = Some(path);
-                self.debug.screenshot_waiter = Some(waiter);
-                if let Some(window) = &self.window {
-                    window.request_redraw();
-                }
-            }
-            DebugCommand::Resize(width, height) => {
-                if let Some(window) = &self.window {
-                    let _ = window.request_inner_size(PhysicalSize::new(width, height));
-                }
-            }
-            DebugCommand::QuickSwitchOpen => self.open_quick_switcher(),
-            DebugCommand::QuickSwitchText(text) => {
-                if let Some(switcher) = &mut self.menus.quick_switcher {
-                    switcher.query = text;
-                    switcher.selected = 0;
-                }
-            }
-            DebugCommand::QuickSwitchDown => self.quick_switcher_move(1),
-            DebugCommand::QuickSwitchUp => self.quick_switcher_move(-1),
-            DebugCommand::QuickSwitchEnter => self.quick_switcher_confirm(),
-            DebugCommand::QuickSwitchEscape => self.menus.quick_switcher = None,
-            DebugCommand::SessionNameText(text) => self.session_name_draft = text,
-            DebugCommand::SaveSessionAs(name) => self.save_named_session(&name),
-            DebugCommand::OpenSession(name) => {
-                self.load_named_session(&name);
-                self.close_settings_page();
-            }
-            DebugCommand::GraphFilterText(text) => self.graph_filter = text,
-            DebugCommand::HistoryFilterText(text) => self.history_ui.history_filter = text,
-            DebugCommand::BookmarksFilterText(text) => self.history_ui.bookmarks_filter = text,
-            DebugCommand::ToggleView => self.toggle_view_mode_shortcut(),
-            DebugCommand::ToggleSettingsPage => self.toggle_settings_page(),
-            DebugCommand::ExportSession(path) => {
-                self.export_session_to(std::path::Path::new(&path));
-            }
-            DebugCommand::ExportState(path) => self.write_export_state(std::path::Path::new(&path)),
-            DebugCommand::ImportSession(path) => match crate::json_file::load(std::path::Path::new(&path), "session") {
-                Ok(json) => self.confirm = Some(Confirm::Import(Box::new(json))),
-                Err(err) => self.queue_toast(err),
-            },
-            DebugCommand::ConfirmImport => {
-                if let Some(Confirm::Import(json)) = self.confirm.take_if(|c| matches!(c, Confirm::Import(_))) {
-                    self.replace_running_session(&json, crate::store::json::Trust::Foreign);
-                }
-            }
-            DebugCommand::CancelImport => {
-                self.confirm.take_if(|c| matches!(c, Confirm::Import(_)));
-            }
-            DebugCommand::RenameGroup => self.rename_current_group_shortcut(),
-            DebugCommand::BookmarkFolderText(text) => {
-                if let Some((_, draft)) = &mut self.history_ui.renaming_bookmark_folder {
-                    *draft = text;
-                }
-            }
-            DebugCommand::DismissPeek => self.dismiss_hover_peek(),
-            DebugCommand::ExportGroup(path) => {
-                if let Some((group_id, _)) = self.menus.node_menu.clone().filter(|(id, _)| self.is_container(id)) {
-                    if let Some(json) = self.export_group_json(&group_id) {
-                        write_json_export(&json, std::path::Path::new(&path), "group");
-                    }
-                }
-            }
-            DebugCommand::ImportGroup(path) => {
-                match crate::json_file::load::<store::json::JsonDoc>(std::path::Path::new(&path), "group") {
-                    Ok(json) => self.import_group_json(&json),
-                    Err(err) => self.queue_toast(err),
-                }
-            }
-            DebugCommand::DuplicateTab => self.duplicate_focused_tab_shortcut(),
-            DebugCommand::DuplicateNode(id) => {
-                self.duplicate_selection(&id);
-                self.save_session();
-            }
-            DebugCommand::ExportBookmarks(path) => {
-                bookmarks::save_to(&self.bookmarks, std::path::Path::new(&path));
-            }
-            DebugCommand::ImportBookmarks(path) => match bookmarks::load_from(std::path::Path::new(&path)) {
-                Ok(imported) => {
-                    self.bookmarks = imported;
-                    bookmarks::save(&self.bookmarks);
-                }
-                Err(err) => self.queue_toast(err),
-            },
-            DebugCommand::PrintToPdf(path) => self.start_print_to_pdf(path),
-            DebugCommand::TogglePin => self.pin_shortcut(),
-            DebugCommand::Reload => self.reload_focused_tab_shortcut(),
-            DebugCommand::GoBack | DebugCommand::GoForward => {
-                if let Some(id) = self.focused.clone() {
-                    let dir = if matches!(cmd, DebugCommand::GoBack) { Dir::Back } else { Dir::Forward };
-                    self.navigate_history(&id, dir);
-                }
-            }
-            DebugCommand::NewGroup => self.new_group_shortcut(),
-            DebugCommand::NewNote => self.new_note_shortcut(),
-            DebugCommand::AddFile(path, None) => {
-                if self.add_file_at(path.into(), None).is_ok() {
-                    self.save_session();
-                }
-            }
-            // Placed like a real drop at that window point. No
-            // `save_session` here either -- same reasoning as
-            // `WindowEvent::DroppedFile`, so a script sending several
-            // `ADDFILE`s with a point still gets one save per batch, not
-            // one per file.
-            DebugCommand::AddFile(path, Some((x, y))) => {
-                self.drop_file(path.into(), egui::pos2(x, y));
-            }
-            // Only ever intercepted by the stdin reader itself.
-            DebugCommand::WaitTabs(_) => {}
-            DebugCommand::NotifyWhenTabsSpawned(waiter) => {
-                if self.spawns.tab_spawns_in_flight == 0 {
-                    let _ = waiter.send(());
-                } else {
-                    self.spawns.tabs_spawned_waiters.push(waiter);
-                }
-            }
-            DebugCommand::WaitIdle(_) => {}
-            DebugCommand::NotifyWhenIdle(waiter) => {
-                self.debug.idle_waiters.push(waiter);
-                self.release_idle_waiters();
-                // Pending input needs frames to land, and the check runs at the end of each.
-                if let Some(window) = &self.window {
-                    window.request_redraw();
-                }
-            }
-            DebugCommand::AddDownload(path) => {
-                if let Some(tab_id) = self.focused.clone() {
-                    self.insert_download_node(tab_id, path, None, None);
-                }
-            }
-            DebugCommand::Split(kind) => self.start_split(kind),
-            DebugCommand::CloseSplit => self.close_split(),
-            DebugCommand::JsonSelect(pointer) => self.apply_json_edit(JsonEdit::Select(pointer)),
-            DebugCommand::JsonToggle(pointer) => self.apply_json_edit(JsonEdit::Toggle(pointer)),
-            DebugCommand::JsonMore(pointer) => self.apply_json_edit(JsonEdit::More(pointer)),
-            DebugCommand::JsonRelayout => self.apply_json_edit(JsonEdit::Relayout),
-            DebugCommand::JsonSearch(text) => self.set_json_search(text),
-            DebugCommand::CloseNode(id) => {
-                if !self.debug_close_node(&id) {
-                    eprintln!("CLOSENODE: no node {id}; ignored");
-                }
-            }
-            DebugCommand::MoveToGroup { id, group } => {
-                if !self.debug_move_to_group(&id, &group) {
-                    eprintln!("MOVETOGROUP: {group} isn't a sibling group of {id}; ignored");
-                }
-            }
-            DebugCommand::Link { from, to } => match self.connect(crate::caps::LINK, &from, &to) {
-                Ok(()) => {
-                    self.save_session();
-                }
-                Err(err) => eprintln!("LINK: {from} -> {to} refused: {err:?}"),
-            },
-            DebugCommand::Unlink { a, b } => {
-                self.disconnect(crate::caps::LINK, &a, &b);
-                self.save_session();
-            }
-            DebugCommand::OpenedFrom { child, parent } => match self.connect(crate::caps::OPENED_FROM, &child, &parent)
-            {
-                Ok(()) => {
-                    self.save_session();
-                }
-                Err(err) => eprintln!("OPENEDFROM: {child} -> {parent} refused: {err:?}"),
-            },
-            DebugCommand::RenameGroupTo { id, name } => {
-                if self.nodes.contains_key(&id) {
-                    self.commit_rename(&id, &name);
-                    self.save_session();
-                } else {
-                    eprintln!("RENAMEGROUP: {id} isn't a node; ignored");
-                }
-            }
-            DebugCommand::SetNoteText { id, text } => {
-                if !self.debug_set_note_text(&id, text) {
-                    eprintln!("SETNOTETEXT: {id} isn't a note; ignored");
-                }
-            }
-            DebugCommand::MoveNode { id, x, y } => {
-                if !self.debug_move_node(&id, egui::vec2(x, y)) {
-                    eprintln!("MOVENODE: no node {id}; ignored");
-                }
-            }
-            DebugCommand::IdleSweep(secs) => self.sweep_idle_tabs(Some(std::time::Duration::from_secs(secs))),
-            DebugCommand::SleepNode(id) => {
-                if self.is_container(&id) {
-                    self.sleep_group(&id);
-                } else {
-                    self.request_sleep(&id, SleepWhy::Manual);
-                }
-            }
-            DebugCommand::RestartView(id) => {
-                if !self.restart_view(&id) {
-                    eprintln!("RESTARTVIEW: no live tab {id}; ignored");
-                }
-            }
-            DebugCommand::EndView(id) => {
-                if !self.end_view(&id) {
-                    eprintln!("ENDVIEW: no live tab {id}; ignored");
-                }
-            }
-            DebugCommand::SetJar(name) => {
-                if self.set_focused_tab_jar_named(&name) {
-                    self.save_session();
-                }
-            }
-            DebugCommand::SwitchJarNow => {
-                if let Some(tab) = self.focused.clone() {
-                    self.switch_jar_now(&tab);
-                }
-            }
-            DebugCommand::ClearJar(name) => {
-                let jar = if name.trim().eq_ignore_ascii_case("default") {
-                    self.default_jar()
-                } else {
-                    self.jar_named(&name)
-                };
-                match jar {
-                    Some(jar) => self.clear_jar_cookies(jar),
-                    None => eprintln!("CLEARJAR: no jar named {name:?}"),
-                }
-            }
-            DebugCommand::NewJar(name) => {
-                // `placement` jitters by the string it is given and leaves a JSON level first, as a new card does.
-                let at = self.placement(&name, None);
-                let id = self.create_jar(&name, at);
-                eprintln!("NEWJAR: {id}");
-                self.save_session();
-            }
-            DebugCommand::UseJar { from, jar } => {
-                let jar = jar.and_then(|j| j.parse().ok());
-                self.set_jar_edge(&from, jar);
-                self.save_session();
-            }
-            DebugCommand::JarEphemeral { id, on } => match id.parse() {
-                Ok(jar) if self.jar_exists(jar) => {
-                    self.set_jar_ephemeral(jar, on);
-                    self.save_session();
-                }
-                _ => eprintln!("JAREPHEMERAL: {id} isn't a jar card; ignored"),
-            },
-            DebugCommand::TriggerFirstLaunchDemo => self.spawn_first_launch_demo(),
-            DebugCommand::Help => debug_control::print_help(),
-            DebugCommand::CloseAllLevel => self.close_all_at_current_level(),
-            DebugCommand::ToggleShortcutsHelp => {
-                self.menus.shortcuts_help_open = !self.menus.shortcuts_help_open;
-            }
-            DebugCommand::TogglePopup(which) => {
-                if !matches!(
-                    which,
-                    AnchoredPopup::BackBranches | AnchoredPopup::ForwardBranches | AnchoredPopup::RecentlyClosed
-                ) {
-                    self.open_settings_page();
-                }
-                popups::toggle_popup(&mut self.menus.open_popup, which);
-            }
-            DebugCommand::Confirm(destructive) => {
-                if destructive {
-                    self.offer_confirm(Confirm::SessionDelete("probe".to_string()));
-                } else {
-                    self.offer_confirm(Confirm::View(crate::view_info::ViewConfirm::Download(ViewKind::Servo)));
-                }
-            }
-            DebugCommand::MenuPage(page) => {
-                self.menus.node_menu_page =
-                    self.menus.node_menu.clone().and_then(|(id, pos)| page.map(|page| (id, pos, page)));
-            }
-            DebugCommand::Quit => {
-                // See `quit_after_redraws`'s doc comment: exiting right
-                // now could drop a pending Enter/Escape/arrow command, or a
-                // just-requested Screenshot that hasn't been captured yet
-                // (`pending_screenshot` is only consumed inside a
-                // `RedrawRequested` — a `Screenshot` immediately followed by
-                // `Quit`, with no frame in between, would otherwise silently
-                // lose the screenshot the same way an unconsumed Enter
-                // could).
-                if self.debug_input_pending() {
-                    self.debug.quit_after_redraws = Some(3);
-                    if let Some(window) = &self.window {
-                        window.request_redraw();
-                    }
-                } else {
-                    event_loop.exit();
-                }
-            }
-        }
-    }
-
-    /// What `EXPORTSTATE` writes (its doc on `DebugCommand::ExportState`).
-    pub(crate) fn export_state(&self) -> serde_json::Value {
-        let focused_url =
-            self.focused.as_ref().and_then(|id| self.nodes.get(id)).and_then(|n| n.as_tab()).map(|t| t.url.clone());
-        let suggestions: Vec<String> = self
-            .address_bar
-            .combined()
-            .into_iter()
-            .map(|s| match s {
-                Suggestion::OpenTab { tab_id, .. } => format!("tab:{tab_id}"),
-                Suggestion::Search { query } => query,
-            })
-            .collect();
-        // The current level's cards, in draw order, with where each
-        // one's center is on screen: what a headless test needs to
-        // aim a click or drag at a card. A card is named by its type
-        // (`CardKind`), never a kind enum (plan 2b-6, Ruling 9).
-        let now = std::time::Instant::now();
-        let window = self.egui_ctx.content_rect();
-        let cards: Vec<serde_json::Value> = self
-            .level_items()
-            .into_iter()
-            .filter_map(|item| {
-                let screen = self.graph_world_rect_to_screen(item.rect);
-                if item.origin == Origin::Json {
-                    // A JSON level's card shows a piece of the Json node's value; it is no stored node.
-                    return Some(serde_json::json!({
-                        "id": item.id,
-                        "type": crate::store::model::TYPE_JSON,
-                        "loaded": false,
-                        "json_card": true,
-                        "unresponsive": false,
-                        "screen": [screen.center().x, screen.center().y],
-                        "rect": [screen.min.x, screen.min.y, screen.max.x, screen.max.y],
-                    }));
-                }
-                if let Origin::Virtual(source) = item.origin {
-                    // A source's card: no node, so none of a stored card's fields; the abilities its kind grants.
-                    let caps = item.caps();
-                    return Some(serde_json::json!({
-                        "id": item.id,
-                        "type": item.kind.ty,
-                        "loaded": false,
-                        "json_card": false,
-                        "virtual": source,
-                        "abilities": {
-                            "restorable": caps.restorable,
-                            "draw_layer": caps.draw_layer,
-                            "selectable": caps.selectable,
-                            "drag_source": caps.drag_source,
-                            "drop_target": caps.drop_target,
-                            "menu": caps.menu,
-                            "stored_controls": caps.stored_controls,
-                        },
-                        "unresponsive": false,
-                        "screen": [screen.center().x, screen.center().y],
-                        "rect": [screen.min.x, screen.min.y, screen.max.x, screen.max.y],
-                    }));
-                }
-                let kind = item.kind;
-                let node = self.nodes.get(&item.id)?;
-                Some(serde_json::json!({
-                    "id": item.id,
-                    "type": kind.ty,
-                    "stored_type": self.mirror.ty(&item.id), // the raw string; `type` is its row (`canonical_type`)
-                    "loaded": kind.loaded(),
-                    "json_card": false,
-                    "group": self.mirror.group(&item.id),
-                    "parent": self.opened_from(&item.id),
-                    "color": self.mirror.color(&item.id).is_some(),
-                    "pinned": self.mirror.pinned(&item.id),
-                    "name": self.mirror.name(&item.id), // name rule: reported as stored
-                    // The tab's or group's own jar edge, the jar it resolves to, and whether a jar card is the Default.
-                    "jar": self.mirror.jar(&item.id).map(|j| j.to_string()),
-                    "effective_jar": self.effective_jar(&item.id).map(|(j, _)| j.to_string()),
-                    "is_default": self.is_default_jar(&item.id),
-                    // A live tab whose engine stopped reading (`ViewTab::is_unresponsive`).
-                    "unresponsive": node.as_tab().is_some_and(|t| t.tab.is_unresponsive(now)),
-                    "editing": node.as_note().is_some_and(|n| n.editing),
-                    // Where MOVENODE puts the card back after it was parked (gate layout).
-                    "world": [self.layout_pos(&item.id).x, self.layout_pos(&item.id).y],
-                    "screen": [screen.center().x, screen.center().y],
-                    "rect": [screen.min.x, screen.min.y, screen.max.x, screen.max.y],
-                }))
-            })
-            .collect();
-        // Every node's group as this replica shows it, at any level (a two-instance test compares them).
-        let mirror_groups: std::collections::BTreeMap<&str, Option<&str>> =
-            self.linked_ids().map(|id| (id, self.mirror.group(id))).collect();
-        // Likewise each group's name, each note's text and every node's document pos, null when absent
-        // (empty, or Pos (0,0)), as EXPORTSESSION leaves them out.
-        let non_empty = |s: &'_ str| (!s.is_empty()).then(|| s.to_owned());
-        let mirror_names: std::collections::BTreeMap<&str, Option<String>> = self
-            .linked_ids()
-            .filter(|id| self.is_container(id))
-            .map(|id| (id, non_empty(self.mirror.name(id)))) // name rule: raw, compared with the document
-            .collect();
-        let mirror_texts: std::collections::BTreeMap<&str, Option<String>> = self
-            .linked_ids()
-            .filter(|id| self.nodes.get(*id).is_some_and(|n| n.as_note().is_some()))
-            .map(|id| (id, non_empty(self.mirror.text(id))))
-            .collect();
-        let mirror_pos: std::collections::BTreeMap<&str, Option<[f32; 2]>> =
-            self.linked_ids().map(|id| (id, self.mirror.pos(id).map(|p| [p.x, p.y]))).collect();
-        let mut selected: Vec<&String> = self.interaction.selected.iter().collect();
-        selected.sort();
-        // Every link this replica knows (ends null where unset), whether or not it is shown. `shown` is true when
-        // both ends are in `nodes`, so a link whose end is hidden (closed) reads false and a deleted one is absent.
-        let links: Vec<serde_json::Value> = self
-            .mirror
-            .link_ids()
-            .map(|link| {
-                let id = link.to_string();
-                let (from, to) = self.mirror.link_ends(&id);
-                let shown = [from, to].iter().all(|e| e.is_some_and(|n| self.nodes.contains_key(&n.to_string())));
-                serde_json::json!({
-                    "id": id, "from": from.map(|n| n.to_string()), "to": to.map(|n| n.to_string()), "shown": shown,
-                })
-            })
-            .collect();
-        // Recently Closed as the document orders it, newest first (`Doc::closed_roots`).
-        let closed: Vec<String> = self
-            .journal
-            .as_ref()
-            .map_or_else(Vec::new, |j| j.doc().closed_roots().into_iter().map(|(id, _)| id.to_string()).collect());
-        // The lines drawn at this level, with the point halfway along each curve (t = 0.5) on screen: where a probe
-        // clicks a link line.
-        let edges: Vec<serde_json::Value> = self
-            .level_edges()
-            .iter()
-            .map(|edge| {
-                let on_screen = |t: f32| {
-                    let world = match edge.curve {
-                        crate::level::EdgeCurve::Bow => crate::link_gestures::bow_point(edge.from, edge.to, t),
-                        crate::level::EdgeCurve::Horizontal => edge.from.lerp(edge.to, t),
-                    };
-                    self.graph_world_rect_to_screen(egui::Rect::from_min_max(world, world)).min
-                };
-                let (mid, near_from, near_to) = (on_screen(0.5), on_screen(0.2), on_screen(0.8));
-                let kind = match edge.kind {
-                    crate::level::EdgeKind::Link => "link",
-                    crate::level::EdgeKind::Jar => "jar",
-                    crate::level::EdgeKind::Opened => "opened",
-                };
-                serde_json::json!({
-                    "kind": kind, "link": edge.link, "from": edge.from_id, "to": edge.to_id, "screen": [mid.x, mid.y],
-                    "near_from": [near_from.x, near_from.y], "near_to": [near_to.x, near_to.y],
-                })
-            })
-            .collect();
-        // Where each card has connect handles when it would show them (on hover, and on every card during a
-        // connect-drag), on screen, so a probe can press one:
-        // `{card id: {top|right|bottom|left: [left, top, right, bottom]}}`. Empty when nothing shows them.
-        let (zoom_scale, _) = self.camera.transform(self.graph_scene_outer_rect());
-        let link_handles: serde_json::Map<String, serde_json::Value> = self
-            .level_items()
-            .into_iter()
-            .filter(|item| item.origin == Origin::Stored && self.shows_link_handles())
-            .map(|item| {
-                let sides: serde_json::Map<String, serde_json::Value> =
-                    crate::link_gestures::link_handle_rects(item.rect, zoom_scale, self.graph_lod_simplified)
-                        .into_iter()
-                        .map(|(side, rect)| {
-                            let r = self.graph_world_rect_to_screen(rect);
-                            (side.key().to_string(), serde_json::json!([r.left(), r.top(), r.right(), r.bottom()]))
-                        })
-                        .collect();
-                (item.id, serde_json::Value::Object(sides))
-            })
-            .collect();
-        serde_json::json!({
-            "tab_view": self.showing_tab_view(),
-            "transition": self.transition.is_some(),
-            "focused_url": focused_url,
-            "address_bar_text": self.address_bar.text,
-            "suggestions": suggestions,
-            "highlighted": self.address_bar.highlighted,
-            "current_group": self.current_group,
-            "cards": cards,
-            "mirror_groups": mirror_groups,
-            "mirror_names": mirror_names,
-            "mirror_texts": mirror_texts,
-            "mirror_pos": mirror_pos,
-            "links": links,
-            "closed": closed,
-            "edges": edges,
-            // Pick-target mode: the source card, the edge and the cards a click would finish it on.
-            "connecting": self.link.connecting.as_ref().map(|(from, edge)| {
-                serde_json::json!({ "from": from, "edge": edge, "targets": self.valid_targets(edge, from) })
-            }),
-            "link_handles": link_handles,
-            "connect_drag": self.link.connect_drag,
-            // The Link node whose end a connect-drag from a curve is moving (`App::retarget`), or null.
-            "retarget": self.link.retarget.as_ref().map(|r| &r.link),
-            // While it runs, what a release at the pointer would do (`App::retarget_preview`): "retarget", "delete",
-            // "refused" or "cancel"; else null.
-            "retarget_preview": self.link.retarget.as_ref().and(self.link.retarget_preview).map(crate::links::RetargetOutcome::name),
-            // The card being dragged (`App::dragging`), or null.
-            "dragging": self.interaction.dragging,
-            "json_level": self.json_level_state(),
-            "selected": selected,
-            // The toast showing, or else the next queued one.
-            "toast": self.toasts.save_toast.as_ref().map(|(message, _)| message).or(self.toasts.save_toast_queue.front()),
-            "view_kinds": self.view_kinds_state(),
-            "window": [window.width(), window.height()],
-            "popups": self.popups_state(),
-            // The theme colors the gate checks on screen, as [r, g, b]: the gate reads them here, not from its own copy.
-            "theme": {"danger": crate::theme::rgb(crate::theme::DANGER_COLOR), "accent": crate::theme::rgb(crate::theme::ACCENT)},
-            "rows": crate::identity::drawn_rows(&self.egui_ctx).iter().map(|r| serde_json::json!({"text": r.text, "selected": r.selected, "rect": [r.rect.min.x, r.rect.min.y, r.rect.max.x, r.rect.max.y]})).collect::<Vec<_>>(),
-            "open_popup": self.menus.open_popup.map(|p| format!("{p:?}")),
-            "identities": crate::identity::drawn_icons(&self.egui_ctx).iter().map(|i| serde_json::json!({"kind": i.kind, "text": i.text, "rect": [i.rect.min.x, i.rect.min.y, i.rect.max.x, i.rect.max.y]})).collect::<Vec<_>>(),
-            "trail": self.trail_state(),
-        })
-    }
-
-    /// `export_state`'s `trail`: each tab with a trail, by id, as `NavHistory::export` plus `back` and `forward`, the
-    /// chips' enablement (`trail_enabled`).
-    fn trail_state(&self) -> serde_json::Map<String, serde_json::Value> {
-        self.nav_history
-            .iter()
-            .map(|(id, h)| {
-                let mut v = h.export();
-                let (back, forward) = self.trail_enabled(id);
-                v["back"] = back.into();
-                v["forward"] = forward.into();
-                (id.clone(), v)
-            })
-            .collect()
-    }
-
-    /// `export_state`'s `popups`: every visible egui `Area` above the panels (menus, dialogs, dropdowns, toasts,
-    /// tooltips), as `{id, order, rect: [left, top, right, bottom]}` in points, so a layout check can see one run past
-    /// the window.
-    fn popups_state(&self) -> Vec<serde_json::Value> {
-        self.egui_ctx.memory(|m| {
-            let mut layers: Vec<_> = m
-                .areas()
-                .visible_layer_ids()
-                .into_iter()
-                .filter(|layer| matches!(layer.order, egui::Order::Foreground | egui::Order::Tooltip))
-                .filter_map(|layer| m.area_rect(layer.id).map(|rect| (layer, rect)))
-                .map(|(layer, rect)| {
-                    serde_json::json!({
-                        "id": format!("{:?}", layer.id),
-                        "order": format!("{:?}", layer.order),
-                        "rect": [rect.min.x, rect.min.y, rect.max.x, rect.max.y],
-                    })
-                })
-                .collect();
-            layers.sort_by_key(|v| v["id"].to_string());
-            layers
-        })
-    }
-
-    /// `export_state`'s `view_kinds`: each engine's name mapped to `{state, disk}`, the label the lists show
-    /// (`view_status_label`) and what the disk holds of its downloadable parts (`on_disk_text`).
-    fn view_kinds_state(&self) -> serde_json::Value {
-        let view_kinds = ViewKind::picker_order().into_iter().map(|kind| {
-            let state = crate::view_info::view_status_label(&self.view_status(kind)).0;
-            let disk = crate::view_info::on_disk_text(kind, crate::process_manager::view_on_disk(kind));
-            (kind.desc().name.to_string(), serde_json::json!({"state": state, "disk": disk}))
-        });
-        serde_json::Value::Object(view_kinds.collect())
-    }
-
-    /// `EXPORTSTATE`: writes `export_state` to `path` through `store::atomic::replace`, so a probe never reads
-    /// a half-written file. A failure is logged.
-    pub(crate) fn write_export_state(&self, path: &std::path::Path) {
-        if let Err(err) = crate::store::atomic::replace(path, self.export_state().to_string().as_bytes()) {
-            eprintln!("EXPORTSTATE: couldn't write {}: {err}", path.display());
-        }
+        (job.run)(self, event_loop);
     }
 }
 
@@ -1869,30 +1112,29 @@ pub(crate) fn debug_key_event(key: egui::Key, modifiers: egui::Modifiers) -> egu
 mod tests {
     use super::*;
 
+    fn parses(line: &str) -> bool {
+        parse_line(line).is_some()
+    }
+
     /// Fix batch A5: `EGUITEXT` types into the focused egui field (a jar name, a group rename) and `BACKSPACE` erases
     /// there; `TYPE` still goes to the page.
     #[test]
     fn egui_typing_commands_parse() {
-        assert!(matches!(parse_line("EGUITEXT Work Stuff"), Some(DebugCommand::EguiText(t)) if t == "Work Stuff"));
-        assert!(parse_line("EGUITEXT").is_none(), "text is required");
-        assert!(matches!(parse_line("backspace"), Some(DebugCommand::Backspace)));
-        assert!(matches!(parse_line("TYPE abc"), Some(DebugCommand::TypeIntoPage(t)) if t == "abc"));
-        for usage in ["EGUITEXT text", "BACKSPACE"] {
-            assert!(COMMAND_HELP.iter().any(|(u, _)| *u == usage), "{usage} is in HELP");
-        }
+        assert!(parses("EGUITEXT Work Stuff"));
+        assert!(!parses("EGUITEXT"), "text is required");
+        assert!(parses("backspace"));
+        assert!(parses("TYPE abc"));
     }
 
     #[test]
     fn click_takes_an_optional_button_and_ctrl() {
-        let click = |line| match parse_line(line) {
-            Some(DebugCommand::Click { x, y, button, ctrl }) => Some((x, y, button, ctrl)),
-            _ => None,
-        };
-        assert_eq!(click("CLICK 1 2"), Some((1.0, 2.0, MouseButton::Left, false)));
-        assert_eq!(click("CLICK 1 2 right"), Some((1.0, 2.0, MouseButton::Right, false)));
-        assert_eq!(click("CLICK 1 2 ctrl"), Some((1.0, 2.0, MouseButton::Left, true)));
-        assert_eq!(click("click 1 2 right CTRL"), Some((1.0, 2.0, MouseButton::Right, true)));
-        assert_eq!(click("CLICK 1"), None);
+        let click = |rest| parse_click(rest).map(|((x, y), button, ctrl)| (x, y, button, ctrl));
+        assert_eq!(click("1 2"), Some((1.0, 2.0, MouseButton::Left, false)));
+        assert_eq!(click("1 2 right"), Some((1.0, 2.0, MouseButton::Right, false)));
+        assert_eq!(click("1 2 ctrl"), Some((1.0, 2.0, MouseButton::Left, true)));
+        assert_eq!(click("1 2 right CTRL"), Some((1.0, 2.0, MouseButton::Right, true)));
+        assert_eq!(click("1"), None);
+        assert!(parses("click 1 2 right CTRL") && !parses("CLICK 1"));
     }
 
     #[test]
@@ -1902,19 +1144,35 @@ mod tests {
         for bad in ["inf", "-inf", "NaN", "1e30", "-1", "86401", "x", ""] {
             assert_eq!(parse_secs(bad), None, "{bad}");
         }
-        assert!(parse_line("SLEEP inf").is_none());
-        assert!(parse_line("WAITTABS 1e30").is_none());
-        assert!(matches!(parse_line("WAITTABS"), Some(DebugCommand::WaitTabs(d)) if d.as_secs() == 60));
-        assert!(parse_line("WAITIDLE 1e30").is_none());
-        assert!(matches!(parse_line("WAITIDLE"), Some(DebugCommand::WaitIdle(d)) if d.as_secs() == 60));
-        assert!(matches!(parse_line("WAITIDLE 5"), Some(DebugCommand::WaitIdle(d)) if d.as_secs() == 5));
+        assert!(!parses("SLEEP inf"));
+        assert!(!parses("WAITTABS 1e30"));
+        assert!(!parses("WAITIDLE 1e30"));
+        let waits = |line| match parse_line(line) {
+            Some(Line::Reader(ReaderOp::WaitTabs(d) | ReaderOp::WaitIdle(d))) => Some(d.as_secs()),
+            _ => None,
+        };
+        assert_eq!(waits("WAITTABS"), Some(60));
+        assert_eq!(waits("WAITIDLE"), Some(60));
+        assert_eq!(waits("WAITIDLE 5"), Some(5));
     }
 
-    /// Every HELP usage parses with sample arguments, and every sampled verb is in HELP.
+    /// Reader-thread verbs block the stdin reader; every other verb is a UI-thread job, and only the mouse verbs are
+    /// pointer input.
     #[test]
-    fn help_and_parser_agree() {
-        // One sample line per parser verb, written from `parse_line`'s match arms
-        // (`?` is `HELP`'s alias, checked separately below).
+    fn rows_are_reader_ops_or_jobs_and_only_mouse_rows_are_pointer() {
+        for line in ["WAITTABS", "WAITIDLE", "SLEEP 1", "SCREENSHOT x.png"] {
+            assert!(matches!(parse_line(line), Some(Line::Reader(_))), "{line}");
+        }
+        for line in ["ENTER", "QUIT", "HELP", "?"] {
+            assert!(matches!(parse_line(line), Some(Line::Run(job)) if !job.pointer), "{line}");
+        }
+        let pointer: Vec<&str> = VERBS.iter().filter(|v| v.pointer).map(Verb::word).collect();
+        assert_eq!(pointer, ["MOUSEMOVE", "MOUSEDOWN", "MOUSEUP", "CLICK", "DOUBLECLICK", "SCROLL"]);
+    }
+
+    /// Every verb has a sample line that parses, and every sampled verb is in the table.
+    #[test]
+    fn every_verb_has_a_parsing_sample() {
         const SAMPLES: &[&str] = &[
             "MOUSEMOVE 1 2",
             "MOUSEDOWN 1 2",
@@ -2042,42 +1300,38 @@ mod tests {
         ];
         let verb = |line: &str| line.split_whitespace().next().unwrap().to_ascii_uppercase();
         for sample in SAMPLES {
-            assert!(parse_line(sample).is_some(), "sample {sample:?} parses");
-            assert!(COMMAND_HELP.iter().any(|(usage, _)| verb(usage) == verb(sample)), "{sample:?} has HELP");
+            assert!(parses(sample), "sample {sample:?} parses");
+            assert!(VERBS.iter().any(|v| v.word() == verb(sample)), "{sample:?} is in the table");
         }
-        for (usage, _) in COMMAND_HELP {
-            assert!(SAMPLES.iter().any(|s| verb(s) == verb(usage)), "HELP verb {usage:?} has a sample");
+        for v in VERBS {
+            assert!(SAMPLES.iter().any(|s| verb(s) == v.word()), "{} has a sample", v.word());
         }
-        assert!(matches!(parse_line("?"), Some(DebugCommand::Help)));
+        for (i, v) in VERBS.iter().enumerate() {
+            assert!(
+                v.word().chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit()),
+                "{}: verbs are upper case",
+                v.usage
+            );
+            assert!(VERBS[..i].iter().all(|w| w.word() != v.word()), "{} is listed twice", v.word());
+        }
+        assert!(parses("?"));
     }
 
-    /// `LINK`, `UNLINK` and `OPENEDFROM` each take two card ids, in order.
+    /// `LINK`, `UNLINK` and `OPENEDFROM` each take two card ids.
     #[test]
     fn link_unlink_and_openedfrom_take_two_ids() {
-        assert!(matches!(
-            parse_line("LINK n1 n2"),
-            Some(DebugCommand::Link { from, to }) if from == "n1" && to == "n2"
-        ));
-        assert!(matches!(
-            parse_line("UNLINK n1 n2"),
-            Some(DebugCommand::Unlink { a, b }) if a == "n1" && b == "n2"
-        ));
-        assert!(matches!(
-            parse_line("OPENEDFROM c p"),
-            Some(DebugCommand::OpenedFrom { child, parent }) if child == "c" && parent == "p"
-        ));
-        for one in ["LINK n1", "UNLINK n1", "OPENEDFROM c"] {
-            assert!(parse_line(one).is_none(), "{one}: both ids are required");
+        for two in ["LINK n1 n2", "UNLINK n1 n2", "OPENEDFROM c p"] {
+            assert!(parses(two), "{two}");
+        }
+        for one in ["LINK n1", "UNLINK n1", "OPENEDFROM c", "MOVETOGROUP n1"] {
+            assert!(!parses(one), "{one}: both ids are required");
         }
     }
 
     /// `MOVETOGROUP` takes two ids and moves only where the node menu's "Move into" would offer.
     #[test]
     fn move_to_group_moves_only_into_an_offered_sibling() {
-        assert!(matches!(
-            parse_line("MOVETOGROUP n1 g1"),
-            Some(DebugCommand::MoveToGroup { id, group }) if id == "n1" && group == "g1"
-        ));
+        assert!(parse_line("MOVETOGROUP n1 g1").is_some());
         assert!(parse_line("MOVETOGROUP n1").is_none(), "both ids are required");
         let mut app = App::default();
         let (g, h, note) = (app.alloc_node_id(), app.alloc_node_id(), app.alloc_node_id());
@@ -2097,7 +1351,7 @@ mod tests {
     /// `CLOSENODE id` closes any node by id, as its card's Close does, and saves.
     #[test]
     fn close_node_takes_any_node() {
-        assert!(matches!(parse_line("CLOSENODE n1"), Some(DebugCommand::CloseNode(id)) if id == "n1"));
+        assert!(parse_line("CLOSENODE n1").is_some());
         assert!(parse_line("CLOSENODE").is_none(), "the id is required");
         let mut app = App::default();
         let (g, note) = (app.alloc_node_id(), app.alloc_node_id());
@@ -2112,7 +1366,7 @@ mod tests {
     /// `REOPENNODE id` reopens a closed node by id, and `EXPORTSTATE` lists the Recently Closed history.
     #[test]
     fn reopennode_reopens_by_id_and_exportstate_lists_the_history() {
-        assert!(matches!(parse_line("REOPENNODE n1"), Some(DebugCommand::ReopenNode(id)) if id == "n1"));
+        assert!(parse_line("REOPENNODE n1").is_some());
         assert!(parse_line("REOPENNODE").is_none(), "the id is required");
         let path = crate::store::testutil::temp_dir("debug-reopennode").join("session.mnf");
         let mut app = crate::session_sync::tests::app_on(&path, 1);
@@ -2124,259 +1378,6 @@ mod tests {
         assert!(app.debug_reopen_node(&g));
         assert!(app.nodes.contains_key(&g));
         assert_eq!(app.export_state()["closed"], serde_json::json!([]));
-    }
-
-    /// `EXPORTSTATE` names a card by its type (plan 2b-6, Ruling 9): `type` (the mime), `loaded` (true for a live tab
-    /// only) and `json_card` (a JSON level's card, not a stored node); the old card enum's `kind` is gone.
-    /// `view_kinds` has every engine, each with its state label and what the disk holds (no data dir under test, so
-    /// the downloaded engines read as not installed with nothing pinned).
-    #[test]
-    fn export_state_lists_each_view_kinds_state_and_disk() {
-        let state = App::default().export_state();
-        let view_kinds = state["view_kinds"].as_object().unwrap();
-        assert_eq!(view_kinds.len(), 4);
-        assert_eq!(view_kinds["webview2"]["disk"], "host ready");
-        assert_eq!(view_kinds["cef"]["disk"], "host missing, runtime missing");
-        assert!(view_kinds["servo"]["state"].as_str().unwrap().starts_with("Unavailable"), "{view_kinds:?}");
-    }
-
-    /// `window` is the window's size and `popups` the visible Foreground layers' rects (`gate layout` reads both).
-    #[test]
-    fn export_state_gives_the_theme_colors() {
-        let state = App::default().export_state();
-        assert_eq!(state["theme"]["danger"], serde_json::json!([224, 112, 84]));
-        assert_eq!(state["theme"]["accent"], serde_json::json!([215, 162, 74]));
-    }
-
-    #[test]
-    fn export_state_gives_the_window_and_each_foreground_popup() {
-        let app = App::default();
-        let mut output = app.egui_ctx.run_ui(egui::RawInput::default(), |ui| {
-            egui::Area::new(egui::Id::new("probe_popup")).order(egui::Order::Foreground).fixed_pos([10.0, 20.0]).show(
-                ui.ctx(),
-                |ui| {
-                    ui.label("x");
-                },
-            );
-        });
-        output.textures_delta.clear();
-        let state = app.export_state();
-        assert_eq!(state["window"].as_array().map(Vec::len), Some(2));
-        let popups = state["popups"].as_array().unwrap();
-        let probe = popups.iter().find(|p| p["id"].as_str().is_some_and(|id| id.contains("probe_popup"))).unwrap();
-        assert_eq!(probe["rect"][0], 10.0);
-        assert_eq!(probe["rect"][1], 20.0);
-    }
-
-    /// `trail` gives each tab's trail and the chips' enablement (`gate trail` reads it).
-    #[test]
-    fn export_state_gives_each_trail() {
-        let mut app = App::default();
-        app.nav_history.insert("t".into(), crate::nav_history::NavHistory::visited(&["a", "b"]));
-        let state = app.export_state();
-        let trail = &state["trail"]["t"];
-        assert_eq!(
-            (trail["entries"].as_u64(), trail["depth"].as_u64(), trail["url"].as_str()),
-            (Some(2), Some(1), Some("b"))
-        );
-        assert_eq!(
-            (trail["back"].as_bool(), trail["forward"].as_bool(), trail["back_fork"].as_bool()),
-            (Some(true), Some(false), Some(false))
-        );
-        assert_eq!(
-            (trail["lin_at"].as_u64(), trail["lin_len"].as_u64(), trail["left_to"].is_null()),
-            (Some(1), Some(2), true)
-        );
-    }
-
-    #[test]
-    fn export_state_names_cards_by_type_loaded_and_json_card() {
-        use crate::node::{NotePayload, TabPayload, UnloadedState, UnloadedTabPayload};
-        use crate::process_manager::{ViewKind, ViewTab};
-        use crate::store::model::{Kind, TYPE_GROUP, TYPE_JSON, TYPE_NOTE, TYPE_TAB};
-        let dir = crate::store::testutil::temp_dir("export_state");
-        let path = dir.join("a.json");
-        std::fs::write(&path, r#"{"a": {"b": 1}}"#).unwrap();
-        let mut app = App::default();
-        let (tab, _peer) = ViewTab::fake(ViewKind::Servo);
-        let live = Runtime::Tab(TabPayload {
-            tab,
-            url: "https://a/".into(),
-            title: String::new(),
-            can_go_back: false,
-            can_go_forward: false,
-            loading: false,
-            audio_playing: false,
-            muted: false,
-            zoom_factor: 1.0,
-            swap_target: None,
-        });
-        let asleep = Runtime::Unloaded(UnloadedTabPayload {
-            url: "https://s/".into(),
-            title: String::new(),
-            muted: false,
-            zoom_factor: 1.0,
-            state: UnloadedState::Sleeping,
-        });
-        app.test_node("live", Kind::Tab, live);
-        app.test_node("asleep", Kind::Tab, asleep);
-        app.test_node("n", Kind::Note, Runtime::Note(NotePayload { text: "t".into(), editing: false }));
-        app.test_node("g", Kind::Group, Runtime::None);
-        app.insert_json_node_with_id("j".into(), path.to_string_lossy().into_owned(), egui::Vec2::ZERO, None).unwrap();
-        let cards = |app: &App| -> std::collections::BTreeMap<String, serde_json::Value> {
-            let state = app.export_state();
-            let cards = state["cards"].as_array().expect("cards is a list");
-            cards.iter().map(|c| (c["id"].as_str().unwrap().to_owned(), c.clone())).collect()
-        };
-
-        let top = cards(&app);
-        assert_eq!(top.len(), 5, "{top:?}");
-        for (id, ty, loaded) in [
-            ("live", TYPE_TAB, true),
-            ("asleep", TYPE_TAB, false),
-            ("n", TYPE_NOTE, false),
-            ("g", TYPE_GROUP, false),
-            ("j", TYPE_JSON, false),
-        ] {
-            let card = &top[id];
-            assert_eq!(card["type"], ty, "{id}: {card}");
-            assert_eq!(card["loaded"], loaded, "{id}: {card}");
-            assert_eq!(card["json_card"], false, "{id}: {card}");
-            assert!(card.get("kind").is_none(), "{id}: {card}");
-            for key in [
-                "group",
-                "parent",
-                "color",
-                "pinned",
-                "editing",
-                "world",
-                "screen",
-                "rect",
-                "jar",
-                "effective_jar",
-                "is_default",
-                "stored_type",
-            ] {
-                assert!(card.get(key).is_some(), "{id} keeps {key}: {card}");
-            }
-        }
-
-        // A JSON level's cards are not stored nodes: `json_card`, typed as the JSON they show.
-        app.switch_group_level(Some("j".into()));
-        let level = cards(&app);
-        assert_eq!(level.keys().collect::<Vec<_>>(), ["j#", "j#/a"]);
-        for card in level.values() {
-            assert_eq!(card["json_card"], true, "{card}");
-            assert_eq!(card["type"], TYPE_JSON, "{card}");
-            assert_eq!(card["loaded"], false, "{card}");
-            assert!(card.get("kind").is_none(), "{card}");
-            for key in ["screen", "rect"] {
-                assert!(card.get(key).is_some(), "{key}: {card}");
-            }
-        }
-        app.switch_group_level(None);
-        assert_eq!(cards(&app)["live"]["unresponsive"], serde_json::json!(false));
-        app.nodes.get("live").and_then(|n| n.as_tab()).unwrap().tab.wedge();
-        assert_eq!(cards(&app)["live"]["unresponsive"], serde_json::json!(true), "its queue filled");
-    }
-
-    /// EXPORTSTATE's `edges`: each line at this level with its kind, Link node, ends and on-screen middle.
-    #[test]
-    fn export_state_lists_the_level_edges_with_their_link() {
-        use crate::node::NotePayload;
-        use crate::store::model::Kind;
-        let mut app = App::default();
-        let (a, b) = (app.alloc_node_id(), app.alloc_node_id());
-        for (id, x) in [(&a, 0.0), (&b, 400.0)] {
-            let note = Runtime::Note(NotePayload { text: "n".into(), editing: false });
-            app.insert_placeholder_node(id.clone(), egui::vec2(x, 0.0), Kind::Note, note);
-        }
-        let link = app.create_link(&a, &b);
-        let state = app.export_state();
-        let edges = state["edges"].as_array().expect("an array");
-        assert_eq!(edges.len(), 1);
-        assert_eq!(edges[0]["kind"], "link");
-        assert_eq!(edges[0]["link"], link.as_str());
-        assert_eq!((edges[0]["from"].as_str(), edges[0]["to"].as_str()), (Some(a.as_str()), Some(b.as_str())));
-        // a's right side to b's left side, bowed: the curve's t = 0.5 point, not the straight segment's middle.
-        let (ra, rb) = (app.card_rect(&a).unwrap(), app.card_rect(&b).unwrap());
-        let (from, to) = (ra.right_center(), rb.left_center());
-        let world = crate::link_gestures::bow_point(from, to, 0.5);
-        assert!((world - from.lerp(to, 0.5)).length() > 1.0, "the bow moves the middle off the chord");
-        let mid = app.graph_world_rect_to_screen(egui::Rect::from_min_max(world, world)).min;
-        let screen: Vec<f64> = edges[0]["screen"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect();
-        assert!((screen[0] as f32 - mid.x).abs() < 0.01 && (screen[1] as f32 - mid.y).abs() < 0.01, "{screen:?}");
-        for (key, t) in [("near_from", 0.2), ("near_to", 0.8)] {
-            let world = crate::link_gestures::bow_point(from, to, t);
-            let want = app.graph_world_rect_to_screen(egui::Rect::from_min_max(world, world)).min;
-            let got: Vec<f64> = edges[0][key].as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect();
-            assert!((got[0] as f32 - want.x).abs() < 0.01 && (got[1] as f32 - want.y).abs() < 0.01, "{key}: {got:?}");
-        }
-        assert!(state["retarget"].is_null());
-        app.start_connect_drag(&a);
-        app.link.retarget = Some(crate::link_gestures::LinkRetarget { link: link.clone(), fixed_is_from: true });
-        assert_eq!(app.export_state()["retarget"], link.as_str());
-    }
-
-    /// EXPORTSTATE's `link_handles`: each card that would show connect handles, each side's on-screen rect.
-    #[test]
-    fn export_state_gives_each_linkable_card_its_handle_rects() {
-        use crate::node::NotePayload;
-        use crate::store::model::Kind;
-        let mut app = App::default();
-        let (a, b) = (app.alloc_node_id(), app.alloc_node_id());
-        for (id, x) in [(&a, 0.0), (&b, 400.0)] {
-            let note = Runtime::Note(NotePayload { text: "n".into(), editing: false });
-            app.insert_placeholder_node(id.clone(), egui::vec2(x, 0.0), Kind::Note, note);
-        }
-        let state = app.export_state();
-        let handles = state["link_handles"][a.as_str()].as_object().expect("a has handles");
-        assert_eq!(handles.keys().map(String::as_str).collect::<Vec<_>>(), ["top", "right", "bottom", "left"]);
-        let r: Vec<f32> = handles["right"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap() as f32).collect();
-        let card = app.graph_world_rect_to_screen(app.card_rect(&a).unwrap());
-        assert!((egui::pos2((r[0] + r[2]) / 2.0, (r[1] + r[3]) / 2.0) - card.right_center()).length() < 0.01);
-        assert!((r[2] - r[0] - crate::link_gestures::HANDLE_SHORT_PX).abs() < 0.01, "16 points across the edge");
-        assert!((r[3] - r[1] - crate::link_gestures::HANDLE_LONG_PX).abs() < 0.01, "28 points along it");
-        assert!(state["connect_drag"].is_null() && state["dragging"].is_null());
-        app.start_connect_drag(&a);
-        let state = app.export_state();
-        assert_eq!(state["connect_drag"], a.as_str());
-        assert!(state["link_handles"].get(b.as_str()).is_some(), "during a connect-drag every card has them");
-        app.cancel_connect();
-        app.interaction.dragging = Some(b.clone());
-        assert_eq!(app.export_state()["dragging"], b.as_str());
-    }
-
-    /// `RENAMEGROUP` alone is F2; with an id it takes the rest of the line as the name. `SETNOTETEXT` takes the rest
-    /// of the line as the text, possibly empty. `MOVENODE` takes exactly an id and two finite numbers.
-    #[test]
-    fn name_text_and_pos_commands_parse() {
-        assert!(matches!(parse_line("RENAMEGROUP"), Some(DebugCommand::RenameGroup)));
-        assert!(matches!(
-            parse_line("RENAMEGROUP g1  Reading list "),
-            Some(DebugCommand::RenameGroupTo { id, name }) if id == "g1" && name == "Reading list"
-        ));
-        assert!(parse_line("RENAMEGROUP g1").is_none(), "a name is required with an id");
-        assert!(matches!(
-            parse_line("SETNOTETEXT n1 two  words"),
-            Some(DebugCommand::SetNoteText { id, text }) if id == "n1" && text == "two  words"
-        ));
-        assert!(matches!(
-            parse_line("SETNOTETEXT n1"),
-            Some(DebugCommand::SetNoteText { id, text }) if id == "n1" && text.is_empty()
-        ));
-        assert!(parse_line("SETNOTETEXT").is_none(), "an id is required");
-        assert!(matches!(
-            parse_line("MOVENODE n1 12 -34.5"),
-            Some(DebugCommand::MoveNode { id, x, y }) if id == "n1" && x == 12.0 && y == -34.5
-        ));
-        for bad in ["MOVENODE n1 12", "MOVENODE n1 inf 0", "MOVENODE n1 NaN 0", "MOVENODE n1 1 2 3", "MOVENODE"] {
-            assert!(parse_line(bad).is_none(), "{bad}");
-        }
-        assert!(matches!(parse_line("GRAPHZOOM 62.5"), Some(DebugCommand::GraphZoom(p)) if p == 62.5));
-        for bad in ["GRAPHZOOM", "GRAPHZOOM 0", "GRAPHZOOM -5", "GRAPHZOOM inf", "GRAPHZOOM x"] {
-            assert!(parse_line(bad).is_none(), "{bad}");
-        }
     }
 
     /// The three edits reach the document through their writers: the rename's clean name (groups only), the note's
@@ -2418,70 +1419,56 @@ mod tests {
     }
 
     #[test]
+    fn name_text_and_pos_commands_parse() {
+        assert_eq!(parse_rename(""), Some(None));
+        assert_eq!(parse_rename("g1  Reading list"), Some(Some(("g1".to_string(), "Reading list".to_string()))));
+        assert_eq!(parse_rename("g1"), None, "a name is required with an id");
+        assert!(parses("RENAMEGROUP") && parses("RENAMEGROUP g1 x") && !parses("RENAMEGROUP g1"));
+        assert_eq!(split_id("n1 two  words"), ("n1".to_string(), "two  words"));
+        assert_eq!(split_id("n1"), ("n1".to_string(), ""));
+        assert!(parses("SETNOTETEXT n1 two  words") && parses("SETNOTETEXT n1"));
+        assert!(!parses("SETNOTETEXT"), "an id is required");
+        assert_eq!(parse_move_node("n1 12 -34.5"), Some(("n1".to_string(), 12.0, -34.5)));
+        for bad in ["n1 12", "n1 inf 0", "n1 NaN 0", "n1 1 2 3", ""] {
+            assert!(parse_move_node(bad).is_none(), "{bad}");
+        }
+        assert_eq!(parse_zoom_pct("62.5"), Some(62.5));
+        for bad in ["", "0", "-5", "inf", "x"] {
+            assert!(parse_zoom_pct(bad).is_none(), "{bad}");
+        }
+    }
+
+    #[test]
     fn jar_commands_parse() {
-        assert!(matches!(parse_line("SETJAR Work"), Some(DebugCommand::SetJar(n)) if n == "Work"));
-        assert!(matches!(parse_line("SETJAR default"), Some(DebugCommand::SetJar(n)) if n == "default"));
-        assert!(parse_line("SETJAR").is_none(), "a jar name is required");
-        assert!(matches!(parse_line("SWITCHJARNOW"), Some(DebugCommand::SwitchJarNow)));
-        assert!(matches!(parse_line("CLEARJAR Work"), Some(DebugCommand::ClearJar(n)) if n == "Work"));
-        assert!(parse_line("CLEARJAR").is_none(), "a jar name is required");
-        assert!(matches!(parse_line("NEWJAR Work Stuff"), Some(DebugCommand::NewJar(n)) if n == "Work Stuff"));
-        assert!(parse_line("NEWJAR").is_none(), "a jar name is required");
-        assert!(matches!(
-            parse_line("USEJAR 1-2 1-5"),
-            Some(DebugCommand::UseJar { from, jar: Some(j) }) if from == "1-2" && j == "1-5"
-        ));
-        assert!(matches!(
-            parse_line("USEJAR 1-2 none"),
-            Some(DebugCommand::UseJar { from, jar: None }) if from == "1-2"
-        ));
-        assert!(parse_line("USEJAR 1-2").is_none());
-        assert!(matches!(
-            parse_line("JAREPHEMERAL 1-5 on"),
-            Some(DebugCommand::JarEphemeral { id, on: true }) if id == "1-5"
-        ));
-        assert!(matches!(parse_line("JAREPHEMERAL 1-5 off"), Some(DebugCommand::JarEphemeral { on: false, .. })));
-        assert!(parse_line("JAREPHEMERAL 1-5 maybe").is_none());
+        for ok in ["SETJAR Work", "SETJAR default", "SWITCHJARNOW", "CLEARJAR Work", "NEWJAR Work Stuff"] {
+            assert!(parses(ok), "{ok}");
+        }
+        for bad in ["SETJAR", "CLEARJAR", "NEWJAR", "USEJAR 1-2", "JAREPHEMERAL 1-5 maybe", "JAREPHEMERAL 1-5"] {
+            assert!(!parses(bad), "{bad}: a jar name or both words are required");
+        }
+        assert_eq!(parse_use_jar("1-2 1-5"), Some(("1-2".to_string(), Some("1-5".to_string()))));
+        assert_eq!(parse_use_jar("1-2 none"), Some(("1-2".to_string(), None)));
+        assert_eq!(parse_use_jar("1-2"), None);
+        assert!(parses("JAREPHEMERAL 1-5 on") && parses("JAREPHEMERAL 1-5 off"));
     }
 
     #[test]
     fn parses_json_level_commands_with_an_optional_pointer() {
-        assert!(matches!(parse_line("JSONSELECT /users/0"), Some(DebugCommand::JsonSelect(p)) if p == "/users/0"));
-        assert!(matches!(parse_line("JSONTOGGLE"), Some(DebugCommand::JsonToggle(p)) if p.is_empty()));
-        assert!(matches!(parse_line("JSONSEARCH two words"), Some(DebugCommand::JsonSearch(q)) if q == "two words"));
-        assert!(matches!(parse_line("JSONRELAYOUT"), Some(DebugCommand::JsonRelayout)));
+        for ok in ["JSONSELECT /users/0", "JSONTOGGLE", "JSONSEARCH two words", "JSONRELAYOUT"] {
+            assert!(parses(ok), "{ok}");
+        }
     }
 
     #[test]
     fn parses_view_install_commands() {
-        assert!(matches!(parse_line("INSTALLVIEW cef"), Some(DebugCommand::InstallView(ViewKind::Cef))));
-        assert!(matches!(parse_line("VIEWSTATE CEF"), Some(DebugCommand::ViewStatus(ViewKind::Cef))));
-        assert!(parse_line("INSTALLVIEW nope").is_none());
+        assert!(parses("INSTALLVIEW cef") && parses("VIEWSTATE CEF"));
+        assert!(!parses("INSTALLVIEW nope"));
     }
 
     #[test]
     fn parses_addfile_with_an_optional_trailing_point() {
-        assert!(matches!(
-            parse_line("ADDFILE C:\\a b\\c.png"),
-            Some(DebugCommand::AddFile(p, None)) if p == "C:\\a b\\c.png"
-        ));
-        assert!(matches!(
-            parse_line("ADDFILE C:\\a b\\c.png 10 20.5"),
-            Some(DebugCommand::AddFile(p, Some((x, y)))) if p == "C:\\a b\\c.png" && x == 10.0 && y == 20.5
-        ));
-    }
-
-    /// EXPORTSTATE writes through `store::atomic::replace`, so a probe can read the file as soon as it exists:
-    /// a blocked target stays unwritten (a plain write would ignore the block).
-    #[test]
-    fn export_state_is_written_through_the_atomic_replace() {
-        let path = crate::store::testutil::temp_dir("export-state-atomic").join("state.json");
-        let app = App::default();
-        crate::store::atomic::block_for_test(&path, true);
-        app.write_export_state(&path);
-        assert!(!path.exists(), "the write went around store::atomic::replace");
-        crate::store::atomic::block_for_test(&path, false);
-        app.write_export_state(&path);
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), app.export_state().to_string());
+        assert_eq!(parse_add_file("C:\\a b\\c.png"), ("C:\\a b\\c.png".to_string(), None));
+        assert_eq!(parse_add_file("C:\\a b\\c.png 10 20.5"), ("C:\\a b\\c.png".to_string(), Some((10.0, 20.5))));
+        assert!(!parses("ADDFILE"));
     }
 }

@@ -422,7 +422,7 @@ fn the_placeholder_characters_are_in_the_monospace_font() {
 const ALLOWED: [&str; 14] = [
     "card.rs",
     "closed.rs",
-    "debug_control.rs",
+    "debug_export.rs",
     "graph_nav.rs",
     "groups.rs",
     "jar_defs.rs",

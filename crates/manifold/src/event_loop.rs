@@ -11,7 +11,7 @@ use winit::window::Icon;
 /// `TabSpawned` — see its own doc comment for why view-host spawning needs
 /// to be async in the first place.
 pub(crate) enum UserEvent {
-    Debug(DebugCommand),
+    Debug(DebugJob),
     TabSpawned(Box<TabSpawnOutcome>),
     /// A screen reader connected, acted on a node, or left (`egui_winit::accesskit_winit`).
     Accessibility(egui_winit::accesskit_winit::Event),
@@ -301,25 +301,13 @@ impl ApplicationHandler<UserEvent> for App {
                 }
             }
             UserEvent::Debug(cmd) => {
-                // egui hit-tests pointer input against the widgets of the
-                // last frame, which may predate whatever changed since the
-                // previous command (a tab that just spawned, suggestions
-                // that just arrived); a CLICK on a node right after
-                // WAITTABS missed 3 runs out of 3. So draw the current
-                // state first.
-                let pointer = matches!(
-                    cmd,
-                    DebugCommand::MouseMove { .. }
-                        | DebugCommand::MouseDown { .. }
-                        | DebugCommand::MouseUp { .. }
-                        | DebugCommand::Click { .. }
-                        | DebugCommand::DoubleClick { .. }
-                        | DebugCommand::Scroll { .. }
-                );
+                // Pointer input is hit-tested against the last frame's widgets, so draw the current state first
+                // (`DebugJob::pointer`).
+                let pointer = cmd.pointer;
                 if self.headless && pointer {
                     self.dispatch_window_event(event_loop, WindowEvent::RedrawRequested);
                 }
-                self.handle_debug_command(event_loop, cmd);
+                self.run_debug_job(event_loop, cmd);
                 // The off-screen headless window can get `RedrawRequested`
                 // (WM_PAINT) only sporadically -- measured ~40 frames in
                 // 20 s under load (another process on the GPU, engines
@@ -1760,7 +1748,7 @@ mod idle_tests {
     #[test]
     fn a_view_wake_is_not_activity_but_a_command_is() {
         assert!(!is_activity(&UserEvent::ViewMessage));
-        assert!(is_activity(&UserEvent::Debug(DebugCommand::Help)));
+        assert!(is_activity(&UserEvent::Debug(DebugJob::quit())));
     }
 
     #[test]

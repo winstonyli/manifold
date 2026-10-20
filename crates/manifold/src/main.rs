@@ -13,6 +13,7 @@ mod closed;
 mod content;
 mod crash_report;
 mod debug_control;
+mod debug_export;
 #[cfg(test)]
 mod deleted_names;
 mod deselect;
@@ -111,7 +112,7 @@ use suggestions::{resolve_navigation_url, Suggestion, SuggestionFetcher};
 
 use card::*;
 use card_kind::*;
-use debug_control::DebugCommand;
+use debug_control::DebugJob;
 use gpu::GpuState;
 use graph_nav::GraphInteraction;
 use graph_ui::*;
