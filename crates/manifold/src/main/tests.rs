@@ -105,7 +105,7 @@ fn every_id_keyed_field_is_forgotten_or_excused() {
         ("pacing", include_str!("../event_loop.rs"), "pub(crate) struct FramePacing {"),
         ("debug", include_str!("../debug_control.rs"), "pub(crate) struct HeadlessDebug {"),
         ("toasts", include_str!("../failure_toasts.rs"), "pub(crate) struct Toasts {"),
-        ("menus", include_str!("../popups.rs"), "pub(crate) struct MenuPopups {"),
+        ("menus", include_str!("../popups/menus.rs"), "pub(crate) struct MenuPopups {"),
         ("history_ui", include_str!("../history.rs"), "pub(crate) struct HistoryUi {"),
         ("view_ui", include_str!("../view_install.rs"), "pub(crate) struct ViewInstallUi {"),
     ];

@@ -87,7 +87,7 @@ Everything from "Running" to the end is a dated log: each entry describes the co
 | `build_tab_context_menu`, `build_group_context_menu`, `build_note_context_menu`, `build_download_context_menu`, `NodeMenuAction`, `apply_node_menu_action` | `node_menu::build_node_context_menu`, `NodeMenuItem`, `NodeMenuConfig` |
 | `tabs_at_level`, `groups_at_current_level`, `downloads_at_level`, ... | `App::level_scan` (`level.rs`, one pass bucketed by `Caps::draw_layer`) and `tabs_at_current_level` in `graph_nav.rs` |
 | `build_tab_ui`, `start_transition_to_tab` | `build_tab_view_ui` (`tab_view.rs`), `start_transition_to_item` (`view_modes.rs`) |
-| `bookmarks_open`, `history_open`, `downloads_open`, `*_engine_picker_open`, `show_anchored_popup`, ... | one `Option<AnchoredPopup>` with `toggle_popup`/`close_popup` (`popups.rs`) |
+| `bookmarks_open`, `history_open`, `downloads_open`, `*_engine_picker_open`, `show_anchored_popup`, ... | one `Option<AnchoredPopup>` with `toggle_popup`/`close_popup` (`popups/menus.rs`) |
 | `advance_graph_camera`, `graph_camera_tween`, `pan_drag_history` | `GraphCamera::advance` and its `tween`, `momentum` and `drag_history` fields (`graph_ui.rs`) |
 | `draw_card_glow`, `GROUP_OVERLOAD_COLOR` | `card_glow_shapes` (`card.rs`); `theme::DANGER_COLOR` and `GROUP_OVERLOAD_THRESHOLD` |
 | `FailedTab`, `FailedTabPayload`, `retry_failed_tab` | `UnloadedState::Failed` on an unloaded tab card; `retry_missing_file` is for fetched files |
