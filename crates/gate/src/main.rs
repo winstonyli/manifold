@@ -17,6 +17,8 @@ mod check;
 #[cfg(windows)]
 mod closed;
 #[cfg(windows)]
+mod dblprobe;
+#[cfg(windows)]
 mod focus;
 mod fresh;
 mod http;
@@ -121,6 +123,7 @@ mod windows_main {
             "two" => crate::two::two(parent),
             "unknown-type" => crate::unknown_type::unknown_type(parent),
             "closed" => crate::closed::closed(parent),
+            "dblprobe" => crate::dblprobe::dblprobe(parent),
             "trail" => crate::trail::trail(parent),
             // Was scripts/fresh-exe.sh: exit 1 and name the stale files if EXE (the next argument) is older than its sources.
             "fresh" => match parent.as_deref().map(require_fresh_exe) {
