@@ -1960,28 +1960,8 @@ Importing replaces every currently open tab.",
             return;
         }
 
-        // A key of "#" starts a section; its text is the heading.
+        // A key of "#" starts a section; its text is the heading. Everywhere is generated from `CHORDS`.
         const SHORTCUTS: &[(&str, &str)] = &[
-            ("#", "Everywhere"),
-            ("Ctrl+T", "New tab"),
-            ("Ctrl+W", "Close focused tab"),
-            ("Ctrl+Shift+W", "Close all tabs at the current level"),
-            ("Ctrl+Shift+T", "Reopen last closed tab"),
-            ("Ctrl+D", "Duplicate focused tab"),
-            ("Ctrl+Tab / Ctrl+Shift+Tab", "Next / previous tab"),
-            ("Ctrl+K", "Quick switcher (jump to any open tab)"),
-            ("Ctrl+G", "Toggle Tab / Graph view"),
-            ("Ctrl+Shift+G", "New group"),
-            ("F2", "Rename the group currently being viewed"),
-            ("Ctrl+P", "Pin / unpin focused tab"),
-            ("Ctrl+L", "Focus the address bar"),
-            ("Ctrl+F", "Find in page"),
-            ("Ctrl+R / F5", "Reload focused tab"),
-            ("Alt+Left / Alt+Right, mouse 4 / 5", "Back / Forward along the focused tab's trail"),
-            ("Ctrl+= / Ctrl+-", "Zoom in / out"),
-            ("Ctrl+0", "Reset zoom"),
-            ("F12", "Open devtools"),
-            ("F1", "Toggle this shortcut reference"),
             ("#", "Graph canvas"),
             ("1 - 9", "Focus the card with that number (two digits for 10 and up); Enter then opens it"),
             ("Hold Ctrl", "Reveal the card numbers and the Ctrl shortcuts (after a short hold, with no other key)"),
@@ -2034,13 +2014,14 @@ Importing replaces every currently open tab.",
                             .spacing(egui::vec2(16.0, 6.0))
                             .max_col_width(width * 0.6)
                             .show(ui, |ui| {
-                                for (keys, desc) in SHORTCUTS {
-                                    if *keys == "#" {
-                                        ui.label(egui::RichText::new(*desc).strong().color(ACCENT));
+                                let everywhere = [("#", "Everywhere")].into_iter().chain(crate::shortcuts::help_rows());
+                                for (keys, desc) in everywhere.chain(SHORTCUTS.iter().copied()) {
+                                    if keys == "#" {
+                                        ui.label(egui::RichText::new(desc).strong().color(ACCENT));
                                         ui.label("");
                                     } else {
                                         ui.horizontal(|ui| kbd_keys(ui, keys));
-                                        ui.label(*desc);
+                                        ui.label(desc);
                                     }
                                     ui.end_row();
                                 }

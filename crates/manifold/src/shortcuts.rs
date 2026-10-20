@@ -29,6 +29,51 @@ pub(crate) enum Shortcut {
     Forward,
 }
 
+impl Shortcut {
+    /// Its row in the shortcut reference: the keys and what they do. `None` for an action shown with its pair
+    /// (`PrevTab` beside `NextTab`, `ZoomOut` beside `ZoomIn`, `Forward` beside `Back`).
+    fn help(self) -> Option<(&'static str, &'static str)> {
+        Some(match self {
+            Shortcut::ReopenTab => ("Ctrl+Shift+T", "Reopen last closed tab"),
+            Shortcut::NewTab => ("Ctrl+T", "New tab"),
+            Shortcut::CloseAllLevel => ("Ctrl+Shift+W", "Close all tabs at the current level"),
+            Shortcut::CloseTab => ("Ctrl+W", "Close focused tab"),
+            Shortcut::FocusAddress => ("Ctrl+L", "Focus the address bar"),
+            Shortcut::OpenFind => ("Ctrl+F", "Find in page"),
+            Shortcut::ZoomIn => ("Ctrl+= / Ctrl+-", "Zoom in / out"),
+            Shortcut::ZoomOut => return None,
+            Shortcut::ZoomReset => ("Ctrl+0", "Reset zoom"),
+            Shortcut::OpenDevtools => ("F12", "Open devtools"),
+            Shortcut::PrevTab => return None,
+            Shortcut::NextTab => ("Ctrl+Tab / Ctrl+Shift+Tab", "Next / previous tab"),
+            Shortcut::QuickSwitch => ("Ctrl+K", "Quick switcher (jump to any open tab)"),
+            Shortcut::NewGroup => ("Ctrl+Shift+G", "New group"),
+            Shortcut::ViewToggle => ("Ctrl+G", "Toggle Tab / Graph view"),
+            Shortcut::PinToggle => ("Ctrl+P", "Pin / unpin focused tab"),
+            Shortcut::Reload => ("Ctrl+R / F5", "Reload focused tab"),
+            Shortcut::RenameGroup => ("F2", "Rename the group currently being viewed"),
+            Shortcut::DuplicateTab => ("Ctrl+D", "Duplicate focused tab"),
+            Shortcut::ShortcutsHelp => ("F1", "Toggle this shortcut reference"),
+            Shortcut::Back => ("Alt+Left / Alt+Right, mouse 4 / 5", "Back / Forward along the focused tab's trail"),
+            Shortcut::Forward => return None,
+        })
+    }
+}
+
+/// The reference's Everywhere rows, one per action in `CHORDS` order: (keys, description).
+pub(crate) fn help_rows() -> Vec<(&'static str, &'static str)> {
+    let mut seen = Vec::new();
+    CHORDS
+        .iter()
+        .filter(|c| {
+            let new = !seen.contains(&c.action);
+            seen.push(c.action);
+            new
+        })
+        .filter_map(|c| c.action.help())
+        .collect()
+}
+
 /// One key chord: egui's modifiers and key (what `consume_key` matches),
 /// the winit codes the same press arrives as on its way to a page
 /// (`claims_chord`), and what it does.
@@ -139,73 +184,49 @@ impl App {
             }
             fired
         });
-        let on = |s: Shortcut| fired.contains(&s);
-        if on(Shortcut::ReopenTab) {
-            self.reopen_closed_shortcut();
+        for shortcut in fired {
+            self.run_shortcut(shortcut);
         }
-        if on(Shortcut::NewTab) {
-            self.new_tab_shortcut();
-        }
-        if on(Shortcut::CloseAllLevel) {
-            self.close_all_at_current_level();
-        }
-        if on(Shortcut::CloseTab) {
-            self.close_focused_tab_shortcut();
-        }
-        if on(Shortcut::FocusAddress) {
-            self.focus_address_bar_shortcut();
-        }
-        if on(Shortcut::OpenFind) {
-            self.open_find_bar_shortcut();
-        }
-        if on(Shortcut::ZoomIn) {
-            self.zoom_in_shortcut();
-        }
-        if on(Shortcut::ZoomOut) {
-            self.zoom_out_shortcut();
-        }
-        if on(Shortcut::ZoomReset) {
-            self.zoom_reset_shortcut();
-        }
-        if on(Shortcut::OpenDevtools) {
-            self.open_devtools_shortcut();
-        }
-        if on(Shortcut::NextTab) || on(Shortcut::PrevTab) {
-            self.cycle_focused_tab(on(Shortcut::NextTab));
-        }
-        if on(Shortcut::QuickSwitch) {
-            self.open_quick_switcher();
-        }
-        if on(Shortcut::NewGroup) {
-            self.new_group_shortcut();
-        }
-        // Neutralized while the quick-switcher is open, same reasoning as
-        // its own Escape/arrow handling in `build_quick_switcher` -- a
-        // `Ctrl+G` typed while it's open shouldn't also flip the view
-        // underneath it.
-        if on(Shortcut::ViewToggle) && self.menus.quick_switcher.is_none() {
-            self.toggle_view_mode_shortcut();
-        }
-        if on(Shortcut::PinToggle) {
-            self.pin_shortcut();
-        }
-        if on(Shortcut::Reload) {
-            self.reload_focused_tab_shortcut();
-        }
-        if on(Shortcut::RenameGroup) {
-            self.rename_current_group_shortcut();
-        }
-        if on(Shortcut::DuplicateTab) {
-            self.duplicate_focused_tab_shortcut();
-        }
-        if on(Shortcut::ShortcutsHelp) {
-            self.menus.shortcuts_help_open = !self.menus.shortcuts_help_open;
-        }
-        for (shortcut, dir) in
-            [(Shortcut::Back, crate::nav_history::Dir::Back), (Shortcut::Forward, crate::nav_history::Dir::Forward)]
-        {
-            if let Some(id) = self.focused.clone().filter(|_| on(shortcut)) {
-                self.navigate_history(&id, dir);
+    }
+
+    /// What `shortcut` does (`handle_global_shortcuts`).
+    fn run_shortcut(&mut self, shortcut: Shortcut) {
+        match shortcut {
+            Shortcut::ReopenTab => self.reopen_closed_shortcut(),
+            Shortcut::NewTab => self.new_tab_shortcut(),
+            Shortcut::CloseAllLevel => self.close_all_at_current_level(),
+            Shortcut::CloseTab => self.close_focused_tab_shortcut(),
+            Shortcut::FocusAddress => self.focus_address_bar_shortcut(),
+            Shortcut::OpenFind => self.open_find_bar_shortcut(),
+            Shortcut::ZoomIn => self.zoom_in_shortcut(),
+            Shortcut::ZoomOut => self.zoom_out_shortcut(),
+            Shortcut::ZoomReset => self.zoom_reset_shortcut(),
+            Shortcut::OpenDevtools => self.open_devtools_shortcut(),
+            Shortcut::NextTab => self.cycle_focused_tab(true),
+            Shortcut::PrevTab => self.cycle_focused_tab(false),
+            Shortcut::QuickSwitch => self.open_quick_switcher(),
+            Shortcut::NewGroup => self.new_group_shortcut(),
+            // Neutralized while the quick-switcher is open, same reasoning as its own Escape/arrow handling in
+            // `build_quick_switcher` -- a `Ctrl+G` typed while it's open shouldn't also flip the view underneath it.
+            Shortcut::ViewToggle => {
+                if self.menus.quick_switcher.is_none() {
+                    self.toggle_view_mode_shortcut();
+                }
+            }
+            Shortcut::PinToggle => self.pin_shortcut(),
+            Shortcut::Reload => self.reload_focused_tab_shortcut(),
+            Shortcut::RenameGroup => self.rename_current_group_shortcut(),
+            Shortcut::DuplicateTab => self.duplicate_focused_tab_shortcut(),
+            Shortcut::ShortcutsHelp => self.menus.shortcuts_help_open = !self.menus.shortcuts_help_open,
+            Shortcut::Back | Shortcut::Forward => {
+                let dir = if shortcut == Shortcut::Back {
+                    crate::nav_history::Dir::Back
+                } else {
+                    crate::nav_history::Dir::Forward
+                };
+                if let Some(id) = self.focused.clone() {
+                    self.navigate_history(&id, dir);
+                }
             }
         }
     }
@@ -574,6 +595,24 @@ mod chord_tests {
                     c.action
                 );
             }
+        }
+    }
+
+    /// Each action has one reference row, and an action shown with its pair has none of its own.
+    #[test]
+    fn the_reference_lists_every_action_once_with_its_pair() {
+        let rows = help_rows();
+        let mut actions: Vec<Shortcut> = Vec::new();
+        for c in CHORDS {
+            if !actions.contains(&c.action) {
+                actions.push(c.action);
+            }
+        }
+        let paired = [Shortcut::PrevTab, Shortcut::ZoomOut, Shortcut::Forward];
+        assert!(paired.iter().all(|a| actions.contains(a) && a.help().is_none()));
+        assert_eq!(rows.len(), actions.len() - paired.len());
+        for (keys, desc) in &rows {
+            assert_eq!(rows.iter().filter(|r| r.0 == *keys).count(), 1, "{keys}: {desc}");
         }
     }
 }
