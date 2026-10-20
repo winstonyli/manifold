@@ -243,8 +243,8 @@ impl App {
         self.save_session();
     }
 
-    /// `source`'s members move into `target`, and `source` goes: a group
-    /// card dropped onto another. Refused if `target` is nested inside
+    /// `source`'s members move into `target`, and `source` closes holding them (`fold_group`; the toast's Undo
+    /// reopens it around them): a group card dropped onto another. Refused if `target` is nested inside
     /// `source` (directly or transitively, walking the same `.group` chain
     /// `group_breadcrumb` does): reassigning source's own members to target
     /// while target is one of them would leave it (or a group between them)
@@ -264,20 +264,16 @@ impl App {
             }
             ancestor = self.nodes.get(&cur).and(self.mirror.group(&cur)).map(str::to_owned);
         }
-        let moved: Vec<String> = self.members_of(source).map(str::to_owned).collect();
-        for member in &moved {
-            self.edit_group(member, Some(target.to_string()));
-        }
-        // Its links move to `target` before its delete would take them (Links final review M2).
+        let message = format!("Merged {} into {}", self.drop_target_name(source), self.drop_target_name(target));
+        // Its links move to `target` and stay there on an undo: the source keeps none.
         self.retarget_links(source, target);
-        self.nodes.remove(source);
-        self.queue_delete(source);
-        self.node_order.retain(|g| g != source);
-        self.forget_id(source);
-        // Only the members that moved can have an edge taken out of reach.
-        for member in moved {
-            self.recheck_edge_scope(&member);
+        for link in self.links_naming(source) {
+            self.delete_link(&link);
         }
+        // The source closes holding its members, so the toast's Undo reopens it around them.
+        self.fold_group(source, Some(target.to_string()));
+        self.toasts.undo = Some((message.clone(), vec![source.to_string()]));
+        self.queue_toast(message);
     }
 
     /// Would setting `node_id`'s parent to `new_parent_id` create a cycle?

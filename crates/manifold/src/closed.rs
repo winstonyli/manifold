@@ -743,6 +743,29 @@ mod tests {
         }
     }
 
+    /// A merge closes the source group holding its members: Undo reopens it around them, and a member the user moved
+    /// on stays where it went. The target keeps the members that stay.
+    #[test]
+    fn a_merge_is_undone_by_reopening_the_source_group() {
+        let path = store::testutil::temp_dir("merge-undo").join("session.mnf");
+        let mut app = app_on(&path, 1);
+        let (source, kept) = group_with_note(&mut app);
+        let (_, left) = group_with_note(&mut app);
+        app.edit_group(&left, Some(source.clone()));
+        let target = add_group(&mut app, "T");
+        assert!(app.save_session());
+        app.merge_groups(&source, &target);
+        assert_eq!(app.mirror.group(&kept), Some(target.as_str()));
+        assert!(closed_ids(&app).contains(&source));
+        let (message, ids) = app.toasts.undo.take().expect("the merge offers an undo");
+        assert!(message.starts_with("Merged"), "{message}");
+        app.edit_group(&left, None);
+        app.undo_ungroup(ids);
+        assert_eq!(app.mirror.group(&kept), Some(source.as_str()), "back in the source group");
+        assert_eq!(app.mirror.group(&left), None, "a member moved on stays");
+        assert!(app.nodes.contains_key(&source) && closed_ids(&app).is_empty());
+    }
+
     /// Ungroup All offers one Undo for every group it dissolved.
     #[test]
     fn ungroup_all_is_undone_in_one_step() {

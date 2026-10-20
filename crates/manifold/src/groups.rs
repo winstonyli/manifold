@@ -51,7 +51,7 @@ impl App {
     }
 
     /// The menu's "Dissolve Group" and the toolbar's Ungroup All: each group's members move up to its own level and
-    /// the empty group is closed (a Recently Closed entry) holding their ids (`field::HELD`), so reopening it, from
+    /// the empty group is closed (a Recently Closed entry) holding their ids (`fold_group`), so reopening it, from
     /// that list or the toast's Undo (`undo_ungroup`), puts them back (`regroup_held`).
     pub(crate) fn ungroup(&mut self, ids: &[String]) {
         let message = match ids {
@@ -60,18 +60,26 @@ impl App {
         };
         for id in ids {
             let parent = self.mirror.group(id).map(str::to_owned);
-            let members: Vec<String> = self.members_of(id).map(str::to_owned).collect();
-            for member in &members {
-                self.edit_group(member, parent.clone());
-            }
-            self.edit_field(id, field::HELD, FieldValue::Str(members.join(" ")));
-            self.close_node(id);
-            for member in &members {
-                self.recheck_edge_scope(member);
-            }
+            self.fold_group(id, parent);
         }
         self.toasts.undo = Some((message.clone(), ids.to_vec()));
         self.queue_toast(message);
+    }
+
+    /// Moves group `id`'s members into `dest` (`None`: the top level) and closes the emptied group, recording where
+    /// they went and who they were in `field::HELD` ("<dest> <member>...", `-` for the top level) so `regroup_held`
+    /// can put them back. Shared by `ungroup` (dest: the group's own level) and `merge_groups` (dest: the target).
+    pub(crate) fn fold_group(&mut self, id: &str, dest: Option<String>) {
+        let members: Vec<String> = self.members_of(id).map(str::to_owned).collect();
+        for member in &members {
+            self.edit_group(member, dest.clone());
+        }
+        let held = std::iter::once(dest.as_deref().unwrap_or("-")).chain(members.iter().map(String::as_str));
+        self.edit_field(id, field::HELD, FieldValue::Str(held.collect::<Vec<_>>().join(" ")));
+        self.close_node(id);
+        for member in &members {
+            self.recheck_edge_scope(member);
+        }
     }
 
     /// The toast's Undo: reopens each group `ungroup` closed.
@@ -81,16 +89,16 @@ impl App {
         }
     }
 
-    /// A reopened group puts back the members `ungroup` took out of it that are still at its level (one moved
-    /// elsewhere meanwhile stays), then forgets them. Nothing if the group is not shown (its own group is closed).
+    /// A reopened group puts back the members `fold_group` took out of it that are still where it left them (one
+    /// moved elsewhere meanwhile stays), then forgets them. Nothing if the group is not shown (its own group is
+    /// closed).
     pub(crate) fn regroup_held(&mut self, id: &str) {
         let FieldValue::Str(held) = self.mirror.get(id, field::HELD) else { return };
-        if held.is_empty() {
-            return;
-        }
-        let level = self.mirror.group(id).map(str::to_owned);
-        for member in held.split(' ') {
-            if self.nodes.contains_key(member) && self.mirror.group(member) == level.as_deref() {
+        let mut words = held.split(' ');
+        let Some(dest) = words.next() else { return };
+        let dest = (dest != "-").then_some(dest);
+        for member in words {
+            if self.nodes.contains_key(member) && self.mirror.group(member) == dest {
                 self.edit_group(member, Some(id.to_owned()));
             }
         }
