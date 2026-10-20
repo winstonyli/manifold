@@ -288,7 +288,7 @@ impl App {
             let old = n.as_tab()?.tab.kind;
             Some(TabSpawn {
                 fallback_kind: Some(old),
-                ..TabSpawn::respawn(tab_id, n, self.mirror.carried(tab_id), target, url)?
+                ..TabSpawn::respawn(tab_id, n, self.doc.mirror.carried(tab_id), target, url)?
             })
         }) else {
             return;

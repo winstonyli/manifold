@@ -14,7 +14,7 @@ impl App {
             .nodes
             .iter()
             .filter(|(id, _)| self.is_container(id))
-            .map(|(id, _)| self.mirror.name(id)) // name rule: compares stored names
+            .map(|(id, _)| self.doc.mirror.name(id)) // name rule: compares stored names
             .collect();
         (1..).map(|n| format!("Group {n}")).find(|name| !taken.contains(name.as_str())).expect("a free number")
     }
@@ -22,7 +22,7 @@ impl App {
     /// How many groups `id` is nested in, by the mirror's `group` chain; capped at the chain's length so a cycle
     /// (two replicas' moves raced) ends.
     pub(crate) fn group_depth(&self, id: &str) -> usize {
-        crate::walk::ancestors(id.to_owned(), |k| self.mirror.group(k).map(str::to_owned)).count()
+        crate::walk::ancestors(id.to_owned(), |k| self.doc.mirror.group(k).map(str::to_owned)).count()
     }
 
     /// The menu's "Dissolve Group" and the toolbar's Ungroup All: each group's members move up to its own level and
@@ -33,7 +33,7 @@ impl App {
             [id] => format!("Dissolved {}", self.drop_target_name(id)),
             _ => format!("Ungrouped {} groups", ids.len()),
         };
-        let folds = ids.iter().map(|id| (id.clone(), self.mirror.group(id).map(str::to_owned))).collect();
+        let folds = ids.iter().map(|id| (id.clone(), self.doc.mirror.group(id).map(str::to_owned))).collect();
         self.fold_groups(folds, message);
     }
 
@@ -66,7 +66,7 @@ impl App {
     /// moved elsewhere meanwhile stays), then forgets them. Nothing if the group is not shown (its own group is
     /// closed).
     pub(crate) fn regroup_held(&mut self, id: &str) {
-        let FieldValue::Str(held) = self.mirror.get(id, field::HELD) else { return };
+        let FieldValue::Str(held) = self.doc.mirror.get(id, field::HELD) else { return };
         let mut words = held.split(' ');
         let Some(dest) = words.next() else { return };
         let dest = (dest != "-").then_some(dest);
@@ -82,7 +82,7 @@ impl App {
     /// Whether card `id` is shown and in group `group` (`None`: the top level): the check before putting it back
     /// anywhere (`regroup_held`, `replay_revert`), so a card moved on or closed meanwhile stays.
     pub(crate) fn card_in_group(&self, id: &str, group: Option<&str>) -> bool {
-        self.nodes.contains_key(id) && self.mirror.group(id) == group
+        self.nodes.contains_key(id) && self.doc.mirror.group(id) == group
     }
 
     /// Shared by `new_group_shortcut` (`pos` `None`: a jittered spawn) and

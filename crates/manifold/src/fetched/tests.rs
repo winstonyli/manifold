@@ -40,13 +40,13 @@ fn insert_content_dispatches_local_files_by_content() {
 #[test]
 fn place_node_types_a_node_whose_entry_lacks_a_type() {
     let mut app = App::default();
-    app.mirror.set("n", field::URL, FieldValue::Str("https://a/".into()));
-    assert_eq!(app.mirror.ty("n"), "");
+    app.doc.mirror.set("n", field::URL, FieldValue::Str("https://a/".into()));
+    assert_eq!(app.doc.mirror.ty("n"), "");
     let note = Runtime::Note(NotePayload { text: "t".into(), editing: false });
     app.insert_placeholder_node("n".into(), egui::Vec2::ZERO, Kind::Note, note);
-    assert_eq!(app.mirror.ty("n"), crate::store::model::TYPE_NOTE);
+    assert_eq!(app.doc.mirror.ty("n"), crate::store::model::TYPE_NOTE);
     assert_eq!(app.card_kind("n").unwrap().ty, crate::store::model::TYPE_NOTE);
-    assert_eq!(app.mirror.url("n"), "https://a/", "the entry's other fields are kept");
+    assert_eq!(app.doc.mirror.url("n"), "https://a/", "the entry's other fields are kept");
 }
 
 #[test]
@@ -132,8 +132,8 @@ fn drop_file_lands_beside_the_focused_tab_in_its_own_group() {
     let beside = egui::vec2(100.0, 50.0) + egui::vec2(240.0, 0.0);
     assert_eq!(app.layout_pos(&ids[0]), beside);
     assert_eq!(app.layout_pos(&ids[1]), beside + egui::vec2(24.0, 24.0));
-    assert_eq!(app.mirror.group(&ids[0]), Some("g"));
-    assert_eq!(app.mirror.group(&ids[1]), Some("g"));
+    assert_eq!(app.doc.mirror.group(&ids[0]), Some("g"));
+    assert_eq!(app.doc.mirror.group(&ids[1]), Some("g"));
 }
 
 #[test]
@@ -158,7 +158,10 @@ fn insert_content_dispatches_web_content_and_keeps_its_url() {
     app.insert_content(source, note_id.clone(), egui::Vec2::ZERO, None).unwrap();
     assert_eq!(app.source_url(&note_id), Some("https://x.test/note.txt"));
     // 2b-5 Task 1: the url is the mirror's, seeded at creation, so the next save creates the node with it.
-    assert_eq!((app.mirror.url(&id), app.mirror.url(&note_id)), ("https://x.test/a.png", "https://x.test/note.txt"));
+    assert_eq!(
+        (app.doc.mirror.url(&id), app.doc.mirror.url(&note_id)),
+        ("https://x.test/a.png", "https://x.test/note.txt")
+    );
     let snapshot = app.snapshot(id.parse().unwrap()).unwrap();
     assert_eq!(snapshot.fields[&field::URL], FieldValue::Str("https://x.test/a.png".into()));
 }
@@ -171,10 +174,10 @@ fn a_new_download_has_its_url_and_type_in_the_mirror() {
     let tab = add(&mut app, Kind::Tab, sleeping_tab("https://x.test/", "T"));
     app.insert_download_node(tab, "f.bin".into(), Some(3), Some("https://x.test/f.bin".into()));
     let id = app.nodes.iter().find(|(_, n)| n.as_download().is_some()).map(|(id, _)| id.clone()).unwrap();
-    assert_eq!(app.mirror.url(&id), "https://x.test/f.bin");
+    assert_eq!(app.doc.mirror.url(&id), "https://x.test/f.bin");
     assert_eq!(app.copyable_url(&id), Some("https://x.test/f.bin"));
-    assert_eq!(app.mirror.ty(&id), crate::store::model::Kind::Download.type_str().unwrap());
-    assert_eq!(app.mirror.path(&id), "f.bin");
+    assert_eq!(app.doc.mirror.ty(&id), crate::store::model::Kind::Download.type_str().unwrap());
+    assert_eq!(app.doc.mirror.path(&id), "f.bin");
 }
 
 /// 2b-5 Ruling 5: a reload that lands in a new file keeps the stored (create-time) path in the mirror, which the
@@ -194,13 +197,13 @@ fn a_reload_keeps_the_stored_path_and_duplicating_exports_the_resolved_one() {
         None,
     )
     .unwrap();
-    assert_eq!(app.mirror.path(&id), stored);
+    assert_eq!(app.doc.mirror.path(&id), stored);
     let moved = dir.join("moved.json");
     std::fs::write(&moved, b"[2]").unwrap();
     let moved = moved.to_string_lossy().into_owned();
     app.reload_fetched_node(&id, WebBody::File { kind: crate::content::ContentKind::Json, path: moved.clone() });
     assert_eq!(app.nodes[&id].as_json().unwrap().path, moved, "the payload reads the new file");
-    assert_eq!(app.mirror.path(&id), stored, "the mirror keeps the stored path");
+    assert_eq!(app.doc.mirror.path(&id), stored, "the mirror keeps the stored path");
     let snapshot = app.snapshot(id.parse().unwrap()).unwrap();
     assert_eq!(snapshot.fields[&field::PATH], FieldValue::Str(stored.clone()), "a save writes the stored path");
     let doc = crate::duplicate::subtree_json(&app, &[id.as_str()], egui::Vec2::ZERO).unwrap();
@@ -292,7 +295,7 @@ fn pruning_keeps_files_a_named_session_names() {
     assert!(app.save_session());
     app.close_node(&closed);
     assert!(app.save_session());
-    let journal = app.journal.as_ref().unwrap();
+    let journal = app.doc.journal.as_ref().unwrap();
     assert!(journal.doc().nodes[&closed.parse().unwrap()].closed(), "closed in the document, not recorded aside");
     journal.save_copy(&sessions.join("saved.mnf"), Some(&app.local_state().to_bytes())).unwrap();
 
@@ -331,7 +334,7 @@ fn a_named_session_that_cant_be_read_whole_stops_the_prune() {
     let mut app = app_on(&root.join("session.mnf"), 1);
     add(&mut app, Kind::Note, Runtime::Note(NotePayload { text: "x".into(), editing: false }));
     assert!(app.save_session());
-    app.journal.as_ref().unwrap().save_copy(&saved, None).unwrap();
+    app.doc.journal.as_ref().unwrap().save_copy(&saved, None).unwrap();
     assert_eq!(prune(), Some(1));
 
     let good = std::fs::read(&saved).unwrap();
@@ -359,7 +362,7 @@ fn a_repaired_store_is_never_pruned_against() {
     std::fs::write(&path, bytes).unwrap();
     let mut app = app_on(&path, 2);
     app.restore_session();
-    assert!(app.store_recovered);
+    assert!(app.doc.store_recovered);
     assert!(!app.may_prune());
 }
 
@@ -371,8 +374,8 @@ fn a_store_set_aside_is_never_pruned_against() {
     std::fs::write(&path, b"not a session").unwrap();
     let mut app = App::default();
     app.open_store_at(&path);
-    assert!(app.journal.is_some());
-    assert!(app.store_recovered);
+    assert!(app.doc.journal.is_some());
+    assert!(app.doc.store_recovered);
     assert!(!app.may_prune());
 }
 
@@ -431,7 +434,7 @@ fn a_refetched_file_reloads_the_node_in_place() {
     let node = &app.nodes["r"];
     assert_eq!(*node.as_json().unwrap().value, serde_json::json!([2]));
     assert_eq!(
-        (app.layout_pos("r"), app.mirror.pos("r"), app.mirror.color("r"), app.source_url("r")),
+        (app.layout_pos("r"), app.doc.mirror.pos("r"), app.doc.mirror.color("r"), app.source_url("r")),
         (egui::vec2(1.0, 2.0), Some(egui::vec2(1.0, 2.0)), Some(egui::Color32::RED), Some("https://x.test/j"))
     );
     assert_eq!(app.node_order, order);
@@ -461,7 +464,7 @@ fn a_failed_refetch_keeps_a_placeholder_with_group_and_error() {
     let node = &app.nodes["r"];
     assert!(node.as_json().unwrap().error.is_some());
     assert_eq!(
-        (app.layout_pos("r"), app.mirror.color("r"), app.mirror.group("r"), app.source_url("r")),
+        (app.layout_pos("r"), app.doc.mirror.color("r"), app.doc.mirror.group("r"), app.source_url("r")),
         (egui::vec2(1.0, 2.0), Some(egui::Color32::RED), Some("g"), Some("https://x.test/j"))
     );
     assert_eq!(app.node_order, order);
@@ -502,7 +505,7 @@ fn closing_a_content_node_moves_what_it_opened_up() {
     let tab = add(&mut app, Kind::Tab, sleeping_tab("https://x.test/from-note", "T"));
     app.edit_parent(&tab, Some(note.clone()));
     app.close_node(&note);
-    assert_eq!(app.mirror.parent(&tab), Some(opener.as_str()));
+    assert_eq!(app.doc.mirror.parent(&tab), Some(opener.as_str()));
 }
 
 /// The engine message arms need a live engine, so the entry's
@@ -555,9 +558,9 @@ fn a_converted_tab_keeps_its_place_and_url() {
 
     assert!(!app.nodes.contains_key(&tab));
     assert!(app.nodes["n"].as_json().is_some());
-    assert_eq!((app.layout_pos("n"), app.mirror.group("n")), (egui::vec2(5.0, 6.0), Some("g")));
+    assert_eq!((app.layout_pos("n"), app.doc.mirror.group("n")), (egui::vec2(5.0, 6.0), Some("g")));
     assert_eq!(app.source_url("n"), Some("https://x.test/a.json"));
-    assert_eq!(app.mirror.parent("n"), Some(opener.as_str()), "still opened from where the tab was");
+    assert_eq!(app.doc.mirror.parent("n"), Some(opener.as_str()), "still opened from where the tab was");
     assert!(app.children_of(&tab).next().is_none(), "children moved up");
 }
 
@@ -604,7 +607,7 @@ fn a_failed_conversion_keeps_the_tab() {
     assert!(app.nodes.contains_key(&tab), "the tab stays");
     assert!(!app.nodes.contains_key("n"));
     assert_eq!(app.focused.as_deref(), Some(tab.as_str()));
-    assert_eq!(app.mirror.parent(&child), Some(tab.as_str()));
+    assert_eq!(app.doc.mirror.parent(&child), Some(tab.as_str()));
     assert_eq!(app.toasts.save_toast_queue.len() + usize::from(app.toasts.save_toast.is_some()), 1, "toasted");
 }
 

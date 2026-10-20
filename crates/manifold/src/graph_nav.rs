@@ -88,7 +88,10 @@ impl App {
     /// instead, since `self.focused` (its `parent`) isn't necessarily a
     /// tab inside whichever group's subgraph is currently being viewed.
     pub(crate) fn group_of(&self, id: &Option<String>) -> Option<String> {
-        id.as_deref().filter(|id| self.nodes.contains_key(*id)).and_then(|id| self.mirror.group(id)).map(str::to_owned)
+        id.as_deref()
+            .filter(|id| self.nodes.contains_key(*id))
+            .and_then(|id| self.doc.mirror.group(id))
+            .map(str::to_owned)
     }
 
     /// The live and unloaded tabs at the level being viewed, in `node_order` (the order within a draw layer,
@@ -199,7 +202,7 @@ impl App {
         }
         for moved_id in moved {
             if self.nodes.contains_key(&moved_id) {
-                self.interaction.drag_origin.push((moved_id.clone(), self.mirror.pos(&moved_id)));
+                self.interaction.drag_origin.push((moved_id.clone(), self.doc.mirror.pos(&moved_id)));
                 self.edit_pos(&moved_id, Some(self.layout_pos(&moved_id)));
             }
         }
@@ -222,7 +225,7 @@ impl App {
         let watched: Vec<String> = self.nodes.keys().cloned().collect();
         let before: Vec<_> = watched
             .iter()
-            .map(|w| (self.mirror.group(w).map(str::to_owned), self.mirror.parent(w).map(str::to_owned)))
+            .map(|w| (self.doc.mirror.group(w).map(str::to_owned), self.doc.mirror.parent(w).map(str::to_owned)))
             .collect();
         let effect = target.as_ref().map(|(effect, other)| (*effect, other.clone()));
         match target {
@@ -261,10 +264,10 @@ impl App {
                 .iter()
                 .zip(before)
                 .filter_map(|(w, (group, parent))| {
-                    let now_group = self.mirror.group(w).map(str::to_owned);
-                    let now_parent = self.mirror.parent(w).map(str::to_owned);
+                    let now_group = self.doc.mirror.group(w).map(str::to_owned);
+                    let now_parent = self.doc.mirror.parent(w).map(str::to_owned);
                     (group != now_group || parent != now_parent).then(|| {
-                        let pos_now = self.mirror.pos(w);
+                        let pos_now = self.doc.mirror.pos(w);
                         let pos_before = origin.iter().find(|(o, _)| o == w).map_or(pos_now, |(_, p)| *p);
                         Moved {
                             id: w.clone(),
@@ -277,7 +280,7 @@ impl App {
                 .collect();
             if !moved.is_empty() {
                 let created = (effect == DropEffect::GroupWith)
-                    .then(|| other.as_deref().and_then(|o| self.mirror.group(o).map(str::to_owned)))
+                    .then(|| other.as_deref().and_then(|o| self.doc.mirror.group(o).map(str::to_owned)))
                     .flatten();
                 let message = self.drop_message(effect, &moved, other.as_deref());
                 self.record_undo(message, UndoKind::Revert { moved, created });
@@ -314,7 +317,7 @@ impl App {
             return;
         }
         let mut above = crate::walk::ancestors(target.to_string(), |k| {
-            self.nodes.get(k).and(self.mirror.group(k)).map(str::to_owned)
+            self.nodes.get(k).and(self.doc.mirror.group(k)).map(str::to_owned)
         });
         if target == source || above.any(|a| a == source) || above.looped() {
             return;
@@ -339,7 +342,8 @@ impl App {
     /// counts as one too.
     pub(crate) fn would_create_cycle(&self, node_id: &str, new_parent_id: &str) -> bool {
         // The raw edge on purpose: a cycle through a closed card would come back with a reopen.
-        let mut above = crate::walk::ancestors(new_parent_id.to_string(), |k| self.mirror.parent(k).map(str::to_owned));
+        let mut above =
+            crate::walk::ancestors(new_parent_id.to_string(), |k| self.doc.mirror.parent(k).map(str::to_owned));
         new_parent_id == node_id || above.any(|a| a == node_id) || above.looped()
     }
 
@@ -353,7 +357,7 @@ impl App {
         let Some(current) = self.current_group.clone() else { return Vec::new() };
         // Called every frame: `ancestors` ends on a cycle in the mirror's `.group` chain (a local move and another
         // replica's move can race into one until the next save), so it can't freeze the app.
-        let up = crate::walk::ancestors(current.clone(), |k| self.mirror.group(k).map(str::to_owned));
+        let up = crate::walk::ancestors(current.clone(), |k| self.doc.mirror.group(k).map(str::to_owned));
         let mut chain = Vec::new();
         for id in std::iter::once(current).chain(up) {
             let Some(node) = self.nodes.get(&id) else { break };
@@ -361,7 +365,7 @@ impl App {
             let name = match &node.runtime {
                 // A group has no runtime of its own (2b-6 Ruling 8).
                 // name rule: drawn by display_name in toolbar_breadcrumb.
-                Runtime::None => self.mirror.name(&id).to_owned(),
+                Runtime::None => self.doc.mirror.name(&id).to_owned(),
                 Runtime::Json(json) => download_filename(&json.path).to_string(),
                 _ => String::new(),
             };
@@ -406,10 +410,15 @@ impl App {
         if !self.nodes.contains_key(root_id) {
             return Vec::new();
         }
-        let level_group = self.mirror.group(root_id);
+        let level_group = self.doc.mirror.group(root_id);
         let children = |current: &String| {
             let opened_here = |id: &&String| self.opened_from(id) == Some(current.as_str());
-            self.nodes.keys().filter(opened_here).filter(|id| self.mirror.group(id) == level_group).cloned().collect()
+            self.nodes
+                .keys()
+                .filter(opened_here)
+                .filter(|id| self.doc.mirror.group(id) == level_group)
+                .cloned()
+                .collect()
         };
         let mut result = vec![root_id.to_string()];
         result.extend(crate::walk::descendants(root_id.to_string(), children, |_| true));
@@ -566,7 +575,7 @@ impl App {
         let pinned: HashSet<String> = self
             .nodes
             .iter()
-            .filter(|(id, _)| self.in_level(id) && self.mirror.pinned(id))
+            .filter(|(id, _)| self.in_level(id) && self.doc.mirror.pinned(id))
             .map(|(id, _)| id.clone())
             .collect();
 
@@ -697,7 +706,7 @@ impl App {
     pub(crate) fn drop_target_name(&self, id: &str) -> String {
         let name = if self.is_container(id) {
             // name rule: drawn by display_name just below
-            self.mirror.name(id).to_owned()
+            self.doc.mirror.name(id).to_owned()
         } else {
             self.quick_switcher_row_label(id).unwrap_or_default()
         };
@@ -894,9 +903,9 @@ mod tests {
             .unwrap();
         app.interaction.selected.extend([g1.clone(), g2.clone(), note.clone()]);
         app.apply_drop(&g1, Some((DropEffect::Join, Some(g2.clone()))));
-        assert_eq!(app.mirror.group(&g2), None, "the target is not moved into itself");
-        assert_eq!(app.mirror.group(&g1), Some(g2.as_str()));
-        assert_eq!(app.mirror.group(&note), Some(g2.as_str()));
+        assert_eq!(app.doc.mirror.group(&g2), None, "the target is not moved into itself");
+        assert_eq!(app.doc.mirror.group(&g1), Some(g2.as_str()));
+        assert_eq!(app.doc.mirror.group(&note), Some(g2.as_str()));
         assert!(app.interaction.selected.is_empty());
     }
 }

@@ -825,17 +825,17 @@ impl App {
         let node = self.nodes.get(id)?;
         Some(NodeMenuView {
             kind: self.card_kind(id)?,
-            has_group: self.mirror.group(id).is_some(),
-            color: self.mirror.color(id),
+            has_group: self.doc.mirror.group(id).is_some(),
+            color: self.doc.mirror.color(id),
             has_url: self.source_url(id).is_some(),
             has_copy_url: self.copyable_url(id).is_some(),
-            pinned: self.mirror.pinned(id),
+            pinned: self.doc.mirror.pinned(id),
             unresponsive: node.as_tab().is_some_and(|t| t.tab.is_unresponsive(std::time::Instant::now())),
             other_default_view_kind: node.runtime.as_unloaded().is_some()
-                && self.mirror.view_kind(id) != self.settings.default_starting_view_kind,
+                && self.doc.mirror.view_kind(id) != self.settings.default_starting_view_kind,
             failed: node.runtime.as_unloaded().is_some_and(|t| matches!(t.state, UnloadedState::Failed(_))),
             view_missing: node.runtime.as_unloaded().is_some_and(|t| {
-                let kind = self.mirror.view_kind(id);
+                let kind = self.doc.mirror.view_kind(id);
                 matches!(t.state, UnloadedState::Failed(_))
                     && !matches!(pick_outcome(kind, &self.view_status(kind)), PickOutcome::Switch(_))
             }),
@@ -843,9 +843,9 @@ impl App {
                 .node_order
                 .iter()
                 .filter(|other| other.as_str() != id)
-                .filter(|other| self.mirror.group(other) == self.mirror.group(id) && self.is_container(other))
+                .filter(|other| self.doc.mirror.group(other) == self.doc.mirror.group(id) && self.is_container(other))
                 // name rule: drawn by display_name in the MoveTo rows
-                .map(|other| (other.clone(), self.mirror.name(other).to_owned()))
+                .map(|other| (other.clone(), self.doc.mirror.name(other).to_owned()))
                 .collect(),
             renaming: [&self.renaming_group, &self.naming_jar]
                 .into_iter()
@@ -854,7 +854,7 @@ impl App {
                 .map(|(_, draft)| draft.clone()),
             jars: self.jar_menu(id),
             edges: self.edge_menu(id),
-            ephemeral: matches!(node.runtime, Runtime::Jar) && self.mirror.jar_def(id).ephemeral,
+            ephemeral: matches!(node.runtime, Runtime::Jar) && self.doc.mirror.jar_def(id).ephemeral,
             closable: !self.is_default_jar(id),
         })
     }
@@ -905,7 +905,7 @@ impl App {
         if !self.is_tab(id) && !self.is_container(id) {
             return None;
         }
-        let own = self.mirror.jar(id);
+        let own = self.doc.mirror.jar(id);
         let inherit = JarRow {
             id: None,
             name: JarLabel { name: "Inherit".into(), marker: None },
@@ -1001,7 +1001,7 @@ impl App {
             NodeAction::FitSubtree => self.camera.jump_to(self.fit_subtree_scene_rect(id)),
             NodeAction::Rename => {
                 // name rule: the field edits the stored name
-                let name = self.mirror.name(id).to_owned();
+                let name = self.doc.mirror.name(id).to_owned();
                 self.renaming_group = Some((id.to_string(), name));
                 self.pending_focus = Some(FocusTarget::GroupRename);
             }
@@ -1014,7 +1014,7 @@ impl App {
             }
             NodeAction::CycleColor => {
                 if self.nodes.contains_key(id) {
-                    let next = next_tag_color(self.mirror.color(id));
+                    let next = next_tag_color(self.doc.mirror.color(id));
                     self.edit_field(id, field::COLOR, session_sync::color_value(next));
                 }
             }
@@ -1025,7 +1025,7 @@ impl App {
             NodeAction::MoveToGroup(group) => self.apply_drop(id, Some((DropEffect::Join, Some(group)))),
             NodeAction::Dissolve => self.ungroup(&[id.to_owned()]),
             NodeAction::ExportGroup => {
-                let name = export_file_name(self.mirror.name(id)); // name rule: export_file_name cleans it
+                let name = export_file_name(self.doc.mirror.name(id)); // name rule: export_file_name cleans it
                 if let Some(json) = self.export_group_json(id) {
                     if let Some((path, toast)) = save_dialog_with_toast(name, "Group") {
                         write_json_export(&json, &path, "group");

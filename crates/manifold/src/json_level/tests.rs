@@ -155,7 +155,7 @@ fn a_new_note_or_group_from_a_json_level_leaves_it_and_lands_in_the_outer_group(
         create(&mut app);
         assert_eq!(app.node_order.len(), before + 1);
         assert!(app.json_level.is_none(), "the level was left");
-        assert_eq!(app.mirror.group(app.node_order.last().unwrap()), Some(OUTER));
+        assert_eq!(app.doc.mirror.group(app.node_order.last().unwrap()), Some(OUTER));
     }
 }
 
@@ -176,10 +176,10 @@ fn place_node_inserts_at_the_placement_and_returns_the_id() {
     let at = Placement { group: Some(OUTER.into()), pos: egui::vec2(1.0, 2.0) };
     let id = app.place_node(None, Kind::Note, note(), at);
     assert_eq!(
-        (app.mirror.group(&id), app.layout_pos(&id), app.mirror.parent(&id).is_none()),
+        (app.doc.mirror.group(&id), app.layout_pos(&id), app.doc.mirror.parent(&id).is_none()),
         (Some(OUTER), egui::vec2(1.0, 2.0), true)
     );
-    assert_eq!(app.mirror.pos(&id), Some(egui::vec2(1.0, 2.0)), "the document pos is the placement too");
+    assert_eq!(app.doc.mirror.pos(&id), Some(egui::vec2(1.0, 2.0)), "the document pos is the placement too");
     assert_eq!(app.node_order.last(), Some(&id));
     let at = Placement { group: None, pos: egui::Vec2::ZERO };
     assert_eq!(app.place_node(Some("fixed".into()), Kind::Note, note(), at), "fixed", "a given id is kept");
@@ -218,7 +218,7 @@ fn the_store_sees_nothing_of_the_level_but_view() {
     app.apply_json_edit(JsonEdit::Relayout);
     assert_eq!(stored(&app), before);
     // The toggle is still there after Relayout; the drag is not.
-    let view = app.mirror.view(&j).expect("a view");
+    let view = app.doc.mirror.view(&j).expect("a view");
     assert_eq!(view.get("/a").and_then(|o| o.collapsed), Some(true));
     assert_eq!(view.get("/a").and_then(|o| o.pos), None);
     app.switch_group_level(Some(OUTER.into()));
@@ -347,7 +347,7 @@ fn a_failed_reload_keeps_the_view() {
     app.switch_group_level(Some(J.into()));
     app.apply_json_edit(JsonEdit::Toggle("/a".into()));
     app.apply_json_edit(JsonEdit::Moved("/a".into(), egui::pos2(500.0, 40.0)));
-    let before = app.mirror.view(J).expect("a view").to_field();
+    let before = app.doc.mirror.view(J).expect("a view").to_field();
     assert_ne!(before, "", "the view has overrides to lose");
     let bad = WebBody::File {
         kind: crate::content::ContentKind::Json,
@@ -356,7 +356,7 @@ fn a_failed_reload_keeps_the_view() {
     app.reload_fetched_node(J, bad);
     let json = app.nodes[J].as_json().unwrap();
     assert!(json.error.is_some(), "the reload failed");
-    assert_eq!(app.mirror.view(J).expect("a view").to_field(), before, "the error card keeps the view for Retry");
+    assert_eq!(app.doc.mirror.view(J).expect("a view").to_field(), before, "the error card keeps the view for Retry");
 }
 
 /// Ruling 8: a reload removes the node and inserts it again, but the view lives in the mirror, which keeps it;
@@ -376,7 +376,7 @@ fn a_reload_keeps_the_view() {
     let body = crate::redirect_fetch::save(&dir, J, crate::content::ContentKind::Json, second).unwrap();
     app.reload_fetched_node(J, body);
     assert!(app.nodes[J].as_json().unwrap().error.is_none(), "the reload worked");
-    let view = app.mirror.view(J).expect("the view survived the reload");
+    let view = app.doc.mirror.view(J).expect("the view survived the reload");
     assert_eq!(view.get("/a").and_then(|o| o.pos), Some([500.0, 40.0]));
     assert!(view.get("/c").is_none(), "an override the new value can't resolve is dropped");
 }
@@ -396,13 +396,13 @@ fn a_refetch_placeholder_is_not_entered_and_keeps_its_view() {
     };
     app.insert_placeholder_node(J.into(), egui::Vec2::ZERO, Kind::Json, Runtime::Json(payload));
     let url = crate::store::model::FieldValue::Str("https://x.test/j".into());
-    app.mirror.set(J, crate::store::model::field::URL, url);
+    app.doc.mirror.set(J, crate::store::model::field::URL, url);
     app.edit_group(J, Some(OUTER.into()));
     assert!(!app.nodes[J].as_json().unwrap().enterable());
     app.switch_group_level(Some(J.into()));
     assert_eq!(app.current_group.as_deref(), Some(OUTER), "entering leaves for the placeholder's group");
     assert!(app.json_level.is_none());
-    assert_eq!(app.mirror.view(J), Some(&view));
+    assert_eq!(app.doc.mirror.view(J), Some(&view));
 }
 
 #[test]
@@ -418,7 +418,7 @@ fn a_drop_from_a_json_level_leaves_it_and_lands_where_the_user_sees_it() {
     assert!(app.json_level.is_none());
     let new: Vec<_> = app.nodes.iter().filter(|(_, n)| n.as_note().is_some()).map(|(id, _)| id).collect();
     assert_eq!(new.len(), 1, "the dropped text file is a note");
-    assert_eq!(app.mirror.group(new[0]), Some(OUTER));
+    assert_eq!(app.doc.mirror.group(new[0]), Some(OUTER));
 }
 
 #[test]
@@ -456,7 +456,7 @@ fn selecting_a_hidden_entry_reveals_it_and_saves_the_reveal() {
     for open in ["", "/users", "/users/33"] {
         assert!(level.outline.open.contains(open), "the outline opens {open:?}");
     }
-    let view = app.mirror.view(&j).expect("a view");
+    let view = app.doc.mirror.view(&j).expect("a view");
     assert_eq!(view.pages("/users"), 2, "the reveal is saved like a manual one");
 }
 
@@ -515,7 +515,7 @@ fn keys_walk_the_outline_and_expand_cards() {
     // Enter toggles the selected container's card.
     let collapsed = |app: &App| {
         json_view::is_collapsed(
-            app.mirror.view(J).unwrap_or(&json_view::NO_VIEW),
+            app.doc.mirror.view(J).unwrap_or(&json_view::NO_VIEW),
             &app.json_level.as_ref().unwrap().expanded,
             "/a",
         )
@@ -663,8 +663,8 @@ fn an_unreadable_view_is_never_overwritten() {
     let dropped = laid.translate(egui::vec2(300.0, 0.0));
     app.json_level.as_mut().unwrap().rects[a] = dropped;
     app.apply_json_edit(JsonEdit::Moved("/a".into(), dropped.min));
-    assert_eq!(app.mirror.get(&j, field::VIEW), FieldValue::Str("[1]".into()));
-    assert!(app.mirror.view(&j).is_some_and(|view| view.is_opaque()));
+    assert_eq!(app.doc.mirror.get(&j, field::VIEW), FieldValue::Str("[1]".into()));
+    assert!(app.doc.mirror.view(&j).is_some_and(|view| view.is_opaque()));
     assert_eq!(app.json_level.as_ref().unwrap().rects[a], laid, "the refused drag snaps back to the layout");
 }
 

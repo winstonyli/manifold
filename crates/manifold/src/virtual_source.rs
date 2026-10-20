@@ -475,8 +475,8 @@ mod tests {
         let nodes = rig.app.nodes.len();
         rig.app.interaction.selected.extend([tab.clone(), virt.clone()]);
         rig.app.pin_shortcut();
-        assert!(rig.app.mirror.pinned(&tab), "the stored tab is pinned");
-        assert!(!rig.app.mirror.has(&virt), "no store write for the virtual id");
+        assert!(rig.app.doc.mirror.pinned(&tab), "the stored tab is pinned");
+        assert!(!rig.app.doc.mirror.has(&virt), "no store write for the virtual id");
         assert_eq!(rig.app.interaction.selected.len(), 2);
 
         let ctx = rig.ctx.clone();
@@ -484,16 +484,16 @@ mod tests {
         assert!(!rig.app.nodes.contains_key(&tab), "the stored tab is closed");
         assert_eq!(rig.app.nodes.len(), nodes - 1);
         assert_eq!(rig.app.interaction.selected, std::collections::HashSet::from([virt.clone()]));
-        assert!(!rig.app.mirror.has(&virt));
+        assert!(!rig.app.doc.mirror.has(&virt));
 
         let (mut rig, virt) = (Rig::with_kind(SELECTABLE), "virtual:fake:a".to_string());
         let tab = rig.tab();
         rig.app.interaction.selected.extend([tab.clone(), virt.clone()]);
         let ctx = rig.ctx.clone();
         rig.app.apply_graph_action(&ctx, GraphAction::GroupSelected);
-        assert!(rig.app.mirror.group(&tab).is_some(), "the stored tab is grouped");
+        assert!(rig.app.doc.mirror.group(&tab).is_some(), "the stored tab is grouped");
         assert_eq!(rig.app.interaction.selected, std::collections::HashSet::from([virt.clone()]));
-        assert!(!rig.app.mirror.has(&virt));
+        assert!(!rig.app.doc.mirror.has(&virt));
     }
 }
 
@@ -513,17 +513,21 @@ mod reach_tests {
         let others: Vec<_> = others
             .iter()
             .map(|o| {
-                (app.mirror.group(o).map(str::to_owned), app.mirror.parent(o).map(str::to_owned), app.mirror.pinned(o))
+                (
+                    app.doc.mirror.group(o).map(str::to_owned),
+                    app.doc.mirror.parent(o).map(str::to_owned),
+                    app.doc.mirror.pinned(o),
+                )
             })
             .collect();
         format!(
             "{} {} {} {:?} {:?} {:?} {:?} {:?} {:?}",
-            app.mirror.has(id),
+            app.doc.mirror.has(id),
             app.layout.contains_key(id),
             app.nodes.len(),
-            app.writes.fields().collect::<Vec<_>>(),
-            app.writes.moves().collect::<Vec<_>>(),
-            app.mirror.get(id, field::POS),
+            app.doc.writes.fields().collect::<Vec<_>>(),
+            app.doc.writes.moves().collect::<Vec<_>>(),
+            app.doc.mirror.get(id, field::POS),
             others,
             app.layout.keys().collect::<std::collections::BTreeSet<_>>(),
             doc,
@@ -694,7 +698,7 @@ mod drag_tests {
         rig.release(from);
         assert!(rig.app.interaction.dragging.is_none());
         assert_eq!(rects(&rig), before);
-        assert!(!rig.app.layout.contains_key("virtual:fake:a") && !rig.app.mirror.has("virtual:fake:a"));
+        assert!(!rig.app.layout.contains_key("virtual:fake:a") && !rig.app.doc.mirror.has("virtual:fake:a"));
     }
 
     #[test]
@@ -766,7 +770,7 @@ mod drag_tests {
         let from = rig.screen("virtual:fake:a").center();
         rig.drag(from, over);
         assert_eq!(drops(&rig).len(), 1, "{:?}", drops(&rig));
-        assert!(rig.app.mirror.group(&tab).is_none(), "the selected stored tab did not join the group");
+        assert!(rig.app.doc.mirror.group(&tab).is_none(), "the selected stored tab did not join the group");
         assert!(rig.app.interaction.selected.contains(&tab), "the selection is untouched");
     }
 
@@ -777,7 +781,7 @@ mod drag_tests {
         rig.app.interaction.drag_moved = vec![];
         rig.app.release_drag();
         assert!(rig.app.interaction.dragging.is_none());
-        assert!(!rig.app.mirror.has("virtual:fake:a") && !rig.app.layout.contains_key("virtual:fake:a"));
+        assert!(!rig.app.doc.mirror.has("virtual:fake:a") && !rig.app.layout.contains_key("virtual:fake:a"));
     }
 
     #[test]
@@ -787,7 +791,7 @@ mod drag_tests {
         let over = rig.app.graph_world_rect_to_screen(rig.app.card_rect(&group).unwrap()).center();
         let from = rig.app.graph_world_rect_to_screen(rig.app.card_rect(&tab).unwrap()).center();
         rig.drag(from, over);
-        assert_eq!(rig.app.mirror.group(&tab), Some(group.as_str()), "the tab joined the group");
+        assert_eq!(rig.app.doc.mirror.group(&tab), Some(group.as_str()), "the tab joined the group");
         assert!(drops(&rig).is_empty());
     }
 }

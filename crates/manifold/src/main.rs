@@ -18,6 +18,7 @@ mod debug_export;
 mod deleted_names;
 mod deselect;
 mod disambiguate;
+mod doc;
 mod duplicate;
 mod embedded_host;
 mod event_loop;
@@ -313,21 +314,8 @@ struct App {
     /// `render_frame`.
     drop_batch: u32,
     view_mode: ViewMode,
-    /// The session store (spec "Journal"): `None` before `open_store`, when
-    /// `%APPDATA%` is unset, or when the file couldn't be opened (toasted).
-    journal: Option<store::journal::Journal>,
-    /// This installation's replica id (`profile::replica_id`): what a close writes to `closed`, and what `Ctrl+Shift+T`
-    /// matches. Persisted, unlike the journal's per-launch actor.
-    replica: u64,
-    /// Ids for nodes made while there is no journal (unit tests, a failed
-    /// open): this launch's own actor, so they parse as store ids.
-    fallback_ids: node_store::NodeIdFallback,
-    /// What the next save commits, and when saves happened or are owed (see `session_sync::PendingWrites`).
-    writes: session_sync::PendingWrites,
-    /// The decoded copy of the document's mirrored fields (`mirror::Mirror`).
-    mirror: mirror::Mirror,
-    /// The personal-state file's write bookkeeping (see `local_state::LocalPersist`).
-    local_persist: local_state::LocalPersist,
+    /// The document and its sync state (see `doc::Doc`).
+    doc: doc::Doc,
     /// Shared across every note's own rendered (non-`editing`) view --
     /// `egui_commonmark`'s own recommended usage (glyph-layout/heading-id
     /// state, not per-note content), not a fresh cache per card per frame.
@@ -447,18 +435,10 @@ struct App {
     /// `request_focus()` on the real widget.
     pending_focus: Option<FocusTarget>,
 
-    /// Personal state (`LocalNode`: settled pos, title, zoom, muted, live url) of nodes this replica keeps out of
-    /// the graph because they are closed or under a closed node (spec decision 8). Filled by `hide_node`, read
-    /// back by a reopen (`apply_remote`), written to `session.mnf.local` with the rest. `forget_id` drops it.
-    pub(crate) hidden_local: HashMap<String, local_state::LocalNode>,
-
     /// Admits or drops page-opened tabs (`ViewToHost::OpenTabRequested`)
     /// per source tab: a user gesture and a rate budget.
     popup_gate: popup_gate::PopupGate,
 
-    /// Set once the store reports a repair (`take_store_recovery`): what
-    /// was loaded may be missing nodes, so `prune_backing_dirs` doesn't run.
-    store_recovered: bool,
     /// `settings::fingerprint()` as this process last saw it (set at load,
     /// updated after every successful save) -- see `save_settings`. `None`
     /// until the file has actually been loaded or saved once this run,
@@ -582,12 +562,7 @@ impl Default for App {
             nav_history: nav_history::load(),
             drop_batch: 0,
             view_mode: ViewMode::Item,
-            journal: None,
-            replica: profile::replica_id(),
-            fallback_ids: node_store::NodeIdFallback::default(),
-            writes: session_sync::PendingWrites::default(),
-            mirror: mirror::Mirror::default(),
-            local_persist: local_state::LocalPersist::default(),
+            doc: doc::Doc::default(),
             commonmark_cache: egui_commonmark::CommonMarkCache::default(),
             cursor_pos: (0.0, 0.0),
             native_drag_tab: None,
@@ -620,9 +595,7 @@ impl Default for App {
             debug: debug_control::HeadlessDebug::default(),
             pacing: event_loop::FramePacing::default(),
             pending_focus: None,
-            hidden_local: HashMap::new(),
             popup_gate: popup_gate::PopupGate::default(),
-            store_recovered: false,
             settings_fingerprint,
             settings_save_due: None,
             content_index: None,

@@ -905,6 +905,7 @@ Importing replaces every currently open tab.",
         // Every closed root, any replica's, newest first (spec "Recently Closed rows"): label from its fields, title
         // from its kept personal state, a group's member count from its non-deleted descendants.
         let rows: Vec<ClosedRow> = self
+            .doc
             .journal
             .as_ref()
             .map(|j| {
@@ -915,7 +916,7 @@ Importing replaces every currently open tab.",
                         let node = doc.nodes.get(&id)?;
                         let key = id.to_string();
                         let json = store::json::node_json(&key, node.ty(), &session_sync::fields_of(node), None);
-                        let title = self.hidden_local.get(&key).map(|l| l.title.clone()).filter(|t| !t.is_empty());
+                        let title = self.doc.hidden_local.get(&key).map(|l| l.title.clone()).filter(|t| !t.is_empty());
                         let members = (node.kind() == Kind::Group).then(|| {
                             let under = doc.with_descendants(std::collections::BTreeSet::from([id]));
                             under.iter().filter(|d| **d != id && doc.nodes.get(d).is_some_and(|n| !n.deleted)).count()
@@ -1363,12 +1364,12 @@ Importing replaces every currently open tab.",
         let mut toggle_pin_all = false;
         // The focused tab's own actions, each with its shortcut shown at the row's edge.
         let mut tab_action: Option<fn(&mut App)> = None;
-        let focused_pinned = self.mirror.pinned(focused_id);
+        let focused_pinned = self.doc.mirror.pinned(focused_id);
         let tab_pin_states: Vec<bool> = self
             .nodes
             .iter()
             .filter(|(_, n)| n.runtime.saved_tab().is_some())
-            .map(|(id, _)| self.mirror.pinned(id))
+            .map(|(id, _)| self.doc.mirror.pinned(id))
             .collect();
         let all_pinned = !tab_pin_states.is_empty() && tab_pin_states.iter().all(|&p| p);
         let area = egui::Area::new(egui::Id::new("tab_actions_popup"))

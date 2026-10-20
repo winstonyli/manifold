@@ -695,7 +695,7 @@ impl App {
             if self.is_running_download(&key) {
                 return None;
             }
-            let ty = self.mirror.ty(&key);
+            let ty = self.doc.mirror.ty(&key);
             if ty.is_empty() {
                 return None;
             }
@@ -704,14 +704,14 @@ impl App {
                 .fields()
                 .iter()
                 .map(|&no| match no {
-                    field::PARENT => (no, FieldValue::Id(link_id(self.mirror.parent(&key)))),
-                    _ => (no, self.mirror.get(&key, no)),
+                    field::PARENT => (no, FieldValue::Id(link_id(self.doc.mirror.parent(&key)))),
+                    _ => (no, self.doc.mirror.get(&key, no)),
                 })
                 .collect();
-            return Some(Snapshot { ty: ty.to_owned(), group: link_id(self.mirror.group(&key)), fields });
+            return Some(Snapshot { ty: ty.to_owned(), group: link_id(self.doc.mirror.group(&key)), fields });
         }
-        if self.mirror.is_link(id) {
-            let fields = Kind::Link.fields().iter().map(|&no| (no, self.mirror.get(&key, no))).collect();
+        if self.doc.mirror.is_link(id) {
+            let fields = Kind::Link.fields().iter().map(|&no| (no, self.doc.mirror.get(&key, no))).collect();
             return Some(Snapshot { ty: TYPE_LINK.to_owned(), group: None, fields });
         }
         self.spawns.spawning.get(&key).cloned()
@@ -729,8 +729,8 @@ impl App {
     /// no create; an id that isn't a store id is never written.
     pub(crate) fn queue_create(&mut self, id: &str) {
         let Ok(node) = id.parse::<NodeId>() else { return };
-        let in_doc = self.journal.as_ref().is_some_and(|j| j.doc().nodes.contains_key(&node));
-        self.writes.queue_create(node, in_doc);
+        let in_doc = self.doc.journal.as_ref().is_some_and(|j| j.doc().nodes.contains_key(&node));
+        self.doc.writes.queue_create(node, in_doc);
     }
 
     /// Queues `id`, a node removed here, for the next save to delete (Ruling 4). The save deletes it if the document
@@ -741,7 +741,7 @@ impl App {
     /// and a content reload take a node out of `nodes` only for a while.
     pub(crate) fn queue_delete(&mut self, id: &str) {
         let Ok(node) = id.parse::<NodeId>() else { return };
-        self.writes.queue_delete(node);
+        self.doc.writes.queue_delete(node);
         // A link goes with either end. `delete_link` forgets the link before it queues the delete, so a link naming
         // a link (remote data can) is found once at most: the recursion ends.
         for link in self.links_naming(id) {
@@ -787,13 +787,13 @@ impl App {
         let kind = Kind::from_type(ty);
         // A node or jar deleted here stays gone: a remote edit arriving before the save commits the queued delete
         // would otherwise re-show it, nameless from a partial change or whole (2b-5 Ruling 9, final review M1).
-        if id.parse::<NodeId>().is_ok_and(|node| self.writes.life(node) == Some(Life::Delete)) {
+        if id.parse::<NodeId>().is_ok_and(|node| self.doc.writes.life(node) == Some(Life::Delete)) {
             return;
         }
         // A link is stored and mirrored, and is never a graph node.
         if kind == Kind::Link {
             let Ok(link) = id.parse::<NodeId>() else { return };
-            self.mirror.add_link(link);
+            self.doc.mirror.add_link(link);
             self.queue_create(&id);
             self.mirror_remote(&id, fields, None);
             return;
@@ -805,7 +805,7 @@ impl App {
         let (held, changed) = self.mirror_remote(&id, fields, group.as_deref());
         // The store never changes a node's type, so the first one seen stands (2b-5 Ruling 10). Kept as written.
         if !ty.is_empty() {
-            self.mirror.init_field(&id, field::TYPE, FieldValue::Str(ty.to_owned()));
+            self.doc.mirror.init_field(&id, field::TYPE, FieldValue::Str(ty.to_owned()));
         }
         let pos = local.map_or_else(|| pos_of(&id, fields), |l| egui::vec2(l.pos[0], l.pos[1]));
         if self.update_live_node(&id, fields, pos, &changed, &held) {
@@ -1044,7 +1044,7 @@ impl App {
     /// differs from the graph's: the local half of what `apply_remote` does for other replicas' changes. A local close
     /// already hid its subtree (`close_node`), so this only finds what a reopen or a repair brought back.
     fn apply_visibility(&mut self, touched: BTreeSet<NodeId>) {
-        let Some(doc) = self.journal.as_ref().map(|j| j.doc()) else { return };
+        let Some(doc) = self.doc.journal.as_ref().map(|j| j.doc()) else { return };
         if touched.is_empty() {
             return;
         }
@@ -1093,7 +1093,7 @@ impl App {
             match change {
                 Remote::Shown(s) => {
                     // A node coming back from hidden takes the personal state it left with (spec decision 8).
-                    let local = self.hidden_local.remove(&key);
+                    let local = self.doc.hidden_local.remove(&key);
                     self.materialize(key.clone(), &s.ty, &s.fields, s.group.map(|g| g.to_string()), local.as_ref());
                     if let (Some(local), Some(live)) = (&local, self.nodes.get_mut(&key)) {
                         Self::apply_local_node(live, local);
@@ -1137,8 +1137,8 @@ impl App {
         for link in self.links_naming(id) {
             self.delete_link(&link);
         }
-        if let Some(link) = id.parse::<NodeId>().ok().filter(|l| self.mirror.is_link(*l)) {
-            self.mirror.forget_link(link);
+        if let Some(link) = id.parse::<NodeId>().ok().filter(|l| self.doc.mirror.is_link(*l)) {
+            self.doc.mirror.forget_link(link);
             return;
         }
         if !self.nodes.contains_key(id) {
@@ -1167,9 +1167,9 @@ impl App {
         // A closed tab keeps its trail (trail spec decision 10); `unshow` -> `forget_id` would drop it.
         let trail = self.nav_history.remove(id);
         self.unshow(id);
-        self.mirror.forget_node(id);
+        self.doc.mirror.forget_node(id);
         self.layout.remove(id);
-        self.hidden_local.insert(id.to_owned(), local);
+        self.doc.hidden_local.insert(id.to_owned(), local);
         if let Some(mut trail) = trail {
             trail.set_left_to(None);
             self.nav_history.insert(id.to_owned(), trail);
@@ -1180,7 +1180,7 @@ impl App {
     /// the nearest shown node above `root` (`Doc::shown_level`), as `take_out` leaves a removed group.
     /// Reads the raw chain, so it holds before the close is committed (a local close) and after (a remote one).
     pub(crate) fn leave_hidden(&mut self, root: NodeId) {
-        let Some(doc) = self.journal.as_ref().map(|j| j.doc()) else { return };
+        let Some(doc) = self.doc.journal.as_ref().map(|j| j.doc()) else { return };
         let Some(level) = self.current_group.as_deref().and_then(|g| g.parse::<NodeId>().ok()) else { return };
         if level != root && !doc.is_ancestor(root, level) {
             return;
@@ -1227,7 +1227,7 @@ impl App {
     pub(crate) fn wake_focused(&mut self) {
         let asleep = |id: &str, this: &Self| {
             let card = this.nodes.get(id).and_then(|n| n.as_unloaded());
-            card.is_some_and(|t| t.state == UnloadedState::Sleeping).then(|| this.mirror.view_kind(id))
+            card.is_some_and(|t| t.state == UnloadedState::Sleeping).then(|| this.doc.mirror.view_kind(id))
         };
         if let Some(id) = self.focused.clone() {
             if let Some(kind) = asleep(&id, self) {
@@ -1277,13 +1277,13 @@ impl App {
     pub(crate) fn edit_field(&mut self, id: &str, no: u32, value: FieldValue) {
         debug_assert!(!matches!(no, field::GROUP | field::PARENT), "a link: `edit_group` / `edit_parent`");
         // A virtual card (`virtual_source`) is no node, so nothing of it is stored or mirrored.
-        if self.mirror.get(id, no) == value || crate::virtual_source::is_virtual_id(id) {
+        if self.doc.mirror.get(id, no) == value || crate::virtual_source::is_virtual_id(id) {
             return;
         }
         if let Ok(node) = id.parse::<NodeId>() {
-            self.writes.queue_field(node, no, encode_field(no, &value));
+            self.doc.writes.queue_field(node, no, encode_field(no, &value));
         }
-        self.mirror.set(id, no, value);
+        self.doc.mirror.set(id, no, value);
     }
 
     /// The one writer of a tab's shared url (2b-3 Ruling 4): called with the url at the moment it is shared (a typed
@@ -1298,7 +1298,7 @@ impl App {
     /// and by every save (`commit_note_buffers`), never per keystroke, since a note can reach 1 MB. Text the mirror
     /// already shows queues nothing and copies nothing.
     pub(crate) fn edit_text(&mut self, id: &str, text: &str) {
-        if self.mirror.text(id) != text {
+        if self.doc.mirror.text(id) != text {
             self.edit_field(id, field::TEXT, FieldValue::Str(text.to_owned()));
         }
     }
@@ -1314,7 +1314,7 @@ impl App {
     /// name already cleaned. A new group's is seeded at placement instead (`place_group`). A jar's is `commit_rename`'s.
     pub(crate) fn edit_name(&mut self, id: &str, name: &str) {
         // name rule: compares stored names
-        if self.mirror.name(id) != name {
+        if self.doc.mirror.name(id) != name {
             self.edit_field(id, field::NAME, FieldValue::Str(name.to_owned()));
         }
     }
@@ -1324,7 +1324,7 @@ impl App {
     pub(crate) fn note_text(&self, id: &str) -> &str {
         match self.nodes.get(id).and_then(|n| n.as_note()) {
             Some(note) if note.editing => &note.text,
-            _ => self.mirror.text(id),
+            _ => self.doc.mirror.text(id),
         }
     }
 
@@ -1339,7 +1339,7 @@ impl App {
     pub(crate) fn own_text(&self, id: &str) -> &str {
         if self.named_by_name(id) {
             // name rule: raw, for `accessible_name` (display_name) and the filter (matches the stored text)
-            return self.mirror.name(id);
+            return self.doc.mirror.name(id);
         }
         self.note_text(id)
     }
@@ -1356,7 +1356,7 @@ impl App {
             .nodes
             .iter()
             .filter_map(|(id, n)| Some((id, n.as_note()?)))
-            .filter(|(id, note)| note.text != self.mirror.text(id))
+            .filter(|(id, note)| note.text != self.doc.mirror.text(id))
             .map(|(id, note)| (id.clone(), note.text.clone()))
             .collect();
         for (id, text) in typed {
@@ -1369,14 +1369,14 @@ impl App {
     /// (`held_text`) is dropped; with nothing typed, the held text applies to the mirror and the box (Ruling 7). The
     /// caller saves.
     pub(crate) fn end_note_edit(&mut self, id: &str) {
-        let held = self.writes.held_text.remove(id);
+        let held = self.doc.writes.held_text.remove(id);
         let Some(note) = self.nodes.get_mut(id).and_then(|n| n.as_note_mut()) else { return };
         note.editing = false;
         let buffer = std::mem::take(&mut note.text);
-        let pending = id.parse::<NodeId>().is_ok_and(|node| self.writes.field_queued(node, field::TEXT));
+        let pending = id.parse::<NodeId>().is_ok_and(|node| self.doc.writes.field_queued(node, field::TEXT));
         let text = match held {
-            Some(theirs) if !pending && buffer == self.mirror.text(id) => {
-                self.mirror.set(id, field::TEXT, FieldValue::Str(theirs.clone()));
+            Some(theirs) if !pending && buffer == self.doc.mirror.text(id) => {
+                self.doc.mirror.set(id, field::TEXT, FieldValue::Str(theirs.clone()));
                 theirs
             }
             _ => {
@@ -1406,7 +1406,7 @@ impl App {
     /// another engine), and with the old engine when a switch fails and falls back. Compared as decoded, so asking for
     /// the engine the mirror already shows queues nothing and keeps a code this build doesn't know (Ruling 6).
     pub(crate) fn edit_view_kind(&mut self, id: &str, kind: ViewKind) {
-        if self.mirror.view_kind(id) != kind {
+        if self.doc.mirror.view_kind(id) != kind {
             self.edit_field(id, field::VIEW_KIND, FieldValue::ViewCode(view_code(kind)));
         }
     }
@@ -1414,28 +1414,28 @@ impl App {
     /// The one writer of a node's parent link: the mirror shows it at once and the next save commits a `Set PARENT`.
     /// A non-store id or target only updates the mirror.
     pub(crate) fn edit_parent(&mut self, id: &str, parent: Option<String>) {
-        if self.mirror.parent(id) == parent.as_deref() || crate::virtual_source::is_virtual_id(id) {
+        if self.doc.mirror.parent(id) == parent.as_deref() || crate::virtual_source::is_virtual_id(id) {
             return;
         }
         if let Ok(node) = id.parse::<NodeId>() {
             match parent_id(&parent) {
                 Some(target) => {
                     let enc = encode_field(field::PARENT, &FieldValue::Id(target));
-                    self.writes.queue_field(node, field::PARENT, enc);
+                    self.doc.writes.queue_field(node, field::PARENT, enc);
                 }
                 // A target that isn't a store id is mirror-only: an earlier queued target must not commit.
                 None => {
-                    self.writes.unqueue_field(node, field::PARENT);
+                    self.doc.writes.unqueue_field(node, field::PARENT);
                 }
             }
         }
-        self.mirror.set_parent(id, parent);
+        self.doc.mirror.set_parent(id, parent);
     }
 
     /// The one writer of a node's group (Ruling 2): shown at once, committed as a `Move` by the next save.
     /// A non-store id or target only updates the mirror.
     pub(crate) fn edit_group(&mut self, id: &str, group: Option<String>) {
-        if self.mirror.group(id) == group.as_deref() || crate::virtual_source::is_virtual_id(id) {
+        if self.doc.mirror.group(id) == group.as_deref() || crate::virtual_source::is_virtual_id(id) {
             return;
         }
         // The Default stays at the top level (spec "The Default jar").
@@ -1445,21 +1445,21 @@ impl App {
         if let Ok(node) = id.parse::<NodeId>() {
             // A target that isn't a store id is mirror-only: an earlier queued move must not commit.
             match parent_id(&group) {
-                Some(target) => self.writes.queue_move(node, target),
-                None => self.writes.unqueue_move(node),
+                Some(target) => self.doc.writes.queue_move(node, target),
+                None => self.doc.writes.unqueue_move(node),
             }
         }
-        self.mirror.set_group(id, group);
+        self.doc.mirror.set_group(id, group);
     }
 
     /// Whether node `id` is shown at the level being viewed.
     pub(crate) fn in_level(&self, id: &str) -> bool {
-        self.mirror.group(id) == self.current_group.as_deref()
+        self.doc.mirror.group(id) == self.current_group.as_deref()
     }
 
     /// Every node whose mirror group is `group` (`linked_ids`).
     pub(crate) fn members_of<'a>(&'a self, group: &'a str) -> impl Iterator<Item = &'a str> + 'a {
-        self.linked_ids().filter(move |id| self.mirror.group(id) == Some(group))
+        self.linked_ids().filter(move |id| self.doc.mirror.group(id) == Some(group))
     }
 
     /// The ids a cascade (a dissolve, merge or removal; a jar re-snapshot, default or delete) must reach: every live
@@ -1468,13 +1468,14 @@ impl App {
     /// node or an old jar. A new spawn has no mirror entry yet and is left out: it lands from its `TabSpawn`
     /// (`seed_landing`), and a cascade writing to it would make a partial entry that stops that seed.
     pub(crate) fn linked_ids(&self) -> impl Iterator<Item = &str> {
-        let respawning = self.spawns.spawning.keys().filter(|id| !self.nodes.contains_key(*id) && self.mirror.has(id));
+        let respawning =
+            self.spawns.spawning.keys().filter(|id| !self.nodes.contains_key(*id) && self.doc.mirror.has(id));
         self.nodes.keys().chain(respawning).map(String::as_str)
     }
 
     /// Whether `id` is one of `linked_ids`.
     pub(crate) fn is_linked(&self, id: &str) -> bool {
-        self.nodes.contains_key(id) || (self.spawns.spawning.contains_key(id) && self.mirror.has(id))
+        self.nodes.contains_key(id) || (self.spawns.spawning.contains_key(id) && self.doc.mirror.has(id))
     }
 
     /// "Remove from Group" (the tab card's eject button, dragging a card out through the way back, and the tab and
@@ -1484,8 +1485,8 @@ impl App {
         if !self.nodes.contains_key(id) {
             return;
         }
-        let group = self.mirror.group(id).map(str::to_owned);
-        let up = group.as_deref().and_then(|g| self.mirror.group(g)).map(str::to_owned);
+        let group = self.doc.mirror.group(id).map(str::to_owned);
+        let up = group.as_deref().and_then(|g| self.doc.mirror.group(g)).map(str::to_owned);
         self.edit_group(id, up);
     }
 
@@ -1493,20 +1494,20 @@ impl App {
     /// carries it in its own `Create`), so only the mirror changes; queuing it would revert a concurrent remote
     /// re-parent. A local edit still pending for the link is rewritten instead, so it keeps winning.
     pub(crate) fn follow_remote_parent(&mut self, id: &str, parent: Option<String>) {
-        if id.parse::<NodeId>().is_ok_and(|node| self.writes.field_queued(node, field::PARENT)) {
+        if id.parse::<NodeId>().is_ok_and(|node| self.doc.writes.field_queued(node, field::PARENT)) {
             self.edit_parent(id, parent);
         } else {
-            self.mirror.set_parent(id, parent);
+            self.doc.mirror.set_parent(id, parent);
         }
     }
 
     /// `follow_remote_parent` for the group: a remote group delete's members move up in the mirror only, so a
     /// concurrent remote merge or move of them stands.
     pub(crate) fn follow_remote_group(&mut self, id: &str, group: Option<String>) {
-        if id.parse::<NodeId>().is_ok_and(|node| self.writes.move_queued(node)) {
+        if id.parse::<NodeId>().is_ok_and(|node| self.doc.writes.move_queued(node)) {
             self.edit_group(id, group);
         } else {
-            self.mirror.set_group(id, group);
+            self.doc.mirror.set_group(id, group);
         }
     }
 
@@ -1528,33 +1529,33 @@ impl App {
             if no == field::PARENT {
                 continue;
             }
-            if node.is_some_and(|node| self.writes.field_queued(node, no)) {
+            if node.is_some_and(|node| self.doc.writes.field_queued(node, no)) {
                 held.push(no);
                 continue;
             }
             if no == field::TEXT && self.is_typed_in(id) {
                 held.push(no);
                 match value {
-                    FieldValue::Str(theirs) if theirs != self.mirror.text(id) => {
-                        self.writes.held_text.insert(id.to_owned(), theirs.clone());
+                    FieldValue::Str(theirs) if theirs != self.doc.mirror.text(id) => {
+                        self.doc.writes.held_text.insert(id.to_owned(), theirs.clone());
                     }
                     // Back to what the mirror shows: nothing left to apply.
                     _ => {
-                        self.writes.held_text.remove(id);
+                        self.doc.writes.held_text.remove(id);
                     }
                 }
                 continue;
             }
-            if self.mirror.get(id, no) != *value {
+            if self.doc.mirror.get(id, no) != *value {
                 changed.push(no);
-                self.mirror.set(id, no, value.clone());
+                self.doc.mirror.set(id, no, value.clone());
             }
         }
-        if !node.is_some_and(|node| self.writes.field_queued(node, field::PARENT)) {
-            self.mirror.set_parent(id, id_of(fields, field::PARENT));
+        if !node.is_some_and(|node| self.doc.writes.field_queued(node, field::PARENT)) {
+            self.doc.mirror.set_parent(id, id_of(fields, field::PARENT));
         }
-        if !node.is_some_and(|node| self.writes.move_queued(node)) {
-            self.mirror.set_group(id, group.map(str::to_owned));
+        if !node.is_some_and(|node| self.doc.writes.move_queued(node)) {
+            self.doc.mirror.set_group(id, group.map(str::to_owned));
         }
         (held, changed)
     }
@@ -1568,7 +1569,7 @@ impl App {
             crate::history::save(&self.history);
             self.history_ui.history_dirty = false;
         }
-        let (nodes, journal) = (&self.nodes, self.journal.as_ref());
+        let (nodes, journal) = (&self.nodes, self.doc.journal.as_ref());
         crate::nav_history::save(&mut self.nav_history, |id| keep_trail(nodes, journal, id));
     }
 
@@ -1578,7 +1579,7 @@ impl App {
         let Built { created, moved, links, .. } = built;
         // The mirror already shows what this commit wrote (it is what the ops were built from); only
         // the links the commit resolved can differ from it.
-        if let Some(journal) = &self.journal {
+        if let Some(journal) = &self.doc.journal {
             let doc = journal.doc();
             // A node this commit created shows the links its `Create` resolved (`resolve_id`: a
             // tab's jar, a group's default jar, any Id field), as an edited one does. Only one
@@ -1587,7 +1588,7 @@ impl App {
             for id in &created {
                 let Some(node) = doc.nodes.get(id) else { continue };
                 let key = id.to_string();
-                if !self.mirror.has(&key) {
+                if !self.doc.mirror.has(&key) {
                     continue;
                 }
                 for &no in node.kind().fields() {
@@ -1596,8 +1597,8 @@ impl App {
                         continue;
                     }
                     let stored = node.get(no);
-                    if self.mirror.get(&key, no) != stored {
-                        self.mirror.set(&key, no, stored);
+                    if self.doc.mirror.get(&key, no) != stored {
+                        self.doc.mirror.set(&key, no, stored);
                     }
                 }
             }
@@ -1606,61 +1607,61 @@ impl App {
             // concurrent move raced it), which the mirror would otherwise keep showing.
             for &node in &moved {
                 let (id, group) = (node.to_string(), doc.effective_group(node));
-                if link_id(self.mirror.group(&id)) != group {
-                    self.mirror.set_group(&id, group.map(|g| g.to_string()));
+                if link_id(self.doc.mirror.group(&id)) != group {
+                    self.doc.mirror.set_group(&id, group.map(|g| g.to_string()));
                 }
             }
             // Created ids are done; one still queued shows nothing yet (an in-progress download) and
             // waits for the save after it does.
-            self.writes.retain_creates(|id| !doc.nodes.contains_key(&id));
+            self.doc.writes.retain_creates(|id| !doc.nodes.contains_key(&id));
         }
-        self.writes.clear_deletes();
+        self.doc.writes.clear_deletes();
         // A link target this commit wrote as none (Ruling 5: deleted here) is none in the mirror too.
         for (&(node, no), &target) in &links {
             let id = node.to_string();
             if no == field::PARENT {
-                if link_id(self.mirror.parent(&id)) != target {
-                    self.mirror.set_parent(&id, target.map(|p| p.to_string()));
+                if link_id(self.doc.mirror.parent(&id)) != target {
+                    self.doc.mirror.set_parent(&id, target.map(|p| p.to_string()));
                 }
             } else {
-                self.mirror.set(&id, no, FieldValue::Id(target));
+                self.doc.mirror.set(&id, no, FieldValue::Id(target));
             }
         }
         // A remote value parked for a tab still spawning (`remote_in_flight`) predates what this
         // commit wrote; its landing must not replay it over the local edit.
-        for (node, no, _) in self.writes.fields() {
+        for (node, no, _) in self.doc.writes.fields() {
             let id = node.to_string();
             if let Some(Remote::Shown((_, fields, _))) = self.spawns.remote_in_flight.get_mut(&id) {
                 let value = match no {
-                    field::PARENT => FieldValue::Id(link_id(self.mirror.parent(&id))),
-                    _ => self.mirror.get(&id, no),
+                    field::PARENT => FieldValue::Id(link_id(self.doc.mirror.parent(&id))),
+                    _ => self.doc.mirror.get(&id, no),
                 };
                 fields.insert(no, value);
             }
         }
-        for (node, _) in self.writes.moves() {
+        for (node, _) in self.doc.writes.moves() {
             let id = node.to_string();
             if let Some(Remote::Shown((_, _, group))) = self.spawns.remote_in_flight.get_mut(&id) {
-                *group = self.mirror.group(&id).map(str::to_owned);
+                *group = self.doc.mirror.group(&id).map(str::to_owned);
             }
         }
         // Text committed here is newer than another replica's held before it: the held text is dropped.
         let texts: Vec<NodeId> =
-            self.writes.fields().filter(|&(_, no, _)| no == field::TEXT).map(|(n, ..)| n).collect();
+            self.doc.writes.fields().filter(|&(_, no, _)| no == field::TEXT).map(|(n, ..)| n).collect();
         for node in texts {
-            self.writes.held_text.remove(&node.to_string());
+            self.doc.writes.held_text.remove(&node.to_string());
         }
-        self.writes.clear_edits();
-        let flagged = self.writes.take_closed();
+        self.doc.writes.clear_edits();
+        let flagged = self.doc.writes.take_closed();
         // A tab still spawning keeps its entry, and its layout: a respawn has removed it from `nodes`
         // until it lands, and `Mirror::init` then leaves an existing entry alone.
         let (nodes, spawning) = (&self.nodes, &self.spawns.spawning);
-        self.mirror.retain(|id| nodes.contains_key(id) || spawning.contains_key(id));
+        self.doc.mirror.retain(|id| nodes.contains_key(id) || spawning.contains_key(id));
         self.layout.retain(|id, _| nodes.contains_key(id) || spawning.contains_key(id));
-        self.writes.held_text.retain(|id, _| nodes.get(id).and_then(|n| n.as_note()).is_some_and(|n| n.editing));
-        self.writes.store_notices.clear();
-        self.writes.last_session_save = Some(std::time::Instant::now());
-        self.writes.save_retry_at = None;
+        self.doc.writes.held_text.retain(|id, _| nodes.get(id).and_then(|n| n.as_note()).is_some_and(|n| n.editing));
+        self.doc.writes.store_notices.clear();
+        self.doc.writes.last_session_save = Some(std::time::Instant::now());
+        self.doc.writes.save_retry_at = None;
         self.flush_history();
         // What this commit's flags and moves changed about visibility (a reopen, a nested root
         // re-stamped, a hidden Default moved out) is shown or hidden the way a remote change is.
@@ -1686,8 +1687,8 @@ impl App {
             // Projected before `begin`, since the `Txn` borrows the journal: what each queued node shows (one that
             // shows nothing yet, an in-progress download, waits).
             let candidates: BTreeMap<NodeId, Snapshot> =
-                self.writes.creates().filter_map(|id| Some((id, self.snapshot(id)?))).collect();
-            let Some(journal) = self.journal.as_mut() else {
+                self.doc.writes.creates().filter_map(|id| Some((id, self.snapshot(id)?))).collect();
+            let Some(journal) = self.doc.journal.as_mut() else {
                 self.flush_history();
                 return false;
             };
@@ -1695,7 +1696,7 @@ impl App {
                 Ok(txn) => txn,
                 Err(err) => {
                     self.store_error(err);
-                    self.writes.save_retry_at = Some(std::time::Instant::now() + SAVE_RETRY);
+                    self.doc.writes.save_retry_at = Some(std::time::Instant::now() + SAVE_RETRY);
                     self.flush_history();
                     return false;
                 }
@@ -1714,7 +1715,7 @@ impl App {
                 self.flush_history();
                 return false;
             }
-            let mut built = build_ops(txn.doc(), &self.writes, candidates);
+            let mut built = build_ops(txn.doc(), &self.doc.writes, candidates);
             let result = if built.ops.is_empty() {
                 drop(txn);
                 Ok(())
@@ -1729,13 +1730,13 @@ impl App {
                 }
                 Err(err) => {
                     self.store_error(err);
-                    self.writes.save_retry_at = Some(std::time::Instant::now() + SAVE_RETRY);
+                    self.doc.writes.save_retry_at = Some(std::time::Instant::now() + SAVE_RETRY);
                     self.flush_history();
                     return false;
                 }
             }
         }
-        self.writes.save_retry_at = Some(std::time::Instant::now() + SAVE_RETRY);
+        self.doc.writes.save_retry_at = Some(std::time::Instant::now() + SAVE_RETRY);
         self.flush_history();
         false
     }
@@ -1749,7 +1750,7 @@ impl App {
     /// passed a mismatched kind (an image type on a pdf runtime) is caught before a painter dispatches on it.
     #[cfg(debug_assertions)]
     fn check_graph_matches_document(&self) {
-        let Some(journal) = &self.journal else { return };
+        let Some(journal) = &self.doc.journal else { return };
         let doc = journal.doc();
         let live = |id: &NodeId| doc.nodes.get(id).is_some_and(Node::is_live);
         for (key, node) in &self.nodes {
@@ -1764,7 +1765,7 @@ impl App {
                 "node {key} has type {ty:?} that its runtime does not run: a create funnel passed a mismatched kind"
             );
         }
-        for id in self.mirror.link_ids() {
+        for id in self.doc.mirror.link_ids() {
             assert!(live(&id), "link {id} is shown but not live in the document: a create funnel was missed");
         }
         for key in self.spawns.spawning.keys() {
@@ -1777,7 +1778,7 @@ impl App {
         for (id, _) in doc.shown() {
             let key = id.to_string();
             let shown =
-                self.nodes.contains_key(&key) || self.spawns.spawning.contains_key(&key) || self.mirror.is_link(id);
+                self.nodes.contains_key(&key) || self.spawns.spawning.contains_key(&key) || self.doc.mirror.is_link(id);
             assert!(shown, "node {key} is live in the document but not shown: a delete funnel was missed");
         }
     }
@@ -1786,7 +1787,7 @@ impl App {
     /// (`session.mnf.local`) on top. `false` when it has no live node, so
     /// the caller starts fresh. Closes past `MAX_CLOSED` are evicted at load (spec decision 6).
     pub(crate) fn restore_session(&mut self) -> bool {
-        let Some(journal) = self.journal.as_ref() else { return false };
+        let Some(journal) = self.doc.journal.as_ref() else { return false };
         let doc = journal.doc();
         let mut nodes: Vec<(NodeId, Snapshot)> = doc.shown().map(|(id, n)| (id, Snapshot::of(doc, id, n))).collect();
         self.take_store_recovery();
@@ -1796,7 +1797,7 @@ impl App {
         // read that failed (the lock stayed busy, an I/O error) is not: the
         // file may hold this profile's state, so it isn't written until
         // `poll_store` has read it.
-        let read = self.journal.as_ref().map(|j| j.read_local());
+        let read = self.doc.journal.as_ref().map(|j| j.read_local());
         let unread = matches!(read, Some(Err(ref err)) if !matches!(err, JournalError::Corrupt(_)));
         if let Some(Err(err)) = read.as_ref().filter(|_| unread) {
             self.log_local_unread(err);
@@ -1847,12 +1848,12 @@ impl App {
     /// that couldn't be read is retried instead, and never written over.
     fn arm_local(&mut self, unread: bool, fresh: bool) {
         if unread {
-            self.local_persist.local_written = None;
-            self.local_persist.local_unread =
+            self.doc.local_persist.local_written = None;
+            self.doc.local_persist.local_unread =
                 Some(LocalUnread { retry_at: std::time::Instant::now() + SAVE_RETRY, fresh });
         } else {
-            self.local_persist.local_written = Some(self.local_state());
-            self.local_persist.local_unread = None;
+            self.doc.local_persist.local_written = Some(self.local_state());
+            self.doc.local_persist.local_unread = None;
         }
     }
 
@@ -1866,6 +1867,7 @@ impl App {
             return;
         }
         let file = self
+            .doc
             .journal
             .as_ref()
             .map(|j| crate::store::local::path_for(j.path()))
@@ -1885,8 +1887,8 @@ impl App {
     /// live view as the user has had it since startup. At exit nothing is
     /// woken (the read only feeds the write that follows).
     fn retry_read_local(&mut self, force: bool) {
-        let Some(unread) = self.local_persist.local_unread else { return };
-        let Some(journal) = self.journal.as_ref() else { return };
+        let Some(unread) = self.doc.local_persist.local_unread else { return };
+        let Some(journal) = self.doc.journal.as_ref() else { return };
         let read = if force {
             journal.read_local()
         } else if std::time::Instant::now() >= unread.retry_at {
@@ -1895,13 +1897,13 @@ impl App {
             return;
         };
         if matches!(read, Err(ref err) if !matches!(err, JournalError::Corrupt(_))) {
-            self.local_persist.local_unread =
+            self.doc.local_persist.local_unread =
                 Some(LocalUnread { retry_at: std::time::Instant::now() + SAVE_RETRY, ..unread });
             return;
         }
-        self.local_persist.local_unread = None;
+        self.doc.local_persist.local_unread = None;
         // Unknown: the file holds what was read, not this merge (or nothing).
-        self.local_persist.local_written = None;
+        self.doc.local_persist.local_written = None;
         let Some(local) = read.ok().flatten().and_then(|bytes| LocalState::from_bytes(&bytes)) else { return };
         if unread.fresh {
             self.keep_hidden_local(local.nodes);
@@ -1924,7 +1926,7 @@ impl App {
             local.zoom = (tab.zoom_factor != self.settings.zoom_factor).then_some(tab.zoom_factor);
             // Against the shared url the mirror holds (Ruling 9): a url this replica shares is edited (`edit_url`)
             // into it, so only an unshared move (a redirect, a script) is recorded.
-            let from = self.mirror.url(id);
+            let from = self.doc.mirror.url(id);
             local.live_url = (from != tab.url).then(|| LiveUrl { url: tab.url.to_string(), from: from.to_owned() });
         } else if let Runtime::Note(n) = &node.runtime {
             local.editing = n.editing;
@@ -1944,7 +1946,7 @@ impl App {
             .filter(|(id, _)| id.parse::<NodeId>().is_ok())
             .map(|(id, node)| (id.clone(), self.local_node(id, node)))
             .collect();
-        if let Some(pending) = &self.local_persist.pending_local {
+        if let Some(pending) = &self.doc.local_persist.pending_local {
             for (id, node) in &pending.nodes {
                 if self.spawns.spawning.contains_key(id) && !nodes.contains_key(id) {
                     nodes.insert(id.clone(), node.clone());
@@ -1952,8 +1954,8 @@ impl App {
             }
         }
         // Hidden nodes keep theirs while the document still holds them (a Delete not yet seen is dropped).
-        if let Some(doc) = self.journal.as_ref().map(|j| j.doc()) {
-            for (id, node) in &self.hidden_local {
+        if let Some(doc) = self.doc.journal.as_ref().map(|j| j.doc()) {
+            for (id, node) in &self.doc.hidden_local {
                 if id.parse::<NodeId>().ok().and_then(|n| doc.nodes.get(&n)).is_some_and(Node::is_live) {
                     nodes.entry(id.clone()).or_insert_with(|| node.clone());
                 }
@@ -1979,7 +1981,7 @@ impl App {
     /// imported/opened file) on top of the just-restored/imported live
     /// graph. A view field naming a node takes hold only when that node
     /// exists, live or still spawning; otherwise the caller's own default
-    /// stands. A node still spawning keeps its entry in `self.local_persist.pending_local`
+    /// stands. A node still spawning keeps its entry in `self.doc.local_persist.pending_local`
     /// for `handle_tab_spawn_result` to apply once it lands.
     pub(crate) fn apply_local(&mut self, state: LocalState) {
         let exists = |id: &Option<String>| {
@@ -1989,7 +1991,7 @@ impl App {
             self.focused = state.focused;
         }
         // A level that is hidden now falls back to its nearest shown ancestor (spec decision 3).
-        let level = match (self.journal.as_ref(), state.current_group.as_deref().and_then(|g| g.parse().ok())) {
+        let level = match (self.doc.journal.as_ref(), state.current_group.as_deref().and_then(|g| g.parse().ok())) {
             (Some(j), Some(g)) => j.doc().shown_level(g).map(|g| g.to_string()),
             _ => state.current_group.clone(),
         };
@@ -2039,7 +2041,7 @@ impl App {
         }
         self.keep_hidden_local(leftover);
         if !pending.is_empty() {
-            self.local_persist.pending_local = Some(LocalState { nodes: pending, ..LocalState::default() });
+            self.doc.local_persist.pending_local = Some(LocalState { nodes: pending, ..LocalState::default() });
         }
 
         if let Some((rect, level)) = state.camera {
@@ -2053,11 +2055,11 @@ impl App {
     /// Personal-state entries for nodes the document holds but the graph doesn't show (closed, or under a closed
     /// node): kept in `hidden_local` for a reopen, not dropped as stale.
     fn keep_hidden_local(&mut self, entries: impl IntoIterator<Item = (String, LocalNode)>) {
-        let Some(doc) = self.journal.as_ref().map(|j| j.doc()) else { return };
+        let Some(doc) = self.doc.journal.as_ref().map(|j| j.doc()) else { return };
         let held = |id: &str| id.parse::<NodeId>().ok().and_then(|n| doc.nodes.get(&n)).is_some_and(Node::is_live);
         let here = |id: &str| self.nodes.contains_key(id) || self.spawns.spawning.contains_key(id);
         let keep: Vec<(String, LocalNode)> = entries.into_iter().filter(|(id, _)| held(id) && !here(id)).collect();
-        self.hidden_local.extend(keep);
+        self.doc.hidden_local.extend(keep);
     }
 
     /// One node's share of `apply_local` beyond its settled position (the caller's `snap_layout`): whatever its
@@ -2088,10 +2090,10 @@ impl App {
     /// unloaded card now takes title/muted/zoom from personal state just
     /// like a live tab; every other kind only takes its position.
     pub(crate) fn apply_pending_local(&mut self, id: &str) {
-        let Some(pending) = &mut self.local_persist.pending_local else { return };
+        let Some(pending) = &mut self.doc.local_persist.pending_local else { return };
         let Some(node) = pending.nodes.remove(id) else { return };
         if pending.nodes.is_empty() {
-            self.local_persist.pending_local = None;
+            self.doc.local_persist.pending_local = None;
         }
         if let Some(live) = self.nodes.get_mut(id) {
             if let Runtime::Tab(_) | Runtime::Unloaded(_) | Runtime::Note(_) = &live.runtime {
@@ -2105,17 +2107,17 @@ impl App {
     /// at most every 30 s, and at exit (`force`). Never while the file is unread (`App::local_persist`.`local_unread`).
     pub(crate) fn maybe_write_local(&mut self, force: bool) {
         const EVERY: std::time::Duration = std::time::Duration::from_secs(30);
-        let due = force || self.local_persist.local_written_at.elapsed() >= EVERY;
-        if !due || self.journal.is_none() || self.local_persist.local_unread.is_some() {
+        let due = force || self.doc.local_persist.local_written_at.elapsed() >= EVERY;
+        if !due || self.doc.journal.is_none() || self.doc.local_persist.local_unread.is_some() {
             return;
         }
         let state = self.local_state();
-        self.local_persist.local_written_at = std::time::Instant::now();
-        if self.local_persist.local_written.as_ref().is_some_and(|w| !crate::local_state::differs(w, &state)) {
+        self.doc.local_persist.local_written_at = std::time::Instant::now();
+        if self.doc.local_persist.local_written.as_ref().is_some_and(|w| !crate::local_state::differs(w, &state)) {
             return;
         }
-        match self.journal.as_ref().unwrap().write_local(&state.to_bytes()) {
-            Ok(()) => self.local_persist.local_written = Some(state),
+        match self.doc.journal.as_ref().unwrap().write_local(&state.to_bytes()) {
+            Ok(()) => self.doc.local_persist.local_written = Some(state),
             Err(err) => self.store_error(err),
         }
     }
@@ -2123,13 +2125,13 @@ impl App {
     /// Each frame: pick up other instances' edits, retry a save that didn't
     /// commit, and flush a debounced fsync (contract "Flushing").
     pub(crate) fn poll_store(&mut self) {
-        let Some(journal) = self.journal.as_mut() else { return };
+        let Some(journal) = self.doc.journal.as_mut() else { return };
         let synced = journal.sync_if_due();
         let changed = journal.changed_on_disk();
         if let Err(err) = synced {
             self.store_error(err);
         }
-        let retry_due = self.writes.save_retry_at.is_some_and(|at| std::time::Instant::now() >= at);
+        let retry_due = self.doc.writes.save_retry_at.is_some_and(|at| std::time::Instant::now() >= at);
         if changed || retry_due {
             self.save_session();
         }
@@ -2144,7 +2146,7 @@ impl App {
         self.retry_read_local(true);
         self.maybe_write_local(true);
         self.flush_history();
-        if let Some(journal) = self.journal.as_mut() {
+        if let Some(journal) = self.doc.journal.as_mut() {
             if let Err(err) = journal.close() {
                 eprintln!("session: closing the store failed: {err}");
             }
@@ -2157,11 +2159,11 @@ impl App {
     /// "Personal state"), same as a named session's own `.mnf.local`.
     /// `None` without a store.
     pub(crate) fn export_session_json(&mut self) -> Option<JsonDoc> {
-        self.journal.as_ref()?;
+        self.doc.journal.as_ref()?;
         if !self.save_session() {
             self.queue_toast("The export may miss recent edits: the session couldn't be saved first".into());
         }
-        let mut json = crate::store::json::doc_to_json(self.journal.as_ref()?.doc());
+        let mut json = crate::store::json::doc_to_json(self.doc.journal.as_ref()?.doc());
         json.local = Some(serde_json::to_value(self.local_state()).expect("personal state serializes"));
         Some(json)
     }
@@ -2173,12 +2175,12 @@ impl App {
     /// unknown group; toasted when the store doesn't hold the group live
     /// (its save failed), rather than exporting an empty file.
     pub(crate) fn export_group_json(&mut self, group: &str) -> Option<JsonDoc> {
-        self.journal.as_ref()?;
+        self.doc.journal.as_ref()?;
         let root: NodeId = group.parse().ok()?;
         if !self.save_session() {
             self.queue_toast("The export may miss recent edits: the session couldn't be saved first".into());
         }
-        let doc = self.journal.as_ref()?.doc();
+        let doc = self.doc.journal.as_ref()?.doc();
         if !doc.is_shown(root) {
             self.queue_toast("Couldn't export the group: it isn't shown in the session".into());
             return None;
@@ -2387,7 +2389,7 @@ impl App {
             self.apply_local(state.remap(&map));
         }
         // Personal state startup couldn't read is the old session's: its view state names nodes that are gone.
-        if let Some(unread) = self.local_persist.local_unread.as_mut() {
+        if let Some(unread) = self.doc.local_persist.local_unread.as_mut() {
             unread.fresh = true;
         }
         self.wake_focused();
@@ -2409,6 +2411,7 @@ impl App {
         // The Default jar is the profile's own: the replaced session's cards go, it stays (spec "The Default jar").
         let default = self.default_jar();
         let old: Vec<NodeId> = self
+            .doc
             .journal
             .as_ref()
             .map(|j| j.doc().live().map(|(id, _)| id).filter(|&id| Some(id) != default).collect())
@@ -2418,11 +2421,11 @@ impl App {
         }
         // A link is not a card, so no endpoint's cascade is certain to reach it (a dangling one has none): the
         // replaced session's links all go, as its cards do.
-        for link in self.mirror.link_ids().map(|l| l.to_string()).collect::<Vec<_>>() {
+        for link in self.doc.mirror.link_ids().map(|l| l.to_string()).collect::<Vec<_>>() {
             self.delete_link(&link);
         }
         // The old session's nodes not created yet are not created at all.
-        self.writes.retain_creates(|id| Some(id) == default);
+        self.doc.writes.retain_creates(|id| Some(id) == default);
         // Each old node's per-id state and GPU textures (`forget_id`), including tabs whose spawn is still in flight
         // (no `nodes` entry yet, but cookie and popup state already). The session-wide clears below stay.
         let keep = default.map(|d| d.to_string());
@@ -2440,8 +2443,8 @@ impl App {
         self.nodes.retain(|id, _| Some(id) == keep.as_ref());
         self.node_order.retain(|id| Some(id) == keep.as_ref());
         self.layout.retain(|id, _| Some(id) == keep.as_ref());
-        self.writes.held_text.clear();
-        self.hidden_local.clear();
+        self.doc.writes.held_text.clear();
+        self.doc.hidden_local.clear();
         // A closed tab's trail is stashed under an id not in `nodes`, so the loop above does not forget it.
         self.nav_history.clear();
         self.focused = None;
@@ -2457,7 +2460,7 @@ impl App {
         self.interaction.rect_select_start = None;
         self.graph_settled_key = None;
         self.spawns.reset();
-        self.local_persist.pending_local = None;
+        self.doc.local_persist.pending_local = None;
     }
 
     /// Collapses the toasts queued since `mark` into one, so a bulk restore
@@ -2483,20 +2486,20 @@ impl App {
     /// Tells the user what a repair of the session file lost, and where
     /// the original was kept (contract "Repairs").
     pub(crate) fn take_store_recovery(&mut self) {
-        let Some(recovery) = self.journal.as_mut().and_then(|j| j.take_recovery()) else { return };
-        self.store_recovered = true;
+        let Some(recovery) = self.doc.journal.as_mut().and_then(|j| j.take_recovery()) else { return };
+        self.doc.store_recovered = true;
         self.notice(recovery_notice(&recovery));
     }
 
     /// Logs and toasts `msg`, unless it was shown since the last commit: a
     /// failing store or a damage report repeats at each save.
     fn notice(&mut self, msg: String) {
-        if self.writes.store_notices.contains(&msg) {
+        if self.doc.writes.store_notices.contains(&msg) {
             return;
         }
         eprintln!("session: {msg}");
         self.queue_toast(msg.clone());
-        self.writes.store_notices.insert(msg);
+        self.doc.writes.store_notices.insert(msg);
     }
 }
 

@@ -349,11 +349,11 @@ impl App {
         self.spawns.tab_spawns_in_flight += 1;
         // Shared at the pos, url, engine and jar the mirror holds for it (a respawn's `spawn.url` is the live one); a
         // new tab has no entry yet and shares the ones it starts with.
-        let shared_url = Some(self.mirror.url(&spawn.id)).filter(|url| !url.is_empty());
-        let has = self.mirror.has(&spawn.id);
-        let pos = if has { self.mirror.pos(&spawn.id) } else { Some(spawn.pos) };
-        let own = if has { self.mirror.jar(&spawn.id) } else { spawn.jar };
-        let view_kind = if has { self.mirror.view_code(&spawn.id) } else { session_sync::view_code(spawn.kind) };
+        let shared_url = Some(self.doc.mirror.url(&spawn.id)).filter(|url| !url.is_empty());
+        let has = self.doc.mirror.has(&spawn.id);
+        let pos = if has { self.doc.mirror.pos(&spawn.id) } else { Some(spawn.pos) };
+        let own = if has { self.doc.mirror.jar(&spawn.id) } else { spawn.jar };
+        let view_kind = if has { self.doc.mirror.view_code(&spawn.id) } else { session_sync::view_code(spawn.kind) };
         let url = shared_url.unwrap_or(&spawn.url);
         let snapshot = session_sync::spawn_snapshot(&spawn, pos, url, view_kind, own);
         self.spawns.spawning.insert(spawn.id.clone(), snapshot);
@@ -429,8 +429,8 @@ impl App {
             let same = other != id
                 && matches!(tab.state, UnloadedState::Failed(_))
                 && tab.url == url
-                && self.mirror.view_kind(other) == kind
-                && self.mirror.group(other) == group;
+                && self.doc.mirror.view_kind(other) == kind
+                && self.doc.mirror.group(other) == group;
             same.then(|| other.clone())
         })
     }
@@ -444,16 +444,16 @@ impl App {
         let Some((parent, group, url, kind)) = self.nodes.get(id).and_then(|n| {
             n.runtime.saved_tab().map(|url| {
                 (
-                    self.mirror.parent(id).map(str::to_owned),
-                    self.mirror.group(id).map(str::to_owned),
+                    self.doc.mirror.parent(id).map(str::to_owned),
+                    self.doc.mirror.group(id).map(str::to_owned),
                     url.to_string(),
-                    self.mirror.view_kind(id),
+                    self.doc.mirror.view_kind(id),
                 )
             })
         }) else {
             return;
         };
-        let jar = self.mirror.jar(id);
+        let jar = self.doc.mirror.jar(id);
         self.spawn_new_tab_with_kind(parent, group, &url, kind, SpawnPurpose::New, jar, None);
     }
 
@@ -473,7 +473,7 @@ impl App {
     pub(crate) fn spawn_tab_from(&mut self, opener: &str, url: &str, pos: Option<egui::Vec2>) -> String {
         let parent = Some(opener.to_string());
         let group = self.group_of(&parent);
-        let (kind, jar) = (self.settings.default_starting_view_kind, self.mirror.jar(opener));
+        let (kind, jar) = (self.settings.default_starting_view_kind, self.doc.mirror.jar(opener));
         self.spawn_new_tab_with_kind(parent, group, url, kind, SpawnPurpose::New, jar, pos)
     }
 
@@ -510,7 +510,7 @@ impl App {
         // the new tab near its actual new groupmates instead of near an
         // unrelated tab at a different level; `ZERO` (same as a fresh
         // group's own spawn point) covers a brand new, still-empty group.
-        let in_group = |id: &str| self.mirror.group(id) == group.as_deref();
+        let in_group = |id: &str| self.doc.mirror.group(id) == group.as_deref();
         let parent_pos = parent
             .as_deref()
             .filter(|p| in_group(p) && self.nodes.contains_key(*p))
@@ -568,7 +568,7 @@ impl App {
         // respawning placeholder until it lands (`pending_respawn_focus`).
         if self.nodes.get(id).and_then(|n| n.as_unloaded()).is_some() {
             self.spawns.pending_respawn_focus = Some(id.to_string());
-            self.wake_tab(id, self.mirror.view_kind(id));
+            self.wake_tab(id, self.doc.mirror.view_kind(id));
         }
         self.send_resize_to(id);
         self.save_session();
@@ -614,7 +614,7 @@ impl App {
             return;
         };
         let group = self.group_of(&Some(focused_id.clone()));
-        let jar = self.mirror.jar(&focused_id);
+        let jar = self.doc.mirror.jar(&focused_id);
         self.spawn_new_tab_with_kind(Some(focused_id), group, &url, kind, SpawnPurpose::Split, jar, None);
     }
 
@@ -699,7 +699,7 @@ impl App {
             self.close_split();
         }
         self.spawns.tab_crashes.remove(id);
-        let group = self.mirror.group(id).map(str::to_owned);
+        let group = self.doc.mirror.group(id).map(str::to_owned);
         // One failed card per intent: keep this one (its id is the live one) and drop another standing for it.
         if let Some(twin) = self.failed_twin(id, &url, kind, group.as_deref()) {
             self.remove_tab(&twin);
@@ -721,11 +721,11 @@ impl App {
     /// or one waiting for its cookies) has already saved its target, so the tab restarts on it, the running engine
     /// its fallback. `None` when `id` is no live tab.
     pub(crate) fn restart_spawn(&self, id: &str) -> Option<TabSpawn> {
-        let want = self.mirror.view_kind(id);
+        let want = self.doc.mirror.view_kind(id);
         let node = self.nodes.get(id)?;
         let tab = node.as_tab()?;
         let fallback_kind = (tab.tab.kind != want).then_some(tab.tab.kind);
-        let spawn = TabSpawn::respawn(id, node, self.mirror.carried(id), want, tab.url.clone())?;
+        let spawn = TabSpawn::respawn(id, node, self.doc.mirror.carried(id), want, tab.url.clone())?;
         Some(TabSpawn { fallback_kind, ..spawn })
     }
 

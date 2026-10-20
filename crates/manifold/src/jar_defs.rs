@@ -237,11 +237,11 @@ impl App {
         let can_switch_now = self.can_switch_jar_now(id);
         let view_kind = match &self.nodes.get(id)?.runtime {
             Runtime::Tab(t) => t.tab.kind,
-            Runtime::Unloaded(_) => self.mirror.view_kind(id),
+            Runtime::Unloaded(_) => self.doc.mirror.view_kind(id),
             _ => return None,
         };
         let view_ignores = !view_kind.desc().jar && Some(key) != default;
-        let following = self.mirror.jar(id).is_none();
+        let following = self.doc.mirror.jar(id).is_none();
         if Some(key) == default && !missing && !will_switch {
             return None;
         }
@@ -307,7 +307,7 @@ impl App {
                     .to_string(),
                 "Clear",
             )),
-            JarConfirm::Ephemeral(id) if self.jar_exists(id) && !self.mirror.jar_def(&id.to_string()).ephemeral => Some((
+            JarConfirm::Ephemeral(id) if self.jar_exists(id) && !self.doc.mirror.jar_def(&id.to_string()).ephemeral => Some((
                 format!("Make {} ephemeral?", self.jar_label(id)),
                 "Its saved sign-ins are deleted from disk now. Tabs keep them until Manifold quits; after that this \
                  jar starts empty each time."
@@ -322,7 +322,7 @@ impl App {
     /// enough per card per frame: the mirror's index holds one id, two for a moment after two replicas' first
     /// launches; shown jars only, a closed or hidden one has left the mirror. Each costs a `to_string` and a hash lookup.
     pub(crate) fn default_jar(&self) -> Option<NodeId> {
-        self.mirror.default_jar_ids().find(|&id| self.jar_exists(id))
+        self.doc.mirror.default_jar_ids().find(|&id| self.jar_exists(id))
     }
 
     /// Whether node `id` is the Default jar.
@@ -339,6 +339,7 @@ impl App {
         // moves out. One this replica shows moves now; one hidden under a closed group is queued, and the save's
         // visibility pass shows it, so no second Default is made meanwhile.
         let grouped: Vec<(NodeId, bool)> = self
+            .doc
             .journal
             .as_ref()
             .map(|j| {
@@ -356,14 +357,14 @@ impl App {
                 self.edit_group(&id.to_string(), None);
                 moved_here = true;
             } else {
-                self.writes.queue_move(id, None);
+                self.doc.writes.queue_move(id, None);
                 queued_hidden = true;
             }
         }
         if queued_hidden {
             return true;
         }
-        let defaults: Vec<NodeId> = self.mirror.default_jar_ids().filter(|&id| self.jar_exists(id)).collect();
+        let defaults: Vec<NodeId> = self.doc.mirror.default_jar_ids().filter(|&id| self.jar_exists(id)).collect();
         let Some((_, losers)) = defaults.split_first() else {
             let pos = crate::graph_layout::GRAPH_WORLD_CENTER + crate::graph_layout::spawn_jitter(DEFAULT_NAME);
             let id = self.create_jar(DEFAULT_NAME, crate::fetched::Placement { group: None, pos });
@@ -396,7 +397,7 @@ impl App {
     /// Where a jar made for `tab` goes: its level (group), just above it.
     pub(crate) fn jar_placement_beside(&self, tab: &str) -> crate::fetched::Placement {
         crate::fetched::Placement {
-            group: self.mirror.group(tab).map(str::to_owned),
+            group: self.doc.mirror.group(tab).map(str::to_owned),
             pos: self.layout_pos(tab) + egui::vec2(0.0, -80.0),
         }
     }
@@ -462,7 +463,7 @@ impl App {
 
     /// A local Make/Stop Ephemeral (`set_jar_ephemeral`, after any confirm): writes the flag, then its effects.
     fn switch_jar_ephemeral(&mut self, id: NodeId, on: bool) {
-        if !self.jar_exists(id) || self.mirror.jar_def(&id.to_string()).ephemeral == on {
+        if !self.jar_exists(id) || self.doc.mirror.jar_def(&id.to_string()).ephemeral == on {
             return;
         }
         self.edit_field(&id.to_string(), field::EPHEMERAL, FieldValue::Bool(on));
@@ -523,7 +524,7 @@ impl App {
         let (mut edge, mut reach, mut next) = (own, origin, origin);
         for _ in 0..=self.nodes.len() {
             if let Some(jar) = edge {
-                let at = self.mirror.group(&jar.to_string());
+                let at = self.doc.mirror.group(&jar.to_string());
                 let in_reach = self.levels_from(reach).any(|level| level == at);
                 return if self.jar_exists(jar) && in_reach {
                     Some((jar, false))
@@ -532,16 +533,16 @@ impl App {
                 };
             }
             let Some(g) = next.filter(|g| self.nodes.contains_key(*g)) else { break };
-            edge = self.mirror.jar(g);
+            edge = self.doc.mirror.jar(g);
             reach = Some(g);
-            next = self.mirror.group(g);
+            next = self.doc.mirror.group(g);
         }
         self.default_jar().map(|d| (d, false))
     }
 
     /// `resolve_jar` for a tab or group the mirror holds (live, asleep or mid-respawn).
     pub(crate) fn effective_jar(&self, id: &str) -> Option<(NodeId, bool)> {
-        self.resolve_jar(self.mirror.jar(id), self.reach_origin(id))
+        self.resolve_jar(self.doc.mirror.jar(id), self.reach_origin(id))
     }
 
     /// Whether `id` is a tab (live, unloaded or mid-respawn: `linked_ids`); false for any other node and for a new
@@ -561,7 +562,7 @@ impl App {
                 let _ = self.connect(JAR_EDGE, id, &jar.to_string());
             }
             None => {
-                if let Some(old) = self.mirror.jar(id) {
+                if let Some(old) = self.doc.mirror.jar(id) {
                     self.disconnect(JAR_EDGE, id, &old.to_string());
                 }
             }
@@ -586,7 +587,7 @@ impl App {
         for (edge, no) in rows {
             let scope = crate::caps::edges().row(edge).expect("a listed row").scope();
             for source in self.linked_ids().map(str::to_owned).collect::<Vec<_>>() {
-                let FieldValue::Id(Some(target)) = self.mirror.get(&source, no) else { continue };
+                let FieldValue::Id(Some(target)) = self.doc.mirror.get(&source, no) else { continue };
                 let to = target.to_string();
                 let touched = self.within(&source, moved) || self.within(&to, moved);
                 if touched && self.nodes.contains_key(&to) && !self.in_scope(scope, &source, &to) {
@@ -625,7 +626,7 @@ impl App {
 
     fn is_ephemeral(&self, id: NodeId) -> bool {
         // The mirror, not `jar_defs`: a jar being removed (`forget_jar_memory`) has left `nodes` but not yet the mirror.
-        self.mirror.jar_def(&id.to_string()).ephemeral
+        self.doc.mirror.jar_def(&id.to_string()).ephemeral
     }
 
     /// Writes jar `id`'s file unless it is ephemeral. A failure is logged (never cookie values) and leaves other jars
@@ -673,7 +674,7 @@ impl App {
         self.nodes
             .iter()
             .filter(|(_, n)| matches!(n.runtime, Runtime::Jar))
-            .filter_map(|(id, _)| Some((id.parse().ok()?, self.mirror.jar_def(id))))
+            .filter_map(|(id, _)| Some((id.parse().ok()?, self.doc.mirror.jar_def(id))))
             .collect()
     }
 

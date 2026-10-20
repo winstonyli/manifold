@@ -91,7 +91,7 @@ impl App {
             self.queue_toast("The saved copy may miss recent edits: the session couldn't be saved first".into());
         }
         let local = self.local_state_for_copy();
-        let Some(journal) = self.journal.as_ref() else { return };
+        let Some(journal) = self.doc.journal.as_ref() else { return };
         if let Err(err) = journal.save_copy(&path, local.as_deref()) {
             let shown = crate::names::to_plain(&crate::names::display_name(&name, crate::names::UNTITLED));
             self.queue_toast(format!("Couldn't save as {shown}: {err}"));
@@ -102,7 +102,7 @@ impl App {
     /// (`App::local_persist`.`local_unread`). The live view then lacks what the file holds (its view state, say); a copy
     /// with none opens with defaults rather than a partial state passed off as this profile's.
     pub(crate) fn local_state_for_copy(&self) -> Option<Vec<u8>> {
-        self.local_persist.local_unread.is_none().then(|| self.local_state().to_bytes())
+        self.doc.local_persist.local_unread.is_none().then(|| self.local_state().to_bytes())
     }
 
     /// "Open Session" (settings popup) / headless `OPENSESSION` -- reads a

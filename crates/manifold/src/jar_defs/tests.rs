@@ -72,9 +72,9 @@ fn an_out_of_scope_edge_from_another_device_is_kept_and_dangles() {
     let tab = tab_in(&mut app, Some(&a));
     let far = jar_at(&mut app, "Far", Some(&b));
     // What a remote write looks like: the field set directly, with no scope check.
-    app.mirror.set(&tab, field::JAR, FieldValue::Id(Some(far)));
+    app.doc.mirror.set(&tab, field::JAR, FieldValue::Id(Some(far)));
     assert_eq!(app.effective_jar(&tab), Some((default, true)));
-    assert_eq!(app.mirror.jar(&tab), Some(far), "never rewritten");
+    assert_eq!(app.doc.mirror.jar(&tab), Some(far), "never rewritten");
 }
 
 #[test]
@@ -89,10 +89,10 @@ fn connect_reaches_a_jar_at_the_level_or_above_but_not_in_a_sibling_group() {
     assert_eq!(app.connect(edge, &tab, &here), Ok(()));
     assert_eq!(app.connect(edge, &tab, &here), Err(crate::links::ConnectError::Exists));
     assert_eq!(app.connect(edge, &tab, &above), Ok(()), "replaces the edge: a field holds one");
-    assert_eq!(app.mirror.jar(&tab), above.parse().ok());
+    assert_eq!(app.doc.mirror.jar(&tab), above.parse().ok());
     assert_eq!(app.connect(edge, &tab, &sibling), Err(crate::links::ConnectError::OutOfScope));
     app.disconnect(edge, &tab, &above);
-    assert_eq!(app.mirror.jar(&tab), None);
+    assert_eq!(app.doc.mirror.jar(&tab), None);
 }
 
 #[test]
@@ -133,15 +133,15 @@ fn a_move_clears_an_edge_it_takes_out_of_reach_and_keeps_one_in_reach() {
         app.edit_group(tab, Some(b.clone()));
         app.recheck_edge_scope(tab);
     }
-    assert_eq!(app.mirror.jar(&kept), Some(top), "an ancestor jar is still in reach");
-    assert_eq!(app.mirror.jar(&lost), None, "cleared");
+    assert_eq!(app.doc.mirror.jar(&kept), Some(top), "an ancestor jar is still in reach");
+    assert_eq!(app.doc.mirror.jar(&lost), None, "cleared");
     assert_eq!(app.effective_jar(&plain), Some((b_jar, false)), "no edge: takes its new group's jar");
     // Moving a jar out of reach clears the edges to it.
     app.edit_group(&local.to_string(), Some(b.clone()));
     app.set_jar_edge(&kept, Some(local));
     app.edit_group(&local.to_string(), Some(a.clone()));
     app.recheck_edge_scope(&local.to_string());
-    assert_eq!(app.mirror.jar(&kept), None);
+    assert_eq!(app.doc.mirror.jar(&kept), None);
     assert!(app.toasts.save_toast_queue.iter().any(|t| t.contains("Local")), "a toast names it");
 }
 
@@ -154,7 +154,7 @@ fn a_drop_into_another_group_rechecks_the_edge() {
     let local = jar_at(&mut app, "Local", Some(&a));
     app.set_jar_edge(&tab, Some(local));
     app.apply_drop(&tab, Some((DropEffect::Join, Some(b))));
-    assert_eq!(app.mirror.jar(&tab), None);
+    assert_eq!(app.doc.mirror.jar(&tab), None);
 }
 
 #[test]
@@ -256,11 +256,11 @@ fn setjar_acts_only_on_a_focused_tab() {
     app.focused = Some(t.clone());
     assert!(app.set_focused_tab_jar_named("Work"));
     let work = app.jar_named("Work").expect("made for the tab");
-    assert_eq!(app.mirror.jar(&t), Some(work));
+    assert_eq!(app.doc.mirror.jar(&t), Some(work));
     assert!(app.set_focused_tab_jar_named("Work"));
     assert_eq!(app.jar_defs().len(), 1, "an existing name is reused");
     assert!(app.set_focused_tab_jar_named("DEFAULT"));
-    assert_eq!(app.mirror.jar(&t), None);
+    assert_eq!(app.doc.mirror.jar(&t), None);
 }
 
 /// Jar name labels: `SETJAR` takes a label first, then a stored name; a stored name several jars share picks the
@@ -275,11 +275,11 @@ fn setjar_takes_a_label_or_an_ambiguous_stored_name() {
     let l2 = app.jar_label(w2).to_string();
     assert_eq!(app.jar_named(&l2), Some(w2));
     assert!(app.set_focused_tab_jar_named(&l2));
-    assert_eq!(app.mirror.jar(&t), Some(w2), "by label");
+    assert_eq!(app.doc.mirror.jar(&t), Some(w2), "by label");
     assert!(app.set_focused_tab_jar_named("Work"));
-    assert_eq!(app.mirror.jar(&t), Some(w1), "an ambiguous stored name: the lowest id");
+    assert_eq!(app.doc.mirror.jar(&t), Some(w1), "an ambiguous stored name: the lowest id");
     assert!(app.set_focused_tab_jar_named("Home"));
-    assert_eq!(app.mirror.jar(&t), Some(home), "a unique name is its own label");
+    assert_eq!(app.doc.mirror.jar(&t), Some(home), "a unique name is its own label");
     assert_eq!(app.jar_defs().len(), 3, "no jar made");
     // A jar literally named like another's label: the label wins, as it is matched first.
     add_jar(&mut app, &l2);
@@ -571,7 +571,7 @@ fn setjar_matches_and_makes_by_the_clean_name() {
     let work = add_jar(&mut app, "Work");
     assert!(app.set_focused_tab_jar_named("Wo\u{200B}rk"));
     assert_eq!(app.jar_defs().len(), 1, "no twin made");
-    assert_eq!(app.mirror.jar(&t), Some(work));
+    assert_eq!(app.doc.mirror.jar(&t), Some(work));
     assert!(app.set_focused_tab_jar_named(" New\u{00A0}\u{00A0}one "));
     assert!(app.jar_defs().values().any(|d| d.name == "New one"));
 }
@@ -608,7 +608,7 @@ fn a_jar_chip_hover_names_a_hidden_character() {
         crate::session_sync::tests::sleeping_tab("https://a/", "A"),
     );
     let jar = add_jar(&mut app, "x");
-    app.mirror.set(
+    app.doc.mirror.set(
         &jar.to_string(),
         crate::store::model::field::NAME,
         crate::store::model::FieldValue::Str("Wo\u{200B}rk".into()),
@@ -624,7 +624,7 @@ fn the_default_jar_is_made_once_at_the_top_level() {
     assert_eq!(app.default_jar(), None);
     assert!(app.ensure_default_jar(), "made");
     let default = app.default_jar().expect("a Default");
-    assert_eq!(app.mirror.group(&default.to_string()), None);
+    assert_eq!(app.doc.mirror.group(&default.to_string()), None);
     assert_eq!(app.jar_defs()[&default].name, "Default");
     assert!(!app.ensure_default_jar(), "already there: nothing to do");
     assert_eq!(app.jar_defs().len(), 1);
@@ -699,7 +699,7 @@ fn ungrouping_never_clears_an_edge() {
                     checked += 1;
                     app.ungroup(&[[a.clone(), g.clone(), h.clone()][ungroup].clone()]);
                     assert_eq!(
-                        app.mirror.jar(&source),
+                        app.doc.mirror.jar(&source),
                         Some(target),
                         "ungroup {ungroup}, source level {source_level} (group: {group_source}), target level {target_level}"
                     );
@@ -720,10 +720,10 @@ fn reverting_a_drop_never_clears_an_edge() {
     let target = jar_at(&mut app, "J", None);
     app.connect(crate::caps::JAR_EDGE, &tab, &target.to_string()).expect("in reach");
     app.apply_drop(&tab, Some((crate::card::DropEffect::Join, Some(g))));
-    assert_eq!(app.mirror.jar(&tab), Some(target), "kept by the drop");
+    assert_eq!(app.doc.mirror.jar(&tab), Some(target), "kept by the drop");
     app.step_history(None, false);
-    assert_eq!(app.mirror.group(&tab), None, "undone");
-    assert_eq!(app.mirror.jar(&tab), Some(target), "kept by Undo");
+    assert_eq!(app.doc.mirror.group(&tab), None, "undone");
+    assert_eq!(app.doc.mirror.jar(&tab), Some(target), "kept by Undo");
     app.step_history(None, true);
-    assert_eq!(app.mirror.jar(&tab), Some(target), "kept by Redo");
+    assert_eq!(app.doc.mirror.jar(&tab), Some(target), "kept by Redo");
 }

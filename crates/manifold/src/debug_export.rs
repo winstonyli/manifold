@@ -112,16 +112,16 @@ impl App {
                 Some(serde_json::json!({
                     "id": item.id,
                     "type": kind.ty,
-                    "stored_type": self.mirror.ty(&item.id), // the raw string; `type` is its row (`canonical_type`)
+                    "stored_type": self.doc.mirror.ty(&item.id), // the raw string; `type` is its row (`canonical_type`)
                     "loaded": kind.loaded(),
                     "json_card": false,
-                    "group": self.mirror.group(&item.id),
+                    "group": self.doc.mirror.group(&item.id),
                     "parent": self.opened_from(&item.id),
-                    "color": self.mirror.color(&item.id).is_some(),
-                    "pinned": self.mirror.pinned(&item.id),
-                    "name": self.mirror.name(&item.id), // name rule: reported as stored
+                    "color": self.doc.mirror.color(&item.id).is_some(),
+                    "pinned": self.doc.mirror.pinned(&item.id),
+                    "name": self.doc.mirror.name(&item.id), // name rule: reported as stored
                     // The tab's or group's own jar edge, the jar it resolves to, and whether a jar card is the Default.
-                    "jar": self.mirror.jar(&item.id).map(|j| j.to_string()),
+                    "jar": self.doc.mirror.jar(&item.id).map(|j| j.to_string()),
                     "effective_jar": self.effective_jar(&item.id).map(|(j, _)| j.to_string()),
                     "is_default": self.is_default_jar(&item.id),
                     // A live tab whose engine stopped reading (`ViewTab::is_unresponsive`).
@@ -136,32 +136,33 @@ impl App {
             .collect();
         // Every node's group as this replica shows it, at any level (a two-instance test compares them).
         let mirror_groups: std::collections::BTreeMap<&str, Option<&str>> =
-            self.linked_ids().map(|id| (id, self.mirror.group(id))).collect();
+            self.linked_ids().map(|id| (id, self.doc.mirror.group(id))).collect();
         // Likewise each group's name, each note's text and every node's document pos, null when absent
         // (empty, or Pos (0,0)), as EXPORTSESSION leaves them out.
         let non_empty = |s: &'_ str| (!s.is_empty()).then(|| s.to_owned());
         let mirror_names: std::collections::BTreeMap<&str, Option<String>> = self
             .linked_ids()
             .filter(|id| self.is_container(id))
-            .map(|id| (id, non_empty(self.mirror.name(id)))) // name rule: raw, compared with the document
+            .map(|id| (id, non_empty(self.doc.mirror.name(id)))) // name rule: raw, compared with the document
             .collect();
         let mirror_texts: std::collections::BTreeMap<&str, Option<String>> = self
             .linked_ids()
             .filter(|id| self.nodes.get(*id).is_some_and(|n| n.as_note().is_some()))
-            .map(|id| (id, non_empty(self.mirror.text(id))))
+            .map(|id| (id, non_empty(self.doc.mirror.text(id))))
             .collect();
         let mirror_pos: std::collections::BTreeMap<&str, Option<[f32; 2]>> =
-            self.linked_ids().map(|id| (id, self.mirror.pos(id).map(|p| [p.x, p.y]))).collect();
+            self.linked_ids().map(|id| (id, self.doc.mirror.pos(id).map(|p| [p.x, p.y]))).collect();
         let mut selected: Vec<&String> = self.interaction.selected.iter().collect();
         selected.sort();
         // Every link this replica knows (ends null where unset), whether or not it is shown. `shown` is true when
         // both ends are in `nodes`, so a link whose end is hidden (closed) reads false and a deleted one is absent.
         let links: Vec<serde_json::Value> = self
+            .doc
             .mirror
             .link_ids()
             .map(|link| {
                 let id = link.to_string();
-                let (from, to) = self.mirror.link_ends(&id);
+                let (from, to) = self.doc.mirror.link_ends(&id);
                 let shown = [from, to].iter().all(|e| e.is_some_and(|n| self.nodes.contains_key(&n.to_string())));
                 serde_json::json!({
                     "id": id, "from": from.map(|n| n.to_string()), "to": to.map(|n| n.to_string()), "shown": shown,
@@ -170,6 +171,7 @@ impl App {
             .collect();
         // Recently Closed as the document orders it, newest first (`Doc::closed_roots`).
         let closed: Vec<String> = self
+            .doc
             .journal
             .as_ref()
             .map_or_else(Vec::new, |j| j.doc().closed_roots().into_iter().map(|(id, _)| id.to_string()).collect());

@@ -219,7 +219,7 @@ impl App {
             self.interaction.selected.iter().cloned().collect()
         };
         let ids: Vec<String> = ids.into_iter().filter(|id| self.nodes.contains_key(id)).collect();
-        let pin = ids.iter().any(|id| !self.mirror.pinned(id));
+        let pin = ids.iter().any(|id| !self.doc.mirror.pinned(id));
         for id in ids {
             self.edit_field(&id, field::PINNED, FieldValue::Bool(pin));
         }
@@ -234,7 +234,7 @@ impl App {
     /// Pins or unpins node `id` of any kind: a pinned card is left out of the graph layout.
     pub(crate) fn toggle_pin(&mut self, id: &str) {
         if self.nodes.contains_key(id) {
-            let on = !self.mirror.pinned(id);
+            let on = !self.doc.mirror.pinned(id);
             self.edit_field(id, field::PINNED, FieldValue::Bool(on));
         }
     }
@@ -265,7 +265,7 @@ impl App {
             return;
         }
         // name rule: the field edits the stored name
-        let name = self.mirror.name(&group_id).to_owned();
+        let name = self.doc.mirror.name(&group_id).to_owned();
         self.renaming_group = Some((group_id, name));
         self.pending_focus = Some(FocusTarget::GroupRename);
     }
@@ -387,9 +387,9 @@ impl App {
     /// replica id `closed` holds, which a restart keeps), where it was. Another replica's closes are left to the
     /// popup. A no-op with none.
     pub(crate) fn reopen_closed_shortcut(&mut self) {
-        let Some(journal) = &self.journal else { return };
+        let Some(journal) = &self.doc.journal else { return };
         let doc = journal.doc();
-        let newest = doc.closed_roots().into_iter().find(|(id, _)| doc.nodes[id].closer() == self.replica);
+        let newest = doc.closed_roots().into_iter().find(|(id, _)| doc.nodes[id].closer() == self.doc.replica);
         if let Some((id, _)) = newest {
             self.reopen_node(id);
         }

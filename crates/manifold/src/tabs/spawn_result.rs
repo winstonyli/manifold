@@ -46,7 +46,7 @@ impl App {
         let (parent, group, color, pinned, muted) = if self.spawns.wakes_in_flight.remove(&id) {
             match self.nodes.get(&id).and_then(|n| n.as_unloaded()) {
                 Some(tab) => {
-                    let Carried { color, pinned, parent, group, .. } = self.mirror.carried(&id);
+                    let Carried { color, pinned, parent, group, .. } = self.doc.mirror.carried(&id);
                     (parent, group, color, pinned, tab.muted)
                 }
                 // Closed while waking (see `wakes_in_flight`): `remove_tab`
@@ -304,13 +304,13 @@ impl App {
     /// other than `landed`, are resolved. Each is deleted outright (not closed, so never in Recently Closed), and removed without a save: the landing's own save commits the delete, after the parked remote changes
     /// land. Another url's card, or the same url's card in another group, stays.
     fn clear_failed_cards(&mut self, url: &str, landed: &str) {
-        let group = self.mirror.group(landed);
+        let group = self.doc.mirror.group(landed);
         let stale: Vec<String> = self
             .nodes
             .iter()
             .filter(|(id, node)| {
                 id.as_str() != landed
-                    && self.mirror.group(id) == group
+                    && self.doc.mirror.group(id) == group
                     && node
                         .as_unloaded()
                         .is_some_and(|tab| matches!(tab.state, UnloadedState::Failed(_)) && tab.url == url)
@@ -337,8 +337,8 @@ impl App {
         let ty = crate::store::model::Kind::Tab.type_str().unwrap_or_default().to_owned();
         let carried = Carried { ty, ..carried };
         self.layout.entry(id.to_owned()).or_insert(Layout::at(carried.pos.unwrap_or_default()));
-        self.mirror.seed(id, &carried);
-        if self.mirror.group(id).is_some_and(|g| !self.nodes.contains_key(g)) {
+        self.doc.mirror.seed(id, &carried);
+        if self.doc.mirror.group(id).is_some_and(|g| !self.nodes.contains_key(g)) {
             let group = self.shown_group(id);
             self.follow_remote_group(id, group);
         }
@@ -348,7 +348,7 @@ impl App {
     /// replica removed and hasn't saved yet is passed over too, as the save that deletes it will. `None` (the top
     /// level) for a node the document doesn't hold yet.
     fn shown_group(&self, id: &str) -> Option<String> {
-        let doc = self.journal.as_ref()?.doc();
+        let doc = self.doc.journal.as_ref()?.doc();
         let mut group = doc.nodes.get(&id.parse::<crate::store::model::NodeId>().ok()?)?.group;
         for _ in 0..=doc.nodes.len() {
             let at = group?;

@@ -654,11 +654,11 @@ fn remove_from_group_moves_up_one_level() {
     }
 
     app.remove_from_group("deep");
-    assert_eq!(app.mirror.group("deep"), Some("outer"));
+    assert_eq!(app.doc.mirror.group("deep"), Some("outer"));
     app.remove_from_group("shallow");
-    assert_eq!(app.mirror.group("shallow"), None);
+    assert_eq!(app.doc.mirror.group("shallow"), None);
     app.remove_from_group("shallow");
-    assert_eq!(app.mirror.group("shallow"), None);
+    assert_eq!(app.doc.mirror.group("shallow"), None);
 }
 
 /// Groups `a` and `b` inside each other in the mirror, plus group `s` outside them: the cycle two replicas'
@@ -750,7 +750,7 @@ fn a_toast_url_is_cut_to_eighty_characters() {
 fn save_as_while_personal_state_is_unread_carries_none() {
     let mut app = App::default();
     assert!(app.local_state_for_copy().is_some());
-    app.local_persist.local_unread =
+    app.doc.local_persist.local_unread =
         Some(session_sync::LocalUnread { retry_at: std::time::Instant::now(), fresh: false });
     assert_eq!(app.local_state_for_copy(), None);
 }

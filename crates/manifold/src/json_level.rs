@@ -232,7 +232,7 @@ impl App {
         // `self.json_level` can be borrowed mutably alongside it.
         let id = self.current_group.clone().unwrap_or_default();
         let Some(json) = self.nodes.get(&id).and_then(|n| n.as_json()) else { return };
-        let view = self.mirror.view(&id).unwrap_or(&json_view::NO_VIEW);
+        let view = self.doc.mirror.view(&id).unwrap_or(&json_view::NO_VIEW);
         match &mut self.json_level {
             Some(level) if level.node_id == id => {
                 if level.stale {
@@ -257,7 +257,7 @@ impl App {
             return;
         }
         let id = level.node_id.clone();
-        let mut view = self.mirror.view(&id).cloned().unwrap_or_default();
+        let mut view = self.doc.mirror.view(&id).cloned().unwrap_or_default();
         if view.is_opaque() {
             // M5: a newer build's format, written back untouched; an edit here would replace it on every replica.
             // Lay out from the unchanged view so a refused drag doesn't leave its card where it was dropped.
@@ -434,7 +434,7 @@ impl App {
     pub(crate) fn reveal_json(&mut self, pointer: &str) {
         // A dry run first, so selecting an already-visible entry doesn't save.
         let changed = self.json_level.as_ref().filter(|_| self.current_json_node().is_some()).is_some_and(|level| {
-            let mut view = self.mirror.view(&level.node_id).cloned().unwrap_or_default();
+            let mut view = self.doc.mirror.view(&level.node_id).cloned().unwrap_or_default();
             json_view::reveal(&level.value, &mut view, &level.expanded, pointer)
         });
         if changed {

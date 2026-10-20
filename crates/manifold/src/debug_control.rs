@@ -1341,11 +1341,11 @@ mod tests {
         assert!(!app.debug_move_to_group(&note, &note), "not a group");
         assert!(!app.debug_move_to_group(&note, "missing"));
         assert!(app.debug_move_to_group(&note, &g));
-        assert_eq!(app.mirror.group(&note), Some(g.as_str()));
+        assert_eq!(app.doc.mirror.group(&note), Some(g.as_str()));
         assert!(!app.debug_move_to_group(&note, &h), "h is no longer a sibling of the note");
-        assert_eq!(app.mirror.group(&note), Some(g.as_str()));
+        assert_eq!(app.doc.mirror.group(&note), Some(g.as_str()));
         assert!(app.debug_move_to_group(&g, &h), "a group nests, as the menu row does");
-        assert_eq!(app.mirror.group(&g), Some(h.as_str()));
+        assert_eq!(app.doc.mirror.group(&g), Some(h.as_str()));
     }
 
     /// `CLOSENODE id` closes any node by id, as its card's Close does, and saves.
@@ -1396,7 +1396,7 @@ mod tests {
         assert!(app.save_session());
         assert_eq!(stored(&app, &g, field::NAME), FieldValue::Str("Errands".into()));
         app.commit_rename(&note, "Not a group");
-        assert_eq!(app.mirror.name(&note), "Not a group", "any node takes a rename");
+        assert_eq!(app.doc.mirror.name(&note), "Not a group", "any node takes a rename");
 
         assert!(app.debug_set_note_text(&note, "mine".into()));
         assert_eq!(stored(&app, &note, field::TEXT), FieldValue::Str("mine".into()), "the blur saved it");
@@ -1406,10 +1406,10 @@ mod tests {
         app.nodes.get_mut(&note).unwrap().as_note_mut().unwrap().editing = true;
         remote_set(&mut other, &note, field::TEXT, FieldValue::Str("theirs".into()));
         assert!(app.save_session());
-        assert!(app.writes.held_text.contains_key(&note), "held");
+        assert!(app.doc.writes.held_text.contains_key(&note), "held");
         assert!(app.debug_set_note_text(&note, "mine again".into()));
         assert_eq!(stored(&app, &note, field::TEXT), FieldValue::Str("mine again".into()));
-        assert_eq!(app.mirror.text(&note), "mine again");
+        assert_eq!(app.doc.mirror.text(&note), "mine again");
         assert!(!app.debug_set_note_text(&g, "x".into()), "not a note");
 
         assert!(app.debug_move_node(&note, egui::vec2(12.0, -34.0)));

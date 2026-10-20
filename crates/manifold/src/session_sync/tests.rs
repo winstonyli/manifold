@@ -101,12 +101,12 @@ pub(crate) fn snapshots(app: &App) -> BTreeMap<NodeId, Snapshot> {
 
 /// Actor 1's op count: what a save wrote.
 fn ops_of(app: &App) -> u64 {
-    app.journal.as_ref().unwrap().doc().version.get(&ActorId(1)).copied().unwrap_or(0)
+    app.doc.journal.as_ref().unwrap().doc().version.get(&ActorId(1)).copied().unwrap_or(0)
 }
 
 /// Whether the document shows `id` live.
 fn live_in_doc(app: &App, id: &str) -> bool {
-    app.journal.as_ref().unwrap().doc().nodes.get(&id.parse().unwrap()).is_some_and(Node::is_live)
+    app.doc.journal.as_ref().unwrap().doc().nodes.get(&id.parse().unwrap()).is_some_and(Node::is_live)
 }
 
 /// The commit builder (2b-5 Task 3): a save creates every queued node the document lacks, each group before the
@@ -119,8 +119,8 @@ fn new_nodes_are_created_groups_first() {
     assert!(note < group, "the member's id sorts first");
     app.edit_group(&note, Some(group.clone()));
     assert!(app.save_session());
-    assert!(!app.writes.has_creates(), "created");
-    let doc = app.journal.as_ref().unwrap().doc();
+    assert!(!app.doc.writes.has_creates(), "created");
+    let doc = app.doc.journal.as_ref().unwrap().doc();
     assert_eq!(doc.effective_group(note.parse().unwrap()), Some(group.parse().unwrap()));
     assert_eq!(doc.nodes[&group.parse().unwrap()].get(field::NAME), FieldValue::Str("G".into()));
     assert_eq!(shown(doc), snapshots(&app));
@@ -149,7 +149,7 @@ fn a_removed_node_is_deleted_and_a_respawning_one_kept() {
     assert!(app.save_session());
     assert!(!live_in_doc(&app, &note), "deleted");
     assert!(live_in_doc(&app, &tab), "kept while respawning");
-    assert!(!app.writes.has_deletes());
+    assert!(!app.doc.writes.has_deletes());
 }
 
 /// A queued create for an id the document holds as a tombstone is dropped (ids are never reused): here a tab
@@ -164,7 +164,7 @@ fn a_tombstone_is_never_recreated() {
     assert!(app.spawns.spawning.contains_key(&tab) && app.nodes.contains_key(&tab), "waking: shown and in flight");
     let mut other = Journal::open(&path, ActorId(2)).unwrap();
     other.begin().unwrap().commit(vec![OpBody::Delete { node: tab.parse().unwrap() }]).unwrap();
-    app.writes.queue_create(tab.parse().unwrap(), false);
+    app.doc.writes.queue_create(tab.parse().unwrap(), false);
     let ops = ops_of(&app);
     assert!(app.save_session());
     assert_eq!(ops_of(&app), ops, "no Create");
@@ -188,7 +188,7 @@ fn re_homing_out_of_a_deleted_group_is_not_a_move() {
     let ops = ops_of(&app);
     assert!(app.save_session());
     assert!(!app.nodes.contains_key(&group) && app.nodes.contains_key(&tab));
-    assert_eq!(app.mirror.group(&tab), None, "shown at the top");
+    assert_eq!(app.doc.mirror.group(&tab), None, "shown at the top");
     assert_eq!(ops_of(&app), ops, "nothing written");
 }
 
@@ -219,7 +219,7 @@ fn a_create_naming_a_node_deleted_by_the_same_save_writes_none() {
     assert!(!live_in_doc(&app, &opener) && !live_in_doc(&app, &group));
     assert!(live_in_doc(&app, &tab), "created from its spawn snapshot");
     assert_eq!(stored(&app, &tab, field::PARENT), FieldValue::Id(None));
-    assert_eq!(app.journal.as_ref().unwrap().doc().nodes[&tab.parse().unwrap()].group, None);
+    assert_eq!(app.doc.journal.as_ref().unwrap().doc().nodes[&tab.parse().unwrap()].group, None);
 }
 
 /// Random local edits through the app's writers (place, group, rename, type, close), each followed by one save:
@@ -283,7 +283,7 @@ fn random_edits_converge_in_one_save() {
             _ => {}
         }
         assert!(app.save_session());
-        let doc = app.journal.as_ref().unwrap().doc();
+        let doc = app.doc.journal.as_ref().unwrap().doc();
         assert_eq!(shown(doc), snapshots(&app), "the document shows the live graph");
         let live: BTreeMap<String, (Kind, Option<String>)> = doc
             .live()
@@ -324,7 +324,7 @@ fn a_failed_new_spawn_leaves_a_failed_card() {
         assert_eq!(tab.url, "https://a/");
         assert_eq!(app.card_kind(&id).map(|kind| kind.ty), Some(crate::store::model::TYPE_TAB));
         assert!(live_in_doc(&app, &id), "persisted, saved_first={saved_first}");
-        assert!(!app.writes.has_creates() && !app.writes.has_deletes());
+        assert!(!app.doc.writes.has_creates() && !app.doc.writes.has_deletes());
     }
 }
 
@@ -371,11 +371,11 @@ fn teardown_deletes_every_old_document_node_jars_included() {
         assert!(!live_in_doc(&app, old), "{old} deleted");
     }
     assert!(!live_in_doc(&app, &jar.to_string()), "the jar card goes with the rest");
-    let doc = app.journal.as_ref().unwrap().doc();
+    let doc = app.doc.journal.as_ref().unwrap().doc();
     let urls: Vec<FieldValue> =
         doc.live().filter(|(_, n)| n.kind() == Kind::Tab).map(|(_, n)| n.get(field::URL)).collect();
     assert_eq!(urls, [FieldValue::Str("https://new/".into())]);
-    assert!(!app.writes.has_deletes());
+    assert!(!app.doc.writes.has_deletes());
 }
 
 /// Another replica's delete removes the node here and queues nothing: the document already lacks it.
@@ -391,7 +391,7 @@ fn a_remote_removal_queues_no_delete() {
     for id in [note.parse().unwrap(), tab.parse().unwrap(), group.parse().unwrap(), jar] {
         app.apply_remote(vec![(id, Remote::Deleted)]);
         assert!(!app.nodes.contains_key(&id.to_string()) && !app.jar_defs().contains_key(&id), "{id} removed");
-        assert!(!app.writes.has_deletes(), "{id}: nothing queued");
+        assert!(!app.doc.writes.has_deletes(), "{id}: nothing queued");
     }
 }
 
@@ -415,7 +415,7 @@ fn a_crash_respawn_a_swap_and_a_reload_delete_nothing() {
     std::fs::write(&moved, b"[2]").unwrap();
     let path = moved.to_string_lossy().into_owned();
     app.reload_fetched_node(&json, crate::WebBody::File { kind: crate::content::ContentKind::Json, path });
-    assert!(!app.writes.has_deletes(), "nothing queued");
+    assert!(!app.doc.writes.has_deletes(), "nothing queued");
     assert!(app.save_session());
     for id in [&crashed, &swapped, &json] {
         assert!(live_in_doc(&app, id), "{id} kept");
@@ -436,8 +436,8 @@ fn a_download_is_created_once_it_completes() {
     };
     let dl = add(&mut app, Kind::Download, Runtime::Download(payload));
     assert!(app.save_session());
-    assert!(!app.journal.as_ref().unwrap().doc().nodes.contains_key(&dl.parse().unwrap()), "not yet");
-    assert_eq!(app.writes.life(dl.parse().unwrap()), Some(Life::Create), "still queued");
+    assert!(!app.doc.journal.as_ref().unwrap().doc().nodes.contains_key(&dl.parse().unwrap()), "not yet");
+    assert_eq!(app.doc.writes.life(dl.parse().unwrap()), Some(Life::Create), "still queued");
     app.nodes.get_mut(&dl).unwrap().runtime = Runtime::Download(DownloadPayload {
         path: "f.bin".into(),
         bytes_received: 2,
@@ -480,7 +480,7 @@ fn a_node_inserted_behind_the_queues_back_trips_the_invariant() {
     let id = app.alloc_node_id();
     let payload = Runtime::Note(NotePayload { text: "stray".into(), editing: false });
     // Behind `place_node` on purpose, so the mirror is given the type by hand: a stray node, not an untyped one.
-    app.mirror.set(&id, field::TYPE, FieldValue::Str(Kind::Note.type_str().unwrap().to_owned()));
+    app.doc.mirror.set(&id, field::TYPE, FieldValue::Str(Kind::Note.type_str().unwrap().to_owned()));
     app.nodes.insert(id, crate::GraphNode { runtime: payload });
     app.save_session();
 }
@@ -523,8 +523,8 @@ fn a_tabs_and_a_groups_jar_edge_project_to_fields_and_back() {
     ]);
     let app = app_with(&nodes);
     assert!(app.nodes[&id(1).to_string()].runtime.as_unloaded().is_some());
-    assert_eq!(app.mirror.jar(&id(1).to_string()), Some(jar));
-    assert_eq!(app.mirror.jar(&id(2).to_string()), Some(jar));
+    assert_eq!(app.doc.mirror.jar(&id(1).to_string()), Some(jar));
+    assert_eq!(app.doc.mirror.jar(&id(2).to_string()), Some(jar));
     assert_eq!(snapshots(&app), nodes, "the live payloads project back to the same fields");
 }
 
@@ -542,8 +542,8 @@ fn a_remote_jar_edit_updates_a_sleeping_tab_and_a_group() {
         (id(1), Remote::Shown(snap(Kind::Tab, tab_fields, None))),
         (id(2), Remote::Shown(snap(Kind::Group, group_fields, None))),
     ]);
-    assert_eq!(app.mirror.jar(&id(1).to_string()), Some(jar));
-    assert_eq!(app.mirror.jar(&id(2).to_string()), Some(jar));
+    assert_eq!(app.doc.mirror.jar(&id(1).to_string()), Some(jar));
+    assert_eq!(app.doc.mirror.jar(&id(2).to_string()), Some(jar));
 }
 
 #[test]
@@ -591,7 +591,7 @@ fn a_json_nodes_view_round_trips_through_the_store() {
     // Restoring those fields gives the same view back.
     let mut restored = App::default();
     restored.materialize(node.clone(), crate::store::model::TYPE_JSON, fields, None, None);
-    assert_eq!(restored.mirror.view(&node).unwrap().get("/users").unwrap().collapsed, Some(true));
+    assert_eq!(restored.doc.mirror.view(&node).unwrap().get("/users").unwrap().collapsed, Some(true));
 }
 
 #[test]
@@ -601,7 +601,7 @@ fn a_remote_view_change_updates_the_node_in_place() {
     let mut fields = snapshots(&app)[&id(1)].fields.clone();
     fields.insert(field::VIEW, FieldValue::Str(r#"{"":{"collapsed":true}}"#.into()));
     app.materialize(node.clone(), crate::store::model::TYPE_JSON, &fields, None, None);
-    assert_eq!(app.mirror.view(&node).unwrap().get("").unwrap().collapsed, Some(true));
+    assert_eq!(app.doc.mirror.view(&node).unwrap().get("").unwrap().collapsed, Some(true));
     let json = app.nodes[&node].as_json().unwrap();
     assert_eq!((&json.value, &json.path), (&value, &path), "only the view changed");
 }
@@ -614,7 +614,7 @@ fn materialize_keeps_the_stored_type_string() {
     let node = id(1).to_string();
     let fields = shared(Kind::Note, None, &[(field::TEXT, FieldValue::Str("n".into()))]).fields;
     app.materialize(node.clone(), "Text/Markdown", &fields, None, None);
-    assert_eq!(app.mirror.ty(&node), "Text/Markdown");
+    assert_eq!(app.doc.mirror.ty(&node), "Text/Markdown");
     assert_eq!(app.card_kind(&node).unwrap().ty, crate::store::model::TYPE_NOTE);
     assert_eq!(app.snapshot(id(1)).unwrap().ty, "Text/Markdown");
 }
@@ -729,16 +729,18 @@ fn a_remotely_removed_group_leaves_no_member_naming_it() {
     let inner = id(1).to_string();
     assert!(!app.nodes.contains_key(&inner) && !app.node_order.contains(&inner));
     let outer = Some(id(0).to_string());
-    assert_eq!(app.mirror.group(&id(2).to_string()), outer.as_deref());
-    assert_eq!(app.mirror.group(&local), outer.as_deref(), "the local-only member moves to the effective group");
+    assert_eq!(app.doc.mirror.group(&id(2).to_string()), outer.as_deref());
+    assert_eq!(app.doc.mirror.group(&local), outer.as_deref(), "the local-only member moves to the effective group");
     assert_eq!(app.current_group, outer, "the view leaves the removed level");
-    assert!(app.nodes.keys().all(|n| app.mirror.group(n) != Some(inner.as_str())));
+    assert!(app.nodes.keys().all(|n| app.doc.mirror.group(n) != Some(inner.as_str())));
 }
 
 /// A windowless app saving to `path` as `actor`. `pub(crate)`: also
 /// used by `main.rs`'s own windowless tests (e.g. `duplicate`'s).
 pub(crate) fn app_on(path: &std::path::Path, actor: u64) -> App {
-    App { journal: Some(Journal::open(path, ActorId(actor)).unwrap()), ..App::default() }
+    let mut app = App::default();
+    app.doc.journal = Some(Journal::open(path, ActorId(actor)).unwrap());
+    app
 }
 
 /// A node of `kind` at the top level with `runtime` as its live state; its type is seeded from `kind`.
@@ -762,7 +764,7 @@ pub(crate) fn remote_set(other: &mut Journal, node: &str, no: u32, value: FieldV
 
 /// `node`'s field `no` as the document stores it.
 pub(crate) fn stored(app: &App, node: &str, no: u32) -> FieldValue {
-    app.journal.as_ref().unwrap().doc().nodes[&node.parse().unwrap()].get(no)
+    app.doc.journal.as_ref().unwrap().doc().nodes[&node.parse().unwrap()].get(no)
 }
 
 /// Another replica sets `closed` on `node` (true closes, false reopens).
@@ -782,26 +784,26 @@ fn a_remote_close_hides_without_deleting_reparenting_or_releasing() {
     app.edit_parent(&outside, Some(tab.clone()));
     let _link = app.create_link(&inner, &outside);
     assert!(app.save_session());
-    let links_before: Vec<NodeId> = app.mirror.link_ids().collect();
+    let links_before: Vec<NodeId> = app.doc.mirror.link_ids().collect();
     let mut other = Journal::open(&path, ActorId(2)).unwrap();
     remote_close(&mut other, &g, true);
     remote_close(&mut other, &tab, true);
     assert!(app.save_session());
     for id in [&g, &inner, &tab] {
-        assert!(!app.nodes.contains_key(id) && !app.mirror.has(id), "{id} is hidden");
+        assert!(!app.nodes.contains_key(id) && !app.doc.mirror.has(id), "{id} is hidden");
         assert!(live_in_doc(&app, id), "{id} is still live in the document");
     }
-    assert_eq!(app.mirror.link_ids().collect::<Vec<_>>(), links_before, "the link to the outside node stays");
-    assert_eq!(app.mirror.parent(&outside), Some(tab.as_str()), "the child keeps its opened-from edge");
-    assert_eq!(app.hidden_local[&tab].zoom, Some(1.25), "the hidden tab's personal state is kept");
-    assert!(!app.writes.has_deletes(), "a hide queues no delete");
+    assert_eq!(app.doc.mirror.link_ids().collect::<Vec<_>>(), links_before, "the link to the outside node stays");
+    assert_eq!(app.doc.mirror.parent(&outside), Some(tab.as_str()), "the child keeps its opened-from edge");
+    assert_eq!(app.doc.hidden_local[&tab].zoom, Some(1.25), "the hidden tab's personal state is kept");
+    assert!(!app.doc.writes.has_deletes(), "a hide queues no delete");
     // The clear brings them back, the group before its member, the tab with its zoom.
     remote_close(&mut other, &g, false);
     remote_close(&mut other, &tab, false);
     assert!(app.save_session());
-    assert_eq!(app.mirror.group(&inner), Some(g.as_str()));
+    assert_eq!(app.doc.mirror.group(&inner), Some(g.as_str()));
     assert!(matches!(&app.nodes[&tab].runtime, Runtime::Unloaded(t) if t.zoom_factor == 1.25));
-    assert!(!app.hidden_local.contains_key(&tab));
+    assert!(!app.doc.hidden_local.contains_key(&tab));
 }
 
 #[test]
@@ -847,11 +849,11 @@ fn hidden_personal_state_survives_a_launch_and_a_delete_drops_it() {
     drop(app);
     let mut back = app_on(&path, 1);
     back.restore_session();
-    assert_eq!(back.hidden_local.get(&tab).and_then(|l| l.zoom), Some(1.5), "read back for the hidden node");
+    assert_eq!(back.doc.hidden_local.get(&tab).and_then(|l| l.zoom), Some(1.5), "read back for the hidden node");
     let node = tab.parse().unwrap();
     other.begin().unwrap().commit(vec![OpBody::Delete { node }]).unwrap();
     assert!(back.save_session());
-    assert!(!back.hidden_local.contains_key(&tab), "the Delete drops it (forget_deleted)");
+    assert!(!back.doc.hidden_local.contains_key(&tab), "the Delete drops it (forget_deleted)");
 }
 
 #[test]
@@ -878,9 +880,9 @@ fn teardown_forgets_hidden_personal_state() {
     remote_close(&mut other, &tab, true);
     assert!(app.save_session());
     app.teardown_running_session();
-    assert!(app.hidden_local.is_empty());
+    assert!(app.doc.hidden_local.is_empty());
     assert!(
-        app.writes.life(tab.parse().unwrap()) == Some(Life::Delete),
+        app.doc.writes.life(tab.parse().unwrap()) == Some(Life::Delete),
         "the closed node is deleted with the session (D12)"
     );
 }
@@ -900,7 +902,7 @@ fn closing_and_reopening_a_tab_while_it_wakes_shows_it_when_the_wake_lands() {
     assert!(!app.nodes.contains_key(&tab));
     let id: NodeId = tab.parse().unwrap();
     app.reopen_node(id);
-    assert!(app.journal.as_ref().unwrap().doc().is_shown(id), "open in the document");
+    assert!(app.doc.journal.as_ref().unwrap().doc().is_shown(id), "open in the document");
     fail_spawns(&mut app);
     assert!(app.nodes.contains_key(&tab), "shown once the wake landed");
     assert!(app.nodes.contains_key(&other));
@@ -911,7 +913,7 @@ fn closing_and_reopening_a_tab_while_it_wakes_shows_it_when_the_wake_lands() {
     app.close_node(&other);
     fail_spawns(&mut app);
     assert!(!app.nodes.contains_key(&other));
-    assert!(app.journal.as_ref().unwrap().doc().nodes[&other.parse::<NodeId>().unwrap()].closed());
+    assert!(app.doc.journal.as_ref().unwrap().doc().nodes[&other.parse::<NodeId>().unwrap()].closed());
 }
 
 /// Defect 2: the same for a tab mid-respawn (no `nodes` entry), where the close parks `Remote::Hidden`: a reopen
@@ -940,7 +942,7 @@ fn closing_and_reopening_a_tab_mid_respawn_is_not_hidden_again_by_the_landing() 
     assert!(matches!(app.spawns.remote_in_flight.get(&tab), Some(Remote::Shown(_))), "the reopen supersedes it");
     fail_spawns(&mut app);
     assert!(app.nodes.contains_key(&tab), "shown, not hidden again by the landing");
-    assert!(!app.journal.as_ref().unwrap().doc().nodes[&id].closed());
+    assert!(!app.doc.journal.as_ref().unwrap().doc().nodes[&id].closed());
 }
 
 #[test]
@@ -966,10 +968,10 @@ fn a_remote_edit_to_one_field_keeps_an_unsaved_local_edit_to_another() {
     // The remote round applies, then the next round commits.
     assert!(app.save_session());
     let live = &app.nodes[&note];
-    assert_eq!(app.mirror.color(&note), Some(egui::Color32::RED));
+    assert_eq!(app.doc.mirror.color(&note), Some(egui::Color32::RED));
     assert!(matches!(&live.runtime, Runtime::Note(n) if n.text == "typing"));
     assert_eq!(stored(&app, &note, field::TEXT), FieldValue::Str("typing".into()));
-    assert!(app.mirror.pinned(&tab));
+    assert!(app.doc.mirror.pinned(&tab));
     assert!(matches!(&app.nodes[&tab].runtime, Runtime::Unloaded(t) if t.url == "https://u1/"));
     assert_eq!(stored(&app, &tab, field::URL), FieldValue::Str("https://u0/".into()));
 
@@ -977,7 +979,7 @@ fn a_remote_edit_to_one_field_keeps_an_unsaved_local_edit_to_another() {
     remote_set(&mut other, &note, field::TEXT, FieldValue::Str("theirs".into()));
     assert!(app.save_session());
     assert!(matches!(&app.nodes[&note].runtime, Runtime::Note(n) if n.text == "theirs"));
-    assert_eq!(app.mirror.color(&note), Some(egui::Color32::RED));
+    assert_eq!(app.doc.mirror.color(&note), Some(egui::Color32::RED));
 }
 
 /// The note's text box has focus and holds `text` (2b-4 Ruling 6: the payload is the edit buffer).
@@ -998,19 +1000,19 @@ fn typing_commits_on_blur_and_at_save() {
     let mut app = app_on(&path, 1);
     let note = add(&mut app, Kind::Note, Runtime::Note(NotePayload { text: "v1".into(), editing: false }));
     assert!(app.save_session());
-    assert_eq!(app.mirror.text(&note), "v1");
+    assert_eq!(app.doc.mirror.text(&note), "v1");
     type_into(&mut app, &note, "v2");
-    assert_eq!(app.mirror.text(&note), "v1", "no mirror write per keystroke");
+    assert_eq!(app.doc.mirror.text(&note), "v1", "no mirror write per keystroke");
     assert_eq!(app.note_text(&note), "v2", "the card shows the buffer while it is typed in");
     assert!(app.save_session());
     assert_eq!(stored(&app, &note, field::TEXT), FieldValue::Str("v2".into()), "a save while editing commits it");
-    assert_eq!(app.mirror.text(&note), "v2");
+    assert_eq!(app.doc.mirror.text(&note), "v2");
     assert!(app.nodes[&note].as_note().unwrap().editing, "a save doesn't end the edit");
     type_into(&mut app, &note, "v3");
     app.blur_note(&note);
     assert!(!app.nodes[&note].as_note().unwrap().editing);
     assert_eq!(stored(&app, &note, field::TEXT), FieldValue::Str("v3".into()), "the blur commits it");
-    assert_eq!((app.mirror.text(&note), app.note_text(&note)), ("v3", "v3"));
+    assert_eq!((app.doc.mirror.text(&note), app.note_text(&note)), ("v3", "v3"));
 }
 
 /// Ruling 7: a remote text change that arrives while the note is typed in leaves the box alone and is held. At the
@@ -1028,17 +1030,17 @@ fn a_remote_text_change_is_held_while_the_note_is_typed_in() {
         remote_set(&mut other, &note, field::COLOR, red());
         assert!(app.save_session());
         assert_eq!(buffer(&app, &note), "v1", "the box is not overwritten");
-        assert_eq!(app.mirror.text(&note), "v1", "held");
-        assert_eq!(app.writes.held_text.get(&note).map(String::as_str), Some("theirs"));
-        assert_eq!(app.mirror.color(&note), Some(egui::Color32::RED), "their other field arrives");
+        assert_eq!(app.doc.mirror.text(&note), "v1", "held");
+        assert_eq!(app.doc.writes.held_text.get(&note).map(String::as_str), Some("theirs"));
+        assert_eq!(app.doc.mirror.color(&note), Some(egui::Color32::RED), "their other field arrives");
         if typed {
             type_into(&mut app, &note, "mine");
         }
         app.blur_note(&note);
         let want = if typed { "mine" } else { "theirs" };
-        assert_eq!((app.mirror.text(&note), buffer(&app, &note).as_str()), (want, want), "typed: {typed}");
+        assert_eq!((app.doc.mirror.text(&note), buffer(&app, &note).as_str()), (want, want), "typed: {typed}");
         assert_eq!(stored(&app, &note, field::TEXT), FieldValue::Str(want.into()), "typed: {typed}");
-        assert!(app.writes.held_text.is_empty(), "typed: {typed}");
+        assert!(app.doc.writes.held_text.is_empty(), "typed: {typed}");
     }
 }
 
@@ -1058,13 +1060,13 @@ fn a_held_text_change_follows_the_order_of_the_commits() {
     remote_set(&mut other, &note, field::TEXT, FieldValue::Str("before".into()));
     assert!(app.save_session());
     assert_eq!(stored(&app, &note, field::TEXT), FieldValue::Str("mine".into()));
-    assert!(app.writes.held_text.is_empty(), "held behind the pending edit, not remembered");
+    assert!(app.doc.writes.held_text.is_empty(), "held behind the pending edit, not remembered");
     // Their change after that commit, nothing typed since: theirs applies at the blur.
     remote_set(&mut other, &note, field::TEXT, FieldValue::Str("after".into()));
     assert!(app.save_session());
     assert_eq!(buffer(&app, &note), "mine");
     app.blur_note(&note);
-    assert_eq!((app.mirror.text(&note), buffer(&app, &note).as_str()), ("after", "after"));
+    assert_eq!((app.doc.mirror.text(&note), buffer(&app, &note).as_str()), ("after", "after"));
     assert_eq!(stored(&app, &note, field::TEXT), FieldValue::Str("after".into()));
 }
 
@@ -1080,13 +1082,13 @@ fn a_held_remote_text_is_dropped_by_a_later_local_commit() {
     type_into(&mut app, &note, "v1");
     remote_set(&mut other, &note, field::TEXT, FieldValue::Str("theirs".into()));
     assert!(app.save_session());
-    assert_eq!(app.writes.held_text.get(&note).map(String::as_str), Some("theirs"), "held, nothing typed yet");
+    assert_eq!(app.doc.writes.held_text.get(&note).map(String::as_str), Some("theirs"), "held, nothing typed yet");
     type_into(&mut app, &note, "mine");
     assert!(app.save_session());
     assert_eq!(stored(&app, &note, field::TEXT), FieldValue::Str("mine".into()));
-    assert!(app.writes.held_text.is_empty(), "the commit came after theirs");
+    assert!(app.doc.writes.held_text.is_empty(), "the commit came after theirs");
     app.blur_note(&note);
-    assert_eq!((app.mirror.text(&note), buffer(&app, &note).as_str()), ("mine", "mine"));
+    assert_eq!((app.doc.mirror.text(&note), buffer(&app, &note).as_str()), ("mine", "mine"));
     assert_eq!(stored(&app, &note, field::TEXT), FieldValue::Str("mine".into()));
 }
 
@@ -1100,9 +1102,9 @@ fn a_remote_text_change_updates_an_idle_note() {
     let mut other = Journal::open(&path, ActorId(2)).unwrap();
     remote_set(&mut other, &note, field::TEXT, FieldValue::Str("theirs".into()));
     assert!(app.save_session());
-    assert_eq!((app.mirror.text(&note), app.note_text(&note)), ("theirs", "theirs"));
+    assert_eq!((app.doc.mirror.text(&note), app.note_text(&note)), ("theirs", "theirs"));
     assert_eq!(buffer(&app, &note), "theirs");
-    assert!(app.writes.held_text.is_empty());
+    assert!(app.doc.writes.held_text.is_empty());
 }
 
 /// Ruling 6: a note can reach 1 MB, so the per-frame reader borrows: the mirror's own string when idle, the box's
@@ -1113,8 +1115,8 @@ fn a_large_note_edit_does_not_clone_per_frame() {
     let text = "x".repeat(1 << 20);
     let note = add(&mut app, Kind::Note, Runtime::Note(NotePayload { text, editing: false }));
     let idle: &str = app.note_text(&note);
-    assert_eq!(idle.as_ptr(), app.mirror.text(&note).as_ptr(), "idle: the mirror's string");
-    assert_eq!(app.mirror.text(&note).as_ptr(), app.mirror.text(&note).as_ptr(), "`Mirror::text` borrows");
+    assert_eq!(idle.as_ptr(), app.doc.mirror.text(&note).as_ptr(), "idle: the mirror's string");
+    assert_eq!(app.doc.mirror.text(&note).as_ptr(), app.doc.mirror.text(&note).as_ptr(), "`Mirror::text` borrows");
     app.nodes.get_mut(&note).unwrap().as_note_mut().unwrap().editing = true;
     let editing: &str = app.note_text(&note);
     assert_eq!(editing.as_ptr(), app.nodes[&note].as_note().unwrap().text.as_ptr(), "editing: the buffer");
@@ -1130,13 +1132,13 @@ fn a_rename_saves_and_a_remote_rename_reaches_the_mirror() {
     assert!(app.save_session());
     assert_eq!(stored(&app, &g, field::NAME), FieldValue::Str("G".into()), "a new group's Create carries its name");
     app.apply_node_action(&egui::Context::default(), &g, NodeAction::CommitRename("Errands".into()));
-    assert_eq!(app.mirror.name(&g), "Errands", "the mirror shows it at once");
+    assert_eq!(app.doc.mirror.name(&g), "Errands", "the mirror shows it at once");
     assert!(app.save_session());
     assert_eq!(stored(&app, &g, field::NAME), FieldValue::Str("Errands".into()));
     let mut other = Journal::open(&path, ActorId(2)).unwrap();
     remote_set(&mut other, &g, field::NAME, FieldValue::Str("Theirs".into()));
     assert!(app.save_session());
-    assert_eq!(app.mirror.name(&g), "Theirs");
+    assert_eq!(app.doc.mirror.name(&g), "Theirs");
     assert_eq!(stored(&app, &g, field::NAME), FieldValue::Str("Theirs".into()), "not diffed back");
 }
 
@@ -1151,7 +1153,7 @@ fn a_pending_local_rename_wins_over_a_remote_one() {
     app.edit_name(&g, "mine");
     remote_set(&mut other, &g, field::NAME, FieldValue::Str("theirs".into()));
     assert!(app.save_session());
-    assert_eq!(app.mirror.name(&g), "mine");
+    assert_eq!(app.doc.mirror.name(&g), "mine");
     assert_eq!(stored(&app, &g, field::NAME), FieldValue::Str("mine".into()));
 }
 
@@ -1174,13 +1176,13 @@ fn a_json_view_edit_saves_and_a_remote_one_refreshes_the_decoded_cache() {
     assert!(app.save_session());
     let users = r#"{"/users":{"collapsed":true}}"#;
     app.edit_view(&node, users);
-    assert_eq!(app.mirror.view(&node).and_then(|v| v.get("/users")).and_then(|o| o.collapsed), Some(true));
+    assert_eq!(app.doc.mirror.view(&node).and_then(|v| v.get("/users")).and_then(|o| o.collapsed), Some(true));
     assert!(app.save_session());
     assert_eq!(stored(&app, &node, field::VIEW), FieldValue::Str(users.into()));
     let mut other = Journal::open(&path, ActorId(2)).unwrap();
     remote_set(&mut other, &node, field::VIEW, FieldValue::Str(r#"{"":{"collapsed":true}}"#.into()));
     assert!(app.save_session());
-    let view = app.mirror.view(&node).expect("a view");
+    let view = app.doc.mirror.view(&node).expect("a view");
     assert_eq!(view.get("").and_then(|o| o.collapsed), Some(true), "the cache shows theirs");
     assert!(view.get("/users").is_none(), "and only theirs");
 }
@@ -1267,7 +1269,7 @@ fn a_drag_release_saves_the_dropped_position() {
     assert!(app.save_session());
     assert_eq!(stored(&app, &note, field::POS), FieldValue::Pos(10.0, 10.0), "a drag in progress is not saved");
     app.release_drag();
-    assert_eq!(app.mirror.pos(&note), Some(egui::vec2(50.0, 10.0)), "shown at once");
+    assert_eq!(app.doc.mirror.pos(&note), Some(egui::vec2(50.0, 10.0)), "shown at once");
     assert!(app.save_session());
     assert_eq!(stored(&app, &note, field::POS), FieldValue::Pos(50.0, 10.0));
 
@@ -1275,10 +1277,10 @@ fn a_drag_release_saves_the_dropped_position() {
     assert_ne!(app.layout_pos(&note), egui::vec2(50.0, 10.0), "the overlapping cards were pushed apart");
     assert_ne!(app.layout_pos(&other), egui::vec2(52.0, 10.0));
     assert!(app.save_session());
-    assert!(!app.writes.has_fields());
+    assert!(!app.doc.writes.has_fields());
     assert_eq!(stored(&app, &note, field::POS), FieldValue::Pos(50.0, 10.0), "physics never writes the document");
     assert_eq!(stored(&app, &other, field::POS), FieldValue::Pos(52.0, 10.0));
-    assert_eq!(app.mirror.pos(&note), Some(egui::vec2(50.0, 10.0)));
+    assert_eq!(app.doc.mirror.pos(&note), Some(egui::vec2(50.0, 10.0)));
 }
 
 /// Ruling 3: a new node's `Create` carries where it was placed, not where a settle moved it before the first save.
@@ -1311,10 +1313,10 @@ fn a_local_pos_edit_wins_over_a_remote_one() {
     remote_set(&mut other, &note, field::COLOR, red());
     // The remote round applies, then the next round commits.
     assert!(app.save_session());
-    assert_eq!(app.mirror.pos(&note), Some(egui::vec2(90.0, 20.0)));
+    assert_eq!(app.doc.mirror.pos(&note), Some(egui::vec2(90.0, 20.0)));
     assert_eq!(stored(&app, &note, field::POS), FieldValue::Pos(90.0, 20.0));
     assert_eq!(app.layout_pos(&note), egui::vec2(90.0, 20.0), "not snapped to theirs");
-    assert_eq!(app.mirror.color(&note), Some(egui::Color32::RED), "their other field arrives");
+    assert_eq!(app.doc.mirror.color(&note), Some(egui::Color32::RED), "their other field arrives");
 }
 
 /// Ruling 4: another replica's pos reaches the mirror and snaps the layout, at rest; nothing is written back.
@@ -1330,10 +1332,10 @@ fn a_remote_pos_snaps_the_layout_and_zeroes_its_velocity() {
     let pos_stamp = |doc: &Doc| doc.nodes[&note.parse().unwrap()].fields[&field::POS].stamp;
     let theirs = pos_stamp(other.doc());
     assert!(app.save_session());
-    assert_eq!(app.mirror.pos(&note), Some(egui::vec2(5.0, 6.0)));
+    assert_eq!(app.doc.mirror.pos(&note), Some(egui::vec2(5.0, 6.0)));
     assert_eq!(app.layout[&note], crate::Layout { pos: egui::vec2(5.0, 6.0), vel: egui::Vec2::ZERO });
     assert!(app.save_session());
-    assert_eq!(pos_stamp(app.journal.as_ref().unwrap().doc()), theirs, "nothing written back");
+    assert_eq!(pos_stamp(app.doc.journal.as_ref().unwrap().doc()), theirs, "nothing written back");
 }
 
 /// Ruling 4: a card the user is dragging is not snapped by a remote pos; its release then wins.
@@ -1349,7 +1351,7 @@ fn a_remote_pos_does_not_snap_a_node_being_dragged() {
     remote_set(&mut other, &a, field::POS, FieldValue::Pos(5.0, 6.0));
     remote_set(&mut other, &b, field::POS, FieldValue::Pos(7.0, 8.0));
     assert!(app.save_session());
-    assert_eq!(app.mirror.pos(&a), Some(egui::vec2(5.0, 6.0)), "the document pos is theirs until the release");
+    assert_eq!(app.doc.mirror.pos(&a), Some(egui::vec2(5.0, 6.0)), "the document pos is theirs until the release");
     assert_eq!(app.layout_pos(&a), egui::vec2(10.0, 70.0), "the dragged card stays under the pointer");
     assert_eq!(app.layout_pos(&b), egui::vec2(300.0, 70.0), "and so does the rest of the selection");
     app.release_drag();
@@ -1441,7 +1443,7 @@ fn a_new_tab_lands_at_its_spawn_position_in_the_layout_and_the_document() {
     assert_eq!(stored(&app, &t, field::POS), FieldValue::Pos(30.0, 40.0));
     fail_spawns(&mut app);
     assert_eq!(app.layout_pos(&t), at);
-    assert_eq!(app.mirror.pos(&t), Some(at));
+    assert_eq!(app.doc.mirror.pos(&t), Some(at));
 }
 
 /// Ruling 4, restore: the mirror holds the document pos and the layout the personal one, and the next save writes
@@ -1460,9 +1462,9 @@ fn a_restart_places_a_node_at_its_personal_position_while_the_mirror_holds_the_d
     let mut app = app_on(&path, 2);
     assert!(app.restore_session());
     assert_eq!(app.layout_pos(&note), egui::vec2(70.0, 80.0));
-    assert_eq!(app.mirror.pos(&note), Some(egui::vec2(10.0, 20.0)));
+    assert_eq!(app.doc.mirror.pos(&note), Some(egui::vec2(10.0, 20.0)));
     assert!(app.save_session());
-    assert!(!app.writes.has_fields());
+    assert!(!app.doc.writes.has_fields());
     assert_eq!(stored(&app, &note, field::POS), FieldValue::Pos(10.0, 20.0));
 }
 
@@ -1478,7 +1480,7 @@ fn a_read_only_store_saves_nothing() {
     let mut app = app_on(&path, 2);
     add(&mut app, Kind::Note, Runtime::Note(NotePayload { text: "n".into(), editing: false }));
     assert!(!app.save_session());
-    assert_eq!(app.journal.as_ref().unwrap().doc().live().count(), 0);
+    assert_eq!(app.doc.journal.as_ref().unwrap().doc().live().count(), 0);
 }
 
 #[test]
@@ -1564,7 +1566,7 @@ fn content_nodes_keep_their_source_url() {
     let id = app.alloc_node_id();
     let payload = NotePayload { text: "hi".into(), editing: false };
     app.insert_placeholder_node(id.clone(), egui::Vec2::ZERO, Kind::Note, Runtime::Note(payload));
-    app.mirror.set(&id, field::URL, FieldValue::Str("https://x.test/a.txt".into()));
+    app.doc.mirror.set(&id, field::URL, FieldValue::Str("https://x.test/a.txt".into()));
     let shared = snapshots(&app);
     let fields = &shared[&id.parse().unwrap()].fields;
     assert_eq!(fields.get(&field::URL), Some(&FieldValue::Str("https://x.test/a.txt".into())));
@@ -1584,7 +1586,7 @@ fn a_completed_download_keeps_its_url() {
     let payload =
         DownloadPayload { path: "f.bin".into(), bytes_received: 0, total_bytes: None, completed: true, failed: false };
     app.insert_placeholder_node(id.clone(), egui::Vec2::ZERO, Kind::Download, Runtime::Download(payload));
-    app.mirror.set(&id, field::URL, FieldValue::Str("https://x.test/f.bin".into()));
+    app.doc.mirror.set(&id, field::URL, FieldValue::Str("https://x.test/f.bin".into()));
     assert!(app.save_session());
     app.close_store();
     let mut restored = app_on(&path, 2);
@@ -1632,13 +1634,13 @@ fn an_opened_from_link_survives_a_restart_on_every_kind_that_has_one() {
     let mut restored = app_on(&path, 2);
     assert!(restored.restore_session());
     for id in [&download, &note, &tab] {
-        assert_eq!(restored.mirror.parent(id), Some(opener.as_str()), "{id}");
+        assert_eq!(restored.doc.mirror.parent(id), Some(opener.as_str()), "{id}");
     }
     // Another replica relinking a download applies here too.
     let mut other = Journal::open(&path, ActorId(3)).unwrap();
     remote_set(&mut other, &download, field::PARENT, FieldValue::Id(Some(tab.parse().unwrap())));
     assert!(restored.save_session());
-    assert_eq!(restored.mirror.parent(&download), Some(tab.as_str()));
+    assert_eq!(restored.doc.mirror.parent(&download), Some(tab.as_str()));
 }
 
 /// Image, PDF and JSON cards keep their "opened from" link across a restart, and so does a tab opened from a
@@ -1672,11 +1674,11 @@ fn an_opened_from_link_survives_a_restart_on_file_cards_and_a_tab_opened_from_on
     let mut restored = app_on(&path, 2);
     assert!(restored.restore_session());
     for id in [&image, &pdf, &json] {
-        assert_eq!(restored.mirror.parent(id), Some(opener.as_str()), "{id}");
+        assert_eq!(restored.doc.mirror.parent(id), Some(opener.as_str()), "{id}");
     }
     assert!(restored.nodes[&image].as_image().is_some() && restored.nodes[&json].as_json().is_some());
     assert!(restored.nodes[&pdf].as_pdf().is_some());
-    assert_eq!(restored.mirror.parent(&tab), Some(image.as_str()), "a tab opened from an image card");
+    assert_eq!(restored.doc.mirror.parent(&tab), Some(image.as_str()), "a tab opened from an image card");
 }
 
 /// A session saved by a build that wrote no `parent` for a download loads unchanged: no link, nothing lost.
@@ -1701,11 +1703,11 @@ fn an_older_sessions_download_without_a_parent_loads_unchanged() {
     let mut app = app_on(&path, 1);
     assert!(app.restore_session());
     let restored = &app.nodes[&node.to_string()];
-    assert_eq!(app.mirror.parent(&node.to_string()), None);
+    assert_eq!(app.doc.mirror.parent(&node.to_string()), None);
     assert!(restored.as_download().is_some());
     assert_eq!(app.copyable_url(&node.to_string()), Some("https://x.test/f.bin"));
     assert_eq!(app.layout_pos(&node.to_string()), egui::vec2(1.0, 2.0));
-    assert_eq!(app.mirror.pos(&node.to_string()), Some(egui::vec2(1.0, 2.0)));
+    assert_eq!(app.doc.mirror.pos(&node.to_string()), Some(egui::vec2(1.0, 2.0)));
     // No link encodes as the absent register, so a save has nothing to write back.
     let ops = ops_of(&app);
     assert!(app.save_session());
@@ -1785,7 +1787,7 @@ fn closing_an_unloaded_tab_keeps_its_childrens_edge() {
     app.edit_parent(&leaf, Some(mid.clone()));
     app.close_node(&mid);
     assert!(!app.nodes.contains_key(&mid));
-    assert_eq!(app.mirror.parent(&leaf), Some(mid.as_str()), "the edge stays: mid is closed, not gone");
+    assert_eq!(app.doc.mirror.parent(&leaf), Some(mid.as_str()), "the edge stays: mid is closed, not gone");
     assert_eq!(app.opened_from(&leaf), None, "and reads as none while its parent is closed");
     app.reopen_node(mid.parse().unwrap());
     assert_eq!(app.opened_from(&leaf), Some(mid.as_str()), "and is back after a reopen");
@@ -1886,7 +1888,7 @@ fn tab_lists_include_sleeping_tabs() {
     assert_eq!(app.test_spawns.len(), 2);
     assert_eq!(app.tabs_at_current_level(), [a.clone(), b.clone()]);
     app.set_all_pinned(true);
-    assert!(app.mirror.pinned(&a) && app.mirror.pinned(&b));
+    assert!(app.doc.mirror.pinned(&a) && app.doc.mirror.pinned(&b));
     app.close_all_at_current_level();
     assert!(app.nodes.is_empty());
 }
@@ -1924,7 +1926,7 @@ fn closing_a_tab_while_it_wakes_deletes_it_from_the_store() {
     // Deliver the parked wake's result -- a failed one, the only kind a
     // unit test can produce (no fake `ViewTab` for a success).
     fail_spawns(&mut app);
-    let still_live = app.journal.as_ref().unwrap().doc().live().any(|(id, _)| id.to_string() == tab);
+    let still_live = app.doc.journal.as_ref().unwrap().doc().live().any(|(id, _)| id.to_string() == tab);
     assert!(!still_live, "should have been deleted once the wake landed on a closed tab");
 }
 
@@ -2017,14 +2019,14 @@ fn toggle_pin_works_on_any_node() {
     let group = add_group(&mut app, "g");
     let tab = add(&mut app, Kind::Tab, sleeping_tab("https://s/", ""));
     for id in [&group, &tab] {
-        assert!(!app.mirror.pinned(id));
+        assert!(!app.doc.mirror.pinned(id));
         app.toggle_pin(id);
-        assert!(app.mirror.pinned(id), "{id} pinned");
+        assert!(app.doc.mirror.pinned(id), "{id} pinned");
         app.toggle_pin(id);
-        assert!(!app.mirror.pinned(id), "{id} unpinned");
+        assert!(!app.doc.mirror.pinned(id), "{id} unpinned");
     }
     app.toggle_pin("no-such-node");
-    assert!(!app.mirror.pinned("no-such-node"));
+    assert!(!app.doc.mirror.pinned("no-such-node"));
 }
 
 /// Fails every spawn parked in `test_spawns`, as a missing engine would.
@@ -2086,7 +2088,7 @@ fn a_repeat_failure_refreshes_one_card_and_a_new_url_adds_one() {
     fail_spawns(&mut app);
     assert_eq!(failed_cards(&app).len(), 1, "the same intent is one card");
     assert!(app.save_session());
-    let doc = app.journal.as_ref().unwrap().doc();
+    let doc = app.doc.journal.as_ref().unwrap().doc();
     assert_eq!(doc.live().count(), 1, "and one document node");
     app.spawn_tab_at("https://b/", egui::Vec2::ZERO, None, None);
     fail_spawns(&mut app);
@@ -2121,7 +2123,7 @@ fn a_successful_spawn_clears_failed_cards_for_its_url() {
     assert!(app.nodes[&left[0]].as_unloaded().unwrap().url == "https://b/");
     assert!(app.nodes.contains_key(&landed));
     assert!(!live_in_doc(&app, &stale), "the stale card is deleted in the document");
-    let closed = app.journal.as_ref().unwrap().doc().closed_roots();
+    let closed = app.doc.journal.as_ref().unwrap().doc().closed_roots();
     assert!(closed.is_empty(), "and not in the history");
 }
 
@@ -2150,7 +2152,7 @@ fn clearing_failed_cards_does_not_save_before_a_parked_remote_delete_lands() {
     let id = app.spawn_tab_at("https://a/", egui::Vec2::ZERO, None, None);
     // The failed twin is not refreshed here: the spawn is still in flight, so it is its own node.
     assert!(app.save_session());
-    assert!(app.journal.as_ref().unwrap().doc().nodes.contains_key(&id.parse().unwrap()), "the spawn is committed");
+    assert!(app.doc.journal.as_ref().unwrap().doc().nodes.contains_key(&id.parse().unwrap()), "the spawn is committed");
     let mut other = Journal::open(&path, ActorId(2)).unwrap();
     other.begin().unwrap().commit(vec![OpBody::Delete { node: id.parse().unwrap() }]).unwrap();
     assert!(app.save_session());
@@ -2168,7 +2170,7 @@ fn clearing_failed_cards_does_not_save_before_a_parked_remote_delete_lands() {
         seed_clears: None,
     });
     assert!(app.save_session());
-    let doc = app.journal.as_ref().unwrap().doc();
+    let doc = app.doc.journal.as_ref().unwrap().doc();
     assert!(!app.nodes.contains_key(&id), "the remotely deleted landing is gone");
     assert!(!app.nodes.contains_key(&card), "the failed card was cleared");
     assert_eq!(doc.live().count(), 0, "the document agrees");
@@ -2216,12 +2218,12 @@ fn a_jar_def_is_saved_as_a_jar_node_and_survives_later_saves() {
     add(&mut app, Kind::Tab, sleeping_tab("https://a.com/", "A"));
     let jar = add_jar(&mut app, "Work");
     app.save_session();
-    let doc = app.journal.as_ref().unwrap().doc();
+    let doc = app.doc.journal.as_ref().unwrap().doc();
     let node = doc.nodes.get(&jar).filter(|n| n.is_live()).expect("jar node created");
     assert_eq!(node.kind(), Kind::Jar);
     assert_eq!(fields_of(node).get(&field::NAME), Some(&FieldValue::Str("Work".into())));
     app.save_session();
-    assert!(app.journal.as_ref().unwrap().doc().nodes[&jar].is_live(), "a second save must not delete it");
+    assert!(app.doc.journal.as_ref().unwrap().doc().nodes[&jar].is_live(), "a second save must not delete it");
     assert!(app.nodes.contains_key(&jar.to_string()), "a jar is a card");
 }
 
@@ -2254,7 +2256,7 @@ fn a_session_with_only_jars_still_restores_them() {
     assert!(!back.restore_session(), "no graph node: a fresh start");
     assert_eq!(back.jar_defs()[&jar].name, "Work", "but the jar is kept, so the next save keeps it");
     back.save_session();
-    assert!(back.journal.as_ref().unwrap().doc().nodes[&jar].is_live());
+    assert!(back.doc.journal.as_ref().unwrap().doc().nodes[&jar].is_live());
 }
 
 /// Final review M1: a jar deleted here whose delete is not saved yet must not come back (nameless, from an
@@ -2275,8 +2277,8 @@ fn a_remote_edit_does_not_bring_back_a_jar_deleted_here() {
         app.remove_node(&jar.to_string());
         assert!(app.save_session());
         assert!(!app.jar_defs().contains_key(&jar), "field {no}: deleted here, not recreated");
-        assert_eq!(app.mirror.get(&jar.to_string(), field::NAME), FieldValue::Str(String::new()), "field {no}");
-        assert!(!app.journal.as_ref().unwrap().doc().nodes[&jar].is_live(), "field {no}: the delete was saved");
+        assert_eq!(app.doc.mirror.get(&jar.to_string(), field::NAME), FieldValue::Str(String::new()), "field {no}");
+        assert!(!app.doc.journal.as_ref().unwrap().doc().nodes[&jar].is_live(), "field {no}: the delete was saved");
     }
 }
 
@@ -2299,9 +2301,9 @@ fn a_remote_edit_does_not_bring_back_a_node_closed_here() {
     for id in [&note, &tab] {
         assert!(!app.nodes.contains_key(id), "{id}: closed here, not shown again");
         assert!(!live_in_doc(&app, id), "{id}: the delete was saved");
-        assert!(!app.mirror.has(id), "{id}: nothing of it kept");
+        assert!(!app.doc.mirror.has(id), "{id}: nothing of it kept");
     }
-    assert!(!app.writes.has_deletes());
+    assert!(!app.doc.writes.has_deletes());
 }
 
 /// `queue_create` checks the document eagerly: an id it already has an entry for (live, or a tombstone) is not
@@ -2313,19 +2315,19 @@ fn queue_create_skips_an_id_the_document_already_has() {
     let mut app = app_on(&temp_dir("queue-create-eager").join("session.mnf"), 1);
     let note = add(&mut app, Kind::Note, Runtime::Note(NotePayload { text: "n".into(), editing: false }));
     let id: NodeId = note.parse().unwrap();
-    assert_eq!(app.writes.creates().collect::<BTreeSet<_>>(), BTreeSet::from([id]), "a new node is queued");
+    assert_eq!(app.doc.writes.creates().collect::<BTreeSet<_>>(), BTreeSet::from([id]), "a new node is queued");
     assert!(app.save_session());
     app.queue_create(&note);
-    assert!(!app.writes.has_creates(), "live in the document: not queued again");
+    assert!(!app.doc.writes.has_creates(), "live in the document: not queued again");
     app.queue_delete(&note);
     app.queue_create(&note);
-    assert!(!app.writes.has_deletes(), "shown again: the delete is withdrawn");
+    assert!(!app.doc.writes.has_deletes(), "shown again: the delete is withdrawn");
     app.remove_node(&note);
     assert!(app.save_session());
     app.queue_create(&note);
-    assert!(!app.writes.has_creates(), "a tombstone: never recreated");
+    assert!(!app.doc.writes.has_creates(), "a tombstone: never recreated");
     app.queue_create("demo");
-    assert!(!app.writes.has_creates(), "not a store id");
+    assert!(!app.doc.writes.has_creates(), "not a store id");
 }
 
 /// `mirror_remote` (Ruling 9) returns the fields another replica changed (old mirror value != new), so
@@ -2341,8 +2343,8 @@ fn mirror_remote_reports_the_changed_fields_but_not_the_held_ones() {
     let (held, changed) = app.mirror_remote(&tab, &fields, None);
     assert_eq!(held, [field::POS], "a pending edit holds the field");
     assert_eq!(changed, [field::URL], "the url changed; pinned, engine and the rest did not");
-    assert_eq!(app.mirror.url(&tab), "https://b/");
-    assert_eq!(app.mirror.pos(&tab), Some(egui::vec2(5.0, 5.0)), "held: the local edit stands");
+    assert_eq!(app.doc.mirror.url(&tab), "https://b/");
+    assert_eq!(app.doc.mirror.pos(&tab), Some(egui::vec2(5.0, 5.0)), "held: the local edit stands");
     let (held, changed) = app.mirror_remote(&tab, &fields, None);
     assert_eq!((held, changed), (vec![field::POS], vec![]), "the same values again change nothing");
 }
@@ -2358,15 +2360,15 @@ fn a_jar_create_rename_and_ephemeral_save_and_a_remote_change_reaches_jar_defs()
     let jar = add_jar(&mut app, "Work");
     let key = jar.to_string();
     let work = FieldValue::Str("Work".into());
-    assert_eq!(app.mirror.get(&key, field::NAME), work, "created in the mirror");
+    assert_eq!(app.doc.mirror.get(&key, field::NAME), work, "created in the mirror");
     assert!(app.save_session());
     assert_eq!(stored(&app, &key, field::NAME), work);
     assert_eq!(stored(&app, &key, field::COLOR), color_value(app.jar_defs()[&jar].color));
-    assert_eq!(app.mirror.get(&key, field::NAME), work, "kept by the save's retain");
+    assert_eq!(app.doc.mirror.get(&key, field::NAME), work, "kept by the save's retain");
     app.commit_rename(&jar.to_string(), "Job");
-    assert!(app.writes.field_queued(jar, field::NAME), "a rename queues its field");
+    assert!(app.doc.writes.field_queued(jar, field::NAME), "a rename queues its field");
     app.set_jar_ephemeral(jar, true);
-    assert!(app.writes.field_queued(jar, field::EPHEMERAL), "so does a toggle");
+    assert!(app.doc.writes.field_queued(jar, field::EPHEMERAL), "so does a toggle");
     assert!(app.save_session());
     assert_eq!(stored(&app, &key, field::NAME), FieldValue::Str("Job".into()));
     assert_eq!(stored(&app, &key, field::EPHEMERAL), FieldValue::Bool(true));
@@ -2376,7 +2378,7 @@ fn a_jar_create_rename_and_ephemeral_save_and_a_remote_change_reaches_jar_defs()
     assert!(app.save_session());
     assert_eq!(app.jar_defs()[&jar].name, "House");
     assert_eq!(app.jar_defs()[&jar].color, Some(egui::Color32::RED));
-    assert_eq!(app.mirror.get(&key, field::NAME), FieldValue::Str("House".into()));
+    assert_eq!(app.doc.mirror.get(&key, field::NAME), FieldValue::Str("House".into()));
 }
 
 /// A jar rename not saved yet wins over another device's (last writer, as for every mirrored field).
@@ -2416,11 +2418,11 @@ fn a_remote_ephemeral_change_deletes_and_saves_the_jar_file() {
     app.apply_remote(toggled(&app, true));
     assert!(app.jar_defs()[&jar].ephemeral);
     assert!(!file.exists(), "on: the file goes");
-    assert!(!app.writes.has_fields(), "a remote value is not a local edit");
+    assert!(!app.doc.writes.has_fields(), "a remote value is not a local edit");
     app.apply_remote(toggled(&app, false));
     assert!(!app.jar_defs()[&jar].ephemeral);
     assert!(file.exists(), "off: saved back");
-    assert!(!app.writes.has_fields());
+    assert!(!app.doc.writes.has_fields());
 }
 
 /// A local ephemeral toggle not saved yet wins over another device's, and the remote value runs no file side effect:
@@ -2470,7 +2472,7 @@ fn a_jar_first_seen_ephemeral_deletes_its_leftover_file_and_queues_nothing() {
     app.apply_remote(vec![(remote, Remote::Shown(snap(Kind::Jar, fields, None)))]);
     assert!(app.jar_defs()[&remote].ephemeral);
     assert!(!file.exists(), "remote-created: the leftover file goes");
-    assert!(!app.writes.has_fields(), "remote-created: nothing queued");
+    assert!(!app.doc.writes.has_fields(), "remote-created: nothing queued");
     // Restored at startup.
     add(&mut app, Kind::Tab, sleeping_tab("https://a.com/", "A"));
     let jar = add_jar(&mut app, "Work");
@@ -2482,7 +2484,7 @@ fn a_jar_first_seen_ephemeral_deletes_its_leftover_file_and_queues_nothing() {
     assert!(back.restore_session());
     assert!(back.jar_defs()[&jar].ephemeral);
     assert!(!file.exists(), "restored: the leftover file goes");
-    assert!(!back.writes.fields().any(|(node, ..)| node == jar), "restored: nothing queued for it");
+    assert!(!back.doc.writes.fields().any(|(node, ..)| node == jar), "restored: nothing queued for it");
 }
 
 /// A jar deleted on another device while this one was not running never reaches `remove_remotely_deleted` here, so
@@ -2511,7 +2513,7 @@ fn startup_deletes_the_files_of_jars_the_document_no_longer_has() {
     // A repaired store may have lost jar nodes.
     let mut repaired = on(2);
     repaired.restore_session();
-    repaired.store_recovered = true;
+    repaired.doc.store_recovered = true;
     assert!(!repaired.may_prune());
     drop(repaired);
 
@@ -2565,7 +2567,7 @@ fn closing_a_jar_leaves_the_tabs_that_named_it_on_the_default_jar() {
     app.close_node(&jar.to_string());
     assert_eq!(app.jar_defs().len(), 1, "only the Default is left");
     // The edge dangles: the field still names the closed jar, and the read rule resolves it to the Default jar.
-    assert_eq!(app.mirror.jar(&tab), Some(jar));
+    assert_eq!(app.doc.mirror.jar(&tab), Some(jar));
     assert_eq!(app.effective_jar(&tab), Some((default, true)));
 }
 
@@ -2597,9 +2599,9 @@ fn opening_a_session_gives_each_imported_jar_a_new_jar() {
     assert_eq!(app.jar_defs()[&new].name, "Work");
     let tab =
         app.nodes.iter().find(|(_, n)| n.runtime.as_unloaded().is_some()).map(|(id, _)| id).expect("tab imported");
-    assert_eq!(app.mirror.jar(tab), Some(new));
+    assert_eq!(app.doc.mirror.jar(tab), Some(new));
     let group = app.nodes.keys().find(|id| app.is_container(id)).expect("group imported");
-    assert_eq!(app.mirror.jar(group), Some(new));
+    assert_eq!(app.doc.mirror.jar(group), Some(new));
 }
 
 /// Import Group the same, twice over: each import is another new jar.
@@ -2616,10 +2618,10 @@ fn importing_a_group_gives_each_imported_jar_a_new_jar() {
         .nodes
         .iter()
         .filter(|(_, n)| n.runtime.as_unloaded().is_some())
-        .filter_map(|(id, _)| app.mirror.jar(id))
+        .filter_map(|(id, _)| app.doc.mirror.jar(id))
         .collect();
     let groups: BTreeSet<NodeId> =
-        app.nodes.keys().filter(|id| app.is_container(id)).filter_map(|id| app.mirror.jar(id)).collect();
+        app.nodes.keys().filter(|id| app.is_container(id)).filter_map(|id| app.doc.mirror.jar(id)).collect();
     assert_eq!((&tabs, &groups), (&new, &new), "each import's tab and group name its own new jar");
 }
 
@@ -2659,7 +2661,7 @@ fn an_imported_groups_tab_arrives_asleep_in_the_new_group() {
     assert!(app.test_spawns.is_empty());
     let (copy_id, copy) = app.nodes.iter().find(|(id, n)| **id != tab && n.as_unloaded().is_some()).expect("a card");
     assert_eq!(copy.as_unloaded().unwrap().state, UnloadedState::Sleeping);
-    let group = app.mirror.group(copy_id).expect("in a group");
+    let group = app.doc.mirror.group(copy_id).expect("in a group");
     assert!(group != g && app.is_container(group), "in the imported group");
 }
 
@@ -2680,7 +2682,7 @@ fn an_imported_member_whose_group_is_outside_the_file_joins_the_roots_level() {
     };
     app.import_group_json(&json);
     let (note, _) = app.nodes.iter().find(|(_, n)| matches!(&n.runtime, Runtime::Note(_))).expect("imported");
-    assert_eq!(app.mirror.group(note), Some(level.as_str()));
+    assert_eq!(app.doc.mirror.group(note), Some(level.as_str()));
 }
 
 /// A session with nothing shown still keeps Recently Closed: the launch starts fresh, but the closed tab is still in
@@ -2698,8 +2700,8 @@ fn an_empty_session_keeps_recently_closed_across_a_launch() {
     };
     let mut app = app_on(&path, 2);
     assert!(!app.restore_session(), "nothing shown: the caller starts fresh");
-    assert_eq!(app.journal.as_ref().unwrap().doc().closed_roots().len(), 1);
-    assert_eq!(app.hidden_local[&tab].title, "Page R");
+    assert_eq!(app.doc.journal.as_ref().unwrap().doc().closed_roots().len(), 1);
+    assert_eq!(app.doc.hidden_local[&tab].title, "Page R");
 }
 
 /// Final-review fix: personal state startup couldn't read (another window
@@ -2730,20 +2732,20 @@ fn personal_state_startup_could_not_read_is_retried_not_overwritten() {
     let peer = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(&lock_path).unwrap();
     peer.try_lock().unwrap();
     assert!(app.restore_session());
-    assert!(app.local_persist.local_unread.is_some(), "the read failed");
+    assert!(app.doc.local_persist.local_unread.is_some(), "the read failed");
     // Due writes, a retry while the lock is still busy, and even exit's
     // forced write leave the file alone.
     app.maybe_write_local(true);
-    app.local_persist.local_unread.as_mut().unwrap().retry_at = std::time::Instant::now();
+    app.doc.local_persist.local_unread.as_mut().unwrap().retry_at = std::time::Instant::now();
     app.poll_store();
-    assert!(app.local_persist.local_unread.is_some(), "still busy: retried later");
+    assert!(app.doc.local_persist.local_unread.is_some(), "still busy: retried later");
     assert_eq!(std::fs::read(&side).unwrap(), saved, "not overwritten while unread");
 
     // The lock is free: the next retry reads and applies it.
     drop(peer);
-    app.local_persist.local_unread.as_mut().unwrap().retry_at = std::time::Instant::now();
+    app.doc.local_persist.local_unread.as_mut().unwrap().retry_at = std::time::Instant::now();
     app.poll_store();
-    assert!(app.local_persist.local_unread.is_none());
+    assert!(app.doc.local_persist.local_unread.is_none());
     assert_eq!(app.layout_pos(&note), egui::vec2(7.0, 8.0));
     app.close_store();
     let bytes = Journal::open(&path, ActorId(4)).unwrap().read_local().unwrap().unwrap();
@@ -2765,11 +2767,11 @@ fn a_damaged_personal_state_file_is_not_retried() {
     std::fs::write(crate::store::local::path_for(&path), b"MNFL damaged").unwrap();
     let mut app = app_on(&path, 2);
     assert!(app.restore_session());
-    assert!(app.local_persist.local_unread.is_none());
+    assert!(app.doc.local_persist.local_unread.is_none());
     // An unchanged state isn't written (`local_written` is armed); a change is.
     add(&mut app, Kind::Note, Runtime::Note(NotePayload { text: "m".into(), editing: false }));
     app.maybe_write_local(true);
-    let bytes = app.journal.as_ref().unwrap().read_local().unwrap();
+    let bytes = app.doc.journal.as_ref().unwrap().read_local().unwrap();
     assert!(bytes.is_some(), "replaced with this profile's state");
 }
 
@@ -2777,8 +2779,8 @@ fn a_damaged_personal_state_file_is_not_retried() {
 /// unread: `local_unread` set by hand, without waiting out `LOCK_WAIT`.
 fn mark_unread_with(app: &mut App, path: &std::path::Path, state: &LocalState) {
     Journal::open(path, ActorId(9)).unwrap().write_local(&state.to_bytes()).unwrap();
-    app.local_persist.local_unread = Some(LocalUnread { retry_at: std::time::Instant::now(), fresh: false });
-    app.local_persist.local_written = None;
+    app.doc.local_persist.local_unread = Some(LocalUnread { retry_at: std::time::Instant::now(), fresh: false });
+    app.doc.local_persist.local_written = None;
 }
 
 /// Open Session while startup's personal state is unread: that state is the
@@ -2793,9 +2795,9 @@ fn opening_a_session_while_unread_applies_nothing_on_retry() {
     let json =
         JsonDoc { nodes: vec![json_node("t", Kind::Tab, serde_json::json!({ "url": "https://new/" }))], local: None };
     app.replace_running_session(&json, crate::store::json::Trust::Own);
-    assert!(app.local_persist.local_unread.is_some_and(|u| u.fresh), "the open makes the retry a fresh start");
+    assert!(app.doc.local_persist.local_unread.is_some_and(|u| u.fresh), "the open makes the retry a fresh start");
     app.poll_store();
-    assert!(app.local_persist.local_unread.is_none(), "read");
+    assert!(app.doc.local_persist.local_unread.is_none(), "read");
     assert_eq!(app.view_mode, ViewMode::Graph, "the old session's view isn't applied");
 }
 
@@ -2831,15 +2833,15 @@ fn a_late_read_of_no_personal_state_keeps_the_live_view() {
     let mut app = app_on(&path, 1);
     add(&mut app, Kind::Note, Runtime::Note(NotePayload { text: "n".into(), editing: false }));
     assert!(app.save_session());
-    app.local_persist.local_unread = Some(LocalUnread { retry_at: std::time::Instant::now(), fresh: false });
-    app.local_persist.local_written = None;
+    app.doc.local_persist.local_unread = Some(LocalUnread { retry_at: std::time::Instant::now(), fresh: false });
+    app.doc.local_persist.local_written = None;
     app.view_mode = ViewMode::Item;
     app.groups_collapsed = true;
     app.poll_store();
-    assert!(app.local_persist.local_unread.is_none(), "read: there is none");
+    assert!(app.doc.local_persist.local_unread.is_none(), "read: there is none");
     assert_eq!((app.view_mode, app.groups_collapsed), (ViewMode::Item, true), "not reset to defaults");
     app.maybe_write_local(true);
-    let bytes = app.journal.as_ref().unwrap().read_local().unwrap().unwrap();
+    let bytes = app.doc.journal.as_ref().unwrap().read_local().unwrap().unwrap();
     assert!(LocalState::from_bytes(&bytes).unwrap().groups_collapsed, "the next write saves the live view");
 }
 
@@ -3000,7 +3002,7 @@ fn exporting_a_group_the_store_lacks_gives_none() {
 #[test]
 fn the_mirror_matches_the_store_after_every_save() {
     fn check(app: &App, step: &str) {
-        let doc = app.journal.as_ref().unwrap().doc();
+        let doc = app.doc.journal.as_ref().unwrap().doc();
         for (id, node) in doc.live() {
             let want = Snapshot::of(doc, id, node);
             assert_eq!(app.snapshot(id), Some(want), "{step}: node {id}");
@@ -3128,7 +3130,7 @@ fn save_count_per_action() {
     let g = add_group(&mut app, "g");
     let (a, b, c, d) = (a_note(&mut app), a_note(&mut app), a_note(&mut app), a_note(&mut app));
     assert!(app.save_session());
-    let begins = |app: &App| app.journal.as_ref().unwrap().begins;
+    let begins = |app: &App| app.doc.journal.as_ref().unwrap().begins;
     let count = |app: &mut App, action: GraphAction| {
         let before = begins(app);
         app.apply_graph_action(&ctx, action);
@@ -3140,7 +3142,7 @@ fn save_count_per_action() {
     let finish = count(&mut app, GraphAction::FinishConnect(d.clone()));
     let enter = count(&mut app, GraphAction::EnterGroup(g.clone()));
     assert!(!app.nodes.contains_key(&a), "deleted");
-    assert_eq!(app.mirror.group(&b), Some(g.as_str()), "joined");
+    assert_eq!(app.doc.mirror.group(&b), Some(g.as_str()), "joined");
     assert_eq!(app.links_naming(&c).len(), 1, "linked");
     assert_eq!(app.current_group.as_deref(), Some(g.as_str()), "entered");
     assert_eq!(
@@ -3171,14 +3173,22 @@ fn teardown_queues_every_node_and_link_delete() {
     assert!(app.save_session());
     app.connect(LINK, &notes[4], &notes[5]).unwrap(); // in the mirror, not saved yet
     a_note(&mut app); // queued for create, not saved yet
-    let mut want: BTreeSet<NodeId> =
-        app.journal.as_ref().unwrap().doc().live().filter(|(_, n)| n.kind() != Kind::Jar).map(|(id, _)| id).collect();
-    want.extend(app.mirror.link_ids());
+    let mut want: BTreeSet<NodeId> = app
+        .doc
+        .journal
+        .as_ref()
+        .unwrap()
+        .doc()
+        .live()
+        .filter(|(_, n)| n.kind() != Kind::Jar)
+        .map(|(id, _)| id)
+        .collect();
+    want.extend(app.doc.mirror.link_ids());
     assert!(want.len() >= 9, "six notes and three links: {want:?}");
     app.teardown_running_session();
-    assert_eq!(app.writes.deletes().collect::<BTreeSet<_>>(), want);
-    assert!(!app.writes.has_creates());
-    assert_eq!(app.mirror.link_ids().count(), 0);
+    assert_eq!(app.doc.writes.deletes().collect::<BTreeSet<_>>(), want);
+    assert!(!app.doc.writes.has_creates());
+    assert_eq!(app.doc.mirror.link_ids().count(), 0);
 }
 
 /// Wave 2 (teardown order): replacing a session of 2000 notes and 300 links. Timing, not correctness, so ignored:
@@ -3221,11 +3231,11 @@ fn a_local_color_edit_is_committed_by_the_next_save() {
     let note = a_note(&mut app);
     assert!(app.save_session());
     app.edit_field(&note, field::COLOR, red());
-    assert_eq!(app.mirror.color(&note), Some(egui::Color32::RED), "the mirror shows it at once");
+    assert_eq!(app.doc.mirror.color(&note), Some(egui::Color32::RED), "the mirror shows it at once");
     assert_eq!(stored(&app, &note, field::COLOR), FieldValue::Color(None), "nothing is written before a save");
     assert!(app.save_session());
     assert_eq!(stored(&app, &note, field::COLOR), red());
-    assert!(!app.writes.has_fields(), "a commit clears what it wrote");
+    assert!(!app.doc.writes.has_fields(), "a commit clears what it wrote");
 }
 
 #[test]
@@ -3236,7 +3246,7 @@ fn a_color_set_before_the_first_save_rides_the_create() {
     app.edit_field(&note, field::COLOR, red());
     assert!(app.save_session());
     assert_eq!(stored(&app, &note, field::COLOR), red());
-    assert!(!app.writes.has_fields());
+    assert!(!app.doc.writes.has_fields());
 }
 
 #[test]
@@ -3248,7 +3258,7 @@ fn a_remote_color_edit_reaches_the_mirror() {
     let mut other = Journal::open(&path, ActorId(2)).unwrap();
     remote_set(&mut other, &note, field::COLOR, red());
     assert!(app.save_session());
-    assert_eq!(app.mirror.color(&note), Some(egui::Color32::RED));
+    assert_eq!(app.doc.mirror.color(&note), Some(egui::Color32::RED));
 }
 
 #[test]
@@ -3262,7 +3272,7 @@ fn a_pending_local_color_edit_wins_over_a_remote_edit_of_the_same_field() {
     remote_set(&mut other, &note, field::COLOR, red());
     // The remote round applies first, the next round commits the local edit over it.
     assert!(app.save_session());
-    assert_eq!(app.mirror.color(&note), Some(egui::Color32::BLUE));
+    assert_eq!(app.doc.mirror.color(&note), Some(egui::Color32::BLUE));
     assert_eq!(stored(&app, &note, field::COLOR), blue());
 }
 
@@ -3275,11 +3285,11 @@ fn the_set_color_action_edits_the_mirror_and_the_next_save_stores_it() {
     let note = a_note(&mut app);
     assert!(app.save_session());
     app.apply_node_action(&ctx, &note, NodeAction::SetColor(Some(egui::Color32::RED)));
-    assert_eq!(app.mirror.color(&note), Some(egui::Color32::RED), "the mirror shows it at once");
+    assert_eq!(app.doc.mirror.color(&note), Some(egui::Color32::RED), "the mirror shows it at once");
     assert!(app.save_session());
     assert_eq!(stored(&app, &note, field::COLOR), red());
     app.apply_node_action(&ctx, &note, NodeAction::SetColor(None));
-    assert_eq!(app.mirror.color(&note), None);
+    assert_eq!(app.doc.mirror.color(&note), None);
     assert!(app.save_session());
     assert_eq!(stored(&app, &note, field::COLOR), FieldValue::Color(None));
 }
@@ -3295,12 +3305,12 @@ fn the_cycle_color_action_steps_through_the_tag_colors() {
     let first = next_tag_color(None);
     assert!(first.is_some());
     app.apply_node_action(&ctx, &note, NodeAction::CycleColor);
-    assert_eq!(app.mirror.color(&note), first);
+    assert_eq!(app.doc.mirror.color(&note), first);
     assert!(app.save_session());
     assert_eq!(stored(&app, &note, field::COLOR), color_value(first));
     let second = next_tag_color(first);
     app.apply_node_action(&ctx, &note, NodeAction::CycleColor);
-    assert_eq!(app.mirror.color(&note), second);
+    assert_eq!(app.doc.mirror.color(&note), second);
     assert!(app.save_session());
     assert_eq!(stored(&app, &note, field::COLOR), color_value(second));
 }
@@ -3311,8 +3321,8 @@ fn a_color_action_on_an_unknown_node_changes_nothing() {
     let ctx = egui::Context::default();
     app.apply_node_action(&ctx, "ghost", NodeAction::SetColor(Some(egui::Color32::RED)));
     app.apply_node_action(&ctx, "ghost", NodeAction::CycleColor);
-    assert_eq!(app.mirror.color("ghost"), None);
-    assert!(!app.writes.has_fields());
+    assert_eq!(app.doc.mirror.color("ghost"), None);
+    assert!(!app.doc.writes.has_fields());
 }
 
 /// A saved node edited, then deleted, before the same save: the delete stands.
@@ -3325,7 +3335,7 @@ fn an_edit_to_a_node_the_store_dropped_is_not_written_back() {
     app.edit_field(&note, field::COLOR, red());
     app.remove_node(&note);
     assert!(app.save_session());
-    let doc = app.journal.as_ref().unwrap().doc();
+    let doc = app.doc.journal.as_ref().unwrap().doc();
     assert!(!doc.nodes[&note.parse().unwrap()].is_live(), "the delete stands; no placeholder or recreate");
 }
 
@@ -3336,11 +3346,11 @@ fn a_save_that_deletes_a_node_writes_no_set_for_it() {
     let mut app = app_on(&path, 1);
     let note = a_note(&mut app);
     assert!(app.save_session());
-    let ops_before = app.journal.as_ref().unwrap().doc().version[&ActorId(1)];
+    let ops_before = app.doc.journal.as_ref().unwrap().doc().version[&ActorId(1)];
     app.edit_field(&note, field::COLOR, red());
     app.remove_node(&note);
     assert!(app.save_session());
-    assert_eq!(app.journal.as_ref().unwrap().doc().version[&ActorId(1)], ops_before + 1, "one op: the Delete");
+    assert_eq!(app.doc.journal.as_ref().unwrap().doc().version[&ActorId(1)], ops_before + 1, "one op: the Delete");
     assert_eq!(stored(&app, &note, field::COLOR), FieldValue::Color(None));
 }
 
@@ -3353,7 +3363,7 @@ fn an_edit_to_an_unsaved_node_removed_before_the_save_leaves_no_placeholder() {
     app.edit_field(&note, field::COLOR, red());
     app.remove_node(&note);
     assert!(app.save_session());
-    let doc = app.journal.as_ref().unwrap().doc();
+    let doc = app.doc.journal.as_ref().unwrap().doc();
     assert!(!doc.nodes.contains_key(&note.parse().unwrap()), "no entry at all for the id");
 }
 
@@ -3365,8 +3375,8 @@ fn a_jars_fields_reach_the_document_only_through_pending() {
     let mut app = app_on(&temp_dir("jar-fields-pending-only").join("session.mnf"), 1);
     let jar = add_jar(&mut app, "j").to_string();
     assert!(app.save_session());
-    app.mirror.set(&jar, field::COLOR, red());
-    app.mirror.set(&jar, field::EPHEMERAL, FieldValue::Bool(true));
+    app.doc.mirror.set(&jar, field::COLOR, red());
+    app.doc.mirror.set(&jar, field::EPHEMERAL, FieldValue::Bool(true));
     let ops = ops_of(&app);
     assert!(app.save_session());
     assert_eq!(ops_of(&app), ops, "nothing written");
@@ -3377,8 +3387,8 @@ fn a_jars_fields_reach_the_document_only_through_pending() {
 fn a_non_store_id_edits_the_mirror_and_queues_nothing() {
     let mut app = App::default();
     app.edit_field("r", field::COLOR, red());
-    assert_eq!(app.mirror.color("r"), Some(egui::Color32::RED));
-    assert!(!app.writes.has_fields());
+    assert_eq!(app.doc.mirror.color("r"), Some(egui::Color32::RED));
+    assert!(!app.doc.writes.has_fields());
 }
 
 #[test]
@@ -3387,7 +3397,7 @@ fn an_unchanged_edit_queues_nothing() {
     let mut app = app_on(&path, 1);
     let note = a_note(&mut app);
     app.edit_field(&note, field::COLOR, FieldValue::Color(None));
-    assert!(!app.writes.has_fields());
+    assert!(!app.doc.writes.has_fields());
 }
 
 /// The same for a graph node: an existing node's mirrored fields reach the document only as `pending` `Set`s.
@@ -3396,8 +3406,8 @@ fn an_existing_nodes_fields_reach_the_document_only_through_pending() {
     let mut app = app_on(&temp_dir("node-fields-pending-only").join("session.mnf"), 1);
     let note = a_note(&mut app);
     assert!(app.save_session());
-    app.mirror.set(&note, field::COLOR, red());
-    app.mirror.set(&note, field::URL, FieldValue::Str("https://elsewhere/".into()));
+    app.doc.mirror.set(&note, field::COLOR, red());
+    app.doc.mirror.set(&note, field::URL, FieldValue::Str("https://elsewhere/".into()));
     let ops = ops_of(&app);
     assert!(app.save_session());
     assert_eq!(ops_of(&app), ops, "nothing written");
@@ -3411,14 +3421,14 @@ fn a_tab_pin_is_committed_and_a_remote_pin_reaches_the_mirror() {
     let tab = add(&mut app, Kind::Tab, failed_tab("https://u0/", 1.0));
     assert!(app.save_session());
     app.edit_field(&tab, field::PINNED, FieldValue::Bool(true));
-    assert!(app.mirror.pinned(&tab));
+    assert!(app.doc.mirror.pinned(&tab));
     assert!(app.save_session());
     assert_eq!(stored(&app, &tab, field::PINNED), FieldValue::Bool(true));
 
     let mut other = Journal::open(&path, ActorId(2)).unwrap();
     remote_set(&mut other, &tab, field::PINNED, FieldValue::Bool(false));
     assert!(app.save_session());
-    assert!(!app.mirror.pinned(&tab));
+    assert!(!app.doc.mirror.pinned(&tab));
 }
 
 #[test]
@@ -3427,7 +3437,7 @@ fn the_pin_shortcut_pins_a_focused_note() {
     let note = a_note(&mut app);
     app.focused = Some(note.clone());
     app.pin_shortcut();
-    assert!(app.mirror.pinned(&note));
+    assert!(app.doc.mirror.pinned(&note));
 }
 
 #[test]
@@ -3438,10 +3448,10 @@ fn the_pin_shortcut_pins_a_whole_selection_then_unpins_it() {
     app.focused = Some(c.clone());
     app.interaction.selected.extend([a.clone(), b.clone()]);
     app.pin_shortcut();
-    assert!([&a, &b].iter().all(|id| app.mirror.pinned(id)), "one was unpinned, so all get pinned");
-    assert!(!app.mirror.pinned(&c), "the focused card is not in the selection");
+    assert!([&a, &b].iter().all(|id| app.doc.mirror.pinned(id)), "one was unpinned, so all get pinned");
+    assert!(!app.doc.mirror.pinned(&c), "the focused card is not in the selection");
     app.pin_shortcut();
-    assert!([&a, &b].iter().all(|id| !app.mirror.pinned(id)), "all were pinned, so all get unpinned");
+    assert!([&a, &b].iter().all(|id| !app.doc.mirror.pinned(id)), "all were pinned, so all get unpinned");
 }
 
 #[test]
@@ -3453,9 +3463,9 @@ fn pin_all_pins_every_tab_and_only_tabs() {
     );
     let note = a_note(&mut app);
     app.set_all_pinned(true);
-    assert!(app.mirror.pinned(&a) && app.mirror.pinned(&b) && !app.mirror.pinned(&note));
+    assert!(app.doc.mirror.pinned(&a) && app.doc.mirror.pinned(&b) && !app.doc.mirror.pinned(&note));
     app.set_all_pinned(false);
-    assert!(!app.mirror.pinned(&a) && !app.mirror.pinned(&b));
+    assert!(!app.doc.mirror.pinned(&a) && !app.doc.mirror.pinned(&b));
 }
 
 /// A remote colour parked for a waking tab (`remote_in_flight`) must not land over a local edit committed after it.
@@ -3475,7 +3485,7 @@ fn a_committed_local_edit_wins_over_a_remote_value_parked_for_a_waking_tab() {
     assert!(app.spawns.remote_in_flight.contains_key(&tab), "the remote value is parked");
     assert_eq!(stored(&app, &tab, field::COLOR), red());
     fail_spawns(&mut app);
-    assert_eq!(app.mirror.color(&tab), Some(egui::Color32::RED));
+    assert_eq!(app.doc.mirror.color(&tab), Some(egui::Color32::RED));
     assert_eq!(stored(&app, &tab, field::COLOR), red());
 }
 
@@ -3499,15 +3509,15 @@ fn a_save_during_a_respawn_keeps_the_mirror_entry() {
         SpawnPurpose::Respawn,
         1.0,
     );
-    (spawn.carry.color, spawn.carry.pinned) = (app.mirror.color(&tab), app.mirror.pinned(&tab));
+    (spawn.carry.color, spawn.carry.pinned) = (app.doc.mirror.color(&tab), app.doc.mirror.pinned(&tab));
     app.respawn_tab(spawn);
     assert!(app.save_session());
-    assert!(app.mirror.pinned(&tab) && app.mirror.color(&tab) == Some(egui::Color32::RED), "kept while parked");
+    assert!(app.doc.mirror.pinned(&tab) && app.doc.mirror.color(&tab) == Some(egui::Color32::RED), "kept while parked");
     app.edit_field(&tab, field::COLOR, blue());
     assert!(app.save_session());
     fail_spawns(&mut app);
-    assert_eq!(app.mirror.color(&tab), Some(egui::Color32::BLUE));
-    assert!(app.mirror.pinned(&tab));
+    assert_eq!(app.doc.mirror.color(&tab), Some(egui::Color32::BLUE));
+    assert!(app.doc.mirror.pinned(&tab));
     assert_eq!(stored(&app, &tab, field::COLOR), blue());
     assert_eq!(stored(&app, &tab, field::PINNED), FieldValue::Bool(true));
 }
@@ -3532,12 +3542,12 @@ fn a_failed_commit_keeps_a_pending_edit_for_the_retry() {
     let saved = app.save_session();
     set_readonly(false);
     assert!(!saved);
-    assert!(app.writes.has_fields(), "kept for the next save");
+    assert!(app.doc.writes.has_fields(), "kept for the next save");
     assert_eq!(stored(&app, &note, field::COLOR), FieldValue::Color(None));
-    app.writes.save_retry_at = Some(std::time::Instant::now());
+    app.doc.writes.save_retry_at = Some(std::time::Instant::now());
     app.poll_store();
-    assert!(app.writes.save_retry_at.is_none());
-    assert!(!app.writes.has_fields());
+    assert!(app.doc.writes.save_retry_at.is_none());
+    assert!(!app.doc.writes.has_fields());
     assert_eq!(stored(&app, &note, field::COLOR), red());
 }
 
@@ -3552,7 +3562,7 @@ fn a_parent_edit_reads_back_and_commits() {
     );
     assert!(app.save_session());
     app.edit_parent(&b, Some(a.clone()));
-    assert_eq!(app.mirror.parent(&b), Some(a.as_str()));
+    assert_eq!(app.doc.mirror.parent(&b), Some(a.as_str()));
     assert_eq!(stored(&app, &b, field::PARENT), FieldValue::Id(None), "not written before the save");
     assert!(app.save_session());
     assert_eq!(stored(&app, &b, field::PARENT), FieldValue::Id(Some(a.parse().unwrap())));
@@ -3573,7 +3583,7 @@ fn a_local_parent_edit_wins_over_a_remote_one() {
     app.edit_parent(&c, Some(a.clone()));
     remote_set(&mut other, &c, field::PARENT, FieldValue::Id(Some(b.parse().unwrap())));
     assert!(app.save_session());
-    assert_eq!(app.mirror.parent(&c), Some(a.as_str()));
+    assert_eq!(app.doc.mirror.parent(&c), Some(a.as_str()));
     assert_eq!(stored(&app, &c, field::PARENT), FieldValue::Id(Some(a.parse().unwrap())));
 }
 
@@ -3598,8 +3608,8 @@ fn a_parent_deleted_by_the_same_commit_is_written_as_none() {
 fn a_parent_edit_on_a_non_store_id_queues_nothing() {
     let mut app = App::default();
     app.edit_parent("c", Some("p".into()));
-    assert_eq!(app.mirror.parent("c"), Some("p"));
-    assert!(!app.writes.has_fields());
+    assert_eq!(app.doc.mirror.parent("c"), Some("p"));
+    assert!(!app.doc.writes.has_fields());
 }
 
 /// A remote parent change reaches the mirror; a node removal re-parents children through the writer.
@@ -3616,7 +3626,7 @@ fn remote_parent_change_and_removal_reparent_through_the_mirror() {
     app.edit_parent(&c, Some(b.clone()));
     assert!(app.save_session());
     app.remove_node(&b);
-    assert_eq!(app.mirror.parent(&c), Some(a.as_str()), "children pass up to the removed node's parent");
+    assert_eq!(app.doc.mirror.parent(&c), Some(a.as_str()), "children pass up to the removed node's parent");
     assert!(app.save_session());
     assert_eq!(stored(&app, &c, field::PARENT), FieldValue::Id(Some(a.parse().unwrap())));
 }
@@ -3640,7 +3650,7 @@ fn a_committed_parent_edit_wins_over_a_remote_value_parked_for_a_waking_tab() {
     assert!(app.save_session());
     assert!(app.spawns.remote_in_flight.contains_key(&tab), "the remote value is parked");
     fail_spawns(&mut app);
-    assert_eq!(app.mirror.parent(&tab), Some(a.as_str()));
+    assert_eq!(app.doc.mirror.parent(&tab), Some(a.as_str()));
     assert_eq!(stored(&app, &tab, field::PARENT), FieldValue::Id(Some(a.parse().unwrap())));
 }
 
@@ -3657,8 +3667,8 @@ fn a_parent_edit_to_a_non_store_target_drops_an_earlier_queued_one() {
     assert!(app.save_session());
     app.edit_parent(&b, Some(a.clone()));
     app.edit_parent(&b, Some("p".into()));
-    assert_eq!(app.mirror.parent(&b), Some("p"));
-    assert!(!app.writes.has_fields());
+    assert_eq!(app.doc.mirror.parent(&b), Some("p"));
+    assert!(!app.doc.writes.has_fields());
     assert!(app.save_session());
     assert_eq!(stored(&app, &b, field::PARENT), FieldValue::Id(None));
 }
@@ -3694,12 +3704,12 @@ fn a_pending_link_edit_for_a_node_deleted_elsewhere_is_dropped() {
     other.begin().unwrap().commit(deletes).unwrap();
     app.edit_parent(&b, Some(a.clone()));
     app.edit_group(&c, Some(g.clone()));
-    let ops_before = app.journal.as_ref().unwrap().doc().version[&ActorId(1)];
+    let ops_before = app.doc.journal.as_ref().unwrap().doc().version[&ActorId(1)];
     assert!(app.save_session());
-    let doc = app.journal.as_ref().unwrap().doc();
+    let doc = app.doc.journal.as_ref().unwrap().doc();
     assert_eq!(doc.version[&ActorId(1)], ops_before, "nothing written");
     assert!(!doc.nodes[&b.parse().unwrap()].is_live() && !doc.nodes[&c.parse().unwrap()].is_live());
-    assert!(!app.writes.has_fields() && !app.writes.has_moves());
+    assert!(!app.doc.writes.has_fields() && !app.doc.writes.has_moves());
 }
 
 /// A parked remote value for a waking tab is patched with what the commit wrote: a parent or group the commit
@@ -3727,8 +3737,8 @@ fn a_parked_link_is_patched_with_the_resolved_value() {
     assert!(app.spawns.remote_in_flight.contains_key(&tab), "the remote value is parked");
     assert_eq!(stored(&app, &tab, field::PARENT), FieldValue::Id(None));
     fail_spawns(&mut app);
-    assert_eq!(app.mirror.parent(&tab), None);
-    assert_eq!(app.mirror.group(&tab), None);
+    assert_eq!(app.doc.mirror.parent(&tab), None);
+    assert_eq!(app.doc.mirror.group(&tab), None);
 }
 
 #[test]
@@ -3739,10 +3749,10 @@ fn a_group_edit_reads_back_and_commits_as_a_move() {
     let t = add(&mut app, Kind::Tab, sleeping_tab("https://t/", ""));
     assert!(app.save_session());
     app.edit_group(&t, Some(g.clone()));
-    assert_eq!(app.mirror.group(&t), Some(g.as_str()));
-    assert_eq!(app.journal.as_ref().unwrap().doc().effective_group(t.parse().unwrap()), None);
+    assert_eq!(app.doc.mirror.group(&t), Some(g.as_str()));
+    assert_eq!(app.doc.journal.as_ref().unwrap().doc().effective_group(t.parse().unwrap()), None);
     assert!(app.save_session());
-    assert_eq!(app.journal.as_ref().unwrap().doc().effective_group(t.parse().unwrap()), Some(g.parse().unwrap()));
+    assert_eq!(app.doc.journal.as_ref().unwrap().doc().effective_group(t.parse().unwrap()), Some(g.parse().unwrap()));
 }
 
 /// A group created in the same commit is the target of a move that follows its Create.
@@ -3755,8 +3765,8 @@ fn a_move_into_a_group_created_by_the_same_save_follows_the_create() {
     let g = add_group(&mut app, "G");
     app.edit_group(&t, Some(g.clone()));
     assert!(app.save_session());
-    assert_eq!(app.journal.as_ref().unwrap().doc().effective_group(t.parse().unwrap()), Some(g.parse().unwrap()));
-    assert_eq!(app.mirror.group(&t), Some(g.as_str()), "the mirror shows what the document holds");
+    assert_eq!(app.doc.journal.as_ref().unwrap().doc().effective_group(t.parse().unwrap()), Some(g.parse().unwrap()));
+    assert_eq!(app.doc.mirror.group(&t), Some(g.as_str()), "the mirror shows what the document holds");
 }
 
 /// A move into a group the same commit deletes lands at the top level (spec section 6 item 4).
@@ -3770,16 +3780,16 @@ fn a_move_into_a_group_deleted_by_the_same_save_is_written_as_none() {
     app.edit_group(&t, Some(g.clone()));
     app.remove_node(&g);
     assert!(app.save_session());
-    assert_eq!(app.journal.as_ref().unwrap().doc().effective_group(t.parse().unwrap()), None);
-    assert_eq!(app.mirror.group(&t), None, "the mirror shows what the commit wrote");
+    assert_eq!(app.doc.journal.as_ref().unwrap().doc().effective_group(t.parse().unwrap()), None);
+    assert_eq!(app.doc.mirror.group(&t), None, "the mirror shows what the commit wrote");
 }
 
 #[test]
 fn a_group_edit_on_a_non_store_id_queues_nothing() {
     let mut app = App::default();
     app.edit_group("t", Some("g".into()));
-    assert_eq!(app.mirror.group("t"), Some("g"));
-    assert!(!app.writes.has_moves());
+    assert_eq!(app.doc.mirror.group("t"), Some("g"));
+    assert!(!app.doc.writes.has_moves());
 }
 
 /// A later move to a target that isn't a store id drops the earlier queued one.
@@ -3792,9 +3802,9 @@ fn a_group_edit_to_a_non_store_target_drops_an_earlier_queued_one() {
     assert!(app.save_session());
     app.edit_group(&t, Some(g.clone()));
     app.edit_group(&t, Some("x".into()));
-    assert!(!app.writes.has_moves());
+    assert!(!app.doc.writes.has_moves());
     assert!(app.save_session());
-    assert_eq!(app.journal.as_ref().unwrap().doc().effective_group(t.parse().unwrap()), None);
+    assert_eq!(app.doc.journal.as_ref().unwrap().doc().effective_group(t.parse().unwrap()), None);
 }
 
 /// An unsaved local move beats another replica's move of the same node.
@@ -3814,8 +3824,8 @@ fn a_local_group_move_wins_over_a_remote_one() {
         .commit(vec![OpBody::Move { node: t.parse().unwrap(), group: Some(g2.parse().unwrap()) }])
         .unwrap();
     assert!(app.save_session());
-    assert_eq!(app.mirror.group(&t), Some(g1.as_str()));
-    assert_eq!(app.journal.as_ref().unwrap().doc().effective_group(t.parse().unwrap()), Some(g1.parse().unwrap()));
+    assert_eq!(app.doc.mirror.group(&t), Some(g1.as_str()));
+    assert_eq!(app.doc.journal.as_ref().unwrap().doc().effective_group(t.parse().unwrap()), Some(g1.parse().unwrap()));
 }
 
 /// Another replica's move reaches the mirror when nothing is pending locally.
@@ -3830,7 +3840,7 @@ fn a_remote_group_move_reaches_the_mirror() {
     let mv = vec![OpBody::Move { node: t.parse().unwrap(), group: Some(g.parse().unwrap()) }];
     other.begin().unwrap().commit(mv).unwrap();
     assert!(app.save_session());
-    assert_eq!(app.mirror.group(&t), Some(g.as_str()));
+    assert_eq!(app.doc.mirror.group(&t), Some(g.as_str()));
 }
 
 /// A remote move parked for a waking tab must not land over a local move committed after it.
@@ -3851,8 +3861,11 @@ fn a_committed_move_wins_over_a_remote_move_parked_for_a_waking_tab() {
     assert!(app.save_session());
     assert!(app.spawns.remote_in_flight.contains_key(&tab), "the remote value is parked");
     fail_spawns(&mut app);
-    assert_eq!(app.mirror.group(&tab), Some(g1.as_str()));
-    assert_eq!(app.journal.as_ref().unwrap().doc().effective_group(tab.parse().unwrap()), Some(g1.parse().unwrap()));
+    assert_eq!(app.doc.mirror.group(&tab), Some(g1.as_str()));
+    assert_eq!(
+        app.doc.journal.as_ref().unwrap().doc().effective_group(tab.parse().unwrap()),
+        Some(g1.parse().unwrap())
+    );
 }
 
 /// Dissolving a group moves its members up through the writer and the store agrees after a save.
@@ -3867,9 +3880,12 @@ fn dissolving_a_group_moves_members_up_and_saves() {
     app.edit_group(&t, Some(inner.clone()));
     assert!(app.save_session());
     app.remove_node(&inner);
-    assert_eq!(app.mirror.group(&t), Some(outer.as_str()));
+    assert_eq!(app.doc.mirror.group(&t), Some(outer.as_str()));
     assert!(app.save_session());
-    assert_eq!(app.journal.as_ref().unwrap().doc().effective_group(t.parse().unwrap()), Some(outer.parse().unwrap()));
+    assert_eq!(
+        app.doc.journal.as_ref().unwrap().doc().effective_group(t.parse().unwrap()),
+        Some(outer.parse().unwrap())
+    );
 }
 
 /// Another replica merges G into T (`merge_groups`: `Delete G` and `Move(M, T)`). Applying G's delete first must not
@@ -3892,8 +3908,8 @@ fn a_remote_merge_is_not_reverted_by_the_dissolve_it_triggers() {
     other.begin().unwrap().commit(merge).unwrap();
     for _ in 0..2 {
         assert!(app.save_session());
-        assert_eq!(app.mirror.group(&m), Some(t.as_str()));
-        let doc = app.journal.as_ref().unwrap().doc();
+        assert_eq!(app.doc.mirror.group(&m), Some(t.as_str()));
+        let doc = app.doc.journal.as_ref().unwrap().doc();
         assert_eq!(doc.effective_group(m.parse().unwrap()), Some(t.parse().unwrap()));
     }
 }
@@ -3921,7 +3937,7 @@ fn a_remote_reparent_is_not_reverted_by_the_removal_it_races() {
     other.begin().unwrap().commit(ops).unwrap();
     for _ in 0..2 {
         assert!(app.save_session());
-        assert_eq!(app.mirror.parent(&c), Some(a.as_str()));
+        assert_eq!(app.doc.mirror.parent(&c), Some(a.as_str()));
         assert_eq!(stored(&app, &c, field::PARENT), FieldValue::Id(Some(a.parse().unwrap())));
     }
 }
@@ -3940,8 +3956,8 @@ fn a_pending_move_into_a_remotely_deleted_group_lands_in_its_group() {
     other.begin().unwrap().commit(vec![OpBody::Delete { node: g.parse().unwrap() }]).unwrap();
     app.edit_group(&m, Some(g.clone()));
     assert!(app.save_session());
-    assert_eq!(app.mirror.group(&m), Some(outer.as_str()));
-    let doc = app.journal.as_ref().unwrap().doc();
+    assert_eq!(app.doc.mirror.group(&m), Some(outer.as_str()));
+    let doc = app.doc.journal.as_ref().unwrap().doc();
     assert_eq!(doc.effective_group(m.parse().unwrap()), Some(outer.parse().unwrap()));
 }
 
@@ -3960,12 +3976,12 @@ fn a_move_the_store_refuses_as_a_cycle_leaves_the_document_acyclic() {
     other.begin().unwrap().commit(nest).unwrap();
     app.edit_group(&a, Some(b.clone()));
     assert!(app.save_session());
-    let doc = app.journal.as_ref().unwrap().doc();
+    let doc = app.doc.journal.as_ref().unwrap().doc();
     assert_eq!(doc.effective_group(b.parse().unwrap()), Some(a.parse().unwrap()), "the remote move stands");
     assert_eq!(doc.effective_group(a.parse().unwrap()), None, "the local move was refused");
     for _ in 0..2 {
-        assert_eq!(app.mirror.group(&a), None, "the mirror shows the refused move as the document does");
-        assert_eq!(app.mirror.group(&b), Some(a.as_str()), "and the remote move");
+        assert_eq!(app.doc.mirror.group(&a), None, "the mirror shows the refused move as the document does");
+        assert_eq!(app.doc.mirror.group(&b), Some(a.as_str()), "and the remote move");
         assert!(app.save_session());
     }
 }
@@ -3974,7 +3990,7 @@ fn a_move_the_store_refuses_as_a_cycle_leaves_the_document_acyclic() {
 /// spawn carries no position: the tab keeps its `App::layout` entry.
 fn start_respawn(app: &mut App, tab: &str) {
     app.nodes.remove(tab).unwrap();
-    let carried = app.mirror.carried(tab);
+    let carried = app.doc.mirror.carried(tab);
     let mut spawn = crate::tabs::TabSpawn::new(
         tab.to_owned(),
         "https://t/".into(),
@@ -4011,11 +4027,11 @@ fn a_remote_group_delete_during_a_respawn_lands_the_tab_in_its_group_without_a_m
     let mut other = Journal::open(&path, ActorId(2)).unwrap();
     other.begin().unwrap().commit(vec![OpBody::Delete { node: g.parse().unwrap() }]).unwrap();
     assert!(app.save_session());
-    assert_eq!(app.mirror.group(&t), Some(outer.as_str()), "the cascade reached the respawning tab");
-    assert!(!app.writes.has_moves(), "a remote cascade queues nothing");
+    assert_eq!(app.doc.mirror.group(&t), Some(outer.as_str()), "the cascade reached the respawning tab");
+    assert!(!app.doc.writes.has_moves(), "a remote cascade queues nothing");
     fail_spawns(&mut app);
-    assert_eq!(app.mirror.group(&t), Some(outer.as_str()));
-    let doc = app.journal.as_ref().unwrap().doc();
+    assert_eq!(app.doc.mirror.group(&t), Some(outer.as_str()));
+    let doc = app.doc.journal.as_ref().unwrap().doc();
     assert_eq!(doc.effective_group(t.parse().unwrap()), Some(outer.parse().unwrap()));
     assert_eq!(doc.nodes[&t.parse().unwrap()].group, Some(g.parse().unwrap()), "no move was committed");
 }
@@ -4028,11 +4044,11 @@ fn a_local_dissolve_during_a_respawn_moves_the_tab_up_a_level() {
     let (outer, g, t) = nested_tab(&mut app);
     start_respawn(&mut app, &t);
     app.remove_node(&g);
-    assert_eq!(app.mirror.group(&t), Some(outer.as_str()));
+    assert_eq!(app.doc.mirror.group(&t), Some(outer.as_str()));
     assert!(app.save_session());
     fail_spawns(&mut app);
-    assert_eq!(app.mirror.group(&t), Some(outer.as_str()));
-    let doc = app.journal.as_ref().unwrap().doc();
+    assert_eq!(app.doc.mirror.group(&t), Some(outer.as_str()));
+    let doc = app.doc.journal.as_ref().unwrap().doc();
     assert_eq!(doc.effective_group(t.parse().unwrap()), Some(outer.parse().unwrap()));
 }
 
@@ -4050,8 +4066,8 @@ fn a_local_merge_during_a_respawn_moves_the_tab_into_the_target() {
     app.merge_groups(&source, &target);
     assert!(app.save_session());
     fail_spawns(&mut app);
-    assert_eq!(app.mirror.group(&m), Some(target.as_str()));
-    let doc = app.journal.as_ref().unwrap().doc();
+    assert_eq!(app.doc.mirror.group(&m), Some(target.as_str()));
+    let doc = app.doc.journal.as_ref().unwrap().doc();
     assert_eq!(doc.effective_group(m.parse().unwrap()), Some(target.parse().unwrap()));
 }
 
@@ -4074,11 +4090,11 @@ fn a_local_removal_during_a_respawn_reparents_the_tab() {
     let (a, p, c) = parent_chain(&mut app);
     start_respawn(&mut app, &c);
     app.remove_tab(&p);
-    assert_eq!(app.mirror.parent(&c), Some(a.as_str()));
+    assert_eq!(app.doc.mirror.parent(&c), Some(a.as_str()));
     assert!(app.save_session());
     assert_eq!(stored(&app, &c, field::PARENT), FieldValue::Id(Some(a.parse().unwrap())));
     fail_spawns(&mut app);
-    assert_eq!(app.mirror.parent(&c), Some(a.as_str()));
+    assert_eq!(app.doc.mirror.parent(&c), Some(a.as_str()));
     assert_eq!(stored(&app, &c, field::PARENT), FieldValue::Id(Some(a.parse().unwrap())));
 }
 
@@ -4092,10 +4108,10 @@ fn a_remote_removal_during_a_respawn_reparents_the_tab_in_the_mirror_only() {
     let mut other = Journal::open(&path, ActorId(2)).unwrap();
     other.begin().unwrap().commit(vec![OpBody::Delete { node: p.parse().unwrap() }]).unwrap();
     assert!(app.save_session());
-    assert_eq!(app.mirror.parent(&c), Some(a.as_str()), "the cascade reached the respawning tab");
-    assert!(!app.writes.has_fields(), "a remote cascade queues nothing");
+    assert_eq!(app.doc.mirror.parent(&c), Some(a.as_str()), "the cascade reached the respawning tab");
+    assert!(!app.doc.writes.has_fields(), "a remote cascade queues nothing");
     fail_spawns(&mut app);
-    assert_eq!(app.mirror.parent(&c), Some(a.as_str()));
+    assert_eq!(app.doc.mirror.parent(&c), Some(a.as_str()));
 }
 
 /// The landing safety net (`seed_landing`): a new spawn has no mirror entry for the cascades to reach, so a group
@@ -4123,9 +4139,9 @@ fn a_new_spawn_into_a_group_dissolved_in_flight_lands_where_the_document_shows_i
     assert!(app.save_session(), "creates the spawning tab in G");
     app.remove_node(&g); // not saved before the landing
     fail_spawns(&mut app);
-    assert_eq!(app.mirror.group(&t), Some(outer.as_str()));
-    assert!(!app.writes.has_moves());
-    let doc = app.journal.as_ref().unwrap().doc();
+    assert_eq!(app.doc.mirror.group(&t), Some(outer.as_str()));
+    assert!(!app.doc.writes.has_moves());
+    let doc = app.doc.journal.as_ref().unwrap().doc();
     assert_eq!(doc.effective_group(t.parse().unwrap()), Some(outer.parse().unwrap()));
     assert_eq!(doc.nodes[&t.parse().unwrap()].group, Some(g.parse().unwrap()), "no move was committed");
 }
@@ -4151,10 +4167,10 @@ fn a_navigation_saves_the_url_it_started_with_not_the_redirect() {
     assert!(app.save_session());
     app.edit_url(&tab, "https://a/");
     set_live_url(&mut app, &tab, "https://b/");
-    assert_eq!(app.mirror.url(&tab), "https://a/", "shown at once");
+    assert_eq!(app.doc.mirror.url(&tab), "https://a/", "shown at once");
     assert!(app.save_session());
     assert_eq!(stored(&app, &tab, field::URL), FieldValue::Str("https://a/".into()));
-    assert_eq!(app.mirror.url(&tab), "https://a/");
+    assert_eq!(app.doc.mirror.url(&tab), "https://a/");
     assert_eq!(app.nodes[&tab].as_unloaded().unwrap().url, "https://b/", "the live url is the page's");
 }
 
@@ -4173,10 +4189,10 @@ fn a_local_url_edit_wins_over_a_remote_one() {
     remote_set(&mut other, &tab, field::PINNED, FieldValue::Bool(true));
     // The remote round applies, then the next round commits.
     assert!(app.save_session());
-    assert_eq!(app.mirror.url(&tab), "https://mine/");
+    assert_eq!(app.doc.mirror.url(&tab), "https://mine/");
     assert_eq!(stored(&app, &tab, field::URL), FieldValue::Str("https://mine/".into()));
     assert_eq!(app.nodes[&tab].as_unloaded().unwrap().url, "https://mine/", "not moved to theirs");
-    assert!(app.mirror.pinned(&tab), "their other field arrives");
+    assert!(app.doc.mirror.pinned(&tab), "their other field arrives");
     assert!(app.test_spawns.is_empty());
 }
 
@@ -4192,10 +4208,10 @@ fn a_remote_url_change_reaches_the_mirror_and_moves_a_sleeping_tab() {
     let url_stamp = |doc: &Doc| doc.nodes[&tab.parse().unwrap()].fields[&field::URL].stamp;
     let theirs = url_stamp(other.doc());
     assert!(app.save_session());
-    assert_eq!(app.mirror.url(&tab), "https://moved/");
+    assert_eq!(app.doc.mirror.url(&tab), "https://moved/");
     assert_eq!(app.nodes[&tab].as_unloaded().unwrap().url, "https://moved/");
     assert!(app.save_session());
-    let ours = url_stamp(app.journal.as_ref().unwrap().doc());
+    let ours = url_stamp(app.doc.journal.as_ref().unwrap().doc());
     assert_eq!(ours, theirs, "nothing written back: the register is still the remote write");
     assert_eq!(stored(&app, &tab, field::URL), FieldValue::Str("https://moved/".into()));
 }
@@ -4212,7 +4228,7 @@ fn an_unmarked_live_url_is_never_saved() {
         set_live_url(&mut app, &tab, "https://s/moved");
         assert!(app.save_session());
         assert_eq!(stored(&app, &tab, field::URL), FieldValue::Str("https://s/".into()));
-        assert_eq!(app.mirror.url(&tab), "https://s/");
+        assert_eq!(app.doc.mirror.url(&tab), "https://s/");
         app.maybe_write_local(true);
         app.close_store();
         tab
@@ -4220,7 +4236,7 @@ fn an_unmarked_live_url_is_never_saved() {
     let mut app = app_on(&path, 2);
     assert!(app.restore_session());
     assert_eq!(app.nodes[&tab].as_unloaded().unwrap().url, "https://s/moved", "reopened at its live url");
-    assert_eq!(app.mirror.url(&tab), "https://s/", "the mirror shows the shared one");
+    assert_eq!(app.doc.mirror.url(&tab), "https://s/", "the mirror shows the shared one");
     fail_spawns(&mut app);
     assert!(app.save_session());
     assert_eq!(stored(&app, &tab, field::URL), FieldValue::Str("https://s/".into()));
@@ -4244,7 +4260,7 @@ fn a_spawning_tab_is_created_and_lands_with_its_url() {
     assert!(app.save_session());
     assert_eq!(stored(&app, &t, field::URL), FieldValue::Str("https://t/".into()));
     fail_spawns(&mut app);
-    assert_eq!(app.mirror.url(&t), "https://t/", "the failed card lands with it");
+    assert_eq!(app.doc.mirror.url(&t), "https://t/", "the failed card lands with it");
     assert!(app.save_session());
     assert_eq!(stored(&app, &t, field::URL), FieldValue::Str("https://t/".into()));
 }
@@ -4261,14 +4277,14 @@ fn a_jar_pick_saves_the_field_and_only_when_it_changed() {
     assert!(app.save_session());
     let key = |no| (tab.parse::<NodeId>().unwrap(), no);
     app.set_jar_edge(&tab, Some(work));
-    assert_eq!(app.mirror.jar(&tab), Some(work), "shown at once");
-    assert_eq!(app.writes.fields().map(|(n, no, _)| (n, no)).collect::<Vec<_>>(), [key(field::JAR)]);
+    assert_eq!(app.doc.mirror.jar(&tab), Some(work), "shown at once");
+    assert_eq!(app.doc.writes.fields().map(|(n, no, _)| (n, no)).collect::<Vec<_>>(), [key(field::JAR)]);
     assert!(app.save_session());
     assert_eq!(stored(&app, &tab, field::JAR), FieldValue::Id(Some(work)));
     app.set_jar_edge(&tab, Some(work));
-    assert!(!app.writes.has_fields(), "re-picking the same jar queues nothing");
+    assert!(!app.doc.writes.has_fields(), "re-picking the same jar queues nothing");
     app.set_jar_edge(&tab, None);
-    assert_eq!(app.writes.fields().map(|(n, no, _)| (n, no)).collect::<Vec<_>>(), [key(field::JAR)]);
+    assert_eq!(app.doc.writes.fields().map(|(n, no, _)| (n, no)).collect::<Vec<_>>(), [key(field::JAR)]);
     assert!(app.save_session());
     assert_eq!(stored(&app, &tab, field::JAR), FieldValue::Id(None));
 }
@@ -4287,9 +4303,9 @@ fn a_pending_jar_naming_a_jar_deleted_in_this_commit_is_written_as_none() {
     app.remove_remotely_deleted(&work.to_string());
     app.queue_delete(&work.to_string());
     assert!(app.save_session());
-    assert!(!app.journal.as_ref().unwrap().doc().nodes[&work].is_live(), "the jar's delete is in this commit");
+    assert!(!app.doc.journal.as_ref().unwrap().doc().nodes[&work].is_live(), "the jar's delete is in this commit");
     assert_eq!(stored(&app, &tab, field::JAR), FieldValue::Id(None));
-    assert_eq!(app.mirror.jar(&tab), None, "the mirror shows what was written");
+    assert_eq!(app.doc.mirror.jar(&tab), None, "the mirror shows what was written");
 }
 
 /// Ruling 8, `Create`: a new tab naming a jar the same commit deletes is created with none; one naming a jar the same
@@ -4309,7 +4325,7 @@ fn a_created_tab_naming_a_jar_deleted_in_this_commit_is_created_with_none() {
     app.set_jar_edge(&other, Some(home));
     assert!(app.save_session());
     assert_eq!(stored(&app, &tab, field::JAR), FieldValue::Id(None), "created with none");
-    assert_eq!(app.mirror.jar(&tab), None, "the mirror shows what was written");
+    assert_eq!(app.doc.mirror.jar(&tab), None, "the mirror shows what was written");
     assert_eq!(stored(&app, &other, field::JAR), FieldValue::Id(Some(home)), "a jar created here is kept");
 }
 
@@ -4330,7 +4346,7 @@ fn a_dangling_remote_deleted_jar_survives_a_save() {
     assert!(!app.jar_defs().contains_key(&work), "the remote delete arrived");
     assert!(app.save_session());
     assert_eq!(stored(&app, &tab, field::JAR), FieldValue::Id(Some(work)), "not cleared by a save");
-    assert_eq!(app.mirror.jar(&tab), Some(work));
+    assert_eq!(app.doc.mirror.jar(&tab), Some(work));
     assert!(app.jar_chip(&tab).is_some_and(|c| c.missing), "the chip says the jar is missing");
 }
 
@@ -4347,9 +4363,9 @@ fn a_local_jar_pick_wins_over_a_remote_one() {
     remote_set(&mut other, &tab, field::JAR, FieldValue::Id(Some(theirs)));
     remote_set(&mut other, &tab, field::PINNED, FieldValue::Bool(true));
     assert!(app.save_session());
-    assert_eq!(app.mirror.jar(&tab), Some(mine));
+    assert_eq!(app.doc.mirror.jar(&tab), Some(mine));
     assert_eq!(stored(&app, &tab, field::JAR), FieldValue::Id(Some(mine)));
-    assert!(app.mirror.pinned(&tab), "their other field arrives");
+    assert!(app.doc.mirror.pinned(&tab), "their other field arrives");
 }
 
 /// Ruling 9 (2b-2's parked item): `recheck_edge_scope` reaches a tab mid-respawn, so a local move that takes its
@@ -4366,11 +4382,11 @@ fn a_respawning_tab_follows_a_local_moves_edge_recheck() {
     start_respawn(&mut app, &t);
     app.edit_group(&t, None); // out of G: the jar inside G is no longer in reach
     app.recheck_edge_scope(&t);
-    assert_eq!(app.mirror.jar(&t), None);
+    assert_eq!(app.doc.mirror.jar(&t), None);
     assert!(app.save_session());
     assert_eq!(stored(&app, &t, field::JAR), FieldValue::Id(None));
     fail_spawns(&mut app);
-    assert_eq!(app.mirror.jar(&t), None, "it lands without it");
+    assert_eq!(app.doc.mirror.jar(&t), None, "it lands without it");
     assert!(app.save_session());
     assert_eq!(stored(&app, &t, field::JAR), FieldValue::Id(None));
 }
@@ -4401,12 +4417,12 @@ fn a_spawning_tab_is_created_and_lands_with_its_jar() {
     app.spawn_tab_async(spawn);
     assert!(app.save_session());
     assert_eq!(stored(&app, &t, field::JAR), FieldValue::Id(Some(work)), "created with its jar");
-    assert!(!app.linked_ids().any(|id| id == t) && app.mirror.jar(&t).is_none(), "out of the edits' reach");
+    assert!(!app.linked_ids().any(|id| id == t) && app.doc.mirror.jar(&t).is_none(), "out of the edits' reach");
     app.set_jar_edge(&g, Some(home));
-    assert!(!app.mirror.has(&t), "no partial entry");
+    assert!(!app.doc.mirror.has(&t), "no partial entry");
     fail_spawns(&mut app);
-    assert_eq!(app.mirror.jar(&t), Some(work), "lands with it");
-    assert_eq!(app.mirror.color(&t), Some(egui::Color32::RED), "the landing seeded the whole entry");
+    assert_eq!(app.doc.mirror.jar(&t), Some(work), "lands with it");
+    assert_eq!(app.doc.mirror.color(&t), Some(egui::Color32::RED), "the landing seeded the whole entry");
     assert!(app.save_session());
     assert_eq!(stored(&app, &t, field::JAR), FieldValue::Id(Some(work)));
 }
@@ -4559,8 +4575,8 @@ fn a_swap_saves_its_target_before_the_state_snapshot() {
     assert!(app.save_session());
     assert_eq!(stored(&app, &tab, field::VIEW_KIND), view_kind(ViewKind::Servo));
     app.start_swap_to(&tab, ViewKind::Cef);
-    assert_eq!(app.mirror.view_kind(&tab), ViewKind::Cef, "shown at once");
-    assert!(app.writes.field_queued(tab.parse().unwrap(), field::VIEW_KIND), "queued when the swap starts");
+    assert_eq!(app.doc.mirror.view_kind(&tab), ViewKind::Cef, "shown at once");
+    assert!(app.doc.writes.field_queued(tab.parse().unwrap(), field::VIEW_KIND), "queued when the swap starts");
     assert!(sent(&mut peer).iter().any(|m| matches!(m, HostToView::GetState)), "the swap asked for the state");
     assert!(app.save_session());
     assert_eq!(stored(&app, &tab, field::VIEW_KIND), view_kind(ViewKind::Cef));
@@ -4584,12 +4600,12 @@ fn a_failed_swap_writes_the_old_view_back() {
     fail_spawns(&mut app);
     let fallback = &app.test_spawns.first().expect("the fallback is in flight").0;
     assert_eq!((fallback.kind, fallback.fallback_kind), (ViewKind::Servo, None));
-    assert_eq!(app.mirror.view_kind(&tab), ViewKind::Servo);
+    assert_eq!(app.doc.mirror.view_kind(&tab), ViewKind::Servo);
     assert!(app.save_session());
     assert_eq!(stored(&app, &tab, field::VIEW_KIND), view_kind(ViewKind::Servo), "written back as the fallback starts");
     fail_spawns(&mut app);
     assert!(matches!(app.nodes[&tab].as_unloaded().unwrap().state, UnloadedState::Failed(_)));
-    assert_eq!(app.mirror.view_kind(&tab), ViewKind::Servo);
+    assert_eq!(app.doc.mirror.view_kind(&tab), ViewKind::Servo);
     assert!(app.save_session());
     assert_eq!(stored(&app, &tab, field::VIEW_KIND), view_kind(ViewKind::Servo));
 }
@@ -4604,10 +4620,10 @@ fn a_remote_view_change_on_a_live_tab_starts_a_swap() {
     let mut other = Journal::open(&path, ActorId(2)).unwrap();
     remote_set(&mut other, &tab, field::VIEW_KIND, view_kind(ViewKind::Cef));
     assert!(app.save_session());
-    assert_eq!(app.mirror.view_kind(&tab), ViewKind::Cef);
+    assert_eq!(app.doc.mirror.view_kind(&tab), ViewKind::Cef);
     assert_eq!(swap_target(&app, &tab), Some(ViewKind::Cef), "the swap started");
     assert!(sent(&mut peer).iter().any(|m| matches!(m, HostToView::GetState)));
-    assert!(!app.writes.has_fields(), "nothing queued");
+    assert!(!app.doc.writes.has_fields(), "nothing queued");
     assert_eq!(stored(&app, &tab, field::VIEW_KIND), view_kind(ViewKind::Cef));
 }
 
@@ -4624,13 +4640,13 @@ fn a_local_swap_in_flight_wins_over_a_remote_view_kind() {
     remote_set(&mut other, &tab, field::VIEW_KIND, view_kind(ViewKind::Webview2));
     remote_set(&mut other, &tab, field::PINNED, FieldValue::Bool(true));
     assert!(app.save_session());
-    assert_eq!(app.mirror.view_kind(&tab), ViewKind::Cef);
+    assert_eq!(app.doc.mirror.view_kind(&tab), ViewKind::Cef);
     assert_eq!(stored(&app, &tab, field::VIEW_KIND), view_kind(ViewKind::Cef));
-    assert!(app.mirror.pinned(&tab), "their other field arrives");
+    assert!(app.doc.mirror.pinned(&tab), "their other field arrives");
     // Saved, and the old engine's state is still on its way: a later remote engine loses too.
     remote_set(&mut other, &tab, field::VIEW_KIND, view_kind(ViewKind::Webview2));
     assert!(app.save_session());
-    assert_eq!(app.mirror.view_kind(&tab), ViewKind::Cef);
+    assert_eq!(app.doc.mirror.view_kind(&tab), ViewKind::Cef);
     assert_eq!(stored(&app, &tab, field::VIEW_KIND), view_kind(ViewKind::Cef), "written again");
     assert_eq!(swap_target(&app, &tab), Some(ViewKind::Cef), "still the one swap");
     let asked = sent(&mut peer).iter().filter(|m| matches!(m, HostToView::GetState)).count();
@@ -4646,15 +4662,15 @@ fn a_wake_into_another_view_is_saved_at_wake_start() {
     let tab = add(&mut app, Kind::Tab, sleeping_tab("https://s/", ""));
     assert!(app.save_session());
     app.wake_tab(&tab, ViewKind::Cef);
-    assert_eq!(app.mirror.view_kind(&tab), ViewKind::Cef, "shown at once");
+    assert_eq!(app.doc.mirror.view_kind(&tab), ViewKind::Cef, "shown at once");
     assert_eq!(app.test_spawns[0].0.kind, ViewKind::Cef);
     app.wake_tab(&tab, ViewKind::Webview2);
-    assert_eq!(app.mirror.view_kind(&tab), ViewKind::Cef, "an ignored wake changes nothing");
+    assert_eq!(app.doc.mirror.view_kind(&tab), ViewKind::Cef, "an ignored wake changes nothing");
     assert!(app.save_session());
     assert_eq!(stored(&app, &tab, field::VIEW_KIND), view_kind(ViewKind::Cef), "saved while the wake is in flight");
     fail_spawns(&mut app);
     assert!(matches!(app.nodes[&tab].as_unloaded().unwrap().state, UnloadedState::Failed(_)));
-    assert_eq!(app.mirror.view_kind(&tab), ViewKind::Cef, "the failed card is on the engine that failed");
+    assert_eq!(app.doc.mirror.view_kind(&tab), ViewKind::Cef, "the failed card is on the engine that failed");
     assert!(app.save_session());
     assert_eq!(stored(&app, &tab, field::VIEW_KIND), view_kind(ViewKind::Cef));
 }
@@ -4670,7 +4686,7 @@ fn an_unknown_view_code_survives_a_save() {
     let mut other = Journal::open(&path, ActorId(2)).unwrap();
     remote_set(&mut other, &tab, field::VIEW_KIND, FieldValue::ViewCode(99));
     assert!(app.save_session());
-    assert_eq!(app.mirror.view_kind(&tab), ViewKind::Servo);
+    assert_eq!(app.doc.mirror.view_kind(&tab), ViewKind::Servo);
     app.edit_field(&tab, field::PINNED, FieldValue::Bool(true));
     assert!(app.save_session());
     assert_eq!(stored(&app, &tab, field::VIEW_KIND), FieldValue::ViewCode(99), "not overwritten by a save");
@@ -4695,7 +4711,7 @@ fn a_tab_put_to_sleep_mid_swap_keeps_the_target() {
     assert!(app.request_sleep(&tab, crate::sleep_state::SleepWhy::Manual), "a sleep is not refused mid-swap");
     app.finish_sleep(&tab, manifold_view_protocol::PageState { scroll_x: 0.0, scroll_y: 0.0, dirty_form: false });
     assert_eq!(app.nodes[&tab].as_unloaded().unwrap().state, UnloadedState::Sleeping, "asleep");
-    assert_eq!(app.mirror.view_kind(&tab), ViewKind::Cef);
+    assert_eq!(app.doc.mirror.view_kind(&tab), ViewKind::Cef);
     assert!(app.save_session());
     assert_eq!(stored(&app, &tab, field::VIEW_KIND), view_kind(ViewKind::Cef));
     app.focus_tab(&tab);
@@ -4715,7 +4731,7 @@ fn a_crash_mid_swap_restarts_on_the_target_with_the_old_view_as_fallback() {
     let spawn = &app.test_spawns.first().expect("restarting").0;
     assert_eq!((spawn.kind, spawn.fallback_kind), (ViewKind::Cef, Some(ViewKind::Servo)));
     fail_spawns(&mut app);
-    assert_eq!(app.mirror.view_kind(&tab), ViewKind::Servo, "the target failed: back to the old engine");
+    assert_eq!(app.doc.mirror.view_kind(&tab), ViewKind::Servo, "the target failed: back to the old engine");
     assert!(app.save_session());
     assert_eq!(stored(&app, &tab, field::VIEW_KIND), view_kind(ViewKind::Servo));
 }
@@ -4756,19 +4772,19 @@ fn a_swap_waiting_for_its_cookies_is_still_the_one_swap() {
     assert!(app.cookies.cookie_holds.contains_key(&tab), "parked for the cookies");
     assert_eq!(swap_target(&app, &tab), None);
     app.start_swap_to(&tab, ViewKind::Servo);
-    assert_eq!(app.mirror.view_kind(&tab), ViewKind::Webview2, "a local pick is refused");
+    assert_eq!(app.doc.mirror.view_kind(&tab), ViewKind::Webview2, "a local pick is refused");
     remote_set(&mut other, &tab, field::VIEW_KIND, view_kind(ViewKind::Servo));
     assert!(app.save_session());
     assert_eq!(swap_target(&app, &tab), None, "no second swap");
     let asked = sent(&mut peer).iter().filter(|m| matches!(m, HostToView::GetState)).count();
     assert_eq!(asked, 1, "the old host was asked once");
-    assert_eq!(app.mirror.view_kind(&tab), ViewKind::Webview2, "the remote engine is written over");
+    assert_eq!(app.doc.mirror.view_kind(&tab), ViewKind::Webview2, "the remote engine is written over");
     app.handle_view_message(&tab, manifold_view_protocol::ViewToHost::Cookies("[]".into()));
     let spawn = &app.test_spawns.first().expect("the swap goes on").0;
     assert_eq!((spawn.kind, spawn.fallback_kind), (ViewKind::Webview2, Some(ViewKind::Cef)));
     let _peers = land_spawns(&mut app);
     assert_eq!(app.nodes[&tab].as_tab().unwrap().tab.kind, ViewKind::Webview2, "landed on the target");
-    assert_eq!(app.mirror.view_kind(&tab), ViewKind::Webview2, "the document holds what runs");
+    assert_eq!(app.doc.mirror.view_kind(&tab), ViewKind::Webview2, "the document holds what runs");
     assert!(app.save_session());
     assert_eq!(stored(&app, &tab, field::VIEW_KIND), view_kind(ViewKind::Webview2));
 }
@@ -4784,8 +4800,8 @@ fn a_remote_view_change_on_a_sleeping_card_is_the_one_it_wakes_into() {
     let mut other = Journal::open(&path, ActorId(2)).unwrap();
     remote_set(&mut other, &tab, field::VIEW_KIND, view_kind(ViewKind::Cef));
     assert!(app.save_session());
-    assert_eq!(app.mirror.view_kind(&tab), ViewKind::Cef);
-    assert!(!app.writes.has_fields() && app.test_spawns.is_empty(), "nothing queued or started");
+    assert_eq!(app.doc.mirror.view_kind(&tab), ViewKind::Cef);
+    assert!(!app.doc.writes.has_fields() && app.test_spawns.is_empty(), "nothing queued or started");
     assert_eq!(app.nodes[&tab].as_unloaded().unwrap().state, UnloadedState::Sleeping);
     app.focus_tab(&tab);
     assert_eq!(app.test_spawns[0].0.kind, ViewKind::Cef, "wakes into it");
@@ -4832,7 +4848,7 @@ fn a_remote_url_navigates_a_live_tab_unless_a_local_url_is_pending() {
     assert!(app.save_session());
     let after = sent(&mut peer);
     assert!(!after.iter().any(|m| matches!(m, HostToView::Navigate { .. })), "held back: no Navigate, got {after:?}");
-    assert_eq!(app.mirror.url(&tab), "https://local/");
+    assert_eq!(app.doc.mirror.url(&tab), "https://local/");
     assert_eq!(stored(&app, &tab, field::URL), FieldValue::Str("https://local/".into()));
 }
 
@@ -4854,11 +4870,11 @@ fn a_remote_url_parked_during_a_wake_navigates_the_tab_when_it_lands() {
     assert!(app.spawns.remote_in_flight.contains_key(&tab), "parked for the landing");
     app.remove_node(&note);
     assert!(app.save_session());
-    assert!(!app.journal.as_ref().unwrap().doc().nodes[&note.parse().unwrap()].is_live(), "the Delete committed");
+    assert!(!app.doc.journal.as_ref().unwrap().doc().nodes[&note.parse().unwrap()].is_live(), "the Delete committed");
     let mut peers = land_spawns(&mut app);
     let to_r = sent(&mut peers[0]).iter().any(|m| matches!(m, HostToView::Navigate { url, .. } if url == "https://r/"));
     assert!(to_r, "the landed tab is sent to the remote url");
-    assert_eq!(app.mirror.url(&tab), "https://r/");
+    assert_eq!(app.doc.mirror.url(&tab), "https://r/");
 }
 
 /// Final review I1, engine: another replica's engine, parked while a swap's respawn is in flight, still reaches
@@ -4888,7 +4904,7 @@ fn a_remote_view_parked_during_a_swap_respawn_is_swapped_to_when_it_lands() {
     assert_eq!(stored(&app, &tab, field::JAR), FieldValue::Id(Some(work)), "the edit committed for the tab");
     let _peers = land_spawns(&mut app);
     assert_eq!(app.nodes[&tab].as_tab().unwrap().tab.kind, ViewKind::Cef, "landed on the swap's target");
-    assert_eq!(app.mirror.view_kind(&tab), ViewKind::Webview2);
+    assert_eq!(app.doc.mirror.view_kind(&tab), ViewKind::Webview2);
     assert_eq!(app.swap_in_flight(&tab), Some(ViewKind::Webview2), "and swaps on to the remote engine");
     assert!(app.save_session());
     assert_eq!(stored(&app, &tab, field::VIEW_KIND), view_kind(ViewKind::Webview2));
@@ -4977,7 +4993,7 @@ fn a_groups_jar_edge_saves_and_a_remote_change_reaches_it() {
     let (work, home) = (add_jar(&mut app, "Work"), add_jar(&mut app, "Home"));
     let g = add_group(&mut app, "G");
     app.set_jar_edge(&g, Some(work));
-    assert_eq!(app.mirror.jar(&g), Some(work));
+    assert_eq!(app.doc.mirror.jar(&g), Some(work));
     assert!(app.save_session());
     assert_eq!(stored(&app, &g, field::JAR), FieldValue::Id(Some(work)));
     app.set_jar_edge(&g, None);
@@ -4986,7 +5002,7 @@ fn a_groups_jar_edge_saves_and_a_remote_change_reaches_it() {
     let mut other = Journal::open(&path, ActorId(2)).unwrap();
     remote_set(&mut other, &g, field::JAR, FieldValue::Id(Some(home)));
     assert!(app.save_session());
-    assert_eq!(app.mirror.jar(&g), Some(home));
+    assert_eq!(app.doc.mirror.jar(&g), Some(home));
     assert_eq!(app.effective_jar(&g), Some((home, false)), "its tabs use Home");
 }
 
@@ -5006,7 +5022,7 @@ fn a_remote_deleted_group_jar_stays_stored() {
     assert!(!app.jar_defs().contains_key(&work), "the jar is gone here");
     assert!(app.save_session());
     assert_eq!(stored(&app, &g, field::JAR), FieldValue::Id(Some(work)), "not cleared");
-    assert_eq!(app.mirror.jar(&g), Some(work));
+    assert_eq!(app.doc.mirror.jar(&g), Some(work));
 }
 
 /// Ruling 10: every way a node is made seeds its type in the mirror (`Mirror::ty`): placed here, landed from a spawn,
@@ -5032,7 +5048,7 @@ fn every_creation_path_seeds_the_node_type() {
         ),
     ];
     for (id, kind) in &placed {
-        assert_eq!(app.mirror.ty(id), ty(*kind), "{kind:?}");
+        assert_eq!(app.doc.mirror.ty(id), ty(*kind), "{kind:?}");
     }
 
     // A tab that lands from a spawn (`seed_landing`).
@@ -5047,7 +5063,7 @@ fn every_creation_path_seeds_the_node_type() {
     );
     app.spawn_tab_async(spawn);
     fail_spawns(&mut app);
-    assert_eq!(app.mirror.ty(&t), ty(Kind::Tab), "a failed landing");
+    assert_eq!(app.doc.mirror.ty(&t), ty(Kind::Tab), "a failed landing");
     let live = app.alloc_node_id();
     let spawn = crate::tabs::TabSpawn::new(
         live.clone(),
@@ -5060,7 +5076,7 @@ fn every_creation_path_seeds_the_node_type() {
     app.spawn_tab_async(spawn);
     let _peers = land_spawns(&mut app);
     assert!(app.nodes[&live].as_tab().is_some(), "landed live");
-    assert_eq!(app.mirror.ty(&live), ty(Kind::Tab), "a live landing");
+    assert_eq!(app.doc.mirror.ty(&live), ty(Kind::Tab), "a live landing");
 
     // Materialized from the document.
     let nodes = BTreeMap::from([
@@ -5070,7 +5086,7 @@ fn every_creation_path_seeds_the_node_type() {
     ]);
     let app = app_with(&nodes);
     for (id, node) in &nodes {
-        assert_eq!(app.mirror.ty(&id.to_string()), ty(node.kind()), "materialized {:?}", node.kind());
+        assert_eq!(app.doc.mirror.ty(&id.to_string()), ty(node.kind()), "materialized {:?}", node.kind());
     }
 }
 
@@ -5088,7 +5104,7 @@ fn a_created_group_shows_the_jar_its_create_resolved() {
     other.begin().unwrap().commit(vec![OpBody::Delete { node: work }]).unwrap();
     assert!(app.save_session());
     assert_eq!(stored(&app, &g, field::JAR), FieldValue::Id(None), "created without the deleted jar");
-    assert_eq!(app.mirror.jar(&g), None, "the mirror shows what the document holds");
+    assert_eq!(app.doc.mirror.jar(&g), None, "the mirror shows what the document holds");
     assert!(app.save_session());
     assert_eq!(stored(&app, &g, field::JAR), FieldValue::Id(None));
 }
@@ -5106,7 +5122,7 @@ fn a_created_note_shows_the_parent_its_create_resolved() {
     other.begin().unwrap().commit(vec![OpBody::Delete { node: opener.parse().unwrap() }]).unwrap();
     assert!(app.save_session());
     assert_eq!(stored(&app, &note, field::PARENT), FieldValue::Id(None));
-    assert_eq!(app.mirror.parent(&note), None, "the mirror shows what the document holds");
+    assert_eq!(app.doc.mirror.parent(&note), None, "the mirror shows what the document holds");
 }
 
 /// Spawn failures that share a cause reach the toast queue as one message once the window has passed.
@@ -5148,7 +5164,7 @@ fn a_failed_retry_and_a_new_failure_of_one_intent_leave_one_card() {
     app.spawn_tab_at("https://a/", egui::Vec2::ZERO, None, None);
     fail_spawns(&mut app);
     let card = failed_cards(&app).remove(0);
-    let kind = app.mirror.view_kind(&card);
+    let kind = app.doc.mirror.view_kind(&card);
     app.wake_tab(&card, kind);
     assert_eq!(app.nodes[&card].as_unloaded().unwrap().state, UnloadedState::Waking);
     app.spawn_tab_at("https://a/", egui::Vec2::ZERO, None, None);
@@ -5172,7 +5188,10 @@ fn a_crashed_tab_beside_a_failed_card_for_its_intent_leaves_one_card() {
     assert_eq!(failed_cards(&app).len(), 1, "setup: a failed card beside the live tab");
     app.leave_failed_card(&live, "keeps crashing", LeftClosed::KeepsCrashing);
     assert_eq!(failed_cards(&app), std::slice::from_ref(&live));
-    assert!(app.journal.as_ref().unwrap().doc().closed_roots().is_empty(), "the other card is deleted, not recorded");
+    assert!(
+        app.doc.journal.as_ref().unwrap().doc().closed_roots().is_empty(),
+        "the other card is deleted, not recorded"
+    );
 }
 
 /// A tab whose engine stops reading is toasted once per stall, not once per drain.
@@ -5238,7 +5257,7 @@ fn a_link_survives_save_and_restore() {
     app.close_store();
     let mut restored = app_on(&path, 2);
     assert!(restored.restore_session());
-    assert_eq!(restored.mirror.link_ends(&link), (a.parse().ok(), b.parse().ok()));
+    assert_eq!(restored.doc.mirror.link_ends(&link), (a.parse().ok(), b.parse().ok()));
     assert_eq!(restored.links_naming(&a), vec![link]);
 }
 
@@ -5251,7 +5270,7 @@ fn removing_a_card_deletes_its_links() {
     let link = app.create_link(&a, &b);
     app.remove_tab(&a);
     assert!(app.links_naming(&b).is_empty());
-    assert!(app.mirror.link_ids().all(|id| id.to_string() != link));
+    assert!(app.doc.mirror.link_ids().all(|id| id.to_string() != link));
     assert!(app.save_session());
 }
 
@@ -5266,7 +5285,7 @@ fn a_remote_delete_of_an_endpoint_removes_its_links() {
     // (as `remote_jar_create_rename_and_delete_reach_jar_defs`):
     app.apply_remote(vec![(a.parse().unwrap(), Remote::Deleted)]);
     assert!(app.links_naming(&b).is_empty());
-    assert!(app.mirror.link_ids().next().is_none());
+    assert!(app.doc.mirror.link_ids().next().is_none());
 }
 
 /// Replacing the session drops every link from the mirror, a dangling one too, and the save still agrees with the
@@ -5280,7 +5299,7 @@ fn replacing_the_session_drops_its_links() {
     app.create_link("not-a-card", "nor-this"); // dangling: no endpoint's cascade reaches it
     assert!(app.save_session());
     app.replace_running_session(&file_with_a_work_jar(), crate::store::json::Trust::Foreign);
-    assert!(app.mirror.link_ids().next().is_none(), "no stale link");
+    assert!(app.doc.mirror.link_ids().next().is_none(), "no stale link");
     assert!(app.save_session());
 }
 
@@ -5293,7 +5312,7 @@ fn a_saved_link_keeps_its_ends_and_is_found_by_a_later_delete() {
     let b = succeed_spawn(&mut app, "https://b/");
     let link = app.create_link(&a, &b);
     assert!(app.save_session());
-    assert_eq!(app.mirror.link_ends(&link), (a.parse().ok(), b.parse().ok()));
+    assert_eq!(app.doc.mirror.link_ends(&link), (a.parse().ok(), b.parse().ok()));
     app.remove_tab(&a);
     assert!(app.links_naming(&b).is_empty());
     assert!(app.save_session());
@@ -5321,10 +5340,10 @@ fn connect_opened_from_sets_the_parent_and_refuses_a_cycle() {
     let a = succeed_spawn(&mut app, "https://a/");
     let b = succeed_spawn(&mut app, "https://b/");
     assert_eq!(app.connect(OPENED_FROM, &b, &a), Ok(()));
-    assert_eq!(app.mirror.parent(&b), Some(a.as_str()));
+    assert_eq!(app.doc.mirror.parent(&b), Some(a.as_str()));
     assert_eq!(app.connect(OPENED_FROM, &a, &b), Err(ConnectError::Cycle));
     app.disconnect(OPENED_FROM, &b, &a);
-    assert_eq!(app.mirror.parent(&b), None);
+    assert_eq!(app.doc.mirror.parent(&b), None);
 }
 
 #[test]
@@ -5456,7 +5475,7 @@ fn connect_opened_from_survives_a_restart_and_a_remote_edit_on_every_allowed_sou
     let mut restored = app_on(&path, 2);
     assert!(restored.restore_session());
     for (ty, id) in &sources {
-        assert_eq!(restored.mirror.parent(id), Some(opener.as_str()), "{ty} after a restart");
+        assert_eq!(restored.doc.mirror.parent(id), Some(opener.as_str()), "{ty} after a restart");
     }
     let mut other = Journal::open(&path, ActorId(3)).unwrap();
     for (_, id) in &sources {
@@ -5464,7 +5483,7 @@ fn connect_opened_from_survives_a_restart_and_a_remote_edit_on_every_allowed_sou
     }
     assert!(restored.save_session());
     for (ty, id) in &sources {
-        assert_eq!(restored.mirror.parent(id), Some(opener.as_str()), "{ty} after another replica's edit");
+        assert_eq!(restored.doc.mirror.parent(id), Some(opener.as_str()), "{ty} after another replica's edit");
     }
 }
 
@@ -5489,7 +5508,7 @@ fn a_running_download_is_no_link_or_opener_end_until_it_completes() {
     }
     assert!(app.valid_targets(LINK, &tab).is_empty() && app.valid_targets(OPENED_FROM, &tab).is_empty());
     assert!(app.valid_targets(LINK, &dl).is_empty(), "nor a source");
-    assert!(app.mirror.link_ids().next().is_none() && app.mirror.parent(&tab).is_none());
+    assert!(app.doc.mirror.link_ids().next().is_none() && app.doc.mirror.parent(&tab).is_none());
 
     app.nodes.get_mut(&dl).unwrap().runtime = download(true);
     assert_eq!(app.valid_targets(LINK, &tab), vec![dl.clone()], "complete, it is a card like any other");
@@ -5514,7 +5533,7 @@ fn a_tab_that_becomes_content_keeps_its_links() {
     assert!(app.links_naming(&tab).is_empty());
     let links = app.links_naming(&node);
     assert_eq!(links.len(), 2);
-    let ends: Vec<_> = links.iter().map(|l| app.mirror.link_ends(l)).collect();
+    let ends: Vec<_> = links.iter().map(|l| app.doc.mirror.link_ends(l)).collect();
     let (n, o) = (node.parse().ok(), other.parse().ok());
     assert!(ends.contains(&(n, o)) && ends.contains(&(o, n)), "direction kept");
     assert!(app.save_session());
@@ -5541,7 +5560,7 @@ fn merging_a_group_retargets_its_links_onto_the_target() {
     assert!(app.links_naming(&s).is_empty());
     let id = |x: &str| x.parse().ok();
     let ends = |app: &App| {
-        let mut ends: Vec<_> = app.links_naming(&t).iter().map(|l| app.mirror.link_ends(l)).collect();
+        let mut ends: Vec<_> = app.links_naming(&t).iter().map(|l| app.doc.mirror.link_ends(l)).collect();
         ends.sort();
         ends
     };
@@ -5582,7 +5601,7 @@ fn connecting_opened_from_again_replaces_the_opener() {
     let c = succeed_spawn(&mut app, "https://c/");
     app.connect(OPENED_FROM, &c, &a).unwrap();
     assert_eq!(app.connect(OPENED_FROM, &c, &b), Ok(()));
-    assert_eq!(app.mirror.parent(&c), Some(b.as_str()));
+    assert_eq!(app.doc.mirror.parent(&c), Some(b.as_str()));
 }
 
 #[test]
@@ -5602,9 +5621,9 @@ fn a_refused_drag_reparent_leaves_the_parent_alone() {
     let b = succeed_spawn(&mut app, "https://b/");
     app.connect(OPENED_FROM, &b, &a).unwrap();
     app.apply_drop(&b, Some((crate::card::DropEffect::Reparent, Some("nope".into()))));
-    assert_eq!(app.mirror.parent(&b), Some(a.as_str()), "a missing target");
+    assert_eq!(app.doc.mirror.parent(&b), Some(a.as_str()), "a missing target");
     app.apply_drop(&a, Some((crate::card::DropEffect::Reparent, Some(b.clone()))));
-    assert_eq!(app.mirror.parent(&a), None, "a cycle");
+    assert_eq!(app.doc.mirror.parent(&a), None, "a cycle");
 }
 
 /// Every link survives a close and comes back with the group under the same id, the outside one included.
@@ -5619,14 +5638,14 @@ fn reopening_a_closed_group_restores_every_link_with_its_id() {
     app.connect(crate::caps::LINK, &x, &y).unwrap();
     app.create_link(&x, &outside); // `connect` would refuse another level, so build this one directly
     assert!(app.save_session());
-    let before: std::collections::BTreeSet<_> = app.mirror.link_ids().collect();
+    let before: std::collections::BTreeSet<_> = app.doc.mirror.link_ids().collect();
     assert_eq!(before.len(), 2);
     app.close_node(&group);
     app.reopen_node(group.parse().unwrap());
-    let after: std::collections::BTreeSet<_> = app.mirror.link_ids().collect();
+    let after: std::collections::BTreeSet<_> = app.doc.mirror.link_ids().collect();
     assert_eq!(after, before, "every link returns with its id");
     for l in &after {
-        let (from, to) = app.mirror.link_ends(&l.to_string());
+        let (from, to) = app.doc.mirror.link_ends(&l.to_string());
         let (from, to) = (from.unwrap().to_string(), to.unwrap().to_string());
         assert!(app.nodes.contains_key(&from) && app.nodes.contains_key(&to), "between live cards");
     }
@@ -5644,7 +5663,7 @@ fn a_foreign_import_drops_a_link_naming_a_card_outside_the_file() {
         json_node("out", Kind::Link, serde_json::json!({ "from": "t", "to": "424242" })),
     ]});
     app.replace_running_session(&serde_json::from_value(json).unwrap(), crate::store::json::Trust::Foreign);
-    let ends: Vec<_> = app.mirror.link_ids().map(|l| app.mirror.link_ends(&l.to_string())).collect();
+    let ends: Vec<_> = app.doc.mirror.link_ids().map(|l| app.doc.mirror.link_ends(&l.to_string())).collect();
     assert_eq!(ends.len(), 1, "only the link inside the file");
     assert!(ends[0].0.is_some() && ends[0].1.is_some());
     assert!(app.save_session());
@@ -5661,7 +5680,7 @@ fn export_state_lists_links() {
 }
 
 fn link_count(app: &App) -> usize {
-    app.mirror.link_ids().count()
+    app.doc.mirror.link_ids().count()
 }
 
 fn link_doc(nodes: Vec<crate::store::json::JsonNode>) -> JsonDoc {
@@ -5782,8 +5801,8 @@ fn closing_keeps_links_to_the_root_and_across_nesting_and_deletes_a_blank_member
     assert!(app.save_session());
     app.close_node(&outer);
     assert!(
-        !app.journal.as_ref().unwrap().doc().nodes.contains_key(&blank.parse().unwrap())
-            || !app.journal.as_ref().unwrap().doc().nodes[&blank.parse().unwrap()].is_live()
+        !app.doc.journal.as_ref().unwrap().doc().nodes.contains_key(&blank.parse().unwrap())
+            || !app.doc.journal.as_ref().unwrap().doc().nodes[&blank.parse().unwrap()].is_live()
     );
     app.reopen_node(outer.parse().unwrap());
     assert_eq!(link_count(&app), 2);
@@ -5869,7 +5888,7 @@ fn disconnect_rows_name_their_edge_and_remove_it() {
     // a's row for the opened-from edge: the parent field is b's.
     let (_, opener) = of_a.iter().find(|(label, _)| label.ends_with("(opened from here)")).unwrap().clone();
     app.apply_node_action(&ctx, &a, opener);
-    assert_eq!(app.mirror.parent(&b), None);
+    assert_eq!(app.doc.mirror.parent(&b), None);
     let (_, link) = disconnects(&app, &b).into_iter().find(|(label, _)| label.ends_with("(link)")).unwrap();
     app.apply_node_action(&ctx, &b, link);
     assert!(app.links_naming(&a).is_empty());
@@ -5903,7 +5922,7 @@ fn closing_a_group_commits_one_frame() {
     let before = frames();
     app.close_node(&g);
     assert_eq!(frames() - before, 1, "one commit for the group and its tabs");
-    let doc = app.journal.as_ref().unwrap().doc();
+    let doc = app.doc.journal.as_ref().unwrap().doc();
     assert!(live_in_doc(&app, &g) && doc.nodes[&g.parse().unwrap()].closed(), "closed, not deleted");
 }
 
@@ -5950,8 +5969,8 @@ fn a_jar_is_a_card_that_round_trips_with_its_position_and_group() {
     let mut back = app_on(&path, 2);
     assert!(back.restore_session());
     assert!(matches!(back.nodes[&jar].runtime, Runtime::Jar), "a jar is a live card");
-    assert_eq!(back.mirror.group(&jar), Some(group.as_str()));
-    assert_eq!(back.mirror.pos(&jar), Some(egui::vec2(120.0, -40.0)));
+    assert_eq!(back.doc.mirror.group(&jar), Some(group.as_str()));
+    assert_eq!(back.doc.mirror.pos(&jar), Some(egui::vec2(120.0, -40.0)));
     assert_eq!(back.jar_defs()[&jar.parse().unwrap()].name, "Work");
 }
 
@@ -6028,7 +6047,7 @@ fn an_imported_default_jar_is_the_running_one() {
         .find(|(_, n)| n.runtime.as_unloaded().is_some())
         .map(|(id, _)| id.clone())
         .expect("tab imported");
-    assert_eq!(app.mirror.jar(&tab), Some(running), "an edge to the file's Default names the running one");
+    assert_eq!(app.doc.mirror.jar(&tab), Some(running), "an edge to the file's Default names the running one");
 }
 
 /// Replacing a session keeps the running Default; the file's other jars come with it, and tabs naming its Default
@@ -6053,7 +6072,7 @@ fn a_replaced_sessions_tabs_use_the_running_default() {
     let work = *app.jar_defs().iter().find(|(_, d)| d.name == "Work").unwrap().0;
     let jar_of_url = |url: &str| {
         let id = app.nodes.iter().find(|(_, n)| n.runtime.as_unloaded().is_some_and(|u| u.url == url)).unwrap().0;
-        app.mirror.jar(id)
+        app.doc.mirror.jar(id)
     };
     assert_eq!(jar_of_url("https://a/"), Some(running), "the file's Default is the running one");
     assert_eq!(jar_of_url("https://b/"), Some(work), "a named jar comes with the session");
@@ -6085,7 +6104,7 @@ pub(crate) fn restored_unknown() -> (App, NodeId, std::path::PathBuf) {
 
 /// The fields `node` holds in `app`'s document, by number.
 fn doc_fields(app: &App, node: NodeId) -> Vec<u32> {
-    app.journal.as_ref().unwrap().doc().nodes[&node].fields.keys().copied().collect()
+    app.doc.journal.as_ref().unwrap().doc().nodes[&node].fields.keys().copied().collect()
 }
 
 #[test]
@@ -6093,10 +6112,10 @@ fn an_unknown_type_is_a_card_from_a_restore_and_from_a_remote_create() {
     let (mut app, node, path) = restored_unknown();
     let key = node.to_string();
     assert!(matches!(app.nodes[&key].runtime, Runtime::Unknown));
-    assert_eq!(app.mirror.ty(&key), FUTURE);
+    assert_eq!(app.doc.mirror.ty(&key), FUTURE);
     assert_eq!(app.card_kind(&key).unwrap().ty, crate::store::model::TYPE_UNKNOWN);
-    assert_eq!(app.mirror.name(&key), "Old");
-    assert_eq!(app.mirror.pos(&key), Some(egui::vec2(5.0, 5.0)));
+    assert_eq!(app.doc.mirror.name(&key), "Old");
+    assert_eq!(app.doc.mirror.pos(&key), Some(egui::vec2(5.0, 5.0)));
     assert_eq!(app.accessible_name(&key).as_deref(), Some("Card: Old"));
     let mut third = Journal::open(&path, ActorId(3)).unwrap();
     let mut txn = third.begin().unwrap();
@@ -6105,7 +6124,7 @@ fn an_unknown_type_is_a_card_from_a_restore_and_from_a_remote_create() {
         .unwrap();
     assert!(app.save_session());
     assert!(matches!(app.nodes[&second.to_string()].runtime, Runtime::Unknown), "another replica's shows too");
-    let doc = app.journal.as_ref().unwrap().doc();
+    let doc = app.doc.journal.as_ref().unwrap().doc();
     assert_eq!(shown(doc), snapshots(&app));
 }
 
@@ -6114,13 +6133,13 @@ fn moving_an_unknown_card_writes_one_set_and_keeps_its_raw_fields() {
     let (mut app, node, _path) = restored_unknown();
     let key = node.to_string();
     assert!(app.save_session());
-    let raw = app.journal.as_ref().unwrap().doc().nodes[&node].fields[&40].enc.clone();
+    let raw = app.doc.journal.as_ref().unwrap().doc().nodes[&node].fields[&40].enc.clone();
     let before = ops_of(&app);
     app.edit_pos(&key, Some(egui::vec2(50.0, 60.0)));
     assert!(app.save_session());
     assert_eq!(ops_of(&app), before + 1, "one Set");
     assert_eq!(stored(&app, &key, field::POS), FieldValue::Pos(50.0, 60.0));
-    let doc = app.journal.as_ref().unwrap().doc();
+    let doc = app.doc.journal.as_ref().unwrap().doc();
     assert_eq!(doc.nodes[&node].fields[&40].enc, raw, "a newer build's field is untouched");
     assert_eq!(doc.nodes[&node].get(field::URL), FieldValue::Str("https://x/".into()), "so is an off-list one");
 }
@@ -6160,7 +6179,7 @@ fn an_unknown_card_copies_as_a_shell_of_its_type() {
     assert!(app.save_session());
     assert_eq!(app.accessible_name(&key).as_deref(), Some("Card: Mine"));
     let shell = |app: &App, id: NodeId| {
-        let doc = app.journal.as_ref().unwrap().doc();
+        let doc = app.doc.journal.as_ref().unwrap().doc();
         assert_eq!(doc.nodes[&id].ty(), FUTURE);
         doc_fields(app, id).iter().all(|no| *no == field::TYPE || *no == field::GROUP || GENERIC.contains(no))
     };
@@ -6173,13 +6192,17 @@ fn an_unknown_card_copies_as_a_shell_of_its_type() {
         .map(|(k, _)| k.clone())
         .collect();
     assert_eq!(copies.len(), 1);
-    assert_eq!(app.mirror.name(&copies[0]), "Mine");
+    assert_eq!(app.doc.mirror.name(&copies[0]), "Mine");
     assert!(shell(&app, copies[0].parse().unwrap()), "{:?}", doc_fields(&app, copies[0].parse().unwrap()));
 
     let orig = doc_fields(&app, key.parse().unwrap());
     app.close_node(&key);
     assert!(!app.nodes.contains_key(&key));
-    assert_eq!(app.journal.as_ref().unwrap().doc().nodes[&key.parse().unwrap()].ty(), FUTURE, "the real string stays");
+    assert_eq!(
+        app.doc.journal.as_ref().unwrap().doc().nodes[&key.parse().unwrap()].ty(),
+        FUTURE,
+        "the real string stays"
+    );
     app.reopen_closed_shortcut();
     let reopened: Vec<NodeId> = app
         .nodes
@@ -6191,7 +6214,7 @@ fn an_unknown_card_copies_as_a_shell_of_its_type() {
     let kept = doc_fields(&app, reopened[0]);
     assert!(orig.iter().all(|no| kept.contains(no)), "raw fields intact: {orig:?} vs {kept:?}");
 
-    let json = crate::store::json::doc_to_json(app.journal.as_ref().unwrap().doc());
+    let json = crate::store::json::doc_to_json(app.doc.journal.as_ref().unwrap().doc());
     let mut counter = 0;
     let next = || {
         counter += 1;
@@ -6215,13 +6238,14 @@ fn a_link_and_a_group_take_an_unknown_card() {
     assert!(app.connect(crate::caps::LINK, &key, &note).is_ok());
     assert!(app.connect(crate::caps::OPENED_FROM, &key, &note).is_err(), "it opens nothing");
     assert!(app.save_session());
-    let links = |app: &App| app.journal.as_ref().unwrap().doc().live().filter(|(_, n)| n.kind() == Kind::Link).count();
+    let links =
+        |app: &App| app.doc.journal.as_ref().unwrap().doc().live().filter(|(_, n)| n.kind() == Kind::Link).count();
     assert_eq!(links(&app), 1);
     app.edit_group(&key, Some(g.clone()));
     assert!(app.save_session());
-    let doc = app.journal.as_ref().unwrap().doc();
+    let doc = app.doc.journal.as_ref().unwrap().doc();
     assert_eq!(doc.effective_group(node), Some(g.parse().unwrap()));
-    assert_eq!(app.mirror.group(&key), Some(g.as_str()));
+    assert_eq!(app.doc.mirror.group(&key), Some(g.as_str()));
 }
 
 // ---- the trail across close, reopen, restart (trail spec decision 10) ---------------------------------------------
@@ -6237,7 +6261,7 @@ fn a_closed_tab_keeps_its_trail_across_a_save_ctrl_shift_t_and_a_restart() {
     assert!(!app.nodes.contains_key(&tab));
     assert!(app.nav_history.contains_key(&tab), "the hide and the close's save kept it");
     let file = dir.join("tab-history.json");
-    let (nodes, journal) = (&app.nodes, app.journal.as_ref());
+    let (nodes, journal) = (&app.nodes, app.doc.journal.as_ref());
     crate::nav_history::save_to(&mut app.nav_history, |id| keep_trail(nodes, journal, id), Some(&file));
     assert!(crate::nav_history::load_from(&file).contains_key(&tab), "a restart keeps it");
     app.reopen_closed_shortcut();
@@ -6265,7 +6289,7 @@ fn keep_trail_adds_document_liveness_to_the_shown_test() {
     app.close_node(&closed);
     app.destroy_node(&gone);
     assert!(app.save_session());
-    let journal = app.journal.as_ref();
+    let journal = app.doc.journal.as_ref();
     assert!(keep_trail(&app.nodes, journal, &shown));
     assert!(keep_trail(&app.nodes, journal, &closed), "closed: hidden, but live in the document");
     assert!(!keep_trail(&app.nodes, journal, &gone));

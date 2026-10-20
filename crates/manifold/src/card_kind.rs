@@ -53,7 +53,7 @@ impl App {
     /// tab has an engine. `None` when `id` has no node.
     pub(crate) fn card_kind(&self, id: &str) -> Option<CardKind> {
         let node = self.nodes.get(id)?;
-        let ty = canonical_type(self.mirror.ty(id));
+        let ty = canonical_type(self.doc.mirror.ty(id));
         let tags = if node.runtime.as_tab().is_some() { TagSet::of(&[Tag::Loaded]) } else { TagSet::EMPTY };
         Some(CardKind { ty, tags })
     }
@@ -184,7 +184,7 @@ mod tests {
             app.test_node(&id, kind, payload);
             if kind == Kind::Unknown {
                 let future = FieldValue::Str("application/x-from-the-future".into());
-                app.mirror.init_field(&id, crate::store::model::field::TYPE, future);
+                app.doc.mirror.init_field(&id, crate::store::model::field::TYPE, future);
             }
             let got = app.card_kind(&id).unwrap();
             assert_eq!(got, want, "{kind:?}");
@@ -200,7 +200,7 @@ mod tests {
         use crate::store::model::{field, FieldValue};
         let mut app = App::default();
         app.test_node("u", Kind::Unknown, Runtime::Unknown);
-        app.mirror.init_field("u", field::TYPE, FieldValue::Str("application/x-from-the-future".into()));
+        app.doc.mirror.init_field("u", field::TYPE, FieldValue::Str("application/x-from-the-future".into()));
         let kind = app.card_kind("u").unwrap();
         assert_eq!(kind.ty, TYPE_UNKNOWN);
         assert!(kind.caps().restorable);

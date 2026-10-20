@@ -356,7 +356,7 @@ fn a_group_card_tooltip_names_a_hidden_character() {
         ("Re\u{200B}ading", Some("Hidden characters: U+200B zero width space"), "Re⟦200B⟧ading"),
         ("Reading", None, "Reading"),
     ] {
-        app.mirror.set(&g, crate::store::model::field::NAME, crate::store::model::FieldValue::Str(name.into()));
+        app.doc.mirror.set(&g, crate::store::model::field::NAME, crate::store::model::FieldValue::Str(name.into()));
         let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
             let mut overlays: DeferredOverlays = Vec::new();
             let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(300.0, 200.0));

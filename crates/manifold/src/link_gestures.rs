@@ -359,7 +359,7 @@ impl App {
 
     /// A click on link line `link`: deletes exactly that Link node, as the node menu's Disconnect row does, and saves.
     pub(crate) fn click_link_line(&mut self, link: &str) {
-        if link.parse::<NodeId>().is_ok_and(|id| self.mirror.is_link(id)) {
+        if link.parse::<NodeId>().is_ok_and(|id| self.doc.mirror.is_link(id)) {
             self.delete_link(link);
             self.save_session();
         }

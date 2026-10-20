@@ -113,7 +113,7 @@ impl App {
         if !stored_card(from) || !stored_card(to) {
             return Err(ConnectError::NotLive);
         }
-        let ty = |id: &str| crate::card_kind::canonical_type(self.mirror.ty(id));
+        let ty = |id: &str| crate::card_kind::canonical_type(self.doc.mirror.ty(id));
         if from == to || !crate::caps::edges().can_connect(edge, ty(from), ty(to)) {
             return Err(ConnectError::NotAllowed);
         }
@@ -128,9 +128,9 @@ impl App {
         }
         let exists = match row.storage() {
             // `parent` lives in the mirror's links, not its field map.
-            Storage::Field(field::PARENT) => self.mirror.parent(from) == Some(to),
+            Storage::Field(field::PARENT) => self.doc.mirror.parent(from) == Some(to),
             Storage::Field(no) => {
-                to.parse::<NodeId>().is_ok_and(|to| self.mirror.get(from, no) == FieldValue::Id(Some(to)))
+                to.parse::<NodeId>().is_ok_and(|to| self.doc.mirror.get(from, no) == FieldValue::Id(Some(to)))
             }
             Storage::Node(_) => match linked {
                 Some(linked) => to.parse::<NodeId>().is_ok_and(|to| linked.contains(&to)),
@@ -163,12 +163,12 @@ impl App {
     pub(crate) fn disconnect(&mut self, edge: &str, from: &str, to: &str) {
         match crate::caps::edges().row(edge).map(|r| r.storage()) {
             Some(Storage::Field(field::PARENT)) => {
-                if self.mirror.parent(from) == Some(to) {
+                if self.doc.mirror.parent(from) == Some(to) {
                     self.edit_parent(from, None);
                 }
             }
             Some(Storage::Field(no)) => {
-                if to.parse::<NodeId>().is_ok_and(|to| self.mirror.get(from, no) == FieldValue::Id(Some(to))) {
+                if to.parse::<NodeId>().is_ok_and(|to| self.doc.mirror.get(from, no) == FieldValue::Id(Some(to))) {
                     self.edit_field(from, no, FieldValue::Id(None));
                 }
             }
@@ -184,7 +184,7 @@ impl App {
     /// `level` and every group enclosing it, out to the top level (`None`), nearest first. Borrowed and
     /// allocation-free: `effective_jar` runs it per card per frame. Bounded so a cycle in bad data ends.
     pub(crate) fn levels_from<'a>(&'a self, level: Option<&'a str>) -> impl Iterator<Item = Option<&'a str>> + 'a {
-        std::iter::successors(Some(level), move |at| at.map(|g| self.mirror.group(g))).take(self.nodes.len() + 2)
+        std::iter::successors(Some(level), move |at| at.map(|g| self.doc.mirror.group(g))).take(self.nodes.len() + 2)
     }
 
     /// The level an edge from `id` reaches out from (spec "Scope", decision 2026-10-14): a group's own contents,
@@ -193,30 +193,30 @@ impl App {
         if self.is_container(id) {
             Some(id)
         } else {
-            self.mirror.group(id)
+            self.doc.mirror.group(id)
         }
     }
 
     /// Whether `to` is in reach of `from` under `scope`. `SameLevel`: both in one group. `SameLevelOrAncestor`:
     /// `to` sits at `from`'s `reach_origin` or in a group enclosing it.
     pub(crate) fn in_scope(&self, scope: Scope, from: &str, to: &str) -> bool {
-        let at = self.mirror.group(to);
+        let at = self.doc.mirror.group(to);
         match scope {
-            Scope::SameLevel => self.mirror.group(from) == at,
+            Scope::SameLevel => self.doc.mirror.group(from) == at,
             Scope::SameLevelOrAncestor => self.levels_from(self.reach_origin(from)).any(|level| level == at),
         }
     }
 
     /// Whether `node` is `root` or sits anywhere inside it.
     pub(crate) fn within(&self, node: &str, root: &str) -> bool {
-        node == root || self.levels_from(self.mirror.group(node)).any(|level| level == Some(root))
+        node == root || self.levels_from(self.doc.mirror.group(node)).any(|level| level == Some(root))
     }
 
     /// The Link node joining `a` and `b`, in either order.
     fn link_between(&self, a: &str, b: &str) -> Option<String> {
         let (a, b) = (a.parse::<NodeId>().ok()?, b.parse::<NodeId>().ok()?);
         self.links_naming(&a.to_string()).into_iter().find(|link| {
-            let (from, to) = self.mirror.link_ends(link);
+            let (from, to) = self.doc.mirror.link_ends(link);
             (from, to) == (Some(a), Some(b)) || (from, to) == (Some(b), Some(a))
         })
     }
@@ -227,7 +227,7 @@ impl App {
         let Ok(me) = from.parse::<NodeId>() else { return HashSet::new() };
         self.links_naming(from)
             .iter()
-            .filter_map(|link| match self.mirror.link_ends(link) {
+            .filter_map(|link| match self.doc.mirror.link_ends(link) {
                 (Some(a), Some(b)) if a == me => Some(b),
                 (Some(a), Some(b)) if b == me => Some(a),
                 _ => None,
@@ -243,7 +243,7 @@ impl App {
 
     /// Whether `other` is a live card shown at the same level as `node`: the far end of an edge worth listing.
     fn shown_with(&self, node: &str, other: &str) -> bool {
-        other != node && self.nodes.contains_key(other) && self.mirror.group(other) == self.mirror.group(node)
+        other != node && self.nodes.contains_key(other) && self.doc.mirror.group(other) == self.doc.mirror.group(node)
     }
 
     /// The card `id` was opened from, when that card is live here (spec decision 9). The stored edge survives a
@@ -251,7 +251,7 @@ impl App {
     /// Every reader of the `opened-from` edge goes through this; the writers (`edit_parent`, a spawn's carried
     /// `parent`, the save) read `Mirror::parent` directly.
     pub(crate) fn opened_from(&self, id: &str) -> Option<&str> {
-        self.mirror.parent(id).filter(|p| self.nodes.contains_key(*p))
+        self.doc.mirror.parent(id).filter(|p| self.nodes.contains_key(*p))
     }
 
     /// The live edges at `node`: the card it was opened from (outgoing), the cards opened from it, and its links.
@@ -274,20 +274,20 @@ impl App {
             })
             .collect();
         for (edge, no) in field_rows {
-            if let FieldValue::Id(Some(to)) = self.mirror.get(node, no) {
+            if let FieldValue::Id(Some(to)) = self.doc.mirror.get(node, no) {
                 let other = to.to_string();
                 if self.shown_with(node, &other) {
                     edges.push(EdgeRef { edge, other, link: None, outgoing: true });
                 }
             }
             for other in self.nodes.keys().filter(|o| self.shown_with(node, o)) {
-                if me.is_some() && self.mirror.get(other, no) == FieldValue::Id(me) {
+                if me.is_some() && self.doc.mirror.get(other, no) == FieldValue::Id(me) {
                     edges.push(EdgeRef { edge, other: other.clone(), link: None, outgoing: false });
                 }
             }
         }
         for link in self.links_naming(node) {
-            let (from, to) = self.mirror.link_ends(&link);
+            let (from, to) = self.doc.mirror.link_ends(&link);
             let outgoing = from == me;
             let Some(other) = (if outgoing { to } else { from }) else { continue };
             if self.shown_with(node, &other.to_string()) {
@@ -363,8 +363,8 @@ impl App {
     /// - otherwise `Retargeted`: the free end moves there by rewriting that one field, so the Link node keeps its
     ///   id, other end and direction.
     fn retarget_outcome(&self, retarget: &LinkRetarget, fixed: &str, end: &DragEnd) -> RetargetOutcome {
-        let link_is_live = retarget.link.parse::<NodeId>().is_ok_and(|id| self.mirror.is_link(id));
-        let (from, to) = self.mirror.link_ends(&retarget.link);
+        let link_is_live = retarget.link.parse::<NodeId>().is_ok_and(|id| self.doc.mirror.is_link(id));
+        let (from, to) = self.doc.mirror.link_ends(&retarget.link);
         let (fixed_end, moving_end) = if retarget.fixed_is_from { (from, to) } else { (to, from) };
         let fixed_still_there = fixed_end.is_some_and(|end| end.to_string() == fixed);
         let (Some(moving_end), true, true) = (moving_end, link_is_live, fixed_still_there) else {
@@ -410,7 +410,7 @@ impl App {
     /// Makes a link from `from` to `to`, both card ids, and returns the new Link node's id. Queued for the next save.
     pub(crate) fn create_link(&mut self, from: &str, to: &str) -> String {
         let key = self.alloc_node_id();
-        self.mirror.add_link(key.parse().expect("alloc_node_id returns a store id"));
+        self.doc.mirror.add_link(key.parse().expect("alloc_node_id returns a store id"));
         self.queue_create(&key);
         self.edit_field(&key, field::FROM, FieldValue::Id(link_id(Some(from))));
         self.edit_field(&key, field::TO, FieldValue::Id(link_id(Some(to))));
@@ -420,7 +420,7 @@ impl App {
     /// Forgets link `id` and queues its delete.
     pub(crate) fn delete_link(&mut self, id: &str) {
         if let Ok(link) = id.parse() {
-            self.mirror.forget_link(link);
+            self.doc.mirror.forget_link(link);
         }
         self.queue_delete(id);
     }
@@ -435,9 +435,9 @@ impl App {
         let far_end =
             |(from, to): (Option<NodeId>, Option<NodeId>), me: NodeId| if from == Some(me) { to } else { from };
         let linked: Vec<NodeId> =
-            self.links_naming(new).iter().filter_map(|link| far_end(self.mirror.link_ends(link), new_id)).collect();
+            self.links_naming(new).iter().filter_map(|link| far_end(self.doc.mirror.link_ends(link), new_id)).collect();
         for link in self.links_naming(old) {
-            let (Some(from), Some(to)) = self.mirror.link_ends(&link) else { continue };
+            let (Some(from), Some(to)) = self.doc.mirror.link_ends(&link) else { continue };
             let other = match (from == old_id, to == old_id) {
                 (true, false) => to,
                 (false, true) => from,
@@ -458,10 +458,11 @@ impl App {
     /// The Link nodes whose `from` or `to` is `node`.
     pub(crate) fn links_naming(&self, node: &str) -> Vec<String> {
         let Ok(node) = node.parse::<crate::store::model::NodeId>() else { return Vec::new() };
-        self.mirror
+        self.doc
+            .mirror
             .link_ids()
             .filter(|link| {
-                let (from, to) = self.mirror.link_ends(&link.to_string());
+                let (from, to) = self.doc.mirror.link_ends(&link.to_string());
                 from == Some(node) || to == Some(node)
             })
             .map(|link| link.to_string())
@@ -572,11 +573,12 @@ mod tests {
         let f = level_fixture(false);
         let g0 = f.groups[0].clone();
         let mut app = f.app;
-        let at: Vec<String> = f.nodes.iter().filter(|id| app.mirror.group(id) == Some(g0.as_str())).cloned().collect();
+        let at: Vec<String> =
+            f.nodes.iter().filter(|id| app.doc.mirror.group(id) == Some(g0.as_str())).cloned().collect();
         let n = at.len();
         let mut k = 0;
         for links in [20usize, 100, 300] {
-            while app.mirror.link_ids().count() < links {
+            while app.doc.mirror.link_ids().count() < links {
                 let (a, b) = (&at[k % n], &at[(k * 7 + 1) % n]);
                 if a != b {
                     app.create_link(a, b);

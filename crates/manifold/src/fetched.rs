@@ -104,7 +104,7 @@ impl App {
         self.snap_layout(&id, at.pos);
         let (pos, group) = (Some(at.pos), at.group);
         let carried = crate::mirror::Carried { pos, group, url, text, view_kind, ty, path, ..Default::default() };
-        self.mirror.seed(&id, &carried);
+        self.doc.mirror.seed(&id, &carried);
         self.node_order.push(id.clone());
         id
     }
@@ -114,10 +114,10 @@ impl App {
     /// again keeps the document's (`materialize` runs `mirror_remote` first). Doesn't save.
     pub(crate) fn place_group(&mut self, id: Option<String>, name: &str, at: Placement) -> String {
         let id = id.unwrap_or_else(|| self.alloc_node_id());
-        let fresh = !self.mirror.has(&id);
+        let fresh = !self.doc.mirror.has(&id);
         self.place_node(Some(id.clone()), Kind::Group, Runtime::None, at);
         if fresh && !name.is_empty() {
-            self.mirror.set(&id, crate::store::model::field::NAME, FieldValue::Str(name.to_owned()));
+            self.doc.mirror.set(&id, crate::store::model::field::NAME, FieldValue::Str(name.to_owned()));
         }
         id
     }
@@ -136,7 +136,7 @@ impl App {
         total_bytes: Option<u64>,
         url: Option<String>,
     ) {
-        let node_group = self.mirror.group(&tab_id).map(str::to_owned);
+        let node_group = self.doc.mirror.group(&tab_id).map(str::to_owned);
         if !self.nodes.contains_key(&tab_id) {
             return;
         }
@@ -190,7 +190,7 @@ impl App {
             keep.extend(node.runtime.file_path().and_then(content::file_name));
             keep.insert(id.clone());
         }
-        if let Some(j) = &self.journal {
+        if let Some(j) = &self.doc.journal {
             keep.extend(doc_backing_names(j.doc(), except.and_then(|e| e.parse().ok())));
         }
         keep
@@ -199,7 +199,7 @@ impl App {
     /// Whether this launch knows every node that may hold a backing file: not with no journal, a rebuilt one
     /// (`store_recovered`), or one a newer build wrote (read-only), any of which may not have loaded everything.
     pub(crate) fn may_prune(&self) -> bool {
-        self.journal.as_ref().is_some_and(|j| !j.read_only()) && !self.store_recovered
+        self.doc.journal.as_ref().is_some_and(|j| !j.read_only()) && !self.doc.store_recovered
     }
 
     /// Deletes the backing files nothing holds (spec "Backing files"), in the content and jars dirs, on a thread.
@@ -255,7 +255,7 @@ impl App {
     /// spinner).
     pub(crate) fn retry_missing_file(&mut self, id: &str) {
         if self.nodes.get(id).and_then(|n| n.as_unloaded()).is_some() {
-            let kind = self.mirror.view_kind(id);
+            let kind = self.doc.mirror.view_kind(id);
             // A tab that failed for want of its engine's runtime can't succeed by retrying: ask to
             // install the engine instead (the card's Download).
             match pick_outcome(kind, &self.view_status(kind)) {
@@ -294,7 +294,8 @@ impl App {
             Runtime::Json(json) if json.error.is_some() => json.path.clone(),
             _ => return,
         };
-        let (group, parent) = (self.mirror.group(id).map(str::to_owned), self.mirror.parent(id).map(str::to_owned));
+        let (group, parent) =
+            (self.doc.mirror.group(id).map(str::to_owned), self.doc.mirror.parent(id).map(str::to_owned));
         let pos = self.layout_pos(id);
         let in_order = self.node_order.iter().any(|n| n == id);
         match self.insert_json_node_with_id(id.to_string(), path, pos, group) {
@@ -347,7 +348,8 @@ impl App {
         }
         let (kind, path) = (*kind, path.clone());
         let new_path = path.clone();
-        let (group, parent) = (self.mirror.group(id).map(str::to_owned), self.mirror.parent(id).map(str::to_owned));
+        let (group, parent) =
+            (self.doc.mirror.group(id).map(str::to_owned), self.doc.mirror.parent(id).map(str::to_owned));
         let pos = self.layout_pos(id);
         // A PNG turned JPEG keeps its id stem, so `prune` never frees it.
         let old_path = node.runtime.file_path().map(str::to_owned);
@@ -384,7 +386,7 @@ impl App {
         // value can't resolve are dropped; an error card's view is left unpruned, since pruning against its `Null`
         // would wipe, and sync away, every override a Retry should get back.
         let value = self.nodes.get(id).and_then(|n| n.as_json()).filter(|_| result.is_ok()).map(|j| j.value.clone());
-        if let (Some(value), Some(view)) = (value, self.mirror.view(id)) {
+        if let (Some(value), Some(view)) = (value, self.doc.mirror.view(id)) {
             let mut pruned = view.clone();
             pruned.retain_resolvable(&value);
             if pruned != *view {
@@ -436,7 +438,7 @@ impl App {
     /// is opened from the node (`parent`), so the two stay linked.
     pub(crate) fn open_as_tab(&mut self, id: &str) {
         let Some(url) = self.source_url(id).map(str::to_string) else { return };
-        let (pos, group) = (self.layout_pos(id) + egui::vec2(40.0, 40.0), self.mirror.group(id).map(str::to_owned));
+        let (pos, group) = (self.layout_pos(id) + egui::vec2(40.0, 40.0), self.doc.mirror.group(id).map(str::to_owned));
         let tab = self.spawn_tab_at(&url, pos, group, Some(id.to_string()));
         self.spawns.skip_convert.insert(tab, false);
     }
@@ -517,7 +519,7 @@ impl App {
     /// shown again (a reload, a restore) keeps the one the mirror holds. `None`, a local file, seeds nothing.
     fn seed_source_url(&mut self, id: &str, url: Option<String>) {
         if let Some(url) = url.filter(|url| !url.is_empty() && self.nodes.contains_key(id)) {
-            self.mirror.init_field(id, crate::store::model::field::URL, FieldValue::Str(url));
+            self.doc.mirror.init_field(id, crate::store::model::field::URL, FieldValue::Str(url));
         }
     }
 
@@ -565,12 +567,12 @@ impl App {
     /// isn't remembered, clearing every reference to it). A failed insert
     /// is toasted and the tab stays.
     pub(crate) fn redirect_tab_to_content(&mut self, tab_id: &str, node_id: String, url: String, body: WebBody) {
-        let group = self.mirror.group(tab_id).map(str::to_owned);
+        let group = self.doc.mirror.group(tab_id).map(str::to_owned);
         if !self.nodes.contains_key(tab_id) {
             return;
         }
         let pos = self.layout_pos(tab_id);
-        let parent = self.mirror.parent(tab_id).map(str::to_owned);
+        let parent = self.doc.mirror.parent(tab_id).map(str::to_owned);
         if self.insert_content(ContentSource::Web { url, body }, node_id.clone(), pos, group).is_ok() {
             self.edit_parent(&node_id, parent);
             // The tab's links go with it (`remove_tab`); the new card takes over each.

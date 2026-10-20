@@ -412,7 +412,7 @@ impl App {
     /// the view toggle): the camera would otherwise keep the old level's
     /// framing and show the new one's nodes off screen.
     pub(crate) fn show_level_of(&mut self, id: &str) {
-        let group = self.nodes.get(id).and(self.mirror.group(id)).map(str::to_owned);
+        let group = self.nodes.get(id).and(self.doc.mirror.group(id)).map(str::to_owned);
         if group != self.current_group {
             self.switch_group_level(group);
         }
@@ -1165,7 +1165,7 @@ impl App {
     /// "Recently Closed (n)"; returns its rect for the popup anchor.
     fn toolbar_recently_closed(&mut self, ui: &mut egui::Ui) -> Option<egui::Rect> {
         let mut recently_closed_button_rect: Option<egui::Rect> = None;
-        let count = self.journal.as_ref().map_or(0, |j| j.doc().closed_roots().len());
+        let count = self.doc.journal.as_ref().map_or(0, |j| j.doc().closed_roots().len());
         if count > 0 {
             let label = format!("Recently Closed ({count})");
             let response = ui.button(label).on_hover_text("Reopen the last closed tab (Ctrl+Shift+T)");
@@ -2367,9 +2367,9 @@ mod tests {
         let expected = (app.layout_pos(&a) + app.layout_pos(&b)) / 2.0;
         app.interaction.selected.extend([a.clone(), b.clone(), "999".to_string()]);
         app.apply_graph_action(&egui::Context::default(), GraphAction::GroupSelected);
-        let group = app.mirror.group(&a).expect("a was grouped").to_string();
-        assert_eq!(app.mirror.group(&b), Some(group.as_str()));
-        assert_eq!(app.mirror.pos(&group), Some(expected), "the mean of the two cards, not divided by three");
+        let group = app.doc.mirror.group(&a).expect("a was grouped").to_string();
+        assert_eq!(app.doc.mirror.group(&b), Some(group.as_str()));
+        assert_eq!(app.doc.mirror.pos(&group), Some(expected), "the mean of the two cards, not divided by three");
         assert!(app.interaction.selected.is_empty());
     }
 
@@ -2457,7 +2457,7 @@ mod tests {
         assert!(![&a, &b].iter().any(|id| screen_rect(&app, id).contains(below)), "empty canvas");
         click(&mut app, below);
         assert!(app.link.connecting.is_none(), "a click on empty canvas ends the mode");
-        assert_eq!(app.mirror.parent(&a), None, "and draws nothing");
+        assert_eq!(app.doc.mirror.parent(&a), None, "and draws nothing");
     }
 
     /// A right-click on a card opens its menu; on the swatch it opens on the Color page. Driven through
@@ -2539,7 +2539,7 @@ mod tests {
         let note = f
             .nodes
             .iter()
-            .find(|id| app.mirror.group(id).is_none() && app.nodes[*id].as_note().is_some())
+            .find(|id| app.doc.mirror.group(id).is_none() && app.nodes[*id].as_note().is_some())
             .expect("a top-level note")
             .clone();
         app.camera.jump_to(app.card_rect(&note).unwrap().expand(300.0));
@@ -2750,7 +2750,11 @@ mod tests {
         let mut app = App::default();
         let g = app.alloc_node_id();
         app.insert_group_at(g.clone(), None);
-        app.mirror.set(&g, crate::store::model::field::NAME, crate::store::model::FieldValue::Str("Reading".into()));
+        app.doc.mirror.set(
+            &g,
+            crate::store::model::field::NAME,
+            crate::store::model::FieldValue::Str("Reading".into()),
+        );
         let ctx = egui::Context::default();
         ctx.enable_accesskit();
         let input = egui::RawInput {
@@ -2780,8 +2784,12 @@ mod tests {
         app.insert_group_at(outer.clone(), None);
         app.insert_group_at(inner.clone(), None);
         app.edit_group(&inner, Some(outer.clone()));
-        app.mirror.set(&outer, crate::store::model::field::NAME, crate::store::model::FieldValue::Str("x".repeat(30)));
-        app.mirror.set(
+        app.doc.mirror.set(
+            &outer,
+            crate::store::model::field::NAME,
+            crate::store::model::FieldValue::Str("x".repeat(30)),
+        );
+        app.doc.mirror.set(
             &inner,
             crate::store::model::field::NAME,
             crate::store::model::FieldValue::Str("Re\u{200B}ading".into()),

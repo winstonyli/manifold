@@ -34,13 +34,13 @@ fn move_to_group_offers_sibling_groups_and_joins() {
     assert_eq!(ids(&app, &note), vec![g1.clone(), g2.clone()]);
     assert_eq!(ids(&app, &g1), vec![g2.clone()], "a group isn't offered itself");
     app.apply_node_action(&egui::Context::default(), &note, NodeAction::MoveToGroup(g2.clone()));
-    assert_eq!(app.mirror.group(&note), Some(g2.as_str()));
+    assert_eq!(app.doc.mirror.group(&note), Some(g2.as_str()));
     // On a group "Move into" nests it, unlike a drop of one group on another (which merges).
     let group = plain(TYPE_GROUP);
     assert_eq!(drop_action(group, DropTarget::Card(group), false), Some(DropEffect::Merge));
     app.apply_node_action(&egui::Context::default(), &g1, NodeAction::MoveToGroup(g2.clone()));
-    assert_eq!(app.mirror.group(&g1), Some(g2.as_str()), "g1 nested in g2, not merged away");
-    assert_eq!(app.mirror.group(&inner), Some(g1.as_str()), "g1 keeps its own members");
+    assert_eq!(app.doc.mirror.group(&g1), Some(g2.as_str()), "g1 nested in g2, not merged away");
+    assert_eq!(app.doc.mirror.group(&inner), Some(g1.as_str()), "g1 keeps its own members");
 }
 
 fn view_of(kind: CardKind) -> NodeMenuView {
@@ -334,7 +334,7 @@ fn new_jar_names_a_jar_and_picks_it_for_the_tab() {
     app.apply_node_action(&ctx, &t, NodeAction::NewJar("  Work ".into()));
     assert_eq!(app.naming_jar, None);
     let work = app.jar_named("Work").expect("created, trimmed");
-    assert_eq!(app.mirror.jar(&t), Some(work));
+    assert_eq!(app.doc.mirror.jar(&t), Some(work));
     app.apply_node_action(&ctx, &t, NodeAction::StartNewJar);
     app.apply_node_action(&ctx, &t, NodeAction::NewJar("   ".into()));
     assert_eq!(app.jar_defs().len(), 1, "an empty name creates nothing");
@@ -406,7 +406,7 @@ fn move_to_rows_show_a_hidden_character_as_a_placeholder() {
     let (g, note) = (app.alloc_node_id(), app.alloc_node_id());
     app.insert_group_at(g.clone(), None);
     app.insert_note_at(note.clone(), None);
-    app.mirror.set(
+    app.doc.mirror.set(
         &g,
         crate::store::model::field::NAME,
         crate::store::model::FieldValue::Str("Re\u{200B}ading".into()),
@@ -442,7 +442,7 @@ fn move_to_rows_shorten_a_long_name() {
     let (g, note) = (app.alloc_node_id(), app.alloc_node_id());
     app.insert_group_at(g.clone(), None);
     app.insert_note_at(note.clone(), None);
-    app.mirror.set(&g, crate::store::model::field::NAME, crate::store::model::FieldValue::Str("x".repeat(200)));
+    app.doc.mirror.set(&g, crate::store::model::field::NAME, crate::store::model::FieldValue::Str("x".repeat(200)));
     app.menus.node_menu = Some((note, egui::pos2(100.0, 100.0)));
     let mut texts = Vec::new();
     for _ in 0..3 {
@@ -700,7 +700,7 @@ fn the_color_row_opens_a_page_and_back_returns() {
     let texts = settle(&mut app);
     click(&mut app, find(&texts, "swatch").unwrap());
     assert_eq!(app.menus.node_menu, None, "a swatch closes the menu");
-    assert!(app.mirror.color(&n).is_some(), "and colours the card");
+    assert!(app.doc.mirror.color(&n).is_some(), "and colours the card");
     // A fresh menu on the same card starts on the items again.
     app.menus.node_menu = Some((n, egui::pos2(300.0, 300.0)));
     let texts = settle(&mut app);
@@ -756,7 +756,7 @@ fn the_new_jar_field_creates_only_on_enter() {
         assert_eq!(app.naming_jar, None, "{how}: no draft left");
         let made = app.jar_named("Work");
         assert_eq!(made.is_some(), creates, "{how}: jars {:?}", app.jar_defs());
-        assert_eq!(app.mirror.jar(&t), made, "{how}: the tab's jar");
+        assert_eq!(app.doc.mirror.jar(&t), made, "{how}: the tab's jar");
     }
 }
 
@@ -784,7 +784,7 @@ fn a_group_rename_still_commits_on_a_click_away() {
     }
     menu_frame(&ctx, &mut app, vec![]);
     assert_eq!(app.renaming_group, None);
-    assert_eq!(app.mirror.name(&g), "Errands");
+    assert_eq!(app.doc.mirror.name(&g), "Errands");
 }
 
 /// "New Jar..."'s draft goes with its menu: closed, or another node's menu open, drops it.
@@ -851,9 +851,9 @@ fn a_group_rename_commits_the_clean_name() {
     let g = app.alloc_node_id();
     app.insert_group_at(g.clone(), None);
     app.apply_node_action(&ctx, &g, NodeAction::CommitRename("  Re\u{200B}ading\u{00A0}\u{00A0}list\n".into()));
-    assert_eq!(app.mirror.name(&g), "Reading list");
+    assert_eq!(app.doc.mirror.name(&g), "Reading list");
     app.apply_node_action(&ctx, &g, NodeAction::CommitRename("\u{200B} \u{202E}".into()));
-    assert_eq!(app.mirror.name(&g), "Reading list");
+    assert_eq!(app.doc.mirror.name(&g), "Reading list");
 }
 
 /// Any node renames: the clean name overrides the derived label, an empty draft clears it, and the screen reader
@@ -865,10 +865,10 @@ fn a_note_rename_overrides_its_label_and_an_empty_draft_clears_it() {
     let note = app.alloc_node_id();
     app.insert_note_at(note.clone(), None);
     app.apply_node_action(&ctx, &note, NodeAction::CommitRename("  Groceries\n".into()));
-    assert_eq!(app.mirror.name(&note), "Groceries");
+    assert_eq!(app.doc.mirror.name(&note), "Groceries");
     assert_eq!(app.accessible_name(&note).as_deref(), Some("Note: Groceries"));
     app.apply_node_action(&ctx, &note, NodeAction::CommitRename(" ".into()));
-    assert_eq!(app.mirror.name(&note), "");
+    assert_eq!(app.doc.mirror.name(&note), "");
     assert_eq!(app.accessible_name(&note).as_deref(), Some("Note"));
 }
 
@@ -951,7 +951,7 @@ fn an_empty_rename_leaves_a_jar_its_name() {
     let mut app = App::default();
     let jar = crate::session_sync::tests::add_jar(&mut app, "Work").to_string();
     app.commit_rename(&jar, "   ");
-    assert_eq!(app.mirror.name(&jar), "Work", "a jar is known by its name alone, like a group");
+    assert_eq!(app.doc.mirror.name(&jar), "Work", "a jar is known by its name alone, like a group");
     app.commit_rename(&jar, "Home");
-    assert_eq!(app.mirror.name(&jar), "Home");
+    assert_eq!(app.doc.mirror.name(&jar), "Home");
 }

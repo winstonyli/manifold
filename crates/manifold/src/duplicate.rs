@@ -86,7 +86,7 @@ pub(crate) fn subtree_json(app: &App, roots: &[&str], offset: egui::Vec2) -> Opt
         let members = members_under(
             root_id,
             &order,
-            |id| app.mirror.group(&id.to_string()).and_then(|g| g.parse().ok()),
+            |id| app.doc.mirror.group(&id.to_string()).and_then(|g| g.parse().ok()),
             |id| app.is_container(&id.to_string()),
         );
         for member_id in members {
@@ -107,11 +107,11 @@ pub(crate) fn subtree_json(app: &App, roots: &[&str], offset: egui::Vec2) -> Opt
     // A link comes along only between cards that do (both ends exported above); import remaps its ends to the new ids.
     let kept: std::collections::BTreeSet<store::model::NodeId> =
         nodes.iter().filter_map(|n| n.id.parse().ok()).collect();
-    let mut links: Vec<_> = app.mirror.link_ids().collect();
+    let mut links: Vec<_> = app.doc.mirror.link_ids().collect();
     links.sort();
     for link in links {
         let label = link.to_string();
-        let (from, to) = app.mirror.link_ends(&label);
+        let (from, to) = app.doc.mirror.link_ends(&label);
         if from.is_some_and(|n| kept.contains(&n)) && to.is_some_and(|n| kept.contains(&n)) {
             if let Some(snap) = app.snapshot(link) {
                 nodes.push(store::json::node_json(&label, &snap.ty, &snap.fields, None));
@@ -136,13 +136,13 @@ impl App {
     /// not again.
     pub(crate) fn duplicate_nodes(&mut self, ids: &[String]) {
         let covered = |app: &App, id: &str| {
-            let mut group = app.mirror.group(id);
+            let mut group = app.doc.mirror.group(id);
             for _ in 0..app.nodes.len() {
                 let Some(g) = group else { return false };
                 if ids.iter().any(|i| i == g) {
                     return true;
                 }
-                group = app.mirror.group(g);
+                group = app.doc.mirror.group(g);
             }
             false
         };
@@ -242,9 +242,9 @@ mod tests {
         app.duplicate_nodes(&[note.clone(), group.clone(), inner.clone()]);
         assert_eq!(app.nodes.len(), before + 3, "note, group and its one member, the member not twice");
         let copies: Vec<&String> = app.nodes.keys().filter(|id| ![&note, &group, &inner].contains(id)).collect();
-        assert!(copies.iter().any(|id| app.mirror.name(id) == "Mine" && app.mirror.text(id) == "n"));
-        let copy = copies.iter().find(|id| app.mirror.name(id) == "Mine").unwrap();
-        assert_eq!(app.mirror.pos(copy), Some(egui::vec2(10.0 + DUPLICATE_OFFSET, 20.0 + DUPLICATE_OFFSET)));
+        assert!(copies.iter().any(|id| app.doc.mirror.name(id) == "Mine" && app.doc.mirror.text(id) == "n"));
+        let copy = copies.iter().find(|id| app.doc.mirror.name(id) == "Mine").unwrap();
+        assert_eq!(app.doc.mirror.pos(copy), Some(egui::vec2(10.0 + DUPLICATE_OFFSET, 20.0 + DUPLICATE_OFFSET)));
         assert!(app.nodes.contains_key(&note) && app.nodes.contains_key(&inner));
     }
 
@@ -270,16 +270,16 @@ mod tests {
         app.duplicate_nodes(std::slice::from_ref(&g));
         let fresh: Vec<String> = app.nodes.keys().filter(|k| !before.contains(*k)).cloned().collect();
         assert_eq!(fresh.len(), 4, "a group and its three members, all with fresh ids");
-        let of_type = |ty: &str| fresh.iter().find(|k| app.mirror.ty(k) == ty).cloned();
+        let of_type = |ty: &str| fresh.iter().find(|k| app.doc.mirror.ty(k) == ty).cloned();
         let new_group = of_type(Kind::Group.type_str().unwrap()).expect("a new group");
         let new_note = of_type(Kind::Note.type_str().unwrap()).expect("a new note");
         let new_jar = of_type(Kind::Jar.type_str().unwrap()).expect("a new jar");
         let new_unknown = of_type(FUTURE).expect("a new unknown card");
         for member in [&new_note, &new_jar, &new_unknown] {
-            assert_eq!(app.mirror.group(member), Some(new_group.as_str()), "members land in the new group");
+            assert_eq!(app.doc.mirror.group(member), Some(new_group.as_str()), "members land in the new group");
         }
         // The unknown copy is a shell of the stored type: only the type, the group and the generic fields.
-        let doc = app.journal.as_ref().unwrap().doc();
+        let doc = app.doc.journal.as_ref().unwrap().doc();
         let shell = &doc.nodes[&new_unknown.parse().unwrap()];
         assert_eq!(shell.ty(), FUTURE);
         assert!(shell.fields.keys().all(|no| *no == field::TYPE || *no == field::GROUP || GENERIC.contains(no)));
@@ -289,7 +289,7 @@ mod tests {
         assert_eq!(app.links_naming(&new_unknown).len(), 1);
         assert_eq!(app.links_naming(&outside).len(), 1, "the outside card gained no link");
         let link = app.links_naming(&new_note).remove(0);
-        let (from, to) = app.mirror.link_ends(&link);
+        let (from, to) = app.doc.mirror.link_ends(&link);
         let ends = [from.map(|n| n.to_string()), to.map(|n| n.to_string())];
         assert!(ends.contains(&Some(new_note.clone())) && ends.contains(&Some(new_unknown.clone())));
     }

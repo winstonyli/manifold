@@ -288,7 +288,7 @@ fn a_click_beside_a_line_on_an_opened_from_line_or_on_a_card_deletes_nothing() {
     let on_b = screen_rect(&app, &b).center();
     h.click(&mut app, on_b);
     assert_eq!(app.links_naming(&a), [ab]);
-    assert_eq!(app.mirror.parent(&c), Some(a.as_str()), "an opened-from line is not clickable");
+    assert_eq!(app.doc.mirror.parent(&c), Some(a.as_str()), "an opened-from line is not clickable");
 }
 
 #[test]
@@ -433,7 +433,7 @@ fn release(h: &Harness, app: &mut App, at: egui::Pos2) {
 }
 
 fn ends(app: &App, link: &str) -> (Option<String>, Option<String>) {
-    let (from, to) = app.mirror.link_ends(link);
+    let (from, to) = app.doc.mirror.link_ends(link);
     (from.map(|n| n.to_string()), to.map(|n| n.to_string()))
 }
 
@@ -621,7 +621,7 @@ fn a_release_just_outside_the_fixed_card_keeps_the_link_and_toasts() {
 fn a_release_just_outside_an_already_linked_card_deletes_the_link() {
     let (app, [a, _, c, _], ab) =
         drop_b_end_at(true, |app, [_, _, c, _]| screen_rect(app, c).center_bottom() + egui::vec2(0.0, 10.0));
-    assert!(app.mirror.link_ends(&ab) == (None, None) || !app.links_naming(&a).contains(&ab), "deleted");
+    assert!(app.doc.mirror.link_ends(&ab) == (None, None) || !app.links_naming(&a).contains(&ab), "deleted");
     assert_eq!(app.links_naming(&a).len(), 1);
     assert!(app.links_naming(&c).len() == 1 && toasts(&app).is_empty());
 }
@@ -913,7 +913,7 @@ fn an_opened_from_line_is_not_draggable() {
     h.drag(&mut app, on, on + egui::vec2(100.0, 0.0));
     assert!(app.link.connect_drag.is_none() && app.link.retarget.is_none());
     assert_ne!(app.camera.rect.center(), before.center(), "it panned");
-    assert_eq!(app.mirror.parent(&c), Some(a.as_str()));
+    assert_eq!(app.doc.mirror.parent(&c), Some(a.as_str()));
 }
 
 /// Review I1: Recently Closed and the shortcuts help close on a click outside them without consuming it, so the
@@ -1156,7 +1156,7 @@ fn a_release_within_the_drop_tolerance_of_a_card_links_it_and_beyond_it_does_not
     drag_from_handle(&h, &mut app, &a, HandleSide::Right, just_outside, vec![]);
     let links = app.links_naming(&a);
     assert_eq!(links.len(), 1, "linked from {just_outside:?}");
-    assert_eq!(app.mirror.link_ends(&links[0]), (a.parse().ok(), b.parse().ok()), "a -> b");
+    assert_eq!(app.doc.mirror.link_ends(&links[0]), (a.parse().ok(), b.parse().ok()), "a -> b");
     let too_far = rb.left_center() - egui::vec2(DROP_TOLERANCE_PX + 8.0, 0.0);
     drag_from_handle(&h, &mut app, &a, HandleSide::Right, too_far, vec![]);
     assert_eq!(app.links_naming(&a).len(), 1, "nothing more from {too_far:?}");
@@ -1182,7 +1182,7 @@ fn dragging_a_handle_onto_a_card_links_them_and_moves_nothing() {
     drag_from_handle(&h, &mut app, &a, HandleSide::Right, onto, vec![]);
     let links = app.links_naming(&a);
     assert_eq!(links.len(), 1);
-    assert_eq!(app.mirror.link_ends(&links[0]), (a.parse().ok(), b.parse().ok()), "a -> b");
+    assert_eq!(app.doc.mirror.link_ends(&links[0]), (a.parse().ok(), b.parse().ok()), "a -> b");
     assert_eq!(app.layout_pos(&a), before, "the card did not move");
     assert!(app.interaction.dragging.is_none() && app.link.connect_drag.is_none() && app.link.connecting.is_none());
 }
@@ -1383,7 +1383,7 @@ fn the_topmost_of_overlapping_cards_takes_the_release() {
     drag_from_handle(&h, &mut app, &a, HandleSide::Right, both.center(), vec![]);
     let links = app.links_naming(&a);
     assert_eq!(links.len(), 1);
-    assert_eq!(app.mirror.link_ends(&links[0]), (a.parse().ok(), d.parse().ok()), "a -> d, the top card");
+    assert_eq!(app.doc.mirror.link_ends(&links[0]), (a.parse().ok(), d.parse().ok()), "a -> d, the top card");
 }
 
 /// Review M4: pressing a handle stops a glide ("grab it to stop it"), as any press on the graph does, so the
@@ -1496,7 +1496,7 @@ fn losing_window_focus_ends_a_card_drag_in_place() {
 
     app.on_window_focus(false);
     assert!(app.interaction.dragging.is_none() && app.interaction.drag_moved.is_empty(), "the drag ended");
-    assert_eq!(app.mirror.pos(&note), Some(held), "saved where it was");
+    assert_eq!(app.doc.mirror.pos(&note), Some(held), "saved where it was");
     assert_eq!(app.group_of(&Some(note.clone())), None, "no drop: it joined nothing");
 
     // The button-up went to another window: egui still has the button down while the pointer moves on.
@@ -1509,7 +1509,7 @@ fn losing_window_focus_ends_a_card_drag_in_place() {
     h.frame(&mut app, vec![press(late, false)]);
     h.frame(&mut app, vec![]);
     assert_eq!(app.layout_pos(&note), held);
-    assert_eq!(app.mirror.pos(&note), Some(held));
+    assert_eq!(app.doc.mirror.pos(&note), Some(held));
     assert_eq!(app.group_of(&Some(note.clone())), None, "a late release drops nothing");
     assert!(app.nodes.contains_key(&note) && app.in_level(&note), "still on this level");
 }

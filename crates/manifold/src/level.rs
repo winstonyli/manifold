@@ -213,8 +213,8 @@ impl App {
             })
         });
         // A link shows only while both of its ends are live cards at this level.
-        let links = self.mirror.link_ids().filter_map(|link| {
-            let (from, to) = self.mirror.link_ends(&link.to_string());
+        let links = self.doc.mirror.link_ids().filter_map(|link| {
+            let (from, to) = self.doc.mirror.link_ends(&link.to_string());
             let (from, to) = (from?.to_string(), to?.to_string());
             let both_here = [&from, &to].iter().all(|end| self.nodes.contains_key(*end) && self.in_level(end));
             if !both_here {
@@ -235,7 +235,7 @@ impl App {
         // A jar edge shows while its source and its jar are both live cards at this level. One reaching a jar in an
         // enclosing group, or a group's edge to a jar inside it, has no line here: its far end is on another level.
         let jars = self.nodes.keys().filter(|id| self.in_level(id)).filter_map(|id| {
-            let jar = self.mirror.jar(id)?.to_string();
+            let jar = self.doc.mirror.jar(id)?.to_string();
             self.nodes.get(&jar).filter(|_| self.in_level(&jar))?;
             let (from, to) = crate::link_gestures::facing_ends(rect_of(id)?, rect_of(&jar)?);
             Some(LevelEdge {
@@ -259,7 +259,7 @@ impl App {
     pub(crate) fn layout_current_level(&mut self) {
         if let Some(level) = self.json_level.as_mut() {
             if self.nodes.get(&level.node_id).and_then(|n| n.as_json()).is_some() {
-                level.relayout(self.mirror.view(&level.node_id).unwrap_or(&crate::json_view::NO_VIEW));
+                level.relayout(self.doc.mirror.view(&level.node_id).unwrap_or(&crate::json_view::NO_VIEW));
             }
             return;
         }

@@ -39,7 +39,7 @@ pub(crate) fn report(what: &str, (best, median): (Duration, Duration)) {
 pub(crate) fn spread(f: &mut Fixture) {
     let mut next: HashMap<Option<String>, usize> = HashMap::new();
     for id in f.groups.iter().chain(&f.nodes) {
-        let k = next.entry(f.app.mirror.group(id).map(str::to_owned)).or_default();
+        let k = next.entry(f.app.doc.mirror.group(id).map(str::to_owned)).or_default();
         let pos = egui::vec2((*k % 30) as f32 * 300.0, (*k / 30) as f32 * 200.0);
         *k += 1;
         f.app.snap_layout(id, pos);

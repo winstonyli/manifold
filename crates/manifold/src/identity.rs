@@ -254,7 +254,7 @@ pub(crate) fn paint_row_icon(
 impl App {
     /// The icon of a list row for the tab `id` showing `url`: its favicon, else the tile in its engine's color.
     pub(crate) fn row_identity(&self, id: &str, url: &str) -> Identity {
-        self.tab_identity(url, false, self.mirror.view_kind(id))
+        self.tab_identity(url, false, self.doc.mirror.view_kind(id))
     }
 
     /// The icon of a list row for a page no tab shows (history, a bookmark): its favicon, else a neutral tile. Takes

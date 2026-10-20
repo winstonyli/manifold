@@ -36,9 +36,9 @@ impl App {
     /// A fresh node id: the journal's counter (contract "Actors and ids"),
     /// or this launch's fallback actor without one.
     pub(crate) fn alloc_node_id(&mut self) -> String {
-        match &mut self.journal {
+        match &mut self.doc.journal {
             Some(journal) => journal.next_id().to_string(),
-            None => self.fallback_ids.next_id(),
+            None => self.doc.fallback_ids.next_id(),
         }
     }
 
@@ -59,11 +59,11 @@ impl App {
         }
         match store::journal::Journal::open_or_set_aside(path, store::model::ActorId::random()) {
             Ok((journal, aside)) => {
-                self.journal = Some(journal);
+                self.doc.journal = Some(journal);
                 if let Some(aside) = aside {
                     // The new, empty session names none of the old one's fetched content or jars: pruning
                     // against it this launch would delete what the set-aside file still needs.
-                    self.store_recovered = true;
+                    self.doc.store_recovered = true;
                     self.queue_toast(format!(
                         "The session file wasn't readable (damaged, or from an older version of manifold); it was kept \
                          (with its .prev/.local, if any) as {} and a new one started",
@@ -96,7 +96,8 @@ impl App {
     pub(crate) fn take_out(&mut self, id: &str, how: Removal) {
         let local = how == Removal::Local;
         let present = self.nodes.contains_key(id);
-        let (parent, group) = (self.mirror.parent(id).map(str::to_owned), self.mirror.group(id).map(str::to_owned));
+        let (parent, group) =
+            (self.doc.mirror.parent(id).map(str::to_owned), self.doc.mirror.group(id).map(str::to_owned));
         let up = group.filter(|_| present);
         let children: Vec<String> = self.children_of(id).map(str::to_owned).collect();
         for child in children {
@@ -185,7 +186,7 @@ impl App {
     pub(crate) fn forget_id(&mut self, id: &str) {
         self.spawns.forget(id);
         // A hide re-inserts its entry after this (plan D5); every permanent removal drops it.
-        self.hidden_local.remove(id);
+        self.doc.hidden_local.remove(id);
         self.pending_sleeps.remove(id);
         self.clear_cookie_state(id);
         self.saved_scroll.remove(id);

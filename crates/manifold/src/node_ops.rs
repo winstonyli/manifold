@@ -36,7 +36,7 @@ impl App {
     /// the live tab under the same id, or a failed card with the new
     /// error. Ignored while a wake is already in flight.
     pub(crate) fn wake_tab(&mut self, id: &str, kind: ViewKind) {
-        let Carried { pos, color, pinned, parent, group, jar, .. } = self.mirror.carried(id);
+        let Carried { pos, color, pinned, parent, group, jar, .. } = self.doc.mirror.carried(id);
         let pos = pos.unwrap_or_default(); // unused: the card's layout entry stays (`TabSpawn::pos`)
         let Some(node) = self.nodes.get_mut(id) else { return };
         let Runtime::Unloaded(tab) = &mut node.runtime else { return };

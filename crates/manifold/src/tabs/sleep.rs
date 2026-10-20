@@ -130,7 +130,7 @@ impl App {
                     id,
                     on_screen: on_screen == Some(id.as_str()) || self.split_tab.as_deref() == Some(id),
                     audio_playing: t.audio_playing,
-                    pinned: self.mirror.pinned(id),
+                    pinned: self.doc.mirror.pinned(id),
                     loading: t.loading,
                     downloading: downloading.contains(id.as_str()),
                 })

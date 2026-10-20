@@ -81,8 +81,8 @@ impl App {
     /// in the document), else from the document (the mirror has no links for a hidden node); while that one is not
     /// live, its own `PARENT` from the document. `None` when no live ancestor is left (plan D16 for a remote delete).
     pub(crate) fn trail_parent(&self, id: &str) -> Option<String> {
-        let doc = self.journal.as_ref().map(|j| j.doc());
-        let mut p = match self.mirror.parent(id) {
+        let doc = self.doc.journal.as_ref().map(|j| j.doc());
+        let mut p = match self.doc.mirror.parent(id) {
             Some(p) => p.to_owned(),
             None => doc_parent(doc?, id)?,
         };
@@ -116,11 +116,12 @@ impl App {
 
     fn doc_node(&self, id: &str) -> Option<&crate::store::model::Node> {
         let id: NodeId = id.parse().ok()?;
-        self.journal.as_ref()?.doc().nodes.get(&id)
+        self.doc.journal.as_ref()?.doc().nodes.get(&id)
     }
 
     fn trail_is_tab(&self, id: &str) -> bool {
-        self.mirror.ty(id) == crate::store::model::TYPE_TAB || self.doc_node(id).is_some_and(|n| n.kind() == Kind::Tab)
+        self.doc.mirror.ty(id) == crate::store::model::TYPE_TAB
+            || self.doc_node(id).is_some_and(|n| n.kind() == Kind::Tab)
     }
 
     /// Back at the root of `id`'s trail: focus its parent, which, when a tab, remembers `id` for its Forward.
@@ -156,7 +157,7 @@ impl App {
     /// in `nodes` yet (a tab still spawning) leaves it to `poll_trail_focus`.
     fn trail_focus(&mut self, id: &str) {
         let mut last = None;
-        for _ in 0..=self.journal.as_ref().map_or(0, |j| j.doc().nodes.len()) {
+        for _ in 0..=self.doc.journal.as_ref().map_or(0, |j| j.doc().nodes.len()) {
             let Some(root) = self.outermost_closed(id) else { break };
             if last == Some(root) {
                 // The reopen did not take (a failed or read-only save leaves the flag).
@@ -175,7 +176,7 @@ impl App {
 
     /// The outermost closed node on `id`'s `group` chain, `id` included, from the document.
     fn outermost_closed(&self, id: &str) -> Option<NodeId> {
-        let doc = self.journal.as_ref()?.doc();
+        let doc = self.doc.journal.as_ref()?.doc();
         let mut cur = Some(id.parse::<NodeId>().ok()?);
         let mut outer = None;
         for _ in 0..=doc.nodes.len() {
@@ -513,7 +514,7 @@ mod tests {
         app.trail_pick(&tab, 1);
         assert_eq!(app.nodes.get(&tab).and_then(|n| n.as_tab()).map(|n| n.url.as_str()), Some("https://b/"));
         assert!(app.spawns.navigated_from.contains_key(&tab), "the origin is noted");
-        assert_eq!(app.mirror.url(&tab), "https://b/", "the url is edited, so it is shared");
+        assert_eq!(app.doc.mirror.url(&tab), "https://b/", "the url is edited, so it is shared");
     }
 
     #[test]

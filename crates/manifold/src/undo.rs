@@ -128,8 +128,8 @@ impl App {
         let mut done = 0;
         for m in moved {
             let holds = self.card_in_group(&m.id, side(&m.group, leaving_after).as_deref())
-                && self.mirror.parent(&m.id).map(str::to_owned) == side(&m.parent, leaving_after)
-                && self.mirror.pos(&m.id) == if leaving_after { m.pos.1 } else { m.pos.0 };
+                && self.doc.mirror.parent(&m.id).map(str::to_owned) == side(&m.parent, leaving_after)
+                && self.doc.mirror.pos(&m.id) == if leaving_after { m.pos.1 } else { m.pos.0 };
             if !holds {
                 continue;
             }

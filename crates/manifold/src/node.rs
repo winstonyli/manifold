@@ -445,7 +445,7 @@ impl App {
     /// detail; a group's own name is already its detail. `None` for an id that isn't a node.
     pub(crate) fn accessible_name(&self, id: &str) -> Option<String> {
         let base = self.nodes.get(id)?.accessible_name(self.own_text(id), self.source_url(id));
-        let renamed = self.mirror.name(id); // name rule: drawn through display_name
+        let renamed = self.doc.mirror.name(id); // name rule: drawn through display_name
         if renamed.is_empty() || self.is_container(id) {
             return Some(base);
         }
@@ -461,13 +461,13 @@ impl App {
             &self.nodes.get(id)?.runtime,
             Runtime::Image(_) | Runtime::Pdf(_) | Runtime::Json(_) | Runtime::Note(_)
         );
-        Some(self.mirror.url(id)).filter(|url| content && !url.is_empty())
+        Some(self.doc.mirror.url(id)).filter(|url| content && !url.is_empty())
     }
 
     /// The URL a card's "Copy URL" puts on the clipboard: its `source_url`, or the address a download came from.
     pub(crate) fn copyable_url(&self, id: &str) -> Option<&str> {
         let download = self.nodes.get(id).is_some_and(|n| n.as_download().is_some());
-        self.source_url(id).or_else(|| Some(self.mirror.url(id)).filter(|url| download && !url.is_empty()))
+        self.source_url(id).or_else(|| Some(self.doc.mirror.url(id)).filter(|url| download && !url.is_empty()))
     }
 }
 
@@ -498,15 +498,19 @@ mod tests {
 second"
             .into();
         assert_eq!(name(&app, &n), "Note: first line");
-        app.mirror.set(&g, crate::store::model::field::NAME, crate::store::model::FieldValue::Str("Reading".into()));
+        app.doc.mirror.set(
+            &g,
+            crate::store::model::field::NAME,
+            crate::store::model::FieldValue::Str("Reading".into()),
+        );
         assert_eq!(name(&app, &g), "Group: Reading");
-        app.mirror.set(
+        app.doc.mirror.set(
             &g,
             crate::store::model::field::NAME,
             crate::store::model::FieldValue::Str("Re\u{200B}ading".into()),
         );
         assert_eq!(name(&app, &g), "Group: Re<U+200B>ading");
-        app.mirror.set(&g, crate::store::model::field::NAME, crate::store::model::FieldValue::Str(" ".into()));
+        app.doc.mirror.set(&g, crate::store::model::field::NAME, crate::store::model::FieldValue::Str(" ".into()));
         assert_eq!(name(&app, &g), "Group: Untitled");
         let raw = "\n\tRe\u{200B}ading\u{00A0}\u{00A0}list \nbody";
         app.nodes.get_mut(&n).unwrap().runtime.as_note_mut().unwrap().text = raw.into();

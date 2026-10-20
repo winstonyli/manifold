@@ -1036,7 +1036,7 @@ impl App {
     pub(crate) fn group_members(&self) -> HashMap<String, Vec<String>> {
         let mut members: HashMap<String, Vec<String>> = HashMap::new();
         for id in &self.node_order {
-            if let Some(group) = self.nodes.get(id).and(self.mirror.group(id)) {
+            if let Some(group) = self.nodes.get(id).and(self.doc.mirror.group(id)) {
                 members.entry(group.to_owned()).or_default().push(id.clone());
             }
         }
@@ -1073,12 +1073,12 @@ impl App {
         let tab = node.as_tab();
         Some(CardView {
             kind,
-            color: self.mirror.color(id),
-            in_group: self.mirror.group(id).is_some(),
+            color: self.doc.mirror.color(id),
+            in_group: self.doc.mirror.group(id).is_some(),
             overloaded: members.len() > GROUP_OVERLOAD_THRESHOLD,
             members,
             focused: self.focused.as_deref() == Some(id),
-            pinned: self.mirror.pinned(id),
+            pinned: self.doc.mirror.pinned(id),
             muted: tab.is_some_and(|t| t.muted),
             audio_playing: tab.is_some_and(|t| t.audio_playing),
             selected: self.interaction.selected.contains(id),
@@ -1414,7 +1414,7 @@ impl App {
 
         if let Some(node) = self.nodes.get(id) {
             let mut needles = card_filter_text(&node.runtime, self.own_text(id));
-            needles.push(self.mirror.name(id)); // name rule: the filter matches the stored text (a rename; a group is matched twice)
+            needles.push(self.doc.mirror.name(id)); // name rule: the filter matches the stored text (a rename; a group is matched twice)
             dim_if_filtered_out(deferred_overlays, &self.graph_filter, &needles, rect, style.dim_rounding);
         } else if self.virtual_card_dimmed(entry) {
             push_dim_scrim(deferred_overlays, rect, style.dim_rounding);
@@ -1481,7 +1481,7 @@ impl App {
             return body;
         };
         let (url, title, state) = (tab.url.clone(), tab.title.clone(), tab.state.clone());
-        let kind = self.mirror.view_kind(id);
+        let kind = self.doc.mirror.view_kind(id);
         // A failed card whose engine isn't installed offers its Download, not a retry that can't work.
         let missing_view_kind = matches!(state, UnloadedState::Failed(_))
             && !matches!(pick_outcome(kind, &self.view_status(kind)), PickOutcome::Switch(_));
@@ -1667,7 +1667,7 @@ impl App {
         if self.graph_lod_simplified {
             return body;
         }
-        let def = self.mirror.jar_def(id);
+        let def = self.doc.mirror.jar_def(id);
         let segs = crate::names::display_name(&def.name, crate::names::UNTITLED);
         let header = CardHeader {
             identity: Identity::Glyph {
@@ -1701,8 +1701,8 @@ impl App {
         if self.graph_lod_simplified {
             return body;
         }
-        let ty = self.mirror.ty(id).to_owned();
-        let named = !self.mirror.name(id).is_empty(); // name rule: only whether one is stored
+        let ty = self.doc.mirror.ty(id).to_owned();
+        let named = !self.doc.mirror.name(id).is_empty(); // name rule: only whether one is stored
         let header = CardHeader {
             identity: Identity::Glyph { glyph: egui_phosphor::light::QUESTION, color: None },
             source: if named { ty.clone() } else { String::new() },
@@ -1799,9 +1799,9 @@ impl App {
             // its live `TextEdit` yanked out from under the
             // user just because the rest of the graph got
             // busy.
-            // Borrowed, not cloned (2b-4 Ruling 6): `text` borrows `self.mirror` and `cache` `self.commonmark_cache`,
+            // Borrowed, not cloned (2b-4 Ruling 6): `text` borrows `self.doc.mirror` and `cache` `self.commonmark_cache`,
             // two disjoint fields. Not being typed in, the note shows the mirror's text (`App::note_text`).
-            let text = self.mirror.text(id);
+            let text = self.doc.mirror.text(id);
             let cache = &mut self.commonmark_cache;
             ui.scope_builder(
                 egui::UiBuilder::new().max_rect(text_rect).layout(egui::Layout::top_down(egui::Align::LEFT)),
@@ -2149,7 +2149,7 @@ impl App {
         if !self.graph_lod_simplified {
             // Owned, so the header can borrow it while `paint_card_header` borrows `self`.
             // name rule: drawn by display_name just below
-            if let Some(stored) = self.is_container(id).then(|| self.mirror.name(id).to_owned()) {
+            if let Some(stored) = self.is_container(id).then(|| self.doc.mirror.name(id).to_owned()) {
                 let segs = crate::names::display_name(&stored, crate::names::UNTITLED);
                 body.tooltip = crate::names::hidden_hint(&segs);
                 let header = CardHeader {
@@ -2234,7 +2234,7 @@ impl App {
         }
         let CardHeader { identity, name, user_name, source, source_is_path, scrim, right_margin } = header;
         // A stored `name` (any kind's rename) takes the title's place, drawn by the display rule like a group's.
-        let stored = self.mirror.name(id).to_owned(); // name rule: drawn through display_name
+        let stored = self.doc.mirror.name(id).to_owned(); // name rule: drawn through display_name
         let own_segs = crate::names::display_name(&stored, crate::names::UNTITLED);
         let user_name = user_name.or((!stored.is_empty()).then_some(own_segs.as_slice()));
         let band_height = if tall { TAB_HEADER_POINTS } else { TAB_STRIP_POINTS } * inv_zoom;
