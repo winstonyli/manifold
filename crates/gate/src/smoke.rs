@@ -721,6 +721,8 @@ fn drive(sm: &mut Smoke, m: &mut Marks) -> io::Result<()> {
             failed(&format!("a {kind} confirm has no {name} button fill (see {file})"));
         }
         sm.send("ESCAPE")?;
+        // The dialog is modal until the frame after the key: wait it out so the next click is not swallowed.
+        sm.send("WAITIDLE")?;
     }
 
     m.mark("reopen-nested");

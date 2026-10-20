@@ -1083,7 +1083,10 @@ impl App {
     /// (0.3 s between frame times). Two `CLICK`s are a frame or more apart,
     /// and a slow headless frame pushes them past that. A double click waits
     /// out the triple-click window of the click before it, or egui would
-    /// count it as a triple.
+    /// count it as a triple. Egui measures that window in frame times, so each
+    /// click's frame runs here, at once: left to the event loop, a slow frame
+    /// would stamp the click later than the clock this wait runs on, and the
+    /// next double click would land inside the window anyway.
     pub(crate) fn debug_click(
         &mut self,
         event_loop: &ActiveEventLoop,
@@ -1101,7 +1104,6 @@ impl App {
         {
             std::thread::sleep(wait);
         }
-        self.debug.last_click = Some(std::time::Instant::now());
         self.dispatch_window_event(
             event_loop,
             WindowEvent::CursorMoved { device_id: DeviceId::dummy(), position: PhysicalPosition::new(x, y) },
@@ -1120,9 +1122,10 @@ impl App {
                 );
             }
         }
+        // The click's frame, with Ctrl still down, before it is let go.
+        self.dispatch_window_event(event_loop, WindowEvent::RedrawRequested);
+        self.debug.last_click = Some(std::time::Instant::now());
         if ctrl {
-            // The click's frame, with Ctrl still down, before it is let go.
-            self.dispatch_window_event(event_loop, WindowEvent::RedrawRequested);
             self.dispatch_window_event(event_loop, WindowEvent::ModifiersChanged(Default::default()));
         }
     }
