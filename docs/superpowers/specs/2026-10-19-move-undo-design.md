@@ -54,7 +54,24 @@ keeps its link retargeting and stays a `Reopen` entry (its links stay on the tar
 - Ctrl+Z in the Graph view undoes the newest entry (and Ctrl+Z again the one before). Not in Tab view (a web page
   owns its keys) and not while egui wants keyboard input (`egui_wants_keyboard_input`, as `graph_ui.rs:1867`), so a
   note's text undo is untouched.
-- A plain move (no effect) pushes nothing, see Decision 1.
+- A plain move (no effect) pushes nothing (Decided 1).
+- Ctrl+Shift+Z and Ctrl+Y redo the newest redo entry, gated like Ctrl+Z.
+- After an undo the toast reads "Undone: Moved 2 into Research" with a Redo button.
+
+## Redo
+
+A second list, `redo`, bounded by the same cap. Undoing an entry (toast or key) moves it to `redo`; redoing moves it
+back to the undo stack. Only a fresh drop, Dissolve, Ungroup All or Merge pushes a new entry, and that empties `redo`
+(Decided 4). An undo made outside the stack (Recently Closed's Reopen) pushes nothing, so the key does nothing after it.
+
+- `Revert`: the same snapshot run the other way: restore a card to *written* only if it still equals *old*.
+- GroupWith: also reopen `created` if it is still closed (`reopen_node`; if it was reopened meanwhile, skip that step),
+  then move the members in. The same group id comes back, so Recently Closed references stay valid.
+- `Reopen`: the entry also keeps `(group, dest)`. Redo calls `fold_group(group, dest)` if the group is shown and (for
+  a merge) `dest` is shown. It folds the group *as it is now*, including a member dropped in after the undo (a
+  deliberate ruling: redo means "dissolve it again", not "restore the old membership"). Merge's links stay on the
+  target, so there is nothing to retarget.
+- A redo of a revert reports "Redone 1 of 3" the same way.
 
 ## Stress test
 
@@ -68,8 +85,8 @@ Round 1 (against the code, `graph_nav.rs`, `card.rs`, `session_sync.rs`, `groups
 2. *`edit_pos` rounds nothing but `layout_pos` can differ from the mirror's pos by physics.* The CAS compares the
    mirror's pos to the value `release_drag` wrote (read back from the mirror right after the write), never to
    `layout_pos`, which physics moves.
-3. *A revert is itself an edit.* It must not push onto the stack (else Ctrl+Z redoes). It pushes nothing; redo is
-   out of scope.
+3. *A revert is itself an edit.* It must not push a new entry (it would clear `redo`). Undo and redo only move an
+   entry between the two lists.
 4. *Eject from a nested group:* `remove_from_group` sends it to the group's own parent. The snapshot's old group is
    the group, written is the parent; revert puts it back only if it still sits in that parent.
 5. *Reparent is an edge, not a move:* snapshot the old parent; `would_create_cycle` is re-checked on revert, since
@@ -94,22 +111,31 @@ Round 2 (against the design):
 13. *Ctrl+Z conflicts:* no `Key::Z` binding exists in `crates/manifold/src` today; the node menu and address bar use
     their own text fields, which egui handles first.
 
-## Decisions for you
+Round 3 (redo):
 
-1. **Plain moves on the stack?** (a) No, only effects; a plain move is undone by dragging back (recommended, keeps
-   the stack to things that are hard to see). (b) Yes, so Ctrl+Z is "undo the last thing I did", at the cost of
-   filling 10 slots with nudges.
-2. **Toast on every effect drop?** (a) Yes, same toast as Dissolve (recommended: discoverable without a tutorial).
-   (b) Key only, no toast, fewer toasts.
-3. **Depth.** (a) 10 (recommended). (b) 1, the parked design. (c) Unbounded.
-4. **Redo.** (a) None (recommended: a revert is a plain edit; move again). (b) Redo stack.
+14. *Redo of GroupWith when the user reopened the group from Recently Closed meanwhile:* the group is live, so skip the
+    reopen and still move the members in if they equal their old values; idempotent.
+15. *Redo of a fold folds the group as it is now:* a member dropped in after the undo is folded too. Ruling above;
+    the alternative (CAS on the old membership) would need the members stored on the entry and gives a partial
+    redo for little gain.
+16. *Plain moves between undo and redo* neither clear `redo` nor are covered by it; the per-card check keeps a redo
+    safe if the moved card was one of its cards (it is skipped).
+17. *Toast serials:* the Redo button targets the serial of the entry now on `redo`, so a later undo cannot make it
+    redo a different entry.
+18. *Keys:* `Key::Y` and `Key::Z` are unbound in `crates/*/src` (grep 2026-10-19).
+
+## Decided (2026-10-19)
+
+1. Plain moves are not on the stack. 2. Every effect drop shows the toast with Undo. 3. Depth 10. 4. Redo exists,
+cleared only by a fresh push; Ctrl+Shift+Z and Ctrl+Y; a Redo button on the "Undone" toast; redo covers Dissolve,
+Ungroup All and Merge by folding again.
 
 ## Tests (what leaves a check)
 
 A rig test per effect in `closed.rs`'s style: drop, revert, the mirror equals the pre-drop state, `edit_group` /
 `edit_pos` queued writes equal what a manual drag back would write; a CAS test per skipped case (moved again, closed,
 remotely re-grouped); GroupWith closes its group only when empty; the edge twin test; Ctrl+Z gating (Tab view, text
-focus); the stack caps at `UNDO_DEPTH`.
+focus); the stack caps at `UNDO_DEPTH`; per effect, undo then redo returns to the post-drop state; a fresh push empties `redo`; GroupWith redo brings back the same group id; a fold redo after a Recently Closed reopen; Ctrl+Shift+Z and Ctrl+Y gating.
 
 ## Not done
 
