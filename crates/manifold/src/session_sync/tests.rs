@@ -1,6 +1,9 @@
+use super::writes::keep_trail;
 use super::*;
+use crate::local_state::{LiveUrl, LocalState};
 use crate::redirect_fetch::{FetchResult, FetchTarget};
 use crate::store::journal::Journal;
+use crate::store::json::JsonDoc;
 use crate::store::model::ActorId;
 use crate::store::testutil::{temp_dir, XorShift};
 use crate::tabs::{LeftClosed, SpawnPurpose};

@@ -6,6 +6,12 @@ use std::collections::{BTreeMap, HashMap};
 
 use serde::{Deserialize, Serialize};
 
+use crate::node::Runtime;
+use crate::session_sync::SAVE_RETRY;
+use crate::store::journal::JournalError;
+use crate::store::model::{Node, NodeId};
+use crate::{App, ViewMode};
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub(crate) struct LocalState {
     #[serde(default)]
@@ -184,6 +190,325 @@ impl LocalState {
     /// `None` for bytes that aren't this shape: treated as a fresh start.
     pub(crate) fn from_bytes(bytes: &[u8]) -> Option<LocalState> {
         serde_json::from_slice(bytes).ok()
+    }
+}
+
+/// Personal state startup couldn't read (`App::local_persist`.`local_unread`): when
+/// `poll_store` next tries, and whether startup was a fresh start (no
+/// graph node), when nothing is applied from what it reads.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct LocalUnread {
+    pub(crate) retry_at: std::time::Instant,
+    pub(crate) fresh: bool,
+}
+
+/// Personal state from a `read_local`: the defaults for no store, no
+/// state, one that doesn't decode, or a read that failed (which the caller
+/// checks for itself first).
+pub(crate) fn local_from(read: Option<Result<Option<Vec<u8>>, JournalError>>) -> LocalState {
+    match read {
+        Some(Ok(Some(bytes))) => LocalState::from_bytes(&bytes).unwrap_or_default(),
+        _ => LocalState::default(),
+    }
+}
+
+/// The fields a live tab and an unloaded one share, read alike for personal
+/// state (`local_state`).
+struct TabCommon<'a> {
+    title: &'a str,
+    muted: bool,
+    zoom_factor: f64,
+    url: &'a str,
+}
+
+fn tab_common(payload: &Runtime) -> Option<TabCommon<'_>> {
+    match payload {
+        Runtime::Tab(t) => Some(TabCommon { title: &t.title, muted: t.muted, zoom_factor: t.zoom_factor, url: &t.url }),
+        Runtime::Unloaded(u) => {
+            Some(TabCommon { title: &u.title, muted: u.muted, zoom_factor: u.zoom_factor, url: &u.url })
+        }
+        _ => None,
+    }
+}
+
+impl App {
+    /// The end of `restore_session`: personal state as read is what the
+    /// file holds, so `maybe_write_local` skips an unchanged write; one
+    /// that couldn't be read is retried instead, and never written over.
+    pub(crate) fn arm_local(&mut self, unread: bool, fresh: bool) {
+        if unread {
+            self.doc.local_persist.local_written = None;
+            self.doc.local_persist.local_unread =
+                Some(LocalUnread { retry_at: std::time::Instant::now() + SAVE_RETRY, fresh });
+        } else {
+            self.doc.local_persist.local_written = Some(self.local_state());
+            self.doc.local_persist.local_unread = None;
+        }
+    }
+
+    /// Logs why startup couldn't read personal state, once (it's marked
+    /// unread only there), unless another instance just held the lock:
+    /// that is routine and the retry sees to it. Anything else (permission
+    /// denied, say) may never clear, and personal state is then never
+    /// written for this session. Names only the file, not its folder.
+    pub(crate) fn log_local_unread(&self, err: &JournalError) {
+        if matches!(err, JournalError::Io(io) if io.kind() == std::io::ErrorKind::WouldBlock) {
+            return;
+        }
+        let file = self
+            .doc
+            .journal
+            .as_ref()
+            .map(|j| crate::store::local::path_for(j.path()))
+            .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()));
+        eprintln!(
+            "session: couldn't read personal state ({}): {err}; it stays unwritten until a retry reads it",
+            file.as_deref().unwrap_or("?")
+        );
+    }
+
+    /// Retries reading the personal state startup couldn't
+    /// (`App::local_persist`.`local_unread`), at most every `SAVE_RETRY` and without
+    /// waiting on the lock, so a busy peer never stalls a frame; `force`
+    /// (at exit) tries now and waits as a save does. Once read, it's
+    /// applied as startup would have, and the next due write saves the result. Only a
+    /// state that decodes is applied: none, or a damaged one, leaves the
+    /// live view as the user has had it since startup. At exit nothing is
+    /// woken (the read only feeds the write that follows).
+    pub(crate) fn retry_read_local(&mut self, force: bool) {
+        let Some(unread) = self.doc.local_persist.local_unread else { return };
+        let Some(journal) = self.doc.journal.as_ref() else { return };
+        let read = if force {
+            journal.read_local()
+        } else if std::time::Instant::now() >= unread.retry_at {
+            journal.read_local_within(std::time::Duration::ZERO)
+        } else {
+            return;
+        };
+        if matches!(read, Err(ref err) if !matches!(err, JournalError::Corrupt(_))) {
+            self.doc.local_persist.local_unread =
+                Some(LocalUnread { retry_at: std::time::Instant::now() + SAVE_RETRY, ..unread });
+            return;
+        }
+        self.doc.local_persist.local_unread = None;
+        // Unknown: the file holds what was read, not this merge (or nothing).
+        self.doc.local_persist.local_written = None;
+        let Some(local) = read.ok().flatten().and_then(|bytes| LocalState::from_bytes(&bytes)) else { return };
+        if unread.fresh {
+            self.keep_hidden_local(local.nodes);
+        } else {
+            self.apply_local(local);
+            if !force {
+                self.wake_focused();
+            }
+        }
+    }
+
+    /// `id`'s personal state as the live graph shows it: its settled position, a tab's title, muted, zoom and
+    /// unshared live url, a note's `editing`.
+    pub(crate) fn local_node(&self, id: &str, node: &crate::GraphNode) -> LocalNode {
+        let pos = self.layout_pos(id);
+        let mut local = LocalNode { pos: [pos.x, pos.y], ..LocalNode::default() };
+        if let Some(tab) = tab_common(&node.runtime) {
+            local.title = tab.title.to_string();
+            local.muted = tab.muted;
+            local.zoom = (tab.zoom_factor != self.settings.zoom_factor).then_some(tab.zoom_factor);
+            // Against the shared url the mirror holds (Ruling 9): a url this replica shares is edited (`edit_url`)
+            // into it, so only an unshared move (a redirect, a script) is recorded.
+            let from = self.doc.mirror.url(id);
+            local.live_url = (from != tab.url).then(|| LiveUrl { url: tab.url.to_string(), from: from.to_owned() });
+        } else if let Runtime::Note(n) = &node.runtime {
+            local.editing = n.editing;
+        }
+        local
+    }
+
+    /// This profile's personal state as the live graph currently shows it
+    /// (spec "Personal state"): what to write to `session.mnf.local`. A
+    /// node still spawning keeps its `pending_local` entry, so a quit
+    /// before restored tabs land doesn't lose their placement and zoom.
+    pub(crate) fn local_state(&self) -> LocalState {
+        let item = self.view_mode == ViewMode::Item;
+        let mut nodes: BTreeMap<String, LocalNode> = self
+            .nodes
+            .iter()
+            .filter(|(id, _)| id.parse::<NodeId>().is_ok())
+            .map(|(id, node)| (id.clone(), self.local_node(id, node)))
+            .collect();
+        if let Some(pending) = &self.doc.local_persist.pending_local {
+            for (id, node) in &pending.nodes {
+                if self.spawns.spawning.contains_key(id) && !nodes.contains_key(id) {
+                    nodes.insert(id.clone(), node.clone());
+                }
+            }
+        }
+        // Hidden nodes keep theirs while the document still holds them (a Delete not yet seen is dropped).
+        if let Some(doc) = self.doc.journal.as_ref().map(|j| j.doc()) {
+            for (id, node) in &self.doc.hidden_local {
+                if id.parse::<NodeId>().ok().and_then(|n| doc.nodes.get(&n)).is_some_and(Node::is_live) {
+                    nodes.entry(id.clone()).or_insert_with(|| node.clone());
+                }
+            }
+        }
+        let rect = self.camera.rect;
+        LocalState {
+            focused: self.focused.clone(),
+            view_item: item,
+            current_group: self.current_group.clone(),
+            viewed_image: item.then(|| self.viewed_image.clone()).flatten(),
+            split_tab: self.split_tab.clone(),
+            groups_collapsed: self.groups_collapsed,
+            camera: Some(([rect.min.x, rect.min.y, rect.max.x, rect.max.y], self.current_group.clone())),
+            nodes,
+            json_accessor_paths: self.json_ui.json_accessor_paths,
+            json_outline_hidden: !self.json_ui.json_outline_visible,
+            json_outline_width: Some(self.json_ui.json_outline_width),
+        }
+    }
+
+    /// Applies `state` (personal state, from `session.mnf.local` or an
+    /// imported/opened file) on top of the just-restored/imported live
+    /// graph. A view field naming a node takes hold only when that node
+    /// exists, live or still spawning; otherwise the caller's own default
+    /// stands. A node still spawning keeps its entry in `self.doc.local_persist.pending_local`
+    /// for `handle_tab_spawn_result` to apply once it lands.
+    pub(crate) fn apply_local(&mut self, state: LocalState) {
+        let exists = |id: &Option<String>| {
+            id.as_deref().is_some_and(|id| self.nodes.contains_key(id) || self.spawns.spawning.contains_key(id))
+        };
+        if exists(&state.focused) {
+            self.focused = state.focused;
+        }
+        // A level that is hidden now falls back to its nearest shown ancestor (spec decision 3).
+        let level = match (self.doc.journal.as_ref(), state.current_group.as_deref().and_then(|g| g.parse().ok())) {
+            (Some(j), Some(g)) => j.doc().shown_level(g).map(|g| g.to_string()),
+            _ => state.current_group.clone(),
+        };
+        if exists(&level) {
+            self.current_group = level;
+        }
+        if exists(&state.viewed_image) {
+            self.viewed_image = state.viewed_image;
+        }
+        if exists(&state.split_tab) {
+            self.split_tab = state.split_tab;
+        }
+        self.view_mode = if state.view_item { ViewMode::Item } else { ViewMode::Graph };
+        self.groups_collapsed = state.groups_collapsed;
+        self.json_ui.json_accessor_paths = state.json_accessor_paths;
+        self.json_ui.json_outline_visible = !state.json_outline_hidden;
+        if let Some(width) = state.json_outline_width {
+            self.json_ui.json_outline_width = width;
+        }
+        // Item view showing a tab still spawning (`focused` names it, but
+        // it's not in `self.nodes` yet -- a tab's restore is always async):
+        // `build_tab_view_ui` bounces an unknown-tab Item view back to
+        // Graph every frame *unless* `pending_respawn_focus` names it, the
+        // same guard a crash respawn or engine swap relies on to stay put
+        // while its own tab is missing mid-respawn. Without this, Item view
+        // never actually survives a restore -- it bounces to Graph the very
+        // first frame after `apply_local`, before the spawn can land.
+        if self.view_mode == ViewMode::Item && self.viewed_image.is_none() {
+            if let Some(id) = &self.focused {
+                if !self.nodes.get(id).is_some_and(|n| n.as_tab().is_some()) {
+                    self.spawns.pending_respawn_focus = Some(id.clone());
+                }
+            }
+        }
+
+        let mut pending = BTreeMap::new();
+        let mut leftover = Vec::new();
+        for (id, node) in state.nodes {
+            if let Some(live) = self.nodes.get_mut(&id) {
+                Self::apply_local_node(live, &node);
+                self.snap_layout(&id, egui::vec2(node.pos[0], node.pos[1]));
+            } else if self.spawns.spawning.contains_key(&id) {
+                pending.insert(id, node);
+            } else {
+                leftover.push((id, node));
+            }
+        }
+        self.keep_hidden_local(leftover);
+        if !pending.is_empty() {
+            self.doc.local_persist.pending_local = Some(LocalState { nodes: pending, ..LocalState::default() });
+        }
+
+        if let Some((rect, level)) = state.camera {
+            if level == self.current_group {
+                self.camera.rect = egui::Rect::from_min_max(egui::pos2(rect[0], rect[1]), egui::pos2(rect[2], rect[3]));
+                self.camera.frame_restored = false;
+            }
+        }
+    }
+
+    /// Personal-state entries for nodes the document holds but the graph doesn't show (closed, or under a closed
+    /// node): kept in `hidden_local` for a reopen, not dropped as stale.
+    pub(crate) fn keep_hidden_local(&mut self, entries: impl IntoIterator<Item = (String, LocalNode)>) {
+        let Some(doc) = self.doc.journal.as_ref().map(|j| j.doc()) else { return };
+        let held = |id: &str| id.parse::<NodeId>().ok().and_then(|n| doc.nodes.get(&n)).is_some_and(Node::is_live);
+        let here = |id: &str| self.nodes.contains_key(id) || self.spawns.spawning.contains_key(id);
+        let keep: Vec<(String, LocalNode)> = entries.into_iter().filter(|(id, _)| held(id) && !here(id)).collect();
+        self.doc.hidden_local.extend(keep);
+    }
+
+    /// One node's share of `apply_local` beyond its settled position (the caller's `snap_layout`): whatever its
+    /// payload kind keeps (a tab's title/muted/zoom, a note's editing).
+    pub(crate) fn apply_local_node(live: &mut crate::GraphNode, node: &LocalNode) {
+        match &mut live.runtime {
+            Runtime::Tab(tab) => {
+                tab.title = node.title.clone();
+                tab.muted = node.muted;
+                if let Some(zoom) = node.zoom {
+                    tab.zoom_factor = zoom;
+                }
+            }
+            Runtime::Unloaded(tab) => {
+                tab.title = node.title.clone();
+                tab.muted = node.muted;
+                if let Some(zoom) = node.zoom {
+                    tab.zoom_factor = zoom;
+                }
+            }
+            Runtime::Note(n) => n.editing = node.editing,
+            _ => {}
+        }
+    }
+
+    /// Applies a spawning node's personal-state entry once its node exists
+    /// (`handle_tab_spawn_result`), removing it from `pending_local`. An
+    /// unloaded card now takes title/muted/zoom from personal state just
+    /// like a live tab; every other kind only takes its position.
+    pub(crate) fn apply_pending_local(&mut self, id: &str) {
+        let Some(pending) = &mut self.doc.local_persist.pending_local else { return };
+        let Some(node) = pending.nodes.remove(id) else { return };
+        if pending.nodes.is_empty() {
+            self.doc.local_persist.pending_local = None;
+        }
+        if let Some(live) = self.nodes.get_mut(id) {
+            if let Runtime::Tab(_) | Runtime::Unloaded(_) | Runtime::Note(_) = &live.runtime {
+                Self::apply_local_node(live, &node)
+            }
+            self.snap_layout(id, egui::vec2(node.pos[0], node.pos[1]));
+        }
+    }
+
+    /// Writes personal state when it changed (contract "Personal state"):
+    /// at most every 30 s, and at exit (`force`). Never while the file is unread (`App::local_persist`.`local_unread`).
+    pub(crate) fn maybe_write_local(&mut self, force: bool) {
+        const EVERY: std::time::Duration = std::time::Duration::from_secs(30);
+        let due = force || self.doc.local_persist.local_written_at.elapsed() >= EVERY;
+        if !due || self.doc.journal.is_none() || self.doc.local_persist.local_unread.is_some() {
+            return;
+        }
+        let state = self.local_state();
+        self.doc.local_persist.local_written_at = std::time::Instant::now();
+        if self.doc.local_persist.local_written.as_ref().is_some_and(|w| !crate::local_state::differs(w, &state)) {
+            return;
+        }
+        match self.doc.journal.as_ref().unwrap().write_local(&state.to_bytes()) {
+            Ok(()) => self.doc.local_persist.local_written = Some(state),
+            Err(err) => self.store_error(err),
+        }
     }
 }
 

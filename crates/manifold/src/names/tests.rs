@@ -430,7 +430,7 @@ const ALLOWED: [&str; 14] = [
     "mirror.rs",
     "node.rs",
     "node_menu.rs",
-    "session_sync.rs",
+    "session_sync/edits.rs",
     "settings_page.rs",
     "shortcuts.rs",
     "virtual_source.rs",
@@ -505,18 +505,20 @@ fn every_stored_name_reaches_the_screen_through_a_name_rule() {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut offenders = Vec::new();
     let mut seen = Vec::new();
-    // `caps/`, `gpu/`, `process_manager/` and `tabs/` are production code: their files are scanned as `<folder>/<file>`.
+    // `caps/`, `gpu/`, `process_manager/`, `session_sync/` and `tabs/` are production code: their files are scanned as `<folder>/<file>`.
     let entries = std::fs::read_dir(&dir)
         .unwrap()
         .chain(std::fs::read_dir(dir.join("caps")).unwrap())
         .chain(std::fs::read_dir(dir.join("gpu")).unwrap())
         .chain(std::fs::read_dir(dir.join("process_manager")).unwrap())
+        .chain(std::fs::read_dir(dir.join("session_sync")).unwrap())
         .chain(std::fs::read_dir(dir.join("tabs")).unwrap());
     for entry in entries {
         let path = entry.unwrap().path();
         let file = path.strip_prefix(&dir).unwrap().to_string_lossy().replace('\\', "/");
         if path.is_dir() {
-            if file == "caps" || file == "gpu" || file == "process_manager" || file == "tabs" {
+            if file == "caps" || file == "gpu" || file == "process_manager" || file == "session_sync" || file == "tabs"
+            {
                 continue;
             }
             // A folder holding only `tests.rs` is its sibling module's test module, which `production` skips anyway.
@@ -528,7 +530,7 @@ fn every_stored_name_reaches_the_screen_through_a_name_rule() {
             assert_eq!(file, "store", "a new source folder: scan it here too");
             continue;
         }
-        // `process_manager/tests.rs` and `tabs/tests.rs` are test modules `production` cannot see as one.
+        // `process_manager/tests.rs`, `session_sync/tests.rs` and `tabs/tests.rs` are test modules `production` cannot see as one.
         if path.extension().is_none_or(|e| e != "rs") || file == "names.rs" || file.ends_with("/tests.rs") {
             continue;
         }

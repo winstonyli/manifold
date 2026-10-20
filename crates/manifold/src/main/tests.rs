@@ -97,7 +97,7 @@ fn every_id_keyed_field_is_forgotten_or_excused() {
     /// (`forget`) it may have; its fields are named `<prefix>.<field>` in `NOT_FORGOTTEN`.
     const GROUPS: [(&str, &str, &str); 12] = [
         ("doc", include_str!("../doc.rs"), "pub(crate) struct Doc {"),
-        ("doc.writes", include_str!("../session_sync.rs"), "pub(crate) struct PendingWrites {"),
+        ("doc.writes", include_str!("../session_sync/writes.rs"), "pub(crate) struct PendingWrites {"),
         ("cookies", include_str!("../jar.rs"), "pub(crate) struct CookieState {"),
         ("link", include_str!("../links.rs"), "pub(crate) struct LinkGesture {"),
         ("interaction", include_str!("../graph_nav.rs"), "pub(crate) struct GraphInteraction {"),
