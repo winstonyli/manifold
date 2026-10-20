@@ -77,7 +77,7 @@ pub(crate) fn value_kind(value: &Value) -> ValueKind {
     }
 }
 
-/// `0x00RRGGBB` to a colour (plan ruling 4).
+/// `0x00RRGGBB` to a colour.
 pub(crate) fn rgb(hex: u32) -> egui::Color32 {
     let [_, r, g, b] = hex.to_be_bytes();
     egui::Color32::from_rgb(r, g, b)

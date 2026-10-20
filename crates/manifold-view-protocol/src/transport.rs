@@ -11,7 +11,7 @@ use crate::channel::MessageChannel;
 use crate::messages::HostToView;
 
 /// Control-channel connection between `manifold` and a same-machine
-/// view-host (CEF, Servo). Frame pixels travel separately via
+/// view-host (CEF, Servo, WebView2). Frame pixels travel separately via
 /// `SharedFrameBuffer`; this only carries `HostToView`/`ViewToHost`
 /// messages. Each `LocalTransport` is one-directional by convention (see
 /// `listen_local_pair`/`connect_local_pair`) — one socket per tab carries
@@ -20,7 +20,7 @@ use crate::messages::HostToView;
 /// concurrently from different threads.
 pub type LocalTransport = MessageChannel<LocalStream>;
 
-/// Control-channel connection to a WSL2-hosted view-host (WPE). No
+/// Control-channel connection to a WSL2-hosted view-host (WebKit). No
 /// shared memory crosses the Windows/WSL2 boundary.
 pub type RemoteTransport = MessageChannel<TcpStream>;
 
@@ -96,7 +96,7 @@ pub fn listen_local_pair(socket_id: &str) -> io::Result<LocalListenerPair> {
     })
 }
 
-/// Bounded wait for a single same-machine view-host (CEF/Servo) to dial
+/// Bounded wait for a single same-machine view-host (CEF/Servo/WebView2) to dial
 /// back on one of the two sockets, rather than `Listener::accept`'s
 /// unbounded block — see `accept_remote`'s doc comment for the sibling case
 /// (there, a cold WSL2 boot; here, a same-machine child process that fails
@@ -390,7 +390,7 @@ mod tests {
 
     /// Same regression, for `accept_local_pair`'s bounded wait (added
     /// alongside the WebKit fix, hardening the same unbounded-`accept()`
-    /// pattern on the same-machine CEF/Servo path) — a listener with no
+    /// pattern on the same-machine path) — a listener with no
     /// client ever connecting must time out cleanly rather than hang.
     #[test]
     fn accept_local_pair_times_out_when_nobody_connects() {

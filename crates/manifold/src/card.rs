@@ -963,7 +963,7 @@ pub(crate) fn node_card_size(runtime: &Runtime) -> egui::Vec2 {
         // parent level"); an error card keeps the small box.
         Runtime::Json(json) if json.error.is_none() => crate::json_view::preview_size(&json.value),
         Runtime::Json(_) => JSON_NODE_SIZE,
-        // A group has no runtime of its own (2b-6 Ruling 8).
+        // A group has no runtime of its own.
         Runtime::None => GROUP_NODE_SIZE,
         Runtime::Unknown => UNKNOWN_NODE_SIZE,
     }
@@ -987,7 +987,7 @@ pub(crate) fn card_filter_text<'a>(runtime: &'a Runtime, text: &'a str) -> Vec<&
         Runtime::Image(image) => vec![download_filename(&image.path)],
         Runtime::Pdf(pdf) => vec![download_filename(&pdf.path)],
         Runtime::Json(json) => vec![download_filename(&json.path)],
-        // A group has no runtime of its own (2b-6 Ruling 8); it matches on its name, `text`, as a jar does.
+        // A group has no runtime of its own. it matches on its name, `text`, as a jar does.
         Runtime::None | Runtime::Jar => vec![text],
         Runtime::Unknown => Vec::new(),
     }

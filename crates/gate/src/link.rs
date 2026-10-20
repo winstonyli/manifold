@@ -86,9 +86,8 @@ pub(crate) fn truthy(v: &Value) -> bool {
 
 /// link-probe.sh `rect_of`: the card's rect, each value rounded, space-separated.
 fn rect_of(s: &State, id: &str) -> io::Result<String> {
-    let c = s.card(id).ok_or_else(|| bad(format!("no card {id}")))?;
-    let r = c["rect"].as_array().ok_or_else(|| bad(format!("card {id} has no rect")))?;
-    Ok(r.iter().map(|v| rnd(v).map(|i| i.to_string())).collect::<io::Result<Vec<_>>>()?.join(" "))
+    let r = s.rect(id).ok_or_else(|| bad(format!("no card {id}, or it has no rect")))?;
+    Ok(r.iter().map(|v| rnd_f(*v).to_string()).collect::<Vec<_>>().join(" "))
 }
 
 /// link-probe.sh `card_pt`: a card's centre (`screen`), rounded.

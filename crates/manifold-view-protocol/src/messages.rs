@@ -374,9 +374,9 @@ pub fn restore_scroll_script(x: f64, y: f64) -> String {
 /// Messages sent from an view-host back to the manifold process manager.
 ///
 /// `FrameReady`'s `pixels` field distinguishes the two transports: a
-/// same-machine view-host (Servo, CEF) leaves it `None` and writes pixels
+/// same-machine view-host (Servo, CEF, WebView2) leaves it `None` and writes pixels
 /// into the `SharedFrameBuffer` named after the tab id instead (cheaper —
-/// no copy through serialization); a WSL2-hosted view-host (WPE/WebKit,
+/// no copy through serialization); a WSL2-hosted view-host (WebKit,
 /// over `RemoteTransport`) has no shared memory with the Windows host
 /// process, so it sends the raw pixel bytes inline here instead.
 #[derive(Debug, Clone, Serialize, Deserialize)]

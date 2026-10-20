@@ -94,8 +94,8 @@ fn cards(s: &State) -> Option<Cards> {
 }
 
 fn rect_of(s: &State, id: &str) -> String {
-    let rect = s.card(id).map(|c| c["rect"].as_array().cloned().unwrap_or_default()).unwrap_or_default();
-    rect.iter().map(|v| rounded(v).to_string()).collect::<Vec<_>>().join(" ")
+    let rect = s.rect(id).unwrap_or_default();
+    rect.iter().map(|v| (round_half_even(*v) as i64).to_string()).collect::<Vec<_>>().join(" ")
 }
 
 fn groups(s: &State, a: &str, b: &str) -> String {

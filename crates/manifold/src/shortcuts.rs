@@ -283,7 +283,7 @@ impl App {
 
     /// The Graph toolbar's "+ Note" button -- a note spawns at whichever
     /// level is currently being viewed, same as "+ New Tab" and (now)
-    /// "+ New Group" itself, since a note is a
+    /// "+ New Group", since a note is a
     /// plain member of a level's subgraph like a tab or download is.
     /// Leaves a JSON level first, like `new_group_shortcut`.
     pub(crate) fn new_note_shortcut(&mut self) {

@@ -137,8 +137,8 @@ fn screen_of(s: &State, id: &str) -> Option<Vec<f64>> {
 }
 
 /// `cards[id]['rect']`.
-fn rect_of(s: &State, id: &str) -> Option<Vec<f64>> {
-    floats(s.card(id)?.get("rect")?, 4)
+fn rect_of(s: &State, id: &str) -> Option<[f64; 4]> {
+    s.rect(id)
 }
 
 /// `sorted(cards)`: every card id, sorted.
@@ -208,20 +208,6 @@ fn items_rows_more(s: &State) -> Option<(f64, f64, bool)> {
 fn earlier_point(s: &State) -> Option<String> {
     let a = items_card(s)?.get("earlier")?.as_array()?;
     Some(a.iter().map(|v| v.as_f64().map(fmt0)).collect::<Option<Vec<_>>>()?.join(" "))
-}
-
-/// `settle`'s comparison key: `sorted((i, [round(v, 1) for v in c["rect"]]) for i, c in cards.items())`. Equal keys
-/// iff python's reprs of that list are equal: `{:.1}` is the correctly rounded decimal, as `round(v, 1)` is, and
-/// two floats print the same only if they are the same.
-fn rect_key(s: &State) -> String {
-    let mut cards = std::collections::BTreeMap::new();
-    for c in s.all_cards() {
-        let rect = c["rect"].as_array().map_or_else(String::new, |r| {
-            r.iter().map(|v| format!("{:.1}", v.as_f64().unwrap_or(f64::NAN))).collect::<Vec<_>>().join(",")
-        });
-        cards.insert(c["id"].as_str().unwrap_or_default().to_string(), rect);
-    }
-    cards.into_iter().map(|(id, r)| format!("{id}:{r}")).collect::<Vec<_>>().join(";")
 }
 
 /// Python's `repr` of a list of ids (they never hold a quote): `['a', 'b']`.
@@ -407,20 +393,10 @@ impl Smoke {
     /// `settle`: exports until two in a row agree on every card's rect; returns the last. A layout that never stops
     /// is a FAIL line and the run goes on.
     fn settle(&mut self, name: &str) -> io::Result<State> {
-        let mut prev: Option<String> = None;
-        let mut last = self.state(name)?;
-        for i in 0..40 {
-            if i > 0 {
-                last = self.state(name)?;
-            }
-            let now = rect_key(&last);
-            if prev.as_ref() == Some(&now) {
-                return Ok(last);
-            }
-            prev = Some(now);
-            sleep(SETTLE_POLL);
+        let (last, settled) = State::settle(|| self.state(name), 40, SETTLE_POLL)?;
+        if !settled {
+            failed(&format!("{name}: the layout never stopped moving"));
         }
-        failed(&format!("{name}: the layout never stopped moving"));
         Ok(last)
     }
 
@@ -1260,8 +1236,8 @@ mod tests {
         let a = state(r#"{"cards":[{"id":"b","rect":[1.0,2.0,3.0,4.04]},{"id":"a","rect":[0.0,0.0,5.0,5.0]}]}"#);
         let same = state(r#"{"cards":[{"id":"a","rect":[0.0,0.0,5.0,5.0]},{"id":"b","rect":[1.0,2.0,3.0,4.0]}]}"#);
         let moved = state(r#"{"cards":[{"id":"a","rect":[0.0,0.0,5.0,5.0]},{"id":"b","rect":[1.0,2.0,3.0,4.1]}]}"#);
-        assert_eq!(rect_key(&a), rect_key(&same)); // 4.04 rounds to 4.0
-        assert_ne!(rect_key(&a), rect_key(&moved));
+        assert_eq!(a.rect_key(), same.rect_key()); // 4.04 rounds to 4.0
+        assert_ne!(a.rect_key(), moved.rect_key());
     }
 
     /// Values python's `round(v, 1)` rounds as `0.2 0.1 0.3 0.5 -0.0 1.0` (recorded from python 3.14:
@@ -1271,7 +1247,7 @@ mod tests {
     fn rect_key_rounds_like_python() {
         for (v, want) in [(0.25, "0.2"), (0.15, "0.1"), (0.35, "0.3"), (0.45, "0.5"), (-0.04, "-0.0"), (0.95, "0.9")] {
             let s = state(&format!(r#"{{"cards":[{{"id":"a","rect":[{v:?},0.0,0.0,0.0]}}]}}"#));
-            assert_eq!(rect_key(&s), format!("a:{want},0.0,0.0,0.0"), "round({v}, 1)");
+            assert_eq!(s.rect_key(), format!("a:{want},0.0,0.0,0.0"), "round({v}, 1)");
         }
     }
 

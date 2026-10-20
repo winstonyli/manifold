@@ -106,8 +106,7 @@ fn bad(msg: String) -> io::Error {
 type Rect = [f64; 4];
 
 fn rect_of(v: &Value) -> Option<Rect> {
-    let a = v.as_array()?;
-    Some([a.first()?.as_f64()?, a.get(1)?.as_f64()?, a.get(2)?.as_f64()?, a.get(3)?.as_f64()?])
+    State::rect_from(v)
 }
 
 fn overlaps(a: Rect, b: Rect) -> bool {

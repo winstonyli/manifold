@@ -1345,7 +1345,7 @@ impl App {
     /// Saves local edits (spec "Local edits become ops"): take the lock,
     /// show what other replicas wrote, and commit the queued edits as one
     /// transaction, in the order Creates (`pending_creates`, groups first),
-    /// Moves (`pending_moves`), Sets (`pending`), Deletes (`pending_deletes`).
+    /// Moves (`pending_moves`), Sets (`pending`), Deletes (`pending_deletes`), then the closed flags (`closed_flags`).
     /// On error the queues stay for the next save (contract "Transactions").
     /// `true` when the store now holds every local edit: `false` read-only,
     /// on error, and when another instance kept writing. The last two are

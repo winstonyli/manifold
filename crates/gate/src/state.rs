@@ -127,6 +127,55 @@ impl State {
         }
     }
 
+    /// `settle`'s comparison key: `sorted((i, [round(v, 1) for v in c["rect"]]) for i, c in cards.items())`. Equal keys
+    /// iff python's reprs of that list are equal: `{:.1}` is the correctly rounded decimal, as `round(v, 1)` is, and
+    /// two floats print the same only if they are the same.
+    pub fn rect_key(&self) -> String {
+        let mut cards = std::collections::BTreeMap::new();
+        for c in self.all_cards() {
+            let rect = c["rect"].as_array().map_or_else(String::new, |r| {
+                r.iter().map(|v| format!("{:.1}", v.as_f64().unwrap_or(f64::NAN))).collect::<Vec<_>>().join(",")
+            });
+            cards.insert(c["id"].as_str().unwrap_or_default().to_string(), rect);
+        }
+        cards.into_iter().map(|(id, r)| format!("{id}:{r}")).collect::<Vec<_>>().join(";")
+    }
+
+    /// Exports until two in a row agree on every card's rect (`rect_key`), polling every `pause`; returns the last
+    /// state and whether it settled within `tries` exports. The one settle loop (the camera eases and fades run on
+    /// frames, so a fixed sleep can read mid-ease).
+    pub fn settle(
+        mut next: impl FnMut() -> std::io::Result<State>,
+        tries: usize,
+        pause: std::time::Duration,
+    ) -> std::io::Result<(State, bool)> {
+        let mut prev: Option<String> = None;
+        let mut last = next()?;
+        for i in 0..tries {
+            if i > 0 {
+                last = next()?;
+            }
+            let now = last.rect_key();
+            if prev.as_ref() == Some(&now) {
+                return Ok((last, true));
+            }
+            prev = Some(now);
+            std::thread::sleep(pause);
+        }
+        Ok((last, false))
+    }
+
+    /// A card's `rect` (`[left, top, right, bottom]`), the one reader every stage uses.
+    pub fn rect(&self, id: &str) -> Option<[f64; 4]> {
+        Self::floats::<4>(self.card(id)?, "rect")
+    }
+
+    /// The first four numbers of a JSON array as a rect (a popup's or a card's `rect` value).
+    pub fn rect_from(v: &Value) -> Option<[f64; 4]> {
+        let a = v.as_array()?;
+        Some([a.first()?.as_f64()?, a.get(1)?.as_f64()?, a.get(2)?.as_f64()?, a.get(3)?.as_f64()?])
+    }
+
     fn floats<const N: usize>(card: &Value, key: &str) -> Option<[f64; N]> {
         let a = card.get(key)?.as_array()?;
         if a.len() < N {

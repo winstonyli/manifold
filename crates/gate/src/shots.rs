@@ -294,15 +294,7 @@ impl Shots {
     /// Waits until two exports agree on the cards: SLEEP draws no frames, and the camera eases after entering a
     /// level, so a fixed sleep can shoot mid-ease.
     fn settle(&mut self) -> io::Result<()> {
-        let mut prev = String::new();
-        for _ in 0..20 {
-            let cur: String = self.state()?.all_cards().iter().map(|c| format!("{}{};", c["id"], c["rect"])).collect();
-            if cur == prev {
-                break;
-            }
-            prev = cur;
-        }
-        Ok(())
+        State::settle(|| self.state(), 20, Duration::from_millis(300)).map(|_| ())
     }
 
     fn shot(&mut self, name: &str) -> io::Result<()> {
