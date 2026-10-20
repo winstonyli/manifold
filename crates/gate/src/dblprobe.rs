@@ -1,7 +1,8 @@
 //! `gate dblprobe`: how often a debug `DOUBLECLICK` on a group card fails to enter it (the smoke flake, README
 //! "gate smoke is flaky"). One instance, one group card: each round double-clicks the card, notes whether the group
-//! was entered, and goes back. Even rounds click straight away, odd rounds first move the pointer onto the card and
-//! let a frame draw. `ROUNDS` (default 100) counts both kinds together; prints one line per kind. Not part of `all`.
+//! was entered, and goes back. Round kinds, in turn: click straight away; move the pointer onto the card and let a
+//! frame draw first; click Reset View (the toolbar's fit button, which eases the camera) first, as the smoke sites do.
+//! `ROUNDS` (default 100) counts all kinds together; prints one line per kind. Not part of `all`.
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -13,6 +14,9 @@ use crate::instance::{seed_settings, Instance};
 use crate::link::bad;
 use crate::state::{GROUP, NOTE};
 use crate::windows_main::{manifold_exe, work_dir};
+
+/// The round kinds' names.
+const NAMES: [&str; 3] = ["straight", "hover first", "after Reset View"];
 
 /// The toolbar's back button, which leaves a group.
 const BACK: &str = "CLICK 14 16";
@@ -41,10 +45,14 @@ fn drive(exe: &Path, work: &Path) -> io::Result<()> {
     a.send("WAITTABS")?;
     a.send("WAITIDLE")?;
     let rounds: usize = std::env::var("ROUNDS").ok().and_then(|r| r.parse().ok()).unwrap_or(100);
-    let mut missed = [0usize; 2];
-    let mut tried = [0usize; 2];
+    let mut missed = [0usize; 3];
+    let mut tried = [0usize; 3];
     for round in 0..rounds {
-        let hover = round % 2 == 1;
+        let kind = round % 3;
+        if kind == 2 {
+            a.send("ZOOMOUT")?;
+            a.send("CLICK 326 17")?;
+        }
         // The camera eases after leaving a group: aim only once two exports agree on every card.
         let mut prev = String::new();
         let s = a.export_until("top", |s| {
@@ -55,22 +63,34 @@ fn drive(exe: &Path, work: &Path) -> io::Result<()> {
         })?;
         let g = s.groups().into_iter().next().ok_or_else(|| bad("no group".to_string()))?;
         let at = s.xy(&g).ok_or_else(|| bad("no group card position".to_string()))?;
-        if hover {
+        if kind == 2 {
+            if let Some(secs) = std::env::var("PAUSE").ok().filter(|s| !s.is_empty()) {
+                a.send(&format!("SLEEP {secs}"))?;
+            }
+        }
+        if kind == 1 {
             a.send(&format!("MOUSEMOVE {at}"))?;
             a.send("SLEEP 0.3")?;
         }
         a.send(&format!("DOUBLECLICK {at}"))?;
         a.send("WAITIDLE")?;
-        tried[hover as usize] += 1;
+        tried[kind] += 1;
         let entered = a.export_until("after", |_| true)?.current_group() == Some(g.as_str());
         if !entered {
-            missed[hover as usize] += 1;
-            println!("round {round} ({}): not entered", if hover { "hover first" } else { "straight" });
+            missed[kind] += 1;
+            let rect_of = |s: &crate::state::State| s.card(&g).map(|c| c["rect"].to_string());
+            let now = a.export_until("miss", |_| true)?;
+            println!(
+                "round {round} ({}): not entered; aimed at {at} when the card was {:?}, now {:?}",
+                NAMES[kind],
+                rect_of(&s),
+                rect_of(&now)
+            );
         }
         a.send(BACK)?;
         a.export_until("back", |s| s.current_group().is_none())?;
     }
-    for (name, i) in [("straight", 0), ("hover first", 1)] {
+    for (i, name) in NAMES.iter().enumerate() {
         println!("{name}: {} missed of {}", missed[i], tried[i]);
     }
     check("the probe ran", true);

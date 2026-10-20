@@ -1080,7 +1080,9 @@ impl App {
     /// `count` times. All of it lands in one egui frame, so for `count` 2
     /// the second release is always within egui's double-click delay
     /// (0.3 s between frame times). Two `CLICK`s are a frame or more apart,
-    /// and a slow headless frame pushes them past that.
+    /// and a slow headless frame pushes them past that. A click that follows
+    /// another within that delay would count as its second or third click
+    /// (egui counts by time, not by target), so it waits the delay out first.
     pub(crate) fn debug_click(
         &mut self,
         event_loop: &ActiveEventLoop,
@@ -1090,6 +1092,12 @@ impl App {
         count: u8,
         ctrl: bool,
     ) {
+        thread_local!(static LAST_CLICK: std::cell::Cell<Option<std::time::Instant>> = const { std::cell::Cell::new(None) });
+        const DOUBLE_CLICK_DELAY: std::time::Duration = std::time::Duration::from_millis(350);
+        if let Some(wait) = LAST_CLICK.get().and_then(|at| DOUBLE_CLICK_DELAY.checked_sub(at.elapsed())) {
+            std::thread::sleep(wait);
+        }
+        LAST_CLICK.set(Some(std::time::Instant::now()));
         self.dispatch_window_event(
             event_loop,
             WindowEvent::CursorMoved { device_id: DeviceId::dummy(), position: PhysicalPosition::new(x, y) },
