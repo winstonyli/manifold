@@ -135,7 +135,9 @@ impl App {
                 continue;
             }
             let (group, parent) = (side(&m.group, arriving_after), side(&m.parent, arriving_after));
-            if parent.as_ref().is_some_and(|p| self.would_create_cycle(&m.id, p)) {
+            // A destination closed or deleted since would hide the card with it.
+            let gone = |id: &Option<String>| id.as_ref().is_some_and(|id| !self.nodes.contains_key(id));
+            if gone(&group) || gone(&parent) || parent.as_ref().is_some_and(|p| self.would_create_cycle(&m.id, p)) {
                 continue;
             }
             if m.group.0 != m.group.1 {
@@ -146,7 +148,12 @@ impl App {
                 self.edit_parent(&m.id, parent);
             }
             if m.pos.0 != m.pos.1 {
-                self.edit_pos(&m.id, if arriving_after { m.pos.1 } else { m.pos.0 });
+                let pos = if arriving_after { m.pos.1 } else { m.pos.0 };
+                self.edit_pos(&m.id, pos);
+                // The card is drawn from the layout, which only a remote pos or a load moves otherwise.
+                if let Some(pos) = pos {
+                    self.snap_layout(&m.id, pos);
+                }
             }
             done += 1;
         }
@@ -169,7 +176,8 @@ impl App {
                     self.fold_group(group, dest.clone());
                     done += 1;
                 }
-            } else if let Ok(node) = group.parse() {
+            } else if let (false, Ok(node)) = (self.nodes.contains_key(group), group.parse()) {
+                // A group shown again already (reopened from Recently Closed) has nothing to undo.
                 self.reopen_node(node);
                 done += 1;
             }

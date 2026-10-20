@@ -190,6 +190,8 @@ impl App {
     /// cleared at every removal site. A drag that is no longer live (`live_drag`) saves nothing.
     pub(crate) fn release_drag(&mut self) {
         let live = self.live_drag().is_some();
+        // A release no drop followed (the window lost focus) must not leave its origins for a later drop.
+        self.interaction.drag_origin.clear();
         self.interaction.dragging = None;
         let moved = std::mem::take(&mut self.interaction.drag_moved);
         if !live {
@@ -215,14 +217,9 @@ impl App {
         if virtual_end {
             return;
         }
-        // The cards a drop can change: the dragged one, its drag unit, and the card dropped on.
-        let watched: Vec<String> = std::iter::once(id.to_owned())
-            .chain(origin.iter().map(|(o, _)| o.clone()))
-            .chain(target.as_ref().and_then(|(_, t)| t.clone()))
-            .collect::<std::collections::BTreeSet<_>>()
-            .into_iter()
-            .filter(|w| self.nodes.contains_key(w))
-            .collect();
+        // Every card's group and parent before the effect, so the step names exactly the cards it changed (a menu
+        // Join moves the whole selection with no drag to say which).
+        let watched: Vec<String> = self.nodes.keys().cloned().collect();
         let before: Vec<_> = watched
             .iter()
             .map(|w| (self.mirror.group(w).map(str::to_owned), self.mirror.parent(w).map(str::to_owned)))

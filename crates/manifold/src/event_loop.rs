@@ -956,6 +956,7 @@ impl App {
             self.link.line_press = None;
             if self.interaction.dragging.is_some() {
                 self.release_drag();
+                self.interaction.drag_origin.clear();
             }
             // Clears a press that is not a drag yet too, so the stale button can't start one.
             self.egui_ctx.stop_dragging();

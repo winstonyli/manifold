@@ -804,6 +804,19 @@ mod tests {
         );
     }
 
+    /// Ctrl+Z on a fold whose group is already reopened changes nothing and does not offer a redo.
+    #[test]
+    fn an_undo_of_an_already_reopened_fold_does_nothing() {
+        let path = store::testutil::temp_dir("undo-after-reopen").join("session.mnf");
+        let mut app = app_on(&path, 1);
+        let (g, inner) = group_with_note(&mut app);
+        app.ungroup(std::slice::from_ref(&g));
+        app.reopen_node(g.parse().unwrap());
+        app.step_history(None, false);
+        app.step_history(None, true);
+        assert_eq!(app.mirror.group(&inner), Some(g.as_str()), "the group was not dissolved again");
+    }
+
     /// Join: a tab dropped into a group is back at the top level, at its old position, by Undo; Redo puts it in again.
     #[test]
     fn a_join_is_undone_and_redone() {
@@ -814,14 +827,62 @@ mod tests {
         app.edit_pos(&n, Some(egui::vec2(40.0, 50.0)));
         app.interaction.drag_origin = vec![(n.clone(), app.mirror.pos(&n))];
         app.edit_pos(&n, Some(egui::vec2(300.0, 300.0)));
+        app.snap_layout(&n, egui::vec2(300.0, 300.0));
         app.apply_drop(&n, Some((DropEffect::Join, Some(g.clone()))));
         assert_eq!(app.mirror.group(&n), Some(g.as_str()));
         app.step_history(None, false);
         assert_eq!(app.mirror.group(&n), None);
         assert_eq!(app.mirror.pos(&n), Some(egui::vec2(40.0, 50.0)), "back where the drag began");
+        assert_eq!(app.layout_pos(&n), egui::vec2(40.0, 50.0), "and drawn there");
         app.step_history(None, true);
         assert_eq!(app.mirror.group(&n), Some(g.as_str()));
         assert_eq!(app.mirror.pos(&n), Some(egui::vec2(300.0, 300.0)));
+        assert_eq!(app.layout_pos(&n), egui::vec2(300.0, 300.0));
+    }
+
+    /// Undo never writes a card into a group that is closed: it would vanish from every level.
+    #[test]
+    fn an_undo_into_a_closed_group_is_refused() {
+        let path = store::testutil::temp_dir("undo-closed-dest").join("session.mnf");
+        let mut app = app_on(&path, 1);
+        let (g, inner) = group_with_note(&mut app);
+        let other = note(&mut app, "other");
+        app.edit_group(&other, Some(g.clone()));
+        app.apply_drop(&inner, Some((DropEffect::Eject, None)));
+        assert_eq!(app.mirror.group(&inner), None);
+        assert!(app.toasts.undo.is_some(), "recorded");
+        app.close_node(&g);
+        assert!(!app.nodes.contains_key(&g), "closed");
+        app.step_history(None, false);
+        assert_eq!(app.mirror.group(&inner), None, "the group is closed, so the card stays out");
+        assert!(app.toasts.undo.as_ref().is_none_or(|(_, _, redo)| !redo), "nothing was undone, so no Redo is offered");
+    }
+
+    /// A menu "Move into" on a selection has no drag, yet every card it moved is on the step.
+    #[test]
+    fn a_menu_join_of_a_selection_records_every_card() {
+        let path = store::testutil::temp_dir("menu-join-undo").join("session.mnf");
+        let mut app = app_on(&path, 1);
+        let (g, _) = group_with_note(&mut app);
+        let (a, b) = (note(&mut app, "a"), note(&mut app, "b"));
+        app.interaction.selected = [a.clone(), b.clone()].into_iter().collect();
+        app.apply_drop(&a, Some((DropEffect::Join, Some(g.clone()))));
+        assert_eq!(app.mirror.group(&b), Some(g.as_str()));
+        app.step_history(None, false);
+        assert_eq!(app.mirror.group(&a), None);
+        assert_eq!(app.mirror.group(&b), None, "the other selected card comes back too");
+    }
+
+    /// A release that no drop follows (the window lost focus mid-drag) leaves no origin for a later drop to find.
+    #[test]
+    fn a_focus_loss_mid_drag_leaves_no_stale_origin() {
+        let path = store::testutil::temp_dir("focus-origin").join("session.mnf");
+        let mut app = app_on(&path, 1);
+        let n = note(&mut app, "n");
+        app.interaction.dragging = Some(n.clone());
+        app.interaction.drag_moved = vec![n.clone()];
+        app.on_window_focus(false);
+        assert!(app.interaction.drag_origin.is_empty());
     }
 
     /// A selection dropped together comes back together, and a card moved on since is left alone.
