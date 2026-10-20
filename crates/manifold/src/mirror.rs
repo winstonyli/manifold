@@ -143,16 +143,6 @@ impl Mirror {
         self.defaults.iter().copied()
     }
 
-    /// Gives `id` these values only if it has no entry yet (a spawn landing: a new tab takes what it was started
-    /// with, an existing node keeps what the mirror already holds).
-    pub(crate) fn init(&mut self, id: &str, fields: impl IntoIterator<Item = (u32, FieldValue)>) {
-        if !self.nodes.contains_key(id) {
-            for (no, value) in fields {
-                self.set(id, no, value);
-            }
-        }
-    }
-
     /// Gives `id` field `no` only if it holds no value for it yet: a new content node's web source, seeded after
     /// its placement (`App::insert_content`), which a stored node shown again (a reload, a restore) already has, and
     /// a materialized node's `TYPE` (`App::materialize`), which a node this replica placed already holds.
@@ -202,10 +192,7 @@ impl Mirror {
     /// it. `None` when it has none. Pos (0,0) is the field's absent value in the encoding, so a node at the exact
     /// origin reads as `None` too (2b-4 Ruling 5). Where the card is drawn is `App::layout`.
     pub(crate) fn pos(&self, id: &str) -> Option<egui::Vec2> {
-        match self.nodes.get(id)?.get(&field::POS)? {
-            FieldValue::Pos(x, y) if (*x, *y) != (0.0, 0.0) => Some(egui::vec2(*x, *y)),
-            _ => None,
-        }
+        self.nodes.get(id).and_then(pos_in)
     }
 
     /// A note's text: the document's, or what the last save or blur committed (`App::edit_text`). "" when the mirror
@@ -229,13 +216,13 @@ impl Mirror {
     }
 
     pub(crate) fn color(&self, id: &str) -> Option<egui::Color32> {
-        color_of(&self.get(id, field::COLOR))
+        self.nodes.get(id).and_then(color_in)
     }
 
     /// Graph view's pin toggle (tabs only): the force-directed layout never moves a pinned tab, as it never moves
     /// a dragged node (`graph_layout::step`); it still pushes its neighbours. Only tabs carry the field.
     pub(crate) fn pinned(&self, id: &str) -> bool {
-        matches!(self.get(id, field::PINNED), FieldValue::Bool(true))
+        self.nodes.get(id).is_some_and(pinned_in)
     }
 
     /// A tab's shared url: the document's, or the one a local edit is about to write (Ruling 1). Its live url, which
@@ -244,13 +231,6 @@ impl Mirror {
     /// mirror has none.
     pub(crate) fn url(&self, id: &str) -> &str {
         self.str_field(id, field::URL)
-    }
-
-    /// A content node's stored path (`field::PATH`): the one it was created with, never rewritten (2b-5 Ruling 5).
-    /// The file it opens on this machine is its payload's `path` (`ContentIndex::resolve`, or a reload's new file).
-    /// "" when the mirror has none.
-    pub(crate) fn path(&self, id: &str) -> &str {
-        self.str_field(id, field::PATH)
     }
 
     /// The node's type string (`field::TYPE`, `Kind::type_str`), seeded at every creation and never changed. Read by
@@ -263,10 +243,7 @@ impl Mirror {
     /// A tab's or group's `jar` edge (`field::JAR`): the jar it names, `None` to inherit. It may name a jar that no
     /// longer exists or sits out of reach (`App::resolve_jar`).
     pub(crate) fn jar(&self, id: &str) -> Option<NodeId> {
-        match self.get(id, field::JAR) {
-            FieldValue::Id(jar) => jar,
-            _ => None,
-        }
+        self.nodes.get(id).and_then(jar_in)
     }
 
     /// A tab's engine: the one it runs or is switching to (`App::edit_view_kind`), the document's otherwise. The mirror
@@ -290,46 +267,28 @@ impl Mirror {
         self.nodes.contains_key(id) || self.links.contains_key(id)
     }
 
+    /// What `id` carries across a respawn or lands with: every field the mirror holds for it but the absent ones, and
+    /// its two links. A field added to the document is carried with no change here.
     pub(crate) fn carried(&self, id: &str) -> Carried {
-        Carried {
-            pos: self.pos(id),
-            color: self.color(id),
-            pinned: self.pinned(id),
-            parent: self.parent(id).map(str::to_owned),
-            group: self.group(id).map(str::to_owned),
-            url: self.url(id).to_owned(),
-            text: self.text(id).to_owned(),
-            view_kind: self.view_code(id),
-            jar: self.jar(id),
-            ty: self.ty(id).to_owned(),
-            path: self.path(id).to_owned(),
-            // name rule: carried as stored
-            name: self.name(id).to_owned(),
-        }
+        let held = self.nodes.get(id).into_iter().flatten();
+        let carried = held.fold(Carried::default(), |carried, (&no, value)| carried.with(no, value.clone()));
+        Carried { parent: self.parent(id).map(str::to_owned), group: self.group(id).map(str::to_owned), ..carried }
     }
 
-    /// `init` for everything a node carries. No pos, an empty string, engine code 0, `false` and no jar (the fields a
-    /// node's kind lacks, or holds unset) are the fields' absent values, so they are left out. The type alone is
-    /// `init_field`: an entry made before the node was placed (a remote op naming it ahead of its `Create`, a
-    /// link cascade) must not leave the placed node untyped, and the store never changes a type (2b-5 Ruling 10).
+    /// `init` for everything a node carries; absent values (no pos, an empty string, engine code 0, `false`, no jar) are
+    /// left out, as `Carried::with` never holds them. The type alone is `init_field`: an entry made before the node
+    /// was placed (a remote op naming it ahead of its `Create`, a link cascade) must not leave the placed node
+    /// untyped, and the store never changes a type (2b-5 Ruling 10). The entry exists afterwards even when nothing was
+    /// seeded: a placed node is known here.
     pub(crate) fn seed(&mut self, id: &str, carried: &Carried) {
-        let str = |no: u32, s: &String| (!s.is_empty()).then(|| (no, FieldValue::Str(s.clone())));
-        let pos = carried.pos.map(|pos| (field::POS, pos_value(pos)));
-        let view_kind = (carried.view_kind != 0).then_some((field::VIEW_KIND, FieldValue::ViewCode(carried.view_kind)));
-        let jar = carried.jar.map(|jar| (field::JAR, FieldValue::Id(Some(jar))));
-        let strings = [
-            str(field::URL, &carried.url),
-            str(field::TEXT, &carried.text),
-            str(field::PATH, &carried.path),
-            // name rule: seeded as stored
-            str(field::NAME, &carried.name),
-        ];
-        let fields = [(field::COLOR, color_value(carried.color)), (field::PINNED, FieldValue::Bool(carried.pinned))];
-        let optional = [pos, view_kind, jar];
-        self.init(id, fields.into_iter().chain(optional.into_iter().flatten()).chain(strings.into_iter().flatten()));
-        // After `init`, which seeds nothing once the entry exists: the type is the one field that still lands.
-        if !carried.ty.is_empty() {
-            self.init_field(id, field::TYPE, FieldValue::Str(carried.ty.clone()));
+        if !self.nodes.contains_key(id) {
+            self.nodes.insert(id.to_owned(), Fields::new());
+            for (&no, value) in carried.fields.iter().filter(|(&no, _)| no != field::TYPE) {
+                self.set(id, no, value.clone());
+            }
+        }
+        if let Some(ty) = carried.fields.get(&field::TYPE) {
+            self.init_field(id, field::TYPE, ty.clone());
         }
         if !self.links.contains_key(id) {
             let links = Links { parent: carried.parent.clone(), group: carried.group.clone() };
@@ -338,32 +297,94 @@ impl Mirror {
     }
 }
 
-/// What a tab carries across a respawn or lands with: the mirror's values for it. `place_node` seeds a new node's
-/// links, pos, type and stored path with it too.
+fn pos_in(fields: &Fields) -> Option<egui::Vec2> {
+    match fields.get(&field::POS)? {
+        FieldValue::Pos(x, y) if (*x, *y) != (0.0, 0.0) => Some(egui::vec2(*x, *y)),
+        _ => None,
+    }
+}
+
+fn color_in(fields: &Fields) -> Option<egui::Color32> {
+    color_of(fields.get(&field::COLOR)?)
+}
+
+fn pinned_in(fields: &Fields) -> bool {
+    matches!(fields.get(&field::PINNED), Some(FieldValue::Bool(true)))
+}
+
+fn jar_in(fields: &Fields) -> Option<NodeId> {
+    match fields.get(&field::JAR) {
+        Some(FieldValue::Id(jar)) => *jar,
+        _ => None,
+    }
+}
+
+/// What a tab carries across a respawn or lands with: the mirror's values for it, as a field map (no absent value
+/// is held) and the two links. `place_node` seeds a new node's links, pos, type and stored path with it too. Read
+/// the fields a respawn needs through `pos`, `color`, `pinned` and `jar`.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct Carried {
-    /// The document pos (`Mirror::pos`): a new node's placement, which its `Create` carries (2b-4 Ruling 3).
-    pub pos: Option<egui::Vec2>,
-    pub color: Option<egui::Color32>,
-    pub pinned: bool,
+    fields: Fields,
+    /// The node this one was opened from.
     pub parent: Option<String>,
+    /// The group it is shown in.
     pub group: Option<String>,
-    /// The url (`Mirror::url`): a tab's shared url, or a content node's web source. `place_node` passes only a tab's
-    /// (from `saved_tab`); a content node's is seeded by its caller (`App::seed_source_url`). "" for none.
-    pub url: String,
-    /// A note's text (`Mirror::text`): what a new note starts with, which its `Create` carries; "" for other kinds.
-    pub text: String,
-    /// The engine's stored code (`Mirror::engine` decodes it, `session_sync::view_code` makes one); 0, the absent
-    /// value, for a node that isn't a tab.
-    pub view_kind: u64,
-    /// The `jar` edge (`Mirror::jar`); `None` inherits, and for a node that is neither a tab nor a group.
-    pub jar: Option<NodeId>,
-    /// The type string (`Mirror::ty`); "" for none.
-    pub ty: String,
-    /// The stored path (`Mirror::path`); "" for a node without a file.
-    pub path: String,
-    /// `Mirror::name`: a rename of any node, or a group's name; "" for none.
-    pub name: String,
+}
+
+impl Carried {
+    /// `value` for field `no`; an absent value removes it, so a carried map never holds one.
+    pub(crate) fn with(mut self, no: u32, value: FieldValue) -> Self {
+        if value == FieldValue::absent(field_def(no).expect("a known field").ty) {
+            self.fields.remove(&no);
+        } else {
+            self.fields.insert(no, value);
+        }
+        self
+    }
+
+    pub(crate) fn in_group(self, group: Option<String>) -> Self {
+        Carried { group, ..self }
+    }
+
+    pub(crate) fn with_str(self, no: u32, text: impl Into<String>) -> Self {
+        self.with(no, FieldValue::Str(text.into()))
+    }
+
+    /// A tab landing or respawning: where it sits, what it keeps, the url it opens and its engine's stored code.
+    pub(crate) fn tab(
+        pos: Option<egui::Vec2>,
+        color: Option<egui::Color32>,
+        pinned: bool,
+        (parent, group): (Option<String>, Option<String>),
+        url: String,
+        view_kind: u64,
+        jar: Option<NodeId>,
+    ) -> Self {
+        let carried = Carried { parent, group, ..Carried::default() };
+        let carried = pos.map_or(carried.clone(), |pos| carried.with(field::POS, pos_value(pos)));
+        carried
+            .with(field::COLOR, color_value(color))
+            .with(field::PINNED, FieldValue::Bool(pinned))
+            .with_str(field::URL, url)
+            .with(field::VIEW_KIND, FieldValue::ViewCode(view_kind))
+            .with(field::JAR, FieldValue::Id(jar))
+    }
+
+    pub(crate) fn pos(&self) -> Option<egui::Vec2> {
+        pos_in(&self.fields)
+    }
+
+    pub(crate) fn color(&self) -> Option<egui::Color32> {
+        color_in(&self.fields)
+    }
+
+    pub(crate) fn pinned(&self) -> bool {
+        pinned_in(&self.fields)
+    }
+
+    pub(crate) fn jar(&self) -> Option<NodeId> {
+        jar_in(&self.fields)
+    }
 }
 
 #[cfg(test)]
@@ -389,25 +410,23 @@ mod tests {
     #[test]
     fn seed_then_carried_round_trips_and_never_overwrites() {
         let mut mirror = Mirror::default();
-        let first = Carried {
-            pos: Some(egui::vec2(3.0, -4.0)),
-            color: Some(egui::Color32::RED),
-            pinned: true,
-            parent: Some("p".into()),
-            group: Some("g".into()),
-            url: "https://a/".into(),
-            text: "note".into(),
-            view_kind: 99,
-            jar: Some(crate::store::model::NodeId { actor: crate::store::model::ActorId(1), counter: 2 }),
-            ty: "text/x".into(),
-            path: "C:/a.json".into(),
-            name: "Mine".into(),
-        };
+        let jar = crate::store::model::NodeId { actor: crate::store::model::ActorId(1), counter: 2 };
+        let first = Carried { parent: Some("p".into()), group: Some("g".into()), ..Carried::default() }
+            .with(field::POS, pos_value(egui::vec2(3.0, -4.0)))
+            .with(field::COLOR, color_value(Some(egui::Color32::RED)))
+            .with(field::PINNED, FieldValue::Bool(true))
+            .with_str(field::URL, "https://a/")
+            .with_str(field::TEXT, "note")
+            .with(field::VIEW_KIND, FieldValue::ViewCode(99))
+            .with(field::JAR, FieldValue::Id(Some(jar)))
+            .with_str(field::TYPE, "text/x")
+            .with_str(field::PATH, "C:/a.json")
+            .with_str(field::NAME, "Mine");
         mirror.seed("7", &first);
         assert_eq!(mirror.carried("7"), first);
-        mirror.seed("7", &Carried { url: "https://b/".into(), ..Carried::default() });
+        mirror.seed("7", &Carried::default().with_str(field::URL, "https://b/"));
         assert_eq!(mirror.carried("7"), first);
-        mirror.seed("8", &Carried { pos: Some(egui::Vec2::ZERO), ..Carried::default() });
+        mirror.seed("8", &Carried::default().with(field::POS, pos_value(egui::Vec2::ZERO)));
         assert_eq!(mirror.pos("8"), None, "pos (0,0) is the absent value (Ruling 5)");
     }
 
@@ -417,9 +436,9 @@ mod tests {
     fn seed_types_an_entry_that_has_none() {
         let mut mirror = Mirror::default();
         mirror.set("7", field::URL, FieldValue::Str("https://a/".into()));
-        mirror.seed("7", &Carried { ty: "text/x".into(), url: "https://b/".into(), ..Carried::default() });
+        mirror.seed("7", &Carried::default().with_str(field::TYPE, "text/x").with_str(field::URL, "https://b/"));
         assert_eq!((mirror.ty("7"), mirror.url("7")), ("text/x", "https://a/"), "the type lands, the rest is kept");
-        mirror.seed("7", &Carried { ty: "text/y".into(), ..Carried::default() });
+        mirror.seed("7", &Carried::default().with_str(field::TYPE, "text/y"));
         assert_eq!(mirror.ty("7"), "text/x");
         mirror.seed("8", &Carried::default());
         assert!(!mirror.nodes["8"].contains_key(&field::TYPE), "no type seeds nothing");
@@ -448,7 +467,9 @@ mod tests {
         assert_eq!(mirror.view_kind("7"), ViewKind::Cef);
         mirror.set("7", field::VIEW_KIND, FieldValue::ViewCode(99));
         assert_eq!(mirror.view_kind("7"), ViewKind::Servo, "a newer build's code reads as Servo");
-        assert_eq!(mirror.carried("7").view_kind, 99, "and is carried as is");
+        let mut copy = Mirror::default();
+        copy.seed("8", &mirror.carried("7"));
+        assert_eq!(copy.view_code("8"), 99, "and is carried as is");
     }
 
     #[test]
@@ -468,7 +489,7 @@ mod tests {
         for no in [field::TYPE, field::PATH, field::JAR] {
             assert!(!mirror.nodes["8"].contains_key(&no), "field {no} seeds nothing");
         }
-        assert_eq!((mirror.ty("8"), mirror.path("8")), ("", ""));
+        assert_eq!((mirror.ty("8"), mirror.get("8", field::PATH)), ("", FieldValue::Str(String::new())));
     }
 
     #[test]
@@ -534,15 +555,6 @@ mod tests {
         assert_eq!(mirror.color("7"), Some(egui::Color32::RED));
         mirror.set("7", field::COLOR, color_value(None));
         assert_eq!(mirror.color("7"), None);
-    }
-
-    #[test]
-    fn init_never_overwrites_an_entry() {
-        let mut mirror = Mirror::default();
-        mirror.init("7", [(field::COLOR, color_value(Some(egui::Color32::RED)))]);
-        assert_eq!(mirror.color("7"), Some(egui::Color32::RED));
-        mirror.init("7", [(field::COLOR, color_value(Some(egui::Color32::BLUE)))]);
-        assert_eq!(mirror.color("7"), Some(egui::Color32::RED));
     }
 
     #[test]

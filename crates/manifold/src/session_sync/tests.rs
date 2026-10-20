@@ -4002,8 +4002,8 @@ fn start_respawn(app: &mut App, tab: &str) {
         SpawnPurpose::Respawn,
         1.0,
     );
-    (spawn.parent, spawn.group, spawn.jar) = (carried.parent, carried.group, carried.jar);
-    (spawn.carry.color, spawn.carry.pinned) = (carried.color, carried.pinned);
+    (spawn.carry.color, spawn.carry.pinned) = (carried.color(), carried.pinned());
+    (spawn.jar, spawn.parent, spawn.group) = (carried.jar(), carried.parent, carried.group);
     app.respawn_tab(spawn);
     assert!(app.spawns.spawning.contains_key(tab) && !app.nodes.contains_key(tab), "respawning");
 }

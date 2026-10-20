@@ -46,7 +46,9 @@ impl App {
         let (parent, group, color, pinned, muted) = if self.spawns.wakes_in_flight.remove(&id) {
             match self.nodes.get(&id).and_then(|n| n.as_unloaded()) {
                 Some(tab) => {
-                    let Carried { color, pinned, parent, group, .. } = self.doc.mirror.carried(&id);
+                    let carried = self.doc.mirror.carried(&id);
+                    let (color, pinned) = (carried.color(), carried.pinned());
+                    let Carried { parent, group, .. } = carried;
                     (parent, group, color, pinned, tab.muted)
                 }
                 // Closed while waking (see `wakes_in_flight`): `remove_tab`
@@ -109,21 +111,9 @@ impl App {
                     },
                 );
                 let view_kind = session_sync::view_code(kind);
-                let pos = Some(pos);
-                self.seed_landing(
-                    &id,
-                    Carried {
-                        pos,
-                        color,
-                        pinned,
-                        parent,
-                        group,
-                        url: url.clone(),
-                        view_kind,
-                        jar: spawn_jar,
-                        ..Default::default()
-                    },
-                );
+                let carried =
+                    Carried::tab(Some(pos), color, pinned, (parent, group), url.clone(), view_kind, spawn_jar);
+                self.seed_landing(&id, carried);
                 if !self.node_order.iter().any(|t| t == &id) {
                     self.node_order.push(id.clone());
                 }
@@ -273,11 +263,8 @@ impl App {
                     // A tab the mirror holds already shows the engine that failed: a switch's target, written when
                     // it started (`edit_view_kind`); a new one lands on it here.
                     let view_kind = session_sync::view_code(kind);
-                    let (pos, jar) = (Some(pos), spawn_jar);
-                    self.seed_landing(
-                        &id,
-                        Carried { pos, color, pinned, parent, group, url, view_kind, jar, ..Default::default() },
-                    );
+                    let carried = Carried::tab(Some(pos), color, pinned, (parent, group), url, view_kind, spawn_jar);
+                    self.seed_landing(&id, carried);
                     if !self.node_order.iter().any(|t| t == &id) {
                         self.node_order.push(id.clone());
                     }
@@ -335,8 +322,8 @@ impl App {
     /// A jar deleted while a new spawn was in flight needs no fix-up: the edge dangles and resolves to the Default.
     fn seed_landing(&mut self, id: &str, carried: Carried) {
         let ty = crate::store::model::Kind::Tab.type_str().unwrap_or_default().to_owned();
-        let carried = Carried { ty, ..carried };
-        self.layout.entry(id.to_owned()).or_insert(Layout::at(carried.pos.unwrap_or_default()));
+        let carried = carried.with_str(field::TYPE, ty);
+        self.layout.entry(id.to_owned()).or_insert(Layout::at(carried.pos().unwrap_or_default()));
         self.doc.mirror.seed(id, &carried);
         if self.doc.mirror.group(id).is_some_and(|g| !self.nodes.contains_key(g)) {
             let group = self.shown_group(id);

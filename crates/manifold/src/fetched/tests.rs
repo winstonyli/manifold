@@ -177,7 +177,7 @@ fn a_new_download_has_its_url_and_type_in_the_mirror() {
     assert_eq!(app.doc.mirror.url(&id), "https://x.test/f.bin");
     assert_eq!(app.copyable_url(&id), Some("https://x.test/f.bin"));
     assert_eq!(app.doc.mirror.ty(&id), crate::store::model::Kind::Download.type_str().unwrap());
-    assert_eq!(app.doc.mirror.path(&id), "f.bin");
+    assert_eq!(app.doc.mirror.get(&id, field::PATH), FieldValue::Str("f.bin".into()));
 }
 
 /// 2b-5 Ruling 5: a reload that lands in a new file keeps the stored (create-time) path in the mirror, which the
@@ -197,13 +197,17 @@ fn a_reload_keeps_the_stored_path_and_duplicating_exports_the_resolved_one() {
         None,
     )
     .unwrap();
-    assert_eq!(app.doc.mirror.path(&id), stored);
+    assert_eq!(app.doc.mirror.get(&id, field::PATH), FieldValue::Str(stored.clone()));
     let moved = dir.join("moved.json");
     std::fs::write(&moved, b"[2]").unwrap();
     let moved = moved.to_string_lossy().into_owned();
     app.reload_fetched_node(&id, WebBody::File { kind: crate::content::ContentKind::Json, path: moved.clone() });
     assert_eq!(app.nodes[&id].as_json().unwrap().path, moved, "the payload reads the new file");
-    assert_eq!(app.doc.mirror.path(&id), stored, "the mirror keeps the stored path");
+    assert_eq!(
+        app.doc.mirror.get(&id, field::PATH),
+        FieldValue::Str(stored.clone()),
+        "the mirror keeps the stored path"
+    );
     let snapshot = app.snapshot(id.parse().unwrap()).unwrap();
     assert_eq!(snapshot.fields[&field::PATH], FieldValue::Str(stored.clone()), "a save writes the stored path");
     let doc = crate::duplicate::subtree_json(&app, &[id.as_str()], egui::Vec2::ZERO).unwrap();

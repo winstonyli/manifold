@@ -102,8 +102,14 @@ impl App {
         // The one way a node enters `nodes`: the next save creates it if the document lacks it (Ruling 3).
         self.queue_create(&id);
         self.snap_layout(&id, at.pos);
-        let (pos, group) = (Some(at.pos), at.group);
-        let carried = crate::mirror::Carried { pos, group, url, text, view_kind, ty, path, ..Default::default() };
+        let carried = crate::mirror::Carried::default()
+            .in_group(at.group)
+            .with(field::POS, crate::session_sync::pos_value(at.pos))
+            .with_str(field::URL, url)
+            .with_str(field::TEXT, text)
+            .with(field::VIEW_KIND, FieldValue::ViewCode(view_kind))
+            .with_str(field::TYPE, ty)
+            .with_str(field::PATH, path);
         self.doc.mirror.seed(&id, &carried);
         self.node_order.push(id.clone());
         id
