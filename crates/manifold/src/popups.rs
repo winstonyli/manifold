@@ -180,6 +180,16 @@ fn folder_job(ui: &egui::Ui, segs: &[crate::names::NameSeg], color: egui::Color3
     job
 }
 
+/// One Recently Closed row: the closed root, its stored form, its kept title, a group's member count and, for a group
+/// an ungroup or merge emptied, how many members it holds.
+struct ClosedRow {
+    id: store::model::NodeId,
+    json: store::json::JsonNode,
+    title: Option<String>,
+    members: Option<usize>,
+    held: Option<usize>,
+}
+
 /// A closed group's member count as its row shows it, after the name.
 fn member_count_text(members: usize) -> String {
     format!("({members})")
@@ -897,7 +907,7 @@ impl App {
         let mut close = false;
         // Every closed root, any replica's, newest first (spec "Recently Closed rows"): label from its fields, title
         // from its kept personal state, a group's member count from its non-deleted descendants.
-        let rows: Vec<(store::model::NodeId, store::json::JsonNode, Option<String>, Option<usize>)> = self
+        let rows: Vec<ClosedRow> = self
             .journal
             .as_ref()
             .map(|j| {
@@ -913,7 +923,16 @@ impl App {
                             let under = doc.with_descendants(std::collections::BTreeSet::from([id]));
                             under.iter().filter(|d| **d != id && doc.nodes.get(d).is_some_and(|n| !n.deleted)).count()
                         });
-                        Some((id, json, title, members))
+                        // A group an ungroup or merge emptied: how many of the members it holds still exist.
+                        let held =
+                            (node.kind() == Kind::Group).then(|| node.get(store::model::field::HELD)).and_then(|v| {
+                                let store::model::FieldValue::Str(held) = v else { return None };
+                                let ids =
+                                    held.split(' ').skip(1).filter_map(|m| m.parse::<store::model::NodeId>().ok());
+                                let alive = ids.filter(|m| doc.nodes.get(m).is_some_and(|n| !n.deleted)).count();
+                                (!held.is_empty()).then_some(alive)
+                            });
+                        Some(ClosedRow { id, json, title, members, held })
                     })
                     .collect()
             })
@@ -922,7 +941,7 @@ impl App {
         let open = self.menus.open_popup == Some(AnchoredPopup::RecentlyClosed);
         let area_rect =
             build_list_popup_frame(ui.ctx(), "recently_closed_popup", anchor_rect, 220.0, 320.0, fade, open, |ui| {
-                for (id, root, title, members) in &rows {
+                for ClosedRow { id, json: root, title, members, held } in &rows {
                     ui.horizontal(|ui| {
                         let mut row_ui = |ui: &mut egui::Ui| {
                             let (label, hint) = Self::closed_entry_label(ui, self.gpu.as_ref(), root, title.as_deref());
@@ -930,13 +949,17 @@ impl App {
                             if let Some(hint) = hint {
                                 row = row.on_hover_text(hint);
                             }
+                            if let Some(held) = held {
+                                row = row.on_hover_text(format!("Emptied: reopening puts its {held} members back"));
+                            }
                             if row.clicked() {
                                 reopen = Some(*id);
                             }
                         };
                         if let Some(count) = members {
                             // The count is laid out first, at the right, so a name cut short keeps it.
-                            let count = member_count_text(*count);
+                            let count =
+                                if held.is_some() { "(emptied)".to_string() } else { member_count_text(*count) };
                             egui::Sides::new().shrink_left().truncate().show(ui, row_ui, |ui| ui.weak(count));
                         } else {
                             row_ui(ui);
