@@ -652,15 +652,9 @@ impl Doc {
     /// depends on each group above it (`effective_group`).
     pub fn with_descendants(&self, nodes: BTreeSet<NodeId>) -> BTreeSet<NodeId> {
         let mut out = nodes.clone();
-        for (&id, node) in &self.nodes {
-            let mut cur = node.group;
-            for _ in 0..self.nodes.len() {
-                let Some(c) = cur else { break };
-                if nodes.contains(&c) {
-                    out.insert(id);
-                    break;
-                }
-                cur = self.nodes.get(&c).and_then(|n| n.group);
+        for &id in self.nodes.keys() {
+            if crate::walk::ancestors(id, |k| self.nodes.get(k).and_then(|n| n.group)).any(|a| nodes.contains(&a)) {
+                out.insert(id);
             }
         }
         out
@@ -669,15 +663,8 @@ impl Doc {
     /// Whether `ancestor` is on the path from `of` to the root, `of`
     /// excluded. Walks deleted nodes too, so every replica answers alike.
     pub fn is_ancestor(&self, ancestor: NodeId, of: NodeId) -> bool {
-        let mut cur = self.nodes.get(&of).and_then(|n| n.group);
-        for _ in 0..=self.nodes.len() {
-            match cur {
-                Some(c) if c == ancestor => return true,
-                Some(c) => cur = self.nodes.get(&c).and_then(|n| n.group),
-                None => return false,
-            }
-        }
-        true // a cycle; `apply_move` never makes one
+        let mut above = crate::walk::ancestors(of, |k| self.nodes.get(k).and_then(|n| n.group));
+        above.any(|a| a == ancestor) || above.looped() // a cycle; `apply_move` never makes one
     }
 }
 

@@ -313,13 +313,11 @@ impl App {
         if !self.nodes.contains_key(target) {
             return;
         }
-        let mut ancestor = Some(target.to_string());
-        let mut visited = HashSet::new();
-        while let Some(cur) = ancestor {
-            if cur == source || !visited.insert(cur.clone()) {
-                return;
-            }
-            ancestor = self.nodes.get(&cur).and(self.mirror.group(&cur)).map(str::to_owned);
+        let mut above = crate::walk::ancestors(target.to_string(), |k| {
+            self.nodes.get(k).and(self.mirror.group(k)).map(str::to_owned)
+        });
+        if target == source || above.any(|a| a == source) || above.looped() {
+            return;
         }
         let message = format!("Merged {} into {}", self.drop_target_name(source), self.drop_target_name(target));
         // Its links move to `target` and stay there on an undo: the source keeps none.
@@ -340,16 +338,9 @@ impl App {
     /// re-parented concurrently; the store doesn't cycle-check `parent`)
     /// counts as one too.
     pub(crate) fn would_create_cycle(&self, node_id: &str, new_parent_id: &str) -> bool {
-        let mut current = Some(new_parent_id.to_string());
-        let mut visited = HashSet::new();
-        while let Some(cur) = current {
-            if cur == node_id || !visited.insert(cur.clone()) {
-                return true;
-            }
-            // The raw edge on purpose: a cycle through a closed card would come back with a reopen.
-            current = self.mirror.parent(&cur).map(str::to_owned);
-        }
-        false
+        // The raw edge on purpose: a cycle through a closed card would come back with a reopen.
+        let mut above = crate::walk::ancestors(new_parent_id.to_string(), |k| self.mirror.parent(k).map(str::to_owned));
+        new_parent_id == node_id || above.any(|a| a == node_id) || above.looped()
     }
 
     /// Every ancestor above `self.current_group`, root-most first, as
@@ -359,18 +350,12 @@ impl App {
     /// `dissolve_group` already do to find a single ancestor; this just
     /// collects the whole chain instead of stopping at the first one.
     pub(crate) fn group_breadcrumb(&self) -> Vec<(String, String)> {
+        let Some(current) = self.current_group.clone() else { return Vec::new() };
+        // Called every frame: `ancestors` ends on a cycle in the mirror's `.group` chain (a local move and another
+        // replica's move can race into one until the next save), so it can't freeze the app.
+        let up = crate::walk::ancestors(current.clone(), |k| self.mirror.group(k).map(str::to_owned));
         let mut chain = Vec::new();
-        let mut visited = std::collections::HashSet::new();
-        let mut current = self.current_group.clone();
-        // Guards against an infinite loop on a cycle in the mirror's
-        // `.group` chain: a local move and another replica's move can race
-        // into one until the next save shows the document's groups (the
-        // store refuses the move that closes it). Called every frame, a
-        // hang here would freeze the whole app with no error.
-        while let Some(id) = current {
-            if !visited.insert(id.clone()) {
-                break;
-            }
+        for id in std::iter::once(current).chain(up) {
             let Some(node) = self.nodes.get(&id) else { break };
             // A JSON level's crumb is its Json node, named by its file.
             let name = match &node.runtime {
@@ -380,7 +365,6 @@ impl App {
                 Runtime::Json(json) => download_filename(&json.path).to_string(),
                 _ => String::new(),
             };
-            current = self.mirror.group(&id).map(str::to_owned);
             chain.push((id, name));
         }
         chain.reverse();
@@ -423,19 +407,12 @@ impl App {
             return Vec::new();
         }
         let level_group = self.mirror.group(root_id);
+        let children = |current: &String| {
+            let opened_here = |id: &&String| self.opened_from(id) == Some(current.as_str());
+            self.nodes.keys().filter(opened_here).filter(|id| self.mirror.group(id) == level_group).cloned().collect()
+        };
         let mut result = vec![root_id.to_string()];
-        let mut frontier = vec![root_id.to_string()];
-        while let Some(current) = frontier.pop() {
-            for id in self.nodes.keys() {
-                if self.opened_from(id) == Some(current.as_str())
-                    && self.mirror.group(id) == level_group
-                    && !result.contains(id)
-                {
-                    result.push(id.clone());
-                    frontier.push(id.clone());
-                }
-            }
-        }
+        result.extend(crate::walk::descendants(root_id.to_string(), children, |_| true));
         result
     }
 

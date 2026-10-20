@@ -86,6 +86,7 @@ mod view_install;
 mod view_modes;
 mod viewport;
 mod virtual_source;
+mod walk;
 mod zoom_chip;
 
 use event_loop::UserEvent;

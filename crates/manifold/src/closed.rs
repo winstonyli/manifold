@@ -21,8 +21,8 @@ pub(crate) fn worth_reopening(ty: &str, fields: &session_sync::Fields) -> bool {
     crate::caps::registry().caps(ty, tags).restorable
 }
 
-/// Every node under `root` at any depth, in `order`, each group visited
-/// once: a group cycle (never built, but the loop must end) can't hang it.
+/// Every node under `root` at any depth (`order` is the membership's source), each group visited once: a group
+/// cycle (never built, but the walk must end) can't hang it.
 pub(crate) fn members_under(
     root: store::model::NodeId,
     order: &[store::model::NodeId],
@@ -35,18 +35,7 @@ pub(crate) fn members_under(
             members.entry(group).or_default().push(*id);
         }
     }
-    let (mut out, mut seen, mut levels) = (Vec::new(), HashSet::from([root]), vec![root]);
-    while let Some(level) = levels.pop() {
-        for id in members.get(&level).into_iter().flatten() {
-            if is_group(id) && seen.insert(*id) {
-                levels.push(*id);
-            }
-            if *id != root {
-                out.push(*id);
-            }
-        }
-    }
-    out
+    crate::walk::descendants(root, |g| members.get(g).cloned().unwrap_or_default(), is_group)
 }
 
 impl App {

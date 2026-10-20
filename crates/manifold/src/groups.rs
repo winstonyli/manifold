@@ -22,15 +22,7 @@ impl App {
     /// How many groups `id` is nested in, by the mirror's `group` chain; capped at the chain's length so a cycle
     /// (two replicas' moves raced) ends.
     pub(crate) fn group_depth(&self, id: &str) -> usize {
-        let (mut depth, mut cur) = (0, id);
-        while let Some(group) = self.mirror.group(cur) {
-            depth += 1;
-            if depth > self.nodes.len() {
-                break;
-            }
-            cur = group;
-        }
-        depth
+        crate::walk::ancestors(id.to_owned(), |k| self.mirror.group(k).map(str::to_owned)).count()
     }
 
     /// Dissolves a group: members rejoin *its own parent's* level again
@@ -152,48 +144,39 @@ impl App {
 
     /// Destroys a group and everything in it, at any depth, then the group itself, and saves once. Records nothing.
     pub(crate) fn destroy_group(&mut self, id: &str) {
-        self.begin_tabs_shutdown(&self.tabs_under(id));
-        self.destroy_group_members(id, &mut HashSet::new());
+        let below = self.members_under(id);
+        let tabs = below.iter().filter(|m| !self.is_container(m)).cloned().collect::<Vec<_>>();
+        self.begin_tabs_shutdown(&tabs);
+        self.destroy_group_members(id, below);
         // The one save for the whole subtree: no member's removal saves (`destroy_group_members`), so the group and
         // everything in it go in one commit, and another replica never reads it half deleted.
         self.save_session();
     }
 
-    /// Every tab member of group `id` and of the groups inside it, each group once (as `destroy_group_members` walks).
-    pub(crate) fn tabs_under(&self, id: &str) -> Vec<String> {
-        let mut seen = HashSet::from([id.to_owned()]);
-        let mut groups = vec![id.to_owned()];
-        let mut tabs = Vec::new();
-        while let Some(group) = groups.pop() {
-            for member in self.members_of(&group) {
-                if !self.is_container(member) {
-                    tabs.push(member.to_owned());
-                } else if seen.insert(member.to_owned()) {
-                    groups.push(member.to_owned());
-                }
-            }
-        }
-        tabs
+    /// Every member of group `id` and of the groups inside it, groups included, each once.
+    pub(crate) fn members_under(&self, id: &str) -> Vec<String> {
+        crate::walk::descendants(
+            id.to_owned(),
+            |g| self.members_of(g).map(str::to_owned).collect(),
+            |m| self.is_container(m),
+        )
     }
 
-    /// `destroy_group`'s walk, with no save: a tab member is `remove_tab`d (not `destroy_tab`, which saves), every
-    /// other member `destroy_node`d, each group once, so a group cycle in the mirror (two replicas' moves raced; the
-    /// next save shows the document's groups) can't recurse forever. A group already being destroyed further up is
-    /// left to it.
-    fn destroy_group_members(&mut self, id: &str, visited: &mut HashSet<String>) {
-        visited.insert(id.to_owned());
-        let member_ids: Vec<String> = self.members_of(id).map(str::to_owned).collect();
-        for tid in member_ids {
-            if self.is_container(&tid) {
-                if !visited.contains(&tid) {
-                    self.destroy_group_members(&tid, visited);
-                }
-            } else if self.card_kind(&tid).is_some_and(|k| k.ty == store::model::TYPE_TAB) {
+    /// `destroy_group`'s removal, with no save: `below` is everything under group `id` (`members_under`, each once, so
+    /// a group cycle in the mirror can't loop it). A tab is `remove_tab`d (not `destroy_tab`, which saves), every
+    /// other member `destroy_node`d, then the groups are dissolved, the innermost first.
+    fn destroy_group_members(&mut self, id: &str, below: Vec<String>) {
+        let (groups, members): (Vec<String>, Vec<String>) = below.into_iter().partition(|m| self.is_container(m));
+        for tid in members {
+            if self.card_kind(&tid).is_some_and(|k| k.ty == store::model::TYPE_TAB) {
                 // No save per tab: `destroy_group` commits the whole subtree once.
                 self.remove_tab(&tid);
             } else {
                 self.destroy_node(&tid);
             }
+        }
+        for group in groups.iter().rev() {
+            self.dissolve_group(group);
         }
         self.dissolve_group(id);
     }

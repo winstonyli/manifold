@@ -4518,7 +4518,7 @@ fn quitting_sends_every_view_shutdown_before_the_drop() {
 /// Closing several tabs at once starts all their shutdowns first (`begin_tabs_shutdown`), so their flush waits share
 /// one deadline: the tabs under a group, nested groups included, and no others.
 #[test]
-fn tabs_under_a_group_all_get_shutdown_together() {
+fn the_tabs_under_a_group_all_get_shutdown_together() {
     let mut app = app_on(&temp_dir("group-shutdown").join("session.mnf"), 1);
     let outer = add_group(&mut app, "outer");
     let inner = add_group(&mut app, "inner");
@@ -4528,7 +4528,7 @@ fn tabs_under_a_group_all_get_shutdown_together() {
     let (_, mut pc) = live_tab(&mut app, ViewKind::Servo, "https://c/");
     app.edit_group(&a, Some(outer.clone()));
     app.edit_group(&b, Some(inner));
-    let mut under = app.tabs_under(&outer);
+    let mut under: Vec<String> = app.members_under(&outer).into_iter().filter(|m| !app.is_container(m)).collect();
     under.sort();
     let mut want = vec![a, b];
     want.sort();
