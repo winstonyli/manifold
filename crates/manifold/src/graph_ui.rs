@@ -1857,8 +1857,7 @@ impl App {
     /// are: a text field, popup, menu, JSON level or Tab view has the keyboard.
     fn handle_undo_keys(&mut self, ui: &egui::Ui) {
         let free = self.json_level.is_none()
-            && self.menus.node_menu.is_none()
-            && !self.popup_open()
+            && !self.modal_open()
             && !self.showing_tab_view()
             && !ui.ctx().egui_wants_keyboard_input();
         if let Some(redo) = free.then(|| ui.input_mut(undo_chord)).flatten() {
@@ -1875,8 +1874,7 @@ impl App {
         let now = ui.input(|i| i.time);
         let (mut buf, at): (String, f64) = ui.data(|d| d.get_temp(key)).unwrap_or_default();
         let free = self.json_level.is_none()
-            && self.menus.node_menu.is_none()
-            && !self.popup_open()
+            && !self.modal_open()
             && !self.showing_tab_view()
             && !ui.ctx().egui_wants_keyboard_input();
         let digit = free.then(|| ui.input(pressed_digit)).flatten();

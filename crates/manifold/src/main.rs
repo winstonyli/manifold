@@ -257,10 +257,8 @@ struct App {
     /// `(tab_id, draft_name)` while a tab's menu shows "New Jar..."'s name field in place of its items, the way
     /// `renaming_group` does for a group. Committing creates the jar and picks it for the tab (`NodeAction::NewJar`).
     naming_jar: Option<(String, String)>,
-    /// A jar's "Clear Cookies" or "Delete" from Settings, waiting for its confirm dialog (`build_jar_confirm_popup`).
-    pending_jar_confirm: Option<jar_defs::JarConfirm>,
-    /// A named session's delete from Settings, waiting for its confirm dialog (`build_session_delete_popup`).
-    pending_session_delete: Option<String>,
+    /// The confirm dialog that is up, if any (`build_confirm_popup`).
+    confirm: Option<popups::Confirm>,
     /// A session picked via "Import Session..." (or headless `IMPORTSESSION`),
     /// staged here rather than applied immediately -- `build_import_confirm_
     /// popup` shows its tab count against the currently running session's
@@ -576,8 +574,7 @@ impl Default for App {
             virtual_sources: vec![std::rc::Rc::new(trail_strip::TrailSource)],
             renaming_group: None,
             naming_jar: None,
-            pending_jar_confirm: None,
-            pending_session_delete: None,
+            confirm: None,
             pending_import: None,
             session_name_draft: String::new(),
             graph_filter: String::new(),

@@ -1555,9 +1555,9 @@ impl App {
             }
             DebugCommand::Confirm(destructive) => {
                 if destructive {
-                    self.offer_session_delete("probe".to_string());
+                    self.offer_confirm(Confirm::SessionDelete("probe".to_string()));
                 } else {
-                    self.offer_view_confirm(crate::view_info::ViewConfirm::Download(ViewKind::Servo));
+                    self.offer_confirm(Confirm::View(crate::view_info::ViewConfirm::Download(ViewKind::Servo)));
                 }
             }
             DebugCommand::MenuPage(page) => {

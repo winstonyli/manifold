@@ -5,6 +5,7 @@
 use crate::caps::{Scope, Storage, JAR_EDGE};
 use crate::jar::Jar;
 use crate::node::Runtime;
+use crate::popups::Confirm;
 use crate::session_sync::color_value;
 use crate::store::model::{field, FieldValue, Kind, NodeId};
 use crate::theme::TAG_COLOR_PALETTE;
@@ -68,8 +69,8 @@ impl JarChip {
 const DEFAULT_NAME: &str = "Default";
 const OLD_DEFAULT_NAME: &str = "Default (old)";
 
-/// A jar action waiting for its confirm dialog (`App::build_jar_confirm_popup`).
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// A jar action waiting for its confirm dialog (`App::build_confirm_popup`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum JarConfirm {
     Clear(NodeId),
     /// Ephemeral turned on for a jar with a saved file (`App::request_jar_ephemeral`).
@@ -476,7 +477,7 @@ impl App {
             self.save_jar(id);
         }
         if on && self.has_saved_file(id) {
-            self.offer_jar_confirm(JarConfirm::Ephemeral(id));
+            self.offer_confirm(Confirm::Jar(JarConfirm::Ephemeral(id)));
         } else {
             self.set_jar_ephemeral(id, on);
         }

@@ -943,7 +943,7 @@ fn make_ephemeral_on_a_jar_card_with_a_saved_file_asks_first() {
     let jar = crate::session_sync::tests::add_jar(&mut app, "Work");
     std::fs::write(dir.join(format!("{jar}.json")), b"x").unwrap();
     app.apply_node_action(&egui::Context::default(), &jar.to_string(), NodeAction::SetJarEphemeral(true));
-    assert_eq!(app.pending_jar_confirm, Some(crate::jar_defs::JarConfirm::Ephemeral(jar)));
+    assert_eq!(app.confirm, Some(crate::popups::Confirm::Jar(crate::jar_defs::JarConfirm::Ephemeral(jar))));
 }
 
 #[test]

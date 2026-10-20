@@ -1051,7 +1051,7 @@ impl App {
             NodeAction::CancelNewJar => self.naming_jar = None,
             NodeAction::ClearJarCookies => {
                 if let Ok(jar) = id.parse() {
-                    self.offer_jar_confirm(JarConfirm::Clear(jar));
+                    self.offer_confirm(Confirm::Jar(JarConfirm::Clear(jar)));
                 }
             }
             NodeAction::SetJarEphemeral(on) => {

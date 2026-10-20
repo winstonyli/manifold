@@ -986,8 +986,6 @@ pub(crate) struct ViewInstallUi {
     pub(crate) view_installs: HashMap<ViewKind, InstallJob>,
     /// The last install's failure message per engine, until the next attempt starts.
     pub(crate) view_failures: HashMap<ViewKind, String>,
-    /// An engine download or removal waiting for its confirm dialog (`build_view_confirm_popup`).
-    pub(crate) pending_view_confirm: Option<crate::view_info::ViewConfirm>,
     /// `view_status` per engine for the current frame: it stats the disk, and cards, pickers, menus
     /// and Settings all ask. Cleared at the start of each frame and whenever an install changes.
     pub(crate) view_status_cache: std::cell::RefCell<HashMap<ViewKind, ViewStatus>>,

@@ -576,7 +576,7 @@ impl App {
         // same Escape press would also fire this chain (leaving to Graph,
         // or dismissing the address-bar dropdown) underneath it.
         let escape_pressed =
-            ui.input(|i| i.key_pressed(egui::Key::Escape)) && self.menus.quick_switcher.is_none() && !self.popup_open();
+            ui.input(|i| i.key_pressed(egui::Key::Escape)) && self.menus.quick_switcher.is_none() && !self.modal_open();
         if back_to_graph || (!has_suggestions && !self.find.open && self.menus.context_menu.is_none() && escape_pressed)
         {
             self.leave_to_graph();

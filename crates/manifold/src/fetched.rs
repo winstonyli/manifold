@@ -260,7 +260,7 @@ impl App {
             // install the engine instead (the card's Download).
             match pick_outcome(kind, &self.view_status(kind)) {
                 PickOutcome::AskInstall(kind) => {
-                    self.offer_view_confirm(ViewConfirm::Download(kind));
+                    self.offer_confirm(Confirm::View(ViewConfirm::Download(kind)));
                 }
                 PickOutcome::AlreadyInstalling(kind) => {
                     self.queue_toast(format!("{} is already installing", view_label(kind)))

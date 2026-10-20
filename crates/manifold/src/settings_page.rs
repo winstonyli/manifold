@@ -70,12 +70,7 @@ impl App {
         let typing = crate::shortcuts::text_field_has_keys(ui.ctx());
 
         // Escape in a field is that field's: it reverts the edit (CEF dir, jar name, Home page).
-        if ui.input(|i| i.key_pressed(egui::Key::Escape))
-            && !typing
-            && !self.popup_open()
-            && self.view_ui.pending_view_confirm.is_none()
-            && self.pending_jar_confirm.is_none()
-        {
+        if ui.input(|i| i.key_pressed(egui::Key::Escape)) && !typing && !self.modal_open() {
             self.close_settings_page();
         }
 
@@ -322,13 +317,13 @@ impl App {
             ui.horizontal(|ui| {
                 match &state {
                     ViewStatus::NotInstalled { .. } if ui.button("Download").clicked() => {
-                        self.offer_view_confirm(ViewConfirm::Download(kind));
+                        self.offer_confirm(Confirm::View(ViewConfirm::Download(kind)));
                     }
                     ViewStatus::UpdateNeeded { .. } if ui.button("Update").clicked() => {
-                        self.offer_view_confirm(ViewConfirm::Download(kind));
+                        self.offer_confirm(Confirm::View(ViewConfirm::Download(kind)));
                     }
                     ViewStatus::Failed(_) if ui.button("Retry").clicked() => {
-                        self.offer_view_confirm(ViewConfirm::Download(kind));
+                        self.offer_confirm(Confirm::View(ViewConfirm::Download(kind)));
                     }
                     ViewStatus::Installing { .. } if ui.button("Cancel").clicked() => self.cancel_view_install(kind),
                     _ => {}
@@ -339,7 +334,7 @@ impl App {
                     ("Clear leftovers", "Delete the partial download and install leftovers")
                 };
                 if removable && ui.button(label).on_hover_text(hint).clicked() {
-                    self.offer_view_confirm(ViewConfirm::Remove(kind));
+                    self.offer_confirm(Confirm::View(ViewConfirm::Remove(kind)));
                 }
             });
         }
@@ -540,7 +535,7 @@ impl App {
             self.close_settings_page();
         }
         if let Some(name) = &req.delete_session_name {
-            self.offer_session_delete(name.clone());
+            self.offer_confirm(Confirm::SessionDelete(name.clone()));
         }
         if req.export_requested {
             if let Some((path, toast)) = save_dialog_with_toast("session.json", "Session") {

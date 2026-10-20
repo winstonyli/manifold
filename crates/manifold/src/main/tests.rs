@@ -75,7 +75,7 @@ const NOT_FORGOTTEN: &[(&str, &str)] = &[
     ("pacing.hidden_for_minimize", "drained at restore"),
     ("menus.node_menu_cache", "the closing menu's fade copy; `node_menu` is the live one"),
     ("menus.trail_menu", "a virtual card id (never a node id), closed by `build_trail_menu` when its page is gone"),
-    ("pending_session_delete", "a session name, not a node id"),
+    ("confirm", "a jar confirm is dropped by `confirm_text` once its jar is gone; the rest hold names and engines"),
     ("favicon_resolved", "origins, not node ids"),
     ("graph_settled_key", "a level fingerprint, rebuilt when it differs"),
     ("debug.debug_address_bar_typing", "typed text, not a node id"),
@@ -354,16 +354,16 @@ fn ephemeral_on_leaves_a_locked_jars_files_alone() {
 fn ephemeral_on_asks_first_only_when_the_jar_has_a_saved_file() {
     let (dir, mut app, work) = jar_saved_earlier("jar-ephemeral-confirm");
     app.request_jar_ephemeral(work, true);
-    assert_eq!(app.pending_jar_confirm, Some(jar_defs::JarConfirm::Ephemeral(work)));
+    assert_eq!(app.confirm, Some(popups::Confirm::Jar(jar_defs::JarConfirm::Ephemeral(work))));
     assert!(!app.jar_defs()[&work].ephemeral, "nothing happens until confirmed");
     assert!(jar::Jar::path(&dir, work).exists());
     let (title, detail, button) = app.jar_confirm_text(jar_defs::JarConfirm::Ephemeral(work)).unwrap();
     assert_eq!((title.as_str(), button), ("Make Work ephemeral?", "Make Ephemeral"));
     assert!(detail.contains("deleted from disk now") && detail.contains("until Manifold quits"), "{detail}");
-    app.pending_jar_confirm = None;
+    app.confirm = None;
     let home = add_jar(&mut app, "Home");
     app.request_jar_ephemeral(home, true);
-    assert!(app.pending_jar_confirm.is_none() && app.jar_defs()[&home].ephemeral, "no file: nothing to lose");
+    assert!(app.confirm.is_none() && app.jar_defs()[&home].ephemeral, "no file: nothing to lose");
     app.request_jar_ephemeral(home, false);
     assert!(!app.jar_defs()[&home].ephemeral);
     app.set_jar_ephemeral(work, true);
@@ -442,7 +442,7 @@ fn ephemeral_on_asks_first_for_a_jar_whose_cookies_are_not_saved_yet() {
     app.cookies.jar_tabs.insert("a".into(), (key, jar::TabCookies::default()));
     assert!(app.apply_pulled_cookies("a", SID));
     app.request_jar_ephemeral(work, true);
-    assert_eq!(app.pending_jar_confirm, Some(jar_defs::JarConfirm::Ephemeral(work)));
+    assert_eq!(app.confirm, Some(popups::Confirm::Jar(jar_defs::JarConfirm::Ephemeral(work))));
 }
 
 #[test]

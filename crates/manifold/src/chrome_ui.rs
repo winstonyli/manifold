@@ -209,9 +209,7 @@ impl App {
         }
         self.build_quick_switcher(ui);
         self.build_import_confirm_popup(ui);
-        self.build_view_confirm_popup(ui);
-        self.build_jar_confirm_popup(ui);
-        self.build_session_delete_popup(ui);
+        self.build_confirm_popup(ui);
     }
 
     /// The "Keyboard Shortcuts (F1)" half of `render_universal_chip`.

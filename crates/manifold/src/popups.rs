@@ -508,15 +508,16 @@ fn confirm_dialog(
     }
 }
 
-/// Opens `confirm` in `slot` only while no confirm dialog is up, `slot`'s own or the other kind's (`other_open`):
-/// `confirm_dialog` is non-modal and centred, so a second would replace the first unanswered or draw over it. A click
-/// that would open one meanwhile is ignored. Returns whether it opened.
-pub(crate) fn offer_confirm<T>(slot: &mut Option<T>, other_open: bool, confirm: T) -> bool {
-    let free = slot.is_none() && !other_open;
-    if free {
-        *slot = Some(confirm);
-    }
-    free
+/// The one confirm dialog that may be up (`App::confirm`). `confirm_dialog` is non-modal and centred, so a second
+/// would replace the first unanswered or draw over it: `App::offer_confirm` ignores a click while one is up.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Confirm {
+    /// An engine download or removal.
+    View(ViewConfirm),
+    /// A Settings jar action that signs tabs out or loses a jar or its logins.
+    Jar(crate::jar_defs::JarConfirm),
+    /// A named session's delete from Settings.
+    SessionDelete(String),
 }
 
 /// What WebKit's download does not include: its host is a Linux program that runs inside WSL.
@@ -651,7 +652,7 @@ impl App {
         match outcome? {
             PickOutcome::Switch(kind) => Some(kind),
             PickOutcome::AskInstall(kind) => {
-                self.offer_view_confirm(ViewConfirm::Download(kind));
+                self.offer_confirm(Confirm::View(ViewConfirm::Download(kind)));
                 None
             }
             PickOutcome::AlreadyInstalling(kind) => {
@@ -665,53 +666,41 @@ impl App {
         }
     }
 
-    /// Asks `confirm` unless a confirm is already up (`offer_confirm`).
-    pub(crate) fn offer_view_confirm(&mut self, confirm: ViewConfirm) -> bool {
-        let other = self.pending_jar_confirm.is_some() || self.pending_session_delete.is_some();
-        offer_confirm(&mut self.view_ui.pending_view_confirm, other, confirm)
-    }
-
-    /// Asks `confirm` unless a confirm is already up (`offer_confirm`).
-    pub(crate) fn offer_jar_confirm(&mut self, confirm: crate::jar_defs::JarConfirm) -> bool {
-        let other = self.view_ui.pending_view_confirm.is_some() || self.pending_session_delete.is_some();
-        offer_confirm(&mut self.pending_jar_confirm, other, confirm)
-    }
-
-    /// Asks before deleting a named session (`offer_confirm`).
-    pub(crate) fn offer_session_delete(&mut self, name: String) -> bool {
-        let other = self.view_ui.pending_view_confirm.is_some() || self.pending_jar_confirm.is_some();
-        offer_confirm(&mut self.pending_session_delete, other, name)
-    }
-
-    /// "Delete session <name>?" for the Settings session list's X.
-    pub(crate) fn build_session_delete_popup(&mut self, ui: &mut egui::Ui) {
-        let Some(name) = self.pending_session_delete.clone() else { return };
-        let shown = crate::names::to_plain(&crate::names::display_name(&name, crate::names::UNTITLED));
-        let title = format!("Delete session {shown}?");
-        match confirm_dialog(
-            ui,
-            "session_delete_popup",
-            title,
-            "Deletes the saved session and its copies from disk.",
-            "Delete",
-            true,
-        ) {
-            Some(true) => {
-                self.pending_session_delete = None;
-                session::delete_named(&name);
-                crate::settings_page::forget_disk_cache(ui.ctx());
-            }
-            Some(false) => self.pending_session_delete = None,
-            None => {}
+    /// Opens `confirm` unless a confirm is already up. Returns whether it opened.
+    pub(crate) fn offer_confirm(&mut self, confirm: Confirm) -> bool {
+        let free = self.confirm.is_none();
+        if free {
+            self.confirm = Some(confirm);
         }
+        free
     }
 
-    /// The confirm before a large or destructive engine action: "Download CEF, 172 MB?" (always
-    /// asked first, since it is a big network action) or removing the downloaded files.
-    pub(crate) fn build_view_confirm_popup(&mut self, ui: &mut egui::Ui) {
-        let Some(confirm) = self.view_ui.pending_view_confirm else { return };
-        let (title, detail, button) = match confirm {
-            ViewConfirm::Download(kind) => {
+    /// Whether a confirm dialog is up (or the import confirm): it owns Escape and the keyboard.
+    pub(crate) fn confirm_open(&self) -> bool {
+        self.confirm.is_some() || self.pending_import.is_some()
+    }
+
+    /// Whether a popup, menu-like surface or confirm owns the keyboard, so the page behind must not act on a press
+    /// that closes it (Escape) or on its own shortcuts.
+    pub(crate) fn modal_open(&self) -> bool {
+        self.popup_open() || self.confirm_open() || self.menus.node_menu.is_some()
+    }
+
+    /// The up confirm's dialog: title, detail, button and whether it is destructive, or `None` when it no longer
+    /// applies (a jar deleted on another device meanwhile just drops the question).
+    fn confirm_text(&self, confirm: &Confirm) -> Option<(String, String, &'static str, bool)> {
+        Some(match confirm {
+            Confirm::SessionDelete(name) => {
+                let shown = crate::names::to_plain(&crate::names::display_name(name, crate::names::UNTITLED));
+                (
+                    format!("Delete session {shown}?"),
+                    "Deletes the saved session and its copies from disk.".to_string(),
+                    "Delete",
+                    true,
+                )
+            }
+            Confirm::View(ViewConfirm::Download(kind)) => {
+                let kind = *kind;
                 let size = crate::view_info::megabytes(self.view_download_size(kind));
                 let verb = if matches!(self.view_status(kind), crate::view_install::ViewStatus::UpdateNeeded { .. }) {
                     "Update"
@@ -719,62 +708,55 @@ impl App {
                     "Download"
                 };
                 let detail = download_detail(kind, &crate::view_install::missing_system_libs(kind));
-                (download_confirm_title(verb, kind, &size), detail, verb)
+                (download_confirm_title(verb, kind, &size), detail, verb, false)
             }
-            ViewConfirm::Remove(kind) if crate::view_install::installed_paths(kind).is_empty() => (
-                format!("Clear {} leftovers?", view_label(kind)),
+            Confirm::View(ViewConfirm::Remove(kind)) if crate::view_install::installed_paths(*kind).is_empty() => (
+                format!("Clear {} leftovers?", view_label(*kind)),
                 "Deletes the partial download and install leftovers.".to_string(),
                 "Clear",
+                true,
             ),
-            ViewConfirm::Remove(kind) => (
-                format!("Remove {}?", view_label(kind)),
+            Confirm::View(ViewConfirm::Remove(kind)) => (
+                format!("Remove {}?", view_label(*kind)),
                 "Deletes the downloaded files. You can download them again later.".to_string(),
                 "Remove",
+                true,
             ),
-        };
-        match confirm_dialog(
-            ui,
-            "view_confirm_popup",
-            title,
-            &detail,
-            button,
-            matches!(confirm, ViewConfirm::Remove(_)),
-        ) {
-            Some(true) => {
-                self.view_ui.pending_view_confirm = None;
-                match confirm {
-                    ViewConfirm::Download(kind) => {
-                        self.start_view_install(kind);
-                    }
-                    ViewConfirm::Remove(kind) => self.remove_view(kind),
-                }
+            Confirm::Jar(jar) => {
+                let (title, detail, button) = self.jar_confirm_text(*jar)?;
+                (title, detail, button, true)
             }
-            Some(false) => self.view_ui.pending_view_confirm = None,
-            None => {}
-        }
+        })
     }
 
-    /// The confirm before a Settings jar action that signs tabs out or loses a jar or its saved logins: "Clear cookies
-    /// in Work?", "Delete jar Work?" or "Make Work ephemeral?" (`jar_confirm_text`). A jar deleted (or made
-    /// ephemeral) on another device meanwhile just drops the question.
-    pub(crate) fn build_jar_confirm_popup(&mut self, ui: &mut egui::Ui) {
-        let Some(confirm) = self.pending_jar_confirm else { return };
-        let Some((title, detail, button)) = self.jar_confirm_text(confirm) else {
-            self.pending_jar_confirm = None;
+    /// The confirm before a large or destructive action ("Download CEF, 172 MB?", "Delete session Work?", "Clear
+    /// cookies in Work?"): asks, then runs it on Yes.
+    pub(crate) fn build_confirm_popup(&mut self, ui: &mut egui::Ui) {
+        let Some(confirm) = self.confirm.clone() else { return };
+        let Some((title, detail, button, destructive)) = self.confirm_text(&confirm) else {
+            self.confirm = None;
             return;
         };
-        match confirm_dialog(ui, "jar_confirm_popup", title, &detail, button, true) {
+        match confirm_dialog(ui, "confirm_popup", title, &detail, button, destructive) {
             Some(true) => {
-                self.pending_jar_confirm = None;
+                self.confirm = None;
                 match confirm {
-                    crate::jar_defs::JarConfirm::Clear(key) => self.clear_jar_cookies(key),
-                    crate::jar_defs::JarConfirm::Ephemeral(id) => {
+                    Confirm::View(ViewConfirm::Download(kind)) => {
+                        self.start_view_install(kind);
+                    }
+                    Confirm::View(ViewConfirm::Remove(kind)) => self.remove_view(kind),
+                    Confirm::Jar(crate::jar_defs::JarConfirm::Clear(key)) => self.clear_jar_cookies(key),
+                    Confirm::Jar(crate::jar_defs::JarConfirm::Ephemeral(id)) => {
                         self.set_jar_ephemeral(id, true);
                         self.save_session();
                     }
+                    Confirm::SessionDelete(name) => {
+                        session::delete_named(&name);
+                        crate::settings_page::forget_disk_cache(ui.ctx());
+                    }
                 }
             }
-            Some(false) => self.pending_jar_confirm = None,
+            Some(false) => self.confirm = None,
             None => {}
         }
     }
@@ -2312,30 +2294,46 @@ mod tests {
         output.textures_delta.clear();
     }
 
-    /// Fix batch B5: a confirm opens only into an empty slot with the other kind's closed; it never replaces one.
+    /// A confirm opens only while none is up; it never replaces one.
     #[test]
     fn a_confirm_opens_only_while_none_is_up() {
-        let mut slot = None;
-        assert!(!offer_confirm(&mut slot, true, 1), "the other kind is up");
-        assert_eq!(slot, None);
-        assert!(offer_confirm(&mut slot, false, 1));
-        assert!(!offer_confirm(&mut slot, false, 2), "its own kind is up");
-        assert_eq!(slot, Some(1));
+        let mut app = App::default();
+        let jar = crate::jar_defs::JarConfirm::Clear(crate::store::model::NodeId {
+            actor: crate::store::model::ActorId(1),
+            counter: 1,
+        });
+        assert!(app.offer_confirm(Confirm::Jar(jar)));
+        assert!(!app.offer_confirm(Confirm::SessionDelete("work".into())), "another kind is up");
+        assert!(!app.offer_confirm(Confirm::Jar(jar)), "its own kind is up");
+        assert_eq!(app.confirm, Some(Confirm::Jar(jar)));
+        app.confirm = None;
+        assert!(app.offer_confirm(Confirm::SessionDelete("work".into())));
     }
 
+    /// Escape on any confirm answers the confirm only: Settings stays open behind it.
     #[test]
-    fn a_session_delete_waits_for_a_free_confirm_slot() {
-        let mut app = App {
-            pending_jar_confirm: Some(crate::jar_defs::JarConfirm::Clear(crate::store::model::NodeId {
-                actor: crate::store::model::ActorId(1),
-                counter: 1,
-            })),
-            ..App::default()
-        };
-        assert!(!app.offer_session_delete("work".into()));
-        app.pending_jar_confirm = None;
-        assert!(app.offer_session_delete("work".into()));
-        assert!(app.pending_session_delete.is_some());
+    fn escape_on_a_confirm_keeps_settings_open() {
+        let ctx = egui::Context::default();
+        crate::theme::apply_fonts(&ctx);
+        crate::theme::apply_style(&ctx);
+        for confirm in [Confirm::SessionDelete("work".into()), Confirm::View(ViewConfirm::Remove(ViewKind::Servo))] {
+            let mut app = App { view_mode: ViewMode::Settings, confirm: Some(confirm), ..App::default() };
+            let key = egui::Key::Escape;
+            let raw = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 1000.0))),
+                events: vec![egui::Event::Key {
+                    key,
+                    physical_key: Some(key),
+                    pressed: true,
+                    repeat: false,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+                ..Default::default()
+            };
+            let mut full = ctx.run_ui(raw, |ui| app.build_settings_page(ui));
+            full.textures_delta.clear();
+            assert_eq!(app.view_mode, ViewMode::Settings, "{:?}", app.confirm);
+        }
     }
 
     #[test]
