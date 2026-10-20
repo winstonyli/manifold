@@ -195,6 +195,23 @@ fn member_count_text(members: usize) -> String {
     format!("({members})")
 }
 
+/// A toolbar list dropdown (`which`: Recently Closed, Bookmarks, History, Downloads) in `build_list_popup_frame`'s
+/// shell, open while `open_popup` is `which`. Returns whether a click landed outside both it and its anchor; the
+/// caller closes the popup then (`close_popup`), after applying what the click on a row asked for.
+pub(crate) fn list_popup(
+    ui: &egui::Ui,
+    open_popup: Option<AnchoredPopup>,
+    which: AnchoredPopup,
+    id: &str,
+    anchor_rect: egui::Rect,
+    fade: f32,
+    add_contents: impl FnOnce(&mut egui::Ui),
+) -> bool {
+    let area_rect =
+        build_list_popup_frame(ui.ctx(), id, anchor_rect, 220.0, 320.0, fade, open_popup == Some(which), add_contents);
+    clicked_outside_popup(ui, area_rect, Some(anchor_rect))
+}
+
 /// A clickable text row in a list popup (`build_list_popup_frame`). Keyboard-focusable: a focused
 /// row shows `focus_ring`, Enter clicks it, and the popup's Up/Down move between rows.
 pub(crate) fn list_row(ui: &mut egui::Ui, text: impl Into<egui::WidgetText>) -> egui::Response {
@@ -680,7 +697,7 @@ impl App {
     /// Whether a popup, menu-like surface or confirm owns the keyboard, so the page behind must not act on a press
     /// that closes it (Escape) or on its own shortcuts.
     pub(crate) fn modal_open(&self) -> bool {
-        self.popup_open() || self.confirm_open() || self.menus.node_menu.is_some()
+        self.popup_open() || self.confirm_open() || self.menus.node_menu.is_some() || self.menus.shortcuts_help_open
     }
 
     /// The up confirm's dialog: title, detail, button and whether it is destructive, or `None` when it no longer
@@ -936,9 +953,14 @@ Importing replaces every currently open tab.",
             })
             .unwrap_or_default();
         let mut reopen: Option<store::model::NodeId> = None;
-        let open = self.menus.open_popup == Some(AnchoredPopup::RecentlyClosed);
-        let area_rect =
-            build_list_popup_frame(ui.ctx(), "recently_closed_popup", anchor_rect, 220.0, 320.0, fade, open, |ui| {
+        let clicked_outside = list_popup(
+            ui,
+            self.menus.open_popup,
+            AnchoredPopup::RecentlyClosed,
+            "recently_closed_popup",
+            anchor_rect,
+            fade,
+            |ui| {
                 for ClosedRow { id, json: root, title, members, held } in &rows {
                     ui.horizontal(|ui| {
                         let mut row_ui = |ui: &mut egui::Ui| {
@@ -964,9 +986,8 @@ Importing replaces every currently open tab.",
                         }
                     });
                 }
-            });
-
-        let clicked_outside = clicked_outside_popup(ui, area_rect, Some(anchor_rect));
+            },
+        );
 
         if let Some(id) = reopen {
             self.reopen_node(id);
@@ -994,9 +1015,14 @@ Importing replaces every currently open tab.",
         let mut folder_rename_commit: Option<String> = None;
         let mut folder_rename_cancel = false;
         let mut wanted: Vec<String> = Vec::new();
-        let open = self.menus.open_popup == Some(AnchoredPopup::Bookmarks);
-        let area_rect =
-            build_list_popup_frame(ui.ctx(), "bookmarks_popup", anchor_rect, 220.0, 320.0, fade, open, |ui| {
+        let clicked_outside = list_popup(
+            ui,
+            self.menus.open_popup,
+            AnchoredPopup::Bookmarks,
+            "bookmarks_popup",
+            anchor_rect,
+            fade,
+            |ui| {
                 ui.add(
                     egui::TextEdit::singleline(&mut self.history_ui.bookmarks_filter)
                         .desired_width(f32::INFINITY)
@@ -1100,10 +1126,10 @@ Importing replaces every currently open tab.",
                         }
                     }
                 });
-            });
+            },
+        );
 
         self.request_favicons(wanted.iter().map(String::as_str));
-        let clicked_outside = clicked_outside_popup(ui, area_rect, Some(anchor_rect));
 
         if let Some((url, draft)) = folder_rename_start {
             self.history_ui.renaming_bookmark_folder = Some((url, draft));
@@ -1152,9 +1178,8 @@ Importing replaces every currently open tab.",
         let mut navigate_url: Option<String> = None;
         let mut clear_requested = false;
         let wanted = std::cell::RefCell::new(Vec::<String>::new());
-        let open = self.menus.open_popup == Some(AnchoredPopup::History);
-        let area_rect =
-            build_list_popup_frame(ui.ctx(), "history_popup", anchor_rect, 220.0, 320.0, fade, open, |ui| {
+        let clicked_outside =
+            list_popup(ui, self.menus.open_popup, AnchoredPopup::History, "history_popup", anchor_rect, fade, |ui| {
                 ui.add(
                     egui::TextEdit::singleline(&mut self.history_ui.history_filter)
                         .desired_width(f32::INFINITY)
@@ -1225,7 +1250,6 @@ Importing replaces every currently open tab.",
             });
 
         self.request_favicons(wanted.borrow().iter().map(String::as_str));
-        let clicked_outside = clicked_outside_popup(ui, area_rect, Some(anchor_rect));
 
         if let Some(url) = navigate_url {
             if let Some(id) = self.focused.clone() {
@@ -1260,9 +1284,14 @@ Importing replaces every currently open tab.",
         let mut close = false;
         let mut reveal_id: Option<String> = None;
         let mut remove_id: Option<String> = None;
-        let open = self.menus.open_popup == Some(AnchoredPopup::Downloads);
-        let area_rect =
-            build_list_popup_frame(ui.ctx(), "downloads_popup", anchor_rect, 220.0, 320.0, fade, open, |ui| {
+        let clicked_outside = list_popup(
+            ui,
+            self.menus.open_popup,
+            AnchoredPopup::Downloads,
+            "downloads_popup",
+            anchor_rect,
+            fade,
+            |ui| {
                 if !self.node_order.iter().any(|id| self.nodes.get(id).is_some_and(|n| n.as_download().is_some())) {
                     ui.label(egui::RichText::new("No downloads yet. Files you download appear here.").weak());
                 }
@@ -1320,9 +1349,8 @@ Importing replaces every currently open tab.",
                         }
                     }
                 });
-            });
-
-        let clicked_outside = clicked_outside_popup(ui, area_rect, Some(anchor_rect));
+            },
+        );
 
         if let Some(id) = reveal_id {
             self.reveal_node(&id);
@@ -1955,7 +1983,8 @@ Importing replaces every currently open tab.",
         if !self.menus.shortcuts_help_open {
             return;
         }
-        if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+        // Consumed, so a page that reads Escape later in the frame does not also act on it.
+        if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
             self.menus.shortcuts_help_open = false;
             return;
         }
@@ -2252,6 +2281,14 @@ mod tests {
         assert_eq!(app.confirm, Some(Confirm::Jar(jar)));
         app.confirm = None;
         assert!(app.offer_confirm(Confirm::SessionDelete("work".into())));
+    }
+
+    /// The shortcut reference owns the keyboard like a popup: the page behind must not act on the Escape that closes it.
+    #[test]
+    fn the_shortcuts_help_owns_the_keyboard() {
+        let mut app = App::default();
+        app.menus.shortcuts_help_open = true;
+        assert!(app.modal_open());
     }
 
     /// A staged session import is a confirm like the rest: it owns the keyboard and a second one is refused.
