@@ -4,9 +4,7 @@ use super::*;
 use crate::caps::JAR_EDGE;
 use crate::jar_defs::{JarConfirm, JarLabel};
 use crate::sleep_state::SleepWhy;
-use crate::store::model::{
-    NodeId, TYPE_DOWNLOAD, TYPE_GROUP, TYPE_IMAGE, TYPE_JAR, TYPE_JSON, TYPE_NOTE, TYPE_PDF, TYPE_TAB,
-};
+use crate::store::model::{NodeId, TYPE_DOWNLOAD, TYPE_GROUP, TYPE_JAR, TYPE_NOTE, TYPE_TAB};
 
 /// Something done to one node, from its right-click menu or its card's
 /// own buttons, applied by `App::apply_node_action`.
@@ -558,20 +556,11 @@ pub(crate) fn node_menu_config(view: &NodeMenuView, headless: bool) -> NodeMenuC
             items.push(Button("Copy Text", A::CopyText));
             finish("note_context_menu", 150.0, items, delete("Delete"), Vec::new())
         }
-        TYPE_IMAGE => {
+        // Image, Pdf and Json: the kinds with `Caps::file`, each with its own area id.
+        _ if view.kind.caps().file => {
             let mut items = url_items(true);
             items.extend(file_items());
-            finish("image_context_menu", 170.0, items, delete("Delete"), Vec::new())
-        }
-        TYPE_PDF => {
-            let mut items = url_items(true);
-            items.extend(file_items());
-            finish("pdf_context_menu", 170.0, items, delete("Delete"), Vec::new())
-        }
-        TYPE_JSON => {
-            let mut items = url_items(true);
-            items.extend(file_items());
-            finish("json_context_menu", 170.0, items, delete("Delete"), Vec::new())
+            finish(view.kind.caps().menu_area, 170.0, items, delete("Delete"), Vec::new())
         }
         TYPE_TAB if view.kind.loaded() => {
             let mut items = Vec::new();

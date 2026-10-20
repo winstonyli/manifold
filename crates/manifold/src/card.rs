@@ -2,6 +2,7 @@
 //! styles, corner controls and drop rules, and each kind's body painter.
 
 use super::*;
+use crate::caps::Click;
 use crate::store::model::{TYPE_DOWNLOAD, TYPE_GROUP, TYPE_IMAGE, TYPE_JAR, TYPE_JSON, TYPE_NOTE, TYPE_PDF, TYPE_TAB};
 
 /// Below this on-screen card width (in points), a node's label is hidden
@@ -587,14 +588,7 @@ impl CardControl {
 /// What Del (the card's Close) does to a `kind` of card, for the focused card's key hint: the first word of the
 /// node menu's row hinted Del.
 pub(crate) fn del_verb(kind: CardKind) -> &'static str {
-    if is_container(kind.ty) {
-        return "close";
-    }
-    match kind.ty {
-        TYPE_TAB | TYPE_JAR => "close",
-        TYPE_DOWNLOAD => "remove",
-        _ => "delete",
-    }
+    kind.caps().delete_verb
 }
 
 /// What a double-click (or Enter) on a `kind` of card does, for the kinds whose click is a `NodeAction`
@@ -606,11 +600,10 @@ pub(crate) fn del_verb(kind: CardKind) -> &'static str {
 /// A Note's double-click edits it in place and a Group or Json opens on it too, in the caller. A single click only
 /// selects (`App::select_only`).
 pub(crate) fn click_action(kind: CardKind) -> Option<NodeAction> {
-    match kind.ty {
-        TYPE_TAB | TYPE_IMAGE => Some(NodeAction::Open),
-        TYPE_DOWNLOAD | TYPE_PDF => Some(NodeAction::Reveal),
-        _ => None,
-    }
+    kind.caps().click.map(|click| match click {
+        Click::Open => NodeAction::Open,
+        Click::Reveal => NodeAction::Reveal,
+    })
 }
 
 /// The buttons `view`'s card shows, in registration order (see
@@ -984,9 +977,10 @@ pub(crate) fn card_filter_text<'a>(runtime: &'a Runtime, text: &'a str) -> Vec<&
         Runtime::Unloaded(tab) => vec![&tab.title, &tab.url],
         Runtime::Download(download) => vec![&download.path],
         Runtime::Note(_) => vec![text],
-        Runtime::Image(image) => vec![download_filename(&image.path)],
-        Runtime::Pdf(pdf) => vec![download_filename(&pdf.path)],
-        Runtime::Json(json) => vec![download_filename(&json.path)],
+        // The file kinds (`Caps::file`).
+        Runtime::Image(_) | Runtime::Pdf(_) | Runtime::Json(_) => {
+            runtime.file_path().map(download_filename).into_iter().collect()
+        }
         // A group has no runtime of its own. it matches on its name, `text`, as a jar does.
         Runtime::None | Runtime::Jar => vec![text],
         Runtime::Unknown => Vec::new(),

@@ -1,6 +1,7 @@
 use super::*;
 use crate::card_kind::fixtures::{kinds, loaded_tab, plain, sleeping_tab};
 use crate::session_sync::tests::add_jar;
+use crate::store::model::{TYPE_IMAGE, TYPE_JSON, TYPE_PDF};
 
 /// The Default jar's label.
 fn built_in() -> JarLabel {

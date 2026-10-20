@@ -15,6 +15,10 @@ pub(crate) struct Row {
     menu: Option<bool>,
     stored_controls: Option<bool>,
     framed: Option<bool>,
+    delete_verb: Option<&'static str>,
+    click: Option<Click>,
+    file: Option<bool>,
+    menu_area: Option<&'static str>,
 }
 
 impl Row {
@@ -30,6 +34,10 @@ impl Row {
             menu: None,
             stored_controls: None,
             framed: None,
+            delete_verb: None,
+            click: None,
+            file: None,
+            menu_area: None,
         }
     }
 
@@ -63,6 +71,26 @@ impl Row {
         self
     }
 
+    pub(crate) fn delete_verb(mut self, verb: &'static str) -> Row {
+        self.delete_verb = Some(verb);
+        self
+    }
+
+    pub(crate) fn click(mut self, click: Click) -> Row {
+        self.click = Some(click);
+        self
+    }
+
+    pub(crate) fn file(mut self, on: bool) -> Row {
+        self.file = Some(on);
+        self
+    }
+
+    pub(crate) fn menu_area(mut self, area: &'static str) -> Row {
+        self.menu_area = Some(area);
+        self
+    }
+
     pub(crate) fn requires(mut self, tags: &[Tag]) -> Row {
         self.requires = TagSet::of(tags);
         self
@@ -84,7 +112,7 @@ impl Row {
 }
 
 /// A node's merged capabilities.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Caps {
     /// Closing it is recorded, so Recently Closed can reopen it.
     pub(crate) restorable: bool,
@@ -104,6 +132,43 @@ pub(crate) struct Caps {
     /// Counts toward the level-of-detail count (how many cards are on screen); the trail strip's pages, which are
     /// not cards in the graph, turn it off.
     pub(crate) framed: bool,
+    /// What Del does to it, as the first word of its delete menu row ("close", "remove", "delete").
+    pub(crate) delete_verb: &'static str,
+    /// What a double-click (or Enter) does where it is a `NodeAction`; `None` leaves the click to the caller.
+    pub(crate) click: Option<Click>,
+    /// A file on disk: its card is matched by filename, and its menu is Refresh, Open as Tab, Copy URL, then the
+    /// file rows.
+    pub(crate) file: bool,
+    /// The egui area id of its node menu.
+    pub(crate) menu_area: &'static str,
+}
+
+impl Default for Caps {
+    fn default() -> Caps {
+        Caps {
+            restorable: false,
+            draw_layer: 0,
+            selectable: false,
+            drag_source: false,
+            drop_target: false,
+            menu: false,
+            stored_controls: false,
+            framed: false,
+            delete_verb: "delete",
+            click: None,
+            file: false,
+            menu_area: "node_context_menu",
+        }
+    }
+}
+
+/// A card's double-click where it is one action (`card::click_action` maps it to a `NodeAction`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Click {
+    /// Opens it into Tab or Item view.
+    Open,
+    /// Reveals its file.
+    Reveal,
 }
 
 /// How many draw layers the builtin rows use: every `Caps::draw_layer` is below this, so a level scan has this many
@@ -163,6 +228,18 @@ impl Registry {
             if let Some(v) = row.stored_controls {
                 caps.stored_controls = v;
             }
+            if let Some(v) = row.delete_verb {
+                caps.delete_verb = v;
+            }
+            if let Some(v) = row.click {
+                caps.click = Some(v);
+            }
+            if let Some(v) = row.file {
+                caps.file = v;
+            }
+            if let Some(v) = row.menu_area {
+                caps.menu_area = v;
+            }
         }
         caps
     }
@@ -202,18 +279,28 @@ pub(crate) fn builtin_rows() -> Vec<Row> {
             .drop_target(false)
             .menu(false)
             .stored_controls(false),
-        Row::new(TYPE_TAB).restorable(true).draw_layer(1), // a sleeping tab; a loaded one draws under it
+        Row::new(TYPE_TAB).restorable(true).draw_layer(1).delete_verb("close").click(Click::Open), // a sleeping tab; a loaded one draws under it
         // Outranks the row above for a loaded tab: same pattern, more `requires` tags (`Row::rank`).
         Row::new(TYPE_TAB).requires(&[Tag::Loaded]).draw_layer(0),
-        Row::new(TYPE_GROUP).restorable(true).draw_layer(7),
-        Row::new("image/*").restorable(true).draw_layer(4),
-        Row::new("application/pdf").restorable(true).draw_layer(5),
-        Row::new("application/json").restorable(true).draw_layer(6),
+        Row::new(TYPE_GROUP).restorable(true).draw_layer(7).delete_verb("close"),
+        Row::new("image/*")
+            .restorable(true)
+            .draw_layer(4)
+            .file(true)
+            .click(Click::Open)
+            .menu_area("image_context_menu"),
+        Row::new("application/pdf")
+            .restorable(true)
+            .draw_layer(5)
+            .file(true)
+            .click(Click::Reveal)
+            .menu_area("pdf_context_menu"),
+        Row::new("application/json").restorable(true).draw_layer(6).file(true).menu_area("json_context_menu"),
         Row::new(TYPE_NOTE).restorable(true).draw_layer(3),
-        Row::new(TYPE_JAR).restorable(true).draw_layer(3), // a jar card, drawn with notes
+        Row::new(TYPE_JAR).restorable(true).draw_layer(3).delete_verb("close"), // a jar card, drawn with notes
         Row::new(TYPE_UNKNOWN).restorable(true).draw_layer(3), // a type this build doesn't know, drawn with notes
         Row::new(TYPE_NOTE).requires(&[Tag::Blank]).restorable(false),
-        Row::new(TYPE_DOWNLOAD).restorable(false).draw_layer(2), // a download
+        Row::new(TYPE_DOWNLOAD).restorable(false).draw_layer(2).delete_verb("remove").click(Click::Reveal), // a download
     ]
     .into_iter()
     .chain(test_rows())

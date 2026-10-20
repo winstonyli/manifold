@@ -7,7 +7,7 @@ mod rows;
 pub(crate) use edges::{Scope, Storage, CONTAINS, JAR_EDGE, LINK, OPENED_FROM};
 pub(crate) use pattern::{Tag, TagSet};
 use rows::{builtin_rows, Registry};
-pub(crate) use rows::{Caps, DRAW_LAYERS};
+pub(crate) use rows::{Caps, Click, DRAW_LAYERS};
 use std::sync::OnceLock;
 
 /// The builtin capability rows.
