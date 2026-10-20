@@ -40,7 +40,7 @@ pub(super) fn view_binary_path(kind: ViewKind) -> PathBuf {
     // An engine with a runtime keeps its host in that runtime's `cef-runtime/`. The others are a lone exe (WebView2's
     // loader is statically linked by the `webview2-com` crate, or a lone DLL at worst): no ANGLE-style filename
     // collision with a runtime's files, so no isolation directory.
-    let sibling = if desc.runtime { cef_sibling_exe() } else { sibling_binary(desc.binary) };
+    let sibling = if desc.runtime_dir.is_some() { cef_sibling_exe() } else { sibling_binary(desc.binary) };
     if sibling.exists() {
         return sibling;
     }
@@ -65,7 +65,7 @@ pub(super) fn cef_sibling_exe() -> PathBuf {
     let mut path = sibling_binary(ViewKind::Cef.desc().binary);
     let file_name = path.file_name().map(|n| n.to_owned()).unwrap_or_default();
     path.pop();
-    path.push("cef-runtime");
+    path.push(CEF_RUNTIME_DIR);
     path.push(file_name);
     path
 }
@@ -79,7 +79,7 @@ pub(super) fn sibling_host(kind: ViewKind) -> Option<PathBuf> {
         return built_webkit_host(&current_exe_dir());
     }
     let flat = Some(sibling_binary(desc.binary)).filter(|path| path.exists());
-    if desc.runtime {
+    if desc.runtime_dir.is_some() {
         flat.or_else(|| Some(cef_sibling_exe()).filter(|path| path.exists()))
     } else {
         flat
@@ -117,10 +117,8 @@ pub(super) fn webkit_host_path() -> Option<PathBuf> {
 /// `runtime_state` reads); `None` for engines with no runtime archive, or
 /// without a data directory.
 pub(crate) fn view_runtime_dir(kind: ViewKind) -> Option<PathBuf> {
-    if !has_runtime(kind) {
-        return None;
-    }
-    view_hosts_dir().map(|dir| dir.join("cef-runtime"))
+    let name = kind.desc().runtime_dir?;
+    view_hosts_dir().map(|dir| dir.join(name))
 }
 
 /// The host part of `kind` on disk: Ready when a sibling host is there, else what the `<kind>.host` marker says

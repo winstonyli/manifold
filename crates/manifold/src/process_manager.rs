@@ -42,6 +42,9 @@ pub(crate) enum HostSource {
     Download,
 }
 
+/// CEF's runtime archive unpacked beside its host: `<hosts dir>/cef-runtime/`, and in a dev build next to the exe.
+pub(crate) const CEF_RUNTIME_DIR: &str = "cef-runtime";
+
 /// How a host process is started.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SpawnMode {
@@ -76,9 +79,10 @@ pub(crate) struct ViewDesc {
     pub(crate) find: bool,
     pub(crate) source: HostSource,
     pub(crate) spawn_mode: SpawnMode,
-    /// Also needs a runtime archive besides its host exe (`cef-runtime/`), and takes a bring-your-own runtime
-    /// directory: only CEF's, the one component that is an archive (`Pin`, `unpack`) rather than single pinned files.
-    pub(crate) runtime: bool,
+    /// The directory name (`CEF_RUNTIME_DIR`) of a runtime archive it needs besides its host exe, which also takes a
+    /// bring-your-own runtime directory: only CEF's, the one component that is an archive (`Pin`, `unpack`) rather
+    /// than single pinned files.
+    pub(crate) runtime_dir: Option<&'static str>,
     /// Runs only on these `std::env::consts::OS` values (empty: anywhere); `only_on_reason` is the refusal's text.
     pub(crate) only_on: &'static [&'static str],
     pub(crate) only_on_reason: &'static str,
@@ -130,7 +134,7 @@ impl ViewKind {
                 find: false,
                 source: HostSource::Download,
                 spawn_mode: SpawnMode::Local,
-                runtime: false,
+                runtime_dir: None,
                 only_on: &[],
                 only_on_reason: "",
                 starting_default: true,
@@ -160,7 +164,7 @@ impl ViewKind {
                 find: true,
                 source: HostSource::Download,
                 spawn_mode: SpawnMode::Local,
-                runtime: true,
+                runtime_dir: Some(CEF_RUNTIME_DIR),
                 only_on: &[],
                 only_on_reason: "",
                 starting_default: false,
@@ -187,7 +191,7 @@ impl ViewKind {
                 find: true,
                 source: HostSource::Download,
                 spawn_mode: SpawnMode::Wsl,
-                runtime: false,
+                runtime_dir: None,
                 only_on: &["windows", "linux"],
                 only_on_reason: "needs Windows or Linux",
                 starting_default: false,
@@ -220,7 +224,7 @@ Not included: WebKit runs inside WSL, which needs a distro named Ubuntu with xvf
                 find: true,
                 source: HostSource::Embedded(embedded_host::Embedded::Webview2),
                 spawn_mode: SpawnMode::Local,
-                runtime: false,
+                runtime_dir: None,
                 only_on: &["windows"],
                 only_on_reason: "needs Windows",
                 starting_default: true,
@@ -963,7 +967,7 @@ pub fn spawn_tab(
             return Err(SpawnError::Io(std::io::Error::new(std::io::ErrorKind::Unsupported, reason)));
         }
     }
-    let custom_cef = custom_cef.filter(|_| desc.runtime);
+    let custom_cef = custom_cef.filter(|_| desc.runtime_dir.is_some());
     let on_disk = view_on_disk_fresh(kind);
     check_spawnable(kind, &plan_for(kind), on_disk, custom_cef)?;
     // A host that came from a download, not from beside manifold.exe, is hashed again here: the folder it sits in is

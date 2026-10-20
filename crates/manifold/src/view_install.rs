@@ -11,7 +11,7 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use crate::host_pin::Component as HostFile;
-use crate::process_manager::{HostSource, SpawnMode, ViewKind};
+use crate::process_manager::{HostSource, SpawnMode, ViewKind, CEF_RUNTIME_DIR};
 
 use manifold_view_protocol::transport::to_hex;
 use sha1::Sha1;
@@ -130,7 +130,7 @@ pub(crate) fn downloads(kind: ViewKind) -> bool {
 
 /// Whether `kind` also needs a runtime archive besides its host exe (`ViewDesc::runtime`).
 pub(crate) fn has_runtime(kind: ViewKind) -> bool {
-    kind.desc().runtime
+    kind.desc().runtime_dir.is_some()
 }
 
 /// The Visual C++ runtime DLLs Servo's Windows host imports (its mozjs and ANGLE are built against the dynamic CRT, so
@@ -740,9 +740,9 @@ fn install_with(
 ) -> Result<PathBuf, InstallError> {
     let io = |e: std::io::Error| InstallError::Io(e.to_string());
     std::fs::create_dir_all(data_dir).map_err(io)?;
-    let part = data_dir.join("cef-runtime.part");
-    let tmp = data_dir.join("cef-runtime.tmp");
-    let live = data_dir.join("cef-runtime");
+    let part = data_dir.join(format!("{CEF_RUNTIME_DIR}.part"));
+    let tmp = data_dir.join(format!("{CEF_RUNTIME_DIR}.tmp"));
+    let live = data_dir.join(CEF_RUNTIME_DIR);
     download(pin.url, &part, pin.size, progress, cancel)?;
     if let Err(e) = verify(&part, pin) {
         if matches!(e, InstallError::BadHash { .. }) {
@@ -861,7 +861,9 @@ pub(crate) fn verify_installed_host(dir: &Path, files: &[HostFile]) -> Result<()
 }
 
 /// The files an install leaves beside the CEF runtime while it works (and after some failures).
-const LEFTOVERS: [&str; 3] = ["cef-runtime.part", "cef-runtime.tmp", "cef-runtime.old"];
+fn leftovers() -> [String; 3] {
+    ["part", "tmp", "old"].map(|ext| format!("{CEF_RUNTIME_DIR}.{ext}"))
+}
 
 /// The file names in the hosts directory that are `kind`'s host: the pinned `files`, those its marker lists (an
 /// install of another release) and the host exe's own name.
@@ -899,7 +901,7 @@ fn host_leftovers(dir: &Path, kind: ViewKind, files: &[HostFile]) -> Vec<PathBuf
 /// Whether `kind` has any install leftover (`.part`, `.tmp`, `.old`) in `dir`.
 pub(crate) fn has_leftovers(dir: &Path, kind: ViewKind, files: &[HostFile]) -> bool {
     !host_leftovers(dir, kind, files).is_empty()
-        || (has_runtime(kind) && LEFTOVERS.iter().any(|name| dir.join(name).exists()))
+        || (has_runtime(kind) && leftovers().iter().any(|name| dir.join(name).exists()))
 }
 
 /// What `kind` has installed in `dir`: its host files and marker that exist, and CEF's runtime directory.
@@ -907,7 +909,7 @@ pub(crate) fn installed_paths_in(dir: &Path, kind: ViewKind, files: &[HostFile])
     let mut paths: Vec<PathBuf> = host_file_names(dir, kind, files).iter().map(|n| dir.join(n)).collect();
     paths.push(host_marker_path(dir, kind));
     if has_runtime(kind) {
-        paths.push(dir.join("cef-runtime"));
+        paths.push(dir.join(CEF_RUNTIME_DIR));
     }
     paths.retain(|p| p.exists());
     paths
@@ -950,7 +952,7 @@ pub(crate) fn remove_view_files(
     if installing {
         return Err("It is installing; cancel that first".into());
     }
-    let live = dir.join("cef-runtime");
+    let live = dir.join(CEF_RUNTIME_DIR);
     remove_if_present(&host_marker_path(dir, kind))?;
     if has_runtime(kind) {
         remove_if_present(&live.join(MARKER))?;
@@ -963,7 +965,7 @@ pub(crate) fn remove_view_files(
     }
     if has_runtime(kind) {
         remove_if_present(&live)?;
-        for name in LEFTOVERS {
+        for name in leftovers() {
             remove_if_present(&dir.join(name))?;
         }
     }
