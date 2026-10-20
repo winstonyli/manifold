@@ -1,5 +1,5 @@
 ---
-status: draft
+status: active
 ---
 
 # Undo for drops and moves — Design

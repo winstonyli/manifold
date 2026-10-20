@@ -52,18 +52,19 @@ impl App {
 
     /// The menu's "Dissolve Group" and the toolbar's Ungroup All: each group's members move up to its own level and
     /// the empty group is closed (a Recently Closed entry) holding their ids (`fold_group`), so reopening it, from
-    /// that list or the toast's Undo (`undo_ungroup`), puts them back (`regroup_held`).
+    /// that list or the toast's Undo (`step_history`), puts them back (`regroup_held`).
     pub(crate) fn ungroup(&mut self, ids: &[String]) {
         let message = match ids {
             [id] => format!("Dissolved {}", self.drop_target_name(id)),
             _ => format!("Ungrouped {} groups", ids.len()),
         };
+        let mut folded = Vec::new();
         for id in ids {
             let parent = self.mirror.group(id).map(str::to_owned);
-            self.fold_group(id, parent);
+            self.fold_group(id, parent.clone());
+            folded.push((id.clone(), parent));
         }
-        self.toasts.undo = Some((message.clone(), ids.to_vec()));
-        self.queue_toast(message);
+        self.record_undo(message, UndoKind::Fold(folded));
     }
 
     /// Moves group `id`'s members into `dest` (`None`: the top level) and closes the emptied group, recording where
@@ -79,13 +80,6 @@ impl App {
         self.close_node(id);
         for member in &members {
             self.recheck_edge_scope(member);
-        }
-    }
-
-    /// The toast's Undo: reopens each group `ungroup` closed.
-    pub(crate) fn undo_ungroup(&mut self, ids: Vec<String>) {
-        for id in ids.iter().filter_map(|id| id.parse().ok()) {
-            self.reopen_node(id);
         }
     }
 

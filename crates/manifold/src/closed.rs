@@ -724,13 +724,13 @@ mod tests {
             app.edit_field(&g, field::COLOR, color.clone());
             assert!(app.save_session());
             app.apply_node_action(&ctx, &g, NodeAction::Dissolve);
-            let (message, ids) = app.toasts.undo.take().expect("the dissolve offers an undo");
+            let (message, serial, _) = app.toasts.undo.clone().expect("the dissolve offers an undo");
             assert!(message.starts_with("Dissolved"), "{message}");
             // A member the user put elsewhere meanwhile stays there.
             let elsewhere = add_group(&mut app, "Elsewhere");
             app.edit_group(&moved_on, Some(elsewhere.clone()));
             if from_toast {
-                app.undo_ungroup(ids);
+                app.step_history(Some(serial), false);
             } else {
                 app.reopen_node(g.parse().unwrap());
             }
@@ -757,13 +757,16 @@ mod tests {
         app.merge_groups(&source, &target);
         assert_eq!(app.mirror.group(&kept), Some(target.as_str()));
         assert!(closed_ids(&app).contains(&source));
-        let (message, ids) = app.toasts.undo.take().expect("the merge offers an undo");
+        let (message, serial, _) = app.toasts.undo.clone().expect("the merge offers an undo");
         assert!(message.starts_with("Merged"), "{message}");
         app.edit_group(&left, None);
-        app.undo_ungroup(ids);
+        app.step_history(Some(serial), false);
         assert_eq!(app.mirror.group(&kept), Some(source.as_str()), "back in the source group");
         assert_eq!(app.mirror.group(&left), None, "a member moved on stays");
         assert!(app.nodes.contains_key(&source) && closed_ids(&app).is_empty());
+        app.step_history(None, true);
+        assert_eq!(app.mirror.group(&kept), Some(target.as_str()), "redo merges again");
+        assert!(closed_ids(&app).contains(&source));
     }
 
     /// Ungroup All offers one Undo for every group it dissolved.
@@ -775,11 +778,30 @@ mod tests {
         let (g2, n2) = group_with_note(&mut app);
         app.ungroup(&[g1.clone(), g2.clone()]);
         assert!(app.mirror.group(&n1).is_none() && app.mirror.group(&n2).is_none());
-        let (message, ids) = app.toasts.undo.take().expect("an undo");
+        let (message, serial, _) = app.toasts.undo.clone().expect("an undo");
         assert_eq!(message, "Ungrouped 2 groups");
-        app.undo_ungroup(ids);
+        app.step_history(Some(serial), false);
         assert_eq!(app.mirror.group(&n1), Some(g1.as_str()));
         assert_eq!(app.mirror.group(&n2), Some(g2.as_str()));
+        app.step_history(None, true);
+        assert!(app.mirror.group(&n1).is_none() && app.mirror.group(&n2).is_none(), "redo ungroups both again");
+    }
+
+    /// Reopening a folded group from Recently Closed goes round the history, so there is nothing to redo.
+    #[test]
+    fn a_reopen_from_recently_closed_leaves_nothing_to_redo() {
+        let path = store::testutil::temp_dir("redo-after-reopen").join("session.mnf");
+        let mut app = app_on(&path, 1);
+        let (g, inner) = group_with_note(&mut app);
+        app.ungroup(std::slice::from_ref(&g));
+        app.reopen_node(g.parse().unwrap());
+        assert_eq!(app.mirror.group(&inner), Some(g.as_str()));
+        app.step_history(None, true);
+        assert_eq!(
+            app.mirror.group(&inner),
+            Some(g.as_str()),
+            "nothing to redo: the reopen did not go through the history"
+        );
     }
 
     /// Past the cap the emptied groups go before any real close, so one Ungroup All never pushes out closed tabs.

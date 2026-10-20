@@ -79,6 +79,7 @@ mod theme;
 mod trail_nav;
 mod trail_strip;
 mod tree_layout;
+mod undo;
 mod url_parts;
 mod view_info;
 mod view_install;
@@ -94,6 +95,7 @@ use node_menu::*;
 use session::sanitize_session_name;
 use tabs::{SpawnPurpose, SpawnTracker, TabCarry, TabSpawn, TabSpawnOutcome};
 use text::*;
+use undo::UndoKind;
 use view_modes::*;
 use zoom_chip::*;
 
@@ -441,6 +443,8 @@ struct App {
     menus: popups::MenuPopups,
     /// Toast state (see `failure_toasts::Toasts`).
     toasts: failure_toasts::Toasts,
+    /// Undo and redo history of drops and folds (see `undo::UndoHistory`).
+    undo: undo::UndoHistory,
     /// Headless debug-control state (see `debug_control::HeadlessDebug`).
     debug: debug_control::HeadlessDebug,
     /// Frame pacing: minimize and idle state (see `event_loop::FramePacing`).
@@ -624,6 +628,7 @@ impl Default for App {
             view_ui: view_install::ViewInstallUi::default(),
             menus: popups::MenuPopups::default(),
             toasts: failure_toasts::Toasts::default(),
+            undo: undo::UndoHistory::default(),
             debug: debug_control::HeadlessDebug::default(),
             pacing: event_loop::FramePacing::default(),
             pending_focus: None,

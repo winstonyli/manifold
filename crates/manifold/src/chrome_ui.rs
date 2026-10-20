@@ -68,7 +68,7 @@ impl App {
         let Some((message, shown_at)) = &self.toasts.save_toast else { return };
         let elapsed = shown_at.elapsed();
         if elapsed >= SAVE_TOAST_DURATION {
-            if self.toasts.undo.as_ref().is_some_and(|(shown, _)| shown == message) {
+            if self.toasts.undo.as_ref().is_some_and(|(shown, _, _)| shown == message) {
                 self.toasts.undo = None;
             }
             self.toasts.save_toast = None;
@@ -81,7 +81,7 @@ impl App {
         let opacity = fade_in.min(fade_out);
         let message = message.clone();
         // A toast that can be undone takes clicks on its Undo button; any other lets them through to what is under it.
-        let undoable = self.toasts.undo.as_ref().is_some_and(|(shown, _)| *shown == message);
+        let undoable = self.toasts.undo.as_ref().is_some_and(|(shown, _, _)| *shown == message);
         let mut undo_clicked = false;
         egui::Area::new(egui::Id::new("save_toast"))
             .anchor(egui::Align2::LEFT_BOTTOM, egui::vec2(12.0, -12.0))
@@ -104,8 +104,8 @@ impl App {
                     control_font(ui);
                     ui.horizontal(|ui| {
                         ui.label(message);
-                        if undoable {
-                            undo_clicked = ui.button("Undo").clicked();
+                        if let Some((_, _, redo)) = self.toasts.undo.as_ref().filter(|_| undoable) {
+                            undo_clicked = ui.button(if *redo { "Redo" } else { "Undo" }).clicked();
                         }
                     });
                 });
@@ -115,8 +115,8 @@ impl App {
                 }
             });
         if undo_clicked {
-            if let Some((_, undo)) = self.toasts.undo.take() {
-                self.undo_ungroup(undo);
+            if let Some((_, serial, redo)) = self.toasts.undo.take() {
+                self.step_history(Some(serial), redo);
             }
             self.toasts.save_toast = None;
         }
