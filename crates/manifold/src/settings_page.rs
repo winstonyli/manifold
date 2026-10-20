@@ -470,7 +470,7 @@ impl App {
         // `export_session_to`/`json_file::load` directly with an
         // explicit path instead, bypassing the dialog
         // entirely (import still stages into
-        // `pending_import` same as a real file pick would,
+        // `Confirm::Import` same as a real file pick would,
         // so `CONFIRMIMPORT`/`CANCELIMPORT` can headlessly
         // test the confirm popup too), the same "headless
         // calls the effect directly" pattern every real-
@@ -548,7 +548,7 @@ impl App {
             if let Some(path) = rfd::FileDialog::new().add_filter("Session", &["json"]).pick_file() {
                 match crate::json_file::load(&path, "session") {
                     Ok(json) => {
-                        self.pending_import = Some(json);
+                        self.confirm = Some(Confirm::Import(Box::new(json)));
                         self.close_settings_page();
                     }
                     Err(err) => self.queue_toast(err),

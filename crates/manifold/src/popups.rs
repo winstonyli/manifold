@@ -510,7 +510,7 @@ fn confirm_dialog(
 
 /// The one confirm dialog that may be up (`App::confirm`). `confirm_dialog` is non-modal and centred, so a second
 /// would replace the first unanswered or draw over it: `App::offer_confirm` ignores a click while one is up.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Confirm {
     /// An engine download or removal.
     View(ViewConfirm),
@@ -518,6 +518,9 @@ pub(crate) enum Confirm {
     Jar(crate::jar_defs::JarConfirm),
     /// A named session's delete from Settings.
     SessionDelete(String),
+    /// A picked session file staged for "Import Session..." (or headless `IMPORTSESSION`): shows its tab count
+    /// against the running session's before replacing it, so a wrong file is a deliberate second click.
+    Import(Box<crate::store::json::JsonDoc>),
 }
 
 /// What WebKit's download does not include: its host is a Linux program that runs inside WSL.
@@ -677,7 +680,7 @@ impl App {
 
     /// Whether a confirm dialog is up (or the import confirm): it owns Escape and the keyboard.
     pub(crate) fn confirm_open(&self) -> bool {
-        self.confirm.is_some() || self.pending_import.is_some()
+        self.confirm.is_some()
     }
 
     /// Whether a popup, menu-like surface or confirm owns the keyboard, so the page behind must not act on a press
@@ -722,6 +725,21 @@ impl App {
                 "Remove",
                 true,
             ),
+            Confirm::Import(json) => {
+                let tabs = |n: usize| format!("{n} tab{}", if n == 1 { "" } else { "s" });
+                let incoming = json.nodes.iter().filter(|n| n.kind() == Some(Kind::Tab)).count();
+                (
+                    "Import Session?".to_string(),
+                    format!(
+                        "Current session: {}. Importing: {}.
+Importing replaces every currently open tab.",
+                        tabs(self.nodes.len()),
+                        tabs(incoming)
+                    ),
+                    "Import",
+                    true,
+                )
+            }
             Confirm::Jar(jar) => {
                 let (title, detail, button) = self.jar_confirm_text(*jar)?;
                 (title, detail, button, true)
@@ -749,6 +767,9 @@ impl App {
                     Confirm::Jar(crate::jar_defs::JarConfirm::Ephemeral(id)) => {
                         self.set_jar_ephemeral(id, true);
                         self.save_session();
+                    }
+                    Confirm::Import(json) => {
+                        self.replace_running_session(&json, crate::store::json::Trust::Foreign);
                     }
                     Confirm::SessionDelete(name) => {
                         session::delete_named(&name);
@@ -2041,59 +2062,6 @@ impl App {
             self.menus.shortcuts_help_open = false;
         }
     }
-
-    /// "Import Session..." confirm popup -- shown whenever `pending_import`
-    /// is staged (a real file pick, or headless `IMPORTSESSION`), comparing
-    /// the picked file's tab count against the currently running session's
-    /// own before actually replacing anything, so swapping in the wrong
-    /// file is a deliberate second click rather than a silent one-shot
-    /// dialog pick. Import applies it via the same `replace_running_session`
-    /// `load_named_session` already uses; Cancel just discards the staged
-    /// session, leaving the running one untouched.
-    pub(crate) fn build_import_confirm_popup(&mut self, ui: &mut egui::Ui) {
-        let Some(json) = &self.pending_import else { return };
-        let incoming = json.nodes.iter().filter(|n| n.kind() == Some(Kind::Tab)).count();
-        let current = self.nodes.len();
-        let mut confirm = false;
-        let mut cancel = false;
-        egui::Area::new(egui::Id::new("import_confirm_popup"))
-            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-            .order(egui::Order::Foreground)
-            .show(ui.ctx(), |ui| {
-                dialog_frame(ui).show(ui, |ui| {
-                    control_font(ui);
-                    ui.set_min_width(240.0);
-                    ui.label(heading_text("Import Session"));
-                    ui.add_space(6.0);
-                    ui.label(format!("Current session: {} tab{}", current, if current == 1 { "" } else { "s" }));
-                    ui.label(format!("Importing: {} tab{}", incoming, if incoming == 1 { "" } else { "s" }));
-                    ui.add_space(4.0);
-                    ui.add(
-                        egui::Label::new(
-                            egui::RichText::new("Importing replaces every currently open tab.").small().weak(),
-                        )
-                        .wrap(),
-                    );
-                    ui.add_space(8.0);
-                    ui.horizontal(|ui| {
-                        if danger_button(ui, "Import").clicked() {
-                            confirm = true;
-                        }
-                        if ui.button("Cancel").clicked() {
-                            cancel = true;
-                        }
-                    });
-                });
-            });
-        if confirm {
-            if let Some(json) = self.pending_import.take() {
-                self.replace_running_session(&json, crate::store::json::Trust::Foreign);
-            }
-        }
-        if cancel {
-            self.pending_import = None;
-        }
-    }
 }
 
 /// "Download Servo, 93 MB?" (`size` from `view_info::megabytes`).
@@ -2308,6 +2276,19 @@ mod tests {
         assert_eq!(app.confirm, Some(Confirm::Jar(jar)));
         app.confirm = None;
         assert!(app.offer_confirm(Confirm::SessionDelete("work".into())));
+    }
+
+    /// A staged session import is a confirm like the rest: it owns the keyboard and a second one is refused.
+    #[test]
+    fn a_staged_import_is_a_confirm() {
+        let mut app = App::default();
+        assert!(!app.modal_open());
+        assert!(app.offer_confirm(Confirm::Import(Box::default())));
+        assert!(app.modal_open() && app.confirm_open());
+        assert!(!app.offer_confirm(Confirm::SessionDelete("work".into())));
+        let (title, detail, button, destructive) = app.confirm_text(&Confirm::Import(Box::default())).unwrap();
+        assert_eq!((title.as_str(), button, destructive), ("Import Session?", "Import", true));
+        assert!(detail.contains("Importing: 0 tabs"), "{detail}");
     }
 
     /// Escape on any confirm answers the confirm only: Settings stays open behind it.

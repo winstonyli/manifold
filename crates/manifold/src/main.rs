@@ -259,12 +259,6 @@ struct App {
     naming_jar: Option<(String, String)>,
     /// The confirm dialog that is up, if any (`build_confirm_popup`).
     confirm: Option<popups::Confirm>,
-    /// A session picked via "Import Session..." (or headless `IMPORTSESSION`),
-    /// staged here rather than applied immediately -- `build_import_confirm_
-    /// popup` shows its tab count against the currently running session's
-    /// own, so replacing a real working session with an accidentally-wrong
-    /// file is a deliberate second click, not a silent one-shot dialog pick.
-    pending_import: Option<store::json::JsonDoc>,
     /// The settings popup's "Save Session As..." name field -- kept across
     /// popup open/close within the running session (not persisted), same
     /// convenience the group-rename draft gets.
@@ -575,7 +569,6 @@ impl Default for App {
             renaming_group: None,
             naming_jar: None,
             confirm: None,
-            pending_import: None,
             session_name_draft: String::new(),
             graph_filter: String::new(),
             focused: None,

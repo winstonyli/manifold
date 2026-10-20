@@ -208,7 +208,6 @@ impl App {
             ViewMode::Settings => self.build_settings_page(ui),
         }
         self.build_quick_switcher(ui);
-        self.build_import_confirm_popup(ui);
         self.build_confirm_popup(ui);
     }
 

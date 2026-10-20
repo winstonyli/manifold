@@ -328,7 +328,7 @@ pub enum DebugCommand {
     /// `Ctrl+Shift+W` equivalent — see `App::close_all_at_current_level`.
     CloseAllLevel,
     /// Clicks the "Import Session..." confirm popup's own Import button —
-    /// see `App::pending_import`.
+    /// see `Confirm::Import`.
     ConfirmImport,
     /// Clicks the confirm popup's Cancel button, same reason as
     /// `ConfirmImport`.
@@ -1335,16 +1335,16 @@ impl App {
             }
             DebugCommand::ExportState(path) => self.write_export_state(std::path::Path::new(&path)),
             DebugCommand::ImportSession(path) => match crate::json_file::load(std::path::Path::new(&path), "session") {
-                Ok(json) => self.pending_import = Some(json),
+                Ok(json) => self.confirm = Some(Confirm::Import(Box::new(json))),
                 Err(err) => self.queue_toast(err),
             },
             DebugCommand::ConfirmImport => {
-                if let Some(json) = self.pending_import.take() {
+                if let Some(Confirm::Import(json)) = self.confirm.take_if(|c| matches!(c, Confirm::Import(_))) {
                     self.replace_running_session(&json, crate::store::json::Trust::Foreign);
                 }
             }
             DebugCommand::CancelImport => {
-                self.pending_import = None;
+                self.confirm.take_if(|c| matches!(c, Confirm::Import(_)));
             }
             DebugCommand::RenameGroup => self.rename_current_group_shortcut(),
             DebugCommand::BookmarkFolderText(text) => {
