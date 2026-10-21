@@ -1,7 +1,7 @@
 //! The trail strip (spec `2026-10-16-trail-strip-design.md`): the focused tab's page tree as virtual cards under the
 //! tab's card, and the painter and geometry the Back/Forward popups share.
 
-use crate::card::{CardBody, CardPass, DropEffect, MIN_LABEL_CARD_SCREEN_WIDTH};
+use crate::card::{label_fits, CardBody, CardPass, DropEffect};
 use crate::identity::{Identity, ICON_SIZE_SMALL};
 use crate::level::{CardEntry, EdgeCurve, EdgeKind, LevelEdge, Origin};
 use crate::nav_history::TrailPage;
@@ -91,7 +91,7 @@ pub(crate) fn paint_trail_page(
     if page.cursor {
         painter.rect_stroke(rect, radius, egui::Stroke::new(2.0 * inv_zoom, ACCENT), egui::StrokeKind::Outside);
     }
-    if !labelled || rect.width() * zoom_scale < MIN_LABEL_CARD_SCREEN_WIDTH {
+    if !labelled || !label_fits(rect, zoom_scale) {
         return;
     }
     let color = if page.cursor || page.on_path { TEXT_PRIMARY } else { TEXT_WEAK };

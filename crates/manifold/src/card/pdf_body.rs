@@ -53,7 +53,7 @@ impl App {
                     // "this is a PDF, not a plain image" cue on top
                     // of the file-type distinction the icon in the
                     // context menu/toolbar already gives.
-                    if page_count > 0 && rect.width() * zoom_scale >= MIN_LABEL_CARD_SCREEN_WIDTH {
+                    if page_count > 0 && label_fits(rect, zoom_scale) {
                         let page_count_pos = rect.right_bottom();
                         let page_count_text = format!("{page_count} page{}", if page_count == 1 { "" } else { "s" });
                         deferred_overlays.push(Box::new(move |overlay_painter, project| {

@@ -64,7 +64,7 @@ impl App {
                             }
                         }
                     }
-                    if member_count > 4 && rect.width() * zoom_scale >= MIN_LABEL_CARD_SCREEN_WIDTH {
+                    if member_count > 4 && label_fits(rect, zoom_scale) {
                         let overflow_pos = grid_rect.right_bottom();
                         let overflow_text = format!("+{}", member_count - 4);
                         deferred_overlays.push(Box::new(move |overlay_painter, project| {

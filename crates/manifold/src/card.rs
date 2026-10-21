@@ -25,6 +25,11 @@ pub(crate) use truncate::*;
 /// zoom levels this app's `GRAPH_ZOOM_MIN` allows.
 pub(crate) const MIN_LABEL_CARD_SCREEN_WIDTH: f32 = 40.0;
 
+/// Whether `rect`, drawn at `zoom_scale`, is wide enough on screen to carry a label (`MIN_LABEL_CARD_SCREEN_WIDTH`).
+pub(crate) fn label_fits(rect: egui::Rect, zoom_scale: f32) -> bool {
+    rect.width() * zoom_scale >= MIN_LABEL_CARD_SCREEN_WIDTH
+}
+
 pub(crate) const GRAPH_THUMB_MARGIN: f32 = 6.0;
 
 /// A group card's border tints `DANGER_COLOR` once its member count exceeds

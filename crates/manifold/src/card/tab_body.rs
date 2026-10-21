@@ -124,7 +124,7 @@ impl App {
         }
         // The jar chip just below the title: under the header, or at the top of a short card (whose title is on
         // the bottom strip).
-        if let Some(chip) = chip.filter(|_| rect.width() * zoom_scale >= MIN_LABEL_CARD_SCREEN_WIDTH) {
+        if let Some(chip) = chip.filter(|_| label_fits(rect, zoom_scale)) {
             let body_rect = card_body_rect(rect, tall, inv_zoom);
             let max_width = body_rect.width() * zoom_scale - 8.0;
             let warn = ui.visuals().warn_fg_color;
@@ -152,7 +152,7 @@ impl App {
         header: CardHeader<'_>,
     ) -> bool {
         let tall = tab_has_header(rect, inv_zoom);
-        if rect.width() * zoom_scale < MIN_LABEL_CARD_SCREEN_WIDTH {
+        if !label_fits(rect, zoom_scale) {
             return tall;
         }
         let CardHeader { identity, name, user_name, source, source_is_path, scrim, right_margin } = header;
@@ -302,7 +302,7 @@ impl App {
             let label = if title.is_empty() { url.as_str() } else { title.as_str() };
             // Busy until the first frame is in, as well as while the page loads.
             let identity = self.tab_identity(&url, loading || thumb_id.is_none(), tab_view_kind);
-            let show_text = rect.width() * zoom_scale >= MIN_LABEL_CARD_SCREEN_WIDTH;
+            let show_text = label_fits(rect, zoom_scale);
             if header {
                 let card_header = CardHeader {
                     identity,
@@ -334,7 +334,7 @@ impl App {
                         text.draw(overlay_painter, project(text.center));
                     }));
                 }
-                // Below `MIN_LABEL_CARD_SCREEN_WIDTH` the label would be a sliver; the icon alone remains.
+                // Below `MIN_LABEL_CARD_SCREEN_WIDTH` (`label_fits`) the label would be a sliver; the icon alone remains.
                 if show_text {
                     let label_font = egui::FontId::proportional(14.0);
                     // Screen width left for the label: the strip's, less the 16px left offset and some room on
