@@ -102,7 +102,7 @@ fn every_id_keyed_field_is_forgotten_or_excused() {
         ("link", include_str!("../links.rs"), "pub(crate) struct LinkGesture {"),
         ("interaction", include_str!("../graph_nav.rs"), "pub(crate) struct GraphInteraction {"),
         ("spawns", include_str!("../tabs.rs"), "pub(crate) struct SpawnTracker {"),
-        ("pacing", include_str!("../event_loop.rs"), "pub(crate) struct FramePacing {"),
+        ("pacing", include_str!("../event_loop/pacing.rs"), "pub(crate) struct FramePacing {"),
         ("debug", include_str!("../debug_control.rs"), "pub(crate) struct HeadlessDebug {"),
         ("toasts", include_str!("../failure_toasts.rs"), "pub(crate) struct Toasts {"),
         ("menus", include_str!("../popups/menus.rs"), "pub(crate) struct MenuPopups {"),
