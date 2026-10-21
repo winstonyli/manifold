@@ -412,7 +412,7 @@ fn move_to_rows_show_a_hidden_character_as_a_placeholder() {
         crate::store::model::field::NAME,
         crate::store::model::FieldValue::Str("Re\u{200B}ading".into()),
     );
-    app.menus.node_menu = Some((note, egui::pos2(100.0, 100.0)));
+    app.menus.node_menu.open(note, egui::pos2(100.0, 100.0));
     let mut galleys = Vec::new();
     for _ in 0..3 {
         let input = egui::RawInput {
@@ -444,7 +444,7 @@ fn move_to_rows_shorten_a_long_name() {
     app.insert_group_at(g.clone(), None);
     app.insert_note_at(note.clone(), None);
     app.doc.mirror.set(&g, crate::store::model::field::NAME, crate::store::model::FieldValue::Str("x".repeat(200)));
-    app.menus.node_menu = Some((note, egui::pos2(100.0, 100.0)));
+    app.menus.node_menu.open(note, egui::pos2(100.0, 100.0));
     let mut texts = Vec::new();
     for _ in 0..3 {
         let input = egui::RawInput {
@@ -544,8 +544,8 @@ fn the_jar_menu_draws_markers_in_their_own_style() {
         crate::store::model::Kind::Tab,
         crate::session_sync::tests::sleeping_tab("https://a/", "A"),
     );
-    app.menus.node_menu = Some((t.clone(), egui::pos2(100.0, 100.0)));
-    app.menus.node_menu_page = Some((t, egui::pos2(100.0, 100.0), MenuPage::Jar));
+    app.menus.node_menu.open(t.clone(), egui::pos2(100.0, 100.0));
+    app.menus.node_menu.show_page(Some(MenuPage::Jar));
     let mut galleys = Vec::new();
     for _ in 0..3 {
         let input = egui::RawInput {
@@ -606,7 +606,7 @@ fn a_click_on_link_to_starts_pick_target_mode() {
     let (a, b) = (app.alloc_node_id(), app.alloc_node_id());
     app.insert_note_at(a.clone(), None);
     app.insert_note_at(b.clone(), None);
-    app.menus.node_menu = Some((a.clone(), egui::pos2(100.0, 100.0)));
+    app.menus.node_menu.open(a.clone(), egui::pos2(100.0, 100.0));
     let frame = |app: &mut App, events| {
         let input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0))),
@@ -640,7 +640,7 @@ fn a_click_on_link_to_starts_pick_target_mode() {
     frame(&mut app, vec![egui::Event::PointerMoved(at), press(true)]);
     frame(&mut app, vec![press(false)]);
     assert_eq!(app.link.connecting, Some((a, crate::caps::LINK)));
-    assert_eq!(app.menus.node_menu, None, "the menu closed");
+    assert_eq!(app.menus.node_menu.open, None, "the menu closed");
 }
 
 /// "Color..." swaps the menu for the swatch page and keeps it open; "Back" returns to the items; a swatch applies and
@@ -652,7 +652,7 @@ fn the_color_row_opens_a_page_and_back_returns() {
     let n = app.alloc_node_id();
     app.insert_note_at(n.clone(), None);
     let pos = egui::pos2(100.0, 100.0);
-    app.menus.node_menu = Some((n.clone(), pos));
+    app.menus.node_menu.open(n.clone(), pos);
     let frame = |app: &mut App, events| {
         let input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0))),
@@ -690,20 +690,20 @@ fn the_color_row_opens_a_page_and_back_returns() {
     let texts = settle(&mut app);
     assert!(find(&texts, "swatch").is_none(), "the swatches are not on the items page");
     click(&mut app, find(&texts, "Color...").expect("a Color row"));
-    assert_eq!(app.menus.node_menu_page.as_ref().map(|p| p.2), Some(MenuPage::Color));
-    assert!(app.menus.node_menu.is_some(), "the menu stays open");
+    assert_eq!(app.menus.node_menu.page, Some(MenuPage::Color));
+    assert!(app.menus.node_menu.open.is_some(), "the menu stays open");
     let texts = settle(&mut app);
     assert!(find(&texts, "swatch").is_some() && find(&texts, "Color...").is_none(), "the swatch page");
     click(&mut app, find(&texts, "Back").expect("a Back row"));
-    assert_eq!(app.menus.node_menu_page, None);
+    assert_eq!(app.menus.node_menu.page, None);
     let texts = settle(&mut app);
     click(&mut app, find(&texts, "Color...").unwrap());
     let texts = settle(&mut app);
     click(&mut app, find(&texts, "swatch").unwrap());
-    assert_eq!(app.menus.node_menu, None, "a swatch closes the menu");
+    assert_eq!(app.menus.node_menu.open, None, "a swatch closes the menu");
     assert!(app.doc.mirror.color(&n).is_some(), "and colours the card");
     // A fresh menu on the same card starts on the items again.
-    app.menus.node_menu = Some((n, egui::pos2(300.0, 300.0)));
+    app.menus.node_menu.open(n, egui::pos2(300.0, 300.0));
     let texts = settle(&mut app);
     assert!(find(&texts, "Color...").is_some());
 }
@@ -743,7 +743,7 @@ fn the_new_jar_field_creates_only_on_enter() {
             crate::store::model::Kind::Tab,
             crate::session_sync::tests::sleeping_tab("https://a/", "A"),
         );
-        app.menus.node_menu = Some((t.clone(), egui::pos2(100.0, 100.0)));
+        app.menus.node_menu.open(t.clone(), egui::pos2(100.0, 100.0));
         let frame = |app: &mut App, events| menu_frame(&ctx, app, events);
         app.apply_node_action(&ctx, &t, NodeAction::StartNewJar);
         frame(&mut app, vec![]);
@@ -768,7 +768,7 @@ fn a_group_rename_still_commits_on_a_click_away() {
     let mut app = App::default();
     let g = app.alloc_node_id();
     app.insert_group_at(g.clone(), None);
-    app.menus.node_menu = Some((g.clone(), egui::pos2(100.0, 100.0)));
+    app.menus.node_menu.open(g.clone(), egui::pos2(100.0, 100.0));
     app.apply_node_action(&ctx, &g, NodeAction::Rename);
     menu_frame(&ctx, &mut app, vec![]);
     menu_frame(&ctx, &mut app, vec![]);
@@ -803,16 +803,16 @@ fn a_jar_name_draft_does_not_outlive_its_menu() {
         crate::store::model::Kind::Tab,
         crate::session_sync::tests::sleeping_tab("https://b/", "B"),
     );
-    app.menus.node_menu = Some((t.clone(), egui::Pos2::ZERO));
+    app.menus.node_menu.open(t.clone(), egui::Pos2::ZERO);
     app.apply_node_action(&ctx, &t, NodeAction::StartNewJar);
     app.drop_stray_jar_name();
     assert!(app.naming_jar.is_some(), "its own menu is open");
-    app.menus.node_menu = Some((u, egui::Pos2::ZERO));
+    app.menus.node_menu.open(u, egui::Pos2::ZERO);
     app.drop_stray_jar_name();
     assert_eq!(app.naming_jar, None, "another node's menu opened");
-    app.menus.node_menu = Some((t.clone(), egui::Pos2::ZERO));
+    app.menus.node_menu.open(t.clone(), egui::Pos2::ZERO);
     app.apply_node_action(&ctx, &t, NodeAction::StartNewJar);
-    app.menus.node_menu = None;
+    app.menus.node_menu.close();
     app.drop_stray_jar_name();
     assert_eq!(app.naming_jar, None, "the menu closed");
 }

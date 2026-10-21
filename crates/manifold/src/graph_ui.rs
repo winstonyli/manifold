@@ -363,12 +363,15 @@ mod tests {
             app.graph_world_rect_to_screen(item.rect)
         };
         right_click(&mut app, card.center());
-        assert_eq!(app.menus.node_menu.as_ref().map(|(id, _)| id), Some(&note_id), "the card's menu opens");
-        assert!(app.menus.node_menu_page.is_none(), "on its items");
-        app.menus.node_menu = None;
+        assert_eq!(app.menus.node_menu.open.as_ref().map(|(id, _)| id), Some(&note_id), "the card's menu opens");
+        assert!(app.menus.node_menu.page.is_none(), "on its items");
+        app.menus.node_menu.close();
         right_click(&mut app, card.right_bottom() - egui::vec2(1.0, 1.0));
-        let page = app.menus.node_menu_page.as_ref().map(|(id, _, page)| (id.clone(), *page));
-        assert_eq!(page, Some((note_id, crate::node_menu::MenuPage::Color)), "the swatch opens the Color page");
+        assert_eq!(
+            app.menus.node_menu.page,
+            Some(crate::node_menu::MenuPage::Color),
+            "the swatch opens the Color page"
+        );
     }
 
     /// Wave 2 (H2 / P2): whole `build_graph_ui` frames over the 2000-node fixture spread on a grid: idle at the top
@@ -416,10 +419,10 @@ mod tests {
         run(&mut app, "pick-target mode (LINK)", vec![]);
         assert!(app.link.connecting.is_some(), "the mode stayed on");
         app.link.connecting = None;
-        app.menus.node_menu = Some((note.clone(), egui::pos2(500.0, 400.0)));
+        app.menus.node_menu.open(note.clone(), egui::pos2(500.0, 400.0));
         run(&mut app, "node menu open", vec![]);
-        assert!(app.menus.node_menu.is_some(), "the menu stayed open");
-        app.menus.node_menu = None;
+        assert!(app.menus.node_menu.open.is_some(), "the menu stayed open");
+        app.menus.node_menu.close();
         app.graph_filter = "abc".into();
         run(&mut app, "filtered", vec![]);
         app.graph_filter.clear();

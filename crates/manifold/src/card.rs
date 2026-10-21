@@ -989,7 +989,7 @@ impl App {
         // Not while a card's menu is open: the pointer is usually still on
         // the card it right-clicked, and the tooltip would cover the menu.
         let response = match body.tooltip {
-            Some(tooltip) if self.menus.node_menu.is_none() && self.menus.trail_menu.is_none() => {
+            Some(tooltip) if self.menus.node_menu.open.is_none() && self.menus.trail_menu.is_none() => {
                 response.on_hover_text(tooltip)
             }
             _ => response,
@@ -1109,7 +1109,7 @@ impl App {
                         source.on_menu(self, entry, at);
                     }
                 }
-                _ => self.menus.node_menu = Some((id.to_string(), at)),
+                _ => self.menus.node_menu.open(id.to_string(), at),
             }
         }
         let mut control = ((caps.stored_controls && response.clicked_by(egui::PointerButton::Middle)) || delete)
@@ -1133,11 +1133,12 @@ impl App {
             let control_response = control_response.on_hover_text(card_control.tip(&view));
             control_hovered |= control_response.hovered();
             // A right-click on the swatch opens the menu (the right-press already did) on its Color page.
-            if card_control == CardControl::Swatch && control_response.secondary_clicked() {
-                if let Some((menu_id, pos)) = self.menus.node_menu.clone().filter(|(menu_id, _)| menu_id == id) {
-                    self.menus.node_menu_page = Some((menu_id, pos, crate::node_menu::MenuPage::Color));
-                    ui.ctx().request_repaint();
-                }
+            if card_control == CardControl::Swatch
+                && control_response.secondary_clicked()
+                && self.menus.node_menu.open.as_ref().is_some_and(|(menu_id, _)| menu_id == id)
+            {
+                self.menus.node_menu.show_page(Some(crate::node_menu::MenuPage::Color));
+                ui.ctx().request_repaint();
             }
             if control_response.clicked() && control.is_none() {
                 control = Some(card_control.action());

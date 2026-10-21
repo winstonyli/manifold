@@ -201,12 +201,7 @@ impl App {
         if self.renaming_group.as_ref().is_some_and(|(g, _)| g == id) {
             self.renaming_group = None;
         }
-        if self.menus.node_menu_page.as_ref().is_some_and(|(n, ..)| n == id) {
-            self.menus.node_menu_page = None;
-        }
-        if self.menus.node_menu.as_ref().is_some_and(|(n, _)| n == id) {
-            self.menus.node_menu = None;
-        }
+        self.menus.node_menu.forget(id);
         self.interaction.forget(id);
         self.forget_connect_source(id);
         if let Some(gpu) = &mut self.gpu {

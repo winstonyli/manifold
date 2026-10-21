@@ -349,7 +349,7 @@ mod tests {
         rig.click(rig.screen("virtual:fake:b").center());
         assert_eq!(calls(&rig, "on_click"), 1, "{:?}", rig.source.calls.borrow());
         assert_eq!((rig.app.nodes.len(), &rig.app.interaction.selected), (nodes, &selected));
-        assert!(rig.app.menus.node_menu.is_none());
+        assert!(rig.app.menus.node_menu.open.is_none());
     }
 
     #[test]
@@ -357,13 +357,13 @@ mod tests {
         let mut rig = Rig::with_kind(FAKE);
         rig.right_click(rig.screen("virtual:fake:b").center());
         assert_eq!(calls(&rig, "on_menu"), 0);
-        assert!(rig.app.menus.node_menu.is_none() && rig.app.menus.node_menu_page.is_none());
+        assert!(rig.app.menus.node_menu.open.is_none() && rig.app.menus.node_menu.page.is_none());
 
         let mut rig = Rig::with_kind(MENU);
         let at = rig.screen("virtual:fake:b").center();
         rig.right_click(at);
         assert_eq!(calls(&rig, "on_menu"), 1, "{:?}", rig.source.calls.borrow());
-        assert!(rig.app.menus.node_menu.is_none() && rig.app.menus.node_menu_page.is_none());
+        assert!(rig.app.menus.node_menu.open.is_none() && rig.app.menus.node_menu.page.is_none());
         assert_eq!(rig.source.menu_at.get(), Some(at));
     }
 
@@ -857,7 +857,7 @@ mod keyboard_menu_tests {
                 let at = rig.source.menu_at.get().expect("asked to open");
                 assert!((at - corner).length() < 1.0, "{at:?} vs {corner:?}");
             }
-            assert!(rig.app.menus.node_menu.is_none(), "a virtual card opens no node menu");
+            assert!(rig.app.menus.node_menu.open.is_none(), "a virtual card opens no node menu");
         }
     }
 }

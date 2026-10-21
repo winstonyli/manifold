@@ -134,7 +134,7 @@ impl App {
                 .map(|(key, dir)| (dir, i.num_presses(key)))
             });
             // An open node menu keeps the arrows and Enter for itself.
-            let menu_open = self.menus.node_menu.is_some();
+            let menu_open = self.menus.node_menu.open.is_some();
             if !menu_open {
                 for (dir, n) in presses {
                     for _ in 0..n {
@@ -165,7 +165,7 @@ impl App {
                 self.cancel_connect();
             } else if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                 self.interaction.selected.clear();
-                if let Some((id, _)) = self.menus.node_menu.take() {
+                if let Some((id, _)) = self.menus.node_menu.open.take() {
                     ui.memory_mut(|m| m.request_focus(egui::Id::new(("graph_card", id.as_str()))));
                 }
                 self.interaction.pending_new_node = None;
@@ -220,10 +220,11 @@ impl App {
                 match hit {
                     Some(CardEntry { id, origin: Origin::Stored, .. }) => {
                         // A right-click on the jar chip opens the menu on its Jar page.
-                        if crate::card::on_jar_chip(ui.ctx(), &id, pos) {
-                            self.menus.node_menu_page = Some((id.clone(), pos, crate::node_menu::MenuPage::Jar));
+                        let on_chip = crate::card::on_jar_chip(ui.ctx(), &id, pos);
+                        self.menus.node_menu.open(id, pos);
+                        if on_chip {
+                            self.menus.node_menu.show_page(Some(crate::node_menu::MenuPage::Jar));
                         }
-                        self.menus.node_menu = Some((id, pos));
                         self.interaction.rect_select_start = None;
                     }
                     // A virtual card has no node menu and no jar chip: its source opens whatever menu the kind's
@@ -248,7 +249,7 @@ impl App {
                         }
                     }
                     None => {
-                        self.menus.node_menu = None;
+                        self.menus.node_menu.close();
                         if let Some(level) = self.json_level.as_mut() {
                             level.menu = None;
                         }

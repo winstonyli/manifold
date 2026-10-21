@@ -290,7 +290,7 @@ impl App {
             && self.interaction.dragging.is_none()
             && self.link.connecting.is_none()
             && self.link.connect_drag.is_none()
-            && self.menus.node_menu.is_none()
+            && self.menus.node_menu.open.is_none()
             && self.interaction.pending_new_node.is_none()
             && self.interaction.rect_select_start.is_none()
             && self.menus.open_popup.is_none()

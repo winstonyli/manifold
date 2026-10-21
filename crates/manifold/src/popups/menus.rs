@@ -80,29 +80,61 @@ pub(crate) fn close_popup(open: &mut Option<AnchoredPopup>, which: AnchoredPopup
     }
 }
 
+/// A node's right-click menu: where it is open, the page showing instead of its items, and the copy that outlives it
+/// while it fades. The page belongs to the menu that set it: opening a menu starts on its items.
+#[derive(Default)]
+pub(crate) struct NodeMenu {
+    /// `(node_id, screen_pos)` while the menu is open.
+    pub(crate) open: Option<(String, egui::Pos2)>,
+    /// The page showing instead of the items (`MenuPage`). Left as it is when the menu closes, so the fade-out keeps
+    /// the page the click was on; `open` drops it, and so does the end of the fade (`App::build_node_menu`).
+    pub(crate) page: Option<crate::node_menu::MenuPage>,
+    /// `open` with the card's frozen `NodeMenuView`, set each frame the menu is open, so `build_node_menu` keeps
+    /// drawing it (fading out, not vanishing) for a few frames after `open` itself goes back to `None`.
+    pub(crate) fade: Fading<(String, egui::Pos2, NodeMenuView)>,
+}
+
+impl NodeMenu {
+    /// Opens the menu on `id` at `pos`, on its items.
+    pub(crate) fn open(&mut self, id: impl Into<String>, pos: egui::Pos2) {
+        self.open = Some((id.into(), pos));
+        self.page = None;
+    }
+
+    /// Closes the menu; its page stays for the fade-out.
+    pub(crate) fn close(&mut self) {
+        self.open = None;
+    }
+
+    /// The open menu's page, `None` for its items; ignored when no menu is open.
+    pub(crate) fn show_page(&mut self, page: Option<crate::node_menu::MenuPage>) {
+        if self.open.is_some() {
+            self.page = page;
+        }
+    }
+
+    /// Drops the menu `id` has open: it is gone.
+    pub(crate) fn forget(&mut self, id: &str) {
+        if self.open.as_ref().is_some_and(|(n, _)| n == id) {
+            self.open = None;
+            self.page = None;
+        }
+    }
+}
+
 /// The popups and menus on screen (`App::menus`), each fading menu with the copy that outlives it.
 #[derive(Default)]
 pub(crate) struct MenuPopups {
-    /// `(node_id, screen_pos)` while a right-click context menu is showing
-    /// for that node's card -- one field for every kind, so at most one
-    /// menu is ever open by construction. Right-click is otherwise the
-    /// rectangle-select gesture over the graph panel (see that gesture's
-    /// own doc comment on `handle_rect_select`); a press landing on any card
-    /// opens this instead of starting a marquee. Drawn by
-    /// `App::build_node_menu`, which dispatches on the node's kind.
-    pub(crate) node_menu: Option<(String, egui::Pos2)>,
+    /// The right-click context menu of a node's card -- one for every kind, so at most one menu is ever open by
+    /// construction (`NodeMenu`). Right-click is otherwise the rectangle-select gesture over the graph panel (see that
+    /// gesture's own doc comment on `handle_rect_select`); a press landing on any card opens this instead of starting a
+    /// marquee. Drawn by `App::build_node_menu`, which dispatches on the node's kind.
+    pub(crate) node_menu: NodeMenu,
     /// The right-click menu of a trail strip page: its virtual card id and the screen point (`App::build_trail_menu`).
     pub(crate) trail_menu: Option<(String, egui::Pos2)>,
     /// The Back/Forward branch popup's camera and which popup it belongs to: recentred every time the popup opens
     /// (`popup_centres_cursor`), kept while it stays open.
     pub(crate) trail_canvas: Option<(AnchoredPopup, crate::graph_ui::GraphCamera)>,
-    /// `node_menu` with the card's frozen `NodeMenuView`, set each frame the menu is open, so `build_node_menu` keeps
-    /// drawing it (fading out, not vanishing) for a few frames after `node_menu` itself goes back to `None`.
-    pub(crate) node_menu_fade: Fading<(String, egui::Pos2, NodeMenuView)>,
-    /// The page of `node_menu` showing instead of its items (`MenuPage`), with the `(node, pos)` it belongs to. Left
-    /// as it is when the menu closes, so the fade-out keeps the page the click was on; a different menu drops it
-    /// (`App::build_node_menu`).
-    pub(crate) node_menu_page: Option<(String, egui::Pos2, crate::node_menu::MenuPage)>,
     /// The minimal right-click context menu, if currently showing — see
     /// `ContextMenuState`'s own doc comment.
     pub(crate) context_menu: Fading<ContextMenuState>,
@@ -142,7 +174,10 @@ impl App {
     /// Whether a popup, menu-like surface or confirm owns the keyboard, so the page behind must not act on a press
     /// that closes it (Escape) or on its own shortcuts.
     pub(crate) fn modal_open(&self) -> bool {
-        self.popup_open() || self.confirm_open() || self.menus.node_menu.is_some() || self.menus.shortcuts_help_open
+        self.popup_open()
+            || self.confirm_open()
+            || self.menus.node_menu.open.is_some()
+            || self.menus.shortcuts_help_open
     }
 
     pub(crate) fn popup_opener_key(which: AnchoredPopup) -> egui::Id {

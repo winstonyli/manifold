@@ -28,7 +28,7 @@ fn forget_id_clears_every_id_keyed_table() {
     app.interaction.selected.extend([t(), "u".to_string()]);
     app.naming_jar = Some((t(), String::new()));
     app.renaming_group = Some((t(), String::new()));
-    app.menus.node_menu = Some((t(), egui::Pos2::ZERO));
+    app.menus.node_menu.open(t(), egui::Pos2::ZERO);
     app.spawns.pending_respawn_focus = Some(t());
     app.interaction.peek_suppressed = Some(t());
     app.interaction.dragging = Some(t());
@@ -47,7 +47,7 @@ fn forget_id_clears_every_id_keyed_table() {
     assert!(app.nav_history.is_empty() && app.spawns.navigated_from.is_empty() && app.spawns.tab_crashes.is_empty());
     assert_eq!(app.popup_gate.admit("t", true, now), popup_gate::Admit::Open, "t's popup burst count went");
     assert_eq!(app.interaction.selected, HashSet::from(["u".to_string()]));
-    assert!(app.naming_jar.is_none() && app.renaming_group.is_none() && app.menus.node_menu.is_none());
+    assert!(app.naming_jar.is_none() && app.renaming_group.is_none() && app.menus.node_menu.open.is_none());
     assert!(app.spawns.pending_respawn_focus.is_none() && app.interaction.peek_suppressed.is_none());
     assert!(app.interaction.dragging.is_none() && app.link.connecting.is_none() && app.link.connect_drag.is_none());
     assert!(app.interaction.hovered.is_none());
@@ -73,7 +73,7 @@ const NOT_FORGOTTEN: &[(&str, &str)] = &[
     ("link.line_press", "a link id, taken at release only if still hovered"),
     ("native_drag_tab", "taken at the button-up"),
     ("pacing.hidden_for_minimize", "drained at restore"),
-    ("menus.node_menu_fade", "the closing menu's fade copy, set from `node_menu` each frame it is open"),
+    ("menus.node_menu.fade", "the closing menu's fade copy, set from `node_menu` each frame it is open"),
     ("menus.trail_menu", "a virtual card id (never a node id), closed by `build_trail_menu` when its page is gone"),
     ("confirm", "a jar confirm is dropped by `confirm_text` once its jar is gone; the rest hold names and engines"),
     ("favicon_resolved", "origins, not node ids"),
@@ -95,7 +95,7 @@ const NOT_FORGOTTEN: &[(&str, &str)] = &[
 fn every_id_keyed_field_is_forgotten_or_excused() {
     /// A struct held by `App` (`App.<prefix>`): its source file, its header line, and the id-forgetting method
     /// (`forget`) it may have; its fields are named `<prefix>.<field>` in `NOT_FORGOTTEN`.
-    const GROUPS: [(&str, &str, &str); 12] = [
+    const GROUPS: [(&str, &str, &str); 13] = [
         ("doc", include_str!("../doc.rs"), "pub(crate) struct Doc {"),
         ("doc.writes", include_str!("../session_sync/writes.rs"), "pub(crate) struct PendingWrites {"),
         ("cookies", include_str!("../jar.rs"), "pub(crate) struct CookieState {"),
@@ -106,6 +106,7 @@ fn every_id_keyed_field_is_forgotten_or_excused() {
         ("debug", include_str!("../debug_control.rs"), "pub(crate) struct HeadlessDebug {"),
         ("toasts", include_str!("../failure_toasts.rs"), "pub(crate) struct Toasts {"),
         ("menus", include_str!("../popups/menus.rs"), "pub(crate) struct MenuPopups {"),
+        ("menus.node_menu", include_str!("../popups/menus.rs"), "pub(crate) struct NodeMenu {"),
         ("history_ui", include_str!("../history.rs"), "pub(crate) struct HistoryUi {"),
         ("view_ui", include_str!("../view_install.rs"), "pub(crate) struct ViewInstallUi {"),
     ];

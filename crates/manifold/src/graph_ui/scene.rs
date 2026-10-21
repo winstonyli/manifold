@@ -117,7 +117,7 @@ impl App {
         self.interaction.selected.clear();
         self.interaction.rect_select_start = None;
         self.interaction.pending_new_node = None;
-        self.menus.node_menu = None;
+        self.menus.node_menu.close();
     }
 
     pub(crate) fn build_graph_ui(&mut self, ui: &mut egui::Ui) {

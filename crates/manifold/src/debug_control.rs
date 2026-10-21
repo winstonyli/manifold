@@ -586,7 +586,7 @@ const VERBS: &[Verb] = &[
     row("DISMISSPEEK", "Escape-dismisses-peek equivalent in Graph view", |_| job(|app, _| app.dismiss_hover_peek())),
     row("EXPORTGROUP path", "Export whichever group's context menu is currently open", |rest| {
         with_text(rest, |app, path| {
-            if let Some((group_id, _)) = app.menus.node_menu.clone().filter(|(id, _)| app.is_container(id)) {
+            if let Some((group_id, _)) = app.menus.node_menu.open.clone().filter(|(id, _)| app.is_container(id)) {
                 if let Some(json) = app.export_group_json(&group_id) {
                     write_json_export(&json, std::path::Path::new(&path), "group");
                 }
@@ -671,7 +671,7 @@ const VERBS: &[Verb] = &[
             _ => return None,
         };
         job(move |app, _| {
-            app.menus.node_menu_page = app.menus.node_menu.clone().and_then(|(id, pos)| page.map(|page| (id, pos, page)));
+            app.menus.node_menu.show_page(page);
         })
     }),
     row("TOGGLEPOPUP name", "Toggle the Settings page's bookmarks|history|downloads popup (opens the page), the graph toolbar's recentlyclosed list, or the Back|Forward chip's branch list (needs its marker)", |rest| {

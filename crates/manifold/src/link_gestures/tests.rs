@@ -301,7 +301,7 @@ fn a_line_click_is_ignored_in_pick_mode_and_with_a_menu_open() {
     h.click(&mut app, on);
     assert!(app.link.connecting.is_none(), "the click ended pick mode, as any click off a target does");
     assert_eq!(app.links_naming(&a), std::slice::from_ref(&ab), "and deleted nothing");
-    app.menus.node_menu = Some((c.clone(), egui::pos2(5.0, 60.0)));
+    app.menus.node_menu.open(c.clone(), egui::pos2(5.0, 60.0));
     h.frame(&mut app, vec![]);
     h.click(&mut app, on);
     assert_eq!(app.links_naming(&a), [ab]);
@@ -363,7 +363,7 @@ fn a_right_press_during_a_connect_drag_opens_no_menu_and_starts_no_marquee() {
     let (on_b, on_c) = (screen_rect(&app, &b).center(), screen_rect(&app, &c).center());
     let canvas = on_b.lerp(on_c, 0.5);
     drag_from_handle(&h, &mut app, &a, HandleSide::Right, on_b, right_press_at(on_c));
-    assert!(app.menus.node_menu.is_none(), "no menu on c");
+    assert!(app.menus.node_menu.open.is_none(), "no menu on c");
     assert_eq!(app.links_naming(&a).len(), 1, "linked to b");
     h.frame(&mut app, vec![right(on_b, false)]);
     drag_from_handle(&h, &mut app, &a, HandleSide::Bottom, on_c, right_press_at(canvas));
@@ -380,7 +380,7 @@ fn a_right_press_during_a_card_drag_opens_no_menu_and_starts_no_marquee() {
     let from = screen_rect(&app, &a).center();
     let to = from + egui::vec2(0.0, -40.0);
     h.drag_with(&mut app, from, to, right_press_at(on_c));
-    assert!(app.menus.node_menu.is_none(), "no menu on c");
+    assert!(app.menus.node_menu.open.is_none(), "no menu on c");
     h.frame(&mut app, vec![right(to, false)]);
     let from = screen_rect(&app, &a).center();
     h.drag_with(&mut app, from, from + egui::vec2(40.0, 0.0), right_press_at(canvas));
@@ -1054,9 +1054,9 @@ fn handles_show_while_nothing_else_owns_the_pointer_and_on_every_card_during_a_d
     app.interaction.dragging = Some(b.clone());
     assert!(!app.shows_link_handles(), "a card drag");
     app.interaction.dragging = None;
-    app.menus.node_menu = Some((b.clone(), egui::Pos2::ZERO));
+    app.menus.node_menu.open(b.clone(), egui::Pos2::ZERO);
     assert!(!app.shows_link_handles(), "a menu");
-    app.menus.node_menu = None;
+    app.menus.node_menu.close();
     app.start_connect_drag(&a);
     assert!(app.shows_link_handles(), "during a connect-drag every card shows them, not only the source");
     app.cancel_connect();

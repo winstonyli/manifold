@@ -92,7 +92,7 @@ pub(crate) enum NodeAction {
     MenuBack,
 }
 
-/// A page of a node's menu that replaces its items while open (`MenuPopups::node_menu_page`): the long or wide
+/// A page of a node's menu that replaces its items while open (`NodeMenu::page`): the long or wide
 /// sections, so the menu itself stays short.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum MenuPage {
@@ -180,7 +180,7 @@ pub(crate) struct NodeMenuConfig {
     items: Vec<NodeMenuItem>,
     /// What the Jar page holds (tab and group menus).
     jar_page: Vec<NodeMenuItem>,
-    /// The page showing instead of `items`, if any (`MenuPopups::node_menu_page`); the caller sets it.
+    /// The page showing instead of `items`, if any (`NodeMenu::page`); the caller sets it.
     page: Option<MenuPage>,
 }
 
@@ -715,7 +715,7 @@ impl App {
     }
 
     /// The one right-click context menu for every node card. Fades via the
-    /// shared `node_menu`/`node_menu_fade` (one fade Id for all kinds --
+    /// shared `node_menu` (one fade Id for all kinds --
     /// per-kind Ids would go unpolled while another kind's menu is open,
     /// breaking `Fading::state`'s continuous-polling rule), draws the
     /// items `node_menu_config` lists for the node's kind, and applies the
@@ -727,23 +727,21 @@ impl App {
     /// rather than just closing the menu; while a jar is being named, only
     /// Enter creates it, and a click outside cancels it, as Escape does.
     pub(crate) fn build_node_menu(&mut self, ui: &mut egui::Ui) {
-        if self.menus.node_menu.as_ref().is_some_and(|(id, _)| !self.nodes.contains_key(id)) {
-            self.menus.node_menu = None;
+        if self.menus.node_menu.open.as_ref().is_some_and(|(id, _)| !self.nodes.contains_key(id)) {
+            self.menus.node_menu.close();
         }
         self.drop_stray_jar_name();
-        if self.menus.node_menu_page.as_ref().is_some_and(|(id, pos, _)| {
-            self.menus.node_menu.as_ref().is_some_and(|(open_id, open_pos)| (id, pos) != (open_id, open_pos))
-        }) {
-            self.menus.node_menu_page = None;
-        }
-        let current =
-            self.menus.node_menu.clone().and_then(|(id, pos)| self.node_menu_view(&id).map(|view| (id, pos, view)));
+        let current = self
+            .menus
+            .node_menu
+            .open
+            .clone()
+            .and_then(|(id, pos)| self.node_menu_view(&id).map(|view| (id, pos, view)));
         let live = current.is_some();
-        self.menus.node_menu_fade.open = current;
-        let Some(((id, pos, view), fade)) = self.menus.node_menu_fade.state(ui.ctx(), egui::Id::new("node_menu_fade"))
+        self.menus.node_menu.fade.open = current;
+        let Some(((id, pos, view), fade)) = self.menus.node_menu.fade.state(ui.ctx(), egui::Id::new("node_menu_fade"))
         else {
-            // Closed and faded out: the next menu opens on its items, even at the same card and point.
-            self.menus.node_menu_page = None;
+            self.menus.node_menu.page = None;
             return;
         };
         let mut config = node_menu_config(&view, self.headless);
@@ -758,12 +756,11 @@ impl App {
             }
             _ => frozen_draft.as_mut().map(|draft| (draft, false, naming.then_some("Jar name"))),
         };
-        config.page =
-            self.menus.node_menu_page.as_ref().filter(|(pid, ppos, _)| *pid == id && *ppos == pos).map(|p| p.2);
+        config.page = self.menus.node_menu.page;
         let (action, clicked_outside) = build_node_context_menu(ui, pos, fade, live, &config, view.color, rename);
         match action {
-            Some(NodeAction::OpenPage(page)) => self.menus.node_menu_page = Some((id.clone(), pos, page)),
-            Some(NodeAction::MenuBack) => self.menus.node_menu_page = None,
+            Some(NodeAction::OpenPage(page)) => self.menus.node_menu.page = Some(page),
+            Some(NodeAction::MenuBack) => self.menus.node_menu.page = None,
             _ => {}
         }
         // The name field reports the generic rename actions; while naming a jar they mean the jar's. Only Enter
@@ -786,7 +783,7 @@ impl App {
             self.save_session();
         }
         if close {
-            self.menus.node_menu = None;
+            self.menus.node_menu.close();
             // Closed from the keyboard: focus goes back to the card the menu belongs to.
             if !ui.input(|i| i.pointer.any_click()) {
                 ui.memory_mut(|m| m.request_focus(egui::Id::new(("graph_card", id.as_str()))));
@@ -799,7 +796,10 @@ impl App {
     /// field reporting it (a right-click on empty graph, a change of group level, the tab gone) and another node's menu
     /// opening. Enter, Escape and a click away are the field's own (`NewJar`, `CancelNewJar`).
     fn drop_stray_jar_name(&mut self) {
-        if self.naming_jar.as_ref().is_some_and(|(tid, _)| self.menus.node_menu.as_ref().map(|(id, _)| id) != Some(tid))
+        if self
+            .naming_jar
+            .as_ref()
+            .is_some_and(|(tid, _)| self.menus.node_menu.open.as_ref().map(|(id, _)| id) != Some(tid))
         {
             self.naming_jar = None;
         }
