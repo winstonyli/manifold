@@ -635,6 +635,11 @@ pub(crate) fn apply_dark_titlebar(window: &Window) {
 #[cfg(not(target_os = "windows"))]
 pub(crate) fn apply_dark_titlebar(_window: &Window) {}
 
+/// `color` at `alpha` (0-255), its own hue unchanged: a wash or a ring in the card's or the accent's color.
+pub(crate) fn with_alpha(color: egui::Color32, alpha: u8) -> egui::Color32 {
+    egui::Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), alpha)
+}
+
 /// Per-channel linear interpolation between two colors -- `egui`/`epaint`
 /// has no built-in `Color32::lerp`. Used to ease a card's border color
 /// between its resting and hovered tint instead of snapping instantly,

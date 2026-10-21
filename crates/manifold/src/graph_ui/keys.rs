@@ -261,11 +261,7 @@ impl App {
         if let Some(start) = self.interaction.rect_select_start {
             let current = pointer_pos.unwrap_or(start);
             let screen_rect = egui::Rect::from_two_pos(start, current);
-            overlay_painter.rect_filled(
-                screen_rect,
-                0.0,
-                egui::Color32::from_rgba_unmultiplied(ACCENT.r(), ACCENT.g(), ACCENT.b(), 35),
-            );
+            overlay_painter.rect_filled(screen_rect, 0.0, with_alpha(ACCENT, 35));
             overlay_painter.rect_stroke(screen_rect, 0.0, egui::Stroke::new(1.5, ACCENT), egui::StrokeKind::Inside);
             if !secondary_down {
                 self.interaction.rect_select_start = None;

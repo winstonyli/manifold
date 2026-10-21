@@ -1051,11 +1051,7 @@ impl App {
         // reads differently from the focused one when both apply. In the
         // background slot, so it tints the card but not its thumbnail.
         if view.selected {
-            background_shapes.push(egui::Shape::rect_filled(
-                rect,
-                2.0 * inv_zoom,
-                egui::Color32::from_rgba_unmultiplied(ACCENT.r(), ACCENT.g(), ACCENT.b(), 45),
-            ));
+            background_shapes.push(egui::Shape::rect_filled(rect, 2.0 * inv_zoom, with_alpha(ACCENT, 45)));
         }
         ui.painter().set(background, egui::Shape::Vec(background_shapes));
         // An inside stroke painted over the body; every body keeps its
@@ -1087,10 +1083,7 @@ impl App {
             ui.painter().rect_stroke(
                 rect.expand(6.0 * inv_zoom),
                 6.0 * inv_zoom,
-                egui::Stroke::new(
-                    2.5 * inv_zoom,
-                    egui::Color32::from_rgba_unmultiplied(ring.r(), ring.g(), ring.b(), alpha),
-                ),
+                egui::Stroke::new(2.5 * inv_zoom, with_alpha(ring, alpha)),
                 egui::StrokeKind::Outside,
             );
         }
@@ -1379,7 +1372,7 @@ pub(crate) fn card_glow_shapes(
         egui::Shape::rect_filled(
             rect.expand(grow * inv_zoom),
             (base_corner_radius + grow) * inv_zoom,
-            egui::Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), alpha),
+            with_alpha(color, alpha),
         )
     })
 }
