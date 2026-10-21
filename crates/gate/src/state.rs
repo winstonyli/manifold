@@ -188,9 +188,28 @@ impl State {
         Some(out)
     }
 
-    /// The card's center on screen, `"x y"` rounded as python's `%.0f` (`xy(id)`).
+    /// A point on the card, `"x y"` rounded as python's `%.0f` (`xy(id)`): its center, or when another card (a virtual
+    /// trail page, say) is drawn over the center, the first of a few other points that none covers.
     pub fn xy(&self, id: &str) -> Option<String> {
-        let [x, y] = Self::floats::<2>(self.card(id)?, "screen")?;
+        let card = self.card(id)?;
+        let [x, y] = Self::floats::<2>(card, "screen")?;
+        let covered = |x: f64, y: f64| {
+            self.all_cards()
+                .iter()
+                .filter(|c| c["id"] != id)
+                .filter_map(|c| Self::rect_from(&c["rect"]))
+                .any(|r| (r[0]..=r[2]).contains(&x) && (r[1]..=r[3]).contains(&y))
+        };
+        if covered(x, y) {
+            if let Some([l, t, r, b]) = Self::floats::<4>(card, "rect") {
+                let clear = [0.25, 0.75, 0.1, 0.9]
+                    .into_iter()
+                    .flat_map(|fy| [0.5, 0.25, 0.75, 0.1, 0.9].map(|fx| (l + (r - l) * fx, t + (b - t) * fy)));
+                if let Some((x, y)) = clear.into_iter().find(|&(x, y)| !covered(x, y)) {
+                    return Some(self.pt(id, x, y));
+                }
+            }
+        }
         Some(self.pt(id, x, y))
     }
 
@@ -250,6 +269,22 @@ impl State {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A virtual trail-page card can sit over a group card's center: the smoke's double-click there entered nothing
+    /// (SMOKE-GROUP-FLAKE), so `xy` aims at a point no other card covers.
+    #[test]
+    fn xy_avoids_a_card_drawn_over_the_center() {
+        let s = State::parse(
+            r#"{"cards":[
+              {"id":"g","screen":[499.0,338.0],"rect":[442.0,299.0,556.0,377.0]},
+              {"id":"v","virtual":true,"screen":[534.0,333.0],"rect":[477.0,318.0,591.0,349.0]}]}"#,
+        )
+        .unwrap();
+        let at: Vec<f64> = s.xy("g").unwrap().split(' ').map(|v| v.parse().unwrap()).collect();
+        let over = |c: [f64; 4]| at[0] >= c[0] && at[0] <= c[2] && at[1] >= c[1] && at[1] <= c[3];
+        assert!(over([442.0, 299.0, 556.0, 377.0]), "inside the card: {at:?}");
+        assert!(!over([477.0, 318.0, 591.0, 349.0]), "clear of the trail page: {at:?}");
+    }
 
     /// A trimmed real shape: two tabs (one live), a group, a note and a JSON level card.
     fn fixture() -> State {
