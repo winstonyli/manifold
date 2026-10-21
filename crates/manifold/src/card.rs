@@ -1238,7 +1238,7 @@ impl App {
         // A virtual card's source paints it (the entry's own rect: `rect` is the same for it).
         if let Origin::Virtual(name) = entry.origin {
             return match self.virtual_source(name) {
-                Some(source) => source.paint_body(self, ui, entry),
+                Some(source) => source.paint_body(self, ui, pass, entry),
                 None => CardBody { interact_rect: rect, tooltip: None },
             };
         }

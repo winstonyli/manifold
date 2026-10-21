@@ -1,7 +1,7 @@
 //! The trail strip (spec `2026-10-16-trail-strip-design.md`): the focused tab's page tree as virtual cards under the
 //! tab's card, and the painter and geometry the Back/Forward popups share.
 
-use crate::card::{CardBody, DropEffect};
+use crate::card::{CardBody, CardPass, DropEffect, MIN_LABEL_CARD_SCREEN_WIDTH};
 use crate::identity::{Identity, ICON_SIZE_SMALL};
 use crate::level::{CardEntry, EdgeCurve, EdgeKind, LevelEdge, Origin};
 use crate::nav_history::TrailPage;
@@ -70,36 +70,55 @@ pub(crate) fn page_rects(pages: &[TrailPage], sizes: &[egui::Vec2], column_gap: 
     rects.into_iter().map(|r| r.translate(-top_left.to_vec2())).collect()
 }
 
-/// One page's body: the card loop already drew the frame and its border over it, so only a hover fills it and the
-/// cursor's ring is drawn outside the page, clear of that border; the label is clipped to the page, dimmed off the
-/// path.
-pub(crate) fn paint_trail_page(painter: &egui::Painter, rect: egui::Rect, page: &TrailPage, hovered: bool) {
+/// One page's body, under the same convention as every card: shapes are sized in screen points times `pass.inv_zoom`,
+/// and the label is queued on the overlay layer at its real screen size, cut with an ellipsis at the page's inner screen
+/// width and skipped (`labelled` false, or the page narrower than a card label may be) when the graph is zoomed out. The
+/// card loop already drew the frame and its border over the page, so only a hover fills it and the cursor's ring is
+/// drawn outside the page, clear of that border; the label is dimmed off the path.
+pub(crate) fn paint_trail_page(
+    painter: &egui::Painter,
+    pass: &mut CardPass,
+    rect: egui::Rect,
+    page: &TrailPage,
+    hovered: bool,
+    labelled: bool,
+) {
+    let (inv_zoom, zoom_scale) = (pass.inv_zoom, pass.zoom_scale);
+    let radius = (6.0 * inv_zoom).min(255.0);
     if hovered {
-        painter.rect_filled(rect, 6.0, SURFACE_HOVER);
+        painter.rect_filled(rect, radius, SURFACE_HOVER);
     }
     if page.cursor {
-        painter.rect_stroke(rect, 6.0, egui::Stroke::new(2.0, ACCENT), egui::StrokeKind::Outside);
+        painter.rect_stroke(rect, radius, egui::Stroke::new(2.0 * inv_zoom, ACCENT), egui::StrokeKind::Outside);
+    }
+    if !labelled || rect.width() * zoom_scale < MIN_LABEL_CARD_SCREEN_WIDTH {
+        return;
     }
     let color = if page.cursor || page.on_path { TEXT_PRIMARY } else { TEXT_WEAK };
-    // One line, cut with an ellipsis at the page's inner width.
     let mut job = egui::text::LayoutJob::simple_singleline(page.label.clone(), label_font(), color);
     job.wrap = egui::text::TextWrapping {
-        max_width: (rect.width() - LABEL_LEFT - LABEL_INSET).max(0.0),
+        max_width: (rect.width() * zoom_scale - LABEL_LEFT - LABEL_INSET).max(0.0),
         max_rows: 1,
         break_anywhere: true,
         overflow_character: Some('…'),
     };
-    let galley = painter.layout_job(job);
-    let at = rect.left_center() + egui::vec2(LABEL_LEFT, -galley.size().y / 2.0);
-    painter.with_clip_rect(rect.intersect(painter.clip_rect())).galley(at, galley, color);
+    let (origin, screen_height) = (rect.left_top(), rect.height() * zoom_scale);
+    pass.deferred_overlays.push(Box::new(move |overlay_painter, project| {
+        let galley = overlay_painter.layout_job(job);
+        let at = project(origin) + egui::vec2(LABEL_LEFT, (screen_height - galley.size().y) / 2.0);
+        overlay_painter.galley(at, galley, color);
+    }));
 }
 
-/// A page's icon at its left: the page's favicon once fetched, else its host's tile in the tab's engine color.
-fn paint_page_icon(app: &App, ui: &egui::Ui, rect: egui::Rect, tab: &str, url: &str) {
+/// A page's icon at its left: the page's favicon once fetched, else its host's tile in the tab's engine color. A tile's
+/// letter is queued on the overlay layer with the label.
+fn paint_page_icon(app: &App, ui: &egui::Ui, pass: &mut CardPass, rect: egui::Rect, tab: &str, url: &str) {
     let Some(identity) = app.page_identity(tab, url) else { return };
-    let center = rect.left_center() + egui::vec2(LABEL_INSET + ICON_SIZE_SMALL / 2.0, 0.0);
-    if let Some(text) = identity.paint(ui, center, ICON_SIZE_SMALL, 1.0, TEXT_WEAK) {
-        text.draw(ui.painter(), text.center);
+    let center = rect.left_center() + egui::vec2(LABEL_INSET + ICON_SIZE_SMALL / 2.0, 0.0) * pass.inv_zoom;
+    if let Some(text) = identity.paint(ui, center, ICON_SIZE_SMALL, pass.inv_zoom, TEXT_WEAK) {
+        pass.deferred_overlays.push(Box::new(move |overlay_painter, project| {
+            text.draw(overlay_painter, project(text.center));
+        }));
     }
 }
 
@@ -246,12 +265,14 @@ impl VirtualSource for TrailSource {
         app.trail_strip_tab().map_or_else(Vec::new, |tab| trail_edges(app, &tab, rect_of))
     }
 
-    fn paint_body(&self, app: &App, ui: &mut egui::Ui, entry: &CardEntry) -> CardBody {
+    fn paint_body(&self, app: &App, ui: &mut egui::Ui, pass: &mut CardPass, entry: &CardEntry) -> CardBody {
         let page = live_page(app, &entry.id).and_then(|(tab, i)| app.nav_history.get(tab)?.tree().into_iter().nth(i));
         if let Some(page) = &page {
-            paint_trail_page(ui.painter(), entry.rect, page, ui.rect_contains_pointer(entry.rect));
-            if let Some((tab, _)) = live_page(app, &entry.id) {
-                paint_page_icon(app, ui, entry.rect, tab, &page.url);
+            let labelled =
+                !app.graph_lod_simplified && entry.rect.width() * pass.zoom_scale >= MIN_LABEL_CARD_SCREEN_WIDTH;
+            paint_trail_page(ui.painter(), pass, entry.rect, page, ui.rect_contains_pointer(entry.rect), labelled);
+            if let (true, Some((tab, _))) = (labelled, live_page(app, &entry.id)) {
+                paint_page_icon(app, ui, pass, entry.rect, tab, &page.url);
             }
         }
         CardBody { interact_rect: entry.rect, tooltip: page.map(|p| p.url) }
@@ -415,6 +436,72 @@ mod tests {
         );
     }
 
+    /// Runs `f` with a card pass at `zoom` (shapes at `1 / zoom`, text at `zoom` screen scale) and plays the queued
+    /// overlays on `ui`'s painter with the world-to-screen projection `p * zoom`.
+    fn with_pass(ui: &mut egui::Ui, zoom: f32, f: impl FnOnce(&mut egui::Ui, &mut CardPass)) {
+        let mut overlays: crate::graph_ui::DeferredOverlays = Vec::new();
+        let (mut actions, drop_preview, members) = (Vec::new(), None, std::collections::HashMap::new());
+        let mut pass = CardPass {
+            deferred_overlays: &mut overlays,
+            actions: &mut actions,
+            inv_zoom: 1.0 / zoom,
+            zoom_scale: zoom,
+            drop_preview: &drop_preview,
+            pick_targets: &[],
+            connect_target: None,
+            connect_ring: None,
+            show_order: false,
+            order: &[],
+            any_focused: false,
+            members: &members,
+            viewport: egui::Rect::EVERYTHING,
+            pan_target: None,
+            carry: true,
+        };
+        f(ui, &mut pass);
+        for overlay in overlays {
+            overlay(ui.painter(), &|p| p * zoom);
+        }
+    }
+
+    fn text_shapes(output: &egui::FullOutput) -> Vec<(egui::Pos2, f32)> {
+        output
+            .shapes
+            .iter()
+            .filter_map(|s| match &s.shape {
+                egui::Shape::Text(t) => Some((t.pos, t.galley.size().y)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_label_keeps_its_screen_size_at_every_zoom_and_hides_when_the_page_is_too_small_to_read() {
+        let ctx = text_ctx();
+        let page = TrailPage {
+            entry: 0,
+            parent: None,
+            label: "Title".into(),
+            url: String::new(),
+            cursor: false,
+            on_path: false,
+        };
+        let rect = egui::Rect::from_min_size(egui::pos2(100.0, 50.0), PAGE);
+        let heights = |zoom: f32, labelled: bool| {
+            let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+                with_pass(ui, zoom, |ui, pass| paint_trail_page(ui.painter(), pass, rect, &page, false, labelled));
+            });
+            output.textures_delta.clear();
+            text_shapes(&output)
+        };
+        let (half, one, two) = (heights(0.5, true), heights(1.0, true), heights(2.0, true));
+        assert_eq!((half.len(), one.len(), two.len()), (1, 1, 1), "one label each");
+        assert_eq!((half[0].1, two[0].1), (one[0].1, one[0].1), "its height does not follow the zoom");
+        assert_eq!(two[0].0.x, 200.0 + LABEL_LEFT, "it starts a screen-sized inset inside the page's left edge");
+        assert!(heights(1.0, false).is_empty(), "an unlabelled page paints no text");
+        assert!(heights(0.2, true).is_empty(), "a page under the label threshold paints no text");
+    }
+
     #[test]
     fn a_long_url_label_paints_clipped_to_the_page() {
         let ctx = egui::Context::default();
@@ -430,7 +517,7 @@ mod tests {
         let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, PAGE);
         let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
             let painter = ui.painter().with_clip_rect(rect);
-            paint_trail_page(&painter, rect, &page, false);
+            with_pass(ui, 1.0, |_, pass| paint_trail_page(&painter, pass, rect, &page, false, true));
         });
         output.textures_delta.clear();
     }
@@ -526,7 +613,7 @@ mod tests {
         let mut tip = None;
         let ctx = rig.ctx.clone();
         ctx.run_ui(egui::RawInput::default(), |ui| {
-            tip = TrailSource.paint_body(&rig.app, ui, &entry).tooltip;
+            with_pass(ui, 1.0, |ui, pass| tip = TrailSource.paint_body(&rig.app, ui, pass, &entry).tooltip);
         })
         .textures_delta
         .clear();
@@ -602,16 +689,21 @@ mod tests {
         let page =
             TrailPage { entry: 0, parent: None, label: "a".into(), url: String::new(), cursor: true, on_path: true };
         let layer = egui::LayerId::new(egui::Order::Background, egui::Id::new("paint_probe"));
-        paint_trail_page(&ctx.layer_painter(layer), rect, &page, false);
-        let rects = ctx.graphics_mut(|g| {
-            g.entry(layer)
-                .all_entries()
-                .filter_map(|c| match &c.shape {
-                    egui::Shape::Rect(r) => Some((r.fill, r.stroke_kind)),
-                    _ => None,
-                })
-                .collect::<Vec<_>>()
-        });
+        let mut rects = Vec::new();
+        ctx.run_ui(egui::RawInput::default(), |ui| {
+            with_pass(ui, 1.0, |_, pass| paint_trail_page(&ctx.layer_painter(layer), pass, rect, &page, false, true));
+            rects = ctx.graphics_mut(|g| {
+                g.entry(layer)
+                    .all_entries()
+                    .filter_map(|c| match &c.shape {
+                        egui::Shape::Rect(r) => Some((r.fill, r.stroke_kind)),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+            });
+        })
+        .textures_delta
+        .clear();
         assert!(rects.iter().all(|(fill, _)| *fill == egui::Color32::TRANSPARENT), "no fill over the card frame");
         assert!(rects.iter().any(|(_, kind)| *kind == egui::StrokeKind::Outside), "the cursor ring clears its border");
     }

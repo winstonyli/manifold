@@ -2,7 +2,7 @@
 //! supplies a level's extra `CardEntry`s, which draw after the stored ones, so on top. The trait grows with the plan:
 //! each handler is added by the task that first calls it (the pre-commit clippy rejects dead code).
 
-use crate::card::{CardBody, DropEffect};
+use crate::card::{CardBody, CardPass, DropEffect};
 use crate::level::{CardEntry, LevelEdge, Origin};
 use crate::{App, GraphAction};
 use std::rc::Rc;
@@ -20,7 +20,7 @@ pub(crate) trait VirtualSource {
     /// The edges this source adds to the level; `rect_of` gives any entry's rect on the level (`None` off it).
     fn edges(&self, app: &App, rect_of: &dyn Fn(&str) -> Option<egui::Rect>) -> Vec<LevelEdge>;
     /// Paints `entry`'s content inside the shared card frame; the body says which part of the card takes the pointer.
-    fn paint_body(&self, app: &App, ui: &mut egui::Ui, entry: &CardEntry) -> CardBody;
+    fn paint_body(&self, app: &App, ui: &mut egui::Ui, pass: &mut CardPass, entry: &CardEntry) -> CardBody;
     /// A click on `entry` (the shared card loop calls it for every virtual card, whatever its abilities).
     fn on_click(&self, app: &mut App, entry: &CardEntry) -> Option<GraphAction>;
     /// A right-click on `entry` at screen point `at`, only when its kind grants `menu`.
@@ -147,7 +147,7 @@ pub(crate) mod fake {
             }]
         }
 
-        fn paint_body(&self, _app: &App, _ui: &mut egui::Ui, entry: &CardEntry) -> CardBody {
+        fn paint_body(&self, _app: &App, _ui: &mut egui::Ui, _pass: &mut CardPass, entry: &CardEntry) -> CardBody {
             self.calls.borrow_mut().push("paint_body".to_string());
             CardBody { interact_rect: entry.rect, tooltip: None }
         }
@@ -597,7 +597,7 @@ mod reach_tests {
             fn edges(&self, _: &App, _: &dyn Fn(&str) -> Option<egui::Rect>) -> Vec<LevelEdge> {
                 Vec::new()
             }
-            fn paint_body(&self, _: &App, _: &mut egui::Ui, entry: &CardEntry) -> CardBody {
+            fn paint_body(&self, _: &App, _: &mut egui::Ui, _: &mut CardPass, entry: &CardEntry) -> CardBody {
                 CardBody { interact_rect: entry.rect, tooltip: None }
             }
             fn on_click(&self, _: &mut App, _: &CardEntry) -> Option<GraphAction> {
