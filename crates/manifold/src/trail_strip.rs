@@ -724,17 +724,42 @@ mod tests {
         i.width().max(0.0) * i.height().max(0.0)
     }
 
-    /// The part of each text shape reading `text` that shows: its bounds cut by its clip, and its galley height.
-    fn shown_text(shapes: &[egui::epaint::ClippedShape], text: &str) -> Vec<(egui::Rect, f32)> {
+    fn is_drop_hint(shown: &str, target: &str) -> bool {
+        use crate::card::DropEffect::*;
+        [Merge, Join, GroupWith, Reparent].iter().any(|effect| shown == effect.hint(target))
+    }
+
+    /// Each text shape reading `text`, as its index in `shapes` (the paint order), the part of it that shows (its
+    /// bounds cut by its clip) and its galley height. The drag's drop hint ("Move into <text>") is left out: it is
+    /// drawn above every card on purpose.
+    fn shown_text_at(shapes: &[egui::epaint::ClippedShape], text: &str) -> Vec<(usize, egui::Rect, f32)> {
         shapes
             .iter()
-            .filter_map(|s| match &s.shape {
-                egui::Shape::Text(t) if t.galley.text().contains(text) => {
-                    Some((t.visual_bounding_rect().intersect(s.clip_rect), t.galley.size().y))
+            .enumerate()
+            .filter_map(|(k, s)| match &s.shape {
+                egui::Shape::Text(t) if t.galley.text().contains(text) && !is_drop_hint(t.galley.text(), text) => {
+                    Some((k, t.visual_bounding_rect().intersect(s.clip_rect), t.galley.size().y))
                 }
                 _ => None,
             })
             .collect()
+    }
+
+    /// `shown_text_at` without the paint order.
+    fn shown_text(shapes: &[egui::epaint::ClippedShape], text: &str) -> Vec<(egui::Rect, f32)> {
+        shown_text_at(shapes, text).into_iter().map(|(_, bounds, height)| (bounds, height)).collect()
+    }
+
+    /// Whether an opaque rectangle painted after shape `from` holds all of `bounds`, so what is there is not seen.
+    fn painted_over(shapes: &[egui::epaint::ClippedShape], from: usize, bounds: egui::Rect) -> bool {
+        fn opaque_over(shape: &egui::Shape, bounds: egui::Rect) -> bool {
+            match shape {
+                egui::Shape::Rect(r) => r.fill.a() == 255 && r.rect.contains_rect(bounds),
+                egui::Shape::Vec(inner) => inner.iter().any(|s| opaque_over(s, bounds)),
+                _ => false,
+            }
+        }
+        shapes[from + 1..].iter().any(|s| opaque_over(&s.shape, bounds.intersect(s.clip_rect)))
     }
 
     /// The bug reported 2026-10-21 (a card's title drawn across the strip over it, and the strip's own text not scaling
@@ -794,15 +819,15 @@ mod tests {
         }
     }
 
-    /// The forked trail's rig with six cards (tab, download and group in turn) scattered around the strip's first page by
+    /// The forked trail's rig with nine cards (tab, download, group, note, image and PDF in turn) scattered around the strip's first page by
     /// `rng`, and a random one selected half the time; each card's id maps to the title its text carries.
     fn random_layout(rng: &mut Lcg) -> (Rig, std::collections::HashMap<String, String>) {
         let mut rig = forked();
         let anchor = pages(&rig)[0].rect.center().to_vec2();
         let mut titles = std::collections::HashMap::new();
-        for n in 0..6 {
+        for n in 0..9 {
             let at = anchor + egui::vec2(rng.between(-250.0, 450.0), rng.between(-200.0, 250.0));
-            let (title, id) = match n % 3 {
+            let (title, id) = match n % 6 {
                 0 => {
                     let (id, title) = (rig.app.alloc_node_id(), format!("CARD{n}"));
                     let tab = crate::session_sync::tests::sleeping_tab("https://stress.test/", &title);
@@ -821,16 +846,46 @@ mod tests {
                     rig.app.insert_placeholder_node(id.clone(), at, crate::store::model::Kind::Download, download);
                     (title, id)
                 }
-                _ => {
+                2 => {
                     let title = format!("GROUP{n}");
                     let placement = crate::fetched::Placement { group: None, pos: at };
                     (title.clone(), rig.app.place_group(None, &title, placement))
+                }
+                3 => {
+                    let (id, title) = (rig.app.alloc_node_id(), format!("NOTE{n}"));
+                    let note = crate::Runtime::Note(crate::node::NotePayload { text: title.clone(), editing: false });
+                    rig.app.insert_placeholder_node(id.clone(), at, crate::store::model::Kind::Note, note);
+                    (title, id)
+                }
+                4 => {
+                    let (id, title) = (rig.app.alloc_node_id(), format!("IMG{n}"));
+                    let image =
+                        crate::node::ImagePayload { path: format!("{title}.png"), width: 0, height: 0, error: None };
+                    rig.app.insert_placeholder_node(
+                        id.clone(),
+                        at,
+                        crate::store::model::Kind::Image,
+                        crate::Runtime::Image(image),
+                    );
+                    (title, id)
+                }
+                _ => {
+                    let (id, title) = (rig.app.alloc_node_id(), format!("PDF{n}"));
+                    let pdf = crate::node::PdfPayload { path: format!("{title}.pdf"), outcome: None };
+                    rig.app.insert_placeholder_node(
+                        id.clone(),
+                        at,
+                        crate::store::model::Kind::Pdf,
+                        crate::Runtime::Pdf(pdf),
+                    );
+                    (title, id)
                 }
             };
             titles.insert(id, title);
         }
         if rng.next() < 0.5 {
-            let ids: Vec<_> = titles.keys().cloned().collect();
+            let mut ids: Vec<_> = titles.keys().cloned().collect();
+            ids.sort_by_key(|id| titles[id].clone());
             rig.app.select_only(&ids[(rng.next() * ids.len() as f32) as usize % ids.len()]);
         }
         (rig, titles)
@@ -859,11 +914,15 @@ mod tests {
         let mut checked = 0;
         for (i, lower) in order.iter().enumerate() {
             let Some(title) = titles.get(&lower.id) else { continue };
-            for (bounds, _) in shown_text(shapes, title) {
+            for (at, bounds, _) in shown_text_at(shapes, title) {
                 checked += 1;
                 kinds.insert(title[..4].to_string());
+                if painted_over(shapes, at, bounds) {
+                    continue;
+                }
                 if let Some(higher) = order[i + 1..].iter().find(|h| shared_area(bounds, screen(h)) >= 1.0) {
-                    return Err(format!("{title} shows through {} ({bounds:?} over {:?})", higher.id, screen(higher)));
+                    let over = titles.get(&higher.id).map_or(higher.id.as_str(), String::as_str);
+                    return Err(format!("{title} shows through {over} ({bounds:?} over {:?})", screen(higher)));
                 }
             }
         }
@@ -882,7 +941,7 @@ mod tests {
     }
 
     /// Random layouts at random zooms: no card's text shows inside a card drawn after it (the strip's pages
-    /// included), and the strip's labels keep one on-screen height at every zoom.
+    /// included; text painted under an opaque fill does not show), and the strip's labels keep one on-screen height at every zoom.
     #[test]
     fn random_layouts_never_show_a_cards_text_through_a_later_card_or_rescale_the_strip_label() {
         let (mut checked, mut label_heights, mut kinds) = (0, Vec::new(), std::collections::HashSet::new());
@@ -898,7 +957,7 @@ mod tests {
             }
             label_heights.extend(strip_label_heights(&rig, &shapes));
         }
-        assert_eq!(kinds.len(), 3, "every kind of card had text on screen to check: {kinds:?}");
+        assert_eq!(kinds.len(), 6, "every kind of card had text on screen to check: {kinds:?}");
         assert!(checked > 20, "the layouts must put titles on screen to mean anything: {checked}");
         assert!(label_heights.len() > 10, "the strip label must show in enough layouts: {}", label_heights.len());
         let first = label_heights[0];
@@ -920,7 +979,9 @@ mod tests {
             rig.app.pending_graph_zoom = Some(zoom);
             settled_shapes(&mut rig);
             let ids: Vec<String> = if seed % 2 == 0 {
-                titles.keys().cloned().collect()
+                let mut ids: Vec<String> = titles.keys().cloned().collect();
+                ids.sort_by_key(|id| titles[id].clone());
+                ids
             } else {
                 pages(&rig).into_iter().map(|p| p.id).collect()
             };
@@ -931,8 +992,8 @@ mod tests {
             let shapes = settled_shapes(&mut rig);
             drags += usize::from(rig.app.interaction.dragging.is_some());
             match titles_behind_later_cards(&rig, &shapes, &titles, &mut kinds) {
-                Ok(n) => checked += n,
                 Err(why) => panic!("seed {seed}, dragging {grabbed} at zoom {zoom}: {why}"),
+                Ok(n) => checked += n,
             }
             let heights = strip_label_heights(&rig, &shapes);
             assert!(heights.windows(2).all(|w| w[0] == w[1]), "seed {seed}: strip label heights differ: {heights:?}");
