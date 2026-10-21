@@ -3,7 +3,7 @@
 //! served by this process (every page titled by its path). From A, NEWTAB opens tab B (parented to the focused tab) at
 //! the home page /b1; B goes to /b2 and /b3. Back twice walks B's pages, a third Back focuses A (opened-from, and A
 //! records `left_to`), Forward on A returns to B, and a new page from /b1 makes a sibling of /b2 (EXPORTSTATE
-//! `trail`). In Graph view the focused tab's trail is drawn as one strip card per page, and a screenshot there (at 60%) and one in Tab view each hold the engine-colored icon tiles (`engine_pixels`). A page that calls history.back() itself must read as a Back. `ENGINE=servo` (etc.) tests another engine; for WebKit add `SITE_HOST` (http.rs).
+//! `trail`). In Graph view the focused tab's trail is drawn as one strip card per page, and a screenshot there (at 60%) and one in Tab view each hold the engine-colored icon tiles (`engine_pixels`). A real press-and-drag of tab A's card over the strip's second page is held for a screenshot (`drag-over-strip.png` in `RUN_DIR`) and released back. A page that calls history.back() itself must read as a Back. `ENGINE=servo` (etc.) tests another engine; for WebKit add `SITE_HOST` (http.rs).
 //!
 //! A failing check does not stop the run; a runner error (a timeout, a launch failure) prints an `ERROR:` line, counts
 //! as a failure and ends the run early. The instance is killed on every exit path (`Instance`'s Drop plus the job).
@@ -108,6 +108,65 @@ fn field<'a>(s: &'a State, id: &str, key: &str) -> Option<&'a Value> {
     trail_of(s, id).map(|t| &t[key])
 }
 
+/// A card's screen rect (`[left, top, right, bottom]`) from EXPORTSTATE.
+fn rect_of(card: &Value) -> Option<[f64; 4]> {
+    let r = card["rect"].as_array()?;
+    Some([r.first()?.as_f64()?, r.get(1)?.as_f64()?, r.get(2)?.as_f64()?, r.get(3)?.as_f64()?])
+}
+
+/// Whether two `[left, top, right, bottom]` rects share area.
+fn overlap(a: [f64; 4], b: [f64; 4]) -> bool {
+    a[0] < b[2] && b[0] < a[2] && a[1] < b[3] && b[1] < a[3]
+}
+
+/// Presses tab `card`'s card and drags it with real pointer moves until it lies over the strip's second page, holds it
+/// there for a frame and a screenshot (kept in `RUN_DIR` for a look at the layering), then moves it back and lets go.
+fn drag_over_strip(inst: &mut Instance, card: &str) -> io::Result<()> {
+    inst.send("GRAPHZOOM 100")?;
+    inst.send("WAITIDLE")?;
+    let is_strip = |c: &Value| c["virtual"].as_str() == Some("trail");
+    let s = inst.export_until("drag-pre", |s| {
+        s.all_cards().iter().filter(|c| is_strip(c)).count() == 4 && s.all_cards().iter().any(|c| c["id"] == card)
+    })?;
+    let (Some(from), Some(page)) = (
+        s.all_cards().iter().find(|c| c["id"] == card).and_then(rect_of),
+        s.all_cards().iter().filter(|c| is_strip(c)).nth(1).and_then(rect_of),
+    ) else {
+        return Err(bad("the card or the strip's second page has no screen rect".to_string()));
+    };
+    let (w, h) = (s.0["window"][0].as_f64().unwrap_or(0.0), s.0["window"][1].as_f64().unwrap_or(0.0));
+    let centre = |r: [f64; 4]| ((r[0] + r[2]) / 2.0, (r[1] + r[3]) / 2.0);
+    let (start, end) = (centre(from), centre(page));
+    if !check_is("the card to drag starts on screen", true, (0.0..w).contains(&start.0) && (0.0..h).contains(&start.1))
+    {
+        return Ok(());
+    }
+    let at = |f: f64| format!("{:.0} {:.0}", start.0 + (end.0 - start.0) * f, start.1 + (end.1 - start.1) * f);
+    inst.send(&format!("MOUSEMOVE {}", at(0.0)))?;
+    inst.send(&format!("MOUSEMOVE {}", at(0.0)))?;
+    inst.send(&format!("MOUSEDOWN {}", at(0.0)))?;
+    for i in 1..=8 {
+        inst.send(&format!("MOUSEMOVE {}", at(f64::from(i) / 8.0)))?;
+    }
+    inst.send("WAITIDLE")?;
+    inst.send(&format!("MOUSEMOVE {}", at(1.0)))?;
+    let s = inst.export_until("drag-held", |s| s.0["dragging"].as_str() == Some(card))?;
+    check_is("the press dragged the card", Some(card), s.0["dragging"].as_str());
+    let held = s.all_cards().iter().find(|c| c["id"] == card).and_then(rect_of);
+    let page = s.all_cards().iter().filter(|c| is_strip(c)).nth(1).and_then(rect_of);
+    check_is("the held card lies over the strip's page", Some(true), held.zip(page).map(|(a, b)| overlap(a, b)));
+    if let Ok(png) = inst.screenshot("drag-over-strip") {
+        if let Some(dir) = std::env::var_os("RUN_DIR") {
+            let _ = std::fs::copy(png, std::path::Path::new(&dir).join("drag-over-strip.png"));
+        }
+    }
+    for i in (0..=8).rev() {
+        inst.send(&format!("MOUSEMOVE {}", at(f64::from(i) / 8.0)))?;
+    }
+    inst.send(&format!("MOUSEUP {}", at(0.0)))?;
+    inst.send("WAITIDLE")
+}
+
 fn drive(run: &Run, sec: &mut Option<Section>) -> io::Result<()> {
     let mut next = |name: &str| *sec = sec.take().map(|s| s.next(name));
     let at = |s: &State, path: &str| s.focused_url().ends_with(path);
@@ -201,6 +260,8 @@ fn drive(run: &Run, sec: &mut Option<Section>) -> io::Result<()> {
             }
         }
     }
+    next("drag");
+    drag_over_strip(&mut inst, &a)?;
     // At 60% the cards are short: each tab and each page leads with the tile in the engine's color.
     inst.send("GRAPHZOOM 60")?;
     inst.send("WAITIDLE")?;
