@@ -770,6 +770,23 @@ pub(crate) fn stored(app: &App, node: &str, no: u32) -> FieldValue {
     app.doc.journal.as_ref().unwrap().doc().nodes[&node.parse().unwrap()].get(no)
 }
 
+pub(crate) fn add_note(app: &mut App, text: &str) -> String {
+    add(app, Kind::Note, Runtime::Note(NotePayload { text: text.into(), editing: false }))
+}
+
+pub(crate) fn closed_ids(app: &App) -> Vec<String> {
+    app.doc.journal.as_ref().unwrap().doc().closed_roots().into_iter().map(|(n, _)| n.to_string()).collect()
+}
+
+/// A group with one kept note inside, saved.
+pub(crate) fn group_with_note(app: &mut App) -> (String, String) {
+    let g = add_group(app, "G");
+    let inner = add_note(app, "kept");
+    app.edit_group(&inner, Some(g.clone()));
+    assert!(app.save_session());
+    (g, inner)
+}
+
 /// Another replica sets `closed` on `node` (true closes, false reopens).
 fn remote_close(other: &mut Journal, node: &str, closed: bool) {
     remote_set(other, node, field::CLOSED, FieldValue::Replica(if closed { 99 } else { 0 }));

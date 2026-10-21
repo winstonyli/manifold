@@ -186,37 +186,4 @@ impl App {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn fold(tag: &str) -> UndoKind {
-        UndoKind::Fold(vec![(tag.to_owned(), None)])
-    }
-
-    /// A new record empties `redo`; undoing and redoing only move an entry between the lists.
-    #[test]
-    fn a_record_empties_redo_but_a_step_does_not() {
-        let mut h = UndoHistory::default();
-        let a = h.record("a".into(), fold("a"));
-        let b = h.record("b".into(), fold("b"));
-        let entry = h.take(None, false).expect("newest");
-        assert_eq!(entry.serial, b);
-        h.put(entry, true);
-        assert_eq!(h.redo.len(), 1);
-        let entry = h.take(Some(a), false).expect("by serial");
-        h.put(entry, true);
-        assert_eq!(h.redo.len(), 2, "a second undo keeps the first redo");
-        h.record("c".into(), fold("c"));
-        assert!(h.redo.is_empty(), "a fresh record clears redo");
-    }
-
-    /// The oldest entry goes past the cap, and serials are never reused.
-    #[test]
-    fn the_history_is_capped_and_serials_never_repeat() {
-        let mut h = UndoHistory::default();
-        let serials: Vec<u64> = (0..UNDO_DEPTH + 3).map(|i| h.record(i.to_string(), fold("x"))).collect();
-        assert_eq!(h.undo.len(), UNDO_DEPTH);
-        assert!(h.take(Some(serials[0]), false).is_none(), "the oldest is gone");
-        assert!(serials.windows(2).all(|w| w[0] < w[1]));
-    }
-}
+mod tests;

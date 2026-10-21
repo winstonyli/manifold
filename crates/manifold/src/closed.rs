@@ -231,25 +231,19 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session_sync::tests::{add, add_group, app_on, stored};
+
+    use crate::session_sync::tests::{add, add_group, add_note, app_on, closed_ids, group_with_note, stored};
+
     use crate::store::model::{field, FieldValue, Kind, NodeId};
-
-    fn note(app: &mut App, text: &str) -> String {
-        add(app, Kind::Note, Runtime::Note(NotePayload { text: text.into(), editing: false }))
-    }
-
-    fn closed_ids(app: &App) -> Vec<String> {
-        app.doc.journal.as_ref().unwrap().doc().closed_roots().into_iter().map(|(n, _)| n.to_string()).collect()
-    }
 
     #[test]
     fn close_flags_the_root_hides_the_subtree_and_reopen_brings_the_same_ids_back() {
         let path = store::testutil::temp_dir("closed-same-ids").join("session.mnf");
         let mut app = app_on(&path, 1);
         let g = add_group(&mut app, "G");
-        let inner = note(&mut app, "kept");
+        let inner = add_note(&mut app, "kept");
         app.edit_group(&inner, Some(g.clone()));
-        let outside = note(&mut app, "outside");
+        let outside = add_note(&mut app, "outside");
         let _link = app.create_link(&inner, &outside);
         assert!(app.save_session());
         let link: Vec<NodeId> = app.doc.mirror.link_ids().collect();
@@ -269,7 +263,7 @@ mod tests {
     fn a_close_flushes_typed_text_and_the_drawn_position() {
         let path = store::testutil::temp_dir("closed-flush").join("session.mnf");
         let mut app = app_on(&path, 1);
-        let n = note(&mut app, "v1");
+        let n = add_note(&mut app, "v1");
         assert!(app.save_session());
         app.nodes.get_mut(&n).unwrap().as_note_mut().unwrap().text = "typed".into();
         app.snap_layout(&n, egui::vec2(120.0, 80.0));
@@ -398,9 +392,9 @@ mod tests {
         let path = store::testutil::temp_dir("closed-blank").join("session.mnf");
         let mut app = app_on(&path, 1);
         let g = add_group(&mut app, "G");
-        let blank = note(&mut app, "  ");
+        let blank = add_note(&mut app, "  ");
         app.edit_group(&blank, Some(g.clone()));
-        let lone = note(&mut app, "");
+        let lone = add_note(&mut app, "");
         assert!(app.save_session());
         app.close_node(&g);
         let doc = app.doc.journal.as_ref().unwrap().doc();
@@ -434,9 +428,9 @@ mod tests {
         let path = store::testutil::temp_dir("closed-evict").join("session.mnf");
         let mut app = app_on(&path, 1);
         let g = add_group(&mut app, "Oldest");
-        let nested = note(&mut app, "nested");
+        let nested = add_note(&mut app, "nested");
         app.edit_group(&nested, Some(g.clone()));
-        let rest: Vec<String> = (0..MAX_CLOSED).map(|i| note(&mut app, &format!("n{i}"))).collect();
+        let rest: Vec<String> = (0..MAX_CLOSED).map(|i| add_note(&mut app, &format!("n{i}"))).collect();
         assert!(app.save_session());
         app.close_node(&nested); // a closed node nested in the oldest root: evicted with it
         app.close_node(&g);
@@ -453,10 +447,10 @@ mod tests {
         let path = store::testutil::temp_dir("closed-restamp").join("session.mnf");
         let mut app = app_on(&path, 1);
         let g = add_group(&mut app, "G");
-        let (a, b) = (note(&mut app, "a"), note(&mut app, "b"));
+        let (a, b) = (add_note(&mut app, "a"), add_note(&mut app, "b"));
         app.edit_group(&a, Some(g.clone()));
         app.edit_group(&b, Some(g.clone()));
-        let other = note(&mut app, "other");
+        let other = add_note(&mut app, "other");
         assert!(app.save_session());
         app.close_node(&a);
         app.close_node(&b);
@@ -470,7 +464,7 @@ mod tests {
     fn ctrl_shift_t_skips_another_replicas_close() {
         let path = store::testutil::temp_dir("closed-mine").join("session.mnf");
         let mut app = app_on(&path, 1);
-        let (mine, theirs) = (note(&mut app, "mine"), note(&mut app, "theirs"));
+        let (mine, theirs) = (add_note(&mut app, "mine"), add_note(&mut app, "theirs"));
         assert!(app.save_session());
         app.close_node(&mine);
         let mut other = store::journal::Journal::open(&path, store::model::ActorId(2)).unwrap();
@@ -485,7 +479,7 @@ mod tests {
     fn a_replica_that_only_receives_closes_evicts_and_agrees() {
         let path = store::testutil::temp_dir("closed-remote-evict").join("session.mnf");
         let mut a = app_on(&path, 1);
-        let notes: Vec<String> = (0..=MAX_CLOSED).map(|i| note(&mut a, &format!("n{i}"))).collect();
+        let notes: Vec<String> = (0..=MAX_CLOSED).map(|i| add_note(&mut a, &format!("n{i}"))).collect();
         assert!(a.save_session());
         // Another replica closes all MAX_CLOSED + 1 notes; A closes none, it only receives them.
         let mut other = store::journal::Journal::open(&path, store::model::ActorId(2)).unwrap();
@@ -506,7 +500,7 @@ mod tests {
     fn a_reopen_concurrent_with_its_eviction_loses() {
         let path = store::testutil::temp_dir("closed-reopen-vs-evict").join("session.mnf");
         let mut a = app_on(&path, 1);
-        let notes: Vec<String> = (0..=MAX_CLOSED).map(|i| note(&mut a, &format!("n{i}"))).collect();
+        let notes: Vec<String> = (0..=MAX_CLOSED).map(|i| add_note(&mut a, &format!("n{i}"))).collect();
         assert!(a.save_session());
         for n in &notes[..MAX_CLOSED] {
             a.close_node(n);
@@ -563,7 +557,7 @@ mod tests {
     fn a_close_survives_an_app_restart_with_the_same_replica_id_and_the_shortcut_finds_it() {
         let path = store::testutil::temp_dir("closed-restart").join("session.mnf");
         let mut first = app_on(&path, 1);
-        let (closed, kept) = (note(&mut first, "closed"), note(&mut first, "kept"));
+        let (closed, kept) = (add_note(&mut first, "closed"), add_note(&mut first, "kept"));
         assert!(first.save_session());
         first.close_node(&closed);
         assert_eq!(stored(&first, &closed, field::CLOSED), FieldValue::Replica(first.doc.replica));
@@ -594,7 +588,7 @@ mod tests {
         let path = store::testutil::temp_dir("closed-restamp-closer").join("session.mnf");
         let mut app = app_on(&path, 1);
         let g = add_group(&mut app, "G");
-        let (a, b) = (note(&mut app, "a"), note(&mut app, "b"));
+        let (a, b) = (add_note(&mut app, "a"), add_note(&mut app, "b"));
         app.edit_group(&a, Some(g.clone()));
         app.edit_group(&b, Some(g.clone()));
         assert!(app.save_session());
@@ -615,7 +609,7 @@ mod tests {
     fn a_reopen_is_not_evicted_by_a_remote_close_arriving_in_the_same_save() {
         let path = store::testutil::temp_dir("closed-reopen-remote-evict").join("session.mnf");
         let mut app = app_on(&path, 1);
-        let notes: Vec<String> = (0..=MAX_CLOSED).map(|i| note(&mut app, &format!("n{i}"))).collect();
+        let notes: Vec<String> = (0..=MAX_CLOSED).map(|i| add_note(&mut app, &format!("n{i}"))).collect();
         assert!(app.save_session());
         for n in &notes[..MAX_CLOSED] {
             app.close_node(n);
@@ -638,9 +632,9 @@ mod tests {
     fn a_close_aborts_when_the_flush_of_pending_creates_fails() {
         let path = store::testutil::temp_dir("closed-flush-fails").join("session.mnf");
         let mut app = app_on(&path, 1);
-        let keep = note(&mut app, "other");
+        let keep = add_note(&mut app, "other");
         assert!(app.save_session());
-        let fresh = note(&mut app, "fresh");
+        let fresh = add_note(&mut app, "fresh");
         let fresh_id: NodeId = fresh.parse().unwrap();
         assert_eq!(
             app.doc.writes.life(fresh_id),
@@ -666,15 +660,6 @@ mod tests {
         let doc = app.doc.journal.as_ref().unwrap().doc();
         assert!(doc.nodes[&fresh_id].is_live() && !doc.nodes[&fresh_id].closed());
         assert!(app.nodes.contains_key(&keep));
-    }
-
-    /// A group with one kept note inside, saved.
-    fn group_with_note(app: &mut App) -> (String, String) {
-        let g = add_group(app, "G");
-        let inner = note(app, "kept");
-        app.edit_group(&inner, Some(g.clone()));
-        assert!(app.save_session());
-        (g, inner)
     }
 
     /// The group card's close (the ✕, Del and a middle-click all resolve to `CardControl::Close.action()`) closes the
@@ -704,270 +689,12 @@ mod tests {
         );
     }
 
-    /// "Dissolve Group" closes the emptied group holding its members' ids: Undo (or the Recently Closed row) reopens
-    /// the same group, with its name and color, around the members still at its level.
-    #[test]
-    fn dissolve_group_is_undone_by_reopening_the_same_group() {
-        use crate::node_menu::NodeAction;
-        let ctx = egui::Context::default();
-        let color = session_sync::color_value(Some(egui::Color32::from_rgb(1, 2, 3)));
-        for from_toast in [true, false] {
-            let path = store::testutil::temp_dir("dissolve-undo").join("session.mnf");
-            let mut app = app_on(&path, 1);
-            let (g, inner) = group_with_note(&mut app);
-            let moved_on = note(&mut app, "moved on");
-            app.edit_group(&moved_on, Some(g.clone()));
-            app.edit_name(&g, "Research");
-            app.edit_field(&g, field::COLOR, color.clone());
-            assert!(app.save_session());
-            app.apply_node_action(&ctx, &g, NodeAction::Dissolve);
-            let (message, serial, _) = app.toasts.undo.clone().expect("the dissolve offers an undo");
-            assert!(message.starts_with("Dissolved"), "{message}");
-            // A member the user put elsewhere meanwhile stays there.
-            let elsewhere = add_group(&mut app, "Elsewhere");
-            app.edit_group(&moved_on, Some(elsewhere.clone()));
-            if from_toast {
-                app.step_history(Some(serial), false);
-            } else {
-                app.reopen_node(g.parse().unwrap());
-            }
-            assert_eq!(app.doc.mirror.group(&inner), Some(g.as_str()), "back in the same group (toast: {from_toast})");
-            assert_eq!(app.doc.mirror.group(&moved_on), Some(elsewhere.as_str()));
-            assert_eq!(app.doc.mirror.name(&g), "Research");
-            assert_eq!(app.doc.mirror.get(&g, field::COLOR), color);
-            assert!(closed_ids(&app).is_empty());
-            assert_eq!(stored(&app, &g, field::HELD), FieldValue::Str(String::new()), "forgotten once restored");
-        }
-    }
-
-    /// A merge closes the source group holding its members: Undo reopens it around them, and a member the user moved
-    /// on stays where it went. The target keeps the members that stay.
-    #[test]
-    fn a_merge_is_undone_by_reopening_the_source_group() {
-        let path = store::testutil::temp_dir("merge-undo").join("session.mnf");
-        let mut app = app_on(&path, 1);
-        let (source, kept) = group_with_note(&mut app);
-        let (_, left) = group_with_note(&mut app);
-        app.edit_group(&left, Some(source.clone()));
-        let target = add_group(&mut app, "T");
-        assert!(app.save_session());
-        app.merge_groups(&source, &target);
-        assert_eq!(app.doc.mirror.group(&kept), Some(target.as_str()));
-        assert!(closed_ids(&app).contains(&source));
-        let (message, serial, _) = app.toasts.undo.clone().expect("the merge offers an undo");
-        assert!(message.starts_with("Merged"), "{message}");
-        app.edit_group(&left, None);
-        app.step_history(Some(serial), false);
-        assert_eq!(app.doc.mirror.group(&kept), Some(source.as_str()), "back in the source group");
-        assert_eq!(app.doc.mirror.group(&left), None, "a member moved on stays");
-        assert!(app.nodes.contains_key(&source) && closed_ids(&app).is_empty());
-        app.step_history(None, true);
-        assert_eq!(app.doc.mirror.group(&kept), Some(target.as_str()), "redo merges again");
-        assert!(closed_ids(&app).contains(&source));
-    }
-
-    /// Ungroup All offers one Undo for every group it dissolved.
-    #[test]
-    fn ungroup_all_is_undone_in_one_step() {
-        let path = store::testutil::temp_dir("ungroup-undo").join("session.mnf");
-        let mut app = app_on(&path, 1);
-        let (g1, n1) = group_with_note(&mut app);
-        let (g2, n2) = group_with_note(&mut app);
-        app.ungroup(&[g1.clone(), g2.clone()]);
-        assert!(app.doc.mirror.group(&n1).is_none() && app.doc.mirror.group(&n2).is_none());
-        let (message, serial, _) = app.toasts.undo.clone().expect("an undo");
-        assert_eq!(message, "Ungrouped 2 groups");
-        app.step_history(Some(serial), false);
-        assert_eq!(app.doc.mirror.group(&n1), Some(g1.as_str()));
-        assert_eq!(app.doc.mirror.group(&n2), Some(g2.as_str()));
-        app.step_history(None, true);
-        assert!(app.doc.mirror.group(&n1).is_none() && app.doc.mirror.group(&n2).is_none(), "redo ungroups both again");
-    }
-
-    /// Reopening a folded group from Recently Closed goes round the history, so there is nothing to redo.
-    #[test]
-    fn a_reopen_from_recently_closed_leaves_nothing_to_redo() {
-        let path = store::testutil::temp_dir("redo-after-reopen").join("session.mnf");
-        let mut app = app_on(&path, 1);
-        let (g, inner) = group_with_note(&mut app);
-        app.ungroup(std::slice::from_ref(&g));
-        app.reopen_node(g.parse().unwrap());
-        assert_eq!(app.doc.mirror.group(&inner), Some(g.as_str()));
-        app.step_history(None, true);
-        assert_eq!(
-            app.doc.mirror.group(&inner),
-            Some(g.as_str()),
-            "nothing to redo: the reopen did not go through the history"
-        );
-    }
-
-    /// Ctrl+Z on a fold whose group is already reopened changes nothing and does not offer a redo.
-    #[test]
-    fn an_undo_of_an_already_reopened_fold_does_nothing() {
-        let path = store::testutil::temp_dir("undo-after-reopen").join("session.mnf");
-        let mut app = app_on(&path, 1);
-        let (g, inner) = group_with_note(&mut app);
-        app.ungroup(std::slice::from_ref(&g));
-        app.reopen_node(g.parse().unwrap());
-        app.step_history(None, false);
-        app.step_history(None, true);
-        assert_eq!(app.doc.mirror.group(&inner), Some(g.as_str()), "the group was not dissolved again");
-    }
-
-    /// Join: a tab dropped into a group is back at the top level, at its old position, by Undo; Redo puts it in again.
-    #[test]
-    fn a_join_is_undone_and_redone() {
-        let path = store::testutil::temp_dir("join-undo").join("session.mnf");
-        let mut app = app_on(&path, 1);
-        let (g, _) = group_with_note(&mut app);
-        let n = note(&mut app, "loose");
-        app.edit_pos(&n, Some(egui::vec2(40.0, 50.0)));
-        app.interaction.drag_origin = vec![(n.clone(), app.doc.mirror.pos(&n))];
-        app.edit_pos(&n, Some(egui::vec2(300.0, 300.0)));
-        app.snap_layout(&n, egui::vec2(300.0, 300.0));
-        app.apply_drop(&n, Some((DropEffect::Join, Some(g.clone()))));
-        assert_eq!(app.doc.mirror.group(&n), Some(g.as_str()));
-        app.step_history(None, false);
-        assert_eq!(app.doc.mirror.group(&n), None);
-        assert_eq!(app.doc.mirror.pos(&n), Some(egui::vec2(40.0, 50.0)), "back where the drag began");
-        assert_eq!(app.layout_pos(&n), egui::vec2(40.0, 50.0), "and drawn there");
-        app.step_history(None, true);
-        assert_eq!(app.doc.mirror.group(&n), Some(g.as_str()));
-        assert_eq!(app.doc.mirror.pos(&n), Some(egui::vec2(300.0, 300.0)));
-        assert_eq!(app.layout_pos(&n), egui::vec2(300.0, 300.0));
-    }
-
-    /// Undo never writes a card into a group that is closed: it would vanish from every level.
-    #[test]
-    fn an_undo_into_a_closed_group_is_refused() {
-        let path = store::testutil::temp_dir("undo-closed-dest").join("session.mnf");
-        let mut app = app_on(&path, 1);
-        let (g, inner) = group_with_note(&mut app);
-        let other = note(&mut app, "other");
-        app.edit_group(&other, Some(g.clone()));
-        app.apply_drop(&inner, Some((DropEffect::Eject, None)));
-        assert_eq!(app.doc.mirror.group(&inner), None);
-        assert!(app.toasts.undo.is_some(), "recorded");
-        app.close_node(&g);
-        assert!(!app.nodes.contains_key(&g), "closed");
-        app.step_history(None, false);
-        assert_eq!(app.doc.mirror.group(&inner), None, "the group is closed, so the card stays out");
-        assert!(app.toasts.undo.as_ref().is_none_or(|(_, _, redo)| !redo), "nothing was undone, so no Redo is offered");
-    }
-
-    /// A menu "Move into" on a selection has no drag, yet every card it moved is on the step.
-    #[test]
-    fn a_menu_join_of_a_selection_records_every_card() {
-        let path = store::testutil::temp_dir("menu-join-undo").join("session.mnf");
-        let mut app = app_on(&path, 1);
-        let (g, _) = group_with_note(&mut app);
-        let (a, b) = (note(&mut app, "a"), note(&mut app, "b"));
-        app.interaction.selected = [a.clone(), b.clone()].into_iter().collect();
-        app.apply_drop(&a, Some((DropEffect::Join, Some(g.clone()))));
-        assert_eq!(app.doc.mirror.group(&b), Some(g.as_str()));
-        app.step_history(None, false);
-        assert_eq!(app.doc.mirror.group(&a), None);
-        assert_eq!(app.doc.mirror.group(&b), None, "the other selected card comes back too");
-    }
-
-    /// A release that no drop follows (the window lost focus mid-drag) leaves no origin for a later drop to find.
-    #[test]
-    fn a_focus_loss_mid_drag_leaves_no_stale_origin() {
-        let path = store::testutil::temp_dir("focus-origin").join("session.mnf");
-        let mut app = app_on(&path, 1);
-        let n = note(&mut app, "n");
-        app.interaction.dragging = Some(n.clone());
-        app.interaction.drag_moved = vec![n.clone()];
-        app.on_window_focus(false);
-        assert!(app.interaction.drag_origin.is_empty());
-    }
-
-    /// A selection dropped together comes back together, and a card moved on since is left alone.
-    #[test]
-    fn a_selection_join_reverts_each_card_and_skips_one_that_moved_on() {
-        let path = store::testutil::temp_dir("join-selection-undo").join("session.mnf");
-        let mut app = app_on(&path, 1);
-        let (g, _) = group_with_note(&mut app);
-        let (a, b) = (note(&mut app, "a"), note(&mut app, "b"));
-        app.interaction.selected = [a.clone(), b.clone()].into_iter().collect();
-        app.interaction.drag_origin = vec![(a.clone(), None), (b.clone(), None)];
-        app.apply_drop(&a, Some((DropEffect::Join, Some(g.clone()))));
-        assert_eq!(app.doc.mirror.group(&b), Some(g.as_str()));
-        let elsewhere = add_group(&mut app, "Elsewhere");
-        app.edit_group(&b, Some(elsewhere.clone()));
-        app.step_history(None, false);
-        assert_eq!(app.doc.mirror.group(&a), None, "restored");
-        assert_eq!(app.doc.mirror.group(&b), Some(elsewhere.as_str()), "moved on, so left alone");
-    }
-
-    /// GroupWith: Undo ungroups both and closes the group it made; Redo brings back the same group id.
-    #[test]
-    fn a_group_with_is_undone_and_redone_with_the_same_group() {
-        let path = store::testutil::temp_dir("groupwith-undo").join("session.mnf");
-        let mut app = app_on(&path, 1);
-        let (a, b) = (note(&mut app, "a"), note(&mut app, "b"));
-        app.apply_drop(&a, Some((DropEffect::GroupWith, Some(b.clone()))));
-        let made = app.doc.mirror.group(&a).map(str::to_owned).expect("grouped");
-        assert_eq!(app.doc.mirror.group(&b), Some(made.as_str()));
-        app.step_history(None, false);
-        assert!(app.doc.mirror.group(&a).is_none() && app.doc.mirror.group(&b).is_none());
-        assert!(!app.nodes.contains_key(&made), "the made group is closed");
-        app.step_history(None, true);
-        assert_eq!(app.doc.mirror.group(&a), Some(made.as_str()), "the same group id");
-        assert_eq!(app.doc.mirror.group(&b), Some(made.as_str()));
-    }
-
-    /// Eject from a nested group goes up one level; Undo puts it back, Redo ejects again.
-    #[test]
-    fn an_eject_is_undone_and_redone() {
-        let path = store::testutil::temp_dir("eject-undo").join("session.mnf");
-        let mut app = app_on(&path, 1);
-        let (g, inner) = group_with_note(&mut app);
-        app.apply_drop(&inner, Some((DropEffect::Eject, None)));
-        assert_eq!(app.doc.mirror.group(&inner), None);
-        app.step_history(None, false);
-        assert_eq!(app.doc.mirror.group(&inner), Some(g.as_str()));
-        app.step_history(None, true);
-        assert_eq!(app.doc.mirror.group(&inner), None);
-    }
-
-    /// Reparent is an edge: Undo restores the old parent.
-    #[test]
-    fn a_reparent_is_undone() {
-        let path = store::testutil::temp_dir("reparent-undo").join("session.mnf");
-        let mut app = app_on(&path, 1);
-        let (g, a) = group_with_note(&mut app);
-        let b = note(&mut app, "b");
-        app.edit_group(&b, Some(g.clone()));
-        let before = app.doc.mirror.parent(&a).map(str::to_owned);
-        app.apply_drop(&a, Some((DropEffect::Reparent, Some(b.clone()))));
-        assert_eq!(app.doc.mirror.parent(&a), Some(b.as_str()));
-        app.step_history(None, false);
-        assert_eq!(app.doc.mirror.parent(&a).map(str::to_owned), before);
-    }
-
-    /// A plain move (no effect) adds no entry; a fresh drop empties redo.
-    #[test]
-    fn only_effect_drops_are_recorded_and_a_drop_clears_redo() {
-        let path = store::testutil::temp_dir("drop-record").join("session.mnf");
-        let mut app = app_on(&path, 1);
-        let (g, _) = group_with_note(&mut app);
-        let (a, b) = (note(&mut app, "a"), note(&mut app, "b"));
-        app.apply_drop(&a, None);
-        assert!(app.toasts.undo.is_none(), "a plain move is not recorded");
-        app.apply_drop(&a, Some((DropEffect::Join, Some(g.clone()))));
-        app.step_history(None, false);
-        app.apply_drop(&b, Some((DropEffect::Join, Some(g.clone()))));
-        app.step_history(None, true);
-        assert_eq!(app.doc.mirror.group(&a), None, "the redo list was emptied by the second drop");
-    }
-
     /// Past the cap the emptied groups go before any real close, so one Ungroup All never pushes out closed tabs.
     #[test]
     fn eviction_takes_emptied_groups_before_real_closes() {
         let path = store::testutil::temp_dir("evict-emptied").join("session.mnf");
         let mut app = app_on(&path, 1);
-        let first = note(&mut app, "first closed");
+        let first = add_note(&mut app, "first closed");
         app.close_node(&first);
         let groups: Vec<String> = (0..MAX_CLOSED).map(|_| group_with_note(&mut app).0).collect();
         app.ungroup(&groups);
@@ -999,38 +726,5 @@ mod tests {
             assert!(app.nodes.contains_key(&inner));
             assert_eq!(app.doc.mirror.group(&inner), Some(g.as_str()));
         }
-    }
-
-    /// A merge drops the source group from the selection with the rest of its UI state (`forget_id`).
-    #[test]
-    fn a_merged_away_group_leaves_the_selection() {
-        let mut app = App::default();
-        let (source, target) = (add_group(&mut app, "S"), add_group(&mut app, "T"));
-        app.interaction.selected.extend([source.clone(), target.clone()]);
-        app.merge_groups(&source, &target);
-        assert!(!app.nodes.contains_key(&source));
-        assert_eq!(app.interaction.selected, HashSet::from([target]));
-    }
-
-    /// A Join (or a menu's Move into) onto a group another replica closed after the menu opened is a no-op: the node
-    /// stays where it is rather than vanishing into the hidden group. A merge onto it is refused the same way.
-    #[test]
-    fn a_join_onto_a_group_closed_remotely_does_nothing() {
-        use crate::card::DropEffect;
-        let path = store::testutil::temp_dir("closed-join-hidden").join("session.mnf");
-        let mut app = app_on(&path, 1);
-        let g = add_group(&mut app, "G");
-        let (n, other_group) = (note(&mut app, "n"), add_group(&mut app, "H"));
-        assert!(app.save_session());
-        let mut other = store::journal::Journal::open(&path, store::model::ActorId(2)).unwrap();
-        crate::session_sync::tests::remote_set(&mut other, &g, field::CLOSED, FieldValue::Replica(99));
-        assert!(app.save_session());
-        assert!(!app.nodes.contains_key(&g), "closed remotely, so not shown");
-        app.apply_drop(&n, Some((DropEffect::Join, Some(g.clone()))));
-        app.apply_node_action(&egui::Context::default(), &n, crate::node_menu::NodeAction::MoveToGroup(g.clone()));
-        assert_eq!(app.doc.mirror.group(&n), None, "still at the top level");
-        assert!(app.nodes.contains_key(&n));
-        app.apply_drop(&other_group, Some((DropEffect::Merge, Some(g.clone()))));
-        assert!(app.nodes.contains_key(&other_group), "the merge into a hidden group is refused");
     }
 }
