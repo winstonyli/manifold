@@ -88,59 +88,120 @@ mod windows_main {
     use crate::fresh::require_fresh_exe;
     use crate::instance::{seed_settings, Instance};
 
+    /// How a stage takes its arguments: the work-dir parent, the rest of the command line, or nothing.
+    enum Run {
+        Parent(fn(Option<PathBuf>) -> ExitCode),
+        Args(fn(&[String]) -> ExitCode),
+        Bare(fn() -> ExitCode),
+    }
+
+    /// One `gate <name>` stage. `usage` is what follows the name in the usage text (`None`: a test aid, not listed).
+    struct Stage {
+        name: &'static str,
+        usage: Option<&'static str>,
+        run: Run,
+    }
+
+    /// Every stage: the one place `gate <name>` dispatch and the usage text come from.
+    const STAGES: &[Stage] = &[
+        Stage {
+            name: "all",
+            usage: Some("LOG [full|light|ui]"),
+            run: Run::Args(|a| crate::all::all(a.first().map(PathBuf::from), a.get(1).cloned())),
+        },
+        Stage { name: "hello", usage: Some("[WORKDIR_PARENT]"), run: Run::Parent(hello) },
+        Stage {
+            name: "launch-forms",
+            usage: Some("[WORKDIR_PARENT]"),
+            run: Run::Parent(crate::launch_forms::launch_forms),
+        },
+        Stage { name: "layout", usage: Some("[WORKDIR_PARENT]"), run: Run::Parent(crate::layout::layout) },
+        Stage { name: "link", usage: Some("[WORKDIR_PARENT]"), run: Run::Parent(crate::link::link) },
+        Stage { name: "smoke", usage: Some("[WORKDIR_PARENT]"), run: Run::Parent(crate::smoke::smoke) },
+        Stage { name: "two", usage: Some("[WORKDIR_PARENT]"), run: Run::Parent(crate::two::two) },
+        Stage {
+            name: "unknown-type",
+            usage: Some("[WORKDIR_PARENT]"),
+            run: Run::Parent(crate::unknown_type::unknown_type),
+        },
+        Stage { name: "closed", usage: Some("[WORKDIR_PARENT]"), run: Run::Parent(crate::closed::closed) },
+        Stage { name: "dblprobe", usage: Some("[WORKDIR_PARENT]"), run: Run::Parent(crate::dblprobe::dblprobe) },
+        Stage { name: "trail", usage: Some("[WORKDIR_PARENT]"), run: Run::Parent(crate::trail::trail) },
+        Stage { name: "unresponsive", usage: Some("[WORKDIR_PARENT]"), run: Run::Parent(crate::stress::unresponsive) },
+        Stage { name: "focus-loss", usage: Some(""), run: Run::Parent(crate::focus::focus_loss) },
+        Stage { name: "bad-url", usage: Some("[WORKDIR_PARENT]"), run: Run::Parent(crate::probes::bad_url) },
+        Stage { name: "failed-spawn", usage: Some("[WORKDIR_PARENT]"), run: Run::Parent(crate::probes::failed_spawn) },
+        Stage { name: "hscroll", usage: Some("[WORKDIR_PARENT]"), run: Run::Parent(crate::probes::hscroll) },
+        Stage { name: "key", usage: Some("[WORKDIR_PARENT]"), run: Run::Parent(crate::probes::key) },
+        Stage { name: "page-kind", usage: Some("[WORKDIR_PARENT]"), run: Run::Parent(crate::probes::page_kind) },
+        Stage { name: "chrome-shots", usage: Some("[WORKDIR_PARENT]"), run: Run::Parent(crate::shots::chrome_shots) },
+        Stage {
+            name: "chrome-shots-sizes",
+            usage: Some("[WORKDIR_PARENT]"),
+            run: Run::Parent(crate::shots::chrome_shots_sizes),
+        },
+        Stage { name: "sleep", usage: Some(""), run: Run::Parent(crate::sleep::sleep) },
+        Stage { name: "jar", usage: Some(""), run: Run::Parent(crate::jar::jar) },
+        Stage { name: "scale", usage: Some("TABS..."), run: Run::Args(crate::stress::scale) },
+        Stage {
+            name: "release-verify",
+            usage: Some("vX.Y.Z [DIST]"),
+            run: Run::Args(crate::release_verify::release_verify),
+        },
+        Stage { name: "release-check", usage: Some("vX.Y.Z"), run: Run::Args(crate::release_check::release_check) },
+        Stage { name: "release-notes", usage: Some("vX.Y.Z"), run: Run::Args(crate::release_check::release_notes) },
+        Stage { name: "sync-runtime-deps", usage: Some(""), run: Run::Bare(crate::sync_deps::sync_runtime_deps) },
+        Stage { name: "cef-pin", usage: Some("[--platform ID] PREFIX"), run: Run::Args(crate::cef_pin::cef_pin_main) },
+        Stage {
+            name: "json-pan",
+            usage: Some("[MODE] [SECONDS] [--samply]"),
+            run: Run::Args(crate::json_pan::json_pan),
+        },
+        Stage { name: "package", usage: Some("[EXE]"), run: Run::Args(crate::package::package) },
+        Stage { name: "install-check", usage: Some("cef|servo EXE"), run: Run::Args(crate::package::install_check) },
+        Stage { name: "tier", usage: Some("[BASE|--stdin]"), run: Run::Args(crate::tier::tier) },
+        Stage { name: "fresh", usage: Some("EXE"), run: Run::Args(fresh) },
+        Stage { name: "hold", usage: None, run: Run::Parent(hold) },
+    ];
+
+    /// Whether `gate <name>` is a stage (`gate all` asserts it for each stage it launches).
+    pub(crate) fn is_stage(name: &str) -> bool {
+        STAGES.iter().any(|s| s.name == name)
+    }
+
+    fn usage() -> String {
+        let listed: Vec<String> = STAGES
+            .iter()
+            .filter_map(|s| s.usage.map(|u| format!("gate {} {u}", s.name).trim_end().to_owned()))
+            .collect();
+        format!("usage: {}", listed.join(" | "))
+    }
+
     pub fn run() -> ExitCode {
         let mut args = std::env::args().skip(1);
-        let stage = args.next().unwrap_or_default();
-        let parent = args.next().map(PathBuf::from);
-        match stage.as_str() {
-            "all" => crate::all::all(parent, args.next()),
-            "bad-url" => crate::probes::bad_url(parent),
-            "failed-spawn" => crate::probes::failed_spawn(parent),
-            "hscroll" => crate::probes::hscroll(parent),
-            "key" => crate::probes::key(parent),
-            "page-kind" => crate::probes::page_kind(parent),
-            "chrome-shots" => crate::shots::chrome_shots(parent),
-            "chrome-shots-sizes" => crate::shots::chrome_shots_sizes(parent),
-            "jar" => crate::jar::jar(parent),
-            "release-check" => crate::release_check::release_check(&std::env::args().skip(2).collect::<Vec<_>>()),
-            "release-notes" => crate::release_check::release_notes(&std::env::args().skip(2).collect::<Vec<_>>()),
-            "release-verify" => crate::release_verify::release_verify(&std::env::args().skip(2).collect::<Vec<_>>()),
-            "sync-runtime-deps" => crate::sync_deps::sync_runtime_deps(),
-            "cef-pin" => crate::cef_pin::cef_pin_main(&std::env::args().skip(2).collect::<Vec<_>>()),
-            "json-pan" => crate::json_pan::json_pan(&std::env::args().skip(2).collect::<Vec<_>>()),
-            "tier" => crate::tier::tier(&std::env::args().skip(2).collect::<Vec<_>>()),
-            "package" => crate::package::package(&std::env::args().skip(2).collect::<Vec<_>>()),
-            "install-check" => crate::package::install_check(&std::env::args().skip(2).collect::<Vec<_>>()),
-            "focus-loss" => crate::focus::focus_loss(parent),
-            "sleep" => crate::sleep::sleep(parent),
-            "scale" => crate::stress::scale(&std::env::args().skip(2).collect::<Vec<_>>()),
-            "unresponsive" => crate::stress::unresponsive(parent),
-            "hello" => hello(parent),
-            "launch-forms" => crate::launch_forms::launch_forms(parent),
-            "layout" => crate::layout::layout(parent),
-            "link" => crate::link::link(parent),
-            "smoke" => crate::smoke::smoke(parent),
-            "two" => crate::two::two(parent),
-            "unknown-type" => crate::unknown_type::unknown_type(parent),
-            "closed" => crate::closed::closed(parent),
-            "dblprobe" => crate::dblprobe::dblprobe(parent),
-            "trail" => crate::trail::trail(parent),
-            // Was scripts/fresh-exe.sh: exit 1 and name the stale files if EXE (the next argument) is older than its sources.
-            "fresh" => match parent.as_deref().map(require_fresh_exe) {
-                Some(Ok(())) => ExitCode::SUCCESS,
-                Some(Err(e)) => {
-                    eprintln!("{e}");
-                    ExitCode::from(1)
-                }
-                None => {
-                    eprintln!("usage: gate fresh EXE");
-                    ExitCode::from(2)
-                }
-            },
-            // Test aid for the "killed gate leaves no manifold.exe" proof; not a gate stage.
-            "hold" => hold(parent),
-            _ => {
-                eprintln!("usage: gate all LOG [full|light|ui] | gate hello|launch-forms|unresponsive|layout|link|smoke|two|unknown-type|closed|trail [WORKDIR_PARENT] | gate chrome-shots|chrome-shots-sizes [WORKDIR_PARENT] | gate sleep | gate jar | gate release-verify vX.Y.Z [DIST] | gate release-check vX.Y.Z | gate release-notes vX.Y.Z | gate sync-runtime-deps | gate cef-pin [--platform ID] PREFIX | gate json-pan [MODE] [SECONDS] [--samply] | gate package [EXE] | gate install-check cef|servo EXE | gate focus-loss | gate scale TABS... | gate tier [BASE|--stdin] | gate fresh EXE");
+        let name = args.next().unwrap_or_default();
+        let rest: Vec<String> = args.collect();
+        match STAGES.iter().find(|s| s.name == name) {
+            Some(Stage { run: Run::Parent(f), .. }) => f(rest.first().map(PathBuf::from)),
+            Some(Stage { run: Run::Args(f), .. }) => f(&rest),
+            Some(Stage { run: Run::Bare(f), .. }) => f(),
+            None => {
+                eprintln!("{}", usage());
+                ExitCode::from(2)
+            }
+        }
+    }
+
+    /// Was scripts/fresh-exe.sh: exit 1 and name the stale files if EXE (the first argument) is older than its sources.
+    fn fresh(args: &[String]) -> ExitCode {
+        match args.first().map(PathBuf::from).as_deref().map(require_fresh_exe) {
+            Some(Ok(())) => ExitCode::SUCCESS,
+            Some(Err(e)) => {
+                eprintln!("{e}");
+                ExitCode::from(1)
+            }
+            None => {
+                eprintln!("usage: gate fresh EXE");
                 ExitCode::from(2)
             }
         }
@@ -248,5 +309,22 @@ mod windows_main {
             return ExitCode::from(1);
         }
         ExitCode::SUCCESS
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn stage_names_are_unique_and_the_usage_lists_the_public_ones() {
+            let mut seen = std::collections::HashSet::new();
+            assert!(STAGES.iter().all(|s| seen.insert(s.name)), "a stage name is registered twice");
+            let usage = usage();
+            for stage in STAGES.iter().filter(|s| s.usage.is_some()) {
+                assert!(usage.contains(&format!("gate {}", stage.name)), "{} missing from {usage}", stage.name);
+            }
+            assert!(!usage.contains("gate hold"), "the test aid is not listed");
+            assert!(is_stage("trail") && !is_stage("sleep-history"));
+        }
     }
 }

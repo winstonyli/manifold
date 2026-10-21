@@ -113,8 +113,9 @@ fn overlap(a: [f64; 4], b: [f64; 4]) -> bool {
     a[0] < b[2] && b[0] < a[2] && a[1] < b[3] && b[1] < a[3]
 }
 
-/// Presses tab `card`'s card and drags it with real pointer moves until it lies over the strip's second page, holds it
-/// there for a frame and a screenshot (kept in `RUN_DIR` for a look at the layering), then moves it back and lets go.
+/// Presses tab `card`'s card (another on-screen card if the layout put it off screen) and drags it with real pointer
+/// moves until it lies over the strip's second page, holds it there for a frame and a screenshot (kept in `RUN_DIR` for
+/// a look at the layering), then moves it back and lets go.
 fn drag_over_strip(inst: &mut Instance, card: &str) -> io::Result<()> {
     inst.send("GRAPHZOOM 100")?;
     inst.send("WAITIDLE")?;
@@ -122,19 +123,28 @@ fn drag_over_strip(inst: &mut Instance, card: &str) -> io::Result<()> {
     let s = inst.export_until("drag-pre", |s| {
         s.all_cards().iter().filter(|c| is_strip(c)).count() == 4 && s.all_cards().iter().any(|c| c["id"] == card)
     })?;
+    let (w, h) = (s.0["window"][0].as_f64().unwrap_or(0.0), s.0["window"][1].as_f64().unwrap_or(0.0));
+    let centre = |r: [f64; 4]| ((r[0] + r[2]) / 2.0, (r[1] + r[3]) / 2.0);
+    let on_screen = |r: [f64; 4]| {
+        let c = centre(r);
+        (0.0..w).contains(&c.0) && (0.0..h).contains(&c.1)
+    };
+    // The layout decides where `card` lands and it can be off screen; any other stored card does as well.
+    let cards = s.all_cards();
+    let pickable = |c: &&Value| c["virtual"].is_null() && State::rect_from(&c["rect"]).is_some_and(on_screen);
+    let Some(card) = cards.iter().find(|c| c["id"] == card).filter(pickable).or_else(|| cards.iter().find(pickable))
+    else {
+        return Err(bad("no card of the graph is on screen to drag".to_string()));
+    };
+    let card = card["id"].as_str().unwrap_or_default().to_string();
+    let card = card.as_str();
     let (Some(from), Some(page)) = (
-        s.all_cards().iter().find(|c| c["id"] == card).and_then(|c| State::rect_from(&c["rect"])),
-        s.all_cards().iter().filter(|c| is_strip(c)).nth(1).and_then(|c| State::rect_from(&c["rect"])),
+        cards.iter().find(|c| c["id"] == card).and_then(|c| State::rect_from(&c["rect"])),
+        cards.iter().filter(|c| is_strip(c)).nth(1).and_then(|c| State::rect_from(&c["rect"])),
     ) else {
         return Err(bad("the card or the strip's second page has no screen rect".to_string()));
     };
-    let (w, h) = (s.0["window"][0].as_f64().unwrap_or(0.0), s.0["window"][1].as_f64().unwrap_or(0.0));
-    let centre = |r: [f64; 4]| ((r[0] + r[2]) / 2.0, (r[1] + r[3]) / 2.0);
     let (start, end) = (centre(from), centre(page));
-    if !check_is("the card to drag starts on screen", true, (0.0..w).contains(&start.0) && (0.0..h).contains(&start.1))
-    {
-        return Ok(());
-    }
     let at = |f: f64| format!("{:.0} {:.0}", start.0 + (end.0 - start.0) * f, start.1 + (end.1 - start.1) * f);
     inst.send(&format!("MOUSEMOVE {}", at(0.0)))?;
     inst.send(&format!("MOUSEMOVE {}", at(0.0)))?;

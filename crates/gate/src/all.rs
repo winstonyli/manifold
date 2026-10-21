@@ -206,6 +206,7 @@ pub(crate) fn all(log: Option<PathBuf>, mode: Option<String>) -> ExitCode {
     append(&log, &format!("GATE start ({mode}) {} cpu={}% defender_rt={}", clock(), cpu_now(), defender_realtime()));
     let mut g = Gate { log: log.clone(), cpu_log, failed: false };
     let gate = |stage: &str| {
+        assert!(crate::windows_main::is_stage(stage), "`gate all` launches `gate {stage}`, which is not a stage");
         let mut c = Command::new(&me);
         c.arg(stage);
         // The page server's address is for the WebKit stages: the others reach it on loopback.
