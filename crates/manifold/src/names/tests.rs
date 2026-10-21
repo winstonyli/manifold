@@ -510,7 +510,7 @@ fn every_stored_name_reaches_the_screen_through_a_name_rule() {
     let mut offenders = Vec::new();
     let mut seen = Vec::new();
     // Every `.rs` file under `src/` is scanned as `<folder>/<file>`, except the store layer and test modules (`production` cuts
-    // a file's own `mod tests`, and a `tests.rs` is one).
+    // a file's own `mod tests`, and a `tests.rs` and a `tests/` folder are).
     let mut stack = vec![dir.clone()];
     let mut entries = Vec::new();
     while let Some(folder) = stack.pop() {
@@ -529,6 +529,7 @@ fn every_stored_name_reaches_the_screen_through_a_name_rule() {
             || file == "names.rs"
             || file.starts_with("store/")
             || file.ends_with("/tests.rs")
+            || file.contains("/tests/")
         {
             continue;
         }
