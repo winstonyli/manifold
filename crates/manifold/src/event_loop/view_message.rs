@@ -126,19 +126,19 @@ impl App {
             // doc comment): a child of whichever tab requested it, staying in
             // the current view rather than auto-focusing, same as an explicit
             // "+ New Tab" click. Only web/internal schemes, only with a user
-            // gesture, and only a few per source tab (`popup_gate.rs`).
+            // gesture, and only a few per source tab (`page_tab_gate.rs`).
             ViewToHost::OpenTabRequested { url, user_gesture } => {
-                if !crate::popup_gate::page_tab_url_allowed(&url) {
-                    match crate::popup_gate::scheme_for_log(&url) {
+                if !crate::page_tab_gate::page_tab_url_allowed(&url) {
+                    match crate::page_tab_gate::scheme_for_log(&url) {
                         Some(scheme) => eprintln!("popup to a disallowed scheme dropped: {scheme}:"),
                         None => eprintln!("popup to a url with no scheme dropped"),
                     }
                 } else {
-                    match self.popup_gate.admit(tab_id, user_gesture, std::time::Instant::now()) {
-                        crate::popup_gate::Admit::Open => {
+                    match self.page_tab_gate.admit(tab_id, user_gesture, std::time::Instant::now()) {
+                        crate::page_tab_gate::Admit::Open => {
                             self.spawn_tab_from(tab_id, &url, None);
                         }
-                        crate::popup_gate::Admit::Drop { toast } => {
+                        crate::page_tab_gate::Admit::Drop { toast } => {
                             if toast {
                                 self.queue_toast("Blocked pop-ups from this page".to_string());
                             }

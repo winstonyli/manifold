@@ -191,7 +191,7 @@ impl App {
         self.clear_cookie_state(id);
         self.saved_scroll.remove(id);
         self.nav_history.remove(id);
-        self.popup_gate.forget(id);
+        self.page_tab_gate.forget(id);
         if let Ok(jar) = id.parse::<crate::store::model::NodeId>() {
             self.forget_jar_memory(jar);
         }

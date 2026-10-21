@@ -56,9 +56,9 @@ mod node;
 mod node_menu;
 mod node_ops;
 mod node_store;
+mod page_tab_gate;
 mod pdf;
 mod pdf_render;
-mod popup_gate;
 mod popups;
 mod process_manager;
 mod profile;
@@ -437,7 +437,7 @@ struct App {
 
     /// Admits or drops page-opened tabs (`ViewToHost::OpenTabRequested`)
     /// per source tab: a user gesture and a rate budget.
-    popup_gate: popup_gate::PopupGate,
+    page_tab_gate: page_tab_gate::PageTabGate,
 
     /// `settings::fingerprint()` as this process last saw it (set at load,
     /// updated after every successful save) -- see `save_settings`. `None`
@@ -595,7 +595,7 @@ impl Default for App {
             debug: debug_control::HeadlessDebug::default(),
             pacing: event_loop::FramePacing::default(),
             pending_focus: None,
-            popup_gate: popup_gate::PopupGate::default(),
+            page_tab_gate: page_tab_gate::PageTabGate::default(),
             settings_fingerprint,
             settings_save_due: None,
             content_index: None,

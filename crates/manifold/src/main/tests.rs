@@ -21,8 +21,8 @@ fn forget_id_clears_every_id_keyed_table() {
     app.saved_scroll.insert("u".into(), sleep_state::SavedScroll::new(0.0, 1.0));
     app.nav_history.insert(t(), nav_history::NavHistory::default());
     app.spawns.navigated_from.insert(t(), ("https://a.test/".into(), now, false));
-    for _ in 0..popup_gate::POPUP_BURST {
-        app.popup_gate.admit("t", true, now);
+    for _ in 0..page_tab_gate::POPUP_BURST {
+        app.page_tab_gate.admit("t", true, now);
     }
     app.spawns.tab_crashes.insert(t(), vec![now]);
     app.interaction.selected.extend([t(), "u".to_string()]);
@@ -45,7 +45,7 @@ fn forget_id_clears_every_id_keyed_table() {
     assert!(app.cookies.jar_pulls.is_empty() && app.cookies.jar_silent.is_empty());
     assert!(!app.saved_scroll.contains_key("t") && app.saved_scroll.contains_key("u"), "only t's entry goes");
     assert!(app.nav_history.is_empty() && app.spawns.navigated_from.is_empty() && app.spawns.tab_crashes.is_empty());
-    assert_eq!(app.popup_gate.admit("t", true, now), popup_gate::Admit::Open, "t's popup burst count went");
+    assert_eq!(app.page_tab_gate.admit("t", true, now), page_tab_gate::Admit::Open, "t's popup burst count went");
     assert_eq!(app.interaction.selected, HashSet::from(["u".to_string()]));
     assert!(app.naming_jar.is_none() && app.renaming_group.is_none() && app.menus.node_menu.open.is_none());
     assert!(app.spawns.pending_respawn_focus.is_none() && app.interaction.peek_suppressed.is_none());

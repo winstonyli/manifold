@@ -62,7 +62,7 @@ wrap_life_span_handler! {
             _no_javascript_access: Option<&mut ::std::os::raw::c_int>,
         ) -> ::std::os::raw::c_int {
             if let Some(url) = target_url {
-                // The host drops popups without a gesture (`popup_gate.rs`).
+                // The host drops popups without a gesture (`page_tab_gate.rs`).
                 self.handler.pending.borrow_mut().push((url.to_string(), user_gesture != 0));
             }
             // Non-zero cancels popup creation - we spawn a real child tab

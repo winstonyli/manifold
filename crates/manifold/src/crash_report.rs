@@ -54,7 +54,7 @@ pub fn redacted_url(url: &str) -> String {
     }
     match url.split_once(':') {
         Some((_, rest)) if !rest.contains('@') => {
-            crate::popup_gate::scheme_for_log(url).map_or_else(String::new, |scheme| format!("{scheme}:"))
+            crate::page_tab_gate::scheme_for_log(url).map_or_else(String::new, |scheme| format!("{scheme}:"))
         }
         _ => String::new(),
     }

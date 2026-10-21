@@ -426,7 +426,7 @@ pub enum ViewToHost {
     /// Servo tabs don't send this (page-triggered popups fall back to
     /// whatever Servo's own unhandled-request default behavior is).
     /// `user_gesture`: the engine saw a user action (click, key) behind the
-    /// request; the host drops requests without one (`popup_gate.rs`).
+    /// request; the host drops requests without one (`page_tab_gate.rs`).
     OpenTabRequested { url: String, user_gesture: bool },
     /// A find-in-page result update for the current search term: `count`
     /// matches found, `active_index` the 1-based position of the currently
