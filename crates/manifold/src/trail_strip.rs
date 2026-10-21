@@ -799,23 +799,45 @@ mod tests {
     #[test]
     fn random_layouts_never_show_a_cards_text_through_a_later_card_or_rescale_the_strip_label() {
         let (mut checked, mut label_heights) = (0, Vec::<f32>::new());
+        let mut kinds_seen = std::collections::HashSet::new();
         for seed in 0..40_u64 {
             let mut rng = Lcg(seed + 1);
             let mut rig = forked();
             let tab = rig.tab();
             let anchor = pages(&rig)[0].rect.center().to_vec2();
             let mut titles = std::collections::HashMap::new();
-            for n in 0..4 {
-                let id = rig.app.alloc_node_id();
+            for n in 0..6 {
                 let at = anchor + egui::vec2(rng.between(-250.0, 450.0), rng.between(-200.0, 250.0));
-                let title = format!("CARD{n}");
-                rig.app.insert_placeholder_node(
-                    id.clone(),
-                    at,
-                    crate::store::model::Kind::Tab,
-                    crate::session_sync::tests::sleeping_tab("https://stress.test/", &title),
-                );
+                let (title, id) = match n % 3 {
+                    0 => {
+                        let (id, title) = (rig.app.alloc_node_id(), format!("CARD{n}"));
+                        let tab = crate::session_sync::tests::sleeping_tab("https://stress.test/", &title);
+                        rig.app.insert_placeholder_node(id.clone(), at, crate::store::model::Kind::Tab, tab);
+                        (title, id)
+                    }
+                    1 => {
+                        let (id, title) = (rig.app.alloc_node_id(), format!("FILE{n}"));
+                        let download = crate::Runtime::Download(crate::node::DownloadPayload {
+                            path: format!("{title}.bin"),
+                            bytes_received: 0,
+                            total_bytes: None,
+                            completed: true,
+                            failed: false,
+                        });
+                        rig.app.insert_placeholder_node(id.clone(), at, crate::store::model::Kind::Download, download);
+                        (title, id)
+                    }
+                    _ => {
+                        let title = format!("GROUP{n}");
+                        let placement = crate::fetched::Placement { group: None, pos: at };
+                        (title.clone(), rig.app.place_group(None, &title, placement))
+                    }
+                };
                 titles.insert(id, title);
+            }
+            if rng.next() < 0.5 {
+                let ids: Vec<_> = titles.keys().cloned().collect();
+                rig.app.select_only(&ids[(rng.next() * ids.len() as f32) as usize % ids.len()]);
             }
             let zoom = rng.between(0.5, 3.0);
             rig.app.pending_graph_zoom = Some(zoom);
@@ -830,6 +852,7 @@ mod tests {
                 let Some(title) = titles.get(&lower.id) else { continue };
                 for (bounds, _) in shown_text(&shapes, title) {
                     checked += 1;
+                    kinds_seen.insert(title[..4].to_string());
                     for higher in &order[i + 1..] {
                         assert!(
                             shared_area(bounds, screen(higher)) < 1.0,
@@ -848,6 +871,7 @@ mod tests {
                 }
             }
         }
+        assert_eq!(kinds_seen.len(), 3, "every kind of card had text on screen to check: {kinds_seen:?}");
         assert!(checked > 20, "the layouts must put titles on screen to mean anything: {checked}");
         assert!(label_heights.len() > 10, "the strip label must show in enough layouts: {}", label_heights.len());
         let first = label_heights[0];
