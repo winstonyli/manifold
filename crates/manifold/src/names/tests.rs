@@ -505,11 +505,12 @@ fn every_stored_name_reaches_the_screen_through_a_name_rule() {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut offenders = Vec::new();
     let mut seen = Vec::new();
-    // `caps/`, `gpu/`, `popups/`, `process_manager/`, `session_sync/` and `tabs/` are production code: their files are scanned as `<folder>/<file>`.
+    // `caps/`, `gpu/`, `graph_ui/`, `popups/`, `process_manager/`, `session_sync/` and `tabs/` are production code: their files are scanned as `<folder>/<file>`.
     let entries = std::fs::read_dir(&dir)
         .unwrap()
         .chain(std::fs::read_dir(dir.join("caps")).unwrap())
         .chain(std::fs::read_dir(dir.join("gpu")).unwrap())
+        .chain(std::fs::read_dir(dir.join("graph_ui")).unwrap())
         .chain(std::fs::read_dir(dir.join("popups")).unwrap())
         .chain(std::fs::read_dir(dir.join("process_manager")).unwrap())
         .chain(std::fs::read_dir(dir.join("session_sync")).unwrap())
@@ -520,6 +521,7 @@ fn every_stored_name_reaches_the_screen_through_a_name_rule() {
         if path.is_dir() {
             if file == "caps"
                 || file == "gpu"
+                || file == "graph_ui"
                 || file == "popups"
                 || file == "process_manager"
                 || file == "session_sync"
