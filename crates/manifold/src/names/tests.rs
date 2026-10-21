@@ -419,8 +419,11 @@ fn the_placeholder_characters_are_in_the_monospace_font() {
 /// rule (the line calls one of `RULE_MARKS`) or marked raw with `// name rule: <why>`, on the same line or as a
 /// comment on the line just above (`ruled`). A new file that reads `.name` must be added here, after deciding
 /// which rule its site gets.
-const ALLOWED: [&str; 14] = [
+const ALLOWED: [&str; 17] = [
     "card.rs",
+    "card/group_body.rs",
+    "card/jar_chip.rs",
+    "card/tab_body.rs",
     "closed.rs",
     "debug_export.rs",
     "graph_nav.rs",
@@ -505,10 +508,11 @@ fn every_stored_name_reaches_the_screen_through_a_name_rule() {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut offenders = Vec::new();
     let mut seen = Vec::new();
-    // `caps/`, `gpu/`, `graph_ui/`, `popups/`, `process_manager/`, `session_sync/` and `tabs/` are production code: their files are scanned as `<folder>/<file>`.
+    // `caps/`, `card/`, `gpu/`, `graph_ui/`, `popups/`, `process_manager/`, `session_sync/` and `tabs/` are production code: their files are scanned as `<folder>/<file>`.
     let entries = std::fs::read_dir(&dir)
         .unwrap()
         .chain(std::fs::read_dir(dir.join("caps")).unwrap())
+        .chain(std::fs::read_dir(dir.join("card")).unwrap())
         .chain(std::fs::read_dir(dir.join("gpu")).unwrap())
         .chain(std::fs::read_dir(dir.join("graph_ui")).unwrap())
         .chain(std::fs::read_dir(dir.join("popups")).unwrap())
@@ -520,6 +524,7 @@ fn every_stored_name_reaches_the_screen_through_a_name_rule() {
         let file = path.strip_prefix(&dir).unwrap().to_string_lossy().replace('\\', "/");
         if path.is_dir() {
             if file == "caps"
+                || file == "card"
                 || file == "gpu"
                 || file == "graph_ui"
                 || file == "popups"

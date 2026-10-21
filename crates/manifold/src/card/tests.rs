@@ -406,8 +406,15 @@ fn a_group_card_tooltip_names_a_hidden_character() {
 /// rather than only in a screenshot.
 #[test]
 fn every_card_body_draws_a_header() {
-    let src = include_str!("../card.rs");
-    let production = &src[..src.find("mod tests;").unwrap()];
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let root = std::fs::read_to_string(dir.join("card.rs")).unwrap();
+    let mut production = root[..root.find("mod tests;").unwrap()].to_string();
+    for entry in std::fs::read_dir(dir.join("card")).unwrap() {
+        let path = entry.unwrap().path();
+        if path.file_name().is_some_and(|n| n != "tests.rs") {
+            production.push_str(&std::fs::read_to_string(path).unwrap());
+        }
+    }
     let markers = ["paint_card_header(", "paint_missing_file_card(", "tab_has_header("];
     for name in ["unloaded_tab", "download", "note", "image", "pdf", "json", "group", "tab", "jar", "unknown"] {
         let start = production.find(&format!("fn paint_{name}_body(")).unwrap_or_else(|| panic!("no {name} body"));
