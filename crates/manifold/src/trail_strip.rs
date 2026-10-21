@@ -779,4 +779,81 @@ mod tests {
         assert_eq!(at(2.0), at(1.0), "its on-screen height does not follow the zoom: {label_heights:?}");
         assert_eq!(at(0.8), at(1.0), "nor at 80%: {label_heights:?}");
     }
+
+    /// A small deterministic generator, so a failing layout can be rerun from its seed.
+    struct Lcg(u64);
+
+    impl Lcg {
+        fn next(&mut self) -> f32 {
+            self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (self.0 >> 40) as f32 / (1u64 << 24) as f32
+        }
+
+        fn between(&mut self, lo: f32, hi: f32) -> f32 {
+            lo + (hi - lo) * self.next()
+        }
+    }
+
+    /// Random layouts of tab cards around the strip, at random zooms: no card's text shows inside a card drawn after
+    /// it (the strip's pages included), and the strip's labels keep one on-screen height at every zoom.
+    #[test]
+    fn random_layouts_never_show_a_cards_text_through_a_later_card_or_rescale_the_strip_label() {
+        let (mut checked, mut label_heights) = (0, Vec::<f32>::new());
+        for seed in 0..40_u64 {
+            let mut rng = Lcg(seed + 1);
+            let mut rig = forked();
+            let tab = rig.tab();
+            let anchor = pages(&rig)[0].rect.center().to_vec2();
+            let mut titles = std::collections::HashMap::new();
+            for n in 0..4 {
+                let id = rig.app.alloc_node_id();
+                let at = anchor + egui::vec2(rng.between(-250.0, 450.0), rng.between(-200.0, 250.0));
+                let title = format!("CARD{n}");
+                rig.app.insert_placeholder_node(
+                    id.clone(),
+                    at,
+                    crate::store::model::Kind::Tab,
+                    crate::session_sync::tests::sleeping_tab("https://stress.test/", &title),
+                );
+                titles.insert(id, title);
+            }
+            let zoom = rng.between(0.5, 3.0);
+            rig.app.pending_graph_zoom = Some(zoom);
+            let mut shapes = Vec::new();
+            for _ in 0..4 {
+                shapes = frame_shapes(&mut rig);
+                rig.app.camera.tween = None;
+            }
+            let order: Vec<_> = rig.app.level_items();
+            let screen = |e: &crate::level::CardEntry| rig.app.graph_world_rect_to_screen(e.rect);
+            for (i, lower) in order.iter().enumerate() {
+                let Some(title) = titles.get(&lower.id) else { continue };
+                for (bounds, _) in shown_text(&shapes, title) {
+                    checked += 1;
+                    for higher in &order[i + 1..] {
+                        assert!(
+                            shared_area(bounds, screen(higher)) < 1.0,
+                            "seed {seed}, zoom {zoom}: {title} shows through {} ({bounds:?} over {:?})",
+                            higher.id,
+                            screen(higher)
+                        );
+                    }
+                }
+            }
+            let label = rig.app.nav_history[&tab].tree()[0].label.clone();
+            let page0 = screen(&pages(&rig)[0]);
+            for (bounds, height) in shown_text(&shapes, &label) {
+                if page0.contains_rect(bounds) && bounds.area() > 0.0 {
+                    label_heights.push(height);
+                }
+            }
+        }
+        assert!(checked > 20, "the layouts must put titles on screen to mean anything: {checked}");
+        assert!(label_heights.len() > 10, "the strip label must show in enough layouts: {}", label_heights.len());
+        let first = label_heights[0];
+        assert!(
+            label_heights.iter().all(|h| *h == first),
+            "the strip label's height varied with the zoom: {label_heights:?}"
+        );
+    }
 }
