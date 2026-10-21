@@ -706,4 +706,77 @@ mod tests {
         assert!(rects.iter().all(|(fill, _)| *fill == egui::Color32::TRANSPARENT), "no fill over the card frame");
         assert!(rects.iter().any(|(_, kind)| *kind == egui::StrokeKind::Outside), "the cursor ring clears its border");
     }
+
+    /// One headless frame of the rig's graph, keeping the painted shapes (`Rig::frame` drops them).
+    fn frame_shapes(rig: &mut Rig) -> Vec<egui::epaint::ClippedShape> {
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1024.0, 768.0))),
+            ..Default::default()
+        };
+        let app = &mut rig.app;
+        let mut output = rig.ctx.run_ui(input, |ui| app.build_graph_ui(ui));
+        output.textures_delta.clear();
+        output.shapes
+    }
+
+    fn shared_area(a: egui::Rect, b: egui::Rect) -> f32 {
+        let i = a.intersect(b);
+        i.width().max(0.0) * i.height().max(0.0)
+    }
+
+    /// The part of each text shape reading `text` that shows: its bounds cut by its clip, and its galley height.
+    fn shown_text(shapes: &[egui::epaint::ClippedShape], text: &str) -> Vec<(egui::Rect, f32)> {
+        shapes
+            .iter()
+            .filter_map(|s| match &s.shape {
+                egui::Shape::Text(t) if t.galley.text().contains(text) => {
+                    Some((t.visual_bounding_rect().intersect(s.clip_rect), t.galley.size().y))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The bug reported 2026-10-21 (a card's title drawn across the strip over it, and the strip's own text not scaling
+    /// with the rest of the graph), made deterministic: a tab card placed under the strip's first page, viewed at
+    /// three zooms.
+    #[test]
+    fn text_of_a_card_under_the_strip_stays_behind_it_and_the_strip_label_keeps_its_size() {
+        let mut rig = forked();
+        let tab = rig.tab();
+        let under = rig.app.alloc_node_id();
+        let world_page = pages(&rig)[0].rect;
+        rig.app.insert_placeholder_node(
+            under.clone(),
+            world_page.center().to_vec2() - egui::vec2(60.0, 40.0),
+            crate::store::model::Kind::Tab,
+            crate::session_sync::tests::sleeping_tab("https://under.test/", "UNDERNEATH"),
+        );
+        let label = rig.app.nav_history[&tab].tree()[0].label.clone();
+        let (mut overlapped, mut label_heights) = (false, Vec::new());
+        for zoom in [0.8_f32, 1.0, 2.0] {
+            rig.app.pending_graph_zoom = Some(zoom);
+            let mut shapes = Vec::new();
+            for _ in 0..4 {
+                shapes = frame_shapes(&mut rig);
+                rig.app.camera.tween = None;
+            }
+            let strip: Vec<egui::Rect> =
+                pages(&rig).iter().map(|p| rig.app.graph_world_rect_to_screen(p.rect)).collect();
+            let card = rig.app.graph_world_rect_to_screen(rig.app.card_rect(&under).expect("the placed card"));
+            for (bounds, _) in shown_text(&shapes, "UNDERNEATH") {
+                assert!(
+                    strip.iter().all(|page| shared_area(bounds, *page) < 1.0),
+                    "zoom {zoom}: the lower card's title shows through the strip: {bounds:?} over {strip:?}"
+                );
+            }
+            overlapped |= strip.iter().any(|page| shared_area(card, *page) > 100.0);
+            label_heights.extend(shown_text(&shapes, &label).iter().map(|(_, h)| (zoom, *h)));
+        }
+        assert!(overlapped, "the placed card really sits under the strip, or this test proves nothing");
+        let at = |z: f32| label_heights.iter().filter(|(zoom, _)| *zoom == z).map(|(_, h)| *h).collect::<Vec<_>>();
+        assert!(!at(1.0).is_empty(), "the strip's label shows at 100%: {label_heights:?}");
+        assert_eq!(at(2.0), at(1.0), "its on-screen height does not follow the zoom: {label_heights:?}");
+        assert_eq!(at(0.8), at(1.0), "nor at 80%: {label_heights:?}");
+    }
 }
