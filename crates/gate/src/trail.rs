@@ -108,12 +108,6 @@ fn field<'a>(s: &'a State, id: &str, key: &str) -> Option<&'a Value> {
     trail_of(s, id).map(|t| &t[key])
 }
 
-/// A card's screen rect (`[left, top, right, bottom]`) from EXPORTSTATE.
-fn rect_of(card: &Value) -> Option<[f64; 4]> {
-    let r = card["rect"].as_array()?;
-    Some([r.first()?.as_f64()?, r.get(1)?.as_f64()?, r.get(2)?.as_f64()?, r.get(3)?.as_f64()?])
-}
-
 /// Whether two `[left, top, right, bottom]` rects share area.
 fn overlap(a: [f64; 4], b: [f64; 4]) -> bool {
     a[0] < b[2] && b[0] < a[2] && a[1] < b[3] && b[1] < a[3]
@@ -129,8 +123,8 @@ fn drag_over_strip(inst: &mut Instance, card: &str) -> io::Result<()> {
         s.all_cards().iter().filter(|c| is_strip(c)).count() == 4 && s.all_cards().iter().any(|c| c["id"] == card)
     })?;
     let (Some(from), Some(page)) = (
-        s.all_cards().iter().find(|c| c["id"] == card).and_then(rect_of),
-        s.all_cards().iter().filter(|c| is_strip(c)).nth(1).and_then(rect_of),
+        s.all_cards().iter().find(|c| c["id"] == card).and_then(|c| State::rect_from(&c["rect"])),
+        s.all_cards().iter().filter(|c| is_strip(c)).nth(1).and_then(|c| State::rect_from(&c["rect"])),
     ) else {
         return Err(bad("the card or the strip's second page has no screen rect".to_string()));
     };
@@ -152,8 +146,8 @@ fn drag_over_strip(inst: &mut Instance, card: &str) -> io::Result<()> {
     inst.send(&format!("MOUSEMOVE {}", at(1.0)))?;
     let s = inst.export_until("drag-held", |s| s.0["dragging"].as_str() == Some(card))?;
     check_is("the press dragged the card", Some(card), s.0["dragging"].as_str());
-    let held = s.all_cards().iter().find(|c| c["id"] == card).and_then(rect_of);
-    let page = s.all_cards().iter().filter(|c| is_strip(c)).nth(1).and_then(rect_of);
+    let held = s.all_cards().iter().find(|c| c["id"] == card).and_then(|c| State::rect_from(&c["rect"]));
+    let page = s.all_cards().iter().filter(|c| is_strip(c)).nth(1).and_then(|c| State::rect_from(&c["rect"]));
     check_is("the held card lies over the strip's page", Some(true), held.zip(page).map(|(a, b)| overlap(a, b)));
     if let Ok(png) = inst.screenshot("drag-over-strip") {
         if let Some(dir) = std::env::var_os("RUN_DIR") {
