@@ -794,84 +794,111 @@ mod tests {
         }
     }
 
-    /// Random layouts of tab cards around the strip, at random zooms: no card's text shows inside a card drawn after
-    /// it (the strip's pages included), and the strip's labels keep one on-screen height at every zoom.
-    #[test]
-    fn random_layouts_never_show_a_cards_text_through_a_later_card_or_rescale_the_strip_label() {
-        let (mut checked, mut label_heights) = (0, Vec::<f32>::new());
-        let mut kinds_seen = std::collections::HashSet::new();
-        for seed in 0..40_u64 {
-            let mut rng = Lcg(seed + 1);
-            let mut rig = forked();
-            let tab = rig.tab();
-            let anchor = pages(&rig)[0].rect.center().to_vec2();
-            let mut titles = std::collections::HashMap::new();
-            for n in 0..6 {
-                let at = anchor + egui::vec2(rng.between(-250.0, 450.0), rng.between(-200.0, 250.0));
-                let (title, id) = match n % 3 {
-                    0 => {
-                        let (id, title) = (rig.app.alloc_node_id(), format!("CARD{n}"));
-                        let tab = crate::session_sync::tests::sleeping_tab("https://stress.test/", &title);
-                        rig.app.insert_placeholder_node(id.clone(), at, crate::store::model::Kind::Tab, tab);
-                        (title, id)
-                    }
-                    1 => {
-                        let (id, title) = (rig.app.alloc_node_id(), format!("FILE{n}"));
-                        let download = crate::Runtime::Download(crate::node::DownloadPayload {
-                            path: format!("{title}.bin"),
-                            bytes_received: 0,
-                            total_bytes: None,
-                            completed: true,
-                            failed: false,
-                        });
-                        rig.app.insert_placeholder_node(id.clone(), at, crate::store::model::Kind::Download, download);
-                        (title, id)
-                    }
-                    _ => {
-                        let title = format!("GROUP{n}");
-                        let placement = crate::fetched::Placement { group: None, pos: at };
-                        (title.clone(), rig.app.place_group(None, &title, placement))
-                    }
-                };
-                titles.insert(id, title);
-            }
-            if rng.next() < 0.5 {
-                let ids: Vec<_> = titles.keys().cloned().collect();
-                rig.app.select_only(&ids[(rng.next() * ids.len() as f32) as usize % ids.len()]);
-            }
-            let zoom = rng.between(0.5, 3.0);
-            rig.app.pending_graph_zoom = Some(zoom);
-            let mut shapes = Vec::new();
-            for _ in 0..4 {
-                shapes = frame_shapes(&mut rig);
-                rig.app.camera.tween = None;
-            }
-            let order: Vec<_> = rig.app.level_items();
-            let screen = |e: &crate::level::CardEntry| rig.app.graph_world_rect_to_screen(e.rect);
-            for (i, lower) in order.iter().enumerate() {
-                let Some(title) = titles.get(&lower.id) else { continue };
-                for (bounds, _) in shown_text(&shapes, title) {
-                    checked += 1;
-                    kinds_seen.insert(title[..4].to_string());
-                    for higher in &order[i + 1..] {
-                        assert!(
-                            shared_area(bounds, screen(higher)) < 1.0,
-                            "seed {seed}, zoom {zoom}: {title} shows through {} ({bounds:?} over {:?})",
-                            higher.id,
-                            screen(higher)
-                        );
-                    }
+    /// The forked trail's rig with six cards (tab, download and group in turn) scattered around the strip's first page by
+    /// `rng`, and a random one selected half the time; each card's id maps to the title its text carries.
+    fn random_layout(rng: &mut Lcg) -> (Rig, std::collections::HashMap<String, String>) {
+        let mut rig = forked();
+        let anchor = pages(&rig)[0].rect.center().to_vec2();
+        let mut titles = std::collections::HashMap::new();
+        for n in 0..6 {
+            let at = anchor + egui::vec2(rng.between(-250.0, 450.0), rng.between(-200.0, 250.0));
+            let (title, id) = match n % 3 {
+                0 => {
+                    let (id, title) = (rig.app.alloc_node_id(), format!("CARD{n}"));
+                    let tab = crate::session_sync::tests::sleeping_tab("https://stress.test/", &title);
+                    rig.app.insert_placeholder_node(id.clone(), at, crate::store::model::Kind::Tab, tab);
+                    (title, id)
                 }
-            }
-            let label = rig.app.nav_history[&tab].tree()[0].label.clone();
-            let page0 = screen(&pages(&rig)[0]);
-            for (bounds, height) in shown_text(&shapes, &label) {
-                if page0.contains_rect(bounds) && bounds.area() > 0.0 {
-                    label_heights.push(height);
+                1 => {
+                    let (id, title) = (rig.app.alloc_node_id(), format!("FILE{n}"));
+                    let download = crate::Runtime::Download(crate::node::DownloadPayload {
+                        path: format!("{title}.bin"),
+                        bytes_received: 0,
+                        total_bytes: None,
+                        completed: true,
+                        failed: false,
+                    });
+                    rig.app.insert_placeholder_node(id.clone(), at, crate::store::model::Kind::Download, download);
+                    (title, id)
+                }
+                _ => {
+                    let title = format!("GROUP{n}");
+                    let placement = crate::fetched::Placement { group: None, pos: at };
+                    (title.clone(), rig.app.place_group(None, &title, placement))
+                }
+            };
+            titles.insert(id, title);
+        }
+        if rng.next() < 0.5 {
+            let ids: Vec<_> = titles.keys().cloned().collect();
+            rig.app.select_only(&ids[(rng.next() * ids.len() as f32) as usize % ids.len()]);
+        }
+        (rig, titles)
+    }
+
+    /// Frames the rig a few times so the camera settles, and returns the last frame's shapes.
+    fn settled_shapes(rig: &mut Rig) -> Vec<egui::epaint::ClippedShape> {
+        let mut shapes = Vec::new();
+        for _ in 0..4 {
+            shapes = frame_shapes(rig);
+            rig.app.camera.tween = None;
+        }
+        shapes
+    }
+
+    /// How many shown titles `shapes` has (their kinds' first four letters added to `kinds`), or the first title that
+    /// shows inside a card drawn after its own.
+    fn titles_behind_later_cards(
+        rig: &Rig,
+        shapes: &[egui::epaint::ClippedShape],
+        titles: &std::collections::HashMap<String, String>,
+        kinds: &mut std::collections::HashSet<String>,
+    ) -> Result<usize, String> {
+        let order = rig.app.level_items();
+        let screen = |e: &crate::level::CardEntry| rig.app.graph_world_rect_to_screen(e.rect);
+        let mut checked = 0;
+        for (i, lower) in order.iter().enumerate() {
+            let Some(title) = titles.get(&lower.id) else { continue };
+            for (bounds, _) in shown_text(shapes, title) {
+                checked += 1;
+                kinds.insert(title[..4].to_string());
+                if let Some(higher) = order[i + 1..].iter().find(|h| shared_area(bounds, screen(h)) >= 1.0) {
+                    return Err(format!("{title} shows through {} ({bounds:?} over {:?})", higher.id, screen(higher)));
                 }
             }
         }
-        assert_eq!(kinds_seen.len(), 3, "every kind of card had text on screen to check: {kinds_seen:?}");
+        Ok(checked)
+    }
+
+    /// The heights of the strip's first label where it shows inside its page.
+    fn strip_label_heights(rig: &Rig, shapes: &[egui::epaint::ClippedShape]) -> Vec<f32> {
+        let label = rig.app.nav_history[&rig.tab()].tree()[0].label.clone();
+        let page0 = rig.app.graph_world_rect_to_screen(pages(rig)[0].rect);
+        shown_text(shapes, &label)
+            .into_iter()
+            .filter(|(bounds, _)| page0.contains_rect(*bounds) && bounds.area() > 0.0)
+            .map(|(_, height)| height)
+            .collect()
+    }
+
+    /// Random layouts at random zooms: no card's text shows inside a card drawn after it (the strip's pages
+    /// included), and the strip's labels keep one on-screen height at every zoom.
+    #[test]
+    fn random_layouts_never_show_a_cards_text_through_a_later_card_or_rescale_the_strip_label() {
+        let (mut checked, mut label_heights, mut kinds) = (0, Vec::new(), std::collections::HashSet::new());
+        for seed in 0..40_u64 {
+            let mut rng = Lcg(seed + 1);
+            let (mut rig, titles) = random_layout(&mut rng);
+            let zoom = rng.between(0.5, 3.0);
+            rig.app.pending_graph_zoom = Some(zoom);
+            let shapes = settled_shapes(&mut rig);
+            match titles_behind_later_cards(&rig, &shapes, &titles, &mut kinds) {
+                Ok(n) => checked += n,
+                Err(why) => panic!("seed {seed}, zoom {zoom}: {why}"),
+            }
+            label_heights.extend(strip_label_heights(&rig, &shapes));
+        }
+        assert_eq!(kinds.len(), 3, "every kind of card had text on screen to check: {kinds:?}");
         assert!(checked > 20, "the layouts must put titles on screen to mean anything: {checked}");
         assert!(label_heights.len() > 10, "the strip label must show in enough layouts: {}", label_heights.len());
         let first = label_heights[0];
@@ -879,5 +906,39 @@ mod tests {
             label_heights.iter().all(|h| *h == first),
             "the strip label's height varied with the zoom: {label_heights:?}"
         );
+    }
+
+    /// The same invariants while a card is held mid-drag onto another: a stored card on even seeds, a strip page on
+    /// odd ones.
+    #[test]
+    fn a_card_held_mid_drag_keeps_the_layering_and_the_strip_label_size() {
+        let (mut checked, mut drags, mut kinds) = (0, 0, std::collections::HashSet::new());
+        for seed in 0..24_u64 {
+            let mut rng = Lcg(1000 + seed);
+            let (mut rig, titles) = random_layout(&mut rng);
+            let zoom = rng.between(0.8, 2.0);
+            rig.app.pending_graph_zoom = Some(zoom);
+            settled_shapes(&mut rig);
+            let ids: Vec<String> = if seed % 2 == 0 {
+                titles.keys().cloned().collect()
+            } else {
+                pages(&rig).into_iter().map(|p| p.id).collect()
+            };
+            let grabbed = &ids[(rng.next() * ids.len() as f32) as usize % ids.len()];
+            let from = rig.screen(grabbed).center();
+            let to = egui::pos2(rng.between(150.0, 850.0), rng.between(150.0, 650.0));
+            rig.hold_drag(from, to);
+            let shapes = settled_shapes(&mut rig);
+            drags += usize::from(rig.app.interaction.dragging.is_some());
+            match titles_behind_later_cards(&rig, &shapes, &titles, &mut kinds) {
+                Ok(n) => checked += n,
+                Err(why) => panic!("seed {seed}, dragging {grabbed} at zoom {zoom}: {why}"),
+            }
+            let heights = strip_label_heights(&rig, &shapes);
+            assert!(heights.windows(2).all(|w| w[0] == w[1]), "seed {seed}: strip label heights differ: {heights:?}");
+            rig.release(to);
+        }
+        assert!(checked > 10, "titles must be on screen mid-drag for this to mean anything: {checked}");
+        assert!(drags > 6, "most grabs must actually start a drag: {drags}");
     }
 }
