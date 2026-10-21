@@ -153,7 +153,7 @@ fn a_painted_jar_chip_can_be_hit_until_it_stops_being_painted() {
         tooltip: None,
     };
     let frame = |paint: bool| {
-        let mut overlays: crate::graph_ui::DeferredOverlays = Vec::new();
+        let mut overlays: crate::graph_ui::DeferredOverlays = DeferredOverlays::default();
         if paint {
             push_jar_chip(
                 &mut overlays,
@@ -167,9 +167,7 @@ fn a_painted_jar_chip_can_be_hit_until_it_stops_being_painted() {
         }
         let mut overlays = Some(overlays);
         let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
-            for overlay in overlays.take().unwrap_or_default() {
-                overlay(ui.painter(), &|p| p);
-            }
+            overlays.take().unwrap_or_default().play(ui.painter(), &|p| p);
         });
         output.textures_delta.clear();
     };
@@ -268,7 +266,7 @@ fn a_group_header_draws_its_name_by_the_display_rule() {
     ] {
         let segs = crate::names::display_name(name, crate::names::UNTITLED);
         let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
-            let mut overlays: DeferredOverlays = Vec::new();
+            let mut overlays: DeferredOverlays = DeferredOverlays::default();
             let header = CardHeader {
                 identity: Identity::Glyph { glyph: egui_phosphor::light::FOLDER, color: None },
                 name: if user_name { String::new() } else { name.into() },
@@ -280,9 +278,7 @@ fn a_group_header_draws_its_name_by_the_display_rule() {
             };
             let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(300.0, 200.0));
             app.paint_card_header(ui, &mut overlays, "n", rect, 1.0, 1.0, header);
-            for overlay in overlays {
-                overlay(ui.painter(), &|p| p);
-            }
+            overlays.play(ui.painter(), &|p| p);
         });
         output.textures_delta.clear();
         let galleys: Vec<_> = output
@@ -309,7 +305,7 @@ fn a_header_with_an_empty_glyph_draws_title_and_source_at_the_header_lines() {
     crate::theme::apply_fonts(&ctx);
     let mut app = App::default();
     let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
-        let mut overlays: DeferredOverlays = Vec::new();
+        let mut overlays: DeferredOverlays = DeferredOverlays::default();
         let header = CardHeader {
             identity: Identity::Glyph { glyph: "", color: None },
             name: "Title".into(),
@@ -321,9 +317,7 @@ fn a_header_with_an_empty_glyph_draws_title_and_source_at_the_header_lines() {
         };
         let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(300.0, 200.0));
         assert!(app.paint_card_header(ui, &mut overlays, "n", rect, 1.0, 1.0, header));
-        for overlay in overlays {
-            overlay(ui.painter(), &|p| p);
-        }
+        overlays.play(ui.painter(), &|p| p);
     });
     output.textures_delta.clear();
     let texts: Vec<_> = output
@@ -358,7 +352,7 @@ fn a_group_card_tooltip_names_a_hidden_character() {
     ] {
         app.doc.mirror.set(&g, crate::store::model::field::NAME, crate::store::model::FieldValue::Str(name.into()));
         let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
-            let mut overlays: DeferredOverlays = Vec::new();
+            let mut overlays: DeferredOverlays = DeferredOverlays::default();
             let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(300.0, 200.0));
             let view = test_view(plain(TYPE_GROUP));
             let mut actions = Vec::new();
@@ -383,9 +377,7 @@ fn a_group_card_tooltip_names_a_hidden_character() {
             };
             let body = app.paint_group_body(ui, &mut pass, &g, &view, rect);
             assert_eq!(body.tooltip.as_deref(), want, "{name:?}");
-            for overlay in overlays {
-                overlay(ui.painter(), &|p| p);
-            }
+            overlays.play(ui.painter(), &|p| p);
         });
         output.textures_delta.clear();
         let texts: Vec<_> = output

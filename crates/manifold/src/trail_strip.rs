@@ -440,7 +440,7 @@ mod tests {
     /// Runs `f` with a card pass at `zoom` (shapes at `1 / zoom`, text at `zoom` screen scale) and plays the queued
     /// overlays on `ui`'s painter with the world-to-screen projection `p * zoom`.
     fn with_pass(ui: &mut egui::Ui, zoom: f32, f: impl FnOnce(&mut egui::Ui, &mut CardPass)) {
-        let mut overlays: crate::graph_ui::DeferredOverlays = Vec::new();
+        let mut overlays = crate::graph_ui::DeferredOverlays::default();
         let (mut actions, drop_preview, members) = (Vec::new(), None, std::collections::HashMap::new());
         let mut pass = CardPass {
             deferred_overlays: &mut overlays,
@@ -460,9 +460,7 @@ mod tests {
             carry: true,
         };
         f(ui, &mut pass);
-        for overlay in overlays {
-            overlay(ui.painter(), &|p| p * zoom);
-        }
+        overlays.play(ui.painter(), &|p| p * zoom);
     }
 
     fn text_shapes(output: &egui::FullOutput) -> Vec<(egui::Pos2, f32)> {

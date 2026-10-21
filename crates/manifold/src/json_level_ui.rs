@@ -999,7 +999,7 @@ mod tests {
         let ctx = egui::Context::default();
         crate::theme::apply_fonts(&ctx);
         let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
-            let mut overlays: DeferredOverlays = Vec::new();
+            let mut overlays: DeferredOverlays = DeferredOverlays::default();
             let pal = palette(true);
             let look = CardLook {
                 palette: &pal,
@@ -1025,9 +1025,7 @@ mod tests {
                 card.more,
                 &look,
             );
-            for overlay in overlays {
-                overlay(ui.painter(), &|p| p);
-            }
+            overlays.play(ui.painter(), &|p| p);
         });
         output.textures_delta.clear();
         output.shapes.into_iter().map(|s| s.shape).collect()

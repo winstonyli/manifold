@@ -7,11 +7,13 @@ use crate::store::model::{TYPE_DOWNLOAD, TYPE_IMAGE, TYPE_JSON, TYPE_NOTE, TYPE_
 mod camera;
 mod hints;
 mod keys;
+mod overlays;
 mod toolbar;
 
 pub(crate) use camera::*;
 use hints::*;
 pub(crate) use keys::*;
+pub(crate) use overlays::*;
 pub(crate) use toolbar::*;
 
 /// Graph view's chrome is just the "+ New Tab" toolbar — no address bar,
@@ -398,7 +400,7 @@ impl App {
             // `DeferredOverlays`'s own doc comment for why (this frame's
             // real pan/zoom isn't reflected in `project`, captured
             // above, until after this whole closure returns).
-            let mut deferred_overlays: DeferredOverlays = Vec::new();
+            let mut deferred_overlays: DeferredOverlays = DeferredOverlays::default();
             paint_dot_grid(ui.painter(), self.camera.rect, zoom_scale, inv_zoom, ui.visuals().weak_text_color());
 
             // The link line under the pointer (link-gestures spec B) is drawn highlighted; a click on it is
@@ -462,9 +464,7 @@ impl App {
         // during a fast pan or zoom.
         let (zoom_scale, translation) = self.camera.transform(scene_outer_rect);
         let project = move |world: egui::Pos2| -> egui::Pos2 { (translation + zoom_scale * world.to_vec2()).to_pos2() };
-        for overlay in deferred_overlays {
-            overlay(&overlay_painter, &project);
-        }
+        deferred_overlays.play(&overlay_painter, &project);
         if scene_rect != scene_rect_before_pan_zoom {
             self.interaction.pending_new_node = None;
         }
@@ -959,46 +959,6 @@ pub(crate) fn paint_dot_grid(
         }
     }
 }
-
-/// One deferred `overlay_painter` paint call, queued during `Scene::show`'s
-/// content closure and actually painted only after it returns -- see
-/// `DeferredOverlays`'s own doc comment for why this exists at all. Takes
-/// the *real* `overlay_painter`/`project` (recomputed fresh post-`Scene`)
-/// as arguments at call time, not at queue time.
-type DeferredOverlay = Box<dyn FnOnce(&egui::Painter, &dyn Fn(egui::Pos2) -> egui::Pos2)>;
-
-/// A frame's worth of `overlay_painter` decorations (node labels, pin/audio/
-/// close/eject icons, the empty-canvas menu's own row labels, ...), queued
-/// during `Scene::show`'s content closure instead of painted immediately.
-///
-/// Root cause this works around: `overlay_painter` draws on a screen-space
-/// layer deliberately untransformed by `Scene` (see that field's own doc
-/// comment for why -- crisp text at any zoom, not blurry rescaled glyphs),
-/// so anything painted on it has to convert its own world position to
-/// screen space manually via `project`. But `project` is built from
-/// `self.camera.rect`, which -- confirmed by reading `egui::Scene::
-/// show`'s actual source (0.36.2) -- is only updated *after* the whole
-/// content closure returns for the frame; a live pan/zoom drag is applied
-/// to `Scene`'s own *internal* transform before the closure runs, which is
-/// why `ui.painter()`-drawn card content (rendered on `Scene`'s own
-/// transformed layer, where egui applies that internal transform
-/// automatically) is always correctly positioned, while anything computed
-/// from `project` during the same closure is exactly one frame stale --
-/// invisible at rest, but a growing pixel gap between a card and its own
-/// label/icons the faster the camera pans, since a fixed one-frame timing
-/// lag becomes a bigger on-screen offset the more distance the camera
-/// covers in that frame.
-///
-/// Fix: instead of painting through `overlay_painter` immediately (using
-/// the stale `project` captured before `Scene::show`), every such call
-/// queues a closure capturing its own world position and paint parameters.
-/// Once `Scene::show` returns and `self.camera.rect` has been updated
-/// to reflect this frame's actual pan/zoom, `project` is recomputed fresh
-/// and every queued closure is invoked with it -- so overlay decorations
-/// are painted using the *same* up-to-date transform the card content
-/// itself already reflects, closing the gap entirely rather than just
-/// making it smaller.
-pub(crate) type DeferredOverlays = Vec<DeferredOverlay>;
 
 #[cfg(test)]
 mod tests {

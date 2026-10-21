@@ -800,7 +800,7 @@ impl App {
                     let viewport = camera.rect;
                     let weak = ui.visuals().weak_text_color();
                     let mut rect = camera.rect;
-                    let mut overlays: crate::graph_ui::DeferredOverlays = Vec::new();
+                    let mut overlays: crate::graph_ui::DeferredOverlays = DeferredOverlays::default();
                     let mut actions = Vec::new();
                     let members = std::collections::HashMap::new();
                     let mut pass = crate::card::CardPass {
@@ -849,9 +849,7 @@ impl App {
                     let (zoom_scale, translation) = camera.transform(outer);
                     let project = move |world: egui::Pos2| (translation + zoom_scale * world.to_vec2()).to_pos2();
                     let overlay_painter = ui.painter().with_clip_rect(outer);
-                    for overlay in overlays {
-                        overlay(&overlay_painter, &project);
-                    }
+                    overlays.play(&overlay_painter, &project);
                     debug_assert!(actions.is_empty(), "a trail page's click returns no GraphAction");
                 });
             });

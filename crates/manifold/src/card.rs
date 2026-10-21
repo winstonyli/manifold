@@ -907,6 +907,19 @@ impl App {
         pass: &mut CardPass,
         entry: &CardEntry,
     ) -> Option<CardOutput> {
+        let out = self.draw_card_inside_overlay_scope(ui, pass, entry);
+        pass.deferred_overlays.end_card();
+        out
+    }
+
+    /// `draw_graph_card`'s body: it begins the card's overlay scope (`DeferredOverlays::begin_card`), and the caller
+    /// ends it on every path.
+    fn draw_card_inside_overlay_scope(
+        &mut self,
+        ui: &mut egui::Ui,
+        pass: &mut CardPass,
+        entry: &CardEntry,
+    ) -> Option<CardOutput> {
         let id = entry.id.as_str();
         let stored = entry.origin == Origin::Stored;
         let inv_zoom = pass.inv_zoom;
@@ -935,6 +948,7 @@ impl App {
         // the interacts, which must follow the body (below). This slot is
         // filled in once it is.
         let background = ui.painter().add(egui::Shape::Noop);
+        pass.deferred_overlays.begin_card(rect);
         let body = self.paint_card_body(ui, pass, entry, &view, rect);
         let deferred_overlays = &mut *pass.deferred_overlays;
 
@@ -1002,7 +1016,7 @@ impl App {
         }
         if pass.show_order {
             let (number, corner) = (slot.map_or(0, |s| s + 1), rect.left_top());
-            deferred_overlays.push(Box::new(move |painter, project| {
+            deferred_overlays.push_top(Box::new(move |painter, project| {
                 // Kept on screen: a card at the edge would clip its badge.
                 let center = project(corner);
                 let center = center.clamp(painter.clip_rect().shrink(10.0).min, painter.clip_rect().shrink(10.0).max);
@@ -1169,7 +1183,7 @@ impl App {
                 _ => egui::Vec2::ZERO,
             };
             let (ghost, fill) = (rect.translate(shift), style.fill);
-            deferred_overlays.push(Box::new(move |painter, project| {
+            deferred_overlays.push_top(Box::new(move |painter, project| {
                 let screen = egui::Rect::from_min_max(project(ghost.min), project(ghost.max));
                 painter.rect_filled(screen, 2.0, fill.gamma_multiply(0.8));
                 painter.rect_stroke(screen, 2.0, egui::Stroke::new(2.0, ACCENT), egui::StrokeKind::Inside);
