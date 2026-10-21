@@ -17,12 +17,13 @@ impl App {
     pub(crate) fn paint_note_body(
         &mut self,
         ui: &mut egui::Ui,
-        deferred_overlays: &mut DeferredOverlays,
+        pass: &mut CardPass,
         id: &str,
+        _view: &CardView,
         rect: egui::Rect,
-        inv_zoom: f32,
-        zoom_scale: f32,
     ) -> CardBody {
+        let (inv_zoom, zoom_scale) = (pass.inv_zoom, pass.zoom_scale);
+        let deferred_overlays = &mut *pass.deferred_overlays;
         let mut body = CardBody { interact_rect: rect, tooltip: None };
         let tall = tab_has_header(rect, inv_zoom);
         let paper = tab_thumb_rect(rect, inv_zoom);

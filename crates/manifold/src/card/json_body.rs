@@ -13,11 +13,13 @@ impl App {
     pub(crate) fn paint_json_body(
         &mut self,
         ui: &mut egui::Ui,
-        deferred_overlays: &mut DeferredOverlays,
+        pass: &mut CardPass,
         id: &str,
+        _view: &CardView,
         rect: egui::Rect,
-        zoom_scale: f32,
     ) -> CardBody {
+        let zoom_scale = pass.zoom_scale;
+        let deferred_overlays = &mut *pass.deferred_overlays;
         let mut body = CardBody { interact_rect: rect, tooltip: None };
         let error = self.nodes.get(id).and_then(|n| n.as_json()).and_then(|j| j.error.clone());
         if let Some(error) = error {

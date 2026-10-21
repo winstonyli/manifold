@@ -33,12 +33,13 @@ impl App {
     pub(crate) fn paint_unloaded_tab_body(
         &mut self,
         ui: &mut egui::Ui,
-        deferred_overlays: &mut DeferredOverlays,
+        pass: &mut CardPass,
         id: &str,
+        _view: &CardView,
         rect: egui::Rect,
-        inv_zoom: f32,
-        zoom_scale: f32,
     ) -> CardBody {
+        let (inv_zoom, zoom_scale) = (pass.inv_zoom, pass.zoom_scale);
+        let deferred_overlays = &mut *pass.deferred_overlays;
         let mut body = CardBody { interact_rect: rect, tooltip: None };
         let Some(tab) = self.nodes.get(id).and_then(|n| n.as_unloaded()) else {
             return body;
@@ -254,12 +255,13 @@ impl App {
     pub(crate) fn paint_tab_body(
         &mut self,
         ui: &mut egui::Ui,
-        deferred_overlays: &mut DeferredOverlays,
+        pass: &mut CardPass,
         id: &str,
+        _view: &CardView,
         rect: egui::Rect,
-        inv_zoom: f32,
-        zoom_scale: f32,
     ) -> CardBody {
+        let (inv_zoom, zoom_scale) = (pass.inv_zoom, pass.zoom_scale);
+        let deferred_overlays = &mut *pass.deferred_overlays;
         let mut body = CardBody { interact_rect: rect, tooltip: None };
         let Some((title, url, tab_view_kind, unresponsive, loading)) =
             self.nodes.get(id).and_then(|n| n.as_tab()).map(|t| {

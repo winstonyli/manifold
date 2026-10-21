@@ -1243,23 +1243,19 @@ impl App {
             };
         }
         let id = entry.id.as_str();
-        let (inv_zoom, zoom_scale) = (pass.inv_zoom, pass.zoom_scale);
-        let deferred_overlays = &mut *pass.deferred_overlays;
         match view.kind.ty {
-            TYPE_DOWNLOAD => self.paint_download_body(ui, deferred_overlays, id, rect, inv_zoom, zoom_scale),
-            TYPE_NOTE => self.paint_note_body(ui, deferred_overlays, id, rect, inv_zoom, zoom_scale),
-            TYPE_JAR => self.paint_jar_body(ui, deferred_overlays, id, rect, inv_zoom, zoom_scale),
-            TYPE_IMAGE => self.paint_image_body(ui, deferred_overlays, id, rect, inv_zoom, zoom_scale),
-            TYPE_PDF => self.paint_pdf_body(ui, deferred_overlays, id, rect, inv_zoom, zoom_scale),
-            TYPE_JSON => self.paint_json_body(ui, deferred_overlays, id, rect, zoom_scale),
+            TYPE_DOWNLOAD => self.paint_download_body(ui, pass, id, view, rect),
+            TYPE_NOTE => self.paint_note_body(ui, pass, id, view, rect),
+            TYPE_JAR => self.paint_jar_body(ui, pass, id, view, rect),
+            TYPE_IMAGE => self.paint_image_body(ui, pass, id, view, rect),
+            TYPE_PDF => self.paint_pdf_body(ui, pass, id, view, rect),
+            TYPE_JSON => self.paint_json_body(ui, pass, id, view, rect),
             // Presentation matches the type, not `is_container` (see `card_style`).
             TYPE_GROUP => self.paint_group_body(ui, pass, id, view, rect),
-            TYPE_TAB if view.kind.loaded() => {
-                self.paint_tab_body(ui, deferred_overlays, id, rect, inv_zoom, zoom_scale)
-            }
-            TYPE_TAB => self.paint_unloaded_tab_body(ui, deferred_overlays, id, rect, inv_zoom, zoom_scale),
+            TYPE_TAB if view.kind.loaded() => self.paint_tab_body(ui, pass, id, view, rect),
+            TYPE_TAB => self.paint_unloaded_tab_body(ui, pass, id, view, rect),
             // `TYPE_UNKNOWN` (`card_kind::canonical_type`): every other row is matched above.
-            _ => self.paint_unknown_body(ui, deferred_overlays, id, rect, inv_zoom, zoom_scale),
+            _ => self.paint_unknown_body(ui, pass, id, view, rect),
         }
     }
 
@@ -1268,12 +1264,13 @@ impl App {
     pub(crate) fn paint_jar_body(
         &mut self,
         ui: &mut egui::Ui,
-        deferred_overlays: &mut DeferredOverlays,
+        pass: &mut CardPass,
         id: &str,
+        _view: &CardView,
         rect: egui::Rect,
-        inv_zoom: f32,
-        zoom_scale: f32,
     ) -> CardBody {
+        let (inv_zoom, zoom_scale) = (pass.inv_zoom, pass.zoom_scale);
+        let deferred_overlays = &mut *pass.deferred_overlays;
         let body = CardBody { interact_rect: rect, tooltip: None };
         if self.graph_lod_simplified {
             return body;
@@ -1302,12 +1299,13 @@ impl App {
     pub(crate) fn paint_unknown_body(
         &mut self,
         ui: &mut egui::Ui,
-        deferred_overlays: &mut DeferredOverlays,
+        pass: &mut CardPass,
         id: &str,
+        _view: &CardView,
         rect: egui::Rect,
-        inv_zoom: f32,
-        zoom_scale: f32,
     ) -> CardBody {
+        let (inv_zoom, zoom_scale) = (pass.inv_zoom, pass.zoom_scale);
+        let deferred_overlays = &mut *pass.deferred_overlays;
         let body = CardBody { interact_rect: rect, tooltip: None };
         if self.graph_lod_simplified {
             return body;
