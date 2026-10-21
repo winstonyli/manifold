@@ -508,43 +508,27 @@ fn every_stored_name_reaches_the_screen_through_a_name_rule() {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut offenders = Vec::new();
     let mut seen = Vec::new();
-    // `caps/`, `card/`, `gpu/`, `graph_ui/`, `popups/`, `process_manager/`, `session_sync/` and `tabs/` are production code: their files are scanned as `<folder>/<file>`.
-    let entries = std::fs::read_dir(&dir)
-        .unwrap()
-        .chain(std::fs::read_dir(dir.join("caps")).unwrap())
-        .chain(std::fs::read_dir(dir.join("card")).unwrap())
-        .chain(std::fs::read_dir(dir.join("gpu")).unwrap())
-        .chain(std::fs::read_dir(dir.join("graph_ui")).unwrap())
-        .chain(std::fs::read_dir(dir.join("popups")).unwrap())
-        .chain(std::fs::read_dir(dir.join("process_manager")).unwrap())
-        .chain(std::fs::read_dir(dir.join("session_sync")).unwrap())
-        .chain(std::fs::read_dir(dir.join("tabs")).unwrap());
-    for entry in entries {
-        let path = entry.unwrap().path();
-        let file = path.strip_prefix(&dir).unwrap().to_string_lossy().replace('\\', "/");
-        if path.is_dir() {
-            if file == "caps"
-                || file == "card"
-                || file == "gpu"
-                || file == "graph_ui"
-                || file == "popups"
-                || file == "process_manager"
-                || file == "session_sync"
-                || file == "tabs"
-            {
-                continue;
+    // Every `.rs` file under `src/` is scanned as `<folder>/<file>`, except the store layer and test modules (`production` cuts
+    // a file's own `mod tests`, and a `tests.rs` is one).
+    let mut stack = vec![dir.clone()];
+    let mut entries = Vec::new();
+    while let Some(folder) = stack.pop() {
+        for entry in std::fs::read_dir(&folder).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                stack.push(path);
+            } else {
+                entries.push(path);
             }
-            // A folder holding only `tests.rs` is its sibling module's test module, which `production` skips anyway.
-            let files: Vec<_> =
-                std::fs::read_dir(&path).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
-            if files == ["tests.rs"] {
-                continue;
-            }
-            assert_eq!(file, "store", "a new source folder: scan it here too");
-            continue;
         }
-        // `process_manager/tests.rs`, `session_sync/tests.rs` and `tabs/tests.rs` are test modules `production` cannot see as one.
-        if path.extension().is_none_or(|e| e != "rs") || file == "names.rs" || file.ends_with("/tests.rs") {
+    }
+    for path in entries {
+        let file = path.strip_prefix(&dir).unwrap().to_string_lossy().replace('\\', "/");
+        if path.extension().is_none_or(|e| e != "rs")
+            || file == "names.rs"
+            || file.starts_with("store/")
+            || file.ends_with("/tests.rs")
+        {
             continue;
         }
         seen.push(file.clone());
