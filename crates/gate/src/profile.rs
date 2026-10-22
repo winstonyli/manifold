@@ -1,7 +1,7 @@
 //! `gate profile SCENARIO [SECONDS] [--samply] [--visible]` (was scripts/json-pan-profile.sh and .py): times, or profiles with
 //! samply, one scripted scenario. SCENARIO is `json-pan`, `json-zoom`, `json-reveal-numbers`, `json-reveal-objects`
-//! (panning, zooming and paging a big JSON level) or `graph-frames` (the Graph view with 80 notes at 25% zoom, a
-//! pointer move per frame). SECONDS (default 20) sets how long the pan, zoom or frames run, one command per frame
+//! (panning, zooming and paging a big JSON level) or `graph-frames` (the Graph view with 80 notes at 25% zoom: pointer
+//! moves, typing in the quick switcher, scrolling and a pan drag, a quarter of SECONDS each). SECONDS (default 20) sets how long the pan, zoom or frames run, one command per frame
 //! (60 a second).
 //!
 //! `--visible` runs a real window (`--debug-commands`, which tells egui it has focus, so the elevated samply task needs
@@ -99,20 +99,41 @@ fn script(fixture: &Path, state: &Path, seconds: f64, mode: &str, branch: usize,
     s
 }
 
-/// The command file of `graph-frames`: `NOTES` notes, the camera at 25%, then a pointer move per frame for `seconds`.
-/// `state` is where it exports the state to count the cards. `paced` holds a frame (`SLEEP`) between the moves, as a
-/// visible window needs for the run to last `seconds`; a headless run takes the moves as fast as it can.
+/// The command file of `graph-frames`: `NOTES` notes, the camera at 25%, then four phases of `seconds / 4` each, a
+/// command per frame: the pointer moving over the cards, typing into the quick switcher (each keystroke
+/// filters every card), scrolling (which zooms in the Graph view) and a drag on the empty canvas (a pan). `state` is where it
+/// exports the state to count the cards. `paced` holds a frame (`SLEEP`) after each command, as a visible window
+/// needs for the run to last `seconds`; a headless run takes them as fast as it can.
 fn graph_script(state: &Path, seconds: f64, paced: bool) -> String {
     let mut s = String::from("WAITIDLE\n");
     s.push_str(&"NEWNOTE\n".repeat(GRAPH_NOTES));
     let _ = writeln!(s, "WAITIDLE\nGRAPHZOOM 25\nWAITIDLE\nEXPORTSTATE {}", state.display());
-    for n in 0..(seconds * 60.0) as usize {
-        let _ = writeln!(s, "MOUSEMOVE {} {}", 300 + (n % 2) * 40, 300 + (n % 3) * 20);
+    let frames = (seconds * 60.0 / 4.0) as usize;
+    let mut frame = |line: String| {
+        s.push_str(&line);
+        s.push('\n');
         if paced {
             s.push_str("SLEEP 0.0167\n");
         }
+    };
+    for n in 0..frames {
+        frame(format!("MOUSEMOVE {} {}", 300 + (n % 2) * 40, 300 + (n % 3) * 20));
     }
-    s.push_str("QUIT\n");
+    frame("QUICKSWITCHOPEN".into());
+    for n in 0..frames {
+        frame(format!("QUICKSWITCHTEXT {}", &"note typing in the switcher"[..n % 20 + 1]));
+    }
+    frame("QUICKSWITCHESCAPE".into());
+    for n in 0..frames {
+        frame(format!("SCROLL 600 400 0 {}", if (n / 60) % 2 == 0 { 12 } else { -12 }));
+    }
+    frame("MOUSEDOWN 1300 850".into());
+    for n in 0..frames {
+        let step = n % 120;
+        frame(format!("MOUSEMOVE {} 850", 1300 - 6 * (if (n / 120) % 2 == 0 { step } else { 120 - step })));
+    }
+    frame("MOUSEUP 700 850".into());
+    frame("QUIT".into());
     s
 }
 
@@ -245,13 +266,15 @@ mod tests {
     }
 
     #[test]
-    fn the_graph_script_adds_the_notes_zooms_out_exports_and_moves_the_pointer_each_frame() {
-        let s = graph_script(Path::new("s.json"), 1.0, false);
+    fn the_graph_script_runs_four_phases_of_a_command_per_frame() {
+        let s = graph_script(Path::new("s.json"), 4.0, false);
         assert_eq!(s.matches("NEWNOTE").count(), GRAPH_NOTES);
         assert!(s.contains("GRAPHZOOM 25\nWAITIDLE\nEXPORTSTATE s.json\n"));
-        assert_eq!(s.matches("MOUSEMOVE").count(), 60);
+        assert_eq!(s.matches("MOUSEMOVE").count(), 120);
+        assert_eq!(s.matches("QUICKSWITCHTEXT").count(), 60);
+        assert_eq!(s.matches("SCROLL").count(), 60);
         assert_eq!(s.matches("SLEEP").count(), 0);
         assert!(s.ends_with("QUIT\n"));
-        assert_eq!(graph_script(Path::new("s.json"), 1.0, true).matches("SLEEP").count(), 60);
+        assert_eq!(graph_script(Path::new("s.json"), 4.0, true).matches("SLEEP").count(), 60 * 4 + 5);
     }
 }
