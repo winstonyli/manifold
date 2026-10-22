@@ -346,6 +346,11 @@ pub(crate) const DANGER_FILL: egui::Color32 = egui::Color32::from_rgb(142, 58, 4
 /// Healthy / recommended / good: a muted green, the one `success` hue (the audio waveform, the recommended engine tier).
 pub(crate) const SUCCESS_COLOR: egui::Color32 = egui::Color32::from_rgb(150, 190, 90);
 
+/// Text on a dark scrim over a card (the title strip, an image's caption, the jar chip): near white.
+pub(crate) const SCRIM_TEXT: egui::Color32 = egui::Color32::from_gray(240);
+/// The weaker line of `SCRIM_TEXT` (a tab card's source).
+pub(crate) const SCRIM_TEXT_WEAK: egui::Color32 = egui::Color32::from_gray(190);
+
 /// The sky-blue entry of `TAG_COLOR_PALETTE`: the one cool hue in this otherwise warm theme.
 pub(crate) const TAG_SKY_BLUE: egui::Color32 = TAG_COLOR_PALETTE[4];
 

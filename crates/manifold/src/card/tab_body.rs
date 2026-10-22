@@ -176,8 +176,8 @@ impl App {
             ui.painter().rect_filled(band, corners, if tall { IMAGE_TEXT_SCRIM } else { TITLE_STRIP_SCRIM });
         }
         let light = scrim || !tall;
-        let title_color = if light { egui::Color32::from_gray(240) } else { ui.visuals().text_color() };
-        let source_color = if light { egui::Color32::from_gray(190) } else { ui.visuals().weak_text_color() };
+        let title_color = if light { crate::theme::SCRIM_TEXT } else { ui.visuals().text_color() };
+        let source_color = if light { crate::theme::SCRIM_TEXT_WEAK } else { ui.visuals().weak_text_color() };
         // One size for measuring and drawing the title, so a strip's plain and rich (hidden-character) titles match.
         let title_size = if tall { HEADER_TITLE_SIZE } else { 12.0 };
         let title_font = egui::FontId::proportional(title_size);

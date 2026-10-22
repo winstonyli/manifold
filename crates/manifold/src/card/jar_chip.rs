@@ -177,7 +177,7 @@ pub(super) fn push_jar_chip(
     let key = jar_chip_key(id);
     deferred_overlays.push(Box::new(move |overlay_painter, project| {
         let font = egui::FontId::proportional(11.0);
-        let text = egui::Color32::from_gray(240);
+        let text = crate::theme::SCRIM_TEXT;
         if let Some(scrim) =
             paint_jar_chip(overlay_painter, project(world) + offset, max_width, &chip, font, text, warn)
         {
