@@ -1,7 +1,8 @@
 //! `gate profile SCENARIO [SECONDS] [--samply] [--visible]` (was scripts/json-pan-profile.sh and .py): times, or profiles with
 //! samply, one scripted scenario. SCENARIO is `json-pan`, `json-zoom`, `json-reveal-numbers`, `json-reveal-objects`
 //! (panning, zooming and paging a big JSON level) or `graph-frames` (the Graph view with 80 notes at 25% zoom: pointer
-//! moves, typing in the quick switcher, scrolling and a pan drag, a quarter of SECONDS each). SECONDS (default 20) sets how long the pan, zoom or frames run, one command per frame
+//! moves, typing in a note and in the quick switcher, scrolling and a pan drag, a fifth of SECONDS each). SECONDS
+//! (default 20) sets how long the pan, zoom or frames run, one command per frame
 //! (60 a second).
 //!
 //! `--visible` runs a real window (`--debug-commands`, which tells egui it has focus, so the elevated samply task needs
@@ -99,16 +100,16 @@ fn script(fixture: &Path, state: &Path, seconds: f64, mode: &str, branch: usize,
     s
 }
 
-/// The command file of `graph-frames`: `NOTES` notes, the camera at 25%, then four phases of `seconds / 4` each, a
-/// command per frame: the pointer moving over the cards, typing into the quick switcher (each keystroke
-/// filters every card), scrolling (which zooms in the Graph view) and a drag on the empty canvas (a pan). `state` is where it
+/// The command file of `graph-frames`: `NOTES` notes, the camera at 25%, then five phases of `seconds / 5` each, a
+/// command per frame: the pointer moving over the cards, typing into the last note (a new note has the
+/// keyboard), typing into the quick switcher (each keystroke filters every card), scrolling (which zooms in the Graph view) and a drag on the empty canvas (a pan). `state` is where it
 /// exports the state to count the cards. `paced` holds a frame (`SLEEP`) after each command, as a visible window
 /// needs for the run to last `seconds`; a headless run takes them as fast as it can.
 fn graph_script(state: &Path, seconds: f64, paced: bool) -> String {
     let mut s = String::from("WAITIDLE\n");
     s.push_str(&"NEWNOTE\n".repeat(GRAPH_NOTES));
     let _ = writeln!(s, "WAITIDLE\nGRAPHZOOM 25\nWAITIDLE\nEXPORTSTATE {}", state.display());
-    let frames = (seconds * 60.0 / 4.0) as usize;
+    let frames = (seconds * 60.0 / 5.0) as usize;
     let mut frame = |line: String| {
         s.push_str(&line);
         s.push('\n');
@@ -119,6 +120,10 @@ fn graph_script(state: &Path, seconds: f64, paced: bool) -> String {
     for n in 0..frames {
         frame(format!("MOUSEMOVE {} {}", 300 + (n % 2) * 40, 300 + (n % 3) * 20));
     }
+    for _ in 0..frames {
+        frame("EGUITEXT n".into());
+    }
+    frame("ESCAPE".into());
     frame("QUICKSWITCHOPEN".into());
     for n in 0..frames {
         frame(format!("QUICKSWITCHTEXT {}", &"note typing in the switcher"[..n % 20 + 1]));
@@ -266,15 +271,16 @@ mod tests {
     }
 
     #[test]
-    fn the_graph_script_runs_four_phases_of_a_command_per_frame() {
-        let s = graph_script(Path::new("s.json"), 4.0, false);
+    fn the_graph_script_runs_five_phases_of_a_command_per_frame() {
+        let s = graph_script(Path::new("s.json"), 5.0, false);
         assert_eq!(s.matches("NEWNOTE").count(), GRAPH_NOTES);
         assert!(s.contains("GRAPHZOOM 25\nWAITIDLE\nEXPORTSTATE s.json\n"));
         assert_eq!(s.matches("MOUSEMOVE").count(), 120);
+        assert_eq!(s.matches("EGUITEXT").count(), 60);
         assert_eq!(s.matches("QUICKSWITCHTEXT").count(), 60);
         assert_eq!(s.matches("SCROLL").count(), 60);
         assert_eq!(s.matches("SLEEP").count(), 0);
         assert!(s.ends_with("QUIT\n"));
-        assert_eq!(graph_script(Path::new("s.json"), 4.0, true).matches("SLEEP").count(), 60 * 4 + 5);
+        assert_eq!(graph_script(Path::new("s.json"), 5.0, true).matches("SLEEP").count(), 60 * 5 + 6);
     }
 }

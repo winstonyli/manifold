@@ -55,17 +55,20 @@ impl App {
             body.interact_rect = handle;
             let mut lost_focus = false;
             if let Some(note) = self.nodes.get_mut(id).and_then(|n| n.as_note_mut()) {
-                lost_focus = ui
-                    .put(
-                        text_rect,
-                        egui::TextEdit::multiline(&mut note.text)
-                            .id(egui::Id::new(("note_edit", id)))
-                            .frame(egui::Frame::NONE)
-                            .font(egui::FontId::proportional(13.0))
-                            .text_color(NOTE_TEXT)
-                            .hint_text("Type a note..."),
-                    )
-                    .lost_focus();
+                let edit = ui.put(
+                    text_rect,
+                    egui::TextEdit::multiline(&mut note.text)
+                        .id(egui::Id::new(("note_edit", id)))
+                        .frame(egui::Frame::NONE)
+                        .font(egui::FontId::proportional(13.0))
+                        .text_color(NOTE_TEXT)
+                        .hint_text("Type a note..."),
+                );
+                if self.interaction.focus_new_note.as_ref().is_some_and(|(n, _)| n == id) {
+                    self.interaction.focus_new_note = None;
+                    edit.request_focus();
+                }
+                lost_focus = edit.lost_focus();
             }
             // The box edits the payload, the edit buffer; the mirror gets it on blur (and at each save), not on
             // every keystroke -- a note can reach 1 MB, and `save_session` is real file I/O (2b-4 Ruling 6).

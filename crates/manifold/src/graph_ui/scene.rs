@@ -368,6 +368,13 @@ impl App {
             self.click_link_line(&link);
         }
 
+        // Before the actions, so a note they make has its full frames.
+        if let Some((_, frames)) = &mut self.interaction.focus_new_note {
+            *frames -= 1;
+            if *frames == 0 {
+                self.interaction.focus_new_note = None;
+            }
+        }
         for action in actions {
             self.apply_graph_action(ui.ctx(), action);
         }

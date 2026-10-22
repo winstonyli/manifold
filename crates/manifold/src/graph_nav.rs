@@ -60,6 +60,10 @@ pub(crate) struct GraphInteraction {
     /// letting it silently drift out of sync with a moved camera would be
     /// the wrong feel for it).
     pub(crate) pending_new_node: Option<egui::Vec2>,
+    /// A note just made (`insert_note_at`) whose editor takes the keyboard when it first draws, so typing starts at
+    /// once, and the graph frames it has left to be drawn in: a note spawned out of view must not grab the keyboard
+    /// when the camera reaches it later. Taken by the note's editor.
+    pub(crate) focus_new_note: Option<(String, u8)>,
 }
 
 impl GraphInteraction {
@@ -74,6 +78,9 @@ impl GraphInteraction {
         }
         if self.peek_suppressed.as_deref() == Some(id) {
             self.peek_suppressed = None;
+        }
+        if self.focus_new_note.as_ref().is_some_and(|(n, _)| n == id) {
+            self.focus_new_note = None;
         }
         self.selected.remove(id);
     }

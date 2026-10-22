@@ -1591,3 +1591,35 @@ fn a_drop_onto_overlapping_groups_targets_the_topmost() {
     let target = app.drop_target(&note, None, None).and_then(|(_, target)| target);
     assert_eq!(target.as_deref(), Some(over.as_str()));
 }
+
+/// A note made by "+ Note" or the new-node menu opens in its editor, so typing starts at once; a note that was
+/// there already (here, one made as a placeholder, as a session load does) does not take the keys.
+#[test]
+fn a_new_note_takes_the_keyboard_and_a_loaded_one_does_not() {
+    let (h, mut app, [loaded, _, _]) = three_notes();
+    let made = app.alloc_node_id();
+    app.insert_note_at(made.clone(), Some(egui::vec2(0.0, 0.0)));
+    for _ in 0..3 {
+        h.frame(&mut app, vec![]);
+    }
+    let has_focus = |id: &str| h.ctx.memory(|m| m.has_focus(egui::Id::new(("note_edit", id))));
+    assert!(has_focus(&made), "the new note's editor has focus");
+    assert!(!has_focus(&loaded));
+}
+
+/// A note spawned out of view does not take the keyboard when the camera reaches it later.
+#[test]
+fn a_new_note_out_of_view_does_not_take_the_keyboard_later() {
+    let (h, mut app, _) = three_notes();
+    let far = app.alloc_node_id();
+    app.insert_note_at(far.clone(), Some(egui::vec2(100_000.0, 100_000.0)));
+    for _ in 0..4 {
+        h.frame(&mut app, vec![]);
+    }
+    assert!(app.interaction.focus_new_note.is_none(), "the request expired");
+    app.camera.jump_to(app.fit_all_nodes_scene_rect());
+    for _ in 0..3 {
+        h.frame(&mut app, vec![]);
+    }
+    assert!(!h.ctx.memory(|m| m.has_focus(egui::Id::new(("note_edit", far.as_str())))));
+}
