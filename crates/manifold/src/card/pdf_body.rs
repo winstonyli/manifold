@@ -1,6 +1,7 @@
 //! A PDF card's body and header.
 
 use super::*;
+use crate::store::model::NodeId;
 
 impl App {
     /// Pdf: same card shape as an image node (drag, hover-revealed
@@ -20,14 +21,14 @@ impl App {
         &mut self,
         ui: &mut egui::Ui,
         pass: &mut CardPass,
-        id: &str,
+        id: NodeId,
         _view: &CardView,
         rect: egui::Rect,
     ) -> CardBody {
         let (inv_zoom, zoom_scale) = (pass.inv_zoom, pass.zoom_scale);
         let deferred_overlays = &mut *pass.deferred_overlays;
         let mut body = CardBody { interact_rect: rect, tooltip: None };
-        let Some(state) = self.nodes.get(id).and_then(|n| n.as_pdf()).map(|pdf| match &pdf.outcome {
+        let Some(state) = self.nodes.get(&id).and_then(|n| n.as_pdf()).map(|pdf| match &pdf.outcome {
             None => None,
             Some(Err(err)) => Some(Err(err.clone())),
             Some(Ok(outcome)) => Some(Ok((self.gpu.as_ref().and_then(|g| g.image_id(id)), outcome.page_count))),
@@ -100,13 +101,13 @@ impl App {
         &mut self,
         ui: &mut egui::Ui,
         deferred_overlays: &mut DeferredOverlays,
-        id: &str,
+        id: NodeId,
         rect: egui::Rect,
         inv_zoom: f32,
         zoom_scale: f32,
         busy: bool,
     ) {
-        let Some(pdf) = self.nodes.get(id).and_then(|n| n.as_pdf()) else { return };
+        let Some(pdf) = self.nodes.get(&id).and_then(|n| n.as_pdf()) else { return };
         let (name, source, source_is_path) = file_header_text(&pdf.path, self.source_url(id));
         // The page count sits at the bottom right, so the fallback strip stops short of it.
         let header = CardHeader {

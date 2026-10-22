@@ -9,6 +9,7 @@
 //! must decode or parse the bytes anyway (see the spec's "Sniffing local
 //! files").
 
+use crate::store::model::NodeId;
 use std::collections::HashSet;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -175,8 +176,8 @@ pub(crate) fn read_head(path: &Path) -> std::io::Result<Vec<u8>> {
 /// Whether `path` is exactly `<dir>/<id>.<anything>`, the name
 /// `redirect_fetch::save` gives. Compared by parent, not by prefix, so a
 /// `..` component can't escape `dir`.
-pub(crate) fn owned_content_file(dir: &Path, id: &str, path: &Path) -> bool {
-    path.parent() == Some(dir) && path.file_stem().is_some_and(|stem| stem == id)
+pub(crate) fn owned_content_file(dir: &Path, id: NodeId, path: &Path) -> bool {
+    path.parent() == Some(dir) && path.file_stem().is_some_and(|stem| stem.to_str() == Some(id.to_string().as_str()))
 }
 
 /// The file name of a node's stored `path`, as `kept` matches it.
@@ -217,6 +218,7 @@ pub(crate) fn prune(dir: &Path, cutoff: SystemTime, keep: impl Fn(&str) -> bool)
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use crate::card_id::testutil::node;
 
     fn png() -> Vec<u8> {
         let mut out = std::io::Cursor::new(Vec::new());
@@ -376,7 +378,7 @@ pub(crate) mod tests {
     #[test]
     fn owned_content_file_is_a_structural_check_not_a_prefix_one() {
         let dir = crate::store::testutil::temp_dir("owned_content_file");
-        let id = "abc123";
+        let id = node(1);
         assert!(owned_content_file(&dir, id, &dir.join(format!("{id}.png"))));
         // `starts_with` alone would accept this -- `..` doesn't resolve to
         // the parent directory it names until the filesystem sees it, so a
@@ -384,6 +386,6 @@ pub(crate) mod tests {
         assert!(!owned_content_file(&dir, id, &dir.join("..").join(format!("{id}.png"))));
         assert!(!owned_content_file(&dir, id, &dir.join("sub").join(format!("{id}.png"))));
         assert!(!owned_content_file(&dir, id, &dir.join("other.png")));
-        assert!(!owned_content_file(&dir, id, std::path::Path::new("/somewhere/else/abc123.png")));
+        assert!(!owned_content_file(&dir, id, std::path::Path::new(&format!("/somewhere/else/{id}.png"))));
     }
 }

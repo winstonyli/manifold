@@ -512,7 +512,7 @@ impl App {
         let Some(level) = self.json_level.as_ref() else { return };
         let Some(json) = self.nodes.get(&level.node_id).and_then(|n| n.as_json()) else { return };
         let root_name = download_filename(&json.path).to_string();
-        let view = self.doc.mirror.view(&level.node_id); // the decoded cache: no parse per frame (2b-4 Ruling 8)
+        let view = self.doc.mirror.view(level.node_id); // the decoded cache: no parse per frame (2b-4 Ruling 8)
         let pal = palette(ui.visuals().dark_mode);
         let base_fill = ui.visuals().extreme_bg_color;
         let idle_border = ui.visuals().weak_text_color();
@@ -743,7 +743,7 @@ impl App {
         // a scalar or empty root has nothing to hide.
         let has_entries = level.value.pointer(&pointer).is_some_and(|v| json_view::entry_count(v) > 0);
         let collapsed = card.filter(|_| has_entries).map(|c| c.collapsed);
-        let view = self.doc.mirror.view(&level.node_id);
+        let view = self.doc.mirror.view(level.node_id);
         let color = view.and_then(|v| v.get(&pointer)).and_then(|o| o.color).map(rgb);
         let mut close = false;
         let mut edit = None;

@@ -3,6 +3,7 @@
 
 use super::*;
 use crate::caps::Click;
+use crate::store::model::NodeId;
 use crate::store::model::{TYPE_DOWNLOAD, TYPE_GROUP, TYPE_IMAGE, TYPE_JAR, TYPE_JSON, TYPE_NOTE, TYPE_PDF, TYPE_TAB};
 
 mod download_body;
@@ -308,7 +309,7 @@ pub(crate) struct CardView {
     /// A group over `GROUP_OVERLOAD_THRESHOLD` members: its border warns.
     pub(crate) overloaded: bool,
     /// Group only: its members' ids, for its thumbnail grid and count.
-    pub(crate) members: Vec<String>,
+    pub(crate) members: Vec<NodeId>,
     /// The open tab: its border is ACCENT.
     pub(crate) focused: bool,
     /// Tab only.
@@ -530,7 +531,7 @@ pub(crate) struct CardPass<'a> {
     /// A card or one of its controls has keyboard focus this frame.
     pub(crate) any_focused: bool,
     /// Every group's members (`App::group_members`), built once before the pass.
-    pub(crate) members: &'a HashMap<String, Vec<String>>,
+    pub(crate) members: &'a HashMap<NodeId, Vec<NodeId>>,
     /// The world rect a card must meet to be drawn (the camera's, in Graph view).
     pub(crate) viewport: egui::Rect,
     /// Set to the rect of a card that gained keyboard focus this frame; the caller pans its camera to it.
@@ -564,7 +565,7 @@ pub(crate) fn paint_card_control(
     deferred_overlays: &mut DeferredOverlays,
     control: CardControl,
     card_rect: egui::Rect,
-    id: &str,
+    card: CardId,
     view: &CardView,
     style: &CardStyle,
     inv_zoom: f32,
@@ -574,7 +575,7 @@ pub(crate) fn paint_card_control(
     let response = ui
         // Not focusable: Tab moves between cards only, and the keyboard reaches these actions
         // through Delete and the node menu.
-        .interact(rect, egui::Id::new(("graph_card_control", control, id)), egui::Sense::CLICK)
+        .interact(rect, egui::Id::new(("graph_card_control", control, card)), egui::Sense::CLICK)
         .on_hover_cursor(egui::CursorIcon::PointingHand);
     match control {
         // A simple card is a few pixels across: a plain square says the same as a tessellated circle.
@@ -839,14 +840,14 @@ impl App {
     /// stops being laid out (its level left, the view changed) loses focus
     /// without `lost_focus()` ever firing, so `editing` would stay on.
     pub(crate) fn end_note_edits(&mut self) -> bool {
-        let editing: Vec<String> = self
+        let editing: Vec<NodeId> = self
             .nodes
             .iter()
             .filter(|(_, n)| n.as_note().is_some_and(|note| note.editing))
-            .map(|(id, _)| id.clone())
+            .map(|(id, _)| *id)
             .collect();
         for id in &editing {
-            self.end_note_edit(id);
+            self.end_note_edit(*id);
         }
         if !editing.is_empty() {
             self.save_session();
@@ -855,11 +856,11 @@ impl App {
     }
 
     /// Every group's members, in `node_order`: built once per card pass.
-    pub(crate) fn group_members(&self) -> HashMap<String, Vec<String>> {
-        let mut members: HashMap<String, Vec<String>> = HashMap::new();
+    pub(crate) fn group_members(&self) -> HashMap<NodeId, Vec<NodeId>> {
+        let mut members: HashMap<NodeId, Vec<NodeId>> = HashMap::new();
         for id in &self.node_order {
-            if let Some(group) = self.nodes.get(id).and(self.doc.mirror.group(id)) {
-                members.entry(group.to_owned()).or_default().push(id.clone());
+            if let Some(group) = self.nodes.get(id).and(self.doc.mirror.group(*id)) {
+                members.entry(group).or_default().push(*id);
             }
         }
         members
@@ -868,7 +869,7 @@ impl App {
     /// `entry`'s `CardView`, or `None` when its node is gone (a JSON level's card is drawn elsewhere). A virtual
     /// card has no node: no colour, group, pin, audio or ✕, and it can be selected but never focused. `members` is
     /// `group_members`, built once for the whole pass.
-    pub(crate) fn card_view(&self, entry: &CardEntry, members: &HashMap<String, Vec<String>>) -> Option<CardView> {
+    pub(crate) fn card_view(&self, entry: &CardEntry, members: &HashMap<NodeId, Vec<NodeId>>) -> Option<CardView> {
         let card = entry.id;
         match entry.origin {
             Origin::Stored => {}
@@ -889,11 +890,10 @@ impl App {
             }
             Origin::Json => return None,
         }
-        let key = card.to_string();
-        let id = key.as_str();
-        let node = self.nodes.get(id)?;
+        let id = card.node()?;
+        let node = self.nodes.get(&id)?;
         let kind = self.card_kind(id)?;
-        let members = if is_container(kind.ty) { members.get(id).cloned().unwrap_or_default() } else { Vec::new() };
+        let members = if is_container(kind.ty) { members.get(&id).cloned().unwrap_or_default() } else { Vec::new() };
         let tab = node.as_tab();
         Some(CardView {
             kind,
@@ -901,7 +901,7 @@ impl App {
             in_group: self.doc.mirror.group(id).is_some(),
             overloaded: members.len() > GROUP_OVERLOAD_THRESHOLD,
             members,
-            focused: self.focused.as_deref() == Some(id),
+            focused: self.focused == Some(id),
             pinned: self.doc.mirror.pinned(id),
             muted: tab.is_some_and(|t| t.muted),
             audio_playing: tab.is_some_and(|t| t.audio_playing),
@@ -938,13 +938,14 @@ impl App {
         entry: &CardEntry,
     ) -> Option<CardOutput> {
         let card = entry.id;
-        let key = card.node().map(|node| node.to_string()).unwrap_or_default();
-        // A virtual card has no node, so `id` is empty for it and every store lookup misses, as it did for its text id.
-        let id = key.as_str();
+        let node = card.node();
         let stored = entry.origin == Origin::Stored;
         let inv_zoom = pass.inv_zoom;
         // A stored card's rect is read fresh: a drag earlier in this frame's loop may have moved it.
-        let rect = if stored { self.card_rect(id)? } else { entry.rect };
+        let rect = match node.filter(|_| stored) {
+            Some(id) => self.card_rect(id)?,
+            None => entry.rect,
+        };
         // Viewport culling: skip every bit of interact/paint
         // work below for a node that isn't actually visible --
         // the single highest-leverage fix for a graph with many
@@ -1016,7 +1017,7 @@ impl App {
             _ => response,
         };
         // Screen readers: the card is a button named by its kind and title (egui announces it on focus).
-        if self.nodes.contains_key(id) {
+        if let Some(id) = node.filter(|id| self.nodes.contains_key(id)) {
             response.widget_info(|| {
                 let name = self.accessible_name(id).unwrap_or_default();
                 egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), name)
@@ -1128,7 +1129,11 @@ impl App {
                         source.on_menu(self, entry, at);
                     }
                 }
-                _ => self.menus.node_menu.open(id.to_string(), at),
+                _ => {
+                    if let Some(id) = node {
+                        self.menus.node_menu.open(id, at);
+                    }
+                }
             }
         }
         let mut control = ((caps.stored_controls && response.clicked_by(egui::PointerButton::Middle)) || delete)
@@ -1143,7 +1148,7 @@ impl App {
                 deferred_overlays,
                 card_control,
                 rect,
-                id,
+                card,
                 &view,
                 &style,
                 inv_zoom,
@@ -1154,7 +1159,7 @@ impl App {
             // A right-click on the swatch opens the menu (the right-press already did) on its Color page.
             if card_control == CardControl::Swatch
                 && control_response.secondary_clicked()
-                && self.menus.node_menu.open.as_ref().is_some_and(|(menu_id, _)| menu_id == id)
+                && self.menus.node_menu.open.as_ref().is_some_and(|(menu_id, _)| Some(*menu_id) == node)
             {
                 self.menus.node_menu.show_page(Some(crate::node_menu::MenuPage::Color));
                 ui.ctx().request_repaint();
@@ -1169,7 +1174,9 @@ impl App {
         // alone (no click below), so the card neither moves nor opens. Stored cards only, not an ability: a handle
         // starts a Link node between two nodes.
         let mut handle_hovered = false;
-        if stored && (is_hovered || self.link.connect_drag.is_some()) && self.shows_link_handles() {
+        if let Some(id) =
+            node.filter(|_| stored && (is_hovered || self.link.connect_drag.is_some()) && self.shows_link_handles())
+        {
             let handles = crate::link_gestures::link_handle_rects(rect, pass.zoom_scale, self.graph_detail);
             for (side, handle) in handles {
                 let handle_response = ui
@@ -1236,7 +1243,6 @@ impl App {
                 if view.selected { self.interaction.selected.iter().copied().collect() } else { vec![card] };
             // The layout only: the document pos is written once, at release (`release_drag`).
             for moved_id in moved.iter().filter_map(|moved| moved.node()) {
-                let moved_id = moved_id.to_string();
                 if self.nodes.contains_key(&moved_id) {
                     self.layout.entry(moved_id).or_default().pos += delta;
                 }
@@ -1254,7 +1260,7 @@ impl App {
             self.interaction.hovered = None;
         }
 
-        if let Some(node) = self.nodes.get(id) {
+        if let Some((id, node)) = node.and_then(|id| self.nodes.get(&id).map(|n| (id, n))) {
             let mut needles = card_filter_text(&node.runtime, self.own_text(id));
             needles.push(self.doc.mirror.name(id)); // name rule: the filter matches the stored text (a rename; a group is matched twice)
             dim_if_filtered_out(deferred_overlays, &self.graph_filter, &needles, rect, style.dim_rounding);
@@ -1282,8 +1288,9 @@ impl App {
                 None => CardBody { interact_rect: rect, tooltip: None },
             };
         }
-        let key = entry.id.to_string();
-        let id = key.as_str();
+        let Some(id) = entry.id.node() else {
+            return CardBody { interact_rect: rect, tooltip: None };
+        };
         match view.kind.ty {
             TYPE_DOWNLOAD => self.paint_download_body(ui, pass, id, view, rect),
             TYPE_NOTE => self.paint_note_body(ui, pass, id, view, rect),
@@ -1306,7 +1313,7 @@ impl App {
         &mut self,
         ui: &mut egui::Ui,
         pass: &mut CardPass,
-        id: &str,
+        id: NodeId,
         _view: &CardView,
         rect: egui::Rect,
     ) -> CardBody {
@@ -1341,7 +1348,7 @@ impl App {
         &mut self,
         ui: &mut egui::Ui,
         pass: &mut CardPass,
-        id: &str,
+        id: NodeId,
         _view: &CardView,
         rect: egui::Rect,
     ) -> CardBody {

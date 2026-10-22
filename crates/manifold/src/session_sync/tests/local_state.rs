@@ -9,15 +9,14 @@ fn hidden_personal_state_survives_a_launch_and_a_delete_drops_it() {
     let tab = add(&mut app, Kind::Tab, failed_tab("https://t/", 1.5));
     assert!(app.save_session());
     let mut other = Journal::open(&path, ActorId(2)).unwrap();
-    remote_close(&mut other, &tab, true);
+    remote_close(&mut other, tab, true);
     assert!(app.save_session());
     app.maybe_write_local(true);
     drop(app);
     let mut back = app_on(&path, 1);
     back.restore_session();
     assert_eq!(back.doc.hidden_local.get(&tab).and_then(|l| l.zoom), Some(1.5), "read back for the hidden node");
-    let node = tab.parse().unwrap();
-    other.begin().unwrap().commit(vec![OpBody::Delete { node }]).unwrap();
+    other.begin().unwrap().commit(vec![OpBody::Delete { node: tab }]).unwrap();
     assert!(back.save_session());
     assert!(!back.doc.hidden_local.contains_key(&tab), "the Delete drops it (forget_deleted)");
 }
@@ -31,17 +30,17 @@ fn a_restart_places_a_node_at_its_personal_position_while_the_mirror_holds_the_d
         let mut app = app_on(&path, 1);
         let note = a_note_at(&mut app, egui::vec2(10.0, 20.0));
         assert!(app.save_session());
-        app.snap_layout(&note, egui::vec2(70.0, 80.0)); // a settle: personal
+        app.snap_layout(note, egui::vec2(70.0, 80.0)); // a settle: personal
         app.close_store();
         note
     };
     let mut app = app_on(&path, 2);
     assert!(app.restore_session());
-    assert_eq!(app.layout_pos(&note), egui::vec2(70.0, 80.0));
-    assert_eq!(app.doc.mirror.pos(&note), Some(egui::vec2(10.0, 20.0)));
+    assert_eq!(app.layout_pos(note), egui::vec2(70.0, 80.0));
+    assert_eq!(app.doc.mirror.pos(note), Some(egui::vec2(10.0, 20.0)));
     assert!(app.save_session());
     assert!(!app.doc.writes.has_fields());
-    assert_eq!(stored(&app, &note, field::POS), FieldValue::Pos(10.0, 20.0));
+    assert_eq!(stored(&app, note, field::POS), FieldValue::Pos(10.0, 20.0));
 }
 
 /// Item view (`view_item`) restoring onto a tab that's still spawning
@@ -61,11 +60,11 @@ fn item_view_restoring_onto_a_still_spawning_tab_sets_the_respawn_focus_guard() 
     // is exactly the shape a real tab restore has before its spawn
     // lands (`materialize`'s `Kind::Tab` arm never inserts directly).
     app.nodes.remove(&tab);
-    app.spawns.spawning.insert(tab.clone(), shared(Kind::Tab, None, &[]));
-    let state = LocalState { focused: Some(tab.clone()), view_item: true, ..LocalState::default() };
+    app.spawns.spawning.insert(tab, shared(Kind::Tab, None, &[]));
+    let state = LocalState { focused: Some(tab.to_string()), view_item: true, ..LocalState::default() };
     app.apply_local(state);
     assert_eq!(app.view_mode, ViewMode::Item);
-    assert_eq!(app.spawns.pending_respawn_focus.as_deref(), Some(tab.as_str()));
+    assert_eq!(app.spawns.pending_respawn_focus, Some(tab));
 }
 
 /// An unloaded tab's title and mute survive a restart through personal
@@ -80,7 +79,7 @@ fn personal_state_keeps_an_unloaded_tabs_title_and_mute() {
         }
     };
     set(&mut app, "Saved title", true);
-    let entry = app.local_state().nodes[&tab].clone();
+    let entry = app.local_state().nodes[&tab.to_string()].clone();
     assert_eq!((entry.title.as_str(), entry.muted), ("Saved title", true));
     set(&mut app, "", false);
     App::apply_local_node(app.nodes.get_mut(&tab).unwrap(), &entry);
@@ -98,10 +97,10 @@ fn mute_all_except_also_mutes_sleeping_tabs() {
     let mut app = app_on(&temp_dir("mute-others-sleeping").join("session.mnf"), 1);
     let keep = add(&mut app, Kind::Tab, sleeping_tab("https://keep/", "Keep"));
     let other = add(&mut app, Kind::Tab, sleeping_tab("https://other/", "Other"));
-    app.mute_all_except(&keep);
+    app.mute_all_except(keep);
     assert!(!app.nodes[&keep].as_unloaded().unwrap().muted, "kept tab untouched");
     assert!(app.nodes[&other].as_unloaded().unwrap().muted);
-    let entry = app.local_state().nodes[&other].clone();
+    let entry = app.local_state().nodes[&other.to_string()].clone();
     assert!(entry.muted, "personal state saves the sleeping card's mute");
 }
 
@@ -121,7 +120,7 @@ fn personal_state_startup_could_not_read_is_retried_not_overwritten() {
     let side = crate::store::local::path_for(&path);
     {
         let journal = Journal::open(&path, ActorId(2)).unwrap();
-        let state = LocalState { nodes: BTreeMap::from([(note.clone(), entry.clone())]), ..LocalState::default() };
+        let state = LocalState { nodes: BTreeMap::from([(note.to_string(), entry.clone())]), ..LocalState::default() };
         journal.write_local(&state.to_bytes()).unwrap();
     }
     let saved = std::fs::read(&side).unwrap();
@@ -147,11 +146,11 @@ fn personal_state_startup_could_not_read_is_retried_not_overwritten() {
     app.doc.local_persist.local_unread.as_mut().unwrap().retry_at = std::time::Instant::now();
     app.poll_store();
     assert!(app.doc.local_persist.local_unread.is_none());
-    assert_eq!(app.layout_pos(&note), egui::vec2(7.0, 8.0));
+    assert_eq!(app.layout_pos(note), egui::vec2(7.0, 8.0));
     app.close_store();
     let bytes = Journal::open(&path, ActorId(4)).unwrap().read_local().unwrap().unwrap();
     let written = LocalState::from_bytes(&bytes).unwrap();
-    assert_eq!(written.nodes[&note].pos, [7.0, 8.0]);
+    assert_eq!(written.nodes[&note.to_string()].pos, [7.0, 8.0]);
 }
 
 /// A damaged `.local` is still a fresh start that the next write replaces
@@ -208,14 +207,14 @@ fn the_forced_retry_at_exit_applies_without_waking() {
     };
     let mut app = app_on(&path, 2);
     assert!(app.restore_session());
-    assert_eq!(app.focused.as_deref(), Some(a.as_str()));
+    assert_eq!(app.focused, Some(a));
     let woken = app.test_spawns.len();
-    mark_unread_with(&mut app, &path, &LocalState { focused: Some(b.clone()), ..LocalState::default() });
+    mark_unread_with(&mut app, &path, &LocalState { focused: Some(b.to_string()), ..LocalState::default() });
     app.close_store();
     assert_eq!(app.test_spawns.len(), woken, "nothing woken at exit");
-    assert_eq!(app.focused.as_deref(), Some(b.as_str()), "applied");
+    assert_eq!(app.focused, Some(b), "applied");
     let bytes = Journal::open(&path, ActorId(3)).unwrap().read_local().unwrap().unwrap();
-    assert_eq!(LocalState::from_bytes(&bytes).unwrap().focused, Some(b), "and written");
+    assert_eq!(LocalState::from_bytes(&bytes).unwrap().focused, Some(b.to_string()), "and written");
 }
 
 /// A late read that finds no personal state (or a damaged one) applies
@@ -256,7 +255,7 @@ fn personal_state_survives_onto_a_still_waking_restored_card_and_a_fresh_failed_
     let entry = LocalNode { pos: [7.0, 8.0], title: "T".into(), zoom: Some(2.0), ..LocalNode::default() };
     {
         let journal = Journal::open(&path, ActorId(2)).unwrap();
-        let state = LocalState { nodes: BTreeMap::from([(tab.clone(), entry.clone())]), ..LocalState::default() };
+        let state = LocalState { nodes: BTreeMap::from([(tab.to_string(), entry.clone())]), ..LocalState::default() };
         journal.write_local(&state.to_bytes()).unwrap();
     }
     let mut app = app_on(&path, 3);
@@ -267,8 +266,8 @@ fn personal_state_survives_onto_a_still_waking_restored_card_and_a_fresh_failed_
     assert_eq!(app.test_spawns.len(), 1, "the restored tab's wake is still in flight");
     let card = add(&mut app, Kind::Tab, failed_tab("https://f/", 1.5));
     let state = app.local_state();
-    assert_eq!(state.nodes.get(&tab), Some(&entry));
-    assert_eq!(state.nodes[&card].zoom, Some(1.5));
+    assert_eq!(state.nodes.get(&tab.to_string()), Some(&entry));
+    assert_eq!(state.nodes[&card.to_string()].zoom, Some(1.5));
 }
 
 /// A tab its page moved on without sharing (a redirect, a script's
@@ -290,7 +289,7 @@ fn a_restart_reopens_a_tabs_live_url_while_the_shared_url_is_unchanged() {
     let mut app = app_on(&path, 2);
     assert!(app.restore_session());
     assert_eq!(app.test_spawns[0].0.url, "https://s/moved");
-    assert_eq!(stored(&app, &tab, field::URL), FieldValue::Str("https://s/".into()), "still unshared");
+    assert_eq!(stored(&app, tab, field::URL), FieldValue::Str("https://s/".into()), "still unshared");
     // The single tab is focused, so it is the one waking.
     assert_eq!(app.nodes[&tab].as_unloaded().unwrap().url, "https://s/moved");
     app.close_store();
@@ -300,7 +299,7 @@ fn a_restart_reopens_a_tabs_live_url_while_the_shared_url_is_unchanged() {
         let journal = Journal::open(&path, ActorId(3)).unwrap();
         let live_url = Some(LiveUrl { url: "https://s/moved".into(), from: "https://elsewhere/".into() });
         let entry = LocalNode { live_url, ..LocalNode::default() };
-        let state = LocalState { nodes: BTreeMap::from([(tab.clone(), entry)]), ..LocalState::default() };
+        let state = LocalState { nodes: BTreeMap::from([(tab.to_string(), entry)]), ..LocalState::default() };
         journal.write_local(&state.to_bytes()).unwrap();
     }
     let mut app = app_on(&path, 4);
@@ -317,10 +316,10 @@ fn an_unmarked_live_url_is_never_saved() {
         let mut app = app_on(&path, 1);
         let tab = add(&mut app, Kind::Tab, sleeping_tab("https://s/", ""));
         assert!(app.save_session());
-        set_live_url(&mut app, &tab, "https://s/moved");
+        set_live_url(&mut app, tab, "https://s/moved");
         assert!(app.save_session());
-        assert_eq!(stored(&app, &tab, field::URL), FieldValue::Str("https://s/".into()));
-        assert_eq!(app.doc.mirror.url(&tab), "https://s/");
+        assert_eq!(stored(&app, tab, field::URL), FieldValue::Str("https://s/".into()));
+        assert_eq!(app.doc.mirror.url(tab), "https://s/");
         app.maybe_write_local(true);
         app.close_store();
         tab
@@ -328,8 +327,8 @@ fn an_unmarked_live_url_is_never_saved() {
     let mut app = app_on(&path, 2);
     assert!(app.restore_session());
     assert_eq!(app.nodes[&tab].as_unloaded().unwrap().url, "https://s/moved", "reopened at its live url");
-    assert_eq!(app.doc.mirror.url(&tab), "https://s/", "the mirror shows the shared one");
+    assert_eq!(app.doc.mirror.url(tab), "https://s/", "the mirror shows the shared one");
     fail_spawns(&mut app);
     assert!(app.save_session());
-    assert_eq!(stored(&app, &tab, field::URL), FieldValue::Str("https://s/".into()));
+    assert_eq!(stored(&app, tab, field::URL), FieldValue::Str("https://s/".into()));
 }

@@ -209,9 +209,9 @@ impl App {
                     .into_iter()
                     .filter_map(|(id, _)| {
                         let node = doc.nodes.get(&id)?;
-                        let key = id.to_string();
-                        let json = store::json::node_json(&key, node.ty(), &session_sync::fields_of(node), None);
-                        let title = self.doc.hidden_local.get(&key).map(|l| l.title.clone()).filter(|t| !t.is_empty());
+                        let json =
+                            store::json::node_json(&id.to_string(), node.ty(), &session_sync::fields_of(node), None);
+                        let title = self.doc.hidden_local.get(&id).map(|l| l.title.clone()).filter(|t| !t.is_empty());
                         let members = (node.kind() == Kind::Group).then(|| {
                             let under = doc.with_descendants(std::collections::BTreeSet::from([id]));
                             under.iter().filter(|d| **d != id && doc.nodes.get(d).is_some_and(|n| !n.deleted)).count()
@@ -425,8 +425,8 @@ impl App {
             }
         }
         if let Some(url) = navigate_url {
-            if let Some(id) = self.focused.clone() {
-                self.navigate_tab(&id, url);
+            if let Some(id) = self.focused {
+                self.navigate_tab(id, url);
             }
             close = true;
         }
@@ -530,8 +530,8 @@ impl App {
         self.request_favicons(wanted.borrow().iter().map(String::as_str));
 
         if let Some(url) = navigate_url {
-            if let Some(id) = self.focused.clone() {
-                self.navigate_tab(&id, url);
+            if let Some(id) = self.focused {
+                self.navigate_tab(id, url);
             }
             close = true;
         }
@@ -560,8 +560,8 @@ impl App {
     /// be found without first switching to Graph view.
     pub(crate) fn build_downloads_popup(&mut self, ui: &mut egui::Ui, anchor_rect: egui::Rect, fade: f32) {
         let mut close = false;
-        let mut reveal_id: Option<String> = None;
-        let mut remove_id: Option<String> = None;
+        let mut reveal_id: Option<NodeId> = None;
+        let mut remove_id: Option<NodeId> = None;
         let clicked_outside = list_popup(
             ui,
             self.menus.open_popup,
@@ -579,10 +579,10 @@ impl App {
                         ui.horizontal(|ui| {
                             let filename = download_filename(&node.path);
                             if list_row(ui, filename).clicked() {
-                                reveal_id = Some(id.clone());
+                                reveal_id = Some(*id);
                             }
                             if ui.small_button(egui_phosphor::light::X).named_tip("Remove from list").clicked() {
-                                remove_id = Some(id.clone());
+                                remove_id = Some(*id);
                             }
                         });
                         // In-progress downloads get a live progress row below
@@ -631,11 +631,11 @@ impl App {
         );
 
         if let Some(id) = reveal_id {
-            self.reveal_node(&id);
+            self.reveal_node(id);
             close = true;
         }
         if let Some(id) = remove_id {
-            self.close_node(&id);
+            self.close_node(id);
         }
         if clicked_outside {
             close = true;
@@ -661,7 +661,7 @@ impl App {
         &mut self,
         ui: &mut egui::Ui,
         anchor_rect: egui::Rect,
-        focused_id: &str,
+        focused_id: NodeId,
         fade: f32,
     ) {
         let mut close = false;
@@ -675,7 +675,7 @@ impl App {
             .nodes
             .iter()
             .filter(|(_, n)| n.runtime.saved_tab().is_some())
-            .map(|(id, _)| self.doc.mirror.pinned(id))
+            .map(|(id, _)| self.doc.mirror.pinned(*id))
             .collect();
         let all_pinned = !tab_pin_states.is_empty() && tab_pin_states.iter().all(|&p| p);
         let area = egui::Area::new(egui::Id::new("tab_actions_popup"))
@@ -746,7 +746,7 @@ impl App {
         ui: &mut egui::Ui,
         dir: Dir,
         anchor_rect: egui::Rect,
-        tab: &str,
+        tab: NodeId,
         fade: f32,
     ) {
         let which = match dir {
@@ -762,7 +762,7 @@ impl App {
         let view = (bounds.size() + egui::Vec2::splat(2.0 * POPUP_PAD)).clamp(POPUP_MIN, POPUP_MAX);
         let cursor = self
             .nav_history
-            .get(tab)
+            .get(&tab)
             .and_then(|h| h.tree().iter().position(|p| p.cursor))
             .and_then(|i| cards.get(i))
             .map(|e| e.rect);
@@ -771,7 +771,7 @@ impl App {
             _ => crate::graph_ui::GraphCamera::new(),
         };
         // An eviction renumbers the pages under an open popup: the old framing means nothing, so recentre.
-        let epoch = self.nav_history.get(tab).map_or(0, |h| h.epoch());
+        let epoch = self.nav_history.get(&tab).map_or(0, |h| h.epoch());
         let epoch_key = egui::Id::new(("trail_popup_epoch", which));
         let seen_epoch = ui.ctx().data_mut(|d| {
             let seen = d.get_temp::<u32>(epoch_key);

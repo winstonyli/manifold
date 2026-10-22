@@ -1,6 +1,7 @@
 //! Viewport geometry, window title, zoom and navigation helpers of `App`.
 
 use super::*;
+use crate::store::model::NodeId;
 
 impl App {
     /// winit's own DPI scale factor — physical pixels per logical point.
@@ -69,14 +70,13 @@ impl App {
         let Some(window) = &self.window else { return };
         let image_title = self
             .viewed_image
-            .as_ref()
             .filter(|_| self.view_mode == ViewMode::Item)
-            .and_then(|id| self.nodes.get(id))
+            .and_then(|id| self.nodes.get(&id))
             .and_then(|n| n.as_image())
             .map(|i| download_filename(&i.path).to_owned());
         let title = image_title
             .or_else(|| {
-                self.focused.as_ref().and_then(|id| self.nodes.get(id)).and_then(|n| n.as_tab()).map(|n| {
+                self.focused.and_then(|id| self.nodes.get(&id)).and_then(|n| n.as_tab()).map(|n| {
                     if n.title.is_empty() {
                         n.url.clone()
                     } else {
@@ -133,10 +133,10 @@ impl App {
         Some(width as f64 / 2.0)
     }
 
-    pub(crate) fn send_resize_to(&mut self, tab_id: &str) {
+    pub(crate) fn send_resize_to(&mut self, tab_id: NodeId) {
         let (width, height) = self.content_size_px();
         let dpi_scale = self.window.as_ref().map_or(1.0, |w| w.scale_factor());
-        if let Some(node) = self.nodes.get_mut(tab_id).and_then(|n| n.as_tab_mut()) {
+        if let Some(node) = self.nodes.get_mut(&tab_id).and_then(|n| n.as_tab_mut()) {
             node.tab.send(&HostToView::Resize { width, height, dpi_scale });
         }
     }
@@ -148,8 +148,8 @@ impl App {
     /// tab's value. Deliberately reads the *tab's own* field, not `self.
     /// settings.zoom_factor` directly -- see `set_focused_zoom`'s own doc
     /// comment for the bug this replaced.
-    pub(crate) fn send_zoom_to(&mut self, tab_id: &str) {
-        if let Some(node) = self.nodes.get_mut(tab_id).and_then(|n| n.as_tab_mut()) {
+    pub(crate) fn send_zoom_to(&mut self, tab_id: NodeId) {
+        if let Some(node) = self.nodes.get_mut(&tab_id).and_then(|n| n.as_tab_mut()) {
             let factor = node.zoom_factor;
             node.tab.send(&HostToView::SetZoom { factor });
         }
@@ -162,8 +162,7 @@ impl App {
     /// no tab-specific value to show in that case.
     pub(crate) fn focused_zoom_factor(&self) -> f64 {
         self.focused
-            .as_deref()
-            .and_then(|id| self.nodes.get(id))
+            .and_then(|id| self.nodes.get(&id))
             .and_then(|n| n.as_tab())
             .map(|t| t.zoom_factor)
             .unwrap_or(self.settings.zoom_factor)
@@ -185,16 +184,16 @@ impl App {
     pub(crate) fn set_focused_zoom(&mut self, factor: f64) {
         self.settings.zoom_factor = factor;
         self.save_settings();
-        if let Some(id) = self.focused.clone() {
+        if let Some(id) = self.focused {
             if let Some(node) = self.nodes.get_mut(&id).and_then(|n| n.as_tab_mut()) {
                 node.zoom_factor = factor;
             }
-            self.send_zoom_to(&id);
+            self.send_zoom_to(id);
         }
     }
 
-    pub(crate) fn navigate_tab(&mut self, tab_id: &str, url: String) {
-        if let Some(node) = self.nodes.get_mut(tab_id).and_then(|n| n.as_tab_mut()) {
+    pub(crate) fn navigate_tab(&mut self, tab_id: NodeId, url: String) {
+        if let Some(node) = self.nodes.get_mut(&tab_id).and_then(|n| n.as_tab_mut()) {
             // Recorded here, not left to `NavigationStateChanged`'s own
             // history-recording: this sets `node.url` immediately
             // (synchronously, before the engine round-trips its own
@@ -214,11 +213,9 @@ impl App {
                 self.history_ui.history_matches_cache = None;
             }
         }
-        if let Some(node) = self.nodes.get_mut(tab_id).and_then(|n| n.as_tab_mut()) {
+        if let Some(node) = self.nodes.get_mut(&tab_id).and_then(|n| n.as_tab_mut()) {
             if node.url != url {
-                self.spawns
-                    .navigated_from
-                    .insert(tab_id.to_string(), (node.url.clone(), std::time::Instant::now(), false));
+                self.spawns.navigated_from.insert(tab_id, (node.url.clone(), std::time::Instant::now(), false));
             }
             node.url = url.clone();
             node.tab.send(&HostToView::Navigate { url: url.clone(), referrer: None });
@@ -241,19 +238,19 @@ impl App {
     /// URL or title contains `query`, case-insensitively. Capped and
     /// ordered by `tab_order` for determinism — this is a small in-memory
     /// list, not worth a fuzzy-match/relevance-ranking pass.
-    pub(crate) fn compute_open_tab_suggestions(&self, query: &str, exclude: &str) -> Vec<Suggestion> {
+    pub(crate) fn compute_open_tab_suggestions(&self, query: &str, exclude: NodeId) -> Vec<Suggestion> {
         if query.is_empty() {
             return Vec::new();
         }
         let query = query.to_lowercase();
         self.node_order
             .iter()
-            .filter(|id| id.as_str() != exclude)
+            .filter(|id| **id != exclude)
             .filter_map(|id| self.nodes.get(id).and_then(|n| n.runtime.listed_tab()).map(|tab| (id, tab)))
             .filter(|(_, (title, url))| url.to_lowercase().contains(&query) || title.to_lowercase().contains(&query))
             .take(5)
             .map(|(id, (title, url))| Suggestion::OpenTab {
-                tab_id: id.clone(),
+                tab_id: *id,
                 url: url.to_string(),
                 title: title.to_string(),
             })
@@ -265,9 +262,9 @@ impl App {
     /// Either way the dropdown itself is cleared and the address bar drops
     /// out of its "actively editing" state so it re-syncs to whichever
     /// tab ends up focused, same as any other navigation.
-    pub(crate) fn accept_suggestion(&mut self, suggestion: Suggestion, focused_tab_id: &str) {
+    pub(crate) fn accept_suggestion(&mut self, suggestion: Suggestion, focused_tab_id: NodeId) {
         match suggestion {
-            Suggestion::OpenTab { tab_id, .. } => self.focus_tab(&tab_id),
+            Suggestion::OpenTab { tab_id, .. } => self.focus_tab(tab_id),
             Suggestion::Search { query } => {
                 let url = self.settings.default_search_engine.search_url(&query);
                 self.navigate_tab(focused_tab_id, url);

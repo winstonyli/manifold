@@ -196,7 +196,7 @@ pub(crate) fn named_jar_label(id: NodeId, defs: &BTreeMap<NodeId, JarDef>) -> Op
 
 impl App {
     /// The card's jar chip (spec "UI"): `None` for a tab on the default jar with nothing to warn about.
-    pub(crate) fn jar_chip(&self, id: &str) -> Option<JarChip> {
+    pub(crate) fn jar_chip(&self, id: NodeId) -> Option<JarChip> {
         if !self.is_tab(id) {
             return None;
         }
@@ -204,7 +204,7 @@ impl App {
         let default = self.default_jar();
         let will_switch = self.will_switch(id);
         let can_switch_now = self.can_switch_jar_now(id);
-        let view_kind = match &self.nodes.get(id)?.runtime {
+        let view_kind = match &self.nodes.get(&id)?.runtime {
             Runtime::Tab(t) => t.tab.kind,
             Runtime::Unloaded(_) => self.doc.mirror.view_kind(id),
             _ => return None,
@@ -215,7 +215,7 @@ impl App {
             return None;
         }
         let name = self.jar_label(key);
-        let was = self.cookies.jar_tabs.get(id).map_or(key, |(k, _)| *k);
+        let was = self.cookies.jar_tabs.get(&id).map_or(key, |(k, _)| *k);
         let mut tips = Vec::new();
         if let Some(hint) = name.hidden_hint() {
             tips.push(hint);
@@ -227,7 +227,7 @@ impl App {
             tips.push("This view does not use jars yet".to_string());
         }
         if will_switch {
-            let cleared = self.cookies.jar_reseed.contains(id);
+            let cleared = self.cookies.jar_reseed.contains(&id);
             let target = if cleared && was == key { "the empty jar".to_string() } else { name.to_string() };
             tips.push(will_switch_tooltip(cleared, &target, can_switch_now));
         }
@@ -276,7 +276,7 @@ impl App {
                     .to_string(),
                 "Clear",
             )),
-            JarConfirm::Ephemeral(id) if self.jar_exists(id) && !self.doc.mirror.jar_def(&id.to_string()).ephemeral => Some((
+            JarConfirm::Ephemeral(id) if self.jar_exists(id) && !self.doc.mirror.jar_def(id).ephemeral => Some((
                 format!("Make {} ephemeral?", self.jar_label(id)),
                 "Its saved sign-ins are deleted from disk now. Tabs keep them until Manifold quits; after that this \
                  jar starts empty each time."

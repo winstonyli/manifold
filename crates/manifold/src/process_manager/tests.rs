@@ -1,4 +1,5 @@
 use super::*;
+use crate::card_id::testutil::node;
 use crate::view_install::{no_download_reason, NO_PIN_REASON};
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -229,11 +230,12 @@ fn a_stale_view_host_is_a_protocol_mismatch_crash() {
 /// A second spawn for the same tab id keeps the first one's log.
 #[test]
 fn per_tab_logs_append() {
-    let tab_id = format!("test-log-append-{}", std::process::id());
-    let path = per_tab_log_path(&tab_id);
+    // The log lives in the shared temp dir, so the id is per process.
+    let tab_id = NodeId { actor: crate::store::model::ActorId(u64::from(std::process::id())), counter: 1 };
+    let path = per_tab_log_path(tab_id);
     let _ = std::fs::remove_file(&path);
-    drop(per_tab_log_files(&tab_id).unwrap());
-    drop(per_tab_log_files(&tab_id).unwrap());
+    drop(per_tab_log_files(tab_id).unwrap());
+    drop(per_tab_log_files(tab_id).unwrap());
     let log = std::fs::read_to_string(&path).unwrap();
     let _ = std::fs::remove_file(&path);
     assert_eq!(log.matches("spawning a host for").count(), 2, "{log}");
@@ -351,14 +353,15 @@ fn a_host_fatal_line_is_the_whole_reason() {
     let reason = "CEF runtime doesn't support CEF API version 15200 (the host was built for CEF 152)";
     let fatal = format!("{}{reason}", manifold_view_protocol::HOST_FATAL);
     let log = lines(&[
-        &spawn_header("t"),
+        &spawn_header(node(1)),
         "[...:ERROR:cef\\libcef_dll\\libcef_dll2.cc:105] Request for unsupported CEF API version 15200",
         &fatal,
     ]);
     assert_eq!(host_fatal(&log).as_deref(), Some(reason));
     assert_eq!(host_fatal(&lines(&["starting", "libfake.so: cannot open shared object file"])), None);
     // An earlier spawn's fatal line, above the latest header, is not this host's.
-    let stale = lines(&[&spawn_header("t"), &fatal, "---- manifold pid 9 spawning a host for t ----", "noise"]);
+    let other_header = format!("---- manifold pid 9 spawning a host for {} ----", node(1));
+    let stale = lines(&[&spawn_header(node(1)), &fatal, &other_header, "noise"]);
     assert_eq!(host_fatal(&stale), None);
 }
 
@@ -370,9 +373,9 @@ fn an_earlier_spawns_fatal_line_is_not_the_reason_for_the_next() {
     let log = dir.join("host.log");
     let old = format!(
         "{}\n{}CEF runtime too old\n{}\n",
-        spawn_header("t"),
+        spawn_header(node(1)),
         manifold_view_protocol::HOST_FATAL,
-        spawn_header("t")
+        spawn_header(node(1))
     );
     std::fs::write(&log, old).unwrap();
     let listeners = transport::listen_local_pair(&format!("test-stale-{}", std::process::id())).unwrap();

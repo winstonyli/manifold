@@ -36,7 +36,7 @@ pub(crate) struct SettingsRequests {
     /// view switch (entering Settings doesn't clear it), so these act on
     /// whichever tab was focused right before Settings was opened, same
     /// as the toolbar controls they replaced.
-    pub(crate) current_tab_id: Option<String>,
+    pub(crate) current_tab_id: Option<NodeId>,
     pub(crate) mute_toggle: bool,
     pub(crate) screenshot_requested: bool,
     pub(crate) print_to_pdf_requested: bool,
@@ -236,11 +236,10 @@ impl App {
         // applies to it.
         let focus_kind = self
             .focused
-            .clone()
             .and_then(|id| self.nodes.get(&id).and_then(|n| n.as_tab()).map(|n| n.tab.kind).map(|kind| (id, kind)));
         match focus_kind {
             Some((id, kind)) => {
-                req.current_tab_id = Some(id.clone());
+                req.current_tab_id = Some(id);
                 ui.horizontal(|ui| {
                     ui.label("Engine");
                     let current_view_response = self.view_opener_button(ui, AnchoredPopup::CurrentViewKind, kind);
@@ -520,7 +519,7 @@ impl App {
     pub(crate) fn apply_settings_requests(&mut self, req: &SettingsRequests) {
         if req.welcome_tour_requested {
             self.close_settings_page();
-            let group = self.current_group.clone();
+            let group = self.current_group;
             self.spawn_new_tab(None, group, "manifold://welcome");
         }
         if req.save_now_requested {
@@ -574,7 +573,7 @@ impl App {
             }
         }
         if req.mute_toggle {
-            if let Some(id) = &req.current_tab_id {
+            if let Some(id) = req.current_tab_id {
                 self.toggle_muted(id);
             }
         }
@@ -622,14 +621,14 @@ impl App {
             self.save_settings();
         }
         let current_kind =
-            req.current_tab_id.as_ref().and_then(|id| self.nodes.get(id)).and_then(|n| n.as_tab()).map(|t| t.tab.kind);
+            req.current_tab_id.and_then(|id| self.nodes.get(&id)).and_then(|n| n.as_tab()).map(|t| t.tab.kind);
         if let Some(kind) = self.build_anchored_view_picker(
             ui,
             AnchoredPopup::CurrentViewKind,
             req.current_view_button_rect,
             current_kind,
         ) {
-            if let Some(id) = &req.current_tab_id {
+            if let Some(id) = req.current_tab_id {
                 if self.swap_in_flight(id).is_some() {
                     // A swap, or a cookie hold ahead of one (up to 2 s), is on its way: this pick would be dropped.
                     self.queue_toast("An engine change is already in progress for this tab".to_owned());

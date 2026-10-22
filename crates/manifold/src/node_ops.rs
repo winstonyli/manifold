@@ -1,6 +1,7 @@
 //! Node operations: closing, destroying, muting, pinning, bookmarking and printing nodes.
 
 use super::*;
+use crate::store::model::NodeId;
 
 impl App {
     /// The shared fold behind both of the above (and `level_items`'
@@ -25,10 +26,10 @@ impl App {
 
     /// Like `insert_group_at`, for `new_note_shortcut` and the card's note.
     /// Doesn't save; the caller does.
-    pub(crate) fn insert_note_at(&mut self, id: String, pos: Option<egui::Vec2>) {
-        let at = self.placement(&id, pos);
+    pub(crate) fn insert_note_at(&mut self, id: NodeId, pos: Option<egui::Vec2>) {
+        let at = self.placement(id, pos);
         let note = NotePayload { text: String::new(), editing: true };
-        self.interaction.focus_new_note = Some((CardId::stored(&id), 2));
+        self.interaction.focus_new_note = Some((CardId::from(id), 2));
         self.place_node(Some(id), store::model::Kind::Note, Runtime::Note(note), at);
     }
 
@@ -36,12 +37,12 @@ impl App {
     /// The card stays, showing a spinner, until the outcome replaces it:
     /// the live tab under the same id, or a failed card with the new
     /// error. Ignored while a wake is already in flight.
-    pub(crate) fn wake_tab(&mut self, id: &str, kind: ViewKind) {
+    pub(crate) fn wake_tab(&mut self, id: NodeId, kind: ViewKind) {
         let carried = self.doc.mirror.carried(id);
         let (pos, color, pinned, jar) = (carried.pos(), carried.color(), carried.pinned(), carried.jar());
         let Carried { parent, group, .. } = carried;
         let pos = pos.unwrap_or_default(); // unused: the card's layout entry stays (`TabSpawn::pos`)
-        let Some(node) = self.nodes.get_mut(id) else { return };
+        let Some(node) = self.nodes.get_mut(&id) else { return };
         let Runtime::Unloaded(tab) = &mut node.runtime else { return };
         if tab.state == UnloadedState::Waking {
             return;
@@ -50,10 +51,10 @@ impl App {
         let (zoom_factor, title, muted) = (tab.zoom_factor, tab.title.clone(), tab.muted);
         let carry = TabCarry { pinned, color, zoom_factor, title, muted };
         let url = tab.url.clone();
-        self.spawns.wakes_in_flight.insert(id.to_string());
+        self.spawns.wakes_in_flight.insert(id);
         // Another engine is saved as the wake starts, not when it lands (2b-3 Ruling 5).
         self.edit_view_kind(id, kind);
-        let (id, purpose, fallback_kind) = (id.to_string(), SpawnPurpose::Wake, None);
+        let (purpose, fallback_kind) = (SpawnPurpose::Wake, None);
         self.respawn_tab(TabSpawn { id, url, kind, parent, group, jar, pos, purpose, carry, fallback_kind });
     }
 
@@ -69,7 +70,7 @@ impl App {
         let ids = self.tabs_at_current_level();
         self.begin_tabs_shutdown(&ids);
         for id in ids {
-            self.close_node(&id);
+            self.close_node(id);
         }
     }
 
@@ -77,8 +78,8 @@ impl App {
     /// Tab view's "Muted" toolbar button and Graph view's own audio-dot
     /// click (see `TabPayload::muted`'s doc comment for the WebView2/WebKit-
     /// only caveat).
-    pub(crate) fn toggle_muted(&mut self, id: &str) {
-        if let Some(node) = self.nodes.get_mut(id).and_then(|n| n.as_tab_mut()) {
+    pub(crate) fn toggle_muted(&mut self, id: NodeId) {
+        if let Some(node) = self.nodes.get_mut(&id).and_then(|n| n.as_tab_mut()) {
             node.muted = !node.muted;
             let muted = node.muted;
             node.tab.send(&HostToView::SetMuted { muted });
@@ -114,8 +115,8 @@ impl App {
     /// already bookmarked (matched by url), removes it if it is. Persists
     /// immediately, same "no separate Save step" posture every other
     /// instant-apply control in this chrome already has.
-    pub(crate) fn toggle_bookmark(&mut self, id: &str) {
-        let Some(node) = self.nodes.get(id).and_then(|n| n.as_tab()) else { return };
+    pub(crate) fn toggle_bookmark(&mut self, id: NodeId) {
+        let Some(node) = self.nodes.get(&id).and_then(|n| n.as_tab()) else { return };
         let url = node.url.clone();
         if let Some(index) = self.bookmarks.iter().position(|b| b.url == url) {
             self.bookmarks.remove(index);
@@ -134,12 +135,12 @@ impl App {
     /// engine to send `SetMuted` to, but a wake's landing already sends it
     /// from the card's own `muted`, and personal state saves it either
     /// way -- see `UnloadedTabPayload::muted`).
-    pub(crate) fn mute_all_except(&mut self, keep_id: &str) {
-        let other_ids: Vec<String> = self
+    pub(crate) fn mute_all_except(&mut self, keep_id: NodeId) {
+        let other_ids: Vec<NodeId> = self
             .nodes
             .iter()
-            .filter(|(id, n)| id.as_str() != keep_id && n.runtime.saved_tab().is_some())
-            .map(|(id, _)| id.clone())
+            .filter(|(&id, n)| id != keep_id && n.runtime.saved_tab().is_some())
+            .map(|(&id, _)| id)
             .collect();
         for id in other_ids {
             let Some(node) = self.nodes.get_mut(&id) else { continue };
@@ -158,18 +159,16 @@ impl App {
     /// `keep_id` through the normal `close_node` path (teardown, reparenting,
     /// Recently Closed all still apply -- this is just that same
     /// action run once per other tab, not a bulk shortcut around it).
-    pub(crate) fn close_all_except(&mut self, keep_id: &str) {
-        let other_ids: Vec<String> = self
+    pub(crate) fn close_all_except(&mut self, keep_id: NodeId) {
+        let other_ids: Vec<NodeId> = self
             .node_order
             .iter()
-            .filter(|id| {
-                id.as_str() != keep_id && self.nodes.get(id.as_str()).is_some_and(|n| n.runtime.saved_tab().is_some())
-            })
-            .cloned()
+            .copied()
+            .filter(|&id| id != keep_id && self.nodes.get(&id).is_some_and(|n| n.runtime.saved_tab().is_some()))
             .collect();
         self.begin_tabs_shutdown(&other_ids);
         for id in other_ids {
-            self.close_node(&id);
+            self.close_node(id);
         }
     }
 
@@ -180,10 +179,10 @@ impl App {
     /// has no natural tab to exclude the way muting excludes the one
     /// they're presumably still listening to.
     pub(crate) fn set_all_pinned(&mut self, pin: bool) {
-        let tabs: Vec<String> =
-            self.nodes.iter().filter(|(_, n)| n.runtime.saved_tab().is_some()).map(|(id, _)| id.clone()).collect();
+        let tabs: Vec<NodeId> =
+            self.nodes.iter().filter(|(_, n)| n.runtime.saved_tab().is_some()).map(|(&id, _)| id).collect();
         for id in tabs {
-            self.edit_field(&id, field::PINNED, FieldValue::Bool(pin));
+            self.edit_field(id, field::PINNED, FieldValue::Bool(pin));
         }
     }
 
@@ -194,7 +193,7 @@ impl App {
     /// (Before this was shared, `destroy_tab`'s own no-op-on-non-tab guard
     /// left every non-tab, non-group member of a closed group merely
     /// reparented by `take_out`, never actually destroyed.)
-    pub(crate) fn destroy_node(&mut self, id: &str) {
+    pub(crate) fn destroy_node(&mut self, id: NodeId) {
         let Some(kind) = self.card_kind(id) else {
             return;
         };

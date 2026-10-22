@@ -166,7 +166,7 @@ impl App {
         let zoom = self.settings.zoom_factor;
 
         let welcome_id = self.alloc_node_id();
-        self.focused = Some(welcome_id.clone());
+        self.focused = Some(welcome_id);
         self.view_mode = ViewMode::Graph;
         let welcome = "manifold://welcome".to_string();
         self.spawn_tab_async(TabSpawn::new(welcome_id, welcome, kind, egui::Vec2::ZERO, SpawnPurpose::Restore, zoom));
@@ -195,7 +195,7 @@ impl App {
             let id = self.alloc_node_id();
             let pos = group_pos + offset;
             let spawn = TabSpawn::new(id, url.to_string(), kind, pos, SpawnPurpose::Restore, zoom);
-            self.spawn_tab_async(TabSpawn { group: Some(group_id.clone()), ..spawn });
+            self.spawn_tab_async(TabSpawn { group: Some(group_id), ..spawn });
         }
 
         // Deliberately left as a plain card, not entered -- the welcome
@@ -221,7 +221,7 @@ impl App {
 /// first node): the level it's brought into, and optionally a fresh
 /// position there.
 pub(crate) struct ImportRoot {
-    pub group: Option<String>,
+    pub group: Option<NodeId>,
     pub pos: Option<egui::Vec2>,
 }
 
@@ -247,9 +247,8 @@ impl App {
     /// nodes are exported. `None` without a store or for an
     /// unknown group; toasted when the store doesn't hold the group live
     /// (its save failed), rather than exporting an empty file.
-    pub(crate) fn export_group_json(&mut self, group: &str) -> Option<JsonDoc> {
+    pub(crate) fn export_group_json(&mut self, root: NodeId) -> Option<JsonDoc> {
         self.doc.journal.as_ref()?;
-        let root: NodeId = group.parse().ok()?;
         if !self.save_session() {
             self.queue_toast("The export may miss recent edits: the session couldn't be saved first".into());
         }
@@ -276,7 +275,7 @@ impl App {
     /// `save_session`, same as `replace_running_session`.
     pub(crate) fn import_group_json(&mut self, json: &JsonDoc) {
         self.leave_json_level();
-        let next_id = || self.alloc_node_id().parse().expect("a store id");
+        let next_id = || self.alloc_node_id();
         let imported = match crate::store::json::import(json, next_id, crate::store::json::Trust::Foreign) {
             Ok(imported) => imported,
             Err(err) => {
@@ -293,7 +292,7 @@ impl App {
         // member's file position is already relative to its own (possibly
         // nested) group and stays as-is, same as the old per-group export
         // format's own import behavior.
-        let pos = crate::graph_layout::GRAPH_WORLD_CENTER + crate::graph_layout::spawn_jitter(&root.to_string());
+        let pos = crate::graph_layout::GRAPH_WORLD_CENTER + crate::graph_layout::spawn_jitter(root);
         let root = ImportRoot { group: self.insertion_group(), pos: Some(pos) };
         self.materialize_imported(imported, Some(root), false);
         self.save_session();
@@ -360,25 +359,23 @@ impl App {
         let pass = self.begin_content_pass();
         for node in imported {
             // A link whose end did not resolve, or names no card in this batch or live, has nothing to join.
-            if crate::store::json::is_half_made_link(&node, |n| {
-                ids.contains(&n) || self.nodes.contains_key(&n.to_string())
-            }) {
+            if crate::store::json::is_half_made_link(&node, |n| ids.contains(&n) || self.nodes.contains_key(&n)) {
                 continue;
             }
             let is_root = Some(node.id) == root_id;
             let group = match node.fields.get(&field::GROUP) {
-                Some(FieldValue::Id(Some(g))) if !is_root && groups.contains(g) => Some(g.to_string()),
-                _ => dest.clone(),
+                Some(FieldValue::Id(Some(g))) if !is_root && groups.contains(g) => Some(*g),
+                _ => dest,
             };
             let mut fields = imported_fields(node.kind(), &node.fields);
             if let Some(FieldValue::Id(parent)) = fields.get_mut(&field::PARENT) {
-                let live = |p: &NodeId| keep_live_parents && self.nodes.contains_key(&p.to_string());
+                let live = |p: &NodeId| keep_live_parents && self.nodes.contains_key(p);
                 *parent = parent.filter(|p| ids.contains(p) || live(p));
             }
             if let (true, Some(pos)) = (is_root, root_pos) {
                 fields.insert(field::POS, FieldValue::Pos(pos.x, pos.y));
             }
-            self.materialize(node.id.to_string(), &node.ty, &fields, group, None);
+            self.materialize(node.id, &node.ty, &fields, group, None);
         }
         self.end_content_pass(pass);
         self.collapse_toasts_since(toasts);
@@ -410,7 +407,7 @@ impl App {
     pub(crate) fn rebind_jar_files(&self, doc: &JsonDoc, imported: &[crate::store::json::Imported]) {
         let Some(dir) = self.jars_dir() else { return };
         for (old, new) in doc.nodes.iter().zip(imported) {
-            if new.kind() != Kind::Jar || self.nodes.contains_key(&old.id) {
+            if new.kind() != Kind::Jar || old.id.parse().is_ok_and(|id: NodeId| self.nodes.contains_key(&id)) {
                 continue;
             }
             let (from, to) = (dir.join(format!("{}.json", old.id)), crate::jar::Jar::path(&dir, new.id));
@@ -434,7 +431,7 @@ impl App {
         json: &JsonDoc,
         trust: crate::store::json::Trust,
     ) -> HashMap<String, String> {
-        let next_id = || self.alloc_node_id().parse().expect("a store id");
+        let next_id = || self.alloc_node_id();
         let imported = match crate::store::json::import(json, next_id, trust) {
             Ok(imported) => imported,
             Err(err) => {
@@ -450,7 +447,7 @@ impl App {
         self.rebind_jar_files(json, &imported);
         let map: HashMap<String, String> =
             json.nodes.iter().zip(&imported).map(|(node, i)| (node.id.clone(), i.id.to_string())).collect();
-        let first_tab = imported.iter().find(|i| i.kind() == Kind::Tab).map(|i| i.id.to_string());
+        let first_tab = imported.iter().find(|i| i.kind() == Kind::Tab).map(|i| i.id);
         // No root: a group or parent outside the file (import keeps real
         // node ids) names nothing once the old session is gone.
         self.materialize_imported(imported, None, false);
@@ -479,7 +476,7 @@ impl App {
     /// not yet started is skipped, as `remove_node` does.
     pub(crate) fn teardown_running_session(&mut self) {
         for (id, _) in self.nodes.iter().filter(|(_, node)| node.as_pdf().is_some()) {
-            self.pdf_renderer.cancel(id);
+            self.pdf_renderer.cancel(*id);
         }
         // The Default jar is the profile's own: the replaced session's cards go, it stays (spec "The Default jar").
         let default = self.default_jar();
@@ -490,32 +487,26 @@ impl App {
             .map(|j| j.doc().live().map(|(id, _)| id).filter(|&id| Some(id) != default).collect())
             .unwrap_or_default();
         for id in old {
-            self.queue_delete(&id.to_string());
+            self.queue_delete(id);
         }
         // A link is not a card, so no endpoint's cascade is certain to reach it (a dangling one has none): the
         // replaced session's links all go, as its cards do.
-        for link in self.doc.mirror.link_ids().map(|l| l.to_string()).collect::<Vec<_>>() {
-            self.delete_link(&link);
+        for link in self.doc.mirror.link_ids().collect::<Vec<_>>() {
+            self.delete_link(link);
         }
         // The old session's nodes not created yet are not created at all.
         self.doc.writes.retain_creates(|id| Some(id) == default);
         // Each old node's per-id state and GPU textures (`forget_id`), including tabs whose spawn is still in flight
         // (no `nodes` entry yet, but cookie and popup state already). The session-wide clears below stay.
-        let keep = default.map(|d| d.to_string());
-        let old_ids: Vec<String> = self
-            .nodes
-            .keys()
-            .chain(self.spawns.spawning.keys())
-            .filter(|id| Some(*id) != keep.as_ref())
-            .cloned()
-            .collect();
+        let old_ids: Vec<NodeId> =
+            self.nodes.keys().chain(self.spawns.spawning.keys()).filter(|id| Some(**id) != default).copied().collect();
         for id in old_ids {
-            self.forget_id(&id);
+            self.forget_id(id);
         }
         self.begin_view_shutdown(); // the tabs below drop together: one SHUTDOWN_FLUSH wait, not one each
-        self.nodes.retain(|id, _| Some(id) == keep.as_ref());
-        self.node_order.retain(|id| Some(id) == keep.as_ref());
-        self.layout.retain(|id, _| Some(id) == keep.as_ref());
+        self.nodes.retain(|id, _| Some(*id) == default);
+        self.node_order.retain(|id| Some(*id) == default);
+        self.layout.retain(|id, _| Some(*id) == default);
         self.doc.writes.held_text.clear();
         self.doc.hidden_local.clear();
         // A closed tab's trail is stashed under an id not in `nodes`, so the loop above does not forget it.

@@ -2,6 +2,7 @@
 //! structs the runtime's variants hold.
 
 use super::*;
+use crate::store::model::NodeId;
 
 /// What a node holds on this machine beyond its stored fields (which are the
 /// `Mirror`'s): the live state its card shows and works from. A node's type
@@ -374,7 +375,7 @@ pub(crate) struct DownloadPayload {
 /// frame across the Graph-view render loops. `foldhash` is already fully
 /// resolved in this workspace's own dependency tree (see `Cargo.toml`'s
 /// own comment on it) -- this is a hasher swap, not a new dependency.
-pub(crate) type NodeMap = HashMap<String, GraphNode, foldhash::fast::RandomState>;
+pub(crate) type NodeMap = HashMap<NodeId, GraphNode, foldhash::fast::RandomState>;
 
 /// One node in the graph view. Its document fields (`pos`, `color`, `pinned`, `parent`, the "opened from" edge,
 /// and `group`, the level it is shown in) are not fields here: see `Mirror`; where its card is drawn is
@@ -443,8 +444,8 @@ impl GraphNode {
 impl App {
     /// `GraphNode::accessible_name` of node `id` with a rename (`NodeAction::CommitRename`) in place of the derived
     /// detail; a group's own name is already its detail. `None` for an id that isn't a node.
-    pub(crate) fn accessible_name(&self, id: &str) -> Option<String> {
-        let base = self.nodes.get(id)?.accessible_name(self.own_text(id), self.source_url(id));
+    pub(crate) fn accessible_name(&self, id: NodeId) -> Option<String> {
+        let base = self.nodes.get(&id)?.accessible_name(self.own_text(id), self.source_url(id));
         let renamed = self.doc.mirror.name(id); // name rule: drawn through display_name
         if renamed.is_empty() || self.is_container(id) {
             return Some(base);
@@ -456,17 +457,17 @@ impl App {
 
     /// The web source of an Image, Pdf, Json or Note node (`Mirror::url`): Refresh and Open as tab use it,
     /// and a missing file is fetched again from it. `None` for a local file and for other kinds.
-    pub(crate) fn source_url(&self, id: &str) -> Option<&str> {
+    pub(crate) fn source_url(&self, id: NodeId) -> Option<&str> {
         let content = matches!(
-            &self.nodes.get(id)?.runtime,
+            &self.nodes.get(&id)?.runtime,
             Runtime::Image(_) | Runtime::Pdf(_) | Runtime::Json(_) | Runtime::Note(_)
         );
         Some(self.doc.mirror.url(id)).filter(|url| content && !url.is_empty())
     }
 
     /// The URL a card's "Copy URL" puts on the clipboard: its `source_url`, or the address a download came from.
-    pub(crate) fn copyable_url(&self, id: &str) -> Option<&str> {
-        let download = self.nodes.get(id).is_some_and(|n| n.as_download().is_some());
+    pub(crate) fn copyable_url(&self, id: NodeId) -> Option<&str> {
+        let download = self.nodes.get(&id).is_some_and(|n| n.as_download().is_some());
         self.source_url(id).or_else(|| Some(self.doc.mirror.url(id)).filter(|url| download && !url.is_empty()))
     }
 }
@@ -475,7 +476,7 @@ impl App {
 impl App {
     /// Places a node `id` of type `kind` (its `TYPE` in the mirror) showing `runtime`, at the origin, as
     /// `insert_placeholder_node` would. For tests that need a node of a given type.
-    pub(crate) fn test_node(&mut self, id: &str, kind: crate::store::model::Kind, runtime: Runtime) {
+    pub(crate) fn test_node(&mut self, id: NodeId, kind: crate::store::model::Kind, runtime: Runtime) {
         self.insert_placeholder_node(id.to_owned(), egui::Vec2::ZERO, kind, runtime);
     }
 }
@@ -489,32 +490,28 @@ mod tests {
     fn accessible_name_is_kind_then_title() {
         let mut app = crate::App::default();
         let (g, n) = (app.alloc_node_id(), app.alloc_node_id());
-        app.insert_group_at(g.clone(), None);
-        app.insert_note_at(n.clone(), None);
-        let name = |app: &crate::App, id: &str| app.nodes[id].accessible_name(app.own_text(id), None);
-        assert_eq!(name(&app, &n), "Note");
+        app.insert_group_at(g, None);
+        app.insert_note_at(n, None);
+        let name = |app: &crate::App, id: NodeId| app.nodes[&id].accessible_name(app.own_text(id), None);
+        assert_eq!(name(&app, n), "Note");
         app.nodes.get_mut(&n).unwrap().runtime.as_note_mut().unwrap().text = "
   first line
 second"
             .into();
-        assert_eq!(name(&app, &n), "Note: first line");
+        assert_eq!(name(&app, n), "Note: first line");
+        app.doc.mirror.set(g, crate::store::model::field::NAME, crate::store::model::FieldValue::Str("Reading".into()));
+        assert_eq!(name(&app, g), "Group: Reading");
         app.doc.mirror.set(
-            &g,
-            crate::store::model::field::NAME,
-            crate::store::model::FieldValue::Str("Reading".into()),
-        );
-        assert_eq!(name(&app, &g), "Group: Reading");
-        app.doc.mirror.set(
-            &g,
+            g,
             crate::store::model::field::NAME,
             crate::store::model::FieldValue::Str("Re\u{200B}ading".into()),
         );
-        assert_eq!(name(&app, &g), "Group: Re<U+200B>ading");
-        app.doc.mirror.set(&g, crate::store::model::field::NAME, crate::store::model::FieldValue::Str(" ".into()));
-        assert_eq!(name(&app, &g), "Group: Untitled");
+        assert_eq!(name(&app, g), "Group: Re<U+200B>ading");
+        app.doc.mirror.set(g, crate::store::model::field::NAME, crate::store::model::FieldValue::Str(" ".into()));
+        assert_eq!(name(&app, g), "Group: Untitled");
         let raw = "\n\tRe\u{200B}ading\u{00A0}\u{00A0}list \nbody";
         app.nodes.get_mut(&n).unwrap().runtime.as_note_mut().unwrap().text = raw.into();
-        assert_eq!(name(&app, &n), "Note: Re<U+200B>ading list");
+        assert_eq!(name(&app, n), "Note: Re<U+200B>ading list");
         assert_eq!(app.nodes[&n].as_note().unwrap().text, raw, "the note's text is not cleaned");
     }
 

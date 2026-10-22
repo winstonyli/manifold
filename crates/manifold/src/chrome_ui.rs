@@ -1,6 +1,7 @@
 //! Toasts and the per-frame UI entry points of `App`.
 
 use super::*;
+use crate::store::model::NodeId;
 
 impl App {
     /// Queues `message` behind whatever toast is showing. `build_save_toast`
@@ -18,11 +19,12 @@ impl App {
         &mut self,
         kind: ViewKind,
         url: &str,
-        group: Option<&str>,
+        group: Option<NodeId>,
         error: &str,
         message: String,
     ) {
-        let intent = format!("{url}\u{1f}{}\u{1f}{}", view_label(kind), group.unwrap_or_default());
+        let intent =
+            format!("{url}\u{1f}{}\u{1f}{}", view_label(kind), group.map(|g| g.to_string()).unwrap_or_default());
         self.toasts.failure_notices.push(std::time::Instant::now(), view_label(kind), error, &intent, message);
     }
 

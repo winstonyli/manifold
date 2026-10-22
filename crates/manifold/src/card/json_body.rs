@@ -1,6 +1,7 @@
 //! A JSON card's body.
 
 use super::*;
+use crate::store::model::NodeId;
 
 impl App {
     /// Json: an error card keeps the missing-file box (fixed at
@@ -14,23 +15,23 @@ impl App {
         &mut self,
         ui: &mut egui::Ui,
         pass: &mut CardPass,
-        id: &str,
+        id: NodeId,
         _view: &CardView,
         rect: egui::Rect,
     ) -> CardBody {
         let zoom_scale = pass.zoom_scale;
         let deferred_overlays = &mut *pass.deferred_overlays;
         let mut body = CardBody { interact_rect: rect, tooltip: None };
-        let error = self.nodes.get(id).and_then(|n| n.as_json()).and_then(|j| j.error.clone());
+        let error = self.nodes.get(&id).and_then(|n| n.as_json()).and_then(|j| j.error.clone());
         if let Some(error) = error {
-            if let Some(path) = self.nodes.get(id).and_then(|n| n.as_json()).map(|j| j.path.clone()) {
+            if let Some(path) = self.nodes.get(&id).and_then(|n| n.as_json()).map(|j| j.path.clone()) {
                 let text = file_header_text(&path, None);
                 self.paint_missing_file_card(ui, deferred_overlays, id, rect, 1.0 / zoom_scale, zoom_scale, text);
             }
             body.tooltip = Some(error);
             return body;
         }
-        let Some(json) = self.nodes.get(id).and_then(|n| n.as_json()) else { return body };
+        let Some(json) = self.nodes.get(&id).and_then(|n| n.as_json()) else { return body };
         let text = self.graph_detail.content() && label_fits(rect, zoom_scale);
         let len = crate::json_view::entry_count(&json.value);
         // The header is 40 screen points, so at other zooms the rows get more or less of the card:

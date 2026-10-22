@@ -7,6 +7,7 @@
 //! downloads the real `pdfium.dll` (a network fetch, once per machine), so
 //! none of it belongs on the UI thread.
 
+use crate::store::model::NodeId;
 use std::collections::{HashMap, HashSet};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
@@ -33,8 +34,8 @@ struct State(Mutex<Inner>);
 
 #[derive(Default)]
 struct Inner {
-    cancelled: HashSet<String>,
-    running: HashMap<String, Cancel>,
+    cancelled: HashSet<NodeId>,
+    running: HashMap<NodeId, Cancel>,
 }
 
 impl State {
@@ -42,50 +43,50 @@ impl State {
         self.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
     }
     /// Node `id` was deleted: skip its render if queued, kill it if running.
-    fn cancel(&self, id: &str) {
+    fn cancel(&self, id: NodeId) {
         let mut inner = self.lock();
-        match inner.running.get(id) {
+        match inner.running.get(&id) {
             Some(running) => running.cancel(),
             None => {
-                inner.cancelled.insert(id.to_string());
+                inner.cancelled.insert(id);
             }
         }
     }
     /// A fresh request: a mark left by deleting an already-rendered PDF must not skip it.
-    fn request(&self, id: &str) {
-        self.lock().cancelled.remove(id);
+    fn request(&self, id: NodeId) {
+        self.lock().cancelled.remove(&id);
     }
     /// A worker takes `id`: false when it was cancelled while queued, else registers `cancel` for it.
-    fn begin(&self, id: &str, cancel: Cancel) -> bool {
+    fn begin(&self, id: NodeId, cancel: Cancel) -> bool {
         let mut inner = self.lock();
-        if inner.cancelled.remove(id) {
+        if inner.cancelled.remove(&id) {
             return false;
         }
-        inner.running.insert(id.to_string(), cancel);
+        inner.running.insert(id, cancel);
         true
     }
-    fn finish(&self, id: &str) {
-        self.lock().running.remove(id);
+    fn finish(&self, id: NodeId) {
+        self.lock().running.remove(&id);
     }
     #[cfg(test)]
-    fn running_ids(&self) -> Vec<String> {
-        self.lock().running.keys().cloned().collect()
+    fn running_ids(&self) -> Vec<NodeId> {
+        self.lock().running.keys().copied().collect()
     }
     #[cfg(test)]
-    fn is_cancelled(&self, id: &str) -> bool {
-        self.lock().cancelled.contains(id)
+    fn is_cancelled(&self, id: NodeId) -> bool {
+        self.lock().cancelled.contains(&id)
     }
 }
 
 pub struct PdfRenderer {
-    tx: mpsc::Sender<(String, String)>,
-    rx: mpsc::Receiver<(String, Result<PdfRenderResult, String>)>,
+    tx: mpsc::Sender<(NodeId, String)>,
+    rx: mpsc::Receiver<(NodeId, Result<PdfRenderResult, String>)>,
     state: Arc<State>,
 }
 
 impl PdfRenderer {
     pub fn new() -> Self {
-        let (tx, queue) = mpsc::channel::<(String, String)>();
+        let (tx, queue) = mpsc::channel::<(NodeId, String)>();
         let (result_tx, rx) = mpsc::channel();
         let queue = Arc::new(Mutex::new(queue));
         let state = Arc::new(State::default());
@@ -95,11 +96,11 @@ impl PdfRenderer {
                 // The lock is held only while waiting for the next request, never while rendering.
                 let Ok((id, path)) = queue.lock().map(|q| q.recv()).unwrap_or(Err(mpsc::RecvError)) else { return };
                 let (cancel, inbox) = manifold_view_protocol::render::channel();
-                if !state.begin(&id, cancel) {
+                if !state.begin(id, cancel) {
                     continue;
                 }
                 let result = render(&path, inbox);
-                state.finish(&id);
+                state.finish(id);
                 if result_tx.send((id, result)).is_err() {
                     return;
                 }
@@ -109,24 +110,24 @@ impl PdfRenderer {
     }
 
     /// Queues a render of `path`'s first page for node `id`.
-    pub fn request(&self, id: String, path: String) {
-        self.state.request(&id);
+    pub fn request(&self, id: NodeId, path: String) {
+        self.state.request(id);
         let _ = self.tx.send((id, path));
     }
 
     /// Node `id` was deleted: skip its render if it hasn't started, kill it if it has.
-    pub fn cancel(&self, id: &str) {
+    pub fn cancel(&self, id: NodeId) {
         self.state.cancel(id);
     }
 
     /// Whether `id`'s render is marked to be skipped (`session_sync` tests).
     #[cfg(test)]
-    pub(crate) fn is_cancelled(&self, id: &str) -> bool {
+    pub(crate) fn is_cancelled(&self, id: NodeId) -> bool {
         self.state.is_cancelled(id)
     }
 
     /// Every render finished since the last call. A result for a node deleted meanwhile is the caller's to ignore.
-    pub fn tick(&self) -> Vec<(String, Result<PdfRenderResult, String>)> {
+    pub fn tick(&self) -> Vec<(NodeId, Result<PdfRenderResult, String>)> {
         self.rx.try_iter().collect()
     }
 }
@@ -155,25 +156,26 @@ fn render(path: &str, inbox: manifold_view_protocol::render::Inbox) -> Result<Pd
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::card_id::testutil::node;
 
     #[test]
     fn a_cancel_before_the_render_starts_skips_it() {
         let state = State::default();
-        state.cancel("gone");
-        assert!(!state.begin("gone", manifold_view_protocol::render::channel().0), "skipped");
-        assert!(state.begin("gone", manifold_view_protocol::render::channel().0), "the mark was taken once");
+        state.cancel(node(1));
+        assert!(!state.begin(node(1), manifold_view_protocol::render::channel().0), "skipped");
+        assert!(state.begin(node(1), manifold_view_protocol::render::channel().0), "the mark was taken once");
     }
 
     #[test]
     fn a_cancel_while_running_kills_instead_of_marking_and_a_finish_clears_it() {
         let state = State::default();
-        assert!(state.begin("a", manifold_view_protocol::render::channel().0));
-        state.cancel("a");
-        assert!(!state.is_cancelled("a"), "a running render is killed, not marked for skipping");
-        state.finish("a");
+        assert!(state.begin(node(2), manifold_view_protocol::render::channel().0));
+        state.cancel(node(2));
+        assert!(!state.is_cancelled(node(2)), "a running render is killed, not marked for skipping");
+        state.finish(node(2));
         assert!(state.running_ids().is_empty());
         assert!(
-            state.begin("a", manifold_view_protocol::render::channel().0),
+            state.begin(node(2), manifold_view_protocol::render::channel().0),
             "a later request for the same id still renders"
         );
     }
@@ -181,8 +183,8 @@ mod tests {
     #[test]
     fn a_new_request_clears_a_stale_cancel() {
         let state = State::default();
-        state.cancel("a");
-        state.request("a");
-        assert!(state.begin("a", manifold_view_protocol::render::channel().0));
+        state.cancel(node(2));
+        state.request(node(2));
+        assert!(state.begin(node(2), manifold_view_protocol::render::channel().0));
     }
 }

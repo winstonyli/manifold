@@ -1,9 +1,10 @@
 //! Node storage: id allocation, opening the session store, and removing or forgetting nodes.
 
 use super::*;
+use crate::store::model::NodeId;
 
 /// The ids of nodes made while there is no journal (unit tests, a failed open): this launch's own actor and a counter,
-/// so they parse as store ids.
+/// so they are store ids.
 pub(crate) struct NodeIdFallback {
     actor: store::model::ActorId,
     counter: u64,
@@ -16,10 +17,10 @@ impl Default for NodeIdFallback {
 }
 
 impl NodeIdFallback {
-    fn next_id(&mut self) -> String {
+    fn next_id(&mut self) -> store::model::NodeId {
         let id = store::model::NodeId { actor: self.actor, counter: self.counter };
         self.counter += 1;
-        id.to_string()
+        id
     }
 }
 
@@ -35,9 +36,9 @@ pub(crate) enum Removal {
 impl App {
     /// A fresh node id: the journal's counter (contract "Actors and ids"),
     /// or this launch's fallback actor without one.
-    pub(crate) fn alloc_node_id(&mut self) -> String {
+    pub(crate) fn alloc_node_id(&mut self) -> NodeId {
         match &mut self.doc.journal {
-            Some(journal) => journal.next_id().to_string(),
+            Some(journal) => journal.next_id(),
             None => self.doc.fallback_ids.next_id(),
         }
     }
@@ -77,7 +78,7 @@ impl App {
 
     /// The local removal of any node (`take_out`, `Removal::Local`): a group, a tab, a download, note, image, PDF or
     /// Json node. Saves nothing; the caller does.
-    pub(crate) fn remove_node(&mut self, id: &str) {
+    pub(crate) fn remove_node(&mut self, id: NodeId) {
         self.take_out(id, Removal::Local);
     }
 
@@ -93,45 +94,43 @@ impl App {
     ///   PDF's render not yet started is cancelled; a download's file on disk is left alone);
     /// - local: the delete is queued, and a member whose `jar` edge now reaches nothing it did before loses it
     ///   (`recheck_edge_scope`; a remote device's own recheck arrives as ordinary tab edits, spec "Inheritance").
-    pub(crate) fn take_out(&mut self, id: &str, how: Removal) {
+    pub(crate) fn take_out(&mut self, id: NodeId, how: Removal) {
         let local = how == Removal::Local;
-        let present = self.nodes.contains_key(id);
-        let (parent, group) =
-            (self.doc.mirror.parent(id).map(str::to_owned), self.doc.mirror.group(id).map(str::to_owned));
+        let present = self.nodes.contains_key(&id);
+        let (parent, group) = (self.doc.mirror.parent(id), self.doc.mirror.group(id));
         let up = group.filter(|_| present);
-        let children: Vec<String> = self.children_of(id).map(str::to_owned).collect();
+        let children: Vec<NodeId> = self.children_of(id).collect();
         for child in children {
             if local {
-                self.edit_parent(&child, parent.clone());
+                self.edit_parent(child, parent);
             } else {
-                self.follow_remote_parent(&child, parent.clone());
+                self.follow_remote_parent(child, parent);
             }
         }
-        let members: Vec<String> =
-            if self.is_container(id) { self.members_of(id).map(str::to_owned).collect() } else { Vec::new() };
-        for member in &members {
+        let members: Vec<NodeId> = if self.is_container(id) { self.members_of(id).collect() } else { Vec::new() };
+        for &member in &members {
             if local {
-                self.edit_group(member, up.clone());
+                self.edit_group(member, up);
             } else {
-                self.follow_remote_group(member, up.clone());
+                self.follow_remote_group(member, up);
             }
         }
         if !local && self.is_container(id) {
             for (_, _, group) in
                 self.spawns.remote_in_flight.values_mut().filter_map(crate::session_sync::Remote::shown_mut)
             {
-                if group.as_deref() == Some(id) {
-                    *group = up.clone();
+                if *group == Some(id) {
+                    *group = up;
                 }
             }
         }
         let removed = self.unshow(id).is_some();
-        if self.current_group.as_deref() == Some(id) {
+        if self.current_group == Some(id) {
             self.switch_group_level(up.filter(|_| removed));
         }
         if local {
             self.queue_delete(id);
-            for member in &members {
+            for &member in &members {
                 self.recheck_edge_scope(member);
             }
         }
@@ -141,17 +140,17 @@ impl App {
     /// shutting its engine host down), a PDF's queued render, its `node_order` slot, the view state naming it
     /// (`focused`, `split_tab`, `viewed_image`, an open find bar), then `forget_id`. Shared by the delete paths
     /// (`take_out`) and the hide path (`hide_node`), which add what each needs. Returns the removed node.
-    pub(crate) fn unshow(&mut self, id: &str) -> Option<crate::GraphNode> {
-        let removed = self.nodes.remove(id);
+    pub(crate) fn unshow(&mut self, id: NodeId) -> Option<crate::GraphNode> {
+        let removed = self.nodes.remove(&id);
         if removed.as_ref().is_some_and(|n| n.as_pdf().is_some()) {
             self.pdf_renderer.cancel(id);
         }
-        self.node_order.retain(|d| d != id);
+        self.node_order.retain(|d| *d != id);
         // A split only makes sense paired with its focused tab (`focus_tab`): losing either half clears it.
-        if self.split_tab.as_deref() == Some(id) || self.focused.as_deref() == Some(id) {
+        if self.split_tab == Some(id) || self.focused == Some(id) {
             self.split_tab = None;
         }
-        if self.focused.as_deref() == Some(id) {
+        if self.focused == Some(id) {
             self.focused = None;
             // Only a showing Tab view drops to Graph: while an Image is maximized `focused` is the hidden last tab.
             if self.showing_tab_view() {
@@ -160,7 +159,7 @@ impl App {
             // The tab is gone: nothing to send `FindStop` to, so only the UI side of the close.
             self.find.close();
         }
-        if self.viewed_image.as_deref() == Some(id) {
+        if self.viewed_image == Some(id) {
             self.viewed_image = None;
             if self.view_mode == ViewMode::Item {
                 self.view_mode = ViewMode::Graph;
@@ -183,26 +182,24 @@ impl App {
     ///
     /// Never call it for a crash respawn or an engine swap: those are temporary, and keep `tab_crashes`,
     /// `nav_history` and `saved_scroll`.
-    pub(crate) fn forget_id(&mut self, id: &str) {
+    pub(crate) fn forget_id(&mut self, id: NodeId) {
         self.spawns.forget(id);
         // A hide re-inserts its entry after this (plan D5); every permanent removal drops it.
-        self.doc.hidden_local.remove(id);
-        self.pending_sleeps.remove(id);
+        self.doc.hidden_local.remove(&id);
+        self.pending_sleeps.remove(&id);
         self.clear_cookie_state(id);
-        self.saved_scroll.remove(id);
-        self.nav_history.remove(id);
+        self.saved_scroll.remove(&id);
+        self.nav_history.remove(&id);
         self.page_tab_gate.forget(id);
-        if let Ok(jar) = id.parse::<crate::store::model::NodeId>() {
-            self.forget_jar_memory(jar);
-        }
-        if self.naming_jar.as_ref().is_some_and(|(t, _)| t == id) {
+        self.forget_jar_memory(id);
+        if self.naming_jar.as_ref().is_some_and(|(t, _)| *t == id) {
             self.naming_jar = None;
         }
-        if self.renaming_group.as_ref().is_some_and(|(g, _)| g == id) {
+        if self.renaming_group.as_ref().is_some_and(|(g, _)| *g == id) {
             self.renaming_group = None;
         }
         self.menus.node_menu.forget(id);
-        self.interaction.forget(CardId::stored(id));
+        self.interaction.forget(CardId::from(id));
         self.forget_connect_source(id);
         if let Some(gpu) = &mut self.gpu {
             gpu.free_tab_thumbnail(id);
@@ -218,8 +215,8 @@ impl App {
     /// clipboard path understand, using the same "Ubuntu" distro name
     /// `process_manager` already hardcodes for spawning the WebKit
     /// view-host. Used by `node_file_path`.
-    pub(crate) fn windows_path_for_download(&self, id: &str) -> Option<String> {
-        let download = self.nodes.get(id)?.as_download()?;
+    pub(crate) fn windows_path_for_download(&self, id: NodeId) -> Option<String> {
+        let download = self.nodes.get(&id)?.as_download()?;
         // Off Windows a download's path is already native (WebKit is not run through WSL there).
         if cfg!(not(windows)) {
             return Some(download.path.clone());

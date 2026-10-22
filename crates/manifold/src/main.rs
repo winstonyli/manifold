@@ -93,6 +93,7 @@ mod virtual_source;
 mod walk;
 mod zoom_chip;
 
+use crate::store::model::NodeId;
 use event_loop::UserEvent;
 use export::*;
 use fetched::*;
@@ -186,12 +187,12 @@ struct App {
     /// this `HashMap`'s own unspecified iteration order (which would make
     /// node click/drag targeting flaky if used directly).
     nodes: NodeMap,
-    node_order: Vec<String>,
+    node_order: Vec<NodeId>,
     /// Where each node's card is drawn, by id (`Layout`, 2b-4 Ruling 1): runtime and personal, never the document's
     /// pos (`Mirror::pos`). Keyed by id and left alone by a respawn's remove-and-reinsert, so a respawning tab keeps
     /// its place; pruned with the mirror at a save. Read through `layout_pos`: a node without an entry (a hand-built
     /// test node) is at the origin.
-    layout: HashMap<String, Layout>,
+    layout: HashMap<NodeId, Layout>,
     /// Toggled by the Graph toolbar's "Collapse Groups"/"Expand Groups"
     /// button -- while `true`, every non-empty group card falls back to
     /// the plain centered name+count layout an empty group already uses,
@@ -246,7 +247,7 @@ struct App {
     /// Entering/leaving eases the camera via `GraphCameraTween` rather than
     /// `Transition` — see that type's own doc comment for why. Groups, their
     /// members and nesting are saved in the session store (`session_sync`).
-    current_group: Option<String>,
+    current_group: Option<NodeId>,
     /// The level of the Json node `current_group` names (spec "Level
     /// sources"); `None` on every other level.
     json_level: Option<JsonLevel>,
@@ -259,10 +260,10 @@ struct App {
     /// `egui::TextEdit` replaces whichever plain button/menu row started
     /// it until Enter commits or Escape cancels. Transient UI state, not
     /// the group's name (`Mirror::name`).
-    renaming_group: Option<(String, String)>,
+    renaming_group: Option<(NodeId, String)>,
     /// `(tab_id, draft_name)` while a tab's menu shows "New Jar..."'s name field in place of its items, the way
     /// `renaming_group` does for a group. Committing creates the jar and picks it for the tab (`NodeAction::NewJar`).
-    naming_jar: Option<(String, String)>,
+    naming_jar: Option<(NodeId, String)>,
     /// The confirm dialog that is up, if any (`build_confirm_popup`).
     confirm: Option<popups::Confirm>,
     /// The settings popup's "Save Session As..." name field -- kept across
@@ -278,12 +279,12 @@ struct App {
     /// The tab shown in Tab view, and — even while in Graph view — the
     /// default parent for a newly created tab (last thing the user
     /// selected). `None` only when there are no tabs left at all.
-    focused: Option<String>,
+    focused: Option<NodeId>,
     /// The Image node `ViewMode::Item` is showing, if any. `None` means
     /// Item view (if active) shows `focused`, a Tab. Kept separate from
     /// `focused` because `focused` is tab-only by contract -- see the
     /// Image Item View spec's "Plan-time corrections".
-    viewed_image: Option<String>,
+    viewed_image: Option<NodeId>,
     /// Zoom/pan for `viewed_image` -- see `ImageViewState`.
     image_view: ImageViewState,
     /// The secondary pane's tab id while a split (engine-vs-engine compare
@@ -296,20 +297,20 @@ struct App {
     /// while shown here. Cleared (not the tab itself closed) whenever the
     /// split closes, `focused` changes to a different tab, or this tab
     /// closes out from under the split -- see `close_split`.
-    split_tab: Option<String>,
+    split_tab: Option<NodeId>,
     /// When each live tab was last on screen, for idle auto-sleep.
     idle_clock: idle_sleep::IdleClock,
     /// Sleep requests awaiting the engine's `PageState` answer, by tab id.
-    pending_sleeps: HashMap<String, sleep_state::PendingSleep>,
+    pending_sleeps: HashMap<NodeId, sleep_state::PendingSleep>,
     /// The cookie jars WebView2 and CEF tabs share, by jar card id (see `jar`). A jar loads the first time a tab
     /// spawns with it (`ensure_jar_loaded`). An ephemeral jar lives only here.
     jars: BTreeMap<store::model::NodeId, jar::Jar>,
     /// Per-host cookie bookkeeping: pull rounds, holds, dirty jars (see `jar::CookieState`).
     cookies: jar::CookieState,
     /// Scroll positions of woken tabs, restored once their first load finishes.
-    saved_scroll: HashMap<String, sleep_state::SavedScroll>,
+    saved_scroll: HashMap<NodeId, sleep_state::SavedScroll>,
     /// Each tab's trail (`nav_history`): its pages as a tree, kept across an engine replacement, a close and a restart.
-    nav_history: HashMap<String, nav_history::NavHistory>,
+    nav_history: HashMap<NodeId, nav_history::NavHistory>,
     /// Files dropped on the window since the last frame -- each one's
     /// placement (`drop_file`) is offset by `egui::vec2(24.0, 24.0) *
     /// drop_batch`, so several dropped in the same frame fan out instead of
@@ -339,7 +340,7 @@ struct App {
     /// the in-progress drag here lets the release be forwarded to the same
     /// tab unconditionally, wherever it lands — the `manifold`-side mirror
     /// of the engine-side `DragState` each native-input view-host keeps.
-    native_drag_tab: Option<String>,
+    native_drag_tab: Option<NodeId>,
     /// Bitflags (see `manifold_view_protocol::modifiers`), tracked from winit's
     /// `WindowEvent::ModifiersChanged` so every forwarded `KeyDown`/`KeyUp`
     /// carries the modifier state at the time of that key, not just the
@@ -401,7 +402,7 @@ struct App {
     /// (and updates this) when they differ, instead of the physics sim
     /// running continuously. See `graph_settle_current_level`'s own doc
     /// comment for why continuous physics was replaced with this at all.
-    graph_settled_key: Option<(Option<String>, usize)>,
+    graph_settled_key: Option<(Option<NodeId>, usize)>,
 
     /// Headless mode (`--headless`): the window is created real but
     /// positioned far off-screen (NOT invisible — a genuinely invisible

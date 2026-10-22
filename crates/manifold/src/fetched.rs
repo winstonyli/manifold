@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::store::model::Kind;
+use crate::store::model::NodeId;
 
 /// Prunes `dir` of the files `only` picks that neither `keep` nor any named session in `sessions` names and that
 /// were last modified before `cutoff`. The startup prune picks every file with `cutoff` a grace before its snapshot;
@@ -42,7 +43,7 @@ pub(crate) fn doc_backing_names(
 /// nothing else names it (`others`: `App::backing_keep` without `id`).
 pub(crate) fn replaced_file_unused(
     dir: &std::path::Path,
-    id: &str,
+    id: NodeId,
     old: &std::path::Path,
     new: &std::path::Path,
     others: &HashSet<String>,
@@ -65,7 +66,7 @@ pub(crate) fn skip_convert_after(entry: Option<bool>, url_changed: bool, loading
 
 /// Where a new node lands (spec `2026-09-30-place-node-design.md`).
 pub(crate) struct Placement {
-    pub(crate) group: Option<String>,
+    pub(crate) group: Option<NodeId>,
     pub(crate) pos: egui::Vec2,
 }
 
@@ -73,10 +74,10 @@ impl App {
     /// Where a new node `id` goes: `current_group` at `pos`, or at a
     /// jittered world-center spawn when `pos` is `None`. A JSON level is
     /// left first, so the node lands in the level the user then sees.
-    pub(crate) fn placement(&mut self, id: &str, pos: Option<egui::Vec2>) -> Placement {
+    pub(crate) fn placement(&mut self, id: NodeId, pos: Option<egui::Vec2>) -> Placement {
         self.leave_json_level();
         let pos = pos.unwrap_or_else(|| graph_layout::GRAPH_WORLD_CENTER + graph_layout::spawn_jitter(id));
-        Placement { group: self.current_group.clone(), pos }
+        Placement { group: self.current_group, pos }
     }
 
     /// Inserts a node of type `kind` (colourless: colour is the mirror's, by id) showing `runtime` at `at` under `id`
@@ -87,7 +88,7 @@ impl App {
     /// (a placeholder for a stored node, a reload) keeps its group, document pos, text and stored path (2b-5 Ruling
     /// 5). A content node's web source is seeded by its caller (`insert_content`, `insert_download_node`).
     /// Doesn't save: the caller does, as `apply_graph_action` does once per action.
-    pub(crate) fn place_node(&mut self, id: Option<String>, kind: Kind, runtime: Runtime, at: Placement) -> String {
+    pub(crate) fn place_node(&mut self, id: Option<NodeId>, kind: Kind, runtime: Runtime, at: Placement) -> NodeId {
         let id = id.unwrap_or_else(|| self.alloc_node_id());
         // A tab's shared url starts as the one it is shown at (2b-3 Ruling 10). A stored tab's entry already holds
         // the document's (`materialize` runs `mirror_remote` first), so a live url it reopens at isn't taken for it.
@@ -98,10 +99,10 @@ impl App {
         let text = runtime.as_note().map(|n| n.text.clone()).unwrap_or_default();
         let ty = kind.type_str().unwrap_or_default().to_owned();
         let path = runtime.file_path().unwrap_or_default().to_owned();
-        self.nodes.insert(id.clone(), GraphNode { runtime });
+        self.nodes.insert(id, GraphNode { runtime });
         // The one way a node enters `nodes`: the next save creates it if the document lacks it (Ruling 3).
-        self.queue_create(&id);
-        self.snap_layout(&id, at.pos);
+        self.queue_create(id);
+        self.snap_layout(id, at.pos);
         let carried = crate::mirror::Carried::default()
             .in_group(at.group)
             .with(field::POS, crate::session_sync::pos_value(at.pos))
@@ -110,20 +111,20 @@ impl App {
             .with(field::VIEW_KIND, FieldValue::ViewCode(view_kind))
             .with_str(field::TYPE, ty)
             .with_str(field::PATH, path);
-        self.doc.mirror.seed(&id, &carried);
-        self.node_order.push(id.clone());
+        self.doc.mirror.seed(id, &carried);
+        self.node_order.push(id);
         id
     }
 
     /// `place_node` for a group named `name` (a group has no runtime). Like a note's text, the name seeds the mirror
     /// (`Mirror::name`) only for an id with no entry yet: a new group's `Create` carries it, and a stored group shown
     /// again keeps the document's (`materialize` runs `mirror_remote` first). Doesn't save.
-    pub(crate) fn place_group(&mut self, id: Option<String>, name: &str, at: Placement) -> String {
+    pub(crate) fn place_group(&mut self, id: Option<NodeId>, name: &str, at: Placement) -> NodeId {
         let id = id.unwrap_or_else(|| self.alloc_node_id());
-        let fresh = !self.doc.mirror.has(&id);
-        self.place_node(Some(id.clone()), Kind::Group, Runtime::None, at);
+        let fresh = !self.doc.mirror.has(id);
+        self.place_node(Some(id), Kind::Group, Runtime::None, at);
         if fresh && !name.is_empty() {
-            self.doc.mirror.set(&id, crate::store::model::field::NAME, FieldValue::Str(name.to_owned()));
+            self.doc.mirror.set(id, crate::store::model::field::NAME, FieldValue::Str(name.to_owned()));
         }
         id
     }
@@ -137,18 +138,18 @@ impl App {
     /// (`DownloadCompleted` saves), so no save.
     pub(crate) fn insert_download_node(
         &mut self,
-        tab_id: String,
+        tab_id: NodeId,
         path: String,
         total_bytes: Option<u64>,
         url: Option<String>,
     ) {
-        let node_group = self.doc.mirror.group(&tab_id).map(str::to_owned);
+        let node_group = self.doc.mirror.group(tab_id);
         if !self.nodes.contains_key(&tab_id) {
             return;
         }
-        let node_pos = self.layout_pos(&tab_id);
+        let node_pos = self.layout_pos(tab_id);
         let id = self.alloc_node_id();
-        let pos = node_pos + graph_layout::spawn_jitter(&id);
+        let pos = node_pos + graph_layout::spawn_jitter(id);
         let payload = Runtime::Download(DownloadPayload {
             path,
             bytes_received: 0,
@@ -156,33 +157,33 @@ impl App {
             completed: false,
             failed: false,
         });
-        self.place_node(Some(id.clone()), Kind::Download, payload, Placement { group: node_group, pos });
-        self.seed_source_url(&id, url);
-        self.edit_parent(&id, Some(tab_id)); // the edge from the tab it came from
+        self.place_node(Some(id), Kind::Download, payload, Placement { group: node_group, pos });
+        self.seed_source_url(id, url);
+        self.edit_parent(id, Some(tab_id)); // the edge from the tab it came from
     }
 
     /// The in-flight download node an engine's progress, failure or
     /// completion for `path` is about: one `tab_id` started if there is one,
     /// else the newest. A finished node with the same path (a restored one,
     /// or an earlier download of the same file) is never matched.
-    pub(crate) fn in_flight_download_id(&self, tab_id: &str, path: &str) -> Option<String> {
-        let in_flight = |id: &String| {
+    pub(crate) fn in_flight_download_id(&self, tab_id: NodeId, path: &str) -> Option<NodeId> {
+        let in_flight = |id: NodeId| {
             self.nodes
-                .get(id)
+                .get(&id)
                 .and_then(|n| n.as_download())
                 .is_some_and(|d| d.path == path && !d.completed && !d.failed)
         };
-        let from_tab = |id: &&String| self.opened_from(id) == Some(tab_id);
-        let mut newest_first = self.node_order.iter().rev().filter(|id| in_flight(id));
+        let from_tab = |id: &&NodeId| self.opened_from(**id) == Some(tab_id);
+        let mut newest_first = self.node_order.iter().rev().filter(|id| in_flight(**id));
         let first = newest_first.clone().next();
-        newest_first.find(from_tab).or(first).cloned()
+        newest_first.find(from_tab).or(first).copied()
     }
 
     /// Inserts a node of type `kind` showing `runtime` at `pos`, top level, no colour of its own (colour is the
     /// mirror's, by id): `materialize`'s way in for kinds with no insert helper of their own,
     /// and for an image/JSON card whose file couldn't be loaded (see
     /// `ImagePayload::error`).
-    pub(crate) fn insert_placeholder_node(&mut self, id: String, pos: egui::Vec2, kind: Kind, runtime: Runtime) {
+    pub(crate) fn insert_placeholder_node(&mut self, id: NodeId, pos: egui::Vec2, kind: Kind, runtime: Runtime) {
         self.place_node(Some(id), kind, runtime, Placement { group: None, pos });
     }
 
@@ -190,14 +191,14 @@ impl App {
     /// nodes' ids (a replica's own content copy is `<id>.<ext>`, a jar's cookies `<id>.json`) and resolved file
     /// names, and every live node the document holds, closed and hidden ones included (`doc_backing_names`).
     /// `except` leaves out one node.
-    pub(crate) fn backing_keep(&self, except: Option<&str>) -> HashSet<String> {
+    pub(crate) fn backing_keep(&self, except: Option<NodeId>) -> HashSet<String> {
         let mut keep: HashSet<String> = HashSet::new();
-        for (id, node) in self.nodes.iter().filter(|(id, _)| Some(id.as_str()) != except) {
+        for (id, node) in self.nodes.iter().filter(|(id, _)| Some(**id) != except) {
             keep.extend(node.runtime.file_path().and_then(content::file_name));
-            keep.insert(id.clone());
+            keep.insert(id.to_string());
         }
         if let Some(j) = &self.doc.journal {
-            keep.extend(doc_backing_names(j.doc(), except.and_then(|e| e.parse().ok())));
+            keep.extend(doc_backing_names(j.doc(), except));
         }
         keep
     }
@@ -223,12 +224,12 @@ impl App {
     /// A removed node's backing files (stem `id`, in the content and jars dirs), deleted at once unless something
     /// still holds them: the startup prune's keep rule with no grace. Called where a removal records no Recently
     /// Closed entry (`remove_remotely_deleted`), after the node has left `nodes`.
-    pub(crate) fn release_backing(&self, id: &str) {
-        if !self.may_prune() || self.backing_keep(None).contains(id) {
+    pub(crate) fn release_backing(&self, id: NodeId) {
+        if !self.may_prune() || self.backing_keep(None).contains(&id.to_string()) {
             return;
         }
         let cutoff = std::time::SystemTime::now() + std::time::Duration::from_secs(1);
-        self.prune_backing_files(cutoff, Some(id.to_owned()), "released");
+        self.prune_backing_files(cutoff, Some(id.to_string()), "released");
     }
 
     /// The shared body: on a thread, prunes each backing dir of the files `only` picks (every file with `None`)
@@ -259,8 +260,8 @@ impl App {
     /// placeholder with the new error, which the insert has already
     /// toasted. A failed PDF card just renders again (back to its
     /// spinner).
-    pub(crate) fn retry_missing_file(&mut self, id: &str) {
-        if self.nodes.get(id).and_then(|n| n.as_unloaded()).is_some() {
+    pub(crate) fn retry_missing_file(&mut self, id: NodeId) {
+        if self.nodes.get(&id).and_then(|n| n.as_unloaded()).is_some() {
             let kind = self.doc.mirror.view_kind(id);
             // A tab that failed for want of its engine's runtime can't succeed by retrying: ask to
             // install the engine instead (the card's Download).
@@ -282,29 +283,28 @@ impl App {
             self.refresh_node(id);
             return;
         }
-        if let Some(pdf) = self.nodes.get_mut(id).and_then(|n| n.as_pdf_mut()) {
+        if let Some(pdf) = self.nodes.get_mut(&id).and_then(|n| n.as_pdf_mut()) {
             if matches!(pdf.outcome, Some(Err(_))) {
                 pdf.outcome = None;
-                self.pdf_renderer.request(id.to_string(), pdf.path.clone());
+                self.pdf_renderer.request(id, pdf.path.clone());
             }
             return;
         }
-        if let Some(image) = self.nodes.get_mut(id).and_then(|n| n.as_image_mut()) {
+        if let Some(image) = self.nodes.get_mut(&id).and_then(|n| n.as_image_mut()) {
             if image.error.take().is_some() {
-                self.image_decoder.request(id.to_string(), image.path.clone());
+                self.image_decoder.request(id, image.path.clone());
             }
             return;
         }
-        let Some(node) = self.nodes.get(id) else { return };
+        let Some(node) = self.nodes.get(&id) else { return };
         let path = match &node.runtime {
             Runtime::Json(json) if json.error.is_some() => json.path.clone(),
             _ => return,
         };
-        let (group, parent) =
-            (self.doc.mirror.group(id).map(str::to_owned), self.doc.mirror.parent(id).map(str::to_owned));
+        let (group, parent) = (self.doc.mirror.group(id), self.doc.mirror.parent(id));
         let pos = self.layout_pos(id);
-        let in_order = self.node_order.iter().any(|n| n == id);
-        match self.insert_json_node_with_id(id.to_string(), path, pos, group) {
+        let in_order = self.node_order.contains(&id);
+        match self.insert_json_node_with_id(id, path, pos, group) {
             Ok(()) => {
                 // The insert replaced the node and pushed its id again;
                 // keep it where it was.
@@ -315,7 +315,7 @@ impl App {
                 self.save_session();
             }
             Err(error) => {
-                if let Some(json) = self.nodes.get_mut(id).and_then(|n| n.as_json_mut()) {
+                if let Some(json) = self.nodes.get_mut(&id).and_then(|n| n.as_json_mut()) {
                     json.error = Some(error);
                 }
             }
@@ -324,9 +324,9 @@ impl App {
 
     /// Fetches a node's source URL again; `reload_fetched_node` swaps it
     /// in once it passes its check. Refresh, and a missing file.
-    pub(crate) fn refresh_node(&mut self, id: &str) {
+    pub(crate) fn refresh_node(&mut self, id: NodeId) {
         use content::ContentKind as K;
-        let Some(node) = self.nodes.get(id) else { return };
+        let Some(node) = self.nodes.get(&id) else { return };
         let kind = match &node.runtime {
             Runtime::Image(_) => K::Image,
             Runtime::Pdf(_) => K::Pdf,
@@ -334,7 +334,7 @@ impl App {
             _ => return,
         };
         let Some(url) = self.source_url(id).map(str::to_string) else { return };
-        let job = FetchJob { target: FetchTarget::Node(id.to_string()), node_id: id.to_string(), url, kind };
+        let job = FetchJob { target: FetchTarget::Node(id), node_id: id, url, kind };
         self.redirect_fetcher.request(job);
     }
 
@@ -344,9 +344,9 @@ impl App {
     /// `retry_missing_file`'s own failure handling, and `session_sync`'s
     /// restore-time placeholder) takes its place, carrying the error and
     /// the url.
-    pub(crate) fn reload_fetched_node(&mut self, id: &str, body: WebBody) {
+    pub(crate) fn reload_fetched_node(&mut self, id: NodeId, body: WebBody) {
         use content::ContentKind as K;
-        let Some(node) = self.nodes.get(id) else { return };
+        let Some(node) = self.nodes.get(&id) else { return };
         let WebBody::File { kind, path } = &body else { return };
         // Checked before removing anything: only these kinds have a placeholder.
         if !matches!(kind, K::Image | K::Pdf | K::Json) {
@@ -354,20 +354,19 @@ impl App {
         }
         let (kind, path) = (*kind, path.clone());
         let new_path = path.clone();
-        let (group, parent) =
-            (self.doc.mirror.group(id).map(str::to_owned), self.doc.mirror.parent(id).map(str::to_owned));
+        let (group, parent) = (self.doc.mirror.group(id), self.doc.mirror.parent(id));
         let pos = self.layout_pos(id);
         // A PNG turned JPEG keeps its id stem, so `prune` never frees it.
         let old_path = node.runtime.file_path().map(str::to_owned);
         let Some(url) = self.source_url(id).map(str::to_string) else { return };
-        let at = self.node_order.iter().position(|n| n == id);
+        let at = self.node_order.iter().position(|n| *n == id);
         if let Some(gpu) = &mut self.gpu {
             gpu.free_image(id);
         }
-        self.nodes.remove(id);
-        self.node_order.retain(|n| n != id);
+        self.nodes.remove(&id);
+        self.node_order.retain(|n| *n != id);
         let source = ContentSource::Web { url: url.clone(), body };
-        let result = self.insert_content(source, id.to_string(), pos, group.clone());
+        let result = self.insert_content(source, id, pos, group);
         if let Err(error) = &result {
             let (ty, runtime) = match kind {
                 K::Image => (
@@ -383,7 +382,7 @@ impl App {
                 // matches.
                 _ => unreachable!("reload_fetched_node only reaches here for Image/Pdf/Json"),
             };
-            self.insert_placeholder_node(id.to_string(), pos, ty, runtime);
+            self.insert_placeholder_node(id, pos, ty, runtime);
         }
         self.edit_parent(id, parent);
         self.edit_group(id, group);
@@ -391,7 +390,7 @@ impl App {
         // new file (2b-5 Ruling 5). The view is the mirror's too (2b-4 Ruling 8). Overrides the new
         // value can't resolve are dropped; an error card's view is left unpruned, since pruning against its `Null`
         // would wipe, and sync away, every override a Retry should get back.
-        let value = self.nodes.get(id).and_then(|n| n.as_json()).filter(|_| result.is_ok()).map(|j| j.value.clone());
+        let value = self.nodes.get(&id).and_then(|n| n.as_json()).filter(|_| result.is_ok()).map(|j| j.value.clone());
         if let (Some(value), Some(view)) = (value, self.doc.mirror.view(id)) {
             let mut pruned = view.clone();
             pruned.retain_resolvable(&value);
@@ -423,9 +422,9 @@ impl App {
     /// Refresh), the node is untouched and a toast says so. With it missing
     /// (restore, sync or Retry), the node becomes the missing-file card,
     /// whose Retry is the feedback.
-    pub(crate) fn refresh_fetch_failed(&mut self, id: &str) {
+    pub(crate) fn refresh_fetch_failed(&mut self, id: NodeId) {
         let error = format!("Couldn't fetch {}", self.source_url(id).unwrap_or_default());
-        let Some(node) = self.nodes.get_mut(id) else { return };
+        let Some(node) = self.nodes.get_mut(&id) else { return };
         let missing = |path: &str| !std::path::Path::new(path).exists();
         let name = match &mut node.runtime {
             Runtime::Image(p) if missing(&p.path) => return p.error = Some(error),
@@ -442,10 +441,10 @@ impl App {
     /// A tab at the node's source URL beside it, which stays a tab on its
     /// first load (`skip_convert`), e.g. to read a PDF past page 1. The tab
     /// is opened from the node (`parent`), so the two stay linked.
-    pub(crate) fn open_as_tab(&mut self, id: &str) {
+    pub(crate) fn open_as_tab(&mut self, id: NodeId) {
         let Some(url) = self.source_url(id).map(str::to_string) else { return };
-        let (pos, group) = (self.layout_pos(id) + egui::vec2(40.0, 40.0), self.doc.mirror.group(id).map(str::to_owned));
-        let tab = self.spawn_tab_at(&url, pos, group, Some(id.to_string()));
+        let (pos, group) = (self.layout_pos(id) + egui::vec2(40.0, 40.0), self.doc.mirror.group(id));
+        let tab = self.spawn_tab_at(&url, pos, group, Some(id));
         self.spawns.skip_convert.insert(tab, false);
     }
 
@@ -455,9 +454,9 @@ impl App {
     pub(crate) fn insert_content(
         &mut self,
         source: ContentSource,
-        id: String,
+        id: NodeId,
         pos: egui::Vec2,
-        group: Option<String>,
+        group: Option<NodeId>,
     ) -> Result<(), String> {
         use content::ContentKind as K;
         let (url, kind, path) = match source {
@@ -500,9 +499,9 @@ impl App {
                             completed: true,
                             failed: false,
                         };
-                        self.insert_placeholder_node(id.clone(), pos, Kind::Download, Runtime::Download(payload));
+                        self.insert_placeholder_node(id, pos, Kind::Download, Runtime::Download(payload));
                         if self.nodes.contains_key(&id) {
-                            self.edit_group(&id, group);
+                            self.edit_group(id, group);
                         }
                         return Ok(());
                     }
@@ -511,35 +510,35 @@ impl App {
             }
         };
         match kind {
-            K::Image => self.insert_image_node_with_id(id.clone(), path, pos, group),
-            K::Pdf => self.insert_pdf_node_with_id(id.clone(), path, pos, group),
-            K::Json => self.insert_json_node_with_id(id.clone(), path, pos, group)?,
+            K::Image => self.insert_image_node_with_id(id, path, pos, group),
+            K::Pdf => self.insert_pdf_node_with_id(id, path, pos, group),
+            K::Json => self.insert_json_node_with_id(id, path, pos, group)?,
             // A web page never reaches here as a file (see `redirect_fetch`).
             K::Note | K::Page | K::Other => return Err(format!("{kind:?} is not a file kind")),
         }
-        self.seed_source_url(&id, url);
+        self.seed_source_url(id, url);
         Ok(())
     }
 
     /// A new content node's web source (`Mirror::url`, `App::source_url`), seeded once it is placed: a stored node
     /// shown again (a reload, a restore) keeps the one the mirror holds. `None`, a local file, seeds nothing.
-    fn seed_source_url(&mut self, id: &str, url: Option<String>) {
-        if let Some(url) = url.filter(|url| !url.is_empty() && self.nodes.contains_key(id)) {
+    fn seed_source_url(&mut self, id: NodeId, url: Option<String>) {
+        if let Some(url) = url.filter(|url| !url.is_empty() && self.nodes.contains_key(&id)) {
             self.doc.mirror.init_field(id, crate::store::model::field::URL, FieldValue::Str(url));
         }
     }
 
     pub(crate) fn insert_note_with_text(
         &mut self,
-        id: String,
+        id: NodeId,
         text: String,
         url: Option<String>,
         pos: egui::Vec2,
-        group: Option<String>,
+        group: Option<NodeId>,
     ) {
         let payload = NotePayload { text, editing: false };
-        self.place_node(Some(id.clone()), Kind::Note, Runtime::Note(payload), Placement { group, pos });
-        self.seed_source_url(&id, url);
+        self.place_node(Some(id), Kind::Note, Runtime::Note(payload), Placement { group, pos });
+        self.seed_source_url(id, url);
     }
 
     /// The insert every `image` card goes through: the caller picks the id,
@@ -551,16 +550,16 @@ impl App {
     /// fills in the size, or the error, from a worker.
     pub(crate) fn insert_image_node_with_id(
         &mut self,
-        id: String,
+        id: NodeId,
         path: String,
         pos: egui::Vec2,
-        group: Option<String>,
+        group: Option<NodeId>,
     ) {
         // The card is placed at once with no size (`ImagePayload::decoding`); the file is read and decoded on a
         // worker (`ImageDecoder`), and `tick_fetchers` sizes the card, uploads the texture, or toasts and keeps
         // the error as the card's tooltip. Decoded by content, not by `path`'s extension: `insert_content` already
         // sniffed this file as an image, which a lying extension (a `.pdf` that's really a PNG) would defeat.
-        self.image_decoder.request(id.clone(), path.clone());
+        self.image_decoder.request(id, path.clone());
         let payload = ImagePayload { path, width: 0, height: 0, error: None };
         self.place_node(Some(id), Kind::Image, Runtime::Image(payload), Placement { group, pos });
     }
@@ -572,17 +571,17 @@ impl App {
     /// that succeeds does the tab go, through `remove_tab` (a close that
     /// isn't remembered, clearing every reference to it). A failed insert
     /// is toasted and the tab stays.
-    pub(crate) fn redirect_tab_to_content(&mut self, tab_id: &str, node_id: String, url: String, body: WebBody) {
-        let group = self.doc.mirror.group(tab_id).map(str::to_owned);
-        if !self.nodes.contains_key(tab_id) {
+    pub(crate) fn redirect_tab_to_content(&mut self, tab_id: NodeId, node_id: NodeId, url: String, body: WebBody) {
+        let group = self.doc.mirror.group(tab_id);
+        if !self.nodes.contains_key(&tab_id) {
             return;
         }
         let pos = self.layout_pos(tab_id);
-        let parent = self.doc.mirror.parent(tab_id).map(str::to_owned);
-        if self.insert_content(ContentSource::Web { url, body }, node_id.clone(), pos, group).is_ok() {
-            self.edit_parent(&node_id, parent);
+        let parent = self.doc.mirror.parent(tab_id);
+        if self.insert_content(ContentSource::Web { url, body }, node_id, pos, group).is_ok() {
+            self.edit_parent(node_id, parent);
             // The tab's links go with it (`remove_tab`); the new card takes over each.
-            self.retarget_links(tab_id, &node_id);
+            self.retarget_links(tab_id, node_id);
             self.remove_tab(tab_id);
             self.save_session();
         }
@@ -597,8 +596,8 @@ impl App {
     /// "still loading") rather than checking the file synchronously first --
     /// decoding a PDF is genuinely slow (see `PdfPayload`'s own doc comment);
     /// a bad/missing file surfaces later as a `Some(Err(_))` outcome.
-    pub(crate) fn insert_pdf_node_with_id(&mut self, id: String, path: String, pos: egui::Vec2, group: Option<String>) {
-        self.pdf_renderer.request(id.clone(), path.clone());
+    pub(crate) fn insert_pdf_node_with_id(&mut self, id: NodeId, path: String, pos: egui::Vec2, group: Option<NodeId>) {
+        self.pdf_renderer.request(id, path.clone());
         let pdf = Runtime::Pdf(PdfPayload { path, outcome: None });
         self.place_node(Some(id), Kind::Pdf, pdf, Placement { group, pos });
     }
@@ -613,10 +612,10 @@ impl App {
     /// body cap; moving it to a worker like `ImageDecoder` is parked as D-R6).
     pub(crate) fn insert_json_node_with_id(
         &mut self,
-        id: String,
+        id: NodeId,
         path: String,
         pos: egui::Vec2,
-        group: Option<String>,
+        group: Option<NodeId>,
     ) -> Result<(), String> {
         // Toasted here, not by callers -- see `insert_image_node_with_id`.
         let value = match crate::json_file::load::<serde_json::Value>(std::path::Path::new(&path), "JSON") {
@@ -663,7 +662,7 @@ impl App {
     /// `ADDFILE`.
     pub(crate) fn add_file_at(&mut self, path: std::path::PathBuf, pos: Option<egui::Vec2>) -> Result<(), String> {
         let id = self.alloc_node_id();
-        let Placement { group, pos } = self.placement(&id, pos);
+        let Placement { group, pos } = self.placement(id, pos);
         self.insert_content(ContentSource::Local(path), id, pos, group)
     }
 
@@ -680,9 +679,9 @@ impl App {
         self.drop_batch += 1;
         let beside_focused = self
             .showing_tab_view()
-            .then(|| self.focused.as_deref().filter(|id| self.nodes.contains_key(*id)))
+            .then(|| self.focused.filter(|id| self.nodes.contains_key(id)))
             .flatten()
-            .map(|id| (self.layout_pos(id) + egui::vec2(240.0, 0.0), self.group_of(&self.focused)));
+            .map(|id| (self.layout_pos(id) + egui::vec2(240.0, 0.0), self.group_of(self.focused)));
         match beside_focused {
             Some((pos, group)) => {
                 let id = self.alloc_node_id();
@@ -707,31 +706,32 @@ impl App {
 /// it when the node has a URL. An unfinished `.tmp` save is never picked.
 /// One directory read answers a whole restore or apply pass.
 #[derive(Debug, Default)]
-pub(crate) struct ContentIndex(HashMap<String, (std::time::SystemTime, std::path::PathBuf)>);
+pub(crate) struct ContentIndex(HashMap<NodeId, (std::time::SystemTime, std::path::PathBuf)>);
 
 impl ContentIndex {
     pub(crate) fn scan(dir: Option<&std::path::Path>) -> Self {
-        let mut newest: HashMap<String, (std::time::SystemTime, std::path::PathBuf)> = HashMap::new();
+        let mut newest: HashMap<NodeId, (std::time::SystemTime, std::path::PathBuf)> = HashMap::new();
         let entries = dir.and_then(|dir| std::fs::read_dir(dir).ok()).into_iter().flatten().flatten();
         for e in entries {
             let name = e.file_name().to_string_lossy().into_owned();
             let Some((id, _)) = name.split_once('.') else { continue };
+            let Ok(id) = id.parse::<NodeId>() else { continue };
             if name.ends_with(".tmp") {
                 continue;
             }
             let modified = e.metadata().and_then(|m| m.modified()).unwrap_or(std::time::UNIX_EPOCH);
-            match newest.get(id) {
+            match newest.get(&id) {
                 Some((at, _)) if *at >= modified => {}
                 _ => {
-                    newest.insert(id.to_string(), (modified, e.path()));
+                    newest.insert(id, (modified, e.path()));
                 }
             }
         }
         Self(newest)
     }
 
-    pub(crate) fn resolve(&self, id: &str, stored: &str) -> String {
-        self.0.get(id).map_or_else(|| stored.to_string(), |(_, path)| path.to_string_lossy().into_owned())
+    pub(crate) fn resolve(&self, id: NodeId, stored: &str) -> String {
+        self.0.get(&id).map_or_else(|| stored.to_string(), |(_, path)| path.to_string_lossy().into_owned())
     }
 }
 

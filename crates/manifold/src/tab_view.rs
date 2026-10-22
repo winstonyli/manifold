@@ -3,6 +3,7 @@
 
 use super::*;
 use crate::nav_history::Dir;
+use crate::store::model::NodeId;
 
 /// Tab view's address bar and its autocomplete dropdown.
 pub(crate) struct AddressBar {
@@ -147,7 +148,7 @@ impl App {
     /// widgets and `trailing_ui` for trailing ones; a kind that needs the
     /// space in between (Tab's address bar) measures `trailing_ui` to size
     /// it. The frame finally advances the row past the trailing cluster.
-    pub(crate) fn render_item_toolbar(&mut self, node_id: &str, ui: &mut egui::Ui) -> ItemToolbarFrame {
+    pub(crate) fn render_item_toolbar(&mut self, node_id: NodeId, ui: &mut egui::Ui) -> ItemToolbarFrame {
         let mut back_to_graph = false;
         let mut shortcuts_help_button_rect = None;
         let mut actions = ItemToolbarActions::default();
@@ -191,7 +192,7 @@ impl App {
 
     pub(crate) fn render_item_toolbar_content(
         &mut self,
-        node_id: &str,
+        node_id: NodeId,
         ui: &mut egui::Ui,
         trailing_ui: &mut egui::Ui,
     ) -> ItemToolbarActions {
@@ -207,14 +208,14 @@ impl App {
 
     pub(crate) fn render_tab_toolbar_content(
         &mut self,
-        focused_id: &str,
+        focused_id: NodeId,
         ui: &mut egui::Ui,
         trailing_ui: &mut egui::Ui,
     ) -> ItemToolbarActions {
         let mut actions = ItemToolbarActions::default();
         let (can_go_back, can_go_forward) = self.trail_enabled(focused_id);
         let (back_fork, forward_fork) =
-            self.nav_history.get(focused_id).map_or((false, false), |h| (h.back_fork(), h.forward_fork()));
+            self.nav_history.get(&focused_id).map_or((false, false), |h| (h.back_fork(), h.forward_fork()));
         let mut back_marker: Option<egui::Response> = None;
         let mut forward_marker: Option<egui::Response> = None;
         toolbar_chip(ui, |ui| {
@@ -344,7 +345,7 @@ impl App {
         actions.split_view_button_rect = Some(split_view_response.rect);
         let is_bookmarked = self
             .nodes
-            .get(focused_id)
+            .get(&focused_id)
             .and_then(|n| n.as_tab())
             .is_some_and(|n| self.bookmarks.iter().any(|b| b.url == n.url));
         // A standalone button, not a chip: pressed look for "already
@@ -429,7 +430,7 @@ impl App {
         // away. A click into the page goes through egui and does move focus.
         self.address_bar.note_focus(ui.memory(|m| m.has_focus(response.id)));
         actions.address_bar_rect = Some(response.rect);
-        let node = self.nodes[focused_id].as_tab().unwrap();
+        let node = self.nodes[&focused_id].as_tab().unwrap();
         let (url, loading, kind) = (node.url.clone(), node.loading, node.tab.kind);
         let identity = self.tab_identity(&url, loading, kind);
         let icon_center = egui::pos2(response.rect.min.x + 8.0 + ICON_SIZE / 2.0, response.rect.center().y);
@@ -460,21 +461,21 @@ impl App {
     /// `ViewMode::Item`: whichever node is maximized -- `viewed_image` if
     /// set, else the focused Tab.
     pub(crate) fn build_item_ui(&mut self, ui: &mut egui::Ui) {
-        match self.viewed_image.clone() {
-            Some(image_id) => self.build_image_view_ui(ui, &image_id),
+        match self.viewed_image {
+            Some(image_id) => self.build_image_view_ui(ui, image_id),
             None => self.build_tab_view_ui(ui),
         }
     }
 
     pub(crate) fn build_tab_view_ui(&mut self, ui: &mut egui::Ui) {
-        let Some(focused_id) = self.focused.clone() else {
+        let Some(focused_id) = self.focused else {
             self.view_mode = ViewMode::Graph;
             return;
         };
         // Missing (mid-respawn), or a failed tab's card.
         if !self.nodes.get(&focused_id).is_some_and(|n| n.as_tab().is_some()) {
-            if self.spawns.pending_respawn_focus.as_deref() == Some(focused_id.as_str()) {
-                self.build_respawn_placeholder(ui, &focused_id);
+            if self.spawns.pending_respawn_focus == Some(focused_id) {
+                self.build_respawn_placeholder(ui, focused_id);
             } else {
                 self.view_mode = ViewMode::Graph;
             }
@@ -520,7 +521,7 @@ impl App {
                     back_branches_rect,
                     forward_branches_rect,
                 },
-        } = self.render_item_toolbar(&focused_id, ui);
+        } = self.render_item_toolbar(focused_id, ui);
 
         self.build_shortcuts_help(ui, shortcuts_help_button_rect);
 
@@ -558,12 +559,12 @@ impl App {
         // never reached anything and just silently dismissed the dropdown.
         let combined = self.address_bar.combined();
         if editing_address && !combined.is_empty() {
-            self.build_address_suggestions(ui, &combined, address_bar_rect, &focused_id);
+            self.build_address_suggestions(ui, &combined, address_bar_rect, focused_id);
         }
 
         if enter_pressed {
             match self.address_bar.highlighted.filter(|&i| i < combined.len()) {
-                Some(idx) => self.accept_suggestion(combined[idx].clone(), &focused_id),
+                Some(idx) => self.accept_suggestion(combined[idx].clone(), focused_id),
                 None => navigate = Some(self.address_bar.text.clone()),
             }
         }
@@ -601,7 +602,7 @@ impl App {
         }
         for (requested, dir) in [(go_back, Dir::Back), (go_forward, Dir::Forward)] {
             if requested {
-                self.navigate_history(&focused_id, dir);
+                self.navigate_history(focused_id, dir);
             }
         }
         if reload_requested {
@@ -609,7 +610,7 @@ impl App {
         }
         if home_requested {
             let home_page = self.settings.home_page.clone();
-            self.navigate_tab(&focused_id, home_page);
+            self.navigate_tab(focused_id, home_page);
         }
         if close_split_requested {
             self.close_split();
@@ -619,8 +620,8 @@ impl App {
         // content quads) rather than as part of either pane's own content,
         // since the secondary pane has no toolbar of its own to put it in
         // (view-only in this first cut, see `split_tab`'s own doc comment).
-        if let Some(split_id) = self.split_tab.clone() {
-            self.build_split_pane_label(ui, &split_id);
+        if let Some(split_id) = self.split_tab {
+            self.build_split_pane_label(ui, split_id);
         }
         // A freshly-spawned or just-respawned tab's content pane draws as
         // plain black until its view-host's first real frame arrives (see
@@ -630,19 +631,19 @@ impl App {
         // spinner for the exact same "no thumbnail yet" state. Only covers
         // the primary pane; the split view's secondary pane (view-only,
         // still a first cut per `split_tab`'s own doc comment) is left as-is.
-        let has_content = self.gpu.as_ref().is_some_and(|g| g.has_tab_texture(&focused_id));
+        let has_content = self.gpu.as_ref().is_some_and(|g| g.has_tab_texture(focused_id));
         if !has_content {
             self.build_content_spinner(ui);
         }
         if toggle_bookmark_requested {
-            self.toggle_bookmark(&focused_id);
+            self.toggle_bookmark(focused_id);
         }
         if switch_jar {
-            self.switch_jar_now(&focused_id);
+            self.switch_jar_now(focused_id);
         }
         let ctx = ui.ctx().clone();
         if let Some((rect, fade)) = self.anchored_popup_fade(&ctx, AnchoredPopup::TabActions, tab_actions_button_rect) {
-            self.build_tab_actions_popup(ui, rect, &focused_id, fade);
+            self.build_tab_actions_popup(ui, rect, focused_id, fade);
         }
         for (dir, which, anchor) in [
             (Dir::Back, AnchoredPopup::BackBranches, back_branches_rect),
@@ -653,7 +654,7 @@ impl App {
                 close_popup(&mut self.menus.open_popup, which);
             }
             if let Some((rect, fade)) = self.anchored_popup_fade(&ctx, which, anchor) {
-                self.build_trail_branches_popup(ui, dir, rect, &focused_id, fade);
+                self.build_trail_branches_popup(ui, dir, rect, focused_id, fade);
             }
         }
         // Highlights the split's own current engine (if one is already
@@ -668,13 +669,13 @@ impl App {
         }
         if let Some(text) = navigate {
             let url = resolve_navigation_url(&text, self.settings.default_search_engine);
-            self.navigate_tab(&focused_id, url);
+            self.navigate_tab(focused_id, url);
             self.address_bar.dismiss();
         }
     }
 
     /// Stand-in while the focused tab is being respawned or woken: just enough chrome to escape to Graph.
-    fn build_respawn_placeholder(&mut self, ui: &mut egui::Ui, focused_id: &str) {
+    fn build_respawn_placeholder(&mut self, ui: &mut egui::Ui, focused_id: NodeId) {
         // An engine swap or crash recovery is respawning the tab
         // the user is currently looking at — stay in Tab view
         // (don't bounce to Graph, see `pending_respawn_focus`'s doc
@@ -685,7 +686,7 @@ impl App {
         // is a tab being woken from sleep; anything else missing
         // here (a crash respawn, or an engine swap) is a real tab
         // reconnecting.
-        let label = if self.nodes.get(focused_id).and_then(|n| n.as_unloaded()).is_some() {
+        let label = if self.nodes.get(&focused_id).and_then(|n| n.as_unloaded()).is_some() {
             "Loading…"
         } else {
             "Reconnecting…"
@@ -715,7 +716,7 @@ impl App {
         ui: &mut egui::Ui,
         combined: &[Suggestion],
         address_bar_rect: Option<egui::Rect>,
-        focused_id: &str,
+        focused_id: NodeId,
     ) {
         // The arrows are the field's only while it has focus (or is in its one-frame blip).
         let live = self.address_bar.unfocused_frames <= 1;
@@ -753,7 +754,7 @@ impl App {
                         for (idx, suggestion) in combined.iter().enumerate() {
                             let highlighted = self.address_bar.highlighted == Some(idx);
                             let identity = match suggestion {
-                                Suggestion::OpenTab { tab_id, url, .. } => self.row_identity(tab_id, url),
+                                Suggestion::OpenTab { tab_id, url, .. } => self.row_identity(*tab_id, url),
                                 Suggestion::Search { .. } => {
                                     Identity::Glyph { glyph: egui_phosphor::light::MAGNIFYING_GLASS, color: None }
                                 }
@@ -794,13 +795,13 @@ impl App {
     }
 
     /// The split pane's engine label and the divider line between the panes.
-    fn build_split_pane_label(&self, ui: &mut egui::Ui, split_id: &str) {
+    fn build_split_pane_label(&self, ui: &mut egui::Ui, split_id: NodeId) {
         let ppp = self.window.as_ref().map_or(1.0, |w| w.scale_factor()) as f32;
         let screen_size =
             self.window.as_ref().map(|w| w.inner_size()).unwrap_or(winit::dpi::PhysicalSize::new(1024, 768));
         let screen_max_y = screen_size.height as f32 / ppp;
         let divider_x = (screen_size.width as f32 / ppp) / 2.0;
-        let kind = self.nodes.get(split_id).and_then(|n| n.as_tab()).map(|t| t.tab.kind);
+        let kind = self.nodes.get(&split_id).and_then(|n| n.as_tab()).map(|t| t.tab.kind);
         ui.painter().line_segment(
             [egui::pos2(divider_x, CHROME_HEIGHT_POINTS), egui::pos2(divider_x, screen_max_y)],
             egui::Stroke::new(1.0, ui.visuals().weak_text_color()),

@@ -134,12 +134,12 @@ impl App {
     /// Open Containing Folder + Copy Path in the trailing cluster.
     pub(crate) fn render_image_toolbar_content(
         &mut self,
-        image_id: &str,
+        image_id: NodeId,
         ui: &mut egui::Ui,
         trailing_ui: &mut egui::Ui,
     ) -> ItemToolbarActions {
         let Some((path, image)) =
-            self.nodes.get(image_id).and_then(|n| n.as_image()).map(|i| (i.path.clone(), image_pixel_size(i)))
+            self.nodes.get(&image_id).and_then(|n| n.as_image()).map(|i| (i.path.clone(), image_pixel_size(i)))
         else {
             return ItemToolbarActions::default();
         };
@@ -212,12 +212,8 @@ impl App {
     /// Zoom-chip click or its keyboard equivalent, applied to the Image
     /// currently in Item view. A no-op outside Image view.
     pub(crate) fn apply_image_zoom_action(&mut self, action: ZoomChipAction) {
-        let Some(image) = self
-            .viewed_image
-            .as_ref()
-            .and_then(|id| self.nodes.get(id))
-            .and_then(|n| n.as_image())
-            .map(image_pixel_size)
+        let Some(image) =
+            self.viewed_image.and_then(|id| self.nodes.get(&id)).and_then(|n| n.as_image()).map(image_pixel_size)
         else {
             return;
         };
@@ -227,8 +223,8 @@ impl App {
     /// Image view: the shared Item toolbar plus the image itself, zoomable
     /// (wheel/pinch about the cursor) and pannable (drag) -- see
     /// `ImageViewState`. Leaves to Graph if the image node is gone.
-    pub(crate) fn build_image_view_ui(&mut self, ui: &mut egui::Ui, image_id: &str) {
-        let Some(image) = self.nodes.get(image_id).and_then(|n| n.as_image()).map(image_pixel_size) else {
+    pub(crate) fn build_image_view_ui(&mut self, ui: &mut egui::Ui, image_id: NodeId) {
+        let Some(image) = self.nodes.get(&image_id).and_then(|n| n.as_image()).map(image_pixel_size) else {
             self.viewed_image = None;
             self.view_mode = ViewMode::Graph;
             self.save_session();

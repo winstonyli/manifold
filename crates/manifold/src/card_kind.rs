@@ -4,6 +4,7 @@
 
 use super::*;
 use crate::caps::{edges, registry, Caps, Tag, TagSet, CONTAINS};
+use crate::store::model::NodeId;
 use crate::store::model::{Kind, TYPE_UNKNOWN};
 #[cfg(test)]
 use crate::store::model::{TYPE_DOWNLOAD, TYPE_GROUP, TYPE_IMAGE, TYPE_JAR, TYPE_JSON, TYPE_NOTE, TYPE_PDF, TYPE_TAB};
@@ -51,15 +52,15 @@ pub(crate) fn can_contain(member: CardKind, group: CardKind) -> bool {
 impl App {
     /// The identity of card `id`: its stored type as its row reads it (`canonical_type`), plus `Tag::Loaded` while a
     /// tab has an engine. `None` when `id` has no node.
-    pub(crate) fn card_kind(&self, id: &str) -> Option<CardKind> {
-        let node = self.nodes.get(id)?;
+    pub(crate) fn card_kind(&self, id: NodeId) -> Option<CardKind> {
+        let node = self.nodes.get(&id)?;
         let ty = canonical_type(self.doc.mirror.ty(id));
         let tags = if node.runtime.as_tab().is_some() { TagSet::of(&[Tag::Loaded]) } else { TagSet::EMPTY };
         Some(CardKind { ty, tags })
     }
 
     /// Whether node `id` is a container (a group): `is_container` of its type. `false` when `id` has no node.
-    pub(crate) fn is_container(&self, id: &str) -> bool {
+    pub(crate) fn is_container(&self, id: NodeId) -> bool {
         self.card_kind(id).is_some_and(|kind| is_container(kind.ty))
     }
 }
@@ -107,6 +108,7 @@ mod tests {
     use super::fixtures::{kinds, loaded_tab, plain, sleeping_tab};
     use super::*;
     use crate::caps::DRAW_LAYERS;
+    use crate::card_id::testutil::node;
     use crate::node::{
         DownloadPayload, ImagePayload, JsonPayload, NotePayload, PdfPayload, UnloadedState, UnloadedTabPayload,
     };
@@ -179,18 +181,18 @@ mod tests {
     fn card_kind_reads_the_type_and_tags_loaded_for_every_constructible_payload() {
         let mut app = App::default();
         for (i, (kind, payload, want)) in payloads().into_iter().enumerate() {
-            let id = format!("n{i}");
+            let id = node(i as u64 + 1);
             let live = payload.as_tab().is_some();
-            app.test_node(&id, kind, payload);
+            app.test_node(id, kind, payload);
             if kind == Kind::Unknown {
                 let future = FieldValue::Str("application/x-from-the-future".into());
-                app.doc.mirror.init_field(&id, crate::store::model::field::TYPE, future);
+                app.doc.mirror.init_field(id, crate::store::model::field::TYPE, future);
             }
-            let got = app.card_kind(&id).unwrap();
+            let got = app.card_kind(id).unwrap();
             assert_eq!(got, want, "{kind:?}");
             assert_eq!(got.loaded(), live, "{kind:?}");
         }
-        assert_eq!(app.card_kind("missing"), None);
+        assert_eq!(app.card_kind(node(9999)), None);
     }
 
     /// A type this build doesn't know reads as the sentinel row: a restorable card drawn with notes and jars, not a
@@ -199,14 +201,14 @@ mod tests {
     fn an_unknown_stored_type_reads_as_the_unknown_row() {
         use crate::store::model::{field, FieldValue};
         let mut app = App::default();
-        app.test_node("u", Kind::Unknown, Runtime::Unknown);
-        app.doc.mirror.init_field("u", field::TYPE, FieldValue::Str("application/x-from-the-future".into()));
-        let kind = app.card_kind("u").unwrap();
+        app.test_node(node(500), Kind::Unknown, Runtime::Unknown);
+        app.doc.mirror.init_field(node(500), field::TYPE, FieldValue::Str("application/x-from-the-future".into()));
+        let kind = app.card_kind(node(500)).unwrap();
         assert_eq!(kind.ty, TYPE_UNKNOWN);
         assert!(kind.caps().restorable);
         assert_eq!(kind.caps().draw_layer, 3);
         assert!(!is_container(kind.ty));
-        assert!(!app.is_container("u") && !app.is_container("missing"));
+        assert!(!app.is_container(node(500)) && !app.is_container(node(9999)));
     }
 
     /// One mapping from a stored type to its row (spec decision 7): a known kind's own string (any image, any case),
@@ -252,9 +254,9 @@ mod tests {
         }
         // The node form reads the mirror's type, not the runtime: a group has none.
         let mut app = App::default();
-        app.test_node("g", Kind::Group, Runtime::None);
-        app.test_node("n", Kind::Note, Runtime::Note(NotePayload { text: String::new(), editing: false }));
-        assert!(app.is_container("g") && !app.is_container("n"));
+        app.test_node(node(501), Kind::Group, Runtime::None);
+        app.test_node(node(502), Kind::Note, Runtime::Note(NotePayload { text: String::new(), editing: false }));
+        assert!(app.is_container(node(501)) && !app.is_container(node(502)));
     }
 
     #[test]

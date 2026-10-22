@@ -1,4 +1,5 @@
 use super::*;
+use crate::card_id::testutil::node;
 use crate::card_kind::fixtures::{kinds, loaded_tab, plain, sleeping_tab};
 
 /// Fix batch B3: a chip on a narrow card gives up, in turn, the end of its name, its name, then the old jar's dot
@@ -157,7 +158,7 @@ fn a_painted_jar_chip_can_be_hit_until_it_stops_being_painted() {
         if paint {
             push_jar_chip(
                 &mut overlays,
-                "card",
+                node(1),
                 egui::pos2(10.0, 10.0),
                 egui::Vec2::ZERO,
                 300.0,
@@ -173,12 +174,12 @@ fn a_painted_jar_chip_can_be_hit_until_it_stops_being_painted() {
     };
     frame(true);
     let on = egui::pos2(10.0 + JAR_CHIP_PAD + JAR_CHIP_R, 10.0 + JAR_CHIP_HEIGHT / 2.0);
-    assert!(on_jar_chip(&ctx, "card", on));
-    assert!(!on_jar_chip(&ctx, "card", egui::pos2(10.0, 10.0 + JAR_CHIP_HEIGHT + 20.0)), "below it");
-    assert!(!on_jar_chip(&ctx, "other", on), "another card's chip");
+    assert!(on_jar_chip(&ctx, node(1), on));
+    assert!(!on_jar_chip(&ctx, node(1), egui::pos2(10.0, 10.0 + JAR_CHIP_HEIGHT + 20.0)), "below it");
+    assert!(!on_jar_chip(&ctx, node(2), on), "another card's chip");
     frame(false);
     frame(false);
-    assert!(!on_jar_chip(&ctx, "card", on), "no longer painted");
+    assert!(!on_jar_chip(&ctx, node(1), on), "no longer painted");
 }
 
 /// The painted scrim honours `fit_jar_chip`, with the long name ellipsized rather than overflowing.
@@ -277,7 +278,7 @@ fn a_group_header_draws_its_name_by_the_display_rule() {
                 right_margin: 0.0,
             };
             let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(300.0, 200.0));
-            app.paint_card_header(ui, &mut overlays, "n", rect, 1.0, 1.0, header);
+            app.paint_card_header(ui, &mut overlays, node(1), rect, 1.0, 1.0, header);
             overlays.play(ui.painter(), &|p| p);
         });
         output.textures_delta.clear();
@@ -316,7 +317,7 @@ fn a_header_with_an_empty_glyph_draws_title_and_source_at_the_header_lines() {
             right_margin: 0.0,
         };
         let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(300.0, 200.0));
-        assert!(app.paint_card_header(ui, &mut overlays, "n", rect, 1.0, 1.0, header));
+        assert!(app.paint_card_header(ui, &mut overlays, node(1), rect, 1.0, 1.0, header));
         overlays.play(ui.painter(), &|p| p);
     });
     output.textures_delta.clear();
@@ -345,12 +346,12 @@ fn a_group_card_tooltip_names_a_hidden_character() {
     crate::theme::apply_fonts(&ctx);
     let mut app = App::default();
     let g = app.alloc_node_id();
-    app.insert_group_at(g.clone(), None);
+    app.insert_group_at(g, None);
     for (name, want, title) in [
         ("Re\u{200B}ading", Some("Hidden characters: U+200B zero width space"), "Re⟦200B⟧ading"),
         ("Reading", None, "Reading"),
     ] {
-        app.doc.mirror.set(&g, crate::store::model::field::NAME, crate::store::model::FieldValue::Str(name.into()));
+        app.doc.mirror.set(g, crate::store::model::field::NAME, crate::store::model::FieldValue::Str(name.into()));
         let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
             let mut overlays: DeferredOverlays = DeferredOverlays::default();
             let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(300.0, 200.0));
@@ -375,7 +376,7 @@ fn a_group_card_tooltip_names_a_hidden_character() {
                 pan_target: None,
                 carry: true,
             };
-            let body = app.paint_group_body(ui, &mut pass, &g, &view, rect);
+            let body = app.paint_group_body(ui, &mut pass, g, &view, rect);
             assert_eq!(body.tooltip.as_deref(), want, "{name:?}");
             overlays.play(ui.painter(), &|p| p);
         });
@@ -743,7 +744,7 @@ fn a_waking_cards_tooltip_differs_from_a_sleeping_ones() {
 fn leaving_the_level_ends_a_note_edit() {
     let mut app = App::default();
     app.new_note_shortcut();
-    let id = app.node_order[0].clone();
+    let id = app.node_order[0];
     app.nodes.get_mut(&id).unwrap().as_note_mut().unwrap().editing = true;
     app.switch_group_level(None);
     assert!(!app.nodes[&id].as_note().unwrap().editing);
@@ -754,16 +755,16 @@ fn leaving_the_level_ends_a_note_edit() {
 fn group_members_follow_node_order() {
     let mut app = App::default();
     let g = app.alloc_node_id();
-    app.insert_group_at(g.clone(), None);
+    app.insert_group_at(g, None);
     let mut made = Vec::new();
     for _ in 0..20 {
         app.new_note_shortcut();
-        let id = app.node_order.last().unwrap().clone();
-        app.edit_group(&id, Some(g.clone()));
+        let id = *app.node_order.last().unwrap();
+        app.edit_group(id, Some(g));
         made.push(id);
     }
     assert_eq!(app.group_members()[&g], made);
-    let entry = app.level_items().into_iter().find(|e| e.id.to_string() == g).unwrap();
+    let entry = app.level_items().into_iter().find(|e| e.id == crate::card_id::CardId::from(g)).unwrap();
     assert_eq!(app.card_view(&entry, &app.group_members()).unwrap().members, made);
 }
 

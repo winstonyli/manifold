@@ -1,4 +1,5 @@
 use super::*;
+use crate::card_id::testutil::node;
 use crate::session_sync::Remote;
 use std::time::{Duration, Instant};
 
@@ -45,43 +46,51 @@ fn forget_and_reset_clear_what_the_old_sites_cleared() {
     let now = std::time::Instant::now();
     let filled = || {
         let mut s = SpawnTracker::default();
-        s.skip_convert.insert("t".into(), true);
-        s.navigated_from.insert("t".into(), ("u".into(), now, false));
-        s.tab_crashes.insert("t".into(), vec![now]);
-        s.pending_respawn_focus = Some("t".into());
-        s.wakes_in_flight.insert("t".into());
-        s.host_loads.insert("t".into(), now);
-        s.remote_in_flight.insert("t".into(), Remote::Deleted);
+        s.skip_convert.insert(node(1), true);
+        s.navigated_from.insert(node(1), ("u".into(), now, false));
+        s.tab_crashes.insert(node(1), vec![now]);
+        s.pending_respawn_focus = Some(node(1));
+        s.wakes_in_flight.insert(node(1));
+        s.host_loads.insert(node(1), now);
+        s.remote_in_flight.insert(node(1), Remote::Deleted);
         s.tab_spawns_in_flight = 2;
         s
     };
     let mut s = filled();
-    s.forget("u");
-    assert!(s.skip_convert.contains_key("t") && s.pending_respawn_focus.is_some(), "another id's state stays");
-    s.forget("t");
+    s.forget(node(2));
+    assert!(s.skip_convert.contains_key(&node(1)) && s.pending_respawn_focus.is_some(), "another id's state stays");
+    s.forget(node(1));
     assert!(s.skip_convert.is_empty() && s.navigated_from.is_empty() && s.tab_crashes.is_empty());
     assert!(s.pending_respawn_focus.is_none());
-    assert!(s.wakes_in_flight.contains("t") && s.host_loads.contains_key("t") && s.remote_in_flight.contains_key("t"));
+    assert!(
+        s.wakes_in_flight.contains(&node(1))
+            && s.host_loads.contains_key(&node(1))
+            && s.remote_in_flight.contains_key(&node(1))
+    );
 
     let mut s = filled();
     s.reset();
     assert!(s.wakes_in_flight.is_empty() && s.host_loads.is_empty() && s.remote_in_flight.is_empty());
     assert!(s.spawning.is_empty() && s.navigated_from.is_empty());
     assert_eq!(s.session_generation, 1);
-    assert!(s.skip_convert.contains_key("t") && s.tab_crashes.contains_key("t") && s.pending_respawn_focus.is_some());
+    assert!(
+        s.skip_convert.contains_key(&node(1))
+            && s.tab_crashes.contains_key(&node(1))
+            && s.pending_respawn_focus.is_some()
+    );
     assert_eq!(s.tab_spawns_in_flight, 2);
 }
 #[test]
 fn finish_sleep_without_a_request_does_nothing() {
     let mut app = App::default();
-    app.finish_sleep("t1", PageState { scroll_x: 0.0, scroll_y: 10.0, dirty_form: false });
+    app.finish_sleep(node(1), PageState { scroll_x: 0.0, scroll_y: 10.0, dirty_form: false });
     assert!(app.pending_sleeps.is_empty() && app.saved_scroll.is_empty());
 }
 
 #[test]
 fn request_sleep_needs_a_live_tab() {
     let mut app = App::default();
-    assert!(!app.request_sleep("missing", SleepWhy::Manual));
+    assert!(!app.request_sleep(node(1), SleepWhy::Manual));
     assert!(app.pending_sleeps.is_empty());
 }
 
@@ -89,8 +98,8 @@ fn request_sleep_needs_a_live_tab() {
 fn unanswered_requests_are_settled_after_the_timeout() {
     let mut app = App::default();
     let t0 = std::time::Instant::now();
-    for (id, why) in [("m", SleepWhy::Manual), ("i", SleepWhy::Idle), ("j", SleepWhy::JarSwitch)] {
-        app.pending_sleeps.insert(id.into(), PendingSleep { why, sent: t0 });
+    for (id, why) in [(node(1), SleepWhy::Manual), (node(2), SleepWhy::Idle), (node(3), SleepWhy::JarSwitch)] {
+        app.pending_sleeps.insert(id, PendingSleep { why, sent: t0 });
     }
     app.expire_pending_sleeps(t0 + sleep_state::PENDING_TIMEOUT - std::time::Duration::from_millis(1));
     assert_eq!(app.pending_sleeps.len(), 3);

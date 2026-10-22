@@ -166,7 +166,7 @@ impl App {
             } else if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                 self.interaction.selected.clear();
                 if let Some((id, _)) = self.menus.node_menu.open.take() {
-                    ui.memory_mut(|m| m.request_focus(CardId::stored(&id).widget()));
+                    ui.memory_mut(|m| m.request_focus(CardId::from(id).widget()));
                 }
                 self.interaction.pending_new_node = None;
                 self.dismiss_hover_peek();
@@ -220,11 +220,12 @@ impl App {
                 match hit {
                     Some(CardEntry { id, origin: Origin::Stored, .. }) => {
                         // A right-click on the jar chip opens the menu on its Jar page.
-                        let key = id.to_string();
-                        let on_chip = crate::card::on_jar_chip(ui.ctx(), &key, pos);
-                        self.menus.node_menu.open(key, pos);
-                        if on_chip {
-                            self.menus.node_menu.show_page(Some(crate::node_menu::MenuPage::Jar));
+                        if let Some(key) = id.node() {
+                            let on_chip = crate::card::on_jar_chip(ui.ctx(), key, pos);
+                            self.menus.node_menu.open(key, pos);
+                            if on_chip {
+                                self.menus.node_menu.show_page(Some(crate::node_menu::MenuPage::Jar));
+                            }
                         }
                         self.interaction.rect_select_start = None;
                     }
@@ -299,8 +300,8 @@ impl App {
         let stored = self
             .node_order
             .iter()
-            .filter(|id| self.nodes.contains_key(*id) && self.in_level(id))
-            .map(|id| CardId::stored(id));
+            .filter(|id| self.nodes.contains_key(*id) && self.in_level(**id))
+            .map(|id| CardId::from(*id));
         stored.chain(self.virtual_sources.iter().flat_map(|source| source.entries(self)).map(|e| e.id)).collect()
     }
 
@@ -455,12 +456,12 @@ mod tests {
         use crate::session_sync::tests::sleeping_tab;
         use crate::store::model::Kind;
         let mut app = App::default();
-        let ids: Vec<String> = (0..3).map(|_| app.alloc_node_id()).collect();
+        let ids: Vec<crate::store::model::NodeId> = (0..3).map(|_| app.alloc_node_id()).collect();
         for (i, id) in ids.iter().enumerate() {
             let tab = sleeping_tab(&format!("https://{i}.test/"), &format!("t{i}"));
-            app.insert_placeholder_node(id.clone(), egui::vec2(100.0 + 200.0 * i as f32, 0.0), Kind::Tab, tab);
+            app.insert_placeholder_node(*id, egui::vec2(100.0 + 200.0 * i as f32, 0.0), Kind::Tab, tab);
         }
-        app.focused = Some(ids[0].clone());
+        app.focused = Some(ids[0]);
         let ctx = egui::Context::default();
         let key = egui::Event::Key {
             key: egui::Key::ArrowRight,
@@ -476,7 +477,7 @@ mod tests {
         };
         let mut output = ctx.run_ui(input, |ui| app.handle_graph_keys(ui, false));
         output.textures_delta.clear();
-        assert_eq!(app.focused.as_deref(), Some(ids[2].as_str()));
+        assert_eq!(app.focused, Some(ids[2]));
     }
 
     /// Links: Escape in pick-target mode ends the mode and does nothing else; the next one is the graph's as before.
@@ -484,7 +485,7 @@ mod tests {
     fn escape_ends_pick_target_mode_first() {
         let mut app = App::default();
         let note = app.alloc_node_id();
-        app.insert_note_at(note.clone(), None);
+        app.insert_note_at(note, None);
         app.link.connecting = Some((note, crate::caps::LINK));
         app.interaction.selected.insert(crate::card_id::testutil::card(1));
         let ctx = egui::Context::default();

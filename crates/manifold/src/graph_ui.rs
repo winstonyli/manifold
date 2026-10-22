@@ -2,7 +2,7 @@
 //! cards (`cards`), toolbar, camera, keyboard and hints are the children below.
 
 use super::*;
-use crate::store::model::{TYPE_DOWNLOAD, TYPE_IMAGE, TYPE_JSON, TYPE_NOTE, TYPE_PDF, TYPE_TAB};
+use crate::store::model::{NodeId, TYPE_DOWNLOAD, TYPE_IMAGE, TYPE_JSON, TYPE_NOTE, TYPE_PDF, TYPE_TAB};
 
 mod camera;
 mod cards;
@@ -100,23 +100,23 @@ impl Detail {
 /// nothing is borrowing `self` for drawing any more.
 #[rustfmt::skip]
 pub(crate) enum GraphAction {
-    Node(String, NodeAction),
+    Node(NodeId, NodeAction),
     /// A new tab under this parent (the toolbar's "+ New Tab", or the
     /// empty-canvas card's New Tab, which can't place it where clicked:
     /// see `spawn_new_tab_with_kind`).
-    NewTab(Option<String>),
+    NewTab(Option<NodeId>),
     /// The empty-canvas card's New Note/New Group/Add File, placed at the
     /// right-clicked world position.
     NewNote(egui::Vec2),
     NewGroup(egui::Vec2),
     NewFile(egui::Vec2),
-    EnterGroup(String),
+    EnterGroup(NodeId),
     LeaveGroup,
     /// A card released after a drag, with where it landed
     /// (`App::drop_target`), if anywhere.
     Drop { id: CardId, target: Option<(DropEffect, Option<CardId>)> },
     /// Pick-target mode: a click on this valid target (`App::finish_connect`).
-    FinishConnect(String),
+    FinishConnect(NodeId),
     GroupSelected,
     CloseSelected,
     UngroupAll,
@@ -170,7 +170,7 @@ pub(crate) struct GraphCamera {
     /// than showing whatever part of it sits around the world origin.
     pub(crate) frame_restored: bool,
     /// The tab whose trail strip the camera last framed (`App::frame_new_strip`), `None` while no strip shows.
-    pub(crate) strip_tab: Option<String>,
+    pub(crate) strip_tab: Option<NodeId>,
 }
 
 impl App {
@@ -183,12 +183,12 @@ impl App {
             self.cancel_connect();
         }
         match action {
-            GraphAction::Node(id, action) => self.apply_node_action(ctx, &id, action),
-            GraphAction::FinishConnect(target) => self.finish_connect(&target),
+            GraphAction::Node(id, action) => self.apply_node_action(ctx, id, action),
+            GraphAction::FinishConnect(target) => self.finish_connect(target),
             GraphAction::NewTab(parent) => {
                 let home_page = self.settings.home_page.clone();
                 self.leave_json_level();
-                let group = self.current_group.clone();
+                let group = self.current_group;
                 self.spawn_new_tab(parent, group, &home_page);
             }
             GraphAction::NewNote(pos) => {
@@ -203,7 +203,7 @@ impl App {
             GraphAction::GroupSelected => {
                 // Only the selected cards still shown: a tab mid-crash-respawn or mid-engine-swap has no card, so it
                 // is neither counted in the centroid nor moved (its selection is consumed with the rest).
-                let live: Vec<String> =
+                let live: Vec<NodeId> =
                     self.take_selected_stored().into_iter().filter(|id| self.nodes.contains_key(id)).collect();
                 if live.is_empty() {
                     return;
@@ -214,12 +214,12 @@ impl App {
                 // real positions the user just drew a box around, so the new
                 // group card should appear where they actually are, not at the
                 // origin of a possibly-distant part of the graph.
-                let pos = live.iter().fold(egui::Vec2::ZERO, |acc, t| acc + self.layout_pos(t)) / live.len() as f32;
+                let pos = live.iter().fold(egui::Vec2::ZERO, |acc, t| acc + self.layout_pos(*t)) / live.len() as f32;
                 let name = self.default_group_name();
-                let at = self.placement(&id, Some(pos));
-                self.place_group(Some(id.clone()), &name, at);
+                let at = self.placement(id, Some(pos));
+                self.place_group(Some(id), &name, at);
                 for tab_id in live {
-                    self.edit_group(&tab_id, Some(id.clone()));
+                    self.edit_group(tab_id, Some(id));
                 }
             }
             GraphAction::CloseSelected => {
@@ -228,11 +228,11 @@ impl App {
                 // Outermost first (then by id, so the order is the same on every run, not the set's): a closed group
                 // hides its whole subtree, so a selected member inside it is already gone at its turn and is
                 // skipped, rather than given a closed root of its own beside the group's.
-                let mut ids: Vec<String> = ids.into_iter().collect();
-                ids.sort_by_cached_key(|id| (self.group_depth(id), id.clone()));
+                let mut ids: Vec<NodeId> = ids.into_iter().collect();
+                ids.sort_by_cached_key(|id| (self.group_depth(*id), *id));
                 for id in ids {
-                    if self.is_linked(&id) {
-                        self.close_node(&id);
+                    if self.is_linked(id) {
+                        self.close_node(id);
                     }
                 }
             }
@@ -271,7 +271,7 @@ impl App {
             // handler both use, now that groups nest. Also ends any rename
             // of the group being left.
             GraphAction::LeaveGroup => {
-                let parent = self.group_of(&self.current_group);
+                let parent = self.group_of(self.current_group);
                 self.switch_group_level(parent);
                 self.renaming_group = None;
             }
@@ -295,14 +295,14 @@ mod tests {
         use crate::store::model::Kind;
         let mut app = App::default();
         let (a, b) = (app.alloc_node_id(), app.alloc_node_id());
-        app.insert_placeholder_node(a.clone(), egui::vec2(100.0, 0.0), Kind::Tab, sleeping_tab("https://a.test/", "a"));
-        app.insert_placeholder_node(b.clone(), egui::vec2(300.0, 0.0), Kind::Tab, sleeping_tab("https://b.test/", "b"));
-        let expected = (app.layout_pos(&a) + app.layout_pos(&b)) / 2.0;
-        app.interaction.selected.extend([CardId::stored(&a), CardId::stored(&b), crate::card_id::testutil::card(999)]);
+        app.insert_placeholder_node(a, egui::vec2(100.0, 0.0), Kind::Tab, sleeping_tab("https://a.test/", "a"));
+        app.insert_placeholder_node(b, egui::vec2(300.0, 0.0), Kind::Tab, sleeping_tab("https://b.test/", "b"));
+        let expected = (app.layout_pos(a) + app.layout_pos(b)) / 2.0;
+        app.interaction.selected.extend([CardId::from(a), CardId::from(b), crate::card_id::testutil::card(999)]);
         app.apply_graph_action(&egui::Context::default(), GraphAction::GroupSelected);
-        let group = app.doc.mirror.group(&a).expect("a was grouped").to_string();
-        assert_eq!(app.doc.mirror.group(&b), Some(group.as_str()));
-        assert_eq!(app.doc.mirror.pos(&group), Some(expected), "the mean of the two cards, not divided by three");
+        let group = app.doc.mirror.group(a).expect("a was grouped");
+        assert_eq!(app.doc.mirror.group(b), Some(group));
+        assert_eq!(app.doc.mirror.pos(group), Some(expected), "the mean of the two cards, not divided by three");
         assert!(app.interaction.selected.is_empty());
     }
 
@@ -315,9 +315,9 @@ mod tests {
         crate::theme::apply_fonts(&ctx);
         let mut app = App::default();
         let (a, b) = (app.alloc_node_id(), app.alloc_node_id());
-        for (id, x) in [(&a, 0.0), (&b, 600.0)] {
+        for (id, x) in [(a, 0.0), (b, 600.0)] {
             let note = Runtime::Note(NotePayload { text: "n".into(), editing: false });
-            app.insert_placeholder_node(id.clone(), egui::vec2(x, 0.0), crate::store::model::Kind::Note, note);
+            app.insert_placeholder_node(id, egui::vec2(x, 0.0), crate::store::model::Kind::Note, note);
         }
         // The size `graph_world_rect_to_screen` assumes with no window.
         let frame = |app: &mut App, events: Vec<egui::Event>| {
@@ -345,24 +345,24 @@ mod tests {
         }
         app.camera.jump_to(app.fit_all_nodes_scene_rect());
         frame(&mut app, vec![]);
-        let screen_rect = |app: &App, id: &str| {
-            let item = app.level_items().into_iter().find(|i| i.id.to_string() == id).expect("on the level");
+        let screen_rect = |app: &App, id: NodeId| {
+            let item = app.level_items().into_iter().find(|i| i.id == CardId::from(id)).expect("on the level");
             app.graph_world_rect_to_screen(item.rect)
         };
-        app.link.connecting = Some((a.clone(), LINK));
-        let on_b = screen_rect(&app, &b).center();
+        app.link.connecting = Some((a, LINK));
+        let on_b = screen_rect(&app, b).center();
         assert!(app.graph_scene_outer_rect().contains(on_b), "{on_b:?} in {:?}", app.graph_scene_outer_rect());
         click(&mut app, on_b);
         assert!(app.link.connecting.is_none());
-        assert_eq!(app.links_naming(&a).len(), 1, "the click linked b");
+        assert_eq!(app.links_naming(a).len(), 1, "the click linked b");
         assert!(!app.nodes[&b].as_note().unwrap().editing, "the click was pick mode's, not the note's");
-        app.link.connecting = Some((a.clone(), OPENED_FROM));
+        app.link.connecting = Some((a, OPENED_FROM));
         // Below both cards, clear of the minimap in the bottom-right corner.
-        let below = egui::pos2(screen_rect(&app, &a).center().x, screen_rect(&app, &a).bottom() + 60.0);
-        assert!(![&a, &b].iter().any(|id| screen_rect(&app, id).contains(below)), "empty canvas");
+        let below = egui::pos2(screen_rect(&app, a).center().x, screen_rect(&app, a).bottom() + 60.0);
+        assert!(![a, b].iter().any(|&id| screen_rect(&app, id).contains(below)), "empty canvas");
         click(&mut app, below);
         assert!(app.link.connecting.is_none(), "a click on empty canvas ends the mode");
-        assert_eq!(app.doc.mirror.parent(&a), None, "and draws nothing");
+        assert_eq!(app.doc.mirror.parent(a), None, "and draws nothing");
     }
 
     /// A right-click on a card opens its menu; on the swatch it opens on the Color page. Driven through
@@ -374,7 +374,7 @@ mod tests {
         let mut app = App::default();
         let note_id = app.alloc_node_id();
         let note = Runtime::Note(NotePayload { text: "n".into(), editing: false });
-        app.insert_placeholder_node(note_id.clone(), egui::vec2(0.0, 0.0), crate::store::model::Kind::Note, note);
+        app.insert_placeholder_node(note_id, egui::vec2(0.0, 0.0), crate::store::model::Kind::Note, note);
         let frame = |app: &mut App, events: Vec<egui::Event>| {
             let input = egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1024.0, 768.0))),
@@ -401,11 +401,11 @@ mod tests {
         app.camera.jump_to(app.fit_all_nodes_scene_rect());
         frame(&mut app, vec![]);
         let card = {
-            let item = app.level_items().into_iter().find(|i| i.id.to_string() == note_id).expect("on the level");
+            let item = app.level_items().into_iter().find(|i| i.id == CardId::from(note_id)).expect("on the level");
             app.graph_world_rect_to_screen(item.rect)
         };
         right_click(&mut app, card.center());
-        assert_eq!(app.menus.node_menu.open.as_ref().map(|(id, _)| id), Some(&note_id), "the card's menu opens");
+        assert_eq!(app.menus.node_menu.open.as_ref().map(|(id, _)| *id), Some(note_id), "the card's menu opens");
         assert!(app.menus.node_menu.page.is_none(), "on its items");
         app.menus.node_menu.close();
         right_click(&mut app, card.right_bottom() - egui::vec2(1.0, 1.0));
@@ -447,28 +447,28 @@ mod tests {
         let note = f
             .nodes
             .iter()
-            .find(|id| app.doc.mirror.group(id).is_none() && app.nodes[*id].as_note().is_some())
-            .expect("a top-level note")
-            .clone();
-        app.camera.jump_to(app.card_rect(&note).unwrap().expand(300.0));
+            .find(|id| app.doc.mirror.group(**id).is_none() && app.nodes[*id].as_note().is_some())
+            .copied()
+            .expect("a top-level note");
+        app.camera.jump_to(app.card_rect(note).unwrap().expand(300.0));
         for _ in 0..3 {
             frame(&mut app, vec![]);
         }
         run(&mut app, "idle, top level", vec![]);
-        let on_note = app.graph_world_rect_to_screen(app.card_rect(&note).unwrap()).center();
+        let on_note = app.graph_world_rect_to_screen(app.card_rect(note).unwrap()).center();
         run(&mut app, "hovering a card", vec![egui::Event::PointerMoved(on_note)]);
-        app.link.connecting = Some((note.clone(), crate::caps::LINK));
+        app.link.connecting = Some((note, crate::caps::LINK));
         run(&mut app, "pick-target mode (LINK)", vec![]);
         assert!(app.link.connecting.is_some(), "the mode stayed on");
         app.link.connecting = None;
-        app.menus.node_menu.open(note.clone(), egui::pos2(500.0, 400.0));
+        app.menus.node_menu.open(note, egui::pos2(500.0, 400.0));
         run(&mut app, "node menu open", vec![]);
         assert!(app.menus.node_menu.open.is_some(), "the menu stayed open");
         app.menus.node_menu.close();
         app.graph_filter = "abc".into();
         run(&mut app, "filtered", vec![]);
         app.graph_filter.clear();
-        app.switch_group_level(Some(f.groups[0].clone()));
+        app.switch_group_level(Some(f.groups[0]));
         for _ in 0..3 {
             frame(&mut app, vec![]);
         }
@@ -533,12 +533,8 @@ mod tests {
     fn card_widget_info_reaches_the_accesskit_tree() {
         let mut app = App::default();
         let g = app.alloc_node_id();
-        app.insert_group_at(g.clone(), None);
-        app.doc.mirror.set(
-            &g,
-            crate::store::model::field::NAME,
-            crate::store::model::FieldValue::Str("Reading".into()),
-        );
+        app.insert_group_at(g, None);
+        app.doc.mirror.set(g, crate::store::model::field::NAME, crate::store::model::FieldValue::Str("Reading".into()));
         let ctx = egui::Context::default();
         ctx.enable_accesskit();
         let input = egui::RawInput {
@@ -547,9 +543,9 @@ mod tests {
         };
         let mut output = ctx.run_ui(input, |ui| {
             let rect = egui::Rect::from_min_size(egui::pos2(10.0, 10.0), egui::vec2(50.0, 50.0));
-            let response = ui.interact(rect, crate::card_id::CardId::stored(&g).widget(), egui::Sense::click());
+            let response = ui.interact(rect, crate::card_id::CardId::from(g).widget(), egui::Sense::click());
             response.widget_info(|| {
-                egui::WidgetInfo::labeled(egui::WidgetType::Button, true, app.accessible_name(&g).unwrap_or_default())
+                egui::WidgetInfo::labeled(egui::WidgetType::Button, true, app.accessible_name(g).unwrap_or_default())
             });
         });
         output.textures_delta.clear();

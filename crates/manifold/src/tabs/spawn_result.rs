@@ -46,7 +46,7 @@ impl App {
         let (parent, group, color, pinned, muted) = if self.spawns.wakes_in_flight.remove(&id) {
             match self.nodes.get(&id).and_then(|n| n.as_unloaded()) {
                 Some(tab) => {
-                    let carried = self.doc.mirror.carried(&id);
+                    let carried = self.doc.mirror.carried(id);
                     let (color, pinned) = (carried.color(), carried.pinned());
                     let Carried { parent, group, .. } = carried;
                     (parent, group, color, pinned, tab.muted)
@@ -63,19 +63,17 @@ impl App {
             (parent, group, color, pinned, muted)
         };
         if matches!(purpose, SpawnPurpose::Respawn | SpawnPurpose::Restore | SpawnPurpose::Wake)
-            && self.spawns.pending_respawn_focus.as_deref() == Some(id.as_str())
+            && self.spawns.pending_respawn_focus == Some(id)
         {
             self.spawns.pending_respawn_focus = None;
         }
         match result {
             Ok(tab) => {
-                self.note_spawned_jar(&id, jar, seeded, seed_clears);
+                self.note_spawned_jar(id, jar, seeded, seed_clears);
                 let is_focused = match purpose {
                     SpawnPurpose::Root => true,
                     SpawnPurpose::New | SpawnPurpose::Split => false,
-                    SpawnPurpose::Respawn | SpawnPurpose::Restore | SpawnPurpose::Wake => {
-                        self.focused.as_deref() == Some(id.as_str())
-                    }
+                    SpawnPurpose::Respawn | SpawnPurpose::Restore | SpawnPurpose::Wake => self.focused == Some(id),
                 };
                 // A split's secondary pane is always live even though it's
                 // never `focused` -- true for a fresh `Split` spawn, and
@@ -83,7 +81,7 @@ impl App {
                 // whatever tab currently happens to be playing that role,
                 // which arrives as an ordinary `Respawn`, not `Split` --
                 // see `SpawnPurpose::Split`'s own doc comment.
-                let is_split = matches!(purpose, SpawnPurpose::Split) || self.split_tab.as_deref() == Some(id.as_str());
+                let is_split = matches!(purpose, SpawnPurpose::Split) || self.split_tab == Some(id);
                 // The focused tab stays hidden while Image view is showing
                 // in front of it -- e.g. relaunching straight into Image
                 // view, or a crash respawn of the tab Image view is
@@ -94,7 +92,7 @@ impl App {
                     tab.send(&HostToView::SetMuted { muted: true });
                 }
                 self.nodes.insert(
-                    id.clone(),
+                    id,
                     GraphNode {
                         runtime: Runtime::Tab(TabPayload {
                             tab,
@@ -113,36 +111,36 @@ impl App {
                 let view_kind = session_sync::view_code(kind);
                 let carried =
                     Carried::tab(Some(pos), color, pinned, (parent, group), url.clone(), view_kind, spawn_jar);
-                self.seed_landing(&id, carried);
-                if !self.node_order.iter().any(|t| t == &id) {
-                    self.node_order.push(id.clone());
+                self.seed_landing(id, carried);
+                if !self.node_order.contains(&id) {
+                    self.node_order.push(id);
                 }
-                self.apply_pending_local(&id);
+                self.apply_pending_local(id);
                 // A fresh attempt at a url resolves its earlier failed attempts; landing an existing tab (respawn,
                 // restore, wake) is no new intent and leaves a failed card the user placed alone.
                 if matches!(purpose, SpawnPurpose::Root | SpawnPurpose::New) {
-                    self.clear_failed_cards(&url, &id);
+                    self.clear_failed_cards(&url, id);
                 }
                 match purpose {
                     SpawnPurpose::Root => {
-                        self.focused = Some(id.clone());
+                        self.focused = Some(id);
                         self.view_mode = ViewMode::Graph;
                         self.address_bar.text = url;
-                        self.send_resize_to(&id);
-                        self.send_zoom_to(&id);
+                        self.send_resize_to(id);
+                        self.send_zoom_to(id);
                     }
                     SpawnPurpose::New => {
-                        self.send_zoom_to(&id);
+                        self.send_zoom_to(id);
                     }
                     SpawnPurpose::Split => {
-                        self.split_tab = Some(id.clone());
-                        self.send_zoom_to(&id);
-                        self.send_resize_to(&id);
+                        self.split_tab = Some(id);
+                        self.send_zoom_to(id);
+                        self.send_resize_to(id);
                         // The primary pane was rendering at full width until
                         // now -- it needs to shrink to half now that
                         // `content_size_px` sees `split_tab` as set.
-                        if let Some(focused_id) = self.focused.clone() {
-                            self.send_resize_to(&focused_id);
+                        if let Some(focused_id) = self.focused {
+                            self.send_resize_to(focused_id);
                         }
                     }
                     SpawnPurpose::Respawn | SpawnPurpose::Wake => {
@@ -151,7 +149,7 @@ impl App {
                         // recovery, engine swap) needs no such marking --
                         // it isn't a url change at all.
                         if matches!(purpose, SpawnPurpose::Wake) {
-                            self.note_host_load(&id);
+                            self.note_host_load(id);
                         }
                         // A respawned tab is a fresh view-host process
                         // that starts at that engine's own default zoom --
@@ -160,7 +158,7 @@ impl App {
                         // crash-recovery or engine-swap respawn silently
                         // reset the page's zoom while Settings kept
                         // showing the configured value.
-                        self.send_zoom_to(&id);
+                        self.send_zoom_to(id);
                         if is_focused {
                             if !self.address_bar.focused {
                                 self.address_bar.text = url;
@@ -169,31 +167,31 @@ impl App {
                             // shown -- skip it while Image view hides this
                             // tab, same as `visible` above.
                             if visible {
-                                self.send_resize_to(&id);
+                                self.send_resize_to(id);
                             }
                         } else if is_split {
-                            self.send_resize_to(&id);
+                            self.send_resize_to(id);
                         }
                     }
                     SpawnPurpose::Restore => {
-                        self.note_host_load(&id);
-                        self.send_zoom_to(&id);
+                        self.note_host_load(id);
+                        self.send_zoom_to(id);
                         if is_focused {
                             self.address_bar.text = url;
                             if visible {
-                                self.send_resize_to(&id);
+                                self.send_resize_to(id);
                             }
                         }
                     }
                 }
-                self.land_remote_in_flight(&id, remote);
+                self.land_remote_in_flight(id, remote);
                 self.save_session();
             }
             Err(err) => {
                 eprintln!("spawn tab failed for {id}: {err}");
                 if let Some(fallback) = fallback_kind {
                     // The switch failed: the old engine is written back (2b-3 Ruling 5).
-                    self.edit_view_kind(&id, fallback);
+                    self.edit_view_kind(id, fallback);
                     self.queue_toast(format!(
                         "Couldn't switch to {}: {err}. Kept {}.",
                         view_label(kind),
@@ -213,7 +211,7 @@ impl App {
                         fallback_kind: None,
                     };
                     if let Some(remote) = remote {
-                        self.spawns.remote_in_flight.insert(spawn.id.clone(), remote);
+                        self.spawns.remote_in_flight.insert(spawn.id, remote);
                     }
                     self.respawn_tab(spawn);
                     return;
@@ -231,10 +229,10 @@ impl App {
                         }
                         _ => format!("Couldn't start {} for {}: {err}", view_label(kind), Self::toast_url(&url)),
                     };
-                    self.queue_failure_toast(kind, &url, group.as_deref(), &err.to_string(), toast);
+                    self.queue_failure_toast(kind, &url, group, &err.to_string(), toast);
                     // The same intent failing again refreshes the card already standing for it.
                     if matches!(purpose, SpawnPurpose::Root | SpawnPurpose::New) {
-                        if let Some(twin) = self.failed_twin(&id, &url, kind, group.as_deref()) {
+                        if let Some(twin) = self.failed_twin(id, &url, kind, group) {
                             if let Some(Runtime::Unloaded(tab)) =
                                 self.nodes.get_mut(&twin).map(|node| &mut node.runtime)
                             {
@@ -243,7 +241,7 @@ impl App {
                             if matches!(purpose, SpawnPurpose::Root) {
                                 self.view_mode = ViewMode::Graph;
                             }
-                            self.queue_delete(&id);
+                            self.queue_delete(id);
                             self.save_session();
                             return;
                         }
@@ -252,28 +250,28 @@ impl App {
                     // failure made while the retry was waking, keeps the retried card (its id is the one in use) and
                     // drops the other: one card per intent, with this error.
                     if matches!(purpose, SpawnPurpose::Respawn | SpawnPurpose::Wake) {
-                        if let Some(twin) = self.failed_twin(&id, &url, kind, group.as_deref()) {
-                            self.remove_tab(&twin);
+                        if let Some(twin) = self.failed_twin(id, &url, kind, group) {
+                            self.remove_tab(twin);
                         }
                     }
                     let state = UnloadedState::Failed(err.to_string());
                     let failed = UnloadedTabPayload { url: url.clone(), title, muted, zoom_factor, state };
                     let runtime = Runtime::Unloaded(failed);
-                    self.nodes.insert(id.clone(), GraphNode { runtime });
+                    self.nodes.insert(id, GraphNode { runtime });
                     // A tab the mirror holds already shows the engine that failed: a switch's target, written when
                     // it started (`edit_view_kind`); a new one lands on it here.
                     let view_kind = session_sync::view_code(kind);
                     let carried = Carried::tab(Some(pos), color, pinned, (parent, group), url, view_kind, spawn_jar);
-                    self.seed_landing(&id, carried);
-                    if !self.node_order.iter().any(|t| t == &id) {
-                        self.node_order.push(id.clone());
+                    self.seed_landing(id, carried);
+                    if !self.node_order.contains(&id) {
+                        self.node_order.push(id);
                     }
-                    self.apply_pending_local(&id);
+                    self.apply_pending_local(id);
                     if matches!(purpose, SpawnPurpose::Root) {
                         // Success switches to Graph view; the failed card must be seen too.
                         self.view_mode = ViewMode::Graph;
                     }
-                    self.land_remote_in_flight(&id, remote);
+                    self.land_remote_in_flight(id, remote);
                     self.save_session();
                     return;
                 }
@@ -281,7 +279,7 @@ impl App {
                 // A save while it was in flight may have created it
                 // (`spawning`); it's gone now (Ruling 4). One never
                 // created is just forgotten.
-                self.queue_delete(&id);
+                self.queue_delete(id);
                 self.save_session();
             }
         }
@@ -290,22 +288,22 @@ impl App {
     /// A tab for `url` landed (`landed`): failed cards for the same url in the landing tab's group (any engine),
     /// other than `landed`, are resolved. Each is deleted outright (not closed, so never in Recently Closed), and removed without a save: the landing's own save commits the delete, after the parked remote changes
     /// land. Another url's card, or the same url's card in another group, stays.
-    fn clear_failed_cards(&mut self, url: &str, landed: &str) {
+    fn clear_failed_cards(&mut self, url: &str, landed: NodeId) {
         let group = self.doc.mirror.group(landed);
-        let stale: Vec<String> = self
+        let stale: Vec<NodeId> = self
             .nodes
             .iter()
             .filter(|(id, node)| {
-                id.as_str() != landed
-                    && self.doc.mirror.group(id) == group
+                **id != landed
+                    && self.doc.mirror.group(**id) == group
                     && node
                         .as_unloaded()
                         .is_some_and(|tab| matches!(tab.state, UnloadedState::Failed(_)) && tab.url == url)
             })
-            .map(|(id, _)| id.clone())
+            .map(|(id, _)| *id)
             .collect();
         for id in stale {
-            self.remove_tab(&id);
+            self.remove_tab(id);
         }
     }
 
@@ -320,12 +318,12 @@ impl App {
     /// tab, and a queued move would override another replica's placement of it (final review I1).
     ///
     /// A jar deleted while a new spawn was in flight needs no fix-up: the edge dangles and resolves to the Default.
-    fn seed_landing(&mut self, id: &str, carried: Carried) {
+    fn seed_landing(&mut self, id: NodeId, carried: Carried) {
         let ty = crate::store::model::Kind::Tab.type_str().unwrap_or_default().to_owned();
         let carried = carried.with_str(field::TYPE, ty);
-        self.layout.entry(id.to_owned()).or_insert(Layout::at(carried.pos().unwrap_or_default()));
+        self.layout.entry(id).or_insert(Layout::at(carried.pos().unwrap_or_default()));
         self.doc.mirror.seed(id, &carried);
-        if self.doc.mirror.group(id).is_some_and(|g| !self.nodes.contains_key(g)) {
+        if self.doc.mirror.group(id).is_some_and(|g| !self.nodes.contains_key(&g)) {
             let group = self.shown_group(id);
             self.follow_remote_group(id, group);
         }
@@ -334,13 +332,13 @@ impl App {
     /// The nearest group above `id` in the document that is here: `Doc::effective_group`, except that a group this
     /// replica removed and hasn't saved yet is passed over too, as the save that deletes it will. `None` (the top
     /// level) for a node the document doesn't hold yet.
-    fn shown_group(&self, id: &str) -> Option<String> {
+    fn shown_group(&self, id: NodeId) -> Option<NodeId> {
         let doc = self.doc.journal.as_ref()?.doc();
-        let mut group = doc.nodes.get(&id.parse::<crate::store::model::NodeId>().ok()?)?.group;
+        let mut group = doc.nodes.get(&id)?.group;
         for _ in 0..=doc.nodes.len() {
             let at = group?;
-            if self.nodes.contains_key(&at.to_string()) {
-                return Some(at.to_string());
+            if self.nodes.contains_key(&at) {
+                return Some(at);
             }
             group = doc.nodes.get(&at)?.group;
         }

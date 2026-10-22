@@ -2,6 +2,7 @@
 //! address bar, and every kind's card header.
 
 use super::*;
+use crate::store::model::NodeId;
 
 /// What a card header or tab shows in its icon slot. A tab resolves it with `Identity::of_tab`; a file kind states its
 /// glyph.
@@ -253,7 +254,7 @@ pub(crate) fn paint_row_icon(
 
 impl App {
     /// The icon of a list row for the tab `id` showing `url`: its favicon, else the tile in its engine's color.
-    pub(crate) fn row_identity(&self, id: &str, url: &str) -> Identity {
+    pub(crate) fn row_identity(&self, id: NodeId, url: &str) -> Identity {
         self.tab_identity(url, false, self.doc.mirror.view_kind(id))
     }
 

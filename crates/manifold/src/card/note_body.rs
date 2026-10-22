@@ -1,6 +1,7 @@
 //! A note card's body.
 
 use super::*;
+use crate::store::model::NodeId;
 
 impl App {
     /// Note: a plain user-authored text card, no engine process
@@ -18,7 +19,7 @@ impl App {
         &mut self,
         ui: &mut egui::Ui,
         pass: &mut CardPass,
-        id: &str,
+        id: NodeId,
         _view: &CardView,
         rect: egui::Rect,
     ) -> CardBody {
@@ -34,7 +35,7 @@ impl App {
         } else {
             egui::Rect::from_min_max(egui::pos2(rect.min.x, rect.max.y - TAB_STRIP_POINTS * inv_zoom), rect.max)
         };
-        let is_editing = self.nodes.get(id).and_then(|n| n.as_note()).is_some_and(|n| n.editing);
+        let is_editing = self.nodes.get(&id).and_then(|n| n.as_note()).is_some_and(|n| n.editing);
 
         ui.painter().rect_filled(paper, 4.0 * inv_zoom, NOTE_CARD_COLOR);
         if self.graph_detail.content() {
@@ -54,17 +55,17 @@ impl App {
         if is_editing {
             body.interact_rect = handle;
             let mut lost_focus = false;
-            if let Some(note) = self.nodes.get_mut(id).and_then(|n| n.as_note_mut()) {
+            if let Some(note) = self.nodes.get_mut(&id).and_then(|n| n.as_note_mut()) {
                 let edit = ui.put(
                     text_rect,
                     egui::TextEdit::multiline(&mut note.text)
-                        .id(CardId::stored(id).editor())
+                        .id(CardId::from(id).editor())
                         .frame(egui::Frame::NONE)
                         .font(egui::FontId::proportional(13.0))
                         .text_color(NOTE_TEXT)
                         .hint_text("Type a note..."),
                 );
-                if self.interaction.focus_new_note.as_ref().is_some_and(|(n, _)| *n == CardId::stored(id)) {
+                if self.interaction.focus_new_note.as_ref().is_some_and(|(n, _)| *n == CardId::from(id)) {
                     self.interaction.focus_new_note = None;
                     edit.request_focus();
                 }
@@ -76,7 +77,7 @@ impl App {
                 // Escape ends the edit; focus goes back to the card so keyboard users keep their place
                 // (a click elsewhere keeps the focus it took).
                 if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                    ui.memory_mut(|m| m.request_focus(CardId::stored(id).widget()));
+                    ui.memory_mut(|m| m.request_focus(CardId::from(id).widget()));
                 }
                 self.blur_note(id);
             }

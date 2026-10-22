@@ -3,6 +3,7 @@
 //! `edit_pos`, so other devices see it as one.
 
 use super::*;
+use crate::store::model::NodeId;
 
 /// How many steps the history keeps, each way.
 pub(crate) const UNDO_DEPTH: usize = 10;
@@ -10,18 +11,18 @@ pub(crate) const UNDO_DEPTH: usize = 10;
 /// One card a drop changed: each field's (before, after).
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Moved {
-    pub(crate) id: String,
-    pub(crate) group: (Option<String>, Option<String>),
-    pub(crate) parent: (Option<String>, Option<String>),
+    pub(crate) id: NodeId,
+    pub(crate) group: (Option<NodeId>, Option<NodeId>),
+    pub(crate) parent: (Option<NodeId>, Option<NodeId>),
     pub(crate) pos: (Option<egui::Vec2>, Option<egui::Vec2>),
 }
 
 pub(crate) enum UndoKind {
     /// A drop with an effect (Join, GroupWith, Eject, Reparent). `created` is the group a GroupWith made.
-    Revert { moved: Vec<Moved>, created: Option<String> },
+    Revert { moved: Vec<Moved>, created: Option<NodeId> },
     /// Dissolve, Ungroup All, Merge: each group and where `fold_group` sent its members. Undo reopens the groups,
     /// redo folds them again.
-    Fold(Vec<(String, Option<String>)>),
+    Fold(Vec<(NodeId, Option<NodeId>)>),
 }
 
 pub(crate) struct UndoEntry {
@@ -101,64 +102,56 @@ impl App {
     fn replay(&mut self, kind: &UndoKind, redo: bool) -> (usize, usize) {
         match kind {
             UndoKind::Fold(groups) => self.replay_fold(groups, redo),
-            UndoKind::Revert { moved, created } => self.replay_revert(moved, created.as_deref(), redo),
+            UndoKind::Revert { moved, created } => self.replay_revert(moved, *created, redo),
         }
     }
 
     /// Undo puts each card back to its before values, redo to its after values, but only a card that still holds
     /// the values being left (the rule of `regroup_held`): a card moved again, closed or changed remotely is skipped.
-    fn replay_revert(&mut self, moved: &[Moved], created: Option<&str>, redo: bool) -> (usize, usize) {
+    fn replay_revert(&mut self, moved: &[Moved], created: Option<NodeId>, redo: bool) -> (usize, usize) {
         // A redo of a GroupWith brings the made group back first.
         if let (true, Some(group)) = (redo, created) {
-            if !self.nodes.contains_key(group) {
-                if let Ok(node) = group.parse() {
-                    self.reopen_node(node);
-                }
+            if !self.nodes.contains_key(&group) {
+                self.reopen_node(group);
             }
         }
         // An undo leaves the drop's after values and arrives at its before values; a redo the reverse.
         let (leaving_after, arriving_after) = (!redo, redo);
-        let side = |pair: &(Option<String>, Option<String>), after: bool| {
-            if after {
-                pair.1.clone()
-            } else {
-                pair.0.clone()
-            }
-        };
+        let side = |pair: &(Option<NodeId>, Option<NodeId>), after: bool| if after { pair.1 } else { pair.0 };
         let mut done = 0;
         for m in moved {
-            let holds = self.card_in_group(&m.id, side(&m.group, leaving_after).as_deref())
-                && self.doc.mirror.parent(&m.id).map(str::to_owned) == side(&m.parent, leaving_after)
-                && self.doc.mirror.pos(&m.id) == if leaving_after { m.pos.1 } else { m.pos.0 };
+            let holds = self.card_in_group(m.id, side(&m.group, leaving_after))
+                && self.doc.mirror.parent(m.id) == side(&m.parent, leaving_after)
+                && self.doc.mirror.pos(m.id) == if leaving_after { m.pos.1 } else { m.pos.0 };
             if !holds {
                 continue;
             }
             let (group, parent) = (side(&m.group, arriving_after), side(&m.parent, arriving_after));
             // A destination closed or deleted since would hide the card with it.
-            let gone = |id: &Option<String>| id.as_ref().is_some_and(|id| !self.nodes.contains_key(id));
-            if gone(&group) || gone(&parent) || parent.as_ref().is_some_and(|p| self.would_create_cycle(&m.id, p)) {
+            let gone = |id: &Option<NodeId>| id.as_ref().is_some_and(|id| !self.nodes.contains_key(id));
+            if gone(&group) || gone(&parent) || parent.is_some_and(|p| self.would_create_cycle(m.id, p)) {
                 continue;
             }
             if m.group.0 != m.group.1 {
-                self.edit_group(&m.id, group);
-                self.recheck_edge_scope(&m.id);
+                self.edit_group(m.id, group);
+                self.recheck_edge_scope(m.id);
             }
             if m.parent.0 != m.parent.1 {
-                self.edit_parent(&m.id, parent);
+                self.edit_parent(m.id, parent);
             }
             if m.pos.0 != m.pos.1 {
                 let pos = if arriving_after { m.pos.1 } else { m.pos.0 };
-                self.edit_pos(&m.id, pos);
+                self.edit_pos(m.id, pos);
                 // The card is drawn from the layout, which only a remote pos or a load moves otherwise.
                 if let Some(pos) = pos {
-                    self.snap_layout(&m.id, pos);
+                    self.snap_layout(m.id, pos);
                 }
             }
             done += 1;
         }
         // An undone GroupWith closes the group it made once nothing is left in it.
         if let (false, Some(group)) = (redo, created) {
-            if self.nodes.contains_key(group) && self.members_of(group).next().is_none() {
+            if self.nodes.contains_key(&group) && self.members_of(group).next().is_none() {
                 self.close_node(group);
             }
         }
@@ -167,17 +160,17 @@ impl App {
 
     /// Undo reopens each group (`reopen_node`, which puts back the members still where the fold sent them); redo
     /// folds each again as the group is now, if it and its destination are shown.
-    fn replay_fold(&mut self, groups: &[(String, Option<String>)], redo: bool) -> (usize, usize) {
+    fn replay_fold(&mut self, groups: &[(NodeId, Option<NodeId>)], redo: bool) -> (usize, usize) {
         let mut done = 0;
-        for (group, dest) in groups {
+        for &(group, dest) in groups {
             if redo {
-                if self.nodes.contains_key(group) && dest.as_ref().is_none_or(|d| self.nodes.contains_key(d)) {
-                    self.fold_group(group, dest.clone());
+                if self.nodes.contains_key(&group) && dest.as_ref().is_none_or(|d| self.nodes.contains_key(d)) {
+                    self.fold_group(group, dest);
                     done += 1;
                 }
-            } else if let (false, Ok(node)) = (self.nodes.contains_key(group), group.parse()) {
+            } else if !self.nodes.contains_key(&group) {
                 // A group shown again already (reopened from Recently Closed) has nothing to undo.
-                self.reopen_node(node);
+                self.reopen_node(group);
                 done += 1;
             }
         }

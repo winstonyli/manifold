@@ -74,7 +74,7 @@ pub(crate) mod fake {
     use crate::caps::TagSet;
     use crate::level::{EdgeCurve, EdgeKind, Origin};
     use crate::session_sync::tests::sleeping_tab;
-    use crate::store::model::Kind;
+    use crate::store::model::{Kind, NodeId};
     use crate::CardKind;
     use std::cell::RefCell;
 
@@ -296,9 +296,9 @@ pub(crate) mod fake {
         }
 
         /// The stored tab's id.
-        pub(crate) fn tab(&self) -> String {
+        pub(crate) fn tab(&self) -> NodeId {
             // `node_order`, not `nodes.keys()`: a HashMap's order is random per map, and a test may add a group beside the tab.
-            self.app.node_order.first().cloned().expect("the rig's tab")
+            self.app.node_order.first().copied().expect("the rig's tab")
         }
 
         /// Entry `id`'s card on screen.
@@ -498,10 +498,9 @@ mod tests {
         let mut rig = Rig::with_kind(SELECTABLE);
         let (tab, virt) = (rig.tab(), fake::id('a'));
         let nodes = rig.app.nodes.len();
-        rig.app.interaction.selected.extend([CardId::stored(&tab), virt]);
+        rig.app.interaction.selected.extend([CardId::from(tab), virt]);
         rig.app.pin_shortcut();
-        assert!(rig.app.doc.mirror.pinned(&tab), "the stored tab is pinned");
-        assert!(!rig.app.doc.mirror.has(&virt.to_string()), "no store write for the virtual id");
+        assert!(rig.app.doc.mirror.pinned(tab), "the stored tab is pinned");
         assert_eq!(rig.app.interaction.selected.len(), 2);
 
         let ctx = rig.ctx.clone();
@@ -509,16 +508,14 @@ mod tests {
         assert!(!rig.app.nodes.contains_key(&tab), "the stored tab is closed");
         assert_eq!(rig.app.nodes.len(), nodes - 1);
         assert_eq!(rig.app.interaction.selected, std::collections::HashSet::from([virt]));
-        assert!(!rig.app.doc.mirror.has(&virt.to_string()));
 
         let (mut rig, virt) = (Rig::with_kind(SELECTABLE), fake::id('a'));
         let tab = rig.tab();
-        rig.app.interaction.selected.extend([CardId::stored(&tab), virt]);
+        rig.app.interaction.selected.extend([CardId::from(tab), virt]);
         let ctx = rig.ctx.clone();
         rig.app.apply_graph_action(&ctx, GraphAction::GroupSelected);
-        assert!(rig.app.doc.mirror.group(&tab).is_some(), "the stored tab is grouped");
+        assert!(rig.app.doc.mirror.group(tab).is_some(), "the stored tab is grouped");
         assert_eq!(rig.app.interaction.selected, std::collections::HashSet::from([virt]));
-        assert!(!rig.app.doc.mirror.has(&virt.to_string()));
     }
 }
 
@@ -527,32 +524,23 @@ mod reach_tests {
     use super::fake::{Rig, FAKE};
     use super::*;
     use crate::level::Origin;
-    use crate::store::model::field;
+    use crate::store::model::NodeId;
 
     const SELECTABLE: &str = "application/vnd.manifold.virtual.fake-selectable";
 
     /// Everything a stored write could touch, for a virtual id `id` and the stored tab and group beside it: the
     /// mirror, layout, node count, queued Sets, Moves and Deletes, and the serialized store document.
-    fn footprint(app: &mut App, id: &str, others: &[&str]) -> String {
+    fn footprint(app: &mut App, others: &[NodeId]) -> String {
         let doc = app.export_session_json();
         let others: Vec<_> = others
             .iter()
-            .map(|o| {
-                (
-                    app.doc.mirror.group(o).map(str::to_owned),
-                    app.doc.mirror.parent(o).map(str::to_owned),
-                    app.doc.mirror.pinned(o),
-                )
-            })
+            .map(|&o| (app.doc.mirror.group(o), app.doc.mirror.parent(o), app.doc.mirror.pinned(o)))
             .collect();
         format!(
-            "{} {} {} {:?} {:?} {:?} {:?} {:?} {:?}",
-            app.doc.mirror.has(id),
-            app.layout.contains_key(id),
+            "{} {:?} {:?} {:?} {:?} {:?}",
             app.nodes.len(),
             app.doc.writes.fields().collect::<Vec<_>>(),
             app.doc.writes.moves().collect::<Vec<_>>(),
-            app.doc.mirror.get(id, field::POS),
             others,
             app.layout.keys().collect::<std::collections::BTreeSet<_>>(),
             doc,
@@ -563,12 +551,12 @@ mod reach_tests {
     fn every_write_entry_point_leaves_a_virtual_id_out_of_the_store_and_the_layout() {
         let mut rig = Rig::with_kind("application/vnd.manifold.virtual.fake-all");
         let placement = crate::fetched::Placement { group: None, pos: egui::vec2(700.0, 300.0) };
-        let group = crate::card_id::testutil::node(9).to_string();
-        rig.app.place_group(Some(group.clone()), "G", placement);
+        let group = crate::card_id::testutil::node(9);
+        rig.app.place_group(Some(group), "G", placement);
         let (virt, tab) = (fake::id('a'), rig.tab());
-        let (virt_text, ctx) = (virt.to_string(), rig.ctx.clone());
-        let others = [tab.as_str(), group.as_str()];
-        let before = footprint(&mut rig.app, &virt_text, &others);
+        let ctx = rig.ctx.clone();
+        let others = [tab, group];
+        let before = footprint(&mut rig.app, &others);
         let virtual_b = fake::id('b');
 
         // A release of a live virtual drag (it must really run).
@@ -582,21 +570,21 @@ mod reach_tests {
         for effect in
             [DropEffect::Join, DropEffect::GroupWith, DropEffect::Reparent, DropEffect::Merge, DropEffect::Eject]
         {
-            for target in [CardId::stored(&group), CardId::stored(&tab), virtual_b] {
+            for target in [CardId::from(group), CardId::from(tab), virtual_b] {
                 rig.app.apply_drop(virt, Some((effect, Some(target))));
             }
-            for dragged in [CardId::stored(&tab), CardId::stored(&group)] {
+            for dragged in [CardId::from(tab), CardId::from(group)] {
                 rig.app.apply_drop(dragged, Some((effect, Some(virt))));
             }
         }
-        assert_eq!(footprint(&mut rig.app, &virt_text, &others), before);
+        assert_eq!(footprint(&mut rig.app, &others), before);
 
         // Selection actions with the virtual id alone selected.
         rig.app.interaction.selected = std::collections::HashSet::from([virt]);
         rig.app.apply_graph_action(&ctx, GraphAction::CloseSelected);
         rig.app.apply_graph_action(&ctx, GraphAction::GroupSelected);
         rig.app.pin_shortcut();
-        assert_eq!(footprint(&mut rig.app, &virt_text, &others), before);
+        assert_eq!(footprint(&mut rig.app, &others), before);
     }
 
     #[test]
@@ -652,7 +640,7 @@ mod reach_tests {
         assert_eq!(card["abilities"]["selectable"], true);
         assert_eq!(card["abilities"]["menu"], false);
         assert!(card["rect"].is_array() && card["screen"].is_array());
-        let stored = state["cards"].as_array().unwrap().iter().find(|c| c["id"] == rig.tab()).unwrap();
+        let stored = state["cards"].as_array().unwrap().iter().find(|c| c["id"] == rig.tab().to_string()).unwrap();
         assert!(stored.get("virtual").is_none());
     }
 
@@ -697,16 +685,17 @@ mod drag_tests {
     use super::fake::{self, Dropped, Rig, FAKE};
     use crate::card::DropEffect;
     use crate::card_id::CardId;
+    use crate::store::model::NodeId;
 
     const DRAG: &str = "application/vnd.manifold.virtual.fake-drag";
     const ALL: &str = "application/vnd.manifold.virtual.fake-all";
 
     /// A rig with a stored group `g` right of the cards, the camera framing everything.
-    fn rig_with_group(ty: &'static str) -> (Rig, String) {
+    fn rig_with_group(ty: &'static str) -> (Rig, NodeId) {
         let mut rig = Rig::with_kind(ty);
         let placement = crate::fetched::Placement { group: None, pos: egui::vec2(700.0, 300.0) };
-        let group = crate::card_id::testutil::node(9).to_string();
-        rig.app.place_group(Some(group.clone()), "G", placement);
+        let group = crate::card_id::testutil::node(9);
+        rig.app.place_group(Some(group), "G", placement);
         rig.app.camera.jump_to(egui::Rect::from_min_max(egui::pos2(-100.0, -100.0), egui::pos2(1100.0, 600.0)));
         for _ in 0..3 {
             rig.frame(vec![], egui::Modifiers::NONE);
@@ -732,17 +721,17 @@ mod drag_tests {
         let before = rects(&rig);
         let from = rig.screen(fake::id('a')).center();
         rig.hold_drag(from, from + egui::vec2(40.0, 70.0));
-        let virt = fake::id('a').to_string();
+        let layout_len = rig.app.layout.len();
         assert_eq!(rig.app.interaction.dragging, Some(fake::id('a')));
         assert!(rig.app.interaction.drag_moved.is_empty());
         assert_eq!(rects(&rig), before, "no rect moved");
-        assert!(!rig.app.layout.contains_key(&virt), "no layout entry");
+        assert_eq!(rig.app.layout.len(), layout_len, "no layout entry");
         rig.frame(vec![], egui::Modifiers::NONE);
         assert_eq!(rig.app.interaction.dragging, Some(fake::id('a')), "end_stale_drag keeps it");
         rig.release(from);
         assert!(rig.app.interaction.dragging.is_none());
         assert_eq!(rects(&rig), before);
-        assert!(!rig.app.layout.contains_key(&virt) && !rig.app.doc.mirror.has(&virt));
+        assert_eq!(rig.app.layout.len(), layout_len);
     }
 
     #[test]
@@ -787,11 +776,11 @@ mod drag_tests {
     #[test]
     fn a_release_over_a_stored_group_calls_on_drop_with_the_effect_and_the_group() {
         let (mut rig, group) = rig_with_group(DRAG);
-        let over = rig.app.graph_world_rect_to_screen(rig.app.card_rect(&group).unwrap()).center();
+        let over = rig.app.graph_world_rect_to_screen(rig.app.card_rect(group).unwrap()).center();
         let from = rig.screen(fake::id('a')).center();
         rig.drag(from, over);
-        assert_eq!(drops(&rig), [(fake::id('a'), Some((DropEffect::Join, Some(CardId::stored(&group)))))]);
-        assert_eq!(rig.app.members_of(&group).count(), 0, "nothing joined the group");
+        assert_eq!(drops(&rig), [(fake::id('a'), Some((DropEffect::Join, Some(CardId::from(group)))))]);
+        assert_eq!(rig.app.members_of(group).count(), 0, "nothing joined the group");
     }
 
     #[test]
@@ -809,13 +798,13 @@ mod drag_tests {
     fn a_virtual_drop_never_takes_the_stored_selection_with_it() {
         let (mut rig, group) = rig_with_group(ALL);
         let tab = rig.tab();
-        rig.app.interaction.selected.extend([CardId::stored(&tab), fake::id('a')]);
-        let over = rig.app.graph_world_rect_to_screen(rig.app.card_rect(&group).unwrap()).center();
+        rig.app.interaction.selected.extend([CardId::from(tab), fake::id('a')]);
+        let over = rig.app.graph_world_rect_to_screen(rig.app.card_rect(group).unwrap()).center();
         let from = rig.screen(fake::id('a')).center();
         rig.drag(from, over);
         assert_eq!(drops(&rig).len(), 1, "{:?}", drops(&rig));
-        assert!(rig.app.doc.mirror.group(&tab).is_none(), "the selected stored tab did not join the group");
-        assert!(rig.app.interaction.selected.contains(&CardId::stored(&tab)), "the selection is untouched");
+        assert!(rig.app.doc.mirror.group(tab).is_none(), "the selected stored tab did not join the group");
+        assert!(rig.app.interaction.selected.contains(&CardId::from(tab)), "the selection is untouched");
     }
 
     #[test]
@@ -823,20 +812,20 @@ mod drag_tests {
         let (mut rig, _) = rig_with_group(DRAG);
         rig.app.interaction.dragging = Some(fake::id('a'));
         rig.app.interaction.drag_moved = vec![];
+        let (nodes, layout_len) = (rig.app.nodes.len(), rig.app.layout.len());
         rig.app.release_drag();
-        let virt = fake::id('a').to_string();
         assert!(rig.app.interaction.dragging.is_none());
-        assert!(!rig.app.doc.mirror.has(&virt) && !rig.app.layout.contains_key(&virt));
+        assert_eq!((rig.app.nodes.len(), rig.app.layout.len()), (nodes, layout_len));
     }
 
     #[test]
     fn a_stored_tab_drag_is_unchanged_and_never_reaches_a_source() {
         let (mut rig, group) = rig_with_group(DRAG);
         let tab = rig.tab();
-        let over = rig.app.graph_world_rect_to_screen(rig.app.card_rect(&group).unwrap()).center();
-        let from = rig.app.graph_world_rect_to_screen(rig.app.card_rect(&tab).unwrap()).center();
+        let over = rig.app.graph_world_rect_to_screen(rig.app.card_rect(group).unwrap()).center();
+        let from = rig.app.graph_world_rect_to_screen(rig.app.card_rect(tab).unwrap()).center();
         rig.drag(from, over);
-        assert_eq!(rig.app.doc.mirror.group(&tab), Some(group.as_str()), "the tab joined the group");
+        assert_eq!(rig.app.doc.mirror.group(tab), Some(group), "the tab joined the group");
         assert!(drops(&rig).is_empty());
     }
 }
@@ -852,8 +841,8 @@ mod rig_tests {
         for _ in 0..40 {
             let mut rig = Rig::with_kind(FAKE);
             let placement = crate::fetched::Placement { group: None, pos: egui::vec2(700.0, 300.0) };
-            let group = node(9).to_string();
-            rig.app.place_group(Some(group.clone()), "G", placement);
+            let group = node(9);
+            rig.app.place_group(Some(group), "G", placement);
             assert_ne!(rig.tab(), group);
         }
     }
@@ -911,7 +900,7 @@ mod keyboard_menu_tests {
 
 #[cfg(test)]
 mod selection_rule_tests {
-    use crate::card_id::{testutil::card, CardId};
+    use crate::card_id::{testutil::node, CardId};
     use crate::App;
 
     /// "Virtual" in a selection action is the id's kind (`CardId::node`), the persistence guard's too: a virtual id
@@ -919,12 +908,12 @@ mod selection_rule_tests {
     #[test]
     fn the_selection_actions_split_on_the_id_kind_not_on_what_sources_list() {
         let mut app = App::default();
-        let (n, gone) = (card(1), CardId::virt("gone", 0x78));
-        app.test_node(&n.to_string(), crate::store::model::Kind::Jar, crate::node::Runtime::Jar);
-        app.interaction.selected.extend([n, gone]);
+        let (n, gone) = (node(1), CardId::virt("gone", 0x78));
+        app.test_node(n, crate::store::model::Kind::Jar, crate::node::Runtime::Jar);
+        app.interaction.selected.extend([CardId::from(n), gone]);
         assert_eq!(app.selected_stored_count(), 1);
         let taken = app.take_selected_stored();
-        assert_eq!(taken, std::collections::HashSet::from([n.to_string()]));
+        assert_eq!(taken, std::collections::HashSet::from([n]));
         assert_eq!(app.interaction.selected, std::collections::HashSet::from([gone]));
     }
 

@@ -1,6 +1,7 @@
 //! `Ctrl+K`'s tab quick switcher: its state, the matching, and the window.
 
 use super::*;
+use crate::store::model::NodeId;
 
 /// `Ctrl+K`'s tab quick-switcher: substring-search-by-title-or-url across
 /// *every* open tab regardless of level/group (unlike the graph views'
@@ -21,18 +22,18 @@ impl App {
     /// title is empty (live or unloaded alike, via `listed_tab`) -- factored
     /// out so `build_quick_switcher`'s row loop and its own test agree on
     /// exactly what a sleeping tab's row shows.
-    pub(crate) fn quick_switcher_row_url(&self, id: &str) -> Option<String> {
-        self.nodes.get(id)?.runtime.listed_tab().map(|(_, url)| url.to_owned())
+    pub(crate) fn quick_switcher_row_url(&self, id: NodeId) -> Option<String> {
+        self.nodes.get(&id)?.runtime.listed_tab().map(|(_, url)| url.to_owned())
     }
 
     /// The qualifier each listed tab needs beside its label to be told from a tab that reads the same
     /// (`disambiguate::qualifiers`), over all listed tabs so a row's qualifier does not change as the query narrows.
-    pub(crate) fn listed_tab_qualifiers(&self) -> std::collections::HashMap<String, String> {
-        let ids: Vec<&String> =
-            self.node_order.iter().filter(|id| self.quick_switcher_row_label(id).is_some()).collect();
+    pub(crate) fn listed_tab_qualifiers(&self) -> std::collections::HashMap<NodeId, String> {
+        let ids: Vec<NodeId> =
+            self.node_order.iter().copied().filter(|&id| self.quick_switcher_row_label(id).is_some()).collect();
         let labels: Vec<(String, String)> = ids
             .iter()
-            .map(|id| {
+            .map(|&id| {
                 (
                     self.quick_switcher_row_label(id).unwrap_or_default(),
                     self.quick_switcher_row_url(id).unwrap_or_default(),
@@ -41,11 +42,11 @@ impl App {
             .collect();
         let rows: Vec<(&str, &str)> = labels.iter().map(|(l, u)| (l.as_str(), u.as_str())).collect();
         let qualifiers = crate::disambiguate::qualifiers(&rows, true);
-        ids.into_iter().zip(qualifiers).filter_map(|(id, q)| Some((id.clone(), q?))).collect()
+        ids.into_iter().zip(qualifiers).filter_map(|(id, q)| Some((id, q?))).collect()
     }
 
-    pub(crate) fn quick_switcher_row_label(&self, id: &str) -> Option<String> {
-        let (title, url) = self.nodes.get(id)?.runtime.listed_tab()?;
+    pub(crate) fn quick_switcher_row_label(&self, id: NodeId) -> Option<String> {
+        let (title, url) = self.nodes.get(&id)?.runtime.listed_tab()?;
         Some(if title.is_empty() { url.to_string() } else { title.to_string() })
     }
 
@@ -54,16 +55,16 @@ impl App {
     /// function and its Enter-key jump always agree on the exact same list
     /// (computed once per frame, not separately in each place that needs
     /// it).
-    pub(crate) fn quick_switcher_matches(&self, query: &str) -> Vec<String> {
+    pub(crate) fn quick_switcher_matches(&self, query: &str) -> Vec<NodeId> {
         let query = query.to_lowercase();
         self.node_order
             .iter()
             .filter(|id| {
-                self.nodes.get(id.as_str()).and_then(|n| n.runtime.listed_tab()).is_some_and(|(title, url)| {
+                self.nodes.get(id).and_then(|n| n.runtime.listed_tab()).is_some_and(|(title, url)| {
                     query.is_empty() || title.to_lowercase().contains(&query) || url.to_lowercase().contains(&query)
                 })
             })
-            .cloned()
+            .copied()
             .collect()
     }
 
@@ -98,9 +99,9 @@ impl App {
         let Some(switcher) = &self.menus.quick_switcher.open else { return };
         let matches = self.quick_switcher_matches(&switcher.query);
         // Clamped: a query narrowed after moving down can leave `selected` past the end.
-        if let Some(id) = matches.get(switcher.selected.min(matches.len().saturating_sub(1))).cloned() {
-            self.show_level_of(&id);
-            self.focus_tab(&id);
+        if let Some(id) = matches.get(switcher.selected.min(matches.len().saturating_sub(1))).copied() {
+            self.show_level_of(id);
+            self.focus_tab(id);
         }
         self.menus.quick_switcher.open = None;
     }
@@ -143,7 +144,7 @@ impl App {
         let matches = self.quick_switcher_matches(&query);
         // The row Enter would pick (`quick_switcher_confirm` clamps the same way).
         let selected_index = switcher.selected.min(matches.len().saturating_sub(1));
-        let mut jump_to: Option<String> = None;
+        let mut jump_to: Option<NodeId> = None;
 
         egui::Area::new(egui::Id::new("quick_switcher"))
             .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 80.0))
@@ -187,19 +188,18 @@ impl App {
                     key_hint_row(ui, [("Up / Down", "move"), ("Enter", "jump"), ("Esc", "close")].into_iter());
                     let qualifiers = self.listed_tab_qualifiers();
                     egui::ScrollArea::vertical().max_height(240.0).show(ui, |ui| {
-                        for (i, id) in matches.iter().enumerate() {
+                        for (i, &id) in matches.iter().enumerate() {
                             let Some(label) = self.quick_switcher_row_label(id) else { continue };
                             let identity =
                                 self.row_identity(id, self.quick_switcher_row_url(id).as_deref().unwrap_or(""));
-                            let widget_label =
-                                row_label(ui, &label, qualifiers.get(id.as_str()).map(String::as_str), 0.0);
+                            let widget_label = row_label(ui, &label, qualifiers.get(&id).map(String::as_str), 0.0);
                             // Full width, so the highlight spans the row, not just its text.
                             let button = egui::Button::selectable(i == selected_index, widget_label)
                                 .min_size(egui::vec2(ui.available_width(), 0.0));
                             let row = if is_live {
                                 let row = rest_borderless(ui, |ui| ui.add(button));
                                 if row.clicked() {
-                                    jump_to = Some(id.clone());
+                                    jump_to = Some(id);
                                 }
                                 row
                             } else {
@@ -224,7 +224,7 @@ impl App {
                         }
                     });
                     // The selected row's full address, for a keyboard user who never hovers.
-                    let selected_url = matches.get(selected_index).and_then(|id| {
+                    let selected_url = matches.get(selected_index).and_then(|&id| {
                         let label = self.quick_switcher_row_label(id)?;
                         self.quick_switcher_row_url(id).filter(|url| *url != label)
                     });
@@ -235,8 +235,8 @@ impl App {
             });
 
         if let Some(id) = jump_to {
-            self.show_level_of(&id);
-            self.focus_tab(&id);
+            self.show_level_of(id);
+            self.focus_tab(id);
             self.menus.quick_switcher.open = None;
         }
     }
@@ -315,8 +315,8 @@ mod tests {
         let mut app = app_on(&crate::store::testutil::temp_dir("qs-label").join("session.mnf"), 1);
         let titled = add(&mut app, Kind::Tab, sleeping_tab("https://a/", "Alpha"));
         let untitled = add(&mut app, Kind::Tab, sleeping_tab("https://b/", ""));
-        assert_eq!(app.quick_switcher_row_label(&titled).as_deref(), Some("Alpha"));
-        assert_eq!(app.quick_switcher_row_label(&untitled).as_deref(), Some("https://b/"));
+        assert_eq!(app.quick_switcher_row_label(titled).as_deref(), Some("Alpha"));
+        assert_eq!(app.quick_switcher_row_label(untitled).as_deref(), Some("https://b/"));
     }
 
     /// Review C-B2: a query narrowed after moving down confirms its first match, not nothing.
@@ -324,7 +324,7 @@ mod tests {
     fn a_narrowed_query_confirms_its_first_match() {
         use crate::session_sync::tests::{add, app_on, sleeping_tab};
         let mut app = app_on(&crate::store::testutil::temp_dir("qs-narrowed").join("session.mnf"), 1);
-        let ids: Vec<String> = (0..6)
+        let ids: Vec<crate::store::model::NodeId> = (0..6)
             .map(|i| add(&mut app, Kind::Tab, sleeping_tab(&format!("https://{i}/"), &format!("Tab {i}"))))
             .collect();
         app.open_quick_switcher();
@@ -335,12 +335,12 @@ mod tests {
         app.menus.quick_switcher.open.as_mut().unwrap().query = "tab 2".into();
         app.quick_switcher_confirm();
         assert!(app.menus.quick_switcher.open.is_none());
-        assert_eq!(app.focused.as_deref(), Some(ids[2].as_str()), "jumped to the one match");
+        assert_eq!(app.focused, Some(ids[2]), "jumped to the one match");
 
         app.open_quick_switcher();
         app.menus.quick_switcher.open.as_mut().unwrap().query = "no such tab".into();
         app.quick_switcher_confirm(); // nothing matches: closes, no panic
         assert!(app.menus.quick_switcher.open.is_none());
-        assert_eq!(app.focused.as_deref(), Some(ids[2].as_str()), "focus unchanged");
+        assert_eq!(app.focused, Some(ids[2]), "focus unchanged");
     }
 }

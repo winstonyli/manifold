@@ -1,3 +1,4 @@
+use crate::store::model::NodeId;
 use std::collections::{HashMap, HashSet};
 /// The present mode asked for: `Immediate` shows a frame without queueing it behind a vsync (key to screen 33 ms against
 /// 100 for `Fifo`, README "View latency, measured"); the event loop then caps its own frame rate (`GpuState::present_blocks`).
@@ -184,12 +185,12 @@ pub struct GpuState {
     /// ever focused: entries are removed via `free_tab_texture` whenever a
     /// tab stops being visible (unfocused, split closed, or closed
     /// outright).
-    tab_textures: HashMap<String, TabTexture>,
-    thumbnails: HashMap<String, ThumbTexture>,
+    tab_textures: HashMap<NodeId, TabTexture>,
+    thumbnails: HashMap<NodeId, ThumbTexture>,
     /// Tabs whose thumbnail is older than their frame texture. `upload_frame` adds a tab; `render` downsamples it
     /// in the frame's encoder when egui draws its thumbnail; `free_tab_texture` flushes it before the frame is
     /// freed; `free_tab_thumbnail` drops it.
-    thumbs_dirty: HashSet<String>,
+    thumbs_dirty: HashSet<NodeId>,
     /// Keyed by *origin* (`scheme://host[:port]`, see `favicon_fetch::
     /// UrlParts::origin`), not tab id -- favicons are fetched independently of
     /// any specific tab (see `favicon_fetch`'s own module doc comment), so
@@ -208,7 +209,7 @@ pub struct GpuState {
     /// FIFO eviction -- bounded by however many image nodes the user
     /// deliberately creates, freed one-for-one via `free_image` when a node
     /// is removed.
-    images: HashMap<String, ThumbTexture>,
+    images: HashMap<NodeId, ThumbTexture>,
     egui_renderer: egui_wgpu::Renderer,
     /// Kept to recreate `surface` after `CurrentSurfaceTexture::Lost`.
     instance: wgpu::Instance,
@@ -531,7 +532,7 @@ impl GpuState {
     /// exists, is not `stale` and keeps its size takes just that band.
     pub fn upload_frame(
         &mut self,
-        tab_id: &str,
+        tab_id: NodeId,
         pixels: &[u8],
         width: u32,
         height: u32,
@@ -545,10 +546,12 @@ impl GpuState {
             self.mark_stale(tab_id);
             return;
         }
-        let reuse_main =
-            self.tab_textures.get(tab_id).is_some_and(|t| t.width == width && t.height == height && t.format == format);
+        let reuse_main = self
+            .tab_textures
+            .get(&tab_id)
+            .is_some_and(|t| t.width == width && t.height == height && t.format == format);
         if reuse_main {
-            let tab = self.tab_textures.get_mut(tab_id).expect("reuse_main found it");
+            let tab = self.tab_textures.get_mut(&tab_id).expect("reuse_main found it");
             let rows = if tab.stale { None } else { rows };
             tab.stale = false;
             Self::write_rows(&self.queue, &tab.texture, pixels, width, height, rows);
@@ -583,13 +586,12 @@ impl GpuState {
                     wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.sampler) },
                 ],
             });
-            self.tab_textures
-                .insert(tab_id.to_string(), TabTexture { texture, width, height, format, bind_group, stale: false });
+            self.tab_textures.insert(tab_id, TabTexture { texture, width, height, format, bind_group, stale: false });
         }
 
         let (thumb_width, thumb_height) = Self::thumbnail_target_size(width, height, THUMBNAIL_MAX_SIZE);
         let reuse_thumb =
-            self.thumbnails.get(tab_id).is_some_and(|t| t.width == thumb_width && t.height == thumb_height);
+            self.thumbnails.get(&tab_id).is_some_and(|t| t.width == thumb_width && t.height == thumb_height);
         if !reuse_thumb {
             let thumb_texture = self.device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("tab thumbnail texture"),
@@ -602,7 +604,7 @@ impl GpuState {
                 view_formats: &[],
             });
             let thumb_view = thumb_texture.create_view(&wgpu::TextureViewDescriptor::default());
-            let egui_id = if let Some(existing) = self.thumbnails.get(tab_id) {
+            let egui_id = if let Some(existing) = self.thumbnails.get(&tab_id) {
                 self.egui_renderer.update_egui_texture_from_wgpu_texture(
                     &self.device,
                     &thumb_view,
@@ -614,13 +616,13 @@ impl GpuState {
                 self.egui_renderer.register_native_texture(&self.device, &thumb_view, wgpu::FilterMode::Linear)
             };
             self.thumbnails.insert(
-                tab_id.to_string(),
+                tab_id,
                 ThumbTexture { texture: thumb_texture, width: thumb_width, height: thumb_height, egui_id },
             );
         }
         // The thumbnail's content is older than this frame whether its texture was just reused or just created;
         // `render` downsamples it when egui draws it.
-        self.thumbs_dirty.insert(tab_id.to_string());
+        self.thumbs_dirty.insert(tab_id);
     }
 
     /// The aspect-preserving target size `render_thumbnail`'s destination
@@ -765,21 +767,21 @@ impl GpuState {
 
     /// Makes `tab_id`'s next upload write the whole texture: a frame for it was skipped, so the rows that frame
     /// changed never reached the texture.
-    pub fn mark_stale(&mut self, tab_id: &str) {
-        if let Some(tab) = self.tab_textures.get_mut(tab_id) {
+    pub fn mark_stale(&mut self, tab_id: NodeId) {
+        if let Some(tab) = self.tab_textures.get_mut(&tab_id) {
             tab.stale = true;
         }
     }
 
     /// The `egui::TextureId` for a tab's cached thumbnail, if it has ever
     /// produced a frame — for the graph view to draw via `egui::Image`.
-    pub fn thumbnail_id(&self, tab_id: &str) -> Option<egui::TextureId> {
-        self.thumbnails.get(tab_id).map(|t| t.egui_id)
+    pub fn thumbnail_id(&self, tab_id: NodeId) -> Option<egui::TextureId> {
+        self.thumbnails.get(&tab_id).map(|t| t.egui_id)
     }
 
     /// A tab's thumbnail size in pixels, for cropping it to a card (see `cover_uv`).
-    pub fn thumbnail_size(&self, tab_id: &str) -> Option<(u32, u32)> {
-        self.thumbnails.get(tab_id).map(|t| (t.width, t.height))
+    pub fn thumbnail_size(&self, tab_id: NodeId) -> Option<(u32, u32)> {
+        self.thumbnails.get(&tab_id).map(|t| (t.width, t.height))
     }
 
     /// Must be called when a tab closes — `egui_wgpu::Renderer` doesn't
@@ -787,9 +789,9 @@ impl GpuState {
     /// unlike egui's own font/image-loader textures (freed automatically
     /// via each frame's `textures_delta.free`, see `render`), this one
     /// leaks until explicitly freed here.
-    pub fn free_tab_thumbnail(&mut self, tab_id: &str) {
-        self.thumbs_dirty.remove(tab_id);
-        if let Some(thumb) = self.thumbnails.remove(tab_id) {
+    pub fn free_tab_thumbnail(&mut self, tab_id: NodeId) {
+        self.thumbs_dirty.remove(&tab_id);
+        if let Some(thumb) = self.thumbnails.remove(&tab_id) {
             self.egui_renderer.free_texture(&thumb.egui_id);
         }
         // Favicons are origin-keyed, not tab-keyed (see `favicons`' own doc
@@ -809,9 +811,9 @@ impl GpuState {
     ///
     /// A dirty thumbnail is downsampled first (own encoder and submit): the tab's last frame must reach its card.
     /// The close and sleep paths call `free_tab_thumbnail` before this, so they never flush one about to be freed.
-    pub fn free_tab_texture(&mut self, tab_id: &str) {
-        if self.thumbs_dirty.remove(tab_id) {
-            if let (Some(source), Some(dest)) = (self.tab_textures.get(tab_id), self.thumbnails.get(tab_id)) {
+    pub fn free_tab_texture(&mut self, tab_id: NodeId) {
+        if self.thumbs_dirty.remove(&tab_id) {
+            if let (Some(source), Some(dest)) = (self.tab_textures.get(&tab_id), self.thumbnails.get(&tab_id)) {
                 let mut encoder = self
                     .device
                     .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("thumbnail flush encoder") });
@@ -827,7 +829,7 @@ impl GpuState {
                 self.queue.submit(std::iter::once(encoder.finish()));
             }
         }
-        self.tab_textures.remove(tab_id);
+        self.tab_textures.remove(&tab_id);
     }
 
     /// Whether `upload_frame` has ever run for this tab -- `false` right
@@ -835,8 +837,8 @@ impl GpuState {
     /// frame arrives. Lets Tab view show a loading spinner instead of the
     /// plain black clear `record_content_pass` draws for a pane with no
     /// texture yet (see that function's own doc comment).
-    pub fn has_tab_texture(&self, tab_id: &str) -> bool {
-        self.tab_textures.contains_key(tab_id)
+    pub fn has_tab_texture(&self, tab_id: NodeId) -> bool {
+        self.tab_textures.contains_key(&tab_id)
     }
 
     /// Draws every entry in `panes` (0 for Graph view/nothing focused yet,
@@ -1034,7 +1036,7 @@ impl GpuState {
     /// frames are exactly as expensive as before this existed.
     pub fn render(
         &mut self,
-        panes: &[(PanePx, &str)],
+        panes: &[(PanePx, NodeId)],
         content_on_top: bool,
         egui_output: Option<(&egui::Context, egui::FullOutput)>,
         screenshot_path: Option<&str>,
@@ -1121,7 +1123,7 @@ impl GpuState {
         // draws nothing for this frame, same tolerance a single-pane render
         // already had).
         let panes: Vec<(PanePx, Option<&TabTexture>)> =
-            panes.iter().map(|(pane, id)| (*pane, self.tab_textures.get(*id))).collect();
+            panes.iter().map(|(pane, id)| (*pane, self.tab_textures.get(id))).collect();
 
         // Tessellated once (`ctx.tessellate` consumes `full_output.shapes`)
         // and reused for both the on-screen pass and, if requested, the

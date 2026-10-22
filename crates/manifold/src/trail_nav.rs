@@ -9,10 +9,10 @@ use crate::nav_history::{Dir, NavAction};
 use crate::store::model::{Kind, NodeId};
 
 /// `id`'s raw `PARENT` in the document.
-fn doc_parent(doc: &crate::store::model::Doc, id: &str) -> Option<String> {
-    let node = doc.nodes.get(&id.parse::<NodeId>().ok()?)?;
+fn doc_parent(doc: &crate::store::model::Doc, id: NodeId) -> Option<NodeId> {
+    let node = doc.nodes.get(&id)?;
     if let FieldValue::Id(Some(p)) = node.get(field::PARENT) {
-        Some(p.to_string())
+        Some(p)
     } else {
         None
     }
@@ -26,15 +26,15 @@ impl App {
             WinitMouseButton::Forward => Dir::Forward,
             _ => return,
         };
-        if let Some(id) = self.focused.clone() {
-            self.navigate_history(&id, dir);
+        if let Some(id) = self.focused {
+            self.navigate_history(id, dir);
         }
     }
 
     /// A Back or Forward press on tab `id` (the toolbar chips, `GOBACK`/`GOFORWARD`). Ignored while a move is pending.
-    pub(crate) fn navigate_history(&mut self, id: &str, dir: Dir) {
+    pub(crate) fn navigate_history(&mut self, id: NodeId, dir: Dir) {
         let now = Instant::now();
-        let history = self.nav_history.get(id);
+        let history = self.nav_history.get(&id);
         if history.is_some_and(|h| h.move_pending(now)) {
             return;
         }
@@ -43,9 +43,9 @@ impl App {
             Dir::Forward => h.can_go_forward(),
         });
         if own {
-            let Some(node) = self.nodes.get(id).and_then(|n| n.as_tab()) else { return };
+            let Some(node) = self.nodes.get(&id).and_then(|n| n.as_tab()) else { return };
             let (back, forward) = (node.can_go_back, node.can_go_forward);
-            let action = self.nav_history.get_mut(id).map_or(NavAction::None, |h| h.go(dir, back, forward, now));
+            let action = self.nav_history.get_mut(&id).map_or(NavAction::None, |h| h.go(dir, back, forward, now));
             self.send_nav_action(id, action);
             return;
         }
@@ -55,7 +55,7 @@ impl App {
         }
     }
 
-    fn send_nav_action(&mut self, id: &str, action: NavAction) {
+    fn send_nav_action(&mut self, id: NodeId, action: NavAction) {
         let message = match action {
             NavAction::GoBack => HostToView::GoBack,
             NavAction::GoForward => HostToView::GoForward,
@@ -63,15 +63,15 @@ impl App {
             NavAction::Navigate(url) => return self.navigate_tab(id, url),
             NavAction::None => return,
         };
-        if let Some(node) = self.nodes.get_mut(id).and_then(|n| n.as_tab_mut()) {
+        if let Some(node) = self.nodes.get_mut(&id).and_then(|n| n.as_tab_mut()) {
             node.tab.send(&message);
         }
     }
 
     /// The chips' enablement for tab `id`: the trail's own Back, else an opened-from parent; the trail's own Forward,
     /// else a valid `left_to`.
-    pub(crate) fn trail_enabled(&self, id: &str) -> (bool, bool) {
-        let history = self.nav_history.get(id);
+    pub(crate) fn trail_enabled(&self, id: NodeId) -> (bool, bool) {
+        let history = self.nav_history.get(&id);
         let back = history.is_some_and(|h| h.can_go_back()) || self.trail_parent(id).is_some();
         let forward = history.is_some_and(|h| h.can_go_forward()) || self.left_to_child(id).is_some();
         (back, forward)
@@ -80,72 +80,71 @@ impl App {
     /// The card `id` was opened from (decision 6): its `PARENT` from the mirror (which sees an edit or a Create not yet
     /// in the document), else from the document (the mirror has no links for a hidden node); while that one is not
     /// live, its own `PARENT` from the document. `None` when no live ancestor is left (plan D16 for a remote delete).
-    pub(crate) fn trail_parent(&self, id: &str) -> Option<String> {
+    pub(crate) fn trail_parent(&self, id: NodeId) -> Option<NodeId> {
         let doc = self.doc.journal.as_ref().map(|j| j.doc());
         let mut p = match self.doc.mirror.parent(id) {
-            Some(p) => p.to_owned(),
+            Some(p) => p,
             None => doc_parent(doc?, id)?,
         };
         for _ in 0..=doc.map_or(0, |d| d.nodes.len()) {
-            if self.is_live_id(&p) {
+            if self.is_live_id(p) {
                 return Some(p);
             }
-            p = doc_parent(doc?, &p)?;
+            p = doc_parent(doc?, p)?;
         }
         None
     }
 
     /// A row of the branch list: a plain move to `entry` of tab `tab`'s trail.
-    pub(crate) fn trail_pick(&mut self, tab: &str, entry: usize) {
-        let Some(h) = self.nav_history.get_mut(tab) else { return };
+    pub(crate) fn trail_pick(&mut self, tab: NodeId, entry: usize) {
+        let Some(h) = self.nav_history.get_mut(&tab) else { return };
         let action = h.go_to(entry, Instant::now());
         self.send_nav_action(tab, action);
     }
 
     /// "Open as card" on a branch row (decision 9): a new tab opened from `tab` at that entry's URL, with opened-from
     /// and the group set as for any opened tab, at `pos` (world) when given. The trail is unchanged.
-    pub(crate) fn open_branch_as_card(&mut self, tab: &str, entry: usize, pos: Option<egui::Vec2>) {
-        let Some(url) = self.nav_history.get(tab).and_then(|h| h.entry_url(entry)).map(str::to_owned) else { return };
+    pub(crate) fn open_branch_as_card(&mut self, tab: NodeId, entry: usize, pos: Option<egui::Vec2>) {
+        let Some(url) = self.nav_history.get(&tab).and_then(|h| h.entry_url(entry)).map(str::to_owned) else { return };
         self.spawn_tab_from(tab, &url, pos);
     }
 
     /// `id` is shown (`nodes`), or live in the document (hidden by a close).
-    fn is_live_id(&self, id: &str) -> bool {
-        self.nodes.contains_key(id) || self.doc_node(id).is_some_and(|n| n.is_live())
+    fn is_live_id(&self, id: NodeId) -> bool {
+        self.nodes.contains_key(&id) || self.doc_node(id).is_some_and(|n| n.is_live())
     }
 
-    fn doc_node(&self, id: &str) -> Option<&crate::store::model::Node> {
-        let id: NodeId = id.parse().ok()?;
+    fn doc_node(&self, id: NodeId) -> Option<&crate::store::model::Node> {
         self.doc.journal.as_ref()?.doc().nodes.get(&id)
     }
 
-    fn trail_is_tab(&self, id: &str) -> bool {
+    fn trail_is_tab(&self, id: NodeId) -> bool {
         self.doc.mirror.ty(id) == crate::store::model::TYPE_TAB
             || self.doc_node(id).is_some_and(|n| n.kind() == Kind::Tab)
     }
 
     /// Back at the root of `id`'s trail: focus its parent, which, when a tab, remembers `id` for its Forward.
-    fn trail_back_to_parent(&mut self, id: &str) {
+    fn trail_back_to_parent(&mut self, id: NodeId) {
         let Some(parent) = self.trail_parent(id) else { return };
-        if self.trail_is_tab(&parent) {
-            self.nav_history.entry(parent.clone()).or_default().set_left_to(Some(id.to_owned()));
+        if self.trail_is_tab(parent) {
+            self.nav_history.entry(parent).or_default().set_left_to(Some(id));
         }
-        self.trail_focus(&parent);
+        self.trail_focus(parent);
     }
 
     /// `parent`'s `left_to` while it is valid (decision 7): the child is live and its opened-from walk ends at
     /// `parent` (a grandparent Back resolved to after a delete keeps it).
-    fn left_to_child(&self, parent: &str) -> Option<String> {
-        let child = self.nav_history.get(parent)?.left_to()?;
-        (self.is_live_id(child) && self.trail_parent(child).as_deref() == Some(parent)).then(|| child.to_owned())
+    fn left_to_child(&self, parent: NodeId) -> Option<NodeId> {
+        let child = self.nav_history.get(&parent)?.left_to()?;
+        (self.is_live_id(child) && self.trail_parent(child) == Some(parent)).then_some(child)
     }
 
     /// Forward with no Forward in the trail: back to the child Back left, or, if that is stale, forget it.
-    fn trail_forward_to_child(&mut self, id: &str) {
+    fn trail_forward_to_child(&mut self, id: NodeId) {
         match self.left_to_child(id) {
-            Some(child) => self.trail_focus(&child),
+            Some(child) => self.trail_focus(child),
             None => {
-                if let Some(h) = self.nav_history.get_mut(id) {
+                if let Some(h) = self.nav_history.get_mut(&id) {
                     h.set_left_to(None);
                 }
             }
@@ -155,7 +154,7 @@ impl App {
     /// Shows `id` for the opened-from step: reopens the closed nodes that hide it, outermost first (a nested closed
     /// node stays closed when its group reopens, so this repeats), then focuses it. A reopen that has not put `id`
     /// in `nodes` yet (a tab still spawning) leaves it to `poll_trail_focus`.
-    fn trail_focus(&mut self, id: &str) {
+    fn trail_focus(&mut self, id: NodeId) {
         let mut last = None;
         for _ in 0..=self.doc.journal.as_ref().map_or(0, |j| j.doc().nodes.len()) {
             let Some(root) = self.outermost_closed(id) else { break };
@@ -167,17 +166,17 @@ impl App {
             last = Some(root);
             self.reopen_node(root);
         }
-        if self.nodes.contains_key(id) {
+        if self.nodes.contains_key(&id) {
             self.finish_trail_focus(id);
         } else {
-            self.spawns.pending_trail_focus = Some(id.to_owned());
+            self.spawns.pending_trail_focus = Some(id);
         }
     }
 
     /// The outermost closed node on `id`'s `group` chain, `id` included, from the document.
-    fn outermost_closed(&self, id: &str) -> Option<NodeId> {
+    fn outermost_closed(&self, id: NodeId) -> Option<NodeId> {
         let doc = self.doc.journal.as_ref()?.doc();
-        let mut cur = Some(id.parse::<NodeId>().ok()?);
+        let mut cur = Some(id);
         let mut outer = None;
         for _ in 0..=doc.nodes.len() {
             let Some(c) = cur else { break };
@@ -192,7 +191,7 @@ impl App {
 
     /// `id` is in `nodes`: a tab or image opens in the Item view on its level; any other card is selected on its
     /// level in the Graph view (plan D14).
-    fn finish_trail_focus(&mut self, id: &str) {
+    fn finish_trail_focus(&mut self, id: NodeId) {
         let ty = self.card_kind(id).map(|k| k.ty);
         if matches!(ty, Some(crate::store::model::TYPE_TAB | crate::store::model::TYPE_IMAGE)) {
             self.show_level_of(id);
@@ -204,17 +203,17 @@ impl App {
         }
         self.show_level_of(id);
         self.interaction.selected.clear();
-        self.interaction.selected.insert(CardId::stored(id));
+        self.interaction.selected.insert(CardId::from(id));
     }
 
     /// Finishes a `trail_focus` once its node is in `nodes`; drops one whose node is gone. Called each tick after the
     /// store is polled.
     pub(crate) fn poll_trail_focus(&mut self) {
-        let Some(id) = self.spawns.pending_trail_focus.clone() else { return };
+        let Some(id) = self.spawns.pending_trail_focus else { return };
         if self.nodes.contains_key(&id) {
             self.spawns.pending_trail_focus = None;
-            self.finish_trail_focus(&id);
-        } else if !self.is_live_id(&id) {
+            self.finish_trail_focus(id);
+        } else if !self.is_live_id(id) {
             self.spawns.pending_trail_focus = None;
         }
     }
@@ -225,6 +224,7 @@ mod tests {
     use std::time::Instant;
 
     use super::*;
+    use crate::card_id::testutil::node;
     use crate::nav_history::NavHistory;
     use crate::popups::popup_start_rect;
     use crate::session_sync::tests::{add, add_group, app_on, live_tab, sleeping_tab, Peer};
@@ -234,14 +234,14 @@ mod tests {
     use crate::store::testutil::temp_dir;
 
     /// Tab `child` (live, focused, a one-page trail) opened from tab `parent` (asleep), both at the top level.
-    fn opened_from(path: &std::path::Path) -> (App, String, String, Peer) {
+    fn opened_from(path: &std::path::Path) -> (App, NodeId, NodeId, Peer) {
         let mut app = app_on(path, 1);
         let parent = add(&mut app, Kind::Tab, sleeping_tab("https://p/", "P"));
         let (child, peer) = live_tab(&mut app, ViewKind::Webview2, "https://c/");
-        app.edit_parent(&child, Some(parent.clone()));
+        app.edit_parent(child, Some(parent));
         assert!(app.save_session());
-        app.nav_history.insert(child.clone(), NavHistory::visited(&["https://c/"]));
-        app.focus_tab(&child);
+        app.nav_history.insert(child, NavHistory::visited(&["https://c/"]));
+        app.focus_tab(child);
         (app, parent, child, peer)
     }
 
@@ -252,23 +252,23 @@ mod tests {
     #[test]
     fn back_at_the_root_focuses_the_parent_and_forward_returns() {
         let (mut app, parent, child, _peer) = opened_from(&session("trail-back-forward"));
-        assert_eq!(app.trail_enabled(&child), (true, false));
-        app.navigate_history(&child, Dir::Back);
-        assert_eq!(app.focused.as_deref(), Some(parent.as_str()));
-        assert_eq!(app.nav_history.get(&parent).and_then(|h| h.left_to()), Some(child.as_str()));
-        assert_eq!(app.trail_enabled(&parent), (false, true));
-        app.navigate_history(&parent, Dir::Forward);
-        assert_eq!(app.focused.as_deref(), Some(child.as_str()));
+        assert_eq!(app.trail_enabled(child), (true, false));
+        app.navigate_history(child, Dir::Back);
+        assert_eq!(app.focused, Some(parent));
+        assert_eq!(app.nav_history.get(&parent).and_then(|h| h.left_to()), Some(child));
+        assert_eq!(app.trail_enabled(parent), (false, true));
+        app.navigate_history(parent, Dir::Forward);
+        assert_eq!(app.focused, Some(child));
     }
 
     #[test]
     fn back_goes_to_a_parent_on_another_level() {
         let (mut app, parent, child, _peer) = opened_from(&session("trail-back-level"));
         let g = add_group(&mut app, "G");
-        app.edit_group(&parent, Some(g.clone()));
+        app.edit_group(parent, Some(g));
         assert!(app.save_session());
-        app.navigate_history(&child, Dir::Back);
-        assert_eq!((app.focused.as_deref(), app.current_group.as_deref()), (Some(parent.as_str()), Some(g.as_str())));
+        app.navigate_history(child, Dir::Back);
+        assert_eq!((app.focused, app.current_group), (Some(parent), Some(g)));
     }
 
     #[test]
@@ -276,12 +276,12 @@ mod tests {
         let mut app = app_on(&session("trail-back-note"), 1);
         let note = add(&mut app, Kind::Note, Runtime::Note(NotePayload { text: "n".into(), editing: false }));
         let (child, _peer) = live_tab(&mut app, ViewKind::Webview2, "https://c/");
-        app.edit_parent(&child, Some(note.clone()));
+        app.edit_parent(child, Some(note));
         assert!(app.save_session());
-        app.focus_tab(&child);
-        app.navigate_history(&child, Dir::Back);
+        app.focus_tab(child);
+        app.navigate_history(child, Dir::Back);
         assert!(app.transition.is_some(), "on its way to the Graph view");
-        assert!(app.interaction.selected.len() == 1 && app.interaction.selected.contains(&CardId::stored(&note)));
+        assert!(app.interaction.selected.len() == 1 && app.interaction.selected.contains(&CardId::from(note)));
         assert!(!app.nav_history.contains_key(&note), "a non-tab parent gets no trail");
     }
 
@@ -289,32 +289,32 @@ mod tests {
     fn back_reopens_a_parent_hidden_in_nested_closed_groups() {
         let (mut app, parent, child, _peer) = opened_from(&session("trail-back-closed"));
         let g = add_group(&mut app, "G");
-        app.edit_group(&parent, Some(g.clone()));
+        app.edit_group(parent, Some(g));
         assert!(app.save_session());
-        app.close_node(&parent);
-        app.close_node(&g);
+        app.close_node(parent);
+        app.close_node(g);
         assert!(!app.nodes.contains_key(&parent) && !app.nodes.contains_key(&g));
-        assert!(app.trail_enabled(&child).0, "a hidden parent is still live");
-        app.navigate_history(&child, Dir::Back);
+        assert!(app.trail_enabled(child).0, "a hidden parent is still live");
+        app.navigate_history(child, Dir::Back);
         assert!(app.nodes.contains_key(&g) && app.nodes.contains_key(&parent), "both reopened, outermost first");
-        assert_eq!((app.focused.as_deref(), app.current_group.as_deref()), (Some(parent.as_str()), Some(g.as_str())));
+        assert_eq!((app.focused, app.current_group), (Some(parent), Some(g)));
     }
 
     #[test]
     fn back_skips_a_deleted_parent_and_is_disabled_when_no_ancestor_is_left() {
         let (mut app, parent, child, _peer) = opened_from(&session("trail-back-deleted"));
         let grand = add(&mut app, Kind::Tab, sleeping_tab("https://g/", "G"));
-        app.edit_parent(&parent, Some(grand.clone()));
+        app.edit_parent(parent, Some(grand));
         assert!(app.save_session());
-        app.destroy_node(&parent);
+        app.destroy_node(parent);
         assert!(app.save_session());
-        assert_eq!(app.trail_parent(&child).as_deref(), Some(grand.as_str()), "a delete hands the child up");
-        app.navigate_history(&child, Dir::Back);
-        assert_eq!(app.focused.as_deref(), Some(grand.as_str()));
-        app.focus_tab(&child);
-        app.destroy_node(&grand);
+        assert_eq!(app.trail_parent(child), Some(grand), "a delete hands the child up");
+        app.navigate_history(child, Dir::Back);
+        assert_eq!(app.focused, Some(grand));
+        app.focus_tab(child);
+        app.destroy_node(grand);
         assert!(app.save_session());
-        assert!(!app.trail_enabled(&child).0);
+        assert!(!app.trail_enabled(child).0);
     }
 
     /// Plan D16: a remote delete leaves the child's `PARENT` naming the deleted node, whose fields the delete cleared
@@ -324,15 +324,15 @@ mod tests {
         let path = session("trail-remote-delete");
         let (mut app, parent, child, _peer) = opened_from(&path);
         let grand = add(&mut app, Kind::Tab, sleeping_tab("https://g/", "G"));
-        app.edit_parent(&parent, Some(grand.clone()));
+        app.edit_parent(parent, Some(grand));
         assert!(app.save_session());
         let mut other = Journal::open(&path, ActorId(2)).unwrap();
-        app.close_node(&parent);
+        app.close_node(parent);
         assert!(app.save_session());
-        other.begin().unwrap().commit(vec![OpBody::Delete { node: parent.parse().unwrap() }]).unwrap();
+        other.begin().unwrap().commit(vec![OpBody::Delete { node: parent }]).unwrap();
         assert!(app.save_session());
         assert!(!app.nodes.contains_key(&parent));
-        assert!(!app.trail_enabled(&child).0);
+        assert!(!app.trail_enabled(child).0);
     }
 
     /// A reopen that does not take (the append fails on a read-only file) must end the reopen loop with a toast, not
@@ -341,7 +341,7 @@ mod tests {
     fn a_reopen_that_does_not_take_toasts_and_focuses_nothing() {
         let path = session("trail-reopen-stuck");
         let (mut app, parent, child, _peer) = opened_from(&path);
-        app.close_node(&parent);
+        app.close_node(parent);
         assert!(!app.nodes.contains_key(&parent));
         let set_readonly = |readonly: bool| {
             let mut perms = std::fs::metadata(&path).unwrap().permissions();
@@ -353,11 +353,11 @@ mod tests {
             std::fs::set_permissions(&path, perms).unwrap();
         };
         set_readonly(true);
-        app.navigate_history(&child, Dir::Back);
+        app.navigate_history(child, Dir::Back);
         set_readonly(false);
         assert!(app.toasts.save_toast_queue.iter().any(|t| t.contains("Couldn't reopen")), "toasted");
         assert!(!app.nodes.contains_key(&parent), "still closed");
-        assert_eq!(app.focused.as_deref(), Some(child.as_str()), "the press focused nothing");
+        assert_eq!(app.focused, Some(child), "the press focused nothing");
         assert_eq!(app.spawns.pending_trail_focus, None, "and waits for nothing");
     }
 
@@ -366,13 +366,13 @@ mod tests {
     #[test]
     fn forward_after_back_to_a_closed_parent_returns_to_the_child() {
         let (mut app, parent, child, _peer) = opened_from(&session("trail-back-closed-forward"));
-        app.close_node(&parent);
-        app.navigate_history(&child, Dir::Back);
-        assert_eq!(app.focused.as_deref(), Some(parent.as_str()), "the parent reopened");
-        assert_eq!(app.nav_history.get(&parent).and_then(|h| h.left_to()), Some(child.as_str()), "left_to survived");
-        assert_eq!(app.trail_enabled(&parent), (false, true));
-        app.navigate_history(&parent, Dir::Forward);
-        assert_eq!(app.focused.as_deref(), Some(child.as_str()));
+        app.close_node(parent);
+        app.navigate_history(child, Dir::Back);
+        assert_eq!(app.focused, Some(parent), "the parent reopened");
+        assert_eq!(app.nav_history.get(&parent).and_then(|h| h.left_to()), Some(child), "left_to survived");
+        assert_eq!(app.trail_enabled(parent), (false, true));
+        app.navigate_history(parent, Dir::Forward);
+        assert_eq!(app.focused, Some(child));
     }
 
     #[test]
@@ -380,14 +380,14 @@ mod tests {
         let mut app = app_on(&session("trail-forward-closed"), 1);
         let parent = add(&mut app, Kind::Tab, sleeping_tab("https://p/", "P"));
         let child = add(&mut app, Kind::Tab, sleeping_tab("https://c/", "C"));
-        app.edit_parent(&child, Some(parent.clone()));
+        app.edit_parent(child, Some(parent));
         assert!(app.save_session());
-        app.nav_history.entry(parent.clone()).or_default().set_left_to(Some(child.clone()));
-        app.close_node(&child);
-        assert!(app.trail_enabled(&parent).1, "a closed child is still live");
-        app.navigate_history(&parent, Dir::Forward);
+        app.nav_history.entry(parent).or_default().set_left_to(Some(child));
+        app.close_node(child);
+        assert!(app.trail_enabled(parent).1, "a closed child is still live");
+        app.navigate_history(parent, Dir::Forward);
         assert!(app.nodes.contains_key(&child));
-        assert_eq!(app.focused.as_deref(), Some(child.as_str()));
+        assert_eq!(app.focused, Some(child));
     }
 
     #[test]
@@ -395,30 +395,30 @@ mod tests {
         let mut app = app_on(&session("trail-own-forward"), 1);
         let (parent, mut peer) = live_tab(&mut app, ViewKind::Webview2, "https://p1/");
         let child = add(&mut app, Kind::Tab, sleeping_tab("https://c/", "C"));
-        app.edit_parent(&child, Some(parent.clone()));
+        app.edit_parent(child, Some(parent));
         assert!(app.save_session());
         let now = Instant::now();
         let mut h = NavHistory::visited(&["https://p1/", "https://p2/"]);
         assert_eq!(h.go(Dir::Back, false, false, now), NavAction::Navigate("https://p1/".into()));
         h.observe("https://p1/", "", false, false, now);
-        h.set_left_to(Some(child.clone()));
-        app.nav_history.insert(parent.clone(), h);
-        app.focus_tab(&parent);
-        app.navigate_history(&parent, Dir::Forward);
-        assert_eq!(app.focused.as_deref(), Some(parent.as_str()), "stays on the parent");
+        h.set_left_to(Some(child));
+        app.nav_history.insert(parent, h);
+        app.focus_tab(parent);
+        app.navigate_history(parent, Dir::Forward);
+        assert_eq!(app.focused, Some(parent), "stays on the parent");
         assert!(peer.sent().iter().any(|m| matches!(m, HostToView::Navigate { url, .. } if url == "https://p2/")));
     }
 
     #[test]
     fn a_stale_left_to_is_cleared() {
         let (mut app, parent, child, _peer) = opened_from(&session("trail-stale-left-to"));
-        app.navigate_history(&child, Dir::Back);
-        app.edit_parent(&child, None);
+        app.navigate_history(child, Dir::Back);
+        app.edit_parent(child, None);
         assert!(app.save_session());
-        assert!(!app.trail_enabled(&parent).1, "the child no longer names this parent");
-        app.navigate_history(&parent, Dir::Forward);
+        assert!(!app.trail_enabled(parent).1, "the child no longer names this parent");
+        app.navigate_history(parent, Dir::Forward);
         assert_eq!(app.nav_history.get(&parent).and_then(|h| h.left_to()), None);
-        assert_eq!(app.focused.as_deref(), Some(parent.as_str()));
+        assert_eq!(app.focused, Some(parent));
     }
 
     #[test]
@@ -426,20 +426,20 @@ mod tests {
         let mut app = app_on(&session("trail-pending-focus"), 1);
         let tab = add(&mut app, Kind::Tab, sleeping_tab("https://t/", "T"));
         assert!(app.save_session());
-        app.close_node(&tab);
-        app.spawns.pending_trail_focus = Some(tab.clone());
+        app.close_node(tab);
+        app.spawns.pending_trail_focus = Some(tab);
         app.poll_trail_focus();
-        assert_eq!(app.spawns.pending_trail_focus.as_deref(), Some(tab.as_str()), "hidden but live: keep waiting");
-        app.reopen_node(tab.parse().unwrap());
+        assert_eq!(app.spawns.pending_trail_focus, Some(tab), "hidden but live: keep waiting");
+        app.reopen_node(tab);
         app.poll_trail_focus();
-        assert_eq!((app.spawns.pending_trail_focus.as_deref(), app.focused.as_deref()), (None, Some(tab.as_str())));
-        app.spawns.pending_trail_focus = Some("no-such-node".to_string());
+        assert_eq!((app.spawns.pending_trail_focus, app.focused), (None, Some(tab)));
+        app.spawns.pending_trail_focus = Some(node(9999));
         app.poll_trail_focus();
         assert_eq!(app.spawns.pending_trail_focus, None, "a node that is gone is not waited for");
     }
 
     /// A live tab whose trail is a -> {b, c}, at c: Back's branch list holds b (entry 1).
-    fn tab_with_a_sibling(name: &str) -> (App, String, Peer) {
+    fn tab_with_a_sibling(name: &str) -> (App, NodeId, Peer) {
         let mut app = app_on(&session(name), 1);
         let (tab, peer) = live_tab(&mut app, ViewKind::Webview2, "https://c/");
         assert!(app.save_session());
@@ -448,14 +448,14 @@ mod tests {
         assert_eq!(h.go(Dir::Back, true, false, now), NavAction::GoBack);
         h.observe("https://a/", "", false, true, now);
         h.observe("https://c/", "", false, false, now);
-        app.nav_history.insert(tab.clone(), h);
+        app.nav_history.insert(tab, h);
         (app, tab, peer)
     }
 
     #[test]
     fn a_branch_pick_navigates_the_tab() {
         let (mut app, tab, mut peer) = tab_with_a_sibling("trail-pick");
-        app.trail_pick(&tab, 1);
+        app.trail_pick(tab, 1);
         assert!(peer.sent().iter().any(|m| matches!(m, HostToView::Navigate { url, .. } if url == "https://b/")));
     }
 
@@ -486,7 +486,7 @@ mod tests {
     #[test]
     fn alt_left_goes_back_and_alt_right_goes_forward_on_the_focused_tab() {
         let (mut app, tab, mut peer) = tab_with_a_sibling("trail-alt-keys");
-        app.focused = Some(tab.clone());
+        app.focused = Some(tab);
         shortcut_frame(&mut app, egui::Key::ArrowLeft, egui::Modifiers::NONE);
         assert!(peer.sent().is_empty(), "a plain arrow is not Back");
         shortcut_frame(&mut app, egui::Key::ArrowLeft, egui::Modifiers::ALT);
@@ -511,19 +511,19 @@ mod tests {
     #[test]
     fn a_plain_move_records_what_navigate_tab_records() {
         let (mut app, tab, _peer) = tab_with_a_sibling("trail-pick-books");
-        app.trail_pick(&tab, 1);
+        app.trail_pick(tab, 1);
         assert_eq!(app.nodes.get(&tab).and_then(|n| n.as_tab()).map(|n| n.url.as_str()), Some("https://b/"));
         assert!(app.spawns.navigated_from.contains_key(&tab), "the origin is noted");
-        assert_eq!(app.doc.mirror.url(&tab), "https://b/", "the url is edited, so it is shared");
+        assert_eq!(app.doc.mirror.url(tab), "https://b/", "the url is edited, so it is shared");
     }
 
     #[test]
     fn open_as_card_opens_a_child_tab_and_leaves_the_trail() {
         let (mut app, tab, _peer) = tab_with_a_sibling("trail-promote");
         let before = app.nav_history[&tab].branches(Dir::Back);
-        app.open_branch_as_card(&tab, 1, None);
+        app.open_branch_as_card(tab, 1, None);
         let spawn = &app.test_spawns.last().unwrap().0;
-        assert_eq!((spawn.url.as_str(), spawn.parent.as_deref()), ("https://b/", Some(tab.as_str())));
+        assert_eq!((spawn.url.as_str(), spawn.parent), ("https://b/", Some(tab)));
         assert_eq!(app.nav_history[&tab].branches(Dir::Back), before);
     }
 
@@ -545,7 +545,7 @@ mod tests {
     }
 
     /// One frame of the Back popup over `tab`; returns what it drew.
-    fn popup_run(app: &mut App, tab: &str, events: Vec<egui::Event>) -> egui::FullOutput {
+    fn popup_run(app: &mut App, tab: NodeId, events: Vec<egui::Event>) -> egui::FullOutput {
         let ctx = app.egui_ctx.clone();
         let input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0))),
@@ -563,11 +563,11 @@ mod tests {
         app.egui_ctx.memory(|m| m.area_rect(id)).expect("the popup's area").min + egui::vec2(5.0, 5.0)
     }
 
-    fn open_back_popup(name: &str) -> (App, String, Peer) {
+    fn open_back_popup(name: &str) -> (App, NodeId, Peer) {
         let (mut app, tab, peer) = tab_with_a_sibling(name);
         app.menus.open_popup = Some(AnchoredPopup::BackBranches);
         for _ in 0..3 {
-            popup_run(&mut app, &tab, vec![]); // measure, draw, settle the recentred camera
+            popup_run(&mut app, tab, vec![]); // measure, draw, settle the recentred camera
         }
         (app, tab, peer)
     }
@@ -584,7 +584,7 @@ mod tests {
     #[test]
     fn the_branch_popup_draws_the_strips_cards_edges_and_grid() {
         let (mut app, tab, _peer) = open_back_popup("trail-popup-draw");
-        let output = popup_run(&mut app, &tab, vec![]);
+        let output = popup_run(&mut app, tab, vec![]);
         let shapes = leaves(&output);
         let accent = egui::epaint::ColorMode::Solid(crate::theme::ACCENT);
         let curves = shapes.iter().filter(|s| matches!(s, egui::Shape::CubicBezier(_))).count();
@@ -594,7 +594,7 @@ mod tests {
         assert!(curves > 0, "the tree's lines are the level's bezier edges");
         assert!(on_path > 0, "the path to the cursor is drawn in the accent, as in the strip");
         assert!(dots > 0, "the graph's dot grid is behind the tree");
-        let cards = crate::trail_strip::trail_cards(&app, &tab, egui::Pos2::ZERO);
+        let cards = crate::trail_strip::trail_cards(&app, tab, egui::Pos2::ZERO);
         let id = cards[1].id.widget();
         assert!(app.egui_ctx.read_response(id).is_some(), "a page is a real graph card");
         assert_eq!(app.menus.open_popup, Some(AnchoredPopup::BackBranches), "no click: it stays open");
@@ -603,12 +603,12 @@ mod tests {
     #[test]
     fn clicking_a_page_moves_the_tab_and_closes_the_popup() {
         let (mut app, tab, mut peer) = open_back_popup("trail-popup-click");
-        let cards = crate::trail_strip::trail_cards(&app, &tab, egui::Pos2::ZERO);
+        let cards = crate::trail_strip::trail_cards(&app, tab, egui::Pos2::ZERO);
         let camera = app.menus.trail_canvas.as_ref().expect("the popup's camera").1.rect;
         // Scale 1 (the viewport is the camera's size): screen = scene origin + (world - camera origin).
         let at = scene_min(&app) + (cards[1].rect.center() - camera.min);
-        popup_run(&mut app, &tab, vec![egui::Event::PointerMoved(at)]);
-        popup_run(&mut app, &tab, vec![primary(at, true), primary(at, false)]);
+        popup_run(&mut app, tab, vec![egui::Event::PointerMoved(at)]);
+        popup_run(&mut app, tab, vec![primary(at, true), primary(at, false)]);
         assert_eq!(app.menus.open_popup, None, "a pick closes the popup");
         assert!(peer.sent().iter().any(|m| matches!(m, HostToView::Navigate { url, .. } if url == "https://b/")));
         // The engine reports the arrival: the cursor is at b, so c is now its sibling.
@@ -622,12 +622,12 @@ mod tests {
         let (mut app, tab, _peer) = open_back_popup("trail-popup-pan");
         let before = app.menus.trail_canvas.as_ref().unwrap().1.rect.center();
         let start = scene_min(&app) + egui::vec2(3.0, 3.0); // inside the 8-point padding: empty canvas
-        popup_run(&mut app, &tab, vec![egui::Event::PointerMoved(start), primary(start, true)]);
+        popup_run(&mut app, tab, vec![egui::Event::PointerMoved(start), primary(start, true)]);
         for step in 1..=4 {
             let at = start + egui::vec2(8.0 * step as f32, 0.0);
-            popup_run(&mut app, &tab, vec![egui::Event::PointerMoved(at)]);
+            popup_run(&mut app, tab, vec![egui::Event::PointerMoved(at)]);
         }
-        popup_run(&mut app, &tab, vec![primary(start + egui::vec2(32.0, 0.0), false)]);
+        popup_run(&mut app, tab, vec![primary(start + egui::vec2(32.0, 0.0), false)]);
         let after = app.menus.trail_canvas.as_ref().unwrap().1.rect.center();
         assert!(after.x < before.x - 10.0, "dragging right pans the view left: {before:?} -> {after:?}");
         assert!(app.interaction.dragging.is_none(), "nothing was carried");
@@ -637,14 +637,14 @@ mod tests {
     fn dragging_from_a_page_pans_the_popup_and_does_not_carry_it() {
         let (mut app, tab, _peer) = open_back_popup("trail-popup-pan-page");
         let before = app.menus.trail_canvas.as_ref().unwrap().1.rect.center();
-        let start = page_centre(&app, &tab, 1);
-        popup_run(&mut app, &tab, vec![egui::Event::PointerMoved(start), primary(start, true)]);
+        let start = page_centre(&app, tab, 1);
+        popup_run(&mut app, tab, vec![egui::Event::PointerMoved(start), primary(start, true)]);
         for step in 1..=4 {
             let at = start + egui::vec2(8.0 * step as f32, 0.0);
-            popup_run(&mut app, &tab, vec![egui::Event::PointerMoved(at)]);
+            popup_run(&mut app, tab, vec![egui::Event::PointerMoved(at)]);
             assert!(app.interaction.dragging.is_none(), "no page is carried while dragging");
         }
-        popup_run(&mut app, &tab, vec![primary(start + egui::vec2(32.0, 0.0), false)]);
+        popup_run(&mut app, tab, vec![primary(start + egui::vec2(32.0, 0.0), false)]);
         let after = app.menus.trail_canvas.as_ref().unwrap().1.rect.center();
         assert!(after.x < before.x - 10.0, "a drag that starts on a page pans: {before:?} -> {after:?}");
     }
@@ -654,16 +654,16 @@ mod tests {
         let (mut app, tab, _peer) = open_back_popup("trail-popup-recentre");
         let first = app.menus.trail_canvas.as_ref().unwrap().1.rect;
         app.menus.trail_canvas.as_mut().unwrap().1.rect = first.translate(egui::vec2(40.0, 0.0)); // the user panned
-        popup_run(&mut app, &tab, vec![]);
+        popup_run(&mut app, tab, vec![]);
         assert_ne!(
             app.menus.trail_canvas.as_ref().unwrap().1.rect.center(),
             first.center(),
             "later frames keep the pan"
         );
         app.menus.open_popup = None;
-        popup_run(&mut app, &tab, vec![]);
+        popup_run(&mut app, tab, vec![]);
         app.menus.open_popup = Some(AnchoredPopup::BackBranches);
-        popup_run(&mut app, &tab, vec![]);
+        popup_run(&mut app, tab, vec![]);
         assert_eq!(app.menus.trail_canvas.as_ref().unwrap().1.rect, first, "reopened: back to the start");
     }
 
@@ -671,10 +671,10 @@ mod tests {
     fn a_one_page_trail_opens_a_small_valid_popup() {
         let mut app = app_on(&session("trail-popup-one"), 1);
         let (tab, _peer) = live_tab(&mut app, ViewKind::Webview2, "https://a/");
-        app.nav_history.insert(tab.clone(), NavHistory::visited(&["https://a/"]));
+        app.nav_history.insert(tab, NavHistory::visited(&["https://a/"]));
         app.menus.open_popup = Some(AnchoredPopup::BackBranches);
         for _ in 0..3 {
-            popup_run(&mut app, &tab, vec![]);
+            popup_run(&mut app, tab, vec![]);
         }
         let id = egui::Id::new(("trail_branches_popup", AnchoredPopup::BackBranches));
         let rect = app.egui_ctx.memory(|m| m.area_rect(id)).expect("the popup's area");
@@ -687,15 +687,15 @@ mod tests {
         let (tab, _peer) = live_tab(&mut app, ViewKind::Webview2, "https://0/");
         let urls: Vec<String> = (0..12).map(|i| format!("https://example.test/page-{i}")).collect();
         let refs: Vec<&str> = urls.iter().map(String::as_str).collect();
-        app.nav_history.insert(tab.clone(), NavHistory::visited(&refs));
+        app.nav_history.insert(tab, NavHistory::visited(&refs));
         app.menus.open_popup = Some(AnchoredPopup::BackBranches);
         for _ in 0..3 {
-            popup_run(&mut app, &tab, vec![]);
+            popup_run(&mut app, tab, vec![]);
         }
         let id = egui::Id::new(("trail_branches_popup", AnchoredPopup::BackBranches));
         let rect = app.egui_ctx.memory(|m| m.area_rect(id)).expect("the popup's area");
         assert!(rect.width() <= 480.0 + 20.0 && rect.height() <= 240.0 + 20.0, "{rect:?}");
-        let cards = crate::trail_strip::trail_cards(&app, &tab, egui::Pos2::ZERO);
+        let cards = crate::trail_strip::trail_cards(&app, tab, egui::Pos2::ZERO);
         let camera = app.menus.trail_canvas.as_ref().unwrap().1.rect;
         assert!(camera.contains(cards.last().unwrap().rect.center()), "the cursor page (the last) is in view");
         assert!(!camera.contains(cards[0].rect.center()), "the first page is off screen");
@@ -704,19 +704,19 @@ mod tests {
     #[test]
     fn the_trail_changing_under_an_open_popup_redraws_its_cards() {
         let (mut app, tab, _peer) = open_back_popup("trail-popup-changes");
-        let old = crate::trail_strip::trail_cards(&app, &tab, egui::Pos2::ZERO);
+        let old = crate::trail_strip::trail_cards(&app, tab, egui::Pos2::ZERO);
         let old_page = old[1].id.widget();
         assert!(app.egui_ctx.read_response(old_page).is_some(), "the old trail's page is registered");
         app.menus.trail_menu = Some((old[1].id, egui::pos2(50.0, 50.0)));
         // A replaced history is a new trail: its slot is new, so every old id names nothing.
         let urls: Vec<String> = (0..52).map(|i| format!("https://example.test/p{i}")).collect();
         let refs: Vec<&str> = urls.iter().map(String::as_str).collect();
-        app.nav_history.insert(tab.clone(), NavHistory::visited(&refs));
-        let cards = crate::trail_strip::trail_cards(&app, &tab, egui::Pos2::ZERO);
+        app.nav_history.insert(tab, NavHistory::visited(&refs));
+        let cards = crate::trail_strip::trail_cards(&app, tab, egui::Pos2::ZERO);
         assert_eq!(cards.len(), 50);
         assert_ne!(cards[1].id, old[1].id, "the new trail has its own slot, so the old ids are retired");
         for _ in 0..2 {
-            popup_run(&mut app, &tab, vec![]);
+            popup_run(&mut app, tab, vec![]);
         }
         let drawn = |c: &&crate::level::CardEntry| app.egui_ctx.read_response(c.id.widget()).is_some();
         assert!(cards.iter().any(|c| drawn(&c)), "the new trail's pages are registered");
@@ -746,7 +746,7 @@ mod tests {
         vec![egui::Event::PointerMoved(at), secondary(true), secondary(false)]
     }
 
-    fn page_centre(app: &App, tab: &str, entry: usize) -> egui::Pos2 {
+    fn page_centre(app: &App, tab: NodeId, entry: usize) -> egui::Pos2 {
         let cards = crate::trail_strip::trail_cards(app, tab, egui::Pos2::ZERO);
         let camera = app.menus.trail_canvas.as_ref().expect("the popup's camera").1.rect;
         scene_min(app) + (cards[entry].rect.center() - camera.min)
@@ -756,13 +756,13 @@ mod tests {
     fn a_right_click_on_a_page_opens_its_menu_in_tab_view_and_keeps_the_popup_open() {
         let (mut app, tab, _peer) = open_back_popup("trail-popup-menu");
         app.view_mode = crate::ViewMode::Item; // the popup lives in Tab view, where no strip hosts the menu
-        let at = page_centre(&app, &tab, 1);
-        popup_run(&mut app, &tab, vec![egui::Event::PointerMoved(at)]);
-        popup_run(&mut app, &tab, right_click(at));
+        let at = page_centre(&app, tab, 1);
+        popup_run(&mut app, tab, vec![egui::Event::PointerMoved(at)]);
+        popup_run(&mut app, tab, right_click(at));
         let (id, _) = app.menus.trail_menu.expect("the page's menu is open");
         assert!(crate::trail_strip::is_page_id(id), "{id}");
         for _ in 0..3 {
-            popup_run(&mut app, &tab, vec![]);
+            popup_run(&mut app, tab, vec![]);
         }
         assert!(app.menus.trail_menu.is_some(), "the popup keeps the menu alive in Tab view");
         assert_eq!(app.menus.open_popup, Some(AnchoredPopup::BackBranches));
@@ -772,17 +772,17 @@ mod tests {
     fn a_click_that_closes_the_menu_from_outside_does_not_also_close_the_popup() {
         let (mut app, tab, _peer) = open_back_popup("trail-popup-menu-outside");
         app.view_mode = crate::ViewMode::Item;
-        let at = page_centre(&app, &tab, 1);
-        popup_run(&mut app, &tab, vec![egui::Event::PointerMoved(at)]);
-        popup_run(&mut app, &tab, right_click(at));
+        let at = page_centre(&app, tab, 1);
+        popup_run(&mut app, tab, vec![egui::Event::PointerMoved(at)]);
+        popup_run(&mut app, tab, right_click(at));
         for _ in 0..2 {
-            popup_run(&mut app, &tab, vec![]);
+            popup_run(&mut app, tab, vec![]);
         }
         let away = egui::pos2(700.0, 500.0);
-        popup_run(&mut app, &tab, vec![egui::Event::PointerMoved(away), primary(away, true), primary(away, false)]);
+        popup_run(&mut app, tab, vec![egui::Event::PointerMoved(away), primary(away, true), primary(away, false)]);
         assert!(app.menus.trail_menu.is_none(), "the click closed the menu");
         assert_eq!(app.menus.open_popup, Some(AnchoredPopup::BackBranches), "and only the menu");
-        popup_run(&mut app, &tab, vec![egui::Event::PointerMoved(away), primary(away, true), primary(away, false)]);
+        popup_run(&mut app, tab, vec![egui::Event::PointerMoved(away), primary(away, true), primary(away, false)]);
         assert_eq!(app.menus.open_popup, None, "the next click outside closes the popup");
     }
 
@@ -800,11 +800,11 @@ mod tests {
     fn the_page_menu_draws_over_the_popups_pages() {
         let (mut app, tab, _peer) = open_back_popup("trail-popup-layers");
         app.view_mode = crate::ViewMode::Item;
-        let at = page_centre(&app, &tab, 1);
-        popup_run(&mut app, &tab, vec![egui::Event::PointerMoved(at)]);
-        popup_run(&mut app, &tab, right_click(at));
+        let at = page_centre(&app, tab, 1);
+        popup_run(&mut app, tab, vec![egui::Event::PointerMoved(at)]);
+        popup_run(&mut app, tab, right_click(at));
         for _ in 0..2 {
-            popup_run(&mut app, &tab, vec![]);
+            popup_run(&mut app, tab, vec![]);
         }
         let top = app.egui_ctx.layer_id_at(at + egui::vec2(6.0, 6.0)).expect("a layer under the menu");
         assert_eq!(top.id, egui::Id::new("trail_page_menu"), "the menu is the topmost layer, not the scene: {top:?}");
@@ -814,15 +814,15 @@ mod tests {
     fn a_scroll_over_the_popup_moves_its_camera() {
         let (mut app, tab, _peer) = open_back_popup("trail-popup-scroll");
         let before = app.menus.trail_canvas.as_ref().unwrap().1.rect;
-        let at = page_centre(&app, &tab, 1);
-        popup_run(&mut app, &tab, vec![egui::Event::PointerMoved(at)]);
+        let at = page_centre(&app, tab, 1);
+        popup_run(&mut app, tab, vec![egui::Event::PointerMoved(at)]);
         let wheel = egui::Event::MouseWheel {
             unit: egui::MouseWheelUnit::Point,
             phase: egui::TouchPhase::Move,
             delta: egui::vec2(0.0, -30.0),
             modifiers: egui::Modifiers::NONE,
         };
-        popup_run(&mut app, &tab, vec![wheel]);
+        popup_run(&mut app, tab, vec![wheel]);
         let after = app.menus.trail_canvas.as_ref().unwrap().1.rect;
         assert_ne!(after, before, "the popup took the scroll");
     }
@@ -830,13 +830,13 @@ mod tests {
     #[test]
     fn closing_the_popup_over_a_hovered_page_leaves_no_stale_hover() {
         let (mut app, tab, _peer) = open_back_popup("trail-popup-hover");
-        let at = page_centre(&app, &tab, 1);
-        popup_run(&mut app, &tab, vec![egui::Event::PointerMoved(at)]);
-        popup_run(&mut app, &tab, vec![]);
+        let at = page_centre(&app, tab, 1);
+        popup_run(&mut app, tab, vec![egui::Event::PointerMoved(at)]);
+        popup_run(&mut app, tab, vec![]);
         assert!(app.interaction.hovered.is_some_and(crate::trail_strip::is_page_id), "hovering");
         app.menus.open_popup = None;
         for _ in 0..3 {
-            popup_run(&mut app, &tab, vec![]);
+            popup_run(&mut app, tab, vec![]);
         }
         assert_eq!(app.interaction.hovered, None, "the closed popup's page is no longer hovered");
     }
@@ -857,9 +857,9 @@ mod tests {
     fn escape_closes_an_open_page_menu_and_leaves_the_popup() {
         let (mut app, tab, _peer) = open_back_popup("trail-popup-escape");
         app.view_mode = crate::ViewMode::Item;
-        let at = page_centre(&app, &tab, 1);
-        popup_run(&mut app, &tab, vec![egui::Event::PointerMoved(at)]);
-        popup_run(&mut app, &tab, right_click(at));
+        let at = page_centre(&app, tab, 1);
+        popup_run(&mut app, tab, vec![egui::Event::PointerMoved(at)]);
+        popup_run(&mut app, tab, right_click(at));
         ui_frame(&mut app, vec![key(egui::Key::Escape)]); // the full UI hosts no popup here: this tests only build_ui's guard
         assert!(app.menus.trail_menu.is_none(), "Escape closed the menu");
         assert_eq!(app.menus.open_popup, Some(AnchoredPopup::BackBranches), "and only the menu");
@@ -871,7 +871,7 @@ mod tests {
     fn a_page_menu_nothing_draws_is_dropped() {
         let (mut app, tab, _peer) = open_back_popup("trail-popup-stale-menu");
         app.view_mode = crate::ViewMode::Item;
-        let id = crate::trail_strip::trail_cards(&app, &tab, egui::Pos2::ZERO)[1].id;
+        let id = crate::trail_strip::trail_cards(&app, tab, egui::Pos2::ZERO)[1].id;
         app.menus.open_popup = None;
         app.menus.trail_menu = Some((id, egui::pos2(50.0, 50.0)));
         ui_frame(&mut app, vec![]);
@@ -883,11 +883,11 @@ mod tests {
         let (mut app, tab) = long_trail_popup("trail-popup-recentre-epoch");
         let urls: Vec<String> = (0..52).map(|i| format!("https://example.test/p{i}")).collect();
         let refs: Vec<&str> = urls.iter().map(String::as_str).collect();
-        app.nav_history.insert(tab.clone(), NavHistory::visited(&refs));
+        app.nav_history.insert(tab, NavHistory::visited(&refs));
         for _ in 0..3 {
-            popup_run(&mut app, &tab, vec![]);
+            popup_run(&mut app, tab, vec![]);
         }
-        let cards = crate::trail_strip::trail_cards(&app, &tab, egui::Pos2::ZERO);
+        let cards = crate::trail_strip::trail_cards(&app, tab, egui::Pos2::ZERO);
         let camera = app.menus.trail_canvas.as_ref().unwrap().1.rect;
         assert!(camera.contains(cards.last().unwrap().rect.center()), "the cursor page is in view again");
     }
@@ -896,20 +896,20 @@ mod tests {
         egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE }
     }
 
-    fn long_trail_popup(name: &str) -> (App, String) {
+    fn long_trail_popup(name: &str) -> (App, NodeId) {
         let mut app = app_on(&session(name), 1);
         let (tab, _peer) = live_tab(&mut app, ViewKind::Webview2, "https://0/");
         let urls: Vec<String> = (0..12).map(|i| format!("https://example.test/page-{i}")).collect();
         let refs: Vec<&str> = urls.iter().map(String::as_str).collect();
-        app.nav_history.insert(tab.clone(), NavHistory::visited(&refs));
+        app.nav_history.insert(tab, NavHistory::visited(&refs));
         app.menus.open_popup = Some(AnchoredPopup::BackBranches);
         for _ in 0..3 {
-            popup_run(&mut app, &tab, vec![]);
+            popup_run(&mut app, tab, vec![]);
         }
         (app, tab)
     }
 
-    fn card_id(app: &App, tab: &str, entry: usize) -> egui::Id {
+    fn card_id(app: &App, tab: NodeId, entry: usize) -> egui::Id {
         let cards = crate::trail_strip::trail_cards(app, tab, egui::Pos2::ZERO);
         cards[entry].id.widget()
     }
@@ -917,17 +917,17 @@ mod tests {
     #[test]
     fn tab_steps_through_the_popups_pages_and_pans_an_off_screen_one_into_view() {
         let (mut app, tab) = long_trail_popup("trail-popup-tab");
-        let (first, second) = (card_id(&app, &tab, 0), card_id(&app, &tab, 1));
+        let (first, second) = (card_id(&app, tab, 0), card_id(&app, tab, 1));
         app.egui_ctx.memory_mut(|m| m.request_focus(first));
-        popup_run(&mut app, &tab, vec![]);
+        popup_run(&mut app, tab, vec![]);
         assert!(app.egui_ctx.memory(|m| m.has_focus(first)), "the first page holds focus");
-        popup_run(&mut app, &tab, vec![key(egui::Key::Tab)]);
+        popup_run(&mut app, tab, vec![key(egui::Key::Tab)]);
         assert!(app.egui_ctx.memory(|m| m.has_focus(second)), "Tab moved to the next page");
-        popup_run(&mut app, &tab, vec![]);
+        popup_run(&mut app, tab, vec![]);
         let camera = &app.menus.trail_canvas.as_ref().unwrap().1;
         assert!(
             camera.tween.is_some()
-                || camera.rect.contains(crate::trail_strip::trail_cards(&app, &tab, egui::Pos2::ZERO)[1].rect.center()),
+                || camera.rect.contains(crate::trail_strip::trail_cards(&app, tab, egui::Pos2::ZERO)[1].rect.center()),
             "the off-screen page is panned into view"
         );
     }
@@ -936,9 +936,9 @@ mod tests {
     fn enter_on_a_focused_page_picks_it_and_shift_f10_opens_its_menu() {
         let (mut app, tab) = long_trail_popup("trail-popup-enter");
         app.view_mode = crate::ViewMode::Item;
-        let second = card_id(&app, &tab, 1);
+        let second = card_id(&app, tab, 1);
         app.egui_ctx.memory_mut(|m| m.request_focus(second));
-        popup_run(&mut app, &tab, vec![]);
+        popup_run(&mut app, tab, vec![]);
         let shift_f10 = egui::Event::Key {
             key: egui::Key::F10,
             physical_key: None,
@@ -946,10 +946,10 @@ mod tests {
             repeat: false,
             modifiers: egui::Modifiers::SHIFT,
         };
-        popup_run(&mut app, &tab, vec![shift_f10]);
+        popup_run(&mut app, tab, vec![shift_f10]);
         assert!(app.menus.trail_menu.is_some(), "Shift+F10 opens the page menu");
         app.menus.trail_menu = None;
-        popup_run(&mut app, &tab, vec![key(egui::Key::Enter)]);
+        popup_run(&mut app, tab, vec![key(egui::Key::Enter)]);
         assert_eq!(app.menus.open_popup, None, "Enter picked the page and closed the popup");
     }
 }

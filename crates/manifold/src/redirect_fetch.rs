@@ -12,6 +12,7 @@
 //! goes through.
 
 use crate::content::{self, ContentKind};
+use crate::store::model::NodeId;
 use crate::WebBody;
 use std::collections::HashSet;
 use std::io::Read;
@@ -22,15 +23,15 @@ use std::time::Duration;
 /// What a finished fetch is for.
 pub enum FetchTarget {
     /// Convert this tab, if it still shows `url`.
-    Tab(String),
+    Tab(NodeId),
     /// Reload this node's file (Refresh, or a missing file).
-    Node(String),
+    Node(NodeId),
 }
 
 pub struct FetchJob {
     pub target: FetchTarget,
     /// The node the content becomes: names the saved file.
-    pub node_id: String,
+    pub node_id: NodeId,
     pub url: String,
     pub kind: ContentKind,
 }
@@ -51,11 +52,11 @@ pub struct RedirectFetcher {
     rx: mpsc::Receiver<FetchResult>,
     /// Nodes with a fetch running or waiting: a second Refresh (or a Retry racing a
     /// restore-time refetch) is dropped instead of writing the same file.
-    in_flight: HashSet<String>,
+    in_flight: HashSet<NodeId>,
     /// Jobs beyond `MAX_REDIRECT_FETCHES` wait here.
     throttle: crate::net::Throttle<FetchJob>,
     /// `fetch`; tests swap in a stub.
-    fetch: fn(&Path, &str, &str, ContentKind) -> Option<WebBody>,
+    fetch: fn(&Path, NodeId, &str, ContentKind) -> Option<WebBody>,
 }
 
 impl RedirectFetcher {
@@ -69,7 +70,7 @@ impl RedirectFetcher {
     /// Fetches `job.url` on a background thread, or queues it behind `MAX_REDIRECT_FETCHES` running
     /// ones. `false` (and nothing done) when `job.node_id` is already being fetched or waiting.
     pub fn request(&mut self, job: FetchJob) -> bool {
-        if !self.in_flight.insert(job.node_id.clone()) {
+        if !self.in_flight.insert(job.node_id) {
             return false;
         }
         if let Some(job) = self.throttle.admit(job) {
@@ -84,7 +85,7 @@ impl RedirectFetcher {
             // A panic still reports (as a failure), so `tick` frees the node and the slot;
             // the panic hook has already printed it.
             let body = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                dir.as_deref().and_then(|d| fetch(d, &job.node_id, &job.url, job.kind))
+                dir.as_deref().and_then(|d| fetch(d, job.node_id, &job.url, job.kind))
             }))
             .unwrap_or(None);
             let _ = tx.send(FetchResult { job, body });
@@ -114,7 +115,7 @@ impl RedirectFetcher {
 /// `file:` URL on another host is refused (`is_unc_file_url`). A web
 /// fetch's failure is logged with the URL's origin only: a path or query
 /// can carry a token.
-pub fn fetch(dir: &Path, node_id: &str, url: &str, kind: ContentKind) -> Option<WebBody> {
+pub fn fetch(dir: &Path, node_id: NodeId, url: &str, kind: ContentKind) -> Option<WebBody> {
     let limit = max_bytes(kind);
     let bytes = match content::file_url_path(url) {
         Some(_) if is_unc_file_url(url) => {
@@ -182,7 +183,7 @@ fn max_bytes(kind: ContentKind) -> u64 {
 /// Written to a temp file first, fsynced and renamed over (`store::atomic`),
 /// so a reader never sees half a file. The temp is unique per call, so two
 /// fetches for one node never share it.
-pub fn save(dir: &Path, node_id: &str, kind: ContentKind, bytes: Vec<u8>) -> Option<WebBody> {
+pub fn save(dir: &Path, node_id: NodeId, kind: ContentKind, bytes: Vec<u8>) -> Option<WebBody> {
     if !content::passes(kind, &bytes) {
         return None;
     }
@@ -199,6 +200,7 @@ pub fn save(dir: &Path, node_id: &str, kind: ContentKind, bytes: Vec<u8>) -> Opt
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::card_id::testutil::node;
     use crate::content::{path_file_url, ContentKind};
     use crate::WebBody;
 
@@ -207,7 +209,7 @@ mod tests {
     static RELEASE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
     /// A stub fetch that counts how many run at once and holds until released.
-    fn gated_fetch(_: &Path, _: &str, _: &str, _: ContentKind) -> Option<WebBody> {
+    fn gated_fetch(_: &Path, _: NodeId, _: &str, _: ContentKind) -> Option<WebBody> {
         use std::sync::atomic::Ordering::SeqCst;
         let now = RUNNING.fetch_add(1, SeqCst) + 1;
         PEAK.fetch_max(now, SeqCst);
@@ -227,10 +229,10 @@ mod tests {
         RELEASE.store(false, SeqCst);
         let mut fetcher = RedirectFetcher::new(Some(crate::store::testutil::temp_dir("redirect_cap")));
         fetcher.fetch = gated_fetch;
-        for n in 0..10 {
+        for n in 0..10u64 {
             let job = FetchJob {
-                target: FetchTarget::Node(format!("7-{n}")),
-                node_id: format!("7-{n}"),
+                target: FetchTarget::Node(node(n)),
+                node_id: node(n),
                 url: "https://example.invalid/x.pdf".into(),
                 kind: ContentKind::Pdf,
             };
@@ -258,17 +260,17 @@ mod tests {
     #[test]
     fn saves_checked_content_by_node_id() {
         let dir = crate::store::testutil::temp_dir("redirect_save");
-        match save(&dir, "7-1", ContentKind::Json, br#"{"a": 1}"#.to_vec()) {
+        match save(&dir, node(1), ContentKind::Json, br#"{"a": 1}"#.to_vec()) {
             Some(WebBody::File { kind: ContentKind::Json, path }) => {
-                assert_eq!(std::path::Path::new(&path), dir.join("7-1.json"));
+                assert_eq!(std::path::Path::new(&path), dir.join(format!("{}.json", node(1))));
                 assert_eq!(std::fs::read(&path).unwrap(), br#"{"a": 1}"#);
             }
             _ => panic!("expected a saved JSON file"),
         }
-        assert!(save(&dir, "7-2", ContentKind::Json, b"{broken".to_vec()).is_none());
-        assert!(!dir.join("7-2.json").exists());
-        assert!(matches!(save(&dir, "7-3", ContentKind::Note, b"hi".to_vec()), Some(WebBody::Text(t)) if t == "hi"));
-        assert!(!dir.join("7-3.txt").exists(), "a note's text isn't saved");
+        assert!(save(&dir, node(2), ContentKind::Json, b"{broken".to_vec()).is_none());
+        assert!(!dir.join(format!("{}.json", node(2))).exists());
+        assert!(matches!(save(&dir, node(3), ContentKind::Note, b"hi".to_vec()), Some(WebBody::Text(t)) if t == "hi"));
+        assert!(!dir.join(format!("{}.txt", node(3))).exists(), "a note's text isn't saved");
     }
 
     #[test]
@@ -277,9 +279,9 @@ mod tests {
         let src = dir.join("in put.pdf");
         std::fs::write(&src, b"%PDF-1.4\n").unwrap();
         let out = dir.join("out");
-        let body = fetch(&out, "9-1", &path_file_url(&src), ContentKind::Pdf);
+        let body = fetch(&out, node(4), &path_file_url(&src), ContentKind::Pdf);
         assert!(matches!(body, Some(WebBody::File { kind: ContentKind::Pdf, .. })));
-        assert!(out.join("9-1.pdf").exists(), "the content dir is created on demand");
+        assert!(out.join(format!("{}.pdf", node(4))).exists(), "the content dir is created on demand");
         let tmp = std::fs::read_dir(&out).unwrap().flatten().any(|e| e.path().extension().is_some_and(|x| x == "tmp"));
         assert!(!tmp, "saved through a renamed temp file");
     }
@@ -289,9 +291,9 @@ mod tests {
         let dir = crate::store::testutil::temp_dir("redirect_file_limit");
         let src = dir.join("long.txt");
         std::fs::write(&src, vec![b'a'; content::NOTE_MAX_BYTES + 1]).unwrap();
-        assert!(fetch(&dir, "9-2", &path_file_url(&src), ContentKind::Note).is_none());
+        assert!(fetch(&dir, node(5), &path_file_url(&src), ContentKind::Note).is_none());
         std::fs::write(&src, vec![b'a'; content::NOTE_MAX_BYTES]).unwrap();
-        assert!(matches!(fetch(&dir, "9-2", &path_file_url(&src), ContentKind::Note), Some(WebBody::Text(_))));
+        assert!(matches!(fetch(&dir, node(5), &path_file_url(&src), ContentKind::Note), Some(WebBody::Text(_))));
     }
 
     #[cfg(windows)] // the host forms decode to UNC paths on Windows only
@@ -310,8 +312,8 @@ mod tests {
         // `None`: every fetch fails at once, without the network.
         let mut fetcher = RedirectFetcher::new(None);
         let job = || FetchJob {
-            target: FetchTarget::Node("7-1".into()),
-            node_id: "7-1".into(),
+            target: FetchTarget::Node(node(1)),
+            node_id: node(1),
             url: "https://example.invalid/x.pdf".into(),
             kind: ContentKind::Pdf,
         };
@@ -334,8 +336,8 @@ mod tests {
         let mut fetcher = RedirectFetcher::new(Some(crate::store::testutil::temp_dir("redirect_panic")));
         fetcher.fetch = |_, _, _, _| panic!("stub fetch panics (expected in this test)");
         let job = || FetchJob {
-            target: FetchTarget::Node("7-2".into()),
-            node_id: "7-2".into(),
+            target: FetchTarget::Node(node(2)),
+            node_id: node(2),
             url: "https://example.invalid/x.pdf".into(),
             kind: ContentKind::Pdf,
         };

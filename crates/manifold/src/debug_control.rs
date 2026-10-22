@@ -132,9 +132,15 @@ fn key_job(key: egui::Key, modifiers: egui::Modifiers) -> Option<Parsed> {
     job(move |app, _| app.debug.debug_input_events.push(debug_key_event(key, modifiers)))
 }
 
-/// A direct-call job on a node id given as the whole argument.
-fn with_id<R>(rest: &str, run: impl FnOnce(&mut App, &str) -> R + Send + 'static) -> Option<Parsed> {
-    with_text(rest, move |app, id| run(app, &id))
+/// A direct-call job on a node id given as the whole argument; an argument that is no node id is a usage error.
+fn with_id<R>(rest: &str, run: impl FnOnce(&mut App, NodeId) -> R + Send + 'static) -> Option<Parsed> {
+    let id = rest.parse().ok()?;
+    job(move |app, _| run(app, id))
+}
+
+/// The next word as a node id.
+fn id_word<'a>(parts: &mut impl Iterator<Item = &'a str>) -> Option<NodeId> {
+    parts.next()?.parse().ok()
 }
 
 fn on_off(word: &str) -> Option<bool> {
@@ -200,9 +206,9 @@ fn parse_click(rest: &str) -> Option<((f64, f64), MouseButton, bool)> {
 }
 
 /// `MOVENODE id x y`: finite coordinates and nothing after them.
-fn parse_move_node(rest: &str) -> Option<(String, f32, f32)> {
+fn parse_move_node(rest: &str) -> Option<(NodeId, f32, f32)> {
     let mut parts = rest.split_whitespace();
-    let id = parts.next()?.to_string();
+    let id = id_word(&mut parts)?;
     let mut coord = || parts.next()?.parse::<f32>().ok().filter(|v| v.is_finite());
     let (x, y) = (coord()?, coord()?);
     parts.next().is_none().then_some((id, x, y))
@@ -214,20 +220,21 @@ fn parse_zoom_pct(rest: &str) -> Option<f32> {
 }
 
 /// `RENAMEGROUP [id name]`: `Some(None)` alone (F2), `Some(Some((id, name)))` with both, `None` for an id with no name.
-fn parse_rename(rest: &str) -> Option<Option<(String, String)>> {
+fn parse_rename(rest: &str) -> Option<Option<(NodeId, String)>> {
     if rest.is_empty() {
         return Some(None);
     }
-    let (id, name) = split_id(rest);
+    let (id, name) = split_id(rest)?;
     (!name.is_empty()).then(|| Some((id, name.to_string())))
 }
 
 /// `USEJAR <id> <jar|none>`.
-fn parse_use_jar(rest: &str) -> Option<(String, Option<String>)> {
+fn parse_use_jar(rest: &str) -> Option<(NodeId, Option<NodeId>)> {
     let mut parts = rest.split_whitespace();
-    let from = parts.next()?.to_string();
+    let from = id_word(&mut parts)?;
     let jar = parts.next()?;
-    Some((from, (!jar.eq_ignore_ascii_case("none")).then(|| jar.to_string())))
+    let jar = if jar.eq_ignore_ascii_case("none") { None } else { Some(jar.parse().ok()?) };
+    Some((from, jar))
 }
 
 /// `WAITTABS`/`WAITIDLE`'s optional timeout: a minute by default.
@@ -242,15 +249,15 @@ fn wait_timeout(rest: &str) -> Option<std::time::Duration> {
 /// `GOBACK`/`GOFORWARD`: the focused tab's trail, one step.
 fn go(dir: Dir) -> Option<Parsed> {
     job(move |app, _| {
-        if let Some(id) = app.focused.clone() {
-            app.navigate_history(&id, dir);
+        if let Some(id) = app.focused {
+            app.navigate_history(id, dir);
         }
     })
 }
 
 /// An action on the focused tab's own view, if it is a tab with one.
 fn on_focused_tab(app: &mut App, run: impl FnOnce(&mut crate::node::TabPayload)) {
-    if let Some(id) = app.focused.clone() {
+    if let Some(id) = app.focused {
         if let Some(node) = app.nodes.get_mut(&id).and_then(|n| n.as_tab_mut()) {
             run(node);
         }
@@ -322,11 +329,11 @@ fn parse_add_file(rest: &str) -> (String, Option<(f32, f32)>) {
     (rest.to_string(), None)
 }
 
-/// `<id> <text...>` -- `rest` is trimmed and non-empty: the first word, and the rest of the line after it, trimmed
-/// (empty when there is none). The text may itself contain spaces.
-fn split_id(rest: &str) -> (String, &str) {
+/// `<id> <text...>` -- `rest` is trimmed and non-empty: the first word as a node id, and the rest of the line after
+/// it, trimmed (empty when there is none). The text may itself contain spaces.
+fn split_id(rest: &str) -> Option<(NodeId, &str)> {
     let (id, text) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
-    (id.to_string(), text.trim())
+    Some((id.parse().ok()?, text.trim()))
 }
 
 /// The command table: one row per verb, in `HELP`'s order.
@@ -445,11 +452,7 @@ const VERBS: &[Verb] = &[
     }),
     row("REOPENTAB", "Ctrl+Shift+T -- reopen the newest Recently Closed entry", |_| job(|app, _| app.reopen_closed_shortcut())),
     row("REOPENNODE id", "Reopen closed node `id`, as the Recently Closed popup does, whichever replica closed it", |rest| {
-        with_id(rest, |app, id| {
-            if !app.debug_reopen_node(id) {
-                eprintln!("REOPENNODE: {id} is not a node id; ignored");
-            }
-        })
+        with_id(rest, |app, id| app.reopen_node(id))
     }),
     row("ZOOMIN", "Ctrl+=/Ctrl++ -- zoom in", |_| job(|app, _| app.zoom_in_shortcut())),
     row("ZOOMOUT", "Ctrl+- -- zoom out", |_| job(|app, _| app.zoom_out_shortcut())),
@@ -571,7 +574,7 @@ const VERBS: &[Verb] = &[
             None => job(|app, _| app.rename_current_group_shortcut()),
             Some((id, name)) => job(move |app, _| {
                 if app.nodes.contains_key(&id) {
-                    app.commit_rename(&id, &name);
+                    app.commit_rename(id, &name);
                     app.save_session();
                 } else {
                     eprintln!("RENAMEGROUP: {id} isn't a node; ignored");
@@ -589,8 +592,8 @@ const VERBS: &[Verb] = &[
     row("DISMISSPEEK", "Escape-dismisses-peek equivalent in Graph view", |_| job(|app, _| app.dismiss_hover_peek())),
     row("EXPORTGROUP path", "Export whichever group's context menu is currently open", |rest| {
         with_text(rest, |app, path| {
-            if let Some((group_id, _)) = app.menus.node_menu.open.clone().filter(|(id, _)| app.is_container(id)) {
-                if let Some(json) = app.export_group_json(&group_id) {
+            if let Some((group_id, _)) = app.menus.node_menu.open.filter(|(id, _)| app.is_container(*id)) {
+                if let Some(json) = app.export_group_json(group_id) {
                     write_json_export(&json, std::path::Path::new(&path), "group");
                 }
             }
@@ -635,7 +638,7 @@ const VERBS: &[Verb] = &[
     // No bytes, unknown total, nothing fetched or written; a no-op with no focused tab.
     row("ADDDOWNLOAD path", "Add a download node for `path`, as if the focused tab started it", |rest| {
         with_text(rest, |app, path| {
-            if let Some(tab_id) = app.focused.clone() {
+            if let Some(tab_id) = app.focused {
                 app.insert_download_node(tab_id, path, None, None);
             }
         })
@@ -720,17 +723,17 @@ const VERBS: &[Verb] = &[
     }),
     row("MOVETOGROUP id group", "Move node `id` into the sibling group `group`, same as its \"Move into\" menu row", |rest| {
         let mut parts = rest.split_whitespace();
-        let (id, group) = (parts.next()?.to_string(), parts.next()?.to_string());
+        let (id, group) = (id_word(&mut parts)?, id_word(&mut parts)?);
         job(move |app, _| {
-            if !app.debug_move_to_group(&id, &group) {
+            if !app.debug_move_to_group(id, group) {
                 eprintln!("MOVETOGROUP: {group} isn't a sibling group of {id}; ignored");
             }
         })
     }),
     row("LINK a b", "Link card `a` to card `b`, same as `a`'s \"Link to...\" row and a click on `b`", |rest| {
         let mut parts = rest.split_whitespace();
-        let (from, to) = (parts.next()?.to_string(), parts.next()?.to_string());
-        job(move |app, _| match app.connect(crate::caps::LINK, &from, &to) {
+        let (from, to) = (id_word(&mut parts)?, id_word(&mut parts)?);
+        job(move |app, _| match app.connect(crate::caps::LINK, from, to) {
             Ok(()) => {
                 app.save_session();
             }
@@ -739,16 +742,16 @@ const VERBS: &[Verb] = &[
     }),
     row("UNLINK a b", "Remove the link between cards `a` and `b`, in either order", |rest| {
         let mut parts = rest.split_whitespace();
-        let (a, b) = (parts.next()?.to_string(), parts.next()?.to_string());
+        let (a, b) = (id_word(&mut parts)?, id_word(&mut parts)?);
         job(move |app, _| {
-            app.disconnect(crate::caps::LINK, &a, &b);
+            app.disconnect(crate::caps::LINK, a, b);
             app.save_session();
         })
     }),
     row("OPENEDFROM child parent", "Set the card `child` was opened from, same as its \"Opened from...\" row", |rest| {
         let mut parts = rest.split_whitespace();
-        let (child, parent) = (parts.next()?.to_string(), parts.next()?.to_string());
-        job(move |app, _| match app.connect(crate::caps::OPENED_FROM, &child, &parent) {
+        let (child, parent) = (id_word(&mut parts)?, id_word(&mut parts)?);
+        job(move |app, _| match app.connect(crate::caps::OPENED_FROM, child, parent) {
             Ok(()) => {
                 app.save_session();
             }
@@ -757,13 +760,10 @@ const VERBS: &[Verb] = &[
     }),
     // `text` is the rest of the line, possibly empty.
     row("SETNOTETEXT id text", "Type `text` into note `id`'s box (replacing it) and blur it, which commits and saves", |rest| {
-        if rest.is_empty() {
-            return None;
-        }
-        let (id, text) = split_id(rest);
+        let (id, text) = split_id(rest)?;
         let text = text.to_string();
         job(move |app, _| {
-            if !app.debug_set_note_text(&id, text) {
+            if !app.debug_set_note_text(id, text) {
                 eprintln!("SETNOTETEXT: {id} isn't a note; ignored");
             }
         })
@@ -771,7 +771,7 @@ const VERBS: &[Verb] = &[
     row("MOVENODE id x y", "Drag card `id` to world point (x, y) and release it there, which saves", |rest| {
         let (id, x, y) = parse_move_node(rest)?;
         job(move |app, _| {
-            if !app.debug_move_node(&id, egui::vec2(x, y)) {
+            if !app.debug_move_node(id, egui::vec2(x, y)) {
                 eprintln!("MOVENODE: no node {id}; ignored");
             }
         })
@@ -814,8 +814,8 @@ const VERBS: &[Verb] = &[
     }),
     row("SWITCHJARNOW", "The focused tab moves to its new jar now, if it is waiting to switch", |_| {
         job(|app, _| {
-            if let Some(tab) = app.focused.clone() {
-                app.switch_jar_now(&tab);
+            if let Some(tab) = app.focused {
+                app.switch_jar_now(tab);
             }
         })
     }),
@@ -830,8 +830,9 @@ const VERBS: &[Verb] = &[
     }),
     row("NEWJAR <name>", "A new jar card at the current level, as \"New Jar...\" makes (no edge)", |rest| {
         with_text(rest, |app, name| {
-            // `placement` jitters by the string it is given and leaves a JSON level first, as a new card does.
-            let at = app.placement(&name, None);
+            // `placement` jitters by the id it is given and leaves a JSON level first, as a new card does.
+            let jitter = app.alloc_node_id();
+            let at = app.placement(jitter, None);
             let id = app.create_jar(&name, at);
             eprintln!("NEWJAR: {id}");
             app.save_session();
@@ -840,21 +841,21 @@ const VERBS: &[Verb] = &[
     row("USEJAR <id> <jar|none>", "Tab or group `id` uses jar card `jar`, or inherits with `none`, as a Jar page row", |rest| {
         let (from, jar) = parse_use_jar(rest)?;
         job(move |app, _| {
-            let jar = jar.and_then(|j| j.parse().ok());
-            app.set_jar_edge(&from, jar);
+            app.set_jar_edge(from, jar);
             app.save_session();
         })
     }),
     row("JAREPHEMERAL <id> on|off", "Jar card `id`'s Make/Stop Ephemeral, confirmed", |rest| {
         let mut parts = rest.split_whitespace();
-        let id = parts.next()?.to_string();
+        let id = id_word(&mut parts)?;
         let on = on_off(parts.next()?)?;
-        job(move |app, _| match id.parse() {
-            Ok(jar) if app.jar_exists(jar) => {
-                app.set_jar_ephemeral(jar, on);
+        job(move |app, _| {
+            if app.jar_exists(id) {
+                app.set_jar_ephemeral(id, on);
                 app.save_session();
+            } else {
+                eprintln!("JAREPHEMERAL: {id} isn't a jar card; ignored");
             }
-            _ => eprintln!("JAREPHEMERAL: {id} isn't a jar card; ignored"),
         })
     }),
     // Adds a fresh copy of the demo layout to whatever's open, never touching `has_shown_first_launch_demo`: purely
@@ -1047,10 +1048,10 @@ pub(crate) struct HeadlessDebug {
 impl App {
     /// `MOVETOGROUP`: what the node menu's "Move into <group>" row does (`NodeAction::MoveToGroup`, a Join drop,
     /// which saves), only when the menu would offer `group`. `false` when it wouldn't.
-    fn debug_move_to_group(&mut self, id: &str, group: &str) -> bool {
-        let offered = self.node_menu_view(id).is_some_and(|v| v.move_targets.iter().any(|(g, _)| g == group));
+    fn debug_move_to_group(&mut self, id: NodeId, group: NodeId) -> bool {
+        let offered = self.node_menu_view(id).is_some_and(|v| v.move_targets.iter().any(|(g, _)| *g == group));
         if offered {
-            self.apply_drop(CardId::stored(id), Some((DropEffect::Join, Some(CardId::stored(group)))));
+            self.apply_drop(CardId::from(id), Some((DropEffect::Join, Some(CardId::from(group)))));
         }
         offered
     }
@@ -1059,8 +1060,8 @@ impl App {
     /// The box is the payload's buffer and `editing` is on while typed in (`paint_note_body`), so a remote text
     /// arriving meanwhile would be held; the blur (`blur_note`) then resolves it and saves. `false` when `id` isn't a
     /// note.
-    fn debug_set_note_text(&mut self, id: &str, text: String) -> bool {
-        let Some(note) = self.nodes.get_mut(id).and_then(|n| n.as_note_mut()) else { return false };
+    fn debug_set_note_text(&mut self, id: NodeId, text: String) -> bool {
+        let Some(note) = self.nodes.get_mut(&id).and_then(|n| n.as_note_mut()) else { return false };
         note.editing = true;
         note.text = text;
         self.blur_note(id);
@@ -1070,26 +1071,19 @@ impl App {
     /// `MOVENODE`: card `id` dragged to world point `pos` and released. The drag moves the layout (`card.rs`), the
     /// release writes the document pos (`release_drag`: `edit_pos` with the layout pos), and the drop saves
     /// (`apply_drop` with no target). `false` when there is no such node.
-    fn debug_move_node(&mut self, id: &str, pos: egui::Vec2) -> bool {
-        if !self.nodes.contains_key(id) {
+    fn debug_move_node(&mut self, id: NodeId, pos: egui::Vec2) -> bool {
+        if !self.nodes.contains_key(&id) {
             return false;
         }
-        self.layout.entry(id.to_owned()).or_default().pos = pos;
+        self.layout.entry(id).or_default().pos = pos;
         self.edit_pos(id, Some(self.layout_pos(id)));
         self.save_session();
         true
     }
 
-    /// `REOPENNODE`: `reopen_node` on node `id`. `false` when `id` is not a node id.
-    fn debug_reopen_node(&mut self, id: &str) -> bool {
-        let Ok(node) = id.parse() else { return false };
-        self.reopen_node(node);
-        true
-    }
-
     /// `CLOSENODE`: `close_node` on node `id`. `false` when there is no such node.
-    fn debug_close_node(&mut self, id: &str) -> bool {
-        if !self.nodes.contains_key(id) {
+    fn debug_close_node(&mut self, id: NodeId) -> bool {
+        if !self.nodes.contains_key(&id) {
             return false;
         }
         self.close_node(id);
@@ -1114,6 +1108,7 @@ pub(crate) fn debug_key_event(key: egui::Key, modifiers: egui::Modifiers) -> egu
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::card_id::testutil::node;
 
     fn parses(line: &str) -> bool {
         parse_line(line).is_some()
@@ -1206,7 +1201,7 @@ mod tests {
             "TYPE abc",
             "KEYPAGE Enter",
             "REOPENTAB",
-            "REOPENNODE n1",
+            "REOPENNODE 0000000000000001-1",
             "INSTALLVIEW cef",
             "VIEWSTATE cef",
             "ZOOMIN",
@@ -1258,7 +1253,7 @@ mod tests {
             r"EXPORTGROUP C:\x.json",
             r"IMPORTGROUP C:\x.json",
             "DUPLICATETAB",
-            "DUPLICATENODE n1",
+            "DUPLICATENODE 0000000000000001-1",
             r"PRINTTOPDF C:\x.pdf",
             "TOGGLEPIN",
             "RELOAD",
@@ -1277,23 +1272,23 @@ mod tests {
             "MENUPAGE jar",
             "SPLIT cef",
             "CLOSESPLIT",
-            "CLOSENODE g1",
-            "MOVETOGROUP n1 g1",
-            "LINK n1 n2",
-            "UNLINK n1 n2",
-            "OPENEDFROM n1 n2",
-            "SETNOTETEXT n1 hello",
-            "MOVENODE n1 10 -20",
-            "SLEEPNODE t1",
-            "RESTARTVIEW t1",
-            "ENDVIEW t1",
+            "CLOSENODE 0000000000000001-3",
+            "MOVETOGROUP 0000000000000001-1 0000000000000001-3",
+            "LINK 0000000000000001-1 0000000000000001-2",
+            "UNLINK 0000000000000001-1 0000000000000001-2",
+            "OPENEDFROM 0000000000000001-1 0000000000000001-2",
+            "SETNOTETEXT 0000000000000001-1 hello",
+            "MOVENODE 0000000000000001-1 10 -20",
+            "SLEEPNODE 0000000000000001-4",
+            "RESTARTVIEW 0000000000000001-4",
+            "ENDVIEW 0000000000000001-4",
             "IDLESWEEP 30",
             "SETJAR default",
             "SWITCHJARNOW",
             "CLEARJAR Work",
             "NEWJAR Work",
-            "USEJAR t1 none",
-            "JAREPHEMERAL j1 on",
+            "USEJAR 0000000000000001-4 none",
+            "JAREPHEMERAL 0000000000000001-5 on",
             "JSONSELECT /a/0",
             "JSONTOGGLE",
             "JSONMORE /a",
@@ -1324,10 +1319,19 @@ mod tests {
     /// `LINK`, `UNLINK` and `OPENEDFROM` each take two card ids.
     #[test]
     fn link_unlink_and_openedfrom_take_two_ids() {
-        for two in ["LINK n1 n2", "UNLINK n1 n2", "OPENEDFROM c p"] {
+        for two in [
+            "LINK 0000000000000001-1 0000000000000001-2",
+            "UNLINK 0000000000000001-1 0000000000000001-2",
+            "OPENEDFROM 0000000000000001-6 0000000000000001-7",
+        ] {
             assert!(parses(two), "{two}");
         }
-        for one in ["LINK n1", "UNLINK n1", "OPENEDFROM c", "MOVETOGROUP n1"] {
+        for one in [
+            "LINK 0000000000000001-1",
+            "UNLINK 0000000000000001-1",
+            "OPENEDFROM 0000000000000001-6",
+            "MOVETOGROUP 0000000000000001-1",
+        ] {
             assert!(!parses(one), "{one}: both ids are required");
         }
     }
@@ -1335,51 +1339,50 @@ mod tests {
     /// `MOVETOGROUP` takes two ids and moves only where the node menu's "Move into" would offer.
     #[test]
     fn move_to_group_moves_only_into_an_offered_sibling() {
-        assert!(parse_line("MOVETOGROUP n1 g1").is_some());
-        assert!(parse_line("MOVETOGROUP n1").is_none(), "both ids are required");
+        assert!(parse_line("MOVETOGROUP 0000000000000001-1 0000000000000001-3").is_some());
+        assert!(parse_line("MOVETOGROUP 0000000000000001-1").is_none(), "both ids are required");
         let mut app = App::default();
         let (g, h, note) = (app.alloc_node_id(), app.alloc_node_id(), app.alloc_node_id());
-        app.insert_group_at(g.clone(), None);
-        app.insert_group_at(h.clone(), None);
-        app.insert_note_at(note.clone(), None);
-        assert!(!app.debug_move_to_group(&note, &note), "not a group");
-        assert!(!app.debug_move_to_group(&note, "missing"));
-        assert!(app.debug_move_to_group(&note, &g));
-        assert_eq!(app.doc.mirror.group(&note), Some(g.as_str()));
-        assert!(!app.debug_move_to_group(&note, &h), "h is no longer a sibling of the note");
-        assert_eq!(app.doc.mirror.group(&note), Some(g.as_str()));
-        assert!(app.debug_move_to_group(&g, &h), "a group nests, as the menu row does");
-        assert_eq!(app.doc.mirror.group(&g), Some(h.as_str()));
+        app.insert_group_at(g, None);
+        app.insert_group_at(h, None);
+        app.insert_note_at(note, None);
+        assert!(!app.debug_move_to_group(note, note), "not a group");
+        assert!(!app.debug_move_to_group(note, node(9999)));
+        assert!(app.debug_move_to_group(note, g));
+        assert_eq!(app.doc.mirror.group(note), Some(g));
+        assert!(!app.debug_move_to_group(note, h), "h is no longer a sibling of the note");
+        assert_eq!(app.doc.mirror.group(note), Some(g));
+        assert!(app.debug_move_to_group(g, h), "a group nests, as the menu row does");
+        assert_eq!(app.doc.mirror.group(g), Some(h));
     }
 
     /// `CLOSENODE id` closes any node by id, as its card's Close does, and saves.
     #[test]
     fn close_node_takes_any_node() {
-        assert!(parse_line("CLOSENODE n1").is_some());
+        assert!(parse_line("CLOSENODE 0000000000000001-1").is_some());
         assert!(parse_line("CLOSENODE").is_none(), "the id is required");
         let mut app = App::default();
         let (g, note) = (app.alloc_node_id(), app.alloc_node_id());
-        app.insert_group_at(g.clone(), None);
-        app.insert_note_at(note.clone(), None);
-        assert!(app.debug_close_node(&note));
-        assert!(app.debug_close_node(&g), "a group closes too");
+        app.insert_group_at(g, None);
+        app.insert_note_at(note, None);
+        assert!(app.debug_close_node(note));
+        assert!(app.debug_close_node(g), "a group closes too");
         assert!(!app.nodes.contains_key(&note) && !app.nodes.contains_key(&g));
-        assert!(!app.debug_close_node("missing"));
+        assert!(!app.debug_close_node(node(9999)));
     }
 
     /// `REOPENNODE id` reopens a closed node by id, and `EXPORTSTATE` lists the Recently Closed history.
     #[test]
     fn reopennode_reopens_by_id_and_exportstate_lists_the_history() {
-        assert!(parse_line("REOPENNODE n1").is_some());
+        assert!(parse_line("REOPENNODE 0000000000000001-1").is_some());
         assert!(parse_line("REOPENNODE").is_none(), "the id is required");
         let path = crate::store::testutil::temp_dir("debug-reopennode").join("session.mnf");
         let mut app = crate::session_sync::tests::app_on(&path, 1);
         let g = crate::session_sync::tests::add_group(&mut app, "G");
         assert!(app.save_session());
-        assert!(app.debug_close_node(&g));
-        assert_eq!(app.export_state()["closed"], serde_json::json!([g]));
-        assert!(!app.debug_reopen_node("not an id"));
-        assert!(app.debug_reopen_node(&g));
+        assert!(app.debug_close_node(g));
+        assert_eq!(app.export_state()["closed"], serde_json::json!([g.to_string()]));
+        app.reopen_node(g);
         assert!(app.nodes.contains_key(&g));
         assert_eq!(app.export_state()["closed"], serde_json::json!([]));
     }
@@ -1396,46 +1399,54 @@ mod tests {
         let note = add(&mut app, Kind::Note, Runtime::Note(NotePayload { text: "v1".into(), editing: false }));
         assert!(app.save_session());
 
-        app.commit_rename(&g, " Errands\u{200B} ");
+        app.commit_rename(g, " Errands\u{200B} ");
         assert!(app.save_session());
-        assert_eq!(stored(&app, &g, field::NAME), FieldValue::Str("Errands".into()));
-        app.commit_rename(&note, "Not a group");
-        assert_eq!(app.doc.mirror.name(&note), "Not a group", "any node takes a rename");
+        assert_eq!(stored(&app, g, field::NAME), FieldValue::Str("Errands".into()));
+        app.commit_rename(note, "Not a group");
+        assert_eq!(app.doc.mirror.name(note), "Not a group", "any node takes a rename");
 
-        assert!(app.debug_set_note_text(&note, "mine".into()));
-        assert_eq!(stored(&app, &note, field::TEXT), FieldValue::Str("mine".into()), "the blur saved it");
+        assert!(app.debug_set_note_text(note, "mine".into()));
+        assert_eq!(stored(&app, note, field::TEXT), FieldValue::Str("mine".into()), "the blur saved it");
         assert!(!app.nodes[&note].as_note().unwrap().editing);
         // A remote text held while typed in loses to what is typed.
         let mut other = crate::store::journal::Journal::open(&path, ActorId(2)).unwrap();
         app.nodes.get_mut(&note).unwrap().as_note_mut().unwrap().editing = true;
-        remote_set(&mut other, &note, field::TEXT, FieldValue::Str("theirs".into()));
+        remote_set(&mut other, note, field::TEXT, FieldValue::Str("theirs".into()));
         assert!(app.save_session());
         assert!(app.doc.writes.held_text.contains_key(&note), "held");
-        assert!(app.debug_set_note_text(&note, "mine again".into()));
-        assert_eq!(stored(&app, &note, field::TEXT), FieldValue::Str("mine again".into()));
-        assert_eq!(app.doc.mirror.text(&note), "mine again");
-        assert!(!app.debug_set_note_text(&g, "x".into()), "not a note");
+        assert!(app.debug_set_note_text(note, "mine again".into()));
+        assert_eq!(stored(&app, note, field::TEXT), FieldValue::Str("mine again".into()));
+        assert_eq!(app.doc.mirror.text(note), "mine again");
+        assert!(!app.debug_set_note_text(g, "x".into()), "not a note");
 
-        assert!(app.debug_move_node(&note, egui::vec2(12.0, -34.0)));
-        assert_eq!(stored(&app, &note, field::POS), FieldValue::Pos(12.0, -34.0));
-        assert_eq!(app.layout_pos(&note), egui::vec2(12.0, -34.0), "the card is where it was dropped");
-        assert!(!app.debug_move_node("999999", egui::vec2(1.0, 1.0)), "no such node");
+        assert!(app.debug_move_node(note, egui::vec2(12.0, -34.0)));
+        assert_eq!(stored(&app, note, field::POS), FieldValue::Pos(12.0, -34.0));
+        assert_eq!(app.layout_pos(note), egui::vec2(12.0, -34.0), "the card is where it was dropped");
+        assert!(!app.debug_move_node(node(9999), egui::vec2(1.0, 1.0)), "no such node");
     }
 
     #[test]
     fn name_text_and_pos_commands_parse() {
+        let (g, n) = (node(3), node(1));
         assert_eq!(parse_rename(""), Some(None));
-        assert_eq!(parse_rename("g1  Reading list"), Some(Some(("g1".to_string(), "Reading list".to_string()))));
-        assert_eq!(parse_rename("g1"), None, "a name is required with an id");
-        assert!(parses("RENAMEGROUP") && parses("RENAMEGROUP g1 x") && !parses("RENAMEGROUP g1"));
-        assert_eq!(split_id("n1 two  words"), ("n1".to_string(), "two  words"));
-        assert_eq!(split_id("n1"), ("n1".to_string(), ""));
-        assert!(parses("SETNOTETEXT n1 two  words") && parses("SETNOTETEXT n1"));
+        assert_eq!(parse_rename(&format!("{g}  Reading list")), Some(Some((g, "Reading list".to_string()))));
+        assert_eq!(parse_rename(&g.to_string()), None, "a name is required with an id");
+        assert_eq!(parse_rename("g1 Reading list"), None, "a word that is no node id is a usage error");
+        assert!(parses("RENAMEGROUP") && parses(&format!("RENAMEGROUP {g} x")) && !parses(&format!("RENAMEGROUP {g}")));
+        assert_eq!(split_id(&format!("{n} two  words")), Some((n, "two  words")));
+        assert_eq!(split_id(&n.to_string()), Some((n, "")));
+        assert_eq!(split_id("n1 two  words"), None);
+        assert!(parses(&format!("SETNOTETEXT {n} two  words")) && parses(&format!("SETNOTETEXT {n}")));
         assert!(!parses("SETNOTETEXT"), "an id is required");
-        assert_eq!(parse_move_node("n1 12 -34.5"), Some(("n1".to_string(), 12.0, -34.5)));
-        for bad in ["n1 12", "n1 inf 0", "n1 NaN 0", "n1 1 2 3", ""] {
-            assert!(parse_move_node(bad).is_none(), "{bad}");
+        assert!(
+            !parses("SETNOTETEXT n1 text") && !parses("CLOSENODE n1"),
+            "a word that is no node id is a usage error"
+        );
+        assert_eq!(parse_move_node(&format!("{n} 12 -34.5")), Some((n, 12.0, -34.5)));
+        for bad in ["12", "inf 0", "NaN 0", "1 2 3"] {
+            assert!(parse_move_node(&format!("{n} {bad}")).is_none(), "{bad}");
         }
+        assert!(parse_move_node("").is_none() && parse_move_node("n1 1 2").is_none());
         assert_eq!(parse_zoom_pct("62.5"), Some(62.5));
         for bad in ["", "0", "-5", "inf", "x"] {
             assert!(parse_zoom_pct(bad).is_none(), "{bad}");
@@ -1447,13 +1458,16 @@ mod tests {
         for ok in ["SETJAR Work", "SETJAR default", "SWITCHJARNOW", "CLEARJAR Work", "NEWJAR Work Stuff"] {
             assert!(parses(ok), "{ok}");
         }
+        let (tab, jar) = (node(2), node(5));
         for bad in ["SETJAR", "CLEARJAR", "NEWJAR", "USEJAR 1-2", "JAREPHEMERAL 1-5 maybe", "JAREPHEMERAL 1-5"] {
             assert!(!parses(bad), "{bad}: a jar name or both words are required");
         }
-        assert_eq!(parse_use_jar("1-2 1-5"), Some(("1-2".to_string(), Some("1-5".to_string()))));
-        assert_eq!(parse_use_jar("1-2 none"), Some(("1-2".to_string(), None)));
-        assert_eq!(parse_use_jar("1-2"), None);
-        assert!(parses("JAREPHEMERAL 1-5 on") && parses("JAREPHEMERAL 1-5 off"));
+        assert!(!parses(&format!("JAREPHEMERAL {jar} maybe")) && !parses(&format!("JAREPHEMERAL {jar}")));
+        assert_eq!(parse_use_jar(&format!("{tab} {jar}")), Some((tab, Some(jar))));
+        assert_eq!(parse_use_jar(&format!("{tab} none")), Some((tab, None)));
+        assert_eq!(parse_use_jar(&tab.to_string()), None);
+        assert_eq!(parse_use_jar(&format!("{tab} Work")), None, "a jar word that is no node id is a usage error");
+        assert!(parses(&format!("JAREPHEMERAL {jar} on")) && parses(&format!("JAREPHEMERAL {jar} off")));
     }
 
     #[test]

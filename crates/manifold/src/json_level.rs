@@ -4,6 +4,7 @@
 //! `self.nodes`, so nothing here can reach the store but the node's own
 //! `view` field.
 
+use crate::store::model::NodeId;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Arc};
 
@@ -13,7 +14,7 @@ use crate::json_view::{self, Card, JsonView, OutlineRow, SearchResult};
 
 pub(crate) struct JsonLevel {
     /// The Json node shown.
-    pub(crate) node_id: String,
+    pub(crate) node_id: NodeId,
     /// The node's value when the level was built; a Refresh rebuilds it.
     pub(crate) value: Arc<serde_json::Value>,
     /// Nodes in `value`, for choosing a worker search.
@@ -106,7 +107,7 @@ pub(crate) enum CopyWhat {
 }
 
 impl JsonLevel {
-    fn new(node_id: String, value: Arc<serde_json::Value>, view: &JsonView) -> Self {
+    fn new(node_id: NodeId, value: Arc<serde_json::Value>, view: &JsonView) -> Self {
         let expanded = json_view::default_expanded(&value);
         let mut level = Self {
             node_id,
@@ -134,11 +135,9 @@ impl JsonLevel {
         self.rects =
             self.cards.iter().zip(positions).map(|(card, pos)| egui::Rect::from_min_size(pos, card.size())).collect();
         self.index = self.cards.iter().enumerate().map(|(i, card)| (card.pointer.clone(), i)).collect();
-        self.ids = self
-            .cards
-            .iter()
-            .map(|card| CardId::virt(JSON_SOURCE, fnv64(&[&self.node_id, "#", &card.pointer])))
-            .collect();
+        let node = self.node_id.to_string();
+        self.ids =
+            self.cards.iter().map(|card| CardId::virt(JSON_SOURCE, fnv64(&[&node, "#", &card.pointer]))).collect();
     }
 
     /// A card's level-item id: the hash of `<json node id>#<pointer>` in the `json` id kind (spec "Model"), so it
@@ -234,15 +233,15 @@ impl App {
         // moved, leaves to its group, where its card shows the error and
         // Retry. Its group is never a Json node, so this recurses once.
         if !json.enterable() {
-            let group = self.group_of(&self.current_group);
+            let group = self.group_of(self.current_group);
             self.switch_group_level(group);
             return;
         }
         // Looked up again through the field, not `current_json_node`, so
         // `self.json_level` can be borrowed mutably alongside it.
-        let id = self.current_group.clone().unwrap_or_default();
+        let Some(id) = self.current_group else { return };
         let Some(json) = self.nodes.get(&id).and_then(|n| n.as_json()) else { return };
-        let view = self.doc.mirror.view(&id).unwrap_or(&json_view::NO_VIEW);
+        let view = self.doc.mirror.view(id).unwrap_or(&json_view::NO_VIEW);
         match &mut self.json_level {
             Some(level) if level.node_id == id => {
                 if level.stale {
@@ -266,8 +265,8 @@ impl App {
         if !self.nodes.get(&level.node_id).and_then(|n| n.as_json()).is_some_and(|json| json.enterable()) {
             return;
         }
-        let id = level.node_id.clone();
-        let mut view = self.doc.mirror.view(&id).cloned().unwrap_or_default();
+        let id = level.node_id;
+        let mut view = self.doc.mirror.view(id).cloned().unwrap_or_default();
         if view.is_opaque() {
             // M5: a newer build's format, written back untouched; an edit here would replace it on every replica.
             // Lay out from the unchanged view so a refused drag doesn't leave its card where it was dropped.
@@ -279,7 +278,7 @@ impl App {
         }
         edit(&mut view, &level.value, &level.expanded);
         view.retain_resolvable(&level.value);
-        self.edit_view(&id, &view.to_field());
+        self.edit_view(id, &view.to_field());
         if let Some(level) = self.json_level.as_mut() {
             level.relayout(&view);
         }
@@ -444,7 +443,7 @@ impl App {
     pub(crate) fn reveal_json(&mut self, pointer: &str) {
         // A dry run first, so selecting an already-visible entry doesn't save.
         let changed = self.json_level.as_ref().filter(|_| self.current_json_node().is_some()).is_some_and(|level| {
-            let mut view = self.doc.mirror.view(&level.node_id).cloned().unwrap_or_default();
+            let mut view = self.doc.mirror.view(level.node_id).cloned().unwrap_or_default();
             json_view::reveal(&level.value, &mut view, &level.expanded, pointer)
         });
         if changed {
@@ -506,7 +505,7 @@ impl App {
             })
             .collect();
         serde_json::json!({
-            "root": level.node_id,
+            "root": level.node_id.to_string(),
             "cards": cards,
             "selected": level.selected,
             "matches": level.search.result.as_ref().map(|r| r.matches.clone()).unwrap_or_default(),

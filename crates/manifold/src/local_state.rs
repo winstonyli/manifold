@@ -128,10 +128,9 @@ pub(crate) struct LocalPersist {
     pub(crate) local_written_at: std::time::Instant,
     /// Personal-state entries for nodes `apply_local` found still spawning
     /// (no live node yet): applied once each one's node is inserted
-    /// (`handle_tab_spawn_result`), then removed. Only `nodes` is ever
-    /// populated here -- the view fields are resolved once, in `apply_local`
+    /// (`handle_tab_spawn_result`), then removed. The view fields are resolved once, in `apply_local`
     /// itself, since spawning is enough for those to take effect.
-    pub(crate) pending_local: Option<LocalState>,
+    pub(crate) pending_local: Option<HashMap<NodeId, LocalNode>>,
 }
 
 impl Default for LocalPersist {
@@ -306,7 +305,7 @@ impl App {
 
     /// `id`'s personal state as the live graph shows it: its settled position, a tab's title, muted, zoom and
     /// unshared live url, a note's `editing`.
-    pub(crate) fn local_node(&self, id: &str, node: &crate::GraphNode) -> LocalNode {
+    pub(crate) fn local_node(&self, id: NodeId, node: &crate::GraphNode) -> LocalNode {
         let pos = self.layout_pos(id);
         let mut local = LocalNode { pos: [pos.x, pos.y], ..LocalNode::default() };
         if let Some(tab) = tab_common(&node.runtime) {
@@ -329,36 +328,34 @@ impl App {
     /// before restored tabs land doesn't lose their placement and zoom.
     pub(crate) fn local_state(&self) -> LocalState {
         let item = self.view_mode == ViewMode::Item;
-        let mut nodes: BTreeMap<String, LocalNode> = self
-            .nodes
-            .iter()
-            .filter(|(id, _)| id.parse::<NodeId>().is_ok())
-            .map(|(id, node)| (id.clone(), self.local_node(id, node)))
-            .collect();
+        let mut nodes: BTreeMap<String, LocalNode> =
+            self.nodes.iter().map(|(id, node)| (id.to_string(), self.local_node(*id, node))).collect();
         if let Some(pending) = &self.doc.local_persist.pending_local {
-            for (id, node) in &pending.nodes {
-                if self.spawns.spawning.contains_key(id) && !nodes.contains_key(id) {
-                    nodes.insert(id.clone(), node.clone());
+            for (id, node) in pending {
+                let key = id.to_string();
+                if self.spawns.spawning.contains_key(id) && !nodes.contains_key(&key) {
+                    nodes.insert(key, node.clone());
                 }
             }
         }
         // Hidden nodes keep theirs while the document still holds them (a Delete not yet seen is dropped).
         if let Some(doc) = self.doc.journal.as_ref().map(|j| j.doc()) {
             for (id, node) in &self.doc.hidden_local {
-                if id.parse::<NodeId>().ok().and_then(|n| doc.nodes.get(&n)).is_some_and(Node::is_live) {
-                    nodes.entry(id.clone()).or_insert_with(|| node.clone());
+                if doc.nodes.get(id).is_some_and(Node::is_live) {
+                    nodes.entry(id.to_string()).or_insert_with(|| node.clone());
                 }
             }
         }
         let rect = self.camera.rect;
+        let text = |id: Option<NodeId>| id.map(|id| id.to_string());
         LocalState {
-            focused: self.focused.clone(),
+            focused: text(self.focused),
             view_item: item,
-            current_group: self.current_group.clone(),
-            viewed_image: item.then(|| self.viewed_image.clone()).flatten(),
-            split_tab: self.split_tab.clone(),
+            current_group: text(self.current_group),
+            viewed_image: text(self.viewed_image.filter(|_| item)),
+            split_tab: text(self.split_tab),
             groups_collapsed: self.groups_collapsed,
-            camera: Some(([rect.min.x, rect.min.y, rect.max.x, rect.max.y], self.current_group.clone())),
+            camera: Some(([rect.min.x, rect.min.y, rect.max.x, rect.max.y], text(self.current_group))),
             nodes,
             json_accessor_paths: self.json_ui.json_accessor_paths,
             json_outline_hidden: !self.json_ui.json_outline_visible,
@@ -373,25 +370,26 @@ impl App {
     /// stands. A node still spawning keeps its entry in `self.doc.local_persist.pending_local`
     /// for `handle_tab_spawn_result` to apply once it lands.
     pub(crate) fn apply_local(&mut self, state: LocalState) {
-        let exists = |id: &Option<String>| {
-            id.as_deref().is_some_and(|id| self.nodes.contains_key(id) || self.spawns.spawning.contains_key(id))
+        let parsed = |id: &Option<String>| id.as_deref().and_then(|id| id.parse::<NodeId>().ok());
+        let known = |id: &Option<String>| {
+            parsed(id).filter(|id| self.nodes.contains_key(id) || self.spawns.spawning.contains_key(id))
         };
-        if exists(&state.focused) {
-            self.focused = state.focused;
+        if let Some(id) = known(&state.focused) {
+            self.focused = Some(id);
         }
         // A level that is hidden now falls back to its nearest shown ancestor (spec decision 3).
-        let level = match (self.doc.journal.as_ref(), state.current_group.as_deref().and_then(|g| g.parse().ok())) {
-            (Some(j), Some(g)) => j.doc().shown_level(g).map(|g| g.to_string()),
-            _ => state.current_group.clone(),
+        let level = match (self.doc.journal.as_ref(), parsed(&state.current_group)) {
+            (Some(j), Some(g)) => j.doc().shown_level(g),
+            (_, group) => group,
         };
-        if exists(&level) {
-            self.current_group = level;
+        if let Some(level) = level.filter(|id| self.nodes.contains_key(id) || self.spawns.spawning.contains_key(id)) {
+            self.current_group = Some(level);
         }
-        if exists(&state.viewed_image) {
-            self.viewed_image = state.viewed_image;
+        if let Some(id) = known(&state.viewed_image) {
+            self.viewed_image = Some(id);
         }
-        if exists(&state.split_tab) {
-            self.split_tab = state.split_tab;
+        if let Some(id) = known(&state.split_tab) {
+            self.split_tab = Some(id);
         }
         self.view_mode = if state.view_item { ViewMode::Item } else { ViewMode::Graph };
         self.groups_collapsed = state.groups_collapsed;
@@ -409,32 +407,33 @@ impl App {
         // never actually survives a restore -- it bounces to Graph the very
         // first frame after `apply_local`, before the spawn can land.
         if self.view_mode == ViewMode::Item && self.viewed_image.is_none() {
-            if let Some(id) = &self.focused {
-                if !self.nodes.get(id).is_some_and(|n| n.as_tab().is_some()) {
-                    self.spawns.pending_respawn_focus = Some(id.clone());
+            if let Some(id) = self.focused {
+                if !self.nodes.get(&id).is_some_and(|n| n.as_tab().is_some()) {
+                    self.spawns.pending_respawn_focus = Some(id);
                 }
             }
         }
 
-        let mut pending = BTreeMap::new();
+        let mut pending = HashMap::new();
         let mut leftover = Vec::new();
         for (id, node) in state.nodes {
+            let Ok(id) = id.parse::<NodeId>() else { continue };
             if let Some(live) = self.nodes.get_mut(&id) {
                 Self::apply_local_node(live, &node);
-                self.snap_layout(&id, egui::vec2(node.pos[0], node.pos[1]));
+                self.snap_layout(id, egui::vec2(node.pos[0], node.pos[1]));
             } else if self.spawns.spawning.contains_key(&id) {
                 pending.insert(id, node);
             } else {
                 leftover.push((id, node));
             }
         }
-        self.keep_hidden_local(leftover);
+        self.keep_hidden(leftover);
         if !pending.is_empty() {
-            self.doc.local_persist.pending_local = Some(LocalState { nodes: pending, ..LocalState::default() });
+            self.doc.local_persist.pending_local = Some(pending);
         }
 
         if let Some((rect, level)) = state.camera {
-            if level == self.current_group {
+            if level == self.current_group.map(|g| g.to_string()) {
                 self.camera.rect = egui::Rect::from_min_max(egui::pos2(rect[0], rect[1]), egui::pos2(rect[2], rect[3]));
                 self.camera.frame_restored = false;
             }
@@ -444,10 +443,14 @@ impl App {
     /// Personal-state entries for nodes the document holds but the graph doesn't show (closed, or under a closed
     /// node): kept in `hidden_local` for a reopen, not dropped as stale.
     pub(crate) fn keep_hidden_local(&mut self, entries: impl IntoIterator<Item = (String, LocalNode)>) {
+        self.keep_hidden(entries.into_iter().filter_map(|(id, node)| Some((id.parse().ok()?, node))));
+    }
+
+    fn keep_hidden(&mut self, entries: impl IntoIterator<Item = (NodeId, LocalNode)>) {
         let Some(doc) = self.doc.journal.as_ref().map(|j| j.doc()) else { return };
-        let held = |id: &str| id.parse::<NodeId>().ok().and_then(|n| doc.nodes.get(&n)).is_some_and(Node::is_live);
-        let here = |id: &str| self.nodes.contains_key(id) || self.spawns.spawning.contains_key(id);
-        let keep: Vec<(String, LocalNode)> = entries.into_iter().filter(|(id, _)| held(id) && !here(id)).collect();
+        let held = |id: &NodeId| doc.nodes.get(id).is_some_and(Node::is_live);
+        let here = |id: &NodeId| self.nodes.contains_key(id) || self.spawns.spawning.contains_key(id);
+        let keep: Vec<(NodeId, LocalNode)> = entries.into_iter().filter(|(id, _)| held(id) && !here(id)).collect();
         self.doc.hidden_local.extend(keep);
     }
 
@@ -478,13 +481,13 @@ impl App {
     /// (`handle_tab_spawn_result`), removing it from `pending_local`. An
     /// unloaded card now takes title/muted/zoom from personal state just
     /// like a live tab; every other kind only takes its position.
-    pub(crate) fn apply_pending_local(&mut self, id: &str) {
+    pub(crate) fn apply_pending_local(&mut self, id: NodeId) {
         let Some(pending) = &mut self.doc.local_persist.pending_local else { return };
-        let Some(node) = pending.nodes.remove(id) else { return };
-        if pending.nodes.is_empty() {
+        let Some(node) = pending.remove(&id) else { return };
+        if pending.is_empty() {
             self.doc.local_persist.pending_local = None;
         }
-        if let Some(live) = self.nodes.get_mut(id) {
+        if let Some(live) = self.nodes.get_mut(&id) {
             if let Runtime::Tab(_) | Runtime::Unloaded(_) | Runtime::Note(_) = &live.runtime {
                 Self::apply_local_node(live, &node)
             }

@@ -58,7 +58,7 @@ impl App {
             match result {
                 Ok(decoded) => {
                     if let Some(gpu) = &mut self.gpu {
-                        gpu.upload_image(&id, &decoded.rgba, decoded.width, decoded.height);
+                        gpu.upload_image(id, &decoded.rgba, decoded.width, decoded.height);
                     }
                     if let Some(image) = self.nodes.get_mut(&id).and_then(|n| n.as_image_mut()) {
                         (image.width, image.height, image.error) = (decoded.width, decoded.height, None);
@@ -86,7 +86,7 @@ impl App {
             match result {
                 Ok(rendered) => {
                     if let Some(gpu) = &mut self.gpu {
-                        gpu.upload_image(&id, &rendered.rgba, rendered.width, rendered.height);
+                        gpu.upload_image(id, &rendered.rgba, rendered.width, rendered.height);
                     }
                     if let Some(pdf) = self.nodes.get_mut(&id).and_then(|n| n.as_pdf_mut()) {
                         eprintln!(
@@ -133,7 +133,7 @@ impl App {
                 // design. A Refresh failing this way would otherwise vanish
                 // with no feedback at all, since it never reaches
                 // `reload_fetched_node`'s own toast.
-                if let FetchTarget::Node(id) = &job.target {
+                if let FetchTarget::Node(id) = job.target {
                     self.refresh_fetch_failed(id);
                 }
                 continue;
@@ -147,10 +147,10 @@ impl App {
                     let still_current =
                         self.nodes.get(&tab_id).and_then(|n| n.as_tab()).is_some_and(|t| t.url == job.url);
                     if still_current {
-                        self.redirect_tab_to_content(&tab_id, job.node_id, job.url, body);
+                        self.redirect_tab_to_content(tab_id, job.node_id, job.url, body);
                     }
                 }
-                FetchTarget::Node(id) => self.reload_fetched_node(&id, body),
+                FetchTarget::Node(id) => self.reload_fetched_node(id, body),
             }
         }
     }

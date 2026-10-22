@@ -42,13 +42,6 @@ impl CardId {
         CardId { hi: fnv64(&[source]), lo: key & !NON_NODE | NON_NODE }
     }
 
-    /// The stored node this card shows; `None` for a non-node card.
-    /// The card of a stored node named by its id text. The stores key by text until the mirror is re-keyed
-    /// (plan Task 5), so this is the one parse on the way from a store key to a card.
-    pub(crate) fn stored(id: &str) -> CardId {
-        id.parse::<NodeId>().map(CardId::from).unwrap_or_else(|e| panic!("a stored node id is a NodeId: {id:?}: {e}"))
-    }
-
     /// The egui widget id of this card's frame: what keyboard focus and hit tests name.
     pub(crate) fn widget(self) -> egui::Id {
         egui::Id::new(("graph_card", self))
@@ -59,6 +52,7 @@ impl CardId {
         egui::Id::new(("note_edit", self))
     }
 
+    /// The stored node this card shows; `None` for a non-node card.
     pub(crate) const fn node(self) -> Option<NodeId> {
         if self.lo & NON_NODE != 0 {
             None

@@ -16,11 +16,11 @@ impl App {
         ui: &mut egui::Ui,
         deferred_overlays: &mut DeferredOverlays,
         actions: &mut Vec<GraphAction>,
-        at_level: &[Vec<String>],
+        at_level: &[Vec<NodeId>],
         inv_zoom: f32,
         zoom_scale: f32,
         leave_group_button_rect: Option<egui::Rect>,
-        connect_target: Option<&str>,
+        connect_target: Option<NodeId>,
     ) {
         // One drop target per frame, shared by the ring and the
         // release (see `drop_target`).
@@ -29,10 +29,7 @@ impl App {
             self.interaction.dragging.and_then(|dragged| self.drop_target(dragged, pointer, leave_group_button_rect));
         // The ring says where a drop would land; this says what it would do, beside the pointer.
         if let (Some((effect, target)), Some(at)) = (&drop_preview, pointer) {
-            let name = target
-                .and_then(|id| id.node())
-                .map(|node| self.drop_target_name(&node.to_string()))
-                .unwrap_or_default();
+            let name = target.and_then(|id| id.node()).map(|node| self.drop_target_name(node)).unwrap_or_default();
             paint_drop_hint(ui.ctx(), at, &effect.hint(&name));
         }
 
@@ -68,7 +65,7 @@ impl App {
         // Pick-target mode: the cards a click would connect to, ringed.
         let pick_targets: Option<Vec<CardId>> =
             self.link.connecting.as_ref().map(|(from, edge)| {
-                self.valid_targets(edge, from).iter().map(|target| CardId::stored(target)).collect()
+                self.valid_targets(edge, *from).iter().map(|&target| CardId::from(target)).collect()
             });
         let mut pass = CardPass {
             deferred_overlays,
@@ -77,7 +74,7 @@ impl App {
             zoom_scale,
             drop_preview: &drop_preview,
             pick_targets: pick_targets.as_deref().unwrap_or_default(),
-            connect_target: connect_target.map(CardId::stored),
+            connect_target: connect_target.map(CardId::from),
             connect_ring: self.link.retarget_preview.map(|outcome| crate::link_gestures::retarget_look(outcome).ring),
             show_order: self.card_nav_active || self.hints_revealed,
             order: &tab_order,
@@ -93,13 +90,12 @@ impl App {
                 self.virtual_card_click(ui, &mut pass, &entry, name, pick_targets.is_some());
                 continue;
             }
-            let key = entry.id.to_string();
-            let id = &key;
+            let Some(id) = entry.id.node() else { continue };
             // Read before the frame: a Note's `TextEdit` can lose
             // focus to a click on its own header this very frame,
             // clearing `editing`, and that click must not
             // immediately re-enter editing.
-            let note_was_editing = self.nodes.get(id).and_then(|n| n.as_note()).is_some_and(|n| n.editing);
+            let note_was_editing = self.nodes.get(&id).and_then(|n| n.as_note()).is_some_and(|n| n.editing);
             let Some(card) = self.draw_graph_card(ui, &mut pass, &entry) else {
                 continue;
             };
@@ -107,14 +103,14 @@ impl App {
                 // A control consumed this frame's click, so
                 // the kind's own click action below (e.g.
                 // Image maximize) is skipped.
-                pass.actions.push(GraphAction::Node(id.clone(), action));
+                pass.actions.push(GraphAction::Node(id, action));
                 continue;
             }
             // Pick-target mode takes the card's click: a valid target finishes it, any other card ends it (as every
             // click does, `build_graph_ui`), and neither does the card's own click action.
             if pick_targets.is_some() {
                 if card.response.clicked() && pass.pick_targets.contains(&entry.id) {
-                    pass.actions.push(GraphAction::FinishConnect(id.clone()));
+                    pass.actions.push(GraphAction::FinishConnect(id));
                 }
                 continue;
             }
@@ -125,7 +121,7 @@ impl App {
             }
             // A placeholder (see `ImagePayload::error`) has nothing
             // to open; a click tries its file again instead.
-            let missing_file = self.nodes.get(id).is_some_and(|n| {
+            let missing_file = self.nodes.get(&id).is_some_and(|n| {
                 n.as_image().is_some_and(|i| i.error.is_some())
                     || n.as_unloaded().is_some_and(|t| matches!(t.state, UnloadedState::Failed(_)))
                     || n.as_json().is_some_and(|j| j.error.is_some())
@@ -143,13 +139,13 @@ impl App {
             match (kind.ty, click) {
                 _ if missing_file => {
                     if card.response.clicked() {
-                        pass.actions.push(GraphAction::Node(id.clone(), NodeAction::RetryMissingFile));
+                        pass.actions.push(GraphAction::Node(id, NodeAction::RetryMissingFile));
                     }
                 }
-                (_, Some(action)) => pass.actions.push(GraphAction::Node(id.clone(), action)),
+                (_, Some(action)) => pass.actions.push(GraphAction::Node(id, action)),
                 // Click on the rendered note enters editing in place.
                 (TYPE_NOTE, _) if activated && !note_was_editing => {
-                    if let Some(note) = self.nodes.get_mut(id).and_then(|n| n.as_note_mut()) {
+                    if let Some(note) = self.nodes.get_mut(&id).and_then(|n| n.as_note_mut()) {
                         note.editing = true;
                     }
                     // The editor appears next frame; focus it so typing can start at once.
@@ -158,17 +154,17 @@ impl App {
                 // Enters the node's JSON level, unless its file failed to
                 // load (plan ruling 10) or it's still being refetched (`JsonPayload::enterable`).
                 (TYPE_JSON, _)
-                    if activated && self.nodes.get(id).and_then(|n| n.as_json()).is_some_and(|j| j.enterable()) =>
+                    if activated && self.nodes.get(&id).and_then(|n| n.as_json()).is_some_and(|j| j.enterable()) =>
                 {
                     // Entered from the keyboard: the level's root card takes focus
                     // (`draw_json_level`), sparing the toolbar's ~17 Tab stops.
                     if !card.response.double_clicked() {
                         ui.data_mut(|d| d.insert_temp(crate::json_level_ui::json_focus_root_key(), true));
                     }
-                    pass.actions.push(GraphAction::EnterGroup(id.clone()))
+                    pass.actions.push(GraphAction::EnterGroup(id))
                 }
                 // Drills into the group's own subgraph.
-                (ty, _) if is_container(ty) && activated => pass.actions.push(GraphAction::EnterGroup(id.clone())),
+                (ty, _) if is_container(ty) && activated => pass.actions.push(GraphAction::EnterGroup(id)),
                 _ => {}
             }
         }
@@ -205,7 +201,7 @@ impl App {
 
     /// World rect of Tab-order card `id`: a stored node's, or a virtual entry's.
     pub(crate) fn level_card_rect(&self, id: CardId) -> Option<egui::Rect> {
-        id.node().and_then(|node| self.card_rect(&node.to_string())).or_else(|| {
+        id.node().and_then(|node| self.card_rect(node)).or_else(|| {
             self.virtual_sources.iter().flat_map(|source| source.entries(self)).find(|e| e.id == id).map(|e| e.rect)
         })
     }
@@ -236,7 +232,7 @@ impl App {
             }
         });
         if tab {
-            actions.push(GraphAction::NewTab(self.focused.clone()));
+            actions.push(GraphAction::NewTab(self.focused));
         } else if note {
             actions.push(GraphAction::NewNote(pos));
         } else if group {
@@ -273,9 +269,9 @@ impl App {
         let peek_fade = ui.ctx().animate_bool(egui::Id::new("peek_preview_fade"), peek_target.is_some());
         if peek_fade > 0.0 {
             if let Some(hovered_id) = peek_target {
-                let key = hovered_id.node().map(|node| node.to_string()).unwrap_or_default();
-                let node_pos = self.nodes.contains_key(&key).then(|| self.layout_pos(&key));
-                let thumb_id = self.gpu.as_ref().and_then(|g| g.thumbnail_id(&key));
+                let key = hovered_id.node();
+                let node_pos = key.filter(|key| self.nodes.contains_key(key)).map(|key| self.layout_pos(key));
+                let thumb_id = key.and_then(|key| self.gpu.as_ref()?.thumbnail_id(key));
                 if let (Some(node_pos), Some(tex_id)) = (node_pos, thumb_id) {
                     let rect = egui::Rect::from_min_size(
                         egui::Pos2::new(

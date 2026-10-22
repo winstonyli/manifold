@@ -10,14 +10,14 @@ fn closing_an_unloaded_tab_keeps_its_childrens_edge() {
     let root = add(&mut app, Kind::Tab, sleeping_tab("https://root/", ""));
     let mid = add(&mut app, Kind::Tab, failed_tab("https://mid/", 1.0));
     let leaf = add(&mut app, Kind::Tab, sleeping_tab("https://leaf/", ""));
-    app.edit_parent(&mid, Some(root.clone()));
-    app.edit_parent(&leaf, Some(mid.clone()));
-    app.close_node(&mid);
+    app.edit_parent(mid, Some(root));
+    app.edit_parent(leaf, Some(mid));
+    app.close_node(mid);
     assert!(!app.nodes.contains_key(&mid));
-    assert_eq!(app.doc.mirror.parent(&leaf), Some(mid.as_str()), "the edge stays: mid is closed, not gone");
-    assert_eq!(app.opened_from(&leaf), None, "and reads as none while its parent is closed");
-    app.reopen_node(mid.parse().unwrap());
-    assert_eq!(app.opened_from(&leaf), Some(mid.as_str()), "and is back after a reopen");
+    assert_eq!(app.doc.mirror.parent(leaf), Some(mid), "the edge stays: mid is closed, not gone");
+    assert_eq!(app.opened_from(leaf), None, "and reads as none while its parent is closed");
+    app.reopen_node(mid);
+    assert_eq!(app.opened_from(leaf), Some(mid), "and is back after a reopen");
 }
 
 /// A reopened tab comes back asleep, starting no engine, and keeps its
@@ -30,12 +30,12 @@ fn a_reopened_tab_comes_back_asleep_with_its_zoom_and_title() {
         t.zoom_factor = 1.5;
     }
     assert!(app.save_session());
-    app.close_node(&tab);
+    app.close_node(tab);
     assert!(!app.nodes.contains_key(&tab));
-    app.reopen_node(tab.parse().unwrap());
+    app.reopen_node(tab);
     assert!(app.test_spawns.is_empty());
     assert_eq!(app.nodes.len(), 1, "the same node, no copy");
-    let cards: Vec<(&String, &UnloadedTabPayload)> =
+    let cards: Vec<(&NodeId, &UnloadedTabPayload)> =
         app.nodes.iter().filter_map(|(id, n)| Some((id, n.as_unloaded()?))).collect();
     assert!(
         matches!(&cards[..], [(id, t)] if **id == tab && t.url == "https://r/" && t.title == "Page R"
@@ -53,7 +53,7 @@ fn an_empty_session_keeps_recently_closed_across_a_launch() {
         let mut app = app_on(&path, 1);
         let tab = add(&mut app, Kind::Tab, sleeping_tab("https://r/", "Page R"));
         assert!(app.save_session());
-        app.close_node(&tab);
+        app.close_node(tab);
         app.close_store();
         tab
     };
@@ -70,20 +70,20 @@ fn reopening_a_closed_group_restores_every_link_with_its_id() {
     let outside = succeed_spawn(&mut app, "https://out/");
     let (x, y) = (succeed_spawn(&mut app, "https://x/"), succeed_spawn(&mut app, "https://y/"));
     let group = add_group(&mut app, "g");
-    app.edit_group(&x, Some(group.clone()));
-    app.edit_group(&y, Some(group.clone()));
-    app.connect(crate::caps::LINK, &x, &y).unwrap();
-    app.create_link(&x, &outside); // `connect` would refuse another level, so build this one directly
+    app.edit_group(x, Some(group));
+    app.edit_group(y, Some(group));
+    app.connect(crate::caps::LINK, x, y).unwrap();
+    app.create_link(x, outside); // `connect` would refuse another level, so build this one directly
     assert!(app.save_session());
     let before: std::collections::BTreeSet<_> = app.doc.mirror.link_ids().collect();
     assert_eq!(before.len(), 2);
-    app.close_node(&group);
-    app.reopen_node(group.parse().unwrap());
+    app.close_node(group);
+    app.reopen_node(group);
     let after: std::collections::BTreeSet<_> = app.doc.mirror.link_ids().collect();
     assert_eq!(after, before, "every link returns with its id");
     for l in &after {
-        let (from, to) = app.doc.mirror.link_ends(&l.to_string());
-        let (from, to) = (from.unwrap().to_string(), to.unwrap().to_string());
+        let (from, to) = app.doc.mirror.link_ends(*l);
+        let (from, to) = (from.unwrap(), to.unwrap());
         assert!(app.nodes.contains_key(&from) && app.nodes.contains_key(&to), "between live cards");
     }
     assert!(app.save_session());
@@ -96,23 +96,23 @@ fn closing_keeps_links_to_the_root_and_across_nesting_and_deletes_a_blank_member
     let mut app = app_on(&temp_dir("link-closed-kept").join("session.mnf"), 1);
     let outer = add_group(&mut app, "outer");
     let inner = add_group(&mut app, "inner");
-    app.edit_group(&inner, Some(outer.clone()));
+    app.edit_group(inner, Some(outer));
     let x = succeed_spawn(&mut app, "https://x/");
     let y = succeed_spawn(&mut app, "https://y/");
-    app.edit_group(&x, Some(outer.clone()));
-    app.edit_group(&y, Some(inner.clone()));
+    app.edit_group(x, Some(outer));
+    app.edit_group(y, Some(inner));
     let blank = add(&mut app, Kind::Note, Runtime::Note(NotePayload { text: " ".into(), editing: false }));
-    app.edit_group(&blank, Some(outer.clone()));
-    app.create_link(&x, &outer); // member and root
-    app.create_link(&x, &y); // across nested groups
-    app.create_link(&x, &blank); // to a member that is deleted on close
+    app.edit_group(blank, Some(outer));
+    app.create_link(x, outer); // member and root
+    app.create_link(x, y); // across nested groups
+    app.create_link(x, blank); // to a member that is deleted on close
     assert!(app.save_session());
-    app.close_node(&outer);
+    app.close_node(outer);
     assert!(
-        !app.doc.journal.as_ref().unwrap().doc().nodes.contains_key(&blank.parse().unwrap())
-            || !app.doc.journal.as_ref().unwrap().doc().nodes[&blank.parse().unwrap()].is_live()
+        !app.doc.journal.as_ref().unwrap().doc().nodes.contains_key(&blank)
+            || !app.doc.journal.as_ref().unwrap().doc().nodes[&blank].is_live()
     );
-    app.reopen_node(outer.parse().unwrap());
+    app.reopen_node(outer);
     assert_eq!(link_count(&app), 2);
     assert!(app.save_session());
 }
@@ -121,14 +121,14 @@ fn closing_keeps_links_to_the_root_and_across_nesting_and_deletes_a_blank_member
 fn closing_a_jar_keeps_it_for_reopen() {
     let path = temp_dir("jar-close").join("session.mnf");
     let mut app = app_on(&path, 1);
-    let jar = app.create_jar("Work", crate::fetched::Placement { group: None, pos: egui::vec2(5.0, 5.0) }).to_string();
+    let jar = app.create_jar("Work", crate::fetched::Placement { group: None, pos: egui::vec2(5.0, 5.0) });
     assert!(app.save_session());
-    app.close_node(&jar);
+    app.close_node(jar);
     assert!(!app.nodes.contains_key(&jar) && app.jar_defs().is_empty());
-    app.reopen_node(jar.parse().unwrap());
+    app.reopen_node(jar);
     let defs = app.jar_defs();
     assert_eq!(defs.len(), 1);
-    assert!(defs.contains_key(&jar.parse().unwrap()), "the same id");
+    assert!(defs.contains_key(&jar), "the same id");
     assert_eq!(defs.values().next().unwrap().name, "Work");
 }
 
@@ -138,8 +138,8 @@ fn a_closed_tab_keeps_its_trail_across_a_save_ctrl_shift_t_and_a_restart() {
     let mut app = app_on(&dir.join("session.mnf"), 1);
     let tab = add(&mut app, Kind::Tab, sleeping_tab("https://b/", "B"));
     assert!(app.save_session());
-    app.nav_history.insert(tab.clone(), crate::nav_history::NavHistory::visited(&["https://a/", "https://b/"]));
-    app.close_node(&tab);
+    app.nav_history.insert(tab, crate::nav_history::NavHistory::visited(&["https://a/", "https://b/"]));
+    app.close_node(tab);
     assert!(!app.nodes.contains_key(&tab));
     assert!(app.nav_history.contains_key(&tab), "the hide and the close's save kept it");
     let file = dir.join("tab-history.json");
@@ -156,8 +156,8 @@ fn deleting_a_shown_tab_drops_its_trail_at_once() {
     let mut app = app_on(&temp_dir("sync-trail-delete").join("session.mnf"), 1);
     let tab = add(&mut app, Kind::Tab, sleeping_tab("https://b/", "B"));
     assert!(app.save_session());
-    app.nav_history.insert(tab.clone(), crate::nav_history::NavHistory::visited(&["https://a/", "https://b/"]));
-    app.destroy_node(&tab);
+    app.nav_history.insert(tab, crate::nav_history::NavHistory::visited(&["https://a/", "https://b/"]));
+    app.destroy_node(tab);
     assert!(!app.nav_history.contains_key(&tab));
 }
 
@@ -168,15 +168,15 @@ fn keep_trail_adds_document_liveness_to_the_shown_test() {
     let closed = add(&mut app, Kind::Tab, sleeping_tab("https://c/", "C"));
     let gone = add(&mut app, Kind::Tab, sleeping_tab("https://g/", "G"));
     assert!(app.save_session());
-    app.close_node(&closed);
-    app.destroy_node(&gone);
+    app.close_node(closed);
+    app.destroy_node(gone);
     assert!(app.save_session());
     let journal = app.doc.journal.as_ref();
-    assert!(keep_trail(&app.nodes, journal, &shown));
-    assert!(keep_trail(&app.nodes, journal, &closed), "closed: hidden, but live in the document");
-    assert!(!keep_trail(&app.nodes, journal, &gone));
-    assert!(!keep_trail(&app.nodes, journal, "not-an-id"));
-    assert!(keep_trail(&app.nodes, None, "not-an-id"), "no document: keep everything");
+    assert!(keep_trail(&app.nodes, journal, shown));
+    assert!(keep_trail(&app.nodes, journal, closed), "closed: hidden, but live in the document");
+    assert!(!keep_trail(&app.nodes, journal, gone));
+    assert!(!keep_trail(&app.nodes, journal, id(99)));
+    assert!(keep_trail(&app.nodes, None, id(99)), "no document: keep everything");
 }
 
 #[test]
@@ -184,8 +184,8 @@ fn a_session_replace_clears_stashed_trails() {
     let mut app = app_on(&temp_dir("sync-trail-teardown").join("session.mnf"), 1);
     let tab = add(&mut app, Kind::Tab, sleeping_tab("https://b/", "B"));
     assert!(app.save_session());
-    app.nav_history.insert(tab.clone(), crate::nav_history::NavHistory::visited(&["https://a/", "https://b/"]));
-    app.close_node(&tab);
+    app.nav_history.insert(tab, crate::nav_history::NavHistory::visited(&["https://a/", "https://b/"]));
+    app.close_node(tab);
     assert!(app.nav_history.contains_key(&tab));
     app.teardown_running_session();
     assert!(app.nav_history.is_empty());

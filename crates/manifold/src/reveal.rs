@@ -1,6 +1,7 @@
 //! Reveal-in-Explorer methods of `App`.
 
 use super::*;
+use crate::store::model::NodeId;
 
 impl App {
     /// Opens `path`'s containing folder with the file itself pre-selected --
@@ -40,8 +41,8 @@ impl App {
     /// `None` for kinds with no backing file (Tab, Group, Note, Jar), and for an
     /// empty path: "no file" (a Download from a `Trust::Foreign` import has
     /// its machine-local path dropped).
-    pub(crate) fn node_file_path(&self, id: &str) -> Option<String> {
-        let path = match &self.nodes.get(id)?.runtime {
+    pub(crate) fn node_file_path(&self, id: NodeId) -> Option<String> {
+        let path = match &self.nodes.get(&id)?.runtime {
             Runtime::Download(_) => self.windows_path_for_download(id),
             Runtime::Image(image) => Some(image.path.clone()),
             Runtime::Pdf(pdf) => Some(pdf.path.clone()),
@@ -61,8 +62,8 @@ impl App {
     /// the obvious thing, no custom UI" posture as the download itself, see
     /// `ViewToHost::DownloadCompleted`'s doc comment). No-op for kinds
     /// with no file; a file node with no path (`node_file_path`) is toasted.
-    pub(crate) fn reveal_node(&mut self, id: &str) {
-        let Some(node) = self.nodes.get(id) else { return };
+    pub(crate) fn reveal_node(&mut self, id: NodeId) {
+        let Some(node) = self.nodes.get(&id) else { return };
         let has_file =
             matches!(node.runtime, Runtime::Download(_) | Runtime::Image(_) | Runtime::Pdf(_) | Runtime::Json(_));
         match self.node_file_path(id) {

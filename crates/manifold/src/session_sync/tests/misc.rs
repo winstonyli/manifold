@@ -61,9 +61,9 @@ fn a_failed_refetch_of_a_missing_file_shows_the_missing_file_card() {
     for FetchResult { job, body } in results {
         assert!(body.is_none());
         let FetchTarget::Node(node) = &job.target else { panic!("a node refetch") };
-        app.refresh_fetch_failed(node);
+        app.refresh_fetch_failed(*node);
     }
-    let error = |n: u64| match &app.nodes[&id(n).to_string()].runtime {
+    let error = |n: u64| match &app.nodes[&id(n)].runtime {
         Runtime::Json(p) => p.error.clone(),
         Runtime::Image(p) => p.error.clone(),
         Runtime::Pdf(p) => p.outcome.as_ref().and_then(|o| o.as_ref().err()).cloned(),
@@ -89,11 +89,11 @@ fn retry_missing_file_refetches_a_node_with_a_url_instead_of_retrying_its_local_
         ),
     )]);
     let mut app = app_with(&nodes);
-    let node_id = id(0).to_string();
+    let node_id = id(0);
     // `materialize` already queued one refetch on its own; drain and
     // discard it so the assertion below reflects only the click.
     drain_fetches(&mut app);
-    app.retry_missing_file(&node_id);
+    app.retry_missing_file(node_id);
     let results = drain_fetches(&mut app);
     assert_eq!(results.len(), 1, "the URL branch queued exactly one fetch");
     assert!(matches!(&results[0].job.target, FetchTarget::Node(n) if *n == node_id));
@@ -106,11 +106,11 @@ fn backing_keep_holds_hidden_nodes_files() {
     let jar = add(&mut app, Kind::Jar, Runtime::Jar);
     assert!(app.save_session());
     let mut other = Journal::open(&path, ActorId(2)).unwrap();
-    remote_close(&mut other, &jar, true);
+    remote_close(&mut other, jar, true);
     assert!(app.save_session());
     assert!(!app.nodes.contains_key(&jar));
-    assert!(app.backing_keep(None).contains(&jar), "a closed jar keeps its cookie file");
-    assert!(!app.backing_keep(Some(&jar)).contains(&jar), "`except` leaves it out");
+    assert!(app.backing_keep(None).contains(&jar.to_string()), "a closed jar keeps its cookie file");
+    assert!(!app.backing_keep(Some(jar)).contains(&jar.to_string()), "`except` leaves it out");
 }
 
 /// Right after a typed navigation, a report still at the url it left
@@ -118,14 +118,14 @@ fn backing_keep_holds_hidden_nodes_files() {
 #[test]
 fn a_report_still_at_the_url_a_typed_navigation_left_is_stale() {
     let mut app = App::default();
-    let report = |app: &mut App, url: &str| app.reported_url("7", url.into(), true, "https://typed/".into());
+    let report = |app: &mut App, url: &str| app.reported_url(id(7), url.into(), true, "https://typed/".into());
     assert_eq!(report(&mut app, "https://old/"), "https://old/", "no typed navigation: as reported");
-    app.spawns.navigated_from.insert("7".into(), ("https://old/".into(), std::time::Instant::now(), false));
+    app.spawns.navigated_from.insert(id(7), ("https://old/".into(), std::time::Instant::now(), false));
     assert_eq!(report(&mut app, "https://old/"), "https://typed/");
     assert_eq!(report(&mut app, "https://typed/"), "https://typed/");
     assert_eq!(report(&mut app, "https://old/"), "https://old/", "after the engine moved on: real (going back)");
     let long_ago = std::time::Instant::now() - std::time::Duration::from_secs(2);
-    app.spawns.navigated_from.insert("7".into(), ("https://old/".into(), long_ago, false));
+    app.spawns.navigated_from.insert(id(7), ("https://old/".into(), long_ago, false));
     assert_eq!(report(&mut app, "https://old/"), "https://old/", "the navigation never started");
 }
 
@@ -136,8 +136,8 @@ fn a_report_still_at_the_url_a_typed_navigation_left_is_stale() {
 fn a_typed_navigation_that_ends_at_the_url_it_left_keeps_that_url() {
     let mut app = App::default();
     let report =
-        |app: &mut App, url: &str, loading: bool| app.reported_url("7", url.into(), loading, "https://typed/".into());
-    app.spawns.navigated_from.insert("7".into(), ("https://old/".into(), std::time::Instant::now(), false));
+        |app: &mut App, url: &str, loading: bool| app.reported_url(id(7), url.into(), loading, "https://typed/".into());
+    app.spawns.navigated_from.insert(id(7), ("https://old/".into(), std::time::Instant::now(), false));
     assert_eq!(report(&mut app, "https://old/", false), "https://typed/", "a finish from before it started");
     assert_eq!(report(&mut app, "https://old/", true), "https://typed/", "started, address not changed yet");
     assert_eq!(report(&mut app, "https://old/", false), "https://old/", "finished without leaving");
@@ -156,26 +156,26 @@ fn a_stale_drag_does_not_overwrite_a_remote_pos() {
     let mut other = Journal::open(&path, ActorId(2)).unwrap();
 
     // A level switch with the button held.
-    drag(&mut app, &[&a, &b], egui::vec2(0.0, 50.0));
-    app.switch_group_level(Some(g.clone()));
+    drag(&mut app, &[a, b], egui::vec2(0.0, 50.0));
+    app.switch_group_level(Some(g));
     assert!(app.interaction.dragging.is_none() && app.interaction.drag_moved.is_empty());
-    remote_set(&mut other, &a, field::POS, FieldValue::Pos(5.0, 6.0));
+    remote_set(&mut other, a, field::POS, FieldValue::Pos(5.0, 6.0));
     assert!(app.save_session());
-    assert_eq!(app.layout_pos(&a), egui::vec2(5.0, 6.0), "no longer dragged, so the remote pos snaps it");
+    assert_eq!(app.layout_pos(a), egui::vec2(5.0, 6.0), "no longer dragged, so the remote pos snaps it");
     app.switch_group_level(None);
     app.release_drag();
     assert!(app.save_session());
-    assert_eq!(stored(&app, &a, field::POS), FieldValue::Pos(5.0, 6.0));
-    assert_eq!(stored(&app, &b, field::POS), FieldValue::Pos(300.0, 20.0), "the ended drag saved nothing");
+    assert_eq!(stored(&app, a, field::POS), FieldValue::Pos(5.0, 6.0));
+    assert_eq!(stored(&app, b, field::POS), FieldValue::Pos(300.0, 20.0), "the ended drag saved nothing");
 
     // Another replica moves the grabbed card into another group mid-drag, and gives it a new pos.
-    drag(&mut app, &[&a], egui::vec2(0.0, 50.0));
-    let node = a.parse().unwrap();
+    drag(&mut app, &[a], egui::vec2(0.0, 50.0));
+    let node = a;
     let pos = FieldValue::Pos(7.0, 8.0);
     let set = OpBody::Set { node, field: field::POS, enc: encode_field(field::POS, &pos) };
-    other.begin().unwrap().commit(vec![OpBody::Move { node, group: Some(g.parse().unwrap()) }, set]).unwrap();
+    other.begin().unwrap().commit(vec![OpBody::Move { node, group: Some(g) }, set]).unwrap();
     assert!(app.save_session());
-    assert_eq!(app.layout_pos(&a), egui::vec2(7.0, 8.0), "off the level, the drag no longer holds the remote pos back");
+    assert_eq!(app.layout_pos(a), egui::vec2(7.0, 8.0), "off the level, the drag no longer holds the remote pos back");
     app.end_stale_drag(true);
     assert!(
         app.interaction.dragging.is_none() && app.interaction.drag_moved.is_empty(),
@@ -183,10 +183,10 @@ fn a_stale_drag_does_not_overwrite_a_remote_pos() {
     );
     app.release_drag();
     assert!(app.save_session());
-    assert_eq!(stored(&app, &a, field::POS), FieldValue::Pos(7.0, 8.0));
+    assert_eq!(stored(&app, a, field::POS), FieldValue::Pos(7.0, 8.0));
 
     // Leaving Graph view ends a drag too.
-    drag(&mut app, &[&b], egui::vec2(0.0, 50.0));
+    drag(&mut app, &[b], egui::vec2(0.0, 50.0));
     app.end_stale_drag(false);
     assert!(app.interaction.dragging.is_none() && app.interaction.drag_moved.is_empty());
 }
@@ -234,12 +234,12 @@ fn an_older_sessions_download_without_a_parent_loads_unchanged() {
     }
     let mut app = app_on(&path, 1);
     assert!(app.restore_session());
-    let restored = &app.nodes[&node.to_string()];
-    assert_eq!(app.doc.mirror.parent(&node.to_string()), None);
+    let restored = &app.nodes[&node];
+    assert_eq!(app.doc.mirror.parent(node), None);
     assert!(restored.as_download().is_some());
-    assert_eq!(app.copyable_url(&node.to_string()), Some("https://x.test/f.bin"));
-    assert_eq!(app.layout_pos(&node.to_string()), egui::vec2(1.0, 2.0));
-    assert_eq!(app.doc.mirror.pos(&node.to_string()), Some(egui::vec2(1.0, 2.0)));
+    assert_eq!(app.copyable_url(node), Some("https://x.test/f.bin"));
+    assert_eq!(app.layout_pos(node), egui::vec2(1.0, 2.0));
+    assert_eq!(app.doc.mirror.pos(node), Some(egui::vec2(1.0, 2.0)));
     // No link encodes as the absent register, so a save has nothing to write back.
     let ops = ops_of(&app);
     assert!(app.save_session());
@@ -254,7 +254,7 @@ fn a_session_with_only_jars_still_restores_them() {
     let tab = add(&mut app, Kind::Tab, sleeping_tab("https://a.com/", "A"));
     let jar = add_jar(&mut app, "Work");
     app.save_session();
-    app.remove_tab(&tab);
+    app.remove_tab(tab);
     app.save_session();
     drop(app);
     let mut back = app_on(&path, 3);
@@ -271,20 +271,20 @@ fn a_respawning_tab_follows_a_local_moves_edge_recheck() {
     let path = temp_dir("jar-respawn-move").join("session.mnf");
     let mut app = app_on(&path, 1);
     let (_outer, g, t) = nested_tab(&mut app);
-    let local = app.create_jar("Local", crate::fetched::Placement { group: Some(g.clone()), pos: egui::Vec2::ZERO });
-    app.set_jar_edge(&t, Some(local));
+    let local = app.create_jar("Local", crate::fetched::Placement { group: Some(g), pos: egui::Vec2::ZERO });
+    app.set_jar_edge(t, Some(local));
     assert!(app.save_session());
-    assert_eq!(stored(&app, &t, field::JAR), FieldValue::Id(Some(local)));
-    start_respawn(&mut app, &t);
-    app.edit_group(&t, None); // out of G: the jar inside G is no longer in reach
-    app.recheck_edge_scope(&t);
-    assert_eq!(app.doc.mirror.jar(&t), None);
+    assert_eq!(stored(&app, t, field::JAR), FieldValue::Id(Some(local)));
+    start_respawn(&mut app, t);
+    app.edit_group(t, None); // out of G: the jar inside G is no longer in reach
+    app.recheck_edge_scope(t);
+    assert_eq!(app.doc.mirror.jar(t), None);
     assert!(app.save_session());
-    assert_eq!(stored(&app, &t, field::JAR), FieldValue::Id(None));
+    assert_eq!(stored(&app, t, field::JAR), FieldValue::Id(None));
     fail_spawns(&mut app);
-    assert_eq!(app.doc.mirror.jar(&t), None, "it lands without it");
+    assert_eq!(app.doc.mirror.jar(t), None, "it lands without it");
     assert!(app.save_session());
-    assert_eq!(stored(&app, &t, field::JAR), FieldValue::Id(None));
+    assert_eq!(stored(&app, t, field::JAR), FieldValue::Id(None));
 }
 
 #[test]
@@ -330,18 +330,18 @@ fn a_groups_jar_edge_saves_and_a_remote_change_reaches_it() {
     let mut app = app_on(&path, 1);
     let (work, home) = (add_jar(&mut app, "Work"), add_jar(&mut app, "Home"));
     let g = add_group(&mut app, "G");
-    app.set_jar_edge(&g, Some(work));
-    assert_eq!(app.doc.mirror.jar(&g), Some(work));
+    app.set_jar_edge(g, Some(work));
+    assert_eq!(app.doc.mirror.jar(g), Some(work));
     assert!(app.save_session());
-    assert_eq!(stored(&app, &g, field::JAR), FieldValue::Id(Some(work)));
-    app.set_jar_edge(&g, None);
+    assert_eq!(stored(&app, g, field::JAR), FieldValue::Id(Some(work)));
+    app.set_jar_edge(g, None);
     assert!(app.save_session());
-    assert_eq!(stored(&app, &g, field::JAR), FieldValue::Id(None));
+    assert_eq!(stored(&app, g, field::JAR), FieldValue::Id(None));
     let mut other = Journal::open(&path, ActorId(2)).unwrap();
-    remote_set(&mut other, &g, field::JAR, FieldValue::Id(Some(home)));
+    remote_set(&mut other, g, field::JAR, FieldValue::Id(Some(home)));
     assert!(app.save_session());
-    assert_eq!(app.doc.mirror.jar(&g), Some(home));
-    assert_eq!(app.effective_jar(&g), Some((home, false)), "its tabs use Home");
+    assert_eq!(app.doc.mirror.jar(g), Some(home));
+    assert_eq!(app.effective_jar(g), Some((home, false)), "its tabs use Home");
 }
 
 #[test]
@@ -349,15 +349,15 @@ fn a_refused_drag_reparent_leaves_the_parent_alone() {
     let mut app = app_on(&temp_dir("reparent-refused").join("session.mnf"), 1);
     let a = succeed_spawn(&mut app, "https://a/");
     let b = succeed_spawn(&mut app, "https://b/");
-    app.connect(OPENED_FROM, &b, &a).unwrap();
+    app.connect(OPENED_FROM, b, a).unwrap();
     app.apply_drop(
-        crate::card_id::CardId::stored(&b),
+        crate::card_id::CardId::from(b),
         Some((crate::card::DropEffect::Reparent, Some(crate::card_id::testutil::card(4242)))),
     );
-    assert_eq!(app.doc.mirror.parent(&b), Some(a.as_str()), "a missing target");
+    assert_eq!(app.doc.mirror.parent(b), Some(a), "a missing target");
     app.apply_drop(
-        crate::card_id::CardId::stored(&a),
-        Some((crate::card::DropEffect::Reparent, Some(crate::card_id::CardId::stored(&b)))),
+        crate::card_id::CardId::from(a),
+        Some((crate::card::DropEffect::Reparent, Some(crate::card_id::CardId::from(b)))),
     );
-    assert_eq!(app.doc.mirror.parent(&a), None, "a cycle");
+    assert_eq!(app.doc.mirror.parent(a), None, "a cycle");
 }

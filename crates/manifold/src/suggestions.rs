@@ -1,3 +1,4 @@
+use crate::store::model::NodeId;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -7,7 +8,7 @@ use crate::settings::SearchEngine;
 #[derive(Debug, Clone)]
 pub enum Suggestion {
     /// Jump to (focus) an already-open tab instead of navigating anywhere.
-    OpenTab { tab_id: String, url: String, title: String },
+    OpenTab { tab_id: NodeId, url: String, title: String },
     /// Run `query` as a search — only ever the address bar's own typed
     /// text as a whole, not a per-word thing, matching how every real
     /// browser's omnibox treats non-URL input.

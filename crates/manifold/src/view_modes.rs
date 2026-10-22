@@ -1,6 +1,7 @@
 //! View modes: Graph/Item/Split, the item transition and swap, and the graph camera's tween and pan momentum.
 
 use super::*;
+use crate::store::model::NodeId;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ViewMode {
@@ -36,7 +37,7 @@ pub(crate) enum TransitionKind {
 /// switching `view_mode` instantly. See `App::transition_content_rects_points`
 /// (Tab) and `App::image_transition_frame` (Image).
 pub(crate) struct Transition {
-    pub(crate) node_id: String,
+    pub(crate) node_id: NodeId,
     pub(crate) kind: TransitionKind,
     pub(crate) start: std::time::Instant,
 }
@@ -145,7 +146,7 @@ impl App {
     /// node's still-animating tab out from under it. Found live: clicking a
     /// tab node multiple times in quick succession visibly glitched the
     /// expand animation instead of queuing or ignoring the extra clicks.
-    pub(crate) fn start_transition_to_item(&mut self, id: &str) {
+    pub(crate) fn start_transition_to_item(&mut self, id: NodeId) {
         if self.transition.is_some() {
             return;
         }
@@ -155,11 +156,8 @@ impl App {
         // `Some` regardless of `view_mode` (see its own doc comment) —
         // `finish_transition_if_done` is what actually matters once the
         // animation completes.
-        self.transition = Some(Transition {
-            node_id: id.to_string(),
-            kind: TransitionKind::ToItem,
-            start: std::time::Instant::now(),
-        });
+        self.transition =
+            Some(Transition { node_id: id, kind: TransitionKind::ToItem, start: std::time::Instant::now() });
     }
 
     /// Checked once per frame, before rendering: once a `Transition`'s
@@ -175,7 +173,7 @@ impl App {
         if transition.start.elapsed() < TRANSITION_DURATION {
             return;
         }
-        let node_id = transition.node_id.clone();
+        let node_id = transition.node_id;
         let kind = transition.kind;
         self.transition = None;
         match kind {
@@ -209,10 +207,10 @@ impl App {
             return (rect, rect);
         }
         // Same rect `paint_tab_body` blits the thumbnail at, so the transition starts and ends on it.
-        let world = egui::Rect::from_center_size(self.layout_pos(&transition.node_id).to_pos2(), GRAPH_NODE_SIZE);
+        let world = egui::Rect::from_center_size(self.layout_pos(transition.node_id).to_pos2(), GRAPH_NODE_SIZE);
         let zoom = self.graph_world_rect_to_screen(world).width() / GRAPH_NODE_SIZE.x;
         let clip_end = self.graph_world_rect_to_screen(tab_thumb_rect(world, 1.0 / zoom));
-        let viewport_end = match self.gpu.as_ref().and_then(|g| g.thumbnail_size(&transition.node_id)) {
+        let viewport_end = match self.gpu.as_ref().and_then(|g| g.thumbnail_size(transition.node_id)) {
             Some(size) => {
                 let uv = cover_uv(size, clip_end.size());
                 let size = egui::vec2(clip_end.width() / uv.width(), clip_end.height() / uv.height());
@@ -234,10 +232,10 @@ impl App {
     pub(crate) fn image_transition_frame(&self, transition: &Transition) -> Option<(egui::TextureId, egui::Rect)> {
         let node = self.nodes.get(&transition.node_id)?;
         let image = node.as_image()?;
-        let tex_id = self.gpu.as_ref()?.image_id(&transition.node_id)?;
+        let tex_id = self.gpu.as_ref()?.image_id(transition.node_id)?;
         let size = image_pixel_size(image);
         let card = self.graph_world_rect_to_screen(egui::Rect::from_center_size(
-            self.layout_pos(&transition.node_id).to_pos2(),
+            self.layout_pos(transition.node_id).to_pos2(),
             image_node_card_size(image.width, image.height),
         ));
         let body = self.item_body_rect();
@@ -250,11 +248,11 @@ impl App {
     /// dropdown: `GetState` -> spawn new engine at the same tab_id -> new
     /// engine's first `FrameReady` becomes the displayed texture (once
     /// focused) -> old view-host dropped when its graph node is replaced.
-    pub(crate) fn start_swap_to(&mut self, tab_id: &str, target: ViewKind) {
+    pub(crate) fn start_swap_to(&mut self, tab_id: NodeId, target: ViewKind) {
         if self.swap_in_flight(tab_id).is_some() {
             return; // one swap at a time for this tab
         }
-        let Some(node) = self.nodes.get_mut(tab_id).and_then(|n| n.as_tab_mut()) else {
+        let Some(node) = self.nodes.get_mut(&tab_id).and_then(|n| n.as_tab_mut()) else {
             return;
         };
         if node.tab.kind == target {
@@ -266,7 +264,7 @@ impl App {
         self.edit_view_kind(tab_id, target);
         // Cookies first: the old host is dropped once its snapshot arrives (`hold_for_cookies` waits for them).
         self.pull_cookies(tab_id);
-        if let Some(node) = self.nodes.get_mut(tab_id).and_then(|n| n.as_tab_mut()) {
+        if let Some(node) = self.nodes.get_mut(&tab_id).and_then(|n| n.as_tab_mut()) {
             node.tab.send(&HostToView::GetState);
         }
     }
@@ -275,16 +273,16 @@ impl App {
     /// arrives, then the snapshot parked for the host's cookies (`hold_for_cookies`; "Switch Jar Now" parks one on
     /// the running engine). The one lock: `start_swap_to` starts no second swap, whose snapshot would never come once
     /// the first drops the host, and a remote engine meanwhile is written over (`update_live_node`).
-    pub(crate) fn swap_in_flight(&self, id: &str) -> Option<ViewKind> {
-        let tab = self.nodes.get(id)?.as_tab()?;
-        tab.swap_target.or(match self.cookies.cookie_holds.get(id) {
+    pub(crate) fn swap_in_flight(&self, id: NodeId) -> Option<ViewKind> {
+        let tab = self.nodes.get(&id)?.as_tab()?;
+        tab.swap_target.or(match self.cookies.cookie_holds.get(&id) {
             Some((_, crate::tabs::Held::Snapshot(target, _))) => Some(*target),
             _ => None,
         })
     }
 
-    pub(crate) fn finish_swap(&mut self, tab_id: &str, target: ViewKind, url: String) {
-        let Some(spawn) = self.nodes.get(tab_id).and_then(|n| {
+    pub(crate) fn finish_swap(&mut self, tab_id: NodeId, target: ViewKind, url: String) {
+        let Some(spawn) = self.nodes.get(&tab_id).and_then(|n| {
             let old = n.as_tab()?.tab.kind;
             Some(TabSpawn {
                 fallback_kind: Some(old),
@@ -296,13 +294,13 @@ impl App {
         // Must drop (and thus Shutdown + kill) the old tab before spawning
         // the new one at the same tab_id — the new view-host's named-pipe
         // listeners would collide with the old ones otherwise.
-        self.nodes.remove(tab_id);
+        self.nodes.remove(&tab_id);
         // Same stale-state guard `destroy_tab` already applies: without it, a
         // drag in progress on this exact tab when its engine swap/crash
         // fires would leave `self.interaction.dragging` pointing at an id invisible for
         // the whole respawn window, then get misread as "just dropped" the
         // instant the respawned node starts rendering again.
-        let card = CardId::stored(tab_id);
+        let card = CardId::from(tab_id);
         if self.interaction.dragging == Some(card) {
             self.interaction.dragging = None;
         }

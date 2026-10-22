@@ -436,24 +436,24 @@ pub(crate) struct CookieState {
     /// Per running host, the jar it was **spawned with** (spec "Live tabs when `jar` changes") and what its engine is
     /// believed to hold (`jar::TabCookies`): only a cookie the tab itself changed reaches that jar, and only a cookie
     /// the tab itself reported can be deleted by its absence.
-    pub(crate) jar_tabs: HashMap<String, (NodeId, TabCookies)>,
+    pub(crate) jar_tabs: HashMap<NodeId, (NodeId, TabCookies)>,
     /// Hosts still holding cookies from a jar the user cleared (`clear_jar_cookies`): they switch (`will_switch`)
     /// although their key is unchanged, and their pulls are dropped so the old cookies cannot refill the jar. An id
     /// leaves when its host is replaced or closed (`forget`).
-    pub(crate) jar_reseed: HashSet<String>,
+    pub(crate) jar_reseed: HashSet<NodeId>,
     /// A copy of `jars` for spawn threads: the seed is read when the host connects, not when the spawn starts. Also
     /// counts each jar's clears, so a host seeded before a clear is caught when it lands (`note_spawned_jar`).
     pub(crate) jar_snapshots: std::sync::Arc<std::sync::Mutex<Snapshots>>,
     /// A sleep's `PageState` or a swap's `StateSnapshot` waiting for the tab's `Cookies` reply (or its deadline), so
     /// the host is not dropped before its last cookies arrive.
-    pub(crate) cookie_holds: HashMap<String, (std::time::Instant, crate::tabs::Held)>,
+    pub(crate) cookie_holds: HashMap<NodeId, (std::time::Instant, crate::tabs::Held)>,
     /// When `jar_pull_all` last ran, for the 30 s pull in `about_to_wait`.
     pub(crate) jar_last_pull: Option<std::time::Instant>,
     /// Tabs with a `GetCookies` in flight, by tab id. A host may never answer, so an entry expires
     /// (`JAR_PULL_TIMEOUT`) instead of blocking the next pull.
-    pub(crate) jar_pulls: HashMap<String, std::time::Instant>,
+    pub(crate) jar_pulls: HashMap<NodeId, std::time::Instant>,
     /// Consecutive unanswered pulls per tab (`tabs::start_pull`).
-    pub(crate) jar_silent: HashMap<String, u8>,
+    pub(crate) jar_silent: HashMap<NodeId, u8>,
     /// Jars a pull changed and not saved yet, each with when it first changed: saved once the pull round ends
     /// (`flush_dirty_jars`), not once per tab's reply. Memory and `jar_snapshots` are current; only the file lags.
     pub(crate) jar_dirty: BTreeMap<NodeId, std::time::Instant>,
@@ -462,12 +462,12 @@ pub(crate) struct CookieState {
 impl CookieState {
     /// Drops tab `id`'s host from the per-tab tables (it closed, or a new host replaces it): its `jar_tabs` entry, pull
     /// bookkeeping and reseed mark. Returns the held answer, if any, for the caller to cancel (`App::cancel_held`).
-    pub(crate) fn forget(&mut self, id: &str) -> Option<(std::time::Instant, crate::tabs::Held)> {
-        self.jar_tabs.remove(id);
-        self.jar_reseed.remove(id);
-        self.jar_pulls.remove(id);
-        self.jar_silent.remove(id);
-        self.cookie_holds.remove(id)
+    pub(crate) fn forget(&mut self, id: NodeId) -> Option<(std::time::Instant, crate::tabs::Held)> {
+        self.jar_tabs.remove(&id);
+        self.jar_reseed.remove(&id);
+        self.jar_pulls.remove(&id);
+        self.jar_silent.remove(&id);
+        self.cookie_holds.remove(&id)
     }
 }
 

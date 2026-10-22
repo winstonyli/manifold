@@ -29,10 +29,10 @@ use crate::store::model::{field, field_def, FieldValue, Kind, NodeId};
 /// path resolved on this machine (2b-5 Ruling 5). `TYPE` is the node's type string (`ty`), seeded at every creation and never changed (Ruling 10).
 #[derive(Default)]
 pub(crate) struct Mirror {
-    nodes: HashMap<String, Fields>,
-    links: HashMap<String, Links>,
+    nodes: HashMap<NodeId, Fields>,
+    links: HashMap<NodeId, Links>,
     /// `field::VIEW` of `nodes`, decoded (`view`); only non-empty views.
-    views: HashMap<String, JsonView>,
+    views: HashMap<NodeId, JsonView>,
     /// The ids of the nodes whose `IS_DEFAULT` is true (`default_jar_ids`), kept by `set` and `retain` like `views`. It may hold
     /// a removed jar until the next `retain`; `App::default_jar` checks liveness.
     defaults: BTreeSet<NodeId>,
@@ -40,25 +40,24 @@ pub(crate) struct Mirror {
     link_nodes: BTreeSet<NodeId>,
 }
 
-/// A node's links to other nodes, as ids: `Option<String>` so hand-built test ids work and per-frame filters
-/// compare without allocating.
+/// A node's links to other nodes, as ids.
 #[derive(Default)]
 struct Links {
-    parent: Option<String>,
-    group: Option<String>,
+    parent: Option<NodeId>,
+    group: Option<NodeId>,
 }
 
 impl Mirror {
     /// `id`'s value of field `no`; the field's absent value when the mirror has none.
-    pub(crate) fn get(&self, id: &str, no: u32) -> FieldValue {
-        match self.nodes.get(id).and_then(|fields| fields.get(&no)) {
+    pub(crate) fn get(&self, id: NodeId, no: u32) -> FieldValue {
+        match self.nodes.get(&id).and_then(|fields| fields.get(&no)) {
             Some(value) => value.clone(),
             None => FieldValue::absent(field_def(no).expect("a known field").ty),
         }
     }
 
     /// Every write of a mirrored field lands here, so the decoded view (`view`) is refreshed in this one place.
-    pub(crate) fn set(&mut self, id: &str, no: u32, value: FieldValue) {
+    pub(crate) fn set(&mut self, id: NodeId, no: u32, value: FieldValue) {
         debug_assert!(!matches!(no, field::GROUP | field::PARENT), "a link: `set_group` / `set_parent`");
         if no == field::VIEW {
             let view = match &value {
@@ -66,46 +65,42 @@ impl Mirror {
                 _ => JsonView::default(),
             };
             if view.is_empty() {
-                self.views.remove(id);
+                self.views.remove(&id);
             } else {
-                self.views.insert(id.to_owned(), view);
+                self.views.insert(id, view);
             }
         }
         if no == field::IS_DEFAULT {
-            if let Ok(node) = id.parse::<NodeId>() {
-                if value == FieldValue::Bool(true) {
-                    self.defaults.insert(node);
-                } else {
-                    self.defaults.remove(&node);
-                }
+            if value == FieldValue::Bool(true) {
+                self.defaults.insert(id);
+            } else {
+                self.defaults.remove(&id);
             }
         }
-        self.nodes.entry(id.to_owned()).or_default().insert(no, value);
+        self.nodes.entry(id).or_default().insert(no, value);
     }
 
     /// Makes `id` a link this replica knows, and seeds its type. A link is never a graph node.
     pub(crate) fn add_link(&mut self, id: NodeId) {
         if self.link_nodes.insert(id) {
             let ty = Kind::Link.type_str().expect("a link type").to_owned();
-            self.init_field(&id.to_string(), field::TYPE, FieldValue::Str(ty));
+            self.init_field(id, field::TYPE, FieldValue::Str(ty));
         }
     }
 
     /// Drops link `id` and its fields (a local or remote delete).
     pub(crate) fn forget_link(&mut self, id: NodeId) {
         self.link_nodes.remove(&id);
-        self.forget_node(&id.to_string());
+        self.forget_node(id);
     }
 
     /// Drops every entry of node `id` (fields, edges, view, Default index): it left the graph without being deleted
     /// (`App::hide_node`), or, for a link, was forgotten (`forget_link`).
-    pub(crate) fn forget_node(&mut self, id: &str) {
-        self.nodes.remove(id);
-        self.links.remove(id);
-        self.views.remove(id);
-        if let Ok(node) = id.parse::<NodeId>() {
-            self.defaults.remove(&node);
-        }
+    pub(crate) fn forget_node(&mut self, id: NodeId) {
+        self.nodes.remove(&id);
+        self.links.remove(&id);
+        self.views.remove(&id);
+        self.defaults.remove(&id);
     }
 
     /// Every link this replica knows, by id.
@@ -120,7 +115,7 @@ impl Mirror {
 
     /// A link's `from` and `to` (`field::FROM`, `field::TO`), read through the plain field map as `default_jar` is.
     /// Either may name a card that no longer exists, or be `None`.
-    pub(crate) fn link_ends(&self, id: &str) -> (Option<NodeId>, Option<NodeId>) {
+    pub(crate) fn link_ends(&self, id: NodeId) -> (Option<NodeId>, Option<NodeId>) {
         let end = |no| match self.get(id, no) {
             FieldValue::Id(end) => end,
             _ => None,
@@ -129,7 +124,7 @@ impl Mirror {
     }
 
     /// A jar's definition, decoded from its mirrored fields (2b-5 Ruling 7).
-    pub(crate) fn jar_def(&self, id: &str) -> JarDef {
+    pub(crate) fn jar_def(&self, id: NodeId) -> JarDef {
         JarDef {
             name: self.str_field(id, field::NAME).to_owned(), // name rule: the stored name, as `JarDef` holds it
             color: self.color(id),
@@ -146,115 +141,115 @@ impl Mirror {
     /// Gives `id` field `no` only if it holds no value for it yet: a new content node's web source, seeded after
     /// its placement (`App::insert_content`), which a stored node shown again (a reload, a restore) already has, and
     /// a materialized node's `TYPE` (`App::materialize`), which a node this replica placed already holds.
-    pub(crate) fn init_field(&mut self, id: &str, no: u32, value: FieldValue) {
-        if !self.nodes.get(id).is_some_and(|fields| fields.contains_key(&no)) {
+    pub(crate) fn init_field(&mut self, id: NodeId, no: u32, value: FieldValue) {
+        if !self.nodes.get(&id).is_some_and(|fields| fields.contains_key(&no)) {
             self.set(id, no, value);
         }
     }
 
     /// A string field, borrowed from the stored value; "" when the mirror has none.
-    fn str_field(&self, id: &str, no: u32) -> &str {
-        match self.nodes.get(id).and_then(|fields| fields.get(&no)) {
+    fn str_field(&self, id: NodeId, no: u32) -> &str {
+        match self.nodes.get(&id).and_then(|fields| fields.get(&no)) {
             Some(FieldValue::Str(text)) => text,
             _ => "",
         }
     }
 
     /// The node this one was opened from (`None` for a root).
-    pub(crate) fn parent(&self, id: &str) -> Option<&str> {
-        self.links.get(id)?.parent.as_deref()
+    pub(crate) fn parent(&self, id: NodeId) -> Option<NodeId> {
+        self.links.get(&id)?.parent
     }
 
-    pub(crate) fn set_parent(&mut self, id: &str, parent: Option<String>) {
-        self.links.entry(id.to_owned()).or_default().parent = parent;
+    pub(crate) fn set_parent(&mut self, id: NodeId, parent: Option<NodeId>) {
+        self.links.entry(id).or_default().parent = parent;
     }
 
     /// The group this node is shown in (`None` at the top level). Groups nest, so a group has one too.
-    pub(crate) fn group(&self, id: &str) -> Option<&str> {
-        self.links.get(id)?.group.as_deref()
+    pub(crate) fn group(&self, id: NodeId) -> Option<NodeId> {
+        self.links.get(&id)?.group
     }
 
-    pub(crate) fn set_group(&mut self, id: &str, group: Option<String>) {
-        self.links.entry(id.to_owned()).or_default().group = group;
+    pub(crate) fn set_group(&mut self, id: NodeId, group: Option<NodeId>) {
+        self.links.entry(id).or_default().group = group;
     }
 
     /// Drops the entries `keep` rejects, except a link's: a link is not a graph node, and only `forget_link` drops it.
-    pub(crate) fn retain(&mut self, keep: impl Fn(&str) -> bool) {
+    pub(crate) fn retain(&mut self, keep: impl Fn(NodeId) -> bool) {
         let link_nodes = &self.link_nodes;
-        let keep = |id: &str| keep(id) || id.parse::<NodeId>().is_ok_and(|n| link_nodes.contains(&n));
-        self.nodes.retain(|id, _| keep(id));
-        self.links.retain(|id, _| keep(id));
-        self.views.retain(|id, _| keep(id));
-        self.defaults.retain(|n| keep(&n.to_string()));
+        let keep = |id: NodeId| keep(id) || link_nodes.contains(&id);
+        self.nodes.retain(|&id, _| keep(id));
+        self.links.retain(|&id, _| keep(id));
+        self.views.retain(|&id, _| keep(id));
+        self.defaults.retain(|&n| keep(n));
     }
 
     /// A node's document pos: where it was placed or last dropped (`App::edit_pos`), or where another replica put
     /// it. `None` when it has none. Pos (0,0) is the field's absent value in the encoding, so a node at the exact
     /// origin reads as `None` too (2b-4 Ruling 5). Where the card is drawn is `App::layout`.
-    pub(crate) fn pos(&self, id: &str) -> Option<egui::Vec2> {
-        self.nodes.get(id).and_then(pos_in)
+    pub(crate) fn pos(&self, id: NodeId) -> Option<egui::Vec2> {
+        self.nodes.get(&id).and_then(pos_in)
     }
 
     /// A note's text: the document's, or what the last save or blur committed (`App::edit_text`). "" when the mirror
     /// has none. Borrowed from the stored string, never a copy: a note can reach 1 MB and the card reads it every
     /// frame (2b-4 Ruling 6). While the note is typed in, the card shows its edit buffer instead (`App::note_text`).
-    pub(crate) fn text(&self, id: &str) -> &str {
+    pub(crate) fn text(&self, id: NodeId) -> &str {
         self.str_field(id, field::TEXT)
     }
 
     /// A Json node's view overrides (`field::VIEW`), decoded: the cache `set` refreshes whenever the mirror's view
     /// changes (2b-4 Ruling 8), so the per-frame readers never parse. `None` when the node has no overrides.
-    pub(crate) fn view(&self, id: &str) -> Option<&JsonView> {
-        self.views.get(id)
+    pub(crate) fn view(&self, id: NodeId) -> Option<&JsonView> {
+        self.views.get(&id)
     }
 
     /// A group's stored name (`field::NAME`, 2b-4 Ruling 9): the document's, or the rename about to be written
     /// (`App::edit_name`). "" when the mirror has none. Raw: drawn only through a name rule (`names.rs`). A jar's
     /// name is read through its `JarDef` (`jar_def`).
-    pub(crate) fn name(&self, id: &str) -> &str {
+    pub(crate) fn name(&self, id: NodeId) -> &str {
         self.str_field(id, field::NAME)
     }
 
-    pub(crate) fn color(&self, id: &str) -> Option<egui::Color32> {
-        self.nodes.get(id).and_then(color_in)
+    pub(crate) fn color(&self, id: NodeId) -> Option<egui::Color32> {
+        self.nodes.get(&id).and_then(color_in)
     }
 
     /// Graph view's pin toggle (tabs only): the force-directed layout never moves a pinned tab, as it never moves
     /// a dragged node (`graph_layout::step`); it still pushes its neighbours. Only tabs carry the field.
-    pub(crate) fn pinned(&self, id: &str) -> bool {
-        self.nodes.get(id).is_some_and(pinned_in)
+    pub(crate) fn pinned(&self, id: NodeId) -> bool {
+        self.nodes.get(&id).is_some_and(pinned_in)
     }
 
     /// A tab's shared url: the document's, or the one a local edit is about to write (Ruling 1). Its live url, which
     /// every engine report moves, is `TabPayload::url` / `UnloadedTabPayload::url`. For a content node (a note, image,
     /// PDF, Json file or download) it is the web source it came from (`App::source_url`), set at creation. "" when the
     /// mirror has none.
-    pub(crate) fn url(&self, id: &str) -> &str {
+    pub(crate) fn url(&self, id: NodeId) -> &str {
         self.str_field(id, field::URL)
     }
 
     /// The node's type string (`field::TYPE`, `Kind::type_str`), seeded at every creation and never changed. Read by
     /// Recently Closed (`worth_reopening`, containment) and, for every card, `App::card_kind`. "" when the mirror
     /// has none.
-    pub(crate) fn ty(&self, id: &str) -> &str {
+    pub(crate) fn ty(&self, id: NodeId) -> &str {
         self.str_field(id, field::TYPE)
     }
 
     /// A tab's or group's `jar` edge (`field::JAR`): the jar it names, `None` to inherit. It may name a jar that no
     /// longer exists or sits out of reach (`App::resolve_jar`).
-    pub(crate) fn jar(&self, id: &str) -> Option<NodeId> {
-        self.nodes.get(id).and_then(jar_in)
+    pub(crate) fn jar(&self, id: NodeId) -> Option<NodeId> {
+        self.nodes.get(&id).and_then(jar_in)
     }
 
     /// A tab's engine: the one it runs or is switching to (`App::edit_view_kind`), the document's otherwise. The mirror
     /// holds the stored code as is, so a code from a newer build survives a save; it, and an absent one, read as
     /// Servo (`view_kind_of`, 2b-3 Ruling 6). `ViewTab::kind` is the engine actually running.
-    pub(crate) fn view_kind(&self, id: &str) -> ViewKind {
+    pub(crate) fn view_kind(&self, id: NodeId) -> ViewKind {
         view_kind_of(self.view_code(id))
     }
 
     /// A tab's engine as the stored code, kept as is (0: none).
-    pub(crate) fn view_code(&self, id: &str) -> u64 {
+    pub(crate) fn view_code(&self, id: NodeId) -> u64 {
         match self.get(id, field::VIEW_KIND) {
             FieldValue::ViewCode(code) => code,
             _ => 0,
@@ -263,16 +258,16 @@ impl Mirror {
 
     /// Whether `id` has an entry: every node placed here, and a tab mid-respawn (its entry outlives the respawn). A
     /// new spawn has none until it lands (`App::linked_ids`).
-    pub(crate) fn has(&self, id: &str) -> bool {
-        self.nodes.contains_key(id) || self.links.contains_key(id)
+    pub(crate) fn has(&self, id: NodeId) -> bool {
+        self.nodes.contains_key(&id) || self.links.contains_key(&id)
     }
 
     /// What `id` carries across a respawn or lands with: every field the mirror holds for it but the absent ones, and
     /// its two links. A field added to the document is carried with no change here.
-    pub(crate) fn carried(&self, id: &str) -> Carried {
-        let held = self.nodes.get(id).into_iter().flatten();
+    pub(crate) fn carried(&self, id: NodeId) -> Carried {
+        let held = self.nodes.get(&id).into_iter().flatten();
         let carried = held.fold(Carried::default(), |carried, (&no, value)| carried.with(no, value.clone()));
-        Carried { parent: self.parent(id).map(str::to_owned), group: self.group(id).map(str::to_owned), ..carried }
+        Carried { parent: self.parent(id), group: self.group(id), ..carried }
     }
 
     /// `init` for everything a node carries; absent values (no pos, an empty string, engine code 0, `false`, no jar) are
@@ -280,9 +275,9 @@ impl Mirror {
     /// was placed (a remote op naming it ahead of its `Create`, a link cascade) must not leave the placed node
     /// untyped, and the store never changes a type (2b-5 Ruling 10). The entry exists afterwards even when nothing was
     /// seeded: a placed node is known here.
-    pub(crate) fn seed(&mut self, id: &str, carried: &Carried) {
-        if !self.nodes.contains_key(id) {
-            self.nodes.insert(id.to_owned(), Fields::new());
+    pub(crate) fn seed(&mut self, id: NodeId, carried: &Carried) {
+        if let std::collections::hash_map::Entry::Vacant(e) = self.nodes.entry(id) {
+            e.insert(Fields::new());
             for (&no, value) in carried.fields.iter().filter(|(&no, _)| no != field::TYPE) {
                 self.set(id, no, value.clone());
             }
@@ -290,10 +285,7 @@ impl Mirror {
         if let Some(ty) = carried.fields.get(&field::TYPE) {
             self.init_field(id, field::TYPE, ty.clone());
         }
-        if !self.links.contains_key(id) {
-            let links = Links { parent: carried.parent.clone(), group: carried.group.clone() };
-            self.links.insert(id.to_owned(), links);
-        }
+        self.links.entry(id).or_insert_with(|| Links { parent: carried.parent, group: carried.group });
     }
 }
 
@@ -326,9 +318,9 @@ fn jar_in(fields: &Fields) -> Option<NodeId> {
 pub(crate) struct Carried {
     fields: Fields,
     /// The node this one was opened from.
-    pub parent: Option<String>,
+    pub parent: Option<NodeId>,
     /// The group it is shown in.
-    pub group: Option<String>,
+    pub group: Option<NodeId>,
 }
 
 impl Carried {
@@ -342,7 +334,7 @@ impl Carried {
         self
     }
 
-    pub(crate) fn in_group(self, group: Option<String>) -> Self {
+    pub(crate) fn in_group(self, group: Option<NodeId>) -> Self {
         Carried { group, ..self }
     }
 
@@ -355,7 +347,7 @@ impl Carried {
         pos: Option<egui::Vec2>,
         color: Option<egui::Color32>,
         pinned: bool,
-        (parent, group): (Option<String>, Option<String>),
+        (parent, group): (Option<NodeId>, Option<NodeId>),
         url: String,
         view_kind: u64,
         jar: Option<NodeId>,
@@ -390,20 +382,17 @@ impl Carried {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::card_id::testutil::node;
 
     #[test]
     fn the_default_index_follows_is_default_writes_and_retain() {
         let mut m = Mirror::default();
-        let (a, b) = (
-            NodeId { actor: crate::store::model::ActorId(1), counter: 1 },
-            NodeId { actor: crate::store::model::ActorId(1), counter: 2 },
-        );
-        let (sa, sb) = (a.to_string(), b.to_string());
-        m.set(&sb, field::IS_DEFAULT, FieldValue::Bool(true));
-        m.set(&sa, field::IS_DEFAULT, FieldValue::Bool(true));
+        let (a, b) = (node(1), node(2));
+        m.set(b, field::IS_DEFAULT, FieldValue::Bool(true));
+        m.set(a, field::IS_DEFAULT, FieldValue::Bool(true));
         assert_eq!(m.default_jar_ids().collect::<Vec<_>>(), [a, b], "lowest first");
-        m.set(&sa, field::IS_DEFAULT, FieldValue::Bool(false));
-        m.retain(|id| id != sb);
+        m.set(a, field::IS_DEFAULT, FieldValue::Bool(false));
+        m.retain(|id| id != b);
         assert_eq!(m.default_jar_ids().count(), 0);
     }
 
@@ -411,7 +400,7 @@ mod tests {
     fn seed_then_carried_round_trips_and_never_overwrites() {
         let mut mirror = Mirror::default();
         let jar = crate::store::model::NodeId { actor: crate::store::model::ActorId(1), counter: 2 };
-        let first = Carried { parent: Some("p".into()), group: Some("g".into()), ..Carried::default() }
+        let first = Carried { parent: Some(node(3)), group: Some(node(4)), ..Carried::default() }
             .with(field::POS, pos_value(egui::vec2(3.0, -4.0)))
             .with(field::COLOR, color_value(Some(egui::Color32::RED)))
             .with(field::PINNED, FieldValue::Bool(true))
@@ -422,12 +411,12 @@ mod tests {
             .with_str(field::TYPE, "text/x")
             .with_str(field::PATH, "C:/a.json")
             .with_str(field::NAME, "Mine");
-        mirror.seed("7", &first);
-        assert_eq!(mirror.carried("7"), first);
-        mirror.seed("7", &Carried::default().with_str(field::URL, "https://b/"));
-        assert_eq!(mirror.carried("7"), first);
-        mirror.seed("8", &Carried::default().with(field::POS, pos_value(egui::Vec2::ZERO)));
-        assert_eq!(mirror.pos("8"), None, "pos (0,0) is the absent value (Ruling 5)");
+        mirror.seed(node(7), &first);
+        assert_eq!(mirror.carried(node(7)), first);
+        mirror.seed(node(7), &Carried::default().with_str(field::URL, "https://b/"));
+        assert_eq!(mirror.carried(node(7)), first);
+        mirror.seed(node(8), &Carried::default().with(field::POS, pos_value(egui::Vec2::ZERO)));
+        assert_eq!(mirror.pos(node(8)), None, "pos (0,0) is the absent value (Ruling 5)");
     }
 
     /// An entry that exists without a type (a remote op named the node before it was placed) takes the placed
@@ -435,136 +424,140 @@ mod tests {
     #[test]
     fn seed_types_an_entry_that_has_none() {
         let mut mirror = Mirror::default();
-        mirror.set("7", field::URL, FieldValue::Str("https://a/".into()));
-        mirror.seed("7", &Carried::default().with_str(field::TYPE, "text/x").with_str(field::URL, "https://b/"));
-        assert_eq!((mirror.ty("7"), mirror.url("7")), ("text/x", "https://a/"), "the type lands, the rest is kept");
-        mirror.seed("7", &Carried::default().with_str(field::TYPE, "text/y"));
-        assert_eq!(mirror.ty("7"), "text/x");
-        mirror.seed("8", &Carried::default());
-        assert!(!mirror.nodes["8"].contains_key(&field::TYPE), "no type seeds nothing");
+        mirror.set(node(7), field::URL, FieldValue::Str("https://a/".into()));
+        mirror.seed(node(7), &Carried::default().with_str(field::TYPE, "text/x").with_str(field::URL, "https://b/"));
+        assert_eq!(
+            (mirror.ty(node(7)), mirror.url(node(7))),
+            ("text/x", "https://a/"),
+            "the type lands, the rest is kept"
+        );
+        mirror.seed(node(7), &Carried::default().with_str(field::TYPE, "text/y"));
+        assert_eq!(mirror.ty(node(7)), "text/x");
+        mirror.seed(node(8), &Carried::default());
+        assert!(!mirror.nodes[&node(8)].contains_key(&field::TYPE), "no type seeds nothing");
     }
 
     #[test]
     fn a_jar_edge_reads_back_and_a_node_without_one_inherits() {
         let mut mirror = Mirror::default();
-        assert_eq!(mirror.jar("7"), None);
-        mirror.seed("8", &Carried::default());
-        assert!(!mirror.nodes["8"].contains_key(&field::JAR), "no edge seeds nothing");
-        assert!(mirror.has("8") && !mirror.has("7"));
+        assert_eq!(mirror.jar(node(7)), None);
+        mirror.seed(node(8), &Carried::default());
+        assert!(!mirror.nodes[&node(8)].contains_key(&field::JAR), "no edge seeds nothing");
+        assert!(mirror.has(node(8)) && !mirror.has(node(7)));
         let jar = NodeId { actor: crate::store::model::ActorId(1), counter: 2 };
-        mirror.set("7", field::JAR, FieldValue::Id(Some(jar)));
-        assert_eq!(mirror.jar("7"), Some(jar));
+        mirror.set(node(7), field::JAR, FieldValue::Id(Some(jar)));
+        assert_eq!(mirror.jar(node(7)), Some(jar));
     }
 
     #[test]
     fn a_view_reads_back_decoded_and_keeps_an_unknown_code() {
         let mut mirror = Mirror::default();
-        assert_eq!(mirror.view_kind("7"), ViewKind::Servo, "absent is Servo");
-        mirror.seed("8", &Carried::default());
-        assert!(!mirror.nodes["8"].contains_key(&field::VIEW_KIND), "code 0 seeds nothing");
+        assert_eq!(mirror.view_kind(node(7)), ViewKind::Servo, "absent is Servo");
+        mirror.seed(node(8), &Carried::default());
+        assert!(!mirror.nodes[&node(8)].contains_key(&field::VIEW_KIND), "code 0 seeds nothing");
         let cef = crate::session_sync::view_code(ViewKind::Cef);
-        mirror.set("7", field::VIEW_KIND, FieldValue::ViewCode(cef));
-        assert_eq!(mirror.view_kind("7"), ViewKind::Cef);
-        mirror.set("7", field::VIEW_KIND, FieldValue::ViewCode(99));
-        assert_eq!(mirror.view_kind("7"), ViewKind::Servo, "a newer build's code reads as Servo");
+        mirror.set(node(7), field::VIEW_KIND, FieldValue::ViewCode(cef));
+        assert_eq!(mirror.view_kind(node(7)), ViewKind::Cef);
+        mirror.set(node(7), field::VIEW_KIND, FieldValue::ViewCode(99));
+        assert_eq!(mirror.view_kind(node(7)), ViewKind::Servo, "a newer build's code reads as Servo");
         let mut copy = Mirror::default();
-        copy.seed("8", &mirror.carried("7"));
-        assert_eq!(copy.view_code("8"), 99, "and is carried as is");
+        copy.seed(node(8), &mirror.carried(node(7)));
+        assert_eq!(copy.view_code(node(8)), 99, "and is carried as is");
     }
 
     #[test]
     fn a_url_reads_back_and_a_node_without_one_has_none() {
         let mut mirror = Mirror::default();
-        assert_eq!(mirror.url("7"), "");
-        mirror.seed("8", &Carried::default());
-        assert!(!mirror.nodes["8"].contains_key(&field::URL), "an empty url seeds nothing");
-        mirror.set("7", field::URL, FieldValue::Str("https://a/".into()));
-        assert_eq!(mirror.url("7"), "https://a/");
+        assert_eq!(mirror.url(node(7)), "");
+        mirror.seed(node(8), &Carried::default());
+        assert!(!mirror.nodes[&node(8)].contains_key(&field::URL), "an empty url seeds nothing");
+        mirror.set(node(7), field::URL, FieldValue::Str("https://a/".into()));
+        assert_eq!(mirror.url(node(7)), "https://a/");
     }
 
     #[test]
     fn a_node_without_group_or_file_fields_seeds_none_and_reads_them_as_absent() {
         let mut mirror = Mirror::default();
-        mirror.seed("8", &Carried::default());
+        mirror.seed(node(8), &Carried::default());
         for no in [field::TYPE, field::PATH, field::JAR] {
-            assert!(!mirror.nodes["8"].contains_key(&no), "field {no} seeds nothing");
+            assert!(!mirror.nodes[&node(8)].contains_key(&no), "field {no} seeds nothing");
         }
-        assert_eq!((mirror.ty("8"), mirror.get("8", field::PATH)), ("", FieldValue::Str(String::new())));
+        assert_eq!((mirror.ty(node(8)), mirror.get(node(8), field::PATH)), ("", FieldValue::Str(String::new())));
     }
 
     #[test]
     fn init_field_never_overwrites_a_value() {
         let mut mirror = Mirror::default();
-        mirror.init_field("7", field::URL, FieldValue::Str("https://a/".into()));
-        mirror.init_field("7", field::URL, FieldValue::Str("https://b/".into()));
-        assert_eq!(mirror.url("7"), "https://a/");
-        mirror.set("8", field::URL, FieldValue::Str(String::new()));
-        mirror.init_field("8", field::URL, FieldValue::Str("https://b/".into()));
-        assert_eq!(mirror.url("8"), "", "an absent value held is a value");
+        mirror.init_field(node(7), field::URL, FieldValue::Str("https://a/".into()));
+        mirror.init_field(node(7), field::URL, FieldValue::Str("https://b/".into()));
+        assert_eq!(mirror.url(node(7)), "https://a/");
+        mirror.set(node(8), field::URL, FieldValue::Str(String::new()));
+        mirror.init_field(node(8), field::URL, FieldValue::Str("https://b/".into()));
+        assert_eq!(mirror.url(node(8)), "", "an absent value held is a value");
     }
 
     #[test]
     fn a_text_reads_back_borrowed_and_a_node_without_one_has_none() {
         let mut mirror = Mirror::default();
-        assert_eq!(mirror.text("7"), "");
-        mirror.seed("8", &Carried::default());
-        assert!(!mirror.nodes["8"].contains_key(&field::TEXT), "an empty text seeds nothing");
-        mirror.set("7", field::TEXT, FieldValue::Str("hello".into()));
-        assert_eq!(mirror.text("7"), "hello");
-        let FieldValue::Str(stored) = &mirror.nodes["7"][&field::TEXT] else { panic!("a Str") };
-        assert_eq!(mirror.text("7").as_ptr(), stored.as_ptr(), "the stored string, not a copy (2b-4 Ruling 6)");
+        assert_eq!(mirror.text(node(7)), "");
+        mirror.seed(node(8), &Carried::default());
+        assert!(!mirror.nodes[&node(8)].contains_key(&field::TEXT), "an empty text seeds nothing");
+        mirror.set(node(7), field::TEXT, FieldValue::Str("hello".into()));
+        assert_eq!(mirror.text(node(7)), "hello");
+        let FieldValue::Str(stored) = &mirror.nodes[&node(7)][&field::TEXT] else { panic!("a Str") };
+        assert_eq!(mirror.text(node(7)).as_ptr(), stored.as_ptr(), "the stored string, not a copy (2b-4 Ruling 6)");
     }
 
     #[test]
     fn a_view_is_decoded_on_every_set_and_dropped_with_its_entry() {
         let mut mirror = Mirror::default();
-        assert!(mirror.view("7").is_none());
-        mirror.set("7", field::VIEW, FieldValue::Str(r#"{"/a":{"collapsed":true}}"#.into()));
-        assert_eq!(mirror.view("7").and_then(|v| v.get("/a")).and_then(|o| o.collapsed), Some(true));
-        mirror.set("7", field::VIEW, FieldValue::Str(r#"{"/b":{"collapsed":false}}"#.into()));
-        let view = mirror.view("7").expect("a view");
+        assert!(mirror.view(node(7)).is_none());
+        mirror.set(node(7), field::VIEW, FieldValue::Str(r#"{"/a":{"collapsed":true}}"#.into()));
+        assert_eq!(mirror.view(node(7)).and_then(|v| v.get("/a")).and_then(|o| o.collapsed), Some(true));
+        mirror.set(node(7), field::VIEW, FieldValue::Str(r#"{"/b":{"collapsed":false}}"#.into()));
+        let view = mirror.view(node(7)).expect("a view");
         assert!(view.get("/a").is_none() && view.get("/b").is_some(), "refreshed, not merged");
-        mirror.set("7", field::VIEW, FieldValue::Str(String::new()));
-        assert!(mirror.view("7").is_none(), "an empty view is none");
-        mirror.set("8", field::VIEW, FieldValue::Str(r#"{"/a":{"collapsed":true}}"#.into()));
-        mirror.retain(|id| id != "8");
-        assert!(mirror.view("8").is_none(), "the cache goes with the entry");
+        mirror.set(node(7), field::VIEW, FieldValue::Str(String::new()));
+        assert!(mirror.view(node(7)).is_none(), "an empty view is none");
+        mirror.set(node(8), field::VIEW, FieldValue::Str(r#"{"/a":{"collapsed":true}}"#.into()));
+        mirror.retain(|id| id != node(8));
+        assert!(mirror.view(node(8)).is_none(), "the cache goes with the entry");
     }
 
     #[test]
     fn a_name_reads_back_borrowed_and_a_node_without_one_has_none() {
         let mut mirror = Mirror::default();
-        assert_eq!(mirror.name("7"), "");
-        mirror.set("7", field::NAME, FieldValue::Str("Errands".into()));
-        assert_eq!(mirror.name("7"), "Errands");
-        let FieldValue::Str(stored) = &mirror.nodes["7"][&field::NAME] else { panic!("a Str") };
-        assert_eq!(mirror.name("7").as_ptr(), stored.as_ptr(), "the stored string, not a copy");
+        assert_eq!(mirror.name(node(7)), "");
+        mirror.set(node(7), field::NAME, FieldValue::Str("Errands".into()));
+        assert_eq!(mirror.name(node(7)), "Errands");
+        let FieldValue::Str(stored) = &mirror.nodes[&node(7)][&field::NAME] else { panic!("a Str") };
+        assert_eq!(mirror.name(node(7)).as_ptr(), stored.as_ptr(), "the stored string, not a copy");
     }
 
     #[test]
     fn an_unknown_node_reads_as_absent() {
         let mirror = Mirror::default();
-        assert_eq!(mirror.get("7", field::COLOR), FieldValue::Color(None));
-        assert_eq!(mirror.color("7"), None);
+        assert_eq!(mirror.get(node(7), field::COLOR), FieldValue::Color(None));
+        assert_eq!(mirror.color(node(7)), None);
     }
 
     #[test]
     fn a_set_value_reads_back() {
         let mut mirror = Mirror::default();
-        mirror.set("7", field::COLOR, color_value(Some(egui::Color32::RED)));
-        assert_eq!(mirror.color("7"), Some(egui::Color32::RED));
-        mirror.set("7", field::COLOR, color_value(None));
-        assert_eq!(mirror.color("7"), None);
+        mirror.set(node(7), field::COLOR, color_value(Some(egui::Color32::RED)));
+        assert_eq!(mirror.color(node(7)), Some(egui::Color32::RED));
+        mirror.set(node(7), field::COLOR, color_value(None));
+        assert_eq!(mirror.color(node(7)), None);
     }
 
     #[test]
     fn retain_drops_rejected_entries() {
         let mut mirror = Mirror::default();
-        mirror.set("a", field::COLOR, color_value(Some(egui::Color32::RED)));
-        mirror.set("b", field::COLOR, color_value(Some(egui::Color32::RED)));
-        mirror.retain(|id| id == "a");
-        assert_eq!(mirror.color("a"), Some(egui::Color32::RED));
-        assert_eq!(mirror.color("b"), None);
+        mirror.set(node(1), field::COLOR, color_value(Some(egui::Color32::RED)));
+        mirror.set(node(2), field::COLOR, color_value(Some(egui::Color32::RED)));
+        mirror.retain(|id| id == node(1));
+        assert_eq!(mirror.color(node(1)), Some(egui::Color32::RED));
+        assert_eq!(mirror.color(node(2)), None);
     }
 
     /// 2b-5 Ruling 7: a jar's definition is decoded from its mirrored fields on every read.
@@ -572,22 +565,22 @@ mod tests {
     fn a_jar_def_reads_its_mirrored_fields() {
         let mut mirror = Mirror::default();
         assert_eq!(
-            mirror.jar_def("5"),
+            mirror.jar_def(node(5)),
             JarDef { name: String::new(), color: None, ephemeral: false, is_default: false }
         );
-        mirror.set("5", field::NAME, FieldValue::Str("Job".into()));
-        mirror.set("5", field::COLOR, color_value(Some(egui::Color32::RED)));
-        mirror.set("5", field::EPHEMERAL, FieldValue::Bool(true));
+        mirror.set(node(5), field::NAME, FieldValue::Str("Job".into()));
+        mirror.set(node(5), field::COLOR, color_value(Some(egui::Color32::RED)));
+        mirror.set(node(5), field::EPHEMERAL, FieldValue::Bool(true));
         let job = JarDef { name: "Job".into(), color: Some(egui::Color32::RED), ephemeral: true, is_default: false };
-        assert_eq!(mirror.jar_def("5"), job);
+        assert_eq!(mirror.jar_def(node(5)), job);
     }
 
     #[test]
     fn pinned_reads_a_bool_and_defaults_to_false() {
         let mut mirror = Mirror::default();
-        assert!(!mirror.pinned("7"));
-        mirror.set("7", field::PINNED, FieldValue::Bool(true));
-        assert!(mirror.pinned("7"));
+        assert!(!mirror.pinned(node(7)));
+        mirror.set(node(7), field::PINNED, FieldValue::Bool(true));
+        assert!(mirror.pinned(node(7)));
     }
 
     /// G2: every field a tab carries (`Kind::Tab.fields()`) survives `carried` → `seed` onto a fresh entry. A tab
@@ -609,15 +602,15 @@ mod tests {
         assert!(!fields.is_empty());
         let mut a = Mirror::default();
         for &no in &fields {
-            a.set("a", no, sample(field_def(no).unwrap().ty));
+            a.set(node(1), no, sample(field_def(no).unwrap().ty));
         }
-        a.set_parent("a", Some("p".into()));
-        a.set_group("a", Some("g".into()));
+        a.set_parent(node(1), Some(node(3)));
+        a.set_group(node(1), Some(node(4)));
         let mut b = Mirror::default();
-        b.seed("b", &a.carried("a"));
+        b.seed(node(2), &a.carried(node(1)));
         for &no in &fields {
-            assert_eq!(b.get("b", no), a.get("a", no), "field {no} is not carried");
+            assert_eq!(b.get(node(2), no), a.get(node(1), no), "field {no} is not carried");
         }
-        assert_eq!((b.parent("b"), b.group("b")), (Some("p"), Some("g")));
+        assert_eq!((b.parent(node(2)), b.group(node(2))), (Some(node(3)), Some(node(4))));
     }
 }

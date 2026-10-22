@@ -1,6 +1,7 @@
 //! The Graph view's scene body: the frame build, its popups, the edges and the dot grid.
 
 use super::*;
+use crate::store::model::NodeId;
 
 /// Edges first so node cards paint on top of the lines feeding them: every edge `level_edges` lists once, each
 /// parent->child edge solid and each Link node dashed in the accent colour, both as the same bowed curve between
@@ -91,8 +92,8 @@ impl App {
     /// already the one shown. For jumps straight to a tab (quick switcher,
     /// the view toggle): the camera would otherwise keep the old level's
     /// framing and show the new one's nodes off screen.
-    pub(crate) fn show_level_of(&mut self, id: &str) {
-        let group = self.nodes.get(id).and(self.doc.mirror.group(id)).map(str::to_owned);
+    pub(crate) fn show_level_of(&mut self, id: NodeId) {
+        let group = self.nodes.get(&id).and(self.doc.mirror.group(id));
         if group != self.current_group {
             self.switch_group_level(group);
         }
@@ -104,7 +105,7 @@ impl App {
     /// otherwise act on tabs no longer visible), the empty-canvas card,
     /// any open node menu, a drag whose card is no longer shown, and pick-target mode (its targets were the old
     /// level's).
-    pub(crate) fn switch_group_level(&mut self, group: Option<String>) {
+    pub(crate) fn switch_group_level(&mut self, group: Option<NodeId>) {
         self.end_note_edits();
         self.current_group = group;
         self.end_stale_drag(true);
@@ -291,7 +292,7 @@ impl App {
                     inv_zoom,
                     zoom_scale,
                     leave_group_button_rect,
-                    connect_target.as_deref(),
+                    connect_target,
                 );
                 self.draw_pending_new_node_menu(ui, &mut actions, &project);
                 self.draw_peek_preview(ui, &mut deferred_overlays);
@@ -366,7 +367,7 @@ impl App {
         }
 
         if let Some(link) = line_click {
-            self.click_link_line(&link);
+            self.click_link_line(link);
         }
 
         // Before the actions, so a note they make has its full frames.

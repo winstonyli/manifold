@@ -1,6 +1,7 @@
 //! A group card's body.
 
 use super::*;
+use crate::store::model::NodeId;
 
 impl App {
     /// Header F (folder glyph, name, item count) over a member thumbnail grid (header only when
@@ -10,7 +11,7 @@ impl App {
         &mut self,
         ui: &mut egui::Ui,
         pass: &mut CardPass,
-        id: &str,
+        id: NodeId,
         view: &CardView,
         rect: egui::Rect,
     ) -> CardBody {
@@ -51,7 +52,7 @@ impl App {
                         let (col, row) = (i as f32 % 2.0, (i / 2) as f32);
                         let cell_min = grid_rect.min + egui::vec2(col * (cell_size.x + gap), row * (cell_size.y + gap));
                         let cell_rect = egui::Rect::from_min_size(cell_min, cell_size);
-                        match self.gpu.as_ref().and_then(|g| g.thumbnail_id(member_id)) {
+                        match self.gpu.as_ref().and_then(|g| g.thumbnail_id(*member_id)) {
                             Some(tex_id) => {
                                 ui.painter().image(tex_id, cell_rect, FULL_UV, egui::Color32::WHITE);
                             }

@@ -272,11 +272,11 @@ impl ApplicationHandler<UserEvent> for App {
                         gpu.resize(size.width, size.height);
                     }
                 }
-                if let Some(id) = self.focused.clone() {
-                    self.send_resize_to(&id);
+                if let Some(id) = self.focused {
+                    self.send_resize_to(id);
                 }
-                if let Some(id) = self.split_tab.clone() {
-                    self.send_resize_to(&id);
+                if let Some(id) = self.split_tab {
+                    self.send_resize_to(id);
                 }
             }
             WindowEvent::Resized(size) => {
@@ -287,11 +287,11 @@ impl ApplicationHandler<UserEvent> for App {
                 // crashed the WebView2 engine ("Tab crashed, restarted" on
                 // restore). The restore's own `Resized` sends the real size.
                 if size.width > 0 && size.height > 0 {
-                    if let Some(id) = self.focused.clone() {
-                        self.send_resize_to(&id);
+                    if let Some(id) = self.focused {
+                        self.send_resize_to(id);
                     }
-                    if let Some(id) = self.split_tab.clone() {
-                        self.send_resize_to(&id);
+                    if let Some(id) = self.split_tab {
+                        self.send_resize_to(id);
                     }
                 }
                 // Not saved in headless mode -- see `Settings::window_width`'s
@@ -320,7 +320,7 @@ impl ApplicationHandler<UserEvent> for App {
                 let chrome_height = self.chrome_height_px() as f64;
                 let in_primary_pane = self.split_divider_x_px().is_none_or(|divider| position.x < divider);
                 if in_tab_view && !consumed_by_egui && position.y >= chrome_height && in_primary_pane {
-                    if let Some(id) = self.focused.clone() {
+                    if let Some(id) = self.focused {
                         if let Some(node) = self.nodes.get_mut(&id).and_then(|n| n.as_tab_mut()) {
                             node.tab.send(&HostToView::Input(InputEvent::MouseMove {
                                 x: position.x,
@@ -367,10 +367,10 @@ impl ApplicationHandler<UserEvent> for App {
                     // `native_drag_tab`'s doc comment for the stuck-button
                     // bug that gating it the same way as a press caused.
                     let target = match state {
-                        ElementState::Pressed if in_content => self.focused.clone(),
+                        ElementState::Pressed if in_content => self.focused,
                         ElementState::Released => {
                             if matches!(button, MouseButton::Left) { self.native_drag_tab.take() } else { None }
-                                .or_else(|| in_content.then(|| self.focused.clone()).flatten())
+                                .or_else(|| in_content.then_some(self.focused).flatten())
                         }
                         ElementState::Pressed => None,
                     };
@@ -383,7 +383,7 @@ impl ApplicationHandler<UserEvent> for App {
                             let event = match state {
                                 ElementState::Pressed => {
                                     let click_count =
-                                        self.click_counter.press(&id, button, (x, y), std::time::Instant::now());
+                                        self.click_counter.press(id, button, (x, y), std::time::Instant::now());
                                     InputEvent::MouseDown { x, y, button, modifiers: self.key_modifiers, click_count }
                                 }
                                 ElementState::Released => InputEvent::MouseUp {
@@ -407,7 +407,7 @@ impl ApplicationHandler<UserEvent> for App {
                 let (x, y) = self.cursor_pos;
                 let in_primary_pane = self.split_divider_x_px().is_none_or(|divider| x < divider);
                 if in_tab_view && !consumed_by_egui && y >= chrome_height && in_primary_pane {
-                    if let Some(id) = self.focused.clone() {
+                    if let Some(id) = self.focused {
                         if let Some(node) = self.nodes.get_mut(&id).and_then(|n| n.as_tab_mut()) {
                             // `LineDelta` is a fixed synthetic unit
                             // (`* 20.0`), not a measurement of anything;
@@ -446,7 +446,7 @@ impl ApplicationHandler<UserEvent> for App {
                     _ => false,
                 };
                 if in_tab_view && !consumed_by_egui && !swallowed {
-                    if let Some(id) = self.focused.clone() {
+                    if let Some(id) = self.focused {
                         if let Some(node) = self.nodes.get_mut(&id).and_then(|n| n.as_tab_mut()) {
                             if let Some(key) = translate_key_code(event.physical_key) {
                                 let input = match event.state {
@@ -481,8 +481,7 @@ impl ApplicationHandler<UserEvent> for App {
                 self.poll_view_installs();
                 let focused_tab = self
                     .focused
-                    .as_deref()
-                    .and_then(|id| self.nodes.get(id))
+                    .and_then(|id| self.nodes.get(&id))
                     .and_then(|n| n.as_tab())
                     .map(|t| format!("{:?} {}", t.tab.kind, crash_report::redacted_url(&t.url)));
                 crash_report::record_state(format!(

@@ -2,6 +2,7 @@
 //! later, as `PdfRenderer` does for a PDF page. Two workers share one queue, so a few big photos decode in parallel
 //! and leave most cores free; the app takes finished images once a frame (`tick`) and uploads them itself.
 
+use crate::store::model::NodeId;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
@@ -15,10 +16,10 @@ pub struct Decoded {
 }
 
 /// A finished decode for node `id`; the error reads as a toast ("Couldn't open image name: why").
-pub type Finished = (String, Result<Decoded, String>);
+pub type Finished = (NodeId, Result<Decoded, String>);
 
 pub struct ImageDecoder {
-    tx: mpsc::Sender<(String, String)>,
+    tx: mpsc::Sender<(NodeId, String)>,
     rx: mpsc::Receiver<Finished>,
     /// Requests whose result `tick` has not yet returned.
     pending: Arc<AtomicUsize>,
@@ -26,7 +27,7 @@ pub struct ImageDecoder {
 
 impl ImageDecoder {
     pub fn new() -> Self {
-        let (tx, queue) = mpsc::channel::<(String, String)>();
+        let (tx, queue) = mpsc::channel::<(NodeId, String)>();
         let (result_tx, rx) = mpsc::channel();
         let queue = Arc::new(Mutex::new(queue));
         for _ in 0..WORKERS {
@@ -44,7 +45,7 @@ impl ImageDecoder {
 
     /// Queues `path`'s decode for node `id`. A node deleted meanwhile is the caller's to ignore (`tick`'s results
     /// name their node).
-    pub fn request(&self, id: String, path: String) {
+    pub fn request(&self, id: NodeId, path: String) {
         self.pending.fetch_add(1, Ordering::SeqCst);
         let _ = self.tx.send((id, path));
     }
@@ -92,6 +93,7 @@ fn decode(path: &str) -> Result<Decoded, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::card_id::testutil::node;
 
     fn wait(decoder: &ImageDecoder) -> Vec<Finished> {
         let end = std::time::Instant::now() + std::time::Duration::from_secs(20);
@@ -111,14 +113,14 @@ mod tests {
         let bad = dir.join("bad.png");
         std::fs::write(&bad, b"not a picture").unwrap();
         let decoder = ImageDecoder::new();
-        decoder.request("good".into(), good.to_string_lossy().into_owned());
-        decoder.request("bad".into(), bad.to_string_lossy().into_owned());
-        decoder.request("gone".into(), dir.join("missing.png").to_string_lossy().into_owned());
+        decoder.request(node(3), good.to_string_lossy().into_owned());
+        decoder.request(node(1), bad.to_string_lossy().into_owned());
+        decoder.request(node(2), dir.join("missing.png").to_string_lossy().into_owned());
         let mut done = wait(&decoder);
-        done.sort_by(|a, b| a.0.cmp(&b.0));
+        done.sort_by_key(|a| a.0);
         assert_eq!(decoder.pending(), 0);
-        let names: Vec<_> = done.iter().map(|(id, _)| id.as_str()).collect();
-        assert_eq!(names, ["bad", "gone", "good"]);
+        let names: Vec<_> = done.iter().map(|(id, _)| *id).collect();
+        assert_eq!(names, [node(1), node(2), node(3)]);
         let good = done[2].1.as_ref().unwrap();
         assert_eq!((good.width, good.height, good.rgba.len()), (3, 2, 24));
         assert!(done[0].1.as_ref().is_err_and(|e| e.starts_with("Couldn't open image bad.png: ")));

@@ -215,7 +215,7 @@ impl App {
             // Same formula `current_level_settle_key()` computes, just
             // built from this frame's already-cached `items` instead of
             // redoing the level scan a second time.
-            let current_key = (self.current_group.clone(), item_count);
+            let current_key = (self.current_group, item_count);
             if self.graph_settled_key.as_ref() != Some(&current_key) {
                 self.layout_current_level();
                 self.graph_settled_key = Some(current_key);
@@ -298,9 +298,10 @@ impl App {
                 // know draws as one of them.
                 _ => (2.0, ACCENT),
             };
-            let failed = self
-                .nodes
-                .get(&item.id.to_string())
+            let failed = item
+                .id
+                .node()
+                .and_then(|id| self.nodes.get(&id))
                 .and_then(|n| n.as_unloaded())
                 .is_some_and(|t| matches!(t.state, UnloadedState::Failed(_)));
             let color = if failed { DANGER_COLOR } else { color };

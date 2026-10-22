@@ -46,7 +46,7 @@ impl App {
         if let Some(window) = &self.window {
             window.request_redraw();
         }
-        let Some(id) = self.focused.clone() else { return };
+        let Some(id) = self.focused else { return };
         let Some(node) = self.nodes.get_mut(&id).and_then(|n| n.as_tab_mut()) else { return };
         if self.find.text.is_empty() {
             node.tab.send(&HostToView::FindStop);
@@ -68,7 +68,7 @@ impl App {
         if let Some(window) = &self.window {
             window.request_redraw();
         }
-        if let Some(id) = self.focused.clone() {
+        if let Some(id) = self.focused {
             if let Some(node) = self.nodes.get_mut(&id).and_then(|n| n.as_tab_mut()) {
                 node.tab.send(&HostToView::FindStop);
             }
@@ -80,7 +80,7 @@ impl App {
         if let Some(window) = &self.window {
             window.request_redraw();
         }
-        let Some(id) = self.focused.clone() else { return };
+        let Some(id) = self.focused else { return };
         let Some(node) = self.nodes.get_mut(&id).and_then(|n| n.as_tab_mut()) else { return };
         node.tab.send(&if forward { HostToView::FindNext } else { HostToView::FindPrevious });
     }

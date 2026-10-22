@@ -1,6 +1,7 @@
 //! A tab card's body: the unloaded placeholder, the thumbnail view, and the header and title they share.
 
 use super::*;
+use crate::store::model::NodeId;
 
 /// A card title, left-centred at `pos`: the styled `rich` job when there is one, else the plain `title`.
 fn paint_card_title(
@@ -34,14 +35,14 @@ impl App {
         &mut self,
         ui: &mut egui::Ui,
         pass: &mut CardPass,
-        id: &str,
+        id: NodeId,
         _view: &CardView,
         rect: egui::Rect,
     ) -> CardBody {
         let (inv_zoom, zoom_scale) = (pass.inv_zoom, pass.zoom_scale);
         let deferred_overlays = &mut *pass.deferred_overlays;
         let mut body = CardBody { interact_rect: rect, tooltip: None };
-        let Some(tab) = self.nodes.get(id).and_then(|n| n.as_unloaded()) else {
+        let Some(tab) = self.nodes.get(&id).and_then(|n| n.as_unloaded()) else {
             return body;
         };
         let (url, title, state) = (tab.url.clone(), tab.title.clone(), tab.state.clone());
@@ -145,7 +146,7 @@ impl App {
         &mut self,
         ui: &egui::Ui,
         deferred_overlays: &mut DeferredOverlays,
-        id: &str,
+        id: NodeId,
         rect: egui::Rect,
         inv_zoom: f32,
         zoom_scale: f32,
@@ -256,7 +257,7 @@ impl App {
         &mut self,
         ui: &mut egui::Ui,
         pass: &mut CardPass,
-        id: &str,
+        id: NodeId,
         _view: &CardView,
         rect: egui::Rect,
     ) -> CardBody {
@@ -264,7 +265,7 @@ impl App {
         let deferred_overlays = &mut *pass.deferred_overlays;
         let mut body = CardBody { interact_rect: rect, tooltip: None };
         let Some((title, url, tab_view_kind, unresponsive, loading)) =
-            self.nodes.get(id).and_then(|n| n.as_tab()).map(|t| {
+            self.nodes.get(&id).and_then(|n| n.as_tab()).map(|t| {
                 (
                     t.title.clone(),
                     t.url.clone(),

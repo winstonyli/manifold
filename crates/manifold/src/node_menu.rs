@@ -55,7 +55,7 @@ pub(crate) enum NodeAction {
     /// The keyboard route for dragging a card onto a sibling group (`DropEffect::Join`). On a group it differs
     /// from the drag: "Move into" nests the group inside the other, where dropping it there merges the two
     /// (`drop_action`).
-    MoveToGroup(String),
+    MoveToGroup(NodeId),
     Dissolve,
     ExportGroup,
     /// Delete for a file card, "Remove from List" for a download, Close
@@ -83,8 +83,8 @@ pub(crate) enum NodeAction {
     /// lists, for an edge stored as one.
     Disconnect {
         edge: &'static str,
-        other: String,
-        link: Option<String>,
+        other: NodeId,
+        link: Option<NodeId>,
     },
     /// "Color…", "Jar…": swaps the menu's items for that page; the menu stays open.
     OpenPage(MenuPage),
@@ -158,7 +158,7 @@ pub(crate) enum NodeMenuItem {
     /// A row that opens a page of the menu.
     Page(&'static str, MenuPage),
     /// One "Move into <name>" button per `(group id, name)`: the sibling groups a card can join.
-    MoveTo(Vec<(String, String)>),
+    MoveTo(Vec<(NodeId, String)>),
     /// A small heading, then one row per jar with its colour dot and a tick on the card's own edge.
     Jars {
         heading: &'static str,
@@ -285,7 +285,7 @@ fn draw_menu_item(
                     response = response.on_hover_text(hover);
                 }
                 if response.clicked() {
-                    *action = Some(NodeAction::MoveToGroup(group.clone()));
+                    *action = Some(NodeAction::MoveToGroup(*group));
                 }
             }
         }
@@ -653,7 +653,7 @@ pub(crate) struct NodeMenuView {
     view_missing: bool,
     /// Sibling groups (same level, not this node) it can move into, as `(id, name)`.
     /// `pub(crate)` for headless `MOVETOGROUP`, which moves only where the menu would offer.
-    pub(crate) move_targets: Vec<(String, String)>,
+    pub(crate) move_targets: Vec<(NodeId, String)>,
     /// Group: the rename draft, while this group is being renamed. Tab: the "New Jar..." name draft.
     renaming: Option<String>,
     /// Jar only: the jar is ephemeral, so the menu offers to stop.
@@ -703,8 +703,8 @@ impl App {
                     Some(scheme) => format!("Can't open a {scheme}: link in a new tab"),
                     None => "Can't open this link in a new tab".to_string(),
                 });
-            } else if let Some(opener) = self.focused.clone() {
-                self.spawn_tab_from(&opener, &menu.href, None);
+            } else if let Some(opener) = self.focused {
+                self.spawn_tab_from(opener, &menu.href, None);
             } else {
                 self.spawn_new_tab(None, None, &menu.href);
             }
@@ -731,12 +731,8 @@ impl App {
             self.menus.node_menu.close();
         }
         self.drop_stray_jar_name();
-        let current = self
-            .menus
-            .node_menu
-            .open
-            .clone()
-            .and_then(|(id, pos)| self.node_menu_view(&id).map(|view| (id, pos, view)));
+        let current =
+            self.menus.node_menu.open.and_then(|(id, pos)| self.node_menu_view(id).map(|view| (id, pos, view)));
         let live = current.is_some();
         self.menus.node_menu.fade.open = current;
         let Some(((id, pos, view), fade)) = self.menus.node_menu.fade.state(ui.ctx(), egui::Id::new("node_menu_fade"))
@@ -779,14 +775,14 @@ impl App {
             None => clicked_outside && view.renaming.is_none(),
         };
         if let Some(action) = action.filter(|a| !matches!(a, NodeAction::OpenPage(_) | NodeAction::MenuBack)) {
-            self.apply_node_action(ui.ctx(), &id, action);
+            self.apply_node_action(ui.ctx(), id, action);
             self.save_session();
         }
         if close {
             self.menus.node_menu.close();
             // Closed from the keyboard: focus goes back to the card the menu belongs to.
             if !ui.input(|i| i.pointer.any_click()) {
-                ui.memory_mut(|m| m.request_focus(CardId::stored(&id).widget()));
+                ui.memory_mut(|m| m.request_focus(CardId::from(id).widget()));
             }
         }
     }
@@ -796,17 +792,13 @@ impl App {
     /// field reporting it (a right-click on empty graph, a change of group level, the tab gone) and another node's menu
     /// opening. Enter, Escape and a click away are the field's own (`NewJar`, `CancelNewJar`).
     fn drop_stray_jar_name(&mut self) {
-        if self
-            .naming_jar
-            .as_ref()
-            .is_some_and(|(tid, _)| self.menus.node_menu.open.as_ref().map(|(id, _)| id) != Some(tid))
-        {
+        if self.naming_jar.as_ref().is_some_and(|(tid, _)| self.menus.node_menu.open.map(|(id, _)| id) != Some(*tid)) {
             self.naming_jar = None;
         }
     }
 
-    pub(crate) fn node_menu_view(&self, id: &str) -> Option<NodeMenuView> {
-        let node = self.nodes.get(id)?;
+    pub(crate) fn node_menu_view(&self, id: NodeId) -> Option<NodeMenuView> {
+        let node = self.nodes.get(&id)?;
         Some(NodeMenuView {
             kind: self.card_kind(id)?,
             has_group: self.doc.mirror.group(id).is_some(),
@@ -826,15 +818,15 @@ impl App {
             move_targets: self
                 .node_order
                 .iter()
-                .filter(|other| other.as_str() != id)
-                .filter(|other| self.doc.mirror.group(other) == self.doc.mirror.group(id) && self.is_container(other))
+                .filter(|&&other| other != id)
+                .filter(|&&other| self.doc.mirror.group(other) == self.doc.mirror.group(id) && self.is_container(other))
                 // name rule: drawn by display_name in the MoveTo rows
-                .map(|other| (other.clone(), self.doc.mirror.name(other).to_owned()))
+                .map(|&other| (other, self.doc.mirror.name(other).to_owned()))
                 .collect(),
             renaming: [&self.renaming_group, &self.naming_jar]
                 .into_iter()
                 .flatten()
-                .find(|(of, _)| of == id)
+                .find(|(of, _)| *of == id)
                 .map(|(_, draft)| draft.clone()),
             jars: self.jar_menu(id),
             edges: self.edge_menu(id),
@@ -846,7 +838,7 @@ impl App {
     /// The Links section (links spec "Menus and pick-target mode"): a verb row per user-creatable edge with at least
     /// one valid target at this level, then a "Disconnect from X" per live edge (`edges_of`). None in a JSON level,
     /// whose cards are not stored nodes.
-    pub(crate) fn edge_menu(&self, id: &str) -> Vec<EdgeMenuRow> {
+    pub(crate) fn edge_menu(&self, id: NodeId) -> Vec<EdgeMenuRow> {
         if self.json_level.is_some() {
             return Vec::new();
         }
@@ -860,7 +852,7 @@ impl App {
         });
         let disconnects = self.edges_of(id).into_iter().map(|e| {
             // The other card as a screen reader names it, cut to a row's length.
-            let name = self.accessible_name(&e.other).unwrap_or_default();
+            let name = self.accessible_name(e.other).unwrap_or_default();
             let segs = crate::names::display_name(&name, crate::names::UNTITLED);
             let short = crate::names::shorten(&segs, crate::names::ROW_UNITS);
             // Which edge it is, since a pair can be joined by both (spec "Two lines on one pair").
@@ -885,7 +877,7 @@ impl App {
 
     /// The tab and group menus' jar list (spec "UI"): "Inherit", then every jar the card's edge could name
     /// (`valid_targets`) and the one it does. `None` for every other kind.
-    pub(crate) fn jar_menu(&self, id: &str) -> Option<JarMenu> {
+    pub(crate) fn jar_menu(&self, id: NodeId) -> Option<JarMenu> {
         if !self.is_tab(id) && !self.is_container(id) {
             return None;
         }
@@ -896,7 +888,7 @@ impl App {
             color: None,
             ticked: own.is_none(),
         };
-        let targets = self.valid_targets(JAR_EDGE, id).into_iter().filter_map(|t| t.parse::<NodeId>().ok());
+        let targets = self.valid_targets(JAR_EDGE, id).into_iter();
         let defs = self.jar_defs();
         let rows = std::iter::once(inherit)
             .chain(
@@ -918,7 +910,7 @@ impl App {
     /// The rename field committed with `name` (`NodeAction::CommitRename`, and headless `RENAMEGROUP id name`): the
     /// field closes, and a group takes the clean name (`edit_name`). A name with nothing left once cleaned, or an id
     /// that isn't a group, changes nothing. The caller saves.
-    pub(crate) fn commit_rename(&mut self, id: &str, name: &str) {
+    pub(crate) fn commit_rename(&mut self, id: NodeId, name: &str) {
         self.renaming_group = None;
         let clean = crate::names::clean_name(name);
         // A group or jar always has a name (an empty draft changes nothing); any other node's name is an override of
@@ -927,7 +919,7 @@ impl App {
             if !clean.is_empty() {
                 self.edit_name(id, &clean);
             }
-        } else if self.nodes.contains_key(id) {
+        } else if self.nodes.contains_key(&id) {
             self.edit_name(id, &clean);
         }
     }
@@ -935,20 +927,20 @@ impl App {
     /// Applies whichever item was clicked in a node's right-click menu.
     /// Each action only ever appears on kinds where it makes sense
     /// (`node_menu_config`), so none of these re-check the kind.
-    pub(crate) fn apply_node_action(&mut self, ctx: &egui::Context, id: &str, action: NodeAction) {
+    pub(crate) fn apply_node_action(&mut self, ctx: &egui::Context, id: NodeId, action: NodeAction) {
         // Pick-target mode ends on any other action (links spec).
         if !matches!(action, NodeAction::Connect(_)) {
             self.cancel_connect();
         }
         match action {
             NodeAction::Open => {
-                if self.nodes.contains_key(id) {
+                if self.nodes.contains_key(&id) {
                     self.interaction.selected.clear();
                     self.start_transition_to_item(id);
                 }
             }
             NodeAction::CopyText => {
-                if self.nodes.get(id).is_some_and(|n| n.as_note().is_some()) {
+                if self.nodes.get(&id).is_some_and(|n| n.as_note().is_some()) {
                     ctx.copy_text(self.note_text(id).to_owned());
                 }
             }
@@ -975,7 +967,7 @@ impl App {
                 self.end_view(id);
             }
             NodeAction::CopyUrl => {
-                let node = self.nodes.get(id);
+                let node = self.nodes.get(&id);
                 if let Some(url) = self.copyable_url(id).map(str::to_owned) {
                     ctx.copy_text(url);
                 } else if let Some(url) = node.and_then(|n| n.runtime.saved_tab()) {
@@ -986,18 +978,18 @@ impl App {
             NodeAction::Rename => {
                 // name rule: the field edits the stored name
                 let name = self.doc.mirror.name(id).to_owned();
-                self.renaming_group = Some((id.to_string(), name));
+                self.renaming_group = Some((id, name));
                 self.pending_focus = Some(FocusTarget::GroupRename);
             }
             NodeAction::CommitRename(name) => self.commit_rename(id, &name),
             NodeAction::CancelRename => self.renaming_group = None,
             NodeAction::SetColor(color) => {
-                if self.nodes.contains_key(id) {
+                if self.nodes.contains_key(&id) {
                     self.edit_field(id, field::COLOR, session_sync::color_value(color));
                 }
             }
             NodeAction::CycleColor => {
-                if self.nodes.contains_key(id) {
+                if self.nodes.contains_key(&id) {
                     let next = next_tag_color(self.doc.mirror.color(id));
                     self.edit_field(id, field::COLOR, session_sync::color_value(next));
                 }
@@ -1005,11 +997,11 @@ impl App {
             NodeAction::ToggleMute => self.toggle_muted(id),
             NodeAction::RetryMissingFile => self.retry_missing_file(id),
             NodeAction::OpenInDefaultViewKind => self.wake_tab(id, self.settings.default_starting_view_kind),
-            NodeAction::RemoveFromGroup => self.apply_drop(CardId::stored(id), Some((DropEffect::Eject, None))),
+            NodeAction::RemoveFromGroup => self.apply_drop(CardId::from(id), Some((DropEffect::Eject, None))),
             NodeAction::MoveToGroup(group) => {
-                self.apply_drop(CardId::stored(id), Some((DropEffect::Join, Some(CardId::stored(&group)))))
+                self.apply_drop(CardId::from(id), Some((DropEffect::Join, Some(CardId::from(group)))))
             }
-            NodeAction::Dissolve => self.ungroup(&[id.to_owned()]),
+            NodeAction::Dissolve => self.ungroup(&[id]),
             NodeAction::ExportGroup => {
                 let name = export_file_name(self.doc.mirror.name(id)); // name rule: export_file_name cleans it
                 if let Some(json) = self.export_group_json(id) {
@@ -1024,7 +1016,7 @@ impl App {
             NodeAction::OpenPage(_) | NodeAction::MenuBack => {}
             NodeAction::SetJar(jar) => self.set_jar_edge(id, jar),
             NodeAction::StartNewJar => {
-                self.naming_jar = Some((id.to_string(), String::new()));
+                self.naming_jar = Some((id, String::new()));
                 self.pending_focus = Some(FocusTarget::JarName);
             }
             NodeAction::NewJar(name) => {
@@ -1036,19 +1028,15 @@ impl App {
             }
             NodeAction::CancelNewJar => self.naming_jar = None,
             NodeAction::ClearJarCookies => {
-                if let Ok(jar) = id.parse() {
-                    self.offer_confirm(Confirm::Jar(JarConfirm::Clear(jar)));
-                }
+                self.offer_confirm(Confirm::Jar(JarConfirm::Clear(id)));
             }
             NodeAction::SetJarEphemeral(on) => {
-                if let Ok(jar) = id.parse() {
-                    self.request_jar_ephemeral(jar, on);
-                }
+                self.request_jar_ephemeral(id, on);
             }
             NodeAction::SwitchJarNow => self.switch_jar_now(id),
             NodeAction::Connect(edge) => {
-                if self.nodes.contains_key(id) {
-                    self.link.connecting = Some((id.to_string(), edge));
+                if self.nodes.contains_key(&id) {
+                    self.link.connecting = Some((id, edge));
                 }
             }
             NodeAction::Disconnect { edge, other, link } => match link {
@@ -1056,13 +1044,13 @@ impl App {
                 // the one clicked.
                 Some(link) => {
                     if self.links_naming(id).contains(&link) {
-                        self.delete_link(&link);
+                        self.delete_link(link);
                     }
                 }
                 // Either way round: the row says which, and `disconnect` only removes an edge that is there.
                 None => {
-                    self.disconnect(edge, id, &other);
-                    self.disconnect(edge, &other, id);
+                    self.disconnect(edge, id, other);
+                    self.disconnect(edge, other, id);
                 }
             },
         }

@@ -2,6 +2,7 @@
 //! the kill-on-exit job (`job`), profile and cache folders (`profiles`), engine availability (`availability`), the
 //! WSL-hosted WebKit spawn (`webkit`) and the control channel (`view_io`).
 
+use crate::store::model::NodeId;
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -674,12 +675,12 @@ fn listen_local_pair_with_retry(socket_id: &str) -> std::io::Result<transport::L
 /// that's itself still stuck.
 static SOCKET_ID_FALLBACK_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-fn fresh_fallback_socket_id(tab_id: &str) -> String {
+fn fresh_fallback_socket_id(tab_id: NodeId) -> String {
     let n = SOCKET_ID_FALLBACK_COUNTER.fetch_add(1, Ordering::Relaxed);
     format!("{tab_id}-r{}-{n}", std::process::id())
 }
 
-fn per_tab_log_files(tab_id: &str) -> std::io::Result<(std::fs::File, std::fs::File)> {
+fn per_tab_log_files(tab_id: NodeId) -> std::io::Result<(std::fs::File, std::fs::File)> {
     // Explicit per-tab log file rather than relying on inherited
     // stdout/stderr: when manifold itself is launched with its stdio
     // redirected (e.g. `manifold.exe > file` from bash), that redirection
@@ -704,7 +705,7 @@ fn open_capped_log(path: &Path, cap: u64) -> std::io::Result<std::fs::File> {
     std::fs::OpenOptions::new().create(true).append(true).open(path)
 }
 
-fn per_tab_log_path(tab_id: &str) -> PathBuf {
+fn per_tab_log_path(tab_id: NodeId) -> PathBuf {
     std::env::temp_dir().join(format!("manifold-{tab_id}.log"))
 }
 
@@ -798,7 +799,7 @@ fn host_fatal(lines: &[String]) -> Option<String> {
 const SPAWN_HEADER_START: &str = "---- manifold pid ";
 
 /// The line `per_tab_log_files` writes to a tab's log before each spawn.
-fn spawn_header(tab_id: &str) -> String {
+fn spawn_header(tab_id: NodeId) -> String {
     format!("{SPAWN_HEADER_START}{} spawning a host for {tab_id} ----", std::process::id())
 }
 
@@ -952,7 +953,7 @@ fn prepare_webview2(kind: ViewKind, _custom: Option<&Path>) -> Result<Prepared, 
 /// `wake` is called by the tab's reader thread after each engine message (`event_loop::view_wake`).
 pub fn spawn_tab(
     kind: ViewKind,
-    tab_id: &str,
+    tab_id: NodeId,
     initial_url: &str,
     custom_cef: Option<&Path>,
     jar_json: &dyn Fn() -> String,
@@ -991,7 +992,7 @@ pub fn spawn_tab(
     // that case, fall back once to a fresh disambiguating id for
     // socket/shared-memory naming only; tab_id itself keeps meaning what it
     // already means everywhere else in manifold (TabNode map key, UI).
-    let (socket_id, listeners) = match listen_local_pair_with_retry(tab_id) {
+    let (socket_id, listeners) = match listen_local_pair_with_retry(&tab_id.to_string()) {
         Ok(listeners) => (tab_id.to_string(), listeners),
         Err(primary_err) => {
             let fallback_id = fresh_fallback_socket_id(tab_id);
@@ -1006,7 +1007,7 @@ pub fn spawn_tab(
 
     let mut command = Command::new(&prepared.exe);
     command
-        .env("VIEW_TAB_ID", tab_id)
+        .env("VIEW_TAB_ID", tab_id.to_string())
         .env(host_env::ENV_SOCKET_ID, &socket_id)
         .env(host_env::ENV_INITIAL_URL, initial_url)
         // A host never reads manifold's stdin (the debug-command pipe); `wsl.exe` would, and take commands from it.

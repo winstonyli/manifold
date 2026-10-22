@@ -1,6 +1,7 @@
 //! Global keyboard shortcuts (and their headless equivalents) as App methods.
 
 use super::*;
+use crate::store::model::NodeId;
 
 /// What a global shortcut does (`App::handle_global_shortcuts`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -224,8 +225,8 @@ impl App {
                 } else {
                     crate::nav_history::Dir::Forward
                 };
-                if let Some(id) = self.focused.clone() {
-                    self.navigate_history(&id, dir);
+                if let Some(id) = self.focused {
+                    self.navigate_history(id, dir);
                 }
             }
         }
@@ -234,27 +235,27 @@ impl App {
     /// `Ctrl+P` / headless `TOGGLEPIN` — pins the selected cards, or unpins them all when every one is pinned; with
     /// nothing selected it toggles the focused card (the same effect as its pin dot or the menu's Pin/Unpin row).
     pub(crate) fn pin_shortcut(&mut self) {
-        let ids: Vec<String> = if self.interaction.selected.is_empty() {
-            self.focused.iter().cloned().collect()
+        let ids: Vec<NodeId> = if self.interaction.selected.is_empty() {
+            self.focused.into_iter().collect()
         } else {
-            self.interaction.selected.iter().filter_map(|c| c.node()).map(|n| n.to_string()).collect()
+            self.interaction.selected.iter().filter_map(|c| c.node()).collect()
         };
-        let ids: Vec<String> = ids.into_iter().filter(|id| self.nodes.contains_key(id)).collect();
-        let pin = ids.iter().any(|id| !self.doc.mirror.pinned(id));
+        let ids: Vec<NodeId> = ids.into_iter().filter(|id| self.nodes.contains_key(id)).collect();
+        let pin = ids.iter().any(|&id| !self.doc.mirror.pinned(id));
         for id in ids {
-            self.edit_field(&id, field::PINNED, FieldValue::Bool(pin));
+            self.edit_field(id, field::PINNED, FieldValue::Bool(pin));
         }
     }
 
     /// The tab menu's Pin/Unpin row: toggles the focused tab alone, whatever is selected.
     pub(crate) fn pin_focused_tab_shortcut(&mut self) {
-        let Some(id) = self.focused.clone() else { return };
-        self.toggle_pin(&id);
+        let Some(id) = self.focused else { return };
+        self.toggle_pin(id);
     }
 
     /// Pins or unpins node `id` of any kind: a pinned card is left out of the graph layout.
-    pub(crate) fn toggle_pin(&mut self, id: &str) {
-        if self.nodes.contains_key(id) {
+    pub(crate) fn toggle_pin(&mut self, id: NodeId) {
+        if self.nodes.contains_key(&id) {
             let on = !self.doc.mirror.pinned(id);
             self.edit_field(id, field::PINNED, FieldValue::Bool(on));
         }
@@ -265,7 +266,7 @@ impl App {
     /// Reload`'s own doc comment), so there's no can-reload guard the way
     /// `GoBack`/`GoForward` need one.
     pub(crate) fn reload_focused_tab_shortcut(&mut self) {
-        let Some(id) = self.focused.clone() else { return };
+        let Some(id) = self.focused else { return };
         if let Some(node) = self.nodes.get_mut(&id).and_then(|n| n.as_tab_mut()) {
             node.tab.send(&HostToView::Reload);
         }
@@ -278,15 +279,15 @@ impl App {
     /// (`current_group` is `None` there, nothing to rename) or while
     /// already renaming.
     pub(crate) fn rename_current_group_shortcut(&mut self) {
-        let Some(group_id) = self.current_group.clone() else { return };
+        let Some(group_id) = self.current_group else { return };
         if self.renaming_group.is_some() || self.current_json_node().is_some() {
             return;
         }
-        if !self.is_container(&group_id) {
+        if !self.is_container(group_id) {
             return;
         }
         // name rule: the field edits the stored name
-        let name = self.doc.mirror.name(&group_id).to_owned();
+        let name = self.doc.mirror.name(group_id).to_owned();
         self.renaming_group = Some((group_id, name));
         self.pending_focus = Some(FocusTarget::GroupRename);
     }
@@ -327,10 +328,10 @@ impl App {
             ViewMode::Item => self.leave_to_graph(),
             ViewMode::Settings => self.close_settings_page(),
             ViewMode::Graph => {
-                let Some(id) = self.focused.clone() else { return };
+                let Some(id) = self.focused else { return };
                 if self.nodes.contains_key(&id) {
-                    self.show_level_of(&id);
-                    self.focus_tab(&id);
+                    self.show_level_of(id);
+                    self.focus_tab(id);
                 }
             }
         }
@@ -377,7 +378,7 @@ impl App {
     /// `HostToView::OpenDevTools`'s doc comment for per-engine support. An
     /// engine without DevTools (`ViewDesc::devtools`) gets a toast instead.
     pub(crate) fn open_devtools_shortcut(&mut self) {
-        let Some(id) = self.focused.clone() else { return };
+        let Some(id) = self.focused else { return };
         let Some(node) = self.nodes.get_mut(&id).and_then(|n| n.as_tab_mut()) else { return };
         let kind = node.tab.kind;
         if kind.desc().devtools {
@@ -392,14 +393,14 @@ impl App {
     /// rather than auto-focusing (see `spawn_new_tab`'s own doc comment).
     pub(crate) fn new_tab_shortcut(&mut self) {
         let home_page = self.settings.home_page.clone();
-        let parent = self.focused.clone();
+        let parent = self.focused;
         // From a JSON level: leave it, and land in the level then shown (the
         // focused id may be a level card, not a stored node).
         let group = if self.current_json_node().is_some() {
             self.leave_json_level();
-            self.current_group.clone()
+            self.current_group
         } else {
-            self.group_of(&parent)
+            self.group_of(parent)
         };
         self.spawn_new_tab(parent, group, &home_page);
     }
@@ -419,8 +420,8 @@ impl App {
     /// `Ctrl+W` / headless `CLOSETAB` — closes the focused tab, a no-op if
     /// none is focused (Graph view with nothing selected).
     pub(crate) fn close_focused_tab_shortcut(&mut self) {
-        if let Some(id) = self.focused.clone() {
-            self.close_node(&id);
+        if let Some(id) = self.focused {
+            self.close_node(id);
         }
     }
 
@@ -428,9 +429,9 @@ impl App {
     /// context menu's own "Duplicate" entry: the selection when one is
     /// made, else the focused card. A no-op if neither exists.
     pub(crate) fn duplicate_focused_tab_shortcut(&mut self) {
-        let selected = self.interaction.selected.iter().find_map(|c| c.node()).map(|n| n.to_string());
-        if let Some(id) = selected.or_else(|| self.focused.clone()) {
-            self.duplicate_selection(&id);
+        let selected = self.interaction.selected.iter().find_map(|c| c.node());
+        if let Some(id) = selected.or(self.focused) {
+            self.duplicate_selection(id);
         }
     }
 
@@ -473,7 +474,7 @@ impl App {
             return;
         }
         // A sleeping or starting tab opens the bar as before; its engine is checked when it is live.
-        let live = self.focused.as_deref().and_then(|id| self.nodes.get(id)).and_then(|n| n.as_tab());
+        let live = self.focused.and_then(|id| self.nodes.get(&id)).and_then(|n| n.as_tab());
         if let Some(kind) = live.map(|t| t.tab.kind).filter(|k| !k.desc().find) {
             self.queue_toast(format!("{} has no find in page", kind.desc().label));
             return;

@@ -11,14 +11,14 @@ fn a_failed_new_spawn_leaves_a_failed_card() {
         let id = app.spawn_tab_at("https://a/", egui::Vec2::ZERO, None, None);
         if saved_first {
             assert!(app.save_session());
-            assert!(live_in_doc(&app, &id), "created while in flight");
+            assert!(live_in_doc(&app, id), "created while in flight");
         }
         fail_spawns(&mut app);
         let tab = app.nodes[&id].as_unloaded().expect("a failed card");
         assert!(matches!(tab.state, UnloadedState::Failed(_)), "saved_first={saved_first}");
         assert_eq!(tab.url, "https://a/");
-        assert_eq!(app.card_kind(&id).map(|kind| kind.ty), Some(crate::store::model::TYPE_TAB));
-        assert!(live_in_doc(&app, &id), "persisted, saved_first={saved_first}");
+        assert_eq!(app.card_kind(id).map(|kind| kind.ty), Some(crate::store::model::TYPE_TAB));
+        assert!(live_in_doc(&app, id), "persisted, saved_first={saved_first}");
         assert!(!app.doc.writes.has_creates() && !app.doc.writes.has_deletes());
     }
 }
@@ -43,7 +43,7 @@ fn a_failed_split_spawn_toasts_and_makes_no_card() {
     assert!(app.save_session());
     fail_spawns(&mut app);
     assert!(!app.nodes.contains_key(&id), "no card for a split pane");
-    assert!(!live_in_doc(&app, &id), "deleted by the failure's save");
+    assert!(!live_in_doc(&app, id), "deleted by the failure's save");
     assert!(app.toasts.save_toast_queue.iter().any(|toast| toast.contains("Couldn't start split view")));
 }
 
@@ -56,11 +56,11 @@ fn closing_and_reopening_a_tab_while_it_wakes_shows_it_when_the_wake_lands() {
     let tab = add(&mut app, Kind::Tab, sleeping_tab("https://a/", "A"));
     let other = add(&mut app, Kind::Tab, sleeping_tab("https://b/", "B"));
     assert!(app.save_session());
-    app.focus_tab(&tab);
+    app.focus_tab(tab);
     assert!(app.spawns.spawning.contains_key(&tab), "waking");
-    app.close_node(&tab);
+    app.close_node(tab);
     assert!(!app.nodes.contains_key(&tab));
-    let id: NodeId = tab.parse().unwrap();
+    let id: NodeId = tab;
     app.reopen_node(id);
     assert!(app.doc.journal.as_ref().unwrap().doc().is_shown(id), "open in the document");
     fail_spawns(&mut app);
@@ -69,11 +69,11 @@ fn closing_and_reopening_a_tab_while_it_wakes_shows_it_when_the_wake_lands() {
     assert!(app.spawns.remote_in_flight.is_empty() && app.spawns.wakes_in_flight.is_empty());
 
     // Closed and left closed: the landing hides it again, and the history holds it.
-    app.focus_tab(&other);
-    app.close_node(&other);
+    app.focus_tab(other);
+    app.close_node(other);
     fail_spawns(&mut app);
     assert!(!app.nodes.contains_key(&other));
-    assert!(app.doc.journal.as_ref().unwrap().doc().nodes[&other.parse::<NodeId>().unwrap()].closed());
+    assert!(app.doc.journal.as_ref().unwrap().doc().nodes[&other].closed());
 }
 
 /// Defect 2: the same for a tab mid-respawn (no `nodes` entry), where the close parks `Remote::Hidden`: a reopen
@@ -86,7 +86,7 @@ fn closing_and_reopening_a_tab_mid_respawn_is_not_hidden_again_by_the_landing() 
     assert!(app.save_session());
     app.nodes.remove(&tab).unwrap();
     let spawn = crate::tabs::TabSpawn::new(
-        tab.clone(),
+        tab,
         "https://a/".into(),
         ViewKind::Servo,
         egui::Vec2::ZERO,
@@ -95,9 +95,9 @@ fn closing_and_reopening_a_tab_mid_respawn_is_not_hidden_again_by_the_landing() 
     );
     app.respawn_tab(spawn);
     assert!(app.spawns.spawning.contains_key(&tab) && !app.nodes.contains_key(&tab));
-    app.close_node(&tab);
+    app.close_node(tab);
     assert!(matches!(app.spawns.remote_in_flight.get(&tab), Some(Remote::Hidden)), "parked hidden");
-    let id: NodeId = tab.parse().unwrap();
+    let id: NodeId = tab;
     app.reopen_node(id);
     assert!(matches!(app.spawns.remote_in_flight.get(&tab), Some(Remote::Shown(_))), "the reopen supersedes it");
     fail_spawns(&mut app);
@@ -112,13 +112,13 @@ fn a_respawn_keeps_the_layout_position() {
     let path = temp_dir("pos-respawn").join("session.mnf");
     let mut app = app_on(&path, 1);
     let tab = add(&mut app, Kind::Tab, sleeping_tab("https://t/", ""));
-    app.snap_layout(&tab, egui::vec2(30.0, 40.0));
+    app.snap_layout(tab, egui::vec2(30.0, 40.0));
     assert!(app.save_session());
-    start_respawn(&mut app, &tab);
+    start_respawn(&mut app, tab);
     assert!(app.save_session());
     fail_spawns(&mut app);
     assert!(app.nodes.contains_key(&tab), "landed as a failed card");
-    assert_eq!(app.layout_pos(&tab), egui::vec2(30.0, 40.0));
+    assert_eq!(app.layout_pos(tab), egui::vec2(30.0, 40.0));
 }
 
 /// A new tab has no layout entry or mirror entry until it lands: it lands at its spawn position, which is its
@@ -130,7 +130,7 @@ fn a_new_tab_lands_at_its_spawn_position_in_the_layout_and_the_document() {
     let t = app.alloc_node_id();
     let at = egui::vec2(30.0, 40.0);
     app.spawn_tab_async(crate::tabs::TabSpawn::new(
-        t.clone(),
+        t,
         "https://t/".into(),
         ViewKind::Servo,
         at,
@@ -138,10 +138,10 @@ fn a_new_tab_lands_at_its_spawn_position_in_the_layout_and_the_document() {
         1.0,
     ));
     assert!(app.save_session(), "creates the spawning tab");
-    assert_eq!(stored(&app, &t, field::POS), FieldValue::Pos(30.0, 40.0));
+    assert_eq!(stored(&app, t, field::POS), FieldValue::Pos(30.0, 40.0));
     fail_spawns(&mut app);
-    assert_eq!(app.layout_pos(&t), at);
-    assert_eq!(app.doc.mirror.pos(&t), Some(at));
+    assert_eq!(app.layout_pos(t), at);
+    assert_eq!(app.doc.mirror.pos(t), Some(at));
 }
 
 /// A restore starts only the focused tab; every other tab is a
@@ -154,7 +154,7 @@ fn a_restore_starts_only_the_focused_tab() {
         let a = add(&mut app, Kind::Tab, sleeping_tab("https://a/", "A"));
         let b = add(&mut app, Kind::Tab, sleeping_tab("https://b/", "B"));
         let c = add(&mut app, Kind::Tab, sleeping_tab("https://c/", "C"));
-        app.focused = Some(b.clone());
+        app.focused = Some(b);
         assert!(app.save_session());
         app.maybe_write_local(true);
         app.close_store();
@@ -162,8 +162,8 @@ fn a_restore_starts_only_the_focused_tab() {
     };
     let mut app = app_on(&path, 2);
     assert!(app.restore_session());
-    let spawned: Vec<&str> = app.test_spawns.iter().map(|(s, _)| s.id.as_str()).collect();
-    assert_eq!(spawned, [b.as_str()]);
+    let spawned: Vec<NodeId> = app.test_spawns.iter().map(|(s, _)| s.id).collect();
+    assert_eq!(spawned, [b]);
     assert!(matches!(app.test_spawns[0].0.purpose, SpawnPurpose::Wake));
     for (id, title) in [(&a, "A"), (&c, "C")] {
         let t = app.nodes[id].as_unloaded().unwrap();
@@ -185,8 +185,8 @@ fn restoring_a_split_session_wakes_both_the_focused_and_split_tab() {
         let a = add(&mut app, Kind::Tab, sleeping_tab("https://a/", "A"));
         let b = add(&mut app, Kind::Tab, sleeping_tab("https://b/", "B"));
         let c = add(&mut app, Kind::Tab, sleeping_tab("https://c/", "C"));
-        app.focused = Some(a.clone());
-        app.split_tab = Some(b.clone());
+        app.focused = Some(a);
+        app.split_tab = Some(b);
         assert!(app.save_session());
         app.maybe_write_local(true);
         app.close_store();
@@ -194,9 +194,9 @@ fn restoring_a_split_session_wakes_both_the_focused_and_split_tab() {
     };
     let mut app = app_on(&path, 2);
     assert!(app.restore_session());
-    let mut spawned: Vec<&str> = app.test_spawns.iter().map(|(s, _)| s.id.as_str()).collect();
+    let mut spawned: Vec<NodeId> = app.test_spawns.iter().map(|(s, _)| s.id).collect();
     spawned.sort();
-    let mut expected = [a.as_str(), b.as_str()];
+    let mut expected = [a, b];
     expected.sort();
     assert_eq!(spawned, expected);
     assert!(app.test_spawns.iter().all(|(s, _)| matches!(s.purpose, SpawnPurpose::Wake)));
@@ -211,13 +211,13 @@ fn opening_a_sleeping_tab_wakes_it_once() {
     let mut app = app_on(&temp_dir("lazy-open").join("session.mnf"), 1);
     let a = add(&mut app, Kind::Tab, sleeping_tab("https://a/", "Alpha"));
     let b = add(&mut app, Kind::Tab, sleeping_tab("https://b/", "Beta"));
-    app.focus_item(&a);
-    app.focus_item(&a);
+    app.focus_item(a);
+    app.focus_item(a);
     assert_eq!(app.test_spawns.len(), 1);
-    assert_eq!(app.focused.as_deref(), Some(a.as_str()));
+    assert_eq!(app.focused, Some(a));
     assert_eq!(app.view_mode, ViewMode::Item);
-    assert_eq!(app.spawns.pending_respawn_focus.as_deref(), Some(a.as_str()));
-    app.focus_tab(&b);
+    assert_eq!(app.spawns.pending_respawn_focus, Some(a));
+    app.focus_tab(b);
     assert_eq!(app.test_spawns.len(), 2);
     assert_eq!(app.nodes[&b].as_unloaded().unwrap().state, UnloadedState::Waking);
 }
@@ -232,14 +232,14 @@ fn tab_lists_include_sleeping_tabs() {
     assert_eq!(app.quick_switcher_matches("beta"), std::slice::from_ref(&b));
     app.menus.quick_switcher.open = Some(crate::QuickSwitcher { query: "beta".into(), selected: 0 });
     app.quick_switcher_confirm();
-    assert_eq!(app.focused.as_deref(), Some(b.as_str()));
+    assert_eq!(app.focused, Some(b));
     assert_eq!(app.test_spawns.len(), 1);
     app.cycle_focused_tab(true);
-    assert_eq!(app.focused.as_deref(), Some(a.as_str()));
+    assert_eq!(app.focused, Some(a));
     assert_eq!(app.test_spawns.len(), 2);
-    assert_eq!(app.tabs_at_current_level(), [a.clone(), b.clone()]);
+    assert_eq!(app.tabs_at_current_level(), [a, b]);
     app.set_all_pinned(true);
-    assert!(app.doc.mirror.pinned(&a) && app.doc.mirror.pinned(&b));
+    assert!(app.doc.mirror.pinned(a) && app.doc.mirror.pinned(b));
     app.close_all_at_current_level();
     assert!(app.nodes.is_empty());
 }
@@ -250,7 +250,7 @@ fn tab_lists_include_sleeping_tabs() {
 fn a_failed_wake_leaves_a_failed_card() {
     let mut app = app_on(&temp_dir("lazy-fail").join("session.mnf"), 1);
     let a = add(&mut app, Kind::Tab, sleeping_tab("https://a/", "A"));
-    app.focus_tab(&a);
+    app.focus_tab(a);
     fail_spawns(&mut app);
     assert!(matches!(app.nodes[&a].as_unloaded().unwrap().state, UnloadedState::Failed(_)));
     assert_eq!(app.nodes[&a].as_unloaded().unwrap().title, "A", "the wake carried its title");
@@ -266,9 +266,9 @@ fn a_failed_wake_leaves_a_failed_card() {
 fn removing_a_tab_clears_its_stale_pending_respawn_focus() {
     let mut app = app_on(&temp_dir("remove-pending-focus").join("session.mnf"), 1);
     let tab = add(&mut app, Kind::Tab, sleeping_tab("https://a/", "A"));
-    app.focus_tab(&tab);
-    assert_eq!(app.spawns.pending_respawn_focus.as_deref(), Some(tab.as_str()));
-    app.destroy_tab(&tab);
+    app.focus_tab(tab);
+    assert_eq!(app.spawns.pending_respawn_focus, Some(tab));
+    app.destroy_tab(tab);
     assert_eq!(app.spawns.pending_respawn_focus, None);
 }
 
@@ -318,7 +318,7 @@ fn a_successful_spawn_clears_failed_cards_for_its_url() {
     assert_eq!(left.len(), 1, "a/'s failed card is gone, b/'s stays");
     assert!(app.nodes[&left[0]].as_unloaded().unwrap().url == "https://b/");
     assert!(app.nodes.contains_key(&landed));
-    assert!(!live_in_doc(&app, &stale), "the stale card is deleted in the document");
+    assert!(!live_in_doc(&app, stale), "the stale card is deleted in the document");
     let closed = app.doc.journal.as_ref().unwrap().doc().closed_roots();
     assert!(closed.is_empty(), "and not in the history");
 }
@@ -348,9 +348,9 @@ fn clearing_failed_cards_does_not_save_before_a_parked_remote_delete_lands() {
     let id = app.spawn_tab_at("https://a/", egui::Vec2::ZERO, None, None);
     // The failed twin is not refreshed here: the spawn is still in flight, so it is its own node.
     assert!(app.save_session());
-    assert!(app.doc.journal.as_ref().unwrap().doc().nodes.contains_key(&id.parse().unwrap()), "the spawn is committed");
+    assert!(app.doc.journal.as_ref().unwrap().doc().nodes.contains_key(&id), "the spawn is committed");
     let mut other = Journal::open(&path, ActorId(2)).unwrap();
-    other.begin().unwrap().commit(vec![OpBody::Delete { node: id.parse().unwrap() }]).unwrap();
+    other.begin().unwrap().commit(vec![OpBody::Delete { node: id }]).unwrap();
     assert!(app.save_session());
     assert!(app.spawns.remote_in_flight.contains_key(&id), "the remote delete is parked");
 
@@ -381,7 +381,7 @@ fn a_respawn_landing_leaves_a_same_url_failed_card() {
     app.spawn_tab_at("https://a/", egui::Vec2::ZERO, None, None);
     fail_spawns(&mut app);
     assert_eq!(failed_cards(&app).len(), 1);
-    app.handle_view_message(&tab, manifold_view_protocol::ViewToHost::Crashed { reason: "boom".into() });
+    app.handle_view_message(tab, manifold_view_protocol::ViewToHost::Crashed { reason: "boom".into() });
     assert!(app.test_spawns.iter().any(|(s, _)| matches!(s.purpose, SpawnPurpose::Respawn)), "restarting");
     let _peers = land_spawns(&mut app);
     assert_eq!(failed_cards(&app).len(), 1, "the failed card stays");
@@ -419,7 +419,7 @@ fn open_session_restores_asleep_and_wakes_only_the_focused_tab() {
     app.replace_running_session(&json, crate::store::json::Trust::Own);
     assert_eq!(app.test_spawns.len(), 1, "only the focused (first) tab wakes");
     assert!(matches!(app.test_spawns[0].0.purpose, SpawnPurpose::Wake));
-    let focused = app.focused.clone().unwrap();
+    let focused = app.focused.unwrap();
     assert_eq!(app.test_spawns[0].0.id, focused);
     let asleep: Vec<&UnloadedTabPayload> =
         app.nodes.iter().filter(|(id, _)| **id != focused).filter_map(|(_, n)| n.as_unloaded()).collect();
@@ -444,9 +444,9 @@ fn restore_without_personal_state_focuses_and_wakes_the_first_tab() {
     };
     let mut app = app_on(&path, 2);
     assert!(app.restore_session());
-    assert_eq!(app.focused.as_deref(), Some(a.as_str()));
-    let spawned: Vec<&str> = app.test_spawns.iter().map(|(s, _)| s.id.as_str()).collect();
-    assert_eq!(spawned, [a.as_str()]);
+    assert_eq!(app.focused, Some(a));
+    let spawned: Vec<NodeId> = app.test_spawns.iter().map(|(s, _)| s.id).collect();
+    assert_eq!(spawned, [a]);
     assert_eq!(app.nodes[&b].as_unloaded().unwrap().state, UnloadedState::Sleeping);
 }
 
@@ -457,30 +457,30 @@ fn a_save_during_a_respawn_keeps_the_mirror_entry() {
     let path = temp_dir("edit-respawn").join("session.mnf");
     let mut app = app_on(&path, 1);
     let tab = add(&mut app, Kind::Tab, sleeping_tab("https://a/", "A"));
-    app.edit_field(&tab, field::COLOR, red());
-    app.edit_field(&tab, field::PINNED, FieldValue::Bool(true));
+    app.edit_field(tab, field::COLOR, red());
+    app.edit_field(tab, field::PINNED, FieldValue::Bool(true));
     assert!(app.save_session());
     // What `finish_swap` and the crash path do: carry from the mirror, remove the node, respawn.
     app.nodes.remove(&tab).unwrap();
     let mut spawn = crate::tabs::TabSpawn::new(
-        tab.clone(),
+        tab,
         "https://a/".into(),
         ViewKind::Servo,
         egui::Vec2::ZERO,
         SpawnPurpose::Respawn,
         1.0,
     );
-    (spawn.carry.color, spawn.carry.pinned) = (app.doc.mirror.color(&tab), app.doc.mirror.pinned(&tab));
+    (spawn.carry.color, spawn.carry.pinned) = (app.doc.mirror.color(tab), app.doc.mirror.pinned(tab));
     app.respawn_tab(spawn);
     assert!(app.save_session());
-    assert!(app.doc.mirror.pinned(&tab) && app.doc.mirror.color(&tab) == Some(egui::Color32::RED), "kept while parked");
-    app.edit_field(&tab, field::COLOR, blue());
+    assert!(app.doc.mirror.pinned(tab) && app.doc.mirror.color(tab) == Some(egui::Color32::RED), "kept while parked");
+    app.edit_field(tab, field::COLOR, blue());
     assert!(app.save_session());
     fail_spawns(&mut app);
-    assert_eq!(app.doc.mirror.color(&tab), Some(egui::Color32::BLUE));
-    assert!(app.doc.mirror.pinned(&tab));
-    assert_eq!(stored(&app, &tab, field::COLOR), blue());
-    assert_eq!(stored(&app, &tab, field::PINNED), FieldValue::Bool(true));
+    assert_eq!(app.doc.mirror.color(tab), Some(egui::Color32::BLUE));
+    assert!(app.doc.mirror.pinned(tab));
+    assert_eq!(stored(&app, tab, field::COLOR), blue());
+    assert_eq!(stored(&app, tab, field::PINNED), FieldValue::Bool(true));
 }
 
 /// Final review I1, remote: another replica deletes G while T respawns here. The cascade reaches T in the mirror
@@ -490,17 +490,17 @@ fn a_remote_group_delete_during_a_respawn_lands_the_tab_in_its_group_without_a_m
     let path = temp_dir("respawn-remote-dissolve").join("session.mnf");
     let mut app = app_on(&path, 1);
     let (outer, g, t) = nested_tab(&mut app);
-    start_respawn(&mut app, &t);
+    start_respawn(&mut app, t);
     let mut other = Journal::open(&path, ActorId(2)).unwrap();
-    other.begin().unwrap().commit(vec![OpBody::Delete { node: g.parse().unwrap() }]).unwrap();
+    other.begin().unwrap().commit(vec![OpBody::Delete { node: g }]).unwrap();
     assert!(app.save_session());
-    assert_eq!(app.doc.mirror.group(&t), Some(outer.as_str()), "the cascade reached the respawning tab");
+    assert_eq!(app.doc.mirror.group(t), Some(outer), "the cascade reached the respawning tab");
     assert!(!app.doc.writes.has_moves(), "a remote cascade queues nothing");
     fail_spawns(&mut app);
-    assert_eq!(app.doc.mirror.group(&t), Some(outer.as_str()));
+    assert_eq!(app.doc.mirror.group(t), Some(outer));
     let doc = app.doc.journal.as_ref().unwrap().doc();
-    assert_eq!(doc.effective_group(t.parse().unwrap()), Some(outer.parse().unwrap()));
-    assert_eq!(doc.nodes[&t.parse().unwrap()].group, Some(g.parse().unwrap()), "no move was committed");
+    assert_eq!(doc.effective_group(t), Some(outer));
+    assert_eq!(doc.nodes[&t].group, Some(g), "no move was committed");
 }
 
 /// Final review I1, local dissolve: a member mid-respawn moves up to the dissolved group's group.
@@ -509,14 +509,14 @@ fn a_local_dissolve_during_a_respawn_moves_the_tab_up_a_level() {
     let path = temp_dir("respawn-local-dissolve").join("session.mnf");
     let mut app = app_on(&path, 1);
     let (outer, g, t) = nested_tab(&mut app);
-    start_respawn(&mut app, &t);
-    app.remove_node(&g);
-    assert_eq!(app.doc.mirror.group(&t), Some(outer.as_str()));
+    start_respawn(&mut app, t);
+    app.remove_node(g);
+    assert_eq!(app.doc.mirror.group(t), Some(outer));
     assert!(app.save_session());
     fail_spawns(&mut app);
-    assert_eq!(app.doc.mirror.group(&t), Some(outer.as_str()));
+    assert_eq!(app.doc.mirror.group(t), Some(outer));
     let doc = app.doc.journal.as_ref().unwrap().doc();
-    assert_eq!(doc.effective_group(t.parse().unwrap()), Some(outer.parse().unwrap()));
+    assert_eq!(doc.effective_group(t), Some(outer));
 }
 
 /// Final review I1, local merge: a member of the merged group mid-respawn lands in the target.
@@ -527,15 +527,15 @@ fn a_local_merge_during_a_respawn_moves_the_tab_into_the_target() {
     let source = add_group(&mut app, "S");
     let target = add_group(&mut app, "T");
     let m = add(&mut app, Kind::Tab, sleeping_tab("https://m/", ""));
-    app.edit_group(&m, Some(source.clone()));
+    app.edit_group(m, Some(source));
     assert!(app.save_session());
-    start_respawn(&mut app, &m);
-    app.merge_groups(&source, &target);
+    start_respawn(&mut app, m);
+    app.merge_groups(source, target);
     assert!(app.save_session());
     fail_spawns(&mut app);
-    assert_eq!(app.doc.mirror.group(&m), Some(target.as_str()));
+    assert_eq!(app.doc.mirror.group(m), Some(target));
     let doc = app.doc.journal.as_ref().unwrap().doc();
-    assert_eq!(doc.effective_group(m.parse().unwrap()), Some(target.parse().unwrap()));
+    assert_eq!(doc.effective_group(m), Some(target));
 }
 
 /// Final review I1, parent: removing P locally while its child C respawns passes C up to P's parent, and commits it.
@@ -544,14 +544,14 @@ fn a_local_removal_during_a_respawn_reparents_the_tab() {
     let path = temp_dir("respawn-local-parent").join("session.mnf");
     let mut app = app_on(&path, 1);
     let (a, p, c) = parent_chain(&mut app);
-    start_respawn(&mut app, &c);
-    app.remove_tab(&p);
-    assert_eq!(app.doc.mirror.parent(&c), Some(a.as_str()));
+    start_respawn(&mut app, c);
+    app.remove_tab(p);
+    assert_eq!(app.doc.mirror.parent(c), Some(a));
     assert!(app.save_session());
-    assert_eq!(stored(&app, &c, field::PARENT), FieldValue::Id(Some(a.parse().unwrap())));
+    assert_eq!(stored(&app, c, field::PARENT), FieldValue::Id(Some(a)));
     fail_spawns(&mut app);
-    assert_eq!(app.doc.mirror.parent(&c), Some(a.as_str()));
-    assert_eq!(stored(&app, &c, field::PARENT), FieldValue::Id(Some(a.parse().unwrap())));
+    assert_eq!(app.doc.mirror.parent(c), Some(a));
+    assert_eq!(stored(&app, c, field::PARENT), FieldValue::Id(Some(a)));
 }
 
 /// Final review I1, parent: another replica deleting P while C respawns here passes C up in the mirror only.
@@ -560,14 +560,14 @@ fn a_remote_removal_during_a_respawn_reparents_the_tab_in_the_mirror_only() {
     let path = temp_dir("respawn-remote-parent").join("session.mnf");
     let mut app = app_on(&path, 1);
     let (a, p, c) = parent_chain(&mut app);
-    start_respawn(&mut app, &c);
+    start_respawn(&mut app, c);
     let mut other = Journal::open(&path, ActorId(2)).unwrap();
-    other.begin().unwrap().commit(vec![OpBody::Delete { node: p.parse().unwrap() }]).unwrap();
+    other.begin().unwrap().commit(vec![OpBody::Delete { node: p }]).unwrap();
     assert!(app.save_session());
-    assert_eq!(app.doc.mirror.parent(&c), Some(a.as_str()), "the cascade reached the respawning tab");
+    assert_eq!(app.doc.mirror.parent(c), Some(a), "the cascade reached the respawning tab");
     assert!(!app.doc.writes.has_fields(), "a remote cascade queues nothing");
     fail_spawns(&mut app);
-    assert_eq!(app.doc.mirror.parent(&c), Some(a.as_str()));
+    assert_eq!(app.doc.mirror.parent(c), Some(a));
 }
 
 /// The landing safety net (`seed_landing`): a new spawn has no mirror entry for the cascades to reach, so a group
@@ -579,27 +579,27 @@ fn a_new_spawn_into_a_group_dissolved_in_flight_lands_where_the_document_shows_i
     let mut app = app_on(&path, 1);
     let outer = add_group(&mut app, "O");
     let g = add_group(&mut app, "G");
-    app.edit_group(&g, Some(outer.clone()));
+    app.edit_group(g, Some(outer));
     assert!(app.save_session());
     let t = app.alloc_node_id();
     let mut spawn = crate::tabs::TabSpawn::new(
-        t.clone(),
+        t,
         "https://t/".into(),
         ViewKind::Servo,
         egui::Vec2::ZERO,
         SpawnPurpose::Restore,
         1.0,
     );
-    spawn.group = Some(g.clone());
+    spawn.group = Some(g);
     app.spawn_tab_async(spawn);
     assert!(app.save_session(), "creates the spawning tab in G");
-    app.remove_node(&g); // not saved before the landing
+    app.remove_node(g); // not saved before the landing
     fail_spawns(&mut app);
-    assert_eq!(app.doc.mirror.group(&t), Some(outer.as_str()));
+    assert_eq!(app.doc.mirror.group(t), Some(outer));
     assert!(!app.doc.writes.has_moves());
     let doc = app.doc.journal.as_ref().unwrap().doc();
-    assert_eq!(doc.effective_group(t.parse().unwrap()), Some(outer.parse().unwrap()));
-    assert_eq!(doc.nodes[&t.parse().unwrap()].group, Some(g.parse().unwrap()), "no move was committed");
+    assert_eq!(doc.effective_group(t), Some(outer));
+    assert_eq!(doc.nodes[&t].group, Some(g), "no move was committed");
 }
 
 /// A tab whose spawn hasn't landed is created with the url it starts at, and lands with it in the mirror.
@@ -609,7 +609,7 @@ fn a_spawning_tab_is_created_and_lands_with_its_url() {
     let mut app = app_on(&path, 1);
     let t = app.alloc_node_id();
     let spawn = crate::tabs::TabSpawn::new(
-        t.clone(),
+        t,
         "https://t/".into(),
         ViewKind::Servo,
         egui::Vec2::ZERO,
@@ -618,11 +618,11 @@ fn a_spawning_tab_is_created_and_lands_with_its_url() {
     );
     app.spawn_tab_async(spawn);
     assert!(app.save_session());
-    assert_eq!(stored(&app, &t, field::URL), FieldValue::Str("https://t/".into()));
+    assert_eq!(stored(&app, t, field::URL), FieldValue::Str("https://t/".into()));
     fail_spawns(&mut app);
-    assert_eq!(app.doc.mirror.url(&t), "https://t/", "the failed card lands with it");
+    assert_eq!(app.doc.mirror.url(t), "https://t/", "the failed card lands with it");
     assert!(app.save_session());
-    assert_eq!(stored(&app, &t, field::URL), FieldValue::Str("https://t/".into()));
+    assert_eq!(stored(&app, t, field::URL), FieldValue::Str("https://t/".into()));
 }
 
 /// A new tab is created with the jar it starts with and lands with it in the mirror. An edit to its group meanwhile
@@ -634,31 +634,31 @@ fn a_spawning_tab_is_created_and_lands_with_its_jar() {
     let mut app = app_on(&path, 1);
     let (work, home) = (add_jar(&mut app, "Work"), add_jar(&mut app, "Home"));
     let g = add_group(&mut app, "G");
-    app.set_jar_edge(&g, Some(work));
+    app.set_jar_edge(g, Some(work));
     assert!(app.save_session());
     // A restored tab, started with its own edge to Work.
     let t = app.alloc_node_id();
     let mut spawn = crate::tabs::TabSpawn::new(
-        t.clone(),
+        t,
         "https://t/".into(),
         ViewKind::Servo,
         egui::Vec2::ZERO,
         SpawnPurpose::Restore,
         1.0,
     );
-    (spawn.group, spawn.jar) = (Some(g.clone()), Some(work));
+    (spawn.group, spawn.jar) = (Some(g), Some(work));
     spawn.carry.color = Some(egui::Color32::RED);
     app.spawn_tab_async(spawn);
     assert!(app.save_session());
-    assert_eq!(stored(&app, &t, field::JAR), FieldValue::Id(Some(work)), "created with its jar");
-    assert!(!app.linked_ids().any(|id| id == t) && app.doc.mirror.jar(&t).is_none(), "out of the edits' reach");
-    app.set_jar_edge(&g, Some(home));
-    assert!(!app.doc.mirror.has(&t), "no partial entry");
+    assert_eq!(stored(&app, t, field::JAR), FieldValue::Id(Some(work)), "created with its jar");
+    assert!(!app.linked_ids().any(|id| id == t) && app.doc.mirror.jar(t).is_none(), "out of the edits' reach");
+    app.set_jar_edge(g, Some(home));
+    assert!(!app.doc.mirror.has(t), "no partial entry");
     fail_spawns(&mut app);
-    assert_eq!(app.doc.mirror.jar(&t), Some(work), "lands with it");
-    assert_eq!(app.doc.mirror.color(&t), Some(egui::Color32::RED), "the landing seeded the whole entry");
+    assert_eq!(app.doc.mirror.jar(t), Some(work), "lands with it");
+    assert_eq!(app.doc.mirror.color(t), Some(egui::Color32::RED), "the landing seeded the whole entry");
     assert!(app.save_session());
-    assert_eq!(stored(&app, &t, field::JAR), FieldValue::Id(Some(work)));
+    assert_eq!(stored(&app, t, field::JAR), FieldValue::Id(Some(work)));
 }
 
 #[test]
@@ -666,7 +666,7 @@ fn only_jar_view_kinds_are_asked_for_cookies() {
     let mut app = app_on(&temp_dir("jar-engines-pull").join("session.mnf"), 1);
     for kind in ViewKind::ALL {
         let (id, mut peer) = live_tab(&mut app, kind, "https://a/");
-        app.pull_cookies(&id);
+        app.pull_cookies(id);
         let asked = sent(&mut peer).iter().any(|m| matches!(m, HostToView::GetCookies));
         assert_eq!(asked, JAR_VIEW_KINDS.contains(&kind), "{kind:?}");
     }
@@ -679,9 +679,9 @@ fn only_jar_view_kinds_switch_when_their_jar_is_cleared() {
         let (id, _peer) = live_tab(&mut app, kind, "https://a/");
         // Running on the default jar, which the user cleared: a jar engine must respawn into it.
         let default = default_jar_id(&mut app);
-        app.cookies.jar_tabs.insert(id.clone(), (default, crate::jar::TabCookies::default()));
-        app.cookies.jar_reseed.insert(id.clone());
-        assert_eq!(app.will_switch(&id), JAR_VIEW_KINDS.contains(&kind), "{kind:?}");
+        app.cookies.jar_tabs.insert(id, (default, crate::jar::TabCookies::default()));
+        app.cookies.jar_reseed.insert(id);
+        assert_eq!(app.will_switch(id), JAR_VIEW_KINDS.contains(&kind), "{kind:?}");
     }
 }
 
@@ -706,13 +706,13 @@ fn the_tabs_under_a_group_all_get_shutdown_together() {
     let mut app = app_on(&temp_dir("group-shutdown").join("session.mnf"), 1);
     let outer = add_group(&mut app, "outer");
     let inner = add_group(&mut app, "inner");
-    app.edit_group(&inner, Some(outer.clone()));
+    app.edit_group(inner, Some(outer));
     let (a, mut pa) = live_tab(&mut app, ViewKind::Servo, "https://a/");
     let (b, mut pb) = live_tab(&mut app, ViewKind::Servo, "https://b/");
     let (_, mut pc) = live_tab(&mut app, ViewKind::Servo, "https://c/");
-    app.edit_group(&a, Some(outer.clone()));
-    app.edit_group(&b, Some(inner));
-    let mut under: Vec<String> = app.members_under(&outer).into_iter().filter(|m| !app.is_container(m)).collect();
+    app.edit_group(a, Some(outer));
+    app.edit_group(b, Some(inner));
+    let mut under: Vec<NodeId> = app.members_under(outer).into_iter().filter(|m| !app.is_container(*m)).collect();
     under.sort();
     let mut want = vec![a, b];
     want.sort();
@@ -733,18 +733,18 @@ fn a_wake_into_another_view_is_saved_at_wake_start() {
     let mut app = app_on(&path, 1);
     let tab = add(&mut app, Kind::Tab, sleeping_tab("https://s/", ""));
     assert!(app.save_session());
-    app.wake_tab(&tab, ViewKind::Cef);
-    assert_eq!(app.doc.mirror.view_kind(&tab), ViewKind::Cef, "shown at once");
+    app.wake_tab(tab, ViewKind::Cef);
+    assert_eq!(app.doc.mirror.view_kind(tab), ViewKind::Cef, "shown at once");
     assert_eq!(app.test_spawns[0].0.kind, ViewKind::Cef);
-    app.wake_tab(&tab, ViewKind::Webview2);
-    assert_eq!(app.doc.mirror.view_kind(&tab), ViewKind::Cef, "an ignored wake changes nothing");
+    app.wake_tab(tab, ViewKind::Webview2);
+    assert_eq!(app.doc.mirror.view_kind(tab), ViewKind::Cef, "an ignored wake changes nothing");
     assert!(app.save_session());
-    assert_eq!(stored(&app, &tab, field::VIEW_KIND), view_kind(ViewKind::Cef), "saved while the wake is in flight");
+    assert_eq!(stored(&app, tab, field::VIEW_KIND), view_kind(ViewKind::Cef), "saved while the wake is in flight");
     fail_spawns(&mut app);
     assert!(matches!(app.nodes[&tab].as_unloaded().unwrap().state, UnloadedState::Failed(_)));
-    assert_eq!(app.doc.mirror.view_kind(&tab), ViewKind::Cef, "the failed card is on the engine that failed");
+    assert_eq!(app.doc.mirror.view_kind(tab), ViewKind::Cef, "the failed card is on the engine that failed");
     assert!(app.save_session());
-    assert_eq!(stored(&app, &tab, field::VIEW_KIND), view_kind(ViewKind::Cef));
+    assert_eq!(stored(&app, tab, field::VIEW_KIND), view_kind(ViewKind::Cef));
 }
 
 /// Spawn failures that share a cause reach the toast queue as one message once the window has passed.
@@ -768,8 +768,8 @@ fn cannot_start_crashes_with_one_reason_toast_once_with_a_count() {
     let mut app = app_on(&temp_dir("crash-toasts").join("session.mnf"), 1);
     let a = succeed_spawn(&mut app, "https://a/");
     let b = succeed_spawn(&mut app, "https://b/");
-    app.leave_failed_card(&a, "no engine", LeftClosed::CannotStart);
-    app.leave_failed_card(&b, "no engine", LeftClosed::CannotStart);
+    app.leave_failed_card(a, "no engine", LeftClosed::CannotStart);
+    app.leave_failed_card(b, "no engine", LeftClosed::CannotStart);
     assert!(app.toasts.save_toast_queue.is_empty(), "held inside the window");
     assert_eq!(flushed_failure_toasts(&mut app), ["2 tabs couldn't start: no engine"]);
 }
@@ -782,8 +782,8 @@ fn a_failed_retry_and_a_new_failure_of_one_intent_leave_one_card() {
     app.spawn_tab_at("https://a/", egui::Vec2::ZERO, None, None);
     fail_spawns(&mut app);
     let card = failed_cards(&app).remove(0);
-    let kind = app.doc.mirror.view_kind(&card);
-    app.wake_tab(&card, kind);
+    let kind = app.doc.mirror.view_kind(card);
+    app.wake_tab(card, kind);
     assert_eq!(app.nodes[&card].as_unloaded().unwrap().state, UnloadedState::Waking);
     app.spawn_tab_at("https://a/", egui::Vec2::ZERO, None, None);
     let mut parked = std::mem::take(&mut app.test_spawns);
@@ -804,7 +804,7 @@ fn a_crashed_tab_beside_a_failed_card_for_its_intent_leaves_one_card() {
     app.spawn_tab_at("https://a/", egui::Vec2::ZERO, None, None);
     fail_spawns(&mut app);
     assert_eq!(failed_cards(&app).len(), 1, "setup: a failed card beside the live tab");
-    app.leave_failed_card(&live, "keeps crashing", LeftClosed::KeepsCrashing);
+    app.leave_failed_card(live, "keeps crashing", LeftClosed::KeepsCrashing);
     assert_eq!(failed_cards(&app), std::slice::from_ref(&live));
     assert!(
         app.doc.journal.as_ref().unwrap().doc().closed_roots().is_empty(),
@@ -830,10 +830,10 @@ fn a_tab_that_stops_responding_is_toasted_once() {
 fn restart_view_respawns_the_tab_under_its_id() {
     let mut app = app_on(&temp_dir("restart-engine").join("session.mnf"), 1);
     let live = succeed_spawn(&mut app, "https://a/");
-    assert!(app.restart_view(&live));
+    assert!(app.restart_view(live));
     assert!(app.test_spawns.iter().any(|(s, _)| s.id == live), "a respawn under the same id");
     assert!(app.toasts.save_toast_queue.iter().any(|t| t == "Restarted: https://a/"));
-    assert!(!app.restart_view("no-such-tab"));
+    assert!(!app.restart_view(id(99)));
 }
 
 /// "End View" leaves a failed card for the tab, and says so.
@@ -841,10 +841,10 @@ fn restart_view_respawns_the_tab_under_its_id() {
 fn end_view_leaves_a_failed_card() {
     let mut app = app_on(&temp_dir("end-engine").join("session.mnf"), 1);
     let live = succeed_spawn(&mut app, "https://a/");
-    assert!(app.end_view(&live));
+    assert!(app.end_view(live));
     assert_eq!(failed_cards(&app), std::slice::from_ref(&live));
     assert!(app.toasts.save_toast_queue.iter().any(|t| t == "Ended (not responding): https://a/"));
-    assert!(!app.end_view(&live), "a failed card is no live tab");
+    assert!(!app.end_view(live), "a failed card is no live tab");
 }
 
 /// A startup Root spawn that failed leaves a saved failed card; the next launch restores it as the focused tab and
@@ -859,6 +859,6 @@ fn a_failed_startup_card_is_retried_at_the_next_launch() {
     app.close_store();
     let mut restored = app_on(&path, 2);
     assert!(restored.restore_session());
-    assert_eq!(restored.focused.as_deref(), Some(card.as_str()));
+    assert_eq!(restored.focused, Some(card));
     assert!(restored.test_spawns.iter().any(|(spawn, _)| spawn.id == card), "the card is woken");
 }

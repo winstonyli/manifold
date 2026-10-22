@@ -11,6 +11,7 @@
 //! The trees are saved to `tab-history.json`, keyed by node id: machine-local, not part of the shared session store
 //! (a trail changes on every navigation; the store shares only user-started URL changes).
 
+use crate::store::model::NodeId;
 use crate::url_parts::UrlParts;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -162,7 +163,7 @@ pub(crate) struct NavHistory {
     dirty: bool,
     /// The child tab Back last left this tab for, at the root of the child's trail (decision 7): Forward goes there
     /// when the trail has no Forward of its own. Not saved, not part of `dirty`.
-    left_to: Option<String>,
+    left_to: Option<NodeId>,
 }
 
 impl NavHistory {
@@ -311,11 +312,11 @@ impl NavHistory {
         }
     }
 
-    pub(crate) fn left_to(&self) -> Option<&str> {
-        self.left_to.as_deref()
+    pub(crate) fn left_to(&self) -> Option<NodeId> {
+        self.left_to
     }
 
-    pub(crate) fn set_left_to(&mut self, child: Option<String>) {
+    pub(crate) fn set_left_to(&mut self, child: Option<NodeId>) {
         self.left_to = child;
     }
 
@@ -489,7 +490,7 @@ impl NavHistory {
             "forward_fork": self.forward_fork(),
             "lin_at": self.lin_at,
             "lin_len": self.lin.len(),
-            "left_to": self.left_to,
+            "left_to": self.left_to.map(|id| id.to_string()),
         })
     }
 
@@ -701,43 +702,45 @@ fn path() -> Option<PathBuf> {
 }
 
 /// The saved trees. A missing file gives none; one that does not parse (the old format included) is moved aside.
-pub(crate) fn load() -> HashMap<String, NavHistory> {
+pub(crate) fn load() -> HashMap<NodeId, NavHistory> {
     path().map_or_else(HashMap::new, |path| load_from(&path))
 }
 
-pub(crate) fn load_from(path: &Path) -> HashMap<String, NavHistory> {
+pub(crate) fn load_from(path: &Path) -> HashMap<NodeId, NavHistory> {
     let saved: HashMap<String, Saved> =
         crate::json_file::load_or_move_aside(path, "tab history").ok().flatten().unwrap_or_default();
     saved
         .into_iter()
         .filter(|(_, s)| s.valid())
-        .map(|(id, s)| {
+        .filter_map(|(id, s)| {
+            // A key that is not a node id names no tab of this build; it is dropped, and so from the next save.
+            let id = id.parse::<NodeId>().ok()?;
             let mut h = NavHistory { entries: s.entries, at: s.at, ..NavHistory::default() };
             h.renumber();
             h.evict_to(MAX_ENTRIES);
-            (id, h)
+            Some((id, h))
         })
         .collect()
 }
 
 /// Drops the trees of tabs `keep` refuses, then writes the rest (one-page trees add nothing and are left out) when
 /// any changed or any was dropped.
-pub(crate) fn save(lists: &mut HashMap<String, NavHistory>, keep: impl Fn(&str) -> bool) {
+pub(crate) fn save(lists: &mut HashMap<NodeId, NavHistory>, keep: impl Fn(NodeId) -> bool) {
     save_to(lists, keep, path().as_deref());
 }
 
-pub(crate) fn save_to(lists: &mut HashMap<String, NavHistory>, keep: impl Fn(&str) -> bool, path: Option<&Path>) {
+pub(crate) fn save_to(lists: &mut HashMap<NodeId, NavHistory>, keep: impl Fn(NodeId) -> bool, path: Option<&Path>) {
     let before = lists.len();
-    lists.retain(|id, _| keep(id));
+    lists.retain(|&id, _| keep(id));
     let dropped = lists.len() != before;
     if !dropped && !lists.values().any(|h| h.dirty) {
         return;
     }
     let Some(path) = path else { return };
-    let saved: HashMap<&String, Saved> = lists
+    let saved: HashMap<String, Saved> = lists
         .iter()
         .filter(|(_, h)| h.entries.len() > 1)
-        .map(|(id, h)| (id, Saved { entries: h.entries.clone(), at: h.at }))
+        .map(|(id, h)| (id.to_string(), Saved { entries: h.entries.clone(), at: h.at }))
         .collect();
     crate::json_file::save(&saved, path, "tab history");
     lists.values_mut().for_each(|h| h.dirty = false);
@@ -746,6 +749,7 @@ pub(crate) fn save_to(lists: &mut HashMap<String, NavHistory>, keep: impl Fn(&st
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::card_id::testutil::node;
     use crate::store::testutil::temp_dir;
 
     fn visit(h: &mut NavHistory, urls: &[&str], now: Instant) {
@@ -1035,10 +1039,10 @@ mod tests {
                 serial: 0,
             })
             .collect();
-        let file = HashMap::from([("t", Saved { entries, at: 2 })]);
+        let file = HashMap::from([(node(1).to_string(), Saved { entries, at: 2 })]);
         std::fs::write(&path, serde_json::to_string(&file).unwrap()).unwrap();
         let mut loaded = load_from(&path);
-        let h = loaded.get_mut("t").unwrap();
+        let h = loaded.get_mut(&node(1)).unwrap();
         assert_eq!((0..3).map(|i| h.serial_of(i)).collect::<Vec<_>>(), [Some(0), Some(1), Some(2)]);
         let pushed = h.child_or_push("p3");
         assert_eq!(h.serial_of(pushed), Some(3));
@@ -1064,11 +1068,11 @@ mod tests {
         back(&mut h, now);
         visit(&mut h, &["c"], now);
         h.observe("c", "C", false, false, now);
-        let mut lists = HashMap::from([("t".to_string(), h)]);
+        let mut lists = HashMap::from([(node(1), h)]);
         save_to(&mut lists, |_| true, Some(&path));
         let mut loaded = load_from(&path);
-        let r = loaded.get_mut("t").unwrap();
-        assert_eq!((&r.entries, r.at), (&lists["t"].entries, lists["t"].at));
+        let r = loaded.get_mut(&node(1)).unwrap();
+        assert_eq!((&r.entries, r.at), (&lists[&node(1)].entries, lists[&node(1)].at));
         assert!(r.lin.is_empty(), "lin is not saved");
         r.view_reset("c");
         assert_eq!(r.go(Dir::Back, true, false, now), NavAction::Navigate("a".into()));
@@ -1078,19 +1082,20 @@ mod tests {
     fn a_saved_tree_that_breaks_an_invariant_is_dropped() {
         let path = temp_dir("nav-history-invalid").join("tab-history.json");
         let e = |url: &str, parent: Option<usize>, fwd: Option<usize>| serde_json::json!({"url": url, "title": "", "parent": parent, "fwd": fwd});
+        let k = |n| node(n).to_string();
         let file = serde_json::json!({
-            "good": {"entries": [e("a", None, Some(1)), e("b", Some(0), None)], "at": 1},
-            "bad_at": {"entries": [e("a", None, None), e("b", Some(0), None)], "at": 2},
-            "two_roots": {"entries": [e("a", None, None), e("b", None, None)], "at": 1},
-            "parent_after": {"entries": [e("a", None, None), e("b", Some(2), None), e("c", Some(0), None)], "at": 2},
-            "fwd_not_a_child": {
+            k(1): {"entries": [e("a", None, Some(1)), e("b", Some(0), None)], "at": 1},
+            k(2): {"entries": [e("a", None, None), e("b", Some(0), None)], "at": 2},
+            k(3): {"entries": [e("a", None, None), e("b", None, None)], "at": 1},
+            k(4): {"entries": [e("a", None, None), e("b", Some(2), None), e("c", Some(0), None)], "at": 2},
+            k(5): {
                 "entries": [e("a", None, None), e("b", Some(0), Some(2)), e("c", Some(0), None)],
                 "at": 2
             },
-            "empty": {"entries": [], "at": 0},
+            k(6): {"entries": [], "at": 0},
         });
         std::fs::write(&path, file.to_string()).unwrap();
-        assert_eq!(load_from(&path).keys().collect::<Vec<_>>(), ["good"]);
+        assert_eq!(load_from(&path).keys().copied().collect::<Vec<_>>(), [node(1)]);
     }
 
     #[test]
@@ -1105,10 +1110,10 @@ mod tests {
                 serial: 0,
             })
             .collect();
-        let file = HashMap::from([("t", Saved { entries, at: 59 })]);
+        let file = HashMap::from([(node(1).to_string(), Saved { entries, at: 59 })]);
         std::fs::write(&path, serde_json::to_string(&file).unwrap()).unwrap();
         let loaded = load_from(&path);
-        let h = &loaded["t"];
+        let h = &loaded[&node(1)];
         assert_eq!((h.entries.len(), h.entries[0].url.as_str(), h.at), (MAX_ENTRIES, "p10", MAX_ENTRIES - 1));
     }
 
@@ -1129,14 +1134,12 @@ mod tests {
     #[test]
     fn a_tab_that_is_gone_leaves_the_file_even_when_nothing_changed() {
         let path = temp_dir("nav-history-prune").join("tab-history.json");
-        let mut lists = HashMap::from([
-            ("t1".to_string(), NavHistory::visited(&["a", "b"])),
-            ("t2".to_string(), NavHistory::visited(&["c", "d"])),
-        ]);
+        let mut lists =
+            HashMap::from([(node(1), NavHistory::visited(&["a", "b"])), (node(2), NavHistory::visited(&["c", "d"]))]);
         save_to(&mut lists, |_| true, Some(&path));
         assert!(lists.values().all(|h| !h.dirty));
-        save_to(&mut lists, |id| id == "t1", Some(&path));
-        assert_eq!(load_from(&path).keys().collect::<Vec<_>>(), ["t1"]);
+        save_to(&mut lists, |id| id == node(1), Some(&path));
+        assert_eq!(load_from(&path).keys().copied().collect::<Vec<_>>(), [node(1)]);
     }
 
     #[test]
@@ -1158,12 +1161,12 @@ mod tests {
     fn left_to_is_cleared_by_a_move_or_a_fork_but_not_by_a_report() {
         let now = Instant::now();
         let mut h = NavHistory::visited(&["a", "b"]);
-        h.set_left_to(Some("child".into()));
+        h.set_left_to(Some(node(5)));
         h.observe("b", "B", false, false, now);
-        assert_eq!(h.left_to(), Some("child"));
+        assert_eq!(h.left_to(), Some(node(5)));
         visit(&mut h, &["c"], now);
         assert_eq!(h.left_to(), None, "a fork");
-        h.set_left_to(Some("child".into()));
+        h.set_left_to(Some(node(5)));
         back(&mut h, now);
         assert_eq!(h.left_to(), None, "a commit");
     }
@@ -1172,11 +1175,11 @@ mod tests {
     fn a_history_with_only_left_to_is_not_saved() {
         let path = temp_dir("nav-history-left-to-only").join("tab-history.json");
         let mut parent = NavHistory::default();
-        parent.set_left_to(Some("child".into()));
+        parent.set_left_to(Some(node(5)));
         assert!(!parent.dirty);
-        let mut lists = HashMap::from([("p".to_string(), parent), ("t".to_string(), NavHistory::visited(&["a", "b"]))]);
+        let mut lists = HashMap::from([(node(2), parent), (node(1), NavHistory::visited(&["a", "b"]))]);
         save_to(&mut lists, |_| true, Some(&path));
-        assert_eq!(load_from(&path).keys().collect::<Vec<_>>(), ["t"]);
+        assert_eq!(load_from(&path).keys().copied().collect::<Vec<_>>(), [node(1)]);
     }
 
     #[test]

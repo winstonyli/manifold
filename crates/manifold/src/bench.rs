@@ -9,7 +9,7 @@ use crate::node::{
     UnloadedTabPayload,
 };
 use crate::process_manager::{ViewKind, ViewTab};
-use crate::store::model::Kind;
+use crate::store::model::{Kind, NodeId};
 use crate::App;
 
 /// The best and the median of `times`.
@@ -37,12 +37,12 @@ pub(crate) fn report(what: &str, (best, median): (Duration, Duration)) {
 
 /// Spreads each level's cards on a grid, 30 to a row, 300 by 200 apart, so a settle starts from distinct positions.
 pub(crate) fn spread(f: &mut Fixture) {
-    let mut next: HashMap<Option<String>, usize> = HashMap::new();
+    let mut next: HashMap<Option<NodeId>, usize> = HashMap::new();
     for id in f.groups.iter().chain(&f.nodes) {
-        let k = next.entry(f.app.doc.mirror.group(id).map(str::to_owned)).or_default();
+        let k = next.entry(f.app.doc.mirror.group(*id)).or_default();
         let pos = egui::vec2((*k % 30) as f32 * 300.0, (*k / 30) as f32 * 200.0);
         *k += 1;
-        f.app.snap_layout(id, pos);
+        f.app.snap_layout(*id, pos);
     }
 }
 
@@ -50,9 +50,9 @@ pub(crate) fn spread(f: &mut Fixture) {
 pub(crate) struct Fixture {
     pub(crate) app: App,
     /// The eight groups, in creation order.
-    pub(crate) groups: Vec<String>,
+    pub(crate) groups: Vec<NodeId>,
     /// The 2000 nodes, in creation order.
-    pub(crate) nodes: Vec<String>,
+    pub(crate) nodes: Vec<NodeId>,
     /// The live tabs' peers, kept so their sockets stay open.
     _peers: Vec<crate::process_manager::FakePeer>,
 }
@@ -63,10 +63,10 @@ pub(crate) struct Fixture {
 pub(crate) fn level_fixture(live_tabs: bool) -> Fixture {
     let mut app = App::default();
     let mut peers = Vec::new();
-    let groups: Vec<String> = (0..8)
+    let groups: Vec<NodeId> = (0..8)
         .map(|_| {
             let id = app.alloc_node_id();
-            app.test_node(&id, Kind::Group, Runtime::None);
+            app.test_node(id, Kind::Group, Runtime::None);
             id
         })
         .collect();
@@ -121,9 +121,9 @@ pub(crate) fn level_fixture(live_tabs: bool) -> Fixture {
             }
             _ => (Kind::Group, Runtime::None),
         };
-        app.test_node(&id, kind, payload);
+        app.test_node(id, kind, payload);
         if !i.is_multiple_of(3) {
-            app.edit_group(&id, Some(groups[i % 8].clone()));
+            app.edit_group(id, Some(groups[i % 8]));
         }
         nodes.push(id);
     }

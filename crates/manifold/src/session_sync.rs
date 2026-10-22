@@ -221,7 +221,7 @@ impl<T> Remote<T> {
 pub(crate) type RemoteChange = (NodeId, Remote<Snapshot>);
 
 /// A node's type string, fields and group, as `materialize` takes them.
-pub(crate) type RemoteNode = (String, Fields, Option<String>);
+pub(crate) type RemoteNode = (String, Fields, Option<NodeId>);
 
 fn str_of(fields: &Fields, no: u32) -> String {
     match fields.get(&no) {
@@ -238,16 +238,16 @@ fn url_of(fields: &Fields) -> Option<String> {
 /// A stored node's document pos, or, for one that has none (an old jar from before jars were cards), a jittered
 /// spawn around the world center: the rule `App::placement` uses for a new node with no position. A missing `POS`
 /// decodes as (0, 0) (`FieldValue::absent`), so the exact origin reads as unplaced, as `Mirror::pos` reads it.
-pub(crate) fn pos_of(id: &str, fields: &Fields) -> egui::Vec2 {
+pub(crate) fn pos_of(id: NodeId, fields: &Fields) -> egui::Vec2 {
     match fields.get(&field::POS) {
         Some(FieldValue::Pos(x, y)) if (*x, *y) != (0.0, 0.0) => egui::vec2(*x, *y),
         _ => crate::graph_layout::GRAPH_WORLD_CENTER + crate::graph_layout::spawn_jitter(id),
     }
 }
 
-fn id_of(fields: &Fields, no: u32) -> Option<String> {
+fn id_of(fields: &Fields, no: u32) -> Option<NodeId> {
     match fields.get(&no) {
-        Some(FieldValue::Id(Some(id))) => Some(id.to_string()),
+        Some(FieldValue::Id(Some(id))) => Some(*id),
         _ => None,
     }
 }
@@ -268,23 +268,6 @@ pub(crate) fn pos_value(pos: egui::Vec2) -> FieldValue {
     }
 }
 
-/// A parent or group as a store link: `Some(None)` for none, `None` when it names something that isn't a store id.
-fn parent_id(parent: &Option<String>) -> Option<Option<NodeId>> {
-    match parent {
-        None => Some(None),
-        Some(id) => id.parse().ok().map(Some),
-    }
-}
-
-fn parse_id(id: &Option<String>) -> Option<NodeId> {
-    link_id(id.as_deref())
-}
-
-/// A mirror link as a store id: `None` for none or an id that isn't a store id.
-pub(crate) fn link_id(id: Option<&str>) -> Option<NodeId> {
-    id.and_then(|id| id.parse().ok())
-}
-
 /// The tab `spawn` starts, as a `Snapshot`: what `save_session` writes for a
 /// tab whose spawn hasn't landed yet (`App::spawning`). `pos`, `url`, `view_kind` (a
 /// stored code) and `jar` are its shared ones (`App::spawn_tab_async`): the
@@ -299,10 +282,10 @@ pub(crate) fn spawn_snapshot(
 ) -> Snapshot {
     let pos = pos.map_or(FieldValue::Pos(0.0, 0.0), pos_value);
     let mut fields = Fields::from([(field::POS, pos), (field::COLOR, color_value(spawn.carry.color))]);
-    let (pinned, parent) = (spawn.carry.pinned, parse_id(&spawn.parent));
+    let (pinned, parent) = (spawn.carry.pinned, spawn.parent);
     let (url, view_kind) = (FieldValue::Str(url.to_owned()), FieldValue::ViewCode(view_kind));
     let ty = tab_fields(&mut fields, url, view_kind, pinned, parent, jar);
-    Snapshot { ty: ty.to_owned(), group: parse_id(&spawn.group), fields }
+    Snapshot { ty: ty.to_owned(), group: spawn.group, fields }
 }
 
 /// A tab's fields beyond `pos` and `color`, live or failed. `url`, `view_kind` and `jar` are the shared ones
@@ -361,13 +344,13 @@ impl App {
         let toasts = self.toasts.save_toast_queue.len();
         // Links ride along: stored, never graph nodes.
         for (id, s) in nodes.iter().filter(|(_, s)| s.kind() == Kind::Link) {
-            self.materialize(id.to_string(), &s.ty, &s.fields, None, None);
+            self.materialize(*id, &s.ty, &s.fields, None, None);
         }
         nodes.retain(|(_, s)| s.kind() != Kind::Link);
         // Only jars (with Task 3, the Default at least): a fresh start, which keeps them where they are.
         if nodes.iter().all(|(_, s)| s.kind() == Kind::Jar) {
             for (id, s) in &nodes {
-                self.materialize(id.to_string(), &s.ty, &s.fields, s.group.map(|g| g.to_string()), None);
+                self.materialize(*id, &s.ty, &s.fields, s.group, None);
             }
             self.keep_hidden_local(local.nodes);
             self.evict_closed();
@@ -377,18 +360,17 @@ impl App {
         nodes.sort_by_key(|(_, s)| s.kind() != Kind::Group);
         let pass = self.begin_content_pass();
         for (id, s) in &nodes {
-            let group = s.group.map(|g| g.to_string());
             // The store's own `pos` still reaches the mirror inside
             // `materialize`; only the live placement is overridden.
             let entry = local.nodes.get(&id.to_string());
-            self.materialize(id.to_string(), &s.ty, &s.fields, group, entry);
+            self.materialize(*id, &s.ty, &s.fields, s.group, entry);
         }
         self.end_content_pass(pass);
         self.collapse_toasts_since(toasts);
         // Graph view with the first tab focused, re-fit once restored tabs
         // land; `apply_local` below overrides both from personal state when
         // it has them.
-        self.focused = nodes.iter().find(|(_, s)| s.kind() == Kind::Tab).map(|(id, _)| id.to_string());
+        self.focused = nodes.iter().find(|(_, s)| s.kind() == Kind::Tab).map(|(id, _)| *id);
         self.view_mode = ViewMode::Graph;
         self.camera.frame_restored = true;
         self.apply_local(local);

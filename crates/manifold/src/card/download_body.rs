@@ -1,6 +1,7 @@
 //! A download card's body.
 
 use super::*;
+use crate::store::model::NodeId;
 
 impl App {
     /// Download: no thumbnail/title-strip/audio-dot machinery (no
@@ -10,7 +11,7 @@ impl App {
         &mut self,
         ui: &mut egui::Ui,
         pass: &mut CardPass,
-        id: &str,
+        id: NodeId,
         _view: &CardView,
         rect: egui::Rect,
     ) -> CardBody {
@@ -19,7 +20,7 @@ impl App {
         let body = CardBody { interact_rect: rect, tooltip: None };
         let Some((download_path, completed, failed, total_bytes, bytes_received)) = self
             .nodes
-            .get(id)
+            .get(&id)
             .and_then(|n| n.as_download())
             .map(|d| (d.path.clone(), d.completed, d.failed, d.total_bytes, d.bytes_received))
         else {

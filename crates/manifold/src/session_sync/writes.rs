@@ -50,7 +50,7 @@ pub(crate) struct PendingWrites {
     closed_seq: u64,
     /// Another replica's text for a note being typed in, held back from its mirror and box until the blur
     /// (`end_note_edit`, 2b-4 Ruling 7), by node. Dropped when this replica commits its own text after it.
-    pub(crate) held_text: HashMap<String, String>,
+    pub(crate) held_text: HashMap<NodeId, String>,
     /// Store errors and repair notices toasted since the last commit
     /// (`store_error`, `take_store_recovery`), each shown once: a read-only
     /// file with a damaged tail reports both at every reload.
@@ -106,13 +106,6 @@ impl PendingWrites {
         self.record(node).fields.insert(no, enc);
     }
 
-    pub(crate) fn unqueue_field(&mut self, node: NodeId, no: u32) {
-        if let Some(w) = self.nodes.get_mut(&node) {
-            w.fields.remove(&no);
-        }
-        self.prune(node);
-    }
-
     pub(crate) fn move_queued(&self, node: NodeId) -> bool {
         self.nodes.get(&node).is_some_and(|w| w.group.is_some())
     }
@@ -120,13 +113,6 @@ impl PendingWrites {
     /// Queues a `Move` of `node` to `target`, `None` for the top level.
     pub(crate) fn queue_move(&mut self, node: NodeId, target: Option<NodeId>) {
         self.record(node).group = Some(target);
-    }
-
-    pub(crate) fn unqueue_move(&mut self, node: NodeId) {
-        if let Some(w) = self.nodes.get_mut(&node) {
-            w.group = None;
-        }
-        self.prune(node);
     }
 
     /// Queues a `closed` write for `node`: `closer` is the replica that closed it, 0 to reopen.
@@ -229,13 +215,10 @@ impl PendingWrites {
 pub(crate) fn keep_trail(
     nodes: &crate::node::NodeMap,
     journal: Option<&crate::store::journal::Journal>,
-    id: &str,
+    id: NodeId,
 ) -> bool {
-    nodes.contains_key(id)
-        || journal.is_none_or(|j| {
-            id.parse::<crate::store::model::NodeId>()
-                .is_ok_and(|n| j.doc().nodes.get(&n).is_some_and(crate::store::model::Node::is_live))
-        })
+    nodes.contains_key(&id)
+        || journal.is_none_or(|j| j.doc().nodes.get(&id).is_some_and(crate::store::model::Node::is_live))
 }
 
 /// What `save_session` builds from the queued writes against the document, before the commit.
@@ -324,12 +307,11 @@ impl App {
     /// none of these. A type this build doesn't know is snapshotted with its string and the generic fields
     /// (`Kind::fields`).
     pub(crate) fn snapshot(&self, id: NodeId) -> Option<Snapshot> {
-        let key = id.to_string();
-        if self.nodes.contains_key(&key) {
-            if self.is_running_download(&key) {
+        if self.nodes.contains_key(&id) {
+            if self.is_running_download(id) {
                 return None;
             }
-            let ty = self.doc.mirror.ty(&key);
+            let ty = self.doc.mirror.ty(id);
             if ty.is_empty() {
                 return None;
             }
@@ -338,33 +320,32 @@ impl App {
                 .fields()
                 .iter()
                 .map(|&no| match no {
-                    field::PARENT => (no, FieldValue::Id(link_id(self.doc.mirror.parent(&key)))),
-                    _ => (no, self.doc.mirror.get(&key, no)),
+                    field::PARENT => (no, FieldValue::Id(self.doc.mirror.parent(id))),
+                    _ => (no, self.doc.mirror.get(id, no)),
                 })
                 .collect();
-            return Some(Snapshot { ty: ty.to_owned(), group: link_id(self.doc.mirror.group(&key)), fields });
+            return Some(Snapshot { ty: ty.to_owned(), group: self.doc.mirror.group(id), fields });
         }
         if self.doc.mirror.is_link(id) {
-            let fields = Kind::Link.fields().iter().map(|&no| (no, self.doc.mirror.get(&key, no))).collect();
+            let fields = Kind::Link.fields().iter().map(|&no| (no, self.doc.mirror.get(id, no))).collect();
             return Some(Snapshot { ty: TYPE_LINK.to_owned(), group: None, fields });
         }
-        self.spawns.spawning.get(&key).cloned()
+        self.spawns.spawning.get(&id).cloned()
     }
 
     /// Whether card `key` is a download still in progress (or failed): placed, but not stored until it completes
     /// (`snapshot`), so nothing stored may name it yet (`check_connect`).
-    pub(crate) fn is_running_download(&self, key: &str) -> bool {
-        self.nodes.get(key).and_then(|n| n.as_download()).is_some_and(|dl| !dl.completed)
+    pub(crate) fn is_running_download(&self, key: NodeId) -> bool {
+        self.nodes.get(&key).and_then(|n| n.as_download()).is_some_and(|dl| !dl.completed)
     }
 
     /// Queues `id`, a node that just entered the live graph (`place_node`, `spawn_tab_async`, a jar's `add_jar`),
     /// for the next save to create (Ruling 3), and withdraws a pending delete of it: it is shown again. One the
     /// document already has an entry for (shown again from a restore or another replica's op, or a tombstone) needs
-    /// no create; an id that isn't a store id is never written.
-    pub(crate) fn queue_create(&mut self, id: &str) {
-        let Ok(node) = id.parse::<NodeId>() else { return };
-        let in_doc = self.doc.journal.as_ref().is_some_and(|j| j.doc().nodes.contains_key(&node));
-        self.doc.writes.queue_create(node, in_doc);
+    /// no create.
+    pub(crate) fn queue_create(&mut self, id: NodeId) {
+        let in_doc = self.doc.journal.as_ref().is_some_and(|j| j.doc().nodes.contains_key(&id));
+        self.doc.writes.queue_create(id, in_doc);
     }
 
     /// Queues `id`, a node removed here, for the next save to delete (Ruling 4). The save deletes it if the document
@@ -373,13 +354,12 @@ impl App {
     /// only the deletes of the links naming the node, `remove_remotely_deleted`): a node another replica
     /// deleted is already gone from the document, and a crash respawn, an engine swap
     /// and a content reload take a node out of `nodes` only for a while.
-    pub(crate) fn queue_delete(&mut self, id: &str) {
-        let Ok(node) = id.parse::<NodeId>() else { return };
-        self.doc.writes.queue_delete(node);
+    pub(crate) fn queue_delete(&mut self, id: NodeId) {
+        self.doc.writes.queue_delete(id);
         // A link goes with either end. `delete_link` forgets the link before it queues the delete, so a link naming
         // a link (remote data can) is found once at most: the recursion ends.
         for link in self.links_naming(id) {
-            self.delete_link(&link);
+            self.delete_link(link);
         }
     }
 
@@ -410,8 +390,7 @@ impl App {
             // in the mirror's links and `group` is the moves' (below).
             for id in &created {
                 let Some(node) = doc.nodes.get(id) else { continue };
-                let key = id.to_string();
-                if !self.doc.mirror.has(&key) {
+                if !self.doc.mirror.has(*id) {
                     continue;
                 }
                 for &no in node.kind().fields() {
@@ -420,8 +399,8 @@ impl App {
                         continue;
                     }
                     let stored = node.get(no);
-                    if self.doc.mirror.get(&key, no) != stored {
-                        self.doc.mirror.set(&key, no, stored);
+                    if self.doc.mirror.get(*id, no) != stored {
+                        self.doc.mirror.set(*id, no, stored);
                     }
                 }
             }
@@ -429,9 +408,9 @@ impl App {
             // deleted (Ruling 5), or where it was when the store refused the move as a cycle (a
             // concurrent move raced it), which the mirror would otherwise keep showing.
             for &node in &moved {
-                let (id, group) = (node.to_string(), doc.effective_group(node));
-                if link_id(self.doc.mirror.group(&id)) != group {
-                    self.doc.mirror.set_group(&id, group.map(|g| g.to_string()));
+                let group = doc.effective_group(node);
+                if self.doc.mirror.group(node) != group {
+                    self.doc.mirror.set_group(node, group);
                 }
             }
             // Created ids are done; one still queued shows nothing yet (an in-progress download) and
@@ -441,45 +420,42 @@ impl App {
         self.doc.writes.clear_deletes();
         // A link target this commit wrote as none (Ruling 5: deleted here) is none in the mirror too.
         for (&(node, no), &target) in &links {
-            let id = node.to_string();
             if no == field::PARENT {
-                if link_id(self.doc.mirror.parent(&id)) != target {
-                    self.doc.mirror.set_parent(&id, target.map(|p| p.to_string()));
+                if self.doc.mirror.parent(node) != target {
+                    self.doc.mirror.set_parent(node, target);
                 }
             } else {
-                self.doc.mirror.set(&id, no, FieldValue::Id(target));
+                self.doc.mirror.set(node, no, FieldValue::Id(target));
             }
         }
         // A remote value parked for a tab still spawning (`remote_in_flight`) predates what this
         // commit wrote; its landing must not replay it over the local edit.
         for (node, no, _) in self.doc.writes.fields() {
-            let id = node.to_string();
-            if let Some(Remote::Shown((_, fields, _))) = self.spawns.remote_in_flight.get_mut(&id) {
+            if let Some(Remote::Shown((_, fields, _))) = self.spawns.remote_in_flight.get_mut(&node) {
                 let value = match no {
-                    field::PARENT => FieldValue::Id(link_id(self.doc.mirror.parent(&id))),
-                    _ => self.doc.mirror.get(&id, no),
+                    field::PARENT => FieldValue::Id(self.doc.mirror.parent(node)),
+                    _ => self.doc.mirror.get(node, no),
                 };
                 fields.insert(no, value);
             }
         }
         for (node, _) in self.doc.writes.moves() {
-            let id = node.to_string();
-            if let Some(Remote::Shown((_, _, group))) = self.spawns.remote_in_flight.get_mut(&id) {
-                *group = self.doc.mirror.group(&id).map(str::to_owned);
+            if let Some(Remote::Shown((_, _, group))) = self.spawns.remote_in_flight.get_mut(&node) {
+                *group = self.doc.mirror.group(node);
             }
         }
         // Text committed here is newer than another replica's held before it: the held text is dropped.
         let texts: Vec<NodeId> =
             self.doc.writes.fields().filter(|&(_, no, _)| no == field::TEXT).map(|(n, ..)| n).collect();
         for node in texts {
-            self.doc.writes.held_text.remove(&node.to_string());
+            self.doc.writes.held_text.remove(&node);
         }
         self.doc.writes.clear_edits();
         let flagged = self.doc.writes.take_closed();
         // A tab still spawning keeps its entry, and its layout: a respawn has removed it from `nodes`
         // until it lands, and `Mirror::init` then leaves an existing entry alone.
         let (nodes, spawning) = (&self.nodes, &self.spawns.spawning);
-        self.doc.mirror.retain(|id| nodes.contains_key(id) || spawning.contains_key(id));
+        self.doc.mirror.retain(|id| nodes.contains_key(&id) || spawning.contains_key(&id));
         self.layout.retain(|id, _| nodes.contains_key(id) || spawning.contains_key(id));
         self.doc.writes.held_text.retain(|id, _| nodes.get(id).and_then(|n| n.as_note()).is_some_and(|n| n.editing));
         self.doc.writes.store_notices.clear();
@@ -576,33 +552,30 @@ impl App {
         let Some(journal) = &self.doc.journal else { return };
         let doc = journal.doc();
         let live = |id: &NodeId| doc.nodes.get(id).is_some_and(Node::is_live);
-        for (key, node) in &self.nodes {
-            let Ok(id) = key.parse::<NodeId>() else { continue };
-            if node.as_download().is_some_and(|dl| !dl.completed) || self.spawns.spawning.contains_key(key) {
+        for (&id, node) in &self.nodes {
+            if node.as_download().is_some_and(|dl| !dl.completed) || self.spawns.spawning.contains_key(&id) {
                 continue;
             }
-            assert!(live(&id), "node {key} is shown but not live in the document: a create funnel was missed");
-            let ty = self.card_kind(key).map(|kind| kind.ty);
+            assert!(live(&id), "node {id} is shown but not live in the document: a create funnel was missed");
+            let ty = self.card_kind(id).map(|kind| kind.ty);
             assert!(
                 ty.is_some_and(|ty| runtime_has_type(&node.runtime, ty)),
-                "node {key} has type {ty:?} that its runtime does not run: a create funnel passed a mismatched kind"
+                "node {id} has type {ty:?} that its runtime does not run: a create funnel passed a mismatched kind"
             );
         }
         for id in self.doc.mirror.link_ids() {
             assert!(live(&id), "link {id} is shown but not live in the document: a create funnel was missed");
         }
-        for key in self.spawns.spawning.keys() {
-            let Ok(id) = key.parse::<NodeId>() else { continue };
+        for id in self.spawns.spawning.keys() {
             assert!(
-                doc.nodes.contains_key(&id),
-                "tab {key} is spawning but the document has no entry: a create funnel was missed"
+                doc.nodes.contains_key(id),
+                "tab {id} is spawning but the document has no entry: a create funnel was missed"
             );
         }
         for (id, _) in doc.shown() {
-            let key = id.to_string();
             let shown =
-                self.nodes.contains_key(&key) || self.spawns.spawning.contains_key(&key) || self.doc.mirror.is_link(id);
-            assert!(shown, "node {key} is live in the document but not shown: a delete funnel was missed");
+                self.nodes.contains_key(&id) || self.spawns.spawning.contains_key(&id) || self.doc.mirror.is_link(id);
+            assert!(shown, "node {id} is live in the document but not shown: a delete funnel was missed");
         }
     }
 }

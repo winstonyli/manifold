@@ -88,26 +88,26 @@ impl GpuState {
     /// `images`' own doc comment), called at creation, restore or Refresh,
     /// not every frame like a tab's thumbnail. Uploading over an existing
     /// key frees the old registration itself.
-    pub fn upload_image(&mut self, key: &str, rgba: &[u8], width: u32, height: u32) {
+    pub fn upload_image(&mut self, key: NodeId, rgba: &[u8], width: u32, height: u32) {
         let Some((texture, view)) = self.register_rgba("image node texture", rgba, width, height) else { return };
         // A second upload for one key (a PDF re-rendered before its first
         // render landed) must not leak the first registration.
         self.free_image(key);
         let egui_id = self.egui_renderer.register_native_texture(&self.device, &view, wgpu::FilterMode::Linear);
-        self.images.insert(key.to_string(), ThumbTexture { texture, width, height, egui_id });
+        self.images.insert(key, ThumbTexture { texture, width, height, egui_id });
     }
 
     /// The `egui::TextureId` for an image node's picture, if it decoded
     /// successfully — for Graph view to draw via `egui::Image`.
-    pub fn image_id(&self, key: &str) -> Option<egui::TextureId> {
-        self.images.get(key).map(|t| t.egui_id)
+    pub fn image_id(&self, key: NodeId) -> Option<egui::TextureId> {
+        self.images.get(&key).map(|t| t.egui_id)
     }
 
     /// Must be called when an image node is removed -- same "manually
     /// registered native textures leak until freed" reasoning as
     /// `free_tab_thumbnail`'s own doc comment.
-    pub fn free_image(&mut self, key: &str) {
-        if let Some(image) = self.images.remove(key) {
+    pub fn free_image(&mut self, key: NodeId) {
+        if let Some(image) = self.images.remove(&key) {
             self.egui_renderer.free_texture(&image.egui_id);
         }
     }

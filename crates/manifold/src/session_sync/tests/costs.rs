@@ -9,11 +9,11 @@ fn a_large_note_edit_does_not_clone_per_frame() {
     let mut app = App::default();
     let text = "x".repeat(1 << 20);
     let note = add(&mut app, Kind::Note, Runtime::Note(NotePayload { text, editing: false }));
-    let idle: &str = app.note_text(&note);
-    assert_eq!(idle.as_ptr(), app.doc.mirror.text(&note).as_ptr(), "idle: the mirror's string");
-    assert_eq!(app.doc.mirror.text(&note).as_ptr(), app.doc.mirror.text(&note).as_ptr(), "`Mirror::text` borrows");
+    let idle: &str = app.note_text(note);
+    assert_eq!(idle.as_ptr(), app.doc.mirror.text(note).as_ptr(), "idle: the mirror's string");
+    assert_eq!(app.doc.mirror.text(note).as_ptr(), app.doc.mirror.text(note).as_ptr(), "`Mirror::text` borrows");
     app.nodes.get_mut(&note).unwrap().as_note_mut().unwrap().editing = true;
-    let editing: &str = app.note_text(&note);
+    let editing: &str = app.note_text(note);
     assert_eq!(editing.as_ptr(), app.nodes[&note].as_note().unwrap().text.as_ptr(), "editing: the buffer");
 }
 
@@ -46,15 +46,15 @@ fn app_save_costs() {
     for tabs in [300usize, 2000, 3000] {
         let dir = temp_dir(&format!("app-cost-{tabs}"));
         let mut app = app_on(&dir.join("session.mnf"), 1);
-        let groups: Vec<String> = (0..tabs / 10).map(|i| add_group(&mut app, &format!("Group {i}"))).collect();
+        let groups: Vec<NodeId> = (0..tabs / 10).map(|i| add_group(&mut app, &format!("Group {i}"))).collect();
         let mut ids = Vec::new();
         for i in 0..tabs {
             let url = format!("https://www.example{}.com/articles/2026/09/some-long-article-slug-{i}?ref=home", i % 50);
             let id = add(&mut app, Kind::Tab, failed_tab(&url, 1.0));
-            app.edit_group(&id, Some(groups[i % groups.len()].clone()));
+            app.edit_group(id, Some(groups[i % groups.len()]));
             let pos = egui::vec2(i as f32 * 3.5, i as f32 * -2.25);
-            app.snap_layout(&id, pos);
-            app.edit_pos(&id, Some(pos));
+            app.snap_layout(id, pos);
+            app.edit_pos(id, Some(pos));
             ids.push(id);
         }
         assert!(app.save_session());
@@ -66,9 +66,9 @@ fn app_save_costs() {
         report(
             "save_session, one url changed",
             timed(N, || {
-                let id = &ids[k % tabs];
+                let id = ids[k % tabs];
                 let url = format!("https://moved.example/{k}");
-                if let Runtime::Unloaded(f) = &mut app.nodes.get_mut(id).unwrap().runtime {
+                if let Runtime::Unloaded(f) = &mut app.nodes.get_mut(&id).unwrap().runtime {
                     f.url = url.clone();
                 }
                 app.edit_url(id, &url);
@@ -107,21 +107,21 @@ fn save_count_per_action() {
         app.apply_graph_action(&ctx, action);
         begins(app) - before
     };
-    let delete = count(&mut app, GraphAction::Node(a.clone(), NodeAction::Delete));
+    let delete = count(&mut app, GraphAction::Node(a, NodeAction::Delete));
     let join = count(
         &mut app,
         GraphAction::Drop {
-            id: crate::card_id::CardId::stored(&b),
-            target: Some((DropEffect::Join, Some(crate::card_id::CardId::stored(&g)))),
+            id: crate::card_id::CardId::from(b),
+            target: Some((DropEffect::Join, Some(crate::card_id::CardId::from(g)))),
         },
     );
-    app.link.connecting = Some((c.clone(), crate::caps::LINK));
-    let finish = count(&mut app, GraphAction::FinishConnect(d.clone()));
-    let enter = count(&mut app, GraphAction::EnterGroup(g.clone()));
+    app.link.connecting = Some((c, crate::caps::LINK));
+    let finish = count(&mut app, GraphAction::FinishConnect(d));
+    let enter = count(&mut app, GraphAction::EnterGroup(g));
     assert!(!app.nodes.contains_key(&a), "deleted");
-    assert_eq!(app.doc.mirror.group(&b), Some(g.as_str()), "joined");
-    assert_eq!(app.links_naming(&c).len(), 1, "linked");
-    assert_eq!(app.current_group.as_deref(), Some(g.as_str()), "entered");
+    assert_eq!(app.doc.mirror.group(b), Some(g), "joined");
+    assert_eq!(app.links_naming(c).len(), 1, "linked");
+    assert_eq!(app.current_group, Some(g), "entered");
     assert_eq!(
         [("menu Delete", delete), ("enter a group", enter), ("Join drop", join), ("finish a link", finish)],
         [("menu Delete", 2), ("enter a group", 1), ("Join drop", 2), ("finish a link", 2)]
@@ -137,9 +137,9 @@ fn teardown_cost() {
     let mut times = Vec::new();
     for _ in 0..10 {
         let mut app = app_on(&temp_dir("teardown-cost").join("session.mnf"), 1);
-        let notes: Vec<String> = (0..2000).map(|_| a_note(&mut app)).collect();
+        let notes: Vec<NodeId> = (0..2000).map(|_| a_note(&mut app)).collect();
         for k in 0..300 {
-            app.create_link(&notes[k], &notes[(k * 7 + 1) % 2000]);
+            app.create_link(notes[k], notes[(k * 7 + 1) % 2000]);
         }
         assert!(app.save_session());
         let start = std::time::Instant::now();

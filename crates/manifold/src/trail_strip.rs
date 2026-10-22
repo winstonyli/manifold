@@ -7,7 +7,7 @@ use crate::identity::{Identity, ICON_SIZE_SMALL};
 use crate::level::{CardEntry, EdgeCurve, EdgeKind, LevelEdge, Origin};
 use crate::nav_history::{NavHistory, TrailPage};
 use crate::popups::menu_popup;
-use crate::store::model::TYPE_TRAIL_PAGE;
+use crate::store::model::{NodeId, TYPE_TRAIL_PAGE};
 use crate::theme::{ACCENT, SURFACE_HOVER, TEXT_PRIMARY, TEXT_WEAK};
 use crate::tree_layout::{tree_layout, TreeNode};
 use crate::virtual_source::VirtualSource;
@@ -41,11 +41,11 @@ pub(crate) fn is_page_id(id: CardId) -> bool {
 
 /// The tab and arena index a page id names, for as long as that page is in its tab's trail: the serial in the id
 /// outlives an eviction of an earlier page and resolves to nothing once its own page is evicted.
-fn live_page(app: &App, id: CardId) -> Option<(&str, usize)> {
+fn live_page(app: &App, id: CardId) -> Option<(NodeId, usize)> {
     let key = id.key().filter(|_| is_page_id(id))?;
     let (slot, serial) = ((key >> 32) as u32, key as u32);
     let (tab, history) = app.nav_history.iter().find(|(_, h)| h.slot().get() == slot)?;
-    Some((tab.as_str(), history.index_of(serial)?))
+    Some((*tab, history.index_of(serial)?))
 }
 
 fn label_font() -> egui::FontId {
@@ -119,7 +119,7 @@ pub(crate) fn paint_trail_page(
 
 /// A page's icon at its left: the page's favicon once fetched, else its host's tile in the tab's engine color. A tile's
 /// letter is queued on the overlay layer with the label.
-fn paint_page_icon(app: &App, ui: &egui::Ui, pass: &mut CardPass, rect: egui::Rect, tab: &str, url: &str) {
+fn paint_page_icon(app: &App, ui: &egui::Ui, pass: &mut CardPass, rect: egui::Rect, tab: NodeId, url: &str) {
     let Some(identity) = app.page_identity(tab, url) else { return };
     let center = rect.left_center() + egui::vec2(LABEL_INSET + ICON_SIZE_SMALL / 2.0, 0.0) * pass.inv_zoom;
     if let Some(text) = identity.paint(ui, center, ICON_SIZE_SMALL, pass.inv_zoom, TEXT_WEAK) {
@@ -133,8 +133,8 @@ pub(crate) struct TrailSource;
 
 impl App {
     /// What `url` looks like as a page of `tab`'s trail (`Identity::of_tab`, never loading); `None` if `tab` is gone.
-    fn page_identity(&self, tab: &str, url: &str) -> Option<Identity> {
-        let kind = self.nodes.get(tab)?.as_tab()?.tab.kind;
+    fn page_identity(&self, tab: NodeId, url: &str) -> Option<Identity> {
+        let kind = self.nodes.get(&tab)?.as_tab()?.tab.kind;
         Some(self.tab_identity(url, false, kind))
     }
 }
@@ -142,12 +142,12 @@ impl App {
 impl App {
     /// The tab the strip hangs under: focused, in Graph view, its card on the level shown, and a trail of two or more
     /// pages.
-    fn trail_strip_tab(&self) -> Option<String> {
+    fn trail_strip_tab(&self) -> Option<NodeId> {
         if self.view_mode != crate::ViewMode::Graph {
             return None;
         }
-        let tab = self.focused.clone()?;
-        let on_level = self.card_rect(&tab).is_some() && self.in_level(&tab);
+        let tab = self.focused?;
+        let on_level = self.card_rect(tab).is_some() && self.in_level(tab);
         (on_level && self.nav_history.get(&tab).is_some_and(|h| h.tree().len() > 1)).then_some(tab)
     }
 }
@@ -167,8 +167,8 @@ impl App {
         if tab == self.camera.strip_tab {
             return;
         }
-        self.camera.strip_tab = tab.clone();
-        let Some(card) = tab.and_then(|tab| self.card_rect(&tab)) else { return };
+        self.camera.strip_tab = tab;
+        let Some(card) = tab.and_then(|tab| self.card_rect(tab)) else { return };
         let strip = self.level_items().into_iter().filter(|e| e.origin == Origin::Virtual("trail"));
         let view = strip.fold(None, |acc: Option<egui::Rect>, e| Some(acc.map_or(e.rect, |r| r.union(e.rect))));
         if let Some(strip) = view {
@@ -189,7 +189,7 @@ impl App {
                 self.menus.open_popup,
                 Some(crate::popups::AnchoredPopup::BackBranches | crate::popups::AnchoredPopup::ForwardBranches)
             );
-        let page = live_page(self, id).map(|(tab, page)| (tab.to_owned(), page));
+        let page = live_page(self, id);
         let Some((tab, page)) = page.filter(|_| hosted) else {
             self.menus.trail_menu = None;
             return;
@@ -198,7 +198,7 @@ impl App {
         let area = egui::Area::new(egui::Id::new("trail_page_menu")).fixed_pos(pos);
         let area = menu_popup(ui.ctx(), area, 1.0, |ui| chosen = page_menu_items(ui));
         if chosen {
-            self.open_branch_as_card(&tab, page, None);
+            self.open_branch_as_card(tab, page, None);
         }
         // The right-click that opened the menu is, to a menu not yet laid out, a click elsewhere.
         let opening_click = ui.input(|i| i.pointer.interact_pos()) == Some(pos);
@@ -211,8 +211,8 @@ impl App {
 
 /// Tab `tab`'s page cards, their bounding box's top-left at `origin`: the strip hangs it under the tab's card, the Back
 /// and Forward popups use their own origin. Empty when the tab has no trail.
-pub(crate) fn trail_cards(app: &App, tab: &str, origin: egui::Pos2) -> Vec<CardEntry> {
-    let Some(history) = app.nav_history.get(tab) else { return Vec::new() };
+pub(crate) fn trail_cards(app: &App, tab: NodeId, origin: egui::Pos2) -> Vec<CardEntry> {
+    let Some(history) = app.nav_history.get(&tab) else { return Vec::new() };
     let pages = history.tree();
     let kind = CardKind { ty: TYPE_TRAIL_PAGE, tags: crate::caps::TagSet::EMPTY };
     pages
@@ -229,8 +229,8 @@ pub(crate) fn trail_cards(app: &App, tab: &str, origin: egui::Pos2) -> Vec<CardE
 
 /// The edges between `tab`'s pages (`rect_of` finds a card's rect by id); those on the path to the cursor are
 /// highlighted.
-pub(crate) fn trail_edges(app: &App, tab: &str, rect_of: &dyn Fn(CardId) -> Option<egui::Rect>) -> Vec<LevelEdge> {
-    let Some(history) = app.nav_history.get(tab) else { return Vec::new() };
+pub(crate) fn trail_edges(app: &App, tab: NodeId, rect_of: &dyn Fn(CardId) -> Option<egui::Rect>) -> Vec<LevelEdge> {
+    let Some(history) = app.nav_history.get(&tab) else { return Vec::new() };
     let pages = history.tree();
     pages
         .iter()
@@ -258,16 +258,16 @@ impl VirtualSource for TrailSource {
 
     fn entries(&self, app: &App) -> Vec<CardEntry> {
         let Some(tab) = app.trail_strip_tab() else { return Vec::new() };
-        let Some(card) = app.card_rect(&tab) else { return Vec::new() };
-        trail_cards(app, &tab, card.left_bottom() + egui::vec2(0.0, STRIP_GAP))
+        let Some(card) = app.card_rect(tab) else { return Vec::new() };
+        trail_cards(app, tab, card.left_bottom() + egui::vec2(0.0, STRIP_GAP))
     }
 
     fn edges(&self, app: &App, rect_of: &dyn Fn(CardId) -> Option<egui::Rect>) -> Vec<LevelEdge> {
-        app.trail_strip_tab().map_or_else(Vec::new, |tab| trail_edges(app, &tab, rect_of))
+        app.trail_strip_tab().map_or_else(Vec::new, |tab| trail_edges(app, tab, rect_of))
     }
 
     fn paint_body(&self, app: &App, ui: &mut egui::Ui, pass: &mut CardPass, entry: &CardEntry) -> CardBody {
-        let page = live_page(app, entry.id).and_then(|(tab, i)| app.nav_history.get(tab)?.tree().into_iter().nth(i));
+        let page = live_page(app, entry.id).and_then(|(tab, i)| app.nav_history.get(&tab)?.tree().into_iter().nth(i));
         if let Some(page) = &page {
             let full = app.graph_detail.content();
             paint_trail_page(ui.painter(), pass, entry.rect, page, ui.rect_contains_pointer(entry.rect), full);
@@ -281,8 +281,8 @@ impl VirtualSource for TrailSource {
     }
 
     fn on_click(&self, app: &mut App, entry: &CardEntry) -> Option<GraphAction> {
-        let (tab, page) = live_page(app, entry.id).map(|(tab, page)| (tab.to_owned(), page))?;
-        app.trail_pick(&tab, page);
+        let (tab, page) = live_page(app, entry.id)?;
+        app.trail_pick(tab, page);
         None
     }
 
@@ -299,8 +299,8 @@ impl VirtualSource for TrailSource {
         _target: Option<(DropEffect, Option<CardId>)>,
         at: egui::Pos2,
     ) -> Option<GraphAction> {
-        let (tab, page) = live_page(app, entry.id).map(|(tab, page)| (tab.to_owned(), page))?;
-        app.open_branch_as_card(&tab, page, Some(at.to_vec2()));
+        let (tab, page) = live_page(app, entry.id)?;
+        app.open_branch_as_card(tab, page, Some(at.to_vec2()));
         None
     }
 }
@@ -308,6 +308,7 @@ impl VirtualSource for TrailSource {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::card_id::testutil::node;
     use crate::nav_history::NavHistory;
     use crate::virtual_source::fake::Rig;
 
@@ -316,7 +317,7 @@ mod tests {
         let mut rig = Rig::new();
         let tab = rig.tab();
         rig.app.nav_history.insert(
-            tab.clone(),
+            tab,
             NavHistory::with_tree(
                 &[("/a", None, Some(3)), ("/b", Some(0), Some(2)), ("/c", Some(1), None), ("/d", Some(0), None)],
                 3,
@@ -332,8 +333,8 @@ mod tests {
     }
 
     /// The card id of the page at arena index `entry` of `tab`'s trail.
-    fn page_id(rig: &Rig, tab: &str, entry: usize) -> CardId {
-        let history = &rig.app.nav_history[tab];
+    fn page_id(rig: &Rig, tab: NodeId, entry: usize) -> CardId {
+        let history = &rig.app.nav_history[&tab];
         page_card(history, history.serial_of(entry).expect("the trail has that page"))
     }
 
@@ -345,15 +346,15 @@ mod tests {
     fn a_strip_that_appears_off_screen_is_framed_once() {
         let mut rig = Rig::new();
         let tab = rig.tab();
-        rig.app.focused = Some(tab.clone());
+        rig.app.focused = Some(tab);
         rig.app.view_mode = crate::ViewMode::Graph;
         rig.frame(vec![], egui::Modifiers::NONE);
         let far = egui::Rect::from_min_size(egui::pos2(9000.0, 9000.0), rig.app.camera.rect.size());
         rig.app.camera.jump_to(far);
-        rig.app.nav_history.insert(tab.clone(), NavHistory::visited(&["/a", "/b"]));
+        rig.app.nav_history.insert(tab, NavHistory::visited(&["/a", "/b"]));
         rig.frame(vec![], egui::Modifiers::NONE);
         assert!(rig.app.camera.tween.is_some(), "the strip appeared off screen: the camera eases to it");
-        assert_eq!(rig.app.camera.strip_tab.as_deref(), Some(tab.as_str()));
+        assert_eq!(rig.app.camera.strip_tab, Some(tab));
         rig.app.camera.jump_to(far);
         rig.frame(vec![], egui::Modifiers::NONE);
         assert!(rig.app.camera.tween.is_none(), "a strip already framed does not fight a later pan");
@@ -363,7 +364,7 @@ mod tests {
     fn a_strip_with_only_its_root_in_view_is_framed() {
         let mut rig = forked();
         let tab = rig.tab();
-        let card = rig.app.card_rect(&tab).expect("the tab's card");
+        let card = rig.app.card_rect(tab).expect("the tab's card");
         let all = pages(&rig);
         let root = all.iter().find(|e| e.origin == Origin::Virtual("trail")).expect("a root page").rect;
         let lowest = all.iter().map(|e| e.rect.bottom()).fold(f32::MIN, f32::max);
@@ -384,8 +385,8 @@ mod tests {
         let cards = pages(&rig);
         assert_eq!(cards.len(), 4);
         assert!(cards.iter().all(|c| c.kind.ty == TYPE_TRAIL_PAGE && c.origin == Origin::Virtual("trail")));
-        assert_eq!(cards[0].id, page_id(&rig, &tab, 0));
-        let below = rig.app.card_rect(&tab).unwrap().left_bottom() + egui::vec2(0.0, STRIP_GAP);
+        assert_eq!(cards[0].id, page_id(&rig, tab, 0));
+        let below = rig.app.card_rect(tab).unwrap().left_bottom() + egui::vec2(0.0, STRIP_GAP);
         let top_left = cards.iter().fold(egui::Rect::NOTHING, |b, c| b.union(c.rect)).min;
         assert_eq!(top_left, below, "the whole strip hangs under the tab card, none of it above");
         assert_eq!(cards[0].rect.height(), PAGE.y);
@@ -403,19 +404,19 @@ mod tests {
         rig.app.focused = None;
         assert!(pages(&rig).is_empty(), "no strip here");
         let origin = egui::pos2(5.0, 7.0);
-        let cards = trail_cards(&rig.app, &tab, origin);
+        let cards = trail_cards(&rig.app, tab, origin);
         assert_eq!(cards.len(), 4);
         assert_eq!(cards.iter().fold(egui::Rect::NOTHING, |b, e| b.union(e.rect)).min, origin);
         let rect_of = |id: CardId| cards.iter().find(|e| e.id == id).map(|e| e.rect);
-        assert_eq!(trail_edges(&rig.app, &tab, &rect_of).len(), 3);
-        assert!(trail_cards(&rig.app, "no-such-tab", origin).is_empty());
+        assert_eq!(trail_edges(&rig.app, tab, &rect_of).len(), 3);
+        assert!(trail_cards(&rig.app, node(9999), origin).is_empty());
     }
 
     #[test]
     fn the_page_menu_stays_while_a_branch_popup_is_open_and_closes_when_neither_shows() {
         let mut rig = forked();
         let tab = rig.tab();
-        let id = page_id(&rig, &tab, 1);
+        let id = page_id(&rig, tab, 1);
         rig.app.view_mode = crate::ViewMode::Item;
         rig.app.menus.trail_menu = Some((id, egui::pos2(5.0, 5.0)));
         let ctx = rig.app.egui_ctx.clone();
@@ -437,11 +438,11 @@ mod tests {
         let tab = rig.tab();
         rig.app.focused = None;
         assert!(pages(&rig).is_empty(), "no focused tab");
-        rig.app.focused = Some(tab.clone());
+        rig.app.focused = Some(tab);
         rig.app.view_mode = crate::ViewMode::Item;
         assert!(pages(&rig).is_empty(), "Tab view");
         rig.app.view_mode = crate::ViewMode::Graph;
-        rig.app.current_group = Some("elsewhere".into());
+        rig.app.current_group = Some(node(9999));
         assert!(pages(&rig).is_empty(), "the tab is on another level");
         rig.app.current_group = None;
         rig.app.nav_history.insert(tab, NavHistory::with_tree(&[("/a", None, None)], 0));
@@ -454,7 +455,7 @@ mod tests {
         let tab = rig.tab();
         let edges: Vec<_> = rig.app.level_edges().into_iter().filter(|e| is_page_id(e.from_id)).collect();
         let key = |e: &crate::level::LevelEdge| (e.from_id, e.to_id, e.highlight);
-        let id = |i: usize| page_id(&rig, &tab, i);
+        let id = |i: usize| page_id(&rig, tab, i);
         assert_eq!(
             edges.iter().map(key).collect::<Vec<_>>(),
             [(id(0), id(1), false), (id(1), id(2), false), (id(0), id(3), true)]
@@ -549,12 +550,12 @@ mod tests {
     fn clicking_a_page_starts_a_plain_move_to_it_and_not_while_one_is_pending() {
         let mut rig = forked();
         let tab = rig.tab();
-        let b = rig.screen(page_id(&rig, &tab, 1)).center();
+        let b = rig.screen(page_id(&rig, tab, 1)).center();
         rig.click(b);
         let now = std::time::Instant::now();
         assert!(rig.app.nav_history[&tab].move_pending(now), "the click started a move");
         // A second click on another page while that move is pending is ignored.
-        let c = rig.screen(page_id(&rig, &tab, 2)).center();
+        let c = rig.screen(page_id(&rig, tab, 2)).center();
         rig.click(c);
         assert!(rig.app.nav_history[&tab].move_pending(now), "still the first move");
     }
@@ -563,10 +564,10 @@ mod tests {
     fn clicking_the_cursor_page_or_an_evicted_one_does_nothing() {
         let mut rig = forked();
         let tab = rig.tab();
-        let d = rig.screen(page_id(&rig, &tab, 3)).center();
+        let d = rig.screen(page_id(&rig, tab, 3)).center();
         rig.click(d);
         assert!(!rig.app.nav_history[&tab].move_pending(std::time::Instant::now()), "the cursor page");
-        rig.app.trail_pick(&tab, 99);
+        rig.app.trail_pick(tab, 99);
         assert!(!rig.app.nav_history[&tab].move_pending(std::time::Instant::now()), "an index past the end");
     }
 
@@ -574,12 +575,12 @@ mod tests {
     fn dragging_a_page_onto_empty_canvas_opens_it_as_a_card_there() {
         let mut rig = forked();
         let tab = rig.tab();
-        let from = rig.screen(page_id(&rig, &tab, 1)).center();
+        let from = rig.screen(page_id(&rig, tab, 1)).center();
         let to = from + egui::vec2(0.0, 300.0);
         rig.drag(from, to);
         let (spawn, _) = rig.app.test_spawns.last().expect("a tab was spawned");
         assert_eq!(spawn.url, "/b");
-        assert_eq!(spawn.parent.as_deref(), Some(tab.as_str()), "opened from the tab whose trail it came from");
+        assert_eq!(spawn.parent, Some(tab), "opened from the tab whose trail it came from");
         let world = rig.app.graph_screen_point_to_world(to);
         assert!((spawn.pos - world).length() < 1.0, "placed at the release point");
         assert_eq!(rig.app.nav_history[&tab].export()["entries"], 4, "the trail is unchanged");
@@ -589,12 +590,12 @@ mod tests {
     fn dropping_a_page_on_a_card_opens_it_the_same_way() {
         let mut rig = forked();
         let tab = rig.tab();
-        let from = rig.screen(page_id(&rig, &tab, 2)).center();
-        let to = rig.app.graph_world_rect_to_screen(rig.app.card_rect(&tab).unwrap()).center();
+        let from = rig.screen(page_id(&rig, tab, 2)).center();
+        let to = rig.app.graph_world_rect_to_screen(rig.app.card_rect(tab).unwrap()).center();
         rig.drag(from, to);
         let (spawn, _) = rig.app.test_spawns.last().expect("a tab was spawned");
         assert_eq!(spawn.url, "/c");
-        assert_eq!(spawn.parent.as_deref(), Some(tab.as_str()), "the card dropped on is not the opener");
+        assert_eq!(spawn.parent, Some(tab), "the card dropped on is not the opener");
     }
 
     fn text_ctx() -> egui::Context {
@@ -630,7 +631,7 @@ mod tests {
         let mut rig = forked();
         let tab = rig.tab();
         let h = NavHistory::visited(&["https://example.com/a", "https://example.com/b"]);
-        rig.app.nav_history.insert(tab.clone(), h);
+        rig.app.nav_history.insert(tab, h);
         rig.frame(vec![], egui::Modifiers::NONE);
         let entry = pages(&rig).remove(1);
         let mut tip = None;
@@ -649,10 +650,10 @@ mod tests {
     fn right_clicking_a_page_opens_the_same_menu_as_the_popup_rows_and_open_as_card_opens_it() {
         let mut rig = forked();
         let tab = rig.tab();
-        let at = rig.screen(page_id(&rig, &tab, 2)).center();
+        let at = rig.screen(page_id(&rig, tab, 2)).center();
         rig.right_click(at);
         let (id, pos) = rig.app.menus.trail_menu.expect("the page's menu is open");
-        assert_eq!(id, page_id(&rig, &tab, 2));
+        assert_eq!(id, page_id(&rig, tab, 2));
         assert_eq!(pos, at, "at the pointer");
         rig.frame(vec![], egui::Modifiers::NONE);
         let menu = rig.ctx.memory(|m| m.area_rect(egui::Id::new("trail_page_menu"))).expect("the menu's area");
@@ -660,7 +661,7 @@ mod tests {
         assert!(rig.app.menus.trail_menu.is_none(), "choosing closes it");
         let (spawn, _) = rig.app.test_spawns.last().expect("Open as card spawned a tab");
         assert_eq!(spawn.url, "/c");
-        assert_eq!(spawn.parent.as_deref(), Some(tab.as_str()));
+        assert_eq!(spawn.parent, Some(tab));
     }
 
     #[test]
@@ -690,7 +691,7 @@ mod tests {
         let tab = rig.tab();
         let urls: Vec<String> = (0..50).map(|i| format!("/p{i}")).collect();
         let refs: Vec<&str> = urls.iter().map(String::as_str).collect();
-        rig.app.nav_history.insert(tab.clone(), NavHistory::visited(&refs));
+        rig.app.nav_history.insert(tab, NavHistory::visited(&refs));
         rig.frame(vec![], egui::Modifiers::NONE);
         let before: Vec<CardId> = pages(&rig).into_iter().map(|c| c.id).collect();
         assert_eq!(before.len(), 50);
@@ -801,7 +802,7 @@ mod tests {
         let under = rig.app.alloc_node_id();
         let world_page = pages(&rig)[0].rect;
         rig.app.insert_placeholder_node(
-            under.clone(),
+            under,
             world_page.center().to_vec2() - egui::vec2(60.0, 40.0),
             crate::store::model::Kind::Tab,
             crate::session_sync::tests::sleeping_tab("https://under.test/", "UNDERNEATH"),
@@ -817,7 +818,7 @@ mod tests {
             }
             let strip: Vec<egui::Rect> =
                 pages(&rig).iter().map(|p| rig.app.graph_world_rect_to_screen(p.rect)).collect();
-            let card = rig.app.graph_world_rect_to_screen(rig.app.card_rect(&under).expect("the placed card"));
+            let card = rig.app.graph_world_rect_to_screen(rig.app.card_rect(under).expect("the placed card"));
             for (bounds, _) in shown_text(&shapes, "UNDERNEATH") {
                 assert!(
                     strip.iter().all(|page| shared_area(bounds, *page) < 1.0),
@@ -860,7 +861,7 @@ mod tests {
                 0 => {
                     let (id, title) = (rig.app.alloc_node_id(), format!("CARD{n}"));
                     let tab = crate::session_sync::tests::sleeping_tab("https://stress.test/", &title);
-                    rig.app.insert_placeholder_node(id.clone(), at, crate::store::model::Kind::Tab, tab);
+                    rig.app.insert_placeholder_node(id, at, crate::store::model::Kind::Tab, tab);
                     (title, id)
                 }
                 1 => {
@@ -872,7 +873,7 @@ mod tests {
                         completed: true,
                         failed: false,
                     });
-                    rig.app.insert_placeholder_node(id.clone(), at, crate::store::model::Kind::Download, download);
+                    rig.app.insert_placeholder_node(id, at, crate::store::model::Kind::Download, download);
                     (title, id)
                 }
                 2 => {
@@ -883,7 +884,7 @@ mod tests {
                 3 => {
                     let (id, title) = (rig.app.alloc_node_id(), format!("NOTE{n}"));
                     let note = crate::Runtime::Note(crate::node::NotePayload { text: title.clone(), editing: false });
-                    rig.app.insert_placeholder_node(id.clone(), at, crate::store::model::Kind::Note, note);
+                    rig.app.insert_placeholder_node(id, at, crate::store::model::Kind::Note, note);
                     (title, id)
                 }
                 4 => {
@@ -891,7 +892,7 @@ mod tests {
                     let image =
                         crate::node::ImagePayload { path: format!("{title}.png"), width: 0, height: 0, error: None };
                     rig.app.insert_placeholder_node(
-                        id.clone(),
+                        id,
                         at,
                         crate::store::model::Kind::Image,
                         crate::Runtime::Image(image),
@@ -901,16 +902,11 @@ mod tests {
                 _ => {
                     let (id, title) = (rig.app.alloc_node_id(), format!("PDF{n}"));
                     let pdf = crate::node::PdfPayload { path: format!("{title}.pdf"), outcome: None };
-                    rig.app.insert_placeholder_node(
-                        id.clone(),
-                        at,
-                        crate::store::model::Kind::Pdf,
-                        crate::Runtime::Pdf(pdf),
-                    );
+                    rig.app.insert_placeholder_node(id, at, crate::store::model::Kind::Pdf, crate::Runtime::Pdf(pdf));
                     (title, id)
                 }
             };
-            titles.insert(CardId::stored(&id), title);
+            titles.insert(CardId::from(id), title);
         }
         if rng.next() < 0.5 {
             let mut ids: Vec<_> = titles.keys().cloned().collect();

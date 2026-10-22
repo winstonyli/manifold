@@ -30,21 +30,21 @@ pub(crate) struct SpawnTracker {
     /// doesn't hold yet (a new, imported or reopened tab) from this snapshot
     /// (`snapshot`), so a quit before it lands doesn't lose it. A respawn
     /// queues no delete, so the store keeps the tab meanwhile.
-    pub(crate) spawning: HashMap<String, session_sync::Snapshot>,
+    pub(crate) spawning: HashMap<NodeId, session_sync::Snapshot>,
 
     /// Other replicas' latest change to a node in `spawning`, applied when
     /// its spawn lands (`Shown`: the change to apply; `Hidden`: hide it once it lands; `Deleted`: remove it). The
     /// spawn itself carries only what it was started with.
-    pub(crate) remote_in_flight: HashMap<String, session_sync::Remote<session_sync::RemoteNode>>,
+    pub(crate) remote_in_flight: HashMap<NodeId, session_sync::Remote<session_sync::RemoteNode>>,
 
     /// Tabs loading a url the host gave them, with when each was last seen
     /// loading; their url changes aren't shared meanwhile
     /// (`App::shares_url_change`).
-    pub(crate) host_loads: HashMap<String, std::time::Instant>,
+    pub(crate) host_loads: HashMap<NodeId, std::time::Instant>,
 
     /// Tabs `navigate_tab` just moved on, with the url each left, when, and
     /// whether the engine has reported loading since (`App::reported_url`).
-    pub(crate) navigated_from: HashMap<String, (String, std::time::Instant, bool)>,
+    pub(crate) navigated_from: HashMap<NodeId, (String, std::time::Instant, bool)>,
 
     pub(crate) tabs_spawned_waiters: Vec<std::sync::mpsc::Sender<()>>,
 
@@ -57,7 +57,7 @@ pub(crate) struct SpawnTracker {
 
     /// Recent engine crash times per tab id (`tabs::crashes_too_often`): a
     /// tab crashing too often is left as a failed card, not respawned.
-    pub(crate) tab_crashes: HashMap<String, Vec<std::time::Instant>>,
+    pub(crate) tab_crashes: HashMap<NodeId, Vec<std::time::Instant>>,
 
     /// The tab id `respawn_tab` was called for *while it was the focused
     /// tab* — i.e. an engine swap or crash recovery is currently respawning
@@ -70,18 +70,18 @@ pub(crate) struct SpawnTracker {
     /// take many seconds. Set in `respawn_tab`, cleared in
     /// `handle_tab_spawn_result` once that same id's `Respawn` outcome
     /// (`Ok` or `Err`) arrives.
-    pub(crate) pending_respawn_focus: Option<String>,
+    pub(crate) pending_respawn_focus: Option<NodeId>,
 
     /// The opened-from step's target (trail spec decision 6) while a reopen has not put it in `nodes` yet;
     /// `App::poll_trail_focus` finishes it.
-    pub(crate) pending_trail_focus: Option<String>,
+    pub(crate) pending_trail_focus: Option<NodeId>,
 
     /// Unloaded tabs' cards whose `wake_tab` spawn is in flight. Unlike a
     /// crash respawn, the card is still on the graph meanwhile, so it can
     /// be moved or closed: the outcome takes the card's placement as it is
     /// now, and is dropped if the card is gone. Set in `wake_tab`, cleared
     /// by that outcome in `handle_tab_spawn_result`.
-    pub(crate) wakes_in_flight: HashSet<String>,
+    pub(crate) wakes_in_flight: HashSet<NodeId>,
 
     /// Tabs that stay tabs whatever they load, each with whether that load
     /// has settled (reported `loading == false`): one opened by "Open as
@@ -91,20 +91,20 @@ pub(crate) struct SpawnTracker {
     /// change after the load settles (an HTTP redirect during it doesn't
     /// count; see `skip_convert_after`) or the tab closes (`remove_tab`).
     /// Not persisted (spec "Left open").
-    pub(crate) skip_convert: HashMap<String, bool>,
+    pub(crate) skip_convert: HashMap<NodeId, bool>,
 }
 
 impl SpawnTracker {
     /// Drops `id`, a node being removed for good, from the per-tab state that is not about a spawn in flight.
     /// `spawning`, `remote_in_flight`, `wakes_in_flight` and `host_loads` are not here: the spawn lifecycle owns them.
-    pub(crate) fn forget(&mut self, id: &str) {
-        self.skip_convert.remove(id);
-        self.navigated_from.remove(id);
-        self.tab_crashes.remove(id);
-        if self.pending_respawn_focus.as_deref() == Some(id) {
+    pub(crate) fn forget(&mut self, id: NodeId) {
+        self.skip_convert.remove(&id);
+        self.navigated_from.remove(&id);
+        self.tab_crashes.remove(&id);
+        if self.pending_respawn_focus == Some(id) {
             self.pending_respawn_focus = None;
         }
-        if self.pending_trail_focus.as_deref() == Some(id) {
+        if self.pending_trail_focus == Some(id) {
             self.pending_trail_focus = None;
         }
     }
@@ -182,11 +182,11 @@ pub(crate) struct TabSpawnOutcome {
 /// group, nothing carried), `TabSpawn::respawn` for one that
 /// already has a node.
 pub(crate) struct TabSpawn {
-    pub(crate) id: String,
+    pub(crate) id: NodeId,
     pub(crate) url: String,
     pub(crate) kind: ViewKind,
-    pub(crate) parent: Option<String>,
-    pub(crate) group: Option<String>,
+    pub(crate) parent: Option<NodeId>,
+    pub(crate) group: Option<NodeId>,
     /// The `jar` edge a new tab starts with, which it lands with (`Carried::jar`); `None` inherits. A tab the mirror
     /// already holds (a respawn or wake) uses the mirror's instead, which an edit may change while it is in flight.
     pub(crate) jar: Option<NodeId>,
@@ -220,7 +220,7 @@ pub(crate) struct TabCarry {
 
 impl TabSpawn {
     pub(crate) fn new(
-        id: String,
+        id: NodeId,
         url: String,
         kind: ViewKind,
         pos: egui::Vec2,
@@ -243,14 +243,14 @@ impl TabSpawn {
 
     /// Tab `node` (`id`) respawned as `kind` at `url`, keeping its `TabCarry` (`carried` is the mirror's); its place
     /// in the graph is its `App::layout` entry, which the respawn leaves alone. `None` if `node` isn't a tab.
-    pub(crate) fn respawn(id: &str, node: &GraphNode, carried: Carried, kind: ViewKind, url: String) -> Option<Self> {
+    pub(crate) fn respawn(id: NodeId, node: &GraphNode, carried: Carried, kind: ViewKind, url: String) -> Option<Self> {
         let tab = node.as_tab()?;
         Some(TabSpawn {
-            id: id.to_string(),
+            id,
             url,
             kind,
-            parent: carried.parent.clone(),
-            group: carried.group.clone(),
+            parent: carried.parent,
+            group: carried.group,
             jar: carried.jar(),
             pos: carried.pos().unwrap_or_default(),
             purpose: SpawnPurpose::Respawn,
@@ -349,19 +349,19 @@ impl App {
         self.spawns.tab_spawns_in_flight += 1;
         // Shared at the pos, url, engine and jar the mirror holds for it (a respawn's `spawn.url` is the live one); a
         // new tab has no entry yet and shares the ones it starts with.
-        let shared_url = Some(self.doc.mirror.url(&spawn.id)).filter(|url| !url.is_empty());
-        let has = self.doc.mirror.has(&spawn.id);
-        let pos = if has { self.doc.mirror.pos(&spawn.id) } else { Some(spawn.pos) };
-        let own = if has { self.doc.mirror.jar(&spawn.id) } else { spawn.jar };
-        let view_kind = if has { self.doc.mirror.view_code(&spawn.id) } else { session_sync::view_code(spawn.kind) };
+        let shared_url = Some(self.doc.mirror.url(spawn.id)).filter(|url| !url.is_empty());
+        let has = self.doc.mirror.has(spawn.id);
+        let pos = if has { self.doc.mirror.pos(spawn.id) } else { Some(spawn.pos) };
+        let own = if has { self.doc.mirror.jar(spawn.id) } else { spawn.jar };
+        let view_kind = if has { self.doc.mirror.view_code(spawn.id) } else { session_sync::view_code(spawn.kind) };
         let url = shared_url.unwrap_or(&spawn.url);
         let snapshot = session_sync::spawn_snapshot(&spawn, pos, url, view_kind, own);
-        self.spawns.spawning.insert(spawn.id.clone(), snapshot);
+        self.spawns.spawning.insert(spawn.id, snapshot);
         // A new tab is created from that snapshot by the next save (Ruling 3); a respawn's id is already stored.
-        self.queue_create(&spawn.id);
+        self.queue_create(spawn.id);
         let generation = self.spawns.session_generation;
         // Resolved and loaded before the test early return, so tests see the load happen.
-        let jar = self.resolve_jar(own, spawn.group.as_deref()).map(|(jar, _)| jar);
+        let jar = self.resolve_jar(own, spawn.group).map(|(jar, _)| jar);
         if let Some(jar) = jar {
             self.ensure_jar_loaded(jar);
         }
@@ -390,7 +390,7 @@ impl App {
                 serde_json::to_string(&cookies).unwrap_or_else(|_| "[]".to_owned())
             };
             let result =
-                process_manager::spawn_tab(spawn.kind, &spawn.id, &spawn.url, custom_cef.as_deref(), &seed, wake);
+                process_manager::spawn_tab(spawn.kind, spawn.id, &spawn.url, custom_cef.as_deref(), &seed, wake);
             let (seeded, seed_clears) = seeded.into_inner();
             let _ = proxy.send_event(UserEvent::TabSpawned(Box::new(TabSpawnOutcome {
                 spawn,
@@ -405,7 +405,7 @@ impl App {
 
     /// `begin_view_shutdown` for the live tabs among `ids`, which the caller is about to remove one after another:
     /// their `SHUTDOWN_FLUSH` waits then share one deadline instead of adding up.
-    pub(crate) fn begin_tabs_shutdown<'a>(&self, ids: impl IntoIterator<Item = &'a String>) {
+    pub(crate) fn begin_tabs_shutdown<'a>(&self, ids: impl IntoIterator<Item = &'a NodeId>) {
         for tab in ids.into_iter().filter_map(|id| self.nodes.get(id)).filter_map(|node| node.as_tab()) {
             tab.tab.begin_shutdown();
         }
@@ -423,15 +423,15 @@ impl App {
 
     /// A failed card already standing for the intent `(url, kind, group)`, other than `id`: a repeat failure refreshes
     /// it instead of adding a second card. Urls compare as exact strings (no normalization).
-    fn failed_twin(&self, id: &str, url: &str, kind: ViewKind, group: Option<&str>) -> Option<String> {
+    fn failed_twin(&self, id: NodeId, url: &str, kind: ViewKind, group: Option<NodeId>) -> Option<NodeId> {
         self.nodes.iter().find_map(|(other, node)| {
             let tab = node.as_unloaded()?;
-            let same = other != id
+            let same = *other != id
                 && matches!(tab.state, UnloadedState::Failed(_))
                 && tab.url == url
-                && self.doc.mirror.view_kind(other) == kind
-                && self.doc.mirror.group(other) == group;
-            same.then(|| other.clone())
+                && self.doc.mirror.view_kind(*other) == kind
+                && self.doc.mirror.group(*other) == group;
+            same.then_some(*other)
         })
     }
 
@@ -440,15 +440,10 @@ impl App {
     /// `id` itself, matching what "duplicate" means in a real browser's
     /// own tab strip. Its engine is the mirror's (a swap in flight: its target).
     /// The copy keeps `id`'s jar choice (deviation 3).
-    pub(crate) fn duplicate_tab(&mut self, id: &str) {
-        let Some((parent, group, url, kind)) = self.nodes.get(id).and_then(|n| {
+    pub(crate) fn duplicate_tab(&mut self, id: NodeId) {
+        let Some((parent, group, url, kind)) = self.nodes.get(&id).and_then(|n| {
             n.runtime.saved_tab().map(|url| {
-                (
-                    self.doc.mirror.parent(id).map(str::to_owned),
-                    self.doc.mirror.group(id).map(str::to_owned),
-                    url.to_string(),
-                    self.doc.mirror.view_kind(id),
-                )
+                (self.doc.mirror.parent(id), self.doc.mirror.group(id), url.to_string(), self.doc.mirror.view_kind(id))
             })
         }) else {
             return;
@@ -463,16 +458,16 @@ impl App {
     /// background tabs render nothing until focused anyway. Also used for
     /// a page-triggered new tab (`ViewToHost::OpenTabRequested`), with
     /// that request's URL instead of the configured home page.
-    pub(crate) fn spawn_new_tab(&mut self, parent: Option<String>, group: Option<String>, url: &str) {
+    pub(crate) fn spawn_new_tab(&mut self, parent: Option<NodeId>, group: Option<NodeId>, url: &str) {
         let kind = self.settings.default_starting_view_kind;
         self.spawn_new_tab_with_kind(parent, group, url, kind, SpawnPurpose::New, None, None);
     }
 
     /// A tab opened by tab `opener` (a page link or `window.open`): a child of it, in its group, with its jar
     /// (deviation 3).
-    pub(crate) fn spawn_tab_from(&mut self, opener: &str, url: &str, pos: Option<egui::Vec2>) -> String {
-        let parent = Some(opener.to_string());
-        let group = self.group_of(&parent);
+    pub(crate) fn spawn_tab_from(&mut self, opener: NodeId, url: &str, pos: Option<egui::Vec2>) -> NodeId {
+        let parent = Some(opener);
+        let group = self.group_of(parent);
         let (kind, jar) = (self.settings.default_starting_view_kind, self.doc.mirror.jar(opener));
         self.spawn_new_tab_with_kind(parent, group, url, kind, SpawnPurpose::New, jar, pos)
     }
@@ -493,14 +488,14 @@ impl App {
     )]
     pub(crate) fn spawn_new_tab_with_kind(
         &mut self,
-        parent: Option<String>,
-        group: Option<String>,
+        parent: Option<NodeId>,
+        group: Option<NodeId>,
         url: &str,
         kind: ViewKind,
         purpose: SpawnPurpose,
         jar: Option<NodeId>,
         pos: Option<egui::Vec2>,
-    ) -> String {
+    ) -> NodeId {
         let id = self.alloc_node_id();
         // `parent`'s own position only if it actually shares `group` --
         // the toolbar's "+ New Tab" passes `self.current_group` as `group`
@@ -510,14 +505,13 @@ impl App {
         // the new tab near its actual new groupmates instead of near an
         // unrelated tab at a different level; `ZERO` (same as a fresh
         // group's own spawn point) covers a brand new, still-empty group.
-        let in_group = |id: &str| self.doc.mirror.group(id) == group.as_deref();
+        let in_group = |id: NodeId| self.doc.mirror.group(id) == group;
         let parent_pos = parent
-            .as_deref()
-            .filter(|p| in_group(p) && self.nodes.contains_key(*p))
-            .or_else(|| self.nodes.keys().map(String::as_str).find(|id| in_group(id)))
+            .filter(|&p| in_group(p) && self.nodes.contains_key(&p))
+            .or_else(|| self.nodes.keys().copied().find(|&id| in_group(id)))
             .map_or(egui::Vec2::ZERO, |id| self.layout_pos(id));
-        let pos = pos.unwrap_or_else(|| parent_pos + graph_layout::spawn_jitter(&id));
-        let spawn = TabSpawn::new(id.clone(), url.to_string(), kind, pos, purpose, self.settings.zoom_factor);
+        let pos = pos.unwrap_or_else(|| parent_pos + graph_layout::spawn_jitter(id));
+        let spawn = TabSpawn::new(id, url.to_string(), kind, pos, purpose, self.settings.zoom_factor);
         self.spawn_tab_async(TabSpawn { parent, group, jar, ..spawn });
         id
     }
@@ -530,12 +524,12 @@ impl App {
         self.close_find_bar();
         self.menus.context_menu.open = None;
         self.close_split();
-        if let Some(old_id) = self.focused.clone() {
+        if let Some(old_id) = self.focused {
             if let Some(old) = self.nodes.get_mut(&old_id).and_then(|n| n.as_tab_mut()) {
                 old.tab.set_visible(false);
             }
             if let Some(gpu) = &mut self.gpu {
-                gpu.free_tab_texture(&old_id);
+                gpu.free_tab_texture(old_id);
             }
         }
     }
@@ -549,25 +543,25 @@ impl App {
     /// whatever split was open, since a split is only ever meaningful
     /// paired with the specific tab it was opened against. An unloaded tab
     /// (`UnloadedTabPayload`) is woken.
-    pub(crate) fn focus_tab(&mut self, id: &str) {
+    pub(crate) fn focus_tab(&mut self, id: NodeId) {
         self.spawns.pending_trail_focus = None;
         self.end_note_edits();
-        if self.focused.as_deref() != Some(id) {
+        if self.focused != Some(id) {
             self.hide_focused_tab();
         }
-        if let Some(node) = self.nodes.get_mut(id).and_then(|n| n.as_tab_mut()) {
+        if let Some(node) = self.nodes.get_mut(&id).and_then(|n| n.as_tab_mut()) {
             node.tab.set_visible(true);
             if !self.address_bar.focused {
                 self.address_bar.text = node.url.clone();
             }
         }
-        self.focused = Some(id.to_string());
+        self.focused = Some(id);
         self.viewed_image = None;
         self.view_mode = ViewMode::Item;
         // An unloaded tab opens by starting its engine; Tab view shows the
         // respawning placeholder until it lands (`pending_respawn_focus`).
-        if self.nodes.get(id).and_then(|n| n.as_unloaded()).is_some() {
-            self.spawns.pending_respawn_focus = Some(id.to_string());
+        if self.nodes.get(&id).and_then(|n| n.as_unloaded()).is_some() {
+            self.spawns.pending_respawn_focus = Some(id);
             self.wake_tab(id, self.doc.mirror.view_kind(id));
         }
         self.send_resize_to(id);
@@ -578,17 +572,17 @@ impl App {
     /// through `focus_tab`; an Image becomes `viewed_image` (the last tab
     /// stays `focused`, hidden, exactly as in Graph view). Kinds with no
     /// Item view are a no-op (and a debug-build assertion).
-    pub(crate) fn focus_item(&mut self, id: &str) {
+    pub(crate) fn focus_item(&mut self, id: NodeId) {
         let Some(kind) = self.card_kind(id) else { return };
         match kind.ty {
             crate::store::model::TYPE_TAB => self.focus_tab(id),
             // Nothing to view until the decode lands (`ImagePayload::decoding`).
             crate::store::model::TYPE_IMAGE
-                if self.nodes.get(id).and_then(|n| n.as_image()).is_some_and(|i| i.decoding()) => {}
+                if self.nodes.get(&id).and_then(|n| n.as_image()).is_some_and(|i| i.decoding()) => {}
             crate::store::model::TYPE_IMAGE => {
                 self.end_note_edits();
                 self.hide_focused_tab();
-                self.viewed_image = Some(id.to_string());
+                self.viewed_image = Some(id);
                 self.image_view = ImageViewState::default();
                 self.view_mode = ViewMode::Item;
                 self.save_session();
@@ -609,12 +603,12 @@ impl App {
     /// longer being shown in a split isn't otherwise different from any
     /// other background tab.
     pub(crate) fn start_split(&mut self, kind: ViewKind) {
-        let Some(focused_id) = self.focused.clone() else { return };
+        let Some(focused_id) = self.focused else { return };
         let Some(url) = self.nodes.get(&focused_id).and_then(|n| n.as_tab()).map(|t| t.url.clone()) else {
             return;
         };
-        let group = self.group_of(&Some(focused_id.clone()));
-        let jar = self.doc.mirror.jar(&focused_id);
+        let group = self.group_of(Some(focused_id));
+        let jar = self.doc.mirror.jar(focused_id);
         self.spawn_new_tab_with_kind(Some(focused_id), group, &url, kind, SpawnPurpose::Split, jar, None);
     }
 
@@ -628,13 +622,13 @@ impl App {
             node.tab.set_visible(false);
         }
         if let Some(gpu) = &mut self.gpu {
-            gpu.free_tab_texture(&id);
+            gpu.free_tab_texture(id);
         }
         // The primary pane was rendering at half width for the split --
         // needs to grow back to the full content width now that
         // `content_size_px` no longer sees `split_tab` as set.
-        if let Some(focused_id) = self.focused.clone() {
-            self.send_resize_to(&focused_id);
+        if let Some(focused_id) = self.focused {
+            self.send_resize_to(focused_id);
         }
     }
 
@@ -649,7 +643,7 @@ impl App {
     /// already there either way, so there's nothing equivalent to suspend.
     pub(crate) fn leave_to_graph(&mut self) {
         self.menus.context_menu.open = None;
-        match self.viewed_image.clone().or_else(|| self.focused.clone()) {
+        match self.viewed_image.or(self.focused) {
             Some(id) => {
                 self.transition =
                     Some(Transition { node_id: id, kind: TransitionKind::ToGraph, start: std::time::Instant::now() });
@@ -670,7 +664,7 @@ impl App {
     /// than orphaning that whole subtree. Falls back to Graph view if the
     /// closed tab was focused. Records nothing: `close_node` is the close
     /// that feeds "Recently Closed".
-    pub(crate) fn destroy_tab(&mut self, id: &str) {
+    pub(crate) fn destroy_tab(&mut self, id: NodeId) {
         self.remove_tab(id);
         self.save_session();
     }
@@ -679,8 +673,8 @@ impl App {
     /// another protocol version, becomes a failed card: the reason is its
     /// tooltip, and opening it tries again. Respawning would only loop.
     /// `why` picks the toast: `CannotStart` says why the host could not start.
-    pub(crate) fn leave_failed_card(&mut self, id: &str, reason: &str, why: LeftClosed) {
-        let Some(node) = self.nodes.get_mut(id) else { return };
+    pub(crate) fn leave_failed_card(&mut self, id: NodeId, reason: &str, why: LeftClosed) {
+        let Some(node) = self.nodes.get_mut(&id) else { return };
         let Runtime::Tab(tab) = &node.runtime else { return };
         let (url, kind) = (tab.url.clone(), tab.tab.kind);
         // Replacing the payload drops the `ViewTab`, which reaps the dead host.
@@ -692,22 +686,22 @@ impl App {
         // Tab view, focused on this card, falls back to Graph by itself
         // (`build_tab_view_ui`) unless a stale respawn spinner names it; a
         // split pane showing it has nothing left to show.
-        if self.spawns.pending_respawn_focus.as_deref() == Some(id) {
+        if self.spawns.pending_respawn_focus == Some(id) {
             self.spawns.pending_respawn_focus = None;
         }
-        if self.split_tab.as_deref() == Some(id) {
+        if self.split_tab == Some(id) {
             self.close_split();
         }
-        self.spawns.tab_crashes.remove(id);
-        let group = self.doc.mirror.group(id).map(str::to_owned);
+        self.spawns.tab_crashes.remove(&id);
+        let group = self.doc.mirror.group(id);
         // One failed card per intent: keep this one (its id is the live one) and drop another standing for it.
-        if let Some(twin) = self.failed_twin(id, &url, kind, group.as_deref()) {
-            self.remove_tab(&twin);
+        if let Some(twin) = self.failed_twin(id, &url, kind, group) {
+            self.remove_tab(twin);
         }
         match why {
             LeftClosed::CannotStart => {
                 let message = format!("Couldn't start {} for {}: {reason}", view_label(kind), Self::toast_url(&url));
-                self.queue_failure_toast(kind, &url, group.as_deref(), reason, message);
+                self.queue_failure_toast(kind, &url, group, reason, message);
             }
             LeftClosed::KeepsCrashing => {
                 self.queue_toast(format!("Tab keeps crashing, left closed: {}", Self::toast_url(&url)))
@@ -720,9 +714,9 @@ impl App {
     /// The spawn that restarts live tab `id` on the engine the mirror holds for it: a swap in flight (`swap_target`,
     /// or one waiting for its cookies) has already saved its target, so the tab restarts on it, the running engine
     /// its fallback. `None` when `id` is no live tab.
-    pub(crate) fn restart_spawn(&self, id: &str) -> Option<TabSpawn> {
+    pub(crate) fn restart_spawn(&self, id: NodeId) -> Option<TabSpawn> {
         let want = self.doc.mirror.view_kind(id);
-        let node = self.nodes.get(id)?;
+        let node = self.nodes.get(&id)?;
         let tab = node.as_tab()?;
         let fallback_kind = (tab.tab.kind != want).then_some(tab.tab.kind);
         let spawn = TabSpawn::respawn(id, node, self.doc.mirror.carried(id), want, tab.url.clone())?;
@@ -731,10 +725,10 @@ impl App {
 
     /// Replaces live tab `id`'s engine with one started from `spawn` (`restart_spawn`). Dropping the old `ViewTab`
     /// ends its host.
-    pub(crate) fn restart_with(&mut self, id: &str, spawn: TabSpawn) {
-        self.nodes.remove(id);
+    pub(crate) fn restart_with(&mut self, id: NodeId, spawn: TabSpawn) {
+        self.nodes.remove(&id);
         // Same stale-state guard `destroy_tab`/`finish_swap` apply — see `finish_swap`'s own comment on this.
-        let card = CardId::stored(id);
+        let card = CardId::from(id);
         if self.interaction.dragging == Some(card) {
             self.interaction.dragging = None;
         }
@@ -746,7 +740,7 @@ impl App {
 
     /// "Restart View": a new host for live tab `id` at its current URL, as a crash restart does, without counting
     /// toward the crash limit. False when `id` is no live tab.
-    pub(crate) fn restart_view(&mut self, id: &str) -> bool {
+    pub(crate) fn restart_view(&mut self, id: NodeId) -> bool {
         let Some(spawn) = self.restart_spawn(id) else { return false };
         self.queue_toast(format!("Restarted: {}", Self::toast_url(&spawn.url)));
         self.restart_with(id, spawn);
@@ -755,8 +749,8 @@ impl App {
 
     /// "End View": ends live tab `id`'s host and leaves a failed card, which a click starts again. False when `id`
     /// is no live tab.
-    pub(crate) fn end_view(&mut self, id: &str) -> bool {
-        if self.nodes.get(id).and_then(|n| n.as_tab()).is_none() {
+    pub(crate) fn end_view(&mut self, id: NodeId) -> bool {
+        if self.nodes.get(&id).and_then(|n| n.as_tab()).is_none() {
             return false;
         }
         self.leave_failed_card(id, "It stopped responding and was ended.", LeftClosed::Ended);
@@ -765,43 +759,44 @@ impl App {
 
     /// A live tab on a jar engine (`ViewDesc::jar`) running on a jar other than the one it now resolves to, or on a
     /// jar the user cleared (`jar_reseed`): it switches when it next qualifies (chip "will switch").
-    pub(crate) fn will_switch(&self, id: &str) -> bool {
-        let Some(tab) = self.nodes.get(id).and_then(|n| n.as_tab()) else { return false };
-        let Some((had, _)) = self.cookies.jar_tabs.get(id) else { return false };
+    pub(crate) fn will_switch(&self, id: NodeId) -> bool {
+        let Some(tab) = self.nodes.get(&id).and_then(|n| n.as_tab()) else { return false };
+        let Some((had, _)) = self.cookies.jar_tabs.get(&id) else { return false };
         let Some((now, _)) = self.effective_jar(id) else { return false };
-        tab.tab.kind.desc().jar && (*had != now || self.cookies.jar_reseed.contains(id))
+        tab.tab.kind.desc().jar && (*had != now || self.cookies.jar_reseed.contains(&id))
     }
 
     /// Puts every live tab whose jar changed and that is not busy, focused or showing to sleep; it wakes into the
     /// new jar (spec table). Runs after a local jar change, a remote batch (`apply_remote`) and each idle sweep, so a
     /// waiting tab switches once it qualifies (deviation 11). A dirty form keeps it awake (`sleep_state::verdict`).
     pub(crate) fn sweep_jar_switches(&mut self) {
-        let todo: Vec<String> = self
+        let todo: Vec<NodeId> = self
             .tab_idle_views()
             .iter()
             .filter(|v| self.will_switch(v.id))
             .filter(|v| {
-                if self.nodes.get(v.id).and_then(|n| n.as_tab()).is_none() {
+                if self.nodes.get(&v.id).and_then(|n| n.as_tab()).is_none() {
                     return false;
                 }
-                let had = self.cookies.jar_tabs.get(v.id).map(|(k, _)| *k);
-                let focused = self.focused.as_deref() == Some(v.id);
-                let reseed = self.cookies.jar_reseed.contains(v.id);
+                let had = self.cookies.jar_tabs.get(&v.id).map(|(k, _)| *k);
+                let focused = self.focused == Some(v.id);
+                let reseed = self.cookies.jar_reseed.contains(&v.id);
                 let Some((now, _)) = self.effective_jar(v.id) else { return false };
                 sleep_state::jar_switch(had, now, reseed, v.busy(), focused) == sleep_state::JarSwitch::SleepNow
             })
-            .map(|v| v.id.to_string())
+            .map(|v| v.id)
             .collect();
         for id in todo {
-            self.request_sleep(&id, SleepWhy::JarSwitch);
+            self.request_sleep(id, SleepWhy::JarSwitch);
         }
     }
 
     /// "Switch jar now": the old jar gets the tab's final cookies, then the host is replaced in place by one seeded
     /// from the new jar (the engine-swap path, same engine). Does nothing while another host change is on its way
     /// (`host_change_pending`): that one replaces the host anyway.
-    pub(crate) fn switch_jar_now(&mut self, id: &str) {
-        let Some((kind, url)) = self.nodes.get(id).and_then(|n| n.as_tab()).map(|t| (t.tab.kind, t.url.clone())) else {
+    pub(crate) fn switch_jar_now(&mut self, id: NodeId) {
+        let Some((kind, url)) = self.nodes.get(&id).and_then(|n| n.as_tab()).map(|t| (t.tab.kind, t.url.clone()))
+        else {
             return;
         };
         if !self.can_switch_jar_now(id) {
@@ -815,22 +810,22 @@ impl App {
 
     /// Whether "Switch Jar Now" would do anything for tab `id`: it waits to switch and nothing else is about to
     /// replace its host. The menu hides the item otherwise.
-    pub(crate) fn can_switch_jar_now(&self, id: &str) -> bool {
+    pub(crate) fn can_switch_jar_now(&self, id: NodeId) -> bool {
         self.will_switch(id) && !self.host_change_pending(id)
     }
 
     /// An engine swap, a sleep or an earlier "Switch Jar Now" is already on its way for tab `id` (Task 6 review M3).
     /// Each replaces or shuts the host, and a second `hold_for_cookies` would cancel the one parked first.
-    pub(crate) fn host_change_pending(&self, id: &str) -> bool {
-        self.pending_sleeps.contains_key(id)
-            || self.cookies.cookie_holds.contains_key(id)
-            || self.nodes.get(id).and_then(|n| n.as_tab()).is_some_and(|t| t.swap_target.is_some())
+    pub(crate) fn host_change_pending(&self, id: NodeId) -> bool {
+        self.pending_sleeps.contains_key(&id)
+            || self.cookies.cookie_holds.contains_key(&id)
+            || self.nodes.get(&id).and_then(|n| n.as_tab()).is_some_and(|t| t.swap_target.is_some())
     }
 
     /// The local close of a tab without the save (`destroy_tab`, `destroy_group_members`, `redirect_tab_to_content`),
     /// queueing the delete (`take_out`). Nothing when `id` is not a tab shown here.
-    pub(crate) fn remove_tab(&mut self, id: &str) {
-        if self.nodes.get(id).is_some_and(|n| n.runtime.saved_tab().is_some()) {
+    pub(crate) fn remove_tab(&mut self, id: NodeId) {
+        if self.nodes.get(&id).is_some_and(|n| n.runtime.saved_tab().is_some()) {
             self.take_out(id, crate::node_store::Removal::Local);
         }
     }
@@ -840,8 +835,8 @@ impl App {
     /// graph is its `App::layout` entry) and, if it's the focused tab, shows a spinner until it's
     /// back (only the focused tab is ever visible).
     pub(crate) fn respawn_tab(&mut self, spawn: TabSpawn) {
-        if self.focused.as_deref() == Some(spawn.id.as_str()) {
-            self.spawns.pending_respawn_focus = Some(spawn.id.clone());
+        if self.focused == Some(spawn.id) {
+            self.spawns.pending_respawn_focus = Some(spawn.id);
         }
         self.spawn_tab_async(spawn);
     }
@@ -851,12 +846,12 @@ impl App {
         &mut self,
         url: &str,
         pos: egui::Vec2,
-        group: Option<String>,
-        parent: Option<String>,
-    ) -> String {
+        group: Option<NodeId>,
+        parent: Option<NodeId>,
+    ) -> NodeId {
         let id = self.alloc_node_id();
         let (kind, zoom) = (self.settings.default_starting_view_kind, self.settings.zoom_factor);
-        let spawn = TabSpawn::new(id.clone(), url.to_string(), kind, pos, SpawnPurpose::New, zoom);
+        let spawn = TabSpawn::new(id, url.to_string(), kind, pos, SpawnPurpose::New, zoom);
         self.spawn_tab_async(TabSpawn { group, parent, ..spawn });
         id
     }
@@ -873,15 +868,16 @@ impl App {
         // fine: `focus_tab` wakes it, and `render_tab_toolbar_content`
         // shows the respawning placeholder until it's live rather than
         // assuming `as_tab().unwrap()`.
-        let tab_ids: Vec<&String> = self
+        let tab_ids: Vec<NodeId> = self
             .node_order
             .iter()
-            .filter(|id| self.nodes.get(id.as_str()).and_then(|n| n.runtime.listed_tab()).is_some())
+            .copied()
+            .filter(|id| self.nodes.get(id).and_then(|n| n.runtime.listed_tab()).is_some())
             .collect();
         if tab_ids.len() < 2 {
             return;
         }
-        let current = self.focused.as_ref().and_then(|id| tab_ids.iter().position(|t| *t == id));
+        let current = self.focused.and_then(|id| tab_ids.iter().position(|t| *t == id));
         let len = tab_ids.len() as isize;
         let next = match current {
             Some(i) => {
@@ -890,8 +886,7 @@ impl App {
             }
             None => 0,
         };
-        let id = tab_ids[next].clone();
-        self.focus_tab(&id);
+        self.focus_tab(tab_ids[next]);
     }
 }
 

@@ -1,6 +1,7 @@
 //! The jar chip on a tab card: its fit, painting, hit rect and the dots it shows.
 
 use super::*;
+use crate::store::model::NodeId;
 
 /// A jar chip's height in screen points.
 pub(super) const JAR_CHIP_HEIGHT: f32 = 16.0;
@@ -167,7 +168,7 @@ pub(crate) fn paint_jar_dots(
 /// most `max_width` screen points wide: the card's width less the chip's inset on both sides.
 pub(super) fn push_jar_chip(
     deferred_overlays: &mut DeferredOverlays,
-    id: &str,
+    id: NodeId,
     world: egui::Pos2,
     offset: egui::Vec2,
     max_width: f32,
@@ -188,13 +189,13 @@ pub(super) fn push_jar_chip(
     }));
 }
 
-fn jar_chip_key(id: &str) -> egui::Id {
+fn jar_chip_key(id: NodeId) -> egui::Id {
     egui::Id::new(("jar_chip_rect", id))
 }
 
 /// Whether screen point `at` is on card `id`'s jar chip, as last painted (this frame or the one before: a chip no
 /// longer drawn is not hit).
-pub(crate) fn on_jar_chip(ctx: &egui::Context, id: &str, at: egui::Pos2) -> bool {
+pub(crate) fn on_jar_chip(ctx: &egui::Context, id: NodeId, at: egui::Pos2) -> bool {
     let now = ctx.cumulative_frame_nr();
     ctx.data(|d| d.get_temp::<(u64, egui::Rect)>(jar_chip_key(id)))
         .is_some_and(|(frame, scrim)| frame + 1 >= now && scrim.contains(at))

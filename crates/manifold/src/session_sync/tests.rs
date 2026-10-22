@@ -67,14 +67,10 @@ fn shown(doc: &Doc) -> BTreeMap<NodeId, Snapshot> {
     doc.shown().map(|(id, node)| (id, Snapshot::of(doc, id, node))).collect()
 }
 
-/// What the store holds for every live node (`App::snapshot`), by store id: an in-progress download, a
-/// hand-built id and a tab whose spawn is in flight are left out. `pub(crate)`: other modules' tests compare it too.
+/// What the store holds for every live node (`App::snapshot`), by id: an in-progress download and a tab whose spawn is
+/// in flight are left out. `pub(crate)`: other modules' tests compare it too.
 pub(crate) fn snapshots(app: &App) -> BTreeMap<NodeId, Snapshot> {
-    app.nodes
-        .keys()
-        .filter_map(|key| key.parse::<NodeId>().ok())
-        .filter_map(|id| Some((id, app.snapshot(id)?)))
-        .collect()
+    app.nodes.keys().filter_map(|&id| Some((id, app.snapshot(id)?))).collect()
 }
 
 /// Actor 1's op count: what a save wrote.
@@ -83,17 +79,17 @@ fn ops_of(app: &App) -> u64 {
 }
 
 /// Whether the document shows `id` live.
-fn live_in_doc(app: &App, id: &str) -> bool {
-    app.doc.journal.as_ref().unwrap().doc().nodes.get(&id.parse().unwrap()).is_some_and(Node::is_live)
+fn live_in_doc(app: &App, id: NodeId) -> bool {
+    app.doc.journal.as_ref().unwrap().doc().nodes.get(&id).is_some_and(Node::is_live)
 }
 
-fn is_inside(model: &BTreeMap<String, (Kind, Option<String>)>, node: &str, ancestor: &str) -> bool {
-    let mut at = model.get(node).and_then(|(_, g)| g.as_deref());
+fn is_inside(model: &BTreeMap<NodeId, (Kind, Option<NodeId>)>, node: NodeId, ancestor: NodeId) -> bool {
+    let mut at = model.get(&node).and_then(|&(_, g)| g);
     while let Some(g) = at {
         if g == ancestor {
             return true;
         }
-        at = model.get(g).and_then(|(_, g)| g.as_deref());
+        at = model.get(&g).and_then(|&(_, g)| g);
     }
     false
 }
@@ -108,13 +104,13 @@ fn app_with(nodes: &BTreeMap<NodeId, Snapshot>) -> App {
 }
 
 /// An App holding one Json node, id `id(1)`, loaded from a temp file.
-fn app_with_json_file(name: &str) -> (App, String) {
+fn app_with_json_file(name: &str) -> (App, NodeId) {
     let dir = crate::store::testutil::temp_dir(name);
     let path = dir.join("v.json");
     std::fs::write(&path, r#"{"users": [{"name": "a"}]}"#).unwrap();
     let mut app = App::default();
-    let node = id(1).to_string();
-    app.insert_json_node_with_id(node.clone(), path.to_string_lossy().into_owned(), egui::Vec2::ZERO, None).unwrap();
+    let node = id(1);
+    app.insert_json_node_with_id(node, path.to_string_lossy().into_owned(), egui::Vec2::ZERO, None).unwrap();
     (app, node)
 }
 
@@ -127,84 +123,83 @@ pub(crate) fn app_on(path: &std::path::Path, actor: u64) -> App {
 }
 
 /// A node of `kind` at the top level with `runtime` as its live state; its type is seeded from `kind`.
-pub(crate) fn add(app: &mut App, kind: Kind, runtime: Runtime) -> String {
+pub(crate) fn add(app: &mut App, kind: Kind, runtime: Runtime) -> NodeId {
     let id = app.alloc_node_id();
-    app.insert_placeholder_node(id.clone(), egui::Vec2::ZERO, kind, runtime);
+    app.insert_placeholder_node(id, egui::Vec2::ZERO, kind, runtime);
     id
 }
 
 /// A group named `name` at the top level (`App::place_group`).
-pub(crate) fn add_group(app: &mut App, name: &str) -> String {
+pub(crate) fn add_group(app: &mut App, name: &str) -> NodeId {
     let id = app.alloc_node_id();
     app.place_group(Some(id), name, crate::fetched::Placement { group: None, pos: egui::Vec2::ZERO })
 }
 
 /// Another replica sets one field of `node`.
-pub(crate) fn remote_set(other: &mut Journal, node: &str, no: u32, value: FieldValue) {
-    let node = node.parse().unwrap();
+pub(crate) fn remote_set(other: &mut Journal, node: NodeId, no: u32, value: FieldValue) {
     other.begin().unwrap().commit(vec![OpBody::Set { node, field: no, enc: encode_field(no, &value) }]).unwrap();
 }
 
 /// `node`'s field `no` as the document stores it.
-pub(crate) fn stored(app: &App, node: &str, no: u32) -> FieldValue {
-    app.doc.journal.as_ref().unwrap().doc().nodes[&node.parse().unwrap()].get(no)
+pub(crate) fn stored(app: &App, node: NodeId, no: u32) -> FieldValue {
+    app.doc.journal.as_ref().unwrap().doc().nodes[&node].get(no)
 }
 
-pub(crate) fn add_note(app: &mut App, text: &str) -> String {
+pub(crate) fn add_note(app: &mut App, text: &str) -> NodeId {
     add(app, Kind::Note, Runtime::Note(NotePayload { text: text.into(), editing: false }))
 }
 
-pub(crate) fn closed_ids(app: &App) -> Vec<String> {
-    app.doc.journal.as_ref().unwrap().doc().closed_roots().into_iter().map(|(n, _)| n.to_string()).collect()
+pub(crate) fn closed_ids(app: &App) -> Vec<NodeId> {
+    app.doc.journal.as_ref().unwrap().doc().closed_roots().into_iter().map(|(n, _)| n).collect()
 }
 
 /// A group with one kept note inside, saved.
-pub(crate) fn group_with_note(app: &mut App) -> (String, String) {
+pub(crate) fn group_with_note(app: &mut App) -> (NodeId, NodeId) {
     let g = add_group(app, "G");
     let inner = add_note(app, "kept");
-    app.edit_group(&inner, Some(g.clone()));
+    app.edit_group(inner, Some(g));
     assert!(app.save_session());
     (g, inner)
 }
 
 /// Another replica sets `closed` on `node` (true closes, false reopens).
-fn remote_close(other: &mut Journal, node: &str, closed: bool) {
+fn remote_close(other: &mut Journal, node: NodeId, closed: bool) {
     remote_set(other, node, field::CLOSED, FieldValue::Replica(if closed { 99 } else { 0 }));
 }
 
 /// The note's text box has focus and holds `text` (2b-4 Ruling 6: the payload is the edit buffer).
-fn type_into(app: &mut App, note: &str, text: &str) {
-    let n = app.nodes.get_mut(note).unwrap().as_note_mut().unwrap();
+fn type_into(app: &mut App, note: NodeId, text: &str) {
+    let n = app.nodes.get_mut(&note).unwrap().as_note_mut().unwrap();
     n.editing = true;
     n.text = text.into();
 }
 
-fn buffer(app: &App, note: &str) -> String {
-    app.nodes[note].as_note().unwrap().text.clone()
+fn buffer(app: &App, note: NodeId) -> String {
+    app.nodes[&note].as_note().unwrap().text.clone()
 }
 
 /// A Json node `v.json` (`{"users": [...]}`) with a store id, in an app saving to `path`.
-fn json_on(path: &std::path::Path, name: &str) -> (App, String) {
+fn json_on(path: &std::path::Path, name: &str) -> (App, NodeId) {
     let file = temp_dir(name).join("v.json");
     std::fs::write(&file, r#"{"users": [{"name": "a"}]}"#).unwrap();
     let mut app = app_on(path, 1);
     let node = app.alloc_node_id();
-    app.insert_json_node_with_id(node.clone(), file.to_string_lossy().into_owned(), egui::Vec2::ZERO, None).unwrap();
+    app.insert_json_node_with_id(node, file.to_string_lossy().into_owned(), egui::Vec2::ZERO, None).unwrap();
     (app, node)
 }
 
 /// A note placed at `pos` (top level), as `place_node` places every new node.
-fn a_note_at(app: &mut App, pos: egui::Vec2) -> String {
+fn a_note_at(app: &mut App, pos: egui::Vec2) -> NodeId {
     let note = Runtime::Note(NotePayload { text: "n".into(), editing: false });
     app.place_node(None, Kind::Note, note, crate::fetched::Placement { group: None, pos })
 }
 
 /// What a drag does to the layout every frame (`card.rs`), then its release.
-fn drag(app: &mut App, ids: &[&str], delta: egui::Vec2) {
-    app.interaction.dragging = Some(crate::card_id::CardId::stored(ids[0]));
-    app.interaction.drag_moved = ids.iter().map(|&id| crate::card_id::CardId::stored(id)).collect();
+fn drag(app: &mut App, ids: &[NodeId], delta: egui::Vec2) {
+    app.interaction.dragging = Some(crate::card_id::CardId::from(ids[0]));
+    app.interaction.drag_moved = ids.iter().map(|&id| crate::card_id::CardId::from(id)).collect();
     for &id in ids {
-        app.layout.entry(id.to_owned()).or_default().pos += delta;
+        app.layout.entry(id).or_default().pos += delta;
     }
 }
 
@@ -252,7 +247,7 @@ fn fail_spawn(app: &mut App, (spawn, generation): (crate::tabs::TabSpawn, u64)) 
 }
 
 /// Starts a New spawn for `url` and lands it on a fake host; returns the new tab's id.
-fn succeed_spawn(app: &mut App, url: &str) -> String {
+fn succeed_spawn(app: &mut App, url: &str) -> NodeId {
     let id = app.spawn_tab_at(url, egui::Vec2::ZERO, None, None);
     let at = app.test_spawns.iter().position(|(spawn, _)| spawn.id == id).expect("the spawn is parked");
     let (spawn, generation) = app.test_spawns.remove(at);
@@ -268,12 +263,12 @@ fn succeed_spawn(app: &mut App, url: &str) -> String {
     id
 }
 
-fn failed_cards(app: &App) -> Vec<String> {
-    let mut ids: Vec<String> = app
+fn failed_cards(app: &App) -> Vec<NodeId> {
+    let mut ids: Vec<NodeId> = app
         .nodes
         .iter()
         .filter(|(_, node)| node.as_unloaded().is_some_and(|tab| matches!(tab.state, UnloadedState::Failed(_))))
-        .map(|(id, _)| id.clone())
+        .map(|(&id, _)| id)
         .collect();
     ids.sort();
     ids
@@ -315,17 +310,17 @@ fn blue() -> FieldValue {
     color_value(Some(egui::Color32::BLUE))
 }
 
-fn a_note(app: &mut App) -> String {
+fn a_note(app: &mut App) -> NodeId {
     add(app, Kind::Note, Runtime::Note(NotePayload { text: "n".into(), editing: false }))
 }
 
 /// What the crash path and `finish_swap` do: carry from the mirror, take the node out of `nodes`, respawn. The
 /// spawn carries no position: the tab keeps its `App::layout` entry.
-fn start_respawn(app: &mut App, tab: &str) {
-    app.nodes.remove(tab).unwrap();
+fn start_respawn(app: &mut App, tab: NodeId) {
+    app.nodes.remove(&tab).unwrap();
     let carried = app.doc.mirror.carried(tab);
     let mut spawn = crate::tabs::TabSpawn::new(
-        tab.to_owned(),
+        tab,
         "https://t/".into(),
         ViewKind::Servo,
         egui::Vec2::ZERO,
@@ -335,34 +330,34 @@ fn start_respawn(app: &mut App, tab: &str) {
     (spawn.carry.color, spawn.carry.pinned) = (carried.color(), carried.pinned());
     (spawn.jar, spawn.parent, spawn.group) = (carried.jar(), carried.parent, carried.group);
     app.respawn_tab(spawn);
-    assert!(app.spawns.spawning.contains_key(tab) && !app.nodes.contains_key(tab), "respawning");
+    assert!(app.spawns.spawning.contains_key(&tab) && !app.nodes.contains_key(&tab), "respawning");
 }
 
 /// O holds G, G holds T, saved.
-fn nested_tab(app: &mut App) -> (String, String, String) {
+fn nested_tab(app: &mut App) -> (NodeId, NodeId, NodeId) {
     let outer = add_group(app, "O");
     let g = add_group(app, "G");
     let t = add(app, Kind::Tab, sleeping_tab("https://t/", ""));
-    app.edit_group(&g, Some(outer.clone()));
-    app.edit_group(&t, Some(g.clone()));
+    app.edit_group(g, Some(outer));
+    app.edit_group(t, Some(g));
     assert!(app.save_session());
     (outer, g, t)
 }
 
 /// A opened P, P opened C, saved.
-fn parent_chain(app: &mut App) -> (String, String, String) {
+fn parent_chain(app: &mut App) -> (NodeId, NodeId, NodeId) {
     let a = add(app, Kind::Tab, sleeping_tab("https://a/", ""));
     let p = add(app, Kind::Tab, sleeping_tab("https://p/", ""));
     let c = add(app, Kind::Tab, sleeping_tab("https://c/", ""));
-    app.edit_parent(&p, Some(a.clone()));
-    app.edit_parent(&c, Some(p.clone()));
+    app.edit_parent(p, Some(a));
+    app.edit_parent(c, Some(p));
     assert!(app.save_session());
     (a, p, c)
 }
 
 /// The page moves on (an engine report): the live url changes, the shared one doesn't.
-fn set_live_url(app: &mut App, tab: &str, url: &str) {
-    match &mut app.nodes.get_mut(tab).unwrap().runtime {
+fn set_live_url(app: &mut App, tab: NodeId, url: &str) {
+    match &mut app.nodes.get_mut(&tab).unwrap().runtime {
         Runtime::Tab(t) => t.url = url.into(),
         Runtime::Unloaded(t) => t.url = url.into(),
         _ => panic!("{tab} is not a tab"),
@@ -372,7 +367,7 @@ fn set_live_url(app: &mut App, tab: &str, url: &str) {
 pub(crate) type Peer = crate::process_manager::FakePeer;
 
 /// A live tab on `kind` (a fake host, `ViewTab::fake`), as a landing inserts it. The peer reads what it is sent.
-pub(crate) fn live_tab(app: &mut App, kind: ViewKind, url: &str) -> (String, Peer) {
+pub(crate) fn live_tab(app: &mut App, kind: ViewKind, url: &str) -> (NodeId, Peer) {
     let (tab, peer) = crate::process_manager::ViewTab::fake(kind);
     let payload = Runtime::Tab(crate::node::TabPayload {
         tab,
@@ -402,8 +397,8 @@ fn view_kind(kind: ViewKind) -> FieldValue {
     FieldValue::ViewCode(view_code(kind))
 }
 
-fn swap_target(app: &App, tab: &str) -> Option<ViewKind> {
-    app.nodes[tab].as_tab().unwrap().swap_target
+fn swap_target(app: &App, tab: NodeId) -> Option<ViewKind> {
+    app.nodes[&tab].as_tab().unwrap().swap_target
 }
 
 /// Lands every spawn in flight on a fake host of the kind it asked for. The peers keep the hosts' channels open.
@@ -425,10 +420,9 @@ fn land_spawns(app: &mut App) -> Vec<Peer> {
 }
 
 /// A new tab spawned with `jar`, as `spawn_tab_at` starts one.
-fn spawn_with_jar(app: &mut App, purpose: SpawnPurpose, jar: NodeId) -> String {
+fn spawn_with_jar(app: &mut App, purpose: SpawnPurpose, jar: NodeId) -> NodeId {
     let t = app.alloc_node_id();
-    let mut spawn =
-        crate::tabs::TabSpawn::new(t.clone(), "https://t/".into(), ViewKind::Servo, egui::Vec2::ZERO, purpose, 1.0);
+    let mut spawn = crate::tabs::TabSpawn::new(t, "https://t/".into(), ViewKind::Servo, egui::Vec2::ZERO, purpose, 1.0);
     spawn.jar = Some(jar);
     app.spawn_tab_async(spawn);
     t

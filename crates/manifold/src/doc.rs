@@ -3,6 +3,7 @@
 
 use std::collections::HashMap;
 
+use crate::store::model::NodeId;
 use crate::{local_state, mirror, node_store, session_sync, store};
 
 pub(crate) struct Doc {
@@ -22,7 +23,7 @@ pub(crate) struct Doc {
     /// Personal state (`LocalNode`: settled pos, title, zoom, muted, live url) of nodes this replica keeps out of
     /// the graph because they are closed or under a closed node (spec decision 8). Filled by `hide_node`, read
     /// back by a reopen (`apply_remote`), written to `session.mnf.local` with the rest. `forget_id` drops it.
-    pub(crate) hidden_local: HashMap<String, local_state::LocalNode>,
+    pub(crate) hidden_local: HashMap<NodeId, local_state::LocalNode>,
     /// The personal-state file's write bookkeeping (see `local_state::LocalPersist`).
     pub(crate) local_persist: local_state::LocalPersist,
     /// Set once the store reports a repair (`take_store_recovery`): what

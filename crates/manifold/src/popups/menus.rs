@@ -1,6 +1,7 @@
 //! The popups and menus on screen (`App::menus`): which anchored popup is open, the fading menus and their state.
 
 use super::*;
+use crate::store::model::NodeId;
 
 /// A minimal right-click context menu: just "Open in new tab" for a link,
 /// positioned where the click landed — see `manifold_view_protocol::ViewToHost::
@@ -85,19 +86,19 @@ pub(crate) fn close_popup(open: &mut Option<AnchoredPopup>, which: AnchoredPopup
 #[derive(Default)]
 pub(crate) struct NodeMenu {
     /// `(node_id, screen_pos)` while the menu is open.
-    pub(crate) open: Option<(String, egui::Pos2)>,
+    pub(crate) open: Option<(NodeId, egui::Pos2)>,
     /// The page showing instead of the items (`MenuPage`). Left as it is when the menu closes, so the fade-out keeps
     /// the page the click was on; `open` drops it, and so does the end of the fade (`App::build_node_menu`).
     pub(crate) page: Option<crate::node_menu::MenuPage>,
     /// `open` with the card's frozen `NodeMenuView`, set each frame the menu is open, so `build_node_menu` keeps
     /// drawing it (fading out, not vanishing) for a few frames after `open` itself goes back to `None`.
-    pub(crate) fade: Fading<(String, egui::Pos2, NodeMenuView)>,
+    pub(crate) fade: Fading<(NodeId, egui::Pos2, NodeMenuView)>,
 }
 
 impl NodeMenu {
     /// Opens the menu on `id` at `pos`, on its items.
-    pub(crate) fn open(&mut self, id: impl Into<String>, pos: egui::Pos2) {
-        self.open = Some((id.into(), pos));
+    pub(crate) fn open(&mut self, id: NodeId, pos: egui::Pos2) {
+        self.open = Some((id, pos));
         self.page = None;
     }
 
@@ -114,8 +115,8 @@ impl NodeMenu {
     }
 
     /// Drops the menu `id` has open: it is gone.
-    pub(crate) fn forget(&mut self, id: &str) {
-        if self.open.as_ref().is_some_and(|(n, _)| n == id) {
+    pub(crate) fn forget(&mut self, id: NodeId) {
+        if self.open.as_ref().is_some_and(|(n, _)| *n == id) {
             self.open = None;
             self.page = None;
         }

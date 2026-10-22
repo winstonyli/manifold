@@ -1,6 +1,7 @@
 //! Graph navigation: fit and bounds, settle, focus movement, group lookup, drops and merges.
 
 use super::*;
+use crate::store::model::NodeId;
 
 /// The Graph view's pointer-driven state (`App::interaction`): drag, hover, selection and the pending new-card choice.
 #[derive(Default)]
@@ -94,20 +95,17 @@ impl App {
     /// toolbar's own "+ New Tab" button uses `self.current_group` directly
     /// instead, since `self.focused` (its `parent`) isn't necessarily a
     /// tab inside whichever group's subgraph is currently being viewed.
-    pub(crate) fn group_of(&self, id: &Option<String>) -> Option<String> {
-        id.as_deref()
-            .filter(|id| self.nodes.contains_key(*id))
-            .and_then(|id| self.doc.mirror.group(id))
-            .map(str::to_owned)
+    pub(crate) fn group_of(&self, id: Option<NodeId>) -> Option<NodeId> {
+        id.filter(|id| self.nodes.contains_key(id)).and_then(|id| self.doc.mirror.group(id))
     }
 
     /// The live and unloaded tabs at the level being viewed, in `node_order` (the order within a draw layer,
     /// `level_scan`): what graph navigation, selection and Close All act on.
-    pub(crate) fn tabs_at_current_level(&self) -> Vec<String> {
+    pub(crate) fn tabs_at_current_level(&self) -> Vec<NodeId> {
         self.node_order
             .iter()
-            .filter(|id| self.in_level(id) && self.nodes.get(*id).is_some_and(|n| n.runtime.saved_tab().is_some()))
-            .cloned()
+            .filter(|id| self.in_level(**id) && self.nodes.get(*id).is_some_and(|n| n.runtime.saved_tab().is_some()))
+            .copied()
             .collect()
     }
 
@@ -138,7 +136,7 @@ impl App {
         // A stored card is carried by its own position; a virtual one (it stays where its source put
         // it) is probed at the pointer, which the drag moves instead.
         let center = if dragged_entry.origin == Origin::Stored {
-            self.layout_pos(&id.to_string()).to_pos2()
+            self.layout_pos(id.node()?).to_pos2()
         } else {
             self.graph_screen_point_to_world(pointer?).to_pos2()
         };
@@ -175,9 +173,9 @@ impl App {
     /// rectangle selection too, which only ever holds this level's tabs
     /// (`switch_group_level` clears it): a later multi-select drag would
     /// otherwise move, or Join would pull back in, a tab no longer shown.
-    pub(crate) fn eject(&mut self, id: &str) {
+    pub(crate) fn eject(&mut self, id: NodeId) {
         self.remove_from_group(id);
-        self.interaction.selected.remove(&CardId::stored(id));
+        self.interaction.selected.remove(&CardId::from(id));
         self.recheck_edge_scope(id);
     }
 
@@ -185,11 +183,11 @@ impl App {
     /// when `id` is in it (it acts as one unit, as "Group Selected" does),
     /// which it empties, else just `id`. `target` (the group or card dropped on) is never part of the unit: it would
     /// be moved into itself.
-    pub(crate) fn take_drag_unit(&mut self, id: CardId, target: &str) -> Vec<String> {
+    pub(crate) fn take_drag_unit(&mut self, id: CardId, target: NodeId) -> Vec<NodeId> {
         if self.interaction.selected.contains(&id) {
-            self.take_selected_stored().into_iter().filter(|member| member != target).collect()
+            self.take_selected_stored().into_iter().filter(|member| *member != target).collect()
         } else {
-            id.node().map(|node| node.to_string()).into_iter().collect()
+            id.node().into_iter().collect()
         }
     }
 
@@ -208,10 +206,10 @@ impl App {
             return;
         }
         for moved_id in moved {
-            let Some(key) = moved_id.node().map(|node| node.to_string()) else { continue };
+            let Some(key) = moved_id.node() else { continue };
             if self.nodes.contains_key(&key) {
-                self.interaction.drag_origin.push((moved_id, self.doc.mirror.pos(&key)));
-                self.edit_pos(&key, Some(self.layout_pos(&key)));
+                self.interaction.drag_origin.push((moved_id, self.doc.mirror.pos(key)));
+                self.edit_pos(key, Some(self.layout_pos(key)));
             }
         }
     }
@@ -223,11 +221,10 @@ impl App {
         let origin = std::mem::take(&mut self.interaction.drag_origin);
         // Every effect below is a stored one: a virtual card at either end is its source's business (`on_drop`),
         // never a group to create, a link to make or a move to write.
-        let Some(id) = id.node().map(|node| node.to_string()) else { return };
-        let id = id.as_str();
+        let Some(id) = id.node() else { return };
         let target = match target {
             Some((effect, Some(other))) => match other.node() {
-                Some(other) => Some((effect, Some(other.to_string()))),
+                Some(other) => Some((effect, Some(other))),
                 None => return,
             },
             Some((effect, None)) => Some((effect, None)),
@@ -235,40 +232,37 @@ impl App {
         };
         // Every card's group and parent before the effect, so the step names exactly the cards it changed (a menu
         // Join moves the whole selection with no drag to say which).
-        let watched: Vec<String> = self.nodes.keys().cloned().collect();
-        let before: Vec<_> = watched
-            .iter()
-            .map(|w| (self.doc.mirror.group(w).map(str::to_owned), self.doc.mirror.parent(w).map(str::to_owned)))
-            .collect();
-        let effect = target.as_ref().map(|(effect, other)| (*effect, other.clone()));
+        let watched: Vec<NodeId> = self.nodes.keys().copied().collect();
+        let before: Vec<_> = watched.iter().map(|&w| (self.doc.mirror.group(w), self.doc.mirror.parent(w))).collect();
+        let effect = target;
         match target {
             Some((DropEffect::Eject, _)) => self.eject(id),
             // A group closed or deleted since the drop began (a remote close after the menu opened) is not shown: a
             // node joined to it would vanish with it.
             Some((DropEffect::Join, Some(group))) if self.nodes.contains_key(&group) => {
-                for member in self.take_drag_unit(CardId::stored(id), &group) {
+                for member in self.take_drag_unit(CardId::from(id), group) {
                     if self.nodes.contains_key(&member) {
-                        self.edit_group(&member, Some(group.clone()));
+                        self.edit_group(member, Some(group));
                     }
-                    self.recheck_edge_scope(&member);
+                    self.recheck_edge_scope(member);
                 }
             }
             Some((DropEffect::GroupWith, Some(other))) => {
                 let group = self.alloc_node_id();
-                let pos = self.layout_pos(&other);
-                self.insert_group_at(group.clone(), Some(pos));
-                let unit = self.take_drag_unit(CardId::stored(id), &other);
+                let pos = self.layout_pos(other);
+                self.insert_group_at(group, Some(pos));
+                let unit = self.take_drag_unit(CardId::from(id), other);
                 for member in std::iter::once(other).chain(unit) {
                     if self.nodes.contains_key(&member) {
-                        self.edit_group(&member, Some(group.clone()));
+                        self.edit_group(member, Some(group));
                     }
-                    self.recheck_edge_scope(&member);
+                    self.recheck_edge_scope(member);
                 }
             }
             Some((DropEffect::Reparent, Some(parent))) => {
-                let _ = self.connect(crate::caps::OPENED_FROM, id, &parent);
+                let _ = self.connect(crate::caps::OPENED_FROM, id, parent);
             }
-            Some((DropEffect::Merge, Some(target))) => self.merge_groups(id, &target),
+            Some((DropEffect::Merge, Some(target))) => self.merge_groups(id, target),
             _ => {}
         }
         // A Merge records its own fold; a drop with no effect or no change records nothing.
@@ -276,15 +270,15 @@ impl App {
             let moved: Vec<Moved> = watched
                 .iter()
                 .zip(before)
-                .filter_map(|(w, (group, parent))| {
-                    let now_group = self.doc.mirror.group(w).map(str::to_owned);
-                    let now_parent = self.doc.mirror.parent(w).map(str::to_owned);
+                .filter_map(|(&w, (group, parent))| {
+                    let now_group = self.doc.mirror.group(w);
+                    let now_parent = self.doc.mirror.parent(w);
                     (group != now_group || parent != now_parent).then(|| {
                         let pos_now = self.doc.mirror.pos(w);
                         let pos_before =
-                            origin.iter().find(|(o, _)| *o == CardId::stored(w)).map_or(pos_now, |(_, p)| *p);
+                            origin.iter().find(|(o, _)| *o == CardId::from(w)).map_or(pos_now, |(_, p)| *p);
                         Moved {
-                            id: w.clone(),
+                            id: w,
                             group: (group, now_group),
                             parent: (parent, now_parent),
                             pos: (pos_before, pos_now),
@@ -293,10 +287,9 @@ impl App {
                 })
                 .collect();
             if !moved.is_empty() {
-                let created = (effect == DropEffect::GroupWith)
-                    .then(|| other.as_deref().and_then(|o| self.doc.mirror.group(o).map(str::to_owned)))
-                    .flatten();
-                let message = self.drop_message(effect, &moved, other.as_deref());
+                let created =
+                    (effect == DropEffect::GroupWith).then(|| other.and_then(|o| self.doc.mirror.group(o))).flatten();
+                let message = self.drop_message(effect, &moved, other);
                 self.record_undo(message, UndoKind::Revert { moved, created });
             }
         }
@@ -304,14 +297,14 @@ impl App {
     }
 
     /// What the toast says of a drop: "Moved 2 into Research".
-    fn drop_message(&self, effect: DropEffect, moved: &[Moved], other: Option<&str>) -> String {
-        let name = |id: Option<&str>| id.map(|id| self.drop_target_name(id)).unwrap_or_default();
+    fn drop_message(&self, effect: DropEffect, moved: &[Moved], other: Option<NodeId>) -> String {
+        let name = |id: Option<NodeId>| id.map(|id| self.drop_target_name(id)).unwrap_or_default();
         match effect {
             DropEffect::Join => format!("Moved {} into {}", moved.len(), name(other)),
             DropEffect::GroupWith => format!("Grouped {} cards", moved.len()),
             DropEffect::Eject => "Moved out of group".to_owned(),
             DropEffect::Reparent => {
-                format!("Moved {} under {}", name(moved.first().map(|m| m.id.as_str())), name(other))
+                format!("Moved {} under {}", name(moved.first().map(|m| m.id)), name(other))
             }
             DropEffect::Merge => String::new(),
         }
@@ -325,14 +318,12 @@ impl App {
     /// pointing at itself once source is removed, a self-reference cycle.
     /// Refused too when the walk meets a group cycle in the mirror (two
     /// replicas' moves raced; the next save shows the document's groups).
-    pub(crate) fn merge_groups(&mut self, source: &str, target: &str) {
+    pub(crate) fn merge_groups(&mut self, source: NodeId, target: NodeId) {
         // Refused too when `target` is not shown (closed or deleted remotely): its new members would vanish with it.
-        if !self.nodes.contains_key(target) {
+        if !self.nodes.contains_key(&target) {
             return;
         }
-        let mut above = crate::walk::ancestors(target.to_string(), |k| {
-            self.nodes.get(k).and(self.doc.mirror.group(k)).map(str::to_owned)
-        });
+        let mut above = crate::walk::ancestors(target, |k| self.nodes.get(k).and(self.doc.mirror.group(*k)));
         if target == source || above.any(|a| a == source) || above.looped() {
             return;
         }
@@ -340,10 +331,10 @@ impl App {
         // Its links move to `target` and stay there on an undo: the source keeps none.
         self.retarget_links(source, target);
         for link in self.links_naming(source) {
-            self.delete_link(&link);
+            self.delete_link(link);
         }
         // The source closes holding its members, so the toast's Undo reopens it around them.
-        self.fold_groups(vec![(source.to_string(), Some(target.to_string()))], message);
+        self.fold_groups(vec![(source, Some(target))], message);
     }
 
     /// Would setting `node_id`'s parent to `new_parent_id` create a cycle?
@@ -354,10 +345,9 @@ impl App {
     /// subgraph) this guards. A chain that is already a cycle (two replicas
     /// re-parented concurrently; the store doesn't cycle-check `parent`)
     /// counts as one too.
-    pub(crate) fn would_create_cycle(&self, node_id: &str, new_parent_id: &str) -> bool {
+    pub(crate) fn would_create_cycle(&self, node_id: NodeId, new_parent_id: NodeId) -> bool {
         // The raw edge on purpose: a cycle through a closed card would come back with a reopen.
-        let mut above =
-            crate::walk::ancestors(new_parent_id.to_string(), |k| self.doc.mirror.parent(k).map(str::to_owned));
+        let mut above = crate::walk::ancestors(new_parent_id, |k| self.doc.mirror.parent(*k));
         new_parent_id == node_id || above.any(|a| a == node_id) || above.looped()
     }
 
@@ -367,11 +357,11 @@ impl App {
     /// upward from the current group exactly the way `subtree_ids`/
     /// `take_out` already does to find a single ancestor; this just
     /// collects the whole chain instead of stopping at the first one.
-    pub(crate) fn group_breadcrumb(&self) -> Vec<(String, String)> {
-        let Some(current) = self.current_group.clone() else { return Vec::new() };
+    pub(crate) fn group_breadcrumb(&self) -> Vec<(NodeId, String)> {
+        let Some(current) = self.current_group else { return Vec::new() };
         // Called every frame: `ancestors` ends on a cycle in the mirror's `.group` chain (a local move and another
         // replica's move can race into one until the next save), so it can't freeze the app.
-        let up = crate::walk::ancestors(current.clone(), |k| self.doc.mirror.group(k).map(str::to_owned));
+        let up = crate::walk::ancestors(current, |k| self.doc.mirror.group(*k));
         let mut chain = Vec::new();
         for id in std::iter::once(current).chain(up) {
             let Some(node) = self.nodes.get(&id) else { break };
@@ -379,7 +369,7 @@ impl App {
             let name = match &node.runtime {
                 // A group has no runtime of its own (2b-6 Ruling 8).
                 // name rule: drawn by display_name in toolbar_breadcrumb.
-                Runtime::None => self.doc.mirror.name(&id).to_owned(),
+                Runtime::None => self.doc.mirror.name(id).to_owned(),
                 Runtime::Json(json) => download_filename(&json.path).to_string(),
                 _ => String::new(),
             };
@@ -409,8 +399,8 @@ impl App {
     /// the minimap (drawn every frame, well after `build_graph_ui`'s own
     /// per-frame `*_at_level` locals are already in hand) reuse this
     /// without redoing the level scans a second time per frame.
-    pub(crate) fn bounds_for_level<'a>(&self, ids: impl IntoIterator<Item = &'a String>) -> egui::Rect {
-        self.bounds_for_rects(ids.into_iter().filter_map(|id| self.card_rect(id)))
+    pub(crate) fn bounds_for_level<'a>(&self, ids: impl IntoIterator<Item = &'a NodeId>) -> egui::Rect {
+        self.bounds_for_rects(ids.into_iter().filter_map(|id| self.card_rect(*id)))
     }
 
     /// `root_id` plus every descendant reachable through `parent` links,
@@ -420,22 +410,22 @@ impl App {
     /// toward an off-screen position. Not the most efficient traversal
     /// (checks every tab per frontier node), but this graph's tab counts
     /// stay small enough that it's not worth a real adjacency structure.
-    pub(crate) fn subtree_ids(&self, root_id: &str) -> Vec<String> {
-        if !self.nodes.contains_key(root_id) {
+    pub(crate) fn subtree_ids(&self, root_id: NodeId) -> Vec<NodeId> {
+        if !self.nodes.contains_key(&root_id) {
             return Vec::new();
         }
         let level_group = self.doc.mirror.group(root_id);
-        let children = |current: &String| {
-            let opened_here = |id: &&String| self.opened_from(id) == Some(current.as_str());
+        let children = |current: &NodeId| {
+            let opened_here = |id: &&NodeId| self.opened_from(**id) == Some(*current);
             self.nodes
                 .keys()
                 .filter(opened_here)
-                .filter(|id| self.doc.mirror.group(id) == level_group)
-                .cloned()
+                .filter(|id| self.doc.mirror.group(**id) == level_group)
+                .copied()
                 .collect()
         };
-        let mut result = vec![root_id.to_string()];
-        result.extend(crate::walk::descendants(root_id.to_string(), children, |_| true));
+        let mut result = vec![root_id];
+        result.extend(crate::walk::descendants(root_id, children, |_| true));
         result
     }
 
@@ -446,7 +436,7 @@ impl App {
     /// than a flat `GRAPH_NODE_SIZE` matters here specifically: `subtree_ids`
     /// follows `parent` links, which include Download children, so a
     /// same-`GRAPH_NODE_SIZE` guess would mis-size those.
-    pub(crate) fn fit_subtree_scene_rect(&self, root_id: &str) -> egui::Rect {
+    pub(crate) fn fit_subtree_scene_rect(&self, root_id: NodeId) -> egui::Rect {
         self.bounds_for_level(&self.subtree_ids(root_id))
     }
 
@@ -456,8 +446,8 @@ impl App {
     /// site that changes `current_group` (the per-frame check, and
     /// entering/leaving a group) computes it the same way rather than
     /// duplicating the formula.
-    pub(crate) fn current_level_settle_key(&self) -> (Option<String>, usize) {
-        (self.current_group.clone(), crate::level::settle_count(&self.level_items()))
+    pub(crate) fn current_level_settle_key(&self) -> (Option<NodeId>, usize) {
+        (self.current_group, crate::level::settle_count(&self.level_items()))
     }
 
     /// Directional spatial navigation for arrow-key graph focus: among tab
@@ -471,10 +461,10 @@ impl App {
     /// tab id everywhere else it's read (address bar sync, Ctrl+W, "+ New
     /// Tab" parent), so keeping it tab-only here avoids handing those call
     /// sites an id type they don't expect.
-    pub(crate) fn nearest_tab_in_direction(&self, from: egui::Vec2, dir: egui::Vec2) -> Option<String> {
-        let mut best: Option<(String, f32)> = None;
+    pub(crate) fn nearest_tab_in_direction(&self, from: egui::Vec2, dir: egui::Vec2) -> Option<NodeId> {
+        let mut best: Option<(NodeId, f32)> = None;
         for id in self.tabs_at_current_level() {
-            let delta = self.layout_pos(&id) - from;
+            let delta = self.layout_pos(id) - from;
             let along = delta.dot(dir);
             if along <= 0.5 {
                 continue;
@@ -498,11 +488,8 @@ impl App {
     /// code -- see `debug_control`'s own doc comment -- so headless mode
     /// calls this directly instead).
     pub(crate) fn move_graph_focus(&mut self, dir: egui::Vec2) {
-        let from_at_level = self
-            .focused
-            .as_deref()
-            .filter(|id| self.in_level(id) && self.nodes.contains_key(*id))
-            .map(|id| self.layout_pos(id));
+        let from_at_level =
+            self.focused.filter(|&id| self.in_level(id) && self.nodes.contains_key(&id)).map(|id| self.layout_pos(id));
         match from_at_level {
             Some(from) => {
                 if let Some(next) = self.nearest_tab_in_direction(from, dir) {
@@ -521,8 +508,8 @@ impl App {
     /// clicking its card does -- the Enter-key equivalent of graph-view
     /// keyboard navigation, and the headless `GRAPHOPEN` command.
     pub(crate) fn open_focused_graph_node(&mut self) {
-        if let Some(id) = self.focused.clone() {
-            let Some(node) = self.nodes.get(&id).filter(|_| self.in_level(&id)) else {
+        if let Some(id) = self.focused {
+            let Some(node) = self.nodes.get(&id).filter(|_| self.in_level(id)) else {
                 return;
             };
             // A crashed focused tab stays focused as its failed card, which
@@ -530,9 +517,9 @@ impl App {
             // sleeping/waking card instead opens like a tab (its own
             // engine wakes via `focus_tab`).
             if node.as_unloaded().is_some_and(|t| matches!(t.state, UnloadedState::Failed(_))) {
-                self.retry_missing_file(&id);
+                self.retry_missing_file(id);
             } else {
-                self.start_transition_to_item(&id);
+                self.start_transition_to_item(id);
             }
         }
     }
@@ -581,23 +568,23 @@ impl App {
         // changes), so this bug affected every settle animation, not a
         // background steady-state cost.
         // The layout only (`App::layout`): physics never writes the document pos (2b-4 Ruling 2).
-        let at_level = || self.nodes.keys().filter(|id| self.in_level(id));
-        let layout = |id: &String| self.layout.get(id).copied().unwrap_or_default();
-        let mut positions: HashMap<String, egui::Vec2> = at_level().map(|id| (id.clone(), layout(id).pos)).collect();
-        let mut velocities: HashMap<String, egui::Vec2> = at_level().map(|id| (id.clone(), layout(id).vel)).collect();
+        let at_level = || self.nodes.keys().filter(|id| self.in_level(**id));
+        let layout = |id: NodeId| self.layout.get(&id).copied().unwrap_or_default();
+        let mut positions: HashMap<NodeId, egui::Vec2> = at_level().map(|id| (*id, layout(*id).pos)).collect();
+        let mut velocities: HashMap<NodeId, egui::Vec2> = at_level().map(|id| (*id, layout(*id).vel)).collect();
         let edges = self.spring_edges();
-        let pinned: HashSet<String> = self
+        let pinned: HashSet<NodeId> = self
             .nodes
             .iter()
-            .filter(|(id, _)| self.in_level(id) && self.doc.mirror.pinned(id))
-            .map(|(id, _)| id.clone())
+            .filter(|(id, _)| self.in_level(**id) && self.doc.mirror.pinned(**id))
+            .map(|(id, _)| *id)
             .collect();
 
-        let sizes: HashMap<String, egui::Vec2> = self
+        let sizes: HashMap<NodeId, egui::Vec2> = self
             .nodes
             .iter()
-            .filter(|(id, _)| self.in_level(id))
-            .map(|(id, n)| (id.clone(), crate::card::node_card_size(&n.runtime)))
+            .filter(|(id, _)| self.in_level(**id))
+            .map(|(id, n)| (*id, crate::card::node_card_size(&n.runtime)))
             .collect();
 
         for _ in 0..SETTLE_ITERATIONS {
@@ -620,32 +607,32 @@ impl App {
 
     /// The `(opener, opened)` pairs that pull on each other in the layout: the level's edges whose table row has
     /// `affects_layout` (today `opened-from`, stored as `parent`). A link is not one, so it never moves a card.
-    pub(crate) fn spring_edges(&self) -> Vec<(String, String)> {
+    pub(crate) fn spring_edges(&self) -> Vec<(NodeId, NodeId)> {
         if !crate::caps::edges().row(crate::caps::OPENED_FROM).is_some_and(|row| row.affects_layout()) {
             return Vec::new();
         }
-        let live = |id: &str| self.nodes.contains_key(id) && self.in_level(id);
+        let live = |id: NodeId| self.nodes.contains_key(&id) && self.in_level(id);
         self.nodes
             .keys()
-            .filter(|id| live(id))
-            .filter_map(|id| self.opened_from(id).map(|p| (p.to_owned(), id.clone())))
-            .filter(|(p, _)| live(p))
+            .filter(|id| live(**id))
+            .filter_map(|id| self.opened_from(*id).map(|p| (p, *id)))
+            .filter(|(p, _)| live(*p))
             .collect()
     }
 
     /// Where `id`'s card is drawn (`App::layout`); the origin for a node with no entry (a hand-built test node).
-    pub(crate) fn layout_pos(&self, id: &str) -> egui::Vec2 {
-        self.layout.get(id).map_or(egui::Vec2::ZERO, |layout| layout.pos)
+    pub(crate) fn layout_pos(&self, id: NodeId) -> egui::Vec2 {
+        self.layout.get(&id).map_or(egui::Vec2::ZERO, |layout| layout.pos)
     }
 
     /// Moves `id`'s card to `pos`, at rest: a placement, a remote pos, a restored personal one.
-    pub(crate) fn snap_layout(&mut self, id: &str, pos: egui::Vec2) {
-        self.layout.insert(id.to_owned(), Layout::at(pos));
+    pub(crate) fn snap_layout(&mut self, id: NodeId, pos: egui::Vec2) {
+        self.layout.insert(id, Layout::at(pos));
     }
 
     /// `id`'s card in world space (`node_card_rect` at its layout position); `None` when there is no such node.
-    pub(crate) fn card_rect(&self, id: &str) -> Option<egui::Rect> {
-        Some(node_card_rect(self.layout_pos(id), &self.nodes.get(id)?.runtime))
+    pub(crate) fn card_rect(&self, id: NodeId) -> Option<egui::Rect> {
+        Some(node_card_rect(self.layout_pos(id), &self.nodes.get(&id)?.runtime))
     }
 
     /// Whether the user is dragging `id` right now: the card under the pointer, or one moving with it as part of
@@ -659,8 +646,8 @@ impl App {
     /// is no longer drawn, so its card never sees the release; its drag is over, with no drop.
     /// A virtual card (no node) is live while a source still shows it and its kind is a `drag_source`.
     fn live_drag(&self) -> Option<CardId> {
-        self.interaction.dragging.filter(|dragged| match dragged.node().map(|node| node.to_string()) {
-            Some(key) if self.nodes.contains_key(&key) => self.in_level(&key),
+        self.interaction.dragging.filter(|dragged| match dragged.node() {
+            Some(key) if self.nodes.contains_key(&key) => self.in_level(key),
             _ => self.level_items().iter().any(|item| item.id == *dragged && item.caps().drag_source),
         })
     }
@@ -697,12 +684,12 @@ impl App {
     }
 
     /// Takes the stored cards out of the selection for a selection action and leaves the virtual ones in it: a
-    /// virtual card has no node for the action to change. What it returns is the nodes' store keys.
-    pub(crate) fn take_selected_stored(&mut self) -> HashSet<String> {
+    /// virtual card has no node for the action to change. What it returns is the nodes' ids.
+    pub(crate) fn take_selected_stored(&mut self) -> HashSet<NodeId> {
         let (taken, kept) =
             std::mem::take(&mut self.interaction.selected).into_iter().partition(|id| id.node().is_some());
         self.interaction.selected = kept;
-        taken.into_iter().map(|id: CardId| id.to_string()).collect()
+        taken.into_iter().filter_map(|id: CardId| id.node()).collect()
     }
 
     /// How many selected cards a selection action would act on: those that are not virtual (`take_selected_stored`).
@@ -713,7 +700,7 @@ impl App {
 
 impl App {
     /// A drop target's name for the hint, through the display rule and cut to a row's width.
-    pub(crate) fn drop_target_name(&self, id: &str) -> String {
+    pub(crate) fn drop_target_name(&self, id: NodeId) -> String {
         let name = if self.is_container(id) {
             // name rule: drawn by display_name just below
             self.doc.mirror.name(id).to_owned()
@@ -768,11 +755,11 @@ mod tests {
         const N: usize = 200;
         let f = crate::bench::level_fixture(true);
         assert_eq!((f.groups.len(), f.nodes.len()), (8, 2000));
-        let levels = [None, Some(f.groups[0].clone())];
+        let levels = [None, Some(f.groups[0])];
         let mut app = f.app; // `f`'s other fields (the live tabs' peers) live to the end of the test
         for level in levels {
-            app.current_group = level.clone();
-            let in_level = app.node_order.iter().filter(|id| app.in_level(id)).count();
+            app.current_group = level;
+            let in_level = app.node_order.iter().filter(|id| app.in_level(**id)).count();
             println!("level {level:?}: {in_level} of {} nodes", app.node_order.len());
 
             // (a) The old enum pass: eight per-kind calls, each a walk of `node_order` keeping the nodes whose
@@ -788,28 +775,28 @@ mod tests {
                 Runtime::None => 7, // the old Group variant
             };
             let old_pass = || {
-                std::array::from_fn::<Vec<String>, 8, _>(|layer| {
+                std::array::from_fn::<Vec<NodeId>, 8, _>(|layer| {
                     app.node_order
                         .iter()
                         .filter(|id| {
-                            app.in_level(id) && app.nodes.get(*id).is_some_and(|n| old_layer(&n.runtime) == layer)
+                            app.in_level(**id) && app.nodes.get(*id).is_some_and(|n| old_layer(&n.runtime) == layer)
                         })
-                        .cloned()
+                        .copied()
                         .collect()
                 })
             };
             report("old: 8 enum passes", timed(N, || drop(old_pass())));
 
             // (b) Task 2's: eight `card_kind` passes by draw layer plus the group pass.
-            let at_level = |pick: &dyn Fn(CardKind) -> bool| -> Vec<String> {
+            let at_level = |pick: &dyn Fn(CardKind) -> bool| -> Vec<NodeId> {
                 app.node_order
                     .iter()
-                    .filter(|id| app.in_level(id) && app.card_kind(id).is_some_and(pick))
-                    .cloned()
+                    .filter(|id| app.in_level(**id) && app.card_kind(**id).is_some_and(pick))
+                    .copied()
                     .collect()
             };
             let eight_pass = || {
-                let layers: [Vec<String>; crate::caps::DRAW_LAYERS] =
+                let layers: [Vec<NodeId>; crate::caps::DRAW_LAYERS] =
                     std::array::from_fn(|layer| at_level(&|kind| usize::from(kind.caps().draw_layer) == layer));
                 let groups = at_level(&|kind| is_container(kind.ty));
                 (layers, groups)
@@ -820,16 +807,16 @@ mod tests {
             // plus `caps()` (the draw layer), plus `is_container` (the whole of `level_scan`).
             report("task 3: level_scan, one pass", timed(N, || drop(app.level_scan())));
             let mut sink = 0usize;
-            let level_only = || app.node_order.iter().filter(|id| app.in_level(id)).count();
+            let level_only = || app.node_order.iter().filter(|id| app.in_level(**id)).count();
             report("  in_level only", timed(N, || sink += level_only()));
             let kinds_only =
-                || app.node_order.iter().filter(|id| app.in_level(id)).filter_map(|id| app.card_kind(id)).count();
+                || app.node_order.iter().filter(|id| app.in_level(**id)).filter_map(|&id| app.card_kind(id)).count();
             report("  + card_kind", timed(N, || sink += kinds_only()));
             let layers_only = || {
                 app.node_order
                     .iter()
-                    .filter(|id| app.in_level(id))
-                    .filter_map(|id| app.card_kind(id))
+                    .filter(|id| app.in_level(**id))
+                    .filter_map(|&id| app.card_kind(id))
                     .map(|kind| usize::from(kind.caps().draw_layer))
                     .sum::<usize>()
             };
@@ -852,12 +839,12 @@ mod tests {
         use crate::bench::{level_fixture, report, spread, timed};
         let mut f = level_fixture(false);
         spread(&mut f);
-        let levels = [None, Some(f.groups[0].clone())];
+        let levels = [None, Some(f.groups[0])];
         let mut app = f.app;
         let start = app.layout.clone();
         for level in levels {
-            app.current_group = level.clone();
-            let cards = app.nodes.keys().filter(|id| app.in_level(id)).count();
+            app.current_group = level;
+            let cards = app.nodes.keys().filter(|id| app.in_level(**id)).count();
             let what = format!("settle, {} ({cards} cards)", if level.is_some() { "g0" } else { "top" });
             report(
                 &what,
@@ -885,15 +872,15 @@ mod tests {
         let a = add(&mut app, Kind::Tab, sleeping_tab("https://a.test/", "a"));
         let b = add(&mut app, Kind::Tab, sleeping_tab("https://b.test/", "b"));
         let h = add_group(&mut app, "H");
-        app.interaction.selected.extend([CardId::stored(&a), CardId::stored(&b)]);
-        app.follow_remote_group(&b, Some(h)); // another replica's move
+        app.interaction.selected.extend([CardId::from(a), CardId::from(b)]);
+        app.follow_remote_group(b, Some(h)); // another replica's move
         let input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 1000.0))),
             ..Default::default()
         };
         let mut output = ctx.run_ui(input, |ui| app.build_ui_inner(ui));
         output.textures_delta.clear();
-        assert_eq!(app.interaction.selected, std::collections::HashSet::from([CardId::stored(&a)]));
+        assert_eq!(app.interaction.selected, std::collections::HashSet::from([CardId::from(a)]));
         app.apply_graph_action(&ctx, crate::graph_ui::GraphAction::CloseSelected);
         assert!(!app.nodes.contains_key(&a), "the tab still shown is closed");
         assert!(app.nodes.contains_key(&b), "the tab moved away is not");
@@ -910,14 +897,14 @@ mod tests {
         let note = app
             .node_order
             .iter()
-            .find(|id| app.card_kind(id).is_some_and(|k| k.ty == crate::store::model::TYPE_NOTE))
-            .cloned()
+            .find(|id| app.card_kind(**id).is_some_and(|k| k.ty == crate::store::model::TYPE_NOTE))
+            .copied()
             .unwrap();
-        app.interaction.selected.extend([CardId::stored(&g1), CardId::stored(&g2), CardId::stored(&note)]);
-        app.apply_drop(CardId::stored(&g1), Some((DropEffect::Join, Some(CardId::stored(&g2)))));
-        assert_eq!(app.doc.mirror.group(&g2), None, "the target is not moved into itself");
-        assert_eq!(app.doc.mirror.group(&g1), Some(g2.as_str()));
-        assert_eq!(app.doc.mirror.group(&note), Some(g2.as_str()));
+        app.interaction.selected.extend([CardId::from(g1), CardId::from(g2), CardId::from(note)]);
+        app.apply_drop(CardId::from(g1), Some((DropEffect::Join, Some(CardId::from(g2)))));
+        assert_eq!(app.doc.mirror.group(g2), None, "the target is not moved into itself");
+        assert_eq!(app.doc.mirror.group(g1), Some(g2));
+        assert_eq!(app.doc.mirror.group(note), Some(g2));
         assert!(app.interaction.selected.is_empty());
     }
 }

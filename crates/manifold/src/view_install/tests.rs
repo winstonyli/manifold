@@ -1000,7 +1000,7 @@ fn an_install_waits_while_a_tab_is_still_starting() {
         group: None,
         fields: Default::default(),
     };
-    app.spawns.spawning.insert("t1".into(), pending);
+    app.spawns.spawning.insert(crate::card_id::testutil::node(1), pending);
     assert!(!app.start_view_install_at(ViewKind::Cef, &data, &runtime_plan(&pin)));
     assert!(app.view_ui.view_installs.is_empty());
     assert_eq!(toasts(&app), ["A tab is still starting; try installing Blink (CEF) again in a moment"]);

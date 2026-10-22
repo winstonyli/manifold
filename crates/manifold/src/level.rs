@@ -84,7 +84,7 @@ pub(crate) struct LevelEdge {
     pub(crate) highlight: bool,
     pub(crate) kind: EdgeKind,
     /// The Link node this line draws. `None` for an opened-from line and every JSON-level line, which no click takes.
-    pub(crate) link: Option<String>,
+    pub(crate) link: Option<NodeId>,
 }
 
 /// How many of `items` count toward the level's settle key: every card but a virtual one. A source's entry count
@@ -99,10 +99,10 @@ pub(crate) fn settle_count(items: &[CardEntry]) -> usize {
 pub(crate) struct LevelScan {
     /// The stored nodes by draw layer (`Caps::draw_layer`), each layer in `node_order`: the order
     /// `build_graph_ui`'s card loop draws them, a later layer on top.
-    pub(crate) layers: [Vec<String>; crate::caps::DRAW_LAYERS],
+    pub(crate) layers: [Vec<NodeId>; crate::caps::DRAW_LAYERS],
     /// The container cards (`is_container`) among them, in `node_order`: what the toolbar's group chip, Ungroup
     /// All and a drop's first search act on.
-    pub(crate) groups: Vec<String>,
+    pub(crate) groups: Vec<NodeId>,
 }
 
 impl App {
@@ -112,15 +112,15 @@ impl App {
     pub(crate) fn level_scan(&self) -> LevelScan {
         let mut scan = LevelScan::default();
         for id in &self.node_order {
-            if !self.in_level(id) {
+            if !self.in_level(*id) {
                 continue;
             }
-            let Some(kind) = self.card_kind(id) else { continue };
+            let Some(kind) = self.card_kind(*id) else { continue };
             // Every builtin row's layer fits (`caps::rows` tests); a row past the top draws on top.
             let layer = usize::from(kind.caps().draw_layer).min(crate::caps::DRAW_LAYERS - 1);
-            scan.layers[layer].push(id.clone());
+            scan.layers[layer].push(*id);
             if is_container(kind.ty) {
-                scan.groups.push(id.clone());
+                scan.groups.push(*id);
             }
         }
         scan
@@ -137,7 +137,7 @@ impl App {
     /// (`build_graph_ui`), so the level isn't walked twice. The stored (or JSON) cards come first, then each
     /// registered `VirtualSource`'s, so a virtual card draws on top. A JSON level lists its own cards only: its
     /// frame is `draw_json_level`, which draws no virtual card, so none may be hit-tested, selected or counted there.
-    pub(crate) fn level_items_from(&self, at_level: &[Vec<String>]) -> Vec<CardEntry> {
+    pub(crate) fn level_items_from(&self, at_level: &[Vec<NodeId>]) -> Vec<CardEntry> {
         if let Some(level) = &self.json_level {
             return (0..level.cards.len())
                 .map(|i| CardEntry {
@@ -154,10 +154,10 @@ impl App {
             .filter_map(|id| {
                 let node = self.nodes.get(id)?;
                 Some(CardEntry {
-                    kind: self.card_kind(id)?,
+                    kind: self.card_kind(*id)?,
                     origin: Origin::Stored,
-                    rect: node_card_rect(self.layout_pos(id), &node.runtime),
-                    id: CardId::stored(id),
+                    rect: node_card_rect(self.layout_pos(*id), &node.runtime),
+                    id: CardId::from(*id),
                 })
             })
             .collect();
@@ -203,16 +203,16 @@ impl App {
         }
         let rects: HashMap<CardId, egui::Rect> = items.iter().map(|e| (e.id, e.rect)).collect();
         let rect_of = |id: CardId| rects.get(&id).copied();
-        let opened = self.nodes.iter().filter(|(id, _)| self.in_level(id)).filter_map(|(id, _)| {
+        let opened = self.nodes.keys().copied().filter(|&id| self.in_level(id)).filter_map(|id| {
             let parent_id = self.opened_from(id)?;
-            self.nodes.get(parent_id).filter(|_| self.in_level(parent_id))?;
+            self.nodes.get(&parent_id).filter(|_| self.in_level(parent_id))?;
             let (from, to) =
-                crate::link_gestures::facing_ends(rect_of(CardId::stored(parent_id))?, rect_of(CardId::stored(id))?);
+                crate::link_gestures::facing_ends(rect_of(CardId::from(parent_id))?, rect_of(CardId::from(id))?);
             Some(LevelEdge {
                 from,
                 to,
-                from_id: CardId::stored(parent_id),
-                to_id: CardId::stored(id),
+                from_id: CardId::from(parent_id),
+                to_id: CardId::from(id),
                 curve: EdgeCurve::Bow,
                 highlight: false,
                 kind: EdgeKind::Opened,
@@ -221,37 +221,36 @@ impl App {
         });
         // A link shows only while both of its ends are live cards at this level.
         let links = self.doc.mirror.link_ids().filter_map(|link| {
-            let (from, to) = self.doc.mirror.link_ends(&link.to_string());
-            let (from, to) = (from?.to_string(), to?.to_string());
-            let both_here = [&from, &to].iter().all(|end| self.nodes.contains_key(*end) && self.in_level(end));
+            let (from, to) = self.doc.mirror.link_ends(link);
+            let (from, to) = (from?, to?);
+            let both_here = [from, to].iter().all(|end| self.nodes.contains_key(end) && self.in_level(*end));
             if !both_here {
                 return None;
             }
             let (from_end, to_end) =
-                crate::link_gestures::facing_ends(rect_of(CardId::stored(&from))?, rect_of(CardId::stored(&to))?);
+                crate::link_gestures::facing_ends(rect_of(CardId::from(from))?, rect_of(CardId::from(to))?);
             Some(LevelEdge {
                 from: from_end,
                 to: to_end,
-                from_id: CardId::stored(&from),
-                to_id: CardId::stored(&to),
+                from_id: CardId::from(from),
+                to_id: CardId::from(to),
                 curve: EdgeCurve::Bow,
                 highlight: false,
                 kind: EdgeKind::Link,
-                link: Some(link.to_string()),
+                link: Some(link),
             })
         });
         // A jar edge shows while its source and its jar are both live cards at this level. One reaching a jar in an
         // enclosing group, or a group's edge to a jar inside it, has no line here: its far end is on another level.
-        let jars = self.nodes.keys().filter(|id| self.in_level(id)).filter_map(|id| {
-            let jar = self.doc.mirror.jar(id)?.to_string();
-            self.nodes.get(&jar).filter(|_| self.in_level(&jar))?;
-            let (from, to) =
-                crate::link_gestures::facing_ends(rect_of(CardId::stored(id))?, rect_of(CardId::stored(&jar))?);
+        let jars = self.nodes.keys().copied().filter(|&id| self.in_level(id)).filter_map(|id| {
+            let jar = self.doc.mirror.jar(id)?;
+            self.nodes.get(&jar).filter(|_| self.in_level(jar))?;
+            let (from, to) = crate::link_gestures::facing_ends(rect_of(CardId::from(id))?, rect_of(CardId::from(jar))?);
             Some(LevelEdge {
                 from,
                 to,
-                from_id: CardId::stored(id),
-                to_id: CardId::stored(&jar),
+                from_id: CardId::from(id),
+                to_id: CardId::from(jar),
                 curve: EdgeCurve::Bow,
                 highlight: false,
                 kind: EdgeKind::Jar,
@@ -268,7 +267,7 @@ impl App {
     pub(crate) fn layout_current_level(&mut self) {
         if let Some(level) = self.json_level.as_mut() {
             if self.nodes.get(&level.node_id).and_then(|n| n.as_json()).is_some() {
-                level.relayout(self.doc.mirror.view(&level.node_id).unwrap_or(&crate::json_view::NO_VIEW));
+                level.relayout(self.doc.mirror.view(level.node_id).unwrap_or(&crate::json_view::NO_VIEW));
             }
             return;
         }
@@ -279,11 +278,11 @@ impl App {
     /// viewed, except on a JSON level, where it's the Json node's own
     /// group. Based on `current_group`, not `json_level`, so it is right
     /// before the first frame builds the level (plan ruling 3).
-    pub(crate) fn insertion_group(&self) -> Option<String> {
+    pub(crate) fn insertion_group(&self) -> Option<NodeId> {
         if self.current_json_node().is_some() {
-            return self.group_of(&self.current_group);
+            return self.group_of(self.current_group);
         }
-        self.current_group.clone()
+        self.current_group
     }
 }
 
@@ -293,16 +292,20 @@ mod tests {
     use crate::card_id::CardId;
     use crate::store::model::Kind;
 
-    // Real node ids (actor 1, counters 1..): `CardId::stored` and the edges need text that parses as a `NodeId`.
-    const G: &str = "0000000000000001-1";
-    const D: &str = "0000000000000001-2";
-    const INNER: &str = "0000000000000001-3";
-    const AWAY: &str = "0000000000000001-4";
-    const P: &str = "0000000000000001-5";
-    const C: &str = "0000000000000001-6";
-    const ELSEWHERE: &str = "0000000000000001-7";
-    const D1: &str = "0000000000000001-8";
-    const D2: &str = "0000000000000001-9";
+    const fn id(counter: u64) -> NodeId {
+        NodeId { actor: crate::store::model::ActorId(1), counter }
+    }
+
+    const G: NodeId = id(1);
+    const D: NodeId = id(2);
+    const INNER: NodeId = id(3);
+    const AWAY: NodeId = id(4);
+    const P: NodeId = id(5);
+    const C: NodeId = id(6);
+    const ELSEWHERE: NodeId = id(7);
+    const D1: NodeId = id(8);
+    const D2: NodeId = id(9);
+    const OTHER: NodeId = id(10);
 
     fn download(path: &str) -> Runtime {
         Runtime::Download(DownloadPayload {
@@ -317,22 +320,22 @@ mod tests {
     #[test]
     fn level_items_list_the_current_level_bottom_first_in_draw_order() {
         let mut app = App::default();
-        app.place_group(Some(G.into()), "G", crate::fetched::Placement { group: None, pos: egui::Vec2::ZERO });
-        app.insert_placeholder_node(D.into(), egui::vec2(300.0, 0.0), Kind::Download, download("a.bin"));
-        app.insert_placeholder_node(INNER.into(), egui::vec2(0.0, 0.0), Kind::Download, download("b.bin"));
-        app.edit_group(INNER, Some(G.into()));
+        app.place_group(Some(G), "G", crate::fetched::Placement { group: None, pos: egui::Vec2::ZERO });
+        app.insert_placeholder_node(D, egui::vec2(300.0, 0.0), Kind::Download, download("a.bin"));
+        app.insert_placeholder_node(INNER, egui::vec2(0.0, 0.0), Kind::Download, download("b.bin"));
+        app.edit_group(INNER, Some(G));
 
         let top: Vec<(CardId, CardKind)> = app.level_items().into_iter().map(|i| (i.id, i.kind)).collect();
         // Downloads draw before groups (`Caps::draw_layer`), whatever the insertion order.
         use crate::card_kind::fixtures::plain;
         use crate::store::model::{TYPE_DOWNLOAD, TYPE_GROUP};
-        assert_eq!(top, [(CardId::stored(D), plain(TYPE_DOWNLOAD)), (CardId::stored(G), plain(TYPE_GROUP))]);
-        assert_eq!(app.level_items()[0].rect, node_card_rect(app.layout_pos(D), &app.nodes[D].runtime));
+        assert_eq!(top, [(CardId::from(D), plain(TYPE_DOWNLOAD)), (CardId::from(G), plain(TYPE_GROUP))]);
+        assert_eq!(app.level_items()[0].rect, node_card_rect(app.layout_pos(D), &app.nodes[&D].runtime));
         assert_eq!(app.level_scan().groups, [G]);
 
-        app.current_group = Some(G.into());
+        app.current_group = Some(G);
         let inside: Vec<CardId> = app.level_items().into_iter().map(|i| i.id).collect();
-        assert_eq!(inside, [CardId::stored(INNER)]);
+        assert_eq!(inside, [CardId::from(INNER)]);
         assert!(app.level_scan().groups.is_empty());
     }
 
@@ -341,18 +344,18 @@ mod tests {
     #[test]
     fn level_scan_buckets_every_node_on_the_level_by_layer_in_node_order() {
         let mut app = App::default();
-        app.place_group(Some(G.into()), "G", crate::fetched::Placement { group: None, pos: egui::Vec2::ZERO });
-        app.insert_placeholder_node(D1.into(), egui::Vec2::ZERO, Kind::Download, download("a.bin"));
+        app.place_group(Some(G), "G", crate::fetched::Placement { group: None, pos: egui::Vec2::ZERO });
+        app.insert_placeholder_node(D1, egui::Vec2::ZERO, Kind::Download, download("a.bin"));
         app.new_note_shortcut();
-        app.insert_placeholder_node(D2.into(), egui::Vec2::ZERO, Kind::Download, download("b.bin"));
-        app.insert_placeholder_node(AWAY.into(), egui::Vec2::ZERO, Kind::Download, download("c.bin"));
-        app.edit_group(AWAY, Some(G.into()));
+        app.insert_placeholder_node(D2, egui::Vec2::ZERO, Kind::Download, download("b.bin"));
+        app.insert_placeholder_node(AWAY, egui::Vec2::ZERO, Kind::Download, download("c.bin"));
+        app.edit_group(AWAY, Some(G));
         let scan = app.level_scan();
-        let by_filter = |pick: &dyn Fn(CardKind) -> bool| -> Vec<String> {
+        let by_filter = |pick: &dyn Fn(CardKind) -> bool| -> Vec<NodeId> {
             app.node_order
                 .iter()
-                .filter(|id| app.in_level(id) && app.card_kind(id).is_some_and(pick))
-                .cloned()
+                .filter(|id| app.in_level(**id) && app.card_kind(**id).is_some_and(pick))
+                .copied()
                 .collect()
         };
         for (layer, ids) in scan.layers.iter().enumerate() {
@@ -375,13 +378,13 @@ mod tests {
     #[test]
     fn level_edges_from_reads_the_rects_it_is_given() {
         let mut app = App::default();
-        app.insert_placeholder_node(P.into(), egui::vec2(0.0, 0.0), Kind::Download, download("p.bin"));
-        app.insert_placeholder_node(C.into(), egui::vec2(100.0, 50.0), Kind::Download, download("c.bin"));
-        app.edit_parent(C, Some(P.into()));
+        app.insert_placeholder_node(P, egui::vec2(0.0, 0.0), Kind::Download, download("p.bin"));
+        app.insert_placeholder_node(C, egui::vec2(100.0, 50.0), Kind::Download, download("c.bin"));
+        app.edit_parent(C, Some(P));
         assert_eq!(app.level_edges_from(&app.level_items()), app.level_edges());
         let mut items = app.level_items();
         let shift = egui::vec2(500.0, 0.0);
-        items.iter_mut().filter(|e| e.id == CardId::stored(C)).for_each(|e| e.rect = e.rect.translate(shift));
+        items.iter_mut().filter(|e| e.id == CardId::from(C)).for_each(|e| e.rect = e.rect.translate(shift));
         let moved = app.level_edges_from(&items);
         assert_eq!(moved[0].to, app.level_edges()[0].to + shift, "the edge follows the given rect");
     }
@@ -389,24 +392,24 @@ mod tests {
     #[test]
     fn level_edges_join_parent_and_child_facing_sides_on_this_level_only() {
         let mut app = App::default();
-        app.insert_placeholder_node(P.into(), egui::vec2(0.0, 0.0), Kind::Download, download("p.bin"));
-        app.insert_placeholder_node(C.into(), egui::vec2(100.0, 50.0), Kind::Download, download("c.bin"));
-        app.insert_placeholder_node(ELSEWHERE.into(), egui::vec2(9.0, 9.0), Kind::Download, download("e.bin"));
-        app.edit_parent(C, Some(P.into()));
-        app.edit_parent(ELSEWHERE, Some(P.into()));
-        app.edit_group(ELSEWHERE, Some("other".into()));
+        app.insert_placeholder_node(P, egui::vec2(0.0, 0.0), Kind::Download, download("p.bin"));
+        app.insert_placeholder_node(C, egui::vec2(100.0, 50.0), Kind::Download, download("c.bin"));
+        app.insert_placeholder_node(ELSEWHERE, egui::vec2(9.0, 9.0), Kind::Download, download("e.bin"));
+        app.edit_parent(C, Some(P));
+        app.edit_parent(ELSEWHERE, Some(P));
+        app.edit_group(ELSEWHERE, Some(OTHER));
 
         let edges = app.level_edges();
         assert_eq!(edges.len(), 1);
-        let rect = |id: &str| node_card_rect(app.layout_pos(id), &app.nodes[id].runtime);
+        let rect = |id: NodeId| node_card_rect(app.layout_pos(id), &app.nodes[&id].runtime);
         let (p, c) = (rect(P), rect(C));
         assert_eq!((edges[0].from, edges[0].to), crate::link_gestures::facing_ends(p, c));
         assert_eq!(edges[0].from, p.right_center(), "c lies mostly to the right of p: p's right side");
         assert_eq!(edges[0].to, c.left_center(), "and c's left side");
         assert_eq!(edges[0].curve, EdgeCurve::Bow);
         assert_eq!(
-            (edges[0].from_id, edges[0].to_id, edges[0].link.as_deref()),
-            (CardId::stored(P), CardId::stored(C), None),
+            (edges[0].from_id, edges[0].to_id, edges[0].link),
+            (CardId::from(P), CardId::from(C), None),
             "an opened-from line names its ends and no Link node"
         );
     }
@@ -415,14 +418,14 @@ mod tests {
     fn a_virtual_source_adds_edges_between_its_entries_beside_the_stored_ones() {
         use crate::virtual_source::fake::{self, FakeSource};
         let mut app = App::default();
-        app.insert_placeholder_node(P.into(), egui::vec2(0.0, 0.0), Kind::Download, download("p.bin"));
-        app.insert_placeholder_node(C.into(), egui::vec2(100.0, 50.0), Kind::Download, download("c.bin"));
-        app.edit_parent(C, Some(P.into()));
+        app.insert_placeholder_node(P, egui::vec2(0.0, 0.0), Kind::Download, download("p.bin"));
+        app.insert_placeholder_node(C, egui::vec2(100.0, 50.0), Kind::Download, download("c.bin"));
+        app.edit_parent(C, Some(P));
         app.register_virtual_source(std::rc::Rc::new(FakeSource::default()));
         let edges = app.level_edges();
         assert!(edges
             .iter()
-            .any(|e| e.kind == EdgeKind::Opened && e.from_id == CardId::stored(P) && e.to_id == CardId::stored(C)));
+            .any(|e| e.kind == EdgeKind::Opened && e.from_id == CardId::from(P) && e.to_id == CardId::from(C)));
         let virt: Vec<_> = edges.iter().filter(|e| e.from_id.is_virtual()).collect();
         assert_eq!(virt.len(), 1);
         assert_eq!((virt[0].from_id, virt[0].to_id), (fake::id('a'), fake::id('b')));
@@ -435,10 +438,10 @@ mod tests {
         let mut app = App::default();
         let tab = add(&mut app, Kind::Tab, sleeping_tab("https://a/", "A"));
         let here = add_jar(&mut app, "Here");
-        app.set_jar_edge(&tab, Some(here));
+        app.set_jar_edge(tab, Some(here));
         let jar_lines = |app: &App| app.level_edges().into_iter().filter(|e| e.kind == EdgeKind::Jar).count();
         assert_eq!(jar_lines(&app), 1);
-        app.edit_group(&here.to_string(), Some("elsewhere".into()));
+        app.edit_group(here, Some(OTHER));
         assert_eq!(jar_lines(&app), 0, "the jar is on another level");
     }
 }

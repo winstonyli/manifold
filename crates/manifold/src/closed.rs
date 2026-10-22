@@ -41,9 +41,8 @@ pub(crate) fn members_under(
 impl App {
     /// Whether closing `id` keeps it (spec decision 4): a node the document can hold whose kind and value are worth
     /// reopening (`worth_reopening`). Without a journal nothing is kept: the close is a plain destroy.
-    fn restorable(&self, id: &str) -> bool {
-        let Some(node) = id.parse::<store::model::NodeId>().ok() else { return false };
-        self.doc.journal.is_some() && self.snapshot(node).is_some_and(|s| worth_reopening(&s.ty, &s.fields))
+    fn restorable(&self, id: NodeId) -> bool {
+        self.doc.journal.is_some() && self.snapshot(id).is_some_and(|s| worth_reopening(&s.ty, &s.fields))
     }
 
     /// Closes one node (spec decision 4), the single user-facing close: a card's hover ✕, its context-menu
@@ -51,7 +50,7 @@ impl App {
     /// and the drawn position are written first; a node not worth reopening is destroyed as before; otherwise the
     /// members not worth reopening go (a blank note, a download), `closed` is queued on the root, and the subtree is
     /// hidden in place with its engines unloaded. Saves, then evicts past `MAX_CLOSED`.
-    pub(crate) fn close_node(&mut self, id: &str) {
+    pub(crate) fn close_node(&mut self, id: NodeId) {
         if self.is_default_jar(id) {
             self.queue_toast("The Default jar can't be closed".to_string());
             return;
@@ -70,47 +69,38 @@ impl App {
             self.save_session();
             return;
         }
-        let root: store::model::NodeId = id.parse().expect("restorable ids parse");
         // The subtree as this replica holds it: the mirror's membership over `node_order`, so a tab mid-respawn and a
         // member not saved yet are found too.
-        let order: Vec<store::model::NodeId> = self.node_order.iter().filter_map(|s| s.parse().ok()).collect();
-        let members = members_under(
-            root,
-            &order,
-            |m| self.doc.mirror.group(&m.to_string()).and_then(|g| g.parse().ok()),
-            |m| self.is_container(&m.to_string()),
-        );
-        let subtree: Vec<String> = std::iter::once(root).chain(members).map(|n| n.to_string()).collect();
-        let (kept, gone): (Vec<String>, Vec<String>) =
-            subtree.into_iter().partition(|key| key == id || self.restorable(key));
+        let members = members_under(id, &self.node_order, |m| self.doc.mirror.group(*m), |m| self.is_container(*m));
+        let subtree: Vec<NodeId> = std::iter::once(id).chain(members).collect();
+        let (kept, gone): (Vec<NodeId>, Vec<NodeId>) =
+            subtree.into_iter().partition(|&key| key == id || self.restorable(key));
         // A kept node the flush could not create has no document entry: its `closed` write would be dropped as not
         // editable and the hide would lose the node for good. Leave everything shown instead.
-        let uncreated = |key: &String| {
-            key.parse().is_ok_and(|n| self.doc.writes.life(n) == Some(crate::session_sync::Life::Create))
-        };
+        let uncreated = |key: &NodeId| self.doc.writes.life(*key) == Some(crate::session_sync::Life::Create);
         if kept.iter().any(uncreated) {
             self.queue_toast("Couldn't save the session, so nothing was closed".to_string());
             return;
         }
         // Where each card was drawn becomes its document pos (2b-4 Ruling 10: a reopen lands where it was shown).
-        for key in &kept {
+        for &key in &kept {
             let carries_pos = Kind::from_type(self.doc.mirror.ty(key)).fields().contains(&field::POS);
-            if carries_pos && self.layout.contains_key(key) {
+            if carries_pos && self.layout.contains_key(&key) {
                 self.edit_pos(key, Some(self.layout_pos(key)));
             }
         }
-        for key in &gone {
+        for &key in &gone {
             self.remove_node(key);
         }
-        self.doc.writes.queue_closed(root, self.doc.replica);
-        let tabs: Vec<String> = kept
+        self.doc.writes.queue_closed(id, self.doc.replica);
+        let tabs: Vec<NodeId> = kept
             .iter()
-            .filter(|k| self.nodes.get(*k).is_some_and(|n| n.runtime.saved_tab().is_some()))
-            .cloned()
+            .copied()
+            .filter(|k| self.nodes.get(k).is_some_and(|n| n.runtime.saved_tab().is_some()))
             .collect();
         self.begin_tabs_shutdown(&tabs);
-        self.leave_hidden(root);
-        for key in &kept {
+        self.leave_hidden(id);
+        for &key in &kept {
             self.hide_node(key);
         }
         self.sweep_jar_switches();
@@ -122,7 +112,7 @@ impl App {
     /// first, so they enter the history newest in their old order. The save's visibility pass shows what is no
     /// longer hidden (`apply_visibility`), and `apply_remote` sweeps the jar switches. A node that stays hidden
     /// (its group is closed) or lands at another level says so (plan D8).
-    pub(crate) fn reopen_node(&mut self, id: store::model::NodeId) {
+    pub(crate) fn reopen_node(&mut self, id: NodeId) {
         let Some(doc) = self.doc.journal.as_ref().map(|j| j.doc()) else { return };
         // A closed node `d` under `id` with no other closed node between them.
         let directly_under = |d: store::model::NodeId| {
@@ -164,18 +154,17 @@ impl App {
         // Where the document shows it, not where the graph does: a tab still spawning or waking has no `nodes` entry.
         let placement = doc.placement(id);
         if matches!(placement, Placement::Shown(_)) {
-            self.regroup_held(&id.to_string());
+            self.regroup_held(id);
         }
         match placement {
             Placement::Hidden => {
                 self.queue_toast("Reopened inside a closed group: it shows when that group is reopened".to_string());
             }
-            Placement::Shown(group) if group.map(|g| g.to_string()) != self.current_group => {
+            Placement::Shown(group) if group != self.current_group => {
                 let level = match group {
                     None => "the top level".to_string(),
                     Some(g) => {
-                        let shown =
-                            crate::names::display_name(self.doc.mirror.name(&g.to_string()), crate::names::UNTITLED);
+                        let shown = crate::names::display_name(self.doc.mirror.name(g), crate::names::UNTITLED);
                         let shown = crate::names::to_plain(&shown);
                         format!("“{shown}”")
                     }
@@ -210,18 +199,17 @@ impl App {
         let oldest_first = || roots.iter().rev().map(|&(id, _)| id);
         let mut victims: Vec<NodeId> = oldest_first().filter(emptied).take(excess).collect();
         victims.extend(oldest_first().filter(|id| !emptied(id)).take(excess - victims.len()));
-        let evicted: Vec<String> = doc
+        let evicted: Vec<NodeId> = doc
             .with_descendants(victims.into_iter().collect())
             .into_iter()
             .filter(|id| doc.nodes.get(id).is_some_and(|n| !n.deleted))
-            .map(|id| id.to_string())
             .collect();
-        for id in &evicted {
+        for &id in &evicted {
             self.queue_delete(id);
         }
         // Files are released only after the Delete committed (decision 11: `release_backing` reads `backing_keep`).
         if self.save_session() {
-            for id in &evicted {
+            for &id in &evicted {
                 self.forget_deleted(id);
             }
         }
@@ -242,19 +230,19 @@ mod tests {
         let mut app = app_on(&path, 1);
         let g = add_group(&mut app, "G");
         let inner = add_note(&mut app, "kept");
-        app.edit_group(&inner, Some(g.clone()));
+        app.edit_group(inner, Some(g));
         let outside = add_note(&mut app, "outside");
-        let _link = app.create_link(&inner, &outside);
+        let _link = app.create_link(inner, outside);
         assert!(app.save_session());
         let link: Vec<NodeId> = app.doc.mirror.link_ids().collect();
-        app.close_node(&g);
-        assert_eq!(stored(&app, &g, field::CLOSED), FieldValue::Replica(app.doc.replica));
-        assert_eq!(stored(&app, &inner, field::CLOSED), FieldValue::Replica(0), "only the root is flagged");
+        app.close_node(g);
+        assert_eq!(stored(&app, g, field::CLOSED), FieldValue::Replica(app.doc.replica));
+        assert_eq!(stored(&app, inner, field::CLOSED), FieldValue::Replica(0), "only the root is flagged");
         assert!(!app.nodes.contains_key(&g) && !app.nodes.contains_key(&inner));
         assert_eq!(closed_ids(&app), std::slice::from_ref(&g));
-        app.reopen_node(g.parse().unwrap());
+        app.reopen_node(g);
         assert!(app.nodes.contains_key(&g) && app.nodes.contains_key(&inner), "same ids");
-        assert_eq!(app.doc.mirror.group(&inner), Some(g.as_str()));
+        assert_eq!(app.doc.mirror.group(inner), Some(g));
         assert_eq!(app.doc.mirror.link_ids().collect::<Vec<_>>(), link, "the link to the outside node survived");
         assert!(closed_ids(&app).is_empty());
     }
@@ -266,13 +254,13 @@ mod tests {
         let n = add_note(&mut app, "v1");
         assert!(app.save_session());
         app.nodes.get_mut(&n).unwrap().as_note_mut().unwrap().text = "typed".into();
-        app.snap_layout(&n, egui::vec2(120.0, 80.0));
-        app.close_node(&n);
-        assert_eq!(stored(&app, &n, field::TEXT), FieldValue::Str("typed".into()));
-        assert_eq!(stored(&app, &n, field::POS), FieldValue::Pos(120.0, 80.0));
-        app.reopen_node(n.parse().unwrap());
-        assert_eq!(app.note_text(&n), "typed");
-        assert_eq!(app.layout_pos(&n), egui::vec2(120.0, 80.0));
+        app.snap_layout(n, egui::vec2(120.0, 80.0));
+        app.close_node(n);
+        assert_eq!(stored(&app, n, field::TEXT), FieldValue::Str("typed".into()));
+        assert_eq!(stored(&app, n, field::POS), FieldValue::Pos(120.0, 80.0));
+        app.reopen_node(n);
+        assert_eq!(app.note_text(n), "typed");
+        assert_eq!(app.layout_pos(n), egui::vec2(120.0, 80.0));
     }
 
     /// A tab whose page moved on without sharing it (a redirect, a script, a restore at its `LiveUrl`) reopens at the
@@ -287,10 +275,10 @@ mod tests {
         if let Runtime::Unloaded(t) = &mut app.nodes.get_mut(&tab).unwrap().runtime {
             t.url = "https://live/".into();
         }
-        assert_eq!(app.doc.mirror.url(&tab), "https://shared/", "the shared url is unchanged");
-        app.close_node(&tab);
+        assert_eq!(app.doc.mirror.url(tab), "https://shared/", "the shared url is unchanged");
+        app.close_node(tab);
         assert_eq!(app.doc.hidden_local[&tab].live_url.as_ref().map(|l| l.url.as_str()), Some("https://live/"));
-        app.reopen_node(tab.parse().unwrap());
+        app.reopen_node(tab);
         let reopened = app.nodes[&tab].as_unloaded().unwrap();
         assert_eq!((reopened.url.as_str(), reopened.title.as_str()), ("https://live/", "T"));
     }
@@ -352,22 +340,22 @@ mod tests {
         let mut app = app_on(&path, 1);
         app.ensure_default_jar();
         let group = add_group(&mut app, "G");
-        let at = crate::fetched::Placement { group: Some(group.clone()), pos: egui::vec2(40.0, 40.0) };
+        let at = crate::fetched::Placement { group: Some(group), pos: egui::vec2(40.0, 40.0) };
         let inside = app.create_jar("In", at);
         let outside = add_jar(&mut app, "Out");
         let tab = add(&mut app, Kind::Tab, sleeping_tab("https://a/", "A"));
         let other = add(&mut app, Kind::Tab, sleeping_tab("https://b/", "B"));
-        for t in [&tab, &other] {
-            app.edit_group(t, Some(group.clone()));
+        for t in [tab, other] {
+            app.edit_group(t, Some(group));
         }
-        app.set_jar_edge(&tab, Some(inside));
-        app.set_jar_edge(&other, Some(outside));
+        app.set_jar_edge(tab, Some(inside));
+        app.set_jar_edge(other, Some(outside));
         assert!(app.save_session());
-        app.close_node(&group);
-        app.reopen_node(group.parse().unwrap());
+        app.close_node(group);
+        app.reopen_node(group);
         assert!(app.jar_defs().contains_key(&inside), "the reopened jar has the same id");
-        assert_eq!(app.doc.mirror.jar(&tab), Some(inside), "follows the reopened jar");
-        assert_eq!(app.doc.mirror.jar(&other), Some(outside), "an outside jar keeps its id");
+        assert_eq!(app.doc.mirror.jar(tab), Some(inside), "follows the reopened jar");
+        assert_eq!(app.doc.mirror.jar(other), Some(outside), "an outside jar keeps its id");
     }
 
     #[test]
@@ -379,7 +367,7 @@ mod tests {
         assert!(app.save_session());
         let file = jars.join(format!("{jar}.json"));
         std::fs::write(&file, b"cookies").unwrap();
-        app.close_node(&jar.to_string());
+        app.close_node(jar);
         assert!(!app.jar_defs().contains_key(&jar), "hidden while closed");
         assert!(file.exists(), "the cookie file was never copied or touched");
         app.reopen_node(jar);
@@ -393,14 +381,14 @@ mod tests {
         let mut app = app_on(&path, 1);
         let g = add_group(&mut app, "G");
         let blank = add_note(&mut app, "  ");
-        app.edit_group(&blank, Some(g.clone()));
+        app.edit_group(blank, Some(g));
         let lone = add_note(&mut app, "");
         assert!(app.save_session());
-        app.close_node(&g);
+        app.close_node(g);
         let doc = app.doc.journal.as_ref().unwrap().doc();
-        assert!(doc.nodes[&blank.parse().unwrap()].deleted, "dropped as the snapshot dropped it");
-        app.close_node(&lone);
-        assert!(app.doc.journal.as_ref().unwrap().doc().nodes[&lone.parse().unwrap()].deleted);
+        assert!(doc.nodes[&blank].deleted, "dropped as the snapshot dropped it");
+        app.close_node(lone);
+        assert!(app.doc.journal.as_ref().unwrap().doc().nodes[&lone].deleted);
         assert_eq!(closed_ids(&app), [g]);
     }
 
@@ -410,15 +398,15 @@ mod tests {
         let mut app = app_on(&path, 1);
         let g = add_group(&mut app, "G");
         let tab = add(&mut app, Kind::Tab, crate::session_sync::tests::sleeping_tab("https://x.test/", "T"));
-        app.edit_group(&tab, Some(g.clone()));
+        app.edit_group(tab, Some(g));
         assert!(app.save_session());
         // An in-progress download takes its tab's group and has no document node (`restorable` is false).
-        app.insert_download_node(tab.clone(), "f.bin".into(), Some(3), Some("https://x.test/f.bin".into()));
-        let download = app.nodes.iter().find(|(_, n)| n.as_download().is_some()).map(|(id, _)| id.clone()).unwrap();
-        assert_eq!(app.doc.mirror.group(&download), Some(g.as_str()));
-        app.close_node(&g);
+        app.insert_download_node(tab, "f.bin".into(), Some(3), Some("https://x.test/f.bin".into()));
+        let download = app.nodes.iter().find(|(_, n)| n.as_download().is_some()).map(|(id, _)| *id).unwrap();
+        assert_eq!(app.doc.mirror.group(download), Some(g));
+        app.close_node(g);
         assert!(!app.nodes.contains_key(&download), "the download went with the closing group");
-        app.reopen_node(g.parse().unwrap());
+        app.reopen_node(g);
         assert!(!app.nodes.contains_key(&download), "reopening the group doesn't bring it back");
         assert!(app.nodes.contains_key(&tab), "the tab came back");
     }
@@ -429,16 +417,16 @@ mod tests {
         let mut app = app_on(&path, 1);
         let g = add_group(&mut app, "Oldest");
         let nested = add_note(&mut app, "nested");
-        app.edit_group(&nested, Some(g.clone()));
-        let rest: Vec<String> = (0..MAX_CLOSED).map(|i| add_note(&mut app, &format!("n{i}"))).collect();
+        app.edit_group(nested, Some(g));
+        let rest: Vec<NodeId> = (0..MAX_CLOSED).map(|i| add_note(&mut app, &format!("n{i}"))).collect();
         assert!(app.save_session());
-        app.close_node(&nested); // a closed node nested in the oldest root: evicted with it
-        app.close_node(&g);
+        app.close_node(nested); // a closed node nested in the oldest root: evicted with it
+        app.close_node(g);
         for n in &rest {
-            app.close_node(n);
+            app.close_node(*n);
         }
         let doc = app.doc.journal.as_ref().unwrap().doc();
-        assert!(doc.nodes[&g.parse().unwrap()].deleted && doc.nodes[&nested.parse().unwrap()].deleted);
+        assert!(doc.nodes[&g].deleted && doc.nodes[&nested].deleted);
         assert_eq!(closed_ids(&app).len(), MAX_CLOSED);
     }
 
@@ -448,15 +436,15 @@ mod tests {
         let mut app = app_on(&path, 1);
         let g = add_group(&mut app, "G");
         let (a, b) = (add_note(&mut app, "a"), add_note(&mut app, "b"));
-        app.edit_group(&a, Some(g.clone()));
-        app.edit_group(&b, Some(g.clone()));
+        app.edit_group(a, Some(g));
+        app.edit_group(b, Some(g));
         let other = add_note(&mut app, "other");
         assert!(app.save_session());
-        app.close_node(&a);
-        app.close_node(&b);
-        app.close_node(&g);
-        app.close_node(&other);
-        app.reopen_node(g.parse().unwrap());
+        app.close_node(a);
+        app.close_node(b);
+        app.close_node(g);
+        app.close_node(other);
+        app.reopen_node(g);
         assert_eq!(closed_ids(&app), [b, a, other], "the nested ones are newest, b after a as before");
     }
 
@@ -466,9 +454,9 @@ mod tests {
         let mut app = app_on(&path, 1);
         let (mine, theirs) = (add_note(&mut app, "mine"), add_note(&mut app, "theirs"));
         assert!(app.save_session());
-        app.close_node(&mine);
+        app.close_node(mine);
         let mut other = store::journal::Journal::open(&path, store::model::ActorId(2)).unwrap();
-        crate::session_sync::tests::remote_set(&mut other, &theirs, field::CLOSED, FieldValue::Replica(99));
+        crate::session_sync::tests::remote_set(&mut other, theirs, field::CLOSED, FieldValue::Replica(99));
         assert!(app.save_session());
         assert_eq!(closed_ids(&app)[0], theirs, "theirs is newest");
         app.reopen_closed_shortcut();
@@ -479,16 +467,16 @@ mod tests {
     fn a_replica_that_only_receives_closes_evicts_and_agrees() {
         let path = store::testutil::temp_dir("closed-remote-evict").join("session.mnf");
         let mut a = app_on(&path, 1);
-        let notes: Vec<String> = (0..=MAX_CLOSED).map(|i| add_note(&mut a, &format!("n{i}"))).collect();
+        let notes: Vec<NodeId> = (0..=MAX_CLOSED).map(|i| add_note(&mut a, &format!("n{i}"))).collect();
         assert!(a.save_session());
         // Another replica closes all MAX_CLOSED + 1 notes; A closes none, it only receives them.
         let mut other = store::journal::Journal::open(&path, store::model::ActorId(2)).unwrap();
         for n in &notes {
-            crate::session_sync::tests::remote_set(&mut other, n, field::CLOSED, FieldValue::Replica(99));
+            crate::session_sync::tests::remote_set(&mut other, *n, field::CLOSED, FieldValue::Replica(99));
         }
         assert!(a.save_session());
         let doc = a.doc.journal.as_ref().unwrap().doc();
-        assert!(doc.nodes[&notes[0].parse().unwrap()].deleted, "A evicted the oldest on receipt");
+        assert!(doc.nodes[&notes[0]].deleted, "A evicted the oldest on receipt");
         assert_eq!(closed_ids(&a).len(), MAX_CLOSED);
         // A replica restored from the same file agrees on the same set and order.
         let mut b = app_on(&path, 3);
@@ -500,17 +488,17 @@ mod tests {
     fn a_reopen_concurrent_with_its_eviction_loses() {
         let path = store::testutil::temp_dir("closed-reopen-vs-evict").join("session.mnf");
         let mut a = app_on(&path, 1);
-        let notes: Vec<String> = (0..=MAX_CLOSED).map(|i| add_note(&mut a, &format!("n{i}"))).collect();
+        let notes: Vec<NodeId> = (0..=MAX_CLOSED).map(|i| add_note(&mut a, &format!("n{i}"))).collect();
         assert!(a.save_session());
         for n in &notes[..MAX_CLOSED] {
-            a.close_node(n);
+            a.close_node(*n);
         }
         // B opens now, so it still sees notes[0] closed and has not seen A's 21st close.
         let mut b = store::journal::Journal::open(&path, store::model::ActorId(2)).unwrap();
-        a.close_node(&notes[MAX_CLOSED]); // A's 21st close evicts notes[0] ...
-        crate::session_sync::tests::remote_set(&mut b, &notes[0], field::CLOSED, FieldValue::Replica(0)); // ... B's stale reopen.
+        a.close_node(notes[MAX_CLOSED]); // A's 21st close evicts notes[0] ...
+        crate::session_sync::tests::remote_set(&mut b, notes[0], field::CLOSED, FieldValue::Replica(0)); // ... B's stale reopen.
         assert!(a.save_session());
-        assert!(a.doc.journal.as_ref().unwrap().doc().nodes[&notes[0].parse().unwrap()].deleted, "Delete wins");
+        assert!(a.doc.journal.as_ref().unwrap().doc().nodes[&notes[0]].deleted, "Delete wins");
         assert!(!a.nodes.contains_key(&notes[0]));
     }
 
@@ -522,13 +510,13 @@ mod tests {
         let default = app.default_jar().unwrap();
         let work = app.create_jar("Work", crate::fetched::Placement { group: None, pos: egui::Vec2::ZERO });
         let tab = add(&mut app, Kind::Tab, crate::session_sync::tests::sleeping_tab("https://a.com/", "A"));
-        app.set_jar_edge(&tab, Some(work));
+        app.set_jar_edge(tab, Some(work));
         assert!(app.save_session());
-        assert_eq!(app.effective_jar(&tab), Some((work, false)));
-        app.close_node(&work.to_string());
-        assert_eq!(app.effective_jar(&tab), Some((default, true)), "the closed jar dangles to the Default");
+        assert_eq!(app.effective_jar(tab), Some((work, false)));
+        app.close_node(work);
+        assert_eq!(app.effective_jar(tab), Some((default, true)), "the closed jar dangles to the Default");
         app.reopen_node(work);
-        assert_eq!(app.effective_jar(&tab), Some((work, false)), "reopened: Work again; the stored edge never changed");
+        assert_eq!(app.effective_jar(tab), Some((work, false)), "reopened: Work again; the stored edge never changed");
     }
 
     #[test]
@@ -540,8 +528,8 @@ mod tests {
         assert!(app.save_session());
         let default = app.default_jar().unwrap();
         let mut other = store::journal::Journal::open(&path, store::model::ActorId(2)).unwrap();
-        crate::session_sync::tests::remote_set(&mut other, &g, field::CLOSED, FieldValue::Replica(99));
-        let op = store::ops::OpBody::Move { node: default, group: Some(g.parse().unwrap()) };
+        crate::session_sync::tests::remote_set(&mut other, g, field::CLOSED, FieldValue::Replica(99));
+        let op = store::ops::OpBody::Move { node: default, group: Some(g) };
         other.begin().unwrap().commit(vec![op]).unwrap();
         assert!(app.save_session());
         assert_eq!(app.default_jar(), Some(default), "the same Default, shown again");
@@ -559,8 +547,8 @@ mod tests {
         let mut first = app_on(&path, 1);
         let (closed, kept) = (add_note(&mut first, "closed"), add_note(&mut first, "kept"));
         assert!(first.save_session());
-        first.close_node(&closed);
-        assert_eq!(stored(&first, &closed, field::CLOSED), FieldValue::Replica(first.doc.replica));
+        first.close_node(closed);
+        assert_eq!(stored(&first, closed, field::CLOSED), FieldValue::Replica(first.doc.replica));
         let replica = first.doc.replica;
         drop(first);
 
@@ -578,7 +566,7 @@ mod tests {
         assert!(second.nodes.contains_key(&kept) && !second.nodes.contains_key(&closed));
         second.reopen_closed_shortcut();
         assert!(second.nodes.contains_key(&closed), "found after the restart");
-        assert_eq!(stored(&second, &closed, field::CLOSED), FieldValue::Replica(0));
+        assert_eq!(stored(&second, closed, field::CLOSED), FieldValue::Replica(0));
     }
 
     /// Defect 1: reopening a group re-stamps the roots nested under it as the replicas that closed them, not as the
@@ -589,18 +577,18 @@ mod tests {
         let mut app = app_on(&path, 1);
         let g = add_group(&mut app, "G");
         let (a, b) = (add_note(&mut app, "a"), add_note(&mut app, "b"));
-        app.edit_group(&a, Some(g.clone()));
-        app.edit_group(&b, Some(g.clone()));
+        app.edit_group(a, Some(g));
+        app.edit_group(b, Some(g));
         assert!(app.save_session());
         let mut other = store::journal::Journal::open(&path, store::model::ActorId(2)).unwrap();
-        crate::session_sync::tests::remote_set(&mut other, &a, field::CLOSED, FieldValue::Replica(99));
+        crate::session_sync::tests::remote_set(&mut other, a, field::CLOSED, FieldValue::Replica(99));
         assert!(app.save_session());
-        app.close_node(&b);
-        app.close_node(&g);
-        app.reopen_node(g.parse().unwrap());
-        assert_eq!(stored(&app, &a, field::CLOSED), FieldValue::Replica(99), "the other replica's close stays its");
-        assert_eq!(stored(&app, &b, field::CLOSED), FieldValue::Replica(app.doc.replica));
-        assert_eq!(stored(&app, &g, field::CLOSED), FieldValue::Replica(0));
+        app.close_node(b);
+        app.close_node(g);
+        app.reopen_node(g);
+        assert_eq!(stored(&app, a, field::CLOSED), FieldValue::Replica(99), "the other replica's close stays its");
+        assert_eq!(stored(&app, b, field::CLOSED), FieldValue::Replica(app.doc.replica));
+        assert_eq!(stored(&app, g, field::CLOSED), FieldValue::Replica(0));
     }
 
     /// Defect 3: the save that commits a reopen may first apply remote ops; the eviction they trigger must not count
@@ -609,18 +597,18 @@ mod tests {
     fn a_reopen_is_not_evicted_by_a_remote_close_arriving_in_the_same_save() {
         let path = store::testutil::temp_dir("closed-reopen-remote-evict").join("session.mnf");
         let mut app = app_on(&path, 1);
-        let notes: Vec<String> = (0..=MAX_CLOSED).map(|i| add_note(&mut app, &format!("n{i}"))).collect();
+        let notes: Vec<NodeId> = (0..=MAX_CLOSED).map(|i| add_note(&mut app, &format!("n{i}"))).collect();
         assert!(app.save_session());
         for n in &notes[..MAX_CLOSED] {
-            app.close_node(n);
+            app.close_node(*n);
         }
         assert_eq!(closed_ids(&app).len(), MAX_CLOSED);
         let mut other = store::journal::Journal::open(&path, store::model::ActorId(2)).unwrap();
-        crate::session_sync::tests::remote_set(&mut other, &notes[MAX_CLOSED], field::CLOSED, FieldValue::Replica(99));
+        crate::session_sync::tests::remote_set(&mut other, notes[MAX_CLOSED], field::CLOSED, FieldValue::Replica(99));
         // The oldest close is reopened; the save applies the remote close first (21 closed roots in the document).
-        app.reopen_node(notes[0].parse().unwrap());
+        app.reopen_node(notes[0]);
         let doc = app.doc.journal.as_ref().unwrap().doc();
-        assert!(!doc.nodes[&notes[0].parse().unwrap()].deleted, "the reopened node was not evicted");
+        assert!(!doc.nodes[&notes[0]].deleted, "the reopened node was not evicted");
         assert!(app.nodes.contains_key(&notes[0]));
         assert_eq!(closed_ids(&app).len(), MAX_CLOSED, "19 of ours and the remote one");
         assert!(closed_ids(&app).contains(&notes[MAX_CLOSED]));
@@ -635,12 +623,7 @@ mod tests {
         let keep = add_note(&mut app, "other");
         assert!(app.save_session());
         let fresh = add_note(&mut app, "fresh");
-        let fresh_id: NodeId = fresh.parse().unwrap();
-        assert_eq!(
-            app.doc.writes.life(fresh_id),
-            Some(crate::session_sync::Life::Create),
-            "created this tick, not saved"
-        );
+        assert_eq!(app.doc.writes.life(fresh), Some(crate::session_sync::Life::Create), "created this tick, not saved");
         let set_readonly = |readonly: bool| {
             let mut perms = std::fs::metadata(&path).unwrap().permissions();
             #[allow(
@@ -651,14 +634,14 @@ mod tests {
             std::fs::set_permissions(&path, perms).unwrap();
         };
         set_readonly(true);
-        app.close_node(&fresh);
+        app.close_node(fresh);
         set_readonly(false);
         assert!(app.nodes.contains_key(&fresh), "still shown");
         assert!(!app.doc.writes.has_closed(), "no close queued");
-        assert_eq!(app.doc.writes.life(fresh_id), Some(crate::session_sync::Life::Create), "still to be created");
+        assert_eq!(app.doc.writes.life(fresh), Some(crate::session_sync::Life::Create), "still to be created");
         assert!(app.save_session());
         let doc = app.doc.journal.as_ref().unwrap().doc();
-        assert!(doc.nodes[&fresh_id].is_live() && !doc.nodes[&fresh_id].closed());
+        assert!(doc.nodes[&fresh].is_live() && !doc.nodes[&fresh].closed());
         assert!(app.nodes.contains_key(&keep));
     }
 
@@ -672,16 +655,16 @@ mod tests {
         let path = store::testutil::temp_dir("closed-group-x").join("session.mnf");
         let mut app = app_on(&path, 1);
         let (g, inner) = group_with_note(&mut app);
-        app.apply_node_action(&ctx, &g, CardControl::Close.action());
+        app.apply_node_action(&ctx, g, CardControl::Close.action());
         assert!(!app.nodes.contains_key(&g) && !app.nodes.contains_key(&inner), "hidden with its members");
         assert_eq!(closed_ids(&app), std::slice::from_ref(&g), "a Recently Closed root, not a delete");
-        app.reopen_node(g.parse().unwrap());
+        app.reopen_node(g);
         assert!(app.nodes.contains_key(&g) && app.nodes.contains_key(&inner));
-        assert_eq!(app.doc.mirror.group(&inner), Some(g.as_str()), "the members are still in it");
+        assert_eq!(app.doc.mirror.group(inner), Some(g), "the members are still in it");
 
-        app.apply_node_action(&ctx, &g, NodeAction::Dissolve);
+        app.apply_node_action(&ctx, g, NodeAction::Dissolve);
         assert!(!app.nodes.contains_key(&g) && app.nodes.contains_key(&inner), "dissolved: the member stays");
-        assert_eq!(app.doc.mirror.group(&inner), None);
+        assert_eq!(app.doc.mirror.group(inner), None);
         assert_eq!(
             closed_ids(&app),
             std::slice::from_ref(&g),
@@ -695,8 +678,8 @@ mod tests {
         let path = store::testutil::temp_dir("evict-emptied").join("session.mnf");
         let mut app = app_on(&path, 1);
         let first = add_note(&mut app, "first closed");
-        app.close_node(&first);
-        let groups: Vec<String> = (0..MAX_CLOSED).map(|_| group_with_note(&mut app).0).collect();
+        app.close_node(first);
+        let groups: Vec<NodeId> = (0..MAX_CLOSED).map(|_| group_with_note(&mut app).0).collect();
         app.ungroup(&groups);
         let closed = closed_ids(&app);
         assert_eq!(closed.len(), MAX_CLOSED, "capped");
@@ -713,20 +696,18 @@ mod tests {
             let path = store::testutil::temp_dir("closed-selected-nested").join("session.mnf");
             let mut app = app_on(&path, 1);
             let (g, inner) = group_with_note(&mut app);
-            app.interaction
-                .selected
-                .extend([crate::card_id::CardId::stored(&inner), crate::card_id::CardId::stored(&g)]);
+            app.interaction.selected.extend([crate::card_id::CardId::from(inner), crate::card_id::CardId::from(g)]);
             app.apply_graph_action(&ctx, crate::graph_ui::GraphAction::CloseSelected);
             assert!(app.interaction.selected.is_empty());
             assert_eq!(closed_ids(&app), std::slice::from_ref(&g), "the group is the only closed root");
             assert_eq!(
-                stored(&app, &inner, field::CLOSED),
+                stored(&app, inner, field::CLOSED),
                 FieldValue::Replica(0),
                 "the member has no close of its own"
             );
-            app.reopen_node(g.parse().unwrap());
+            app.reopen_node(g);
             assert!(app.nodes.contains_key(&inner));
-            assert_eq!(app.doc.mirror.group(&inner), Some(g.as_str()));
+            assert_eq!(app.doc.mirror.group(inner), Some(g));
         }
     }
 }

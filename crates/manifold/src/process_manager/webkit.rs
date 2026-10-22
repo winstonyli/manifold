@@ -62,7 +62,7 @@ pub(super) fn webkit_shell_command(
     ))
 }
 
-pub(super) fn spawn_webkit_tab(tab_id: &str, initial_url: &str, wake: view_io::Wake) -> std::io::Result<ViewTab> {
+pub(super) fn spawn_webkit_tab(tab_id: NodeId, initial_url: &str, wake: view_io::Wake) -> std::io::Result<ViewTab> {
     // Bind an ephemeral port (0 = "pick one for me") so concurrent tabs
     // don't collide. Bound on all interfaces, not just loopback: WSL2's
     // NAT-mode networking refuses (ECONNREFUSED, verified directly) a

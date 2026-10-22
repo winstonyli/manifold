@@ -11,16 +11,16 @@ fn teardown_deletes_every_old_document_node_jars_included() {
     let note = add(&mut app, Kind::Note, Runtime::Note(NotePayload { text: "old".into(), editing: false }));
     let group = add_group(&mut app, "G");
     let tab = add(&mut app, Kind::Tab, sleeping_tab("https://old/", ""));
-    app.edit_group(&tab, Some(group.clone()));
+    app.edit_group(tab, Some(group));
     let jar = add_jar(&mut app, "Work");
     assert!(app.save_session());
     let json =
         JsonDoc { nodes: vec![json_node("t", Kind::Tab, serde_json::json!({ "url": "https://new/" }))], local: None };
     app.replace_running_session(&json, crate::store::json::Trust::Foreign);
-    for old in [&note, &group, &tab] {
+    for old in [note, group, tab] {
         assert!(!live_in_doc(&app, old), "{old} deleted");
     }
-    assert!(!live_in_doc(&app, &jar.to_string()), "the jar card goes with the rest");
+    assert!(!live_in_doc(&app, jar), "the jar card goes with the rest");
     let doc = app.doc.journal.as_ref().unwrap().doc();
     let urls: Vec<FieldValue> =
         doc.live().filter(|(_, n)| n.kind() == Kind::Tab).map(|(_, n)| n.get(field::URL)).collect();
@@ -34,7 +34,7 @@ fn an_imported_jar_is_created() {
     let mut app = app_on(&temp_dir("imported-jar-created").join("session.mnf"), 1);
     app.replace_running_session(&file_with_a_work_jar(), crate::store::json::Trust::Foreign);
     let jar = *app.jar_defs().keys().next().expect("the jar imported");
-    assert!(live_in_doc(&app, &jar.to_string()));
+    assert!(live_in_doc(&app, jar));
 }
 
 #[test]
@@ -44,14 +44,11 @@ fn teardown_forgets_hidden_personal_state() {
     let tab = add(&mut app, Kind::Tab, failed_tab("https://t/", 1.5));
     assert!(app.save_session());
     let mut other = Journal::open(&path, ActorId(2)).unwrap();
-    remote_close(&mut other, &tab, true);
+    remote_close(&mut other, tab, true);
     assert!(app.save_session());
     app.teardown_running_session();
     assert!(app.doc.hidden_local.is_empty());
-    assert!(
-        app.doc.writes.life(tab.parse().unwrap()) == Some(Life::Delete),
-        "the closed node is deleted with the session (D12)"
-    );
+    assert!(app.doc.writes.life(tab) == Some(Life::Delete), "the closed node is deleted with the session (D12)");
 }
 
 /// A group export round-trips as a JSON snapshot: `export_group_json`
@@ -63,11 +60,11 @@ fn a_group_export_imports_as_fresh_nodes() {
     let dir = crate::store::testutil::temp_dir("group-json");
     let mut app = app_on(&dir.join("session.mnf"), 1);
     let g = app.alloc_node_id();
-    app.insert_group_at(g.clone(), Some(egui::vec2(0.0, 0.0)));
+    app.insert_group_at(g, Some(egui::vec2(0.0, 0.0)));
     let n = app.alloc_node_id();
-    app.insert_note_at(n.clone(), Some(egui::vec2(10.0, 0.0)));
-    app.edit_group(&n, Some(g.clone()));
-    let json = app.export_group_json(&g).unwrap();
+    app.insert_note_at(n, Some(egui::vec2(10.0, 0.0)));
+    app.edit_group(n, Some(g));
+    let json = app.export_group_json(g).unwrap();
     assert_eq!(json.nodes.len(), 2);
     assert_eq!(json.nodes[0].kind(), Some(Kind::Group));
     app.import_group_json(&json);
@@ -128,9 +125,9 @@ fn opening_a_session_gives_each_imported_jar_a_new_jar() {
     let new = *app.jar_defs().iter().find(|(_, d)| !d.is_default).unwrap().0;
     assert_eq!(app.jar_defs()[&new].name, "Work");
     let tab =
-        app.nodes.iter().find(|(_, n)| n.runtime.as_unloaded().is_some()).map(|(id, _)| id).expect("tab imported");
+        app.nodes.iter().find(|(_, n)| n.runtime.as_unloaded().is_some()).map(|(id, _)| *id).expect("tab imported");
     assert_eq!(app.doc.mirror.jar(tab), Some(new));
-    let group = app.nodes.keys().find(|id| app.is_container(id)).expect("group imported");
+    let group = app.nodes.keys().copied().find(|&id| app.is_container(id)).expect("group imported");
     assert_eq!(app.doc.mirror.jar(group), Some(new));
 }
 
@@ -148,10 +145,10 @@ fn importing_a_group_gives_each_imported_jar_a_new_jar() {
         .nodes
         .iter()
         .filter(|(_, n)| n.runtime.as_unloaded().is_some())
-        .filter_map(|(id, _)| app.doc.mirror.jar(id))
+        .filter_map(|(&id, _)| app.doc.mirror.jar(id))
         .collect();
     let groups: BTreeSet<NodeId> =
-        app.nodes.keys().filter(|id| app.is_container(id)).filter_map(|id| app.doc.mirror.jar(id)).collect();
+        app.nodes.keys().copied().filter(|&id| app.is_container(id)).filter_map(|id| app.doc.mirror.jar(id)).collect();
     assert_eq!((&tabs, &groups), (&new, &new), "each import's tab and group name its own new jar");
 }
 
@@ -161,13 +158,13 @@ fn an_imported_groups_tab_arrives_asleep_in_the_new_group() {
     let mut app = app_on(&temp_dir("import-sleep").join("session.mnf"), 1);
     let g = add_group(&mut app, "G");
     let tab = add(&mut app, Kind::Tab, failed_tab("https://i/", 1.0));
-    app.edit_group(&tab, Some(g.clone()));
-    let json = app.export_group_json(&g).unwrap();
+    app.edit_group(tab, Some(g));
+    let json = app.export_group_json(g).unwrap();
     app.import_group_json(&json);
     assert!(app.test_spawns.is_empty());
     let (copy_id, copy) = app.nodes.iter().find(|(id, n)| **id != tab && n.as_unloaded().is_some()).expect("a card");
     assert_eq!(copy.as_unloaded().unwrap().state, UnloadedState::Sleeping);
-    let group = app.doc.mirror.group(copy_id).expect("in a group");
+    let group = app.doc.mirror.group(*copy_id).expect("in a group");
     assert!(group != g && app.is_container(group), "in the imported group");
 }
 
@@ -178,17 +175,17 @@ fn an_imported_member_whose_group_is_outside_the_file_joins_the_roots_level() {
     let mut app = app_on(&temp_dir("import-outside").join("session.mnf"), 1);
     let level = add_group(&mut app, "L");
     let elsewhere = add_group(&mut app, "E");
-    app.current_group = Some(level.clone());
+    app.current_group = Some(level);
     let json = JsonDoc {
         nodes: vec![
             json_node("a", Kind::Group, serde_json::json!({ "name": "G" })),
-            json_node("b", Kind::Note, serde_json::json!({ "text": "t", "group": elsewhere })),
+            json_node("b", Kind::Note, serde_json::json!({ "text": "t", "group": elsewhere.to_string() })),
         ],
         local: None,
     };
     app.import_group_json(&json);
     let (note, _) = app.nodes.iter().find(|(_, n)| matches!(&n.runtime, Runtime::Note(_))).expect("imported");
-    assert_eq!(app.doc.mirror.group(note), Some(level.as_str()));
+    assert_eq!(app.doc.mirror.group(*note), Some(level));
 }
 
 /// Export Group of a group the store doesn't hold gives nothing (and
@@ -197,7 +194,7 @@ fn an_imported_member_whose_group_is_outside_the_file_joins_the_roots_level() {
 fn exporting_a_group_the_store_lacks_gives_none() {
     let mut app = app_on(&temp_dir("export-missing").join("session.mnf"), 1);
     let g = app.alloc_node_id();
-    assert!(app.export_group_json(&g).is_none());
+    assert!(app.export_group_json(g).is_none());
     assert!(!app.toasts.save_toast_queue.is_empty(), "toasted");
 }
 
@@ -208,8 +205,8 @@ fn teardown_cancels_pending_pdf_renders() {
     let pdf = add(&mut app, Kind::Pdf, Runtime::Pdf(crate::node::PdfPayload { path: "d.pdf".into(), outcome: None }));
     let note = add(&mut app, Kind::Note, Runtime::Note(NotePayload { text: "n".into(), editing: false }));
     app.teardown_running_session();
-    assert!(app.pdf_renderer.is_cancelled(&pdf));
-    assert!(!app.pdf_renderer.is_cancelled(&note), "only PDFs are marked");
+    assert!(app.pdf_renderer.is_cancelled(pdf));
+    assert!(!app.pdf_renderer.is_cancelled(note), "only PDFs are marked");
 }
 
 /// Wave 2 (teardown order): replacing the session queues a delete for every live non-jar node of the document and
@@ -217,11 +214,11 @@ fn teardown_cancels_pending_pdf_renders() {
 #[test]
 fn teardown_queues_every_node_and_link_delete() {
     let mut app = app_on(&temp_dir("teardown-queues").join("session.mnf"), 1);
-    let notes: Vec<String> = (0..6).map(|_| a_note(&mut app)).collect();
-    app.connect(LINK, &notes[0], &notes[1]).unwrap();
-    app.connect(LINK, &notes[2], &notes[3]).unwrap();
+    let notes: Vec<NodeId> = (0..6).map(|_| a_note(&mut app)).collect();
+    app.connect(LINK, notes[0], notes[1]).unwrap();
+    app.connect(LINK, notes[2], notes[3]).unwrap();
     assert!(app.save_session());
-    app.connect(LINK, &notes[4], &notes[5]).unwrap(); // in the mirror, not saved yet
+    app.connect(LINK, notes[4], notes[5]).unwrap(); // in the mirror, not saved yet
     a_note(&mut app); // queued for create, not saved yet
     let mut want: BTreeSet<NodeId> = app
         .doc
@@ -248,8 +245,8 @@ fn replacing_the_session_drops_its_links() {
     let mut app = app_on(&temp_dir("link-replace").join("session.mnf"), 1);
     let a = succeed_spawn(&mut app, "https://a/");
     let b = succeed_spawn(&mut app, "https://b/");
-    app.create_link(&a, &b);
-    app.create_link("not-a-card", "nor-this"); // dangling: no endpoint's cascade reaches it
+    app.create_link(a, b);
+    app.create_link(id(901), id(902)); // dangling: no endpoint's cascade reaches it
     assert!(app.save_session());
     app.replace_running_session(&file_with_a_work_jar(), crate::store::json::Trust::Foreign);
     assert!(app.doc.mirror.link_ids().next().is_none(), "no stale link");
@@ -267,7 +264,7 @@ fn a_foreign_import_drops_a_link_naming_a_card_outside_the_file() {
         json_node("out", Kind::Link, serde_json::json!({ "from": "t", "to": "424242" })),
     ]});
     app.replace_running_session(&serde_json::from_value(json).unwrap(), crate::store::json::Trust::Foreign);
-    let ends: Vec<_> = app.doc.mirror.link_ids().map(|l| app.doc.mirror.link_ends(&l.to_string())).collect();
+    let ends: Vec<_> = app.doc.mirror.link_ids().map(|l| app.doc.mirror.link_ends(l)).collect();
     assert_eq!(ends.len(), 1, "only the link inside the file");
     assert!(ends[0].0.is_some() && ends[0].1.is_some());
     assert!(app.save_session());
@@ -281,11 +278,11 @@ fn a_foreign_import_drops_a_link_naming_a_live_card_outside_the_file() {
     let live = succeed_spawn(&mut app, "https://live/");
     let doc = link_doc(vec![
         json_node("t", Kind::Tab, serde_json::json!({ "url": "https://a/" })),
-        json_node("l", Kind::Link, serde_json::json!({ "from": "t", "to": live })),
+        json_node("l", Kind::Link, serde_json::json!({ "from": "t", "to": live.to_string() })),
     ]);
     app.import_group_json(&doc);
     assert_eq!(link_count(&app), 0);
-    assert!(app.links_naming(&live).is_empty());
+    assert!(app.links_naming(live).is_empty());
 }
 
 /// Export Group keeps a link with both ends in the group and leaves out one to a card outside it.
@@ -295,14 +292,14 @@ fn export_group_includes_links_inside_the_group_only() {
     let outside = succeed_spawn(&mut app, "https://out/");
     let (x, y) = (succeed_spawn(&mut app, "https://x/"), succeed_spawn(&mut app, "https://y/"));
     let group = add_group(&mut app, "g");
-    app.edit_group(&x, Some(group.clone()));
-    app.edit_group(&y, Some(group.clone()));
-    let inside = app.create_link(&x, &y);
-    let crossing = app.create_link(&x, &outside);
-    let json = app.export_group_json(&group).unwrap();
+    app.edit_group(x, Some(group));
+    app.edit_group(y, Some(group));
+    let inside = app.create_link(x, y);
+    let crossing = app.create_link(x, outside);
+    let json = app.export_group_json(group).unwrap();
     let ids: Vec<&str> = json.nodes.iter().map(|n| n.id.as_str()).collect();
-    assert!(ids.contains(&inside.as_str()), "the inner link is exported");
-    assert!(!ids.contains(&crossing.as_str()), "the crossing link is not");
+    assert!(ids.contains(&inside.to_string().as_str()), "the inner link is exported");
+    assert!(!ids.contains(&crossing.to_string().as_str()), "the crossing link is not");
     // And it round-trips through Import Group.
     app.import_group_json(&json);
     assert_eq!(link_count(&app), 3, "the two originals and one imported copy");
@@ -326,12 +323,12 @@ fn an_own_import_skips_a_link_whose_end_is_not_a_node() {
 fn export_session_drops_links_with_a_dead_end() {
     let mut app = app_on(&temp_dir("link-export-session").join("session.mnf"), 1);
     let (a, b) = (succeed_spawn(&mut app, "https://a/"), succeed_spawn(&mut app, "https://b/"));
-    let good = app.create_link(&a, &b);
-    let dead = app.create_link(&a, "ffffffffffffffff-777");
+    let good = app.create_link(a, b);
+    let dead = app.create_link(a, NodeId { actor: ActorId(u64::MAX), counter: 777 });
     let json = app.export_session_json().unwrap();
     let ids: Vec<&str> = json.nodes.iter().map(|n| n.id.as_str()).collect();
-    assert!(ids.contains(&good.as_str()));
-    assert!(!ids.contains(&dead.as_str()));
+    assert!(ids.contains(&good.to_string().as_str()));
+    assert!(!ids.contains(&dead.to_string().as_str()));
 }
 
 /// Export Session writes through `store::atomic::replace`: a blocked target fails the export and stays unwritten.
@@ -373,10 +370,10 @@ fn teardown_forgets_the_old_tabs_per_id_state() {
     let mut app = App::default();
     let t = add(&mut app, Kind::Tab, sleeping_tab("https://a.test/", "a"));
     let now = std::time::Instant::now();
-    app.saved_scroll.insert(t.clone(), crate::sleep_state::SavedScroll::new(0.0, 1.0));
-    app.spawns.tab_crashes.insert(t.clone(), vec![now]);
-    app.spawns.skip_convert.insert(t.clone(), true);
-    app.cookies.jar_pulls.insert(t.clone(), now);
+    app.saved_scroll.insert(t, crate::sleep_state::SavedScroll::new(0.0, 1.0));
+    app.spawns.tab_crashes.insert(t, vec![now]);
+    app.spawns.skip_convert.insert(t, true);
+    app.cookies.jar_pulls.insert(t, now);
     app.teardown_running_session();
     assert!(app.nodes.is_empty());
     assert!(app.saved_scroll.is_empty(), "saved_scroll");
@@ -389,7 +386,7 @@ fn teardown_forgets_the_old_tabs_per_id_state() {
 fn a_session_of_only_jars_is_a_fresh_start_that_keeps_them() {
     let path = temp_dir("jar-only").join("session.mnf");
     let mut app = app_on(&path, 1);
-    let jar = add_jar(&mut app, "Work").to_string();
+    let jar = add_jar(&mut app, "Work");
     assert!(app.save_session());
     let mut back = app_on(&path, 2);
     assert!(!back.restore_session(), "only jars is a fresh start");
@@ -424,13 +421,9 @@ fn an_imported_default_jar_is_the_running_one() {
     };
     app.replace_running_session(&doc, crate::store::json::Trust::Foreign);
     assert_eq!(app.jar_defs().len(), 1, "no second Default");
-    let tab = app
-        .nodes
-        .iter()
-        .find(|(_, n)| n.runtime.as_unloaded().is_some())
-        .map(|(id, _)| id.clone())
-        .expect("tab imported");
-    assert_eq!(app.doc.mirror.jar(&tab), Some(running), "an edge to the file's Default names the running one");
+    let tab =
+        app.nodes.iter().find(|(_, n)| n.runtime.as_unloaded().is_some()).map(|(id, _)| *id).expect("tab imported");
+    assert_eq!(app.doc.mirror.jar(tab), Some(running), "an edge to the file's Default names the running one");
 }
 
 /// Replacing a session keeps the running Default; the file's other jars come with it, and tabs naming its Default
@@ -454,7 +447,7 @@ fn a_replaced_sessions_tabs_use_the_running_default() {
     assert_eq!(app.jar_defs().len(), 2, "the running Default and the file's Work");
     let work = *app.jar_defs().iter().find(|(_, d)| d.name == "Work").unwrap().0;
     let jar_of_url = |url: &str| {
-        let id = app.nodes.iter().find(|(_, n)| n.runtime.as_unloaded().is_some_and(|u| u.url == url)).unwrap().0;
+        let &id = app.nodes.iter().find(|(_, n)| n.runtime.as_unloaded().is_some_and(|u| u.url == url)).unwrap().0;
         app.doc.mirror.jar(id)
     };
     assert_eq!(jar_of_url("https://a/"), Some(running), "the file's Default is the running one");

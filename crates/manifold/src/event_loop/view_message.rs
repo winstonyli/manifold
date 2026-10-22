@@ -1,6 +1,7 @@
 //! What each `ViewToHost` message does to the host.
 
 use super::*;
+use crate::store::model::NodeId;
 
 impl App {
     /// Applies one message from tab `tab_id`'s engine (see
@@ -10,7 +11,7 @@ impl App {
     /// session for happened: the tab's settled url changed (title/history-
     /// only changes and a same-url reload don't count), or a download
     /// completed (the store keeps completed downloads).
-    pub(crate) fn handle_view_message(&mut self, tab_id: &str, msg: ViewToHost) -> bool {
+    pub(crate) fn handle_view_message(&mut self, tab_id: NodeId, msg: ViewToHost) -> bool {
         match msg {
             ViewToHost::FrameReady { .. } => {}
             ViewToHost::PageState(state) => {
@@ -19,13 +20,14 @@ impl App {
                 }
             }
             ViewToHost::Cookies(json) => {
-                self.cookies.jar_pulls.remove(tab_id);
-                self.cookies.jar_silent.remove(tab_id);
+                self.cookies.jar_pulls.remove(&tab_id);
+                self.cookies.jar_silent.remove(&tab_id);
                 self.apply_pulled_cookies(tab_id, &json);
                 self.release_cookie_hold(tab_id);
             }
             ViewToHost::StateSnapshot(state) => {
-                let target = self.nodes.get_mut(tab_id).and_then(|n| n.as_tab_mut()).and_then(|t| t.swap_target.take());
+                let target =
+                    self.nodes.get_mut(&tab_id).and_then(|n| n.as_tab_mut()).and_then(|t| t.swap_target.take());
                 if let Some(target) = target {
                     if let Some(Held::Snapshot(target, url)) =
                         self.hold_for_cookies(tab_id, Held::Snapshot(target, state.url))
@@ -35,26 +37,26 @@ impl App {
                 }
             }
             ViewToHost::NavigationStateChanged { url, title, can_go_back, can_go_forward, loading, .. } => {
-                let Some(current) = self.nodes.get(tab_id).and_then(|n| n.as_tab()).map(|t| t.url.clone()) else {
+                let Some(current) = self.nodes.get(&tab_id).and_then(|n| n.as_tab()).map(|t| t.url.clone()) else {
                     return false;
                 };
                 let url = self.reported_url(tab_id, url, loading, current);
-                let stale = self.nav_history.entry(tab_id.to_string()).or_default().observe(
+                let stale = self.nav_history.entry(tab_id).or_default().observe(
                     &url,
                     &title,
                     loading,
                     can_go_forward,
                     std::time::Instant::now(),
                 );
-                let Some(node) = self.nodes.get_mut(tab_id).and_then(|n| n.as_tab_mut()) else {
+                let Some(node) = self.nodes.get_mut(&tab_id).and_then(|n| n.as_tab_mut()) else {
                     return false;
                 };
                 let (url, title) = if stale { (node.url.clone(), node.title.clone()) } else { (url, title) };
                 let url_changed = node.url != url;
-                let skip = skip_convert_after(self.spawns.skip_convert.get(tab_id).copied(), url_changed, loading);
+                let skip = skip_convert_after(self.spawns.skip_convert.get(&tab_id).copied(), url_changed, loading);
                 match skip {
-                    Some(settled) => self.spawns.skip_convert.insert(tab_id.to_string(), settled),
-                    None => self.spawns.skip_convert.remove(tab_id),
+                    Some(settled) => self.spawns.skip_convert.insert(tab_id, settled),
+                    None => self.spawns.skip_convert.remove(&tab_id),
                 };
                 if url_changed {
                     self.history.push(history::HistoryEntry { title: title.clone(), url: url.clone() });
@@ -74,10 +76,10 @@ impl App {
                 if url_changed {
                     self.request_favicons([url.as_str()]);
                 }
-                let restore = self.saved_scroll.get_mut(tab_id).is_some_and(|s| s.on_loading(loading));
+                let restore = self.saved_scroll.get_mut(&tab_id).is_some_and(|s| s.on_loading(loading));
                 if restore {
-                    if let Some(s) = self.saved_scroll.remove(tab_id) {
-                        if let Some(tab) = self.nodes.get_mut(tab_id).and_then(|n| n.as_tab_mut()) {
+                    if let Some(s) = self.saved_scroll.remove(&tab_id) {
+                        if let Some(tab) = self.nodes.get_mut(&tab_id).and_then(|n| n.as_tab_mut()) {
                             tab.tab.send(&HostToView::RestoreScroll { x: s.x, y: s.y });
                         }
                     }
@@ -90,7 +92,7 @@ impl App {
                 // start would fail the same way again, and a page or install that
                 // crashes on every start would loop forever; each is left as a
                 // failed card instead.
-                let times = self.spawns.tab_crashes.entry(tab_id.to_string()).or_default();
+                let times = self.spawns.tab_crashes.entry(tab_id).or_default();
                 match crate::tabs::after_crash(&reason, times, std::time::Instant::now()) {
                     AfterCrash::Restart => {}
                     AfterCrash::GiveUp => {
@@ -152,12 +154,12 @@ impl App {
                 // (`close_find_bar` sends `FindStop` on every focus change),
                 // but a stray late result from just before a switch is cheap
                 // to guard against.
-                if self.focused.as_deref() == Some(tab_id) {
+                if self.focused == Some(tab_id) {
                     self.find.result = Some((count, active_index));
                 }
             }
             ViewToHost::AudioPlayingChanged { playing } => {
-                if let Some(tab) = self.nodes.get_mut(tab_id).and_then(|n| n.as_tab_mut()) {
+                if let Some(tab) = self.nodes.get_mut(&tab_id).and_then(|n| n.as_tab_mut()) {
                     tab.audio_playing = playing;
                 }
             }
@@ -166,18 +168,15 @@ impl App {
             // kind. Written on the UI thread, unlike every other kind's
             // fetch: it's already in hand, so there's nothing to background.
             ViewToHost::JsonBody { body } => {
-                let url = self.nodes.get(tab_id).and_then(|n| n.as_tab()).map(|tab| tab.url.clone());
-                if self.spawns.skip_convert.contains_key(tab_id) {
+                let url = self.nodes.get(&tab_id).and_then(|n| n.as_tab()).map(|tab| tab.url.clone());
+                if self.spawns.skip_convert.contains_key(&tab_id) {
                     return false;
                 }
                 if let (Some(url), Some(dir)) = (url, crate::profile::content_dir()) {
                     let node_id = self.alloc_node_id();
-                    if let Some(web) = crate::redirect_fetch::save(
-                        &dir,
-                        &node_id,
-                        crate::content::ContentKind::Json,
-                        body.into_bytes(),
-                    ) {
+                    if let Some(web) =
+                        crate::redirect_fetch::save(&dir, node_id, crate::content::ContentKind::Json, body.into_bytes())
+                    {
                         self.redirect_tab_to_content(tab_id, node_id, url, web);
                     }
                 }
@@ -189,14 +188,14 @@ impl App {
             // in `drain_tab_events`, not here.
             ViewToHost::RedirectableContent { content_type } => {
                 use crate::content::ContentKind as K;
-                if self.spawns.skip_convert.contains_key(tab_id) {
+                if self.spawns.skip_convert.contains_key(&tab_id) {
                     return false;
                 }
-                let url = self.nodes.get(tab_id).and_then(|n| n.as_tab()).map(|t| t.url.clone());
+                let url = self.nodes.get(&tab_id).and_then(|n| n.as_tab()).map(|t| t.url.clone());
                 let kind = crate::content::kind_of(&content_type);
                 if let (Some(url), K::Image | K::Pdf | K::Json | K::Note) = (url, kind) {
                     let node_id = self.alloc_node_id();
-                    let target = FetchTarget::Tab(tab_id.to_string());
+                    let target = FetchTarget::Tab(tab_id);
                     self.redirect_fetcher.request(FetchJob { target, node_id, url, kind });
                 }
             }
@@ -212,13 +211,13 @@ impl App {
                 // content starts below it (see
                 // `CHROME_HEIGHT_POINTS`'s other call sites). Only
                 // meaningful for the tab currently on screen.
-                if self.focused.as_deref() == Some(tab_id) {
+                if self.focused == Some(tab_id) {
                     self.menus.context_menu.open =
                         Some(ContextMenuState { x: x as f32 / ppp, y: y as f32 / ppp + CHROME_HEIGHT_POINTS, href });
                 }
             }
             ViewToHost::DownloadStarted { path, total_bytes, url } => {
-                self.insert_download_node(tab_id.to_string(), path, total_bytes, url);
+                self.insert_download_node(tab_id, path, total_bytes, url);
             }
             // Each finds its node with `in_flight_download_id`: the in-flight
             // one this tab started, never a finished one with the same path.
@@ -255,16 +254,17 @@ impl App {
 mod tests {
     use super::*;
 
-    // Real node ids: the new download node is laid out through `CardId::stored`, which parses them.
-    const N: &str = "0000000000000001-1";
-    const A: &str = "0000000000000001-2";
-    const B: &str = "0000000000000001-3";
+    use crate::store::model::{ActorId, NodeId};
+
+    const N: NodeId = NodeId { actor: ActorId(1), counter: 1 };
+    const A: NodeId = NodeId { actor: ActorId(1), counter: 2 };
+    const B: NodeId = NodeId { actor: ActorId(1), counter: 3 };
 
     #[test]
     fn a_failed_download_is_marked_and_no_longer_in_flight() {
         let mut app = App::default();
-        app.insert_note_at(N.into(), None);
-        app.insert_download_node(N.into(), "f.zip".into(), Some(10), None);
+        app.insert_note_at(N, None);
+        app.insert_download_node(N, "f.zip".into(), Some(10), None);
         let in_flight =
             |app: &App| app.nodes.values().any(|n| n.as_download().is_some_and(|d| !d.completed && !d.failed));
         assert!(in_flight(&app));
@@ -277,10 +277,10 @@ mod tests {
     #[test]
     fn a_redownload_updates_the_new_node_not_the_finished_one() {
         let mut app = App::default();
-        app.insert_note_at(N.into(), None);
-        app.insert_download_node(N.into(), "f.zip".into(), Some(10), None);
+        app.insert_note_at(N, None);
+        app.insert_download_node(N, "f.zip".into(), Some(10), None);
         app.handle_view_message(N, ViewToHost::DownloadCompleted { path: "f.zip".into() });
-        app.insert_download_node(N.into(), "f.zip".into(), Some(20), None);
+        app.insert_download_node(N, "f.zip".into(), Some(20), None);
         app.handle_view_message(N, ViewToHost::DownloadProgress { path: "f.zip".into(), bytes_received: 7 });
         let downloads: Vec<_> = app.node_order.iter().filter_map(|id| app.nodes[id].as_download()).collect();
         assert_eq!(downloads.len(), 2);
@@ -291,15 +291,15 @@ mod tests {
     #[test]
     fn same_named_downloads_from_two_tabs_stay_apart() {
         let mut app = App::default();
-        app.insert_note_at(A.into(), None);
-        app.insert_note_at(B.into(), None);
-        app.insert_download_node(A.into(), "f.zip".into(), None, None);
-        app.insert_download_node(B.into(), "f.zip".into(), None, None);
+        app.insert_note_at(A, None);
+        app.insert_note_at(B, None);
+        app.insert_download_node(A, "f.zip".into(), None, None);
+        app.insert_download_node(B, "f.zip".into(), None, None);
         app.handle_view_message(A, ViewToHost::DownloadFailed { path: "f.zip".into() });
-        let by_parent = |p: &str| {
+        let by_parent = |p: NodeId| {
             app.nodes
                 .iter()
-                .find(|(id, _)| app.opened_from(id) == Some(p))
+                .find(|(id, _)| app.opened_from(**id) == Some(p))
                 .and_then(|(_, n)| n.as_download())
                 .unwrap()
                 .failed

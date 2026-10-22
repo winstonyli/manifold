@@ -2,6 +2,7 @@
 //! (double-click selects a word, fires `dblclick`), and the window system
 //! only delivers single presses.
 
+use crate::store::model::NodeId;
 use std::time::{Duration, Instant};
 
 use manifold_view_protocol::MouseButton;
@@ -14,7 +15,7 @@ pub(crate) const MULTI_CLICK_SLOP: f64 = 4.0;
 #[derive(Debug, Default)]
 pub(crate) struct ClickCounter {
     /// The tab, button, place and time of the last press.
-    last: Option<(String, MouseButton, (f64, f64), Instant)>,
+    last: Option<(NodeId, MouseButton, (f64, f64), Instant)>,
     count: u8,
 }
 
@@ -22,16 +23,16 @@ impl ClickCounter {
     /// Records a press on tab `tab` and returns its click count: 1, or one
     /// more than the last press when it was on the same tab with the same
     /// button, close by and soon after.
-    pub(crate) fn press(&mut self, tab: &str, button: MouseButton, pos: (f64, f64), now: Instant) -> u8 {
+    pub(crate) fn press(&mut self, tab: NodeId, button: MouseButton, pos: (f64, f64), now: Instant) -> u8 {
         let continues = self.last.as_ref().is_some_and(|(id, b, p, t)| {
-            id == tab
+            *id == tab
                 && *b == button
                 && now.duration_since(*t) <= MULTI_CLICK_TIME
                 && (p.0 - pos.0).abs() <= MULTI_CLICK_SLOP
                 && (p.1 - pos.1).abs() <= MULTI_CLICK_SLOP
         });
         self.count = if continues { self.count.saturating_add(1) } else { 1 };
-        self.last = Some((tab.to_string(), button, pos, now));
+        self.last = Some((tab, button, pos, now));
         self.count
     }
 
@@ -50,14 +51,15 @@ impl ClickCounter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::card_id::testutil::node;
 
     #[test]
     fn quick_presses_in_one_place_count_up() {
         let mut clicks = ClickCounter::default();
         let t = Instant::now();
-        assert_eq!(clicks.press("t", MouseButton::Left, (10.0, 10.0), t), 1);
-        assert_eq!(clicks.press("t", MouseButton::Left, (12.0, 9.0), t + Duration::from_millis(200)), 2);
-        assert_eq!(clicks.press("t", MouseButton::Left, (12.0, 9.0), t + Duration::from_millis(400)), 3);
+        assert_eq!(clicks.press(node(1), MouseButton::Left, (10.0, 10.0), t), 1);
+        assert_eq!(clicks.press(node(1), MouseButton::Left, (12.0, 9.0), t + Duration::from_millis(200)), 2);
+        assert_eq!(clicks.press(node(1), MouseButton::Left, (12.0, 9.0), t + Duration::from_millis(400)), 3);
         assert_eq!(clicks.current(), 3);
     }
 
@@ -65,11 +67,11 @@ mod tests {
     fn slow_far_or_other_button_presses_start_over() {
         let mut clicks = ClickCounter::default();
         let t = Instant::now();
-        clicks.press("t", MouseButton::Left, (0.0, 0.0), t);
-        assert_eq!(clicks.press("t", MouseButton::Left, (0.0, 0.0), t + Duration::from_millis(600)), 1, "slow");
-        assert_eq!(clicks.press("t", MouseButton::Left, (20.0, 0.0), t + Duration::from_millis(700)), 1, "far");
+        clicks.press(node(1), MouseButton::Left, (0.0, 0.0), t);
+        assert_eq!(clicks.press(node(1), MouseButton::Left, (0.0, 0.0), t + Duration::from_millis(600)), 1, "slow");
+        assert_eq!(clicks.press(node(1), MouseButton::Left, (20.0, 0.0), t + Duration::from_millis(700)), 1, "far");
         assert_eq!(
-            clicks.press("t", MouseButton::Right, (20.0, 0.0), t + Duration::from_millis(800)),
+            clicks.press(node(1), MouseButton::Right, (20.0, 0.0), t + Duration::from_millis(800)),
             1,
             "other button"
         );
@@ -79,11 +81,19 @@ mod tests {
     fn a_press_on_another_tab_or_off_the_page_starts_over() {
         let mut clicks = ClickCounter::default();
         let t = Instant::now();
-        clicks.press("a", MouseButton::Left, (0.0, 0.0), t);
-        assert_eq!(clicks.press("b", MouseButton::Left, (0.0, 0.0), t + Duration::from_millis(100)), 1, "other tab");
-        assert_eq!(clicks.press("b", MouseButton::Left, (0.0, 0.0), t + Duration::from_millis(200)), 2);
+        clicks.press(node(1), MouseButton::Left, (0.0, 0.0), t);
+        assert_eq!(
+            clicks.press(node(2), MouseButton::Left, (0.0, 0.0), t + Duration::from_millis(100)),
+            1,
+            "other tab"
+        );
+        assert_eq!(clicks.press(node(2), MouseButton::Left, (0.0, 0.0), t + Duration::from_millis(200)), 2);
         clicks.reset();
         assert_eq!(clicks.current(), 1, "a release after a press on the chrome");
-        assert_eq!(clicks.press("b", MouseButton::Left, (0.0, 0.0), t + Duration::from_millis(300)), 1, "after reset");
+        assert_eq!(
+            clicks.press(node(2), MouseButton::Left, (0.0, 0.0), t + Duration::from_millis(300)),
+            1,
+            "after reset"
+        );
     }
 }

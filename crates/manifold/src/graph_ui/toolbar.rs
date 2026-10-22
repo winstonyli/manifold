@@ -30,7 +30,7 @@ impl App {
     /// selection's actions, a spawn error and the universal chip. What its
     /// buttons ask for comes back as a `GraphToolbar`, which
     /// `build_graph_ui` applies at the same points it always did.
-    pub(crate) fn render_graph_toolbar(&mut self, ui: &mut egui::Ui, groups_at_level: &[String]) -> GraphToolbar {
+    pub(crate) fn render_graph_toolbar(&mut self, ui: &mut egui::Ui, groups_at_level: &[NodeId]) -> GraphToolbar {
         // A JSON level is read-only: no creation, grouping or rename here.
         let on_json_level = self.json_level.is_some();
         let mut actions: Vec<GraphAction> = Vec::new();
@@ -64,7 +64,7 @@ impl App {
                 // from the early-return branch) -- removing them is a
                 // pure simplification, not a capability loss.
                 if !on_json_level && primary_button(ui, "+ New Tab").on_hover_text("New tab (Ctrl+T)").clicked() {
-                    actions.push(GraphAction::NewTab(self.focused.clone()));
+                    actions.push(GraphAction::NewTab(self.focused));
                 }
                 if !on_json_level && (!self.headless || !groups_at_level.is_empty()) {
                     self.toolbar_group_chip(ui, groups_at_level, &mut actions);
@@ -169,10 +169,9 @@ impl App {
                             }
                             if response.lost_focus() {
                                 if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                                    actions.push(GraphAction::Node(id.clone(), NodeAction::CancelRename));
+                                    actions.push(GraphAction::Node(*id, NodeAction::CancelRename));
                                 } else {
-                                    actions
-                                        .push(GraphAction::Node(id.clone(), NodeAction::CommitRename(draft.clone())));
+                                    actions.push(GraphAction::Node(*id, NodeAction::CommitRename(draft.clone())));
                                 }
                             }
                         }
@@ -183,7 +182,7 @@ impl App {
                         }))
                         .clicked()
                     {
-                        actions.push(GraphAction::Node(id.clone(), NodeAction::Rename));
+                        actions.push(GraphAction::Node(*id, NodeAction::Rename));
                     }
                 } else {
                     // An ancestor, not the current group itself
@@ -199,7 +198,7 @@ impl App {
                         }))
                         .clicked()
                     {
-                        actions.push(GraphAction::EnterGroup(id.clone()));
+                        actions.push(GraphAction::EnterGroup(*id));
                     }
                     // `CARET_RIGHT`, not a raw "›" glyph -- same
                     // tofu-box reasoning as the back-one-level
@@ -215,7 +214,7 @@ impl App {
     }
 
     /// Import / Ungroup All / Collapse chip for the groups at this level.
-    fn toolbar_group_chip(&mut self, ui: &mut egui::Ui, groups_at_level: &[String], actions: &mut Vec<GraphAction>) {
+    fn toolbar_group_chip(&mut self, ui: &mut egui::Ui, groups_at_level: &[NodeId], actions: &mut Vec<GraphAction>) {
         // These three buttons used to carry full text labels
         // ("Import Group...", "Ungroup All", "Collapse Groups"/
         // "Expand Groups") and, together with "+ New Group"/
@@ -344,9 +343,7 @@ impl App {
     /// group (`GraphAction::CloseSelected`).
     fn unselected_members_of_selection(&self) -> usize {
         let mut inside = std::collections::HashSet::new();
-        let selected: Vec<String> =
-            self.interaction.selected.iter().filter_map(|c| c.node()).map(|n| n.to_string()).collect();
-        let mut frontier: Vec<&str> = selected.iter().map(String::as_str).collect();
+        let mut frontier: Vec<NodeId> = self.interaction.selected.iter().filter_map(|c| c.node()).collect();
         while let Some(group) = frontier.pop() {
             for member in self.members_of(group) {
                 if inside.insert(member) {
@@ -354,7 +351,7 @@ impl App {
                 }
             }
         }
-        inside.iter().filter(|id| !self.interaction.selected.contains(&CardId::stored(id))).count()
+        inside.iter().filter(|id| !self.interaction.selected.contains(&CardId::from(**id))).count()
     }
 
     /// Group/Close Selected, shown once a rectangle select has picked something.
@@ -394,16 +391,16 @@ mod tests {
         crate::theme::apply_fonts(&ctx);
         let mut app = App::default();
         let (outer, inner) = (app.alloc_node_id(), app.alloc_node_id());
-        app.insert_group_at(outer.clone(), None);
-        app.insert_group_at(inner.clone(), None);
-        app.edit_group(&inner, Some(outer.clone()));
+        app.insert_group_at(outer, None);
+        app.insert_group_at(inner, None);
+        app.edit_group(inner, Some(outer));
         app.doc.mirror.set(
-            &outer,
+            outer,
             crate::store::model::field::NAME,
             crate::store::model::FieldValue::Str("x".repeat(30)),
         );
         app.doc.mirror.set(
-            &inner,
+            inner,
             crate::store::model::field::NAME,
             crate::store::model::FieldValue::Str("Re\u{200B}ading".into()),
         );
@@ -433,19 +430,19 @@ mod tests {
         let mut app = App::default();
         let top = Placement { group: None, pos: egui::Vec2::ZERO };
         use crate::card_id::testutil::node;
-        let [outer, inner, a, b, c] = [1, 2, 3, 4, 5].map(|n| node(n).to_string());
-        app.place_group(Some(outer.clone()), "Outer", top);
-        app.place_group(Some(inner.clone()), "Inner", Placement { group: Some(outer.clone()), pos: egui::Vec2::ZERO });
-        for (id, group) in [(&a, &outer), (&b, &inner), (&c, &inner)] {
+        let [outer, inner, a, b, c] = [1, 2, 3, 4, 5].map(node);
+        app.place_group(Some(outer), "Outer", top);
+        app.place_group(Some(inner), "Inner", Placement { group: Some(outer), pos: egui::Vec2::ZERO });
+        for (id, group) in [(a, outer), (b, inner), (c, inner)] {
             let note = Runtime::Note(NotePayload { text: "n".into(), editing: false });
-            app.insert_placeholder_node(id.clone(), egui::Vec2::ZERO, crate::store::model::Kind::Note, note);
-            app.edit_group(id, Some(group.clone()));
+            app.insert_placeholder_node(id, egui::Vec2::ZERO, crate::store::model::Kind::Note, note);
+            app.edit_group(id, Some(group));
         }
-        app.interaction.selected.insert(CardId::stored(&a));
+        app.interaction.selected.insert(CardId::from(a));
         assert_eq!(app.unselected_members_of_selection(), 0, "a note holds nothing");
-        app.interaction.selected.insert(CardId::stored(&outer));
+        app.interaction.selected.insert(CardId::from(outer));
         assert_eq!(app.unselected_members_of_selection(), 3, "inner, b and c; a is selected itself");
-        app.interaction.selected.insert(CardId::stored(&c));
+        app.interaction.selected.insert(CardId::from(c));
         assert_eq!(app.unselected_members_of_selection(), 2, "c is selected too");
     }
 

@@ -1,7 +1,6 @@
 //! The two walks over a parent edge (a node's group, a tab's parent), each owning its cycle guard: two replicas'
 //! moves can race into a cycle that exists until the next save shows the document's groups, and a walk that loops
-//! on one would freeze the frame it runs in. The edge is a closure, so the mirror's string ids and the document's
-//! `NodeId`s share them.
+//! on one would freeze the frame it runs in. The edge is a closure, so the mirror and the document share them.
 
 use std::collections::HashSet;
 use std::hash::Hash;
