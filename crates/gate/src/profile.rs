@@ -138,6 +138,10 @@ fn graph_script(state: &Path, seconds: f64, paced: bool, notes: usize) -> String
     let mut s = String::from("WAITIDLE\n");
     s.push_str(&"NEWNOTE\n".repeat(notes));
     let _ = writeln!(s, "WAITIDLE\nGRAPHZOOM 25\nWAITIDLE\nEXPORTSTATE {}", state.display());
+    if paced {
+        // Let the startup burn pass before the first phase (see `idle_script`); on DX12 it lasts about 16 s.
+        s.push_str("SLEEP 20\n");
+    }
     let frames = (seconds * 60.0 / 5.0) as usize;
     let mut frame = |line: String| {
         s.push_str(&line);
@@ -390,6 +394,6 @@ QUIT
         assert_eq!(s.matches("SCROLL").count(), 60);
         assert_eq!(s.matches("SLEEP").count(), 0);
         assert!(s.ends_with("QUIT\n"));
-        assert_eq!(graph_script(Path::new("s.json"), 5.0, true, GRAPH_NOTES).matches("SLEEP").count(), 60 * 5 + 6);
+        assert_eq!(graph_script(Path::new("s.json"), 5.0, true, GRAPH_NOTES).matches("SLEEP").count(), 60 * 5 + 7);
     }
 }

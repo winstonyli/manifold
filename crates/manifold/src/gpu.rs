@@ -1119,7 +1119,8 @@ impl GpuState {
         // offscreen screenshot pass below.
         let mut extra_command_buffers = Vec::new();
         let egui_draw = if let Some((ctx, full_output)) = egui_output {
-            let clipped_primitives = ctx.tessellate(full_output.shapes, full_output.pixels_per_point);
+            let clipped_primitives = tracing::info_span!("tessellate")
+                .in_scope(|| ctx.tessellate(full_output.shapes, full_output.pixels_per_point));
             if tracing::enabled!(target: "mesh", tracing::Level::TRACE) {
                 let (mut meshes, mut verts, mut indices) = (0, 0, 0);
                 for p in &clipped_primitives {
