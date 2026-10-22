@@ -577,6 +577,15 @@ pub(crate) fn paint_card_control(
         .interact(rect, egui::Id::new(("graph_card_control", control, id)), egui::Sense::CLICK)
         .on_hover_cursor(egui::CursorIcon::PointingHand);
     match control {
+        // A simple card is a few pixels across: a plain square says the same as a tessellated circle.
+        CardControl::Swatch if !detail.content() => {
+            let color = view.color.unwrap_or(style.border_idle);
+            ui.painter().rect_filled(
+                egui::Rect::from_center_size(rect.center(), egui::Vec2::splat(12.0 * inv_zoom)),
+                0.0,
+                color,
+            );
+        }
         CardControl::Swatch => {
             match view.color {
                 Some(color) => {
@@ -682,6 +691,7 @@ pub(crate) fn paint_card_control(
                 egui_phosphor::light::SIGN_OUT,
                 style,
                 inv_zoom,
+                detail,
             );
         }
         CardControl::Close => {
@@ -694,6 +704,7 @@ pub(crate) fn paint_card_control(
                 egui_phosphor::light::X,
                 style,
                 inv_zoom,
+                detail,
             );
         }
     }
@@ -715,15 +726,19 @@ pub(crate) fn paint_control_square(
     icon: &'static str,
     style: &CardStyle,
     inv_zoom: f32,
+    detail: crate::graph_ui::Detail,
 ) {
-    ui.painter().rect_filled(rect, 2.0 * inv_zoom, if hovered { hover_fill } else { style.close_fill });
+    let rounding = if detail.content() { 2.0 * inv_zoom } else { 0.0 };
+    ui.painter().rect_filled(rect, rounding, if hovered { hover_fill } else { style.close_fill });
     ui.painter().rect_stroke(
         rect,
-        2.0 * inv_zoom,
+        rounding,
         egui::Stroke::new(1.0 * inv_zoom, style.close_border),
         egui::StrokeKind::Inside,
     );
-    push_centered_text(deferred_overlays, rect.center(), icon, 14.0, style.close_icon);
+    if detail.content() {
+        push_centered_text(deferred_overlays, rect.center(), icon, 14.0, style.close_icon);
+    }
 }
 
 /// An image node's own card size: `width`x`height` scaled down (never up)

@@ -60,6 +60,8 @@ pub(crate) struct PendingWrites {
     /// nothing is owed. Without it an edit could sit unsaved until the next
     /// local action or remote write.
     pub(crate) save_retry_at: Option<std::time::Instant>,
+    /// When `poll_store` last looked at the store file's length and modified time (`STORE_STAT_GAP`).
+    pub(crate) store_statted_at: Option<std::time::Instant>,
     /// When `save_session` last committed to the store -- shown in the
     /// settings popup's Sessions section next to a "Save Now" button, so a
     /// save that's actually continuous (every mutation calls

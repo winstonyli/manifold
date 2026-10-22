@@ -39,6 +39,10 @@ pub(crate) const SAVE_RETRY: std::time::Duration = std::time::Duration::from_sec
 /// changes stay local (`App::shares_url_change`), when the engine doesn't
 /// say how they started: a script redirect can come just after the page
 /// reports loaded.
+/// The least time between two looks at the store file for another instance's edits (none under test, which polls by hand).
+const STORE_STAT_GAP: std::time::Duration =
+    if cfg!(test) { std::time::Duration::ZERO } else { std::time::Duration::from_millis(100) };
+
 const HOST_LOAD_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// A node's fields by number: every field of its kind (`Kind::fields`) but `group`, absent values included, so a
@@ -399,7 +403,13 @@ impl App {
     pub(crate) fn poll_store(&mut self) {
         let Some(journal) = self.doc.journal.as_mut() else { return };
         let synced = journal.sync_if_due();
-        let changed = journal.changed_on_disk();
+        // A stat is a system call; other instances' edits can wait a tick, not a frame.
+        let now = std::time::Instant::now();
+        let stat_due = self.doc.writes.store_statted_at.is_none_or(|at| now.duration_since(at) >= STORE_STAT_GAP);
+        let changed = stat_due && journal.changed_on_disk();
+        if stat_due {
+            self.doc.writes.store_statted_at = Some(now);
+        }
         if let Err(err) = synced {
             self.store_error(err);
         }
