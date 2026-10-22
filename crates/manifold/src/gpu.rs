@@ -162,6 +162,11 @@ struct ThumbTexture {
     egui_id: egui::TextureId,
 }
 
+/// The backends the instance loads unless `WGPU_BACKEND` says otherwise.
+#[cfg(windows)]
+const DEFAULT_BACKENDS: wgpu::Backends = wgpu::Backends::DX12;
+#[cfg(not(windows))]
+const DEFAULT_BACKENDS: wgpu::Backends = wgpu::Backends::PRIMARY;
 pub struct GpuState {
     surface: wgpu::Surface<'static>,
     device: wgpu::Device,
@@ -298,10 +303,11 @@ impl GpuState {
         // tier this app never needs (it only ever ends up on Vulkan or
         // DX12 in practice, per `adapter.get_info()`) is pure waste --
         // `PRIMARY` is wgpu's own recommended set for exactly this reason.
-        // DX12 is the default: frames were 15-30% shorter than on Vulkan in every repeat at 400 cards (`PARKED.md`,
-        // "Default backend", runs `2026-10-22-ab3-*`). `WGPU_BACKEND` (`vulkan`, `dx12`) overrides it.
+        // On Windows DX12 is the default: frames were 15-30% shorter than on Vulkan in every repeat at 400 cards
+        // (`PARKED.md`, "Default backend", runs `2026-10-22-ab3-*`). Elsewhere `PRIMARY` is the platform's own (Metal,
+        // Vulkan). `WGPU_BACKEND` (`vulkan`, `dx12`) overrides it.
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::from_env().unwrap_or(wgpu::Backends::DX12),
+            backends: wgpu::Backends::from_env().unwrap_or(DEFAULT_BACKENDS),
             ..wgpu::InstanceDescriptor::new_without_display_handle()
         });
         let surface = instance.create_surface(window.clone()).expect("create wgpu surface");
