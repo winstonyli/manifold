@@ -403,7 +403,7 @@ mod tests {
         app.insert_placeholder_node("p".into(), egui::vec2(0.0, 0.0), Kind::Download, download("p.bin"));
         app.insert_placeholder_node("c".into(), egui::vec2(100.0, 50.0), Kind::Download, download("c.bin"));
         app.edit_parent("c", Some("p".into()));
-        app.virtual_sources.push(std::rc::Rc::new(FakeSource::default()));
+        app.register_virtual_source(std::rc::Rc::new(FakeSource::default()));
         let edges = app.level_edges();
         assert!(edges.iter().any(|e| e.kind == EdgeKind::Opened && e.from_id == "p" && e.to_id == "c"));
         let virt: Vec<_> = edges.iter().filter(|e| e.from_id.starts_with("virtual:")).collect();

@@ -673,7 +673,7 @@ fn an_unreadable_view_is_never_overwritten() {
 #[test]
 fn a_json_level_lists_no_virtual_entries() {
     let (mut app, j) = app_with_json("no-virtual", r#"{"a": 1}"#);
-    app.virtual_sources.push(std::rc::Rc::new(crate::virtual_source::fake::FakeSource::default()));
+    app.register_virtual_source(std::rc::Rc::new(crate::virtual_source::fake::FakeSource::default()));
     assert!(app.level_items().iter().any(|i| matches!(i.origin, Origin::Virtual(_))), "listed on a stored level");
     app.switch_group_level(Some(j));
     assert!(app.json_level.is_some());

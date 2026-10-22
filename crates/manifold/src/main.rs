@@ -3,6 +3,7 @@ mod bench;
 mod bookmarks;
 mod caps;
 mod card;
+mod card_id;
 mod card_kind;
 mod cef_pin;
 mod cef_platform;

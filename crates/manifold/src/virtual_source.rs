@@ -56,6 +56,15 @@ impl App {
         text.is_some_and(|text| crate::card::graph_filter_dims(&self.graph_filter, &[&text]))
     }
 
+    /// Registers `source` after the sources already there. Each name hashes to its cards' `CardId` tag, so a clash (or
+    /// the JSON levels' name) panics in debug builds.
+    #[cfg(test)]
+    pub(crate) fn register_virtual_source(&mut self, source: Rc<dyn VirtualSource>) {
+        self.virtual_sources.push(source);
+        let names: Vec<&str> = self.virtual_sources.iter().map(|s| s.name()).collect();
+        crate::card_id::assert_distinct_tags(&names);
+    }
+
     /// The registered source named `name` (the `Origin::Virtual` of the entries it yields). Shared, so a handler can
     /// take `&mut App` while the caller still holds the source.
     pub(crate) fn virtual_source(&self, name: &str) -> Option<Rc<dyn VirtualSource>> {
@@ -200,7 +209,7 @@ pub(crate) mod fake {
             // The context that runs the frames, so text measuring has fonts.
             let mut app = App { egui_ctx: ctx.clone(), ..App::default() };
             let source = Rc::new(FakeSource::with_kind(ty));
-            app.virtual_sources.push(source.clone());
+            app.register_virtual_source(source.clone());
             let id = app.alloc_node_id();
             app.insert_placeholder_node(id, egui::vec2(0.0, 300.0), Kind::Tab, sleeping_tab("https://a.test/", "t"));
             let mut rig = Self { ctx, app, source };
@@ -306,9 +315,24 @@ mod tests {
     use crate::level::Origin;
 
     #[test]
+    fn the_default_sources_have_distinct_tags() {
+        let app = App::default();
+        let names: Vec<&str> = app.virtual_sources.iter().map(|s| s.name()).collect();
+        crate::card_id::assert_distinct_tags(&names);
+    }
+
+    #[test]
+    #[should_panic(expected = "share a tag")]
+    fn registering_a_source_twice_panics_in_debug() {
+        let mut app = App::default();
+        app.register_virtual_source(Rc::new(fake::FakeSource::default()));
+        app.register_virtual_source(Rc::new(fake::FakeSource::default()));
+    }
+
+    #[test]
     fn level_items_include_a_registered_virtual_source_after_the_stored_nodes() {
         let mut app = App::default();
-        app.virtual_sources.push(Rc::new(fake::FakeSource::default()));
+        app.register_virtual_source(Rc::new(fake::FakeSource::default()));
         let items = app.level_items();
         assert!(items.iter().any(|i| i.id == "virtual:fake:a" && matches!(i.origin, Origin::Virtual("fake"))));
         assert_eq!(items.last().unwrap().id, "virtual:fake:c", "virtual entries draw last, so on top");
@@ -616,7 +640,7 @@ mod reach_tests {
         }
         let mut rig = Rig::new();
         let fit = rig.app.fit_all_nodes_scene_rect();
-        rig.app.virtual_sources.push(Rc::new(Far));
+        rig.app.register_virtual_source(Rc::new(Far));
         assert!(rig.app.fit_all_nodes_scene_rect().max.x > 9000.0 && fit.max.x < 1000.0);
     }
 
@@ -644,7 +668,7 @@ mod reach_tests {
         rig.app.virtual_sources.clear();
         let source = Rc::new(fake::FakeSource::default());
         source.searchable.set(Some("alpha"));
-        rig.app.virtual_sources.push(source);
+        rig.app.register_virtual_source(source);
         assert!(rig.app.virtual_card_dimmed(&entry), "text that does not match dims");
         rig.app.graph_filter = "ALP".to_string();
         assert!(!rig.app.virtual_card_dimmed(&entry), "text that matches does not");
