@@ -299,13 +299,19 @@ impl App {
         stored.chain(self.virtual_sources.iter().flat_map(|source| source.entries(self)).map(|e| e.id)).collect()
     }
 
+    /// Whether the Graph view's own plain keys (undo, card digits) may act: no text field, popup, menu, JSON level or
+    /// Tab view has the keyboard.
+    fn graph_keys_free(&self, ui: &egui::Ui) -> bool {
+        self.json_level.is_none()
+            && !self.modal_open()
+            && !self.showing_tab_view()
+            && !ui.ctx().egui_wants_keyboard_input()
+    }
+
     /// Ctrl+Z undoes and Ctrl+Shift+Z or Ctrl+Y redoes the newest step (`step_history`). Ignored where the digit keys
     /// are: a text field, popup, menu, JSON level or Tab view has the keyboard.
     pub(super) fn handle_undo_keys(&mut self, ui: &egui::Ui) {
-        let free = self.json_level.is_none()
-            && !self.modal_open()
-            && !self.showing_tab_view()
-            && !ui.ctx().egui_wants_keyboard_input();
+        let free = self.graph_keys_free(ui);
         if let Some(redo) = free.then(|| ui.input_mut(undo_chord)).flatten() {
             self.step_history(None, redo);
         }
@@ -319,10 +325,7 @@ impl App {
         let key = egui::Id::new("card_digits");
         let now = ui.input(|i| i.time);
         let (mut buf, at): (String, f64) = ui.data(|d| d.get_temp(key)).unwrap_or_default();
-        let free = self.json_level.is_none()
-            && !self.modal_open()
-            && !self.showing_tab_view()
-            && !ui.ctx().egui_wants_keyboard_input();
+        let free = self.graph_keys_free(ui);
         let digit = free.then(|| ui.input(pressed_digit)).flatten();
         if let Some(d) = digit {
             if now - at > DIGIT_WINDOW {
