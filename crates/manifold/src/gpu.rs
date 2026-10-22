@@ -1065,6 +1065,7 @@ impl GpuState {
         if std::mem::take(&mut self.reconfigure) {
             self.reconfigure_surface();
         }
+        let acquire = tracing::info_span!("acquire").entered();
         let frame = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(t) => t,
             // Presentable now, but wgpu asks for a reconfigure; done before the next acquire.
@@ -1106,6 +1107,7 @@ impl GpuState {
             // yet) go unused this frame.
             _ => return RenderOutcome { surface_ok: false, screenshot_result: None },
         };
+        drop(acquire);
         let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
         let mut encoder =
             self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("tab render encoder") });
@@ -1171,6 +1173,7 @@ impl GpuState {
                 size_in_pixels: [width, height],
                 pixels_per_point: full_output.pixels_per_point,
             };
+            let upload = tracing::info_span!("upload").entered();
             extra_command_buffers = self.egui_renderer.update_buffers(
                 &self.device,
                 &self.queue,
@@ -1178,6 +1181,7 @@ impl GpuState {
                 &clipped_primitives,
                 &screen_descriptor,
             );
+            drop(upload);
             Some((clipped_primitives, screen_descriptor))
         } else {
             None
@@ -1246,8 +1250,12 @@ impl GpuState {
             (path.to_string(), readback_buffer, padded_bytes_per_row)
         });
 
+        let submit = tracing::info_span!("submit").entered();
         self.queue.submit(extra_command_buffers.into_iter().chain(std::iter::once(encoder.finish())));
+        drop(submit);
+        let present = tracing::info_span!("present").entered();
         self.queue.present(frame);
+        drop(present);
 
         let screenshot_result = pending_screenshot.map(|(path, readback_buffer, padded_bytes_per_row)| {
             let (tx, rx) = std::sync::mpsc::channel();
