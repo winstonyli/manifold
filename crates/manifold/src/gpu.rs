@@ -298,8 +298,9 @@ impl GpuState {
         // tier this app never needs (it only ever ends up on Vulkan or
         // DX12 in practice, per `adapter.get_info()`) is pure waste --
         // `PRIMARY` is wgpu's own recommended set for exactly this reason.
+        // `WGPU_BACKEND` (`vulkan`, `dx12`) overrides it, to compare backends on the real app.
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::PRIMARY,
+            backends: wgpu::Backends::from_env().unwrap_or(wgpu::Backends::PRIMARY),
             ..wgpu::InstanceDescriptor::new_without_display_handle()
         });
         let surface = instance.create_surface(window.clone()).expect("create wgpu surface");
