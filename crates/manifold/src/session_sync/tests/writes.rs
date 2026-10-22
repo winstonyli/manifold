@@ -297,7 +297,7 @@ fn a_read_only_store_saves_nothing() {
     let path = temp_dir("sync-readonly").join("session.mnf");
     drop(Journal::open(&path, ActorId(1)).unwrap());
     let mut bytes = std::fs::read(&path).unwrap();
-    bytes[4] = 3; // a newer format version, as in `journal`'s own test
+    bytes[4] = u8::try_from(crate::store::journal::FORMAT_VERSION + 1).unwrap(); // a newer format version
     let crc = crate::store::crc32c::crc32c(&bytes[..21]);
     bytes[21..25].copy_from_slice(&crc.to_le_bytes());
     std::fs::write(&path, &bytes).unwrap();

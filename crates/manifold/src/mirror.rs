@@ -596,6 +596,7 @@ mod tests {
             FieldType::Bool => FieldValue::Bool(true),
             FieldType::ViewCode => FieldValue::ViewCode(3),
             FieldType::Replica => FieldValue::Replica(3),
+            FieldType::Held => FieldValue::Held { dest: None, members: vec![NodeId { actor: ActorId(1), counter: 2 }] },
         };
         let fields: Vec<u32> =
             Kind::Tab.fields().iter().copied().filter(|&no| no != field::PARENT && no != field::CLOSED).collect();

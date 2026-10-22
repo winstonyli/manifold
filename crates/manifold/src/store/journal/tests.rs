@@ -631,7 +631,7 @@ fn a_newer_format_version_opens_read_only() {
     let path = dir.join("session.mnf");
     drop(Journal::open(&path, ActorId(1)).unwrap());
     let mut bytes = std::fs::read(&path).unwrap();
-    bytes[4] = 3; // format_version 3
+    bytes[4] = u8::try_from(FORMAT_VERSION + 1).unwrap(); // a newer format version
     let crc = crc32c(&bytes[..21]);
     bytes[21..25].copy_from_slice(&crc.to_le_bytes());
     std::fs::write(&path, &bytes).unwrap();

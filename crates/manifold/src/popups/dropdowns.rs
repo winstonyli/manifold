@@ -219,11 +219,10 @@ impl App {
                         // A group an ungroup or merge emptied: how many of the members it holds still exist.
                         let held =
                             (node.kind() == Kind::Group).then(|| node.get(store::model::field::HELD)).and_then(|v| {
-                                let store::model::FieldValue::Str(held) = v else { return None };
-                                let ids =
-                                    held.split(' ').skip(1).filter_map(|m| m.parse::<store::model::NodeId>().ok());
-                                let alive = ids.filter(|m| doc.nodes.get(m).is_some_and(|n| !n.deleted)).count();
-                                (!held.is_empty()).then_some(alive)
+                                let store::model::FieldValue::Held { members, .. } = v else { return None };
+                                let alive =
+                                    members.iter().filter(|m| doc.nodes.get(m).is_some_and(|n| !n.deleted)).count();
+                                (!members.is_empty()).then_some(alive)
                             });
                         Some(ClosedRow { id, json, title, members, held })
                     })

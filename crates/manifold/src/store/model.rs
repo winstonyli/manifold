@@ -234,6 +234,9 @@ pub enum FieldType {
     ViewCode,
     /// A replica id (`profile::replica_id`): a nonzero `u64` varint; absent or 0 is none.
     Replica,
+    /// `field::HELD`: the group a fold sent its members to and the members, `{1: dest id, 2: member id*}`; absent
+    /// is the top level and no members.
+    Held,
 }
 
 #[derive(Debug)]
@@ -304,7 +307,7 @@ pub static FIELDS: [FieldDef; 19] = [
     FieldDef { no: field::TO, name: "to", ty: FieldType::Id },
     FieldDef { no: field::IS_DEFAULT, name: "is_default", ty: FieldType::Bool },
     FieldDef { no: field::CLOSED, name: "closed", ty: FieldType::Replica },
-    FieldDef { no: field::HELD, name: "held", ty: FieldType::Str },
+    FieldDef { no: field::HELD, name: "held", ty: FieldType::Held },
 ];
 
 /// Retired: a tab's `jar_set` and a group's `default_jar`, replaced by the `jar` edge (jars-as-cards spec). Never
@@ -329,6 +332,11 @@ pub enum FieldValue {
     Bool(bool),
     ViewCode(u64),
     Replica(u64),
+    /// What a fold took out of a group: where its members went (`None`: the top level) and who they were.
+    Held {
+        dest: Option<NodeId>,
+        members: Vec<NodeId>,
+    },
 }
 
 impl FieldValue {
@@ -342,6 +350,7 @@ impl FieldValue {
             FieldType::Bool => FieldValue::Bool(false),
             FieldType::ViewCode => FieldValue::ViewCode(0),
             FieldType::Replica => FieldValue::Replica(0),
+            FieldType::Held => FieldValue::Held { dest: None, members: Vec::new() },
         }
     }
 }
@@ -376,13 +385,24 @@ pub fn encode_field_into(out: &mut Vec<u8>, no: u32, value: &FieldValue) {
         FieldValue::Str(s) if !s.is_empty() => w.str(no, s),
         FieldValue::Bool(true) => w.varint(no, 1),
         FieldValue::ViewCode(code) | FieldValue::Replica(code) if *code != 0 => w.varint(no, *code),
+        FieldValue::Held { dest, members } if dest.is_some() || !members.is_empty() => {
+            let mut m = Writer::new();
+            if let Some(dest) = dest {
+                m.message(1, &id_message(*dest));
+            }
+            for member in members {
+                m.message(2, &id_message(*member));
+            }
+            w.message(no, &m);
+        }
         // The empty or zero value of each type is "absent": nothing is written.
         FieldValue::Color(None)
         | FieldValue::Id(None)
         | FieldValue::Str(_)
         | FieldValue::Bool(false)
         | FieldValue::ViewCode(_)
-        | FieldValue::Replica(_) => {}
+        | FieldValue::Replica(_)
+        | FieldValue::Held { .. } => {}
     }
     *out = w.into_bytes();
 }
@@ -441,6 +461,18 @@ pub fn decode_field(def: &FieldDef, encoded: &[u8]) -> Result<FieldValue, TlvErr
             FieldType::Bool => FieldValue::Bool(v.bool()?),
             FieldType::ViewCode => FieldValue::ViewCode(v.u64()?),
             FieldType::Replica => FieldValue::Replica(v.u64()?),
+            FieldType::Held => {
+                let (mut dest, mut members) = (None, Vec::new());
+                for f in Reader::new(v.bytes()?) {
+                    let f = f?;
+                    match f.no {
+                        1 => dest = Some(decode_id(f.value.bytes()?)?),
+                        2 => members.push(decode_id(f.value.bytes()?)?),
+                        _ => {}
+                    }
+                }
+                FieldValue::Held { dest, members }
+            }
         };
     }
     Ok(value)
@@ -915,6 +947,22 @@ mod tests {
         assert_eq!(doc.shown_level(id(1)), Some(id(1)));
         assert_eq!(doc.shown_level(id(3)), Some(id(1)), "hidden by 2, closed itself: both skipped");
         assert_eq!(doc.shown_level(id(9)), None, "unknown: the top level");
+    }
+
+    #[test]
+    fn held_round_trips_and_empty_is_absent() {
+        let def = field_def(field::HELD).unwrap();
+        let id = |counter| NodeId { actor: ActorId(7), counter };
+        for held in [
+            FieldValue::Held { dest: Some(id(1)), members: vec![id(2), id(3)] },
+            FieldValue::Held { dest: None, members: vec![id(2)] },
+            FieldValue::Held { dest: Some(id(1)), members: vec![] },
+        ] {
+            assert_eq!(decode_field(def, &encode_field(field::HELD, &held)).unwrap(), held);
+        }
+        let none = FieldValue::absent(FieldType::Held);
+        assert!(encode_field(field::HELD, &none).is_empty(), "the top level with no members writes nothing");
+        assert_eq!(decode_field(def, &[]).unwrap(), none);
     }
 
     #[test]

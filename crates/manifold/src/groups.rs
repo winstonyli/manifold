@@ -1,7 +1,7 @@
 //! Group methods of `App`: naming, insertion, dissolving and destroying.
 
 use super::*;
-use crate::store::model::NodeId;
+use crate::store::model::{FieldType, NodeId};
 
 impl App {
     /// A fresh group's default display name: "Group N" for the smallest N
@@ -48,17 +48,13 @@ impl App {
     }
 
     /// Moves group `id`'s members into `dest` (`None`: the top level) and closes the emptied group, recording where
-    /// they went and who they were in `field::HELD` ("<dest> <member>...", `-` for the top level) so `regroup_held`
-    /// can put them back. Records no undo step itself (redo of a fold calls it too): go through `fold_groups`.
+    /// they went and who they were in `field::HELD` so `regroup_held` can put them back. Records no undo step itself (redo of a fold calls it too): go through `fold_groups`.
     pub(crate) fn fold_group(&mut self, id: NodeId, dest: Option<NodeId>) {
         let members: Vec<NodeId> = self.members_of(id).collect();
         for &member in &members {
             self.edit_group(member, dest);
         }
-        let held = std::iter::once(dest.map_or("-".to_string(), |d| d.to_string()))
-            .chain(members.iter().map(NodeId::to_string))
-            .collect::<Vec<_>>();
-        self.edit_field(id, field::HELD, FieldValue::Str(held.join(" ")));
+        self.edit_field(id, field::HELD, FieldValue::Held { dest, members: members.clone() });
         self.close_node(id);
         for &member in &members {
             self.recheck_edge_scope(member);
@@ -69,21 +65,13 @@ impl App {
     /// moved elsewhere meanwhile stays), then forgets them. Nothing if the group is not shown (its own group is
     /// closed).
     pub(crate) fn regroup_held(&mut self, id: NodeId) {
-        let FieldValue::Str(held) = self.doc.mirror.get(id, field::HELD) else { return };
-        let mut words = held.split(' ');
-        let Some(dest) = words.next() else { return };
-        let dest = if dest == "-" {
-            None
-        } else {
-            let Ok(dest) = dest.parse::<NodeId>() else { return };
-            Some(dest)
-        };
-        for member in words.filter_map(|w| w.parse::<NodeId>().ok()) {
+        let FieldValue::Held { dest, members } = self.doc.mirror.get(id, field::HELD) else { return };
+        for member in members {
             if self.card_in_group(member, dest) {
                 self.edit_group(member, Some(id));
             }
         }
-        self.edit_field(id, field::HELD, FieldValue::Str(String::new()));
+        self.edit_field(id, field::HELD, FieldValue::absent(FieldType::Held));
         self.save_session();
     }
 

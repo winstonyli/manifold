@@ -19,9 +19,9 @@ use super::tlv::{Reader, TlvError, Writer};
 use super::varint;
 
 pub const MAGIC: [u8; 4] = *b"MNF\0";
-/// 2: a node's kind is its `type` register (field 19); 1 held a numeric
-/// kind, and a version-1 file is refused (no migration).
-pub const FORMAT_VERSION: u64 = 2;
+/// 3: `held` (field 24) is a message of ids, not text; 2 held it as text. 2: a node's kind is its `type` register
+/// (field 19); 1 held a numeric kind. A file older than this is refused (no migration).
+pub const FORMAT_VERSION: u64 = 3;
 
 /// Frame types. 0 is invalid, so a zeroed region never parses.
 pub mod frame {
@@ -247,9 +247,8 @@ pub fn read_header(buf: &[u8]) -> Result<Header, JournalError> {
 }
 
 /// `read_header`, refusing as `NotAJournal` a file older than
-/// `FORMAT_VERSION`: version 1 held a numeric kind and no `type`, so read
-/// as this format every node would be typeless and compact away (no
-/// migration). The one rule for what this build reads: `load`, the
+/// `FORMAT_VERSION`: read as this format, version 1 would leave every node typeless (compacted away) and version 2
+/// would mis-decode `held` (no migration). The one rule for what this build reads: `load`, the
 /// set-aside check and `--check` all use it.
 pub fn read_readable_header(buf: &[u8]) -> Result<Header, JournalError> {
     let header = read_header(buf)?;

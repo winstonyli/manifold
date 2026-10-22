@@ -56,7 +56,8 @@ fn value_to_json(value: &FieldValue) -> Option<Value> {
         | FieldValue::Str(_)
         | FieldValue::Bool(false)
         | FieldValue::ViewCode(_)
-        | FieldValue::Replica(_) => return None,
+        | FieldValue::Replica(_)
+        | FieldValue::Held { .. } => return None,
     })
 }
 

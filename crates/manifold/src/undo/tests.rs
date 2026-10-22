@@ -2,7 +2,7 @@ use super::*;
 use crate::card_id::testutil::node;
 use crate::card_id::CardId;
 use crate::session_sync::tests::{add_group, add_note, app_on, closed_ids, group_with_note, stored};
-use crate::store::model::{field, FieldValue};
+use crate::store::model::{field, FieldType, FieldValue};
 
 fn fold(tag: NodeId) -> UndoKind {
     UndoKind::Fold(vec![(tag, None)])
@@ -67,7 +67,7 @@ fn dissolve_group_is_undone_by_reopening_the_same_group() {
         assert_eq!(app.doc.mirror.name(g), "Research");
         assert_eq!(app.doc.mirror.get(g, field::COLOR), color);
         assert!(closed_ids(&app).is_empty());
-        assert_eq!(stored(&app, g, field::HELD), FieldValue::Str(String::new()), "forgotten once restored");
+        assert_eq!(stored(&app, g, field::HELD), FieldValue::absent(FieldType::Held), "forgotten once restored");
     }
 }
 

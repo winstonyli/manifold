@@ -193,7 +193,9 @@ impl App {
         // Past the cap the oldest go, but an emptied group (`App::ungroup`) before any real close: one Ungroup All of
         // many groups must not push out the tabs a user closed.
         let emptied = |id: &NodeId| {
-            doc.nodes.get(id).is_some_and(|n| matches!(n.get(field::HELD), FieldValue::Str(held) if !held.is_empty()))
+            doc.nodes
+                .get(id)
+                .is_some_and(|n| matches!(n.get(field::HELD), FieldValue::Held { members, .. } if !members.is_empty()))
         };
         let excess = roots.len() - MAX_CLOSED;
         let oldest_first = || roots.iter().rev().map(|&(id, _)| id);
