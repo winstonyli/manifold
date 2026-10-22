@@ -182,20 +182,13 @@ impl App {
     /// Flips `graph_detail` with hysteresis from how many of `items` are in view.
     pub(super) fn update_graph_lod(&mut self, items: &[CardEntry]) {
         // Level-of-detail: count how many nodes at this level actually
-        // intersect the viewport, then flip `graph_detail` with a
-        // hysteresis gap -- see `LOD_SIMPLIFY_COUNT`'s own doc comment for
-        // why. Uses this frame's not-yet-updated `camera.rect`, the
+        // intersect the viewport, then step `graph_detail` with `Detail::next`'s
+        // hysteresis gap (see `LOD_SIMPLIFY_COUNT`'s doc comment). Uses this frame's not-yet-updated `camera.rect`, the
         // same one-frame-stale viewport the render loops' own cull check
         // already accepts.
         let lod_visible_count: usize =
             items.iter().filter(|item| item.caps().framed && item.rect.intersects(self.camera.rect)).count();
-        if self.graph_detail == Detail::Simple {
-            if lod_visible_count < LOD_RESTORE_COUNT {
-                self.graph_detail = Detail::Full;
-            }
-        } else if lod_visible_count > LOD_SIMPLIFY_COUNT {
-            self.graph_detail = Detail::Simple;
-        }
+        self.graph_detail = self.graph_detail.next(lod_visible_count);
     }
 
     /// Applies a pending frame-restore and the toolbar's Fit request to the camera.

@@ -53,7 +53,7 @@ pub(crate) const LOD_SIMPLIFY_COUNT: usize = 60;
 /// count hovering right at a single boundary doesn't flip every frame.
 pub(crate) const LOD_RESTORE_COUNT: usize = 45;
 
-/// How much a card draws, one value per frame set by `update_graph_lod` from the count of visible cards. Painters ask
+/// How much a card draws, one value per frame set by `Detail::next` from the count of visible cards. Painters ask
 /// what to draw (`content`, `link_handles`, `glow_layers`) and never compare the level, so a new level or a new
 /// thing that depends on it is one edit here.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -64,6 +64,16 @@ pub(crate) enum Detail {
 }
 
 impl Detail {
+    /// The level for a frame that sees `visible` framed cards in the viewport, given the last frame's level: `Simple`
+    /// above `LOD_SIMPLIFY_COUNT`, `Full` again only below the lower `LOD_RESTORE_COUNT`, and unchanged in between.
+    pub(crate) fn next(self, visible: usize) -> Self {
+        match self {
+            Self::Simple if visible < LOD_RESTORE_COUNT => Self::Full,
+            Self::Full if visible > LOD_SIMPLIFY_COUNT => Self::Simple,
+            level => level,
+        }
+    }
+
     /// Text, thumbnails, rendered markdown and the other per-kind content of a card body.
     pub(crate) fn content(self) -> bool {
         self == Self::Full
