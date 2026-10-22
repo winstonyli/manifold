@@ -178,7 +178,8 @@ fn graph_script(state: &Path, seconds: f64, paced: bool, notes: usize) -> String
 }
 
 /// The command file of `graph-idle`: `notes` notes at 25% zoom, then nothing for `seconds`. The run's `idle` phase
-/// shows how often the loop redraws and how much CPU it spends when nothing happens.
+/// shows how often the loop redraws and how much CPU it spends when nothing happens. The 15 s before the mark let the
+/// startup burn pass (about a core for the first 10-12 s, measured 2026-10-21; `PARKED.md`).
 fn idle_script(state: &Path, seconds: f64, notes: usize) -> String {
     let mut s = String::from(
         "WAITIDLE
@@ -199,7 +200,7 @@ EXPORTSTATE {}",
     );
     let _ = writeln!(
         s,
-        "SLEEP 2
+        "SLEEP 15
 MARK idle
 SLEEP {seconds}
 MARK end
