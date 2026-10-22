@@ -9,6 +9,19 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 
 /// `path`'s file name, for a toast -- the full path is logged instead.
+/// Reads a JSON object as a map keyed by `K` (`deserialize_with`), dropping each entry whose key does not read as a
+/// `K` instead of failing the file.
+pub fn lenient_map<'de, D, K, V, C>(d: D) -> Result<C, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    K: std::str::FromStr,
+    V: serde::Deserialize<'de>,
+    C: FromIterator<(K, V)>,
+{
+    let raw = <std::collections::HashMap<String, V> as serde::Deserialize>::deserialize(d)?;
+    Ok(raw.into_iter().filter_map(|(key, value)| Some((key.parse().ok()?, value))).collect())
+}
+
 pub fn file_name(path: &Path) -> String {
     path.file_name().unwrap_or(path.as_os_str()).to_string_lossy().into_owned()
 }

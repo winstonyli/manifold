@@ -352,7 +352,7 @@ impl App {
             for (id, s) in &nodes {
                 self.materialize(*id, &s.ty, &s.fields, s.group, None);
             }
-            self.keep_hidden_local(local.nodes);
+            self.keep_hidden(local.nodes);
             self.evict_closed();
             self.arm_local(unread, true);
             return false;
@@ -362,7 +362,7 @@ impl App {
         for (id, s) in &nodes {
             // The store's own `pos` still reaches the mirror inside
             // `materialize`; only the live placement is overridden.
-            let entry = local.nodes.get(&id.to_string());
+            let entry = local.nodes.get(id);
             self.materialize(*id, &s.ty, &s.fields, s.group, entry);
         }
         self.end_content_pass(pass);

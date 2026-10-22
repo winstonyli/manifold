@@ -175,8 +175,8 @@ fn keep_trail_adds_document_liveness_to_the_shown_test() {
     assert!(keep_trail(&app.nodes, journal, shown));
     assert!(keep_trail(&app.nodes, journal, closed), "closed: hidden, but live in the document");
     assert!(!keep_trail(&app.nodes, journal, gone));
-    assert!(!keep_trail(&app.nodes, journal, id(99)));
-    assert!(keep_trail(&app.nodes, None, id(99)), "no document: keep everything");
+    assert!(!keep_trail(&app.nodes, journal, node(99)));
+    assert!(keep_trail(&app.nodes, None, node(99)), "no document: keep everything");
 }
 
 #[test]

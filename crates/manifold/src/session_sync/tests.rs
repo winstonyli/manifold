@@ -1,5 +1,6 @@
 use super::writes::keep_trail;
 use super::*;
+use crate::card_id::testutil::node;
 use crate::local_state::{LiveUrl, LocalState};
 use crate::redirect_fetch::{FetchResult, FetchTarget};
 use crate::store::journal::Journal;
@@ -21,8 +22,6 @@ mod trail;
 mod view_modes;
 mod writes;
 
-const A: ActorId = ActorId(0xA);
-
 /// Waits up to ~1 s for `app.redirect_fetcher` to report something.
 /// Under test (no content dir) every fetch fails at once.
 fn drain_fetches(app: &mut App) -> Vec<FetchResult> {
@@ -34,10 +33,6 @@ fn drain_fetches(app: &mut App) -> Vec<FetchResult> {
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
     Vec::new()
-}
-
-fn id(counter: u64) -> NodeId {
-    NodeId { actor: A, counter }
 }
 
 fn shared(kind: Kind, group: Option<NodeId>, set: &[(u32, FieldValue)]) -> Snapshot {
@@ -103,13 +98,13 @@ fn app_with(nodes: &BTreeMap<NodeId, Snapshot>) -> App {
     app
 }
 
-/// An App holding one Json node, id `id(1)`, loaded from a temp file.
+/// An App holding one Json node, id `node(1)`, loaded from a temp file.
 fn app_with_json_file(name: &str) -> (App, NodeId) {
     let dir = crate::store::testutil::temp_dir(name);
     let path = dir.join("v.json");
     std::fs::write(&path, r#"{"users": [{"name": "a"}]}"#).unwrap();
     let mut app = App::default();
-    let node = id(1);
+    let node = node(1);
     app.insert_json_node_with_id(node, path.to_string_lossy().into_owned(), egui::Vec2::ZERO, None).unwrap();
     (app, node)
 }

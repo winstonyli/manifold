@@ -91,6 +91,11 @@ pub(crate) struct TrailPage {
     pub(crate) on_path: bool,
 }
 
+/// What `tab-history.json` holds: a tree per tab. A key that is not a node id names no tab of this build; it is
+/// dropped, and so from the next save.
+#[derive(Default, serde::Deserialize)]
+struct SavedTrees(#[serde(deserialize_with = "crate::json_file::lenient_map")] HashMap<NodeId, Saved>);
+
 /// What `tab-history.json` holds for one tab.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 struct Saved {
@@ -490,7 +495,7 @@ impl NavHistory {
             "forward_fork": self.forward_fork(),
             "lin_at": self.lin_at,
             "lin_len": self.lin.len(),
-            "left_to": self.left_to.map(|id| id.to_string()),
+            "left_to": self.left_to,
         })
     }
 
@@ -707,18 +712,16 @@ pub(crate) fn load() -> HashMap<NodeId, NavHistory> {
 }
 
 pub(crate) fn load_from(path: &Path) -> HashMap<NodeId, NavHistory> {
-    let saved: HashMap<String, Saved> =
+    let SavedTrees(saved) =
         crate::json_file::load_or_move_aside(path, "tab history").ok().flatten().unwrap_or_default();
     saved
         .into_iter()
         .filter(|(_, s)| s.valid())
-        .filter_map(|(id, s)| {
-            // A key that is not a node id names no tab of this build; it is dropped, and so from the next save.
-            let id = id.parse::<NodeId>().ok()?;
+        .map(|(id, s)| {
             let mut h = NavHistory { entries: s.entries, at: s.at, ..NavHistory::default() };
             h.renumber();
             h.evict_to(MAX_ENTRIES);
-            Some((id, h))
+            (id, h)
         })
         .collect()
 }
@@ -737,10 +740,10 @@ pub(crate) fn save_to(lists: &mut HashMap<NodeId, NavHistory>, keep: impl Fn(Nod
         return;
     }
     let Some(path) = path else { return };
-    let saved: HashMap<String, Saved> = lists
+    let saved: HashMap<NodeId, Saved> = lists
         .iter()
         .filter(|(_, h)| h.entries.len() > 1)
-        .map(|(id, h)| (id.to_string(), Saved { entries: h.entries.clone(), at: h.at }))
+        .map(|(&id, h)| (id, Saved { entries: h.entries.clone(), at: h.at }))
         .collect();
     crate::json_file::save(&saved, path, "tab history");
     lists.values_mut().for_each(|h| h.dirty = false);

@@ -61,7 +61,7 @@ fn item_view_restoring_onto_a_still_spawning_tab_sets_the_respawn_focus_guard() 
     // lands (`materialize`'s `Kind::Tab` arm never inserts directly).
     app.nodes.remove(&tab);
     app.spawns.spawning.insert(tab, shared(Kind::Tab, None, &[]));
-    let state = LocalState { focused: Some(tab.to_string()), view_item: true, ..LocalState::default() };
+    let state = LocalState { focused: Some(tab), view_item: true, ..LocalState::default() };
     app.apply_local(state);
     assert_eq!(app.view_mode, ViewMode::Item);
     assert_eq!(app.spawns.pending_respawn_focus, Some(tab));
@@ -79,7 +79,7 @@ fn personal_state_keeps_an_unloaded_tabs_title_and_mute() {
         }
     };
     set(&mut app, "Saved title", true);
-    let entry = app.local_state().nodes[&tab.to_string()].clone();
+    let entry = app.local_state().nodes[&tab].clone();
     assert_eq!((entry.title.as_str(), entry.muted), ("Saved title", true));
     set(&mut app, "", false);
     App::apply_local_node(app.nodes.get_mut(&tab).unwrap(), &entry);
@@ -100,7 +100,7 @@ fn mute_all_except_also_mutes_sleeping_tabs() {
     app.mute_all_except(keep);
     assert!(!app.nodes[&keep].as_unloaded().unwrap().muted, "kept tab untouched");
     assert!(app.nodes[&other].as_unloaded().unwrap().muted);
-    let entry = app.local_state().nodes[&other.to_string()].clone();
+    let entry = app.local_state().nodes[&other].clone();
     assert!(entry.muted, "personal state saves the sleeping card's mute");
 }
 
@@ -120,7 +120,7 @@ fn personal_state_startup_could_not_read_is_retried_not_overwritten() {
     let side = crate::store::local::path_for(&path);
     {
         let journal = Journal::open(&path, ActorId(2)).unwrap();
-        let state = LocalState { nodes: BTreeMap::from([(note.to_string(), entry.clone())]), ..LocalState::default() };
+        let state = LocalState { nodes: BTreeMap::from([(note, entry.clone())]), ..LocalState::default() };
         journal.write_local(&state.to_bytes()).unwrap();
     }
     let saved = std::fs::read(&side).unwrap();
@@ -150,7 +150,7 @@ fn personal_state_startup_could_not_read_is_retried_not_overwritten() {
     app.close_store();
     let bytes = Journal::open(&path, ActorId(4)).unwrap().read_local().unwrap().unwrap();
     let written = LocalState::from_bytes(&bytes).unwrap();
-    assert_eq!(written.nodes[&note.to_string()].pos, [7.0, 8.0]);
+    assert_eq!(written.nodes[&note].pos, [7.0, 8.0]);
 }
 
 /// A damaged `.local` is still a fresh start that the next write replaces
@@ -209,12 +209,12 @@ fn the_forced_retry_at_exit_applies_without_waking() {
     assert!(app.restore_session());
     assert_eq!(app.focused, Some(a));
     let woken = app.test_spawns.len();
-    mark_unread_with(&mut app, &path, &LocalState { focused: Some(b.to_string()), ..LocalState::default() });
+    mark_unread_with(&mut app, &path, &LocalState { focused: Some(b), ..LocalState::default() });
     app.close_store();
     assert_eq!(app.test_spawns.len(), woken, "nothing woken at exit");
     assert_eq!(app.focused, Some(b), "applied");
     let bytes = Journal::open(&path, ActorId(3)).unwrap().read_local().unwrap().unwrap();
-    assert_eq!(LocalState::from_bytes(&bytes).unwrap().focused, Some(b.to_string()), "and written");
+    assert_eq!(LocalState::from_bytes(&bytes).unwrap().focused, Some(b), "and written");
 }
 
 /// A late read that finds no personal state (or a damaged one) applies
@@ -255,7 +255,7 @@ fn personal_state_survives_onto_a_still_waking_restored_card_and_a_fresh_failed_
     let entry = LocalNode { pos: [7.0, 8.0], title: "T".into(), zoom: Some(2.0), ..LocalNode::default() };
     {
         let journal = Journal::open(&path, ActorId(2)).unwrap();
-        let state = LocalState { nodes: BTreeMap::from([(tab.to_string(), entry.clone())]), ..LocalState::default() };
+        let state = LocalState { nodes: BTreeMap::from([(tab, entry.clone())]), ..LocalState::default() };
         journal.write_local(&state.to_bytes()).unwrap();
     }
     let mut app = app_on(&path, 3);
@@ -266,8 +266,8 @@ fn personal_state_survives_onto_a_still_waking_restored_card_and_a_fresh_failed_
     assert_eq!(app.test_spawns.len(), 1, "the restored tab's wake is still in flight");
     let card = add(&mut app, Kind::Tab, failed_tab("https://f/", 1.5));
     let state = app.local_state();
-    assert_eq!(state.nodes.get(&tab.to_string()), Some(&entry));
-    assert_eq!(state.nodes[&card.to_string()].zoom, Some(1.5));
+    assert_eq!(state.nodes.get(&tab), Some(&entry));
+    assert_eq!(state.nodes[&card].zoom, Some(1.5));
 }
 
 /// A tab its page moved on without sharing (a redirect, a script's
@@ -299,7 +299,7 @@ fn a_restart_reopens_a_tabs_live_url_while_the_shared_url_is_unchanged() {
         let journal = Journal::open(&path, ActorId(3)).unwrap();
         let live_url = Some(LiveUrl { url: "https://s/moved".into(), from: "https://elsewhere/".into() });
         let entry = LocalNode { live_url, ..LocalNode::default() };
-        let state = LocalState { nodes: BTreeMap::from([(tab.to_string(), entry)]), ..LocalState::default() };
+        let state = LocalState { nodes: BTreeMap::from([(tab, entry)]), ..LocalState::default() };
         journal.write_local(&state.to_bytes()).unwrap();
     }
     let mut app = app_on(&path, 4);

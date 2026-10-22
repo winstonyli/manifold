@@ -833,7 +833,7 @@ fn restart_view_respawns_the_tab_under_its_id() {
     assert!(app.restart_view(live));
     assert!(app.test_spawns.iter().any(|(s, _)| s.id == live), "a respawn under the same id");
     assert!(app.toasts.save_toast_queue.iter().any(|t| t == "Restarted: https://a/"));
-    assert!(!app.restart_view(id(99)));
+    assert!(!app.restart_view(node(99)));
 }
 
 /// "End View" leaves a failed card for the tab, and says so.

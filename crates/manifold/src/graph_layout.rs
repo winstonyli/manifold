@@ -191,11 +191,11 @@ pub fn step_sized(
 /// spawns near where the spring will settle it anyway, instead of starting
 /// deep inside its parent's/siblings' repulsion field and relying on the
 /// simulation to slowly push it out from near-zero distance.
-pub fn spawn_jitter(seed: NodeId) -> egui::Vec2 {
+pub fn spawn_jitter(seed: impl std::fmt::Display) -> egui::Vec2 {
     jitter_from_text(&seed.to_string())
 }
 
-pub fn jitter_from_text(seed_str: &str) -> egui::Vec2 {
+fn jitter_from_text(seed_str: &str) -> egui::Vec2 {
     let mut hash: u32 = 2166136261;
     for b in seed_str.bytes() {
         hash ^= b as u32;

@@ -3,6 +3,7 @@
 //! (plan ruling 4).
 
 use std::collections::{BTreeMap, HashMap};
+use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 
@@ -12,28 +13,32 @@ use crate::store::journal::JournalError;
 use crate::store::model::{Node, NodeId};
 use crate::{App, ViewMode};
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub(crate) struct LocalState {
-    #[serde(default)]
-    pub focused: Option<String>,
+/// Personal state keyed by node id `K`: `NodeId` for the live profile, the file's own id text (`String`) for an
+/// imported session file until `remap` gives its nodes fresh ids. An id that does not read as a `K` is dropped on
+/// its own, never failing the file.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(bound(serialize = "K: Serialize + Ord", deserialize = "K: FromStr + Ord"))]
+pub(crate) struct LocalState<K = NodeId> {
+    #[serde(default, deserialize_with = "lenient_id")]
+    pub focused: Option<K>,
     /// Item view (a tab or image full-size) rather than Graph view.
     #[serde(default)]
     pub view_item: bool,
-    #[serde(default)]
-    pub current_group: Option<String>,
-    #[serde(default)]
-    pub viewed_image: Option<String>,
-    #[serde(default)]
-    pub split_tab: Option<String>,
+    #[serde(default, deserialize_with = "lenient_id")]
+    pub current_group: Option<K>,
+    #[serde(default, deserialize_with = "lenient_id")]
+    pub viewed_image: Option<K>,
+    #[serde(default, deserialize_with = "lenient_id")]
+    pub split_tab: Option<K>,
     #[serde(default)]
     pub groups_collapsed: bool,
     /// The camera rect `[min x, min y, max x, max y]` and the level it was
     /// saved at (plan ruling 5).
     #[serde(default, deserialize_with = "lenient_camera")]
-    pub camera: Option<([f32; 4], Option<String>)>,
+    pub camera: Option<([f32; 4], Option<K>)>,
     /// Per node, by live id.
-    #[serde(default)]
-    pub nodes: BTreeMap<String, LocalNode>,
+    #[serde(default, deserialize_with = "crate::json_file::lenient_map")]
+    pub nodes: BTreeMap<K, LocalNode>,
     /// Copy path on a JSON level gives the accessor form
     /// (`users[0].name`) rather than a JSON Pointer.
     #[serde(default)]
@@ -84,11 +89,24 @@ fn lenient_pos<'de, D: serde::Deserializer<'de>>(d: D) -> Result<[f32; 2], D::Er
     Ok([x.unwrap_or(0.0), y.unwrap_or(0.0)])
 }
 
-/// A camera rect with a `null` in it reads as no saved camera.
+/// An id that does not read as a `K` is none.
+fn lenient_id<'de, D: serde::Deserializer<'de>, K: FromStr>(d: D) -> Result<Option<K>, D::Error> {
+    Ok(Option::<String>::deserialize(d)?.and_then(|text| text.parse().ok()))
+}
+
+/// A camera rect with a `null` in it reads as no saved camera; so does a level id that does not read as a `K`.
 #[allow(clippy::type_complexity, reason = "mirrors the field's own type")]
-fn lenient_camera<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<([f32; 4], Option<String>)>, D::Error> {
+fn lenient_camera<'de, D: serde::Deserializer<'de>, K: FromStr>(
+    d: D,
+) -> Result<Option<([f32; 4], Option<K>)>, D::Error> {
     let raw = Option::<([Option<f32>; 4], Option<String>)>::deserialize(d)?;
-    Ok(raw.and_then(|(r, level)| Some(([r[0]?, r[1]?, r[2]?, r[3]?], level))))
+    Ok(raw.and_then(|(r, level)| {
+        let level = match level {
+            None => None,
+            Some(text) => Some(text.parse().ok()?),
+        };
+        Some(([r[0]?, r[1]?, r[2]?, r[3]?], level))
+    }))
 }
 
 /// Whether `a` and `b` differ enough to write: settled positions within
@@ -144,11 +162,28 @@ impl Default for LocalPersist {
     }
 }
 
-impl LocalState {
-    /// This state with ids renamed by `map` (an import gave nodes fresh
-    /// ids); ids `map` lacks are dropped.
-    pub(crate) fn remap(&self, map: &HashMap<String, String>) -> LocalState {
-        let id = |old: &Option<String>| old.as_ref().and_then(|o| map.get(o)).cloned();
+impl<K> Default for LocalState<K> {
+    fn default() -> Self {
+        Self {
+            focused: None,
+            view_item: false,
+            current_group: None,
+            viewed_image: None,
+            split_tab: None,
+            groups_collapsed: false,
+            camera: None,
+            nodes: BTreeMap::new(),
+            json_accessor_paths: false,
+            json_outline_hidden: false,
+            json_outline_width: None,
+        }
+    }
+}
+
+impl LocalState<String> {
+    /// This file-keyed state with ids renamed by `map` (an import gave nodes fresh ids); ids `map` lacks are dropped.
+    pub(crate) fn remap(self, map: &HashMap<String, NodeId>) -> LocalState {
+        let id = |old: &Option<String>| old.as_ref().and_then(|o| map.get(o)).copied();
         LocalState {
             focused: id(&self.focused),
             current_group: id(&self.current_group),
@@ -156,14 +191,19 @@ impl LocalState {
             split_tab: id(&self.split_tab),
             camera: self
                 .camera
-                .clone()
                 .filter(|(_, level)| level.is_none() || id(level).is_some())
                 .map(|(r, level)| (r, id(&level))),
-            nodes: self.nodes.iter().filter_map(|(k, v)| Some((map.get(k)?.clone(), v.clone()))).collect(),
-            ..self.clone()
+            nodes: self.nodes.into_iter().filter_map(|(k, v)| Some((*map.get(&k)?, v))).collect(),
+            view_item: self.view_item,
+            groups_collapsed: self.groups_collapsed,
+            json_accessor_paths: self.json_accessor_paths,
+            json_outline_hidden: self.json_outline_hidden,
+            json_outline_width: self.json_outline_width,
         }
     }
+}
 
+impl LocalState {
     fn all_finite(&self) -> bool {
         self.nodes.values().all(|n| n.pos.iter().all(|v| v.is_finite()))
             && self.camera.as_ref().is_none_or(|(r, _)| r.iter().all(|v| v.is_finite()))
@@ -294,7 +334,7 @@ impl App {
         self.doc.local_persist.local_written = None;
         let Some(local) = read.ok().flatten().and_then(|bytes| LocalState::from_bytes(&bytes)) else { return };
         if unread.fresh {
-            self.keep_hidden_local(local.nodes);
+            self.keep_hidden(local.nodes);
         } else {
             self.apply_local(local);
             if !force {
@@ -328,13 +368,12 @@ impl App {
     /// before restored tabs land doesn't lose their placement and zoom.
     pub(crate) fn local_state(&self) -> LocalState {
         let item = self.view_mode == ViewMode::Item;
-        let mut nodes: BTreeMap<String, LocalNode> =
-            self.nodes.iter().map(|(id, node)| (id.to_string(), self.local_node(*id, node))).collect();
+        let mut nodes: BTreeMap<NodeId, LocalNode> =
+            self.nodes.iter().map(|(&id, node)| (id, self.local_node(id, node))).collect();
         if let Some(pending) = &self.doc.local_persist.pending_local {
-            for (id, node) in pending {
-                let key = id.to_string();
-                if self.spawns.spawning.contains_key(id) && !nodes.contains_key(&key) {
-                    nodes.insert(key, node.clone());
+            for (&id, node) in pending {
+                if self.spawns.spawning.contains_key(&id) {
+                    nodes.entry(id).or_insert_with(|| node.clone());
                 }
             }
         }
@@ -342,20 +381,19 @@ impl App {
         if let Some(doc) = self.doc.journal.as_ref().map(|j| j.doc()) {
             for (id, node) in &self.doc.hidden_local {
                 if doc.nodes.get(id).is_some_and(Node::is_live) {
-                    nodes.entry(id.to_string()).or_insert_with(|| node.clone());
+                    nodes.entry(*id).or_insert_with(|| node.clone());
                 }
             }
         }
         let rect = self.camera.rect;
-        let text = |id: Option<NodeId>| id.map(|id| id.to_string());
         LocalState {
-            focused: text(self.focused),
+            focused: self.focused,
             view_item: item,
-            current_group: text(self.current_group),
-            viewed_image: text(self.viewed_image.filter(|_| item)),
-            split_tab: text(self.split_tab),
+            current_group: self.current_group,
+            viewed_image: self.viewed_image.filter(|_| item),
+            split_tab: self.split_tab,
             groups_collapsed: self.groups_collapsed,
-            camera: Some(([rect.min.x, rect.min.y, rect.max.x, rect.max.y], text(self.current_group))),
+            camera: Some(([rect.min.x, rect.min.y, rect.max.x, rect.max.y], self.current_group)),
             nodes,
             json_accessor_paths: self.json_ui.json_accessor_paths,
             json_outline_hidden: !self.json_ui.json_outline_visible,
@@ -370,25 +408,23 @@ impl App {
     /// stands. A node still spawning keeps its entry in `self.doc.local_persist.pending_local`
     /// for `handle_tab_spawn_result` to apply once it lands.
     pub(crate) fn apply_local(&mut self, state: LocalState) {
-        let parsed = |id: &Option<String>| id.as_deref().and_then(|id| id.parse::<NodeId>().ok());
-        let known = |id: &Option<String>| {
-            parsed(id).filter(|id| self.nodes.contains_key(id) || self.spawns.spawning.contains_key(id))
-        };
-        if let Some(id) = known(&state.focused) {
+        let known =
+            |id: Option<NodeId>| id.filter(|id| self.nodes.contains_key(id) || self.spawns.spawning.contains_key(id));
+        if let Some(id) = known(state.focused) {
             self.focused = Some(id);
         }
         // A level that is hidden now falls back to its nearest shown ancestor (spec decision 3).
-        let level = match (self.doc.journal.as_ref(), parsed(&state.current_group)) {
+        let level = match (self.doc.journal.as_ref(), state.current_group) {
             (Some(j), Some(g)) => j.doc().shown_level(g),
             (_, group) => group,
         };
         if let Some(level) = level.filter(|id| self.nodes.contains_key(id) || self.spawns.spawning.contains_key(id)) {
             self.current_group = Some(level);
         }
-        if let Some(id) = known(&state.viewed_image) {
+        if let Some(id) = known(state.viewed_image) {
             self.viewed_image = Some(id);
         }
-        if let Some(id) = known(&state.split_tab) {
+        if let Some(id) = known(state.split_tab) {
             self.split_tab = Some(id);
         }
         self.view_mode = if state.view_item { ViewMode::Item } else { ViewMode::Graph };
@@ -417,7 +453,6 @@ impl App {
         let mut pending = HashMap::new();
         let mut leftover = Vec::new();
         for (id, node) in state.nodes {
-            let Ok(id) = id.parse::<NodeId>() else { continue };
             if let Some(live) = self.nodes.get_mut(&id) {
                 Self::apply_local_node(live, &node);
                 self.snap_layout(id, egui::vec2(node.pos[0], node.pos[1]));
@@ -433,7 +468,7 @@ impl App {
         }
 
         if let Some((rect, level)) = state.camera {
-            if level == self.current_group.map(|g| g.to_string()) {
+            if level == self.current_group {
                 self.camera.rect = egui::Rect::from_min_max(egui::pos2(rect[0], rect[1]), egui::pos2(rect[2], rect[3]));
                 self.camera.frame_restored = false;
             }
@@ -442,11 +477,7 @@ impl App {
 
     /// Personal-state entries for nodes the document holds but the graph doesn't show (closed, or under a closed
     /// node): kept in `hidden_local` for a reopen, not dropped as stale.
-    pub(crate) fn keep_hidden_local(&mut self, entries: impl IntoIterator<Item = (String, LocalNode)>) {
-        self.keep_hidden(entries.into_iter().filter_map(|(id, node)| Some((id.parse().ok()?, node))));
-    }
-
-    fn keep_hidden(&mut self, entries: impl IntoIterator<Item = (NodeId, LocalNode)>) {
+    pub(crate) fn keep_hidden(&mut self, entries: impl IntoIterator<Item = (NodeId, LocalNode)>) {
         let Some(doc) = self.doc.journal.as_ref().map(|j| j.doc()) else { return };
         let held = |id: &NodeId| doc.nodes.get(id).is_some_and(Node::is_live);
         let here = |id: &NodeId| self.nodes.contains_key(id) || self.spawns.spawning.contains_key(id);
@@ -518,10 +549,11 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::card_id::testutil::node;
 
     fn with_pos(x: f32) -> LocalState {
-        let node = LocalNode { pos: [x, 0.0], ..LocalNode::default() };
-        LocalState { nodes: BTreeMap::from([("a".to_owned(), node)]), ..LocalState::default() }
+        let entry = LocalNode { pos: [x, 0.0], ..LocalNode::default() };
+        LocalState { nodes: BTreeMap::from([(node(1), entry)]), ..LocalState::default() }
     }
 
     #[test]
@@ -533,14 +565,36 @@ mod tests {
 
     #[test]
     fn remap_renames_ids_and_drops_unknown_ones() {
-        let mut state = with_pos(1.0);
-        state.focused = Some("a".into());
-        state.current_group = Some("gone".into());
-        let map = HashMap::from([("a".to_owned(), "b".to_owned())]);
-        let out = state.remap(&map);
-        assert_eq!(out.focused.as_deref(), Some("b"));
+        let entry = LocalNode { pos: [1.0, 0.0], ..LocalNode::default() };
+        let state = LocalState::<String> {
+            focused: Some("a".into()),
+            current_group: Some("gone".into()),
+            nodes: BTreeMap::from([("a".to_owned(), entry), ("gone".to_owned(), LocalNode::default())]),
+            ..LocalState::default()
+        };
+        let out = state.remap(&HashMap::from([("a".to_owned(), node(2))]));
+        assert_eq!(out.focused, Some(node(2)));
         assert_eq!(out.current_group, None);
-        assert!(out.nodes.contains_key("b"));
+        assert_eq!(out.nodes.keys().collect::<Vec<_>>(), [&node(2)]);
+    }
+
+    #[test]
+    fn an_unreadable_id_costs_only_itself() {
+        let text = format!(
+            r#"{{"focused":"not an id","split_tab":"{}","camera":[[0,0,1,1],"nope"],"nodes":{{"junk":{{"pos":[1,1]}},"{}":{{"pos":[2,3]}}}}}}"#,
+            node(5),
+            node(6)
+        );
+        let state = LocalState::from_bytes(text.as_bytes()).expect("the file still reads");
+        assert_eq!((state.focused, state.split_tab, state.camera), (None, Some(node(5)), None));
+        assert_eq!(state.nodes.keys().collect::<Vec<_>>(), [&node(6)]);
+    }
+
+    #[test]
+    fn ids_are_written_as_their_text() {
+        let state = with_pos(1.0);
+        let json: serde_json::Value = serde_json::from_slice(&state.to_bytes()).unwrap();
+        assert!(json["nodes"][node(1).to_string()]["pos"].is_array());
     }
 
     #[test]
@@ -553,12 +607,12 @@ mod tests {
     #[test]
     fn a_non_finite_value_costs_only_itself() {
         let mut state = with_pos(f32::NAN);
-        state.nodes.insert("b".into(), LocalNode { pos: [5.0, 6.0], title: "kept".into(), ..LocalNode::default() });
+        state.nodes.insert(node(2), LocalNode { pos: [5.0, 6.0], title: "kept".into(), ..LocalNode::default() });
         state.camera = Some(([0.0, f32::INFINITY, 1.0, 1.0], None));
         state.json_outline_width = Some(f32::NAN);
         let back = LocalState::from_bytes(&state.to_bytes()).expect("still readable");
-        assert_eq!(back.nodes["a"].pos, [0.0, 0.0], "the bad position is zeroed, the node kept");
-        assert_eq!(back.nodes["b"].title, "kept");
+        assert_eq!(back.nodes[&node(1)].pos, [0.0, 0.0], "the bad position is zeroed, the node kept");
+        assert_eq!(back.nodes[&node(2)].title, "kept");
         assert_eq!((back.camera, back.json_outline_width), (None, None));
     }
 
@@ -572,9 +626,12 @@ mod tests {
     /// Files written before the fix hold `null` where the value was NaN.
     #[test]
     fn nulls_written_by_older_builds_read_back() {
-        let bytes = br#"{"camera":[[0.0,null,1.0,1.0],null],"nodes":{"a":{"pos":[null,2.0]}},"closed":[{"nodes":[]}]}"#;
-        let state = LocalState::from_bytes(bytes).expect("lenient");
-        assert_eq!(state.nodes["a"].pos, [0.0, 2.0]);
+        let bytes = format!(
+            r#"{{"camera":[[0.0,null,1.0,1.0],null],"nodes":{{"{}":{{"pos":[null,2.0]}}}},"closed":[{{"nodes":[]}}]}}"#,
+            node(1)
+        );
+        let state = LocalState::from_bytes(bytes.as_bytes()).expect("lenient");
+        assert_eq!(state.nodes[&node(1)].pos, [0.0, 2.0]);
         assert_eq!(state.camera, None);
         assert_eq!(state.nodes.len(), 1, "an old file's Recently Closed list is ignored, not an error");
     }

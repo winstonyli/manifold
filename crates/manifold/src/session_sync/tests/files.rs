@@ -246,7 +246,7 @@ fn replacing_the_session_drops_its_links() {
     let a = succeed_spawn(&mut app, "https://a/");
     let b = succeed_spawn(&mut app, "https://b/");
     app.create_link(a, b);
-    app.create_link(id(901), id(902)); // dangling: no endpoint's cascade reaches it
+    app.create_link(node(901), node(902)); // dangling: no endpoint's cascade reaches it
     assert!(app.save_session());
     app.replace_running_session(&file_with_a_work_jar(), crate::store::json::Trust::Foreign);
     assert!(app.doc.mirror.link_ids().next().is_none(), "no stale link");

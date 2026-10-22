@@ -78,7 +78,7 @@ fn connect_refuses_another_level_and_a_missing_card() {
     let g = add_group(&mut app, "g");
     app.edit_group(b, Some(g));
     assert_eq!(app.connect(LINK, a, b), Err(ConnectError::DifferentLevel));
-    assert_eq!(app.connect(LINK, a, id(99)), Err(ConnectError::NotLive));
+    assert_eq!(app.connect(LINK, a, node(99)), Err(ConnectError::NotLive));
     assert_eq!(app.connect("contains", a, b), Err(ConnectError::NotAllowed), "not a user-drawn edge");
 }
 

@@ -8,7 +8,7 @@ fn a_json_nodes_view_round_trips_through_the_store() {
     app.edit_view(node, r#"{"/users":{"collapsed":true}}"#);
 
     let shared = snapshots(&app);
-    let fields = &shared[&id(1)].fields;
+    let fields = &shared[&node].fields;
     assert_eq!(fields.get(&field::VIEW), Some(&FieldValue::Str(r#"{"/users":{"collapsed":true}}"#.into())));
 
     // Restoring those fields gives the same view back.
@@ -141,8 +141,8 @@ fn toggle_pin_works_on_any_node() {
         app.toggle_pin(id);
         assert!(!app.doc.mirror.pinned(id), "{id} unpinned");
     }
-    app.toggle_pin(id(99));
-    assert!(!app.doc.mirror.pinned(id(99)));
+    app.toggle_pin(node(99));
+    assert!(!app.doc.mirror.pinned(node(99)));
 }
 
 #[test]
@@ -216,7 +216,7 @@ fn the_cycle_color_action_steps_through_the_tag_colors() {
 fn a_color_action_on_an_unknown_node_changes_nothing() {
     let mut app = App::default();
     let ctx = egui::Context::default();
-    let ghost = id(99);
+    let ghost = node(99);
     app.apply_node_action(&ctx, ghost, NodeAction::SetColor(Some(egui::Color32::RED)));
     app.apply_node_action(&ctx, ghost, NodeAction::CycleColor);
     assert_eq!(app.doc.mirror.color(ghost), None);

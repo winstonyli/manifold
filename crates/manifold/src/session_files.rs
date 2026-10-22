@@ -430,7 +430,7 @@ impl App {
         &mut self,
         json: &JsonDoc,
         trust: crate::store::json::Trust,
-    ) -> HashMap<String, String> {
+    ) -> HashMap<String, NodeId> {
         let next_id = || self.alloc_node_id();
         let imported = match crate::store::json::import(json, next_id, trust) {
             Ok(imported) => imported,
@@ -445,8 +445,8 @@ impl App {
         }
         self.teardown_running_session();
         self.rebind_jar_files(json, &imported);
-        let map: HashMap<String, String> =
-            json.nodes.iter().zip(&imported).map(|(node, i)| (node.id.clone(), i.id.to_string())).collect();
+        let map: HashMap<String, NodeId> =
+            json.nodes.iter().zip(&imported).map(|(node, i)| (node.id.clone(), i.id)).collect();
         let first_tab = imported.iter().find(|i| i.kind() == Kind::Tab).map(|i| i.id);
         // No root: a group or parent outside the file (import keeps real
         // node ids) names nothing once the old session is gone.
@@ -455,7 +455,9 @@ impl App {
         self.focused = first_tab;
         self.view_mode = ViewMode::Graph;
         self.camera.frame_restored = true;
-        if let Some(state) = json.local.clone().and_then(|value| serde_json::from_value::<LocalState>(value).ok()) {
+        if let Some(state) =
+            json.local.clone().and_then(|value| serde_json::from_value::<LocalState<String>>(value).ok())
+        {
             self.apply_local(state.remap(&map));
         }
         // Personal state startup couldn't read is the old session's: its view state names nodes that are gone.

@@ -91,7 +91,7 @@ fn re_homing_out_of_a_deleted_group_is_not_a_move() {
 fn a_parent_naming_a_missing_node_is_written_as_none() {
     let mut app = app_on(&temp_dir("parent-missing").join("session.mnf"), 1);
     let tab = add(&mut app, Kind::Tab, sleeping_tab("https://t/", ""));
-    app.edit_parent(tab, Some(id(9)));
+    app.edit_parent(tab, Some(node(9)));
     assert!(app.save_session());
     assert_eq!(stored(&app, tab, field::PARENT), FieldValue::Id(None));
 }
@@ -997,9 +997,9 @@ fn every_creation_path_seeds_the_node_type() {
 
     // Materialized from the document.
     let nodes = BTreeMap::from([
-        (id(1), shared(Kind::Group, None, &[(field::NAME, FieldValue::Str("G".into()))])),
-        (id(2), shared(Kind::Note, None, &[(field::TEXT, FieldValue::Str("n".into()))])),
-        (id(3), shared(Kind::Tab, None, &[(field::URL, FieldValue::Str("https://a.test/".into()))])),
+        (node(1), shared(Kind::Group, None, &[(field::NAME, FieldValue::Str("G".into()))])),
+        (node(2), shared(Kind::Note, None, &[(field::TEXT, FieldValue::Str("n".into()))])),
+        (node(3), shared(Kind::Tab, None, &[(field::URL, FieldValue::Str("https://a.test/".into()))])),
     ]);
     let app = app_with(&nodes);
     for (id, node) in &nodes {
@@ -1171,11 +1171,11 @@ fn a_stored_card_without_a_position_lands_jittered_around_the_world_center() {
     // What `fields_of` hands over for a node whose POS was never written: the absent value, (0, 0).
     let unplaced = fields_of(&Node::typed(Kind::Jar));
     assert_eq!(unplaced.get(&field::POS), Some(&FieldValue::Pos(0.0, 0.0)));
-    let (a, b) = (pos_of(id(1), &unplaced), pos_of(id(2), &unplaced));
-    assert_eq!(a, GRAPH_WORLD_CENTER + spawn_jitter(id(1)));
+    let (a, b) = (pos_of(node(1), &unplaced), pos_of(node(2), &unplaced));
+    assert_eq!(a, GRAPH_WORLD_CENTER + spawn_jitter(node(1)));
     assert_ne!(a, b, "two old jars do not stack");
     let placed = Fields::from([(field::POS, FieldValue::Pos(120.0, -40.0))]);
-    assert_eq!(pos_of(id(1), &placed), egui::vec2(120.0, -40.0), "a stored pos is used as is");
+    assert_eq!(pos_of(node(1), &placed), egui::vec2(120.0, -40.0), "a stored pos is used as is");
 }
 
 #[test]

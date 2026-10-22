@@ -31,6 +31,21 @@ impl fmt::Display for NodeId {
     }
 }
 
+/// Serde spells a `NodeId` as its `Display` text (also usable as a JSON map key); the store's own codec does not
+/// go through serde.
+impl serde::Serialize for NodeId {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(self)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for NodeId {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let text = <std::borrow::Cow<str>>::deserialize(deserializer)?;
+        text.parse().map_err(serde::de::Error::custom)
+    }
+}
+
 impl std::str::FromStr for NodeId {
     type Err = String;
 

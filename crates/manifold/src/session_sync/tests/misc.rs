@@ -47,9 +47,9 @@ fn a_failed_refetch_of_a_missing_file_shows_the_missing_file_card() {
     let url = |u: &str| (field::URL, FieldValue::Str(u.into()));
     let gone = |p: &str| (field::PATH, FieldValue::Str(p.into()));
     let nodes = BTreeMap::from([
-        (id(0), shared(Kind::Json, None, &[gone(r"Z:\gone.json"), url("https://x.test/a.json")])),
-        (id(1), shared(Kind::Image, None, &[gone(r"Z:\gone.png"), url("https://x.test/a.png")])),
-        (id(2), shared(Kind::Pdf, None, &[gone(r"Z:\gone.pdf"), url("https://x.test/a.pdf")])),
+        (node(0), shared(Kind::Json, None, &[gone(r"Z:\gone.json"), url("https://x.test/a.json")])),
+        (node(1), shared(Kind::Image, None, &[gone(r"Z:\gone.png"), url("https://x.test/a.png")])),
+        (node(2), shared(Kind::Pdf, None, &[gone(r"Z:\gone.pdf"), url("https://x.test/a.pdf")])),
     ]);
     let mut app = app_with(&nodes);
     let mut results = Vec::new();
@@ -63,7 +63,7 @@ fn a_failed_refetch_of_a_missing_file_shows_the_missing_file_card() {
         let FetchTarget::Node(node) = &job.target else { panic!("a node refetch") };
         app.refresh_fetch_failed(*node);
     }
-    let error = |n: u64| match &app.nodes[&id(n)].runtime {
+    let error = |n: u64| match &app.nodes[&node(n)].runtime {
         Runtime::Json(p) => p.error.clone(),
         Runtime::Image(p) => p.error.clone(),
         Runtime::Pdf(p) => p.outcome.as_ref().and_then(|o| o.as_ref().err()).cloned(),
@@ -78,7 +78,7 @@ fn a_failed_refetch_of_a_missing_file_shows_the_missing_file_card() {
 #[test]
 fn retry_missing_file_refetches_a_node_with_a_url_instead_of_retrying_its_local_path() {
     let nodes = BTreeMap::from([(
-        id(0),
+        node(0),
         shared(
             Kind::Json,
             None,
@@ -89,7 +89,7 @@ fn retry_missing_file_refetches_a_node_with_a_url_instead_of_retrying_its_local_
         ),
     )]);
     let mut app = app_with(&nodes);
-    let node_id = id(0);
+    let node_id = node(0);
     // `materialize` already queued one refetch on its own; drain and
     // discard it so the assertion below reflects only the click.
     drain_fetches(&mut app);
@@ -118,14 +118,14 @@ fn backing_keep_holds_hidden_nodes_files() {
 #[test]
 fn a_report_still_at_the_url_a_typed_navigation_left_is_stale() {
     let mut app = App::default();
-    let report = |app: &mut App, url: &str| app.reported_url(id(7), url.into(), true, "https://typed/".into());
+    let report = |app: &mut App, url: &str| app.reported_url(node(7), url.into(), true, "https://typed/".into());
     assert_eq!(report(&mut app, "https://old/"), "https://old/", "no typed navigation: as reported");
-    app.spawns.navigated_from.insert(id(7), ("https://old/".into(), std::time::Instant::now(), false));
+    app.spawns.navigated_from.insert(node(7), ("https://old/".into(), std::time::Instant::now(), false));
     assert_eq!(report(&mut app, "https://old/"), "https://typed/");
     assert_eq!(report(&mut app, "https://typed/"), "https://typed/");
     assert_eq!(report(&mut app, "https://old/"), "https://old/", "after the engine moved on: real (going back)");
     let long_ago = std::time::Instant::now() - std::time::Duration::from_secs(2);
-    app.spawns.navigated_from.insert(id(7), ("https://old/".into(), long_ago, false));
+    app.spawns.navigated_from.insert(node(7), ("https://old/".into(), long_ago, false));
     assert_eq!(report(&mut app, "https://old/"), "https://old/", "the navigation never started");
 }
 
@@ -135,9 +135,10 @@ fn a_report_still_at_the_url_a_typed_navigation_left_is_stale() {
 #[test]
 fn a_typed_navigation_that_ends_at_the_url_it_left_keeps_that_url() {
     let mut app = App::default();
-    let report =
-        |app: &mut App, url: &str, loading: bool| app.reported_url(id(7), url.into(), loading, "https://typed/".into());
-    app.spawns.navigated_from.insert(id(7), ("https://old/".into(), std::time::Instant::now(), false));
+    let report = |app: &mut App, url: &str, loading: bool| {
+        app.reported_url(node(7), url.into(), loading, "https://typed/".into())
+    };
+    app.spawns.navigated_from.insert(node(7), ("https://old/".into(), std::time::Instant::now(), false));
     assert_eq!(report(&mut app, "https://old/", false), "https://typed/", "a finish from before it started");
     assert_eq!(report(&mut app, "https://old/", true), "https://typed/", "started, address not changed yet");
     assert_eq!(report(&mut app, "https://old/", false), "https://old/", "finished without leaving");

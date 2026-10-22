@@ -24,7 +24,7 @@ fn a_tabs_and_a_groups_jar_edge_project_to_fields_and_back() {
     let jar = NodeId { actor: ActorId(7), counter: 1 };
     let nodes = BTreeMap::from([
         (
-            id(1),
+            node(1),
             shared(
                 Kind::Tab,
                 None,
@@ -35,12 +35,12 @@ fn a_tabs_and_a_groups_jar_edge_project_to_fields_and_back() {
                 ],
             ),
         ),
-        (id(2), shared(Kind::Group, None, &[(field::JAR, FieldValue::Id(Some(jar)))])),
+        (node(2), shared(Kind::Group, None, &[(field::JAR, FieldValue::Id(Some(jar)))])),
     ]);
     let app = app_with(&nodes);
-    assert!(app.nodes[&id(1)].runtime.as_unloaded().is_some());
-    assert_eq!(app.doc.mirror.jar(id(1)), Some(jar));
-    assert_eq!(app.doc.mirror.jar(id(2)), Some(jar));
+    assert!(app.nodes[&node(1)].runtime.as_unloaded().is_some());
+    assert_eq!(app.doc.mirror.jar(node(1)), Some(jar));
+    assert_eq!(app.doc.mirror.jar(node(2)), Some(jar));
     assert_eq!(snapshots(&app), nodes, "the live payloads project back to the same fields");
 }
 
@@ -49,17 +49,17 @@ fn a_remote_jar_edit_updates_a_sleeping_tab_and_a_group() {
     let jar = NodeId { actor: ActorId(2), counter: 50 };
     let tab = shared(Kind::Tab, None, &[(field::URL, FieldValue::Str("https://a.com/".into()))]);
     let group = shared(Kind::Group, None, &[]);
-    let mut app = app_with(&BTreeMap::from([(id(1), tab.clone()), (id(2), group.clone())]));
+    let mut app = app_with(&BTreeMap::from([(node(1), tab.clone()), (node(2), group.clone())]));
     let mut tab_fields = tab.fields.clone();
     tab_fields.insert(field::JAR, FieldValue::Id(Some(jar)));
     let mut group_fields = group.fields.clone();
     group_fields.insert(field::JAR, FieldValue::Id(Some(jar)));
     app.apply_remote(vec![
-        (id(1), Remote::Shown(snap(Kind::Tab, tab_fields, None))),
-        (id(2), Remote::Shown(snap(Kind::Group, group_fields, None))),
+        (node(1), Remote::Shown(snap(Kind::Tab, tab_fields, None))),
+        (node(2), Remote::Shown(snap(Kind::Group, group_fields, None))),
     ]);
-    assert_eq!(app.doc.mirror.jar(id(1)), Some(jar));
-    assert_eq!(app.doc.mirror.jar(id(2)), Some(jar));
+    assert_eq!(app.doc.mirror.jar(node(1)), Some(jar));
+    assert_eq!(app.doc.mirror.jar(node(2)), Some(jar));
 }
 
 #[test]
@@ -67,10 +67,10 @@ fn a_restored_note_group_and_leaf_project_back_to_their_fields() {
     let red = color_value(Some(egui::Color32::from_rgb(200, 10, 10)));
     let nodes = BTreeMap::from([
         (
-            id(0),
+            node(0),
             shared(
                 Kind::Note,
-                Some(id(1)),
+                Some(node(1)),
                 &[
                     (field::TEXT, FieldValue::Str("hello".into())),
                     (field::POS, FieldValue::Pos(3.0, -4.0)),
@@ -78,8 +78,8 @@ fn a_restored_note_group_and_leaf_project_back_to_their_fields() {
                 ],
             ),
         ),
-        (id(1), shared(Kind::Group, None, &[(field::NAME, FieldValue::Str("G".into()))])),
-        (id(2), shared(Kind::Json, Some(id(1)), &[(field::PATH, FieldValue::Str("C:/data.json".into()))])),
+        (node(1), shared(Kind::Group, None, &[(field::NAME, FieldValue::Str("G".into()))])),
+        (node(2), shared(Kind::Json, Some(node(1)), &[(field::PATH, FieldValue::Str("C:/data.json".into()))])),
     ]);
     assert_eq!(snapshots(&app_with(&nodes)), nodes);
 }
@@ -88,7 +88,7 @@ fn a_restored_note_group_and_leaf_project_back_to_their_fields() {
 fn a_remote_view_change_updates_the_node_in_place() {
     let (mut app, node) = app_with_json_file("json_view_remote");
     let (value, path) = app.nodes[&node].as_json().map(|j| (j.value.clone(), j.path.clone())).unwrap();
-    let mut fields = snapshots(&app)[&id(1)].fields.clone();
+    let mut fields = snapshots(&app)[&node].fields.clone();
     fields.insert(field::VIEW, FieldValue::Str(r#"{"":{"collapsed":true}}"#.into()));
     app.materialize(node, crate::store::model::TYPE_JSON, &fields, None, None);
     assert_eq!(app.doc.mirror.view(node).unwrap().get("").unwrap().collapsed, Some(true));
@@ -101,18 +101,18 @@ fn a_remote_view_change_updates_the_node_in_place() {
 #[test]
 fn materialize_keeps_the_stored_type_string() {
     let mut app = App::default();
-    let node = id(1);
+    let node = node(1);
     let fields = shared(Kind::Note, None, &[(field::TEXT, FieldValue::Str("n".into()))]).fields;
     app.materialize(node, "Text/Markdown", &fields, None, None);
     assert_eq!(app.doc.mirror.ty(node), "Text/Markdown");
     assert_eq!(app.card_kind(node).unwrap().ty, crate::store::model::TYPE_NOTE);
-    assert_eq!(app.snapshot(id(1)).unwrap().ty, "Text/Markdown");
+    assert_eq!(app.snapshot(node).unwrap().ty, "Text/Markdown");
 }
 
 #[test]
 fn a_missing_content_file_with_a_known_url_becomes_a_placeholder_that_refetches() {
     let nodes = BTreeMap::from([(
-        id(0),
+        node(0),
         shared(
             Kind::Json,
             None,
@@ -123,7 +123,7 @@ fn a_missing_content_file_with_a_known_url_becomes_a_placeholder_that_refetches(
         ),
     )]);
     let mut app = app_with(&nodes);
-    let node_id = id(0);
+    let node_id = node(0);
     match &app.nodes[&node_id].runtime {
         Runtime::Json(p) => {
             assert!(p.error.is_none(), "a known-URL miss never reaches insert_json_node_with_id's own toast");
@@ -141,25 +141,28 @@ fn a_missing_content_file_with_a_known_url_becomes_a_placeholder_that_refetches(
 #[test]
 fn a_remotely_removed_group_leaves_no_member_naming_it() {
     let nodes = BTreeMap::from([
-        (id(0), group("Outer")),
-        (id(1), shared(Kind::Group, Some(id(0)), &[(field::NAME, FieldValue::Str("Inner".into()))])),
-        (id(2), note("stored member", Some(id(1)))),
+        (node(0), group("Outer")),
+        (node(1), shared(Kind::Group, Some(node(0)), &[(field::NAME, FieldValue::Str("Inner".into()))])),
+        (node(2), note("stored member", Some(node(1)))),
     ]);
     let mut app = app_with(&nodes);
     // A note only this replica has, not yet saved, inside the group.
-    let local = id(3);
+    let local = node(3);
     let payload = Runtime::Note(NotePayload { text: "local".into(), editing: false });
     app.insert_placeholder_node(local, egui::Vec2::ZERO, Kind::Note, payload);
-    app.edit_group(local, Some(id(1)));
-    app.current_group = Some(id(1));
+    app.edit_group(local, Some(node(1)));
+    app.current_group = Some(node(1));
     // What `remote_changes` reports when another replica deletes Inner:
     // the group gone, its stored member now shown in Outer.
-    let member = nodes[&id(2)].fields.clone();
-    app.apply_remote(vec![(id(1), Remote::Deleted), (id(2), Remote::Shown(snap(Kind::Note, member, Some(id(0)))))]);
-    let inner = id(1);
+    let member = nodes[&node(2)].fields.clone();
+    app.apply_remote(vec![
+        (node(1), Remote::Deleted),
+        (node(2), Remote::Shown(snap(Kind::Note, member, Some(node(0))))),
+    ]);
+    let inner = node(1);
     assert!(!app.nodes.contains_key(&inner) && !app.node_order.contains(&inner));
-    let outer = Some(id(0));
-    assert_eq!(app.doc.mirror.group(id(2)), outer);
+    let outer = Some(node(0));
+    assert_eq!(app.doc.mirror.group(node(2)), outer);
     assert_eq!(app.doc.mirror.group(local), outer, "the local-only member moves to the effective group");
     assert_eq!(app.current_group, outer, "the view leaves the removed level");
     assert!(app.nodes.keys().all(|n| app.doc.mirror.group(*n) != Some(inner)));
@@ -376,12 +379,12 @@ fn a_pending_local_rename_wins_over_a_remote_one() {
 #[test]
 fn url_changes_after_a_host_started_load_stay_local_until_it_settles() {
     let mut app = App::default();
-    assert!(app.shares_url_change(id(7), None), "an ordinary tab shares");
-    app.note_host_load(id(7));
-    assert!(!app.shares_url_change(id(7), None), "a redirect right after the host's navigation");
-    assert!(!app.shares_url_change(id(7), None), "still within the grace");
-    app.spawns.host_loads.insert(id(7), std::time::Instant::now() - HOST_LOAD_GRACE);
-    assert!(app.shares_url_change(id(7), None), "settled: the next navigation is shared");
+    assert!(app.shares_url_change(node(7), None), "an ordinary tab shares");
+    app.note_host_load(node(7));
+    assert!(!app.shares_url_change(node(7), None), "a redirect right after the host's navigation");
+    assert!(!app.shares_url_change(node(7), None), "still within the grace");
+    app.spawns.host_loads.insert(node(7), std::time::Instant::now() - HOST_LOAD_GRACE);
+    assert!(app.shares_url_change(node(7), None), "settled: the next navigation is shared");
     assert!(app.spawns.host_loads.is_empty());
 }
 
@@ -389,9 +392,9 @@ fn url_changes_after_a_host_started_load_stay_local_until_it_settles() {
 #[test]
 fn the_view_kinds_cause_decides_whether_a_url_change_is_shared() {
     let mut app = App::default();
-    assert!(!app.shares_url_change(id(7), Some(false)), "a script's navigation stays local");
-    app.note_host_load(id(7));
-    assert!(app.shares_url_change(id(7), Some(true)), "a click right after the host's load is shared");
+    assert!(!app.shares_url_change(node(7), Some(false)), "a script's navigation stays local");
+    app.note_host_load(node(7));
+    assert!(app.shares_url_change(node(7), Some(true)), "a click right after the host's load is shared");
     assert!(app.spawns.host_loads.is_empty(), "and ends the host's load");
 }
 
@@ -476,15 +479,15 @@ fn a_remote_url_change_moves_a_sleeping_tab_without_waking_it() {
 #[test]
 fn a_remote_new_tab_arrives_asleep() {
     let url = FieldValue::Str("https://new/".into());
-    let app = app_with(&BTreeMap::from([(id(1), shared(Kind::Tab, None, &[(field::URL, url)]))]));
+    let app = app_with(&BTreeMap::from([(node(1), shared(Kind::Tab, None, &[(field::URL, url)]))]));
     assert!(app.test_spawns.is_empty());
-    let tab = app.nodes[&id(1)].as_unloaded().unwrap();
+    let tab = app.nodes[&node(1)].as_unloaded().unwrap();
     assert_eq!((tab.url.as_str(), &tab.state), ("https://new/", &UnloadedState::Sleeping));
 }
 
 #[test]
 fn remote_jar_create_rename_and_delete_reach_jar_defs() {
-    let jar = id(40);
+    let jar = node(40);
     let named = |name: &str| shared(Kind::Jar, None, &[(field::NAME, FieldValue::Str(name.into()))]);
     let mut app = app_with(&BTreeMap::from([(jar, named("Home"))]));
     assert_eq!(app.jar_defs()[&jar].name, "Home");
@@ -1250,7 +1253,7 @@ fn a_remote_delete_removes_an_unknown_card() {
 /// A node an op named before its `Create` arrived stays hidden; once its type lands it is a card.
 #[test]
 fn a_typeless_placeholder_gets_its_card_when_its_type_arrives() {
-    let node = id(5);
+    let node = node(5);
     let mut doc = Doc::new(crate::store::model::DocId([0; 16]));
     doc.nodes.insert(node, Node::placeholder());
     assert_eq!(App::remote_changes(&doc, &[node]), vec![(node, Remote::Deleted)]);

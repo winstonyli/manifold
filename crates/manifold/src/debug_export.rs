@@ -116,14 +116,14 @@ impl App {
                     "stored_type": self.doc.mirror.ty(id), // the raw string; `type` is its row (`canonical_type`)
                     "loaded": kind.loaded(),
                     "json_card": false,
-                    "group": self.doc.mirror.group(id).map(|g| g.to_string()),
-                    "parent": self.opened_from(id).map(|p| p.to_string()),
+                    "group": self.doc.mirror.group(id),
+                    "parent": self.opened_from(id),
                     "color": self.doc.mirror.color(id).is_some(),
                     "pinned": self.doc.mirror.pinned(id),
                     "name": self.doc.mirror.name(id), // name rule: reported as stored
                     // The tab's or group's own jar edge, the jar it resolves to, and whether a jar card is the Default.
-                    "jar": self.doc.mirror.jar(id).map(|j| j.to_string()),
-                    "effective_jar": self.effective_jar(id).map(|(j, _)| j.to_string()),
+                    "jar": self.doc.mirror.jar(id),
+                    "effective_jar": self.effective_jar(id).map(|(j, _)| j),
                     "is_default": self.is_default_jar(id),
                     // A live tab whose engine stopped reading (`ViewTab::is_unresponsive`).
                     "unresponsive": node.as_tab().is_some_and(|t| t.tab.is_unresponsive(now)),
@@ -136,23 +136,23 @@ impl App {
             })
             .collect();
         // Every node's group as this replica shows it, at any level (a two-instance test compares them).
-        let mirror_groups: std::collections::BTreeMap<String, Option<String>> =
-            self.linked_ids().map(|id| (id.to_string(), self.doc.mirror.group(id).map(|g| g.to_string()))).collect();
+        let mirror_groups: std::collections::BTreeMap<NodeId, Option<NodeId>> =
+            self.linked_ids().map(|id| (id, self.doc.mirror.group(id))).collect();
         // Likewise each group's name, each note's text and every node's document pos, null when absent
         // (empty, or Pos (0,0)), as EXPORTSESSION leaves them out.
         let non_empty = |s: &'_ str| (!s.is_empty()).then(|| s.to_owned());
-        let mirror_names: std::collections::BTreeMap<String, Option<String>> = self
+        let mirror_names: std::collections::BTreeMap<NodeId, Option<String>> = self
             .linked_ids()
             .filter(|id| self.is_container(*id))
-            .map(|id| (id.to_string(), non_empty(self.doc.mirror.name(id)))) // name rule: raw, compared with the document
+            .map(|id| (id, non_empty(self.doc.mirror.name(id)))) // name rule: raw, compared with the document
             .collect();
-        let mirror_texts: std::collections::BTreeMap<String, Option<String>> = self
+        let mirror_texts: std::collections::BTreeMap<NodeId, Option<String>> = self
             .linked_ids()
             .filter(|id| self.nodes.get(id).is_some_and(|n| n.as_note().is_some()))
-            .map(|id| (id.to_string(), non_empty(self.doc.mirror.text(id))))
+            .map(|id| (id, non_empty(self.doc.mirror.text(id))))
             .collect();
-        let mirror_pos: std::collections::BTreeMap<String, Option<[f32; 2]>> =
-            self.linked_ids().map(|id| (id.to_string(), self.doc.mirror.pos(id).map(|p| [p.x, p.y]))).collect();
+        let mirror_pos: std::collections::BTreeMap<NodeId, Option<[f32; 2]>> =
+            self.linked_ids().map(|id| (id, self.doc.mirror.pos(id).map(|p| [p.x, p.y]))).collect();
         // Sorted by text, as when ids were text, so the export's order is the one the gate has always read.
         let mut selected: Vec<String> = self.interaction.selected.iter().map(|id| id.to_string()).collect();
         selected.sort();
@@ -163,11 +163,10 @@ impl App {
             .mirror
             .link_ids()
             .map(|link| {
-                let id = link.to_string();
                 let (from, to) = self.doc.mirror.link_ends(link);
                 let shown = [from, to].iter().all(|e| e.is_some_and(|n| self.nodes.contains_key(&n)));
                 serde_json::json!({
-                    "id": id, "from": from.map(|n| n.to_string()), "to": to.map(|n| n.to_string()), "shown": shown,
+                    "id": link, "from": from, "to": to, "shown": shown,
                 })
             })
             .collect();
@@ -197,7 +196,7 @@ impl App {
                     crate::level::EdgeKind::Opened => "opened",
                 };
                 serde_json::json!({
-                    "kind": kind, "link": edge.link.map(|l| l.to_string()), "from": edge.from_id, "to": edge.to_id, "screen": [mid.x, mid.y],
+                    "kind": kind, "link": edge.link, "from": edge.from_id, "to": edge.to_id, "screen": [mid.x, mid.y],
                     "near_from": [near_from.x, near_from.y], "near_to": [near_to.x, near_to.y],
                 })
             })
@@ -229,7 +228,7 @@ impl App {
             "address_bar_text": self.address_bar.text,
             "suggestions": suggestions,
             "highlighted": self.address_bar.highlighted,
-            "current_group": self.current_group.map(|g| g.to_string()),
+            "current_group": self.current_group,
             "cards": cards,
             "mirror_groups": mirror_groups,
             "mirror_names": mirror_names,
@@ -241,15 +240,15 @@ impl App {
             // Pick-target mode: the source card, the edge and the cards a click would finish it on.
             "connecting": self.link.connecting.as_ref().map(|(from, edge)| {
                 serde_json::json!({
-                    "from": from.to_string(),
+                    "from": from,
                     "edge": edge,
                     "targets": self.valid_targets(edge, *from).iter().map(NodeId::to_string).collect::<Vec<_>>(),
                 })
             }),
             "link_handles": link_handles,
-            "connect_drag": self.link.connect_drag.map(|id| id.to_string()),
+            "connect_drag": self.link.connect_drag,
             // The Link node whose end a connect-drag from a curve is moving (`App::retarget`), or null.
-            "retarget": self.link.retarget.as_ref().map(|r| r.link.to_string()),
+            "retarget": self.link.retarget.as_ref().map(|r| r.link),
             // While it runs, what a release at the pointer would do (`App::retarget_preview`): "retarget", "delete",
             // "refused" or "cancel"; else null.
             "retarget_preview": self.link.retarget.as_ref().and(self.link.retarget_preview).map(crate::links::RetargetOutcome::name),
