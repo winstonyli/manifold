@@ -511,12 +511,12 @@ pub(crate) struct CardPass<'a> {
     pub(crate) zoom_scale: f32,
     /// Where the card being dragged would drop right now
     /// (`App::drop_target`), computed once before the pass.
-    pub(crate) drop_preview: &'a Option<(DropEffect, Option<String>)>,
+    pub(crate) drop_preview: &'a Option<(DropEffect, Option<CardId>)>,
     /// Pick-target mode's valid targets (`App::valid_targets`), each ringed; empty outside the mode.
-    pub(crate) pick_targets: &'a [String],
+    pub(crate) pick_targets: &'a [CardId],
     /// During a connect-drag, the card under the pointer (`App::connect_drag_end`): its target ring is drawn bright,
     /// as a hovered one is in pick-target mode.
-    pub(crate) connect_target: Option<&'a str>,
+    pub(crate) connect_target: Option<CardId>,
     /// While a link's end is dragged (`App::retarget_preview`), the ring colour for the outcome of releasing on
     /// `connect_target`, which is then ringed even where it is no valid target (refused, its own card), so a ring
     /// never promises a retarget the release will not do. `None` otherwise: valid targets keep the accent ring.
@@ -526,7 +526,7 @@ pub(crate) struct CardPass<'a> {
     pub(crate) show_order: bool,
     /// The level's card ids in Tab order (creation order, `App::card_tab_order`). Only the first is
     /// a Tab stop from outside the graph; `card_tab_step` moves between the rest.
-    pub(crate) order: &'a [String],
+    pub(crate) order: &'a [CardId],
     /// A card or one of its controls has keyboard focus this frame.
     pub(crate) any_focused: bool,
     /// Every group's members (`App::group_members`), built once before the pass.
@@ -869,7 +869,7 @@ impl App {
     /// card has no node: no colour, group, pin, audio or ✕, and it can be selected but never focused. `members` is
     /// `group_members`, built once for the whole pass.
     pub(crate) fn card_view(&self, entry: &CardEntry, members: &HashMap<String, Vec<String>>) -> Option<CardView> {
-        let id = entry.id.as_str();
+        let card = entry.id;
         match entry.origin {
             Origin::Stored => {}
             Origin::Virtual(_) => {
@@ -883,12 +883,14 @@ impl App {
                     pinned: false,
                     muted: false,
                     audio_playing: false,
-                    selected: self.interaction.selected.contains(id),
+                    selected: self.interaction.selected.contains(&card),
                     closable: false,
                 });
             }
             Origin::Json => return None,
         }
+        let key = card.to_string();
+        let id = key.as_str();
         let node = self.nodes.get(id)?;
         let kind = self.card_kind(id)?;
         let members = if is_container(kind.ty) { members.get(id).cloned().unwrap_or_default() } else { Vec::new() };
@@ -903,7 +905,7 @@ impl App {
             pinned: self.doc.mirror.pinned(id),
             muted: tab.is_some_and(|t| t.muted),
             audio_playing: tab.is_some_and(|t| t.audio_playing),
-            selected: self.interaction.selected.contains(id),
+            selected: self.interaction.selected.contains(&card),
             closable: !self.is_default_jar(id),
         })
     }
@@ -935,7 +937,10 @@ impl App {
         pass: &mut CardPass,
         entry: &CardEntry,
     ) -> Option<CardOutput> {
-        let id = entry.id.as_str();
+        let card = entry.id;
+        let key = card.node().map(|node| node.to_string()).unwrap_or_default();
+        // A virtual card has no node, so `id` is empty for it and every store lookup misses, as it did for its text id.
+        let id = key.as_str();
         let stored = entry.origin == Origin::Stored;
         let inv_zoom = pass.inv_zoom;
         // A stored card's rect is read fresh: a drag earlier in this frame's loop may have moved it.
@@ -952,10 +957,10 @@ impl App {
         // The Tab entry (first card) and the card holding keyboard focus stay registered too, so
         // Tab can reach them and focus survives a pan that hasn't brought them into view yet, and
         // a note being edited, whose editor must stay laid out to keep its focus.
-        let keeps_keyboard = pass.order.first().is_some_and(|first| first == id)
-            || ui.memory(|m| m.has_focus(egui::Id::new(("graph_card", id))))
-            || ui.memory(|m| m.has_focus(egui::Id::new(("note_edit", id))));
-        if self.interaction.dragging.as_deref() != Some(id) && !keeps_keyboard && !rect.intersects(pass.viewport) {
+        let keeps_keyboard = pass.order.first() == Some(&card)
+            || ui.memory(|m| m.has_focus(card.widget()))
+            || ui.memory(|m| m.has_focus(card.editor()));
+        if self.interaction.dragging != Some(card) && !keeps_keyboard && !rect.intersects(pass.viewport) {
             return None;
         }
         let view = self.card_view(entry, pass.members)?;
@@ -979,9 +984,9 @@ impl App {
         // header) still counts; being hover-only it takes no clicks.
         // Focusable only as the Tab entry (first in `pass.order`) or while holding focus, so egui's
         // own traversal can't walk the cards in draw order.
-        let card_id = egui::Id::new(("graph_card", id));
+        let card_id = card.widget();
         // The Tab entry is first in the order; the position (a scan) is only needed for the order badges.
-        let is_tab_entry = pass.order.first().is_some_and(|first| first == id);
+        let is_tab_entry = pass.order.first() == Some(&card);
         // A card takes a drag (and so keeps the scene from panning under it) only if its kind may be picked up: a
         // stored card is moved by it, a virtual one carried (handled below).
         let draggable = entry.caps().drag_source && (stored || pass.carry);
@@ -999,7 +1004,7 @@ impl App {
             && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Space))
             && entry.caps().selectable
         {
-            self.toggle_selected(id);
+            self.toggle_selected(card);
         }
         let response = ui.interact(body.interact_rect, card_id, sense);
         // Not while a card's menu is open: the pointer is usually still on
@@ -1031,7 +1036,7 @@ impl App {
             pass.pan_target = Some(rect);
         }
         if pass.show_order {
-            let number = pass.order.iter().position(|o| o == id).map_or(0, |s| s + 1);
+            let number = pass.order.iter().position(|o| *o == card).map_or(0, |s| s + 1);
             let corner = rect.left_top();
             deferred_overlays.push_top(Box::new(move |painter, project| {
                 // Kept on screen: a card at the edge would clip its badge.
@@ -1045,16 +1050,16 @@ impl App {
                 painter.galley(cap.center() - galley.size() / 2.0, galley, TEXT_PRIMARY);
             }));
         }
-        let hover = ui.interact(rect, egui::Id::new(("graph_card_hover", id)), egui::Sense::hover());
+        let hover = ui.interact(rect, egui::Id::new(("graph_card_hover", card)), egui::Sense::hover());
         let pointer_on_card = hover.hovered() || response.hovered();
         // Last frame's hover too, which keeps the ✕ drawn while the
         // pointer is on it: registered last, it takes the hover from both
         // interacts above.
-        let is_hovered = self.interaction.hovered.as_deref() == Some(id) || pointer_on_card;
+        let is_hovered = self.interaction.hovered == Some(card) || pointer_on_card;
 
         // One eased hover drives the glow, the fill's brightening and the
         // border, so the three move together.
-        let hover_t = ui.ctx().animate_bool_responsive(egui::Id::new(("graph_card_hover_t", id)), is_hovered);
+        let hover_t = ui.ctx().animate_bool_responsive(egui::Id::new(("graph_card_hover_t", card)), is_hovered);
         let style = card_style(view.kind, ui.visuals());
         let (border_width, border_color) = card_border(&view, &style, hover_t);
         let mut background_shapes: Vec<egui::Shape> =
@@ -1087,7 +1092,7 @@ impl App {
         // The card the dragged one would drop onto: a bold ring, expanded
         // well past this card so it still shows around a larger dragged
         // card on top of it. Tracks the pointer directly, not eased.
-        if pass.drop_preview.as_ref().and_then(|(_, target)| target.as_deref()) == Some(id) {
+        if pass.drop_preview.as_ref().and_then(|(_, target)| *target) == Some(card) {
             ui.painter().rect_stroke(
                 rect.expand(16.0 * inv_zoom),
                 10.0 * inv_zoom,
@@ -1097,8 +1102,8 @@ impl App {
         }
         // Pick-target mode: a valid target gets a thinner accent ring, closer in than the drop ring, and brighter
         // while hovered, where a click would connect.
-        let reached = pass.connect_target == Some(id);
-        if pass.pick_targets.iter().any(|t| t == id) || (reached && pass.connect_ring.is_some()) {
+        let reached = pass.connect_target == Some(card);
+        if pass.pick_targets.contains(&card) || (reached && pass.connect_ring.is_some()) {
             let alpha = if pointer_on_card || reached { 255 } else { 160 };
             let ring = pass.connect_ring.filter(|_| reached).unwrap_or(ACCENT);
             ui.painter().rect_stroke(
@@ -1168,7 +1173,7 @@ impl App {
             let handles = crate::link_gestures::link_handle_rects(rect, pass.zoom_scale, self.graph_detail);
             for (side, handle) in handles {
                 let handle_response = ui
-                    .interact(handle, egui::Id::new(("link_handle", side, id)), egui::Sense::DRAG)
+                    .interact(handle, egui::Id::new(("link_handle", side, card)), egui::Sense::DRAG)
                     .on_hover_cursor(egui::CursorIcon::Crosshair)
                     .on_hover_text("Drag to another card to link them");
                 handle_hovered |= handle_response.hovered();
@@ -1189,7 +1194,7 @@ impl App {
         // follows the pointer, and the release goes to its source (`VirtualSource::on_drop`).
         let carried = !stored && entry.caps().drag_source && pass.carry;
         if carried && response.dragged() {
-            self.interaction.dragging = Some(id.to_string());
+            self.interaction.dragging = Some(card);
             self.interaction.drag_moved = Vec::new();
             let to_local = ui.ctx().layer_transform_from_global(ui.layer_id());
             let (press, now) = (ui.input(|i| i.pointer.press_origin()), response.interact_pointer_pos());
@@ -1203,9 +1208,9 @@ impl App {
                 painter.rect_filled(screen, 2.0, fill.gamma_multiply(0.8));
                 painter.rect_stroke(screen, 2.0, egui::Stroke::new(2.0, ACCENT), egui::StrokeKind::Inside);
             }));
-        } else if carried && self.interaction.dragging.as_deref() == Some(id) {
+        } else if carried && self.interaction.dragging == Some(card) {
             self.release_drag();
-            let target = pass.drop_preview.clone();
+            let target = *pass.drop_preview;
             // Where the pointer let go, in world space: the ghost's transform, applied to the latest pointer position.
             let to_local = ui.ctx().layer_transform_from_global(ui.layer_id());
             let at = ui.input(|i| i.pointer.interact_pos()).map_or(rect.center(), |p| to_local.map_or(p, |t| t * p));
@@ -1219,7 +1224,7 @@ impl App {
             ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
         }
         if stored && response.dragged() {
-            self.interaction.dragging = Some(id.to_string());
+            self.interaction.dragging = Some(card);
             // Dragging one selected tab moves the whole selection, as one
             // unit (see `take_drag_unit`). Recomputed (and overwritten)
             // every dragged frame rather than only at drag start: cheap,
@@ -1227,24 +1232,25 @@ impl App {
             // `drag_moved` holds when the drag ends is the full, correct
             // set to save -- see the release branch below.
             let delta = response.drag_delta();
-            let moved: Vec<String> =
-                if view.selected { self.interaction.selected.iter().cloned().collect() } else { vec![id.to_string()] };
+            let moved: Vec<CardId> =
+                if view.selected { self.interaction.selected.iter().copied().collect() } else { vec![card] };
             // The layout only: the document pos is written once, at release (`release_drag`).
-            for moved_id in &moved {
-                if self.nodes.contains_key(moved_id) {
-                    self.layout.entry(moved_id.clone()).or_default().pos += delta;
+            for moved_id in moved.iter().filter_map(|moved| moved.node()) {
+                let moved_id = moved_id.to_string();
+                if self.nodes.contains_key(&moved_id) {
+                    self.layout.entry(moved_id).or_default().pos += delta;
                 }
             }
             self.interaction.drag_moved = moved;
-        } else if stored && self.interaction.dragging.as_deref() == Some(id) {
+        } else if stored && self.interaction.dragging == Some(card) {
             self.release_drag();
             // `drop_preview` was computed this frame for this card, and
             // nothing moved it since (no drag delta on a release frame).
-            pass.actions.push(GraphAction::Drop { id: id.to_string(), target: pass.drop_preview.clone() });
+            pass.actions.push(GraphAction::Drop { id: card, target: *pass.drop_preview });
         }
         if still_hovered {
-            self.interaction.hovered = Some(id.to_string());
-        } else if self.interaction.hovered.as_deref() == Some(id) {
+            self.interaction.hovered = Some(card);
+        } else if self.interaction.hovered == Some(card) {
             self.interaction.hovered = None;
         }
 
@@ -1276,7 +1282,8 @@ impl App {
                 None => CardBody { interact_rect: rect, tooltip: None },
             };
         }
-        let id = entry.id.as_str();
+        let key = entry.id.to_string();
+        let id = key.as_str();
         match view.kind.ty {
             TYPE_DOWNLOAD => self.paint_download_body(ui, pass, id, view, rect),
             TYPE_NOTE => self.paint_note_body(ui, pass, id, view, rect),

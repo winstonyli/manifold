@@ -344,7 +344,9 @@ impl App {
     /// group (`GraphAction::CloseSelected`).
     fn unselected_members_of_selection(&self) -> usize {
         let mut inside = std::collections::HashSet::new();
-        let mut frontier: Vec<&str> = self.interaction.selected.iter().map(String::as_str).collect();
+        let selected: Vec<String> =
+            self.interaction.selected.iter().filter_map(|c| c.node()).map(|n| n.to_string()).collect();
+        let mut frontier: Vec<&str> = selected.iter().map(String::as_str).collect();
         while let Some(group) = frontier.pop() {
             for member in self.members_of(group) {
                 if inside.insert(member) {
@@ -352,7 +354,7 @@ impl App {
                 }
             }
         }
-        inside.iter().filter(|id| !self.interaction.selected.contains(**id)).count()
+        inside.iter().filter(|id| !self.interaction.selected.contains(&CardId::stored(id))).count()
     }
 
     /// Group/Close Selected, shown once a rectangle select has picked something.
@@ -430,22 +432,20 @@ mod tests {
         use crate::fetched::Placement;
         let mut app = App::default();
         let top = Placement { group: None, pos: egui::Vec2::ZERO };
-        app.place_group(Some("outer".into()), "Outer", top);
-        app.place_group(
-            Some("inner".into()),
-            "Inner",
-            Placement { group: Some("outer".into()), pos: egui::Vec2::ZERO },
-        );
-        for (id, group) in [("a", "outer"), ("b", "inner"), ("c", "inner")] {
+        use crate::card_id::testutil::node;
+        let [outer, inner, a, b, c] = [1, 2, 3, 4, 5].map(|n| node(n).to_string());
+        app.place_group(Some(outer.clone()), "Outer", top);
+        app.place_group(Some(inner.clone()), "Inner", Placement { group: Some(outer.clone()), pos: egui::Vec2::ZERO });
+        for (id, group) in [(&a, &outer), (&b, &inner), (&c, &inner)] {
             let note = Runtime::Note(NotePayload { text: "n".into(), editing: false });
-            app.insert_placeholder_node(id.into(), egui::Vec2::ZERO, crate::store::model::Kind::Note, note);
-            app.edit_group(id, Some(group.into()));
+            app.insert_placeholder_node(id.clone(), egui::Vec2::ZERO, crate::store::model::Kind::Note, note);
+            app.edit_group(id, Some(group.clone()));
         }
-        app.interaction.selected.insert("a".into());
+        app.interaction.selected.insert(CardId::stored(&a));
         assert_eq!(app.unselected_members_of_selection(), 0, "a note holds nothing");
-        app.interaction.selected.insert("outer".into());
+        app.interaction.selected.insert(CardId::stored(&outer));
         assert_eq!(app.unselected_members_of_selection(), 3, "inner, b and c; a is selected itself");
-        app.interaction.selected.insert("c".into());
+        app.interaction.selected.insert(CardId::stored(&c));
         assert_eq!(app.unselected_members_of_selection(), 2, "c is selected too");
     }
 

@@ -95,8 +95,9 @@ fn entering_builds_the_level_and_leaving_drops_it() {
     app.switch_group_level(Some(j.clone()));
     let level = app.json_level.as_ref().expect("entering a Json node builds its level");
     assert_eq!(level.node_id, j);
-    let ids: Vec<String> = app.level_items().into_iter().map(|i| i.id).collect();
-    assert_eq!(ids, [format!("{J}#"), format!("{J}#/a"), format!("{J}#/c")]);
+    let ids: Vec<CardId> = app.level_items().into_iter().map(|i| i.id).collect();
+    let want = ["", "/a", "/c"].map(|pointer| CardId::virt(JSON_SOURCE, fnv64(&[J, "#", pointer])));
+    assert_eq!(ids, want);
     assert!(app.level_items().iter().all(|i| i.origin == Origin::Json));
     assert_eq!(app.level_edges().len(), 2);
     assert!(app.level_edges().iter().all(|e| e.link.is_none()), "no JSON-level line is a link");
@@ -695,4 +696,44 @@ fn a_json_level_card_has_no_ability_through_its_own_row() {
             "{item:?}: {caps:?}"
         );
     }
+}
+
+fn level_of(node: &str, json: &str) -> JsonLevel {
+    JsonLevel::new(node.into(), Arc::new(serde_json::from_str(json).unwrap()), &crate::json_view::NO_VIEW)
+}
+
+/// Plan Task 3b: every card of a level has its own non-node id.
+#[test]
+fn two_cards_of_one_level_get_different_ids() {
+    let level = level_of("n", r#"{"a": {"x": 1}, "b": {"y": 2}}"#);
+    assert!(level.cards.len() >= 3);
+    let ids: HashSet<_> = (0..level.cards.len()).map(|i| level.card_id(i)).collect();
+    assert_eq!(ids.len(), level.cards.len());
+    for i in 0..level.cards.len() {
+        let id = level.card_id(i);
+        assert!(id.is_virtual());
+        assert_eq!(id.source_tag(), Some(crate::card_id::fnv64(&[crate::card_id::JSON_SOURCE])));
+    }
+}
+
+/// Review Focus 0: a card's id names its pointer, not its index, so collapsing a sibling that moves it in the card
+/// list leaves its id alone.
+#[test]
+fn a_cards_id_is_unchanged_when_a_sibling_is_expanded() {
+    let mut level = level_of("n", r#"{"a": {"x": {"deep": 1}}, "b": {"y": 2}}"#);
+    let b = level.index["/b"];
+    let (id, before) = (level.card_id(b), level.cards.len());
+    level.expanded.remove("/a");
+    level.relayout(&crate::json_view::NO_VIEW);
+    assert!(level.cards.len() < before, "collapsing /a hides its children");
+    let moved = level.index["/b"];
+    assert_eq!(level.card_id(moved), id);
+}
+
+#[test]
+fn a_card_of_another_json_node_with_the_same_pointer_gets_another_id() {
+    let (one, two) = (level_of("n1", r#"{"a": {"x": 1}}"#), level_of("n2", r#"{"a": {"x": 1}}"#));
+    let at = one.index["/a"];
+    assert_eq!(two.index["/a"], at);
+    assert_ne!(one.card_id(at), two.card_id(at));
 }

@@ -237,7 +237,7 @@ impl App {
         let ids: Vec<String> = if self.interaction.selected.is_empty() {
             self.focused.iter().cloned().collect()
         } else {
-            self.interaction.selected.iter().cloned().collect()
+            self.interaction.selected.iter().filter_map(|c| c.node()).map(|n| n.to_string()).collect()
         };
         let ids: Vec<String> = ids.into_iter().filter(|id| self.nodes.contains_key(id)).collect();
         let pin = ids.iter().any(|id| !self.doc.mirror.pinned(id));
@@ -428,7 +428,8 @@ impl App {
     /// context menu's own "Duplicate" entry: the selection when one is
     /// made, else the focused card. A no-op if neither exists.
     pub(crate) fn duplicate_focused_tab_shortcut(&mut self) {
-        if let Some(id) = self.interaction.selected.iter().next().cloned().or_else(|| self.focused.clone()) {
+        let selected = self.interaction.selected.iter().find_map(|c| c.node()).map(|n| n.to_string());
+        if let Some(id) = selected.or_else(|| self.focused.clone()) {
             self.duplicate_selection(&id);
         }
     }

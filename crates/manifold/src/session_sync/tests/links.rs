@@ -53,7 +53,7 @@ fn a_link_is_a_level_edge_only_while_both_ends_are_live_at_this_level() {
     assert!(edges
         .iter()
         .filter(|e| e.kind == EdgeKind::Link)
-        .all(|e| (e.from_id.as_str(), e.to_id.as_str()) == (a.as_str(), b.as_str()) && e.link.is_some()));
+        .all(|e| (e.from_id.to_string(), e.to_id.to_string()) == (a.clone(), b.clone()) && e.link.is_some()));
     app.edit_group(&b, Some("elsewhere".into()));
     assert!(app.level_edges().iter().all(|e| e.kind != EdgeKind::Link), "another level: not shown");
 }

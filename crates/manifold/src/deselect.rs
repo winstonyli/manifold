@@ -3,18 +3,20 @@
 
 use crate::App;
 
+use crate::card_id::CardId;
+
 impl App {
     /// Puts card `id` in the selection, or takes it out if it is in (Space on a focused card, Ctrl-click).
-    pub(crate) fn toggle_selected(&mut self, id: &str) {
-        if !self.interaction.selected.remove(id) {
-            self.interaction.selected.insert(id.to_string());
+    pub(crate) fn toggle_selected(&mut self, id: CardId) {
+        if !self.interaction.selected.remove(&id) {
+            self.interaction.selected.insert(id);
         }
     }
 
     /// Makes card `id` the whole selection (a plain click on a card).
-    pub(crate) fn select_only(&mut self, id: &str) {
+    pub(crate) fn select_only(&mut self, id: CardId) {
         self.interaction.selected.clear();
-        self.interaction.selected.insert(id.to_string());
+        self.interaction.selected.insert(id);
     }
 
     /// Whether a click on the graph's Scene background empties the selection. `clicked` is the Scene's own primary
@@ -44,6 +46,7 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+    use crate::card_id::CardId;
     use crate::session_sync::tests::sleeping_tab;
     use crate::store::model::Kind;
     use crate::App;
@@ -72,7 +75,7 @@ mod tests {
             }
             rig.app.camera.jump_to(rig.app.fit_all_nodes_scene_rect());
             rig.frame(vec![], egui::Modifiers::NONE);
-            rig.app.interaction.selected.extend(rig.ids.iter().cloned());
+            rig.app.interaction.selected.extend(rig.ids.iter().map(|i| CardId::stored(i)));
             rig
         }
 
@@ -132,8 +135,8 @@ mod tests {
             below
         }
 
-        fn both(&self) -> HashSet<String> {
-            self.ids.iter().cloned().collect()
+        fn both(&self) -> HashSet<CardId> {
+            self.ids.iter().map(|i| CardId::stored(i)).collect()
         }
     }
 
@@ -195,7 +198,7 @@ mod tests {
         let mut rig = Rig::new();
         let centre = rig.card(0).center();
         rig.click_with(centre, egui::Modifiers::CTRL);
-        assert_eq!(rig.app.interaction.selected, HashSet::from([rig.ids[1].clone()]), "out");
+        assert_eq!(rig.app.interaction.selected, HashSet::from([CardId::stored(&rig.ids[1])]), "out");
         rig.app.transition = None;
         rig.click_with(centre, egui::Modifiers::CTRL);
         assert_eq!(rig.app.interaction.selected, rig.both(), "and back in");
@@ -208,7 +211,7 @@ mod tests {
         let mut rig = Rig::new();
         let centre = rig.card(0).center();
         rig.click(centre);
-        assert_eq!(rig.app.interaction.selected, HashSet::from([rig.ids[0].clone()]));
+        assert_eq!(rig.app.interaction.selected, HashSet::from([CardId::stored(&rig.ids[0])]));
         assert!(rig.app.transition.is_none(), "a single click does not open the tab");
     }
 

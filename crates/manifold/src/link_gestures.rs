@@ -2,6 +2,7 @@
 //! card's edge handle links it to the card it is released on. Both act on `link` edges only; opened-from stays
 //! menu-only.
 
+use crate::card_id::CardId;
 use crate::level::LevelEdge;
 use crate::store::model::NodeId;
 use crate::App;
@@ -412,7 +413,7 @@ impl App {
         };
         let fixed_is_from = !grabs_from_end(edge, at);
         let fixed = if fixed_is_from { &edge.from_id } else { &edge.to_id };
-        self.start_connect_drag(fixed);
+        self.start_connect_drag(&fixed.to_string());
         self.link.retarget = Some(LinkRetarget { link, fixed_is_from });
         true
     }
@@ -424,9 +425,10 @@ impl App {
     /// all, and a refused card toasts on release.
     pub(crate) fn card_within(&self, at: egui::Pos2, tolerance: f32, source: &str) -> Option<String> {
         let items = self.level_items();
+        let source_card = CardId::stored(source);
         let cards = || items.iter().rev().filter(|item| item.origin == crate::level::Origin::Stored);
         if let Some(under) = cards().find(|item| item.rect.contains(at)) {
-            return (under.id != source).then(|| under.id.clone());
+            return (under.id != source_card).then(|| under.id.to_string());
         }
         // Only cards the ring marks (`valid_targets`) count here, so a refused neighbour never shadows a valid one.
         let edge = self.link.connecting.as_ref().map_or(crate::caps::LINK, |(_, edge)| edge);
@@ -439,12 +441,12 @@ impl App {
                     best = Some((d, item));
                 }
             }
-            best.map(|(_, item)| item.id.clone())
+            best.map(|(_, item)| item.id.to_string())
         };
         // A dragged link end deletes its link on empty canvas, so there any other card in reach (its own old card, a
         // refused one) is where it landed, tried after the valid ones; the release then resolves it, never as canvas.
-        nearest(&|item| valid.contains(&item.id))
-            .or_else(|| self.link.retarget.is_some().then(|| nearest(&|item| item.id != source)).flatten())
+        nearest(&|item| valid.contains(&item.id.to_string()))
+            .or_else(|| self.link.retarget.is_some().then(|| nearest(&|item| item.id != source_card)).flatten())
     }
 
     /// The pointer in world space, inside `build_graph_ui`'s Scene (this frame's layer transform).

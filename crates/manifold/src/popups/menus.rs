@@ -131,7 +131,7 @@ pub(crate) struct MenuPopups {
     /// marquee. Drawn by `App::build_node_menu`, which dispatches on the node's kind.
     pub(crate) node_menu: NodeMenu,
     /// The right-click menu of a trail strip page: its virtual card id and the screen point (`App::build_trail_menu`).
-    pub(crate) trail_menu: Option<(String, egui::Pos2)>,
+    pub(crate) trail_menu: Option<(crate::card_id::CardId, egui::Pos2)>,
     /// The Back/Forward branch popup's camera and which popup it belongs to: recentred every time the popup opens
     /// (`popup_centres_cursor`), kept while it stays open.
     pub(crate) trail_canvas: Option<(AnchoredPopup, crate::graph_ui::GraphCamera)>,

@@ -58,13 +58,13 @@ impl App {
                 let edit = ui.put(
                     text_rect,
                     egui::TextEdit::multiline(&mut note.text)
-                        .id(egui::Id::new(("note_edit", id)))
+                        .id(CardId::stored(id).editor())
                         .frame(egui::Frame::NONE)
                         .font(egui::FontId::proportional(13.0))
                         .text_color(NOTE_TEXT)
                         .hint_text("Type a note..."),
                 );
-                if self.interaction.focus_new_note.as_ref().is_some_and(|(n, _)| n == id) {
+                if self.interaction.focus_new_note.as_ref().is_some_and(|(n, _)| *n == CardId::stored(id)) {
                     self.interaction.focus_new_note = None;
                     edit.request_focus();
                 }
@@ -76,7 +76,7 @@ impl App {
                 // Escape ends the edit; focus goes back to the card so keyboard users keep their place
                 // (a click elsewhere keeps the focus it took).
                 if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                    ui.memory_mut(|m| m.request_focus(egui::Id::new(("graph_card", id))));
+                    ui.memory_mut(|m| m.request_focus(CardId::stored(id).widget()));
                 }
                 self.blur_note(id);
             }

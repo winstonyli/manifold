@@ -20,7 +20,7 @@ pub(crate) enum Origin {
 /// One card on the current level, as the shared chrome sees it.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct CardEntry {
-    pub(crate) id: String,
+    pub(crate) id: CardId,
     /// What the card is: the key into the capability rows. A JSON level's card is `TYPE_JSON_LEVEL`, whose row
     /// grants no ability.
     pub(crate) kind: CardKind,
@@ -78,8 +78,8 @@ pub(crate) struct LevelEdge {
     pub(crate) from: egui::Pos2,
     pub(crate) to: egui::Pos2,
     /// The cards at each end (a JSON level's card ids there).
-    pub(crate) from_id: String,
-    pub(crate) to_id: String,
+    pub(crate) from_id: CardId,
+    pub(crate) to_id: CardId,
     pub(crate) curve: EdgeCurve,
     pub(crate) highlight: bool,
     pub(crate) kind: EdgeKind,
@@ -157,7 +157,7 @@ impl App {
                     kind: self.card_kind(id)?,
                     origin: Origin::Stored,
                     rect: node_card_rect(self.layout_pos(id), &node.runtime),
-                    id: id.clone(),
+                    id: CardId::stored(id),
                 })
             })
             .collect();
@@ -201,17 +201,18 @@ impl App {
                 })
                 .collect();
         }
-        let rects: HashMap<&str, egui::Rect> = items.iter().map(|e| (e.id.as_str(), e.rect)).collect();
-        let rect_of = |id: &str| rects.get(id).copied();
+        let rects: HashMap<CardId, egui::Rect> = items.iter().map(|e| (e.id, e.rect)).collect();
+        let rect_of = |id: CardId| rects.get(&id).copied();
         let opened = self.nodes.iter().filter(|(id, _)| self.in_level(id)).filter_map(|(id, _)| {
             let parent_id = self.opened_from(id)?;
             self.nodes.get(parent_id).filter(|_| self.in_level(parent_id))?;
-            let (from, to) = crate::link_gestures::facing_ends(rect_of(parent_id)?, rect_of(id)?);
+            let (from, to) =
+                crate::link_gestures::facing_ends(rect_of(CardId::stored(parent_id))?, rect_of(CardId::stored(id))?);
             Some(LevelEdge {
                 from,
                 to,
-                from_id: parent_id.to_string(),
-                to_id: id.clone(),
+                from_id: CardId::stored(parent_id),
+                to_id: CardId::stored(id),
                 curve: EdgeCurve::Bow,
                 highlight: false,
                 kind: EdgeKind::Opened,
@@ -226,12 +227,13 @@ impl App {
             if !both_here {
                 return None;
             }
-            let (from_end, to_end) = crate::link_gestures::facing_ends(rect_of(&from)?, rect_of(&to)?);
+            let (from_end, to_end) =
+                crate::link_gestures::facing_ends(rect_of(CardId::stored(&from))?, rect_of(CardId::stored(&to))?);
             Some(LevelEdge {
                 from: from_end,
                 to: to_end,
-                from_id: from,
-                to_id: to,
+                from_id: CardId::stored(&from),
+                to_id: CardId::stored(&to),
                 curve: EdgeCurve::Bow,
                 highlight: false,
                 kind: EdgeKind::Link,
@@ -243,12 +245,13 @@ impl App {
         let jars = self.nodes.keys().filter(|id| self.in_level(id)).filter_map(|id| {
             let jar = self.doc.mirror.jar(id)?.to_string();
             self.nodes.get(&jar).filter(|_| self.in_level(&jar))?;
-            let (from, to) = crate::link_gestures::facing_ends(rect_of(id)?, rect_of(&jar)?);
+            let (from, to) =
+                crate::link_gestures::facing_ends(rect_of(CardId::stored(id))?, rect_of(CardId::stored(&jar))?);
             Some(LevelEdge {
                 from,
                 to,
-                from_id: id.clone(),
-                to_id: jar,
+                from_id: CardId::stored(id),
+                to_id: CardId::stored(&jar),
                 curve: EdgeCurve::Bow,
                 highlight: false,
                 kind: EdgeKind::Jar,
@@ -287,7 +290,19 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::card_id::CardId;
     use crate::store::model::Kind;
+
+    // Real node ids (actor 1, counters 1..): `CardId::stored` and the edges need text that parses as a `NodeId`.
+    const G: &str = "0000000000000001-1";
+    const D: &str = "0000000000000001-2";
+    const INNER: &str = "0000000000000001-3";
+    const AWAY: &str = "0000000000000001-4";
+    const P: &str = "0000000000000001-5";
+    const C: &str = "0000000000000001-6";
+    const ELSEWHERE: &str = "0000000000000001-7";
+    const D1: &str = "0000000000000001-8";
+    const D2: &str = "0000000000000001-9";
 
     fn download(path: &str) -> Runtime {
         Runtime::Download(DownloadPayload {
@@ -302,22 +317,22 @@ mod tests {
     #[test]
     fn level_items_list_the_current_level_bottom_first_in_draw_order() {
         let mut app = App::default();
-        app.place_group(Some("g".into()), "G", crate::fetched::Placement { group: None, pos: egui::Vec2::ZERO });
-        app.insert_placeholder_node("d".into(), egui::vec2(300.0, 0.0), Kind::Download, download("a.bin"));
-        app.insert_placeholder_node("inner".into(), egui::vec2(0.0, 0.0), Kind::Download, download("b.bin"));
-        app.edit_group("inner", Some("g".into()));
+        app.place_group(Some(G.into()), "G", crate::fetched::Placement { group: None, pos: egui::Vec2::ZERO });
+        app.insert_placeholder_node(D.into(), egui::vec2(300.0, 0.0), Kind::Download, download("a.bin"));
+        app.insert_placeholder_node(INNER.into(), egui::vec2(0.0, 0.0), Kind::Download, download("b.bin"));
+        app.edit_group(INNER, Some(G.into()));
 
-        let top: Vec<(String, CardKind)> = app.level_items().into_iter().map(|i| (i.id, i.kind)).collect();
+        let top: Vec<(CardId, CardKind)> = app.level_items().into_iter().map(|i| (i.id, i.kind)).collect();
         // Downloads draw before groups (`Caps::draw_layer`), whatever the insertion order.
         use crate::card_kind::fixtures::plain;
         use crate::store::model::{TYPE_DOWNLOAD, TYPE_GROUP};
-        assert_eq!(top, [("d".to_string(), plain(TYPE_DOWNLOAD)), ("g".to_string(), plain(TYPE_GROUP)),]);
-        assert_eq!(app.level_items()[0].rect, node_card_rect(app.layout_pos("d"), &app.nodes["d"].runtime));
-        assert_eq!(app.level_scan().groups, ["g"]);
+        assert_eq!(top, [(CardId::stored(D), plain(TYPE_DOWNLOAD)), (CardId::stored(G), plain(TYPE_GROUP))]);
+        assert_eq!(app.level_items()[0].rect, node_card_rect(app.layout_pos(D), &app.nodes[D].runtime));
+        assert_eq!(app.level_scan().groups, [G]);
 
-        app.current_group = Some("g".into());
-        let inside: Vec<String> = app.level_items().into_iter().map(|i| i.id).collect();
-        assert_eq!(inside, ["inner"]);
+        app.current_group = Some(G.into());
+        let inside: Vec<CardId> = app.level_items().into_iter().map(|i| i.id).collect();
+        assert_eq!(inside, [CardId::stored(INNER)]);
         assert!(app.level_scan().groups.is_empty());
     }
 
@@ -326,12 +341,12 @@ mod tests {
     #[test]
     fn level_scan_buckets_every_node_on_the_level_by_layer_in_node_order() {
         let mut app = App::default();
-        app.place_group(Some("g".into()), "G", crate::fetched::Placement { group: None, pos: egui::Vec2::ZERO });
-        app.insert_placeholder_node("d1".into(), egui::Vec2::ZERO, Kind::Download, download("a.bin"));
+        app.place_group(Some(G.into()), "G", crate::fetched::Placement { group: None, pos: egui::Vec2::ZERO });
+        app.insert_placeholder_node(D1.into(), egui::Vec2::ZERO, Kind::Download, download("a.bin"));
         app.new_note_shortcut();
-        app.insert_placeholder_node("d2".into(), egui::Vec2::ZERO, Kind::Download, download("b.bin"));
-        app.insert_placeholder_node("away".into(), egui::Vec2::ZERO, Kind::Download, download("c.bin"));
-        app.edit_group("away", Some("g".into()));
+        app.insert_placeholder_node(D2.into(), egui::Vec2::ZERO, Kind::Download, download("b.bin"));
+        app.insert_placeholder_node(AWAY.into(), egui::Vec2::ZERO, Kind::Download, download("c.bin"));
+        app.edit_group(AWAY, Some(G.into()));
         let scan = app.level_scan();
         let by_filter = |pick: &dyn Fn(CardKind) -> bool| -> Vec<String> {
             app.node_order
@@ -345,7 +360,7 @@ mod tests {
         }
         assert_eq!(scan.groups, by_filter(&|kind| is_container(kind.ty)));
         assert_eq!(scan.layers.concat().len(), 4, "the top level's nodes, once each");
-        assert_eq!(scan.layers[2], ["d1", "d2"]);
+        assert_eq!(scan.layers[2], [D1, D2]);
     }
 
     #[test]
@@ -360,13 +375,13 @@ mod tests {
     #[test]
     fn level_edges_from_reads_the_rects_it_is_given() {
         let mut app = App::default();
-        app.insert_placeholder_node("p".into(), egui::vec2(0.0, 0.0), Kind::Download, download("p.bin"));
-        app.insert_placeholder_node("c".into(), egui::vec2(100.0, 50.0), Kind::Download, download("c.bin"));
-        app.edit_parent("c", Some("p".into()));
+        app.insert_placeholder_node(P.into(), egui::vec2(0.0, 0.0), Kind::Download, download("p.bin"));
+        app.insert_placeholder_node(C.into(), egui::vec2(100.0, 50.0), Kind::Download, download("c.bin"));
+        app.edit_parent(C, Some(P.into()));
         assert_eq!(app.level_edges_from(&app.level_items()), app.level_edges());
         let mut items = app.level_items();
         let shift = egui::vec2(500.0, 0.0);
-        items.iter_mut().filter(|e| e.id == "c").for_each(|e| e.rect = e.rect.translate(shift));
+        items.iter_mut().filter(|e| e.id == CardId::stored(C)).for_each(|e| e.rect = e.rect.translate(shift));
         let moved = app.level_edges_from(&items);
         assert_eq!(moved[0].to, app.level_edges()[0].to + shift, "the edge follows the given rect");
     }
@@ -374,41 +389,43 @@ mod tests {
     #[test]
     fn level_edges_join_parent_and_child_facing_sides_on_this_level_only() {
         let mut app = App::default();
-        app.insert_placeholder_node("p".into(), egui::vec2(0.0, 0.0), Kind::Download, download("p.bin"));
-        app.insert_placeholder_node("c".into(), egui::vec2(100.0, 50.0), Kind::Download, download("c.bin"));
-        app.insert_placeholder_node("elsewhere".into(), egui::vec2(9.0, 9.0), Kind::Download, download("e.bin"));
-        app.edit_parent("c", Some("p".into()));
-        app.edit_parent("elsewhere", Some("p".into()));
-        app.edit_group("elsewhere", Some("other".into()));
+        app.insert_placeholder_node(P.into(), egui::vec2(0.0, 0.0), Kind::Download, download("p.bin"));
+        app.insert_placeholder_node(C.into(), egui::vec2(100.0, 50.0), Kind::Download, download("c.bin"));
+        app.insert_placeholder_node(ELSEWHERE.into(), egui::vec2(9.0, 9.0), Kind::Download, download("e.bin"));
+        app.edit_parent(C, Some(P.into()));
+        app.edit_parent(ELSEWHERE, Some(P.into()));
+        app.edit_group(ELSEWHERE, Some("other".into()));
 
         let edges = app.level_edges();
         assert_eq!(edges.len(), 1);
         let rect = |id: &str| node_card_rect(app.layout_pos(id), &app.nodes[id].runtime);
-        let (p, c) = (rect("p"), rect("c"));
+        let (p, c) = (rect(P), rect(C));
         assert_eq!((edges[0].from, edges[0].to), crate::link_gestures::facing_ends(p, c));
         assert_eq!(edges[0].from, p.right_center(), "c lies mostly to the right of p: p's right side");
         assert_eq!(edges[0].to, c.left_center(), "and c's left side");
         assert_eq!(edges[0].curve, EdgeCurve::Bow);
         assert_eq!(
-            (edges[0].from_id.as_str(), edges[0].to_id.as_str(), edges[0].link.as_deref()),
-            ("p", "c", None),
+            (edges[0].from_id, edges[0].to_id, edges[0].link.as_deref()),
+            (CardId::stored(P), CardId::stored(C), None),
             "an opened-from line names its ends and no Link node"
         );
     }
 
     #[test]
     fn a_virtual_source_adds_edges_between_its_entries_beside_the_stored_ones() {
-        use crate::virtual_source::fake::FakeSource;
+        use crate::virtual_source::fake::{self, FakeSource};
         let mut app = App::default();
-        app.insert_placeholder_node("p".into(), egui::vec2(0.0, 0.0), Kind::Download, download("p.bin"));
-        app.insert_placeholder_node("c".into(), egui::vec2(100.0, 50.0), Kind::Download, download("c.bin"));
-        app.edit_parent("c", Some("p".into()));
+        app.insert_placeholder_node(P.into(), egui::vec2(0.0, 0.0), Kind::Download, download("p.bin"));
+        app.insert_placeholder_node(C.into(), egui::vec2(100.0, 50.0), Kind::Download, download("c.bin"));
+        app.edit_parent(C, Some(P.into()));
         app.register_virtual_source(std::rc::Rc::new(FakeSource::default()));
         let edges = app.level_edges();
-        assert!(edges.iter().any(|e| e.kind == EdgeKind::Opened && e.from_id == "p" && e.to_id == "c"));
-        let virt: Vec<_> = edges.iter().filter(|e| e.from_id.starts_with("virtual:")).collect();
+        assert!(edges
+            .iter()
+            .any(|e| e.kind == EdgeKind::Opened && e.from_id == CardId::stored(P) && e.to_id == CardId::stored(C)));
+        let virt: Vec<_> = edges.iter().filter(|e| e.from_id.is_virtual()).collect();
         assert_eq!(virt.len(), 1);
-        assert_eq!((virt[0].from_id.as_str(), virt[0].to_id.as_str()), ("virtual:fake:a", "virtual:fake:b"));
+        assert_eq!((virt[0].from_id, virt[0].to_id), (fake::id('a'), fake::id('b')));
         assert_eq!((virt[0].from, virt[0].to), (egui::pos2(50.0, 30.0), egui::pos2(250.0, 30.0)));
     }
 

@@ -25,14 +25,14 @@ impl App {
         // One drop target per frame, shared by the ring and the
         // release (see `drop_target`).
         let pointer = ui.input(|i| i.pointer.interact_pos());
-        let drop_preview = self
-            .interaction
-            .dragging
-            .clone()
-            .and_then(|dragged| self.drop_target(&dragged, pointer, leave_group_button_rect));
+        let drop_preview =
+            self.interaction.dragging.and_then(|dragged| self.drop_target(dragged, pointer, leave_group_button_rect));
         // The ring says where a drop would land; this says what it would do, beside the pointer.
         if let (Some((effect, target)), Some(at)) = (&drop_preview, pointer) {
-            let name = target.as_deref().map(|id| self.drop_target_name(id)).unwrap_or_default();
+            let name = target
+                .and_then(|id| id.node())
+                .map(|node| self.drop_target_name(&node.to_string()))
+                .unwrap_or_default();
             paint_drop_hint(ui.ctx(), at, &effect.hint(&name));
         }
 
@@ -66,7 +66,10 @@ impl App {
         };
         let members = self.group_members();
         // Pick-target mode: the cards a click would connect to, ringed.
-        let pick_targets = self.link.connecting.as_ref().map(|(from, edge)| self.valid_targets(edge, from));
+        let pick_targets: Option<Vec<CardId>> =
+            self.link.connecting.as_ref().map(|(from, edge)| {
+                self.valid_targets(edge, from).iter().map(|target| CardId::stored(target)).collect()
+            });
         let mut pass = CardPass {
             deferred_overlays,
             actions,
@@ -74,7 +77,7 @@ impl App {
             zoom_scale,
             drop_preview: &drop_preview,
             pick_targets: pick_targets.as_deref().unwrap_or_default(),
-            connect_target,
+            connect_target: connect_target.map(CardId::stored),
             connect_ring: self.link.retarget_preview.map(|outcome| crate::link_gestures::retarget_look(outcome).ring),
             show_order: self.card_nav_active || self.hints_revealed,
             order: &tab_order,
@@ -85,12 +88,13 @@ impl App {
             carry: true,
         };
         for entry in self.level_items_from(at_level) {
-            let id = &entry.id;
             let kind = entry.kind;
             if let Origin::Virtual(name) = entry.origin {
                 self.virtual_card_click(ui, &mut pass, &entry, name, pick_targets.is_some());
                 continue;
             }
+            let key = entry.id.to_string();
+            let id = &key;
             // Read before the frame: a Note's `TextEdit` can lose
             // focus to a click on its own header this very frame,
             // clearing `editing`, and that click must not
@@ -109,14 +113,14 @@ impl App {
             // Pick-target mode takes the card's click: a valid target finishes it, any other card ends it (as every
             // click does, `build_graph_ui`), and neither does the card's own click action.
             if pick_targets.is_some() {
-                if card.response.clicked() && pass.pick_targets.contains(id) {
+                if card.response.clicked() && pass.pick_targets.contains(&entry.id) {
                     pass.actions.push(GraphAction::FinishConnect(id.clone()));
                 }
                 continue;
             }
             // Ctrl-click on a card toggles it in the selection and opens nothing.
             if card.response.clicked() && ui.input(|i| i.modifiers.ctrl) {
-                self.toggle_selected(id);
+                self.toggle_selected(entry.id);
                 continue;
             }
             // A placeholder (see `ImagePayload::error`) has nothing
@@ -133,7 +137,7 @@ impl App {
                 || (card.response.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
             // Click (not drag -- egui doesn't report `clicked()` for a drag).
             if card.response.clicked() {
-                self.select_only(id);
+                self.select_only(entry.id);
             }
             let click = activated.then(|| click_action(kind)).flatten();
             match (kind.ty, click) {
@@ -149,7 +153,7 @@ impl App {
                         note.editing = true;
                     }
                     // The editor appears next frame; focus it so typing can start at once.
-                    ui.memory_mut(|m| m.request_focus(egui::Id::new(("note_edit", id))));
+                    ui.memory_mut(|m| m.request_focus(entry.id.editor()));
                 }
                 // Enters the node's JSON level, unless its file failed to
                 // load (plan ruling 10) or it's still being refetched (`JsonPayload::enterable`).
@@ -192,7 +196,7 @@ impl App {
             return Some(card.response);
         }
         if ui.input(|i| i.modifiers.ctrl) && entry.caps().selectable {
-            self.toggle_selected(&entry.id);
+            self.toggle_selected(entry.id);
         } else if let Some(source) = self.virtual_source(name) {
             pass.actions.extend(source.on_click(self, entry));
         }
@@ -200,8 +204,8 @@ impl App {
     }
 
     /// World rect of Tab-order card `id`: a stored node's, or a virtual entry's.
-    pub(crate) fn level_card_rect(&self, id: &str) -> Option<egui::Rect> {
-        self.card_rect(id).or_else(|| {
+    pub(crate) fn level_card_rect(&self, id: CardId) -> Option<egui::Rect> {
+        id.node().and_then(|node| self.card_rect(&node.to_string())).or_else(|| {
             self.virtual_sources.iter().flat_map(|source| source.entries(self)).find(|e| e.id == id).map(|e| e.rect)
         })
     }
@@ -257,11 +261,7 @@ impl App {
         if self.interaction.peek_suppressed.is_some() && self.interaction.peek_suppressed != self.interaction.hovered {
             self.interaction.peek_suppressed = None;
         }
-        let peek_target = self
-            .interaction
-            .hovered
-            .clone()
-            .filter(|id| self.interaction.peek_suppressed.as_deref() != Some(id.as_str()));
+        let peek_target = self.interaction.hovered.filter(|id| self.interaction.peek_suppressed != Some(*id));
         // Polled every frame regardless of `peek_target`, same
         // "continuous polling, not just while shown" reasoning the
         // dropdown popups' own fade needs -- a plain `if let Some`
@@ -273,8 +273,9 @@ impl App {
         let peek_fade = ui.ctx().animate_bool(egui::Id::new("peek_preview_fade"), peek_target.is_some());
         if peek_fade > 0.0 {
             if let Some(hovered_id) = peek_target {
-                let node_pos = self.nodes.contains_key(&hovered_id).then(|| self.layout_pos(&hovered_id));
-                let thumb_id = self.gpu.as_ref().and_then(|g| g.thumbnail_id(&hovered_id));
+                let key = hovered_id.node().map(|node| node.to_string()).unwrap_or_default();
+                let node_pos = self.nodes.contains_key(&key).then(|| self.layout_pos(&key));
+                let thumb_id = self.gpu.as_ref().and_then(|g| g.thumbnail_id(&key));
                 if let (Some(node_pos), Some(tex_id)) = (node_pos, thumb_id) {
                     let rect = egui::Rect::from_min_size(
                         egui::Pos2::new(

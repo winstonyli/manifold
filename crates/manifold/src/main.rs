@@ -114,6 +114,7 @@ use redirect_fetch::{FetchJob, FetchResult, FetchTarget, RedirectFetcher};
 use suggestions::{resolve_navigation_url, Suggestion, SuggestionFetcher};
 
 use card::*;
+use card_id::CardId;
 use card_kind::*;
 use debug_control::DebugJob;
 use gpu::GpuState;

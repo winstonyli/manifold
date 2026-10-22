@@ -114,7 +114,7 @@ pub(crate) enum GraphAction {
     LeaveGroup,
     /// A card released after a drag, with where it landed
     /// (`App::drop_target`), if anywhere.
-    Drop { id: String, target: Option<(DropEffect, Option<String>)> },
+    Drop { id: CardId, target: Option<(DropEffect, Option<CardId>)> },
     /// Pick-target mode: a click on this valid target (`App::finish_connect`).
     FinishConnect(String),
     GroupSelected,
@@ -275,7 +275,7 @@ impl App {
                 self.switch_group_level(parent);
                 self.renaming_group = None;
             }
-            GraphAction::Drop { id, target } => self.apply_drop(&id, target),
+            GraphAction::Drop { id, target } => self.apply_drop(id, target),
         }
         // Group edits, drops and moves change nothing else that saves; the
         // node menu's actions save the same way.
@@ -298,7 +298,7 @@ mod tests {
         app.insert_placeholder_node(a.clone(), egui::vec2(100.0, 0.0), Kind::Tab, sleeping_tab("https://a.test/", "a"));
         app.insert_placeholder_node(b.clone(), egui::vec2(300.0, 0.0), Kind::Tab, sleeping_tab("https://b.test/", "b"));
         let expected = (app.layout_pos(&a) + app.layout_pos(&b)) / 2.0;
-        app.interaction.selected.extend([a.clone(), b.clone(), "999".to_string()]);
+        app.interaction.selected.extend([CardId::stored(&a), CardId::stored(&b), crate::card_id::testutil::card(999)]);
         app.apply_graph_action(&egui::Context::default(), GraphAction::GroupSelected);
         let group = app.doc.mirror.group(&a).expect("a was grouped").to_string();
         assert_eq!(app.doc.mirror.group(&b), Some(group.as_str()));
@@ -346,7 +346,7 @@ mod tests {
         app.camera.jump_to(app.fit_all_nodes_scene_rect());
         frame(&mut app, vec![]);
         let screen_rect = |app: &App, id: &str| {
-            let item = app.level_items().into_iter().find(|i| i.id == id).expect("on the level");
+            let item = app.level_items().into_iter().find(|i| i.id.to_string() == id).expect("on the level");
             app.graph_world_rect_to_screen(item.rect)
         };
         app.link.connecting = Some((a.clone(), LINK));
@@ -401,7 +401,7 @@ mod tests {
         app.camera.jump_to(app.fit_all_nodes_scene_rect());
         frame(&mut app, vec![]);
         let card = {
-            let item = app.level_items().into_iter().find(|i| i.id == note_id).expect("on the level");
+            let item = app.level_items().into_iter().find(|i| i.id.to_string() == note_id).expect("on the level");
             app.graph_world_rect_to_screen(item.rect)
         };
         right_click(&mut app, card.center());
@@ -547,7 +547,7 @@ mod tests {
         };
         let mut output = ctx.run_ui(input, |ui| {
             let rect = egui::Rect::from_min_size(egui::pos2(10.0, 10.0), egui::vec2(50.0, 50.0));
-            let response = ui.interact(rect, egui::Id::new(("graph_card", g.as_str())), egui::Sense::click());
+            let response = ui.interact(rect, crate::card_id::CardId::stored(&g).widget(), egui::Sense::click());
             response.widget_info(|| {
                 egui::WidgetInfo::labeled(egui::WidgetType::Button, true, app.accessible_name(&g).unwrap_or_default())
             });

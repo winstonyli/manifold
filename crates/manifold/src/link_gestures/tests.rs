@@ -25,8 +25,8 @@ fn edge(link: Option<&str>, y: f32) -> LevelEdge {
     LevelEdge {
         from: egui::pos2(0.0, y),
         to: egui::pos2(100.0, y),
-        from_id: "x".into(),
-        to_id: "y".into(),
+        from_id: crate::card_id::testutil::card(1001),
+        to_id: crate::card_id::testutil::card(1002),
         curve: EdgeCurve::Bow,
         highlight: false,
         kind: if link.is_some() { EdgeKind::Link } else { EdgeKind::Opened },
@@ -1052,7 +1052,7 @@ fn two_notes() -> (App, String, String) {
 fn handles_show_while_nothing_else_owns_the_pointer_and_on_every_card_during_a_drag() {
     let (mut app, a, b) = two_notes();
     assert!(app.shows_link_handles());
-    app.interaction.dragging = Some(b.clone());
+    app.interaction.dragging = Some(crate::card_id::CardId::stored(&b));
     assert!(!app.shows_link_handles(), "a card drag");
     app.interaction.dragging = None;
     app.menus.node_menu.open(b.clone(), egui::Pos2::ZERO);
@@ -1102,7 +1102,7 @@ fn during_a_handle_drag_every_card_has_handles() {
         assert_eq!(sides.len(), 4, "{id}");
     }
     for (id, side) in [(&b, HandleSide::Left), (&c, HandleSide::Top)] {
-        let widget = egui::Id::new(("link_handle", side, id.as_str()));
+        let widget = egui::Id::new(("link_handle", side, crate::card_id::CardId::stored(id)));
         assert!(h.ctx.read_response(widget).is_some(), "{id}'s {side:?} handle is a widget mid-drag");
     }
     h.frame(&mut app, vec![press(canvas, false)]);
@@ -1297,7 +1297,7 @@ fn escape_cancels_a_handle_drag_while_a_note_is_being_edited() {
     let on_a = screen_rect(&app, &a).center();
     h.double_click(&mut app, on_a);
     assert!(app.nodes[&a].as_note().unwrap().editing);
-    assert!(h.ctx.memory(|m| m.has_focus(egui::Id::new(("note_edit", a.as_str())))), "a's editor has focus");
+    assert!(h.ctx.memory(|m| m.has_focus(crate::card_id::CardId::stored(&a).editor())), "a's editor has focus");
     let escape = egui::Event::Key {
         key: egui::Key::Escape,
         physical_key: Some(egui::Key::Escape),
@@ -1378,7 +1378,7 @@ fn the_topmost_of_overlapping_cards_takes_the_release() {
     h.frame(&mut app, vec![]);
     let both = screen_rect(&app, &b).intersect(screen_rect(&app, &d));
     assert!(both.is_positive(), "b and d overlap");
-    let items: Vec<String> = app.level_items().into_iter().map(|i| i.id).collect();
+    let items: Vec<String> = app.level_items().into_iter().map(|i| i.id.to_string()).collect();
     let pos = |id: &String| items.iter().position(|i| i == id);
     assert!(pos(&d) > pos(&b), "d is drawn after b, on top");
     drag_from_handle(&h, &mut app, &a, HandleSide::Right, both.center(), vec![]);
@@ -1426,7 +1426,7 @@ fn a_click_that_ends_a_note_edit_deletes_no_line() {
     h.frame(&mut app, vec![]);
     let on_a = screen_rect(&app, &a).center();
     h.double_click(&mut app, on_a);
-    assert!(h.ctx.memory(|m| m.has_focus(egui::Id::new(("note_edit", a.as_str())))), "a's editor has focus");
+    assert!(h.ctx.memory(|m| m.has_focus(crate::card_id::CardId::stored(&a).editor())), "a's editor has focus");
     let on = line_middle(&app, &ab);
     h.click(&mut app, on);
     assert_eq!(app.links_naming(&a), std::slice::from_ref(&ab), "the line stays");
@@ -1488,9 +1488,12 @@ fn losing_window_focus_ends_a_card_drag_in_place() {
     for step in 1..=8 {
         h.frame(&mut app, vec![egui::Event::PointerMoved(from + (over_group - from) * (step as f32 / 8.0))]);
     }
-    assert_eq!(app.interaction.dragging.as_deref(), Some(note.as_str()), "mid-drag");
+    assert_eq!(app.interaction.dragging, Some(crate::card_id::CardId::stored(&note)), "mid-drag");
     assert!(
-        matches!(app.drop_target(&note, Some(over_group), None), Some((crate::card::DropEffect::Join, _))),
+        matches!(
+            app.drop_target(crate::card_id::CardId::stored(&note), Some(over_group), None),
+            Some((crate::card::DropEffect::Join, _))
+        ),
         "a release here would join the group"
     );
     let held = app.layout_pos(&note);
@@ -1589,8 +1592,8 @@ fn a_drop_onto_overlapping_groups_targets_the_topmost() {
     app.insert_placeholder_node(under.clone(), at, Kind::Group, Runtime::None);
     app.insert_placeholder_node(over.clone(), at, Kind::Group, Runtime::None);
     app.insert_placeholder_node(note.clone(), at, Kind::Note, text);
-    let target = app.drop_target(&note, None, None).and_then(|(_, target)| target);
-    assert_eq!(target.as_deref(), Some(over.as_str()));
+    let target = app.drop_target(crate::card_id::CardId::stored(&note), None, None).and_then(|(_, target)| target);
+    assert_eq!(target, Some(crate::card_id::CardId::stored(&over)));
 }
 
 /// A note made by "+ Note" or the new-node menu opens in its editor, so typing starts at once; a note that was
@@ -1603,7 +1606,7 @@ fn a_new_note_takes_the_keyboard_and_a_loaded_one_does_not() {
     for _ in 0..3 {
         h.frame(&mut app, vec![]);
     }
-    let has_focus = |id: &str| h.ctx.memory(|m| m.has_focus(egui::Id::new(("note_edit", id))));
+    let has_focus = |id: &str| h.ctx.memory(|m| m.has_focus(crate::card_id::CardId::stored(id).editor()));
     assert!(has_focus(&made), "the new note's editor has focus");
     assert!(!has_focus(&loaded));
 }
@@ -1622,5 +1625,5 @@ fn a_new_note_out_of_view_does_not_take_the_keyboard_later() {
     for _ in 0..3 {
         h.frame(&mut app, vec![]);
     }
-    assert!(!h.ctx.memory(|m| m.has_focus(egui::Id::new(("note_edit", far.as_str())))));
+    assert!(!h.ctx.memory(|m| m.has_focus(crate::card_id::CardId::stored(&far).editor())));
 }

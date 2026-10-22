@@ -108,27 +108,28 @@ impl App {
                     }));
                 }
                 let kind = item.kind;
-                let node = self.nodes.get(&item.id)?;
+                let key = item.id.to_string();
+                let node = self.nodes.get(&key)?;
                 Some(serde_json::json!({
                     "id": item.id,
                     "type": kind.ty,
-                    "stored_type": self.doc.mirror.ty(&item.id), // the raw string; `type` is its row (`canonical_type`)
+                    "stored_type": self.doc.mirror.ty(&key), // the raw string; `type` is its row (`canonical_type`)
                     "loaded": kind.loaded(),
                     "json_card": false,
-                    "group": self.doc.mirror.group(&item.id),
-                    "parent": self.opened_from(&item.id),
-                    "color": self.doc.mirror.color(&item.id).is_some(),
-                    "pinned": self.doc.mirror.pinned(&item.id),
-                    "name": self.doc.mirror.name(&item.id), // name rule: reported as stored
+                    "group": self.doc.mirror.group(&key),
+                    "parent": self.opened_from(&key),
+                    "color": self.doc.mirror.color(&key).is_some(),
+                    "pinned": self.doc.mirror.pinned(&key),
+                    "name": self.doc.mirror.name(&key), // name rule: reported as stored
                     // The tab's or group's own jar edge, the jar it resolves to, and whether a jar card is the Default.
-                    "jar": self.doc.mirror.jar(&item.id).map(|j| j.to_string()),
-                    "effective_jar": self.effective_jar(&item.id).map(|(j, _)| j.to_string()),
-                    "is_default": self.is_default_jar(&item.id),
+                    "jar": self.doc.mirror.jar(&key).map(|j| j.to_string()),
+                    "effective_jar": self.effective_jar(&key).map(|(j, _)| j.to_string()),
+                    "is_default": self.is_default_jar(&key),
                     // A live tab whose engine stopped reading (`ViewTab::is_unresponsive`).
                     "unresponsive": node.as_tab().is_some_and(|t| t.tab.is_unresponsive(now)),
                     "editing": node.as_note().is_some_and(|n| n.editing),
                     // Where MOVENODE puts the card back after it was parked (gate layout).
-                    "world": [self.layout_pos(&item.id).x, self.layout_pos(&item.id).y],
+                    "world": [self.layout_pos(&key).x, self.layout_pos(&key).y],
                     "screen": [screen.center().x, screen.center().y],
                     "rect": [screen.min.x, screen.min.y, screen.max.x, screen.max.y],
                 }))
@@ -152,7 +153,8 @@ impl App {
             .collect();
         let mirror_pos: std::collections::BTreeMap<&str, Option<[f32; 2]>> =
             self.linked_ids().map(|id| (id, self.doc.mirror.pos(id).map(|p| [p.x, p.y]))).collect();
-        let mut selected: Vec<&String> = self.interaction.selected.iter().collect();
+        // Sorted by text, as when ids were text, so the export's order is the one the gate has always read.
+        let mut selected: Vec<String> = self.interaction.selected.iter().map(|id| id.to_string()).collect();
         selected.sort();
         // Every link this replica knows (ends null where unset), whether or not it is shown. `shown` is true when
         // both ends are in `nodes`, so a link whose end is hidden (closed) reads false and a deleted one is absent.
@@ -217,7 +219,7 @@ impl App {
                             (side.key().to_string(), serde_json::json!([r.left(), r.top(), r.right(), r.bottom()]))
                         })
                         .collect();
-                (item.id, serde_json::Value::Object(sides))
+                (item.id.to_string(), serde_json::Value::Object(sides))
             })
             .collect();
         serde_json::json!({
@@ -396,6 +398,12 @@ mod tests {
         use crate::node::{NotePayload, TabPayload, UnloadedState, UnloadedTabPayload};
         use crate::process_manager::{ViewKind, ViewTab};
         use crate::store::model::{Kind, TYPE_GROUP, TYPE_JSON, TYPE_NOTE, TYPE_TAB};
+        // Real node ids (actor 1): the cards' ids are `CardId`s, which parse stored ids as `NodeId`s.
+        const LIVE: &str = "0000000000000001-1";
+        const ASLEEP: &str = "0000000000000001-2";
+        const N: &str = "0000000000000001-3";
+        const G: &str = "0000000000000001-4";
+        const J: &str = "0000000000000001-5";
         let dir = crate::store::testutil::temp_dir("export_state");
         let path = dir.join("a.json");
         std::fs::write(&path, r#"{"a": {"b": 1}}"#).unwrap();
@@ -420,11 +428,11 @@ mod tests {
             zoom_factor: 1.0,
             state: UnloadedState::Sleeping,
         });
-        app.test_node("live", Kind::Tab, live);
-        app.test_node("asleep", Kind::Tab, asleep);
-        app.test_node("n", Kind::Note, Runtime::Note(NotePayload { text: "t".into(), editing: false }));
-        app.test_node("g", Kind::Group, Runtime::None);
-        app.insert_json_node_with_id("j".into(), path.to_string_lossy().into_owned(), egui::Vec2::ZERO, None).unwrap();
+        app.test_node(LIVE, Kind::Tab, live);
+        app.test_node(ASLEEP, Kind::Tab, asleep);
+        app.test_node(N, Kind::Note, Runtime::Note(NotePayload { text: "t".into(), editing: false }));
+        app.test_node(G, Kind::Group, Runtime::None);
+        app.insert_json_node_with_id(J.into(), path.to_string_lossy().into_owned(), egui::Vec2::ZERO, None).unwrap();
         let cards = |app: &App| -> std::collections::BTreeMap<String, serde_json::Value> {
             let state = app.export_state();
             let cards = state["cards"].as_array().expect("cards is a list");
@@ -434,11 +442,11 @@ mod tests {
         let top = cards(&app);
         assert_eq!(top.len(), 5, "{top:?}");
         for (id, ty, loaded) in [
-            ("live", TYPE_TAB, true),
-            ("asleep", TYPE_TAB, false),
-            ("n", TYPE_NOTE, false),
-            ("g", TYPE_GROUP, false),
-            ("j", TYPE_JSON, false),
+            (LIVE, TYPE_TAB, true),
+            (ASLEEP, TYPE_TAB, false),
+            (N, TYPE_NOTE, false),
+            (G, TYPE_GROUP, false),
+            (J, TYPE_JSON, false),
         ] {
             let card = &top[id];
             assert_eq!(card["type"], ty, "{id}: {card}");
@@ -464,9 +472,15 @@ mod tests {
         }
 
         // A JSON level's cards are not stored nodes: `json_card`, typed as the JSON they show.
-        app.switch_group_level(Some("j".into()));
+        app.switch_group_level(Some(J.into()));
         let level = cards(&app);
-        assert_eq!(level.keys().collect::<Vec<_>>(), ["j#", "j#/a"]);
+        let json_id = |pointer: &str| {
+            use crate::card_id::{fnv64, CardId, JSON_SOURCE};
+            CardId::virt(JSON_SOURCE, fnv64(&[J, "#", pointer])).to_string()
+        };
+        let mut want = [json_id(""), json_id("/a")];
+        want.sort();
+        assert_eq!(level.keys().cloned().collect::<Vec<_>>(), want);
         for card in level.values() {
             assert_eq!(card["json_card"], true, "{card}");
             assert_eq!(card["type"], TYPE_JSON, "{card}");
@@ -477,9 +491,9 @@ mod tests {
             }
         }
         app.switch_group_level(None);
-        assert_eq!(cards(&app)["live"]["unresponsive"], serde_json::json!(false));
-        app.nodes.get("live").and_then(|n| n.as_tab()).unwrap().tab.wedge();
-        assert_eq!(cards(&app)["live"]["unresponsive"], serde_json::json!(true), "its queue filled");
+        assert_eq!(cards(&app)[LIVE]["unresponsive"], serde_json::json!(false));
+        app.nodes.get(LIVE).and_then(|n| n.as_tab()).unwrap().tab.wedge();
+        assert_eq!(cards(&app)[LIVE]["unresponsive"], serde_json::json!(true), "its queue filled");
     }
 
     /// EXPORTSTATE's `edges`: each line at this level with its kind, Link node, ends and on-screen middle.
@@ -545,7 +559,7 @@ mod tests {
         assert_eq!(state["connect_drag"], a.as_str());
         assert!(state["link_handles"].get(b.as_str()).is_some(), "during a connect-drag every card has them");
         app.cancel_connect();
-        app.interaction.dragging = Some(b.clone());
+        app.interaction.dragging = Some(crate::card_id::CardId::stored(&b));
         assert_eq!(app.export_state()["dragging"], b.as_str());
     }
 

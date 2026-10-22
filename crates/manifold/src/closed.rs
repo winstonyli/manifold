@@ -713,7 +713,9 @@ mod tests {
             let path = store::testutil::temp_dir("closed-selected-nested").join("session.mnf");
             let mut app = app_on(&path, 1);
             let (g, inner) = group_with_note(&mut app);
-            app.interaction.selected.extend([inner.clone(), g.clone()]);
+            app.interaction
+                .selected
+                .extend([crate::card_id::CardId::stored(&inner), crate::card_id::CardId::stored(&g)]);
             app.apply_graph_action(&ctx, crate::graph_ui::GraphAction::CloseSelected);
             assert!(app.interaction.selected.is_empty());
             assert_eq!(closed_ids(&app), std::slice::from_ref(&g), "the group is the only closed root");

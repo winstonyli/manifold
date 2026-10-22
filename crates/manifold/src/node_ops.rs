@@ -20,7 +20,7 @@ impl App {
     /// needing the pointer to move away first. See `peek_suppressed`'s own
     /// doc comment for why this can't just clear `hovered` directly.
     pub(crate) fn dismiss_hover_peek(&mut self) {
-        self.interaction.peek_suppressed = self.interaction.hovered.clone();
+        self.interaction.peek_suppressed = self.interaction.hovered;
     }
 
     /// Like `insert_group_at`, for `new_note_shortcut` and the card's note.
@@ -28,7 +28,7 @@ impl App {
     pub(crate) fn insert_note_at(&mut self, id: String, pos: Option<egui::Vec2>) {
         let at = self.placement(&id, pos);
         let note = NotePayload { text: String::new(), editing: true };
-        self.interaction.focus_new_note = Some((id.clone(), 2));
+        self.interaction.focus_new_note = Some((CardId::stored(&id), 2));
         self.place_node(Some(id), store::model::Kind::Note, Runtime::Note(note), at);
     }
 

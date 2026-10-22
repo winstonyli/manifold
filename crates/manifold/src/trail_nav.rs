@@ -204,7 +204,7 @@ impl App {
         }
         self.show_level_of(id);
         self.interaction.selected.clear();
-        self.interaction.selected.insert(id.to_owned());
+        self.interaction.selected.insert(CardId::stored(id));
     }
 
     /// Finishes a `trail_focus` once its node is in `nodes`; drops one whose node is gone. Called each tick after the
@@ -281,7 +281,7 @@ mod tests {
         app.focus_tab(&child);
         app.navigate_history(&child, Dir::Back);
         assert!(app.transition.is_some(), "on its way to the Graph view");
-        assert!(app.interaction.selected.len() == 1 && app.interaction.selected.contains(&note));
+        assert!(app.interaction.selected.len() == 1 && app.interaction.selected.contains(&CardId::stored(&note)));
         assert!(!app.nav_history.contains_key(&note), "a non-tab parent gets no trail");
     }
 
@@ -595,7 +595,7 @@ mod tests {
         assert!(on_path > 0, "the path to the cursor is drawn in the accent, as in the strip");
         assert!(dots > 0, "the graph's dot grid is behind the tree");
         let cards = crate::trail_strip::trail_cards(&app, &tab, egui::Pos2::ZERO);
-        let id = egui::Id::new(("graph_card", cards[1].id.as_str()));
+        let id = cards[1].id.widget();
         assert!(app.egui_ctx.read_response(id).is_some(), "a page is a real graph card");
         assert_eq!(app.menus.open_popup, Some(AnchoredPopup::BackBranches), "no click: it stays open");
     }
@@ -705,9 +705,9 @@ mod tests {
     fn the_trail_changing_under_an_open_popup_redraws_its_cards() {
         let (mut app, tab, _peer) = open_back_popup("trail-popup-changes");
         let old = crate::trail_strip::trail_cards(&app, &tab, egui::Pos2::ZERO);
-        let old_page = egui::Id::new(("graph_card", old[1].id.as_str()));
+        let old_page = old[1].id.widget();
         assert!(app.egui_ctx.read_response(old_page).is_some(), "the old trail's page is registered");
-        app.menus.trail_menu = Some((old[1].id.clone(), egui::pos2(50.0, 50.0)));
+        app.menus.trail_menu = Some((old[1].id, egui::pos2(50.0, 50.0)));
         // A replaced history is a new trail: its slot is new, so every old id names nothing.
         let urls: Vec<String> = (0..52).map(|i| format!("https://example.test/p{i}")).collect();
         let refs: Vec<&str> = urls.iter().map(String::as_str).collect();
@@ -718,9 +718,7 @@ mod tests {
         for _ in 0..2 {
             popup_run(&mut app, &tab, vec![]);
         }
-        let drawn = |c: &&crate::level::CardEntry| {
-            app.egui_ctx.read_response(egui::Id::new(("graph_card", c.id.as_str()))).is_some()
-        };
+        let drawn = |c: &&crate::level::CardEntry| app.egui_ctx.read_response(c.id.widget()).is_some();
         assert!(cards.iter().any(|c| drawn(&c)), "the new trail's pages are registered");
         assert!(app.menus.trail_menu.is_none(), "a menu on a retired page closes");
     }
@@ -761,8 +759,8 @@ mod tests {
         let at = page_centre(&app, &tab, 1);
         popup_run(&mut app, &tab, vec![egui::Event::PointerMoved(at)]);
         popup_run(&mut app, &tab, right_click(at));
-        let (id, _) = app.menus.trail_menu.clone().expect("the page's menu is open");
-        assert!(crate::trail_strip::is_page_id(&id), "{id}");
+        let (id, _) = app.menus.trail_menu.expect("the page's menu is open");
+        assert!(crate::trail_strip::is_page_id(id), "{id}");
         for _ in 0..3 {
             popup_run(&mut app, &tab, vec![]);
         }
@@ -835,7 +833,7 @@ mod tests {
         let at = page_centre(&app, &tab, 1);
         popup_run(&mut app, &tab, vec![egui::Event::PointerMoved(at)]);
         popup_run(&mut app, &tab, vec![]);
-        assert!(app.interaction.hovered.as_deref().is_some_and(crate::trail_strip::is_page_id), "hovering");
+        assert!(app.interaction.hovered.is_some_and(crate::trail_strip::is_page_id), "hovering");
         app.menus.open_popup = None;
         for _ in 0..3 {
             popup_run(&mut app, &tab, vec![]);
@@ -873,7 +871,7 @@ mod tests {
     fn a_page_menu_nothing_draws_is_dropped() {
         let (mut app, tab, _peer) = open_back_popup("trail-popup-stale-menu");
         app.view_mode = crate::ViewMode::Item;
-        let id = crate::trail_strip::trail_cards(&app, &tab, egui::Pos2::ZERO)[1].id.clone();
+        let id = crate::trail_strip::trail_cards(&app, &tab, egui::Pos2::ZERO)[1].id;
         app.menus.open_popup = None;
         app.menus.trail_menu = Some((id, egui::pos2(50.0, 50.0)));
         ui_frame(&mut app, vec![]);
@@ -913,7 +911,7 @@ mod tests {
 
     fn card_id(app: &App, tab: &str, entry: usize) -> egui::Id {
         let cards = crate::trail_strip::trail_cards(app, tab, egui::Pos2::ZERO);
-        egui::Id::new(("graph_card", cards[entry].id.as_str()))
+        cards[entry].id.widget()
     }
 
     #[test]

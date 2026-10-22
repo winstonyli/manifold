@@ -8,8 +8,7 @@ impl App {
     /// mirror. A value the mirror already shows queues nothing.
     pub(crate) fn edit_field(&mut self, id: &str, no: u32, value: FieldValue) {
         debug_assert!(!matches!(no, field::GROUP | field::PARENT), "a link: `edit_group` / `edit_parent`");
-        // A virtual card (`virtual_source`) is no node, so nothing of it is stored or mirrored.
-        if self.doc.mirror.get(id, no) == value || crate::virtual_source::is_virtual_id(id) {
+        if self.doc.mirror.get(id, no) == value {
             return;
         }
         if let Ok(node) = id.parse::<NodeId>() {
@@ -146,7 +145,7 @@ impl App {
     /// The one writer of a node's parent link: the mirror shows it at once and the next save commits a `Set PARENT`.
     /// A non-store id or target only updates the mirror.
     pub(crate) fn edit_parent(&mut self, id: &str, parent: Option<String>) {
-        if self.doc.mirror.parent(id) == parent.as_deref() || crate::virtual_source::is_virtual_id(id) {
+        if self.doc.mirror.parent(id) == parent.as_deref() {
             return;
         }
         if let Ok(node) = id.parse::<NodeId>() {
@@ -167,7 +166,7 @@ impl App {
     /// The one writer of a node's group (Ruling 2): shown at once, committed as a `Move` by the next save.
     /// A non-store id or target only updates the mirror.
     pub(crate) fn edit_group(&mut self, id: &str, group: Option<String>) {
-        if self.doc.mirror.group(id) == group.as_deref() || crate::virtual_source::is_virtual_id(id) {
+        if self.doc.mirror.group(id) == group.as_deref() {
             return;
         }
         // The Default stays at the top level (spec "The Default jar").

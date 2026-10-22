@@ -8,7 +8,9 @@ const SID: &str = r#"[{"name":"sid","value":"1","domain":"a.com","path":"/","exp
 fn forget_id_clears_every_id_keyed_table() {
     let mut app = App::default();
     let now = std::time::Instant::now();
-    let t = || "t".to_string();
+    use crate::card_id::testutil::{card, node};
+    let (t, u) = (|| node(1).to_string(), || node(2).to_string());
+    let (tc, uc) = (card(1), card(2));
     app.spawns.skip_convert.insert(t(), true);
     app.pending_sleeps.insert(t(), sleep_state::PendingSleep { why: sleep_state::SleepWhy::Manual, sent: now });
     let default = default_jar_id(&mut app);
@@ -18,35 +20,35 @@ fn forget_id_clears_every_id_keyed_table() {
     app.cookies.jar_pulls.insert(t(), now);
     app.cookies.jar_silent.insert(t(), 1);
     app.saved_scroll.insert(t(), sleep_state::SavedScroll::new(0.0, 1.0));
-    app.saved_scroll.insert("u".into(), sleep_state::SavedScroll::new(0.0, 1.0));
+    app.saved_scroll.insert(u(), sleep_state::SavedScroll::new(0.0, 1.0));
     app.nav_history.insert(t(), nav_history::NavHistory::default());
     app.spawns.navigated_from.insert(t(), ("https://a.test/".into(), now, false));
     for _ in 0..page_tab_gate::POPUP_BURST {
-        app.page_tab_gate.admit("t", true, now);
+        app.page_tab_gate.admit(&t(), true, now);
     }
     app.spawns.tab_crashes.insert(t(), vec![now]);
-    app.interaction.selected.extend([t(), "u".to_string()]);
+    app.interaction.selected.extend([tc, uc]);
     app.naming_jar = Some((t(), String::new()));
     app.renaming_group = Some((t(), String::new()));
     app.menus.node_menu.open(t(), egui::Pos2::ZERO);
     app.spawns.pending_respawn_focus = Some(t());
-    app.interaction.peek_suppressed = Some(t());
-    app.interaction.dragging = Some(t());
+    app.interaction.peek_suppressed = Some(tc);
+    app.interaction.dragging = Some(tc);
     app.link.connecting = Some((t(), crate::caps::LINK));
     app.link.connect_drag = Some(t());
-    app.interaction.hovered = Some(t());
+    app.interaction.hovered = Some(tc);
 
-    app.forget_id("t");
+    app.forget_id(&t());
 
     assert!(app.spawns.skip_convert.is_empty() && app.pending_sleeps.is_empty());
     assert!(
         app.cookies.jar_tabs.is_empty() && app.cookies.jar_reseed.is_empty() && app.cookies.cookie_holds.is_empty()
     );
     assert!(app.cookies.jar_pulls.is_empty() && app.cookies.jar_silent.is_empty());
-    assert!(!app.saved_scroll.contains_key("t") && app.saved_scroll.contains_key("u"), "only t's entry goes");
+    assert!(!app.saved_scroll.contains_key(&t()) && app.saved_scroll.contains_key(&u()), "only t's entry goes");
     assert!(app.nav_history.is_empty() && app.spawns.navigated_from.is_empty() && app.spawns.tab_crashes.is_empty());
-    assert_eq!(app.page_tab_gate.admit("t", true, now), page_tab_gate::Admit::Open, "t's popup burst count went");
-    assert_eq!(app.interaction.selected, HashSet::from(["u".to_string()]));
+    assert_eq!(app.page_tab_gate.admit(&t(), true, now), page_tab_gate::Admit::Open, "t's popup burst count went");
+    assert_eq!(app.interaction.selected, HashSet::from([uc]));
     assert!(app.naming_jar.is_none() && app.renaming_group.is_none() && app.menus.node_menu.open.is_none());
     assert!(app.spawns.pending_respawn_focus.is_none() && app.interaction.peek_suppressed.is_none());
     assert!(app.interaction.dragging.is_none() && app.link.connecting.is_none() && app.link.connect_drag.is_none());
@@ -663,31 +665,36 @@ fn remove_from_group_moves_up_one_level() {
     assert_eq!(app.doc.mirror.group("shallow"), None);
 }
 
+// Real node ids: `merge_groups` and `destroy_group` reach the level through `CardId::stored`.
+const A: &str = "0000000000000001-1";
+const B: &str = "0000000000000001-2";
+const S: &str = "0000000000000001-3";
+
 /// Groups `a` and `b` inside each other in the mirror, plus group `s` outside them: the cycle two replicas'
 /// racing moves can leave there until the next save aligns it with the document.
 fn mirror_group_cycle() -> App {
     let mut app = App::default();
-    for id in ["a", "b", "s"] {
+    for id in [A, B, S] {
         app.test_node(id, crate::store::model::Kind::Group, Runtime::None);
     }
-    app.edit_group("a", Some("b".into()));
-    app.edit_group("b", Some("a".into()));
+    app.edit_group(A, Some(B.into()));
+    app.edit_group(B, Some(A.into()));
     app
 }
 
 #[test]
 fn a_merge_into_a_group_cycle_is_refused() {
     let mut app = mirror_group_cycle();
-    app.merge_groups("s", "a");
-    assert!(app.nodes.contains_key("s"), "the merge is refused, so the source stays");
+    app.merge_groups(S, A);
+    assert!(app.nodes.contains_key(S), "the merge is refused, so the source stays");
 }
 
 #[test]
 fn destroying_a_group_in_a_cycle_ends() {
     let mut app = mirror_group_cycle();
-    app.destroy_group("a");
-    assert!(!app.nodes.contains_key("a") && !app.nodes.contains_key("b"), "both go");
-    assert!(app.nodes.contains_key("s"));
+    app.destroy_group(A);
+    assert!(!app.nodes.contains_key(A) && !app.nodes.contains_key(B), "both go");
+    assert!(app.nodes.contains_key(S));
 }
 
 /// Two concurrent re-parents can make a parent cycle: the store doesn't cycle-check `parent`.

@@ -254,7 +254,7 @@ fn the_pin_shortcut_pins_a_whole_selection_then_unpins_it() {
     let (a, b, c) = (a_note(&mut app), a_note(&mut app), a_note(&mut app));
     app.toggle_pin(&a);
     app.focused = Some(c.clone());
-    app.interaction.selected.extend([a.clone(), b.clone()]);
+    app.interaction.selected.extend([crate::card_id::CardId::stored(&a), crate::card_id::CardId::stored(&b)]);
     app.pin_shortcut();
     assert!([&a, &b].iter().all(|id| app.doc.mirror.pinned(id)), "one was unpinned, so all get pinned");
     assert!(!app.doc.mirror.pinned(&c), "the focused card is not in the selection");

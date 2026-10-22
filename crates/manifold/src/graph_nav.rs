@@ -8,7 +8,7 @@ pub(crate) struct GraphInteraction {
     /// Graph view: the node currently being dragged (pinned in the physics
     /// sim — see `graph_layout::step`'s `pinned` parameter) and the node
     /// currently hovered (drives the peek-preview popup).
-    pub(crate) dragging: Option<String>,
+    pub(crate) dragging: Option<CardId>,
     /// Every node the current drag is moving (a lone card, or the whole
     /// selection when the dragged card is selected — see `take_drag_unit`
     /// and the `dragged()` branch that fills this in). Read and cleared at
@@ -20,11 +20,11 @@ pub(crate) struct GraphInteraction {
     /// gesture. Until then a remote pos for any of them doesn't snap its
     /// layout (`is_being_dragged`). Cleared without a write when the drag
     /// stops being live (`end_stale_drag`).
-    pub(crate) drag_moved: Vec<String>,
+    pub(crate) drag_moved: Vec<CardId>,
     /// Where each card of the drag released last stood in the document before `release_drag` wrote its new pos, for
     /// the drop's undo (`apply_drop` takes it; a drop with no effect discards it).
-    pub(crate) drag_origin: Vec<(String, Option<egui::Vec2>)>,
-    pub(crate) hovered: Option<String>,
+    pub(crate) drag_origin: Vec<(CardId, Option<egui::Vec2>)>,
+    pub(crate) hovered: Option<CardId>,
     /// Set to `hovered` by an Escape press while a hover-peek preview
     /// is showing, so that preview can be dismissed early without needing
     /// the pointer to actually move away -- the peek drawing code skips
@@ -32,7 +32,7 @@ pub(crate) struct GraphInteraction {
     /// whenever `hovered` changes to anything else (including `None`), so
     /// hovering the same or a different node again always shows a fresh
     /// peek.
-    pub(crate) peek_suppressed: Option<String>,
+    pub(crate) peek_suppressed: Option<CardId>,
     /// Graph view rectangle-select: `Some` (holding the screen-space anchor
     /// point) for exactly the duration of a right-button drag over the
     /// graph panel -- the right button specifically, since the primary
@@ -42,7 +42,7 @@ pub(crate) struct GraphInteraction {
     /// until the next selection (a fresh right-drag) or an explicit clear
     /// (a plain click on empty background, or Escape).
     pub(crate) rect_select_start: Option<egui::Pos2>,
-    pub(crate) selected: HashSet<String>,
+    pub(crate) selected: HashSet<CardId>,
     /// World position of the small "New Tab/Note/Group/File" card shown
     /// after a plain right-click (no real drag) on empty Graph-view
     /// background -- see the marquee-release logic below for where this
@@ -63,26 +63,26 @@ pub(crate) struct GraphInteraction {
     /// A note just made (`insert_note_at`) whose editor takes the keyboard when it first draws, so typing starts at
     /// once, and the graph frames it has left to be drawn in: a note spawned out of view must not grab the keyboard
     /// when the camera reaches it later. Taken by the note's editor.
-    pub(crate) focus_new_note: Option<(String, u8)>,
+    pub(crate) focus_new_note: Option<(CardId, u8)>,
 }
 
 impl GraphInteraction {
     /// Drops `id`, a node being removed, from the state that names a single node. `drag_moved` and `pending_new_node`
     /// are not here: a gone id in `drag_moved` is skipped at release, and the pending card names no node.
-    pub(crate) fn forget(&mut self, id: &str) {
-        if self.dragging.as_deref() == Some(id) {
+    pub(crate) fn forget(&mut self, id: CardId) {
+        if self.dragging == Some(id) {
             self.dragging = None;
         }
-        if self.hovered.as_deref() == Some(id) {
+        if self.hovered == Some(id) {
             self.hovered = None;
         }
-        if self.peek_suppressed.as_deref() == Some(id) {
+        if self.peek_suppressed == Some(id) {
             self.peek_suppressed = None;
         }
-        if self.focus_new_note.as_ref().is_some_and(|(n, _)| n == id) {
+        if self.focus_new_note.as_ref().is_some_and(|(n, _)| *n == id) {
             self.focus_new_note = None;
         }
-        self.selected.remove(id);
+        self.selected.remove(&id);
     }
 }
 
@@ -123,10 +123,10 @@ impl App {
     /// the two can't disagree.
     pub(crate) fn drop_target(
         &self,
-        id: &str,
+        id: CardId,
         pointer: Option<egui::Pos2>,
         leave_button: Option<egui::Rect>,
-    ) -> Option<(DropEffect, Option<String>)> {
+    ) -> Option<(DropEffect, Option<CardId>)> {
         use crate::store::model::{TYPE_TAB, TYPE_VIRTUAL_PREFIX};
         let items = self.level_items();
         let dragged_entry = items.iter().find(|item| item.id == id)?;
@@ -138,7 +138,7 @@ impl App {
         // A stored card is carried by its own position; a virtual one (it stays where its source put
         // it) is probed at the pointer, which the drag moves instead.
         let center = if dragged_entry.origin == Origin::Stored {
-            self.layout_pos(id).to_pos2()
+            self.layout_pos(&id.to_string()).to_pos2()
         } else {
             self.graph_screen_point_to_world(pointer?).to_pos2()
         };
@@ -152,7 +152,7 @@ impl App {
             &|k| k.ty == TYPE_TAB && k.loaded(),
             &|k| k.ty == TYPE_TAB && !k.loaded(),
         ];
-        let mut hits: [Option<(&str, CardKind)>; 4] = [None; 4];
+        let mut hits: [Option<(CardId, CardKind)>; 4] = [None; 4];
         // A stored card has only stored effects (`apply_drop`), so a virtual card is no target for it.
         let stored_drag = dragged_entry.origin == Origin::Stored;
         // Topmost first: the last in draw order is drawn over the rest.
@@ -161,12 +161,12 @@ impl App {
         }) {
             let Some(slot) = searches.iter().position(|pick| pick(other.kind)) else { continue };
             if hits[slot].is_none() && other.rect.contains(center) {
-                hits[slot] = Some((other.id.as_str(), other.kind));
+                hits[slot] = Some((other.id, other.kind));
             }
         }
         hits.iter().flatten().find_map(|&(target, kind)| {
             let effect = drop_action(dragged, DropTarget::Card(kind), inside_group)?;
-            Some((effect, Some(target.to_owned())))
+            Some((effect, Some(target)))
         })
     }
 
@@ -177,7 +177,7 @@ impl App {
     /// otherwise move, or Join would pull back in, a tab no longer shown.
     pub(crate) fn eject(&mut self, id: &str) {
         self.remove_from_group(id);
-        self.interaction.selected.remove(id);
+        self.interaction.selected.remove(&CardId::stored(id));
         self.recheck_edge_scope(id);
     }
 
@@ -185,11 +185,11 @@ impl App {
     /// when `id` is in it (it acts as one unit, as "Group Selected" does),
     /// which it empties, else just `id`. `target` (the group or card dropped on) is never part of the unit: it would
     /// be moved into itself.
-    pub(crate) fn take_drag_unit(&mut self, id: &str, target: &str) -> Vec<String> {
-        if self.interaction.selected.contains(id) {
+    pub(crate) fn take_drag_unit(&mut self, id: CardId, target: &str) -> Vec<String> {
+        if self.interaction.selected.contains(&id) {
             self.take_selected_stored().into_iter().filter(|member| member != target).collect()
         } else {
-            vec![id.to_string()]
+            id.node().map(|node| node.to_string()).into_iter().collect()
         }
     }
 
@@ -208,9 +208,10 @@ impl App {
             return;
         }
         for moved_id in moved {
-            if self.nodes.contains_key(&moved_id) {
-                self.interaction.drag_origin.push((moved_id.clone(), self.doc.mirror.pos(&moved_id)));
-                self.edit_pos(&moved_id, Some(self.layout_pos(&moved_id)));
+            let Some(key) = moved_id.node().map(|node| node.to_string()) else { continue };
+            if self.nodes.contains_key(&key) {
+                self.interaction.drag_origin.push((moved_id, self.doc.mirror.pos(&key)));
+                self.edit_pos(&key, Some(self.layout_pos(&key)));
             }
         }
     }
@@ -218,15 +219,20 @@ impl App {
     /// A card released after a drag (`GraphAction::Drop`), with where it
     /// landed, if anywhere. Saves the session on every release, since the
     /// drag itself moved the card.
-    pub(crate) fn apply_drop(&mut self, id: &str, target: Option<(DropEffect, Option<String>)>) {
+    pub(crate) fn apply_drop(&mut self, id: CardId, target: Option<(DropEffect, Option<CardId>)>) {
         let origin = std::mem::take(&mut self.interaction.drag_origin);
         // Every effect below is a stored one: a virtual card at either end is its source's business (`on_drop`),
         // never a group to create, a link to make or a move to write.
-        let virtual_end = crate::virtual_source::is_virtual_id(id)
-            || matches!(&target, Some((_, Some(other))) if crate::virtual_source::is_virtual_id(other));
-        if virtual_end {
-            return;
-        }
+        let Some(id) = id.node().map(|node| node.to_string()) else { return };
+        let id = id.as_str();
+        let target = match target {
+            Some((effect, Some(other))) => match other.node() {
+                Some(other) => Some((effect, Some(other.to_string()))),
+                None => return,
+            },
+            Some((effect, None)) => Some((effect, None)),
+            None => None,
+        };
         // Every card's group and parent before the effect, so the step names exactly the cards it changed (a menu
         // Join moves the whole selection with no drag to say which).
         let watched: Vec<String> = self.nodes.keys().cloned().collect();
@@ -240,7 +246,7 @@ impl App {
             // A group closed or deleted since the drop began (a remote close after the menu opened) is not shown: a
             // node joined to it would vanish with it.
             Some((DropEffect::Join, Some(group))) if self.nodes.contains_key(&group) => {
-                for member in self.take_drag_unit(id, &group) {
+                for member in self.take_drag_unit(CardId::stored(id), &group) {
                     if self.nodes.contains_key(&member) {
                         self.edit_group(&member, Some(group.clone()));
                     }
@@ -251,7 +257,7 @@ impl App {
                 let group = self.alloc_node_id();
                 let pos = self.layout_pos(&other);
                 self.insert_group_at(group.clone(), Some(pos));
-                let unit = self.take_drag_unit(id, &other);
+                let unit = self.take_drag_unit(CardId::stored(id), &other);
                 for member in std::iter::once(other).chain(unit) {
                     if self.nodes.contains_key(&member) {
                         self.edit_group(&member, Some(group.clone()));
@@ -275,7 +281,8 @@ impl App {
                     let now_parent = self.doc.mirror.parent(w).map(str::to_owned);
                     (group != now_group || parent != now_parent).then(|| {
                         let pos_now = self.doc.mirror.pos(w);
-                        let pos_before = origin.iter().find(|(o, _)| o == w).map_or(pos_now, |(_, p)| *p);
+                        let pos_before =
+                            origin.iter().find(|(o, _)| *o == CardId::stored(w)).map_or(pos_now, |(_, p)| *p);
                         Moved {
                             id: w.clone(),
                             group: (group, now_group),
@@ -643,21 +650,18 @@ impl App {
 
     /// Whether the user is dragging `id` right now: the card under the pointer, or one moving with it as part of
     /// the selection (`drag_moved`), while that drag is live (`live_drag`).
-    pub(crate) fn is_being_dragged(&self, id: &str) -> bool {
-        self.live_drag().is_some_and(|dragged| dragged == id || self.interaction.drag_moved.iter().any(|m| m == id))
+    pub(crate) fn is_being_dragged(&self, id: CardId) -> bool {
+        self.live_drag().is_some_and(|dragged| dragged == id || self.interaction.drag_moved.contains(&id))
     }
 
     /// The grabbed card (`dragging`) while its drag is live: the card is still on the level shown. A grabbed card
     /// that left it (a level switch with the button held, another replica moving it into another group, a removal)
     /// is no longer drawn, so its card never sees the release; its drag is over, with no drop.
     /// A virtual card (no node) is live while a source still shows it and its kind is a `drag_source`.
-    fn live_drag(&self) -> Option<&str> {
-        self.interaction.dragging.as_deref().filter(|dragged| {
-            if self.nodes.contains_key(*dragged) {
-                self.in_level(dragged)
-            } else {
-                self.level_items().iter().any(|item| item.id == *dragged && item.caps().drag_source)
-            }
+    fn live_drag(&self) -> Option<CardId> {
+        self.interaction.dragging.filter(|dragged| match dragged.node().map(|node| node.to_string()) {
+            Some(key) if self.nodes.contains_key(&key) => self.in_level(&key),
+            _ => self.level_items().iter().any(|item| item.id == *dragged && item.caps().drag_source),
         })
     }
 
@@ -683,28 +687,27 @@ impl App {
         if self.interaction.selected.is_empty() {
             return;
         }
-        let selectable: HashSet<String> = self.selectable_ids();
+        let selectable: HashSet<CardId> = self.selectable_ids();
         self.interaction.selected.retain(|id| selectable.contains(id));
     }
 
     /// The ids of this level's cards that can be selected (`Caps::selectable`), whatever supplies them.
-    pub(crate) fn selectable_ids(&self) -> HashSet<String> {
+    pub(crate) fn selectable_ids(&self) -> HashSet<CardId> {
         self.level_items().into_iter().filter(|item| item.caps().selectable).map(|item| item.id).collect()
     }
 
     /// Takes the stored cards out of the selection for a selection action and leaves the virtual ones in it: a
-    /// virtual card has no node for the action to change. "Virtual" is `is_virtual_id`, the persistence guard's rule.
+    /// virtual card has no node for the action to change. What it returns is the nodes' store keys.
     pub(crate) fn take_selected_stored(&mut self) -> HashSet<String> {
-        let (kept, taken) = std::mem::take(&mut self.interaction.selected)
-            .into_iter()
-            .partition(|id| crate::virtual_source::is_virtual_id(id));
+        let (taken, kept) =
+            std::mem::take(&mut self.interaction.selected).into_iter().partition(|id| id.node().is_some());
         self.interaction.selected = kept;
-        taken
+        taken.into_iter().map(|id: CardId| id.to_string()).collect()
     }
 
     /// How many selected cards a selection action would act on: those that are not virtual (`take_selected_stored`).
     pub(crate) fn selected_stored_count(&self) -> usize {
-        self.interaction.selected.iter().filter(|id| !crate::virtual_source::is_virtual_id(id)).count()
+        self.interaction.selected.iter().filter(|id| id.node().is_some()).count()
     }
 }
 
@@ -728,23 +731,25 @@ mod tests {
     /// node if it is `id`, and `id` in the selection, leaving other nodes' state and the rest alone.
     #[test]
     fn forget_clears_only_the_removed_ids_state() {
+        use crate::card_id::testutil::card;
+        let (t, u) = (card(1), card(2));
         let mut gi = GraphInteraction {
-            dragging: Some("t".into()),
-            drag_moved: vec!["t".into()],
-            hovered: Some("t".into()),
-            peek_suppressed: Some("t".into()),
-            selected: HashSet::from(["t".to_string(), "u".to_string()]),
+            dragging: Some(t),
+            drag_moved: vec![t],
+            hovered: Some(t),
+            peek_suppressed: Some(t),
+            selected: HashSet::from([t, u]),
             pending_new_node: Some(egui::Vec2::ZERO),
             ..Default::default()
         };
-        gi.forget("t");
+        gi.forget(t);
         assert!(gi.dragging.is_none() && gi.hovered.is_none() && gi.peek_suppressed.is_none());
-        assert_eq!(gi.selected, HashSet::from(["u".to_string()]));
-        assert_eq!(gi.drag_moved, ["t"], "not forgotten: skipped at release");
+        assert_eq!(gi.selected, HashSet::from([u]));
+        assert_eq!(gi.drag_moved, [t], "not forgotten: skipped at release");
         assert!(gi.pending_new_node.is_some());
-        gi.dragging = Some("u".into());
-        gi.forget("t");
-        assert_eq!(gi.dragging.as_deref(), Some("u"), "another node's state stays");
+        gi.dragging = Some(u);
+        gi.forget(t);
+        assert_eq!(gi.dragging, Some(u), "another node's state stays");
     }
 
     use super::*;
@@ -880,7 +885,7 @@ mod tests {
         let a = add(&mut app, Kind::Tab, sleeping_tab("https://a.test/", "a"));
         let b = add(&mut app, Kind::Tab, sleeping_tab("https://b.test/", "b"));
         let h = add_group(&mut app, "H");
-        app.interaction.selected.extend([a.clone(), b.clone()]);
+        app.interaction.selected.extend([CardId::stored(&a), CardId::stored(&b)]);
         app.follow_remote_group(&b, Some(h)); // another replica's move
         let input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 1000.0))),
@@ -888,7 +893,7 @@ mod tests {
         };
         let mut output = ctx.run_ui(input, |ui| app.build_ui_inner(ui));
         output.textures_delta.clear();
-        assert_eq!(app.interaction.selected, std::collections::HashSet::from([a.clone()]));
+        assert_eq!(app.interaction.selected, std::collections::HashSet::from([CardId::stored(&a)]));
         app.apply_graph_action(&ctx, crate::graph_ui::GraphAction::CloseSelected);
         assert!(!app.nodes.contains_key(&a), "the tab still shown is closed");
         assert!(app.nodes.contains_key(&b), "the tab moved away is not");
@@ -908,8 +913,8 @@ mod tests {
             .find(|id| app.card_kind(id).is_some_and(|k| k.ty == crate::store::model::TYPE_NOTE))
             .cloned()
             .unwrap();
-        app.interaction.selected.extend([g1.clone(), g2.clone(), note.clone()]);
-        app.apply_drop(&g1, Some((DropEffect::Join, Some(g2.clone()))));
+        app.interaction.selected.extend([CardId::stored(&g1), CardId::stored(&g2), CardId::stored(&note)]);
+        app.apply_drop(CardId::stored(&g1), Some((DropEffect::Join, Some(CardId::stored(&g2)))));
         assert_eq!(app.doc.mirror.group(&g2), None, "the target is not moved into itself");
         assert_eq!(app.doc.mirror.group(&g1), Some(g2.as_str()));
         assert_eq!(app.doc.mirror.group(&note), Some(g2.as_str()));

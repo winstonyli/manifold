@@ -1050,7 +1050,7 @@ impl App {
     fn debug_move_to_group(&mut self, id: &str, group: &str) -> bool {
         let offered = self.node_menu_view(id).is_some_and(|v| v.move_targets.iter().any(|(g, _)| g == group));
         if offered {
-            self.apply_drop(id, Some((DropEffect::Join, Some(group.to_string()))));
+            self.apply_drop(CardId::stored(id), Some((DropEffect::Join, Some(CardId::stored(group)))));
         }
         offered
     }

@@ -734,10 +734,11 @@ impl App {
     pub(crate) fn restart_with(&mut self, id: &str, spawn: TabSpawn) {
         self.nodes.remove(id);
         // Same stale-state guard `destroy_tab`/`finish_swap` apply — see `finish_swap`'s own comment on this.
-        if self.interaction.dragging.as_deref() == Some(id) {
+        let card = CardId::stored(id);
+        if self.interaction.dragging == Some(card) {
             self.interaction.dragging = None;
         }
-        if self.interaction.hovered.as_deref() == Some(id) {
+        if self.interaction.hovered == Some(card) {
             self.interaction.hovered = None;
         }
         self.respawn_tab(spawn);

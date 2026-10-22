@@ -161,8 +161,9 @@ impl App {
 
     /// Duplicate on `id` as the menu and Ctrl+D mean it: the whole selection when `id` is in it, else `id` alone.
     pub(crate) fn duplicate_selection(&mut self, id: &str) {
-        let ids: Vec<String> = if self.interaction.selected.contains(id) {
-            let mut all: Vec<String> = self.interaction.selected.iter().cloned().collect();
+        let ids: Vec<String> = if self.interaction.selected.contains(&CardId::stored(id)) {
+            let mut all: Vec<String> =
+                self.interaction.selected.iter().filter_map(|c| c.node()).map(|n| n.to_string()).collect();
             all.sort();
             all
         } else {

@@ -201,8 +201,8 @@ fn a_note_at(app: &mut App, pos: egui::Vec2) -> String {
 
 /// What a drag does to the layout every frame (`card.rs`), then its release.
 fn drag(app: &mut App, ids: &[&str], delta: egui::Vec2) {
-    app.interaction.dragging = Some(ids[0].to_owned());
-    app.interaction.drag_moved = ids.iter().map(|&id| id.to_owned()).collect();
+    app.interaction.dragging = Some(crate::card_id::CardId::stored(ids[0]));
+    app.interaction.drag_moved = ids.iter().map(|&id| crate::card_id::CardId::stored(id)).collect();
     for &id in ids {
         app.layout.entry(id.to_owned()).or_default().pos += delta;
     }

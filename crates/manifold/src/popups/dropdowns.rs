@@ -783,7 +783,7 @@ impl App {
         if opened || renumbered {
             camera.jump_to(popup_start_rect(bounds, cursor, view));
         }
-        let order: Vec<String> = cards.iter().map(|e| e.id.clone()).collect();
+        let order: Vec<CardId> = cards.iter().map(|e| e.id).collect();
         let mut clicked = false;
         let menu_was_open = self.menus.trail_menu.is_some();
         let area = egui::Area::new(egui::Id::new(("trail_branches_popup", which)))
@@ -855,8 +855,7 @@ impl App {
             });
         self.menus.trail_canvas = Some((which, camera));
         // A fading or closed popup leaves no hover behind: its page ids are the strip's too.
-        if self.menus.open_popup != Some(which)
-            && self.interaction.hovered.as_deref().is_some_and(crate::trail_strip::is_page_id)
+        if self.menus.open_popup != Some(which) && self.interaction.hovered.is_some_and(crate::trail_strip::is_page_id)
         {
             self.interaction.hovered = None;
         }

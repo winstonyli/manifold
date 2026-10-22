@@ -108,7 +108,13 @@ fn save_count_per_action() {
         begins(app) - before
     };
     let delete = count(&mut app, GraphAction::Node(a.clone(), NodeAction::Delete));
-    let join = count(&mut app, GraphAction::Drop { id: b.clone(), target: Some((DropEffect::Join, Some(g.clone()))) });
+    let join = count(
+        &mut app,
+        GraphAction::Drop {
+            id: crate::card_id::CardId::stored(&b),
+            target: Some((DropEffect::Join, Some(crate::card_id::CardId::stored(&g)))),
+        },
+    );
     app.link.connecting = Some((c.clone(), crate::caps::LINK));
     let finish = count(&mut app, GraphAction::FinishConnect(d.clone()));
     let enter = count(&mut app, GraphAction::EnterGroup(g.clone()));

@@ -202,7 +202,7 @@ impl App {
             self.renaming_group = None;
         }
         self.menus.node_menu.forget(id);
-        self.interaction.forget(id);
+        self.interaction.forget(CardId::stored(id));
         self.forget_connect_source(id);
         if let Some(gpu) = &mut self.gpu {
             gpu.free_tab_thumbnail(id);

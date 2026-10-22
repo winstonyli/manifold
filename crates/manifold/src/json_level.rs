@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Arc};
 
 use super::*;
+use crate::card_id::{fnv64, JSON_SOURCE};
 use crate::json_view::{self, Card, JsonView, OutlineRow, SearchResult};
 
 pub(crate) struct JsonLevel {
@@ -24,6 +25,8 @@ pub(crate) struct JsonLevel {
     pub(crate) rects: Vec<egui::Rect>,
     /// Card index by pointer.
     pub(crate) index: HashMap<String, usize>,
+    /// Each card's `CardId` (hashed from the node and the pointer, set with `cards`), so a frame never re-hashes.
+    ids: Vec<CardId>,
     /// The selected card's or row's pointer.
     pub(crate) selected: Option<String>,
     /// The view changed from elsewhere (another replica); relaid out on
@@ -113,6 +116,7 @@ impl JsonLevel {
             cards: Vec::new(),
             rects: Vec::new(),
             index: HashMap::new(),
+            ids: Vec::new(),
             selected: None,
             stale: false,
             outline: Outline { open: HashSet::from([String::new()]), dirty: true, ..Outline::default() },
@@ -130,11 +134,17 @@ impl JsonLevel {
         self.rects =
             self.cards.iter().zip(positions).map(|(card, pos)| egui::Rect::from_min_size(pos, card.size())).collect();
         self.index = self.cards.iter().enumerate().map(|(i, card)| (card.pointer.clone(), i)).collect();
+        self.ids = self
+            .cards
+            .iter()
+            .map(|card| CardId::virt(JSON_SOURCE, fnv64(&[&self.node_id, "#", &card.pointer])))
+            .collect();
     }
 
-    /// A card's level-item id, `<json node id>#<pointer>` (spec "Model").
-    pub(crate) fn card_id(&self, card: usize) -> String {
-        format!("{}#{}", self.node_id, self.cards[card].pointer)
+    /// A card's level-item id: the hash of `<json node id>#<pointer>` in the `json` id kind (spec "Model"), so it
+    /// follows the pointer, not the card's index.
+    pub(crate) fn card_id(&self, card: usize) -> CardId {
+        self.ids[card]
     }
 
     /// The pointer of the entry row under `world` on card `card`, or

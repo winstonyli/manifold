@@ -1,5 +1,6 @@
 use super::{id_digest, jar_fragment, named_jar_label, JarConfirm, JarLabel, JarMarker};
 use crate::card::DropEffect;
+use crate::card_id::CardId;
 use crate::session_sync::tests::default_jar_id;
 use crate::session_sync::tests::{add, add_jar, sleeping_tab};
 use crate::store::model::{field, FieldValue, Kind, NodeId};
@@ -153,7 +154,7 @@ fn a_drop_into_another_group_rechecks_the_edge() {
     let tab = tab_in(&mut app, Some(&a));
     let local = jar_at(&mut app, "Local", Some(&a));
     app.set_jar_edge(&tab, Some(local));
-    app.apply_drop(&tab, Some((DropEffect::Join, Some(b))));
+    app.apply_drop(CardId::stored(&tab), Some((DropEffect::Join, Some(CardId::stored(&b)))));
     assert_eq!(app.doc.mirror.jar(&tab), None);
 }
 
@@ -719,7 +720,7 @@ fn reverting_a_drop_never_clears_an_edge() {
     let tab = tab_in(&mut app, None);
     let target = jar_at(&mut app, "J", None);
     app.connect(crate::caps::JAR_EDGE, &tab, &target.to_string()).expect("in reach");
-    app.apply_drop(&tab, Some((crate::card::DropEffect::Join, Some(g))));
+    app.apply_drop(CardId::stored(&tab), Some((crate::card::DropEffect::Join, Some(CardId::stored(&g)))));
     assert_eq!(app.doc.mirror.jar(&tab), Some(target), "kept by the drop");
     app.step_history(None, false);
     assert_eq!(app.doc.mirror.group(&tab), None, "undone");

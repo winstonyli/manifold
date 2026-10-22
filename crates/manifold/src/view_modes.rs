@@ -302,10 +302,11 @@ impl App {
         // fires would leave `self.interaction.dragging` pointing at an id invisible for
         // the whole respawn window, then get misread as "just dropped" the
         // instant the respawned node starts rendering again.
-        if self.interaction.dragging.as_deref() == Some(tab_id) {
+        let card = CardId::stored(tab_id);
+        if self.interaction.dragging == Some(card) {
             self.interaction.dragging = None;
         }
-        if self.interaction.hovered.as_deref() == Some(tab_id) {
+        if self.interaction.hovered == Some(card) {
             self.interaction.hovered = None;
         }
         self.respawn_tab(spawn);

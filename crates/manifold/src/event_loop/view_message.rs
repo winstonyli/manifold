@@ -255,15 +255,20 @@ impl App {
 mod tests {
     use super::*;
 
+    // Real node ids: the new download node is laid out through `CardId::stored`, which parses them.
+    const N: &str = "0000000000000001-1";
+    const A: &str = "0000000000000001-2";
+    const B: &str = "0000000000000001-3";
+
     #[test]
     fn a_failed_download_is_marked_and_no_longer_in_flight() {
         let mut app = App::default();
-        app.insert_note_at("n".into(), None);
-        app.insert_download_node("n".into(), "f.zip".into(), Some(10), None);
+        app.insert_note_at(N.into(), None);
+        app.insert_download_node(N.into(), "f.zip".into(), Some(10), None);
         let in_flight =
             |app: &App| app.nodes.values().any(|n| n.as_download().is_some_and(|d| !d.completed && !d.failed));
         assert!(in_flight(&app));
-        app.handle_view_message("n", ViewToHost::DownloadFailed { path: "f.zip".into() });
+        app.handle_view_message(N, ViewToHost::DownloadFailed { path: "f.zip".into() });
         let download = app.nodes.values().find_map(|n| n.as_download()).unwrap();
         assert!(download.failed && !download.completed);
         assert!(!in_flight(&app));
@@ -272,11 +277,11 @@ mod tests {
     #[test]
     fn a_redownload_updates_the_new_node_not_the_finished_one() {
         let mut app = App::default();
-        app.insert_note_at("n".into(), None);
-        app.insert_download_node("n".into(), "f.zip".into(), Some(10), None);
-        app.handle_view_message("n", ViewToHost::DownloadCompleted { path: "f.zip".into() });
-        app.insert_download_node("n".into(), "f.zip".into(), Some(20), None);
-        app.handle_view_message("n", ViewToHost::DownloadProgress { path: "f.zip".into(), bytes_received: 7 });
+        app.insert_note_at(N.into(), None);
+        app.insert_download_node(N.into(), "f.zip".into(), Some(10), None);
+        app.handle_view_message(N, ViewToHost::DownloadCompleted { path: "f.zip".into() });
+        app.insert_download_node(N.into(), "f.zip".into(), Some(20), None);
+        app.handle_view_message(N, ViewToHost::DownloadProgress { path: "f.zip".into(), bytes_received: 7 });
         let downloads: Vec<_> = app.node_order.iter().filter_map(|id| app.nodes[id].as_download()).collect();
         assert_eq!(downloads.len(), 2);
         assert!(downloads[0].completed && downloads[0].bytes_received == 0, "the old node is untouched");
@@ -286,11 +291,11 @@ mod tests {
     #[test]
     fn same_named_downloads_from_two_tabs_stay_apart() {
         let mut app = App::default();
-        app.insert_note_at("a".into(), None);
-        app.insert_note_at("b".into(), None);
-        app.insert_download_node("a".into(), "f.zip".into(), None, None);
-        app.insert_download_node("b".into(), "f.zip".into(), None, None);
-        app.handle_view_message("a", ViewToHost::DownloadFailed { path: "f.zip".into() });
+        app.insert_note_at(A.into(), None);
+        app.insert_note_at(B.into(), None);
+        app.insert_download_node(A.into(), "f.zip".into(), None, None);
+        app.insert_download_node(B.into(), "f.zip".into(), None, None);
+        app.handle_view_message(A, ViewToHost::DownloadFailed { path: "f.zip".into() });
         let by_parent = |p: &str| {
             app.nodes
                 .iter()
@@ -299,6 +304,6 @@ mod tests {
                 .unwrap()
                 .failed
         };
-        assert!(by_parent("a") && !by_parent("b"));
+        assert!(by_parent(A) && !by_parent(B));
     }
 }

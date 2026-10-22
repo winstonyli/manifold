@@ -2,6 +2,7 @@
 //! hide/remove/wake paths a change can take.
 
 use super::*;
+use crate::card_id::CardId;
 
 impl App {
     /// Makes live node `id` show `fields`. A new node is inserted; a new
@@ -87,7 +88,7 @@ impl App {
         if !self.nodes.contains_key(id) {
             return false;
         }
-        if changed(field::POS) && !self.is_being_dragged(id) {
+        if changed(field::POS) && !self.is_being_dragged(CardId::stored(id)) {
             self.snap_layout(id, pos);
         }
         // Only a jar has `ephemeral`. The mirror already holds the new flag (`mirror_remote`), so this applies its

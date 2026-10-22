@@ -145,6 +145,11 @@ mod tests {
         assert_eq!(hints.len(), 1, "the hint is painted once");
     }
 
+    // Real node ids: cards are keyed by `CardId`, which parses stored ids as `NodeId`s.
+    const FULL: &str = "0000000000000001-1";
+    const EMPTY: &str = "0000000000000001-2";
+    const N: &str = "0000000000000001-3";
+
     #[test]
     fn the_hint_shows_on_every_empty_level_not_only_an_empty_graph() {
         use crate::fetched::Placement;
@@ -152,11 +157,11 @@ mod tests {
         crate::theme::apply_fonts(&ctx);
         let mut app = App::default();
         let at = Placement { group: None, pos: egui::Vec2::ZERO };
-        app.place_group(Some("full".into()), "Full", at);
-        app.place_group(Some("empty".into()), "Empty", Placement { group: Some("full".into()), pos: egui::Vec2::ZERO });
+        app.place_group(Some(FULL.into()), "Full", at);
+        app.place_group(Some(EMPTY.into()), "Empty", Placement { group: Some(FULL.into()), pos: egui::Vec2::ZERO });
         let note = Runtime::Note(NotePayload { text: "n".into(), editing: false });
-        app.insert_placeholder_node("n".into(), egui::Vec2::ZERO, crate::store::model::Kind::Note, note);
-        app.edit_group("n", Some("full".into()));
+        app.insert_placeholder_node(N.into(), egui::Vec2::ZERO, crate::store::model::Kind::Note, note);
+        app.edit_group(N, Some(FULL.into()));
         let hints_at = |app: &mut App, level: Option<&str>| {
             app.current_group = level.map(str::to_owned);
             let mut hints = 0;
@@ -175,8 +180,8 @@ mod tests {
             }
             hints
         };
-        assert_eq!(hints_at(&mut app, Some("empty")), 1, "an empty group shows the hint");
-        assert_eq!(hints_at(&mut app, Some("full")), 0, "a level with a node does not");
+        assert_eq!(hints_at(&mut app, Some(EMPTY)), 1, "an empty group shows the hint");
+        assert_eq!(hints_at(&mut app, Some(FULL)), 0, "a level with a node does not");
         assert_eq!(hints_at(&mut app, None), 0, "the top level holds the group card");
     }
 }

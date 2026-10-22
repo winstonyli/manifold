@@ -2,8 +2,6 @@
 //! card (a `VirtualSource`'s, a JSON level's) is a source tag plus a 63-bit key chosen by that source. The two never
 //! collide: a node's `counter` counts up from zero per launch, so its top bit is clear, and a non-node id sets it.
 
-#![allow(dead_code, reason = "CardId is adopted module by module (docs/superpowers/plans/2026-10-22-card-id.md)")]
-
 use std::fmt;
 
 use crate::store::model::{ActorId, NodeId};
@@ -45,6 +43,22 @@ impl CardId {
     }
 
     /// The stored node this card shows; `None` for a non-node card.
+    /// The card of a stored node named by its id text. The stores key by text until the mirror is re-keyed
+    /// (plan Task 5), so this is the one parse on the way from a store key to a card.
+    pub(crate) fn stored(id: &str) -> CardId {
+        id.parse::<NodeId>().map(CardId::from).unwrap_or_else(|e| panic!("a stored node id is a NodeId: {id:?}: {e}"))
+    }
+
+    /// The egui widget id of this card's frame: what keyboard focus and hit tests name.
+    pub(crate) fn widget(self) -> egui::Id {
+        egui::Id::new(("graph_card", self))
+    }
+
+    /// The egui widget id of a note card's text editor.
+    pub(crate) fn editor(self) -> egui::Id {
+        egui::Id::new(("note_edit", self))
+    }
+
     pub(crate) const fn node(self) -> Option<NodeId> {
         if self.lo & NON_NODE != 0 {
             None
@@ -92,6 +106,13 @@ impl fmt::Display for CardId {
     }
 }
 
+/// Debug exports print a card id as its text, which `FromStr` reads back.
+impl serde::Serialize for CardId {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(self)
+    }
+}
+
 impl std::str::FromStr for CardId {
     type Err = String;
 
@@ -114,14 +135,14 @@ impl std::str::FromStr for CardId {
     }
 }
 
-/// Panics (in debug builds) when two registered sources share a tag, or one takes [`JSON_SOURCE`]'s name.
+/// Panics when two sources share a tag, or one takes [`JSON_SOURCE`]'s name. Sources are fixed at construction, so
+/// only tests register them (`App::register_virtual_source`) and check the default list.
+#[cfg(test)]
 pub(crate) fn assert_distinct_tags(names: &[&str]) {
-    if cfg!(debug_assertions) {
-        for (i, a) in names.iter().enumerate() {
-            assert!(*a != JSON_SOURCE, "{JSON_SOURCE:?} is reserved for JSON-level cards");
-            for b in &names[i + 1..] {
-                assert!(fnv64(&[a]) != fnv64(&[b]), "virtual sources {a:?} and {b:?} share a tag");
-            }
+    for (i, a) in names.iter().enumerate() {
+        assert!(*a != JSON_SOURCE, "{JSON_SOURCE:?} is reserved for JSON-level cards");
+        for b in &names[i + 1..] {
+            assert!(fnv64(&[a]) != fnv64(&[b]), "virtual sources {a:?} and {b:?} share a tag");
         }
     }
 }

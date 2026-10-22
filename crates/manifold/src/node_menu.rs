@@ -786,7 +786,7 @@ impl App {
             self.menus.node_menu.close();
             // Closed from the keyboard: focus goes back to the card the menu belongs to.
             if !ui.input(|i| i.pointer.any_click()) {
-                ui.memory_mut(|m| m.request_focus(egui::Id::new(("graph_card", id.as_str()))));
+                ui.memory_mut(|m| m.request_focus(CardId::stored(&id).widget()));
             }
         }
     }
@@ -1005,8 +1005,10 @@ impl App {
             NodeAction::ToggleMute => self.toggle_muted(id),
             NodeAction::RetryMissingFile => self.retry_missing_file(id),
             NodeAction::OpenInDefaultViewKind => self.wake_tab(id, self.settings.default_starting_view_kind),
-            NodeAction::RemoveFromGroup => self.apply_drop(id, Some((DropEffect::Eject, None))),
-            NodeAction::MoveToGroup(group) => self.apply_drop(id, Some((DropEffect::Join, Some(group)))),
+            NodeAction::RemoveFromGroup => self.apply_drop(CardId::stored(id), Some((DropEffect::Eject, None))),
+            NodeAction::MoveToGroup(group) => {
+                self.apply_drop(CardId::stored(id), Some((DropEffect::Join, Some(CardId::stored(&group)))))
+            }
             NodeAction::Dissolve => self.ungroup(&[id.to_owned()]),
             NodeAction::ExportGroup => {
                 let name = export_file_name(self.doc.mirror.name(id)); // name rule: export_file_name cleans it

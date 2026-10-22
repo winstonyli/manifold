@@ -350,8 +350,14 @@ fn a_refused_drag_reparent_leaves_the_parent_alone() {
     let a = succeed_spawn(&mut app, "https://a/");
     let b = succeed_spawn(&mut app, "https://b/");
     app.connect(OPENED_FROM, &b, &a).unwrap();
-    app.apply_drop(&b, Some((crate::card::DropEffect::Reparent, Some("nope".into()))));
+    app.apply_drop(
+        crate::card_id::CardId::stored(&b),
+        Some((crate::card::DropEffect::Reparent, Some(crate::card_id::testutil::card(4242)))),
+    );
     assert_eq!(app.doc.mirror.parent(&b), Some(a.as_str()), "a missing target");
-    app.apply_drop(&a, Some((crate::card::DropEffect::Reparent, Some(b.clone()))));
+    app.apply_drop(
+        crate::card_id::CardId::stored(&a),
+        Some((crate::card::DropEffect::Reparent, Some(crate::card_id::CardId::stored(&b)))),
+    );
     assert_eq!(app.doc.mirror.parent(&a), None, "a cycle");
 }

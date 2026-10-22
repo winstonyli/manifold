@@ -7,10 +7,10 @@ use super::*;
 /// on to the next widget outside the cards.
 pub(crate) fn card_tab_step(
     ui: &egui::Ui,
-    order: &[String],
-    rect_of: impl Fn(&str) -> Option<egui::Rect>,
+    order: &[CardId],
+    rect_of: impl Fn(CardId) -> Option<egui::Rect>,
 ) -> Option<egui::Rect> {
-    let card_id = |id: &String| egui::Id::new(("graph_card", id.as_str()));
+    let card_id = |id: &CardId| id.widget();
     let at = order.iter().position(|id| ui.memory(|m| m.has_focus(card_id(id))))?;
     // The shift state comes from the key event itself, which is also how the debug `TABKEY shift` sends it.
     let (tab, shift) = ui.input(|i| {
@@ -25,7 +25,7 @@ pub(crate) fn card_tab_step(
     });
     let target = target.filter(|_| tab)?;
     ui.memory_mut(|m| m.request_focus(card_id(&order[target])));
-    rect_of(&order[target])
+    rect_of(order[target])
 }
 
 /// Ctrl held alone this long reveals the key hints.
@@ -166,7 +166,7 @@ impl App {
             } else if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                 self.interaction.selected.clear();
                 if let Some((id, _)) = self.menus.node_menu.open.take() {
-                    ui.memory_mut(|m| m.request_focus(egui::Id::new(("graph_card", id.as_str()))));
+                    ui.memory_mut(|m| m.request_focus(CardId::stored(&id).widget()));
                 }
                 self.interaction.pending_new_node = None;
                 self.dismiss_hover_peek();
@@ -220,8 +220,9 @@ impl App {
                 match hit {
                     Some(CardEntry { id, origin: Origin::Stored, .. }) => {
                         // A right-click on the jar chip opens the menu on its Jar page.
-                        let on_chip = crate::card::on_jar_chip(ui.ctx(), &id, pos);
-                        self.menus.node_menu.open(id, pos);
+                        let key = id.to_string();
+                        let on_chip = crate::card::on_jar_chip(ui.ctx(), &key, pos);
+                        self.menus.node_menu.open(key, pos);
                         if on_chip {
                             self.menus.node_menu.show_page(Some(crate::node_menu::MenuPage::Jar));
                         }
@@ -294,8 +295,12 @@ impl App {
     }
 
     /// The current level's cards in Tab order: the stored ones in creation order, then the virtual ones.
-    pub(crate) fn card_tab_order(&self) -> Vec<String> {
-        let stored = self.node_order.iter().filter(|id| self.nodes.contains_key(*id) && self.in_level(id)).cloned();
+    pub(crate) fn card_tab_order(&self) -> Vec<CardId> {
+        let stored = self
+            .node_order
+            .iter()
+            .filter(|id| self.nodes.contains_key(*id) && self.in_level(id))
+            .map(|id| CardId::stored(id));
         stored.chain(self.virtual_sources.iter().flat_map(|source| source.entries(self)).map(|e| e.id)).collect()
     }
 
@@ -321,7 +326,7 @@ impl App {
     /// pan, never open. Two digits within `DIGIT_WINDOW` make a longer number; a lone digit that no
     /// longer number could extend jumps at once. Ignored while a text field, popup, menu or JSON
     /// level has the keyboard.
-    pub(super) fn handle_card_digits(&mut self, ui: &egui::Ui, order: &[String]) {
+    pub(super) fn handle_card_digits(&mut self, ui: &egui::Ui, order: &[CardId]) {
         let key = egui::Id::new("card_digits");
         let now = ui.input(|i| i.time);
         let (mut buf, at): (String, f64) = ui.data(|d| d.get_temp(key)).unwrap_or_default();
@@ -346,8 +351,8 @@ impl App {
         };
         ui.data_mut(|d| d.remove_temp::<(String, f64)>(key));
         if let Some(id) = number.checked_sub(1).and_then(|n| order.get(n)) {
-            ui.memory_mut(|m| m.request_focus(egui::Id::new(("graph_card", id.as_str()))));
-            if let Some(rect) = self.level_card_rect(id) {
+            ui.memory_mut(|m| m.request_focus(id.widget()));
+            if let Some(rect) = self.level_card_rect(*id) {
                 self.camera.pan_to(rect);
             }
         }
@@ -409,7 +414,7 @@ mod tests {
     #[test]
     fn keys_typed_into_a_text_field_stay_out_of_graph_navigation() {
         let mut app = App::default();
-        app.interaction.selected.insert("t".into());
+        app.interaction.selected.insert(crate::card_id::testutil::card(1));
         let ctx = egui::Context::default();
         let field = egui::Id::new("test_field");
         let mut text = String::new();
@@ -438,7 +443,7 @@ mod tests {
             modifiers: egui::Modifiers::NONE,
         };
         frame(&mut app, vec![key(egui::Key::Escape)]);
-        assert!(app.interaction.selected.contains("t"), "Escape ended the edit only");
+        assert!(app.interaction.selected.contains(&crate::card_id::testutil::card(1)), "Escape ended the edit only");
         assert!(!ctx.memory(|m| m.has_focus(field)), "the field let go");
         frame(&mut app, vec![key(egui::Key::Escape)]);
         assert!(app.interaction.selected.is_empty(), "with no field focused, Escape is the graph's");
@@ -481,7 +486,7 @@ mod tests {
         let note = app.alloc_node_id();
         app.insert_note_at(note.clone(), None);
         app.link.connecting = Some((note, crate::caps::LINK));
-        app.interaction.selected.insert("t".into());
+        app.interaction.selected.insert(crate::card_id::testutil::card(1));
         let ctx = egui::Context::default();
         let escape = egui::Event::Key {
             key: egui::Key::Escape,
@@ -497,7 +502,10 @@ mod tests {
         };
         frame(&mut app);
         assert!(app.link.connecting.is_none());
-        assert!(app.interaction.selected.contains("t"), "that Escape was pick mode's only");
+        assert!(
+            app.interaction.selected.contains(&crate::card_id::testutil::card(1)),
+            "that Escape was pick mode's only"
+        );
         frame(&mut app);
         assert!(app.interaction.selected.is_empty());
     }
@@ -512,7 +520,7 @@ mod tests {
         }
         let order = app.card_tab_order();
         assert_eq!(order.len(), 3);
-        let card = |i: usize| egui::Id::new(("graph_card", order[i].as_str()));
+        let card = |i: usize| order[i].widget();
         let ctx = egui::Context::default();
         let frame = |events: Vec<egui::Event>| {
             let input = egui::RawInput {
@@ -525,7 +533,7 @@ mod tests {
                 for (i, id) in order.iter().enumerate() {
                     let rect =
                         egui::Rect::from_min_size(egui::pos2(10.0 + 60.0 * i as f32, 10.0), egui::vec2(50.0, 50.0));
-                    ui.interact(rect, egui::Id::new(("graph_card", id.as_str())), egui::Sense::click());
+                    ui.interact(rect, id.widget(), egui::Sense::click());
                 }
                 card_tab_step(ui, &order, |_| None);
             });

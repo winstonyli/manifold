@@ -3,6 +3,7 @@
 //! each handler is added by the task that first calls it (the pre-commit clippy rejects dead code).
 
 use crate::card::{CardBody, CardPass, DropEffect};
+use crate::card_id::CardId;
 use crate::level::{CardEntry, LevelEdge, Origin};
 use crate::{App, GraphAction};
 use std::rc::Rc;
@@ -18,7 +19,7 @@ pub(crate) trait VirtualSource {
     /// The cards this source shows on the level being viewed, in draw order.
     fn entries(&self, app: &App) -> Vec<CardEntry>;
     /// The edges this source adds to the level; `rect_of` gives any entry's rect on the level (`None` off it).
-    fn edges(&self, app: &App, rect_of: &dyn Fn(&str) -> Option<egui::Rect>) -> Vec<LevelEdge>;
+    fn edges(&self, app: &App, rect_of: &dyn Fn(CardId) -> Option<egui::Rect>) -> Vec<LevelEdge>;
     /// Paints `entry`'s content inside the shared card frame; the body says which part of the card takes the pointer.
     fn paint_body(&self, app: &App, ui: &mut egui::Ui, pass: &mut CardPass, entry: &CardEntry) -> CardBody;
     /// A click on `entry` (the shared card loop calls it for every virtual card, whatever its abilities).
@@ -34,18 +35,13 @@ pub(crate) trait VirtualSource {
         &self,
         app: &mut App,
         entry: &CardEntry,
-        target: Option<(DropEffect, Option<String>)>,
+        target: Option<(DropEffect, Option<CardId>)>,
         at: egui::Pos2,
     ) -> Option<GraphAction>;
     /// The text the Graph toolbar filter matches `entry` against; `None` (the default) means the filter never dims it.
     fn searchable_text(&self, _entry: &CardEntry) -> Option<String> {
         None
     }
-}
-
-/// Whether `id` names a virtual card (`virtual:<source>:<key>`, spec decision 3), which never collides with a node id.
-pub(crate) fn is_virtual_id(id: &str) -> bool {
-    id.starts_with("virtual:")
 }
 
 impl App {
@@ -57,7 +53,7 @@ impl App {
     }
 
     /// Registers `source` after the sources already there. Each name hashes to its cards' `CardId` tag, so a clash (or
-    /// the JSON levels' name) panics in debug builds.
+    /// the JSON levels' name) panics.
     #[cfg(test)]
     pub(crate) fn register_virtual_source(&mut self, source: Rc<dyn VirtualSource>) {
         self.virtual_sources.push(source);
@@ -86,9 +82,14 @@ pub(crate) mod fake {
     pub(crate) const FAKE: &str = "application/vnd.manifold.virtual.fake";
 
     /// One `on_drop`: the entry's id and the target it received.
-    pub(crate) type Dropped = (String, Option<(DropEffect, Option<String>)>);
+    pub(crate) type Dropped = (CardId, Option<(DropEffect, Option<CardId>)>);
 
-    /// Three cards `virtual:fake:a|b|c`, side by side, that records every handler call in `calls`.
+    /// The id of the fake card named `letter`.
+    pub(crate) fn id(letter: char) -> CardId {
+        CardId::virt("fake", u64::from(letter))
+    }
+
+    /// Three cards `id('a')`, `id('b')`, `id('c')`, side by side, that records every handler call in `calls`.
     pub(crate) struct FakeSource {
         pub(crate) calls: RefCell<Vec<String>>,
         /// Where `on_menu` was last asked to open.
@@ -129,9 +130,9 @@ pub(crate) mod fake {
 
         fn entries(&self, _app: &App) -> Vec<CardEntry> {
             self.calls.borrow_mut().push("entries".to_string());
-            [("a", 0.0), ("b", 200.0), ("c", 400.0)]
+            [('a', 0.0), ('b', 200.0), ('c', 400.0)]
                 .map(|(letter, x)| CardEntry {
-                    id: format!("virtual:fake:{letter}"),
+                    id: id(letter),
                     kind: CardKind { ty: self.ty, tags: TagSet::EMPTY },
                     origin: Origin::Virtual("fake"),
                     rect: egui::Rect::from_min_size(egui::pos2(x, 0.0), egui::vec2(100.0, 60.0)),
@@ -140,15 +141,15 @@ pub(crate) mod fake {
         }
 
         /// One edge, `a` to `b`, between the rects' midpoints.
-        fn edges(&self, _app: &App, rect_of: &dyn Fn(&str) -> Option<egui::Rect>) -> Vec<LevelEdge> {
-            let (Some(a), Some(b)) = (rect_of("virtual:fake:a"), rect_of("virtual:fake:b")) else {
+        fn edges(&self, _app: &App, rect_of: &dyn Fn(CardId) -> Option<egui::Rect>) -> Vec<LevelEdge> {
+            let (Some(a), Some(b)) = (rect_of(id('a')), rect_of(id('b'))) else {
                 return Vec::new();
             };
             vec![LevelEdge {
                 from: a.center(),
                 to: b.center(),
-                from_id: "virtual:fake:a".to_string(),
-                to_id: "virtual:fake:b".to_string(),
+                from_id: id('a'),
+                to_id: id('b'),
                 curve: EdgeCurve::Bow,
                 highlight: false,
                 kind: EdgeKind::Opened,
@@ -175,11 +176,11 @@ pub(crate) mod fake {
             &self,
             _app: &mut App,
             entry: &CardEntry,
-            target: Option<(DropEffect, Option<String>)>,
+            target: Option<(DropEffect, Option<CardId>)>,
             at: egui::Pos2,
         ) -> Option<GraphAction> {
             self.calls.borrow_mut().push("on_drop".to_string());
-            self.drops.borrow_mut().push((entry.id.clone(), target));
+            self.drops.borrow_mut().push((entry.id, target));
             self.drop_at.borrow_mut().push(at);
             None
         }
@@ -291,7 +292,7 @@ pub(crate) mod fake {
 
         /// The screen rect around all three fake cards, with a margin.
         pub(crate) fn around_virtuals(&self) -> egui::Rect {
-            self.screen("virtual:fake:a").union(self.screen("virtual:fake:c")).expand(10.0)
+            self.screen(id('a')).union(self.screen(id('c'))).expand(10.0)
         }
 
         /// The stored tab's id.
@@ -301,7 +302,7 @@ pub(crate) mod fake {
         }
 
         /// Entry `id`'s card on screen.
-        pub(crate) fn screen(&self, id: &str) -> egui::Rect {
+        pub(crate) fn screen(&self, id: CardId) -> egui::Rect {
             let entry = self.app.level_items().into_iter().find(|i| i.id == id).expect("an entry with that id");
             self.app.graph_world_rect_to_screen(entry.rect)
         }
@@ -334,8 +335,8 @@ mod tests {
         let mut app = App::default();
         app.register_virtual_source(Rc::new(fake::FakeSource::default()));
         let items = app.level_items();
-        assert!(items.iter().any(|i| i.id == "virtual:fake:a" && matches!(i.origin, Origin::Virtual("fake"))));
-        assert_eq!(items.last().unwrap().id, "virtual:fake:c", "virtual entries draw last, so on top");
+        assert!(items.iter().any(|i| i.id == fake::id('a') && matches!(i.origin, Origin::Virtual("fake"))));
+        assert_eq!(items.last().unwrap().id, fake::id('c'), "virtual entries draw last, so on top");
     }
 
     #[test]
@@ -345,7 +346,7 @@ mod tests {
         assert!(matches!(items[0].origin, Origin::Stored), "the tab is first: {items:?}");
         assert_eq!(items.len(), 4);
         assert!(items[1..].iter().all(|i| i.kind.ty == FAKE && rig.app.virtual_source("fake").is_some()));
-        let (a, b) = (rig.screen("virtual:fake:a"), rig.screen("virtual:fake:b"));
+        let (a, b) = (rig.screen(fake::id('a')), rig.screen(fake::id('b')));
         assert!(a.width() > 0.0 && a.right() < b.left(), "{a:?} {b:?}");
     }
 
@@ -359,10 +360,10 @@ mod tests {
     #[test]
     fn the_card_loop_draws_virtual_entries_and_hovers_them() {
         let mut rig = Rig::with_kind(ALL);
-        let on_b = rig.screen("virtual:fake:b").center();
+        let on_b = rig.screen(fake::id('b')).center();
         rig.frame(vec![egui::Event::PointerMoved(on_b)], egui::Modifiers::NONE);
         rig.frame(vec![], egui::Modifiers::NONE);
-        assert_eq!(rig.app.interaction.hovered.as_deref(), Some("virtual:fake:b"));
+        assert_eq!(rig.app.interaction.hovered, Some(fake::id('b')));
         assert!(calls(&rig, "paint_body") >= 3, "each of the three cards paints through the source");
     }
 
@@ -370,7 +371,7 @@ mod tests {
     fn a_click_on_a_virtual_card_reaches_the_source_and_touches_no_node() {
         let mut rig = Rig::with_kind(ALL);
         let (nodes, selected) = (rig.app.nodes.len(), rig.app.interaction.selected.clone());
-        rig.click(rig.screen("virtual:fake:b").center());
+        rig.click(rig.screen(fake::id('b')).center());
         assert_eq!(calls(&rig, "on_click"), 1, "{:?}", rig.source.calls.borrow());
         assert_eq!((rig.app.nodes.len(), &rig.app.interaction.selected), (nodes, &selected));
         assert!(rig.app.menus.node_menu.open.is_none());
@@ -379,12 +380,12 @@ mod tests {
     #[test]
     fn a_right_click_on_a_virtual_card_opens_no_node_menu_and_calls_on_menu_only_with_the_ability() {
         let mut rig = Rig::with_kind(FAKE);
-        rig.right_click(rig.screen("virtual:fake:b").center());
+        rig.right_click(rig.screen(fake::id('b')).center());
         assert_eq!(calls(&rig, "on_menu"), 0);
         assert!(rig.app.menus.node_menu.open.is_none() && rig.app.menus.node_menu.page.is_none());
 
         let mut rig = Rig::with_kind(MENU);
-        let at = rig.screen("virtual:fake:b").center();
+        let at = rig.screen(fake::id('b')).center();
         rig.right_click(at);
         assert_eq!(calls(&rig, "on_menu"), 1, "{:?}", rig.source.calls.borrow());
         assert!(rig.app.menus.node_menu.open.is_none() && rig.app.menus.node_menu.page.is_none());
@@ -402,27 +403,27 @@ mod tests {
         let stored = rig.app.level_items().remove(0);
         assert!(!card_controls(&rig.app.card_view(&stored, &Default::default()).unwrap()).is_empty());
         let order = rig.app.card_tab_order();
-        assert_eq!(order.last().map(String::as_str), Some("virtual:fake:c"));
+        assert_eq!(order.last().copied(), Some(fake::id('c')));
         assert_eq!(order.len(), 4);
     }
 
     #[test]
     fn a_virtual_card_is_not_in_eguis_own_tab_traversal() {
         let rig = Rig::new();
-        let sense = |id: &str| rig.ctx.read_response(egui::Id::new(("graph_card", id))).expect("drawn").sense;
-        assert!(!sense("virtual:fake:b").is_focusable(), "only the first card or the focused one is focusable");
-        let first = rig.app.card_tab_order()[0].clone();
-        assert!(sense(&first).is_focusable());
+        let sense = |id: CardId| rig.ctx.read_response(id.widget()).expect("drawn").sense;
+        assert!(!sense(fake::id('b')).is_focusable(), "only the first card or the focused one is focusable");
+        let first = rig.app.card_tab_order()[0];
+        assert!(sense(first).is_focusable());
     }
 
     #[test]
     fn tab_onto_a_virtual_card_pans_to_its_rect() {
         let mut rig = Rig::new();
         let order = rig.app.card_tab_order();
-        let from = rig.app.card_rect(&order[0]).unwrap();
+        let from = rig.app.level_card_rect(order[0]).unwrap();
         rig.app.camera.jump_to(egui::Rect::from_center_size(from.center(), egui::vec2(120.0, 120.0)));
         rig.frame(vec![], egui::Modifiers::NONE);
-        rig.ctx.memory_mut(|m| m.request_focus(egui::Id::new(("graph_card", order[0].as_str()))));
+        rig.ctx.memory_mut(|m| m.request_focus(order[0].widget()));
         rig.frame(vec![], egui::Modifiers::NONE);
         rig.app.camera.tween = None;
         let tab = egui::Event::Key {
@@ -435,13 +436,13 @@ mod tests {
         rig.frame(vec![tab], egui::Modifiers::NONE);
         assert!(rig.app.camera.tween.is_some(), "Tab to a card out of view pans to it");
         let want = rig.app.level_items().iter().find(|e| e.id == order[1]).unwrap().rect;
-        assert_eq!(rig.app.level_card_rect(&order[1]), Some(want));
+        assert_eq!(rig.app.level_card_rect(order[1]), Some(want));
     }
 
     const SELECTABLE: &str = "application/vnd.manifold.virtual.fake-selectable";
 
-    fn virtual_ids() -> std::collections::HashSet<String> {
-        ["a", "b", "c"].map(|l| format!("virtual:fake:{l}")).into_iter().collect()
+    fn virtual_ids() -> std::collections::HashSet<CardId> {
+        ['a', 'b', 'c'].map(fake::id).into_iter().collect()
     }
 
     #[test]
@@ -456,7 +457,7 @@ mod tests {
             let mut rig = Rig::with_kind(ty);
             rig.marquee(rig.around_virtuals());
             assert!(rig.app.interaction.selected.is_empty(), "{ty}: {:?}", rig.app.interaction.selected);
-            rig.app.interaction.selected.insert("virtual:fake:a".to_string());
+            rig.app.interaction.selected.insert(fake::id('a'));
             rig.app.end_stale_selection();
             assert!(rig.app.interaction.selected.is_empty(), "{ty}: a kind that cannot be selected is dropped");
         }
@@ -473,8 +474,8 @@ mod tests {
         };
         for (ty, expect) in [(SELECTABLE, true), (FAKE, false)] {
             let mut rig = Rig::with_kind(ty);
-            let first = rig.app.card_tab_order()[0].clone();
-            rig.ctx.memory_mut(|m| m.request_focus(egui::Id::new(("graph_card", first.as_str()))));
+            let first = rig.app.card_tab_order()[0];
+            rig.ctx.memory_mut(|m| m.request_focus(first.widget()));
             rig.frame(vec![], egui::Modifiers::NONE);
             let tab = egui::Event::Key {
                 key: egui::Key::Tab,
@@ -485,8 +486,8 @@ mod tests {
             };
             rig.frame(vec![tab], egui::Modifiers::NONE);
             rig.frame(vec![], egui::Modifiers::NONE);
-            let focused = rig.app.card_tab_order()[1].clone();
-            assert!(rig.ctx.memory(|m| m.has_focus(egui::Id::new(("graph_card", focused.as_str())))), "{focused}");
+            let focused = rig.app.card_tab_order()[1];
+            assert!(rig.ctx.memory(|m| m.has_focus(focused.widget())), "{focused}");
             rig.frame(vec![space()], egui::Modifiers::NONE);
             assert_eq!(rig.app.interaction.selected.contains(&focused), expect, "{ty}");
         }
@@ -495,29 +496,29 @@ mod tests {
     #[test]
     fn selection_actions_act_on_stored_cards_and_leave_a_virtual_id_alone() {
         let mut rig = Rig::with_kind(SELECTABLE);
-        let (tab, virt) = (rig.tab(), "virtual:fake:a".to_string());
+        let (tab, virt) = (rig.tab(), fake::id('a'));
         let nodes = rig.app.nodes.len();
-        rig.app.interaction.selected.extend([tab.clone(), virt.clone()]);
+        rig.app.interaction.selected.extend([CardId::stored(&tab), virt]);
         rig.app.pin_shortcut();
         assert!(rig.app.doc.mirror.pinned(&tab), "the stored tab is pinned");
-        assert!(!rig.app.doc.mirror.has(&virt), "no store write for the virtual id");
+        assert!(!rig.app.doc.mirror.has(&virt.to_string()), "no store write for the virtual id");
         assert_eq!(rig.app.interaction.selected.len(), 2);
 
         let ctx = rig.ctx.clone();
         rig.app.apply_graph_action(&ctx, GraphAction::CloseSelected);
         assert!(!rig.app.nodes.contains_key(&tab), "the stored tab is closed");
         assert_eq!(rig.app.nodes.len(), nodes - 1);
-        assert_eq!(rig.app.interaction.selected, std::collections::HashSet::from([virt.clone()]));
-        assert!(!rig.app.doc.mirror.has(&virt));
+        assert_eq!(rig.app.interaction.selected, std::collections::HashSet::from([virt]));
+        assert!(!rig.app.doc.mirror.has(&virt.to_string()));
 
-        let (mut rig, virt) = (Rig::with_kind(SELECTABLE), "virtual:fake:a".to_string());
+        let (mut rig, virt) = (Rig::with_kind(SELECTABLE), fake::id('a'));
         let tab = rig.tab();
-        rig.app.interaction.selected.extend([tab.clone(), virt.clone()]);
+        rig.app.interaction.selected.extend([CardId::stored(&tab), virt]);
         let ctx = rig.ctx.clone();
         rig.app.apply_graph_action(&ctx, GraphAction::GroupSelected);
         assert!(rig.app.doc.mirror.group(&tab).is_some(), "the stored tab is grouped");
-        assert_eq!(rig.app.interaction.selected, std::collections::HashSet::from([virt.clone()]));
-        assert!(!rig.app.doc.mirror.has(&virt));
+        assert_eq!(rig.app.interaction.selected, std::collections::HashSet::from([virt]));
+        assert!(!rig.app.doc.mirror.has(&virt.to_string()));
     }
 }
 
@@ -526,7 +527,7 @@ mod reach_tests {
     use super::fake::{Rig, FAKE};
     use super::*;
     use crate::level::Origin;
-    use crate::store::model::{field, FieldValue};
+    use crate::store::model::field;
 
     const SELECTABLE: &str = "application/vnd.manifold.virtual.fake-selectable";
 
@@ -562,22 +563,17 @@ mod reach_tests {
     fn every_write_entry_point_leaves_a_virtual_id_out_of_the_store_and_the_layout() {
         let mut rig = Rig::with_kind("application/vnd.manifold.virtual.fake-all");
         let placement = crate::fetched::Placement { group: None, pos: egui::vec2(700.0, 300.0) };
-        rig.app.place_group(Some("g".into()), "G", placement);
-        let (virt, tab, group) = ("virtual:fake:a", rig.tab(), "g".to_string());
-        let ctx = rig.ctx.clone();
-        let others = [tab.as_str(), "g"];
-        let before = footprint(&mut rig.app, virt, &others);
-        let virtual_b = "virtual:fake:b".to_string();
-
-        // The virtual id edited directly.
-        rig.app.edit_pos(virt, Some(egui::vec2(5.0, 7.0)));
-        rig.app.edit_field(virt, field::PINNED, FieldValue::Bool(true));
-        rig.app.edit_group(virt, Some(group.clone()));
-        rig.app.edit_parent(virt, Some(tab.clone()));
+        let group = crate::card_id::testutil::node(9).to_string();
+        rig.app.place_group(Some(group.clone()), "G", placement);
+        let (virt, tab) = (fake::id('a'), rig.tab());
+        let (virt_text, ctx) = (virt.to_string(), rig.ctx.clone());
+        let others = [tab.as_str(), group.as_str()];
+        let before = footprint(&mut rig.app, &virt_text, &others);
+        let virtual_b = fake::id('b');
 
         // A release of a live virtual drag (it must really run).
-        rig.app.interaction.dragging = Some(virt.to_string());
-        rig.app.interaction.drag_moved = vec![virt.to_string()];
+        rig.app.interaction.dragging = Some(virt);
+        rig.app.interaction.drag_moved = vec![virt];
         assert!(rig.app.is_being_dragged(virt), "the release below is not vacuous");
         rig.app.release_drag();
 
@@ -586,21 +582,21 @@ mod reach_tests {
         for effect in
             [DropEffect::Join, DropEffect::GroupWith, DropEffect::Reparent, DropEffect::Merge, DropEffect::Eject]
         {
-            for target in [group.clone(), tab.clone(), virtual_b.clone()] {
+            for target in [CardId::stored(&group), CardId::stored(&tab), virtual_b] {
                 rig.app.apply_drop(virt, Some((effect, Some(target))));
             }
-            for dragged in [tab.as_str(), "g"] {
-                rig.app.apply_drop(dragged, Some((effect, Some(virt.to_string()))));
+            for dragged in [CardId::stored(&tab), CardId::stored(&group)] {
+                rig.app.apply_drop(dragged, Some((effect, Some(virt))));
             }
         }
-        assert_eq!(footprint(&mut rig.app, virt, &others), before);
+        assert_eq!(footprint(&mut rig.app, &virt_text, &others), before);
 
         // Selection actions with the virtual id alone selected.
-        rig.app.interaction.selected = std::collections::HashSet::from([virt.to_string()]);
+        rig.app.interaction.selected = std::collections::HashSet::from([virt]);
         rig.app.apply_graph_action(&ctx, GraphAction::CloseSelected);
         rig.app.apply_graph_action(&ctx, GraphAction::GroupSelected);
         rig.app.pin_shortcut();
-        assert_eq!(footprint(&mut rig.app, virt, &others), before);
+        assert_eq!(footprint(&mut rig.app, &virt_text, &others), before);
     }
 
     #[test]
@@ -612,13 +608,13 @@ mod reach_tests {
             }
             fn entries(&self, _: &App) -> Vec<CardEntry> {
                 vec![CardEntry {
-                    id: "virtual:far:x".to_string(),
+                    id: CardId::virt("far", 0x78),
                     kind: crate::CardKind { ty: FAKE, tags: crate::caps::TagSet::EMPTY },
                     origin: Origin::Virtual("far"),
                     rect: egui::Rect::from_min_size(egui::pos2(9000.0, 9000.0), egui::vec2(100.0, 60.0)),
                 }]
             }
-            fn edges(&self, _: &App, _: &dyn Fn(&str) -> Option<egui::Rect>) -> Vec<LevelEdge> {
+            fn edges(&self, _: &App, _: &dyn Fn(CardId) -> Option<egui::Rect>) -> Vec<LevelEdge> {
                 Vec::new()
             }
             fn paint_body(&self, _: &App, _: &mut egui::Ui, _: &mut CardPass, entry: &CardEntry) -> CardBody {
@@ -632,7 +628,7 @@ mod reach_tests {
                 &self,
                 _: &mut App,
                 _: &CardEntry,
-                _: Option<(DropEffect, Option<String>)>,
+                _: Option<(DropEffect, Option<CardId>)>,
                 _: egui::Pos2,
             ) -> Option<GraphAction> {
                 None
@@ -648,7 +644,8 @@ mod reach_tests {
     fn export_state_lists_a_virtual_card_with_its_source_and_abilities() {
         let rig = Rig::with_kind(SELECTABLE);
         let state = rig.app.export_state();
-        let card = state["cards"].as_array().unwrap().iter().find(|c| c["id"] == "virtual:fake:a").expect("listed");
+        let card =
+            state["cards"].as_array().unwrap().iter().find(|c| c["id"] == fake::id('a').to_string()).expect("listed");
         assert_eq!(card["virtual"], "fake");
         assert_eq!(card["type"], SELECTABLE);
         assert_eq!(card["json_card"], false);
@@ -657,6 +654,26 @@ mod reach_tests {
         assert!(card["rect"].is_array() && card["screen"].is_array());
         let stored = state["cards"].as_array().unwrap().iter().find(|c| c["id"] == rig.tab()).unwrap();
         assert!(stored.get("virtual").is_none());
+    }
+
+    /// Review Focus 5: EXPORTSTATE prints a card's id as `Display` and `FromStr` reads it back to the same id, for
+    /// stored and virtual cards alike (a script drives the app with the text it was given).
+    #[test]
+    fn exportstate_prints_a_card_id_that_parses_back() {
+        let rig = Rig::with_kind(SELECTABLE);
+        let state = rig.app.export_state();
+        let printed: Vec<CardId> = state["cards"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["id"].as_str().unwrap().parse().expect("a printed id parses"))
+            .collect();
+        let mut drawn: Vec<CardId> = rig.app.level_items().into_iter().map(|e| e.id).collect();
+        drawn.sort();
+        let mut printed_sorted = printed;
+        printed_sorted.sort();
+        assert_eq!(printed_sorted, drawn);
+        assert!(drawn.iter().any(|id| id.is_virtual()) && drawn.iter().any(|id| id.node().is_some()));
     }
 
     #[test]
@@ -677,8 +694,9 @@ mod reach_tests {
 
 #[cfg(test)]
 mod drag_tests {
-    use super::fake::{Dropped, Rig, FAKE};
+    use super::fake::{self, Dropped, Rig, FAKE};
     use crate::card::DropEffect;
+    use crate::card_id::CardId;
 
     const DRAG: &str = "application/vnd.manifold.virtual.fake-drag";
     const ALL: &str = "application/vnd.manifold.virtual.fake-all";
@@ -687,19 +705,20 @@ mod drag_tests {
     fn rig_with_group(ty: &'static str) -> (Rig, String) {
         let mut rig = Rig::with_kind(ty);
         let placement = crate::fetched::Placement { group: None, pos: egui::vec2(700.0, 300.0) };
-        rig.app.place_group(Some("g".into()), "G", placement);
+        let group = crate::card_id::testutil::node(9).to_string();
+        rig.app.place_group(Some(group.clone()), "G", placement);
         rig.app.camera.jump_to(egui::Rect::from_min_max(egui::pos2(-100.0, -100.0), egui::pos2(1100.0, 600.0)));
         for _ in 0..3 {
             rig.frame(vec![], egui::Modifiers::NONE);
         }
-        (rig, "g".to_string())
+        (rig, group)
     }
 
     fn world_to_screen(rig: &Rig, world: egui::Pos2) -> egui::Pos2 {
         rig.app.graph_world_rect_to_screen(egui::Rect::from_min_size(world, egui::Vec2::ZERO)).min
     }
 
-    fn rects(rig: &Rig) -> Vec<(String, egui::Rect)> {
+    fn rects(rig: &Rig) -> Vec<(CardId, egui::Rect)> {
         rig.app.level_items().into_iter().map(|e| (e.id, e.rect)).collect()
     }
 
@@ -711,24 +730,25 @@ mod drag_tests {
     fn dragging_a_virtual_card_moves_nothing_and_the_drag_stays_live_while_held() {
         let (mut rig, _) = rig_with_group(DRAG);
         let before = rects(&rig);
-        let from = rig.screen("virtual:fake:a").center();
+        let from = rig.screen(fake::id('a')).center();
         rig.hold_drag(from, from + egui::vec2(40.0, 70.0));
-        assert_eq!(rig.app.interaction.dragging.as_deref(), Some("virtual:fake:a"));
+        let virt = fake::id('a').to_string();
+        assert_eq!(rig.app.interaction.dragging, Some(fake::id('a')));
         assert!(rig.app.interaction.drag_moved.is_empty());
         assert_eq!(rects(&rig), before, "no rect moved");
-        assert!(!rig.app.layout.contains_key("virtual:fake:a"), "no layout entry");
+        assert!(!rig.app.layout.contains_key(&virt), "no layout entry");
         rig.frame(vec![], egui::Modifiers::NONE);
-        assert_eq!(rig.app.interaction.dragging.as_deref(), Some("virtual:fake:a"), "end_stale_drag keeps it");
+        assert_eq!(rig.app.interaction.dragging, Some(fake::id('a')), "end_stale_drag keeps it");
         rig.release(from);
         assert!(rig.app.interaction.dragging.is_none());
         assert_eq!(rects(&rig), before);
-        assert!(!rig.app.layout.contains_key("virtual:fake:a") && !rig.app.doc.mirror.has("virtual:fake:a"));
+        assert!(!rig.app.layout.contains_key(&virt) && !rig.app.doc.mirror.has(&virt));
     }
 
     #[test]
     fn a_kind_without_drag_source_is_not_dragged() {
         let (mut rig, _) = rig_with_group(FAKE);
-        let from = rig.screen("virtual:fake:a").center();
+        let from = rig.screen(fake::id('a')).center();
         rig.hold_drag(from, from + egui::vec2(40.0, 70.0));
         assert!(rig.app.interaction.dragging.is_none());
     }
@@ -742,9 +762,9 @@ mod drag_tests {
             .level_items()
             .iter()
             .all(|e| !e.rect.contains(rig.app.graph_screen_point_to_world(empty).to_pos2())));
-        let from = rig.screen("virtual:fake:a").center();
+        let from = rig.screen(fake::id('a')).center();
         rig.drag(from, empty);
-        assert_eq!(drops(&rig), [("virtual:fake:a".to_string(), None)]);
+        assert_eq!(drops(&rig), [(fake::id('a'), None)]);
         assert_eq!(rig.source.calls.borrow().iter().filter(|c| *c == "on_drop").count(), 1);
         assert!(rig.app.interaction.dragging.is_none());
     }
@@ -755,7 +775,7 @@ mod drag_tests {
     fn on_drop_gets_the_release_point_in_world_space() {
         let (mut rig, _) = rig_with_group(DRAG);
         let empty = world_to_screen(&rig, egui::pos2(500.0, 150.0));
-        let from = rig.screen("virtual:fake:a").center();
+        let from = rig.screen(fake::id('a')).center();
         rig.drag(from, empty);
         let want = rig.app.graph_screen_point_to_world(empty).to_pos2();
         let at = rig.source.drop_at.borrow().clone();
@@ -768,9 +788,9 @@ mod drag_tests {
     fn a_release_over_a_stored_group_calls_on_drop_with_the_effect_and_the_group() {
         let (mut rig, group) = rig_with_group(DRAG);
         let over = rig.app.graph_world_rect_to_screen(rig.app.card_rect(&group).unwrap()).center();
-        let from = rig.screen("virtual:fake:a").center();
+        let from = rig.screen(fake::id('a')).center();
         rig.drag(from, over);
-        assert_eq!(drops(&rig), [("virtual:fake:a".to_string(), Some((DropEffect::Join, Some(group.clone()))))]);
+        assert_eq!(drops(&rig), [(fake::id('a'), Some((DropEffect::Join, Some(CardId::stored(&group)))))]);
         assert_eq!(rig.app.members_of(&group).count(), 0, "nothing joined the group");
     }
 
@@ -778,10 +798,10 @@ mod drag_tests {
     fn a_virtual_card_is_a_drop_target_only_with_the_ability() {
         for (ty, expect) in [(ALL, true), (DRAG, false)] {
             let mut rig = Rig::with_kind(ty);
-            let (a, b) = (rig.screen("virtual:fake:a").center(), rig.screen("virtual:fake:b").center());
+            let (a, b) = (rig.screen(fake::id('a')).center(), rig.screen(fake::id('b')).center());
             rig.drag(a, b);
-            let want = expect.then(|| (DropEffect::Join, Some("virtual:fake:b".to_string())));
-            assert_eq!(drops(&rig), [("virtual:fake:a".to_string(), want)], "{ty}");
+            let want = expect.then(|| (DropEffect::Join, Some(fake::id('b'))));
+            assert_eq!(drops(&rig), [(fake::id('a'), want)], "{ty}");
         }
     }
 
@@ -789,23 +809,24 @@ mod drag_tests {
     fn a_virtual_drop_never_takes_the_stored_selection_with_it() {
         let (mut rig, group) = rig_with_group(ALL);
         let tab = rig.tab();
-        rig.app.interaction.selected.extend([tab.clone(), "virtual:fake:a".to_string()]);
+        rig.app.interaction.selected.extend([CardId::stored(&tab), fake::id('a')]);
         let over = rig.app.graph_world_rect_to_screen(rig.app.card_rect(&group).unwrap()).center();
-        let from = rig.screen("virtual:fake:a").center();
+        let from = rig.screen(fake::id('a')).center();
         rig.drag(from, over);
         assert_eq!(drops(&rig).len(), 1, "{:?}", drops(&rig));
         assert!(rig.app.doc.mirror.group(&tab).is_none(), "the selected stored tab did not join the group");
-        assert!(rig.app.interaction.selected.contains(&tab), "the selection is untouched");
+        assert!(rig.app.interaction.selected.contains(&CardId::stored(&tab)), "the selection is untouched");
     }
 
     #[test]
     fn release_drag_for_a_virtual_id_writes_nothing() {
         let (mut rig, _) = rig_with_group(DRAG);
-        rig.app.interaction.dragging = Some("virtual:fake:a".to_string());
+        rig.app.interaction.dragging = Some(fake::id('a'));
         rig.app.interaction.drag_moved = vec![];
         rig.app.release_drag();
+        let virt = fake::id('a').to_string();
         assert!(rig.app.interaction.dragging.is_none());
-        assert!(!rig.app.doc.mirror.has("virtual:fake:a") && !rig.app.layout.contains_key("virtual:fake:a"));
+        assert!(!rig.app.doc.mirror.has(&virt) && !rig.app.layout.contains_key(&virt));
     }
 
     #[test]
@@ -823,6 +844,7 @@ mod drag_tests {
 #[cfg(test)]
 mod rig_tests {
     use super::fake::{Rig, FAKE};
+    use crate::card_id::testutil::node;
 
     /// A HashMap-order `tab()` picked the group about half the time once one was added; 40 rigs make that certain.
     #[test]
@@ -830,8 +852,9 @@ mod rig_tests {
         for _ in 0..40 {
             let mut rig = Rig::with_kind(FAKE);
             let placement = crate::fetched::Placement { group: None, pos: egui::vec2(700.0, 300.0) };
-            rig.app.place_group(Some("g".into()), "G", placement);
-            assert_ne!(rig.tab(), "g");
+            let group = node(9).to_string();
+            rig.app.place_group(Some(group.clone()), "G", placement);
+            assert_ne!(rig.tab(), group);
         }
     }
 }
@@ -864,20 +887,20 @@ mod keyboard_menu_tests {
         const MENU: &str = "application/vnd.manifold.virtual.fake-menu";
         for (ty, calls) in [(MENU, 1), (super::fake::FAKE, 0)] {
             let mut rig = Rig::with_kind(ty);
-            let first = rig.app.card_tab_order()[0].clone();
-            rig.ctx.memory_mut(|m| m.request_focus(egui::Id::new(("graph_card", first.as_str()))));
+            let first = rig.app.card_tab_order()[0];
+            rig.ctx.memory_mut(|m| m.request_focus(first.widget()));
             rig.frame(vec![], egui::Modifiers::NONE);
             let key =
                 |key, modifiers| egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers };
             rig.frame(vec![key(egui::Key::Tab, egui::Modifiers::NONE)], egui::Modifiers::NONE);
             rig.frame(vec![], egui::Modifiers::NONE);
-            let focused = rig.app.card_tab_order()[1].clone();
-            assert!(rig.ctx.memory(|m| m.has_focus(egui::Id::new(("graph_card", focused.as_str())))), "{focused}");
+            let focused = rig.app.card_tab_order()[1];
+            assert!(rig.ctx.memory(|m| m.has_focus(focused.widget())), "{focused}");
             rig.frame(vec![key(egui::Key::F10, egui::Modifiers::SHIFT)], egui::Modifiers::SHIFT);
             let seen = rig.source.calls.borrow().iter().filter(|c| *c == "on_menu").count();
             assert_eq!(seen, calls, "{ty}");
             if calls == 1 {
-                let corner = rig.screen(&focused).left_bottom();
+                let corner = rig.screen(focused).left_bottom();
                 let at = rig.source.menu_at.get().expect("asked to open");
                 assert!((at - corner).length() < 1.0, "{at:?} vs {corner:?}");
             }
@@ -888,18 +911,30 @@ mod keyboard_menu_tests {
 
 #[cfg(test)]
 mod selection_rule_tests {
+    use crate::card_id::{testutil::card, CardId};
     use crate::App;
 
-    /// "Virtual" in a selection action is the id rule (`is_virtual_id`), the persistence guard's too: a virtual id
+    /// "Virtual" in a selection action is the id's kind (`CardId::node`), the persistence guard's too: a virtual id
     /// whose source no longer lists it stays out of the stored count and the stored take.
     #[test]
-    fn the_selection_actions_split_on_the_virtual_id_rule_not_on_what_sources_list() {
+    fn the_selection_actions_split_on_the_id_kind_not_on_what_sources_list() {
         let mut app = App::default();
-        app.test_node("n", crate::store::model::Kind::Jar, crate::node::Runtime::Jar);
-        app.interaction.selected.extend(["n".to_string(), "virtual:gone:x".to_string()]);
+        let (n, gone) = (card(1), CardId::virt("gone", 0x78));
+        app.test_node(&n.to_string(), crate::store::model::Kind::Jar, crate::node::Runtime::Jar);
+        app.interaction.selected.extend([n, gone]);
         assert_eq!(app.selected_stored_count(), 1);
         let taken = app.take_selected_stored();
-        assert_eq!(taken, std::collections::HashSet::from(["n".to_string()]));
-        assert_eq!(app.interaction.selected, std::collections::HashSet::from(["virtual:gone:x".to_string()]));
+        assert_eq!(taken, std::collections::HashSet::from([n.to_string()]));
+        assert_eq!(app.interaction.selected, std::collections::HashSet::from([gone]));
+    }
+
+    /// Review Focus 4: a selected virtual id whose source is not registered is pruned with the rest of a stale
+    /// selection, so no action ever sees a card nothing draws.
+    #[test]
+    fn selection_prunes_a_virtual_id_whose_source_is_unregistered() {
+        let mut app = App::default();
+        app.interaction.selected.insert(CardId::virt("gone", 0x78));
+        app.end_stale_selection();
+        assert!(app.interaction.selected.is_empty());
     }
 }

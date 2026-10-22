@@ -1,4 +1,5 @@
 use super::*;
+use crate::card_id::CardId;
 use crate::session_sync::tests::{add_group, add_note, app_on, closed_ids, group_with_note, stored};
 use crate::store::model::{field, FieldValue};
 
@@ -151,10 +152,10 @@ fn a_join_is_undone_and_redone() {
     let (g, _) = group_with_note(&mut app);
     let n = add_note(&mut app, "loose");
     app.edit_pos(&n, Some(egui::vec2(40.0, 50.0)));
-    app.interaction.drag_origin = vec![(n.clone(), app.doc.mirror.pos(&n))];
+    app.interaction.drag_origin = vec![(CardId::stored(&n), app.doc.mirror.pos(&n))];
     app.edit_pos(&n, Some(egui::vec2(300.0, 300.0)));
     app.snap_layout(&n, egui::vec2(300.0, 300.0));
-    app.apply_drop(&n, Some((DropEffect::Join, Some(g.clone()))));
+    app.apply_drop(CardId::stored(&n), Some((DropEffect::Join, Some(CardId::stored(&g)))));
     assert_eq!(app.doc.mirror.group(&n), Some(g.as_str()));
     app.step_history(None, false);
     assert_eq!(app.doc.mirror.group(&n), None);
@@ -174,7 +175,7 @@ fn an_undo_into_a_closed_group_is_refused() {
     let (g, inner) = group_with_note(&mut app);
     let other = add_note(&mut app, "other");
     app.edit_group(&other, Some(g.clone()));
-    app.apply_drop(&inner, Some((DropEffect::Eject, None)));
+    app.apply_drop(CardId::stored(&inner), Some((DropEffect::Eject, None)));
     assert_eq!(app.doc.mirror.group(&inner), None);
     assert!(app.toasts.undo.is_some(), "recorded");
     app.close_node(&g);
@@ -191,8 +192,8 @@ fn a_menu_join_of_a_selection_records_every_card() {
     let mut app = app_on(&path, 1);
     let (g, _) = group_with_note(&mut app);
     let (a, b) = (add_note(&mut app, "a"), add_note(&mut app, "b"));
-    app.interaction.selected = [a.clone(), b.clone()].into_iter().collect();
-    app.apply_drop(&a, Some((DropEffect::Join, Some(g.clone()))));
+    app.interaction.selected = [CardId::stored(&a), CardId::stored(&b)].into_iter().collect();
+    app.apply_drop(CardId::stored(&a), Some((DropEffect::Join, Some(CardId::stored(&g)))));
     assert_eq!(app.doc.mirror.group(&b), Some(g.as_str()));
     app.step_history(None, false);
     assert_eq!(app.doc.mirror.group(&a), None);
@@ -205,8 +206,8 @@ fn a_focus_loss_mid_drag_leaves_no_stale_origin() {
     let path = store::testutil::temp_dir("focus-origin").join("session.mnf");
     let mut app = app_on(&path, 1);
     let n = add_note(&mut app, "n");
-    app.interaction.dragging = Some(n.clone());
-    app.interaction.drag_moved = vec![n.clone()];
+    app.interaction.dragging = Some(CardId::stored(&n));
+    app.interaction.drag_moved = vec![CardId::stored(&n)];
     app.on_window_focus(false);
     assert!(app.interaction.drag_origin.is_empty());
 }
@@ -218,9 +219,9 @@ fn a_selection_join_reverts_each_card_and_skips_one_that_moved_on() {
     let mut app = app_on(&path, 1);
     let (g, _) = group_with_note(&mut app);
     let (a, b) = (add_note(&mut app, "a"), add_note(&mut app, "b"));
-    app.interaction.selected = [a.clone(), b.clone()].into_iter().collect();
-    app.interaction.drag_origin = vec![(a.clone(), None), (b.clone(), None)];
-    app.apply_drop(&a, Some((DropEffect::Join, Some(g.clone()))));
+    app.interaction.selected = [CardId::stored(&a), CardId::stored(&b)].into_iter().collect();
+    app.interaction.drag_origin = vec![(CardId::stored(&a), None), (CardId::stored(&b), None)];
+    app.apply_drop(CardId::stored(&a), Some((DropEffect::Join, Some(CardId::stored(&g)))));
     assert_eq!(app.doc.mirror.group(&b), Some(g.as_str()));
     let elsewhere = add_group(&mut app, "Elsewhere");
     app.edit_group(&b, Some(elsewhere.clone()));
@@ -235,7 +236,7 @@ fn a_group_with_is_undone_and_redone_with_the_same_group() {
     let path = store::testutil::temp_dir("groupwith-undo").join("session.mnf");
     let mut app = app_on(&path, 1);
     let (a, b) = (add_note(&mut app, "a"), add_note(&mut app, "b"));
-    app.apply_drop(&a, Some((DropEffect::GroupWith, Some(b.clone()))));
+    app.apply_drop(CardId::stored(&a), Some((DropEffect::GroupWith, Some(CardId::stored(&b)))));
     let made = app.doc.mirror.group(&a).map(str::to_owned).expect("grouped");
     assert_eq!(app.doc.mirror.group(&b), Some(made.as_str()));
     app.step_history(None, false);
@@ -252,7 +253,7 @@ fn an_eject_is_undone_and_redone() {
     let path = store::testutil::temp_dir("eject-undo").join("session.mnf");
     let mut app = app_on(&path, 1);
     let (g, inner) = group_with_note(&mut app);
-    app.apply_drop(&inner, Some((DropEffect::Eject, None)));
+    app.apply_drop(CardId::stored(&inner), Some((DropEffect::Eject, None)));
     assert_eq!(app.doc.mirror.group(&inner), None);
     app.step_history(None, false);
     assert_eq!(app.doc.mirror.group(&inner), Some(g.as_str()));
@@ -269,7 +270,7 @@ fn a_reparent_is_undone() {
     let b = add_note(&mut app, "b");
     app.edit_group(&b, Some(g.clone()));
     let before = app.doc.mirror.parent(&a).map(str::to_owned);
-    app.apply_drop(&a, Some((DropEffect::Reparent, Some(b.clone()))));
+    app.apply_drop(CardId::stored(&a), Some((DropEffect::Reparent, Some(CardId::stored(&b)))));
     assert_eq!(app.doc.mirror.parent(&a), Some(b.as_str()));
     app.step_history(None, false);
     assert_eq!(app.doc.mirror.parent(&a).map(str::to_owned), before);
@@ -282,11 +283,11 @@ fn only_effect_drops_are_recorded_and_a_drop_clears_redo() {
     let mut app = app_on(&path, 1);
     let (g, _) = group_with_note(&mut app);
     let (a, b) = (add_note(&mut app, "a"), add_note(&mut app, "b"));
-    app.apply_drop(&a, None);
+    app.apply_drop(CardId::stored(&a), None);
     assert!(app.toasts.undo.is_none(), "a plain move is not recorded");
-    app.apply_drop(&a, Some((DropEffect::Join, Some(g.clone()))));
+    app.apply_drop(CardId::stored(&a), Some((DropEffect::Join, Some(CardId::stored(&g)))));
     app.step_history(None, false);
-    app.apply_drop(&b, Some((DropEffect::Join, Some(g.clone()))));
+    app.apply_drop(CardId::stored(&b), Some((DropEffect::Join, Some(CardId::stored(&g)))));
     app.step_history(None, true);
     assert_eq!(app.doc.mirror.group(&a), None, "the redo list was emptied by the second drop");
 }
@@ -296,10 +297,10 @@ fn only_effect_drops_are_recorded_and_a_drop_clears_redo() {
 fn a_merged_away_group_leaves_the_selection() {
     let mut app = App::default();
     let (source, target) = (add_group(&mut app, "S"), add_group(&mut app, "T"));
-    app.interaction.selected.extend([source.clone(), target.clone()]);
+    app.interaction.selected.extend([CardId::stored(&source), CardId::stored(&target)]);
     app.merge_groups(&source, &target);
     assert!(!app.nodes.contains_key(&source));
-    assert_eq!(app.interaction.selected, HashSet::from([target]));
+    assert_eq!(app.interaction.selected, HashSet::from([CardId::stored(&target)]));
 }
 
 /// A Join (or a menu's Move into) onto a group another replica closed after the menu opened is a no-op: the node
@@ -316,10 +317,10 @@ fn a_join_onto_a_group_closed_remotely_does_nothing() {
     crate::session_sync::tests::remote_set(&mut other, &g, field::CLOSED, FieldValue::Replica(99));
     assert!(app.save_session());
     assert!(!app.nodes.contains_key(&g), "closed remotely, so not shown");
-    app.apply_drop(&n, Some((DropEffect::Join, Some(g.clone()))));
+    app.apply_drop(CardId::stored(&n), Some((DropEffect::Join, Some(CardId::stored(&g)))));
     app.apply_node_action(&egui::Context::default(), &n, crate::node_menu::NodeAction::MoveToGroup(g.clone()));
     assert_eq!(app.doc.mirror.group(&n), None, "still at the top level");
     assert!(app.nodes.contains_key(&n));
-    app.apply_drop(&other_group, Some((DropEffect::Merge, Some(g.clone()))));
+    app.apply_drop(CardId::stored(&other_group), Some((DropEffect::Merge, Some(CardId::stored(&g)))));
     assert!(app.nodes.contains_key(&other_group), "the merge into a hidden group is refused");
 }

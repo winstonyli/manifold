@@ -300,7 +300,7 @@ impl App {
             };
             let failed = self
                 .nodes
-                .get(&item.id)
+                .get(&item.id.to_string())
                 .and_then(|n| n.as_unloaded())
                 .is_some_and(|t| matches!(t.state, UnloadedState::Failed(_)));
             let color = if failed { DANGER_COLOR } else { color };
