@@ -21,7 +21,7 @@
 //! out. With `--samply` it records through the elevated `Samply` task (~/.claude/SAMPLY.md) to
 //! target/profile/profile.json.gz; keep SECONDS near 10, since samply's kernel trace wrote 7 GB in 15 minutes for a 20 s
 //! run. Needs a release exe (`CARGO_PROFILE_RELEASE_DEBUG=true cargo build --release -p manifold` for names in a
-//! profile). Check the machine is quiet first (CPU under ~20%) and say so with any numbers. The run is at
+//! profile); it refuses an exe older than any source file under crates/. Check the machine is quiet first (CPU under ~20%) and say so with any numbers. The run is at
 //! BelowNormal.
 
 use std::fmt::Write as _;
