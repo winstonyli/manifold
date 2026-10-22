@@ -27,7 +27,6 @@ mod instance;
 #[cfg(windows)]
 mod jar;
 #[cfg(windows)]
-mod json_pan;
 #[cfg(windows)]
 mod launch_forms;
 #[cfg(windows)]
@@ -39,6 +38,7 @@ mod nonce;
 mod package;
 #[cfg(windows)]
 mod probes;
+mod profile;
 #[cfg(windows)]
 mod release_check;
 #[cfg(windows)]
@@ -153,9 +153,9 @@ mod windows_main {
         Stage { name: "sync-runtime-deps", usage: Some(""), run: Run::Bare(crate::sync_deps::sync_runtime_deps) },
         Stage { name: "cef-pin", usage: Some("[--platform ID] PREFIX"), run: Run::Args(crate::cef_pin::cef_pin_main) },
         Stage {
-            name: "json-pan",
-            usage: Some("[MODE] [SECONDS] [--samply]"),
-            run: Run::Args(crate::json_pan::json_pan),
+            name: "profile",
+            usage: Some("SCENARIO [SECONDS] [--samply]"),
+            run: Run::Args(crate::profile::profile),
         },
         Stage { name: "package", usage: Some("[EXE]"), run: Run::Args(crate::package::package) },
         Stage { name: "install-check", usage: Some("cef|servo EXE"), run: Run::Args(crate::package::install_check) },

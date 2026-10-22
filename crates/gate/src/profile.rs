@@ -1,21 +1,24 @@
-//! `gate json-pan [MODE] [SECONDS] [--samply]` (was scripts/json-pan-profile.sh and .py): times, or profiles with
-//! samply, panning a big JSON level. MODE is `pan` (default), `zoom`, `reveal-numbers` or `reveal-objects`;
-//! SECONDS (default 20) sets how long the pan or zoom runs, one command per frame (60 a second).
+//! `gate profile SCENARIO [SECONDS] [--samply]` (was scripts/json-pan-profile.sh and .py): times, or profiles with
+//! samply, one scripted scenario. SCENARIO is `json-pan`, `json-zoom`, `json-reveal-numbers`, `json-reveal-objects`
+//! (panning, zooming and paging a big JSON level) or `graph-frames` (the Graph view with 80 notes at 25% zoom, a
+//! pointer move per frame). SECONDS (default 20) sets how long the pan, zoom or frames run, one command per frame
+//! (60 a second).
 //!
 //! The app runs headless on an isolated profile folder, driven by a command file (`--script`, `--profile-dir`: the
-//! elevated samply task can set neither stdin nor APPDATA). `pan` and `zoom` use a tree 3 levels deep with 12 children
-//! per level (`JSON_BRANCH`, default 12; 27 gives ~20k containers) and reveal the 12 x 12 depth-2 cards, which brings a
-//! few thousand cards into play. The reveal modes open `{"items": [...]}` of `REVEAL_N` (default 200000) numbers or
-//! objects and select the last entry, which pages the array to every row.
+//! elevated samply task can set neither stdin nor APPDATA). `json-pan` and `json-zoom` use a tree 3 levels deep with 12
+//! children per level (`JSON_BRANCH`, default 12; 27 gives ~20k containers) and reveal the 12 x 12 depth-2 cards, which
+//! brings a few thousand cards into play. The reveal scenarios open `{"items": [...]}` of `REVEAL_N` (default 200000)
+//! numbers or objects and select the last entry, which pages the array to every row.
 //!
-//! Without `--samply` it runs the copied release exe once and appends `TIME_ONLY mode=… seconds=… commands=… ms=…
-//! exit=… selected=…` to target/json-time.log (an empty `selected` on a reveal run means the level never opened and
-//! nothing was timed). The cost per command is the difference between two runs of different SECONDS divided by the
-//! difference in commands, so the ~6 s setup cancels out. With `--samply` it records through the elevated `Samply` task
-//! (~/.claude/SAMPLY.md) to target/json-profile/profile.json.gz; keep SECONDS near 10, since samply's kernel trace
-//! wrote 7 GB in 15 minutes for a 20 s run. Needs a release exe (`CARGO_PROFILE_RELEASE_DEBUG=true cargo build
-//! --release -p manifold` for names in a profile). Check the machine is quiet first (CPU under ~20%) and say so with
-//! any numbers. The run is at BelowNormal.
+//! Without `--samply` it runs the copied release exe once and appends `TIME_ONLY scenario=… seconds=… commands=…
+//! ms=… exit=… result=…` to target/profile-time.log (`result` is the selected pointer of a reveal run, empty if the
+//! level never opened and nothing was timed, or the card count of `graph-frames`). The cost per command is the
+//! difference between two runs of different SECONDS divided by the difference in commands, so the ~6 s setup cancels
+//! out. With `--samply` it records through the elevated `Samply` task (~/.claude/SAMPLY.md) to
+//! target/profile/profile.json.gz; keep SECONDS near 10, since samply's kernel trace wrote 7 GB in 15 minutes for a 20 s
+//! run. Needs a release exe (`CARGO_PROFILE_RELEASE_DEBUG=true cargo build --release -p manifold` for names in a
+//! profile). Check the machine is quiet first (CPU under ~20%) and say so with any numbers. The run is at
+//! BelowNormal.
 
 use std::fmt::Write as _;
 use std::io::Write as _;
@@ -27,6 +30,9 @@ use std::time::Instant;
 use serde_json::{json, Value};
 
 const BELOW_NORMAL: u32 = 0x4000;
+/// The notes `graph-frames` adds.
+const GRAPH_NOTES: usize = 80;
+const SCENARIOS: [&str; 5] = ["json-pan", "json-zoom", "json-reveal-numbers", "json-reveal-objects", "graph-frames"];
 
 fn env_usize(name: &str, default: usize) -> usize {
     std::env::var(name).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
@@ -90,27 +96,62 @@ fn script(fixture: &Path, state: &Path, seconds: f64, mode: &str, branch: usize,
     s
 }
 
-/// The `selected` pointer of a state export, empty when there is none.
-fn selected(state: &Path) -> String {
+/// The headless command file of `graph-frames`: `NOTES` notes, the camera at 25%, then a pointer move per frame for
+/// `seconds`. `state` is where it exports the state to count the cards.
+fn graph_script(state: &Path, seconds: f64) -> String {
+    let mut s = String::from(
+        "WAITIDLE
+",
+    );
+    s.push_str(
+        &"NEWNOTE
+"
+        .repeat(GRAPH_NOTES),
+    );
+    let _ = writeln!(
+        s,
+        "WAITIDLE
+GRAPHZOOM 25
+WAITIDLE
+EXPORTSTATE {}",
+        state.display()
+    );
+    for n in 0..(seconds * 60.0) as usize {
+        let _ = writeln!(s, "MOUSEMOVE {} {}", 300 + (n % 2) * 40, 300 + (n % 3) * 20);
+    }
+    s.push_str(
+        "QUIT
+",
+    );
+    s
+}
+
+/// What a run's state export shows: the card count of `graph-frames`, else the JSON level's `selected` pointer
+/// (empty when there is none).
+fn result(scenario: &str, state: &Path) -> String {
     let text = std::fs::read_to_string(state).unwrap_or_default();
     let v: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
+    if scenario == "graph-frames" {
+        return v["cards"].as_array().map_or(0, Vec::len).to_string();
+    }
     v["json_level"]["selected"].as_str().unwrap_or("").to_owned()
 }
 
 fn run(args: &[String]) -> Result<(), String> {
     let samply = args.iter().any(|a| a == "--samply");
     let mut pos = args.iter().filter(|a| !a.starts_with("--"));
-    let mode = pos.next().map_or("pan", String::as_str);
-    if !["pan", "zoom", "reveal-numbers", "reveal-objects"].contains(&mode) {
-        return Err(format!("unknown MODE {mode}: pan, zoom, reveal-numbers or reveal-objects"));
+    let scenario = pos.next().map_or("", String::as_str);
+    if !SCENARIOS.contains(&scenario) {
+        return Err(format!("SCENARIO {scenario:?} is not one of {}", SCENARIOS.join(", ")));
     }
+    let mode = scenario.strip_prefix("json-").unwrap_or(scenario);
     let seconds: f64 = pos.next().map_or(Ok(20.0), |s| s.parse()).map_err(|e| format!("SECONDS: {e}"))?;
     let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().map_err(|e| e.to_string())?;
     let release = repo.join("target/release/manifold.exe");
     if !release.exists() {
         return Err(format!("build the release exe first (see the module doc): {}", release.display()));
     }
-    let out = repo.join("target/json-profile");
+    let out = repo.join("target/profile");
     let _ = std::fs::remove_dir_all(&out);
     let appdata = out.join("appdata");
     let io = |e: std::io::Error| e.to_string();
@@ -118,9 +159,13 @@ fn run(args: &[String]) -> Result<(), String> {
     std::fs::write(appdata.join("settings.json"), "{\"has_shown_first_launch_demo\": true}\n").map_err(io)?;
     let (branch, reveal_n) = (env_usize("JSON_BRANCH", 12), env_usize("REVEAL_N", 200_000));
     let fixture_path = out.join("fixture.json");
-    std::fs::write(&fixture_path, fixture(mode, branch, reveal_n).to_string()).map_err(io)?;
     let state = out.join("state.json");
-    let commands = script(&fixture_path, &state, seconds, mode, branch, reveal_n);
+    let commands = if scenario == "graph-frames" {
+        graph_script(&state, seconds)
+    } else {
+        std::fs::write(&fixture_path, fixture(mode, branch, reveal_n).to_string()).map_err(io)?;
+        script(&fixture_path, &state, seconds, mode, branch, reveal_n)
+    };
     let command_file = out.join("commands.txt");
     std::fs::write(&command_file, &commands).map_err(io)?;
     let exe = out.join("manifold.exe");
@@ -150,19 +195,19 @@ fn run(args: &[String]) -> Result<(), String> {
         .status()
         .map_err(io)?;
     let line = format!(
-        "TIME_ONLY mode={mode} seconds={seconds} commands={} ms={} exit={} selected={}",
+        "TIME_ONLY scenario={scenario} seconds={seconds} commands={} ms={} exit={} result={}",
         commands.lines().count(),
         start.elapsed().as_millis(),
         status.code().unwrap_or(-1),
-        selected(&state)
+        result(scenario, &state)
     );
     println!("{line}");
     let mut log =
-        std::fs::OpenOptions::new().create(true).append(true).open(repo.join("target/json-time.log")).map_err(io)?;
+        std::fs::OpenOptions::new().create(true).append(true).open(repo.join("target/profile-time.log")).map_err(io)?;
     writeln!(log, "{line}").map_err(io)
 }
 
-pub fn json_pan(args: &[String]) -> ExitCode {
+pub fn profile(args: &[String]) -> ExitCode {
     match run(args) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
@@ -187,5 +232,22 @@ mod tests {
         let r = script(Path::new("f.json"), Path::new("s.json"), 1.0, "reveal-numbers", 3, 10);
         assert!(r.contains("JSONSELECT /items/9\nWAITIDLE 60\nEXPORTSTATE s.json"));
         assert_eq!(script(Path::new("f"), Path::new("s"), 2.0, "zoom", 3, 10).matches("SCROLL").count(), 120);
+    }
+
+    #[test]
+    fn the_graph_script_adds_the_notes_zooms_out_exports_and_moves_the_pointer_each_frame() {
+        let s = graph_script(Path::new("s.json"), 1.0);
+        assert_eq!(s.matches("NEWNOTE").count(), GRAPH_NOTES);
+        assert!(s.contains(
+            "GRAPHZOOM 25
+WAITIDLE
+EXPORTSTATE s.json
+"
+        ));
+        assert_eq!(s.matches("MOUSEMOVE").count(), 60);
+        assert!(s.ends_with(
+            "QUIT
+"
+        ));
     }
 }
