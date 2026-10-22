@@ -146,7 +146,7 @@ pub(crate) mod testutil {
     use super::*;
 
     /// The `n`th node of a fixed test actor.
-    pub(crate) fn node(n: u64) -> NodeId {
+    pub(crate) const fn node(n: u64) -> NodeId {
         NodeId { actor: ActorId(1), counter: n }
     }
 

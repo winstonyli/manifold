@@ -289,23 +289,20 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::card_id::testutil::node;
     use crate::card_id::CardId;
     use crate::store::model::Kind;
 
-    const fn id(counter: u64) -> NodeId {
-        NodeId { actor: crate::store::model::ActorId(1), counter }
-    }
-
-    const G: NodeId = id(1);
-    const D: NodeId = id(2);
-    const INNER: NodeId = id(3);
-    const AWAY: NodeId = id(4);
-    const P: NodeId = id(5);
-    const C: NodeId = id(6);
-    const ELSEWHERE: NodeId = id(7);
-    const D1: NodeId = id(8);
-    const D2: NodeId = id(9);
-    const OTHER: NodeId = id(10);
+    const G: NodeId = node(1);
+    const D: NodeId = node(2);
+    const INNER: NodeId = node(3);
+    const AWAY: NodeId = node(4);
+    const P: NodeId = node(5);
+    const C: NodeId = node(6);
+    const ELSEWHERE: NodeId = node(7);
+    const D1: NodeId = node(8);
+    const D2: NodeId = node(9);
+    const OTHER: NodeId = node(10);
 
     fn download(path: &str) -> Runtime {
         Runtime::Download(DownloadPayload {
