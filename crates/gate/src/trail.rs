@@ -108,36 +108,101 @@ fn field<'a>(s: &'a State, id: &str, key: &str) -> Option<&'a Value> {
     trail_of(s, id).map(|t| &t[key])
 }
 
+/// The centre of a `[left, top, right, bottom]` rect.
+fn centre(r: [f64; 4]) -> (f64, f64) {
+    ((r[0] + r[2]) / 2.0, (r[1] + r[3]) / 2.0)
+}
+
 /// Whether two `[left, top, right, bottom]` rects share area.
 fn overlap(a: [f64; 4], b: [f64; 4]) -> bool {
     a[0] < b[2] && b[0] < a[2] && a[1] < b[3] && b[1] < a[3]
 }
 
-/// Presses tab `card`'s card (another on-screen card if the layout put it off screen) and drags it with real pointer
-/// moves until it lies over the strip's second page, holds it there for a frame and a screenshot (kept in `RUN_DIR` for
-/// a look at the layering), then moves it back and lets go.
-fn drag_over_strip(inst: &mut Instance, card: &str) -> io::Result<()> {
+/// Parks a card other than the strip's tab at a free spot in the open, at 100% zoom, and returns the settled state with
+/// its id; `None` if the card never holds the spot (the camera or the layout moves it after the move). The strip hangs
+/// under its tab's card and follows it, so that card can never be brought over the strip; the layout puts any other
+/// card anywhere, even off screen.
+fn park_card(inst: &mut Instance) -> io::Result<Option<(State, String)>> {
+    let is_strip = |c: &Value| c["virtual"].as_str() == Some("trail");
+    for _ in 0..3 {
+        // The strip's arrival eases the camera, so rects read now may be mid-ease by the time the pointer gets there.
+        let (s, settled) =
+            State::settle(|| inst.export_state("drag-settled"), 20, std::time::Duration::from_millis(300))?;
+        if !settled {
+            println!("  park: the cards were still moving");
+            continue;
+        }
+        let (w, h) = (s.0["window"][0].as_f64().unwrap_or(0.0), s.0["window"][1].as_f64().unwrap_or(0.0));
+        // A strip page's id is `virtual:trail:<tab>:<epoch>:<entry>`.
+        let cards = s.all_cards();
+        let strip_tab =
+            cards.iter().find(|c| is_strip(c)).and_then(|c| c["id"].as_str()?.split(':').nth(2)).unwrap_or_default();
+        let Some(moving) = cards.iter().find(|c| c["id"] != strip_tab && c["virtual"].is_null()) else {
+            return Err(bad("no card besides the strip's tab to drag".to_string()));
+        };
+        let (Some(rect), Some(wx), Some(wy)) =
+            (State::rect_from(&moving["rect"]), moving["world"][0].as_f64(), moving["world"][1].as_f64())
+        else {
+            return Err(bad("the card to drag has no rect or world position".to_string()));
+        };
+        let id = moving["id"].as_str().unwrap_or_default().to_string();
+        // The camera is at 100%, so a world step is the same screen step. The spot is the first of a few in the open
+        // at the sides that no other card covers.
+        let size = (rect[2] - rect[0], rect[3] - rect[1]);
+        let free = |spot: (f64, f64)| {
+            let r = [spot.0 - size.0 / 2.0, spot.1 - size.1 / 2.0, spot.0 + size.0 / 2.0, spot.1 + size.1 / 2.0];
+            let clear = cards
+                .iter()
+                .filter(|c| c["id"] != moving["id"])
+                .filter_map(|c| State::rect_from(&c["rect"]))
+                .all(|other| !overlap(r, other));
+            clear && r[0] >= 0.0 && r[2] <= w && r[1] >= 0.0 && r[3] <= h
+        };
+        let spots = [(0.2, 0.55), (0.8, 0.55), (0.2, 0.25), (0.8, 0.25), (0.2, 0.85), (0.8, 0.85)];
+        let Some(want) = spots.iter().map(|(fx, fy)| (w * fx, h * fy)).find(|&s| free(s)) else {
+            return Err(bad("no free spot on screen to park the card to drag".to_string()));
+        };
+        let now = centre(rect);
+        // Compared in world coordinates: the camera may still be easing, which moves the screen position.
+        let target = (wx + want.0 - now.0, wy + want.1 - now.1);
+        inst.send(&format!("MOVENODE {id} {} {}", target.0, target.1))?;
+        let id_ref = id.as_str();
+        let world_of = |s: &State| {
+            let c = s.all_cards().iter().find(|c| c["id"] == id_ref)?;
+            Some((c["world"][0].as_f64()?, c["world"][1].as_f64()?))
+        };
+        let at_spot =
+            |s: &State| world_of(s).is_some_and(|w| (w.0 - target.0).abs() < 1.0 && (w.1 - target.1).abs() < 1.0);
+        let s = inst.export_until("drag-moved", at_spot)?;
+        if !at_spot(&s) {
+            println!("  {id} at world {:?}, wanted {target:?}, moved from {:?}", world_of(&s), (wx, wy));
+            continue;
+        }
+        let (s, _) = State::settle(|| inst.export_state("drag-parked"), 20, std::time::Duration::from_millis(300))?;
+        // The camera can still move once the card is there, so the spot is only good if the card holds it on screen.
+        if s.rect(&id).is_some_and(|r| (centre(r).0 - want.0).abs() < 1.0 && (centre(r).1 - want.1).abs() < 1.0) {
+            return Ok(Some((s, id)));
+        }
+        println!("  park: {id} on screen at {:?}, wanted the centre {want:?}", s.rect(&id));
+    }
+    Ok(None)
+}
+
+/// Parks a card other than the strip's tab (`park_card`), presses it and drags it with real pointer moves until it lies
+/// over the strip's second page, holds it there for a frame and a screenshot (kept in `RUN_DIR` for a look at the
+/// layering), then moves it back and lets go.
+fn drag_over_strip(inst: &mut Instance) -> io::Result<()> {
     inst.send("GRAPHZOOM 100")?;
     inst.send("WAITIDLE")?;
     let is_strip = |c: &Value| c["virtual"].as_str() == Some("trail");
-    let s = inst.export_until("drag-pre", |s| {
-        s.all_cards().iter().filter(|c| is_strip(c)).count() == 4 && s.all_cards().iter().any(|c| c["id"] == card)
+    inst.export_until("drag-pre", |s| {
+        s.all_cards().iter().filter(|c| is_strip(c)).count() == 4 && s.all_cards().iter().any(|c| c["id"].is_string())
     })?;
-    let (w, h) = (s.0["window"][0].as_f64().unwrap_or(0.0), s.0["window"][1].as_f64().unwrap_or(0.0));
-    let centre = |r: [f64; 4]| ((r[0] + r[2]) / 2.0, (r[1] + r[3]) / 2.0);
-    let on_screen = |r: [f64; 4]| {
-        let c = centre(r);
-        (0.0..w).contains(&c.0) && (0.0..h).contains(&c.1)
+    let Some((s, id)) = park_card(inst)? else {
+        check_is("the card to drag holds its spot", true, false);
+        return Ok(());
     };
-    // The layout decides where `card` lands and it can be off screen; any other stored card does as well.
-    let cards = s.all_cards();
-    let pickable = |c: &&Value| c["virtual"].is_null() && State::rect_from(&c["rect"]).is_some_and(on_screen);
-    let Some(card) = cards.iter().find(|c| c["id"] == card).filter(pickable).or_else(|| cards.iter().find(pickable))
-    else {
-        return Err(bad("no card of the graph is on screen to drag".to_string()));
-    };
-    let card = card["id"].as_str().unwrap_or_default().to_string();
-    let card = card.as_str();
+    let (cards, card) = (s.all_cards(), id.as_str());
     let (Some(from), Some(page)) = (
         cards.iter().find(|c| c["id"] == card).and_then(|c| State::rect_from(&c["rect"])),
         cards.iter().filter(|c| is_strip(c)).nth(1).and_then(|c| State::rect_from(&c["rect"])),
@@ -145,6 +210,7 @@ fn drag_over_strip(inst: &mut Instance, card: &str) -> io::Result<()> {
         return Err(bad("the card or the strip's second page has no screen rect".to_string()));
     };
     let (start, end) = (centre(from), centre(page));
+    let page_before = page;
     let at = |f: f64| format!("{:.0} {:.0}", start.0 + (end.0 - start.0) * f, start.1 + (end.1 - start.1) * f);
     inst.send(&format!("MOUSEMOVE {}", at(0.0)))?;
     inst.send(&format!("MOUSEMOVE {}", at(0.0)))?;
@@ -158,7 +224,9 @@ fn drag_over_strip(inst: &mut Instance, card: &str) -> io::Result<()> {
     check_is("the press dragged the card", Some(card), s.0["dragging"].as_str());
     let held = s.all_cards().iter().find(|c| c["id"] == card).and_then(|c| State::rect_from(&c["rect"]));
     let page = s.all_cards().iter().filter(|c| is_strip(c)).nth(1).and_then(|c| State::rect_from(&c["rect"]));
-    check_is("the held card lies over the strip's page", Some(true), held.zip(page).map(|(a, b)| overlap(a, b)));
+    if !check_is("the held card lies over the strip's page", Some(true), held.zip(page).map(|(a, b)| overlap(a, b))) {
+        println!("  held {held:?}, page {page:?}, grabbed {from:?}, page before {page_before:?}, pointer {end:?}");
+    }
     if let Ok(png) = inst.screenshot("drag-over-strip") {
         if let Some(dir) = std::env::var_os("RUN_DIR") {
             let _ = std::fs::copy(png, std::path::Path::new(&dir).join("drag-over-strip.png"));
@@ -265,7 +333,7 @@ fn drive(run: &Run, sec: &mut Option<Section>) -> io::Result<()> {
         }
     }
     next("drag");
-    drag_over_strip(&mut inst, &a)?;
+    drag_over_strip(&mut inst)?;
     // At 60% the cards are short: each tab and each page leads with the tile in the engine's color.
     inst.send("GRAPHZOOM 60")?;
     inst.send("WAITIDLE")?;

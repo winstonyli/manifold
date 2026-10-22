@@ -153,7 +153,7 @@ pub(crate) fn page_menu_items(ui: &mut egui::Ui) -> bool {
 impl App {
     /// Eases the camera to a trail strip that has just appeared (Graph view entered, another tab focused, a first
     /// branch): the strip hangs under its tab's card wherever the layout put that, and nothing else moves the camera,
-    /// so it could sit off screen. Frames the card and the strip's root, unless they are in view already. Not on
+    /// so it could sit off screen. Frames the card and the whole strip, unless they are in view already. Not on
     /// every frame, so it never fights a pan, and a strip that grows while you browse does not move the view.
     pub(crate) fn frame_new_strip(&mut self) {
         let tab = self.trail_strip_tab();
@@ -162,9 +162,10 @@ impl App {
         }
         self.camera.strip_tab = tab.clone();
         let Some(card) = tab.and_then(|tab| self.card_rect(&tab)) else { return };
-        let root = self.level_items().into_iter().find(|e| e.origin == Origin::Virtual("trail"));
-        if let Some(root) = root {
-            self.camera.pan_to(card.union(root.rect));
+        let strip = self.level_items().into_iter().filter(|e| e.origin == Origin::Virtual("trail"));
+        let view = strip.fold(None, |acc: Option<egui::Rect>, e| Some(acc.map_or(e.rect, |r| r.union(e.rect))));
+        if let Some(strip) = view {
+            self.camera.pan_to(card.union(strip));
         }
     }
 }
@@ -350,6 +351,24 @@ mod tests {
         rig.app.camera.jump_to(far);
         rig.frame(vec![], egui::Modifiers::NONE);
         assert!(rig.app.camera.tween.is_none(), "a strip already framed does not fight a later pan");
+    }
+
+    #[test]
+    fn a_strip_with_only_its_root_in_view_is_framed() {
+        let mut rig = forked();
+        let tab = rig.tab();
+        let card = rig.app.card_rect(&tab).expect("the tab's card");
+        let all = pages(&rig);
+        let root = all.iter().find(|e| e.origin == Origin::Virtual("trail")).expect("a root page").rect;
+        let lowest = all.iter().map(|e| e.rect.bottom()).fold(f32::MIN, f32::max);
+        assert!(lowest > root.bottom() + 1.0, "the strip reaches below its root");
+        // A camera that holds the tab's card and the strip's root and stops short of the lowest page.
+        let seen = card.union(root).expand2(egui::vec2(2.0, 0.0));
+        rig.app.camera.jump_to(seen);
+        rig.app.camera.tween = None;
+        rig.app.camera.strip_tab = None;
+        rig.frame(vec![], egui::Modifiers::NONE);
+        assert!(rig.app.camera.tween.is_some(), "the lowest page is off screen: the camera eases to the strip");
     }
 
     #[test]
