@@ -1,6 +1,6 @@
 //! `gate profile SCENARIO [SECONDS] [--samply] [--visible]` (was scripts/json-pan-profile.sh and .py): times, or profiles with
 //! samply, one scripted scenario. SCENARIO is `json-pan`, `json-zoom`, `json-reveal-numbers`, `json-reveal-objects`
-//! (panning, zooming and paging a big JSON level) or `graph-frames` (the Graph view with 80 notes at 25% zoom: pointer
+//! (panning, zooming and paging a big JSON level) or `graph-frames` (the Graph view with `GRAPH_NOTES` (default 80) notes at 25% zoom: pointer
 //! moves, typing in a note and in the quick switcher, scrolling and a pan drag, a fifth of SECONDS each). SECONDS
 //! (default 20) sets how long the pan, zoom or frames run, one command per frame
 //! (60 a second).
@@ -35,7 +35,7 @@ use serde_json::{json, Value};
 
 const BELOW_NORMAL: u32 = 0x4000;
 /// The notes `graph-frames` adds.
-const GRAPH_NOTES: usize = 80;
+const GRAPH_NOTES: usize = 80; // the default of `GRAPH_NOTES` in the environment
 const SCENARIOS: [&str; 5] = ["json-pan", "json-zoom", "json-reveal-numbers", "json-reveal-objects", "graph-frames"];
 
 fn env_usize(name: &str, default: usize) -> usize {
@@ -100,14 +100,14 @@ fn script(fixture: &Path, state: &Path, seconds: f64, mode: &str, branch: usize,
     s
 }
 
-/// The command file of `graph-frames`: `NOTES` notes, the camera at 25%, then five phases of `seconds / 5` each, a
+/// The command file of `graph-frames`: `notes` notes, the camera at 25%, then five phases of `seconds / 5` each, a
 /// command per frame: the pointer moving over the cards, typing into the last note (a new note has the
 /// keyboard), typing into the quick switcher (each keystroke filters every card), scrolling (which zooms in the Graph view) and a drag on the empty canvas (a pan). `state` is where it
 /// exports the state to count the cards. `paced` holds a frame (`SLEEP`) after each command, as a visible window
 /// needs for the run to last `seconds`; a headless run takes them as fast as it can.
-fn graph_script(state: &Path, seconds: f64, paced: bool) -> String {
+fn graph_script(state: &Path, seconds: f64, paced: bool, notes: usize) -> String {
     let mut s = String::from("WAITIDLE\n");
-    s.push_str(&"NEWNOTE\n".repeat(GRAPH_NOTES));
+    s.push_str(&"NEWNOTE\n".repeat(notes));
     let _ = writeln!(s, "WAITIDLE\nGRAPHZOOM 25\nWAITIDLE\nEXPORTSTATE {}", state.display());
     let frames = (seconds * 60.0 / 5.0) as usize;
     let mut frame = |line: String| {
@@ -182,7 +182,7 @@ fn run(args: &[String]) -> Result<(), String> {
     let fixture_path = out.join("fixture.json");
     let state = out.join("state.json");
     let commands = if scenario == "graph-frames" {
-        graph_script(&state, seconds, visible)
+        graph_script(&state, seconds, visible, env_usize("GRAPH_NOTES", GRAPH_NOTES))
     } else {
         std::fs::write(&fixture_path, fixture(mode, branch, reveal_n).to_string()).map_err(io)?;
         script(&fixture_path, &state, seconds, mode, branch, reveal_n)
@@ -272,7 +272,7 @@ mod tests {
 
     #[test]
     fn the_graph_script_runs_five_phases_of_a_command_per_frame() {
-        let s = graph_script(Path::new("s.json"), 5.0, false);
+        let s = graph_script(Path::new("s.json"), 5.0, false, GRAPH_NOTES);
         assert_eq!(s.matches("NEWNOTE").count(), GRAPH_NOTES);
         assert!(s.contains("GRAPHZOOM 25\nWAITIDLE\nEXPORTSTATE s.json\n"));
         assert_eq!(s.matches("MOUSEMOVE").count(), 120);
@@ -281,6 +281,6 @@ mod tests {
         assert_eq!(s.matches("SCROLL").count(), 60);
         assert_eq!(s.matches("SLEEP").count(), 0);
         assert!(s.ends_with("QUIT\n"));
-        assert_eq!(graph_script(Path::new("s.json"), 5.0, true).matches("SLEEP").count(), 60 * 5 + 6);
+        assert_eq!(graph_script(Path::new("s.json"), 5.0, true, GRAPH_NOTES).matches("SLEEP").count(), 60 * 5 + 6);
     }
 }
