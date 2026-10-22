@@ -381,14 +381,14 @@ struct App {
     spawns: SpawnTracker,
     /// Graph view's pan/zoom and its animations.
     camera: GraphCamera,
-    /// Level-of-detail: true once a frame's own count of viewport-visible
+    /// Level-of-detail: `Simple` once a frame's own count of viewport-visible
     /// nodes (post-cull, see `build_graph_ui`'s own pre-pass) crossed
     /// `LOD_SIMPLIFY_COUNT`, gating the per-kind render loops' thumbnail/
     /// title-text painting to keep dense views cheap. Flips back to
-    /// `false` only once the count drops under the lower `LOD_RESTORE_
+    /// `Full` only once the count drops under the lower `LOD_RESTORE_
     /// COUNT` -- a deliberate hysteresis gap, not a single threshold, so
     /// a count sitting right at one boundary doesn't flicker every frame.
-    graph_lod_simplified: bool,
+    graph_detail: graph_ui::Detail,
     /// See `truncate_to_width`'s own doc comment.
     truncate_cache: HashMap<TruncateCacheKey, (String, String)>,
     /// A zoom scale (1.0 = 100%) the next Graph frame sets the camera to (`GRAPHZOOM`).
@@ -585,7 +585,7 @@ impl Default for App {
             interaction: GraphInteraction::default(),
             spawns: SpawnTracker::default(),
             camera: GraphCamera::new(),
-            graph_lod_simplified: false,
+            graph_detail: graph_ui::Detail::Full,
             truncate_cache: HashMap::new(),
             pending_graph_zoom: None,
             graph_settled_key: None,

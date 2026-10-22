@@ -269,11 +269,11 @@ impl VirtualSource for TrailSource {
     fn paint_body(&self, app: &App, ui: &mut egui::Ui, pass: &mut CardPass, entry: &CardEntry) -> CardBody {
         let page = live_page(app, &entry.id).and_then(|(tab, i)| app.nav_history.get(tab)?.tree().into_iter().nth(i));
         if let Some(page) = &page {
-            let simple = app.graph_lod_simplified;
-            paint_trail_page(ui.painter(), pass, entry.rect, page, ui.rect_contains_pointer(entry.rect), !simple);
+            let full = app.graph_detail.content();
+            paint_trail_page(ui.painter(), pass, entry.rect, page, ui.rect_contains_pointer(entry.rect), full);
             // The icon needs only its own inset and width; the label needs the card-label minimum.
             let icon_fits = entry.rect.width() * pass.zoom_scale >= 2.0 * LABEL_INSET + ICON_SIZE_SMALL;
-            if let (true, Some((tab, _))) = (!simple && icon_fits, live_page(app, &entry.id)) {
+            if let (true, Some((tab, _))) = (full && icon_fits, live_page(app, &entry.id)) {
                 paint_page_icon(app, ui, pass, entry.rect, tab, &page.url);
             }
         }

@@ -37,7 +37,7 @@ impl App {
         let is_editing = self.nodes.get(id).and_then(|n| n.as_note()).is_some_and(|n| n.editing);
 
         ui.painter().rect_filled(paper, 4.0 * inv_zoom, NOTE_CARD_COLOR);
-        if !self.graph_lod_simplified {
+        if self.graph_detail.content() {
             let words = self.note_text(id).split_whitespace().count();
             let header = CardHeader {
                 identity: Identity::Glyph { glyph: egui_phosphor::light::NOTE_PENCIL, color: None },
@@ -80,7 +80,7 @@ impl App {
                 }
                 self.blur_note(id);
             }
-        } else if !self.graph_lod_simplified {
+        } else if self.graph_detail.content() {
             // LOD: skip the markdown render (real parsing +
             // rich text layout, one of the pricier per-node
             // widgets in this whole view) once simplified --

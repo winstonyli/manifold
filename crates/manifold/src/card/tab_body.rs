@@ -66,7 +66,7 @@ impl App {
         });
         let chip = self.jar_chip(id);
         body.tooltip = chain_tooltip(body.tooltip, chip.as_ref().and_then(|c| c.tooltip.clone()));
-        if self.graph_lod_simplified {
+        if !self.graph_detail.content() {
             return body;
         }
         // Favicons aren't kept across restarts and no engine loads a sleeping tab's url, so the
@@ -282,11 +282,11 @@ impl App {
         // favicon text below are this card's two genuinely
         // expensive parts (a real GPU texture sample, and
         // glyph rasterization queued on `overlay_painter`) --
-        // skipped once `graph_lod_simplified` is set (see its
+        // skipped once `graph_detail` is `Simple` (see its
         // own doc comment), leaving the frame's plain card
         // and controls as the simplified card's whole
         // appearance.
-        if !self.graph_lod_simplified {
+        if self.graph_detail.content() {
             let header = tab_has_header(rect, inv_zoom);
             let thumb_rect = tab_thumb_rect(rect, inv_zoom);
             let thumb_id = self.gpu.as_ref().and_then(|g| g.thumbnail_id(id));

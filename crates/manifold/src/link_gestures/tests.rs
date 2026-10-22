@@ -1,4 +1,5 @@
 use super::*;
+use crate::graph_ui::Detail;
 use crate::level::{EdgeCurve, EdgeKind, LevelEdge};
 use crate::node::{NotePayload, Runtime};
 use crate::store::model::{Kind, NodeId};
@@ -1009,7 +1010,7 @@ fn a_click_on_the_minimap_over_a_line_deletes_nothing() {
 #[test]
 fn handles_are_pills_on_each_edge_midpoint_at_a_constant_screen_size() {
     let card = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(180.0, 140.0));
-    let rects = link_handle_rects(card, 2.0, false);
+    let rects = link_handle_rects(card, 2.0, Detail::Full);
     assert_eq!(rects.iter().map(|(side, _)| *side).collect::<Vec<_>>(), HandleSide::ALL);
     let (long, short) = (HANDLE_LONG_PX / 2.0, HANDLE_SHORT_PX / 2.0);
     for (side, r) in &rects {
@@ -1026,14 +1027,14 @@ fn handles_are_pills_on_each_edge_midpoint_at_a_constant_screen_size() {
 #[test]
 fn handles_hide_on_short_edges_and_when_simplified() {
     let thin = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(180.0, 30.0));
-    let sides: Vec<HandleSide> = link_handle_rects(thin, 1.0, false).into_iter().map(|(s, _)| s).collect();
+    let sides: Vec<HandleSide> = link_handle_rects(thin, 1.0, Detail::Full).into_iter().map(|(s, _)| s).collect();
     assert_eq!(sides, [HandleSide::Top, HandleSide::Bottom], "30 points tall: no side handles");
-    assert!(link_handle_rects(thin, 0.2, false).is_empty(), "180 * 0.2 = 36 points wide: none");
-    assert!(link_handle_rects(thin, 3.0, true).is_empty(), "a simplified level shows none");
+    assert!(link_handle_rects(thin, 0.2, Detail::Full).is_empty(), "180 * 0.2 = 36 points wide: none");
+    assert!(link_handle_rects(thin, 3.0, Detail::Simple).is_empty(), "a simplified level shows none");
     assert_eq!(HANDLE_MIN_EDGE_PX, 60.0);
     let edge = |on_screen: f32| egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(on_screen, 400.0));
-    assert_eq!(link_handle_rects(edge(59.0), 1.0, false).len(), 2, "59 wide: only the side handles");
-    assert_eq!(link_handle_rects(edge(60.0), 1.0, false).len(), 4, "60 wide: all four");
+    assert_eq!(link_handle_rects(edge(59.0), 1.0, Detail::Full).len(), 2, "59 wide: only the side handles");
+    assert_eq!(link_handle_rects(edge(60.0), 1.0, Detail::Full).len(), 4, "60 wide: all four");
 }
 
 /// Two notes at the top level, not yet drawn.
@@ -1135,7 +1136,7 @@ fn a_connect_drag_ends_with_its_mode_and_with_its_source() {
 
 fn handle_on_screen(app: &App, id: &str, side: HandleSide) -> egui::Pos2 {
     let (zoom, _) = app.camera.transform(app.graph_scene_outer_rect());
-    let rects = link_handle_rects(app.card_rect(id).expect("a card"), zoom, false);
+    let rects = link_handle_rects(app.card_rect(id).expect("a card"), zoom, Detail::Full);
     let (_, rect) = rects.into_iter().find(|(s, _)| *s == side).expect("shown at this zoom");
     app.graph_world_rect_to_screen(rect).center()
 }

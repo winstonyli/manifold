@@ -568,7 +568,7 @@ pub(crate) fn paint_card_control(
     view: &CardView,
     style: &CardStyle,
     inv_zoom: f32,
-    lod_simplified: bool,
+    detail: crate::graph_ui::Detail,
 ) -> egui::Response {
     let rect = control.rect(card_rect, inv_zoom);
     let response = ui
@@ -597,7 +597,7 @@ pub(crate) fn paint_card_control(
         // of the force-directed layout (see `Mirror::pinned`).
         CardControl::Pin => {
             let pin_color = if view.pinned { ACCENT } else { ui.visuals().weak_text_color() };
-            if !lod_simplified {
+            if detail.content() {
                 push_centered_text(deferred_overlays, rect.center(), egui_phosphor::light::PUSH_PIN, 14.0, pin_color);
             }
         }
@@ -620,7 +620,7 @@ pub(crate) fn paint_card_control(
                 // so drawn on `overlay_painter` like the pin/
                 // eject icons, not `ui.painter()` like the
                 // waveform's own vector bars below.
-                if !lod_simplified {
+                if detail.content() {
                     push_centered_text(
                         deferred_overlays,
                         rect.center(),
@@ -1040,7 +1040,11 @@ impl App {
         let hover_t = ui.ctx().animate_bool_responsive(egui::Id::new(("graph_card_hover_t", id)), is_hovered);
         let style = card_style(view.kind, ui.visuals());
         let (border_width, border_color) = card_border(&view, &style, hover_t);
-        let mut background_shapes = card_glow_shapes(rect, 2.0, border_color, inv_zoom, 1.0 + hover_t * 0.8).to_vec();
+        let mut background_shapes: Vec<egui::Shape> =
+            card_glow_shapes(rect, 2.0, border_color, inv_zoom, 1.0 + hover_t * 0.8)
+                .into_iter()
+                .take(self.graph_detail.glow_layers(hover_t > 0.0))
+                .collect();
         background_shapes.push(egui::Shape::rect_filled(
             rect,
             2.0 * inv_zoom,
@@ -1121,7 +1125,7 @@ impl App {
                 &view,
                 &style,
                 inv_zoom,
-                self.graph_lod_simplified,
+                self.graph_detail,
             );
             let control_response = control_response.on_hover_text(card_control.tip(&view));
             control_hovered |= control_response.hovered();
@@ -1144,7 +1148,7 @@ impl App {
         // starts a Link node between two nodes.
         let mut handle_hovered = false;
         if stored && (is_hovered || self.link.connect_drag.is_some()) && self.shows_link_handles() {
-            let handles = crate::link_gestures::link_handle_rects(rect, pass.zoom_scale, self.graph_lod_simplified);
+            let handles = crate::link_gestures::link_handle_rects(rect, pass.zoom_scale, self.graph_detail);
             for (side, handle) in handles {
                 let handle_response = ui
                     .interact(handle, egui::Id::new(("link_handle", side, id)), egui::Sense::DRAG)
@@ -1285,7 +1289,7 @@ impl App {
         let (inv_zoom, zoom_scale) = (pass.inv_zoom, pass.zoom_scale);
         let deferred_overlays = &mut *pass.deferred_overlays;
         let body = CardBody { interact_rect: rect, tooltip: None };
-        if self.graph_lod_simplified {
+        if !self.graph_detail.content() {
             return body;
         }
         let def = self.doc.mirror.jar_def(id);
@@ -1320,7 +1324,7 @@ impl App {
         let (inv_zoom, zoom_scale) = (pass.inv_zoom, pass.zoom_scale);
         let deferred_overlays = &mut *pass.deferred_overlays;
         let body = CardBody { interact_rect: rect, tooltip: None };
-        if self.graph_lod_simplified {
+        if !self.graph_detail.content() {
             return body;
         }
         let ty = self.doc.mirror.ty(id).to_owned();

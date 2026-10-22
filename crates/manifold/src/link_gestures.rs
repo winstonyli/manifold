@@ -253,9 +253,13 @@ pub(crate) const HANDLE_MIN_EDGE_PX: f32 = 2.0 * (16.0 + HANDLE_LONG_PX / 2.0);
 
 /// Card `card`'s handles (world space) at `zoom_scale`, each a `HANDLE_LONG_PX` by `HANDLE_SHORT_PX` pill on screen
 /// (long side along the edge), in `HandleSide::ALL` order. A side whose edge is under `HANDLE_MIN_EDGE_PX` on screen
-/// has none, and a `simplified` level (`graph_lod_simplified`) has none at all.
-pub(crate) fn link_handle_rects(card: egui::Rect, zoom_scale: f32, simplified: bool) -> Vec<(HandleSide, egui::Rect)> {
-    if simplified {
+/// has none, and a `Simple` detail level (`graph_detail`) has none at all.
+pub(crate) fn link_handle_rects(
+    card: egui::Rect,
+    zoom_scale: f32,
+    detail: crate::graph_ui::Detail,
+) -> Vec<(HandleSide, egui::Rect)> {
+    if !detail.link_handles() {
         return Vec::new();
     }
     let (long, short) = (HANDLE_LONG_PX / zoom_scale, HANDLE_SHORT_PX / zoom_scale);

@@ -210,7 +210,7 @@ impl App {
             .filter(|item| item.origin == Origin::Stored && self.shows_link_handles())
             .map(|item| {
                 let sides: serde_json::Map<String, serde_json::Value> =
-                    crate::link_gestures::link_handle_rects(item.rect, zoom_scale, self.graph_lod_simplified)
+                    crate::link_gestures::link_handle_rects(item.rect, zoom_scale, self.graph_detail)
                         .into_iter()
                         .map(|(side, rect)| {
                             let r = self.graph_world_rect_to_screen(rect);

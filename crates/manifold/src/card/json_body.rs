@@ -31,7 +31,7 @@ impl App {
             return body;
         }
         let Some(json) = self.nodes.get(id).and_then(|n| n.as_json()) else { return body };
-        let text = !self.graph_lod_simplified && label_fits(rect, zoom_scale);
+        let text = self.graph_detail.content() && label_fits(rect, zoom_scale);
         let len = crate::json_view::entry_count(&json.value);
         // The header is 40 screen points, so at other zooms the rows get more or less of the card:
         // show only the rows that fit, with a `+ N more` row when some are cut. A card too short for

@@ -28,7 +28,7 @@ impl App {
         let download_url = self.copyable_url(id).map(str::to_owned);
         let filename = download_filename(&download_path);
         // LOD: the header text is skipped once simplified -- see `paint_tab_body`'s own LOD comment.
-        if !self.graph_lod_simplified {
+        if self.graph_detail.content() {
             let header = CardHeader {
                 identity: Identity::Glyph { glyph: egui_phosphor::light::DOWNLOAD_SIMPLE, color: None },
                 name: filename.to_owned(),

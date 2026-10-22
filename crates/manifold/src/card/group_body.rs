@@ -19,7 +19,7 @@ impl App {
         let mut body = CardBody { interact_rect: rect, tooltip: None };
         let member_ids = &view.members;
         let member_count = member_ids.len();
-        if !self.graph_lod_simplified {
+        if self.graph_detail.content() {
             // Owned, so the header can borrow it while `paint_card_header` borrows `self`.
             // name rule: drawn by display_name just below
             if let Some(stored) = self.is_container(id).then(|| self.doc.mirror.name(id).to_owned()) {

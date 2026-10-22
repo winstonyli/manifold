@@ -20,7 +20,7 @@ impl App {
         zoom_scale: f32,
         (name, source, source_is_path): (String, String, bool),
     ) {
-        if self.graph_lod_simplified {
+        if !self.graph_detail.content() {
             return;
         }
         let header = CardHeader {
@@ -74,7 +74,7 @@ impl App {
         // picture *is* the fill). The simplified state shows the
         // frame's plain fill, matching every other kind's
         // "background + border" simplified look.
-        if !self.graph_lod_simplified {
+        if self.graph_detail.content() {
             // Still decoding (`ImageDecoder`): the header's icon spins, over the plain fill.
             let decoding =
                 tex_id.is_none() && self.nodes.get(id).and_then(|n| n.as_image()).is_some_and(|i| i.decoding());

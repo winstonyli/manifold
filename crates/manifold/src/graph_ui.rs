@@ -53,6 +53,38 @@ pub(crate) const LOD_SIMPLIFY_COUNT: usize = 60;
 /// count hovering right at a single boundary doesn't flip every frame.
 pub(crate) const LOD_RESTORE_COUNT: usize = 45;
 
+/// How much a card draws, one value per frame set by `update_graph_lod` from the count of visible cards. Painters ask
+/// what to draw (`content`, `link_handles`, `glow_layers`) and never compare the level, so a new level or a new
+/// thing that depends on it is one edit here.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Detail {
+    #[default]
+    Full,
+    Simple,
+}
+
+impl Detail {
+    /// Text, thumbnails, rendered markdown and the other per-kind content of a card body.
+    pub(crate) fn content(self) -> bool {
+        self == Self::Full
+    }
+
+    /// The connect-drag handles on a hovered card.
+    pub(crate) fn link_handles(self) -> bool {
+        self == Self::Full
+    }
+
+    /// How many of the two glow rects behind a card to draw: a simple card shows none until hover starts (the glow
+    /// eases in and out with it, so `hovering` stays true while it fades).
+    pub(crate) fn glow_layers(self, hovering: bool) -> usize {
+        if self == Self::Full || hovering {
+            2
+        } else {
+            0
+        }
+    }
+}
+
 /// A click in Graph view, collected while `build_graph_ui` draws and
 /// applied in order once it's done (`App::apply_graph_action`), when
 /// nothing is borrowing `self` for drawing any more.

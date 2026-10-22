@@ -44,7 +44,7 @@ impl App {
         // LOD: same "plain solid box instead of the real
         // content" simplification as `paint_image_body` -- see
         // `paint_tab_body`'s own LOD comment.
-        if !self.graph_lod_simplified {
+        if self.graph_detail.content() {
             match state {
                 Some(Ok((Some(tex_id), page_count))) => {
                     ui.painter().image(tex_id, rect, FULL_UV, egui::Color32::WHITE);
