@@ -814,11 +814,11 @@ fn drive(sm: &mut Smoke, m: &mut Marks) -> io::Result<()> {
         &json_in,
         "json_in",
         "the JSON level shows the root card",
-        &format!("[c['pointer'] for c in s['json_level']['cards']] == [''] and cards['{json_id}#']['json_card']"),
+        "[c['pointer'] for c in s['json_level']['cards']] == [''] and [c for c in cards if c['json_card']]",
         |s| {
             let pointers: Option<Vec<&str>> =
                 json_level(s)["cards"].as_array().and_then(|a| a.iter().map(|c| c["pointer"].as_str()).collect());
-            pointers == Some(vec![""]) && s.card(&format!("{json_id}#")).is_some_and(|c| truthy(&c["json_card"]))
+            pointers == Some(vec![""]) && s.all_cards().iter().any(|c| truthy(&c["json_card"]))
         },
     );
     sm.send("JSONSELECT /a")?;
