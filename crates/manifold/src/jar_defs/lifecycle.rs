@@ -12,7 +12,11 @@ impl App {
 
     /// Whether node `id` is the Default jar.
     pub(crate) fn is_default_jar(&self, id: &str) -> bool {
-        id.parse().ok().is_some_and(|id| self.default_jar() == Some(id))
+        // A frame asks per card, and `default_jar` looks a node up by string: only a card that could be the Default
+        // gets that far.
+        id.parse()
+            .ok()
+            .is_some_and(|id| self.doc.mirror.default_jar_ids().any(|d| d == id) && self.default_jar() == Some(id))
     }
 
     /// The startup and sync invariant (spec "The Default jar"): with no Default, one is made at the top level; with

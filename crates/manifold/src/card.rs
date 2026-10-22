@@ -980,11 +980,12 @@ impl App {
         // Focusable only as the Tab entry (first in `pass.order`) or while holding focus, so egui's
         // own traversal can't walk the cards in draw order.
         let card_id = egui::Id::new(("graph_card", id));
-        let slot = pass.order.iter().position(|o| o == id);
+        // The Tab entry is first in the order; the position (a scan) is only needed for the order badges.
+        let is_tab_entry = pass.order.first().is_some_and(|first| first == id);
         // A card takes a drag (and so keeps the scene from panning under it) only if its kind may be picked up: a
         // stored card is moved by it, a virtual one carried (handled below).
         let draggable = entry.caps().drag_source && (stored || pass.carry);
-        let focusable = slot == Some(0) || ui.memory(|m| m.has_focus(card_id));
+        let focusable = is_tab_entry || ui.memory(|m| m.has_focus(card_id));
         let sense = match (draggable, focusable) {
             (false, true) => egui::Sense::click(),
             (false, false) => egui::Sense::CLICK,
@@ -1030,7 +1031,8 @@ impl App {
             pass.pan_target = Some(rect);
         }
         if pass.show_order {
-            let (number, corner) = (slot.map_or(0, |s| s + 1), rect.left_top());
+            let number = pass.order.iter().position(|o| o == id).map_or(0, |s| s + 1);
+            let corner = rect.left_top();
             deferred_overlays.push_top(Box::new(move |painter, project| {
                 // Kept on screen: a card at the edge would clip its badge.
                 let center = project(corner);
