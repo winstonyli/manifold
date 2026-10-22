@@ -92,7 +92,7 @@ fn rect_of(s: &State, id: &str) -> io::Result<String> {
 
 /// link-probe.sh `card_pt`: a card's centre (`screen`), rounded.
 fn card_pt(s: &State, id: &str) -> io::Result<(i64, i64)> {
-    rounded_pair(&s.card(id).ok_or_else(|| bad(format!("no card {id}")))?["screen"])
+    rounded_pair(&s.require_card(id).map_err(bad)?["screen"])
 }
 
 /// How many link edges the export draws.
@@ -334,7 +334,7 @@ fn drive(run: &Run, sec: &mut Option<Section>) -> io::Result<Exports> {
     let s7 = i.export_state("s7")?;
     // The same drag, released 15 points left of b's left edge: within the drop tolerance of b, off every card.
     // python: r = b's rect; (round(r[0]) - 15, round((r[1]+r[3])/2))
-    let rb = &s7.card(&b).ok_or_else(|| bad(format!("no card {b}")))?["rect"];
+    let rb = &s7.require_card(&b).map_err(bad)?["rect"];
     let (nx, ny) = (rnd(&rb[0])? - 15, rnd_f((num(&rb[1])? + num(&rb[3])?) / 2.0));
     i.send(&format!("UNLINK {a} {b}"))?;
     i.send("SLEEP 1")?;

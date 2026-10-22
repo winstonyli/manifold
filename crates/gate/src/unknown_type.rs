@@ -104,7 +104,7 @@ fn drive(run: &Run, sec: &mut Option<Section>) -> io::Result<()> {
     let mut i = run.start("log1")?;
     let s0 = i.export_until("s0", |s| s.cards().iter().any(|c| c["type"] == SENTINEL))?;
     let (u, t, g) = (only(&s0, SENTINEL)?, only(&s0, TAB)?, only(&s0, GROUP)?);
-    let card = s0.card(&u).ok_or_else(|| bad(format!("no card {u}")))?;
+    let card = s0.require_card(&u).map_err(bad)?;
     check_eq("the unknown node is a card that keeps its stored type", FUTURE.to_string(), py(&card["stored_type"]));
     i.send(&format!("MOVENODE {u} 500 50"))?;
     let at = |s: &State| {

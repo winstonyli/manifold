@@ -77,6 +77,15 @@ impl State {
         self.all_cards().iter().find(|c| c["id"] == id)
     }
 
+    /// A card the probe needs: `card`, or an error naming the id and the ids on screen, so a stale or hand-built id
+    /// reads as that and not as a failed check.
+    pub fn require_card(&self, id: &str) -> Result<&Value, String> {
+        self.card(id).ok_or_else(|| {
+            let present: Vec<&str> = self.all_cards().iter().filter_map(|c| c["id"].as_str()).collect();
+            format!("no card {id}; cards present: {}", present.join(", "))
+        })
+    }
+
     /// `card_is`: a stored node of type `ty` (a JSON level's card and a virtual card are never one); `loaded` also
     /// requires that engine state (`Some(true)` a live tab, `Some(false)` a sleeping/waking/failed one).
     pub fn card_is(card: &Value, ty: &str, loaded: Option<bool>) -> bool {
@@ -316,6 +325,8 @@ mod tests {
         assert_eq!(s.tabs(), ["t1", "t2"]);
         assert_eq!(s.groups(), ["g"]);
         assert!(s.card("nope").is_none());
+        let err = s.require_card("nope").unwrap_err();
+        assert!(err.starts_with("no card nope; cards present: ") && err.contains('j'), "{err}");
     }
 
     #[test]
