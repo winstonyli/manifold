@@ -856,7 +856,7 @@ impl App {
         self.menus.trail_canvas = Some((which, camera));
         // A fading or closed popup leaves no hover behind: its page ids are the strip's too.
         if self.menus.open_popup != Some(which)
-            && self.interaction.hovered.as_deref().is_some_and(|id| id.starts_with("virtual:trail:"))
+            && self.interaction.hovered.as_deref().is_some_and(crate::trail_strip::is_page_id)
         {
             self.interaction.hovered = None;
         }

@@ -708,13 +708,13 @@ mod tests {
         let old_page = egui::Id::new(("graph_card", old[1].id.as_str()));
         assert!(app.egui_ctx.read_response(old_page).is_some(), "the old trail's page is registered");
         app.menus.trail_menu = Some((old[1].id.clone(), egui::pos2(50.0, 50.0)));
-        // 52 pages overflow the 50-entry cap: eviction renumbers the entries and bumps the epoch, retiring every id.
+        // A replaced history is a new trail: its slot is new, so every old id names nothing.
         let urls: Vec<String> = (0..52).map(|i| format!("https://example.test/p{i}")).collect();
         let refs: Vec<&str> = urls.iter().map(String::as_str).collect();
         app.nav_history.insert(tab.clone(), NavHistory::visited(&refs));
         let cards = crate::trail_strip::trail_cards(&app, &tab, egui::Pos2::ZERO);
         assert_eq!(cards.len(), 50);
-        assert_ne!(cards[1].id, old[1].id, "the epoch retired the old ids");
+        assert_ne!(cards[1].id, old[1].id, "the new trail has its own slot, so the old ids are retired");
         for _ in 0..2 {
             popup_run(&mut app, &tab, vec![]);
         }
@@ -762,7 +762,7 @@ mod tests {
         popup_run(&mut app, &tab, vec![egui::Event::PointerMoved(at)]);
         popup_run(&mut app, &tab, right_click(at));
         let (id, _) = app.menus.trail_menu.clone().expect("the page's menu is open");
-        assert!(id.starts_with("virtual:trail:"), "{id}");
+        assert!(crate::trail_strip::is_page_id(&id), "{id}");
         for _ in 0..3 {
             popup_run(&mut app, &tab, vec![]);
         }
@@ -835,7 +835,7 @@ mod tests {
         let at = page_centre(&app, &tab, 1);
         popup_run(&mut app, &tab, vec![egui::Event::PointerMoved(at)]);
         popup_run(&mut app, &tab, vec![]);
-        assert!(app.interaction.hovered.as_deref().is_some_and(|id| id.starts_with("virtual:trail:")), "hovering");
+        assert!(app.interaction.hovered.as_deref().is_some_and(crate::trail_strip::is_page_id), "hovering");
         app.menus.open_popup = None;
         for _ in 0..3 {
             popup_run(&mut app, &tab, vec![]);

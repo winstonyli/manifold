@@ -2,9 +2,10 @@
 //! tab's card, and the painter and geometry the Back/Forward popups share.
 
 use crate::card::{label_fits, CardBody, CardPass, DropEffect};
+use crate::card_id::{fnv64, CardId};
 use crate::identity::{Identity, ICON_SIZE_SMALL};
 use crate::level::{CardEntry, EdgeCurve, EdgeKind, LevelEdge, Origin};
-use crate::nav_history::TrailPage;
+use crate::nav_history::{NavHistory, TrailPage};
 use crate::popups::menu_popup;
 use crate::store::model::TYPE_TRAIL_PAGE;
 use crate::theme::{ACCENT, SURFACE_HOVER, TEXT_PRIMARY, TEXT_WEAK};
@@ -25,20 +26,27 @@ pub(crate) const ROW_GAP: f32 = 12.0;
 /// Between the tab card's bottom edge and the root page.
 const STRIP_GAP: f32 = 24.0;
 
-const ID_PREFIX: &str = "virtual:trail:";
+/// The source name of the strip's cards (`VirtualSource::name`).
+const SOURCE: &str = "trail";
 
-/// `virtual:trail:<tab>:<epoch>:<entry>` -> (tab, epoch, entry).
-fn page_ids(id: &str) -> Option<(&str, u32, usize)> {
-    let (rest, entry) = id.strip_prefix(ID_PREFIX)?.rsplit_once(':')?;
-    let (tab, epoch) = rest.rsplit_once(':')?;
-    Some((tab, epoch.parse().ok()?, entry.parse().ok()?))
+/// A page's card id: the tab's slot above the page's serial (both below 2^31, so the key's top bit stays free).
+fn page_card(history: &NavHistory, serial: u32) -> CardId {
+    CardId::virt(SOURCE, u64::from(history.slot().get()) << 32 | u64::from(serial))
 }
 
-/// The tab and entry a page id names, only while that tab's trail has not evicted anything since the id was made (an
-/// eviction shifts the indices after it, so an old id could now mean another page).
-fn live_page<'a>(app: &App, id: &'a str) -> Option<(&'a str, usize)> {
-    let (tab, epoch, entry) = page_ids(id)?;
-    (app.nav_history.get(tab)?.epoch() == epoch).then_some((tab, entry))
+/// Whether `id` is a strip page's card id.
+pub(crate) fn is_page_id(id: &str) -> bool {
+    id.parse::<CardId>().is_ok_and(|id| id.source_tag() == Some(fnv64(&[SOURCE])))
+}
+
+/// The tab and arena index a page id names, for as long as that page is in its tab's trail: the serial in the id
+/// outlives an eviction of an earlier page and resolves to nothing once its own page is evicted.
+fn live_page<'a>(app: &'a App, id: &str) -> Option<(&'a str, usize)> {
+    let id = id.parse::<CardId>().ok().filter(|id| id.source_tag() == Some(fnv64(&[SOURCE])))?;
+    let key = id.key()?;
+    let (slot, serial) = ((key >> 32) as u32, key as u32);
+    let (tab, history) = app.nav_history.iter().find(|(_, h)| h.slot().get() == slot)?;
+    Some((tab.as_str(), history.index_of(serial)?))
 }
 
 fn label_font() -> egui::FontId {
@@ -202,25 +210,19 @@ impl App {
     }
 }
 
-impl TrailSource {
-    fn page_id(tab: &str, epoch: u32, entry: usize) -> String {
-        format!("{ID_PREFIX}{tab}:{epoch}:{entry}")
-    }
-}
-
 /// Tab `tab`'s page cards, their bounding box's top-left at `origin`: the strip hangs it under the tab's card, the Back
 /// and Forward popups use their own origin. Empty when the tab has no trail.
 pub(crate) fn trail_cards(app: &App, tab: &str, origin: egui::Pos2) -> Vec<CardEntry> {
     let Some(history) = app.nav_history.get(tab) else { return Vec::new() };
-    let (pages, epoch) = (history.tree(), history.epoch());
+    let pages = history.tree();
     let kind = CardKind { ty: TYPE_TRAIL_PAGE, tags: crate::caps::TagSet::EMPTY };
     pages
         .iter()
         .zip(page_rects(&pages, &page_sizes(&app.egui_ctx, &pages, PAGE), COLUMN_GAP, ROW_GAP))
         .map(|(page, rect)| CardEntry {
-            id: TrailSource::page_id(tab, epoch, page.entry),
+            id: page_card(history, page.serial).to_string(),
             kind,
-            origin: Origin::Virtual("trail"),
+            origin: Origin::Virtual(SOURCE),
             rect: rect.translate(origin.to_vec2()),
         })
         .collect()
@@ -230,13 +232,13 @@ pub(crate) fn trail_cards(app: &App, tab: &str, origin: egui::Pos2) -> Vec<CardE
 /// highlighted.
 pub(crate) fn trail_edges(app: &App, tab: &str, rect_of: &dyn Fn(&str) -> Option<egui::Rect>) -> Vec<LevelEdge> {
     let Some(history) = app.nav_history.get(tab) else { return Vec::new() };
-    let (pages, epoch) = (history.tree(), history.epoch());
+    let pages = history.tree();
     pages
         .iter()
         .filter_map(|page| {
             let parent = &pages[page.parent?];
             let (from_id, to_id) =
-                (TrailSource::page_id(tab, epoch, parent.entry), TrailSource::page_id(tab, epoch, page.entry));
+                (page_card(history, parent.serial).to_string(), page_card(history, page.serial).to_string());
             Some(LevelEdge {
                 from: rect_of(&from_id)?.right_center(),
                 to: rect_of(&to_id)?.left_center(),
@@ -281,8 +283,8 @@ impl VirtualSource for TrailSource {
     }
 
     fn on_click(&self, app: &mut App, entry: &CardEntry) -> Option<GraphAction> {
-        let (tab, page) = live_page(app, &entry.id)?;
-        app.trail_pick(tab, page);
+        let (tab, page) = live_page(app, &entry.id).map(|(tab, page)| (tab.to_owned(), page))?;
+        app.trail_pick(&tab, page);
         None
     }
 
@@ -299,8 +301,8 @@ impl VirtualSource for TrailSource {
         _target: Option<(DropEffect, Option<String>)>,
         at: egui::Pos2,
     ) -> Option<GraphAction> {
-        let (tab, page) = live_page(app, &entry.id)?;
-        app.open_branch_as_card(tab, page, Some(at.to_vec2()));
+        let (tab, page) = live_page(app, &entry.id).map(|(tab, page)| (tab.to_owned(), page))?;
+        app.open_branch_as_card(&tab, page, Some(at.to_vec2()));
         None
     }
 }
@@ -331,8 +333,14 @@ mod tests {
         rig
     }
 
+    /// The card id of the page at arena index `entry` of `tab`'s trail.
+    fn page_id(rig: &Rig, tab: &str, entry: usize) -> String {
+        let history = &rig.app.nav_history[tab];
+        page_card(history, history.serial_of(entry).expect("the trail has that page")).to_string()
+    }
+
     fn pages(rig: &Rig) -> Vec<crate::level::CardEntry> {
-        rig.app.level_items().into_iter().filter(|e| e.id.starts_with("virtual:trail:")).collect()
+        rig.app.level_items().into_iter().filter(|e| is_page_id(&e.id)).collect()
     }
 
     #[test]
@@ -378,7 +386,7 @@ mod tests {
         let cards = pages(&rig);
         assert_eq!(cards.len(), 4);
         assert!(cards.iter().all(|c| c.kind.ty == TYPE_TRAIL_PAGE && c.origin == Origin::Virtual("trail")));
-        assert_eq!(cards[0].id, format!("virtual:trail:{tab}:0:0"));
+        assert_eq!(cards[0].id, page_id(&rig, &tab, 0));
         let below = rig.app.card_rect(&tab).unwrap().left_bottom() + egui::vec2(0.0, STRIP_GAP);
         let top_left = cards.iter().fold(egui::Rect::NOTHING, |b, c| b.union(c.rect)).min;
         assert_eq!(top_left, below, "the whole strip hangs under the tab card, none of it above");
@@ -409,7 +417,7 @@ mod tests {
     fn the_page_menu_stays_while_a_branch_popup_is_open_and_closes_when_neither_shows() {
         let mut rig = forked();
         let tab = rig.tab();
-        let id = TrailSource::page_id(&tab, rig.app.nav_history[&tab].epoch(), 1);
+        let id = page_id(&rig, &tab, 1);
         rig.app.view_mode = crate::ViewMode::Item;
         rig.app.menus.trail_menu = Some((id.clone(), egui::pos2(5.0, 5.0)));
         let ctx = rig.app.egui_ctx.clone();
@@ -446,10 +454,9 @@ mod tests {
     fn edges_join_parent_to_child_and_mark_the_path() {
         let rig = forked();
         let tab = rig.tab();
-        let edges: Vec<_> =
-            rig.app.level_edges().into_iter().filter(|e| e.from_id.starts_with("virtual:trail:")).collect();
+        let edges: Vec<_> = rig.app.level_edges().into_iter().filter(|e| is_page_id(&e.from_id)).collect();
         let key = |e: &crate::level::LevelEdge| (e.from_id.clone(), e.to_id.clone(), e.highlight);
-        let id = |i: usize| format!("virtual:trail:{tab}:0:{i}");
+        let id = |i: usize| page_id(&rig, &tab, i);
         assert_eq!(
             edges.iter().map(key).collect::<Vec<_>>(),
             [(id(0), id(1), false), (id(1), id(2), false), (id(0), id(3), true)]
@@ -497,7 +504,7 @@ mod tests {
     fn the_label_keeps_its_screen_size_at_every_zoom_and_hides_when_the_page_is_too_small_to_read() {
         let ctx = text_ctx();
         let page = TrailPage {
-            entry: 0,
+            serial: 0,
             parent: None,
             label: "Title".into(),
             url: String::new(),
@@ -525,7 +532,7 @@ mod tests {
         let ctx = egui::Context::default();
         crate::theme::apply_fonts(&ctx);
         let page = TrailPage {
-            entry: 0,
+            serial: 0,
             parent: None,
             label: "x".repeat(400),
             url: String::new(),
@@ -544,12 +551,12 @@ mod tests {
     fn clicking_a_page_starts_a_plain_move_to_it_and_not_while_one_is_pending() {
         let mut rig = forked();
         let tab = rig.tab();
-        let b = rig.screen(&format!("virtual:trail:{tab}:0:1")).center();
+        let b = rig.screen(&page_id(&rig, &tab, 1)).center();
         rig.click(b);
         let now = std::time::Instant::now();
         assert!(rig.app.nav_history[&tab].move_pending(now), "the click started a move");
         // A second click on another page while that move is pending is ignored.
-        let c = rig.screen(&format!("virtual:trail:{tab}:0:2")).center();
+        let c = rig.screen(&page_id(&rig, &tab, 2)).center();
         rig.click(c);
         assert!(rig.app.nav_history[&tab].move_pending(now), "still the first move");
     }
@@ -558,7 +565,7 @@ mod tests {
     fn clicking_the_cursor_page_or_an_evicted_one_does_nothing() {
         let mut rig = forked();
         let tab = rig.tab();
-        let d = rig.screen(&format!("virtual:trail:{tab}:0:3")).center();
+        let d = rig.screen(&page_id(&rig, &tab, 3)).center();
         rig.click(d);
         assert!(!rig.app.nav_history[&tab].move_pending(std::time::Instant::now()), "the cursor page");
         rig.app.trail_pick(&tab, 99);
@@ -569,7 +576,7 @@ mod tests {
     fn dragging_a_page_onto_empty_canvas_opens_it_as_a_card_there() {
         let mut rig = forked();
         let tab = rig.tab();
-        let from = rig.screen(&format!("virtual:trail:{tab}:0:1")).center();
+        let from = rig.screen(&page_id(&rig, &tab, 1)).center();
         let to = from + egui::vec2(0.0, 300.0);
         rig.drag(from, to);
         let (spawn, _) = rig.app.test_spawns.last().expect("a tab was spawned");
@@ -584,7 +591,7 @@ mod tests {
     fn dropping_a_page_on_a_card_opens_it_the_same_way() {
         let mut rig = forked();
         let tab = rig.tab();
-        let from = rig.screen(&format!("virtual:trail:{tab}:0:2")).center();
+        let from = rig.screen(&page_id(&rig, &tab, 2)).center();
         let to = rig.app.graph_world_rect_to_screen(rig.app.card_rect(&tab).unwrap()).center();
         rig.drag(from, to);
         let (spawn, _) = rig.app.test_spawns.last().expect("a tab was spawned");
@@ -603,7 +610,7 @@ mod tests {
     fn a_page_is_as_wide_as_its_label_within_the_clamp() {
         let ctx = text_ctx();
         let page = |label: &str| TrailPage {
-            entry: 0,
+            serial: 0,
             parent: None,
             label: label.into(),
             url: String::new(),
@@ -644,10 +651,10 @@ mod tests {
     fn right_clicking_a_page_opens_the_same_menu_as_the_popup_rows_and_open_as_card_opens_it() {
         let mut rig = forked();
         let tab = rig.tab();
-        let at = rig.screen(&format!("virtual:trail:{tab}:0:2")).center();
+        let at = rig.screen(&page_id(&rig, &tab, 2)).center();
         rig.right_click(at);
         let (id, pos) = rig.app.menus.trail_menu.clone().expect("the page's menu is open");
-        assert_eq!(id, format!("virtual:trail:{tab}:0:2"));
+        assert_eq!(id, page_id(&rig, &tab, 2));
         assert_eq!(pos, at, "at the pointer");
         rig.frame(vec![], egui::Modifiers::NONE);
         let menu = rig.ctx.memory(|m| m.area_rect(egui::Id::new("trail_page_menu"))).expect("the menu's area");
@@ -662,9 +669,10 @@ mod tests {
     fn a_menu_for_a_page_that_is_gone_closes() {
         let mut rig = forked();
         let tab = rig.tab();
-        rig.app.menus.trail_menu = Some((format!("virtual:trail:{tab}:7:2"), egui::pos2(10.0, 10.0)));
+        let unknown = page_card(&rig.app.nav_history[&tab], 99).to_string();
+        rig.app.menus.trail_menu = Some((unknown, egui::pos2(10.0, 10.0)));
         rig.frame(vec![], egui::Modifiers::NONE);
-        assert!(rig.app.menus.trail_menu.is_none(), "a stale epoch names no page");
+        assert!(rig.app.menus.trail_menu.is_none(), "a serial no page has names no page");
     }
 
     #[test]
@@ -679,7 +687,7 @@ mod tests {
     }
 
     #[test]
-    fn a_page_evicted_at_the_cap_retires_every_old_page_id() {
+    fn a_page_evicted_at_the_cap_retires_only_its_own_id() {
         let mut rig = forked();
         let tab = rig.tab();
         let urls: Vec<String> = (0..50).map(|i| format!("/p{i}")).collect();
@@ -695,7 +703,11 @@ mod tests {
         rig.frame(vec![], egui::Modifiers::NONE);
         let after: Vec<String> = pages(&rig).into_iter().map(|c| c.id).collect();
         assert_eq!(after.len(), 50, "still 50 pages");
-        assert!(after.iter().all(|id| !before.contains(id)), "an index that now means another page has a new id");
+        assert!(live_page(&rig.app, &before[0]).is_none(), "the evicted page's id names nothing (Review Focus 2)");
+        assert_eq!(&after[..49], &before[1..], "every survivor keeps its id although its index dropped by one");
+        assert!(!before.contains(&after[49]), "the new page has an id of its own");
+        let (_, index) = live_page(&rig.app, &before[1]).expect("the survivor resolves");
+        assert_eq!(index, 0, "to its new index");
     }
 
     #[test]
@@ -705,7 +717,7 @@ mod tests {
         ctx.run_ui(egui::RawInput::default(), |_| {}).textures_delta.clear();
         let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, PAGE);
         let page =
-            TrailPage { entry: 0, parent: None, label: "a".into(), url: String::new(), cursor: true, on_path: true };
+            TrailPage { parent: None, serial: 0, label: "a".into(), url: String::new(), cursor: true, on_path: true };
         let layer = egui::LayerId::new(egui::Order::Background, egui::Id::new("paint_probe"));
         let mut rects = Vec::new();
         ctx.run_ui(egui::RawInput::default(), |ui| {

@@ -61,7 +61,7 @@ impl App {
     #[cfg(test)]
     pub(crate) fn register_virtual_source(&mut self, source: Rc<dyn VirtualSource>) {
         self.virtual_sources.push(source);
-        let names: Vec<&str> = self.virtual_sources.iter().map(|s| s.name()).collect();
+        let names: Vec<&str> = self.virtual_sources.iter().map(|s| s.name()).collect(); // name rule: a source's identifier, never shown
         crate::card_id::assert_distinct_tags(&names);
     }
 

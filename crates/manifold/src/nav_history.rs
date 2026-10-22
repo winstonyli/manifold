@@ -50,13 +50,35 @@ struct Entry {
     parent: Option<usize>,
     /// Forward goes here: the child the cursor last left this entry for.
     fwd: Option<usize>,
+    /// Names this page for as long as the process runs: unlike its index, it survives an eviction of an earlier page,
+    /// and it is never reused. Not saved; `NavHistory::renumber` gives a loaded tree `0..n`.
+    #[serde(skip)]
+    serial: u32,
+}
+
+/// A tab's trail, numbered for the process: the high half of its pages' card ids (`trail_strip.rs`). Every
+/// `Default` takes the next number, so a history made by `or_default()`, `insert` or a load needs no table.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Slot(u32);
+
+impl Default for Slot {
+    fn default() -> Slot {
+        static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        Slot(NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+    }
+}
+
+impl Slot {
+    pub(crate) fn get(self) -> u32 {
+        self.0
+    }
 }
 
 /// One page of the trail as the strip and the popup draw it.
 pub(crate) struct TrailPage {
-    /// The arena index: what `go_to` and `entry_url` take.
-    pub(crate) entry: usize,
     pub(crate) parent: Option<usize>,
+    /// `Entry::serial`: what names the page across an eviction.
+    pub(crate) serial: u32,
     /// The title, or the URL's path (its host when there is none) when the title is empty; pages that share an address
     /// and differ in query or fragment lead with what differs (`page_labels`).
     pub(crate) label: String,
@@ -126,9 +148,12 @@ pub(crate) struct NavHistory {
     /// The engine's cursor in `lin`.
     lin_at: usize,
     pending: Option<Move>,
-    /// Bumped by every eviction, which shifts the indices after it: the strip puts it in its page ids so an id never
-    /// outlives the page it named.
+    /// Bumped by every eviction, which shifts the indices after it: an open Back/Forward popup recentres on it
+    /// (`popups/dropdowns.rs`). Page ids do not need it: they carry the page's `serial`.
     epoch: u32,
+    /// The serial the next pushed entry takes.
+    next_serial: u32,
+    slot: Slot,
     /// The last folded report was still loading: a URL change next is a redirect.
     loading: bool,
     /// The cursor entry was chosen by a move or reloaded by a new engine, so a redirect rewrites it.
@@ -187,7 +212,8 @@ impl NavHistory {
     fn fold(&mut self, url: &str, loading: bool, can_go_forward: bool, now: Instant) -> bool {
         // 1: the first report makes the root.
         if self.entries.is_empty() {
-            self.entries.push(Entry { url: url.to_owned(), title: String::new(), parent: None, fwd: None });
+            let serial = self.take_serial();
+            self.entries.push(Entry { url: url.to_owned(), title: String::new(), parent: None, fwd: None, serial });
             self.at = 0;
             self.lin = vec![Some(0)];
             self.lin_at = 0;
@@ -377,6 +403,34 @@ impl NavHistory {
         self.epoch
     }
 
+    pub(crate) fn slot(&self) -> Slot {
+        self.slot
+    }
+
+    /// The serial of the page at arena index `entry`.
+    #[cfg(test)]
+    pub(crate) fn serial_of(&self, entry: usize) -> Option<u32> {
+        self.entries.get(entry).map(|e| e.serial)
+    }
+
+    /// The arena index of the page with `serial`; `None` once that page has been evicted.
+    pub(crate) fn index_of(&self, serial: u32) -> Option<usize> {
+        self.entries.iter().position(|e| e.serial == serial)
+    }
+
+    fn take_serial(&mut self) -> u32 {
+        self.next_serial += 1;
+        self.next_serial - 1
+    }
+
+    /// Numbers the entries `0..n` in order (a loaded or hand-built tree).
+    fn renumber(&mut self) {
+        for (i, e) in self.entries.iter_mut().enumerate() {
+            e.serial = i as u32;
+        }
+        self.next_serial = self.entries.len() as u32;
+    }
+
     /// Every page in entry order (a parent always before its children), for drawing.
     pub(crate) fn tree(&self) -> Vec<TrailPage> {
         if self.entries.is_empty() {
@@ -389,10 +443,10 @@ impl NavHistory {
             .zip(labels)
             .enumerate()
             .map(|(i, (e, label))| TrailPage {
-                entry: i,
                 parent: e.parent,
                 label,
                 url: e.url.clone(),
+                serial: e.serial,
                 cursor: i == self.at,
                 on_path: path.contains(&i),
             })
@@ -404,9 +458,11 @@ impl NavHistory {
     pub(crate) fn with_tree(spec: &[(&str, Option<usize>, Option<usize>)], at: usize) -> NavHistory {
         let entries = spec
             .iter()
-            .map(|&(url, parent, fwd)| Entry { url: url.into(), title: String::new(), parent, fwd })
+            .map(|&(url, parent, fwd)| Entry { url: url.into(), title: String::new(), parent, fwd, serial: 0 })
             .collect();
-        NavHistory { entries, at, ..NavHistory::default() }
+        let mut h = NavHistory { entries, at, ..NavHistory::default() };
+        h.renumber();
+        h
     }
 
     /// The Back chip shows its branch marker: the cursor entry has siblings.
@@ -503,7 +559,14 @@ impl NavHistory {
         {
             return c;
         }
-        self.entries.push(Entry { url: url.to_owned(), title: String::new(), parent: Some(self.at), fwd: None });
+        let serial = self.take_serial();
+        self.entries.push(Entry {
+            url: url.to_owned(),
+            title: String::new(),
+            parent: Some(self.at),
+            fwd: None,
+            serial,
+        });
         self.entries.len() - 1
     }
 
@@ -650,6 +713,7 @@ pub(crate) fn load_from(path: &Path) -> HashMap<String, NavHistory> {
         .filter(|(_, s)| s.valid())
         .map(|(id, s)| {
             let mut h = NavHistory { entries: s.entries, at: s.at, ..NavHistory::default() };
+            h.renumber();
             h.evict_to(MAX_ENTRIES);
             (id, h)
         })
@@ -716,7 +780,7 @@ mod tests {
         );
         h.entries[1].title = "Bee".into();
         let pages = h.tree();
-        assert_eq!(pages.iter().map(|p| p.entry).collect::<Vec<_>>(), [0, 1, 2, 3]);
+        assert_eq!(pages.iter().map(|p| p.serial).collect::<Vec<_>>(), [0, 1, 2, 3]);
         assert_eq!(pages.iter().map(|p| p.parent).collect::<Vec<_>>(), [None, Some(0), Some(1), Some(0)]);
         assert_eq!(pages.iter().map(|p| p.label.as_str()).collect::<Vec<_>>(), ["/a", "Bee", "/c", "/d"]);
         assert_eq!(pages.iter().map(|p| p.cursor).collect::<Vec<_>>(), [false, false, false, true]);
@@ -924,6 +988,63 @@ mod tests {
     }
 
     #[test]
+    fn a_pages_serial_survives_an_eviction_of_an_earlier_page() {
+        let mut h = NavHistory::default();
+        visit(&mut h, &["a", "b", "c"], Instant::now());
+        let serial_c = h.serial_of(2).expect("c has a serial");
+        h.remove(1);
+        assert_eq!(h.index_of(serial_c), Some(1), "c moved down one slot and kept its serial");
+        assert_eq!(h.serial_of(1), Some(serial_c));
+    }
+
+    #[test]
+    fn an_evicted_pages_serial_resolves_to_nothing() {
+        let mut h = NavHistory::default();
+        visit(&mut h, &["a", "b", "c"], Instant::now());
+        let serial_b = h.serial_of(1).unwrap();
+        h.remove(1);
+        assert_eq!(h.index_of(serial_b), None);
+        visit(&mut h, &["d"], Instant::now());
+        let later = h.serial_of(h.entries.len() - 1);
+        assert!(later.is_some() && later != Some(serial_b), "a serial is never reused");
+    }
+
+    #[test]
+    fn every_page_of_a_tree_has_its_own_serial_and_the_strip_gets_it() {
+        let h = NavHistory::visited(&["a", "b", "c"]);
+        let serials: Vec<u32> = h.tree().iter().map(|p| p.serial).collect();
+        assert_eq!(serials.len(), 3);
+        assert!(serials.iter().enumerate().all(|(i, s)| serials[..i].iter().all(|t| t != s)));
+        assert_eq!(h.serial_of(3), None);
+    }
+
+    #[test]
+    fn two_histories_get_different_slots() {
+        assert_ne!(NavHistory::default().slot(), NavHistory::default().slot());
+    }
+
+    #[test]
+    fn serials_are_assigned_in_order_on_load_and_the_next_push_continues() {
+        let path = temp_dir("nav-history-serials").join("tab-history.json");
+        let entries: Vec<Entry> = (0usize..3)
+            .map(|n| Entry {
+                url: format!("p{n}"),
+                title: String::new(),
+                parent: n.checked_sub(1),
+                fwd: None,
+                serial: 0,
+            })
+            .collect();
+        let file = HashMap::from([("t", Saved { entries, at: 2 })]);
+        std::fs::write(&path, serde_json::to_string(&file).unwrap()).unwrap();
+        let mut loaded = load_from(&path);
+        let h = loaded.get_mut("t").unwrap();
+        assert_eq!((0..3).map(|i| h.serial_of(i)).collect::<Vec<_>>(), [Some(0), Some(1), Some(2)]);
+        let pushed = h.child_or_push("p3");
+        assert_eq!(h.serial_of(pushed), Some(3));
+    }
+
+    #[test]
     fn the_tree_and_lin_are_capped() {
         let now = Instant::now();
         let pages: Vec<String> = (0..55).map(|n| format!("p{n}")).collect();
@@ -976,7 +1097,13 @@ mod tests {
     fn a_saved_tree_over_the_cap_is_evicted_on_load() {
         let path = temp_dir("nav-history-over-cap").join("tab-history.json");
         let entries: Vec<Entry> = (0usize..60)
-            .map(|n| Entry { url: format!("p{n}"), title: String::new(), parent: n.checked_sub(1), fwd: None })
+            .map(|n| Entry {
+                url: format!("p{n}"),
+                title: String::new(),
+                parent: n.checked_sub(1),
+                fwd: None,
+                serial: 0,
+            })
             .collect();
         let file = HashMap::from([("t", Saved { entries, at: 59 })]);
         std::fs::write(&path, serde_json::to_string(&file).unwrap()).unwrap();
