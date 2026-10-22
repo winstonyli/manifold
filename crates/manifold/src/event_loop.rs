@@ -511,9 +511,11 @@ impl ApplicationHandler<UserEvent> for App {
                             self.egui_ctx.repaint_causes().iter().map(ToString::to_string).collect();
                         tracing::trace!(target: "repaint", label = causes.join(" | ").as_str());
                     }
-                    self.mark_active();
                 }
-                self.pacing.idle_interval = repaint_in.map_or(IDLE_FRAME, |d| d.min(IDLE_FRAME));
+                // An animation asking for the next frame at once is drawn at the display's rate, not counted as
+                // activity: a blinking caret asks every half second, and counting it kept the loop out of idle.
+                let animation_pace = self.frame_interval();
+                self.pacing.idle_interval = repaint_in.map_or(IDLE_FRAME, |d| d.max(animation_pace).min(IDLE_FRAME));
 
                 tracing::info_span!("render").in_scope(|| self.render_frame(egui_output));
                 self.pacing.last_present = std::time::Instant::now();
