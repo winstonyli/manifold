@@ -44,8 +44,10 @@ impl App {
                 // The hidden headless window never has OS focus, and egui
                 // reports no widget focus (`Response::has_focus`) in an
                 // unfocused window, so the address bar could never take
-                // the typed text.
-                if self.headless {
+                // the typed text. A window under `--debug-commands` may
+                // not have it either (an elevated profiling task cannot
+                // take the foreground).
+                if self.headless || self.debug_commands {
                     raw_input.focused = true;
                 }
                 raw_input.events.append(&mut self.debug.debug_input_events);

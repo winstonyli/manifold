@@ -1,8 +1,11 @@
-//! `gate profile SCENARIO [SECONDS] [--samply]` (was scripts/json-pan-profile.sh and .py): times, or profiles with
+//! `gate profile SCENARIO [SECONDS] [--samply] [--visible]` (was scripts/json-pan-profile.sh and .py): times, or profiles with
 //! samply, one scripted scenario. SCENARIO is `json-pan`, `json-zoom`, `json-reveal-numbers`, `json-reveal-objects`
 //! (panning, zooming and paging a big JSON level) or `graph-frames` (the Graph view with 80 notes at 25% zoom, a
 //! pointer move per frame). SECONDS (default 20) sets how long the pan, zoom or frames run, one command per frame
 //! (60 a second).
+//!
+//! `--visible` runs a real window (`--debug-commands`, which tells egui it has focus, so the elevated samply task needs
+//! no foreground) instead of the hidden headless one, to include the real present path; it pops up for the run.
 //!
 //! The app runs headless on an isolated profile folder, driven by a command file (`--script`, `--profile-dir`: the
 //! elevated samply task can set neither stdin nor APPDATA). `json-pan` and `json-zoom` use a tree 3 levels deep with 12
@@ -23,7 +26,7 @@
 use std::fmt::Write as _;
 use std::io::Write as _;
 use std::os::windows::process::CommandExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 use std::time::Instant;
 
@@ -96,33 +99,20 @@ fn script(fixture: &Path, state: &Path, seconds: f64, mode: &str, branch: usize,
     s
 }
 
-/// The headless command file of `graph-frames`: `NOTES` notes, the camera at 25%, then a pointer move per frame for
-/// `seconds`. `state` is where it exports the state to count the cards.
-fn graph_script(state: &Path, seconds: f64) -> String {
-    let mut s = String::from(
-        "WAITIDLE
-",
-    );
-    s.push_str(
-        &"NEWNOTE
-"
-        .repeat(GRAPH_NOTES),
-    );
-    let _ = writeln!(
-        s,
-        "WAITIDLE
-GRAPHZOOM 25
-WAITIDLE
-EXPORTSTATE {}",
-        state.display()
-    );
+/// The command file of `graph-frames`: `NOTES` notes, the camera at 25%, then a pointer move per frame for `seconds`.
+/// `state` is where it exports the state to count the cards. `paced` holds a frame (`SLEEP`) between the moves, as a
+/// visible window needs for the run to last `seconds`; a headless run takes the moves as fast as it can.
+fn graph_script(state: &Path, seconds: f64, paced: bool) -> String {
+    let mut s = String::from("WAITIDLE\n");
+    s.push_str(&"NEWNOTE\n".repeat(GRAPH_NOTES));
+    let _ = writeln!(s, "WAITIDLE\nGRAPHZOOM 25\nWAITIDLE\nEXPORTSTATE {}", state.display());
     for n in 0..(seconds * 60.0) as usize {
         let _ = writeln!(s, "MOUSEMOVE {} {}", 300 + (n % 2) * 40, 300 + (n % 3) * 20);
+        if paced {
+            s.push_str("SLEEP 0.0167\n");
+        }
     }
-    s.push_str(
-        "QUIT
-",
-    );
+    s.push_str("QUIT\n");
     s
 }
 
@@ -139,6 +129,9 @@ fn result(scenario: &str, state: &Path) -> String {
 
 fn run(args: &[String]) -> Result<(), String> {
     let samply = args.iter().any(|a| a == "--samply");
+    // A visible window (`--debug-commands`) instead of the hidden headless one: the real present path.
+    let visible = args.iter().any(|a| a == "--visible");
+    let mode_flag = if visible { "--debug-commands" } else { "--headless" };
     let mut pos = args.iter().filter(|a| !a.starts_with("--"));
     let scenario = pos.next().map_or("", String::as_str);
     if !SCENARIOS.contains(&scenario) {
@@ -147,6 +140,8 @@ fn run(args: &[String]) -> Result<(), String> {
     let mode = scenario.strip_prefix("json-").unwrap_or(scenario);
     let seconds: f64 = pos.next().map_or(Ok(20.0), |s| s.parse()).map_err(|e| format!("SECONDS: {e}"))?;
     let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().map_err(|e| e.to_string())?;
+    // `canonicalize` gives a verbatim `\\?\` path, which the elevated samply task cannot expand.
+    let repo = repo.to_str().and_then(|s| s.strip_prefix(r"\\?\")).map_or(repo.clone(), PathBuf::from);
     let release = repo.join("target/release/manifold.exe");
     if !release.exists() {
         return Err(format!("build the release exe first (see the module doc): {}", release.display()));
@@ -161,7 +156,7 @@ fn run(args: &[String]) -> Result<(), String> {
     let fixture_path = out.join("fixture.json");
     let state = out.join("state.json");
     let commands = if scenario == "graph-frames" {
-        graph_script(&state, seconds)
+        graph_script(&state, seconds, visible)
     } else {
         std::fs::write(&fixture_path, fixture(mode, branch, reveal_n).to_string()).map_err(io)?;
         script(&fixture_path, &state, seconds, mode, branch, reveal_n)
@@ -171,16 +166,31 @@ fn run(args: &[String]) -> Result<(), String> {
     let exe = out.join("manifold.exe");
     std::fs::copy(&release, &exe).map_err(io)?;
     let app_args = |c: &mut Command| {
-        c.arg("--headless").arg("--profile-dir").arg(&appdata).arg("--script").arg(&command_file);
+        c.arg(mode_flag).arg("--profile-dir").arg(&appdata).arg("--script").arg(&command_file);
     };
     if samply {
         let ps1 = std::env::var_os("USERPROFILE").map(|h| Path::new(&h).join(".claude/samply/profile.ps1"));
         let ps1 = ps1.filter(|p| p.exists()).ok_or("~/.claude/samply/profile.ps1 not found: see SAMPLY.md")?;
-        let mut c = Command::new("powershell");
-        c.args(["-NoProfile", "-File"]).arg(ps1).arg("-Exe").arg(&exe);
-        c.arg("-Out").arg(out.join("profile.json.gz")).arg("-ExeArgs");
-        let list = format!("--headless,--profile-dir,{},--script,{}", appdata.display(), command_file.display());
-        let status = c.arg(list).creation_flags(BELOW_NORMAL).stdin(Stdio::null()).status().map_err(io)?;
+        // `-Command`, not `-File`: only a command line splits `-ExeArgs 'a','b'` into an array.
+        let quote = |p: &dyn std::fmt::Display| format!("'{}'", p.to_string().replace('\'', "''"));
+        let list = [mode_flag.to_owned(), "--profile-dir".into(), appdata.display().to_string(), "--script".into()]
+            .into_iter()
+            .chain([command_file.display().to_string()])
+            .map(|a| quote(&a))
+            .collect::<Vec<_>>()
+            .join(",");
+        let command = format!(
+            "& {} -Exe {} -Out {} -ExeArgs {list}",
+            quote(&ps1.display()),
+            quote(&exe.display()),
+            quote(&out.join("profile.json.gz").display())
+        );
+        let status = Command::new("powershell")
+            .args(["-NoProfile", "-Command", &command])
+            .creation_flags(BELOW_NORMAL)
+            .stdin(Stdio::null())
+            .status()
+            .map_err(io)?;
         return if status.success() { Ok(()) } else { Err(format!("profile.ps1: {status}")) };
     }
     let log = std::fs::File::create(out.join("run.log")).map_err(io)?;
@@ -236,18 +246,12 @@ mod tests {
 
     #[test]
     fn the_graph_script_adds_the_notes_zooms_out_exports_and_moves_the_pointer_each_frame() {
-        let s = graph_script(Path::new("s.json"), 1.0);
+        let s = graph_script(Path::new("s.json"), 1.0, false);
         assert_eq!(s.matches("NEWNOTE").count(), GRAPH_NOTES);
-        assert!(s.contains(
-            "GRAPHZOOM 25
-WAITIDLE
-EXPORTSTATE s.json
-"
-        ));
+        assert!(s.contains("GRAPHZOOM 25\nWAITIDLE\nEXPORTSTATE s.json\n"));
         assert_eq!(s.matches("MOUSEMOVE").count(), 60);
-        assert!(s.ends_with(
-            "QUIT
-"
-        ));
+        assert_eq!(s.matches("SLEEP").count(), 0);
+        assert!(s.ends_with("QUIT\n"));
+        assert_eq!(graph_script(Path::new("s.json"), 1.0, true).matches("SLEEP").count(), 60);
     }
 }

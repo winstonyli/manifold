@@ -154,7 +154,7 @@ mod windows_main {
         Stage { name: "cef-pin", usage: Some("[--platform ID] PREFIX"), run: Run::Args(crate::cef_pin::cef_pin_main) },
         Stage {
             name: "profile",
-            usage: Some("SCENARIO [SECONDS] [--samply]"),
+            usage: Some("SCENARIO [SECONDS] [--samply] [--visible]"),
             run: Run::Args(crate::profile::profile),
         },
         Stage { name: "package", usage: Some("[EXE]"), run: Run::Args(crate::package::package) },

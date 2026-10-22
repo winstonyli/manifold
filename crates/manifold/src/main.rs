@@ -412,6 +412,9 @@ struct App {
     /// stdin instead of real OS input. See `debug_control`'s doc comment
     /// for the full rationale and the text-command protocol.
     headless: bool,
+    /// `--debug-commands`: a real window driven by debug commands. It tells egui it has focus, as headless does,
+    /// so scripted keys reach egui without the OS giving the window the foreground.
+    debug_commands: bool,
     /// JSON level view settings (see `json_level_ui::JsonLevelUi`).
     json_ui: json_level_ui::JsonLevelUi,
     /// Bookmarks and history popup state (see `history::HistoryUi`).
@@ -586,6 +589,7 @@ impl Default for App {
             pending_graph_zoom: None,
             graph_settled_key: None,
             headless: false,
+            debug_commands: false,
             json_ui: json_level_ui::JsonLevelUi::default(),
             history_ui: history::HistoryUi::default(),
             view_ui: view_install::ViewInstallUi::default(),
@@ -672,6 +676,7 @@ fn main() {
 
     let mut app = App {
         headless,
+        debug_commands,
         // Must be set before `run_app` — `resumed()` calls `spawn_root_tab`,
         // which needs this to hand its background spawn thread a way to report
         // back (see `TabSpawnOutcome`'s doc comment).
