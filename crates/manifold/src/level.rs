@@ -170,6 +170,12 @@ impl App {
     /// (`link_gestures::facing_sides`), not their centres. Link lines come in `link_ids` order, so the last of two on one pair is the greater id
     /// (`nearest_link`'s tie rule).
     pub(crate) fn level_edges(&self) -> Vec<LevelEdge> {
+        self.level_edges_from(&self.level_items())
+    }
+
+    /// `level_edges` with the level's `items` already in hand (`level_items_from`), so the caller that has them does
+    /// not scan the level again; a JSON level draws from its own rects and ignores them.
+    pub(crate) fn level_edges_from(&self, items: &[CardEntry]) -> Vec<LevelEdge> {
         // A JSON level: from the parent's row port (its right edge, at the
         // row's middle) to the child's header.
         if let Some(level) = &self.json_level {
@@ -195,7 +201,7 @@ impl App {
                 })
                 .collect();
         }
-        let rects: HashMap<String, egui::Rect> = self.level_items().into_iter().map(|e| (e.id, e.rect)).collect();
+        let rects: HashMap<&str, egui::Rect> = items.iter().map(|e| (e.id.as_str(), e.rect)).collect();
         let rect_of = |id: &str| rects.get(id).copied();
         let opened = self.nodes.iter().filter(|(id, _)| self.in_level(id)).filter_map(|(id, _)| {
             let parent_id = self.opened_from(id)?;
@@ -349,6 +355,20 @@ mod tests {
             app.new_note_shortcut();
         }
         assert_eq!(app.level_items_from(&app.level_scan().layers), app.level_items());
+    }
+
+    #[test]
+    fn level_edges_from_reads_the_rects_it_is_given() {
+        let mut app = App::default();
+        app.insert_placeholder_node("p".into(), egui::vec2(0.0, 0.0), Kind::Download, download("p.bin"));
+        app.insert_placeholder_node("c".into(), egui::vec2(100.0, 50.0), Kind::Download, download("c.bin"));
+        app.edit_parent("c", Some("p".into()));
+        assert_eq!(app.level_edges_from(&app.level_items()), app.level_edges());
+        let mut items = app.level_items();
+        let shift = egui::vec2(500.0, 0.0);
+        items.iter_mut().filter(|e| e.id == "c").for_each(|e| e.rect = e.rect.translate(shift));
+        let moved = app.level_edges_from(&items);
+        assert_eq!(moved[0].to, app.level_edges()[0].to + shift, "the edge follows the given rect");
     }
 
     #[test]

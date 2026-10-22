@@ -255,7 +255,8 @@ impl App {
 
             // The link line under the pointer (link-gestures spec B) is drawn highlighted; a click on it is
             // applied after the Scene, from the Scene's own response.
-            let mut edges = self.level_edges();
+            // Rects read afresh (a drag or settle since `items` moved cards), the layer scan reused.
+            let mut edges = self.level_edges_from(&self.level_items_from(&at_level));
             let minimap_rect = minimap.map(|(rect, _, _)| rect);
             let line_hover = self.hovered_link_line(ui, &edges, inv_zoom, minimap_rect, typing);
             for edge in &mut edges {
