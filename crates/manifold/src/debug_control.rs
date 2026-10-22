@@ -458,6 +458,9 @@ const VERBS: &[Verb] = &[
         let pct = parse_zoom_pct(rest)?;
         job(move |app, _| app.pending_graph_zoom = Some(pct / 100.0))
     }),
+    row("MARK label", "Write `label` into the timing trace (`MANIFOLD_TRACE`), to tell a script's phases apart", |rest| {
+        with_text(rest, |_, label| tracing::info!(target: "mark", label = label.as_str()))
+    }),
     row("OPENDEVTOOLS", "F12 -- open devtools", |_| job(|app, _| app.open_devtools_shortcut())),
     row("NEWTAB", "Ctrl+T -- new tab", |_| job(|app, _| app.new_tab_shortcut())),
     row("CLOSETAB", "Ctrl+W -- close the focused tab", |_| job(|app, _| app.close_focused_tab_shortcut())),
@@ -1210,6 +1213,7 @@ mod tests {
             "ZOOMOUT",
             "ZOOMRESET",
             "GRAPHZOOM 60",
+            "MARK phase one",
             "OPENDEVTOOLS",
             "NEWTAB",
             "CLOSETAB",

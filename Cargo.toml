@@ -112,6 +112,8 @@ sha2 = "0.10.9"
 # Cargo.lock holds two skrifa versions.
 skrifa = "=0.44.0"
 tar = "0.4.46"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["registry", "std"] }
 unicode-segmentation = "1.13.3"
 ureq = "3"
 url = "2.5.8"

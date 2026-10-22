@@ -60,6 +60,7 @@ mod suggest;
 mod sync_deps;
 mod tier;
 mod timing;
+mod trace;
 #[cfg(windows)]
 mod trail;
 #[cfg(windows)]

@@ -440,8 +440,8 @@ const ALLOWED: [&str; 18] = [
     "virtual_source.rs",
 ];
 /// Files whose `.name` is some other name: a cookie's (`jar.rs`), a string literal (`json_level_ui.rs`), a thread's
-/// (`process_manager/view_io.rs`).
-const OTHER_NAMES: [&str; 3] = ["jar.rs", "json_level_ui.rs", "process_manager/view_io.rs"];
+/// (`process_manager/view_io.rs`), a tracing field's or span's (`telemetry.rs`).
+const OTHER_NAMES: [&str; 4] = ["jar.rs", "json_level_ui.rs", "process_manager/view_io.rs", "telemetry.rs"];
 const RULE_MARKS: [&str; 8] = [
     "display_name(",
     "clean_name(",

@@ -117,6 +117,7 @@ impl ApplicationHandler<UserEvent> for App {
     /// WSLg. Children before the window: egui's state and the surface hold
     /// handles to it.
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        telemetry::flush();
         self.flush_pending_settings();
         self.final_cookie_pull();
         self.begin_view_shutdown();
@@ -191,6 +192,7 @@ impl ApplicationHandler<UserEvent> for App {
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {
         if is_activity(&event) {
+            tracing::trace!(target: "input", "user event");
             self.mark_active();
         }
         match event {
@@ -242,6 +244,7 @@ impl ApplicationHandler<UserEvent> for App {
         };
         let in_tab_view = self.showing_tab_view();
         if !matches!(event, WindowEvent::RedrawRequested) {
+            tracing::trace!(target: "input", "window event");
             self.mark_active();
         }
 
@@ -472,6 +475,7 @@ impl ApplicationHandler<UserEvent> for App {
             // stops spinning; `about_to_wait` ticks it instead.
             WindowEvent::RedrawRequested if self.is_minimized() => {}
             WindowEvent::RedrawRequested => {
+                let _frame = tracing::info_span!("frame").entered();
                 self.poll_store();
                 self.poll_trail_focus();
                 self.poll_view_installs();
@@ -495,17 +499,23 @@ impl ApplicationHandler<UserEvent> for App {
                 // stale transitioning frame.
                 self.finish_transition_if_done();
 
-                let egui_output = self.run_egui_frame();
+                let egui_output = tracing::info_span!("egui").in_scope(|| self.run_egui_frame());
                 // egui asks for the next frame itself while something it
                 // draws is animating.
                 let repaint_in =
                     egui_output.as_ref().and_then(|o| o.viewport_output.values().map(|v| v.repaint_delay).min());
                 if repaint_in.is_some_and(|d| d.is_zero()) {
+                    // What keeps an idle window drawing: the `request_repaint` call sites, as `file:line reason`.
+                    if tracing::enabled!(target: "repaint", tracing::Level::TRACE) {
+                        let causes: Vec<String> =
+                            self.egui_ctx.repaint_causes().iter().map(ToString::to_string).collect();
+                        tracing::trace!(target: "repaint", label = causes.join(" | ").as_str());
+                    }
                     self.mark_active();
                 }
                 self.pacing.idle_interval = repaint_in.map_or(IDLE_FRAME, |d| d.min(IDLE_FRAME));
 
-                self.render_frame(egui_output);
+                tracing::info_span!("render").in_scope(|| self.render_frame(egui_output));
                 self.pacing.last_present = std::time::Instant::now();
                 if !self.is_idle() && self.present_blocks() {
                     if let Some(window) = &self.window {

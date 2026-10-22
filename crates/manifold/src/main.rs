@@ -76,6 +76,7 @@ mod store;
 mod suggestions;
 mod tab_view;
 mod tabs;
+mod telemetry;
 mod text;
 mod theme;
 mod trail_nav;
@@ -630,6 +631,7 @@ impl Default for App {
 
 fn main() {
     crash_report::install();
+    telemetry::init();
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     if let Some(code) = cli::run(&args) {

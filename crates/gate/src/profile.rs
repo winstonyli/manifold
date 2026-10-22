@@ -5,6 +5,12 @@
 //! (default 20) sets how long the pan, zoom or frames run, one command per frame
 //! (60 a second).
 //!
+//! `graph-idle` adds the notes and then does nothing for SECONDS: its `idle` phase shows the redraws and CPU of a
+//! loop with nothing to do. Without `--samply` the app also writes a timing trace (`MANIFOLD_TRACE`, target/profile/
+//! trace.json, openable in Perfetto) and the run prints a table from it: per phase of the script (`MARK label`), the
+//! redraws a second, the frame time, the input latency (an input's arrival to the end of the first frame started after
+//! it, not counting the compositor and display) and the process CPU per second, then the five slowest frames.
+//!
 //! `--visible` runs a real window (`--debug-commands`, which tells egui it has focus, so the elevated samply task needs
 //! no foreground) instead of the hidden headless one, to include the real present path; it pops up for the run.
 //!
@@ -36,14 +42,18 @@ use serde_json::{json, Value};
 const BELOW_NORMAL: u32 = 0x4000;
 /// The notes `graph-frames` adds.
 const GRAPH_NOTES: usize = 80; // the default of `GRAPH_NOTES` in the environment
-const SCENARIOS: [&str; 5] = ["json-pan", "json-zoom", "json-reveal-numbers", "json-reveal-objects", "graph-frames"];
+const SCENARIOS: [&str; 6] =
+    ["json-pan", "json-zoom", "json-reveal-numbers", "json-reveal-objects", "graph-frames", "graph-idle"];
 
-/// The most recently changed `.rs` or `Cargo.toml` file under `dir`, with its time.
+/// The most recently changed `.rs` or `Cargo.toml` file under `dir`, with its time, leaving out `crates/gate`: the
+/// harness is not part of the exe it profiles.
 fn newest_source(dir: &Path) -> Option<(PathBuf, std::time::SystemTime)> {
     let mut newest: Option<(PathBuf, std::time::SystemTime)> = None;
     for entry in std::fs::read_dir(dir).ok()?.flatten() {
         let path = entry.path();
-        let found = if path.is_dir() {
+        let found = if path.file_name().is_some_and(|n| n == "gate") {
+            None
+        } else if path.is_dir() {
             newest_source(&path)
         } else if path.extension().is_some_and(|e| e == "rs") || path.file_name().is_some_and(|n| n == "Cargo.toml") {
             entry.metadata().and_then(|m| m.modified()).ok().map(|at| (path, at))
@@ -132,32 +142,69 @@ fn graph_script(state: &Path, seconds: f64, paced: bool, notes: usize) -> String
     let mut frame = |line: String| {
         s.push_str(&line);
         s.push('\n');
-        if paced {
+        if paced && !line.starts_with("MARK") {
             s.push_str("SLEEP 0.0167\n");
         }
     };
+    frame("MARK pointer".into());
     for n in 0..frames {
         frame(format!("MOUSEMOVE {} {}", 300 + (n % 2) * 40, 300 + (n % 3) * 20));
     }
+    frame("MARK note-typing".into());
     for _ in 0..frames {
         frame("EGUITEXT n".into());
     }
     frame("ESCAPE".into());
     frame("QUICKSWITCHOPEN".into());
+    frame("MARK switcher-typing".into());
     for n in 0..frames {
         frame(format!("QUICKSWITCHTEXT {}", &"note typing in the switcher"[..n % 20 + 1]));
     }
     frame("QUICKSWITCHESCAPE".into());
+    frame("MARK scroll-zoom".into());
     for n in 0..frames {
         frame(format!("SCROLL 600 400 0 {}", if (n / 60) % 2 == 0 { 12 } else { -12 }));
     }
+    frame("MARK pan".into());
     frame("MOUSEDOWN 1300 850".into());
     for n in 0..frames {
         let step = n % 120;
         frame(format!("MOUSEMOVE {} 850", 1300 - 6 * (if (n / 120) % 2 == 0 { step } else { 120 - step })));
     }
     frame("MOUSEUP 700 850".into());
+    frame("MARK end".into());
     frame("QUIT".into());
+    s
+}
+
+/// The command file of `graph-idle`: `notes` notes at 25% zoom, then nothing for `seconds`. The run's `idle` phase
+/// shows how often the loop redraws and how much CPU it spends when nothing happens.
+fn idle_script(state: &Path, seconds: f64, notes: usize) -> String {
+    let mut s = String::from(
+        "WAITIDLE
+",
+    );
+    s.push_str(
+        &"NEWNOTE
+"
+        .repeat(notes),
+    );
+    let _ = writeln!(
+        s,
+        "WAITIDLE
+GRAPHZOOM 25
+WAITIDLE
+EXPORTSTATE {}",
+        state.display()
+    );
+    let _ = writeln!(
+        s,
+        "SLEEP 2
+MARK idle
+SLEEP {seconds}
+MARK end
+QUIT"
+    );
     s
 }
 
@@ -166,7 +213,7 @@ fn graph_script(state: &Path, seconds: f64, paced: bool, notes: usize) -> String
 fn result(scenario: &str, state: &Path) -> String {
     let text = std::fs::read_to_string(state).unwrap_or_default();
     let v: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
-    if scenario == "graph-frames" {
+    if scenario.starts_with("graph-") {
         return v["cards"].as_array().map_or(0, Vec::len).to_string();
     }
     v["json_level"]["selected"].as_str().unwrap_or("").to_owned()
@@ -204,8 +251,11 @@ fn run(args: &[String]) -> Result<(), String> {
     let (branch, reveal_n) = (env_usize("JSON_BRANCH", 12), env_usize("REVEAL_N", 200_000));
     let fixture_path = out.join("fixture.json");
     let state = out.join("state.json");
+    let notes = env_usize("GRAPH_NOTES", GRAPH_NOTES);
     let commands = if scenario == "graph-frames" {
-        graph_script(&state, seconds, visible, env_usize("GRAPH_NOTES", GRAPH_NOTES))
+        graph_script(&state, seconds, visible, notes)
+    } else if scenario == "graph-idle" {
+        idle_script(&state, seconds, notes)
     } else {
         std::fs::write(&fixture_path, fixture(mode, branch, reveal_n).to_string()).map_err(io)?;
         script(&fixture_path, &state, seconds, mode, branch, reveal_n)
@@ -243,8 +293,10 @@ fn run(args: &[String]) -> Result<(), String> {
         return if status.success() { Ok(()) } else { Err(format!("profile.ps1: {status}")) };
     }
     let log = std::fs::File::create(out.join("run.log")).map_err(io)?;
+    let trace = out.join("trace.json");
     let mut c = Command::new(&exe);
     app_args(&mut c);
+    c.env("MANIFOLD_TRACE", &trace);
     let start = Instant::now();
     let status = c
         .creation_flags(BELOW_NORMAL)
@@ -261,6 +313,9 @@ fn run(args: &[String]) -> Result<(), String> {
         result(scenario, &state)
     );
     println!("{line}");
+    if let Ok(text) = std::fs::read_to_string(&trace) {
+        print!("{}", crate::trace::summarize(&text));
+    }
     let mut log =
         std::fs::OpenOptions::new().create(true).append(true).open(repo.join("target/profile-time.log")).map_err(io)?;
     writeln!(log, "{line}").map_err(io)
@@ -305,6 +360,22 @@ mod tests {
         let r = script(Path::new("f.json"), Path::new("s.json"), 1.0, "reveal-numbers", 3, 10);
         assert!(r.contains("JSONSELECT /items/9\nWAITIDLE 60\nEXPORTSTATE s.json"));
         assert_eq!(script(Path::new("f"), Path::new("s"), 2.0, "zoom", 3, 10).matches("SCROLL").count(), 120);
+    }
+
+    #[test]
+    fn the_idle_script_marks_the_idle_phase_and_does_nothing_in_it() {
+        let s = idle_script(Path::new("s.json"), 30.0, 4);
+        assert_eq!(s.matches("NEWNOTE").count(), 4);
+        assert!(
+            s.ends_with(
+                "MARK idle
+SLEEP 30
+MARK end
+QUIT
+"
+            ),
+            "{s}"
+        );
     }
 
     #[test]
