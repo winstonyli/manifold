@@ -57,7 +57,7 @@ fn system_times() -> Option<(u64, u64, u64)> {
 }
 
 /// Total CPU load over the next `window`, in percent, or `None` if it cannot be read or `stop` is set first.
-fn cpu_over(window: Duration, stop: &AtomicBool) -> Option<f64> {
+pub(crate) fn cpu_over(window: Duration, stop: &AtomicBool) -> Option<f64> {
     let before = system_times()?;
     let end = Instant::now() + window;
     while Instant::now() < end {

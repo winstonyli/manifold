@@ -320,6 +320,10 @@ fn run(args: &[String]) -> Result<(), String> {
     println!("{line}");
     if let Ok(text) = std::fs::read_to_string(&trace) {
         print!("{}", crate::trace::summarize(&text));
+        // `run.ps1` takes this as the run's headline (RUNS.md).
+        if let Some(dir) = std::env::var_os("RUN_DIR") {
+            std::fs::write(Path::new(&dir).join("headline.txt"), crate::trace::headline(&text)).map_err(io)?;
+        }
     }
     let mut log =
         std::fs::OpenOptions::new().create(true).append(true).open(repo.join("target/profile-time.log")).map_err(io)?;

@@ -10,6 +10,8 @@
 #![allow(dead_code, reason = "the runner core's API is used by the link and smoke ports of later tasks, and by tests")]
 
 #[cfg(windows)]
+mod ab;
+#[cfg(windows)]
 mod all;
 #[cfg(windows)]
 mod cef_pin;
@@ -157,6 +159,11 @@ mod windows_main {
             name: "profile",
             usage: Some("SCENARIO [SECONDS] [--samply] [--visible]"),
             run: Run::Args(crate::profile::profile),
+        },
+        Stage {
+            name: "ab",
+            usage: Some("NAME SCENARIO [SECONDS] [--repeats N] [--quiet PCT] LABEL:VAR=value[,VAR=value]..."),
+            run: Run::Args(crate::ab::ab),
         },
         Stage { name: "package", usage: Some("[EXE]"), run: Run::Args(crate::package::package) },
         Stage { name: "install-check", usage: Some("cef|servo EXE"), run: Run::Args(crate::package::install_check) },

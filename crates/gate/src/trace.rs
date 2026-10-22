@@ -73,6 +73,67 @@ fn parse(text: &str) -> (Vec<Frame>, Vec<Mark>) {
     (frames, marks)
 }
 
+/// One phase of a script: what the table prints for it, in milliseconds and per second.
+#[derive(Clone, Debug)]
+pub struct Phase {
+    pub name: String,
+    pub secs: f64,
+    pub fps: f64,
+    pub frame50: f64,
+    pub frame99: f64,
+    pub frame_max: f64,
+    pub wait50: f64,
+    pub input50: f64,
+    pub input99: f64,
+    /// Process CPU in milliseconds per second, if the marks carried it.
+    pub cpu: Option<f64>,
+}
+
+/// The phases of a parsed trace, each with the frames that started in it.
+fn phases<'a>(frames: &'a [Frame], marks: &[Mark]) -> Vec<(Phase, Vec<&'a Frame>)> {
+    let mut out = vec![];
+    for (i, mark) in marks.iter().enumerate() {
+        let Some(next) = marks.get(i + 1) else { break };
+        let phase: Vec<&Frame> = frames.iter().filter(|f| f.start >= mark.at && f.start < next.at).collect();
+        let secs = (next.at - mark.at) / 1000.0;
+        let durs = sorted(phase.iter().map(|f| f.end - f.start));
+        let waits = sorted(phase.iter().filter_map(|f| f.input_wait));
+        let latencies = sorted(phase.iter().filter_map(|f| f.input_latency));
+        let stat = Phase {
+            name: mark.name.clone(),
+            secs,
+            fps: phase.len() as f64 / secs,
+            frame50: percentile(&durs, 0.5),
+            frame99: percentile(&durs, 0.99),
+            frame_max: durs.last().copied().unwrap_or(0.0),
+            wait50: percentile(&waits, 0.5),
+            input50: percentile(&latencies, 0.5),
+            input99: percentile(&latencies, 0.99),
+            cpu: mark.cpu_us.zip(next.cpu_us).map(|(a, b)| (b - a) / 1000.0 / secs),
+        };
+        out.push((stat, phase));
+    }
+    out
+}
+
+/// The phases of a trace file's text.
+pub fn phase_stats(text: &str) -> Vec<Phase> {
+    let (frames, marks) = parse(text);
+    phases(&frames, &marks).into_iter().map(|(stat, _)| stat).collect()
+}
+
+/// One line for a run's record: the median frame time (and rate) and CPU of each phase.
+pub fn headline(text: &str) -> String {
+    let stats = phase_stats(text);
+    let cell = |f: &dyn Fn(&Phase) -> String| stats.iter().map(f).collect::<Vec<_>>().join("/");
+    let frames = stats.iter().map(|p| format!("{} {:.1} ({:.0} fps)", p.name, p.frame50, p.fps)).collect::<Vec<_>>();
+    format!(
+        "frame50 ms: {}; cpu ms/s {}",
+        frames.join(", "),
+        cell(&|p| p.cpu.map_or("-".into(), |c| format!("{c:.0}")))
+    )
+}
+
 /// The per-phase table of a trace, and its slowest frames.
 pub fn summarize(text: &str) -> String {
     let (frames, marks) = parse(text);
@@ -83,29 +144,23 @@ pub fn summarize(text: &str) -> String {
         "phase", "secs", "fps", "frame50", "frame99", "frameMax", "wait50", "input50", "input99", "cpu ms/s"
     );
     let mut worst: Vec<(f64, &str, &Frame)> = vec![];
-    for (i, mark) in marks.iter().enumerate() {
-        let Some(next) = marks.get(i + 1) else { break };
-        let phase: Vec<&Frame> = frames.iter().filter(|f| f.start >= mark.at && f.start < next.at).collect();
-        let secs = (next.at - mark.at) / 1000.0;
-        let durs = sorted(phase.iter().map(|f| f.end - f.start));
-        let waits = sorted(phase.iter().filter_map(|f| f.input_wait));
-        let latencies = sorted(phase.iter().filter_map(|f| f.input_latency));
-        let cpu = mark.cpu_us.zip(next.cpu_us).map(|(a, b)| (b - a) / 1000.0 / secs);
+    for (p, phase) in phases(&frames, &marks) {
         let _ = writeln!(
             out,
             "{:<16} {:>6.1} {:>6.1} {:>8.2} {:>8.2} {:>8.2} {:>8.2} {:>9.2} {:>9.2} {:>8}",
-            mark.name,
-            secs,
-            phase.len() as f64 / secs,
-            percentile(&durs, 0.5),
-            percentile(&durs, 0.99),
-            durs.last().copied().unwrap_or(0.0),
-            percentile(&waits, 0.5),
-            percentile(&latencies, 0.5),
-            percentile(&latencies, 0.99),
-            cpu.map_or("-".to_owned(), |c| format!("{c:.0}")),
+            p.name,
+            p.secs,
+            p.fps,
+            p.frame50,
+            p.frame99,
+            p.frame_max,
+            p.wait50,
+            p.input50,
+            p.input99,
+            p.cpu.map_or("-".to_owned(), |c| format!("{c:.0}")),
         );
-        worst.extend(phase.into_iter().map(|f| (f.end - f.start, mark.name.as_str(), f)));
+        let name = marks.iter().find(|m| m.name == p.name).map_or("", |m| m.name.as_str());
+        worst.extend(phase.into_iter().map(|f| (f.end - f.start, name, f)));
     }
     worst.sort_by(|a, b| b.0.total_cmp(&a.0));
     for (dur, phase, f) in worst.iter().take(5) {
