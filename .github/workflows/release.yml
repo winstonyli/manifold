@@ -72,8 +72,8 @@ jobs:
           cargo build --release --locked -p manifold-view-cef
           if ($LASTEXITCODE -ne 0) { exit 1 }
           New-Item -ItemType Directory -Force dist | Out-Null
-          # Extra host files: ANGLE's DLLs come from mozangle's build output (the newest copy is the one this build made), WebKit's host
-          # comes from the Linux job.
+          # Extra host files: ANGLE's DLLs come from mozangle's build output (the newest copy is the one this build
+          # made); WebKit's host comes from the Linux job.
           $sources = @{ 'manifold-view-webkitgtk' = 'webkit-host/manifold-view-webkitgtk' }
           if (-not (Test-Path $sources['manifold-view-webkitgtk'])) { throw 'no WebKit host from the Linux job' }
           foreach ($dll in 'libEGL.dll', 'libGLESv2.dll') {
