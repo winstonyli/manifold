@@ -72,15 +72,15 @@ jobs:
           cargo build --release --locked -p manifold-view-cef
           if ($LASTEXITCODE -ne 0) { exit 1 }
           New-Item -ItemType Directory -Force dist | Out-Null
-          # ANGLE's DLLs come from mozangle's build output; the newest copy is the one this build made. WebKit's host
+          # Extra host files: ANGLE's DLLs come from mozangle's build output (the newest copy is the one this build made), WebKit's host
           # comes from the Linux job.
-          $angle = @{ 'manifold-view-webkit' = 'webkit-host/manifold-view-webkit' }
-          if (-not (Test-Path $angle['manifold-view-webkit'])) { throw 'no WebKit host from the Linux job' }
+          $sources = @{ 'manifold-view-webkit' = 'webkit-host/manifold-view-webkit' }
+          if (-not (Test-Path $sources['manifold-view-webkit'])) { throw 'no WebKit host from the Linux job' }
           foreach ($dll in 'libEGL.dll', 'libGLESv2.dll') {
-            $angle[$dll] = Get-ChildItem target/release/build -Recurse -Filter $dll | Where-Object FullName -Match 'mozangle' | Sort-Object LastWriteTime -Descending | Select-Object -First 1 -ExpandProperty FullName
-            if (-not $angle[$dll]) { throw "no $dll under target/release/build" }
+            $sources[$dll] = Get-ChildItem target/release/build -Recurse -Filter $dll | Where-Object FullName -Match 'mozangle' | Sort-Object LastWriteTime -Descending | Select-Object -First 1 -ExpandProperty FullName
+            if (-not $sources[$dll]) { throw "no $dll under target/release/build" }
           }
-          function Source($name) { if ($angle.ContainsKey($name)) { $angle[$name] } else { "target/release/$name" } }
+          function Source($name) { if ($sources.ContainsKey($name)) { $sources[$name] } else { "target/release/$name" } }
           $hosts = [ordered]@{
             cef = [ordered]@{ 'windows-x64' = @('manifold-view-cef.exe') }
             servo = [ordered]@{ 'windows-x64' = @('manifold-view-servo.exe', 'libEGL.dll', 'libGLESv2.dll') }
