@@ -111,7 +111,15 @@ impl App {
                         }
                     });
                 });
-                let shapes = card_glow_shapes(response.response.rect, 3.0, accent(ui.visuals()), 1.0, 1.0);
+                let shapes = card_glow_shapes(
+                    response.response.rect,
+                    8.0,
+                    accent(ui.visuals()),
+                    1.0,
+                    1.0,
+                    palette(ui.visuals()).shadow,
+                    0.0,
+                );
                 for (slot, shape) in glow_slots.into_iter().zip(shapes) {
                     ui.painter().set(slot, shape);
                 }

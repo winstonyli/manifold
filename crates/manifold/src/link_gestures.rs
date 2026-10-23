@@ -185,7 +185,7 @@ pub(crate) enum RetargetGlyph {
 }
 
 /// `RetargetLook` for `outcome`: the usual accent for a retarget or a cancel, a thin red band ending in an "x" for a
-/// deletion, a cool blue for a refusal (`theme::refused_color`), and a weak-text ring where nothing would change.
+/// deletion, a yellow for a refusal (`theme::refused_color`), and a weak-text ring where nothing would change.
 pub(crate) fn retarget_look(outcome: crate::links::RetargetOutcome, visuals: &egui::Visuals) -> RetargetLook {
     use crate::links::RetargetOutcome::*;
     use crate::theme::{accent, danger, palette, refused_color};

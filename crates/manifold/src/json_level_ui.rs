@@ -268,7 +268,7 @@ fn paint_json_frame(
     border: (f32, egui::Color32),
     inv_zoom: f32,
 ) {
-    let rounding = 2.0 * inv_zoom;
+    let rounding = CARD_RADIUS * inv_zoom;
     painter.rect_filled(rect, rounding, fill);
     if let Some(tint) = tint {
         let header = egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), json_view::HEADER_HEIGHT));

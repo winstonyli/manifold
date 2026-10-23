@@ -135,6 +135,7 @@ impl App {
         // retry on a later one instead of being silently dropped.
         let screenshot_path = self.debug.pending_screenshot.clone();
         let mut lost = None;
+        let canvas = crate::theme::palette(&self.egui_ctx.global_style().visuals).canvas;
         if let Some(gpu) = &mut self.gpu {
             let outcome = match egui_output {
                 Some(output) => gpu.render(
@@ -142,8 +143,9 @@ impl App {
                     content_on_top,
                     Some((&self.egui_ctx, output)),
                     screenshot_path.as_deref(),
+                    canvas,
                 ),
-                None => gpu.render(&content_panes_px, content_on_top, None, screenshot_path.as_deref()),
+                None => gpu.render(&content_panes_px, content_on_top, None, screenshot_path.as_deref(), canvas),
             };
             lost = gpu.take_device_lost();
             if outcome.surface_ok {

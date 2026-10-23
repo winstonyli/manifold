@@ -859,7 +859,7 @@ impl GpuState {
         panes: &[(PanePx, Option<&TabTexture>)],
         target: (u32, u32),
         pipeline: &wgpu::RenderPipeline,
-        clear: bool,
+        clear: Option<wgpu::Color>,
     ) {
         if panes.is_empty() {
             Self::record_content_pass(
@@ -874,7 +874,7 @@ impl GpuState {
             return;
         }
         for (i, (pane, showing)) in panes.iter().enumerate() {
-            Self::record_content_pass(encoder, view, *pane, target, *showing, pipeline, clear && i == 0);
+            Self::record_content_pass(encoder, view, *pane, target, *showing, pipeline, clear.filter(|_| i == 0));
         }
     }
 
@@ -898,7 +898,7 @@ impl GpuState {
         target: (u32, u32),
         showing: Option<&TabTexture>,
         pipeline: &wgpu::RenderPipeline,
-        clear: bool,
+        clear: Option<wgpu::Color>,
     ) {
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("tab render pass"),
@@ -907,7 +907,7 @@ impl GpuState {
                 depth_slice: None,
                 resolve_target: None,
                 ops: wgpu::Operations {
-                    load: if clear { wgpu::LoadOp::Clear(wgpu::Color::BLACK) } else { wgpu::LoadOp::Load },
+                    load: clear.map_or(wgpu::LoadOp::Load, wgpu::LoadOp::Clear),
                     store: wgpu::StoreOp::Store,
                 },
             })],
@@ -951,7 +951,7 @@ impl GpuState {
         renderer: &mut egui_wgpu::Renderer,
         clipped_primitives: &[egui::ClippedPrimitive],
         screen_descriptor: &egui_wgpu::ScreenDescriptor,
-        clear: bool,
+        clear: Option<wgpu::Color>,
     ) {
         let pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("egui render pass"),
@@ -960,7 +960,7 @@ impl GpuState {
                 depth_slice: None,
                 resolve_target: None,
                 ops: wgpu::Operations {
-                    load: if clear { wgpu::LoadOp::Clear(wgpu::Color::BLACK) } else { wgpu::LoadOp::Load },
+                    load: clear.map_or(wgpu::LoadOp::Load, wgpu::LoadOp::Clear),
                     store: wgpu::StoreOp::Store,
                 },
             })],
@@ -989,17 +989,18 @@ impl GpuState {
         renderer: &mut egui_wgpu::Renderer,
         egui_draw: Option<&(Vec<egui::ClippedPrimitive>, egui_wgpu::ScreenDescriptor)>,
         content_on_top: bool,
+        canvas: wgpu::Color,
     ) {
         match (egui_draw, content_on_top) {
             (Some((primitives, screen)), true) => {
-                Self::record_egui_pass(encoder, view, renderer, primitives, screen, true);
-                Self::record_content_layers(encoder, view, panes, target, pipeline, false);
+                Self::record_egui_pass(encoder, view, renderer, primitives, screen, Some(canvas));
+                Self::record_content_layers(encoder, view, panes, target, pipeline, None);
             }
             (Some((primitives, screen)), false) => {
-                Self::record_content_layers(encoder, view, panes, target, pipeline, true);
-                Self::record_egui_pass(encoder, view, renderer, primitives, screen, false);
+                Self::record_content_layers(encoder, view, panes, target, pipeline, Some(canvas));
+                Self::record_egui_pass(encoder, view, renderer, primitives, screen, None);
             }
-            (None, _) => Self::record_content_layers(encoder, view, panes, target, pipeline, true),
+            (None, _) => Self::record_content_layers(encoder, view, panes, target, pipeline, Some(canvas)),
         }
     }
 
@@ -1040,7 +1041,13 @@ impl GpuState {
         content_on_top: bool,
         egui_output: Option<(&egui::Context, egui::FullOutput)>,
         screenshot_path: Option<&str>,
+        canvas: egui::Color32,
     ) -> RenderOutcome {
+        // The surface is sRGB, so a clear value is linear.
+        let canvas = {
+            let c = egui::Rgba::from(canvas);
+            wgpu::Color { r: c.r() as f64, g: c.g() as f64, b: c.b() as f64, a: 1.0 }
+        };
         // Sync texture-atlas deltas (font glyphs, etc.) to the GPU-side
         // renderer, and clear them, *before* checking whether this frame's
         // surface can even be acquired. `TexturesDelta` panics on `Drop` if
@@ -1198,6 +1205,7 @@ impl GpuState {
             &mut self.egui_renderer,
             egui_draw.as_ref(),
             content_on_top,
+            canvas,
         );
 
         let pending_screenshot = screenshot_path.map(|path| {
@@ -1221,6 +1229,7 @@ impl GpuState {
                 &mut self.egui_renderer,
                 egui_draw.as_ref(),
                 content_on_top,
+                canvas,
             );
 
             let unpadded_bytes_per_row = width * 4;

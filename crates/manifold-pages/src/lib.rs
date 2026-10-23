@@ -22,15 +22,15 @@ pub mod palette {
     }
 
     pub const DARK: Colors = Colors {
-        bg: [23, 20, 15],
-        toolbar_fill: [29, 26, 20],
-        surface_raised: [41, 36, 27],
-        surface_hover: [58, 50, 37],
-        outline: [140, 127, 100],
-        text_primary: [233, 226, 211],
-        text_weak: [178, 164, 130],
-        accent: [215, 162, 74],
-        danger: [224, 112, 84],
+        bg: [41, 39, 35],
+        toolbar_fill: [47, 45, 40],
+        surface_raised: [58, 55, 49],
+        surface_hover: [70, 67, 60],
+        outline: [152, 147, 136],
+        text_primary: [236, 233, 226],
+        text_weak: [186, 181, 170],
+        accent: [143, 176, 255],
+        danger: [240, 132, 112],
     };
 
     /// One table today; `LIGHT` arrives with the light theme and `colors` then picks by `dark`.
@@ -125,7 +125,7 @@ mod tests {
     fn pages_take_their_colors_from_the_palette() {
         for name in ["welcome", "tips", "start", "nosuch"] {
             let html = serve(&format!("manifold://{name}")).1;
-            assert!(html.contains("--bg:#17140F;") && html.contains("--accent:#D7A24A;"), "{name}");
+            assert!(html.contains("--bg:#292723;") && html.contains("--accent:#8FB0FF;"), "{name}");
             assert!(!html.contains("/*PALETTE*/") && !html.contains("/*BASE*/"), "{name}");
         }
         for html in [WELCOME_HTML, TIPS_HTML, START_HTML] {
@@ -135,9 +135,9 @@ mod tests {
     }
 
     #[test]
-    fn dark_table_keeps_todays_values() {
-        assert_eq!(palette::DARK.bg, [23, 20, 15]);
-        assert_eq!(palette::DARK.accent, [215, 162, 74]);
+    fn dark_table_has_the_soft_values() {
+        assert_eq!(palette::DARK.bg, [41, 39, 35]);
+        assert_eq!(palette::DARK.accent, [143, 176, 255]);
         assert_eq!(palette::colors(true), &palette::DARK);
     }
 

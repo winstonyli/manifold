@@ -353,8 +353,8 @@ mod tests {
     #[test]
     fn export_state_gives_the_theme_colors() {
         let state = App::default().export_state();
-        assert_eq!(state["theme"]["danger"], serde_json::json!([224, 112, 84]));
-        assert_eq!(state["theme"]["accent"], serde_json::json!([215, 162, 74]));
+        assert_eq!(state["theme"]["danger"], serde_json::json!(manifold_pages::palette::DARK.danger));
+        assert_eq!(state["theme"]["accent"], serde_json::json!(manifold_pages::palette::DARK.accent));
     }
 
     #[test]

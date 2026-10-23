@@ -37,7 +37,7 @@ impl App {
         };
         let is_editing = self.nodes.get(&id).and_then(|n| n.as_note()).is_some_and(|n| n.editing);
 
-        ui.painter().rect_filled(paper, 4.0 * inv_zoom, NOTE_CARD_COLOR);
+        ui.painter().rect_filled(paper, CARD_RADIUS * inv_zoom, NOTE_CARD_COLOR);
         if self.graph_detail.content() {
             let words = self.note_text(id).split_whitespace().count();
             let header = CardHeader {

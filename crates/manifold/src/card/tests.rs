@@ -821,3 +821,17 @@ fn a_repeated_cut_is_one_cache_entry() {
         assert_eq!(cache.len(), 2, "start and end cuts are cached apart");
     });
 }
+
+#[test]
+fn card_glow_shapes_keeps_two_shapes_and_offsets_downward() {
+    let rect = egui::Rect::from_min_size(egui::pos2(100.0, 100.0), egui::vec2(200.0, 120.0));
+    let shapes = card_glow_shapes(rect, CARD_RADIUS, egui::Color32::BLACK, 1.0, 1.0, 70, 3.0);
+    assert_eq!(shapes.len(), 2);
+    for shape in &shapes {
+        assert!(shape.visual_bounding_rect().center().y > rect.center().y, "the shadow sits below the card");
+    }
+    // At zoom 0.5 the same offset is twice as far in graph units, so it stays the same on screen.
+    let far = card_glow_shapes(rect, CARD_RADIUS, egui::Color32::BLACK, 2.0, 1.0, 70, 3.0);
+    let (near_y, far_y) = (shapes[0].visual_bounding_rect().center().y, far[0].visual_bounding_rect().center().y);
+    assert!((far_y - rect.center().y) > (near_y - rect.center().y));
+}

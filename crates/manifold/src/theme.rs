@@ -42,7 +42,7 @@ pub(crate) fn popup_frame(ui: &egui::Ui) -> egui::Frame {
     egui::Frame::default()
         .fill(ui.visuals().window_fill)
         .stroke(egui::Stroke::new(1.0, ui.visuals().weak_text_color()))
-        .corner_radius(8u8)
+        .corner_radius(RADIUS)
         .inner_margin(egui::Margin::same(4))
 }
 
@@ -320,9 +320,11 @@ const fn color([r, g, b]: [u8; 3]) -> egui::Color32 {
 }
 
 /// Corner radii: the base (widgets, windows, menus), a menu or dropdown row, and a toolbar chip.
-pub(crate) const RADIUS: u8 = 2;
-pub(crate) const RADIUS_ITEM: u8 = 5;
-pub(crate) const RADIUS_CHIP: u8 = 6;
+pub(crate) const RADIUS: u8 = 8;
+pub(crate) const RADIUS_ITEM: u8 = 6;
+pub(crate) const RADIUS_CHIP: u8 = 10;
+/// A graph card's corner radius, in graph units (multiply by `inv_zoom` for screen space).
+pub(crate) const CARD_RADIUS: f32 = 12.0;
 
 /// Text on a dark scrim over a card (the title strip, an image's caption, the jar chip): near white. The scrims are
 /// dark in both themes, so this does not change with the theme.
@@ -330,14 +332,14 @@ pub(crate) const SCRIM_TEXT: egui::Color32 = egui::Color32::from_gray(240);
 /// The weaker line of `SCRIM_TEXT` (a tab card's source).
 pub(crate) const SCRIM_TEXT_WEAK: egui::Color32 = egui::Color32::from_gray(190);
 
-/// The sky-blue entry of `TAG_COLOR_PALETTE`: the one cool hue in this otherwise warm theme.
-pub(crate) const TAG_SKY_BLUE: egui::Color32 = TAG_COLOR_PALETTE[4];
+/// The yellow entry of `TAG_COLOR_PALETTE`: the one hue that is far from both the blue accent and the red danger.
+pub(crate) const TAG_YELLOW: egui::Color32 = TAG_COLOR_PALETTE[2];
 
-/// A drag that a release would refuse (keeping what it holds): `TAG_SKY_BLUE` pulled a little toward the panel
+/// A drag that a release would refuse (keeping what it holds): `TAG_YELLOW` pulled a little toward the panel
 /// color, a hue far from the accent (a valid drop) and the danger red (a deletion), so the outcomes differ by hue, not
 /// brightness.
 pub(crate) fn refused_color(visuals: &egui::Visuals) -> egui::Color32 {
-    lerp_color32(TAG_SKY_BLUE, visuals.panel_fill, 0.2)
+    lerp_color32(TAG_YELLOW, visuals.panel_fill, 0.2)
 }
 
 /// A sticky note's card fill -- a warm, light color deliberately unlike
@@ -357,6 +359,10 @@ pub(crate) struct Palette {
     /// A darker rust than `danger`, for a solid fill that carries `text` (the graph close button's hover).
     pub danger_fill: egui::Color32,
     pub success: egui::Color32,
+    /// The window and canvas ground: the clear color behind everything the app paints.
+    pub canvas: egui::Color32,
+    /// Peak alpha of a card's soft shadow.
+    pub shadow: u8,
 }
 
 /// Ink on a tag color: it sits on the tag, not on the theme, so it does not change with the theme.
@@ -366,8 +372,10 @@ pub(crate) const INK_LIGHT: egui::Color32 = egui::Color32::from_rgb(233, 226, 21
 static DARK_PALETTE: Palette = Palette {
     text: color(manifold_pages::palette::DARK.text_primary),
     text_weak: color(manifold_pages::palette::DARK.text_weak),
-    danger_fill: egui::Color32::from_rgb(142, 58, 40),
+    danger_fill: egui::Color32::from_rgb(150, 52, 38),
     success: egui::Color32::from_rgb(150, 190, 90),
+    canvas: color(manifold_pages::palette::DARK.bg),
+    shadow: 70,
 };
 
 pub(crate) fn palette(_visuals: &egui::Visuals) -> &'static Palette {

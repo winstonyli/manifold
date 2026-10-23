@@ -147,3 +147,7 @@ design assumes the font set is fixed before the build, since the look values are
 - **Font** (decided 2026-10-22): keep Familjen Grotesk as the one family; Literata and Newsreader go with the serif
   decision, nothing new is bundled.
 - **Theme setting** (decided 2026-10-22): `System | Light | Dark`, default System.
+- **Dark values as built** (2026-10-22): the mockup table passed the contrast test except three roles, nudged to
+  `text_weak [186,181,170]`, `danger [240,132,112]`, `outline [152,147,136]`. The card fill is `faint_bg_color`
+  (the raised surface), not `extreme_bg_color`, so a card is lighter than the canvas. The "refused" drag color is the
+  yellow tag color, because sky blue collided with the blue accent.

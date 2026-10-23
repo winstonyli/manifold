@@ -659,7 +659,7 @@ fn the_live_preview_follows_the_pointer_and_is_exported() {
 }
 
 /// Each outcome has its own look: accent for a retarget or a cancel (a weak-text ring for the cancel), a thin red
-/// band with an "x" for a deletion, blue for a refusal; the outcomes differ by hue, not brightness.
+/// band with an "x" for a deletion, yellow for a refusal; the outcomes differ by hue, not brightness.
 #[test]
 fn each_retarget_outcome_has_its_own_look() {
     use crate::links::RetargetOutcome::*;

@@ -289,7 +289,7 @@ impl App {
                     let ring = accent(ui.visuals()).gamma_multiply(peek_fade);
                     deferred_overlays.push(Box::new(move |painter, project| {
                         let (min, max) = (project(rect.min), project(rect.max));
-                        let rounding = 6.0 * (max.x - min.x) / rect.width();
+                        let rounding = CARD_RADIUS * (max.x - min.x) / rect.width();
                         // Slid back inside the graph panel when the node is near its edge.
                         let view = painter.clip_rect();
                         let shift = (view.max - max).min(egui::Vec2::ZERO) + (view.min - min).max(egui::Vec2::ZERO);

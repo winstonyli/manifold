@@ -253,12 +253,11 @@ pub(crate) struct CardStyle {
     /// The border of the open tab (the accent) and of an overloaded group (the danger red).
     pub(crate) focus_border: egui::Color32,
     pub(crate) overload_border: egui::Color32,
-    pub(crate) dim_rounding: f32,
 }
 
 pub(crate) fn card_style(kind: CardKind, visuals: &egui::Visuals) -> CardStyle {
     let themed = CardStyle {
-        fill: visuals.extreme_bg_color,
+        fill: visuals.faint_bg_color,
         border_hover: visuals.text_color(),
         border_idle: visuals.weak_text_color(),
         close_fill: visuals.extreme_bg_color,
@@ -266,14 +265,12 @@ pub(crate) fn card_style(kind: CardKind, visuals: &egui::Visuals) -> CardStyle {
         close_icon: visuals.text_color(),
         focus_border: accent(visuals),
         overload_border: danger(visuals),
-        dim_rounding: 4.0,
     };
     // Presentation matches the type; behaviour reads the container table (`is_container`). See the plan 2b-6
     // Outcome, "Presentation arms".
     match kind.ty {
-        TYPE_NOTE | TYPE_DOWNLOAD | TYPE_TAB => CardStyle { dim_rounding: 6.0, ..themed },
         // The accent at rest, as group cards have always been.
-        TYPE_GROUP => CardStyle { border_idle: accent(visuals), dim_rounding: 6.0, ..themed },
+        TYPE_GROUP => CardStyle { border_idle: accent(visuals), ..themed },
         // Every other type, an unknown one and a virtual kind (`TYPE_VIRTUAL_PREFIX`) included, takes the themed default.
         _ => themed,
     }
@@ -1064,14 +1061,23 @@ impl App {
         let hover_t = ui.ctx().animate_bool_responsive(egui::Id::new(("graph_card_hover_t", card)), is_hovered);
         let style = card_style(view.kind, ui.visuals());
         let (border_width, border_color) = card_border(&view, &style, hover_t);
-        let mut background_shapes: Vec<egui::Shape> =
-            card_glow_shapes(rect, 2.0, border_color, inv_zoom, 1.0 + hover_t * 0.8)
-                .into_iter()
-                .take(self.graph_detail.glow_layers(hover_t > 0.0))
-                .collect();
+        // A soft black shadow at rest that takes on the border color as the card is hovered or open.
+        let shadow_color = lerp_color32(egui::Color32::BLACK, border_color, if view.focused { 1.0 } else { hover_t });
+        let mut background_shapes: Vec<egui::Shape> = card_glow_shapes(
+            rect,
+            CARD_RADIUS,
+            shadow_color,
+            inv_zoom,
+            1.0 + hover_t * 0.8,
+            palette(ui.visuals()).shadow,
+            3.0,
+        )
+        .into_iter()
+        .take(self.graph_detail.glow_layers(hover_t > 0.0))
+        .collect();
         background_shapes.push(egui::Shape::rect_filled(
             rect,
-            2.0 * inv_zoom,
+            CARD_RADIUS * inv_zoom,
             style.fill.gamma_multiply(1.0 + hover_t * 0.35),
         ));
         // Rectangle-select's highlight: a translucent ACCENT wash, distinct
@@ -1081,7 +1087,7 @@ impl App {
         if view.selected {
             background_shapes.push(egui::Shape::rect_filled(
                 rect,
-                2.0 * inv_zoom,
+                CARD_RADIUS * inv_zoom,
                 with_alpha(accent(ui.visuals()), 45),
             ));
         }
@@ -1090,7 +1096,7 @@ impl App {
         // content inset from the edge.
         ui.painter().rect_stroke(
             rect,
-            2.0 * inv_zoom,
+            CARD_RADIUS * inv_zoom,
             egui::Stroke::new(border_width * inv_zoom, border_color),
             egui::StrokeKind::Inside,
         );
@@ -1268,9 +1274,9 @@ impl App {
         if let Some((id, node)) = node.and_then(|id| self.nodes.get(&id).map(|n| (id, n))) {
             let mut needles = card_filter_text(&node.runtime, self.own_text(id));
             needles.push(self.doc.mirror.name(id)); // name rule: the filter matches the stored text (a rename; a group is matched twice)
-            dim_if_filtered_out(deferred_overlays, &self.graph_filter, &needles, rect, style.dim_rounding);
+            dim_if_filtered_out(deferred_overlays, &self.graph_filter, &needles, rect, CARD_RADIUS / inv_zoom);
         } else if self.virtual_card_dimmed(entry) {
-            push_dim_scrim(deferred_overlays, rect, style.dim_rounding);
+            push_dim_scrim(deferred_overlays, rect, CARD_RADIUS / inv_zoom);
         }
         Some(CardOutput { response, control })
     }
@@ -1406,11 +1412,13 @@ pub(crate) fn card_glow_shapes(
     color: egui::Color32,
     inv_zoom: f32,
     intensity: f32,
+    shadow: u8,
+    offset_y: f32,
 ) -> [egui::Shape; 2] {
-    [(85u8, 3.5_f32), (38u8, 8.5)].map(|(alpha, grow)| {
-        let alpha = ((alpha as f32) * intensity).min(255.0) as u8;
+    [(0.6_f32, 4.0_f32), (0.25, 12.0)].map(|(share, grow)| {
+        let alpha = ((shadow as f32) * share * intensity).min(255.0) as u8;
         egui::Shape::rect_filled(
-            rect.expand(grow * inv_zoom),
+            rect.translate(egui::vec2(0.0, offset_y * inv_zoom)).expand(grow * inv_zoom),
             (base_corner_radius + grow) * inv_zoom,
             with_alpha(color, alpha),
         )
