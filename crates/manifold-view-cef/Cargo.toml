@@ -22,5 +22,5 @@ windows = { workspace = true, features = ["Win32_Foundation", "Win32_Security", 
 # The exe keeps the name released builds, release.yml and the scripts know; it changes with a release that
 # publishes assets under the new names (spec 2026-10-12, Step 0).
 [[bin]]
-name = "manifold-engine-cef"
+name = "manifold-view-cef"
 path = "src/main.rs"

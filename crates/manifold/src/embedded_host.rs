@@ -31,7 +31,7 @@ impl Embedded {
     /// Unchanged for WebView2: the exe name is how released builds and scripts know it.
     fn file(self) -> &'static str {
         match self {
-            Self::Webview2 => "manifold-engine-webview2.exe",
+            Self::Webview2 => "manifold-view-webview2.exe",
             Self::Pdfium => "manifold-view-pdfium.exe",
         }
     }

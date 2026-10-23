@@ -1,10 +1,10 @@
 //! `gate sync-runtime-deps` (was scripts/sync-runtime-deps.sh): recopies Servo's ANGLE DLLs and CEF's runtime files
-//! from their build.rs output directories into target/debug/, where manifold-engine-servo.exe and
-//! manifold-engine-cef.exe (through its isolated `cef-runtime/` subdirectory) load them from. Cargo does not do this,
+//! from their build.rs output directories into target/debug/, where manifold-view-servo.exe and
+//! manifold-view-cef.exe (through its isolated `cef-runtime/` subdirectory) load them from. Cargo does not do this,
 //! and the fingerprint hash directory they live under can change on a rebuild that touched neither Cargo.toml nor
 //! Cargo.lock, silently staling an earlier copy (README "Manual runtime-file placement"). Safe to run any time (a
-//! no-op when everything is current); run it after every `cargo build` that touches manifold-engine-servo or
-//! manifold-engine-cef. Not a build.rs: a build script sees only its own crate's OUT_DIR.
+//! no-op when everything is current); run it after every `cargo build` that touches manifold-view-servo or
+//! manifold-view-cef. Not a build.rs: a build script sees only its own crate's OUT_DIR.
 //!
 //! The source is the most recently *written* match, not the newest fingerprint directory, whose mtime cargo touches
 //! on every build. Newer cargo nightlies put build-script output under `build/<crate>/<hash>/`, older ones under
@@ -102,12 +102,12 @@ fn run() -> io::Result<()> {
     } else {
         eprintln!("sync-runtime-deps: no cef-dll-sys output directory found, skipping CEF runtime");
     }
-    // The host exe is rebuilt whenever manifold-engine-cef changes, unlike the DLLs: always resync it.
-    let exe = target_debug.join("manifold-engine-cef.exe");
+    // The host exe is rebuilt whenever manifold-view-cef changes, unlike the DLLs: always resync it.
+    let exe = target_debug.join("manifold-view-cef.exe");
     changed |= sync_file(
         exe.is_file().then_some(exe.as_path()),
-        &runtime.join("manifold-engine-cef.exe"),
-        "cef-runtime/manifold-engine-cef.exe",
+        &runtime.join("manifold-view-cef.exe"),
+        "cef-runtime/manifold-view-cef.exe",
     )?;
     if !changed {
         say("everything already current, nothing to do");

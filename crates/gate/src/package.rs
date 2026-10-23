@@ -130,8 +130,8 @@ pub(crate) fn install_check(args: &[String]) -> ExitCode {
 /// downloaded. The Servo list is the manifest's three files and is unconfirmed until a published release carries them.
 fn installed_files(engine: &str) -> Option<Vec<&'static str>> {
     match engine {
-        "cef" => Some(vec!["manifold-engine-cef.exe", "cef-runtime/libcef.dll"]),
-        "servo" => Some(vec!["manifold-engine-servo.exe", "libEGL.dll", "libGLESv2.dll"]),
+        "cef" => Some(vec!["manifold-view-cef.exe", "cef-runtime/libcef.dll"]),
+        "servo" => Some(vec!["manifold-view-servo.exe", "libEGL.dll", "libGLESv2.dll"]),
         _ => None,
     }
 }
@@ -226,7 +226,7 @@ fn run(repo: &Path, exe_src: &Path, work: &Path) -> io::Result<()> {
     let hosts = profile.join("manifold").join("data").join("engine-hosts");
     check(
         "the WebView2 host was extracted under the redirected APPDATA",
-        hosts.join("webview2").join("manifold-engine-webview2.exe").is_file(),
+        hosts.join("webview2").join("manifold-view-webview2.exe").is_file(),
     );
     let rendered = log.lines().any(|l| l.starts_with("pdf: rendered ") && l.contains("fixture.pdf: 1000x500, 1 page"));
     if !check("the PDF view rendered the fixture (1000x500, 1 page)", rendered) {

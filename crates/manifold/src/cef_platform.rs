@@ -117,7 +117,7 @@ mod tests {
 
     #[test]
     fn host_exe_adds_the_platforms_suffix() {
-        assert_eq!(PLATFORM.host_exe("manifold-engine-cef"), format!("manifold-engine-cef{}", PLATFORM.exe_suffix));
+        assert_eq!(PLATFORM.host_exe("manifold-view-cef"), format!("manifold-view-cef{}", PLATFORM.exe_suffix));
         assert_eq!(PLATFORM.host_exe("x"), if cfg!(windows) { "x.exe" } else { "x" });
     }
 

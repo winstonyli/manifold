@@ -70,7 +70,7 @@ fn verify(tag: &str, dist: &Path) -> Result<(), String> {
     check(
         "the embedded WebView2 host copy matches the recorded hash",
         matches_record(
-            &dist.join("embedded/manifold-engine-webview2.exe"),
+            &dist.join("embedded/manifold-view-webview2.exe"),
             &dist.join(format!("{stem}.embedded-host.sha256")),
         ),
     );

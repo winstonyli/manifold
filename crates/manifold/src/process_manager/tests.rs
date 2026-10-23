@@ -288,7 +288,7 @@ fn the_log_sweep_drops_old_tab_logs_and_all_but_the_newest_crash_reports() {
 }
 
 /// The host copy tests only need a file name; the platform's suffix is not what they check.
-const HOST: &str = "manifold-engine-cef";
+const HOST: &str = "manifold-view-cef";
 
 /// A shell command as a child whose stdout and stderr go to `log`, the
 /// way `spawn_tab` starts a host.
@@ -424,7 +424,7 @@ static SERVO_FILES: [crate::host_pin::Component; 3] = [
     crate::host_pin::Component { file: "libEGL.dll", url: "http://x/egl", size: 1_000_000, sha256: HASH },
     crate::host_pin::Component { file: "libGLESv2.dll", url: "http://x/gles", size: 2_000_000, sha256: HASH },
     crate::host_pin::Component {
-        file: "manifold-engine-servo.exe",
+        file: "manifold-view-servo.exe",
         url: "http://x/servo",
         size: 90_000_000,
         sha256: HASH,
@@ -434,7 +434,7 @@ const SERVO_SIZE: u64 = 93_000_000;
 
 /// CEF's pinned host (0.7 MB) and the platform's runtime archive.
 static CEF_FILES: [crate::host_pin::Component; 1] =
-    [crate::host_pin::Component { file: "manifold-engine-cef.exe", url: "http://x/cef", size: 700_000, sha256: HASH }];
+    [crate::host_pin::Component { file: "manifold-view-cef.exe", url: "http://x/cef", size: 700_000, sha256: HASH }];
 
 fn servo_plan() -> Result<Plan, String> {
     Ok(Plan { host: &SERVO_FILES, runtime: None })
@@ -465,7 +465,7 @@ fn view_kinds_that_are_not_downloaded_are_always_installed_where_the_os_can_run_
 
 /// WebKit's host is the Linux ELF, pinned for linux-x64 whichever OS runs manifold (WSL runs it on Windows).
 static WEBKIT_FILES: [crate::host_pin::Component; 1] = [crate::host_pin::Component {
-    file: "manifold-engine-webkit",
+    file: "manifold-view-webkit",
     url: "http://x/webkit",
     size: 7_000_000,
     sha256: HASH,
@@ -506,7 +506,7 @@ fn the_webkit_host_is_found_beside_the_exe_then_in_a_dev_tree_then_in_engine_hos
     let exe_dir = root.join("repo").join("target").join("debug");
     std::fs::create_dir_all(&exe_dir).unwrap();
     let hosts = root.join("engine-hosts");
-    let downloaded = hosts.join("manifold-engine-webkit");
+    let downloaded = hosts.join("manifold-view-webkit");
     // Nothing built: the downloaded path, even though no file is there yet (the install puts it there).
     assert_eq!(pick_webkit_host(&exe_dir, Some(&hosts)), Some(downloaded.clone()));
     assert_eq!(pick_webkit_host(&exe_dir, None), None);
@@ -515,11 +515,11 @@ fn the_webkit_host_is_found_beside_the_exe_then_in_a_dev_tree_then_in_engine_hos
     let dev = root.join("repo").join("target-linux").join("debug");
     std::fs::create_dir_all(&dev).unwrap();
     assert!(built_webkit_host(&exe_dir).is_none(), "the folder alone is not a host");
-    std::fs::write(dev.join("manifold-engine-webkit"), b"elf").unwrap();
-    assert_eq!(built_webkit_host(&exe_dir), Some(dev.join("manifold-engine-webkit")));
-    assert_eq!(pick_webkit_host(&exe_dir, Some(&hosts)), Some(dev.join("manifold-engine-webkit")));
+    std::fs::write(dev.join("manifold-view-webkit"), b"elf").unwrap();
+    assert_eq!(built_webkit_host(&exe_dir), Some(dev.join("manifold-view-webkit")));
+    assert_eq!(pick_webkit_host(&exe_dir, Some(&hosts)), Some(dev.join("manifold-view-webkit")));
     // A host beside the exe wins over both.
-    let flat = exe_dir.join("manifold-engine-webkit");
+    let flat = exe_dir.join("manifold-view-webkit");
     std::fs::write(&flat, b"elf").unwrap();
     assert_eq!(pick_webkit_host(&exe_dir, Some(&hosts)), Some(flat));
 }
@@ -902,18 +902,18 @@ fn the_webview2_sweep_touches_only_manifolds_profile_dirs() {
 
 #[test]
 fn a_webview2_hosts_profile_dir_is_in_its_default_user_data_folder() {
-    let dir = super::webview2_profile_dir(Path::new("bin/manifold-engine-webview2.exe"), 3);
-    assert_eq!(dir, Path::new("bin/manifold-engine-webview2.exe.WebView2/EBWebView/WV2Profile_manifold_3"));
+    let dir = super::webview2_profile_dir(Path::new("bin/manifold-view-webview2.exe"), 3);
+    assert_eq!(dir, Path::new("bin/manifold-view-webview2.exe.WebView2/EBWebView/WV2Profile_manifold_3"));
 }
 
 #[test]
 fn an_extracted_webview2_host_keeps_its_user_data_folder_in_its_own_engine_hosts_folder() {
     let hosts = Path::new("data/engine-hosts");
     let host = crate::embedded_host::Embedded::Webview2.host_path(hosts);
-    assert_eq!(host, hosts.join("webview2").join("manifold-engine-webview2.exe"));
+    assert_eq!(host, hosts.join("webview2").join("manifold-view-webview2.exe"));
     assert_eq!(
         super::webview2_profile_dir(&host, 0),
-        hosts.join("webview2/manifold-engine-webview2.exe.WebView2/EBWebView/WV2Profile_manifold_0")
+        hosts.join("webview2/manifold-view-webview2.exe.WebView2/EBWebView/WV2Profile_manifold_0")
     );
 }
 

@@ -60,8 +60,8 @@ jobs:
           }
           function Source($name) { if ($angle.ContainsKey($name)) { $angle[$name] } else { "target/release/$name" } }
           $hosts = [ordered]@{
-            cef = [ordered]@{ 'windows-x64' = @('manifold-engine-cef.exe') }
-            servo = [ordered]@{ 'windows-x64' = @('manifold-engine-servo.exe', 'libEGL.dll', 'libGLESv2.dll') }
+            cef = [ordered]@{ 'windows-x64' = @('manifold-view-cef.exe') }
+            servo = [ordered]@{ 'windows-x64' = @('manifold-view-servo.exe', 'libEGL.dll', 'libGLESv2.dll') }
           }
           $manifest = [ordered]@{}
           foreach ($kind in $hosts.Keys) {
@@ -83,9 +83,9 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit 1 }
           $env:MANIFOLD_HOST_PINS = (Resolve-Path "dist/manifold-$env:TAG-windows-x64.host-pins.json").Path
           New-Item -ItemType Directory -Force dist/embedded | Out-Null
-          Copy-Item target/release/manifold-engine-webview2.exe dist/embedded/
+          Copy-Item target/release/manifold-view-webview2.exe dist/embedded/
           Copy-Item target/release/manifold-view-pdfium.exe dist/embedded/
-          $env:MANIFOLD_WEBVIEW2_HOST = (Resolve-Path dist/embedded/manifold-engine-webview2.exe).Path
+          $env:MANIFOLD_WEBVIEW2_HOST = (Resolve-Path dist/embedded/manifold-view-webview2.exe).Path
           $env:MANIFOLD_PDFIUM_HOST = (Resolve-Path dist/embedded/manifold-view-pdfium.exe).Path
           cargo build --release --locked -p manifold
           if ($LASTEXITCODE -ne 0) { exit 1 }
@@ -96,7 +96,7 @@ jobs:
             "$h  $(Split-Path $path -Leaf)" | Set-Content -Encoding ascii $out
           }
           Record "dist/$stem.exe" "dist/$stem.exe.sha256"
-          Record "dist/embedded/manifold-engine-webview2.exe" "dist/$stem.embedded-host.sha256"
+          Record "dist/embedded/manifold-view-webview2.exe" "dist/$stem.embedded-host.sha256"
           Record "dist/embedded/manifold-view-pdfium.exe" "dist/$stem.embedded-pdf-view.sha256"
       - name: Package check and release-verify
         run: |

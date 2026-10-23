@@ -453,7 +453,7 @@ pub enum ViewToHost {
     /// not a passive read, and a much bigger and riskier change than a tab
     /// icon warrants (get it wrong and CEF tabs go silent). CEF sends this
     /// too, by a different and much lighter route instead: a periodic
-    /// `V8Context::eval` (`manifold-engine-cef`'s own polling timer, see
+    /// `V8Context::eval` (`manifold-view-cef`'s own polling timer, see
     /// `AUDIO_PLAYING_POLL_INTERVAL`) checking whether any `<video>`/
     /// `<audio>` element is currently playing and unmuted -- a real
     /// approximation, not the same guarantee the other two engines'
@@ -531,7 +531,7 @@ pub enum ViewToHost {
     /// runs the same two checks via `V8Context::eval` and hands the result
     /// back to the browser process over a `ProcessMessage` -- no V8
     /// extension needed, just CEF's own real mechanism for a renderer to
-    /// return a value at all (see `manifold-engine-cef`'s `render_process_
+    /// return a value at all (see `manifold-view-cef`'s `render_process_
     /// handler.rs`). The host converts the tab to a `Json` node from this
     /// same body, right away -- see
     /// `RedirectableContent`'s own doc comment for why JSON takes this

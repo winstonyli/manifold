@@ -168,7 +168,7 @@ fn main() {
     pages::register_factory();
 
     // Two one-directional control sockets back to manifold — same
-    // convention as manifold-engine-servo (see manifold_view_protocol::transport).
+    // convention as manifold-view-servo (see manifold_view_protocol::transport).
     let (host_to_view, mut control) =
         manifold_view_protocol::transport::connect_local_pair(&socket_id).expect("connect to manifold control sockets");
     let rx = manifold_view_protocol::transport::spawn_host_reader(host_to_view);

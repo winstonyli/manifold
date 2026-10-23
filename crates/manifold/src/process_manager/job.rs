@@ -17,7 +17,7 @@ use super::*;
 /// above already notes "a prior run that crashed... can leave a stale
 /// view-host-*.exe still holding tab_id's named pipe indefinitely," with
 /// a fallback-socket-id workaround for *that* one symptom. Found live to
-/// be worse than a stale pipe, though -- orphaned `manifold-engine-
+/// be worse than a stale pipe, though -- orphaned `manifold-view-
 /// webview2.exe` processes accumulating across several crashed/force-
 /// killed sessions were confirmed to silently starve *new* engine-hosts'
 /// own frame capture (`Windows.Graphics.Capture`, which every WebView2

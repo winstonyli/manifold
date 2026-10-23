@@ -650,7 +650,7 @@ fn main() {
     // that this process was *not* actually DPI-aware despite the assumption
     // that `winit` sets this up automatically: `window.scale_factor()`
     // (`self.ppp()`) reported `1.0` on a real 125%-scaled display -- the
-    // exact same DPI-virtualization symptom `manifold-engine-webview2`'s own
+    // exact same DPI-virtualization symptom `manifold-view-webview2`'s own
     // `main()` had (see that module's doc comment on
     // `SetProcessDpiAwarenessContext` for the full mechanism). Without this,
     // the whole app runs on virtualized, bitmap-stretched coordinates:

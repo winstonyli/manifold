@@ -31,7 +31,7 @@ use crate::stress::powershell;
 
 /// The window in which a tab that must STAY awake is given the chance to sleep (the dirty case's "idle sleep left it
 /// awake"): a negative wait, so a real sleep and never shortened. WebView2 sleeps at once, but a CEF tab's sleep waits
-/// for its last cookies: the host's jar pull answers only after `EMPTY_PULL_TIMEOUT` (2 s, manifold-engine-cef
+/// for its last cookies: the host's jar pull answers only after `EMPTY_PULL_TIMEOUT` (2 s, manifold-view-cef
 /// jar_cookies.rs) on an empty jar, and the app holds the page state up to `COOKIE_HOLD` (2 s, tabs.rs) for it, so CEF
 /// sleeps ~2 s after the request. A 1-2 s wait exported a CEF tab before it slept, and the check passed on CEF without
 /// proving it. Positive waits for a tab to sleep or wake poll its exported state instead (`Instance::export_until`).
@@ -84,7 +84,7 @@ fn kill_hosts(work: &Path, parent: u32, view: &str) -> io::Result<()> {
     const SCRIPT: &str = "param([int]$Parent, [string]$Name)
 Get-CimInstance Win32_Process -Filter \"ParentProcessId=$Parent AND Name='$Name'\" | ForEach-Object { $_.ProcessId }
 ";
-    let name = format!("manifold-engine-{view}.exe");
+    let name = format!("manifold-view-{view}.exe");
     for pid in powershell(work, "hosts", SCRIPT, &["-Parent", &parent.to_string(), "-Name", &name])? {
         Command::new("taskkill")
             .args(["/F", "/T", "/PID", &pid])

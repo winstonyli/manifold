@@ -7,7 +7,7 @@
 //! pins nothing, so its engines read Unavailable unless a sibling host exists. A debug build also reads the file named
 //! by `MANIFOLD_HOST_PINS_FILE`, which is how the gate shows the download states.
 //!
-//! The manifest is `{"cef": {"windows-x64": [{"file": "manifold-engine-cef.exe", "size": 123, "sha256": "..."}]}}`
+//! The manifest is `{"cef": {"windows-x64": [{"file": "manifold-view-cef.exe", "size": 123, "sha256": "..."}]}}`
 //! with the engine's store name (`ViewKind::desc().name`) as the first key.
 
 use std::sync::OnceLock;
@@ -17,7 +17,7 @@ use crate::process_manager::ViewKind;
 /// One downloadable host file.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Component {
-    /// The file name it installs under (`manifold-engine-cef.exe`).
+    /// The file name it installs under (`manifold-view-cef.exe`).
     pub file: &'static str,
     /// Where it is fetched from: `https://github.com/winstonyli/manifold/releases/download/v<ver>/<file>-<platform>`.
     /// Untrusted: only `sha256` is the trust anchor.
@@ -136,13 +136,13 @@ mod tests {
 
     #[test]
     fn a_host_is_fetched_from_its_own_releases_download() {
-        let entries = parse(&manifest("manifold-engine-cef.exe", 740_000, HASH), "1.2.3").unwrap();
+        let entries = parse(&manifest("manifold-view-cef.exe", 740_000, HASH), "1.2.3").unwrap();
         let table: &'static [Entry] = Box::leak(entries.into_boxed_slice());
         let c = &lookup(table, ViewKind::Cef, "windows-x64")[0];
-        assert_eq!(c.file, "manifold-engine-cef.exe");
+        assert_eq!(c.file, "manifold-view-cef.exe");
         assert_eq!(
             c.url,
-            "https://github.com/winstonyli/manifold/releases/download/v1.2.3/manifold-engine-cef.exe-windows-x64"
+            "https://github.com/winstonyli/manifold/releases/download/v1.2.3/manifold-view-cef.exe-windows-x64"
         );
         assert_eq!((c.size, c.sha256), (740_000, HASH));
         assert!(lookup(table, ViewKind::Cef, "linux-x64").is_empty());
@@ -152,15 +152,15 @@ mod tests {
     #[test]
     fn a_bad_manifest_is_refused_whole() {
         for bad in [
-            manifest("manifold-engine-cef.exe", 1, ""),
-            manifest("manifold-engine-cef.exe", 1, &HASH.to_uppercase()),
-            manifest("manifold-engine-cef.exe", 1, &HASH[1..]),
-            manifest("manifold-engine-cef.exe", 1, &HASH.replace('d', "g")),
-            manifest("manifold-engine-cef.exe", 0, HASH),
+            manifest("manifold-view-cef.exe", 1, ""),
+            manifest("manifold-view-cef.exe", 1, &HASH.to_uppercase()),
+            manifest("manifold-view-cef.exe", 1, &HASH[1..]),
+            manifest("manifold-view-cef.exe", 1, &HASH.replace('d', "g")),
+            manifest("manifold-view-cef.exe", 0, HASH),
             manifest("", 1, HASH),
             manifest("../x.exe", 1, HASH),
             manifest("a\\\\b.exe", 1, HASH), // JSON `a\\b.exe`, the name a\b.exe
-            manifest("manifold-engine-cef.exe", 1, HASH).replace("cef", "nosuch"),
+            manifest("manifold-view-cef.exe", 1, HASH).replace("cef", "nosuch"),
             "[]".to_owned(),
             "{".to_owned(),
         ] {

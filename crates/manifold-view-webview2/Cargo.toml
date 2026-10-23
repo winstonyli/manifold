@@ -61,5 +61,5 @@ image.workspace = true
 # The exe keeps the name released builds, release.yml and the scripts know; it changes with a release that
 # publishes assets under the new names (spec 2026-10-12, Step 0).
 [[bin]]
-name = "manifold-engine-webview2"
+name = "manifold-view-webview2"
 path = "src/main.rs"

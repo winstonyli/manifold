@@ -495,7 +495,7 @@ pub(crate) fn failed_spawn(parent: Option<PathBuf>) -> ExitCode {
         fs::create_dir_all(&bin)?;
         let lone = bin.join("manifold.exe");
         fs::copy(&exe, &lone)?;
-        fs::write(bin.join("manifold-engine-webview2.exe"), "not a program")?;
+        fs::write(bin.join("manifold-view-webview2.exe"), "not a program")?;
         let profile = work.join("appdata");
         seed(&lone, &profile, "webview2", &[])?;
         let mut inst = Instance::launch(&lone, &profile, &work, "log")?;

@@ -123,7 +123,7 @@ pub fn sweep_cef_cache() {
 }
 
 /// What a WebView2 host's profile directory is named: manifold hands each host a profile name `manifold_<slot>`
-/// (`VIEW_WEBVIEW2_PROFILE`; manifold-engine-webview2's `create_composition_controller`), and WebView2 keeps a named
+/// (`VIEW_WEBVIEW2_PROFILE`; manifold-view-webview2's `create_composition_controller`), and WebView2 keeps a named
 /// profile in `WV2Profile_<name>` (observed, not documented: runtime 154.0.4258.53, 2026-10-03). InPrivate holds no
 /// cookies there, but caches and empty databases (~2 MB) stay behind.
 pub(super) const WEBVIEW2_PROFILE_PREFIX: &str = "WV2Profile_manifold_";

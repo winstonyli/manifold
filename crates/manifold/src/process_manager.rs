@@ -119,7 +119,7 @@ impl ViewKind {
             ViewKind::Servo => ViewDesc {
                 name: "servo",
                 code: 1,
-                binary: "manifold-engine-servo",
+                binary: "manifold-view-servo",
                 label: "Servo",
                 bgra: false,
                 jar: false,
@@ -148,7 +148,7 @@ impl ViewKind {
             ViewKind::Cef => ViewDesc {
                 name: "cef",
                 code: 2,
-                binary: "manifold-engine-cef",
+                binary: "manifold-view-cef",
                 label: "Blink (CEF)",
                 bgra: true,
                 jar: true,
@@ -174,7 +174,7 @@ impl ViewKind {
             ViewKind::Webkit => ViewDesc {
                 name: "webkit",
                 code: 3,
-                binary: "manifold-engine-webkit",
+                binary: "manifold-view-webkit",
                 label: "WebKit",
                 bgra: false,
                 jar: false,
@@ -208,7 +208,7 @@ Not included: WebKit runs inside WSL, which needs a distro named Ubuntu with xvf
             ViewKind::Webview2 => ViewDesc {
                 name: "webview2",
                 code: 4,
-                binary: "manifold-engine-webview2",
+                binary: "manifold-view-webview2",
                 label: "WebView2",
                 bgra: true,
                 jar: true,
@@ -456,12 +456,12 @@ fn reap_host(kind: ViewKind, mut child: Child) {
         // `wsl.exe` relay — force-killing it immediately (the
         // local-engine path below) does NOT terminate the actual
         // Linux-side process tree (fish/bash/xvfb-run/Xvfb/
-        // manifold-engine-webkit), which WSL2 keeps running independently
+        // manifold-view-webkit), which WSL2 keeps running independently
         // of any Windows-side process state: confirmed live, a killed
         // relay leaves that whole tree orphaned and running
         // indefinitely, invisible to any further Windows-side cleanup.
         // The graceful `Shutdown` queued above (the writer sends it before the reaper gives up) already makes
-        // manifold-engine-webkit return from `main()` on its own, which
+        // manifold-view-webkit return from `main()` on its own, which
         // cascades correctly on the Linux side (xvfb-run's own EXIT
         // trap kills its Xvfb child once its wrapped command exits, and
         // so on up through bash/fish to `wsl.exe` itself returning) —
@@ -897,7 +897,7 @@ fn prepare_plain(kind: ViewKind, _custom: Option<&Path>) -> Result<Prepared, Spa
 }
 
 /// CEF: the host runs from a copy beside the runtime it loads (`host_home`), and each host gets its own throwaway
-/// cache dir, so CEF tabs don't share cookies or logins and keep none across a restart (see manifold-engine-cef's
+/// cache dir, so CEF tabs don't share cookies or logins and keep none across a restart (see manifold-view-cef's
 /// main.rs for why they can't share one).
 fn prepare_cef(kind: ViewKind, custom: Option<&Path>) -> Result<Prepared, SpawnError> {
     let exe = match host_home(custom, cef_sibling_exe().exists(), view_runtime_dir(kind)) {
@@ -933,7 +933,7 @@ fn prepare_webview2(kind: ViewKind, _custom: Option<&Path>) -> Result<Prepared, 
 /// returns a handle the process manager (and the tab-swap logic) can drive.
 ///
 /// `tab_id`/`initial_url` are passed via env vars, not argv, for
-/// manifold-engine-cef specifically — see that crate's main.rs for why (CEF
+/// manifold-view-cef specifically — see that crate's main.rs for why (CEF
 /// parses this process's own argv as its own command line). We do the same
 /// for the other engines too, for one consistent spawn path.
 ///

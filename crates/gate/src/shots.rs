@@ -54,7 +54,7 @@ const DEFAULT_VIEWS: &str = "graph graph-hover graph-menu-tab graph-menu-group g
 const SIZES_VIEWS: &str = "graph graph-menu-tab graph-newnode-menu shortcuts quickswitch settings tabview";
 /// The CEF host the fixture manifest pins: (file, size, SHA-256). Nothing downloads it; the files on disk are sparse.
 const FAKE_CEF_HOST: (&str, u64, &str) =
-    ("manifold-engine-cef.exe", 740_000, "db3e0751979c3cb3068f732ed4f0ef12ade69d183d98ceee120ad08c8d00f74c");
+    ("manifold-view-cef.exe", 740_000, "db3e0751979c3cb3068f732ed4f0ef12ade69d183d98ceee120ad08c8d00f74c");
 const CEF_PIN: &str = include_str!("../../manifold/src/cef_pin.rs");
 /// Where a click outside every popup lands and closes it.
 const AWAY: &str = "CLICK 1100 300";
@@ -1424,8 +1424,8 @@ impl Shots {
         fs::create_dir_all(&eng)?;
         let eng_exe = eng.join("manifold.exe");
         fs::copy(exe, &eng_exe)?;
-        let host = exe.with_file_name("manifold-engine-webview2.exe");
-        fs::copy(&host, eng.join("manifold-engine-webview2.exe"))?;
+        let host = exe.with_file_name("manifold-view-webview2.exe");
+        fs::copy(&host, eng.join("manifold-view-webview2.exe"))?;
         let proxy = Proxy::start(true)?;
 
         self.engine_app(&eng_exe, &proxy, "states", "")?;

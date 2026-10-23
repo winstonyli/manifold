@@ -20,7 +20,7 @@ pub(super) fn sibling_binary(name: &str) -> PathBuf {
 /// live in the same directory — Windows resolves an implicit DLL
 /// dependency from the loading EXE's own directory first, so whichever
 /// engine's ANGLE build was copied there last wins for *both* engines.
-/// manifold-engine-cef.exe and its full CEF runtime (libcef.dll, resources,
+/// manifold-view-cef.exe and its full CEF runtime (libcef.dll, resources,
 /// locales, its own ANGLE DLLs, ...) are isolated in `cef-runtime/` next to
 /// the other binaries.
 ///
@@ -96,7 +96,7 @@ fn current_exe_dir() -> PathBuf {
 /// (a Linux package), else a dev tree's `target-linux/debug/` (WebKit is built inside WSL into its own target dir,
 /// README "Building"), found by walking up at most as far as the repo root of a worktree under `.claude/`.
 pub(super) fn built_webkit_host(exe_dir: &Path) -> Option<PathBuf> {
-    const NAME: &str = "manifold-engine-webkit";
+    const NAME: &str = "manifold-view-webkit";
     let flat = exe_dir.join(NAME);
     let dev = |dir: &Path| dir.join("target-linux").join("debug").join(NAME);
     std::iter::once(flat).chain(exe_dir.ancestors().take(5).map(dev)).find(|path| path.is_file())

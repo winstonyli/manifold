@@ -37,7 +37,7 @@ pub(crate) fn powershell(work: &Path, name: &str, script: &str, args: &[&str]) -
 fn suspend_engines(work: &Path, parent: u32) -> io::Result<Vec<String>> {
     const SCRIPT: &str = "param([int]$Parent)
 Add-Type -Namespace P -Name N -MemberDefinition '[DllImport(\"ntdll.dll\")] public static extern int NtSuspendProcess(IntPtr h);'
-Get-CimInstance Win32_Process -Filter \"ParentProcessId=$Parent AND Name='manifold-engine-webview2.exe'\" | ForEach-Object {
+Get-CimInstance Win32_Process -Filter \"ParentProcessId=$Parent AND Name='manifold-view-webview2.exe'\" | ForEach-Object {
     $null = [P.N]::NtSuspendProcess((Get-Process -Id $_.ProcessId).Handle)
     $_.ProcessId
 }

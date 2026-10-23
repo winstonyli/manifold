@@ -5,7 +5,7 @@ use super::*;
 
 /// Converts this repo's Windows path (wherever manifold.exe actually is)
 /// to the `/mnt/c/...` form WSL2 uses to see the same filesystem, so we can
-/// hand `wsl.exe` a path to the manifold-engine-webkit binary it built.
+/// hand `wsl.exe` a path to the manifold-view-webkit binary it built.
 fn windows_path_to_wsl(path: &Path) -> String {
     let s = path.to_string_lossy().replace('\\', "/");
     // "C:/Users/..." -> "/mnt/c/Users/..."

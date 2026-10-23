@@ -139,7 +139,7 @@ pub fn create_hidden_window() -> Result<HWND> {
 ///
 /// Runs on a **detached background thread**, not inline. An earlier round
 /// of live testing produced a zero-screenshot, unresponsive-looking
-/// `manifold-engine-webview2.exe` right after adding this call and was first
+/// `manifold-view-webview2.exe` right after adding this call and was first
 /// read as `DeleteTab` hanging -- **re-tested since, with a hard-timeout-
 /// wrapped synchronous call and diagnostic prints bracketing it, and it
 /// completed normally in well under the 2s retry budget below**. The

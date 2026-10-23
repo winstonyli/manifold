@@ -53,19 +53,19 @@ pub fn require_fresh_exe(exe: &Path) -> Result<(), String> {
     let dir = exe.parent().unwrap_or(Path::new("."));
     // CEF runs from an isolated copy that only `gate sync-runtime-deps` refreshes; a stale one speaks an old message
     // numbering and its host crashes.
-    let cef = dir.join("manifold-engine-cef.exe");
-    let cef_copy = dir.join("cef-runtime").join("manifold-engine-cef.exe");
+    let cef = dir.join("manifold-view-cef.exe");
+    let cef_copy = dir.join("cef-runtime").join("manifold-view-cef.exe");
     if let (Some(built), Some(copy)) = (mtime(&cef), mtime(&cef_copy)) {
         if built > copy {
             return Err(
-                "cef-runtime/manifold-engine-cef.exe is older than the built one: run `target/debug/gate.exe sync-runtime-deps`, or set ALLOW_STALE=1."
+                "cef-runtime/manifold-view-cef.exe is older than the built one: run `target/debug/gate.exe sync-runtime-deps`, or set ALLOW_STALE=1."
                     .into(),
             );
         }
     }
     // The WebView2 host and the PDF view are separate crates that `-p manifold` does not build; judge each by its own
     // dep-info, and skip one that is absent.
-    let hosts = [dir.join("manifold-engine-webview2.exe"), dir.join("manifold-view-pdfium.exe")];
+    let hosts = [dir.join("manifold-view-webview2.exe"), dir.join("manifold-view-pdfium.exe")];
     let mut report = String::new();
     for e in std::iter::once(exe).chain(hosts.iter().map(PathBuf::as_path)) {
         if e != exe && !e.exists() {
@@ -110,7 +110,7 @@ mod tests {
             std::fs::create_dir_all(&dir).unwrap();
             let bin = Bin(dir);
             bin.touch("src.rs", 1);
-            for n in ["manifold", "manifold-engine-webview2", "manifold-view-pdfium"] {
+            for n in ["manifold", "manifold-view-webview2", "manifold-view-pdfium"] {
                 let rule = format!("{}: {}", bin.0.join(format!("{n}.exe")).display(), bin.0.join("src.rs").display());
                 std::fs::write(
                     bin.0.join(format!("{n}.d")),
@@ -151,17 +151,17 @@ mod tests {
         bin.touch("manifold.exe", 4);
         bin.touch("manifold-view-pdfium.exe", 4);
         let err = bin.check().unwrap_err();
-        assert!(err.contains("manifold-engine-webview2.exe is older"), "{err}");
+        assert!(err.contains("manifold-view-webview2.exe is older"), "{err}");
         assert!(err.contains("-p manifold -p manifold-view-webview2"), "{err}");
         assert!(!err.contains("manifold-view-pdfium.exe is older"), "{err}");
 
-        bin.touch("manifold-engine-webview2.exe", 4);
+        bin.touch("manifold-view-webview2.exe", 4);
         bin.touch("manifold-view-pdfium.exe", 2);
         let err = bin.check().unwrap_err();
         assert!(err.contains("manifold-view-pdfium.exe is older"), "{err}");
 
         // A host that is absent is skipped.
-        std::fs::remove_file(bin.0.join("manifold-engine-webview2.exe")).unwrap();
+        std::fs::remove_file(bin.0.join("manifold-view-webview2.exe")).unwrap();
         std::fs::remove_file(bin.0.join("manifold-view-pdfium.exe")).unwrap();
         assert_eq!(bin.check(), Ok(()), "a missing host is skipped");
 

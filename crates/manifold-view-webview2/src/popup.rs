@@ -6,7 +6,7 @@
 //! WebView2 window escaping this project's off-screen-host model.
 //!
 //! Confirmed live: clicking a real `target="_blank"` link (via `input.rs`'s
-//! `el.click()` `MouseUp` handling) took the manifold-engine-webview2.exe
+//! `el.click()` `MouseUp` handling) took the manifold-view-webview2.exe
 //! process count from 1 to 2 -- a real child tab spawned, not a stray
 //! window. No second window ever became visible/capturable, consistent
 //! with `SetHandled(true)` suppressing WebView2's own default popup

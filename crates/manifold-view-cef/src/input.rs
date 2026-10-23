@@ -53,7 +53,7 @@ fn utf16_units(codepoint: u32) -> Vec<u16> {
 }
 
 /// Translates and dispatches one `manifold_view_protocol::InputEvent` onto a live CEF
-/// `Browser` — mirrors `manifold-engine-servo`'s `translate_input_event`, just
+/// `Browser` — mirrors `manifold-view-servo`'s `translate_input_event`, just
 /// dispatching directly instead of returning a value, since CEF's
 /// `BrowserHost` methods are fire-and-forget (`send_*_event`) rather than a
 /// single `notify_input_event` call.

@@ -20,7 +20,7 @@ fn dirty_rows(dirty_rects: Option<&[Rect]>, height: i32) -> Option<std::ops::Ran
 }
 
 /// Headless OSR render handler. No window, no wgpu — CEF's classic
-/// software OSR path, matching manifold-engine-servo's shared-memory frame
+/// software OSR path, matching manifold-view-servo's shared-memory frame
 /// hand-off instead of the accelerated/shared-texture path (which only
 /// makes sense for a single-process embedder, not our separate-process
 /// view-host architecture).

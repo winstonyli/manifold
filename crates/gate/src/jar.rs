@@ -478,7 +478,7 @@ impl Probe {
 
     /// Ten WebView2 tabs opened and closed in turn: Local State may gain no profile names outside the pool.
     fn ten(&self) -> io::Result<()> {
-        let local_state = self.exe.with_file_name("manifold-engine-webview2.exe.WebView2/EBWebView/Local State");
+        let local_state = self.exe.with_file_name("manifold-view-webview2.exe.WebView2/EBWebView/Local State");
         let before = profile_names(&local_state).unwrap_or_default();
         self.rm_jars();
         let jar_log = self.run("ten", "webview2", "/whoami?c", |inst, _| {

@@ -122,7 +122,7 @@ fn main() {
     // (msedgewebview2.exe browser/renderer/GPU processes) that are NOT
     // direct children of this process in the Windows sense (they're
     // children of WebView2's own browser-process, a grandchild of us) --
-    // confirmed live that a hard-killed manifold-engine-webview2.exe (e.g. an
+    // confirmed live that a hard-killed manifold-view-webview2.exe (e.g. an
     // external `timeout` cutting the whole tree, or a plain force-kill)
     // leaves those grandchildren running indefinitely, invisible to any
     // cleanup this process's own `Shutdown` handler could do (it never
@@ -147,7 +147,7 @@ fn main() {
         std::process::exit(1);
     }
 
-    // Same convention as manifold-engine-cef/-servo: manifold already created
+    // Same convention as manifold-view-cef/-servo: manifold already created
     // both named pipes before spawning us (listen_local_pair), we just
     // connect. `host_to_view`/`control` are one-directional (HostToView
     // in, ViewToHost out) -- see transport.rs's own doc comment.
