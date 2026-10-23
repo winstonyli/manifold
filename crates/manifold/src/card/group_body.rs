@@ -54,14 +54,11 @@ impl App {
                         let cell_rect = egui::Rect::from_min_size(cell_min, cell_size);
                         match self.gpu.as_ref().and_then(|g| g.thumbnail_id(*member_id)) {
                             Some(tex_id) => {
-                                ui.painter().image(tex_id, cell_rect, FULL_UV, egui::Color32::WHITE);
+                                let radius = 2.0 * inv_zoom;
+                                rounded_image(ui.painter(), tex_id, cell_rect, FULL_UV, egui::Color32::WHITE, radius);
                             }
                             None => {
-                                ui.painter().rect_filled(
-                                    cell_rect,
-                                    2.0 * inv_zoom,
-                                    ui.visuals().extreme_bg_color.gamma_multiply(1.2),
-                                );
+                                ui.painter().rect_filled(cell_rect, 2.0 * inv_zoom, palette(ui.visuals()).canvas);
                             }
                         }
                     }

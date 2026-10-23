@@ -176,7 +176,7 @@ impl App {
             egui::Rect::from_min_max(egui::pos2(rect.left(), rect.bottom() - band_height), rect.right_bottom())
         };
         if scrim || !tall {
-            let radius = (6.0 * inv_zoom).min(255.0) as u8;
+            let radius = (CARD_RADIUS * inv_zoom).min(255.0) as u8;
             let corners = if tall {
                 egui::CornerRadius { nw: radius, ne: radius, sw: 0, se: 0 }
             } else {
@@ -305,7 +305,15 @@ impl App {
                     .as_ref()
                     .and_then(|g| g.thumbnail_size(id))
                     .map_or(FULL_UV, |size| cover_uv(size, thumb_rect.size()));
-                ui.painter().image(tex_id, thumb_rect, uv, egui::Color32::WHITE);
+                // The bottom corners follow the card's; the top ones too unless the header sits above.
+                let (top, bottom) = (if header { 0.0 } else { inset_radius(inv_zoom) }, inset_radius(inv_zoom));
+                let radii = egui::CornerRadius {
+                    nw: top.round().min(255.0) as u8,
+                    ne: top.round().min(255.0) as u8,
+                    sw: bottom.round().min(255.0) as u8,
+                    se: bottom.round().min(255.0) as u8,
+                };
+                rounded_image(ui.painter(), tex_id, thumb_rect, uv, egui::Color32::WHITE, radii);
             }
 
             let label = if title.is_empty() { url.as_str() } else { title.as_str() };
@@ -329,7 +337,16 @@ impl App {
                     egui::Pos2::new(thumb_rect.left(), thumb_rect.bottom() - TAB_STRIP_POINTS * inv_zoom),
                     thumb_rect.right_bottom(),
                 );
-                ui.painter().rect_filled(title_strip, 0.0, TITLE_STRIP_SCRIM);
+                // Its bottom corners follow the thumbnail's.
+                ui.painter().rect_filled(
+                    title_strip,
+                    egui::CornerRadius {
+                        sw: inset_radius(inv_zoom).round().min(255.0) as u8,
+                        se: inset_radius(inv_zoom).round().min(255.0) as u8,
+                        ..egui::CornerRadius::ZERO
+                    },
+                    TITLE_STRIP_SCRIM,
+                );
                 // The same icon as the header's, small enough for the strip.
                 let icon_text = identity.paint(
                     ui,

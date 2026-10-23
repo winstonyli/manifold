@@ -81,7 +81,7 @@ impl App {
                 tex_id.is_none() && self.nodes.get(&id).and_then(|n| n.as_image()).is_some_and(|i| i.decoding());
             match tex_id {
                 Some(tex_id) => {
-                    ui.painter().image(tex_id, rect, FULL_UV, egui::Color32::WHITE);
+                    rounded_image(ui.painter(), tex_id, rect, FULL_UV, egui::Color32::WHITE, CARD_RADIUS * inv_zoom);
                 }
                 None if decoding => {}
                 // Only reachable if the node somehow outlived its own texture (freed but not removed): a

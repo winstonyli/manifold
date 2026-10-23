@@ -48,7 +48,7 @@ impl App {
         if self.graph_detail.content() {
             match state {
                 Some(Ok((Some(tex_id), page_count))) => {
-                    ui.painter().image(tex_id, rect, FULL_UV, egui::Color32::WHITE);
+                    rounded_image(ui.painter(), tex_id, rect, FULL_UV, egui::Color32::WHITE, CARD_RADIUS * inv_zoom);
                     self.paint_pdf_header(ui, deferred_overlays, id, rect, inv_zoom, zoom_scale, false);
                     // Shown even for a one-page PDF -- a glanceable
                     // "this is a PDF, not a plain image" cue on top

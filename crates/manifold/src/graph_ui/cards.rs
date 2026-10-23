@@ -295,11 +295,13 @@ impl App {
                         let shift = (view.max - max).min(egui::Vec2::ZERO) + (view.min - min).max(egui::Vec2::ZERO);
                         let rect = egui::Rect::from_min_max(min + shift, max + shift);
                         painter.rect_filled(rect, rounding, bg);
-                        painter.image(
+                        crate::card::rounded_image(
+                            painter,
                             tex_id,
                             rect,
                             crate::card::FULL_UV,
                             egui::Color32::WHITE.gamma_multiply(peek_fade),
+                            rounding,
                         );
                         painter.rect_stroke(rect, rounding, egui::Stroke::new(1.5, ring), egui::StrokeKind::Inside);
                     }));

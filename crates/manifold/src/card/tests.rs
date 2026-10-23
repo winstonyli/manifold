@@ -496,6 +496,30 @@ fn tab_thumb_rect_leaves_room_for_the_header_only_on_tall_cards() {
 }
 
 #[test]
+fn a_picture_is_one_rounded_textured_shape_concentric_with_its_card() {
+    // Zoom 1: the card's 12 radius less the 6 margin; zoomed far out the margin is wider than the radius.
+    assert_eq!(inset_radius(1.0), CARD_RADIUS - crate::GRAPH_THUMB_MARGIN);
+    assert_eq!(inset_radius(0.1), 0.0);
+    let ctx = egui::Context::default();
+    let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+        let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(40.0, 30.0));
+        rounded_image(ui.painter(), egui::TextureId::User(1), rect, FULL_UV, egui::Color32::WHITE, 6.0);
+    });
+    output.textures_delta.clear();
+    let rects: Vec<_> = output
+        .shapes
+        .iter()
+        .filter_map(|s| match &s.shape {
+            egui::Shape::Rect(r) => Some(r.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(rects.len(), 1);
+    assert_eq!(rects[0].corner_radius, egui::CornerRadius::same(6));
+    assert!(rects[0].brush.is_some());
+}
+
+#[test]
 fn card_controls_list_each_cards_buttons_in_pointer_order() {
     use CardControl::*;
     for kind in kinds().into_iter().filter(|k| k.ty != TYPE_TAB) {

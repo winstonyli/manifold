@@ -99,6 +99,24 @@ const HEADER_RIGHT_RESERVE: f32 = HEADER_TEXT_X;
 /// The whole texture: UVs for an image drawn uncropped.
 pub(crate) const FULL_UV: egui::Rect = egui::Rect { min: egui::Pos2::ZERO, max: egui::pos2(1.0, 1.0) };
 
+/// Paints `tex` over `rect` as one textured rounded rect, so a picture meets a card's rounded corners instead of
+/// poking past them. `radii` are in world units, like `CARD_RADIUS * inv_zoom`.
+pub(crate) fn rounded_image(
+    painter: &egui::Painter,
+    tex: egui::TextureId,
+    rect: egui::Rect,
+    uv: egui::Rect,
+    tint: egui::Color32,
+    radii: impl Into<egui::CornerRadius>,
+) {
+    painter.add(egui::epaint::RectShape::filled(rect, radii, tint).with_texture(tex, uv));
+}
+
+/// The radius of a picture inset by `GRAPH_THUMB_MARGIN` inside a card corner, concentric with the card's own.
+pub(crate) fn inset_radius(inv_zoom: f32) -> f32 {
+    (CARD_RADIUS * inv_zoom - GRAPH_THUMB_MARGIN).max(0.0)
+}
+
 /// Behind a header's text drawn over a picture: dark enough to read light text on any image.
 const IMAGE_TEXT_SCRIM: egui::Color32 = egui::Color32::from_black_alpha(190);
 
@@ -1228,8 +1246,8 @@ impl App {
             let (ghost, fill, ring) = (rect.translate(shift), style.fill, accent(ui.visuals()));
             deferred_overlays.push_top(Box::new(move |painter, project| {
                 let screen = egui::Rect::from_min_max(project(ghost.min), project(ghost.max));
-                painter.rect_filled(screen, 2.0, fill.gamma_multiply(0.8));
-                painter.rect_stroke(screen, 2.0, egui::Stroke::new(2.0, ring), egui::StrokeKind::Inside);
+                painter.rect_filled(screen, CARD_RADIUS, fill.gamma_multiply(0.8));
+                painter.rect_stroke(screen, CARD_RADIUS, egui::Stroke::new(2.0, ring), egui::StrokeKind::Inside);
             }));
         } else if carried && self.interaction.dragging == Some(card) {
             self.release_drag();
