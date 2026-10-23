@@ -100,7 +100,6 @@ impl App {
             .order(egui::Order::Foreground)
             .show(ui.ctx(), |ui| {
                 popup_frame(ui).inner_margin(egui::Margin::symmetric(10, 6)).show(ui, |ui| {
-                    control_font(ui);
                     ui.horizontal(|ui| {
                         let response = ui
                             .add(

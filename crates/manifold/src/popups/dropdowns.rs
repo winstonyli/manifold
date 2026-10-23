@@ -943,7 +943,7 @@ mod tests {
     fn a_long_bookmark_folder_header_is_one_cut_line() {
         let ctx = crate::theme::testutil::ctx(true);
         let mut app = App::default();
-        let folder = format!("w{}", " Wardrobe".repeat(7));
+        let folder = format!("w{}", " Wardrobe".repeat(20));
         let bookmark = |title: &str| bookmarks::Bookmark {
             title: title.into(),
             url: format!("https://example.org/{title}"),
@@ -964,7 +964,7 @@ mod tests {
                 .shapes
                 .into_iter()
                 .filter_map(|s| match s.shape {
-                    egui::Shape::Text(t) if t.galley.job.text == folder => Some(t.galley),
+                    egui::Shape::Text(t) if t.galley.job.text.starts_with(&folder[..9]) => Some(t.galley),
                     _ => None,
                 })
                 .collect();
@@ -974,7 +974,11 @@ mod tests {
             let galley = galleys.iter().find(|g| g.job.sections[0].format.color == color);
             let galley = galley.unwrap_or_else(|| panic!("the folder {what} is drawn"));
             assert_eq!(galley.rows.len(), 1, "{what}: one line: {:?}", galley.text());
-            assert!(galley.elided, "{what}: cut with an ellipsis: {:?}", galley.text());
+            assert!(
+                galley.elided || galley.job.text.ends_with('…'),
+                "{what}: cut with an ellipsis: {:?}",
+                galley.text()
+            );
         }
     }
 

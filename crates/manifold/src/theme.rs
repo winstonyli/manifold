@@ -126,7 +126,7 @@ impl NamedTip for egui::Response {
 
 /// Paints `keys` as keycaps right-aligned at `right_center`, with no layout: for a hint drawn over a field.
 pub(crate) fn paint_keycaps(ui: &egui::Ui, right_center: egui::Pos2, keys: &[&str]) {
-    let font = egui::FontId::new(11.0, bound_family(ui.ctx(), control_family()));
+    let font = egui::FontId::new(11.0, egui::FontFamily::Proportional);
     let visuals = ui.visuals();
     let (weak, fill, border) =
         (palette(visuals).text_weak, visuals.widgets.inactive.bg_fill, visuals.widgets.hovered.bg_fill);
@@ -181,7 +181,6 @@ pub(crate) fn key_hint_strip<'a>(
 ) {
     area.order(egui::Order::Foreground).interactable(false).show(ctx, |ui| {
         popup_frame(ui).show(ui, |ui| {
-            control_font(ui);
             key_hint_row(ui, hints);
         });
     });
@@ -273,7 +272,7 @@ fn filled_button(ui: &mut egui::Ui, label: &str, fill: egui::Color32) -> egui::R
             true,
             egui::Button::new(
                 egui::RichText::new(label)
-                    .font(egui::FontId::new(14.0, bound_family(ui.ctx(), control_bold_family())))
+                    .font(egui::FontId::new(14.0, bound_family(ui.ctx(), bold_family())))
                     .color(ink),
             )
             .fill(fill),
@@ -288,7 +287,6 @@ fn filled_button(ui: &mut egui::Ui, label: &str, fill: egui::Color32) -> egui::R
 /// The global spacing is airier on purpose, which suits dialogs and the
 /// settings page but makes a menu of plain buttons look padded.
 pub(crate) fn menu_item_style(ui: &mut egui::Ui) {
-    control_font(ui);
     let style = ui.style_mut();
     style.spacing.item_spacing.y = 0.0;
     style.spacing.button_padding = egui::vec2(10.0, 4.0);
@@ -516,33 +514,6 @@ fn fill_style(style: &mut egui::Style, dark: bool) {
     style.visuals.error_fg_color = danger;
 }
 
-/// The named font family `heading_text` requests for dialog titles and
-/// settings-section headers -- kept separate from `FontFamily::Proportional`
-/// (body text) so the two can be genuinely different typefaces rather than
-/// the same face at a bigger size. Both are static single-weight instances
-/// generated from Google's variable-only source files via `fonttools
-/// varLib.instancer` (neither Literata nor Newsreader ships a static build
-/// upstream any more, and egui/ab_glyph has no variable-axis support of its
-/// own -- it would otherwise just rasterize whatever the font's default
-/// `fvar` instance happens to be, ignoring any weight/opsz this app wants).
-pub(crate) fn heading_family() -> egui::FontFamily {
-    egui::FontFamily::Name("heading".into())
-}
-
-/// Familjen Grotesk Regular for controls: buttons, menu rows, hints. Same
-/// static-instance story as `heading_family`; falls back to the body chain.
-pub(crate) fn control_family() -> egui::FontFamily {
-    egui::FontFamily::Name("control".into())
-}
-
-/// Makes widgets laid out in `ui` (buttons, menu rows, text fields) use Familjen Grotesk at body size.
-/// egui 0.36 buttons resolve their font from `TextStyle::Body`, not `TextStyle::Button`, so the family is
-/// set per `Ui` rather than through `text_styles`.
-pub(crate) fn control_font(ui: &mut egui::Ui) {
-    let family = bound_family(ui.ctx(), control_family());
-    ui.style_mut().override_font_id = Some(egui::FontId::new(13.0, family));
-}
-
 /// `family` if the context's fonts define it, else the body family. Asking egui for an unbound named family
 /// panics, which would otherwise take down any frame run before `apply_fonts` takes effect (headless tests).
 fn bound_family(ctx: &egui::Context, family: egui::FontFamily) -> egui::FontFamily {
@@ -553,78 +524,32 @@ fn bound_family(ctx: &egui::Context, family: egui::FontFamily) -> egui::FontFami
     }
 }
 
-/// Familjen Grotesk SemiBold, for the primary button.
-pub(crate) fn control_bold_family() -> egui::FontFamily {
+/// Familjen Grotesk SemiBold: the primary button and every title (`heading_text`).
+pub(crate) fn bold_family() -> egui::FontFamily {
     egui::FontFamily::Name("control_bold".into())
 }
 
-/// Replaces egui's bundled default (`Ubuntu-Light`) with Literata for body
-/// text, inserted ahead of it in the proportional family rather than
-/// instead of it — a glyph outside Literata's own coverage still falls back
-/// to the bundled default (and from there to egui's bundled emoji/symbol
-/// fonts) instead of tofu-boxing. Picked over the OS's own Segoe UI for one
-/// concrete reason: `egui`/`ab_glyph` needs the actual font bytes at build
-/// time, and there's no equivalent of a browser's "ask the OS for this
-/// family" for a native GPU-rendered glyph atlas — bundling a real file was
-/// required either way, so the choice came down to which file, not whether
-/// to bundle one. Literata is Google's own "built for reading apps" text
-/// face (tuned for legibility at small sizes on low-DPI screens), instanced
-/// here at a text-appropriate `opsz`, not IBM Plex Serif's old plain
-/// Regular-only cut, which read a little soft for UI chrome once compared
-/// side by side. Newsreader (also Google's, from the same reading-app
-/// design effort, so the pairing is deliberate) supplies just the separate
-/// `heading_family()` above, instanced Bold and at a display-sized `opsz`,
-/// for the handful of dialog titles/section headers that want more
-/// contrast than body text at any weight gives for free.
+/// Familjen Grotesk is the app's one family: Regular for all text (inserted ahead of egui's bundled default in the
+/// proportional family, so a glyph outside its Latin coverage falls back to the default and from there to egui's
+/// emoji and symbol fonts), SemiBold as `bold_family()` for titles and the primary button. The icon font (Phosphor
+/// Light) is added before both so their chains carry its glyphs. Familjen's line box sits its caps ~0.075 em below
+/// centre; the tweak lifts the glyphs so labels look centred. Both files are static instances of Google's
+/// variable-only sources (`fonttools varLib.instancer`): egui/ab_glyph has no variable-axis support.
 pub(crate) fn font_definitions() -> egui::FontDefinitions {
     let mut fonts = egui::FontDefinitions::default();
-    fonts.font_data.insert(
-        "Literata".to_owned(),
-        std::sync::Arc::new(egui::FontData::from_static(include_bytes!("../assets/fonts/Literata-Regular.ttf"))),
-    );
-    if let Some(family) = fonts.families.get_mut(&egui::FontFamily::Proportional) {
-        family.insert(0, "Literata".to_owned());
-    }
-    fonts.font_data.insert(
-        "Newsreader".to_owned(),
-        std::sync::Arc::new(egui::FontData::from_static(include_bytes!("../assets/fonts/Newsreader-Bold.ttf"))),
-    );
-    // Falls back to the same Literata/default chain as body text for any
-    // glyph Newsreader's own Latin-focused coverage doesn't have (a heading
-    // is still just text -- it shouldn't tofu-box on a character body text
-    // would have rendered fine).
-    let mut heading_fallback = fonts.families.get(&egui::FontFamily::Proportional).cloned().unwrap_or_default();
-    heading_fallback.insert(0, "Newsreader".to_owned());
-    fonts.families.insert(heading_family(), heading_fallback);
-    // A real icon font, not a symbol glyph gamble -- Literata's own doc
-    // comment above notes a theoretical fallback chain to egui's bundled
-    // emoji/symbol font, but this project has repeatedly confirmed live
-    // that several such glyphs still render as empty tofu boxes regardless
-    // (see the pin/mute/audio-indicator dots, all painter-drawn shapes
-    // specifically to dodge this). Phosphor's own codepoints live in a
-    // private-use range no other font in this chain defines, so there's no
-    // coverage ambiguity: every `egui_phosphor::light::*` constant used
-    // in this app's chrome is guaranteed to resolve here. `Light` (not
-    // `Regular`) to sit better against the now-serif-forward, less heavy
-    // typography around it.
     egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Light);
-    // After the icon font is added, so these chains inherit its glyphs: an icon button in a
-    // `control_font` Ui looks its glyph up in this family.
-    for (name, family, bytes) in [
-        ("FamiljenGrotesk", control_family(), include_bytes!("../assets/fonts/FamiljenGrotesk-Regular.ttf").as_slice()),
-        (
-            "FamiljenGrotesk-SemiBold",
-            control_bold_family(),
-            include_bytes!("../assets/fonts/FamiljenGrotesk-SemiBold.ttf").as_slice(),
-        ),
+    for (name, bytes) in [
+        ("FamiljenGrotesk", include_bytes!("../assets/fonts/FamiljenGrotesk-Regular.ttf").as_slice()),
+        ("FamiljenGrotesk-SemiBold", include_bytes!("../assets/fonts/FamiljenGrotesk-SemiBold.ttf").as_slice()),
     ] {
-        // Familjen's line box sits its caps ~0.075 em below centre; lift the glyphs so labels look centred.
         let tweak = egui::FontTweak { y_offset_factor: -0.06, ..Default::default() };
         fonts.font_data.insert(name.to_owned(), std::sync::Arc::new(egui::FontData::from_static(bytes).tweak(tweak)));
-        let mut chain = fonts.families.get(&egui::FontFamily::Proportional).cloned().unwrap_or_default();
-        chain.insert(0, name.to_owned());
-        fonts.families.insert(family, chain);
     }
+    let proportional = fonts.families.get_mut(&egui::FontFamily::Proportional).expect("egui defines it");
+    proportional.insert(0, "FamiljenGrotesk".to_owned());
+    let mut bold = proportional.clone();
+    bold[0] = "FamiljenGrotesk-SemiBold".to_owned();
+    fonts.families.insert(bold_family(), bold);
     fonts
 }
 
@@ -633,13 +558,12 @@ pub(crate) fn apply_fonts(ctx: &egui::Context) {
     ctx.set_fonts(font_definitions());
 }
 
-/// A dialog title or settings-section header — `heading_family()` (Newsreader
-/// Bold) at a size that reads as a real step up from body text, in
+/// A dialog title or settings-section header — `bold_family()` at a size that reads as a real step up from body text, in
 /// the primary text color. Every such title in this app's chrome goes through this
 /// one helper rather than each popup separately picking a size/weight, so
 /// they stay visually identical to each other by construction.
 pub(crate) fn heading_text(visuals: &egui::Visuals, text: impl Into<String>) -> egui::RichText {
-    egui::RichText::new(text).font(egui::FontId::new(17.0, heading_family())).color(palette(visuals).text)
+    egui::RichText::new(text).font(egui::FontId::new(17.0, bold_family())).color(palette(visuals).text)
 }
 
 /// The native window's theme for the setting (`None` follows the system). winit owns the title bar and re-applies it
@@ -710,7 +634,6 @@ pub(crate) fn toolbar_panel(id: &'static str, ui: &mut egui::Ui, content: impl F
             ui.spacing_mut().button_padding = egui::vec2(8.0, 4.0);
             // Buttons and fields are 28 px tall (the mockup's control height).
             ui.spacing_mut().interact_size.y = 28.0;
-            control_font(ui);
             // Soft-filled fields and borderless buttons: the raised fill
             // alone separates them from the bar (approved toolbar mockup).
             ui.visuals_mut().extreme_bg_color = ui.visuals().widgets.inactive.bg_fill;
@@ -1103,29 +1026,6 @@ mod tests {
         out.textures_delta.clear();
         let update = out.platform_output.accesskit_update.expect("accesskit enabled");
         assert!(update.nodes.iter().any(|(_, n)| n.label() == Some("Go to home page")), "no node carries the name");
-    }
-
-    /// A button in a `control_font` Ui is laid out in Familjen Grotesk, which is narrower than Literata
-    /// at the same size; a plain Ui keeps Literata.
-    #[test]
-    fn control_font_switches_button_family() {
-        let ctx = egui::Context::default();
-        apply_fonts(&ctx);
-        apply_style(&ctx);
-        let input = egui::RawInput {
-            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(400.0, 200.0))),
-            ..Default::default()
-        };
-        // Fonts set with `set_fonts` take effect on the next frame.
-        ctx.run_ui(input.clone(), |_| {}).textures_delta.clear();
-        let (mut plain, mut control) = (0.0, 0.0);
-        let mut out = ctx.run_ui(input, |ui| {
-            plain = ui.add(egui::Button::new("Developer Tools")).rect.width();
-            control_font(ui);
-            control = ui.add(egui::Button::new("Developer Tools")).rect.width();
-        });
-        out.textures_delta.clear();
-        assert!(control < plain - 5.0, "control {control} should be narrower than plain {plain}");
     }
 
     /// The size of the widget `add` lays out, after a few frames with the mouse over it or not

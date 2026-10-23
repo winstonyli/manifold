@@ -948,7 +948,9 @@ mod tests {
                 if painted_over(shapes, at, bounds) {
                     continue;
                 }
-                if let Some(higher) = order[i + 1..].iter().find(|h| shared_area(bounds, screen(h)) >= 1.0) {
+                // `bounds` is the text's line box, taller than its ink: a card edge within a pixel of it is not a show-through.
+                let ink = bounds.shrink2(egui::vec2(0.0, 1.0));
+                if let Some(higher) = order[i + 1..].iter().find(|h| shared_area(ink, screen(h)) >= 1.0) {
                     let over = titles.get(&higher.id).cloned().unwrap_or_else(|| higher.id.to_string());
                     return Err(format!("{title} shows through {over} ({bounds:?} over {:?})", screen(higher)));
                 }

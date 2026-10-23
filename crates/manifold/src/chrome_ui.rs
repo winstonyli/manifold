@@ -103,7 +103,6 @@ impl App {
                 // cards, is needed here specifically.
                 let glow_slots = [ui.painter().add(egui::Shape::Noop), ui.painter().add(egui::Shape::Noop)];
                 let response = popup_frame(ui).inner_margin(egui::Margin::symmetric(10, 6)).show(ui, |ui| {
-                    control_font(ui);
                     ui.horizontal(|ui| {
                         ui.label(message);
                         if let Some((_, _, redo)) = self.toasts.undo.as_ref().filter(|_| undoable) {

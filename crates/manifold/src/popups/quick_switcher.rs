@@ -153,7 +153,6 @@ impl App {
             .show(ui.ctx(), |ui| {
                 ui.set_opacity(fade);
                 dialog_frame(ui).show(ui, |ui| {
-                    control_font(ui);
                     ui.set_width(360.0);
                     if is_live {
                         if let Some(switcher) = &mut self.menus.quick_switcher.open {

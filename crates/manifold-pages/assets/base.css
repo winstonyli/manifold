@@ -1,13 +1,13 @@
 :root {
   /*PALETTE*/
   color-scheme: dark;
-  --serif: "Newsreader", "Iowan Old Style", Georgia, serif;
+  --sans: "Familjen Grotesk", "Segoe UI", system-ui, sans-serif;
   --mono: ui-monospace, "Cascadia Code", monospace;
 }
 body {
   background: var(--bg);
   color: var(--text);
-  font-family: var(--serif);
+  font-family: var(--sans);
   padding: 3em 2em;
   max-width: 720px;
   margin: 0 auto;

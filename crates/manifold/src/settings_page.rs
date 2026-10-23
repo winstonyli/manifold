@@ -92,7 +92,6 @@ impl App {
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             egui::Frame::default().inner_margin(egui::Margin::symmetric(16, 0)).show(ui, |ui| {
                 ui.set_max_width(ui.available_width().min(PAGE_MAX_WIDTH)); // never wider than the window
-                control_font(ui);
                 ui.add_space(PAGE_PAD);
 
                 self.settings_help_section(ui, &mut req);

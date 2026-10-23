@@ -92,8 +92,7 @@ not on the theme.
 
 ### Fonts
 
-The Heptabase mockups use Inter everywhere. Dropping the serif is a separate decision (see Open decisions); this
-design assumes the font set is fixed before the build, since the look values are tuned against it.
+The Heptabase mockups use one sans everywhere; the app follows with Familjen Grotesk (see Open decisions, Font).
 
 ## Phasing (each lands green)
 
@@ -144,8 +143,9 @@ design assumes the font set is fixed before the build, since the look values are
 
 ## Decisions
 
-- **Font** (decided 2026-10-22): keep Familjen Grotesk as the one family; Literata and Newsreader go with the serif
-  decision, nothing new is bundled.
+- **Font** (decided and built 2026-10-22): Familjen Grotesk is the one family (Regular for all text, SemiBold for titles
+  and the primary button); the serif is dropped. Literata, Newsreader, `control_family`, `heading_family` and
+  `control_font` are deleted (Body is already 13 pt), and the `manifold://` pages use a sans stack. Nothing new is bundled.
 - **Theme setting** (decided 2026-10-22): `System | Light | Dark`, default System.
 - **Dark values as built** (2026-10-22): the mockup table passed the contrast test except three roles, nudged to
   `text_weak [186,181,170]`, `danger [240,132,112]`, `outline [152,147,136]`. The card fill is `faint_bg_color`

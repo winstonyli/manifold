@@ -59,7 +59,6 @@ impl App {
             .order(egui::Order::Foreground)
             .show(ui.ctx(), |ui| {
                 dialog_frame(ui).show(ui, |ui| {
-                    control_font(ui);
                     // Narrower than 360 in a narrow window; the descriptions wrap to the room left of the keys.
                     let width = 360.0_f32.min(ui.ctx().content_rect().width() - 60.0);
                     ui.set_width(width);

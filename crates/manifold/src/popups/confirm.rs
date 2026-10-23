@@ -19,7 +19,6 @@ fn confirm_dialog(
         .order(egui::Order::Foreground)
         .show(ui.ctx(), |ui| {
             dialog_frame(ui).show(ui, |ui| {
-                control_font(ui);
                 ui.set_min_width(240.0);
                 ui.label(heading_text(ui.visuals(), title));
                 ui.add_space(4.0);
