@@ -93,6 +93,10 @@ impl App {
                     ui.horizontal(|ui| {
                         // Joined like the toolbar's chips: the buttons touch, and the bar's own padding is the only gap.
                         ui.spacing_mut().item_spacing.x = 0.0;
+                        // The toolbar's button size: the app-wide padding makes a button 32 px tall, so the 26 px
+                        // count slot sat 3 px above the buttons' centre line.
+                        ui.spacing_mut().button_padding = egui::vec2(8.0, 4.0);
+                        ui.spacing_mut().interact_size.y = 26.0;
                         // How many are selected: a round chip, its number centred in it by hand (a framed label sat
                         // low against the buttons).
                         let (rect, chip) = ui.allocate_exact_size(egui::vec2(26.0, 26.0), egui::Sense::hover());
