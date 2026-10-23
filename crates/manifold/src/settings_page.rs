@@ -452,7 +452,9 @@ impl App {
         };
         ui.add(egui::Label::new(egui::RichText::new(last_saved).small().weak()).wrap());
         ui.horizontal(|ui| {
-            ui.add(egui::TextEdit::singleline(&mut self.session_name_draft).desired_width(120.0).hint_text("Name"));
+            toolbar_field(ui, |ui| {
+                ui.add(egui::TextEdit::singleline(&mut self.session_name_draft).desired_width(120.0).hint_text("Name"))
+            });
             if ui.button("Save As").clicked() {
                 req.save_as_requested = true;
             }
