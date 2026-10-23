@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Look options</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Familjen+Grotesk:wght@400;500;600&family=Inter:wght@400;500;600&family=Literata:wght@400;500&display=swap" rel="stylesheet">
+<style>
+*{box-sizing:border-box}
+body{margin:0;padding:24px 20px 64px;background:#0b0a08;color:#e8e2d4;font:14px/1.45 'Familjen Grotesk',system-ui,sans-serif}
+h1{font:600 18px 'Familjen Grotesk',sans-serif;margin:0 0 4px}
+p.lede{margin:0 0 18px;color:#9b9585;max-width:90ch}
+h2{font:600 12px 'Familjen Grotesk',sans-serif;letter-spacing:.08em;text-transform:uppercase;color:#9b9585;margin:30px 0 4px}
+h2 b{color:#e8e2d4}
+.note{color:#9b9585;font-size:13px;margin:0 0 10px;max-width:90ch}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(780px,1fr));gap:22px}
+
+/* ---------- theme tokens (one set per look) ---------- */
+.look{
+  --bg:#17140f;--panel:#1d1a14;--raised:#292419;--hover:#3a3225;--outline:#8c7f64;
+  --text:#e9e2d3;--weak:#b2a482;--accent:#d7a24a;--on-accent:#17140f;--danger:#e07054;
+  --canvas:#000;--dots:rgba(255,255,255,.12);--dotsz:28px;
+  --r:2px;--ri:5px;--rc:8px;--cardfill:#1d1a14;--cardline:rgba(255,255,255,.1);--shadow:none;
+  --edge:#8c7f64;--edgew:1.5px;
+  --ui:'Familjen Grotesk',system-ui,sans-serif;--body:'Literata',Georgia,serif;
+  --hdrband:transparent;
+}
+.look[data-look=obsidian]{
+  --bg:#1e1e1e;--panel:#262626;--raised:#2f2f2f;--hover:#3a3a3a;--outline:#5a5a5a;
+  --text:#dadada;--weak:#9a9a9a;--accent:#8b6cef;--on-accent:#fff;--danger:#e5675a;
+  --canvas:#1e1e1e;--dots:rgba(255,255,255,.07);--dotsz:20px;
+  --r:6px;--ri:6px;--rc:6px;--cardfill:#262626;--cardline:#3a3a3a;--edge:#6a6a6a;--edgew:1px;
+  --ui:'Inter',system-ui,sans-serif;--body:'Inter',system-ui,sans-serif;
+}
+.look[data-look=linear]{
+  --bg:#0f1011;--panel:#16171a;--raised:#1d1e22;--hover:#26272c;--outline:#3b3d44;
+  --text:#e6e6e8;--weak:#8a8f98;--accent:#5e6ad2;--on-accent:#fff;--danger:#e5484d;
+  --canvas:#0b0b0c;--dots:transparent;--dotsz:24px;
+  --r:6px;--ri:6px;--rc:8px;--cardfill:#16171a;--cardline:#26272c;--edge:#4a4d57;--edgew:1px;
+  --ui:'Inter',system-ui,sans-serif;--body:'Inter',system-ui,sans-serif;
+}
+.look[data-look=heptabase]{
+  --bg:#f4f2ee;--panel:#ffffff;--raised:#efece6;--hover:#e5e1d9;--outline:#bdb7aa;
+  --text:#2b2a28;--weak:#7a756c;--accent:#3b6df0;--on-accent:#fff;--danger:#d64b3c;
+  --canvas:#ebe8e1;--dots:rgba(0,0,0,.13);--dotsz:22px;
+  --r:10px;--ri:8px;--rc:12px;--cardfill:#ffffff;--cardline:rgba(0,0,0,.07);--shadow:0 1px 2px rgba(0,0,0,.06),0 6px 18px rgba(40,30,10,.10);
+  --edge:#a39d90;--edgew:1.5px;
+  --ui:'Inter',system-ui,sans-serif;--body:'Inter',system-ui,sans-serif;
+}
+.look[data-look=calm]{ /* option 2: neutral chrome, colour lives on the canvas */
+  --bg:#17181a;--panel:#1e1f22;--raised:#272a2e;--hover:#31353a;--outline:#575c63;
+  --text:#e4e6e8;--weak:#8e949b;--accent:#e4e6e8;--on-accent:#17181a;--danger:#ef6a5a;
+  --canvas:#101113;--dots:rgba(255,255,255,.06);--dotsz:24px;
+  --r:5px;--ri:5px;--rc:8px;--cardfill:#1e1f22;--cardline:#2f3237;--edge:#5a6068;--edgew:1.25px;
+  --ui:'Familjen Grotesk',system-ui,sans-serif;--body:'Familjen Grotesk',system-ui,sans-serif;
+  --hdrband:var(--tag);
+}
+.look[data-look=ctxA],.look[data-look=ctxB]{ /* option 3: warm base, a space tints the chrome */
+  --tint:#56b4e9;
+  --bg:color-mix(in srgb,#17140f 90%,var(--tint) 10%);
+  --panel:color-mix(in srgb,#1d1a14 82%,var(--tint) 18%);
+  --raised:color-mix(in srgb,#292419 78%,var(--tint) 22%);
+  --hover:color-mix(in srgb,#3a3225 72%,var(--tint) 28%);
+  --outline:color-mix(in srgb,#8c7f64 55%,var(--tint) 45%);
+  --accent:var(--tint);--on-accent:#0d0b08;
+  --canvas:color-mix(in srgb,#000 90%,var(--tint) 10%);
+  --cardline:color-mix(in srgb,#fff 10%,var(--tint) 22%);
+  --edge:var(--tint);
+}
+.look[data-look=ctxB]{--tint:#cc79a7}
+
+.look[data-look=calmctx]{ /* 2+3: neutral chrome tinted by the space, tag-coloured card bands */
+  --tint:#56b4e9;
+  --bg:color-mix(in srgb,#17181a 92%,var(--tint) 8%);--panel:color-mix(in srgb,#1e1f22 90%,var(--tint) 10%);
+  --raised:color-mix(in srgb,#272a2e 86%,var(--tint) 14%);--hover:color-mix(in srgb,#31353a 80%,var(--tint) 20%);
+  --outline:color-mix(in srgb,#575c63 60%,var(--tint) 40%);--text:#e4e6e8;--weak:#8e949b;
+  --accent:var(--tint);--on-accent:#0d0e10;--danger:#ef6a5a;
+  --canvas:color-mix(in srgb,#101113 92%,var(--tint) 8%);--dots:rgba(255,255,255,.06);--dotsz:24px;
+  --r:5px;--ri:5px;--rc:8px;--cardfill:color-mix(in srgb,#1e1f22 90%,var(--tint) 10%);--cardline:color-mix(in srgb,#fff 8%,var(--tint) 18%);
+  --edge:var(--tint);--edgew:1.25px;--ui:'Familjen Grotesk',system-ui,sans-serif;--body:'Familjen Grotesk',system-ui,sans-serif;
+}
+.look[data-look=heptadark]{ /* Heptabase's softness in dark: cards LIGHTER than the ground, ambient shadow, big radii */
+  --bg:#201e1a;--panel:#2b2924;--raised:#38352f;--hover:#45413a;--outline:#6a655a;
+  --text:#ece8df;--weak:#a29c8e;--accent:#8fb0ff;--on-accent:#101830;--danger:#f0806a;
+  --canvas:#292723;--dots:rgba(255,255,255,.09);--dotsz:22px;
+  --r:10px;--ri:8px;--rc:12px;--cardfill:#3a3731;--cardline:rgba(255,255,255,.07);
+  --shadow:0 1px 2px rgba(0,0,0,.35),0 10px 26px rgba(0,0,0,.38);--edge:#8a8474;--edgew:1.5px;
+  --ui:'Inter',system-ui,sans-serif;--body:'Inter',system-ui,sans-serif;
+}
+.look[data-look=warmsans]{ /* today's palette and shape, type neutralised */
+  --r:4px;--ri:6px;--rc:8px;--ui:'Familjen Grotesk',system-ui,sans-serif;--body:'Familjen Grotesk',system-ui,sans-serif;
+}
+.look[data-look=arc]{ /* Arc: gradient space, frosted translucent panels, big radii */
+  --bg:linear-gradient(135deg,#3b2a63,#1d3a63);--panel:rgba(255,255,255,.09);--raised:rgba(255,255,255,.12);--hover:rgba(255,255,255,.2);--outline:rgba(255,255,255,.4);
+  --text:#fff;--weak:rgba(255,255,255,.66);--accent:#fff;--on-accent:#2a1f4d;--danger:#ff8a7a;
+  --canvas:rgba(10,8,30,.28);--dots:rgba(255,255,255,.14);--dotsz:26px;
+  --r:12px;--ri:10px;--rc:14px;--cardfill:rgba(255,255,255,.12);--cardline:rgba(255,255,255,.16);
+  --shadow:0 8px 24px rgba(0,0,0,.25);--edge:rgba(255,255,255,.55);--edgew:1.5px;
+  --ui:'Inter',system-ui,sans-serif;--body:'Inter',system-ui,sans-serif;
+}
+.look[data-look=arc] .menu{background:rgba(40,32,80,.94)}
+.look[data-look=zed]{ /* Zed / One Dark: flat, dense, slightly mono */
+  --bg:#282c34;--panel:#21252b;--raised:#2c313a;--hover:#3a404b;--outline:#4b5263;
+  --text:#abb2bf;--weak:#7f848e;--accent:#61afef;--on-accent:#1b1e24;--danger:#e06c75;
+  --canvas:#1e2127;--dots:transparent;--dotsz:24px;
+  --r:4px;--ri:4px;--rc:4px;--cardfill:#21252b;--cardline:#3a3f4b;--edge:#4b5263;--edgew:1px;
+  --ui:'Inter',system-ui,sans-serif;--body:ui-monospace,'Cascadia Code',Consolas,monospace;
+}
+.look[data-look=notion]{ /* Notion dark: flat charcoal, no strokes to speak of, blue accent */
+  --bg:#191919;--panel:#202020;--raised:#2b2b2b;--hover:#373737;--outline:#525252;
+  --text:#e6e6e6;--weak:#9b9b9b;--accent:#2383e2;--on-accent:#fff;--danger:#eb5757;
+  --canvas:#191919;--dots:transparent;--dotsz:24px;
+  --r:4px;--ri:4px;--rc:6px;--cardfill:#202020;--cardline:#2f2f2f;--edge:#5a5a5a;--edgew:1px;
+  --ui:system-ui,'Segoe UI',sans-serif;--body:system-ui,'Segoe UI',sans-serif;
+}
+.look[data-look=calmctx] .hd{color:#0d0e10;background:var(--tag)}
+.look[data-look=calmctx] .hd .host{color:rgba(0,0,0,.6)}
+/* ---------- scene ---------- */
+.look{background:var(--bg);color:var(--text);font:13px/1.4 var(--ui);border-radius:10px;overflow:hidden;border:1px solid #2a2820}
+.cap{padding:9px 14px;font-size:12px;display:flex;gap:10px;align-items:baseline;background:#0e0d0a;color:#9b9585;border-bottom:1px solid #2a2820}
+.cap b{color:#e8e2d4;font-weight:600;font-size:13px}
+.bar{height:38px;background:var(--panel);display:flex;align-items:center;gap:6px;padding:0 8px;border-bottom:1px solid var(--cardline)}
+.chip{display:flex;height:28px;background:var(--raised);border-radius:var(--ri);overflow:hidden;color:var(--text)}
+.chip>span{width:30px;display:flex;align-items:center;justify-content:center;border-right:1px solid var(--cardline)}
+.chip>span:last-child{border-right:0}
+.field{flex:1;height:28px;background:var(--raised);border-radius:var(--ri);display:flex;align-items:center;gap:8px;padding:0 10px;color:var(--weak)}
+.field kbd{font:500 10px var(--ui);border:1px solid var(--outline);border-radius:3px;padding:0 4px;color:var(--weak)}
+.btn{height:28px;padding:0 12px;border-radius:var(--ri);background:var(--raised);display:flex;align-items:center;gap:6px;color:var(--text)}
+.btn.pri{background:var(--accent);color:var(--on-accent);font-weight:600}
+svg.ic{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;flex:none}
+.stage{position:relative;height:340px;background:var(--canvas);background-image:radial-gradient(var(--dots) 1px,transparent 1px);background-size:var(--dotsz) var(--dotsz)}
+svg.edges{position:absolute;inset:0;width:100%;height:100%}
+svg.edges path{fill:none;stroke:var(--edge);stroke-width:var(--edgew);opacity:.8}
+.card{position:absolute;width:176px;height:122px;border-radius:var(--rc);background:var(--cardfill);border:1px solid var(--cardline);box-shadow:var(--shadow);overflow:hidden;display:flex;flex-direction:column}
+.card.sel{outline:2px solid var(--accent);outline-offset:3px}
+.card.tagged{outline:2px solid var(--tag);outline-offset:3px}
+.hd{height:34px;flex:none;display:flex;align-items:center;gap:7px;padding:0 9px;background:var(--hdrband);position:relative}
+.look[data-look=calm] .hd{color:#0d0e10;background:var(--tag)}
+.look[data-look=calm] .hd .host{color:rgba(0,0,0,.6)}
+.hd .t{display:flex;flex-direction:column;min-width:0;line-height:1.15}
+.hd .t b{font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-family:var(--body);font-size:12.5px}
+.hd .host{font-size:10.5px;color:var(--weak)}
+.fav{width:14px;height:14px;border-radius:3px;background:var(--tag,#ef8f2e);flex:none}
+.pg{flex:1;margin:0 5px 5px;border-radius:calc(var(--rc) - 3px);background:#f4f1ea;position:relative;overflow:hidden}
+.pg i{position:absolute;display:block;border-radius:2px;background:#d9d4c7}
+.pg i.h{left:10%;top:14%;width:46%;height:10%;background:#2a2a2a}
+.pg i.a{left:10%;top:36%;width:80%;height:6%}.pg i.b{left:10%;top:50%;width:70%;height:6%}
+.pg i.d{left:10%;top:68%;width:32%;height:20%;background:#c7d9f0}.pg i.e{left:48%;top:68%;width:42%;height:20%;background:#e8d9c0}
+.card.note{background:var(--cardfill)}
+.paper{flex:1;margin:0 5px 5px;border-radius:calc(var(--rc) - 3px);background:#ffec94;color:#3a3210;padding:6px 8px;font:12px/1.35 var(--body)}
+.grp{flex:1;margin:0 6px 6px;display:grid;grid-template-columns:1fr 1fr;gap:5px}
+.grp i{border-radius:calc(var(--rc) - 4px);background:var(--raised);border:1px solid var(--cardline)}
+.json{flex:1;padding:2px 10px;font:11px/1.55 ui-monospace,Consolas,monospace;color:var(--weak)}
+.json b{font-weight:400;color:var(--accent)}.json u{text-decoration:none;color:var(--text)}
+.menu{position:absolute;background:var(--panel);border:1px solid var(--outline);border-radius:var(--rc);padding:4px;box-shadow:var(--shadow);width:176px;font-size:12.5px}
+.menu div{height:26px;display:flex;align-items:center;justify-content:space-between;padding:0 8px;border-radius:var(--ri);color:var(--text)}
+.menu div.on{background:var(--hover)}.menu div span{color:var(--weak);font-size:11px}
+.menu hr{border:0;border-top:1px solid var(--cardline);margin:3px 0}
+.menu .del{color:var(--danger)}
+.toggle{display:inline-block;width:30px;height:17px;border-radius:9px;background:var(--accent);position:relative}
+.toggle:after{content:"";position:absolute;right:2px;top:2px;width:13px;height:13px;border-radius:50%;background:var(--on-accent)}
+.panel{position:absolute;right:12px;bottom:12px;width:230px;background:var(--panel);border:1px solid var(--cardline);border-radius:var(--rc);padding:12px;box-shadow:var(--shadow)}
+.panel h4{margin:0 0 8px;font:700 15px var(--body);color:var(--text)}
+.row{display:flex;justify-content:space-between;align-items:center;padding:5px 0;color:var(--weak)}
+</style></head><body>
+<h1>Look options</h1>
+<p class="lede">One scene (toolbar, a graph with a selected tab, a tagged tab, a group, a note and a JSON card, a context menu and a settings panel) drawn in six looks. Real content, tokens only: radii, palette, fonts, canvas, card framing and edges change; layout does not. The first is today's app for reference. Needs Google Fonts for Inter, Familjen Grotesk and Literata.</p>
+<div class="grid" id="grid"></div>
+<script>
+const icons={
+  back:'<path d="M15 6l-6 6 6 6"/>',fwd:'<path d="M9 6l6 6-6 6"/>',graph:'<circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="8" r="2.5"/><circle cx="12" cy="18" r="2.5"/><path d="M8 7l8 1M7 8l4 8M17 10l-4 6"/>',
+  star:'<path d="M12 4l2.5 5 5.5.8-4 3.9.9 5.5-4.9-2.6-4.9 2.6.9-5.5-4-3.9 5.5-.8z"/>',plus:'<path d="M12 5v14M5 12h14"/>',pin:'<path d="M9 4h6l-1 6 3 3H7l3-3zM12 13v7"/>'};
+const ic=n=>`<svg class="ic" viewBox="0 0 24 24">${icons[n]}</svg>`;
+const looks=[
+ ['current','Current','Warm near-black, gold accent, serif body, 2 px corners. The baseline.'],
+ ['obsidian','Obsidian Canvas','Calm neutral grays, one violet accent, 6 px corners, all Inter, faint dot grid, thin muted edges. The canvas stays quiet.'],
+ ['linear','Linear','Cool near-black, indigo accent, 1 px hairlines, no grid, Inter. Precise and dense; the generic dev-tool look the README moved away from.'],
+ ['heptabase','Heptabase','Light and soft: warm paper ground, white cards with soft shadows, 12 px corners, blue accent. Needs a light theme.'],
+ ['calm','Option 2: calm chrome, colourful canvas','Neutral gray chrome with a white accent. Colour comes from the cards: each card kind (or its tag) paints its header band.'],
+ ['ctxA','Option 3: context colour (space "Research")','Today\'s warm base, but the space\'s colour tints the chrome, canvas, edges and accent (sky blue here).'],
+ ['ctxB','Option 3: context colour (space "Reading")','Same palette, another space: the tint (reddish purple) re-colours the whole frame.'],
+ ['calmctx','Options 2+3 combined (space "Research")','Neutral chrome tinted by the space, accent and edges in the tint, tag-coloured card bands.'],
+ ['heptadark','Heptabase in dark','Cards lighter than the ground, ambient shadows, 12 px corners, soft warm charcoal, pastel blue accent.'],
+ ['warmsans','Today, all-sans','Same warm palette, shape and accent; only the type changes (Familjen Grotesk everywhere).'],
+ ['arc','Arc','Gradient space, frosted translucent panels, 14 px corners, white accent.'],
+ ['zed','Zed (One Dark)','Flat, dense, 4 px corners, blue accent, monospace card titles.'],
+ ['notion','Notion dark','Flat charcoal, hairline strokes, system sans, blue accent.'],
+];
+function scene(k){
+ const calm=k==='calm'||k==='calmctx';
+ const band=c=>calm?`style="--tag:${c}"`:'';
+ return `
+ <div class="bar">
+   <div class="chip"><span>${ic('back')}</span><span>${ic('fwd')}</span><span>${ic('graph')}</span></div>
+   <div class="field">${ic('star')}<span>research notes — notion.so/workspace</span><kbd>Ctrl L</kbd></div>
+   <div class="btn">${ic('pin')}</div><div class="btn pri">${ic('plus')} New tab</div>
+ </div>
+ <div class="stage">
+  <svg class="edges" viewBox="0 0 780 340" preserveAspectRatio="none"><path d="M196 80 C 250 80, 250 70, 296 70"/><path d="M476 70 C 520 70, 520 230, 560 236"/><path d="M196 80 C 240 140, 240 230, 296 236"/></svg>
+  <div class="card sel" style="left:20px;top:22px" ${band('#56b4e9')}><div class="hd" ${band('#56b4e9')}><span class="fav" style="background:#56b4e9"></span><div class="t"><b>Graph databases</b><span class="host">neo4j.com</span></div></div><div class="pg"><i class="h"></i><i class="a"></i><i class="b"></i><i class="d"></i><i class="e"></i></div></div>
+  <div class="card tagged" style="left:300px;top:12px;--tag:#009e73" ${band('#009e73')}><div class="hd" ${band('#009e73')}><span class="fav" style="background:#009e73"></span><div class="t"><b>Okabe–Ito palette</b><span class="host">jfly.uni-koeln.de</span></div></div><div class="pg"><i class="h"></i><i class="a"></i><i class="b"></i><i class="d"></i><i class="e"></i></div></div>
+  <div class="card" style="left:300px;top:176px" ${band('#e69f00')}><div class="hd" ${band('#e69f00')}><span class="fav" style="background:#e69f00"></span><div class="t"><b>Reading list</b><span class="host">3 items</span></div></div><div class="grp"><i></i><i></i><i></i><i></i></div></div>
+  <div class="card note" style="left:562px;top:184px" ${band('#f0e442')}><div class="hd" ${band('#f0e442')}><span class="fav" style="background:#f0e442"></span><div class="t"><b>Note</b><span class="host">14 words</span></div></div><div class="paper">Compare layouts before picking one.</div></div>
+  <div class="card" style="left:20px;top:188px" ${band('#d55e00')}><div class="hd" ${band('#d55e00')}><span class="fav" style="background:#d55e00"></span><div class="t"><b>session.json</b><span class="host">C:\\data</span></div></div><div class="json"><b>"id"</b>: <u>42</u><br><b>"kind"</b>: <u>"tab"</u><br><b>"held"</b>: <u>[ ]</u></div></div>
+  <div class="menu" style="left:560px;top:14px"><div>Rename <span>F2</span></div><div class="on">Duplicate <span>Ctrl D</span></div><div>Pin</div><div>Color…</div><hr><div class="del">Close card <span>Del</span></div></div>
+  <div class="panel" style="display:none"></div>
+ </div>`;
+}
+document.getElementById('grid').innerHTML=looks.map(([k,n,d])=>`<section><div class="look" data-look="${k}"><div class="cap"><b>${n}</b><span>${d}</span></div>${scene(k)}</div></section>`).join('');
+</script></body></html>

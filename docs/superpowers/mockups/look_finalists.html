@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Look finalists</title>
+<link href="https://fonts.googleapis.com/css2?family=Familjen+Grotesk:wght@400;500;600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+*{box-sizing:border-box}
+body{margin:0;padding:24px 20px 64px;background:#0b0a08;color:#e8e2d4;font:14px/1.45 'Inter',system-ui,sans-serif}
+h1{font:600 18px 'Inter',sans-serif;margin:0 0 4px}
+p.lede{margin:0 0 14px;color:#9b9585;max-width:100ch}
+.ctl{position:sticky;top:0;z-index:5;background:#0b0a08;padding:8px 0;margin:0 0 10px;display:flex;gap:6px;align-items:center;color:#9b9585;font-size:13px}
+.ctl button{font:inherit;color:#e8e2d4;background:#2e2a20;border:1px solid #444;border-radius:6px;padding:3px 10px;cursor:pointer}
+.ctl button.on{background:#d7a24a;color:#2b1c05;border-color:#d7a24a}
+
+.look{--bg:#201e1a;--panel:#2b2924;--raised:#38352f;--hover:#45413a;--outline:#6a655a;--text:#ece8df;--weak:#a29c8e;--accent:#8fb0ff;--on-accent:#101830;--danger:#f0806a;
+  --canvas:#292723;--dots:rgba(255,255,255,.09);--cardfill:#3a3731;--cardsel:#443f37;--cardline:rgba(255,255,255,.07);--shadow:0 1px 2px rgba(0,0,0,.35),0 10px 26px rgba(0,0,0,.38);
+  --body-fill:#2c2a25;--tile:#4a463e;--rc:12px;--ri:8px;--edge:#8a8474;
+  --ui:'Inter',system-ui,sans-serif;
+  margin:0 0 26px;border-radius:12px;overflow:hidden;border:1px solid #2a2820;background:var(--bg);color:var(--text);font:13px/1.4 var(--ui)}
+.look[data-look=hlight]{--bg:#f4f2ee;--panel:#fff;--raised:#efece6;--hover:#e5e1d9;--outline:#bdb7aa;--text:#2b2a28;--weak:#7a756c;--accent:#3b6df0;--on-accent:#fff;--danger:#d64b3c;
+  --canvas:#ebe8e1;--dots:rgba(0,0,0,.13);--cardfill:#fff;--cardsel:#fff;--cardline:rgba(0,0,0,.07);--shadow:0 1px 2px rgba(0,0,0,.06),0 6px 18px rgba(40,30,10,.10);
+  --body-fill:#f4f1ea;--tile:#e2ded4;--edge:#a39d90}
+.look[data-look=hybrid]{--tint:#56b4e9;
+  --bg:color-mix(in srgb,#17181a 92%,var(--tint) 8%);--panel:color-mix(in srgb,#1e1f22 90%,var(--tint) 10%);--raised:color-mix(in srgb,#272a2e 86%,var(--tint) 14%);--hover:color-mix(in srgb,#31353a 80%,var(--tint) 20%);
+  --outline:color-mix(in srgb,#575c63 60%,var(--tint) 40%);--text:#e4e6e8;--weak:#8e949b;--accent:var(--tint);--on-accent:#0d0e10;--danger:#ef6a5a;
+  --canvas:color-mix(in srgb,#101113 92%,var(--tint) 8%);--dots:rgba(255,255,255,.06);
+  --cardfill:color-mix(in srgb,#1e1f22 90%,var(--tint) 10%);--cardsel:color-mix(in srgb,#252629 88%,var(--tint) 12%);--cardline:color-mix(in srgb,#fff 8%,var(--tint) 18%);--shadow:none;
+  --body-fill:#141517;--tile:#2a2d31;--rc:8px;--ri:5px;--edge:var(--tint);--ui:'Familjen Grotesk',system-ui,sans-serif}
+.cap{padding:9px 14px;font-size:12px;background:#0e0d0a;color:#9b9585;border-bottom:1px solid #2a2820}.cap b{color:#e8e2d4;font-size:13px;margin-right:8px}
+.bar{height:38px;background:var(--panel);display:flex;align-items:center;gap:6px;padding:0 8px;border-bottom:1px solid var(--cardline)}
+.chip{display:flex;height:28px;background:var(--raised);border-radius:var(--ri);overflow:hidden}.chip>span{width:30px;display:flex;align-items:center;justify-content:center;border-right:1px solid var(--cardline)}.chip>span:last-child{border:0}
+.field{flex:1;height:28px;background:var(--raised);border-radius:var(--ri);display:flex;align-items:center;padding:0 10px;color:var(--weak)}
+.btn{height:28px;padding:0 12px;border-radius:var(--ri);display:flex;align-items:center;gap:6px;background:var(--accent);color:var(--on-accent);font-weight:600}
+.stage{background:var(--canvas);background-image:radial-gradient(var(--dots) 1px,transparent 1px);background-size:22px 22px;padding:26px 24px;display:grid;grid-template-columns:repeat(auto-fill,minmax(236px,max-content));gap:34px 26px}
+.cell{display:flex;flex-direction:column;gap:8px}.cell>small{font:500 11px var(--ui);color:var(--weak)}
+.card{position:relative;width:232px;height:156px;border-radius:var(--rc);font-size:13px}
+.shell{position:absolute;inset:0;border-radius:var(--rc);overflow:hidden;border:1px solid var(--cardline);background:var(--cardfill);box-shadow:var(--shadow);display:flex;flex-direction:column}
+.card.sel .shell{background:var(--cardsel)}
+.card::before{content:"";position:absolute;inset:-5px;border-radius:calc(var(--rc) + 4px);pointer-events:none;opacity:0;box-shadow:0 0 0 2px var(--ring,var(--accent))}
+.card.sel::before,.card.tag::before{opacity:1}.card.tag{--ring:#009e73}
+.x{position:absolute;right:-9px;top:-9px;width:22px;height:22px;border-radius:calc(var(--ri) - 2px);background:var(--panel);border:1px solid var(--outline);display:none;align-items:center;justify-content:center;z-index:3}
+.card.sel .x{display:flex}
+.conn{position:absolute;right:-9px;bottom:-9px;width:18px;height:18px;border-radius:50%;border:2px solid var(--outline);background:var(--panel);z-index:3}.card.sel .conn{border-color:var(--accent)}
+svg.ic{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;flex:none}
+.hd{height:40px;display:grid;grid-template-columns:auto 1fr auto;column-gap:8px;align-items:center;padding:0 10px 2px;flex:none}
+.look[data-look=hybrid] .hd{background:var(--k);color:#0d0e10}
+.look[data-look=hybrid] .t2{color:rgba(0,0,0,.62)}.look[data-look=hybrid] .gl{color:#0d0e10}
+.gl{grid-row:1/3;width:16px;height:16px;color:var(--k,var(--weak));display:flex}.gl svg{width:16px;height:16px}
+.look:not([data-look=hybrid]) .gl{color:var(--weak)}
+.fav{width:14px;height:14px;border-radius:3px;background:var(--k);grid-row:1/3}
+.badges{grid-row:1/3;grid-column:3;display:flex;color:var(--weak)}.look[data-look=hybrid] .badges{color:#0d0e10}
+.t1{font-weight:500;line-height:1.2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;align-self:end}
+.t2{color:var(--weak);font-size:11px;line-height:1.2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;align-self:start}.t2.path{direction:rtl;text-align:left}
+.body{position:relative;flex:1;margin:0 5px 5px;border-radius:calc(var(--rc) - 4px);overflow:hidden}
+.thumb{position:absolute;inset:0;background:#f4f1ea}.thumb i{position:absolute;display:block;border-radius:2px}
+.b-img{background:linear-gradient(135deg,#5b86b8,#2f4d73 55%,#e0a05a)}
+.b-pdf{background:#e9e6df;display:flex;align-items:center;justify-content:center}.b-pdf .pg{width:46%;height:82%;background:#fff;box-shadow:0 2px 8px rgba(0,0,0,.3);padding:8px;display:flex;flex-direction:column;gap:5px}
+.b-pdf .pg i{display:block;height:4px;background:#cfcabd;border-radius:2px}.b-pdf .pg i:first-child{width:60%;background:#444;height:6px}
+.b-note{background:#ffea91;color:#5a4c1c;padding:10px;font-size:13px;line-height:1.4}
+.body.b-json{margin:0;border-radius:0;padding:0 10px;font:12px ui-monospace,Consolas,monospace;color:var(--weak)}
+.b-json div{display:flex;justify-content:space-between;line-height:22px}.b-json b{color:var(--accent);font-weight:400}.b-json u,.b-json s{text-decoration:none;color:var(--text)}
+.b-grp{background:var(--body-fill);display:grid;grid-template-columns:repeat(3,1fr);gap:6px;padding:8px;align-content:start}.b-grp i{display:block;aspect-ratio:4/3;border-radius:4px;background:var(--tile)}
+.b-dl,.b-miss,.b-sleep{background:var(--body-fill);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;font-size:12px;text-align:center;color:var(--weak)}
+.b-dl svg,.b-miss svg,.b-sleep svg{width:28px;height:28px}.bar2{width:70%;height:6px;border-radius:3px;background:var(--tile);overflow:hidden}.bar2 i{display:block;height:100%;width:35%;background:var(--accent)}
+.b-miss{color:var(--danger)}
+</style></head><body>
+<h1>Look finalists, real card kinds</h1>
+<p class="lede">Heptabase-light, Heptabase-dark and the 2+3 hybrid (neutral chrome tinted by the space, card header bands in each kind's colour), each with every card kind in the app's 40 px header layout. Toggle state and name length. Content areas (page thumbnail, image, PDF, note paper) are unchanged from the app.</p>
+<div class="ctl">State: <button data-s="rest" class="on">Rest</button><button data-s="sel">Selected</button><button data-s="tag">Tagged</button> Name: <button data-n="short" class="on">Short</button><button data-n="long">Long</button></div>
+<div id="root"></div>
+<script>
+const P=d=>`<svg class="ic" viewBox="0 0 24 24"><path d="${d}"/></svg>`;
+const I={x:P('M6 6l12 12M18 6L6 18'),img:P('M4 5h16v14H4zM4 16l5-5 4 4 3-3 4 4M15 9.5h.01'),pdf:P('M7 3h7l5 5v13H7zM14 3v5h5'),note:P('M5 4h14v11l-5 5H5zM14 20v-5h5'),
+ json:P('M9 4c-2 0-3 1-3 3v3c0 1-1 2-2 2 1 0 2 1 2 2v3c0 2 1 3 3 3M15 4c2 0 3 1 3 3v3c0 1 1 2 2 2-1 0-2 1-2 2v3c0 2-1 3-3 3'),grp:P('M3 6h7l2 2h9v11H3z'),
+ dl:P('M12 4v11M7 11l5 5 5-5M5 20h14'),warn:P('M12 3l10 18H2zM12 10v5M12 18v.5'),moon:P('M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z'),edit:P('M4 20h4L19 9l-4-4L4 16zM13 7l4 4'),
+ back:P('M15 6l-6 6 6 6'),fwd:P('M9 6l6 6-6 6'),graph:P('M8 7l8 1M7 8l4 8M17 10l-4 6M6 4a2 2 0 100 .1M18 6a2 2 0 100 .1M12 16a2 2 0 100 .1')};
+let ST='',LONG=false;const L=(a,b)=>LONG?b:a;const gl=i=>`<span class="gl">${i}</span>`;
+const PAGE='<div class="body"><div class="thumb"><i style="left:12%;top:16%;width:46%;height:9%;background:#2a2a2a"></i><i style="left:12%;top:34%;width:76%;height:5%;background:#d9d4c7"></i><i style="left:12%;top:44%;width:70%;height:5%;background:#d9d4c7"></i><i style="left:12%;top:68%;width:30%;height:16%;background:#c7d9f0"></i><i style="left:48%;top:68%;width:40%;height:16%;background:#e8d9c0"></i></div></div>';
+const longName='How to build a calm, legible interface for a spatial browser',longUrl='notes.example.com/2026/10/building-a-calm-legible-interface-for-a-spatial-browser',longPath='C:/Users/winston/Pictures/Harbour/Prints/2026/harbour-at-dusk-final-edit-v3-for-print.png';
+const fav='<span class="fav"></span>';
+function kinds(){return [
+ ['Tab','#56b4e9',fav,L('Field notes',longName),L('notes.example.com/field-notes',longUrl),PAGE,''],
+ ['Image','#cc79a7',gl(I.img),L('harbour.png','harbour-at-dusk-final-edit-v3-for-print.png'),L('images.example.com/harbour.png',longPath),'<div class="body b-img"></div>',''],
+ ['PDF','#d55e00',gl(I.pdf),L('paper.pdf','attention-is-all-you-need-annotated-copy.pdf'),L('arxiv.org/pdf/1706.03762','C:/Users/winston/Documents/Papers/Reading/attention-is-all-you-need-annotated-copy.pdf'),'<div class="body b-pdf"><div class="pg"><i></i><i></i><i></i><i></i><i></i></div></div>',''],
+ ['Note','#f0e442',gl(I.note),'Note','12 words','<div class="body b-note">Ideas for the card header: keep it quiet, let the page lead.</div>',I.edit],
+ ['JSON','#009e73',gl(I.json),'data.json',L('C:/Users/winston/Downloads','C:/Users/winston/Documents/exports/2026-10-01/raw'),'<div class="body b-json"><div><b>name</b><s>"demo"</s></div><div><b>items</b><u>[3]</u></div><div><b>nested</b><u>{2}</u></div></div>','{3}'],
+ ['Group','#e69f00',gl(I.grp),L('Research','Research for the spring reading list'),'6 items','<div class="body b-grp"><i></i><i></i><i></i><i></i><i></i><i></i></div>',''],
+ ['Download','#7fb5a4',gl(I.dl),L('report.zip','quarterly-financial-report-2026-q3-final.zip'),L('C:/Users/winston/Downloads/report.zip','C:/Users/winston/Downloads/quarterly-financial-report-2026-q3-final.zip'),'<div class="body b-dl">'+I.dl+'<div class="bar2"><i></i></div></div>',''],
+ ['Sleeping tab','#9aa0a6',fav,L('Field notes',longName),L('notes.example.com/field-notes',longUrl),'<div class="body b-sleep">'+I.moon+'Asleep · click to wake</div>',I.moon],
+ ['Missing file','#ef6a5a',gl(I.warn),L('harbour.png','harbour-at-dusk-final-edit-v3-for-print.png'),L('C:/Users/winston/Pictures/harbour.png',longPath),'<div class="body b-miss">'+I.warn+'The file was moved or deleted</div>',I.warn]
+]}
+const LOOKS=[['hdark','Heptabase dark','Cards lighter than the ground, ambient shadows, 12 px corners, warm charcoal, pastel blue accent.'],
+ ['hlight','Heptabase light','Paper ground, white cards, soft shadows, 12 px corners, blue accent.'],
+ ['hybrid','2+3 hybrid (space "Research")','Neutral chrome tinted by the space; each card kind paints its header band; accent and edges follow the tint.']];
+function render(){
+ document.getElementById('root').innerHTML=LOOKS.map(([k,n,d])=>`<div class="look" data-look="${k}"><div class="cap"><b>${n}</b>${d}</div>
+ <div class="bar"><div class="chip"><span>${I.back}</span><span>${I.fwd}</span><span>${I.graph}</span></div><div class="field">research notes — notion.so/workspace</div><div class="btn">+ New tab</div></div>
+ <div class="stage">${kinds().map(([kn,hue,g,nm,m,b,bd])=>`<div class="cell"><div class="card ${ST}" style="--k:${hue}"><div class="shell"><div class="hd">${g.replace('class="fav"','class="fav"')}<span class="t1">${nm}</span><span class="badges">${bd}</span><span class="t2 ${m.startsWith('C:')?'path':''}"><bdi>${m}</bdi></span></div>${b}</div><div class="x">${I.x}</div><div class="conn"></div></div><small>${kn}</small></div>`).join('')}</div></div>`).join('');
+}
+document.querySelectorAll('.ctl button').forEach(b=>b.onclick=()=>{
+ if(b.dataset.s){ST=b.dataset.s==='rest'?'':b.dataset.s;document.querySelectorAll('[data-s]').forEach(x=>x.classList.toggle('on',x===b))}
+ if(b.dataset.n){LONG=b.dataset.n==='long';document.querySelectorAll('[data-n]').forEach(x=>x.classList.toggle('on',x===b))}
+ render()});
+render();
+</script></body></html>
