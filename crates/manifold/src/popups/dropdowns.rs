@@ -333,7 +333,8 @@ impl App {
                         if let Some(name) = folder {
                             let segs = crate::names::display_name(name, crate::names::UNTITLED);
                             // One line, cut with "…" at the popup's width (egui's hover then shows it all).
-                            let header = ui.add(egui::Label::new(folder_job(ui, &segs, TEXT_PRIMARY)).truncate());
+                            let header =
+                                ui.add(egui::Label::new(folder_job(ui, &segs, palette(ui.visuals()).text)).truncate());
                             if let Some(hint) = crate::names::hidden_hint(&segs) {
                                 header.on_hover_text(hint);
                             }
@@ -588,7 +589,7 @@ impl App {
                         // the filename; a completed one is left exactly as
                         // before this feature -- just the filename row above.
                         if node.failed {
-                            ui.colored_label(DANGER_COLOR, "Failed");
+                            ui.colored_label(danger(ui.visuals()), "Failed");
                         } else if !node.completed {
                             match node.total_bytes {
                                 Some(total) if total > 0 => {
@@ -793,7 +794,7 @@ impl App {
                 ui.set_opacity(fade);
                 popup_frame(ui).show(ui, |ui| {
                     let (outer, _) = ui.allocate_exact_size(view, egui::Sense::hover());
-                    ui.painter().rect_filled(outer, 4.0, crate::theme::BG);
+                    ui.painter().rect_filled(outer, 4.0, ui.visuals().panel_fill);
                     let (zoom_scale, _) = camera.begin_frame(ui.ctx(), outer);
                     let inv_zoom = 1.0 / zoom_scale;
                     let viewport = camera.rect;
@@ -940,9 +941,7 @@ mod tests {
     /// a header and as the "click to set folder" label under a bookmark.
     #[test]
     fn a_long_bookmark_folder_header_is_one_cut_line() {
-        let ctx = egui::Context::default();
-        theme::apply_fonts(&ctx);
-        theme::apply_style(&ctx);
+        let ctx = crate::theme::testutil::ctx(true);
         let mut app = App::default();
         let folder = format!("w{}", " Wardrobe".repeat(7));
         let bookmark = |title: &str| bookmarks::Bookmark {

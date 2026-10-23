@@ -41,8 +41,7 @@ fn a_jar_chip_keeps_its_marker_while_the_name_shrinks() {
 /// The painted chip shows the marker as text of its own, whole, next to an ellipsized name.
 #[test]
 fn a_painted_jar_chip_draws_the_marker_whole() {
-    let ctx = egui::Context::default();
-    crate::theme::apply_fonts(&ctx);
+    let ctx = crate::theme::testutil::ctx(true);
     let chip = crate::jar_defs::JarChip {
         name: crate::jar_defs::JarLabel {
             name: "A rather long jar name".into(),
@@ -96,8 +95,7 @@ fn a_painted_jar_chip_draws_the_marker_whole() {
 /// then the new jar's; one dot otherwise. Tab view drew only the new jar's dot.
 #[test]
 fn the_jar_dots_show_a_waiting_switch() {
-    let ctx = egui::Context::default();
-    crate::theme::apply_fonts(&ctx);
+    let ctx = crate::theme::testutil::ctx(true);
     for will_switch in [false, true] {
         let chip = crate::jar_defs::JarChip {
             name: "Home".into(),
@@ -140,8 +138,7 @@ fn the_jar_dots_show_a_waiting_switch() {
 /// chip that stops being painted stops being hit.
 #[test]
 fn a_painted_jar_chip_can_be_hit_until_it_stops_being_painted() {
-    let ctx = egui::Context::default();
-    crate::theme::apply_fonts(&ctx);
+    let ctx = crate::theme::testutil::ctx(true);
     let chip = crate::jar_defs::JarChip {
         name: crate::jar_defs::JarLabel { name: "Work".into(), marker: None },
         color: egui::Color32::RED,
@@ -185,8 +182,7 @@ fn a_painted_jar_chip_can_be_hit_until_it_stops_being_painted() {
 /// The painted scrim honours `fit_jar_chip`, with the long name ellipsized rather than overflowing.
 #[test]
 fn a_painted_jar_chip_stays_inside_its_width() {
-    let ctx = egui::Context::default();
-    crate::theme::apply_fonts(&ctx);
+    let ctx = crate::theme::testutil::ctx(true);
     let chip = crate::jar_defs::JarChip {
         name: "A rather long jar name".into(),
         color: egui::Color32::RED,
@@ -220,8 +216,7 @@ fn a_painted_jar_chip_stays_inside_its_width() {
 /// Name rules: a chip draws a hidden character in its jar's name as a placeholder, in the marker style.
 #[test]
 fn a_jar_chip_shows_a_hidden_character_as_a_placeholder() {
-    let ctx = egui::Context::default();
-    crate::theme::apply_fonts(&ctx);
+    let ctx = crate::theme::testutil::ctx(true);
     let chip = crate::jar_defs::JarChip {
         name: crate::jar_defs::JarLabel { name: "Wo\u{200B}rk".into(), marker: None },
         color: egui::Color32::RED,
@@ -256,8 +251,7 @@ fn a_jar_chip_shows_a_hidden_character_as_a_placeholder() {
 /// spaces, the fallback); another card's title is drawn as before.
 #[test]
 fn a_group_header_draws_its_name_by_the_display_rule() {
-    let ctx = egui::Context::default();
-    crate::theme::apply_fonts(&ctx);
+    let ctx = crate::theme::testutil::ctx(true);
     let mut app = App::default();
     for (name, user_name, want) in [
         ("Re\u{200B}ading", true, "Re⟦200B⟧ading"),
@@ -302,8 +296,7 @@ fn a_group_header_draws_its_name_by_the_display_rule() {
 /// centred on `HEADER_TITLE_Y` and `HEADER_SOURCE_Y`, where the tab card drew them by hand before `CardHeader`.
 #[test]
 fn a_header_with_an_empty_glyph_draws_title_and_source_at_the_header_lines() {
-    let ctx = egui::Context::default();
-    crate::theme::apply_fonts(&ctx);
+    let ctx = crate::theme::testutil::ctx(true);
     let mut app = App::default();
     let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
         let mut overlays: DeferredOverlays = DeferredOverlays::default();
@@ -342,8 +335,7 @@ fn a_header_with_an_empty_glyph_draws_title_and_source_at_the_header_lines() {
 /// header draws the same segments the hover came from.
 #[test]
 fn a_group_card_tooltip_names_a_hidden_character() {
-    let ctx = egui::Context::default();
-    crate::theme::apply_fonts(&ctx);
+    let ctx = crate::theme::testutil::ctx(true);
     let mut app = App::default();
     let g = app.alloc_node_id();
     app.insert_group_at(g, None);
@@ -448,7 +440,7 @@ fn card_border_resolves_focus_tag_overload_idle_and_hover() {
     let style = CardStyle {
         border_idle: egui::Color32::GRAY,
         border_hover: egui::Color32::WHITE,
-        ..card_style(plain(TYPE_NOTE), &egui::Visuals::dark())
+        ..card_style(plain(TYPE_NOTE), &crate::theme::testutil::ctx(true).global_style().visuals)
     };
     let red = egui::Color32::RED;
     let view = |color| CardView { color, ..test_view(plain(TYPE_NOTE)) };

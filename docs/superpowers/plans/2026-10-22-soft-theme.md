@@ -117,7 +117,7 @@ Change `palette_vars()` to iterate `[("bg", c.bg), ("panel", c.toolbar_fill), ("
 #[test]
 fn palette_follows_visuals_dark_mode() {
     let ctx = testutil::ctx(true);
-    let v = ctx.style().visuals.clone();
+    let v = ctx.global_style().visuals.clone();
     assert_eq!(palette(&v).text, TEXT_PRIMARY);
     assert_eq!(accent(&v), ACCENT);
     assert_eq!(danger(&v), DANGER_COLOR);
@@ -126,7 +126,7 @@ fn palette_follows_visuals_dark_mode() {
 #[test]
 fn error_fg_and_selection_are_set_by_apply_style() {
     let ctx = testutil::ctx(true);
-    let v = ctx.style().visuals.clone();
+    let v = ctx.global_style().visuals.clone();
     assert_eq!(v.selection.bg_fill, ACCENT);
     assert_eq!(v.error_fg_color, DANGER_COLOR);
 }
@@ -161,7 +161,7 @@ Declare `#[cfg(test)] pub(crate) mod testutil;` in `theme.rs`.
 
 **Interfaces:** Consumes T2's `palette()`, `accent()`, `danger()`.
 
-Rule for every site: `ACCENT` -> `crate::theme::accent(ui.visuals())` (or `painter.ctx().style().visuals` clone held once per function where there is no `Ui`; bind `let v = ui.visuals();` once per function, not per use); `DANGER_COLOR` -> `crate::theme::danger(v)`; `TEXT_PRIMARY/TEXT_WEAK/BG-as-ink/DANGER_FILL/SUCCESS_COLOR/SCRIM_TEXT*/NOTE_CARD_COLOR` -> `crate::theme::palette(v).<field>`; `BG` used as a fill (`card.rs:1049`, the number cap) -> `v.panel_fill`. Sites known from the survey: `card.rs` 1047-1051, 1081, 1100, 1109, 1216, 276, 335, 337, 550, 609, 639, 691, 704; `download_body.rs` 54, 85; `image_body.rs` 28, 38; `jar_chip.rs` 181; `note_body.rs` 40; `pdf_body.rs` 88; `tab_body.rs` 83, 106, 110, 113, 180, 181, 370.
+Rule for every site: `ACCENT` -> `crate::theme::accent(ui.visuals())` (or `painter.ctx().global_style().visuals` clone held once per function where there is no `Ui`; bind `let v = ui.visuals();` once per function, not per use); `DANGER_COLOR` -> `crate::theme::danger(v)`; `TEXT_PRIMARY/TEXT_WEAK/BG-as-ink/DANGER_FILL/SUCCESS_COLOR/SCRIM_TEXT*/NOTE_CARD_COLOR` -> `crate::theme::palette(v).<field>`; `BG` used as a fill (`card.rs:1049`, the number cap) -> `v.panel_fill`. Sites known from the survey: `card.rs` 1047-1051, 1081, 1100, 1109, 1216, 276, 335, 337, 550, 609, 639, 691, 704; `download_body.rs` 54, 85; `image_body.rs` 28, 38; `jar_chip.rs` 181; `note_body.rs` 40; `pdf_body.rs` 88; `tab_body.rs` 83, 106, 110, 113, 180, 181, 370.
 
 Two structural cases:
 - `card.rs:114` `const WAVEFORM_COLOR = SUCCESS_COLOR` becomes `fn waveform_color(v: &Visuals) -> Color32 { palette(v).success }`; update its callers.
@@ -173,7 +173,7 @@ Two structural cases:
 #[test]
 fn border_colors_come_from_the_visuals() {
     let ctx = crate::theme::testutil::ctx(true);
-    let v = ctx.style().visuals.clone();
+    let v = ctx.global_style().visuals.clone();
     assert_eq!(crate::theme::accent(&v), crate::theme::ACCENT);
 }
 ```
@@ -226,7 +226,7 @@ Mapping beyond T3's rule: `SURFACE_RAISED` -> `v.widgets.inactive.bg_fill`; `SUR
 - [ ] **Step 2: Dark values** (`palette::DARK`): bg `[41,39,35]`, toolbar_fill `[47,45,40]`, surface_raised `[58,55,49]`, surface_hover `[70,67,60]`, outline `[140,135,124]`, text_primary `[236,233,226]`, text_weak `[176,171,160]`, accent `[143,176,255]`, danger `[236,120,100]`. Update `DARK_PALETTE.text/text_weak/canvas`, set `danger_fill` `[150,52,38]`, `shadow: 70`. Update the page test's expected `--bg:#292723;` and `--accent:#8FB0FF;`.
 - [ ] **Step 3: Shape.** `RADIUS = 8`, `RADIUS_ITEM = 6`, `RADIUS_CHIP = 10`, card corner `12`. For each `rect_filled`/`rect_stroke` literal radius found by `grep -rn "rect_filled\|rect_stroke" crates/manifold/src | grep -E ", (2|3|4|5|6)\.0"` decide per site: card or control corners take the constant; circle radii and margins stay. Card corner source: `card_style` `rounding` fields (`card.rs:261-290`) set to 12 (`dim_rounding` follows).
 - [ ] **Step 4: Shadow.** `card_glow_shapes` per the interface: alphas `(shadow*0.6, shadow*0.25)`, grows `(4.0, 12.0)`, `offset_y` 3.0 for rest shadow; hover/focus callers keep passing the state color and `intensity` as today. Note `chrome_ui.rs:114`'s call and every caller (`grep -rn card_glow_shapes`).
-- [ ] **Step 5: Clear.** In `render`, convert `canvas` to `wgpu::Color` (linear if the surface is sRGB: copy the conversion `gpu.rs` already uses for egui colors; grep `srgb`); use it at both clears. Pass `palette(&ctx.style().visuals).canvas` from the caller.
+- [ ] **Step 5: Clear.** In `render`, convert `canvas` to `wgpu::Color` (linear if the surface is sRGB: copy the conversion `gpu.rs` already uses for egui colors; grep `srgb`); use it at both clears. Pass `palette(&ctx.global_style().visuals).canvas` from the caller.
 - [ ] **Step 6:** Mute the canvas dot grid and edge colors: `grep -rn "dot\|grid" crates/manifold/src/graph_ui/scene.rs crates/manifold/src/level.rs` for the canvas dot grid; mute to `with_alpha(text_weak, 40)`.
 - [ ] **Step 7:** `cargo test -j 8 -p manifold -p manifold-pages`, clippy, then `gate chrome-shots`; view the shots (screenshots or the generated sheet) and compare with `look_finalists.html` dark. Commit `Heptabase dark: values, radii, soft shadow, canvas clear`.
 

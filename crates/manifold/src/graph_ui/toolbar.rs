@@ -387,8 +387,7 @@ mod tests {
     /// Name rules: crumbs draw hidden characters as placeholders and shorten to 20 units, a placeholder counting one.
     #[test]
     fn breadcrumb_crumbs_follow_the_display_rule() {
-        let ctx = egui::Context::default();
-        crate::theme::apply_fonts(&ctx);
+        let ctx = crate::theme::testutil::ctx(true);
         let mut app = App::default();
         let (outer, inner) = (app.alloc_node_id(), app.alloc_node_id());
         app.insert_group_at(outer, None);

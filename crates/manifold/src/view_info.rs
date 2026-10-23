@@ -24,7 +24,7 @@ pub(crate) fn on_disk_text(kind: ViewKind, disk: crate::view_install::OnDisk) ->
     text
 }
 
-/// How an engine state's label is colored: weak text, or `DANGER_COLOR` for a failure.
+/// How an engine state's label is colored: weak text, or the danger red for a failure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Tone {
     Weak,
@@ -32,10 +32,10 @@ pub(crate) enum Tone {
 }
 
 impl Tone {
-    pub(crate) fn color(self) -> egui::Color32 {
+    pub(crate) fn color(self, visuals: &egui::Visuals) -> egui::Color32 {
         match self {
-            Tone::Weak => TEXT_WEAK,
-            Tone::Danger => DANGER_COLOR,
+            Tone::Weak => crate::theme::palette(visuals).text_weak,
+            Tone::Danger => crate::theme::danger(visuals),
         }
     }
 }
@@ -104,7 +104,7 @@ pub(crate) enum ViewConfirm {
 /// The state line of an engine card or Settings row: its label, plus a progress bar while installing.
 pub(crate) fn view_status_line(ui: &mut egui::Ui, state: &ViewStatus) {
     let (text, tone) = view_status_label(state);
-    ui.label(egui::RichText::new(text).small().color(tone.color()));
+    ui.label(egui::RichText::new(text).small().color(tone.color(ui.visuals())));
     if let ViewStatus::Installing { received, total } = state {
         install_progress_bar(ui, *received, *total);
     }
@@ -158,14 +158,14 @@ impl ViewTier {
     }
 
     /// A muted, tier-coded badge color -- deliberately not reusing
-    /// `ACCENT`/`DANGER_COLOR` (both already mean something else
+    /// the accent and danger colors (both already mean something else
     /// elsewhere: "focused" and "destructive") or any `view_color`
     /// (that axis is "which engine," this one is "how ready is it").
-    pub(crate) fn color(self) -> egui::Color32 {
+    pub(crate) fn color(self, visuals: &egui::Visuals) -> egui::Color32 {
         match self {
-            ViewTier::Recommended => crate::theme::SUCCESS_COLOR,
-            ViewTier::Experimental => crate::theme::ACCENT,
-            ViewTier::Limited => crate::theme::DANGER_COLOR,
+            ViewTier::Recommended => crate::theme::palette(visuals).success,
+            ViewTier::Experimental => crate::theme::accent(visuals),
+            ViewTier::Limited => crate::theme::danger(visuals),
         }
     }
 }
@@ -184,20 +184,29 @@ pub(crate) fn draw_view_card(
     // An engine this platform cannot run is dimmed to weak text and only explains itself when clicked.
     let dim = matches!(state, ViewStatus::Unavailable(_));
     let frame_response = egui::Frame::default()
-        .fill(if is_selected { SURFACE_HOVER } else { SURFACE_RAISED })
+        .fill(if is_selected { ui.visuals().widgets.hovered.bg_fill } else { ui.visuals().widgets.inactive.bg_fill })
         .corner_radius(crate::theme::RADIUS)
         .inner_margin(egui::Margin::same(8))
         .show(ui, |ui| {
             // The popup's full width, not just as wide as the card's text.
             ui.set_min_width(ui.available_width());
+            let palette = crate::theme::palette(ui.visuals());
             ui.horizontal(|ui| {
                 view_dot(ui, kind, 10.0);
-                ui.label(egui::RichText::new(view_label(kind)).color(if dim { TEXT_WEAK } else { TEXT_PRIMARY }));
+                ui.label(egui::RichText::new(view_label(kind)).color(if dim {
+                    palette.text_weak
+                } else {
+                    palette.text
+                }));
                 if is_selected {
                     ui.label(egui_phosphor::light::CHECK_CIRCLE);
                 }
                 let tier = kind.desc().tier;
-                ui.label(egui::RichText::new(tier.label()).small().color(if dim { TEXT_WEAK } else { tier.color() }));
+                ui.label(egui::RichText::new(tier.label()).small().color(if dim {
+                    palette.text_weak
+                } else {
+                    tier.color(ui.visuals())
+                }));
             });
             if *state != ViewStatus::Installed {
                 view_status_line(ui, state);
@@ -205,10 +214,10 @@ pub(crate) fn draw_view_card(
             ui.add_space(4.0);
             for pro in kind.desc().pros {
                 let text = egui::RichText::new(format!("+ {pro}")).small();
-                ui.label(if dim { text.color(TEXT_WEAK) } else { text });
+                ui.label(if dim { text.color(palette.text_weak) } else { text });
             }
             for con in kind.desc().cons {
-                ui.label(egui::RichText::new(format!("\u{2212} {con}")).small().color(TEXT_WEAK));
+                ui.label(egui::RichText::new(format!("\u{2212} {con}")).small().color(palette.text_weak));
             }
         });
     // Interacted on *after* the frame's content is laid out, using its own
@@ -302,6 +311,15 @@ pub(crate) fn build_view_picker_popup(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tier_and_tone_colors_come_from_the_visuals() {
+        let visuals = crate::theme::testutil::ctx(true).global_style().visuals.clone();
+        assert_eq!(ViewTier::Recommended.color(&visuals), crate::theme::palette(&visuals).success);
+        assert_eq!(ViewTier::Experimental.color(&visuals), crate::theme::accent(&visuals));
+        assert_eq!(Tone::Danger.color(&visuals), crate::theme::danger(&visuals));
+        assert_eq!(Tone::Weak.color(&visuals), crate::theme::palette(&visuals).text_weak);
+    }
 
     fn key(key: egui::Key) -> egui::Event {
         egui::Event::Key {

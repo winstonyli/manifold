@@ -51,7 +51,7 @@ impl App {
                     (false, None) => crate::human_bytes(bytes_received),
                 };
                 let middle = card_body_rect(rect, true, inv_zoom).center();
-                let color = if failed { DANGER_COLOR } else { ui.visuals().weak_text_color() };
+                let color = if failed { danger(ui.visuals()) } else { ui.visuals().weak_text_color() };
                 push_centered_text(deferred_overlays, middle, size, 13.0, color);
             }
         }
@@ -82,7 +82,7 @@ impl App {
                     track_rect.min,
                     egui::pos2(track_rect.min.x + track_rect.width() * fraction, track_rect.max.y),
                 );
-                ui.painter().rect_filled(fill_rect, 2.0, ACCENT);
+                ui.painter().rect_filled(fill_rect, 2.0, accent(ui.visuals()));
             }
         }
         body

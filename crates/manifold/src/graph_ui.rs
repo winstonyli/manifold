@@ -311,8 +311,7 @@ mod tests {
     #[test]
     fn a_click_finishes_or_cancels_pick_target_mode() {
         use crate::caps::{LINK, OPENED_FROM};
-        let ctx = egui::Context::default();
-        crate::theme::apply_fonts(&ctx);
+        let ctx = crate::theme::testutil::ctx(true);
         let mut app = App::default();
         let (a, b) = (app.alloc_node_id(), app.alloc_node_id());
         for (id, x) in [(a, 0.0), (b, 600.0)] {
@@ -369,8 +368,7 @@ mod tests {
     /// `build_graph_ui` with real egui input.
     #[test]
     fn a_right_click_on_the_swatch_opens_the_menu_on_its_color_page() {
-        let ctx = egui::Context::default();
-        crate::theme::apply_fonts(&ctx);
+        let ctx = crate::theme::testutil::ctx(true);
         let mut app = App::default();
         let note_id = app.alloc_node_id();
         let note = Runtime::Note(NotePayload { text: "n".into(), editing: false });
@@ -424,8 +422,7 @@ mod tests {
     #[ignore]
     fn graph_frame_cost() {
         use crate::bench::{level_fixture, report, spread, timed};
-        let ctx = egui::Context::default();
-        crate::theme::apply_fonts(&ctx);
+        let ctx = crate::theme::testutil::ctx(true);
         let mut f = level_fixture(false);
         spread(&mut f);
         let mut app = f.app;
@@ -479,8 +476,7 @@ mod tests {
     /// top-left corner. Pins the slot lookup before it moves to a per-pass map.
     #[test]
     fn each_card_shows_its_tab_slot_badge() {
-        let ctx = egui::Context::default();
-        crate::theme::apply_fonts(&ctx);
+        let ctx = crate::theme::testutil::ctx(true);
         let mut app = App::default();
         for k in 0..3 {
             let id = app.alloc_node_id();

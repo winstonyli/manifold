@@ -140,8 +140,7 @@ struct Harness {
 
 impl Harness {
     fn new() -> Self {
-        let ctx = egui::Context::default();
-        crate::theme::apply_fonts(&ctx);
+        let ctx = crate::theme::testutil::ctx(true);
         Self { ctx, cover: std::cell::Cell::new(None), clock: std::cell::Cell::new(0.0) }
     }
 
@@ -665,13 +664,14 @@ fn the_live_preview_follows_the_pointer_and_is_exported() {
 fn each_retarget_outcome_has_its_own_look() {
     use crate::links::RetargetOutcome::*;
     use crate::theme::{refused_color, ACCENT, DANGER_COLOR, TEXT_WEAK};
-    let look = retarget_look;
+    let visuals = crate::theme::testutil::ctx(true).global_style().visuals.clone();
+    let look = |outcome| retarget_look(outcome, &visuals);
     assert_eq!(look(Retargeted), RetargetLook { band: ACCENT, band_px: LINK_STROKE_PX, glyph: None, ring: ACCENT });
     assert_eq!(look(Cancelled).band, ACCENT);
     assert_eq!(look(Cancelled).ring, TEXT_WEAK, "an own-card ring promises no retarget");
     assert_eq!(
         (look(Refused).band, look(Refused).ring, look(Refused).glyph),
-        (refused_color(), refused_color(), Some(RetargetGlyph::Prohibited))
+        (refused_color(&visuals), refused_color(&visuals), Some(RetargetGlyph::Prohibited))
     );
     let deleted = look(Deleted);
     assert_eq!((deleted.band, deleted.ring, deleted.glyph), (DANGER_COLOR, DANGER_COLOR, Some(RetargetGlyph::Cross)));

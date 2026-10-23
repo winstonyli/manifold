@@ -290,13 +290,13 @@ impl App {
         overlay_painter.rect_filled(minimap_rect, 4.0, egui::Color32::from_black_alpha(160));
         for item in items {
             let (radius, color) = match item.kind.ty {
-                ty if is_container(ty) => (3.0, ACCENT),
+                ty if is_container(ty) => (3.0, accent(ui.visuals())),
                 TYPE_TAB => (2.0, ui.visuals().text_color()),
                 TYPE_DOWNLOAD => (2.0, ui.visuals().weak_text_color()),
                 TYPE_NOTE => (2.0, NOTE_CARD_COLOR),
                 // Image, PDF and JSON cards, a JSON level's cards and the virtual ones; a type this build doesn't
                 // know draws as one of them.
-                _ => (2.0, ACCENT),
+                _ => (2.0, accent(ui.visuals())),
             };
             let failed = item
                 .id
@@ -304,13 +304,18 @@ impl App {
                 .and_then(|id| self.nodes.get(&id))
                 .and_then(|n| n.as_unloaded())
                 .is_some_and(|t| matches!(t.state, UnloadedState::Failed(_)));
-            let color = if failed { DANGER_COLOR } else { color };
+            let color = if failed { danger(ui.visuals()) } else { color };
             overlay_painter.circle_filled(world_to_minimap(item.rect.center()), radius, color);
         }
         let viewport_rect =
             egui::Rect::from_two_pos(world_to_minimap(self.camera.rect.min), world_to_minimap(self.camera.rect.max))
                 .intersect(minimap_rect);
-        overlay_painter.rect_stroke(viewport_rect, 0.0, egui::Stroke::new(1.5, ACCENT), egui::StrokeKind::Inside);
+        overlay_painter.rect_stroke(
+            viewport_rect,
+            0.0,
+            egui::Stroke::new(1.5, accent(ui.visuals())),
+            egui::StrokeKind::Inside,
+        );
         overlay_painter.rect_stroke(
             minimap_rect,
             4.0,

@@ -248,8 +248,7 @@ mod tests {
 
     /// The texts one frame of the quick switcher paints, in order.
     fn quick_switcher_texts(app: &mut App) -> Vec<String> {
-        let ctx = egui::Context::default();
-        crate::theme::apply_fonts(&ctx);
+        let ctx = crate::theme::testutil::ctx(true);
         // An `Area` is hidden for its sizing frame, and the popup fades in over a second: run both out.
         let mut output = Default::default();
         for frame in 0..4 {

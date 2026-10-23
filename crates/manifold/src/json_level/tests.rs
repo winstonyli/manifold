@@ -37,8 +37,7 @@ fn a_search_builds_its_hit_rows_per_card() {
 fn tab_walks_the_json_cards_and_focus_survives_a_pan() {
     let (mut app, j) = app_with_json("tab-walk", r#"{"a": {"x": 1}, "b": {"y": 2}, "c": {"z": 3}}"#);
     app.switch_group_level(Some(j));
-    let ctx = egui::Context::default();
-    crate::theme::apply_fonts(&ctx);
+    let ctx = crate::theme::testutil::ctx(true);
     let frame = |app: &mut App, events: Vec<egui::Event>| {
         let input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1024.0, 768.0))),

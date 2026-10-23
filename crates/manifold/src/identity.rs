@@ -289,9 +289,9 @@ pub(crate) fn ink_on(fill: egui::Color32) -> egui::Color32 {
     };
     let luminance = 0.2126 * lin(fill.r()) + 0.7152 * lin(fill.g()) + 0.0722 * lin(fill.b());
     if luminance > 0.3 {
-        BG
+        crate::theme::INK_DARK
     } else {
-        TEXT_PRIMARY
+        crate::theme::INK_LIGHT
     }
 }
 
@@ -318,15 +318,14 @@ mod tests {
 
     #[test]
     fn ink_is_dark_on_light_engines_and_light_on_dark_ones() {
-        assert_eq!(ink_on(view_color(ViewKind::Servo)), BG);
-        assert_eq!(ink_on(view_color(ViewKind::Webkit)), BG);
-        assert_eq!(ink_on(view_color(ViewKind::Webview2)), TEXT_PRIMARY);
+        assert_eq!(ink_on(view_color(ViewKind::Servo)), crate::theme::INK_DARK);
+        assert_eq!(ink_on(view_color(ViewKind::Webkit)), crate::theme::INK_DARK);
+        assert_eq!(ink_on(view_color(ViewKind::Webview2)), crate::theme::INK_LIGHT);
     }
 
     #[test]
     fn a_letter_is_centred_on_its_ink_not_its_line_box() {
-        let ctx = egui::Context::default();
-        crate::theme::apply_fonts(&ctx);
+        let ctx = crate::theme::testutil::ctx(true);
         let at = egui::pos2(50.0, 50.0);
         let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
             let text = IdentityText { center: at, text: "E".into(), size: 11.0, color: BG };
@@ -351,8 +350,7 @@ mod tests {
 
     #[test]
     fn a_line_of_text_is_centred_on_its_line_box() {
-        let ctx = egui::Context::default();
-        crate::theme::apply_fonts(&ctx);
+        let ctx = crate::theme::testutil::ctx(true);
         let at = egui::pos2(50.0, 50.0);
         let mut output = ctx.run_ui(egui::RawInput::default(), |ui| paint_centered(ui.painter(), at, "Egg", 11.0, BG));
         output.textures_delta.clear();

@@ -61,8 +61,7 @@ mod tests {
 
     impl Rig {
         fn new() -> Self {
-            let ctx = egui::Context::default();
-            crate::theme::apply_fonts(&ctx);
+            let ctx = crate::theme::testutil::ctx(true);
             let mut app = App::default();
             let ids = [(0.0, "https://a.test/"), (600.0, "https://b.test/")].map(|(x, url)| {
                 let id = app.alloc_node_id();

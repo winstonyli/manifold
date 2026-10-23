@@ -67,6 +67,7 @@ impl App {
         // (`CardKind`), never a kind enum (plan 2b-6, Ruling 9).
         let now = std::time::Instant::now();
         let window = self.egui_ctx.content_rect();
+        let visuals = self.egui_ctx.global_style().visuals.clone();
         let cards: Vec<serde_json::Value> = self
             .level_items()
             .into_iter()
@@ -262,7 +263,7 @@ impl App {
             "window": [window.width(), window.height()],
             "popups": self.popups_state(),
             // The theme colors the gate checks on screen, as [r, g, b]: the gate reads them here, not from its own copy.
-            "theme": {"danger": crate::theme::rgb(crate::theme::DANGER_COLOR), "accent": crate::theme::rgb(crate::theme::ACCENT)},
+            "theme": {"danger": crate::theme::rgb(crate::theme::danger(&visuals)), "accent": crate::theme::rgb(crate::theme::accent(&visuals))},
             "rows": crate::identity::drawn_rows(&self.egui_ctx).iter().map(|r| serde_json::json!({"text": r.text, "selected": r.selected, "rect": [r.rect.min.x, r.rect.min.y, r.rect.max.x, r.rect.max.y]})).collect::<Vec<_>>(),
             "open_popup": self.menus.open_popup.map(|p| format!("{p:?}")),
             "identities": crate::identity::drawn_icons(&self.egui_ctx).iter().map(|i| serde_json::json!({"kind": i.kind, "text": i.text, "rect": [i.rect.min.x, i.rect.min.y, i.rect.max.x, i.rect.max.y]})).collect::<Vec<_>>(),

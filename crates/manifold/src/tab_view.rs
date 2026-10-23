@@ -771,7 +771,7 @@ impl App {
                             .truncate()
                             .min_size(egui::vec2(full_width, 0.0));
                             if highlighted {
-                                button = button.fill(ACCENT);
+                                button = button.fill(accent(ui.visuals()));
                             }
                             let row = ui.add(button);
                             paint_row_icon(
@@ -811,7 +811,7 @@ impl App {
             .order(egui::Order::Foreground)
             .show(ui.ctx(), |ui| {
                 egui::Frame::default()
-                    .fill(TOOLBAR_FILL)
+                    .fill(ui.visuals().window_fill)
                     .corner_radius(4u8)
                     .inner_margin(egui::Margin::symmetric(8, 3))
                     .show(ui, |ui| {

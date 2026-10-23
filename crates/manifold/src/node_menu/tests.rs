@@ -402,7 +402,7 @@ fn the_jar_menus_list_same_named_jars_by_label() {
 /// Name rules: "Move into <group>" draws a hidden character in the group's name as a placeholder.
 #[test]
 fn move_to_rows_show_a_hidden_character_as_a_placeholder() {
-    let ctx = menu_ctx();
+    let ctx = crate::theme::testutil::ctx(true);
     let mut app = App::default();
     let (g, note) = (app.alloc_node_id(), app.alloc_node_id());
     app.insert_group_at(g, None);
@@ -438,7 +438,7 @@ fn move_to_rows_show_a_hidden_character_as_a_placeholder() {
 /// Name rules: a long group name is cut to `ROW_UNITS` in a "Move into" row, so it cannot widen the menu.
 #[test]
 fn move_to_rows_shorten_a_long_name() {
-    let ctx = menu_ctx();
+    let ctx = crate::theme::testutil::ctx(true);
     let mut app = App::default();
     let (g, note) = (app.alloc_node_id(), app.alloc_node_id());
     app.insert_group_at(g, None);
@@ -466,18 +466,11 @@ fn move_to_rows_shorten_a_long_name() {
     assert!(texts.contains(&want), "{texts:?}");
 }
 
-fn menu_ctx() -> egui::Context {
-    let ctx = egui::Context::default();
-    crate::theme::apply_fonts(&ctx);
-    crate::theme::apply_style(&ctx);
-    ctx
-}
-
 /// The menu's sections share one grid: a heading, a jar row's colour dot and a colour swatch start at the same x,
 /// whether or not the jar row is the selected one, so a new section cannot drift out of line.
 #[test]
 fn menu_sections_share_one_left_margin() {
-    let ctx = menu_ctx();
+    let ctx = crate::theme::testutil::ctx(true);
     let row = |ticked, color| JarRow { id: None, name: built_in(), color, ticked };
     let rows = vec![row(true, None), row(false, Some(egui::Color32::RED))];
     let view = NodeMenuView { jars: Some(JarMenu { rows, will_switch: false }), ..view_of(loaded_tab()) };
@@ -534,7 +527,7 @@ fn menu_frame(ctx: &egui::Context, app: &mut App, events: Vec<egui::Event>) {
 /// "Work · #3f2a", which is drawn as a plain name.
 #[test]
 fn the_jar_menu_draws_markers_in_their_own_style() {
-    let ctx = menu_ctx();
+    let ctx = crate::theme::testutil::ctx(true);
     let mut app = App::default();
     app.ensure_default_jar();
     let (w1, _) = (add_jar(&mut app, "Work"), add_jar(&mut app, "Work"));
@@ -601,7 +594,7 @@ fn the_jar_menu_draws_markers_in_their_own_style() {
 /// mode from the menu's card. Driven through `build_node_menu` with real egui input.
 #[test]
 fn a_click_on_link_to_starts_pick_target_mode() {
-    let ctx = menu_ctx();
+    let ctx = crate::theme::testutil::ctx(true);
     let mut app = App::default();
     let (a, b) = (app.alloc_node_id(), app.alloc_node_id());
     app.insert_note_at(a, None);
@@ -647,7 +640,7 @@ fn a_click_on_link_to_starts_pick_target_mode() {
 /// closes. Driven through `build_node_menu` with real egui input.
 #[test]
 fn the_color_row_opens_a_page_and_back_returns() {
-    let ctx = menu_ctx();
+    let ctx = crate::theme::testutil::ctx(true);
     let mut app = App::default();
     let n = app.alloc_node_id();
     app.insert_note_at(n, None);
@@ -736,7 +729,7 @@ fn the_new_jar_field_creates_only_on_enter() {
         ("a click away", click_away(), false),
         ("Escape", vec![vec![key(egui::Key::Escape)]], false),
     ] {
-        let ctx = menu_ctx();
+        let ctx = crate::theme::testutil::ctx(true);
         let mut app = App::default();
         let t = crate::session_sync::tests::add(
             &mut app,
@@ -764,7 +757,7 @@ fn the_new_jar_field_creates_only_on_enter() {
 /// Fix batch A3: a group rename still commits on a click away (only "New Jar..." cancels).
 #[test]
 fn a_group_rename_still_commits_on_a_click_away() {
-    let ctx = menu_ctx();
+    let ctx = crate::theme::testutil::ctx(true);
     let mut app = App::default();
     let g = app.alloc_node_id();
     app.insert_group_at(g, None);

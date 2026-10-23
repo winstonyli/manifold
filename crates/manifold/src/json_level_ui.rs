@@ -321,7 +321,11 @@ pub(crate) fn paint_json_content(
         painter.rect_filled(row_rect(lead + e - skip), 0.0, SEARCH_HIT.gamma_multiply(0.18));
     }
     if let Some(row) = look.selected_row {
-        painter.rect_filled(row_rect(lead + row - skip), 0.0, ACCENT.gamma_multiply(0.22));
+        painter.rect_filled(
+            row_rect(lead + row - skip),
+            0.0,
+            accent(&painter.ctx().global_style().visuals).gamma_multiply(0.22),
+        );
     }
 
     let mut text = Vec::new();
@@ -572,7 +576,7 @@ impl App {
                 &rows[rows.partition_point(|&r| r < card.skip)..rows.partition_point(|&r| r < card.skip + card.rows)]
             });
             let border = if level.selected.as_deref() == Some(card.pointer.as_str()) {
-                (2.0, ACCENT)
+                (2.0, accent(ui.visuals()))
             } else if hits.is_some_and(|h| h.contains(&card.pointer)) || !hit_rows.is_empty() {
                 (2.0, SEARCH_HIT)
             } else {
@@ -717,9 +721,16 @@ impl App {
         }
         let outline = egui_phosphor::light::LIST_BULLETS;
         // On is a raised fill, not the gold selection color: gold is the primary action's.
-        let on = if self.json_ui.json_outline_visible { SURFACE_HOVER } else { egui::Color32::TRANSPARENT };
-        let toggle =
-            add_borderless(ui, true, egui::Button::new(egui::RichText::new(outline).color(TEXT_PRIMARY)).fill(on));
+        let on = if self.json_ui.json_outline_visible {
+            ui.visuals().widgets.hovered.bg_fill
+        } else {
+            egui::Color32::TRANSPARENT
+        };
+        let toggle = add_borderless(
+            ui,
+            true,
+            egui::Button::new(egui::RichText::new(outline).color(crate::theme::palette(ui.visuals()).text)).fill(on),
+        );
         if toggle.on_hover_text("Outline").clicked() {
             self.json_ui.json_outline_visible = !self.json_ui.json_outline_visible;
         }
@@ -915,7 +926,10 @@ impl App {
                             if open { egui_phosphor::light::CARET_DOWN } else { egui_phosphor::light::CARET_RIGHT };
                         let caret_button = ui.add_sized(
                             CARET_SIZE,
-                            egui::Button::new(egui::RichText::new(caret).color(TEXT_PRIMARY)).frame(false),
+                            egui::Button::new(
+                                egui::RichText::new(caret).color(crate::theme::palette(ui.visuals()).text),
+                            )
+                            .frame(false),
                         );
                         focus_ring(ui, &caret_button);
                         if caret_button.clicked() {
@@ -996,8 +1010,7 @@ mod tests {
         selected_row: Option<usize>,
         hit_rows: &[usize],
     ) -> Vec<egui::Shape> {
-        let ctx = egui::Context::default();
-        crate::theme::apply_fonts(&ctx);
+        let ctx = crate::theme::testutil::ctx(true);
         let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
             let mut overlays: DeferredOverlays = DeferredOverlays::default();
             let pal = palette(true);

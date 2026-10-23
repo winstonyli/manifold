@@ -76,7 +76,7 @@ impl App {
                                 let everywhere = [("#", "Everywhere")].into_iter().chain(crate::shortcuts::help_rows());
                                 for (keys, desc) in everywhere.chain(SHORTCUTS.iter().copied()) {
                                     if keys == "#" {
-                                        ui.label(egui::RichText::new(desc).strong().color(ACCENT));
+                                        ui.label(egui::RichText::new(desc).strong().color(accent(ui.visuals())));
                                         ui.label("");
                                     } else {
                                         ui.horizontal(|ui| kbd_keys(ui, keys));

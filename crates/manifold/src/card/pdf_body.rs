@@ -85,7 +85,7 @@ impl App {
                         rect.center(),
                         egui_phosphor::light::FILE_X,
                         24.0,
-                        DANGER_COLOR,
+                        danger(ui.visuals()),
                     );
                 }
                 // Still rendering: the header's icon spins, over the plain fill.

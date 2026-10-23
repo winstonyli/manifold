@@ -8,16 +8,18 @@ pub(super) const EMPTY_HINT: &str = "Ctrl+T for a new tab \u{b7} drop a file or 
 /// A small label beside the pointer on the topmost layer, over the cards and the toolbar alike.
 pub(super) fn paint_drop_hint(ctx: &egui::Context, at: egui::Pos2, text: &str) {
     let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("drop_hint")));
-    let galley = painter.layout_no_wrap(text.to_owned(), egui::FontId::proportional(13.0), crate::theme::TEXT_PRIMARY);
+    let visuals = ctx.global_style().visuals.clone();
+    let text_color = crate::theme::palette(&visuals).text;
+    let galley = painter.layout_no_wrap(text.to_owned(), egui::FontId::proportional(13.0), text_color);
     let rect = egui::Rect::from_min_size(at + egui::vec2(16.0, 18.0), galley.size()).expand2(egui::vec2(8.0, 4.0));
     painter.rect(
         rect,
         crate::theme::RADIUS,
-        crate::theme::SURFACE_RAISED,
-        egui::Stroke::new(1.0, crate::theme::OUTLINE),
+        visuals.widgets.inactive.bg_fill,
+        egui::Stroke::new(1.0, visuals.widgets.hovered.bg_stroke.color),
         egui::StrokeKind::Inside,
     );
-    painter.galley(rect.min + egui::vec2(8.0, 4.0), galley, crate::theme::TEXT_PRIMARY);
+    painter.galley(rect.min + egui::vec2(8.0, 4.0), galley, text_color);
 }
 
 /// The mouse and key pairs the hint strip shows for a `kind` of card: each gesture beside its keyboard twin.
@@ -123,8 +125,7 @@ mod tests {
     /// An empty level keeps its canvas: the whole of `build_graph_ui` runs without panicking and paints the hint.
     #[test]
     fn an_empty_level_paints_the_hint_on_its_canvas() {
-        let ctx = egui::Context::default();
-        crate::theme::apply_fonts(&ctx);
+        let ctx = crate::theme::testutil::ctx(true);
         let mut app = App::default();
         assert!(app.nodes.is_empty());
         let mut hints = Vec::new();
@@ -150,8 +151,7 @@ mod tests {
     #[test]
     fn the_hint_shows_on_every_empty_level_not_only_an_empty_graph() {
         use crate::fetched::Placement;
-        let ctx = egui::Context::default();
-        crate::theme::apply_fonts(&ctx);
+        let ctx = crate::theme::testutil::ctx(true);
         let (full, empty, n) = (node(1), node(2), node(3));
         let mut app = App::default();
         let at = Placement { group: None, pos: egui::Vec2::ZERO };

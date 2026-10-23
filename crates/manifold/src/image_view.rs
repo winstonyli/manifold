@@ -264,7 +264,7 @@ impl App {
         }
 
         let painter = ui.painter_at(body);
-        painter.rect_filled(body, 0.0, BG);
+        painter.rect_filled(body, 0.0, ui.visuals().panel_fill);
         let rect = image_display_rect(body, image, scale, pan);
         match self.gpu.as_ref().and_then(|g| g.image_id(image_id)) {
             Some(tex_id) => {

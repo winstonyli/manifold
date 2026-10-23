@@ -108,11 +108,6 @@ const TITLE_STRIP_SCRIM: egui::Color32 = egui::Color32::from_black_alpha(160);
 /// Over a card the Graph toolbar filter doesn't match (`dim_if_filtered_out`).
 const FILTER_DIM_SCRIM: egui::Color32 = egui::Color32::from_black_alpha(190);
 
-/// An audio card control's waveform while the tab plays. A warm sage rather than a minty green:
-/// still unambiguously "active/live" (the universal recording-light color family), just shifted to
-/// sit with the rest of this app's warm palette instead of against it.
-const WAVEFORM_COLOR: egui::Color32 = crate::theme::SUCCESS_COLOR;
-
 /// A note's text on its pale paper.
 const NOTE_TEXT: egui::Color32 = egui::Color32::from_black_alpha(220);
 
@@ -255,6 +250,9 @@ pub(crate) struct CardStyle {
     pub(crate) close_fill: egui::Color32,
     pub(crate) close_border: egui::Color32,
     pub(crate) close_icon: egui::Color32,
+    /// The border of the open tab (the accent) and of an overloaded group (the danger red).
+    pub(crate) focus_border: egui::Color32,
+    pub(crate) overload_border: egui::Color32,
     pub(crate) dim_rounding: f32,
 }
 
@@ -266,14 +264,16 @@ pub(crate) fn card_style(kind: CardKind, visuals: &egui::Visuals) -> CardStyle {
         close_fill: visuals.extreme_bg_color,
         close_border: visuals.weak_text_color(),
         close_icon: visuals.text_color(),
+        focus_border: accent(visuals),
+        overload_border: danger(visuals),
         dim_rounding: 4.0,
     };
     // Presentation matches the type; behaviour reads the container table (`is_container`). See the plan 2b-6
     // Outcome, "Presentation arms".
     match kind.ty {
         TYPE_NOTE | TYPE_DOWNLOAD | TYPE_TAB => CardStyle { dim_rounding: 6.0, ..themed },
-        // ACCENT at rest, as group cards have always been.
-        TYPE_GROUP => CardStyle { border_idle: ACCENT, dim_rounding: 6.0, ..themed },
+        // The accent at rest, as group cards have always been.
+        TYPE_GROUP => CardStyle { border_idle: accent(visuals), dim_rounding: 6.0, ..themed },
         // Every other type, an unknown one and a virtual kind (`TYPE_VIRTUAL_PREFIX`) included, takes the themed default.
         _ => themed,
     }
@@ -332,9 +332,9 @@ pub(crate) struct CardView {
 pub(crate) fn card_border(view: &CardView, style: &CardStyle, hover_t: f32) -> (f32, egui::Color32) {
     // The strongest, least ambiguous signal: not eased, and over any tag.
     if view.focused {
-        return (2.5, ACCENT);
+        return (2.5, style.focus_border);
     }
-    let resting = view.color.unwrap_or(if view.overloaded { DANGER_COLOR } else { style.border_idle });
+    let resting = view.color.unwrap_or(if view.overloaded { style.overload_border } else { style.border_idle });
     (1.0 + 0.5 * hover_t, lerp_color32(resting, style.border_hover, hover_t))
 }
 
@@ -547,7 +547,7 @@ pub(crate) fn card_focus_ring(ui: &egui::Ui, rect: egui::Rect, inv_zoom: f32) {
     ui.painter().rect_stroke(
         rect.expand(3.0 * inv_zoom),
         3.0 * inv_zoom,
-        egui::Stroke::new(2.0 * inv_zoom, TEXT_PRIMARY),
+        egui::Stroke::new(2.0 * inv_zoom, palette(ui.visuals()).text),
         egui::StrokeKind::Outside,
     );
 }
@@ -606,7 +606,7 @@ pub(crate) fn paint_card_control(
         // A `PUSH_PIN` icon, ACCENT when pinned. A pinned node is left out
         // of the force-directed layout (see `Mirror::pinned`).
         CardControl::Pin => {
-            let pin_color = if view.pinned { ACCENT } else { ui.visuals().weak_text_color() };
+            let pin_color = if view.pinned { accent(ui.visuals()) } else { ui.visuals().weak_text_color() };
             if detail.content() {
                 push_centered_text(deferred_overlays, rect.center(), egui_phosphor::light::PUSH_PIN, 14.0, pin_color);
             }
@@ -636,7 +636,7 @@ pub(crate) fn paint_card_control(
                         rect.center(),
                         egui_phosphor::light::SPEAKER_X,
                         12.0,
-                        DANGER_COLOR,
+                        danger(ui.visuals()),
                     );
                 }
             } else {
@@ -678,7 +678,7 @@ pub(crate) fn paint_card_control(
                     let x = base_x + i as f32 * (bar_w + gap);
                     let bar_rect =
                         egui::Rect::from_min_max(egui::Pos2::new(x, base_y - h), egui::Pos2::new(x + bar_w, base_y));
-                    ui.painter().rect_filled(bar_rect, 1.0 * inv_zoom, WAVEFORM_COLOR);
+                    ui.painter().rect_filled(bar_rect, 1.0 * inv_zoom, palette(ui.visuals()).success);
                 }
             }
         }
@@ -688,7 +688,7 @@ pub(crate) fn paint_card_control(
                 deferred_overlays,
                 rect,
                 response.hovered(),
-                ACCENT,
+                accent(ui.visuals()),
                 egui_phosphor::light::SIGN_OUT,
                 style,
                 inv_zoom,
@@ -701,7 +701,7 @@ pub(crate) fn paint_card_control(
                 deferred_overlays,
                 rect,
                 response.hovered(),
-                crate::theme::DANGER_FILL,
+                palette(ui.visuals()).danger_fill,
                 egui_phosphor::light::X,
                 style,
                 inv_zoom,
@@ -1039,16 +1039,17 @@ impl App {
         if pass.show_order {
             let number = pass.order.iter().position(|o| *o == card).map_or(0, |s| s + 1);
             let corner = rect.left_top();
+            let (text, panel) = (palette(ui.visuals()).text, ui.visuals().panel_fill);
             deferred_overlays.push_top(Box::new(move |painter, project| {
                 // Kept on screen: a card at the edge would clip its badge.
                 let center = project(corner);
                 let center = center.clamp(painter.clip_rect().shrink(10.0).min, painter.clip_rect().shrink(10.0).max);
                 // A keycap: the number is the key that jumps to this card.
-                let galley = painter.layout_no_wrap(number.to_string(), egui::FontId::monospace(11.0), TEXT_PRIMARY);
+                let galley = painter.layout_no_wrap(number.to_string(), egui::FontId::monospace(11.0), text);
                 let cap = egui::Rect::from_center_size(center, galley.size() + egui::vec2(8.0, 4.0));
-                painter.rect_filled(cap, 3.0, BG);
-                painter.rect_stroke(cap, 3.0, egui::Stroke::new(1.0, TEXT_PRIMARY), egui::StrokeKind::Inside);
-                painter.galley(cap.center() - galley.size() / 2.0, galley, TEXT_PRIMARY);
+                painter.rect_filled(cap, 3.0, panel);
+                painter.rect_stroke(cap, 3.0, egui::Stroke::new(1.0, text), egui::StrokeKind::Inside);
+                painter.galley(cap.center() - galley.size() / 2.0, galley, text);
             }));
         }
         let hover = ui.interact(rect, egui::Id::new(("graph_card_hover", card)), egui::Sense::hover());
@@ -1078,7 +1079,11 @@ impl App {
         // reads differently from the focused one when both apply. In the
         // background slot, so it tints the card but not its thumbnail.
         if view.selected {
-            background_shapes.push(egui::Shape::rect_filled(rect, 2.0 * inv_zoom, with_alpha(ACCENT, 45)));
+            background_shapes.push(egui::Shape::rect_filled(
+                rect,
+                2.0 * inv_zoom,
+                with_alpha(accent(ui.visuals()), 45),
+            ));
         }
         ui.painter().set(background, egui::Shape::Vec(background_shapes));
         // An inside stroke painted over the body; every body keeps its
@@ -1097,7 +1102,7 @@ impl App {
             ui.painter().rect_stroke(
                 rect.expand(16.0 * inv_zoom),
                 10.0 * inv_zoom,
-                egui::Stroke::new(4.0 * inv_zoom, ACCENT),
+                egui::Stroke::new(4.0 * inv_zoom, accent(ui.visuals())),
                 egui::StrokeKind::Outside,
             );
         }
@@ -1106,7 +1111,7 @@ impl App {
         let reached = pass.connect_target == Some(card);
         if pass.pick_targets.contains(&card) || (reached && pass.connect_ring.is_some()) {
             let alpha = if pointer_on_card || reached { 255 } else { 160 };
-            let ring = pass.connect_ring.filter(|_| reached).unwrap_or(ACCENT);
+            let ring = pass.connect_ring.filter(|_| reached).unwrap_or(accent(ui.visuals()));
             ui.painter().rect_stroke(
                 rect.expand(6.0 * inv_zoom),
                 6.0 * inv_zoom,
@@ -1209,11 +1214,11 @@ impl App {
                 (Some(press), Some(now)) => now - to_local.map_or(press, |t| t * press),
                 _ => egui::Vec2::ZERO,
             };
-            let (ghost, fill) = (rect.translate(shift), style.fill);
+            let (ghost, fill, ring) = (rect.translate(shift), style.fill, accent(ui.visuals()));
             deferred_overlays.push_top(Box::new(move |painter, project| {
                 let screen = egui::Rect::from_min_max(project(ghost.min), project(ghost.max));
                 painter.rect_filled(screen, 2.0, fill.gamma_multiply(0.8));
-                painter.rect_stroke(screen, 2.0, egui::Stroke::new(2.0, ACCENT), egui::StrokeKind::Inside);
+                painter.rect_stroke(screen, 2.0, egui::Stroke::new(2.0, ring), egui::StrokeKind::Inside);
             }));
         } else if carried && self.interaction.dragging == Some(card) {
             self.release_drag();

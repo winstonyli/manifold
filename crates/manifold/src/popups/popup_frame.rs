@@ -116,7 +116,8 @@ pub(crate) fn list_popup(
 pub(crate) fn list_row(ui: &mut egui::Ui, text: impl Into<egui::WidgetText>) -> egui::Response {
     // A focused widget gets the "active" text color, which is black in this theme.
     let active_fg = ui.visuals().widgets.active.fg_stroke;
-    ui.visuals_mut().widgets.active.fg_stroke = egui::Stroke::new(active_fg.width, TEXT_PRIMARY);
+    ui.visuals_mut().widgets.active.fg_stroke =
+        egui::Stroke::new(active_fg.width, crate::theme::palette(ui.visuals()).text);
     let response = ui
         .add(egui::Label::new(text).truncate().sense(egui::Sense::click()))
         .on_hover_cursor(egui::CursorIcon::PointingHand);

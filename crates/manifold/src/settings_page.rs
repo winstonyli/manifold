@@ -279,10 +279,11 @@ impl App {
             ui.horizontal(|ui| {
                 view_dot(ui, kind, 10.0);
                 let unavailable = matches!(state, ViewStatus::Unavailable(_));
+                let palette = palette(ui.visuals());
                 ui.label(egui::RichText::new(view_label(kind)).color(if unavailable {
-                    TEXT_WEAK
+                    palette.text_weak
                 } else {
-                    TEXT_PRIMARY
+                    palette.text
                 }));
             });
             // What this engine has installed (host files, CEF's runtime): present means Remove and a size line.
@@ -299,7 +300,7 @@ impl App {
                     ui.label(
                         egui::RichText::new(format!("{label} \u{b7} {} on disk", megabytes(size)))
                             .small()
-                            .color(tone.color()),
+                            .color(tone.color(ui.visuals())),
                     );
                 }
                 _ => view_status_line(ui, &state),
@@ -345,7 +346,7 @@ impl App {
     /// directory that fails validation shows why and is not used.
     fn settings_cef_directory_row(&mut self, ui: &mut egui::Ui) {
         ui.add_space(6.0);
-        ui.label(egui::RichText::new("Use your own Blink (CEF) folder").small().color(TEXT_PRIMARY));
+        ui.label(egui::RichText::new("Use your own Blink (CEF) folder").small().color(palette(ui.visuals()).text));
         let mut commit = None;
         let configured = self.settings.cef_directory.clone().unwrap_or_default();
         ui.horizontal(|ui| {
@@ -383,7 +384,7 @@ impl App {
         }
         match self.cef_dir_verdict() {
             Some((_, Err(message))) => {
-                ui.add(egui::Label::new(egui::RichText::new(message).small().color(DANGER_COLOR)).wrap());
+                ui.add(egui::Label::new(egui::RichText::new(message).small().color(danger(ui.visuals()))).wrap());
             }
             Some((dir, Ok(()))) => {
                 let note = crate::cef_pin::pin_for_platform().and_then(|pin| {
@@ -778,9 +779,7 @@ mod tests {
     /// Review C-B5: Escape in a Settings field reverts that field and keeps the page open.
     #[test]
     fn escape_in_a_settings_field_reverts_it_and_stays_on_the_page() {
-        let ctx = egui::Context::default();
-        crate::theme::apply_fonts(&ctx);
-        crate::theme::apply_style(&ctx);
+        let ctx = crate::theme::testutil::ctx(true);
         let mut app = App::default();
         app.settings.home_page = "https://old".into();
         app.open_settings_page();
@@ -829,9 +828,7 @@ mod tests {
     /// jar rows' right-aligned tab counts ran off the edge.
     #[test]
     fn the_settings_page_keeps_its_text_inside_a_480_px_window() {
-        let ctx = egui::Context::default();
-        crate::theme::apply_fonts(&ctx);
-        crate::theme::apply_style(&ctx);
+        let ctx = crate::theme::testutil::ctx(true);
         let mut app = App::default();
         let input = || egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(480.0, 3000.0))),

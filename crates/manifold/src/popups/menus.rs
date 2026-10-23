@@ -199,9 +199,9 @@ impl App {
             .is_some_and(|id| ui.memory(|m| m.has_focus(id)));
         let unavailable = matches!(self.view_status(kind), crate::view_install::ViewStatus::Unavailable(_));
         let color = if focused {
-            BG
+            ui.visuals().widgets.active.fg_stroke.color
         } else if unavailable {
-            TEXT_WEAK
+            palette(ui.visuals()).text_weak
         } else {
             view_color(kind)
         };

@@ -34,12 +34,15 @@ pub(crate) fn paint_edges(ui: &egui::Ui, viewport: egui::Rect, edges: &[LevelEdg
                 } else {
                     crate::link_gestures::LINK_STROKE_PX
                 };
-                egui::Stroke::new(width * inv_zoom, ACCENT)
+                egui::Stroke::new(width * inv_zoom, accent(ui.visuals()))
             }
             EdgeKind::Jar => egui::Stroke::new(1.0 * inv_zoom, ui.visuals().weak_text_color().gamma_multiply(0.6)),
-            EdgeKind::Opened => {
-                crate::level::opened_edge_stroke(edge.highlight, inv_zoom, ui.visuals().weak_text_color())
-            }
+            EdgeKind::Opened => crate::level::opened_edge_stroke(
+                edge.highlight,
+                inv_zoom,
+                accent(ui.visuals()),
+                ui.visuals().weak_text_color(),
+            ),
         };
         match edge.curve {
             EdgeCurve::Bow => {

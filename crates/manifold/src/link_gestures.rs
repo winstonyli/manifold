@@ -186,24 +186,26 @@ pub(crate) enum RetargetGlyph {
 
 /// `RetargetLook` for `outcome`: the usual accent for a retarget or a cancel, a thin red band ending in an "x" for a
 /// deletion, a cool blue for a refusal (`theme::refused_color`), and a weak-text ring where nothing would change.
-pub(crate) fn retarget_look(outcome: crate::links::RetargetOutcome) -> RetargetLook {
+pub(crate) fn retarget_look(outcome: crate::links::RetargetOutcome, visuals: &egui::Visuals) -> RetargetLook {
     use crate::links::RetargetOutcome::*;
-    use crate::theme::{refused_color, ACCENT, DANGER_COLOR, TEXT_WEAK};
-    let usual = RetargetLook { band: ACCENT, band_px: LINK_STROKE_PX, glyph: None, ring: ACCENT };
+    use crate::theme::{accent, danger, palette, refused_color};
+    let accent = accent(visuals);
+    let danger = danger(visuals);
+    let usual = RetargetLook { band: accent, band_px: LINK_STROKE_PX, glyph: None, ring: accent };
     match outcome {
         Retargeted => usual,
-        Cancelled => RetargetLook { ring: TEXT_WEAK, ..usual },
+        Cancelled => RetargetLook { ring: palette(visuals).text_weak, ..usual },
         Refused => RetargetLook {
-            band: refused_color(),
+            band: refused_color(visuals),
             glyph: Some(RetargetGlyph::Prohibited),
-            ring: refused_color(),
+            ring: refused_color(visuals),
             ..usual
         },
         Deleted => RetargetLook {
-            band: DANGER_COLOR,
+            band: danger,
             band_px: LINK_STROKE_PX * 0.6,
             glyph: Some(RetargetGlyph::Cross),
-            ring: DANGER_COLOR,
+            ring: danger,
         },
     }
 }
@@ -279,8 +281,9 @@ pub(crate) fn link_handle_rects(
 
 /// A handle: an accent-outlined pill, filled while hovered or dragged from.
 pub(crate) fn paint_link_handle(ui: &egui::Ui, handle: egui::Rect, active: bool, inv_zoom: f32) {
-    let fill = if active { crate::theme::ACCENT } else { crate::theme::BG };
-    let stroke = egui::Stroke::new(1.5 * inv_zoom, crate::theme::ACCENT);
+    let accent = crate::theme::accent(ui.visuals());
+    let fill = if active { accent } else { ui.visuals().panel_fill };
+    let stroke = egui::Stroke::new(1.5 * inv_zoom, accent);
     let radius = handle.width().min(handle.height()) / 2.0;
     ui.painter().rect(handle, radius, fill, stroke, egui::StrokeKind::Inside);
 }
@@ -504,10 +507,10 @@ impl App {
             std::mem::swap(&mut from, &mut to);
         }
         // A dragged link end is drawn by what a release there would do (`retarget_look`).
-        let look = self.link.retarget_preview.map(retarget_look);
+        let look = self.link.retarget_preview.map(|outcome| retarget_look(outcome, ui.visuals()));
         let stroke = match look {
             Some(look) => egui::Stroke::new(look.band_px * inv_zoom, look.band),
-            None => egui::Stroke::new(LINK_STROKE_PX * inv_zoom, crate::theme::ACCENT),
+            None => egui::Stroke::new(LINK_STROKE_PX * inv_zoom, crate::theme::accent(ui.visuals())),
         };
         paint_bow(ui.painter(), from, to, stroke, Some(inv_zoom));
         let r = 5.0 * inv_zoom;

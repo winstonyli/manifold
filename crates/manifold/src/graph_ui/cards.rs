@@ -75,7 +75,10 @@ impl App {
             drop_preview: &drop_preview,
             pick_targets: pick_targets.as_deref().unwrap_or_default(),
             connect_target: connect_target.map(CardId::from),
-            connect_ring: self.link.retarget_preview.map(|outcome| crate::link_gestures::retarget_look(outcome).ring),
+            connect_ring: self
+                .link
+                .retarget_preview
+                .map(|outcome| crate::link_gestures::retarget_look(outcome, ui.visuals()).ring),
             show_order: self.card_nav_active || self.hints_revealed,
             order: &tab_order,
             any_focused: false,
@@ -283,6 +286,7 @@ impl App {
                     // Queued, not painted here: card labels and chips paint on the overlay layer after the
                     // scene, so a peek drawn in the scene would sit under a neighbour's text.
                     let bg = ui.visuals().extreme_bg_color.gamma_multiply(peek_fade);
+                    let ring = accent(ui.visuals()).gamma_multiply(peek_fade);
                     deferred_overlays.push(Box::new(move |painter, project| {
                         let (min, max) = (project(rect.min), project(rect.max));
                         let rounding = 6.0 * (max.x - min.x) / rect.width();
@@ -297,12 +301,7 @@ impl App {
                             crate::card::FULL_UV,
                             egui::Color32::WHITE.gamma_multiply(peek_fade),
                         );
-                        painter.rect_stroke(
-                            rect,
-                            rounding,
-                            egui::Stroke::new(1.5, ACCENT.gamma_multiply(peek_fade)),
-                            egui::StrokeKind::Inside,
-                        );
+                        painter.rect_stroke(rect, rounding, egui::Stroke::new(1.5, ring), egui::StrokeKind::Inside);
                     }));
                 }
             }

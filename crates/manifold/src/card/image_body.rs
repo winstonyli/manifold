@@ -25,7 +25,7 @@ impl App {
             return;
         }
         let header = CardHeader {
-            identity: Identity::Glyph { glyph: egui_phosphor::light::FILE_X, color: Some(DANGER_COLOR) },
+            identity: Identity::Glyph { glyph: egui_phosphor::light::FILE_X, color: Some(danger(ui.visuals())) },
             name,
             user_name: None,
             source,
@@ -35,7 +35,7 @@ impl App {
         };
         let tall = self.paint_card_header(ui, deferred_overlays, id, rect, inv_zoom, zoom_scale, header);
         let icon_pos = card_body_rect(rect, tall, inv_zoom).center();
-        push_centered_text(deferred_overlays, icon_pos, egui_phosphor::light::FILE_X, 24.0, DANGER_COLOR);
+        push_centered_text(deferred_overlays, icon_pos, egui_phosphor::light::FILE_X, 24.0, danger(ui.visuals()));
     }
 
     /// Image: a locally-added picture, no engine/IPC behind it --

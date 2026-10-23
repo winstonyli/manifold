@@ -122,9 +122,7 @@ mod view_picker_tests {
     /// wrapping, and entering the stop lands on its first widget.
     #[test]
     fn a_stop_of_several_widgets_is_one_step_of_up_and_down() {
-        let ctx = egui::Context::default();
-        theme::apply_fonts(&ctx);
-        theme::apply_style(&ctx);
+        let ctx = crate::theme::testutil::ctx(true);
         let mut stops: Vec<Vec<egui::Id>> = Vec::new();
         let mut frame = |events: Vec<egui::Event>| -> Option<usize> {
             let input = egui::RawInput {
@@ -181,9 +179,7 @@ mod view_picker_tests {
     /// opens.
     #[test]
     fn a_page_swap_focuses_the_new_pages_first_row() {
-        let ctx = egui::Context::default();
-        theme::apply_fonts(&ctx);
-        theme::apply_style(&ctx);
+        let ctx = crate::theme::testutil::ctx(true);
         let frame = |page: u8, events: Vec<egui::Event>| -> Vec<egui::Id> {
             let mut first: Vec<egui::Id> = Vec::new();
             let input = egui::RawInput {
@@ -241,9 +237,7 @@ mod view_picker_tests {
     /// Two Down presses that land in one frame (a slow frame, a key repeat) are two steps, not one.
     #[test]
     fn two_presses_in_one_frame_are_two_steps() {
-        let ctx = egui::Context::default();
-        theme::apply_fonts(&ctx);
-        theme::apply_style(&ctx);
+        let ctx = crate::theme::testutil::ctx(true);
         let frame = |events: Vec<egui::Event>| -> Vec<egui::Id> {
             let mut rows: Vec<egui::Id> = Vec::new();
             let input = egui::RawInput {
@@ -275,9 +269,7 @@ mod view_picker_tests {
     /// wrapping at either end of the laid-out window.
     #[test]
     fn a_long_history_popup_lays_out_only_the_rows_in_view() {
-        let ctx = egui::Context::default();
-        theme::apply_fonts(&ctx);
-        theme::apply_style(&ctx);
+        let ctx = crate::theme::testutil::ctx(true);
         let history = (0..300)
             .map(|i| crate::history::HistoryEntry { title: format!("entry {i}"), url: format!("https://e/{i}") })
             .collect();
@@ -363,9 +355,7 @@ mod view_picker_tests {
     /// the button that opened it; the next Escape leaves the page.
     #[test]
     fn escape_closes_the_picker_then_the_page_and_refocuses_the_button() {
-        let ctx = egui::Context::default();
-        theme::apply_fonts(&ctx);
-        theme::apply_style(&ctx);
+        let ctx = crate::theme::testutil::ctx(true);
         let mut app = App { view_mode: ViewMode::Settings, ..App::default() };
         for _ in 0..3 {
             frame(&mut app, &ctx, vec![]);
@@ -389,9 +379,7 @@ mod view_picker_tests {
     /// picker open.
     #[test]
     fn clicking_an_unavailable_view_explains_and_keeps_the_picker_open() {
-        let ctx = egui::Context::default();
-        theme::apply_fonts(&ctx);
-        theme::apply_style(&ctx);
+        let ctx = crate::theme::testutil::ctx(true);
         let mut app = App { view_mode: ViewMode::Settings, ..App::default() };
         let (first, reason) = (ViewKind::picker_order()[0], "needs Windows");
         // `build_ui` clears the per-frame state cache, so seed it inside each frame, past that clear.

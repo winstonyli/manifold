@@ -205,8 +205,7 @@ pub(crate) mod fake {
 
         /// A rig whose fake entries are of kind `ty`.
         pub(crate) fn with_kind(ty: &'static str) -> Self {
-            let ctx = egui::Context::default();
-            crate::theme::apply_fonts(&ctx);
+            let ctx = crate::theme::testutil::ctx(true);
             // The context that runs the frames, so text measuring has fonts.
             let mut app = App { egui_ctx: ctx.clone(), ..App::default() };
             let source = Rc::new(FakeSource::with_kind(ty));

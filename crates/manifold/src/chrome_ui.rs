@@ -111,7 +111,7 @@ impl App {
                         }
                     });
                 });
-                let shapes = card_glow_shapes(response.response.rect, 3.0, ACCENT, 1.0, 1.0);
+                let shapes = card_glow_shapes(response.response.rect, 3.0, accent(ui.visuals()), 1.0, 1.0);
                 for (slot, shape) in glow_slots.into_iter().zip(shapes) {
                     ui.painter().set(slot, shape);
                 }

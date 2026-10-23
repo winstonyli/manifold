@@ -865,9 +865,7 @@ mod tests {
     #[test]
     fn a_tab_another_replica_moved_away_leaves_the_selection() {
         use crate::session_sync::tests::{add, add_group, sleeping_tab};
-        let ctx = egui::Context::default();
-        crate::theme::apply_fonts(&ctx);
-        crate::theme::apply_style(&ctx);
+        let ctx = crate::theme::testutil::ctx(true);
         let mut app = App { view_mode: crate::view_modes::ViewMode::Settings, ..App::default() };
         let a = add(&mut app, Kind::Tab, sleeping_tab("https://a.test/", "a"));
         let b = add(&mut app, Kind::Tab, sleeping_tab("https://b.test/", "b"));

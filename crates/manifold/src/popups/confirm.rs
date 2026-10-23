@@ -25,7 +25,7 @@ fn confirm_dialog(
                 ui.add_space(4.0);
                 for (i, line) in detail.lines().enumerate() {
                     let text = egui::RichText::new(line).small();
-                    let text = if i == 0 { text.weak() } else { text.color(crate::theme::ACCENT) };
+                    let text = if i == 0 { text.weak() } else { text.color(crate::theme::accent(ui.visuals())) };
                     ui.add(egui::Label::new(text).wrap());
                 }
                 ui.add_space(8.0);
@@ -218,9 +218,7 @@ mod tests {
     #[test]
     fn a_confirm_fills_its_main_button_by_what_it_does() {
         let fills = |destructive: bool| {
-            let ctx = egui::Context::default();
-            crate::theme::apply_fonts(&ctx);
-            crate::theme::apply_style(&ctx);
+            let ctx = crate::theme::testutil::ctx(true);
             let input = |frame: usize| egui::RawInput {
                 time: Some(frame as f64),
                 screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(600.0, 400.0))),
@@ -297,9 +295,7 @@ mod tests {
     /// Escape on any confirm answers the confirm only: Settings stays open behind it.
     #[test]
     fn escape_on_a_confirm_keeps_settings_open() {
-        let ctx = egui::Context::default();
-        crate::theme::apply_fonts(&ctx);
-        crate::theme::apply_style(&ctx);
+        let ctx = crate::theme::testutil::ctx(true);
         for confirm in [Confirm::SessionDelete("work".into()), Confirm::View(ViewConfirm::Remove(ViewKind::Servo))] {
             let mut app = App { view_mode: ViewMode::Settings, confirm: Some(confirm), ..App::default() };
             let key = egui::Key::Escape;

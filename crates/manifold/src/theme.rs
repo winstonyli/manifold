@@ -346,7 +346,8 @@ pub(crate) const DANGER_FILL: egui::Color32 = egui::Color32::from_rgb(142, 58, 4
 /// Healthy / recommended / good: a muted green, the one `success` hue (the audio waveform, the recommended engine tier).
 pub(crate) const SUCCESS_COLOR: egui::Color32 = egui::Color32::from_rgb(150, 190, 90);
 
-/// Text on a dark scrim over a card (the title strip, an image's caption, the jar chip): near white.
+/// Text on a dark scrim over a card (the title strip, an image's caption, the jar chip): near white. The scrims are
+/// dark in both themes, so this does not change with the theme.
 pub(crate) const SCRIM_TEXT: egui::Color32 = egui::Color32::from_gray(240);
 /// The weaker line of `SCRIM_TEXT` (a tab card's source).
 pub(crate) const SCRIM_TEXT_WEAK: egui::Color32 = egui::Color32::from_gray(190);
@@ -354,10 +355,11 @@ pub(crate) const SCRIM_TEXT_WEAK: egui::Color32 = egui::Color32::from_gray(190);
 /// The sky-blue entry of `TAG_COLOR_PALETTE`: the one cool hue in this otherwise warm theme.
 pub(crate) const TAG_SKY_BLUE: egui::Color32 = TAG_COLOR_PALETTE[4];
 
-/// A drag that a release would refuse (keeping what it holds): `TAG_SKY_BLUE` pulled a little toward `BG`, a hue far
-/// from `ACCENT` (a valid drop) and `DANGER_COLOR` (a deletion), so the outcomes differ by hue, not brightness.
-pub(crate) fn refused_color() -> egui::Color32 {
-    lerp_color32(TAG_SKY_BLUE, BG, 0.2)
+/// A drag that a release would refuse (keeping what it holds): `TAG_SKY_BLUE` pulled a little toward the panel
+/// color, a hue far from the accent (a valid drop) and the danger red (a deletion), so the outcomes differ by hue, not
+/// brightness.
+pub(crate) fn refused_color(visuals: &egui::Visuals) -> egui::Color32 {
+    lerp_color32(TAG_SKY_BLUE, visuals.panel_fill, 0.2)
 }
 
 /// A sticky note's card fill -- a warm, light color deliberately unlike
@@ -398,87 +400,108 @@ pub(crate) const TEXT_PRIMARY: egui::Color32 = color(manifold_pages::palette::DA
 
 pub(crate) const TEXT_WEAK: egui::Color32 = color(manifold_pages::palette::DARK.text_weak);
 
-/// Applied once at startup (see `Default for App`). Bumps corner rounding
-/// and spacing up from egui's fairly tight defaults (which read as "plain
-/// tool window" rather than "app chrome"), replaces egui's stock flat-gray
-/// widget palette with the `BG`/`TOOLBAR_FILL`/`SURFACE_RAISED`/
-/// `SURFACE_HOVER` depth ladder above, and threads `ACCENT` through
-/// selection/hyperlink/focus/active-widget colors so the whole chrome reads
-/// as one deliberately designed theme rather than an unstyled egui app.
+/// What `Visuals` has no exact slot for, per theme (`palette` picks by `Visuals::dark_mode`). Text lives here, not in
+/// `Visuals`: `Visuals::text_color()` is the weak tan and `weak_text_color()` is derived from it, so mapping these
+/// onto egui's slots would change every plain label and every `weak_text_color()` caller.
+pub(crate) struct Palette {
+    pub text: egui::Color32,
+    pub text_weak: egui::Color32,
+    /// A darker rust than `danger`, for a solid fill that carries `text` (the graph close button's hover).
+    pub danger_fill: egui::Color32,
+    pub success: egui::Color32,
+}
+
+/// Ink on a tag color: it sits on the tag, not on the theme, so it does not change with the theme.
+pub(crate) const INK_DARK: egui::Color32 = egui::Color32::from_rgb(23, 20, 15);
+pub(crate) const INK_LIGHT: egui::Color32 = egui::Color32::from_rgb(233, 226, 211);
+
+static DARK_PALETTE: Palette =
+    Palette { text: TEXT_PRIMARY, text_weak: TEXT_WEAK, danger_fill: DANGER_FILL, success: SUCCESS_COLOR };
+
+pub(crate) fn palette(_visuals: &egui::Visuals) -> &'static Palette {
+    &DARK_PALETTE
+}
+
+/// The accent: the selection fill, which `fill_style` also uses for hyperlinks and the active widget.
+pub(crate) fn accent(visuals: &egui::Visuals) -> egui::Color32 {
+    visuals.selection.bg_fill
+}
+
+/// The one severity-red, for text, icons and borders.
+pub(crate) fn danger(visuals: &egui::Visuals) -> egui::Color32 {
+    visuals.error_fg_color
+}
+
+/// Fills egui's dark and light style slots (`style_mut_of` keeps one `Style` per theme), so `set_theme` switches the
+/// whole chrome. Each slot starts from egui's own preset for its theme, so every field the table below does not name
+/// is coherent for that theme, then gets the spacing, shape and the `manifold_pages::palette` colors: the
+/// `BG`/`TOOLBAR_FILL`/`SURFACE_RAISED`/`SURFACE_HOVER` depth ladder and `ACCENT` through selection, hyperlink,
+/// focus and the active widget. Until the theme setting exists the app pins the dark theme.
 pub(crate) fn apply_style(ctx: &egui::Context) {
-    // `all_styles_mut` (not `style`/`set_style`, egui 0.36 keeps separate
-    // dark/light styles internally) applies the same tweaks regardless of
-    // which theme the OS/window ends up reporting — this app's chrome is
-    // dark-only in practice, but there's no "just style whatever's active"
-    // entry point, so set both identically. **Found live**: this used to
-    // only tweak specific widget-state fields on top of whichever preset
-    // (`Visuals::dark()`/`Visuals::light()`) egui already had loaded for
-    // that style slot — under a light OS theme, every field this function
-    // doesn't explicitly touch (heading/`.strong()` text color among them)
-    // kept the light preset's own near-black default, invisible against
-    // this app's always-dark backgrounds (`BG`/`TOOLBAR_FILL`/etc. are
-    // forced dark regardless of OS theme). Resetting to `Visuals::dark()`
-    // first, for both style slots, means every untouched field starts from
-    // a coherent dark-appropriate default before the cosmetic overrides
-    // below apply on top.
-    ctx.all_styles_mut(|style| {
-        style.visuals = egui::Visuals::dark();
-        // Airier than egui's own defaults on purpose -- the editorial
-        // direction this app's chrome now takes wants real breathing room in
-        // dialogs/menus/settings. The one place this is deliberately *not*
-        // wanted -- the graph view's own toolbar, already packed with icon
-        // buttons and genuinely screen-space-constrained -- pushes narrower
-        // values back onto its own `Ui` locally (see wherever that toolbar
-        // is drawn) rather than fighting this global default.
-        style.spacing.item_spacing = egui::vec2(10.0, 7.0);
-        style.spacing.button_padding = egui::vec2(13.0, 7.0);
+    for (theme, dark) in [(egui::Theme::Dark, true), (egui::Theme::Light, false)] {
+        ctx.style_mut_of(theme, |style| fill_style(style, dark));
+    }
+    ctx.set_theme(egui::Theme::Dark);
+}
 
-        let corner_radius: egui::CornerRadius = RADIUS.into();
-        style.visuals.widgets.noninteractive.corner_radius = corner_radius;
-        style.visuals.widgets.noninteractive.bg_fill = TOOLBAR_FILL;
-        style.visuals.widgets.noninteractive.weak_bg_fill = TOOLBAR_FILL;
-        style.visuals.widgets.noninteractive.fg_stroke.color = TEXT_WEAK;
+fn fill_style(style: &mut egui::Style, dark: bool) {
+    style.visuals = if dark { egui::Visuals::dark() } else { egui::Visuals::light() };
+    // Airier than egui's own defaults on purpose -- the editorial
+    // direction this app's chrome now takes wants real breathing room in
+    // dialogs/menus/settings. The one place this is deliberately *not*
+    // wanted -- the graph view's own toolbar, already packed with icon
+    // buttons and genuinely screen-space-constrained -- pushes narrower
+    // values back onto its own `Ui` locally (see wherever that toolbar
+    // is drawn) rather than fighting this global default.
+    style.spacing.item_spacing = egui::vec2(10.0, 7.0);
+    style.spacing.button_padding = egui::vec2(13.0, 7.0);
 
-        style.visuals.widgets.inactive.corner_radius = corner_radius;
-        style.visuals.widgets.inactive.bg_fill = SURFACE_RAISED;
-        style.visuals.widgets.inactive.weak_bg_fill = SURFACE_RAISED;
-        style.visuals.widgets.inactive.fg_stroke.color = TEXT_PRIMARY;
-        style.visuals.widgets.inactive.bg_stroke = egui::Stroke::new(1.0, SURFACE_HOVER);
+    let corner_radius: egui::CornerRadius = RADIUS.into();
+    style.visuals.widgets.noninteractive.corner_radius = corner_radius;
+    style.visuals.widgets.noninteractive.bg_fill = TOOLBAR_FILL;
+    style.visuals.widgets.noninteractive.weak_bg_fill = TOOLBAR_FILL;
+    style.visuals.widgets.noninteractive.fg_stroke.color = TEXT_WEAK;
 
-        style.visuals.widgets.hovered.corner_radius = corner_radius;
-        style.visuals.widgets.hovered.bg_fill = SURFACE_HOVER;
-        style.visuals.widgets.hovered.weak_bg_fill = SURFACE_HOVER;
-        style.visuals.widgets.hovered.fg_stroke.color = TEXT_PRIMARY;
-        style.visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.0, OUTLINE);
+    style.visuals.widgets.inactive.corner_radius = corner_radius;
+    style.visuals.widgets.inactive.bg_fill = SURFACE_RAISED;
+    style.visuals.widgets.inactive.weak_bg_fill = SURFACE_RAISED;
+    style.visuals.widgets.inactive.fg_stroke.color = TEXT_PRIMARY;
+    style.visuals.widgets.inactive.bg_stroke = egui::Stroke::new(1.0, SURFACE_HOVER);
 
-        style.visuals.widgets.active.corner_radius = corner_radius;
-        style.visuals.widgets.active.bg_fill = ACCENT;
-        style.visuals.widgets.active.weak_bg_fill = ACCENT;
-        style.visuals.widgets.active.fg_stroke.color = BG;
-        style.visuals.widgets.active.bg_stroke = egui::Stroke::new(1.0, ACCENT);
+    style.visuals.widgets.hovered.corner_radius = corner_radius;
+    style.visuals.widgets.hovered.bg_fill = SURFACE_HOVER;
+    style.visuals.widgets.hovered.weak_bg_fill = SURFACE_HOVER;
+    style.visuals.widgets.hovered.fg_stroke.color = TEXT_PRIMARY;
+    style.visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.0, OUTLINE);
 
-        style.visuals.widgets.open.corner_radius = corner_radius;
-        style.visuals.widgets.open.bg_fill = SURFACE_RAISED;
-        style.visuals.widgets.open.weak_bg_fill = SURFACE_RAISED;
-        style.visuals.widgets.open.fg_stroke.color = TEXT_PRIMARY;
-        style.visuals.widgets.open.bg_stroke = egui::Stroke::new(1.0, ACCENT);
+    style.visuals.widgets.active.corner_radius = corner_radius;
+    style.visuals.widgets.active.bg_fill = ACCENT;
+    style.visuals.widgets.active.weak_bg_fill = ACCENT;
+    style.visuals.widgets.active.fg_stroke.color = BG;
+    style.visuals.widgets.active.bg_stroke = egui::Stroke::new(1.0, ACCENT);
 
-        style.visuals.window_corner_radius = RADIUS.into();
-        style.visuals.menu_corner_radius = RADIUS.into();
-        style.visuals.window_fill = TOOLBAR_FILL;
-        style.visuals.panel_fill = BG;
-        style.visuals.extreme_bg_color = BG;
-        style.visuals.faint_bg_color = SURFACE_RAISED;
-        style.visuals.window_stroke = egui::Stroke::new(1.0, SURFACE_RAISED);
+    style.visuals.widgets.open.corner_radius = corner_radius;
+    style.visuals.widgets.open.bg_fill = SURFACE_RAISED;
+    style.visuals.widgets.open.weak_bg_fill = SURFACE_RAISED;
+    style.visuals.widgets.open.fg_stroke.color = TEXT_PRIMARY;
+    style.visuals.widgets.open.bg_stroke = egui::Stroke::new(1.0, ACCENT);
 
-        style.visuals.selection.bg_fill = ACCENT;
-        // Warm cream (`TEXT_PRIMARY`), not pure white -- white read cold and
-        // slightly out of place against a gold selection fill once the rest
-        // of this palette warmed up.
-        style.visuals.selection.stroke.color = TEXT_PRIMARY;
-        style.visuals.hyperlink_color = ACCENT;
-        style.visuals.override_text_color = None;
-    });
+    style.visuals.window_corner_radius = RADIUS.into();
+    style.visuals.menu_corner_radius = RADIUS.into();
+    style.visuals.window_fill = TOOLBAR_FILL;
+    style.visuals.panel_fill = BG;
+    style.visuals.extreme_bg_color = BG;
+    style.visuals.faint_bg_color = SURFACE_RAISED;
+    style.visuals.window_stroke = egui::Stroke::new(1.0, SURFACE_RAISED);
+
+    style.visuals.selection.bg_fill = ACCENT;
+    // Warm cream (`TEXT_PRIMARY`), not pure white -- white read cold and
+    // slightly out of place against a gold selection fill once the rest
+    // of this palette warmed up.
+    style.visuals.selection.stroke.color = TEXT_PRIMARY;
+    style.visuals.hyperlink_color = ACCENT;
+    style.visuals.override_text_color = None;
+    style.visuals.error_fg_color = DANGER_COLOR;
 }
 
 /// The named font family `heading_text` requests for dialog titles and
@@ -849,6 +872,9 @@ pub(crate) fn toolbar_chip(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui
 }
 
 #[cfg(test)]
+pub(crate) mod testutil;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -893,6 +919,23 @@ mod tests {
             }
         }
         assert!(contrast(BG, DANGER_COLOR) >= 4.5, "BG text on DANGER_COLOR");
+    }
+
+    #[test]
+    fn palette_follows_visuals_dark_mode() {
+        let ctx = testutil::ctx(true);
+        let v = ctx.global_style().visuals.clone();
+        assert_eq!(palette(&v).text, TEXT_PRIMARY);
+        assert_eq!(accent(&v), ACCENT);
+        assert_eq!(danger(&v), DANGER_COLOR);
+    }
+
+    #[test]
+    fn apply_style_sets_selection_and_error_colors() {
+        let ctx = testutil::ctx(true);
+        let v = ctx.global_style().visuals.clone();
+        assert_eq!(v.selection.bg_fill, ACCENT);
+        assert_eq!(v.error_fg_color, DANGER_COLOR);
     }
 
     /// Light text keeps AA contrast on the solid danger fill the graph close button shows on hover.

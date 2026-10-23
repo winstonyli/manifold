@@ -8,7 +8,7 @@ use crate::level::{CardEntry, EdgeCurve, EdgeKind, LevelEdge, Origin};
 use crate::nav_history::{NavHistory, TrailPage};
 use crate::popups::menu_popup;
 use crate::store::model::{NodeId, TYPE_TRAIL_PAGE};
-use crate::theme::{ACCENT, SURFACE_HOVER, TEXT_PRIMARY, TEXT_WEAK};
+use crate::theme::{accent, palette};
 use crate::tree_layout::{tree_layout, TreeNode};
 use crate::virtual_source::VirtualSource;
 use crate::{App, CardKind, GraphAction};
@@ -92,16 +92,22 @@ pub(crate) fn paint_trail_page(
 ) {
     let (inv_zoom, zoom_scale) = (pass.inv_zoom, pass.zoom_scale);
     let radius = (6.0 * inv_zoom).min(255.0);
+    let visuals = painter.ctx().global_style().visuals.clone();
     if hovered {
-        painter.rect_filled(rect, radius, SURFACE_HOVER);
+        painter.rect_filled(rect, radius, visuals.widgets.hovered.bg_fill);
     }
     if page.cursor {
-        painter.rect_stroke(rect, radius, egui::Stroke::new(2.0 * inv_zoom, ACCENT), egui::StrokeKind::Outside);
+        painter.rect_stroke(
+            rect,
+            radius,
+            egui::Stroke::new(2.0 * inv_zoom, accent(&visuals)),
+            egui::StrokeKind::Outside,
+        );
     }
     if !labelled || !label_fits(rect, zoom_scale) {
         return;
     }
-    let color = if page.cursor || page.on_path { TEXT_PRIMARY } else { TEXT_WEAK };
+    let color = if page.cursor || page.on_path { palette(&visuals).text } else { palette(&visuals).text_weak };
     let mut job = egui::text::LayoutJob::simple_singleline(page.label.clone(), label_font(), color);
     job.wrap = egui::text::TextWrapping {
         max_width: (rect.width() * zoom_scale - LABEL_LEFT - LABEL_INSET).max(0.0),
@@ -122,7 +128,7 @@ pub(crate) fn paint_trail_page(
 fn paint_page_icon(app: &App, ui: &egui::Ui, pass: &mut CardPass, rect: egui::Rect, tab: NodeId, url: &str) {
     let Some(identity) = app.page_identity(tab, url) else { return };
     let center = rect.left_center() + egui::vec2(LABEL_INSET + ICON_SIZE_SMALL / 2.0, 0.0) * pass.inv_zoom;
-    if let Some(text) = identity.paint(ui, center, ICON_SIZE_SMALL, pass.inv_zoom, TEXT_WEAK) {
+    if let Some(text) = identity.paint(ui, center, ICON_SIZE_SMALL, pass.inv_zoom, palette(ui.visuals()).text_weak) {
         pass.deferred_overlays.push(Box::new(move |overlay_painter, project| {
             text.draw(overlay_painter, project(text.center));
         }));
@@ -528,8 +534,7 @@ mod tests {
 
     #[test]
     fn a_long_url_label_paints_clipped_to_the_page() {
-        let ctx = egui::Context::default();
-        crate::theme::apply_fonts(&ctx);
+        let ctx = crate::theme::testutil::ctx(true);
         let page = TrailPage {
             serial: 0,
             parent: None,
@@ -599,8 +604,7 @@ mod tests {
     }
 
     fn text_ctx() -> egui::Context {
-        let ctx = egui::Context::default();
-        crate::theme::apply_fonts(&ctx);
+        let ctx = crate::theme::testutil::ctx(true);
         ctx.run_ui(egui::RawInput::default(), |_| {}).textures_delta.clear();
         ctx
     }
@@ -711,8 +715,7 @@ mod tests {
 
     #[test]
     fn a_page_leaves_the_frame_to_the_card_and_rings_the_cursor_outside_it() {
-        let ctx = egui::Context::default();
-        crate::theme::apply_fonts(&ctx);
+        let ctx = crate::theme::testutil::ctx(true);
         ctx.run_ui(egui::RawInput::default(), |_| {}).textures_delta.clear();
         let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, PAGE);
         let page =
