@@ -582,25 +582,28 @@ pub(crate) fn card_focus_ring(ui: &egui::Ui, rect: egui::Rect, inv_zoom: f32) {
 }
 
 /// One of a card's `card_controls`, hit-tested and drawn at its corner.
-/// A pinned card's pin mark, ACCENT at its bottom-left corner. It is not a control: a card is pinned and unpinned from
-/// the selection bar (`graph_ui/selection_bar.rs`), and a pinned node is left out of the force-directed layout (see
-/// `Mirror::pinned`), so the mark says why it does not move.
+/// A pinned card's pin mark: an accent pin on a round backing, inset into its bottom-left corner (a mark centred on the
+/// corner sat half under the card's border). It is not a control: a card is pinned and unpinned from the selection bar
+/// (`graph_ui/selection_bar.rs`), and a pinned node is left out of the force-directed layout (see `Mirror::pinned`),
+/// so the mark says why it does not move.
 pub(crate) fn paint_pinned_mark(
     ui: &egui::Ui,
     deferred_overlays: &mut DeferredOverlays,
     card_rect: egui::Rect,
     view: &CardView,
+    inv_zoom: f32,
     detail: crate::graph_ui::Detail,
 ) {
-    if view.pinned && detail.content() {
-        push_centered_text(
-            deferred_overlays,
-            card_rect.left_bottom(),
-            egui_phosphor::light::PUSH_PIN,
-            14.0,
-            accent(ui.visuals()),
-        );
+    if !view.pinned || !detail.content() {
+        return;
     }
+    let (accent, backing) = (accent(ui.visuals()), ui.visuals().window_fill);
+    let center = card_rect.left_bottom() + egui::vec2(12.0, -12.0) * inv_zoom;
+    deferred_overlays.push(Box::new(move |overlay_painter, project| {
+        let at = project(center);
+        overlay_painter.circle(at, 9.0, backing, egui::Stroke::new(1.0, accent));
+        paint_centered(overlay_painter, at, egui_phosphor::light::PUSH_PIN, 12.0, accent);
+    }));
 }
 
 /// Returns its response: the frame turns a click into
@@ -1195,7 +1198,7 @@ impl App {
         let mut control = ((caps.stored_controls && response.clicked_by(egui::PointerButton::Middle)) || delete)
             .then(|| CardControl::Close.action());
         let mut control_hovered = false;
-        paint_pinned_mark(ui, deferred_overlays, rect, &view, self.graph_detail);
+        paint_pinned_mark(ui, deferred_overlays, rect, &view, inv_zoom, self.graph_detail);
         for card_control in card_controls(&view) {
             if card_control.hover_only() && !is_hovered {
                 continue;
