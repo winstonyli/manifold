@@ -311,6 +311,8 @@ impl App {
                     egui::TextEdit::singleline(&mut self.graph_filter)
                         .desired_width(150.0)
                         .min_size(egui::vec2(0.0, 28.0))
+                        // Taller than its text, as the address bar is: centre the text rather than leave the slack below.
+                        .vertical_align(egui::Align::Center)
                         .margin(FIELD_MARGIN)
                         .hint_text("Filter..."),
                 )
