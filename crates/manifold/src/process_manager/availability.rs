@@ -35,7 +35,7 @@ pub(super) fn sibling_binary(name: &str) -> PathBuf {
 /// from there: `spawn_tab` copies it beside the runtime's `libcef.dll`.)
 pub(super) fn view_binary_path(kind: ViewKind) -> PathBuf {
     let desc = kind.desc();
-    assert!(desc.spawn_mode == SpawnMode::Local, "{} is spawned via wsl.exe, not a local path", desc.label);
+    assert!(desc.link == HostLink::PipesShm, "{} is reached over TCP, not by a local path", desc.label);
     let file_name = crate::cef_platform::PLATFORM.host_exe(desc.binary);
     // An engine with a runtime keeps its host in that runtime's `cef-runtime/`. The others are a lone exe (WebView2's
     // loader is statically linked by the `webview2-com` crate, or a lone DLL at worst): no ANGLE-style filename
@@ -75,7 +75,7 @@ pub(super) fn cef_sibling_exe() -> PathBuf {
 /// pin table says.
 pub(super) fn sibling_host(kind: ViewKind) -> Option<PathBuf> {
     let desc = kind.desc();
-    if desc.spawn_mode == SpawnMode::Wsl {
+    if Runtime::of(kind) == Some(Runtime::Wsl) {
         return built_webkit_host(&current_exe_dir());
     }
     let flat = Some(sibling_binary(desc.binary)).filter(|path| path.exists());
@@ -215,23 +215,19 @@ pub(crate) fn view_availability(
     failed: Option<&str>,
     custom: Option<&Path>,
 ) -> ViewStatus {
-    availability_with(std::env::consts::OS, plan, kind, on_disk, installing, failed, custom)
+    availability_with(Os::here(), plan, kind, on_disk, installing, failed, custom)
 }
 
-/// Why `kind` cannot run on `os` (a `std::env::consts::OS` value) at all, or `None` when it can. The one
-/// place that knows: availability (every engine list) and the spawn refusal both read it.
-/// WebView2 is Windows-only. WebKit runs through WSL on Windows and is hosted natively on Linux; macOS has
-/// no WebKit host wired yet. (WSL is not probed: on Windows it is only found missing when a tab spawns.)
-pub(super) fn platform_unavailable_reason(os: &str, kind: ViewKind) -> Option<&'static str> {
-    // An engine with no `only_on` runs wherever manifold does (Servo's host builds there; CEF's platforms are its
-    // pin's, `plan_for`).
-    let desc = kind.desc();
-    (!desc.only_on.is_empty() && !desc.only_on.contains(&os)).then_some(desc.only_on_reason)
+/// Why `kind` cannot run on `os` at all, or `None` when it can (`runtime::unavailable_reason`). An engine whose
+/// host is built for whichever OS manifold runs on (Servo; CEF, whose platforms are its pin's, `plan_for`) always
+/// can. (WSL is not probed: on Windows it is only found missing when a tab spawns.)
+pub(super) fn platform_unavailable_reason(os: Os, kind: ViewKind) -> Option<String> {
+    runtime::unavailable_reason(kind, os)
 }
 
 /// The engine a fresh profile starts new tabs in on `os`: the first in picker order that may start one
 /// (`ViewDesc::starting_default`) and that the platform can run.
-pub(crate) fn platform_default_view_kind(os: &str) -> ViewKind {
+pub(crate) fn platform_default_view_kind(os: Os) -> ViewKind {
     ViewKind::picker_order()
         .into_iter()
         .find(|kind| kind.desc().starting_default && platform_unavailable_reason(os, *kind).is_none())
@@ -242,7 +238,7 @@ pub(crate) fn platform_default_view_kind(os: &str) -> ViewKind {
 /// with its reason, unless the parts are already there (a dev tree's siblings) or, for CEF, a custom runtime is
 /// set and the host is there.
 pub(super) fn availability_with(
-    os: &str,
+    os: Os,
     plan: &Result<Plan, String>,
     kind: ViewKind,
     on_disk: OnDisk,
@@ -251,7 +247,7 @@ pub(super) fn availability_with(
     custom: Option<&Path>,
 ) -> ViewStatus {
     if let Some(reason) = platform_unavailable_reason(os, kind) {
-        return ViewStatus::Unavailable(reason.to_string());
+        return ViewStatus::Unavailable(reason);
     }
     if !downloads(kind) {
         return ViewStatus::Installed;

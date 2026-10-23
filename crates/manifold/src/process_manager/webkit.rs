@@ -5,8 +5,8 @@ use super::*;
 /// Why a WebKit spawn cannot start on `os` although WebKit counts as available there, or `None`. The only
 /// WebKit host is reached through `wsl.exe` (`spawn_webkit_tab`); on Linux, where it would run natively,
 /// that launch is not wired yet, so the spawn says so instead of failing on a missing `wsl.exe`.
-pub(super) fn webkit_host_missing(os: &str) -> Option<&'static str> {
-    (os == "linux").then_some("WebKit can't start yet: a native Linux WebKit host is not wired up")
+pub(super) fn webkit_host_missing(os: Os) -> Option<&'static str> {
+    (os == Os::Linux).then_some("WebKit can't start yet: a native Linux WebKit host is not wired up")
 }
 
 /// Converts this repo's Windows path (wherever manifold.exe actually is)

@@ -11,7 +11,8 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use crate::host_pin::Component as HostFile;
-use crate::process_manager::{HostSource, SpawnMode, ViewKind, CEF_RUNTIME_DIR};
+use crate::process_manager::runtime::Os;
+use crate::process_manager::{HostSource, ViewKind, CEF_RUNTIME_DIR};
 
 use manifold_view_protocol::transport::to_hex;
 use sha1::Sha1;
@@ -158,14 +159,10 @@ pub(crate) fn missing_vc_runtime() -> Vec<&'static str> {
     }
 }
 
-/// `host_pin`'s name for the platform `kind`'s host runs on: this build's own, except a WSL-hosted engine's, a Linux
-/// ELF even when manifold runs on Windows.
+/// `host_pin`'s name for the platform `kind`'s host is built for: this build's own OS, except an engine built for
+/// another (WebKit's is a Linux ELF even when manifold runs on Windows, through WSL).
 pub(crate) fn host_platform(kind: ViewKind) -> &'static str {
-    if kind.desc().spawn_mode == SpawnMode::Wsl || !cfg!(windows) {
-        "linux-x64"
-    } else {
-        "windows-x64"
-    }
+    kind.desc().host_os.unwrap_or_else(Os::here).pin_platform()
 }
 
 /// The host files this build pins for `kind` on this platform; empty for an engine that is not downloaded.

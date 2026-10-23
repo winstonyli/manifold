@@ -46,18 +46,9 @@ pub(crate) enum HostSource {
 /// CEF's runtime archive unpacked beside its host: `<hosts dir>/cef-runtime/`, and in a dev build next to the exe.
 pub(crate) const CEF_RUNTIME_DIR: &str = "cef-runtime";
 
-/// How a host process is started.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SpawnMode {
-    /// A program on this machine, with a pipe pair and shared-memory frames (`spawn_tab`).
-    Local,
-    /// A Linux program run through `wsl.exe` and reached over TCP (`spawn_webkit_tab`): no frame file, no cache dir,
-    /// and a force-killed relay would orphan its Linux process tree, so it exits on its own (`reap_host`).
-    Wsl,
-}
-
 /// What each engine is: the one place everything that differs between engines lives -- name, store code, binary,
-/// label, pixel order, jar use, how it spawns and where it runs, how it is installed, and how the picker shows it.
+/// label, pixel order, jar use, which OS its host is built for and how it reaches manifold, how it is installed, and
+/// how the picker shows it.
 /// `desc` is an exhaustive `match`, so a new `ViewKind` fails to compile until it has a row here.
 pub(crate) struct ViewDesc {
     /// The string `settings.json`, session exports and the `view_kind` store field hold.
@@ -79,14 +70,15 @@ pub(crate) struct ViewDesc {
     /// toasts instead of opening a find bar that never gets a result.
     pub(crate) find: bool,
     pub(crate) source: HostSource,
-    pub(crate) spawn_mode: SpawnMode,
+    /// The OS the host is built for (`runtime::Runtime::between` says where that runs); `None`: whichever OS
+    /// manifold runs on.
+    pub(crate) host_os: Option<runtime::Os>,
+    /// How the host reaches manifold.
+    pub(crate) link: runtime::HostLink,
     /// The directory name (`CEF_RUNTIME_DIR`) of a runtime archive it needs besides its host exe, which also takes a
     /// bring-your-own runtime directory: only CEF's, the one component that is an archive (`Pin`, `unpack`) rather
     /// than single pinned files.
     pub(crate) runtime_dir: Option<&'static str>,
-    /// Runs only on these `std::env::consts::OS` values (empty: anywhere); `only_on_reason` is the refusal's text.
-    pub(crate) only_on: &'static [&'static str],
-    pub(crate) only_on_reason: &'static str,
     /// May be a fresh profile's starting engine (`platform_default_view_kind`): not an opt-in download, nor one
     /// that needs setup first.
     pub(crate) starting_default: bool,
@@ -134,10 +126,9 @@ impl ViewKind {
                 devtools: false,
                 find: false,
                 source: HostSource::Download,
-                spawn_mode: SpawnMode::Local,
+                host_os: None,
+                link: HostLink::PipesShm,
                 runtime_dir: None,
-                only_on: &[],
-                only_on_reason: "",
                 starting_default: true,
                 missing_system_libs: crate::view_install::missing_vc_runtime,
                 download_note: "",
@@ -164,10 +155,9 @@ impl ViewKind {
                 devtools: true,
                 find: true,
                 source: HostSource::Download,
-                spawn_mode: SpawnMode::Local,
+                host_os: None,
+                link: HostLink::PipesShm,
                 runtime_dir: Some(CEF_RUNTIME_DIR),
-                only_on: &[],
-                only_on_reason: "",
                 starting_default: false,
                 missing_system_libs: || crate::cef_platform::PLATFORM.missing_system_libs(),
                 download_note: "",
@@ -191,12 +181,11 @@ impl ViewKind {
                 devtools: false,
                 find: true,
                 source: HostSource::Download,
-                // Windows only (dev only: not in the release). On Linux the host would run natively, but that launch
-                // is not wired (`process_manager/webkit.rs`); README "Engines by OS".
-                spawn_mode: SpawnMode::Wsl,
+                // A Linux program: native on Linux, through WSL on Windows (not in the release; README "Engines by OS").
+                // TCP because nothing else crosses the WSL boundary.
+                host_os: Some(Os::Linux),
+                link: HostLink::Tcp,
                 runtime_dir: None,
-                only_on: &["windows", "linux"],
-                only_on_reason: "needs Windows or Linux",
                 starting_default: false,
                 missing_system_libs: Vec::new,
                 download_note: "
@@ -226,10 +215,9 @@ Not included: WebKit runs inside WSL, which needs a distro named Ubuntu with xvf
                 devtools: true,
                 find: true,
                 source: HostSource::Embedded(embedded_host::Embedded::Webview2),
-                spawn_mode: SpawnMode::Local,
+                host_os: Some(Os::Windows),
+                link: HostLink::PipesShm,
                 runtime_dir: None,
-                only_on: &["windows"],
-                only_on_reason: "needs Windows",
                 starting_default: true,
                 missing_system_libs: Vec::new,
                 download_note: "",
@@ -426,7 +414,7 @@ impl Drop for ViewTab {
         self.writer.shutdown();
         let Some(child) = self.child.take() else { return };
         let (cache_dir, slot) = (self.cache_dir.take(), self.profile_slot.take());
-        if self.kind.desc().spawn_mode == SpawnMode::Wsl {
+        if Runtime::of(self.kind) == Some(Runtime::Wsl) {
             // Off the UI thread: a WSL host gets up to 3 s to exit on its own,
             // and dropping a session of N of them used to freeze the window for 3N s.
             // It has no frame file (frames arrive over TCP) and no cache dir.
@@ -463,7 +451,7 @@ impl Drop for ViewTab {
 
 /// Waits for an engine host to exit after `Shutdown`, killing it if needed.
 fn reap_host(kind: ViewKind, mut child: Child) {
-    if kind.desc().spawn_mode == SpawnMode::Wsl {
+    if Runtime::of(kind) == Some(Runtime::Wsl) {
         // For the WSL2-hosted case, `child` is only the Windows-side
         // `wsl.exe` relay — force-killing it immediately (the
         // local-engine path below) does NOT terminate the actual
@@ -626,8 +614,8 @@ fn check_spawnable(
 
 /// The spawn refusal for an engine this OS cannot run, from the same `platform_unavailable_reason` the
 /// engine lists show, so a spawn fails by name instead of a bare "file not found".
-fn unsupported_on(os: &str, kind: ViewKind) -> Option<String> {
-    platform_unavailable_reason(os, kind).map(|reason| crate::view_info::PickOutcome::unavailable_toast(kind, reason))
+fn unsupported_on(os: Os, kind: ViewKind) -> Option<String> {
+    platform_unavailable_reason(os, kind).map(|reason| crate::view_info::PickOutcome::unavailable_toast(kind, &reason))
 }
 
 /// During a swap, the old view-host on this same `tab_id` was just killed
@@ -962,11 +950,11 @@ pub fn spawn_tab(
     wake: view_io::Wake,
 ) -> Result<ViewTab, SpawnError> {
     let desc = kind.desc();
-    if let Some(reason) = unsupported_on(std::env::consts::OS, kind) {
+    if let Some(reason) = unsupported_on(Os::here(), kind) {
         return Err(SpawnError::Io(std::io::Error::new(std::io::ErrorKind::Unsupported, reason)));
     }
-    if desc.spawn_mode == SpawnMode::Wsl {
-        if let Some(reason) = webkit_host_missing(std::env::consts::OS) {
+    if desc.link == HostLink::Tcp {
+        if let Some(reason) = webkit_host_missing(Os::here()) {
             return Err(SpawnError::Io(std::io::Error::new(std::io::ErrorKind::Unsupported, reason)));
         }
     }
@@ -983,7 +971,7 @@ pub fn spawn_tab(
             })?;
         }
     }
-    if desc.spawn_mode == SpawnMode::Wsl {
+    if desc.link == HostLink::Tcp {
         return Ok(spawn_webkit_tab(tab_id, initial_url, wake)?);
     }
 
@@ -1078,6 +1066,7 @@ pub fn spawn_tab(
 mod availability;
 mod job;
 mod profiles;
+pub(crate) mod runtime;
 pub(crate) mod view_io;
 mod webkit;
 #[cfg(test)]
@@ -1106,6 +1095,7 @@ use profiles::{
 pub use profiles::{
     finish_cache_removals, sweep_cef_cache, sweep_frame_files, sweep_view_logs, sweep_webview2_profiles,
 };
+use runtime::{HostLink, Os, Runtime};
 #[cfg(test)]
 use webkit::webkit_shell_command;
 use webkit::{spawn_webkit_tab, webkit_host_missing};

@@ -443,8 +443,11 @@ fn view_kinds_that_are_not_downloaded_are_always_installed_where_the_os_can_run_
     let a = |os, kind, disk, installing, failed| availability_with(os, &none, kind, disk, installing, failed, None);
     let kind = ViewKind::Webview2;
     assert!(!downloads(kind));
-    assert_eq!(a("windows", kind, OnDisk::both(RuntimeOnDisk::Missing), None, None), ViewStatus::Installed);
-    assert_eq!(a("windows", kind, OnDisk::both(RuntimeOnDisk::Stale), Some((1, 2)), Some("x")), ViewStatus::Installed);
+    assert_eq!(a(Os::Windows, kind, OnDisk::both(RuntimeOnDisk::Missing), None, None), ViewStatus::Installed);
+    assert_eq!(
+        a(Os::Windows, kind, OnDisk::both(RuntimeOnDisk::Stale), Some((1, 2)), Some("x")),
+        ViewStatus::Installed
+    );
 }
 
 /// WebKit's host is the Linux ELF, pinned for linux-x64 whichever OS runs manifold (WSL runs it on Windows).
@@ -461,19 +464,19 @@ static WEBKIT_FILES: [crate::host_pin::Component; 1] = [crate::host_pin::Compone
 fn webkit_is_installed_with_its_host_else_offered_or_unavailable() {
     assert!(downloads(ViewKind::Webkit));
     assert_eq!(host_platform(ViewKind::Webkit), "linux-x64");
-    assert_eq!(host_platform(ViewKind::Servo), if cfg!(windows) { "windows-x64" } else { "linux-x64" });
+    assert_eq!(host_platform(ViewKind::Servo), Os::here().pin_platform());
     let reason = no_download_reason(ViewKind::Webkit);
     assert_eq!(reason, "this build has no WebKit download");
     let a = |os, plan: &Result<Plan, String>, disk| {
         availability_with(os, plan, ViewKind::Webkit, OnDisk::both(disk), None, None, None)
     };
     let (no_pin, pinned) = (Err(reason.clone()), Ok(Plan { host: &WEBKIT_FILES, runtime: None }));
-    for os in ["windows", "linux"] {
-        assert_eq!(a(os, &no_pin, RuntimeOnDisk::Ready), ViewStatus::Installed, "{os}");
-        assert_eq!(a(os, &no_pin, RuntimeOnDisk::Missing), ViewStatus::Unavailable(reason.clone()), "{os}");
-        assert_eq!(a(os, &pinned, RuntimeOnDisk::Missing), ViewStatus::NotInstalled { size: 7_000_000 }, "{os}");
-        assert_eq!(a(os, &pinned, RuntimeOnDisk::Stale), ViewStatus::UpdateNeeded { size: 7_000_000 }, "{os}");
-        assert_eq!(a(os, &pinned, RuntimeOnDisk::Ready), ViewStatus::Installed, "{os}");
+    for os in [Os::Windows, Os::Linux] {
+        assert_eq!(a(os, &no_pin, RuntimeOnDisk::Ready), ViewStatus::Installed, "{os:?}");
+        assert_eq!(a(os, &no_pin, RuntimeOnDisk::Missing), ViewStatus::Unavailable(reason.clone()), "{os:?}");
+        assert_eq!(a(os, &pinned, RuntimeOnDisk::Missing), ViewStatus::NotInstalled { size: 7_000_000 }, "{os:?}");
+        assert_eq!(a(os, &pinned, RuntimeOnDisk::Stale), ViewStatus::UpdateNeeded { size: 7_000_000 }, "{os:?}");
+        assert_eq!(a(os, &pinned, RuntimeOnDisk::Ready), ViewStatus::Installed, "{os:?}");
     }
     assert!(matches!(
         check_spawnable(ViewKind::Webkit, &pinned, OnDisk::both(RuntimeOnDisk::Missing), None),
@@ -519,14 +522,14 @@ fn servo_is_installed_with_its_host_else_offered_or_unavailable() {
     };
     let no_pin = Err(reason.clone());
     let missing = ViewStatus::Unavailable(reason.clone());
-    for os in ["windows", "linux", "macos"] {
+    for os in Os::ALL {
         for plan in [&no_pin, &servo_plan()] {
-            assert_eq!(a(os, plan, RuntimeOnDisk::Ready, None, None), ViewStatus::Installed, "{os}");
-            assert_eq!(a(os, plan, RuntimeOnDisk::Ready, None, Some("x")), ViewStatus::Installed, "{os}");
+            assert_eq!(a(os, plan, RuntimeOnDisk::Ready, None, None), ViewStatus::Installed, "{os:?}");
+            assert_eq!(a(os, plan, RuntimeOnDisk::Ready, None, Some("x")), ViewStatus::Installed, "{os:?}");
         }
         // Nothing pinned and no sibling: Unavailable, an install or failure changing nothing (it cannot exist).
-        assert_eq!(a(os, &no_pin, RuntimeOnDisk::Missing, None, None), missing, "{os}");
-        assert_eq!(a(os, &no_pin, RuntimeOnDisk::Stale, None, Some("x")), missing, "{os}");
+        assert_eq!(a(os, &no_pin, RuntimeOnDisk::Missing, None, None), missing, "{os:?}");
+        assert_eq!(a(os, &no_pin, RuntimeOnDisk::Stale, None, Some("x")), missing, "{os:?}");
         // Pinned: the same disk is a download.
         let plan = servo_plan();
         assert_eq!(a(os, &plan, RuntimeOnDisk::Missing, None, None), ViewStatus::NotInstalled { size: SERVO_SIZE });
@@ -603,48 +606,48 @@ fn on_disk_answers_are_reused_until_the_ttl_or_forgotten() {
     assert_eq!(reads.get(), 4);
 }
 
-/// Every OS case, from any host: the reason text is also what the spawn refusal and the lists show.
+/// Every OS case, from any host: the reason text is also what the spawn refusal and the lists show. (The OS-by-engine
+/// table itself is `runtime::tests`.)
 #[test]
 fn view_kinds_the_os_cannot_run_are_unavailable_with_a_reason() {
     let none = Err("unused".to_string());
     let unavailable =
         |os, kind| availability_with(os, &none, kind, OnDisk::both(RuntimeOnDisk::Ready), None, None, None);
     let reason = |text: &str| ViewStatus::Unavailable(text.to_string());
-    for os in ["linux", "macos", "freebsd"] {
-        assert_eq!(unavailable(os, ViewKind::Webview2), reason("needs Windows"), "{os}");
+    for os in [Os::Linux, Os::Mac] {
+        assert_eq!(unavailable(os, ViewKind::Webview2), reason("needs Windows"), "{os:?}");
     }
-    assert_eq!(unavailable("macos", ViewKind::Webkit), reason("needs Windows or Linux"));
-    assert_eq!(unavailable("freebsd", ViewKind::Webkit), reason("needs Windows or Linux"));
-    assert_eq!(unavailable("windows", ViewKind::Webview2), ViewStatus::Installed);
-    assert_eq!(unavailable("windows", ViewKind::Webkit), ViewStatus::Installed);
-    assert_eq!(unavailable("linux", ViewKind::Webkit), ViewStatus::Installed);
+    assert_eq!(unavailable(Os::Mac, ViewKind::Webkit), reason("needs Windows or Linux"));
+    assert_eq!(unavailable(Os::Windows, ViewKind::Webview2), ViewStatus::Installed);
+    assert_eq!(unavailable(Os::Windows, ViewKind::Webkit), ViewStatus::Installed);
+    assert_eq!(unavailable(Os::Linux, ViewKind::Webkit), ViewStatus::Installed);
     // Servo runs everywhere (with its host on disk); CEF follows its pin, not the OS table.
-    assert_eq!(unavailable("macos", ViewKind::Servo), ViewStatus::Installed);
-    assert_eq!(unavailable("macos", ViewKind::Cef), ViewStatus::Installed);
+    assert_eq!(unavailable(Os::Mac, ViewKind::Servo), ViewStatus::Installed);
+    assert_eq!(unavailable(Os::Mac, ViewKind::Cef), ViewStatus::Installed);
     // The spawn refusal reads the same table.
-    assert_eq!(unsupported_on("windows", ViewKind::Webview2), None);
-    assert_eq!(unsupported_on("linux", ViewKind::Servo), None);
-    assert_eq!(unsupported_on("linux", ViewKind::Webkit), None);
-    let refusal = unsupported_on("macos", ViewKind::Webview2).unwrap();
+    assert_eq!(unsupported_on(Os::Windows, ViewKind::Webview2), None);
+    assert_eq!(unsupported_on(Os::Linux, ViewKind::Servo), None);
+    assert_eq!(unsupported_on(Os::Linux, ViewKind::Webkit), None);
+    let refusal = unsupported_on(Os::Mac, ViewKind::Webview2).unwrap();
     assert!(refusal.contains("WebView2") && refusal.contains("needs Windows"), "{refusal}");
-    assert!(unsupported_on("macos", ViewKind::Webkit).unwrap().contains("needs Windows or Linux"));
+    assert!(unsupported_on(Os::Mac, ViewKind::Webkit).unwrap().contains("needs Windows or Linux"));
 }
 
 #[test]
 fn a_linux_webkit_spawn_names_the_missing_native_host() {
     // Available on Linux, but the only host is reached through wsl.exe: refused by name, not by a
     // raw "No such file or directory" from a wsl.exe that isn't there.
-    assert!(webkit_host_missing("linux").unwrap().contains("native Linux WebKit host"));
-    assert_eq!(webkit_host_missing("windows"), None);
+    assert!(webkit_host_missing(Os::Linux).unwrap().contains("native Linux WebKit host"));
+    assert_eq!(webkit_host_missing(Os::Windows), None);
 }
 
 #[test]
 fn the_platform_default_is_the_first_view_the_os_can_run() {
-    assert_eq!(platform_default_view_kind("windows"), ViewKind::Webview2);
-    for os in ["linux", "macos", "freebsd"] {
-        assert_eq!(platform_default_view_kind(os), ViewKind::Servo, "{os}");
+    assert_eq!(platform_default_view_kind(Os::Windows), ViewKind::Webview2);
+    for os in [Os::Linux, Os::Mac] {
+        assert_eq!(platform_default_view_kind(os), ViewKind::Servo, "{os:?}");
     }
-    for os in ["windows", "linux", "macos"] {
+    for os in Os::ALL {
         assert!(platform_unavailable_reason(os, platform_default_view_kind(os)).is_none());
     }
 }
@@ -690,7 +693,7 @@ fn cef_state_follows_disk_then_overrides() {
 fn a_platform_without_a_pin_offers_no_install() {
     let none = Err(NO_PIN_REASON.to_string());
     let a = |disk: OnDisk, installing, failed, custom| {
-        availability_with("windows", &none, ViewKind::Cef, disk, installing, failed, custom)
+        availability_with(Os::Windows, &none, ViewKind::Cef, disk, installing, failed, custom)
     };
     let unavailable = ViewStatus::Unavailable(NO_PIN_REASON.to_string());
     for disk in [RuntimeOnDisk::Missing, RuntimeOnDisk::Stale] {
@@ -706,7 +709,7 @@ fn a_platform_without_a_pin_offers_no_install() {
         ViewStatus::Custom(p.to_path_buf())
     );
     assert_eq!(
-        availability_with("windows", &none, ViewKind::Servo, OnDisk::both(RuntimeOnDisk::Ready), None, None, None),
+        availability_with(Os::Windows, &none, ViewKind::Servo, OnDisk::both(RuntimeOnDisk::Ready), None, None, None),
         ViewStatus::Installed
     );
     // The pick says so rather than asking to download, and the label gives the reason.
