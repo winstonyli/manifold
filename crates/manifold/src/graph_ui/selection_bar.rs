@@ -3,7 +3,7 @@
 use super::{App, GraphAction};
 use crate::card_id::CardId;
 use crate::store::model::NodeId;
-use crate::theme::bar_frame;
+use crate::theme::{accent, bar_frame, chip_icon_button, NamedTip, RADIUS_CHIP};
 
 /// The bar's estimated height, to decide whether it fits above the selection before it is laid out.
 const BAR_HEIGHT: f32 = 40.0;
@@ -81,10 +81,9 @@ impl App {
         } else {
             (egui::Align2::CENTER_TOP, (max.y + BAR_GAP).min(panel.bottom() - BAR_HEIGHT))
         };
-        let x = ((min.x + max.x) / 2.0).clamp(panel.left() + 120.0, panel.right() - 120.0);
+        let x = ((min.x + max.x) / 2.0).clamp(panel.left() + 90.0, panel.right() - 90.0);
         let stored = self.selected_stored_count();
         let inside = self.unselected_members_of_selection();
-        let pin_label = if self.selection_would_pin() { "Pin" } else { "Unpin" };
         egui::Area::new(egui::Id::new("selection_bar"))
             .order(egui::Order::Foreground)
             .pivot(pivot)
@@ -92,25 +91,57 @@ impl App {
             .show(ui.ctx(), |ui| {
                 bar_frame(ui).show(ui, |ui| {
                     ui.horizontal(|ui| {
-                        crate::theme::menu_item_style(ui);
-                        ui.label(egui::RichText::new(stored.to_string()).weak());
-                        if ui
-                            .button(format!("{} {pin_label}", egui_phosphor::light::PUSH_PIN))
-                            .on_hover_text("Pinned cards stay where they are when the layout moves")
-                            .clicked()
-                        {
+                        ui.spacing_mut().item_spacing.x = 4.0;
+                        // How many are selected: a round chip, centred on the buttons.
+                        let chip = egui::Frame::new()
+                            .fill(ui.visuals().widgets.inactive.weak_bg_fill)
+                            .corner_radius(egui::CornerRadius::same(RADIUS_CHIP))
+                            .inner_margin(egui::Margin::symmetric(8, 2))
+                            .show(ui, |ui| ui.label(egui::RichText::new(stored.to_string()).weak()));
+                        chip.response.on_hover_text(format!("{stored} selected"));
+                        // The glyph is accented once every selected card is pinned (a click then unpins).
+                        let pinned = !self.selection_would_pin();
+                        let pin = ui
+                            .scope(|ui| {
+                                if pinned {
+                                    let accent = accent(ui.visuals());
+                                    ui.visuals_mut().widgets.inactive.fg_stroke.color = accent;
+                                    ui.visuals_mut().widgets.hovered.fg_stroke.color = accent;
+                                }
+                                chip_icon_button(ui, egui::Id::new("selection_pin"), egui_phosphor::light::PUSH_PIN)
+                            })
+                            .inner;
+                        let pin_tip = if pinned { "Unpin" } else { "Pin: keep these cards where they are" };
+                        if pin.named_tip(pin_tip).clicked() {
                             actions.push(GraphAction::PinSelected);
                         }
                         // Groups the selection into a new group at the level being viewed.
-                        if ui.button(format!("{} Group", egui_phosphor::light::FOLDER_PLUS)).clicked() {
+                        let group =
+                            chip_icon_button(ui, egui::Id::new("selection_group"), egui_phosphor::light::FOLDER_PLUS);
+                        if group.named_tip("Group").clicked() {
                             actions.push(GraphAction::GroupSelected);
                         }
-                        let close = match inside {
-                            0 => format!("{} Close", egui_phosphor::light::X),
-                            n => format!("{} Close (+ {n} inside)", egui_phosphor::light::X),
+                        let close = chip_icon_button(ui, egui::Id::new("selection_close"), egui_phosphor::light::X);
+                        let close_rect = close.rect;
+                        let tip = match inside {
+                            0 => "Close".to_owned(),
+                            n => format!("Close (a group closes with its {n} more inside)"),
                         };
-                        if ui.button(close).on_hover_text("A group closes with everything in it").clicked() {
+                        if close.named_tip(tip).clicked() {
                             actions.push(GraphAction::CloseSelected);
+                        }
+                        // What a selected group takes with it, as a badge on the X.
+                        if inside > 0 {
+                            let center = close_rect.right_top() + egui::vec2(-4.0, 4.0);
+                            let painter = ui.painter();
+                            painter.circle_filled(center, 7.0, accent(ui.visuals()));
+                            painter.text(
+                                center,
+                                egui::Align2::CENTER_CENTER,
+                                format!("+{}", inside.min(9)),
+                                egui::FontId::proportional(8.0),
+                                egui::Color32::WHITE,
+                            );
                         }
                     });
                 });
