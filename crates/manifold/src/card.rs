@@ -378,7 +378,6 @@ pub(crate) fn card_border(view: &CardView, style: &CardStyle, hover_t: f32) -> (
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum CardControl {
     Swatch,
-    Pin,
     Audio,
     Eject,
     Close,
@@ -396,7 +395,6 @@ impl CardControl {
     pub(crate) fn action(self) -> NodeAction {
         match self {
             CardControl::Swatch => NodeAction::CycleColor,
-            CardControl::Pin => NodeAction::TogglePin,
             CardControl::Audio => NodeAction::ToggleMute,
             CardControl::Eject => NodeAction::RemoveFromGroup,
             CardControl::Close => NodeAction::Delete,
@@ -407,8 +405,6 @@ impl CardControl {
     pub(crate) fn tip(self, view: &CardView) -> &'static str {
         match self {
             CardControl::Swatch => "Next color (right-click to pick)",
-            CardControl::Pin if view.pinned => "Unpin: let the layout move this card",
-            CardControl::Pin => "Pin: keep this card where it is",
             CardControl::Audio if view.muted => "Unmute",
             CardControl::Audio => "Mute",
             CardControl::Eject => "Remove from group",
@@ -424,7 +420,6 @@ impl CardControl {
     pub(crate) fn rect(self, card: egui::Rect, inv_zoom: f32) -> egui::Rect {
         let (anchor, size) = match self {
             CardControl::Swatch => (card.right_bottom(), 16.0),
-            CardControl::Pin => (card.left_bottom(), 16.0),
             CardControl::Audio => (card.right_top() + egui::vec2(-8.0, 8.0) * inv_zoom, 16.0),
             CardControl::Eject => (card.left_top(), 18.0),
             CardControl::Close => (card.right_top(), 18.0),
@@ -455,14 +450,14 @@ pub(crate) fn click_action(kind: CardKind) -> Option<NodeAction> {
 }
 
 /// The buttons `view`'s card shows, in registration order (see
-/// `CardControl`): the swatch and the pin on every card, and a live tab's audio indicator while playing or muted, eject on
+/// `CardControl`): the swatch on every card, and a live tab's audio indicator while playing or muted, eject on
 /// a grouped one, and a closable card's ✕ last, so it wins over anything under it.
 pub(crate) fn card_controls(view: &CardView) -> Vec<CardControl> {
     // A virtual kind has no node to colour, pin, eject or close.
     if !view.kind.caps().stored_controls {
         return Vec::new();
     }
-    let mut controls = vec![CardControl::Swatch, CardControl::Pin];
+    let mut controls = vec![CardControl::Swatch];
     if view.kind.ty == TYPE_TAB {
         // Also while muted after audio stops, so a mute can always be
         // seen and undone from Graph view. An unloaded card has no engine
@@ -587,6 +582,27 @@ pub(crate) fn card_focus_ring(ui: &egui::Ui, rect: egui::Rect, inv_zoom: f32) {
 }
 
 /// One of a card's `card_controls`, hit-tested and drawn at its corner.
+/// A pinned card's pin mark, ACCENT at its bottom-left corner. It is not a control: a card is pinned and unpinned from
+/// the selection bar (`graph_ui/selection_bar.rs`), and a pinned node is left out of the force-directed layout (see
+/// `Mirror::pinned`), so the mark says why it does not move.
+pub(crate) fn paint_pinned_mark(
+    ui: &egui::Ui,
+    deferred_overlays: &mut DeferredOverlays,
+    card_rect: egui::Rect,
+    view: &CardView,
+    detail: crate::graph_ui::Detail,
+) {
+    if view.pinned && detail.content() {
+        push_centered_text(
+            deferred_overlays,
+            card_rect.left_bottom(),
+            egui_phosphor::light::PUSH_PIN,
+            14.0,
+            accent(ui.visuals()),
+        );
+    }
+}
+
 /// Returns its response: the frame turns a click into
 /// `control.action()` and counts its hover as the card's. Icons are
 /// painted on the overlay layer (see `DeferredOverlays`), like card text.
@@ -635,14 +651,6 @@ pub(crate) fn paint_card_control(
                         egui::Stroke::new(1.5 * inv_zoom, style.border_idle),
                     );
                 }
-            }
-        }
-        // A `PUSH_PIN` icon, ACCENT when pinned. A pinned node is left out
-        // of the force-directed layout (see `Mirror::pinned`).
-        CardControl::Pin => {
-            let pin_color = if view.pinned { accent(ui.visuals()) } else { ui.visuals().weak_text_color() };
-            if detail.content() {
-                push_centered_text(deferred_overlays, rect.center(), egui_phosphor::light::PUSH_PIN, 14.0, pin_color);
             }
         }
         // Audio-playing/muted indicator: shown while playing so audio
@@ -1187,6 +1195,7 @@ impl App {
         let mut control = ((caps.stored_controls && response.clicked_by(egui::PointerButton::Middle)) || delete)
             .then(|| CardControl::Close.action());
         let mut control_hovered = false;
+        paint_pinned_mark(ui, deferred_overlays, rect, &view, self.graph_detail);
         for card_control in card_controls(&view) {
             if card_control.hover_only() && !is_hovered {
                 continue;

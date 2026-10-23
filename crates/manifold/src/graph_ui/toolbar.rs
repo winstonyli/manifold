@@ -78,9 +78,6 @@ impl App {
                 }
                 self.toolbar_filter(ui, on_json_level);
                 recently_closed_button_rect = self.toolbar_recently_closed(ui);
-                if !on_json_level {
-                    self.toolbar_selection(ui, &mut actions);
-                }
                 shortcuts_help_button_rect = Some(self.render_universal_chip(ui));
             });
         });
@@ -332,46 +329,6 @@ impl App {
         }
         recently_closed_button_rect
     }
-
-    /// How many cards inside the selected groups (at any depth) are not themselves selected: they close with the
-    /// group (`GraphAction::CloseSelected`).
-    fn unselected_members_of_selection(&self) -> usize {
-        let mut inside = std::collections::HashSet::new();
-        let mut frontier: Vec<NodeId> = self.interaction.selected.iter().filter_map(|c| c.node()).collect();
-        while let Some(group) = frontier.pop() {
-            for member in self.members_of(group) {
-                if inside.insert(member) {
-                    frontier.push(member);
-                }
-            }
-        }
-        inside.iter().filter(|id| !self.interaction.selected.contains(&CardId::from(**id))).count()
-    }
-
-    /// Group/Close Selected, shown once a rectangle select has picked something.
-    fn toolbar_selection(&self, ui: &mut egui::Ui, actions: &mut Vec<GraphAction>) {
-        // Rectangle-select's own action bar: only shown once a
-        // right-drag has actually selected something (see
-        // `handle_rect_select`).
-        // Counts the stored cards: both actions leave a virtual card alone.
-        let stored = self.selected_stored_count();
-        if stored > 0 {
-            // Matches "+ New Group" above: groups the selection
-            // into a new subgroup of whichever level is
-            // currently being viewed, not just the top.
-            if ui.button(format!("Group Selected ({stored})")).clicked() {
-                actions.push(GraphAction::GroupSelected);
-            }
-            let inside = self.unselected_members_of_selection();
-            let label = match inside {
-                0 => format!("Close Selected ({stored})"),
-                n => format!("Close Selected ({stored} + {n} inside)"),
-            };
-            if ui.button(label).on_hover_text("A group closes with everything in it").clicked() {
-                actions.push(GraphAction::CloseSelected);
-            }
-        }
-    }
 }
 
 #[cfg(test)]
@@ -414,29 +371,6 @@ mod tests {
         assert!(texts.contains(&format!("{}…", "x".repeat(19))), "{texts:?}");
         let current = galleys.iter().find(|g| g.text() == "Re⟦200B⟧ading").unwrap_or_else(|| panic!("{texts:?}"));
         assert!(current.job.sections.iter().any(|s| s.format.font_id.family == egui::FontFamily::Monospace));
-    }
-
-    /// Close Selected names the cards that close with a selected group and are not selected themselves, at any depth.
-    #[test]
-    fn close_selected_counts_what_a_selected_group_takes_with_it() {
-        use crate::fetched::Placement;
-        let mut app = App::default();
-        let top = Placement { group: None, pos: egui::Vec2::ZERO };
-        use crate::card_id::testutil::node;
-        let [outer, inner, a, b, c] = [1, 2, 3, 4, 5].map(node);
-        app.place_group(Some(outer), "Outer", top);
-        app.place_group(Some(inner), "Inner", Placement { group: Some(outer), pos: egui::Vec2::ZERO });
-        for (id, group) in [(a, outer), (b, inner), (c, inner)] {
-            let note = Runtime::Note(NotePayload { text: "n".into(), editing: false });
-            app.insert_placeholder_node(id, egui::Vec2::ZERO, crate::store::model::Kind::Note, note);
-            app.edit_group(id, Some(group));
-        }
-        app.interaction.selected.insert(CardId::from(a));
-        assert_eq!(app.unselected_members_of_selection(), 0, "a note holds nothing");
-        app.interaction.selected.insert(CardId::from(outer));
-        assert_eq!(app.unselected_members_of_selection(), 3, "inner, b and c; a is selected itself");
-        app.interaction.selected.insert(CardId::from(c));
-        assert_eq!(app.unselected_members_of_selection(), 2, "c is selected too");
     }
 
     /// The hint is per level: an empty group shows it; a level with a node (a group card counts) does not.

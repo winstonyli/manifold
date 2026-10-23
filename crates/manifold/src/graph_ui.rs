@@ -10,6 +10,7 @@ mod hints;
 mod keys;
 mod overlays;
 mod scene;
+mod selection_bar;
 mod toolbar;
 
 pub(crate) use camera::*;
@@ -117,6 +118,7 @@ pub(crate) enum GraphAction {
     Drop { id: CardId, target: Option<(DropEffect, Option<CardId>)> },
     /// Pick-target mode: a click on this valid target (`App::finish_connect`).
     FinishConnect(NodeId),
+    PinSelected,
     GroupSelected,
     CloseSelected,
     UngroupAll,
@@ -200,6 +202,7 @@ impl App {
                 self.insert_group_at(id, Some(pos));
             }
             GraphAction::NewFile(pos) => self.add_file_node(Some(pos)),
+            GraphAction::PinSelected => self.pin_shortcut(),
             GraphAction::GroupSelected => {
                 // Only the selected cards still shown: a tab mid-crash-respawn or mid-engine-swap has no card, so it
                 // is neither counted in the centroid nor moved (its selection is consumed with the rest).

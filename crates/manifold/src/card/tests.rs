@@ -523,40 +523,39 @@ fn a_picture_is_one_rounded_textured_shape_concentric_with_its_card() {
 fn card_controls_list_each_cards_buttons_in_pointer_order() {
     use CardControl::*;
     for kind in kinds().into_iter().filter(|k| k.ty != TYPE_TAB) {
-        assert_eq!(card_controls(&test_view(kind)), vec![Swatch, Pin, Close], "{kind:?}");
+        assert_eq!(card_controls(&test_view(kind)), vec![Swatch, Close], "{kind:?}");
         let grouped = CardView { in_group: true, ..test_view(kind) };
-        assert_eq!(card_controls(&grouped), vec![Swatch, Pin, Eject, Close], "{kind:?}");
+        assert_eq!(card_controls(&grouped), vec![Swatch, Eject, Close], "{kind:?}");
     }
     // Close is the one close on every kind, a group included (Dissolve is a menu row, not the card's close).
     assert_eq!(Close.action(), NodeAction::Delete);
-    // Every card shows its pin; an unloaded tab never shows the audio
+    // An unloaded tab never shows the audio
     // indicator -- it has no engine to be playing or muted.
-    assert_eq!(card_controls(&test_view(sleeping_tab())), vec![Swatch, Pin, Close]);
+    assert_eq!(card_controls(&test_view(sleeping_tab())), vec![Swatch, Close]);
     assert_eq!(
         card_controls(&CardView { audio_playing: true, muted: true, ..test_view(sleeping_tab()) }),
-        vec![Swatch, Pin, Close]
+        vec![Swatch, Close]
     );
-    // A tab always shows its pin; its audio indicator while playing or
+    // A tab shows its audio indicator while playing or
     // muted. Close still registers last: it overlaps the indicator.
     let tab = |f: fn(&mut CardView)| {
         let mut view = test_view(loaded_tab());
         f(&mut view);
         card_controls(&view)
     };
-    assert_eq!(tab(|_| {}), vec![Swatch, Pin, Close]);
-    assert_eq!(tab(|v| v.pinned = true), vec![Swatch, Pin, Close]);
-    assert_eq!(tab(|v| v.audio_playing = true), vec![Swatch, Pin, Audio, Close]);
-    assert_eq!(tab(|v| v.muted = true), vec![Swatch, Pin, Audio, Close]);
+    assert_eq!(tab(|_| {}), vec![Swatch, Close]);
+    assert_eq!(tab(|v| v.pinned = true), vec![Swatch, Close]);
+    assert_eq!(tab(|v| v.audio_playing = true), vec![Swatch, Audio, Close]);
+    assert_eq!(tab(|v| v.muted = true), vec![Swatch, Audio, Close]);
     assert_eq!(
         tab(|v| {
             v.muted = true;
             v.in_group = true;
         }),
-        vec![Swatch, Pin, Audio, Eject, Close]
+        vec![Swatch, Audio, Eject, Close]
     );
-    assert_eq!(Pin.action(), NodeAction::TogglePin);
     assert_eq!(Audio.action(), NodeAction::ToggleMute);
-    assert!(!Pin.hover_only() && !Audio.hover_only());
+    assert!(!Audio.hover_only());
     assert_eq!(Eject.action(), NodeAction::RemoveFromGroup);
     assert_eq!(Swatch.action(), NodeAction::CycleColor);
     assert!(Close.hover_only() && Eject.hover_only() && !Swatch.hover_only());
@@ -572,10 +571,6 @@ fn card_control_rects_sit_on_their_corners() {
         assert_eq!(
             Swatch.rect(card, inv_zoom),
             egui::Rect::from_center_size(card.right_bottom(), egui::Vec2::splat(16.0) * inv_zoom)
-        );
-        assert_eq!(
-            Pin.rect(card, inv_zoom),
-            egui::Rect::from_center_size(card.left_bottom(), egui::Vec2::splat(16.0) * inv_zoom)
         );
         assert_eq!(
             Audio.rect(card, inv_zoom),
