@@ -72,9 +72,9 @@ const NOT_FOUND_HTML: &str = "<!doctype html><html><head><meta charset=\"utf-8\"
 /// The stylesheet every page starts from (the palette variables, the body, headings and key caps).
 const BASE_CSS: &str = include_str!("../assets/base.css");
 
-/// `:root` declarations for `palette`, substituted for each page's `/*PALETTE*/`.
-fn palette_vars() -> String {
-    let c = palette::colors(true);
+/// `:root` declarations for the `dark` or light `palette`, substituted for each page's `/*PALETTE*/`.
+fn palette_vars(dark: bool) -> String {
+    let c = palette::colors(dark);
     let hex = |[r, g, b]: [u8; 3]| format!("#{r:02X}{g:02X}{b:02X}");
     [
         ("bg", c.bg),
@@ -91,12 +91,21 @@ fn palette_vars() -> String {
     .concat()
 }
 
-/// Every page with the base stylesheet and its palette filled in, built once.
+static DARK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+/// Which palette `serve` fills in: the app writes this when its theme changes (a page already open keeps the colors
+/// it was served with until reloaded).
+pub fn set_dark(dark: bool) {
+    DARK.store(dark, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Every page with the base stylesheet and the current palette filled in, built once per theme.
 fn themed(index: usize) -> &'static str {
-    static PAGES: std::sync::OnceLock<[String; 4]> = std::sync::OnceLock::new();
-    &PAGES.get_or_init(|| {
+    static PAGES: [std::sync::OnceLock<[String; 4]>; 2] = [std::sync::OnceLock::new(), std::sync::OnceLock::new()];
+    let dark = DARK.load(std::sync::atomic::Ordering::Relaxed);
+    &PAGES[usize::from(dark)].get_or_init(|| {
         [WELCOME_HTML, TIPS_HTML, START_HTML, NOT_FOUND_HTML]
-            .map(|html| html.replace("/*BASE*/", BASE_CSS).replace("/*PALETTE*/", &palette_vars()))
+            .map(|html| html.replace("/*BASE*/", BASE_CSS).replace("/*PALETTE*/", &palette_vars(dark)))
     })[index]
 }
 
@@ -127,6 +136,9 @@ fn page_content(page: &str) -> Option<&'static str> {
 mod tests {
     use super::*;
 
+    /// `set_dark` is process-global: tests that read page colors hold this and set the theme they expect.
+    static THEME: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn every_page_name_serves_its_page() {
         for name in ["welcome", "tips", "start"] {
@@ -138,6 +150,8 @@ mod tests {
 
     #[test]
     fn pages_take_their_colors_from_the_palette() {
+        let _theme = THEME.lock().unwrap_or_else(|e| e.into_inner());
+        set_dark(true);
         for name in ["welcome", "tips", "start", "nosuch"] {
             let html = serve(&format!("manifold://{name}")).1;
             assert!(html.contains("--bg:#292723;") && html.contains("--accent:#8FB0FF;"), "{name}");
@@ -147,6 +161,15 @@ mod tests {
             let style = html.split("</style>").next().unwrap();
             assert!(!style.contains("#1E1F24") && !style.contains("#58A6FF"), "an old hardcoded color is left");
         }
+    }
+
+    #[test]
+    fn pages_follow_set_dark() {
+        let _theme = THEME.lock().unwrap_or_else(|e| e.into_inner());
+        set_dark(false);
+        assert!(serve("manifold://start").1.contains("--bg:#EBE8E1;"));
+        set_dark(true);
+        assert!(serve("manifold://start").1.contains("--bg:#292723;"));
     }
 
     #[test]

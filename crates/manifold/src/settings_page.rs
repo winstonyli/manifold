@@ -113,6 +113,19 @@ impl App {
     /// Settings: search engine, starting engine, zoom and home page.
     pub(crate) fn settings_general_section(&mut self, ui: &mut egui::Ui, req: &mut SettingsRequests) {
         section_start(ui, "General");
+        ui.label("Theme");
+        egui::ComboBox::from_id_salt("settings_theme").selected_text(self.settings.theme.label()).show_ui(ui, |ui| {
+            menu_item_style(ui);
+            for choice in ThemeChoice::ALL {
+                let selected = self.settings.theme == choice;
+                if selectable_label(ui, selected, choice.label()).clicked() && !selected {
+                    self.settings.theme = choice;
+                    apply_theme_choice(ui.ctx(), choice);
+                    self.save_settings();
+                }
+            }
+        });
+        ui.add_space(FIELD_GAP);
         ui.label("Default search engine");
         egui::ComboBox::from_id_salt("settings_search_engine")
             .selected_text(self.settings.default_search_engine.label())

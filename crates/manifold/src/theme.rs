@@ -430,12 +430,26 @@ pub(crate) fn danger(visuals: &egui::Visuals) -> egui::Color32 {
 /// whole chrome. Each slot starts from egui's own preset for its theme, so every field the table below does not name
 /// is coherent for that theme, then gets the spacing, shape and the `manifold_pages::palette` colors: the
 /// bg, toolbar, raised and hover depth ladder and the accent through selection, hyperlink,
-/// focus and the active widget. Until the theme setting exists the app pins the dark theme.
+/// focus and the active widget. Which slot shows is `apply_theme_choice`'s.
 pub(crate) fn apply_style(ctx: &egui::Context) {
     for (theme, dark) in [(egui::Theme::Dark, true), (egui::Theme::Light, false)] {
         ctx.style_mut_of(theme, |style| fill_style(style, dark));
     }
-    ctx.set_theme(egui::Theme::Dark);
+}
+
+/// The theme setting as egui's preference: `System` follows winit's theme events.
+pub(crate) fn apply_theme_choice(ctx: &egui::Context, choice: ThemeChoice) {
+    ctx.set_theme(match choice {
+        ThemeChoice::System => egui::ThemePreference::System,
+        ThemeChoice::Light => egui::ThemePreference::Light,
+        ThemeChoice::Dark => egui::ThemePreference::Dark,
+    });
+}
+
+/// True on the first call and whenever `now` differs from the last one seen: the frame loop's cue to re-apply what
+/// follows the theme (title bar, `manifold://` pages).
+pub(crate) fn theme_changed(last: &mut Option<egui::Theme>, now: egui::Theme) -> bool {
+    last.replace(now) != Some(now)
 }
 
 fn fill_style(style: &mut egui::Style, dark: bool) {
@@ -629,12 +643,11 @@ pub(crate) fn heading_text(visuals: &egui::Visuals, text: impl Into<String>) -> 
     egui::RichText::new(text).font(egui::FontId::new(17.0, heading_family())).color(palette(visuals).text)
 }
 
-/// Forces the native (OS-drawn, undecorated-in-headless-mode-only -- see
-/// `resumed`'s own window setup) titlebar dark, independent of the current
-/// Windows theme setting. Without this, a system in light mode draws a
-/// bright titlebar directly above this app's now warm-dark chrome -- a
-/// visible seam undermining the rest of this theming pass for the one strip
-/// of the window this app doesn't control. A full custom-drawn titlebar
+/// Sets the native (OS-drawn, undecorated-in-headless-mode-only -- see
+/// `resumed`'s own window setup) titlebar dark or light to match the app's
+/// theme, independent of the current Windows theme setting. Without this, a
+/// mismatch draws a bright (or dark) titlebar directly above the chrome -- a
+/// visible seam in the one strip of the window this app doesn't control. A full custom-drawn titlebar
 /// (matching the palette exactly, not just light/dark) was considered and
 /// deliberately deferred -- it would mean reimplementing drag/minimize/
 /// maximize/close hit-testing, a real feature addition, not a theme tweak.
@@ -643,12 +656,12 @@ pub(crate) fn heading_text(visuals: &egui::Visuals, text: impl Into<String>) -> 
 /// ignored (`DwmSetWindowAttribute`'s return value discarded) the same way
 /// this app already treats titlebar theming as cosmetic, never fatal.
 #[cfg(target_os = "windows")]
-pub(crate) fn apply_dark_titlebar(window: &Window) {
+pub(crate) fn apply_titlebar(window: &Window, dark: bool) {
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
     let Ok(handle) = window.window_handle() else { return };
     let RawWindowHandle::Win32(win32) = handle.as_raw() else { return };
     let hwnd: windows_sys::Win32::Foundation::HWND = win32.hwnd.get() as *mut core::ffi::c_void;
-    let enabled: windows_sys::Win32::Foundation::BOOL = 1;
+    let enabled = windows_sys::Win32::Foundation::BOOL::from(dark);
     unsafe {
         windows_sys::Win32::Graphics::Dwm::DwmSetWindowAttribute(
             hwnd,
@@ -660,7 +673,7 @@ pub(crate) fn apply_dark_titlebar(window: &Window) {
 }
 
 #[cfg(not(target_os = "windows"))]
-pub(crate) fn apply_dark_titlebar(_window: &Window) {}
+pub(crate) fn apply_titlebar(_window: &Window, _dark: bool) {}
 
 /// `color` at `alpha` (0-255), its own hue unchanged: a wash or a ring in the card's or the accent's color.
 pub(crate) fn with_alpha(color: egui::Color32, alpha: u8) -> egui::Color32 {
@@ -949,6 +962,13 @@ mod tests {
                 assert!(contrast(c, card) >= 3.0, "{c:?} on the {} card", if dark { "dark" } else { "light" });
             }
         }
+    }
+
+    #[test]
+    fn theme_changed_reports_first_and_each_switch() {
+        let mut last = None;
+        let calls = [egui::Theme::Dark, egui::Theme::Dark, egui::Theme::Light, egui::Theme::Dark];
+        assert_eq!(calls.map(|t| theme_changed(&mut last, t)), [true, false, true, true]);
     }
 
     #[test]

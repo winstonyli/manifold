@@ -299,6 +299,30 @@ impl App {
     }
 }
 
+impl App {
+    /// When the theme changes (the setting, or the system under `System`), re-applies what follows it outside egui:
+    /// the title bar, and the `manifold://` pages, whose open tabs are reloaded to take the new colors.
+    pub(crate) fn sync_theme(&mut self) {
+        let now = self.egui_ctx.theme();
+        if !theme_changed(&mut self.last_theme, now) {
+            return;
+        }
+        let dark = now == egui::Theme::Dark;
+        if let Some(window) = &self.window {
+            apply_titlebar(window, dark);
+        }
+        manifold_pages::set_dark(dark);
+        let scheme = format!("{}://", manifold_pages::SCHEME);
+        let pages: Vec<NodeId> =
+            self.nodes.keys().copied().filter(|&id| self.doc.mirror.url(id).starts_with(&scheme)).collect();
+        for id in pages {
+            if let Some(tab) = self.nodes.get_mut(&id).and_then(|n| n.as_tab_mut()) {
+                tab.tab.send(&HostToView::Reload);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

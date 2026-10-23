@@ -43,6 +43,27 @@ impl SearchEngine {
     }
 }
 
+/// Which look the app has: the system's (egui follows winit's theme events), or one fixed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ThemeChoice {
+    System,
+    Light,
+    Dark,
+}
+
+impl ThemeChoice {
+    pub const ALL: [ThemeChoice; 3] = [ThemeChoice::System, ThemeChoice::Light, ThemeChoice::Dark];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            ThemeChoice::System => "System",
+            ThemeChoice::Light => "Light",
+            ThemeChoice::Dark => "Dark",
+        }
+    }
+}
+
 /// User-configurable, persisted-to-disk settings — everything here is a
 /// *default* applied to newly spawned tabs (starting engine, home page,
 /// zoom) or to future navigation (search engine); none of it retroactively
@@ -56,6 +77,9 @@ impl SearchEngine {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct Settings {
+    /// Light, dark, or the system's (`theme::apply_theme_choice`).
+    #[serde(deserialize_with = "theme_choice")]
+    pub theme: ThemeChoice,
     #[serde(deserialize_with = "search_engine")]
     pub default_search_engine: SearchEngine,
     #[serde(serialize_with = "view_kind_serde::serialize", deserialize_with = "starting_view_kind")]
@@ -140,6 +164,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             default_search_engine: SearchEngine::DuckDuckGo,
+            theme: ThemeChoice::System,
             default_starting_view_kind: crate::process_manager::platform_default_view_kind(std::env::consts::OS),
             zoom_factor: 1.0,
             home_page: "manifold://start".to_string(),
@@ -180,6 +205,10 @@ fn search_engine<'de, D: serde::Deserializer<'de>>(d: D) -> Result<SearchEngine,
         |v| SearchEngine::deserialize(v).ok(),
         || Settings::default().default_search_engine,
     )
+}
+
+fn theme_choice<'de, D: serde::Deserializer<'de>>(d: D) -> Result<ThemeChoice, D::Error> {
+    lenient(d, "theme", |v| ThemeChoice::deserialize(v).ok(), || Settings::default().theme)
 }
 
 fn starting_view_kind<'de, D: serde::Deserializer<'de>>(d: D) -> Result<ViewKind, D::Error> {
@@ -329,6 +358,17 @@ mod tests {
         assert_eq!(s.default_search_engine, SearchEngine::DuckDuckGo);
         assert_eq!(s.default_starting_view_kind, Settings::default().default_starting_view_kind);
         assert_eq!(s.zoom_factor, 0.5, "clamped into the range the UI steps through");
+    }
+
+    #[test]
+    fn theme_defaults_to_system_and_round_trips() {
+        let old: Settings = serde_json::from_str(r#"{"home_page":"https://a.test"}"#).unwrap();
+        assert_eq!(old.theme, ThemeChoice::System);
+        let dark = Settings { theme: ThemeChoice::Dark, ..Settings::default() };
+        let back: Settings = serde_json::from_str(&serde_json::to_string(&dark).unwrap()).unwrap();
+        assert_eq!(back.theme, ThemeChoice::Dark);
+        let bad: Settings = serde_json::from_str(r#"{"theme":"sepia"}"#).unwrap();
+        assert_eq!(bad.theme, ThemeChoice::System);
     }
 
     /// H4: zoom loads clamped, a wrongly typed zoom is the default, and the defaults round-trip.

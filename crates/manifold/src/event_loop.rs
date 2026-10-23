@@ -71,7 +71,7 @@ impl ApplicationHandler<UserEvent> for App {
         // screen reader there).
         let real_window = !self.headless;
         let window = Arc::new(event_loop.create_window(attrs.with_visible(!real_window)).expect("create window"));
-        apply_dark_titlebar(&window);
+        apply_titlebar(&window, self.egui_ctx.theme() == egui::Theme::Dark);
         self.gpu = Some(GpuState::new(window.clone()));
         let mut egui_state = egui_winit::State::new(
             self.egui_ctx.clone(),
@@ -479,6 +479,7 @@ impl ApplicationHandler<UserEvent> for App {
                 self.poll_store();
                 self.poll_trail_focus();
                 self.poll_view_installs();
+                self.sync_theme();
                 let focused_tab = self
                     .focused
                     .and_then(|id| self.nodes.get(&id))

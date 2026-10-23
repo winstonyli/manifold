@@ -132,7 +132,7 @@ use mirror::Carried;
 use node::*;
 use popups::*;
 use process_manager::{ViewKind, ViewTab};
-use settings::{SearchEngine, Settings};
+use settings::{SearchEngine, Settings, ThemeChoice};
 use store::model::{field, FieldValue};
 use tab_view::*;
 use theme::*;
@@ -180,6 +180,8 @@ struct App {
     /// once a frame regardless (this app's winit loop runs `ControlFlow::
     /// Poll`, redrawing continuously).
     last_window_title: String,
+    /// The theme `sync_theme` last applied to the title bar and pages (`None` before the first frame).
+    last_theme: Option<egui::Theme>,
     gpu: Option<GpuState>,
     /// Every graph node -- tabs, downloads, and groups alike (see
     /// `GraphNode`'s own doc comment). `node_order` is a stable
@@ -525,6 +527,8 @@ impl Default for App {
         apply_style(&egui_ctx);
         apply_fonts(&egui_ctx);
         let (settings, settings_err) = Settings::load();
+        apply_theme_choice(&egui_ctx, settings.theme);
+        manifold_pages::set_dark(egui_ctx.theme() == egui::Theme::Dark);
         // Re-reads the file `settings::fingerprint()` already just read for
         // `load()` -- a second read of a file this small, once at startup,
         // isn't worth threading a fingerprint out through `load()`'s own
@@ -544,6 +548,7 @@ impl Default for App {
         let mut app = Self {
             window: None,
             last_window_title: "manifold".to_string(),
+            last_theme: None,
             gpu: None,
             nodes: NodeMap::default(),
             node_order: Vec::new(),
