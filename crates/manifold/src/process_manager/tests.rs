@@ -1040,7 +1040,7 @@ fn the_webkit_command_carries_the_dark_flag_only_when_dark() {
 fn every_host_has_one_engine_family() {
     use crate::caps::Tag;
     for kind in ViewKind::ALL {
-        let families = [Tag::Blink, Tag::WebKit, Tag::Servo].into_iter().filter(|t| kind.has(*t)).count();
+        let families = Tag::FAMILIES.iter().filter(|(t, _)| kind.has(*t)).count();
         assert_eq!(families, 1, "{kind:?}");
     }
     assert!(ViewKind::Cef.has(Tag::Blink) && ViewKind::Webview2.has(Tag::Blink));

@@ -12,8 +12,7 @@ pub(crate) fn view_label(kind: ViewKind) -> &'static str {
 /// with Blink (CEF)", or "WebKit engine (only host)".
 pub(crate) fn engine_line(kind: ViewKind) -> String {
     use crate::caps::Tag;
-    let families = [(Tag::Blink, "Blink"), (Tag::WebKit, "WebKit"), (Tag::Servo, "Servo")];
-    let Some(&(family, name)) = families.iter().find(|(tag, _)| kind.has(*tag)) else { return String::new() };
+    let Some(&(family, name)) = Tag::FAMILIES.iter().find(|(tag, _)| kind.has(*tag)) else { return String::new() };
     let others: Vec<&str> = ViewKind::ALL.into_iter().filter(|k| *k != kind && k.has(family)).map(view_label).collect();
     if others.is_empty() {
         format!("{name} engine (only host)")

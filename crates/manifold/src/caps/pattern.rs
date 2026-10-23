@@ -101,6 +101,12 @@ pub(crate) enum Tag {
     Find,
 }
 
+impl Tag {
+    /// The rendering-engine family tags, each with its display name.
+    pub(crate) const FAMILIES: [(Tag, &'static str); 3] =
+        [(Tag::Blink, "Blink"), (Tag::WebKit, "WebKit"), (Tag::Servo, "Servo")];
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub(crate) struct TagSet(u32);
 
