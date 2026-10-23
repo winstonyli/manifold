@@ -2,6 +2,37 @@
 
 One entry per tagged release, newest first. The annotated tag `vX.Y.Z` carries the same text. Releases before v0.4.0 have no entry: see `git log --first-parent --decorate`.
 
+## 0.8.0 - 2026-10-23
+
+*Session store format 2 -> 3 (journal), view protocol 4 -> 5: older sessions may not load.*
+
+### Changed
+
+- **Breaking:** Journal format 2 -> 3: `held` is a typed field, and a fold records its destination and members as ids ([9db8124](https://github.com/winstonyli/manifold/commit/9db8124)).
+- **Breaking:** View protocol 4 -> 5: `SetTheme` reaches the engine hosts, and a host gets the theme at spawn ([1319fa4](https://github.com/winstonyli/manifold/commit/1319fa4), [7a4bbd3](https://github.com/winstonyli/manifold/commit/7a4bbd3)).
+- Pick the theme in Settings (System, Light or Dark); the chrome, the title bar and the `manifold://` pages follow ([ae59d01](https://github.com/winstonyli/manifold/commit/ae59d01)).
+- Restyle the chrome: Heptabase-style light and dark palettes, Familjen Grotesk as the only font, one raised look and one height for every text field ([1717c63](https://github.com/winstonyli/manifold/commit/1717c63), [a90f8c3](https://github.com/winstonyli/manifold/commit/a90f8c3), [82fe93d](https://github.com/winstonyli/manifold/commit/82fe93d)).
+- Select a card with a click and open it with a double-click ([db814ae](https://github.com/winstonyli/manifold/commit/db814ae)).
+- Use DX12 as the default graphics backend on Windows: 15-30% shorter frames at 400 cards ([0adaf44](https://github.com/winstonyli/manifold/commit/0adaf44)).
+- Move Pin, Group and Close for the selected cards into a floating selection bar with an outline around two or more cards; the toolbar buttons and the card's pin control are gone ([9d982a9](https://github.com/winstonyli/manifold/commit/9d982a9), [7632132](https://github.com/winstonyli/manifold/commit/7632132)).
+- Show a pinned card with a pin mark inset on a backing circle, or an accent dot in dense views ([004c5f2](https://github.com/winstonyli/manifold/commit/004c5f2), [cc28087](https://github.com/winstonyli/manifold/commit/cc28087)).
+
+### Added
+
+- Undo and redo (Ctrl+Z, Ctrl+Shift+Z or Ctrl+Y) for drops, folds, Dissolve Group and group merges ([01c29b7](https://github.com/winstonyli/manifold/commit/01c29b7), [4b31e7d](https://github.com/winstonyli/manifold/commit/4b31e7d)).
+- Add `manifold://` start, welcome and tips pages on every engine, with the start page as the default new tab and a Help section in Settings ([4d658d0](https://github.com/winstonyli/manifold/commit/4d658d0), [829ed0d](https://github.com/winstonyli/manifold/commit/829ed0d)).
+- Ship the Servo engine host in the release, with its ANGLE DLLs ([d5cdc45](https://github.com/winstonyli/manifold/commit/d5cdc45)).
+- Name what differs between look-alike rows in the quick switcher, the address dropdown and the trail, and show the selected row's address ([cc9e756](https://github.com/winstonyli/manifold/commit/cc9e756), [fac6a27](https://github.com/winstonyli/manifold/commit/fac6a27)).
+
+### Fixed
+
+- Make Escape on a confirm dialog no longer close Settings ([0cc1e16](https://github.com/winstonyli/manifold/commit/0cc1e16)).
+
+### Internal
+
+- Key cards by `CardId` and stores by `NodeId`, and split the large UI files into modules ([c7b2b85](https://github.com/winstonyli/manifold/commit/c7b2b85), [794d478](https://github.com/winstonyli/manifold/commit/794d478)).
+- Add timing traces, `gate profile` scenarios and `gate ab`; the gate gains a dense pinned shot ([6c384e8](https://github.com/winstonyli/manifold/commit/6c384e8), [6434c17](https://github.com/winstonyli/manifold/commit/6434c17)).
+
 ## 0.7.1 - 2026-10-18
 
 *v0.7.0 was tagged but never released (its release workflow failed, see Fixed); v0.7.1 is the first release with its changes.*
