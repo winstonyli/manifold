@@ -10,7 +10,8 @@ use std::sync::Arc;
 #[test]
 fn page_controlled_text_never_reaches_the_wsl_command_line() {
     let token = [7u8; transport::TOKEN_LEN];
-    let build = |url: &str| webkit_shell_command(url, 4000, &token, "/mnt/c/repo/target-linux/debug/host").unwrap();
+    let build =
+        |url: &str| webkit_shell_command(url, 4000, &token, "/mnt/c/repo/target-linux/debug/host", false).unwrap();
     let benign_url = "https://example.com/";
     let hostile_url = "https://x/'$(touch${IFS}/tmp/pwn)'\";`id`\n&|;<>\\ \u{e9}";
     let (benign, hostile) = (build(benign_url), build(hostile_url));
@@ -25,7 +26,7 @@ fn page_controlled_text_never_reaches_the_wsl_command_line() {
 #[test]
 fn a_url_too_long_for_a_command_line_is_refused_by_name() {
     let token = [7u8; transport::TOKEN_LEN];
-    let build = |len: usize| webkit_shell_command(&"a".repeat(len), 4000, &token, "/x");
+    let build = |len: usize| webkit_shell_command(&"a".repeat(len), 4000, &token, "/x", false);
     assert!(build(8192).is_ok(), "the longest URL that fits");
     assert_eq!(build(8193).unwrap_err().kind(), std::io::ErrorKind::InvalidInput);
     assert_eq!(build(20_000).unwrap_err().kind(), std::io::ErrorKind::InvalidInput);
@@ -1015,4 +1016,12 @@ fn picker_order_is_every_engine_once_by_rank() {
     assert_eq!(sorted, ViewKind::ALL, "a permutation of ALL");
     assert!(order.windows(2).all(|pair| pair[0].desc().picker_rank < pair[1].desc().picker_rank), "ranks are distinct");
     assert_eq!(order[0], ViewKind::Cef, "best-supported first");
+}
+
+#[test]
+fn the_webkit_command_carries_the_dark_flag_only_when_dark() {
+    let token = [7u8; transport::TOKEN_LEN];
+    let build = |dark| webkit_shell_command("https://a", 4000, &token, "/x", dark).unwrap();
+    assert!(build(true).starts_with("VIEW_DARK=1 "));
+    assert!(!build(false).contains("VIEW_DARK"));
 }

@@ -449,6 +449,10 @@ pub(crate) fn theme_changed(last: &mut Option<egui::Theme>, now: egui::Theme) ->
 
 fn fill_style(style: &mut egui::Style, dark: bool) {
     style.visuals = if dark { egui::Visuals::dark() } else { egui::Visuals::light() };
+    if !dark {
+        // egui's light orange is 2.7:1 on the paper canvas; the jar chip and its dots need 3:1.
+        style.visuals.warn_fg_color = egui::Color32::from_rgb(176, 84, 0);
+    }
     // Airier than egui's own defaults on purpose -- the editorial
     // direction this app's chrome now takes wants real breathing room in
     // dialogs/menus/settings. The one place this is deliberately *not*
@@ -945,6 +949,10 @@ mod tests {
             let v = testutil::ctx(dark).global_style().visuals.clone();
             assert!(contrast(v.selection.stroke.color, v.selection.bg_fill) >= 4.5, "selection ink, dark={dark}");
             assert!(contrast(refused_color(&v), v.panel_fill) >= 3.0, "refused on the canvas, dark={dark}");
+            let toolbar = color(manifold_pages::palette::colors(dark).toolbar_fill);
+            for surface in [v.panel_fill, toolbar] {
+                assert!(contrast(v.warn_fg_color, surface) >= 3.0, "warn (jar chip) on {surface:?}, dark={dark}");
+            }
         }
     }
 

@@ -20,6 +20,7 @@ const DEFAULT_HEIGHT: i32 = 768;
 const FRAME_INTERVAL: Duration = Duration::from_millis(33);
 
 fn main() {
+    manifold_pages::set_dark(std::env::var_os(manifold_view_protocol::host_env::ENV_DARK).is_some());
     // Hex of the UTF-8 URL (process_manager.rs's webkit_shell_command): page text crosses the WSL shells
     // only as hex. A missing variable keeps the old default; a malformed one is a bug in the host.
     let initial_url = match std::env::var("VIEW_INITIAL_URL_HEX") {

@@ -44,6 +44,7 @@ pub(super) fn webkit_shell_command(
     port: u16,
     token: &transport::Token,
     binary_path: &str,
+    dark: bool,
 ) -> std::io::Result<String> {
     /// Windows' command line holds 32 767 characters; leave the rest of this one room.
     const MAX_URL_HEX: usize = 16_384;
@@ -54,8 +55,9 @@ pub(super) fn webkit_shell_command(
             "the URL is too long to start a WebKit tab with",
         ));
     }
+    let dark = if dark { format!("{}=1 ", host_env::ENV_DARK) } else { String::new() };
     Ok(format!(
-        "VIEW_INITIAL_URL_HEX={url_hex} VIEW_TCP_PORT={port} VIEW_TOKEN={} \
+        "{dark}VIEW_INITIAL_URL_HEX={url_hex} VIEW_TCP_PORT={port} VIEW_TOKEN={} \
          VIEW_HOST_IP=$(ip route | awk '/^default/ {{print $3}}') xvfb-run -a {}",
         transport::to_hex(token),
         shell_quote(binary_path),
@@ -95,7 +97,7 @@ pub(super) fn spawn_webkit_tab(tab_id: NodeId, initial_url: &str, wake: view_io:
     // same user's processes only.
     let mut token = [0u8; transport::TOKEN_LEN];
     getrandom::fill(&mut token).map_err(|e| std::io::Error::other(e.to_string()))?;
-    let command = webkit_shell_command(initial_url, port, &token, &binary_path)?;
+    let command = webkit_shell_command(initial_url, port, &token, &binary_path, manifold_pages::is_dark())?;
     let mut child = Command::new("wsl.exe")
         .args(["-d", "Ubuntu", "--", "bash", "-c", &command])
         // Not manifold's stdin: `wsl.exe` forwards what it reads, and would take the debug commands piped to manifold.
