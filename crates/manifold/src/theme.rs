@@ -127,19 +127,15 @@ impl NamedTip for egui::Response {
 /// Paints `keys` as keycaps right-aligned at `right_center`, with no layout: for a hint drawn over a field.
 pub(crate) fn paint_keycaps(ui: &egui::Ui, right_center: egui::Pos2, keys: &[&str]) {
     let font = egui::FontId::new(11.0, bound_family(ui.ctx(), control_family()));
-    let weak = egui::Color32::from_rgb(150, 144, 130);
+    let visuals = ui.visuals();
+    let (weak, fill, border) =
+        (palette(visuals).text_weak, visuals.widgets.inactive.bg_fill, visuals.widgets.hovered.bg_fill);
     let mut right = right_center.x;
     for key in keys.iter().rev() {
         let galley = ui.painter().layout_no_wrap((*key).to_string(), font.clone(), weak);
         let size = galley.size() + egui::vec2(8.0, 2.0);
         let rect = egui::Rect::from_min_size(egui::pos2(right - size.x, right_center.y - size.y / 2.0 - 1.0), size);
-        ui.painter().rect(
-            rect,
-            3.0,
-            egui::Color32::from_rgb(48, 45, 38),
-            egui::Stroke::new(1.0, egui::Color32::from_rgb(62, 59, 52)),
-            egui::StrokeKind::Inside,
-        );
+        ui.painter().rect(rect, 3.0, fill, egui::Stroke::new(1.0, border), egui::StrokeKind::Inside);
         ui.painter().galley(rect.center() - galley.size() / 2.0, galley, weak);
         right = rect.min.x - 3.0;
     }
@@ -740,13 +736,13 @@ pub(crate) fn toolbar_panel(id: &'static str, ui: &mut egui::Ui, content: impl F
         });
 }
 
-/// Runs `add` with the approved mockup's field look: a soft fill (white at 6%) and a hairline border
-/// (white at 14%) with 6 px corners, so a text field reads as an inset box rather than bare text on the bar.
+/// Runs `add` with the approved mockup's field look: a soft raised fill and a hairline hover-step border
+/// with `RADIUS_CHIP` corners, so a text field reads as an inset box rather than bare text on the bar.
 pub(crate) fn toolbar_field<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
     ui.scope(|ui| {
         let visuals = ui.visuals_mut();
-        visuals.extreme_bg_color = egui::Color32::from_rgb(43, 40, 34);
-        let border = egui::Stroke::new(1.0, egui::Color32::from_rgb(62, 59, 52));
+        visuals.extreme_bg_color = visuals.widgets.inactive.bg_fill;
+        let border = egui::Stroke::new(1.0, visuals.widgets.hovered.bg_fill);
         for w in [&mut visuals.widgets.inactive, &mut visuals.widgets.hovered] {
             w.bg_stroke = border;
             w.corner_radius = egui::CornerRadius::same(RADIUS_CHIP);

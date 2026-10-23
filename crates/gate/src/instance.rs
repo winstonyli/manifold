@@ -97,12 +97,16 @@ fn timed_out(what: String) -> io::Error {
 
 /// scripts/lib.sh `seed_settings`: `PROFILE/settings.json` that skips the first-launch demo and starts tabs on
 /// `view_kind`. (`--profile-dir DIR` names the manifold folder itself, so there is no `manifold/` level as under
-/// `%APPDATA%`.) `more` is extra JSON members, starting with `", "`.
+/// `%APPDATA%`.) `more` is extra JSON members, starting with `", "`. The theme is pinned (default `dark`, or
+/// `GATE_THEME=light`) so a run does not depend on the machine's own theme.
 pub fn seed_settings(profile: &Path, view_kind: &str, more: &str) -> io::Result<()> {
     fs::create_dir_all(profile)?;
+    let theme = if std::env::var("GATE_THEME").is_ok_and(|t| t == "light") { "light" } else { "dark" };
     fs::write(
         profile.join("settings.json"),
-        format!("{{\"has_shown_first_launch_demo\": true, \"default_starting_view_kind\": \"{view_kind}\"{more}}}"),
+        format!(
+            "{{\"has_shown_first_launch_demo\": true, \"default_starting_view_kind\": \"{view_kind}\", \"theme\": \"{theme}\"{more}}}"
+        ),
     )
 }
 
