@@ -329,23 +329,43 @@ impl App {
         if first {
             return;
         }
-        let scheme = format!("{}://", manifold_pages::SCHEME);
-        let pages: Vec<NodeId> =
-            self.nodes.keys().copied().filter(|&id| self.doc.mirror.url(id).starts_with(&scheme)).collect();
-        for tab in self.nodes.values_mut().filter_map(|n| n.as_tab_mut()) {
-            tab.tab.send(&HostToView::SetTheme { dark });
-        }
-        for id in pages {
+        let tabs: Vec<(NodeId, String)> = self
+            .nodes
+            .iter()
+            .filter(|(_, node)| node.as_tab().is_some())
+            .map(|(&id, _)| (id, self.doc.mirror.url(id).to_string()))
+            .collect();
+        for (id, msg) in theme_updates(dark, tabs.iter().map(|(id, url)| (*id, url.as_str()))) {
             if let Some(tab) = self.nodes.get_mut(&id).and_then(|n| n.as_tab_mut()) {
-                tab.tab.send(&HostToView::Reload);
+                tab.tab.send(&msg);
             }
         }
     }
 }
 
+/// What a theme change sends: `SetTheme` to every tab (a later navigation uses the host's flag), then `Reload` to the
+/// ones showing a `manifold://` page, which picks up the new colors.
+fn theme_updates<'a>(dark: bool, tabs: impl Iterator<Item = (NodeId, &'a str)> + Clone) -> Vec<(NodeId, HostToView)> {
+    let scheme = format!("{}://", manifold_pages::SCHEME);
+    let set = tabs.clone().map(|(id, _)| (id, HostToView::SetTheme { dark }));
+    let reload = tabs.filter(|(_, url)| url.starts_with(&scheme)).map(|(id, _)| (id, HostToView::Reload));
+    set.chain(reload).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_theme_change_tells_every_tab_then_reloads_only_the_manifold_pages() {
+        let actor = crate::store::model::ActorId::random();
+        let urls = [(1, "https://a.test/"), (2, "manifold://start"), (3, "manifold://tips/")];
+        let sent = theme_updates(false, urls.iter().map(|&(id, url)| (NodeId { actor, counter: id }, url)));
+        let theme = |id| (NodeId { actor, counter: id }, HostToView::SetTheme { dark: false });
+        let reload = |id| (NodeId { actor, counter: id }, HostToView::Reload);
+        let expected = vec![theme(1), theme(2), theme(3), reload(2), reload(3)];
+        assert_eq!(format!("{sent:?}"), format!("{expected:?}"));
+    }
 
     #[test]
     fn a_failed_print_capture_clears_the_pdf_target() {
