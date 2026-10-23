@@ -376,12 +376,12 @@ impl App {
     /// itself; nothing comes back to `manifold` for this, so there's no
     /// state to track here beyond sending the message). See
     /// `HostToView::OpenDevTools`'s doc comment for per-engine support. An
-    /// engine without DevTools (`ViewDesc::devtools`) gets a toast instead.
+    /// engine without DevTools (`Tag::DevTools`) gets a toast instead.
     pub(crate) fn open_devtools_shortcut(&mut self) {
         let Some(id) = self.focused else { return };
         let Some(node) = self.nodes.get_mut(&id).and_then(|n| n.as_tab_mut()) else { return };
         let kind = node.tab.kind;
-        if kind.desc().devtools {
+        if kind.has(crate::caps::Tag::DevTools) {
             node.tab.send(&HostToView::OpenDevTools);
         } else {
             self.queue_toast(format!("{} has no DevTools", kind.desc().label));
@@ -462,7 +462,7 @@ impl App {
     /// outline's search box on a JSON level (`focus_json_search`), nothing
     /// elsewhere in Graph view. Opening the find bar with existing text
     /// re-searches for it (matches a real browser's find bar remembering
-    /// the last term). An engine without find (`ViewDesc::find`) gets a toast
+    /// the last term). An engine without find (`Tag::Find`) gets a toast
     /// instead.
     pub(crate) fn open_find_bar_shortcut(&mut self) {
         // On a JSON level, Ctrl+F searches the value instead.
@@ -475,7 +475,7 @@ impl App {
         }
         // A sleeping or starting tab opens the bar as before; its engine is checked when it is live.
         let live = self.focused.and_then(|id| self.nodes.get(&id)).and_then(|n| n.as_tab());
-        if let Some(kind) = live.map(|t| t.tab.kind).filter(|k| !k.desc().find) {
+        if let Some(kind) = live.map(|t| t.tab.kind).filter(|k| !k.has(crate::caps::Tag::Find)) {
             self.queue_toast(format!("{} has no find in page", kind.desc().label));
             return;
         }

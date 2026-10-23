@@ -277,7 +277,7 @@ pub enum HostToView {
     /// WebKit's host ignores it: the inspector window would wait forever under
     /// Xvfb, which has no window manager. Servo's embedding API has no
     /// DevTools/inspector method at all. The host toasts for both instead of
-    /// sending (`ViewDesc::devtools`).
+    /// sending (`Tag::DevTools`).
     OpenDevTools,
     /// Mutes/unmutes this tab's audio output — host-initiated (the mute
     /// button), unlike `ViewToHost::AudioPlayingChanged`'s passive

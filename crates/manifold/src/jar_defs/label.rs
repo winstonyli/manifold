@@ -209,7 +209,7 @@ impl App {
             Runtime::Unloaded(_) => self.doc.mirror.view_kind(id),
             _ => return None,
         };
-        let view_ignores = !view_kind.desc().jar && Some(key) != default;
+        let view_ignores = !view_kind.has(crate::caps::Tag::Jars) && Some(key) != default;
         let following = self.doc.mirror.jar(id).is_none();
         if Some(key) == default && !missing && !will_switch {
             return None;

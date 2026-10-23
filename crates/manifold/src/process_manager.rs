@@ -2,6 +2,7 @@
 //! the kill-on-exit job (`job`), profile and cache folders (`profiles`), engine availability (`availability`), the
 //! WSL-hosted WebKit spawn (`webkit`) and the control channel (`view_io`).
 
+use crate::caps::{Tag, TagSet};
 use crate::store::model::NodeId;
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
@@ -57,18 +58,9 @@ pub(crate) struct ViewDesc {
     pub(crate) code: u64,
     pub(crate) binary: &'static str,
     pub(crate) label: &'static str,
-    /// Frames arrive as BGRA (CEF, WebView2) rather than RGBA (Servo, WebKit).
-    pub(crate) bgra: bool,
-    /// Takes part in the cookie jar: waits for `SetCookies` before its first navigation (`VIEW_AWAIT_COOKIES`), and
-    /// answers `GetCookies` (spec 2026-10-02-jars-design). The rest are neither seeded nor pulled, and a jar choice
-    /// on their tabs shows "This view does not use jars yet".
-    pub(crate) jar: bool,
-    /// Opens its own DevTools window on `OpenDevTools` (CEF, WebView2). Servo has no inspector API; WebKit's
-    /// inspector needs a window manager its Xvfb session doesn't have. Without it, F12 toasts instead.
-    pub(crate) devtools: bool,
-    /// Answers `FindStart` with `FindResult` (all but Servo, whose embedding API has no find). Without it, Ctrl+F
-    /// toasts instead of opening a find bar that never gets a result.
-    pub(crate) find: bool,
+    /// What the host is and can do (`Tag`: its rendering-engine family, frame format, jar, DevTools and find). A live
+    /// tab inherits them (`App::card_kind`).
+    pub(crate) tags: TagSet,
     pub(crate) source: HostSource,
     /// The OS the host is built for (`runtime::Runtime::between` says where that runs); `None`: whichever OS
     /// manifold runs on.
@@ -105,6 +97,11 @@ pub(crate) struct ViewDesc {
 }
 
 impl ViewKind {
+    /// Whether this host has `tag` (a capability or its engine family).
+    pub(crate) fn has(self, tag: Tag) -> bool {
+        self.desc().tags.has(tag)
+    }
+
     pub(crate) const ALL: [ViewKind; 4] = [ViewKind::Servo, ViewKind::Cef, ViewKind::Webkit, ViewKind::Webview2];
 
     /// `ALL` in picker order (`ViewDesc::picker_rank`).
@@ -121,10 +118,7 @@ impl ViewKind {
                 code: 1,
                 binary: "manifold-view-servo",
                 label: "Servo",
-                bgra: false,
-                jar: false,
-                devtools: false,
-                find: false,
+                tags: TagSet::of(&[Tag::Servo]),
                 source: HostSource::Download,
                 host_os: None,
                 link: HostLink::PipesShm,
@@ -150,10 +144,7 @@ impl ViewKind {
                 code: 2,
                 binary: "manifold-view-cef",
                 label: "Blink (CEF)",
-                bgra: true,
-                jar: true,
-                devtools: true,
-                find: true,
+                tags: TagSet::of(&[Tag::Blink, Tag::Bgra, Tag::Jars, Tag::DevTools, Tag::Find]),
                 source: HostSource::Download,
                 host_os: None,
                 link: HostLink::PipesShm,
@@ -176,10 +167,7 @@ impl ViewKind {
                 code: 3,
                 binary: "manifold-view-webkitgtk",
                 label: "WebKit",
-                bgra: false,
-                jar: false,
-                devtools: false,
-                find: true,
+                tags: TagSet::of(&[Tag::WebKit, Tag::Find]),
                 source: HostSource::Download,
                 // A Linux program: native on Linux, through WSL on Windows (not in the release; README "Engines by OS").
                 // TCP because nothing else crosses the WSL boundary.
@@ -210,10 +198,7 @@ Not included: WebKit runs inside WSL, which needs a distro named Ubuntu with xvf
                 code: 4,
                 binary: "manifold-view-webview2",
                 label: "WebView2",
-                bgra: true,
-                jar: true,
-                devtools: true,
-                find: true,
+                tags: TagSet::of(&[Tag::Blink, Tag::Bgra, Tag::Jars, Tag::DevTools, Tag::Find]),
                 source: HostSource::Embedded(embedded_host::Embedded::Webview2),
                 host_os: Some(Os::Windows),
                 link: HostLink::PipesShm,
@@ -1004,7 +989,7 @@ pub fn spawn_tab(
         command.env(host_env::ENV_DARK, "1");
     }
     // Jar engines wait for the jar (`SetCookies`) before their first navigation.
-    if desc.jar {
+    if desc.tags.has(Tag::Jars) {
         command.env(host_env::ENV_AWAIT_COOKIES, "1");
     }
     for (key, value) in &prepared.env {
@@ -1052,7 +1037,7 @@ pub fn spawn_tab(
     let frame_map = view_io::FrameMap::default();
     let tab =
         ViewTab { kind, socket_id, writer, events_rx, frame, frame_map, child: Some(child), cache_dir, profile_slot };
-    if desc.jar {
+    if desc.tags.has(Tag::Jars) {
         // Serialised now that the host is connected, so cookies merged while it started are in the seed.
         tab.send(&HostToView::SetCookies(jar_json()));
     }

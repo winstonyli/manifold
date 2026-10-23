@@ -147,7 +147,7 @@ impl App {
             if !self.nodes.contains_key(&update.tab_id) {
                 continue;
             }
-            let format = if update.kind.desc().bgra {
+            let format = if update.kind.has(crate::caps::Tag::Bgra) {
                 wgpu::TextureFormat::Bgra8UnormSrgb
             } else {
                 wgpu::TextureFormat::Rgba8UnormSrgb

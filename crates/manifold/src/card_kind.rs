@@ -50,12 +50,16 @@ pub(crate) fn can_contain(member: CardKind, group: CardKind) -> bool {
 }
 
 impl App {
-    /// The identity of card `id`: its stored type as its row reads it (`canonical_type`), plus `Tag::Loaded` while a
-    /// tab has an engine. `None` when `id` has no node.
+    /// The identity of card `id`: its stored type as its row reads it (`canonical_type`), plus `Tag::Loaded` and its
+    /// host's tags while a tab has an engine. `None` when `id` has no node.
     pub(crate) fn card_kind(&self, id: NodeId) -> Option<CardKind> {
         let node = self.nodes.get(&id)?;
         let ty = canonical_type(self.doc.mirror.ty(id));
-        let tags = if node.runtime.as_tab().is_some() { TagSet::of(&[Tag::Loaded]) } else { TagSet::EMPTY };
+        // A live tab inherits its host's tags (`ViewDesc::tags`).
+        let tags = match node.runtime.as_tab() {
+            Some(tab) => TagSet::of(&[Tag::Loaded]).union(tab.tab.kind.desc().tags),
+            None => TagSet::EMPTY,
+        };
         Some(CardKind { ty, tags })
     }
 
@@ -189,10 +193,31 @@ mod tests {
                 app.doc.mirror.init_field(id, crate::store::model::field::TYPE, future);
             }
             let got = app.card_kind(id).unwrap();
-            assert_eq!(got, want, "{kind:?}");
+            assert_eq!(got.ty, want.ty, "{kind:?}");
+            assert!(got.tags.contains_all(want.tags), "{kind:?}");
             assert_eq!(got.loaded(), live, "{kind:?}");
         }
         assert_eq!(app.card_kind(node(9999)), None);
+    }
+
+    /// A live tab carries its host's tags (a Servo tab: the Servo family, no DevTools); a sleeping one carries none.
+    #[test]
+    fn a_live_tab_inherits_its_hosts_tags() {
+        use crate::caps::Tag;
+        let mut app = App::default();
+        for (i, (kind, payload, want)) in payloads().into_iter().enumerate() {
+            let id = node(i as u64 + 1);
+            let live = payload.as_tab().is_some();
+            let sleeping = want.ty == TYPE_TAB && !live;
+            app.test_node(id, kind, payload);
+            let tags = app.card_kind(id).unwrap().tags;
+            if live {
+                assert!(tags.has(Tag::Loaded) && tags.has(Tag::Servo));
+                assert!(!tags.has(Tag::DevTools) && !tags.has(Tag::Blink));
+            } else if sleeping {
+                assert_eq!(tags, TagSet::EMPTY);
+            }
+        }
     }
 
     /// A type this build doesn't know reads as the sentinel row: a restorable card drawn with notes and jars, not a

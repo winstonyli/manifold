@@ -757,13 +757,13 @@ impl App {
         true
     }
 
-    /// A live tab on a jar engine (`ViewDesc::jar`) running on a jar other than the one it now resolves to, or on a
+    /// A live tab on a jar engine (`Tag::Jars`) running on a jar other than the one it now resolves to, or on a
     /// jar the user cleared (`jar_reseed`): it switches when it next qualifies (chip "will switch").
     pub(crate) fn will_switch(&self, id: NodeId) -> bool {
         let Some(tab) = self.nodes.get(&id).and_then(|n| n.as_tab()) else { return false };
         let Some((had, _)) = self.cookies.jar_tabs.get(&id) else { return false };
         let Some((now, _)) = self.effective_jar(id) else { return false };
-        tab.tab.kind.desc().jar && (*had != now || self.cookies.jar_reseed.contains(&id))
+        tab.tab.kind.has(crate::caps::Tag::Jars) && (*had != now || self.cookies.jar_reseed.contains(&id))
     }
 
     /// Puts every live tab whose jar changed and that is not busy, focused or showing to sleep; it wakes into the

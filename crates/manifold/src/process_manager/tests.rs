@@ -1034,3 +1034,15 @@ fn the_webkit_command_carries_the_dark_flag_only_when_dark() {
     assert!(build(true).starts_with("VIEW_DARK=1 "));
     assert!(!build(false).contains("VIEW_DARK"));
 }
+
+/// Every host names exactly one rendering-engine family, and the two Blink hosts share it.
+#[test]
+fn every_host_has_one_engine_family() {
+    use crate::caps::Tag;
+    for kind in ViewKind::ALL {
+        let families = [Tag::Blink, Tag::WebKit, Tag::Servo].into_iter().filter(|t| kind.has(*t)).count();
+        assert_eq!(families, 1, "{kind:?}");
+    }
+    assert!(ViewKind::Cef.has(Tag::Blink) && ViewKind::Webview2.has(Tag::Blink));
+    assert!(ViewKind::Webkit.has(Tag::WebKit) && ViewKind::Servo.has(Tag::Servo));
+}

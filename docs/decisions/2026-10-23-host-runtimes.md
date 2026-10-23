@@ -52,3 +52,23 @@ behind. Windows and Linux unit tests pass.
 ## Not verified
 
 A force-killed manifold with a native tab was not tried.
+
+## Host tags (2026-10-23, same day)
+
+The engine/host split is carried by tags, not a second kind. A host row (`ViewDesc`, keyed by `ViewKind`, which stays
+the user's choice and the stored key) has `tags: TagSet` in place of the four bools `bgra`, `jar`, `devtools` and `find`:
+`Bgra`, `Jars`, `DevTools`, `Find` and exactly one rendering-engine family (`Blink`, `WebKit`, `Servo`). A live tab
+inherits its host's tags in `App::card_kind` (a sleeping tab has none), so a capability row can require them like it
+requires `Loaded`. CEF and WebView2 share `Blink` while staying two hosts. The WebKit host crate and binary are
+`manifold-view-webkitgtk`; the engine stays "WebKit" (`ViewKind::Webkit`, the stored key `webkit`), so a macOS WKWebView
+host can be added beside it.
+
+- **Hosts are a runtime registry, not stored cards.** They differ per machine; a stored card would sync and need a
+  `FORMAT_VERSION` bump.
+- **Tags carry classification only.** `binary`, `prepare`, `source`, `link`, `host_os`, `runtime_dir`, `color`, copy stay
+  plain host data. No family "card" above the host.
+- **No capability rows yet.** `Caps` is card-shell abilities (select, drag, menu); the four readers hold a `ViewKind`, not
+  a card, and read `ViewKind::has(tag)`. A row requiring `Find` or `DevTools` would be added with a consumer.
+- **`TagSet` is `u32`** (was `u16`): 9 tags now.
+- **Parked (macOS trigger):** resolving "WebKit" to a host per OS by a family query, and storing the query instead of the
+  host key. See PARKED.md.

@@ -72,23 +72,58 @@ impl Pattern {
     }
 }
 
-/// A runtime fact about a node that refines which rows apply (spec "Tags"). Not stored.
+/// A fact about a node that refines which rows apply (spec "Tags"), or about an engine host that its tabs inherit
+/// (`ViewDesc::tags`, merged into a live tab's tags by `App::card_kind`). Not stored.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum Tag {
     /// A tab with a running engine (`App::card_kind` produces it; the `TYPE_TAB` row that requires it reads it).
     Loaded,
     /// A note with no text.
     Blank,
+    /// A host that renders with Blink (CEF, WebView2). Exactly one of the three family tags is on every host: the
+    /// rendering engine, as against the host that embeds it.
+    Blink,
+    /// A host that renders with WebKit (WebKitGTK today).
+    WebKit,
+    /// A host that renders with Servo.
+    Servo,
+    /// Frames arrive as BGRA (CEF, WebView2) rather than RGBA (Servo, WebKit).
+    Bgra,
+    /// Takes part in the cookie jar: waits for `SetCookies` before its first navigation (`VIEW_AWAIT_COOKIES`), and
+    /// answers `GetCookies` (spec 2026-10-02-jars-design). A tab on a host without it shows "This view does not use
+    /// jars yet".
+    Jars,
+    /// Opens its own DevTools window on `OpenDevTools`. Servo has no inspector API; WebKit's inspector needs a window
+    /// manager its Xvfb session doesn't have. Without it, F12 toasts instead.
+    DevTools,
+    /// Answers `FindStart` with `FindResult` (all but Servo, whose embedding API has no find). Without it, Ctrl+F
+    /// toasts instead of opening a find bar that never gets a result.
+    Find,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
-pub(crate) struct TagSet(u16);
+pub(crate) struct TagSet(u32);
 
 impl TagSet {
     pub(crate) const EMPTY: TagSet = TagSet(0);
 
-    pub(crate) fn of(tags: &[Tag]) -> TagSet {
-        TagSet(tags.iter().fold(0, |bits, &tag| bits | 1 << tag as u16))
+    pub(crate) const fn of(tags: &[Tag]) -> TagSet {
+        let mut bits = 0;
+        let mut i = 0;
+        while i < tags.len() {
+            bits |= 1 << tags[i] as u32;
+            i += 1;
+        }
+        TagSet(bits)
+    }
+
+    /// Both sets' tags.
+    pub(crate) fn union(self, other: TagSet) -> TagSet {
+        TagSet(self.0 | other.0)
+    }
+
+    pub(crate) fn has(self, tag: Tag) -> bool {
+        self.contains_all(TagSet::of(&[tag]))
     }
 
     /// Whether every tag in `other` is in `self`.
@@ -176,6 +211,8 @@ mod tests {
         assert!(both.contains_all(TagSet::of(&[Tag::Blank])));
         assert!(both.contains_all(TagSet::EMPTY));
         assert!(!TagSet::of(&[Tag::Loaded]).contains_all(both));
+        assert!(both.has(Tag::Blank) && !both.has(Tag::Servo));
+        assert_eq!(both.union(TagSet::of(&[Tag::Servo])).len(), 3);
         assert_eq!(TagSet::of(&[Tag::Blank, Tag::Blank]).len(), 1);
     }
 }

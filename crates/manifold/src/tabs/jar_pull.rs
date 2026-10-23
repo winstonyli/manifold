@@ -125,12 +125,12 @@ impl App {
         }
     }
 
-    /// Asks one jar engine's tab (`ViewDesc::jar`) for its cookies; the answer arrives as `ViewToHost::Cookies`. Best effort:
+    /// Asks one jar engine's tab (`Tag::Jars`) for its cookies; the answer arrives as `ViewToHost::Cookies`. Best effort:
     /// a host may never answer, so nothing waits on it, and a pull still pending (under `JAR_PULL_TIMEOUT`) is not
     /// stacked.
     pub(crate) fn pull_cookies(&mut self, id: NodeId) {
         let Some(node) = self.nodes.get_mut(&id).and_then(|n| n.as_tab_mut()) else { return };
-        if node.tab.kind.desc().jar
+        if node.tab.kind.has(crate::caps::Tag::Jars)
             && start_pull(&mut self.cookies.jar_pulls, &mut self.cookies.jar_silent, id, std::time::Instant::now())
         {
             node.tab.send(&HostToView::GetCookies);
