@@ -76,7 +76,7 @@ pub(crate) fn file_header_text(path: &str, url: Option<&str>) -> (String, String
 }
 
 /// Height of a card's header F (glyph or favicon, title, source line), in screen points.
-pub(crate) const TAB_HEADER_POINTS: f32 = 40.0;
+pub(crate) const TAB_HEADER_POINTS: f32 = 36.0;
 /// The strip a card too short for the header (`tab_has_header`) gets along its bottom instead, in screen points.
 pub(crate) const TAB_STRIP_POINTS: f32 = 18.0;
 /// Header F's layout, in screen points from the card's top-left. `paint_card_header` and the JSON
@@ -84,13 +84,15 @@ pub(crate) const TAB_STRIP_POINTS: f32 = 18.0;
 /// The space left of the icon and between it and the text, equal so the icon sits centered between the card's
 /// edge and the title.
 const HEADER_PAD: f32 = 8.0;
+/// The header icon's size (a favicon is drawn up from 16 px).
+pub(crate) const HEADER_ICON_SIZE: f32 = 18.0;
 /// The icon's center (`Identity::paint`); the JSON preview's header uses it too.
-pub(crate) const HEADER_ICON_X: f32 = HEADER_PAD + ICON_SIZE / 2.0;
+pub(crate) const HEADER_ICON_X: f32 = HEADER_PAD + HEADER_ICON_SIZE / 2.0;
 /// The line the glyph sits on, and the title's when there is no source line.
-pub(crate) const HEADER_CENTER_Y: f32 = 20.0;
-pub(crate) const HEADER_TEXT_X: f32 = HEADER_PAD + ICON_SIZE + HEADER_PAD;
-pub(crate) const HEADER_TITLE_Y: f32 = 12.0;
-pub(crate) const HEADER_SOURCE_Y: f32 = 28.0;
+pub(crate) const HEADER_CENTER_Y: f32 = 18.0;
+pub(crate) const HEADER_TEXT_X: f32 = HEADER_PAD + HEADER_ICON_SIZE + HEADER_PAD;
+pub(crate) const HEADER_TITLE_Y: f32 = 11.0;
+pub(crate) const HEADER_SOURCE_Y: f32 = 25.0;
 pub(crate) const HEADER_TITLE_SIZE: f32 = 13.0;
 pub(crate) const HEADER_SOURCE_SIZE: f32 = 11.0;
 /// Below this card height (screen points) the header gives way to the old strip over the thumbnail.

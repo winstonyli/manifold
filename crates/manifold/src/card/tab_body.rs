@@ -223,7 +223,7 @@ impl App {
         };
         let icon_text = if tall {
             let center = band.left_top() + egui::vec2(HEADER_ICON_X, HEADER_CENTER_Y) * inv_zoom;
-            identity.paint(ui, center, ICON_SIZE, inv_zoom, source_color)
+            identity.paint(ui, center, HEADER_ICON_SIZE, inv_zoom, source_color)
         } else {
             None
         };

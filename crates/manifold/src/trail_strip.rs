@@ -945,12 +945,13 @@ mod tests {
             for (at, bounds, _) in shown_text_at(shapes, title) {
                 checked += 1;
                 kinds.insert(title[..4].to_string());
-                if painted_over(shapes, at, bounds) {
-                    continue;
-                }
                 // `bounds` is the text's line box, taller than its ink: a card edge within a pixel of it is not a show-through.
                 let ink = bounds.shrink2(egui::vec2(0.0, 1.0));
-                if let Some(higher) = order[i + 1..].iter().find(|h| shared_area(ink, screen(h)) >= 1.0) {
+                // Text that sticks out past a later card's edge is fine: only the part inside that card must be hidden.
+                let shows = |h: &&crate::level::CardEntry| {
+                    shared_area(ink, screen(h)) >= 1.0 && !painted_over(shapes, at, bounds.intersect(screen(h)))
+                };
+                if let Some(higher) = order[i + 1..].iter().find(shows) {
                     let over = titles.get(&higher.id).cloned().unwrap_or_else(|| higher.id.to_string());
                     return Err(format!("{title} shows through {over} ({bounds:?} over {:?})", screen(higher)));
                 }
