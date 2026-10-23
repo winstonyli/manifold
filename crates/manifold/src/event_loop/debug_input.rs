@@ -28,14 +28,16 @@ impl App {
     }
 
     /// What `WAITIDLE` waits for: no debug input still needs a frame, no
-    /// view transition is running, the Graph camera isn't easing or gliding, no address-bar suggestion is on its
-    /// way, and the focused tab (if any) isn't loading. It must hold for `QUIET_FRAMES` frame ends in a row (see `release_idle_waiters`).
+    /// view transition is running, the Graph camera isn't easing or gliding (only a frame that draws the Graph
+    /// advances it, so in another view it is not waited on), no address-bar suggestion is on its way, and the
+    /// focused tab (if any) isn't loading. It must hold for `QUIET_FRAMES` frame ends in a row (see
+    /// `release_idle_waiters`).
     fn debug_idle(&self) -> bool {
         let loading =
             self.focused.as_ref().and_then(|id| self.nodes.get(id)).and_then(|n| n.as_tab()).is_some_and(|t| t.loading);
         !self.debug_input_pending()
             && self.transition.is_none()
-            && !self.camera.is_moving()
+            && !(self.view_mode == ViewMode::Graph && self.camera.is_moving())
             && !self.address_bar.fetcher.is_busy()
             && !loading
     }
@@ -112,5 +114,24 @@ impl App {
             self.dispatch_window_event(event_loop, WindowEvent::RedrawRequested);
             self.dispatch_window_event(event_loop, WindowEvent::ModifiersChanged(Default::default()));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::view_modes::ViewMode;
+    use crate::App;
+
+    /// The camera advances only in a frame that draws the Graph, so an ease left running when the view changed
+    /// (`NEWTAB`, then `TOGGLEVIEW`) never finishes; `WAITIDLE` must not wait on it there.
+    #[test]
+    fn a_stalled_graph_ease_does_not_hold_idle_outside_the_graph() {
+        let mut app = App::default();
+        app.camera.ease_to(egui::Rect::from_min_size(egui::pos2(500.0, 500.0), egui::vec2(100.0, 100.0)));
+        assert!(app.camera.is_moving());
+        app.view_mode = ViewMode::Graph;
+        assert!(!app.debug_idle(), "the Graph is drawing it");
+        app.view_mode = ViewMode::Item;
+        assert!(app.debug_idle(), "nothing will advance it");
     }
 }
