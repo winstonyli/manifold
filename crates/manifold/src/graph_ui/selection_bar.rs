@@ -3,7 +3,7 @@
 use super::{App, GraphAction};
 use crate::card_id::CardId;
 use crate::store::model::NodeId;
-use crate::theme::{accent, bar_frame, chip_icon_button, NamedTip, RADIUS_CHIP};
+use crate::theme::{accent, bar_frame, chip_icon_button, NamedTip};
 
 /// The bar's estimated height, to decide whether it fits above the selection before it is laid out.
 const BAR_HEIGHT: f32 = 40.0;
@@ -89,16 +89,22 @@ impl App {
             .pivot(pivot)
             .fixed_pos(egui::pos2(x, y))
             .show(ui.ctx(), |ui| {
-                bar_frame(ui).show(ui, |ui| {
+                bar_frame(ui).inner_margin(egui::Margin::symmetric(4, 3)).show(ui, |ui| {
                     ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 4.0;
-                        // How many are selected: a round chip, centred on the buttons.
-                        let chip = egui::Frame::new()
-                            .fill(ui.visuals().widgets.inactive.weak_bg_fill)
-                            .corner_radius(egui::CornerRadius::same(RADIUS_CHIP))
-                            .inner_margin(egui::Margin::symmetric(8, 2))
-                            .show(ui, |ui| ui.label(egui::RichText::new(stored.to_string()).weak()));
-                        chip.response.on_hover_text(format!("{stored} selected"));
+                        // Joined like the toolbar's chips: the buttons touch, and the bar's own padding is the only gap.
+                        ui.spacing_mut().item_spacing.x = 0.0;
+                        // How many are selected: a round chip, its number centred in it by hand (a framed label sat
+                        // low against the buttons).
+                        let (rect, chip) = ui.allocate_exact_size(egui::vec2(26.0, 26.0), egui::Sense::hover());
+                        ui.painter().circle_filled(rect.center(), 11.0, ui.visuals().widgets.inactive.weak_bg_fill);
+                        ui.painter().text(
+                            rect.center(),
+                            egui::Align2::CENTER_CENTER,
+                            stored.to_string(),
+                            egui::TextStyle::Button.resolve(ui.style()),
+                            ui.visuals().weak_text_color(),
+                        );
+                        chip.on_hover_text(format!("{stored} selected"));
                         // The glyph is accented once every selected card is pinned (a click then unpins).
                         let pinned = !self.selection_would_pin();
                         let pin = ui
