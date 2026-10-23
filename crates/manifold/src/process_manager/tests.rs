@@ -32,13 +32,6 @@ fn a_url_too_long_for_a_command_line_is_refused_by_name() {
     assert_eq!(build(20_000).unwrap_err().kind(), std::io::ErrorKind::InvalidInput);
 }
 
-/// A native WebKit host needs a display for GTK's offscreen window: its own when the session has one, else Xvfb.
-#[test]
-fn a_native_webkit_host_runs_under_xvfb_only_without_a_display() {
-    assert_eq!(native_host_argv("/h", true), ["/h"]);
-    assert_eq!(native_host_argv("/h", false), ["xvfb-run", "-a", "/h"]);
-}
-
 /// The host reads the same variables whichever runtime starts it; only the address it dials back differs.
 #[test]
 fn the_webkit_host_environment_is_the_same_under_every_runtime() {

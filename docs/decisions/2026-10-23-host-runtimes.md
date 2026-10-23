@@ -25,8 +25,11 @@ host-pin platform id and the reaping rule all read these; none keeps its own OS 
   per pair; there is none.
 - **D. A module of its own** (`process_manager/runtime.rs`), not more of the 1,100-line `process_manager.rs`.
 - **Any TCP host is reaped gracefully** (`Drop for ViewTab`, `reap_host`): it gets time to exit on its own, because
-  force-killing the wrapper (`wsl.exe`, or `xvfb-run` on Linux) skips its exit trap and orphans the tree. This was the
-  WSL rule; native Linux needs it for `xvfb-run` equally.
+  force-killing the wrapper (`wsl.exe`) skips its exit trap and orphans the tree. A native host has no wrapper and
+  takes the same graceful path harmlessly.
+- **No `xvfb-run` fallback for a native Linux host.** It was written for a session without a display, but manifold's
+  own window (winit) panics without one, so the host always inherits a display. Deleted as unreachable (run with
+  `DISPLAY` unset, 2026-10-23: manifold panicked before any tab). Only the WSL launch still uses `xvfb-run`.
 
 ## Decided against
 
@@ -43,10 +46,9 @@ host-pin platform id and the reaping rule all read these; none keeps its own OS 
 ## Verified
 
 2026-10-23, WSL Ubuntu: the Linux build ran headless with WebKit as the default engine; the host started directly
-(no `xvfb-run`, `DISPLAY` set), connected over loopback TCP, painted `manifold://start`, and exited with no host left
+(`DISPLAY` set), connected over loopback TCP, loaded `manifold://start` and a `data:` page, and exited with no host left
 behind. Windows and Linux unit tests pass.
 
 ## Not verified
 
-The `xvfb-run` fallback (no display) has only the pure argv test, and no real page was loaded in a native tab (only the
-start page). A force-killed manifold with a native tab was not tried.
+A force-killed manifold with a native tab was not tried.

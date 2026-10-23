@@ -1094,7 +1094,7 @@ pub use profiles::{
 use runtime::{HostLink, Os, Runtime};
 use webkit::spawn_webkit_tab;
 #[cfg(test)]
-use webkit::{native_host_argv, webkit_env, webkit_shell_command};
+use webkit::{webkit_env, webkit_shell_command};
 #[cfg(test)]
 mod tests;
 

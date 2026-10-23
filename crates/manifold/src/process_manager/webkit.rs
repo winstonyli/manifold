@@ -77,20 +77,6 @@ pub(super) fn webkit_shell_command(
     ))
 }
 
-/// The program and arguments that start a WebKit host on this Linux machine: GTK's offscreen window needs a display,
-/// so without the session's own the host runs under Xvfb (`xvfb-run`'s exit trap then also removes the X server).
-pub(super) fn native_host_argv(host: &str, has_display: bool) -> Vec<String> {
-    if has_display {
-        vec![host.to_string()]
-    } else {
-        ["xvfb-run", "-a", host].map(String::from).to_vec()
-    }
-}
-
-fn session_has_display() -> bool {
-    ["DISPLAY", "WAYLAND_DISPLAY"].iter().any(|name| std::env::var_os(name).is_some_and(|value| !value.is_empty()))
-}
-
 /// Starts the WebKit host the way `runtime` says and accepts its connection back. A `Wsl` host dials the Windows
 /// host's default-gateway address, so its listener is on every interface; a `Native` one dials loopback.
 pub(super) fn spawn_webkit_tab(
@@ -133,12 +119,9 @@ pub(super) fn spawn_webkit_tab(
             command
         }
         Runtime::Native => {
-            let argv = native_host_argv(&host.to_string_lossy(), session_has_display());
-            let mut command = Command::new(&argv[0]);
-            command
-                .args(&argv[1..])
-                .envs(webkit_env(initial_url, port, &token, dark)?)
-                .env("VIEW_HOST_IP", "127.0.0.1");
+            // manifold itself needs a display on Linux, so the host inherits it.
+            let mut command = Command::new(&host);
+            command.envs(webkit_env(initial_url, port, &token, dark)?).env("VIEW_HOST_IP", "127.0.0.1");
             command
         }
     };
@@ -147,13 +130,7 @@ pub(super) fn spawn_webkit_tab(
         .stdin(std::process::Stdio::null())
         .stdout(stdout_file)
         .stderr(stderr_file)
-        .spawn()
-        .map_err(|e| match (runtime, e.kind()) {
-            (Runtime::Native, std::io::ErrorKind::NotFound) if !session_has_display() => {
-                std::io::Error::other("WebKit needs a display or xvfb-run")
-            }
-            _ => e,
-        })?;
+        .spawn()?;
     // Only reaches the Windows-side `wsl.exe` relay, same limitation
     // `Drop for ViewTab`'s own doc comment already calls out for
     // explicit `Shutdown`-then-kill -- the actual Linux-side process tree
