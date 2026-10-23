@@ -8,6 +8,20 @@ pub(crate) fn view_label(kind: ViewKind) -> &'static str {
     kind.desc().label
 }
 
+/// The rendering engine `kind` embeds and which other hosts share it, from the family tags: "Blink engine, shared
+/// with Blink (CEF)", or "WebKit engine (only host)".
+pub(crate) fn engine_line(kind: ViewKind) -> String {
+    use crate::caps::Tag;
+    let families = [(Tag::Blink, "Blink"), (Tag::WebKit, "WebKit"), (Tag::Servo, "Servo")];
+    let Some(&(family, name)) = families.iter().find(|(tag, _)| kind.has(*tag)) else { return String::new() };
+    let others: Vec<&str> = ViewKind::ALL.into_iter().filter(|k| *k != kind && k.has(family)).map(view_label).collect();
+    if others.is_empty() {
+        format!("{name} engine (only host)")
+    } else {
+        format!("{name} engine, shared with {}", others.join(", "))
+    }
+}
+
 /// What the disk holds of `kind`'s downloadable parts, for the headless `VIEWSTATE` and `EXPORTSTATE`:
 /// "host ready", and for CEF also "runtime missing" (Ready, Missing or Stale each).
 pub(crate) fn on_disk_text(kind: ViewKind, disk: crate::view_install::OnDisk) -> String {
@@ -211,6 +225,7 @@ pub(crate) fn draw_view_card(
             if *state != ViewStatus::Installed {
                 view_status_line(ui, state);
             }
+            ui.label(egui::RichText::new(engine_line(kind)).small().color(palette.text_weak));
             ui.add_space(4.0);
             for pro in kind.desc().pros {
                 let text = egui::RichText::new(format!("+ {pro}")).small();
@@ -309,6 +324,14 @@ pub(crate) fn build_view_picker_popup(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_engine_line_names_the_family_and_who_shares_it() {
+        assert_eq!(super::engine_line(ViewKind::Cef), "Blink engine, shared with WebView2");
+        assert_eq!(super::engine_line(ViewKind::Webview2), "Blink engine, shared with Blink (CEF)");
+        assert_eq!(super::engine_line(ViewKind::Webkit), "WebKit engine (only host)");
+        assert_eq!(super::engine_line(ViewKind::Servo), "Servo engine (only host)");
+    }
+
     use super::*;
 
     #[test]

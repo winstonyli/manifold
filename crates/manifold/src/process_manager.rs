@@ -182,7 +182,7 @@ Not included: WebKit runs inside WSL, which needs a distro named Ubuntu with xvf
                 color: egui::Color32::from_rgb(26, 188, 156),
                 tier: crate::view_info::ViewTier::Limited,
                 pros: &[
-                    "The only non-Blink, non-Servo engine here -- real engine diversity for cross-engine testing",
+                    "A third rendering engine -- real engine diversity for cross-engine testing",
                     "Catches Safari/WebKit-specific site behavior the other three can't show you",
                 ],
                 cons: &[
@@ -212,7 +212,6 @@ Not included: WebKit runs inside WSL, which needs a distro named Ubuntu with xvf
                 color: egui::Color32::from_rgb(0, 120, 212),
                 tier: crate::view_info::ViewTier::Recommended,
                 pros: &[
-                    "Also Blink-based -- same site compatibility as CEF",
                     "Uses the OS's own Edge runtime -- no separate browser binary for this app to ship or update",
                 ],
                 cons: &[
