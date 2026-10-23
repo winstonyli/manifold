@@ -302,8 +302,7 @@ impl App {
             |ui| {
                 toolbar_field(ui, |ui| {
                     ui.add(
-                        egui::TextEdit::singleline(&mut self.history_ui.bookmarks_filter)
-                            .margin(FIELD_MARGIN)
+                        field_edit(&mut self.history_ui.bookmarks_filter)
                             .desired_width(f32::INFINITY)
                             .hint_text("Filter..."),
                     )
@@ -372,8 +371,7 @@ impl App {
                                 if let Some((_, draft)) = &mut self.history_ui.renaming_bookmark_folder {
                                     let response = toolbar_field(ui, |ui| {
                                         ui.add(
-                                            egui::TextEdit::singleline(draft)
-                                                .margin(FIELD_MARGIN)
+                                            field_edit(draft)
                                                 .desired_width(140.0)
                                                 .hint_text("Folder (blank for none)")
                                                 .font(egui::TextStyle::Small),
@@ -466,8 +464,7 @@ impl App {
             list_popup(ui, self.menus.open_popup, AnchoredPopup::History, "history_popup", anchor_rect, fade, |ui| {
                 toolbar_field(ui, |ui| {
                     ui.add(
-                        egui::TextEdit::singleline(&mut self.history_ui.history_filter)
-                            .margin(FIELD_MARGIN)
+                        field_edit(&mut self.history_ui.history_filter)
                             .desired_width(f32::INFINITY)
                             .hint_text("Filter..."),
                     )

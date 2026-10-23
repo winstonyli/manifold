@@ -329,6 +329,7 @@ mod view_picker_tests {
             let (rows, at) = frame(vec![]);
             assert_eq!(at, Some(299 - k), "Up back to {}: {rows:?}", 299 - k);
         }
+        frame(vec![]); // the scroll back to the top settles one frame later
         let (rows, at) = frame(vec![]);
         assert_eq!((rows[0], at), (299, Some(299)), "back at the top, scrolled back: {rows:?}");
         assert_eq!(app.menus.open_popup, Some(AnchoredPopup::History));

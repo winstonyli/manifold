@@ -406,11 +406,8 @@ impl App {
             (ui.available_rect_before_wrap().width() - trailing_width - ui.spacing().item_spacing.x).max(40.0);
         let response = toolbar_field(ui, |ui| {
             ui.add(
-                egui::TextEdit::singleline(&mut self.address_bar.text)
+                field_edit(&mut self.address_bar.text)
                     .desired_width(text_width)
-                    .min_size(egui::vec2(0.0, 28.0))
-                    // The field is taller than its text: centre the text in it rather than leave the slack below.
-                    .vertical_align(egui::Align::Center)
                     .hint_text("Search or enter address")
                     // Match `style.spacing.button_padding` (set in
                     // `apply_style`) so the address bar renders the

@@ -647,9 +647,15 @@ pub(crate) fn toolbar_panel(id: &'static str, ui: &mut egui::Ui, content: impl F
         });
 }
 
-/// Text inset for every field drawn through `toolbar_field`; egui's own default (4, 2) leaves the first letter
-/// touching the rounded end.
-pub(crate) const FIELD_MARGIN: egui::Margin = egui::Margin::symmetric(8, 4);
+/// A single-line text field's shape, for every field drawn through `toolbar_field`: the control height (28 px, as
+/// buttons) with the text centered in it, and an inset that keeps the first letter off the rounded end (egui's own
+/// default margin is (4, 2) and top-aligned text).
+pub(crate) fn field_edit(text: &mut dyn egui::TextBuffer) -> egui::TextEdit<'_> {
+    egui::TextEdit::singleline(text)
+        .margin(egui::Margin::symmetric(8, 4))
+        .min_size(egui::vec2(0.0, 28.0))
+        .vertical_align(egui::Align::Center)
+}
 
 /// Runs `add` with the approved mockup's field look: a soft raised fill and a hairline hover-step border
 /// with `RADIUS_CHIP` corners, so a text field reads as an inset box rather than bare text on the bar.

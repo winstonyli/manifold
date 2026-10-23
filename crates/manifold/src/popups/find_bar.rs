@@ -102,12 +102,7 @@ impl App {
                 bar_frame(ui).show(ui, |ui| {
                     ui.horizontal(|ui| {
                         let response = toolbar_field(ui, |ui| {
-                            ui.add(
-                                egui::TextEdit::singleline(&mut self.find.text)
-                                    .margin(FIELD_MARGIN)
-                                    .desired_width(160.0)
-                                    .hint_text("Find in page"),
-                            )
+                            ui.add(field_edit(&mut self.find.text).desired_width(160.0).hint_text("Find in page"))
                         })
                         .on_hover_text("Enter: next match, Shift+Enter: previous, Esc: close");
                         if take_focus(&mut self.pending_focus, FocusTarget::FindBar) {

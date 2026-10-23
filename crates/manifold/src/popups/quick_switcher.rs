@@ -158,8 +158,7 @@ impl App {
                         if let Some(switcher) = &mut self.menus.quick_switcher.open {
                             let response = toolbar_field(ui, |ui| {
                                 ui.add(
-                                    egui::TextEdit::singleline(&mut switcher.query)
-                                        .margin(FIELD_MARGIN)
+                                    field_edit(&mut switcher.query)
                                         .desired_width(f32::INFINITY)
                                         // Tab would otherwise walk focus out to the toolbar behind
                                         // the switcher; arrows and Enter pick a row.
