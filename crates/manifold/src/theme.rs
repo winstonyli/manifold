@@ -651,8 +651,14 @@ pub(crate) fn toolbar_panel(id: &'static str, ui: &mut egui::Ui, content: impl F
 /// buttons) with the text centered in it, and an inset that keeps the first letter off the rounded end (egui's own
 /// default margin is (4, 2) and top-aligned text).
 pub(crate) fn field_edit(text: &mut dyn egui::TextBuffer) -> egui::TextEdit<'_> {
+    field_edit_inset(text, 8, 8)
+}
+
+/// `field_edit` with its own left and right text inset, for a field that draws something inside its ends (the address
+/// bar's favicon and keycaps).
+pub(crate) fn field_edit_inset(text: &mut dyn egui::TextBuffer, left: i8, right: i8) -> egui::TextEdit<'_> {
     egui::TextEdit::singleline(text)
-        .margin(egui::Margin::symmetric(8, 4))
+        .margin(egui::Margin { left, right, top: 4, bottom: 4 })
         .min_size(egui::vec2(0.0, 28.0))
         .vertical_align(egui::Align::Center)
 }
