@@ -880,6 +880,9 @@ impl Shots {
             s.shot("graph-select-key-on")?;
             send!(s, "SPACEKEY", "SLEEP 1")?;
             s.shot("graph-select-key-off")?;
+            // Two more cards selected: the selection bar sits on a box around both.
+            send!(s, "TABKEY", "SLEEP 0.5", "SPACEKEY", "SLEEP 0.5", "TABKEY", "SLEEP 0.5", "SPACEKEY", "SLEEP 1")?;
+            s.shot("graph-select-key-two")?;
             s.reset()
         })?;
         // Tab to the Note card and Enter: the note starts editing; Escape ends it and Enter edits again (focus

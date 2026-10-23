@@ -7,8 +7,10 @@ use crate::theme::bar_frame;
 
 /// The bar's estimated height, to decide whether it fits above the selection before it is laid out.
 const BAR_HEIGHT: f32 = 40.0;
-/// Space between the bar and the selection.
+/// Space between the bar and the selection's box.
 const BAR_GAP: f32 = 8.0;
+/// Screen points between the selected cards and the box drawn around two or more of them.
+const BOX_PAD: f32 = 10.0;
 
 impl App {
     /// The selected stored cards' bounding box in world space, or `None` with nothing (stored) selected. A virtual
@@ -56,6 +58,23 @@ impl App {
         }
         let Some(bounds) = self.selection_bounds() else { return };
         let (min, max) = (project(bounds.min), project(bounds.max));
+        // One selected card already has its own ring; two or more get a box around the lot, which the bar sits on.
+        let boxed = self.selected_stored_count() > 1;
+        let (min, max) =
+            if boxed { (min - egui::Vec2::splat(BOX_PAD), max + egui::Vec2::splat(BOX_PAD)) } else { (min, max) };
+        if boxed {
+            let accent = crate::theme::accent(ui.visuals());
+            let painter =
+                ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("selection_box")));
+            let rect = egui::Rect::from_min_max(min, max);
+            // Outline only: a fill over the cards would dim them.
+            painter.with_clip_rect(panel).rect_stroke(
+                rect,
+                crate::theme::CARD_RADIUS + BOX_PAD,
+                egui::Stroke::new(1.5, accent),
+                egui::StrokeKind::Outside,
+            );
+        }
         let above = min.y - BAR_GAP - BAR_HEIGHT >= panel.top();
         let (pivot, y) = if above {
             (egui::Align2::CENTER_BOTTOM, min.y - BAR_GAP)
