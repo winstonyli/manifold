@@ -56,6 +56,7 @@ pub(crate) fn explorer_select_arg(path: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(windows)]
     use super::*;
 
     #[cfg(windows)]

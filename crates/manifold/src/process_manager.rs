@@ -1063,15 +1063,14 @@ pub(crate) use availability::{
     forget_on_disk, platform_default_view_kind, view_availability, view_hosts_dir, view_on_disk, view_runtime_dir,
 };
 use job::assign_to_view_job;
+#[cfg(all(test, windows))]
+use profiles::take_webview2_slot;
 use profiles::{
     cef_cache_root, claim_webview2_slot, free_webview2_slot, remove_cache_dir, webview2_profile_dir,
     webview2_profile_name, CACHE_REMOVALS, CEF_CACHE_COUNTER, MAX_TAB_LOG_BYTES,
 };
 #[cfg(test)]
-use profiles::{
-    claim_slot, sweep_cache_dirs, sweep_view_logs_in, take_webview2_slot, WEBVIEW2_PROFILE_POOL,
-    WEBVIEW2_PROFILE_PREFIX,
-};
+use profiles::{claim_slot, sweep_cache_dirs, sweep_view_logs_in, WEBVIEW2_PROFILE_POOL, WEBVIEW2_PROFILE_PREFIX};
 pub use profiles::{
     finish_cache_removals, sweep_cef_cache, sweep_frame_files, sweep_view_logs, sweep_webview2_profiles,
 };
