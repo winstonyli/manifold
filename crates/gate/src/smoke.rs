@@ -22,7 +22,7 @@ use std::time::Duration;
 use serde_json::Value;
 
 use crate::check::{exit_code, fail_line, failures, note_failure, pass_line, Marks};
-use crate::instance::{file_url, log_tail, remove_dir_with_retries, Instance};
+use crate::instance::{file_url, log_tail, remove_dir_with_retries, seed_settings, Instance};
 use crate::link::{bad, no_verdict_words, truthy};
 use crate::state::{fmt0, round_half_even, State, DOWNLOAD, IMAGE, JAR, JSON, NOTE, PDF, TAB};
 use crate::suggest::{query_param, url_query, Server};
@@ -1177,14 +1177,11 @@ pub fn smoke(parent: Option<PathBuf>) -> ExitCode {
     };
     let profile = work.join("profile");
     // Address-bar suggestions come from a local server, not DuckDuckGo, so those checks don't depend on the network.
-    let started = fs::create_dir_all(&profile)
-        .and_then(|()| fs::write(profile.join("settings.json"), "{\"has_shown_first_launch_demo\": true}\n"))
-        .and_then(|()| Server::start())
-        .and_then(|server| {
-            let url = server.url();
-            let inst = Instance::launch_env(&exe, &profile, &out, "smoke.log", &[("MANIFOLD_SUGGESTIONS_URL", &url)])?;
-            Ok((server, inst))
-        });
+    let started = seed_settings(&profile, "webview2", "").and_then(|()| Server::start()).and_then(|server| {
+        let url = server.url();
+        let inst = Instance::launch_env(&exe, &profile, &out, "smoke.log", &[("MANIFOLD_SUGGESTIONS_URL", &url)])?;
+        Ok((server, inst))
+    });
     let (server, inst) = match started {
         Ok(x) => x,
         Err(e) => return fatal(format!("launch: {e}")),

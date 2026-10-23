@@ -251,8 +251,7 @@ fn run(args: &[String]) -> Result<(), String> {
     let _ = std::fs::remove_dir_all(&out);
     let appdata = out.join("appdata");
     let io = |e: std::io::Error| e.to_string();
-    std::fs::create_dir_all(&appdata).map_err(io)?;
-    std::fs::write(appdata.join("settings.json"), "{\"has_shown_first_launch_demo\": true}\n").map_err(io)?;
+    crate::instance::seed_settings(&appdata, "webview2", "").map_err(io)?;
     let (branch, reveal_n) = (env_usize("JSON_BRANCH", 12), env_usize("REVEAL_N", 200_000));
     let fixture_path = out.join("fixture.json");
     let state = out.join("state.json");
