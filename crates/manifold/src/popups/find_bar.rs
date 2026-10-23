@@ -99,15 +99,17 @@ impl App {
             .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-12.0, CHROME_HEIGHT_POINTS + 6.0))
             .order(egui::Order::Foreground)
             .show(ui.ctx(), |ui| {
-                popup_frame(ui).inner_margin(egui::Margin::symmetric(10, 6)).show(ui, |ui| {
+                bar_frame(ui).show(ui, |ui| {
                     ui.horizontal(|ui| {
-                        let response = ui
-                            .add(
+                        let response = toolbar_field(ui, |ui| {
+                            ui.add(
                                 egui::TextEdit::singleline(&mut self.find.text)
+                                    .margin(FIELD_MARGIN)
                                     .desired_width(160.0)
                                     .hint_text("Find in page"),
                             )
-                            .on_hover_text("Enter: next match, Shift+Enter: previous, Esc: close");
+                        })
+                        .on_hover_text("Enter: next match, Shift+Enter: previous, Esc: close");
                         if take_focus(&mut self.pending_focus, FocusTarget::FindBar) {
                             response.request_focus();
                         }

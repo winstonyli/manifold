@@ -300,11 +300,14 @@ impl App {
             anchor_rect,
             fade,
             |ui| {
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.history_ui.bookmarks_filter)
-                        .desired_width(f32::INFINITY)
-                        .hint_text("Filter..."),
-                );
+                toolbar_field(ui, |ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.history_ui.bookmarks_filter)
+                            .margin(FIELD_MARGIN)
+                            .desired_width(f32::INFINITY)
+                            .hint_text("Filter..."),
+                    )
+                });
                 let matches: Vec<(usize, &bookmarks::Bookmark)> = self
                     .bookmarks
                     .iter()
@@ -367,12 +370,15 @@ impl App {
                                 .is_some_and(|(url, _)| url == &bookmark.url);
                             if is_renaming {
                                 if let Some((_, draft)) = &mut self.history_ui.renaming_bookmark_folder {
-                                    let response = ui.add(
-                                        egui::TextEdit::singleline(draft)
-                                            .desired_width(140.0)
-                                            .hint_text("Folder (blank for none)")
-                                            .font(egui::TextStyle::Small),
-                                    );
+                                    let response = toolbar_field(ui, |ui| {
+                                        ui.add(
+                                            egui::TextEdit::singleline(draft)
+                                                .margin(FIELD_MARGIN)
+                                                .desired_width(140.0)
+                                                .hint_text("Folder (blank for none)")
+                                                .font(egui::TextStyle::Small),
+                                        )
+                                    });
                                     if take_focus(&mut self.pending_focus, FocusTarget::BookmarkFolder) {
                                         response.request_focus();
                                     }
@@ -458,11 +464,14 @@ impl App {
         let wanted = std::cell::RefCell::new(Vec::<String>::new());
         let clicked_outside =
             list_popup(ui, self.menus.open_popup, AnchoredPopup::History, "history_popup", anchor_rect, fade, |ui| {
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.history_ui.history_filter)
-                        .desired_width(f32::INFINITY)
-                        .hint_text("Filter..."),
-                );
+                toolbar_field(ui, |ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.history_ui.history_filter)
+                            .margin(FIELD_MARGIN)
+                            .desired_width(f32::INFINITY)
+                            .hint_text("Filter..."),
+                    )
+                });
                 if self.history.is_empty() {
                     ui.label(egui::RichText::new("No history yet. Pages you visit appear here.").weak());
                 }

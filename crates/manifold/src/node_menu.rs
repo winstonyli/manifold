@@ -213,11 +213,11 @@ pub(crate) fn build_node_context_menu(
         interactable,
         |ui| {
             if let Some((draft, focus, hint)) = rename {
-                let mut edit = egui::TextEdit::singleline(draft).desired_width(140.0);
+                let mut edit = egui::TextEdit::singleline(draft).desired_width(140.0).margin(FIELD_MARGIN);
                 if let Some(hint) = hint {
                     edit = edit.hint_text(hint);
                 }
-                let response = ui.add(edit);
+                let response = toolbar_field(ui, |ui| ui.add(edit));
                 if focus {
                     response.request_focus();
                 }

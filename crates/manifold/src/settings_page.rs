@@ -182,7 +182,12 @@ impl App {
         let saved = self.settings.home_page.clone();
         let draft = self.home_page_draft.get_or_insert_with(|| saved.clone());
         let response = toolbar_field(ui, |ui| {
-            ui.add(egui::TextEdit::singleline(draft).id(egui::Id::new(HOME_PAGE_FIELD)).desired_width(f32::INFINITY))
+            ui.add(
+                egui::TextEdit::singleline(draft)
+                    .id(egui::Id::new(HOME_PAGE_FIELD))
+                    .margin(FIELD_MARGIN)
+                    .desired_width(f32::INFINITY),
+            )
         });
         if response.lost_focus() {
             // Escape gives up the edit, as the CEF folder row does. Unchanged text isn't saved: `lost_focus` stays
@@ -366,6 +371,7 @@ impl App {
             let response = toolbar_field(ui, |ui| {
                 ui.add(
                     egui::TextEdit::singleline(draft)
+                        .margin(FIELD_MARGIN)
                         .desired_width(220.0)
                         .hint_text(format!("Folder with {}", crate::cef_platform::PLATFORM.runtime_lib)),
                 )
@@ -452,7 +458,12 @@ impl App {
         ui.add(egui::Label::new(egui::RichText::new(last_saved).small().weak()).wrap());
         ui.horizontal(|ui| {
             toolbar_field(ui, |ui| {
-                ui.add(egui::TextEdit::singleline(&mut self.session_name_draft).desired_width(120.0).hint_text("Name"))
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.session_name_draft)
+                        .margin(FIELD_MARGIN)
+                        .desired_width(120.0)
+                        .hint_text("Name"),
+                )
             });
             if ui.button("Save As").clicked() {
                 req.save_as_requested = true;

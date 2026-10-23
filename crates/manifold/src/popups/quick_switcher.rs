@@ -156,14 +156,17 @@ impl App {
                     ui.set_width(360.0);
                     if is_live {
                         if let Some(switcher) = &mut self.menus.quick_switcher.open {
-                            let response = ui.add(
-                                egui::TextEdit::singleline(&mut switcher.query)
-                                    .desired_width(f32::INFINITY)
-                                    // Tab would otherwise walk focus out to the toolbar behind
-                                    // the switcher; arrows and Enter pick a row.
-                                    .lock_focus(true)
-                                    .hint_text("Search open tabs..."),
-                            );
+                            let response = toolbar_field(ui, |ui| {
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut switcher.query)
+                                        .margin(FIELD_MARGIN)
+                                        .desired_width(f32::INFINITY)
+                                        // Tab would otherwise walk focus out to the toolbar behind
+                                        // the switcher; arrows and Enter pick a row.
+                                        .lock_focus(true)
+                                        .hint_text("Search open tabs..."),
+                                )
+                            });
                             if response.changed() {
                                 switcher.selected = 0; // a new query starts at its first match
                             }

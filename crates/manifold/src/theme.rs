@@ -312,6 +312,11 @@ pub(crate) fn menu_separator(ui: &mut egui::Ui) {
     ui.add_space(MENU_SEPARATOR_PAD);
 }
 
+/// `popup_frame` for one-row floating bars (find bar, toasts): a little more air than a menu, less than a dialog.
+pub(crate) fn bar_frame(ui: &egui::Ui) -> egui::Frame {
+    popup_frame(ui).inner_margin(egui::Margin::symmetric(10, 6))
+}
+
 /// `popup_frame` for centered dialogs (quick switcher, shortcuts help,
 /// import confirm, JSON viewer): rounder, with more padding.
 pub(crate) fn dialog_frame(ui: &egui::Ui) -> egui::Frame {
@@ -641,6 +646,10 @@ pub(crate) fn toolbar_panel(id: &'static str, ui: &mut egui::Ui, content: impl F
             egui::ScrollArea::horizontal().auto_shrink([false, false]).show(ui, content);
         });
 }
+
+/// Text inset for every field drawn through `toolbar_field`; egui's own default (4, 2) leaves the first letter
+/// touching the rounded end.
+pub(crate) const FIELD_MARGIN: egui::Margin = egui::Margin::symmetric(8, 4);
 
 /// Runs `add` with the approved mockup's field look: a soft raised fill and a hairline hover-step border
 /// with `RADIUS_CHIP` corners, so a text field reads as an inset box rather than bare text on the bar.

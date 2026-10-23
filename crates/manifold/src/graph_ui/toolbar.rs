@@ -163,7 +163,9 @@ impl App {
                     let is_renaming = self.renaming_group.as_ref().is_some_and(|(rid, _)| rid == id);
                     if is_renaming {
                         if let Some((_, draft)) = &mut self.renaming_group {
-                            let response = ui.add(egui::TextEdit::singleline(draft).desired_width(140.0));
+                            let response = toolbar_field(ui, |ui| {
+                                ui.add(egui::TextEdit::singleline(draft).desired_width(140.0).margin(FIELD_MARGIN))
+                            });
                             if take_focus(&mut self.pending_focus, FocusTarget::GroupRename) {
                                 response.request_focus();
                             }
@@ -309,7 +311,7 @@ impl App {
                     egui::TextEdit::singleline(&mut self.graph_filter)
                         .desired_width(150.0)
                         .min_size(egui::vec2(0.0, 28.0))
-                        .margin(egui::Margin::symmetric(8, 4))
+                        .margin(FIELD_MARGIN)
                         .hint_text("Filter..."),
                 )
             });

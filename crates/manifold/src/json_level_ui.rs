@@ -864,9 +864,14 @@ impl App {
         let root_name = self.current_json_node().map(|j| download_filename(&j.path).to_string()).unwrap_or_default();
         let Some(level) = self.json_level.as_mut() else { return };
         let mut query = level.search.query.clone();
-        let search = ui.add(
-            egui::TextEdit::singleline(&mut query).hint_text("Search keys and values").desired_width(f32::INFINITY),
-        );
+        let search = toolbar_field(ui, |ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut query)
+                    .hint_text("Search keys and values")
+                    .desired_width(f32::INFINITY)
+                    .margin(FIELD_MARGIN),
+            )
+        });
         if std::mem::take(&mut level.search.focus) {
             search.request_focus();
         }
