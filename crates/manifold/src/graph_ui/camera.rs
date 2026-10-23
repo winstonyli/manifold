@@ -28,6 +28,11 @@ impl GraphCamera {
         self.momentum = None;
     }
 
+    /// Whether an ease or a pan glide is still moving `rect`.
+    pub(crate) fn is_moving(&self) -> bool {
+        self.tween.is_some() || self.momentum.is_some()
+    }
+
     /// Eased camera move into/out of a group -- see `GraphCameraTween`'s
     /// doc comment for why this is a separate mechanism from
     /// `Transition`. Recomputed fresh from the tween's fixed `from`/`to`
@@ -475,6 +480,21 @@ mod tests {
         assert_eq!(scale, 2.0);
         assert_eq!(camera.rect.size(), egui::vec2(200.0, 100.0));
         assert_eq!(camera.zoom_pct, 200.0);
+    }
+
+    #[test]
+    fn the_camera_is_moving_while_an_ease_or_a_glide_runs() {
+        let mut camera = GraphCamera::new();
+        assert!(!camera.is_moving());
+        camera.ease_to(egui::Rect::from_center_size(egui::pos2(5000.0, 5000.0), egui::vec2(400.0, 300.0)));
+        assert!(camera.is_moving());
+        camera.tween.as_mut().unwrap().start -= TRANSITION_DURATION;
+        camera.advance();
+        assert!(!camera.is_moving());
+        let start = std::time::Instant::now();
+        camera.momentum =
+            Some(PanMomentum { initial_velocity: egui::vec2(2000.0, 0.0), start, start_center: camera.rect.center() });
+        assert!(camera.is_moving());
     }
 
     #[test]

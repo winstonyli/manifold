@@ -922,11 +922,9 @@ fn run_reader_op(proxy: &EventLoopProxy<UserEvent>, op: ReaderOp) -> bool {
             format!("WAITIDLE: input or a load still pending after {timeout:?}; continuing"),
             Box::new(move |app, _| {
                 app.debug.idle_waiters.push(tx);
-                app.release_idle_waiters();
+                app.debug.idle_frames = 0;
                 // Pending input needs frames to land, and the check runs at the end of each.
-                if let Some(window) = &app.window {
-                    window.request_redraw();
-                }
+                app.release_idle_waiters();
             }),
         ),
         // Frames can stall for seconds and the app holds one pending screenshot, so an unblocked second
@@ -1043,6 +1041,8 @@ pub(crate) struct HeadlessDebug {
     pub(crate) pending_print_to_pdf: Option<(String, String)>,
     /// Senders of the headless `WAITIDLE` commands waiting for `debug_idle`.
     pub(crate) idle_waiters: Vec<std::sync::mpsc::Sender<()>>,
+    /// Consecutive frame ends at which `debug_idle` held, while `idle_waiters` waits; `QUIET_FRAMES` releases them.
+    pub(crate) idle_frames: u8,
 }
 
 impl App {

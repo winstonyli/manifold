@@ -38,8 +38,7 @@ impl App {
             && self.line_click_allowed()
             && self.renaming_group.is_none()
             && self.menus.quick_switcher.open.is_none()
-            && self.camera.momentum.is_none()
-            && self.camera.tween.is_none()
+            && !self.camera.is_moving()
             && !pointer.zip(minimap).is_some_and(|(p, rect)| rect.contains(p))
     }
 }

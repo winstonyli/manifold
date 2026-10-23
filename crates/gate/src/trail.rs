@@ -126,12 +126,8 @@ fn park_card(inst: &mut Instance) -> io::Result<Option<(State, String)>> {
     let is_strip = |c: &Value| c["virtual"].as_str() == Some("trail");
     for _ in 0..3 {
         // The strip's arrival eases the camera, so rects read now may be mid-ease by the time the pointer gets there.
-        let (s, settled) =
-            State::settle(|| inst.export_state("drag-settled"), 20, std::time::Duration::from_millis(300))?;
-        if !settled {
-            println!("  park: the cards were still moving");
-            continue;
-        }
+        inst.send("WAITIDLE")?;
+        let s = inst.export_state("drag-settled")?;
         let (w, h) = (s.0["window"][0].as_f64().unwrap_or(0.0), s.0["window"][1].as_f64().unwrap_or(0.0));
         // A strip page's id is `virtual:trail:<tab>:<epoch>:<entry>`.
         let cards = s.all_cards();
@@ -178,7 +174,8 @@ fn park_card(inst: &mut Instance) -> io::Result<Option<(State, String)>> {
             println!("  {id} at world {:?}, wanted {target:?}, moved from {:?}", world_of(&s), (wx, wy));
             continue;
         }
-        let (s, _) = State::settle(|| inst.export_state("drag-parked"), 20, std::time::Duration::from_millis(300))?;
+        inst.send("WAITIDLE")?;
+        let s = inst.export_state("drag-parked")?;
         // The camera can still move once the card is there, so the spot is only good if the card holds it on screen.
         if s.rect(&id).is_some_and(|r| (centre(r).0 - want.0).abs() < 1.0 && (centre(r).1 - want.1).abs() < 1.0) {
             return Ok(Some((s, id)));

@@ -291,10 +291,10 @@ impl Shots {
             .ok_or_else(|| io::Error::other(format!("no top-level card of type {ty}")))
     }
 
-    /// Waits until two exports agree on the cards: SLEEP draws no frames, and the camera eases after entering a
-    /// level, so a fixed sleep can shoot mid-ease.
+    /// Waits for the app to be idle: SLEEP draws no frames, and the camera eases after entering a level, so a
+    /// fixed sleep can shoot mid-ease.
     fn settle(&mut self) -> io::Result<()> {
-        State::settle(|| self.state(), 20, Duration::from_millis(300)).map(|_| ())
+        self.inst.send("WAITIDLE")
     }
 
     fn shot(&mut self, name: &str) -> io::Result<()> {

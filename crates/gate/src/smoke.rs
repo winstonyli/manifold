@@ -390,14 +390,10 @@ impl Smoke {
         Ok(())
     }
 
-    /// `settle`: exports until two in a row agree on every card's rect; returns the last. A layout that never stops
-    /// is a FAIL line and the run goes on.
+    /// `settle`: waits for the app to be idle (no camera ease or glide, no transition), then exports.
     fn settle(&mut self, name: &str) -> io::Result<State> {
-        let (last, settled) = State::settle(|| self.state(name), 40, SETTLE_POLL)?;
-        if !settled {
-            failed(&format!("{name}: the layout never stopped moving"));
-        }
-        Ok(last)
+        self.send("WAITIDLE")?;
+        self.state(name)
     }
 
     /// `drag X0 Y0 X1 Y1 [button]`: a press, six moves and a release with no sleep between them.
@@ -1226,26 +1222,6 @@ mod tests {
         assert_eq!(v.q, "sourdough bread two");
         let s = state(r#"{"focused_url":null}"#);
         assert_eq!((View::new(&s).url, View::new(&s).q.as_str()), ("", ""));
-    }
-
-    #[test]
-    fn settle_key_ignores_card_order_and_changes_with_a_tenth_of_a_pixel() {
-        let a = state(r#"{"cards":[{"id":"b","rect":[1.0,2.0,3.0,4.04]},{"id":"a","rect":[0.0,0.0,5.0,5.0]}]}"#);
-        let same = state(r#"{"cards":[{"id":"a","rect":[0.0,0.0,5.0,5.0]},{"id":"b","rect":[1.0,2.0,3.0,4.0]}]}"#);
-        let moved = state(r#"{"cards":[{"id":"a","rect":[0.0,0.0,5.0,5.0]},{"id":"b","rect":[1.0,2.0,3.0,4.1]}]}"#);
-        assert_eq!(a.rect_key(), same.rect_key()); // 4.04 rounds to 4.0
-        assert_ne!(a.rect_key(), moved.rect_key());
-    }
-
-    /// Values python's `round(v, 1)` rounds as `0.2 0.1 0.3 0.5 -0.0 1.0` (recorded from python 3.14:
-    /// `[round(v, 1) for v in (0.25, 0.15, 0.35, 0.45, -0.04, 0.95)]` is `[0.2, 0.1, 0.3, 0.5, -0.0, 0.9]`): the key
-    /// must agree wherever python's repr does.
-    #[test]
-    fn rect_key_rounds_like_python() {
-        for (v, want) in [(0.25, "0.2"), (0.15, "0.1"), (0.35, "0.3"), (0.45, "0.5"), (-0.04, "-0.0"), (0.95, "0.9")] {
-            let s = state(&format!(r#"{{"cards":[{{"id":"a","rect":[{v:?},0.0,0.0,0.0]}}]}}"#));
-            assert_eq!(s.rect_key(), format!("a:{want},0.0,0.0,0.0"), "round({v}, 1)");
-        }
     }
 
     #[test]

@@ -28,19 +28,30 @@ impl App {
     }
 
     /// What `WAITIDLE` waits for: no debug input still needs a frame, no
-    /// view transition is running, and the focused tab (if any) isn't loading.
+    /// view transition is running, the Graph camera isn't easing or gliding, and the focused tab (if any) isn't
+    /// loading. It must hold for `QUIET_FRAMES` frame ends in a row (see `release_idle_waiters`).
     fn debug_idle(&self) -> bool {
         let loading =
             self.focused.as_ref().and_then(|id| self.nodes.get(id)).and_then(|n| n.as_tab()).is_some_and(|t| t.loading);
-        !self.debug_input_pending() && self.transition.is_none() && !loading
+        !self.debug_input_pending() && self.transition.is_none() && !self.camera.is_moving() && !loading
     }
 
-    /// Releases the `WAITIDLE` commands waiting, if `debug_idle` holds.
+    /// Releases the `WAITIDLE` commands waiting once `debug_idle` has held for `QUIET_FRAMES` frame ends in a row,
+    /// and until then asks for the next frame: a headless window draws only when asked, and the camera, queued
+    /// input and loads all advance on frames. Several frames, because one that sizes a new card is not the frame
+    /// that places it, and a click aimed at what the first drew can miss.
     pub(crate) fn release_idle_waiters(&mut self) {
-        if !self.debug.idle_waiters.is_empty() && self.debug_idle() {
+        const QUIET_FRAMES: u8 = 3;
+        if self.debug.idle_waiters.is_empty() {
+            return;
+        }
+        self.debug.idle_frames = if self.debug_idle() { self.debug.idle_frames.saturating_add(1) } else { 0 };
+        if self.debug.idle_frames >= QUIET_FRAMES {
             for waiter in self.debug.idle_waiters.drain(..) {
                 let _ = waiter.send(());
             }
+        } else if let Some(window) = &self.window {
+            window.request_redraw();
         }
     }
 
