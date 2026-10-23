@@ -437,7 +437,9 @@ impl App {
         let node = self.nodes[&focused_id].as_tab().unwrap();
         let (url, loading, kind) = (node.url.clone(), node.loading, node.tab.kind);
         let identity = self.tab_identity(&url, loading, kind);
-        let icon_center = egui::pos2(response.rect.min.x + 8.0 + ICON_SIZE / 2.0, response.rect.center().y);
+        // 8 px of field inside the border on the left, the same before the text on the right (the 32 px text margin
+        // less this offset and the icon, plus the text's own side bearing).
+        let icon_center = egui::pos2(response.rect.min.x + 9.0 + ICON_SIZE / 2.0, response.rect.center().y);
         if let Some(text) = identity.paint(ui, icon_center, ICON_SIZE, 1.0, ui.visuals().weak_text_color()) {
             text.draw(ui.painter(), text.center);
         }
