@@ -82,7 +82,7 @@ not on the theme.
 
 - **Setting**: `Settings.theme: Dark | Light | System`, default **System**, in the Settings page. `System` follows
   egui's `system_theme()` (winit's theme events).
-- **Title bar**: `apply_dark_titlebar(window)` becomes `apply_titlebar(window, dark: bool)`. The frame loop compares
+- **Title bar**: `apply_dark_titlebar(window)` became a DWM `apply_titlebar`, then was deleted for `window.set_theme` (see Decisions, final review I2). The frame loop compares
   `ctx.theme()` with the last applied value and re-applies on change (this covers both the setting and a system
   switch under `System`).
 - **Pages**: `manifold_pages::palette` gains a light table; `palette_vars` emits both as `:root` and
