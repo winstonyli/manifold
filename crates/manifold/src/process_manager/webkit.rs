@@ -80,7 +80,7 @@ pub(super) fn webkit_shell_command(
 /// Starts the WebKit host the way `runtime` says and accepts its connection back. A `Wsl` host dials the Windows
 /// host's default-gateway address, so its listener is on every interface; a `Native` one dials loopback.
 pub(super) fn spawn_webkit_tab(
-    runtime: Runtime,
+    runtime: HostRuntime,
     tab_id: NodeId,
     initial_url: &str,
     wake: view_io::Wake,
@@ -90,8 +90,8 @@ pub(super) fn spawn_webkit_tab(
     // guest must instead reach the host at its own default-gateway IP, which the command string below discovers at
     // spawn time (see VIEW_HOST_IP).
     let bind_ip = match runtime {
-        Runtime::Wsl => "0.0.0.0",
-        Runtime::Native => "127.0.0.1",
+        HostRuntime::Wsl => "0.0.0.0",
+        HostRuntime::Native => "127.0.0.1",
     };
     let listener = TcpListener::bind((bind_ip, 0))?;
     let port = listener.local_addr()?.port();
@@ -108,7 +108,7 @@ pub(super) fn spawn_webkit_tab(
     getrandom::fill(&mut token).map_err(|e| std::io::Error::other(e.to_string()))?;
     let dark = manifold_pages::is_dark();
     let mut command = match runtime {
-        Runtime::Wsl => {
+        HostRuntime::Wsl => {
             // `wsl.exe` does NOT forward this Command's environment into the Linux process (verified: env vars set
             // via `.env()` here simply don't appear on the other side) -- WSL has its own opt-in `WSLENV`
             // passthrough, more trouble than it is worth. Pass values as inline shell assignments in the command
@@ -118,7 +118,7 @@ pub(super) fn spawn_webkit_tab(
             command.args(["-d", "Ubuntu", "--", "bash", "-c", &shell]);
             command
         }
-        Runtime::Native => {
+        HostRuntime::Native => {
             // manifold itself needs a display on Linux, so the host inherits it.
             let mut command = Command::new(&host);
             command.envs(webkit_env(initial_url, port, &token, dark)?).env("VIEW_HOST_IP", "127.0.0.1");

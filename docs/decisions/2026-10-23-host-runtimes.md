@@ -1,4 +1,4 @@
-# Host runtimes: Os, Runtime and HostLink (2026-10-23)
+# Host runtimes: Os, HostRuntime and HostLink (2026-10-23)
 
 Plan: `docs/superpowers/plans/2026-10-23-host-runtimes.md`. Code: `crates/manifold/src/process_manager/runtime.rs`.
 
@@ -9,7 +9,7 @@ An engine row (`ViewDesc`) states two facts instead of a spawn mode and an allow
 - `host_os: Option<Os>`, the OS its host is built for (`None`: whichever OS manifold runs on, as for Servo and CEF).
 - `link: HostLink`, how the host reaches manifold: `PipesShm` (named pipes and a file-backed frame) or `Tcp`.
 
-`Runtime::between(host, here)` says how a host built for one OS runs on another: `Native` on the same OS, `Wsl` for a
+`HostRuntime::between(host, here)` says how a host built for one OS runs on another: `Native` on the same OS, `Wsl` for a
 Linux host on Windows, `None` otherwise. Availability, the "needs Windows or Linux" texts, the spawn refusal, the
 host-pin platform id and the reaping rule all read these; none keeps its own OS table.
 
@@ -35,9 +35,9 @@ host-pin platform id and the reaping rule all read these; none keeps its own OS 
 
 - **`target-lexicon` crate.** It models target triples; the need here is three OS values and our own pin ids. It is not
   in the Windows dependency graph.
-- **Wine as a `Runtime`.** It adds nothing: the only Windows-only engine is WebView2, and CEF covers Blink natively.
-  WebView2's frame capture (`Windows.Graphics.Capture`) under Wine is unverified. If ever wanted, it is one `Runtime`
-  variant and one arm of `Runtime::between`.
+- **Wine as a `HostRuntime`.** It adds nothing: the only Windows-only engine is WebView2, and CEF covers Blink natively.
+  WebView2's frame capture (`Windows.Graphics.Capture`) under Wine is unverified. If ever wanted, it is one `HostRuntime`
+  variant and one arm of `HostRuntime::between`.
 
 - **Reading FreeBSD and other Unixes as Linux.** First ruling (2026-10-23), reversed the same day for `Os::Other`:
   WebKit showed as available there although its Linux ELF would not run. `Other` costs one arm in `name` and

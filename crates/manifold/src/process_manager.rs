@@ -62,7 +62,7 @@ pub(crate) struct ViewDesc {
     /// tab inherits them (`App::card_kind`).
     pub(crate) tags: TagSet,
     pub(crate) source: HostSource,
-    /// The OS the host is built for (`runtime::Runtime::between` says where that runs); `None`: whichever OS
+    /// The OS the host is built for (`runtime::HostRuntime::between` says where that runs); `None`: whichever OS
     /// manifold runs on.
     pub(crate) host_os: Option<runtime::Os>,
     /// How the host reaches manifold.
@@ -951,7 +951,7 @@ pub fn spawn_tab(
         }
     }
     if desc.link == HostLink::Tcp {
-        let runtime = Runtime::of(kind).ok_or_else(|| std::io::Error::from(std::io::ErrorKind::Unsupported))?;
+        let runtime = HostRuntime::of(kind).ok_or_else(|| std::io::Error::from(std::io::ErrorKind::Unsupported))?;
         return Ok(spawn_webkit_tab(runtime, tab_id, initial_url, wake)?);
     }
 
@@ -1075,7 +1075,7 @@ use profiles::{
 pub use profiles::{
     finish_cache_removals, sweep_cef_cache, sweep_frame_files, sweep_view_logs, sweep_webview2_profiles,
 };
-use runtime::{HostLink, Os, Runtime};
+use runtime::{HostLink, HostRuntime, Os};
 use webkit::spawn_webkit_tab;
 #[cfg(test)]
 use webkit::{webkit_env, webkit_shell_command};

@@ -1,9 +1,9 @@
 //! Where an engine's host is built to run, and how that maps onto the machine manifold runs on.
 //!
-//! `Os` is the operating systems an engine host can target, and `Other` for every one without a host of its own. `Runtime` says how a host built for one OS runs
+//! `Os` is the operating systems an engine host can target, and `Other` for every one without a host of its own. `HostRuntime` says how a host built for one OS runs
 //! on another: natively on its own, or a Linux host through WSL on Windows. `HostLink` is how a host reaches
 //! manifold, a property of the host, not of the runtime. A fourth compatibility layer (Wine) would be one more
-//! `Runtime` and one more arm of `Runtime::between`.
+//! `HostRuntime` and one more arm of `HostRuntime::between`.
 
 use super::ViewKind;
 
@@ -59,7 +59,7 @@ impl Os {
 
 /// How a host built for one OS runs on another.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Runtime {
+pub(crate) enum HostRuntime {
     /// A program on this machine.
     Native,
     /// A Linux program run through `wsl.exe` on Windows: a force-killed relay would orphan its Linux process tree, so
@@ -67,25 +67,25 @@ pub(crate) enum Runtime {
     Wsl,
 }
 
-impl Runtime {
+impl HostRuntime {
     /// How a host built for `host` runs on `here`, or `None` when it cannot.
-    pub(crate) fn between(host: Os, here: Os) -> Option<Runtime> {
+    pub(crate) fn between(host: Os, here: Os) -> Option<HostRuntime> {
         match (host, here) {
-            (host, here) if host == here => Some(Runtime::Native),
-            (Os::Linux, Os::Windows) => Some(Runtime::Wsl),
+            (host, here) if host == here => Some(HostRuntime::Native),
+            (Os::Linux, Os::Windows) => Some(HostRuntime::Wsl),
             _ => None,
         }
     }
 
     /// How `kind`'s host runs on this machine, or `None` when it cannot.
-    pub(crate) fn of(kind: ViewKind) -> Option<Runtime> {
-        Runtime::for_os(kind, Os::here())
+    pub(crate) fn of(kind: ViewKind) -> Option<HostRuntime> {
+        HostRuntime::for_os(kind, Os::here())
     }
 
-    fn for_os(kind: ViewKind, here: Os) -> Option<Runtime> {
+    fn for_os(kind: ViewKind, here: Os) -> Option<HostRuntime> {
         match kind.desc().host_os {
-            None => Some(Runtime::Native),
-            Some(host) => Runtime::between(host, here),
+            None => Some(HostRuntime::Native),
+            Some(host) => HostRuntime::between(host, here),
         }
     }
 }
@@ -103,11 +103,11 @@ pub(crate) enum HostLink {
 /// Why `kind` cannot run on `here`, or `None` when it can: the OSes that can ("needs Windows or Linux"). The one
 /// place that knows: availability (every engine list) and the spawn refusal both read it.
 pub(crate) fn unavailable_reason(kind: ViewKind, here: Os) -> Option<String> {
-    if Runtime::for_os(kind, here).is_some() {
+    if HostRuntime::for_os(kind, here).is_some() {
         return None;
     }
     let names: Vec<&str> =
-        Os::ALL.into_iter().filter(|os| Runtime::for_os(kind, *os).is_some()).map(Os::name).collect();
+        Os::ALL.into_iter().filter(|os| HostRuntime::for_os(kind, *os).is_some()).map(Os::name).collect();
     Some(format!("needs {}", names.join(" or ")))
 }
 
@@ -118,13 +118,13 @@ mod tests {
     #[test]
     fn a_host_runs_natively_on_its_own_os_and_in_wsl_for_linux_on_windows() {
         use Os::{Linux, Mac, Windows};
-        assert_eq!(Runtime::between(Windows, Windows), Some(Runtime::Native));
-        assert_eq!(Runtime::between(Linux, Linux), Some(Runtime::Native));
-        assert_eq!(Runtime::between(Linux, Windows), Some(Runtime::Wsl));
-        assert_eq!(Runtime::between(Linux, Mac), None);
-        assert_eq!(Runtime::between(Windows, Linux), None);
-        assert_eq!(Runtime::between(Windows, Mac), None);
-        assert_eq!(Runtime::between(Mac, Windows), None);
+        assert_eq!(HostRuntime::between(Windows, Windows), Some(HostRuntime::Native));
+        assert_eq!(HostRuntime::between(Linux, Linux), Some(HostRuntime::Native));
+        assert_eq!(HostRuntime::between(Linux, Windows), Some(HostRuntime::Wsl));
+        assert_eq!(HostRuntime::between(Linux, Mac), None);
+        assert_eq!(HostRuntime::between(Windows, Linux), None);
+        assert_eq!(HostRuntime::between(Windows, Mac), None);
+        assert_eq!(HostRuntime::between(Mac, Windows), None);
     }
 
     #[test]
@@ -163,7 +163,7 @@ mod tests {
         for kind in ViewKind::ALL {
             for here in Os::ALL {
                 let Some(host) = kind.desc().host_os else { continue };
-                if Runtime::between(host, here) == Some(Runtime::Wsl) {
+                if HostRuntime::between(host, here) == Some(HostRuntime::Wsl) {
                     assert_eq!(kind.desc().link, HostLink::Tcp, "{kind:?} on {here:?}");
                 }
             }
