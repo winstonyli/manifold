@@ -36,6 +36,27 @@ pub(crate) const TAG_COLOR_PALETTE: [egui::Color32; 6] = [
     egui::Color32::from_rgb(204, 121, 167),
 ];
 
+/// `TAG_COLOR_PALETTE` for the light theme, entry for entry: the same hues, with the three too pale for a white card
+/// (orange-yellow, yellow, sky blue) deepened so every swatch keeps 3:1 against it. A tag is stored as its
+/// `TAG_COLOR_PALETTE` entry in either theme; `tag_shown` picks what is painted.
+const LIGHT_TAG_COLOR_PALETTE: [egui::Color32; 6] = [
+    TAG_COLOR_PALETTE[0],
+    egui::Color32::from_rgb(170, 105, 0),
+    egui::Color32::from_rgb(140, 122, 0),
+    TAG_COLOR_PALETTE[3],
+    egui::Color32::from_rgb(0, 114, 178),
+    TAG_COLOR_PALETTE[5],
+];
+
+/// The color to paint for a stored tag color: its entry of the theme's table (a color outside the palette is
+/// painted as stored).
+pub(crate) fn tag_shown(stored: egui::Color32, dark: bool) -> egui::Color32 {
+    match TAG_COLOR_PALETTE.iter().position(|&p| p == stored) {
+        Some(i) if !dark => LIGHT_TAG_COLOR_PALETTE[i],
+        _ => stored,
+    }
+}
+
 /// Background, border and padding shared by every menu and dropdown
 /// (right-click menus, toolbar lists, the address-bar suggestions).
 pub(crate) fn popup_frame(ui: &egui::Ui) -> egui::Frame {
@@ -378,8 +399,21 @@ static DARK_PALETTE: Palette = Palette {
     shadow: 70,
 };
 
-pub(crate) fn palette(_visuals: &egui::Visuals) -> &'static Palette {
-    &DARK_PALETTE
+static LIGHT_PALETTE: Palette = Palette {
+    text: color(manifold_pages::palette::LIGHT.text_primary),
+    text_weak: color(manifold_pages::palette::LIGHT.text_weak),
+    danger_fill: egui::Color32::from_rgb(230, 125, 105),
+    success: egui::Color32::from_rgb(38, 112, 42),
+    canvas: color(manifold_pages::palette::LIGHT.bg),
+    shadow: 28,
+};
+
+pub(crate) fn palette(visuals: &egui::Visuals) -> &'static Palette {
+    if visuals.dark_mode {
+        &DARK_PALETTE
+    } else {
+        &LIGHT_PALETTE
+    }
 }
 
 /// The accent: the selection fill, which `fill_style` also uses for hyperlinks and the active widget.
@@ -443,7 +477,8 @@ fn fill_style(style: &mut egui::Style, dark: bool) {
     style.visuals.widgets.active.corner_radius = corner_radius;
     style.visuals.widgets.active.bg_fill = accent;
     style.visuals.widgets.active.weak_bg_fill = accent;
-    style.visuals.widgets.active.fg_stroke.color = bg;
+    // Ink on the accent fill: the dark ground on the light accent, white on the light theme's deep one.
+    style.visuals.widgets.active.fg_stroke.color = if dark { bg } else { raised };
     style.visuals.widgets.active.bg_stroke = egui::Stroke::new(1.0, accent);
 
     style.visuals.widgets.open.corner_radius = corner_radius;
@@ -860,34 +895,71 @@ mod tests {
         (hi + 0.05) / (lo + 0.05)
     }
 
-    /// Every foreground role on every surface it is drawn on keeps its contrast: 4.5:1 (WCAG AA) for text, 3:1 for
-    /// the hover outline (a UI boundary). A new role goes in this table with the surfaces it sits on.
+    /// Every foreground role on every surface it is drawn on keeps its contrast, in each theme: 4.5:1 (WCAG AA) for
+    /// text, 3:1 for the hover outline (a UI boundary). A new role goes in this table with the surfaces it sits on.
     #[test]
     fn colour_roles_keep_their_contrast_on_their_surfaces() {
-        let t = &manifold_pages::palette::DARK;
-        let p = &DARK_PALETTE;
-        let [bg, toolbar, raised, hover] = [t.bg, t.toolbar_fill, t.surface_raised, t.surface_hover].map(color);
-        let [accent, danger, outline] = [t.accent, t.danger, t.outline].map(color);
-        let surfaces = [bg, toolbar, raised, hover];
-        // (role, color, the surfaces it is drawn on, the ratio it needs). Accent and danger text is drawn on the page
-        // and raised surfaces only (a hovered row shows weak or primary text).
-        let roles: [(&str, egui::Color32, &[egui::Color32], f32); 7] = [
-            ("text", p.text, &surfaces, 4.5),
-            ("text_weak", p.text_weak, &surfaces, 4.5),
-            ("accent", accent, &[bg, toolbar, raised], 4.5),
-            ("danger", danger, &[bg, toolbar, raised], 4.5),
-            ("success", p.success, &[bg, toolbar, raised], 4.5),
-            ("outline", outline, &[hover], 3.0),
-            // Text on a solid fill: `filled_button` and the active widget set `bg` text; the close hover sets primary.
-            ("bg on accent", bg, &[accent], 4.5),
-        ];
-        for (name, color, surfaces, needed) in roles {
-            for &surface in surfaces {
-                let got = contrast(color, surface);
-                assert!(got >= needed, "{name} on {surface:?} is {got:.2}, needs {needed}");
+        let mut failures = Vec::new();
+        for dark in [true, false] {
+            let t = manifold_pages::palette::colors(dark);
+            let visuals = testutil::ctx(dark).global_style().visuals.clone();
+            let p = palette(&visuals);
+            let [bg, toolbar, raised, hover] = [t.bg, t.toolbar_fill, t.surface_raised, t.surface_hover].map(color);
+            let [accent, danger, outline] = [t.accent, t.danger, t.outline].map(color);
+            let ink = visuals.widgets.active.fg_stroke.color;
+            let surfaces = [bg, toolbar, raised, hover];
+            // (role, color, the surfaces it is drawn on, the ratio it needs). Accent and danger text is drawn on the page
+            // and raised surfaces only (a hovered row shows weak or primary text).
+            let roles: [(&str, egui::Color32, &[egui::Color32], f32); 8] = [
+                ("text", p.text, &surfaces, 4.5),
+                ("text_weak", p.text_weak, &surfaces, 4.5),
+                ("accent", accent, &[bg, toolbar, raised], 4.5),
+                ("danger", danger, &[bg, toolbar, raised], 4.5),
+                ("success", p.success, &[bg, toolbar, raised], 4.5),
+                ("outline", outline, &[hover], 3.0),
+                // Text on a solid fill: `filled_button` and the active widget set `ink`; the close hover sets primary.
+                ("ink on accent", ink, &[accent, danger], 4.5),
+                ("text on danger_fill", p.text, &[p.danger_fill], 4.5),
+            ];
+            for (name, color, surfaces, needed) in roles {
+                for &surface in surfaces {
+                    let got = contrast(color, surface);
+                    if got < needed {
+                        failures.push(format!("dark={dark}: {name} on {surface:?} is {got:.2}, needs {needed}"));
+                    }
+                }
             }
         }
-        assert!(contrast(bg, danger) >= 4.5, "bg text on danger");
+        assert!(failures.is_empty(), "{failures:#?}");
+    }
+
+    #[test]
+    fn card_and_canvas_differ_in_both_themes() {
+        for dark in [true, false] {
+            let c = manifold_pages::palette::colors(dark);
+            assert_ne!(c.surface_raised, c.bg, "dark={dark}");
+        }
+    }
+
+    #[test]
+    fn every_tag_color_has_3_to_1_on_its_themes_card() {
+        for dark in [true, false] {
+            let card = color(manifold_pages::palette::colors(dark).surface_raised);
+            for c in TAG_COLOR_PALETTE.map(|c| tag_shown(c, dark)) {
+                assert!(contrast(c, card) >= 3.0, "{c:?} on the {} card", if dark { "dark" } else { "light" });
+            }
+        }
+    }
+
+    #[test]
+    fn palette_matches_the_visuals_theme() {
+        for dark in [true, false] {
+            let visuals = testutil::ctx(dark).global_style().visuals.clone();
+            let t = manifold_pages::palette::colors(dark);
+            assert_eq!(palette(&visuals).text, color(t.text_primary), "dark={dark}");
+            assert_eq!(palette(&visuals).canvas, color(t.bg), "dark={dark}");
+            assert_eq!(accent(&visuals), color(t.accent), "dark={dark}");
+        }
     }
 
     #[test]

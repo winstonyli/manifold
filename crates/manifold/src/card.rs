@@ -253,6 +253,8 @@ pub(crate) struct CardStyle {
     /// The border of the open tab (the accent) and of an overloaded group (the danger red).
     pub(crate) focus_border: egui::Color32,
     pub(crate) overload_border: egui::Color32,
+    /// Whether the theme is dark: picks the tag-color table (`tag_shown`).
+    pub(crate) dark: bool,
 }
 
 pub(crate) fn card_style(kind: CardKind, visuals: &egui::Visuals) -> CardStyle {
@@ -265,6 +267,7 @@ pub(crate) fn card_style(kind: CardKind, visuals: &egui::Visuals) -> CardStyle {
         close_icon: visuals.text_color(),
         focus_border: accent(visuals),
         overload_border: danger(visuals),
+        dark: visuals.dark_mode,
     };
     // Presentation matches the type; behaviour reads the container table (`is_container`). See the plan 2b-6
     // Outcome, "Presentation arms".
@@ -331,7 +334,11 @@ pub(crate) fn card_border(view: &CardView, style: &CardStyle, hover_t: f32) -> (
     if view.focused {
         return (2.5, style.focus_border);
     }
-    let resting = view.color.unwrap_or(if view.overloaded { style.overload_border } else { style.border_idle });
+    let resting = view.color.map(|c| tag_shown(c, style.dark)).unwrap_or(if view.overloaded {
+        style.overload_border
+    } else {
+        style.border_idle
+    });
     (1.0 + 0.5 * hover_t, lerp_color32(resting, style.border_hover, hover_t))
 }
 
@@ -577,7 +584,7 @@ pub(crate) fn paint_card_control(
     match control {
         // A simple card is a few pixels across: a plain square says the same as a tessellated circle.
         CardControl::Swatch if !detail.content() => {
-            let color = view.color.unwrap_or(style.border_idle);
+            let color = view.color.map_or(style.border_idle, |c| tag_shown(c, style.dark));
             ui.painter().rect_filled(
                 egui::Rect::from_center_size(rect.center(), egui::Vec2::splat(12.0 * inv_zoom)),
                 0.0,
@@ -587,7 +594,7 @@ pub(crate) fn paint_card_control(
         CardControl::Swatch => {
             match view.color {
                 Some(color) => {
-                    ui.painter().circle_filled(rect.center(), 6.0 * inv_zoom, color);
+                    ui.painter().circle_filled(rect.center(), 6.0 * inv_zoom, tag_shown(color, style.dark));
                 }
                 // A faint ring, so an uncolored card still shows where to
                 // click.

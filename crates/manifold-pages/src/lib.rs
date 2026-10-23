@@ -33,9 +33,24 @@ pub mod palette {
         danger: [240, 132, 112],
     };
 
-    /// One table today; `LIGHT` arrives with the light theme and `colors` then picks by `dark`.
-    pub fn colors(_dark: bool) -> &'static Colors {
-        &DARK
+    pub const LIGHT: Colors = Colors {
+        bg: [235, 232, 225],
+        toolbar_fill: [245, 243, 238],
+        surface_raised: [255, 255, 255],
+        surface_hover: [240, 237, 230],
+        outline: [135, 130, 120],
+        text_primary: [34, 32, 28],
+        text_weak: [100, 95, 86],
+        accent: [40, 90, 215],
+        danger: [190, 50, 30],
+    };
+
+    pub fn colors(dark: bool) -> &'static Colors {
+        if dark {
+            &DARK
+        } else {
+            &LIGHT
+        }
     }
 }
 

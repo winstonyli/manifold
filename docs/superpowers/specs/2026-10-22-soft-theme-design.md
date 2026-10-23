@@ -151,3 +151,9 @@ design assumes the font set is fixed before the build, since the look values are
   `text_weak [186,181,170]`, `danger [240,132,112]`, `outline [152,147,136]`. The card fill is `faint_bg_color`
   (the raised surface), not `extreme_bg_color`, so a card is lighter than the canvas. The "refused" drag color is the
   yellow tag color, because sky blue collided with the blue accent.
+- **Light values as built** (2026-10-22): light table in `manifold_pages::palette::LIGHT`; every role passes the
+  per-theme contrast test. Unknown 4 resolved without `accent_text`: one deeper light accent `[40,90,215]` serves fill
+  and text. Tag colors: stored as the canonical `TAG_COLOR_PALETTE` entry in both themes; `theme::tag_shown(stored,
+  dark)` maps to `LIGHT_TAG_COLOR_PALETTE` (orange-yellow, yellow, sky blue deepened, same hues) at the card paint
+  sites (border, swatch, node menu); equality logic (`next_tag_color`, jar free-color search) and the jar chip (on a
+  dark scrim) stay canonical. The yellow "refused" color is unchanged in light.

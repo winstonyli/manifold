@@ -448,7 +448,7 @@ pub(crate) fn color_swatch_row(ui: &mut egui::Ui, current: Option<egui::Color32>
                 swatches.push(response.id);
                 match choice {
                     Some(swatch) => {
-                        ui.painter().circle_filled(rect.center(), 7.0, swatch);
+                        ui.painter().circle_filled(rect.center(), 7.0, tag_shown(swatch, ui.visuals().dark_mode));
                         if current == Some(swatch) {
                             ui.painter().circle_stroke(
                                 rect.center(),
