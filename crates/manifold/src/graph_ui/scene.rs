@@ -74,7 +74,7 @@ pub(crate) fn paint_dot_grid(
     while grid_spacing * zoom_scale > 80.0 {
         grid_spacing /= 2.0;
     }
-    let dot_color = weak.gamma_multiply(0.16);
+    let dot_color = weak.gamma_multiply(0.55);
     let start_x = (visible.min.x / grid_spacing).floor() as i32;
     let end_x = (visible.max.x / grid_spacing).ceil() as i32;
     let start_y = (visible.min.y / grid_spacing).floor() as i32;
