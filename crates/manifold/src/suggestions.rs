@@ -106,6 +106,8 @@ pub struct SuggestionFetcher {
     pending_since: Option<Instant>,
     /// The last fetch started: its query and generation (`due_fetch`).
     last_fetched: Option<(String, u64)>,
+    /// The generation whose reply is still on its way (`spawn_fetch` sent, `tick` not yet read).
+    awaiting: Option<u64>,
 }
 
 const DEBOUNCE: Duration = Duration::from_millis(200);
@@ -138,7 +140,7 @@ pub fn warm_up_https_client() {
 impl SuggestionFetcher {
     pub fn new() -> Self {
         let (tx, rx) = mpsc::channel();
-        Self { tx, rx, generation: 0, pending_query: None, pending_since: None, last_fetched: None }
+        Self { tx, rx, generation: 0, pending_query: None, pending_since: None, last_fetched: None, awaiting: None }
     }
 
     /// Call whenever the address bar's text actually changes (not every
@@ -166,6 +168,16 @@ impl SuggestionFetcher {
         self.pending_query = None;
         self.pending_since = None;
         self.last_fetched = None;
+        self.awaiting = None;
+    }
+
+    /// Whether a suggestion is still coming: a query waiting out its debounce, or a fetch not yet answered.
+    pub fn is_busy(&self) -> bool {
+        let debouncing = self
+            .pending_query
+            .as_ref()
+            .is_some_and(|q| self.last_fetched.as_ref() != Some(&(q.clone(), self.generation)));
+        debouncing || self.awaiting.is_some()
     }
 
     /// The fetch to start now, if one is due: the debounced query, once per
@@ -187,11 +199,15 @@ impl SuggestionFetcher {
     /// query stopped looking like a search or the request failed).
     pub fn tick(&mut self) -> Option<Vec<String>> {
         if let Some((query, generation)) = self.due_fetch(Instant::now()) {
+            self.awaiting = Some(generation);
             spawn_fetch(query, generation, self.tx.clone());
         }
 
         let mut latest = None;
         while let Ok((gen, results)) = self.rx.try_recv() {
+            if self.awaiting == Some(gen) {
+                self.awaiting = None;
+            }
             if gen == self.generation {
                 latest = Some(results);
             }
@@ -236,6 +252,24 @@ fn suggestions_url(base: Option<&str>, query: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_fetcher_is_busy_from_typing_until_the_reply_lands() {
+        let mut f = SuggestionFetcher::new();
+        assert!(!f.is_busy());
+        f.note_text_changed("rust");
+        assert!(f.is_busy(), "debounce pending");
+        // A fetch started for this generation, its reply not in yet.
+        f.last_fetched = Some(("rust".to_string(), f.generation));
+        f.awaiting = Some(f.generation);
+        assert!(f.is_busy(), "awaiting the reply");
+        f.tx.send((f.generation, vec!["rust lang".to_string()])).unwrap();
+        assert_eq!(f.tick(), Some(vec!["rust lang".to_string()]));
+        assert!(!f.is_busy(), "the reply landed");
+        f.note_text_changed("rusty");
+        f.cancel();
+        assert!(!f.is_busy(), "cancel drops the pending query");
+    }
 
     #[test]
     fn the_endpoint_can_be_overridden() {

@@ -459,6 +459,7 @@ fn drive(sm: &mut Smoke, m: &mut Marks) -> io::Result<()> {
     })?;
 
     sm.send("ADDRESSBAR weather")?;
+    sm.send("WAITIDLE")?;
     sm.wait_state("weather_rows", "suggestions for \"weather\" arrive", r#"s["suggestions"]"#, |v| {
         truthy_key(v.s, "suggestions")
     })?;
@@ -473,6 +474,7 @@ fn drive(sm: &mut Smoke, m: &mut Marks) -> io::Result<()> {
 
     // Arrow-key highlight + Enter-accept: two ARROWDOWNs highlight the 2nd row.
     sm.send("ADDRESSBAR sourdough bread")?;
+    sm.send("WAITIDLE")?;
     sm.wait_state(
         "sourdough_rows",
         "suggestions for \"sourdough bread\" arrive",
@@ -492,6 +494,7 @@ fn drive(sm: &mut Smoke, m: &mut Marks) -> io::Result<()> {
 
     // Escape dismisses the dropdown without leaving Tab view, and navigates nowhere.
     sm.send("ADDRESSBAR pancake recipe")?;
+    sm.send("WAITIDLE")?;
     sm.wait_state("pancake_rows", "suggestions for \"pancake recipe\" arrive", r#"s["suggestions"]"#, |v| {
         truthy_key(v.s, "suggestions")
     })?;

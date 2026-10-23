@@ -28,12 +28,16 @@ impl App {
     }
 
     /// What `WAITIDLE` waits for: no debug input still needs a frame, no
-    /// view transition is running, the Graph camera isn't easing or gliding, and the focused tab (if any) isn't
-    /// loading. It must hold for `QUIET_FRAMES` frame ends in a row (see `release_idle_waiters`).
+    /// view transition is running, the Graph camera isn't easing or gliding, no address-bar suggestion is on its
+    /// way, and the focused tab (if any) isn't loading. It must hold for `QUIET_FRAMES` frame ends in a row (see `release_idle_waiters`).
     fn debug_idle(&self) -> bool {
         let loading =
             self.focused.as_ref().and_then(|id| self.nodes.get(id)).and_then(|n| n.as_tab()).is_some_and(|t| t.loading);
-        !self.debug_input_pending() && self.transition.is_none() && !self.camera.is_moving() && !loading
+        !self.debug_input_pending()
+            && self.transition.is_none()
+            && !self.camera.is_moving()
+            && !self.address_bar.fetcher.is_busy()
+            && !loading
     }
 
     /// Releases the `WAITIDLE` commands waiting once `debug_idle` has held for `QUIET_FRAMES` frame ends in a row,
