@@ -108,7 +108,7 @@ pub(super) fn assign_to_view_job(child: &Child) {
 /// No kill-on-exit job off Windows: an view-host sees the socket drop when manifold dies and shuts itself down
 /// (`manifold_view_protocol::transport::spawn_host_reader`). Measured on Linux (WSL2, 2026-10-02): `kill -9` of manifold with a
 /// live CEF tab left no CEF process after 1 s, so `PR_SET_PDEATHSIG` or a process group is not needed there. Said once
-/// on stderr rather than silently, since other hosts (WebKit in WSL) are not covered by that measurement.
+/// on stderr rather than silently, since other hosts (WebKit, through WSL or under xvfb-run) are not covered by that measurement.
 #[cfg(not(target_os = "windows"))]
 pub(super) fn assign_to_view_job(_child: &Child) {
     static WARNED: std::sync::Once = std::sync::Once::new();

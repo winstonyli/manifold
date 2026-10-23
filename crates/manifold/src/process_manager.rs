@@ -452,7 +452,7 @@ impl Drop for ViewTab {
 /// Waits for an engine host to exit after `Shutdown`, killing it if needed.
 fn reap_host(kind: ViewKind, mut child: Child) {
     if kind.desc().link == HostLink::Tcp {
-        // For the WSL2-hosted case, `child` is only the Windows-side
+        // For a TCP host behind a launcher (the WSL2 case: `child` is only the Windows-side
         // `wsl.exe` relay — force-killing it immediately (the
         // local-engine path below) does NOT terminate the actual
         // Linux-side process tree (fish/bash/xvfb-run/Xvfb/
