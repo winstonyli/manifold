@@ -1,30 +1,33 @@
 //! Where an engine's host is built to run, and how that maps onto the machine manifold runs on.
 //!
-//! `Os` is the three operating systems an engine host can target. `Runtime` says how a host built for one OS runs
+//! `Os` is the operating systems an engine host can target, and `Other` for every one without a host of its own. `Runtime` says how a host built for one OS runs
 //! on another: natively on its own, or a Linux host through WSL on Windows. `HostLink` is how a host reaches
 //! manifold, a property of the host, not of the runtime. A fourth compatibility layer (Wine) would be one more
 //! `Runtime` and one more arm of `Runtime::between`.
 
 use super::ViewKind;
 
-/// An operating system a host is built for, or manifold runs on. Any Unix that is not macOS reads as Linux.
+/// An operating system a host is built for, or manifold runs on. `Other` is any not named here (FreeBSD and the like):
+/// only the engines built for whichever OS manifold runs on (Servo, CEF) can run there.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Os {
     Windows,
     Linux,
     Mac,
+    Other,
 }
 
 impl Os {
     /// In the order a refusal lists them ("needs Windows or Linux").
-    pub(crate) const ALL: [Os; 3] = [Os::Windows, Os::Linux, Os::Mac];
+    pub(crate) const ALL: [Os; 4] = [Os::Windows, Os::Linux, Os::Mac, Os::Other];
 
     /// The OS of a `std::env::consts::OS` value.
     pub(crate) fn from_consts(os: &str) -> Os {
         match os {
             "windows" => Os::Windows,
+            "linux" => Os::Linux,
             "macos" => Os::Mac,
-            _ => Os::Linux,
+            _ => Os::Other,
         }
     }
 
@@ -38,6 +41,7 @@ impl Os {
             Os::Windows => "Windows",
             Os::Linux => "Linux",
             Os::Mac => "macOS",
+            Os::Other => "another OS",
         }
     }
 
@@ -47,6 +51,8 @@ impl Os {
             Os::Windows => "windows-x64",
             Os::Linux => "linux-x64",
             Os::Mac => "macos-x64",
+            // No host is pinned for it, so a lookup finds nothing.
+            Os::Other => "other-x64",
         }
     }
 }
@@ -122,11 +128,12 @@ mod tests {
     }
 
     #[test]
-    fn an_os_name_from_the_standard_library_reads_as_one_of_three() {
+    fn an_os_name_from_the_standard_library_reads_as_one_of_four() {
         assert_eq!(Os::from_consts("windows"), Os::Windows);
+        assert_eq!(Os::from_consts("linux"), Os::Linux);
         assert_eq!(Os::from_consts("macos"), Os::Mac);
-        for other in ["linux", "freebsd", "openbsd"] {
-            assert_eq!(Os::from_consts(other), Os::Linux, "{other}");
+        for other in ["freebsd", "openbsd"] {
+            assert_eq!(Os::from_consts(other), Os::Other, "{other}");
         }
         assert_eq!(Os::Windows.pin_platform(), "windows-x64");
         assert_eq!(Os::Linux.pin_platform(), "linux-x64");
@@ -134,10 +141,12 @@ mod tests {
 
     #[test]
     fn the_reason_an_engine_is_unavailable_names_the_oses_that_can_run_it() {
-        for os in [Os::Linux, Os::Mac] {
+        for os in [Os::Linux, Os::Mac, Os::Other] {
             assert_eq!(unavailable_reason(ViewKind::Webview2, os).as_deref(), Some("needs Windows"), "{os:?}");
         }
-        assert_eq!(unavailable_reason(ViewKind::Webkit, Os::Mac).as_deref(), Some("needs Windows or Linux"));
+        for os in [Os::Mac, Os::Other] {
+            assert_eq!(unavailable_reason(ViewKind::Webkit, os).as_deref(), Some("needs Windows or Linux"), "{os:?}");
+        }
         assert_eq!(unavailable_reason(ViewKind::Webkit, Os::Windows), None);
         assert_eq!(unavailable_reason(ViewKind::Webkit, Os::Linux), None);
         assert_eq!(unavailable_reason(ViewKind::Webview2, Os::Windows), None);

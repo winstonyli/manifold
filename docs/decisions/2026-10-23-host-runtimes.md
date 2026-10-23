@@ -16,7 +16,7 @@ host-pin platform id and the reaping rule all read these; none keeps its own OS 
 ## Rulings
 
 - **A. Typed `Os` on the row**, with the pin id (`windows-x64`, `linux-x64`, `macos-x64`) derived. `std::env::consts::OS`
-  strings and `cfg!(windows)` no longer decide anything; any Unix that is not macOS reads as Linux.
+  strings and `cfg!(windows)` no longer decide anything; any OS that is not Windows, Linux or macOS is `Os::Other`, which no host is built for, so only Servo and CEF run there.
 - **B. README matrix hand-written**, with unit tests over every (OS, engine) pair (`runtime::tests`) so it cannot drift
   from the code unnoticed.
 - **C. Transport is the host's property, not the runtime's.** The plan first said "per host-and-runtime pair". Only a
@@ -39,9 +39,9 @@ host-pin platform id and the reaping rule all read these; none keeps its own OS 
   WebView2's frame capture (`Windows.Graphics.Capture`) under Wine is unverified. If ever wanted, it is one `Runtime`
   variant and one arm of `Runtime::between`.
 
-- **A fourth `Os` for FreeBSD and other Unixes.** They read as Linux, so WebKit shows as available there although its
-  Linux ELF would not run. Nothing builds or tests manifold on them; an `Os::Other` would add an arm to every `Os`
-  match for a platform nobody uses. Revisit if someone ports to one.
+- **Reading FreeBSD and other Unixes as Linux.** First ruling (2026-10-23), reversed the same day for `Os::Other`:
+  WebKit showed as available there although its Linux ELF would not run. `Other` costs one arm in `name` and
+  `pin_platform`.
 
 ## Verified
 

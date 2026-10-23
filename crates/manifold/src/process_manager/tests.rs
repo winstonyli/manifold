@@ -627,10 +627,11 @@ fn view_kinds_the_os_cannot_run_are_unavailable_with_a_reason() {
     let unavailable =
         |os, kind| availability_with(os, &none, kind, OnDisk::both(RuntimeOnDisk::Ready), None, None, None);
     let reason = |text: &str| ViewStatus::Unavailable(text.to_string());
-    for os in [Os::Linux, Os::Mac] {
+    for os in [Os::Linux, Os::Mac, Os::Other] {
         assert_eq!(unavailable(os, ViewKind::Webview2), reason("needs Windows"), "{os:?}");
     }
     assert_eq!(unavailable(Os::Mac, ViewKind::Webkit), reason("needs Windows or Linux"));
+    assert_eq!(unavailable(Os::Other, ViewKind::Webkit), reason("needs Windows or Linux"));
     assert_eq!(unavailable(Os::Windows, ViewKind::Webview2), ViewStatus::Installed);
     assert_eq!(unavailable(Os::Windows, ViewKind::Webkit), ViewStatus::Installed);
     assert_eq!(unavailable(Os::Linux, ViewKind::Webkit), ViewStatus::Installed);
@@ -649,7 +650,7 @@ fn view_kinds_the_os_cannot_run_are_unavailable_with_a_reason() {
 #[test]
 fn the_platform_default_is_the_first_view_the_os_can_run() {
     assert_eq!(platform_default_view_kind(Os::Windows), ViewKind::Webview2);
-    for os in [Os::Linux, Os::Mac] {
+    for os in [Os::Linux, Os::Mac, Os::Other] {
         assert_eq!(platform_default_view_kind(os), ViewKind::Servo, "{os:?}");
     }
     for os in Os::ALL {
