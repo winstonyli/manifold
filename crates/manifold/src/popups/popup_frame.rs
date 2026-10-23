@@ -65,6 +65,9 @@ pub(crate) fn build_list_popup_frame(
     .rect
 }
 
+/// How far a menu-like popup keeps from the window's edges when its anchor is near one.
+const POPUP_EDGE_MARGIN: f32 = 6.0;
+
 /// The shell of every menu-like popup: `area` (the caller sets its id, position and `interactable`) on the foreground
 /// layer at opacity `fade`, in the popup frame with menu item styling. Returns the area's response, for its rect.
 pub(crate) fn menu_popup(
@@ -74,6 +77,7 @@ pub(crate) fn menu_popup(
     add_contents: impl FnOnce(&mut egui::Ui),
 ) -> egui::Response {
     area.order(egui::Order::Foreground)
+        .constrain_to(ctx.content_rect().shrink(POPUP_EDGE_MARGIN))
         .show(ctx, |ui| {
             ui.set_opacity(fade);
             popup_frame(ui).show(ui, |ui| {

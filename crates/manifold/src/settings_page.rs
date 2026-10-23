@@ -182,8 +182,9 @@ impl App {
         ui.label("Home page (new tabs)");
         let saved = self.settings.home_page.clone();
         let draft = self.home_page_draft.get_or_insert_with(|| saved.clone());
-        let response =
-            ui.add(egui::TextEdit::singleline(draft).id(egui::Id::new(HOME_PAGE_FIELD)).desired_width(f32::INFINITY));
+        let response = toolbar_field(ui, |ui| {
+            ui.add(egui::TextEdit::singleline(draft).id(egui::Id::new(HOME_PAGE_FIELD)).desired_width(f32::INFINITY))
+        });
         if response.lost_focus() {
             // Escape gives up the edit, as the CEF folder row does. Unchanged text isn't saved: `lost_focus` stays
             // true for a second frame.
@@ -363,11 +364,13 @@ impl App {
         let configured = self.settings.cef_directory.clone().unwrap_or_default();
         ui.horizontal(|ui| {
             let draft = self.view_ui.cef_dir_draft.get_or_insert_with(|| configured.clone());
-            let response = ui.add(
-                egui::TextEdit::singleline(draft)
-                    .desired_width(220.0)
-                    .hint_text(format!("Folder with {}", crate::cef_platform::PLATFORM.runtime_lib)),
-            );
+            let response = toolbar_field(ui, |ui| {
+                ui.add(
+                    egui::TextEdit::singleline(draft)
+                        .desired_width(220.0)
+                        .hint_text(format!("Folder with {}", crate::cef_platform::PLATFORM.runtime_lib)),
+                )
+            });
             if response.lost_focus() {
                 // Escape gives up the edit instead of committing it.
                 commit = Some(if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
