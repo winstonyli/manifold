@@ -18,7 +18,7 @@
 //!   tab-dropdown tab-popup tab-popup-history tab-popup-downloads tab-engine tab-combo`) sweep the mouse or the Tab key
 //!   along a bar and print where anything other than the hovered widget moved (`shots_img::hover_report`);
 //!   `focus-graph` does the same for clicks
-//! - keyboard views: `graph-enter-group graph-enter-json graph-menu-key graph-select-key json-keys tabview-split-key`
+//! - keyboard views: `graph-enter-group graph-enter-json graph-menu-key graph-select-key graph-pinned-dense json-keys tabview-split-key`
 //! - assertion views, which print `PASS:`/`FAIL:`: `mouse-regress` (drag, swatch click, middle-click close),
 //!   `note-key`, `digit-jump`, `json-tab-offscreen`, `tabview-actions-click`
 //! - `graph-menu-jars graph-menu-chip graph-menu-color graph-menu-group-jars`: the menu's Jar and Color pages
@@ -886,6 +886,21 @@ impl Shots {
             // Pinned: the bar's pin goes accent, and each card keeps its passive pin mark.
             send!(s, "TOGGLEPIN", "SLEEP 1")?;
             s.shot("graph-select-key-pinned")?;
+            s.reset()
+        })?;
+        // Over `LOD_SIMPLIFY_COUNT` cards the graph draws simple: a pinned card shows its accent dot, not the glyph.
+        self.view("graph-pinned-dense", |s| {
+            for _ in 0..70 {
+                send!(s, "NEWNOTE")?;
+            }
+            send!(s, "SLEEP 3")?;
+            s.tab_presses(1, "0.5")?;
+            send!(s, "SPACEKEY", "SLEEP 0.5", "TOGGLEPIN", "SLEEP 1")?;
+            for _ in 0..6 {
+                send!(s, "CLICK 207 19", "SLEEP 0.5")?;
+            }
+            send!(s, "SLEEP 1")?;
+            s.shot("graph-pinned-dense")?;
             s.reset()
         })?;
         // Tab to the Note card and Enter: the note starts editing; Escape ends it and Enter edits again (focus

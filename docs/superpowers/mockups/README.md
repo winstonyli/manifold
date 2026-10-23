@@ -68,3 +68,5 @@ Compare with the running app using `gate chrome-shots`.
 ## 2026-10-23: pinned mark in dense views
 
 `Detail::Simple` (over 60 visible cards) hid the pin mark, so pinned cards were indistinguishable exactly where a pinned layout matters. It now paints a 3.5 px accent dot at the card's bottom-left. Not shot: the gate has no 60-card view; seen only by code reading.
+
+Seen (gate view `graph-pinned-dense`, 70 notes, one pinned, zoom 38%): the accent dot reads at the card's bottom-left, though it shares the selection ring's accent when the card is selected. At 52% (still `Full`) the 18 px glyph backing fit an 80 px-wide card without covering its neighbours, so no size cap was added.
