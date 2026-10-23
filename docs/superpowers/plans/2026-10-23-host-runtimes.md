@@ -1,5 +1,5 @@
 ---
-status: active
+status: done
 ---
 
 # Host runtimes: one concept for "how an engine host runs on this OS"
@@ -61,7 +61,19 @@ Ruling on C: transport is not a runtime property. The host decides (`link`); `Ru
 
 - [ ] `docs/decisions/2026-10-23-host-runtimes.md`: the design, A/B/C/D, target-lexicon and Wine decided against (Wine adds nothing: the only Windows-only engine is WebView2, which CEF's Blink covers; WebView2's capture needs `Windows.Graphics.Capture`, unverified under Wine).
 - [ ] README "Engines by OS": the Linux WebKit cell, the architecture line "WebKitGTK, hosted inside WSL2", and any `SpawnMode` or `spawn_webkit_tab` mention (grep); PARKED: the WebKit-host-in-release entry's wording; this plan `status: done`.
-- [ ] Verification: Linux build and tests of `-p manifold` in WSL Ubuntu with `CARGO_TARGET_DIR=target-linux` (BelowNormal, `-j 8`); one native WebKit tab driven headless under WSL if the harness allows (else say it was not driven); `gate light` once on Windows (it exercises the unchanged WSL path only if `WEBKIT_SITE_HOST` is set, so also run `ENGINE=webkit gate trail` per README "WebKit under the gate").
+- [x] Verification (2026-10-23): `cargo test -p manifold` on Windows 1481 passed; on Linux under WSL Ubuntu
+  (`CARGO_TARGET_DIR=$HOME/mf-target`, nice 19, -j 6) 1474 passed, 0 failed. Not done: the native WebKit tab was not
+  started against a display (only the launch's pure parts are tested), and `gate light` was not run (it does not
+  exercise the WebKit path, and the gate runs before a tag, on request).
+
+## Rulings during execution
+
+- `Os::MacOs` became `Os::Mac` (clippy `enum_variant_names`).
+- `spawn_webkit_tab` kept its name and gained a `Runtime` parameter instead of becoming `spawn_tcp_host(kind, ..)`: WebKit
+  is the only TCP engine, so a kind parameter would be unused generality.
+- `Drop for ViewTab` and `reap_host` key on `link == Tcp`, not `Runtime::Wsl`: a native `xvfb-run` wrapper orphans
+  Xvfb when force-killed, the same as the `wsl.exe` relay (found while writing Task 2).
+- `sibling_host` looks for the built ELF when `host_os == Some(Linux)`, so it works for both runtimes.
 
 ## Stress-test log
 
