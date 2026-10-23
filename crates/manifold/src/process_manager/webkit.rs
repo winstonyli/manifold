@@ -1,13 +1,7 @@
-//! The WebKit host, which runs inside WSL2: translating the host path, building the `bash -c` command and the spawn.
+//! The WebKit host, a TCP-linked Linux program: started through WSL2 on Windows (translating the host path and
+//! building the `bash -c` command) or directly on Linux, where it gets a display from the session or Xvfb.
 
 use super::*;
-
-/// Why a WebKit spawn cannot start on `os` although WebKit counts as available there, or `None`. The only
-/// WebKit host is reached through `wsl.exe` (`spawn_webkit_tab`); on Linux, where it would run natively,
-/// that launch is not wired yet, so the spawn says so instead of failing on a missing `wsl.exe`.
-pub(super) fn webkit_host_missing(os: Os) -> Option<&'static str> {
-    (os == Os::Linux).then_some("WebKit can't start yet: a native Linux WebKit host is not wired up")
-}
 
 /// Converts this repo's Windows path (wherever manifold.exe actually is)
 /// to the `/mnt/c/...` form WSL2 uses to see the same filesystem, so we can
@@ -36,6 +30,35 @@ fn shell_quote(s: &str) -> String {
 /// can see and retry) well within a minute beats a tab stuck starting forever.
 const WEBKIT_CONNECT_TIMEOUT: Duration = Duration::from_secs(45);
 
+/// What the host reads (`manifold-view-webkit`'s `main`) besides `VIEW_HOST_IP`, the address it dials back, which
+/// differs by runtime. Page text (the URL) appears only as hex.
+pub(super) fn webkit_env(
+    initial_url: &str,
+    port: u16,
+    token: &transport::Token,
+    dark: bool,
+) -> std::io::Result<Vec<(&'static str, String)>> {
+    /// Windows' command line holds 32 767 characters; leave the rest of this one room.
+    const MAX_URL_HEX: usize = 16_384;
+    let url_hex = transport::to_hex(initial_url.as_bytes());
+    if url_hex.len() > MAX_URL_HEX {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "the URL is too long to start a WebKit tab with",
+        ));
+    }
+    let mut env = Vec::new();
+    if dark {
+        env.push((host_env::ENV_DARK, "1".to_string()));
+    }
+    env.extend([
+        ("VIEW_INITIAL_URL_HEX", url_hex),
+        ("VIEW_TCP_PORT", port.to_string()),
+        ("VIEW_TOKEN", transport::to_hex(token)),
+    ]);
+    Ok(env)
+}
+
 /// The `bash -c` string `spawn_webkit_tab` hands to `wsl.exe -d Ubuntu -- bash -c`. It crosses two
 /// shells there (the distro's login shell parses what `wsl.exe` re-joins, then bash), so text from a
 /// page must not appear in it as itself.
@@ -46,65 +69,91 @@ pub(super) fn webkit_shell_command(
     binary_path: &str,
     dark: bool,
 ) -> std::io::Result<String> {
-    /// Windows' command line holds 32 767 characters; leave the rest of this one room.
-    const MAX_URL_HEX: usize = 16_384;
-    let url_hex = transport::to_hex(initial_url.as_bytes());
-    if url_hex.len() > MAX_URL_HEX {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "the URL is too long to start a WebKit tab with",
-        ));
-    }
-    let dark = if dark { format!("{}=1 ", host_env::ENV_DARK) } else { String::new() };
+    let assignments: String =
+        webkit_env(initial_url, port, token, dark)?.iter().map(|(name, value)| format!("{name}={value} ")).collect();
     Ok(format!(
-        "{dark}VIEW_INITIAL_URL_HEX={url_hex} VIEW_TCP_PORT={port} VIEW_TOKEN={} \
-         VIEW_HOST_IP=$(ip route | awk '/^default/ {{print $3}}') xvfb-run -a {}",
-        transport::to_hex(token),
+        "{assignments}VIEW_HOST_IP=$(ip route | awk '/^default/ {{print $3}}') xvfb-run -a {}",
         shell_quote(binary_path),
     ))
 }
 
-pub(super) fn spawn_webkit_tab(tab_id: NodeId, initial_url: &str, wake: view_io::Wake) -> std::io::Result<ViewTab> {
-    // Bind an ephemeral port (0 = "pick one for me") so concurrent tabs
-    // don't collide. Bound on all interfaces, not just loopback: WSL2's
-    // NAT-mode networking refuses (ECONNREFUSED, verified directly) a
-    // WSL2-side connection to 127.0.0.1:port on the Windows host — the
-    // guest must instead reach the host at its own default-gateway IP,
-    // which the command string below discovers at spawn time (see
-    // VIEW_HOST_IP).
-    let listener = TcpListener::bind(("0.0.0.0", 0))?;
+/// The program and arguments that start a WebKit host on this Linux machine: GTK's offscreen window needs a display,
+/// so without the session's own the host runs under Xvfb (`xvfb-run`'s exit trap then also removes the X server).
+pub(super) fn native_host_argv(host: &str, has_display: bool) -> Vec<String> {
+    if has_display {
+        vec![host.to_string()]
+    } else {
+        ["xvfb-run", "-a", host].map(String::from).to_vec()
+    }
+}
+
+fn session_has_display() -> bool {
+    ["DISPLAY", "WAYLAND_DISPLAY"].iter().any(|name| std::env::var_os(name).is_some_and(|value| !value.is_empty()))
+}
+
+/// Starts the WebKit host the way `runtime` says and accepts its connection back. A `Wsl` host dials the Windows
+/// host's default-gateway address, so its listener is on every interface; a `Native` one dials loopback.
+pub(super) fn spawn_webkit_tab(
+    runtime: Runtime,
+    tab_id: NodeId,
+    initial_url: &str,
+    wake: view_io::Wake,
+) -> std::io::Result<ViewTab> {
+    // Bind an ephemeral port (0 = "pick one for me") so concurrent tabs don't collide. WSL2's NAT-mode networking
+    // refuses (ECONNREFUSED, verified directly) a WSL2-side connection to 127.0.0.1:port on the Windows host, the
+    // guest must instead reach the host at its own default-gateway IP, which the command string below discovers at
+    // spawn time (see VIEW_HOST_IP).
+    let bind_ip = match runtime {
+        Runtime::Wsl => "0.0.0.0",
+        Runtime::Native => "127.0.0.1",
+    };
+    let listener = TcpListener::bind((bind_ip, 0))?;
     let port = listener.local_addr()?.port();
 
     let (stdout_file, stderr_file) = per_tab_log_files(tab_id)?;
     // The file `spawn_tab` just hashed when it came from a download: WSL runs it straight from the Windows drive
     // (drvfs gives every file the exec bit; plan "Spike results" 2), so there is no copy into the distro.
     let host = webkit_host_path().ok_or_else(|| std::io::Error::other("no data directory for the WebKit host"))?;
-    let binary_path = windows_path_to_wsl(&host);
 
-    // `wsl.exe` does NOT forward this Command's environment into the
-    // Linux process (verified: env vars set via `.env()` here simply don't
-    // appear on the other side) — WSL has its own opt-in `WSLENV`
-    // passthrough mechanism instead, which is more trouble than it's
-    // worth here. Pass values as inline shell assignments in the command
-    // string instead, and run under `xvfb-run` for the virtual display
-    // GTK's offscreen rendering needs.
-    // The Windows host isn't reachable from WSL2 at 127.0.0.1 (see
-    // listen_remote's doc comment) — only at its default-gateway IP, which
-    // changes across WSL2 restarts, so it's discovered fresh here rather
-    // than hardcoded.
-    // A random secret the engine must send before it is accepted: the listener is on
-    // every interface (`listen_remote`). It sits in this command line, as hex, visible to the
-    // same user's processes only.
+    // A random secret the engine must send before it is accepted: the listener may be on every interface
+    // (`listen_remote`). It sits in the host's command line or environment, as hex, visible to the same user's
+    // processes only.
     let mut token = [0u8; transport::TOKEN_LEN];
     getrandom::fill(&mut token).map_err(|e| std::io::Error::other(e.to_string()))?;
-    let command = webkit_shell_command(initial_url, port, &token, &binary_path, manifold_pages::is_dark())?;
-    let mut child = Command::new("wsl.exe")
-        .args(["-d", "Ubuntu", "--", "bash", "-c", &command])
+    let dark = manifold_pages::is_dark();
+    let mut command = match runtime {
+        Runtime::Wsl => {
+            // `wsl.exe` does NOT forward this Command's environment into the Linux process (verified: env vars set
+            // via `.env()` here simply don't appear on the other side) -- WSL has its own opt-in `WSLENV`
+            // passthrough, more trouble than it is worth. Pass values as inline shell assignments in the command
+            // string instead, and run under `xvfb-run` for the virtual display GTK's offscreen rendering needs.
+            let shell = webkit_shell_command(initial_url, port, &token, &windows_path_to_wsl(&host), dark)?;
+            let mut command = Command::new("wsl.exe");
+            command.args(["-d", "Ubuntu", "--", "bash", "-c", &shell]);
+            command
+        }
+        Runtime::Native => {
+            let argv = native_host_argv(&host.to_string_lossy(), session_has_display());
+            let mut command = Command::new(&argv[0]);
+            command
+                .args(&argv[1..])
+                .envs(webkit_env(initial_url, port, &token, dark)?)
+                .env("VIEW_HOST_IP", "127.0.0.1");
+            command
+        }
+    };
+    let mut child = command
         // Not manifold's stdin: `wsl.exe` forwards what it reads, and would take the debug commands piped to manifold.
         .stdin(std::process::Stdio::null())
         .stdout(stdout_file)
         .stderr(stderr_file)
-        .spawn()?;
+        .spawn()
+        .map_err(|e| match (runtime, e.kind()) {
+            (Runtime::Native, std::io::ErrorKind::NotFound) if !session_has_display() => {
+                std::io::Error::other("WebKit needs a display or xvfb-run")
+            }
+            _ => e,
+        })?;
     // Only reaches the Windows-side `wsl.exe` relay, same limitation
     // `Drop for ViewTab`'s own doc comment already calls out for
     // explicit `Shutdown`-then-kill -- the actual Linux-side process tree

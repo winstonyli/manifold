@@ -32,6 +32,26 @@ fn a_url_too_long_for_a_command_line_is_refused_by_name() {
     assert_eq!(build(20_000).unwrap_err().kind(), std::io::ErrorKind::InvalidInput);
 }
 
+/// A native WebKit host needs a display for GTK's offscreen window: its own when the session has one, else Xvfb.
+#[test]
+fn a_native_webkit_host_runs_under_xvfb_only_without_a_display() {
+    assert_eq!(native_host_argv("/h", true), ["/h"]);
+    assert_eq!(native_host_argv("/h", false), ["xvfb-run", "-a", "/h"]);
+}
+
+/// The host reads the same variables whichever runtime starts it; only the address it dials back differs.
+#[test]
+fn the_webkit_host_environment_is_the_same_under_every_runtime() {
+    let token = [7u8; transport::TOKEN_LEN];
+    let env = webkit_env("https://a", 4000, &token, true).unwrap();
+    let names: Vec<_> = env.iter().map(|(name, _)| *name).collect();
+    assert_eq!(names, ["VIEW_DARK", "VIEW_INITIAL_URL_HEX", "VIEW_TCP_PORT", "VIEW_TOKEN"]);
+    let wsl = webkit_shell_command("https://a", 4000, &token, "/x", true).unwrap();
+    for (name, value) in &env {
+        assert!(wsl.contains(&format!("{name}={value} ")), "{name} in {wsl}");
+    }
+}
+
 /// The host's reader of one engine connection; `feed` writes the engine's side of it, its version first.
 fn reader_fed(
     feed: impl FnOnce(std::net::TcpStream) + Send + 'static,
@@ -631,14 +651,6 @@ fn view_kinds_the_os_cannot_run_are_unavailable_with_a_reason() {
     let refusal = unsupported_on(Os::Mac, ViewKind::Webview2).unwrap();
     assert!(refusal.contains("WebView2") && refusal.contains("needs Windows"), "{refusal}");
     assert!(unsupported_on(Os::Mac, ViewKind::Webkit).unwrap().contains("needs Windows or Linux"));
-}
-
-#[test]
-fn a_linux_webkit_spawn_names_the_missing_native_host() {
-    // Available on Linux, but the only host is reached through wsl.exe: refused by name, not by a
-    // raw "No such file or directory" from a wsl.exe that isn't there.
-    assert!(webkit_host_missing(Os::Linux).unwrap().contains("native Linux WebKit host"));
-    assert_eq!(webkit_host_missing(Os::Windows), None);
 }
 
 #[test]

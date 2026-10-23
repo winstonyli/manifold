@@ -75,7 +75,7 @@ pub(super) fn cef_sibling_exe() -> PathBuf {
 /// pin table says.
 pub(super) fn sibling_host(kind: ViewKind) -> Option<PathBuf> {
     let desc = kind.desc();
-    if Runtime::of(kind) == Some(Runtime::Wsl) {
+    if desc.host_os == Some(Os::Linux) {
         return built_webkit_host(&current_exe_dir());
     }
     let flat = Some(sibling_binary(desc.binary)).filter(|path| path.exists());

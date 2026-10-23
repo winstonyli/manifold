@@ -414,8 +414,8 @@ impl Drop for ViewTab {
         self.writer.shutdown();
         let Some(child) = self.child.take() else { return };
         let (cache_dir, slot) = (self.cache_dir.take(), self.profile_slot.take());
-        if Runtime::of(self.kind) == Some(Runtime::Wsl) {
-            // Off the UI thread: a WSL host gets up to 3 s to exit on its own,
+        if self.kind.desc().link == HostLink::Tcp {
+            // Off the UI thread: a TCP host gets up to 3 s to exit on its own,
             // and dropping a session of N of them used to freeze the window for 3N s.
             // It has no frame file (frames arrive over TCP) and no cache dir.
             // A writer stuck on its socket stays blocked until the Linux side dies: closing the
@@ -451,7 +451,7 @@ impl Drop for ViewTab {
 
 /// Waits for an engine host to exit after `Shutdown`, killing it if needed.
 fn reap_host(kind: ViewKind, mut child: Child) {
-    if Runtime::of(kind) == Some(Runtime::Wsl) {
+    if kind.desc().link == HostLink::Tcp {
         // For the WSL2-hosted case, `child` is only the Windows-side
         // `wsl.exe` relay — force-killing it immediately (the
         // local-engine path below) does NOT terminate the actual
@@ -953,11 +953,6 @@ pub fn spawn_tab(
     if let Some(reason) = unsupported_on(Os::here(), kind) {
         return Err(SpawnError::Io(std::io::Error::new(std::io::ErrorKind::Unsupported, reason)));
     }
-    if desc.link == HostLink::Tcp {
-        if let Some(reason) = webkit_host_missing(Os::here()) {
-            return Err(SpawnError::Io(std::io::Error::new(std::io::ErrorKind::Unsupported, reason)));
-        }
-    }
     let custom_cef = custom_cef.filter(|_| desc.runtime_dir.is_some());
     let on_disk = view_on_disk_fresh(kind);
     check_spawnable(kind, &plan_for(kind), on_disk, custom_cef)?;
@@ -972,7 +967,8 @@ pub fn spawn_tab(
         }
     }
     if desc.link == HostLink::Tcp {
-        return Ok(spawn_webkit_tab(tab_id, initial_url, wake)?);
+        let runtime = Runtime::of(kind).ok_or_else(|| std::io::Error::from(std::io::ErrorKind::Unsupported))?;
+        return Ok(spawn_webkit_tab(runtime, tab_id, initial_url, wake)?);
     }
 
     // Normally the socket/shared-memory id is just tab_id. But a prior run
@@ -1096,9 +1092,9 @@ pub use profiles::{
     finish_cache_removals, sweep_cef_cache, sweep_frame_files, sweep_view_logs, sweep_webview2_profiles,
 };
 use runtime::{HostLink, Os, Runtime};
+use webkit::spawn_webkit_tab;
 #[cfg(test)]
-use webkit::webkit_shell_command;
-use webkit::{spawn_webkit_tab, webkit_host_missing};
+use webkit::{native_host_argv, webkit_env, webkit_shell_command};
 #[cfg(test)]
 mod tests;
 
