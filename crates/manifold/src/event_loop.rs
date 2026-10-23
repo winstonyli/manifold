@@ -78,7 +78,7 @@ impl ApplicationHandler<UserEvent> for App {
             egui::ViewportId::ROOT,
             window.as_ref(),
             Some(window.scale_factor() as f32),
-            None,
+            window.theme(),
             None,
         );
         if real_window {

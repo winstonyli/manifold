@@ -352,11 +352,10 @@ pub(crate) const SCRIM_TEXT_WEAK: egui::Color32 = egui::Color32::from_gray(190);
 /// The yellow entry of `TAG_COLOR_PALETTE`: the one hue that is far from both the blue accent and the red danger.
 pub(crate) const TAG_YELLOW: egui::Color32 = TAG_COLOR_PALETTE[2];
 
-/// A drag that a release would refuse (keeping what it holds): `TAG_YELLOW` pulled a little toward the panel
-/// color, a hue far from the accent (a valid drop) and the danger red (a deletion), so the outcomes differ by hue, not
+/// A drag that a release would refuse (keeping what it holds): the theme's yellow tag color, a hue far from the accent (a valid drop) and the danger red (a deletion), so the outcomes differ by hue, not
 /// brightness.
 pub(crate) fn refused_color(visuals: &egui::Visuals) -> egui::Color32 {
-    lerp_color32(TAG_YELLOW, visuals.panel_fill, 0.2)
+    tag_shown(TAG_YELLOW, visuals.dark_mode)
 }
 
 /// A sticky note's card fill -- a warm, light color deliberately unlike
@@ -506,8 +505,8 @@ fn fill_style(style: &mut egui::Style, dark: bool) {
     style.visuals.window_stroke = egui::Stroke::new(1.0, raised);
 
     style.visuals.selection.bg_fill = accent;
-    // The primary text color, not pure white: white read cold against the selection fill.
-    style.visuals.selection.stroke.color = text;
+    // The same ink as an active widget: text drawn on the selection fill (a selected row, a toggle).
+    style.visuals.selection.stroke.color = style.visuals.widgets.active.fg_stroke.color;
     style.visuals.hyperlink_color = accent;
     style.visuals.override_text_color = None;
     style.visuals.error_fg_color = danger;
@@ -957,6 +956,15 @@ mod tests {
             for c in TAG_COLOR_PALETTE.map(|c| tag_shown(c, dark)) {
                 assert!(contrast(c, card) >= 3.0, "{c:?} on the {} card", if dark { "dark" } else { "light" });
             }
+        }
+    }
+
+    #[test]
+    fn selection_ink_and_the_refused_color_read_in_both_themes() {
+        for dark in [true, false] {
+            let v = testutil::ctx(dark).global_style().visuals.clone();
+            assert!(contrast(v.selection.stroke.color, v.selection.bg_fill) >= 4.5, "selection ink, dark={dark}");
+            assert!(contrast(refused_color(&v), v.panel_fill) >= 3.0, "refused on the canvas, dark={dark}");
         }
     }
 

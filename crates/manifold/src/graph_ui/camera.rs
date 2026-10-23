@@ -287,7 +287,7 @@ impl App {
             .min(minimap_rect.height() / world_bounds.height().max(1.0));
         let world_to_minimap =
             |p: egui::Pos2| -> egui::Pos2 { minimap_rect.center() + (p - world_bounds.center()) * minimap_scale };
-        overlay_painter.rect_filled(minimap_rect, 4.0, egui::Color32::from_black_alpha(160));
+        overlay_painter.rect_filled(minimap_rect, 4.0, with_alpha(palette(ui.visuals()).canvas, 200));
         for item in items {
             let (radius, color) = match item.kind.ty {
                 ty if is_container(ty) => (3.0, accent(ui.visuals())),

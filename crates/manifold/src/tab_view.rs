@@ -366,7 +366,11 @@ impl App {
         // The jar dot, beside the address bar (spec "UI"): the card chip's dots (`card::paint_jar_dots`, so a tab
         // waiting to switch shows its old jar's dot, an arrow, then the new one), its name and warnings as hover text.
         // A click switches a tab that is waiting to, unless another host change is already on its way.
-        if let Some(chip) = self.jar_chip(focused_id) {
+        if let Some(mut chip) = self.jar_chip(focused_id) {
+            // The dots sit on the toolbar, not a dark scrim: the theme's tag-color variants.
+            let dark = trailing_ui.visuals().dark_mode;
+            chip.color = tag_shown(chip.color, dark);
+            chip.was_color = tag_shown(chip.was_color, dark);
             let text = trailing_ui.visuals().text_color();
             let arrow =
                 crate::card::jar_chip_arrow(trailing_ui.painter(), &chip, egui::FontId::proportional(11.0), text);

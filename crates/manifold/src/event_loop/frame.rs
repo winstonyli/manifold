@@ -304,6 +304,7 @@ impl App {
     /// the title bar, and the `manifold://` pages, whose open tabs are reloaded to take the new colors.
     pub(crate) fn sync_theme(&mut self) {
         let now = self.egui_ctx.theme();
+        let first = self.last_theme.is_none();
         if !theme_changed(&mut self.last_theme, now) {
             return;
         }
@@ -312,6 +313,10 @@ impl App {
             apply_titlebar(window, dark);
         }
         manifold_pages::set_dark(dark);
+        // The first frame only records the theme: `App::default` and the window setup already applied it.
+        if first {
+            return;
+        }
         let scheme = format!("{}://", manifold_pages::SCHEME);
         let pages: Vec<NodeId> =
             self.nodes.keys().copied().filter(|&id| self.doc.mirror.url(id).starts_with(&scheme)).collect();

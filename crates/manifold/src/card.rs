@@ -105,8 +105,9 @@ const IMAGE_TEXT_SCRIM: egui::Color32 = egui::Color32::from_black_alpha(190);
 /// Behind a short card's title strip along its bottom: a lighter scrim, the strip is small.
 const TITLE_STRIP_SCRIM: egui::Color32 = egui::Color32::from_black_alpha(160);
 
-/// Over a card the Graph toolbar filter doesn't match (`dim_if_filtered_out`).
-const FILTER_DIM_SCRIM: egui::Color32 = egui::Color32::from_black_alpha(190);
+/// Over a card the Graph toolbar filter doesn't match (`dim_if_filtered_out`): the canvas color at this alpha, so a
+/// dimmed card fades into the canvas in either theme.
+const FILTER_DIM_ALPHA: u8 = 190;
 
 /// A note's text on its pale paper.
 const NOTE_TEXT: egui::Color32 = egui::Color32::from_black_alpha(220);
@@ -212,7 +213,7 @@ pub(crate) const PDF_PENDING_NODE_SIZE: egui::Vec2 = egui::vec2(150.0, 90.0);
 pub(crate) const JSON_NODE_SIZE: egui::Vec2 = egui::vec2(160.0, 90.0);
 
 /// Graph toolbar filter: when `filter` doesn't match any of `haystacks`,
-/// dims the card at `rect` with one black scrim, pushed as a deferred
+/// dims the card at `rect` with one canvas-colored scrim (`scrim`), pushed as a deferred
 /// overlay so it paints last (on the same untransformed foreground layer
 /// card text uses, so it covers that too, not just the thumbnail/borders
 /// below it) rather than threading a dim factor through every draw call.
@@ -223,20 +224,17 @@ pub(crate) fn dim_if_filtered_out(
     haystacks: &[&str],
     rect: egui::Rect,
     rounding: f32,
+    scrim: egui::Color32,
 ) {
     if graph_filter_dims(filter, haystacks) {
-        push_dim_scrim(deferred_overlays, rect, rounding);
+        push_dim_scrim(deferred_overlays, rect, rounding, scrim);
     }
 }
 
 /// The scrim `dim_if_filtered_out` pushes, for a caller that has already decided the card dims.
-fn push_dim_scrim(deferred_overlays: &mut DeferredOverlays, rect: egui::Rect, rounding: f32) {
+fn push_dim_scrim(deferred_overlays: &mut DeferredOverlays, rect: egui::Rect, rounding: f32, scrim: egui::Color32) {
     deferred_overlays.push(Box::new(move |overlay_painter, project| {
-        overlay_painter.rect_filled(
-            egui::Rect::from_min_max(project(rect.min), project(rect.max)),
-            rounding,
-            FILTER_DIM_SCRIM,
-        );
+        overlay_painter.rect_filled(egui::Rect::from_min_max(project(rect.min), project(rect.max)), rounding, scrim);
     }));
 }
 
@@ -1278,12 +1276,13 @@ impl App {
             self.interaction.hovered = None;
         }
 
+        let scrim = with_alpha(palette(ui.visuals()).canvas, FILTER_DIM_ALPHA);
         if let Some((id, node)) = node.and_then(|id| self.nodes.get(&id).map(|n| (id, n))) {
             let mut needles = card_filter_text(&node.runtime, self.own_text(id));
             needles.push(self.doc.mirror.name(id)); // name rule: the filter matches the stored text (a rename; a group is matched twice)
-            dim_if_filtered_out(deferred_overlays, &self.graph_filter, &needles, rect, CARD_RADIUS / inv_zoom);
+            dim_if_filtered_out(deferred_overlays, &self.graph_filter, &needles, rect, CARD_RADIUS / inv_zoom, scrim);
         } else if self.virtual_card_dimmed(entry) {
-            push_dim_scrim(deferred_overlays, rect, CARD_RADIUS / inv_zoom);
+            push_dim_scrim(deferred_overlays, rect, CARD_RADIUS / inv_zoom, scrim);
         }
         Some(CardOutput { response, control })
     }

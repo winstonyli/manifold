@@ -28,9 +28,8 @@ pub(crate) const COUNT_WIDTH: f32 = 44.0;
 /// Below this zoom, rows are gray bars without text (spec "Level of
 /// detail").
 const LOD_TEXT_ZOOM: f32 = 0.5;
-/// A search hit's border and row wash: blue, apart from the selection's
-/// ACCENT gold.
-const SEARCH_HIT: egui::Color32 = egui::Color32::from_rgb(90, 150, 230);
+/// A search hit's border and row wash: the green tag color, apart from the selection's blue accent and the red danger.
+const SEARCH_HIT: egui::Color32 = crate::theme::TAG_COLOR_PALETTE[3];
 /// Mixed into an array card's fill so array and object cards read apart.
 const ARRAY_TINT: egui::Color32 = egui::Color32::from_rgb(90, 100, 160);
 /// A row tooltip's cap, in characters.
