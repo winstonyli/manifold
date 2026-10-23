@@ -5,7 +5,7 @@ use super::*;
 
 /// Converts this repo's Windows path (wherever manifold.exe actually is)
 /// to the `/mnt/c/...` form WSL2 uses to see the same filesystem, so we can
-/// hand `wsl.exe` a path to the manifold-view-webkit binary it built.
+/// hand `wsl.exe` a path to the manifold-view-webkitgtk binary it built.
 fn windows_path_to_wsl(path: &Path) -> String {
     let s = path.to_string_lossy().replace('\\', "/");
     // "C:/Users/..." -> "/mnt/c/Users/..."
@@ -30,7 +30,7 @@ fn shell_quote(s: &str) -> String {
 /// can see and retry) well within a minute beats a tab stuck starting forever.
 const WEBKIT_CONNECT_TIMEOUT: Duration = Duration::from_secs(45);
 
-/// What the host reads (`manifold-view-webkit`'s `main`) besides `VIEW_HOST_IP`, the address it dials back, which
+/// What the host reads (`manifold-view-webkitgtk`'s `main`) besides `VIEW_HOST_IP`, the address it dials back, which
 /// differs by runtime. Page text (the URL) appears only as hex.
 pub(super) fn webkit_env(
     initial_url: &str,

@@ -1375,19 +1375,19 @@ fn servo_installs_its_exe_and_both_dlls_flat_and_the_exe_alone_is_missing() {
 fn webkit_installs_its_elf_under_its_own_marker() {
     let dir = temp_dir("webkit-elf");
     let elf = body(5000);
-    let f = files(vec![component("manifold-view-webkit", &elf, serve_bytes(&elf))]);
+    let f = files(vec![component("manifold-view-webkitgtk", &elf, serve_bytes(&elf))]);
     assert_eq!(host_state(&dir, ViewKind::Webkit, f), RuntimeOnDisk::Missing, "nothing on disk");
-    std::fs::write(dir.join("manifold-view-webkit"), &*elf).unwrap();
+    std::fs::write(dir.join("manifold-view-webkitgtk"), &*elf).unwrap();
     assert_eq!(host_state(&dir, ViewKind::Webkit, f), RuntimeOnDisk::Missing, "the ELF without its marker");
     install_host(&dir, ViewKind::Webkit, f, &mut |_| {}, &never()).unwrap();
     assert_eq!(host_state(&dir, ViewKind::Webkit, f), RuntimeOnDisk::Ready);
-    assert_eq!(std::fs::read(dir.join("manifold-view-webkit")).unwrap(), *elf);
+    assert_eq!(std::fs::read(dir.join("manifold-view-webkitgtk")).unwrap(), *elf);
     assert_eq!(
         std::fs::read_to_string(dir.join("webkit.host")).unwrap(),
-        format!("{} manifold-view-webkit\n", f[0].sha256)
+        format!("{} manifold-view-webkitgtk\n", f[0].sha256)
     );
     verify_installed_host(&dir, f).unwrap();
-    std::fs::remove_file(dir.join("manifold-view-webkit")).unwrap();
+    std::fs::remove_file(dir.join("manifold-view-webkitgtk")).unwrap();
     assert_eq!(host_state(&dir, ViewKind::Webkit, f), RuntimeOnDisk::Missing, "the marker without the ELF");
 }
 

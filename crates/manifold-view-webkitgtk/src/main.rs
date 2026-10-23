@@ -406,7 +406,7 @@ fn main() {
                 // (`xvfb-run -a`, no `-wm`/window-manager flag) has no
                 // window manager running at all. A real toplevel shown with
                 // no WM to map it never receives the response GTK's show
-                // path waits on, which pegged manifold-view-webkit at ~45%
+                // path waits on, which pegged manifold-view-webkitgtk at ~45%
                 // CPU indefinitely (confirmed via a live 8-minute hang,
                 // process never returned to servicing IPC) rather than
                 // just failing visibly. No safe way to open a real window

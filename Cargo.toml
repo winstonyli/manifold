@@ -7,7 +7,7 @@ members = [
     "crates/gate",
     "crates/manifold-view-servo",
     "crates/manifold-view-cef",
-    "crates/manifold-view-webkit",
+    "crates/manifold-view-webkitgtk",
     "crates/manifold-view-webview2",
     "crates/manifold-view-pdfium",
 ]

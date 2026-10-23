@@ -5079,7 +5079,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "manifold-view-webkit"
+name = "manifold-view-webkitgtk"
 version = "0.8.0"
 dependencies = [
  "gtk",

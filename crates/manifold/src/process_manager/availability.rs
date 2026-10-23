@@ -96,7 +96,7 @@ fn current_exe_dir() -> PathBuf {
 /// (a Linux package), else a dev tree's `target-linux/debug/` (WebKit is built inside WSL into its own target dir,
 /// README "Building"), found by walking up at most as far as the repo root of a worktree under `.claude/`.
 pub(super) fn built_webkit_host(exe_dir: &Path) -> Option<PathBuf> {
-    const NAME: &str = "manifold-view-webkit";
+    const NAME: &str = "manifold-view-webkitgtk";
     let flat = exe_dir.join(NAME);
     let dev = |dir: &Path| dir.join("target-linux").join("debug").join(NAME);
     std::iter::once(flat).chain(exe_dir.ancestors().take(5).map(dev)).find(|path| path.is_file())

@@ -174,7 +174,7 @@ impl ViewKind {
             ViewKind::Webkit => ViewDesc {
                 name: "webkit",
                 code: 3,
-                binary: "manifold-view-webkit",
+                binary: "manifold-view-webkitgtk",
                 label: "WebKit",
                 bgra: false,
                 jar: false,
@@ -456,12 +456,12 @@ fn reap_host(kind: ViewKind, mut child: Child) {
         // `wsl.exe` relay — force-killing it immediately (the
         // local-engine path below) does NOT terminate the actual
         // Linux-side process tree (fish/bash/xvfb-run/Xvfb/
-        // manifold-view-webkit), which WSL2 keeps running independently
+        // manifold-view-webkitgtk), which WSL2 keeps running independently
         // of any Windows-side process state: confirmed live, a killed
         // relay leaves that whole tree orphaned and running
         // indefinitely, invisible to any further Windows-side cleanup.
         // The graceful `Shutdown` queued above (the writer sends it before the reaper gives up) already makes
-        // manifold-view-webkit return from `main()` on its own, which
+        // manifold-view-webkitgtk return from `main()` on its own, which
         // cascades correctly on the Linux side (xvfb-run's own EXIT
         // trap kills its Xvfb child once its wrapped command exits, and
         // so on up through bash/fish to `wsl.exe` itself returning) —

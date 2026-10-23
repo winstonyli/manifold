@@ -204,7 +204,7 @@ pub fn token_from_hex(hex: &str) -> Option<Token> {
 /// `ECONNREFUSED`, not a timeout). The WSL2 guest instead reaches the
 /// Windows host at its default-gateway IP (`ip route`'s `default via`
 /// address, which is the host's own `vEthernet (WSL)` adapter) — see
-/// `connect_remote`'s caller in manifold-view-webkit for the matching side.
+/// `connect_remote`'s caller in manifold-view-webkitgtk for the matching side.
 pub fn listen_remote(port: u16) -> io::Result<TcpListener> {
     TcpListener::bind(("0.0.0.0", port))
 }

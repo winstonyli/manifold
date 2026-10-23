@@ -465,7 +465,7 @@ fn view_kinds_that_are_not_downloaded_are_always_installed_where_the_os_can_run_
 
 /// WebKit's host is the Linux ELF, pinned for linux-x64 whichever OS runs manifold (WSL runs it on Windows).
 static WEBKIT_FILES: [crate::host_pin::Component; 1] = [crate::host_pin::Component {
-    file: "manifold-view-webkit",
+    file: "manifold-view-webkitgtk",
     url: "http://x/webkit",
     size: 7_000_000,
     sha256: HASH,
@@ -506,7 +506,7 @@ fn the_webkit_host_is_found_beside_the_exe_then_in_a_dev_tree_then_in_engine_hos
     let exe_dir = root.join("repo").join("target").join("debug");
     std::fs::create_dir_all(&exe_dir).unwrap();
     let hosts = root.join("engine-hosts");
-    let downloaded = hosts.join("manifold-view-webkit");
+    let downloaded = hosts.join("manifold-view-webkitgtk");
     // Nothing built: the downloaded path, even though no file is there yet (the install puts it there).
     assert_eq!(pick_webkit_host(&exe_dir, Some(&hosts)), Some(downloaded.clone()));
     assert_eq!(pick_webkit_host(&exe_dir, None), None);
@@ -515,11 +515,11 @@ fn the_webkit_host_is_found_beside_the_exe_then_in_a_dev_tree_then_in_engine_hos
     let dev = root.join("repo").join("target-linux").join("debug");
     std::fs::create_dir_all(&dev).unwrap();
     assert!(built_webkit_host(&exe_dir).is_none(), "the folder alone is not a host");
-    std::fs::write(dev.join("manifold-view-webkit"), b"elf").unwrap();
-    assert_eq!(built_webkit_host(&exe_dir), Some(dev.join("manifold-view-webkit")));
-    assert_eq!(pick_webkit_host(&exe_dir, Some(&hosts)), Some(dev.join("manifold-view-webkit")));
+    std::fs::write(dev.join("manifold-view-webkitgtk"), b"elf").unwrap();
+    assert_eq!(built_webkit_host(&exe_dir), Some(dev.join("manifold-view-webkitgtk")));
+    assert_eq!(pick_webkit_host(&exe_dir, Some(&hosts)), Some(dev.join("manifold-view-webkitgtk")));
     // A host beside the exe wins over both.
-    let flat = exe_dir.join("manifold-view-webkit");
+    let flat = exe_dir.join("manifold-view-webkitgtk");
     std::fs::write(&flat, b"elf").unwrap();
     assert_eq!(pick_webkit_host(&exe_dir, Some(&hosts)), Some(flat));
 }

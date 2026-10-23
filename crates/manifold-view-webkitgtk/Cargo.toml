@@ -1,5 +1,5 @@
 [package]
-name = "manifold-view-webkit"
+name = "manifold-view-webkitgtk"
 version.workspace = true
 edition.workspace = true
 description.workspace = true
@@ -17,5 +17,5 @@ webkit2gtk = { workspace = true, features = ["v2_30"] }
 # The exe keeps the name released builds, release.yml and the scripts know; it changes with a release that
 # publishes assets under the new names (spec 2026-10-12, Step 0).
 [[bin]]
-name = "manifold-view-webkit"
+name = "manifold-view-webkitgtk"
 path = "src/main.rs"
