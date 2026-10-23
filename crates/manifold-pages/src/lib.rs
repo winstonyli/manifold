@@ -7,16 +7,36 @@
 /// these, and every page below gets them as CSS variables (`--bg`, `--panel`, `--raised`, `--hover`, `--outline`, `--text`,
 /// `--weak`, `--accent`, `--danger`), so the chrome and the pages cannot drift apart.
 pub mod palette {
-    pub const BG: [u8; 3] = [23, 20, 15];
-    pub const TOOLBAR_FILL: [u8; 3] = [29, 26, 20];
-    pub const SURFACE_RAISED: [u8; 3] = [41, 36, 27];
-    pub const SURFACE_HOVER: [u8; 3] = [58, 50, 37];
-    /// A resting-but-visible border: a hovered control's outline (gold is kept for selected and focused).
-    pub const OUTLINE: [u8; 3] = [140, 127, 100];
-    pub const TEXT_PRIMARY: [u8; 3] = [233, 226, 211];
-    pub const TEXT_WEAK: [u8; 3] = [178, 164, 130];
-    pub const ACCENT: [u8; 3] = [215, 162, 74];
-    pub const DANGER: [u8; 3] = [224, 112, 84];
+    #[derive(Debug, PartialEq, Eq)]
+    pub struct Colors {
+        pub bg: [u8; 3],
+        pub toolbar_fill: [u8; 3],
+        pub surface_raised: [u8; 3],
+        pub surface_hover: [u8; 3],
+        /// A resting-but-visible border: a hovered control's outline (the accent is kept for selected and focused).
+        pub outline: [u8; 3],
+        pub text_primary: [u8; 3],
+        pub text_weak: [u8; 3],
+        pub accent: [u8; 3],
+        pub danger: [u8; 3],
+    }
+
+    pub const DARK: Colors = Colors {
+        bg: [23, 20, 15],
+        toolbar_fill: [29, 26, 20],
+        surface_raised: [41, 36, 27],
+        surface_hover: [58, 50, 37],
+        outline: [140, 127, 100],
+        text_primary: [233, 226, 211],
+        text_weak: [178, 164, 130],
+        accent: [215, 162, 74],
+        danger: [224, 112, 84],
+    };
+
+    /// One table today; `LIGHT` arrives with the light theme and `colors` then picks by `dark`.
+    pub fn colors(_dark: bool) -> &'static Colors {
+        &DARK
+    }
 }
 
 /// The scheme's name, without `://`. Each engine registers it as standard (so `manifold://welcome` has host
@@ -39,18 +59,18 @@ const BASE_CSS: &str = include_str!("../assets/base.css");
 
 /// `:root` declarations for `palette`, substituted for each page's `/*PALETTE*/`.
 fn palette_vars() -> String {
-    use palette::*;
+    let c = palette::colors(true);
     let hex = |[r, g, b]: [u8; 3]| format!("#{r:02X}{g:02X}{b:02X}");
     [
-        ("bg", BG),
-        ("panel", TOOLBAR_FILL),
-        ("raised", SURFACE_RAISED),
-        ("hover", SURFACE_HOVER),
-        ("outline", OUTLINE),
-        ("text", TEXT_PRIMARY),
-        ("weak", TEXT_WEAK),
-        ("accent", ACCENT),
-        ("danger", DANGER),
+        ("bg", c.bg),
+        ("panel", c.toolbar_fill),
+        ("raised", c.surface_raised),
+        ("hover", c.surface_hover),
+        ("outline", c.outline),
+        ("text", c.text_primary),
+        ("weak", c.text_weak),
+        ("accent", c.accent),
+        ("danger", c.danger),
     ]
     .map(|(name, color)| format!("--{name}:{};", hex(color)))
     .concat()
@@ -112,6 +132,13 @@ mod tests {
             let style = html.split("</style>").next().unwrap();
             assert!(!style.contains("#1E1F24") && !style.contains("#58A6FF"), "an old hardcoded color is left");
         }
+    }
+
+    #[test]
+    fn dark_table_keeps_todays_values() {
+        assert_eq!(palette::DARK.bg, [23, 20, 15]);
+        assert_eq!(palette::DARK.accent, [215, 162, 74]);
+        assert_eq!(palette::colors(true), &palette::DARK);
     }
 
     #[test]
