@@ -36,7 +36,17 @@ host-pin platform id and the reaping rule all read these; none keeps its own OS 
   WebView2's frame capture (`Windows.Graphics.Capture`) under Wine is unverified. If ever wanted, it is one `Runtime`
   variant and one arm of `Runtime::between`.
 
+- **A fourth `Os` for FreeBSD and other Unixes.** They read as Linux, so WebKit shows as available there although its
+  Linux ELF would not run. Nothing builds or tests manifold on them; an `Os::Other` would add an arm to every `Os`
+  match for a platform nobody uses. Revisit if someone ports to one.
+
+## Verified
+
+2026-10-23, WSL Ubuntu: the Linux build ran headless with WebKit as the default engine; the host started directly
+(no `xvfb-run`, `DISPLAY` set), connected over loopback TCP, painted `manifold://start`, and exited with no host left
+behind. Windows and Linux unit tests pass.
+
 ## Not verified
 
-The native Linux launch is covered by pure tests (argv, environment). It has not been started against a display or an
-Xvfb here; the WSL Ubuntu run in the plan's Task 3 stands in for a Linux machine.
+The `xvfb-run` fallback (no display) has only the pure argv test, and no real page was loaded in a native tab (only the
+start page). A force-killed manifold with a native tab was not tried.
