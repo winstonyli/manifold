@@ -191,6 +191,8 @@ impl ViewKind {
                 devtools: false,
                 find: true,
                 source: HostSource::Download,
+                // Windows only (dev only: not in the release). On Linux the host would run natively, but that launch
+                // is not wired (`process_manager/webkit.rs`); README "Engines by OS".
                 spawn_mode: SpawnMode::Wsl,
                 runtime_dir: None,
                 only_on: &["windows", "linux"],
