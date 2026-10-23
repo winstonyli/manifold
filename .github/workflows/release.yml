@@ -13,7 +13,23 @@ concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 jobs:
+  # WebKit's host is a Linux ELF that WSL runs from the Windows drive. It is built on the oldest Ubuntu we support
+  # (22.04, the first with libwebkit2gtk-4.1), since a newer runner's glibc would not start on an older distro. The
+  # release job pins it under linux-x64.
+  webkit-host:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install
+      - run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev
+      - run: cargo build --release --locked -p manifold-view-webkit
+      - uses: actions/upload-artifact@v4
+        with:
+          name: webkit-host
+          path: target/release/manifold-view-webkit
+          retention-days: 3
   release:
+    needs: webkit-host
     runs-on: windows-latest
     defaults:
       run:
@@ -34,6 +50,10 @@ jobs:
         if: github.ref_type == 'tag'
         run: git fetch --force origin "refs/tags/${env:TAG}:refs/tags/${env:TAG}"
       - run: rustup toolchain install
+      - uses: actions/download-artifact@v4
+        with:
+          name: webkit-host
+          path: webkit-host
       - run: cargo build --locked -p gate
       - name: The tag is one we can build
         if: github.ref_type == 'tag'
@@ -52,8 +72,10 @@ jobs:
           cargo build --release --locked -p manifold-view-cef
           if ($LASTEXITCODE -ne 0) { exit 1 }
           New-Item -ItemType Directory -Force dist | Out-Null
-          # ANGLE's DLLs come from mozangle's build output; the newest copy is the one this build made.
-          $angle = @{}
+          # ANGLE's DLLs come from mozangle's build output; the newest copy is the one this build made. WebKit's host
+          # comes from the Linux job.
+          $angle = @{ 'manifold-view-webkit' = 'webkit-host/manifold-view-webkit' }
+          if (-not (Test-Path $angle['manifold-view-webkit'])) { throw 'no WebKit host from the Linux job' }
           foreach ($dll in 'libEGL.dll', 'libGLESv2.dll') {
             $angle[$dll] = Get-ChildItem target/release/build -Recurse -Filter $dll | Where-Object FullName -Match 'mozangle' | Sort-Object LastWriteTime -Descending | Select-Object -First 1 -ExpandProperty FullName
             if (-not $angle[$dll]) { throw "no $dll under target/release/build" }
@@ -62,6 +84,7 @@ jobs:
           $hosts = [ordered]@{
             cef = [ordered]@{ 'windows-x64' = @('manifold-view-cef.exe') }
             servo = [ordered]@{ 'windows-x64' = @('manifold-view-servo.exe', 'libEGL.dll', 'libGLESv2.dll') }
+            webkit = [ordered]@{ 'linux-x64' = @('manifold-view-webkit') }
           }
           $manifest = [ordered]@{}
           foreach ($kind in $hosts.Keys) {
@@ -118,5 +141,5 @@ jobs:
           $stem = "manifold-$env:TAG-windows-x64"
           & target/debug/gate.exe release-notes $env:TAG "dist/$stem.host-pins.json" | Set-Content -Encoding utf8 notes.md
           if ($LASTEXITCODE -ne 0) { exit 1 }
-          gh release create $env:TAG --draft --verify-tag --title $env:TAG --notes-file notes.md "dist/$stem.exe" "dist/$stem.exe.sha256" "dist/$stem.embedded-host.sha256" "dist/$stem.embedded-pdf-view.sha256" "dist/$stem.host-pins.json" (Get-ChildItem dist -File | Where-Object Name -Like "*-windows-x64" | ForEach-Object FullName)
+          gh release create $env:TAG --draft --verify-tag --title $env:TAG --notes-file notes.md "dist/$stem.exe" "dist/$stem.exe.sha256" "dist/$stem.embedded-host.sha256" "dist/$stem.embedded-pdf-view.sha256" "dist/$stem.host-pins.json" (Get-ChildItem dist -File | Where-Object Name -Match '-(windows|linux)-x64$' | ForEach-Object FullName)
           if ($LASTEXITCODE -ne 0) { exit 1 }
