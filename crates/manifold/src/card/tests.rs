@@ -447,16 +447,16 @@ fn card_border_resolves_focus_tag_overload_idle_and_hover() {
     // At rest: the tag color, else the kind's idle color.
     assert_eq!(card_border(&view(None), &style, 0.0), (1.0, egui::Color32::GRAY));
     assert_eq!(card_border(&view(Some(red)), &style, 0.0), (1.0, red));
-    // An overloaded group rests on DANGER_COLOR, unless tagged.
+    // An overloaded group rests on the danger color, unless tagged.
     let overloaded = |color| CardView { color, overloaded: true, ..test_view(plain(TYPE_GROUP)) };
-    assert_eq!(card_border(&overloaded(None), &style, 0.0), (1.0, DANGER_COLOR));
+    assert_eq!(card_border(&overloaded(None), &style, 0.0), (1.0, style.overload_border));
     assert_eq!(card_border(&overloaded(Some(red)), &style, 0.0), (1.0, red));
     // Fully hovered: the hover color at 1.5, whatever the resting color.
     assert_eq!(card_border(&view(Some(red)), &style, 1.0), (1.5, egui::Color32::WHITE));
-    // The open tab: ACCENT at 2.5 over everything, not eased.
+    // The open tab: the accent at 2.5 over everything, not eased.
     let focused = CardView { color: Some(red), focused: true, ..test_view(loaded_tab()) };
-    assert_eq!(card_border(&focused, &style, 0.0), (2.5, ACCENT));
-    assert_eq!(card_border(&focused, &style, 1.0), (2.5, ACCENT));
+    assert_eq!(card_border(&focused, &style, 0.0), (2.5, style.focus_border));
+    assert_eq!(card_border(&focused, &style, 1.0), (2.5, style.focus_border));
 }
 
 #[test]

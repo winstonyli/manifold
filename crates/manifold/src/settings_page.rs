@@ -14,7 +14,7 @@ const FIELD_GAP: f32 = 8.0;
 fn section_start(ui: &mut egui::Ui, title: &str) {
     ui.add_space(10.0);
     ui.separator();
-    ui.label(heading_text(title));
+    ui.label(heading_text(ui.visuals(), title));
 }
 
 /// What the Settings page's sections (`App::settings_general_section`
@@ -85,7 +85,7 @@ impl App {
                 {
                     self.close_settings_page();
                 }
-                ui.label(heading_text("Settings"));
+                ui.label(heading_text(ui.visuals(), "Settings"));
             });
         });
 
@@ -509,7 +509,7 @@ impl App {
 
     /// Settings, "Help", first on the page: the welcome tour again, for anyone who missed it on first launch.
     pub(crate) fn settings_help_section(&mut self, ui: &mut egui::Ui, req: &mut SettingsRequests) {
-        ui.label(heading_text("Help")); // first on the page: no rule above it
+        ui.label(heading_text(ui.visuals(), "Help")); // first on the page: no rule above it
         if ui.button("Welcome tour").on_hover_text("Open the first-launch tour in a new tab").clicked() {
             req.welcome_tour_requested = true;
         }

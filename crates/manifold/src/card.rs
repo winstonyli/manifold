@@ -33,7 +33,7 @@ pub(crate) fn label_fits(rect: egui::Rect, zoom_scale: f32) -> bool {
 
 pub(crate) const GRAPH_THUMB_MARGIN: f32 = 6.0;
 
-/// A group card's border tints `DANGER_COLOR` once its member count exceeds
+/// A group card's border tints the danger color once its member count exceeds
 /// this threshold -- a cheap glanceable "this one's gotten big" cue. Only
 /// applies while the group has no explicit tag color of its own (see its use
 /// below) -- a deliberate user choice always wins over this automatic one,
@@ -326,7 +326,7 @@ pub(crate) struct CardView {
 }
 
 /// A card's border width and color at hover progress `hover_t` (0 at
-/// rest, 1 hovered): the tag color at rest, else DANGER_COLOR for an
+/// rest, 1 hovered): the tag color at rest, else the danger color for an
 /// overloaded group, else the kind's idle color, easing toward its hover
 /// color, from width 1 to 1.5. A focused tab's is ACCENT at 2.5.
 pub(crate) fn card_border(view: &CardView, style: &CardStyle, hover_t: f32) -> (f32, egui::Color32) {

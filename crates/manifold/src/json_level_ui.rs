@@ -1077,7 +1077,10 @@ mod tests {
         };
         let row_top = |row: usize| json_view::HEADER_HEIGHT + json_view::ROW_HEIGHT * row as f32;
         assert_eq!(fill_top(SEARCH_HIT.gamma_multiply(0.18)), [row_top(1 + 50 - 40)]);
-        assert_eq!(fill_top(ACCENT.gamma_multiply(0.22)), [row_top(1 + 45 - 40)]);
+        assert_eq!(
+            fill_top(crate::theme::testutil::ctx(true).global_style().visuals.selection.bg_fill.gamma_multiply(0.22)),
+            [row_top(1 + 45 - 40)]
+        );
     }
 
     /// Wave 2 (H1a): a card's painted texts, pinned before rows are culled to the camera.

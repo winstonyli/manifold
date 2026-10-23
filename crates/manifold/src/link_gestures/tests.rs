@@ -663,18 +663,24 @@ fn the_live_preview_follows_the_pointer_and_is_exported() {
 #[test]
 fn each_retarget_outcome_has_its_own_look() {
     use crate::links::RetargetOutcome::*;
-    use crate::theme::{refused_color, ACCENT, DANGER_COLOR, TEXT_WEAK};
+    use crate::theme::{accent, danger, palette, refused_color};
     let visuals = crate::theme::testutil::ctx(true).global_style().visuals.clone();
     let look = |outcome| retarget_look(outcome, &visuals);
-    assert_eq!(look(Retargeted), RetargetLook { band: ACCENT, band_px: LINK_STROKE_PX, glyph: None, ring: ACCENT });
-    assert_eq!(look(Cancelled).band, ACCENT);
-    assert_eq!(look(Cancelled).ring, TEXT_WEAK, "an own-card ring promises no retarget");
+    assert_eq!(
+        look(Retargeted),
+        RetargetLook { band: accent(&visuals), band_px: LINK_STROKE_PX, glyph: None, ring: accent(&visuals) }
+    );
+    assert_eq!(look(Cancelled).band, accent(&visuals));
+    assert_eq!(look(Cancelled).ring, palette(&visuals).text_weak, "an own-card ring promises no retarget");
     assert_eq!(
         (look(Refused).band, look(Refused).ring, look(Refused).glyph),
         (refused_color(&visuals), refused_color(&visuals), Some(RetargetGlyph::Prohibited))
     );
     let deleted = look(Deleted);
-    assert_eq!((deleted.band, deleted.ring, deleted.glyph), (DANGER_COLOR, DANGER_COLOR, Some(RetargetGlyph::Cross)));
+    assert_eq!(
+        (deleted.band, deleted.ring, deleted.glyph),
+        (danger(&visuals), danger(&visuals), Some(RetargetGlyph::Cross))
+    );
     assert_ne!(RetargetGlyph::Cross, RetargetGlyph::Prohibited);
     let glyphs: Vec<_> = [Retargeted, Cancelled, Refused, Deleted].map(|o| look(o).glyph.is_some()).to_vec();
     assert_eq!(glyphs, [false, false, true, true], "only the deleted and the refused carry a mark");
@@ -684,7 +690,7 @@ fn each_retarget_outcome_has_its_own_look() {
         assert!(rings.iter().skip(i + 1).all(|b| a != b), "four distinct rings");
     }
     // Bands (Cancelled shares the accent band with Retargeted by design): pairwise distinct, and the refusal's
-    // hue is far from both others. ACCENT (gold) and DANGER_COLOR (rust) are existing theme constants only about
+    // hue is far from both others. The accent and the danger color are existing theme constants only about
     // 25 degrees apart, so that pair also has the thin band and the "x" to tell it apart.
     let hue = |c: egui::Color32| egui::ecolor::Hsva::from(c).h * 360.0;
     let apart = |a: egui::Color32, b: egui::Color32| {

@@ -586,7 +586,7 @@ mod tests {
         let (mut app, tab, _peer) = open_back_popup("trail-popup-draw");
         let output = popup_run(&mut app, tab, vec![]);
         let shapes = leaves(&output);
-        let accent = egui::epaint::ColorMode::Solid(crate::theme::ACCENT);
+        let accent = egui::epaint::ColorMode::Solid(crate::theme::accent(&app.egui_ctx.global_style().visuals));
         let curves = shapes.iter().filter(|s| matches!(s, egui::Shape::CubicBezier(_))).count();
         let on_path =
             shapes.iter().filter(|s| matches!(s, egui::Shape::CubicBezier(b) if b.stroke.color == accent)).count();

@@ -40,7 +40,7 @@ pub(crate) const TAG_COLOR_PALETTE: [egui::Color32; 6] = [
 /// (right-click menus, toolbar lists, the address-bar suggestions).
 pub(crate) fn popup_frame(ui: &egui::Ui) -> egui::Frame {
     egui::Frame::default()
-        .fill(TOOLBAR_FILL)
+        .fill(ui.visuals().window_fill)
         .stroke(egui::Stroke::new(1.0, ui.visuals().weak_text_color()))
         .corner_radius(8u8)
         .inner_margin(egui::Margin::same(4))
@@ -63,9 +63,9 @@ pub(crate) fn kbd(ui: &mut egui::Ui, text: &str) -> egui::Response {
 pub(crate) fn toggle(ui: &mut egui::Ui, on: bool, label: &str) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(egui::vec2(30.0, 17.0), egui::Sense::click());
     let t = ui.ctx().animate_bool_responsive(response.id, on);
-    let off_fill = TOOLBAR_FILL.gamma_multiply(1.6);
-    let fill = lerp_color32(off_fill, ACCENT, t);
-    let knob = lerp_color32(ui.visuals().weak_text_color(), BG, t);
+    let off_fill = ui.visuals().window_fill.gamma_multiply(1.6);
+    let fill = lerp_color32(off_fill, accent(ui.visuals()), t);
+    let knob = lerp_color32(ui.visuals().weak_text_color(), ui.visuals().panel_fill, t);
     let radius = rect.height() / 2.0;
     ui.painter().rect_filled(rect, radius, fill);
     let knob_x = egui::lerp((rect.left() + radius)..=(rect.right() - radius), t);
@@ -180,7 +180,12 @@ pub(crate) fn rgb(color: egui::Color32) -> [u8; 3] {
 /// has no frame; this paints inside the widget's rect, so it moves nothing.
 pub(crate) fn focus_ring(ui: &egui::Ui, response: &egui::Response) {
     if response.has_focus() {
-        ui.painter().rect_stroke(response.rect, 2.0, egui::Stroke::new(1.5, TEXT_PRIMARY), egui::StrokeKind::Inside);
+        ui.painter().rect_stroke(
+            response.rect,
+            2.0,
+            egui::Stroke::new(1.5, palette(ui.visuals()).text),
+            egui::StrokeKind::Inside,
+        );
     }
 }
 
@@ -231,25 +236,28 @@ pub(crate) fn selectable_label(ui: &mut egui::Ui, selected: bool, text: impl Int
 
 /// The one solid-gold button a toolbar has: its main action.
 pub(crate) fn primary_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
-    filled_button(ui, label, ACCENT)
+    let fill = accent(ui.visuals());
+    filled_button(ui, label, fill)
 }
 
-/// A dialog's main button when it destroys something: the same solid fill in `DANGER_COLOR`, so the colour says
+/// A dialog's main button when it destroys something: the same solid fill in the danger color, so the colour says
 /// which kind of action it is (a gold "Delete" would read as the safe default).
 pub(crate) fn danger_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
-    filled_button(ui, label, DANGER_COLOR)
+    let fill = danger(ui.visuals());
+    filled_button(ui, label, fill)
 }
 
 fn filled_button(ui: &mut egui::Ui, label: &str, fill: egui::Color32) -> egui::Response {
     ui.scope(|ui| {
         ui.spacing_mut().button_padding.x = 11.0;
+        let ink = ui.visuals().widgets.active.fg_stroke.color;
         add_borderless(
             ui,
             true,
             egui::Button::new(
                 egui::RichText::new(label)
                     .font(egui::FontId::new(14.0, bound_family(ui.ctx(), control_bold_family())))
-                    .color(BG),
+                    .color(ink),
             )
             .fill(fill),
         )
@@ -316,36 +324,6 @@ pub(crate) const RADIUS: u8 = 2;
 pub(crate) const RADIUS_ITEM: u8 = 5;
 pub(crate) const RADIUS_CHIP: u8 = 6;
 
-/// Fill for the toolbar/chrome bars (Tab view's merged single bar, Graph
-/// view's "+ New Tab" bar, the settings popup) — distinct from the
-/// graph/content area below.
-pub(crate) const TOOLBAR_FILL: egui::Color32 = color(manifold_pages::palette::DARK.toolbar_fill);
-
-/// A single accent color used throughout — selection highlights, hyperlinks,
-/// the focused-tab-strip fill, the focused graph node's border — so the
-/// whole chrome reads as one coherent theme rather than egui's flat default
-/// dark gray-on-gray. A muted gold rather than the cooler blue this used to
-/// be, to sit with the rest of the warm/editorial palette below instead of
-/// against it.
-pub(crate) const ACCENT: egui::Color32 = color(manifold_pages::palette::DARK.accent);
-
-/// The one severity-red used everywhere this app needs to say "warning" or
-/// "destructive": a group card's overloaded border, every close/eject
-/// button's hover fill, error text, and the muted-audio icon all reference
-/// this single constant rather than each re-deriving the same RGB triple --
-/// so it reads unambiguously as one meaning across the whole chrome, and a
-/// future shade change only has one place to edit. A warm rust rather than a
-/// pure red, so it still reads unambiguously as "danger" without clashing
-/// with the rest of this palette the way a stop-sign red would.
-pub(crate) const DANGER_COLOR: egui::Color32 = color(manifold_pages::palette::DARK.danger);
-
-/// A darker rust than `DANGER_COLOR`, for a solid fill that carries `TEXT_PRIMARY` (the graph close button's hover):
-/// `DANGER_COLOR` is for text and icons on dark surfaces, and light text on it reads at only 2.5:1.
-pub(crate) const DANGER_FILL: egui::Color32 = egui::Color32::from_rgb(142, 58, 40);
-
-/// Healthy / recommended / good: a muted green, the one `success` hue (the audio waveform, the recommended engine tier).
-pub(crate) const SUCCESS_COLOR: egui::Color32 = egui::Color32::from_rgb(150, 190, 90);
-
 /// Text on a dark scrim over a card (the title strip, an image's caption, the jar chip): near white. The scrims are
 /// dark in both themes, so this does not change with the theme.
 pub(crate) const SCRIM_TEXT: egui::Color32 = egui::Color32::from_gray(240);
@@ -363,42 +341,12 @@ pub(crate) fn refused_color(visuals: &egui::Visuals) -> egui::Color32 {
 }
 
 /// A sticky note's card fill -- a warm, light color deliberately unlike
-/// every other card's dark `extreme_bg_color`/`TOOLBAR_FILL` tone, so a note
+/// every other card's dark `extreme_bg_color`/`window_fill` tone, so a note
 /// reads as "a physical note" at a glance rather than another chrome-toned
 /// panel. The text drawn on it (`NotePayload`'s editable body) is dark to
 /// stay legible against this light fill, the one card in this app that
 /// isn't light-text-on-dark.
 pub(crate) const NOTE_CARD_COLOR: egui::Color32 = egui::Color32::from_rgb(255, 236, 148);
-
-/// The window/content-area base — behind every panel, the darkest layer.
-/// Distinct from `TOOLBAR_FILL` on purpose: egui's own default has exactly
-/// one dark gray for everything (panels, buttons, the app background all
-/// read as the same flat plane), which is the single biggest reason this
-/// app used to look like an unstyled egui demo rather than real chrome.
-/// This + `TOOLBAR_FILL` + `SURFACE_RAISED` form a three-step depth ladder
-/// (background < panel < raised widget) that egui's stock palette doesn't
-/// have at all.
-pub(crate) const BG: egui::Color32 = color(manifold_pages::palette::DARK.bg);
-
-/// A button/field's own resting fill, one step up from `TOOLBAR_FILL` — the
-/// panel it sits on. Also used for the graph card's engine-picker `Frame`.
-/// Deliberately a wide jump from `TOOLBAR_FILL`, not a subtle one — the
-/// point is a button reads as its own raised chip at a glance, not just
-/// under close pixel inspection.
-pub(crate) const SURFACE_RAISED: egui::Color32 = color(manifold_pages::palette::DARK.surface_raised);
-
-/// Hover state, one step up again — every interactive widget in this app's
-/// toolbar/popups visibly lightens on hover, which stock egui's near-
-/// identical inactive/hovered grays don't make obvious at a glance.
-pub(crate) const SURFACE_HOVER: egui::Color32 = color(manifold_pages::palette::DARK.surface_hover);
-
-/// A hovered control's outline. Hover is a surface step plus this neutral stroke; `ACCENT` marks what is selected,
-/// focused, open or primary, so the two read differently.
-pub(crate) const OUTLINE: egui::Color32 = color(manifold_pages::palette::DARK.outline);
-
-pub(crate) const TEXT_PRIMARY: egui::Color32 = color(manifold_pages::palette::DARK.text_primary);
-
-pub(crate) const TEXT_WEAK: egui::Color32 = color(manifold_pages::palette::DARK.text_weak);
 
 /// What `Visuals` has no exact slot for, per theme (`palette` picks by `Visuals::dark_mode`). Text lives here, not in
 /// `Visuals`: `Visuals::text_color()` is the weak tan and `weak_text_color()` is derived from it, so mapping these
@@ -415,8 +363,12 @@ pub(crate) struct Palette {
 pub(crate) const INK_DARK: egui::Color32 = egui::Color32::from_rgb(23, 20, 15);
 pub(crate) const INK_LIGHT: egui::Color32 = egui::Color32::from_rgb(233, 226, 211);
 
-static DARK_PALETTE: Palette =
-    Palette { text: TEXT_PRIMARY, text_weak: TEXT_WEAK, danger_fill: DANGER_FILL, success: SUCCESS_COLOR };
+static DARK_PALETTE: Palette = Palette {
+    text: color(manifold_pages::palette::DARK.text_primary),
+    text_weak: color(manifold_pages::palette::DARK.text_weak),
+    danger_fill: egui::Color32::from_rgb(142, 58, 40),
+    success: egui::Color32::from_rgb(150, 190, 90),
+};
 
 pub(crate) fn palette(_visuals: &egui::Visuals) -> &'static Palette {
     &DARK_PALETTE
@@ -435,7 +387,7 @@ pub(crate) fn danger(visuals: &egui::Visuals) -> egui::Color32 {
 /// Fills egui's dark and light style slots (`style_mut_of` keeps one `Style` per theme), so `set_theme` switches the
 /// whole chrome. Each slot starts from egui's own preset for its theme, so every field the table below does not name
 /// is coherent for that theme, then gets the spacing, shape and the `manifold_pages::palette` colors: the
-/// `BG`/`TOOLBAR_FILL`/`SURFACE_RAISED`/`SURFACE_HOVER` depth ladder and `ACCENT` through selection, hyperlink,
+/// bg, toolbar, raised and hover depth ladder and the accent through selection, hyperlink,
 /// focus and the active widget. Until the theme setting exists the app pins the dark theme.
 pub(crate) fn apply_style(ctx: &egui::Context) {
     for (theme, dark) in [(egui::Theme::Dark, true), (egui::Theme::Light, false)] {
@@ -456,52 +408,56 @@ fn fill_style(style: &mut egui::Style, dark: bool) {
     style.spacing.item_spacing = egui::vec2(10.0, 7.0);
     style.spacing.button_padding = egui::vec2(13.0, 7.0);
 
+    let c = manifold_pages::palette::colors(dark);
+    let (bg, toolbar, raised, hover) =
+        (color(c.bg), color(c.toolbar_fill), color(c.surface_raised), color(c.surface_hover));
+    let (outline, text, weak) = (color(c.outline), color(c.text_primary), color(c.text_weak));
+    let (accent, danger) = (color(c.accent), color(c.danger));
+
     let corner_radius: egui::CornerRadius = RADIUS.into();
     style.visuals.widgets.noninteractive.corner_radius = corner_radius;
-    style.visuals.widgets.noninteractive.bg_fill = TOOLBAR_FILL;
-    style.visuals.widgets.noninteractive.weak_bg_fill = TOOLBAR_FILL;
-    style.visuals.widgets.noninteractive.fg_stroke.color = TEXT_WEAK;
+    style.visuals.widgets.noninteractive.bg_fill = toolbar;
+    style.visuals.widgets.noninteractive.weak_bg_fill = toolbar;
+    style.visuals.widgets.noninteractive.fg_stroke.color = weak;
 
     style.visuals.widgets.inactive.corner_radius = corner_radius;
-    style.visuals.widgets.inactive.bg_fill = SURFACE_RAISED;
-    style.visuals.widgets.inactive.weak_bg_fill = SURFACE_RAISED;
-    style.visuals.widgets.inactive.fg_stroke.color = TEXT_PRIMARY;
-    style.visuals.widgets.inactive.bg_stroke = egui::Stroke::new(1.0, SURFACE_HOVER);
+    style.visuals.widgets.inactive.bg_fill = raised;
+    style.visuals.widgets.inactive.weak_bg_fill = raised;
+    style.visuals.widgets.inactive.fg_stroke.color = text;
+    style.visuals.widgets.inactive.bg_stroke = egui::Stroke::new(1.0, hover);
 
     style.visuals.widgets.hovered.corner_radius = corner_radius;
-    style.visuals.widgets.hovered.bg_fill = SURFACE_HOVER;
-    style.visuals.widgets.hovered.weak_bg_fill = SURFACE_HOVER;
-    style.visuals.widgets.hovered.fg_stroke.color = TEXT_PRIMARY;
-    style.visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.0, OUTLINE);
+    style.visuals.widgets.hovered.bg_fill = hover;
+    style.visuals.widgets.hovered.weak_bg_fill = hover;
+    style.visuals.widgets.hovered.fg_stroke.color = text;
+    style.visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.0, outline);
 
     style.visuals.widgets.active.corner_radius = corner_radius;
-    style.visuals.widgets.active.bg_fill = ACCENT;
-    style.visuals.widgets.active.weak_bg_fill = ACCENT;
-    style.visuals.widgets.active.fg_stroke.color = BG;
-    style.visuals.widgets.active.bg_stroke = egui::Stroke::new(1.0, ACCENT);
+    style.visuals.widgets.active.bg_fill = accent;
+    style.visuals.widgets.active.weak_bg_fill = accent;
+    style.visuals.widgets.active.fg_stroke.color = bg;
+    style.visuals.widgets.active.bg_stroke = egui::Stroke::new(1.0, accent);
 
     style.visuals.widgets.open.corner_radius = corner_radius;
-    style.visuals.widgets.open.bg_fill = SURFACE_RAISED;
-    style.visuals.widgets.open.weak_bg_fill = SURFACE_RAISED;
-    style.visuals.widgets.open.fg_stroke.color = TEXT_PRIMARY;
-    style.visuals.widgets.open.bg_stroke = egui::Stroke::new(1.0, ACCENT);
+    style.visuals.widgets.open.bg_fill = raised;
+    style.visuals.widgets.open.weak_bg_fill = raised;
+    style.visuals.widgets.open.fg_stroke.color = text;
+    style.visuals.widgets.open.bg_stroke = egui::Stroke::new(1.0, accent);
 
     style.visuals.window_corner_radius = RADIUS.into();
     style.visuals.menu_corner_radius = RADIUS.into();
-    style.visuals.window_fill = TOOLBAR_FILL;
-    style.visuals.panel_fill = BG;
-    style.visuals.extreme_bg_color = BG;
-    style.visuals.faint_bg_color = SURFACE_RAISED;
-    style.visuals.window_stroke = egui::Stroke::new(1.0, SURFACE_RAISED);
+    style.visuals.window_fill = toolbar;
+    style.visuals.panel_fill = bg;
+    style.visuals.extreme_bg_color = bg;
+    style.visuals.faint_bg_color = raised;
+    style.visuals.window_stroke = egui::Stroke::new(1.0, raised);
 
-    style.visuals.selection.bg_fill = ACCENT;
-    // Warm cream (`TEXT_PRIMARY`), not pure white -- white read cold and
-    // slightly out of place against a gold selection fill once the rest
-    // of this palette warmed up.
-    style.visuals.selection.stroke.color = TEXT_PRIMARY;
-    style.visuals.hyperlink_color = ACCENT;
+    style.visuals.selection.bg_fill = accent;
+    // The primary text color, not pure white: white read cold against the selection fill.
+    style.visuals.selection.stroke.color = text;
+    style.visuals.hyperlink_color = accent;
     style.visuals.override_text_color = None;
-    style.visuals.error_fg_color = DANGER_COLOR;
+    style.visuals.error_fg_color = danger;
 }
 
 /// The named font family `heading_text` requests for dialog titles and
@@ -623,11 +579,11 @@ pub(crate) fn apply_fonts(ctx: &egui::Context) {
 
 /// A dialog title or settings-section header — `heading_family()` (Newsreader
 /// Bold) at a size that reads as a real step up from body text, in
-/// `TEXT_PRIMARY`. Every such title in this app's chrome goes through this
+/// the primary text color. Every such title in this app's chrome goes through this
 /// one helper rather than each popup separately picking a size/weight, so
 /// they stay visually identical to each other by construction.
-pub(crate) fn heading_text(text: impl Into<String>) -> egui::RichText {
-    egui::RichText::new(text).font(egui::FontId::new(17.0, heading_family())).color(TEXT_PRIMARY)
+pub(crate) fn heading_text(visuals: &egui::Visuals, text: impl Into<String>) -> egui::RichText {
+    egui::RichText::new(text).font(egui::FontId::new(17.0, heading_family())).color(palette(visuals).text)
 }
 
 /// Forces the native (OS-drawn, undecorated-in-headless-mode-only -- see
@@ -713,7 +669,7 @@ pub(crate) fn lerp_color32(a: egui::Color32, b: egui::Color32, t: f32) -> egui::
 pub(crate) fn toolbar_panel(id: &'static str, ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui)) {
     egui::Panel::top(id)
         .exact_size(CHROME_HEIGHT_POINTS)
-        .frame(egui::Frame::default().fill(TOOLBAR_FILL).inner_margin(egui::Margin::symmetric(8, 5)))
+        .frame(egui::Frame::default().fill(ui.visuals().window_fill).inner_margin(egui::Margin::symmetric(8, 5)))
         .show(ui, |ui| {
             ui.spacing_mut().item_spacing = egui::vec2(6.0, 4.0);
             ui.spacing_mut().button_padding = egui::vec2(8.0, 4.0);
@@ -722,7 +678,7 @@ pub(crate) fn toolbar_panel(id: &'static str, ui: &mut egui::Ui, content: impl F
             control_font(ui);
             // Soft-filled fields and borderless buttons: the raised fill
             // alone separates them from the bar (approved toolbar mockup).
-            ui.visuals_mut().extreme_bg_color = SURFACE_RAISED;
+            ui.visuals_mut().extreme_bg_color = ui.visuals().widgets.inactive.bg_fill;
             ui.visuals_mut().widgets.inactive.bg_stroke = egui::Stroke::NONE;
             egui::ScrollArea::horizontal().auto_shrink([false, false]).show(ui, content);
         });
@@ -846,7 +802,7 @@ pub(crate) fn toolbar_chip(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui
     // A hairline between this chip and whatever came before it in the row.
     if ui.min_rect().width() > 1.0 {
         let (rect, _) = ui.allocate_exact_size(egui::vec2(1.0, 18.0), egui::Sense::hover());
-        ui.painter().rect_filled(rect, 0.0, SURFACE_HOVER);
+        ui.painter().rect_filled(rect, 0.0, ui.visuals().widgets.hovered.bg_fill);
     }
     let chip_bg_slot = ui.painter().add(egui::Shape::Noop);
     // 2 px of chip padding around 26 px buttons: a 30 px chip in a 28 px row.
@@ -867,7 +823,8 @@ pub(crate) fn toolbar_chip(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui
     // for right-to-left) -- skip painting rather than filling an
     // unbounded rect.
     if rect.is_finite() {
-        ui.painter().set(chip_bg_slot, egui::Shape::rect_filled(rect, 8.0, TOOLBAR_FILL.gamma_multiply(1.6)));
+        let fill = ui.visuals().window_fill.gamma_multiply(1.6);
+        ui.painter().set(chip_bg_slot, egui::Shape::rect_filled(rect, 8.0, fill));
     }
 }
 
@@ -899,18 +856,22 @@ mod tests {
     /// the hover outline (a UI boundary). A new role goes in this table with the surfaces it sits on.
     #[test]
     fn colour_roles_keep_their_contrast_on_their_surfaces() {
-        const SURFACES: [egui::Color32; 4] = [BG, TOOLBAR_FILL, SURFACE_RAISED, SURFACE_HOVER];
+        let t = &manifold_pages::palette::DARK;
+        let p = &DARK_PALETTE;
+        let [bg, toolbar, raised, hover] = [t.bg, t.toolbar_fill, t.surface_raised, t.surface_hover].map(color);
+        let [accent, danger, outline] = [t.accent, t.danger, t.outline].map(color);
+        let surfaces = [bg, toolbar, raised, hover];
         // (role, color, the surfaces it is drawn on, the ratio it needs). Accent and danger text is drawn on the page
         // and raised surfaces only (a hovered row shows weak or primary text).
         let roles: [(&str, egui::Color32, &[egui::Color32], f32); 7] = [
-            ("TEXT_PRIMARY", TEXT_PRIMARY, &SURFACES, 4.5),
-            ("TEXT_WEAK", TEXT_WEAK, &SURFACES, 4.5),
-            ("ACCENT", ACCENT, &[BG, TOOLBAR_FILL, SURFACE_RAISED], 4.5),
-            ("DANGER_COLOR", DANGER_COLOR, &[BG, TOOLBAR_FILL, SURFACE_RAISED], 4.5),
-            ("SUCCESS_COLOR", SUCCESS_COLOR, &[BG, TOOLBAR_FILL, SURFACE_RAISED], 4.5),
-            ("OUTLINE", OUTLINE, &[SURFACE_HOVER], 3.0),
-            // Text on a solid fill: `filled_button` and the active widget set `BG` text; the close hover sets primary.
-            ("BG on ACCENT", BG, &[ACCENT], 4.5),
+            ("text", p.text, &surfaces, 4.5),
+            ("text_weak", p.text_weak, &surfaces, 4.5),
+            ("accent", accent, &[bg, toolbar, raised], 4.5),
+            ("danger", danger, &[bg, toolbar, raised], 4.5),
+            ("success", p.success, &[bg, toolbar, raised], 4.5),
+            ("outline", outline, &[hover], 3.0),
+            // Text on a solid fill: `filled_button` and the active widget set `bg` text; the close hover sets primary.
+            ("bg on accent", bg, &[accent], 4.5),
         ];
         for (name, color, surfaces, needed) in roles {
             for &surface in surfaces {
@@ -918,30 +879,31 @@ mod tests {
                 assert!(got >= needed, "{name} on {surface:?} is {got:.2}, needs {needed}");
             }
         }
-        assert!(contrast(BG, DANGER_COLOR) >= 4.5, "BG text on DANGER_COLOR");
+        assert!(contrast(bg, danger) >= 4.5, "bg text on danger");
     }
 
     #[test]
     fn palette_follows_visuals_dark_mode() {
         let ctx = testutil::ctx(true);
         let v = ctx.global_style().visuals.clone();
-        assert_eq!(palette(&v).text, TEXT_PRIMARY);
-        assert_eq!(accent(&v), ACCENT);
-        assert_eq!(danger(&v), DANGER_COLOR);
+        assert_eq!(palette(&v).text, color(manifold_pages::palette::DARK.text_primary));
+        assert_eq!(accent(&v), color(manifold_pages::palette::DARK.accent));
+        assert_eq!(danger(&v), color(manifold_pages::palette::DARK.danger));
     }
 
     #[test]
     fn apply_style_sets_selection_and_error_colors() {
         let ctx = testutil::ctx(true);
         let v = ctx.global_style().visuals.clone();
-        assert_eq!(v.selection.bg_fill, ACCENT);
-        assert_eq!(v.error_fg_color, DANGER_COLOR);
+        assert_eq!(v.selection.bg_fill, color(manifold_pages::palette::DARK.accent));
+        assert_eq!(v.error_fg_color, color(manifold_pages::palette::DARK.danger));
     }
 
     /// Light text keeps AA contrast on the solid danger fill the graph close button shows on hover.
     #[test]
     fn danger_fill_carries_primary_text() {
-        assert!(contrast(TEXT_PRIMARY, DANGER_FILL) >= 4.5, "{}", contrast(TEXT_PRIMARY, DANGER_FILL));
+        let p = &DARK_PALETTE;
+        assert!(contrast(p.text, p.danger_fill) >= 4.5, "{}", contrast(p.text, p.danger_fill));
     }
 
     /// Easing in from transparent keeps the target's color and only raises its opacity: a lerp of the unmultiplied

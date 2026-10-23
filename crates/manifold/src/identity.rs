@@ -328,7 +328,7 @@ mod tests {
         let ctx = crate::theme::testutil::ctx(true);
         let at = egui::pos2(50.0, 50.0);
         let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
-            let text = IdentityText { center: at, text: "E".into(), size: 11.0, color: BG };
+            let text = IdentityText { center: at, text: "E".into(), size: 11.0, color: INK_DARK };
             text.draw(ui.painter(), at);
         });
         output.textures_delta.clear();
@@ -352,7 +352,8 @@ mod tests {
     fn a_line_of_text_is_centred_on_its_line_box() {
         let ctx = crate::theme::testutil::ctx(true);
         let at = egui::pos2(50.0, 50.0);
-        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| paint_centered(ui.painter(), at, "Egg", 11.0, BG));
+        let mut output =
+            ctx.run_ui(egui::RawInput::default(), |ui| paint_centered(ui.painter(), at, "Egg", 11.0, INK_DARK));
         output.textures_delta.clear();
         let middle = output.shapes.iter().find_map(|s| match &s.shape {
             egui::Shape::Text(t) => Some(t.pos + t.galley.size() / 2.0),
@@ -373,7 +374,7 @@ mod tests {
     fn a_spinner_paints_shapes_and_no_text() {
         let ctx = egui::Context::default();
         let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
-            let text = Identity::Spinner.paint(ui, egui::pos2(20.0, 20.0), 16.0, 1.0, TEXT_WEAK);
+            let text = Identity::Spinner.paint(ui, egui::pos2(20.0, 20.0), 16.0, 1.0, egui::Color32::GRAY);
             assert!(text.is_none());
         });
         output.textures_delta.clear();
@@ -398,10 +399,11 @@ mod tests {
         let fill = view_color(ViewKind::Cef);
         let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
             let text = Identity::Tile { fill, letter: Some('E') }
-                .paint(ui, egui::pos2(10.0, 10.0), 16.0, 1.0, TEXT_WEAK)
+                .paint(ui, egui::pos2(10.0, 10.0), 16.0, 1.0, egui::Color32::GRAY)
                 .expect("a tile has a letter");
             assert_eq!((text.text.as_str(), text.center, text.color), ("E", egui::pos2(10.0, 10.0), ink_on(fill)));
-            let globe = Identity::Tile { fill, letter: None }.paint(ui, egui::Pos2::ZERO, 16.0, 1.0, TEXT_WEAK);
+            let globe =
+                Identity::Tile { fill, letter: None }.paint(ui, egui::Pos2::ZERO, 16.0, 1.0, egui::Color32::GRAY);
             assert_eq!(globe.unwrap().text, egui_phosphor::light::GLOBE);
         });
         output.textures_delta.clear();
@@ -418,9 +420,9 @@ mod tests {
                     egui::pos2(10.0, 10.0),
                     16.0,
                     1.0,
-                    TEXT_WEAK,
+                    egui::Color32::GRAY,
                 );
-                Identity::Spinner.paint(ui, egui::pos2(50.0, 10.0), 16.0, 1.0, TEXT_WEAK);
+                Identity::Spinner.paint(ui, egui::pos2(50.0, 10.0), 16.0, 1.0, egui::Color32::GRAY);
                 paint_row_icon(
                     ui,
                     egui::Rect::from_min_size(egui::pos2(0.0, 30.0), egui::vec2(100.0, 14.0)),

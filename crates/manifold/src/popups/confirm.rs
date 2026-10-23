@@ -21,7 +21,7 @@ fn confirm_dialog(
             dialog_frame(ui).show(ui, |ui| {
                 control_font(ui);
                 ui.set_min_width(240.0);
-                ui.label(heading_text(title));
+                ui.label(heading_text(ui.visuals(), title));
                 ui.add_space(4.0);
                 for (i, line) in detail.lines().enumerate() {
                     let text = egui::RichText::new(line).small();
@@ -242,8 +242,10 @@ mod tests {
         };
         let ((rust, rust_focused), (gold, gold_focused)) = (fills(true), fills(false));
         assert!(gold_focused && !rust_focused, "focus: gold {gold_focused}, rust {rust_focused}");
-        assert!(rust.contains(&crate::theme::DANGER_COLOR) && !rust.contains(&crate::theme::ACCENT), "{rust:?}");
-        assert!(gold.contains(&crate::theme::ACCENT) && !gold.contains(&crate::theme::DANGER_COLOR), "{gold:?}");
+        let v = crate::theme::testutil::ctx(true).global_style().visuals.clone();
+        let (danger, accent) = (crate::theme::danger(&v), crate::theme::accent(&v));
+        assert!(rust.contains(&danger) && !rust.contains(&accent), "{rust:?}");
+        assert!(gold.contains(&accent) && !gold.contains(&danger), "{gold:?}");
     }
 
     #[test]

@@ -63,7 +63,7 @@ impl App {
                     // Narrower than 360 in a narrow window; the descriptions wrap to the room left of the keys.
                     let width = 360.0_f32.min(ui.ctx().content_rect().width() - 60.0);
                     ui.set_width(width);
-                    ui.label(heading_text("Keyboard Shortcuts"));
+                    ui.label(heading_text(ui.visuals(), "Keyboard Shortcuts"));
                     ui.separator();
                     // Leaves room for the title above and the Close button below on a short window.
                     let list_height = (ui.ctx().content_rect().height() - 170.0).clamp(120.0, 520.0);

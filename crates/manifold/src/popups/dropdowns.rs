@@ -970,7 +970,7 @@ mod tests {
                 .collect();
         }
         let weak = ctx.global_style().visuals.weak_text_color();
-        for (what, color) in [("header", TEXT_PRIMARY), ("label", weak)] {
+        for (what, color) in [("header", palette(&ctx.global_style().visuals).text), ("label", weak)] {
             let galley = galleys.iter().find(|g| g.job.sections[0].format.color == color);
             let galley = galley.unwrap_or_else(|| panic!("the folder {what} is drawn"));
             assert_eq!(galley.rows.len(), 1, "{what}: one line: {:?}", galley.text());
@@ -984,10 +984,10 @@ mod tests {
         let ctx = egui::Context::default();
         let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
             let segs = crate::names::display_name("Re\u{200B}ading", crate::names::UNTITLED);
-            let job = folder_job(ui, &segs, TEXT_PRIMARY);
+            let job = folder_job(ui, &segs, crate::theme::palette(&egui::Visuals::dark()).text);
             assert_eq!(job.text, "Re⟦200B⟧ading");
             assert_eq!(job.sections[0].format.font_id, egui::TextStyle::Small.resolve(ui.style()));
-            assert_eq!(job.sections[0].format.color, TEXT_PRIMARY);
+            assert_eq!(job.sections[0].format.color, crate::theme::palette(&egui::Visuals::dark()).text);
             assert_eq!(job.sections[1].format.font_id.family, egui::FontFamily::Monospace);
         });
         output.textures_delta.clear();
