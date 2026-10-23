@@ -585,7 +585,7 @@ pub(crate) fn card_focus_ring(ui: &egui::Ui, rect: egui::Rect, inv_zoom: f32) {
 /// A pinned card's pin mark: an accent pin on a round backing, inset into its bottom-left corner (a mark centred on the
 /// corner sat half under the card's border). It is not a control: a card is pinned and unpinned from the selection bar
 /// (`graph_ui/selection_bar.rs`), and a pinned node is left out of the force-directed layout (see `Mirror::pinned`),
-/// so the mark says why it does not move.
+/// so the mark says why it does not move. In `Detail::Simple` it is a plain accent dot.
 pub(crate) fn paint_pinned_mark(
     ui: &egui::Ui,
     deferred_overlays: &mut DeferredOverlays,
@@ -594,10 +594,18 @@ pub(crate) fn paint_pinned_mark(
     inv_zoom: f32,
     detail: crate::graph_ui::Detail,
 ) {
-    if !view.pinned || !detail.content() {
+    if !view.pinned {
         return;
     }
     let (accent, backing) = (accent(ui.visuals()), ui.visuals().window_fill);
+    // A dense view (`Detail::Simple`) gets an accent dot: the glyph would be unreadable and cost a text layout per card.
+    if !detail.content() {
+        let center = card_rect.left_bottom() + egui::vec2(7.0, -7.0) * inv_zoom;
+        deferred_overlays.push(Box::new(move |overlay_painter, project| {
+            overlay_painter.circle_filled(project(center), 3.5, accent);
+        }));
+        return;
+    }
     let center = card_rect.left_bottom() + egui::vec2(12.0, -12.0) * inv_zoom;
     deferred_overlays.push(Box::new(move |overlay_painter, project| {
         let at = project(center);
