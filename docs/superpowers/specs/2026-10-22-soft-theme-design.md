@@ -115,12 +115,21 @@ design assumes the font set is fixed before the build, since the look values are
 - Tag colours on a white card: the swatch is a ring or dot, not text, so contrast is checked as a non-text 3:1 only.
 - Phase 1's pixel-identical `chrome-shots` is the regression check for the refactor.
 
-## Unknowns to settle in the first read of the build
+## Unknowns, checked 2026-10-22 (read-only)
 
-1. **Tab render pass clear colour.** `gpu.rs:910` and `:963` clear to `Color::BLACK`. What shows through at card
-   edges or while a tab loads, and whether a light canvas needs the clear to follow the theme.
-2. **Web-engine surround.** Whether any engine host paints a default background that shows a seam in light.
-3. **How pages learn the theme** (above).
+1. **Clear colour.** `gpu.rs:910` (the tab render pass) and `:963` (the egui pass) clear the swapchain to `Color::BLACK`
+   when first in the frame; the thumbnail downsample passes clear to transparent and are unaffected. egui paints
+   panels over the whole window, so black shows only at an unpainted seam (for example the tab content viewport's
+   edge). In light that seam would be a black hairline. Fix: both clears take the theme's canvas colour from
+   `Palette` (one value, passed to `GpuState::render`).
+2. **Engine backgrounds.** Tab content is captured into textures and drawn by wgpu, so no engine surface sits in the
+   window; the only host background in the code is the WebView2 window class's null brush (`window.rs:75`). Nothing
+   to change.
+3. **Pages.** `manifold_pages::serve(uri)` takes no theme and builds each page once (`OnceLock`). Chosen: a process
+   global `manifold_pages::set_dark(bool)` written by the app on theme change, and `serve` returns the cached dark or
+   light page. It works the same in every engine, where `prefers-color-scheme` would need per-engine plumbing. An
+   already open `manifold://` page keeps its old colours until reloaded; the app reloads open `manifold://` tabs on a
+   theme change.
 4. **One accent, two jobs.** The accent is a fill (selected, primary button, with `BG`-toned ink on it) and also a text
    or ring colour. In light the blue that passes as a fill may not pass as thin text on white; the build may need
    `Palette.accent_text` beside `selection.bg_fill`, decided by the contrast table.
@@ -133,9 +142,8 @@ design assumes the font set is fixed before the build, since the look values are
 - A custom-drawn title bar (the existing note defers it).
 - User-editable themes or more than two palettes.
 
-## Open decisions for review
+## Decisions
 
-- **D1. Font.** Keep Familjen Grotesk as the one family (already bundled; drop Literata and Newsreader, 390 KB), or
-  switch to Inter as in the mockups (adds a bundled font). Recommendation: Familjen Grotesk, since it is a close
-  grotesque, already tuned (`y_offset_factor`), and adds nothing. Needs the user's call.
-- **D2. Default theme.** System (recommended) or Dark.
+- **Font** (decided 2026-10-22): keep Familjen Grotesk as the one family; Literata and Newsreader go with the serif
+  decision, nothing new is bundled.
+- **Theme setting** (decided 2026-10-22): `System | Light | Dark`, default System.
