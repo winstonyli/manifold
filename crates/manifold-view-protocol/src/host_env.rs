@@ -13,6 +13,8 @@ pub const ENV_SOCKET_ID: &str = "VIEW_SOCKET_ID";
 pub const ENV_INITIAL_URL: &str = "VIEW_INITIAL_URL";
 /// Set (to anything) for a jar engine: wait for `SetCookies` before the first navigation.
 pub const ENV_AWAIT_COOKIES: &str = "VIEW_AWAIT_COOKIES";
+/// Set (to anything) when the app theme is dark at spawn; later changes arrive as `HostToView::SetTheme`.
+pub const ENV_DARK: &str = "VIEW_DARK";
 
 /// How long a host started with `ENV_AWAIT_COOKIES` waits for manifold's `SetCookies` before navigating.
 pub const COOKIE_SEED_WAIT: Duration = Duration::from_secs(5);
@@ -27,6 +29,8 @@ pub struct HostEnv {
     pub socket_id: String,
     pub initial_url: String,
     pub await_cookies: bool,
+    /// The app theme at spawn, for the `manifold://` pages the host serves.
+    pub dark: bool,
 }
 
 /// What came first from manifold at startup: the jar seed a jar engine waits for, and any other first message,
@@ -41,14 +45,19 @@ pub struct StartupMessages {
 impl HostEnv {
     /// Panics without `ENV_SOCKET_ID`: a host started by hand cannot work.
     pub fn from_env() -> Self {
-        Self::from_vars(|name| std::env::var(name).ok(), std::env::var_os(ENV_AWAIT_COOKIES).is_some())
+        Self::from_vars(
+            |name| std::env::var(name).ok(),
+            std::env::var_os(ENV_AWAIT_COOKIES).is_some(),
+            std::env::var_os(ENV_DARK).is_some(),
+        )
     }
 
-    fn from_vars(get: impl Fn(&str) -> Option<String>, await_cookies: bool) -> Self {
+    fn from_vars(get: impl Fn(&str) -> Option<String>, await_cookies: bool, dark: bool) -> Self {
         Self {
             socket_id: get(ENV_SOCKET_ID).unwrap_or_else(|| panic!("{ENV_SOCKET_ID} env var required")),
             initial_url: get(ENV_INITIAL_URL).unwrap_or_else(|| DEFAULT_URL.to_string()),
             await_cookies,
+            dark,
         }
     }
 
@@ -76,16 +85,20 @@ mod tests {
 
     #[test]
     fn the_url_defaults_and_the_socket_id_is_required() {
-        let env = HostEnv::from_vars(|name| (name == ENV_SOCKET_ID).then(|| "t1".to_string()), false);
-        assert_eq!(env, HostEnv { socket_id: "t1".into(), initial_url: DEFAULT_URL.into(), await_cookies: false });
-        let env = HostEnv::from_vars(|name| Some(format!("<{name}>")), true);
+        let env = HostEnv::from_vars(|name| (name == ENV_SOCKET_ID).then(|| "t1".to_string()), false, false);
+        assert_eq!(
+            env,
+            HostEnv { socket_id: "t1".into(), initial_url: DEFAULT_URL.into(), await_cookies: false, dark: false }
+        );
+        let env = HostEnv::from_vars(|name| Some(format!("<{name}>")), true, true);
         assert_eq!((env.socket_id.as_str(), env.initial_url.as_str()), ("<VIEW_SOCKET_ID>", "<VIEW_INITIAL_URL>"));
-        assert!(std::panic::catch_unwind(|| HostEnv::from_vars(|_| None, false)).is_err());
+        assert!(env.dark);
+        assert!(std::panic::catch_unwind(|| HostEnv::from_vars(|_| None, false, false)).is_err());
     }
 
     #[test]
     fn a_seed_is_split_from_any_other_first_message() {
-        let env = HostEnv { socket_id: "t".into(), initial_url: "u".into(), await_cookies: true };
+        let env = HostEnv { socket_id: "t".into(), initial_url: "u".into(), await_cookies: true, dark: false };
         let (tx, rx) = mpsc::channel();
         tx.send(HostToView::SetCookies("[]".into())).unwrap();
         let got = env.await_cookies(&rx, || {});
@@ -97,7 +110,7 @@ mod tests {
 
     #[test]
     fn a_host_not_awaiting_cookies_leaves_its_messages_alone() {
-        let env = HostEnv { socket_id: "t".into(), initial_url: "u".into(), await_cookies: false };
+        let env = HostEnv { socket_id: "t".into(), initial_url: "u".into(), await_cookies: false, dark: false };
         let (tx, rx) = mpsc::channel();
         tx.send(HostToView::SetCookies("[]".into())).unwrap();
         let got = env.await_cookies(&rx, || {});

@@ -417,6 +417,7 @@ fn main() {
                 HostToView::SetMuted { muted } => {
                     webview.set_is_muted(muted);
                 }
+                HostToView::SetTheme { dark } => manifold_pages::set_dark(dark),
                 HostToView::Shutdown => {
                     return;
                 }

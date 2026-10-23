@@ -638,37 +638,17 @@ pub(crate) fn heading_text(visuals: &egui::Visuals, text: impl Into<String>) -> 
     egui::RichText::new(text).font(egui::FontId::new(17.0, heading_family())).color(palette(visuals).text)
 }
 
-/// Sets the native (OS-drawn, undecorated-in-headless-mode-only -- see
-/// `resumed`'s own window setup) titlebar dark or light to match the app's
-/// theme, independent of the current Windows theme setting. Without this, a
-/// mismatch draws a bright (or dark) titlebar directly above the chrome -- a
-/// visible seam in the one strip of the window this app doesn't control. A full custom-drawn titlebar
-/// (matching the palette exactly, not just light/dark) was considered and
-/// deliberately deferred -- it would mean reimplementing drag/minimize/
-/// maximize/close hit-testing, a real feature addition, not a theme tweak.
-/// `DWMWA_USE_IMMERSIVE_DARK_MODE` (20) is undocumented pre-Windows 11 but
-/// has shipped stably since a Windows 10 20H1 update; failure is silently
-/// ignored (`DwmSetWindowAttribute`'s return value discarded) the same way
-/// this app already treats titlebar theming as cosmetic, never fatal.
-#[cfg(target_os = "windows")]
-pub(crate) fn apply_titlebar(window: &Window, dark: bool) {
-    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-    let Ok(handle) = window.window_handle() else { return };
-    let RawWindowHandle::Win32(win32) = handle.as_raw() else { return };
-    let hwnd: windows_sys::Win32::Foundation::HWND = win32.hwnd.get() as *mut core::ffi::c_void;
-    let enabled = windows_sys::Win32::Foundation::BOOL::from(dark);
-    unsafe {
-        windows_sys::Win32::Graphics::Dwm::DwmSetWindowAttribute(
-            hwnd,
-            windows_sys::Win32::Graphics::Dwm::DWMWA_USE_IMMERSIVE_DARK_MODE as u32,
-            &enabled as *const _ as *const core::ffi::c_void,
-            std::mem::size_of::<windows_sys::Win32::Foundation::BOOL>() as u32,
-        );
+/// The native window's theme for the setting (`None` follows the system). winit owns the title bar and re-applies it
+/// on system changes, so a fixed choice is set here rather than through DWM, which winit would reset. A full
+/// custom-drawn title bar was considered and deferred: it would mean reimplementing drag, minimize, maximize and
+/// close hit-testing.
+pub(crate) fn window_theme(choice: ThemeChoice) -> Option<winit::window::Theme> {
+    match choice {
+        ThemeChoice::System => None,
+        ThemeChoice::Light => Some(winit::window::Theme::Light),
+        ThemeChoice::Dark => Some(winit::window::Theme::Dark),
     }
 }
-
-#[cfg(not(target_os = "windows"))]
-pub(crate) fn apply_titlebar(_window: &Window, _dark: bool) {}
 
 /// `color` at `alpha` (0-255), its own hue unchanged: a wash or a ring in the card's or the accent's color.
 pub(crate) fn with_alpha(color: egui::Color32, alpha: u8) -> egui::Color32 {

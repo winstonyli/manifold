@@ -1014,6 +1014,9 @@ pub fn spawn_tab(
         .stdin(Stdio::null())
         .stdout(stdout_file)
         .stderr(stderr_file);
+    if manifold_pages::is_dark() {
+        command.env(host_env::ENV_DARK, "1");
+    }
     // Jar engines wait for the jar (`SetCookies`) before their first navigation.
     if desc.jar {
         command.env(host_env::ENV_AWAIT_COOKIES, "1");

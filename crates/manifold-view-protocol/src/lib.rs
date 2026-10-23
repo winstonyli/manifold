@@ -26,7 +26,8 @@ pub use transport::{LocalTransport, RemoteTransport};
 /// 2: `ViewToHost::OpenTabRequested` carries `user_gesture`.
 /// 3: `InputEvent::MouseDown`/`MouseUp` carry `click_count`; `TabState` drops `zoom`.
 /// 4: `ViewToHost::FrameReady` carries `generation` (frame files are named by generation) and drops `frame_id`.
-pub const PROTOCOL_VERSION: u32 = 4;
+/// 5: `HostToView::SetTheme`.
+pub const PROTOCOL_VERSION: u32 = 5;
 
 /// Starts the `ViewToHost::Crashed` reason for a version mismatch, so the
 /// host shows a failed card instead of respawning the same stale binary.

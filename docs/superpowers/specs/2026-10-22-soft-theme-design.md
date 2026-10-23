@@ -1,5 +1,5 @@
 ---
-status: draft
+status: done
 ---
 
 # Soft theme: Heptabase-style light and dark — Design
@@ -157,3 +157,11 @@ design assumes the font set is fixed before the build, since the look values are
   dark)` maps to `LIGHT_TAG_COLOR_PALETTE` (orange-yellow, yellow, sky blue deepened, same hues) at the card paint
   sites (border, swatch, node menu); equality logic (`next_tag_color`, jar free-color search) and the jar chip (on a
   dark scrim) stay canonical. The yellow "refused" color is unchanged in light.
+- **Pages reach the engines** (2026-10-22, final review C1): the pages are served inside the engine host processes, so
+  the app's `set_dark` alone never reached them. The theme travels as `HostToView::SetTheme { dark }` (protocol 5)
+  and at spawn as `VIEW_DARK`; every host calls `manifold_pages::set_dark`. The app sends `SetTheme` to every tab
+  (a later navigation uses the flag), then `Reload` to the open `manifold://` ones. The WebKit host (remote) takes the
+  message only: its first page can load in the old palette.
+- **Title bar** (final review I2): `window.set_theme(window_theme(choice))`, so winit owns the title bar; the DWM call
+  is gone. egui's own `SetTheme` viewport command is never processed here (the app does not call
+  `process_viewport_commands`), so `App::choose_theme` sets the window theme and refreshes egui's `system_theme`.

@@ -71,7 +71,7 @@ impl ApplicationHandler<UserEvent> for App {
         // screen reader there).
         let real_window = !self.headless;
         let window = Arc::new(event_loop.create_window(attrs.with_visible(!real_window)).expect("create window"));
-        apply_titlebar(&window, self.egui_ctx.theme() == egui::Theme::Dark);
+        window.set_theme(window_theme(self.settings.theme));
         self.gpu = Some(GpuState::new(window.clone()));
         let mut egui_state = egui_winit::State::new(
             self.egui_ctx.clone(),

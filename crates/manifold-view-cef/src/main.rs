@@ -139,6 +139,7 @@ fn main() {
     // positional args risks CEF's Chromium-style parser misinterpreting
     // them as its own flags/URLs-to-open.
     let host_env = manifold_view_protocol::HostEnv::from_env();
+    manifold_pages::set_dark(host_env.dark);
     let (socket_id, initial_url) = (host_env.socket_id.clone(), host_env.initial_url.clone());
     // VIEW_CACHE_DIR is this process's own `root_cache_path`, fresh per
     // spawn and deleted afterwards (see process_manager::spawn_tab).
@@ -380,6 +381,7 @@ fn main() {
                         frame.execute_java_script(Some(&code.as_str().into()), None, 0);
                     }
                 }
+                HostToView::SetTheme { dark } => manifold_pages::set_dark(dark),
                 HostToView::Shutdown => {
                     // Must call `close_browser` and wait for
                     // `LifeSpanHandler::on_before_close` before

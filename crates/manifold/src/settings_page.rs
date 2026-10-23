@@ -119,8 +119,7 @@ impl App {
             for choice in ThemeChoice::ALL {
                 let selected = self.settings.theme == choice;
                 if selectable_label(ui, selected, choice.label()).clicked() && !selected {
-                    self.settings.theme = choice;
-                    apply_theme_choice(ui.ctx(), choice);
+                    self.choose_theme(choice);
                     self.save_settings();
                 }
             }

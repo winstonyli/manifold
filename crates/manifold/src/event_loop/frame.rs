@@ -300,8 +300,23 @@ impl App {
 }
 
 impl App {
-    /// When the theme changes (the setting, or the system under `System`), re-applies what follows it outside egui:
-    /// the title bar, and the `manifold://` pages, whose open tabs are reloaded to take the new colors.
+    /// Applies a theme choice everywhere it lands at once: egui's preference, and the native window's (which owns
+    /// the title bar). Under `System` the window re-reports its own theme, so egui's input is refreshed at once.
+    pub(crate) fn choose_theme(&mut self, choice: ThemeChoice) {
+        self.settings.theme = choice;
+        apply_theme_choice(&self.egui_ctx, choice);
+        let Some(window) = &self.window else { return };
+        window.set_theme(window_theme(choice));
+        if let (ThemeChoice::System, Some(state)) = (choice, &mut self.egui_state) {
+            state.egui_input_mut().system_theme = window.theme().map(|t| match t {
+                winit::window::Theme::Light => egui::Theme::Light,
+                winit::window::Theme::Dark => egui::Theme::Dark,
+            });
+        }
+    }
+
+    /// When the theme changes (the setting, or the system under `System`), tells every engine host the palette its
+    /// `manifold://` pages use, and reloads the open ones to take it.
     pub(crate) fn sync_theme(&mut self) {
         let now = self.egui_ctx.theme();
         let first = self.last_theme.is_none();
@@ -309,17 +324,17 @@ impl App {
             return;
         }
         let dark = now == egui::Theme::Dark;
-        if let Some(window) = &self.window {
-            apply_titlebar(window, dark);
-        }
         manifold_pages::set_dark(dark);
-        // The first frame only records the theme: `App::default` and the window setup already applied it.
+        // The first frame only records the theme: `App::default` and the spawn environment already applied it.
         if first {
             return;
         }
         let scheme = format!("{}://", manifold_pages::SCHEME);
         let pages: Vec<NodeId> =
             self.nodes.keys().copied().filter(|&id| self.doc.mirror.url(id).starts_with(&scheme)).collect();
+        for tab in self.nodes.values_mut().filter_map(|n| n.as_tab_mut()) {
+            tab.tab.send(&HostToView::SetTheme { dark });
+        }
         for id in pages {
             if let Some(tab) = self.nodes.get_mut(&id).and_then(|n| n.as_tab_mut()) {
                 tab.tab.send(&HostToView::Reload);

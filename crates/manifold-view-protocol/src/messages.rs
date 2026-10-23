@@ -299,6 +299,9 @@ pub enum HostToView {
     /// silent no-op there only.
     SetMuted { muted: bool },
     Shutdown,
+    /// The app theme changed: serve `manifold://` pages in the dark or light palette from now on (a page already
+    /// open keeps its colors until `Reload`). Sent to every host, since a later navigation uses the flag.
+    SetTheme { dark: bool },
 }
 
 /// The script every engine that reports `JsonBody`/`RedirectableContent` (all but CEF, which
@@ -682,10 +685,10 @@ mod wire_shape_tests {
     use std::io::Cursor;
 
     /// The `PROTOCOL_VERSION` that `RECORDED_FINGERPRINT` was recorded for.
-    const RECORDED_FOR_VERSION: u32 = 4;
+    const RECORDED_FOR_VERSION: u32 = 5;
     /// The fingerprint of the wire shape at `RECORDED_FOR_VERSION`.
-    const RECORDED_FINGERPRINT: u64 = 0x6634_ca5c_7cb1_04de;
-    const HOST_TO_VIEW_VARIANTS: usize = 20;
+    const RECORDED_FINGERPRINT: u64 = 0x9b42_23dc_8815_171f;
+    const HOST_TO_VIEW_VARIANTS: usize = 21;
     const VIEW_TO_HOST_VARIANTS: usize = 16;
     const INPUT_EVENT_VARIANTS: usize = 7;
     const MOUSE_BUTTON_VARIANTS: usize = 3;
@@ -714,6 +717,7 @@ mod wire_shape_tests {
             HostToView::OpenDevTools => 17,
             HostToView::SetMuted { .. } => 18,
             HostToView::Shutdown => 19,
+            HostToView::SetTheme { .. } => 20,
         }
     }
 
@@ -808,6 +812,7 @@ mod wire_shape_tests {
             HostToView::OpenDevTools,
             HostToView::SetMuted { muted: true },
             HostToView::Shutdown,
+            HostToView::SetTheme { dark: true },
         ]
     }
 

@@ -93,6 +93,11 @@ fn palette_vars(dark: bool) -> String {
 
 static DARK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
 
+/// The palette `serve` currently fills in.
+pub fn is_dark() -> bool {
+    DARK.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// Which palette `serve` fills in: the app writes this when its theme changes (a page already open keeps the colors
 /// it was served with until reloaded).
 pub fn set_dark(dark: bool) {
