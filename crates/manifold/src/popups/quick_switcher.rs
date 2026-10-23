@@ -190,6 +190,8 @@ impl App {
                     key_hint_row(ui, [("Up / Down", "move"), ("Enter", "jump"), ("Esc", "close")].into_iter());
                     let qualifiers = self.listed_tab_qualifiers();
                     egui::ScrollArea::vertical().max_height(240.0).show(ui, |ui| {
+                        // Rows are menu rows: the same padding, height and corners as every other list.
+                        menu_item_style(ui);
                         for (i, &id) in matches.iter().enumerate() {
                             let Some(label) = self.quick_switcher_row_label(id) else { continue };
                             let identity =

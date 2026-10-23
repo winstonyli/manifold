@@ -75,8 +75,10 @@ pub(crate) fn file_header_text(path: &str, url: Option<&str>) -> (String, String
     (name, url.unwrap_or(path).to_owned(), url.is_none())
 }
 
-/// Height of a card's header F (glyph or favicon, title, source line), in screen points.
-pub(crate) const TAB_HEADER_POINTS: f32 = 36.0;
+/// Height of a card's header F (glyph or favicon, title, source line), in screen points: the two text lines, the gap
+/// between them and the padding above and below.
+pub(crate) const TAB_HEADER_POINTS: f32 =
+    HEADER_PAD_Y + HEADER_TITLE_LINE + HEADER_LINE_GAP + HEADER_SOURCE_LINE + HEADER_PAD_Y;
 /// The strip a card too short for the header (`tab_has_header`) gets along its bottom instead, in screen points.
 pub(crate) const TAB_STRIP_POINTS: f32 = 18.0;
 /// Header F's layout, in screen points from the card's top-left. `paint_card_header` and the JSON
@@ -89,12 +91,19 @@ pub(crate) const HEADER_ICON_SIZE: f32 = 18.0;
 /// The icon's center (`Identity::paint`); the JSON preview's header uses it too.
 pub(crate) const HEADER_ICON_X: f32 = HEADER_PAD + HEADER_ICON_SIZE / 2.0;
 /// The line the glyph sits on, and the title's when there is no source line.
-pub(crate) const HEADER_CENTER_Y: f32 = 18.0;
+pub(crate) const HEADER_CENTER_Y: f32 = TAB_HEADER_POINTS / 2.0;
 pub(crate) const HEADER_TEXT_X: f32 = HEADER_PAD + HEADER_ICON_SIZE + HEADER_PAD;
-pub(crate) const HEADER_TITLE_Y: f32 = 11.0;
-pub(crate) const HEADER_SOURCE_Y: f32 = 25.0;
 pub(crate) const HEADER_TITLE_SIZE: f32 = 13.0;
 pub(crate) const HEADER_SOURCE_SIZE: f32 = 11.0;
+/// A text line's box: its font size plus one point.
+const HEADER_TITLE_LINE: f32 = HEADER_TITLE_SIZE + 1.0;
+const HEADER_SOURCE_LINE: f32 = HEADER_SOURCE_SIZE + 1.0;
+/// Space above the title and below the source line, and between the two lines.
+const HEADER_PAD_Y: f32 = 4.5;
+const HEADER_LINE_GAP: f32 = 1.0;
+/// Each line's center, from the header's top.
+pub(crate) const HEADER_TITLE_Y: f32 = HEADER_PAD_Y + HEADER_TITLE_LINE / 2.0;
+pub(crate) const HEADER_SOURCE_Y: f32 = HEADER_PAD_Y + HEADER_TITLE_LINE + HEADER_LINE_GAP + HEADER_SOURCE_LINE / 2.0;
 /// Below this card height (screen points) the header gives way to the old strip over the thumbnail.
 const TAB_HEADER_MIN_CARD_POINTS: f32 = 80.0;
 /// Kept clear at a header's right edge, mirroring `HEADER_TEXT_X` at its left: the corner controls
