@@ -72,6 +72,7 @@ mod session_files;
 mod session_sync;
 mod settings;
 mod settings_page;
+mod settings_rows;
 mod shortcuts;
 mod sleep_state;
 mod store;
@@ -471,6 +472,8 @@ struct App {
 
     /// The Home page field's text while it's being edited; Escape drops it (`build_settings_page`).
     home_page_draft: Option<String>,
+    /// The Settings row to scroll to and outline, for one frame (`settings_page::draw_setting_rows`).
+    settings_focus: Option<&'static str>,
 
     /// User-configurable defaults (search engine, starting engine, zoom,
     /// home page), loaded once at startup and persisted to
@@ -621,6 +624,7 @@ impl Default for App {
             content_index: None,
             find: FindState::default(),
             home_page_draft: None,
+            settings_focus: None,
             settings,
             settings_return_view: ViewMode::Item,
             bookmarks,

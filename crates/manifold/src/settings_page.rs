@@ -94,13 +94,7 @@ impl App {
                 ui.set_max_width(ui.available_width().min(PAGE_MAX_WIDTH)); // never wider than the window
                 ui.add_space(PAGE_PAD);
 
-                self.settings_help_section(ui, &mut req);
-                self.settings_general_section(ui, &mut req);
-                self.settings_current_tab_section(ui, &mut req);
-                self.settings_view_kinds_section(ui);
-                self.settings_lists_section(ui, &mut req);
-                self.settings_sessions_section(ui, &mut req);
-                self.settings_bookmarks_section(ui, &mut req);
+                self.draw_setting_rows(ui, &mut req);
 
                 ui.add_space(PAGE_PAD);
             });
@@ -109,9 +103,33 @@ impl App {
         self.build_settings_popups(ui, &req);
     }
 
-    /// Settings: search engine, starting engine, zoom and home page.
-    pub(crate) fn settings_general_section(&mut self, ui: &mut egui::Ui, req: &mut SettingsRequests) {
-        section_start(ui, "General");
+    /// Draws `settings_rows::rows()`: a heading where the section changes (the first has no rule above it), a gap
+    /// between rows, and for the row `settings_focus` names, a scroll to it and an outline for this frame.
+    fn draw_setting_rows(&mut self, ui: &mut egui::Ui, req: &mut SettingsRequests) {
+        let focus = self.settings_focus.take();
+        let mut section = "";
+        for row in crate::settings_rows::rows() {
+            if row.section != section {
+                if section.is_empty() {
+                    ui.label(heading_text(ui.visuals(), row.section));
+                } else {
+                    section_start(ui, row.section);
+                }
+                section = row.section;
+            } else {
+                ui.add_space(FIELD_GAP);
+            }
+            let rect = ui.scope(|ui| (row.draw)(self, ui, req)).response.rect;
+            if focus == Some(row.id) {
+                ui.scroll_to_rect(rect, Some(egui::Align::Center));
+                let stroke = egui::Stroke::new(2.0, ui.visuals().selection.stroke.color);
+                ui.painter().rect_stroke(rect.expand(4.0), 4.0, stroke, egui::StrokeKind::Outside);
+            }
+        }
+    }
+
+    /// Settings, General: the theme.
+    pub(crate) fn settings_theme_row(&mut self, ui: &mut egui::Ui) {
         ui.label("Theme");
         egui::ComboBox::from_id_salt("settings_theme").selected_text(self.settings.theme.label()).show_ui(ui, |ui| {
             menu_item_style(ui);
@@ -123,7 +141,10 @@ impl App {
                 }
             }
         });
-        ui.add_space(FIELD_GAP);
+    }
+
+    /// Settings, General: where a search goes.
+    pub(crate) fn settings_search_engine_row(&mut self, ui: &mut egui::Ui) {
         ui.label("Default search engine");
         egui::ComboBox::from_id_salt("settings_search_engine")
             .selected_text(self.settings.default_search_engine.label())
@@ -147,8 +168,10 @@ impl App {
             )
             .wrap(),
         );
+    }
 
-        ui.add_space(FIELD_GAP);
+    /// Settings, General: the engine new tabs start with.
+    pub(crate) fn settings_starting_engine_row(&mut self, ui: &mut egui::Ui, req: &mut SettingsRequests) {
         ui.label("Default starting engine (new tabs)");
         let default_view_response =
             self.view_opener_button(ui, AnchoredPopup::DefaultViewKind, self.settings.default_starting_view_kind);
@@ -158,8 +181,10 @@ impl App {
         if matches!(default_state, crate::view_install::ViewStatus::Unavailable(_)) {
             view_status_line(ui, &default_state);
         }
+    }
 
-        ui.add_space(FIELD_GAP);
+    /// Settings, General: zoom.
+    pub(crate) fn settings_zoom_row(&mut self, ui: &mut egui::Ui) {
         ui.label("Zoom (new tabs; also applies to the current tab now)");
         ui.horizontal(|ui| {
             // Reads/writes the *focused tab's own* zoom, not the raw
@@ -176,8 +201,10 @@ impl App {
                 self.set_focused_zoom(1.0);
             }
         });
+    }
 
-        ui.add_space(FIELD_GAP);
+    /// Settings, General: the page new tabs open.
+    pub(crate) fn settings_home_page_row(&mut self, ui: &mut egui::Ui) {
         ui.label("Home page (new tabs)");
         let saved = self.settings.home_page.clone();
         let draft = self.home_page_draft.get_or_insert_with(|| saved.clone());
@@ -197,8 +224,10 @@ impl App {
             // window is unfocused, yet the field still takes typed text, so the draft would be dropped each frame.
             self.home_page_draft = None;
         }
+    }
 
-        ui.add_space(FIELD_GAP);
+    /// Settings, General: idle sleep for background tabs.
+    pub(crate) fn settings_sleep_row(&mut self, ui: &mut egui::Ui) {
         let mut minutes = self.settings.idle_sleep_minutes;
         setting_row(
             ui,
@@ -235,8 +264,7 @@ impl App {
     }
 
     /// Settings, "Current Tab": engine, mute, screenshot, print.
-    pub(crate) fn settings_current_tab_section(&mut self, ui: &mut egui::Ui, req: &mut SettingsRequests) {
-        section_start(ui, "Current Tab");
+    pub(crate) fn settings_current_tab_row(&mut self, ui: &mut egui::Ui, req: &mut SettingsRequests) {
         // Engine swap, Mute, Screenshot, and Print to PDF used to
         // be live toolbar controls next to the address bar --
         // moved here to keep that toolbar down to nav + address
@@ -284,9 +312,8 @@ impl App {
     /// Settings, "Engines": each engine's state, and the actions that state allows -- Download/Update
     /// (both ask first, naming the size), Cancel while installing, Retry after a failure, and Remove
     /// (asks first) with the installed size for downloaded files.
-    pub(crate) fn settings_view_kinds_section(&mut self, ui: &mut egui::Ui) {
+    pub(crate) fn settings_view_kinds_row(&mut self, ui: &mut egui::Ui) {
         use crate::view_install::ViewStatus;
-        section_start(ui, "Engines");
         for kind in ViewKind::picker_order() {
             let state = self.view_status(kind);
             ui.add_space(4.0);
@@ -417,8 +444,7 @@ impl App {
     }
 
     /// Settings, "Lists": the bookmarks/history/downloads buttons.
-    pub(crate) fn settings_lists_section(&mut self, ui: &mut egui::Ui, req: &mut SettingsRequests) {
-        section_start(ui, "Lists");
+    pub(crate) fn settings_lists_row(&mut self, ui: &mut egui::Ui, req: &mut SettingsRequests) {
         ui.horizontal(|ui| {
             let bookmarks_response = ui.button(format!("Bookmarks ({})", self.bookmarks.len()));
             if self.popup_opener_clicked(ui, AnchoredPopup::Bookmarks, &bookmarks_response) {
@@ -442,8 +468,7 @@ impl App {
     }
 
     /// Settings, "Sessions": save, save as, open/delete, export/import.
-    pub(crate) fn settings_sessions_section(&mut self, ui: &mut egui::Ui, req: &mut SettingsRequests) {
-        section_start(ui, "Sessions");
+    pub(crate) fn settings_sessions_row(&mut self, ui: &mut egui::Ui, req: &mut SettingsRequests) {
         if ui.button("Save Now").on_hover_text("Write the auto-restored session (session.mnf) now").clicked() {
             req.save_now_requested = true;
         }
@@ -506,8 +531,7 @@ impl App {
     }
 
     /// Settings, "Bookmarks": export/import.
-    pub(crate) fn settings_bookmarks_section(&mut self, ui: &mut egui::Ui, req: &mut SettingsRequests) {
-        section_start(ui, "Bookmarks");
+    pub(crate) fn settings_bookmarks_row(&mut self, ui: &mut egui::Ui, req: &mut SettingsRequests) {
         // Same "real file dialog blocks on OS/human input
         // neither exists in headless mode" reasoning as
         // Export/Import Session (`settings_sessions_section`) -- `EXPORTBOOKMARKS`/
@@ -526,8 +550,7 @@ impl App {
     }
 
     /// Settings, "Help", first on the page: the welcome tour again, for anyone who missed it on first launch.
-    pub(crate) fn settings_help_section(&mut self, ui: &mut egui::Ui, req: &mut SettingsRequests) {
-        ui.label(heading_text(ui.visuals(), "Help")); // first on the page: no rule above it
+    pub(crate) fn settings_welcome_tour_row(&mut self, ui: &mut egui::Ui, req: &mut SettingsRequests) {
         if ui.button("Welcome tour").on_hover_text("Open the first-launch tour in a new tab").clicked() {
             req.welcome_tour_requested = true;
         }
@@ -868,5 +891,33 @@ mod tests {
             }
         }
         assert!(texts > 20, "the page drew its text ({texts})");
+    }
+
+    /// A row named by `settings_focus` is outlined for one frame and the field is cleared; an unknown id only clears.
+    #[test]
+    fn the_focused_row_is_outlined_once() {
+        let ctx = crate::theme::testutil::ctx(true);
+        let mut app = App::default();
+        let outlines = |output: &egui::FullOutput| {
+            output.shapes.iter().filter(|s| matches!(&s.shape, egui::Shape::Rect(r) if r.stroke.width == 2.0)).count()
+        };
+        let frame = |app: &mut App| {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 3000.0))),
+                ..Default::default()
+            };
+            let mut output = ctx.run_ui(input, |ui| app.build_settings_page(ui));
+            output.textures_delta.clear();
+            output
+        };
+        frame(&mut app);
+        let before = outlines(&frame(&mut app));
+        app.settings_focus = Some("home_page");
+        assert_eq!(outlines(&frame(&mut app)), before + 1);
+        assert_eq!(app.settings_focus, None);
+        assert_eq!(outlines(&frame(&mut app)), before, "gone the next frame");
+        app.settings_focus = Some("no_such_row");
+        assert_eq!(outlines(&frame(&mut app)), before);
+        assert_eq!(app.settings_focus, None);
     }
 }
