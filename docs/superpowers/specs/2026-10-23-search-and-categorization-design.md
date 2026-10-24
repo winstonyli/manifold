@@ -254,3 +254,19 @@ grouping, always-on topical layout, and region-style groups (`PARKED.md`).
 - R2. The 2 s extraction delay, 64 KB cap, row cap of 5, `k = 64`, and the similarity constants are named constants set by
   the plan's measurements, not fixed here.
 - R3. `WAITIDLE` does not wait for extraction; `WAITINDEX` does.
+
+### Prototype result (2026-10-23, `graph_layout/prototype.rs`, release)
+
+Synthetic cards: in-topic cosine 0.6 ± 0.15, cross-topic 0.1 ± 0.1, top-3 similarity edges at or above 0.30, 300 iterations of
+`step_sized` from random positions on a 4000 x 4000 field; then 90 ordinary settle steps with no similarity edges.
+
+| Cards | Seed | In/cross distance ratio | Mean drift in the settle | 300 iterations |
+| --- | --- | --- | --- | --- |
+| 120 | none | 0.695 | 97 (30 % of REST_LENGTH) | 23 ms |
+| 200 | none | 0.694 | 110 (34 %) | 56 ms |
+| 200 | corner seed | 0.149 | 143 (45 %) | 50 ms |
+| 300 | none | 0.681 | 134 (42 %) | 108 ms |
+
+Without a seed the ratio sits between the plan's "usable" (< 0.6) and "tangled" (> 0.8) lines; a corner seed (a stand-in
+for the LSA seed) gives 0.15. OQ1: a later ordinary settle moves cards 30-45 % of REST_LENGTH on average, over the
+plan's 25 % line, so the plan stops here for the user's choice.

@@ -216,6 +216,9 @@ fn jitter_from_text(seed_str: &str) -> egui::Vec2 {
 }
 
 #[cfg(test)]
+mod prototype;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::card_id::testutil::node;
