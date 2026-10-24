@@ -484,7 +484,7 @@ pub fn trail(parent: Option<PathBuf>) -> ExitCode {
         work,
         base: server.base(),
         alias: fav_server.base(),
-        engine: std::env::var("ENGINE").unwrap_or_else(|_| "webview2".to_owned()),
+        engine: crate::probes::engine(),
     };
     if let Err(e) = run.setup().and_then(|()| drive(&run, &mut sec)) {
         println!("ERROR: trail stopped early: {e}");

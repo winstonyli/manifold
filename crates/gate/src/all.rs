@@ -10,12 +10,11 @@
 //! - `ui`: `cargo test` of the three CI crates, then `link`, `unknown-type`, `closed`, `trail`, `sleep-history` and `layout`. For drawing, input and view-state modules
 //!   that import no store, sync or network module (the list is in tier.rs), and docs.
 //!
-//! With `WEBKIT_SITE_HOST=<ip>` set (the WSL gateway as Windows sees it, `wsl.exe -d Ubuntu -- ip route`, the default
-//! route's `via`; README "WebKit under the gate") and the WebKit host built in WSL, any mode adds `trail-webkit` and
-//! `sleep-webkit` (`ENGINE=webkit`, `VIEWS=webkit`, `SITE_HOST` for those two stages only) after `trail`.
-//!
-//! With `WITH_SERVO=1` set and the Servo host built and placed beside `manifold.exe` (README "Building Servo on its own"),
-//! any mode adds `trail-servo` (`ENGINE=servo`) and `sleep-servo` (`VIEWS=servo`, cases history, crash, restart).
+//! `WITH_ENGINES="servo webkit"` adds an engine's steps to any mode, after `sleep-history`. `servo` adds `trail-servo`
+//! and `sleep-servo` (cases history, crash, restart) and needs the Servo host built and placed beside `manifold.exe`
+//! (README "Building Servo on its own"). `webkit` adds `trail-webkit` and `sleep-webkit`, needs the WebKit host built in
+//! WSL, and takes `SITE_HOST=<ip>`, the WSL gateway as Windows sees it (`wsl.exe -d Ubuntu -- ip route`, the default
+//! route's `via`; README "WebKit under the gate"), for those two steps only; without it they fail.
 //!
 //! Build first (`cargo build -j 8 -p manifold -p manifold-view-webview2 -p manifold-view-pdfium -p gate`) and run from
 //! the repo root, detached and low priority: `cmd //c start "" //b //belownormal target/debug/gate.exe all LOG [mode]`.
@@ -172,13 +171,12 @@ struct Step {
     env: &'static [(&'static str, &'static str)],
     /// Whether mode `ui` runs it (`full` and `light` run every step).
     in_ui: bool,
-    /// The environment variable that must be set for the step to run; `site_host` passes its value as `SITE_HOST`.
-    opt_in: Option<&'static str>,
-    site_host: bool,
+    /// The engine whose host must be listed in `WITH_ENGINES` for the step to run (`webkit` also needs `SITE_HOST`).
+    engine: Option<&'static str>,
 }
 
 const fn step(name: &'static str, in_ui: bool) -> Step {
-    Step { name, stage: name, env: &[], in_ui, opt_in: None, site_host: false }
+    Step { name, stage: name, env: &[], in_ui, engine: None }
 }
 
 const STEPS: &[Step] = &[
@@ -193,25 +191,18 @@ const STEPS: &[Step] = &[
     step("closed", true),
     step("trail", true),
     Step { stage: "sleep", env: &[("VIEWS", "webview2"), ("CASES", "history")], ..step("sleep-history", true) },
-    Step {
-        stage: "trail",
-        env: &[("ENGINE", "webkit")],
-        opt_in: Some("WEBKIT_SITE_HOST"),
-        site_host: true,
-        ..step("trail-webkit", true)
-    },
+    Step { stage: "trail", env: &[("ENGINE", "webkit")], engine: Some("webkit"), ..step("trail-webkit", true) },
     Step {
         stage: "sleep",
         env: &[("VIEWS", "webkit"), ("CASES", "manual idle scroll history dirty")],
-        opt_in: Some("WEBKIT_SITE_HOST"),
-        site_host: true,
+        engine: Some("webkit"),
         ..step("sleep-webkit", true)
     },
-    Step { stage: "trail", env: &[("ENGINE", "servo")], opt_in: Some("WITH_SERVO"), ..step("trail-servo", true) },
+    Step { stage: "trail", env: &[("ENGINE", "servo")], engine: Some("servo"), ..step("trail-servo", true) },
     Step {
         stage: "sleep",
         env: &[("VIEWS", "servo"), ("CASES", "history crash restart")],
-        opt_in: Some("WITH_SERVO"),
+        engine: Some("servo"),
         ..step("sleep-servo", true)
     },
     step("layout", true),
@@ -286,21 +277,25 @@ pub(crate) fn all(log: Option<PathBuf>, mode: Option<String>) -> ExitCode {
     for i in 1..=runs {
         g.stage(&format!("two-{i}"), &sibling(&log, &format!("two-{i}.log")), gate("two"));
     }
+    let with_engines: Vec<String> =
+        std::env::var("WITH_ENGINES").map(|v| v.split_whitespace().map(str::to_owned).collect()).unwrap_or_default();
     for step in STEPS {
         if mode == "ui" && !step.in_ui {
             continue;
         }
-        let site_host = match step.opt_in {
-            Some(var) => match std::env::var(var) {
-                Ok(value) => value,
-                Err(_) => continue,
-            },
-            None => String::new(),
-        };
+        if step.engine.is_some_and(|e| !with_engines.iter().any(|w| w == e)) {
+            continue;
+        }
         let mut c = gate(step.stage);
         c.envs(step.env.iter().copied());
-        if step.site_host {
-            c.env("SITE_HOST", &site_host);
+        if step.engine == Some("webkit") {
+            // The page server's address as WSL sees it; `gate()` removed it for the other steps.
+            let Ok(ip) = std::env::var("SITE_HOST") else {
+                append(&log, &format!("GATE {} not run: WITH_ENGINES has webkit but SITE_HOST is not set", step.name));
+                g.failed = true;
+                continue;
+            };
+            c.env("SITE_HOST", ip);
         }
         g.stage(step.name, &sibling(&log, &format!("{}.log", step.name)), c);
     }
@@ -329,7 +324,7 @@ mod tests {
         for step in STEPS {
             assert!(crate::windows_main::is_stage(step.stage), "{} -> {}", step.name, step.stage);
             assert!(names.insert(step.name), "{} twice", step.name);
-            assert!(step.opt_in.is_some() || !step.site_host, "{} passes a SITE_HOST nobody set", step.name);
+            assert!(step.engine.is_none_or(|e| ["servo", "webkit"].contains(&e)), "{}: unknown engine", step.name);
         }
     }
 

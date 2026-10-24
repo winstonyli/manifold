@@ -146,9 +146,15 @@ pub(crate) fn finish(work: &Path) -> ExitCode {
     exit_code()
 }
 
-/// The view kinds to run: `VIEWS` (space separated), default `webview2`.
+/// The view kinds to run: `VIEWS` (space separated), else `ENGINE`, default `webview2`.
 pub(crate) fn views() -> Vec<String> {
-    std::env::var("VIEWS").unwrap_or_else(|_| "webview2".into()).split_whitespace().map(str::to_owned).collect()
+    let chosen = std::env::var("VIEWS").or_else(|_| std::env::var("ENGINE")).unwrap_or_else(|_| "webview2".into());
+    chosen.split_whitespace().map(str::to_owned).collect()
+}
+
+/// The one engine a single-engine stage drives: the first of `views()`.
+pub(crate) fn engine() -> String {
+    views().into_iter().next().unwrap_or_else(|| "webview2".to_owned())
 }
 
 /// scripts' seed step: `PROFILE/settings.json` starting tabs on `view_kind`, and `PROFILE/session.mnf` built from

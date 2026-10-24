@@ -166,7 +166,7 @@ pub(crate) fn scale(counts: &[String]) -> ExitCode {
         Ok(v) => v,
         Err(code) => return code,
     };
-    let engine = std::env::var("ENGINE").unwrap_or_else(|_| "webview2".into());
+    let engine = crate::probes::engine();
     let page = medium_page();
     let server =
         match http::Server::start(Arc::new(move |_: &str| response("200 OK", &[], "text/html", page.as_bytes()))) {
