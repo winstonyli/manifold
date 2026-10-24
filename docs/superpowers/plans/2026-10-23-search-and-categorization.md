@@ -1,5 +1,5 @@
 ---
-status: active
+status: done
 ---
 
 # Search and categorization Implementation Plan

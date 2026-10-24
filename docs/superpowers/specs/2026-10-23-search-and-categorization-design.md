@@ -1,5 +1,5 @@
 ---
-status: active
+status: done
 ---
 
 # Search and categorization: one omnibar, a local page index, suggested groups — Design
