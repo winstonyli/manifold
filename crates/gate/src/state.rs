@@ -10,8 +10,9 @@ pub const NOTE: &str = "text/markdown";
 pub const IMAGE: &str = "image/png";
 pub const PDF: &str = "application/pdf";
 pub const JSON: &str = "application/json";
-/// The Graph toolbar's "Fit" button (Reset View, fit all), as a `CLICK`: the zoom chip's last button in the 816 px test window.
-pub const FIT_VIEW: &str = "CLICK 380 19";
+/// The names (tooltips) of the chrome controls the gate clicks, as the state export's `controls` lists them.
+pub const FIT_VIEW: &str = "Reset View (fit all)";
+pub const BACK: &str = "Back one level";
 pub const DOWNLOAD: &str = "application/octet-stream";
 
 /// The headless window the smoke test sizes with RESIZE, and the graph toolbar's height rounded up:
@@ -161,6 +162,14 @@ impl State {
         Some(out)
     }
 
+    /// The center of the named control (`controls` in the export), `"x y"`, or `None` when the last frame drew none
+    /// of that name.
+    pub fn control(&self, name: &str) -> Option<String> {
+        let c = self.0["controls"].as_array()?.iter().find(|c| c["name"] == name)?;
+        let [l, t, r, b] = Self::floats::<4>(c, "rect")?;
+        Some(fmt_pair((l + r) / 2.0, (t + b) / 2.0))
+    }
+
     /// A point on the card, `"x y"` rounded as python's `%.0f` (`xy(id)`): its center, or when that is off the canvas
     /// (a card past the window's edge) or another card (a virtual trail page, say) is drawn over it, the first of a few
     /// other points that are on the canvas and that no card covers.
@@ -269,6 +278,14 @@ mod tests {
 
     /// A card can reach past the window's bottom edge with its center outside it (the smoke's empty group at
     /// `reopen-nested`: center y 651 in a 639 px window): `xy` aims at the part that is on the canvas.
+    /// A control is found by its name in `controls`, at its rect's center; an unknown name is `None`.
+    #[test]
+    fn control_is_found_by_name() {
+        let s = State::parse(r#"{"controls":[{"name":"Back one level","rect":[10.0,5.0,34.0,29.0]}]}"#).unwrap();
+        assert_eq!(s.control("Back one level").as_deref(), Some("22 17"));
+        assert_eq!(s.control("Reset View (fit all)"), None);
+    }
+
     #[test]
     fn xy_stays_on_the_canvas() {
         let s =

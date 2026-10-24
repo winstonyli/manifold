@@ -3,7 +3,7 @@
 //! `EXPORTSTATE path` -- writes UI state that the session store doesn't
 //! hold (and shouldn't: it's the user's saved session) as JSON, for a
 //! test to check: `tab_view`, `transition`, `focused_url`,
-//! `address_bar_text`, `omni_matches` (the ids of the cards the Graph omnibar's text matches, page text included), `suggestions` (the omnibar dropdown's rows: `tab:<id>` for an open
+//! `controls` (the named controls drawn, by tooltip, with their rects), `address_bar_text`, `omni_matches` (the ids of the cards the Graph omnibar's text matches, page text included), `suggestions` (the omnibar dropdown's rows: `tab:<id>` for an open
 //! tab, `setting:<id>`, a history url, or the text a search or the typed row acts on), `highlighted` (a row
 //! index, or null) and `current_group` (the Graph view level's group
 //! id, or null at the top). `cards` lists the current level's cards in
@@ -285,6 +285,8 @@ impl App {
             // The theme colors the gate checks on screen, as [r, g, b]: the gate reads them here, not from its own copy.
             "theme": {"danger": crate::theme::rgb(crate::theme::danger(&visuals)), "accent": crate::theme::rgb(crate::theme::accent(&visuals))},
             "rows": crate::identity::drawn_rows(&self.egui_ctx).iter().map(|r| serde_json::json!({"text": r.text, "selected": r.selected, "rect": [r.rect.min.x, r.rect.min.y, r.rect.max.x, r.rect.max.y]})).collect::<Vec<_>>(),
+            // The controls with a name (`NamedTip`) the last frame drew: the gate clicks them by name, not by pixel.
+            "controls": crate::identity::drawn_controls(&self.egui_ctx).iter().map(|c| serde_json::json!({"name": c.label, "rect": [c.rect.min.x, c.rect.min.y, c.rect.max.x, c.rect.max.y]})).collect::<Vec<_>>(),
             "open_popup": self.menus.open_popup.map(|p| format!("{p:?}")),
             "identities": crate::identity::drawn_icons(&self.egui_ctx).iter().map(|i| serde_json::json!({"kind": i.kind, "text": i.text, "rect": [i.rect.min.x, i.rect.min.y, i.rect.max.x, i.rect.max.y]})).collect::<Vec<_>>(),
             "trail": self.trail_state(),

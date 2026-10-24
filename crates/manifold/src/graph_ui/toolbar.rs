@@ -1,6 +1,7 @@
 //! The Graph view's toolbar: breadcrumb, group chip, zoom chip, filter, Recently Closed and the selection actions.
 
 use super::*;
+use crate::theme::NamedTip;
 
 /// What the Graph toolbar (`App::render_graph_toolbar`) hands back to
 /// `build_graph_ui`: the actions its buttons pushed, the zoom-chip
@@ -119,7 +120,7 @@ impl App {
             // chevron already migrated to `egui_phosphor` for
             // this exact font's tofu-box risk with symbol
             // glyphs; this one had been missed.
-            let leave_group_response = ui.button(egui_phosphor::light::CARET_LEFT).on_hover_text("Back one level");
+            let leave_group_response = ui.button(egui_phosphor::light::CARET_LEFT).named_tip("Back one level");
             if leave_group_response.clicked() {
                 actions.push(GraphAction::LeaveGroup);
             }

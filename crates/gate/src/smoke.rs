@@ -24,7 +24,7 @@ use serde_json::Value;
 use crate::check::{exit_code, fail_line, failures, note_failure, pass_line, Marks};
 use crate::instance::{file_url, log_tail, remove_dir_with_retries, seed_settings, Instance};
 use crate::link::{bad, no_verdict_words, truthy};
-use crate::state::{fmt0, round_half_even, State, DOWNLOAD, IMAGE, JAR, JSON, NOTE, PDF, TAB};
+use crate::state::{fmt0, round_half_even, State, BACK, DOWNLOAD, FIT_VIEW, IMAGE, JAR, JSON, NOTE, PDF, TAB};
 use crate::suggest::{query_param, url_query, Server};
 use crate::windows_main::{manifold_exe, work_dir};
 
@@ -518,7 +518,7 @@ fn drive(sm: &mut Smoke, m: &mut Marks) -> io::Result<()> {
     sm.check_state("group_card", "a headless screenshot shows no toast", "s['toast'] is None", |v| {
         null_key(v.s, "toast")
     })?;
-    sm.send(crate::state::FIT_VIEW)?;
+    sm.inst.click_control(FIT_VIEW)?;
     let s = sm.settle("group_card")?;
     let first_group = first(&s.groups(), "group card")?.clone();
     sm.send(&format!("DOUBLECLICK {}", xy(&s, &first_group)?))?;
@@ -528,7 +528,7 @@ fn drive(sm: &mut Smoke, m: &mut Marks) -> io::Result<()> {
         r#"not s["tab_view"] and s["current_group"]"#,
         |v| falsy_key(v.s, "tab_view") && key(v.s, "current_group").is_some_and(truthy),
     )?;
-    sm.send("CLICK 22 17")?;
+    sm.inst.click_control(BACK)?;
     let group_out =
         sm.check_state("group_out", "the back button leaves the group", r#"s["current_group"] is None"#, |v| {
             null_key(v.s, "current_group")
@@ -542,7 +542,7 @@ fn drive(sm: &mut Smoke, m: &mut Marks) -> io::Result<()> {
     sm.send(&format!("IMPORTGROUP {}", sm.win("pair.group.json")))?;
     sm.send("WAITTABS")?;
     // Reset View (fit all) brings the imported card into view.
-    sm.send(crate::state::FIT_VIEW)?;
+    sm.inst.click_control(FIT_VIEW)?;
     let pair_top = sm.settle("pair_top")?;
     let pair_id = new_group(&pair_top, &before).ok_or_else(|| bad("no imported group card".into()))?;
     sm.send(&format!("DOUBLECLICK {}", xy(&pair_top, &pair_id)?))?;
@@ -653,13 +653,13 @@ fn drive(sm: &mut Smoke, m: &mut Marks) -> io::Result<()> {
     m.mark("borders");
     // Border colors, read off a screenshot: a group of more than 8 members rests on DANGER_COLOR, and the empty
     // group from above on ACCENT (both read from EXPORTSTATE's `theme`). The mouse waits in an empty corner.
-    sm.send("CLICK 22 17")?;
+    sm.inst.click_control(BACK)?;
     sm.write("nine.group.json", nine_group().to_string().as_bytes())?;
     let top = sm.settle("top")?;
     let before_nine = top.groups();
     sm.send(&format!("IMPORTGROUP {}", sm.win("nine.group.json")))?;
     sm.send("WAITTABS")?;
-    sm.send(crate::state::FIT_VIEW)?;
+    sm.inst.click_control(FIT_VIEW)?;
     sm.send("MOUSEMOVE 806 629")?;
     let nine_s = sm.settle("nine")?;
     let nine = new_group(&nine_s, &before_nine).unwrap_or_default();
@@ -716,7 +716,7 @@ fn drive(sm: &mut Smoke, m: &mut Marks) -> io::Result<()> {
         &format!("s['current_group'] == '{empty}' and len(groups) == 1 and sum(card_is(c, IMAGE) for c in cards.values()) == 1"),
         |s| in_group(s, &empty) && s.groups().len() == 1 && count_of(s, IMAGE) == 1,
     );
-    sm.send("CLICK 22 17")?;
+    sm.inst.click_control(BACK)?;
     sm.settle("outer_back")?;
     sm.send(&format!("CLOSENODE {empty}"))?;
     let outer_closed = sm.settle("outer_closed")?;
@@ -828,7 +828,7 @@ fn drive(sm: &mut Smoke, m: &mut Marks) -> io::Result<()> {
         "s['json_level']['selected'] == '/a' and s['json_level']['matches'] == ['/a']",
         |v| json_level(v.s)["selected"] == "/a" && json_level(v.s)["matches"] == serde_json::json!(["/a"]),
     )?;
-    sm.send("CLICK 22 17")?;
+    sm.inst.click_control(BACK)?;
     sm.check_state(
         "json_out",
         "the back button leaves the JSON level",
@@ -973,7 +973,7 @@ fn drive(sm: &mut Smoke, m: &mut Marks) -> io::Result<()> {
         &format!("cards['{tab_id}']['jar'] == '{jar_id}' and len(jars) == 2"),
         |s| s.card(&tab_id).is_some_and(|c| c["jar"] == jar_id.as_str()) && count_of(s, JAR) == 2,
     );
-    sm.send("CLICK 22 17")?;
+    sm.inst.click_control(BACK)?;
     sm.settle("jar_group_out")?;
     sm.send(&format!("CLOSENODE {outer}"))?;
     sm.settle("jar_group_gone")?;
@@ -1051,7 +1051,7 @@ fn drive(sm: &mut Smoke, m: &mut Marks) -> io::Result<()> {
                 && json_level(s)["root"] == big_id.as_str()
         },
     );
-    sm.send("CLICK 22 17")?;
+    sm.inst.click_control(BACK)?;
     sm.check_state("big_out", "the back button leaves the big JSON level", "s['json_level'] is None", |v| {
         null_key(v.s, "json_level")
     })?;

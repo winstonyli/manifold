@@ -110,7 +110,8 @@ pub(crate) fn setting_row(ui: &mut egui::Ui, label: &str, hint: Option<&str>, co
     });
 }
 
-/// A tooltip that also names the widget for a screen reader: icon buttons otherwise announce their glyph.
+/// A tooltip that also names the widget for a screen reader (icon buttons otherwise announce their glyph) and for the
+/// gate, which finds the control by name in the state export's `controls` instead of by pixel.
 pub(crate) trait NamedTip {
     fn named_tip(self, text: impl Into<String>) -> Self;
 }
@@ -120,6 +121,7 @@ impl NamedTip for egui::Response {
         let text = text.into();
         let enabled = self.enabled();
         self.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, text.clone()));
+        crate::identity::note_control(&self.ctx, self.layer_id, &text, self.rect);
         self.on_hover_text(text)
     }
 }

@@ -18,9 +18,6 @@ use crate::windows_main::{manifold_exe, work_dir};
 /// The round kinds' names.
 const NAMES: [&str; 3] = ["straight", "hover first", "after Reset View"];
 
-/// The toolbar's back button, which leaves a group.
-const BACK: &str = "CLICK 14 16";
-
 fn drive(exe: &Path, work: &Path) -> io::Result<()> {
     let profile = work.join("profile");
     seed_settings(&profile, "webview2", "")?;
@@ -51,7 +48,7 @@ fn drive(exe: &Path, work: &Path) -> io::Result<()> {
         let kind = round % 3;
         if kind == 2 {
             a.send("ZOOMOUT")?;
-            a.send(crate::state::FIT_VIEW)?;
+            a.click_control(crate::state::FIT_VIEW)?;
         }
         // The camera eases after leaving a group: aim only once two exports agree on every card.
         let mut prev = String::new();
@@ -87,7 +84,7 @@ fn drive(exe: &Path, work: &Path) -> io::Result<()> {
                 rect_of(&now)
             );
         }
-        a.send(BACK)?;
+        a.click_control(crate::state::BACK)?;
         a.export_until("back", |s| s.current_group().is_none())?;
     }
     for (i, name) in NAMES.iter().enumerate() {
