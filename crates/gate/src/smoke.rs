@@ -964,11 +964,7 @@ fn drive(sm: &mut Smoke, m: &mut Marks) -> io::Result<()> {
     let reopened = sm.settle("jar_group_reopened")?;
     check_found(&reopened, "jar_group_reopened", "REOPENTAB brings the jar group back", &group_id);
     let outer = group_id.clone();
-    // The reopened group keeps the spot it had when closed, which can sit under the toolbar (seen once at y = 24,
-    // where the double-click missed it): drag it to the world origin, the middle of the canvas, first.
-    sm.send(&format!("MOVENODE {outer} 0 0"))?;
-    let placed = sm.settle("jar_group_placed")?;
-    sm.send(&format!("DOUBLECLICK {}", xy(&placed, &outer)?))?;
+    sm.send(&format!("DOUBLECLICK {}", xy(&reopened, &outer)?))?;
     let inside = sm.settle("jar_group_in")?;
     check_query(
         &inside,

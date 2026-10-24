@@ -111,6 +111,7 @@ impl App {
     pub(crate) fn switch_group_level(&mut self, group: Option<NodeId>) {
         self.end_note_edits();
         self.current_group = group;
+        self.camera.reveal = None;
         self.end_stale_drag(true);
         self.cancel_connect();
         self.link.line_press = None;

@@ -12,6 +12,7 @@ impl GraphCamera {
             drag_history: std::collections::VecDeque::new(),
             frame_restored: false,
             strip_tab: None,
+            reveal: None,
         }
     }
 
@@ -212,6 +213,10 @@ impl App {
             self.interaction.pending_new_node = None;
         }
         self.frame_new_strip();
+        if let Some(rect) = self.camera.reveal.and_then(|id| self.card_rect(id)) {
+            self.camera.reveal = None;
+            self.camera.pan_to(rect);
+        }
     }
 
     /// Re-lays-out the level when its node set changed size, unless a drag is in progress.
@@ -423,6 +428,25 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A reopened card the layout put out of view is eased into it; one already in view leaves the camera alone.
+    #[test]
+    fn a_revealed_card_out_of_view_is_eased_to() {
+        use crate::session_sync::tests::sleeping_tab;
+        use crate::store::model::Kind;
+        let mut app = App::default();
+        let far = app.alloc_node_id();
+        app.insert_placeholder_node(far, egui::vec2(5000.0, 5000.0), Kind::Tab, sleeping_tab("https://a.test/", "t"));
+        let near = app.alloc_node_id();
+        app.insert_placeholder_node(near, egui::vec2(0.0, 0.0), Kind::Tab, sleeping_tab("https://b.test/", "t"));
+        app.camera.jump_to(egui::Rect::from_center_size(egui::pos2(100.0, 100.0), egui::vec2(900.0, 700.0)));
+        app.camera.reveal = Some(near);
+        app.apply_camera_requests(false);
+        assert!(!app.camera.is_moving() && app.camera.reveal.is_none(), "already in view");
+        app.camera.reveal = Some(far);
+        app.apply_camera_requests(false);
+        assert!(app.camera.is_moving() && app.camera.reveal.is_none(), "eased to the far card");
+    }
 
     #[test]
     fn easing_the_camera_stops_a_glide() {

@@ -173,6 +173,9 @@ pub(crate) struct GraphCamera {
     pub(crate) frame_restored: bool,
     /// The tab whose trail strip the camera last framed (`App::frame_new_strip`), `None` while no strip shows.
     pub(crate) strip_tab: Option<NodeId>,
+    /// A card to bring into view once it has a rect (`App::reveal_card`): a reopened node appears a frame after the
+    /// write that reopens it, wherever the layout put it.
+    pub(crate) reveal: Option<NodeId>,
 }
 
 impl App {

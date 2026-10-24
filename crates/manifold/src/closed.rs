@@ -171,7 +171,7 @@ impl App {
                 };
                 self.queue_toast(format!("Reopened in {level}"));
             }
-            Placement::Shown(_) => {}
+            Placement::Shown(_) => self.camera.reveal = Some(id),
         }
     }
 
