@@ -536,6 +536,11 @@ const VERBS: &[Verb] = &[
     row("EXPORTSTATE path", "Write view, address bar and dropdown state to `path` as JSON (see debug_export.rs)", |rest| {
         with_text(rest, |app, path| app.write_export_state(std::path::Path::new(&path)))
     }),
+    row("TEXTOF id path", "Write the page text stored for tab `id` to `path`, or `none` (see tabs/page_text.rs)", |rest| {
+        let (id, path) = rest.split_once(' ')?;
+        let (id, path) = (id.parse().ok()?, path.to_owned());
+        job(move |app, _| app.write_text_of(id, std::path::Path::new(&path)))
+    }),
     row("IMPORTSESSION path", "Load a session from `path`", |rest| {
         with_text(rest, |app, path| match crate::json_file::load(std::path::Path::new(&path), "session") {
             Ok(json) => app.confirm = Some(Confirm::Import(Box::new(json))),
@@ -1280,6 +1285,7 @@ mod tests {
             "SETNOTETEXT 0000000000000001-1 hello",
             "MOVENODE 0000000000000001-1 10 -20",
             "SLEEPNODE 0000000000000001-4",
+            r"TEXTOF 0000000000000001-4 C:\x.txt",
             "RESTARTVIEW 0000000000000001-4",
             "ENDVIEW 0000000000000001-4",
             "IDLESWEEP 30",

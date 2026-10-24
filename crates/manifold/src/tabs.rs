@@ -7,11 +7,13 @@ use manifold_view_protocol::PageState;
 use sleep_state::{PendingSleep, SavedScroll, SleepWhy, Verdict};
 
 mod jar_pull;
+mod page_text;
 mod sleep;
 mod spawn_result;
 pub(crate) use jar_pull::Held;
 #[cfg(test)]
 pub(crate) use jar_pull::{pull_pending, start_pull, JAR_FLUSH_AFTER, JAR_PULL_TIMEOUT};
+pub(crate) use page_text::PageTextTracker;
 
 /// Tab spawn and respawn bookkeeping (`App::spawns`): spawns in flight and what waits on them, the per-tab state
 /// that outlives a spawn (`host_loads`, `navigated_from`, `skip_convert`, `tab_crashes`), and the session generation

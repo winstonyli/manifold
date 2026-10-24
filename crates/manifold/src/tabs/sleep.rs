@@ -1,4 +1,4 @@
-//! Sleeping tabs on App: the request/answer/expiry cycle, the idle sweep, and "Sleep Tabs" on a group.
+//! Sleepi        if self.text_is_stale(id) {g tabs on App: the request/answer/expiry cycle, the idle sweep, and "Sleep Tabs" on a group.
 
 use super::*;
 
@@ -52,6 +52,9 @@ impl App {
             return false;
         }
         self.pull_cookies(id);
+        if self.text_is_stale(id) {
+            self.ask_page_text(id);
+        }
         let Some(tab) = self.nodes.get_mut(&id).and_then(|n| n.as_tab_mut()) else { return false };
         tab.tab.send(&HostToView::QueryPageState);
         self.pending_sleeps.insert(id, PendingSleep { why, sent: std::time::Instant::now() });

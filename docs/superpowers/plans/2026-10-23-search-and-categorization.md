@@ -1,5 +1,5 @@
 ---
-status: draft
+status: active
 ---
 
 # Search and categorization Implementation Plan

@@ -39,6 +39,12 @@ addEventListener('scroll', () => {\n  clearTimeout(t);\n  t = setTimeout(() => f
 
 /// A page taller than any window, for the sleep probe: it reports its scroll position on load and after each scroll
 /// settles, and `?dirty` makes its input differ from the default.
+/// A page with known text, for the page-text probe: a script and a style (neither is page text) around two paragraphs.
+const TEXT: &str = "<!doctype html><title>text</title><style>.x{color:STYLEMARK}</style>
+\n<p>The quick brown fox</p><script>var s='SCRIPTMARK';</script>
+<p>jumps   over
+ the lazy dog</p>";
+
 const TALL: &str = "<!doctype html><title>tall</title><input id=i>\n\
 <div style=\"height:6000px;background:linear-gradient(#fff,#9cf)\"></div>\n<script>\n\
 if (location.search.includes('dirty')) document.getElementById('i').value = 'draft';\n\
@@ -84,6 +90,7 @@ impl Site {
                 "/data.json" => response("200 OK", &[], "application/json", br#"{"probe": [1, 2, 3]}"#),
                 "/pixel.png" => response("200 OK", &[], "image/png", &png),
                 "/wide" => response("200 OK", &[], "text/html", WIDE.as_bytes()),
+                "/text" => response("200 OK", &[], "text/html", TEXT.as_bytes()),
                 "/tall" => response("200 OK", &[], "text/html", TALL.as_bytes()),
                 _ => response("200 OK", &[], "text/html", PAGE.as_bytes()),
             }

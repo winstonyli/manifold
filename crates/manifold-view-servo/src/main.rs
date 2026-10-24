@@ -193,6 +193,8 @@ fn main() {
 
     // Filled by the `QueryPageState` script callback, drained and sent each tick.
     let pending_page_state: Rc<RefCell<Option<manifold_view_protocol::PageState>>> = Rc::new(RefCell::new(None));
+    // Filled by the `QueryPageText` script callback, drained and sent each tick.
+    let pending_page_text: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
 
     // As the WebView2 host: an initial URL that doesn't parse opens about:blank instead of panicking.
     let start = Url::parse(&initial_url).unwrap_or_else(|err| {
@@ -298,6 +300,16 @@ fn main() {
                         }
                     });
                 }
+                HostToView::QueryPageText => {
+                    let pending = pending_page_text.clone();
+                    webview.evaluate_javascript(manifold_view_protocol::PAGE_TEXT_SCRIPT, move |result| {
+                        if let Ok(JSValue::String(raw)) = result {
+                            if let Some(text) = manifold_view_protocol::page_text_reply(Some(&raw)) {
+                                *pending.borrow_mut() = Some(text);
+                            }
+                        }
+                    });
+                }
                 HostToView::RestoreScroll { x, y } => {
                     webview.evaluate_javascript(manifold_view_protocol::restore_scroll_script(x, y), |_| {});
                 }
@@ -347,6 +359,10 @@ fn main() {
 
         if let Some(state) = pending_page_state.borrow_mut().take() {
             let _ = control.send(&ViewToHost::PageState(state));
+        }
+
+        if let Some(text) = pending_page_text.borrow_mut().take() {
+            let _ = control.send(&ViewToHost::PageText { text });
         }
 
         if let Some(content_type) = delegate.redirect_content_type.borrow_mut().take() {

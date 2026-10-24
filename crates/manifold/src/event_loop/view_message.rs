@@ -19,6 +19,7 @@ impl App {
                     self.finish_sleep(tab_id, state);
                 }
             }
+            ViewToHost::PageText { text } => self.accept_page_text(tab_id, text),
             ViewToHost::Cookies(json) => {
                 self.cookies.jar_pulls.remove(&tab_id);
                 self.cookies.jar_silent.remove(&tab_id);
@@ -70,11 +71,15 @@ impl App {
                 node.title = title;
                 node.can_go_back = can_go_back;
                 node.can_go_forward = can_go_forward;
+                let load_ended = node.loading && !loading;
                 node.loading = loading;
                 // The origin is known as soon as the url is, without waiting for the page to finish loading
                 // (`favicon_fetch` guesses `/favicon.ico`); a typed navigation asks in `navigate_tab`.
                 if url_changed {
                     self.request_favicons([url.as_str()]);
+                }
+                if load_ended {
+                    self.note_load_end(tab_id, &url, std::time::Instant::now());
                 }
                 let restore = self.saved_scroll.get_mut(&tab_id).is_some_and(|s| s.on_loading(loading));
                 if restore {

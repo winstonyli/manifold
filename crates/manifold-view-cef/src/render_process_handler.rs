@@ -36,6 +36,10 @@ pub const AUDIO_PLAYING_RESULT: &str = "audio-playing-result";
 /// `main.rs` parses with `manifold_view_protocol::PageState::parse`.
 pub const CHECK_PAGE_STATE: &str = "check-page-state";
 pub const PAGE_STATE_RESULT: &str = "page-state-result";
+/// See `manifold_view_protocol::ViewToHost::PageText`: the renderer evals `PAGE_TEXT_SCRIPT` and replies with its raw
+/// text (nothing when the page is not text); `main.rs` cleans it with `page_text_reply`.
+pub const CHECK_PAGE_TEXT: &str = "check-page-text";
+pub const PAGE_TEXT_RESULT: &str = "page-text-result";
 
 #[derive(Clone)]
 pub struct ViewRenderProcessHandler {}
@@ -83,6 +87,24 @@ wrap_render_process_handler! {
                 });
                 if let Some(text) = text {
                     if let Some(mut reply) = process_message_create(Some(&PAGE_STATE_RESULT.into())) {
+                        if let Some(args) = reply.argument_list() {
+                            args.set_string(0, Some(&text.as_str().into()));
+                        }
+                        frame.send_process_message(ProcessId::BROWSER, Some(&mut reply));
+                    }
+                }
+                return 1;
+            }
+            if name == CHECK_PAGE_TEXT {
+                // Only reply when the eval produced text: a null (not a text page) or a failed eval stays silent.
+                let text = frame.v8_context().and_then(|context| {
+                    context.enter();
+                    let text = eval_string(&context, manifold_view_protocol::PAGE_TEXT_SCRIPT);
+                    context.exit();
+                    text
+                });
+                if let Some(text) = text {
+                    if let Some(mut reply) = process_message_create(Some(&PAGE_TEXT_RESULT.into())) {
                         if let Some(args) = reply.argument_list() {
                             args.set_string(0, Some(&text.as_str().into()));
                         }

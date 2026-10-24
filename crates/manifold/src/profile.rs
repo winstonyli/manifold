@@ -109,6 +109,11 @@ pub fn jars_dir() -> Option<PathBuf> {
     Some(dir()?.join("jars"))
 }
 
+/// Where the page text log and search files live (`search`). `None` like `dir()`.
+pub fn search_dir() -> Option<PathBuf> {
+    Some(dir()?.join("search"))
+}
+
 /// The per-user data directory (Known Folders on Windows, which puts it at
 /// `%APPDATA%\manifold\manifold\data`; XDG on Linux; Application Support on
 /// macOS) where `process_manager::view_binary_path` looks for an engine

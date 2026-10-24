@@ -66,6 +66,7 @@ mod profile;
 mod redirect_fetch;
 mod reveal;
 mod rgba;
+mod search;
 mod session;
 mod session_files;
 mod session_sync;
@@ -304,6 +305,10 @@ struct App {
     idle_clock: idle_sleep::IdleClock,
     /// Sleep requests awaiting the engine's `PageState` answer, by tab id.
     pending_sleeps: HashMap<NodeId, sleep_state::PendingSleep>,
+    /// Page text: load-end timers and awaited answers (`tabs::page_text`).
+    page_text: tabs::PageTextTracker,
+    /// The page text log (`search`).
+    search: search::Search,
     /// The cookie jars WebView2 and CEF tabs share, by jar card id (see `jar`). A jar loads the first time a tab
     /// spawns with it (`ensure_jar_loaded`). An ephemeral jar lives only here.
     jars: BTreeMap<store::model::NodeId, jar::Jar>,
@@ -568,6 +573,8 @@ impl Default for App {
             split_tab: None,
             idle_clock: idle_sleep::IdleClock::default(),
             pending_sleeps: HashMap::new(),
+            page_text: Default::default(),
+            search: search::Search::open(),
             jars,
             cookies: jar::CookieState { jar_snapshots, ..Default::default() },
             saved_scroll: HashMap::new(),

@@ -229,6 +229,7 @@ fn main() {
     let pending_json_body = nav_state::new_shared_json_body();
     let pending_redirect_content_type = nav_state::new_shared_redirect_content_type();
     let pending_page_state: Rc<RefCell<Option<manifold_view_protocol::PageState>>> = Rc::new(RefCell::new(None));
+    let pending_page_text: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
     let pending_cookies: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
     nav_state::register_handlers(
         &webview,
@@ -388,6 +389,20 @@ fn main() {
                         webview.ExecuteScript(&HSTRING::from(manifold_view_protocol::PAGE_STATE_SCRIPT), &handler)
                     };
                 }
+                HostToView::QueryPageText => {
+                    let pending = pending_page_text.clone();
+                    let handler = ExecuteScriptCompletedHandler::create(Box::new(move |_error, result| {
+                        // `ExecuteScript` returns the string JSON-encoded; `null` for a page that is not text.
+                        let raw = serde_json::from_str::<Option<String>>(&result.to_string()).ok().flatten();
+                        if let Some(text) = manifold_view_protocol::page_text_reply(raw.as_deref()) {
+                            *pending.borrow_mut() = Some(text);
+                        }
+                        Ok(())
+                    }));
+                    let _ = unsafe {
+                        webview.ExecuteScript(&HSTRING::from(manifold_view_protocol::PAGE_TEXT_SCRIPT), &handler)
+                    };
+                }
                 HostToView::RestoreScroll { x, y } => {
                     let handler = ExecuteScriptCompletedHandler::create(Box::new(|_error, _result| Ok(())));
                     let script = manifold_view_protocol::restore_scroll_script(x, y);
@@ -460,6 +475,10 @@ fn main() {
 
         if let Some(state) = pending_page_state.borrow_mut().take() {
             let _ = control.send(&ViewToHost::PageState(state));
+        }
+
+        if let Some(text) = pending_page_text.borrow_mut().take() {
+            let _ = control.send(&ViewToHost::PageText { text });
         }
 
         if let Some(content_type) = pending_redirect_content_type.borrow_mut().take() {

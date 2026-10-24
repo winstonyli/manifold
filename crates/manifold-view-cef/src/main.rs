@@ -19,8 +19,8 @@ use manifold_view_protocol::{HostToView, InputEvent, TabState, ViewToHost};
 
 use app::{AppBuilder, ViewApp};
 use client::{
-    new_shared_audio_playing, new_shared_json_body, new_shared_page_state, new_shared_redirect_content_type,
-    ClientBuilder,
+    new_shared_audio_playing, new_shared_json_body, new_shared_page_state, new_shared_page_text,
+    new_shared_redirect_content_type, ClientBuilder,
 };
 use context_menu_handler::new_shared_context_menu_link;
 use download_handler::new_shared_download_path;
@@ -28,7 +28,7 @@ use find_handler::new_shared_find_result;
 use life_span_handler::{new_shared_closed, new_shared_pending_open_tab};
 use nav_handler::{new_shared_muted, new_shared_nav_state};
 use render_handler::ViewRenderHandler;
-use render_process_handler::{CHECK_AUDIO_PLAYING, CHECK_PAGE_STATE};
+use render_process_handler::{CHECK_AUDIO_PLAYING, CHECK_PAGE_STATE, CHECK_PAGE_TEXT};
 
 const DEFAULT_WIDTH: u32 = 1024;
 const DEFAULT_HEIGHT: u32 = 768;
@@ -187,6 +187,7 @@ fn main() {
     let redirect_content_type = new_shared_redirect_content_type();
     let audio_playing = new_shared_audio_playing();
     let page_state = new_shared_page_state();
+    let page_text = new_shared_page_text();
     let mut last_reported_audio_playing = false;
     let mut last_audio_poll = std::time::Instant::now();
     // Remembers the most recent `FindStart`'s term/case-sensitivity —
@@ -223,6 +224,7 @@ fn main() {
             redirect_content_type.clone(),
             audio_playing.clone(),
             page_state.clone(),
+            page_text.clone(),
         )),
         Some(&initial_url.as_str().into()),
         Some(&browser_settings),
@@ -309,6 +311,13 @@ fn main() {
                 HostToView::QueryPageState => {
                     if let Some(frame) = browser.main_frame() {
                         if let Some(mut message) = process_message_create(Some(&CHECK_PAGE_STATE.into())) {
+                            frame.send_process_message(ProcessId::RENDERER, Some(&mut message));
+                        }
+                    }
+                }
+                HostToView::QueryPageText => {
+                    if let Some(frame) = browser.main_frame() {
+                        if let Some(mut message) = process_message_create(Some(&CHECK_PAGE_TEXT.into())) {
                             frame.send_process_message(ProcessId::RENDERER, Some(&mut message));
                         }
                     }
@@ -456,6 +465,12 @@ fn main() {
         if let Some(text) = page_state.borrow_mut().take() {
             if let Some(state) = manifold_view_protocol::PageState::parse(&text) {
                 let _ = control.send(&ViewToHost::PageState(state));
+            }
+        }
+
+        if let Some(raw) = page_text.borrow_mut().take() {
+            if let Some(text) = manifold_view_protocol::page_text_reply(Some(&raw)) {
+                let _ = control.send(&ViewToHost::PageText { text });
             }
         }
 

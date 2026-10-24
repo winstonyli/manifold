@@ -22,7 +22,9 @@ use crate::nav_handler::{
     ViewLoadHandler, ViewRequestHandler,
 };
 use crate::render_handler::{RenderHandlerBuilder, ViewRenderHandler};
-use crate::render_process_handler::{AUDIO_PLAYING_RESULT, JSON_BODY_RESULT, PAGE_STATE_RESULT, REDIRECT_RESULT};
+use crate::render_process_handler::{
+    AUDIO_PLAYING_RESULT, JSON_BODY_RESULT, PAGE_STATE_RESULT, PAGE_TEXT_RESULT, REDIRECT_RESULT,
+};
 
 /// The renderer subprocess's own answer to a `check-json-body`
 /// `ProcessMessage` (see `render_process_handler.rs`) -- `Client::
@@ -65,6 +67,13 @@ pub fn new_shared_page_state() -> SharedPageState {
     Rc::new(RefCell::new(None))
 }
 
+/// The renderer's `page-text-result` reply: the raw script text, which `main.rs` cleans with `page_text_reply`.
+pub type SharedPageText = Rc<RefCell<Option<String>>>;
+
+pub fn new_shared_page_text() -> SharedPageText {
+    Rc::new(RefCell::new(None))
+}
+
 wrap_client! {
     pub struct ClientBuilder {
         render_handler: RenderHandler,
@@ -79,6 +88,7 @@ wrap_client! {
         redirect_content_type: SharedRedirectContentType,
         audio_playing: SharedAudioPlaying,
         page_state: SharedPageState,
+        page_text: SharedPageText,
     }
 
     impl Client {
@@ -113,6 +123,12 @@ wrap_client! {
             if name == PAGE_STATE_RESULT {
                 if let Some(args) = message.argument_list() {
                     *self.page_state.borrow_mut() = Some(CefString::from(&args.string(0)).to_string());
+                }
+                return 1;
+            }
+            if name == PAGE_TEXT_RESULT {
+                if let Some(args) = message.argument_list() {
+                    *self.page_text.borrow_mut() = Some(CefString::from(&args.string(0)).to_string());
                 }
                 return 1;
             }
@@ -167,6 +183,7 @@ impl ClientBuilder {
         redirect_content_type: SharedRedirectContentType,
         audio_playing: SharedAudioPlaying,
         page_state: SharedPageState,
+        page_text: SharedPageText,
     ) -> Client {
         Self::new(
             RenderHandlerBuilder::build(render_handler),
@@ -181,6 +198,7 @@ impl ClientBuilder {
             redirect_content_type,
             audio_playing,
             page_state,
+            page_text,
         )
     }
 }

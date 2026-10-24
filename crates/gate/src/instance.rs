@@ -241,6 +241,14 @@ impl Instance {
         State::parse(&fs::read_to_string(&path)?).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
     }
 
+    /// `TEXTOF`, then polls for the file: the page text stored for tab `id`, or `none`.
+    pub fn text_of(&mut self, name: &str, id: &str) -> io::Result<String> {
+        let path = self.fresh_path(format!("{name}.txt"));
+        self.send(&format!("TEXTOF {id} {}", path.display()))?;
+        wait_file(&path, EXPORT_TIMEOUT)?;
+        fs::read_to_string(&path)
+    }
+
     /// Sends `cmds`, waits (`STEP_TIMEOUT`) for `seen` to hold (an observable of the commands' effect, such as the
     /// probe server having seen the request they cause), then for the app to be idle (`WAITIDLE`: typed input landed,
     /// the focused tab loaded).

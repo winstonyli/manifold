@@ -39,6 +39,7 @@ mod nonce;
 #[cfg(windows)]
 mod package;
 #[cfg(windows)]
+mod page_text;
 mod probes;
 mod profile;
 #[cfg(windows)]
@@ -143,6 +144,7 @@ mod windows_main {
             usage: Some("[WORKDIR_PARENT]"),
             run: Run::Parent(crate::shots::chrome_shots_sizes),
         },
+        Stage { name: "page-text", usage: Some("[WORKDIR_PARENT]"), run: Run::Parent(crate::page_text::page_text) },
         Stage { name: "sleep", usage: Some(""), run: Run::Parent(crate::sleep::sleep) },
         Stage { name: "jar", usage: Some(""), run: Run::Parent(crate::jar::jar) },
         Stage { name: "scale", usage: Some("TABS..."), run: Run::Args(crate::stress::scale) },

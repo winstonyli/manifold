@@ -302,6 +302,10 @@ pub enum HostToView {
     /// The app theme changed: serve `manifold://` pages in the dark or light palette from now on (a page already
     /// open keeps its colors until `Reload`). Sent to every host, since a later navigation uses the flag.
     SetTheme { dark: bool },
+    /// Asks for the page's visible text (`PAGE_TEXT_SCRIPT`) for the local search index; the engine answers
+    /// `ViewToHost::PageText`, or stays silent when it cannot or the page has none. Sent a moment after a load ends
+    /// and just before a tab sleeps.
+    QueryPageText,
 }
 
 /// The script every engine that reports `JsonBody`/`RedirectableContent` (all but CEF, which
@@ -358,6 +362,27 @@ impl PageState {
         };
         parts.next().is_none().then_some(PageState { scroll_x, scroll_y, dirty_form })
     }
+}
+
+/// Largest page text kept, in UTF-16 units (the script's `slice` unit) and, after `clean_page_text`, in chars.
+pub const TEXT_CAP_UNITS: usize = 65_536;
+
+/// Returns the page's visible text, or null for a page that is not html or plain text. `innerText` omits script and
+/// style; whitespace runs are collapsed; the cut is at `TEXT_CAP_UNITS`.
+pub const PAGE_TEXT_SCRIPT: &str = "(function(){var t=document.contentType;if(t!=='text/html'&&t!=='text/plain'){return null;}var b=document.body;if(!b){return null;}return (b.innerText||'').replace(/\\s+/g,' ').trim().slice(0,65536);})();";
+
+/// A host's reply, guarded: whitespace collapsed again, a replacement char left by a cut surrogate trimmed from the
+/// ends, at most `TEXT_CAP_UNITS` chars.
+pub fn clean_page_text(raw: &str) -> String {
+    let collapsed = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+    collapsed.trim_matches('\u{FFFD}').chars().take(TEXT_CAP_UNITS).collect()
+}
+
+/// What a host sends for a `PAGE_TEXT_SCRIPT` result: the cleaned text, or `None` for a null, failed or blank one.
+/// Every host runs its result through this before sending `ViewToHost::PageText`.
+pub fn page_text_reply(raw: Option<&str>) -> Option<String> {
+    let text = clean_page_text(raw?);
+    (!text.is_empty()).then_some(text)
 }
 
 /// Scrolls to `(x, y)`, retrying on animation frames for up to 3 s until the
@@ -552,6 +577,8 @@ pub enum ViewToHost {
     /// any content type but `application/json`, which comes as `JsonBody`
     /// instead and converts from that body.
     RedirectableContent { content_type: String },
+    /// The answer to `HostToView::QueryPageText`: the page's visible text, already through `clean_page_text`.
+    PageText { text: String },
 }
 
 #[cfg(test)]
@@ -685,11 +712,11 @@ mod wire_shape_tests {
     use std::io::Cursor;
 
     /// The `PROTOCOL_VERSION` that `RECORDED_FINGERPRINT` was recorded for.
-    const RECORDED_FOR_VERSION: u32 = 5;
+    const RECORDED_FOR_VERSION: u32 = 6;
     /// The fingerprint of the wire shape at `RECORDED_FOR_VERSION`.
-    const RECORDED_FINGERPRINT: u64 = 0x9b42_23dc_8815_171f;
-    const HOST_TO_VIEW_VARIANTS: usize = 21;
-    const VIEW_TO_HOST_VARIANTS: usize = 16;
+    const RECORDED_FINGERPRINT: u64 = 0x956d_ba4d_e3c7_6183;
+    const HOST_TO_VIEW_VARIANTS: usize = 22;
+    const VIEW_TO_HOST_VARIANTS: usize = 17;
     const INPUT_EVENT_VARIANTS: usize = 7;
     const MOUSE_BUTTON_VARIANTS: usize = 3;
 
@@ -718,6 +745,7 @@ mod wire_shape_tests {
             HostToView::SetMuted { .. } => 18,
             HostToView::Shutdown => 19,
             HostToView::SetTheme { .. } => 20,
+            HostToView::QueryPageText => 21,
         }
     }
 
@@ -740,6 +768,7 @@ mod wire_shape_tests {
             ViewToHost::DownloadFailed { .. } => 13,
             ViewToHost::JsonBody { .. } => 14,
             ViewToHost::RedirectableContent { .. } => 15,
+            ViewToHost::PageText { .. } => 16,
         }
     }
 
@@ -813,6 +842,7 @@ mod wire_shape_tests {
             HostToView::SetMuted { muted: true },
             HostToView::Shutdown,
             HostToView::SetTheme { dark: true },
+            HostToView::QueryPageText,
         ]
     }
 
@@ -851,6 +881,7 @@ mod wire_shape_tests {
             ViewToHost::DownloadFailed { path: "a.bin".into() },
             ViewToHost::JsonBody { body: "{}".into() },
             ViewToHost::RedirectableContent { content_type: "image/png".into() },
+            ViewToHost::PageText { text: "hello".into() },
         ]
     }
 
@@ -912,5 +943,40 @@ mod wire_shape_tests {
             "PROTOCOL_VERSION is {PROTOCOL_VERSION} but this test records version {RECORDED_FOR_VERSION}. If the bump \
              was deliberate and the wire shape is unchanged, set RECORDED_FOR_VERSION to {PROTOCOL_VERSION}."
         );
+    }
+}
+
+#[cfg(test)]
+mod page_text_tests {
+    use super::*;
+
+    #[test]
+    fn page_text_script_is_one_expression_returning_a_string_or_null() {
+        assert!(PAGE_TEXT_SCRIPT.starts_with("(function(){"));
+        assert!(PAGE_TEXT_SCRIPT.contains("text/html") && PAGE_TEXT_SCRIPT.contains("text/plain"));
+        assert!(PAGE_TEXT_SCRIPT.contains(&TEXT_CAP_UNITS.to_string()));
+    }
+
+    #[test]
+    fn clean_page_text_collapses_whitespace_and_caps() {
+        assert_eq!(clean_page_text("a \n\t b  c"), "a b c");
+        let long = "x".repeat(TEXT_CAP_UNITS * 2);
+        assert_eq!(clean_page_text(&long).chars().count(), TEXT_CAP_UNITS);
+        assert_eq!(
+            clean_page_text("\u{FFFD}ok"),
+            "ok",
+            "a replacement char from a cut surrogate is dropped at the edges"
+        );
+    }
+
+    #[test]
+    fn a_null_or_blank_reply_sends_nothing() {
+        assert_eq!(page_text_reply(None), None);
+        assert_eq!(page_text_reply(Some("  \n ")), None);
+    }
+
+    #[test]
+    fn a_reply_is_cleaned() {
+        assert_eq!(page_text_reply(Some(" a  b ")).as_deref(), Some("a b"));
     }
 }

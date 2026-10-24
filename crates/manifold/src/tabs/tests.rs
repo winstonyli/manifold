@@ -106,3 +106,129 @@ fn unanswered_requests_are_settled_after_the_timeout() {
     app.expire_pending_sleeps(t0 + sleep_state::PENDING_TIMEOUT);
     assert!(app.pending_sleeps.is_empty());
 }
+
+mod page_text {
+    use super::*;
+    use crate::process_manager::ViewKind;
+    use crate::session_sync::tests::{add_jar, live_tab, Peer};
+    use crate::tabs::page_text::TEXT_DELAY;
+    use manifold_view_protocol::HostToView;
+
+    const URL: &str = "https://a.test/";
+
+    fn tab(app: &mut App, url: &str) -> (NodeId, Peer) {
+        live_tab(app, ViewKind::Servo, url)
+    }
+
+    fn set_url(app: &mut App, id: NodeId, url: &str) {
+        app.nodes.get_mut(&id).unwrap().as_tab_mut().unwrap().url = url.into();
+    }
+
+    fn text_queries(peer: &mut Peer) -> usize {
+        peer.sent().iter().filter(|m| matches!(m, HostToView::QueryPageText)).count()
+    }
+
+    #[test]
+    fn load_end_arms_a_timer_and_it_fires_after_text_delay() {
+        let mut app = App::default();
+        let (id, mut peer) = tab(&mut app, URL);
+        let t0 = Instant::now();
+        app.note_load_end(id, URL, t0);
+        app.poll_text_timers(t0 + TEXT_DELAY - Duration::from_millis(1));
+        assert_eq!(text_queries(&mut peer), 0);
+        app.poll_text_timers(t0 + TEXT_DELAY);
+        app.poll_text_timers(t0 + TEXT_DELAY * 2);
+        assert_eq!(text_queries(&mut peer), 1, "asked once, then the timer is spent");
+    }
+
+    #[test]
+    fn a_navigation_before_the_timer_cancels_it() {
+        let mut app = App::default();
+        let (id, mut peer) = tab(&mut app, URL);
+        let t0 = Instant::now();
+        app.note_load_end(id, URL, t0);
+        set_url(&mut app, id, "https://b.test/");
+        app.poll_text_timers(t0 + TEXT_DELAY);
+        assert_eq!(text_queries(&mut peer), 0);
+    }
+
+    #[test]
+    fn page_text_is_stored_with_the_url_it_was_asked_at() {
+        let mut app = App::default();
+        let (id, _peer) = tab(&mut app, URL);
+        app.ask_page_text(id);
+        app.accept_page_text(id, "hello world".into());
+        let rec = app.search.texts.get(id).unwrap();
+        assert_eq!((rec.text.as_str(), rec.url.as_str()), ("hello world", URL));
+    }
+
+    #[test]
+    fn page_text_for_a_changed_url_is_dropped() {
+        let mut app = App::default();
+        let (id, _peer) = tab(&mut app, URL);
+        app.ask_page_text(id);
+        set_url(&mut app, id, "https://b.test/");
+        app.accept_page_text(id, "x".into());
+        assert!(app.search.texts.get(id).is_none());
+    }
+
+    #[test]
+    fn an_unasked_answer_is_dropped() {
+        let mut app = App::default();
+        let (id, _peer) = tab(&mut app, URL);
+        app.accept_page_text(id, "x".into());
+        assert!(app.search.texts.get(id).is_none());
+    }
+
+    #[test]
+    fn manifold_pages_and_non_http_urls_are_not_wanted() {
+        let mut app = App::default();
+        for (url, wanted) in [
+            ("manifold://start", false),
+            ("file:///x", false),
+            ("about:blank", false),
+            (URL, true),
+            ("HTTP://A.TEST/", true),
+        ] {
+            let (id, _peer) = tab(&mut app, url);
+            assert_eq!(app.text_wanted(id), wanted, "{url}");
+        }
+    }
+
+    #[test]
+    fn an_ephemeral_jar_tab_is_not_wanted() {
+        let mut app = App::default();
+        let (id, mut peer) = tab(&mut app, URL);
+        let jar = add_jar(&mut app, "Tmp");
+        app.set_jar_edge(id, Some(jar));
+        assert!(app.text_wanted(id));
+        app.set_jar_ephemeral(jar, true);
+        assert!(!app.text_wanted(id));
+        app.ask_page_text(id);
+        app.accept_page_text(id, "x".into());
+        assert!(app.search.texts.get(id).is_none());
+        assert_eq!(text_queries(&mut peer), 0);
+    }
+
+    #[test]
+    fn sleep_asks_for_text_first_when_the_stored_text_is_for_another_url() {
+        let mut app = App::default();
+        let (id, mut peer) = tab(&mut app, URL);
+        assert!(app.request_sleep(id, SleepWhy::Manual));
+        let sent = peer.sent();
+        let text = sent.iter().position(|m| matches!(m, HostToView::QueryPageText));
+        let state = sent.iter().position(|m| matches!(m, HostToView::QueryPageState));
+        assert!(text.is_some() && text < state, "{sent:?}");
+    }
+
+    #[test]
+    fn sleep_does_not_ask_when_the_stored_text_is_current() {
+        let mut app = App::default();
+        let (id, mut peer) = tab(&mut app, URL);
+        app.ask_page_text(id);
+        app.accept_page_text(id, "x".into());
+        let _ = peer.sent();
+        assert!(app.request_sleep(id, SleepWhy::Manual));
+        assert_eq!(text_queries(&mut peer), 0);
+    }
+}
