@@ -1,5 +1,5 @@
 /// Case-insensitive substring match against any of `haystacks` -- shared
-/// by the Graph toolbar's own filter (via `graph_filter_dims` below) and
+/// by the Graph omnibar's dimming (`App::node_matches`) and
 /// the History/Bookmarks popup filter boxes, so the three don't each
 /// reimplement the same `to_lowercase().contains()` check slightly
 /// differently. An empty `filter` always matches (nothing typed yet, so

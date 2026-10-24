@@ -320,10 +320,7 @@ impl App {
         minimap: Option<egui::Rect>,
         typing: bool,
     ) -> Option<NodeId> {
-        if !self.line_click_allowed()
-            || typing
-            || self.renaming_group.is_some()
-            || self.menus.quick_switcher.open.is_some()
+        if !self.line_click_allowed() || typing || self.renaming_group.is_some() || self.menus.omni_popup.open.is_some()
         {
             return None;
         }

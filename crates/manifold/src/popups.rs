@@ -1,5 +1,5 @@
 //! Popups and floating windows. The anchored toolbar dropdowns are in `dropdowns`, their shared shell in
-//! `popup_frame`, and the rest by name: `menus`, `confirm`, `find_bar`, `quick_switcher`, `shortcuts_help`.
+//! `popup_frame`, and the rest by name: `menus`, `confirm`, `find_bar`, `shortcuts_help`.
 
 use super::*;
 use crate::nav_history::Dir;
@@ -10,7 +10,6 @@ mod dropdowns;
 mod find_bar;
 mod menus;
 mod popup_frame;
-mod quick_switcher;
 mod shortcuts_help;
 
 pub(crate) use confirm::*;
@@ -19,7 +18,6 @@ pub(crate) use dropdowns::*;
 pub(crate) use find_bar::*;
 pub(crate) use menus::*;
 pub(crate) use popup_frame::*;
-pub(crate) use quick_switcher::*;
 
 /// A `TextEdit` that a shortcut or click wants focused. The widget may not
 /// exist until a later frame (a rename field replaces its button, the find
@@ -28,9 +26,11 @@ pub(crate) use quick_switcher::*;
 /// only one widget can hold focus.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum FocusTarget {
-    AddressBar,
+    /// The inline omnibar (`App::omni`), whichever view shows it.
+    OmniBar,
+    /// The Ctrl+K popup's omnibar (`App::omni_popup`).
+    OmniPopup,
     FindBar,
-    QuickSwitcher,
     GroupRename,
     BookmarkFolder,
     /// The tab menu's "New Jar..." name field (`App::naming_jar`).
@@ -55,7 +55,7 @@ mod tests {
     #[test]
     fn a_focus_request_is_taken_once_by_its_own_widget() {
         let mut pending = Some(FocusTarget::FindBar);
-        assert!(!take_focus(&mut pending, FocusTarget::AddressBar));
+        assert!(!take_focus(&mut pending, FocusTarget::OmniBar));
         assert!(take_focus(&mut pending, FocusTarget::FindBar));
         assert!(!take_focus(&mut pending, FocusTarget::FindBar));
     }

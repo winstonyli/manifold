@@ -19,7 +19,6 @@ pub(crate) fn rows() -> &'static [SettingRow] {
     &ROWS
 }
 
-#[allow(dead_code, reason = "called by the omnibar (plan Task 5)")]
 /// The rows whose title and keywords hold every word of `query` as a substring, in page order. An empty query
 /// matches nothing.
 pub(crate) fn matching(query: &str) -> Vec<&'static SettingRow> {

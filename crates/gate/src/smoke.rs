@@ -460,8 +460,8 @@ fn drive(sm: &mut Smoke, m: &mut Marks) -> io::Result<()> {
 
     sm.send("ADDRESSBAR weather")?;
     sm.send("WAITIDLE")?;
-    sm.wait_state("weather_rows", "suggestions for \"weather\" arrive", r#"s["suggestions"]"#, |v| {
-        truthy_key(v.s, "suggestions")
+    sm.wait_state("weather_rows", "suggestions for \"weather\" arrive", r#"len(s["suggestions"]) >= 2"#, |v| {
+        v.s.0["suggestions"].as_array().is_some_and(|a| a.len() >= 2)
     })?;
     sm.shot("dropdown.png", "autocomplete dropdown")?;
     let first_row = sm.state("weather_rows")?.0["suggestions"][0].as_str().unwrap_or_default().to_string();
@@ -478,8 +478,8 @@ fn drive(sm: &mut Smoke, m: &mut Marks) -> io::Result<()> {
     sm.wait_state(
         "sourdough_rows",
         "suggestions for \"sourdough bread\" arrive",
-        r#"len(s["suggestions"]) >= 2"#,
-        |v| v.s.0["suggestions"].as_array().is_some_and(|a| a.len() >= 2),
+        r#"len(s["suggestions"]) >= 3"#,
+        |v| v.s.0["suggestions"].as_array().is_some_and(|a| a.len() >= 3),
     )?;
     sm.send("ARROWDOWN")?;
     sm.send("ARROWDOWN")?;
@@ -495,8 +495,8 @@ fn drive(sm: &mut Smoke, m: &mut Marks) -> io::Result<()> {
     // Escape dismisses the dropdown without leaving Tab view, and navigates nowhere.
     sm.send("ADDRESSBAR pancake recipe")?;
     sm.send("WAITIDLE")?;
-    sm.wait_state("pancake_rows", "suggestions for \"pancake recipe\" arrive", r#"s["suggestions"]"#, |v| {
-        truthy_key(v.s, "suggestions")
+    sm.wait_state("pancake_rows", "suggestions for \"pancake recipe\" arrive", r#"len(s["suggestions"]) >= 2"#, |v| {
+        v.s.0["suggestions"].as_array().is_some_and(|a| a.len() >= 2)
     })?;
     sm.send("ESCAPE")?;
     sm.shot("escape_dismiss.png", "Escape dismiss")?;

@@ -232,45 +232,4 @@ impl App {
             self.request_favicons([url.as_str()]);
         }
     }
-
-    /// Address-bar autocomplete's open-tab source: every *other* tab (an
-    /// exact-match-only self isn't a useful "switch to" suggestion) whose
-    /// URL or title contains `query`, case-insensitively. Capped and
-    /// ordered by `tab_order` for determinism — this is a small in-memory
-    /// list, not worth a fuzzy-match/relevance-ranking pass.
-    pub(crate) fn compute_open_tab_suggestions(&self, query: &str, exclude: NodeId) -> Vec<Suggestion> {
-        if query.is_empty() {
-            return Vec::new();
-        }
-        let query = query.to_lowercase();
-        self.node_order
-            .iter()
-            .filter(|id| **id != exclude)
-            .filter_map(|id| self.nodes.get(id).and_then(|n| n.runtime.listed_tab()).map(|tab| (id, tab)))
-            .filter(|(_, (title, url))| url.to_lowercase().contains(&query) || title.to_lowercase().contains(&query))
-            .take(5)
-            .map(|(id, (title, url))| Suggestion::OpenTab {
-                tab_id: *id,
-                url: url.to_string(),
-                title: title.to_string(),
-            })
-            .collect()
-    }
-
-    /// Accepting a suggestion: jump straight to an already-open tab (no
-    /// navigation at all), or navigate the focused tab to a search.
-    /// Either way the dropdown itself is cleared and the address bar drops
-    /// out of its "actively editing" state so it re-syncs to whichever
-    /// tab ends up focused, same as any other navigation.
-    pub(crate) fn accept_suggestion(&mut self, suggestion: Suggestion, focused_tab_id: NodeId) {
-        match suggestion {
-            Suggestion::OpenTab { tab_id, .. } => self.focus_tab(tab_id),
-            Suggestion::Search { query } => {
-                let url = self.settings.default_search_engine.search_url(&query);
-                self.navigate_tab(focused_tab_id, url);
-            }
-        }
-        self.address_bar.dismiss();
-        self.address_bar.focused = false;
-    }
 }

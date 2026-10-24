@@ -125,7 +125,6 @@ impl App {
                     SpawnPurpose::Root => {
                         self.focused = Some(id);
                         self.view_mode = ViewMode::Graph;
-                        self.address_bar.text = url;
                         self.send_resize_to(id);
                         self.send_zoom_to(id);
                     }
@@ -160,9 +159,6 @@ impl App {
                         // showing the configured value.
                         self.send_zoom_to(id);
                         if is_focused {
-                            if !self.address_bar.focused {
-                                self.address_bar.text = url;
-                            }
                             // Resizing only matters for what's actually
                             // shown -- skip it while Image view hides this
                             // tab, same as `visible` above.
@@ -176,11 +172,8 @@ impl App {
                     SpawnPurpose::Restore => {
                         self.note_host_load(id);
                         self.send_zoom_to(id);
-                        if is_focused {
-                            self.address_bar.text = url;
-                            if visible {
-                                self.send_resize_to(id);
-                            }
+                        if is_focused && visible {
+                            self.send_resize_to(id);
                         }
                     }
                 }

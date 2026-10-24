@@ -229,9 +229,9 @@ fn tab_lists_include_sleeping_tabs() {
     let mut app = app_on(&temp_dir("lazy-lists").join("session.mnf"), 1);
     let a = add(&mut app, Kind::Tab, sleeping_tab("https://a/", "Alpha"));
     let b = add(&mut app, Kind::Tab, sleeping_tab("https://b/", "Beta"));
-    assert_eq!(app.quick_switcher_matches("beta"), std::slice::from_ref(&b));
-    app.menus.quick_switcher.open = Some(crate::QuickSwitcher { query: "beta".into(), selected: 0 });
-    app.quick_switcher_confirm();
+    app.open_omni_popup();
+    app.omni_set_text(crate::omnibar::Host::Popup, "beta");
+    app.omni_confirm(crate::omnibar::Host::Popup);
     assert_eq!(app.focused, Some(b));
     assert_eq!(app.test_spawns.len(), 1);
     app.cycle_focused_tab(true);

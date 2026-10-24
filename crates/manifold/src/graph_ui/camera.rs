@@ -198,7 +198,7 @@ impl App {
     }
 
     /// Applies a pending frame-restore and the toolbar's Fit request to the camera.
-    pub(super) fn apply_camera_requests(&mut self, reset_view: bool) {
+    pub(crate) fn apply_camera_requests(&mut self, reset_view: bool) {
         // See `GraphCamera::frame_restored`.
         if self.camera.frame_restored && self.spawns.tab_spawns_in_flight == 0 {
             self.camera.frame_restored = false;

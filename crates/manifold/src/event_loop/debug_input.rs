@@ -23,7 +23,7 @@ impl App {
     pub(crate) fn debug_input_pending(&self) -> bool {
         !self.debug.debug_input_events.is_empty()
             || self.debug.debug_address_bar_typing.is_some()
-            || self.pending_focus == Some(FocusTarget::AddressBar)
+            || self.pending_focus == Some(FocusTarget::OmniBar)
             || self.debug.pending_screenshot.is_some()
     }
 
@@ -38,7 +38,8 @@ impl App {
         !self.debug_input_pending()
             && self.transition.is_none()
             && !(self.view_mode == ViewMode::Graph && self.camera.is_moving())
-            && !self.address_bar.fetcher.is_busy()
+            && !self.omni.fetcher.is_busy()
+            && !self.omni_popup.fetcher.is_busy()
             && !loading
     }
 

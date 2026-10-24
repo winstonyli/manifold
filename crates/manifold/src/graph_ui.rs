@@ -468,9 +468,9 @@ mod tests {
         run(&mut app, "node menu open", vec![]);
         assert!(app.menus.node_menu.open.is_some(), "the menu stayed open");
         app.menus.node_menu.close();
-        app.graph_filter = "abc".into();
+        app.set_graph_filter("abc");
         run(&mut app, "filtered", vec![]);
-        app.graph_filter.clear();
+        app.set_graph_filter("");
         app.switch_group_level(Some(f.groups[0]));
         for _ in 0..3 {
             frame(&mut app, vec![]);

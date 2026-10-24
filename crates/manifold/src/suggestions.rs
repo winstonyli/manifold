@@ -1,34 +1,7 @@
-use crate::store::model::NodeId;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use crate::settings::SearchEngine;
-
-/// One row in the address bar's autocomplete dropdown.
-#[derive(Debug, Clone)]
-pub enum Suggestion {
-    /// Jump to (focus) an already-open tab instead of navigating anywhere.
-    OpenTab { tab_id: NodeId, url: String, title: String },
-    /// Run `query` as a search — only ever the address bar's own typed
-    /// text as a whole, not a per-word thing, matching how every real
-    /// browser's omnibox treats non-URL input.
-    Search { query: String },
-}
-
-impl Suggestion {
-    pub fn label(&self) -> String {
-        match self {
-            Suggestion::OpenTab { title, url, .. } => {
-                if title.is_empty() {
-                    url.clone()
-                } else {
-                    format!("{title} — {url}")
-                }
-            }
-            Suggestion::Search { query } => format!("Search for \u{201c}{query}\u{201d}"),
-        }
-    }
-}
 
 /// Whether `input` should be treated as a URL to navigate to directly
 /// (`https://...`, `example.com`, `localhost:8080`) versus a search query

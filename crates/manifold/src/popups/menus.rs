@@ -139,9 +139,8 @@ pub(crate) struct MenuPopups {
     /// The minimal right-click context menu, if currently showing — see
     /// `ContextMenuState`'s own doc comment.
     pub(crate) context_menu: Fading<ContextMenuState>,
-    /// `Ctrl+K` quick-switcher, if currently open — see `QuickSwitcher`'s
-    /// own doc comment and `App::build_quick_switcher`.
-    pub(crate) quick_switcher: Fading<QuickSwitcher>,
+    /// The `Ctrl+K` omnibar popup, if open; its state is `App::omni_popup` (see `App::build_omni_popup`).
+    pub(crate) omni_popup: Fading<()>,
     /// Which popup anchored below a toolbar or Settings button is open, if
     /// any; one at a time. See `AnchoredPopup`, `toggle_popup` and
     /// `close_popup`.

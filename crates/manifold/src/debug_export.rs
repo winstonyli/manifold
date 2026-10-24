@@ -3,8 +3,8 @@
 //! `EXPORTSTATE path` -- writes UI state that the session store doesn't
 //! hold (and shouldn't: it's the user's saved session) as JSON, for a
 //! test to check: `tab_view`, `transition`, `focused_url`,
-//! `address_bar_text`, `suggestions` (the dropdown's rows: a search's
-//! query, or `tab:<id>` for an open tab), `highlighted` (a row
+//! `address_bar_text`, `suggestions` (the omnibar dropdown's rows: `tab:<id>` for an open
+//! tab, `setting:<id>`, a history url, or the text a search or the typed row acts on), `highlighted` (a row
 //! index, or null) and `current_group` (the Graph view level's group
 //! id, or null at the top). `cards` lists the current level's cards in
 //! draw order, each as `id`, `type` (the card's mime type, e.g.
@@ -52,15 +52,20 @@ impl App {
     pub(crate) fn export_state(&self) -> serde_json::Value {
         let focused_url =
             self.focused.as_ref().and_then(|id| self.nodes.get(id)).and_then(|n| n.as_tab()).map(|t| t.url.clone());
-        let suggestions: Vec<String> = self
-            .address_bar
-            .combined()
-            .into_iter()
-            .map(|s| match s {
-                Suggestion::OpenTab { tab_id, .. } => format!("tab:{tab_id}"),
-                Suggestion::Search { query } => query,
-            })
-            .collect();
+        // The inline omnibar's rows while its dropdown is open, each as what Enter on it would act on.
+        let suggestions: Vec<String> = match self.omni.host.filter(|_| self.omni.open) {
+            Some(host) => self
+                .omni_rows(host)
+                .into_iter()
+                .map(|row| match row {
+                    crate::omnibar::Row::Card { id, .. } => format!("tab:{id}"),
+                    crate::omnibar::Row::Setting { id, .. } => format!("setting:{id}"),
+                    crate::omnibar::Row::History { url, .. } => url,
+                    crate::omnibar::Row::Typed { text } | crate::omnibar::Row::Suggestion { text } => text,
+                })
+                .collect(),
+            None => Vec::new(),
+        };
         // The current level's cards, in draw order, with where each
         // one's center is on screen: what a headless test needs to
         // aim a click or drag at a card. A card is named by its type
@@ -226,9 +231,9 @@ impl App {
             "tab_view": self.showing_tab_view(),
             "transition": self.transition.is_some(),
             "focused_url": focused_url,
-            "address_bar_text": self.address_bar.text,
+            "address_bar_text": self.omni.text,
             "suggestions": suggestions,
-            "highlighted": self.address_bar.highlighted,
+            "highlighted": self.omni.highlighted,
             "current_group": self.current_group,
             "cards": cards,
             "mirror_groups": mirror_groups,

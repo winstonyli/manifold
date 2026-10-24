@@ -205,12 +205,12 @@ impl App {
             Shortcut::OpenDevtools => self.open_devtools_shortcut(),
             Shortcut::NextTab => self.cycle_focused_tab(true),
             Shortcut::PrevTab => self.cycle_focused_tab(false),
-            Shortcut::QuickSwitch => self.open_quick_switcher(),
+            Shortcut::QuickSwitch => self.open_omni_popup(),
             Shortcut::NewGroup => self.new_group_shortcut(),
-            // Neutralized while the quick-switcher is open, same reasoning as its own Escape/arrow handling in
-            // `build_quick_switcher` -- a `Ctrl+G` typed while it's open shouldn't also flip the view underneath it.
+            // Neutralized while the Ctrl+K popup is open, same reasoning as its own Escape/arrow handling in
+            // `build_omni_popup` -- a `Ctrl+G` typed while it's open shouldn't also flip the view underneath it.
             Shortcut::ViewToggle => {
-                if self.menus.quick_switcher.open.is_none() {
+                if self.menus.omni_popup.open.is_none() {
                     self.toggle_view_mode_shortcut();
                 }
             }
@@ -437,12 +437,12 @@ impl App {
 
     /// `Ctrl+L` / headless `FOCUSADDRESS` — only meaningful in Tab view,
     /// since Graph view has no address bar to focus. Queues a focus request
-    /// rather than setting `address_bar.focused` directly: real egui focus
+    /// rather than setting `omni.focused` directly: real egui focus
     /// can only be requested on the widget, when `build_tab_view_ui` builds
     /// it (see `FocusTarget`).
     pub(crate) fn focus_address_bar_shortcut(&mut self) {
         if self.showing_tab_view() {
-            self.pending_focus = Some(FocusTarget::AddressBar);
+            self.pending_focus = Some(FocusTarget::OmniBar);
             // `request_focus()` only takes hold starting the *next* frame
             // after it's called (immediate-mode: the widget this frame
             // already painted before `build_tab_view_ui` gets to call it) — a

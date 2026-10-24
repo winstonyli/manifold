@@ -49,7 +49,7 @@ impl App {
     pub(crate) fn virtual_card_dimmed(&self, entry: &CardEntry) -> bool {
         let Origin::Virtual(name) = entry.origin else { return false };
         let text = self.virtual_source(name).and_then(|source| source.searchable_text(entry));
-        text.is_some_and(|text| crate::card::graph_filter_dims(&self.graph_filter, &[&text]))
+        text.is_some_and(|text| !crate::text::filter_matches(self.omni_filter(), &[&text]))
     }
 
     /// Registers `source` after the sources already there. Each name hashes to its cards' `CardId` tag, so a clash (or
@@ -667,14 +667,14 @@ mod reach_tests {
     fn a_filter_dims_a_virtual_card_only_when_its_source_gives_searchable_text() {
         let mut rig = Rig::new();
         let entry = rig.app.level_items().pop().unwrap();
-        rig.app.graph_filter = "zzz".to_string();
+        rig.app.set_graph_filter("zzz");
         assert!(!rig.app.virtual_card_dimmed(&entry), "no searchable text: never dimmed");
         rig.app.virtual_sources.clear();
         let source = Rc::new(fake::FakeSource::default());
         source.searchable.set(Some("alpha"));
         rig.app.register_virtual_source(source);
         assert!(rig.app.virtual_card_dimmed(&entry), "text that does not match dims");
-        rig.app.graph_filter = "ALP".to_string();
+        rig.app.set_graph_filter("ALP");
         assert!(!rig.app.virtual_card_dimmed(&entry), "text that matches does not");
     }
 }

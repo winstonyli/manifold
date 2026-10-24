@@ -5,83 +5,6 @@ use super::*;
 use crate::nav_history::Dir;
 use crate::store::model::NodeId;
 
-/// Tab view's address bar and its autocomplete dropdown.
-pub(crate) struct AddressBar {
-    pub(crate) text: String,
-    pub(crate) focused: bool,
-    /// Open tabs matching `text`, recomputed synchronously (cheap, from
-    /// data already in memory) whenever it changes.
-    pub(crate) open_tab_suggestions: Vec<Suggestion>,
-    /// Search-engine suggestions, which arrive later from `fetcher`'s
-    /// debounced background fetch.
-    pub(crate) search_suggestions: Vec<String>,
-    pub(crate) fetcher: SuggestionFetcher,
-    /// Index into `combined()` the user has moved to with Up/Down; `None`
-    /// means no row is highlighted (Enter navigates to the typed text).
-    /// Reset whenever the list changes or the dropdown closes, so a stale
-    /// index can't point at an unrelated row.
-    pub(crate) highlighted: Option<usize>,
-    /// Frames in a row the field hasn't had focus. The dropdown survives one
-    /// (egui's focus blip as its buttons appear, see `editing`) and closes
-    /// after that: a click into the page must dismiss it.
-    pub(crate) unfocused_frames: u8,
-}
-
-impl AddressBar {
-    pub(crate) fn new(text: String) -> Self {
-        Self {
-            text,
-            focused: false,
-            open_tab_suggestions: Vec::new(),
-            search_suggestions: Vec::new(),
-            fetcher: SuggestionFetcher::new(),
-            highlighted: None,
-            unfocused_frames: 0,
-        }
-    }
-
-    /// Records this frame's focus; dismisses the dropdown once focus has
-    /// been away for more than one frame.
-    pub(crate) fn note_focus(&mut self, has_focus: bool) {
-        self.focused = has_focus;
-        self.unfocused_frames = if has_focus { 0 } else { self.unfocused_frames.saturating_add(1) };
-        if self.unfocused_frames > 1 && (!self.open_tab_suggestions.is_empty() || !self.search_suggestions.is_empty()) {
-            self.dismiss();
-        }
-    }
-
-    /// The dropdown's rows: open tabs first (jumping to one already loaded
-    /// beats a fresh navigation), then searches.
-    pub(crate) fn combined(&self) -> Vec<Suggestion> {
-        let mut all = self.open_tab_suggestions.clone();
-        all.extend(self.search_suggestions.iter().cloned().map(|query| Suggestion::Search { query }));
-        all
-    }
-
-    /// Whether the user is mid-edit, so the text mustn't be resynced to the
-    /// tab's URL. Not just `focused`: found live that the moment the
-    /// suggestion dropdown's buttons first appear, egui's own keyboard-focus
-    /// tracking transiently moves off the `TextEdit` for a frame (a real,
-    /// reproducible bug, not a one-off) — `has_focus()` then reports false
-    /// for that one frame, which (without this) blew away whatever the user
-    /// had just typed by resyncing to the tab's real URL mid-keystroke.
-    /// Suggestions being non-empty is a good proxy for "still actively
-    /// editing" that survives that blip.
-    pub(crate) fn editing(&self) -> bool {
-        self.focused || !self.open_tab_suggestions.is_empty() || !self.search_suggestions.is_empty()
-    }
-
-    /// Closes the dropdown, and cancels the search fetch in flight: its
-    /// response would otherwise reopen the dropdown after an Enter or
-    /// Escape.
-    pub(crate) fn dismiss(&mut self) {
-        self.open_tab_suggestions.clear();
-        self.search_suggestions.clear();
-        self.highlighted = None;
-        self.fetcher.cancel();
-    }
-}
-
 /// The "back to Graph" control every non-Graph item view shares (today,
 /// only Tab view; see the design spec's "item-view shared chip" layer).
 /// Deliberately not chip-wrapped, unlike the icon clusters elsewhere in
@@ -114,7 +37,6 @@ pub(crate) struct ItemToolbarActions {
     pub(crate) go_forward: bool,
     pub(crate) reload_requested: bool,
     pub(crate) home_requested: bool,
-    pub(crate) enter_pressed: bool,
     pub(crate) toggle_bookmark_requested: bool,
     /// The jar dot was clicked while the tab waits to switch: "Switch Jar Now".
     pub(crate) switch_jar: bool,
@@ -123,7 +45,6 @@ pub(crate) struct ItemToolbarActions {
     pub(crate) back_to_graph: bool,
     pub(crate) tab_actions_button_rect: Option<egui::Rect>,
     pub(crate) split_view_button_rect: Option<egui::Rect>,
-    pub(crate) address_bar_rect: Option<egui::Rect>,
     /// The Back chip's branch marker, when drawn: the branch list anchors to it.
     pub(crate) back_branches_rect: Option<egui::Rect>,
     pub(crate) forward_branches_rect: Option<egui::Rect>,
@@ -404,23 +325,7 @@ impl App {
         // real measured width begins.
         let text_width =
             (ui.available_rect_before_wrap().width() - trailing_width - ui.spacing().item_spacing.x).max(40.0);
-        let response = toolbar_field(ui, |ui| {
-            ui.add(
-                // Room for the favicon at the left and the Ctrl L keycaps at the right.
-                field_edit_inset(&mut self.address_bar.text, 32, 56)
-                    .desired_width(text_width)
-                    .hint_text("Search or enter address"),
-            )
-        });
-        if take_focus(&mut self.pending_focus, FocusTarget::AddressBar) {
-            response.request_focus();
-        }
-        // Egui's own focus, not `response.has_focus()`: that is also false while
-        // the OS window is unfocused, yet the field keeps its edit, so switching
-        // windows mid-edit would close the dropdown and resync the typed text
-        // away. A click into the page goes through egui and does move focus.
-        self.address_bar.note_focus(ui.memory(|m| m.has_focus(response.id)));
-        actions.address_bar_rect = Some(response.rect);
+        let response = self.omni_ui(ui, Host::Item, text_width);
         let node = self.nodes[&focused_id].as_tab().unwrap();
         let (url, loading, kind) = (node.url.clone(), node.loading, node.tab.kind);
         let identity = self.tab_identity(&url, loading, kind);
@@ -432,20 +337,6 @@ impl App {
         }
         if !response.has_focus() {
             paint_keycaps(ui, response.rect.right_center() - egui::vec2(8.0, 0.0), &["Ctrl", "L"]);
-        }
-
-        if response.changed() {
-            self.address_bar.open_tab_suggestions =
-                self.compute_open_tab_suggestions(&self.address_bar.text, focused_id);
-            self.address_bar.fetcher.note_text_changed(&self.address_bar.text);
-            // A changed query invalidates whatever row was
-            // highlighted for the *previous* suggestion list —
-            // keeping a stale index could silently highlight
-            // (and Enter-accept) an unrelated row.
-            self.address_bar.highlighted = None;
-        }
-        if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-            actions.enter_pressed = true;
         }
 
         actions
@@ -474,23 +365,13 @@ impl App {
             }
             return;
         }
-        let editing_address = self.address_bar.editing();
-        // `focused` is tab-only (see `App::focused`), so this always finds
-        // a Tab; `if let` rather than `.unwrap()` so a future path that
-        // breaks that invariant degrades to a stale address bar, not a
-        // panic.
-        if !editing_address {
+        // Another view's edit mustn't come back over the address: `omni_sync_host` reseeds on a host change, and the
+        // text resyncs to the tab's url unless the user is mid-edit here.
+        if self.omni.host != Some(Host::Item) || !self.omni.editing() {
             if let Some(tab) = self.nodes.get(&focused_id).and_then(|n| n.as_tab()) {
-                self.address_bar.text = tab.url.clone();
+                self.omni.text = tab.url.clone();
             }
         }
-        let mut navigate = None;
-        // Whether Enter fired this frame (real keypress or headless `ENTER`)
-        // — deferred here rather than acted on immediately inside the
-        // toolbar closure below, since deciding what Enter *does* (accept
-        // the highlighted dropdown row vs. plain-navigate) needs `combined`
-        // (the suggestion list), which isn't computed until after this
-        // closure returns.
         // Exhaustive (no `..`): a new `ItemToolbarActions` field that isn't
         // wired up here fails to compile.
         let ItemToolbarFrame {
@@ -502,7 +383,6 @@ impl App {
                     go_forward,
                     reload_requested,
                     home_requested,
-                    enter_pressed,
                     toggle_bookmark_requested,
                     switch_jar,
                     close_split_requested,
@@ -510,7 +390,6 @@ impl App {
                     back_to_graph: _,
                     tab_actions_button_rect,
                     split_view_button_rect,
-                    address_bar_rect,
                     back_branches_rect,
                     forward_branches_rect,
                 },
@@ -524,53 +403,13 @@ impl App {
 
         self.build_context_menu(ui);
 
-        if let Some(results) = self.address_bar.fetcher.tick() {
-            self.address_bar.search_suggestions = results;
-        }
-
-        // Autocomplete dropdown: a separate `egui::Area` anchored right
-        // below the address bar (screen space, not the toolbar `Panel`'s
-        // own layout — the dropdown needs to float over the content area
-        // below chrome, which a plain widget inside the toolbar couldn't
-        // do without stretching the toolbar itself). Clicking a row accepts
-        // it directly; Up/Down move `AddressBar::highlighted` (wrapping at
-        // both ends) and Enter accepts whichever row is highlighted (see
-        // `enter_pressed`'s resolution below) — reading arrow keys via
-        // `ui.input(|i| i.key_pressed(...))` here, after the `TextEdit`
-        // above already had its turn, is safe: `key_pressed` is a plain
-        // per-frame boolean read, not a consumed event, and a singleline
-        // `TextEdit` has no vertical text to move a cursor through, so
-        // there's no competing behavior to fight over (Enter was the one
-        // that actually needed care, via `enter_pressed`'s deferred
-        // resolution — a singleline `TextEdit` losing focus on Enter is a
-        // real, meaningful interaction to not double-handle).
-        // Gated on `editing_address`, not raw `self.address_bar.focused`:
-        // the same one-frame focus blip documented above (egui's focus
-        // tracking transiently leaving the `TextEdit` when the dropdown's
-        // buttons appear) was also hiding this whole Area, including the
-        // buttons, on the exact frame a click landed on one — so the click
-        // never reached anything and just silently dismissed the dropdown.
-        let combined = self.address_bar.combined();
-        if editing_address && !combined.is_empty() {
-            self.build_address_suggestions(ui, &combined, address_bar_rect, focused_id);
-        }
-
-        if enter_pressed {
-            match self.address_bar.highlighted.filter(|&i| i < combined.len()) {
-                Some(idx) => self.accept_suggestion(combined[idx].clone(), focused_id),
-                None => navigate = Some(self.address_bar.text.clone()),
-            }
-        }
-
-        let has_suggestions =
-            !self.address_bar.open_tab_suggestions.is_empty() || !self.address_bar.search_suggestions.is_empty();
-        // Neutralized while the quick-switcher is open: it does its own,
-        // separate Escape check in `build_quick_switcher` to close itself,
-        // and `key_pressed` is a non-consuming peek -- without this, the
-        // same Escape press would also fire this chain (leaving to Graph,
-        // or dismissing the address-bar dropdown) underneath it.
+        // The omnibar's dropdown is drawn by `omni_ui` in the toolbar above; Escape closes it here, in the layered chain.
+        let has_suggestions = self.omni.open;
+        // Neutralized while the Ctrl+K popup is open: it does its own, separate Escape check in `build_omni_popup` to
+        // close itself, and `key_pressed` is a non-consuming peek -- without this, the same Escape press would also
+        // fire this chain (leaving to Graph, or dismissing the address-bar dropdown) underneath it.
         let escape_pressed = ui.input(|i| i.key_pressed(egui::Key::Escape))
-            && self.menus.quick_switcher.open.is_none()
+            && self.menus.omni_popup.open.is_none()
             && !self.modal_open();
         if back_to_graph
             || (!has_suggestions && !self.find.open && self.menus.context_menu.open.is_none() && escape_pressed)
@@ -590,7 +429,7 @@ impl App {
             } else if self.find.open {
                 self.close_find_bar();
             } else if has_suggestions {
-                self.address_bar.dismiss();
+                self.omni.dismiss();
             }
         }
         for (requested, dir) in [(go_back, Dir::Back), (go_forward, Dir::Forward)] {
@@ -660,11 +499,6 @@ impl App {
         {
             self.start_split(kind);
         }
-        if let Some(text) = navigate {
-            let url = resolve_navigation_url(&text, self.settings.default_search_engine);
-            self.navigate_tab(focused_id, url);
-            self.address_bar.dismiss();
-        }
     }
 
     /// Stand-in while the focused tab is being respawned or woken: just enough chrome to escape to Graph.
@@ -701,90 +535,6 @@ impl App {
         ui.centered_and_justified(|ui| {
             ui.add(egui::Spinner::new().size(32.0));
         });
-    }
-
-    /// The address-bar suggestion dropdown: Up/Down move the highlight, a click accepts a row.
-    fn build_address_suggestions(
-        &mut self,
-        ui: &mut egui::Ui,
-        combined: &[Suggestion],
-        address_bar_rect: Option<egui::Rect>,
-        focused_id: NodeId,
-    ) {
-        // The arrows are the field's only while it has focus (or is in its one-frame blip).
-        let live = self.address_bar.unfocused_frames <= 1;
-        let delta = if live { ui.input(popups::arrow_delta) } else { 0 };
-        if delta != 0 && !combined.is_empty() {
-            // With nothing highlighted, Down lands on the first row and Up on the last: step from just before / after.
-            let from = self.address_bar.highlighted.unwrap_or(if delta > 0 { combined.len() - 1 } else { 0 });
-            self.address_bar.highlighted = Some(popups::step_index(from, delta, combined.len(), true));
-        }
-
-        if let Some(rect) = address_bar_rect {
-            let mut accepted = None;
-            egui::Area::new(egui::Id::new("address_suggestions"))
-                .fixed_pos(rect.left_bottom())
-                .order(egui::Order::Foreground)
-                .show(ui.ctx(), |ui| {
-                    // Inner width minus the frame's padding and border, so the
-                    // dropdown lines up with the address bar's edges.
-                    let frame = popup_frame(ui);
-                    let inner_width = rect.width() - frame.total_margin().sum().x;
-                    frame.show(ui, |ui| {
-                        menu_item_style(ui);
-                        ui.set_width(inner_width);
-                        // `ui.set_width` alone only sets the *container's*
-                        // layout width (affects wrapping/available_width),
-                        // not an individual `Button`'s own size — left
-                        // unset, each row was only as wide as its own
-                        // text, producing a ragged right edge instead of
-                        // a uniform list. `min_size`'s width stretches
-                        // each row to fill the container; height stays
-                        // `0.0` (no minimum) so natural row height/padding
-                        // is untouched.
-                        let full_width = ui.available_width();
-                        let qualifiers = self.listed_tab_qualifiers();
-                        for (idx, suggestion) in combined.iter().enumerate() {
-                            let highlighted = self.address_bar.highlighted == Some(idx);
-                            let identity = match suggestion {
-                                Suggestion::OpenTab { tab_id, url, .. } => self.row_identity(*tab_id, url),
-                                Suggestion::Search { .. } => {
-                                    Identity::Glyph { glyph: egui_phosphor::light::MAGNIFYING_GLASS, color: None }
-                                }
-                            };
-                            let mut button = egui::Button::new(row_label(
-                                ui,
-                                &suggestion.label(),
-                                match suggestion {
-                                    Suggestion::OpenTab { tab_id, .. } => qualifiers.get(tab_id).map(String::as_str),
-                                    Suggestion::Search { .. } => None,
-                                },
-                                0.0,
-                            ))
-                            .truncate()
-                            .min_size(egui::vec2(full_width, 0.0));
-                            if highlighted {
-                                button = button.fill(accent(ui.visuals()));
-                            }
-                            let row = ui.add(button);
-                            paint_row_icon(
-                                ui,
-                                row.rect,
-                                ui.spacing().button_padding.x,
-                                &suggestion.label(),
-                                highlighted,
-                                identity,
-                            );
-                            if row.clicked() {
-                                accepted = Some(suggestion.clone());
-                            }
-                        }
-                    });
-                });
-            if let Some(suggestion) = accepted {
-                self.accept_suggestion(suggestion, focused_id);
-            }
-        }
     }
 
     /// The split pane's engine label and the divider line between the panes.
@@ -833,24 +583,5 @@ impl App {
                 ui.add(egui::Spinner::new().size(32.0));
             });
         });
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Review C-B6: the dropdown survives one unfocused frame (the focus blip) but not two.
-    #[test]
-    fn the_dropdown_closes_after_focus_stays_away() {
-        let mut bar = AddressBar::new(String::new());
-        bar.search_suggestions = vec!["rust".into()];
-        bar.note_focus(false);
-        assert!(bar.editing(), "one frame is the known blip");
-        bar.note_focus(true);
-        bar.note_focus(false);
-        assert!(bar.editing(), "regaining focus starts the count again");
-        bar.note_focus(false);
-        assert!(!bar.editing(), "dismissed");
     }
 }

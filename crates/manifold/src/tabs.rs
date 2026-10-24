@@ -553,9 +553,6 @@ impl App {
         }
         if let Some(node) = self.nodes.get_mut(&id).and_then(|n| n.as_tab_mut()) {
             node.tab.set_visible(true);
-            if !self.address_bar.focused {
-                self.address_bar.text = node.url.clone();
-            }
         }
         self.focused = Some(id);
         self.viewed_image = None;
@@ -865,7 +862,7 @@ impl App {
     pub(crate) fn cycle_focused_tab(&mut self, forward: bool) {
         // `node_order` holds every graph node (tabs, notes, images, PDFs,
         // JSON files), not just tabs -- filter to live and unloaded tabs
-        // first (same filter `quick_switcher_matches` applies) so this
+        // first (same filter the omnibar's cards use) so this
         // never lands on a non-tab node. Landing on an unloaded tab is
         // fine: `focus_tab` wakes it, and `render_tab_toolbar_content`
         // shows the respawning placeholder until it's live rather than

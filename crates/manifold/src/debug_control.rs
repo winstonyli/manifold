@@ -375,7 +375,7 @@ const VERBS: &[Verb] = &[
     // `Text` input in the first frame the bar has it (see `debug_address_bar_typing`).
     row("ADDRESSBAR text", "Set the address bar's text and focus (Tab view only)", |rest| with_str(rest, |app, text| {
         if app.showing_tab_view() {
-            app.pending_focus = Some(FocusTarget::AddressBar);
+            app.pending_focus = Some(FocusTarget::OmniBar);
             app.debug.debug_address_bar_typing = Some(text);
             if let Some(window) = &app.window {
                 window.request_redraw();
@@ -504,17 +504,16 @@ const VERBS: &[Verb] = &[
         })
     }),
     row("QUIT", "Exit the app", |_| job(quit)),
-    row("QUICKSWITCHOPEN", "Ctrl+K -- open the quick switcher", |_| job(|app, _| app.open_quick_switcher())),
-    row("QUICKSWITCHTEXT text", "Set the quick switcher's search text", |rest| with_str(rest, |app, text| {
-        if let Some(switcher) = &mut app.menus.quick_switcher.open {
-            switcher.query = text;
-            switcher.selected = 0;
+    row("QUICKSWITCHOPEN", "Ctrl+K -- open the omnibar popup", |_| job(|app, _| app.open_omni_popup())),
+    row("QUICKSWITCHTEXT text", "Set the omnibar popup's search text", |rest| with_str(rest, |app, text| {
+        if app.menus.omni_popup.open.is_some() {
+            app.omni_set_text(Host::Popup, &text);
         }
     })),
-    row("QUICKSWITCHDOWN", "Quick switcher: move highlight down", |_| job(|app, _| app.quick_switcher_move(1))),
-    row("QUICKSWITCHUP", "Quick switcher: move highlight up", |_| job(|app, _| app.quick_switcher_move(-1))),
-    row("QUICKSWITCHENTER", "Quick switcher: confirm the highlighted row", |_| job(|app, _| app.quick_switcher_confirm())),
-    row("QUICKSWITCHESCAPE", "Close the quick switcher", |_| job(|app, _| app.menus.quick_switcher.open = None)),
+    row("QUICKSWITCHDOWN", "Omnibar popup: move highlight down", |_| job(|app, _| app.omni_move(Host::Popup, 1))),
+    row("QUICKSWITCHUP", "Omnibar popup: move highlight up", |_| job(|app, _| app.omni_move(Host::Popup, -1))),
+    row("QUICKSWITCHENTER", "Omnibar popup: confirm the highlighted row", |_| job(|app, _| app.omni_confirm(Host::Popup))),
+    row("QUICKSWITCHESCAPE", "Close the omnibar popup", |_| job(|app, _| app.omni_close(Host::Popup))),
     row("SESSIONNAMETEXT text", "Set the \"Save Session As...\" name field", |rest| with_str(rest, |app, text| app.session_name_draft = text)),
     row("SAVESESSIONAS name", "Save the running session as `name` (sessions/<name>.mnf)", |rest| with_text(rest, |app, name| app.save_named_session(&name))),
     row("OPENSESSION name", "Open the named save `name`, replacing the running session", |rest| {
@@ -523,7 +522,7 @@ const VERBS: &[Verb] = &[
             app.close_settings_page();
         })
     }),
-    row("GRAPHFILTERTEXT text", "Set the Graph toolbar's own filter box", |rest| with_str(rest, |app, text| app.graph_filter = text)),
+    row("GRAPHFILTERTEXT text", "Set the Graph omnibar's text (dims the cards it misses)", |rest| with_str(rest, |app, text| app.set_graph_filter(&text))),
     row("HISTORYFILTERTEXT text", "Set the History popup's own filter box", |rest| with_str(rest, |app, text| app.history_ui.history_filter = text)),
     row("BOOKMARKSFILTERTEXT text", "Set the Bookmarks popup's own filter box", |rest| with_str(rest, |app, text| app.history_ui.bookmarks_filter = text)),
     row("TOGGLEVIEW", "Ctrl+G -- toggle Tab / Graph view", |_| job(|app, _| app.toggle_view_mode_shortcut())),

@@ -301,19 +301,17 @@ impl App {
         // Not on a JSON level: it filters no cards there, and the
         // outline has the level's own search.
         if !on_json_level {
-            toolbar_field(ui, |ui| {
-                ui.add(field_edit(&mut self.graph_filter).desired_width(150.0).hint_text("Filter..."))
-            });
+            self.omni_ui(ui, Host::Graph, 220.0);
         }
         // Only shown once there's actually something to clear --
         // same `egui_phosphor::light::X` glyph every other close/
         // dismiss affordance in this app already uses, so this
         // reads as "clear" at a glance rather than a new symbol.
         if !on_json_level
-            && !self.graph_filter.is_empty()
-            && ui.button(egui_phosphor::light::X).on_hover_text("Clear filter").clicked()
+            && !self.omni.text.is_empty()
+            && ui.button(egui_phosphor::light::X).on_hover_text("Clear search").clicked()
         {
-            self.graph_filter.clear();
+            self.omni_escape(Host::Graph);
         }
     }
 

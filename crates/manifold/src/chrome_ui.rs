@@ -161,13 +161,8 @@ impl App {
 
     pub(crate) fn build_ui_inner(&mut self, ui: &mut egui::Ui) {
         self.handle_global_shortcuts(ui);
-        // The address bar is built only in Tab view, so leaving it by any
-        // path ends the edit, as Escape does. Otherwise the dropdown and
-        // typed text came back over whichever tab was shown next.
-        if !self.showing_tab_view() && self.address_bar.editing() {
-            self.address_bar.dismiss();
-            self.address_bar.focused = false;
-        }
+        // Leaving the view the omnibar was drawn in, by any path, ends its edit.
+        self.omni_leave_other_views();
         // Likewise a drag ends when its card stops being drawn (Graph view left, or the card left the level by
         // another replica's move): its release would never be seen, and the next one would save a stale pos.
         self.end_stale_drag(self.transition.is_some() || self.view_mode == ViewMode::Graph);
@@ -216,7 +211,7 @@ impl App {
             ViewMode::Graph => self.build_graph_ui(ui),
             ViewMode::Settings => self.build_settings_page(ui),
         }
-        self.build_quick_switcher(ui);
+        self.build_omni_popup(ui);
         self.build_confirm_popup(ui);
     }
 

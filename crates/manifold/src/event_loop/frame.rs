@@ -51,7 +51,7 @@ impl App {
                     raw_input.focused = true;
                 }
                 raw_input.events.append(&mut self.debug.debug_input_events);
-                if self.address_bar.focused {
+                if self.omni.focused {
                     if let Some(text) = self.debug.debug_address_bar_typing.take() {
                         raw_input.events.push(debug_key_event(egui::Key::A, egui::Modifiers::COMMAND));
                         raw_input.events.push(egui::Event::Text(text));

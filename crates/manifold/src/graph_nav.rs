@@ -705,7 +705,7 @@ impl App {
             // name rule: drawn by display_name just below
             self.doc.mirror.name(id).to_owned()
         } else {
-            self.quick_switcher_row_label(id).unwrap_or_default()
+            self.listed_tab_label(id).unwrap_or_default()
         };
         let segs = crate::names::display_name(&name, crate::names::UNTITLED);
         crate::names::to_plain(&crate::names::shorten(&segs, crate::names::ROW_UNITS).unwrap_or(segs))

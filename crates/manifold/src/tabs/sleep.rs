@@ -1,4 +1,4 @@
-//! Sleepi        if self.text_is_stale(id) {g tabs on App: the request/answer/expiry cycle, the idle sweep, and "Sleep Tabs" on a group.
+//! Sleeping tabs on App: the request/answer/expiry cycle, the idle sweep, and "Sleep Tabs" on a group.
 
 use super::*;
 

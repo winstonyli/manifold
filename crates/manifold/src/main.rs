@@ -57,6 +57,7 @@ mod node;
 mod node_menu;
 mod node_ops;
 mod node_store;
+mod omnibar;
 mod page_tab_gate;
 mod pdf;
 mod pdf_render;
@@ -112,9 +113,10 @@ use std::sync::Arc;
 
 use favicon_fetch::FaviconFetcher;
 use image_decode::ImageDecoder;
+use omnibar::{Host, OmniBar};
 use pdf_render::PdfRenderer;
 use redirect_fetch::{FetchJob, FetchResult, FetchTarget, RedirectFetcher};
-use suggestions::{resolve_navigation_url, Suggestion, SuggestionFetcher};
+use suggestions::{looks_like_url, resolve_navigation_url, SuggestionFetcher};
 
 use card::*;
 use card_id::CardId;
@@ -274,12 +276,6 @@ struct App {
     /// popup open/close within the running session (not persisted), same
     /// convenience the group-rename draft gets.
     session_name_draft: String,
-    /// Graph view's own toolbar filter box -- dims (doesn't hide) any
-    /// tab/download/group whose title/url/path/name doesn't contain this
-    /// case-insensitively, keeping edges and spatial layout intact rather
-    /// than making the graph reflow the way actually removing non-matches
-    /// would. Empty means no filtering. See `App::graph_node_dimmed`.
-    graph_filter: String,
     /// The tab shown in Tab view, and — even while in Graph view — the
     /// default parent for a newly created tab (last thing the user
     /// selected). `None` only when there are no tabs left at all.
@@ -362,8 +358,11 @@ struct App {
 
     egui_ctx: egui::Context,
     egui_state: Option<egui_winit::State>,
-    /// Tab view's address bar and its autocomplete. See `AddressBar`.
-    address_bar: AddressBar,
+    /// The omnibar of whichever view is showing (the Item view's address bar, the Graph's and Settings' search). See
+    /// `OmniBar`.
+    omni: OmniBar,
+    /// The Ctrl+K popup's omnibar.
+    omni_popup: OmniBar,
     /// Background fetcher for `favicon_fetch::fetch_favicon` -- see that
     /// module's own doc comment for why favicons are fetched independently
     /// here rather than aggregated from each engine's own (inconsistent)
@@ -569,7 +568,6 @@ impl Default for App {
             naming_jar: None,
             confirm: None,
             session_name_draft: String::new(),
-            graph_filter: String::new(),
             focused: None,
             viewed_image: None,
             image_view: ImageViewState::default(),
@@ -593,7 +591,8 @@ impl Default for App {
             swallowed_keys: Default::default(),
             egui_ctx,
             egui_state: None,
-            address_bar: AddressBar::new(settings.home_page.clone()),
+            omni: OmniBar::new(settings.home_page.clone()),
+            omni_popup: OmniBar::new(String::new()),
             favicon_fetcher: FaviconFetcher::new(profile::favicon_cache_dir()),
             pdf_renderer: PdfRenderer::new(),
             image_decoder: ImageDecoder::new(),

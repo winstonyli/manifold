@@ -1,0 +1,191 @@
+//! The omnibar's rows: what each source offers for a typed text, in the fixed order the dropdown shows them. Pure over
+//! a `Corpus`, so the tests need no `App`.
+
+use crate::store::model::NodeId;
+
+/// Rows each section offers at most; the dimming set (`App::omni_matches`) is not capped.
+pub(crate) const ROW_CAP: usize = 5;
+
+/// `Query` (Graph, Settings, Ctrl+K) starts empty and preselects the first row; `Address` (Item) starts as the tab's
+/// url and preselects none, so Enter navigates to what is typed.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Mode {
+    Query,
+    Address,
+}
+
+#[rustfmt::skip]
+#[derive(Clone, PartialEq, Debug)]
+pub(crate) enum Row {
+    Card { id: NodeId, label: String, url: String, jar: Option<String>, snippet: Option<String> },
+    History { url: String, title: String },
+    Setting { id: &'static str, title: &'static str, section: &'static str },
+    /// The typed text: a url to open, or a search with the default engine.
+    Typed { text: String },
+    /// A search suggestion from the engine.
+    Suggestion { text: String },
+}
+
+/// One open card the omnibar may offer.
+pub(crate) struct CardInfo {
+    pub(crate) id: NodeId,
+    pub(crate) label: String,
+    pub(crate) url: String,
+    pub(crate) jar: Option<String>,
+    pub(crate) closed: bool,
+}
+
+pub(crate) trait Corpus {
+    fn cards(&self) -> Vec<CardInfo>;
+    /// `(title, url)`, newest first.
+    fn history(&self) -> Vec<(String, String)>;
+}
+
+/// Whether `text` (trimmed) is a case-insensitive substring of any of `haystacks`.
+fn contains(text: &str, haystacks: &[&str]) -> bool {
+    let text = text.trim().to_lowercase();
+    haystacks.iter().any(|h| h.to_lowercase().contains(&text))
+}
+
+/// The rows for `text`: open cards, history, settings, the typed text, then search `suggestions`, each section at
+/// most `ROW_CAP`. An empty text offers the first open cards and nothing else (the Ctrl+K list before a keystroke).
+pub(crate) fn rows(corpus: &impl Corpus, text: &str, suggestions: &[String]) -> Vec<Row> {
+    let text = text.trim();
+    let mut out: Vec<Row> = corpus
+        .cards()
+        .into_iter()
+        .filter(|c| !c.closed && contains(text, &[&c.label, &c.url]))
+        .take(ROW_CAP)
+        .map(|c| Row::Card { id: c.id, label: c.label, url: c.url, jar: c.jar, snippet: None })
+        .collect();
+    if text.is_empty() {
+        return out;
+    }
+    out.extend(
+        corpus
+            .history()
+            .into_iter()
+            .filter(|(title, url)| contains(text, &[title, url]))
+            .take(ROW_CAP)
+            .map(|(title, url)| Row::History { url, title }),
+    );
+    out.extend(crate::settings_rows::matching(text).into_iter().take(ROW_CAP).map(|r| Row::Setting {
+        id: r.id,
+        title: r.title,
+        section: r.section,
+    }));
+    out.push(Row::Typed { text: text.to_string() });
+    out.extend(suggestions.iter().take(ROW_CAP).map(|s| Row::Suggestion { text: s.clone() }));
+    out
+}
+
+/// The row Enter picks before the user moves: the first in `Query` mode, none in `Address` mode.
+pub(crate) fn default_highlight(mode: Mode, rows: &[Row]) -> Option<usize> {
+    (mode == Mode::Query && !rows.is_empty()).then_some(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::store::model::ActorId;
+
+    fn id(n: u64) -> NodeId {
+        NodeId { actor: ActorId(1), counter: n }
+    }
+
+    #[derive(Default)]
+    struct Fake {
+        cards: Vec<(u64, &'static str, &'static str, bool)>,
+        history: Vec<(&'static str, &'static str)>,
+    }
+
+    impl Corpus for Fake {
+        fn cards(&self) -> Vec<CardInfo> {
+            self.cards
+                .iter()
+                .map(|&(n, label, url, closed)| CardInfo {
+                    id: id(n),
+                    label: label.into(),
+                    url: url.into(),
+                    jar: None,
+                    closed,
+                })
+                .collect()
+        }
+        fn history(&self) -> Vec<(String, String)> {
+            self.history.iter().map(|&(t, u)| (t.into(), u.into())).collect()
+        }
+    }
+
+    fn kinds(rows: &[Row]) -> Vec<&'static str> {
+        rows.iter()
+            .map(|r| match r {
+                Row::Card { .. } => "card",
+                Row::History { .. } => "history",
+                Row::Setting { .. } => "setting",
+                Row::Typed { .. } => "typed",
+                Row::Suggestion { .. } => "suggestion",
+            })
+            .collect()
+    }
+
+    #[test]
+    fn card_rows_come_before_history_before_settings_before_typed() {
+        let fake = Fake {
+            cards: vec![(1, "Rust book", "https://doc.test/", false)],
+            history: vec![("Rust blog", "https://blog.test/")],
+        };
+        let rows = rows(&fake, "e", &["engine room".into()]);
+        let mut order = kinds(&rows);
+        order.dedup();
+        assert_eq!(order, ["card", "history", "setting", "typed", "suggestion"]);
+    }
+
+    #[test]
+    fn each_section_is_capped_at_row_cap() {
+        let cards = (0..ROW_CAP as u64 + 3).map(|n| (n, "a card", "https://a.test/", false)).collect();
+        let fake = Fake { cards, history: Vec::new() };
+        let shown = rows(&fake, "a", &[]);
+        assert_eq!(shown.iter().filter(|r| matches!(r, Row::Card { .. })).count(), ROW_CAP);
+    }
+
+    #[test]
+    fn query_mode_preselects_the_first_row_and_address_mode_preselects_none() {
+        let fake = Fake { cards: vec![(1, "Rust", "https://r.test/", false)], history: Vec::new() };
+        let shown = rows(&fake, "rust", &[]);
+        assert_eq!(default_highlight(Mode::Query, &shown), Some(0));
+        assert_eq!(default_highlight(Mode::Address, &shown), None);
+        assert_eq!(default_highlight(Mode::Query, &[]), None, "nothing to pick");
+    }
+
+    #[test]
+    fn substring_of_title_or_url_matches_a_card_case_insensitively() {
+        let fake = Fake { cards: vec![(1, "Rust Book", "https://x.test/Guide", false)], history: Vec::new() };
+        let cards = |query| rows(&fake, query, &[]).into_iter().filter(|r| matches!(r, Row::Card { .. })).count();
+        for query in ["rust", "BOOK", "guide"] {
+            assert_eq!(cards(query), 1, "{query}");
+        }
+        assert_eq!(cards("zebra"), 0);
+    }
+
+    #[test]
+    fn closed_cards_are_not_offered() {
+        let fake = Fake { cards: vec![(1, "Rust", "https://r.test/", true)], history: Vec::new() };
+        assert!(!rows(&fake, "rust", &[]).iter().any(|r| matches!(r, Row::Card { .. })));
+    }
+
+    #[test]
+    fn settings_rows_appear_for_a_settings_word_and_not_for_a_page_word() {
+        let fake = Fake::default();
+        let settings = |text| rows(&fake, text, &[]).into_iter().filter(|r| matches!(r, Row::Setting { .. })).count();
+        assert!(settings("engine") > 0);
+        assert_eq!(settings("rust"), 0);
+    }
+
+    #[test]
+    fn an_empty_text_offers_only_the_open_cards() {
+        let fake =
+            Fake { cards: vec![(1, "Rust", "https://r.test/", false)], history: vec![("Blog", "https://b.test/")] };
+        assert_eq!(kinds(&rows(&fake, "  ", &["x".into()])), ["card"]);
+    }
+}
