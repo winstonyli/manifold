@@ -58,7 +58,7 @@ pub struct Server {
 }
 
 /// `SITE_HOST`, default `127.0.0.1`: the local address the gate's site listens on.
-fn site_host() -> String {
+pub(crate) fn site_host() -> String {
     std::env::var("SITE_HOST").unwrap_or_else(|_| "127.0.0.1".to_owned())
 }
 

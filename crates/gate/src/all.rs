@@ -329,6 +329,16 @@ mod tests {
     }
 
     #[test]
+    fn the_readme_names_every_step() {
+        let readme = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../README.md")).unwrap();
+        for step in STEPS {
+            let named =
+                readme.contains(&format!("`{}`", step.name)) || readme.contains(&format!("`gate {}`", step.name));
+            assert!(named, "README.md does not name the step `{}`", step.name);
+        }
+    }
+
+    #[test]
     fn ui_mode_keeps_the_store_free_steps_in_order() {
         let ui: Vec<&str> = STEPS.iter().filter(|s| s.in_ui).map(|s| s.name).collect();
         assert_eq!(

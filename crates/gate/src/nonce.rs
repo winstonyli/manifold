@@ -250,7 +250,7 @@ mod tests {
     fn serves_over_a_socket() {
         let site = Site::start().unwrap();
         let ask = |target: &str| {
-            let mut c = TcpStream::connect(("127.0.0.1", site.port())).unwrap();
+            let mut c = TcpStream::connect((http::site_host().as_str(), site.port())).unwrap();
             c.write_all(format!("GET {target} HTTP/1.1\r\nHost: x\r\n\r\n").as_bytes()).unwrap();
             let mut got = String::new();
             c.read_to_string(&mut got).unwrap();

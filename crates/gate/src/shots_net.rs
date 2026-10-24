@@ -10,7 +10,7 @@ use std::time::Duration;
 
 type Held = Mutex<Vec<TcpStream>>;
 
-/// A listener on 127.0.0.1 that hands each connection to `on_conn` on its own thread. A connection the handler
+/// A listener on 127.0.0.1 (or `SITE_HOST`) that hands each connection to `on_conn` on its own thread. A connection the handler
 /// pushes onto the held list stays open until `close_held` or drop.
 struct Hold {
     addr: SocketAddr,
@@ -21,7 +21,7 @@ struct Hold {
 
 impl Hold {
     fn start(on_conn: impl Fn(TcpStream, &Held) + Send + Sync + 'static) -> io::Result<Hold> {
-        let listener = TcpListener::bind(("127.0.0.1", 0))?;
+        let listener = TcpListener::bind((crate::http::site_host().as_str(), 0))?;
         let addr = listener.local_addr()?;
         let stop = Arc::new(AtomicBool::new(false));
         let held = Arc::new(Held::default());
@@ -97,7 +97,7 @@ impl Downloads {
     }
 
     pub fn url(&self, path: &str) -> String {
-        format!("http://127.0.0.1:{}{path}", self.0.addr.port())
+        format!("http://{}:{}{path}", crate::http::site_host(), self.0.addr.port())
     }
 
     pub fn kill(&self) {
@@ -136,7 +136,7 @@ impl Proxy {
     }
 
     pub fn url(&self) -> String {
-        format!("http://127.0.0.1:{}", self.hold.addr.port())
+        format!("http://{}:{}", crate::http::site_host(), self.hold.addr.port())
     }
 }
 
@@ -145,7 +145,7 @@ mod tests {
     use super::*;
 
     fn get(url_port: u16, path: &str, read: usize) -> Vec<u8> {
-        let mut s = TcpStream::connect(("127.0.0.1", url_port)).unwrap();
+        let mut s = TcpStream::connect((crate::http::site_host().as_str(), url_port)).unwrap();
         s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
         write!(s, "GET {path} HTTP/1.1\r\n\r\n").unwrap();
         let mut got = Vec::new();

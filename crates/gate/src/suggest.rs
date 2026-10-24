@@ -88,7 +88,7 @@ pub struct Server {
 }
 
 impl Server {
-    /// Listens on `127.0.0.1` with an ephemeral port and answers each connection on a thread of its own.
+    /// Listens on `127.0.0.1` (or `SITE_HOST`) with an ephemeral port and answers each connection on a thread of its own.
     pub fn start() -> io::Result<Server> {
         let log = Arc::new(Mutex::new(Vec::new()));
         let log2 = log.clone();
@@ -103,7 +103,7 @@ impl Server {
 
     /// The value for `MANIFOLD_SUGGESTIONS_URL`.
     pub fn url(&self) -> String {
-        format!("http://127.0.0.1:{}/ac/", self.http.port())
+        format!("http://{}:{}/ac/", http::site_host(), self.http.port())
     }
 
     /// The request targets seen so far (path and query), oldest first.
