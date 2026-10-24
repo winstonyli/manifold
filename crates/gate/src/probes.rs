@@ -44,6 +44,12 @@ addEventListener('mouseup', e => setTimeout(() => {
   fetch('/c?' + q);
 }, 100));
 </script>";
+/// The inner page of the iframe probe: one big input, focused, reporting its value on every edit.
+pub(crate) const FRAME: &str = "<!doctype html><title>frame</title><body style=\"margin:0\"><input id=i autofocus style=\"width:100%;height:280px;font-size:40px\">
+<script>
+addEventListener('input', e => fetch('/v?v=' + encodeURIComponent(e.target.value)));
+\nfor (const t of ['mousedown', 'focusin', 'keydown']) addEventListener(t, () => fetch('/v?e=' + t));
+</script>";
 const WIDE: &str = "<!doctype html><title>wide</title>\n\
 <div style=\"width:6000px;height:400px;background:linear-gradient(90deg,#fff,#9cf)\"></div>\n<script>\nlet t;\n\
 addEventListener('scroll', () => {\n  clearTimeout(t);\n  t = setTimeout(() => fetch('/s?e=hscroll&y=' + Math.round(scrollX)), 300);\n});\n</script>";
@@ -99,6 +105,23 @@ impl Site {
                     response("204 No Content", &[], "text/plain", b"")
                 }
                 "/clicks" => response("200 OK", &[], "text/html", CLICKS.as_bytes()),
+                "/v" => {
+                    note(if query.contains("e=") {
+                        format!("frame saw {}", param("e"))
+                    } else {
+                        format!("typed v={}", param("v"))
+                    });
+                    response("204 No Content", &[], "text/plain", b"")
+                }
+                "/frame" => response("200 OK", &[], "text/html", FRAME.as_bytes()),
+                // The outer page of the iframe probe: `src` (another origin's `/frame`) fills the window.
+                "/outer" => {
+                    let html = format!(
+                        "<!doctype html><title>outer</title><body style=\"margin:0\"><iframe src=\"{}\" style=\"border:0;width:100%;height:400px\"></iframe>",
+                        param("src").replace('"', "")
+                    );
+                    response("200 OK", &[], "text/html", html.as_bytes())
+                }
                 "/s" => {
                     note(format!("{} y={}", param("e"), param("y")));
                     response("204 No Content", &[], "text/plain", b"")

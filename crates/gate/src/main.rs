@@ -27,6 +27,7 @@ mod dblprobe;
 mod focus;
 mod fresh;
 mod http;
+mod iframe_typing;
 #[cfg(windows)]
 mod instance;
 #[cfg(windows)]
@@ -152,6 +153,11 @@ mod windows_main {
             name: "click-count",
             usage: Some("[WORKDIR_PARENT]"),
             run: Run::Parent(crate::click_count::click_count),
+        },
+        Stage {
+            name: "iframe-typing",
+            usage: Some("[WORKDIR_PARENT]"),
+            run: Run::Parent(crate::iframe_typing::iframe_typing),
         },
         Stage { name: "page-text", usage: Some("[WORKDIR_PARENT]"), run: Run::Parent(crate::page_text::page_text) },
         Stage { name: "search", usage: Some("[WORKDIR_PARENT]"), run: Run::Parent(crate::search::search) },
