@@ -466,8 +466,9 @@ fn drive(sm: &mut Smoke, m: &mut Marks) -> io::Result<()> {
     sm.shot("dropdown.png", "autocomplete dropdown")?;
     let first_row = sm.state("weather_rows")?.0["suggestions"][0].as_str().unwrap_or_default().to_string();
 
-    // First suggestion row's position below the address bar, at the 816x639 size pinned above.
-    sm.send("CLICK 283 42")?;
+    // The dropdown's first row, where the export says it is.
+    let row = sm.state("weather_rows")?.row(0).ok_or_else(|| bad("the dropdown drew no row".into()))?;
+    sm.send(&format!("CLICK {row}"))?;
     sm.wait_state("after_click", "clicking the first suggestion searches it", "q == row", |v| v.q == first_row)?;
     sm.send("WAITIDLE")?;
     sm.shot("after_click.png", "post-click navigation")?;

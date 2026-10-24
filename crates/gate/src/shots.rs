@@ -58,6 +58,8 @@ const FAKE_CEF_HOST: (&str, u64, &str) =
 const CEF_PIN: &str = include_str!("../../manifold/src/cef_pin.rs");
 /// Where a click outside every popup lands and closes it.
 const AWAY: &str = "CLICK 1100 300";
+/// The zoom chip's zoom-out button, by name.
+const ZOOM_OUT: &str = "Zoom out (Ctrl+-)";
 const QUIT_TIMEOUT: Duration = Duration::from_secs(30);
 
 fn knob(name: &str, default: u32) -> u32 {
@@ -316,7 +318,7 @@ impl Shots {
                 if s.current_group().is_none() && s.0["json_level"].is_null() {
                     return Ok(());
                 }
-                send!(self, "CLICK 14 16")?;
+                self.inst.click_control(crate::state::BACK)?;
             }
         }
         eprintln!("reset: not back at the top level");
@@ -897,7 +899,8 @@ impl Shots {
             s.tab_presses(1, "0.5")?;
             send!(s, "SPACEKEY", "SLEEP 0.5", "TOGGLEPIN", "SLEEP 1")?;
             for _ in 0..6 {
-                send!(s, "CLICK 207 19", "SLEEP 0.5")?;
+                s.inst.click_control(ZOOM_OUT)?;
+                send!(s, "SLEEP 0.5")?;
             }
             send!(s, "SLEEP 1")?;
             s.shot("graph-pinned-dense")?;

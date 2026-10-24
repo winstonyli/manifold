@@ -170,6 +170,12 @@ impl State {
         Some(fmt_pair((l + r) / 2.0, (t + b) / 2.0))
     }
 
+    /// The center of the `n`th list row the last frame drew (`rows`: the omnibar's dropdown rows, a menu's), `"x y"`.
+    pub fn row(&self, n: usize) -> Option<String> {
+        let [l, t, r, b] = Self::floats::<4>(self.0["rows"].as_array()?.get(n)?, "rect")?;
+        Some(fmt_pair((l + r) / 2.0, (t + b) / 2.0))
+    }
+
     /// A point on the card, `"x y"` rounded as python's `%.0f` (`xy(id)`): its center, or when that is off the canvas
     /// (a card past the window's edge) or another card (a virtual trail page, say) is drawn over it, the first of a few
     /// other points that are on the canvas and that no card covers.
@@ -278,6 +284,14 @@ mod tests {
 
     /// A card can reach past the window's bottom edge with its center outside it (the smoke's empty group at
     /// `reopen-nested`: center y 651 in a 639 px window): `xy` aims at the part that is on the canvas.
+    /// A row is found by its index in `rows`, at its rect's center.
+    #[test]
+    fn row_is_found_by_index() {
+        let s = State::parse(r#"{"rows":[{"text":"a","selected":false,"rect":[183.0,38.0,615.0,64.0]}]}"#).unwrap();
+        assert_eq!(s.row(0).as_deref(), Some("399 51"));
+        assert_eq!(s.row(1), None);
+    }
+
     /// A control is found by its name in `controls`, at its rect's center; an unknown name is `None`.
     #[test]
     fn control_is_found_by_name() {
