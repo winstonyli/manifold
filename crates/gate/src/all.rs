@@ -1,3 +1,4 @@
+//! The steps `gate all` runs after `two` are the `STEPS` table below: add a stage there, nowhere else in this file.
 //! `gate all LOG [full|light|ui]`: the pre-merge gate (was scripts/gate.sh), sequential so load from other sessions is the
 //! only thing that stretches it. A Git Bash fork costs seconds on this machine and the old script forked per stage for
 //! the clock, the log counts and the timing join; here only the stages and one PowerShell call for Defender are spawned.
@@ -164,6 +165,58 @@ impl Gate {
     }
 }
 
+/// One stage `gate all` runs after the `two` runs, in order: `gate <stage>` with `env`, its output in `LOG.<name>.log`.
+struct Step {
+    name: &'static str,
+    stage: &'static str,
+    env: &'static [(&'static str, &'static str)],
+    /// Whether mode `ui` runs it (`full` and `light` run every step).
+    in_ui: bool,
+    /// The environment variable that must be set for the step to run; `site_host` passes its value as `SITE_HOST`.
+    opt_in: Option<&'static str>,
+    site_host: bool,
+}
+
+const fn step(name: &'static str, in_ui: bool) -> Step {
+    Step { name, stage: name, env: &[], in_ui, opt_in: None, site_host: false }
+}
+
+const STEPS: &[Step] = &[
+    step("smoke", false),
+    step("launch-forms", false),
+    step("page-text", false),
+    step("search", false),
+    step("suggest-groups", false),
+    step("arrange", false),
+    step("link", true),
+    step("unknown-type", true),
+    step("closed", true),
+    step("trail", true),
+    Step { stage: "sleep", env: &[("VIEWS", "webview2"), ("CASES", "history")], ..step("sleep-history", true) },
+    Step {
+        stage: "trail",
+        env: &[("ENGINE", "webkit")],
+        opt_in: Some("WEBKIT_SITE_HOST"),
+        site_host: true,
+        ..step("trail-webkit", true)
+    },
+    Step {
+        stage: "sleep",
+        env: &[("VIEWS", "webkit"), ("CASES", "manual idle scroll history dirty")],
+        opt_in: Some("WEBKIT_SITE_HOST"),
+        site_host: true,
+        ..step("sleep-webkit", true)
+    },
+    Step { stage: "trail", env: &[("ENGINE", "servo")], opt_in: Some("WITH_SERVO"), ..step("trail-servo", true) },
+    Step {
+        stage: "sleep",
+        env: &[("VIEWS", "servo"), ("CASES", "history crash restart")],
+        opt_in: Some("WITH_SERVO"),
+        ..step("sleep-servo", true)
+    },
+    step("layout", true),
+];
+
 pub(crate) fn all(log: Option<PathBuf>, mode: Option<String>) -> ExitCode {
     let mode = mode.as_deref().unwrap_or("full");
     let runs = match mode {
@@ -233,37 +286,24 @@ pub(crate) fn all(log: Option<PathBuf>, mode: Option<String>) -> ExitCode {
     for i in 1..=runs {
         g.stage(&format!("two-{i}"), &sibling(&log, &format!("two-{i}.log")), gate("two"));
     }
-    if mode != "ui" {
-        g.stage("smoke", &sibling(&log, "smoke.log"), gate("smoke"));
-        g.stage("launch-forms", &sibling(&log, "launch-forms.log"), gate("launch-forms"));
-        for name in ["page-text", "search", "suggest-groups", "arrange"] {
-            g.stage(name, &sibling(&log, &format!("{name}.log")), gate(name));
+    for step in STEPS {
+        if mode == "ui" && !step.in_ui {
+            continue;
         }
+        let site_host = match step.opt_in {
+            Some(var) => match std::env::var(var) {
+                Ok(value) => value,
+                Err(_) => continue,
+            },
+            None => String::new(),
+        };
+        let mut c = gate(step.stage);
+        c.envs(step.env.iter().copied());
+        if step.site_host {
+            c.env("SITE_HOST", &site_host);
+        }
+        g.stage(step.name, &sibling(&log, &format!("{}.log", step.name)), c);
     }
-    g.stage("link", &sibling(&log, "link.log"), gate("link"));
-    g.stage("unknown-type", &sibling(&log, "unknown-type.log"), gate("unknown-type"));
-    g.stage("closed", &sibling(&log, "closed.log"), gate("closed"));
-    g.stage("trail", &sibling(&log, "trail.log"), gate("trail"));
-    let mut history = gate("sleep");
-    history.env("VIEWS", "webview2").env("CASES", "history");
-    g.stage("sleep-history", &sibling(&log, "sleep-history.log"), history);
-    if let Ok(ip) = std::env::var("WEBKIT_SITE_HOST") {
-        let mut trail = gate("trail");
-        trail.env("ENGINE", "webkit").env("SITE_HOST", &ip);
-        g.stage("trail-webkit", &sibling(&log, "trail-webkit.log"), trail);
-        let mut sleep = gate("sleep");
-        sleep.env("VIEWS", "webkit").env("CASES", "manual idle scroll history dirty").env("SITE_HOST", &ip);
-        g.stage("sleep-webkit", &sibling(&log, "sleep-webkit.log"), sleep);
-    }
-    if std::env::var_os("WITH_SERVO").is_some() {
-        let mut trail = gate("trail");
-        trail.env("ENGINE", "servo");
-        g.stage("trail-servo", &sibling(&log, "trail-servo.log"), trail);
-        let mut sleep = gate("sleep");
-        sleep.env("VIEWS", "servo").env("CASES", "history crash restart");
-        g.stage("sleep-servo", &sibling(&log, "sleep-servo.log"), sleep);
-    }
-    g.stage("layout", &sibling(&log, "layout.log"), gate("layout"));
 
     append(&log, "GATE slowest steps (seconds, cpu at start, mean cpu):");
     for line in timing::top(&fs::read_to_string(&log).unwrap_or_default(), 10) {
@@ -276,5 +316,40 @@ pub(crate) fn all(log: Option<PathBuf>, mode: Option<String>) -> ExitCode {
         ExitCode::from(1)
     } else {
         ExitCode::SUCCESS
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_step_runs_a_real_stage_under_its_own_log_name() {
+        let mut names = std::collections::HashSet::new();
+        for step in STEPS {
+            assert!(crate::windows_main::is_stage(step.stage), "{} -> {}", step.name, step.stage);
+            assert!(names.insert(step.name), "{} twice", step.name);
+            assert!(step.opt_in.is_some() || !step.site_host, "{} passes a SITE_HOST nobody set", step.name);
+        }
+    }
+
+    #[test]
+    fn ui_mode_keeps_the_store_free_steps_in_order() {
+        let ui: Vec<&str> = STEPS.iter().filter(|s| s.in_ui).map(|s| s.name).collect();
+        assert_eq!(
+            ui,
+            [
+                "link",
+                "unknown-type",
+                "closed",
+                "trail",
+                "sleep-history",
+                "trail-webkit",
+                "sleep-webkit",
+                "trail-servo",
+                "sleep-servo",
+                "layout"
+            ]
+        );
     }
 }

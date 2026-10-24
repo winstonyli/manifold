@@ -61,7 +61,7 @@ impl App {
                     crate::omnibar::Row::Card { id, .. } => format!("tab:{id}"),
                     crate::omnibar::Row::Setting { id, .. } => format!("setting:{id}"),
                     crate::omnibar::Row::History { url, .. } => url,
-                    crate::omnibar::Row::Command(command) => format!("command:{}", command.title()),
+                    crate::omnibar::Row::Command(command) => format!("command:{}", command.title),
                     crate::omnibar::Row::Typed { text } | crate::omnibar::Row::Suggestion { text } => text,
                 })
                 .collect(),

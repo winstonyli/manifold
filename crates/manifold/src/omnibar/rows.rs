@@ -2,6 +2,7 @@
 //! a `Corpus`, so the tests need no `App`.
 
 use crate::store::model::NodeId;
+use crate::App;
 
 /// Rows each section offers at most; the dimming set (`App::omni_matches`) is not capped.
 pub(crate) const ROW_CAP: usize = 5;
@@ -25,34 +26,38 @@ pub(crate) enum Row {
     /// A search suggestion from the engine.
     Suggestion { text: String },
     /// An action the typed words name.
-    Command(Command),
+    Command(&'static Command),
 }
 
-/// An action the omnibar offers by name.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum Command {
-    SuggestGroups,
-    Arrange,
+/// An action the omnibar offers by name: what it is called, the phrases whose prefix (two letters or more) offers
+/// it, and what it does. A new command is one more entry in `COMMANDS`.
+#[derive(Debug)]
+pub(crate) struct Command {
+    pub(crate) title: &'static str,
+    phrases: &'static [&'static str],
+    pub(crate) run: fn(&mut App),
 }
 
-impl Command {
-    pub(crate) const ALL: [Command; 2] = [Command::SuggestGroups, Command::Arrange];
-
-    pub(crate) fn title(self) -> &'static str {
-        match self {
-            Command::SuggestGroups => "Suggest groups",
-            Command::Arrange => "Arrange by topic",
-        }
-    }
-
-    /// The phrases whose prefix (two letters or more) offers the command.
-    fn phrases(self) -> &'static [&'static str] {
-        match self {
-            Command::SuggestGroups => &["suggest groups", "group by topic"],
-            Command::Arrange => &["arrange by topic", "lay out by topic"],
-        }
+/// Titles are unique, so they are the identity.
+impl PartialEq for Command {
+    fn eq(&self, other: &Self) -> bool {
+        self.title == other.title
     }
 }
+
+pub(crate) static SUGGEST_GROUPS: Command = Command {
+    title: "Suggest groups",
+    phrases: &["suggest groups", "group by topic"],
+    run: |app| {
+        app.suggest_groups();
+    },
+};
+pub(crate) static ARRANGE: Command = Command {
+    title: "Arrange by topic",
+    phrases: &["arrange by topic", "lay out by topic"],
+    run: App::arrange_by_topic,
+};
+pub(crate) static COMMANDS: [&Command; 2] = [&SUGGEST_GROUPS, &ARRANGE];
 
 /// One open card the omnibar may offer.
 pub(crate) struct CardInfo {
@@ -123,9 +128,7 @@ pub(crate) fn rows(corpus: &impl Corpus, text: &str, suggestions: &[String]) -> 
     }));
     if corpus.offers_commands() && text.chars().count() >= 2 {
         let lower = text.to_lowercase();
-        out.extend(
-            Command::ALL.into_iter().filter(|c| c.phrases().iter().any(|p| p.starts_with(&lower))).map(Row::Command),
-        );
+        out.extend(COMMANDS.into_iter().filter(|c| c.phrases.iter().any(|p| p.starts_with(&lower))).map(Row::Command));
     }
     out.push(Row::Typed { text: text.to_string() });
     out.extend(suggestions.iter().take(ROW_CAP).map(|s| Row::Suggestion { text: s.clone() }));
@@ -198,7 +201,7 @@ mod tests {
     #[test]
     fn a_command_is_offered_for_a_prefix_of_its_phrase_and_only_where_commands_are() {
         let on = Fake { commands: true, ..Default::default() };
-        let offered = |fake: &Fake, text| rows(fake, text, &[]).contains(&Row::Command(Command::SuggestGroups));
+        let offered = |fake: &Fake, text| rows(fake, text, &[]).contains(&Row::Command(&SUGGEST_GROUPS));
         for text in ["su", "Suggest gr", "group by", "GRO"] {
             assert!(offered(&on, text), "{text}");
         }
@@ -206,7 +209,7 @@ mod tests {
             assert!(!offered(&on, text), "{text}");
         }
         assert!(!offered(&Fake::default(), "suggest"), "the address bar offers none");
-        let arrange = |text| rows(&on, text, &[]).contains(&Row::Command(Command::Arrange));
+        let arrange = |text| rows(&on, text, &[]).contains(&Row::Command(&ARRANGE));
         assert!(arrange("arrange by") && arrange("ARR") && !arrange("su"));
     }
 

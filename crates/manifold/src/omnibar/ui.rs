@@ -29,7 +29,7 @@ pub(crate) fn row_text(row: &Row) -> String {
         Row::Typed { text } if looks_like_url(text) => format!("Go to {text}"),
         Row::Typed { text } => format!("Search for \u{201c}{text}\u{201d}"),
         Row::Suggestion { text } => text.clone(),
-        Row::Command(command) => command.title().to_owned(),
+        Row::Command(command) => command.title.to_owned(),
     }
 }
 

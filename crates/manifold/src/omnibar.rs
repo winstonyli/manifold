@@ -4,7 +4,7 @@
 mod rows;
 mod ui;
 
-pub(crate) use rows::{default_highlight, Command, Mode, Row};
+pub(crate) use rows::{default_highlight, Mode, Row};
 
 use super::*;
 use crate::store::model::NodeId;
@@ -332,10 +332,7 @@ impl App {
             Row::History { url, .. } => self.omni_open_url(url, host),
             Row::Typed { text } => self.omni_open_url(resolve_navigation_url(&text, engine), host),
             Row::Suggestion { text } => self.omni_open_url(engine.search_url(&text), host),
-            Row::Command(Command::SuggestGroups) => {
-                self.suggest_groups();
-            }
-            Row::Command(Command::Arrange) => self.arrange_by_topic(),
+            Row::Command(command) => (command.run)(self),
         }
         self.omni_close(host);
     }
