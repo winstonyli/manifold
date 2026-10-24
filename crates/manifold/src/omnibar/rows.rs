@@ -24,6 +24,31 @@ pub(crate) enum Row {
     Typed { text: String },
     /// A search suggestion from the engine.
     Suggestion { text: String },
+    /// An action the typed words name.
+    Command(Command),
+}
+
+/// An action the omnibar offers by name.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Command {
+    SuggestGroups,
+}
+
+impl Command {
+    pub(crate) const ALL: [Command; 1] = [Command::SuggestGroups];
+
+    pub(crate) fn title(self) -> &'static str {
+        match self {
+            Command::SuggestGroups => "Suggest groups",
+        }
+    }
+
+    /// The phrases whose prefix (two letters or more) offers the command.
+    fn phrases(self) -> &'static [&'static str] {
+        match self {
+            Command::SuggestGroups => &["suggest groups", "arrange by topic"],
+        }
+    }
 }
 
 /// One open card the omnibar may offer.
@@ -43,6 +68,8 @@ pub(crate) trait Corpus {
     fn text_hits(&self, text: &str) -> Vec<NodeId>;
     /// About a line of `id`'s document around `text`.
     fn snippet(&self, id: NodeId, text: &str) -> Option<String>;
+    /// Whether commands are offered (not in the address bar, where the text is a url or a search).
+    fn offers_commands(&self) -> bool;
 }
 
 /// Whether `text` (trimmed) is a case-insensitive substring of any of `haystacks`.
@@ -91,6 +118,12 @@ pub(crate) fn rows(corpus: &impl Corpus, text: &str, suggestions: &[String]) -> 
         title: r.title,
         section: r.section,
     }));
+    if corpus.offers_commands() && text.chars().count() >= 2 {
+        let lower = text.to_lowercase();
+        out.extend(
+            Command::ALL.into_iter().filter(|c| c.phrases().iter().any(|p| p.starts_with(&lower))).map(Row::Command),
+        );
+    }
     out.push(Row::Typed { text: text.to_string() });
     out.extend(suggestions.iter().take(ROW_CAP).map(|s| Row::Suggestion { text: s.clone() }));
     out
@@ -116,6 +149,7 @@ mod tests {
         history: Vec<(&'static str, &'static str)>,
         /// `(card, snippet)` for the cards a page-text search finds.
         text_hits: Vec<(u64, &'static str)>,
+        commands: bool,
     }
 
     impl Corpus for Fake {
@@ -140,6 +174,9 @@ mod tests {
         fn snippet(&self, card: NodeId, _text: &str) -> Option<String> {
             self.text_hits.iter().find(|&&(n, _)| id(n) == card).map(|&(_, s)| s.to_owned())
         }
+        fn offers_commands(&self) -> bool {
+            self.commands
+        }
     }
 
     fn kinds(rows: &[Row]) -> Vec<&'static str> {
@@ -150,8 +187,22 @@ mod tests {
                 Row::Setting { .. } => "setting",
                 Row::Typed { .. } => "typed",
                 Row::Suggestion { .. } => "suggestion",
+                Row::Command(_) => "command",
             })
             .collect()
+    }
+
+    #[test]
+    fn a_command_is_offered_for_a_prefix_of_its_phrase_and_only_where_commands_are() {
+        let on = Fake { commands: true, ..Default::default() };
+        let offered = |fake: &Fake, text| rows(fake, text, &[]).contains(&Row::Command(Command::SuggestGroups));
+        for text in ["su", "Suggest gr", "arrange by", "ARR"] {
+            assert!(offered(&on, text), "{text}");
+        }
+        for text in ["s", "rust", "suggestions"] {
+            assert!(!offered(&on, text), "{text}");
+        }
+        assert!(!offered(&Fake::default(), "suggest"), "the address bar offers none");
     }
 
     #[test]

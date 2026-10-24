@@ -60,6 +60,7 @@ mod state;
 #[cfg(windows)]
 mod stress;
 mod suggest;
+mod suggest_groups;
 #[cfg(windows)]
 mod sync_deps;
 mod tier;
@@ -147,6 +148,11 @@ mod windows_main {
         },
         Stage { name: "page-text", usage: Some("[WORKDIR_PARENT]"), run: Run::Parent(crate::page_text::page_text) },
         Stage { name: "search", usage: Some("[WORKDIR_PARENT]"), run: Run::Parent(crate::search::search) },
+        Stage {
+            name: "suggest-groups",
+            usage: Some("[WORKDIR_PARENT]"),
+            run: Run::Parent(crate::suggest_groups::suggest_groups),
+        },
         Stage { name: "sleep", usage: Some(""), run: Run::Parent(crate::sleep::sleep) },
         Stage { name: "jar", usage: Some(""), run: Run::Parent(crate::jar::jar) },
         Stage { name: "scale", usage: Some("TABS..."), run: Run::Args(crate::stress::scale) },

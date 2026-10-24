@@ -118,18 +118,9 @@ impl Index {
         Some(format!("{lead}{}{tail}", body.trim()))
     }
 
-    #[allow(dead_code, reason = "the tests count documents; the LSA (Task 8) may too")]
+    #[cfg(test)]
     pub(crate) fn docs(&self) -> usize {
         self.len.len()
-    }
-
-    /// Each document's terms with their counts, for the LSA.
-    #[allow(dead_code, reason = "the LSA (Task 8) is the first user")]
-    pub(crate) fn term_doc_matrix(&self) -> Vec<(DocKey, Vec<(&str, u32)>)> {
-        let mut out: Vec<_> =
-            self.terms.iter().map(|(k, t)| (*k, t.iter().map(|(w, c)| (w.as_str(), *c)).collect())).collect();
-        out.sort_by_key(|&(k, _)| k);
-        out
     }
 }
 
@@ -224,17 +215,6 @@ mod tests {
         index.add(DocKey::History(7), "Rust blog");
         index.add(node(1), "rust book");
         assert_eq!(index.search("rust").len(), 2);
-    }
-
-    #[test]
-    fn the_term_doc_matrix_lists_each_documents_counts() {
-        let mut index = Index::new();
-        index.add(node(1), "a b b");
-        let matrix = index.term_doc_matrix();
-        assert_eq!(matrix.len(), 1);
-        let (key, mut terms) = matrix.into_iter().next().unwrap();
-        terms.sort();
-        assert_eq!((key, terms), (node(1), vec![("a", 1), ("b", 2)]));
     }
 
     #[test]

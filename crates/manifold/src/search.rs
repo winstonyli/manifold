@@ -2,10 +2,11 @@
 //! built from it (`service`, on a worker thread), and `sync`, which keeps the index equal to what the document and
 //! the text log hold.
 
+mod cluster;
 mod index;
-#[allow(dead_code, reason = "the clustering (Task 9) is the first user")]
 mod lsa;
 mod service;
+mod suggest;
 mod sync;
 pub(crate) mod text_store;
 mod tokenize;
@@ -13,8 +14,6 @@ mod tokenize;
 pub(crate) use index::{DocKey, Index};
 pub(crate) use service::{page_doc, SearchService};
 pub(crate) use text_store::TextStore;
-#[allow(unused_imports, reason = "the LSA (Task 8) is the first user")]
-pub(crate) use tokenize::tokens;
 
 use crate::store::model::NodeId;
 use std::cell::RefCell;
@@ -38,6 +37,8 @@ pub(crate) struct Search {
     pub(crate) next_sync: Option<Instant>,
     /// The last query's hits, keyed by its text and the index generation.
     cache: RefCell<Option<(String, u64, Rc<Hits>)>>,
+    /// The groups offered by the last "Suggest groups" (`App::suggestions` says which still stand).
+    pub(crate) suggestions: Option<suggest::Suggestions>,
 }
 
 impl Search {
@@ -46,7 +47,14 @@ impl Search {
         let mut texts = TextStore::open(crate::profile::search_dir().as_deref());
         texts.compact_if_wasteful();
         let service = SearchService::start(&texts);
-        Search { texts, service, indexed: HashMap::new(), next_sync: None, cache: RefCell::new(None) }
+        Search {
+            texts,
+            service,
+            indexed: HashMap::new(),
+            next_sync: None,
+            cache: RefCell::new(None),
+            suggestions: None,
+        }
     }
 
     /// Forgets every stored text and the index ("Clear search index"). Titles and urls of what is open come back at

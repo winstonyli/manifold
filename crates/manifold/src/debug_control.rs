@@ -658,6 +658,15 @@ const VERBS: &[Verb] = &[
     row("WAITIDLE [secs]", "Hold later commands until typed input has landed, no view transition runs and the focused tab isn't loading (default 60 s max)", |rest| {
         wait_timeout(rest).map(|timeout| Parsed::Reader(ReaderOp::WaitIdle(timeout)))
     }),
+    row("SUGGEST", "Toolbar's Suggest groups: cluster this level's cards by page text (read the offers in EXPORTSTATE `group_suggestions`)", |_| {
+        job(|app, _| {
+            app.suggest_groups();
+        })
+    }),
+    row("ACCEPTSUGGESTION n", "Accept the n-th (from 0) suggested group", |rest| {
+        let index: usize = rest.parse().ok()?;
+        job(move |app, _| app.accept_suggestion(index))
+    }),
     row("WAITINDEX [secs]", "Hold later commands until the page-text index has caught up with the loaded pages (default 60 s max)", |rest| {
         wait_timeout(rest).map(|timeout| Parsed::Reader(ReaderOp::WaitIndex(timeout)))
     }),

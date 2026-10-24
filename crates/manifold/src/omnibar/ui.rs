@@ -10,6 +10,7 @@ fn row_icon(row: &Row) -> Identity {
         Row::Setting { .. } => egui_phosphor::light::GEAR,
         Row::Typed { text } if looks_like_url(text) => egui_phosphor::light::ARROW_RIGHT,
         Row::Typed { .. } | Row::Suggestion { .. } => egui_phosphor::light::MAGNIFYING_GLASS,
+        Row::Command(_) => egui_phosphor::light::SPARKLE,
     };
     Identity::Glyph { glyph, color: None }
 }
@@ -24,6 +25,7 @@ pub(crate) fn row_text(row: &Row) -> String {
         Row::Typed { text } if looks_like_url(text) => format!("Go to {text}"),
         Row::Typed { text } => format!("Search for \u{201c}{text}\u{201d}"),
         Row::Suggestion { text } => text.clone(),
+        Row::Command(command) => command.title().to_owned(),
     }
 }
 

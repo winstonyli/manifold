@@ -255,6 +255,13 @@ impl App {
                     actions.push(GraphAction::ImportGroup);
                 }
             }
+            let response =
+                chip_icon_button(ui, egui::Id::new("icon_btn_suggest_groups"), egui_phosphor::light::SPARKLE)
+                    .named_tip("Suggest groups: cluster these cards by what their pages say");
+            grow(response.rect);
+            if response.clicked() {
+                self.suggest_groups();
+            }
             if !groups_at_level.is_empty() {
                 let response =
                     chip_icon_button(ui, egui::Id::new("icon_btn_ungroup_all"), egui_phosphor::light::FOLDER_MINUS)

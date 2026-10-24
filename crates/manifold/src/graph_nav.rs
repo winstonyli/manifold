@@ -232,8 +232,7 @@ impl App {
         };
         // Every card's group and parent before the effect, so the step names exactly the cards it changed (a menu
         // Join moves the whole selection with no drag to say which).
-        let watched: Vec<NodeId> = self.nodes.keys().copied().collect();
-        let before: Vec<_> = watched.iter().map(|&w| (self.doc.mirror.group(w), self.doc.mirror.parent(w))).collect();
+        let before = self.membership_snapshot();
         let effect = target;
         match target {
             Some((DropEffect::Eject, _)) => self.eject(id),
@@ -248,16 +247,9 @@ impl App {
                 }
             }
             Some((DropEffect::GroupWith, Some(other))) => {
-                let group = self.alloc_node_id();
-                let pos = self.layout_pos(other);
-                self.insert_group_at(group, Some(pos));
                 let unit = self.take_drag_unit(CardId::from(id), other);
-                for member in std::iter::once(other).chain(unit) {
-                    if self.nodes.contains_key(&member) {
-                        self.edit_group(member, Some(group));
-                    }
-                    self.recheck_edge_scope(member);
-                }
+                let at = self.layout_pos(other);
+                self.group_cards(std::iter::once(other).chain(unit), at);
             }
             Some((DropEffect::Reparent, Some(parent))) => {
                 let _ = self.connect(crate::caps::OPENED_FROM, id, parent);
@@ -267,25 +259,7 @@ impl App {
         }
         // A Merge records its own fold; a drop with no effect or no change records nothing.
         if let Some((effect, other)) = effect.filter(|(effect, _)| *effect != DropEffect::Merge) {
-            let moved: Vec<Moved> = watched
-                .iter()
-                .zip(before)
-                .filter_map(|(&w, (group, parent))| {
-                    let now_group = self.doc.mirror.group(w);
-                    let now_parent = self.doc.mirror.parent(w);
-                    (group != now_group || parent != now_parent).then(|| {
-                        let pos_now = self.doc.mirror.pos(w);
-                        let pos_before =
-                            origin.iter().find(|(o, _)| *o == CardId::from(w)).map_or(pos_now, |(_, p)| *p);
-                        Moved {
-                            id: w,
-                            group: (group, now_group),
-                            parent: (parent, now_parent),
-                            pos: (pos_before, pos_now),
-                        }
-                    })
-                })
-                .collect();
+            let moved = self.moved_since(before, &origin);
             if !moved.is_empty() {
                 let created =
                     (effect == DropEffect::GroupWith).then(|| other.and_then(|o| self.doc.mirror.group(o))).flatten();
@@ -294,6 +268,46 @@ impl App {
             }
         }
         self.save_session();
+    }
+
+    /// A new group at `at` holding `members` (those shown; the others only get their edge scope rechecked); returns
+    /// the group. A GroupWith drop and an accepted suggestion both end here.
+    pub(crate) fn group_cards(&mut self, members: impl IntoIterator<Item = NodeId>, at: egui::Vec2) -> NodeId {
+        let group = self.alloc_node_id();
+        self.insert_group_at(group, Some(at));
+        for member in members {
+            if self.nodes.contains_key(&member) {
+                self.edit_group(member, Some(group));
+            }
+            self.recheck_edge_scope(member);
+        }
+        group
+    }
+
+    /// Every shown card's group and parent, for `moved_since`.
+    pub(crate) fn membership_snapshot(&self) -> Vec<(NodeId, Option<NodeId>, Option<NodeId>)> {
+        self.nodes.keys().map(|&w| (w, self.doc.mirror.group(w), self.doc.mirror.parent(w))).collect()
+    }
+
+    /// The cards whose group or parent differs from `before`, each with its before and after values. `origin` says
+    /// where dragged cards started (a card not in it did not move).
+    pub(crate) fn moved_since(
+        &self,
+        before: Vec<(NodeId, Option<NodeId>, Option<NodeId>)>,
+        origin: &[(CardId, Option<egui::Vec2>)],
+    ) -> Vec<Moved> {
+        before
+            .into_iter()
+            .filter_map(|(w, group, parent)| {
+                let now_group = self.doc.mirror.group(w);
+                let now_parent = self.doc.mirror.parent(w);
+                (group != now_group || parent != now_parent).then(|| {
+                    let pos_now = self.doc.mirror.pos(w);
+                    let pos_before = origin.iter().find(|(o, _)| *o == CardId::from(w)).map_or(pos_now, |(_, p)| *p);
+                    Moved { id: w, group: (group, now_group), parent: (parent, now_parent), pos: (pos_before, pos_now) }
+                })
+            })
+            .collect()
     }
 
     /// What the toast says of a drop: "Moved 2 into Research".

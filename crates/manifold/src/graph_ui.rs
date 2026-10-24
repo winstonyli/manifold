@@ -11,6 +11,7 @@ mod keys;
 mod overlays;
 mod scene;
 mod selection_bar;
+mod suggestions;
 mod toolbar;
 
 pub(crate) use camera::*;

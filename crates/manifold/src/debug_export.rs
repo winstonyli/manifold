@@ -61,6 +61,7 @@ impl App {
                     crate::omnibar::Row::Card { id, .. } => format!("tab:{id}"),
                     crate::omnibar::Row::Setting { id, .. } => format!("setting:{id}"),
                     crate::omnibar::Row::History { url, .. } => url,
+                    crate::omnibar::Row::Command(command) => format!("command:{}", command.title()),
                     crate::omnibar::Row::Typed { text } | crate::omnibar::Row::Suggestion { text } => text,
                 })
                 .collect(),
@@ -244,6 +245,7 @@ impl App {
             "address_bar_text": self.omni.text,
             "suggestions": suggestions,
             "omni_matches": omni_matches,
+            "group_suggestions": self.suggestions().iter().map(|s| serde_json::json!({"label": s.label, "cards": s.cards})).collect::<Vec<_>>(),
             "highlighted": self.omni.highlighted,
             "current_group": self.current_group,
             "cards": cards,

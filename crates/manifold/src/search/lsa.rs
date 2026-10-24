@@ -15,7 +15,7 @@ const OVERSAMPLE: usize = 8;
 const POWER_ITERATIONS: usize = 2;
 
 pub(crate) trait Embedder {
-    /// Embeds documents given as their term counts (`Index::term_doc_matrix`).
+    /// Embeds documents given as their term counts (`App::suggest_groups` counts the tokens of each card's text).
     fn embed(&self, docs: &[(DocKey, Vec<(&str, u32)>)]) -> Embedding;
 }
 
