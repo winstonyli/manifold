@@ -1,5 +1,5 @@
 ---
-status: draft
+status: active
 ---
 
 # Search and categorization: one omnibar, a local page index, suggested groups — Design
@@ -35,7 +35,7 @@ groups the user can accept; no network request is made for any of it.
 | D7 | One `OmniBar` component in Graph, Item and Settings; Ctrl+K is the same component in a popup. |
 | D8 | Graph view: Enter on a url or query row opens a new tab; on a card row it jumps to the card. |
 | D9 | Settings: a row table that both draws the page and is searched. |
-| D10 | Hand-rolled in-memory inverted index with BM25, saved as one rebuildable file. |
+| D10 | Hand-rolled in-memory inverted index with BM25, rebuilt from the text log at start (saved as a file only if that is measured slow). |
 | D11 | Every jar is indexed (results show the jar), with a Settings "Clear search index" button. Refinement in "Privacy": ephemeral jars are excluded. |
 | D12 | TF-IDF plus LSA behind a trait (`Embedder`), so a model can replace it later. |
 | D13 | Categorization produces suggested groups the user accepts. |
@@ -95,7 +95,7 @@ Also decided in this spec (rulings, cheap to reverse): see "Rulings" at the end.
 
 ### 2. The index (`crates/manifold/src/search/`)
 
-- `text_store`: per-device, outside the synced journal. One file per profile, `%APPDATA%\manifold\search\text.bin`
+- `text_store`: per-device, outside the synced journal. One file per profile, `%APPDATA%\manifold\search\text.log`
   (through `profile::dir()`, so tests never touch it), holding `(node id, url, title, text, captured_at)` records; written
   atomically (`store::atomic`). Notes, group names and file names are not stored there: they are read from the live
   document when (re)indexing.
@@ -108,8 +108,10 @@ Also decided in this spec (rulings, cheap to reverse): see "Rulings" at the end.
   title + url, with no text.
 - Worker: a thread owns writes (add, remove, rebuild, save); the UI thread reads under a short lock on an `Arc<Mutex>`
   holding the index. A query is synchronous (tens of thousands of postings; expected well under a frame, to be
-  measured). Saved to `search/index.bin` on idle and on exit, atomically; a missing, corrupt or older-version file means a
-  rebuild from `text.bin` and the document. The index is derived state and is never synced or shipped.
+  measured). The index is rebuilt on the worker from the text log at every start (the plan, Task 7, measures a 50 MB
+  corpus); a saved `search/index.bin` is added only if that rebuild takes over 1 s, which removes a file format and its
+  invalidation rules unless needed. The text log is an append-only `search/text.log` (one JSON line per record, last
+  wins, compacted when wasteful). The index is derived state and is never synced or shipped.
 - Updates: text arrival, note edit (debounced 1 s), rename, jar becoming ephemeral (removes that jar's records).
   A card that is closed stays in the document (Recently Closed can put it back), so its text record is kept; records
   are pruned when the document no longer holds the node at all (checked at startup and on idle), and closed cards are
