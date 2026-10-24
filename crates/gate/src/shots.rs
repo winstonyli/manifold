@@ -498,22 +498,16 @@ impl Shots {
         })?;
         // A toolbar tooltip (the shortcuts help button).
         self.view("graph-tooltip", |s| {
-            send!(s, "MOUSEMOVE 467 16", "SLEEP 2")?;
+            s.inst.hover_control("Keyboard Shortcuts (F1)")?;
+            send!(s, "SLEEP 2")?;
             s.shot("graph-tooltip")?;
             send!(s, "MOUSEMOVE 5 790")
         })?;
         // A download card and a sleeping tab beside the live cards (header F on cards with no seeded kind of their own).
         self.view("cards-f", |s| {
-            send!(
-                s,
-                format!("ADDDOWNLOAD {}", work.join("data.json").display()),
-                "SLEEPNODE t1",
-                "SLEEP 6",
-                "MOUSEMOVE 327 19",
-                "MOUSEDOWN 327 19 left",
-                "MOUSEUP 327 19 left",
-                "SLEEP 2"
-            )?;
+            send!(s, format!("ADDDOWNLOAD {}", work.join("data.json").display()), "SLEEPNODE t1", "SLEEP 6")?;
+            s.inst.click_control(crate::state::FIT_VIEW)?;
+            send!(s, "SLEEP 2")?;
             s.shot("cards-f")
         })?;
         // A note being edited: a double-click on the rendered note enters the editor in place.
@@ -1310,7 +1304,9 @@ impl Shots {
         if self.has_any(&["download-progress", "download-failed"]) {
             // Still arriving: 300 KB of 1 MB. The fit button frames the new card, which opens above the tab's.
             send!(self, format!("ADDRESSBAR {}", server.url("/slow")), "SLEEP 1", "ENTER", "SLEEP 6")?;
-            send!(self, "TOGGLEVIEW", "SLEEP 2", "CLICK 327 19", "SLEEP 2", "MOUSEMOVE 5 790", "SLEEP 1")?;
+            send!(self, "TOGGLEVIEW", "SLEEP 2")?;
+            self.inst.click_control(crate::state::FIT_VIEW)?;
+            send!(self, "SLEEP 2", "MOUSEMOVE 5 790", "SLEEP 1")?;
             if self.has("download-progress") {
                 self.shot("download-progress")?;
             }

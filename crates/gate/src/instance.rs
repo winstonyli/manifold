@@ -241,14 +241,25 @@ impl Instance {
         State::parse(&fs::read_to_string(&path)?).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
     }
 
-    /// Clicks the control named `name` (a tooltip in the export's `controls`): found by name, so a moved toolbar still
-    /// works and a missing control fails naming it.
-    pub fn click_control(&mut self, name: &str) -> io::Result<()> {
+    /// Where the control named `name` (a tooltip in the export's `controls`) is, `"x y"`: found by name, so a moved
+    /// toolbar still works and a missing control fails naming it.
+    pub fn control_at(&mut self, name: &str) -> io::Result<String> {
         // The export lists the last finished frame: wait until the one that follows the previous command is drawn.
         self.send("WAITIDLE")?;
         let at = self.export_state("control")?.control(name);
-        let at = at.ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, format!("no control {name:?} on screen")))?;
+        at.ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, format!("no control {name:?} on screen")))
+    }
+
+    /// Clicks the control named `name`.
+    pub fn click_control(&mut self, name: &str) -> io::Result<()> {
+        let at = self.control_at(name)?;
         self.send(&format!("CLICK {at}"))
+    }
+
+    /// Moves the mouse onto the control named `name`.
+    pub fn hover_control(&mut self, name: &str) -> io::Result<()> {
+        let at = self.control_at(name)?;
+        self.send(&format!("MOUSEMOVE {at}"))
     }
 
     /// `TEXTOF`, then polls for the file: the page text stored for tab `id`, or `none`.
