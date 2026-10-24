@@ -47,15 +47,15 @@ impl Search {
     pub(crate) fn open() -> Self {
         let mut texts = TextStore::open(crate::profile::search_dir().as_deref());
         texts.compact_if_wasteful();
+        Self::from_texts(texts)
+    }
+
+    /// Starts the index from `texts`. `indexed` lists what that build holds, with a fingerprint nothing matches, so
+    /// the first `sync` re-queues each and its sweep removes any whose document is gone.
+    pub(super) fn from_texts(texts: TextStore) -> Self {
         let service = SearchService::start(&texts);
-        Search {
-            texts,
-            service,
-            indexed: HashMap::new(),
-            next_sync: None,
-            cache: RefCell::new(None),
-            suggestions: None,
-        }
+        let indexed = texts.ids().map(|id| (DocKey::Node(id), 0)).collect();
+        Search { texts, service, indexed, next_sync: None, cache: RefCell::new(None), suggestions: None }
     }
 
     /// Forgets every stored text and the index ("Clear search index"). Titles and urls of what is open come back at

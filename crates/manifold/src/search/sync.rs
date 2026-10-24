@@ -96,8 +96,6 @@ impl App {
             let gone = !held && !self.doc.store_recovered;
             if gone || self.in_ephemeral_jar(id) {
                 self.search.texts.remove(id);
-                // The startup index was built from the text log, so `indexed` may not know this key.
-                self.search.service.queue_remove(DocKey::Node(id));
             }
         }
         let mut keys: Vec<DocKey> = self.nodes.keys().map(|&id| DocKey::Node(id)).collect();
@@ -181,8 +179,17 @@ mod tests {
         let jar = add_jar(&mut app, "Tmp");
         app.set_jar_edge(id, Some(jar));
         stored(&mut app, id, "secret words");
-        // As after a restart: the index was built from the text log, so `sync` never queued it.
-        app.search.service.queue_add(DocKey::Node(id), "secret words".into());
+        // As after a restart: the index was built from the text log before `sync` ever ran.
+        let mut texts = crate::search::text_store::TextStore::open(None);
+        let tab = app.nodes.get(&id).and_then(|n| n.as_tab()).unwrap();
+        texts.put(TextRecord {
+            id,
+            url: tab.url.clone(),
+            title: tab.title.clone(),
+            text: "secret words".into(),
+            at: 1,
+        });
+        app.search = crate::search::Search::from_texts(texts);
         assert_eq!(hits(&app, "secret"), [id]);
         app.set_jar_ephemeral(jar, true);
         app.sync_search_index(Instant::now());
