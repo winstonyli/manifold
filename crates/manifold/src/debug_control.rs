@@ -356,6 +356,10 @@ const VERBS: &[Verb] = &[
         let (x, y) = coords(&mut rest.split_whitespace())?;
         job(move |app, el| app.debug_click(el, x, y, MouseButton::Left, 2, false))
     }),
+    pointer_row("TRIPLECLICK x y", "Left triple-click at (x, y), the three clicks in one frame", |rest| {
+        let (x, y) = coords(&mut rest.split_whitespace())?;
+        job(move |app, el| app.debug_click(el, x, y, MouseButton::Left, 3, false))
+    }),
     pointer_row("SCROLL x y dx dy", "Scroll at (x, y) by (dx, dy)", |rest| {
         let mut parts = rest.split_whitespace();
         let (x, y) = coords(&mut parts)?;
@@ -1199,7 +1203,7 @@ mod tests {
             assert!(matches!(parse_line(line), Some(Line::Run(job)) if !job.pointer), "{line}");
         }
         let pointer: Vec<&str> = VERBS.iter().filter(|v| v.pointer).map(Verb::word).collect();
-        assert_eq!(pointer, ["MOUSEMOVE", "MOUSEDOWN", "MOUSEUP", "CLICK", "DOUBLECLICK", "SCROLL"]);
+        assert_eq!(pointer, ["MOUSEMOVE", "MOUSEDOWN", "MOUSEUP", "CLICK", "DOUBLECLICK", "TRIPLECLICK", "SCROLL"]);
     }
 
     /// Every verb has a sample line that parses, and every sampled verb is in the table.
@@ -1211,6 +1215,7 @@ mod tests {
             "MOUSEUP 1 2 right",
             "CLICK 1 2",
             "DOUBLECLICK 1 2",
+            "TRIPLECLICK 1 2",
             "SCROLL 1 2 0 -3",
             "ADDRESSBAR example.com",
             "ENTER",

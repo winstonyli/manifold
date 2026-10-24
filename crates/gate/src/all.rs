@@ -183,6 +183,7 @@ const STEPS: &[Step] = &[
     step("smoke", false),
     step("launch-forms", false),
     step("page-text", false),
+    step("click-count", false),
     step("search", false),
     step("suggest-groups", false),
     step("arrange", false),

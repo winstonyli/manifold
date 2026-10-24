@@ -18,6 +18,8 @@ mod arrange;
 mod cef_pin;
 mod check;
 #[cfg(windows)]
+mod click_count;
+#[cfg(windows)]
 mod closed;
 #[cfg(windows)]
 mod dblprobe;
@@ -39,7 +41,6 @@ mod link;
 mod nonce;
 #[cfg(windows)]
 mod package;
-#[cfg(windows)]
 mod page_text;
 mod probes;
 mod profile;
@@ -146,6 +147,11 @@ mod windows_main {
             name: "chrome-shots-sizes",
             usage: Some("[WORKDIR_PARENT]"),
             run: Run::Parent(crate::shots::chrome_shots_sizes),
+        },
+        Stage {
+            name: "click-count",
+            usage: Some("[WORKDIR_PARENT]"),
+            run: Run::Parent(crate::click_count::click_count),
         },
         Stage { name: "page-text", usage: Some("[WORKDIR_PARENT]"), run: Run::Parent(crate::page_text::page_text) },
         Stage { name: "search", usage: Some("[WORKDIR_PARENT]"), run: Run::Parent(crate::search::search) },

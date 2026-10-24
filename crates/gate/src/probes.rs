@@ -33,6 +33,17 @@ const QUIT_TIMEOUT: Duration = Duration::from_secs(30);
 const PAGE: &str = "<!doctype html><title>keys</title><textarea id=t autofocus></textarea>\n<script>\n\
 document.getElementById('t').focus();\n\
 addEventListener('keydown', e => {\n  const q = new URLSearchParams({code: e.code, key: e.key, kc: e.keyCode});\n  new Image().src = '/k?' + q;\n});\n</script>";
+/// A page of one paragraph for the click-count probe: it reports each mouse release's click count (`detail`) and the
+/// selection a moment later. The line box is 300 px tall, so a click anywhere in it lands on the text's line.
+pub(crate) const CLICKS: &str =
+    "<!doctype html><title>clicks</title><style>body{margin:0}p{margin:0;font:40px/300px monospace}</style>
+<p>alpha beta gamma delta</p>
+<script>
+addEventListener('mouseup', e => setTimeout(() => {
+  const q = new URLSearchParams({d: e.detail, s: getSelection().toString()});
+  fetch('/c?' + q);
+}, 100));
+</script>";
 const WIDE: &str = "<!doctype html><title>wide</title>\n\
 <div style=\"width:6000px;height:400px;background:linear-gradient(90deg,#fff,#9cf)\"></div>\n<script>\nlet t;\n\
 addEventListener('scroll', () => {\n  clearTimeout(t);\n  t = setTimeout(() => fetch('/s?e=hscroll&y=' + Math.round(scrollX)), 300);\n});\n</script>";
@@ -83,6 +94,11 @@ impl Site {
                     note(format!("code={} key={} kc={}", param("code"), param("key"), param("kc")));
                     response("204 No Content", &[], "text/plain", b"")
                 }
+                "/c" => {
+                    note(format!("click d={} sel={}", param("d"), param("s")));
+                    response("204 No Content", &[], "text/plain", b"")
+                }
+                "/clicks" => response("200 OK", &[], "text/html", CLICKS.as_bytes()),
                 "/s" => {
                     note(format!("{} y={}", param("e"), param("y")));
                     response("204 No Content", &[], "text/plain", b"")
