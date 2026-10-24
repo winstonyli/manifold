@@ -199,7 +199,8 @@ Also decided in this spec (rulings, cheap to reverse): see "Rulings" at the end.
   level's card set changes, and starts from the current positions. If that visibly relaxes an arrangement, the choices
   are (a) accept it, (b) keep the similarity edges in every settle of a level the user has arranged (a per-level flag,
   which makes the layout partly always-on), (c) pin arranged cards. The default is (a); the prototype measures how far
-  cards move in one ordinary settle after an arrangement.
+  cards move in one ordinary settle after an arrangement. *Decided 2026-10-23:* (a), accept the drift, with the LSA seed;
+(b) is parked (PARKED.md "Keep similarity edges..."), since a bigger layout overhaul is planned.
 - A prototype on a synthetic 200-card corpus (two to five topics plus noise) runs first. If the result is tangled, seed
   positions from the first two LSA components before settling (additive); if not, no seed.
 - Cost: pairwise repulsion is O(n²) per step; at 300 cards and 300 iterations that is about 27 M pair evaluations
@@ -218,7 +219,7 @@ Also decided in this spec (rulings, cheap to reverse): see "Rulings" at the end.
 ## Open for the user
 
 - R1 (ephemeral jars excluded, which narrows D11) needs a yes.
-- OQ1 (does a later settle undo an arrangement) is answered by the prototype; the default is to accept it.
+- OQ1 (does a later settle undo an arrangement) is decided: accept the drift (a), park (b).
 
 ## Docs this changes
 

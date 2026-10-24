@@ -2,7 +2,7 @@
 //! group at a time to accept or dismiss. Nothing is grouped until the user accepts.
 
 use super::cluster::{cluster, CLUSTER_MAX_CARDS, CLUSTER_MIN_SIMILARITY};
-use super::lsa::{Embedder, LsaEmbedder};
+use super::lsa::{Embedder, Embedding, LsaEmbedder};
 use super::{tokenize::tokens, DocKey};
 use crate::store::model::NodeId;
 use crate::undo::Moved;
@@ -27,12 +27,31 @@ pub(crate) struct Suggestions {
 
 impl App {
     /// The cards `suggest_groups` considers: the current level's non-container cards, sorted.
-    fn suggestion_candidates(&self) -> Vec<NodeId> {
+    pub(super) fn suggestion_candidates(&self) -> Vec<NodeId> {
         let scan = self.level_scan();
         let mut cards: Vec<NodeId> =
             scan.layers.iter().flatten().copied().filter(|id| !scan.groups.contains(id)).collect();
         cards.sort_unstable();
         cards
+    }
+
+    /// The cards' page text embedded (`LsaEmbedder`), documents in `ids` order.
+    pub(super) fn embed_cards(&self, ids: &[NodeId]) -> Embedding {
+        let counted: Vec<(DocKey, BTreeMap<String, u32>)> = ids
+            .iter()
+            .map(|&id| {
+                let mut counts = BTreeMap::new();
+                for token in tokens(&self.index_text(DocKey::Node(id))) {
+                    *counts.entry(token).or_default() += 1;
+                }
+                (DocKey::Node(id), counts)
+            })
+            .collect();
+        let docs: Vec<(DocKey, Vec<(&str, u32)>)> = counted
+            .iter()
+            .map(|(key, counts)| (*key, counts.iter().map(|(t, &n)| (t.as_str(), n)).collect()))
+            .collect();
+        LsaEmbedder::default().embed(&docs)
     }
 
     /// Clusters the current level by topic and keeps the clusters as suggestions (none when the level has more than
@@ -41,23 +60,7 @@ impl App {
         let candidates = self.suggestion_candidates();
         let mut items = Vec::new();
         if candidates.len() <= CLUSTER_MAX_CARDS {
-            let texts: Vec<(NodeId, String)> =
-                candidates.iter().map(|&id| (id, self.index_text(DocKey::Node(id)))).collect();
-            let counted: Vec<(DocKey, BTreeMap<String, u32>)> = texts
-                .iter()
-                .map(|(id, text)| {
-                    let mut counts = BTreeMap::new();
-                    for token in tokens(text) {
-                        *counts.entry(token).or_default() += 1;
-                    }
-                    (DocKey::Node(*id), counts)
-                })
-                .collect();
-            let docs: Vec<(DocKey, Vec<(&str, u32)>)> = counted
-                .iter()
-                .map(|(key, counts)| (*key, counts.iter().map(|(t, &n)| (t.as_str(), n)).collect()))
-                .collect();
-            let embedding = LsaEmbedder::default().embed(&docs);
+            let embedding = self.embed_cards(&candidates);
             for members in cluster(&embedding, CLUSTER_MIN_SIMILARITY) {
                 let mut cards: Vec<NodeId> = members
                     .iter()

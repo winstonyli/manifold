@@ -330,6 +330,7 @@ impl App {
             Row::Command(Command::SuggestGroups) => {
                 self.suggest_groups();
             }
+            Row::Command(Command::Arrange) => self.arrange_by_topic(),
         }
         self.omni_close(host);
     }

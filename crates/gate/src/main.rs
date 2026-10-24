@@ -13,6 +13,7 @@
 mod ab;
 #[cfg(windows)]
 mod all;
+mod arrange;
 #[cfg(windows)]
 mod cef_pin;
 mod check;
@@ -153,6 +154,7 @@ mod windows_main {
             usage: Some("[WORKDIR_PARENT]"),
             run: Run::Parent(crate::suggest_groups::suggest_groups),
         },
+        Stage { name: "arrange", usage: Some("[WORKDIR_PARENT]"), run: Run::Parent(crate::arrange::arrange) },
         Stage { name: "sleep", usage: Some(""), run: Run::Parent(crate::sleep::sleep) },
         Stage { name: "jar", usage: Some(""), run: Run::Parent(crate::jar::jar) },
         Stage { name: "scale", usage: Some("TABS..."), run: Run::Args(crate::stress::scale) },

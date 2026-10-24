@@ -663,6 +663,9 @@ const VERBS: &[Verb] = &[
             app.suggest_groups();
         })
     }),
+    row("ARRANGE", "Toolbar's Arrange by topic: lay this level's cards out by page text (one undo step)", |_| {
+        job(|app, _| app.arrange_by_topic())
+    }),
     row("ACCEPTSUGGESTION n", "Accept the n-th (from 0) suggested group", |rest| {
         let index: usize = rest.parse().ok()?;
         job(move |app, _| app.accept_suggestion(index))
@@ -1298,6 +1301,7 @@ mod tests {
             "WAITIDLE 5",
             "WAITINDEX 5",
             "SUGGEST",
+            "ARRANGE",
             "ACCEPTSUGGESTION 0",
             "SLEEP 0.5",
             "TOGGLESHORTCUTSHELP",

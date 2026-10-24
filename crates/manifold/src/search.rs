@@ -2,6 +2,7 @@
 //! built from it (`service`, on a worker thread), and `sync`, which keeps the index equal to what the document and
 //! the text log hold.
 
+mod arrange;
 mod cluster;
 mod index;
 mod lsa;

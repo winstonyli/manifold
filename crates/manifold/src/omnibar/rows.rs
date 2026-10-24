@@ -32,21 +32,24 @@ pub(crate) enum Row {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Command {
     SuggestGroups,
+    Arrange,
 }
 
 impl Command {
-    pub(crate) const ALL: [Command; 1] = [Command::SuggestGroups];
+    pub(crate) const ALL: [Command; 2] = [Command::SuggestGroups, Command::Arrange];
 
     pub(crate) fn title(self) -> &'static str {
         match self {
             Command::SuggestGroups => "Suggest groups",
+            Command::Arrange => "Arrange by topic",
         }
     }
 
     /// The phrases whose prefix (two letters or more) offers the command.
     fn phrases(self) -> &'static [&'static str] {
         match self {
-            Command::SuggestGroups => &["suggest groups", "arrange by topic"],
+            Command::SuggestGroups => &["suggest groups", "group by topic"],
+            Command::Arrange => &["arrange by topic", "lay out by topic"],
         }
     }
 }
@@ -196,13 +199,15 @@ mod tests {
     fn a_command_is_offered_for_a_prefix_of_its_phrase_and_only_where_commands_are() {
         let on = Fake { commands: true, ..Default::default() };
         let offered = |fake: &Fake, text| rows(fake, text, &[]).contains(&Row::Command(Command::SuggestGroups));
-        for text in ["su", "Suggest gr", "arrange by", "ARR"] {
+        for text in ["su", "Suggest gr", "group by", "GRO"] {
             assert!(offered(&on, text), "{text}");
         }
         for text in ["s", "rust", "suggestions"] {
             assert!(!offered(&on, text), "{text}");
         }
         assert!(!offered(&Fake::default(), "suggest"), "the address bar offers none");
+        let arrange = |text| rows(&on, text, &[]).contains(&Row::Command(Command::Arrange));
+        assert!(arrange("arrange by") && arrange("ARR") && !arrange("su"));
     }
 
     #[test]
