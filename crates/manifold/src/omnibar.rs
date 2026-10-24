@@ -235,7 +235,12 @@ impl App {
     pub(crate) fn omni_confirm(&mut self, host: Host) {
         let rows = self.omni_rows(host);
         let bar = self.bar(host);
-        let picked = match (bar.mode, bar.highlighted) {
+        // Query mode always has a row Enter picks: after a dismiss the highlight is gone but the rows are not.
+        let highlighted = match (bar.mode, bar.highlighted) {
+            (Mode::Query, None) => rows::default_highlight(Mode::Query, &rows),
+            (_, h) => h,
+        };
+        let picked = match (bar.mode, highlighted) {
             (_, None) => None,
             (Mode::Query, Some(i)) => rows.get(i.min(rows.len().saturating_sub(1))),
             (Mode::Address, Some(i)) => rows.get(i),
@@ -492,6 +497,21 @@ mod tests {
         app.omni_confirm(Host::Popup);
         assert!(app.menus.omni_popup.open.is_none());
         assert_eq!(app.focused, Some(ids[2]), "jumped to the one match");
+    }
+
+    /// A dismissed dropdown (focus left the box, the text stayed) still confirms the first match, never a web search.
+    #[test]
+    fn enter_after_the_dropdown_was_dismissed_still_confirms_the_first_match() {
+        let mut app = app_on(&crate::store::testutil::temp_dir("omni-dismissed").join("session.mnf"), 1);
+        let ids: Vec<NodeId> = (0..2).map(|i| tab(&mut app, &format!("https://{i}/"), &format!("Rust {i}"))).collect();
+        app.open_omni_popup();
+        app.omni_set_text(Host::Popup, "rust 1");
+        app.omni_popup.dismiss();
+        assert_eq!(app.omni_popup.highlighted, None);
+        app.omni_confirm(Host::Popup);
+        let search = app.settings.default_search_engine.search_url("rust 1");
+        assert!(app.test_spawns.iter().all(|(spawn, _)| spawn.url != search), "no web search");
+        assert_eq!(app.focused, Some(ids[1]));
     }
 
     /// Nothing open matches: Enter searches for it (a new tab), as the Graph's typed row does.

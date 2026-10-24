@@ -5,7 +5,7 @@
 
 use super::{page_doc, DocKey};
 use crate::card::card_filter_text;
-use crate::store::model::NodeId;
+use crate::store::model::{field, FieldValue, NodeId};
 use crate::App;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashSet;
@@ -16,9 +16,23 @@ use std::time::{Duration, Instant};
 pub(crate) const SYNC_EVERY: Duration = Duration::from_secs(1);
 
 impl App {
-    /// Whether tab `id` is in an ephemeral jar: nothing of it is stored or indexed (ruling R1).
+    /// Whether tab `id` is in an ephemeral jar: nothing of it is stored or indexed (ruling R1). A closed tab has left
+    /// `nodes` and the mirror, so its jar is read from the document: its own `jar` edge, else its nearest group's.
     pub(crate) fn in_ephemeral_jar(&self, id: NodeId) -> bool {
-        self.is_tab(id) && self.effective_jar(id).is_some_and(|(jar, _)| self.doc.mirror.jar_def(jar).ephemeral)
+        if self.nodes.contains_key(&id) {
+            return self.is_tab(id)
+                && self.effective_jar(id).is_some_and(|(jar, _)| self.doc.mirror.jar_def(jar).ephemeral);
+        }
+        let Some(doc) = self.doc.journal.as_ref().map(|j| j.doc()) else { return false };
+        let mut at = Some(id);
+        for _ in 0..=doc.nodes.len() {
+            let Some(node) = at.and_then(|n| doc.nodes.get(&n)) else { break };
+            if let FieldValue::Id(Some(jar)) = node.get(field::JAR) {
+                return self.jar_exists(jar) && self.doc.mirror.jar_def(jar).ephemeral;
+            }
+            at = node.group;
+        }
+        self.default_jar().is_some_and(|jar| self.doc.mirror.jar_def(jar).ephemeral)
     }
 
     /// The fingerprint of `key`'s document, or `None` when it has none to index.
@@ -112,7 +126,7 @@ mod tests {
     use super::*;
     use crate::process_manager::ViewKind;
     use crate::search::text_store::TextRecord;
-    use crate::session_sync::tests::{add_jar, add_note, live_tab};
+    use crate::session_sync::tests::{add_jar, add_note, app_on, live_tab};
 
     fn settle(app: &App) {
         let deadline = Instant::now() + Duration::from_secs(20);
@@ -156,6 +170,24 @@ mod tests {
         app.sync_search_index(t0 + SYNC_EVERY);
         assert!(hits(&app, "secret").is_empty());
         assert!(app.search.texts.get(id).is_none(), "the stored text is gone too");
+    }
+
+    #[test]
+    fn a_closed_tabs_text_is_purged_when_its_jar_turns_ephemeral() {
+        let mut app = app_on(&crate::store::testutil::temp_dir("closed-ephemeral").join("session.mnf"), 1);
+        let t0 = Instant::now();
+        let (id, _peer) = live_tab(&mut app, ViewKind::Servo, "https://a.test/");
+        let jar = add_jar(&mut app, "Tmp");
+        app.set_jar_edge(id, Some(jar));
+        app.save_session();
+        stored(&mut app, id, "secret words");
+        app.sync_search_index(t0);
+        app.close_node(id);
+        assert!(!app.nodes.contains_key(&id), "the tab is closed");
+        app.set_jar_ephemeral(jar, true);
+        app.sync_search_index(t0 + SYNC_EVERY);
+        assert!(app.search.texts.get(id).is_none(), "the closed tab's stored text is gone");
+        assert!(hits(&app, "secret").is_empty());
     }
 
     #[test]

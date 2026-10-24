@@ -18,6 +18,10 @@ fn row_icon(row: &Row) -> Identity {
 /// What a row says.
 pub(crate) fn row_text(row: &Row) -> String {
     match row {
+        Row::Card { label, snippet: Some(snippet), jar, .. } => match jar {
+            Some(jar) => format!("{label} \u{2014} {snippet} \u{b7} {jar}"),
+            None => format!("{label} \u{2014} {snippet}"),
+        },
         Row::Card { label, .. } => label.clone(),
         Row::History { url, title } if title.is_empty() => url.clone(),
         Row::History { url, title } => format!("{title} \u{2014} {url}"),
@@ -278,6 +282,24 @@ mod tests {
             walk(&clipped.shape, &mut texts);
         }
         texts
+    }
+
+    #[test]
+    fn a_page_text_hit_row_says_the_snippet_and_the_jar() {
+        use crate::store::model::ActorId;
+        let hit = |snippet: Option<&str>, jar: Option<&str>| Row::Card {
+            id: NodeId { actor: ActorId(1), counter: 1 },
+            label: "Other".into(),
+            url: "https://o.test/".into(),
+            jar: jar.map(str::to_owned),
+            snippet: snippet.map(str::to_owned),
+        };
+        assert_eq!(row_text(&hit(None, Some("Work"))), "Other");
+        assert_eq!(row_text(&hit(Some("the borrow checker"), None)), "Other \u{2014} the borrow checker");
+        assert_eq!(
+            row_text(&hit(Some("the borrow checker"), Some("Work"))),
+            "Other \u{2014} the borrow checker \u{b7} Work"
+        );
     }
 
     /// The highlighted row's full address shows under the list when the label is not already the address.

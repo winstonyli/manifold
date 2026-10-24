@@ -369,7 +369,7 @@ pub const TEXT_CAP_UNITS: usize = 65_536;
 
 /// Returns the page's visible text, or null for a page that is not html or plain text. `innerText` omits script and
 /// style; whitespace runs are collapsed; the cut is at `TEXT_CAP_UNITS`.
-pub const PAGE_TEXT_SCRIPT: &str = "(function(){var t=document.contentType;if(t!=='text/html'&&t!=='text/plain'){return null;}var b=document.body;if(!b){return null;}return (b.innerText||'').replace(/\\s+/g,' ').trim().slice(0,65536);})();";
+pub const PAGE_TEXT_SCRIPT: &str = "(function(){var t=document.contentType;if(t!=='text/html'&&t!=='text/plain'){return null;}var b=document.body;if(!b){return null;}var s=(b.innerText||'').replace(/\\s+/g,' ').trim().slice(0,65536);if(/[\\uD800-\\uDBFF]$/.test(s)){s=s.slice(0,-1);}return s;})();";
 
 /// A host's reply, guarded: whitespace collapsed again, a replacement char left by a cut surrogate trimmed from the
 /// ends, at most `TEXT_CAP_UNITS` chars.
@@ -955,6 +955,8 @@ mod page_text_tests {
         assert!(PAGE_TEXT_SCRIPT.starts_with("(function(){"));
         assert!(PAGE_TEXT_SCRIPT.contains("text/html") && PAGE_TEXT_SCRIPT.contains("text/plain"));
         assert!(PAGE_TEXT_SCRIPT.contains(&TEXT_CAP_UNITS.to_string()));
+        // The cut must not leave half a surrogate pair: serde_json rejects the reply and the page's text is lost.
+        assert!(PAGE_TEXT_SCRIPT.contains("[\\uD800-\\uDBFF]$"));
     }
 
     #[test]

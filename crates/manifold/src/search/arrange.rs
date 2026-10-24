@@ -93,7 +93,7 @@ impl App {
                 id,
                 group: (group, group),
                 parent: (parent, parent),
-                pos: (self.doc.mirror.pos(id), Some(after)),
+                pos: (Some(self.layout_pos(id)), Some(after)),
             });
             self.edit_pos(id, Some(after));
             self.snap_layout(id, after);
@@ -183,6 +183,19 @@ mod tests {
         let after: Vec<_> = all.iter().map(|&id| app.doc.mirror.pos(id)).collect();
         assert_eq!(after, before);
         assert!(all.iter().all(|&id| Some(app.layout_pos(id)) == app.doc.mirror.pos(id)));
+    }
+
+    #[test]
+    fn undo_restores_where_the_card_was_drawn_not_its_stale_document_pos() {
+        let (mut app, cats, _) = spread_app();
+        // A settle moved the card: the layout differs from the stored pos.
+        let shown = egui::vec2(-640.0, 480.0);
+        app.snap_layout(cats[0], shown);
+        app.arrange_by_topic();
+        let serial = app.toasts.undo.as_ref().map(|u| u.1);
+        app.step_history(serial, false);
+        assert_eq!(app.layout_pos(cats[0]), shown);
+        assert_eq!(app.doc.mirror.pos(cats[0]), Some(shown));
     }
 
     #[test]
