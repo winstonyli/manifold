@@ -111,7 +111,7 @@ mod page_text {
     use super::*;
     use crate::process_manager::ViewKind;
     use crate::session_sync::tests::{add_jar, live_tab, Peer};
-    use crate::tabs::page_text::TEXT_DELAY;
+    use crate::tabs::page_text::{ASK_TIMEOUT, TEXT_DELAY};
     use manifold_view_protocol::HostToView;
 
     const URL: &str = "https://a.test/";
@@ -170,6 +170,21 @@ mod page_text {
         set_url(&mut app, id, "https://b.test/");
         app.accept_page_text(id, "x".into());
         assert!(app.search.texts.get(id).is_none());
+    }
+
+    #[test]
+    fn an_unanswered_ask_and_a_closed_tabs_timer_are_forgotten() {
+        let mut app = App::default();
+        let (silent, _peer) = tab(&mut app, URL);
+        let (closed, _peer2) = tab(&mut app, "https://c.test/");
+        let t0 = Instant::now();
+        app.ask_page_text(silent);
+        app.note_load_end(closed, "https://c.test/", t0 + Duration::from_secs(3600));
+        app.nodes.remove(&closed);
+        app.poll_text_timers(t0);
+        assert!(!app.page_text.is_quiet(), "the ask is still awaited inside its window");
+        app.poll_text_timers(Instant::now() + ASK_TIMEOUT);
+        assert!(app.page_text.is_quiet(), "an empty or non-HTML page that never answers stops holding it");
     }
 
     #[test]

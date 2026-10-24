@@ -473,12 +473,14 @@ fn main() {
             let _ = control.send(&ViewToHost::Cookies(json));
         }
 
-        if let Some(state) = pending_page_state.borrow_mut().take() {
-            let _ = control.send(&ViewToHost::PageState(state));
-        }
-
+        // Text before state: the host puts the tab to sleep on the `PageState` and drops the engine, so a text sent
+        // after it (the sleep asks for both) would arrive for a tab that is gone.
         if let Some(text) = pending_page_text.borrow_mut().take() {
             let _ = control.send(&ViewToHost::PageText { text });
+        }
+
+        if let Some(state) = pending_page_state.borrow_mut().take() {
+            let _ = control.send(&ViewToHost::PageState(state));
         }
 
         if let Some(content_type) = pending_redirect_content_type.borrow_mut().take() {

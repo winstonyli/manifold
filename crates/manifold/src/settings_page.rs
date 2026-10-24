@@ -560,7 +560,7 @@ impl App {
     /// "Clear search index": what is stored where, and a button that forgets it.
     pub(crate) fn settings_search_index_row(&mut self, ui: &mut egui::Ui, req: &mut SettingsRequests) {
         ui.label(
-            "The text of the pages you visit is kept on this device, in text.log in your profile folder, so the omnibar              can find a card by what it says. Nothing is sent anywhere. Tabs in an ephemeral jar are never kept.",
+            "The text of the pages you visit is kept on this device, in text.log in your profile folder, so the omnibar can find a card by what it says. Nothing is sent anywhere. Tabs in an ephemeral jar are never kept.",
         );
         if ui
             .button("Clear search index")

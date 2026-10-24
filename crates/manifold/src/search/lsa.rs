@@ -52,6 +52,10 @@ impl Embedding {
         }
         let common = (self.keys.len() as f32 * 0.6) as u32;
         let mut order: Vec<usize> = (0..self.terms.len()).filter(|&t| mass[t] > 0.0 && df[t] <= common).collect();
+        if order.is_empty() {
+            // Every word of these members is common (a level of a few cards): name them by the common ones.
+            order = (0..self.terms.len()).filter(|&t| mass[t] > 0.0).collect();
+        }
         order.sort_by(|&a, &b| mass[b].total_cmp(&mass[a]).then(a.cmp(&b)));
         order.into_iter().take(n).map(|t| self.terms[t].clone()).collect()
     }
@@ -358,6 +362,15 @@ mod tests {
         assert_eq!(one.cosine(0, 0), 0.0, "no term is shared, so the row is zero");
         let two = lsa.embed(&[doc(1, "same"), doc(2, "same")]);
         assert!((two.cosine(0, 1) - 1.0).abs() < 1e-4, "{}", two.cosine(0, 1));
+    }
+
+    #[test]
+    fn top_terms_of_a_small_level_are_never_empty() {
+        let embedding = LsaEmbedder::default().embed(&[doc(1, "cat milk"), doc(2, "cat fur"), doc(3, "cat purr")]);
+        assert!(
+            !embedding.top_terms(&[0, 1, 2], 3).is_empty(),
+            "every shared word is common, the label still names something"
+        );
     }
 
     #[test]
