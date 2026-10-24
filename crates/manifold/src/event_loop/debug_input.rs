@@ -62,6 +62,30 @@ impl App {
         }
     }
 
+    /// Whether the page-text index has caught up: every live tab whose text is wanted has the text of the page it
+    /// shows, no request is awaited or due, a sync pass has run since the last answer, and the worker has no job
+    /// left.
+    fn index_settled(&self) -> bool {
+        let read =
+            self.nodes.iter().all(|(&id, n)| n.as_tab().is_none() || !self.text_wanted(id) || !self.text_is_stale(id));
+        read && self.page_text.is_quiet() && self.search.synced() && !self.search.service.busy()
+    }
+
+    /// Releases the `WAITINDEX` commands waiting once `index_settled` holds, and until then asks for the next frame
+    /// (the sync pass runs on the tick, and a headless window draws only when asked).
+    pub(crate) fn release_index_waiters(&mut self) {
+        if self.debug.index_waiters.is_empty() {
+            return;
+        }
+        if self.index_settled() {
+            for waiter in self.debug.index_waiters.drain(..) {
+                let _ = waiter.send(());
+            }
+        } else if let Some(window) = &self.window {
+            window.request_redraw();
+        }
+    }
+
     /// Moves the pointer to (x, y), then presses and releases `button`
     /// `count` times. All of it lands in one egui frame, so for `count` 2
     /// the second release is always within egui's double-click delay

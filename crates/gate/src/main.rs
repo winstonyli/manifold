@@ -46,6 +46,7 @@ mod profile;
 mod release_check;
 #[cfg(windows)]
 mod release_verify;
+mod search;
 mod session;
 #[cfg(windows)]
 mod shots;
@@ -145,6 +146,7 @@ mod windows_main {
             run: Run::Parent(crate::shots::chrome_shots_sizes),
         },
         Stage { name: "page-text", usage: Some("[WORKDIR_PARENT]"), run: Run::Parent(crate::page_text::page_text) },
+        Stage { name: "search", usage: Some("[WORKDIR_PARENT]"), run: Run::Parent(crate::search::search) },
         Stage { name: "sleep", usage: Some(""), run: Run::Parent(crate::sleep::sleep) },
         Stage { name: "jar", usage: Some(""), run: Run::Parent(crate::jar::jar) },
         Stage { name: "scale", usage: Some("TABS..."), run: Run::Args(crate::stress::scale) },

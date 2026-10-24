@@ -1,27 +1,82 @@
-//! Local page search: the text the hosts return for each tab (`text_store`), the tokenizer and the BM25 `Index` built
-//! from it.
+//! Local page search: the text the hosts return for each tab (`text_store`), the tokenizer and the BM25 `Index`
+//! built from it (`service`, on a worker thread), and `sync`, which keeps the index equal to what the document and
+//! the text log hold.
 
-#[allow(dead_code, reason = "the index service (Task 7) is the first user")]
 mod index;
+mod service;
+mod sync;
 pub(crate) mod text_store;
-#[allow(dead_code, reason = "the index service (Task 7) is the first user")]
 mod tokenize;
 
-#[allow(unused_imports, reason = "the index service (Task 7) is the first user")]
 pub(crate) use index::{DocKey, Index};
-#[allow(unused_imports, reason = "the index service (Task 7) is the first user")]
+pub(crate) use service::{page_doc, SearchService};
+pub(crate) use text_store::TextStore;
+#[allow(unused_imports, reason = "the LSA (Task 8) is the first user")]
 pub(crate) use tokenize::tokens;
+
+use crate::store::model::NodeId;
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
+use std::time::Instant;
+
+/// The cards whose document matched a query, best first, at one index generation.
+pub(crate) struct Hits {
+    pub(crate) ids: Vec<NodeId>,
+    pub(crate) set: HashSet<NodeId>,
+}
 
 /// What `App` keeps for search.
 pub(crate) struct Search {
-    pub(crate) texts: text_store::TextStore,
+    pub(crate) texts: TextStore,
+    pub(crate) service: SearchService,
+    /// The fingerprint of each document as last queued, so `sync` queues only what changed.
+    indexed: HashMap<DocKey, u64>,
+    /// When `sync` next runs (the debounce for note edits and the pace of everything else).
+    pub(crate) next_sync: Option<Instant>,
+    /// The last query's hits, keyed by its text and the index generation.
+    cache: RefCell<Option<(String, u64, Rc<Hits>)>>,
 }
 
 impl Search {
-    /// Opens the text log in the profile (memory only under test).
+    /// Opens the text log in the profile (memory only under test) and starts the index from it.
     pub(crate) fn open() -> Self {
-        let mut texts = text_store::TextStore::open(crate::profile::search_dir().as_deref());
+        let mut texts = TextStore::open(crate::profile::search_dir().as_deref());
         texts.compact_if_wasteful();
-        Search { texts }
+        let service = SearchService::start(&texts);
+        Search { texts, service, indexed: HashMap::new(), next_sync: None, cache: RefCell::new(None) }
+    }
+
+    /// Forgets every stored text and the index ("Clear search index"). Titles and urls of what is open come back at
+    /// the next `sync`.
+    pub(crate) fn clear(&mut self) {
+        self.texts.clear();
+        self.service.queue_clear();
+        self.indexed.clear();
+        self.next_sync = None;
+    }
+
+    /// Whether a sync pass has run since the last change that resets it.
+    pub(crate) fn synced(&self) -> bool {
+        self.next_sync.is_some()
+    }
+
+    /// The cards whose document holds every word of `text`.
+    pub(crate) fn hits(&self, text: &str) -> Rc<Hits> {
+        let generation = self.service.generation();
+        if let Some((t, g, hits)) = &*self.cache.borrow() {
+            if t == text && *g == generation {
+                return hits.clone();
+            }
+        }
+        let ids: Vec<NodeId> = self
+            .service
+            .search(text)
+            .into_iter()
+            .filter_map(|(key, _)| if let DocKey::Node(id) = key { Some(id) } else { None })
+            .collect();
+        let hits = Rc::new(Hits { set: ids.iter().copied().collect(), ids });
+        *self.cache.borrow_mut() = Some((text.to_owned(), generation, hits.clone()));
+        hits
     }
 }

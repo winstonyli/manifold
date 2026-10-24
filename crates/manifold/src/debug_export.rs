@@ -3,7 +3,7 @@
 //! `EXPORTSTATE path` -- writes UI state that the session store doesn't
 //! hold (and shouldn't: it's the user's saved session) as JSON, for a
 //! test to check: `tab_view`, `transition`, `focused_url`,
-//! `address_bar_text`, `suggestions` (the omnibar dropdown's rows: `tab:<id>` for an open
+//! `address_bar_text`, `omni_matches` (the ids of the cards the Graph omnibar's text matches, page text included), `suggestions` (the omnibar dropdown's rows: `tab:<id>` for an open
 //! tab, `setting:<id>`, a history url, or the text a search or the typed row acts on), `highlighted` (a row
 //! index, or null) and `current_group` (the Graph view level's group
 //! id, or null at the top). `cards` lists the current level's cards in
@@ -65,6 +65,16 @@ impl App {
                 })
                 .collect(),
             None => Vec::new(),
+        };
+        // The cards the Graph omnibar's text matches (title, url, page text...), by id; none while it has no text.
+        let omni_matches: Vec<String> = match self.omni_filter().trim() {
+            "" => Vec::new(),
+            filter => {
+                let mut ids: Vec<NodeId> =
+                    self.nodes.keys().copied().filter(|&id| self.node_matches(filter, id)).collect();
+                ids.sort();
+                ids.into_iter().map(|id| id.to_string()).collect()
+            }
         };
         // The current level's cards, in draw order, with where each
         // one's center is on screen: what a headless test needs to
@@ -233,6 +243,7 @@ impl App {
             "focused_url": focused_url,
             "address_bar_text": self.omni.text,
             "suggestions": suggestions,
+            "omni_matches": omni_matches,
             "highlighted": self.omni.highlighted,
             "current_group": self.current_group,
             "cards": cards,

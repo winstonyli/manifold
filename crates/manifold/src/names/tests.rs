@@ -419,7 +419,7 @@ fn the_placeholder_characters_are_in_the_monospace_font() {
 /// rule (the line calls one of `RULE_MARKS`) or marked raw with `// name rule: <why>`, on the same line or as a
 /// comment on the line just above (`ruled`). A new file that reads `.name` must be added here, after deciding
 /// which rule its site gets.
-const ALLOWED: [&str; 19] = [
+const ALLOWED: [&str; 20] = [
     "card.rs",
     "card/group_body.rs",
     "card/jar_chip.rs",
@@ -435,14 +435,16 @@ const ALLOWED: [&str; 19] = [
     "node.rs",
     "node_menu.rs",
     "omnibar.rs",
+    "search/sync.rs",
     "session_sync/edits.rs",
     "settings_page.rs",
     "shortcuts.rs",
     "virtual_source.rs",
 ];
 /// Files whose `.name` is some other name: a cookie's (`jar.rs`), a string literal (`json_level_ui.rs`), a thread's
-/// (`process_manager/view_io.rs`), a tracing field's or span's (`telemetry.rs`).
-const OTHER_NAMES: [&str; 4] = ["jar.rs", "json_level_ui.rs", "process_manager/view_io.rs", "telemetry.rs"];
+/// (`process_manager/view_io.rs`, `search/service.rs`), a tracing field's or span's (`telemetry.rs`).
+const OTHER_NAMES: [&str; 5] =
+    ["jar.rs", "json_level_ui.rs", "process_manager/view_io.rs", "search/service.rs", "telemetry.rs"];
 const RULE_MARKS: [&str; 8] = [
     "display_name(",
     "clean_name(",

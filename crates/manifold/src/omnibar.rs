@@ -115,6 +115,14 @@ impl Corpus for AppCorpus<'_> {
     fn history(&self) -> Vec<(String, String)> {
         self.app.history.iter().rev().map(|h| (h.title.clone(), h.url.clone())).collect()
     }
+
+    fn text_hits(&self, text: &str) -> Vec<NodeId> {
+        self.app.search.hits(text).ids.clone()
+    }
+
+    fn snippet(&self, id: NodeId, text: &str) -> Option<String> {
+        crate::search::Index::snippet(&self.app.index_text(crate::search::DocKey::Node(id)), text, 80)
+    }
 }
 
 impl App {
@@ -143,13 +151,13 @@ impl App {
         ids.into_iter().zip(qualifiers).filter_map(|(id, q)| Some((id, q?))).collect()
     }
 
-    /// Whether `text` matches card `id`: its title, url, file name or text, or its stored name. The one test the
+    /// Whether `text` matches card `id`: its title, url, file name or text, its stored name, or the page text the index holds. The one test the
     /// Graph view dims by, over every node and uncapped (the dropdown's rows are capped).
     pub(crate) fn node_matches(&self, text: &str, id: NodeId) -> bool {
         let Some(node) = self.nodes.get(&id) else { return false };
         let mut needles = crate::card::card_filter_text(&node.runtime, self.own_text(id));
         needles.push(self.doc.mirror.name(id)); // name rule: the filter matches the stored text (a rename; a group is matched twice)
-        crate::text::filter_matches(text, &needles)
+        crate::text::filter_matches(text, &needles) || self.search.hits(text).set.contains(&id)
     }
 
     /// The text the Graph view dims by: the inline omnibar's while it is the Graph's, else none (all match).

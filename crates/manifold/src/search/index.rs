@@ -118,11 +118,13 @@ impl Index {
         Some(format!("{lead}{}{tail}", body.trim()))
     }
 
+    #[allow(dead_code, reason = "the tests count documents; the LSA (Task 8) may too")]
     pub(crate) fn docs(&self) -> usize {
         self.len.len()
     }
 
     /// Each document's terms with their counts, for the LSA.
+    #[allow(dead_code, reason = "the LSA (Task 8) is the first user")]
     pub(crate) fn term_doc_matrix(&self) -> Vec<(DocKey, Vec<(&str, u32)>)> {
         let mut out: Vec<_> =
             self.terms.iter().map(|(k, t)| (*k, t.iter().map(|(w, c)| (w.as_str(), *c)).collect())).collect();

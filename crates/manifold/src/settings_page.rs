@@ -32,6 +32,7 @@ pub(crate) struct SettingsRequests {
     pub(crate) import_bookmarks_requested: bool,
     pub(crate) save_now_requested: bool,
     pub(crate) welcome_tour_requested: bool,
+    pub(crate) clear_search_requested: bool,
     /// `settings_current_tab_section`: `self.focused` persists across a
     /// view switch (entering Settings doesn't clear it), so these act on
     /// whichever tab was focused right before Settings was opened, same
@@ -556,6 +557,20 @@ impl App {
         }
     }
 
+    /// "Clear search index": what is stored where, and a button that forgets it.
+    pub(crate) fn settings_search_index_row(&mut self, ui: &mut egui::Ui, req: &mut SettingsRequests) {
+        ui.label(
+            "The text of the pages you visit is kept on this device, in text.log in your profile folder, so the omnibar              can find a card by what it says. Nothing is sent anywhere. Tabs in an ephemeral jar are never kept.",
+        );
+        if ui
+            .button("Clear search index")
+            .on_hover_text("Delete the stored page text and the index built from it")
+            .clicked()
+        {
+            req.clear_search_requested = true;
+        }
+    }
+
     /// What the Settings sections asked for, acted on once the page's
     /// scroll area is done (`build_settings_page`).
     pub(crate) fn apply_settings_requests(&mut self, req: &SettingsRequests) {
@@ -563,6 +578,9 @@ impl App {
             self.close_settings_page();
             let group = self.current_group;
             self.spawn_new_tab(None, group, "manifold://welcome");
+        }
+        if req.clear_search_requested {
+            self.search.clear();
         }
         if req.save_now_requested {
             self.save_session();

@@ -17,6 +17,13 @@ pub(crate) struct PageTextTracker {
     asked: HashMap<NodeId, String>,
 }
 
+impl PageTextTracker {
+    /// Whether no text request is armed or awaited.
+    pub(crate) fn is_quiet(&self) -> bool {
+        self.timers.is_empty() && self.asked.is_empty()
+    }
+}
+
 impl App {
     /// A load on tab `id` ended on `url`: read its text after `TEXT_DELAY`.
     pub(crate) fn note_load_end(&mut self, id: NodeId, url: &str, now: Instant) {
@@ -25,6 +32,7 @@ impl App {
 
     /// Asks the tabs whose timer is due and whose url is still the one the load ended on.
     pub(crate) fn poll_text_timers(&mut self, now: Instant) {
+        self.sync_search_index(now);
         let due: Vec<NodeId> =
             self.page_text.timers.iter().filter(|(_, (_, at))| now >= *at).map(|(id, _)| *id).collect();
         for id in due {
@@ -42,7 +50,7 @@ impl App {
         if !(url.starts_with("http://") || url.starts_with("https://")) {
             return false;
         }
-        self.effective_jar(id).is_none_or(|(jar, _)| !self.doc.mirror.jar_def(jar).ephemeral)
+        !self.in_ephemeral_jar(id)
     }
 
     /// Sends `QueryPageText` to tab `id` when its text is wanted, remembering the url it was asked at.
@@ -79,5 +87,6 @@ impl App {
         let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
         let rec = crate::search::text_store::TextRecord { id, url: asked, title: tab.title.clone(), text, at };
         self.search.texts.put(rec);
+        self.search.next_sync = None; // index it now, not at the next tick of the pace
     }
 }

@@ -6,7 +6,7 @@
 //! `VERBS` is the one table: each row is a verb's usage, its help line, whether it is pointer input, and a parser
 //! from the rest of the line to a `Parsed`. `HELP`, the line parser and the sync test all read it, so adding a
 //! command is adding a row. A row's parser yields either a `Job` (a closure run on the UI thread, with the already
-//! parsed arguments captured) or a `ReaderOp` (`WAITTABS`, `WAITIDLE`, `SLEEP`, `SCREENSHOT`: the stdin reader
+//! parsed arguments captured) or a `ReaderOp` (`WAITTABS`, `WAITIDLE`, `WAITINDEX`, `SLEEP`, `SCREENSHOT`: the stdin reader
 //! blocks on those itself, so later lines stay in order behind them).
 //!
 //! Mouse commands are genuine synthetic `winit::event::WindowEvent`s (`App::dispatch_window_event`), deliberately
@@ -71,6 +71,7 @@ impl DebugJob {
 pub(crate) enum ReaderOp {
     WaitTabs(std::time::Duration),
     WaitIdle(std::time::Duration),
+    WaitIndex(std::time::Duration),
     Sleep(std::time::Duration),
     Screenshot(String),
 }
@@ -657,6 +658,9 @@ const VERBS: &[Verb] = &[
     row("WAITIDLE [secs]", "Hold later commands until typed input has landed, no view transition runs and the focused tab isn't loading (default 60 s max)", |rest| {
         wait_timeout(rest).map(|timeout| Parsed::Reader(ReaderOp::WaitIdle(timeout)))
     }),
+    row("WAITINDEX [secs]", "Hold later commands until the page-text index has caught up with the loaded pages (default 60 s max)", |rest| {
+        wait_timeout(rest).map(|timeout| Parsed::Reader(ReaderOp::WaitIndex(timeout)))
+    }),
     // A driver script's own `sleep` doesn't stay in order: while the reader is blocked (`WAITTABS`, `SCREENSHOT`) the
     // script keeps writing, and the lines it buffered arrive back to back.
     row("SLEEP secs", "Hold later commands for `secs` (in order, unlike a driver script's own sleep)", |rest| {
@@ -931,6 +935,17 @@ fn run_reader_op(proxy: &EventLoopProxy<UserEvent>, op: ReaderOp) -> bool {
                 app.release_idle_waiters();
             }),
         ),
+        // The app sends `()` on `tx` once `App::index_settled` holds, checked when it arrives and at the end of every
+        // frame. An engine that never answers `QueryPageText` (Servo, WebKitGTK and CEF have no arm yet) keeps it from
+        // holding until the timeout.
+        ReaderOp::WaitIndex(timeout) => (
+            timeout,
+            format!("WAITINDEX: the index still behind after {timeout:?}; continuing"),
+            Box::new(move |app, _| {
+                app.debug.index_waiters.push(tx);
+                app.release_index_waiters();
+            }),
+        ),
         // Frames can stall for seconds and the app holds one pending screenshot, so an unblocked second
         // `SCREENSHOT` (or a `QUIT`) would drop the first.
         ReaderOp::Screenshot(path) => (
@@ -1045,6 +1060,8 @@ pub(crate) struct HeadlessDebug {
     pub(crate) pending_print_to_pdf: Option<(String, String)>,
     /// Senders of the headless `WAITIDLE` commands waiting for `debug_idle`.
     pub(crate) idle_waiters: Vec<std::sync::mpsc::Sender<()>>,
+    /// Senders of the headless `WAITINDEX` commands waiting for `index_settled`.
+    pub(crate) index_waiters: Vec<std::sync::mpsc::Sender<()>>,
     /// Consecutive frame ends at which `debug_idle` held, while `idle_waiters` waits; `QUIET_FRAMES` releases them.
     pub(crate) idle_frames: u8,
 }
@@ -1149,6 +1166,7 @@ mod tests {
         assert!(!parses("SLEEP inf"));
         assert!(!parses("WAITTABS 1e30"));
         assert!(!parses("WAITIDLE 1e30"));
+        assert!(parses("WAITINDEX") && parses("WAITINDEX 5"));
         let waits = |line| match parse_line(line) {
             Some(Line::Reader(ReaderOp::WaitTabs(d) | ReaderOp::WaitIdle(d))) => Some(d.as_secs()),
             _ => None,
@@ -1269,6 +1287,7 @@ mod tests {
             r"ADDDOWNLOAD C:\x.zip",
             "WAITTABS 5",
             "WAITIDLE 5",
+            "WAITINDEX 5",
             "SLEEP 0.5",
             "TOGGLESHORTCUTSHELP",
             "TOGGLEPOPUP history",

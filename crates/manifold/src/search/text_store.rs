@@ -73,7 +73,6 @@ impl TextStore {
         self.live.insert(rec.id, rec);
     }
 
-    #[allow(dead_code, reason = "called by the index service (plan Task 7)")]
     pub(crate) fn remove(&mut self, id: NodeId) {
         if self.live.remove(&id).is_some() {
             self.append(&json!({"id": id.to_string(), "gone": true}).to_string());
@@ -84,13 +83,11 @@ impl TextStore {
         self.live.get(&id)
     }
 
-    #[allow(dead_code, reason = "called by the index service (plan Task 7)")]
     pub(crate) fn ids(&self) -> impl Iterator<Item = NodeId> + '_ {
         self.live.keys().copied()
     }
 
     /// Forgets every record and deletes the file.
-    #[allow(dead_code, reason = "called by the index service (plan Task 7)")]
     pub(crate) fn clear(&mut self) {
         self.live.clear();
         self.file_lines = 0;

@@ -284,6 +284,7 @@ impl App {
         }
 
         self.release_idle_waiters();
+        self.release_index_waiters();
 
         // See `quit_after_redraws`'s doc comment.
         if let Some(left) = self.debug.quit_after_redraws {

@@ -35,7 +35,7 @@ pub(crate) fn matching(query: &str) -> Vec<&'static SettingRow> {
         .collect()
 }
 
-static ROWS: [SettingRow; 12] = [
+static ROWS: [SettingRow; 13] = [
     SettingRow {
         id: "welcome_tour",
         section: "Help",
@@ -119,6 +119,13 @@ static ROWS: [SettingRow; 12] = [
         title: "Export and import bookmarks",
         keywords: "file backup html favourites favorites",
         draw: |app, ui, req| app.settings_bookmarks_row(ui, req),
+    },
+    SettingRow {
+        id: "search_index",
+        section: "Search",
+        title: "Clear search index",
+        keywords: "privacy history text forget delete page content",
+        draw: |app, ui, req| app.settings_search_index_row(ui, req),
     },
 ];
 

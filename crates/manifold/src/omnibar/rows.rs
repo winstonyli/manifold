@@ -39,6 +39,10 @@ pub(crate) trait Corpus {
     fn cards(&self) -> Vec<CardInfo>;
     /// `(title, url)`, newest first.
     fn history(&self) -> Vec<(String, String)>;
+    /// The cards whose page text (or other document) holds every word of `text`, best first.
+    fn text_hits(&self, text: &str) -> Vec<NodeId>;
+    /// About a line of `id`'s document around `text`.
+    fn snippet(&self, id: NodeId, text: &str) -> Option<String>;
 }
 
 /// Whether `text` (trimmed) is a case-insensitive substring of any of `haystacks`.
@@ -51,13 +55,26 @@ fn contains(text: &str, haystacks: &[&str]) -> bool {
 /// most `ROW_CAP`. An empty text offers the first open cards and nothing else (the Ctrl+K list before a keystroke).
 pub(crate) fn rows(corpus: &impl Corpus, text: &str, suggestions: &[String]) -> Vec<Row> {
     let text = text.trim();
-    let mut out: Vec<Row> = corpus
-        .cards()
-        .into_iter()
+    let cards = corpus.cards();
+    let mut out: Vec<Row> = cards
+        .iter()
         .filter(|c| !c.closed && contains(text, &[&c.label, &c.url]))
         .take(ROW_CAP)
-        .map(|c| Row::Card { id: c.id, label: c.label, url: c.url, jar: c.jar, snippet: None })
+        .map(|c| Row::Card { id: c.id, label: c.label.clone(), url: c.url.clone(), jar: c.jar.clone(), snippet: None })
         .collect();
+    if !text.is_empty() {
+        for id in corpus.text_hits(text) {
+            if out.len() >= ROW_CAP {
+                break;
+            }
+            let Some(c) = cards.iter().find(|c| c.id == id && !c.closed) else { continue };
+            if out.iter().any(|r| matches!(r, Row::Card { id: seen, .. } if *seen == id)) {
+                continue;
+            }
+            let snippet = corpus.snippet(id, text);
+            out.push(Row::Card { id, label: c.label.clone(), url: c.url.clone(), jar: c.jar.clone(), snippet });
+        }
+    }
     if text.is_empty() {
         return out;
     }
@@ -97,6 +114,8 @@ mod tests {
     struct Fake {
         cards: Vec<(u64, &'static str, &'static str, bool)>,
         history: Vec<(&'static str, &'static str)>,
+        /// `(card, snippet)` for the cards a page-text search finds.
+        text_hits: Vec<(u64, &'static str)>,
     }
 
     impl Corpus for Fake {
@@ -114,6 +133,12 @@ mod tests {
         }
         fn history(&self) -> Vec<(String, String)> {
             self.history.iter().map(|&(t, u)| (t.into(), u.into())).collect()
+        }
+        fn text_hits(&self, _text: &str) -> Vec<NodeId> {
+            self.text_hits.iter().map(|&(n, _)| id(n)).collect()
+        }
+        fn snippet(&self, card: NodeId, _text: &str) -> Option<String> {
+            self.text_hits.iter().find(|&&(n, _)| id(n) == card).map(|&(_, s)| s.to_owned())
         }
     }
 
@@ -134,6 +159,7 @@ mod tests {
         let fake = Fake {
             cards: vec![(1, "Rust book", "https://doc.test/", false)],
             history: vec![("Rust blog", "https://blog.test/")],
+            ..Default::default()
         };
         let rows = rows(&fake, "e", &["engine room".into()]);
         let mut order = kinds(&rows);
@@ -144,14 +170,14 @@ mod tests {
     #[test]
     fn each_section_is_capped_at_row_cap() {
         let cards = (0..ROW_CAP as u64 + 3).map(|n| (n, "a card", "https://a.test/", false)).collect();
-        let fake = Fake { cards, history: Vec::new() };
+        let fake = Fake { cards, ..Default::default() };
         let shown = rows(&fake, "a", &[]);
         assert_eq!(shown.iter().filter(|r| matches!(r, Row::Card { .. })).count(), ROW_CAP);
     }
 
     #[test]
     fn query_mode_preselects_the_first_row_and_address_mode_preselects_none() {
-        let fake = Fake { cards: vec![(1, "Rust", "https://r.test/", false)], history: Vec::new() };
+        let fake = Fake { cards: vec![(1, "Rust", "https://r.test/", false)], ..Default::default() };
         let shown = rows(&fake, "rust", &[]);
         assert_eq!(default_highlight(Mode::Query, &shown), Some(0));
         assert_eq!(default_highlight(Mode::Address, &shown), None);
@@ -160,7 +186,7 @@ mod tests {
 
     #[test]
     fn substring_of_title_or_url_matches_a_card_case_insensitively() {
-        let fake = Fake { cards: vec![(1, "Rust Book", "https://x.test/Guide", false)], history: Vec::new() };
+        let fake = Fake { cards: vec![(1, "Rust Book", "https://x.test/Guide", false)], ..Default::default() };
         let cards = |query| rows(&fake, query, &[]).into_iter().filter(|r| matches!(r, Row::Card { .. })).count();
         for query in ["rust", "BOOK", "guide"] {
             assert_eq!(cards(query), 1, "{query}");
@@ -170,7 +196,7 @@ mod tests {
 
     #[test]
     fn closed_cards_are_not_offered() {
-        let fake = Fake { cards: vec![(1, "Rust", "https://r.test/", true)], history: Vec::new() };
+        let fake = Fake { cards: vec![(1, "Rust", "https://r.test/", true)], ..Default::default() };
         assert!(!rows(&fake, "rust", &[]).iter().any(|r| matches!(r, Row::Card { .. })));
     }
 
@@ -184,8 +210,51 @@ mod tests {
 
     #[test]
     fn an_empty_text_offers_only_the_open_cards() {
-        let fake =
-            Fake { cards: vec![(1, "Rust", "https://r.test/", false)], history: vec![("Blog", "https://b.test/")] };
+        let fake = Fake {
+            cards: vec![(1, "Rust", "https://r.test/", false)],
+            history: vec![("Blog", "https://b.test/")],
+            ..Default::default()
+        };
         assert_eq!(kinds(&rows(&fake, "  ", &["x".into()])), ["card"]);
+    }
+
+    #[test]
+    fn a_page_text_word_finds_the_card_with_a_snippet() {
+        let fake = Fake {
+            cards: vec![(1, "Rust book", "https://doc.test/", false), (2, "Other", "https://o.test/", false)],
+            text_hits: vec![(2, "…the borrow checker…")],
+            ..Default::default()
+        };
+        let shown = rows(&fake, "borrow", &[]);
+        assert_eq!(
+            shown.first(),
+            Some(&Row::Card {
+                id: id(2),
+                label: "Other".into(),
+                url: "https://o.test/".into(),
+                jar: None,
+                snippet: Some("…the borrow checker…".into()),
+            })
+        );
+    }
+
+    #[test]
+    fn a_closed_card_text_hit_is_not_offered() {
+        let fake = Fake {
+            cards: vec![(2, "Other", "https://o.test/", true)],
+            text_hits: vec![(2, "…borrow…"), (9, "…borrow…")],
+            ..Default::default()
+        };
+        assert!(!rows(&fake, "borrow", &[]).iter().any(|r| matches!(r, Row::Card { .. })));
+    }
+
+    #[test]
+    fn a_card_matching_by_title_and_by_text_is_offered_once() {
+        let fake = Fake {
+            cards: vec![(1, "Borrow book", "https://b.test/", false)],
+            text_hits: vec![(1, "…borrow…")],
+            ..Default::default()
+        };
+        assert_eq!(rows(&fake, "borrow", &[]).iter().filter(|r| matches!(r, Row::Card { .. })).count(), 1);
     }
 }
