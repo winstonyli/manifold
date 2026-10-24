@@ -64,6 +64,7 @@ mod state;
 mod stress;
 mod suggest;
 mod suggest_groups;
+mod surface;
 #[cfg(windows)]
 mod sync_deps;
 mod tier;
@@ -160,6 +161,7 @@ mod windows_main {
             run: Run::Parent(crate::iframe_typing::iframe_typing),
         },
         Stage { name: "page-text", usage: Some("[WORKDIR_PARENT]"), run: Run::Parent(crate::page_text::page_text) },
+        Stage { name: "surface", usage: Some("[WORKDIR_PARENT]"), run: Run::Parent(crate::surface::surface) },
         Stage { name: "search", usage: Some("[WORKDIR_PARENT]"), run: Run::Parent(crate::search::search) },
         Stage {
             name: "suggest-groups",

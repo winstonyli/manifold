@@ -185,6 +185,7 @@ const STEPS: &[Step] = &[
     step("page-text", false),
     step("click-count", false),
     step("iframe-typing", false),
+    step("surface", false),
     step("search", false),
     step("suggest-groups", false),
     step("arrange", false),

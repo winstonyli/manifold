@@ -508,6 +508,17 @@ const VERBS: &[Verb] = &[
             }
         })
     }),
+    row("SURFACE outdated|lost", "Make the next frame see an outdated or lost window surface (the recovery paths)", |rest| {
+        let fault = crate::gpu::SurfaceFault::parse(rest.trim())?;
+        job(move |app, _| {
+            if let Some(gpu) = app.gpu.as_mut() {
+                gpu.force_surface_fault(fault);
+            }
+            if let Some(window) = &app.window {
+                window.request_redraw();
+            }
+        })
+    }),
     row("QUIT", "Exit the app", |_| job(quit)),
     row("QUICKSWITCHOPEN", "Ctrl+K -- open the omnibar popup", |_| job(|app, _| app.open_omni_popup())),
     row("QUICKSWITCHTEXT text", "Set the omnibar popup's search text", |rest| with_str(rest, |app, text| {
@@ -1263,6 +1274,7 @@ mod tests {
             "SETVISIBLE false",
             r"SCREENSHOT C:\x.png",
             "RESIZE 800 600",
+            "SURFACE lost",
             "QUIT",
             "QUICKSWITCHOPEN",
             "QUICKSWITCHTEXT abc",

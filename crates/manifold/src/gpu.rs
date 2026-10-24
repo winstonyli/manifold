@@ -35,6 +35,23 @@ impl PanePx {
     }
 }
 
+/// A surface status a debug command makes the next frame see.
+#[derive(Clone, Copy)]
+pub(crate) enum SurfaceFault {
+    Outdated,
+    Lost,
+}
+
+impl SurfaceFault {
+    pub(crate) fn parse(word: &str) -> Option<Self> {
+        match word {
+            "outdated" => Some(Self::Outdated),
+            "lost" => Some(Self::Lost),
+            _ => None,
+        }
+    }
+}
+
 pub struct RenderOutcome {
     pub surface_ok: bool,
     /// `Some` only when a screenshot was requested AND `surface_ok` --
@@ -216,6 +233,11 @@ pub struct GpuState {
     window: Arc<Window>,
     /// The next `render` reconfigures before acquiring (set after `Suboptimal`).
     reconfigure: bool,
+    /// The status the next `render` takes in place of the surface's (debug `SURFACE`), so the recovery branches below
+    /// run without a replug or a display change.
+    forced: Option<SurfaceFault>,
+    /// How many times an `Outdated` surface was reconfigured or a `Lost` one recreated.
+    pub(crate) recoveries: u32,
     /// Set by the device-lost callback; read once by `take_device_lost`.
     device_lost: Arc<std::sync::Mutex<Option<String>>>,
 }
@@ -473,6 +495,8 @@ impl GpuState {
             instance,
             window,
             reconfigure: false,
+            forced: None,
+            recoveries: 0,
             device_lost,
         }
     }
@@ -493,6 +517,11 @@ impl GpuState {
             self.config.height = size.height;
         }
         self.surface.configure(&self.device, &self.config);
+    }
+
+    /// Makes the next frame see `fault` instead of the surface's own status.
+    pub(crate) fn force_surface_fault(&mut self, fault: SurfaceFault) {
+        self.forced = Some(fault);
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {
@@ -1075,7 +1104,12 @@ impl GpuState {
             self.reconfigure_surface();
         }
         let acquire = tracing::info_span!("acquire").entered();
-        let frame = match self.surface.get_current_texture() {
+        let acquired = match self.forced.take() {
+            Some(SurfaceFault::Outdated) => wgpu::CurrentSurfaceTexture::Outdated,
+            Some(SurfaceFault::Lost) => wgpu::CurrentSurfaceTexture::Lost,
+            None => self.surface.get_current_texture(),
+        };
+        let frame = match acquired {
             wgpu::CurrentSurfaceTexture::Success(t) => t,
             // Presentable now, but wgpu asks for a reconfigure; done before the next acquire.
             wgpu::CurrentSurfaceTexture::Suboptimal(t) => {
@@ -1086,6 +1120,7 @@ impl GpuState {
             // with no resize event): without a reconfigure every later acquire fails too.
             wgpu::CurrentSurfaceTexture::Outdated => {
                 self.reconfigure_surface();
+                self.recoveries += 1;
                 return RenderOutcome { surface_ok: false, screenshot_result: None };
             }
             // The surface itself is gone: make a new one for the same window.
@@ -1097,6 +1132,7 @@ impl GpuState {
                         self.surface = surface;
                         LOST_LOGGED.store(false, std::sync::atomic::Ordering::Relaxed);
                         self.reconfigure_surface();
+                        self.recoveries += 1;
                     }
                     Err(err) => {
                         if !LOST_LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed) {

@@ -274,6 +274,8 @@ impl App {
             // The card being dragged (`App::dragging`), or null.
             "dragging": self.interaction.dragging,
             "json_level": self.json_level_state(),
+            // How many outdated surfaces were reconfigured and lost ones recreated (debug `SURFACE`).
+            "surface_recoveries": self.gpu.as_ref().map(|g| g.recoveries),
             "selected": selected,
             // The toast showing, or else the next queued one.
             "toast": self.toasts.save_toast.as_ref().map(|(message, _)| message).or(self.toasts.save_toast_queue.front()),
