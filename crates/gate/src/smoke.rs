@@ -518,7 +518,7 @@ fn drive(sm: &mut Smoke, m: &mut Marks) -> io::Result<()> {
     sm.check_state("group_card", "a headless screenshot shows no toast", "s['toast'] is None", |v| {
         null_key(v.s, "toast")
     })?;
-    sm.send("CLICK 326 17")?;
+    sm.send(crate::state::FIT_VIEW)?;
     let s = sm.settle("group_card")?;
     let first_group = first(&s.groups(), "group card")?.clone();
     sm.send(&format!("DOUBLECLICK {}", xy(&s, &first_group)?))?;
@@ -542,7 +542,7 @@ fn drive(sm: &mut Smoke, m: &mut Marks) -> io::Result<()> {
     sm.send(&format!("IMPORTGROUP {}", sm.win("pair.group.json")))?;
     sm.send("WAITTABS")?;
     // Reset View (fit all) brings the imported card into view.
-    sm.send("CLICK 326 17")?;
+    sm.send(crate::state::FIT_VIEW)?;
     let pair_top = sm.settle("pair_top")?;
     let pair_id = new_group(&pair_top, &before).ok_or_else(|| bad("no imported group card".into()))?;
     sm.send(&format!("DOUBLECLICK {}", xy(&pair_top, &pair_id)?))?;
@@ -659,7 +659,7 @@ fn drive(sm: &mut Smoke, m: &mut Marks) -> io::Result<()> {
     let before_nine = top.groups();
     sm.send(&format!("IMPORTGROUP {}", sm.win("nine.group.json")))?;
     sm.send("WAITTABS")?;
-    sm.send("CLICK 326 17")?;
+    sm.send(crate::state::FIT_VIEW)?;
     sm.send("MOUSEMOVE 806 629")?;
     let nine_s = sm.settle("nine")?;
     let nine = new_group(&nine_s, &before_nine).unwrap_or_default();

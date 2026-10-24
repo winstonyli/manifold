@@ -51,7 +51,7 @@ fn drive(exe: &Path, work: &Path) -> io::Result<()> {
         let kind = round % 3;
         if kind == 2 {
             a.send("ZOOMOUT")?;
-            a.send("CLICK 326 17")?;
+            a.send(crate::state::FIT_VIEW)?;
         }
         // The camera eases after leaving a group: aim only once two exports agree on every card.
         let mut prev = String::new();

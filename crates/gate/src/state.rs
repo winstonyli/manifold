@@ -10,6 +10,8 @@ pub const NOTE: &str = "text/markdown";
 pub const IMAGE: &str = "image/png";
 pub const PDF: &str = "application/pdf";
 pub const JSON: &str = "application/json";
+/// The Graph toolbar's "Fit" button (Reset View, fit all), as a `CLICK`: the zoom chip's last button in the 816 px test window.
+pub const FIT_VIEW: &str = "CLICK 380 19";
 pub const DOWNLOAD: &str = "application/octet-stream";
 
 /// The headless window the smoke test sizes with RESIZE, and the graph toolbar's height rounded up:
