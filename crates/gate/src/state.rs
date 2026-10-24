@@ -159,8 +159,9 @@ impl State {
         Some(out)
     }
 
-    /// A point on the card, `"x y"` rounded as python's `%.0f` (`xy(id)`): its center, or when another card (a virtual
-    /// trail page, say) is drawn over the center, the first of a few other points that none covers.
+    /// A point on the card, `"x y"` rounded as python's `%.0f` (`xy(id)`): its center, or when that is off the canvas
+    /// (a card past the window's edge) or another card (a virtual trail page, say) is drawn over it, the first of a few
+    /// other points that are on the canvas and that no card covers.
     pub fn xy(&self, id: &str) -> Option<String> {
         let card = self.card(id)?;
         let [x, y] = Self::floats::<2>(card, "screen")?;
@@ -171,12 +172,19 @@ impl State {
                 .filter_map(|c| Self::rect_from(&c["rect"]))
                 .any(|r| (r[0]..=r[2]).contains(&x) && (r[1]..=r[3]).contains(&y))
         };
-        if covered(x, y) {
+        let usable = |x: f64, y: f64| (0.0..W).contains(&x) && (TOP..H).contains(&y) && !covered(x, y);
+        if !usable(x, y) {
             if let Some([l, t, r, b]) = Self::floats::<4>(card, "rect") {
-                let clear = [0.25, 0.75, 0.1, 0.9]
+                let grid = [0.5, 0.25, 0.75, 0.1, 0.9]
                     .into_iter()
                     .flat_map(|fy| [0.5, 0.25, 0.75, 0.1, 0.9].map(|fx| (l + (r - l) * fx, t + (b - t) * fy)));
-                if let Some((x, y)) = clear.into_iter().find(|&(x, y)| !covered(x, y)) {
+                // The card's visible part first: a point of its rect clamped to the canvas.
+                let visible = (l.max(0.0), t.max(TOP), r.min(W - 1.0), b.min(H - 1.0));
+                let inside = [0.5, 0.25, 0.75, 0.1, 0.9].into_iter().flat_map(|fy| {
+                    [0.5, 0.25, 0.75, 0.1, 0.9]
+                        .map(|fx| (visible.0 + (visible.2 - visible.0) * fx, visible.1 + (visible.3 - visible.1) * fy))
+                });
+                if let Some((x, y)) = inside.chain(grid).find(|&(x, y)| usable(x, y)) {
                     return Some(self.pt(id, x, y));
                 }
             }
@@ -255,6 +263,17 @@ mod tests {
         let over = |c: [f64; 4]| at[0] >= c[0] && at[0] <= c[2] && at[1] >= c[1] && at[1] <= c[3];
         assert!(over([442.0, 299.0, 556.0, 377.0]), "inside the card: {at:?}");
         assert!(!over([477.0, 318.0, 591.0, 349.0]), "clear of the trail page: {at:?}");
+    }
+
+    /// A card can reach past the window's bottom edge with its center outside it (the smoke's empty group at
+    /// `reopen-nested`: center y 651 in a 639 px window): `xy` aims at the part that is on the canvas.
+    #[test]
+    fn xy_stays_on_the_canvas() {
+        let s =
+            State::parse(r#"{"cards":[{"id":"g","screen":[63.0,651.0],"rect":[-17.0,596.0,143.0,706.0]}]}"#).unwrap();
+        let at: Vec<f64> = s.xy("g").unwrap().split(' ').map(|v| v.parse().unwrap()).collect();
+        assert!((0.0..W).contains(&at[0]) && (TOP..H).contains(&at[1]), "on the canvas: {at:?}");
+        assert!(at[1] >= 596.0 && at[0] >= -17.0 && at[0] <= 143.0, "inside the card: {at:?}");
     }
 
     /// A trimmed real shape: two tabs (one live), a group, a note and a JSON level card.
