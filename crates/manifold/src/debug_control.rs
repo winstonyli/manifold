@@ -1297,6 +1297,8 @@ mod tests {
             "WAITTABS 5",
             "WAITIDLE 5",
             "WAITINDEX 5",
+            "SUGGEST",
+            "ACCEPTSUGGESTION 0",
             "SLEEP 0.5",
             "TOGGLESHORTCUTSHELP",
             "TOGGLEPOPUP history",
