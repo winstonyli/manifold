@@ -3,6 +3,8 @@
 //! the text log hold.
 
 mod index;
+#[allow(dead_code, reason = "the clustering (Task 9) is the first user")]
+mod lsa;
 mod service;
 mod sync;
 pub(crate) mod text_store;
