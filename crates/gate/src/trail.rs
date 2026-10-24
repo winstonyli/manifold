@@ -39,6 +39,12 @@ struct Run {
 }
 
 impl Run {
+    /// The site's address without scheme or port (`127.0.0.1`, or `SITE_HOST`): what the open-tab dropdown is asked
+    /// for, since every tab's url contains it.
+    fn site_host(&self) -> &str {
+        self.base.trim_start_matches("http://").split(':').next().unwrap_or_default()
+    }
+
     /// Settings (home page /b1, so NEWTAB opens B there) and a session holding tab A at /a.
     fn setup(&self) -> io::Result<()> {
         seed_settings(&self.profile, &self.engine, &format!(", \"home_page\": \"{}/b1\"", self.base))?;
@@ -345,7 +351,7 @@ fn drive(run: &Run, sec: &mut Option<Section>) -> io::Result<()> {
     check_is("the address bar has an icon tile", true, tiles(&s, Some(40.0)) >= 1);
     // The dropdown: each open-tab suggestion is a labelled row led by an icon tile. Suggestions only recompute when
     // the text changes, so type, then change it.
-    inst.send("ADDRESSBAR 127")?;
+    inst.send(&format!("ADDRESSBAR {}", run.site_host()))?;
     inst.send("EGUITEXT .")?;
     let s = inst.export_until("dropdown", |s| !rows(s).is_empty())?;
     let led = |s: &State| {
@@ -388,7 +394,7 @@ fn drive(run: &Run, sec: &mut Option<Section>) -> io::Result<()> {
     // The focused tab is not offered to itself: look at it from tab A.
     inst.send("NEXTTAB")?;
     inst.send("WAITIDLE")?;
-    inst.send("ADDRESSBAR 127")?;
+    inst.send(&format!("ADDRESSBAR {}", run.site_host()))?;
     inst.send("EGUITEXT .")?;
     let images =
         |s: &State| s.0["identities"].as_array().map_or(0, |ids| ids.iter().filter(|i| i["kind"] == "image").count());
