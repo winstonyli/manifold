@@ -621,7 +621,7 @@ impl App {
 
     /// The `(opener, opened)` pairs that pull on each other in the layout: the level's edges whose table row has
     /// `affects_layout` (today `opened-from`, stored as `parent`). A link is not one, so it never moves a card.
-    pub(crate) fn spring_edges(&self) -> Vec<(NodeId, NodeId)> {
+    pub(crate) fn spring_edges(&self) -> Vec<graph_layout::Edge> {
         if !crate::caps::edges().row(crate::caps::OPENED_FROM).is_some_and(|row| row.affects_layout()) {
             return Vec::new();
         }
@@ -629,8 +629,8 @@ impl App {
         self.nodes
             .keys()
             .filter(|id| live(**id))
-            .filter_map(|id| self.opened_from(*id).map(|p| (p, *id)))
-            .filter(|(p, _)| live(*p))
+            .filter_map(|id| self.opened_from(*id).map(|p| graph_layout::Edge { from: p, to: *id, weight: 1.0 }))
+            .filter(|e| live(e.from))
             .collect()
     }
 

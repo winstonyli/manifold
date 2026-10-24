@@ -67,7 +67,8 @@ fn links_never_feed_the_layout_springs() {
     app.connect(LINK, a, b).unwrap();
     assert!(app.spring_edges().is_empty());
     app.connect(OPENED_FROM, b, a).unwrap();
-    assert_eq!(app.spring_edges(), vec![(a, b)]);
+    let pairs: Vec<_> = app.spring_edges().iter().map(|e| (e.from, e.to, e.weight)).collect();
+    assert_eq!(pairs, vec![(a, b, 1.0)]);
 }
 
 #[test]

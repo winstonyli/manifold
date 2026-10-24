@@ -2,6 +2,15 @@ use std::collections::{HashMap, HashSet};
 
 use crate::store::model::NodeId;
 
+/// A spring between two cards: `weight` scales its pull toward `REST_LENGTH` (1.0 for a structural edge, less for a
+/// weak one, 0.0 for none).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Edge {
+    pub from: NodeId,
+    pub to: NodeId,
+    pub weight: f32,
+}
+
 /// The graph's world-space center that the physics centering force pulls
 /// toward — independent of screen/window coordinates now that the graph is
 /// pannable/zoomable (`egui::Scene`), unlike pre-pan/zoom where node
@@ -61,7 +70,7 @@ const SETTLE_SPEED: f32 = 1.0;
 /// One force-directed simulation tick.
 ///
 /// `positions`/`velocities` are keyed by node id and updated in place.
-/// `edges` are `(parent_id, child_id)` pairs. `pinned` holds node ids being
+/// `edges` are springs from a parent to a child (or any pair). `pinned` holds node ids being
 /// dragged: their position is the caller's and they don't move, but they
 /// still push the others (a dragged card shoulders its neighbours aside).
 /// Ids and edges are processed in sorted order, so the result doesn't depend
@@ -70,7 +79,7 @@ const SETTLE_SPEED: f32 = 1.0;
 pub fn step(
     positions: &mut HashMap<NodeId, egui::Vec2>,
     velocities: &mut HashMap<NodeId, egui::Vec2>,
-    edges: &[(NodeId, NodeId)],
+    edges: &[Edge],
     pinned: &HashSet<NodeId>,
     center: egui::Vec2,
     dt: f32,
@@ -85,7 +94,7 @@ pub fn step(
 pub fn step_sized(
     positions: &mut HashMap<NodeId, egui::Vec2>,
     velocities: &mut HashMap<NodeId, egui::Vec2>,
-    edges: &[(NodeId, NodeId)],
+    edges: &[Edge],
     pinned: &HashSet<NodeId>,
     sizes: &HashMap<NodeId, egui::Vec2>,
     center: egui::Vec2,
@@ -142,13 +151,13 @@ pub fn step_sized(
     // Spring attraction along parent->child edges toward a rest length. An
     // edge to a since-removed node is ignored; the rest are applied in sorted
     // order, so the sums don't depend on the order of `edges` either.
-    let mut springs: Vec<(usize, usize)> =
-        edges.iter().filter_map(|(parent, child)| Some((*index.get(parent)?, *index.get(child)?))).collect();
-    springs.sort_unstable();
-    for (p, c) in springs {
+    let mut springs: Vec<(usize, usize, f32)> =
+        edges.iter().filter_map(|e| Some((*index.get(&e.from)?, *index.get(&e.to)?, e.weight))).collect();
+    springs.sort_unstable_by(|a, b| (a.0, a.1).cmp(&(b.0, b.1)).then(a.2.total_cmp(&b.2)));
+    for (p, c, weight) in springs {
         let delta = pos[c] - pos[p];
         let dist = delta.length().max(MIN_DISTANCE);
-        let force = delta / dist * (SPRING_STRENGTH * (dist - REST_LENGTH));
+        let force = delta / dist * (SPRING_STRENGTH * weight * (dist - REST_LENGTH));
         forces[p] += force;
         forces[c] -= force;
     }
@@ -211,11 +220,15 @@ mod tests {
     use super::*;
     use crate::card_id::testutil::node;
 
+    fn edge(from: NodeId, to: NodeId) -> Edge {
+        Edge { from, to, weight: 1.0 }
+    }
+
     /// Today's `step_sized`, kept as the golden test's reference (wave 2, H3).
     fn step_sized_reference(
         positions: &mut HashMap<NodeId, egui::Vec2>,
         velocities: &mut HashMap<NodeId, egui::Vec2>,
-        edges: &[(NodeId, NodeId)],
+        edges: &[Edge],
         pinned: &HashSet<NodeId>,
         sizes: &HashMap<NodeId, egui::Vec2>,
         center: egui::Vec2,
@@ -263,7 +276,7 @@ mod tests {
         }
 
         let mut springs: Vec<(usize, usize)> =
-            edges.iter().filter_map(|(parent, child)| Some((*index.get(parent)?, *index.get(child)?))).collect();
+            edges.iter().filter_map(|e| Some((*index.get(&e.from)?, *index.get(&e.to)?))).collect();
         springs.sort_unstable();
         for (p, c) in springs {
             let delta = pos[c] - pos[p];
@@ -316,7 +329,7 @@ mod tests {
             .filter(|i: &usize| !i.is_multiple_of(5))
             .map(|i| (ids[i], egui::vec2(160.0 + i as f32, 100.0)))
             .collect();
-        let edges: Vec<(NodeId, NodeId)> = (1..13).map(|i| (ids[0], ids[3 * i])).collect();
+        let edges: Vec<Edge> = (1..13).map(|i| edge(ids[0], ids[3 * i])).collect();
         let pinned = HashSet::from([ids[7]]);
         let (mut ref_positions, mut ref_velocities) = (positions.clone(), velocities.clone());
         for _ in 0..90 {
@@ -350,7 +363,7 @@ mod tests {
         positions.insert(node(2), egui::Vec2::new(500.0, 0.0));
         velocities.insert(node(1), egui::Vec2::ZERO);
         velocities.insert(node(2), egui::Vec2::ZERO);
-        let edges = vec![(node(1), node(2))];
+        let edges = vec![edge(node(1), node(2))];
         let pinned = HashSet::new();
 
         for _ in 0..2000 {
@@ -361,6 +374,41 @@ mod tests {
         assert!((dist - REST_LENGTH).abs() < 20.0, "expected settling near rest length {REST_LENGTH}, got {dist}");
     }
 
+    /// Two cards 3000 apart joined by a spring of `weight`, 30 steps on: their distance.
+    fn settled_distance(weight: f32) -> f32 {
+        let mut positions = HashMap::from([(node(1), egui::vec2(-1500.0, 0.0)), (node(2), egui::vec2(1500.0, 0.0))]);
+        let mut velocities = HashMap::from([(node(1), egui::Vec2::ZERO), (node(2), egui::Vec2::ZERO)]);
+        let edges = [Edge { from: node(1), to: node(2), weight }];
+        for _ in 0..30 {
+            step(&mut positions, &mut velocities, &edges, &HashSet::new(), egui::Vec2::ZERO, 1.0 / 60.0);
+        }
+        (positions[&node(1)] - positions[&node(2)]).length()
+    }
+
+    #[test]
+    fn a_zero_weight_edge_exerts_no_force() {
+        let mut with = (HashMap::new(), HashMap::new());
+        let mut without = (HashMap::new(), HashMap::new());
+        for (p, v) in [&mut with, &mut without] {
+            p.insert(node(1), egui::vec2(-400.0, 0.0));
+            p.insert(node(2), egui::vec2(400.0, 0.0));
+            v.insert(node(1), egui::Vec2::ZERO);
+            v.insert(node(2), egui::Vec2::ZERO);
+        }
+        let dead = [Edge { from: node(1), to: node(2), weight: 0.0 }];
+        for _ in 0..50 {
+            step(&mut with.0, &mut with.1, &dead, &HashSet::new(), egui::Vec2::ZERO, 1.0 / 60.0);
+            step(&mut without.0, &mut without.1, &[], &HashSet::new(), egui::Vec2::ZERO, 1.0 / 60.0);
+        }
+        assert_eq!(with.0, without.0);
+    }
+
+    #[test]
+    fn a_heavier_edge_pulls_closer_than_a_lighter_one() {
+        let (light, heavy) = (settled_distance(0.2), settled_distance(1.0));
+        assert!(heavy < light, "heavy {heavy}, light {light}");
+    }
+
     #[test]
     fn simulation_settles_to_zero_velocity() {
         let mut positions = HashMap::new();
@@ -369,7 +417,7 @@ mod tests {
         positions.insert(node(2), egui::Vec2::new(50.0, 0.0));
         velocities.insert(node(1), egui::Vec2::ZERO);
         velocities.insert(node(2), egui::Vec2::ZERO);
-        let edges = vec![(node(1), node(2))];
+        let edges = vec![edge(node(1), node(2))];
         let pinned = HashSet::new();
 
         for _ in 0..5000 {
@@ -451,9 +499,9 @@ mod tests {
     fn the_layout_is_deterministic() {
         let ids: Vec<NodeId> = (0..30).map(|i| node(i + 1)).collect();
         // A chain plus a few cross edges, so several springs act on one node.
-        let mut edges: Vec<(NodeId, NodeId)> = (0..29).map(|i| (node(i + 1), node(i + 2))).collect();
-        edges.extend([(1, 8), (4, 21), (8, 16), (21, 16)].map(|(a, b)| (node(a), node(b))));
-        let run = |order: &[NodeId], edges: &[(NodeId, NodeId)]| {
+        let mut edges: Vec<Edge> = (0..29).map(|i| edge(node(i + 1), node(i + 2))).collect();
+        edges.extend([(1, 8), (4, 21), (8, 16), (21, 16)].map(|(a, b)| edge(node(a), node(b))));
+        let run = |order: &[NodeId], edges: &[Edge]| {
             let mut positions = HashMap::new();
             let mut velocities = HashMap::new();
             for id in order {
@@ -472,7 +520,7 @@ mod tests {
             out
         };
         let reversed: Vec<NodeId> = ids.iter().rev().copied().collect();
-        let reversed_edges: Vec<(NodeId, NodeId)> = edges.iter().rev().copied().collect();
+        let reversed_edges: Vec<Edge> = edges.iter().rev().copied().collect();
         assert_eq!(run(&ids, &edges), run(&reversed, &reversed_edges), "edge order must not matter");
         assert_eq!(run(&ids, &edges), run(&reversed, &edges), "map order must not matter");
     }
@@ -493,7 +541,7 @@ mod tests {
         positions.insert(node(2), egui::Vec2::new(10.0, 0.0));
         velocities.insert(node(1), egui::Vec2::ZERO);
         velocities.insert(node(2), egui::Vec2::ZERO);
-        let edges = vec![];
+        let edges: Vec<Edge> = vec![];
         let mut pinned = HashSet::new();
         pinned.insert(node(1));
 
