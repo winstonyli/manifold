@@ -2,7 +2,7 @@
 //! only thing that stretches it. A Git Bash fork costs seconds on this machine and the old script forked per stage for
 //! the clock, the log counts and the timing join; here only the stages and one PowerShell call for Defender are spawned.
 //!
-//! - `full` (default): `gate two` x3, `smoke`, `launch-forms`, `link`, `unknown-type`, `closed`, `trail`, `sleep-history`, `layout`. For any change to sync, the store, the
+//! - `full` (default): `gate two` x3, `smoke`, `launch-forms`, `page-text`, `search`, `suggest-groups`, `arrange`, `link`, `unknown-type`, `closed`, `trail`, `sleep-history`, `layout`. For any change to sync, the store, the
 //!   mirror, session save/restore or the view hosts.
 //! - `light`: the same with `two` once. For UI code that writes the store or reaches a view, and scripts. The repeats in
 //!   `full` exist to catch flaky ordering in sync, which UI-only changes cannot reach.
@@ -18,7 +18,7 @@
 //!
 //! Build first (`cargo build -j 8 -p manifold -p manifold-view-webview2 -p manifold-view-pdfium -p gate`) and run from
 //! the repo root, detached and low priority: `cmd //c start "" //b //belownormal target/debug/gate.exe all LOG [mode]`.
-//! Progress and verdicts go to LOG; each stage's own output to LOG.two-N.log, .smoke.log, .launch-forms.log, .link.log, .unknown-type.log, .closed.log, .trail.log,
+//! Progress and verdicts go to LOG; each stage's own output to LOG.two-N.log, .smoke.log, .launch-forms.log, .page-text.log, .search.log, .suggest-groups.log, .arrange.log, .link.log, .unknown-type.log, .closed.log, .trail.log,
 //! .sleep-history.log, .layout.log and .unit.log. After each stage LOG gets its `TIMING` lines (see timing.rs) and at the end the slowest
 //! ten; LOG.cpu holds the machine's CPU load sampled every few seconds. Running the stages in parallel was tried
 //! (2026-10-07) and was worse: 53 min, all four runs failed on timing waits under load.
@@ -236,6 +236,9 @@ pub(crate) fn all(log: Option<PathBuf>, mode: Option<String>) -> ExitCode {
     if mode != "ui" {
         g.stage("smoke", &sibling(&log, "smoke.log"), gate("smoke"));
         g.stage("launch-forms", &sibling(&log, "launch-forms.log"), gate("launch-forms"));
+        for name in ["page-text", "search", "suggest-groups", "arrange"] {
+            g.stage(name, &sibling(&log, &format!("{name}.log")), gate(name));
+        }
     }
     g.stage("link", &sibling(&log, "link.log"), gate("link"));
     g.stage("unknown-type", &sibling(&log, "unknown-type.log"), gate("unknown-type"));
