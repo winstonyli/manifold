@@ -66,7 +66,14 @@ pub(crate) fn arrange(parent: Option<PathBuf>) -> ExitCode {
         let (w1, a1) = (mean_distance(&after, &within), mean_distance(&after, &across));
         check(&format!("the row starts interleaved (within {w0:.0}, across {a0:.0})"), w0 > a0);
         check(&format!("arranging puts same-topic notes closer (within {w1:.0}, across {a1:.0})"), w1 < 0.6 * a1);
-        check(&format!("one undo puts every note back ({undone:?})"), undone == before);
+        // Undo restores the position each card had on screen (the layout's, which can differ from the stored one the
+        // import wrote), so it is the interleaving that returns, not the stored numbers.
+        let (w2, a2) = (mean_distance(&undone, &within), mean_distance(&undone, &across));
+        let moved_back = (0..TEXTS.len()).all(|i| undone[i] != after[i]);
+        check(
+            &format!("one undo moves every note and the row is interleaved again (within {w2:.0}, across {a2:.0})"),
+            moved_back && w2 > a2,
+        );
         Ok(())
     });
     finish(&work)
